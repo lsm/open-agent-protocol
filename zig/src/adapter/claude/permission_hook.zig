@@ -27,21 +27,23 @@ pub fn decisionOutput(arena: std.mem.Allocator, answer: []const u8) !?[]const u8
     return try std.json.Stringify.valueAlloc(arena, std.json.Value{ .object = output }, .{});
 }
 
+pub const answer_timeout_ms: u64 = 50_000;
+
 pub fn ask(arena: std.mem.Allocator, endpoint: []const u8, request: []const u8) ?[]const u8 {
-    const uri = std.Uri.parse(endpoint) catch return null;
-    var client = compat.http.HttpClient.init(arena);
-    defer client.deinit();
+    return askWithin(arena, endpoint, request, answer_timeout_ms);
+}
+
+pub fn askWithin(arena: std.mem.Allocator, endpoint: []const u8, request: []const u8, timeout_ms: u64) ?[]const u8 {
     const headers = [_]std.http.Header{.{ .name = "content-type", .value = "application/json" }};
-    var pending = client.openRequest(.POST, uri, .{ .extra_headers = &headers, .keep_alive = false }) catch return null;
-    defer pending.deinit();
-    compat.http.sendRequest(&pending, request) catch return null;
-    var head: [4096]u8 = undefined;
-    var response = compat.http.receiveResponse(&pending, &head) catch return null;
-    if (response.head.status != .ok) return null;
-    var transfer: [4096]u8 = undefined;
-    const reader = compat.http.responseReader(&response, &transfer);
-    const answer = compat.http.allocRemainingResponse(arena, reader, answer_limit) catch return null;
-    return decisionOutput(arena, answer) catch null;
+    const answered = compat.http.fetch(arena, endpoint, .{
+        .method = .POST,
+        .body = request,
+        .extra_headers = &headers,
+        .max_response_bytes = answer_limit,
+        .timeout_ms = timeout_ms,
+    }) catch return null;
+    if (answered.status != 200) return null;
+    return decisionOutput(arena, answered.body) catch null;
 }
 
 test "an allow answer becomes the hook's allow decision" {
@@ -71,4 +73,18 @@ test "an unreachable endpoint leaves the prompt to the session's own host" {
     defer arena.deinit();
     try std.testing.expectEqual(@as(?[]const u8, null), ask(arena.allocator(), "http://127.0.0.1:1/claude/permission", "{}"));
     try std.testing.expectEqual(@as(?[]const u8, null), ask(arena.allocator(), "not a url", "{}"));
+}
+
+test "an endpoint that never answers is given up on within the bound" {
+    if (!compat.net.supports_unix_channels) return error.SkipZigTest;
+    const address = try compat.net.Address.parse("127.0.0.1", 0);
+    var server = try address.listen(std.testing.io, .{});
+    defer server.deinit(std.testing.io);
+    const url = try std.fmt.allocPrint(std.testing.allocator, "http://127.0.0.1:{d}/claude/permission", .{server.socket.address.getPort()});
+    defer std.testing.allocator.free(url);
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const started = try compat.time.monotonicMillis();
+    try std.testing.expectEqual(@as(?[]const u8, null), askWithin(arena.allocator(), url, "{}", 200));
+    try std.testing.expect(try compat.time.monotonicMillis() - started < 5_000);
 }
