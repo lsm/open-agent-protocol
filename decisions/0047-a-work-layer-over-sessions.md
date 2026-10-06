@@ -69,9 +69,27 @@ Claude Code CLI 2.1.289 and the Claude desktop app with its bundled CLI
   (Decision 0040); never for a session the app made. A session the app made
   runs with `--setting-sources=user,project,local` and the app's own prompt.
 
-Codex is the opposite case: HyperNeo's driver connects to the app-server
-socket Codex Desktop already runs (`thread/start`, `turn/start`,
-`turn/interrupt`), and what it starts shows in the app.
+Two more probes, the same day:
+
+- **A pending Claude prompt can be answered by a `PermissionRequest` hook.**
+  With a hook in `--settings`, the hook ran when the session asked to `Write`,
+  returned `allow`, the host received `control_cancel_request` for its pending
+  `can_use_tool`, and the tool ran. Without a hook, nothing outside the
+  session's stdin answers it: `claude agents --json` says
+  `waitingFor: "permission prompt"` and no more, and a cross-session message
+  is only enqueued (filed as anthropics/claude-code#99964).
+- **Codex has a shared app-server, but it is not the desktop app's.** The
+  ChatGPT app runs its own `codex app-server` child over stdio. Separately,
+  Codex keeps a managed daemon (`codex app-server --listen unix://
+  --managed-daemon`, 0.159.2 here) behind
+  `~/.codex/app-server-control/app-server-control.sock`, which speaks
+  JSON-RPC over a WebSocket; this is the socket HyperNeo's driver uses. A
+  client there gets the full wire: `thread/start` and `turn/start` answered,
+  `item/agentMessage/delta` and the other notifications streamed, and
+  `item/commandExecution/requestApproval` sent to it as a server request. The
+  thread lands in `~/.codex/state_5.sqlite` with source `vscode`, the source
+  the app's own threads carry. Whether the app shows it live, and what
+  happens when the app opens a thread the daemon holds, was not observed.
 
 ## Decisions
 
@@ -121,19 +139,25 @@ the adapter is not told, and its SDK wire cannot reach it
 (`research/deepseek-harness-dsh-v0.1.7-rc.2-mapping.md`). Its adapter lists
 nothing native until a deployment says where that store is.
 
-### 3. A native session can be adopted, in one of three ways
+### 3. A native session can be adopted, in one of four ways
 
 An open naming a native id adopts it. The adapter answers which way it can:
 
 | Way | When | What the host gets |
 | --- | --- | --- |
-| `attach` | the harness serves a socket other clients can join | the full core: events, prompts, cancel; the app sees the same session |
+| `attach` | the harness serves a socket other clients can join | the full core: events, prompts, cancel, in a process other clients share |
 | `resume` | no process runs the session | the full core, in a process the adapter owns, via the harness's own resume (for Claude, 0040's `--resume`, given a native id instead of a binding) |
-| refused `session_running_elsewhere` | another process runs it and there is no socket to join | nothing; the caller relays outside OAP |
+| `observe` | another process runs it, there is no socket to join, and the harness has a prompt hook | events read from the harness's transcript, prompts answered through the hook; no submit, no cancel |
+| refused `session_running_elsewhere` | another process runs it and none of the above applies | nothing; the caller relays outside OAP |
 
-Codex Desktop is `attach`. Claude Code is `resume` when `claude agents --json`
-does not list the session, and refused when it does, because a second writer
-forks the conversation. An adopting Claude adapter resumes with the settings
+Codex is `attach` through the managed daemon's socket. Claude Code is
+`resume` when `claude agents --json` does not list the session, and `observe`
+when it does, because a second writer forks the conversation: progress comes
+from tailing `~/.claude/projects/<dir>/<id>.jsonl`, and a prompt reaches the
+host through a `PermissionRequest` hook the user installed, which asks the
+endpoint and falls back to the app's own prompt when no answer comes. A hook
+must be in the session's settings before it starts, so `observe` without one
+answers no prompts. An adopting Claude adapter resumes with the settings
 the app recorded for the session, not with `--setting-sources=`.
 
 OAP does not carry a relay. A relayed message has no run, no events and no
