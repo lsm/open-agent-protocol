@@ -617,14 +617,18 @@ pub const Hub = struct {
         for (current.active_runs) |run| {
             if (run.pending_interactions.len > 0) found.pending_interaction = run.pending_interactions[0];
         }
+        var journal_waiting = false;
         if (current.status == .running and found.pending_interaction.len == 0) {
-            found.pending_interaction = try journalPending(arena, entry, found.run_id);
+            if (try journalPending(arena, entry, found.run_id)) |pending| {
+                journal_waiting = true;
+                found.pending_interaction = pending;
+            }
         }
         switch (current.status) {
             .closed => return null,
             .queued => found.status = .queued,
             .waiting_for_input => found.status = .needs_you,
-            .running => found.status = if (found.pending_interaction.len > 0) .needs_you else .running,
+            .running => found.status = if (journal_waiting or found.pending_interaction.len > 0) .needs_you else .running,
             .@"error" => found.status = .failed,
             .idle => try latestOutcome(arena, entry, &found),
         }
@@ -637,8 +641,8 @@ pub const Hub = struct {
         return registered.adapter.nativeLink(arena, record.native_id);
     }
 
-    fn journalPending(arena: std.mem.Allocator, entry: *const Entry, run_id: []const u8) ![]const u8 {
-        if (run_id.len == 0) return "";
+    fn journalPending(arena: std.mem.Allocator, entry: *const Entry, run_id: []const u8) !?[]const u8 {
+        if (run_id.len == 0) return null;
         var index = entry.journal.items.len;
         while (index > 0) {
             index -= 1;
@@ -651,14 +655,14 @@ pub const Hub = struct {
             if (parsed != .object) continue;
             const kind = parsed.object.get("type") orelse continue;
             if (kind != .string or !std.mem.eql(u8, kind.string, "run.status.updated")) continue;
-            const payload = parsed.object.get("payload") orelse return "";
-            if (payload != .object) return "";
-            const status = payload.object.get("status") orelse return "";
-            if (status != .string or !std.mem.eql(u8, status.string, "waiting_for_input")) return "";
+            const payload = parsed.object.get("payload") orelse return null;
+            if (payload != .object) return null;
+            const status = payload.object.get("status") orelse return null;
+            if (status != .string or !std.mem.eql(u8, status.string, "waiting_for_input")) return null;
             const pending = payload.object.get("pending_user_input_id") orelse return "";
             return if (pending == .string) pending.string else "";
         }
-        return "";
+        return null;
     }
 
     fn latestOutcome(arena: std.mem.Allocator, entry: *const Entry, found: *Work) !void {
