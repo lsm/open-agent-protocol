@@ -4271,6 +4271,11 @@ That is enough to stage the unit and not enough to decide it: its decision must
 say whether the list is the host's records, the harness's, or both, and how a
 long list is paged.
 
+**Status: [Decision 0046](../decisions/0046-a-session-list-is-the-hosts-bindings.md)
+is proposed.** It answers both: the list is the host's bindings and only those,
+paged newest first on an opaque cursor, and four harnesses' native lists stay
+out until a host needs sessions no binding names. Nothing is executable yet.
+
 ## T4. Steer
 
 **Status: [Decision 0013](../decisions/0013-steer.md) is accepted (2026-10-03).**

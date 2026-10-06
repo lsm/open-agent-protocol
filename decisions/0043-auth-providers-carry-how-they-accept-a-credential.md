@@ -1,6 +1,10 @@
 # Decision 0043: Auth Providers Carry How They Accept a Credential
 
-Status: proposed
+Status: accepted 2026-10-06 (#505 put `auth_kinds` on every provider row,
+required with `minItems: 1` in `auth.schema.json`, copied from the catalog's own
+`auth` array, with the `auth-provider-without-kinds` schema-invalid fixture; the
+Go, TypeScript, Python and Rust SDKs each drop an unknown kind and keep the rest,
+pinned by their own tests)
 Date: 2026-09-28
 Protocol: `open-agent-protocol` version `0.1`
 Profile: `open-agent-protocol.agent-control-core`

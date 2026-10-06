@@ -673,7 +673,7 @@ Common optional core features:
 - `endpoint.status`
 - `capabilities.updates`
 - `models.list` (executable; [Decision 0006](../decisions/0006-models-catalog.md))
-- `session.list`
+- `session.list` (staged; [Decision 0046](../decisions/0046-a-session-list-is-the-hosts-bindings.md), proposed)
 - `session.open.subscribe` (executable; [Decision 0009](../decisions/0009-compound-open.md))
 - `session.open.reopen` (executable; [Decision 0040](../decisions/0040-a-session-reopens-through-its-own-binding.md))
 - `session.reasoning` and `session.compaction.policy` (executable; [Decision 0045](../decisions/0045-reasoning-level-and-compaction-policy-are-session-settings.md))

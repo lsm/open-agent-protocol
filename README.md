@@ -806,7 +806,7 @@ Research:
 - [Pinned Hermes agent mapping](research/hermes-v2026.9.24-mapping.md), over the [v2026.8.31 base mapping](research/hermes-v2026.8.31-mapping.md)
 - [Pinned Claude Code CLI and Agent SDK mapping](research/claude-code-agent-sdk-2.1.288-mapping.md), over the [2.1.282](research/claude-code-agent-sdk-2.1.282-mapping.md) and [2.1.280](research/claude-code-agent-sdk-2.1.280-mapping.md) mappings and the [2.1.263 base mapping](research/claude-code-agent-sdk-2.1.263-mapping.md)
 - [Z.ai China Coding Plan evidence matrix](research/zai-china-coding-plan-evidence.md)
-- [OpenCode provider breadth and its model catalog](research/opencode-provider-catalog-mapping.md), with [Decision 0035](decisions/0035-a-model-entry-publishes-its-facts-and-absence-means-unknown.md) proposed on it
+- [OpenCode provider breadth and its model catalog](research/opencode-provider-catalog-mapping.md), with [Decision 0035](decisions/0035-a-model-entry-publishes-its-facts-and-absence-means-unknown.md) accepted on it
 - [Protocol feedback from eight adapter tranches](research/protocol-feedback-2026-09.md)
 
 ### Implementing OAP natively
@@ -874,16 +874,17 @@ Decisions:
 - [0032 — go and zig are peers, and the specification decides](decisions/0032-go-and-zig-are-peers.md) (accepted)
 - [0033 — harness pins are data](decisions/0033-harness-pins-are-data.md) (proposed)
 - [0034 — an unpublished catalog is unknown](decisions/0034-an-unpublished-catalog-is-unknown.md) (accepted)
-- [0035 — a model entry publishes its facts, and absence means unknown](decisions/0035-a-model-entry-publishes-its-facts-and-absence-means-unknown.md) (proposed)
-- [0036 — a presentation layer is not evidence for its own profile](decisions/0036-a-presentation-layer-is-not-evidence-for-its-own-profile.md) (proposed)
+- [0035 — a model entry publishes its facts, and absence means unknown](decisions/0035-a-model-entry-publishes-its-facts-and-absence-means-unknown.md) (accepted)
+- [0036 — a presentation layer is not evidence for its own profile](decisions/0036-a-presentation-layer-is-not-evidence-for-its-own-profile.md) (accepted)
 - [0037 — presentation state is versioned, and every intent is idempotent](decisions/0037-presentation-state-is-versioned-and-every-intent-is-idempotent.md) (proposed)
 - [0038 — one released binary, and a library for every language](decisions/0038-one-released-binary-and-a-library-for-every-language.md) (accepted)
 - [0039 — a session is OAP's, and a harness is where it runs](decisions/0039-a-session-is-oaps-and-a-harness-is-where-it-runs.md) (accepted)
 - [0040 — a session reopens through its own binding](decisions/0040-a-session-reopens-through-its-own-binding.md) (accepted)
-- [0041 — cancel acceptance is judged when the cancel is checked](decisions/0041-cancel-acceptance-is-judged-when-the-cancel-is-checked.md) (proposed)
-- [0043 — auth providers carry how they accept a credential](decisions/0043-auth-providers-carry-how-they-accept-a-credential.md) (proposed)
+- [0041 — cancel acceptance is judged when the cancel is checked](decisions/0041-cancel-acceptance-is-judged-when-the-cancel-is-checked.md) (accepted)
+- [0043 — auth providers carry how they accept a credential](decisions/0043-auth-providers-carry-how-they-accept-a-credential.md) (accepted)
 - [0044 — compaction](decisions/0044-compaction.md) (accepted)
 - [0045 — reasoning level and compaction policy are session settings](decisions/0045-reasoning-level-and-compaction-policy-are-session-settings.md) (accepted)
+- [0046 — a session list is the host's bindings](decisions/0046-a-session-list-is-the-hosts-bindings.md) (proposed)
 - [0047 — a work layer over sessions](decisions/0047-a-work-layer-over-sessions.md) (proposed)
 
 Decision 0003 defines what `accepted` means and what moves a record from

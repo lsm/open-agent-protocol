@@ -6,8 +6,9 @@ Protocol: `open-agent-protocol` version `0.1`
 Profile: a new `open-agent-protocol.work` profile over
 `open-agent-protocol.agent-control-core`
 Leans on: [Decision 0039](0039-a-session-is-oaps-and-a-harness-is-where-it-runs.md),
-[Decision 0040](0040-a-session-reopens-through-its-own-binding.md) and the
-proposed Decision 0046 (#904), whose session list this record widens
+[Decision 0040](0040-a-session-reopens-through-its-own-binding.md) and
+[Decision 0046](0046-a-session-list-is-the-hosts-bindings.md), whose session
+list this record widens
 Amends: [the hub draft](../drafts/hub.md), whose name it retires
 
 ## Context
@@ -26,7 +27,7 @@ The core already does most of what the five verbs need:
 | --- | --- |
 | `start` | open, then submit. A message carried on the open is still refused in Zig (hub draft, D11). |
 | `send` | submit, steer ([0013](0013-steer.md)) and queue ([0007](0007-queue-delivery.md)) |
-| `stop` | cancel, on every adapter |
+| `stop` | cancel, on every adapter but DeepSeek's, whose wire has no cancel request |
 | `status` | `session.state` and the event stream, with no summary a caller can read in one call |
 | `find` | only the sessions a host opened (0046); none a harness holds |
 
@@ -86,7 +87,9 @@ endpoint gains it without new run machinery:
   This is D11: the Zig hub admits a message at open, as Go does.
 - `work.send {ref, message}`: submit, or queue while a run is active.
 - `work.status {ref}`: one of six statuses and the last reply.
-- `work.stop {ref}`: cancel.
+- `work.stop {ref}`: cancel. Where the adapter does not advertise `run.cancel`
+  (DeepSeek), it is refused `unsupported_feature` naming `run.cancel`, as
+  cancel already is.
 
 The six statuses are a summary of core state, not new state:
 
@@ -112,7 +115,8 @@ OpenCode `GET /api/session`, Hermes `session.list`. Claude and Pi have no list
 on their wire; their adapters may read the harness's own store read-only
 (Claude: the app's session records and `claude agents --json`). That reverses
 0012's refusal to read a private store, for listing only, and only for these
-two.
+two. The DeepSeek harness has no list and no recorded store, so its adapter
+lists nothing native.
 
 ### 3. A native session can be adopted, in one of three ways
 
