@@ -172,8 +172,9 @@ Request `{"ref", "after"?, "limit"?}`. Answer `{"turns": [...]}`, each turn
 `{"index", "role", "text", "run_id"?, "outcome"?, "at_ms"}`, oldest first,
 after index `after`, at most `limit` (1 to 500, default 100).
 
-Where the adapter can read the harness's own transcript (Claude Code, from its
-project's `<native id>.jsonl`), `work.read` answers from it: every user message
+Where the adapter can read the harness's own transcript (Codex through
+`thread/turns/list`, Claude Code from its project's `<native id>.jsonl`),
+`work.read` answers from it: every user message
 and the reply that followed, the conversation before `serve` held the session
 included, and still there after `serve` restarts, so `serve` writes no message
 text of its own to disk. A turn there carries no `run_id` or `outcome`; its

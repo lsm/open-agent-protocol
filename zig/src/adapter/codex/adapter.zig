@@ -92,55 +92,135 @@ pub const Adapter = struct {
     }
 
     pub fn adapter(self: *Adapter) contract.Adapter {
-        return .{ .ptr = self, .vtable = &.{ .probe = probe, .open = open, .native_list = nativeList, .native_link = nativeLink } };
+        return .{ .ptr = self, .vtable = &.{ .probe = probe, .open = open, .native_list = nativeList, .native_link = nativeLink, .native_read = nativeRead } };
     }
+
+    const OneShot = struct {
+        transport: *process.Transport,
+        config: Config,
+        next_id: i64 = 1,
+
+        fn open(self: *Adapter, arena: std.mem.Allocator, refusal: *contract.Refusal) contract.Failure!OneShot {
+            const config = self.config;
+            const argv = try std.mem.concat(arena, []const u8, &.{ config.args, try serverArgs(arena, config) });
+            const transport = process.Transport.open(self.allocator, .{
+                .executable = config.executable,
+                .args = argv,
+                .environment = config.environment,
+                .working_directory = config.working_directory,
+                .frame_limit = config.frame_limit,
+                .exit_grace_ns = config.exit_grace_ns,
+            }) catch |err| {
+                if (err == error.OutOfMemory) return error.OutOfMemory;
+                return refusal.fail(error.BackendFailed, try std.fmt.allocPrint(arena, "the codex app-server could not start: {s}", .{@errorName(err)}));
+            };
+            errdefer transport.deinit();
+            const opening = [_][]const u8{
+                "{\"jsonrpc\":\"2.0\",\"id\":0,\"method\":\"initialize\",\"params\":{\"clientInfo\":{\"name\":\"oapx\",\"version\":\"0\"}}}",
+                "{\"jsonrpc\":\"2.0\",\"method\":\"initialized\",\"params\":{}}",
+            };
+            for (opening) |line| transport.write(line) catch return refusal.fail(error.BackendFailed, "the codex app-server closed before it was initialized");
+            return .{ .transport = transport, .config = config };
+        }
+
+        fn deinit(shot: *OneShot) void {
+            shot.transport.deinit();
+        }
+
+        fn call(shot: *OneShot, arena: std.mem.Allocator, method: []const u8, params: std.json.ObjectMap, refusal: *contract.Refusal) contract.Failure!?std.json.Value {
+            const id = shot.next_id;
+            shot.next_id += 1;
+            const encoded = try std.json.Stringify.valueAlloc(arena, std.json.Value{ .object = params }, .{});
+            const line = try std.fmt.allocPrint(arena, "{{\"jsonrpc\":\"2.0\",\"id\":{d},\"method\":\"{s}\",\"params\":{s}}}", .{ id, method, encoded });
+            shot.transport.write(line) catch return refusal.fail(error.BackendFailed, try std.fmt.allocPrint(arena, "the codex app-server closed before answering {s}", .{method}));
+            const started = monotonic();
+            while (monotonic() -| started < shot.config.request_timeout_ns) {
+                const polled = shot.transport.poll(shot.config.poll_ns) catch return refusal.fail(error.BackendFailed, "the codex app-server's answer could not be read");
+                const frame = switch (polled) {
+                    .frame => |frame| frame,
+                    .quiet => continue,
+                    .ended => return refusal.fail(error.BackendFailed, try std.fmt.allocPrint(arena, "the codex app-server exited before answering {s}", .{method})),
+                };
+                const parsed = std.json.parseFromSliceLeaky(std.json.Value, arena, frame, .{}) catch continue;
+                if (parsed != .object) continue;
+                const answered = parsed.object.get("id") orelse continue;
+                if (answered != .integer or answered.integer != id) continue;
+                if (parsed.object.get("error")) |failure| {
+                    const text = if (failure == .object) (if (failure.object.get("message")) |m| (if (m == .string) m.string else "") else "") else "";
+                    return refusal.fail(error.BackendFailed, try std.fmt.allocPrint(arena, "codex {s} refused: {s}", .{ method, text }));
+                }
+                return parsed.object.get("result");
+            }
+            return refusal.fail(error.BackendFailed, try std.fmt.allocPrint(arena, "the codex app-server did not answer {s} in time", .{method}));
+        }
+    };
 
     fn nativeList(ptr: *anyopaque, arena: std.mem.Allocator, request: contract.NativeListRequest, refusal: *contract.Refusal) contract.Failure![]const contract.NativeSession {
         const self: *Adapter = @ptrCast(@alignCast(ptr));
-        const config = self.config;
-        const argv = try std.mem.concat(arena, []const u8, &.{ config.args, try serverArgs(arena, config) });
-        const transport = process.Transport.open(self.allocator, .{
-            .executable = config.executable,
-            .args = argv,
-            .environment = config.environment,
-            .working_directory = config.working_directory,
-            .frame_limit = config.frame_limit,
-            .exit_grace_ns = config.exit_grace_ns,
-        }) catch |err| {
-            if (err == error.OutOfMemory) return error.OutOfMemory;
-            return refusal.fail(error.BackendFailed, try std.fmt.allocPrint(arena, "the codex app-server could not start: {s}", .{@errorName(err)}));
-        };
-        defer transport.deinit();
-        const directory = if (request.directory.len > 0) request.directory else config.working_directory orelse "";
+        var shot = try OneShot.open(self, arena, refusal);
+        defer shot.deinit();
+        const directory = if (request.directory.len > 0) request.directory else self.config.working_directory orelse "";
         var params = std.json.ObjectMap.empty;
         try params.put(arena, "limit", .{ .integer = @intCast(request.limit) });
         if (directory.len > 0) try params.put(arena, "cwd", .{ .string = directory });
-        const listing = try std.json.Stringify.valueAlloc(arena, std.json.Value{ .object = params }, .{});
-        const lines = [_][]const u8{
-            "{\"jsonrpc\":\"2.0\",\"id\":0,\"method\":\"initialize\",\"params\":{\"clientInfo\":{\"name\":\"oapx\",\"version\":\"0\"}}}",
-            "{\"jsonrpc\":\"2.0\",\"method\":\"initialized\",\"params\":{}}",
-            try std.fmt.allocPrint(arena, "{{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"thread/list\",\"params\":{s}}}", .{listing}),
-        };
-        for (lines) |line| transport.write(line) catch return refusal.fail(error.BackendFailed, "the codex app-server closed before answering thread/list");
-        const started = monotonic();
-        while (monotonic() -| started < config.request_timeout_ns) {
-            const polled = transport.poll(config.poll_ns) catch return refusal.fail(error.BackendFailed, "the codex app-server's answer could not be read");
-            const frame = switch (polled) {
-                .frame => |frame| frame,
-                .quiet => continue,
-                .ended => return refusal.fail(error.BackendFailed, "the codex app-server exited before answering thread/list"),
-            };
-            const parsed = std.json.parseFromSliceLeaky(std.json.Value, arena, frame, .{}) catch continue;
-            if (parsed != .object) continue;
-            const id = parsed.object.get("id") orelse continue;
-            if (id != .integer or id.integer != 1) continue;
-            if (parsed.object.get("error")) |failure| {
-                const text = if (failure == .object) (if (failure.object.get("message")) |m| (if (m == .string) m.string else "") else "") else "";
-                return refusal.fail(error.BackendFailed, try std.fmt.allocPrint(arena, "codex thread/list refused: {s}", .{text}));
-            }
-            return threadsOf(arena, parsed.object.get("result"));
+        return threadsOf(arena, try shot.call(arena, "thread/list", params, refusal));
+    }
+
+    fn nativeRead(ptr: *anyopaque, arena: std.mem.Allocator, request: contract.NativeReadRequest, refusal: *contract.Refusal) contract.Failure![]const contract.NativeTurn {
+        const self: *Adapter = @ptrCast(@alignCast(ptr));
+        var shot = try OneShot.open(self, arena, refusal);
+        defer shot.deinit();
+        var found: std.ArrayList(contract.NativeTurn) = .empty;
+        var cursor: []const u8 = "";
+        var pages: usize = 0;
+        while (pages < turn_pages_max) : (pages += 1) {
+            var params = std.json.ObjectMap.empty;
+            try params.put(arena, "threadId", .{ .string = request.native_id });
+            try params.put(arena, "itemsView", .{ .string = "full" });
+            try params.put(arena, "sortDirection", .{ .string = "asc" });
+            try params.put(arena, "limit", .{ .integer = turn_page });
+            if (cursor.len > 0) try params.put(arena, "cursor", .{ .string = cursor });
+            const page = try shot.call(arena, "thread/turns/list", params, refusal) orelse break;
+            try turnsOf(arena, page, &found);
+            cursor = if (page == .object) textOf(page, "nextCursor") else "";
+            if (cursor.len == 0) break;
         }
-        return refusal.fail(error.BackendFailed, "the codex app-server did not answer thread/list in time");
+        return found.items;
+    }
+
+    fn turnsOf(arena: std.mem.Allocator, page: std.json.Value, found: *std.ArrayList(contract.NativeTurn)) !void {
+        if (page != .object) return;
+        const data = page.object.get("data") orelse return;
+        if (data != .array) return;
+        for (data.array.items) |turn| {
+            if (turn != .object) continue;
+            const items = turn.object.get("items") orelse continue;
+            if (items != .array) continue;
+            var said: std.ArrayList(u8) = .empty;
+            var reply: []const u8 = "";
+            for (items.array.items) |item| {
+                const kind = textOf(item, "type");
+                if (std.mem.eql(u8, kind, "userMessage")) {
+                    const content = item.object.get("content") orelse continue;
+                    if (content != .array) continue;
+                    for (content.array.items) |input| {
+                        if (!std.mem.eql(u8, textOf(input, "type"), "text")) continue;
+                        if (said.items.len > 0) try said.append(arena, '\n');
+                        try said.appendSlice(arena, textOf(input, "text"));
+                    }
+                } else if (std.mem.eql(u8, kind, "agentMessage")) {
+                    const text = textOf(item, "text");
+                    if (text.len > 0) reply = text;
+                }
+            }
+            if (said.items.len > 0) try found.append(arena, .{ .role = .user, .text = said.items, .at_ms = secondsOf(turn, "startedAt") });
+            if (reply.len > 0) try found.append(arena, .{ .role = .assistant, .text = reply, .at_ms = secondsOf(turn, "completedAt") });
+        }
+    }
+
+    fn secondsOf(value: std.json.Value, name: []const u8) i64 {
+        const member = value.object.get(name) orelse return 0;
+        return if (member == .integer) member.integer * std.time.ms_per_s else 0;
     }
 
     fn nativeLink(ptr: *anyopaque, arena: std.mem.Allocator, native_id: []const u8) std.mem.Allocator.Error![]const u8 {
@@ -151,6 +231,9 @@ pub const Adapter = struct {
     fn threadLink(arena: std.mem.Allocator, native_id: []const u8) std.mem.Allocator.Error![]const u8 {
         return std.fmt.allocPrint(arena, "codex://threads/{s}", .{native_id});
     }
+
+    const turn_page: i64 = 100;
+    const turn_pages_max: usize = 50;
 
     fn threadsOf(arena: std.mem.Allocator, result: ?std.json.Value) ![]const contract.NativeSession {
         const body = result orelse return &.{};
@@ -1382,6 +1465,29 @@ test "a session compacts only once no run is active and its events are drained" 
 
     try probe.handle.?.drain(scratch, &drained);
     try testing.expect(try live.compact());
+}
+
+test "a thread/turns/list page becomes the user message and final reply of each turn, timed by its start and completion" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const page = try std.json.parseFromSliceLeaky(std.json.Value, arena.allocator(),
+        \\{"data":[{"id":"u1","status":"completed","startedAt":1791311072,"completedAt":1791311075,"items":[
+        \\{"type":"userMessage","id":"i1","content":[{"type":"text","text":"Reply with one."},{"type":"image","url":"x"},{"type":"text","text":"Please."}]},
+        \\{"type":"reasoning","id":"i2"},
+        \\{"type":"agentMessage","id":"i3","phase":"commentary","text":"Thinking aloud."},
+        \\{"type":"agentMessage","id":"i4","phase":"final_answer","text":"one"}]},
+        \\{"id":"u2","status":"failed","startedAt":1791311080,"items":[{"type":"userMessage","id":"i5","content":[{"type":"text","text":"again"}]}]}],"nextCursor":null}
+    , .{});
+    var found: std.ArrayList(contract.NativeTurn) = .empty;
+    try Adapter.turnsOf(arena.allocator(), page, &found);
+    try std.testing.expectEqual(@as(usize, 3), found.items.len);
+    try std.testing.expectEqual(contract.NativeTurn.Role.user, found.items[0].role);
+    try std.testing.expectEqualStrings("Reply with one.\nPlease.", found.items[0].text);
+    try std.testing.expectEqual(@as(i64, 1791311072000), found.items[0].at_ms);
+    try std.testing.expectEqual(contract.NativeTurn.Role.assistant, found.items[1].role);
+    try std.testing.expectEqualStrings("one", found.items[1].text);
+    try std.testing.expectEqual(@as(i64, 1791311075000), found.items[1].at_ms);
+    try std.testing.expectEqualStrings("again", found.items[2].text);
 }
 
 test "a thread/list answer becomes native sessions, titled by name or the preview's first line" {
