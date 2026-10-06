@@ -1,6 +1,6 @@
 # Decision 0012: Retire `+persistence`, and Stage Transcript Load
 
-Status: proposed;
+Status: accepted 2026-10-06 (its surface is on main);
 [Decision 0039](0039-a-session-is-oaps-and-a-harness-is-where-it-runs.md) stages
 `session-reattach` and `session-list` beside its `transcript-load`, and makes
 that unit's entries and cursor OAP's vocabulary

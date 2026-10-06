@@ -709,8 +709,9 @@ has no verb for, so that half is pinned by each tree's hub tests instead.
 
 ### `+session-list`
 
-`+session-list` is staged under
-[Decision 0046](../decisions/0046-a-session-list-is-the-hosts-bindings.md).
+`+session-list` is executable under
+[Decision 0046](../decisions/0046-a-session-list-is-the-hosts-bindings.md),
+accepted.
 An implementation conforms if it:
 
 - advertises `session.list` above `unavailable`, refuses a
