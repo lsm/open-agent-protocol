@@ -77,6 +77,7 @@ pub const RemoteExecution = struct {
         compacts: *const fn (ctx: *anyopaque) bool,
         compact: *const fn (ctx: *anyopaque, focus: []const u8) anyerror!void,
         set_compaction_policy: *const fn (ctx: *anyopaque, policy_json: []const u8) anyerror!void,
+        set_settings: *const fn (ctx: *anyopaque, level: ai_types.ThinkingLevel, settings_json: []const u8) anyerror!void,
         decide_approval: *const fn (ctx: *anyopaque, tool_call_id: []const u8, granted: bool) anyerror!void,
         follow_up: *const fn (ctx: *anyopaque, text: []const u8) anyerror!void,
         steer: *const fn (ctx: *anyopaque, text: []const u8) anyerror!void,
@@ -661,8 +662,17 @@ pub const TuiRuntime = struct {
         return self.remote != null and self.started;
     }
 
+    fn sendRemoteSetting(self: *TuiRuntime, settings: anytype) error{ AgentAlreadyStreaming, UnavailableOverOap }!void {
+        const remote = self.remote.?;
+        const json = std.json.Stringify.valueAlloc(self.allocator, .{ .oapx = settings }, .{}) catch return error.UnavailableOverOap;
+        defer self.allocator.free(json);
+        remote.vtable.set_settings(remote.ctx, self.thinking_level, json) catch |err| return switch (err) {
+            error.RunInProgress => error.AgentAlreadyStreaming,
+            else => error.UnavailableOverOap,
+        };
+    }
+
     pub fn setContextWindow(self: *TuiRuntime, window: ?u32) error{ AboveMaximum, AgentAlreadyStreaming, UnavailableOverOap }!void {
-        if (self.settingsFixedOverOap()) return error.UnavailableOverOap;
         if (self.local_agent) |*local| {
             if (!local.isIdle()) return error.AgentAlreadyStreaming;
         }
@@ -671,6 +681,7 @@ pub const TuiRuntime = struct {
                 if (held > ceiling) return error.AboveMaximum;
             }
         }
+        if (self.settingsFixedOverOap()) try self.sendRemoteSetting(.{ .context_window = window });
         self.context_window = window;
         self.suspended_context_window = null;
         self.context_window_refused = null;
@@ -754,7 +765,6 @@ pub const TuiRuntime = struct {
     }
 
     pub fn setOutput(self: *TuiRuntime, setting: agent.OutputSetting) error{ AboveMaximum, AgentAlreadyStreaming, UnavailableOverOap }!void {
-        if (self.settingsFixedOverOap()) return error.UnavailableOverOap;
         if (self.local_agent) |*local| {
             if (!local.isIdle()) return error.AgentAlreadyStreaming;
         }
@@ -763,12 +773,16 @@ pub const TuiRuntime = struct {
                 if (model.max_tokens > 0 and setting.tokens > model.max_tokens) return error.AboveMaximum;
             }
         }
+        if (self.settingsFixedOverOap()) switch (setting) {
+            .tokens => |count| try self.sendRemoteSetting(.{ .output = count }),
+            else => try self.sendRemoteSetting(.{ .output = @tagName(setting) }),
+        };
         self.output = setting;
         if (self.local_agent) |*local| local.setOutput(setting);
     }
 
     pub fn setPermissionMode(self: *TuiRuntime, mode: PermissionMode) !void {
-        if (self.settingsFixedOverOap()) return error.UnavailableOverOap;
+        if (self.settingsFixedOverOap()) try self.sendRemoteSetting(.{ .permission_mode = @tagName(mode) });
         self.permission_mode = mode;
         if (self.permission_engine) |engine| engine.setBypassAll(mode == .bypass);
         self.rebuildWrappedTools();
@@ -781,7 +795,7 @@ pub const TuiRuntime = struct {
     }
 
     pub fn setWorkspaceRoot(self: *TuiRuntime, root: []const u8) !void {
-        if (self.settingsFixedOverOap()) return error.UnavailableOverOap;
+        if (self.settingsFixedOverOap()) try self.sendRemoteSetting(.{ .workspace_root = root });
         if (self.local_agent) |*local| {
             if (!local.isIdle()) return error.AgentAlreadyStreaming;
         }

@@ -451,7 +451,9 @@ pub const Endpoint = struct {
             if (payload.reasoning_level != null) return refusal.unsupportedField(contract.feature_session_reasoning, contract.reason_unadvertised, "reasoning_level");
             return refusal.unsupportedField(contract.feature_compaction_policy, contract.reason_unadvertised, "compaction_policy");
         };
-        const updated = try updater(entry.session.ptr, arena, payload, refusal);
+        var forwarded = payload.*;
+        forwarded.extensions_json = request.extensions_json;
+        const updated = try updater(entry.session.ptr, arena, &forwarded, refusal);
         try self.respond(arena, request, .{
             .id = "",
             .session_id = entry.session.id(),

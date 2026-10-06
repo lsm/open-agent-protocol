@@ -366,6 +366,7 @@ pub const Session = struct {
             try self.applyPolicy(raw, refusal);
             response.compaction_policy_json = self.policy_json;
         }
+        if (request.extensions_json) |raw| try applyLiveSettings(arena, self.runtime, raw, refusal);
         self.updated_at_ms = self.owner.now_ms();
         return .{ .response = response, .state = try self.snapshot(arena) };
     }
@@ -1228,6 +1229,44 @@ fn offersUserInput(metadata: ?std.json.Value) bool {
     if (settings != .object) return true;
     const offered = settings.object.get("user_input") orelse return true;
     return !(offered == .bool and !offered.bool);
+}
+
+fn applyLiveSettings(arena: std.mem.Allocator, runtime: *tui_runtime.TuiRuntime, raw: []const u8, refusal: *contract.Refusal) contract.Failure!void {
+    const document = std.json.parseFromSliceLeaky(std.json.Value, arena, raw, .{}) catch return;
+    if (document != .object) return;
+    const settings = document.object.get(settings_key) orelse return;
+    if (settings != .object) return;
+    const fields = settings.object;
+    if (fields.get("context_window")) |value| {
+        const window: ?u32 = switch (value) {
+            .null => null,
+            .integer => |count| if (count > 0 and count <= std.math.maxInt(u32)) @intCast(count) else return refusal.fail(error.InvalidSubmission, "context_window must be a positive token count or null"),
+            else => return refusal.fail(error.InvalidSubmission, "context_window must be a positive token count or null"),
+        };
+        runtime.setContextWindow(window) catch |err| return refusal.fail(error.InvalidSubmission, @errorName(err));
+    }
+    if (fields.get("output")) |value| {
+        const setting: agent.OutputSetting = switch (value) {
+            .string => |text| if (std.mem.eql(u8, text, "auto")) .auto else if (std.mem.eql(u8, text, "max")) .max else return refusal.fail(error.InvalidSubmission, "output must be auto, max or a token count"),
+            .integer => |count| if (count > 0 and count <= std.math.maxInt(u32)) .{ .tokens = @intCast(count) } else return refusal.fail(error.InvalidSubmission, "output must be auto, max or a token count"),
+            else => return refusal.fail(error.InvalidSubmission, "output must be auto, max or a token count"),
+        };
+        runtime.setOutput(setting) catch |err| return refusal.fail(error.InvalidSubmission, @errorName(err));
+    }
+    if (fields.get("permission_mode")) |value| {
+        const mode = if (value == .string) std.meta.stringToEnum(tui_runtime.PermissionMode, value.string) else null;
+        runtime.setPermissionMode(mode orelse return refusal.fail(error.InvalidSubmission, "permission_mode is not a mode the loop has")) catch |err| switch (err) {
+            error.OutOfMemory => return error.OutOfMemory,
+            else => return refusal.fail(error.BackendFailed, @errorName(err)),
+        };
+    }
+    if (fields.get("workspace_root")) |value| {
+        if (value != .string or value.string.len == 0) return refusal.fail(error.InvalidSubmission, "workspace_root must be a directory");
+        runtime.setWorkspaceRoot(value.string) catch |err| switch (err) {
+            error.OutOfMemory => return error.OutOfMemory,
+            else => return refusal.fail(error.BackendFailed, @errorName(err)),
+        };
+    }
 }
 
 pub fn sessionOptions(base: tui_runtime.TuiRuntimeOptions, metadata: ?std.json.Value) tui_runtime.TuiRuntimeOptions {

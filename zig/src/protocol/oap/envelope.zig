@@ -32,6 +32,10 @@ pub fn serializeEnvelope(env: oap_types.Envelope, allocator: std.mem.Allocator) 
     if (env.turn_id) |value| try w.writeStringField("turn_id", value);
     if (env.tool_call_id) |value| try w.writeStringField("tool_call_id", value);
     if (env.capability_revision) |value| try w.writeStringField("capability_revision", value);
+    if (env.extensions_json) |value| {
+        try w.writeKey("extensions");
+        try w.writeRawJson(value);
+    }
 
     try w.writeKey("payload");
     try serializePayload(&w, env.payload);
@@ -891,6 +895,11 @@ fn decodeEnvelope(line: []const u8, allocator: std.mem.Allocator) !oap_types.Env
     errdefer if (tool_call_id) |owned| allocator.free(owned);
     const capability_revision = try optionalOwnedString(root, "capability_revision", allocator);
     errdefer if (capability_revision) |owned| allocator.free(owned);
+    const extensions_json: ?[]const u8 = if (root.get("extensions")) |value| switch (value) {
+        .object => try json_encode.valueAlloc(allocator, value),
+        else => return DecodeError.InvalidField,
+    } else null;
+    errdefer if (extensions_json) |owned| allocator.free(owned);
 
     const id = try allocator.dupe(u8, id_str);
     errdefer allocator.free(id);
@@ -908,6 +917,7 @@ fn decodeEnvelope(line: []const u8, allocator: std.mem.Allocator) !oap_types.Env
         .turn_id = turn_id,
         .tool_call_id = tool_call_id,
         .capability_revision = capability_revision,
+        .extensions_json = extensions_json,
     };
 }
 
