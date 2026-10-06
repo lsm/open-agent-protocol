@@ -353,6 +353,7 @@ pub const Session = struct {
         if (!std.mem.eql(u8, request.session_id, self.id)) return error.RunNotFound;
         if (request.reasoning_level == null and request.compaction_policy_json == null) return error.InvalidSubmission;
         const level: ?ai_types.ThinkingLevel = if (request.reasoning_level) |asked| try thinkingLevel(asked, refusal) else null;
+        const extended = if (request.extensions_json) |raw| try parseLiveSettings(arena, raw, refusal) else LiveSettings{};
         if (request.compaction_policy_json) |raw| _ = try compactAt(arena, raw, self.runtime, refusal);
         if (self.live() != null or self.queuedCount() > 0 or !self.runtime.isIdle()) return error.RunActive;
         var response = oap_types.SessionSettingsUpdateResponse{ .session_id = self.id };
@@ -366,7 +367,7 @@ pub const Session = struct {
             try self.applyPolicy(raw, refusal);
             response.compaction_policy_json = self.policy_json;
         }
-        if (request.extensions_json) |raw| try applyLiveSettings(arena, self.runtime, raw, refusal);
+        try applyLiveSettings(self.runtime, extended, refusal);
         self.updated_at_ms = self.owner.now_ms();
         return .{ .response = response, .state = try self.snapshot(arena) };
     }
@@ -1231,42 +1232,56 @@ fn offersUserInput(metadata: ?std.json.Value) bool {
     return !(offered == .bool and !offered.bool);
 }
 
-fn applyLiveSettings(arena: std.mem.Allocator, runtime: *tui_runtime.TuiRuntime, raw: []const u8, refusal: *contract.Refusal) contract.Failure!void {
-    const document = std.json.parseFromSliceLeaky(std.json.Value, arena, raw, .{}) catch return;
-    if (document != .object) return;
-    const settings = document.object.get(settings_key) orelse return;
-    if (settings != .object) return;
-    const fields = settings.object;
+const LiveSettings = struct {
+    context_window: ?(?u32) = null,
+    output: ?agent.OutputSetting = null,
+    permission_mode: ?tui_runtime.PermissionMode = null,
+    workspace_root: ?[]const u8 = null,
+};
+
+fn parseLiveSettings(arena: std.mem.Allocator, raw: []const u8, refusal: *contract.Refusal) contract.Failure!LiveSettings {
+    var settings = LiveSettings{};
+    const document = std.json.parseFromSliceLeaky(std.json.Value, arena, raw, .{}) catch return settings;
+    if (document != .object) return settings;
+    const named = document.object.get(settings_key) orelse return settings;
+    if (named != .object) return settings;
+    const fields = named.object;
     if (fields.get("context_window")) |value| {
-        const window: ?u32 = switch (value) {
-            .null => null,
-            .integer => |count| if (count > 0 and count <= std.math.maxInt(u32)) @intCast(count) else return refusal.fail(error.InvalidSubmission, "context_window must be a positive token count or null"),
+        settings.context_window = switch (value) {
+            .null => @as(?u32, null),
+            .integer => |count| if (count > 0 and count <= std.math.maxInt(u32)) @as(?u32, @intCast(count)) else return refusal.fail(error.InvalidSubmission, "context_window must be a positive token count or null"),
             else => return refusal.fail(error.InvalidSubmission, "context_window must be a positive token count or null"),
         };
-        runtime.setContextWindow(window) catch |err| return refusal.fail(error.InvalidSubmission, @errorName(err));
     }
     if (fields.get("output")) |value| {
-        const setting: agent.OutputSetting = switch (value) {
+        settings.output = switch (value) {
             .string => |text| if (std.mem.eql(u8, text, "auto")) .auto else if (std.mem.eql(u8, text, "max")) .max else return refusal.fail(error.InvalidSubmission, "output must be auto, max or a token count"),
             .integer => |count| if (count > 0 and count <= std.math.maxInt(u32)) .{ .tokens = @intCast(count) } else return refusal.fail(error.InvalidSubmission, "output must be auto, max or a token count"),
             else => return refusal.fail(error.InvalidSubmission, "output must be auto, max or a token count"),
         };
-        runtime.setOutput(setting) catch |err| return refusal.fail(error.InvalidSubmission, @errorName(err));
     }
     if (fields.get("permission_mode")) |value| {
         const mode = if (value == .string) std.meta.stringToEnum(tui_runtime.PermissionMode, value.string) else null;
-        runtime.setPermissionMode(mode orelse return refusal.fail(error.InvalidSubmission, "permission_mode is not a mode the loop has")) catch |err| switch (err) {
-            error.OutOfMemory => return error.OutOfMemory,
-            else => return refusal.fail(error.BackendFailed, @errorName(err)),
-        };
+        settings.permission_mode = mode orelse return refusal.fail(error.InvalidSubmission, "permission_mode is not a mode the loop has");
     }
     if (fields.get("workspace_root")) |value| {
         if (value != .string or value.string.len == 0) return refusal.fail(error.InvalidSubmission, "workspace_root must be a directory");
-        runtime.setWorkspaceRoot(value.string) catch |err| switch (err) {
-            error.OutOfMemory => return error.OutOfMemory,
-            else => return refusal.fail(error.BackendFailed, @errorName(err)),
-        };
+        settings.workspace_root = value.string;
     }
+    return settings;
+}
+
+fn applyLiveSettings(runtime: *tui_runtime.TuiRuntime, settings: LiveSettings, refusal: *contract.Refusal) contract.Failure!void {
+    if (settings.context_window) |window| runtime.setContextWindow(window) catch |err| return refusal.fail(error.InvalidSubmission, @errorName(err));
+    if (settings.output) |setting| runtime.setOutput(setting) catch |err| return refusal.fail(error.InvalidSubmission, @errorName(err));
+    if (settings.permission_mode) |mode| runtime.setPermissionMode(mode) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        else => return refusal.fail(error.BackendFailed, @errorName(err)),
+    };
+    if (settings.workspace_root) |root| runtime.setWorkspaceRoot(root) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        else => return refusal.fail(error.BackendFailed, @errorName(err)),
+    };
 }
 
 pub fn sessionOptions(base: tui_runtime.TuiRuntimeOptions, metadata: ?std.json.Value) tui_runtime.TuiRuntimeOptions {

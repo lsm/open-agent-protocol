@@ -649,7 +649,7 @@ pub const OapExecution = struct {
 
     fn setSettings(ctx: *anyopaque, level: ai_types.ThinkingLevel, settings_json: []const u8) anyerror!void {
         const self = cast(ctx);
-        if (!self.live_reasoning) return error.UnavailableOverOap;
+        if (!self.live_reasoning or self.hub != null) return error.UnavailableOverOap;
         if (self.turn_open.load(.acquire) or queuedCount(ctx) > 0) return error.RunInProgress;
         var scratch = std.heap.ArenaAllocator.init(self.allocator);
         defer scratch.deinit();
