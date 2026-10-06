@@ -880,6 +880,7 @@ pub const OapExecution = struct {
         try self.applyPendingCatalog();
         while (self.takeInbound()) |line| {
             defer self.allocator.free(line);
+            try self.applyPendingCatalog();
             try self.sendLine(line);
             moved = true;
         }
