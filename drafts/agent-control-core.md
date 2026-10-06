@@ -675,7 +675,7 @@ Common optional core features:
 - `models.list` (executable; [Decision 0006](../decisions/0006-models-catalog.md))
 - `session.list`
 - `session.open.subscribe` (executable; [Decision 0009](../decisions/0009-compound-open.md))
-- `session.open.reopen` (staged; [Decision 0040](../decisions/0040-a-session-reopens-through-its-own-binding.md))
+- `session.open.reopen` (executable; [Decision 0040](../decisions/0040-a-session-reopens-through-its-own-binding.md))
 - `session.reasoning` and `session.compaction.policy` (executable; [Decision 0045](../decisions/0045-reasoning-level-and-compaction-policy-are-session-settings.md))
 - `transcript.load`
 - `transcript.delta`

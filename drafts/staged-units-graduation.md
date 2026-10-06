@@ -4236,8 +4236,9 @@ natively today. The intent is a `reopen: true` member on
 settings the session actually runs under (owner, 2026-09-27, #446).
 
 **Status: [Decision 0040](../decisions/0040-a-session-reopens-through-its-own-binding.md)
-is proposed and answers this section's two remaining questions. Its wire is in
-place: `reopen` on `session.open.request`, the `session.open.reopen` key, the
+is accepted (2026-10-05) and answers this section's two remaining questions.
+Every pinned adapter reopens or refuses a reopen, and both hubs keep bindings
+in one file format. Its wire is in place: `reopen` on `session.open.request`, the `session.open.reopen` key, the
 validator rules in both trees and the `session-reattach` fixtures. The memory
 references in both trees reopen a session they closed within the process,
 through either hub, and both conformance runners check that a reopen of a

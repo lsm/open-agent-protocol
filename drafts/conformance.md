@@ -687,7 +687,7 @@ and configuration but does not block the main run.
 
 ### `+session-reattach`
 
-`+session-reattach` is staged under
+`+session-reattach` is executable under
 [Decision 0040](../decisions/0040-a-session-reopens-through-its-own-binding.md).
 An implementation conforms if it:
 

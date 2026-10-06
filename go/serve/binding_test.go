@@ -497,3 +497,25 @@ func TestAReopenAfterARestartTheAdapterCannotLoadIsUnsupportedFeature(t *testing
 		t.Fatalf("reopening a bound session the restarted adapter lost answered %v, want unsupported_feature naming %s", err, protocol.FeatureOpenReopen)
 	}
 }
+
+func TestAnOpenRecordsTheSettingsItAskedFor(t *testing.T) {
+	store, err := binding.File(filepath.Join(t.TempDir(), "bindings.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	hub := boundHub(t, serve.Options{Bindings: store})
+	ctx := context.Background()
+	request := openRequestFor("session-settings")
+	request.ReasoningLevel = "high"
+	request.CompactionPolicy = &protocol.CompactionPolicy{Kind: protocol.CompactionShare, SharePercent: 70}
+	if _, _, err := hub.Open(ctx, "memory", request); err != nil {
+		t.Fatal(err)
+	}
+	entry, found, err := store.Latest(ctx, "session-settings")
+	if err != nil || !found {
+		t.Fatalf("latest found=%v err=%v", found, err)
+	}
+	if entry.Record.ReasoningLevel != "high" || entry.Record.CompactionPolicy == nil || *entry.Record.CompactionPolicy != *request.CompactionPolicy {
+		t.Fatalf("record = %+v, want the reasoning level and compaction policy the open asked for", entry.Record)
+	}
+}

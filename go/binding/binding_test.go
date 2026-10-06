@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/lsm/open-agent-protocol/go/protocol"
 )
 
 func fileStoreIn(t *testing.T) Store {
@@ -441,6 +443,21 @@ func TestTheLineIsTheOneTheZigStoreWrites(t *testing.T) {
 	}
 	entry, err := decode(zig)
 	if err != nil || entry.Record.NativeSessionID != "thread-1" {
+		t.Fatalf("decode = %+v, %v", entry, err)
+	}
+}
+
+func TestTheOpensSettingsAreWrittenAsTheZigStoreWritesThem(t *testing.T) {
+	const zig = "b3827233 {\"action\":\"opened\",\"time_ms\":7,\"record\":{\"session_id\":\"s\",\"adapter\":\"pi\",\"model\":\"m\",\"reasoning_level\":\"high\",\"compaction_policy\":{\"kind\":\"share\",\"share_percent\":80}}}\n"
+	line, err := encode(Entry{Action: ActionOpened, TimeMS: 7, Record: Record{SessionID: "s", Adapter: "pi", Model: "m", ReasoningLevel: "high", CompactionPolicy: &protocol.CompactionPolicy{Kind: protocol.CompactionShare, SharePercent: 80}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(line) != zig {
+		t.Fatalf("Go writes %q, the Zig store writes %q", line, zig)
+	}
+	entry, err := decode(zig)
+	if err != nil || entry.Record.ReasoningLevel != "high" || entry.Record.CompactionPolicy == nil || entry.Record.CompactionPolicy.SharePercent != 80 {
 		t.Fatalf("decode = %+v, %v", entry, err)
 	}
 }

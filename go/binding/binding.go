@@ -3,6 +3,8 @@ package binding
 import (
 	"context"
 	"errors"
+
+	"github.com/lsm/open-agent-protocol/go/protocol"
 )
 
 var ErrTorn = errors.New("binding: a record was not written whole")
@@ -31,14 +33,16 @@ func State(history []Entry) (Entry, bool) {
 }
 
 type Record struct {
-	SessionID       string   `json:"session_id"`
-	Adapter         string   `json:"adapter"`
-	HarnessVersion  string   `json:"harness_version,omitempty"`
-	NativeSessionID string   `json:"native_session_id,omitempty"`
-	Home            string   `json:"home,omitempty"`
-	Directory       string   `json:"directory,omitempty"`
-	Model           string   `json:"model,omitempty"`
-	ToolSourceIDs   []string `json:"tool_source_ids,omitempty"`
+	SessionID        string                     `json:"session_id"`
+	Adapter          string                     `json:"adapter"`
+	HarnessVersion   string                     `json:"harness_version,omitempty"`
+	NativeSessionID  string                     `json:"native_session_id,omitempty"`
+	Home             string                     `json:"home,omitempty"`
+	Directory        string                     `json:"directory,omitempty"`
+	Model            string                     `json:"model,omitempty"`
+	ReasoningLevel   string                     `json:"reasoning_level,omitempty"`
+	CompactionPolicy *protocol.CompactionPolicy `json:"compaction_policy,omitempty"`
+	ToolSourceIDs    []string                   `json:"tool_source_ids,omitempty"`
 }
 
 type Entry struct {
