@@ -260,11 +260,11 @@ pub const Session = struct {
         return store.save(store.ctx, allocator, self.id, index, history);
     }
 
-    fn compactionTranscripts(self: *Session, arena: std.mem.Allocator) error{OutOfMemory}![]const []const u8 {
+    fn compactionTranscripts(self: *Session, arena: std.mem.Allocator) error{ OutOfMemory, TranscriptSaveFailed }![]const []const u8 {
         const kept = self.runtime.run_transcripts.items;
         const history = self.runtime.history();
-        if (history.len == 0 or agent.compaction.isCompacted(history)) return arena.dupe([]const u8, @ptrCast(kept));
-        const saved = saveTranscript(self, self.runtime.allocator, kept.len + 1, history) orelse return arena.dupe([]const u8, @ptrCast(kept));
+        if (self.owner.transcripts == null or history.len == 0 or agent.compaction.isCompacted(history)) return arena.dupe([]const u8, @ptrCast(kept));
+        const saved = saveTranscript(self, self.runtime.allocator, kept.len + 1, history) orelse return error.TranscriptSaveFailed;
         self.runtime.run_transcripts.append(self.runtime.allocator, saved) catch |err| {
             self.runtime.allocator.free(saved);
             return err;
@@ -675,7 +675,11 @@ pub const Session = struct {
         }
         self.gate.cancelled.store(false, .release);
         if (run.compaction) {
-            self.runtime.compact(.{ .focus = run.compact_focus, .transcripts = try self.compactionTranscripts(a) }) catch |err| switch (err) {
+            const transcripts = self.compactionTranscripts(a) catch |err| switch (err) {
+                error.OutOfMemory => return error.OutOfMemory,
+                error.TranscriptSaveFailed => return refusal.fail(error.BackendFailed, "the transcript could not be saved, so the history was kept"),
+            };
+            self.runtime.compact(.{ .focus = run.compact_focus, .transcripts = transcripts }) catch |err| switch (err) {
                 error.OutOfMemory => return error.OutOfMemory,
                 error.NothingToCompact => return refusal.fail(error.InvalidSubmission, "the session has no history to compact"),
                 else => return refusal.fail(error.BackendFailed, @errorName(err)),
@@ -2701,6 +2705,41 @@ test "a requested compaction saves the session's transcript through the store an
     const runtime = Session.cast(harness.session.ptr).runtime;
     try testing.expectEqual(@as(usize, 1), runtime.run_transcripts.items.len);
     try testing.expect(std.mem.endsWith(u8, runtime.run_transcripts.items[0], "-compaction-1.jsonl"));
+}
+
+fn refuseTranscript(ctx: *anyopaque, allocator: std.mem.Allocator, session_id: []const u8, index: usize, history: []const ai_types.Message) ?[]u8 {
+    const saved: *usize = @ptrCast(@alignCast(ctx));
+    saved.* += 1;
+    _ = allocator;
+    _ = session_id;
+    _ = index;
+    _ = history;
+    return null;
+}
+
+test "a requested compaction whose transcript the store cannot save fails and keeps the history" {
+    var script = Script{ .reply = "the session so far" };
+    var harness: Harness = undefined;
+    try harness.init(&script);
+    defer harness.deinit();
+    var attempts: usize = 0;
+    harness.owner.transcripts = .{ .ctx = &attempts, .save = refuseTranscript };
+    _ = try harness.submit("remember the parser");
+    try harness.untilTerminal();
+    harness.reset();
+    const runtime = Session.cast(harness.session.ptr).runtime;
+    const before = runtime.history().len;
+    const calls = script.calls;
+
+    var refusal = contract.Refusal{};
+    try testing.expectError(error.BackendFailed, compactRequest(&harness, "the parser", &refusal));
+    try testing.expectEqualStrings("the transcript could not be saved, so the history was kept", refusal.message);
+    try testing.expectEqual(@as(usize, 1), attempts);
+    try testing.expect(ofType(&harness, "run.compaction.started") == null);
+    try testing.expectEqual(calls, script.calls);
+    try testing.expectEqual(before, runtime.history().len);
+    try testing.expect(!agent.compaction.isCompacted(runtime.history()));
+    try testing.expectEqual(@as(usize, 0), runtime.run_transcripts.items.len);
 }
 
 test "a compaction is refused for what the loop cannot do, and on a busy session it waits its turn" {

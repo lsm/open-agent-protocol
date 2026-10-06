@@ -5698,10 +5698,10 @@ pub fn runWith(allocator: std.mem.Allocator, io: std.Io, context_window: ?u32, e
         options.protocol = runtime.provider.protocolClient();
         options.generate_titles = false;
     }
-    var execution: ?*tui_oap_execution.OapExecution = null;
-    defer if (execution) |owned| owned.destroy();
     var history_store: ?session_store.Store = session_store.Store.initDefault(allocator) catch null;
     defer if (history_store) |*store| store.deinit();
+    var execution: ?*tui_oap_execution.OapExecution = null;
+    defer if (execution) |owned| owned.destroy();
     if (execution_mode != .local) {
         execution = switch (execution_mode) {
             .attach => |target| try tui_oap_execution.OapExecution.attach(allocator, target.url, target.adapter),
