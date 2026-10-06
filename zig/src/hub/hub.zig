@@ -217,6 +217,7 @@ pub const Subscription = struct {
     joined_after: u64 = 0,
     joined: bool = false,
     joined_run: []u8 = &.{},
+    attached_run: []u8 = &.{},
     gap: ?contract.Gap = null,
     replay: std.ArrayList(Pending) = .empty,
     replay_at: usize = 0,
@@ -309,6 +310,7 @@ pub const Subscription = struct {
         if (self.overflow_run.len > 0) allocator.free(self.overflow_run);
         if (self.run_id.len > 0) allocator.free(self.run_id);
         if (self.joined_run.len > 0) allocator.free(self.joined_run);
+        if (self.attached_run.len > 0) allocator.free(self.attached_run);
         allocator.free(self.session_id);
         self.* = undefined;
     }
@@ -836,6 +838,7 @@ pub const Hub = struct {
             subscription.joined = joined > 0;
             subscription.joined_after = joined;
             if (joined > 0) subscription.joined_run = try self.allocator.dupe(u8, entry.run_id);
+            if (entry.run_id.len > 0) subscription.attached_run = try self.allocator.dupe(u8, entry.run_id);
         }
         try self.subscriptions.append(self.allocator, subscription);
         errdefer _ = self.subscriptions.pop();
@@ -913,7 +916,7 @@ pub const Hub = struct {
             _ = entry.session.pump(wait) catch |err| switch (err) {
                 error.OutOfMemory => return error.OutOfMemory,
                 else => {
-                    self.endSubscriptions(entry, .stream_failed);
+                    self.failStream(entry, entry.session.streamFailure());
                 },
             };
         }
@@ -932,7 +935,7 @@ pub const Hub = struct {
             entry.session.drain(scratch.allocator(), &events) catch |err| switch (err) {
                 error.OutOfMemory => return error.OutOfMemory,
                 else => {
-                    self.endSubscriptions(entry, .stream_failed);
+                    self.failStream(entry, entry.session.streamFailure());
                     continue;
                 },
             };
@@ -1344,6 +1347,51 @@ pub const Hub = struct {
         entry.deinit(self.allocator);
     }
 
+    fn failStream(self: *Hub, entry: *Entry, cause: ?contract.StreamFailure) void {
+        const failed = cause orelse return self.endSubscriptions(entry, .stream_failed);
+        if (!failed.overflow and std.mem.eql(u8, failed.run_id, entry.run_id)) return self.endSubscriptions(entry, .stream_failed);
+        var index: usize = 0;
+        while (index < entry.subscribers.items.len) {
+            const subscription = entry.subscribers.items[index];
+            if (!exposedTo(entry, subscription, failed.run_id)) {
+                index += 1;
+                continue;
+            }
+            _ = entry.subscribers.orderedRemove(index);
+            if (!failed.overflow) {
+                subscription.ending = .stream_failed;
+                continue;
+            }
+            const reached = if (std.mem.eql(u8, subscription.run_id, failed.run_id)) subscription.highest else 0;
+            self.seedOverflow(subscription, failed.run_id, reached) catch {
+                subscription.ending = .stream_failed;
+            };
+        }
+    }
+
+    fn exposedTo(entry: *const Entry, subscription: *const Subscription, run_id: []const u8) bool {
+        const serial = ordinal(entry, run_id);
+        const pending = pendingFor(subscription, run_id);
+        if (subscription.run_id.len == 0) {
+            if (std.mem.eql(u8, subscription.attached_run, run_id)) return true;
+            if (subscription.attached_run.len == 0) return pending;
+            return pending and serial >= ordinal(entry, subscription.attached_run);
+        }
+        if (serial < 0) return false;
+        const acknowledged = ordinal(entry, subscription.run_id);
+        return serial == acknowledged or (serial > acknowledged and pending);
+    }
+
+    fn pendingFor(subscription: *const Subscription, run_id: []const u8) bool {
+        for (subscription.replay.items[subscription.replay_at..]) |event| {
+            if (std.mem.eql(u8, event.run_id, run_id)) return true;
+        }
+        for (subscription.queue.items[subscription.queue_at..]) |event| {
+            if (std.mem.eql(u8, event.run_id, run_id)) return true;
+        }
+        return false;
+    }
+
     fn endSubscriptions(self: *Hub, entry: *Entry, ending: Ending) void {
         _ = self;
         for (entry.subscribers.items) |subscription| subscription.ending = ending;
@@ -1556,6 +1604,66 @@ test "a cursor may name an admitted run whose events have not arrived yet" {
     try testing.expect(joined.next() == null);
     try hub.pump(testing.allocator, 0);
     try testing.expect(joined.next() != null);
+}
+
+fn twoRunFixture(flaky: *Flaky, hub: *Hub, arena: std.mem.Allocator) !struct { reading_newer: *Subscription, behind: *Subscription } {
+    const opened = try hub.open(arena, "flaky", .{ .session_id = "scoped" });
+    const reading_newer = try hub.subscribe(arena, opened.session_id, .{});
+    const behind = try hub.subscribe(arena, opened.session_id, .{});
+    flaky.script[0] = .{ .run = "run-a", .sequence = 1, .line = "{\"protocol\":\"open-agent-protocol\",\"version\":\"0.1\",\"type\":\"content.delta\",\"id\":\"a1\"}" };
+    flaky.script[1] = .{ .run = "run-b", .sequence = 1, .line = "{\"protocol\":\"open-agent-protocol\",\"version\":\"0.1\",\"type\":\"content.delta\",\"id\":\"b1\"}" };
+    flaky.script_len = 2;
+    try hub.pump(testing.allocator, 0);
+    _ = reading_newer.next().?;
+    _ = reading_newer.next().?;
+    try testing.expectEqualStrings("run-b", reading_newer.run_id);
+    flaky.fail_drain = true;
+    return .{ .reading_newer = reading_newer, .behind = behind };
+}
+
+test "an adapter's stream overflow on one run ends only the subscriptions exposed to that run" {
+    var flaky = Flaky{ .allocator = testing.allocator, .fail_drain = false };
+    flaky.keep = std.heap.ArenaAllocator.init(testing.allocator);
+    defer flaky.keep.deinit();
+    var hub = Hub.init(testing.allocator, testClock, .{ .stream_queue = 8 });
+    defer hub.deinit();
+    try hub.register("flaky", flaky.adapter());
+    var scratch = std.heap.ArenaAllocator.init(testing.allocator);
+    defer scratch.deinit();
+
+    const fixture = try twoRunFixture(&flaky, &hub, scratch.allocator());
+    flaky.failed_run = "run-a";
+    flaky.failed_overflow = true;
+    try hub.pump(testing.allocator, 0);
+    try testing.expectEqual(Ending.open, fixture.reading_newer.ending);
+    try testing.expectEqual(Ending.overflow, fixture.behind.ending);
+    try testing.expectEqualStrings("run-a", fixture.behind.overflow_run);
+    try testing.expectEqual(@as(u64, 0), fixture.behind.overflow_sequence);
+    try testing.expect(fixture.behind.next() != null);
+    try testing.expect(fixture.behind.next() != null);
+    try testing.expect(fixture.behind.next() == null);
+    try testing.expectEqual(@as(usize, 1), hub.sessionCount());
+}
+
+test "a stream failure on an older run spares a subscription reading a newer one, and one on the current run ends them all" {
+    var flaky = Flaky{ .allocator = testing.allocator, .fail_drain = false };
+    flaky.keep = std.heap.ArenaAllocator.init(testing.allocator);
+    defer flaky.keep.deinit();
+    var hub = Hub.init(testing.allocator, testClock, .{ .stream_queue = 8 });
+    defer hub.deinit();
+    try hub.register("flaky", flaky.adapter());
+    var scratch = std.heap.ArenaAllocator.init(testing.allocator);
+    defer scratch.deinit();
+
+    const fixture = try twoRunFixture(&flaky, &hub, scratch.allocator());
+    flaky.failed_run = "run-a";
+    try hub.pump(testing.allocator, 0);
+    try testing.expectEqual(Ending.open, fixture.reading_newer.ending);
+    try testing.expectEqual(Ending.stream_failed, fixture.behind.ending);
+
+    flaky.failed_run = "run-b";
+    try hub.pump(testing.allocator, 0);
+    try testing.expectEqual(Ending.stream_failed, fixture.reading_newer.ending);
 }
 
 test "a backend that cannot make progress ends its stream, and the session stays open" {
@@ -3042,6 +3150,8 @@ const Flaky = struct {
     active_run: []const u8 = "",
     fail_drain: bool = true,
     fail_pump: bool = false,
+    failed_run: []const u8 = "",
+    failed_overflow: bool = false,
     read_end: ?std.posix.fd_t = null,
     write_end: ?std.posix.fd_t = null,
     waits: [8]u64 = .{ 0, 0, 0, 0, 0, 0, 0, 0 },
@@ -3104,6 +3214,7 @@ fn flakyOpen(ptr: *anyopaque, arena: std.mem.Allocator, request: contract.OpenRe
         .readable = flakyReadable,
         .models = flakyModels,
         .tools = flakyTools,
+        .stream_failure = flakyStreamFailure,
     } };
     self.owned_id = id;
     return self.session;
@@ -3185,6 +3296,12 @@ fn flakyDrain(ptr: *anyopaque, allocator: std.mem.Allocator, out: *std.ArrayList
     const copied = try allocator.dupe(u8, line);
     const run = try allocator.dupe(u8, "run-1");
     try out.append(allocator, .{ .line = copied, .run_id = run, .sequence = 1 });
+}
+
+fn flakyStreamFailure(ptr: *anyopaque) ?contract.StreamFailure {
+    const self: *Flaky = @ptrCast(@alignCast(ptr));
+    if (self.failed_run.len == 0) return null;
+    return .{ .run_id = self.failed_run, .overflow = self.failed_overflow };
 }
 
 fn flakyActivity(ptr: *anyopaque) contract.Activity {
