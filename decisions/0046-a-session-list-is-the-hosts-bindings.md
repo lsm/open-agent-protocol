@@ -19,7 +19,7 @@ Design: [Staged Units Graduation Plan](../drafts/staged-units-graduation.md),
 
 Decision 0040 made a session reopenable through a binding the host keeps, and
 both hubs now write that binding to one file format, the session history,
-named by `--bindings` until #908 renames the flag `--session-history`. What a host
+named by `--session-history` (`--bindings` before #908). What a host
 still cannot do is ask which sessions it could reopen. The staged plan's T8
 section leaves two questions to this record: whether the list is the host's
 records, the harness's, or both; and how a long list is paged.
