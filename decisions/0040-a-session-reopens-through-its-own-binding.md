@@ -1,6 +1,20 @@
 # Decision 0040: A Session Reopens Through Its Own Binding
 
-Status: proposed
+Status: accepted 2026-10-05 (the wire, the `session.open.reopen` key and the
+validator rules landed in both trees with the `session-reattach` fixtures
+(#819); both memory references reopen a session they closed, through either
+hub (#820), and both conformance runners refuse a reopen of a session an
+endpoint never had (#826). Every pinned adapter answers a reopen: Codex resumes
+its bound thread (#827) under the host's sandbox, approval policy and directory
+(#895), Claude through `--resume` (#881), ACP through an advertised load
+(#884), Pi from its session file (#887), Hermes through `session.resume`,
+refusing a session with a restart pending (#890), and OpenCode by attaching to
+the server session after its last stored event (#891); DeepSeek advertises
+reopen unavailable because its pinned wire reaches no store (#892), and `oapx
+serve agent` refuses it (#862). The binding is a host record with a file store
+that refuses a torn line (#479), `goap hub` and `oapx hub` write and read the
+same file (#893), and a record carries the reasoning level and compaction
+policy the open asked for. The session list stays with T8)
 Date: 2026-09-28
 Protocol: `open-agent-protocol` version `0.1`
 Profile: `open-agent-protocol.agent-control-core`

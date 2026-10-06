@@ -161,7 +161,13 @@ func (h *Hub) openRecord(ctx context.Context, adapterName string, implementation
 	for _, source := range request.ToolSources {
 		sources = append(sources, string(source.ID))
 	}
-	return binding.FromOpen(string(state.SessionID), adapterName, version, state.CurrentModelID, h.home, h.registry.WorkingDirectory(adapterName), sources)
+	record := binding.FromOpen(string(state.SessionID), adapterName, version, state.CurrentModelID, h.home, h.registry.WorkingDirectory(adapterName), sources)
+	record.ReasoningLevel = string(request.ReasoningLevel)
+	if request.CompactionPolicy != nil {
+		policy := *request.CompactionPolicy
+		record.CompactionPolicy = &policy
+	}
+	return record
 }
 
 func (h *Hub) recordBinding(ctx context.Context, record binding.Record, action binding.Action, timeMS int64) {
