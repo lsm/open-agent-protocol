@@ -5663,7 +5663,7 @@ fn preferredContextWindow(stored: ?u32, flag: ?u32) ?u32 {
     return flag orelse stored;
 }
 
-pub const over_oap_notice = "oapx tui: this session runs over OAP, through the in-process endpoint or the hub it is attached to. Resume and the model's questions to you are not carried over OAP yet, queued follow-ups and the autocompact setting are not carried on an attached hub, the context window, output limit and workspace are fixed when the session opens, and so is the thinking level unless the endpoint advertises changing it live; use oapx --tui for them.";
+pub const over_oap_notice = "oapx tui: this session runs over OAP, through the in-process endpoint or the hub it is attached to. Resume and the model's questions to you are not carried over OAP yet, queued follow-ups and the autocompact setting are not carried on an attached hub, an \"always\" answer to a tool approval applies to that call only unless the endpoint offers it, the context window, output limit and workspace are fixed when the session opens, and so is the thinking level unless the endpoint advertises changing it live; use oapx --tui for them.";
 pub const over_oap_setting_refusal = tui_commands.over_oap_setting_refusal;
 pub const over_oap_compaction_refusal = "this session's endpoint does not take a compaction over OAP; use oapx --tui to compact.";
 
