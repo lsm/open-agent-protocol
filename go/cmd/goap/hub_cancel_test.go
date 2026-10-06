@@ -247,7 +247,7 @@ func startOwnedHub(t *testing.T) *ownedHub {
 		t.Skip("set OAP_OAPX_BIN to an oapx binary to drive its HTTP daemon")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
-	command := exec.CommandContext(ctx, oapx, "hub", "--addr=127.0.0.1:0")
+	command := exec.CommandContext(ctx, oapx, "hub", "--addr=127.0.0.1:0", "--session-history=")
 	command.Stdin = strings.NewReader("")
 	stderr := &lockedBuffer{}
 	command.Stderr = stderr
