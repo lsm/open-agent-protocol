@@ -18,8 +18,8 @@ Design: [Staged Units Graduation Plan](../drafts/staged-units-graduation.md),
 ## Context
 
 Decision 0040 made a session reopenable through a binding the host keeps, and
-both hubs now write that binding to one file format, the session history
-(`--session-history`). What a host
+both hubs now write that binding to one file format, the session history,
+named by `--bindings` until #908 renames the flag `--session-history`. What a host
 still cannot do is ask which sessions it could reopen. The staged plan's T8
 section leaves two questions to this record: whether the list is the host's
 records, the harness's, or both; and how a long list is paged.
@@ -90,7 +90,7 @@ between two reads, and the later page is not a correction of the earlier one.
 ### The capability key is `session.list`, advertised by the host
 
 An endpoint that keeps bindings advertises `session.list`. One that keeps none
-— a host with no session history, like `goap hub` without `--session-history` — answers
+— a host with no session history, like `goap hub` started without one — answers
 `unsupported_feature` naming the key, with reason `unadvertised`. The key is the
 host's, not an adapter's: no adapter descriptor advertises it, because no
 adapter holds the records it reads.
@@ -127,6 +127,7 @@ adapter holds the records it reads.
 2. **`limit` is 1 to 100, default 50**, as written above.
 3. **The hub serves the list at `GET /sessions/history`**, beside
    `GET /sessions`, which keeps meaning the sessions this process holds now. The
-   file it reads is the session history: `--session-history <path>` in both
-   hubs, which `oapx hub` keeps at `~/.oapx/sessions.jsonl` by default. The
-   `--bindings` spelling is retired rather than kept as an alias.
+   file it reads is the session history, and #908 carries the rename the owner
+   asked for alongside this answer: `--session-history <path>` in both hubs,
+   kept by `oapx hub` at `~/.oapx/sessions.jsonl` by default, with `--bindings`
+   retired rather than kept as an alias.
