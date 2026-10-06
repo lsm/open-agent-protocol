@@ -732,8 +732,9 @@ defect, for the reason the decision gives.
 The Go conformance runner asks for the list right after its open: an endpoint
 advertising `session.list` must answer with a page naming the open session as
 `live`, and one that does not must refuse `unsupported_feature`. `goap serve
-agent` advertises it at `emulated`, from an in-process history its hub keeps
-for the connection's lifetime; both `oapx` endpoints refuse it naming the key.
+agent --session-history <path>` advertises it at `emulated` and answers from
+that file; without the flag it, and both `oapx` endpoints, refuse it naming the
+key.
 The Zig runner does not ask yet, because the Zig tree has no `session.list`
 envelope types to decode the answer with.
 
