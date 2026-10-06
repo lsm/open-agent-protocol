@@ -29,7 +29,7 @@ are compiled and run by `go test`:
 | what it shows | where |
 | --- | --- |
 | a prompt to a result, with interactions answered by a policy function | `ExampleRunToTerminal` in `go/adapter/prompt_example_test.go` |
-| driving `goap hub` over HTTP + SSE from a Go program | `Example` in `go/client/example_test.go` |
+| driving `goap serve` over HTTP + SSE from a Go program | `Example` in `go/client/example_test.go` |
 | resuming an event stream after a gap | `ExampleSession_EventsAfter` in `go/client/example_test.go` |
 
 ## What it is for

@@ -247,7 +247,7 @@ func startOwnedHub(t *testing.T) *ownedHub {
 		t.Skip("set OAP_OAPX_BIN to an oapx binary to drive its HTTP daemon")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
-	command := exec.CommandContext(ctx, oapx, "hub", "--addr=127.0.0.1:0")
+	command := exec.CommandContext(ctx, oapx, "serve", "--addr=127.0.0.1:0")
 	command.Stdin = strings.NewReader("")
 	stderr := &lockedBuffer{}
 	command.Stderr = stderr
@@ -298,7 +298,7 @@ func awaitBoundAddress(t *testing.T, stdout io.Reader, hub *ownedHub, cancel con
 	fields := strings.Fields(identity)
 	if len(fields) == 0 {
 		cancel()
-		t.Fatalf("oapx hub --addr reported no address:\n%s", hub.shutDownForDiagnostics(t))
+		t.Fatalf("oapx serve --addr reported no address:\n%s", hub.shutDownForDiagnostics(t))
 		return ""
 	}
 	return strings.TrimPrefix(strings.TrimPrefix(fields[len(fields)-1], "http://"), "https://")

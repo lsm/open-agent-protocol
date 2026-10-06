@@ -28,7 +28,7 @@ over it, which is authored files agreeing with each other.
 
 ## What this binding is not
 
-`goap hub --stdio` is a different thing and implementers should not build it.
+`goap serve --stdio` is a different thing and implementers should not build it.
 That frontend exposes a **hub**: thirteen ops, an `adapter` dimension, cursor
 replay, and several subscriptions multiplexed over one pipe, each line wrapping
 an OAP envelope inside a transport object with its own numeric `id`.

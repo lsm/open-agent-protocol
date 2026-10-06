@@ -57,7 +57,7 @@ presentation and control in one process, but the boundary remains useful for
 testing, plugin integration, remote UIs, and swapping presentation surfaces.
 
 The minimum profile assumes every presentation attached to a control layer acts
-for one trusted user, the trust model `goap hub` already has on a loopback bind.
+for one trusted user, the trust model `goap serve` already has on a loopback bind.
 Any attached presentation may answer a prompt, and the first answer wins because a
 prompt resolves once. A presentation that may watch but not approve needs
 presentation identity (*Surface*, in the idea pool below), and a control layer

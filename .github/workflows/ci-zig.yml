@@ -337,24 +337,24 @@ jobs:
       - name: Build oapx
         run: zig build --build-file zig/build.zig install --prefix /tmp/oapx-hub
 
-      - name: Require oapx hub --stdio to answer exactly as goap hub --stdio
+      - name: Require oapx serve --stdio to answer exactly as goap serve --stdio
         env:
           OAP_OAPX_BIN: /tmp/oapx-hub/bin/oapx
         run: go test ./go/cmd/goap/ -run 'TestHub(Stdio|Refuses|Addr)' -v
 
-      - name: Require oapx hub to refuse what it does not carry
+      - name: Require oapx serve to refuse what it does not carry
         run: |
           set -euo pipefail
-          if /tmp/oapx-hub/bin/oapx hub --config=missing.json </dev/null >/dev/null 2>&1; then
-            echo "oapx hub --config=missing.json exited 0; a config it cannot read must not"
+          if /tmp/oapx-hub/bin/oapx serve --config=missing.json </dev/null >/dev/null 2>&1; then
+            echo "oapx serve --config=missing.json exited 0; a config it cannot read must not"
             exit 1
           fi
 
-      - name: Require oapx hub --addr to bind a loopback address and end on an interrupt
+      - name: Require oapx serve --addr to bind a loopback address and end on an interrupt
         run: |
           set -euo pipefail
           bound=/tmp/oapx-hub-addr.out
-          /tmp/oapx-hub/bin/oapx hub --addr=127.0.0.1:0 </dev/null >"$bound" 2>&1 &
+          /tmp/oapx-hub/bin/oapx serve --addr=127.0.0.1:0 </dev/null >"$bound" 2>&1 &
           hub=$!
           for _ in $(seq 1 40); do
             grep -q '^listening on http://' "$bound" && break
@@ -362,7 +362,7 @@ jobs:
             sleep 0.5
           done
           if ! grep -q '^listening on http://' "$bound"; then
-            echo "oapx hub --addr never reported a bound address:"
+            echo "oapx serve --addr never reported a bound address:"
             cat "$bound"
             kill -9 "$hub" 2>/dev/null || true
             exit 1
@@ -373,16 +373,16 @@ jobs:
             sleep 0.5
           done
           if kill -0 "$hub" 2>/dev/null; then
-            echo "oapx hub --addr ignored an interrupt:"
+            echo "oapx serve --addr ignored an interrupt:"
             cat "$bound"
             kill -9 "$hub" 2>/dev/null || true
             exit 1
           fi
-          wait "$hub" || { echo "oapx hub --addr did not end cleanly on an interrupt"; cat "$bound"; exit 1; }
+          wait "$hub" || { echo "oapx serve --addr did not end cleanly on an interrupt"; cat "$bound"; exit 1; }
 
   # =============================================================================
   hub-clients-ts:
-    name: Differential - the TypeScript client against oapx hub
+    name: Differential - the TypeScript client against oapx serve
     needs: [unit-tests]
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -411,7 +411,7 @@ jobs:
 
       - run: npm ci
 
-      - name: Run the clients/ts suite, the one ci.yml runs against goap hub, against oapx hub
+      - name: Run the clients/ts suite, the one ci.yml runs against goap serve, against oapx serve
         env:
           OAP_TS_HUB: /tmp/oapx-hub/bin/oapx
         run: npm test
