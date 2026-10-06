@@ -8974,6 +8974,10 @@ fn codexBackendConfig(
             try surface.refuse("{s} \"{s}\" names endpoint \"{s}\"; a codex endpoint is unix://<path to the app-server control socket>", .{ surface.noun, entry.name, entry.endpoint });
             return error.BackendRefused;
         }
+        if (entry.executable.len > 0 or entry.args.len > 0) {
+            try surface.refuse("{s} \"{s}\" names an endpoint and an executable or args; a codex endpoint relays to a running app-server, so set one or the other", .{ surface.noun, entry.name });
+            return error.BackendRefused;
+        }
         const self_path = std.process.executablePathAlloc(backendIo(), arena) catch {
             try surface.refuse("{s} \"{s}\" needs this executable's own path to relay to its endpoint, and it could not be read", .{ surface.noun, entry.name });
             return error.BackendRefused;
@@ -9538,7 +9542,7 @@ fn refusedBackend(allocator: std.mem.Allocator, name: []const u8, config_path: ?
     return complained;
 }
 
-test "a codex endpoint relays through this executable to the named socket, and only a unix endpoint is accepted" {
+test "a codex endpoint relays through this executable to the named socket, only a unix endpoint is accepted, and never beside an executable or args" {
     var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena_state.deinit();
     const arena = arena_state.allocator();
@@ -9553,6 +9557,8 @@ test "a codex endpoint relays through this executable to the named socket, and o
     try std.testing.expect(shared.executable.len > 0);
     try std.testing.expectEqual(@as(usize, 0), shared.args.len);
     try std.testing.expectError(error.BackendRefused, codexBackendConfig(surface, arena, .{ .name = "codexd", .kind = "codex", .endpoint = "ws://127.0.0.1:1" }, &environ));
+    try std.testing.expectError(error.BackendRefused, codexBackendConfig(surface, arena, .{ .name = "codexd", .kind = "codex", .endpoint = "unix:///tmp/codex.sock", .executable = "/bin/codex" }, &environ));
+    try std.testing.expectError(error.BackendRefused, codexBackendConfig(surface, arena, .{ .name = "codexd", .kind = "codex", .endpoint = "unix:///tmp/codex.sock", .args = &.{"-c"} }, &environ));
     compat.stdio.close(stderr_pipe[1]);
     const complained = try readAllFrom(std.testing.allocator, stderr_pipe[0]);
     defer std.testing.allocator.free(complained);
