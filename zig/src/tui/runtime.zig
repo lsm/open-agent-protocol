@@ -77,7 +77,7 @@ pub const RemoteExecution = struct {
         compacts: *const fn (ctx: *anyopaque) bool,
         compact: *const fn (ctx: *anyopaque, focus: []const u8) anyerror!void,
         set_compaction_policy: *const fn (ctx: *anyopaque, policy_json: []const u8) anyerror!void,
-        decide_approval: *const fn (ctx: *anyopaque, tool_call_id: []const u8, granted: bool) anyerror!void,
+        decide_approval: *const fn (ctx: *anyopaque, tool_call_id: []const u8, decision: ToolApprovalDecision) anyerror!void,
         follow_up: *const fn (ctx: *anyopaque, text: []const u8) anyerror!void,
         steer: *const fn (ctx: *anyopaque, text: []const u8) anyerror!void,
         clear_queued: *const fn (ctx: *anyopaque) void,
@@ -1269,7 +1269,7 @@ pub const TuiRuntime = struct {
     }
 
     pub fn decideToolApproval(self: *TuiRuntime, tool_call_id: []const u8, decision: ToolApprovalDecision) !void {
-        if (self.remote) |remote| return remote.vtable.decide_approval(remote.ctx, tool_call_id, decision == .approve or decision == .approve_always);
+        if (self.remote) |remote| return remote.vtable.decide_approval(remote.ctx, tool_call_id, decision);
         while (!self.approval_mutex.tryLock()) std.atomic.spinLoopHint();
         defer self.approval_mutex.unlock();
         if (self.pending_approval.tool_call_id.len > 0 and !std.mem.eql(u8, self.pending_approval.tool_call_id, tool_call_id)) return error.ToolApprovalNotPending;

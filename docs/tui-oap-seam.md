@@ -15,8 +15,10 @@ through `session.settings.update.request` when the endpoint advertises
 `session.reasoning` with `session_live`, over `--attach` through the hub's settings
 route. Tool approvals cross too: in ask mode the adapter's
 `action.permission.requested` becomes the TUI's approval prompt, and the answer goes
-back as `action.permission.resolve.request` with `approve` or `deny`, so an "always"
-answer covers that one call. The model's questions (`user.input.*`) stay off: the
+back as `action.permission.resolve.request` naming the choice the user made: the
+`oapx` adapter offers `approve_always` and `reject_always` beside `approve` and
+`deny`, and passes an always answer to its loop, which remembers it as `--tui`
+does; an endpoint that does not offer them gets `approve` or `deny`. The model's questions (`user.input.*`) stay off: the
 open declines `user_input`, because the TUI has no prompt for them. A run's terminal
 event carries `usage.output_tokens`, and the oapx adapter adds the context the run
 filled as `extensions.oapx.context_tokens`, which the TUI shows on its context gauge
