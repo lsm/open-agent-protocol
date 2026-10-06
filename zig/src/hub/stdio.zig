@@ -79,6 +79,7 @@ pub const Request = struct {
     payload: ?std.json.Value = null,
     allow_degraded_features: []const []const u8 = &.{},
     supplied: Supplied = .{},
+    after_unreadable: bool = false,
 
     fn takes(self: Request, parameter: []const u8) bool {
         if (std.mem.eql(u8, parameter, "adapter")) return self.supplied.adapter;
@@ -364,6 +365,8 @@ pub fn decode(arena: std.mem.Allocator, line: []const u8) Error!Request {
             request.after = null;
         } else if (after == .integer and after.integer >= 0) {
             request.after = @intCast(after.integer);
+        } else {
+            request.after_unreadable = true;
         }
     }
     if (request.supplied.request) request.payload = member(root, "request");
@@ -466,6 +469,12 @@ pub const Frontend = struct {
         if (try request.only(arena, events_parameters)) |refusal| return .{ .refused = refusal };
         const session_id = request.session_id orelse "";
         const run = request.run_id orelse "";
+        if (!self.hub.knows(session_id)) {
+            return .{ .refused = .{ .code = "unknown_session", .message = try std.fmt.allocPrint(arena, "no session \"{s}\"", .{session_id}) } };
+        }
+        if (request.after_unreadable) {
+            return .{ .refused = .{ .code = "invalid_cursor", .message = "the cursor is not an unsigned sequence" } };
+        }
         if (request.after == null and run.len > 0) {
             return .{ .refused = .{ .code = "invalid_cursor", .message = "run_id names the run a cursor belongs to; it has no meaning without after" } };
         }
@@ -582,7 +591,15 @@ pub const Frontend = struct {
 
     fn writeSignal(self: *Frontend, arena: std.mem.Allocator, object: std.json.ObjectMap) Error!void {
         const line = json_encode.valueAlloc(arena, .{ .object = object }) catch return error.OutOfMemory;
-        try self.write(line);
+        if (line.len <= self.frame_limit) return self.write(line);
+        var minimal = try emptyObject(arena);
+        var members = object.iterator();
+        while (members.next()) |kept| {
+            const essential = std.mem.eql(u8, kept.key_ptr.*, "event") or kept.value_ptr.* == .integer;
+            if (essential) try minimal.put(arena, kept.key_ptr.*, kept.value_ptr.*);
+        }
+        const short = json_encode.valueAlloc(arena, .{ .object = minimal }) catch return error.OutOfMemory;
+        if (short.len <= self.frame_limit) try self.write(short);
     }
 
     pub fn noteDefect(self: *Frontend, line: []const u8) void {
@@ -2366,7 +2383,7 @@ test "events acknowledges, then streams the run's envelopes on its own id and en
     try testing.expectEqual(@as(usize, 0), harness.frontend.streams.items.len);
 }
 
-test "events refuses an absent session, a run without a cursor and a parameter it does not take" {
+test "events refuses an absent session ahead of everything, an unreadable cursor, a run without a cursor and a parameter it does not take" {
     const harness = try Harness.init(testing.allocator, .{}, .{});
     defer harness.deinit();
     try harness.send(try openLine(harness.arena(), "reference", open_envelope));
@@ -2376,7 +2393,23 @@ test "events refuses an absent session, a run without a cursor and a parameter i
     try testing.expectEqualStrings("invalid_cursor", try harness.code());
     try harness.send("{\"id\":4,\"op\":\"events\",\"session_id\":\"s1\",\"adapter\":\"reference\"}");
     try testing.expectEqualStrings("invalid_request", try harness.code());
+    for ([_][]const u8{ "\"8\"", "-1", "1.5" }) |cursor| {
+        try harness.send(try std.fmt.allocPrint(harness.arena(), "{{\"id\":5,\"op\":\"events\",\"session_id\":\"s1\",\"after\":{s}}}", .{cursor}));
+        try testing.expectEqualStrings("invalid_cursor", try harness.code());
+    }
+    try harness.send("{\"id\":6,\"op\":\"events\",\"session_id\":\"absent\",\"run_id\":\"run-1\"}");
+    try testing.expectEqualStrings("unknown_session", try harness.code());
     try testing.expectEqual(@as(usize, 0), harness.frontend.streams.items.len);
+}
+
+test "a signal too long for the frame limit falls back to its event, id and numbers" {
+    const harness = try Harness.init(testing.allocator, .{}, .{ .frame_limit = minimum_frame_limit });
+    defer harness.deinit();
+    var object = try Frontend.signalObject(harness.arena(), "oap-overflow", 9, "s1");
+    try object.put(harness.arena(), "run_id", .{ .string = &([_]u8{'r'} ** minimum_frame_limit) });
+    try object.put(harness.arena(), "last_sequence", .{ .integer = 4 });
+    try harness.frontend.writeSignal(harness.arena(), object);
+    try testing.expectEqualStrings("{\"event\":\"oap-overflow\",\"id\":9,\"last_sequence\":4}", harness.recorder.last());
 }
 
 test "a subscription whose session closes ends with oap-session-closed" {
