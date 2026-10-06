@@ -5706,7 +5706,7 @@ pub fn runWith(allocator: std.mem.Allocator, io: std.Io, context_window: ?u32, e
             else => try tui_oap_execution.OapExecution.create(allocator, options),
         };
         options.remote = execution.?.remote();
-        options.generate_titles = false;
+        if (execution_mode == .attach) options.generate_titles = false;
         options.auto_worktree = false;
     }
 
