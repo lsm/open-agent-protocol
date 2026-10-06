@@ -986,6 +986,7 @@ pub const Frontend = struct {
         try object.put(arena, "state", .{ .string = if (found.session.running) "running" else "idle" });
         if (found.session.title.len > 0) try object.put(arena, "title", .{ .string = found.session.title });
         if (found.session.directory.len > 0) try object.put(arena, "directory", .{ .string = found.session.directory });
+        if (found.session.link.len > 0) try object.put(arena, "link", .{ .string = found.session.link });
         try object.put(arena, "updated_at_ms", .{ .integer = found.session.updated_at_ms });
         return .{ .object = object };
     }
@@ -1234,6 +1235,7 @@ pub const Frontend = struct {
         try object.put(arena, "status", .{ .string = @tagName(piece.status) });
         if (piece.directory.len > 0) try object.put(arena, "directory", .{ .string = piece.directory });
         if (piece.title.len > 0) try object.put(arena, "title", .{ .string = piece.title });
+        if (piece.link.len > 0) try object.put(arena, "link", .{ .string = piece.link });
         if (piece.run_id.len > 0) try object.put(arena, "run_id", .{ .string = piece.run_id });
         if (piece.last_reply.len > 0) try object.put(arena, "last_reply", .{ .string = piece.last_reply });
         try object.put(arena, "updated_at_ms", .{ .integer = piece.updated_at_ms });

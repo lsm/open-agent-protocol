@@ -18,6 +18,7 @@ pub fn projectDirName(arena: std.mem.Allocator, directory: []const u8) ![]u8 {
 const Desktop = struct {
     title: []const u8 = "",
     archived: bool = false,
+    local_id: []const u8 = "",
 };
 
 pub const Paths = struct {
@@ -51,10 +52,22 @@ pub fn list(arena: std.mem.Allocator, paths: Paths, directory: []const u8, limit
             .directory = directory,
             .updated_at_ms = updated,
             .running = live.contains(id),
+            .link = if (known != null and known.?.local_id.len > 0) try appLink(arena, known.?.local_id) else "",
         });
     }
     std.mem.sort(contract.NativeSession, found.items, {}, newer);
     return found.items[0..@min(found.items.len, limit)];
+}
+
+pub fn appLink(arena: std.mem.Allocator, local_id: []const u8) ![]const u8 {
+    return std.fmt.allocPrint(arena, "claude://claude.ai/epitaxy/{s}", .{local_id});
+}
+
+pub fn linkFor(arena: std.mem.Allocator, desktop_sessions: []const u8, native_id: []const u8) ![]const u8 {
+    const records = try desktopRecords(arena, desktop_sessions);
+    const known = records.get(native_id) orelse return "";
+    if (known.local_id.len == 0) return "";
+    return appLink(arena, known.local_id);
 }
 
 fn newer(_: void, left: contract.NativeSession, right: contract.NativeSession) bool {
@@ -116,7 +129,8 @@ fn desktopRecords(arena: std.mem.Allocator, root: []const u8) !std.StringHashMap
                 if (cli != .string) continue;
                 const title = if (parsed.object.get("title")) |given| (if (given == .string) given.string else "") else "";
                 const archived = if (parsed.object.get("isArchived")) |given| (given == .bool and given.bool) else false;
-                try records.put(arena, cli.string, .{ .title = title, .archived = archived });
+                const local_id = if (parsed.object.get("sessionId")) |given| (if (given == .string) given.string else "") else "";
+                try records.put(arena, cli.string, .{ .title = title, .archived = archived, .local_id = local_id });
             }
         }
     }
@@ -154,6 +168,20 @@ fn customTitle(arena: std.mem.Allocator, bytes: []const u8) ?[]const u8 {
     return latest;
 }
 
+fn withoutLeadingTags(text: []const u8) []const u8 {
+    var rest = std.mem.trim(u8, text, " \t\r\n");
+    while (rest.len > 1 and rest[0] == '<') {
+        const name_end = std.mem.indexOfAny(u8, rest, "> \n") orelse break;
+        const name = rest[1..name_end];
+        if (name.len == 0 or name[0] == '/') break;
+        var closing_buffer: [128]u8 = undefined;
+        const closing = std.fmt.bufPrint(&closing_buffer, "</{s}>", .{name}) catch break;
+        const at = std.mem.indexOf(u8, rest, closing) orelse break;
+        rest = std.mem.trim(u8, rest[at + closing.len ..], " \t\r\n");
+    }
+    return rest;
+}
+
 fn firstUserLine(arena: std.mem.Allocator, bytes: []const u8) []const u8 {
     var lines = std.mem.splitScalar(u8, bytes, '\n');
     while (lines.next()) |line| {
@@ -175,7 +203,7 @@ fn firstUserLine(arena: std.mem.Allocator, bytes: []const u8) []const u8 {
             },
             else => continue,
         };
-        const trimmed = std.mem.trim(u8, text, " \t\r\n");
+        const trimmed = withoutLeadingTags(text);
         if (trimmed.len == 0 or trimmed[0] == '<') continue;
         const first = trimmed[0 .. std.mem.indexOfScalar(u8, trimmed, '\n') orelse trimmed.len];
         var cut = @min(first.len, title_limit);
@@ -202,13 +230,14 @@ test "a project's transcripts list newest first, titled by the latest custom tit
     try tmp.dir.createDirPath(io, "desktop/account/workspace");
     var project = try tmp.dir.openDir(io, ".claude/projects/-w", .{});
     defer project.close(io);
-    try project.writeFile(io, .{ .sub_path = "aaa.jsonl", .data = "{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":\"<command-name>/init</command-name>\"}}\n{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"fix the parser\\nplease\"}]}}\n" });
+    try project.writeFile(io, .{ .sub_path = "aaa.jsonl", .data = "{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":\"<command-name>/init</command-name>\"}}\n{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"<system-reminder>\\nnoise\\n</system-reminder>\\nfix the parser\\nplease\"}]}}\n" });
     try project.writeFile(io, .{ .sub_path = "bbb.jsonl", .data = "{\"type\":\"custom-title\",\"customTitle\":\"New session\"}\n{\"type\":\"custom-title\",\"customTitle\":\"Named work\"}\n" });
     try project.writeFile(io, .{ .sub_path = "ccc.jsonl", .data = "{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":\"archived\"}}\n" });
     try project.writeFile(io, .{ .sub_path = "notes.txt", .data = "ignored" });
     var workspace = try tmp.dir.openDir(io, "desktop/account/workspace", .{});
     defer workspace.close(io);
     try workspace.writeFile(io, .{ .sub_path = "local_c.json", .data = "{\"cliSessionId\":\"ccc\",\"title\":\"gone\",\"isArchived\":true}" });
+    try workspace.writeFile(io, .{ .sub_path = "local_b.json", .data = "{\"sessionId\":\"local_b\",\"cliSessionId\":\"bbb\",\"title\":\"\",\"isArchived\":false}" });
 
     const root = try tmp.dir.realPathFileAlloc(io, ".", arena);
     const listed = try list(arena, .{ .home = root, .desktop_sessions = try std.fs.path.join(arena, &.{ root, "desktop" }) }, "/w", 10);
@@ -216,6 +245,8 @@ test "a project's transcripts list newest first, titled by the latest custom tit
     var titles: [2][]const u8 = undefined;
     for (listed, 0..) |session, index| {
         titles[index] = session.title;
+        if (std.mem.eql(u8, session.native_id, "bbb")) try std.testing.expectEqualStrings("claude://claude.ai/epitaxy/local_b", session.link);
+        if (std.mem.eql(u8, session.native_id, "aaa")) try std.testing.expectEqualStrings("", session.link);
         try std.testing.expectEqualStrings("/w", session.directory);
         try std.testing.expect(!session.running);
     }

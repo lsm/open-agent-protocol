@@ -178,6 +178,7 @@ pub const Work = struct {
     last_reply: []const u8 = "",
     pending_interaction: []const u8 = "",
     title: []const u8 = "",
+    link: []const u8 = "",
     updated_at_ms: i64,
 };
 
@@ -608,6 +609,7 @@ pub const Hub = struct {
             .status = .done,
             .run_id = current.active_run_id orelse "",
             .title = entry.title,
+            .link = try self.linkOf(arena, entry),
             .updated_at_ms = current.updated_at_ms orelse entry.created_at_ms,
         };
         for (current.active_runs) |run| {
@@ -622,6 +624,12 @@ pub const Hub = struct {
             .idle => try latestOutcome(arena, entry, &found),
         }
         return found;
+    }
+
+    fn linkOf(self: *Hub, arena: std.mem.Allocator, entry: *const Entry) std.mem.Allocator.Error![]const u8 {
+        const record = self.findBound(entry.session_id) orelse return "";
+        const registered = self.find(entry.adapter_name) orelse return "";
+        return registered.adapter.nativeLink(arena, record.native_id);
     }
 
     fn latestOutcome(arena: std.mem.Allocator, entry: *const Entry, found: *Work) !void {

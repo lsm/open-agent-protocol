@@ -255,6 +255,7 @@ pub const NativeSession = struct {
     directory: []const u8 = "",
     updated_at_ms: i64 = 0,
     running: bool = false,
+    link: []const u8 = "",
 };
 
 pub const NativeListRequest = struct {
@@ -270,7 +271,14 @@ pub const Adapter = struct {
         probe: *const fn (ptr: *anyopaque, refusal: *Refusal) Failure!Descriptor,
         open: *const fn (ptr: *anyopaque, arena: std.mem.Allocator, request: OpenRequest, refusal: *Refusal) Failure!Session,
         native_list: ?*const fn (ptr: *anyopaque, arena: std.mem.Allocator, request: NativeListRequest, refusal: *Refusal) Failure![]const NativeSession = null,
+        native_link: ?*const fn (ptr: *anyopaque, arena: std.mem.Allocator, native_id: []const u8) std.mem.Allocator.Error![]const u8 = null,
     };
+
+    pub fn nativeLink(self: Adapter, arena: std.mem.Allocator, native_id: []const u8) std.mem.Allocator.Error![]const u8 {
+        if (native_id.len == 0) return "";
+        const linked = self.vtable.native_link orelse return "";
+        return linked(self.ptr, arena, native_id);
+    }
 
     pub fn nativeList(self: Adapter, arena: std.mem.Allocator, request: NativeListRequest, refusal: *Refusal) ?Failure![]const NativeSession {
         const listed = self.vtable.native_list orelse return null;

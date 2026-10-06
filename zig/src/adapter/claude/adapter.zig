@@ -145,7 +145,17 @@ pub const Adapter = struct {
     }
 
     pub fn adapter(self: *Adapter) contract.Adapter {
-        return .{ .ptr = self, .vtable = &.{ .probe = probe, .open = open, .native_list = nativeList } };
+        return .{ .ptr = self, .vtable = &.{ .probe = probe, .open = open, .native_list = nativeList, .native_link = nativeLink } };
+    }
+
+    fn nativeLink(ptr: *anyopaque, arena: std.mem.Allocator, native_id: []const u8) std.mem.Allocator.Error![]const u8 {
+        _ = ptr;
+        if (builtin.os.tag != .macos) return "";
+        const home = compat.getEnvVarOwned(arena, "HOME") catch return "";
+        const desktop = try std.fs.path.join(arena, &.{ home, "Library", "Application Support", "Claude", "claude-code-sessions" });
+        return native_list.linkFor(arena, desktop, native_id) catch |err| switch (err) {
+            error.OutOfMemory => return error.OutOfMemory,
+        };
     }
 
     fn nativeList(ptr: *anyopaque, arena: std.mem.Allocator, request: contract.NativeListRequest, refusal: *contract.Refusal) contract.Failure![]const contract.NativeSession {

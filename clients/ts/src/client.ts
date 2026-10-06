@@ -33,6 +33,7 @@ export interface Work {
   title?: string;
   run_id?: string;
   last_reply?: string;
+  link?: string;
   updated_at_ms: number;
   pending?: { interaction_id: string };
 }

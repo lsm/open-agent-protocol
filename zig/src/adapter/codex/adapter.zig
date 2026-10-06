@@ -92,7 +92,7 @@ pub const Adapter = struct {
     }
 
     pub fn adapter(self: *Adapter) contract.Adapter {
-        return .{ .ptr = self, .vtable = &.{ .probe = probe, .open = open, .native_list = nativeList } };
+        return .{ .ptr = self, .vtable = &.{ .probe = probe, .open = open, .native_list = nativeList, .native_link = nativeLink } };
     }
 
     fn nativeList(ptr: *anyopaque, arena: std.mem.Allocator, request: contract.NativeListRequest, refusal: *contract.Refusal) contract.Failure![]const contract.NativeSession {
@@ -143,6 +143,15 @@ pub const Adapter = struct {
         return refusal.fail(error.BackendFailed, "the codex app-server did not answer thread/list in time");
     }
 
+    fn nativeLink(ptr: *anyopaque, arena: std.mem.Allocator, native_id: []const u8) std.mem.Allocator.Error![]const u8 {
+        _ = ptr;
+        return threadLink(arena, native_id);
+    }
+
+    fn threadLink(arena: std.mem.Allocator, native_id: []const u8) std.mem.Allocator.Error![]const u8 {
+        return std.fmt.allocPrint(arena, "codex://threads/{s}", .{native_id});
+    }
+
     fn threadsOf(arena: std.mem.Allocator, result: ?std.json.Value) ![]const contract.NativeSession {
         const body = result orelse return &.{};
         if (body != .object) return &.{};
@@ -165,6 +174,7 @@ pub const Adapter = struct {
                 .directory = textOf(thread, "cwd"),
                 .updated_at_ms = if (updated) |seconds| (if (seconds == .integer) seconds.integer * std.time.ms_per_s else 0) else 0,
                 .running = std.mem.eql(u8, kind, "active"),
+                .link = try threadLink(arena, id),
             });
         }
         return listed.items;
@@ -1383,4 +1393,5 @@ test "a thread/list answer becomes native sessions, titled by name or the previe
     try std.testing.expectEqualStrings("first line", listed[1].title);
     try std.testing.expect(!listed[1].running);
     try std.testing.expectEqualStrings("/w", listed[1].directory);
+    try std.testing.expectEqualStrings("codex://threads/t2", listed[1].link);
 }
