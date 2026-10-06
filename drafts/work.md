@@ -1,15 +1,17 @@
 # The Work Profile
 
 Status: draft, from [Decision 0047](../decisions/0047-a-work-layer-over-sessions.md)
-and its owner answers (2026-10-06). Nothing here is executable yet.
+and its owner answers (2026-10-06). The six verbs are served by `oapx serve`
+over stdio and HTTP; the capabilities answer below is not served yet, so a
+missing verb shows only as its refusal.
 
 Profile: `open-agent-protocol.work`, over `open-agent-protocol.agent-control-core`.
 
 ## What it is for
 
 A caller that manages many pieces of work (HyperNeo's Neo, a dashboard, a
-phone) asks five questions: where is there work, start some, tell it
-something, how is it doing, stop it. The core answers each, but in session and
+phone) asks six questions: where is there work, start some, tell it
+something, how is it doing, what was said, stop it. The core answers each, but in session and
 run terms, across several calls and an event stream. This profile answers them
 in one call each, in terms of a piece of work and one of six statuses.
 
@@ -84,7 +86,8 @@ history (its `held: false` entry, no turns, nothing to stop) without starting
 a harness. `work.send` reopens it through its binding (0040) and then submits,
 so a reference survives a restart of `serve`; an adapter without
 `session.open.reopen` refuses that, as an open would. A native entry is
-refused `unknown_session` by every verb until adoption lands.
+taken over only by `work.start` with its `native_id`; every other verb refuses
+its id `unknown_session`.
 
 ## Operations
 
@@ -176,7 +179,7 @@ completed run, its reply text. It keeps the last 512 turns of a session it
 holds, each cut at 64 KiB on a character boundary; an index stays stable as old
 turns drop. This is what `serve` saw, not the harness's own transcript:
 reasoning, tool calls and anything said before `serve` held the session are
-not in it. Reading a harness's transcript is a later verb, with adoption.
+not in it. Reading a harness's own transcript is a later verb.
 
 This is the content a caller's own search indexes (see `work.list`).
 
