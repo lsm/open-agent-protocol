@@ -520,13 +520,23 @@ pub const Hub = struct {
 
     pub fn work(self: *Hub, arena: std.mem.Allocator, session_id: []const u8) Failure!Work {
         const entry = self.findSession(session_id) orelse return error.UnknownSession;
-        return (try self.workOf(arena, entry)) orelse error.SessionClosed;
+        if (try self.workOf(arena, entry)) |found| return found;
+        self.releaseSession(entry);
+        return error.UnknownSession;
     }
 
     pub fn works(self: *Hub, arena: std.mem.Allocator) Failure![]Work {
         var listed = std.ArrayList(Work).empty;
+        var releasing = std.ArrayList([]const u8).empty;
         for (self.entries.items) |*entry| {
-            if (try self.workOf(arena, entry)) |found| try listed.append(arena, found);
+            if (try self.workOf(arena, entry)) |found| {
+                try listed.append(arena, found);
+            } else {
+                try releasing.append(arena, try arena.dupe(u8, entry.session_id));
+            }
+        }
+        for (releasing.items) |session_id| {
+            if (self.findSession(session_id)) |entry| self.releaseSession(entry);
         }
         std.mem.sort(Work, listed.items, {}, byRecentWork);
         return listed.toOwnedSlice(arena);

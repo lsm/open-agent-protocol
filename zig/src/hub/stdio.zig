@@ -2863,7 +2863,7 @@ fn workResult(harness: *Harness, id: i64) !std.json.ObjectMap {
     return (try harness.lastValue()).object.get("result").?.object;
 }
 
-test "work.status names an idle session that never ran done, a running one running, and a closed or absent one as state does" {
+test "work.status names an idle session that never ran done, a running one running, and an absent one unknown_session" {
     const harness = try Harness.init(testing.allocator, .{}, .{});
     defer harness.deinit();
     try harness.send(try openLine(harness.arena(), "reference", open_envelope));
@@ -2880,6 +2880,24 @@ test "work.status names an idle session that never ran done, a running one runni
 
     try harness.send("{\"id\":5,\"op\":\"work.status\",\"session_id\":\"absent\"}");
     try testing.expectEqualStrings("unknown_session", try harness.code());
+}
+
+test "a closed session is released by work.status and by work.find, and is then unknown" {
+    for ([_][]const u8{ "work.status", "work.find" }) |op| {
+        const harness = try Harness.init(testing.allocator, .{}, .{});
+        defer harness.deinit();
+        try harness.send(try openLine(harness.arena(), "reference", open_envelope));
+        reference_holder.closed = true;
+        defer reference_holder.closed = false;
+        if (std.mem.eql(u8, op, "work.status")) {
+            try harness.send("{\"id\":2,\"op\":\"work.status\",\"session_id\":\"s1\"}");
+            try testing.expectEqualStrings("unknown_session", try harness.code());
+        } else {
+            try harness.send("{\"id\":2,\"op\":\"work.find\"}");
+            try testing.expectEqual(@as(usize, 0), (try harness.lastValue()).object.get("result").?.object.get("groups").?.array.items.len);
+        }
+        try testing.expectEqual(@as(usize, 0), harness.hub.sessionCount());
+    }
 }
 
 test "work.status of an idle session reads its latest run's terminal: completed is done with the reply, failed is failed, cancelled is stopped" {
