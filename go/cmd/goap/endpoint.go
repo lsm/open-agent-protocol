@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -18,8 +17,7 @@ import (
 
 func runServeRole(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 	if len(args) == 0 || strings.HasPrefix(args[0], "-") {
-		fmt.Fprintln(stderr, "usage: goap serve agent [--backend B] [--config F] [--stdio]; the multi-session daemon is goap hub")
-		return errors.New("serve needs a role")
+		return runHub(ctx, args, stdin, stdout, stderr)
 	}
 	switch args[0] {
 	case "agent":
@@ -27,7 +25,7 @@ func runServeRole(ctx context.Context, args []string, stdin io.Reader, stdout, s
 	case "provider", "agent,provider", "provider,agent":
 		return fmt.Errorf("unavailable: goap does not carry serve %s", args[0])
 	default:
-		fmt.Fprintln(stderr, "usage: goap serve agent [--backend B] [--config F] [--stdio]; the multi-session daemon is goap hub")
+		fmt.Fprintln(stderr, "usage: goap serve [--addr A | --stdio] [--config F] serves many sessions; goap serve agent [--backend B] [--config F] [--stdio] serves one")
 		return fmt.Errorf("unknown serve role %q", args[0])
 	}
 }

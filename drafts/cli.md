@@ -22,7 +22,7 @@ not a second product.
 | verb | meaning | `oapx` (released) | `goap` (repository tool) |
 |---|---|---|---|
 | `tui [--context-window N]` | the terminal UI as an `agent-control-core` client: its runs go as envelopes through the in-process endpoint to the `oapx` backend, beside `--tui`, which calls the loop directly, until it covers the same ground | experimental | — |
-| `tui --attach URL [--adapter NAME]` | the same client over a running `oapx hub`'s HTTP wire: it opens a session on the named adapter (`oapx` by default), follows each run's SSE stream from its first event, and closes the session on exit. The model is chosen at open through `metadata.oapx.model`, since the hub has no switch route | experimental | — |
+| `tui --attach URL [--adapter NAME]` | the same client over a running `oapx serve`'s HTTP wire: it opens a session on the named adapter (`oapx` by default), follows each run's SSE stream from its first event, and closes the session on exit. The model is chosen at open through `metadata.oapx.model`, since the hub has no switch route | experimental | — |
 | `serve agent [--backend B] [--config F] [--stdio]` | one agent loop over `agent-control-core`, raw envelopes per [endpoint-stdio](endpoint-stdio.md); no `--backend` means the binary's own loop | native loop; harness backends as they are wired | the Go adapters (today `goap endpoint --adapter`) |
 | `serve provider [--stdio \| --http ADDR] [--specimens]` | `model-provider-core` | yes | answers `unavailable` |
 | `serve agent,provider --stdio` | both profiles on one pipe (Decision 0027) | yes | answers `unavailable` |
@@ -42,11 +42,11 @@ because it waits for the endpoint to stop talking rather than for an answer; and
 `oapx` still renews per line in its runner, so `oapx conformance --timeout-ms` waits
 on a chatty endpoint indefinitely until Zig carries the same absolute budget.
 
-The hub is its own verb in both binaries: `goap hub` and `oapx hub`. It is a layer
+The hub is its own verb in both binaries: `goap serve` and `oapx serve`. It is a layer
 above an endpoint, not a different spelling of one, and giving it its own verb is
 what lets `serve agent` mean one thing.
 
-`oapx hub` carries the stdio transport today and answers `unavailable` for the
+`oapx serve` carries the stdio transport today and answers `unavailable` for the
 other two, naming which: `--addr` with the HTTP and SSE transport, and `--config`
 with the hub's registry. Nothing silently falls back — a host that asked for a
 transport this build does not serve is told so rather than handed a pipe, because
@@ -72,7 +72,7 @@ a pipe answers the requests that fit it and is silent about the rest.
 
 ## Migration
 
-- `goap serve` becomes `goap hub`. There is no alias. An alias would keep the
+- `goap serve` becomes `goap serve`. There is no alias. An alias would keep the
   word meaning two things for another release, which is the confusion this
   draft removes.
 - `goap endpoint --adapter A` becomes `goap serve agent --backend A`. `endpoint`

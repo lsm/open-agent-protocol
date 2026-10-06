@@ -22,7 +22,7 @@ import (
 )
 
 func runHub(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.Writer) error {
-	fs := flag.NewFlagSet("hub", flag.ContinueOnError)
+	fs := flag.NewFlagSet("serve", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	configPath := fs.String("config", "", "adapter registry JSON path (default: built-in memory adapter)")
 	addr := fs.String("addr", servehttp.DefaultAddr, "listen address")
