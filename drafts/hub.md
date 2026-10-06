@@ -94,10 +94,18 @@ serves anything, named by its entry name.
 An adapter entry takes exactly these members: `type`, `executable`, `args`,
 `environment`, `working_directory`, `model`, `journal_capacity`,
 `allowed_tools`, `unrestricted_tools`, `approval_policy`, `sandbox`,
-`provider`, `max_tokens`, `agent_config`, `system_prompt`, `endpoint`, `agent`.
+`provider`, `max_tokens`, `agent_config`, `system_prompt`, `endpoint`, `agent`,
+`any_directory`.
 `type` defaults to the entry's own name, so a registry of one memory adapter
 needs nothing but its name. Without `--config` the hub serves the built-in
 memory reference adapter alone.
+
+`any_directory: true` makes the entry a template: a `work.start` naming another
+absolute directory gets a session from an adapter built from this entry with
+that `working_directory`, one per directory and kept for the hub's life, and
+its binding records that directory so a reopen, also after a restart, runs
+there again. Native lists and every other operation use the entry as written.
+Go reads the member and ignores it, since its hub has no work profile.
 
 An entry of type **`oapx`** serves oapx's own agent loop, built the way
 `oapx serve agent --backend oapx` builds it: the providers, credentials and

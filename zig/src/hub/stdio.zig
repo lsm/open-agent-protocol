@@ -99,6 +99,7 @@ pub const Request = struct {
     limit: ?i64 = null,
     supplied: Supplied = .{},
     after_unreadable: bool = false,
+    directory: []const u8 = "",
 
     fn takes(self: Request, parameter: []const u8) bool {
         if (std.mem.eql(u8, parameter, "adapter")) return self.supplied.adapter;
@@ -1130,12 +1131,17 @@ pub const Frontend = struct {
         if (adapter.len == 0) return .{ .refused = .{ .code = "invalid_request", .message = "adapter is required" } };
         if (workParamsRefusal(params, "message")) |refusal| return .{ .refused = refusal };
         const configured = self.hub.adapterDirectory(adapter) orelse return .{ .refused = .{ .code = "unknown_adapter", .message = try std.fmt.allocPrint(arena, "no adapter is registered as \"{s}\"", .{adapter}) } };
-        if (workText(params, "directory")) |directory| {
-            if (!std.mem.eql(u8, directory, configured)) return .{ .refused = try refusalWith(arena, "invalid_request", "a session runs in its adapter's working directory; another directory needs its own adapter entry", &.{
-                .{ .key = "working_directory", .value = configured },
-            }) };
+        var directory: []const u8 = "";
+        if (workText(params, "directory")) |given| {
+            if (!std.mem.eql(u8, given, configured)) {
+                if (!self.hub.servesAnyDirectory(adapter)) return .{ .refused = try refusalWith(arena, "invalid_request", "a session runs in its adapter's working directory; another directory needs its own adapter entry, or \"any_directory\": true on this one", &.{
+                    .{ .key = "working_directory", .value = configured },
+                }) };
+                if (!std.fs.path.isAbsolute(given)) return .{ .refused = .{ .code = "invalid_request", .message = "request.directory must be an absolute path" } };
+                directory = given;
+            }
         }
-        if (workText(params, "native_id")) |native_id| return self.workAdopt(arena, adapter, native_id, params);
+        if (workText(params, "native_id")) |native_id| return self.workAdopt(arena, adapter, native_id, directory, params);
         var open_payload = try emptyObject(arena);
         try open_payload.put(arena, "message", try userMessage(arena, workText(params, "message").?));
         const request = Request{
@@ -1144,6 +1150,7 @@ pub const Frontend = struct {
             .adapter = adapter,
             .payload = try self.workEnvelope(arena, "session.open.request", "", open_payload),
             .supplied = .{ .adapter = true, .request = true },
+            .directory = directory,
         };
         const opened = try self.openSession(arena, adapter, request, false);
         const line = switch (opened) {
@@ -1160,12 +1167,12 @@ pub const Frontend = struct {
         return self.workStatus(arena, session_id);
     }
 
-    fn workAdopt(self: *Frontend, arena: std.mem.Allocator, adapter: []const u8, native_id: []const u8, params: ?std.json.Value) !Outcome {
+    fn workAdopt(self: *Frontend, arena: std.mem.Allocator, adapter: []const u8, native_id: []const u8, directory: []const u8, params: ?std.json.Value) !Outcome {
         if (native_id.len == 0) return .{ .refused = .{ .code = "invalid_request", .message = "request.native_id is a non-empty string" } };
         if (try self.boundSession(arena, adapter, native_id)) |session_id| return self.workSend(arena, session_id, params);
         if (try self.hub.nativeRunning(arena, adapter, native_id)) return .{ .refused = .{ .code = "run_active", .message = "another process is running this session; continuing it here would fork the conversation" } };
         var refused: hubmod.OpenRefusal = .{};
-        const opened = self.hub.openReporting(arena, adapter, .{ .reopen = true, .adopt_native_id = native_id }, &refused) catch |err| {
+        const opened = self.hub.openReporting(arena, adapter, .{ .reopen = true, .adopt_native_id = native_id, .directory = directory }, &refused) catch |err| {
             try ownRevisions(arena, &refused);
             return .{ .refused = try openRefusal(arena, err, .{ .id = 0, .op = op_open, .adapter = adapter }, &refused) };
         };
@@ -1664,6 +1671,7 @@ pub const Frontend = struct {
             .tool_sources_json = try substitutedSources(arena, self.hub, open.tool_sources_json),
             .reasoning_level = open.reasoning_level,
             .compaction_policy_json = open.compaction_policy_json,
+            .directory = request.directory,
         }, &refused) catch |err| {
             try ownRevisions(arena, &refused);
             envelope.deinit(arena);
@@ -3399,6 +3407,26 @@ test "work.start with a native id refuses a session another process runs, and an
     try harness.send("{\"id\":3,\"op\":\"work.start\",\"adapter\":\"reference\",\"request\":{\"message\":\"go\",\"native_id\":\"\"}}");
     try testing.expectEqualStrings("invalid_request", try harness.code());
     try testing.expectEqual(@as(usize, 0), harness.hub.sessionCount());
+}
+
+fn referenceBuilt(context: *anyopaque, arena: std.mem.Allocator, entry: hubmod.config.AdapterEntry) contract.Failure!contract.Adapter {
+    _ = context;
+    _ = arena;
+    _ = entry;
+    return reference();
+}
+
+test "work.start on an any_directory adapter starts work in the absolute directory it is given and refuses a relative one" {
+    const harness = try Harness.init(testing.allocator, .{}, .{});
+    defer harness.deinit();
+    var diagnostic = hubmod.config.Diagnostic{};
+    try harness.hub.load(harness.arena(), .{ .adapters = &.{.{ .name = "placed", .kind = "reference", .working_directory = "/base", .any_directory = true }} }, .{ .context = harness, .make = referenceBuilt }, &diagnostic);
+    try harness.send("{\"id\":1,\"op\":\"work.start\",\"adapter\":\"placed\",\"request\":{\"message\":\"go\",\"directory\":\"elsewhere\"}}");
+    try testing.expectEqualStrings("invalid_request", try harness.code());
+    try testing.expectEqual(@as(usize, 0), harness.hub.sessionCount());
+    try harness.send("{\"id\":2,\"op\":\"work.start\",\"adapter\":\"placed\",\"request\":{\"message\":\"go\",\"directory\":\"/elsewhere\"}}");
+    const started = (try harness.lastValue()).object.get("result").?.object;
+    try testing.expectEqualStrings("/elsewhere", started.get("directory").?.string);
 }
 
 test "work.start refuses a missing message, an unknown adapter and a directory its adapter does not run in" {
