@@ -11,7 +11,7 @@ const permission = @import("permission");
 const interactions = @import("interactions.zig");
 
 pub const endpoint_id = "oapx.agent";
-pub const capability_revision = "oapx-agent-v7";
+pub const capability_revision = "oapx-agent-v8";
 
 pub const journal_capacity: usize = 1 << 16;
 pub const queue_capacity: usize = 8;
@@ -29,7 +29,7 @@ const features = [_]contract.Feature{
     .{ .key = "session.message.delivery.auto", .level = .native },
     .{ .key = "session.message.delivery.queue", .level = .native },
     .{ .key = "session.message.delivery.steer", .level = .native, .reason = "guidance joins the running loop after its current tool result or turn; guidance still waiting when the run ends is dropped" },
-    .{ .key = "action.permissions", .level = .native, .scope = "call", .reason = "ask mode waits for the declared responder; bypass mode skips prompts" },
+    .{ .key = "action.permissions", .level = .native, .scope = "call", .reason = "ask mode waits for the declared responder, and approve_always or reject_always settles the tool for the rest of the session; bypass mode skips prompts" },
     .{ .key = "user_input", .level = .native, .reason = "request_user_input asks text or choice questions and validates answers before returning them to the tool" },
     .{ .key = "run.streaming", .level = .native },
     .{ .key = "run.status", .level = .native },
@@ -708,12 +708,12 @@ pub const Session = struct {
                 if (pending.kind != .permission) return error.InvalidResolution;
                 if (answer.updated_arguments_json != null) return refusal.unsupportedField("action.permissions", contract.reason_unsatisfiable, "updated_arguments_json");
                 const choice = answer.choice_id orelse return error.InvalidResolution;
-                const granted = if (std.mem.eql(u8, choice, "approve")) true else if (std.mem.eql(u8, choice, "deny")) false else return error.InvalidResolution;
+                const granted = if (std.mem.eql(u8, choice, "approve") or std.mem.eql(u8, choice, "approve_always")) true else if (std.mem.eql(u8, choice, "deny") or std.mem.eql(u8, choice, "reject_always")) false else return error.InvalidResolution;
                 if (granted != answer.granted) return error.InvalidResolution;
                 try resolved.put("outcome", .{ .string = "resolved" });
                 try resolved.put("choice_id", .{ .string = choice });
                 try resolved.put("granted", .{ .bool = granted });
-                break :answer try self.gpa.dupe(u8, if (granted) "approve" else "deny");
+                break :answer try self.gpa.dupe(u8, choice);
             },
             .input => |answer| answer: {
                 if (pending.kind != .input) return error.InvalidResolution;
@@ -805,7 +805,7 @@ pub const Session = struct {
         if (native.kind == .permission) {
             try payload.put("title", .{ .string = native.tool_name });
             try payload.put("arguments_json", try jsonOrString(a, native.arguments));
-            try payload.put("choices", try parseValue(a, "[{\"id\":\"approve\",\"label\":\"Allow once\"},{\"id\":\"deny\",\"label\":\"Deny\"}]"));
+            try payload.put("choices", try parseValue(a, "[{\"id\":\"approve\",\"label\":\"Allow once\"},{\"id\":\"approve_always\",\"label\":\"Always allow\"},{\"id\":\"deny\",\"label\":\"Deny\"},{\"id\":\"reject_always\",\"label\":\"Always deny\"}]"));
         } else {
             const prompt = try parseValue(a, native.arguments);
             try payload.put("title", prompt.object.get("title") orelse .{ .string = "User input" });
@@ -828,7 +828,10 @@ pub const Session = struct {
         if (std.mem.eql(u8, request.tool_name, "request_user_input")) return .approve;
         const answer = self.gate.wait(self.gpa, .permission, request.tool_call_id, request.tool_name, request.args_json, null) catch return .reject;
         defer self.gpa.free(answer);
-        return if (std.mem.eql(u8, answer, "approve")) .approve else .reject;
+        if (std.mem.eql(u8, answer, "approve")) return .approve;
+        if (std.mem.eql(u8, answer, "approve_always")) return .approve_always;
+        if (std.mem.eql(u8, answer, "reject_always")) return .reject_always;
+        return .reject;
     }
 
     fn inputTool(self: *Session) agent.AgentTool {
@@ -1970,6 +1973,35 @@ fn permissionAnswer(harness: *Harness, pending: PendingInteraction) oap_types.Pe
     return .{ .interaction_id = pending.id, .requested_by = endpoint_id, .responded_by = "user", .session_id = harness.session.id(), .run_id = Session.cast(harness.session.ptr).run.?.id, .granted = true, .choice_id = "approve" };
 }
 
+test "a permission prompt offers the always choices, and an always answer reaches the loop as one and is published as chosen" {
+    var script = Script{ .tool_first = true };
+    var harness: Harness = undefined;
+    try harness.init(&script);
+    defer harness.deinit();
+    try Session.cast(harness.session.ptr).runtime.setPermissionMode(.ask);
+    _ = try harness.submit("use the tool");
+    const pending = try waitForPrompt(&harness);
+    var offered: usize = 0;
+    for (harness.seen.items) |parsed| {
+        if (!std.mem.eql(u8, parsed.value.object.get("type").?.string, "action.permission.requested")) continue;
+        for (parsed.value.object.get("payload").?.object.get("choices").?.array.items) |choice| {
+            const id = choice.object.get("id").?.string;
+            if (std.mem.eql(u8, id, "approve_always") or std.mem.eql(u8, id, "reject_always")) offered += 1;
+        }
+    }
+    try testing.expectEqual(@as(usize, 2), offered);
+    var always = permissionAnswer(&harness, pending);
+    always.choice_id = "approve_always";
+    var refusal = contract.Refusal{};
+    try harness.session.resolve(harness.arena.allocator(), .{ .permission = &always }, &refusal);
+    try harness.untilTerminal();
+    try testing.expectEqual(@as(usize, 1), harness.count("action.call.completed"));
+    for (harness.seen.items) |parsed| {
+        if (!std.mem.eql(u8, parsed.value.object.get("type").?.string, "action.permission.resolved")) continue;
+        try testing.expectEqualStrings("approve_always", parsed.value.object.get("payload").?.object.get("choice_id").?.string);
+    }
+}
+
 test "an ask-mode tool blocks for its declared responder, refuses contradictory and repeated answers, and executes after approval" {
     var script = Script{ .tool_first = true };
     var harness: Harness = undefined;
@@ -1995,7 +2027,7 @@ test "an ask-mode tool blocks for its declared responder, refuses contradictory 
             3 => wrong.session_id = "another-session",
             4 => wrong.interaction_id = "another-interaction",
             5 => wrong.granted = false,
-            6 => wrong.choice_id = "approve_always",
+            6 => wrong.choice_id = "approve_forever",
             else => unreachable,
         }
         try testing.expectError(error.InvalidResolution, harness.session.resolve(harness.arena.allocator(), .{ .permission = &wrong }, &refusal));
