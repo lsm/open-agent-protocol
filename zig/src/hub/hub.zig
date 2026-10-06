@@ -595,7 +595,7 @@ pub const Hub = struct {
         const admission = entry.session.submit(arena, request, envelope_id, refusal) catch |err| switch (err) {
             error.SessionClosed => {
                 self.releaseSession(entry);
-                return error.UnknownSession;
+                return error.SessionClosed;
             },
             else => |failure| return failure,
         };
@@ -609,7 +609,7 @@ pub const Hub = struct {
         const admission = compactor(entry.session.ptr, arena, request, envelope_id, refusal) catch |err| switch (err) {
             error.SessionClosed => {
                 self.releaseSession(entry);
-                return error.UnknownSession;
+                return error.SessionClosed;
             },
             else => |failure| return failure,
         };
@@ -636,7 +636,7 @@ pub const Hub = struct {
         entry.session.resolve(arena, resolution, &refusal) catch |err| switch (err) {
             error.SessionClosed => {
                 self.releaseSession(entry);
-                return error.UnknownSession;
+                return error.SessionClosed;
             },
             else => |failure| return failure,
         };
@@ -654,7 +654,7 @@ pub const Hub = struct {
         return resolver(entry.session.ptr, arena, request_id, request, refusal) catch |err| switch (err) {
             error.SessionClosed => {
                 self.releaseSession(entry);
-                return error.UnknownSession;
+                return error.SessionClosed;
             },
             else => |failure| return failure,
         };
@@ -666,7 +666,7 @@ pub const Hub = struct {
         return entry.session.cancel(arena, run_id, &refusal) catch |err| switch (err) {
             error.SessionClosed => {
                 self.releaseSession(entry);
-                return error.UnknownSession;
+                return error.SessionClosed;
             },
             else => |failure| return failure,
         };
@@ -4009,6 +4009,71 @@ test "a settings update the adapter finds closed answers session_closed and rele
     var refusal = contract.Refusal{};
     try testing.expectError(error.SessionClosed, hub.updateSettings(arena, "gone", &.{ .session_id = "gone", .compaction_policy_json = "{\"kind\":\"off\"}" }, &refusal));
     try testing.expect(!hub.knows("gone"));
+}
+
+const ClosingControls = struct {
+    inner: *memory.Adapter,
+    session_vtable: contract.Session.VTable = undefined,
+
+    fn adapter(self: *ClosingControls) contract.Adapter {
+        return .{ .ptr = self, .vtable = &.{ .probe = probe, .open = open } };
+    }
+
+    fn probe(ptr: *anyopaque, refusal: *contract.Refusal) contract.Failure!contract.Descriptor {
+        const self: *ClosingControls = @ptrCast(@alignCast(ptr));
+        return self.inner.adapter().probe(refusal);
+    }
+
+    fn open(ptr: *anyopaque, arena: std.mem.Allocator, request: contract.OpenRequest, refusal: *contract.Refusal) contract.Failure!contract.Session {
+        const self: *ClosingControls = @ptrCast(@alignCast(ptr));
+        const session = try self.inner.adapter().open(arena, request, refusal);
+        self.session_vtable = session.vtable.*;
+        self.session_vtable.submit = submitClosed;
+        self.session_vtable.resolve = resolveClosed;
+        self.session_vtable.cancel = cancelClosed;
+        return .{ .ptr = session.ptr, .vtable = &self.session_vtable };
+    }
+
+    fn submitClosed(ptr: *anyopaque, arena: std.mem.Allocator, request: *const oap_types.MessageSubmitRequest, envelope_id: []const u8, refusal: *contract.Refusal) contract.Failure!oap_types.MessageSubmitResponse {
+        _ = .{ ptr, arena, request, envelope_id, refusal };
+        return error.SessionClosed;
+    }
+
+    fn resolveClosed(ptr: *anyopaque, arena: std.mem.Allocator, resolution: contract.Resolution, refusal: *contract.Refusal) contract.Failure!void {
+        _ = .{ ptr, arena, resolution, refusal };
+        return error.SessionClosed;
+    }
+
+    fn cancelClosed(ptr: *anyopaque, arena: std.mem.Allocator, run_id: []const u8, refusal: *contract.Refusal) contract.Failure!oap_types.RunCancelResponse {
+        _ = .{ ptr, arena, run_id, refusal };
+        return error.SessionClosed;
+    }
+};
+
+test "a control the adapter finds closed answers session_closed and releases the session, as Go does" {
+    var inner = memory.Adapter.init(testing.allocator);
+    defer inner.deinit();
+    var closing = ClosingControls{ .inner = &inner };
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    var hub = Hub.init(testing.allocator, testClock, .{});
+    defer hub.deinit();
+    try hub.register("closing", closing.adapter());
+    var refusal = contract.Refusal{};
+
+    _ = try hub.open(arena, "closing", .{ .session_id = "submitted" });
+    const message = try arena.dupe(oap_types.Message, &.{.{ .role = .user, .content = .{ .text = "hi" } }});
+    try testing.expectError(error.SessionClosed, hub.submitReporting(arena, "submitted", &.{ .session_id = "submitted", .messages = message, .delivery = .auto }, "e1", &refusal));
+    try testing.expect(!hub.knows("submitted"));
+
+    _ = try hub.open(arena, "closing", .{ .session_id = "resolved" });
+    try testing.expectError(error.SessionClosed, hub.resolve(arena, "resolved", .{ .permission = &.{ .session_id = "resolved", .run_id = "run-1", .interaction_id = "i1", .requested_by = "agent", .responded_by = "user", .granted = true } }));
+    try testing.expect(!hub.knows("resolved"));
+
+    _ = try hub.open(arena, "closing", .{ .session_id = "cancelled" });
+    try testing.expectError(error.SessionClosed, hub.cancel(arena, "cancelled", "run-1"));
+    try testing.expect(!hub.knows("cancelled"));
 }
 
 test {
