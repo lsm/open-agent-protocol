@@ -2372,6 +2372,7 @@ fn printUsage(file: std.Io.File) !void {
         \\  oapx serve agent [--stdio] [--model <model-ref>]
         \\  oapx serve agent [--stdio] --backend <name> [--config <path>]
         \\  oapx serve provider [--stdio] [--specimens]
+        \\  oapx claude-permission-hook --endpoint <url>  A Claude Code PermissionRequest hook: asks <url>, and leaves the prompt to the session when no allow or deny comes back
         \\  oapx serve provider --http 127.0.0.1:<port>
         \\  oapx serve agent,provider --stdio [--model <model-ref>]
         \\  oapx serve --stdio | --addr <host:port> [--config <path>] [--session-history <path>]
@@ -6616,6 +6617,22 @@ pub fn main(init: std.process.Init) !void {
             if (err == error.FrameTooLarge or err == error.BackendRefused or err == error.StdinFailed or err == error.OutputStalled or err == error.BrokenPipe) std.process.exit(1);
             return err;
         };
+        return;
+    }
+
+    if (std.mem.eql(u8, args[1], "claude-permission-hook")) {
+        if (args.len != 4 or !std.mem.eql(u8, args[2], "--endpoint")) {
+            try compat.stdio.writeAll(stderr, "usage: oapx claude-permission-hook --endpoint <url>\n");
+            return error.InvalidArgument;
+        }
+        var arena_state = std.heap.ArenaAllocator.init(allocator);
+        defer arena_state.deinit();
+        const arena = arena_state.allocator();
+        const request = readAllFrom(arena, stdin) catch return;
+        if (claude_adapter.permission_hook.ask(arena, args[3], request)) |output| {
+            try compat.stdio.writeAll(stdout, output);
+            try compat.stdio.writeAll(stdout, "\n");
+        }
         return;
     }
 

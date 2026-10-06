@@ -269,3 +269,33 @@ that UUID on its first turn. An untouched session may have no transcript file
 yet, so closing it before any turn does not make a native reload possible.
 Legacy configured session selectors remain caller-owned on create, and their
 UUID is only known once observed; they cannot override a binding-based reopen.
+
+## PermissionRequest hook (`oapx claude-permission-hook`)
+
+Probed 2026-10-06 against Claude Code CLI **2.1.289** on macOS, not against the
+2.1.288 pin; re-probe at the next pin bump. Each probe spawned the CLI as the
+desktop app does (`--input-format stream-json --output-format stream-json
+--permission-prompt-tool stdio --permission-mode default`), passed the hook
+through `--settings`, and asked the session to `Write` a file.
+
+- **Input on stdin:** one JSON object with `session_id`, `transcript_path`,
+  `cwd`, `hook_event_name` (`PermissionRequest`), `permission_mode`,
+  `permission_suggestions`, `prompt_id`, `scratchpad_dir`, `tool_name` and
+  `tool_input`.
+- **Output that answers:** `{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decision":{"behavior":"allow"}}}`,
+  or `"behavior":"deny"` with a `"message"`, which reached the model as the
+  tool result with `is_error: true`.
+- **Racing the host:** the CLI sends `can_use_tool` to its host at the same
+  moment the hook runs. When the hook answers first, the host receives
+  `control_cancel_request` for that request id and the tool runs (or is
+  denied). When the host answers first (a hook sleeping 15 s, the host denying
+  after 3 s), the host's answer stands and the hook's later answer is ignored.
+- **No answer:** a hook that prints nothing leaves `can_use_tool` pending with
+  the host; no cancel follows.
+- **Without a hook:** nothing outside the session's stdin answers a pending
+  prompt. `claude agents --json` reports `"status":"waiting","waitingFor":"permission prompt"`
+  and nothing about the call; filed as anthropics/claude-code#99964.
+
+The hook's unit tests pin only the translation from an endpoint's answer to
+this output, so a format change upstream shows up as the host's own prompt
+appearing, not as a failure.
