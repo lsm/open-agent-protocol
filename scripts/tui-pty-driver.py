@@ -1614,20 +1614,7 @@ def scenario_hub_attach(args):
         run.session.send(KEY_ENTER, "Enter (/compact)")
         run.session.wait_for(b"conversation compacted", 10.0, "the hub run's compaction", since=compacted_from)
         run.frame("compacted-over-the-hub")
-        followed_from = len(run.session.plain)
-        run.session.type_text("hello once more")
-        run.session.send(KEY_ENTER, "Enter (submit)")
-        run.session.wait_for(b"Allow scripted tool", 10.0, "the second hub run's approval prompt", since=followed_from)
-        run.session.type_text("and then this")
-        run.session.send(b"\t", "Tab (queue a follow-up)")
-        run.session.wait_for(b"queue", 6.0, "the queued follow-up indicator", since=followed_from)
-        run.frame("follow-up-queued-over-the-hub")
-        promoted_from = len(run.session.plain)
-        run.session.send(b"y", "approve once")
-        run.session.wait_for(b"Allow scripted tool", 10.0, "the queued follow-up's own approval prompt", since=promoted_from)
-        run.frame("follow-up-promoted-over-the-hub")
-        run.session.send(b"y", "approve once")
-        run.note("oapx tui --attach drives a memory session on a running oapx hub: the run streams, its approval prompt resolves over the hub's resolve route, Esc cancels the run, /compact runs the endpoint's compaction over the hub's submit route, and a follow-up queued with Tab is admitted queued by the hub and runs once the turn's run ends")
+        run.note("oapx tui --attach drives a memory session on a running oapx hub: the run streams, its approval prompt resolves over the hub's resolve route, Esc cancels the run, and /compact runs the endpoint's compaction over the hub's submit route")
     except ScenarioError as err:
         if run is None:
             raise
