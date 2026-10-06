@@ -6,10 +6,14 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"syscall"
 )
 
 func lockSessionHistory(path string) (*os.File, error) {
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return nil, err
+	}
 	held, err := os.OpenFile(path+".lock", os.O_RDWR|os.O_CREATE, 0o600)
 	if err != nil {
 		return nil, err

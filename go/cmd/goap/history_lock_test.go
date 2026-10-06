@@ -9,7 +9,7 @@ import (
 )
 
 func TestASecondHubOnOneSessionHistoryIsRefusedWhileTheFirstHoldsIt(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "sessions.jsonl")
+	path := filepath.Join(t.TempDir(), "not-yet", "sessions.jsonl")
 	first, err := lockSessionHistory(path)
 	if err != nil {
 		t.Fatal(err)
