@@ -251,6 +251,13 @@ pub const Endpoint = struct {
         const request = oap_envelope.deserializeEnvelope(line, arena) catch |err| switch (err) {
             error.OutOfMemory => return error.OutOfMemory,
             oap_envelope.DecodeError.UnknownEnvelopeType => {
+                if (std.mem.eql(u8, declared_type, "session.list.request")) {
+                    const details = try arena.dupe(oap_types.DetailEntry, &.{
+                        .{ .key = "feature", .value = "session.list" },
+                        .{ .key = "reason", .value = "unadvertised" },
+                    });
+                    return self.deny("unsupported_feature", "this endpoint keeps no session history", details);
+                }
                 const message = try std.fmt.allocPrint(arena, "this endpoint serves no {s}", .{declared_type});
                 return self.deny("unsupported_request", message, &.{});
             },
@@ -1511,6 +1518,17 @@ test "a request type this endpoint does not serve draws unsupported_request" {
 
     const undecodable = try harness.send(framed("session.message.submit.request", "x-3", "", "{\"session_id\":\"s\"}"));
     try testing.expectEqualStrings("invalid_payload", field(undecodable[0], &.{ "payload", "error", "code" }));
+}
+
+test "a session list draws unsupported_feature naming session.list, unadvertised" {
+    var harness: Harness = undefined;
+    harness.init(testing.allocator, .{});
+    defer harness.deinit();
+
+    const refused = try harness.send(framed("session.list.request", "l-1", "", "{}"));
+    try testing.expectEqualStrings("unsupported_feature", field(refused[0], &.{ "payload", "error", "code" }));
+    try testing.expectEqualStrings("session.list", field(refused[0], &.{ "payload", "error", "details", "feature" }));
+    try testing.expectEqualStrings("unadvertised", field(refused[0], &.{ "payload", "error", "details", "reason" }));
 }
 
 test "initialize declares the backend's endpoint and revision, and names the control participant for later opens" {

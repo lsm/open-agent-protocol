@@ -270,6 +270,19 @@ pub const NativeSession = struct {
     link: []const u8 = "",
 };
 
+pub const NativeTurn = struct {
+    pub const Role = enum { user, assistant };
+    role: Role,
+    text: []const u8,
+    at_ms: i64 = 0,
+};
+
+pub const NativeReadRequest = struct {
+    native_id: []const u8,
+    directory: []const u8 = "",
+    max_turns: usize = std.math.maxInt(usize),
+};
+
 pub const NativeListRequest = struct {
     directory: []const u8 = "",
     limit: usize = 50,
@@ -284,7 +297,14 @@ pub const Adapter = struct {
         open: *const fn (ptr: *anyopaque, arena: std.mem.Allocator, request: OpenRequest, refusal: *Refusal) Failure!Session,
         native_list: ?*const fn (ptr: *anyopaque, arena: std.mem.Allocator, request: NativeListRequest, refusal: *Refusal) Failure![]const NativeSession = null,
         native_link: ?*const fn (ptr: *anyopaque, arena: std.mem.Allocator, native_id: []const u8) std.mem.Allocator.Error![]const u8 = null,
+        native_read: ?*const fn (ptr: *anyopaque, arena: std.mem.Allocator, request: NativeReadRequest, refusal: *Refusal) Failure![]const NativeTurn = null,
     };
+
+    pub fn nativeRead(self: Adapter, arena: std.mem.Allocator, request: NativeReadRequest, refusal: *Refusal) ?Failure![]const NativeTurn {
+        if (request.native_id.len == 0) return null;
+        const reads = self.vtable.native_read orelse return null;
+        return reads(self.ptr, arena, request, refusal);
+    }
 
     pub fn nativeLink(self: Adapter, arena: std.mem.Allocator, native_id: []const u8) std.mem.Allocator.Error![]const u8 {
         if (native_id.len == 0) return "";
