@@ -245,10 +245,9 @@ pub const OapExecution = struct {
             if (self.adapter) |held| if (held.history) |loader| {
                 const found = loader.load(loader.ctx, a, saved) catch null;
                 if (found == null) {
-                    if (self.session_id.len > 0) {
-                        self.stopping.store(false, .release);
-                        self.thread = try std.Thread.spawn(.{}, run, .{self});
-                    }
+                    if (self.session_id.len == 0) return error.OapReopenNotSaved;
+                    self.stopping.store(false, .release);
+                    self.thread = try std.Thread.spawn(.{}, run, .{self});
                     return error.OapReopenRefused;
                 }
             };
@@ -1776,6 +1775,24 @@ const SavedTranscript = struct {
         return messages;
     }
 };
+
+test "a refused reopen before any session opened leaves the runtime unstarted, so the next turn opens one" {
+    var script = Script{};
+    var execution: *OapExecution = undefined;
+    var runtime = try remoteRuntime(&script, &execution, .low);
+    defer execution.destroy();
+    defer runtime.deinit();
+    var saved = SavedTranscript{ .missing = true };
+    execution.setHistory(.{ .ctx = &saved, .load = SavedTranscript.load });
+
+    try testing.expectError(error.OapReopenNotSaved, runtime.reopenSaved("saved-session"));
+    try testing.expect(!runtime.started);
+    try runtime.submitTurn("a fresh start");
+    var seen = Seen{};
+    defer seen.deinit();
+    try drainTurn(&runtime, &seen);
+    try testing.expectEqual(@as(?tui_session.TuiEndReason, .completed), seen.end);
+}
 
 test "a saved session reopened over OAP carries its transcript into the next run" {
     var script = Script{};
