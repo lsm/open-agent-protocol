@@ -66,6 +66,7 @@ const adapter_parameter: []const []const u8 = &.{"adapter"};
 const open_parameters: []const []const u8 = &.{ "adapter", "request" };
 const max_envelope_bytes: usize = 16 << 20;
 const session_parameter: []const []const u8 = &.{"session_id"};
+const events_parameters: []const []const u8 = &.{ "session_id", "run_id", "after" };
 const all_parameters = [_][]const u8{ "adapter", "session_id", "run_id", "after", "request", "allow_degraded_features" };
 
 pub const Request = struct {
@@ -406,6 +407,20 @@ pub const Defect = struct {
     }
 };
 
+fn subscribeRefusal(arena: std.mem.Allocator, err: hubmod.Failure, id: []const u8) !Refusal {
+    return switch (err) {
+        error.UnknownSession => .{ .code = "unknown_session", .message = try std.fmt.allocPrint(arena, "no session \"{s}\"", .{id}) },
+        error.SessionClosed => .{ .code = "session_closed", .message = "the session is closed" },
+        error.NoRunToResume => .{ .code = "no_run_to_resume", .message = "the session has no run to resume a cursor on" },
+        error.ReplayCursorFuture => .{ .code = "replay_cursor_future", .message = "the cursor is past the latest sequence the run has emitted" },
+        error.RunNotFound => .{ .code = "run_not_found", .message = "the session never had the run the cursor names" },
+        error.InvalidCursor => .{ .code = "invalid_cursor", .message = "run_id names the run a cursor belongs to; it has no meaning without after" },
+        error.SubscriptionFull => .{ .code = "busy", .message = "the session already has as many subscribers as the hub serves" },
+        error.OutOfMemory => error.OutOfMemory,
+        else => .{ .code = "internal", .message = @errorName(err) },
+    };
+}
+
 pub const Frontend = struct {
     hub: *Hub,
     sink: Sink,
@@ -416,8 +431,15 @@ pub const Frontend = struct {
     in_flight: usize = 0,
     recorded: Defect = .{},
     next_envelope: u64 = 0,
-    subscriptions: std.ArrayList(*hubmod.Subscription) = .empty,
+    streams: std.ArrayList(Watched) = .empty,
     stopped: bool = false,
+
+    const Watched = struct {
+        id: i64,
+        subscription: *hubmod.Subscription,
+        run: std.ArrayList(u8) = .empty,
+        sequence: u64 = 0,
+    };
 
     pub fn init(allocator: std.mem.Allocator, hub: *Hub, sink: Sink, options: Options) Error!Frontend {
         if (options.frame_limit < minimum_frame_limit) return Error.FrameLimitTooSmall;
@@ -432,8 +454,135 @@ pub const Frontend = struct {
     }
 
     pub fn deinit(self: *Frontend) void {
-        self.subscriptions.deinit(self.allocator);
+        for (self.streams.items) |*watched| {
+            watched.subscription.close();
+            watched.run.deinit(self.allocator);
+        }
+        self.streams.deinit(self.allocator);
         self.* = undefined;
+    }
+
+    fn events(self: *Frontend, arena: std.mem.Allocator, request: Request) Error!Outcome {
+        if (try request.only(arena, events_parameters)) |refusal| return .{ .refused = refusal };
+        const session_id = request.session_id orelse "";
+        const run = request.run_id orelse "";
+        if (request.after == null and run.len > 0) {
+            return .{ .refused = .{ .code = "invalid_cursor", .message = "run_id names the run a cursor belongs to; it has no meaning without after" } };
+        }
+        if (self.max_subscriptions > 0 and self.streams.items.len >= self.max_subscriptions) {
+            return .{ .refused = .{ .code = "busy", .message = "the frontend already holds as many subscriptions as it serves; a subscription ends at its run's terminal, at an overflow or stream failure, or when its session closes" } };
+        }
+        const subscription = self.hub.subscribe(arena, session_id, .{ .run_id = run, .after = request.after }) catch |err| {
+            return .{ .refused = try subscribeRefusal(arena, err, session_id) };
+        };
+        self.answer(request.id, .{ .null = {} }) catch |err| {
+            subscription.close();
+            return err;
+        };
+        if (subscription.gap) |gap| {
+            defer subscription.close();
+            var object = try signalObject(arena, "oap-replay-gap", request.id, session_id);
+            try object.put(arena, "requested_after", .{ .integer = @intCast(gap.requested_after) });
+            try object.put(arena, "oldest_available", .{ .integer = @intCast(gap.oldest_available) });
+            try object.put(arena, "latest_available", .{ .integer = @intCast(gap.latest_available) });
+            try object.put(arena, "message", .{ .string = "requested replay cursor is no longer retained; resume with a cursor at or after oldest_available - 1" });
+            try self.writeSignal(arena, object);
+            return .streaming;
+        }
+        if (subscription.joined) {
+            var object = try signalObject(arena, "oap-subscribed", request.id, session_id);
+            if (subscription.joined_run.len > 0) try object.put(arena, "run_id", .{ .string = subscription.joined_run });
+            try object.put(arena, "joined_after", .{ .integer = @intCast(subscription.joined_after) });
+            try object.put(arena, "message", .{ .string = "the subscription begins after this sequence; resubscribe with a cursor at or before it to replay what preceded this point" });
+            try self.writeSignal(arena, object);
+        }
+        self.streams.append(self.allocator, .{ .id = request.id, .subscription = subscription, .sequence = request.after orelse 0 }) catch |err| {
+            subscription.close();
+            return err;
+        };
+        try self.pumpStreams();
+        return .streaming;
+    }
+
+    pub fn pumpStreams(self: *Frontend) Error!void {
+        var index: usize = 0;
+        while (index < self.streams.items.len) {
+            if (try self.feed(&self.streams.items[index])) {
+                var ended = self.streams.orderedRemove(index);
+                ended.subscription.close();
+                ended.run.deinit(self.allocator);
+            } else {
+                index += 1;
+            }
+        }
+    }
+
+    fn feed(self: *Frontend, watched: *Watched) Error!bool {
+        var scratch = std.heap.ArenaAllocator.init(self.allocator);
+        defer scratch.deinit();
+        const arena = scratch.allocator();
+        const subscription = watched.subscription;
+        const session_json = try std.json.Stringify.valueAlloc(arena, subscription.session_id, .{});
+        while (subscription.next()) |delivered| {
+            const line = if (delivered.sequence > 0)
+                try std.fmt.allocPrint(arena, "{{\"event\":\"envelope\",\"id\":{d},\"session_id\":{s},\"sequence\":{d},\"envelope\":{s}}}", .{ watched.id, session_json, delivered.sequence, delivered.line })
+            else
+                try std.fmt.allocPrint(arena, "{{\"event\":\"envelope\",\"id\":{d},\"session_id\":{s},\"envelope\":{s}}}", .{ watched.id, session_json, delivered.line });
+            if (line.len > self.frame_limit) {
+                var object = try signalObject(arena, "oap-frame-limit", watched.id, subscription.session_id);
+                try object.put(arena, "run_id", .{ .string = delivered.run_id });
+                try object.put(arena, "sequence", .{ .integer = @intCast(if (delivered.sequence > 0) delivered.sequence else watched.sequence) });
+                try object.put(arena, "message", .{ .string = "envelope exceeds the frame limit; the subscription ended — resume with a cursor after this sequence to continue past it" });
+                try self.writeSignal(arena, object);
+                return true;
+            }
+            try self.write(line);
+            if (!std.mem.eql(u8, watched.run.items, delivered.run_id)) {
+                watched.run.clearRetainingCapacity();
+                try watched.run.appendSlice(self.allocator, delivered.run_id);
+                watched.sequence = 0;
+            }
+            if (delivered.sequence > watched.sequence) watched.sequence = delivered.sequence;
+        }
+        switch (subscription.ending) {
+            .open => return false,
+            .run_terminal, .expired => return true,
+            .overflow => {
+                var object = try signalObject(arena, "oap-overflow", watched.id, subscription.session_id);
+                try object.put(arena, "run_id", .{ .string = subscription.overflow_run });
+                try object.put(arena, "last_sequence", .{ .integer = @intCast(subscription.overflow_sequence) });
+                try object.put(arena, "message", .{ .string = "event stream consumer fell behind; resume with a cursor after this sequence" });
+                try self.writeSignal(arena, object);
+                return true;
+            },
+            .session_closed => {
+                var object = try signalObject(arena, "oap-session-closed", watched.id, subscription.session_id);
+                try object.put(arena, "message", .{ .string = "the session is closed" });
+                try self.writeSignal(arena, object);
+                return true;
+            },
+            .stream_failed => {
+                var object = try signalObject(arena, "oap-stream-failed", watched.id, subscription.session_id);
+                if (watched.run.items.len > 0) try object.put(arena, "run_id", .{ .string = watched.run.items });
+                try object.put(arena, "sequence", .{ .integer = @intCast(watched.sequence) });
+                try object.put(arena, "message", .{ .string = "the run's event stream failed; resume with a cursor after this sequence" });
+                try self.writeSignal(arena, object);
+                return true;
+            },
+        }
+    }
+
+    fn signalObject(arena: std.mem.Allocator, event: []const u8, id: i64, session_id: []const u8) Error!std.json.ObjectMap {
+        var object = try emptyObject(arena);
+        try object.put(arena, "event", .{ .string = event });
+        try object.put(arena, "id", .{ .integer = id });
+        if (session_id.len > 0) try object.put(arena, "session_id", .{ .string = session_id });
+        return object;
+    }
+
+    fn writeSignal(self: *Frontend, arena: std.mem.Allocator, object: std.json.ObjectMap) Error!void {
+        const line = json_encode.valueAlloc(arena, .{ .object = object }) catch return error.OutOfMemory;
+        try self.write(line);
     }
 
     pub fn noteDefect(self: *Frontend, line: []const u8) void {
@@ -523,6 +672,7 @@ pub const Frontend = struct {
             }
             return self.openSession(arena, name, request, false);
         }
+        if (std.mem.eql(u8, request.op, op_events)) return self.events(arena, request);
         if (std.mem.eql(u8, request.op, op_models)) {
             if (try request.only(arena, session_and_degraded)) |refusal| return .{ .refused = refusal };
             return self.models(arena, request.session_id orelse "", request.allow_degraded_features);
@@ -1245,6 +1395,7 @@ pub fn serve(allocator: std.mem.Allocator, frontend: *Frontend, stream: Stream) 
             if (frontend.stopped) return error.StdinFailed;
         }
         try frontend.hub.pump(allocator, 0);
+        try frontend.pumpStreams();
         if (input_ready and !more) {
             if (pending.items.len > 0) {
                 frontend.noteDefect(pending.items);
@@ -1388,6 +1539,7 @@ const ReferenceState = struct {
     state_fails: bool = false,
     lister_closed: bool = false,
     closed: bool = false,
+    pending_events: []const contract.Event = &.{},
 };
 
 var reference_holder: ReferenceState = .{};
@@ -1522,9 +1674,9 @@ fn referencePump(ptr: *anyopaque, wait_ns: u64) contract.Failure!bool {
 }
 
 fn referenceDrain(ptr: *anyopaque, allocator: std.mem.Allocator, out: *std.ArrayList(contract.Event)) contract.Failure!void {
-    _ = ptr;
-    _ = allocator;
-    _ = out;
+    const state: *ReferenceState = @ptrCast(@alignCast(ptr));
+    try out.appendSlice(allocator, state.pending_events);
+    state.pending_events = &.{};
 }
 
 fn referenceActivity(ptr: *anyopaque) contract.Activity {
@@ -2184,6 +2336,63 @@ fn openResult(harness: *Harness) !std.json.ObjectMap {
 fn listedSessions(harness: *Harness) !usize {
     try harness.send("{\"id\":2,\"op\":\"sessions\"}");
     return (try openResult(harness)).get("sessions").?.array.items.len;
+}
+
+const event_head = "\"protocol\":\"open-agent-protocol\",\"version\":\"0.1\",\"profile\":\"open-agent-protocol.agent-control-core\"";
+const started_line = "{" ++ event_head ++ ",\"type\":\"run.started\",\"id\":\"e1\",\"session_id\":\"s1\",\"run_id\":\"run-1\",\"sequence\":1,\"payload\":{\"session_id\":\"s1\",\"run_id\":\"run-1\"}}";
+const completed_line = "{" ++ event_head ++ ",\"type\":\"run.completed\",\"id\":\"e2\",\"session_id\":\"s1\",\"run_id\":\"run-1\",\"sequence\":2,\"payload\":{\"session_id\":\"s1\",\"run_id\":\"run-1\"}}";
+
+test "events acknowledges, then streams the run's envelopes on its own id and ends at the terminal" {
+    const harness = try Harness.init(testing.allocator, .{}, .{});
+    defer harness.deinit();
+    defer reference_holder.pending_events = &.{};
+    try harness.send(try openLine(harness.arena(), "reference", open_envelope));
+    try harness.send("{\"id\":2,\"op\":\"events\",\"session_id\":\"s1\"}");
+    try testing.expectEqualStrings("{\"id\":2,\"ok\":true,\"result\":null}", harness.recorder.last());
+    const before = harness.recorder.lines.items.len;
+    reference_holder.pending_events = &.{ .{ .line = started_line, .run_id = "run-1", .sequence = 1 }, .{ .line = completed_line, .run_id = "run-1", .sequence = 2 } };
+    try harness.hub.pump(testing.allocator, 0);
+    try harness.frontend.pumpStreams();
+    const streamed = harness.recorder.lines.items[before..];
+    try testing.expectEqual(@as(usize, 2), streamed.len);
+    for (streamed, [_]i64{ 1, 2 }) |line, sequence| {
+        const value = try std.json.parseFromSliceLeaky(std.json.Value, harness.arena(), line, .{});
+        try testing.expectEqualStrings("envelope", value.object.get("event").?.string);
+        try testing.expectEqual(@as(i64, 2), value.object.get("id").?.integer);
+        try testing.expectEqualStrings("s1", value.object.get("session_id").?.string);
+        try testing.expectEqual(sequence, value.object.get("sequence").?.integer);
+        try testing.expectEqualStrings("run-1", value.object.get("envelope").?.object.get("run_id").?.string);
+    }
+    try testing.expectEqual(@as(usize, 0), harness.frontend.streams.items.len);
+}
+
+test "events refuses an absent session, a run without a cursor and a parameter it does not take" {
+    const harness = try Harness.init(testing.allocator, .{}, .{});
+    defer harness.deinit();
+    try harness.send(try openLine(harness.arena(), "reference", open_envelope));
+    try harness.send("{\"id\":2,\"op\":\"events\",\"session_id\":\"absent\"}");
+    try testing.expectEqualStrings("unknown_session", try harness.code());
+    try harness.send("{\"id\":3,\"op\":\"events\",\"session_id\":\"s1\",\"run_id\":\"run-1\"}");
+    try testing.expectEqualStrings("invalid_cursor", try harness.code());
+    try harness.send("{\"id\":4,\"op\":\"events\",\"session_id\":\"s1\",\"adapter\":\"reference\"}");
+    try testing.expectEqualStrings("invalid_request", try harness.code());
+    try testing.expectEqual(@as(usize, 0), harness.frontend.streams.items.len);
+}
+
+test "a subscription whose session closes ends with oap-session-closed" {
+    const harness = try Harness.init(testing.allocator, .{}, .{});
+    defer harness.deinit();
+    try harness.send(try openLine(harness.arena(), "reference", open_envelope));
+    try harness.send("{\"id\":2,\"op\":\"events\",\"session_id\":\"s1\"}");
+    try testing.expectEqual(@as(usize, 1), harness.frontend.streams.items.len);
+    try harness.send("{\"id\":3,\"op\":\"close\",\"session_id\":\"s1\"}");
+    try harness.frontend.pumpStreams();
+    var saw_closed = false;
+    for (harness.recorder.lines.items) |line| {
+        if (std.mem.indexOf(u8, line, "\"event\":\"oap-session-closed\"") != null and std.mem.indexOf(u8, line, "\"id\":2") != null) saw_closed = true;
+    }
+    try testing.expect(saw_closed);
+    try testing.expectEqual(@as(usize, 0), harness.frontend.streams.items.len);
 }
 
 test "an open answers with the request envelope's own id and the session it made" {
