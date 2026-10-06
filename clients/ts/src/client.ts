@@ -56,6 +56,7 @@ export interface WorkStartInput {
   message: string;
   title?: string;
   directory?: string;
+  native_id?: string;
 }
 
 export interface FetchResponse {

@@ -87,6 +87,7 @@ pub const OpenRequest = struct {
     tool_sources_json: ?[]const u8 = null,
     reasoning_level: ?[]const u8 = null,
     compaction_policy_json: ?[]const u8 = null,
+    adopt_native_id: []const u8 = "",
 
     fn payload(self: OpenRequest) oap_types.SessionOpenRequest {
         return .{
@@ -719,7 +720,9 @@ pub const Hub = struct {
         if (request.session_id.len > 0 and self.findSession(request.session_id) != null) return error.SessionExists;
         try contract.refuseUnadvertisedOpenElections(descriptor, &request.payload(), &refused.reason);
         var native_session_id: []const u8 = "";
-        if (request.reopen) {
+        if (request.reopen and request.adopt_native_id.len > 0) {
+            native_session_id = request.adopt_native_id;
+        } else if (request.reopen) {
             if (self.findBound(request.session_id)) |record| {
                 if (!std.mem.eql(u8, record.adapter_name, adapter_name)) return error.UnknownSession;
                 native_session_id = try arena.dupe(u8, record.native_id);
@@ -872,6 +875,20 @@ pub const Hub = struct {
     fn declared(known: []const []const u8, native_id: []const u8) bool {
         for (known) |candidate| {
             if (std.mem.eql(u8, candidate, native_id)) return true;
+        }
+        return false;
+    }
+
+    pub fn nativeRunning(self: *Hub, arena: std.mem.Allocator, adapter_name: []const u8, native_id: []const u8) Failure!bool {
+        const registered = self.find(adapter_name) orelse return error.UnknownAdapter;
+        var refusal = contract.Refusal{};
+        const answered = registered.adapter.nativeList(arena, .{ .directory = registered.directory, .limit = native_list_limit }, &refusal) orelse return false;
+        const listed = answered catch |err| switch (err) {
+            error.OutOfMemory => return error.OutOfMemory,
+            else => return false,
+        };
+        for (listed) |found| {
+            if (std.mem.eql(u8, found.native_id, native_id)) return found.running;
         }
         return false;
     }
@@ -4136,6 +4153,20 @@ fn bareOpen(ptr: *anyopaque, arena: std.mem.Allocator, request: contract.OpenReq
     _ = request;
     _ = refusal;
     return error.Unavailable;
+}
+
+test "an open adopting a native id hands the adapter that id without any binding, and holds nothing when the harness cannot load it" {
+    var inner = memory.Adapter.init(testing.allocator);
+    defer inner.deinit();
+    var native = NativeMemory{ .inner = &inner };
+    var hub = Hub.init(testing.allocator, testClock, .{});
+    defer hub.deinit();
+    try hub.register("native", native.adapter());
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    try testing.expectError(error.UnsupportedFeature, hub.open(arena_state.allocator(), "native", .{ .reopen = true, .adopt_native_id = "thread-from-elsewhere" }));
+    try testing.expectEqualStrings("thread-from-elsewhere", native.handed);
+    try testing.expectEqual(@as(usize, 0), hub.sessionCount());
 }
 
 test "a closed session reopens through the hub once, and a reopen of a live or unknown session is refused" {

@@ -1098,6 +1098,7 @@ pub const Frontend = struct {
                 .{ .key = "working_directory", .value = configured },
             }) };
         }
+        if (workText(params, "native_id")) |native_id| return self.workAdopt(arena, adapter, native_id, params);
         var open_payload = try emptyObject(arena);
         try open_payload.put(arena, "message", try userMessage(arena, workText(params, "message").?));
         const request = Request{
@@ -1120,6 +1121,18 @@ pub const Frontend = struct {
         const session_id = opened_answer.object.get("session_id").?.string;
         if (workText(params, "title")) |title| try self.hub.setTitle(session_id, title);
         return self.workStatus(arena, session_id);
+    }
+
+    fn workAdopt(self: *Frontend, arena: std.mem.Allocator, adapter: []const u8, native_id: []const u8, params: ?std.json.Value) !Outcome {
+        if (native_id.len == 0) return .{ .refused = .{ .code = "invalid_request", .message = "request.native_id is a non-empty string" } };
+        if (try self.hub.nativeRunning(arena, adapter, native_id)) return .{ .refused = .{ .code = "run_active", .message = "another process is running this session; continuing it here would fork the conversation" } };
+        var refused: hubmod.OpenRefusal = .{};
+        const opened = self.hub.openReporting(arena, adapter, .{ .reopen = true, .adopt_native_id = native_id }, &refused) catch |err| {
+            try ownRevisions(arena, &refused);
+            return .{ .refused = try openRefusal(arena, err, .{ .id = 0, .op = op_open, .adapter = adapter }, &refused) };
+        };
+        if (workText(params, "title")) |title| try self.hub.setTitle(opened.session_id, title);
+        return self.workSend(arena, opened.session_id, params);
     }
 
     pub fn workSend(self: *Frontend, arena: std.mem.Allocator, session_id: []const u8, params: ?std.json.Value) !Outcome {
@@ -3286,6 +3299,18 @@ test "work.read refuses an unreadable after and answers no turns past the larges
     try testing.expectEqualStrings("invalid_request", try harness.code());
     const read = try harness.hub.transcript("s1", std.math.maxInt(u64), 10);
     try testing.expectEqual(@as(usize, 0), read.turns.len);
+}
+
+test "work.start with a native id refuses a session another process runs, and an adapter that cannot reopen" {
+    const harness = try Harness.init(testing.allocator, .{}, .{});
+    defer harness.deinit();
+    try harness.send("{\"id\":1,\"op\":\"work.start\",\"adapter\":\"reference\",\"request\":{\"message\":\"go\",\"native_id\":\"thread-b\"}}");
+    try testing.expectEqualStrings("run_active", try harness.code());
+    try harness.send("{\"id\":2,\"op\":\"work.start\",\"adapter\":\"reference\",\"request\":{\"message\":\"go\",\"native_id\":\"thread-a\"}}");
+    try testing.expectEqualStrings("unsupported_feature", try harness.code());
+    try harness.send("{\"id\":3,\"op\":\"work.start\",\"adapter\":\"reference\",\"request\":{\"message\":\"go\",\"native_id\":\"\"}}");
+    try testing.expectEqualStrings("invalid_request", try harness.code());
+    try testing.expectEqual(@as(usize, 0), harness.hub.sessionCount());
 }
 
 test "work.start refuses a missing message, an unknown adapter and a directory its adapter does not run in" {
