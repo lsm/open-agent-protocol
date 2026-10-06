@@ -31,6 +31,7 @@ pub const OapExecution = struct {
     revision: []u8 = &.{},
     session_id: []u8 = &.{},
     run_id: []u8 = &.{},
+    submitted: []u8 = &.{},
     ids: u64 = 0,
     inbound: std.ArrayList([]u8) = .empty,
     inbound_mutex: std.atomic.Mutex = .unlocked,
@@ -155,6 +156,7 @@ pub const OapExecution = struct {
         allocator.free(self.sent_policy);
         allocator.free(self.session_id);
         allocator.free(self.run_id);
+        allocator.free(self.submitted);
         if (self.adapter) |adapter| allocator.destroy(adapter);
         allocator.destroy(self);
     }
@@ -316,7 +318,10 @@ pub const OapExecution = struct {
         defer scratch.deinit();
         const a = scratch.allocator();
         const payload = try self.submission(a, text, "auto");
+        const kept_text = try self.allocator.dupe(u8, text);
         self.lockInbound();
+        self.allocator.free(self.submitted);
+        self.submitted = kept_text;
         self.allocator.free(self.run_id);
         self.run_id = &.{};
         self.cancel_pending.store(false, .release);
@@ -975,6 +980,14 @@ pub const OapExecution = struct {
             self.in_assistant = false;
             self.closed_messages = 0;
             self.deliver(.{ .agent_start = .{} });
+            self.lockInbound();
+            const echoed = self.submitted;
+            self.submitted = &.{};
+            self.inbound_mutex.unlock();
+            if (echoed.len > 0) {
+                defer self.allocator.free(echoed);
+                self.deliver(.{ .message_end = .{ .role = .user, .text = try self.ownedText(echoed) } });
+            }
             self.deliver(.{ .turn_start = .{} });
             if (self.cancel_pending.swap(false, .acq_rel)) try self.sendCancel();
             return;
@@ -1653,7 +1666,7 @@ test "a follow-up queued during a turn over OAP runs after it inside the same tu
     try testing.expectEqual(@as(?tui_session.TuiEndReason, .completed), seen.end);
     try testing.expectEqual(@as(usize, 1), seen.agent_starts);
     try testing.expectEqual(@as(usize, 2), script.calls);
-    try testing.expectEqualStrings("second", seen.user_text.items);
+    try testing.expectEqualStrings("firstsecond", seen.user_text.items);
     try testing.expectEqualStrings("over the wireover the wire", seen.text.items);
     try testing.expectEqual(@as(usize, 0), runtime.queuedCounts().follow_up);
 }
@@ -1678,7 +1691,7 @@ test "clearing a follow-up queued over OAP cancels its reservation, so the turn 
     try drainTurn(&runtime, &seen);
     try testing.expectEqual(@as(?tui_session.TuiEndReason, .completed), seen.end);
     try testing.expectEqual(@as(usize, 1), script.calls);
-    try testing.expectEqual(@as(usize, 0), seen.user_text.items.len);
+    try testing.expectEqualStrings("first", seen.user_text.items);
 
     try runtime.submitTurn("third");
     var next = Seen{};
@@ -1706,6 +1719,21 @@ test "a follow-up sent while no turn runs over OAP starts one" {
     try drainTurn(&runtime, &seen);
     try testing.expectEqual(@as(?tui_session.TuiEndReason, .completed), seen.end);
     try testing.expectEqual(@as(usize, 1), script.calls);
+}
+
+test "the first message of a turn over OAP comes back as the user's message, as the local loop reports it" {
+    var script = Script{};
+    var execution: *OapExecution = undefined;
+    var runtime = try remoteRuntime(&script, &execution, .low);
+    defer execution.destroy();
+    defer runtime.deinit();
+
+    try runtime.submitTurn("name this session");
+    var seen = Seen{};
+    defer seen.deinit();
+    try drainTurn(&runtime, &seen);
+    try testing.expectEqual(@as(?tui_session.TuiEndReason, .completed), seen.end);
+    try testing.expectEqualStrings("name this session", seen.user_text.items);
 }
 
 test "a runtime over OAP refuses what the protocol path cannot carry yet" {
@@ -2299,7 +2327,7 @@ test "a steer sent during a turn over OAP joins it at the next turn boundary and
     try testing.expectEqual(@as(?tui_session.TuiEndReason, .completed), seen.end);
     try testing.expectEqual(@as(usize, 1), seen.agent_starts);
     try testing.expectEqual(@as(usize, 2), script.calls);
-    try testing.expectEqualStrings("change course", seen.user_text.items);
+    try testing.expectEqualStrings("firstchange course", seen.user_text.items);
     try testing.expectEqual(@as(usize, 0), seen.warnings);
     try testing.expectEqual(@as(usize, 0), runtime.queuedCounts().steering);
     try testing.expectEqual(@as(u64, 1), runtime.steersConsumedCount());
@@ -2340,7 +2368,7 @@ test "a steer still waiting when the turn is cancelled over OAP settles without 
     try drainTurn(&runtime, &seen);
     try testing.expectEqual(@as(?tui_session.TuiEndReason, .cancelled), seen.end);
     try testing.expectEqual(@as(usize, 0), seen.warnings);
-    try testing.expectEqualStrings("", seen.user_text.items);
+    try testing.expectEqualStrings("first", seen.user_text.items);
     try testing.expectEqual(@as(usize, 0), runtime.queuedCounts().steering);
     try testing.expectEqual(@as(u64, 1), runtime.steersConsumedCount());
 }
