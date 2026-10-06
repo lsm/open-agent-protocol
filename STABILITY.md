@@ -59,6 +59,7 @@ one side of this line or the other. None is left unstated:
 | `+session-reattach` | yes | [Decision 0040](decisions/0040-a-session-reopens-through-its-own-binding.md), accepted. |
 | `+session-list` | yes | [Decision 0046](decisions/0046-a-session-list-is-the-hosts-bindings.md), accepted. |
 | `+session-settings`, `+session-settings-live` | yes | [Decision 0045](decisions/0045-reasoning-level-and-compaction-policy-are-session-settings.md), accepted. |
+| `+provider-attach` | **no** | [Decision 0028](decisions/0028-live-model-and-provider-control.md) is `proposed`: its wire and fixtures exist, but the record says live attachment is not yet implemented. |
 | `+compaction` | yes | [Decision 0044](decisions/0044-compaction.md), accepted. |
 
 A unit joins the covered set when its graduating decision becomes `accepted`,

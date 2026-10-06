@@ -1,6 +1,6 @@
 # Decision 0028: Live Session Model and Provider Control
 
-Status: accepted 2026-10-06 (its surface is on main)
+Status: proposed
 Date: 2026-09-22
 Protocol: `open-agent-protocol` version `0.1`
 Profile: `open-agent-protocol.agent-control-core`

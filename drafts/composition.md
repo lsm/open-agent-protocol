@@ -180,9 +180,10 @@ individually hides it:
 2. **Discovery** — what is available here. `action.tools.list`; `models.list`
    plus 0014's provider descriptors.
 3. **Provision and selection by the client** — attach a source, supply a tool,
-   choose a model. Complete for tools. For providers, 0014's descriptors and
-   0028's live model and provider control are accepted and on the wire; 0017,
-   which 0028 superseded, never was.
+   choose a model. Complete for tools. For providers, 0014's descriptors are
+   accepted, and 0028's live model and provider control is on the wire but still
+   proposed, since live attachment is not yet implemented; 0017, which 0028
+   superseded, never was.
 
 A capability absent from one column is not a small gap. It is the layer below
 becoming something the client cannot see or steer, which is the thing layering

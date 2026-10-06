@@ -868,7 +868,7 @@ Decisions:
 - [0025 — authentication is an obligation, not a credential channel](decisions/0025-authentication-is-an-obligation-not-a-credential-channel.md) (superseded by [0029](decisions/0029-authentication-over-agent-control.md) before acceptance)
 - [0026 — a resume cursor may name its run](decisions/0026-a-resume-cursor-may-name-its-run.md) (accepted)
 - [0027 — compose profiles on one stdio connection](decisions/0027-composed-stdio-profiles.md) (proposed)
-- [0028 — live session model and provider control](decisions/0028-live-model-and-provider-control.md) (accepted)
+- [0028 — live session model and provider control](decisions/0028-live-model-and-provider-control.md) (proposed)
 - [0029 — authentication over agent control](decisions/0029-authentication-over-agent-control.md) (accepted)
 - [0030 — remote model providers over HTTP](decisions/0030-remote-provider-http-binding.md) (proposed)
 - [0031 — a policy refusal is a settlement](decisions/0031-a-policy-refusal-is-a-settlement.md) (accepted)
