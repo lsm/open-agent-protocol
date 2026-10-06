@@ -97,7 +97,8 @@ Two more probes, the same day:
 
 ### 1. A work profile, built on the core
 
-`open-agent-protocol.work` defines the five verbs over core operations, so an
+`open-agent-protocol.work` defines the verbs over core operations (five here,
+and `work.read` added with [the draft](../drafts/work.md)), so an
 endpoint gains it without new run machinery:
 
 - `work.list {directory?, adapters?, include_closed?, limit?, cursor?}`:
@@ -205,7 +206,7 @@ stays as an alias for one release.
    [0037](0037-presentation-state-is-versioned-and-every-intent-is-idempotent.md)),
    and the work verbs are operations a caller runs. Each verb is a capability
    key an endpoint advertises (`work.list`, `work.start`, `work.send`,
-   `work.status`, `work.stop`), so a missing one, such as `work.stop` over
+   `work.status`, `work.stop`, `work.read`), so a missing one, such as `work.stop` over
    DeepSeek, is known before it is called.
 2. **Reading Claude's and Pi's own stores for listing is accepted, read-only.**
    A store whose format changed lists nothing; it is never written.

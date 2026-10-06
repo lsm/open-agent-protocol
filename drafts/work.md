@@ -173,6 +173,6 @@ This is the content a caller's own search indexes (see `work.list`).
 ## Order of work
 
 1. All six verbs over the sessions `serve` holds (#919).
-3. Native lists in `work.list` (Codex `thread/list`, ACP `session/list`,
+2. Native lists in `work.list` (Codex `thread/list`, ACP `session/list`,
    OpenCode, Hermes; Claude and Pi read-only from their stores).
-4. Adoption by native reference: `attach`, `resume`, `observe`, refuse.
+3. Adoption by native reference: `attach`, `resume`, `observe`, refuse.
