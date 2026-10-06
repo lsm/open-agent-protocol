@@ -163,6 +163,7 @@ var unitCapabilities = map[string][]string{
 	"models":                {protocol.FeatureModelsList},
 	"compound-open":         {protocol.FeatureOpenSubscribe},
 	"session-reattach":      {protocol.FeatureOpenReopen},
+	"session-list":          {protocol.FeatureSessionList},
 	"session-settings":      {protocol.FeatureSessionReasoning, protocol.FeatureCompactionPolicy},
 	"session-settings-live": {protocol.FeatureSessionReasoning, protocol.FeatureCompactionPolicy},
 }
@@ -200,6 +201,7 @@ func diagnosticCodes() map[string]bool {
 		CodeModelNotInCatalog, CodeAmbiguousDefaultModel, CodeDuplicateModelID, CodeUnannouncedCatalogChange,
 		CodeUnmatchedProvider, CodeDuplicateProvider,
 		CodeAuthFlowOrder, CodeMissingAuthTerminal,
+		CodeSessionListOverLimit, CodeSessionListOrder, CodeDuplicateSessionEntry,
 	}
 	result := make(map[string]bool, len(codes))
 	for _, code := range codes {

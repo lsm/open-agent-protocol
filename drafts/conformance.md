@@ -37,6 +37,7 @@ Conformance units are additive:
 - `+steer`
 - `+btw`
 - `+session-reattach`
+- `+session-list`
 - `+session-settings`
 - `+session-settings-live`
 - `+compaction`
@@ -705,6 +706,28 @@ Both conformance runners check the fail-closed half over a single endpoint: a
 reopen naming a session the endpoint never had must be refused, never answered
 with a fresh session. Reopening a closed session needs a close, which core OAP
 has no verb for, so that half is pinned by each tree's hub tests instead.
+
+### `+session-list`
+
+`+session-list` is staged under
+[Decision 0046](../decisions/0046-a-session-list-is-the-hosts-bindings.md).
+An implementation conforms if it:
+
+- advertises `session.list` above `unavailable`, refuses a
+  `session.list.request` against a descriptor that does not with
+  `unsupported_feature` naming the key, and refuses one against a `degraded`
+  disclosure with `capability_degraded` unless the request consents through
+  `allow_degraded_features`;
+- answers with a `session.list.response` citing the active capability revision,
+  holding at most the request's `limit` entries (50 when it names none), one per
+  session, newest first by `updated_at_ms` with ties broken by `session_id`
+  (`session_list_over_limit`, `duplicate_session_entry`, `session_list_order`);
+- lists only what its session history records, so an entry carries no native
+  session id, home directory, credential or environment value, which the schema
+  refuses.
+
+A page is judged on its own: a session that moved between two pages is not a
+defect, for the reason the decision gives.
 
 ### `+session-settings`
 

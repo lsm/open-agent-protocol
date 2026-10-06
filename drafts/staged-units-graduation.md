@@ -100,7 +100,7 @@ Decision 0003's four steps translate into these exit criteria for every unit:
 | 6 | T5b auth state | Claude `auth_status` frames; OpenCode `provider.list` | staged | — |
 | 7 | T7 session reattach | Claude `--resume=<uuid>`; Codex `thread/resume`, which the Go adapter already selects through `ResumeThreadID`; ACP `session/load` and `session/resume`; pi's durable session file and `switch_session`; Hermes' native `session.resume`, which its adapter does not write | Codex (native) | Claude, ACP, pi |
 | 8 | T6 transcript load | pi `get_entries` with `since`; ACP `session/load` replaying the conversation through `session/update` | pi (degraded) | ACP |
-| 9 | T8 session list | a host's binding records; ACP's optional native list | staged | — |
+| 9 | T8 session list | a host's binding records; ACP's optional native list | accepted (0046) | — |
 
 Ledgers: [Codex](../research/codex-app-server-0.160.0-mapping.md) ·
 [Claude Code](../research/claude-code-agent-sdk-2.1.288-mapping.md) ·
@@ -4272,9 +4272,14 @@ say whether the list is the host's records, the harness's, or both, and how a
 long list is paged.
 
 **Status: [Decision 0046](../decisions/0046-a-session-list-is-the-hosts-bindings.md)
-is proposed.** It answers both: the list is the host's bindings and only those,
-paged newest first on an opaque cursor, and four harnesses' native lists stay
-out until a host needs sessions no binding names. Nothing is executable yet.
+is accepted (2026-10-06).** It answers both: the list is the host's bindings and
+only those, paged newest first on an opaque cursor, and four harnesses' native
+lists stay out until a host needs sessions no binding names. Both hubs serve it
+at `GET /sessions/history` and the `history` stdio op. The first graduation
+slice puts `session.list.request` and `session.list.response` on the wire under
+the `session-list` unit, judged by both validators, with positive and negative
+fixtures; no endpoint advertises `session.list` yet, so the unit is not
+executable.
 
 ## T4. Steer
 
