@@ -1,6 +1,6 @@
 # Decision 0033: Harness Pins Are Data
 
-Status: proposed
+Status: accepted 2026-10-06 (its surface is on main)
 Date: 2026-09-24
 Protocol: `open-agent-protocol` version `0.1`
 Profiles: neither; this record governs how the adapters record which upstream

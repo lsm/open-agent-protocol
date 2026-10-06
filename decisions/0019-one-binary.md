@@ -1,6 +1,6 @@
 # Decision 0019: One Binary, And The Rewrite That Gets There
 
-Status: proposed; its oracle and retirement clauses and the Go binary's name are superseded by [Decision 0032](0032-go-and-zig-are-peers.md), and [Decision 0038](0038-one-released-binary-and-a-library-for-every-language.md) makes `conformance/` product work and answers its open question on `serve/`: the hub stays in Go and ports to Zig
+Status: accepted 2026-10-06 (its surface is on main); its oracle and retirement clauses and the Go binary's name are superseded by [Decision 0032](0032-go-and-zig-are-peers.md), and [Decision 0038](0038-one-released-binary-and-a-library-for-every-language.md) makes `conformance/` product work and answers its open question on `serve/`: the hub stays in Go and ports to Zig
 Date: 2026-09-18
 Protocol: `open-agent-protocol` version `0.1`
 Profiles: `open-agent-protocol.agent-control-core` and
