@@ -5,6 +5,7 @@ pub const Verb = enum {
     capabilities,
     open,
     sessions,
+    history,
     state,
     tools,
     models,
@@ -21,6 +22,7 @@ pub const Route = union(Verb) {
     capabilities: []const u8,
     open: []const u8,
     sessions: void,
+    history: void,
     state: []const u8,
     tools: []const u8,
     models: []const u8,
@@ -37,7 +39,7 @@ pub const Route = union(Verb) {
 
     pub fn parameterOf(self: Route) []const u8 {
         return switch (self) {
-            inline .adapters, .sessions => "",
+            inline .adapters, .sessions, .history => "",
             inline else => |carried| carried,
         };
     }
@@ -64,6 +66,7 @@ pub const table = [_]Entry{
     .{ .method = "GET", .pattern = "/adapters/{name}/capabilities", .verb = .capabilities },
     .{ .method = "POST", .pattern = "/adapters/{name}/sessions", .verb = .open },
     .{ .method = "GET", .pattern = "/sessions", .verb = .sessions },
+    .{ .method = "GET", .pattern = "/sessions/history", .verb = .history },
     .{ .method = "GET", .pattern = "/sessions/{id}/state", .verb = .state },
     .{ .method = "GET", .pattern = "/sessions/{id}/tools", .verb = .tools },
     .{ .method = "GET", .pattern = "/sessions/{id}/models", .verb = .models },
@@ -146,6 +149,7 @@ fn build(verb: Verb, parameter: ?[]const u8) Route {
     return switch (verb) {
         .adapters => .{ .adapters = {} },
         .sessions => .{ .sessions = {} },
+        .history => .{ .history = {} },
         .capabilities => .{ .capabilities = parameter.? },
         .open => .{ .open = parameter.? },
         .state => .{ .state = parameter.? },
@@ -184,13 +188,14 @@ fn matched(arena: std.mem.Allocator, method: []const u8, path: []const u8) !Matc
     return route(arena, method, path);
 }
 
-test "the table is the draft's thirteen routes, one line each" {
-    try testing.expectEqual(@as(usize, 13), table.len);
+test "the table is the draft's fourteen routes, one line each" {
+    try testing.expectEqual(@as(usize, 14), table.len);
     const paths = [_][]const u8{
         "/adapters",
         "/adapters/{name}/capabilities",
         "/adapters/{name}/sessions",
         "/sessions",
+        "/sessions/history",
         "/sessions/{id}/state",
         "/sessions/{id}/tools",
         "/sessions/{id}/models",

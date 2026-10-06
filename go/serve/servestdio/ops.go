@@ -13,6 +13,7 @@ import (
 	"time"
 
 	base "github.com/lsm/open-agent-protocol/go/adapter"
+	"github.com/lsm/open-agent-protocol/go/binding"
 	"github.com/lsm/open-agent-protocol/go/protocol"
 	"github.com/lsm/open-agent-protocol/go/serve"
 )
@@ -23,6 +24,7 @@ const (
 	opAdapters     = "adapters"
 	opCapabilities = "capabilities"
 	opSessions     = "sessions"
+	opHistory      = "history"
 	opState        = "state"
 	opModels       = "models"
 	opSubmit       = "submit"
@@ -221,6 +223,11 @@ func (s *Server) dispatch(ctx context.Context, request requestLine) (json.RawMes
 			return nil, werr
 		}
 		return s.sessionsOp(ctx)
+	case opHistory:
+		if werr := request.only(paramCursor, paramLimit); werr != nil {
+			return nil, werr
+		}
+		return s.historyOp(ctx, request)
 	case opState:
 		if werr := request.only(paramSession); werr != nil {
 			return nil, werr
@@ -267,6 +274,8 @@ const (
 	paramRequest = "request"
 	paramAfter   = "after"
 	paramRun     = "run_id"
+	paramCursor  = "cursor"
+	paramLimit   = "limit"
 
 	paramAllowDegraded = "allow_degraded_features"
 )
@@ -277,7 +286,7 @@ func (request requestLine) only(fields ...string) *wireError {
 		allowed[field] = true
 	}
 	var extra []string
-	for _, param := range []string{paramAdapter, paramSession, paramRun, paramAfter, paramRequest, paramAllowDegraded} {
+	for _, param := range []string{paramAdapter, paramSession, paramRun, paramAfter, paramRequest, paramCursor, paramLimit, paramAllowDegraded} {
 		if !allowed[param] && request.present[param] {
 			extra = append(extra, param)
 		}
@@ -351,6 +360,31 @@ func (s *Server) sessionsOp(ctx context.Context) (json.RawMessage, *wireError) {
 		})
 	}
 	return marshalResult(map[string]any{"sessions": infos})
+}
+
+func (s *Server) historyOp(ctx context.Context, request requestLine) (json.RawMessage, *wireError) {
+	limit := 0
+	if request.Limit != nil {
+		if *request.Limit < 1 || *request.Limit > binding.MaxLimit {
+			return nil, &wireError{Code: "invalid_request", Message: binding.ErrInvalidLimit.Error()}
+		}
+		limit = *request.Limit
+	}
+	page, err := s.hub.SessionHistory(ctx, request.Cursor, limit)
+	switch {
+	case err == nil:
+		return marshalResult(page)
+	case errors.Is(err, serve.ErrNoSessionHistory):
+		return nil, &wireError{Code: "unsupported_feature", Message: err.Error(), Details: map[string]any{
+			"feature": protocol.FeatureSessionList, "reason": base.ControlUnadvertised,
+		}}
+	case errors.Is(err, binding.ErrInvalidCursor):
+		return nil, &wireError{Code: "invalid_cursor", Message: err.Error()}
+	case errors.Is(err, binding.ErrInvalidLimit):
+		return nil, &wireError{Code: "invalid_request", Message: err.Error()}
+	default:
+		return nil, &wireError{Code: "history_failed", Message: "the session history could not be read"}
+	}
 }
 
 func (s *Server) openOp(ctx context.Context, request requestLine, stream context.Context) (json.RawMessage, *serve.Subscription, *wireError) {

@@ -409,6 +409,7 @@ daemon-minted correlation id a client can pair with its own request envelope):
 | `GET /sessions/{id}/models` | `models.response` (repeatable `?allow_degraded=<key>`) |
 | `POST /sessions/{id}/close` | Close (v0.1 defines no close envelope; returns 204) |
 | `GET /adapters`, `GET /sessions` | daemon-management listings, plain JSON |
+| `GET /sessions/history` | the session history, live and closed, paged (`?limit=`, `?cursor=`); plain JSON |
 
 The daemon acts as participant `user`: interactive gates opened over a
 session resolve with `responded_by: "user"`.
@@ -816,7 +817,7 @@ is the other direction: one agent loop that speaks OAP itself.
 
 `drafts/endpoint-stdio.md` is the binding — OAP envelopes, one per line, over
 stdin and stdout. It is deliberately narrower than `goap serve --stdio`, which
-exposes a hub; an implementer should not have to build a registry, thirteen ops
+exposes a hub; an implementer should not have to build a registry, fourteen ops
 and multiplexed subscriptions to be conformant.
 
 ```sh

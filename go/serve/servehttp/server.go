@@ -18,6 +18,7 @@ import (
 	"time"
 
 	base "github.com/lsm/open-agent-protocol/go/adapter"
+	"github.com/lsm/open-agent-protocol/go/binding"
 	"github.com/lsm/open-agent-protocol/go/protocol"
 	"github.com/lsm/open-agent-protocol/go/serve"
 	"github.com/lsm/open-agent-protocol/go/validation"
@@ -70,6 +71,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /adapters/{name}/capabilities", s.handleCapabilities)
 	mux.HandleFunc("POST /adapters/{name}/sessions", s.handleOpen)
 	mux.HandleFunc("GET /sessions", s.handleSessions)
+	mux.HandleFunc("GET /sessions/history", s.handleSessionHistory)
 	mux.HandleFunc("GET /sessions/{id}/events", s.handleEvents)
 	mux.HandleFunc("GET /sessions/{id}/state", s.handleState)
 	mux.HandleFunc("GET /sessions/{id}/tools", s.handleTools)
@@ -893,4 +895,32 @@ func trimMessage(message string) string {
 		return message
 	}
 	return string(runes[:limit]) + "…"
+}
+
+func (s *Server) handleSessionHistory(w http.ResponseWriter, r *http.Request) {
+	query := r.URL.Query()
+	limit := 0
+	if query.Has("limit") {
+		parsed, err := strconv.Atoi(query.Get("limit"))
+		if err != nil || parsed < 1 || parsed > binding.MaxLimit {
+			s.writeError(w, http.StatusBadRequest, "invalid_request", binding.ErrInvalidLimit.Error(), protocol.Envelope{})
+			return
+		}
+		limit = parsed
+	}
+	page, err := s.hub.SessionHistory(r.Context(), query.Get("cursor"), limit)
+	switch {
+	case err == nil:
+		writeJSON(w, http.StatusOK, page)
+	case errors.Is(err, serve.ErrNoSessionHistory):
+		s.writeErrorDetails(w, http.StatusBadRequest, "unsupported_feature", err.Error(), map[string]any{
+			"feature": protocol.FeatureSessionList, "reason": base.ControlUnadvertised,
+		}, protocol.Envelope{})
+	case errors.Is(err, binding.ErrInvalidCursor):
+		s.writeError(w, http.StatusBadRequest, "invalid_cursor", err.Error(), protocol.Envelope{})
+	case errors.Is(err, binding.ErrInvalidLimit):
+		s.writeError(w, http.StatusBadRequest, "invalid_request", err.Error(), protocol.Envelope{})
+	default:
+		s.writeError(w, http.StatusInternalServerError, "history_failed", "the session history could not be read", protocol.Envelope{})
+	}
 }

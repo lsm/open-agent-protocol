@@ -203,7 +203,7 @@ func encode(entry Entry) ([]byte, error) {
 }
 
 func (s *fileStore) Latest(ctx context.Context, sessionID string) (Entry, bool, error) {
-	entries, err := s.read(ctx, sessionID)
+	entries, err := s.History(ctx, sessionID)
 	if err != nil || len(entries) == 0 {
 		return Entry{}, false, err
 	}
@@ -211,10 +211,18 @@ func (s *fileStore) Latest(ctx context.Context, sessionID string) (Entry, bool, 
 }
 
 func (s *fileStore) History(ctx context.Context, sessionID string) ([]Entry, error) {
-	return s.read(ctx, sessionID)
+	return s.read(ctx, func(entry Entry) bool { return entry.Record.SessionID == sessionID })
 }
 
-func (s *fileStore) read(ctx context.Context, sessionID string) ([]Entry, error) {
+func (s *fileStore) Sessions(ctx context.Context) ([]Entry, error) {
+	entries, err := s.read(ctx, func(Entry) bool { return true })
+	if err != nil {
+		return nil, err
+	}
+	return Sessions(entries), nil
+}
+
+func (s *fileStore) read(ctx context.Context, keep func(Entry) bool) ([]Entry, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	file, err := os.Open(s.path)
@@ -244,7 +252,7 @@ func (s *fileStore) read(ctx context.Context, sessionID string) ([]Entry, error)
 			s.forget()
 			return nil, err
 		}
-		if entry.Record.SessionID == sessionID {
+		if keep(entry) {
 			entries = append(entries, entry)
 		}
 	}
