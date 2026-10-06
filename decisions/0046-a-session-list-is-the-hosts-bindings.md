@@ -1,6 +1,6 @@
 # Decision 0046: A Session List Is the Host's Bindings
 
-Status: proposed
+Status: proposed (the three open questions answered by the owner 2026-10-06)
 Date: 2026-10-06
 Protocol: `open-agent-protocol` version `0.1`
 Profile: `open-agent-protocol.agent-control-core`
@@ -18,7 +18,8 @@ Design: [Staged Units Graduation Plan](../drafts/staged-units-graduation.md),
 ## Context
 
 Decision 0040 made a session reopenable through a binding the host keeps, and
-both hubs now write that binding to one file format (`--bindings`). What a host
+both hubs now write that binding to one file format, the session history
+(`--session-history`). What a host
 still cannot do is ask which sessions it could reopen. The staged plan's T8
 section leaves two questions to this record: whether the list is the host's
 records, the harness's, or both; and how a long list is paged.
@@ -89,7 +90,7 @@ between two reads, and the later page is not a correction of the earlier one.
 ### The capability key is `session.list`, advertised by the host
 
 An endpoint that keeps bindings advertises `session.list`. One that keeps none
-— a host with no binding store, like `goap hub` without `--bindings` — answers
+— a host with no session history, like `goap hub` without `--session-history` — answers
 `unsupported_feature` naming the key, with reason `unadvertised`. The key is the
 host's, not an adapter's: no adapter descriptor advertises it, because no
 adapter holds the records it reads.
@@ -118,12 +119,14 @@ adapter holds the records it reads.
 - **A transcript or a preview in an entry.** The conversation is the harness's
   (Decision 0040), and an entry is a pointer.
 
-## Open questions for review
+## Answers from review, 2026-10-06
 
-1. A failed reopen records nothing today, so the list cannot show one. Should
-   it, through a new binding action, or is a failed reopen the client's to
-   remember?
-2. Is 100 the right ceiling for `limit`? It matches OpenCode's history page and
-   is twice its list default.
-3. Should the hub expose this as a new route (`GET /bindings`) or widen
-   `GET /sessions` behind a query parameter?
+1. **A failed reopen stays the client's to remember.** It records nothing, and
+   no binding action is added for it, so the list shows what a host opened and
+   closed and nothing about attempts that failed.
+2. **`limit` is 1 to 100, default 50**, as written above.
+3. **The hub serves the list at `GET /sessions/history`**, beside
+   `GET /sessions`, which keeps meaning the sessions this process holds now. The
+   file it reads is the session history: `--session-history <path>` in both
+   hubs, which `oapx hub` keeps at `~/.oapx/sessions.jsonl` by default. The
+   `--bindings` spelling is retired rather than kept as an alias.
