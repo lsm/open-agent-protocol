@@ -1205,6 +1205,10 @@ pub const Frontend = struct {
                 }
             }
         }
+        if (!holding and open.subscribe and self.max_subscriptions > 0 and self.streams.items.len >= self.max_subscriptions) {
+            envelope.deinit(arena);
+            return .{ .refused = .{ .code = "busy", .message = try std.fmt.allocPrint(arena, "the frontend already holds {d} subscriptions; a subscription ends at its run's terminal, at an overflow or stream failure, or when its session closes — send this request again once one has", .{self.max_subscriptions}) } };
+        }
         var refused: hubmod.OpenRefusal = .{};
         const opened = self.hub.openReporting(arena, adapter, .{
             .session_id = open.session_id orelse "",
@@ -1260,9 +1264,16 @@ pub const Frontend = struct {
             .payload = .{ .session_open_response = opened_state },
         };
         const line = try oap_envelope.serializeEnvelope(opened_envelope, arena);
+        const named = open.session_id != null;
         envelope.deinit(arena);
         if (holding) return .{ .answer_line = line };
         const subscription = opened.subscription orelse return .{ .answer_line = line };
+        if (!self.fits(request.id, line)) {
+            subscription.close();
+            if (named) return .{ .refused = .{ .code = "response_too_large", .message = "the open response exceeds the frame limit; the session is open under the session_id the request supplied" } };
+            self.hub.discardSession(opened.session_id);
+            return .{ .refused = .{ .code = "response_too_large", .message = "the open response exceeds the frame limit; the session was rolled back" } };
+        }
         self.answerLine(request.id, line) catch |err| {
             subscription.close();
             return err;
@@ -1444,6 +1455,12 @@ pub const Frontend = struct {
         };
         defer arena.free(line);
         try self.write(line);
+    }
+
+    fn fits(self: *const Frontend, id: i64, payload: []const u8) bool {
+        var digits: [24]u8 = undefined;
+        const counted = std.fmt.bufPrint(&digits, "{d}", .{id}) catch return false;
+        return payload.len + counted.len + "{\"id\":,\"ok\":true,\"result\":}".len <= self.frame_limit;
     }
 
     fn answerLine(self: *Frontend, id: i64, payload: []const u8) Error!void {
@@ -2810,6 +2827,31 @@ test "an open answers with the request envelope's own id and the session it made
     try testing.expectEqualStrings("s1", result.get("session_id").?.string);
     try testing.expect(!std.mem.eql(u8, result.get("id").?.string, "o1"));
     try testing.expectEqual(@as(usize, 1), try listedSessions(harness));
+}
+
+test "a subscribing open past the subscription ceiling is busy, and one whose answer cannot be framed streams nothing" {
+    const subscribing = "{\"protocol\":\"open-agent-protocol\",\"version\":\"0.1\",\"profile\":\"open-agent-protocol.agent-control-core\",\"type\":\"session.open.request\",\"id\":\"o1\",\"capability_revision\":\"reference-v1\",\"payload\":{\"session_id\":\"s1\",\"subscribe\":true}}";
+    {
+        const harness = try Harness.init(testing.allocator, .{}, .{ .max_subscriptions = 1 });
+        defer harness.deinit();
+        try harness.send(try openLine(harness.arena(), "reference", subscribing));
+        try testing.expectEqual(@as(usize, 1), harness.frontend.streams.items.len);
+        const second = "{\"protocol\":\"open-agent-protocol\",\"version\":\"0.1\",\"profile\":\"open-agent-protocol.agent-control-core\",\"type\":\"session.open.request\",\"id\":\"o2\",\"capability_revision\":\"reference-v1\",\"payload\":{\"session_id\":\"s2\",\"subscribe\":true}}";
+        try harness.send(try openLine(harness.arena(), "reference", second));
+        try testing.expectEqualStrings("busy", try harness.code());
+        try testing.expect(!harness.hub.knows("s2"));
+    }
+    {
+        const unnamed = "{\"protocol\":\"open-agent-protocol\",\"version\":\"0.1\",\"profile\":\"open-agent-protocol.agent-control-core\",\"type\":\"session.open.request\",\"id\":\"o3\",\"capability_revision\":\"reference-v1\",\"payload\":{\"subscribe\":true}}";
+        const request_line = try openLine(testing.allocator, "reference", unnamed);
+        defer testing.allocator.free(request_line);
+        const harness = try Harness.init(testing.allocator, .{}, .{ .frame_limit = @max(request_line.len + 1, minimum_frame_limit) });
+        defer harness.deinit();
+        try harness.send(request_line);
+        try testing.expectEqualStrings("response_too_large", try harness.code());
+        try testing.expectEqual(@as(usize, 0), harness.frontend.streams.items.len);
+        try testing.expectEqual(@as(usize, 0), (try harness.hub.sessions(harness.arena())).len);
+    }
 }
 
 test "a subscribing open answers, then streams the session's envelopes on the open's own id" {
