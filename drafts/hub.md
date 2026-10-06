@@ -364,8 +364,9 @@ history, of either tree, is refused and told to name its own, rather than both
 rewriting the file and dropping each other's records — Zig: `a second store on
 one session history is refused while the first holds it, and taken once it
 closes`; Go: `TestASecondHubOnOneSessionHistoryIsRefusedWhileTheFirstHoldsIt`.
-`goap hub` takes the lock on Unix only, since it is never released and runs
-where CI does; on Windows it opens the lock file without locking it. `goap hub` has no
+`goap hub` takes the lock on Unix only: on Windows it opens the lock file
+without locking it, a gap recorded here rather than closed, since `goap` is
+never released and CI runs it on Unix. `goap hub` has no
 default, so without the flag it records nothing and reports no binding. It is the host's file and the host's decision
 where it lives, and `Decision 0040` is what a record must say — which harness
 ran which session, under which pin, in which home and directory, with which
