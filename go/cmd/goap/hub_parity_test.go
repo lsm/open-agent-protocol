@@ -81,7 +81,54 @@ var hubParityScenarios = map[string][]string{
 	},
 }
 
+const pinnedSourceConfig = `{"adapters": {"memory": {"type": "memory"}}, "tool_sources": {"pinned": {"kind": "local", "display_name": "Operator pinned", "endpoint": "stdio:operator"}}}`
+
+var hubConfiguredScenarios = map[string]struct {
+	config string
+	lines  []string
+	check  func(t *testing.T, answers map[string]map[string]any)
+}{
+	"a source the operator pinned reaches the adapter as the operator declared it": {
+		config: pinnedSourceConfig,
+		lines: []string{
+			`{"id":1,"op":"open","adapter":"memory","request":{` + openEnvelopeFields + `"id":"o1","payload":{"session_id":"s1","tool_sources":[{"id":"pinned","kind":"local"}]}}}`,
+			`{"id":2,"op":"open","adapter":"memory","request":{` + openEnvelopeFields + `"id":"o2","payload":{"session_id":"s2","tool_sources":[{"id":"pinned","kind":"local","display_name":"Wire said"}]}}}`,
+			`{"id":3,"op":"open","adapter":"memory","request":{` + openEnvelopeFields + `"id":"o3","payload":{"session_id":"s3","tool_sources":[{"id":"loose","kind":"local","display_name":"Host named"}]}}}`,
+		},
+		check: func(t *testing.T, answers map[string]map[string]any) {
+			if source := openedSource(t, answers["1"]); source["display_name"] != "Operator pinned" || source["endpoint"] != "stdio:operator" {
+				t.Fatalf("the pinned source opened as %v, want the operator's display_name and endpoint", source)
+			}
+			if refusal, _ := answers["2"]["error"].(map[string]any); refusal == nil || refusal["code"] != "unsupported_feature" {
+				t.Fatalf("a wire display_name on a pinned source answered %v, want unsupported_feature", answers["2"])
+			}
+			if source := openedSource(t, answers["3"]); source["display_name"] != "Host named" {
+				t.Fatalf("an unconfigured source opened as %v, want it passed through as the host wrote it", source)
+			}
+		},
+	},
+}
+
+func openedSource(t *testing.T, answer map[string]any) map[string]any {
+	t.Helper()
+	result, _ := answer["result"].(map[string]any)
+	payload, _ := result["payload"].(map[string]any)
+	sources, _ := payload["sources"].([]any)
+	for _, raw := range sources {
+		if source, _ := raw.(map[string]any); source["kind"] == "local" {
+			return source
+		}
+	}
+	t.Fatalf("the open names no local source: %v", answer)
+	return nil
+}
+
 func TestHubStdioComparesWhatTheScenariosSend(t *testing.T) {
+	for name, scenario := range hubConfiguredScenarios {
+		if len(expectedHubIDs(scenario.lines, len(scenario.lines)-1)) == 0 {
+			t.Errorf("scenario %q would compare nothing", name)
+		}
+	}
 	for name, lines := range hubParityScenarios {
 		stopAt := len(lines) - 1
 		if at, stops := hubWireStops[name]; stops {
@@ -108,6 +155,19 @@ func TestHubStdioAnswersGoapAndOapxTheSame(t *testing.T) {
 			goAnswers := runHubScript(t, oapBinary(t), lines)
 			zigAnswers := runHubScript(t, oapx, lines)
 			assertSameHubAnswers(t, name, lines, goAnswers, zigAnswers)
+		})
+	}
+	for name, scenario := range hubConfiguredScenarios {
+		t.Run(name, func(t *testing.T) {
+			config := filepath.Join(t.TempDir(), "oap-serve.json")
+			if err := os.WriteFile(config, []byte(scenario.config), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			goAnswers := runHubScript(t, oapBinary(t), scenario.lines, "--config", config)
+			zigAnswers := runHubScript(t, oapx, scenario.lines, "--config", config)
+			assertSameHubAnswers(t, name, scenario.lines, goAnswers, zigAnswers)
+			scenario.check(t, goAnswers)
+			scenario.check(t, zigAnswers)
 		})
 	}
 }
@@ -212,15 +272,15 @@ func TestHubAddrBindsLoopbackAndEndsOnAnInterrupt(t *testing.T) {
 	}
 }
 
-func hubCommand(t *testing.T, binary string) *exec.Cmd {
+func hubCommand(t *testing.T, binary string, extra ...string) *exec.Cmd {
 	t.Helper()
-	command := exec.Command(binary, "serve", "--stdio", "--session-history=")
+	command := exec.Command(binary, append([]string{"serve", "--stdio", "--session-history="}, extra...)...)
 	return command
 }
 
-func runHubScript(t *testing.T, binary string, lines []string) map[string]map[string]any {
+func runHubScript(t *testing.T, binary string, lines []string, extra ...string) map[string]map[string]any {
 	t.Helper()
-	command := hubCommand(t, binary)
+	command := hubCommand(t, binary, extra...)
 	command.Stdin = strings.NewReader(strings.Join(lines, "\n") + "\n")
 	var stderr strings.Builder
 	command.Stderr = &stderr
