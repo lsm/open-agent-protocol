@@ -162,13 +162,20 @@ pub const Daemon = struct {
         return .{ .answer = .{ .status = statusFor(refused.code), .body = body } };
     }
 
+    fn control(self: *Daemon, arena: std.mem.Allocator, given: hub_stdio.Frontend.Control, correlation: Correlation) !Reply {
+        switch (given) {
+            .refused => |refused| {
+                var correlated = correlation;
+                if (refused.run_id) |run_id| correlated.run_id = run_id;
+                return self.refusal(arena, refused.refusal, correlated);
+            },
+            .envelope => |envelope| return self.answered(arena, envelope),
+        }
+    }
+
     fn answered(self: *Daemon, arena: std.mem.Allocator, envelope: oap_types.Envelope) !Reply {
         _ = self;
         return .{ .answer = .{ .status = ok_status, .body = try oap_envelope.serializeEnvelope(envelope, arena) } };
-    }
-
-    fn responseId(self: *Daemon, arena: std.mem.Allocator) ![]const u8 {
-        return std.fmt.allocPrint(arena, "oap-response-{d}", .{self.next()});
     }
 
     fn closing(self: *Daemon, arena: std.mem.Allocator, id: []const u8) !Reply {
@@ -194,144 +201,22 @@ pub const Daemon = struct {
 
     fn submit(self: *Daemon, arena: std.mem.Allocator, id: []const u8, body: []const u8) !Reply {
         const value = parseBody(arena, body) orelse return self.refusal(arena, malformed, .{});
-        const correlation = correlationOf(value);
-        const gated = try hub_stdio.Frontend.gateEnvelope(arena, value, &.{ .message_submit_request, .session_compact_request }, "the request envelope is not a session.message.submit.request or a session.compact.request");
-        var envelope = switch (gated) {
-            .refused => |refused| return self.refusal(arena, refused, correlation),
-            .envelope => |envelope| envelope,
-        };
-        var reported = contract.Refusal{};
-        const compacting = envelope.payload == .session_compact_request;
-        const admission = switch (envelope.payload) {
-            .session_compact_request => |*request| self.frontend.hub.compactReporting(arena, id, request, envelope.id, &reported),
-            else => self.frontend.hub.submitReporting(arena, id, &envelope.payload.message_submit_request, envelope.id, &reported),
-        } catch |err| {
-            return self.refusal(arena, try controlRefusal(arena, err, &reported, id), correlation);
-        };
-        return self.answered(arena, .{
-            .id = try self.responseId(arena),
-            .in_reply_to = envelope.id,
-            .session_id = admission.session_id,
-            .run_id = admission.run_id,
-            .capability_revision = envelope.capability_revision,
-            .payload = if (compacting) .{ .session_compact_response = admission } else .{ .message_submit_response = admission },
-        });
+        return self.control(arena, try self.frontend.submitControl(arena, id, value), correlationOf(value));
     }
 
     fn resolve(self: *Daemon, arena: std.mem.Allocator, id: []const u8, body: []const u8) !Reply {
         const value = parseBody(arena, body) orelse return self.refusal(arena, malformed, .{});
-        var correlation = correlationOf(value);
-        const gated = try hub_stdio.Frontend.gateEnvelope(
-            arena,
-            value,
-            &.{ .permission_resolve_request, .user_input_resolve_request, .call_resolve_request },
-            "the request envelope is not action.permission.resolve.request, user.input.resolve.request or action.call.resolve.request",
-        );
-        var envelope = switch (gated) {
-            .refused => |refused| return self.refusal(arena, refused, correlation),
-            .envelope => |envelope| envelope,
-        };
-        var reported = contract.Refusal{};
-        switch (envelope.payload) {
-            .call_resolve_request => |*request| {
-                correlation.run_id = request.run_id;
-                const settled = self.frontend.hub.resolveCallReporting(arena, id, envelope.id, request, &reported) catch |err| {
-                    return self.refusal(arena, try controlRefusal(arena, err, &reported, id), correlation);
-                };
-                return self.answered(arena, .{
-                    .id = try self.responseId(arena),
-                    .in_reply_to = envelope.id,
-                    .session_id = id,
-                    .run_id = request.run_id,
-                    .capability_revision = envelope.capability_revision,
-                    .payload = .{ .call_resolve_response = settled },
-                });
-            },
-            .permission_resolve_request => |*request| {
-                correlation.run_id = request.run_id;
-                self.frontend.hub.resolve(arena, id, .{ .permission = request }) catch |err| {
-                    return self.refusal(arena, try controlRefusal(arena, err, &reported, id), correlation);
-                };
-                return self.answered(arena, .{
-                    .id = try self.responseId(arena),
-                    .in_reply_to = envelope.id,
-                    .session_id = id,
-                    .run_id = request.run_id,
-                    .capability_revision = envelope.capability_revision,
-                    .payload = .{ .permission_resolve_response = .{ .interaction_id = request.interaction_id, .session_id = request.session_id, .run_id = request.run_id, .accepted = true } },
-                });
-            },
-            .user_input_resolve_request => |*request| {
-                correlation.run_id = request.run_id;
-                self.frontend.hub.resolve(arena, id, .{ .input = request }) catch |err| {
-                    return self.refusal(arena, try controlRefusal(arena, err, &reported, id), correlation);
-                };
-                return self.answered(arena, .{
-                    .id = try self.responseId(arena),
-                    .in_reply_to = envelope.id,
-                    .session_id = id,
-                    .run_id = request.run_id,
-                    .capability_revision = envelope.capability_revision,
-                    .payload = .{ .user_input_resolve_response = .{ .interaction_id = request.interaction_id, .session_id = request.session_id, .run_id = request.run_id, .accepted = true } },
-                });
-            },
-            else => unreachable,
-        }
+        return self.control(arena, try self.frontend.resolveControl(arena, id, value), correlationOf(value));
     }
 
     fn cancel(self: *Daemon, arena: std.mem.Allocator, id: []const u8, body: []const u8) !Reply {
         const value = parseBody(arena, body) orelse return self.refusal(arena, malformed, .{});
-        var correlation = correlationOf(value);
-        const gated = try hub_stdio.Frontend.gateEnvelope(arena, value, &.{.run_cancel_request}, "the request envelope is not a run.cancel.request");
-        const envelope = switch (gated) {
-            .refused => |refused| return self.refusal(arena, refused, correlation),
-            .envelope => |envelope| envelope,
-        };
-        const request = envelope.payload.run_cancel_request;
-        if (!self.frontend.hub.knows(id)) {
-            return self.refusal(arena, .{ .code = "unknown_session", .message = try std.fmt.allocPrint(arena, "no session \"{s}\"", .{id}) }, correlation);
-        }
-        if (!std.mem.eql(u8, request.session_id, id)) {
-            return self.refusal(arena, .{
-                .code = "scope_mismatch",
-                .message = try std.fmt.allocPrint(arena, "payload session_id \"{s}\" does not match the addressed session \"{s}\"", .{ request.session_id, id }),
-            }, correlation);
-        }
-        correlation.run_id = request.run_id;
-        var reported = contract.Refusal{};
-        const acknowledged = self.frontend.hub.cancel(arena, id, request.run_id) catch |err| {
-            return self.refusal(arena, try controlRefusal(arena, err, &reported, id), correlation);
-        };
-        return self.answered(arena, .{
-            .id = try self.responseId(arena),
-            .in_reply_to = envelope.id,
-            .session_id = acknowledged.session_id,
-            .run_id = acknowledged.run_id,
-            .capability_revision = envelope.capability_revision,
-            .payload = .{ .run_cancel_response = acknowledged },
-        });
+        return self.control(arena, try self.frontend.cancelControl(arena, id, value), correlationOf(value));
     }
 
     fn settings(self: *Daemon, arena: std.mem.Allocator, id: []const u8, body: []const u8) !Reply {
         const value = parseBody(arena, body) orelse return self.refusal(arena, malformed, .{});
-        const correlation = correlationOf(value);
-        const gated = try hub_stdio.Frontend.gateEnvelope(arena, value, &.{.session_settings_update_request}, "the request envelope is not a session.settings.update.request");
-        const envelope = switch (gated) {
-            .refused => |refused| return self.refusal(arena, refused, correlation),
-            .envelope => |envelope| envelope,
-        };
-        const request = &envelope.payload.session_settings_update_request;
-        var reported = contract.Refusal{};
-        const updated = self.frontend.hub.updateSettings(arena, id, request, &reported) catch |err| {
-            return self.refusal(arena, try controlRefusal(arena, err, &reported, id), correlation);
-        };
-        return self.answered(arena, .{
-            .id = try self.responseId(arena),
-            .in_reply_to = envelope.id,
-            .session_id = updated.session_id,
-            .capability_revision = envelope.capability_revision,
-            .payload = .{ .session_settings_update_response = updated },
-        });
+        return self.control(arena, try self.frontend.settingsControl(arena, id, value), correlationOf(value));
     }
 
     fn events(self: *Daemon, arena: std.mem.Allocator, id: []const u8, request: hub_http.Request) !Reply {
@@ -451,58 +336,6 @@ fn correlationOf(value: std.json.Value) Correlation {
         .in_reply_to = stringIn(value.object, "id"),
         .session_id = stringIn(value.object, "session_id"),
         .run_id = stringIn(value.object, "run_id"),
-    };
-}
-
-fn detailsOf(arena: std.mem.Allocator, reported: *const contract.Refusal) ![]const oap_types.DetailEntry {
-    var details = std.ArrayList(oap_types.DetailEntry).empty;
-    try details.append(arena, .{ .key = "feature", .value = reported.feature });
-    try details.append(arena, .{ .key = "reason", .value = reported.reason });
-    if (reported.tool.len > 0) try details.append(arena, .{ .key = "tool", .value = reported.tool });
-    if (reported.field.len > 0) try details.append(arena, .{ .key = "field", .value = reported.field });
-    if (reported.source.len > 0) try details.append(arena, .{ .key = "source", .value = reported.source });
-    return details.items;
-}
-
-fn messageOr(reported: *const contract.Refusal, fallback: []const u8) []const u8 {
-    return if (reported.message.len > 0) reported.message else fallback;
-}
-
-pub fn controlRefusal(arena: std.mem.Allocator, err: hubmod.Failure, reported: *const contract.Refusal, id: []const u8) !hub_stdio.Refusal {
-    return switch (err) {
-        error.UnknownSession => .{ .code = "unknown_session", .message = try std.fmt.allocPrint(arena, "no session \"{s}\"", .{id}) },
-        error.ScopeMismatch => .{ .code = "scope_mismatch", .message = try std.fmt.allocPrint(arena, "the payload names a session other than \"{s}\"", .{id}) },
-        error.SessionClosed => .{ .code = "session_closed", .message = messageOr(reported, "the session is closed") },
-        error.RunActive => .{ .code = "run_active", .message = messageOr(reported, "the session already has a run in flight") },
-        error.InvalidSubmission => .{ .code = "invalid_submission", .message = messageOr(reported, "the submission is invalid") },
-        error.UnsupportedFeature, error.ToolCatalogUnavailable => {
-            const message = if (reported.detail.len > 0)
-                try std.fmt.allocPrint(arena, "unsupported input: {s} ({s}): {s}", .{ reported.feature, reported.reason, reported.detail })
-            else
-                try std.fmt.allocPrint(arena, "unsupported input: {s} ({s})", .{ reported.feature, reported.reason });
-            const details = try detailsOf(arena, reported);
-            return .{ .code = "unsupported_feature", .message = message, .details = details };
-        },
-        error.CapabilityDegraded => {
-            const message = try std.fmt.allocPrint(arena, "unsupported input: {s} is degraded and was not opted into", .{reported.feature});
-            const details = try arena.dupe(oap_types.DetailEntry, &.{.{ .key = "feature", .value = reported.feature }});
-            return .{ .code = "capability_degraded", .message = message, .details = details };
-        },
-        error.ModelNotFound => {
-            const message = try std.fmt.allocPrint(arena, "model not found: \"{s}\"", .{reported.model_id});
-            const details = try arena.dupe(oap_types.DetailEntry, &.{.{ .key = "model_id", .value = reported.model_id }});
-            return .{ .code = "model_not_found", .message = message, .details = details };
-        },
-        error.InvalidSteerTarget => .{
-            .code = "invalid_steer_target",
-            .message = messageOr(reported, "the steer names no run it can reach"),
-            .details = try arena.dupe(oap_types.DetailEntry, &.{.{ .key = "reason", .value = reported.reason }}),
-        },
-        error.RunNotFound => .{ .code = "run_not_found", .message = messageOr(reported, "no such run") },
-        error.RunTerminal => .{ .code = "run_terminal", .message = messageOr(reported, "the run has already settled") },
-        error.InteractionNotFound, error.InvalidResolution => .{ .code = "resolution_rejected", .message = messageOr(reported, @errorName(err)) },
-        error.OutOfMemory => error.OutOfMemory,
-        else => .{ .code = "internal", .message = messageOr(reported, @errorName(err)) },
     };
 }
 
