@@ -1,6 +1,6 @@
 # Decision 0022: `tool_choice` Is a Filter Here and a Mode There
 
-Status: proposed
+Status: accepted 2026-10-06 (its surface is on main)
 Date: 2026-09-20
 Protocol: `open-agent-protocol` version `0.1`
 Profile: `open-agent-protocol.agent-control-core`

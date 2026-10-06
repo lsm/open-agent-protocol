@@ -14,6 +14,7 @@ pub const AdapterEntry = struct {
     args: []const []const u8 = &.{},
     environment: []const []const u8 = &.{},
     working_directory: ?[]const u8 = null,
+    any_directory: bool = false,
     model: []const u8 = "",
     journal_capacity: ?i64 = null,
     allowed_tools: ?[]const []const u8 = null,
@@ -62,7 +63,7 @@ const adapter_members = [_][]const u8{
     "working_directory",  "model",           "journal_capacity", "allowed_tools",
     "unrestricted_tools", "approval_policy", "sandbox",          "provider",
     "max_tokens",         "agent_config",    "system_prompt",    "endpoint",
-    "agent",
+    "agent",              "any_directory",
 };
 const source_members = [_][]const u8{ "kind", "display_name", "protocol", "endpoint", "command", "args", "environment" };
 const source_kinds = [_][]const u8{ "native", "local", "process", "remote", "hosted" };
@@ -194,6 +195,7 @@ fn readAdapter(reader: Reader, name: []const u8, value: std.json.Value, environ:
         .args = args,
         .environment = environment,
         .working_directory = nonEmpty(try reader.string(object, where, "working_directory")),
+        .any_directory = try reader.flag(object, where, "any_directory"),
         .model = try reader.string(object, where, "model"),
         .journal_capacity = try reader.integer(object, where, "journal_capacity"),
         .allowed_tools = allowed_tools,
@@ -600,4 +602,3 @@ fn parseExample(allocator: std.mem.Allocator) !void {
 test "parsing frees what it built when any allocation fails" {
     try testing.checkAllAllocationFailures(testing.allocator, parseExample, .{});
 }
-

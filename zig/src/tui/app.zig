@@ -5663,7 +5663,7 @@ fn preferredContextWindow(stored: ?u32, flag: ?u32) ?u32 {
     return flag orelse stored;
 }
 
-pub const over_oap_notice = "oapx tui: this session runs over OAP, through the in-process endpoint or the hub it is attached to. Resume and the model's questions to you are not carried over OAP yet, queued follow-ups and the autocompact setting are not carried on an attached hub, an \"always\" answer to a tool approval applies to that call only, the context window, output limit and workspace are fixed when the session opens, and so is the thinking level unless the endpoint advertises changing it live; use oapx --tui for them.";
+pub const over_oap_notice = "oapx tui: this session runs over OAP, through the in-process endpoint or the hub it is attached to. Resume and the model's questions to you are not carried over OAP yet, queued follow-ups and the autocompact setting are not carried on an attached hub, an \"always\" answer to a tool approval applies to that call only unless the endpoint offers it, the context window, output limit and workspace are fixed when the session opens, and so is the thinking level unless the endpoint advertises changing it live; use oapx --tui for them.";
 pub const over_oap_setting_refusal = tui_commands.over_oap_setting_refusal;
 pub const over_oap_compaction_refusal = "this session's endpoint does not take a compaction over OAP; use oapx --tui to compact.";
 
@@ -5698,6 +5698,8 @@ pub fn runWith(allocator: std.mem.Allocator, io: std.Io, context_window: ?u32, e
         options.protocol = runtime.provider.protocolClient();
         options.generate_titles = false;
     }
+    var history_store: ?session_store.Store = session_store.Store.initDefault(allocator) catch null;
+    defer if (history_store) |*store| store.deinit();
     var execution: ?*tui_oap_execution.OapExecution = null;
     defer if (execution) |owned| owned.destroy();
     if (execution_mode != .local) {
@@ -5705,8 +5707,9 @@ pub fn runWith(allocator: std.mem.Allocator, io: std.Io, context_window: ?u32, e
             .attach => |target| try tui_oap_execution.OapExecution.attach(allocator, target.url, target.adapter),
             else => try tui_oap_execution.OapExecution.create(allocator, options),
         };
+        if (history_store) |*store| execution.?.setTranscripts(.{ .ctx = store, .save = saveSessionTranscript });
         options.remote = execution.?.remote();
-        options.generate_titles = false;
+        if (execution_mode == .attach) options.generate_titles = false;
         options.auto_worktree = false;
     }
 
@@ -5714,6 +5717,13 @@ pub fn runWith(allocator: std.mem.Allocator, io: std.Io, context_window: ?u32, e
     program.model = .{ .options = options, .autocompact = production.mode_settings.autocompact, .verbosity = production.mode_settings.verbosity };
     defer program.deinit();
     try program.run();
+}
+
+fn saveSessionTranscript(ctx: *anyopaque, allocator: std.mem.Allocator, session_id: []const u8, index: usize, history: []const ai_types.Message) ?[]u8 {
+    const store: *session_store.Store = @ptrCast(@alignCast(ctx));
+    const saved = store.saveTranscript(session_id, index, history) catch return null;
+    defer store.allocator.free(saved);
+    return allocator.dupe(u8, saved) catch null;
 }
 
 const StderrRedirect = struct {

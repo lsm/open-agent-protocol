@@ -199,6 +199,7 @@ func (r *runner) drive() {
 	} else {
 		r.pass("the open names the session it was asked for")
 	}
+	r.exerciseSessionList()
 	selected := r.electModel(state.CurrentModelID)
 	if selected == "" {
 		selected = state.CurrentModelID
@@ -499,6 +500,47 @@ func (r *runner) answerCancel() {
 		return
 	}
 	r.pass(name)
+}
+
+func (r *runner) exerciseSessionList() {
+	const name = "session.list is answered with the open session when advertised, or refused as unadvertised"
+	envelope, err := protocol.NewEnvelope(protocol.TypeSessionListRequest, r.next("request"), protocol.SessionListRequest{})
+	if err != nil {
+		r.fail(name, err.Error())
+		return
+	}
+	envelope.CapabilityRevision = r.revision
+	if err := r.client.Probe(envelope); err != nil {
+		r.fail(name, err.Error())
+		return
+	}
+	answer, err := r.client.Response(envelope.ID)
+	if err != nil {
+		r.fail(name, err.Error())
+		return
+	}
+	declared := r.descriptor.Features[protocol.FeatureSessionList]
+	if declared.Level == "" || declared.Level == protocol.SupportUnavailable {
+		var failure protocol.ErrorResponse
+		if answer.Type != protocol.TypeErrorResponse || answer.DecodePayload(&failure) != nil || failure.Error.Code != "unsupported_feature" {
+			r.fail(name, fmt.Sprintf("an endpoint that does not advertise session.list answered %s", answer.Type))
+			return
+		}
+		r.pass(name)
+		return
+	}
+	var page protocol.SessionListResponse
+	if answer.Type != protocol.TypeSessionListResponse || answer.DecodePayload(&page) != nil {
+		r.fail(name, fmt.Sprintf("an endpoint advertising session.list %q answered %s", declared.Level, answer.Type))
+		return
+	}
+	for _, entry := range page.Sessions {
+		if entry.SessionID == r.session && entry.State == protocol.SessionListLive {
+			r.pass(name)
+			return
+		}
+	}
+	r.fail(name, fmt.Sprintf("the list does not name the open session %q as live", r.session))
 }
 
 func (r *runner) electModel(current string) string {

@@ -1,6 +1,6 @@
 # Decision 0018: Makai Becomes First-Party, And What That Costs
 
-Status: proposed
+Status: accepted 2026-10-06 (its surface is on main)
 Date: 2026-09-17
 Protocol: `open-agent-protocol` version `0.1`
 Profiles: affects the evidence standing of both
