@@ -128,6 +128,7 @@ pub const Store = struct {
     path: []u8,
     staging: []u8,
     last_failure: ?anyerror = null,
+    held: ?compat.fs.File = null,
 
     pub fn open(allocator: std.mem.Allocator, path: []const u8) !Store {
         if (path.len == 0) return error.BindingStoreNeedsAPath;
@@ -136,12 +137,20 @@ pub const Store = struct {
         errdefer allocator.free(owned);
         const staging = try std.fmt.allocPrint(allocator, "{s}.writing", .{path});
         errdefer allocator.free(staging);
-        var store = Store{ .allocator = allocator, .path = owned, .staging = staging };
+        const lock_path = try std.fmt.allocPrint(allocator, "{s}.lock", .{path});
+        defer allocator.free(lock_path);
+        const held = compat.fs.getCwd().createFile(compat.fs.defaultIo(), lock_path, .{ .truncate = false, .lock = .exclusive, .lock_nonblocking = true, .permissions = compat.fs.default_file_mode }) catch |err| switch (err) {
+            error.WouldBlock => return error.SessionHistoryInUse,
+            else => return err,
+        };
+        errdefer held.close(compat.fs.defaultIo());
+        var store = Store{ .allocator = allocator, .path = owned, .staging = staging, .held = held };
         try store.rewrite(null);
         return store;
     }
 
     pub fn deinit(self: *Store) void {
+        if (self.held) |held| held.close(compat.fs.defaultIo());
         self.allocator.free(self.path);
         self.allocator.free(self.staging);
         self.* = undefined;
@@ -276,4 +285,16 @@ test "a torn record is detected rather than read, and the next open keeps only t
         try testing.expectEqualStrings(whole, kept);
         try testing.expectEqualStrings("n", (try repaired.latest(arena.allocator(), "s")).?.record.native_session_id);
     }
+}
+
+test "a second store on one session history is refused while the first holds it, and taken once it closes" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const path = try scratchPath(testing.allocator, &tmp, "sessions.jsonl");
+    defer testing.allocator.free(path);
+    var first = try Store.open(testing.allocator, path);
+    try testing.expectError(error.SessionHistoryInUse, Store.open(testing.allocator, path));
+    first.deinit();
+    var second = try Store.open(testing.allocator, path);
+    second.deinit();
 }

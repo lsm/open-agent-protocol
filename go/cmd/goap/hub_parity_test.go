@@ -125,7 +125,7 @@ func TestHubRefusesAConfigItCannotReadAndNamesTheFile(t *testing.T) {
 	}
 	for _, each := range cases {
 		t.Run(each.argument, func(t *testing.T) {
-			command := exec.Command(oapx, "serve", each.argument)
+			command := exec.Command(oapx, "serve", each.argument, "--session-history=")
 			command.Stdin = strings.NewReader("")
 			output, err := command.CombinedOutput()
 			if err == nil {
@@ -146,7 +146,7 @@ func TestHubStdioEndsCleanlyWhenTheHostClosesThePipe(t *testing.T) {
 	if oapx == "" {
 		t.Skip("set OAP_OAPX_BIN to an oapx binary to check it ends cleanly")
 	}
-	command := exec.Command(oapx, "serve", "--stdio")
+	command := exec.Command(oapx, "serve", "--stdio", "--session-history=")
 	command.Stdin = strings.NewReader("")
 	command.Stderr = os.Stderr
 	if err := command.Run(); err != nil {
@@ -161,7 +161,7 @@ func TestHubAddrBindsLoopbackAndEndsOnAnInterrupt(t *testing.T) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
-	command := exec.CommandContext(ctx, oapx, "serve", "--addr=127.0.0.1:0")
+	command := exec.CommandContext(ctx, oapx, "serve", "--addr=127.0.0.1:0", "--session-history=")
 	command.Stdin = strings.NewReader("")
 	var stderr strings.Builder
 	command.Stderr = &stderr
@@ -214,7 +214,7 @@ func TestHubAddrBindsLoopbackAndEndsOnAnInterrupt(t *testing.T) {
 
 func hubCommand(t *testing.T, binary string) *exec.Cmd {
 	t.Helper()
-	command := exec.Command(binary, "serve", "--stdio")
+	command := exec.Command(binary, "serve", "--stdio", "--session-history=")
 	return command
 }
 

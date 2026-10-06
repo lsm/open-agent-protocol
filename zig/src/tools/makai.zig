@@ -1621,16 +1621,16 @@ fn runHub(
     var over_stdio = false;
     var config: ?[]const u8 = null;
     var addr: ?[]const u8 = null;
-    var bindings_path: ?[]const u8 = null;
+    var history_path: ?[]const u8 = null;
     var index: usize = 0;
     while (index < args.len) : (index += 1) {
         const argument = args[index];
-        if (std.mem.eql(u8, argument, "--bindings")) {
+        if (std.mem.eql(u8, argument, "--session-history")) {
             index += 1;
             if (index >= args.len) return error.InvalidHubOption;
-            bindings_path = args[index];
-        } else if (std.mem.startsWith(u8, argument, "--bindings=")) {
-            bindings_path = argument["--bindings=".len..];
+            history_path = args[index];
+        } else if (std.mem.startsWith(u8, argument, "--session-history=")) {
+            history_path = argument["--session-history=".len..];
         } else if (std.mem.eql(u8, argument, "--stdio")) {
             over_stdio = true;
         } else if (std.mem.eql(u8, argument, "--config")) {
@@ -1678,10 +1678,18 @@ fn runHub(
     defer registry.deinit();
     var bindings: ?hub.binding.Store = null;
     defer if (bindings) |*store| store.deinit();
-    if (bindings_path) |path| {
-        bindings = hub.binding.Store.open(allocator, path) catch |err| {
+    const history = history_path orelse if (compat.getEnvVarOwned(arena, "HOME")) |home| try std.fs.path.join(arena, &.{ home, ".oapx", "sessions.jsonl" }) else |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        else => "",
+    };
+    if (history.len > 0) {
+        bindings = hub.binding.Store.open(allocator, history) catch |err| {
             if (err == error.OutOfMemory) return error.OutOfMemory;
-            try surface.refuse("cannot open --bindings {s}: {s}", .{ path, @errorName(err) });
+            if (err == error.SessionHistoryInUse) {
+                try surface.refuse("another oapx hub is using the session history {s}; pass --session-history <path> to give this one its own", .{history});
+            } else {
+                try surface.refuse("cannot open --session-history {s}: {s}", .{ history, @errorName(err) });
+            }
             return error.BackendRefused;
         };
     }
@@ -2366,7 +2374,7 @@ fn printUsage(file: std.Io.File) !void {
         \\  oapx serve provider [--stdio] [--specimens]
         \\  oapx serve provider --http 127.0.0.1:<port>
         \\  oapx serve agent,provider --stdio [--model <model-ref>]
-        \\  oapx serve --stdio | --addr <host:port> [--config <path>] [--bindings <path>]
+        \\  oapx serve --stdio | --addr <host:port> [--config <path>] [--session-history <path>]
         \\                                                   Many sessions on one wire; oapx hub is its old name
         \\  oapx validate [--format human|json] [--mode strict|tolerant] [--pack DIR]... <trace.json>...
         \\  oapx conformance --command CMD [--session <id>] [--timeout-ms <n>]

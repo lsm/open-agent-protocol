@@ -24,7 +24,7 @@ func startHubAddr(t *testing.T) (string, func(), context.CancelFunc) {
 		t.Skip("set OAP_OAPX_BIN to an oapx binary to drive its HTTP daemon")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
-	command := exec.CommandContext(ctx, oapx, "serve", "--addr=127.0.0.1:0")
+	command := exec.CommandContext(ctx, oapx, "serve", "--addr=127.0.0.1:0", "--session-history=")
 	command.Stdin = strings.NewReader("")
 	var stderr bytes.Buffer
 	command.Stderr = &stderr

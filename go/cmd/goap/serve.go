@@ -27,7 +27,7 @@ func runHub(ctx context.Context, args []string, stdin io.Reader, stdout, stderr 
 	configPath := fs.String("config", "", "adapter registry JSON path (default: built-in memory adapter)")
 	addr := fs.String("addr", servehttp.DefaultAddr, "listen address")
 	overStdio := fs.Bool("stdio", false, "serve newline-delimited JSON on stdin/stdout instead of listening on a port")
-	bindingsPath := fs.String("bindings", "", "append-only JSONL file recording a binding per open, so a host can reopen what it opened")
+	bindingsPath := fs.String("session-history", "", "append-only JSONL file recording every session this hub opens, reopens and closes, so a host can reopen what it opened")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -64,6 +64,11 @@ func runHub(ctx context.Context, args []string, stdin io.Reader, stdout, stderr 
 		Home:   homeDirectory(),
 	}
 	if *bindingsPath != "" {
+		held, err := lockSessionHistory(*bindingsPath)
+		if err != nil {
+			return err
+		}
+		defer held.Close()
 		store, err := binding.File(*bindingsPath)
 		if err != nil {
 			return err
