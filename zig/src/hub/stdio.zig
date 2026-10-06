@@ -533,7 +533,7 @@ pub const Frontend = struct {
             return .{ .refused = .{ .code = "invalid_cursor", .message = "run_id names the run a cursor belongs to; it has no meaning without after" } };
         }
         if (self.max_subscriptions > 0 and self.streams.items.len >= self.max_subscriptions) {
-            return .{ .refused = .{ .code = "busy", .message = "the frontend already holds as many subscriptions as it serves; a subscription ends at its run's terminal, at an overflow or stream failure, or when its session closes" } };
+            return .{ .refused = .{ .code = "busy", .message = try std.fmt.allocPrint(arena, "the frontend already holds {d} subscriptions; a subscription ends at its run's terminal, at an overflow or stream failure, or when its session closes — send this request again once one has", .{self.max_subscriptions}) } };
         }
         const subscription = self.hub.subscribe(arena, session_id, .{ .run_id = run, .after = request.after }) catch |err| {
             return .{ .refused = try subscribeRefusal(arena, err, session_id) };
@@ -1180,7 +1180,7 @@ pub const Frontend = struct {
         }
         if (open.subscribe and !holding) {
             envelope.deinit(arena);
-            return .{ .refused = .{ .code = "unsupported_feature", .message = "a subscribing open is refused until events lands" } };
+            return .{ .refused = .{ .code = "unsupported_feature", .message = "a subscribing open is refused over stdio until the open hands its subscription to events" } };
         }
         if (open.message_json != null) {
             envelope.deinit(arena);
