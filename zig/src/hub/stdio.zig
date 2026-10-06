@@ -1178,9 +1178,9 @@ pub const Frontend = struct {
                 }
             }
         }
-        if (open.subscribe and !holding) {
+        if (!holding and open.subscribe and self.max_subscriptions > 0 and self.streams.items.len >= self.max_subscriptions) {
             envelope.deinit(arena);
-            return .{ .refused = .{ .code = "unsupported_feature", .message = "a subscribing open is refused over stdio until the open hands its subscription to events" } };
+            return .{ .refused = .{ .code = "busy", .message = try std.fmt.allocPrint(arena, "the frontend already holds {d} subscriptions; a subscription ends at its run's terminal, at an overflow or stream failure, or when its session closes — send this request again once one has", .{self.max_subscriptions}) } };
         }
         var refused: hubmod.OpenRefusal = .{};
         const opened = self.hub.openReporting(arena, adapter, .{
@@ -1200,22 +1200,26 @@ pub const Frontend = struct {
             return .{ .refused = try openRefusal(arena, err, request, &refused) };
         };
         if (opened.subscription) |subscription| {
-            _ = self.hub.holdSubscription(subscription) catch |err| {
-                subscription.close();
-                self.hub.discardSession(opened.session_id);
-                envelope.deinit(arena);
-                return err;
-            };
+            if (holding) {
+                _ = self.hub.holdSubscription(subscription) catch |err| {
+                    subscription.close();
+                    self.hub.discardSession(opened.session_id);
+                    envelope.deinit(arena);
+                    return err;
+                };
+            }
         }
         var answered = opened.state;
         if (open.message_json != null) {
             const admission = self.admitOpeningMessage(arena, request, envelope.id, opened.state.session_id) catch |err| {
+                if (!holding) if (opened.subscription) |subscription| subscription.close();
                 self.hub.discardSession(opened.session_id);
                 envelope.deinit(arena);
                 return err;
             };
             switch (admission) {
                 .refused => |refusal| {
+                    if (!holding) if (opened.subscription) |subscription| subscription.close();
                     self.hub.discardSession(opened.session_id);
                     envelope.deinit(arena);
                     return .{ .refused = refusal };
@@ -1233,8 +1237,26 @@ pub const Frontend = struct {
             .payload = .{ .session_open_response = answered },
         };
         const line = try oap_envelope.serializeEnvelope(opened_envelope, arena);
+        const named = open.session_id != null;
         envelope.deinit(arena);
-        return .{ .answer_line = line };
+        if (holding) return .{ .answer_line = line };
+        const subscription = opened.subscription orelse return .{ .answer_line = line };
+        if (!self.fits(request.id, line)) {
+            subscription.close();
+            if (named) return .{ .refused = .{ .code = "response_too_large", .message = "the open response exceeds the frame limit; the session is open under the session_id the request supplied" } };
+            self.hub.discardSession(opened.session_id);
+            return .{ .refused = .{ .code = "response_too_large", .message = "the open response exceeds the frame limit; the session was rolled back" } };
+        }
+        self.answerLine(request.id, line) catch |err| {
+            subscription.close();
+            return err;
+        };
+        self.streams.append(self.allocator, .{ .id = request.id, .subscription = subscription }) catch |err| {
+            subscription.close();
+            return err;
+        };
+        try self.pumpStreams();
+        return .streaming;
     }
 
     const OpeningAdmission = union(enum) {
@@ -1430,6 +1452,12 @@ pub const Frontend = struct {
         };
         defer arena.free(line);
         try self.write(line);
+    }
+
+    fn fits(self: *const Frontend, id: i64, payload: []const u8) bool {
+        var digits: [24]u8 = undefined;
+        const counted = std.fmt.bufPrint(&digits, "{d}", .{id}) catch return false;
+        return payload.len + counted.len + "{\"id\":,\"ok\":true,\"result\":}".len <= self.frame_limit;
     }
 
     fn answerLine(self: *Frontend, id: i64, payload: []const u8) Error!void {
@@ -2830,12 +2858,51 @@ test "an open whose message the adapter refuses answers that refusal and leaves 
     try testing.expectEqual(@as(usize, 0), try listedSessions(harness));
 }
 
-test "a subscribing open is refused, because this wire cannot drain a subscription" {
+test "a subscribing open past the subscription ceiling is busy, and one whose answer cannot be framed streams nothing" {
+    const subscribing = "{\"protocol\":\"open-agent-protocol\",\"version\":\"0.1\",\"profile\":\"open-agent-protocol.agent-control-core\",\"type\":\"session.open.request\",\"id\":\"o1\",\"capability_revision\":\"reference-v1\",\"payload\":{\"session_id\":\"s1\",\"subscribe\":true}}";
+    {
+        const harness = try Harness.init(testing.allocator, .{}, .{ .max_subscriptions = 1 });
+        defer harness.deinit();
+        try harness.send(try openLine(harness.arena(), "reference", subscribing));
+        try testing.expectEqual(@as(usize, 1), harness.frontend.streams.items.len);
+        const second = "{\"protocol\":\"open-agent-protocol\",\"version\":\"0.1\",\"profile\":\"open-agent-protocol.agent-control-core\",\"type\":\"session.open.request\",\"id\":\"o2\",\"capability_revision\":\"reference-v1\",\"payload\":{\"session_id\":\"s2\",\"subscribe\":true}}";
+        try harness.send(try openLine(harness.arena(), "reference", second));
+        try testing.expectEqualStrings("busy", try harness.code());
+        try testing.expect(!harness.hub.knows("s2"));
+    }
+    {
+        const unnamed = "{\"protocol\":\"open-agent-protocol\",\"version\":\"0.1\",\"profile\":\"open-agent-protocol.agent-control-core\",\"type\":\"session.open.request\",\"id\":\"o3\",\"capability_revision\":\"reference-v1\",\"payload\":{\"subscribe\":true}}";
+        const request_line = try openLine(testing.allocator, "reference", unnamed);
+        defer testing.allocator.free(request_line);
+        const harness = try Harness.init(testing.allocator, .{}, .{ .frame_limit = @max(request_line.len + 1, minimum_frame_limit) });
+        defer harness.deinit();
+        try harness.send(request_line);
+        try testing.expectEqualStrings("response_too_large", try harness.code());
+        try testing.expectEqual(@as(usize, 0), harness.frontend.streams.items.len);
+        try testing.expectEqual(@as(usize, 0), (try harness.hub.sessions(harness.arena())).len);
+    }
+}
+
+test "a subscribing open answers, then streams the session's envelopes on the open's own id" {
     const harness = try Harness.init(testing.allocator, .{}, .{});
     defer harness.deinit();
+    defer reference_holder.pending_events = &.{};
     const envelope = "{\"protocol\":\"open-agent-protocol\",\"version\":\"0.1\",\"profile\":\"open-agent-protocol.agent-control-core\",\"type\":\"session.open.request\",\"id\":\"o1\",\"capability_revision\":\"reference-v1\",\"payload\":{\"session_id\":\"s1\",\"subscribe\":true}}";
     try harness.send(try openLine(harness.arena(), "reference", envelope));
-    try testing.expectEqualStrings("unsupported_feature", try harness.code());
+    try testing.expectEqualStrings("session.open.response", (try openResult(harness)).get("type").?.string);
+    try testing.expectEqual(@as(usize, 1), harness.frontend.streams.items.len);
+    const before = harness.recorder.lines.items.len;
+    reference_holder.pending_events = &.{ .{ .line = started_line, .run_id = "run-1", .sequence = 1 }, .{ .line = completed_line, .run_id = "run-1", .sequence = 2 } };
+    try harness.hub.pump(testing.allocator, 0);
+    try harness.frontend.pumpStreams();
+    const streamed = harness.recorder.lines.items[before..];
+    try testing.expectEqual(@as(usize, 2), streamed.len);
+    for (streamed) |line| {
+        const value = try std.json.parseFromSliceLeaky(std.json.Value, harness.arena(), line, .{});
+        try testing.expectEqualStrings("envelope", value.object.get("event").?.string);
+        try testing.expectEqual(@as(i64, 1), value.object.get("id").?.integer);
+    }
+    try testing.expectEqual(@as(usize, 0), harness.frontend.streams.items.len);
 }
 
 test "a refusal carries the adapter's own feature and reason, and nothing more" {
@@ -3029,7 +3096,6 @@ test "the refusals the open gate and the payload read name" {
         .{ .line = "{\"id\":1,\"op\":\"open\",\"adapter\":\"nope\",\"request\":{\"protocol\":\"open-agent-protocol\",\"version\":\"0.1\",\"profile\":\"open-agent-protocol.agent-control-core\",\"type\":\"session.open.request\",\"id\":\"o1\",\"payload\":{\"session_id\":\"z\"}}}", .code = "unknown_adapter" },
         .{ .line = "{\"id\":1,\"op\":\"open\",\"adapter\":\"reference\",\"request\":7}", .code = "malformed_json" },
         .{ .line = "{\"id\":1,\"op\":\"open\",\"adapter\":\"reference\",\"request\":[]}", .code = "malformed_json" },
-        .{ .line = "{\"id\":1,\"op\":\"open\",\"adapter\":\"reference\",\"request\":{\"protocol\":\"open-agent-protocol\",\"version\":\"0.1\",\"profile\":\"open-agent-protocol.agent-control-core\",\"type\":\"session.open.request\",\"id\":\"o1\",\"payload\":{\"session_id\":\"n\",\"subscribe\":true}}}", .code = "unsupported_feature" },
     };
     for (cases) |case| {
         const harness = try Harness.init(testing.allocator, .{}, .{});
