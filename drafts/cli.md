@@ -26,7 +26,7 @@ not a second product.
 | `serve agent [--backend B] [--config F] [--stdio]` | one agent loop over `agent-control-core`, raw envelopes per [endpoint-stdio](endpoint-stdio.md); no `--backend` means the binary's own loop | native loop; harness backends as they are wired | the Go adapters (today `goap endpoint --adapter`) |
 | `serve provider [--stdio \| --http ADDR] [--specimens]` | `model-provider-core` | yes | answers `unavailable` |
 | `serve agent,provider --stdio` | both profiles on one pipe (Decision 0027) | yes | answers `unavailable` |
-| `hub [--config F] [--addr ADDR \| --stdio]` | the multi-session daemon: an adapter registry, fan-out, cursor replay, HTTP+SSE or the stdio transport-object wire, per [hub](hub.md) | yes (stdio) | yes |
+| `serve [--config F] [--addr ADDR \| --stdio]`, and `hub` as its old name | the multi-session daemon: an adapter registry, fan-out, cursor replay, HTTP+SSE or the stdio transport-object wire, per [hub](hub.md) | yes (stdio) | yes |
 | `validate [--format human\|json] [--mode strict\|tolerant] [--pack DIR]... [--provider] TRACE...` | judge traces: decode, schema, semantic | yes (packs, modes and some semantic rules still porting) | yes |
 | `conformance [--command CMD] [--format text\|json]` | drive an endpoint and judge what crossed the pipe | yes, first slice: the handshake and one submitted run; the interaction, tool, queue, model and auth groups are still to come | yes |
 | `check` | the repository's own schemas, fixtures and reference path | not yet | yes |
@@ -42,9 +42,10 @@ because it waits for the endpoint to stop talking rather than for an answer; and
 `oapx` still renews per line in its runner, so `oapx conformance --timeout-ms` waits
 on a chatty endpoint indefinitely until Zig carries the same absolute budget.
 
-The hub is its own verb in both binaries: `goap serve` and `oapx serve`. It is a layer
-above an endpoint, not a different spelling of one, and giving it its own verb is
-what lets `serve agent` mean one thing.
+The multi-session daemon is `serve` with no role in both binaries: `goap serve`
+and `oapx serve`. A role after it (`agent`, `provider`) selects the one-session
+endpoint instead, so `serve` names serving at every level and the role says how
+much. `hub`, its old verb, still runs it.
 
 `oapx serve` carries the stdio transport today and answers `unavailable` for the
 other two, naming which: `--addr` with the HTTP and SSE transport, and `--config`
@@ -72,9 +73,9 @@ a pipe answers the requests that fit it and is silent about the rest.
 
 ## Migration
 
-- `goap serve` becomes `goap serve`. There is no alias. An alias would keep the
-  word meaning two things for another release, which is the confusion this
-  draft removes.
+- The multi-session daemon's verb `hub` becomes bare `serve`, in both binaries
+  (Decision 0047, proposed). `hub` stays as an alias for one release; `serve`
+  with a role still selects one endpoint, so no command changes meaning.
 - `goap endpoint --adapter A` becomes `goap serve agent --backend A`. `endpoint`
   stays as an alias until the conformance runner and its callers move.
 - `oapx`'s superseded flags (`--tui`, `-p`, `--oap`, `--oap-provider`) keep

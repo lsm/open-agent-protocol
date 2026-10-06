@@ -9768,7 +9768,7 @@ test "unavailable names the surface it was called for" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     var complained_on = try tmp.dir.createFile(std.testing.io, "stderr", .{});
-    try std.testing.expectError(error.Unavailable, unavailable(complained_on, "hub", "--addr", "the HTTP and SSE transport lands with #388"));
+    try std.testing.expectError(error.Unavailable, unavailable(complained_on, "serve", "--addr", "the HTTP and SSE transport lands with #388"));
     complained_on.close(std.testing.io);
     const complained = try tmp.dir.readFileAlloc(std.testing.io, "stderr", allocator, .limited(4096));
     defer allocator.free(complained);
