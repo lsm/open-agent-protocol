@@ -10,6 +10,7 @@ import (
 
 	base "github.com/lsm/open-agent-protocol/go/adapter"
 	"github.com/lsm/open-agent-protocol/go/binding"
+	"github.com/lsm/open-agent-protocol/go/protocol"
 	"github.com/lsm/open-agent-protocol/go/serve"
 	"github.com/lsm/open-agent-protocol/go/serve/servehttp"
 )
@@ -90,13 +91,13 @@ func TestSessionHistoryMatchesHTTPPageByPage(t *testing.T) {
 	if string(result.Result) != whole {
 		t.Fatalf("history drifted:\n http %s\nstdio %s", whole, result.Result)
 	}
-	var listed serve.HistoryPage
+	var listed protocol.SessionListResponse
 	if err := json.Unmarshal([]byte(whole), &listed); err != nil {
 		t.Fatal(err)
 	}
 	states := map[string]string{}
 	for _, entry := range listed.Sessions {
-		states[entry.SessionID] = entry.State
+		states[string(entry.SessionID)] = string(entry.State)
 	}
 	if len(states) != 3 || states["history-a"] != "live" || states["history-b"] != "closed" || states["history-c"] != "live" {
 		t.Fatalf("states = %v, want a and c live and b closed", states)
@@ -116,12 +117,12 @@ func TestSessionHistoryMatchesHTTPPageByPage(t *testing.T) {
 		if status != http.StatusOK || string(page.Result) != body {
 			t.Fatalf("page drifted (%d):\n http %s\nstdio %s", status, body, page.Result)
 		}
-		var decoded serve.HistoryPage
+		var decoded protocol.SessionListResponse
 		if err := json.Unmarshal([]byte(body), &decoded); err != nil {
 			t.Fatal(err)
 		}
 		for _, entry := range decoded.Sessions {
-			paged = append(paged, entry.SessionID)
+			paged = append(paged, string(entry.SessionID))
 		}
 		if decoded.NextCursor == "" {
 			break
@@ -132,7 +133,7 @@ func TestSessionHistoryMatchesHTTPPageByPage(t *testing.T) {
 		t.Fatalf("paging by one listed %v, want all three", paged)
 	}
 	for i, entry := range listed.Sessions {
-		if paged[i] != entry.SessionID {
+		if paged[i] != string(entry.SessionID) {
 			t.Fatalf("paging listed %v, not the order of the whole list", paged)
 		}
 	}

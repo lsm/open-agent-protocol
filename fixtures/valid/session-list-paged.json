@@ -1,0 +1,110 @@
+[
+  {
+    "protocol": "open-agent-protocol",
+    "version": "0.1",
+    "profile": "open-agent-protocol.agent-control-core",
+    "type": "capabilities.request",
+    "id": "capq",
+    "payload": {}
+  },
+  {
+    "protocol": "open-agent-protocol",
+    "version": "0.1",
+    "profile": "open-agent-protocol.agent-control-core",
+    "type": "capabilities.response",
+    "id": "capr",
+    "in_reply_to": "capq",
+    "capability_revision": "cap-v1",
+    "payload": {
+      "endpoint": {
+        "id": "fixture.endpoint",
+        "name": "Session list fixture endpoint"
+      },
+      "features": {
+        "session.message.delivery.auto": {
+          "level": "native"
+        },
+        "session.list": {
+          "level": "native"
+        }
+      }
+    }
+  },
+  {
+    "protocol": "open-agent-protocol",
+    "version": "0.1",
+    "profile": "open-agent-protocol.agent-control-core",
+    "type": "session.list.request",
+    "id": "l1",
+    "capability_revision": "cap-v1",
+    "payload": {
+      "limit": 2
+    }
+  },
+  {
+    "protocol": "open-agent-protocol",
+    "version": "0.1",
+    "profile": "open-agent-protocol.agent-control-core",
+    "type": "session.list.response",
+    "id": "l1r",
+    "in_reply_to": "l1",
+    "capability_revision": "cap-v1",
+    "payload": {
+      "sessions": [
+        {
+          "session_id": "s3",
+          "adapter": "memory",
+          "state": "live",
+          "updated_at_ms": 3000,
+          "model": "m1",
+          "directory": "/work"
+        },
+        {
+          "session_id": "s2",
+          "adapter": "memory",
+          "state": "closed",
+          "updated_at_ms": 2000
+        }
+      ],
+      "next_cursor": "MjAwMDpzMg"
+    }
+  },
+  {
+    "protocol": "open-agent-protocol",
+    "version": "0.1",
+    "profile": "open-agent-protocol.agent-control-core",
+    "type": "session.list.request",
+    "id": "l2",
+    "capability_revision": "cap-v1",
+    "payload": {
+      "limit": 2,
+      "cursor": "MjAwMDpzMg"
+    }
+  },
+  {
+    "protocol": "open-agent-protocol",
+    "version": "0.1",
+    "profile": "open-agent-protocol.agent-control-core",
+    "type": "session.list.response",
+    "id": "l2r",
+    "in_reply_to": "l2",
+    "capability_revision": "cap-v1",
+    "payload": {
+      "sessions": [
+        {
+          "session_id": "s1",
+          "adapter": "memory",
+          "state": "closed",
+          "updated_at_ms": 1500
+        },
+        {
+          "session_id": "s0",
+          "adapter": "memory",
+          "state": "closed",
+          "updated_at_ms": 1000,
+          "harness_version": "1.0.0"
+        }
+      ]
+    }
+  }
+]
