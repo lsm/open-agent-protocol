@@ -544,6 +544,8 @@ jobs:
   # so the real provider path (bridge, registry, HTTP client, SSE parsing) is
   # exercised too; provider-https trusts a throwaway CA installed into the
   # runner's system bundle, which is where Zig's std reads roots on Linux.
+  # Each sweep scenario also runs on `oapx tui` and the two runs' saved session
+  # records are compared: the parity gate for retiring `--tui`.
   # =============================================================================
   tui-pty-harness:
     name: TUI PTY Harness
