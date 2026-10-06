@@ -43,6 +43,7 @@ type adapterEntry struct {
 	Args             []string `json:"args"`
 	Environment      []string `json:"environment"`
 	WorkingDirectory string   `json:"working_directory"`
+	AnyDirectory     bool     `json:"any_directory"`
 	Model            string   `json:"model"`
 	JournalCapacity  int      `json:"journal_capacity"`
 
