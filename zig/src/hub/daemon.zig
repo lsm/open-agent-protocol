@@ -339,8 +339,6 @@ fn correlationOf(value: std.json.Value) Correlation {
     };
 }
 
-const controlRefusal = hub_stdio.controlRefusal;
-
 fn subscribeRefusal(arena: std.mem.Allocator, err: hubmod.Failure, id: []const u8) !hub_stdio.Refusal {
     return switch (err) {
         error.UnknownSession => .{ .code = "unknown_session", .message = try std.fmt.allocPrint(arena, "no session \"{s}\"", .{id}) },
