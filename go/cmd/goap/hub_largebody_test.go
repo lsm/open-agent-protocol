@@ -24,7 +24,7 @@ func startHubAddr(t *testing.T) (string, func(), context.CancelFunc) {
 		t.Skip("set OAP_OAPX_BIN to an oapx binary to drive its HTTP daemon")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
-	command := exec.CommandContext(ctx, oapx, "hub", "--addr=127.0.0.1:0")
+	command := exec.CommandContext(ctx, oapx, "serve", "--addr=127.0.0.1:0")
 	command.Stdin = strings.NewReader("")
 	var stderr bytes.Buffer
 	command.Stderr = &stderr
@@ -62,7 +62,7 @@ func startHubAddr(t *testing.T) (string, func(), context.CancelFunc) {
 				select {
 				case <-done:
 				case <-time.After(10 * time.Second):
-					t.Log("oapx hub --addr did not report an exit after Kill")
+					t.Log("oapx serve --addr did not report an exit after Kill")
 				}
 			}
 		}
@@ -79,7 +79,7 @@ func startHubAddr(t *testing.T) (string, func(), context.CancelFunc) {
 	address := <-addressBound
 	if address == "" {
 		cleanup()
-		t.Fatalf("oapx hub --addr never reported a bound address:\n%s", stderr.String())
+		t.Fatalf("oapx serve --addr never reported a bound address:\n%s", stderr.String())
 		return "", func() {}, cancel
 	}
 	return address, cleanup, cancel

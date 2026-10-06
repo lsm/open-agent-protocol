@@ -62,7 +62,7 @@ async function startHub(t: TestContext): Promise<string> {
     });
     assert.equal(build.status, 0, `go build failed: ${build.stderr}`);
   }
-  const daemon = spawn(binary, ['hub', '--addr', '127.0.0.1:0'], {
+  const daemon = spawn(binary, ['serve', '--addr', '127.0.0.1:0'], {
     stdio: ['ignore', 'pipe', 'pipe'],
   });
   t.after(() => {

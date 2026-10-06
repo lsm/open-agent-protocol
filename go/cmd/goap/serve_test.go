@@ -30,15 +30,20 @@ func TestUsageMentionsHubAndServe(t *testing.T) {
 	}
 }
 
-func TestServeWithoutRoleNamesHub(t *testing.T) {
-	for _, args := range [][]string{{"serve"}, {"serve", "--addr", "127.0.0.1:0"}, {"serve", "--stdio"}} {
+func TestServeWithoutRoleServesManySessions(t *testing.T) {
+	for _, args := range [][]string{{"serve", "--stdio"}, {"hub", "--stdio"}} {
 		var stdout, stderr bytes.Buffer
-		if err := run(context.Background(), args, strings.NewReader(""), &stdout, &stderr); err == nil {
-			t.Fatalf("%v succeeded", args)
+		if err := run(context.Background(), args, strings.NewReader(""), &stdout, &stderr); err != nil {
+			t.Fatalf("%v with a host that sent nothing and closed: %v\n%s", args, err, stderr.String())
 		}
-		if !strings.Contains(stderr.String(), "goap hub") || !strings.Contains(stderr.String(), "serve agent") {
-			t.Fatalf("%v usage does not name hub and serve agent: %s", args, stderr.String())
-		}
+	}
+	var stdout, stderr bytes.Buffer
+	if err := run(context.Background(), []string{"serve", "--no-such-flag"}, strings.NewReader(""), &stdout, &stderr); err == nil {
+		t.Fatal("serve --no-such-flag succeeded; the multi-session flags must parse it")
+	}
+	stderr.Reset()
+	if err := run(context.Background(), []string{"serve", "ghost"}, strings.NewReader(""), &stdout, &stderr); err == nil || !strings.Contains(stderr.String(), "serve agent") {
+		t.Fatalf("serve ghost: %v\n%s", err, stderr.String())
 	}
 }
 

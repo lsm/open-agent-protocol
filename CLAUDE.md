@@ -387,7 +387,7 @@ deliberately absent from executable v0.1.
 
 ## Daemon trust model
 
-`goap hub` is a single-user local service: loopback bind by default, no auth,
+`goap serve` is a single-user local service: loopback bind by default, no auth,
 `Host` allowlisted to loopback names on a loopback bind, and a restart kills
 every session. The registry config's `environment` list is an explicit
 allowlist — a child never inherits ambient variables that were not listed. Keep

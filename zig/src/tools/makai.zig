@@ -1534,7 +1534,7 @@ fn hubConfiguredSources(
 }
 
 fn hubBindRefusal(stderr: std.Io.File, message: []const u8) error{InvalidHubOption} {
-    compat.stdio.writeAll(stderr, "oapx hub: ") catch {};
+    compat.stdio.writeAll(stderr, "oapx serve: ") catch {};
     compat.stdio.writeAll(stderr, message) catch {};
     compat.stdio.writeAll(stderr, "\n") catch {};
     return error.InvalidHubOption;
@@ -1646,12 +1646,12 @@ fn runHub(
         } else if (std.mem.startsWith(u8, argument, "--addr=")) {
             addr = argument["--addr=".len..];
         } else {
-            try compat.stdio.writeAll(stderr, "oapx hub: unknown flag\n\n");
+            try compat.stdio.writeAll(stderr, "oapx serve: unknown flag\n\n");
             return error.InvalidHubOption;
         }
     }
     if (over_stdio and addr != null) {
-        try compat.stdio.writeAll(stderr, "oapx hub: --stdio takes no listen address; --addr and --stdio are mutually exclusive\n");
+        try compat.stdio.writeAll(stderr, "oapx serve: --stdio takes no listen address; --addr and --stdio are mutually exclusive\n");
         return error.InvalidHubOption;
     }
 
@@ -1703,11 +1703,11 @@ fn runHub(
 
     if (hubTakesSignals()) {
         endpoint_signals.install() catch {
-            try compat.stdio.writeAll(stderr, "oapx hub: the process cannot take a signal handler; refusing to serve a hub that cannot be stopped\n");
+            try compat.stdio.writeAll(stderr, "oapx serve: the process cannot take a signal handler; refusing to serve a hub that cannot be stopped\n");
             return error.BackendRefused;
         };
     } else {
-        try compat.stdio.writeAll(stderr, "oapx hub: a console interrupt ends this process rather than the hub; the Windows path is #460\n");
+        try compat.stdio.writeAll(stderr, "oapx serve: a console interrupt ends this process rather than the hub; the Windows path is #460\n");
     }
 
     const served = try std.mem.join(arena, ", ", try core.names(arena));
@@ -2358,7 +2358,7 @@ fn printUsage(file: std.Io.File) !void {
         \\  oapx                                              Start the terminal UI
         \\  oapx --tui --context-window <tokens>            Start the terminal UI on a window
         \\  oapx tui [--context-window <tokens>]          The terminal UI over OAP, through the in-process endpoint (experimental)
-        \\  oapx tui --attach <url> [--adapter <name>]    The terminal UI over a running oapx hub's HTTP wire; adapter defaults to oapx
+        \\  oapx tui --attach <url> [--adapter <name>]    The terminal UI over a running oapx serve's HTTP wire; adapter defaults to oapx
         \\                                                   (a whole number, optionally with k or m)
         \\  oapx run [--agent] [--storage] [--model <id>] "<prompt>"
         \\  oapx serve agent [--stdio] [--model <model-ref>]
@@ -2367,7 +2367,8 @@ fn printUsage(file: std.Io.File) !void {
         \\  oapx claude-permission-hook --endpoint <url>  A Claude Code PermissionRequest hook: asks <url>, and leaves the prompt to the session when no allow or deny comes back
         \\  oapx serve provider --http 127.0.0.1:<port>
         \\  oapx serve agent,provider --stdio [--model <model-ref>]
-        \\  oapx hub --stdio [--config <path>] [--bindings <path>]
+        \\  oapx serve --stdio | --addr <host:port> [--config <path>] [--bindings <path>]
+        \\                                                   Many sessions on one wire; oapx hub is its old name
         \\  oapx validate [--format human|json] [--mode strict|tolerant] [--pack DIR]... <trace.json>...
         \\  oapx conformance --command CMD [--session <id>] [--timeout-ms <n>]
         \\                        [--exit-grace-ms <n>] [--env NAME]... [--format text|json]
@@ -6586,7 +6587,7 @@ pub fn main(init: std.process.Init) !void {
         return;
     }
 
-    if (std.mem.eql(u8, args[1], "hub")) {
+    if (std.mem.eql(u8, args[1], "hub") or (std.mem.eql(u8, args[1], "serve") and (args.len == 2 or std.mem.startsWith(u8, args[2], "-")))) {
         runHub(allocator, args[2..], stdin, stdout, stderr) catch |err| {
             if (err == error.InvalidHubOption) {
                 try printUsage(stderr);
@@ -6624,6 +6625,23 @@ pub fn main(init: std.process.Init) !void {
             try compat.stdio.writeAll(stdout, output);
             try compat.stdio.writeAll(stdout, "\n");
         }
+        return;
+    }
+
+    if (std.mem.eql(u8, args[1], "codex-bridge")) {
+        if (args.len != 4 or !std.mem.eql(u8, args[2], "--sock")) {
+            try compat.stdio.writeAll(stderr, "usage: oapx codex-bridge --sock <path>\n");
+            return error.InvalidArgument;
+        }
+        if (comptime @import("builtin").os.tag == .windows) {
+            try compat.stdio.writeAll(stderr, "oapx codex-bridge: Codex's control socket is a Unix socket; this platform has none\n");
+            std.process.exit(1);
+        }
+        codex_adapter.bridge.run(allocator, args[3], std.posix.STDIN_FILENO, std.posix.STDOUT_FILENO) catch |err| {
+            var line_buffer: [128]u8 = undefined;
+            try compat.stdio.writeAll(stderr, std.fmt.bufPrint(&line_buffer, "oapx codex-bridge: {s}\n", .{@errorName(err)}) catch "oapx codex-bridge: failed\n");
+            std.process.exit(1);
+        };
         return;
     }
 
@@ -8895,7 +8913,7 @@ const ConfigSurface = struct {
 };
 
 const endpoint_config_surface = ConfigSurface{ .label = "oapx serve agent", .noun = "backend" };
-const hub_config_surface = ConfigSurface{ .label = "oapx hub", .noun = "adapter" };
+const hub_config_surface = ConfigSurface{ .label = "oapx serve", .noun = "adapter" };
 
 fn withSurface(base: ConfigSurface, arena: std.mem.Allocator, stderr: std.Io.File) ConfigSurface {
     return .{ .label = base.label, .noun = base.noun, .stderr = stderr, .arena = arena };
@@ -8968,6 +8986,30 @@ fn codexBackendConfig(
     entry: adapter_config.AdapterEntry,
     environ: *const std.process.Environ.Map,
 ) !codex_adapter.Config {
+    if (entry.endpoint.len > 0) {
+        const unix_scheme = "unix://";
+        if (!std.mem.startsWith(u8, entry.endpoint, unix_scheme) or entry.endpoint.len == unix_scheme.len) {
+            try surface.refuse("{s} \"{s}\" names endpoint \"{s}\"; a codex endpoint is unix://<path to the app-server control socket>", .{ surface.noun, entry.name, entry.endpoint });
+            return error.BackendRefused;
+        }
+        if (entry.executable.len > 0 or entry.args.len > 0) {
+            try surface.refuse("{s} \"{s}\" names an endpoint and an executable or args; a codex endpoint relays to a running app-server, so set one or the other", .{ surface.noun, entry.name });
+            return error.BackendRefused;
+        }
+        const self_path = std.process.executablePathAlloc(backendIo(), arena) catch {
+            try surface.refuse("{s} \"{s}\" needs this executable's own path to relay to its endpoint, and it could not be read", .{ surface.noun, entry.name });
+            return error.BackendRefused;
+        };
+        return .{
+            .executable = self_path,
+            .control_socket = entry.endpoint[unix_scheme.len..],
+            .environment = entry.environment,
+            .working_directory = entry.working_directory,
+            .model = entry.model,
+            .approval_policy = entry.approval_policy,
+            .sandbox = entry.sandbox,
+        };
+    }
     const wanted = if (entry.executable.len > 0) entry.executable else "codex";
     const executable = try adapter_config.resolveExecutable(arena, backendIo(), wanted, environ.get("PATH") orelse "") orelse {
         try surface.refuse("no executable \"{s}\" on PATH for {s} \"{s}\"; name one with \"executable\" in a --config entry", .{ wanted, surface.noun, entry.name });
@@ -9518,6 +9560,29 @@ fn refusedBackend(allocator: std.mem.Allocator, name: []const u8, config_path: ?
     return complained;
 }
 
+test "a codex endpoint relays through this executable to the named socket, only a unix endpoint is accepted, and never beside an executable or args" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    const stderr_pipe = try compat.stdio.pipe();
+    defer compat.stdio.close(stderr_pipe[0]);
+    var surface = hub_config_surface;
+    surface.stderr = stderr_pipe[1];
+    surface.arena = arena;
+    var environ = std.process.Environ.Map.init(arena);
+    const shared = try codexBackendConfig(surface, arena, .{ .name = "codexd", .kind = "codex", .endpoint = "unix:///tmp/codex.sock" }, &environ);
+    try std.testing.expectEqualStrings("/tmp/codex.sock", shared.control_socket);
+    try std.testing.expect(shared.executable.len > 0);
+    try std.testing.expectEqual(@as(usize, 0), shared.args.len);
+    try std.testing.expectError(error.BackendRefused, codexBackendConfig(surface, arena, .{ .name = "codexd", .kind = "codex", .endpoint = "ws://127.0.0.1:1" }, &environ));
+    try std.testing.expectError(error.BackendRefused, codexBackendConfig(surface, arena, .{ .name = "codexd", .kind = "codex", .endpoint = "unix:///tmp/codex.sock", .executable = "/bin/codex" }, &environ));
+    try std.testing.expectError(error.BackendRefused, codexBackendConfig(surface, arena, .{ .name = "codexd", .kind = "codex", .endpoint = "unix:///tmp/codex.sock", .args = &.{"-c"} }, &environ));
+    compat.stdio.close(stderr_pipe[1]);
+    const complained = try readAllFrom(std.testing.allocator, stderr_pipe[0]);
+    defer std.testing.allocator.free(complained);
+    try std.testing.expect(std.mem.indexOf(u8, complained, "unix://") != null);
+}
+
 test "the hub's registry builds every entry a document names, and a child inherits only the variables its entry lists" {
     const allocator = std.testing.allocator;
     var arena_state = std.heap.ArenaAllocator.init(allocator);
@@ -9576,7 +9641,7 @@ test "the hub's registry refuses an entry of a type it does not know, naming the
     complained_on.close(std.testing.io);
     const complained = try tmp.dir.readFileAlloc(std.testing.io, "stderr", allocator, .limited(4096));
     defer allocator.free(complained);
-    try std.testing.expectEqualStrings("oapx hub: adapter \"ghost\" is of type \"ghost\", which oapx does not know; it serves claude, codex, pi, acp, hermes, deepseek, opencode, memory and oapx\n", complained);
+    try std.testing.expectEqualStrings("oapx serve: adapter \"ghost\" is of type \"ghost\", which oapx does not know; it serves claude, codex, pi, acp, hermes, deepseek, opencode, memory and oapx\n", complained);
 }
 
 test "the hub's registry reports a known adapter's own requirement once, not as an unknown type" {
@@ -9596,7 +9661,7 @@ test "the hub's registry reports a known adapter's own requirement once, not as 
     complained_on.close(std.testing.io);
     const complained = try tmp.dir.readFileAlloc(std.testing.io, "stderr", allocator, .limited(4096));
     defer allocator.free(complained);
-    try std.testing.expectEqualStrings("oapx hub: adapter \"a\" is an OpenCode server and needs a --config entry naming its \"endpoint\"\n", complained);
+    try std.testing.expectEqualStrings("oapx serve: adapter \"a\" is an OpenCode server and needs a --config entry naming its \"endpoint\"\n", complained);
 }
 
 test "two entries of one type are two adapters, each with its own executable" {
@@ -9782,11 +9847,11 @@ test "unavailable names the surface it was called for" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     var complained_on = try tmp.dir.createFile(std.testing.io, "stderr", .{});
-    try std.testing.expectError(error.Unavailable, unavailable(complained_on, "hub", "--addr", "the HTTP and SSE transport lands with #388"));
+    try std.testing.expectError(error.Unavailable, unavailable(complained_on, "serve", "--addr", "the HTTP and SSE transport lands with #388"));
     complained_on.close(std.testing.io);
     const complained = try tmp.dir.readFileAlloc(std.testing.io, "stderr", allocator, .limited(4096));
     defer allocator.free(complained);
-    try std.testing.expectEqualStrings("oapx hub: --addr: unavailable: the HTTP and SSE transport lands with #388\n", complained);
+    try std.testing.expectEqualStrings("oapx serve: --addr: unavailable: the HTTP and SSE transport lands with #388\n", complained);
 }
 
 test "a backend oapx does not know, or a --config entry it cannot serve, is refused on stderr before any request is read" {
