@@ -15,6 +15,8 @@ pub const Verb = enum {
     settings,
     close,
     events,
+    work_find,
+    work_status,
 };
 
 pub const Route = union(Verb) {
@@ -32,6 +34,8 @@ pub const Route = union(Verb) {
     settings: []const u8,
     close: []const u8,
     events: []const u8,
+    work_find: void,
+    work_status: []const u8,
 
     pub fn verb(self: Route) Verb {
         return std.meta.activeTag(self);
@@ -39,7 +43,7 @@ pub const Route = union(Verb) {
 
     pub fn parameterOf(self: Route) []const u8 {
         return switch (self) {
-            inline .adapters, .sessions, .history => "",
+            inline .adapters, .sessions, .history, .work_find => "",
             inline else => |carried| carried,
         };
     }
@@ -76,6 +80,8 @@ pub const table = [_]Entry{
     .{ .method = "POST", .pattern = "/sessions/{id}/settings", .verb = .settings },
     .{ .method = "POST", .pattern = "/sessions/{id}/close", .verb = .close },
     .{ .method = "GET", .pattern = "/sessions/{id}/events", .verb = .events },
+    .{ .method = "GET", .pattern = "/work", .verb = .work_find },
+    .{ .method = "GET", .pattern = "/work/sessions/{id}", .verb = .work_status },
 };
 
 const ShapeFailure = error{
@@ -161,6 +167,8 @@ fn build(verb: Verb, parameter: ?[]const u8) Route {
         .settings => .{ .settings = parameter.? },
         .close => .{ .close = parameter.? },
         .events => .{ .events = parameter.? },
+        .work_find => .{ .work_find = {} },
+        .work_status => .{ .work_status = parameter.? },
     };
 }
 
@@ -188,8 +196,8 @@ fn matched(arena: std.mem.Allocator, method: []const u8, path: []const u8) !Matc
     return route(arena, method, path);
 }
 
-test "the table is the draft's fourteen routes, one line each" {
-    try testing.expectEqual(@as(usize, 14), table.len);
+test "the table is the draft's sixteen routes, one line each" {
+    try testing.expectEqual(@as(usize, 16), table.len);
     const paths = [_][]const u8{
         "/adapters",
         "/adapters/{name}/capabilities",
@@ -205,6 +213,8 @@ test "the table is the draft's fourteen routes, one line each" {
         "/sessions/{id}/settings",
         "/sessions/{id}/close",
         "/sessions/{id}/events",
+        "/work",
+        "/work/sessions/{id}",
     };
     for (paths, 0..) |path, index| {
         try testing.expectEqualStrings(path, table[index].pattern);

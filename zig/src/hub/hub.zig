@@ -166,6 +166,21 @@ pub const Status = struct {
     created_at_ms: i64,
 };
 
+pub const WorkStatus = enum { queued, running, needs_you, done, failed, stopped };
+
+pub const Work = struct {
+    session_id: []const u8,
+    adapter: []const u8,
+    directory: []const u8,
+    status: WorkStatus,
+    run_id: []const u8 = "",
+    last_reply: []const u8 = "",
+    pending_interaction: []const u8 = "",
+    updated_at_ms: i64,
+};
+
+pub const last_reply_limit: usize = 4096;
+
 pub const Listed = struct {
     name: []const u8,
     revision: []const u8 = "",
@@ -501,6 +516,105 @@ pub const Hub = struct {
 
     fn byText(_: void, left: []const u8, right: []const u8) bool {
         return std.mem.lessThan(u8, left, right);
+    }
+
+    pub fn work(self: *Hub, arena: std.mem.Allocator, session_id: []const u8) Failure!Work {
+        const entry = self.findSession(session_id) orelse return error.UnknownSession;
+        return (try self.workOf(arena, entry)) orelse error.SessionClosed;
+    }
+
+    pub fn works(self: *Hub, arena: std.mem.Allocator) Failure![]Work {
+        var listed = std.ArrayList(Work).empty;
+        for (self.entries.items) |*entry| {
+            if (try self.workOf(arena, entry)) |found| try listed.append(arena, found);
+        }
+        std.mem.sort(Work, listed.items, {}, byRecentWork);
+        return listed.toOwnedSlice(arena);
+    }
+
+    fn byRecentWork(_: void, left: Work, right: Work) bool {
+        if (left.updated_at_ms != right.updated_at_ms) return left.updated_at_ms > right.updated_at_ms;
+        return std.mem.lessThan(u8, left.session_id, right.session_id);
+    }
+
+    fn workOf(self: *Hub, arena: std.mem.Allocator, entry: *Entry) Failure!?Work {
+        if (entry.session_closed) return null;
+        var refusal = contract.Refusal{};
+        const current = entry.session.state(arena, &refusal) catch |err| switch (err) {
+            error.SessionClosed => return null,
+            error.OutOfMemory => return error.OutOfMemory,
+            else => oap_types.SessionState{ .session_id = entry.session_id, .status = .@"error" },
+        };
+        var found = Work{
+            .session_id = entry.session_id,
+            .adapter = entry.adapter_name,
+            .directory = if (self.find(entry.adapter_name)) |registered| registered.directory else "",
+            .status = .done,
+            .run_id = current.active_run_id orelse "",
+            .updated_at_ms = current.updated_at_ms orelse entry.created_at_ms,
+        };
+        for (current.active_runs) |run| {
+            if (run.pending_interactions.len > 0) found.pending_interaction = run.pending_interactions[0];
+        }
+        switch (current.status) {
+            .closed => return null,
+            .queued => found.status = .queued,
+            .waiting_for_input => found.status = .needs_you,
+            .running => found.status = if (found.pending_interaction.len > 0) .needs_you else .running,
+            .@"error" => found.status = .failed,
+            .idle => try latestOutcome(arena, entry, &found),
+        }
+        return found;
+    }
+
+    fn latestOutcome(arena: std.mem.Allocator, entry: *const Entry, found: *Work) !void {
+        var index = entry.journal.items.len;
+        while (index > 0) {
+            index -= 1;
+            const kept = entry.journal.items[index];
+            const parsed = std.json.parseFromSliceLeaky(std.json.Value, arena, kept.line, .{}) catch |err| switch (err) {
+                error.OutOfMemory => return error.OutOfMemory,
+                else => continue,
+            };
+            if (parsed != .object) continue;
+            const kind = parsed.object.get("type") orelse continue;
+            if (kind != .string) continue;
+            const status: WorkStatus = if (std.mem.eql(u8, kind.string, "run.completed"))
+                .done
+            else if (std.mem.eql(u8, kind.string, "run.failed"))
+                .failed
+            else if (std.mem.eql(u8, kind.string, "run.cancelled"))
+                .stopped
+            else
+                continue;
+            found.status = status;
+            found.run_id = kept.run_id;
+            if (status == .done) found.last_reply = try replyText(arena, parsed.object.get("payload"));
+            return;
+        }
+    }
+
+    fn replyText(arena: std.mem.Allocator, payload: ?std.json.Value) ![]const u8 {
+        const body = payload orelse return "";
+        if (body != .object) return "";
+        const response = body.object.get("final_response") orelse return "";
+        if (response != .object) return "";
+        const content = response.object.get("content") orelse return "";
+        var text: []const u8 = "";
+        switch (content) {
+            .string => |plain| text = plain,
+            .array => |parts| {
+                var joined: std.ArrayList(u8) = .empty;
+                for (parts.items) |part| {
+                    if (part != .object) continue;
+                    const piece = part.object.get("text") orelse continue;
+                    if (piece == .string) try joined.appendSlice(arena, piece.string);
+                }
+                text = joined.items;
+            },
+            else => return "",
+        }
+        return text[0..@min(text.len, last_reply_limit)];
     }
 
     fn bySessionId(_: void, left: Status, right: Status) bool {

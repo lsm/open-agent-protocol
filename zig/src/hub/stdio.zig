@@ -29,6 +29,8 @@ pub const op_close = "close";
 pub const op_settings = "settings";
 pub const op_events = "events";
 pub const op_history = "history";
+pub const op_work_status = "work.status";
+pub const op_work_find = "work.find";
 
 pub const Error = error{
     MalformedLine,
@@ -741,6 +743,14 @@ pub const Frontend = struct {
             if (try request.only(arena, history_parameters)) |refusal| return .{ .refused = refusal };
             return self.history(arena, request.cursor, request.limit);
         }
+        if (std.mem.eql(u8, request.op, op_work_status)) {
+            if (try request.only(arena, session_parameter)) |refusal| return .{ .refused = refusal };
+            return self.workStatus(arena, request.session_id orelse "");
+        }
+        if (std.mem.eql(u8, request.op, op_work_find)) {
+            if (try request.only(arena, no_parameters)) |refusal| return .{ .refused = refusal };
+            return .{ .answer = try self.workFind(arena) };
+        }
         if (std.mem.eql(u8, request.op, op_capabilities)) {
             if (try request.only(arena, adapter_parameter)) |refusal| return .{ .refused = refusal };
             const name = request.adapter orelse "";
@@ -885,6 +895,61 @@ pub const Frontend = struct {
         try root.put(arena, "sessions", try jsonArray(arena, entries));
         if (page.next_cursor) |next| try root.put(arena, "next_cursor", .{ .string = next });
         return .{ .answer = .{ .object = root } };
+    }
+
+    pub fn workStatus(self: *Frontend, arena: std.mem.Allocator, session_id: []const u8) !Outcome {
+        const found = self.hub.work(arena, session_id) catch |err| {
+            return .{ .refused = try self.stateRefusal(arena, err, session_id) };
+        };
+        return .{ .answer = try workJson(arena, found) };
+    }
+
+    pub fn workFind(self: *Frontend, arena: std.mem.Allocator) !std.json.Value {
+        const found = try self.hub.works(arena);
+        var groups: std.ArrayList(std.json.Value) = .empty;
+        var directories: std.ArrayList([]const u8) = .empty;
+        var members: std.ArrayList(std.ArrayList(std.json.Value)) = .empty;
+        var latest: std.ArrayList(i64) = .empty;
+        for (found) |piece| {
+            const at = for (directories.items, 0..) |directory, index| {
+                if (std.mem.eql(u8, directory, piece.directory)) break index;
+            } else blk: {
+                try directories.append(arena, piece.directory);
+                try members.append(arena, .empty);
+                try latest.append(arena, piece.updated_at_ms);
+                break :blk directories.items.len - 1;
+            };
+            try members.items[at].append(arena, try workJson(arena, piece));
+        }
+        for (directories.items, members.items, latest.items) |directory, listed, last| {
+            var group = try emptyObject(arena);
+            try group.put(arena, "directory", .{ .string = directory });
+            try group.put(arena, "last_activity_ms", .{ .integer = last });
+            try group.put(arena, "work", try jsonArray(arena, listed.items));
+            try groups.append(arena, .{ .object = group });
+        }
+        var root = try emptyObject(arena);
+        try root.put(arena, "groups", try jsonArray(arena, groups.items));
+        return .{ .object = root };
+    }
+
+    fn workJson(arena: std.mem.Allocator, piece: hubmod.Work) !std.json.Value {
+        var ref = try emptyObject(arena);
+        try ref.put(arena, "adapter", .{ .string = piece.adapter });
+        try ref.put(arena, "session_id", .{ .string = piece.session_id });
+        var object = try emptyObject(arena);
+        try object.put(arena, "ref", .{ .object = ref });
+        try object.put(arena, "status", .{ .string = @tagName(piece.status) });
+        if (piece.directory.len > 0) try object.put(arena, "directory", .{ .string = piece.directory });
+        if (piece.run_id.len > 0) try object.put(arena, "run_id", .{ .string = piece.run_id });
+        if (piece.last_reply.len > 0) try object.put(arena, "last_reply", .{ .string = piece.last_reply });
+        try object.put(arena, "updated_at_ms", .{ .integer = piece.updated_at_ms });
+        if (piece.pending_interaction.len > 0) {
+            var pending = try emptyObject(arena);
+            try pending.put(arena, "interaction_id", .{ .string = piece.pending_interaction });
+            try object.put(arena, "pending", .{ .object = pending });
+        }
+        return .{ .object = object };
     }
 
     pub fn capabilities(self: *Frontend, arena: std.mem.Allocator, name: []const u8) !Outcome {
@@ -2787,6 +2852,73 @@ test "events acknowledges, then streams the run's envelopes on its own id and en
         try testing.expectEqualStrings("run-1", value.object.get("envelope").?.object.get("run_id").?.string);
     }
     try testing.expectEqual(@as(usize, 0), harness.frontend.streams.items.len);
+}
+
+const replied_line = "{" ++ event_head ++ ",\"type\":\"run.completed\",\"id\":\"e2\",\"session_id\":\"s1\",\"run_id\":\"run-1\",\"sequence\":2,\"payload\":{\"session_id\":\"s1\",\"run_id\":\"run-1\",\"final_response\":{\"id\":\"m1\",\"role\":\"assistant\",\"content\":\"pong\"}}}";
+const failed_line = "{" ++ event_head ++ ",\"type\":\"run.failed\",\"id\":\"e2\",\"session_id\":\"s1\",\"run_id\":\"run-1\",\"sequence\":2,\"payload\":{\"session_id\":\"s1\",\"run_id\":\"run-1\"}}";
+const cancelled_line = "{" ++ event_head ++ ",\"type\":\"run.cancelled\",\"id\":\"e2\",\"session_id\":\"s1\",\"run_id\":\"run-1\",\"sequence\":2,\"payload\":{\"session_id\":\"s1\",\"run_id\":\"run-1\"}}";
+
+fn workResult(harness: *Harness, id: i64) !std.json.ObjectMap {
+    try harness.send(try std.fmt.allocPrint(harness.arena(), "{{\"id\":{d},\"op\":\"work.status\",\"session_id\":\"s1\"}}", .{id}));
+    return (try harness.lastValue()).object.get("result").?.object;
+}
+
+test "work.status names an idle session that never ran done, a running one running, and a closed or absent one as state does" {
+    const harness = try Harness.init(testing.allocator, .{}, .{});
+    defer harness.deinit();
+    try harness.send(try openLine(harness.arena(), "reference", open_envelope));
+    const idle = try workResult(harness, 2);
+    try testing.expectEqualStrings("done", idle.get("status").?.string);
+    try testing.expectEqualStrings("s1", idle.get("ref").?.object.get("session_id").?.string);
+    try testing.expectEqualStrings("reference", idle.get("ref").?.object.get("adapter").?.string);
+    try testing.expect(idle.get("last_reply") == null);
+
+    try harness.send(try controlLine(harness.arena(), 3, op_submit, "s1", "{" ++ control_head ++ ",\"type\":\"session.message.submit.request\",\"id\":\"sub-1\",\"session_id\":\"s1\",\"payload\":{\"session_id\":\"s1\",\"delivery\":\"auto\",\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}]}}"));
+    const running = try workResult(harness, 4);
+    try testing.expectEqualStrings("running", running.get("status").?.string);
+    try testing.expectEqualStrings("run-1", running.get("run_id").?.string);
+
+    try harness.send("{\"id\":5,\"op\":\"work.status\",\"session_id\":\"absent\"}");
+    try testing.expectEqualStrings("unknown_session", try harness.code());
+}
+
+test "work.status of an idle session reads its latest run's terminal: completed is done with the reply, failed is failed, cancelled is stopped" {
+    const cases = [_]struct { line: []const u8, status: []const u8, reply: ?[]const u8 }{
+        .{ .line = replied_line, .status = "done", .reply = "pong" },
+        .{ .line = failed_line, .status = "failed", .reply = null },
+        .{ .line = cancelled_line, .status = "stopped", .reply = null },
+    };
+    for (cases) |case| {
+        const harness = try Harness.init(testing.allocator, .{}, .{});
+        defer harness.deinit();
+        defer reference_holder.pending_events = &.{};
+        try harness.send(try openLine(harness.arena(), "reference", open_envelope));
+        reference_holder.pending_events = &.{ .{ .line = started_line, .run_id = "run-1", .sequence = 1 }, .{ .line = case.line, .run_id = "run-1", .sequence = 2 } };
+        try harness.hub.pump(testing.allocator, 0);
+        reference_holder.pending_events = &.{};
+        const settled = try workResult(harness, 2);
+        try testing.expectEqualStrings(case.status, settled.get("status").?.string);
+        try testing.expectEqualStrings("run-1", settled.get("run_id").?.string);
+        if (case.reply) |reply| {
+            try testing.expectEqualStrings(reply, settled.get("last_reply").?.string);
+        } else {
+            try testing.expect(settled.get("last_reply") == null);
+        }
+    }
+}
+
+test "work.find groups the sessions it holds by directory and refuses a parameter it does not take" {
+    const harness = try Harness.init(testing.allocator, .{}, .{});
+    defer harness.deinit();
+    try harness.send(try openLine(harness.arena(), "reference", open_envelope));
+    try harness.send("{\"id\":2,\"op\":\"work.find\"}");
+    const groups = (try harness.lastValue()).object.get("result").?.object.get("groups").?.array.items;
+    try testing.expectEqual(@as(usize, 1), groups.len);
+    const work = groups[0].object.get("work").?.array.items;
+    try testing.expectEqual(@as(usize, 1), work.len);
+    try testing.expectEqualStrings("s1", work[0].object.get("ref").?.object.get("session_id").?.string);
+    try harness.send("{\"id\":3,\"op\":\"work.find\",\"session_id\":\"s1\"}");
+    try testing.expectEqualStrings("invalid_request", try harness.code());
 }
 
 test "events refuses an absent session ahead of everything, an unreadable cursor, a run without a cursor and a parameter it does not take" {
