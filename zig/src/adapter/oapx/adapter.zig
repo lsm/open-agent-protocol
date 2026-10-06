@@ -356,6 +356,7 @@ pub const Session = struct {
         const extended = if (request.extensions_json) |raw| try parseLiveSettings(arena, raw, refusal) else LiveSettings{};
         if (request.compaction_policy_json) |raw| _ = try compactAt(arena, raw, self.runtime, refusal);
         if (self.live() != null or self.queuedCount() > 0 or !self.runtime.isIdle()) return error.RunActive;
+        try checkLiveSettings(self.runtime, extended, refusal);
         var response = oap_types.SessionSettingsUpdateResponse{ .session_id = self.id };
         if (level) |chosen| {
             response.previous_reasoning_level = @tagName(self.runtime.thinkingLevel());
@@ -1276,7 +1277,7 @@ fn parseLiveSettings(arena: std.mem.Allocator, raw: []const u8, refusal: *contra
     return settings;
 }
 
-fn applyLiveSettings(runtime: *tui_runtime.TuiRuntime, settings: LiveSettings, refusal: *contract.Refusal) contract.Failure!void {
+fn checkLiveSettings(runtime: *tui_runtime.TuiRuntime, settings: LiveSettings, refusal: *contract.Refusal) contract.Failure!void {
     if (settings.context_window) |window| if (window == .tokens) {
         if (runtime.contextWindowMaximum()) |ceiling| {
             if (window.tokens > ceiling) return refusal.fail(error.InvalidSubmission, "context_window is above the model's window");
@@ -1287,6 +1288,9 @@ fn applyLiveSettings(runtime: *tui_runtime.TuiRuntime, settings: LiveSettings, r
             if (model.max_tokens > 0 and setting.tokens > model.max_tokens) return refusal.fail(error.InvalidSubmission, "output is above the model's output limit");
         }
     };
+}
+
+fn applyLiveSettings(runtime: *tui_runtime.TuiRuntime, settings: LiveSettings, refusal: *contract.Refusal) contract.Failure!void {
     if (settings.context_window) |window| runtime.setContextWindow(switch (window) {
         .default => null,
         .tokens => |count| count,
@@ -2921,7 +2925,7 @@ fn updateWith(harness: *Harness, extensions: []const u8, refusal: *contract.Refu
     return harness.session.vtable.update_settings.?(harness.session.ptr, harness.arena.allocator(), &request, refusal);
 }
 
-test "a live update sets the context window, a null clears it, and a refused update with two keys changes neither" {
+test "a live update sets the context window, a null clears it, and a refused update changes none of its keys, the reasoning level included" {
     var script = Script{};
     var harness: Harness = undefined;
     try harness.init(&script);
@@ -2934,6 +2938,8 @@ test "a live update sets the context window, a null clears it, and a refused upd
     _ = try updateWith(&harness, "{\"oapx\":{\"context_window\":null}}", &refusal);
     try testing.expectEqual(@as(?u32, null), runtime.contextWindowOverride());
 
+    try runtime.setThinkingLevel(.high);
     try testing.expectError(error.InvalidSubmission, updateWith(&harness, "{\"oapx\":{\"context_window\":2048,\"output\":4000000000}}", &refusal));
     try testing.expectEqual(@as(?u32, null), runtime.contextWindowOverride());
+    try testing.expectEqual(ai_types.ThinkingLevel.high, runtime.thinkingLevel());
 }
