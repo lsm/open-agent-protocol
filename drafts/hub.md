@@ -438,7 +438,7 @@ error. That is stated because the four reasons are the whole set.
 | `GET /sessions/{id}/events` | `events` | an SSE stream, adopting a held subscription when the request named no cursor | see [events](#events) |
 | `GET /work` | `work.list` | `{"groups":[...]}`, per [the work profile](work.md) | — |
 | `GET /work/sessions/{id}` | `work.status` | one piece of work, per [the work profile](work.md) | `unknown_session` 404, `session_closed` 409 |
-| `POST /adapters/{name}/work` | `work.start` | the new session's `work.status` | `invalid_request` 400, `unknown_adapter` 404, `unsupported_feature` 400, and an open's refusals |
+| `POST /adapters/{name}/work` | `work.start` | the new session's `work.status` | `invalid_request` 400 (a missing message, or a directory other than the adapter's, naming its `working_directory`), `unknown_adapter` 404, and an open's refusals |
 | `POST /work/sessions/{id}/send` | `work.send` | the session's `work.status` | `invalid_request` 400, and a submit's refusals |
 | `POST /work/sessions/{id}/stop` | `work.stop` | the session's `work.status` | `unknown_session` 404, `session_closed` 409, and a cancel's refusals |
 | `GET /work/sessions/{id}/read` | `work.read` | `{"turns":[...]}`, after `after` and up to `limit` (1 to 500, default 100) | `invalid_request` 400, `unknown_session` 404 |

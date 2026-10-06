@@ -364,7 +364,7 @@ test(
     assert.ok(['queued', 'running', 'needs_you', 'done'].includes(started.status), started.status);
     const sessionId = started.ref.session_id;
 
-    await assert.rejects(client.workStart('memory', { message: 'x', directory: '/nowhere' }), /unsupported_feature/);
+    await assert.rejects(client.workStart('memory', { message: 'x', directory: '/nowhere' }), /invalid_request/);
     await assert.rejects(client.workStatus('nope'), /unknown_session/);
 
     await client.workSend(sessionId, 'second');

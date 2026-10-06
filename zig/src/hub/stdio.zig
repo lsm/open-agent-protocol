@@ -1000,9 +1000,8 @@ pub const Frontend = struct {
         if (workParamsRefusal(params, "message")) |refusal| return .{ .refused = refusal };
         const configured = self.hub.adapterDirectory(adapter) orelse return .{ .refused = .{ .code = "unknown_adapter", .message = try std.fmt.allocPrint(arena, "no adapter is registered as \"{s}\"", .{adapter}) } };
         if (workText(params, "directory")) |directory| {
-            if (!std.mem.eql(u8, directory, configured)) return .{ .refused = try refusalWith(arena, "unsupported_feature", "a session runs in its adapter's working directory; another directory needs its own adapter entry", &.{
-                .{ .key = "feature", .value = "work.start.directory" },
-                .{ .key = "reason", .value = contract.reason_unsatisfiable },
+            if (!std.mem.eql(u8, directory, configured)) return .{ .refused = try refusalWith(arena, "invalid_request", "a session runs in its adapter's working directory; another directory needs its own adapter entry", &.{
+                .{ .key = "working_directory", .value = configured },
             }) };
         }
         var open_payload = try emptyObject(arena);
@@ -3120,7 +3119,7 @@ test "work.start refuses a missing message, an unknown adapter and a directory i
     try harness.send("{\"id\":2,\"op\":\"work.start\",\"adapter\":\"nope\",\"request\":{\"message\":\"go\"}}");
     try testing.expectEqualStrings("unknown_adapter", try harness.code());
     try harness.send("{\"id\":3,\"op\":\"work.start\",\"adapter\":\"reference\",\"request\":{\"message\":\"go\",\"directory\":\"/elsewhere\"}}");
-    try testing.expectEqualStrings("unsupported_feature", try harness.code());
+    try testing.expectEqualStrings("invalid_request", try harness.code());
     try testing.expectEqual(@as(usize, 0), harness.hub.sessionCount());
 }
 
