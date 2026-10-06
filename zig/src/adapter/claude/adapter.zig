@@ -9,6 +9,7 @@ const rpc = @import("rpc");
 const compat = @import("compat");
 const json_encode = @import("json_encode");
 
+pub const permission_hook = @import("permission_hook.zig");
 pub const endpoint_id = session.endpoint_id;
 pub const capability_revision = harness_pins.claude_code_capability_revision;
 pub const pinned_version = harness_pins.claude_code_endpoint_version;
@@ -1741,4 +1742,8 @@ test "a create exposes its native binding before the first turn" {
     const state = try opened.state(probe.arena.allocator(), &refusal);
     try testing.expect(std.mem.indexOf(u8, state.metadata_json.?, opened.nativeId()) != null);
     try testing.expect(!state.recovered);
+}
+
+test {
+    _ = permission_hook;
 }
