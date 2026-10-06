@@ -57,7 +57,7 @@ func run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 }
 
 func usage(w io.Writer) error {
-	fmt.Fprintln(w, "usage: goap <hub|serve|endpoint|conformance|validate|fixtures|demo|check|providers> [arguments]")
+	fmt.Fprintln(w, "usage: goap <serve|endpoint|conformance|validate|fixtures|demo|check|providers> [arguments]; hub is the old name of serve")
 	return errors.New("invalid command")
 }
 

@@ -1580,7 +1580,7 @@ def scenario_provider_https(args):
 def scenario_hub_attach(args):
     hub_home = tempfile.mkdtemp(prefix="makai-pty-hub-")
     hub = subprocess.Popen(
-        [args.binary, "hub", "--addr", "127.0.0.1:0"],
+        [args.binary, "serve", "--addr", "127.0.0.1:0"],
         stdout=subprocess.PIPE,
         stderr=subprocess.DEVNULL,
         env=dict(os.environ, HOME=hub_home),
@@ -1590,7 +1590,7 @@ def scenario_hub_attach(args):
     try:
         line = hub.stdout.readline().decode("utf-8", "replace").strip()
         if not line.startswith("listening on "):
-            raise ScenarioError(f"hub-attach: oapx hub did not report its address, said {line!r}")
+            raise ScenarioError(f"hub-attach: oapx serve did not report its address, said {line!r}")
         url = line[len("listening on "):]
         run = SweepRun(args, "hub-attach", "", use_fixture=False, argv=["tui", "--attach", url, "--adapter", "memory"])
         run.session.wait_for(WELCOME_MARKER, args.startup_timeout, "welcome banner")
@@ -1614,7 +1614,7 @@ def scenario_hub_attach(args):
         run.session.send(KEY_ENTER, "Enter (/compact)")
         run.session.wait_for(b"conversation compacted", 10.0, "the hub run's compaction", since=compacted_from)
         run.frame("compacted-over-the-hub")
-        run.note("oapx tui --attach drives a memory session on a running oapx hub: the run streams, its approval prompt resolves over the hub's resolve route, Esc cancels the run, and /compact runs the endpoint's compaction over the hub's submit route")
+        run.note("oapx tui --attach drives a memory session on a running oapx serve: the run streams, its approval prompt resolves over the hub's resolve route, Esc cancels the run, and /compact runs the endpoint's compaction over the hub's submit route")
     except ScenarioError as err:
         if run is None:
             raise

@@ -320,31 +320,31 @@ adapter's pin — which makes it the first native adapter to exercise the
 degraded opt-in end to end. The reference adapter serves the fixed catalog its
 model gate already enforces.
 
-### Local daemon (`goap hub`)
+### Local daemon (`goap serve`)
 
-`goap hub` is this repository's own command and is **not installed**: run it
-with `go run`. The same verb is `oapx hub` on the released binary. It carries
+`goap serve` is this repository's own command and is **not installed**: run it
+with `go run`. The same verb is `oapx serve` on the released binary; `hub` is its old name and still works. It carries
 the stdio transport and the registry config (`--config`), and its HTTP daemon
 (`--addr`) binds, holds the trust model below, and answers every route with a
 plain `404` until the routes themselves land — so what the two share is the
 registry, the refusals and the shutdown, not the route table. [Decision 0038](decisions/0038-one-released-binary-and-a-library-for-every-language.md)
 is why there is one released binary, and a library for every language.
 
-`goap hub` exposes the adapter registry over HTTP + Server-Sent Events so any
+`goap serve` exposes the adapter registry over HTTP + Server-Sent Events so any
 client — not only Go hosts — can drive any OAP adapter. The daemon is a thin
 HTTP+SSE codec (`serve/servehttp`) over the embeddable `serve` package; its
 wire behavior is the contract the `client` package proves:
 
 **`go/serve` is the library, and it is for in-process hosts.** A Go host that
 wants the hub driven inside its own test binary imports `go/serve` and calls it
-directly — no socket, no port, no second process. `oapx hub` is the product's
+directly — no socket, no port, no second process. `oapx serve` is the product's
 daemon; on the **stdio** wire the two answer identically, and `go/cmd/goap`'s
 differential asserts that rather than assuming it. It does not extend to HTTP:
-`oapx hub --addr` answers every route `404` until the route table lands, so an
-HTTP+SSE client such as `clients/ts` is served by `goap hub` today.
+`oapx serve --addr` answers every route `404` until the route table lands, so an
+HTTP+SSE client such as `clients/ts` is served by `goap serve` today.
 
 ```sh
-go run ./go/cmd/goap hub [--config examples/oap-serve.json] [--addr 127.0.0.1:6270]
+go run ./go/cmd/goap serve [--config examples/oap-serve.json] [--addr 127.0.0.1:6270]
 ```
 
 Without `--config` the daemon serves the built-in memory reference adapter
@@ -456,13 +456,13 @@ and closes every session inside a bounded window — active runs that refuse
 Close are cancelled first — so child agent processes are settled rather than
 orphaned.
 
-### Subprocess embedding (`goap hub --stdio`)
+### Subprocess embedding (`goap serve --stdio`)
 
 A host that would rather spawn a child process than manage a port gets the
 same surface over newline-delimited JSON on the process's own pipes:
 
 ```sh
-go run ./go/cmd/goap hub --stdio [--config examples/oap-serve.json]
+go run ./go/cmd/goap serve --stdio [--config examples/oap-serve.json]
 ```
 
 Spawning the process is the authorization, so there is no port, no TLS and no
@@ -641,7 +641,7 @@ boundary, exactly as `servehttp` does against the bundled schema.
 
 Pick the tier that fits: `adapter.Session` directly for one embedded session
 (a single run stream with a single consumer, replay through `Resume`);
-`serve` for multi-adapter, multi-session hosts in process; `goap hub` plus
+`serve` for multi-adapter, multi-session hosts in process; `goap serve` plus
 `client` for out-of-process or non-Go consumers over HTTP + SSE.
 
 ### Depending on the Go library
@@ -685,7 +685,7 @@ answer interactions itself.
 ### Go client (`client`)
 
 The `client` package is the far-side conformance proof for that wire: a public
-Go client that drives `goap hub` over HTTP + SSE, and the template later
+Go client that drives `goap serve` over HTTP + SSE, and the template later
 clients (TypeScript) copy. It speaks verbatim schema/v0.1 envelopes, consumes
 the event stream through a real `text/event-stream` parser, and resolves
 interactive gates as participant `user` by default:
@@ -815,7 +815,7 @@ Every adapter in this repository translates a harness *into* OAP. An endpoint
 is the other direction: one agent loop that speaks OAP itself.
 
 `drafts/endpoint-stdio.md` is the binding — OAP envelopes, one per line, over
-stdin and stdout. It is deliberately narrower than `goap hub --stdio`, which
+stdin and stdout. It is deliberately narrower than `goap serve --stdio`, which
 exposes a hub; an implementer should not have to build a registry, thirteen ops
 and multiplexed subscriptions to be conformant.
 
