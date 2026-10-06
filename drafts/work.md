@@ -87,10 +87,13 @@ Request `{"ref": <reference>}`. Answer:
   "title": "...",
   "run_id": "run-3",
   "last_reply": "...",
-  "updated_at_ms": 1791300000000,
-  "pending": {"kind": "permission", "interaction_id": "...", "summary": "..."}
+  "updated_at_ms": 1791300000000
 }
 ```
+
+A session waiting on a prompt answers `"status": "needs_you"` with
+`"pending": {"kind": "permission", "interaction_id": "...", "summary": "..."}`
+and no `last_reply`.
 
 `title` is the title `work.start` was given, which `serve` keeps for as long
 as it holds the session; a session opened any other way has none, and the

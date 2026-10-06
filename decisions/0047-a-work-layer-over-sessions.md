@@ -1,6 +1,8 @@
 # Decision 0047: A Work Layer Over Sessions
 
-Status: proposed
+Status: proposed (the owner answered its four open questions on 2026-10-06;
+see "Owner answers". Nothing in it is executable beyond `work.status` and
+`work.find` over held sessions, #919)
 Date: 2026-10-06
 Protocol: `open-agent-protocol` version `0.1`
 Profile: a new `open-agent-protocol.work` profile over
