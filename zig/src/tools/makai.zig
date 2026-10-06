@@ -1421,8 +1421,11 @@ const HubRegistry = struct {
     surface: ConfigSurface,
     production: ?*tui_app.ProductionRuntime = null,
     memories: std.ArrayList(*memory_adapter.Adapter) = .empty,
+    claudes: std.ArrayList(*claude_adapter.Adapter) = .empty,
 
     fn deinit(self: *HubRegistry) void {
+        for (self.claudes.items) |claude| claude.deinit();
+        self.claudes.deinit(self.allocator);
         if (self.production) |production| {
             production.deinit();
             self.allocator.destroy(production);
@@ -1448,6 +1451,7 @@ const HubRegistry = struct {
             const config = claudeBackendConfig(self.surface, arena, entry, self.environ) catch |failure| return self.reported(failure);
             const built = try arena.create(claude_adapter.Adapter);
             built.* = claude_adapter.Adapter.init(self.allocator, config);
+            try self.claudes.append(self.allocator, built);
             return built.adapter();
         }
         if (std.mem.eql(u8, entry.kind, "codex")) {

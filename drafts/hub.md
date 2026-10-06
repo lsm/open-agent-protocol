@@ -646,7 +646,7 @@ needs a whole-body deadline, which is not what either tree has.
 the same for a path no pattern matches, and the draft's codes are
 `invalid_request`, `unknown_adapter` and `unknown_session` — none of which is
 "this URL does not exist". So the answer carries no `error.response` envelope.
-The fourteen core routes are written in both trees, and the two work routes in
+The fourteen core routes are written in both trees, and the six work routes in
 Zig only (D30): Zig dispatches each to the same
 `Frontend` operation the stdio op runs, so an answer's shape is shared rather
 than written twice. A path that is a route asked with another method answers

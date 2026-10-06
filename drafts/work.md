@@ -97,8 +97,10 @@ Request `{"ref": <reference>}`. Answer:
 ```
 
 A session waiting on a prompt answers `"status": "needs_you"` with
-`"pending": {"kind": "permission", "interaction_id": "...", "summary": "..."}`
-and no `last_reply`.
+`"pending": {"interaction_id": "..."}`, the id the core's resolve takes. A
+`kind` and a `summary` of what is asked are a later addition. A piece also
+carries `link` when its adapter can name one (`codex://threads/<id>`,
+`claude://claude.ai/epitaxy/<local id>`).
 
 `title` is the title `work.start` was given, which `serve` keeps for as long
 as it holds the session; a session opened any other way has none, and the

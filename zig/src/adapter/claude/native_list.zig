@@ -63,11 +63,16 @@ pub fn appLink(arena: std.mem.Allocator, local_id: []const u8) ![]const u8 {
     return std.fmt.allocPrint(arena, "claude://claude.ai/epitaxy/{s}", .{local_id});
 }
 
-pub fn linkFor(arena: std.mem.Allocator, desktop_sessions: []const u8, native_id: []const u8) ![]const u8 {
-    const records = try desktopRecords(arena, desktop_sessions);
-    const known = records.get(native_id) orelse return "";
-    if (known.local_id.len == 0) return "";
-    return appLink(arena, known.local_id);
+pub fn localIds(arena: std.mem.Allocator, desktop_sessions: []const u8) std.mem.Allocator.Error!std.StringHashMapUnmanaged([]const u8) {
+    var ids: std.StringHashMapUnmanaged([]const u8) = .empty;
+    const records = desktopRecords(arena, desktop_sessions) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+    };
+    var iterator = records.iterator();
+    while (iterator.next()) |entry| {
+        if (entry.value_ptr.local_id.len > 0) try ids.put(arena, entry.key_ptr.*, entry.value_ptr.local_id);
+    }
+    return ids;
 }
 
 fn newer(_: void, left: contract.NativeSession, right: contract.NativeSession) bool {

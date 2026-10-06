@@ -135,10 +135,15 @@ fn monotonic() u64 {
     return compat.time.monotonicNanos() catch 0;
 }
 
+const link_cache_ns: u64 = 10 * std.time.ns_per_s;
+
 pub const Adapter = struct {
     allocator: std.mem.Allocator,
     config: Config,
     ids: usize = 0,
+    links: ?std.heap.ArenaAllocator = null,
+    link_records: std.StringHashMapUnmanaged([]const u8) = .empty,
+    links_read_at: u64 = 0,
 
     pub fn init(allocator: std.mem.Allocator, config: Config) Adapter {
         return .{ .allocator = allocator, .config = config };
@@ -149,13 +154,26 @@ pub const Adapter = struct {
     }
 
     fn nativeLink(ptr: *anyopaque, arena: std.mem.Allocator, native_id: []const u8) std.mem.Allocator.Error![]const u8 {
-        _ = ptr;
+        const self: *Adapter = @ptrCast(@alignCast(ptr));
         if (builtin.os.tag != .macos) return "";
-        const home = compat.getEnvVarOwned(arena, "HOME") catch return "";
-        const desktop = try std.fs.path.join(arena, &.{ home, "Library", "Application Support", "Claude", "claude-code-sessions" });
-        return native_list.linkFor(arena, desktop, native_id) catch |err| switch (err) {
-            error.OutOfMemory => return error.OutOfMemory,
-        };
+        const now = monotonic();
+        if (self.links == null or now -| self.links_read_at > link_cache_ns) {
+            if (self.links) |*old| old.deinit();
+            self.links = std.heap.ArenaAllocator.init(self.allocator);
+            self.link_records = .empty;
+            self.links_read_at = now;
+            const kept = self.links.?.allocator();
+            const home = compat.getEnvVarOwned(kept, "HOME") catch return "";
+            const desktop = try std.fs.path.join(kept, &.{ home, "Library", "Application Support", "Claude", "claude-code-sessions" });
+            self.link_records = try native_list.localIds(kept, desktop);
+        }
+        const local_id = self.link_records.get(native_id) orelse return "";
+        return native_list.appLink(arena, local_id);
+    }
+
+    pub fn deinit(self: *Adapter) void {
+        if (self.links) |*kept| kept.deinit();
+        self.links = null;
     }
 
     fn nativeList(ptr: *anyopaque, arena: std.mem.Allocator, request: contract.NativeListRequest, refusal: *contract.Refusal) contract.Failure![]const contract.NativeSession {
