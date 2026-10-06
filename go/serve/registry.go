@@ -87,6 +87,7 @@ var adapterMembers = []string{
 	"type", "executable", "args", "environment", "working_directory", "model",
 	"journal_capacity", "allowed_tools", "unrestricted_tools", "approval_policy",
 	"sandbox", "provider", "max_tokens", "agent_config", "system_prompt", "endpoint", "agent",
+	"any_directory",
 }
 
 var toolSourceMembers = []string{"kind", "display_name", "protocol", "endpoint", "command", "args", "environment"}

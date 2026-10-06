@@ -51,6 +51,17 @@ func TestLoadRegistryMemory(t *testing.T) {
 	}
 }
 
+func TestLoadRegistryReadsAnyDirectoryAndServesTheEntryAsWritten(t *testing.T) {
+	path := writeConfig(t, `{"adapters": {"memory": {"type": "memory", "any_directory": true}}}`)
+	registry, err := LoadRegistry(path, os.LookupEnv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := registry.Lookup("memory"); !ok {
+		t.Fatal("memory adapter missing")
+	}
+}
+
 func TestLoadRegistryRefusesCaseVariantMembers(t *testing.T) {
 	for name, test := range map[string]struct{ document, want string }{
 		"top-level":   {`{"Adapters": {}}`, `config: the file: unknown field "Adapters"`},
