@@ -478,6 +478,33 @@ pub fn controlRefusal(arena: std.mem.Allocator, err: hubmod.Failure, reported: *
     };
 }
 
+fn withAdmittedRun(arena: std.mem.Allocator, state: oap_types.SessionState, admission: oap_types.MessageSubmitResponse, request_id: []const u8) !oap_types.SessionState {
+    const run_id = admission.run_id orelse return state;
+    const status = admission.status orelse .running;
+    var position: u64 = 1;
+    for (state.active_runs) |active| {
+        if (active.status == .queued) position += 1;
+    }
+    const runs = try arena.alloc(oap_types.ActiveRun, state.active_runs.len + 1);
+    @memcpy(runs[0..state.active_runs.len], state.active_runs);
+    runs[state.active_runs.len] = .{
+        .run_id = run_id,
+        .status = status,
+        .relationship = "primary",
+        .queue_position = if (status == .queued) position else null,
+        .admitted_submit_requests = if (request_id.len > 0) try arena.dupe([]const u8, &.{request_id}) else &.{},
+    };
+    var next = state;
+    next.active_runs = runs;
+    if (status != .queued) {
+        next.active_run_id = run_id;
+        next.status = .running;
+    } else if (state.status == .idle) {
+        next.status = .queued;
+    }
+    return next;
+}
+
 pub const Frontend = struct {
     hub: *Hub,
     sink: Sink,
@@ -1178,10 +1205,6 @@ pub const Frontend = struct {
                 }
             }
         }
-        if (open.message_json != null) {
-            envelope.deinit(arena);
-            return .{ .refused = .{ .code = "unsupported_feature", .message = "an open carrying a message is refused until submit lands" } };
-        }
         var refused: hubmod.OpenRefusal = .{};
         const opened = self.hub.openReporting(arena, adapter, .{
             .session_id = open.session_id orelse "",
@@ -1209,14 +1232,32 @@ pub const Frontend = struct {
                 };
             }
         }
+        var opened_state = opened.state;
+        if (open.message_json) |message| {
+            const admitted = self.admitAtOpen(arena, opened.session_id, envelope.id, message) catch |err| {
+                if (!holding) if (opened.subscription) |subscription| subscription.close();
+                self.hub.discardSession(opened.session_id);
+                envelope.deinit(arena);
+                return err;
+            };
+            switch (admitted) {
+                .refused => |refusal| {
+                    if (!holding) if (opened.subscription) |subscription| subscription.close();
+                    self.hub.discardSession(opened.session_id);
+                    envelope.deinit(arena);
+                    return .{ .refused = refusal };
+                },
+                .admitted => |admission| opened_state = try withAdmittedRun(arena, opened_state, admission, envelope.id),
+            }
+        }
         self.next_envelope += 1;
         const answer_id = try std.fmt.allocPrint(arena, "oap-response-{d}", .{self.next_envelope});
         const opened_envelope = oap_types.Envelope{
             .id = answer_id,
             .in_reply_to = envelope.id,
-            .session_id = opened.state.session_id,
+            .session_id = opened_state.session_id,
             .capability_revision = if (open.subscribe or open.reopen or contract.carriesEntries(open.tool_sources_json)) opened.revision else envelope.capability_revision,
-            .payload = .{ .session_open_response = opened.state },
+            .payload = .{ .session_open_response = opened_state },
         };
         const line = try oap_envelope.serializeEnvelope(opened_envelope, arena);
         envelope.deinit(arena);
@@ -1232,6 +1273,38 @@ pub const Frontend = struct {
         };
         try self.pumpStreams();
         return .streaming;
+    }
+
+    const Admitted = union(enum) {
+        refused: Refusal,
+        admitted: oap_types.MessageSubmitResponse,
+    };
+
+    fn admitAtOpen(self: *Frontend, arena: std.mem.Allocator, session_id: []const u8, request_id: []const u8, message_json: []const u8) Error!Admitted {
+        const not_a_submission = Refusal{ .code = "invalid_payload", .message = "the open's message is not a submission this session can admit" };
+        const parsed = std.json.parseFromSliceLeaky(std.json.Value, arena, message_json, .{}) catch return .{ .refused = not_a_submission };
+        if (parsed != .object) return .{ .refused = not_a_submission };
+        var payload = parsed.object;
+        try payload.put(arena, "session_id", .{ .string = session_id });
+        var root = try emptyObject(arena);
+        try root.put(arena, "protocol", .{ .string = "open-agent-protocol" });
+        try root.put(arena, "version", .{ .string = "0.1" });
+        try root.put(arena, "profile", .{ .string = "open-agent-protocol.agent-control-core" });
+        try root.put(arena, "type", .{ .string = "session.message.submit.request" });
+        try root.put(arena, "id", .{ .string = request_id });
+        try root.put(arena, "session_id", .{ .string = session_id });
+        try root.put(arena, "payload", .{ .object = payload });
+        const line = json_encode.valueAlloc(arena, .{ .object = root }) catch return error.OutOfMemory;
+        var submit = oap_envelope.deserializeEnvelope(line, arena) catch |err| {
+            if (err == error.OutOfMemory) return error.OutOfMemory;
+            return .{ .refused = not_a_submission };
+        };
+        if (submit.payload != .message_submit_request) return .{ .refused = not_a_submission };
+        var reported = contract.Refusal{};
+        const admission = self.hub.submitReporting(arena, session_id, &submit.payload.message_submit_request, request_id, &reported) catch |err| {
+            return .{ .refused = try controlRefusal(arena, err, &reported, session_id) };
+        };
+        return .{ .admitted = admission };
     }
 
     fn openRefusal(
@@ -1783,6 +1856,7 @@ const ReferenceState = struct {
     lister_closed: bool = false,
     closed: bool = false,
     pending_events: []const contract.Event = &.{},
+    submit_fails: bool = false,
 };
 
 var reference_holder: ReferenceState = .{};
@@ -1878,6 +1952,7 @@ fn referenceSubmit(ptr: *anyopaque, arena: std.mem.Allocator, request: *const oa
     const state: *ReferenceState = @ptrCast(@alignCast(ptr));
     _ = request;
     _ = refusal;
+    if (state.submit_fails) return error.InvalidSubmission;
     state.running = true;
     const session_id = try arena.dupe(u8, referenceId(state));
     const submission = try arena.dupe(u8, "s1");
@@ -2701,6 +2776,30 @@ test "the control ops refuse as the HTTP routes do: an absent session, a missing
     try testing.expectEqualStrings("unsupported_feature", try harness.code());
 }
 
+const message_open = "{\"protocol\":\"open-agent-protocol\",\"version\":\"0.1\",\"profile\":\"open-agent-protocol.agent-control-core\",\"type\":\"session.open.request\",\"id\":\"o1\",\"payload\":{\"session_id\":\"m\",\"message\":{\"messages\":[{\"role\":\"user\",\"content\":\"go\"}],\"delivery\":\"auto\"}}}";
+
+test "an open carrying a message admits it, and the answer names the run it started and the open that admitted it" {
+    const harness = try Harness.init(testing.allocator, .{}, .{});
+    defer harness.deinit();
+    try harness.send(try openLine(harness.arena(), "reference", message_open));
+    const payload = (try openResult(harness)).get("payload").?.object;
+    try testing.expectEqualStrings("running", payload.get("status").?.string);
+    try testing.expectEqualStrings("run-1", payload.get("active_run_id").?.string);
+    const run = payload.get("active_runs").?.array.items[0].object;
+    try testing.expectEqualStrings("run-1", run.get("run_id").?.string);
+    try testing.expectEqualStrings("o1", run.get("admitted_submit_requests").?.array.items[0].string);
+}
+
+test "an open whose message the adapter refuses is refused whole, and leaves no session behind" {
+    const harness = try Harness.init(testing.allocator, .{}, .{});
+    defer harness.deinit();
+    reference_holder.submit_fails = true;
+    defer reference_holder.submit_fails = false;
+    try harness.send(try openLine(harness.arena(), "reference", message_open));
+    try testing.expectEqualStrings("invalid_submission", try harness.code());
+    try testing.expect(!harness.hub.knows("m"));
+}
+
 test "an open answers with the request envelope's own id and the session it made" {
     const harness = try Harness.init(testing.allocator, .{}, .{});
     defer harness.deinit();
@@ -2926,7 +3025,6 @@ test "the refusals the open gate and the payload read name" {
         .{ .line = "{\"id\":1,\"op\":\"open\",\"adapter\":\"nope\",\"request\":{\"protocol\":\"open-agent-protocol\",\"version\":\"0.1\",\"profile\":\"open-agent-protocol.agent-control-core\",\"type\":\"session.open.request\",\"id\":\"o1\",\"payload\":{\"session_id\":\"z\"}}}", .code = "unknown_adapter" },
         .{ .line = "{\"id\":1,\"op\":\"open\",\"adapter\":\"reference\",\"request\":7}", .code = "malformed_json" },
         .{ .line = "{\"id\":1,\"op\":\"open\",\"adapter\":\"reference\",\"request\":[]}", .code = "malformed_json" },
-        .{ .line = "{\"id\":1,\"op\":\"open\",\"adapter\":\"reference\",\"request\":{\"protocol\":\"open-agent-protocol\",\"version\":\"0.1\",\"profile\":\"open-agent-protocol.agent-control-core\",\"type\":\"session.open.request\",\"id\":\"o1\",\"payload\":{\"session_id\":\"m\",\"message\":{\"messages\":[{\"role\":\"user\",\"content\":\"go\"}],\"delivery\":\"auto\"}}}}", .code = "unsupported_feature" },
     };
     for (cases) |case| {
         const harness = try Harness.init(testing.allocator, .{}, .{});
