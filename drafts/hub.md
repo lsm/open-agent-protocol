@@ -436,7 +436,7 @@ error. That is stated because the four reasons are the whole set.
 | `POST /sessions/{id}/settings` | `settings` | `session.settings.update.response` | see [settings](#settings) |
 | `POST /sessions/{id}/close` | `close` | `204 No Content`, no body | `unknown_session` 404, `run_active` 409, `session_closed` 409, `request_cancelled` 400, `internal` 500 |
 | `GET /sessions/{id}/events` | `events` | an SSE stream, adopting a held subscription when the request named no cursor | see [events](#events) |
-| `GET /work` | `work.find` | `{"groups":[...]}`, per [the work profile](work.md) | — |
+| `GET /work` | `work.list` | `{"groups":[...]}`, per [the work profile](work.md) | — |
 | `GET /work/sessions/{id}` | `work.status` | one piece of work, per [the work profile](work.md) | `unknown_session` 404, `session_closed` 409 |
 
 **The daemon serves a bounded number of connections at once, and a stream is
@@ -2024,13 +2024,13 @@ are "stamped with the revision the lister served it under", and both name
 | **Zig does** | Accepts `unix://<path>`: the adapter starts `oapx codex-bridge --sock <path>` in place of `codex app-server`, and the bridge relays the adapter's newline-framed JSON-RPC to that socket's WebSocket. Any other scheme is refused, and so is an entry naming an `endpoint` beside an `executable` or `args`. The relay runs whatever Codex version the daemon is (0.159.2 when probed), not the pinned corpus version: the adapter does not check it. |
 | **Why it matters** | A document naming a codex `endpoint` is not portable between the hubs. Closing it needs the same relay in Go. |
 
-### D30 — `work.status` and `work.find` are served by `oapx serve` and not by `goap serve`
+### D30 — `work.status` and `work.list` are served by `oapx serve` and not by `goap serve`
 
 | | |
 | --- | --- |
-| **The draft says** | `serve` answers the work profile's verbs ([work](work.md)), starting with `work.status` and `work.find` over the sessions it holds. |
+| **The draft says** | `serve` answers the work profile's verbs ([work](work.md)), starting with `work.status` and `work.list` over the sessions it holds. |
 | **Go does** | Has neither op nor route: `GET /work` answers `404`. |
-| **Zig does** | Serves both on both transports. A piece of work's status is projected from the session's state and, when it is idle, the latest terminal envelope in its journal; `last_reply` is the latest `run.completed`'s `final_response` text, cut at 4 KiB. `work.find` groups by the adapter's working directory, most recent first, with no filters or paging yet. |
+| **Zig does** | Serves both on both transports. A piece of work's status is projected from the session's state and, when it is idle, the latest terminal envelope in its journal; `last_reply` is the latest `run.completed`'s `final_response` text, cut at 4 KiB. `work.list` groups by the adapter's working directory, most recent first, with no filters or paging yet. |
 | **Why it matters** | A caller of the work profile has to use `oapx serve` until Go serves it. |
 
 ### D12 — an open's `unsupported_feature` and `capability_degraded` carried no `feature`

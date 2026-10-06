@@ -30,7 +30,7 @@ pub const op_settings = "settings";
 pub const op_events = "events";
 pub const op_history = "history";
 pub const op_work_status = "work.status";
-pub const op_work_find = "work.find";
+pub const op_work_list = "work.list";
 
 pub const Error = error{
     MalformedLine,
@@ -747,9 +747,9 @@ pub const Frontend = struct {
             if (try request.only(arena, session_parameter)) |refusal| return .{ .refused = refusal };
             return self.workStatus(arena, request.session_id orelse "");
         }
-        if (std.mem.eql(u8, request.op, op_work_find)) {
+        if (std.mem.eql(u8, request.op, op_work_list)) {
             if (try request.only(arena, no_parameters)) |refusal| return .{ .refused = refusal };
-            return .{ .answer = try self.workFind(arena) };
+            return .{ .answer = try self.workList(arena) };
         }
         if (std.mem.eql(u8, request.op, op_capabilities)) {
             if (try request.only(arena, adapter_parameter)) |refusal| return .{ .refused = refusal };
@@ -904,7 +904,7 @@ pub const Frontend = struct {
         return .{ .answer = try workJson(arena, found) };
     }
 
-    pub fn workFind(self: *Frontend, arena: std.mem.Allocator) !std.json.Value {
+    pub fn workList(self: *Frontend, arena: std.mem.Allocator) !std.json.Value {
         const found = try self.hub.works(arena);
         var groups: std.ArrayList(std.json.Value) = .empty;
         var directories: std.ArrayList([]const u8) = .empty;
@@ -2882,8 +2882,8 @@ test "work.status names an idle session that never ran done, a running one runni
     try testing.expectEqualStrings("unknown_session", try harness.code());
 }
 
-test "work.status answers session_closed for a session it finds closed, releases it, and is then unknown; work.find releases it too" {
-    for ([_][]const u8{ "work.status", "work.find" }) |op| {
+test "work.status answers session_closed for a session it finds closed, releases it, and is then unknown; work.list releases it too" {
+    for ([_][]const u8{ "work.status", "work.list" }) |op| {
         const harness = try Harness.init(testing.allocator, .{}, .{});
         defer harness.deinit();
         try harness.send(try openLine(harness.arena(), "reference", open_envelope));
@@ -2895,7 +2895,7 @@ test "work.status answers session_closed for a session it finds closed, releases
             try harness.send("{\"id\":3,\"op\":\"work.status\",\"session_id\":\"s1\"}");
             try testing.expectEqualStrings("unknown_session", try harness.code());
         } else {
-            try harness.send("{\"id\":2,\"op\":\"work.find\"}");
+            try harness.send("{\"id\":2,\"op\":\"work.list\"}");
             try testing.expectEqual(@as(usize, 0), (try harness.lastValue()).object.get("result").?.object.get("groups").?.array.items.len);
         }
         try testing.expectEqual(@as(usize, 0), harness.hub.sessionCount());
@@ -2927,17 +2927,17 @@ test "work.status of an idle session reads its latest run's terminal: completed 
     }
 }
 
-test "work.find groups the sessions it holds by directory and refuses a parameter it does not take" {
+test "work.list groups the sessions it holds by directory and refuses a parameter it does not take" {
     const harness = try Harness.init(testing.allocator, .{}, .{});
     defer harness.deinit();
     try harness.send(try openLine(harness.arena(), "reference", open_envelope));
-    try harness.send("{\"id\":2,\"op\":\"work.find\"}");
+    try harness.send("{\"id\":2,\"op\":\"work.list\"}");
     const groups = (try harness.lastValue()).object.get("result").?.object.get("groups").?.array.items;
     try testing.expectEqual(@as(usize, 1), groups.len);
     const work = groups[0].object.get("work").?.array.items;
     try testing.expectEqual(@as(usize, 1), work.len);
     try testing.expectEqualStrings("s1", work[0].object.get("ref").?.object.get("session_id").?.string);
-    try harness.send("{\"id\":3,\"op\":\"work.find\",\"session_id\":\"s1\"}");
+    try harness.send("{\"id\":3,\"op\":\"work.list\",\"session_id\":\"s1\"}");
     try testing.expectEqualStrings("invalid_request", try harness.code());
 }
 
