@@ -6611,6 +6611,23 @@ pub fn main(init: std.process.Init) !void {
         return;
     }
 
+    if (std.mem.eql(u8, args[1], "codex-bridge")) {
+        if (args.len != 4 or !std.mem.eql(u8, args[2], "--sock")) {
+            try compat.stdio.writeAll(stderr, "usage: oapx codex-bridge --sock <path>\n");
+            return error.InvalidArgument;
+        }
+        if (comptime @import("builtin").os.tag == .windows) {
+            try compat.stdio.writeAll(stderr, "oapx codex-bridge: Codex's control socket is a Unix socket; this platform has none\n");
+            std.process.exit(1);
+        }
+        codex_adapter.bridge.run(allocator, args[3], std.posix.STDIN_FILENO, std.posix.STDOUT_FILENO) catch |err| {
+            var line_buffer: [128]u8 = undefined;
+            try compat.stdio.writeAll(stderr, std.fmt.bufPrint(&line_buffer, "oapx codex-bridge: {s}\n", .{@errorName(err)}) catch "oapx codex-bridge: failed\n");
+            std.process.exit(1);
+        };
+        return;
+    }
+
     if (std.mem.eql(u8, args[1], "validate")) {
         const failed = runValidate(allocator, args[2..], stdout, stderr) catch |err| {
             if (err == error.Unavailable) std.process.exit(1);
@@ -7047,9 +7064,7 @@ test "the built-in fallback rows publish no lifecycle, because none states one" 
         }
     }
 
-    const request = try std.fmt.allocPrint(allocator,
-        "{{\"protocol\":\"open-agent-protocol\",\"version\":\"0.1\",\"profile\":\"{s}\",\"type\":\"provider.models.list.request\",\"id\":\"q1\",\"payload\":{{}}}}",
-        .{oap_provider_types.PROFILE});
+    const request = try std.fmt.allocPrint(allocator, "{{\"protocol\":\"open-agent-protocol\",\"version\":\"0.1\",\"profile\":\"{s}\",\"type\":\"provider.models.list.request\",\"id\":\"q1\",\"payload\":{{}}}}", .{oap_provider_types.PROFILE});
     defer allocator.free(request);
     try server.handleLine(request);
 
@@ -8954,6 +8969,30 @@ fn codexBackendConfig(
     entry: adapter_config.AdapterEntry,
     environ: *const std.process.Environ.Map,
 ) !codex_adapter.Config {
+    if (entry.endpoint.len > 0) {
+        const unix_scheme = "unix://";
+        if (!std.mem.startsWith(u8, entry.endpoint, unix_scheme) or entry.endpoint.len == unix_scheme.len) {
+            try surface.refuse("{s} \"{s}\" names endpoint \"{s}\"; a codex endpoint is unix://<path to the app-server control socket>", .{ surface.noun, entry.name, entry.endpoint });
+            return error.BackendRefused;
+        }
+        if (entry.executable.len > 0 or entry.args.len > 0) {
+            try surface.refuse("{s} \"{s}\" names an endpoint and an executable or args; a codex endpoint relays to a running app-server, so set one or the other", .{ surface.noun, entry.name });
+            return error.BackendRefused;
+        }
+        const self_path = std.process.executablePathAlloc(backendIo(), arena) catch {
+            try surface.refuse("{s} \"{s}\" needs this executable's own path to relay to its endpoint, and it could not be read", .{ surface.noun, entry.name });
+            return error.BackendRefused;
+        };
+        return .{
+            .executable = self_path,
+            .control_socket = entry.endpoint[unix_scheme.len..],
+            .environment = entry.environment,
+            .working_directory = entry.working_directory,
+            .model = entry.model,
+            .approval_policy = entry.approval_policy,
+            .sandbox = entry.sandbox,
+        };
+    }
     const wanted = if (entry.executable.len > 0) entry.executable else "codex";
     const executable = try adapter_config.resolveExecutable(arena, backendIo(), wanted, environ.get("PATH") orelse "") orelse {
         try surface.refuse("no executable \"{s}\" on PATH for {s} \"{s}\"; name one with \"executable\" in a --config entry", .{ wanted, surface.noun, entry.name });
@@ -9502,6 +9541,29 @@ fn refusedBackend(allocator: std.mem.Allocator, name: []const u8, config_path: ?
     try std.testing.expectEqual(@as(?anyerror, error.BackendRefused), runner.err);
     try std.testing.expectEqual(@as(usize, 0), written.len);
     return complained;
+}
+
+test "a codex endpoint relays through this executable to the named socket, only a unix endpoint is accepted, and never beside an executable or args" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    const stderr_pipe = try compat.stdio.pipe();
+    defer compat.stdio.close(stderr_pipe[0]);
+    var surface = hub_config_surface;
+    surface.stderr = stderr_pipe[1];
+    surface.arena = arena;
+    var environ = std.process.Environ.Map.init(arena);
+    const shared = try codexBackendConfig(surface, arena, .{ .name = "codexd", .kind = "codex", .endpoint = "unix:///tmp/codex.sock" }, &environ);
+    try std.testing.expectEqualStrings("/tmp/codex.sock", shared.control_socket);
+    try std.testing.expect(shared.executable.len > 0);
+    try std.testing.expectEqual(@as(usize, 0), shared.args.len);
+    try std.testing.expectError(error.BackendRefused, codexBackendConfig(surface, arena, .{ .name = "codexd", .kind = "codex", .endpoint = "ws://127.0.0.1:1" }, &environ));
+    try std.testing.expectError(error.BackendRefused, codexBackendConfig(surface, arena, .{ .name = "codexd", .kind = "codex", .endpoint = "unix:///tmp/codex.sock", .executable = "/bin/codex" }, &environ));
+    try std.testing.expectError(error.BackendRefused, codexBackendConfig(surface, arena, .{ .name = "codexd", .kind = "codex", .endpoint = "unix:///tmp/codex.sock", .args = &.{"-c"} }, &environ));
+    compat.stdio.close(stderr_pipe[1]);
+    const complained = try readAllFrom(std.testing.allocator, stderr_pipe[0]);
+    defer std.testing.allocator.free(complained);
+    try std.testing.expect(std.mem.indexOf(u8, complained, "unix://") != null);
 }
 
 test "the hub's registry builds every entry a document names, and a child inherits only the variables its entry lists" {

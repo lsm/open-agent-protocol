@@ -338,6 +338,9 @@ func buildAdapter(name string, entry adapterEntry, environ func(string) (string,
 		})
 		return implementation, statePostureInConfig(name, wrapBuild(name, err))
 	case "codex":
+		if entry.Endpoint != "" {
+			return nil, fmt.Errorf("serve: adapter %q: a codex \"endpoint\" relays to Codex's shared app-server, which only oapx serves", name)
+		}
 		implementation, err := appserver.New(appserver.Config{
 			Executable: entry.Executable, Args: entry.Args, Environment: environment,
 			WorkingDirectory: entry.WorkingDirectory, Model: entry.Model, ApprovalPolicy: entry.ApprovalPolicy,

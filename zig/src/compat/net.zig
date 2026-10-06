@@ -104,6 +104,11 @@ pub fn unixListen(path: []const u8) !std.Io.net.Server {
 
 pub const supports_unix_channels = std.Io.net.has_unix_sockets;
 
+pub fn unixConnect(path: []const u8) !Stream {
+    const address = try UnixAddress.init(path);
+    return Stream.init(try address.connect(defaultIo()));
+}
+
 pub fn serverHandle(server: *const std.Io.net.Server) std.Io.net.Socket.Handle {
     return server.socket.handle;
 }

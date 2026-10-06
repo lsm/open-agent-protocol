@@ -10,6 +10,7 @@ const rpc = @import("rpc");
 const compat = @import("compat");
 const json_encode = @import("json_encode");
 
+pub const bridge = @import("bridge.zig");
 pub const endpoint_id = session.endpoint_id;
 pub const capability_revision = session.capability_revision;
 const app_server_args = [_][]const u8{ "app-server", "--listen", "stdio://" };
@@ -46,11 +47,32 @@ pub const Config = struct {
     model: []const u8 = "",
     approval_policy: []const u8 = "",
     sandbox: []const u8 = "",
+    control_socket: []const u8 = "",
     frame_limit: usize = rpc.frame_limit_default,
     exit_grace_ns: u64 = process.default_exit_grace_ns,
     request_timeout_ns: u64 = 60 * std.time.ns_per_s,
     poll_ns: u64 = 5 * std.time.ns_per_ms,
 };
+
+fn serverArgs(arena: std.mem.Allocator, config: Config) ![]const []const u8 {
+    if (config.control_socket.len == 0) return &app_server_args;
+    return try arena.dupe([]const u8, &.{ "codex-bridge", "--sock", config.control_socket });
+}
+
+test {
+    _ = bridge;
+}
+
+test "a control socket swaps the app-server for the bridge" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const own = try serverArgs(arena.allocator(), .{ .executable = "codex" });
+    try std.testing.expectEqualStrings("app-server", own[0]);
+    const shared = try serverArgs(arena.allocator(), .{ .executable = "oapx", .control_socket = "/tmp/codex.sock" });
+    try std.testing.expectEqual(@as(usize, 3), shared.len);
+    try std.testing.expectEqualStrings("codex-bridge", shared[0]);
+    try std.testing.expectEqualStrings("/tmp/codex.sock", shared[2]);
+}
 
 fn wallClock() i64 {
     return compat.time.nowMillis();
@@ -135,7 +157,7 @@ pub const Session = struct {
         errdefer reducer_arena.deinit();
         const resume_thread_id: []const u8 = if (request.reopen) try reducer_arena.allocator().dupe(u8, request.native_session_id) else "";
         const settings = try codexSettings(arena, request, refusal);
-        const argv = try std.mem.concat(arena, []const u8, &.{ config.args, &app_server_args });
+        const argv = try std.mem.concat(arena, []const u8, &.{ config.args, try serverArgs(arena, config) });
         const transport = process.Transport.open(gpa, .{
             .executable = config.executable,
             .args = argv,

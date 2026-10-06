@@ -1963,6 +1963,15 @@ are "stamped with the revision the lister served it under", and both name
 | **Zig did** | `Hub.submit`, `compact`, `resolve`, `resolveCall` and `cancel` released the session on the adapter's `SessionClosed` and answered `404 unknown_session`. |
 | **Now** | They release it and answer `session_closed`, as `Hub.updateSettings` already did. Pinned by `a control the adapter finds closed answers session_closed and releases the session, as Go does`. A later request for the released session is `unknown_session` in both trees. |
 
+### D29 — a `codex` entry naming an `endpoint` relays to Codex's shared app-server in `oapx hub` and is refused by `goap hub`
+
+| | |
+| --- | --- |
+| **The draft says** | An entry's `endpoint` names a server the adapter connects to rather than a process it starts (the `attach` way proposed in #905). |
+| **Go does** | Refuses a `codex` entry with an `endpoint`: there is no Go client for the WebSocket Codex's managed daemon speaks on its control socket. |
+| **Zig does** | Accepts `unix://<path>`: the adapter starts `oapx codex-bridge --sock <path>` in place of `codex app-server`, and the bridge relays the adapter's newline-framed JSON-RPC to that socket's WebSocket. Any other scheme is refused, and so is an entry naming an `endpoint` beside an `executable` or `args`. The relay runs whatever Codex version the daemon is (0.159.2 when probed), not the pinned corpus version: the adapter does not check it. |
+| **Why it matters** | A document naming a codex `endpoint` is not portable between the hubs. Closing it needs the same relay in Go. |
+
 ### D12 — an open's `unsupported_feature` and `capability_degraded` carried no `feature`
 
 | | |
