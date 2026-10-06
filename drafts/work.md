@@ -26,7 +26,7 @@ answer (stdio op `work.capabilities`), per adapter:
 
 | Key | Built from | Unadvertised when |
 | --- | --- | --- |
-| `work.find` | the hub's sessions, the bindings (0046), and each adapter's native list (0047 decision 2) | never; an adapter with no native list contributes only its sessions |
+| `work.list` | the hub's sessions, the bindings (0046), and each adapter's native list (0047 decision 2) | never; an adapter with no native list contributes only its sessions |
 | `work.start` | open with a message (D11, closed) | the adapter refuses an open's message |
 | `work.send` | submit, `delivery: auto` | never |
 | `work.status` | session state, plus the latest run's terminal envelope | never |
@@ -42,7 +42,7 @@ in the capabilities answer, that the verb is missing before it is called.
 `{"adapter": "...", "session_id": "..."}` for a session this endpoint holds or
 has a binding for, or `{"adapter": "...", "native_id": "..."}` for a harness
 session no binding names. A native reference is only ever answered by
-`work.find`; `work.start`, `work.send` and `work.stop` take a native reference
+`work.list`; `work.start`, `work.send` and `work.stop` take a native reference
 only once adoption (0047 decision 3) lands, and refuse it until then.
 
 ## Statuses
@@ -59,7 +59,7 @@ only once adoption (0047 decision 3) lands, and refuse it until then.
 An idle session that has never run is `done` with no `last_reply`.
 
 These six apply only to a session `serve` holds, the only kind with core state
-and a journal. Two other kinds of entry appear in `work.find` and carry **no
+and a journal. Two other kinds of entry appear in `work.list` and carry **no
 `status`**:
 
 - **Unheld:** a session with a binding (0046) that `serve` does not hold, such
@@ -100,9 +100,9 @@ as it holds the session; a session opened any other way has none, and the
 member is absent. `last_reply` is the latest `run.completed`'s `final_response` content,
 truncated to 4 KiB. `pending` is present only when `status` is `needs_you`.
 
-### `work.find`
+### `work.list`
 
-Request `{"text"?, "directory"?, "adapters"?, "include_closed"?, "limit"?, "cursor"?}`.
+Request `{"directory"?, "adapters"?, "include_closed"?, "limit"?, "cursor"?}`.
 Answer `{"groups": [...], "next_cursor"?}`, where each group is
 `{"directory", "last_activity_ms", "work": [<entry>...]}`, where an entry is a
 held session's `work.status` answer or an unheld or native entry as
@@ -111,8 +111,14 @@ newest first. A group appears even when it holds no open work, so a caller can
 start work in a place it named. `limit` is 1 to 100, default 50, counting
 pieces of work; the cursor is opaque, as in 0046.
 
-`text` matches a title, a directory or a last reply, case-insensitively. Full
-text over transcripts is out of scope here.
+`work.list` lists; it does not search. Finding work by what was said in it is
+the caller's job: a control layer such as HyperNeo keeps its own index, ranks
+by its own rules and knows what its user is looking for. OAP's part is to hand
+over what such an index needs. Today that is the list and each entry's
+`last_reply`; reading a session's conversation is a later verb (`work.read`),
+not part of this draft. Where a harness's own list takes a search term (Codex
+`thread/list`'s `searchTerm`), a native listing may pass one through once
+native lists land, but `serve` builds no index of its own.
 
 ### `work.start`
 
@@ -140,8 +146,8 @@ with no active run answers its status unchanged.
 
 ## Order of work
 
-1. `work.status` and `work.find` over the sessions `serve` holds.
+1. `work.status` and `work.list` over the sessions `serve` holds.
 2. `work.start`, `work.send`, `work.stop`.
-3. Native lists in `work.find` (Codex `thread/list`, ACP `session/list`,
+3. Native lists in `work.list` (Codex `thread/list`, ACP `session/list`,
    OpenCode, Hermes; Claude and Pi read-only from their stores).
 4. Adoption by native reference: `attach`, `resume`, `observe`, refuse.

@@ -2,7 +2,7 @@
 
 Status: proposed (the owner answered its four open questions on 2026-10-06;
 see "Owner answers". Nothing in it is executable beyond `work.status` and
-`work.find` over held sessions, #919)
+`work.list` over held sessions, #919)
 Date: 2026-10-06
 Protocol: `open-agent-protocol` version `0.1`
 Profile: a new `open-agent-protocol.work` profile over
@@ -31,7 +31,7 @@ The core already does most of what the five verbs need:
 | `send` | submit, steer ([0013](0013-steer.md)) and queue ([0007](0007-queue-delivery.md)) |
 | `stop` | cancel, on every adapter but DeepSeek's, whose wire has no cancel request |
 | `status` | `session.state` and the event stream, with no summary a caller can read in one call |
-| `find` | only the sessions a host opened (0046); none a harness holds |
+| `list` (HyperNeo's `find`) | only the sessions a host opened (0046); none a harness holds |
 
 Session bindings already outlive a restart in both hubs (`--bindings`, #893).
 
@@ -100,7 +100,7 @@ Two more probes, the same day:
 `open-agent-protocol.work` defines the five verbs over core operations, so an
 endpoint gains it without new run machinery:
 
-- `work.find {text?, directory?, adapters?, include_closed?, limit?, cursor?}`:
+- `work.list {text?, directory?, adapters?, include_closed?, limit?, cursor?}`:
   groups by directory, newest first, the host's sessions (0046) and the
   sessions each adapter can list natively (decision 2).
 - `work.start {adapter, directory, title, message}`: open with the message.
@@ -129,9 +129,9 @@ The rule: a native session no binding names is listed with its native id and
 **no** OAP session id. It gets an OAP id only when a host adopts it (decision
 3), and the adoption writes the binding. Both of 0046's rules stand. The list
 never invents an identity. And `session.list` still never carries a native id
-or a home directory: native entries appear only in `work.find`, which must
+or a home directory: native entries appear only in `work.list`, which must
 carry the native id because adopting needs it, so an endpoint serves
-`work.find` only to a caller it trusts with the harness's own pointers, as it
+`work.list` only to a caller it trusts with the harness's own pointers, as it
 trusts its binding file.
 
 Sources, by harness: Codex `thread/list`, ACP `session/list` when advertised,
@@ -204,7 +204,7 @@ stays as an alias for one release.
    ([0036](0036-a-presentation-layer-is-not-evidence-for-its-own-profile.md),
    [0037](0037-presentation-state-is-versioned-and-every-intent-is-idempotent.md)),
    and the work verbs are operations a caller runs. Each verb is a capability
-   key an endpoint advertises (`work.find`, `work.start`, `work.send`,
+   key an endpoint advertises (`work.list`, `work.start`, `work.send`,
    `work.status`, `work.stop`), so a missing one, such as `work.stop` over
    DeepSeek, is known before it is called.
 2. **Reading Claude's and Pi's own stores for listing is accepted, read-only.**
@@ -216,3 +216,6 @@ stays as an alias for one release.
    The work verbs are served by `serve` itself, next to its own operations
    ([work](../drafts/work.md)), not by a separate `oapx work` command as
    decision 4 first said.
+5. **The listing verb is `work.list`, not `work.find`** (owner, 2026-10-06).
+   It lists and filters; it does not search. Search, by text or meaning, is
+   the caller's, built on its own index over what OAP hands it.
