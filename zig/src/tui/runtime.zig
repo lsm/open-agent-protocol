@@ -658,7 +658,7 @@ pub const TuiRuntime = struct {
         return model_catalog.contextWindowIsReported(self.models[index]);
     }
 
-    fn settingsFixedOverOap(self: *const TuiRuntime) bool {
+    fn openOverOap(self: *const TuiRuntime) bool {
         return self.remote != null and self.started;
     }
 
@@ -681,7 +681,7 @@ pub const TuiRuntime = struct {
                 if (held > ceiling) return error.AboveMaximum;
             }
         }
-        if (self.settingsFixedOverOap()) try self.sendRemoteSetting(.{ .context_window = window });
+        if (self.openOverOap()) try self.sendRemoteSetting(.{ .context_window = window });
         self.context_window = window;
         self.suspended_context_window = null;
         self.context_window_refused = null;
@@ -755,7 +755,7 @@ pub const TuiRuntime = struct {
 
     pub fn setThinkingLevel(self: *TuiRuntime, level: ai_types.ThinkingLevel) !void {
         const normalized = normalizeTuiThinkingLevel(level);
-        if (self.settingsFixedOverOap()) try self.remote.?.vtable.set_reasoning(self.remote.?.ctx, normalized);
+        if (self.openOverOap()) try self.remote.?.vtable.set_reasoning(self.remote.?.ctx, normalized);
         self.thinking_level = normalized;
         if (self.local_agent) |*local| local.setThinkingLevel(normalized);
     }
@@ -773,7 +773,7 @@ pub const TuiRuntime = struct {
                 if (model.max_tokens > 0 and setting.tokens > model.max_tokens) return error.AboveMaximum;
             }
         }
-        if (self.settingsFixedOverOap()) switch (setting) {
+        if (self.openOverOap()) switch (setting) {
             .tokens => |count| try self.sendRemoteSetting(.{ .output = count }),
             else => try self.sendRemoteSetting(.{ .output = @tagName(setting) }),
         };
@@ -782,7 +782,7 @@ pub const TuiRuntime = struct {
     }
 
     pub fn setPermissionMode(self: *TuiRuntime, mode: PermissionMode) !void {
-        if (self.settingsFixedOverOap()) try self.sendRemoteSetting(.{ .permission_mode = @tagName(mode) });
+        if (self.openOverOap()) try self.sendRemoteSetting(.{ .permission_mode = @tagName(mode) });
         self.permission_mode = mode;
         if (self.permission_engine) |engine| engine.setBypassAll(mode == .bypass);
         self.rebuildWrappedTools();
@@ -795,7 +795,7 @@ pub const TuiRuntime = struct {
     }
 
     pub fn setWorkspaceRoot(self: *TuiRuntime, root: []const u8) !void {
-        if (self.settingsFixedOverOap()) try self.sendRemoteSetting(.{ .workspace_root = root });
+        if (self.openOverOap()) try self.sendRemoteSetting(.{ .workspace_root = root });
         if (self.local_agent) |*local| {
             if (!local.isIdle()) return error.AgentAlreadyStreaming;
         }
