@@ -230,9 +230,10 @@ profile does not decide.
   do. This profile is not on their path, and retiring the Makai v1 wire does not
   wait for it.
 - `zig/src/tui/` is not touched by this record, and no test in either tree
-  changes by it. The profile is not executable by this record either, which is
-  why the status is `proposed` under 0003's first criterion. Its wire rules are
-  a separate record, so either can be amended without reopening the other.
+  changes by it. The profile is not executable by this record either: the
+  record sets a gate and graduates nothing, so 0003's first criterion has
+  nothing to ask of it, and it was accepted as a policy. Its wire rules are a
+  separate record, so either can be amended without reopening the other.
 - `examples/presentation-control-session.json` judges neither the schema nor the
   draft. `examples/` is illustrative by project rule — "illustrative JSON bindings
   for the draft protocol, not conformance tests" — and this example predates the

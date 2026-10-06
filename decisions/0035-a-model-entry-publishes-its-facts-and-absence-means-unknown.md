@@ -209,7 +209,8 @@ was built, so a `fallback` source can be told from a fresh one.
 
 ## What accepting this requires
 
-Not part of this proposal, and the reason it is a proposal: edits to
+Not part of this proposal, and the reason it stayed one until #532 landed them:
+edits to
 `schema/v0.1/provider.schema.json`, to the model-entry list in
 `drafts/model-provider-core.md`, to the `protocol/` types, the Go validator, a
 fixture per new judgement, and `clients/ts/src/protocol.ts` — the standing
