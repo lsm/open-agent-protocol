@@ -33,7 +33,7 @@ answer (stdio op `work.capabilities`), per adapter:
 | `work.send` | submit, `delivery: auto` | never; but on a busy session it queues only where the adapter advertises `session.message.delivery.queue` (0007) |
 | `work.status` | session state, plus the latest run's terminal envelope | never |
 | `work.stop` | `run.cancel` | the adapter does not advertise `run.cancel` (DeepSeek) |
-| `work.read` | the turns `serve` records as messages are submitted and runs end | never |
+| `work.read` | the harness's own transcript where the adapter reads one, else the turns `serve` records as messages are submitted and runs end | never |
 
 A verb an adapter cannot serve is refused `unsupported_feature` naming the
 core feature it rests on, as the core's own refusal does: `work.stop` over
@@ -82,7 +82,7 @@ and a journal. Two other kinds of entry appear in `work.list` and carry **no
   `native_id` and whatever the harness's own list says, nothing projected.
 
 `work.status`, `work.read` and `work.stop` answer an unheld entry from the
-history (its `held: false` entry, no turns, nothing to stop) without starting
+history (its `held: false` entry, the harness's transcript or no turns, nothing to stop) without starting
 a harness. `work.send` reopens it through its binding (0040) and then submits,
 so a reference survives a restart of `serve`; an adapter without
 `session.open.reopen` refuses that, as an open would. A native entry is
@@ -172,14 +172,22 @@ Request `{"ref", "after"?, "limit"?}`. Answer `{"turns": [...]}`, each turn
 `{"index", "role", "text", "run_id"?, "outcome"?, "at_ms"}`, oldest first,
 after index `after`, at most `limit` (1 to 500, default 100).
 
-`serve` records a `user` turn for each message a submit admits (from
-`work.start`, `work.send` or the core's own submit) and an `assistant` turn
-when a run ends, with `outcome` (`completed`, `failed`, `cancelled`) and, for a
-completed run, its reply text. It keeps the last 512 turns of a session it
-holds, each cut at 64 KiB on a character boundary; an index stays stable as old
-turns drop. This is what `serve` saw, not the harness's own transcript:
-reasoning, tool calls and anything said before `serve` held the session are
-not in it. Reading a harness's own transcript is a later verb.
+Where the adapter can read the harness's own transcript (Claude Code, from its
+project's `<native id>.jsonl`), `work.read` answers from it: every user message
+and the reply that followed, the conversation before `serve` held the session
+included, and still there after `serve` restarts, so `serve` writes no message
+text of its own to disk. A turn there carries no `run_id` or `outcome`; its
+index is its place in the transcript, and its text is cut at 64 KiB. A session
+`serve` no longer holds is read the same way from its binding's native id. A
+held session whose harness transcript is still empty is answered as below.
+
+Otherwise `serve` answers from what it recorded: a `user` turn for each message
+a submit admits (from `work.start`, `work.send` or the core's own submit) and an
+`assistant` turn when a run ends, with `outcome` (`completed`, `failed`,
+`cancelled`) and, for a completed run, its reply text. It keeps the last 512
+turns of a session it holds, each cut at 64 KiB on a character boundary; an
+index stays stable as old turns drop. That record is in memory only, so it is
+gone after a restart, and a session `serve` no longer holds answers no turns.
 
 This is the content a caller's own search indexes (see `work.list`).
 

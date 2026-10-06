@@ -215,6 +215,12 @@ pub const Turn = struct {
     at_ms: i64,
 };
 
+pub const NativeRef = struct {
+    adapter: []const u8,
+    native_id: []const u8,
+    directory: []const u8 = "",
+};
+
 pub const Transcript = struct {
     first_index: u64,
     turns: []const Turn,
@@ -694,6 +700,10 @@ pub const Hub = struct {
         }
     }
 
+    pub fn textCut(text: []const u8) usize {
+        return cutAt(text, turn_text_limit);
+    }
+
     fn replyCut(text: []const u8) usize {
         return cutAt(text, last_reply_limit);
     }
@@ -946,6 +956,16 @@ pub const Hub = struct {
             if (std.mem.eql(u8, found.native_id, native_id)) return found.running;
         }
         return false;
+    }
+
+    pub fn heldNative(self: *Hub, session_id: []const u8) ?NativeRef {
+        const record = self.findBound(session_id) orelse return null;
+        return .{ .adapter = record.adapter_name, .native_id = record.native_id, .directory = record.directory };
+    }
+
+    pub fn nativeTranscript(self: *Hub, arena: std.mem.Allocator, ref: NativeRef, refusal: *contract.Refusal) ?Failure![]const contract.NativeTurn {
+        const registered = self.find(ref.adapter) orelse return null;
+        return registered.adapter.nativeRead(arena, .{ .native_id = ref.native_id, .directory = if (ref.directory.len > 0) ref.directory else registered.directory }, refusal);
     }
 
     pub fn adapterDirectory(self: *Hub, name: []const u8) ?[]const u8 {

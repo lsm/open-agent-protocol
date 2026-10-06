@@ -11,6 +11,7 @@ const json_encode = @import("json_encode");
 
 pub const permission_hook = @import("permission_hook.zig");
 pub const native_list = @import("native_list.zig");
+pub const native_read = @import("native_read.zig");
 pub const endpoint_id = session.endpoint_id;
 pub const capability_revision = harness_pins.claude_code_capability_revision;
 pub const pinned_version = harness_pins.claude_code_endpoint_version;
@@ -156,7 +157,7 @@ pub const Adapter = struct {
     }
 
     pub fn adapter(self: *Adapter) contract.Adapter {
-        return .{ .ptr = self, .vtable = &.{ .probe = probe, .open = open, .native_list = nativeList, .native_link = nativeLink } };
+        return .{ .ptr = self, .vtable = &.{ .probe = probe, .open = open, .native_list = nativeList, .native_link = nativeLink, .native_read = nativeRead } };
     }
 
     fn nativeLink(ptr: *anyopaque, arena: std.mem.Allocator, native_id: []const u8) std.mem.Allocator.Error![]const u8 {
@@ -189,6 +190,14 @@ pub const Adapter = struct {
         const desktop = if (builtin.os.tag == .macos) try std.fs.path.join(arena, &.{ home, "Library", "Application Support", "Claude", "claude-code-sessions" }) else "";
         const directory = if (request.directory.len > 0) request.directory else self.config.backend.working_directory orelse "";
         return try native_list.list(arena, .{ .home = home, .desktop_sessions = desktop }, directory, request.limit);
+    }
+
+    fn nativeRead(ptr: *anyopaque, arena: std.mem.Allocator, request: contract.NativeReadRequest, refusal: *contract.Refusal) contract.Failure![]const contract.NativeTurn {
+        const self: *Adapter = @ptrCast(@alignCast(ptr));
+        _ = refusal;
+        const home = compat.getEnvVarOwned(arena, "HOME") catch return &.{};
+        const directory = if (request.directory.len > 0) request.directory else self.config.backend.working_directory orelse "";
+        return try native_read.read(arena, home, directory, request.native_id);
     }
 
     fn mint(self: *Adapter, allocator: std.mem.Allocator, kind: []const u8) ![]u8 {
@@ -1820,4 +1829,5 @@ test "a create exposes its native binding before the first turn" {
 test {
     _ = permission_hook;
     _ = native_list;
+    _ = native_read;
 }

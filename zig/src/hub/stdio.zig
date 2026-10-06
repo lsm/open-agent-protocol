@@ -1243,16 +1243,32 @@ pub const Frontend = struct {
             if (given < 1 or given > work_read_max) return .{ .refused = .{ .code = "invalid_request", .message = std.fmt.comptimePrint("work.read: limit must be from 1 to {d}", .{work_read_max}) } };
             bound = @intCast(given);
         }
+        var native: ?hubmod.NativeRef = null;
+        var held = true;
         if (!self.hub.knows(session_id)) {
             switch (try self.unheld(arena, session_id)) {
-                .entry => {
-                    var empty = try emptyObject(arena);
-                    try empty.put(arena, "turns", try jsonArray(arena, &.{}));
-                    return .{ .answer = .{ .object = empty } };
+                .entry => |entry| {
+                    held = false;
+                    native = .{ .adapter = entry.record.adapter, .native_id = entry.record.native_session_id, .directory = entry.record.directory };
                 },
                 .unreadable => return .{ .refused = history_unreadable },
                 .absent => {},
             }
+        } else native = self.hub.heldNative(session_id);
+        if (native) |ref| {
+            var refusal = contract.Refusal{};
+            if (self.hub.nativeTranscript(arena, ref, &refusal)) |answered| {
+                const read = answered catch |err| switch (err) {
+                    error.OutOfMemory => return error.OutOfMemory,
+                    else => return .{ .refused = .{ .code = "internal", .message = if (refusal.message.len > 0) refusal.message else @errorName(err) } },
+                };
+                if (read.len > 0 or !held) return .{ .answer = try nativeTurnsJson(arena, read, after, bound) };
+            }
+        }
+        if (!held) {
+            var empty = try emptyObject(arena);
+            try empty.put(arena, "turns", try jsonArray(arena, &.{}));
+            return .{ .answer = .{ .object = empty } };
         }
         const read = self.hub.transcript(session_id, after, bound) catch |err| {
             return .{ .refused = try self.stateRefusal(arena, err, session_id) };
@@ -1271,6 +1287,23 @@ pub const Frontend = struct {
         var root = try emptyObject(arena);
         try root.put(arena, "turns", try jsonArray(arena, turns));
         return .{ .answer = .{ .object = root } };
+    }
+
+    fn nativeTurnsJson(arena: std.mem.Allocator, read: []const contract.NativeTurn, after: ?u64, bound: usize) !std.json.Value {
+        const from: usize = if (after) |given| @intCast(@min(given +| 1, read.len)) else 0;
+        const to = @min(read.len, from + bound);
+        const turns = try arena.alloc(std.json.Value, to - from);
+        for (read[from..to], turns, from..) |turn, *slot, index| {
+            var object = try emptyObject(arena);
+            try object.put(arena, "index", .{ .integer = @intCast(index) });
+            try object.put(arena, "role", .{ .string = @tagName(turn.role) });
+            try object.put(arena, "text", .{ .string = turn.text[0..hubmod.Hub.textCut(turn.text)] });
+            try object.put(arena, "at_ms", .{ .integer = turn.at_ms });
+            slot.* = .{ .object = object };
+        }
+        var root = try emptyObject(arena);
+        try root.put(arena, "turns", try jsonArray(arena, turns));
+        return .{ .object = root };
     }
 
     fn workJson(arena: std.mem.Allocator, piece: hubmod.Work) !std.json.Value {
@@ -2342,12 +2375,34 @@ const ReferenceState = struct {
     lister_closed: bool = false,
     closed: bool = false,
     pending_events: []const contract.Event = &.{},
+    native_id_buffer: [64]u8 = undefined,
+    native_id: []const u8 = "",
+    opens_native: []const u8 = "",
 };
 
 var reference_holder: ReferenceState = .{};
 
+const reference_transcript = [_]contract.NativeTurn{
+    .{ .role = .user, .text = "from before serve", .at_ms = 1 },
+    .{ .role = .assistant, .text = "remembered", .at_ms = 2 },
+    .{ .role = .user, .text = "and again", .at_ms = 3 },
+};
+
+fn referenceNativeRead(ptr: *anyopaque, arena: std.mem.Allocator, request: contract.NativeReadRequest, refusal: *contract.Refusal) contract.Failure![]const contract.NativeTurn {
+    _ = ptr;
+    _ = arena;
+    _ = refusal;
+    if (std.mem.eql(u8, request.native_id, "thread-a") and (request.directory.len == 0 or std.mem.eql(u8, request.directory, "/work/a"))) return &reference_transcript;
+    return &.{};
+}
+
+fn referenceNativeId(ptr: *anyopaque) []const u8 {
+    const state: *ReferenceState = @ptrCast(@alignCast(ptr));
+    return state.native_id;
+}
+
 fn reference() contract.Adapter {
-    return .{ .ptr = @ptrCast(@constCast(&reference_holder)), .vtable = &.{ .probe = referenceProbe, .open = referenceOpen, .native_list = referenceNativeList } };
+    return .{ .ptr = @ptrCast(@constCast(&reference_holder)), .vtable = &.{ .probe = referenceProbe, .open = referenceOpen, .native_list = referenceNativeList, .native_read = referenceNativeRead } };
 }
 
 fn referenceProbe(ptr: *anyopaque, refusal: *contract.Refusal) contract.Failure!contract.Descriptor {
@@ -2363,6 +2418,10 @@ fn referenceOpen(ptr: *anyopaque, arena: std.mem.Allocator, request: contract.Op
     state.opened += 1;
     state.running = false;
     state.saw_metadata_members = if (request.metadata) |named| named.object.count() else 0;
+    const asked_native = if (request.native_session_id.len > 0) request.native_session_id else state.opens_native;
+    const native = asked_native[0..@min(asked_native.len, state.native_id_buffer.len)];
+    @memcpy(state.native_id_buffer[0..native.len], native);
+    state.native_id = state.native_id_buffer[0..native.len];
     const handed = request.tool_sources_json orelse "";
     if (handed.len <= state.saw_tool_sources_buffer.len) {
         @memcpy(state.saw_tool_sources_buffer[0..handed.len], handed);
@@ -2379,6 +2438,7 @@ fn referenceOpen(ptr: *anyopaque, arena: std.mem.Allocator, request: contract.Op
     }
     return .{ .ptr = state, .vtable = &.{
         .id = referenceId,
+        .native_id = referenceNativeId,
         .state = referenceState,
         .submit = referenceSubmit,
         .resolve = referenceResolve,
@@ -4013,6 +4073,47 @@ fn fadingProbe(ptr: *anyopaque, refusal: *contract.Refusal) contract.Failure!con
     if (state.registered) return .{ .endpoint = fading_descriptor.endpoint, .capability_revision = "", .features = &.{} };
     state.registered = true;
     return fading_descriptor;
+}
+
+test "work.read of a session with a native id reads the harness's own transcript, held or not, paged by after and limit, and a held one whose transcript is empty reads serve's turns" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const cwd = try std.process.currentPathAlloc(testing.io, testing.allocator);
+    defer testing.allocator.free(cwd);
+    const path = try std.fs.path.join(testing.allocator, &.{ cwd, ".zig-cache", "tmp", tmp.sub_path[0..], "sessions.jsonl" });
+    defer testing.allocator.free(path);
+    var store = try hubmod.binding.Store.open(testing.allocator, path);
+    defer store.deinit();
+    try store.append(.{ .action = .opened, .time_ms = 10, .record = .{ .session_id = "left", .adapter = "reference", .native_session_id = "thread-a", .directory = "/work/a" } });
+    const harness = try Harness.init(testing.allocator, .{ .bindings = &store }, .{});
+    defer harness.deinit();
+
+    try harness.send("{\"id\":1,\"op\":\"work.read\",\"session_id\":\"left\",\"after\":0,\"limit\":1}");
+    const unheld = (try harness.lastValue()).object.get("result").?.object.get("turns").?.array.items;
+    try testing.expectEqual(@as(usize, 1), unheld.len);
+    try testing.expectEqual(@as(i64, 1), unheld[0].object.get("index").?.integer);
+    try testing.expectEqualStrings("assistant", unheld[0].object.get("role").?.string);
+    try testing.expectEqualStrings("remembered", unheld[0].object.get("text").?.string);
+    try testing.expectEqual(@as(i64, 2), unheld[0].object.get("at_ms").?.integer);
+
+    defer reference_holder.opens_native = "";
+    reference_holder.opens_native = "thread-a";
+    try harness.send(try openLine(harness.arena(), "reference", open_envelope));
+    try harness.send(try controlLine(harness.arena(), 3, op_submit, "s1", "{" ++ control_head ++ ",\"type\":\"session.message.submit.request\",\"id\":\"sub-1\",\"session_id\":\"s1\",\"payload\":{\"session_id\":\"s1\",\"delivery\":\"auto\",\"messages\":[{\"role\":\"user\",\"content\":\"own turn\"}]}}"));
+    try harness.send("{\"id\":4,\"op\":\"work.read\",\"session_id\":\"s1\"}");
+    const held = (try harness.lastValue()).object.get("result").?.object.get("turns").?.array.items;
+    try testing.expectEqual(@as(usize, 3), held.len);
+    try testing.expectEqualStrings("from before serve", held[0].object.get("text").?.string);
+
+    const fresh = try Harness.init(testing.allocator, .{}, .{});
+    defer fresh.deinit();
+    reference_holder.opens_native = "thread-empty";
+    try fresh.send(try openLine(fresh.arena(), "reference", open_envelope));
+    try fresh.send(try controlLine(fresh.arena(), 6, op_submit, "s1", "{" ++ control_head ++ ",\"type\":\"session.message.submit.request\",\"id\":\"sub-2\",\"session_id\":\"s1\",\"payload\":{\"session_id\":\"s1\",\"delivery\":\"auto\",\"messages\":[{\"role\":\"user\",\"content\":\"own turn\"}]}}"));
+    try fresh.send("{\"id\":7,\"op\":\"work.read\",\"session_id\":\"s1\"}");
+    const own = (try fresh.lastValue()).object.get("result").?.object.get("turns").?.array.items;
+    try testing.expectEqual(@as(usize, 1), own.len);
+    try testing.expectEqualStrings("own turn", own[0].object.get("text").?.string);
 }
 
 test "work.list shows a session serve no longer holds from its binding, live by default and closed on request, and work.status, work.read and work.stop answer it without reopening" {
