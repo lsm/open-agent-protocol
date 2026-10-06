@@ -2033,7 +2033,7 @@ are "stamped with the revision the lister served it under", and both name
 | | |
 | --- | --- |
 | **The draft says** | `serve` answers the work profile's verbs ([work](work.md)), starting with `work.status` and `work.list` over the sessions it holds. |
-| **Go does** | Has neither op nor route: `GET /work` answers `404`. |
+| **Go does** | Has none of the ops or routes: `GET /work` answers `404`. |
 | **Zig does** | Serves both on both transports. A piece of work's status is projected from the session's state and, when it is idle, the latest terminal envelope in its journal; `last_reply` is the latest `run.completed`'s `final_response` text, cut at 4 KiB. `work.list` groups by the adapter's working directory, most recent first, with no filters or paging yet. `work.start` opens with the message (D11) and keeps the title; `work.send` submits with `delivery: auto`; `work.stop` cancels the active run and answers a session with none unchanged; `work.read` returns the turns `serve` recorded: each submitted user message, and each run's outcome with its reply text, the last 512 kept, each cut at 64 KiB. |
 | **Why it matters** | A caller of the work profile has to use `oapx serve` until Go serves it. |
 
