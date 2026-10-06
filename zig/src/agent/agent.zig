@@ -63,6 +63,7 @@ pub const Agent = struct {
     const ContinueRequest = struct {
         messages: []ai_types.Message,
         skip_steering: bool,
+        steering: bool = false,
     };
 
     _state: AgentState,
@@ -827,7 +828,7 @@ pub const Agent = struct {
                 var run_messages: ?[]const ai_types.Message = if (steering) |s| s else null;
                 try self.runLoopInternal(
                     &run_messages,
-                    .{ .skip_initial_steering_poll = true },
+                    .{ .skip_initial_steering_poll = true, .prompts_are_steering = true },
                 );
                 return;
             }
@@ -874,7 +875,7 @@ pub const Agent = struct {
             if (self._steering_queue.items.len > 0) {
                 const steering = try self.dequeueSteeringMessagesLocked();
                 _ = self._steering_consumed.fetchAdd(steering.len, .release);
-                return .{ .messages = steering, .skip_steering = true };
+                return .{ .messages = steering, .skip_steering = true, .steering = true };
             }
 
             if (self._follow_up_queue.items.len > 0) {
@@ -913,7 +914,7 @@ pub const Agent = struct {
             self._state.is_streaming = false;
             self._cancel_token = null;
         }
-        self._thread = try std.Thread.spawn(.{}, runLoopThread, .{ self, request.messages, request.skip_steering });
+        self._thread = try std.Thread.spawn(.{}, runLoopThread, .{ self, request.messages, request.skip_steering, request.steering });
     }
 
     pub fn waitForIdle(self: *Agent) void {
@@ -964,7 +965,7 @@ pub const Agent = struct {
             self._cancel_token = null;
         }
 
-        self._thread = try std.Thread.spawn(.{}, runLoopThread, .{ self, owned_messages, true });
+        self._thread = try std.Thread.spawn(.{}, runLoopThread, .{ self, owned_messages, true, false });
     }
 
     fn copyMessagesForThread(self: *Agent, messages: []const ai_types.Message) ![]ai_types.Message {
@@ -1142,7 +1143,7 @@ pub const Agent = struct {
         };
     }
 
-    fn runLoopThread(self: *Agent, messages: []ai_types.Message, skip_steering: bool) void {
+    fn runLoopThread(self: *Agent, messages: []ai_types.Message, skip_steering: bool, steering: bool) void {
         var messages_owned = true;
         var failed_because: ?[]const u8 = null;
         self._state.terminal_sent = false;
@@ -1180,7 +1181,7 @@ pub const Agent = struct {
 
         self.runLoopInternal(
             &run_messages,
-            .{ .skip_initial_steering_poll = skip_steering },
+            .{ .skip_initial_steering_poll = skip_steering, .prompts_are_steering = steering },
         ) catch |err| {
             failed_because = @errorName(err);
         };
@@ -1199,6 +1200,7 @@ pub const Agent = struct {
 
     const RunLoopOptions = struct {
         skip_initial_steering_poll: bool = false,
+        prompts_are_steering: bool = false,
     };
 
     fn runLoop(self: *Agent, messages: []const ai_types.Message) !void {
@@ -1278,6 +1280,7 @@ pub const Agent = struct {
             .transform_context_ctx = self._transform_context_ctx,
             .get_steering_messages_fn = getSteeringMessages,
             .get_steering_messages_ctx = self,
+            .prompts_are_steering = options.prompts_are_steering,
             .get_follow_up_messages_fn = getFollowUpMessages,
             .get_follow_up_messages_ctx = self,
             .compact_between_turns_fn = compactBetweenTurns,
@@ -2090,13 +2093,13 @@ test "a run that stops before it starts still ends, and says why" {
     agent.subscribeWithContext(&tally, TerminalTally.onEvent);
 
     const empty = try std.testing.allocator.alloc(ai_types.Message, 0);
-    agent.runLoopThread(empty, false);
+    agent.runLoopThread(empty, false, false);
     try std.testing.expectEqual(@as(usize, 1), tally.terminals);
     try std.testing.expectEqualStrings("NothingToRun", tally.reason);
 
     const one = try std.testing.allocator.alloc(ai_types.Message, 1);
     one[0] = .{ .user = .{ .content = .{ .text = try std.testing.allocator.dupe(u8, "hello") }, .timestamp = 0 } };
-    agent.runLoopThread(one, false);
+    agent.runLoopThread(one, false, false);
     try std.testing.expectEqual(@as(usize, 2), tally.terminals);
     try std.testing.expectEqualStrings("NoModelConfigured", tally.reason);
     try std.testing.expect(!tally.saw_end);

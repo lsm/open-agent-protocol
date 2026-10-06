@@ -1472,8 +1472,6 @@ fn erroredStream(
     return stream_ptr;
 }
 
-
-
 test "an errored turn's events stay readable after the message is released" {
     const model = testModel();
     var events_storage: AgentEventStream = undefined;
@@ -1751,6 +1749,7 @@ fn runLoop(
             } });
             try pushAgentEvent(event_stream, .{ .message_end = .{
                 .message = prompt,
+                .steering = config.prompts_are_steering,
             } });
 
             try appendClonedStateMessage(&state.messages, allocator, prompt);
@@ -1826,6 +1825,7 @@ fn runLoop(
                         } });
                         try pushAgentEvent(event_stream, .{ .message_end = .{
                             .message = steering_msg,
+                            .steering = true,
                         } });
                         try appendClonedStateMessage(&state.messages, allocator, steering_msg);
                     }
@@ -1920,6 +1920,7 @@ fn runLoop(
                                     } });
                                     try pushAgentEvent(event_stream, .{ .message_end = .{
                                         .message = steering_msg,
+                                        .steering = true,
                                     } });
                                     try appendClonedStateMessage(&state.messages, allocator, steering_msg);
                                 }
@@ -2014,6 +2015,7 @@ fn runLoop(
                             } });
                             try pushAgentEvent(event_stream, .{ .message_end = .{
                                 .message = steering_msg,
+                                .steering = true,
                             } });
                             try appendClonedStateMessage(&state.messages, allocator, steering_msg);
                         }
