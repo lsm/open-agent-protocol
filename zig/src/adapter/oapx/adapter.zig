@@ -58,9 +58,15 @@ fn wallClock() i64 {
     return compat.time.nowMillis();
 }
 
+pub const TranscriptStore = struct {
+    ctx: *anyopaque,
+    save: *const fn (ctx: *anyopaque, allocator: std.mem.Allocator, session_id: []const u8, index: usize, history: []const ai_types.Message) ?[]u8,
+};
+
 pub const Adapter = struct {
     allocator: std.mem.Allocator,
     options: tui_runtime.TuiRuntimeOptions,
+    transcripts: ?TranscriptStore = null,
     ids: u64 = 0,
     now_ms: *const fn () i64 = wallClock,
 
@@ -221,7 +227,7 @@ pub const Session = struct {
         var scratch = std.heap.ArenaAllocator.init(self.gpa);
         defer scratch.deinit();
         const at = try compactAt(scratch.allocator(), raw, self.runtime, refusal);
-        self.runtime.armAutoCompact(at, &.{}, null) catch |err| switch (err) {
+        self.runtime.armAutoCompact(at, self.runtime.run_transcripts.items, self.transcriptWriter()) catch |err| switch (err) {
             error.OutOfMemory => return error.OutOfMemory,
             else => return refusal.fail(error.BackendFailed, @errorName(err)),
         };
@@ -237,10 +243,29 @@ pub const Session = struct {
             error.OutOfMemory => return error.OutOfMemory,
             else => return,
         };
-        self.runtime.armAutoCompact(at, &.{}, null) catch |err| switch (err) {
+        self.runtime.armAutoCompact(at, self.runtime.run_transcripts.items, self.transcriptWriter()) catch |err| switch (err) {
             error.OutOfMemory => return error.OutOfMemory,
             else => {},
         };
+    }
+
+    fn transcriptWriter(self: *Session) ?tui_runtime.TuiRuntime.TranscriptWriter {
+        if (self.owner.transcripts == null) return null;
+        return .{ .ctx = self, .save_fn = saveTranscript };
+    }
+
+    fn saveTranscript(ctx: ?*anyopaque, allocator: std.mem.Allocator, index: usize, history: []const ai_types.Message) ?[]u8 {
+        const self: *Session = @ptrCast(@alignCast(ctx.?));
+        const store = self.owner.transcripts orelse return null;
+        return store.save(store.ctx, allocator, self.id, index, history);
+    }
+
+    fn compactionTranscripts(self: *Session, arena: std.mem.Allocator) error{OutOfMemory}![]const []const u8 {
+        const kept = self.runtime.run_transcripts.items;
+        const saved = saveTranscript(self, self.runtime.allocator, kept.len + 1, self.runtime.history()) orelse return arena.dupe([]const u8, @ptrCast(kept));
+        errdefer self.runtime.allocator.free(saved);
+        try self.runtime.run_transcripts.append(self.runtime.allocator, saved);
+        return arena.dupe([]const u8, @ptrCast(self.runtime.run_transcripts.items));
     }
 
     fn compact(ptr: *anyopaque, arena: std.mem.Allocator, request: *const oap_types.SessionCompactRequest, envelope_id: []const u8, refusal: *contract.Refusal) contract.Failure!oap_types.MessageSubmitResponse {
@@ -646,7 +671,7 @@ pub const Session = struct {
         }
         self.gate.cancelled.store(false, .release);
         if (run.compaction) {
-            self.runtime.compact(.{ .focus = run.compact_focus }) catch |err| switch (err) {
+            self.runtime.compact(.{ .focus = run.compact_focus, .transcripts = try self.compactionTranscripts(a) }) catch |err| switch (err) {
                 error.OutOfMemory => return error.OutOfMemory,
                 error.NothingToCompact => return refusal.fail(error.InvalidSubmission, "the session has no history to compact"),
                 else => return refusal.fail(error.BackendFailed, @errorName(err)),
@@ -2631,6 +2656,44 @@ test "a compaction on an idle session is a run of its own that settles compacted
     try testing.expectEqualStrings("compacted", completed.get("stop_reason").?.string);
     try testing.expectEqualStrings(ended.get("summary").?.object.get("content").?.string, completed.get("final_response").?.object.get("content").?.string);
     try testing.expectEqual(@as(usize, 2), script.calls);
+}
+
+const SavedTranscripts = struct {
+    saved: usize = 0,
+    session_id: [64]u8 = undefined,
+    session_len: usize = 0,
+    messages: usize = 0,
+
+    fn save(ctx: *anyopaque, allocator: std.mem.Allocator, session_id: []const u8, index: usize, history: []const ai_types.Message) ?[]u8 {
+        const self: *SavedTranscripts = @ptrCast(@alignCast(ctx));
+        self.saved += 1;
+        self.session_len = @min(session_id.len, self.session_id.len);
+        @memcpy(self.session_id[0..self.session_len], session_id[0..self.session_len]);
+        self.messages = history.len;
+        return std.fmt.allocPrint(allocator, "/saved/{s}-compaction-{d}.jsonl", .{ session_id, index }) catch null;
+    }
+};
+
+test "a requested compaction saves the session's transcript through the store and hands its path to the loop" {
+    var script = Script{ .reply = "the session so far" };
+    var harness: Harness = undefined;
+    try harness.init(&script);
+    defer harness.deinit();
+    var store = SavedTranscripts{};
+    harness.owner.transcripts = .{ .ctx = &store, .save = SavedTranscripts.save };
+    _ = try harness.submit("remember the parser");
+    try harness.untilTerminal();
+    harness.reset();
+
+    var refusal = contract.Refusal{};
+    _ = try compactRequest(&harness, "the parser", &refusal);
+    try harness.untilTerminal();
+    try testing.expectEqual(@as(usize, 1), store.saved);
+    try testing.expectEqualStrings(harness.session.id(), store.session_id[0..store.session_len]);
+    try testing.expect(store.messages > 0);
+    const runtime = Session.cast(harness.session.ptr).runtime;
+    try testing.expectEqual(@as(usize, 1), runtime.run_transcripts.items.len);
+    try testing.expect(std.mem.endsWith(u8, runtime.run_transcripts.items[0], "-compaction-1.jsonl"));
 }
 
 test "a compaction is refused for what the loop cannot do, and on a busy session it waits its turn" {
