@@ -2882,7 +2882,7 @@ test "work.status names an idle session that never ran done, a running one runni
     try testing.expectEqualStrings("unknown_session", try harness.code());
 }
 
-test "a closed session is released by work.status and by work.find, and is then unknown" {
+test "work.status answers session_closed for a session it finds closed, releases it, and is then unknown; work.find releases it too" {
     for ([_][]const u8{ "work.status", "work.find" }) |op| {
         const harness = try Harness.init(testing.allocator, .{}, .{});
         defer harness.deinit();
@@ -2891,6 +2891,8 @@ test "a closed session is released by work.status and by work.find, and is then 
         defer reference_holder.closed = false;
         if (std.mem.eql(u8, op, "work.status")) {
             try harness.send("{\"id\":2,\"op\":\"work.status\",\"session_id\":\"s1\"}");
+            try testing.expectEqualStrings("session_closed", try harness.code());
+            try harness.send("{\"id\":3,\"op\":\"work.status\",\"session_id\":\"s1\"}");
             try testing.expectEqualStrings("unknown_session", try harness.code());
         } else {
             try harness.send("{\"id\":2,\"op\":\"work.find\"}");

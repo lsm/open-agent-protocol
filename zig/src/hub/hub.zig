@@ -522,7 +522,7 @@ pub const Hub = struct {
         const entry = self.findSession(session_id) orelse return error.UnknownSession;
         if (try self.workOf(arena, entry)) |found| return found;
         self.releaseSession(entry);
-        return error.UnknownSession;
+        return error.SessionClosed;
     }
 
     pub fn works(self: *Hub, arena: std.mem.Allocator) Failure![]Work {
@@ -604,6 +604,13 @@ pub const Hub = struct {
         }
     }
 
+    fn replyCut(text: []const u8) usize {
+        if (text.len <= last_reply_limit) return text.len;
+        var cut = last_reply_limit;
+        while (cut > 0 and text[cut] & 0xC0 == 0x80) cut -= 1;
+        return cut;
+    }
+
     fn replyText(arena: std.mem.Allocator, payload: ?std.json.Value) ![]const u8 {
         const body = payload orelse return "";
         if (body != .object) return "";
@@ -624,7 +631,7 @@ pub const Hub = struct {
             },
             else => return "",
         }
-        return text[0..@min(text.len, last_reply_limit)];
+        return text[0..replyCut(text)];
     }
 
     fn bySessionId(_: void, left: Status, right: Status) bool {
@@ -4239,4 +4246,13 @@ test "a control the adapter finds closed answers session_closed and releases the
 
 test {
     _ = binding;
+}
+
+test "a reply longer than the bound is cut on a character boundary" {
+    const long = "a" ** (last_reply_limit - 1) ++ "\u{00e9}" ++ "b";
+    const cut = Hub.replyCut(long);
+    try std.testing.expectEqual(last_reply_limit - 1, cut);
+    try std.testing.expect(std.unicode.utf8ValidateSlice(long[0..cut]));
+    const short = "short";
+    try std.testing.expectEqual(short.len, Hub.replyCut(short));
 }
