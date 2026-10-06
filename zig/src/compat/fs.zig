@@ -68,7 +68,10 @@ fn createDirFollowingLinks(dir: Dir, path: []const u8) !void {
     } else |_| {}
     if (std.fs.path.dirname(path)) |parent| try createDirFollowingLinks(dir, parent);
     dir.createDir(defaultIo(), path, .default_dir) catch |err| switch (err) {
-        error.PathAlreadyExists => {},
+        error.PathAlreadyExists => {
+            var existing = dir.openDir(defaultIo(), path, .{}) catch return error.NotDir;
+            existing.close(defaultIo());
+        },
         else => return err,
     };
 }
@@ -227,4 +230,6 @@ test "createDir accepts a parent reached through a symbolic link to a directory"
     try createDir(tmp.dir, "linked/inner/deeper");
     var made = try tmp.dir.openDir(std.testing.io, "real/inner/deeper", .{});
     made.close(std.testing.io);
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "real/plain", .data = "" });
+    try std.testing.expectError(error.NotDir, createDir(tmp.dir, "linked/plain"));
 }
