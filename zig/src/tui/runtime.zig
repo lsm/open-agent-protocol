@@ -271,7 +271,6 @@ pub const TuiRuntime = struct {
     semantic_wait_ms: i64 = 2_000,
     dropped_event_count: u64 = 0,
     dropped_since_warning: u64 = 0,
-    steering_tagged_count: u64 = 0,
     current_generation: u32 = 0,
     backpressure_active: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
     backpressure_status_active_emitted: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
@@ -456,7 +455,6 @@ pub const TuiRuntime = struct {
             .rewrite_tool_args_fn = rewriteToolArgs,
             .rewrite_tool_args_ctx = self,
         });
-        self.steering_tagged_count = 0;
         self.local_agent.?.subscribeWithContext(self, onAgentEvent);
         self.local_agent.?.setCompactToolOutput(self.compact_output);
         const system_prompt = try self.workspaceSystemPrompt();
@@ -852,7 +850,6 @@ pub const TuiRuntime = struct {
         self.allocator.free(parts);
         result.content = OwnedSlice(ai_types.UserContentPart).initOwned(next);
     }
-
 
     fn workingDirectoryInsideRoot(self: *const TuiRuntime, candidate: []const u8) bool {
         if (!std.Io.Dir.path.isAbsolute(candidate)) return false;
@@ -1765,14 +1762,7 @@ pub const TuiRuntime = struct {
             },
             .message_end => |payload| {
                 var message_payload = try self.messageEndPayload(payload.message);
-                if (message_payload.role == .user) {
-                    if (self.local_agent) |*local| {
-                        if (local.steeringConsumedCount() > self.steering_tagged_count) {
-                            message_payload.steering = true;
-                            self.steering_tagged_count += 1;
-                        }
-                    }
-                }
+                if (message_payload.role == .user) message_payload.steering = payload.steering;
                 self.push(.{ .message_end = message_payload });
             },
             .tool_execution_start => |payload| self.push(.{ .tool_execution_start = .{
@@ -2994,6 +2984,57 @@ test "runtime tags post-tool consumed steer and feeds it to the model" {
         }
     }
     try std.testing.expect(tagged_user_message_end);
+}
+
+const PromptEndHold = struct {
+    agent: *agent.Agent,
+    held: bool = false,
+
+    fn onEvent(ctx: ?*anyopaque, event: agent.AgentEvent) void {
+        const self: *PromptEndHold = @ptrCast(@alignCast(ctx.?));
+        if (self.held or event != .message_end or event.message_end.message != .user) return;
+        self.held = true;
+        var waits: usize = 0;
+        while (self.agent.steeringConsumedCount() == 0 and waits < 5000) : (waits += 1) {
+            std.testing.io.sleep(.fromNanoseconds(std.time.ns_per_ms), .boot) catch {};
+        }
+    }
+};
+
+test "a prompt whose end is handled after the loop took a steer is not tagged as the steer" {
+    var mock = MockProtocolCtx{ .tool_first = true, .wait_after_tool_first = true };
+    const models = [_]ai_types.Model{test_model_a};
+    var runtime = try TuiRuntime.init(std.testing.allocator, .{ .protocol = makeProtocol(&mock), .models = &models, .run_async = true });
+    defer runtime.deinit();
+
+    var tui_session = runtime.createSession();
+    try tui_session.start();
+    const local = &runtime.local_agent.?;
+    var hold = PromptEndHold{ .agent = local };
+    local.unsubscribeWithContext(&runtime, TuiRuntime.onAgentEvent);
+    local.subscribeWithContext(&hold, PromptEndHold.onEvent);
+    local.subscribeWithContext(&runtime, TuiRuntime.onAgentEvent);
+    try tui_session.submitTurn("first");
+    try tui_session.steer("steer mid tool");
+    local.waitForIdle();
+
+    try std.testing.expect(hold.held);
+    try std.testing.expectEqual(@as(u64, 1), runtime.steersConsumedCount());
+    var prompt_tagged: ?bool = null;
+    var steer_tagged: ?bool = null;
+    while (tui_session.popEvent()) |event| {
+        var ev = event;
+        defer ev.deinit(std.testing.allocator);
+        switch (ev) {
+            .message_end => |payload| if (payload.role == .user) {
+                if (std.mem.eql(u8, payload.text.slice(), "first")) prompt_tagged = payload.steering;
+                if (std.mem.eql(u8, payload.text.slice(), "steer mid tool")) steer_tagged = payload.steering;
+            },
+            else => {},
+        }
+    }
+    try std.testing.expectEqual(@as(?bool, false), prompt_tagged);
+    try std.testing.expectEqual(@as(?bool, true), steer_tagged);
 }
 
 test "runtime active steering continues after plain assistant stop" {

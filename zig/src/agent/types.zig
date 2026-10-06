@@ -73,6 +73,7 @@ pub const MessageUpdatePayload = struct {
 
 pub const MessageEndPayload = struct {
     message: ai_types.Message,
+    steering: bool = false,
 };
 
 pub const ContextUsagePayload = struct {
@@ -450,6 +451,7 @@ pub const AgentLoopConfig = struct {
     transform_context_ctx: ?*anyopaque = null,
     get_steering_messages_fn: ?GetSteeringMessagesFn = null,
     get_steering_messages_ctx: ?*anyopaque = null,
+    prompts_are_steering: bool = false,
     get_follow_up_messages_fn: ?GetFollowUpMessagesFn = null,
     get_follow_up_messages_ctx: ?*anyopaque = null,
     compact_between_turns_fn: ?CompactBetweenTurnsFn = null,
