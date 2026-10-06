@@ -172,13 +172,14 @@ pub const Adapter = struct {
         defer shot.deinit();
         var found: std.ArrayList(contract.NativeTurn) = .empty;
         var cursor: []const u8 = "";
+        const pages_max = request.max_turns / turn_page + 2;
         var pages: usize = 0;
-        while (pages < turn_pages_max) : (pages += 1) {
+        while (pages < pages_max) : (pages += 1) {
             var params = std.json.ObjectMap.empty;
             try params.put(arena, "threadId", .{ .string = request.native_id });
             try params.put(arena, "itemsView", .{ .string = "full" });
             try params.put(arena, "sortDirection", .{ .string = "asc" });
-            try params.put(arena, "limit", .{ .integer = turn_page });
+            try params.put(arena, "limit", .{ .integer = @intCast(turn_page) });
             if (cursor.len > 0) try params.put(arena, "cursor", .{ .string = cursor });
             const page = try shot.call(arena, "thread/turns/list", params, refusal) orelse break;
             try turnsOf(arena, page, &found);
@@ -233,8 +234,7 @@ pub const Adapter = struct {
         return std.fmt.allocPrint(arena, "codex://threads/{s}", .{native_id});
     }
 
-    const turn_page: i64 = 100;
-    const turn_pages_max: usize = 50;
+    const turn_page: usize = 100;
 
     fn threadsOf(arena: std.mem.Allocator, result: ?std.json.Value) ![]const contract.NativeSession {
         const body = result orelse return &.{};

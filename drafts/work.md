@@ -181,7 +181,9 @@ index is its place in the transcript, and its text is cut at 64 KiB. A session
 `serve` no longer holds is read the same way from its binding's native id. A
 held session whose harness transcript is still empty, or cannot be read, is answered as below; a
 session `serve` no longer holds then answers no turns. A Codex read pages only as
-far as `after` and `limit` need.
+far as `after` and `limit` need, with no cap of its own. A read runs on `serve`'s
+one loop, so while a Codex app-server answers it, other operations and event
+delivery wait; Claude's read is a local file.
 
 Otherwise `serve` answers from what it recorded: a `user` turn for each message
 a submit admits (from `work.start`, `work.send` or the core's own submit) and an
