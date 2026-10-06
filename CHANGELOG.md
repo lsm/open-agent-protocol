@@ -7,6 +7,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+## [0.1.0-alpha.10] - 2026-10-06
+
+### Breaking changes
+
+- **validation: put session.list on the wire and judge it in both trees (0046)** ([#920](https://github.com/lsm/open-agent-protocol/pull/920))
+
+- `go/serve`: `HistoryEntry` and `HistoryPage` are gone; `Hub.SessionHistory` returns `protocol.SessionListResponse`.
+
+- **hub: serve the session history at GET /sessions/history (0046)** ([#917](https://github.com/lsm/open-agent-protocol/pull/917))
+
+- `go/binding`: `Store` gains `Sessions(ctx) ([]Entry, error)`, so an outside implementation must add it.
+
+### Merged pull requests
+
+- **compat: --session-history works under a symlinked /tmp on macOS** ([#921](https://github.com/lsm/open-agent-protocol/pull/921)): `oapx serve --session-history=/tmp/x.jsonl` refused to start on macOS with `NotDir`: `/tmp` links to `/private/tmp`, and `createDirPath` rejects a symlinked component.
+- **validation: put session.list on the wire and judge it in both trees (0046)** ([#920](https://github.com/lsm/open-agent-protocol/pull/920)): Second half of Decision 0046, which this accepts: `session.list.request`/`session.list.response` join the schema under the staged `session-list` unit.
+- **decisions: record the owner's answers on 0047, and draft the work profile** ([#918](https://github.com/lsm/open-agent-protocol/pull/918)): Records the four answers: the work layer is a profile in this repo (`open-agent-protocol.work`, one capability key per verb, not an affordance); reading Claude's and Pi's stores for listing is fine read-only; an adopting Claude adapter…
+- **hub: serve the session history at GET /sessions/history (0046)** ([#917](https://github.com/lsm/open-agent-protocol/pull/917)): Both hubs now list the session history (Decision 0046): `GET /sessions/history` and a `history` stdio op, in Go and Zig.
+- **hub: deliver a subscription's queued events before it reports the session closed** ([#916](https://github.com/lsm/open-agent-protocol/pull/916)): Zig's `Subscription.next` stopped as soon as an ending was set, so a subscriber that was behind when its session closed (or its stream failed) lost the envelopes it had queued, the terminal included.
+- **hub: let oapx hub --stdio exit on /dev/null input on macOS** ([#915](https://github.com/lsm/open-agent-protocol/pull/915)): `oapx hub --stdio </dev/null` spun forever on macOS (alpha.8 too): macOS `poll()` reports `POLLNVAL` for `/dev/null`, and the stdio loop only woke on `POLLIN`/`POLLHUP`, so it never read the EOF.
+- **hub: admit a message carried on an open (D11)** ([#914](https://github.com/lsm/open-agent-protocol/pull/914)): Closes D11: the Zig hub now admits an open's `message` the way Go's `OpenCompound` does, on stdio and HTTP.
+- **serve: rename hub to serve, keep hub as an alias** ([#913](https://github.com/lsm/open-agent-protocol/pull/913)): `oapx serve` / `goap serve` with no role (or a flag first) now run the multi-session server; `hub` still works.
+- **hub: stream a subscribing open on oapx hub --stdio** ([#912](https://github.com/lsm/open-agent-protocol/pull/912)): This finishes D11 together with #914, which already admits an open's message.
+- **claude: add oapx claude-permission-hook** ([#911](https://github.com/lsm/open-agent-protocol/pull/911)): Lets an outside controller answer a permission prompt in a Claude session it doesn't own, such as one the Claude app runs.
+- **codex: drive Codex's shared app-server through oapx codex-bridge** ([#910](https://github.com/lsm/open-agent-protocol/pull/910)): A codex registry entry with `"endpoint": "unix://<path>"` relays to Codex's managed app-server daemon (`~/.codex/app-server-control/app-server-control.sock`) instead of starting its own `codex app-server`.
+- **decisions: record the owner's answers to 0046** ([#909](https://github.com/lsm/open-agent-protocol/pull/909)): Records your three answers in Decision 0046.
+- **hub: name the binding file the session history, and keep oapx's by default** ([#908](https://github.com/lsm/open-agent-protocol/pull/908)): Renames `--bindings` to `--session-history` in `goap hub` and `oapx hub`.
+- **tui: clear stream_active before a run's terminal event is published** ([#907](https://github.com/lsm/open-agent-protocol/pull/907)): `endRun` and `finishCompaction` published the terminal event and only then cleared `stream_active`.
+- **hub: serve events on oapx hub --stdio** ([#906](https://github.com/lsm/open-agent-protocol/pull/906)): `oapx hub --stdio` now serves `events`.
+- **decisions: propose 0047, a work layer over sessions** ([#905](https://github.com/lsm/open-agent-protocol/pull/905)): Proposes 0047.
+- **decisions: propose 0046, a session list read from the host's bindings** ([#904](https://github.com/lsm/open-agent-protocol/pull/904)): Proposes Decision 0046 for T8, the session list.
+- **hub: serve submit, resolve, cancel and settings on oapx hub --stdio** ([#903](https://github.com/lsm/open-agent-protocol/pull/903)): `oapx hub --stdio` now serves `submit`, `resolve`, `cancel` and `settings`.
+- **decisions: accept 0035, 0036, 0041 and 0043** ([#902](https://github.com/lsm/open-agent-protocol/pull/902)): Accepts four decisions whose surface is already on main.
+- **hub: answer session_closed when a Zig control finds its session closed** ([#900](https://github.com/lsm/open-agent-protocol/pull/900)): When the adapter reports the session closed, Zig's submit, compact, resolve and cancel now answer `409 session_closed` and release the session, matching Go and the rows in `drafts/hub.md`.
+
 ## [0.1.0-alpha.9] - 2026-10-06
 
 ### Merged pull requests

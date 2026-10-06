@@ -1,6 +1,6 @@
 .{
     .name = .makai,
-    .version = "0.1.0-alpha.9",
+    .version = "0.1.0-alpha.10",
     .dependencies = .{
         .zigzag = .{
             .path = "vendor/zigzag",
