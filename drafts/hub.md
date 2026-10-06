@@ -1962,7 +1962,7 @@ are "stamped with the revision the lister served it under", and both name
 | **Zig did** | `Hub.submit`, `compact`, `resolve`, `resolveCall` and `cancel` released the session on the adapter's `SessionClosed` and answered `404 unknown_session`. |
 | **Now** | They release it and answer `session_closed`, as `Hub.updateSettings` already did. Pinned by `a control the adapter finds closed answers session_closed and releases the session, as Go does`. A later request for the released session is `unknown_session` in both trees. |
 
-### D28 — a `codex` entry naming an `endpoint` relays to Codex's shared app-server in `oapx hub` and is refused by `goap hub`
+### D29 — a `codex` entry naming an `endpoint` relays to Codex's shared app-server in `oapx hub` and is refused by `goap hub`
 
 | | |
 | --- | --- |

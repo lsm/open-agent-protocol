@@ -6615,6 +6615,10 @@ pub fn main(init: std.process.Init) !void {
             try compat.stdio.writeAll(stderr, "usage: oapx codex-bridge --sock <path>\n");
             return error.InvalidArgument;
         }
+        if (comptime @import("builtin").os.tag == .windows) {
+            try compat.stdio.writeAll(stderr, "oapx codex-bridge: Codex's control socket is a Unix socket; this platform has none\n");
+            std.process.exit(1);
+        }
         codex_adapter.bridge.run(allocator, args[3], std.posix.STDIN_FILENO, std.posix.STDOUT_FILENO) catch |err| {
             var line_buffer: [128]u8 = undefined;
             try compat.stdio.writeAll(stderr, std.fmt.bufPrint(&line_buffer, "oapx codex-bridge: {s}\n", .{@errorName(err)}) catch "oapx codex-bridge: failed\n");
