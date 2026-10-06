@@ -10,6 +10,7 @@ const compat = @import("compat");
 const json_encode = @import("json_encode");
 
 pub const permission_hook = @import("permission_hook.zig");
+pub const native_list = @import("native_list.zig");
 pub const endpoint_id = session.endpoint_id;
 pub const capability_revision = harness_pins.claude_code_capability_revision;
 pub const pinned_version = harness_pins.claude_code_endpoint_version;
@@ -144,7 +145,16 @@ pub const Adapter = struct {
     }
 
     pub fn adapter(self: *Adapter) contract.Adapter {
-        return .{ .ptr = self, .vtable = &.{ .probe = probe, .open = open } };
+        return .{ .ptr = self, .vtable = &.{ .probe = probe, .open = open, .native_list = nativeList } };
+    }
+
+    fn nativeList(ptr: *anyopaque, arena: std.mem.Allocator, request: contract.NativeListRequest, refusal: *contract.Refusal) contract.Failure![]const contract.NativeSession {
+        const self: *Adapter = @ptrCast(@alignCast(ptr));
+        _ = refusal;
+        const home = compat.getEnvVarOwned(arena, "HOME") catch return &.{};
+        const desktop = if (builtin.os.tag == .macos) try std.fs.path.join(arena, &.{ home, "Library", "Application Support", "Claude", "claude-code-sessions" }) else "";
+        const directory = if (request.directory.len > 0) request.directory else self.config.backend.working_directory orelse "";
+        return try native_list.list(arena, .{ .home = home, .desktop_sessions = desktop }, directory, request.limit);
     }
 
     fn mint(self: *Adapter, allocator: std.mem.Allocator, kind: []const u8) ![]u8 {
@@ -1746,4 +1756,5 @@ test "a create exposes its native binding before the first turn" {
 
 test {
     _ = permission_hook;
+    _ = native_list;
 }

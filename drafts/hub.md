@@ -436,7 +436,7 @@ error. That is stated because the four reasons are the whole set.
 | `POST /sessions/{id}/settings` | `settings` | `session.settings.update.response` | see [settings](#settings) |
 | `POST /sessions/{id}/close` | `close` | `204 No Content`, no body | `unknown_session` 404, `run_active` 409, `session_closed` 409, `request_cancelled` 400, `internal` 500 |
 | `GET /sessions/{id}/events` | `events` | an SSE stream, adopting a held subscription when the request named no cursor | see [events](#events) |
-| `GET /work` | `work.list` | `{"groups":[...]}`, per [the work profile](work.md); `?include_closed=true` adds closed sessions from the session history; `?include_native=true` adds each adapter's own sessions it can list (Codex today), and an adapter that could not list is named in `unavailable` | — |
+| `GET /work` | `work.list` | `{"groups":[...]}`, per [the work profile](work.md); `?include_closed=true` adds closed sessions from the session history; `?include_native=true` adds each adapter's own sessions it can list (Codex through `thread/list`; Claude Code read-only from `~/.claude/projects`, the live-session registry and the desktop app's records), and an adapter that could not list is named in `unavailable` | — |
 | `GET /work/sessions/{id}` | `work.status` | one piece of work, per [the work profile](work.md) | `unknown_session` 404, `session_closed` 409 |
 | `POST /adapters/{name}/work` | `work.start` | the new session's `work.status` | `invalid_request` 400 (a missing message, or a directory other than the adapter's, naming its `working_directory`), `unknown_adapter` 404, and an open's refusals |
 | `POST /work/sessions/{id}/send` | `work.send` | the session's `work.status` | `invalid_request` 400, and a submit's refusals |
