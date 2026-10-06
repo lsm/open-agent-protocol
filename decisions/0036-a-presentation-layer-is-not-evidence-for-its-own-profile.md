@@ -1,6 +1,10 @@
 # Decision 0036: A Presentation Layer Is Not Evidence for Its Own Profile
 
-Status: proposed
+Status: accepted 2026-10-06 (a policy decision: it sets the gate a presentation
+profile passes and graduates nothing, so what it decided is true of the tree as
+soon as it is merged. The profile itself stays a draft with no step landed;
+[Decision 0037](0037-presentation-state-is-versioned-and-every-intent-is-idempotent.md)
+stays proposed until steps 1 and 2 do)
 Date: 2026-09-26
 Protocol: `open-agent-protocol` version `0.1`
 Profile: `open-agent-protocol.presentation-control`

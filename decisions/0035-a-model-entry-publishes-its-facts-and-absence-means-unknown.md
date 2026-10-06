@@ -1,6 +1,17 @@
 # Decision 0035: A Model Entry Publishes Its Facts, and Absence Means Unknown
 
-Status: proposed (the five open questions answered by the owner 2026-09-26)
+Status: accepted 2026-10-06 (the five open questions answered by the owner
+2026-09-26; the members landed in #532: `provider.schema.json` carries `cost`,
+both modality lists, `reasoning_levels`, `release_date`, `family` and the
+listing's `catalog`, `drafts/model-provider-core.md` lists them, the Zig
+provider types and server publish them, the provider fixtures include
+`model-facts-published` and `model-listing-published-as-partial` with their
+negative pair, `drafts/conformance.md` states that a price is published and not
+judged, and the Go SDK and `docs/v1-sdk-agent-provider-spec.md` read them. The
+Go tree has no provider runtime and `clients/ts` speaks only the agent profile,
+so neither carries a type for them. Retiring the three deprecated media
+capabilities, a cost tier and an agent-side completeness member stay with later
+decisions, as the answers below say)
 Date: 2026-09-26
 Protocol: `open-agent-protocol` version `0.1`
 Profile: `open-agent-protocol.model-provider-core`
@@ -215,8 +226,8 @@ the envelope this decision touches.
 
 The owner answered the five questions this proposal was opened with, before any
 schema, type or validator change, and each answer is now carried in the decisions
-above rather than beside them. The proposal stays `proposed`: nothing below is
-executable yet, and what accepting it requires has not moved.
+above rather than beside them. The proposal stayed `proposed` until what
+accepting it required had landed; the status line records where.
 
 1. **`vision`, `audio_input` and `audio_output` stay** in `modelCapability` for
    v0.1 as deprecated aliases. Removing them is a later decision, in a version
