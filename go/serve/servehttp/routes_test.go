@@ -13,6 +13,7 @@ func TestTheRouteTableIsComplete(t *testing.T) {
 		{http.MethodGet, "/adapters/memory/capabilities"},
 		{http.MethodPost, "/adapters/memory/sessions"},
 		{http.MethodGet, "/sessions"},
+		{http.MethodGet, "/sessions/history"},
 		{http.MethodGet, "/sessions/absent/state"},
 		{http.MethodGet, "/sessions/absent/tools"},
 		{http.MethodGet, "/sessions/absent/models"},

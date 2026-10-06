@@ -148,6 +148,8 @@ const FeatureOpenSubscribe = "session.open.subscribe"
 
 const FeatureOpenReopen = "session.open.reopen"
 
+const FeatureSessionList = "session.list"
+
 const (
 	FeatureSessionReasoning = "session.reasoning"
 	FeatureCompactionPolicy = "session.compaction.policy"

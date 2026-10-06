@@ -416,7 +416,7 @@ error. That is stated because the four reasons are the whole set.
 | The verb is `hub`, not `serve` | `TestServeWithoutRoleNamesHub` |
 | The built binary drives a full session, and fails closed on a malformed line | `TestStdioBinaryDrivesAFullSession`, `TestStdioBinaryFailsClosedOnAMalformedLine` |
 | The full lifecycle runs against a real listener | `TestServeLifecycleOverRealListener` |
-| The hub's stdio wire is the thirteen ops, not the endpoint's raw envelopes | `TestCapabilitiesNameTheStdioBinding` |
+| The hub's stdio wire is the fourteen ops, not the endpoint's raw envelopes | `TestCapabilitiesNameTheStdioBinding` |
 
 ### The HTTP routes and SSE framing
 
@@ -426,6 +426,7 @@ error. That is stated because the four reasons are the whole set.
 | `GET /adapters/{name}/capabilities` | `capabilities` | `capabilities.response` | `unknown_adapter` 404, `probe_failed` 500, `internal` 500 |
 | `POST /adapters/{name}/sessions` | `open` | `session.open.response`, and a held subscription when the request set `subscribe` | see [open](#open) |
 | `GET /sessions` | `sessions` | `{"sessions":[...]}` | — |
+| `GET /sessions/history` | `history` | `{"sessions":[...],"next_cursor":…}` | see [history](#history) |
 | `GET /sessions/{id}/state` | `state` | `session.state.response` | `unknown_session` 404, `state_failed` 500, `internal` 500 |
 | `GET /sessions/{id}/tools` | `tools` | `action.tools.list.response` | see [tools](#tools) |
 | `GET /sessions/{id}/models` | `models` | `models.response` | see [models](#models) |
@@ -639,7 +640,7 @@ needs a whole-body deadline, which is not what either tree has.
 the same for a path no pattern matches, and the draft's codes are
 `invalid_request`, `unknown_adapter` and `unknown_session` — none of which is
 "this URL does not exist". So the answer carries no `error.response` envelope.
-All thirteen routes are written in both trees: Zig dispatches each to the same
+All fourteen routes are written in both trees: Zig dispatches each to the same
 `Frontend` operation the stdio op runs, so an answer's shape is shared rather
 than written twice. A path that is a route asked with another method answers
 `405 Method Not Allowed` with an `Allow` header naming the one it takes, which
@@ -658,11 +659,11 @@ was settled by #656 either.
   `.not_found` at `:389`, so on this tree an unrouted path carrying a body and a non-JSON
   `Content-Type` is answered `415 unsupported_media_type`, **not** the plain `404` the paragraph
   above describes. Go cannot reach the same answer: its media check is at
-  `servehttp/server.go:796`, inside `readRequest`, which is called from the **five**
-  body-reading handlers at `:191`, `:327`, `:400`, `:514` and `:562` — five of the thirteen operations
-  registered on the mux across `:69`-`:81`, `:68` being the `http.NewServeMux()` construction rather
+  `servehttp/server.go:798`, inside `readRequest`, which is called from the **five**
+  body-reading handlers at `:194`, `:330`, `:403`, `:517` and `:565` — five of the fourteen operations
+  registered on the mux across `:70`-`:83`, `:69` being the `http.NewServeMux()` construction rather
   than a registration. So a path matching no pattern is answered by the mux before any handler runs,
-  and the other eight registrations read no body at all. So the two trees disagree on one request, and the paragraph above is right about
+  and the other nine registrations read no body at all. So the two trees disagree on one request, and the paragraph above is right about
   the rule and incomplete about the case. **Neither tree is wrong against the draft**: the draft
   states the media rule for routes that read a body, and states no rule for a path that does not
   exist. Which answer an unrouted path should give is **not decided here**. The `415`-on-unrouted
@@ -1161,7 +1162,7 @@ never connects overflows exactly as a slow consumer does, and the adopter reads
 
 ## The operations
 
-Thirteen ops. Each row gives the request line's parameters, the answer, and the
+Fourteen ops. Each row gives the request line's parameters, the answer, and the
 errors. A refusal the row does not name is `internal` on both, with two
 exceptions stated once here rather than repeated per row:
 
@@ -1321,6 +1322,39 @@ nowhere to put a reason (D12).
   session absent, `unknown_session` afterwards, and reopens the same id, and
   `TestHubSessionsListingAcrossAdapters` leaves the closed one out while the live
   one is still listed.
+
+### `history`
+
+The session history ([Decision 0046](../decisions/0046-a-session-list-is-the-hosts-bindings.md)):
+every session the hub's history file names, live or closed, as the store last
+recorded it. Over HTTP it is `GET /sessions/history?limit=…&cursor=…`.
+
+- **params:** `limit` (1 to 100, default 50) and `cursor` (the `next_cursor` of
+  the page before), both optional.
+- **answer:** `{"sessions":[{"session_id":…,"adapter":…,"harness_version":…,"state":"live"|"closed","updated_at_ms":…,"model":…,"directory":…}],"next_cursor":…}`.
+  One entry per session, from its latest entry that is not `refused`; a session
+  whose only entries are `refused` is not listed. `harness_version`, `model` and
+  `directory` appear when recorded, and `next_cursor` only when more remain.
+  Entries are newest first by `updated_at_ms`, ties by `session_id`. The cursor is
+  opaque to a client; both trees issue the same bytes for the same position, so
+  a cursor from one hub's page reads the next page of the other's. A native
+  session id, a home directory, a credential and an environment value are never
+  listed.
+- **errors:** `invalid_cursor` (400) for a cursor this history did not issue,
+  `invalid_request` (400) for a `limit` outside 1 to 100 or another parameter,
+  `unsupported_feature` (400, `feature` `session.list`, `reason` `unadvertised`)
+  from a hub started without a session history, and `history_failed` (500) when
+  the file cannot be read.
+- **pinned by:** Go: `TestSessionHistoryMatchesHTTPPageByPage`,
+  `TestSessionHistoryRefusesAsHTTPDoes`, `TestSessionHistoryIsUnadvertisedWithoutAStore`,
+  `TestAListIsNewestFirstWithTiesBrokenBySessionID`, `TestAListPagesOnItsCursorUntilNoneRemain`,
+  `TestSessionsKeepsEachSessionsLatestEntryThatIsNotRefused`,
+  `TestACursorIsTheBytesTheZigHubIssuesForTheSamePosition`. Zig: `the session
+  history lists what the store recorded, newest first, and pages on its cursor`,
+  `the session history refuses a cursor, a limit and a missing store as Go does`,
+  `the history op answers the store's sessions and refuses as the route does`,
+  `a session list is newest first, ties broken by session id, and pages on the
+  cursor Go issues`.
 
 ### `state`
 

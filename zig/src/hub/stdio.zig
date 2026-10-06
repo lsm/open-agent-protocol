@@ -28,6 +28,7 @@ pub const op_cancel = "cancel";
 pub const op_close = "close";
 pub const op_settings = "settings";
 pub const op_events = "events";
+pub const op_history = "history";
 
 pub const Error = error{
     MalformedLine,
@@ -59,6 +60,8 @@ pub const Supplied = struct {
     after: bool = false,
     request: bool = false,
     allow_degraded_features: bool = false,
+    cursor: bool = false,
+    limit: bool = false,
 };
 
 const no_parameters: []const []const u8 = &.{};
@@ -69,7 +72,8 @@ const max_envelope_bytes: usize = 16 << 20;
 const session_parameter: []const []const u8 = &.{"session_id"};
 const events_parameters: []const []const u8 = &.{ "session_id", "run_id", "after" };
 const session_request_parameters: []const []const u8 = &.{ "session_id", "request" };
-const all_parameters = [_][]const u8{ "adapter", "session_id", "run_id", "after", "request", "allow_degraded_features" };
+const history_parameters: []const []const u8 = &.{ "cursor", "limit" };
+const all_parameters = [_][]const u8{ "adapter", "session_id", "run_id", "after", "request", "cursor", "limit", "allow_degraded_features" };
 
 pub const Request = struct {
     id: i64,
@@ -80,6 +84,8 @@ pub const Request = struct {
     after: ?u64 = null,
     payload: ?std.json.Value = null,
     allow_degraded_features: []const []const u8 = &.{},
+    cursor: ?[]const u8 = null,
+    limit: ?i64 = null,
     supplied: Supplied = .{},
     after_unreadable: bool = false,
 
@@ -90,6 +96,8 @@ pub const Request = struct {
         if (std.mem.eql(u8, parameter, "after")) return self.supplied.after;
         if (std.mem.eql(u8, parameter, "request")) return self.supplied.request;
         if (std.mem.eql(u8, parameter, "allow_degraded_features")) return self.supplied.allow_degraded_features;
+        if (std.mem.eql(u8, parameter, "cursor")) return self.supplied.cursor;
+        if (std.mem.eql(u8, parameter, "limit")) return self.supplied.limit;
         unreachable;
     }
 
@@ -290,6 +298,7 @@ pub const refusal_statuses = [_]struct { code: []const u8, status: []const u8 }{
     .{ .code = "run_active", .status = "409 Conflict" },
     .{ .code = "model_not_found", .status = "400 Bad Request" },
     .{ .code = "state_failed", .status = "500 Internal Server Error" },
+    .{ .code = "history_failed", .status = "500 Internal Server Error" },
     .{ .code = "tools_failed", .status = "502 Bad Gateway" },
     .{ .code = "internal", .status = "500 Internal Server Error" },
     .{ .code = "probe_failed", .status = "500 Internal Server Error" },
@@ -355,6 +364,17 @@ pub fn decode(arena: std.mem.Allocator, line: []const u8) Error!Request {
     request.supplied.after = member(root, "after") != null;
     request.supplied.request = member(root, "request") != null;
     request.supplied.allow_degraded_features = member(root, "allow_degraded_features") != null;
+    request.supplied.cursor = member(root, "cursor") != null;
+    request.supplied.limit = member(root, "limit") != null;
+    try requireStringOrNull(root, "cursor");
+    request.cursor = stringMember(root, "cursor");
+    if (member(root, "limit")) |limit| {
+        if (limit == .integer) {
+            request.limit = limit.integer;
+        } else if (limit != .null) {
+            return Error.MalformedLine;
+        }
+    }
     try requireStringOrNull(root, "adapter");
     try requireStringOrNull(root, "session_id");
     try requireStringOrNull(root, "run_id");
@@ -390,7 +410,7 @@ pub fn decode(arena: std.mem.Allocator, line: []const u8) Error!Request {
 }
 
 fn allowed(key: []const u8) bool {
-    const names = [_][]const u8{ "id", "op", "adapter", "session_id", "run_id", "after", "request", "allow_degraded_features" };
+    const names = [_][]const u8{ "id", "op", "adapter", "session_id", "run_id", "after", "request", "cursor", "limit", "allow_degraded_features" };
     for (names) |name| {
         if (std.mem.eql(u8, key, name)) return true;
     }
@@ -717,6 +737,10 @@ pub const Frontend = struct {
             if (try request.only(arena, no_parameters)) |refusal| return .{ .refused = refusal };
             return .{ .answer = try self.sessions(arena) };
         }
+        if (std.mem.eql(u8, request.op, op_history)) {
+            if (try request.only(arena, history_parameters)) |refusal| return .{ .refused = refusal };
+            return self.history(arena, request.cursor, request.limit);
+        }
         if (std.mem.eql(u8, request.op, op_capabilities)) {
             if (try request.only(arena, adapter_parameter)) |refusal| return .{ .refused = refusal };
             const name = request.adapter orelse "";
@@ -822,6 +846,45 @@ pub const Frontend = struct {
         var root = try emptyObject(arena);
         try root.put(arena, "sessions", try jsonArray(arena, entries));
         return .{ .object = root };
+    }
+
+    pub fn history(self: *Frontend, arena: std.mem.Allocator, cursor: ?[]const u8, limit: ?i64) !Outcome {
+        const limit_message = std.fmt.comptimePrint("binding: limit must be from 1 to {d}", .{hubmod.binding.max_limit});
+        var bound: usize = 0;
+        if (limit) |given| {
+            if (given < 1 or given > hubmod.binding.max_limit) return .{ .refused = .{ .code = "invalid_request", .message = limit_message } };
+            bound = @intCast(given);
+        }
+        const store = self.hub.bindings orelse return .{ .refused = try refusalWith(arena, "unsupported_feature", "serve: this hub keeps no session history", &.{
+            .{ .key = "feature", .value = "session.list" },
+            .{ .key = "reason", .value = "unadvertised" },
+        }) };
+        const unreadable = Refusal{ .code = "history_failed", .message = "the session history could not be read" };
+        const recorded = store.sessions(arena) catch |err| switch (err) {
+            error.OutOfMemory => return error.OutOfMemory,
+            else => return .{ .refused = unreadable },
+        };
+        const page = hubmod.binding.list(arena, recorded, cursor, bound) catch |err| switch (err) {
+            error.OutOfMemory => return error.OutOfMemory,
+            error.InvalidCursor => return .{ .refused = .{ .code = "invalid_cursor", .message = "binding: a cursor this history did not issue" } },
+            error.InvalidLimit => return .{ .refused = .{ .code = "invalid_request", .message = limit_message } },
+        };
+        const entries = try arena.alloc(std.json.Value, page.entries.len);
+        for (page.entries, entries) |entry, *slot| {
+            var object = try emptyObject(arena);
+            try object.put(arena, "session_id", .{ .string = entry.record.session_id });
+            try object.put(arena, "adapter", .{ .string = entry.record.adapter });
+            if (entry.record.harness_version.len > 0) try object.put(arena, "harness_version", .{ .string = entry.record.harness_version });
+            try object.put(arena, "state", .{ .string = if (entry.action == .closed) "closed" else "live" });
+            try object.put(arena, "updated_at_ms", .{ .integer = entry.time_ms });
+            if (entry.record.model.len > 0) try object.put(arena, "model", .{ .string = entry.record.model });
+            if (entry.record.directory.len > 0) try object.put(arena, "directory", .{ .string = entry.record.directory });
+            slot.* = .{ .object = object };
+        }
+        var root = try emptyObject(arena);
+        try root.put(arena, "sessions", try jsonArray(arena, entries));
+        if (page.next_cursor) |next| try root.put(arena, "next_cursor", .{ .string = next });
+        return .{ .answer = .{ .object = root } };
     }
 
     pub fn capabilities(self: *Frontend, arena: std.mem.Allocator, name: []const u8) !Outcome {
@@ -3129,12 +3192,12 @@ test "every code the draft names has a status, or is one the draft leaves undefi
         "stale_capabilities",     "state_failed",      "tools_failed",
         "unknown_adapter",        "unknown_session",   "unsupported_feature",
         "unsupported_media_type", "request_read",      "unrecognized_host",
-        "cross_origin_request",
+        "cross_origin_request",   "history_failed",
     };
     for (named) |code| {
         try testing.expect(statusForRefusal(code) != null);
     }
-    try testing.expectEqual(@as(usize, 28), refusal_statuses.len);
+    try testing.expectEqual(@as(usize, 29), refusal_statuses.len);
 }
 
 test "an unnamed refusal code carries no status, so the wire rule can refuse it" {
@@ -3172,12 +3235,13 @@ test "every code the transport can answer carries the status the draft pins" {
         .{ .code = "request_read", .status = "400 Bad Request" },
         .{ .code = "unrecognized_host", .status = "403 Forbidden" },
         .{ .code = "cross_origin_request", .status = "403 Forbidden" },
+        .{ .code = "history_failed", .status = "500 Internal Server Error" },
     };
     for (named) |entry| {
         try testing.expectEqualStrings(entry.status, statusForRefusal(entry.code).?);
     }
-    try testing.expectEqual(@as(usize, 28), refusal_statuses.len);
-    try testing.expectEqual(@as(usize, 28), named.len);
+    try testing.expectEqual(@as(usize, 29), refusal_statuses.len);
+    try testing.expectEqual(@as(usize, 29), named.len);
 }
 
 const many_detail_keys = [_][]const u8{
@@ -3297,4 +3361,40 @@ fn fadingProbe(ptr: *anyopaque, refusal: *contract.Refusal) contract.Failure!con
     if (state.registered) return .{ .endpoint = fading_descriptor.endpoint, .capability_revision = "", .features = &.{} };
     state.registered = true;
     return fading_descriptor;
+}
+
+test "the history op answers the store's sessions and refuses as the route does" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const cwd = try std.process.currentPathAlloc(testing.io, testing.allocator);
+    defer testing.allocator.free(cwd);
+    const path = try std.fs.path.join(testing.allocator, &.{ cwd, ".zig-cache", "tmp", tmp.sub_path[0..], "sessions.jsonl" });
+    defer testing.allocator.free(path);
+    var store = try hubmod.binding.Store.open(testing.allocator, path);
+    defer store.deinit();
+    const harness = try Harness.init(testing.allocator, .{ .bindings = &store }, .{});
+    defer harness.deinit();
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    _ = try harness.hub.open(arena_state.allocator(), "reference", .{ .session_id = "listed" });
+
+    try harness.send("{\"id\":1,\"op\":\"history\",\"limit\":1}");
+    const result = (try harness.lastValue()).object.get("result").?.object;
+    const listed = result.get("sessions").?.array.items;
+    try testing.expectEqual(@as(usize, 1), listed.len);
+    try testing.expectEqualStrings("listed", listed[0].object.get("session_id").?.string);
+    try testing.expectEqualStrings("live", listed[0].object.get("state").?.string);
+    try testing.expect(result.get("next_cursor") == null);
+
+    try harness.send("{\"id\":2,\"op\":\"history\",\"cursor\":\"not-a-cursor\"}");
+    try testing.expectEqualStrings("invalid_cursor", try harness.code());
+    try harness.send("{\"id\":3,\"op\":\"history\",\"limit\":0}");
+    try testing.expectEqualStrings("invalid_request", try harness.code());
+    try harness.send("{\"id\":4,\"op\":\"history\",\"session_id\":\"listed\"}");
+    try testing.expectEqualStrings("invalid_request", try harness.code());
+
+    const bare = try Harness.init(testing.allocator, .{}, .{});
+    defer bare.deinit();
+    try bare.send("{\"id\":5,\"op\":\"history\"}");
+    try testing.expectEqualStrings("unsupported_feature", try bare.code());
 }

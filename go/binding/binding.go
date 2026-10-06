@@ -55,6 +55,24 @@ type Store interface {
 	Append(ctx context.Context, entry Entry) error
 	Latest(ctx context.Context, sessionID string) (Entry, bool, error)
 	History(ctx context.Context, sessionID string) ([]Entry, error)
+	Sessions(ctx context.Context) ([]Entry, error)
+}
+
+func Sessions(entries []Entry) []Entry {
+	latest := make(map[string]int)
+	var states []Entry
+	for _, entry := range entries {
+		if entry.Action == ActionRefused {
+			continue
+		}
+		if at, seen := latest[entry.Record.SessionID]; seen {
+			states[at] = entry
+			continue
+		}
+		latest[entry.Record.SessionID] = len(states)
+		states = append(states, entry)
+	}
+	return states
 }
 
 func FromOpen(sessionID, adapter, harnessVersion, model, home, directory string, toolSourceIDs []string) Record {

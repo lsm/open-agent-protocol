@@ -203,7 +203,84 @@ pub const Store = struct {
         }
         return found;
     }
+
+    pub fn sessions(self: *Store, arena: std.mem.Allocator) ![]Entry {
+        const bytes = compat.fs.readFileAlloc(arena, compat.fs.getCwd(), self.path, max_store_bytes) catch |err| switch (err) {
+            error.FileNotFound => return &.{},
+            else => return err,
+        };
+        var entries: std.ArrayList(Entry) = .empty;
+        var start: usize = 0;
+        while (start < bytes.len) {
+            const end = std.mem.indexOfScalarPos(u8, bytes, start, '\n') orelse return error.TornRecord;
+            try entries.append(arena, try decode(arena, bytes[start .. end + 1]));
+            start = end + 1;
+        }
+        return latestEach(arena, entries.items);
+    }
 };
+
+pub const default_limit: usize = 50;
+pub const max_limit: usize = 100;
+
+pub fn latestEach(arena: std.mem.Allocator, entries: []const Entry) ![]Entry {
+    var states: std.ArrayList(Entry) = .empty;
+    var at: std.StringHashMapUnmanaged(usize) = .empty;
+    for (entries) |entry| {
+        if (entry.action == .refused) continue;
+        if (at.get(entry.record.session_id)) |index| {
+            states.items[index] = entry;
+            continue;
+        }
+        try at.put(arena, entry.record.session_id, states.items.len);
+        try states.append(arena, entry);
+    }
+    return states.items;
+}
+
+pub const Page = struct {
+    entries: []const Entry,
+    next_cursor: ?[]const u8 = null,
+};
+
+pub fn list(arena: std.mem.Allocator, sessions: []const Entry, cursor: ?[]const u8, limit: usize) !Page {
+    const bound = if (limit == 0) default_limit else limit;
+    if (bound > max_limit) return error.InvalidLimit;
+    const ordered = try arena.dupe(Entry, sessions);
+    std.mem.sort(Entry, ordered, {}, before);
+    var start: usize = 0;
+    if (cursor) |given| if (given.len > 0) {
+        const after = try decodeCursor(arena, given);
+        while (start < ordered.len and !before({}, after, ordered[start])) start += 1;
+    };
+    const end = @min(start + bound, ordered.len);
+    var page = Page{ .entries = ordered[start..end] };
+    if (end < ordered.len) page.next_cursor = try encodeCursor(arena, ordered[end - 1]);
+    return page;
+}
+
+fn before(_: void, a: Entry, b: Entry) bool {
+    if (a.time_ms != b.time_ms) return a.time_ms > b.time_ms;
+    return std.mem.lessThan(u8, a.record.session_id, b.record.session_id);
+}
+
+const cursor_codec = std.base64.url_safe_no_pad;
+
+fn encodeCursor(arena: std.mem.Allocator, entry: Entry) ![]const u8 {
+    const raw = try std.fmt.allocPrint(arena, "{d}:{s}", .{ entry.time_ms, entry.record.session_id });
+    const out = try arena.alloc(u8, cursor_codec.Encoder.calcSize(raw.len));
+    return cursor_codec.Encoder.encode(out, raw);
+}
+
+fn decodeCursor(arena: std.mem.Allocator, cursor: []const u8) !Entry {
+    const size = cursor_codec.Decoder.calcSizeForSlice(cursor) catch return error.InvalidCursor;
+    const raw = try arena.alloc(u8, size);
+    cursor_codec.Decoder.decode(raw, cursor) catch return error.InvalidCursor;
+    const colon = std.mem.indexOfScalar(u8, raw, ':') orelse return error.InvalidCursor;
+    if (colon + 1 == raw.len) return error.InvalidCursor;
+    const time_ms = std.fmt.parseInt(i64, raw[0..colon], 10) catch return error.InvalidCursor;
+    return .{ .action = .opened, .time_ms = time_ms, .record = .{ .session_id = raw[colon + 1 ..], .adapter = "" } };
+}
 
 const testing = std.testing;
 
@@ -297,4 +374,60 @@ test "a second store on one session history is refused while the first holds it,
     first.deinit();
     var second = try Store.open(testing.allocator, path);
     second.deinit();
+}
+
+fn opened(time_ms: i64, session_id: []const u8) Entry {
+    return .{ .action = .opened, .time_ms = time_ms, .record = .{ .session_id = session_id, .adapter = "memory" } };
+}
+
+test "the session list keeps each session's latest entry that is not refused" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var closed = opened(4, "a");
+    closed.action = .closed;
+    var refused = opened(5, "a");
+    refused.action = .refused;
+    var only_refused = opened(2, "only-refused");
+    only_refused.action = .refused;
+    const states = try latestEach(arena.allocator(), &.{ opened(1, "a"), only_refused, opened(3, "b"), closed, refused });
+    try testing.expectEqual(@as(usize, 2), states.len);
+    try testing.expectEqualStrings("a", states[0].record.session_id);
+    try testing.expectEqual(Action.closed, states[0].action);
+    try testing.expectEqual(@as(i64, 4), states[0].time_ms);
+    try testing.expectEqualStrings("b", states[1].record.session_id);
+}
+
+test "a session list is newest first, ties broken by session id, and pages on the cursor Go issues" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const sessions = [_]Entry{ opened(1, "old"), opened(5, "tie-b"), opened(9, "new"), opened(5, "tie-a") };
+    const whole = try list(a, &sessions, null, 0);
+    try testing.expectEqual(@as(usize, 4), whole.entries.len);
+    try testing.expect(whole.next_cursor == null);
+    const order = [_][]const u8{ "new", "tie-a", "tie-b", "old" };
+    for (order, whole.entries) |want, got| try testing.expectEqualStrings(want, got.record.session_id);
+
+    const first = try list(a, &sessions, null, 2);
+    try testing.expectEqualStrings("NTp0aWUtYQ", first.next_cursor.?);
+    const second = try list(a, &sessions, first.next_cursor, 2);
+    try testing.expectEqualStrings("tie-b", second.entries[0].record.session_id);
+    try testing.expectEqualStrings("old", second.entries[1].record.session_id);
+    try testing.expect(second.next_cursor == null);
+}
+
+test "a session list defaults its limit, refuses one past the ceiling, and refuses a cursor it did not issue" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const sessions = try a.alloc(Entry, default_limit + 1);
+    for (sessions, 0..) |*slot, index| slot.* = opened(@intCast(index), try std.fmt.allocPrint(a, "s{d}", .{index}));
+    const page = try list(a, sessions, null, 0);
+    try testing.expectEqual(default_limit, page.entries.len);
+    try testing.expect(page.next_cursor != null);
+    try testing.expectError(error.InvalidLimit, list(a, sessions, null, max_limit + 1));
+    _ = try list(a, sessions, null, max_limit);
+    for ([_][]const u8{ "not base64!", "bm8tY29sb24", "eDpzZXNzaW9u", "MTI6" }) |cursor| {
+        try testing.expectError(error.InvalidCursor, list(a, sessions, cursor, 0));
+    }
 }
