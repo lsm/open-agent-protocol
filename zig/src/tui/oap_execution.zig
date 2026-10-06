@@ -240,8 +240,15 @@ pub const OapExecution = struct {
         if (settings.resume_session_id) |saved| {
             try open.put("session_id", .{ .string = saved });
             try open.put("reopen", .{ .bool = true });
+            if (self.endpoint) |*endpoint| _ = endpoint.closeSession(saved);
         }
+        const left = try a.dupe(u8, self.session_id);
         const opened = self.exchange(a, "session.open.request", open.value(), true) catch |err| retry: {
+            if (settings.resume_session_id != null and left.len > 0) {
+                self.stopping.store(false, .release);
+                self.thread = try std.Thread.spawn(.{}, run, .{self});
+                return error.OapReopenRefused;
+            }
             if (err != error.OapRequestRefused or self.hub == null or settings.model == null) return err;
             _ = settings_map.map.swapRemove("model");
             try metadata.put(oapx_adapter.settings_key, settings_map.value());
@@ -258,6 +265,9 @@ pub const OapExecution = struct {
         const kept_session = try self.allocator.dupe(u8, session_id.string);
         self.allocator.free(self.session_id);
         self.session_id = kept_session;
+        if (settings.resume_session_id != null and left.len > 0 and !std.mem.eql(u8, left, kept_session)) {
+            if (self.endpoint) |*endpoint| _ = endpoint.closeSession(left);
+        }
 
         var listing = Map.init(a);
         try listing.put("session_id", .{ .string = self.session_id });
@@ -1745,7 +1755,16 @@ test "a saved session reopened over OAP carries its transcript into the next run
     try drainTurn(&runtime, &seen);
     try testing.expectEqual(@as(?tui_session.TuiEndReason, .completed), seen.end);
     try testing.expectEqual(@as(usize, 2), script.last_context_messages);
-    try testing.expectError(error.OapRequestRefused, runtime.reopenSaved("never-saved"));
+    try testing.expectError(error.OapReopenRefused, runtime.reopenSaved("never-saved"));
+    try testing.expectEqualStrings("saved-session", execution.session_id);
+
+    try runtime.reopenSaved("saved-session");
+    try runtime.submitTurn("and once more");
+    var again = Seen{};
+    defer again.deinit();
+    try drainTurn(&runtime, &again);
+    try testing.expectEqual(@as(?tui_session.TuiEndReason, .completed), again.end);
+    try testing.expectEqual(@as(usize, 2), script.last_context_messages);
 }
 
 test "a runtime over OAP refuses what the protocol path cannot carry yet" {

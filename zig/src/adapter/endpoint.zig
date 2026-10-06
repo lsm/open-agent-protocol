@@ -156,6 +156,16 @@ pub const Endpoint = struct {
         return false;
     }
 
+    pub fn closeSession(self: *Endpoint, session_id: []const u8) bool {
+        for (self.entries.items, 0..) |*entry, index| {
+            if (!std.mem.eql(u8, entry.session.id(), session_id)) continue;
+            entry.deinit(self.allocator);
+            _ = self.entries.orderedRemove(index);
+            return true;
+        }
+        return false;
+    }
+
     fn closeSessions(self: *Endpoint) void {
         for (self.entries.items) |*entry| entry.deinit(self.allocator);
         self.entries.clearRetainingCapacity();

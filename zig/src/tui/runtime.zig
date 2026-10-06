@@ -670,7 +670,10 @@ pub const TuiRuntime = struct {
             remote.vtable.stop(remote.ctx);
             self.started = false;
         }
-        try remote.vtable.start(remote.ctx, .{ .ctx = self, .push = pushRemote }, self.remoteSettings(session_id));
+        remote.vtable.start(remote.ctx, .{ .ctx = self, .push = pushRemote }, self.remoteSettings(session_id)) catch |err| {
+            self.started = err == error.OapReopenRefused;
+            return err;
+        };
         self.started = true;
     }
 
