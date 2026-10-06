@@ -115,8 +115,11 @@ OpenCode `GET /api/session`, Hermes `session.list`. Claude and Pi have no list
 on their wire; their adapters may read the harness's own store read-only
 (Claude: the app's session records and `claude agents --json`). That reverses
 0012's refusal to read a private store, for listing only, and only for these
-two. The DeepSeek harness has no list and no recorded store, so its adapter
-lists nothing native.
+two. The DeepSeek harness ships a store (`session-persistence-jsonl`, which
+can enumerate), but a deployment mounts it only by composition, under a `root`
+the adapter is not told, and its SDK wire cannot reach it
+(`research/deepseek-harness-dsh-v0.1.7-rc.2-mapping.md`). Its adapter lists
+nothing native until a deployment says where that store is.
 
 ### 3. A native session can be adopted, in one of three ways
 
