@@ -63,9 +63,10 @@ Claude Code CLI 2.1.289 and the Claude desktop app with its bundled CLI
   HyperNeo sends, but that carries no events and cannot answer a permission
   prompt.
 - **OAP's adapters open clean sessions.** The Zig adapter passes
-  `--setting-sources=` and an empty `--system-prompt`, and neither adapter
-  passes `--resume`. A session the app made runs with
-  `--setting-sources=user,project,local` and the app's own prompt.
+  `--setting-sources=` and an empty `--system-prompt`. Both adapters pass
+  `--resume` only when reopening a session their own binding names
+  (Decision 0040); never for a session the app made. A session the app made
+  runs with `--setting-sources=user,project,local` and the app's own prompt.
 
 Codex is the opposite case: HyperNeo's driver connects to the app-server
 socket Codex Desktop already runs (`thread/start`, `turn/start`,
@@ -120,7 +121,7 @@ An open naming a native id adopts it. The adapter answers which way it can:
 | Way | When | What the host gets |
 | --- | --- | --- |
 | `attach` | the harness serves a socket other clients can join | the full core: events, prompts, cancel; the app sees the same session |
-| `resume` | no process runs the session | the full core, in a process the adapter owns, via the harness's own resume |
+| `resume` | no process runs the session | the full core, in a process the adapter owns, via the harness's own resume (for Claude, 0040's `--resume`, given a native id instead of a binding) |
 | refused `session_running_elsewhere` | another process runs it and there is no socket to join | nothing; the caller relays outside OAP |
 
 Codex Desktop is `attach`. Claude Code is `resume` when `claude agents --json`
