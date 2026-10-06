@@ -26,6 +26,7 @@ pub const op_submit = "submit";
 pub const op_resolve = "resolve";
 pub const op_cancel = "cancel";
 pub const op_close = "close";
+pub const op_settings = "settings";
 pub const op_events = "events";
 
 pub const Error = error{
@@ -66,6 +67,7 @@ const adapter_parameter: []const []const u8 = &.{"adapter"};
 const open_parameters: []const []const u8 = &.{ "adapter", "request" };
 const max_envelope_bytes: usize = 16 << 20;
 const session_parameter: []const []const u8 = &.{"session_id"};
+const session_request_parameters: []const []const u8 = &.{ "session_id", "request" };
 const all_parameters = [_][]const u8{ "adapter", "session_id", "run_id", "after", "request", "allow_degraded_features" };
 
 pub const Request = struct {
@@ -406,6 +408,58 @@ pub const Defect = struct {
     }
 };
 
+fn detailsOf(arena: std.mem.Allocator, reported: *const contract.Refusal) ![]const oap_types.DetailEntry {
+    var details = std.ArrayList(oap_types.DetailEntry).empty;
+    try details.append(arena, .{ .key = "feature", .value = reported.feature });
+    try details.append(arena, .{ .key = "reason", .value = reported.reason });
+    if (reported.tool.len > 0) try details.append(arena, .{ .key = "tool", .value = reported.tool });
+    if (reported.field.len > 0) try details.append(arena, .{ .key = "field", .value = reported.field });
+    if (reported.source.len > 0) try details.append(arena, .{ .key = "source", .value = reported.source });
+    return details.items;
+}
+
+fn messageOr(reported: *const contract.Refusal, fallback: []const u8) []const u8 {
+    return if (reported.message.len > 0) reported.message else fallback;
+}
+
+pub fn controlRefusal(arena: std.mem.Allocator, err: hubmod.Failure, reported: *const contract.Refusal, id: []const u8) !Refusal {
+    return switch (err) {
+        error.UnknownSession => .{ .code = "unknown_session", .message = try std.fmt.allocPrint(arena, "no session \"{s}\"", .{id}) },
+        error.ScopeMismatch => .{ .code = "scope_mismatch", .message = try std.fmt.allocPrint(arena, "the payload names a session other than \"{s}\"", .{id}) },
+        error.SessionClosed => .{ .code = "session_closed", .message = messageOr(reported, "the session is closed") },
+        error.RunActive => .{ .code = "run_active", .message = messageOr(reported, "the session already has a run in flight") },
+        error.InvalidSubmission => .{ .code = "invalid_submission", .message = messageOr(reported, "the submission is invalid") },
+        error.UnsupportedFeature, error.ToolCatalogUnavailable => {
+            const message = if (reported.detail.len > 0)
+                try std.fmt.allocPrint(arena, "unsupported input: {s} ({s}): {s}", .{ reported.feature, reported.reason, reported.detail })
+            else
+                try std.fmt.allocPrint(arena, "unsupported input: {s} ({s})", .{ reported.feature, reported.reason });
+            const details = try detailsOf(arena, reported);
+            return .{ .code = "unsupported_feature", .message = message, .details = details };
+        },
+        error.CapabilityDegraded => {
+            const message = try std.fmt.allocPrint(arena, "unsupported input: {s} is degraded and was not opted into", .{reported.feature});
+            const details = try arena.dupe(oap_types.DetailEntry, &.{.{ .key = "feature", .value = reported.feature }});
+            return .{ .code = "capability_degraded", .message = message, .details = details };
+        },
+        error.ModelNotFound => {
+            const message = try std.fmt.allocPrint(arena, "model not found: \"{s}\"", .{reported.model_id});
+            const details = try arena.dupe(oap_types.DetailEntry, &.{.{ .key = "model_id", .value = reported.model_id }});
+            return .{ .code = "model_not_found", .message = message, .details = details };
+        },
+        error.InvalidSteerTarget => .{
+            .code = "invalid_steer_target",
+            .message = messageOr(reported, "the steer names no run it can reach"),
+            .details = try arena.dupe(oap_types.DetailEntry, &.{.{ .key = "reason", .value = reported.reason }}),
+        },
+        error.RunNotFound => .{ .code = "run_not_found", .message = messageOr(reported, "no such run") },
+        error.RunTerminal => .{ .code = "run_terminal", .message = messageOr(reported, "the run has already settled") },
+        error.InteractionNotFound, error.InvalidResolution => .{ .code = "resolution_rejected", .message = messageOr(reported, @errorName(err)) },
+        error.OutOfMemory => error.OutOfMemory,
+        else => .{ .code = "internal", .message = messageOr(reported, @errorName(err)) },
+    };
+}
+
 pub const Frontend = struct {
     hub: *Hub,
     sink: Sink,
@@ -523,6 +577,23 @@ pub const Frontend = struct {
             }
             return self.openSession(arena, name, request, false);
         }
+        if (std.mem.eql(u8, request.op, op_submit) or std.mem.eql(u8, request.op, op_resolve) or std.mem.eql(u8, request.op, op_cancel) or std.mem.eql(u8, request.op, op_settings)) {
+            if (try request.only(arena, session_request_parameters)) |refusal| return .{ .refused = refusal };
+            const session_id = request.session_id orelse "";
+            const value = request.payload orelse std.json.Value{ .null = {} };
+            const controlled = if (std.mem.eql(u8, request.op, op_submit))
+                try self.submitControl(arena, session_id, value)
+            else if (std.mem.eql(u8, request.op, op_resolve))
+                try self.resolveControl(arena, session_id, value)
+            else if (std.mem.eql(u8, request.op, op_cancel))
+                try self.cancelControl(arena, session_id, value)
+            else
+                try self.settingsControl(arena, session_id, value);
+            return switch (controlled) {
+                .refused => |refused| .{ .refused = refused.refusal },
+                .envelope => |envelope| .{ .answer_line = try oap_envelope.serializeEnvelope(envelope, arena) },
+            };
+        }
         if (std.mem.eql(u8, request.op, op_models)) {
             if (try request.only(arena, session_and_degraded)) |refusal| return .{ .refused = refusal };
             return self.models(arena, request.session_id orelse "", request.allow_degraded_features);
@@ -632,6 +703,152 @@ pub const Frontend = struct {
             .payload = .{ .session_state_response = reported },
         };
         return .{ .answer_line = try oap_envelope.serializeEnvelope(envelope, arena) };
+    }
+
+    pub const Control = union(enum) {
+        refused: struct { refusal: Refusal, run_id: ?[]const u8 = null },
+        envelope: oap_types.Envelope,
+    };
+
+    fn responseId(self: *Frontend, arena: std.mem.Allocator) ![]const u8 {
+        self.next_envelope += 1;
+        return std.fmt.allocPrint(arena, "oap-response-{d}", .{self.next_envelope});
+    }
+
+    pub fn submitControl(self: *Frontend, arena: std.mem.Allocator, id: []const u8, value: std.json.Value) !Control {
+        const gated = try gateEnvelope(arena, value, &.{ .message_submit_request, .session_compact_request }, "the request envelope is not a session.message.submit.request or a session.compact.request");
+        var envelope = switch (gated) {
+            .refused => |refused| return .{ .refused = .{ .refusal = refused, .run_id = null } },
+            .envelope => |envelope| envelope,
+        };
+        var reported = contract.Refusal{};
+        const compacting = envelope.payload == .session_compact_request;
+        const admission = switch (envelope.payload) {
+            .session_compact_request => |*request| self.hub.compactReporting(arena, id, request, envelope.id, &reported),
+            else => self.hub.submitReporting(arena, id, &envelope.payload.message_submit_request, envelope.id, &reported),
+        } catch |err| {
+            return .{ .refused = .{ .refusal = try controlRefusal(arena, err, &reported, id), .run_id = null } };
+        };
+        return .{ .envelope = .{
+            .id = try self.responseId(arena),
+            .in_reply_to = envelope.id,
+            .session_id = admission.session_id,
+            .run_id = admission.run_id,
+            .capability_revision = envelope.capability_revision,
+            .payload = if (compacting) .{ .session_compact_response = admission } else .{ .message_submit_response = admission },
+        } };
+    }
+
+    pub fn resolveControl(self: *Frontend, arena: std.mem.Allocator, id: []const u8, value: std.json.Value) !Control {
+        var run_id: ?[]const u8 = null;
+        const gated = try gateEnvelope(
+            arena,
+            value,
+            &.{ .permission_resolve_request, .user_input_resolve_request, .call_resolve_request },
+            "the request envelope is not action.permission.resolve.request, user.input.resolve.request or action.call.resolve.request",
+        );
+        var envelope = switch (gated) {
+            .refused => |refused| return .{ .refused = .{ .refusal = refused, .run_id = run_id } },
+            .envelope => |envelope| envelope,
+        };
+        var reported = contract.Refusal{};
+        switch (envelope.payload) {
+            .call_resolve_request => |*request| {
+                run_id = request.run_id;
+                const settled = self.hub.resolveCallReporting(arena, id, envelope.id, request, &reported) catch |err| {
+                    return .{ .refused = .{ .refusal = try controlRefusal(arena, err, &reported, id), .run_id = run_id } };
+                };
+                return .{ .envelope = .{
+                    .id = try self.responseId(arena),
+                    .in_reply_to = envelope.id,
+                    .session_id = id,
+                    .run_id = request.run_id,
+                    .capability_revision = envelope.capability_revision,
+                    .payload = .{ .call_resolve_response = settled },
+                } };
+            },
+            .permission_resolve_request => |*request| {
+                run_id = request.run_id;
+                self.hub.resolve(arena, id, .{ .permission = request }) catch |err| {
+                    return .{ .refused = .{ .refusal = try controlRefusal(arena, err, &reported, id), .run_id = run_id } };
+                };
+                return .{ .envelope = .{
+                    .id = try self.responseId(arena),
+                    .in_reply_to = envelope.id,
+                    .session_id = id,
+                    .run_id = request.run_id,
+                    .capability_revision = envelope.capability_revision,
+                    .payload = .{ .permission_resolve_response = .{ .interaction_id = request.interaction_id, .session_id = request.session_id, .run_id = request.run_id, .accepted = true } },
+                } };
+            },
+            .user_input_resolve_request => |*request| {
+                run_id = request.run_id;
+                self.hub.resolve(arena, id, .{ .input = request }) catch |err| {
+                    return .{ .refused = .{ .refusal = try controlRefusal(arena, err, &reported, id), .run_id = run_id } };
+                };
+                return .{ .envelope = .{
+                    .id = try self.responseId(arena),
+                    .in_reply_to = envelope.id,
+                    .session_id = id,
+                    .run_id = request.run_id,
+                    .capability_revision = envelope.capability_revision,
+                    .payload = .{ .user_input_resolve_response = .{ .interaction_id = request.interaction_id, .session_id = request.session_id, .run_id = request.run_id, .accepted = true } },
+                } };
+            },
+            else => unreachable,
+        }
+    }
+
+    pub fn cancelControl(self: *Frontend, arena: std.mem.Allocator, id: []const u8, value: std.json.Value) !Control {
+        var run_id: ?[]const u8 = null;
+        const gated = try gateEnvelope(arena, value, &.{.run_cancel_request}, "the request envelope is not a run.cancel.request");
+        const envelope = switch (gated) {
+            .refused => |refused| return .{ .refused = .{ .refusal = refused, .run_id = run_id } },
+            .envelope => |envelope| envelope,
+        };
+        const request = envelope.payload.run_cancel_request;
+        if (!self.hub.knows(id)) {
+            return .{ .refused = .{ .refusal = .{ .code = "unknown_session", .message = try std.fmt.allocPrint(arena, "no session \"{s}\"", .{id}) }, .run_id = run_id } };
+        }
+        if (!std.mem.eql(u8, request.session_id, id)) {
+            return .{ .refused = .{ .refusal = .{
+                .code = "scope_mismatch",
+                .message = try std.fmt.allocPrint(arena, "payload session_id \"{s}\" does not match the addressed session \"{s}\"", .{ request.session_id, id }),
+            }, .run_id = run_id } };
+        }
+        run_id = request.run_id;
+        var reported = contract.Refusal{};
+        const acknowledged = self.hub.cancel(arena, id, request.run_id) catch |err| {
+            return .{ .refused = .{ .refusal = try controlRefusal(arena, err, &reported, id), .run_id = run_id } };
+        };
+        return .{ .envelope = .{
+            .id = try self.responseId(arena),
+            .in_reply_to = envelope.id,
+            .session_id = acknowledged.session_id,
+            .run_id = acknowledged.run_id,
+            .capability_revision = envelope.capability_revision,
+            .payload = .{ .run_cancel_response = acknowledged },
+        } };
+    }
+
+    pub fn settingsControl(self: *Frontend, arena: std.mem.Allocator, id: []const u8, value: std.json.Value) !Control {
+        const gated = try gateEnvelope(arena, value, &.{.session_settings_update_request}, "the request envelope is not a session.settings.update.request");
+        const envelope = switch (gated) {
+            .refused => |refused| return .{ .refused = .{ .refusal = refused, .run_id = null } },
+            .envelope => |envelope| envelope,
+        };
+        const request = &envelope.payload.session_settings_update_request;
+        var reported = contract.Refusal{};
+        const updated = self.hub.updateSettings(arena, id, request, &reported) catch |err| {
+            return .{ .refused = .{ .refusal = try controlRefusal(arena, err, &reported, id), .run_id = null } };
+        };
+        return .{ .envelope = .{
+            .id = try self.responseId(arena),
+            .in_reply_to = envelope.id,
+            .session_id = updated.session_id,
+            .capability_revision = envelope.capability_revision,
+            .payload = .{ .session_settings_update_response = updated },
+        } };
     }
 
     pub const Gate = union(enum) {
@@ -2184,6 +2401,53 @@ fn openResult(harness: *Harness) !std.json.ObjectMap {
 fn listedSessions(harness: *Harness) !usize {
     try harness.send("{\"id\":2,\"op\":\"sessions\"}");
     return (try openResult(harness)).get("sessions").?.array.items.len;
+}
+
+const control_head = "\"protocol\":\"open-agent-protocol\",\"version\":\"0.1\",\"profile\":\"open-agent-protocol.agent-control-core\"";
+
+fn controlLine(arena: std.mem.Allocator, id: i64, op: []const u8, session_id: []const u8, envelope: []const u8) ![]const u8 {
+    return std.fmt.allocPrint(arena, "{{\"id\":{d},\"op\":\"{s}\",\"session_id\":\"{s}\",\"request\":{s}}}", .{ id, op, session_id, envelope });
+}
+
+fn resultType(harness: *Harness) ![]const u8 {
+    return (try openResult(harness)).get("type").?.string;
+}
+
+test "submit, resolve and cancel answer over stdio as they do over HTTP, each correlated to its request" {
+    const harness = try Harness.init(testing.allocator, .{}, .{});
+    defer harness.deinit();
+    try harness.send(try openLine(harness.arena(), "reference", open_envelope));
+
+    try harness.send(try controlLine(harness.arena(), 2, op_submit, "s1", "{" ++ control_head ++ ",\"type\":\"session.message.submit.request\",\"id\":\"sub-1\",\"session_id\":\"s1\",\"payload\":{\"session_id\":\"s1\",\"delivery\":\"auto\",\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}]}}"));
+    try testing.expectEqualStrings("session.message.submit.response", try resultType(harness));
+    try testing.expectEqualStrings("sub-1", (try openResult(harness)).get("in_reply_to").?.string);
+    try testing.expectEqualStrings("run-1", (try openResult(harness)).get("run_id").?.string);
+
+    try harness.send(try controlLine(harness.arena(), 3, op_resolve, "s1", "{" ++ control_head ++ ",\"type\":\"action.permission.resolve.request\",\"id\":\"res-1\",\"session_id\":\"s1\",\"run_id\":\"run-1\",\"payload\":{\"interaction_id\":\"i1\",\"requested_by\":\"agent\",\"responded_by\":\"user\",\"session_id\":\"s1\",\"run_id\":\"run-1\",\"granted\":true}}"));
+    try testing.expectEqualStrings("action.permission.resolve.response", try resultType(harness));
+    try testing.expectEqualStrings("res-1", (try openResult(harness)).get("in_reply_to").?.string);
+
+    try harness.send(try controlLine(harness.arena(), 4, op_cancel, "s1", "{" ++ control_head ++ ",\"type\":\"run.cancel.request\",\"id\":\"can-1\",\"session_id\":\"s1\",\"run_id\":\"run-1\",\"payload\":{\"session_id\":\"s1\",\"run_id\":\"run-1\"}}"));
+    try testing.expectEqualStrings("run.cancel.response", try resultType(harness));
+    try testing.expectEqualStrings("can-1", (try openResult(harness)).get("in_reply_to").?.string);
+}
+
+test "the control ops refuse as the HTTP routes do: an absent session, a missing request, a parameter they do not take, an adapter without settings" {
+    const harness = try Harness.init(testing.allocator, .{}, .{});
+    defer harness.deinit();
+    try harness.send(try openLine(harness.arena(), "reference", open_envelope));
+    const cancel_absent = "{" ++ control_head ++ ",\"type\":\"run.cancel.request\",\"id\":\"can-2\",\"session_id\":\"absent\",\"run_id\":\"run-1\",\"payload\":{\"session_id\":\"absent\",\"run_id\":\"run-1\"}}";
+    try harness.send(try controlLine(harness.arena(), 2, op_cancel, "absent", cancel_absent));
+    try testing.expectEqualStrings("unknown_session", try harness.code());
+
+    try harness.send("{\"id\":3,\"op\":\"submit\",\"session_id\":\"s1\"}");
+    try testing.expectEqualStrings("invalid_request", try harness.code());
+
+    try harness.send(try std.fmt.allocPrint(harness.arena(), "{{\"id\":4,\"op\":\"cancel\",\"session_id\":\"s1\",\"run_id\":\"run-1\",\"request\":{s}}}", .{cancel_absent}));
+    try testing.expectEqualStrings("invalid_request", try harness.code());
+
+    try harness.send(try controlLine(harness.arena(), 5, op_settings, "s1", "{" ++ control_head ++ ",\"type\":\"session.settings.update.request\",\"id\":\"set-1\",\"session_id\":\"s1\",\"payload\":{\"session_id\":\"s1\",\"compaction_policy\":{\"kind\":\"off\"}}}"));
+    try testing.expectEqualStrings("unsupported_feature", try harness.code());
 }
 
 test "an open answers with the request envelope's own id and the session it made" {
