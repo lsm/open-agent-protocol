@@ -24,6 +24,8 @@ export const EnvelopeType = {
   SessionStateRequest: 'session.state.request',
   SessionStateResponse: 'session.state.response',
   SessionStateUpdated: 'session.state.updated',
+  SessionListRequest: 'session.list.request',
+  SessionListResponse: 'session.list.response',
   SessionModelSwitchRequest: 'session.model.switch.request',
   SessionModelSwitchResponse: 'session.model.switch.response',
   SessionSettingsUpdateRequest: 'session.settings.update.request',
@@ -393,6 +395,27 @@ export type CompactionPolicy =
 export type SessionOpenResponse = SessionState;
 export type SessionStateResponse = SessionState;
 export type SessionStateUpdated = SessionState;
+
+export interface SessionListRequest {
+  cursor?: string;
+  limit?: number;
+  allow_degraded_features?: string[];
+}
+
+export interface SessionListEntry {
+  session_id: string;
+  adapter: string;
+  harness_version?: string;
+  state: 'live' | 'closed';
+  updated_at_ms: number;
+  model?: string;
+  directory?: string;
+}
+
+export interface SessionListResponse {
+  sessions: SessionListEntry[];
+  next_cursor?: string;
+}
 
 export interface SessionStateRequest {
   session_id: string;

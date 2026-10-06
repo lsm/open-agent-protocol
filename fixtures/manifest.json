@@ -11763,6 +11763,264 @@
           "aspect": "honour"
         }
       ]
+    },
+    {
+      "id": "session-list-paged",
+      "path": "valid/session-list-paged.json",
+      "kind": "positive",
+      "valid": true,
+      "phase": "",
+      "codes": [],
+      "units": [
+        "session-list"
+      ],
+      "provenance": [
+        "decisions/0046-a-session-list-is-the-hosts-bindings.md"
+      ]
+    },
+    {
+      "id": "session-list-ties-by-session-id",
+      "path": "valid/session-list-ties-by-session-id.json",
+      "kind": "positive",
+      "valid": true,
+      "phase": "",
+      "codes": [],
+      "units": [
+        "session-list"
+      ],
+      "provenance": [
+        "decisions/0046-a-session-list-is-the-hosts-bindings.md"
+      ]
+    },
+    {
+      "id": "session-list-unadvertised-refused",
+      "path": "valid/session-list-unadvertised-refused.json",
+      "kind": "positive",
+      "valid": true,
+      "phase": "",
+      "codes": [],
+      "units": [
+        "session-list"
+      ],
+      "provenance": [
+        "decisions/0046-a-session-list-is-the-hosts-bindings.md"
+      ]
+    },
+    {
+      "id": "session-list-degraded-with-optin",
+      "path": "valid/session-list-degraded-with-optin.json",
+      "kind": "positive",
+      "valid": true,
+      "phase": "",
+      "codes": [],
+      "units": [
+        "session-list"
+      ],
+      "provenance": [
+        "decisions/0046-a-session-list-is-the-hosts-bindings.md"
+      ]
+    },
+    {
+      "id": "session-list-unadvertised",
+      "path": "semantic-invalid/session-list-unadvertised.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "unavailable_capability"
+      ],
+      "units": [
+        "session-list"
+      ],
+      "provenance": [
+        "decisions/0046-a-session-list-is-the-hosts-bindings.md"
+      ],
+      "covers": [
+        {
+          "capability": "session.list",
+          "aspect": "gate"
+        }
+      ]
+    },
+    {
+      "id": "session-list-unadvertised-wrong-refusal",
+      "path": "semantic-invalid/session-list-unadvertised-wrong-refusal.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "unavailable_capability"
+      ],
+      "units": [
+        "session-list"
+      ],
+      "provenance": [
+        "decisions/0046-a-session-list-is-the-hosts-bindings.md"
+      ],
+      "covers": [
+        {
+          "capability": "session.list",
+          "aspect": "gate"
+        }
+      ]
+    },
+    {
+      "id": "session-list-degraded-admitted-without-optin",
+      "path": "semantic-invalid/session-list-degraded-admitted-without-optin.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "degraded_without_optin"
+      ],
+      "units": [
+        "session-list"
+      ],
+      "provenance": [
+        "decisions/0046-a-session-list-is-the-hosts-bindings.md"
+      ],
+      "covers": [
+        {
+          "capability": "session.list",
+          "aspect": "gate"
+        }
+      ]
+    },
+    {
+      "id": "session-list-over-limit",
+      "path": "semantic-invalid/session-list-over-limit.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "session_list_over_limit"
+      ],
+      "units": [
+        "session-list"
+      ],
+      "provenance": [
+        "decisions/0046-a-session-list-is-the-hosts-bindings.md"
+      ],
+      "covers": [
+        {
+          "capability": "session.list",
+          "aspect": "honour"
+        }
+      ]
+    },
+    {
+      "id": "session-list-out-of-order",
+      "path": "semantic-invalid/session-list-out-of-order.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "session_list_order"
+      ],
+      "units": [
+        "session-list"
+      ],
+      "provenance": [
+        "decisions/0046-a-session-list-is-the-hosts-bindings.md"
+      ],
+      "covers": [
+        {
+          "capability": "session.list",
+          "aspect": "honour"
+        }
+      ]
+    },
+    {
+      "id": "session-list-tie-out-of-order",
+      "path": "semantic-invalid/session-list-tie-out-of-order.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "session_list_order"
+      ],
+      "units": [
+        "session-list"
+      ],
+      "provenance": [
+        "decisions/0046-a-session-list-is-the-hosts-bindings.md"
+      ],
+      "covers": [
+        {
+          "capability": "session.list",
+          "aspect": "honour"
+        }
+      ]
+    },
+    {
+      "id": "session-list-duplicate-entry",
+      "path": "semantic-invalid/session-list-duplicate-entry.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "duplicate_session_entry"
+      ],
+      "units": [
+        "session-list"
+      ],
+      "provenance": [
+        "decisions/0046-a-session-list-is-the-hosts-bindings.md"
+      ],
+      "covers": [
+        {
+          "capability": "session.list",
+          "aspect": "honour"
+        }
+      ]
+    },
+    {
+      "id": "session-list-limit-out-of-range",
+      "path": "schema-invalid/session-list-limit-out-of-range.json",
+      "kind": "schema-invalid",
+      "valid": false,
+      "phase": "schema",
+      "codes": [
+        "schema_invalid"
+      ],
+      "units": [
+        "session-list"
+      ],
+      "provenance": [
+        "decisions/0046-a-session-list-is-the-hosts-bindings.md"
+      ]
+    },
+    {
+      "id": "session-list-entry-native-id",
+      "path": "schema-invalid/session-list-entry-native-id.json",
+      "kind": "schema-invalid",
+      "valid": false,
+      "phase": "schema",
+      "codes": [
+        "schema_invalid"
+      ],
+      "units": [
+        "session-list"
+      ],
+      "provenance": [
+        "decisions/0046-a-session-list-is-the-hosts-bindings.md"
+      ]
+    },
+    {
+      "id": "session-list-entry-unknown-state",
+      "path": "schema-invalid/session-list-entry-unknown-state.json",
+      "kind": "schema-invalid",
+      "valid": false,
+      "phase": "schema",
+      "codes": [
+        "schema_invalid"
+      ],
+      "units": [
+        "session-list"
+      ],
+      "provenance": [
+        "decisions/0046-a-session-list-is-the-hosts-bindings.md"
+      ]
     }
   ]
 }

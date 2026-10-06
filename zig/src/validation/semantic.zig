@@ -55,6 +55,9 @@ pub const code_resolution_payload_mismatch = "resolution_payload_mismatch";
 pub const code_wrong_tool_owner = "wrong_tool_owner";
 pub const code_undisclosed_provide_limit = "undisclosed_provide_limit";
 pub const code_attachment_field_in_catalog = "attachment_field_in_catalog";
+pub const code_session_list_over_limit = "session_list_over_limit";
+pub const code_session_list_order = "session_list_order";
+pub const code_duplicate_session_entry = "duplicate_session_entry";
 
 const attachment_only_members = [_][]const u8{ "command", "args", "environment" };
 
@@ -75,7 +78,8 @@ pub const implemented = [_][]const u8{
     code_illegal_tool_transition,     code_pending_tool_at_terminal,    code_duplicate_interaction,
     code_unmatched_interaction,       code_wrong_interaction_responder, code_pending_interaction_at_terminal,
     code_resolution_payload_mismatch, code_wrong_tool_owner,            code_undisclosed_provide_limit,
-    code_attachment_field_in_catalog,
+    code_attachment_field_in_catalog, code_session_list_over_limit,     code_session_list_order,
+    code_duplicate_session_entry,
 };
 
 pub fn isImplemented(code: []const u8) bool {
@@ -403,6 +407,7 @@ const Pending = struct {
     model_listed: bool = false,
     limit_refusal: ?Expectation = null,
     model_query: bool = false,
+    list_limit: ?u64 = null,
     satisfies: bool = false,
     model_unjudged: bool = false,
     revision: []const u8 = "",
@@ -763,6 +768,14 @@ pub const Machine = struct {
         }
         if (std.mem.eql(u8, declared, "models.response")) {
             try self.modelsResponse(index, envelope, payload);
+            return;
+        }
+        if (std.mem.eql(u8, declared, "session.list.request")) {
+            try self.sessionListRequest(index, envelope, payload);
+            return;
+        }
+        if (std.mem.eql(u8, declared, "session.list.response")) {
+            try self.sessionListResponse(index, envelope, payload);
             return;
         }
         if (std.mem.eql(u8, declared, "session.model.switch.request")) {
@@ -1638,6 +1651,44 @@ pub const Machine = struct {
     fn modelsRequest(self: *Machine, index: usize, envelope: std.json.Value, payload: std.json.Value) !void {
         try self.gatedRequest(index, envelope, payload, feature_models_list, "/payload");
         if (self.submits.get(field(envelope, "id"))) |query| query.model_query = true;
+    }
+
+    fn sessionListRequest(self: *Machine, index: usize, envelope: std.json.Value, payload: std.json.Value) !void {
+        try self.gatedRequest(index, envelope, payload, feature_session_list, "/payload");
+        if (self.submits.get(field(envelope, "id"))) |query| query.list_limit = unsigned(payload, "limit") orelse session_list_default_limit;
+    }
+
+    fn sessionListResponse(self: *Machine, index: usize, envelope: std.json.Value, payload: std.json.Value) !void {
+        try self.featureKeys(index, envelope, &.{feature_session_list});
+        var limit: ?u64 = null;
+        if (self.submits.get(field(envelope, "in_reply_to"))) |query| {
+            limit = query.list_limit;
+            if (query.control) |expectation| {
+                if (expectation.rung == rung_degradation) try self.add(code_degraded_without_optin, index);
+            }
+        }
+        const listed = member(payload, "sessions") orelse return;
+        if (listed != .array) return;
+        const entries = listed.array.items;
+        if (limit) |bound| {
+            if (entries.len > bound) try self.add(code_session_list_over_limit, index);
+        }
+        var seen: std.StringArrayHashMapUnmanaged(void) = .empty;
+        for (entries, 0..) |entry, at| {
+            const id = memberString(entry, "session_id");
+            if (seen.get(id) != null) {
+                try self.add(code_duplicate_session_entry, index);
+                continue;
+            }
+            try seen.put(self.arena.allocator(), id, {});
+            if (at == 0) continue;
+            const previous = entries[at - 1];
+            const was = unsigned(previous, "updated_at_ms") orelse 0;
+            const now = unsigned(entry, "updated_at_ms") orelse 0;
+            if (was < now or (was == now and std.mem.order(u8, memberString(previous, "session_id"), id) == .gt)) {
+                try self.add(code_session_list_order, index);
+            }
+        }
     }
 
     fn modelSwitchResponse(self: *Machine, index: usize, envelope: std.json.Value, payload: std.json.Value) !void {
@@ -3878,6 +3929,8 @@ pub const feature_delivery_queue = "session.message.delivery.queue";
 const output_schema_document = "output-schema";
 const feature_model_selection = "run.model_selection";
 const feature_models_list = "models.list";
+const feature_session_list = "session.list";
+const session_list_default_limit: u64 = 50;
 const feature_model_switch = "session.model.switch";
 const feature_providers_attach = "action.providers.attach";
 const feature_tools_list = "action.tools.list";

@@ -1,6 +1,6 @@
 # Decision 0046: A Session List Is the Host's Bindings
 
-Status: proposed (the three open questions answered by the owner 2026-10-06)
+Status: accepted 2026-10-06 (the owner answered its three open questions; both hubs serve the list (#917) and both validators judge the wire under `session-list`)
 Date: 2026-10-06
 Protocol: `open-agent-protocol` version `0.1`
 Profile: `open-agent-protocol.agent-control-core`

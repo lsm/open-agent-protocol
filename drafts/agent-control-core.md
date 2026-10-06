@@ -495,6 +495,13 @@ a per-submit `model_id` remains a run override under `run.model_selection`.
 The complete race, queue-promotion, and catalog rules are in
 [Decision 0028](../decisions/0028-live-model-and-provider-control.md).
 
+An endpoint that keeps a session history advertises `session.list` and answers
+`session.list.request` (an optional `cursor` and a `limit` from 1 to 100,
+default 50) with `session.list.response`: the sessions its history records,
+live or closed, newest first, and a `next_cursor` when more remain. The list is
+the host's records only; a harness's own sessions are not merged in
+([Decision 0046](../decisions/0046-a-session-list-is-the-hosts-bindings.md)).
+
 An endpoint advertising `session.reasoning` or `session.compaction.policy` in
 `session_live` mode may accept `session.settings.update.request`, which names
 the session and at least one of `reasoning_level` and `compaction_policy`. The

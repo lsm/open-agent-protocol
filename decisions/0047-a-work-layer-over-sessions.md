@@ -33,7 +33,7 @@ The core already does most of what the five verbs need:
 | `status` | `session.state` and the event stream, with no summary a caller can read in one call |
 | `list` (HyperNeo's `find`) | only the sessions a host opened (0046); none a harness holds |
 
-Session bindings already outlive a restart in both hubs (`--bindings`, #893).
+Session bindings already outlive a restart in both hubs (`--session-history`, first `--bindings`, #893).
 
 ### What a Claude Code session is, probed on 2026-10-06
 
@@ -100,7 +100,7 @@ Two more probes, the same day:
 `open-agent-protocol.work` defines the five verbs over core operations, so an
 endpoint gains it without new run machinery:
 
-- `work.list {text?, directory?, adapters?, include_closed?, limit?, cursor?}`:
+- `work.list {directory?, adapters?, include_closed?, limit?, cursor?}`:
   groups by directory, newest first, the host's sessions (0046) and the
   sessions each adapter can list natively (decision 2).
 - `work.start {adapter, directory, title, message}`: open with the message.
