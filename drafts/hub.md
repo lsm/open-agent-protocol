@@ -1338,6 +1338,9 @@ nowhere to put a reason (D12).
 The session history ([Decision 0046](../decisions/0046-a-session-list-is-the-hosts-bindings.md)):
 every session the hub's history file names, live or closed, as the store last
 recorded it. Over HTTP it is `GET /sessions/history?limit=…&cursor=…`.
+A client's close records `closed`; a shutdown does not, so the sessions a
+shutdown ended stay `live` in the history and a restarted hub lists and
+reopens them as left behind, not closed by anyone. Both trees do this.
 
 - **params:** `limit` (1 to 100, default 50) and `cursor` (the `next_cursor` of
   the page before), both optional.

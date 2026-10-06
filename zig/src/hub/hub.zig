@@ -437,6 +437,7 @@ pub const Hub = struct {
     holds: std.ArrayList(Held) = .empty,
     bound: std.ArrayList(Bound) = .empty,
     bindings: ?*binding.Store = null,
+    shutting_down: bool = false,
 
     pub fn init(allocator: std.mem.Allocator, now: *const fn () u64, options: Options) Hub {
         return .{
@@ -1238,6 +1239,7 @@ pub const Hub = struct {
     }
 
     pub fn closeSessions(self: *Hub) Sweep {
+        self.shutting_down = true;
         var summary = Sweep{};
         const deadline = self.clock() + self.shutdown_ns;
         while (self.entries.items.len > 0) {
@@ -1659,7 +1661,7 @@ pub const Hub = struct {
     }
 
     fn releaseSession(self: *Hub, entry: *Entry) void {
-        self.recordBinding(.closed, entry.session_id, @intCast(self.clock() / std.time.ns_per_ms));
+        if (!self.shutting_down) self.recordBinding(.closed, entry.session_id, @intCast(self.clock() / std.time.ns_per_ms));
         self.endSubscriptions(entry, .session_closed);
         var index: usize = 0;
         while (index < self.holds.items.len) {
@@ -3176,6 +3178,35 @@ test "the shutdown sweep cancels a live run before it releases the session" {
     try testing.expectEqual(@as(usize, 0), hub.sessionCount());
     try testing.expectError(error.UnknownSession, hub.state(arena, "settled"));
     try testing.expectError(error.UnknownSession, hub.state(arena, "second"));
+}
+
+test "a shutdown leaves the history naming its sessions live, so a restarted hub lists and reopens them as left behind, not closed" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const cwd = try std.process.currentPathAlloc(testing.io, testing.allocator);
+    defer testing.allocator.free(cwd);
+    const path = try std.fs.path.join(testing.allocator, &.{ cwd, ".zig-cache", "tmp", tmp.sub_path[0..], "sessions.jsonl" });
+    defer testing.allocator.free(path);
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    {
+        var store = try binding.Store.open(testing.allocator, path);
+        defer store.deinit();
+        var memory_adapter = memory.Adapter.init(testing.allocator);
+        defer memory_adapter.deinit();
+        var hub = Hub.init(testing.allocator, testClock, .{ .bindings = &store });
+        defer hub.deinit();
+        try hub.register("memory", memory_adapter.adapter());
+        _ = try hub.open(arena, "memory", .{ .session_id = "kept" });
+        _ = try hub.open(arena, "memory", .{ .session_id = "dropped" });
+        try hub.close(arena, "dropped");
+        _ = hub.closeSessions();
+    }
+    var store = try binding.Store.open(testing.allocator, path);
+    defer store.deinit();
+    try testing.expectEqual(binding.Action.opened, (try store.latest(arena, "kept")).?.action);
+    try testing.expectEqual(binding.Action.closed, (try store.latest(arena, "dropped")).?.action);
 }
 
 test "closeSessions settles every session" {

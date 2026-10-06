@@ -2,6 +2,7 @@ package serve
 
 import (
 	"sync"
+	"sync/atomic"
 
 	"context"
 	"errors"
@@ -42,6 +43,7 @@ type Hub struct {
 	bindings  binding.Store
 	home      string
 	bindingMu sync.Mutex
+	stopping  atomic.Bool
 }
 
 func New(registry *Registry, options Options) *Hub {
@@ -105,7 +107,9 @@ func (h *Hub) Open(ctx context.Context, adapterName string, request base.OpenReq
 		h.bindingMu.Lock()
 		defer h.bindingMu.Unlock()
 		h.sessions.remove(released.id, released)
-		h.recordBinding(context.Background(), released.binding, binding.ActionClosed, h.now())
+		if !h.stopping.Load() {
+			h.recordBinding(context.Background(), released.binding, binding.ActionClosed, h.now())
+		}
 	})
 	entry.runs = h.sessions.runs
 	opened := h.openRecord(ctx, adapterName, implementation, state, request)
@@ -280,6 +284,7 @@ func (h *Hub) Sessions(ctx context.Context) []SessionStatus {
 }
 
 func (h *Hub) CloseSessions(ctx context.Context) {
+	h.stopping.Store(true)
 	entries := h.sessions.list()
 	sweep, cancelSweep := context.WithTimeout(ctx, h.shutdown)
 	defer cancelSweep()
