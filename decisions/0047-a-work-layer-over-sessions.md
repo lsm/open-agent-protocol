@@ -157,7 +157,17 @@ from tailing `~/.claude/projects/<dir>/<id>.jsonl`, and a prompt reaches the
 host through a `PermissionRequest` hook the user installed, which asks the
 endpoint and falls back to the app's own prompt when no answer comes. A hook
 must be in the session's settings before it starts, so `observe` without one
-answers no prompts. An adopting Claude adapter resumes with the settings
+answers no prompts.
+
+The hook is `oapx claude-permission-hook --endpoint <url>` (#911). It posts
+the hook input (`session_id`, `transcript_path`, `cwd`, `tool_name`,
+`tool_input`, `permission_mode` and the rest Claude sends) to `<url>`; a
+`200` carrying `{"behavior":"allow"}` or `{"behavior":"deny","message":…}`
+answers the prompt, and anything else, or no answer, leaves it with the app.
+Probed: the app's prompt is raised at the same moment the hook runs, and
+whichever answers first wins, so a slow or absent endpoint never blocks the
+user. Codex's `attach` is `oapx codex-bridge` in place of `codex app-server`
+(#910). An adopting Claude adapter resumes with the settings
 the app recorded for the session, not with `--setting-sources=`.
 
 OAP does not carry a relay. A relayed message has no run, no events and no
