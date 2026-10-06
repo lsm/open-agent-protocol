@@ -1446,8 +1446,8 @@ nowhere to put a reason (D12).
   answered on its own route, and one naming nothing, an unadvertised setting or
   an absent session is refused` and `a settings update reaches the session's
   adapter, and one naming nothing or another session is refused before it`.
-  `oapx hub --stdio` does not serve the op, as it serves no `submit`, `resolve`
-  or `cancel`.
+  `oapx hub --stdio` serves the op through the same `Frontend.settingsControl`
+  the daemon route runs.
 
 ### `close`
 
@@ -1942,6 +1942,7 @@ are "stamped with the revision the lister served it under", and both name
 | **The fix** | `hub.OpenRequest` gains `message_json`, the hub registers the subscription before running the submission, and the answer carries `admitted_submit_requests`. For the subscribing case, the `Frontend` needs a held subscription — the same thing `events` needs — so both unblock together. This is `submit`'s work, not `open`'s: the same PR that serves `submit` on the wire is the one that can admit a message at open time. |
 | **The refusal's precedence** | It is checked **before** the adapter is looked up and before the revision gate runs, so an open naming an unregistered adapter *and* carrying a message answers `unsupported_feature` where Go answers `unknown_adapter`, and a subscribing open citing a stale revision answers `unsupported_feature` where Go answers `stale_capabilities`. Go's `openOp` looks the adapter up first and gates second, so both of those win there. Hoisting the refusal means it lives in the hub rather than the frontend, which is where it stops existing: the moment `submit` admits a message and `events` admits a subscription, neither refusal is there to be out of order. It is recorded rather than fixed because every input that reaches the difference is already divergent under this row. |
 | **Over HTTP** | The subscribing half is served: `POST /adapters/{name}/sessions` holds the subscription the open registered, and the `events` request with no cursor adopts it — Zig: `a subscribing open holds its subscription, and the events request with no cursor adopts it from the first envelope`. The `message` half is still refused on both transports, and the stdio op still refuses `subscribe`, because stdio has no `events` op to drain it. |
+| **Stdio controls, 2026-10-06** | `oapx hub --stdio` now serves `submit`, `resolve`, `cancel` and `settings`, each through the `Frontend` function the daemon route calls (`submitControl`, `resolveControl`, `cancelControl`, `settingsControl`), so the two transports answer one implementation. Zig: `submit, resolve and cancel answer over stdio as they do over HTTP, each correlated to its request` and `the control ops refuse as the HTTP routes do`. **`events` is still not served over stdio**, so a run admitted there can be cancelled and answered but not watched, and the two refusals below stand until it is. |
 | **Also refused here** | **A subscribing open, for the same reason and a sharper one.** `hub.open` registers a `Subscription` when `subscribe` is set, and the stdio op discarded it — the wire accepted a subscription it cannot deliver, and once `submit` lands its envelopes would queue against a subscription nothing drains. Go holds the subscription in its `Frontend`; there is no equivalent here yet, so the honest answer is to refuse until `events` exists. **This is a second divergence from the same cause** and it is why `open`'s parity cases carry no `subscribe` at all. |
 
 ### D27 — an `oapx` registry entry is served by `oapx hub` and refused by `goap hub`
