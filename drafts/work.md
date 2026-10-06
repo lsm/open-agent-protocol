@@ -49,13 +49,18 @@ twice; the message goes to that session instead. One the harness lists as
 running is refused `run_active`. `work.status`, `work.send`, `work.stop` and
 `work.read` take the OAP id from then on.
 
+An adopted session keeps the harness's own posture: the Claude adapter resumes
+it with the user's settings and prompt rather than the clean room `serve`
+gives a session it starts. Its binding records `"adopted": true`, so every
+later reopen, including one after a restart, resumes it the same way.
+
 ## Statuses
 
 | Status | When |
 | --- | --- |
 | `queued` | the session's state is `queued`, or a submit was admitted and no run started |
 | `running` | the session's state is `running` |
-| `needs_you` | the session's state is `waiting_for_input`, or a permission or input request is pending |
+| `needs_you` | the session's state is `waiting_for_input`, a run in it names a pending interaction, or the active run's latest `run.status.updated` in the journal is `waiting_for_input` (the Claude adapter reports a gate only there) |
 | `done` | idle, and the latest run ended `run.completed` |
 | `failed` | idle, and the latest run ended `run.failed`, or the session's state is `error` |
 | `stopped` | idle, and the latest run ended `run.cancelled` |

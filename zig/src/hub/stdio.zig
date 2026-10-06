@@ -3308,6 +3308,30 @@ test "work.status of an idle session reads its latest run's terminal: completed 
     }
 }
 
+const waiting_line = "{" ++ event_head ++ ",\"type\":\"run.status.updated\",\"id\":\"e2\",\"session_id\":\"s1\",\"run_id\":\"run-1\",\"sequence\":2,\"payload\":{\"session_id\":\"s1\",\"run_id\":\"run-1\",\"status\":\"waiting_for_input\",\"pending_user_input_id\":\"gate-1\"}}";
+const resumed_line = "{" ++ event_head ++ ",\"type\":\"run.status.updated\",\"id\":\"e3\",\"session_id\":\"s1\",\"run_id\":\"run-1\",\"sequence\":3,\"payload\":{\"session_id\":\"s1\",\"run_id\":\"run-1\",\"status\":\"running\"}}";
+
+test "work.status of a running session whose state names no interaction reads needs_you from the run's latest status update, and running again once it resumes" {
+    const harness = try Harness.init(testing.allocator, .{}, .{});
+    defer harness.deinit();
+    defer reference_holder.pending_events = &.{};
+    try harness.send(try openLine(harness.arena(), "reference", open_envelope));
+    try harness.send(try controlLine(harness.arena(), 2, op_submit, "s1", "{" ++ control_head ++ ",\"type\":\"session.message.submit.request\",\"id\":\"sub-1\",\"session_id\":\"s1\",\"payload\":{\"session_id\":\"s1\",\"delivery\":\"auto\",\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}]}}"));
+    reference_holder.pending_events = &.{ .{ .line = started_line, .run_id = "run-1", .sequence = 1 }, .{ .line = waiting_line, .run_id = "run-1", .sequence = 2 } };
+    try harness.hub.pump(testing.allocator, 0);
+    reference_holder.pending_events = &.{};
+    const waiting = try workResult(harness, 3);
+    try testing.expectEqualStrings("needs_you", waiting.get("status").?.string);
+    try testing.expectEqualStrings("gate-1", waiting.get("pending").?.object.get("interaction_id").?.string);
+
+    reference_holder.pending_events = &.{.{ .line = resumed_line, .run_id = "run-1", .sequence = 3 }};
+    try harness.hub.pump(testing.allocator, 0);
+    reference_holder.pending_events = &.{};
+    const resumed = try workResult(harness, 4);
+    try testing.expectEqualStrings("running", resumed.get("status").?.string);
+    try testing.expect(resumed.get("pending") == null);
+}
+
 test "work.start opens with the message and its title, work.send adds a turn, and work.read returns both and the run's reply" {
     const harness = try Harness.init(testing.allocator, .{}, .{});
     defer harness.deinit();

@@ -102,7 +102,7 @@ pub const OpenRequest = struct {
         };
     }
 
-    fn contractRequest(self: OpenRequest, native_session_id: []const u8) contract.OpenRequest {
+    fn contractRequest(self: OpenRequest, native_session_id: []const u8, adopted: bool) contract.OpenRequest {
         return .{
             .session_id = self.session_id,
             .participant = self.participant,
@@ -112,7 +112,7 @@ pub const OpenRequest = struct {
             .tool_sources_json = self.tool_sources_json,
             .reopen = self.reopen,
             .native_session_id = native_session_id,
-            .adopted = self.adopt_native_id.len > 0,
+            .adopted = adopted,
             .reasoning_level = self.reasoning_level,
             .compaction_policy_json = self.compaction_policy_json,
         };
@@ -128,6 +128,7 @@ const Bound = struct {
     directory: []const u8 = "",
     reasoning_level: []const u8 = "",
     compaction_policy: []const u8 = "",
+    adopted: bool = false,
 
     fn deinit(self: *Bound, allocator: std.mem.Allocator) void {
         allocator.free(self.session_id);
@@ -616,6 +617,9 @@ pub const Hub = struct {
         for (current.active_runs) |run| {
             if (run.pending_interactions.len > 0) found.pending_interaction = run.pending_interactions[0];
         }
+        if (current.status == .running and found.pending_interaction.len == 0) {
+            found.pending_interaction = try journalPending(arena, entry, found.run_id);
+        }
         switch (current.status) {
             .closed => return null,
             .queued => found.status = .queued,
@@ -631,6 +635,30 @@ pub const Hub = struct {
         const record = self.findBound(entry.session_id) orelse return "";
         const registered = self.find(entry.adapter_name) orelse return "";
         return registered.adapter.nativeLink(arena, record.native_id);
+    }
+
+    fn journalPending(arena: std.mem.Allocator, entry: *const Entry, run_id: []const u8) ![]const u8 {
+        if (run_id.len == 0) return "";
+        var index = entry.journal.items.len;
+        while (index > 0) {
+            index -= 1;
+            const kept = entry.journal.items[index];
+            if (!std.mem.eql(u8, kept.run_id, run_id)) continue;
+            const parsed = std.json.parseFromSliceLeaky(std.json.Value, arena, kept.line, .{}) catch |err| switch (err) {
+                error.OutOfMemory => return error.OutOfMemory,
+                else => continue,
+            };
+            if (parsed != .object) continue;
+            const kind = parsed.object.get("type") orelse continue;
+            if (kind != .string or !std.mem.eql(u8, kind.string, "run.status.updated")) continue;
+            const payload = parsed.object.get("payload") orelse return "";
+            if (payload != .object) return "";
+            const status = payload.object.get("status") orelse return "";
+            if (status != .string or !std.mem.eql(u8, status.string, "waiting_for_input")) return "";
+            const pending = payload.object.get("pending_user_input_id") orelse return "";
+            return if (pending == .string) pending.string else "";
+        }
+        return "";
     }
 
     fn latestOutcome(arena: std.mem.Allocator, entry: *const Entry, found: *Work) !void {
@@ -729,12 +757,15 @@ pub const Hub = struct {
         if (request.session_id.len > 0 and self.findSession(request.session_id) != null) return error.SessionExists;
         try contract.refuseUnadvertisedOpenElections(descriptor, &request.payload(), &refused.reason);
         var native_session_id: []const u8 = "";
+        var adopted_native = false;
         if (request.reopen and request.adopt_native_id.len > 0) {
             native_session_id = request.adopt_native_id;
+            adopted_native = true;
         } else if (request.reopen) {
             if (self.findBound(request.session_id)) |record| {
                 if (!std.mem.eql(u8, record.adapter_name, adapter_name)) return error.UnknownSession;
                 native_session_id = try arena.dupe(u8, record.native_id);
+                adopted_native = record.adopted;
             } else {
                 const store = self.bindings orelse return error.UnknownSession;
                 const stored = store.latest(arena, request.session_id) catch |err| {
@@ -746,9 +777,10 @@ pub const Hub = struct {
                 };
                 if (!std.mem.eql(u8, stored.record.adapter, adapter_name)) return error.UnknownSession;
                 native_session_id = stored.record.native_session_id;
+                adopted_native = stored.record.adopted;
             }
         }
-        var session = registered.adapter.open(arena, request.contractRequest(native_session_id), &refused.reason) catch |err| {
+        var session = registered.adapter.open(arena, request.contractRequest(native_session_id, adopted_native), &refused.reason) catch |err| {
             if (request.reopen and err == error.UnknownSession) return refused.reason.unsupported(contract.feature_open_reopen, contract.reason_unsatisfiable);
             return err;
         };
@@ -757,6 +789,7 @@ pub const Hub = struct {
         if (self.findSession(session.id()) != null) return error.SessionExists;
         const opened_state = try session.state(arena, &refused.reason);
         var record = try self.boundFor(adapter_name, session, descriptor.endpoint.version orelse "", opened_state.current_model_id orelse "", request.reasoning_level orelse "", request.compaction_policy_json orelse "");
+        record.adopted = adopted_native;
         var kept = false;
         errdefer if (!kept) record.deinit(self.allocator);
         const entry = try self.adopt(adapter_name, session, @intCast(self.clock() / std.time.ns_per_ms));
@@ -1647,6 +1680,7 @@ pub const Hub = struct {
             .model = bound.model,
             .reasoning_level = bound.reasoning_level,
             .compaction_policy = policy,
+            .adopted = bound.adopted,
         } }) catch {};
     }
 
@@ -4206,6 +4240,8 @@ test "a closed session reopens through the hub once, and a reopen of a live or u
 const NativeMemory = struct {
     inner: *memory.Adapter,
     handed: []const u8 = "",
+    handed_adopted: bool = false,
+    loads_any: bool = false,
     session_vtable: contract.Session.VTable = undefined,
 
     fn adapter(self: *NativeMemory) contract.Adapter {
@@ -4220,7 +4256,10 @@ const NativeMemory = struct {
     fn open(ptr: *anyopaque, arena: std.mem.Allocator, request: contract.OpenRequest, refusal: *contract.Refusal) contract.Failure!contract.Session {
         const self: *NativeMemory = @ptrCast(@alignCast(ptr));
         self.handed = try arena.dupe(u8, request.native_session_id);
-        const session = try self.inner.adapter().open(arena, request, refusal);
+        self.handed_adopted = request.adopted;
+        var forwarded = request;
+        if (self.loads_any) forwarded = .{ .participant = request.participant };
+        const session = try self.inner.adapter().open(arena, forwarded, refusal);
         self.session_vtable = session.vtable.*;
         self.session_vtable.native_id = nativeThread;
         return .{ .ptr = session.ptr, .vtable = &self.session_vtable };
@@ -4250,6 +4289,51 @@ test "a reopen hands the adapter the native id its open recorded, and only under
     try testing.expectError(error.UnknownSession, hub.open(arena, "memory", .{ .session_id = "kept", .reopen = true }));
     _ = try hub.open(arena, "native", .{ .session_id = "kept", .reopen = true });
     try testing.expectEqualStrings("native-thread", native.handed);
+}
+
+test "a session opened by adopting a native id is reopened as adopted, from the hub's binding and after a restart from its store, and one it opened itself is not" {
+    var inner = memory.Adapter.init(testing.allocator);
+    defer inner.deinit();
+    var native = NativeMemory{ .inner = &inner, .loads_any = true };
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const cwd = try std.process.currentPathAlloc(testing.io, testing.allocator);
+    defer testing.allocator.free(cwd);
+    const path = try std.fs.path.join(testing.allocator, &.{ cwd, ".zig-cache", "tmp", tmp.sub_path[0..], "bindings.jsonl" });
+    defer testing.allocator.free(path);
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    var adopted_id: []const u8 = "";
+    var own_id: []const u8 = "";
+    {
+        var store = try binding.Store.open(testing.allocator, path);
+        defer store.deinit();
+        var hub = Hub.init(testing.allocator, testClock, .{ .bindings = &store });
+        defer hub.deinit();
+        try hub.register("native", native.adapter());
+        adopted_id = try arena.dupe(u8, (try hub.open(arena, "native", .{ .reopen = true, .adopt_native_id = "thread-x" })).session_id);
+        try testing.expect(native.handed_adopted);
+        try hub.close(arena, adopted_id);
+        native.handed_adopted = false;
+        _ = try hub.open(arena, "native", .{ .session_id = adopted_id, .reopen = true });
+        try testing.expect(native.handed_adopted);
+        own_id = try arena.dupe(u8, (try hub.open(arena, "native", .{})).session_id);
+        try testing.expect(!native.handed_adopted);
+        try hub.close(arena, own_id);
+        _ = try hub.open(arena, "native", .{ .session_id = own_id, .reopen = true });
+        try testing.expect(!native.handed_adopted);
+    }
+    var store = try binding.Store.open(testing.allocator, path);
+    defer store.deinit();
+    var restarted = Hub.init(testing.allocator, testClock, .{ .bindings = &store });
+    defer restarted.deinit();
+    try restarted.register("native", native.adapter());
+    _ = try restarted.open(arena, "native", .{ .session_id = adopted_id, .reopen = true });
+    try testing.expect(native.handed_adopted);
+    try testing.expect((try store.latest(arena, adopted_id)).?.record.adopted);
+    _ = try restarted.open(arena, "native", .{ .session_id = own_id, .reopen = true });
+    try testing.expect(!native.handed_adopted);
 }
 
 test "a binding recorded before a hub restart is read after it, and a torn store is not read" {
