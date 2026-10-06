@@ -61,6 +61,8 @@ fn wallClock() i64 {
 pub const Adapter = struct {
     allocator: std.mem.Allocator,
     options: tui_runtime.TuiRuntimeOptions,
+    catalog: ?[]ai_types.Model = null,
+    catalog_generation: u64 = 0,
     ids: u64 = 0,
     now_ms: *const fn () i64 = wallClock,
 
@@ -69,6 +71,18 @@ pub const Adapter = struct {
         runtime_options.run_async = true;
         runtime_options.generate_titles = false;
         return .{ .allocator = allocator, .options = runtime_options };
+    }
+
+    pub fn deinit(self: *Adapter) void {
+        if (self.catalog) |held| tui_runtime.deinitModels(self.allocator, held);
+        self.catalog = null;
+    }
+
+    pub fn setCatalog(self: *Adapter, models: []const ai_types.Model) !void {
+        const next = try tui_runtime.cloneModels(self.allocator, models);
+        if (self.catalog) |held| tui_runtime.deinitModels(self.allocator, held);
+        self.catalog = next;
+        self.catalog_generation += 1;
     }
 
     pub fn adapter(self: *Adapter) contract.Adapter {
@@ -150,6 +164,7 @@ pub const Session = struct {
     runtime: *tui_runtime.TuiRuntime,
     engine: ?*permission.PermissionEngine = null,
     updated_at_ms: i64,
+    catalog_seen: u64 = 0,
     run: ?*Run = null,
     runs: std.ArrayList(*Run) = .empty,
     gate: interactions.Gate = .{},
@@ -368,6 +383,17 @@ pub const Session = struct {
         }
         self.updated_at_ms = self.owner.now_ms();
         return .{ .response = response, .state = try self.snapshot(arena) };
+    }
+
+    fn syncCatalog(self: *Session) contract.Failure!void {
+        const catalog = self.owner.catalog orelse return;
+        if (self.catalog_seen == self.owner.catalog_generation) return;
+        if (self.live() != null or !self.runtime.isIdle()) return;
+        self.runtime.replaceModels(catalog, self.runtime.currentModel()) catch |err| switch (err) {
+            error.OutOfMemory => return error.OutOfMemory,
+            else => return,
+        };
+        self.catalog_seen = self.owner.catalog_generation;
     }
 
     fn cast(ptr: *anyopaque) *Session {
@@ -1170,6 +1196,7 @@ pub const Session = struct {
         _ = refusal;
         const self = cast(ptr);
         if (request.session_id.len > 0 and !std.mem.eql(u8, request.session_id, self.id)) return error.InvalidSubmission;
+        try self.syncCatalog();
         const current = try self.currentModelRef(arena);
         const available = self.runtime.availableModels();
         var catalog = try std.ArrayList(oap_types.ModelDescriptor).initCapacity(arena, available.len);
@@ -1197,6 +1224,7 @@ pub const Session = struct {
         const self = cast(ptr);
         if (!std.mem.eql(u8, request.session_id, self.id)) return error.InvalidSubmission;
         if (self.live() != null or self.queuedCount() > 0) return error.RunActive;
+        try self.syncCatalog();
         const chosen = findModel(arena, self.runtime.availableModels(), request.model_id) catch |err| switch (err) {
             error.OutOfMemory => return error.OutOfMemory,
         } orelse return refusal.missingModel(request.model_id);
