@@ -125,8 +125,12 @@ The six statuses are a summary of core state, not new state:
 This widens 0046, which leaves native lists out until it has an identity rule.
 The rule: a native session no binding names is listed with its native id and
 **no** OAP session id. It gets an OAP id only when a host adopts it (decision
-3), and the adoption writes the binding. 0046's concern stands: the list never
-invents an identity.
+3), and the adoption writes the binding. Both of 0046's rules stand. The list
+never invents an identity. And `session.list` still never carries a native id
+or a home directory: native entries appear only in `work.find`, which must
+carry the native id because adopting needs it, so an endpoint serves
+`work.find` only to a caller it trusts with the harness's own pointers, as it
+trusts its binding file.
 
 Sources, by harness: Codex `thread/list`, ACP `session/list` when advertised,
 OpenCode `GET /api/session`, Hermes `session.list`. Claude and Pi have no list
