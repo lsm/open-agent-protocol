@@ -64,6 +64,11 @@ func runHub(ctx context.Context, args []string, stdin io.Reader, stdout, stderr 
 		Home:   homeDirectory(),
 	}
 	if *bindingsPath != "" {
+		held, err := lockSessionHistory(*bindingsPath)
+		if err != nil {
+			return err
+		}
+		defer held.Close()
 		store, err := binding.File(*bindingsPath)
 		if err != nil {
 			return err
