@@ -120,6 +120,7 @@ pub const Daemon = struct {
         return switch (found) {
             .adapters => self.listing(arena, try self.frontend.adapters(arena)),
             .sessions => self.listing(arena, try self.frontend.sessions(arena)),
+            .history => self.history(arena, request.split.query),
             .capabilities => |name| self.outcome(arena, try self.frontend.capabilities(arena, name), .{}),
             .state => |id| self.outcome(arena, try self.frontend.state(arena, id), .{ .session_id = id }),
             .models => |id| self.outcome(arena, try self.frontend.models(arena, id, try queryValues(arena, request.split.query, "allow_degraded")), .{ .session_id = id }),
@@ -132,6 +133,14 @@ pub const Daemon = struct {
             .settings => |id| self.settings(arena, id, request.body),
             .events => |id| self.events(arena, id, request),
         };
+    }
+
+    fn history(self: *Daemon, arena: std.mem.Allocator, query: []const u8) !Reply {
+        var limit: ?i64 = null;
+        if (try queryValue(arena, query, "limit")) |text| {
+            limit = std.fmt.parseInt(i64, text, 10) catch 0;
+        }
+        return self.outcome(arena, try self.frontend.history(arena, try queryValue(arena, query, "cursor"), limit), .{});
     }
 
     fn listing(self: *Daemon, arena: std.mem.Allocator, value: std.json.Value) !Reply {
@@ -1495,4 +1504,97 @@ test "a reopen is answered with the revision it was gated under, though it cited
     const root = try fixture.json(reopened);
     try testing.expectEqualStrings(memory.capability_revision, root.get("capability_revision").?.string);
     try testing.expect(root.get("payload").?.object.get("recovery").?.object.get("recovered").?.bool);
+}
+
+fn openNamed(arena: std.mem.Allocator, session_id: []const u8) ![]const u8 {
+    return std.fmt.allocPrint(arena, "{{" ++ envelope_head ++ ",\"type\":\"session.open.request\",\"id\":\"open-{s}\",\"payload\":{{\"session_id\":\"{s}\"}}}}", .{ session_id, session_id });
+}
+
+test "the session history lists what the store recorded, newest first, and pages on its cursor" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const cwd = try std.process.currentPathAlloc(testing.io, testing.allocator);
+    defer testing.allocator.free(cwd);
+    const path = try std.fs.path.join(testing.allocator, &.{ cwd, ".zig-cache", "tmp", tmp.sub_path[0..], "sessions.jsonl" });
+    defer testing.allocator.free(path);
+    var store = try hubmod.binding.Store.open(testing.allocator, path);
+    defer store.deinit();
+    var fixture: Fixture = undefined;
+    try fixture.init(.{ .bindings = &store });
+    defer fixture.deinit();
+    const arena = fixture.scratch.allocator();
+
+    for ([_][]const u8{ "history-a", "history-b", "history-c" }) |id| {
+        const opened = try fixture.answer("POST", "/adapters/memory/sessions", try openNamed(arena, id));
+        try testing.expectEqualStrings("200 OK", opened.status);
+    }
+    const closed = try fixture.ask("POST", "/sessions/history-b/close", "");
+    try testing.expect(closed == .no_content);
+
+    const whole = try fixture.answer("GET", "/sessions/history", "");
+    try testing.expectEqualStrings("200 OK", whole.status);
+    const listed = (try fixture.json(whole)).get("sessions").?.array.items;
+    try testing.expectEqual(@as(usize, 3), listed.len);
+    var ids: [3][]const u8 = undefined;
+    for (listed, 0..) |entry, index| {
+        const id = entry.object.get("session_id").?.string;
+        ids[index] = id;
+        const want: []const u8 = if (std.mem.eql(u8, id, "history-b")) "closed" else "live";
+        try testing.expectEqualStrings(want, entry.object.get("state").?.string);
+        try testing.expectEqualStrings("memory", entry.object.get("adapter").?.string);
+        if (index == 0) continue;
+        const earlier = listed[index - 1].object;
+        const was = earlier.get("updated_at_ms").?.integer;
+        const now = entry.object.get("updated_at_ms").?.integer;
+        try testing.expect(was > now or (was == now and std.mem.lessThan(u8, earlier.get("session_id").?.string, id)));
+    }
+    try testing.expect((try fixture.json(whole)).get("next_cursor") == null);
+
+    var cursor: ?[]const u8 = null;
+    var paged: usize = 0;
+    while (paged < 4) {
+        const target = if (cursor) |given| try std.fmt.allocPrint(arena, "/sessions/history?limit=1&cursor={s}", .{given}) else "/sessions/history?limit=1";
+        const page = try fixture.json(try fixture.answer("GET", target, ""));
+        const entries = page.get("sessions").?.array.items;
+        try testing.expectEqual(@as(usize, 1), entries.len);
+        try testing.expectEqualStrings(ids[paged], entries[0].object.get("session_id").?.string);
+        paged += 1;
+        cursor = if (page.get("next_cursor")) |next| next.string else break;
+    }
+    try testing.expectEqual(@as(usize, 3), paged);
+}
+
+test "the session history refuses a cursor, a limit and a missing store as Go does" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const cwd = try std.process.currentPathAlloc(testing.io, testing.allocator);
+    defer testing.allocator.free(cwd);
+    const path = try std.fs.path.join(testing.allocator, &.{ cwd, ".zig-cache", "tmp", tmp.sub_path[0..], "sessions.jsonl" });
+    defer testing.allocator.free(path);
+    var store = try hubmod.binding.Store.open(testing.allocator, path);
+    defer store.deinit();
+    var fixture: Fixture = undefined;
+    try fixture.init(.{ .bindings = &store });
+    defer fixture.deinit();
+    const cases = [_]struct { target: []const u8, code: []const u8 }{
+        .{ .target = "/sessions/history?cursor=not-a-cursor", .code = "invalid_cursor" },
+        .{ .target = "/sessions/history?limit=0", .code = "invalid_request" },
+        .{ .target = "/sessions/history?limit=101", .code = "invalid_request" },
+        .{ .target = "/sessions/history?limit=many", .code = "invalid_request" },
+    };
+    for (cases) |each| {
+        const refused = try fixture.answer("GET", each.target, "");
+        try testing.expectEqualStrings("400 Bad Request", refused.status);
+        try testing.expectEqualStrings(each.code, try fixture.code(refused));
+    }
+
+    var bare: Fixture = undefined;
+    try bare.init(.{});
+    defer bare.deinit();
+    const unadvertised = try bare.answer("GET", "/sessions/history", "");
+    try testing.expectEqualStrings("400 Bad Request", unadvertised.status);
+    try testing.expectEqualStrings("unsupported_feature", try bare.code(unadvertised));
+    const details = (try bare.json(unadvertised)).get("payload").?.object.get("error").?.object.get("details").?.object;
+    try testing.expectEqualStrings("session.list", details.get("feature").?.string);
+    try testing.expectEqualStrings("unadvertised", details.get("reason").?.string);
 }
