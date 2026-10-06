@@ -75,6 +75,7 @@ pub const RemoteExecution = struct {
         switch_model: *const fn (ctx: *anyopaque, model: ai_types.Model) anyerror!void,
         set_reasoning: *const fn (ctx: *anyopaque, level: ai_types.ThinkingLevel) anyerror!void,
         compacts: *const fn (ctx: *anyopaque) bool,
+        compactable: *const fn (ctx: *anyopaque) bool,
         compact: *const fn (ctx: *anyopaque, focus: []const u8) anyerror!void,
         set_compaction_policy: *const fn (ctx: *anyopaque, policy_json: []const u8) anyerror!void,
         decide_approval: *const fn (ctx: *anyopaque, tool_call_id: []const u8, decision: ToolApprovalDecision) anyerror!void,
@@ -1092,6 +1093,7 @@ pub const TuiRuntime = struct {
             if (!self.started) try self.start();
             if (!remote.vtable.compacts(remote.ctx)) return error.UnavailableOverOap;
             if (self.stream_active) return error.AgentAlreadyStreaming;
+            if (!remote.vtable.compactable(remote.ctx)) return error.NothingToCompact;
             if (self.currentModel() == null) return error.NoModelConfigured;
             self.resetEventStreamForTurn();
             self.cancelled.store(false, .release);

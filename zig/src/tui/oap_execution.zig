@@ -44,6 +44,7 @@ pub const OapExecution = struct {
     session_models: std.ArrayList([]u8) = .empty,
     live_reasoning: bool = false,
     live_compaction: bool = false,
+    has_history: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
     live_policy: bool = false,
     live_steer: bool = false,
     steers: std.ArrayList(PendingSteer) = .empty,
@@ -178,6 +179,7 @@ pub const OapExecution = struct {
         .switch_model = switchModel,
         .set_reasoning = setReasoning,
         .compacts = compacts,
+        .compactable = compactable,
         .compact = compact,
         .set_compaction_policy = setCompactionPolicy,
         .decide_approval = decideApproval,
@@ -661,6 +663,10 @@ pub const OapExecution = struct {
         return cast(ctx).live_compaction;
     }
 
+    fn compactable(ctx: *anyopaque) bool {
+        return cast(ctx).has_history.load(.acquire);
+    }
+
     fn compact(ctx: *anyopaque, focus: []const u8) anyerror!void {
         const self = cast(ctx);
         if (!self.live_compaction) return error.UnavailableOverOap;
@@ -713,6 +719,7 @@ pub const OapExecution = struct {
     fn settleCompaction(self: *OapExecution, outcome: CompactionOutcome, message: []const u8) !void {
         const ended = self.compaction_result orelse CompactionEnd{ .outcome = outcome, .message = try self.ownedText(message) };
         self.compaction_result = null;
+        if (ended.outcome == .completed) self.has_history.store(false, .release);
         self.compacting = false;
         self.awaiting_promotion.store(false, .release);
         self.turn_open.store(false, .release);
@@ -984,6 +991,7 @@ pub const OapExecution = struct {
             return;
         }
         if (std.mem.eql(u8, kind, "run.started")) {
+            self.has_history.store(true, .release);
             const run_id = stringOf(body, "run_id") orelse "";
             if (self.turn_open.load(.acquire)) {
                 if (self.takePromoted(run_id)) |text| {
@@ -2278,6 +2286,40 @@ test "a compaction over OAP runs the endpoint's compaction and ends on its summa
     defer after.deinit();
     try drainTurn(&runtime, &after);
     try testing.expectEqual(@as(?tui_session.TuiEndReason, .completed), after.end);
+}
+
+test "a compaction over OAP with nothing to compact is refused before anything is sent, as the local loop refuses it" {
+    var script = Script{ .reply = "the session so far" };
+    var execution: *OapExecution = undefined;
+    var runtime = try remoteRuntime(&script, &execution, .low);
+    defer execution.destroy();
+    defer runtime.deinit();
+
+    try runtime.start();
+    try testing.expectError(error.NothingToCompact, runtime.compact(.{}));
+    try testing.expect(runtime.streamEvents().poll() == null);
+    try testing.expect(!execution.turn_open.load(.acquire));
+
+    try runtime.submitTurn("remember the parser");
+    var turn = Seen{};
+    defer turn.deinit();
+    try drainTurn(&runtime, &turn);
+    try runtime.compact(.{});
+    var seen = Compactions{};
+    defer seen.deinit();
+    try drainCompactions(&runtime, &seen, true);
+    try testing.expectEqual(@as(?CompactionOutcome, .completed), seen.outcome);
+    try testing.expectError(error.NothingToCompact, runtime.compact(.{}));
+
+    try runtime.submitTurn("and after");
+    var after = Seen{};
+    defer after.deinit();
+    try drainTurn(&runtime, &after);
+    try runtime.compact(.{});
+    var again = Compactions{};
+    defer again.deinit();
+    try drainCompactions(&runtime, &again, true);
+    try testing.expectEqual(@as(?CompactionOutcome, .completed), again.outcome);
 }
 
 test "an autocompact setting reaches the endpoint as its policy, and the next run compacts inside itself" {
