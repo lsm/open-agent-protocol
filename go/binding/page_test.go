@@ -1,6 +1,7 @@
 package binding_test
 
 import (
+	"context"
 	"errors"
 	"testing"
 
@@ -139,5 +140,30 @@ func TestACursorIsTheBytesTheZigHubIssuesForTheSamePosition(t *testing.T) {
 	}
 	if page.NextCursor != "NTp0aWUtYQ" {
 		t.Fatalf("next_cursor = %q, want the bytes the Zig hub's binding test pins", page.NextCursor)
+	}
+}
+
+func TestTheMemoryStoreListsWhatWasAppendedAsTheFileStoreDoes(t *testing.T) {
+	store := binding.Memory()
+	ctx := context.Background()
+	for _, e := range []binding.Entry{entry(binding.ActionOpened, 1, "a"), entry(binding.ActionOpened, 2, "b"), entry(binding.ActionClosed, 3, "a"), entry(binding.ActionRefused, 4, "a")} {
+		if err := store.Append(ctx, e); err != nil {
+			t.Fatal(err)
+		}
+	}
+	sessions, err := store.Sessions(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := ids(sessions); !equal(got, []string{"a", "b"}) || sessions[0].Action != binding.ActionClosed {
+		t.Fatalf("sessions = %+v, want a closed and b opened", sessions)
+	}
+	latest, found, err := store.Latest(ctx, "a")
+	if err != nil || !found || latest.Action != binding.ActionRefused {
+		t.Fatalf("latest a = %+v found=%v err=%v, want the refusal the file store would also return", latest, found, err)
+	}
+	history, err := store.History(ctx, "a")
+	if err != nil || len(history) != 3 {
+		t.Fatalf("history a = %d entries err=%v, want 3", len(history), err)
 	}
 }

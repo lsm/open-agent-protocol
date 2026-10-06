@@ -11,6 +11,7 @@ import (
 	"strings"
 	"syscall"
 
+	"github.com/lsm/open-agent-protocol/go/binding"
 	"github.com/lsm/open-agent-protocol/go/serve"
 	"github.com/lsm/open-agent-protocol/go/serve/serveendpoint"
 )
@@ -36,6 +37,7 @@ func runEndpoint(ctx context.Context, verb, backendFlag string, args []string, s
 	configPath := fs.String("config", "", "adapter registry JSON path (default: built-in memory adapter)")
 	adapterName := fs.String(backendFlag, "memory", "the single adapter this endpoint exposes")
 	fs.Bool("stdio", true, "carry raw envelopes on stdin/stdout, the only transport this verb has")
+	historyPath := fs.String("session-history", "", "append-only JSONL file of the sessions this endpoint opens and closes; given, the endpoint advertises session.list and answers it from the file")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -60,7 +62,20 @@ func runEndpoint(ctx context.Context, verb, backendFlag string, args []string, s
 	signals, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	hub := serve.New(registry, serve.Options{Logger: log.New(stderr, "goap: ", 0)})
+	options := serve.Options{Logger: log.New(stderr, "goap: ", 0)}
+	if *historyPath != "" {
+		held, err := lockSessionHistory(*historyPath)
+		if err != nil {
+			return err
+		}
+		defer held.Close()
+		store, err := binding.File(*historyPath)
+		if err != nil {
+			return err
+		}
+		options.Bindings = store
+	}
+	hub := serve.New(registry, options)
 	endpoint, err := serveendpoint.New(hub, serveendpoint.Options{
 		Adapter: *adapterName,
 		Logger:  log.New(stderr, "goap: ", 0),

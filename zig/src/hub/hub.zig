@@ -1,7 +1,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const oap_types = @import("oap_types");
-const config = @import("config");
+pub const config = @import("config");
 const contract = @import("contract");
 const memory = @import("memory");
 const compat = @import("compat");
@@ -88,6 +88,7 @@ pub const OpenRequest = struct {
     reasoning_level: ?[]const u8 = null,
     compaction_policy_json: ?[]const u8 = null,
     adopt_native_id: []const u8 = "",
+    directory: []const u8 = "",
 
     fn payload(self: OpenRequest) oap_types.SessionOpenRequest {
         return .{
@@ -393,6 +394,13 @@ const Registered = struct {
     adapter: contract.Adapter,
     revision: []const u8 = "",
     directory: []u8 = &.{},
+    template: ?Template = null,
+};
+
+const Template = struct {
+    entry: config.AdapterEntry,
+    builder: Builder,
+    arena: std.mem.Allocator,
 };
 
 const Held = struct {
@@ -413,8 +421,10 @@ const Entry = struct {
     turns: std.ArrayList(Turn) = .empty,
     turns_dropped: u64 = 0,
     title: []u8 = &.{},
+    directory: []u8 = &.{},
 
     fn deinit(self: *Entry, allocator: std.mem.Allocator) void {
+        if (self.directory.len > 0) allocator.free(self.directory);
         for (self.turns.items) |turn| {
             allocator.free(turn.text);
             allocator.free(turn.run_id);
@@ -444,6 +454,7 @@ pub const Hub = struct {
     shutdown_ns: u64,
     tool_sources: []const contract.ConfiguredSource,
     adapters: std.ArrayList(Registered) = .empty,
+    placed: std.ArrayList(Registered) = .empty,
     entries: std.ArrayList(Entry) = .empty,
     subscriptions: std.ArrayList(*Subscription) = .empty,
     holds: std.ArrayList(Held) = .empty,
@@ -482,6 +493,12 @@ pub const Hub = struct {
             registered.* = undefined;
         }
         self.adapters.deinit(self.allocator);
+        for (self.placed.items) |*registered| {
+            self.allocator.free(registered.name);
+            self.allocator.free(registered.directory);
+            registered.* = undefined;
+        }
+        self.placed.deinit(self.allocator);
         self.* = undefined;
     }
 
@@ -511,9 +528,11 @@ pub const Hub = struct {
             }
             const adapter = try builder.make(builder.context, arena, entry);
             try self.register(entry.name, adapter);
+            const registered = self.find(entry.name).?;
             if (entry.working_directory) |directory| {
-                if (directory.len > 0) self.find(entry.name).?.directory = try self.allocator.dupe(u8, directory);
+                if (directory.len > 0) registered.directory = try self.allocator.dupe(u8, directory);
             }
+            if (entry.any_directory) registered.template = .{ .entry = entry, .builder = builder, .arena = arena };
         }
     }
 
@@ -615,7 +634,7 @@ pub const Hub = struct {
         var found = Work{
             .session_id = entry.session_id,
             .adapter = entry.adapter_name,
-            .directory = if (self.find(entry.adapter_name)) |registered| registered.directory else "",
+            .directory = entry.directory,
             .status = .done,
             .run_id = current.active_run_id orelse "",
             .title = entry.title,
@@ -774,6 +793,7 @@ pub const Hub = struct {
         try contract.refuseUnadvertisedOpenElections(descriptor, &request.payload(), &refused.reason);
         var native_session_id: []const u8 = "";
         var adopted_native = false;
+        var directory = request.directory;
         if (request.reopen and request.adopt_native_id.len > 0) {
             native_session_id = request.adopt_native_id;
             adopted_native = true;
@@ -782,6 +802,7 @@ pub const Hub = struct {
                 if (!std.mem.eql(u8, record.adapter_name, adapter_name)) return error.UnknownSession;
                 native_session_id = try arena.dupe(u8, record.native_id);
                 adopted_native = record.adopted;
+                directory = try arena.dupe(u8, record.directory);
             } else {
                 const store = self.bindings orelse return error.UnknownSession;
                 const stored = store.latest(arena, request.session_id) catch |err| {
@@ -794,9 +815,11 @@ pub const Hub = struct {
                 if (!std.mem.eql(u8, stored.record.adapter, adapter_name)) return error.UnknownSession;
                 native_session_id = stored.record.native_session_id;
                 adopted_native = stored.record.adopted;
+                directory = stored.record.directory;
             }
         }
-        var session = registered.adapter.open(arena, request.contractRequest(native_session_id, adopted_native), &refused.reason) catch |err| {
+        const placed = try self.placedIn(registered, directory);
+        var session = placed.adapter.open(arena, request.contractRequest(native_session_id, adopted_native), &refused.reason) catch |err| {
             if (request.reopen and err == error.UnknownSession) return refused.reason.unsupported(contract.feature_open_reopen, contract.reason_unsatisfiable);
             return err;
         };
@@ -804,12 +827,13 @@ pub const Hub = struct {
         errdefer if (!adopted) session.teardown();
         if (self.findSession(session.id()) != null) return error.SessionExists;
         const opened_state = try session.state(arena, &refused.reason);
-        var record = try self.boundFor(adapter_name, session, descriptor.endpoint.version orelse "", opened_state.current_model_id orelse "", request.reasoning_level orelse "", request.compaction_policy_json orelse "");
+        var record = try self.boundFor(adapter_name, placed.directory, session, descriptor.endpoint.version orelse "", opened_state.current_model_id orelse "", request.reasoning_level orelse "", request.compaction_policy_json orelse "");
         record.adopted = adopted_native;
         var kept = false;
         errdefer if (!kept) record.deinit(self.allocator);
         const entry = try self.adopt(adapter_name, session, @intCast(self.clock() / std.time.ns_per_ms));
         adopted = true;
+        if (placed.directory.len > 0) entry.directory = try self.allocator.dupe(u8, placed.directory);
         self.keepBound(record);
         kept = true;
         self.recordBinding(if (request.reopen) .reopened else .opened, entry.session_id, opened_state.updated_at_ms orelse @intCast(self.clock() / std.time.ns_per_ms));
@@ -966,6 +990,31 @@ pub const Hub = struct {
     pub fn nativeTranscript(self: *Hub, arena: std.mem.Allocator, ref: NativeRef, max_turns: usize, refusal: *contract.Refusal) ?Failure![]const contract.NativeTurn {
         const registered = self.find(ref.adapter) orelse return null;
         return registered.adapter.nativeRead(arena, .{ .native_id = ref.native_id, .directory = if (ref.directory.len > 0) ref.directory else registered.directory, .max_turns = max_turns }, refusal);
+    }
+
+    pub fn servesAnyDirectory(self: *Hub, name: []const u8) bool {
+        const registered = self.find(name) orelse return false;
+        return registered.template != null;
+    }
+
+    fn placedIn(self: *Hub, base: *Registered, directory: []const u8) Failure!*Registered {
+        if (directory.len == 0 or std.mem.eql(u8, directory, base.directory)) return base;
+        for (self.placed.items) |*candidate| {
+            if (std.mem.eql(u8, candidate.name, base.name) and std.mem.eql(u8, candidate.directory, directory)) return candidate;
+        }
+        const template = base.template orelse return base;
+        var entry = template.entry;
+        entry.working_directory = try template.arena.dupe(u8, directory);
+        const adapter = try template.builder.make(template.builder.context, template.arena, entry);
+        var refusal = contract.Refusal{};
+        const descriptor = try adapter.probe(&refusal);
+        if (descriptor.capability_revision.len == 0) return error.AdapterDescriptorUnbound;
+        const owned_name = try self.allocator.dupe(u8, base.name);
+        errdefer self.allocator.free(owned_name);
+        const owned_directory = try self.allocator.dupe(u8, directory);
+        errdefer self.allocator.free(owned_directory);
+        try self.placed.append(self.allocator, .{ .name = owned_name, .adapter = adapter, .revision = descriptor.capability_revision, .directory = owned_directory });
+        return &self.placed.items[self.placed.items.len - 1];
     }
 
     pub fn adapterDirectory(self: *Hub, name: []const u8) ?[]const u8 {
@@ -1671,7 +1720,7 @@ pub const Hub = struct {
         return null;
     }
 
-    fn boundFor(self: *Hub, adapter_name: []const u8, session: contract.Session, version: []const u8, model: []const u8, reasoning_level: []const u8, compaction_policy: []const u8) !Bound {
+    fn boundFor(self: *Hub, adapter_name: []const u8, directory: []const u8, session: contract.Session, version: []const u8, model: []const u8, reasoning_level: []const u8, compaction_policy: []const u8) !Bound {
         try self.bound.ensureUnusedCapacity(self.allocator, 1);
         const session_id = try self.allocator.dupe(u8, session.id());
         errdefer self.allocator.free(session_id);
@@ -1683,7 +1732,6 @@ pub const Hub = struct {
         errdefer self.allocator.free(owned_version);
         const owned_model = try self.allocator.dupe(u8, model);
         errdefer self.allocator.free(owned_model);
-        const directory = if (self.find(adapter_name)) |registered| registered.directory else "";
         const owned_directory = try self.allocator.dupe(u8, directory);
         errdefer self.allocator.free(owned_directory);
         const owned_level = try self.allocator.dupe(u8, reasoning_level);
@@ -2564,6 +2612,59 @@ fn scripted(context: *anyopaque, arena: std.mem.Allocator, entry: config.Adapter
     _ = entry;
     const adapter: *memory.Adapter = @ptrCast(@alignCast(context));
     return adapter.adapter();
+}
+
+const PlacingBuilder = struct {
+    inner: *memory.Adapter,
+    built: [8][]const u8 = undefined,
+    count: usize = 0,
+
+    fn make(context: *anyopaque, arena: std.mem.Allocator, entry: config.AdapterEntry) contract.Failure!contract.Adapter {
+        _ = arena;
+        const self: *PlacingBuilder = @ptrCast(@alignCast(context));
+        self.built[self.count] = entry.working_directory orelse "";
+        self.count += 1;
+        return self.inner.adapter();
+    }
+};
+
+test "an any_directory entry opens a session in the directory asked for, through one adapter built per directory, and reopens it there" {
+    var inner = memory.Adapter.init(testing.allocator);
+    defer inner.deinit();
+    var placing = PlacingBuilder{ .inner = &inner };
+    var hub = Hub.init(testing.allocator, testClock, .{});
+    defer hub.deinit();
+    var scratch = std.heap.ArenaAllocator.init(testing.allocator);
+    defer scratch.deinit();
+    const arena = scratch.allocator();
+    var diagnostic = config.Diagnostic{};
+    try hub.load(arena, config.File{ .adapters = &.{
+        .{ .name = "worker", .kind = "memory", .working_directory = "/base", .any_directory = true },
+        .{ .name = "fixed", .kind = "memory", .working_directory = "/fixed" },
+    } }, .{ .context = &placing, .make = PlacingBuilder.make }, &diagnostic);
+    try testing.expectEqual(@as(usize, 2), placing.count);
+    try testing.expect(hub.servesAnyDirectory("worker"));
+    try testing.expect(!hub.servesAnyDirectory("fixed"));
+
+    const away = try arena.dupe(u8, (try hub.open(arena, "worker", .{ .directory = "/elsewhere/a" })).session_id);
+    try testing.expectEqual(@as(usize, 3), placing.count);
+    try testing.expectEqualStrings("/elsewhere/a", placing.built[2]);
+    try testing.expectEqualStrings("/elsewhere/a", (try hub.work(arena, away)).directory);
+    try testing.expectEqualStrings("/elsewhere/a", hub.findBound(away).?.directory);
+
+    _ = try hub.open(arena, "worker", .{ .directory = "/elsewhere/a" });
+    const home = try arena.dupe(u8, (try hub.open(arena, "worker", .{ .directory = "/base" })).session_id);
+    try testing.expectEqual(@as(usize, 3), placing.count);
+    try testing.expectEqualStrings("/base", (try hub.work(arena, home)).directory);
+
+    try hub.close(arena, away);
+    _ = try hub.open(arena, "worker", .{ .session_id = away, .reopen = true });
+    try testing.expectEqual(@as(usize, 3), placing.count);
+    try testing.expectEqualStrings("/elsewhere/a", (try hub.work(arena, away)).directory);
+
+    const fixed = try arena.dupe(u8, (try hub.open(arena, "fixed", .{ .directory = "/elsewhere/b" })).session_id);
+    try testing.expectEqual(@as(usize, 3), placing.count);
+    try testing.expectEqualStrings("/fixed", (try hub.work(arena, fixed)).directory);
 }
 
 test "a cursor sitting on a settled run's terminal ends at once and hears nothing later" {

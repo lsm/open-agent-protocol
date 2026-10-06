@@ -144,13 +144,12 @@ Request `{"adapter", "directory"?, "title"?, "message"}`. Opens a session on
 `work.status`.
 
 The core's `openRequest` carries no working directory: a session runs in its
-adapter's configured `working_directory`. So `directory`, when given, must
-name that directory, and any other is refused `invalid_request` with the
+adapter's configured `working_directory`. A `directory` naming another place is
+served only by an entry marked `"any_directory": true` (`drafts/hub.md`, the
+registry), which builds an adapter for that directory, and must then be
+absolute. Over any other entry it is refused `invalid_request` with the
 configured `working_directory` in its details, so the caller learns where the
-adapter runs from the refusal. Starting work in a directory no adapter is configured
-for needs the open to carry a directory, which is a core change of its own and
-not part of this profile; until then a caller registers one adapter entry per
-place.
+adapter runs from the refusal.
 
 ### `work.send`
 
