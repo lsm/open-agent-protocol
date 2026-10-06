@@ -1,0 +1,158 @@
+# Decision 0047: A Work Layer Over Sessions
+
+Status: proposed
+Date: 2026-10-06
+Protocol: `open-agent-protocol` version `0.1`
+Profile: a new `open-agent-protocol.work` profile over
+`open-agent-protocol.agent-control-core`
+Leans on: [Decision 0039](0039-a-session-is-oaps-and-a-harness-is-where-it-runs.md),
+[Decision 0040](0040-a-session-reopens-through-its-own-binding.md) and the
+proposed Decision 0046 (#904), whose session list this record widens
+Amends: [the hub draft](../drafts/hub.md), whose name it retires
+
+## Context
+
+HyperNeo now drives Codex Desktop and Claude Code Desktop through its own
+drivers (`packages/daemon/src/lib/drivers` in lsm/HyperNeo, #5589 to #5681).
+Its interface has five verbs: `find`, `start`, `send`, `status` and `stop`.
+Each piece of work reports one of six statuses. Its design doc names OAP as the
+adapter it wants later, and says why OAP is not that adapter yet: OAP cannot
+see or drive a session it did not open, and nothing it opens shows in the
+desktop apps.
+
+The core already does most of what the five verbs need:
+
+| Verb | What the core has |
+| --- | --- |
+| `start` | open, then submit. A message carried on the open is still refused in Zig (hub draft, D11). |
+| `send` | submit, steer ([0013](0013-steer.md)) and queue ([0007](0007-queue-delivery.md)) |
+| `stop` | cancel, on every adapter |
+| `status` | `session.state` and the event stream, with no summary a caller can read in one call |
+| `find` | only the sessions a host opened (0046); none a harness holds |
+
+Session bindings already outlive a restart in both hubs (`--bindings`, #893).
+
+### What a Claude Code session is, probed on 2026-10-06
+
+Claude Code CLI 2.1.289 and the Claude desktop app with its bundled CLI
+2.1.288, on macOS:
+
+- **The app runs the CLI.** Each desktop session is a child process of the
+  app: the CLI copy under `~/Library/Application Support/Claude/claude-code/<version>/`,
+  run with `--input-format stream-json --output-format stream-json
+  --permission-prompt-tool stdio --resume=<id>`. This is the control wire the
+  OAP Claude adapters drive (`zig/src/adapter/claude/backend.zig`,
+  `go/adapter/claude/adapter.go`), over the process's own pipes.
+- **One conversation, two records.** The transcript is the CLI's
+  `~/.claude/projects/<dir>/<id>.jsonl`. The app adds a record of its own,
+  `claude-code-sessions/<…>/local_<uuid>.json`, holding `cliSessionId`, the
+  folder, title, archive flag, permission mode and the app's state. A session
+  with no app record does not show in the app; `claude --desktop --resume <id>`
+  creates one (HyperNeo verified this on 2026-10-04; not repeated here).
+- **Live sessions are registered, not locked.** Every running CLI writes
+  `~/.claude/sessions/<pid>.json` (`sessionId`, `entrypoint`, and the app's
+  `hostSessionId` when the app runs it). `claude agents --json` reads that
+  registry and reports `busy`, `waiting` or `idle`. No lock was observed that
+  keeps a second process from resuming the same id.
+- **The CLI's own answer to a running session is a copy.** `claude --bg
+  --resume <id>` "starts a copy and says so when the session is already
+  running" (`claude --help`). A second writer on one transcript forks the
+  conversation.
+- **No outside process can join a running session's wire.** It is the app's
+  pipes. Cross-session `SendMessage` can deliver text into it, which is how
+  HyperNeo sends, but that carries no events and cannot answer a permission
+  prompt.
+- **OAP's adapters open clean sessions.** The Zig adapter passes
+  `--setting-sources=` and an empty `--system-prompt`, and neither adapter
+  passes `--resume`. A session the app made runs with
+  `--setting-sources=user,project,local` and the app's own prompt.
+
+Codex is the opposite case: HyperNeo's driver connects to the app-server
+socket Codex Desktop already runs (`thread/start`, `turn/start`,
+`turn/interrupt`), and what it starts shows in the app.
+
+## Decisions
+
+### 1. A work profile, built on the core
+
+`open-agent-protocol.work` defines the five verbs over core operations, so an
+endpoint gains it without new run machinery:
+
+- `work.find {text?, directory?, adapters?, include_closed?, limit?, cursor?}`:
+  groups by directory, newest first, the host's sessions (0046) and the
+  sessions each adapter can list natively (decision 2).
+- `work.start {adapter, directory, title, message}`: open with the message.
+  This is D11: the Zig hub admits a message at open, as Go does.
+- `work.send {ref, message}`: submit, or queue while a run is active.
+- `work.status {ref}`: one of six statuses and the last reply.
+- `work.stop {ref}`: cancel.
+
+The six statuses are a summary of core state, not new state:
+
+| Status | From |
+| --- | --- |
+| `queued` | admitted, no run started |
+| `running` | a run is active |
+| `needs_you` | a permission or input request is pending |
+| `done` | the last run completed |
+| `failed` | the last run failed |
+| `stopped` | the last run was cancelled |
+
+### 2. A harness's own sessions can be listed
+
+This widens 0046, which leaves native lists out until it has an identity rule.
+The rule: a native session no binding names is listed with its native id and
+**no** OAP session id. It gets an OAP id only when a host adopts it (decision
+3), and the adoption writes the binding. 0046's concern stands: the list never
+invents an identity.
+
+Sources, by harness: Codex `thread/list`, ACP `session/list` when advertised,
+OpenCode `GET /api/session`, Hermes `session.list`. Claude and Pi have no list
+on their wire; their adapters may read the harness's own store read-only
+(Claude: the app's session records and `claude agents --json`). That reverses
+0012's refusal to read a private store, for listing only, and only for these
+two.
+
+### 3. A native session can be adopted, in one of three ways
+
+An open naming a native id adopts it. The adapter answers which way it can:
+
+| Way | When | What the host gets |
+| --- | --- | --- |
+| `attach` | the harness serves a socket other clients can join | the full core: events, prompts, cancel; the app sees the same session |
+| `resume` | no process runs the session | the full core, in a process the adapter owns, via the harness's own resume |
+| refused `session_running_elsewhere` | another process runs it and there is no socket to join | nothing; the caller relays outside OAP |
+
+Codex Desktop is `attach`. Claude Code is `resume` when `claude agents --json`
+does not list the session, and refused when it does, because a second writer
+forks the conversation. An adopting Claude adapter resumes with the settings
+the app recorded for the session, not with `--setting-sources=`.
+
+OAP does not carry a relay. A relayed message has no run, no events and no
+prompts, so it is not a session.
+
+### 4. `hub` becomes `serve`
+
+`oapx hub` and `goap hub` become `oapx serve` and `goap serve`; the
+single-session `oapx serve agent` keeps its name. `drafts/hub.md` becomes
+`drafts/serve.md`. The work profile ships as `oapx work`. The old command
+stays as an alias for one release.
+
+## Consequences
+
+- Each decision above graduates as its own unit under
+  [Decision 0003](0003-staged-unit-graduation.md); the rename is mechanical
+  and can land first.
+- HyperNeo can put an `oap` adapter behind its `WorkAdapter` for Codex and for
+  the harnesses with no desktop app, and keep its relay for a Claude session
+  the app is running.
+
+## Open questions for review
+
+1. Should the work profile be in this repository, or left to callers like
+   HyperNeo over the core?
+2. Is reading Claude's and Pi's private stores for listing acceptable?
+3. Should an adopting Claude adapter also write the app's session record, so a
+   resumed session shows in the app? That is writing another product's private
+   file.
+4. Is `serve` the right name, given `serve agent` already exists?

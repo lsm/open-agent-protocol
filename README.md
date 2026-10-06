@@ -884,6 +884,7 @@ Decisions:
 - [0043 — auth providers carry how they accept a credential](decisions/0043-auth-providers-carry-how-they-accept-a-credential.md) (proposed)
 - [0044 — compaction](decisions/0044-compaction.md) (accepted)
 - [0045 — reasoning level and compaction policy are session settings](decisions/0045-reasoning-level-and-compaction-policy-are-session-settings.md) (accepted)
+- [0047 — a work layer over sessions](decisions/0047-a-work-layer-over-sessions.md) (proposed)
 
 Decision 0003 defines what `accepted` means and what moves a record from
 proposed to accepted. A record's own `Status:` line is authoritative; this table
