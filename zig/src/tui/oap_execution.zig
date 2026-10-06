@@ -240,6 +240,16 @@ pub const OapExecution = struct {
         if (settings.resume_session_id) |saved| {
             try open.put("session_id", .{ .string = saved });
             try open.put("reopen", .{ .bool = true });
+            if (self.adapter) |held| if (held.history) |loader| {
+                const found = loader.load(loader.ctx, a, saved) catch null;
+                if (found == null) {
+                    if (self.session_id.len > 0) {
+                        self.stopping.store(false, .release);
+                        self.thread = try std.Thread.spawn(.{}, run, .{self});
+                    }
+                    return error.OapReopenRefused;
+                }
+            };
             if (self.endpoint) |*endpoint| _ = endpoint.closeSession(saved);
         }
         const left = try a.dupe(u8, self.session_id);
@@ -1728,9 +1738,11 @@ test "a follow-up sent while no turn runs over OAP starts one" {
 }
 
 const SavedTranscript = struct {
+    missing: bool = false,
+
     fn load(ctx: *anyopaque, arena: std.mem.Allocator, session_id: []const u8) anyerror!?[]const ai_types.Message {
-        _ = ctx;
-        if (!std.mem.eql(u8, session_id, "saved-session")) return null;
+        const self: *SavedTranscript = @ptrCast(@alignCast(ctx));
+        if (self.missing or !std.mem.eql(u8, session_id, "saved-session")) return null;
         const messages = try arena.alloc(ai_types.Message, 1);
         messages[0] = .{ .user = .{ .content = .{ .text = try arena.dupe(u8, "earlier question") }, .timestamp = 0 } };
         return messages;
@@ -1757,6 +1769,15 @@ test "a saved session reopened over OAP carries its transcript into the next run
     try testing.expectEqual(@as(usize, 2), script.last_context_messages);
     try testing.expectError(error.OapReopenRefused, runtime.reopenSaved("never-saved"));
     try testing.expectEqualStrings("saved-session", execution.session_id);
+
+    saved.missing = true;
+    try testing.expectError(error.OapReopenRefused, runtime.reopenSaved("saved-session"));
+    saved.missing = false;
+    try runtime.submitTurn("still on the open session");
+    var kept = Seen{};
+    defer kept.deinit();
+    try drainTurn(&runtime, &kept);
+    try testing.expectEqual(@as(?tui_session.TuiEndReason, .completed), kept.end);
 
     try runtime.reopenSaved("saved-session");
     try runtime.submitTurn("and once more");
