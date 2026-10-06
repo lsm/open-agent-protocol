@@ -91,6 +91,8 @@ pub const OapExecution = struct {
         requested_by: []u8,
         responded_by: []u8,
         run_id: []u8,
+        offers_approve_always: bool = false,
+        offers_reject_always: bool = false,
 
         fn deinit(self: *PendingPermission, allocator: std.mem.Allocator) void {
             allocator.free(self.interaction_id);
@@ -109,6 +111,10 @@ pub const OapExecution = struct {
         const self = try allocator.create(OapExecution);
         self.* = .{ .allocator = allocator, .adapter = adapter, .endpoint = adapter_endpoint.Endpoint.init(allocator, adapter.adapter(), .{ .frame_limit = in_process_frame_limit }) };
         return self;
+    }
+
+    pub fn setTranscripts(self: *OapExecution, store: oapx_adapter.TranscriptStore) void {
+        if (self.adapter) |held| held.transcripts = store;
     }
 
     pub fn attach(allocator: std.mem.Allocator, base: []const u8, adapter_name: []const u8) !*OapExecution {
@@ -760,7 +766,7 @@ pub const OapExecution = struct {
         event.deinit(self.allocator);
     }
 
-    fn decideApproval(ctx: *anyopaque, tool_call_id: []const u8, granted: bool) anyerror!void {
+    fn decideApproval(ctx: *anyopaque, tool_call_id: []const u8, decision: tui_runtime.ToolApprovalDecision) anyerror!void {
         const self = cast(ctx);
         var scratch = std.heap.ArenaAllocator.init(self.allocator);
         defer scratch.deinit();
@@ -784,8 +790,15 @@ pub const OapExecution = struct {
         try payload.put("responded_by", .{ .string = pending.responded_by });
         try payload.put("session_id", .{ .string = self.session_id });
         try payload.put("run_id", .{ .string = pending.run_id });
+        const granted = decision == .approve or decision == .approve_always;
+        const choice: []const u8 = switch (decision) {
+            .approve => "approve",
+            .reject => "deny",
+            .approve_always => if (pending.offers_approve_always) "approve_always" else "approve",
+            .reject_always => if (pending.offers_reject_always) "reject_always" else "deny",
+        };
         try payload.put("granted", .{ .bool = granted });
-        try payload.put("choice_id", .{ .string = if (granted) "approve" else "deny" });
+        try payload.put("choice_id", .{ .string = choice });
         _ = try self.enqueue(a, "action.permission.resolve.request", "resolve", payload.value(), pending.run_id);
     }
 
@@ -810,7 +823,26 @@ pub const OapExecution = struct {
         self.forgetPermission();
         self.lockInbound();
         defer self.inbound_mutex.unlock();
-        self.pending_permission = .{ .interaction_id = interaction_id, .tool_call_id = tool_call_id, .requested_by = requested_by, .responded_by = responded_by, .run_id = run_id };
+        self.pending_permission = .{
+            .interaction_id = interaction_id,
+            .tool_call_id = tool_call_id,
+            .requested_by = requested_by,
+            .responded_by = responded_by,
+            .run_id = run_id,
+            .offers_approve_always = offersChoice(body, "approve_always"),
+            .offers_reject_always = offersChoice(body, "reject_always"),
+        };
+    }
+
+    fn offersChoice(body: std.json.ObjectMap, id: []const u8) bool {
+        const choices = body.get("choices") orelse return false;
+        if (choices != .array) return false;
+        for (choices.array.items) |choice| {
+            if (choice != .object) continue;
+            const named = choice.object.get("id") orelse continue;
+            if (named == .string and std.mem.eql(u8, named.string, id)) return true;
+        }
+        return false;
     }
 
     fn stop(ctx: *anyopaque) void {
