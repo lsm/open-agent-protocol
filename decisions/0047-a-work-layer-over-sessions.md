@@ -193,12 +193,21 @@ stays as an alias for one release.
   the harnesses with no desktop app, and keep its relay for a Claude session
   the app is running.
 
-## Open questions for review
+## Owner answers, 2026-10-06
 
-1. Should the work profile be in this repository, or left to callers like
-   HyperNeo over the core?
-2. Is reading Claude's and Pi's private stores for listing acceptable?
-3. Should an adopting Claude adapter also write the app's session record, so a
-   resumed session shows in the app? That is writing another product's private
-   file.
-4. Is `serve` the right name, given `serve agent` already exists?
+1. **The work layer is in this repository, as its own profile.**
+   `open-agent-protocol.work` sits over `agent-control-core` the way
+   `presentation-control` does. It is not an affordance: in this repository an
+   affordance is presentation state, what a surface may do
+   ([0036](0036-a-presentation-layer-is-not-evidence-for-its-own-profile.md),
+   [0037](0037-presentation-state-is-versioned-and-every-intent-is-idempotent.md)),
+   and the work verbs are operations a caller runs. Each verb is a capability
+   key an endpoint advertises (`work.find`, `work.start`, `work.send`,
+   `work.status`, `work.stop`), so a missing one, such as `work.stop` over
+   DeepSeek, is known before it is called.
+2. **Reading Claude's and Pi's own stores for listing is accepted, read-only.**
+   A store whose format changed lists nothing; it is never written.
+3. **An adopting Claude adapter does not write the app's session record.** A
+   caller that wants the session in the app uses `claude --desktop --resume`.
+4. **The name is `serve`.** It landed in #913, with `hub` as an alias for one
+   release.
