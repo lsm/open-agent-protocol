@@ -3,6 +3,12 @@ const compat = @import("compat");
 
 pub const Action = enum { opened, reopened, closed, refused };
 
+pub const CompactionPolicy = struct {
+    kind: []const u8,
+    share_percent: ?i64 = null,
+    tokens: ?i64 = null,
+};
+
 pub const Record = struct {
     session_id: []const u8,
     adapter: []const u8,
@@ -11,6 +17,8 @@ pub const Record = struct {
     home: []const u8 = "",
     directory: []const u8 = "",
     model: []const u8 = "",
+    reasoning_level: []const u8 = "",
+    compaction_policy: ?CompactionPolicy = null,
     tool_source_ids: []const []const u8 = &.{},
 };
 
@@ -30,6 +38,8 @@ const WireRecord = struct {
     home: ?[]const u8 = null,
     directory: ?[]const u8 = null,
     model: ?[]const u8 = null,
+    reasoning_level: ?[]const u8 = null,
+    compaction_policy: ?CompactionPolicy = null,
     tool_source_ids: ?[]const []const u8 = null,
 };
 
@@ -55,6 +65,8 @@ pub fn encode(allocator: std.mem.Allocator, entry: Entry) ![]u8 {
             .home = present(entry.record.home),
             .directory = present(entry.record.directory),
             .model = present(entry.record.model),
+            .reasoning_level = present(entry.record.reasoning_level),
+            .compaction_policy = entry.record.compaction_policy,
             .tool_source_ids = if (entry.record.tool_source_ids.len > 0) entry.record.tool_source_ids else null,
         },
     };
@@ -89,6 +101,8 @@ pub fn decode(arena: std.mem.Allocator, line: []const u8) !Entry {
             .home = wire.record.home orelse "",
             .directory = wire.record.directory orelse "",
             .model = wire.record.model orelse "",
+            .reasoning_level = wire.record.reasoning_level orelse "",
+            .compaction_policy = wire.record.compaction_policy,
             .tool_source_ids = wire.record.tool_source_ids orelse &.{},
         },
     };
@@ -199,6 +213,17 @@ test "a record line is the checksum of its JSON and the JSON, as the Go store wr
     const decoded = try decode(arena.allocator(), line);
     try testing.expectEqualStrings("thread-1", decoded.record.native_session_id);
     try testing.expectEqual(Action.opened, decoded.action);
+}
+
+test "the open's settings are written as the Go store writes them" {
+    const line = try encode(testing.allocator, .{ .action = .opened, .time_ms = 7, .record = .{ .session_id = "s", .adapter = "pi", .model = "m", .reasoning_level = "high", .compaction_policy = .{ .kind = "share", .share_percent = 80 } } });
+    defer testing.allocator.free(line);
+    try testing.expectEqualStrings("b3827233 {\"action\":\"opened\",\"time_ms\":7,\"record\":{\"session_id\":\"s\",\"adapter\":\"pi\",\"model\":\"m\",\"reasoning_level\":\"high\",\"compaction_policy\":{\"kind\":\"share\",\"share_percent\":80}}}\n", line);
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const decoded = try decode(arena.allocator(), line);
+    try testing.expectEqualStrings("high", decoded.record.reasoning_level);
+    try testing.expectEqual(@as(?i64, 80), decoded.record.compaction_policy.?.share_percent);
 }
 
 test "a binding recorded before a restart is read after it, the latest entry winning" {

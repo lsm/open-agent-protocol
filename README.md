@@ -879,7 +879,7 @@ Decisions:
 - [0037 — presentation state is versioned, and every intent is idempotent](decisions/0037-presentation-state-is-versioned-and-every-intent-is-idempotent.md) (proposed)
 - [0038 — one released binary, and a library for every language](decisions/0038-one-released-binary-and-a-library-for-every-language.md) (accepted)
 - [0039 — a session is OAP's, and a harness is where it runs](decisions/0039-a-session-is-oaps-and-a-harness-is-where-it-runs.md) (accepted)
-- [0040 — a session reopens through its own binding](decisions/0040-a-session-reopens-through-its-own-binding.md) (proposed)
+- [0040 — a session reopens through its own binding](decisions/0040-a-session-reopens-through-its-own-binding.md) (accepted)
 - [0041 — cancel acceptance is judged when the cancel is checked](decisions/0041-cancel-acceptance-is-judged-when-the-cancel-is-checked.md) (proposed)
 - [0043 — auth providers carry how they accept a credential](decisions/0043-auth-providers-carry-how-they-accept-a-credential.md) (proposed)
 - [0044 — compaction](decisions/0044-compaction.md) (accepted)

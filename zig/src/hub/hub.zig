@@ -124,6 +124,8 @@ const Bound = struct {
     version: []const u8 = "",
     model: []const u8 = "",
     directory: []const u8 = "",
+    reasoning_level: []const u8 = "",
+    compaction_policy: []const u8 = "",
 
     fn deinit(self: *Bound, allocator: std.mem.Allocator) void {
         allocator.free(self.session_id);
@@ -132,6 +134,8 @@ const Bound = struct {
         allocator.free(self.version);
         allocator.free(self.model);
         allocator.free(self.directory);
+        allocator.free(self.reasoning_level);
+        allocator.free(self.compaction_policy);
         self.* = undefined;
     }
 };
@@ -552,7 +556,7 @@ pub const Hub = struct {
         errdefer if (!adopted) session.teardown();
         if (self.findSession(session.id()) != null) return error.SessionExists;
         const opened_state = try session.state(arena, &refused.reason);
-        var record = try self.boundFor(adapter_name, session, descriptor.endpoint.version orelse "", opened_state.current_model_id orelse "");
+        var record = try self.boundFor(adapter_name, session, descriptor.endpoint.version orelse "", opened_state.current_model_id orelse "", request.reasoning_level orelse "", request.compaction_policy_json orelse "");
         var kept = false;
         errdefer if (!kept) record.deinit(self.allocator);
         const entry = try self.adopt(adapter_name, session, @intCast(self.clock() / std.time.ns_per_ms));
@@ -1262,7 +1266,7 @@ pub const Hub = struct {
         return null;
     }
 
-    fn boundFor(self: *Hub, adapter_name: []const u8, session: contract.Session, version: []const u8, model: []const u8) !Bound {
+    fn boundFor(self: *Hub, adapter_name: []const u8, session: contract.Session, version: []const u8, model: []const u8, reasoning_level: []const u8, compaction_policy: []const u8) !Bound {
         try self.bound.ensureUnusedCapacity(self.allocator, 1);
         const session_id = try self.allocator.dupe(u8, session.id());
         errdefer self.allocator.free(session_id);
@@ -1276,12 +1280,19 @@ pub const Hub = struct {
         errdefer self.allocator.free(owned_model);
         const directory = if (self.find(adapter_name)) |registered| registered.directory else "";
         const owned_directory = try self.allocator.dupe(u8, directory);
-        return .{ .session_id = session_id, .adapter_name = owned_adapter, .native_id = native_id, .version = owned_version, .model = owned_model, .directory = owned_directory };
+        errdefer self.allocator.free(owned_directory);
+        const owned_level = try self.allocator.dupe(u8, reasoning_level);
+        errdefer self.allocator.free(owned_level);
+        const owned_policy = try self.allocator.dupe(u8, compaction_policy);
+        return .{ .session_id = session_id, .adapter_name = owned_adapter, .native_id = native_id, .version = owned_version, .model = owned_model, .directory = owned_directory, .reasoning_level = owned_level, .compaction_policy = owned_policy };
     }
 
     fn recordBinding(self: *Hub, action: binding.Action, session_id: []const u8, time_ms: i64) void {
         const store = self.bindings orelse return;
         const bound = self.findBound(session_id) orelse return;
+        var scratch = std.heap.ArenaAllocator.init(self.allocator);
+        defer scratch.deinit();
+        const policy: ?binding.CompactionPolicy = if (bound.compaction_policy.len == 0) null else std.json.parseFromSliceLeaky(binding.CompactionPolicy, scratch.allocator(), bound.compaction_policy, .{ .ignore_unknown_fields = true }) catch null;
         store.append(.{ .action = action, .time_ms = time_ms, .record = .{
             .session_id = bound.session_id,
             .adapter = bound.adapter_name,
@@ -1289,6 +1300,8 @@ pub const Hub = struct {
             .native_session_id = bound.native_id,
             .directory = bound.directory,
             .model = bound.model,
+            .reasoning_level = bound.reasoning_level,
+            .compaction_policy = policy,
         } }) catch {};
     }
 
@@ -3860,6 +3873,31 @@ test "a binding recorded before a hub restart is read after it, and a torn store
     var refused: OpenRefusal = .{};
     try testing.expectError(error.BackendFailed, torn.openReporting(arena, "native", .{ .session_id = "kept", .reopen = true }, &refused));
     try testing.expect(std.mem.indexOf(u8, refused.reason.message, "not written whole") != null);
+}
+
+test "an open records the compaction policy it asked for" {
+    var inner = memory.Adapter.init(testing.allocator);
+    defer inner.deinit();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const cwd = try std.process.currentPathAlloc(testing.io, testing.allocator);
+    defer testing.allocator.free(cwd);
+    const path = try std.fs.path.join(testing.allocator, &.{ cwd, ".zig-cache", "tmp", tmp.sub_path[0..], "bindings.jsonl" });
+    defer testing.allocator.free(path);
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    var store = try binding.Store.open(testing.allocator, path);
+    defer store.deinit();
+    var hub = Hub.init(testing.allocator, testClock, .{ .bindings = &store });
+    defer hub.deinit();
+    try hub.register("memory", inner.adapter());
+    _ = try hub.open(arena, "memory", .{ .session_id = "set", .compaction_policy_json = "{\"kind\":\"share\",\"share_percent\":70}" });
+    const entry = (try store.latest(arena, "set")).?;
+    try testing.expectEqualStrings("", entry.record.reasoning_level);
+    try testing.expectEqualStrings("share", entry.record.compaction_policy.?.kind);
+    try testing.expectEqual(@as(?i64, 70), entry.record.compaction_policy.?.share_percent);
+    try hub.close(arena, "set");
 }
 
 test "a binding the store failed to write is reported at reopen rather than read as an unknown session" {

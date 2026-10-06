@@ -360,7 +360,7 @@ open, and nothing happens without it: a hub built with no store records
 nothing and reports no binding. It is the host's file and the host's decision
 where it lives, and `Decision 0040` is what a record must say — which harness
 ran which session, under which pin, in which home and directory, with which
-model — and what it must never hold. A reopen reads it: when the hub holds no
+model, reasoning level and compaction policy — and what it must never hold. A reopen reads it: when the hub holds no
 record for the session in memory (it restarted), the latest entry in the file
 names the adapter and the native session id handed back to it. Both hubs take
 the flag (`goap hub` and `oapx hub`) and write the same line, a CRC-32 of the
