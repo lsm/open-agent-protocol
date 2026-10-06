@@ -110,6 +110,10 @@ pub const OapExecution = struct {
         return self;
     }
 
+    pub fn setTranscripts(self: *OapExecution, store: oapx_adapter.TranscriptStore) void {
+        if (self.adapter) |held| held.transcripts = store;
+    }
+
     pub fn attach(allocator: std.mem.Allocator, base: []const u8, adapter_name: []const u8) !*OapExecution {
         const link = try hub_link.HubLink.create(allocator, base, adapter_name);
         errdefer link.destroy();

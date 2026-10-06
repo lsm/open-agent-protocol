@@ -5698,6 +5698,8 @@ pub fn runWith(allocator: std.mem.Allocator, io: std.Io, context_window: ?u32, e
         options.protocol = runtime.provider.protocolClient();
         options.generate_titles = false;
     }
+    var history_store: ?session_store.Store = session_store.Store.initDefault(allocator) catch null;
+    defer if (history_store) |*store| store.deinit();
     var execution: ?*tui_oap_execution.OapExecution = null;
     defer if (execution) |owned| owned.destroy();
     if (execution_mode != .local) {
@@ -5705,6 +5707,7 @@ pub fn runWith(allocator: std.mem.Allocator, io: std.Io, context_window: ?u32, e
             .attach => |target| try tui_oap_execution.OapExecution.attach(allocator, target.url, target.adapter),
             else => try tui_oap_execution.OapExecution.create(allocator, options),
         };
+        if (history_store) |*store| execution.?.setTranscripts(.{ .ctx = store, .save = saveSessionTranscript });
         options.remote = execution.?.remote();
         if (execution_mode == .attach) options.generate_titles = false;
         options.auto_worktree = false;
@@ -5714,6 +5717,13 @@ pub fn runWith(allocator: std.mem.Allocator, io: std.Io, context_window: ?u32, e
     program.model = .{ .options = options, .autocompact = production.mode_settings.autocompact, .verbosity = production.mode_settings.verbosity };
     defer program.deinit();
     try program.run();
+}
+
+fn saveSessionTranscript(ctx: *anyopaque, allocator: std.mem.Allocator, session_id: []const u8, index: usize, history: []const ai_types.Message) ?[]u8 {
+    const store: *session_store.Store = @ptrCast(@alignCast(ctx));
+    const saved = store.saveTranscript(session_id, index, history) catch return null;
+    defer store.allocator.free(saved);
+    return allocator.dupe(u8, saved) catch null;
 }
 
 const StderrRedirect = struct {
