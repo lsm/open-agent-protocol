@@ -29,7 +29,7 @@ const features = [_]contract.Feature{
     .{ .key = "session.message.delivery.auto", .level = .native },
     .{ .key = "session.message.delivery.queue", .level = .native },
     .{ .key = "session.message.delivery.steer", .level = .native, .reason = "guidance joins the running loop after its current tool result or turn; guidance still waiting when the run ends is dropped" },
-    .{ .key = "action.permissions", .level = .native, .scope = "call", .reason = "ask mode waits for the declared responder, and approve_always or reject_always settles the tool for the rest of the session; bypass mode skips prompts" },
+    .{ .key = "action.permissions", .level = .native, .scope = "call", .reason = "ask mode waits for the declared responder, and approve_always or reject_always settles a call that names a path or a command for the rest of the session, as the loop remembers it; bypass mode skips prompts" },
     .{ .key = "user_input", .level = .native, .reason = "request_user_input asks text or choice questions and validates answers before returning them to the tool" },
     .{ .key = "run.streaming", .level = .native },
     .{ .key = "run.status", .level = .native },
@@ -828,10 +828,7 @@ pub const Session = struct {
         if (std.mem.eql(u8, request.tool_name, "request_user_input")) return .approve;
         const answer = self.gate.wait(self.gpa, .permission, request.tool_call_id, request.tool_name, request.args_json, null) catch return .reject;
         defer self.gpa.free(answer);
-        if (std.mem.eql(u8, answer, "approve")) return .approve;
-        if (std.mem.eql(u8, answer, "approve_always")) return .approve_always;
-        if (std.mem.eql(u8, answer, "reject_always")) return .reject_always;
-        return .reject;
+        return decisionFor(answer);
     }
 
     fn inputTool(self: *Session) agent.AgentTool {
@@ -1217,6 +1214,13 @@ pub const Session = struct {
 };
 
 pub const settings_key = "oapx";
+
+fn decisionFor(answer: []const u8) tui_session.ToolApprovalDecision {
+    if (std.mem.eql(u8, answer, "approve")) return .approve;
+    if (std.mem.eql(u8, answer, "approve_always")) return .approve_always;
+    if (std.mem.eql(u8, answer, "reject_always")) return .reject_always;
+    return .reject;
+}
 
 fn thinkingLevel(text: []const u8, refusal: *contract.Refusal) contract.Failure!ai_types.ThinkingLevel {
     const level = std.meta.stringToEnum(ai_types.ThinkingLevel, text) orelse return refusal.unsupportedField(contract.feature_session_reasoning, contract.reason_unsatisfiable, "reasoning_level");
@@ -1973,7 +1977,15 @@ fn permissionAnswer(harness: *Harness, pending: PendingInteraction) oap_types.Pe
     return .{ .interaction_id = pending.id, .requested_by = endpoint_id, .responded_by = "user", .session_id = harness.session.id(), .run_id = Session.cast(harness.session.ptr).run.?.id, .granted = true, .choice_id = "approve" };
 }
 
-test "a permission prompt offers the always choices, and an always answer reaches the loop as one and is published as chosen" {
+test "each permission choice reaches the loop as its own decision, and anything else is a refusal" {
+    try testing.expectEqual(tui_session.ToolApprovalDecision.approve, decisionFor("approve"));
+    try testing.expectEqual(tui_session.ToolApprovalDecision.approve_always, decisionFor("approve_always"));
+    try testing.expectEqual(tui_session.ToolApprovalDecision.reject_always, decisionFor("reject_always"));
+    try testing.expectEqual(tui_session.ToolApprovalDecision.reject, decisionFor("deny"));
+    try testing.expectEqual(tui_session.ToolApprovalDecision.reject, decisionFor("approve_forever"));
+}
+
+test "a permission prompt offers the always choices, and an always answer is accepted and published as chosen" {
     var script = Script{ .tool_first = true };
     var harness: Harness = undefined;
     try harness.init(&script);
