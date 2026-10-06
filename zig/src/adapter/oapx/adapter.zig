@@ -1232,8 +1232,13 @@ fn offersUserInput(metadata: ?std.json.Value) bool {
     return !(offered == .bool and !offered.bool);
 }
 
+const ContextWindowSetting = union(enum) {
+    default,
+    tokens: u32,
+};
+
 const LiveSettings = struct {
-    context_window: ?(?u32) = null,
+    context_window: ?ContextWindowSetting = null,
     output: ?agent.OutputSetting = null,
     permission_mode: ?tui_runtime.PermissionMode = null,
     workspace_root: ?[]const u8 = null,
@@ -1248,8 +1253,8 @@ fn parseLiveSettings(arena: std.mem.Allocator, raw: []const u8, refusal: *contra
     const fields = named.object;
     if (fields.get("context_window")) |value| {
         settings.context_window = switch (value) {
-            .null => @as(?u32, null),
-            .integer => |count| if (count > 0 and count <= std.math.maxInt(u32)) @as(?u32, @intCast(count)) else return refusal.fail(error.InvalidSubmission, "context_window must be a positive token count or null"),
+            .null => .default,
+            .integer => |count| if (count > 0 and count <= std.math.maxInt(u32)) .{ .tokens = @intCast(count) } else return refusal.fail(error.InvalidSubmission, "context_window must be a positive token count or null"),
             else => return refusal.fail(error.InvalidSubmission, "context_window must be a positive token count or null"),
         };
     }
@@ -1272,7 +1277,20 @@ fn parseLiveSettings(arena: std.mem.Allocator, raw: []const u8, refusal: *contra
 }
 
 fn applyLiveSettings(runtime: *tui_runtime.TuiRuntime, settings: LiveSettings, refusal: *contract.Refusal) contract.Failure!void {
-    if (settings.context_window) |window| runtime.setContextWindow(window) catch |err| return refusal.fail(error.InvalidSubmission, @errorName(err));
+    if (settings.context_window) |window| if (window == .tokens) {
+        if (runtime.contextWindowMaximum()) |ceiling| {
+            if (window.tokens > ceiling) return refusal.fail(error.InvalidSubmission, "context_window is above the model's window");
+        }
+    };
+    if (settings.output) |setting| if (setting == .tokens) {
+        if (runtime.currentModel()) |model| {
+            if (model.max_tokens > 0 and setting.tokens > model.max_tokens) return refusal.fail(error.InvalidSubmission, "output is above the model's output limit");
+        }
+    };
+    if (settings.context_window) |window| runtime.setContextWindow(switch (window) {
+        .default => null,
+        .tokens => |count| count,
+    }) catch |err| return refusal.fail(error.InvalidSubmission, @errorName(err));
     if (settings.output) |setting| runtime.setOutput(setting) catch |err| return refusal.fail(error.InvalidSubmission, @errorName(err));
     if (settings.permission_mode) |mode| runtime.setPermissionMode(mode) catch |err| switch (err) {
         error.OutOfMemory => return error.OutOfMemory,
@@ -2896,4 +2914,26 @@ test "a steer with no running loop to take it names why" {
     refusal = .{};
     try testing.expectError(error.InvalidSteerTarget, harness.steer("change course", finished.run_id, &refusal));
     try testing.expectEqualStrings("terminal", refusal.reason);
+}
+
+fn updateWith(harness: *Harness, extensions: []const u8, refusal: *contract.Refusal) contract.Failure!contract.Updated {
+    const request = oap_types.SessionSettingsUpdateRequest{ .session_id = harness.session.id(), .reasoning_level = "low", .extensions_json = extensions };
+    return harness.session.vtable.update_settings.?(harness.session.ptr, harness.arena.allocator(), &request, refusal);
+}
+
+test "a live update sets the context window, a null clears it, and a refused update with two keys changes neither" {
+    var script = Script{};
+    var harness: Harness = undefined;
+    try harness.init(&script);
+    defer harness.deinit();
+    const runtime = Session.cast(harness.session.ptr).runtime;
+    var refusal = contract.Refusal{};
+
+    _ = try updateWith(&harness, "{\"oapx\":{\"context_window\":4096}}", &refusal);
+    try testing.expectEqual(@as(?u32, 4096), runtime.contextWindowOverride());
+    _ = try updateWith(&harness, "{\"oapx\":{\"context_window\":null}}", &refusal);
+    try testing.expectEqual(@as(?u32, null), runtime.contextWindowOverride());
+
+    try testing.expectError(error.InvalidSubmission, updateWith(&harness, "{\"oapx\":{\"context_window\":2048,\"output\":4000000000}}", &refusal));
+    try testing.expectEqual(@as(?u32, null), runtime.contextWindowOverride());
 }
