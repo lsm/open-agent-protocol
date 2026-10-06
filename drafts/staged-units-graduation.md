@@ -4278,8 +4278,11 @@ lists stay out until a host needs sessions no binding names. Both hubs serve it
 at `GET /sessions/history` and the `history` stdio op. The first graduation
 slice puts `session.list.request` and `session.list.response` on the wire under
 the `session-list` unit, judged by both validators, with positive and negative
-fixtures; no endpoint advertises `session.list` yet, so the unit is not
-executable.
+fixtures. The second slice is step 1 of the gate: `goap serve agent`, over the
+memory reference, advertises `session.list` at `emulated` and answers it from
+the in-process history its hub keeps, the Go conformance runner checks it, and
+both `oapx` endpoints refuse it naming the key. No pinned harness is evidence
+for it yet, since the list is the host's records rather than a harness's.
 
 ## T4. Steer
 

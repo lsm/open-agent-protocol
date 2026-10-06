@@ -11,6 +11,7 @@ import (
 	"strings"
 	"syscall"
 
+	"github.com/lsm/open-agent-protocol/go/binding"
 	"github.com/lsm/open-agent-protocol/go/serve"
 	"github.com/lsm/open-agent-protocol/go/serve/serveendpoint"
 )
@@ -60,7 +61,7 @@ func runEndpoint(ctx context.Context, verb, backendFlag string, args []string, s
 	signals, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	hub := serve.New(registry, serve.Options{Logger: log.New(stderr, "goap: ", 0)})
+	hub := serve.New(registry, serve.Options{Logger: log.New(stderr, "goap: ", 0), Bindings: binding.Memory()})
 	endpoint, err := serveendpoint.New(hub, serveendpoint.Options{
 		Adapter: *adapterName,
 		Logger:  log.New(stderr, "goap: ", 0),
