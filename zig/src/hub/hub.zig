@@ -176,10 +176,28 @@ pub const Work = struct {
     run_id: []const u8 = "",
     last_reply: []const u8 = "",
     pending_interaction: []const u8 = "",
+    title: []const u8 = "",
     updated_at_ms: i64,
 };
 
 pub const last_reply_limit: usize = 4096;
+pub const turn_text_limit: usize = 64 * 1024;
+pub const turns_kept: usize = 512;
+
+pub const TurnRole = enum { user, assistant };
+
+pub const Turn = struct {
+    role: TurnRole,
+    text: []u8,
+    run_id: []u8,
+    outcome: []const u8,
+    at_ms: i64,
+};
+
+pub const Transcript = struct {
+    first_index: u64,
+    turns: []const Turn,
+};
 
 pub const Listed = struct {
     name: []const u8,
@@ -363,8 +381,17 @@ const Entry = struct {
     journal: std.ArrayList(Journaled) = .empty,
     cursors: std.ArrayList(Cursor) = .empty,
     subscribers: std.ArrayList(*Subscription) = .empty,
+    turns: std.ArrayList(Turn) = .empty,
+    turns_dropped: u64 = 0,
+    title: []u8 = &.{},
 
     fn deinit(self: *Entry, allocator: std.mem.Allocator) void {
+        for (self.turns.items) |turn| {
+            allocator.free(turn.text);
+            allocator.free(turn.run_id);
+        }
+        self.turns.deinit(allocator);
+        if (self.title.len > 0) allocator.free(self.title);
         for (self.cursors.items) |cursor| allocator.free(cursor.run_id);
         self.cursors.deinit(allocator);
         for (self.journal.items) |kept| allocator.free(kept.line);
@@ -561,6 +588,7 @@ pub const Hub = struct {
             .directory = if (self.find(entry.adapter_name)) |registered| registered.directory else "",
             .status = .done,
             .run_id = current.active_run_id orelse "",
+            .title = entry.title,
             .updated_at_ms = current.updated_at_ms orelse entry.created_at_ms,
         };
         for (current.active_runs) |run| {
@@ -605,13 +633,22 @@ pub const Hub = struct {
     }
 
     fn replyCut(text: []const u8) usize {
-        if (text.len <= last_reply_limit) return text.len;
-        var cut = last_reply_limit;
+        return cutAt(text, last_reply_limit);
+    }
+
+    fn cutAt(text: []const u8, limit: usize) usize {
+        if (text.len <= limit) return text.len;
+        var cut = limit;
         while (cut > 0 and text[cut] & 0xC0 == 0x80) cut -= 1;
         return cut;
     }
 
     fn replyText(arena: std.mem.Allocator, payload: ?std.json.Value) ![]const u8 {
+        const text = try fullReplyText(arena, payload);
+        return text[0..replyCut(text)];
+    }
+
+    fn fullReplyText(arena: std.mem.Allocator, payload: ?std.json.Value) ![]const u8 {
         const body = payload orelse return "";
         if (body != .object) return "";
         const response = body.object.get("final_response") orelse return "";
@@ -631,7 +668,7 @@ pub const Hub = struct {
             },
             else => return "",
         }
-        return text[0..replyCut(text)];
+        return text;
     }
 
     fn bySessionId(_: void, left: Status, right: Status) bool {
@@ -732,7 +769,70 @@ pub const Hub = struct {
             },
             else => |failure| return failure,
         };
+        try self.recordTurn(entry, .user, try userText(self.allocator, request), admission.run_id orelse "", "");
         return self.admitted(entry, admission);
+    }
+
+    fn userText(allocator: std.mem.Allocator, request: *const oap_types.MessageSubmitRequest) ![]u8 {
+        var joined: std.ArrayList(u8) = .empty;
+        errdefer joined.deinit(allocator);
+        for (request.messages) |message| {
+            if (message.role != .user) continue;
+            switch (message.content) {
+                .text => |text| {
+                    if (joined.items.len > 0) try joined.append(allocator, '\n');
+                    try joined.appendSlice(allocator, text);
+                },
+                .parts => |parts| for (parts) |part| switch (part) {
+                    .text => |text| {
+                        if (joined.items.len > 0) try joined.append(allocator, '\n');
+                        try joined.appendSlice(allocator, text);
+                    },
+                    else => {},
+                },
+            }
+        }
+        return joined.toOwnedSlice(allocator);
+    }
+
+    fn recordTurn(self: *Hub, entry: *Entry, role: TurnRole, owned_text: []u8, run_id: []const u8, outcome: []const u8) !void {
+        errdefer self.allocator.free(owned_text);
+        const kept_run = try self.allocator.dupe(u8, run_id);
+        errdefer self.allocator.free(kept_run);
+        try entry.turns.ensureUnusedCapacity(self.allocator, 1);
+        if (entry.turns.items.len == turns_kept) {
+            const oldest = entry.turns.orderedRemove(0);
+            self.allocator.free(oldest.text);
+            self.allocator.free(oldest.run_id);
+            entry.turns_dropped += 1;
+        }
+        const text = if (owned_text.len > turn_text_limit) blk: {
+            const cut = cutAt(owned_text, turn_text_limit);
+            const shorter = try self.allocator.dupe(u8, owned_text[0..cut]);
+            self.allocator.free(owned_text);
+            break :blk shorter;
+        } else owned_text;
+        entry.turns.appendAssumeCapacity(.{ .role = role, .text = text, .run_id = kept_run, .outcome = outcome, .at_ms = @intCast(self.clock() / std.time.ns_per_ms) });
+    }
+
+    pub fn transcript(self: *Hub, session_id: []const u8, after: ?u64, limit: usize) Failure!Transcript {
+        const entry = self.findSession(session_id) orelse return error.UnknownSession;
+        const start_index: u64 = if (after) |given| given + 1 else entry.turns_dropped;
+        const from: usize = if (start_index <= entry.turns_dropped) 0 else @intCast(@min(start_index - entry.turns_dropped, entry.turns.items.len));
+        const to = @min(entry.turns.items.len, from + limit);
+        return .{ .first_index = entry.turns_dropped + from, .turns = entry.turns.items[from..to] };
+    }
+
+    pub fn adapterDirectory(self: *Hub, name: []const u8) ?[]const u8 {
+        const registered = self.find(name) orelse return null;
+        return registered.directory;
+    }
+
+    pub fn setTitle(self: *Hub, session_id: []const u8, title: []const u8) !void {
+        const entry = self.findSession(session_id) orelse return;
+        const kept = try self.allocator.dupe(u8, title);
+        if (entry.title.len > 0) self.allocator.free(entry.title);
+        entry.title = kept;
     }
 
     pub fn compactReporting(self: *Hub, arena: std.mem.Allocator, session_id: []const u8, request: *const oap_types.SessionCompactRequest, envelope_id: []const u8, refusal: *contract.Refusal) Failure!oap_types.MessageSubmitResponse {
@@ -1260,6 +1360,28 @@ pub const Hub = struct {
         return 0;
     }
 
+    fn recordOutcome(self: *Hub, entry: *Entry, event: contract.Event) !void {
+        var scratch = std.heap.ArenaAllocator.init(self.allocator);
+        defer scratch.deinit();
+        const parsed = std.json.parseFromSliceLeaky(std.json.Value, scratch.allocator(), event.line, .{}) catch |err| switch (err) {
+            error.OutOfMemory => return error.OutOfMemory,
+            else => return,
+        };
+        if (parsed != .object) return;
+        const kind = parsed.object.get("type") orelse return;
+        if (kind != .string) return;
+        const outcome: []const u8 = if (std.mem.eql(u8, kind.string, "run.completed"))
+            "completed"
+        else if (std.mem.eql(u8, kind.string, "run.failed"))
+            "failed"
+        else if (std.mem.eql(u8, kind.string, "run.cancelled"))
+            "cancelled"
+        else
+            return;
+        const reply = try fullReplyText(scratch.allocator(), parsed.object.get("payload"));
+        try self.recordTurn(entry, .assistant, try self.allocator.dupe(u8, reply), event.run_id, outcome);
+    }
+
     fn terminal(allocator: std.mem.Allocator, line: []const u8) !bool {
         var parsed = std.json.parseFromSlice(std.json.Value, allocator, line, .{}) catch |err| switch (err) {
             error.OutOfMemory => return error.OutOfMemory,
@@ -1284,7 +1406,10 @@ pub const Hub = struct {
             try self.noteRun(entry, event.run_id, true);
         }
         entry.cursors.items[index].latest = @max(entry.cursors.items[index].latest, event.sequence);
-        if (settled) entry.cursors.items[index].terminal = event.sequence;
+        if (settled) {
+            entry.cursors.items[index].terminal = event.sequence;
+            try self.recordOutcome(entry, event);
+        }
         if (self.journal_capacity == 0) return;
         const line = try self.allocator.dupe(u8, event.line);
         errdefer self.allocator.free(line);

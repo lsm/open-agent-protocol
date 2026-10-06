@@ -11,6 +11,12 @@ export {
   type FetchResponse,
   type ByteBody,
   type StreamReader,
+  type Work,
+  type WorkGroup,
+  type WorkRef,
+  type WorkStartInput,
+  type WorkStatus,
+  type WorkTurn,
 } from './client.js';
 
 export {

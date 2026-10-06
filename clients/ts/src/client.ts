@@ -15,6 +15,45 @@ import {
   type ToolSourceAttachment,
 } from './protocol.js';
 
+export type WorkStatus = 'queued' | 'running' | 'needs_you' | 'done' | 'failed' | 'stopped';
+
+export interface WorkRef {
+  adapter: string;
+  session_id: string;
+}
+
+export interface Work {
+  ref: WorkRef;
+  status: WorkStatus;
+  directory?: string;
+  title?: string;
+  run_id?: string;
+  last_reply?: string;
+  updated_at_ms: number;
+  pending?: { interaction_id: string };
+}
+
+export interface WorkGroup {
+  directory: string;
+  last_activity_ms: number;
+  work: Work[];
+}
+
+export interface WorkTurn {
+  index: number;
+  role: 'user' | 'assistant';
+  text: string;
+  run_id?: string;
+  outcome?: 'completed' | 'failed' | 'cancelled';
+  at_ms: number;
+}
+
+export interface WorkStartInput {
+  message: string;
+  title?: string;
+  directory?: string;
+}
+
 export interface FetchResponse {
   readonly status: number;
   readonly ok: boolean;
@@ -111,6 +150,58 @@ export class OapClient {
       throw wrap(`client: decode adapter listing: ${message(err)}`, err);
     }
     return listing.adapters ?? [];
+  }
+
+  async workList(): Promise<WorkGroup[]> {
+    const listed = await this.plain<{ groups?: WorkGroup[] }>('GET', '/work', null, 'list work');
+    return listed.groups ?? [];
+  }
+
+  async workStatus(sessionId: string): Promise<Work> {
+    return this.plain<Work>('GET', `/work/sessions/${encodeURIComponent(sessionId)}`, null, 'read work status');
+  }
+
+  async workStart(adapter: string, input: WorkStartInput): Promise<Work> {
+    return this.plain<Work>('POST', `/adapters/${encodeURIComponent(adapter)}/work`, input, 'start work');
+  }
+
+  async workSend(sessionId: string, message: string): Promise<Work> {
+    return this.plain<Work>('POST', `/work/sessions/${encodeURIComponent(sessionId)}/send`, { message }, 'send work');
+  }
+
+  async workStop(sessionId: string): Promise<Work> {
+    return this.plain<Work>('POST', `/work/sessions/${encodeURIComponent(sessionId)}/stop`, null, 'stop work');
+  }
+
+  async workRead(sessionId: string, options: { after?: number; limit?: number } = {}): Promise<WorkTurn[]> {
+    const query = new URLSearchParams();
+    if (options.after !== undefined) query.set('after', String(options.after));
+    if (options.limit !== undefined) query.set('limit', String(options.limit));
+    const suffix = query.toString() ? `?${query.toString()}` : '';
+    const read = await this.plain<{ turns?: WorkTurn[] }>(
+      'GET',
+      `/work/sessions/${encodeURIComponent(sessionId)}/read${suffix}`,
+      null,
+      'read work',
+    );
+    return read.turns ?? [];
+  }
+
+  private async plain<T>(method: string, path: string, body: unknown, what: string): Promise<T> {
+    const init: FetchInit = { method, headers: { Accept: 'application/json' } };
+    if (body !== null) {
+      init.headers = { ...init.headers, 'Content-Type': 'application/json' };
+      init.body = JSON.stringify(body);
+    }
+    const response = await this.request(path, init);
+    const text = await this.readBody(response, what);
+    const failure = this.failureError(response.status, text);
+    if (failure) throw failure;
+    try {
+      return JSON.parse(text) as T;
+    } catch (err) {
+      throw wrap(`client: decode ${what}: ${message(err)}`, err);
+    }
   }
 
   async capabilities(adapter: string): Promise<Capabilities> {

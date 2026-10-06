@@ -438,6 +438,10 @@ error. That is stated because the four reasons are the whole set.
 | `GET /sessions/{id}/events` | `events` | an SSE stream, adopting a held subscription when the request named no cursor | see [events](#events) |
 | `GET /work` | `work.list` | `{"groups":[...]}`, per [the work profile](work.md) | — |
 | `GET /work/sessions/{id}` | `work.status` | one piece of work, per [the work profile](work.md) | `unknown_session` 404, `session_closed` 409 |
+| `POST /adapters/{name}/work` | `work.start` | the new session's `work.status` | `invalid_request` 400, `unknown_adapter` 404, `unsupported_feature` 400, and an open's refusals |
+| `POST /work/sessions/{id}/send` | `work.send` | the session's `work.status` | `invalid_request` 400, and a submit's refusals |
+| `POST /work/sessions/{id}/stop` | `work.stop` | the session's `work.status` | `unknown_session` 404, `session_closed` 409, and a cancel's refusals |
+| `GET /work/sessions/{id}/read` | `work.read` | `{"turns":[...]}`, after `after` and up to `limit` (1 to 500, default 100) | `invalid_request` 400, `unknown_session` 404 |
 
 **The daemon serves a bounded number of connections at once, and a stream is
 not a connection to itself.** One connection at a time is enough for the
@@ -2024,13 +2028,13 @@ are "stamped with the revision the lister served it under", and both name
 | **Zig does** | Accepts `unix://<path>`: the adapter starts `oapx codex-bridge --sock <path>` in place of `codex app-server`, and the bridge relays the adapter's newline-framed JSON-RPC to that socket's WebSocket. Any other scheme is refused, and so is an entry naming an `endpoint` beside an `executable` or `args`. The relay runs whatever Codex version the daemon is (0.159.2 when probed), not the pinned corpus version: the adapter does not check it. |
 | **Why it matters** | A document naming a codex `endpoint` is not portable between the hubs. Closing it needs the same relay in Go. |
 
-### D30 — `work.status` and `work.list` are served by `oapx serve` and not by `goap serve`
+### D30 — the work verbs are served by `oapx serve` and not by `goap serve`
 
 | | |
 | --- | --- |
 | **The draft says** | `serve` answers the work profile's verbs ([work](work.md)), starting with `work.status` and `work.list` over the sessions it holds. |
 | **Go does** | Has neither op nor route: `GET /work` answers `404`. |
-| **Zig does** | Serves both on both transports. A piece of work's status is projected from the session's state and, when it is idle, the latest terminal envelope in its journal; `last_reply` is the latest `run.completed`'s `final_response` text, cut at 4 KiB. `work.list` groups by the adapter's working directory, most recent first, with no filters or paging yet. |
+| **Zig does** | Serves both on both transports. A piece of work's status is projected from the session's state and, when it is idle, the latest terminal envelope in its journal; `last_reply` is the latest `run.completed`'s `final_response` text, cut at 4 KiB. `work.list` groups by the adapter's working directory, most recent first, with no filters or paging yet. `work.start` opens with the message (D11) and keeps the title; `work.send` submits with `delivery: auto`; `work.stop` cancels the active run and answers a session with none unchanged; `work.read` returns the turns `serve` recorded: each submitted user message, and each run's outcome with its reply text, the last 512 kept, each cut at 64 KiB. |
 | **Why it matters** | A caller of the work profile has to use `oapx serve` until Go serves it. |
 
 ### D12 — an open's `unsupported_feature` and `capability_degraded` carried no `feature`
