@@ -82,6 +82,7 @@ const events_parameters: []const []const u8 = &.{ "session_id", "run_id", "after
 const session_request_parameters: []const []const u8 = &.{ "session_id", "request" };
 const history_parameters: []const []const u8 = &.{ "cursor", "limit" };
 const work_start_parameters: []const []const u8 = &.{ "adapter", "request" };
+const request_parameter: []const []const u8 = &.{"request"};
 const work_read_parameters: []const []const u8 = &.{ "session_id", "after", "limit" };
 const all_parameters = [_][]const u8{ "adapter", "session_id", "run_id", "after", "request", "cursor", "limit", "allow_degraded_features" };
 
@@ -772,8 +773,8 @@ pub const Frontend = struct {
             return self.workRead(arena, request.session_id orelse "", request.after, request.limit);
         }
         if (std.mem.eql(u8, request.op, op_work_list)) {
-            if (try request.only(arena, no_parameters)) |refusal| return .{ .refused = refusal };
-            return .{ .answer = try self.workList(arena) };
+            if (try request.only(arena, request_parameter)) |refusal| return .{ .refused = refusal };
+            return self.workList(arena, workFlag(request.payload, "include_closed"));
         }
         if (std.mem.eql(u8, request.op, op_capabilities)) {
             if (try request.only(arena, adapter_parameter)) |refusal| return .{ .refused = refusal };
@@ -922,30 +923,86 @@ pub const Frontend = struct {
     }
 
     pub fn workStatus(self: *Frontend, arena: std.mem.Allocator, session_id: []const u8) !Outcome {
+        if (!self.hub.knows(session_id)) {
+            if (try self.unheld(arena, session_id)) |entry| return .{ .answer = try unheldJson(arena, entry) };
+        }
         const found = self.hub.work(arena, session_id) catch |err| {
             return .{ .refused = try self.stateRefusal(arena, err, session_id) };
         };
         return .{ .answer = try workJson(arena, found) };
     }
 
-    pub fn workList(self: *Frontend, arena: std.mem.Allocator) !std.json.Value {
-        const found = try self.hub.works(arena);
-        var groups: std.ArrayList(std.json.Value) = .empty;
+    fn workFlag(params: ?std.json.Value, name: []const u8) bool {
+        const given = params orelse return false;
+        if (given != .object) return false;
+        const value = given.object.get(name) orelse return false;
+        return value == .bool and value.bool;
+    }
+
+    fn latestBindings(self: *Frontend, arena: std.mem.Allocator) !?[]const hubmod.binding.Entry {
+        const store = self.hub.bindings orelse return null;
+        const recorded = store.sessions(arena) catch |err| switch (err) {
+            error.OutOfMemory => return error.OutOfMemory,
+            else => return null,
+        };
+        return try hubmod.binding.latestEach(arena, recorded);
+    }
+
+    fn unheldJson(arena: std.mem.Allocator, entry: hubmod.binding.Entry) !std.json.Value {
+        var ref = try emptyObject(arena);
+        try ref.put(arena, "adapter", .{ .string = entry.record.adapter });
+        try ref.put(arena, "session_id", .{ .string = entry.record.session_id });
+        var object = try emptyObject(arena);
+        try object.put(arena, "ref", .{ .object = ref });
+        try object.put(arena, "held", .{ .bool = false });
+        try object.put(arena, "state", .{ .string = if (entry.action == .closed) "closed" else "live" });
+        if (entry.record.directory.len > 0) try object.put(arena, "directory", .{ .string = entry.record.directory });
+        try object.put(arena, "updated_at_ms", .{ .integer = entry.time_ms });
+        return .{ .object = object };
+    }
+
+    fn unheld(self: *Frontend, arena: std.mem.Allocator, session_id: []const u8) !?hubmod.binding.Entry {
+        const latest = (try self.latestBindings(arena)) orelse return null;
+        for (latest) |entry| {
+            if (std.mem.eql(u8, entry.record.session_id, session_id)) return entry;
+        }
+        return null;
+    }
+
+    pub fn workList(self: *Frontend, arena: std.mem.Allocator, include_closed: bool) !Outcome {
+        const Piece = struct { directory: []const u8, at_ms: i64, value: std.json.Value };
+        var pieces: std.ArrayList(Piece) = .empty;
+        for (try self.hub.works(arena)) |piece| {
+            try pieces.append(arena, .{ .directory = piece.directory, .at_ms = piece.updated_at_ms, .value = try workJson(arena, piece) });
+        }
+        if (try self.latestBindings(arena)) |latest| {
+            for (latest) |entry| {
+                if (self.hub.knows(entry.record.session_id)) continue;
+                if (entry.action == .closed and !include_closed) continue;
+                try pieces.append(arena, .{ .directory = entry.record.directory, .at_ms = entry.time_ms, .value = try unheldJson(arena, entry) });
+            }
+        }
+        std.mem.sort(Piece, pieces.items, {}, struct {
+            fn newer(_: void, left: Piece, right: Piece) bool {
+                return left.at_ms > right.at_ms;
+            }
+        }.newer);
         var directories: std.ArrayList([]const u8) = .empty;
         var members: std.ArrayList(std.ArrayList(std.json.Value)) = .empty;
-        var latest: std.ArrayList(i64) = .empty;
-        for (found) |piece| {
+        var latest_at: std.ArrayList(i64) = .empty;
+        for (pieces.items) |piece| {
             const at = for (directories.items, 0..) |directory, index| {
                 if (std.mem.eql(u8, directory, piece.directory)) break index;
             } else blk: {
                 try directories.append(arena, piece.directory);
                 try members.append(arena, .empty);
-                try latest.append(arena, piece.updated_at_ms);
+                try latest_at.append(arena, piece.at_ms);
                 break :blk directories.items.len - 1;
             };
-            try members.items[at].append(arena, try workJson(arena, piece));
+            try members.items[at].append(arena, piece.value);
         }
-        for (directories.items, members.items, latest.items) |directory, listed, last| {
+        var groups: std.ArrayList(std.json.Value) = .empty;
+        for (directories.items, members.items, latest_at.items) |directory, listed, last| {
             var group = try emptyObject(arena);
             try group.put(arena, "directory", .{ .string = directory });
             try group.put(arena, "last_activity_ms", .{ .integer = last });
@@ -954,7 +1011,7 @@ pub const Frontend = struct {
         }
         var root = try emptyObject(arena);
         try root.put(arena, "groups", try jsonArray(arena, groups.items));
-        return .{ .object = root };
+        return .{ .answer = .{ .object = root } };
     }
 
     fn workEnvelope(self: *Frontend, arena: std.mem.Allocator, kind: []const u8, session_id: []const u8, payload: std.json.ObjectMap) !std.json.Value {
@@ -1030,6 +1087,11 @@ pub const Frontend = struct {
 
     pub fn workSend(self: *Frontend, arena: std.mem.Allocator, session_id: []const u8, params: ?std.json.Value) !Outcome {
         if (workParamsRefusal(params, "message")) |refusal| return .{ .refused = refusal };
+        if (!self.hub.knows(session_id)) {
+            if (try self.unheld(arena, session_id)) |entry| {
+                if (try self.reopenFor(arena, entry)) |refusal| return .{ .refused = refusal };
+            }
+        }
         var submitted = (try userMessage(arena, workText(params, "message").?)).object;
         try submitted.put(arena, "session_id", .{ .string = session_id });
         const controlled = try self.submitControl(arena, session_id, try self.workEnvelope(arena, "session.message.submit.request", session_id, submitted));
@@ -1040,7 +1102,29 @@ pub const Frontend = struct {
         return self.workStatus(arena, session_id);
     }
 
+    fn reopenFor(self: *Frontend, arena: std.mem.Allocator, entry: hubmod.binding.Entry) !?Refusal {
+        var open_payload = try emptyObject(arena);
+        try open_payload.put(arena, "session_id", .{ .string = entry.record.session_id });
+        try open_payload.put(arena, "reopen", .{ .bool = true });
+        var envelope = try self.workEnvelope(arena, "session.open.request", "", open_payload);
+        try envelope.object.put(arena, "session_id", .{ .string = entry.record.session_id });
+        const request = Request{
+            .id = 0,
+            .op = op_open,
+            .adapter = entry.record.adapter,
+            .payload = envelope,
+            .supplied = .{ .adapter = true, .request = true },
+        };
+        return switch (try self.openSession(arena, entry.record.adapter, request, false)) {
+            .refused => |refusal| refusal,
+            else => null,
+        };
+    }
+
     pub fn workStop(self: *Frontend, arena: std.mem.Allocator, session_id: []const u8) !Outcome {
+        if (!self.hub.knows(session_id)) {
+            if (try self.unheld(arena, session_id)) |entry| return .{ .answer = try unheldJson(arena, entry) };
+        }
         const current = self.hub.work(arena, session_id) catch |err| {
             return .{ .refused = try self.stateRefusal(arena, err, session_id) };
         };
@@ -1064,6 +1148,13 @@ pub const Frontend = struct {
         if (limit) |given| {
             if (given < 1 or given > work_read_max) return .{ .refused = .{ .code = "invalid_request", .message = std.fmt.comptimePrint("work.read: limit must be from 1 to {d}", .{work_read_max}) } };
             bound = @intCast(given);
+        }
+        if (!self.hub.knows(session_id)) {
+            if (try self.unheld(arena, session_id) != null) {
+                var empty = try emptyObject(arena);
+                try empty.put(arena, "turns", try jsonArray(arena, &.{}));
+                return .{ .answer = .{ .object = empty } };
+            }
         }
         const read = self.hub.transcript(session_id, after, bound) catch |err| {
             return .{ .refused = try self.stateRefusal(arena, err, session_id) };
@@ -3723,6 +3814,46 @@ fn fadingProbe(ptr: *anyopaque, refusal: *contract.Refusal) contract.Failure!con
     if (state.registered) return .{ .endpoint = fading_descriptor.endpoint, .capability_revision = "", .features = &.{} };
     state.registered = true;
     return fading_descriptor;
+}
+
+test "work.list shows a session serve no longer holds from its binding, live by default and closed on request, and work.status, work.read and work.stop answer it without reopening" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const cwd = try std.process.currentPathAlloc(testing.io, testing.allocator);
+    defer testing.allocator.free(cwd);
+    const path = try std.fs.path.join(testing.allocator, &.{ cwd, ".zig-cache", "tmp", tmp.sub_path[0..], "sessions.jsonl" });
+    defer testing.allocator.free(path);
+    var store = try hubmod.binding.Store.open(testing.allocator, path);
+    defer store.deinit();
+    try store.append(.{ .action = .opened, .time_ms = 10, .record = .{ .session_id = "left", .adapter = "reference", .directory = "/work/a" } });
+    try store.append(.{ .action = .opened, .time_ms = 20, .record = .{ .session_id = "ended", .adapter = "reference", .directory = "/work/a" } });
+    try store.append(.{ .action = .closed, .time_ms = 30, .record = .{ .session_id = "ended", .adapter = "reference", .directory = "/work/a" } });
+    const harness = try Harness.init(testing.allocator, .{ .bindings = &store }, .{});
+    defer harness.deinit();
+
+    try harness.send("{\"id\":1,\"op\":\"work.list\"}");
+    const live = (try harness.lastValue()).object.get("result").?.object.get("groups").?.array.items;
+    try testing.expectEqual(@as(usize, 1), live.len);
+    const only = live[0].object.get("work").?.array.items;
+    try testing.expectEqual(@as(usize, 1), only.len);
+    try testing.expectEqualStrings("left", only[0].object.get("ref").?.object.get("session_id").?.string);
+    try testing.expectEqual(false, only[0].object.get("held").?.bool);
+    try testing.expectEqualStrings("live", only[0].object.get("state").?.string);
+    try testing.expectEqualStrings("/work/a", live[0].object.get("directory").?.string);
+
+    try harness.send("{\"id\":2,\"op\":\"work.list\",\"request\":{\"include_closed\":true}}");
+    const all = (try harness.lastValue()).object.get("result").?.object.get("groups").?.array.items[0].object.get("work").?.array.items;
+    try testing.expectEqual(@as(usize, 2), all.len);
+    try testing.expectEqualStrings("ended", all[0].object.get("ref").?.object.get("session_id").?.string);
+    try testing.expectEqualStrings("closed", all[0].object.get("state").?.string);
+
+    try harness.send("{\"id\":3,\"op\":\"work.status\",\"session_id\":\"ended\"}");
+    try testing.expectEqualStrings("closed", (try harness.lastValue()).object.get("result").?.object.get("state").?.string);
+    try harness.send("{\"id\":4,\"op\":\"work.read\",\"session_id\":\"left\"}");
+    try testing.expectEqual(@as(usize, 0), (try harness.lastValue()).object.get("result").?.object.get("turns").?.array.items.len);
+    try harness.send("{\"id\":5,\"op\":\"work.stop\",\"session_id\":\"left\"}");
+    try testing.expectEqual(false, (try harness.lastValue()).object.get("result").?.object.get("held").?.bool);
+    try testing.expectEqual(@as(usize, 0), harness.hub.sessionCount());
 }
 
 test "the history op answers the store's sessions and refuses as the route does" {
