@@ -24,6 +24,7 @@ pub const Config = struct {
     model: []const u8 = "",
     resume_session_id: []const u8 = "",
     native_session_id: []const u8 = "",
+    user_settings: bool = false,
     tools: ?ToolPosture = null,
     expand_prompts: bool = false,
     frame_limit: usize = process.default_frame_limit,
@@ -44,7 +45,19 @@ pub fn spawnFor(arena: std.mem.Allocator, config: Config) !process.Spawn {
     const posture = config.tools orelse return Error.ToolPostureRequired;
 
     var argv = std.ArrayList([]const u8).empty;
-    try argv.appendSlice(arena, &fixed_argv);
+    if (config.user_settings) {
+        var index: usize = 0;
+        while (index < fixed_argv.len) : (index += 1) {
+            const argument = fixed_argv[index];
+            if (std.mem.eql(u8, argument, "--system-prompt")) {
+                index += 1;
+                continue;
+            }
+            try argv.append(arena, if (std.mem.eql(u8, argument, "--setting-sources=")) "--setting-sources=user,project,local" else argument);
+        }
+    } else {
+        try argv.appendSlice(arena, &fixed_argv);
+    }
     if (config.model.len != 0) {
         try argv.append(arena, "--model");
         try argv.append(arena, config.model);
@@ -829,4 +842,25 @@ test "the binding selects the native session in the child argv" {
     const spawn = try spawnFor(arena.allocator(), .{ .executable = "/fixture/claude", .tools = .unrestricted, .resume_session_id = "9d992266-63b1-4a69-8000-3aaf8b854e5c" });
     try std.testing.expectEqualStrings("--resume", spawn.args[spawn.args.len - 2]);
     try std.testing.expectEqualStrings("9d992266-63b1-4a69-8000-3aaf8b854e5c", spawn.args[spawn.args.len - 1]);
+}
+
+test "an adopted session runs with the user's own settings and Claude Code's own prompt" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const clean = try spawnFor(arena.allocator(), .{ .executable = "claude", .tools = .unrestricted });
+    const adopted = try spawnFor(arena.allocator(), .{ .executable = "claude", .tools = .unrestricted, .user_settings = true, .resume_session_id = "u" });
+    var clean_sources = false;
+    var clean_prompt = false;
+    for (clean.args) |argument| {
+        if (std.mem.eql(u8, argument, "--setting-sources=")) clean_sources = true;
+        if (std.mem.eql(u8, argument, "--system-prompt")) clean_prompt = true;
+    }
+    try std.testing.expect(clean_sources and clean_prompt);
+    var adopted_sources = false;
+    for (adopted.args) |argument| {
+        try std.testing.expect(!std.mem.eql(u8, argument, "--system-prompt"));
+        try std.testing.expect(!std.mem.eql(u8, argument, "--setting-sources="));
+        if (std.mem.eql(u8, argument, "--setting-sources=user,project,local")) adopted_sources = true;
+    }
+    try std.testing.expect(adopted_sources);
 }

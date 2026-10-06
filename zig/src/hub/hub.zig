@@ -112,6 +112,7 @@ pub const OpenRequest = struct {
             .tool_sources_json = self.tool_sources_json,
             .reopen = self.reopen,
             .native_session_id = native_session_id,
+            .adopted = self.adopt_native_id.len > 0,
             .reasoning_level = self.reasoning_level,
             .compaction_policy_json = self.compaction_policy_json,
         };

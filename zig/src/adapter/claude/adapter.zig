@@ -219,6 +219,7 @@ pub const Session = struct {
     flags_json: []const u8 = "",
     reported_level: ?[]const u8 = null,
     reported_policy: ?[]const u8 = null,
+    settings_arena: std.heap.ArenaAllocator,
     recovered: bool = false,
 
     fn open(owner: *Adapter, arena: std.mem.Allocator, request: contract.OpenRequest, refusal: *contract.Refusal) contract.Failure!*Session {
@@ -241,7 +242,7 @@ pub const Session = struct {
             self.flags_json = flags;
             try self.control(arena, .apply_flag_settings, owner.config.initialize_timeout_ns, refusal);
         }
-        const kept = self.reducer_arena.allocator();
+        const kept = self.settings_arena.allocator();
         if (request.reasoning_level) |level| self.reported_level = try kept.dupe(u8, level);
         if (request.compaction_policy_json) |policy| self.reported_policy = try kept.dupe(u8, policy);
         if (request.reopen) {
@@ -266,6 +267,7 @@ pub const Session = struct {
         errdefer reducer_arena.deinit();
         var config = owner.config.backend;
         config.resume_session_id = if (request.reopen) request.native_session_id else "";
+        config.user_settings = request.adopted;
         config.native_session_id = "";
         if (!request.reopen and !hasSessionSelector(config.args)) {
             var bytes: [16]u8 = undefined;
@@ -297,6 +299,7 @@ pub const Session = struct {
             .participant = participant,
             .reducer_arena = reducer_arena,
             .engine = engine,
+            .settings_arena = std.heap.ArenaAllocator.init(gpa),
         };
         return self;
     }
@@ -330,7 +333,7 @@ pub const Session = struct {
         if (self.engine.reducer.run != null) return error.RunActive;
         self.flags_json = flags;
         try self.control(arena, .apply_flag_settings, self.owner.config.control_timeout_ns, refusal);
-        const kept = self.reducer_arena.allocator();
+        const kept = self.settings_arena.allocator();
         var response = oap_types.SessionSettingsUpdateResponse{ .session_id = self.id };
         if (request.reasoning_level) |level| {
             response.previous_reasoning_level = self.reported_level;
@@ -357,6 +360,7 @@ pub const Session = struct {
         self.clearCall();
         self.reducer_arena.deinit();
         gpa.destroy(self.reducer_arena);
+        self.settings_arena.deinit();
         gpa.free(self.id);
         gpa.free(self.participant);
         gpa.destroy(self);
@@ -565,8 +569,8 @@ pub const Session = struct {
         if (applied != .object or effective != .object) return error.BackendFailed;
         const model = applied.object.get("model") orelse return error.BackendFailed;
         if (model != .string or model.string.len == 0) return error.BackendFailed;
-        const kept = self.reducer_arena.allocator();
-        self.engine.reducer.current_model = try kept.dupe(u8, model.string);
+        self.engine.reducer.current_model = try self.reducer_arena.allocator().dupe(u8, model.string);
+        const kept = self.settings_arena.allocator();
         self.reported_level = null;
         if (applied.object.get("effort")) |effort| {
             if (effort == .string) {
@@ -1041,6 +1045,29 @@ test "an open applies its effort and compaction window after initialize and repo
     probe.handle = opened;
     const written = try probe.fake.written(probe.arena.allocator());
     try testing.expect(std.mem.indexOf(u8, written, "{\"request\":{\"settings\":{\"autoCompactEnabled\":true,\"autoCompactWindow\":150000,\"effortLevel\":\"max\"},\"subtype\":\"apply_flag_settings\"},\"request_id\":\"req_2_") != null);
+    const reported = try opened.state(probe.arena.allocator(), &refusal);
+    try testing.expectEqualStrings("max", reported.reasoning_level.?);
+    try testing.expectEqualStrings("{\"kind\":\"tokens\",\"tokens\":150000}", reported.compaction_policy_json.?);
+}
+
+test "the reported effort and compaction window read back unchanged after the arena compaction that follows a run" {
+    var probe: Probe = undefined;
+    try probe.init(fake_prelude ++
+        \\take; printf '{"type":"control_response","response":{"subtype":"success","request_id":"%s","response":{}}}\n' "$(field request_id)"
+        \\
+    ++ fake_gated_turn ++ fake_idle);
+    defer probe.deinit();
+    var refusal = contract.Refusal{};
+    const opened = try probe.adapter.adapter().open(probe.arena.allocator(), .{ .session_id = "s1", .participant = "user", .reasoning_level = "max", .compaction_policy_json = "{\"kind\":\"tokens\",\"tokens\":150000}" }, &refusal);
+    probe.handle = opened;
+    const live: *Session = @ptrCast(@alignCast(opened.ptr));
+    live.engine.compact_above = 0;
+    var seen = std.ArrayList(contract.Event).empty;
+    _ = try probe.submit("one", &refusal);
+    try probe.answer(try probe.pumpUntil("user.input.requested", &seen), "allow", &refusal);
+    _ = try probe.pumpUntil("run.completed", &seen);
+    _ = try opened.pump(std.time.ns_per_ms);
+    try testing.expect(live.engine.retained > 0);
     const reported = try opened.state(probe.arena.allocator(), &refusal);
     try testing.expectEqualStrings("max", reported.reasoning_level.?);
     try testing.expectEqualStrings("{\"kind\":\"tokens\",\"tokens\":150000}", reported.compaction_policy_json.?);
