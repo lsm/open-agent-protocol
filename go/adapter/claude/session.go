@@ -37,6 +37,7 @@ type Session struct {
 	ids      base.IDGenerator
 
 	expandPrompts bool
+	turnTag       string
 
 	nativeSessionID string
 	participant     protocol.ParticipantID
@@ -160,6 +161,9 @@ func (s *Session) Submit(ctx context.Context, submit base.SubmitRequest) (protoc
 		return protocol.MessageSubmitResponse{}, nil, base.ErrRunActive
 	}
 	submissionUUID := s.ids.NewID("turn")
+	if s.turnTag != "" {
+		submissionUUID = "turn-" + s.turnTag + "-" + strings.TrimPrefix(submissionUUID, "turn-")
+	}
 	if err := native.ValidateTurnUUID(submissionUUID); err != nil {
 		s.mu.Unlock()
 		s.reduceMu.Unlock()

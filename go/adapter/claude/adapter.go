@@ -2,6 +2,8 @@ package claude
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -308,6 +310,9 @@ func (a *Adapter) Open(ctx context.Context, req base.OpenRequest) (base.Session,
 		encoded, _ := json.Marshal(nativeSessionID)
 		s.state.Metadata = map[string]json.RawMessage{"claude_native_session_id": encoded}
 	}
+	if a.processConfig != nil {
+		s.turnTag = turnTag()
+	}
 	go s.dispatch()
 	if a.initializeAtOpen {
 
@@ -378,6 +383,13 @@ func participant(p protocol.Participant) protocol.ParticipantID {
 		return p.ID
 	}
 	return "user"
+}
+
+func turnTag() string {
+	var bytes [8]byte
+	_, _ = rand.Read(bytes[:])
+	bytes[7] |= 1
+	return hex.EncodeToString(bytes[:])
 }
 
 type systemClock struct{}
