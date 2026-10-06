@@ -770,6 +770,7 @@ pub const Frontend = struct {
         }
         if (std.mem.eql(u8, request.op, op_work_read)) {
             if (try request.only(arena, work_read_parameters)) |refusal| return .{ .refused = refusal };
+            if (request.after_unreadable) return .{ .refused = .{ .code = "invalid_request", .message = "after is a whole number" } };
             return self.workRead(arena, request.session_id orelse "", request.after, request.limit);
         }
         if (std.mem.eql(u8, request.op, op_work_list)) {
@@ -3275,6 +3276,16 @@ test "work.start opens with the message and its title, work.send adds a turn, an
     const paged = (try harness.lastValue()).object.get("result").?.object.get("turns").?.array.items;
     try testing.expectEqual(@as(usize, 1), paged.len);
     try testing.expectEqual(@as(i64, 1), paged[0].object.get("index").?.integer);
+}
+
+test "work.read refuses an unreadable after and answers no turns past the largest one" {
+    const harness = try Harness.init(testing.allocator, .{}, .{});
+    defer harness.deinit();
+    try harness.send(try openLine(harness.arena(), "reference", open_envelope));
+    try harness.send("{\"id\":2,\"op\":\"work.read\",\"session_id\":\"s1\",\"after\":\"x\"}");
+    try testing.expectEqualStrings("invalid_request", try harness.code());
+    const read = try harness.hub.transcript("s1", std.math.maxInt(u64), 10);
+    try testing.expectEqual(@as(usize, 0), read.turns.len);
 }
 
 test "work.start refuses a missing message, an unknown adapter and a directory its adapter does not run in" {

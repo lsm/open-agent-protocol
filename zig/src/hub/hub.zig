@@ -834,7 +834,7 @@ pub const Hub = struct {
 
     pub fn transcript(self: *Hub, session_id: []const u8, after: ?u64, limit: usize) Failure!Transcript {
         const entry = self.findSession(session_id) orelse return error.UnknownSession;
-        const start_index: u64 = if (after) |given| given + 1 else entry.turns_dropped;
+        const start_index: u64 = if (after) |given| std.math.add(u64, given, 1) catch return .{ .first_index = entry.turns_dropped + entry.turns.items.len, .turns = &.{} } else entry.turns_dropped;
         const from: usize = if (start_index <= entry.turns_dropped) 0 else @intCast(@min(start_index - entry.turns_dropped, entry.turns.items.len));
         const to = @min(entry.turns.items.len, from + limit);
         return .{ .first_index = entry.turns_dropped + from, .turns = entry.turns.items[from..to] };
