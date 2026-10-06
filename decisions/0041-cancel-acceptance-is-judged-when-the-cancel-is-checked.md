@@ -1,6 +1,10 @@
 # Decision 0041: Cancel Acceptance Is Judged When the Cancel Is Checked
 
-Status: proposed
+Status: accepted 2026-10-06 (both validators judge the three fixtures it names,
+`core-cancel-accepted-after-natural-completion`,
+`cancel-accepted-after-late-request` and `core-cancel-late-request-refused`, from
+#463; the Go validator no longer refuses a late request; the announcement order
+it leaves open is #901)
 Date: 2026-09-28
 Protocol: `open-agent-protocol` version `0.1`
 Profile: `open-agent-protocol.agent-control-core`
