@@ -49,15 +49,19 @@ The evidence, from the ledgers:
 ### The list is the host's bindings, and only those
 
 `session.list` answers from the host's binding records: one entry per OAP
-session id whose latest binding entry is not `refused`. A harness's own list is
+session id, read from its latest entry that is not `refused`, as
+`binding.State` already reads it. A `refused` entry records a duplicate open
+the hub turned away for a session it still holds, so it says nothing about
+that session's state; a session whose only entries are `refused` is not
+listed. A harness's own list is
 **not** merged in. A harness session no binding names is not an OAP session —
 Decision 0039 makes a session OAP's, and an OAP session exists only once a host
 has opened it — so listing it would invent an identity rather than report one.
 
 An entry reports what the binding says and nothing it would have to ask a
 harness for: `session_id`, `adapter`, `harness_version` when recorded,
-`state` (`live` when the latest entry is `opened` or `reopened`, `closed` when
-it is `closed`), `updated_at_ms` (the latest entry's time), and `model` and
+`state` (`live` when that entry is `opened` or `reopened`, `closed` when it is
+`closed`), `updated_at_ms` (that entry's time), and `model` and
 `directory` when recorded. It never carries a native session id, a home
 directory, a credential or an environment value: the first two are the host's
 pointers into a harness, and the list is read by clients the host may trust less
@@ -116,8 +120,9 @@ adapter holds the records it reads.
 
 ## Open questions for review
 
-1. Should `state` include the `refused` entries a host recorded, so a client can
-   see a reopen that failed, or is omitting them right?
+1. A failed reopen records nothing today, so the list cannot show one. Should
+   it, through a new binding action, or is a failed reopen the client's to
+   remember?
 2. Is 100 the right ceiling for `limit`? It matches OpenCode's history page and
    is twice its list default.
 3. Should the hub expose this as a new route (`GET /bindings`) or widen
