@@ -7,7 +7,14 @@ const profile = "open-agent-protocol.agent-control-core";
 const request_timeout_ms: u64 = 30_000;
 const pollable = @import("builtin").os.tag != .windows;
 const max_answer_bytes: usize = 16 << 20;
+const max_idle_streams: u8 = 3;
 const lost_stream = "{\"control\":\"stream.lost\",\"message\":\"the hub stopped this run's stream before its terminal event\"}";
+
+const Followed = struct {
+    id: []u8,
+    highest: u64 = 0,
+    settled: bool = false,
+};
 
 pub const HubLink = struct {
     allocator: std.mem.Allocator,
@@ -17,7 +24,9 @@ pub const HubLink = struct {
     outbound: std.ArrayList([]u8) = .empty,
     outbound_mutex: std.atomic.Mutex = .unlocked,
     stream: ?RunStream = null,
-    settled: bool = false,
+    runs: std.ArrayList(Followed) = .empty,
+    idle_streams: u8 = 0,
+    stream_moved: bool = false,
 
     pub fn create(allocator: std.mem.Allocator, base: []const u8, adapter: []const u8) !*HubLink {
         const trimmed = std.mem.trimEnd(u8, base, "/");
@@ -33,6 +42,8 @@ pub const HubLink = struct {
     pub fn destroy(self: *HubLink) void {
         const allocator = self.allocator;
         self.dropStream();
+        for (self.runs.items) |run| allocator.free(run.id);
+        self.runs.deinit(allocator);
         for (self.outbound.items) |line| allocator.free(line);
         self.outbound.deinit(allocator);
         allocator.free(self.base);
@@ -50,12 +61,12 @@ pub const HubLink = struct {
         const root = parsed.object;
         const kind = textOf(root, "type") orelse return;
         const id = textOf(root, "id") orelse "";
-        if (std.mem.eql(u8, kind, "capabilities.request")) return self.call(a, .GET, try self.path(a, "/adapters/", self.adapter, "/capabilities"), null, id);
-        if (std.mem.eql(u8, kind, "session.open.request")) return self.call(a, .POST, try self.path(a, "/adapters/", self.adapter, "/sessions"), line, id);
-        if (std.mem.eql(u8, kind, "models.request")) return self.call(a, .GET, try self.path(a, "/sessions/", self.session_id, "/models"), null, id);
-        if (std.mem.eql(u8, kind, "session.message.submit.request") or std.mem.eql(u8, kind, "session.compact.request")) return self.call(a, .POST, try self.path(a, "/sessions/", self.session_id, "/submit"), line, id);
-        if (std.mem.eql(u8, kind, "run.cancel.request")) return self.call(a, .POST, try self.path(a, "/sessions/", self.session_id, "/cancel"), line, id);
-        if (std.mem.eql(u8, kind, "action.permission.resolve.request")) return self.call(a, .POST, try self.path(a, "/sessions/", self.session_id, "/resolve"), line, id);
+        if (std.mem.eql(u8, kind, "capabilities.request")) return self.call(a, .GET, try self.path(a, "/adapters/", self.adapter, "/capabilities"), null, id, false);
+        if (std.mem.eql(u8, kind, "session.open.request")) return self.call(a, .POST, try self.path(a, "/adapters/", self.adapter, "/sessions"), line, id, false);
+        if (std.mem.eql(u8, kind, "models.request")) return self.call(a, .GET, try self.path(a, "/sessions/", self.session_id, "/models"), null, id, false);
+        if (std.mem.eql(u8, kind, "session.message.submit.request") or std.mem.eql(u8, kind, "session.compact.request")) return self.call(a, .POST, try self.path(a, "/sessions/", self.session_id, "/submit"), line, id, std.mem.eql(u8, kind, "session.message.submit.request") and followsUp(root));
+        if (std.mem.eql(u8, kind, "run.cancel.request")) return self.call(a, .POST, try self.path(a, "/sessions/", self.session_id, "/cancel"), line, id, false);
+        if (std.mem.eql(u8, kind, "action.permission.resolve.request")) return self.call(a, .POST, try self.path(a, "/sessions/", self.session_id, "/resolve"), line, id, false);
         try self.refuse(a, id, "unsupported_feature", try std.fmt.allocPrint(a, "the hub has no route for {s}", .{kind}));
     }
 
@@ -65,6 +76,7 @@ pub const HubLink = struct {
         var moved = false;
         while (try stream.nextFrame(self.allocator)) |frame| {
             moved = true;
+            self.stream_moved = true;
             if (stream.status_ok) {
                 try self.relay(frame);
             } else {
@@ -72,11 +84,57 @@ pub const HubLink = struct {
             }
         }
         if (ended) {
+            const refused = !stream.status_ok;
+            const delivered = self.stream_moved;
             self.dropStream();
-            if (!self.settled) try self.push(lost_stream);
+            try self.streamEnded(refused, delivered);
             moved = true;
         }
         return moved;
+    }
+
+    fn streamEnded(self: *HubLink, refused: bool, delivered: bool) !void {
+        if (refused) return self.lose();
+        const next = self.nextUnsettled() orelse return;
+        self.idle_streams = if (delivered) 0 else self.idle_streams + 1;
+        if (self.idle_streams >= max_idle_streams) return self.lose();
+        var scratch = std.heap.ArenaAllocator.init(self.allocator);
+        defer scratch.deinit();
+        self.follow(scratch.allocator(), next.id, next.highest) catch return self.lose();
+    }
+
+    fn lose(self: *HubLink) !void {
+        for (self.runs.items) |*run| run.settled = true;
+        try self.push(lost_stream);
+    }
+
+    fn nextUnsettled(self: *HubLink) ?*Followed {
+        for (self.runs.items) |*run| {
+            if (!run.settled) return run;
+        }
+        return null;
+    }
+
+    fn findRun(self: *HubLink, run_id: []const u8) ?*Followed {
+        for (self.runs.items) |*run| {
+            if (std.mem.eql(u8, run.id, run_id)) return run;
+        }
+        return null;
+    }
+
+    fn track(self: *HubLink, run_id: []const u8) !void {
+        if (self.findRun(run_id) != null) return;
+        var index: usize = 0;
+        while (index < self.runs.items.len) {
+            if (self.runs.items[index].settled) {
+                self.allocator.free(self.runs.orderedRemove(index).id);
+            } else {
+                index += 1;
+            }
+        }
+        const owned = try self.allocator.dupe(u8, run_id);
+        errdefer self.allocator.free(owned);
+        try self.runs.append(self.allocator, .{ .id = owned });
     }
 
     pub fn closeSession(self: *HubLink) void {
@@ -98,7 +156,7 @@ pub const HubLink = struct {
         return self.outbound.orderedRemove(0);
     }
 
-    fn call(self: *HubLink, a: std.mem.Allocator, method: compat.http.Method, target: []const u8, body: ?[]const u8, id: []const u8) !void {
+    fn call(self: *HubLink, a: std.mem.Allocator, method: compat.http.Method, target: []const u8, body: ?[]const u8, id: []const u8, follow_up: bool) !void {
         const url = try std.fmt.allocPrint(a, "{s}{s}", .{ self.base, target });
         const headers = [_]std.http.Header{ .{ .name = "Content-Type", .value = "application/json" }, .{ .name = "Accept", .value = "application/json" } };
         var fetched = compat.http.fetch(self.allocator, url, .{
@@ -113,7 +171,7 @@ pub const HubLink = struct {
             return self.refuse(a, id, "hub_unreadable", try std.fmt.allocPrint(a, "the hub answered {d} with a body that is not an envelope", .{fetched.status}));
         };
         if (answer != .object) return self.refuse(a, id, "hub_unreadable", "the hub answered with a body that is not an envelope");
-        if (try self.queuedBehind(a, answer.object, id)) return;
+        if (try self.queuedBehind(a, answer.object, id, follow_up)) return;
         try self.observe(a, answer.object);
         var correlated = answer.object;
         try correlated.put(a, "in_reply_to", .{ .string = id });
@@ -132,16 +190,22 @@ pub const HubLink = struct {
         }
         if (std.mem.eql(u8, kind, "session.message.submit.response") or std.mem.eql(u8, kind, "session.compact.response")) {
             const run_id = textOf(body, "run_id") orelse return;
-            if (!std.mem.eql(u8, textOf(body, "admission") orelse "", "started")) return;
-            try self.follow(a, run_id);
+            const admission = textOf(body, "admission") orelse "";
+            if (std.mem.eql(u8, admission, "queued")) return self.track(run_id);
+            if (!std.mem.eql(u8, admission, "started")) return;
+            for (self.runs.items) |*run| run.settled = true;
+            try self.track(run_id);
+            self.idle_streams = 0;
+            try self.follow(a, run_id, 0);
         }
     }
 
-    fn queuedBehind(self: *HubLink, a: std.mem.Allocator, answer: std.json.ObjectMap, id: []const u8) !bool {
+    fn queuedBehind(self: *HubLink, a: std.mem.Allocator, answer: std.json.ObjectMap, id: []const u8, follow_up: bool) !bool {
         const replied = textOf(answer, "type") orelse "";
         if (!std.mem.eql(u8, replied, "session.message.submit.response") and !std.mem.eql(u8, replied, "session.compact.response")) return false;
         const body = if (answer.get("payload")) |value| (if (value == .object) value.object else return false) else return false;
         if (!std.mem.eql(u8, textOf(body, "admission") orelse "", "queued")) return false;
+        if (follow_up and self.nextUnsettled() != null) return false;
         if (textOf(body, "run_id")) |run_id| {
             var cancel_payload: std.json.ObjectMap = .empty;
             try cancel_payload.put(a, "session_id", .{ .string = self.session_id });
@@ -168,13 +232,13 @@ pub const HubLink = struct {
         return true;
     }
 
-    fn follow(self: *HubLink, a: std.mem.Allocator, run_id: []const u8) !void {
+    fn follow(self: *HubLink, a: std.mem.Allocator, run_id: []const u8, after: u64) !void {
         self.dropStream();
         const escaped_run = try escapeSegment(a, run_id);
         const target = try self.path(a, "/sessions/", self.session_id, "/events");
-        const request_target = try std.fmt.allocPrint(a, "{s}?after=0&run_id={s}", .{ target, escaped_run });
+        const request_target = try std.fmt.allocPrint(a, "{s}?after={d}&run_id={s}", .{ target, after, escaped_run });
         self.stream = try RunStream.open(a, self.base, request_target);
-        self.settled = false;
+        self.stream_moved = false;
     }
 
     fn dropStream(self: *HubLink) void {
@@ -189,13 +253,15 @@ pub const HubLink = struct {
         const parsed = std.json.parseFromSliceLeaky(std.json.Value, a, data, .{}) catch return;
         if (parsed != .object) return;
         if (textOf(parsed.object, "type")) |kind| {
-            if (std.mem.eql(u8, kind, "run.completed") or std.mem.eql(u8, kind, "run.failed") or std.mem.eql(u8, kind, "run.cancelled")) self.settled = true;
+            const run_id = textOf(parsed.object, "run_id") orelse return self.push(data);
+            const run = self.findRun(run_id) orelse return;
+            const sequence: u64 = if (parsed.object.get("sequence")) |value| (if (value == .integer and value.integer > 0) @intCast(value.integer) else 0) else 0;
+            if (sequence > 0 and sequence <= run.highest) return;
+            if (sequence > run.highest) run.highest = sequence;
+            if (std.mem.eql(u8, kind, "run.completed") or std.mem.eql(u8, kind, "run.failed") or std.mem.eql(u8, kind, "run.cancelled")) run.settled = true;
             return self.push(data);
         }
-        if (parsed.object.get("last_sequence") != null or parsed.object.get("oldest_available") != null) {
-            self.settled = true;
-            try self.push(lost_stream);
-        }
+        if (parsed.object.get("last_sequence") != null or parsed.object.get("oldest_available") != null) try self.lose();
     }
 
     fn refuse(self: *HubLink, a: std.mem.Allocator, id: []const u8, code: []const u8, message: []const u8) !void {
@@ -320,6 +386,12 @@ fn dialTarget(authority: []const u8) !Dialed {
     return .{ .host = host, .port = port };
 }
 
+fn followsUp(root: std.json.ObjectMap) bool {
+    const payload = root.get("payload") orelse return false;
+    if (payload != .object) return false;
+    return std.mem.eql(u8, textOf(payload.object, "delivery") orelse "", "queue");
+}
+
 fn textOf(object: std.json.ObjectMap, key: []const u8) ?[]const u8 {
     const value = object.get(key) orelse return null;
     return if (value == .string) value.string else null;
@@ -359,7 +431,6 @@ test "a bracketed IPv6 hub address is dialled without its brackets" {
     try testing.expectEqualStrings("127.0.0.1", v4.host);
     try testing.expectError(error.HubUrlNeedsPort, dialTarget("[::1]"));
 }
-
 
 test "an events stream the hub refuses still ends the turn with a lost stream" {
     if (comptime !pollable) return error.SkipZigTest;
@@ -484,4 +555,109 @@ test "a compaction the hub queues behind a run is withdrawn and refused, not lef
     defer testing.allocator.free(answer);
     try testing.expect(std.mem.indexOf(u8, answer, "session_busy") != null);
     try testing.expect(std.mem.indexOf(u8, answer, "\"in_reply_to\":\"compact-1\"") != null);
+}
+
+const QueueHub = struct {
+    listener: compat.net.Server,
+    targets: [4][128]u8 = undefined,
+    lengths: [4]usize = .{ 0, 0, 0, 0 },
+    first_events: []const u8,
+    second_events: []const u8,
+
+    fn take(self: *QueueHub, index: usize) ?compat.net.Connection {
+        var served = compat.net.accept(&self.listener) catch return null;
+        var buffer: [8192]u8 = undefined;
+        var filled: usize = 0;
+        while (std.mem.indexOf(u8, buffer[0..filled], "\r\n\r\n") == null) {
+            const count = served.stream.readSome(buffer[filled..]) catch return null;
+            if (count == 0) break;
+            filled += count;
+        }
+        if (std.mem.indexOf(u8, buffer[0..filled], "Content-Length: ")) |at| {
+            const head_end = std.mem.indexOf(u8, buffer[0..filled], "\r\n\r\n").? + 4;
+            const length_end = std.mem.indexOfScalarPos(u8, buffer[0..filled], at, '\r').?;
+            const length = std.fmt.parseInt(usize, buffer[at + "Content-Length: ".len .. length_end], 10) catch 0;
+            while (filled < head_end + length) {
+                const count = served.stream.readSome(buffer[filled..]) catch return null;
+                if (count == 0) break;
+                filled += count;
+            }
+        }
+        const line_end = std.mem.indexOf(u8, buffer[0..filled], "\r\n") orelse return null;
+        @memcpy(self.targets[index][0..line_end], buffer[0..line_end]);
+        self.lengths[index] = line_end;
+        return served;
+    }
+
+    fn answer(served: *compat.net.Connection, body: []const u8) void {
+        var head: [128]u8 = undefined;
+        served.stream.writeAll(std.fmt.bufPrint(&head, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {d}\r\nConnection: close\r\n\r\n", .{body.len}) catch return) catch return;
+        served.stream.writeAll(body) catch return;
+        served.stream.close();
+    }
+
+    fn serve(self: *QueueHub) void {
+        var started = self.take(0) orelse return;
+        answer(&started, "{" ++ envelope_head ++ ",\"type\":\"session.message.submit.response\",\"id\":\"hub-1\",\"payload\":{\"session_id\":\"s1\",\"accepted\":true,\"admission\":\"started\",\"run_id\":\"run-1\",\"status\":\"running\"}}");
+        var first = self.take(1) orelse return;
+        first.stream.writeAll("HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\n\r\n") catch return;
+        var queued = self.take(2) orelse return;
+        answer(&queued, "{" ++ envelope_head ++ ",\"type\":\"session.message.submit.response\",\"id\":\"hub-2\",\"payload\":{\"session_id\":\"s1\",\"accepted\":true,\"admission\":\"queued\",\"run_id\":\"run-2\",\"status\":\"queued\"}}");
+        first.stream.writeAll(self.first_events) catch return;
+        first.stream.close();
+        var second = self.take(3) orelse return;
+        second.stream.writeAll("HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\n\r\n") catch return;
+        second.stream.writeAll(self.second_events) catch return;
+        second.stream.close();
+    }
+
+    fn target(self: *const QueueHub, index: usize) []const u8 {
+        return self.targets[index][0..self.lengths[index]];
+    }
+};
+
+fn runEvent(comptime kind: []const u8, comptime run_id: []const u8, comptime sequence: []const u8) []const u8 {
+    return "data: {" ++ envelope_head ++ ",\"type\":\"" ++ kind ++ "\",\"id\":\"e-" ++ run_id ++ "-" ++ sequence ++ "\",\"session_id\":\"s1\",\"run_id\":\"" ++ run_id ++ "\",\"sequence\":" ++ sequence ++ ",\"payload\":{}}\n\n";
+}
+
+const queue_first_events = runEvent("run.started", "run-1", "1") ++ runEvent("run.started", "run-other", "1") ++ runEvent("run.completed", "run-1", "2");
+const queue_second_events = runEvent("run.started", "run-2", "1") ++ runEvent("run.started", "run-2", "1") ++ runEvent("run.completed", "run-2", "2");
+
+test "a follow-up the hub queues behind this terminal's run is followed once that run ends, without another run's events or a repeat" {
+    if (comptime !pollable) return error.SkipZigTest;
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    var fake = QueueHub{
+        .listener = try compat.net.tcpListen(try compat.net.resolveAddress(a, "127.0.0.1", 0), .{ .reuse_address = true }),
+        .first_events = queue_first_events,
+        .second_events = queue_second_events,
+    };
+    defer compat.net.closeServer(&fake.listener);
+    const base = try std.fmt.allocPrint(a, "http://127.0.0.1:{d}", .{compat.net.listenAddress(&fake.listener).getPort()});
+    const thread = try std.Thread.spawn(.{}, QueueHub.serve, .{&fake});
+    const link = try HubLink.create(testing.allocator, base, "memory");
+    defer link.destroy();
+    link.session_id = try testing.allocator.dupe(u8, "s1");
+    try link.handleLine("{" ++ envelope_head ++ ",\"type\":\"session.message.submit.request\",\"id\":\"submit-1\",\"session_id\":\"s1\",\"payload\":{\"session_id\":\"s1\",\"delivery\":\"auto\"}}");
+    try link.handleLine("{" ++ envelope_head ++ ",\"type\":\"session.message.submit.request\",\"id\":\"queue-1\",\"session_id\":\"s1\",\"payload\":{\"session_id\":\"s1\",\"delivery\":\"queue\"}}");
+    var rounds: usize = 0;
+    while (link.nextUnsettled() != null and rounds < 400) : (rounds += 1) {
+        _ = try link.pump();
+        compat.time.sleepMs(5);
+    }
+    thread.join();
+    try testing.expectEqualStrings("GET /sessions/s1/events?after=0&run_id=run-1 HTTP/1.1", fake.target(1));
+    try testing.expectEqualStrings("POST /sessions/s1/submit HTTP/1.1", fake.target(2));
+    try testing.expectEqualStrings("GET /sessions/s1/events?after=0&run_id=run-2 HTTP/1.1", fake.target(3));
+    const expected = [_][]const u8{ "\"in_reply_to\":\"submit-1\"", "\"in_reply_to\":\"queue-1\"", "\"id\":\"e-run-1-1\"", "\"id\":\"e-run-1-2\"", "\"id\":\"e-run-2-1\"", "\"id\":\"e-run-2-2\"" };
+    for (expected) |needle| {
+        const line = link.popOutbound() orelse return error.TestLineMissing;
+        defer testing.allocator.free(line);
+        if (std.mem.indexOf(u8, line, needle) == null) {
+            std.debug.print("wanted {s} in {s}\n", .{ needle, line });
+            return error.TestLineOutOfOrder;
+        }
+    }
+    try testing.expect(link.popOutbound() == null);
 }

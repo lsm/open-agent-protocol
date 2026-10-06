@@ -25,9 +25,12 @@ replaces the TUI's estimate only for a run with one assistant message; a run tha
 before a tool call keeps the per-message estimates rather than counting its tokens twice.
 A follow-up queued during a turn is submitted with `delivery: "queue"`, and the turn stays
 open until each reservation has been promoted and run, so it reads as one turn as it does
-locally; clearing the queue or aborting cancels the reservations. A session attached to a
-hub refuses a follow-up locally, because the hub link withdraws any queued admission as
-`session_busy`. `/compact` sends `session.compact.request` and `/autocompact`
+locally; clearing the queue or aborting cancels the reservations. Over `--attach` the hub
+link follows each run this terminal submitted, one stream at a time: when the followed run
+ends it subscribes to the next queued one from its last delivered sequence, drops events of
+runs it did not submit, and ends the turn with a lost stream after three streams in a row
+deliver nothing. A queued admission that is not a follow-up behind its own run is still
+withdrawn and refused `session_busy`. `/compact` sends `session.compact.request` and `/autocompact`
 sends its setting as the session's `compaction_policy` before each turn, when the
 endpoint advertises them; the TUI's attach link (`zig/src/tui/hub_link.zig`) sends
 the compaction to the hub's submit route and follows the run it starts, and the

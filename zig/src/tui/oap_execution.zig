@@ -329,7 +329,6 @@ pub const OapExecution = struct {
 
     fn followUp(ctx: *anyopaque, text: []const u8) anyerror!void {
         const self = cast(ctx);
-        if (self.hub != null) return error.UnavailableOverOap;
         if (self.compacting) return error.CompactionInProgress;
         var scratch = std.heap.ArenaAllocator.init(self.allocator);
         defer scratch.deinit();
@@ -2070,12 +2069,16 @@ test "a follow-up is refused once the turn is cancelling or closed, rather than 
     try testing.expectEqual(@as(usize, 0), execution.queued_runs.items.len);
 }
 
-test "a follow-up on a hub-attached session is refused locally, so the composer keeps it" {
+test "a follow-up on a hub-attached session is sent to the hub as a queued submit" {
     const execution = try OapExecution.attach(testing.allocator, "http://127.0.0.1:1", "memory");
     defer execution.destroy();
     execution.turn_open.store(true, .release);
-    try testing.expectError(error.UnavailableOverOap, OapExecution.followUp(execution, "later"));
-    try testing.expectEqual(@as(usize, 0), execution.queued_runs.items.len);
+    try OapExecution.followUp(execution, "later");
+    try testing.expectEqual(@as(usize, 1), execution.queued_runs.items.len);
+    try testing.expectEqual(@as(usize, 1), execution.inbound.items.len);
+    const sent = execution.inbound.items[0];
+    try testing.expect(std.mem.indexOf(u8, sent, "\"delivery\":\"queue\"") != null);
+    try testing.expect(std.mem.indexOf(u8, sent, execution.queued_runs.items[0].submit_id) != null);
 }
 
 test "a held turn ends when the endpoint refuses the last reservation it waits on" {
