@@ -71,8 +71,12 @@ and a journal. Two other kinds of entry appear in `work.list` and carry **no
 - **Native:** a harness session no binding names (0047 decision 2). It carries
   `native_id` and whatever the harness's own list says, nothing projected.
 
-`work.status` answers only a held session; for any other it refuses
-`unknown_session`, as `state` does.
+`work.status`, `work.read` and `work.stop` answer an unheld entry from the
+history (its `held: false` entry, no turns, nothing to stop) without starting
+a harness. `work.send` reopens it through its binding (0040) and then submits,
+so a reference survives a restart of `serve`; an adapter without
+`session.open.reopen` refuses that, as an open would. A native entry is
+refused `unknown_session` by every verb until adoption lands.
 
 ## Operations
 
