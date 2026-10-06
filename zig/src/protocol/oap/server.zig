@@ -427,7 +427,8 @@ pub const Server = struct {
         }
 
         var env = oap_envelope.deserializeEnvelope(line, self.allocator) catch |err| {
-            try self.emitDecodeError(err, declared_id);
+            const declared_type = if (parsed.value.object.get("type")) |value| (if (value == .string) value.string else "") else "";
+            try self.emitDecodeError(err, declared_id, declared_type);
             return;
         };
         defer env.deinit(self.allocator);
@@ -453,7 +454,16 @@ pub const Server = struct {
         try self.outbound.append(self.allocator, line);
     }
 
-    fn emitDecodeError(self: *Self, err: anyerror, in_reply_to: ?[]const u8) !void {
+    fn emitDecodeError(self: *Self, err: anyerror, in_reply_to: ?[]const u8, declared_type: []const u8) !void {
+        if (err == oap_envelope.DecodeError.UnknownEnvelopeType) {
+            if (stagedFeature(declared_type)) |feature| {
+                try self.pushError(in_reply_to, null, null, oap_types.EmittedErrorCode.unsupported_feature.text(), "this endpoint does not advertise this staged feature", &.{
+                    .{ .key = "feature", .value = feature },
+                    .{ .key = "reason", .value = "unadvertised" },
+                });
+                return;
+            }
+        }
         const message = switch (err) {
             oap_envelope.DecodeError.ProtocolMismatch => "envelope protocol is not open-agent-protocol",
             oap_envelope.DecodeError.VersionMismatch => "envelope version is not 0.1",
@@ -3284,6 +3294,23 @@ test "unconfigured provider attachment receives a named optional-feature refusal
     try std.testing.expectEqualStrings("action.providers.attach", reply.payload.error_response.detail("feature").?);
 }
 
+test "a session list draws a refusal naming session.list, which this endpoint does not advertise" {
+    const allocator = std.testing.allocator;
+    var server = try Server.init(allocator, .{});
+    defer server.deinit();
+
+    try server.handleLine(
+        "{\"protocol\":\"open-agent-protocol\",\"version\":\"0.1\",\"profile\":\"" ++ oap_types.PROFILE ++
+            "\",\"type\":\"session.list.request\",\"id\":\"list\",\"payload\":{}}",
+    );
+    var reply = try nextEnvelope(&server, allocator);
+    defer reply.deinit(allocator);
+    try std.testing.expectEqualStrings("list", reply.in_reply_to.?);
+    try std.testing.expectEqualStrings("unsupported_feature", reply.payload.error_response.code);
+    try std.testing.expectEqualStrings("session.list", reply.payload.error_response.detail("feature").?);
+    try std.testing.expectEqualStrings("unadvertised", reply.payload.error_response.detail("reason").?);
+}
+
 test "a full conversation drives the endpoint end to end over lines" {
     const allocator = std.testing.allocator;
     var server = try Server.init(allocator, .{ .default_model_id = "anthropic/anthropic-messages@m" });
@@ -3476,4 +3503,9 @@ test "an open and a live update set the session's reasoning level, report it, an
     defer refused_open.deinit(allocator);
     try std.testing.expectEqualStrings("unsupported_feature", refused_open.payload.error_response.code);
     try std.testing.expect(server.sessions.getPtr("t") == null);
+}
+
+fn stagedFeature(declared_type: []const u8) ?[]const u8 {
+    if (std.mem.eql(u8, declared_type, "session.list.request")) return "session.list";
+    return null;
 }

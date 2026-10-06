@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	base "github.com/lsm/open-agent-protocol/go/adapter"
+	"github.com/lsm/open-agent-protocol/go/binding"
 	"github.com/lsm/open-agent-protocol/go/protocol"
 	"github.com/lsm/open-agent-protocol/go/serve"
 )
@@ -114,6 +115,8 @@ func (s *Server) serve(ctx context.Context, streams context.Context, e protocol.
 		return plain(s.resolve(ctx, e))
 	case protocol.TypeModelsRequest:
 		return plain(s.models(ctx, e))
+	case protocol.TypeSessionListRequest:
+		return plain(s.sessionList(ctx, e))
 	case protocol.TypeActionToolsListRequest:
 		return plain(s.tools(ctx, e))
 	}
@@ -185,6 +188,14 @@ func (s *Server) capabilities(ctx context.Context, e protocol.Envelope) (protoco
 		return protocol.Envelope{}, err
 	}
 	capabilities := descriptor.Capabilities
+	if s.hub.Binding() != nil {
+		features := make(map[string]protocol.FeatureSupport, len(capabilities.Features)+1)
+		for key, support := range capabilities.Features {
+			features[key] = support
+		}
+		features[protocol.FeatureSessionList] = protocol.FeatureSupport{Level: protocol.SupportEmulated, Reason: "listed from the session history this endpoint's hub keeps"}
+		capabilities.Features = features
+	}
 	if len(capabilities.Bindings) == 0 {
 		capabilities.Bindings = []protocol.Binding{{Kind: "stdio", Serialization: "jsonl"}}
 	}
@@ -577,6 +588,38 @@ func (s *Server) models(ctx context.Context, e protocol.Envelope) (protocol.Enve
 	answer.InReplyTo = e.ID
 	answer.SessionID = entry.ID()
 	answer.CapabilityRevision = catalog.Revision
+	return answer, nil
+}
+
+func (s *Server) sessionList(ctx context.Context, e protocol.Envelope) (protocol.Envelope, error) {
+	var request protocol.SessionListRequest
+	if err := e.DecodePayload(&request); err != nil {
+		return protocol.Envelope{}, &refusal{code: "invalid_payload", message: err.Error()}
+	}
+	if s.hub.Binding() == nil {
+		return protocol.Envelope{}, &refusal{code: "unsupported_feature", message: serve.ErrNoSessionHistory.Error(), details: map[string]any{
+			"feature": protocol.FeatureSessionList, "reason": base.ControlUnadvertised,
+		}}
+	}
+	descriptor, err := s.hub.Probe(ctx, s.adapter)
+	if err != nil {
+		return protocol.Envelope{}, err
+	}
+	page, err := s.hub.SessionHistory(ctx, request.Cursor, request.Limit)
+	switch {
+	case errors.Is(err, binding.ErrInvalidCursor):
+		return protocol.Envelope{}, &refusal{code: "invalid_cursor", message: err.Error()}
+	case errors.Is(err, binding.ErrInvalidLimit):
+		return protocol.Envelope{}, &refusal{code: "invalid_request", message: err.Error()}
+	case err != nil:
+		return protocol.Envelope{}, &refusal{code: "history_failed", message: "the session history could not be read"}
+	}
+	answer, err := protocol.NewEnvelope(protocol.TypeSessionListResponse, s.nextID("response"), page)
+	if err != nil {
+		return protocol.Envelope{}, err
+	}
+	answer.InReplyTo = e.ID
+	answer.CapabilityRevision = descriptor.CapabilityRevision
 	return answer, nil
 }
 
