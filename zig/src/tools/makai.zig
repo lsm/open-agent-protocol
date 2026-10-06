@@ -1421,8 +1421,11 @@ const HubRegistry = struct {
     surface: ConfigSurface,
     production: ?*tui_app.ProductionRuntime = null,
     memories: std.ArrayList(*memory_adapter.Adapter) = .empty,
+    claudes: std.ArrayList(*claude_adapter.Adapter) = .empty,
 
     fn deinit(self: *HubRegistry) void {
+        for (self.claudes.items) |claude| claude.deinit();
+        self.claudes.deinit(self.allocator);
         if (self.production) |production| {
             production.deinit();
             self.allocator.destroy(production);
@@ -1448,6 +1451,7 @@ const HubRegistry = struct {
             const config = claudeBackendConfig(self.surface, arena, entry, self.environ) catch |failure| return self.reported(failure);
             const built = try arena.create(claude_adapter.Adapter);
             built.* = claude_adapter.Adapter.init(self.allocator, config);
+            try self.claudes.append(self.allocator, built);
             return built.adapter();
         }
         if (std.mem.eql(u8, entry.kind, "codex")) {
@@ -9645,6 +9649,7 @@ test "the hub's registry refuses an entry of a type it does not know, naming the
     var diagnostic = adapter_config.Diagnostic{};
     const file = try adapter_config.parse(arena, "{\"adapters\":{\"ghost\":{\"type\":\"ghost\"}}}", &environ, &diagnostic);
     var registry = HubRegistry{ .allocator = allocator, .environ = &environ, .surface = withSurface(hub_config_surface, arena, complained_on) };
+    defer registry.deinit();
     try std.testing.expectError(error.Unavailable, HubRegistry.build(&registry, arena, file.adapter("ghost").?));
     complained_on.close(std.testing.io);
     const complained = try tmp.dir.readFileAlloc(std.testing.io, "stderr", allocator, .limited(4096));
@@ -9665,6 +9670,7 @@ test "the hub's registry reports a known adapter's own requirement once, not as 
     var diagnostic = adapter_config.Diagnostic{};
     const file = try adapter_config.parse(arena, "{\"adapters\":{\"a\":{\"type\":\"opencode\"}}}", &environ, &diagnostic);
     var registry = HubRegistry{ .allocator = allocator, .environ = &environ, .surface = withSurface(hub_config_surface, arena, complained_on) };
+    defer registry.deinit();
     try std.testing.expectError(error.Unavailable, HubRegistry.build(&registry, arena, file.adapter("a").?));
     complained_on.close(std.testing.io);
     const complained = try tmp.dir.readFileAlloc(std.testing.io, "stderr", allocator, .limited(4096));
@@ -9691,6 +9697,7 @@ test "two entries of one type are two adapters, each with its own executable" {
     var diagnostic = adapter_config.Diagnostic{};
     const file = try adapter_config.parse(arena, document, &environ, &diagnostic);
     var registry = HubRegistry{ .allocator = allocator, .environ = &environ, .surface = withSurface(hub_config_surface, arena, complained_on) };
+    defer registry.deinit();
 
     const first = try HubRegistry.build(&registry, arena, file.adapter("first").?);
     const second = try HubRegistry.build(&registry, arena, file.adapter("second").?);

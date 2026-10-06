@@ -121,6 +121,12 @@ pub const Daemon = struct {
             .adapters => self.listing(arena, try self.frontend.adapters(arena)),
             .sessions => self.listing(arena, try self.frontend.sessions(arena)),
             .history => self.history(arena, request.split.query),
+            .work_list => self.outcome(arena, try self.frontend.workList(arena, .{ .include_closed = try self.queryFlag(arena, request.split.query, "include_closed"), .include_native = try self.queryFlag(arena, request.split.query, "include_native") }), .{}),
+            .work_status => |id| self.outcome(arena, try self.frontend.workStatus(arena, id), .{ .session_id = id }),
+            .work_start => |name| self.workStart(arena, name, request.body),
+            .work_send => |id| self.workSend(arena, id, request.body),
+            .work_stop => |id| self.outcome(arena, try self.frontend.workStop(arena, id), .{ .session_id = id }),
+            .work_read => |id| self.workRead(arena, id, request.split.query),
             .capabilities => |name| self.outcome(arena, try self.frontend.capabilities(arena, name), .{}),
             .state => |id| self.outcome(arena, try self.frontend.state(arena, id), .{ .session_id = id }),
             .models => |id| self.outcome(arena, try self.frontend.models(arena, id, try queryValues(arena, request.split.query, "allow_degraded")), .{ .session_id = id }),
@@ -206,6 +212,30 @@ pub const Daemon = struct {
             .supplied = .{ .adapter = true, .request = true },
         };
         return self.outcome(arena, try self.frontend.openSession(arena, name, request, true), correlation);
+    }
+
+    fn queryFlag(self: *Daemon, arena: std.mem.Allocator, query: []const u8, name: []const u8) !bool {
+        _ = self;
+        const given = (try queryValue(arena, query, name)) orelse return false;
+        return std.mem.eql(u8, given, "true") or std.mem.eql(u8, given, "1");
+    }
+
+    fn workStart(self: *Daemon, arena: std.mem.Allocator, name: []const u8, body: []const u8) !Reply {
+        const value = parseBody(arena, body) orelse return self.refusal(arena, malformed, .{});
+        return self.outcome(arena, try self.frontend.workStart(arena, name, value), .{});
+    }
+
+    fn workSend(self: *Daemon, arena: std.mem.Allocator, id: []const u8, body: []const u8) !Reply {
+        const value = parseBody(arena, body) orelse return self.refusal(arena, malformed, .{});
+        return self.outcome(arena, try self.frontend.workSend(arena, id, value), .{ .session_id = id });
+    }
+
+    fn workRead(self: *Daemon, arena: std.mem.Allocator, id: []const u8, query: []const u8) !Reply {
+        var after: ?u64 = null;
+        if (try queryValue(arena, query, "after")) |text| after = std.fmt.parseInt(u64, text, 10) catch return self.refusal(arena, .{ .code = "invalid_request", .message = "after is a whole number" }, .{ .session_id = id });
+        var limit: ?i64 = null;
+        if (try queryValue(arena, query, "limit")) |text| limit = std.fmt.parseInt(i64, text, 10) catch 0;
+        return self.outcome(arena, try self.frontend.workRead(arena, id, after, limit), .{ .session_id = id });
     }
 
     fn submit(self: *Daemon, arena: std.mem.Allocator, id: []const u8, body: []const u8) !Reply {

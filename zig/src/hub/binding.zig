@@ -20,6 +20,7 @@ pub const Record = struct {
     reasoning_level: []const u8 = "",
     compaction_policy: ?CompactionPolicy = null,
     tool_source_ids: []const []const u8 = &.{},
+    adopted: bool = false,
 };
 
 pub const Entry = struct {
@@ -41,6 +42,7 @@ const WireRecord = struct {
     reasoning_level: ?[]const u8 = null,
     compaction_policy: ?CompactionPolicy = null,
     tool_source_ids: ?[]const []const u8 = null,
+    adopted: ?bool = null,
 };
 
 const WireEntry = struct {
@@ -68,6 +70,7 @@ pub fn encode(allocator: std.mem.Allocator, entry: Entry) ![]u8 {
             .reasoning_level = present(entry.record.reasoning_level),
             .compaction_policy = entry.record.compaction_policy,
             .tool_source_ids = if (entry.record.tool_source_ids.len > 0) entry.record.tool_source_ids else null,
+            .adopted = if (entry.record.adopted) true else null,
         },
     };
     const payload = try std.json.Stringify.valueAlloc(allocator, wire, .{ .emit_null_optional_fields = false });
@@ -104,6 +107,7 @@ pub fn decode(arena: std.mem.Allocator, line: []const u8) !Entry {
             .reasoning_level = wire.record.reasoning_level orelse "",
             .compaction_policy = wire.record.compaction_policy,
             .tool_source_ids = wire.record.tool_source_ids orelse &.{},
+            .adopted = wire.record.adopted orelse false,
         },
     };
 }

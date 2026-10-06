@@ -130,6 +130,7 @@ pub const OpenRequest = struct {
     tool_sources_json: ?[]const u8 = null,
     reopen: bool = false,
     native_session_id: []const u8 = "",
+    adopted: bool = false,
     reasoning_level: ?[]const u8 = null,
     compaction_policy_json: ?[]const u8 = null,
 };
@@ -260,6 +261,20 @@ pub const Session = struct {
     }
 };
 
+pub const NativeSession = struct {
+    native_id: []const u8,
+    title: []const u8 = "",
+    directory: []const u8 = "",
+    updated_at_ms: i64 = 0,
+    running: bool = false,
+    link: []const u8 = "",
+};
+
+pub const NativeListRequest = struct {
+    directory: []const u8 = "",
+    limit: usize = 50,
+};
+
 pub const Adapter = struct {
     ptr: *anyopaque,
     vtable: *const VTable,
@@ -267,7 +282,20 @@ pub const Adapter = struct {
     pub const VTable = struct {
         probe: *const fn (ptr: *anyopaque, refusal: *Refusal) Failure!Descriptor,
         open: *const fn (ptr: *anyopaque, arena: std.mem.Allocator, request: OpenRequest, refusal: *Refusal) Failure!Session,
+        native_list: ?*const fn (ptr: *anyopaque, arena: std.mem.Allocator, request: NativeListRequest, refusal: *Refusal) Failure![]const NativeSession = null,
+        native_link: ?*const fn (ptr: *anyopaque, arena: std.mem.Allocator, native_id: []const u8) std.mem.Allocator.Error![]const u8 = null,
     };
+
+    pub fn nativeLink(self: Adapter, arena: std.mem.Allocator, native_id: []const u8) std.mem.Allocator.Error![]const u8 {
+        if (native_id.len == 0) return "";
+        const linked = self.vtable.native_link orelse return "";
+        return linked(self.ptr, arena, native_id);
+    }
+
+    pub fn nativeList(self: Adapter, arena: std.mem.Allocator, request: NativeListRequest, refusal: *Refusal) ?Failure![]const NativeSession {
+        const listed = self.vtable.native_list orelse return null;
+        return listed(self.ptr, arena, request, refusal);
+    }
 
     pub fn probe(self: Adapter, refusal: *Refusal) Failure!Descriptor {
         return self.vtable.probe(self.ptr, refusal);

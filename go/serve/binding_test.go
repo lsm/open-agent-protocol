@@ -519,3 +519,32 @@ func TestAnOpenRecordsTheSettingsItAskedFor(t *testing.T) {
 		t.Fatalf("record = %+v, want the reasoning level and compaction policy the open asked for", entry.Record)
 	}
 }
+
+func TestAShutdownLeavesItsSessionsLiveInTheHistoryAndAClientCloseDoesNot(t *testing.T) {
+	store, err := binding.File(filepath.Join(t.TempDir(), "bindings.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	hub := boundHub(t, serve.Options{Bindings: store})
+	ctx := context.Background()
+	if _, _, err := hub.Open(ctx, "memory", openRequestFor("kept")); err != nil {
+		t.Fatal(err)
+	}
+	dropped, _, err := hub.Open(ctx, "memory", openRequestFor("dropped"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := dropped.Close(ctx); err != nil {
+		t.Fatal(err)
+	}
+	hub.CloseSessions(ctx)
+	for id, want := range map[string]binding.Action{"kept": binding.ActionOpened, "dropped": binding.ActionClosed} {
+		entry, found, err := store.Latest(ctx, id)
+		if err != nil || !found {
+			t.Fatalf("%s: found=%v err=%v", id, found, err)
+		}
+		if entry.Action != want {
+			t.Fatalf("%s: action = %q, want %q", id, entry.Action, want)
+		}
+	}
+}

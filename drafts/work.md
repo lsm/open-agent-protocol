@@ -1,15 +1,17 @@
 # The Work Profile
 
 Status: draft, from [Decision 0047](../decisions/0047-a-work-layer-over-sessions.md)
-and its owner answers (2026-10-06). Nothing here is executable yet.
+and its owner answers (2026-10-06). The six verbs are served by `oapx serve`
+over stdio and HTTP; the capabilities answer below is not served yet, so a
+missing verb shows only as its refusal.
 
 Profile: `open-agent-protocol.work`, over `open-agent-protocol.agent-control-core`.
 
 ## What it is for
 
 A caller that manages many pieces of work (HyperNeo's Neo, a dashboard, a
-phone) asks five questions: where is there work, start some, tell it
-something, how is it doing, stop it. The core answers each, but in session and
+phone) asks six questions: where is there work, start some, tell it
+something, how is it doing, what was said, stop it. The core answers each, but in session and
 run terms, across several calls and an event stream. This profile answers them
 in one call each, in terms of a piece of work and one of six statuses.
 
@@ -42,9 +44,17 @@ in the capabilities answer, that the verb is missing before it is called.
 
 `{"adapter": "...", "session_id": "..."}` for a session this endpoint holds or
 has a binding for, or `{"adapter": "...", "native_id": "..."}` for a harness
-session no binding names. A native reference is only ever answered by
-`work.list`; `work.start`, `work.send` and `work.stop` take a native reference
-only once adoption (0047 decision 3) lands, and refuse it until then.
+session no binding names. `work.start` given a `native_id` adopts that
+session (0047 decision 3): it resumes it under a new OAP id and submits the
+message. A native id `serve` already holds or has a binding for is not adopted
+twice; the message goes to that session instead. One the harness lists as
+running is refused `run_active`. `work.status`, `work.send`, `work.stop` and
+`work.read` take the OAP id from then on.
+
+An adopted session keeps the harness's own posture: the Claude adapter resumes
+it with the user's settings and prompt rather than the clean room `serve`
+gives a session it starts. Its binding records `"adopted": true`, so every
+later reopen, including one after a restart, resumes it the same way.
 
 ## Statuses
 
@@ -52,7 +62,7 @@ only once adoption (0047 decision 3) lands, and refuse it until then.
 | --- | --- |
 | `queued` | the session's state is `queued`, or a submit was admitted and no run started |
 | `running` | the session's state is `running` |
-| `needs_you` | the session's state is `waiting_for_input`, or a permission or input request is pending |
+| `needs_you` | the session's state is `waiting_for_input`, a run in it names a pending interaction, or the active run's latest `run.status.updated` in the journal is `waiting_for_input` (the Claude adapter reports a gate only there) |
 | `done` | idle, and the latest run ended `run.completed` |
 | `failed` | idle, and the latest run ended `run.failed`, or the session's state is `error` |
 | `stopped` | idle, and the latest run ended `run.cancelled` |
@@ -76,7 +86,8 @@ history (its `held: false` entry, no turns, nothing to stop) without starting
 a harness. `work.send` reopens it through its binding (0040) and then submits,
 so a reference survives a restart of `serve`; an adapter without
 `session.open.reopen` refuses that, as an open would. A native entry is
-refused `unknown_session` by every verb until adoption lands.
+taken over only by `work.start` with its `native_id`; every other verb refuses
+its id `unknown_session`.
 
 ## Operations
 
@@ -97,8 +108,10 @@ Request `{"ref": <reference>}`. Answer:
 ```
 
 A session waiting on a prompt answers `"status": "needs_you"` with
-`"pending": {"kind": "permission", "interaction_id": "...", "summary": "..."}`
-and no `last_reply`.
+`"pending": {"interaction_id": "..."}`, the id the core's resolve takes. A
+`kind` and a `summary` of what is asked are a later addition. A piece also
+carries `link` when its adapter can name one (`codex://threads/<id>`,
+`claude://claude.ai/epitaxy/<local id>`).
 
 `title` is the title `work.start` was given, which `serve` keeps for as long
 as it holds the session; a session opened any other way has none, and the
@@ -166,7 +179,7 @@ completed run, its reply text. It keeps the last 512 turns of a session it
 holds, each cut at 64 KiB on a character boundary; an index stays stable as old
 turns drop. This is what `serve` saw, not the harness's own transcript:
 reasoning, tool calls and anything said before `serve` held the session are
-not in it. Reading a harness's transcript is a later verb, with adoption.
+not in it. Reading a harness's own transcript is a later verb.
 
 This is the content a caller's own search indexes (see `work.list`).
 

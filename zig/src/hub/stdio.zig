@@ -29,6 +29,14 @@ pub const op_close = "close";
 pub const op_settings = "settings";
 pub const op_events = "events";
 pub const op_history = "history";
+pub const op_work_status = "work.status";
+pub const op_work_list = "work.list";
+pub const op_work_start = "work.start";
+pub const op_work_send = "work.send";
+pub const op_work_stop = "work.stop";
+pub const op_work_read = "work.read";
+pub const work_read_default: usize = 100;
+pub const work_read_max: usize = 500;
 
 pub const Error = error{
     MalformedLine,
@@ -73,6 +81,9 @@ const session_parameter: []const []const u8 = &.{"session_id"};
 const events_parameters: []const []const u8 = &.{ "session_id", "run_id", "after" };
 const session_request_parameters: []const []const u8 = &.{ "session_id", "request" };
 const history_parameters: []const []const u8 = &.{ "cursor", "limit" };
+const work_start_parameters: []const []const u8 = &.{ "adapter", "request" };
+const request_parameter: []const []const u8 = &.{"request"};
+const work_read_parameters: []const []const u8 = &.{ "session_id", "after", "limit" };
 const all_parameters = [_][]const u8{ "adapter", "session_id", "run_id", "after", "request", "cursor", "limit", "allow_degraded_features" };
 
 pub const Request = struct {
@@ -741,6 +752,31 @@ pub const Frontend = struct {
             if (try request.only(arena, history_parameters)) |refusal| return .{ .refused = refusal };
             return self.history(arena, request.cursor, request.limit);
         }
+        if (std.mem.eql(u8, request.op, op_work_status)) {
+            if (try request.only(arena, session_parameter)) |refusal| return .{ .refused = refusal };
+            return self.workStatus(arena, request.session_id orelse "");
+        }
+        if (std.mem.eql(u8, request.op, op_work_start)) {
+            if (try request.only(arena, work_start_parameters)) |refusal| return .{ .refused = refusal };
+            return self.workStart(arena, request.adapter orelse "", request.payload);
+        }
+        if (std.mem.eql(u8, request.op, op_work_send)) {
+            if (try request.only(arena, session_request_parameters)) |refusal| return .{ .refused = refusal };
+            return self.workSend(arena, request.session_id orelse "", request.payload);
+        }
+        if (std.mem.eql(u8, request.op, op_work_stop)) {
+            if (try request.only(arena, session_parameter)) |refusal| return .{ .refused = refusal };
+            return self.workStop(arena, request.session_id orelse "");
+        }
+        if (std.mem.eql(u8, request.op, op_work_read)) {
+            if (try request.only(arena, work_read_parameters)) |refusal| return .{ .refused = refusal };
+            if (request.after_unreadable) return .{ .refused = .{ .code = "invalid_request", .message = "after is a whole number" } };
+            return self.workRead(arena, request.session_id orelse "", request.after, request.limit);
+        }
+        if (std.mem.eql(u8, request.op, op_work_list)) {
+            if (try request.only(arena, request_parameter)) |refusal| return .{ .refused = refusal };
+            return self.workList(arena, .{ .include_closed = workFlag(request.payload, "include_closed"), .include_native = workFlag(request.payload, "include_native") });
+        }
         if (std.mem.eql(u8, request.op, op_capabilities)) {
             if (try request.only(arena, adapter_parameter)) |refusal| return .{ .refused = refusal };
             const name = request.adapter orelse "";
@@ -885,6 +921,377 @@ pub const Frontend = struct {
         try root.put(arena, "sessions", try jsonArray(arena, entries));
         if (page.next_cursor) |next| try root.put(arena, "next_cursor", .{ .string = next });
         return .{ .answer = .{ .object = root } };
+    }
+
+    pub fn workStatus(self: *Frontend, arena: std.mem.Allocator, session_id: []const u8) !Outcome {
+        if (!self.hub.knows(session_id)) {
+            switch (try self.unheld(arena, session_id)) {
+                .entry => |entry| return .{ .answer = try unheldJson(arena, entry) },
+                .unreadable => return .{ .refused = history_unreadable },
+                .absent => {},
+            }
+        }
+        const found = self.hub.work(arena, session_id) catch |err| {
+            return .{ .refused = try self.stateRefusal(arena, err, session_id) };
+        };
+        return .{ .answer = try workJson(arena, found) };
+    }
+
+    fn workFlag(params: ?std.json.Value, name: []const u8) bool {
+        const given = params orelse return false;
+        if (given != .object) return false;
+        const value = given.object.get(name) orelse return false;
+        return value == .bool and value.bool;
+    }
+
+    const History = union(enum) {
+        none,
+        entries: []const hubmod.binding.Entry,
+        unreadable,
+    };
+
+    const history_unreadable = Refusal{ .code = "history_failed", .message = "the session history could not be read" };
+
+    fn latestBindings(self: *Frontend, arena: std.mem.Allocator) !History {
+        const store = self.hub.bindings orelse return .none;
+        const recorded = store.sessions(arena) catch |err| switch (err) {
+            error.OutOfMemory => return error.OutOfMemory,
+            else => return .unreadable,
+        };
+        return .{ .entries = try hubmod.binding.latestEach(arena, recorded) };
+    }
+
+    const Unheld = union(enum) {
+        absent,
+        entry: hubmod.binding.Entry,
+        unreadable,
+    };
+
+    fn unheldJson(arena: std.mem.Allocator, entry: hubmod.binding.Entry) !std.json.Value {
+        var ref = try emptyObject(arena);
+        try ref.put(arena, "adapter", .{ .string = entry.record.adapter });
+        try ref.put(arena, "session_id", .{ .string = entry.record.session_id });
+        var object = try emptyObject(arena);
+        try object.put(arena, "ref", .{ .object = ref });
+        try object.put(arena, "held", .{ .bool = false });
+        try object.put(arena, "state", .{ .string = if (entry.action == .closed) "closed" else "live" });
+        if (entry.record.directory.len > 0) try object.put(arena, "directory", .{ .string = entry.record.directory });
+        try object.put(arena, "updated_at_ms", .{ .integer = entry.time_ms });
+        return .{ .object = object };
+    }
+
+    fn unheld(self: *Frontend, arena: std.mem.Allocator, session_id: []const u8) !Unheld {
+        const latest = switch (try self.latestBindings(arena)) {
+            .none => return .absent,
+            .unreadable => return .unreadable,
+            .entries => |entries| entries,
+        };
+        for (latest) |entry| {
+            if (std.mem.eql(u8, entry.record.session_id, session_id)) return .{ .entry = entry };
+        }
+        return .absent;
+    }
+
+    fn boundSession(self: *Frontend, arena: std.mem.Allocator, adapter: []const u8, native_id: []const u8) !?[]const u8 {
+        if (self.hub.sessionForNative(adapter, native_id)) |held| return held;
+        const latest = switch (try self.latestBindings(arena)) {
+            .entries => |entries| entries,
+            else => return null,
+        };
+        for (latest) |entry| {
+            if (std.mem.eql(u8, entry.record.adapter, adapter) and std.mem.eql(u8, entry.record.native_session_id, native_id)) return entry.record.session_id;
+        }
+        return null;
+    }
+
+    pub const ListOptions = struct {
+        include_closed: bool = false,
+        include_native: bool = false,
+    };
+
+    fn nativeJson(arena: std.mem.Allocator, found: hubmod.Native) !std.json.Value {
+        var ref = try emptyObject(arena);
+        try ref.put(arena, "adapter", .{ .string = found.adapter });
+        try ref.put(arena, "native_id", .{ .string = found.session.native_id });
+        var object = try emptyObject(arena);
+        try object.put(arena, "ref", .{ .object = ref });
+        try object.put(arena, "held", .{ .bool = false });
+        try object.put(arena, "native", .{ .bool = true });
+        try object.put(arena, "state", .{ .string = if (found.session.running) "running" else "idle" });
+        if (found.session.title.len > 0) try object.put(arena, "title", .{ .string = found.session.title });
+        if (found.session.directory.len > 0) try object.put(arena, "directory", .{ .string = found.session.directory });
+        if (found.session.link.len > 0) try object.put(arena, "link", .{ .string = found.session.link });
+        try object.put(arena, "updated_at_ms", .{ .integer = found.session.updated_at_ms });
+        return .{ .object = object };
+    }
+
+    pub fn workList(self: *Frontend, arena: std.mem.Allocator, options: ListOptions) !Outcome {
+        const Piece = struct { directory: []const u8, at_ms: i64, value: std.json.Value };
+        var pieces: std.ArrayList(Piece) = .empty;
+        for (try self.hub.works(arena)) |piece| {
+            try pieces.append(arena, .{ .directory = piece.directory, .at_ms = piece.updated_at_ms, .value = try workJson(arena, piece) });
+        }
+        var known_native: std.ArrayList([]const u8) = .empty;
+        const recorded = try self.latestBindings(arena);
+        if (recorded == .unreadable) return .{ .refused = history_unreadable };
+        if (recorded == .entries) {
+            for (recorded.entries) |entry| {
+                if (entry.record.native_session_id.len > 0) try known_native.append(arena, entry.record.native_session_id);
+                if (self.hub.knows(entry.record.session_id)) continue;
+                if (entry.action == .closed and !options.include_closed) continue;
+                try pieces.append(arena, .{ .directory = entry.record.directory, .at_ms = entry.time_ms, .value = try unheldJson(arena, entry) });
+            }
+        }
+        var unavailable: std.ArrayList(std.json.Value) = .empty;
+        if (options.include_native) {
+            const found = try self.hub.natives(arena, known_native.items);
+            for (found.sessions) |native| {
+                try pieces.append(arena, .{ .directory = native.session.directory, .at_ms = native.session.updated_at_ms, .value = try nativeJson(arena, native) });
+            }
+            for (found.failures) |failure| {
+                var object = try emptyObject(arena);
+                try object.put(arena, "adapter", .{ .string = failure.adapter });
+                try object.put(arena, "message", .{ .string = try trim(arena, failure.message) });
+                try unavailable.append(arena, .{ .object = object });
+            }
+        }
+        std.mem.sort(Piece, pieces.items, {}, struct {
+            fn newer(_: void, left: Piece, right: Piece) bool {
+                return left.at_ms > right.at_ms;
+            }
+        }.newer);
+        var directories: std.ArrayList([]const u8) = .empty;
+        var members: std.ArrayList(std.ArrayList(std.json.Value)) = .empty;
+        var latest_at: std.ArrayList(i64) = .empty;
+        for (pieces.items) |piece| {
+            const at = for (directories.items, 0..) |directory, index| {
+                if (std.mem.eql(u8, directory, piece.directory)) break index;
+            } else blk: {
+                try directories.append(arena, piece.directory);
+                try members.append(arena, .empty);
+                try latest_at.append(arena, piece.at_ms);
+                break :blk directories.items.len - 1;
+            };
+            try members.items[at].append(arena, piece.value);
+        }
+        var groups: std.ArrayList(std.json.Value) = .empty;
+        for (directories.items, members.items, latest_at.items) |directory, listed, last| {
+            var group = try emptyObject(arena);
+            try group.put(arena, "directory", .{ .string = directory });
+            try group.put(arena, "last_activity_ms", .{ .integer = last });
+            try group.put(arena, "work", try jsonArray(arena, listed.items));
+            try groups.append(arena, .{ .object = group });
+        }
+        var root = try emptyObject(arena);
+        try root.put(arena, "groups", try jsonArray(arena, groups.items));
+        if (unavailable.items.len > 0) try root.put(arena, "unavailable", try jsonArray(arena, unavailable.items));
+        return .{ .answer = .{ .object = root } };
+    }
+
+    fn workEnvelope(self: *Frontend, arena: std.mem.Allocator, kind: []const u8, session_id: []const u8, payload: std.json.ObjectMap) !std.json.Value {
+        self.next_envelope += 1;
+        var envelope = try emptyObject(arena);
+        try envelope.put(arena, "protocol", .{ .string = "open-agent-protocol" });
+        try envelope.put(arena, "version", .{ .string = "0.1" });
+        try envelope.put(arena, "profile", .{ .string = "open-agent-protocol.agent-control-core" });
+        try envelope.put(arena, "type", .{ .string = kind });
+        try envelope.put(arena, "id", .{ .string = try std.fmt.allocPrint(arena, "work-{d}", .{self.next_envelope}) });
+        if (session_id.len > 0) try envelope.put(arena, "session_id", .{ .string = session_id });
+        try envelope.put(arena, "payload", .{ .object = payload });
+        return .{ .object = envelope };
+    }
+
+    fn userMessage(arena: std.mem.Allocator, text: []const u8) !std.json.Value {
+        var message = try emptyObject(arena);
+        try message.put(arena, "role", .{ .string = "user" });
+        try message.put(arena, "content", .{ .string = text });
+        var submitted = try emptyObject(arena);
+        try submitted.put(arena, "messages", try jsonArray(arena, &.{.{ .object = message }}));
+        try submitted.put(arena, "delivery", .{ .string = "auto" });
+        return .{ .object = submitted };
+    }
+
+    fn workText(params: ?std.json.Value, name: []const u8) ?[]const u8 {
+        const given = params orelse return null;
+        if (given != .object) return null;
+        const value = given.object.get(name) orelse return null;
+        return if (value == .string) value.string else null;
+    }
+
+    fn workParamsRefusal(params: ?std.json.Value, required: []const u8) ?Refusal {
+        const given = params orelse return .{ .code = "invalid_request", .message = "request is required" };
+        if (given != .object) return .{ .code = "invalid_request", .message = "request is an object" };
+        const value = given.object.get(required) orelse return .{ .code = "invalid_request", .message = "request.message is required" };
+        if (value != .string or value.string.len == 0) return .{ .code = "invalid_request", .message = "request.message is a non-empty string" };
+        return null;
+    }
+
+    pub fn workStart(self: *Frontend, arena: std.mem.Allocator, adapter: []const u8, params: ?std.json.Value) !Outcome {
+        if (adapter.len == 0) return .{ .refused = .{ .code = "invalid_request", .message = "adapter is required" } };
+        if (workParamsRefusal(params, "message")) |refusal| return .{ .refused = refusal };
+        const configured = self.hub.adapterDirectory(adapter) orelse return .{ .refused = .{ .code = "unknown_adapter", .message = try std.fmt.allocPrint(arena, "no adapter is registered as \"{s}\"", .{adapter}) } };
+        if (workText(params, "directory")) |directory| {
+            if (!std.mem.eql(u8, directory, configured)) return .{ .refused = try refusalWith(arena, "invalid_request", "a session runs in its adapter's working directory; another directory needs its own adapter entry", &.{
+                .{ .key = "working_directory", .value = configured },
+            }) };
+        }
+        if (workText(params, "native_id")) |native_id| return self.workAdopt(arena, adapter, native_id, params);
+        var open_payload = try emptyObject(arena);
+        try open_payload.put(arena, "message", try userMessage(arena, workText(params, "message").?));
+        const request = Request{
+            .id = 0,
+            .op = op_open,
+            .adapter = adapter,
+            .payload = try self.workEnvelope(arena, "session.open.request", "", open_payload),
+            .supplied = .{ .adapter = true, .request = true },
+        };
+        const opened = try self.openSession(arena, adapter, request, false);
+        const line = switch (opened) {
+            .answer_line => |answered| answered,
+            .refused => |refusal| return .{ .refused = refusal },
+            else => return .{ .refused = .{ .code = "internal", .message = "the open answered without a session" } },
+        };
+        const opened_answer = std.json.parseFromSliceLeaky(std.json.Value, arena, line, .{}) catch |err| switch (err) {
+            error.OutOfMemory => return error.OutOfMemory,
+            else => return .{ .refused = .{ .code = "internal", .message = "the open's answer could not be read back" } },
+        };
+        const session_id = opened_answer.object.get("session_id").?.string;
+        if (workText(params, "title")) |title| try self.hub.setTitle(session_id, title);
+        return self.workStatus(arena, session_id);
+    }
+
+    fn workAdopt(self: *Frontend, arena: std.mem.Allocator, adapter: []const u8, native_id: []const u8, params: ?std.json.Value) !Outcome {
+        if (native_id.len == 0) return .{ .refused = .{ .code = "invalid_request", .message = "request.native_id is a non-empty string" } };
+        if (try self.boundSession(arena, adapter, native_id)) |session_id| return self.workSend(arena, session_id, params);
+        if (try self.hub.nativeRunning(arena, adapter, native_id)) return .{ .refused = .{ .code = "run_active", .message = "another process is running this session; continuing it here would fork the conversation" } };
+        var refused: hubmod.OpenRefusal = .{};
+        const opened = self.hub.openReporting(arena, adapter, .{ .reopen = true, .adopt_native_id = native_id }, &refused) catch |err| {
+            try ownRevisions(arena, &refused);
+            return .{ .refused = try openRefusal(arena, err, .{ .id = 0, .op = op_open, .adapter = adapter }, &refused) };
+        };
+        if (workText(params, "title")) |title| try self.hub.setTitle(opened.session_id, title);
+        return self.workSend(arena, opened.session_id, params);
+    }
+
+    pub fn workSend(self: *Frontend, arena: std.mem.Allocator, session_id: []const u8, params: ?std.json.Value) !Outcome {
+        if (workParamsRefusal(params, "message")) |refusal| return .{ .refused = refusal };
+        if (!self.hub.knows(session_id)) {
+            switch (try self.unheld(arena, session_id)) {
+                .entry => |entry| if (try self.reopenFor(arena, entry)) |refusal| return .{ .refused = refusal },
+                .unreadable => return .{ .refused = history_unreadable },
+                .absent => {},
+            }
+        }
+        var submitted = (try userMessage(arena, workText(params, "message").?)).object;
+        try submitted.put(arena, "session_id", .{ .string = session_id });
+        const controlled = try self.submitControl(arena, session_id, try self.workEnvelope(arena, "session.message.submit.request", session_id, submitted));
+        switch (controlled) {
+            .refused => |refused| return .{ .refused = refused.refusal },
+            .envelope => {},
+        }
+        return self.workStatus(arena, session_id);
+    }
+
+    fn reopenFor(self: *Frontend, arena: std.mem.Allocator, entry: hubmod.binding.Entry) !?Refusal {
+        var open_payload = try emptyObject(arena);
+        try open_payload.put(arena, "session_id", .{ .string = entry.record.session_id });
+        try open_payload.put(arena, "reopen", .{ .bool = true });
+        var envelope = try self.workEnvelope(arena, "session.open.request", "", open_payload);
+        try envelope.object.put(arena, "session_id", .{ .string = entry.record.session_id });
+        const request = Request{
+            .id = 0,
+            .op = op_open,
+            .adapter = entry.record.adapter,
+            .payload = envelope,
+            .supplied = .{ .adapter = true, .request = true },
+        };
+        return switch (try self.openSession(arena, entry.record.adapter, request, false)) {
+            .refused => |refusal| refusal,
+            else => null,
+        };
+    }
+
+    pub fn workStop(self: *Frontend, arena: std.mem.Allocator, session_id: []const u8) !Outcome {
+        if (!self.hub.knows(session_id)) {
+            switch (try self.unheld(arena, session_id)) {
+                .entry => |entry| return .{ .answer = try unheldJson(arena, entry) },
+                .unreadable => return .{ .refused = history_unreadable },
+                .absent => {},
+            }
+        }
+        const current = self.hub.work(arena, session_id) catch |err| {
+            return .{ .refused = try self.stateRefusal(arena, err, session_id) };
+        };
+        const live = current.status == .running or current.status == .queued or current.status == .needs_you;
+        if (!live or current.run_id.len == 0) return .{ .answer = try workJson(arena, current) };
+        var cancel = try emptyObject(arena);
+        try cancel.put(arena, "session_id", .{ .string = session_id });
+        try cancel.put(arena, "run_id", .{ .string = current.run_id });
+        var envelope = try self.workEnvelope(arena, "run.cancel.request", session_id, cancel);
+        try envelope.object.put(arena, "run_id", .{ .string = current.run_id });
+        const controlled = try self.cancelControl(arena, session_id, envelope);
+        switch (controlled) {
+            .refused => |refused| return .{ .refused = refused.refusal },
+            .envelope => {},
+        }
+        return self.workStatus(arena, session_id);
+    }
+
+    pub fn workRead(self: *Frontend, arena: std.mem.Allocator, session_id: []const u8, after: ?u64, limit: ?i64) !Outcome {
+        var bound: usize = work_read_default;
+        if (limit) |given| {
+            if (given < 1 or given > work_read_max) return .{ .refused = .{ .code = "invalid_request", .message = std.fmt.comptimePrint("work.read: limit must be from 1 to {d}", .{work_read_max}) } };
+            bound = @intCast(given);
+        }
+        if (!self.hub.knows(session_id)) {
+            switch (try self.unheld(arena, session_id)) {
+                .entry => {
+                    var empty = try emptyObject(arena);
+                    try empty.put(arena, "turns", try jsonArray(arena, &.{}));
+                    return .{ .answer = .{ .object = empty } };
+                },
+                .unreadable => return .{ .refused = history_unreadable },
+                .absent => {},
+            }
+        }
+        const read = self.hub.transcript(session_id, after, bound) catch |err| {
+            return .{ .refused = try self.stateRefusal(arena, err, session_id) };
+        };
+        const turns = try arena.alloc(std.json.Value, read.turns.len);
+        for (read.turns, turns, 0..) |turn, *slot, offset| {
+            var object = try emptyObject(arena);
+            try object.put(arena, "index", .{ .integer = @intCast(read.first_index + offset) });
+            try object.put(arena, "role", .{ .string = @tagName(turn.role) });
+            try object.put(arena, "text", .{ .string = turn.text });
+            if (turn.run_id.len > 0) try object.put(arena, "run_id", .{ .string = turn.run_id });
+            if (turn.outcome.len > 0) try object.put(arena, "outcome", .{ .string = turn.outcome });
+            try object.put(arena, "at_ms", .{ .integer = turn.at_ms });
+            slot.* = .{ .object = object };
+        }
+        var root = try emptyObject(arena);
+        try root.put(arena, "turns", try jsonArray(arena, turns));
+        return .{ .answer = .{ .object = root } };
+    }
+
+    fn workJson(arena: std.mem.Allocator, piece: hubmod.Work) !std.json.Value {
+        var ref = try emptyObject(arena);
+        try ref.put(arena, "adapter", .{ .string = piece.adapter });
+        try ref.put(arena, "session_id", .{ .string = piece.session_id });
+        var object = try emptyObject(arena);
+        try object.put(arena, "ref", .{ .object = ref });
+        try object.put(arena, "status", .{ .string = @tagName(piece.status) });
+        if (piece.directory.len > 0) try object.put(arena, "directory", .{ .string = piece.directory });
+        if (piece.title.len > 0) try object.put(arena, "title", .{ .string = piece.title });
+        if (piece.link.len > 0) try object.put(arena, "link", .{ .string = piece.link });
+        if (piece.run_id.len > 0) try object.put(arena, "run_id", .{ .string = piece.run_id });
+        if (piece.last_reply.len > 0) try object.put(arena, "last_reply", .{ .string = piece.last_reply });
+        try object.put(arena, "updated_at_ms", .{ .integer = piece.updated_at_ms });
+        if (piece.pending_interaction.len > 0) {
+            var pending = try emptyObject(arena);
+            try pending.put(arena, "interaction_id", .{ .string = piece.pending_interaction });
+            try object.put(arena, "pending", .{ .object = pending });
+        }
+        return .{ .object = object };
     }
 
     pub fn capabilities(self: *Frontend, arena: std.mem.Allocator, name: []const u8) !Outcome {
@@ -1930,6 +2337,7 @@ const ReferenceState = struct {
     saw_tool_sources_json: []const u8 = "",
     running: bool = false,
     submit_refuses: bool = false,
+    native_fails: bool = false,
     state_fails: bool = false,
     lister_closed: bool = false,
     closed: bool = false,
@@ -1939,7 +2347,7 @@ const ReferenceState = struct {
 var reference_holder: ReferenceState = .{};
 
 fn reference() contract.Adapter {
-    return .{ .ptr = @ptrCast(@constCast(&reference_holder)), .vtable = &.{ .probe = referenceProbe, .open = referenceOpen } };
+    return .{ .ptr = @ptrCast(@constCast(&reference_holder)), .vtable = &.{ .probe = referenceProbe, .open = referenceOpen, .native_list = referenceNativeList } };
 }
 
 fn referenceProbe(ptr: *anyopaque, refusal: *contract.Refusal) contract.Failure!contract.Descriptor {
@@ -2022,6 +2430,16 @@ fn referenceState(ptr: *anyopaque, arena: std.mem.Allocator, refusal: *contract.
     const run = try arena.dupe(u8, "run-1");
     const runs = try arena.dupe(oap_types.ActiveRun, &.{.{ .run_id = run, .status = .running, .relationship = "primary" }});
     return .{ .session_id = session_id, .status = .running, .active_run_id = run, .active_runs = runs };
+}
+
+fn referenceNativeList(ptr: *anyopaque, arena: std.mem.Allocator, request: contract.NativeListRequest, refusal: *contract.Refusal) contract.Failure![]const contract.NativeSession {
+    const state: *ReferenceState = @ptrCast(@alignCast(ptr));
+    _ = request;
+    if (state.native_fails) return refusal.fail(error.BackendFailed, "the harness would not list");
+    return try arena.dupe(contract.NativeSession, &.{
+        .{ .native_id = "thread-a", .title = "older thread", .directory = "/work/a", .updated_at_ms = 5 },
+        .{ .native_id = "thread-b", .title = "busy thread", .directory = "/work/a", .updated_at_ms = 7, .running = true },
+    });
 }
 
 fn referenceSubmit(ptr: *anyopaque, arena: std.mem.Allocator, request: *const oap_types.MessageSubmitRequest, envelope_id: []const u8, refusal: *contract.Refusal) contract.Failure!oap_types.MessageSubmitResponse {
@@ -2789,6 +3207,240 @@ test "events acknowledges, then streams the run's envelopes on its own id and en
     try testing.expectEqual(@as(usize, 0), harness.frontend.streams.items.len);
 }
 
+const replied_line = "{" ++ event_head ++ ",\"type\":\"run.completed\",\"id\":\"e2\",\"session_id\":\"s1\",\"run_id\":\"run-1\",\"sequence\":2,\"payload\":{\"session_id\":\"s1\",\"run_id\":\"run-1\",\"final_response\":{\"id\":\"m1\",\"role\":\"assistant\",\"content\":\"pong\"}}}";
+const failed_line = "{" ++ event_head ++ ",\"type\":\"run.failed\",\"id\":\"e2\",\"session_id\":\"s1\",\"run_id\":\"run-1\",\"sequence\":2,\"payload\":{\"session_id\":\"s1\",\"run_id\":\"run-1\"}}";
+const cancelled_line = "{" ++ event_head ++ ",\"type\":\"run.cancelled\",\"id\":\"e2\",\"session_id\":\"s1\",\"run_id\":\"run-1\",\"sequence\":2,\"payload\":{\"session_id\":\"s1\",\"run_id\":\"run-1\"}}";
+
+fn workResult(harness: *Harness, id: i64) !std.json.ObjectMap {
+    try harness.send(try std.fmt.allocPrint(harness.arena(), "{{\"id\":{d},\"op\":\"work.status\",\"session_id\":\"s1\"}}", .{id}));
+    return (try harness.lastValue()).object.get("result").?.object;
+}
+
+test "work.status names an idle session that never ran done, a running one running, and an absent one unknown_session" {
+    const harness = try Harness.init(testing.allocator, .{}, .{});
+    defer harness.deinit();
+    try harness.send(try openLine(harness.arena(), "reference", open_envelope));
+    const idle = try workResult(harness, 2);
+    try testing.expectEqualStrings("done", idle.get("status").?.string);
+    try testing.expectEqualStrings("s1", idle.get("ref").?.object.get("session_id").?.string);
+    try testing.expectEqualStrings("reference", idle.get("ref").?.object.get("adapter").?.string);
+    try testing.expect(idle.get("last_reply") == null);
+
+    try harness.send(try controlLine(harness.arena(), 3, op_submit, "s1", "{" ++ control_head ++ ",\"type\":\"session.message.submit.request\",\"id\":\"sub-1\",\"session_id\":\"s1\",\"payload\":{\"session_id\":\"s1\",\"delivery\":\"auto\",\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}]}}"));
+    const running = try workResult(harness, 4);
+    try testing.expectEqualStrings("running", running.get("status").?.string);
+    try testing.expectEqualStrings("run-1", running.get("run_id").?.string);
+
+    try harness.send("{\"id\":5,\"op\":\"work.status\",\"session_id\":\"absent\"}");
+    try testing.expectEqualStrings("unknown_session", try harness.code());
+}
+
+test "work.list adds an adapter's own sessions only on include_native, and names an adapter that could not list" {
+    const harness = try Harness.init(testing.allocator, .{}, .{});
+    defer harness.deinit();
+    try harness.send("{\"id\":1,\"op\":\"work.list\"}");
+    try testing.expectEqual(@as(usize, 0), (try harness.lastValue()).object.get("result").?.object.get("groups").?.array.items.len);
+
+    try harness.send("{\"id\":2,\"op\":\"work.list\",\"request\":{\"include_native\":true}}");
+    const groups = (try harness.lastValue()).object.get("result").?.object.get("groups").?.array.items;
+    try testing.expectEqual(@as(usize, 1), groups.len);
+    try testing.expectEqualStrings("/work/a", groups[0].object.get("directory").?.string);
+    const work = groups[0].object.get("work").?.array.items;
+    try testing.expectEqual(@as(usize, 4), work.len);
+    try testing.expectEqualStrings("thread-b", work[0].object.get("ref").?.object.get("native_id").?.string);
+    try testing.expectEqualStrings("running", work[0].object.get("state").?.string);
+    try testing.expectEqual(true, work[0].object.get("native").?.bool);
+    try testing.expectEqualStrings("older thread", work[3].object.get("title").?.string);
+
+    reference_holder.native_fails = true;
+    defer reference_holder.native_fails = false;
+    try harness.send("{\"id\":3,\"op\":\"work.list\",\"request\":{\"include_native\":true}}");
+    const failed = (try harness.lastValue()).object.get("result").?.object;
+    try testing.expectEqual(@as(usize, 0), failed.get("groups").?.array.items.len);
+    const unavailable = failed.get("unavailable").?.array.items;
+    try testing.expectEqual(@as(usize, 2), unavailable.len);
+    try testing.expectEqualStrings("reference", unavailable[0].object.get("adapter").?.string);
+    try testing.expectEqualStrings("the harness would not list", unavailable[0].object.get("message").?.string);
+}
+
+test "work.status answers session_closed for a session it finds closed, releases it, and is then unknown; work.list releases it too" {
+    for ([_][]const u8{ "work.status", "work.list" }) |op| {
+        const harness = try Harness.init(testing.allocator, .{}, .{});
+        defer harness.deinit();
+        try harness.send(try openLine(harness.arena(), "reference", open_envelope));
+        reference_holder.closed = true;
+        defer reference_holder.closed = false;
+        if (std.mem.eql(u8, op, "work.status")) {
+            try harness.send("{\"id\":2,\"op\":\"work.status\",\"session_id\":\"s1\"}");
+            try testing.expectEqualStrings("session_closed", try harness.code());
+            try harness.send("{\"id\":3,\"op\":\"work.status\",\"session_id\":\"s1\"}");
+            try testing.expectEqualStrings("unknown_session", try harness.code());
+        } else {
+            try harness.send("{\"id\":2,\"op\":\"work.list\"}");
+            try testing.expectEqual(@as(usize, 0), (try harness.lastValue()).object.get("result").?.object.get("groups").?.array.items.len);
+        }
+        try testing.expectEqual(@as(usize, 0), harness.hub.sessionCount());
+    }
+}
+
+test "work.status of an idle session reads its latest run's terminal: completed is done with the reply, failed is failed, cancelled is stopped" {
+    const cases = [_]struct { line: []const u8, status: []const u8, reply: ?[]const u8 }{
+        .{ .line = replied_line, .status = "done", .reply = "pong" },
+        .{ .line = failed_line, .status = "failed", .reply = null },
+        .{ .line = cancelled_line, .status = "stopped", .reply = null },
+    };
+    for (cases) |case| {
+        const harness = try Harness.init(testing.allocator, .{}, .{});
+        defer harness.deinit();
+        defer reference_holder.pending_events = &.{};
+        try harness.send(try openLine(harness.arena(), "reference", open_envelope));
+        reference_holder.pending_events = &.{ .{ .line = started_line, .run_id = "run-1", .sequence = 1 }, .{ .line = case.line, .run_id = "run-1", .sequence = 2 } };
+        try harness.hub.pump(testing.allocator, 0);
+        reference_holder.pending_events = &.{};
+        const settled = try workResult(harness, 2);
+        try testing.expectEqualStrings(case.status, settled.get("status").?.string);
+        try testing.expectEqualStrings("run-1", settled.get("run_id").?.string);
+        if (case.reply) |reply| {
+            try testing.expectEqualStrings(reply, settled.get("last_reply").?.string);
+        } else {
+            try testing.expect(settled.get("last_reply") == null);
+        }
+    }
+}
+
+const waiting_line = "{" ++ event_head ++ ",\"type\":\"run.status.updated\",\"id\":\"e2\",\"session_id\":\"s1\",\"run_id\":\"run-1\",\"sequence\":2,\"payload\":{\"session_id\":\"s1\",\"run_id\":\"run-1\",\"status\":\"waiting_for_input\",\"pending_user_input_id\":\"gate-1\"}}";
+const waiting_unnamed_line = "{" ++ event_head ++ ",\"type\":\"run.status.updated\",\"id\":\"e2\",\"session_id\":\"s1\",\"run_id\":\"run-1\",\"sequence\":2,\"payload\":{\"session_id\":\"s1\",\"run_id\":\"run-1\",\"status\":\"waiting_for_input\"}}";
+const resumed_line = "{" ++ event_head ++ ",\"type\":\"run.status.updated\",\"id\":\"e3\",\"session_id\":\"s1\",\"run_id\":\"run-1\",\"sequence\":3,\"payload\":{\"session_id\":\"s1\",\"run_id\":\"run-1\",\"status\":\"running\"}}";
+
+test "work.status of a running session whose state names no interaction reads needs_you from the run's latest status update, and running again once it resumes" {
+    const harness = try Harness.init(testing.allocator, .{}, .{});
+    defer harness.deinit();
+    defer reference_holder.pending_events = &.{};
+    try harness.send(try openLine(harness.arena(), "reference", open_envelope));
+    try harness.send(try controlLine(harness.arena(), 2, op_submit, "s1", "{" ++ control_head ++ ",\"type\":\"session.message.submit.request\",\"id\":\"sub-1\",\"session_id\":\"s1\",\"payload\":{\"session_id\":\"s1\",\"delivery\":\"auto\",\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}]}}"));
+    reference_holder.pending_events = &.{ .{ .line = started_line, .run_id = "run-1", .sequence = 1 }, .{ .line = waiting_line, .run_id = "run-1", .sequence = 2 } };
+    try harness.hub.pump(testing.allocator, 0);
+    reference_holder.pending_events = &.{};
+    const waiting = try workResult(harness, 3);
+    try testing.expectEqualStrings("needs_you", waiting.get("status").?.string);
+    try testing.expectEqualStrings("gate-1", waiting.get("pending").?.object.get("interaction_id").?.string);
+
+    reference_holder.pending_events = &.{.{ .line = resumed_line, .run_id = "run-1", .sequence = 3 }};
+    try harness.hub.pump(testing.allocator, 0);
+    reference_holder.pending_events = &.{};
+    const resumed = try workResult(harness, 4);
+    try testing.expectEqualStrings("running", resumed.get("status").?.string);
+    try testing.expect(resumed.get("pending") == null);
+}
+
+test "work.status reads needs_you from a waiting status update that names no interaction, with no pending" {
+    const harness = try Harness.init(testing.allocator, .{}, .{});
+    defer harness.deinit();
+    defer reference_holder.pending_events = &.{};
+    try harness.send(try openLine(harness.arena(), "reference", open_envelope));
+    try harness.send(try controlLine(harness.arena(), 2, op_submit, "s1", "{" ++ control_head ++ ",\"type\":\"session.message.submit.request\",\"id\":\"sub-1\",\"session_id\":\"s1\",\"payload\":{\"session_id\":\"s1\",\"delivery\":\"auto\",\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}]}}"));
+    reference_holder.pending_events = &.{ .{ .line = started_line, .run_id = "run-1", .sequence = 1 }, .{ .line = waiting_unnamed_line, .run_id = "run-1", .sequence = 2 } };
+    try harness.hub.pump(testing.allocator, 0);
+    reference_holder.pending_events = &.{};
+    const waiting = try workResult(harness, 3);
+    try testing.expectEqualStrings("needs_you", waiting.get("status").?.string);
+    try testing.expect(waiting.get("pending") == null);
+}
+
+test "work.start opens with the message and its title, work.send adds a turn, and work.read returns both and the run's reply" {
+    const harness = try Harness.init(testing.allocator, .{}, .{});
+    defer harness.deinit();
+    defer reference_holder.pending_events = &.{};
+    try harness.send("{\"id\":1,\"op\":\"work.start\",\"adapter\":\"reference\",\"request\":{\"message\":\"go\",\"title\":\"a task\"}}");
+    const started = (try harness.lastValue()).object.get("result").?.object;
+    try testing.expectEqualStrings("running", started.get("status").?.string);
+    try testing.expectEqualStrings("a task", started.get("title").?.string);
+    const session_id = started.get("ref").?.object.get("session_id").?.string;
+
+    reference_holder.pending_events = &.{ .{ .line = started_line, .run_id = "run-1", .sequence = 1 }, .{ .line = replied_line, .run_id = "run-1", .sequence = 2 } };
+    try harness.hub.pump(testing.allocator, 0);
+    reference_holder.pending_events = &.{};
+    try harness.send(try std.fmt.allocPrint(harness.arena(), "{{\"id\":2,\"op\":\"work.send\",\"session_id\":\"{s}\",\"request\":{{\"message\":\"more\"}}}}", .{session_id}));
+    try testing.expect((try harness.lastValue()).object.get("result") != null);
+
+    try harness.send(try std.fmt.allocPrint(harness.arena(), "{{\"id\":3,\"op\":\"work.read\",\"session_id\":\"{s}\"}}", .{session_id}));
+    const turns = (try harness.lastValue()).object.get("result").?.object.get("turns").?.array.items;
+    try testing.expectEqual(@as(usize, 3), turns.len);
+    try testing.expectEqualStrings("user", turns[0].object.get("role").?.string);
+    try testing.expectEqualStrings("go", turns[0].object.get("text").?.string);
+    try testing.expectEqualStrings("assistant", turns[1].object.get("role").?.string);
+    try testing.expectEqualStrings("pong", turns[1].object.get("text").?.string);
+    try testing.expectEqualStrings("completed", turns[1].object.get("outcome").?.string);
+    try testing.expectEqualStrings("more", turns[2].object.get("text").?.string);
+
+    try harness.send(try std.fmt.allocPrint(harness.arena(), "{{\"id\":4,\"op\":\"work.read\",\"session_id\":\"{s}\",\"after\":0,\"limit\":1}}", .{session_id}));
+    const paged = (try harness.lastValue()).object.get("result").?.object.get("turns").?.array.items;
+    try testing.expectEqual(@as(usize, 1), paged.len);
+    try testing.expectEqual(@as(i64, 1), paged[0].object.get("index").?.integer);
+}
+
+test "work.read refuses an unreadable after and answers no turns past the largest one" {
+    const harness = try Harness.init(testing.allocator, .{}, .{});
+    defer harness.deinit();
+    try harness.send(try openLine(harness.arena(), "reference", open_envelope));
+    try harness.send("{\"id\":2,\"op\":\"work.read\",\"session_id\":\"s1\",\"after\":\"x\"}");
+    try testing.expectEqualStrings("invalid_request", try harness.code());
+    const read = try harness.hub.transcript("s1", std.math.maxInt(u64), 10);
+    try testing.expectEqual(@as(usize, 0), read.turns.len);
+}
+
+test "work.start with a native id refuses a session another process runs, and an adapter that cannot reopen" {
+    const harness = try Harness.init(testing.allocator, .{}, .{});
+    defer harness.deinit();
+    try harness.send("{\"id\":1,\"op\":\"work.start\",\"adapter\":\"reference\",\"request\":{\"message\":\"go\",\"native_id\":\"thread-b\"}}");
+    try testing.expectEqualStrings("run_active", try harness.code());
+    try harness.send("{\"id\":2,\"op\":\"work.start\",\"adapter\":\"reference\",\"request\":{\"message\":\"go\",\"native_id\":\"thread-a\"}}");
+    try testing.expectEqualStrings("unsupported_feature", try harness.code());
+    try harness.send("{\"id\":3,\"op\":\"work.start\",\"adapter\":\"reference\",\"request\":{\"message\":\"go\",\"native_id\":\"\"}}");
+    try testing.expectEqualStrings("invalid_request", try harness.code());
+    try testing.expectEqual(@as(usize, 0), harness.hub.sessionCount());
+}
+
+test "work.start refuses a missing message, an unknown adapter and a directory its adapter does not run in" {
+    const harness = try Harness.init(testing.allocator, .{}, .{});
+    defer harness.deinit();
+    try harness.send("{\"id\":1,\"op\":\"work.start\",\"adapter\":\"reference\",\"request\":{}}");
+    try testing.expectEqualStrings("invalid_request", try harness.code());
+    try harness.send("{\"id\":2,\"op\":\"work.start\",\"adapter\":\"nope\",\"request\":{\"message\":\"go\"}}");
+    try testing.expectEqualStrings("unknown_adapter", try harness.code());
+    try harness.send("{\"id\":3,\"op\":\"work.start\",\"adapter\":\"reference\",\"request\":{\"message\":\"go\",\"directory\":\"/elsewhere\"}}");
+    try testing.expectEqualStrings("invalid_request", try harness.code());
+    try testing.expectEqual(@as(usize, 0), harness.hub.sessionCount());
+}
+
+test "work.stop cancels the running run and answers a session with none unchanged" {
+    const harness = try Harness.init(testing.allocator, .{}, .{});
+    defer harness.deinit();
+    try harness.send(try openLine(harness.arena(), "reference", open_envelope));
+    const idle = try workResult(harness, 2);
+    try harness.send("{\"id\":3,\"op\":\"work.stop\",\"session_id\":\"s1\"}");
+    try testing.expectEqualStrings(idle.get("status").?.string, (try harness.lastValue()).object.get("result").?.object.get("status").?.string);
+    try harness.send(try controlLine(harness.arena(), 4, op_submit, "s1", "{" ++ control_head ++ ",\"type\":\"session.message.submit.request\",\"id\":\"sub-1\",\"session_id\":\"s1\",\"payload\":{\"session_id\":\"s1\",\"delivery\":\"auto\",\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}]}}"));
+    try testing.expectEqualStrings("running", (try workResult(harness, 5)).get("status").?.string);
+    try harness.send("{\"id\":6,\"op\":\"work.stop\",\"session_id\":\"s1\"}");
+    try testing.expect(!std.mem.eql(u8, "running", (try harness.lastValue()).object.get("result").?.object.get("status").?.string));
+    try testing.expect(!reference_holder.running);
+}
+
+test "work.list groups the sessions it holds by directory and refuses a parameter it does not take" {
+    const harness = try Harness.init(testing.allocator, .{}, .{});
+    defer harness.deinit();
+    try harness.send(try openLine(harness.arena(), "reference", open_envelope));
+    try harness.send("{\"id\":2,\"op\":\"work.list\"}");
+    const groups = (try harness.lastValue()).object.get("result").?.object.get("groups").?.array.items;
+    try testing.expectEqual(@as(usize, 1), groups.len);
+    const work = groups[0].object.get("work").?.array.items;
+    try testing.expectEqual(@as(usize, 1), work.len);
+    try testing.expectEqualStrings("s1", work[0].object.get("ref").?.object.get("session_id").?.string);
+    try harness.send("{\"id\":3,\"op\":\"work.list\",\"session_id\":\"s1\"}");
+    try testing.expectEqualStrings("invalid_request", try harness.code());
+}
+
 test "events refuses an absent session ahead of everything, an unreadable cursor, a run without a cursor and a parameter it does not take" {
     const harness = try Harness.init(testing.allocator, .{}, .{});
     defer harness.deinit();
@@ -3361,6 +4013,64 @@ fn fadingProbe(ptr: *anyopaque, refusal: *contract.Refusal) contract.Failure!con
     if (state.registered) return .{ .endpoint = fading_descriptor.endpoint, .capability_revision = "", .features = &.{} };
     state.registered = true;
     return fading_descriptor;
+}
+
+test "work.list shows a session serve no longer holds from its binding, live by default and closed on request, and work.status, work.read and work.stop answer it without reopening" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const cwd = try std.process.currentPathAlloc(testing.io, testing.allocator);
+    defer testing.allocator.free(cwd);
+    const path = try std.fs.path.join(testing.allocator, &.{ cwd, ".zig-cache", "tmp", tmp.sub_path[0..], "sessions.jsonl" });
+    defer testing.allocator.free(path);
+    var store = try hubmod.binding.Store.open(testing.allocator, path);
+    defer store.deinit();
+    try store.append(.{ .action = .opened, .time_ms = 10, .record = .{ .session_id = "left", .adapter = "reference", .directory = "/work/a" } });
+    try store.append(.{ .action = .opened, .time_ms = 20, .record = .{ .session_id = "ended", .adapter = "reference", .directory = "/work/a" } });
+    try store.append(.{ .action = .closed, .time_ms = 30, .record = .{ .session_id = "ended", .adapter = "reference", .directory = "/work/a" } });
+    const harness = try Harness.init(testing.allocator, .{ .bindings = &store }, .{});
+    defer harness.deinit();
+
+    try harness.send("{\"id\":1,\"op\":\"work.list\"}");
+    const live = (try harness.lastValue()).object.get("result").?.object.get("groups").?.array.items;
+    try testing.expectEqual(@as(usize, 1), live.len);
+    const only = live[0].object.get("work").?.array.items;
+    try testing.expectEqual(@as(usize, 1), only.len);
+    try testing.expectEqualStrings("left", only[0].object.get("ref").?.object.get("session_id").?.string);
+    try testing.expectEqual(false, only[0].object.get("held").?.bool);
+    try testing.expectEqualStrings("live", only[0].object.get("state").?.string);
+    try testing.expectEqualStrings("/work/a", live[0].object.get("directory").?.string);
+
+    try harness.send("{\"id\":2,\"op\":\"work.list\",\"request\":{\"include_closed\":true}}");
+    const all = (try harness.lastValue()).object.get("result").?.object.get("groups").?.array.items[0].object.get("work").?.array.items;
+    try testing.expectEqual(@as(usize, 2), all.len);
+    try testing.expectEqualStrings("ended", all[0].object.get("ref").?.object.get("session_id").?.string);
+    try testing.expectEqualStrings("closed", all[0].object.get("state").?.string);
+
+    try harness.send("{\"id\":3,\"op\":\"work.status\",\"session_id\":\"ended\"}");
+    try testing.expectEqualStrings("closed", (try harness.lastValue()).object.get("result").?.object.get("state").?.string);
+    try harness.send("{\"id\":4,\"op\":\"work.read\",\"session_id\":\"left\"}");
+    try testing.expectEqual(@as(usize, 0), (try harness.lastValue()).object.get("result").?.object.get("turns").?.array.items.len);
+    try harness.send("{\"id\":5,\"op\":\"work.stop\",\"session_id\":\"left\"}");
+    try testing.expectEqual(false, (try harness.lastValue()).object.get("result").?.object.get("held").?.bool);
+    try testing.expectEqual(@as(usize, 0), harness.hub.sessionCount());
+}
+
+test "an unreadable session history is history_failed for work.list and work.status, not an unknown session" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const cwd = try std.process.currentPathAlloc(testing.io, testing.allocator);
+    defer testing.allocator.free(cwd);
+    const path = try std.fs.path.join(testing.allocator, &.{ cwd, ".zig-cache", "tmp", tmp.sub_path[0..], "sessions.jsonl" });
+    defer testing.allocator.free(path);
+    var store = try hubmod.binding.Store.open(testing.allocator, path);
+    defer store.deinit();
+    try tmp.dir.writeFile(testing.io, .{ .sub_path = "sessions.jsonl", .data = "not a record" });
+    const harness = try Harness.init(testing.allocator, .{ .bindings = &store }, .{});
+    defer harness.deinit();
+    try harness.send("{\"id\":1,\"op\":\"work.list\"}");
+    try testing.expectEqualStrings("history_failed", try harness.code());
+    try harness.send("{\"id\":2,\"op\":\"work.status\",\"session_id\":\"gone\"}");
+    try testing.expectEqualStrings("history_failed", try harness.code());
 }
 
 test "the history op answers the store's sessions and refuses as the route does" {

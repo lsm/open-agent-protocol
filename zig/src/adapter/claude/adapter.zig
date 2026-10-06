@@ -10,6 +10,7 @@ const compat = @import("compat");
 const json_encode = @import("json_encode");
 
 pub const permission_hook = @import("permission_hook.zig");
+pub const native_list = @import("native_list.zig");
 pub const endpoint_id = session.endpoint_id;
 pub const capability_revision = harness_pins.claude_code_capability_revision;
 pub const pinned_version = harness_pins.claude_code_endpoint_version;
@@ -126,6 +127,12 @@ pub const Config = struct {
     poll_ns: u64 = 5 * std.time.ns_per_ms,
 };
 
+fn turnTag() u64 {
+    var bytes: [8]u8 = undefined;
+    compat.random.fillSecureBytes(&bytes);
+    return std.mem.readInt(u64, &bytes, .little) | 1;
+}
+
 fn wallClock() i64 {
     return compat.time.nowMillis();
 }
@@ -134,17 +141,54 @@ fn monotonic() u64 {
     return compat.time.monotonicNanos() catch 0;
 }
 
+const link_cache_ns: u64 = 10 * std.time.ns_per_s;
+
 pub const Adapter = struct {
     allocator: std.mem.Allocator,
     config: Config,
     ids: usize = 0,
+    links: ?std.heap.ArenaAllocator = null,
+    link_records: std.StringHashMapUnmanaged([]const u8) = .empty,
+    links_read_at: u64 = 0,
 
     pub fn init(allocator: std.mem.Allocator, config: Config) Adapter {
         return .{ .allocator = allocator, .config = config };
     }
 
     pub fn adapter(self: *Adapter) contract.Adapter {
-        return .{ .ptr = self, .vtable = &.{ .probe = probe, .open = open } };
+        return .{ .ptr = self, .vtable = &.{ .probe = probe, .open = open, .native_list = nativeList, .native_link = nativeLink } };
+    }
+
+    fn nativeLink(ptr: *anyopaque, arena: std.mem.Allocator, native_id: []const u8) std.mem.Allocator.Error![]const u8 {
+        const self: *Adapter = @ptrCast(@alignCast(ptr));
+        if (builtin.os.tag != .macos) return "";
+        const now = monotonic();
+        if (self.links == null or now -| self.links_read_at > link_cache_ns) {
+            if (self.links) |*old| old.deinit();
+            self.links = std.heap.ArenaAllocator.init(self.allocator);
+            self.link_records = .empty;
+            self.links_read_at = now;
+            const kept = self.links.?.allocator();
+            const home = compat.getEnvVarOwned(kept, "HOME") catch return "";
+            const desktop = try std.fs.path.join(kept, &.{ home, "Library", "Application Support", "Claude", "claude-code-sessions" });
+            self.link_records = try native_list.localIds(kept, desktop);
+        }
+        const local_id = self.link_records.get(native_id) orelse return "";
+        return native_list.appLink(arena, local_id);
+    }
+
+    pub fn deinit(self: *Adapter) void {
+        if (self.links) |*kept| kept.deinit();
+        self.links = null;
+    }
+
+    fn nativeList(ptr: *anyopaque, arena: std.mem.Allocator, request: contract.NativeListRequest, refusal: *contract.Refusal) contract.Failure![]const contract.NativeSession {
+        const self: *Adapter = @ptrCast(@alignCast(ptr));
+        _ = refusal;
+        const home = compat.getEnvVarOwned(arena, "HOME") catch return &.{};
+        const desktop = if (builtin.os.tag == .macos) try std.fs.path.join(arena, &.{ home, "Library", "Application Support", "Claude", "claude-code-sessions" }) else "";
+        const directory = if (request.directory.len > 0) request.directory else self.config.backend.working_directory orelse "";
+        return try native_list.list(arena, .{ .home = home, .desktop_sessions = desktop }, directory, request.limit);
     }
 
     fn mint(self: *Adapter, allocator: std.mem.Allocator, kind: []const u8) ![]u8 {
@@ -199,6 +243,7 @@ pub const Session = struct {
     flags_json: []const u8 = "",
     reported_level: ?[]const u8 = null,
     reported_policy: ?[]const u8 = null,
+    settings_arena: std.heap.ArenaAllocator,
     recovered: bool = false,
 
     fn open(owner: *Adapter, arena: std.mem.Allocator, request: contract.OpenRequest, refusal: *contract.Refusal) contract.Failure!*Session {
@@ -221,7 +266,7 @@ pub const Session = struct {
             self.flags_json = flags;
             try self.control(arena, .apply_flag_settings, owner.config.initialize_timeout_ns, refusal);
         }
-        const kept = self.reducer_arena.allocator();
+        const kept = self.settings_arena.allocator();
         if (request.reasoning_level) |level| self.reported_level = try kept.dupe(u8, level);
         if (request.compaction_policy_json) |policy| self.reported_policy = try kept.dupe(u8, policy);
         if (request.reopen) {
@@ -246,6 +291,7 @@ pub const Session = struct {
         errdefer reducer_arena.deinit();
         var config = owner.config.backend;
         config.resume_session_id = if (request.reopen) request.native_session_id else "";
+        config.user_settings = request.adopted;
         config.native_session_id = "";
         if (!request.reopen and !hasSessionSelector(config.args)) {
             var bytes: [16]u8 = undefined;
@@ -264,6 +310,7 @@ pub const Session = struct {
             .revision = capability_revision,
             .counter = &owner.ids,
             .now_ms = wallClock,
+            .turn_tag = turnTag(),
         }) catch |err| {
             if (err == error.OutOfMemory) return error.OutOfMemory;
             const message = try std.fmt.allocPrint(arena, "the claude child could not start: {s}", .{@errorName(err)});
@@ -277,6 +324,7 @@ pub const Session = struct {
             .participant = participant,
             .reducer_arena = reducer_arena,
             .engine = engine,
+            .settings_arena = std.heap.ArenaAllocator.init(gpa),
         };
         return self;
     }
@@ -310,7 +358,7 @@ pub const Session = struct {
         if (self.engine.reducer.run != null) return error.RunActive;
         self.flags_json = flags;
         try self.control(arena, .apply_flag_settings, self.owner.config.control_timeout_ns, refusal);
-        const kept = self.reducer_arena.allocator();
+        const kept = self.settings_arena.allocator();
         var response = oap_types.SessionSettingsUpdateResponse{ .session_id = self.id };
         if (request.reasoning_level) |level| {
             response.previous_reasoning_level = self.reported_level;
@@ -337,6 +385,7 @@ pub const Session = struct {
         self.clearCall();
         self.reducer_arena.deinit();
         gpa.destroy(self.reducer_arena);
+        self.settings_arena.deinit();
         gpa.free(self.id);
         gpa.free(self.participant);
         gpa.destroy(self);
@@ -545,8 +594,8 @@ pub const Session = struct {
         if (applied != .object or effective != .object) return error.BackendFailed;
         const model = applied.object.get("model") orelse return error.BackendFailed;
         if (model != .string or model.string.len == 0) return error.BackendFailed;
-        const kept = self.reducer_arena.allocator();
-        self.engine.reducer.current_model = try kept.dupe(u8, model.string);
+        self.engine.reducer.current_model = try self.reducer_arena.allocator().dupe(u8, model.string);
+        const kept = self.settings_arena.allocator();
         self.reported_level = null;
         if (applied.object.get("effort")) |effort| {
             if (effort == .string) {
@@ -1021,6 +1070,30 @@ test "an open applies its effort and compaction window after initialize and repo
     probe.handle = opened;
     const written = try probe.fake.written(probe.arena.allocator());
     try testing.expect(std.mem.indexOf(u8, written, "{\"request\":{\"settings\":{\"autoCompactEnabled\":true,\"autoCompactWindow\":150000,\"effortLevel\":\"max\"},\"subtype\":\"apply_flag_settings\"},\"request_id\":\"req_2_") != null);
+    const reported = try opened.state(probe.arena.allocator(), &refusal);
+    try testing.expectEqualStrings("max", reported.reasoning_level.?);
+    try testing.expectEqualStrings("{\"kind\":\"tokens\",\"tokens\":150000}", reported.compaction_policy_json.?);
+}
+
+test "the reported effort and compaction window read back unchanged after the arena compaction that follows a run" {
+    var probe: Probe = undefined;
+    try probe.init(fake_prelude ++
+        \\take; printf '{"type":"control_response","response":{"subtype":"success","request_id":"%s","response":{}}}\n' "$(field request_id)"
+        \\
+    ++ fake_gated_turn ++ fake_idle);
+    defer probe.deinit();
+    var refusal = contract.Refusal{};
+    const opened = try probe.adapter.adapter().open(probe.arena.allocator(), .{ .session_id = "s1", .participant = "user", .reasoning_level = "max", .compaction_policy_json = "{\"kind\":\"tokens\",\"tokens\":150000}" }, &refusal);
+    probe.handle = opened;
+    const live: *Session = @ptrCast(@alignCast(opened.ptr));
+    live.engine.compact_above = 0;
+    try testing.expect(live.engine.reducer.options.turn_tag != 0);
+    var seen = std.ArrayList(contract.Event).empty;
+    _ = try probe.submit("one", &refusal);
+    try probe.answer(try probe.pumpUntil("user.input.requested", &seen), "allow", &refusal);
+    _ = try probe.pumpUntil("run.completed", &seen);
+    _ = try opened.pump(std.time.ns_per_ms);
+    try testing.expect(live.engine.retained > 0);
     const reported = try opened.state(probe.arena.allocator(), &refusal);
     try testing.expectEqualStrings("max", reported.reasoning_level.?);
     try testing.expectEqualStrings("{\"kind\":\"tokens\",\"tokens\":150000}", reported.compaction_policy_json.?);
@@ -1746,4 +1819,5 @@ test "a create exposes its native binding before the first turn" {
 
 test {
     _ = permission_hook;
+    _ = native_list;
 }

@@ -351,3 +351,37 @@ function sabotagedEventsFetch(): { fetch: FetchLike; connections(): number } {
   };
   return { fetch: fetchLike, connections: () => eventsConnections };
 }
+
+test(
+  'integration: the work profile starts, reads, sends to, lists and stops a session on oapx serve',
+  { skip: skip || (hub === '' ? 'goap serve has no work routes yet (D30)' : false) },
+  async (t) => {
+    const client = dial(await startHub(t));
+
+    const started = await client.workStart('memory', { message: 'hello there', title: 'first task' });
+    assert.equal(started.ref.adapter, 'memory');
+    assert.equal(started.title, 'first task');
+    assert.ok(['queued', 'running', 'needs_you', 'done'].includes(started.status ?? ''), started.status);
+    const sessionId = started.ref.session_id ?? '';
+    assert.ok(sessionId);
+
+    await assert.rejects(client.workStart('memory', { message: 'x', directory: '/nowhere' }), /invalid_request/);
+    await assert.rejects(client.workStatus('nope'), /unknown_session/);
+
+    await client.workSend(sessionId, 'second');
+    const turns = await client.workRead(sessionId);
+    assert.deepEqual(
+      turns.filter((turn) => turn.role === 'user').map((turn) => turn.text),
+      ['hello there', 'second'],
+    );
+    const paged = await client.workRead(sessionId, { after: 0, limit: 1 });
+    assert.equal(paged.length, 1);
+    assert.equal(paged[0]?.index, 1);
+
+    const { groups } = await client.workList();
+    assert.ok(groups.some((group) => group.work.some((piece) => piece.ref.session_id === sessionId)));
+
+    const stopped = await client.workStop(sessionId);
+    assert.equal(stopped.ref.session_id, sessionId);
+  },
+);

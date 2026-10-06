@@ -43,6 +43,7 @@ type Record struct {
 	ReasoningLevel   string                     `json:"reasoning_level,omitempty"`
 	CompactionPolicy *protocol.CompactionPolicy `json:"compaction_policy,omitempty"`
 	ToolSourceIDs    []string                   `json:"tool_source_ids,omitempty"`
+	Adopted          bool                       `json:"adopted,omitempty"`
 }
 
 type Entry struct {

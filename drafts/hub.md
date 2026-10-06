@@ -436,6 +436,12 @@ error. That is stated because the four reasons are the whole set.
 | `POST /sessions/{id}/settings` | `settings` | `session.settings.update.response` | see [settings](#settings) |
 | `POST /sessions/{id}/close` | `close` | `204 No Content`, no body | `unknown_session` 404, `run_active` 409, `session_closed` 409, `request_cancelled` 400, `internal` 500 |
 | `GET /sessions/{id}/events` | `events` | an SSE stream, adopting a held subscription when the request named no cursor | see [events](#events) |
+| `GET /work` | `work.list` | `{"groups":[...]}`, per [the work profile](work.md); `?include_closed=true` adds closed sessions from the session history; `?include_native=true` adds each adapter's own sessions it can list (Codex through `thread/list`; Claude Code read-only from `~/.claude/projects`, the live-session registry and the desktop app's records), and an adapter that could not list is named in `unavailable`. A piece carries `link` when its adapter can name one: `codex://threads/<id>` for Codex, `claude://claude.ai/epitaxy/<local id>` for a Claude Code session the desktop app has a record of | — |
+| `GET /work/sessions/{id}` | `work.status` | one piece of work, per [the work profile](work.md) | `unknown_session` 404, `session_closed` 409 |
+| `POST /adapters/{name}/work` | `work.start` | the new session's `work.status` | `invalid_request` 400 (a missing message, or a directory other than the adapter's, naming its `working_directory`), `unknown_adapter` 404, and an open's refusals |
+| `POST /work/sessions/{id}/send` | `work.send` | the session's `work.status` | `invalid_request` 400, and a submit's refusals |
+| `POST /work/sessions/{id}/stop` | `work.stop` | the session's `work.status` | `unknown_session` 404, `session_closed` 409, and a cancel's refusals |
+| `GET /work/sessions/{id}/read` | `work.read` | `{"turns":[...]}`, after `after` and up to `limit` (1 to 500, default 100) | `invalid_request` 400, `unknown_session` 404 |
 
 **The daemon serves a bounded number of connections at once, and a stream is
 not a connection to itself.** One connection at a time is enough for the
@@ -640,7 +646,8 @@ needs a whole-body deadline, which is not what either tree has.
 the same for a path no pattern matches, and the draft's codes are
 `invalid_request`, `unknown_adapter` and `unknown_session` — none of which is
 "this URL does not exist". So the answer carries no `error.response` envelope.
-All fourteen routes are written in both trees: Zig dispatches each to the same
+The fourteen core routes are written in both trees, and the six work routes in
+Zig only (D30): Zig dispatches each to the same
 `Frontend` operation the stdio op runs, so an answer's shape is shared rather
 than written twice. A path that is a route asked with another method answers
 `405 Method Not Allowed` with an `Allow` header naming the one it takes, which
@@ -1331,6 +1338,9 @@ nowhere to put a reason (D12).
 The session history ([Decision 0046](../decisions/0046-a-session-list-is-the-hosts-bindings.md)):
 every session the hub's history file names, live or closed, as the store last
 recorded it. Over HTTP it is `GET /sessions/history?limit=…&cursor=…`.
+A client's close records `closed`; a shutdown does not, so the sessions a
+shutdown ended stay `live` in the history and a restarted hub lists and
+reopens them as left behind, not closed by anyone. Both trees do this.
 
 - **params:** `limit` (1 to 100, default 50) and `cursor` (the `next_cursor` of
   the page before), both optional.
@@ -2011,7 +2021,7 @@ are "stamped with the revision the lister served it under", and both name
 | **Zig did** | `Hub.submit`, `compact`, `resolve`, `resolveCall` and `cancel` released the session on the adapter's `SessionClosed` and answered `404 unknown_session`. |
 | **Now** | They release it and answer `session_closed`, as `Hub.updateSettings` already did. Pinned by `a control the adapter finds closed answers session_closed and releases the session, as Go does`. A later request for the released session is `unknown_session` in both trees. |
 
-### D29 — a `codex` entry naming an `endpoint` relays to Codex's shared app-server in `oapx hub` and is refused by `goap hub`
+### D29 — a `codex` entry naming an `endpoint` relays to Codex's shared app-server in `oapx serve` and is refused by `goap serve`
 
 | | |
 | --- | --- |
@@ -2019,6 +2029,15 @@ are "stamped with the revision the lister served it under", and both name
 | **Go does** | Refuses a `codex` entry with an `endpoint`: there is no Go client for the WebSocket Codex's managed daemon speaks on its control socket. |
 | **Zig does** | Accepts `unix://<path>`: the adapter starts `oapx codex-bridge --sock <path>` in place of `codex app-server`, and the bridge relays the adapter's newline-framed JSON-RPC to that socket's WebSocket. Any other scheme is refused, and so is an entry naming an `endpoint` beside an `executable` or `args`. The relay runs whatever Codex version the daemon is (0.159.2 when probed), not the pinned corpus version: the adapter does not check it. |
 | **Why it matters** | A document naming a codex `endpoint` is not portable between the hubs. Closing it needs the same relay in Go. |
+
+### D30 — the work verbs are served by `oapx serve` and not by `goap serve`
+
+| | |
+| --- | --- |
+| **The draft says** | `serve` answers the work profile's verbs ([work](work.md)), starting with `work.status` and `work.list` over the sessions it holds. |
+| **Go does** | Has none of the ops or routes: `GET /work` answers `404`. |
+| **Zig does** | Serves both on both transports. A piece of work's status is projected from the session's state and, when it is idle, the latest terminal envelope in its journal; `last_reply` is the latest `run.completed`'s `final_response` text, cut at 4 KiB. `work.list` groups by the adapter's working directory, most recent first, with no filters or paging yet. `work.start` opens with the message (D11) and keeps the title, or, given a `native_id` from `work.list`, adopts that harness session by resuming it under a new OAP id and submits the message to it, refused `run_active` while the harness lists it running; `work.send` submits with `delivery: auto`; `work.stop` cancels the active run and answers a session with none unchanged; A session the history names that `serve` does not hold (closed, or left by a restart) is listed with `held: false` and its `live` or `closed` state, closed ones only on `include_closed`; `work.status`, `work.read` and `work.stop` answer it without reopening, and `work.send` reopens it through its binding (0040) first, which an adapter without `session.open.reopen` refuses. `work.read` returns the turns `serve` recorded: each submitted user message, and each run's outcome with its reply text, the last 512 kept, each cut at 64 KiB. |
+| **Why it matters** | A caller of the work profile has to use `oapx serve` until Go serves it. |
 
 ### D12 — an open's `unsupported_feature` and `capability_degraded` carried no `feature`
 
