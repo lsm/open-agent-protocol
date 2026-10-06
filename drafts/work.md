@@ -28,7 +28,7 @@ answer (stdio op `work.capabilities`), per adapter:
 | --- | --- | --- |
 | `work.list` | the hub's sessions, the bindings (0046), and each adapter's native list (0047 decision 2) | never; an adapter with no native list contributes only its sessions |
 | `work.start` | open with a message (D11, closed) | the adapter refuses an open's message |
-| `work.send` | submit, `delivery: auto` | never |
+| `work.send` | submit, `delivery: auto` | never; but on a busy session it queues only where the adapter advertises `session.message.delivery.queue` (0007) |
 | `work.status` | session state, plus the latest run's terminal envelope | never |
 | `work.stop` | `run.cancel` | the adapter does not advertise `run.cancel` (DeepSeek) |
 | `work.read` | the turns `serve` records as messages are submitted and runs end | never |
@@ -137,7 +137,11 @@ place.
 ### `work.send`
 
 Request `{"ref", "message"}`. Submits with `delivery: auto`: it starts a run
-on an idle session and queues on a busy one. Answers `work.status`.
+on an idle session. On a busy one it queues where the adapter advertises
+`session.message.delivery.queue` (only OpenCode among the pinned harnesses
+today) and is otherwise refused `run_active`, the core's own answer to a busy
+`auto` it cannot queue (Decision 0007); the caller waits for the run to end or
+stops it. Answers `work.status`.
 
 ### `work.stop`
 
