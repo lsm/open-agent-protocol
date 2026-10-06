@@ -606,3 +606,74 @@ func readSSEEnvelope(t *testing.T, body io.Reader) protocol.Envelope {
 		return envelope
 	}
 }
+
+func TestSettingsOpMatchesHTTP(t *testing.T) {
+	httpHub, stdioHub := newTestHub(t, 64, 64), newTestHub(t, 64, 64)
+	for _, hub := range []*serve.Hub{httpHub, stdioHub} {
+		openSession(t, hub, "settings")
+	}
+	server, err := servehttp.New(httpHub, servehttp.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	httpFrontend := httptest.NewServer(server.Handler())
+	defer httpFrontend.Close()
+	f := startFrontend(t, stdioHub, Options{})
+
+	post := func(t *testing.T, session string, request json.RawMessage) (int, json.RawMessage) {
+		t.Helper()
+		response, err := http.Post(httpFrontend.URL+"/sessions/"+session+"/settings", "application/json", bytes.NewReader(request))
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer response.Body.Close()
+		body, err := io.ReadAll(response.Body)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return response.StatusCode, body
+	}
+
+	t.Run("a compaction policy is updated and answered the same on both", func(t *testing.T) {
+		request := requestEnvelope(t, "req-parity-settings", protocol.TypeSessionSettingsUpdateRequest, protocol.SessionSettingsUpdateRequest{
+			SessionID: "settings", CompactionPolicy: &protocol.CompactionPolicy{Kind: protocol.CompactionShare, SharePercent: 60},
+		}, "settings", "")
+		status, body := post(t, "settings", request)
+		if status != http.StatusOK {
+			t.Fatalf("POST settings: %d: %s", status, body)
+		}
+		f.send(fmt.Sprintf(`{"id":1,"op":"settings","session_id":"settings","request":%s}`, request))
+		response := f.expectResponse(1)
+		requireOK(t, response)
+		requireEqualPayloads(t, response.Result, body)
+		if !bytes.Contains(body, []byte(`"share_percent":60`)) {
+			t.Fatalf("the response does not report the policy now in force: %s", body)
+		}
+	})
+
+	t.Run("an update naming no setting is schema-invalid on both", func(t *testing.T) {
+		request := requestEnvelope(t, "req-parity-empty", protocol.TypeSessionSettingsUpdateRequest, protocol.SessionSettingsUpdateRequest{SessionID: "settings"}, "settings", "")
+		status, body := post(t, "settings", request)
+		if status != http.StatusBadRequest || errorCode(t, body) != "schema_invalid" {
+			t.Fatalf("POST settings with nothing to set: %d: %s", status, body)
+		}
+		f.send(fmt.Sprintf(`{"id":2,"op":"settings","session_id":"settings","request":%s}`, request))
+		requireCode(t, f.expectResponse(2), errorCode(t, body))
+	})
+
+	t.Run("an update for a session neither hub holds is unknown on both", func(t *testing.T) {
+		request := requestEnvelope(t, "req-parity-ghost", protocol.TypeSessionSettingsUpdateRequest, protocol.SessionSettingsUpdateRequest{
+			SessionID: "ghost", CompactionPolicy: &protocol.CompactionPolicy{Kind: protocol.CompactionOff},
+		}, "ghost", "")
+		status, body := post(t, "ghost", request)
+		if status != http.StatusNotFound || errorCode(t, body) != "unknown_session" {
+			t.Fatalf("POST settings for an unknown session: %d: %s", status, body)
+		}
+		f.send(fmt.Sprintf(`{"id":3,"op":"settings","session_id":"ghost","request":%s}`, request))
+		requireCode(t, f.expectResponse(3), "unknown_session")
+	})
+
+	if err := f.finish(); err != nil {
+		t.Fatalf("finish: %v", err)
+	}
+}

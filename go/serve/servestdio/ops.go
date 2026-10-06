@@ -28,6 +28,7 @@ const (
 	opSubmit       = "submit"
 	opResolve      = "resolve"
 	opCancel       = "cancel"
+	opSettings     = "settings"
 	opClose        = "close"
 	opTools        = "tools"
 )
@@ -236,7 +237,7 @@ func (s *Server) dispatch(ctx context.Context, request requestLine) (json.RawMes
 			return nil, werr
 		}
 		return s.modelsOp(ctx, request)
-	case opSubmit, opResolve, opCancel:
+	case opSubmit, opResolve, opCancel, opSettings:
 		if werr := request.only(paramSession, paramRequest); werr != nil {
 			return nil, werr
 		}
@@ -245,6 +246,8 @@ func (s *Server) dispatch(ctx context.Context, request requestLine) (json.RawMes
 			return s.submitOp(ctx, request)
 		case opResolve:
 			return s.resolveOp(ctx, request)
+		case opSettings:
+			return s.settingsOp(ctx, request)
 		default:
 			return s.cancelOp(ctx, request)
 		}
@@ -744,6 +747,33 @@ func (s *Server) cancelOp(ctx context.Context, request requestLine) (json.RawMes
 	response.InReplyTo = envelope.ID
 	response.SessionID = ack.SessionID
 	response.RunID = ack.RunID
+	response.CapabilityRevision = envelope.CapabilityRevision
+	return envelopeResult(response)
+}
+
+func (s *Server) settingsOp(ctx context.Context, request requestLine) (json.RawMessage, *wireError) {
+	envelope, werr := s.gateRequest(request.Request, protocol.TypeSessionSettingsUpdateRequest)
+	if werr != nil {
+		return nil, werr
+	}
+	var payload protocol.SessionSettingsUpdateRequest
+	if err := envelope.DecodePayload(&payload); err != nil {
+		return nil, &wireError{Code: "invalid_payload", Message: trimMessage(err.Error())}
+	}
+	entry, werr := s.lookupSession(request.SessionID)
+	if werr != nil {
+		return nil, werr
+	}
+	updated, _, err := entry.UpdateSettings(ctx, payload)
+	if err != nil {
+		return nil, submitError(err)
+	}
+	response, err := protocol.NewEnvelope(protocol.TypeSessionSettingsUpdateResponse, protocol.EnvelopeID(s.nextID("response")), updated)
+	if err != nil {
+		return nil, internalError(err)
+	}
+	response.InReplyTo = envelope.ID
+	response.SessionID = updated.SessionID
 	response.CapabilityRevision = envelope.CapabilityRevision
 	return envelopeResult(response)
 }

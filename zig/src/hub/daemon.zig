@@ -129,6 +129,7 @@ pub const Daemon = struct {
             .submit => |id| self.submit(arena, id, request.body),
             .resolve => |id| self.resolve(arena, id, request.body),
             .cancel => |id| self.cancel(arena, id, request.body),
+            .settings => |id| self.settings(arena, id, request.body),
             .events => |id| self.events(arena, id, request),
         };
     }
@@ -308,6 +309,28 @@ pub const Daemon = struct {
             .run_id = acknowledged.run_id,
             .capability_revision = envelope.capability_revision,
             .payload = .{ .run_cancel_response = acknowledged },
+        });
+    }
+
+    fn settings(self: *Daemon, arena: std.mem.Allocator, id: []const u8, body: []const u8) !Reply {
+        const value = parseBody(arena, body) orelse return self.refusal(arena, malformed, .{});
+        const correlation = correlationOf(value);
+        const gated = try hub_stdio.Frontend.gateEnvelope(arena, value, &.{.session_settings_update_request}, "the request envelope is not a session.settings.update.request");
+        const envelope = switch (gated) {
+            .refused => |refused| return self.refusal(arena, refused, correlation),
+            .envelope => |envelope| envelope,
+        };
+        const request = &envelope.payload.session_settings_update_request;
+        var reported = contract.Refusal{};
+        const updated = self.frontend.hub.updateSettings(arena, id, request, &reported) catch |err| {
+            return self.refusal(arena, try controlRefusal(arena, err, &reported, id), correlation);
+        };
+        return self.answered(arena, .{
+            .id = try self.responseId(arena),
+            .in_reply_to = envelope.id,
+            .session_id = updated.session_id,
+            .capability_revision = envelope.capability_revision,
+            .payload = .{ .session_settings_update_response = updated },
         });
     }
 
@@ -1240,6 +1263,32 @@ test "a resolve answers the response its request's type selects, and a second an
     try testing.expectEqualStrings("409 Conflict", twice.status);
     try testing.expectEqualStrings("resolution_rejected", try fixture.code(twice));
     try testing.expectEqualStrings("run-1", (try fixture.json(twice)).get("run_id").?.string);
+}
+
+test "a settings update is answered on its own route, and one naming nothing, an unadvertised setting or an absent session is refused" {
+    var fixture: Fixture = undefined;
+    try fixture.init(.{});
+    defer fixture.deinit();
+    _ = try fixture.answer("POST", "/adapters/memory/sessions", open_demo);
+
+    const updated = try fixture.answer("POST", "/sessions/demo/settings", "{" ++ envelope_head ++ ",\"type\":\"session.settings.update.request\",\"id\":\"set-1\",\"session_id\":\"demo\",\"payload\":{\"session_id\":\"demo\",\"compaction_policy\":{\"kind\":\"share\",\"share_percent\":60}}}");
+    try testing.expectEqualStrings("200 OK", updated.status);
+    try testing.expectEqualStrings("session.settings.update.response", try fixture.kind(updated));
+    const policy = (try fixture.json(updated)).get("payload").?.object.get("compaction_policy").?.object;
+    try testing.expectEqualStrings("share", policy.get("kind").?.string);
+    try testing.expectEqual(@as(i64, 60), policy.get("share_percent").?.integer);
+
+    const empty = try fixture.answer("POST", "/sessions/demo/settings", "{" ++ envelope_head ++ ",\"type\":\"session.settings.update.request\",\"id\":\"set-2\",\"session_id\":\"demo\",\"payload\":{\"session_id\":\"demo\"}}");
+    try testing.expectEqualStrings("400 Bad Request", empty.status);
+    try testing.expectEqualStrings("schema_invalid", try fixture.code(empty));
+
+    const level = try fixture.answer("POST", "/sessions/demo/settings", "{" ++ envelope_head ++ ",\"type\":\"session.settings.update.request\",\"id\":\"set-3\",\"session_id\":\"demo\",\"payload\":{\"session_id\":\"demo\",\"reasoning_level\":\"high\"}}");
+    try testing.expectEqualStrings("400 Bad Request", level.status);
+    try testing.expectEqualStrings("unsupported_feature", try fixture.code(level));
+
+    const absent = try fixture.answer("POST", "/sessions/absent/settings", "{" ++ envelope_head ++ ",\"type\":\"session.settings.update.request\",\"id\":\"set-4\",\"session_id\":\"absent\",\"payload\":{\"session_id\":\"absent\",\"compaction_policy\":{\"kind\":\"off\"}}}");
+    try testing.expectEqualStrings("404 Not Found", absent.status);
+    try testing.expectEqualStrings("unknown_session", try fixture.code(absent));
 }
 
 test "a cancel naming another session is scope_mismatch, a live run's is accepted, and a completed run's is run_terminal" {

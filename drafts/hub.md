@@ -404,7 +404,7 @@ error. That is stated because the four reasons are the whole set.
 | The verb is `hub`, not `serve` | `TestServeWithoutRoleNamesHub` |
 | The built binary drives a full session, and fails closed on a malformed line | `TestStdioBinaryDrivesAFullSession`, `TestStdioBinaryFailsClosedOnAMalformedLine` |
 | The full lifecycle runs against a real listener | `TestServeLifecycleOverRealListener` |
-| The hub's stdio wire is the twelve ops, not the endpoint's raw envelopes | `TestCapabilitiesNameTheStdioBinding` |
+| The hub's stdio wire is the thirteen ops, not the endpoint's raw envelopes | `TestCapabilitiesNameTheStdioBinding` |
 
 ### The HTTP routes and SSE framing
 
@@ -420,6 +420,7 @@ error. That is stated because the four reasons are the whole set.
 | `POST /sessions/{id}/submit` | `submit` | `session.message.submit.response`, or `session.compact.response` for a compaction | see [submit](#submit) |
 | `POST /sessions/{id}/resolve` | `resolve` | the matching resolve response | see [resolve](#resolve) |
 | `POST /sessions/{id}/cancel` | `cancel` | `run.cancel.response` | see [cancel](#cancel) |
+| `POST /sessions/{id}/settings` | `settings` | `session.settings.update.response` | see [settings](#settings) |
 | `POST /sessions/{id}/close` | `close` | `204 No Content`, no body | `unknown_session` 404, `run_active` 409, `session_closed` 409, `request_cancelled` 400, `internal` 500 |
 | `GET /sessions/{id}/events` | `events` | an SSE stream, adopting a held subscription when the request named no cursor | see [events](#events) |
 
@@ -626,7 +627,7 @@ needs a whole-body deadline, which is not what either tree has.
 the same for a path no pattern matches, and the draft's codes are
 `invalid_request`, `unknown_adapter` and `unknown_session` — none of which is
 "this URL does not exist". So the answer carries no `error.response` envelope.
-All twelve routes are written in both trees: Zig dispatches each to the same
+All thirteen routes are written in both trees: Zig dispatches each to the same
 `Frontend` operation the stdio op runs, so an answer's shape is shared rather
 than written twice. A path that is a route asked with another method answers
 `405 Method Not Allowed` with an `Allow` header naming the one it takes, which
@@ -641,13 +642,13 @@ thread. They are measurements and an open question. None of them settles anythin
 was settled by #656 either.
 
 - **A wrong-media request to a path no route matches is `415` here and `404` in Go — MEASURED, both
-  sides, from the source.** `answer()` tests the media gate at `http.zig:381` and only then returns
-  `.not_found` at `:382`, so on this tree an unrouted path carrying a body and a non-JSON
+  sides, from the source.** `answer()` tests the media gate at `http.zig:388` and only then returns
+  `.not_found` at `:389`, so on this tree an unrouted path carrying a body and a non-JSON
   `Content-Type` is answered `415 unsupported_media_type`, **not** the plain `404` the paragraph
   above describes. Go cannot reach the same answer: its media check is at
-  `servehttp/server.go:749`, inside `readRequest`, which is called from the **four**
-  body-reading handlers at `:191`, `:321`, `:382` and `:496` — four of the twelve operations
-  registered on the mux across `:69`-`:80`, `:68` being the `http.NewServeMux()` construction rather
+  `servehttp/server.go:796`, inside `readRequest`, which is called from the **five**
+  body-reading handlers at `:191`, `:327`, `:400`, `:514` and `:562` — five of the thirteen operations
+  registered on the mux across `:69`-`:81`, `:68` being the `http.NewServeMux()` construction rather
   than a registration. So a path matching no pattern is answered by the mux before any handler runs,
   and the other eight registrations read no body at all. So the two trees disagree on one request, and the paragraph above is right about
   the rule and incomplete about the case. **Neither tree is wrong against the draft**: the draft
@@ -1148,7 +1149,7 @@ never connects overflows exactly as a slow consumer does, and the adopter reads
 
 ## The operations
 
-Twelve ops. Each row gives the request line's parameters, the answer, and the
+Thirteen ops. Each row gives the request line's parameters, the answer, and the
 errors. A refusal the row does not name is `internal` on both, with two
 exceptions stated once here rather than repeated per row:
 
@@ -1423,6 +1424,30 @@ nowhere to put a reason (D12).
   (409), `request_cancelled` (400), `internal` (500).
 - **pinned by:** `TestCancelRejections`, `TestOpErrorCodesMirrorHTTP`,
   `TestCloseAfterCancellation`.
+
+### `settings`
+
+- **params:** `session_id` and `request`, and nothing else.
+- **answer:** a `session.settings.update.response` envelope reporting the
+  reasoning level and compaction policy now in force, from the session's
+  adapter, which judges the update against its own descriptor. The hub adds
+  nothing: it refuses an update for a session it does not hold or whose payload
+  names another session, and an update to an adapter with no settings update at
+  all is `unsupported_feature` naming the first setting it carries. The
+  `session.state.updated` an endpoint publishes after the response has nowhere
+  to go, because the hub's streams are a run's; a host reads `state`.
+- **errors:** `unknown_session` (404), `invalid_request`, `malformed_json`,
+  `schema_invalid` (400, which is also the answer to an update naming no
+  setting, since the schema requires one), `type_mismatch`, `invalid_payload`,
+  `scope_mismatch` (400), `unsupported_feature` and `capability_degraded`
+  (400), `run_active` (409, a run in flight), `session_closed` (409),
+  `request_cancelled` (400), `internal` (500).
+- **pinned by:** `TestSettingsOpMatchesHTTP`; Zig: `a settings update is
+  answered on its own route, and one naming nothing, an unadvertised setting or
+  an absent session is refused` and `a settings update reaches the session's
+  adapter, and one naming nothing or another session is refused before it`.
+  `oapx hub --stdio` does not serve the op, as it serves no `submit`, `resolve`
+  or `cancel`.
 
 ### `close`
 
@@ -1927,6 +1952,14 @@ are "stamped with the revision the lister served it under", and both name
 | **Go does** | Refuses the entry: `buildAdapter` has no `oapx` case, because there is no Go adapter over oapx's loop. |
 | **Zig does** | Builds it from the same production runtime `oapx serve agent --backend oapx` uses. |
 | **Why it matters** | One document is not portable between the two hubs once it names an `oapx` entry, which is why `examples/oap-serve.json` does not name one. Closing it needs a Go adapter that spawns `oapx serve agent --backend oapx` over the endpoint binding, which is adapter work rather than hub work. |
+
+### D28 — a control that finds its session closed answers `unknown_session` in Zig
+
+| | |
+| --- | --- |
+| **Go does** | `serve.Session` marks itself closed when the adapter answers `ErrSessionClosed`, and `submit`, `resolve`, `cancel` and `settings` answer `409 session_closed`, as their rows say. |
+| **Zig does** | `Hub.submit`, `resolve`, `resolveCall`, `cancel` and `compact` release the session on the adapter's `SessionClosed` and answer `404 unknown_session`. `Hub.updateSettings` releases it too but answers `session_closed`, matching Go and its row, because it was written after the draft named the code. |
+| **Why it is open** | The four older controls predate the rows' `session_closed`; moving them is a behaviour change on routes clients already drive, so it is recorded here rather than folded into the settings route. |
 
 ### D12 — an open's `unsupported_feature` and `capability_degraded` carried no `feature`
 

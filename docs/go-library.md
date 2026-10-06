@@ -74,7 +74,7 @@ being one.
 | `go/serve` | The hub: sessions, runs, subscriptions, the snapshot and the close semantics, over a transport-agnostic core. | `go/cmd/goap/serve.go`, `endpoint.go` |
 | `go/serve/servehttp` | The HTTP + SSE binding of the hub, including the body gate, the allowlists and the stream endings. | `go/cmd/goap/serve.go` |
 | `go/serve/serveendpoint` | The endpoint binding: raw OAP envelopes over a pair of streams, `Server.Run(ctx, io.Reader, io.Writer)`, with no listener and no HTTP — the stdio form the endpoint profile specifies. The embeddable **HTTP** handler is `servehttp.Server.Handler()`. | `go/cmd/goap/endpoint.go` |
-| `go/serve/servestdio` | The stdio binding: twelve ops over a pipe, with its own op set rather than the endpoint's raw envelopes. | `go/cmd/goap/serve.go` |
+| `go/serve/servestdio` | The stdio binding: thirteen ops over a pipe, with its own op set rather than the endpoint's raw envelopes. | `go/cmd/goap/serve.go` |
 | `go/client` | A Go client for the hub's HTTP + SSE wire. Also the far-side proof that the wire is implementable from outside this module. | — |
 | `go/sdk` | A client for a **running endpoint**: it spawns `oapx serve agent,provider --stdio` and exposes four namespaces over profiled newline-delimited OAP envelopes — `Auth`, `Models`, `Provider` and `Agent`. Where `go/client` speaks the hub's HTTP + SSE wire to a daemon you started, this speaks the stdio wire to a process it owns. | `go/cmd/goap` does not use it; it is the library a Go program embeds |
 | `harnesses` | The embedded harness pin catalogue, so a consumer reads the same pins the repository does. | `go/cmd/goap/harnesses.go` |
