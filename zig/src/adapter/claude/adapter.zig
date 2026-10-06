@@ -127,6 +127,12 @@ pub const Config = struct {
     poll_ns: u64 = 5 * std.time.ns_per_ms,
 };
 
+fn turnTag() u64 {
+    var bytes: [8]u8 = undefined;
+    compat.random.fillSecureBytes(&bytes);
+    return std.mem.readInt(u64, &bytes, .little) | 1;
+}
+
 fn wallClock() i64 {
     return compat.time.nowMillis();
 }
@@ -304,6 +310,7 @@ pub const Session = struct {
             .revision = capability_revision,
             .counter = &owner.ids,
             .now_ms = wallClock,
+            .turn_tag = turnTag(),
         }) catch |err| {
             if (err == error.OutOfMemory) return error.OutOfMemory;
             const message = try std.fmt.allocPrint(arena, "the claude child could not start: {s}", .{@errorName(err)});
@@ -1080,6 +1087,7 @@ test "the reported effort and compaction window read back unchanged after the ar
     probe.handle = opened;
     const live: *Session = @ptrCast(@alignCast(opened.ptr));
     live.engine.compact_above = 0;
+    try testing.expect(live.engine.reducer.options.turn_tag != 0);
     var seen = std.ArrayList(contract.Event).empty;
     _ = try probe.submit("one", &refusal);
     try probe.answer(try probe.pumpUntil("user.input.requested", &seen), "allow", &refusal);

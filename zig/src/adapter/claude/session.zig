@@ -22,6 +22,7 @@ pub const Options = struct {
     revision: []const u8 = capability_revision,
     counter: ?*usize = null,
     now_ms: ?*const fn () i64 = null,
+    turn_tag: u64 = 0,
 };
 
 pub const Started = struct {
@@ -138,7 +139,10 @@ pub const Reducer = struct {
     }
 
     pub fn mintTurn(self: *Reducer) ![]const u8 {
-        return self.nextID("turn");
+        if (self.options.turn_tag == 0) return self.nextID("turn");
+        const counter = self.options.counter orelse &self.ids;
+        counter.* += 1;
+        return std.fmt.allocPrint(self.allocator(), "turn-{x:0>16}-{d}", .{ self.options.turn_tag, counter.* });
     }
 
     fn now(self: *Reducer) i64 {
@@ -2712,4 +2716,17 @@ test "a policy-denied call still open when the child dies settles refused_by_pol
     try testing.expectEqualStrings("run.failed", kinds[kinds.len - 1]);
     const settled = reducer.envelopes.items[kinds.len - 2].object.get("payload").?.object.get("error").?.object;
     try testing.expectEqualStrings(refused_by_policy, settled.get("code").?.string);
+}
+
+test "a tagged reducer mints turn ids no other session or process repeats, and an untagged one keeps the corpus's turn-N" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var plain = Reducer.init(&arena, .{});
+    try std.testing.expectEqualStrings("turn-1", try plain.mintTurn());
+    var first = Reducer.init(&arena, .{ .turn_tag = 0xabc });
+    var second = Reducer.init(&arena, .{ .turn_tag = 0xdef });
+    const a = try first.mintTurn();
+    const b = try second.mintTurn();
+    try std.testing.expectEqualStrings("turn-0000000000000abc-1", a);
+    try std.testing.expect(!std.mem.eql(u8, a, b));
 }
