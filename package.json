@@ -1,6 +1,6 @@
 {
   "name": "oap-sdk",
-  "version": "0.1.0-alpha.8",
+  "version": "0.1.0-alpha.9",
   "description": "TypeScript SDK for the Open Agent Protocol project's runtime, over its stdio protocol",
   "main": "dist/src/index.js",
   "types": "dist/src/index.d.ts",

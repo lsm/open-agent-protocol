@@ -7,6 +7,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+## [0.1.0-alpha.9] - 2026-10-06
+
+### Merged pull requests
+
+- **hub: route a live settings update to the session's adapter** ([#898](https://github.com/lsm/open-agent-protocol/pull/898)): Both hubs now take a live settings update at `POST /sessions/{id}/settings`, and `goap hub --stdio` takes it as the `settings` op.
+- **tui: follow a queued follow-up over --attach instead of refusing it** ([#897](https://github.com/lsm/open-agent-protocol/pull/897)): `oapx tui --attach` can now queue a follow-up with Tab: the hub admits it queued, and the terminal runs it once the current run ends.
+- **decisions: accept 0040 session reattach on its graduated evidence** ([#896](https://github.com/lsm/open-agent-protocol/pull/896)): Accepts Decision 0040: the reattach wire, the memory references, both conformance runners and every pinned adapter's reopen (or refusal of one) are on main, and both hubs share one binding file.
+- **codex: resume a thread under the host's sandbox, approval policy and directory** ([#895](https://github.com/lsm/open-agent-protocol/pull/895)): Closes the last open item of #446 (owner decision, 2026-10-05).
+- **tui: steer and compact over --attach through the hub's submit route** ([#894](https://github.com/lsm/open-agent-protocol/pull/894)): Part of #442 (hub attach parity).
+- **hub: keep session bindings in a file oapx reads at reopen** ([#893](https://github.com/lsm/open-agent-protocol/pull/893)): Part of #447 (epic #442).
+- **deepseek: advertise reopen as unavailable and decline it before a runtime starts** ([#892](https://github.com/lsm/open-agent-protocol/pull/892)): Part of #448 (epic #442).
+- **opencode: reopen the bound server session after its last stored event** ([#891](https://github.com/lsm/open-agent-protocol/pull/891)): Part of #448 (epic #442).
+- **hermes: reopen the bound stored session through session.resume** ([#890](https://github.com/lsm/open-agent-protocol/pull/890)): Part of #448 (epic #442).
+- **providers: let an override move the Anthropic and Codex rows, and refuse one on Copilot** ([#889](https://github.com/lsm/open-agent-protocol/pull/889)): Closes the last part of #360.
+- **providers: hold a stored vendor API key to the origins its OAuth token may reach** ([#888](https://github.com/lsm/open-agent-protocol/pull/888)): Part of #360; flagged in #880's review.
+- **Pi: Reopen bound session files in Go and Zig** ([#887](https://github.com/lsm/open-agent-protocol/pull/887)): Both adapter trees reopen Pi’s recorded UUID and session file through `switch_session`, report recovered settings, and advertise capability revision v5.
+- **auth: name the host an override sends a provider to** ([#885](https://github.com/lsm/open-agent-protocol/pull/885)): Part of #360.
+- **acp: Reopen bound sessions through advertised load operations** ([#884](https://github.com/lsm/open-agent-protocol/pull/884))
+- **providers: apply an override's models as the row's allowlist** ([#883](https://github.com/lsm/open-agent-protocol/pull/883)): Part of #360.
+- **tui: end a compaction over OAP only once its run settles** ([#882](https://github.com/lsm/open-agent-protocol/pull/882)): Fixes the `compaction over OAP ... ends on its summary` flake (issue #10).
+- **claude: Reopen sessions through their native bindings** ([#881](https://github.com/lsm/open-agent-protocol/pull/881)): Refs #448, #442.
+- **providers: point a catalogued row at its override, and keep the row's stored credential home** ([#880](https://github.com/lsm/open-agent-protocol/pull/880)): Part of #360, per the owner's decision: an override's endpoint gets no row credential unless it says `forwards_credential: true`; environment keys are not gated.
+- **zig: detect the Z.AI coding plan as Z.AI, on live evidence of its thinking wire** ([#879](https://github.com/lsm/open-agent-protocol/pull/879)): Closes #580, per the owner's decision: widen the Z.AI detection once a live probe confirmed the thinking wire.
+- **tools: deny a read or write whose workspace_root lies outside the session's root** ([#878](https://github.com/lsm/open-agent-protocol/pull/878)): Closes #587, per the owner's decision: a model-supplied `workspace_root` must lie inside the session's root.
+- **tools: let an MCP server's declaration, not a tool's name, set its permission tier** ([#877](https://github.com/lsm/open-agent-protocol/pull/877)): Closes #630, per the owner's decision: an MCP tool's name no longer grants anything.
+- **zig: count a 402 from a coding plan's models endpoint as not subscribed** ([#876](https://github.com/lsm/open-agent-protocol/pull/876)): Closes #352, per the owner's decision on it: a 402 from a coding plan's models endpoint now counts as "not subscribed", like 401 and 403, so the plan is dropped for that key.
+- **tui: steer a running turn over OAP** ([#875](https://github.com/lsm/open-agent-protocol/pull/875)): Closes #615.
+- **serve: write an accepted run.cancel.response before the run.cancelled it confirms** ([#874](https://github.com/lsm/open-agent-protocol/pull/874)): Closes #818.
+
 ## [0.1.0-alpha.8] - 2026-10-04
 
 ### Breaking changes
