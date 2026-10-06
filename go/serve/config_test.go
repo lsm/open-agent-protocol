@@ -162,6 +162,7 @@ func TestLoadRegistryConstructorErrors(t *testing.T) {
 		{"acp relative directory", `"acp": {"type": "acp", "executable": "/bin/x", "working_directory": "relative"}`, []string{"acp", "absolute working directory"}},
 		{"deepseek without provider", `"deepseek": {"type": "deepseek", "executable": "/bin/x", "working_directory": "/tmp", "model": "m"}`, []string{"deepseek", "provider"}},
 		{"opencode without endpoint", `"opencode": {"type": "opencode"}`, []string{"opencode", "endpoint"}},
+		{"codex naming an endpoint", `"codex": {"type": "codex", "executable": "/bin/codex", "endpoint": "unix:///tmp/codex.sock"}`, []string{"codex", "endpoint", "only oapx"}},
 		{"unknown type", `"ghost": {"type": "ghost"}`, []string{"ghost", "unknown type"}},
 	}
 	for _, testCase := range cases {
