@@ -15,7 +15,9 @@ in one call each, in terms of a piece of work and one of six statuses.
 
 It is served by `serve` (the multi-session endpoint), next to the hub's own
 operations, on both transports. It adds no run machinery: every verb is built
-from core operations the endpoint already serves.
+from core operations the endpoint already serves, and where a core
+operation has no room for what a verb asks (a per-request directory), the
+verb says so and refuses it rather than inventing surface.
 
 ## Capability keys
 
@@ -54,6 +56,20 @@ only once adoption (0047 decision 3) lands, and refuse it until then.
 
 An idle session that has never run is `done` with no `last_reply`.
 
+These six apply only to a session `serve` holds, the only kind with core state
+and a journal. Two other kinds of entry appear in `work.find` and carry **no
+`status`**:
+
+- **Unheld:** a session with a binding (0046) that `serve` does not hold, such
+  as one closed or left behind by a restart. It carries `"held": false` and the
+  binding's `state` (`live` or `closed`), nothing projected. It is listed only
+  when `include_closed` is set.
+- **Native:** a harness session no binding names (0047 decision 2). It carries
+  `native_id` and whatever the harness's own list says, nothing projected.
+
+`work.status` answers only a held session; for any other it refuses
+`unknown_session`, as `state` does.
+
 ## Operations
 
 ### `work.status`
@@ -90,9 +106,17 @@ text over transcripts is out of scope here.
 
 ### `work.start`
 
-Request `{"adapter", "directory", "title"?, "message"}`. Opens a session in
-`directory` with `message` as its first message (D11) and answers its
+Request `{"adapter", "directory"?, "title"?, "message"}`. Opens a session on
+`adapter` with `message` as its first message (D11) and answers its
 `work.status`.
+
+The core's `openRequest` carries no working directory: a session runs in its
+adapter's configured `working_directory`. So `directory`, when given, must
+name that directory, and any other is refused `unsupported_feature` naming
+`work.start.directory`. Starting work in a directory no adapter is configured
+for needs the open to carry a directory, which is a core change of its own and
+not part of this profile; until then a caller registers one adapter entry per
+place.
 
 ### `work.send`
 
