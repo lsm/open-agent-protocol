@@ -642,13 +642,13 @@ thread. They are measurements and an open question. None of them settles anythin
 was settled by #656 either.
 
 - **A wrong-media request to a path no route matches is `415` here and `404` in Go — MEASURED, both
-  sides, from the source.** `answer()` tests the media gate at `http.zig:381` and only then returns
-  `.not_found` at `:382`, so on this tree an unrouted path carrying a body and a non-JSON
+  sides, from the source.** `answer()` tests the media gate at `http.zig:388` and only then returns
+  `.not_found` at `:389`, so on this tree an unrouted path carrying a body and a non-JSON
   `Content-Type` is answered `415 unsupported_media_type`, **not** the plain `404` the paragraph
   above describes. Go cannot reach the same answer: its media check is at
-  `servehttp/server.go:749`, inside `readRequest`, which is called from the **four**
-  body-reading handlers at `:191`, `:321`, `:382` and `:496` — four of the twelve operations
-  registered on the mux across `:69`-`:80`, `:68` being the `http.NewServeMux()` construction rather
+  `servehttp/server.go:796`, inside `readRequest`, which is called from the **five**
+  body-reading handlers at `:191`, `:327`, `:400`, `:514` and `:562` — five of the thirteen operations
+  registered on the mux across `:69`-`:81`, `:68` being the `http.NewServeMux()` construction rather
   than a registration. So a path matching no pattern is answered by the mux before any handler runs,
   and the other eight registrations read no body at all. So the two trees disagree on one request, and the paragraph above is right about
   the rule and incomplete about the case. **Neither tree is wrong against the draft**: the draft
