@@ -1208,9 +1208,9 @@ pub const TuiRuntime = struct {
             .failed => .@"error",
         };
         self.completed = true;
+        self.stream_active = false;
         self.pushTerminal(.{ .compaction_end = payload });
         self.event_stream.complete(.{ .reason = reason });
-        self.stream_active = false;
     }
 
     pub fn resumeSession(self: *TuiRuntime) !void {
@@ -1541,9 +1541,9 @@ pub const TuiRuntime = struct {
 
     fn endRun(self: *TuiRuntime, reason: TuiEndReason) anyerror!void {
         self.completed = true;
+        self.stream_active = false;
         self.pushTerminal(.{ .agent_end = .{ .reason = reason } });
         self.event_stream.complete(.{ .reason = reason });
-        self.stream_active = false;
     }
 
     fn workspaceSystemPrompt(self: *TuiRuntime) ![]u8 {

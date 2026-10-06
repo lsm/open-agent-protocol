@@ -4,8 +4,8 @@ Status: proposed design; the specification both trees are judged against
 Date: 2026-09-26
 Base protocol: `open-agent-protocol` version `0.1`
 Profile: `open-agent-protocol.agent-control-core`
-Reference implementation: `goap hub` (`go/serve`), the only hub that exists
-Written for: `oapx hub` (Zig), which does not exist yet and is the reason this
+Reference implementation: `goap serve` (`go/serve`), the only hub that exists
+Written for: `oapx serve` (Zig), which does not exist yet and is the reason this
 document does
 Decides: the wire the Go hub serves today by behaviour
 Governs: the transports, not the profile
@@ -63,7 +63,7 @@ security posture, and a port carries all of them or is not conformant.
 
 | rule | detail | pinned by |
 | --- | --- | --- |
-| **Loopback bind by default** | The HTTP daemon binds `127.0.0.1:6270`. Pointing it at an external interface is explicitly unsupported and opts out of the single-user model. | `TestServeDefaultAddrIsLoopback`. Zig: `oapx hub` with no transport flag binds `127.0.0.1:6270`, pinned by `the default bind is loopback, so every default user keeps the allowlist`; `the loopback allowlist is the three loopback spellings and nothing else` pins which binds are loopback at all, `a bind is read as a host and a port, and a malformed one says which part it is` pins every `--addr` refusal, and `the banner names the bound address, IPv4 plainly and IPv6 bracketed` pins what the banner prints |
+| **Loopback bind by default** | The HTTP daemon binds `127.0.0.1:6270`. Pointing it at an external interface is explicitly unsupported and opts out of the single-user model. | `TestServeDefaultAddrIsLoopback`. Zig: `oapx serve` with no transport flag binds `127.0.0.1:6270`, pinned by `the default bind is loopback, so every default user keeps the allowlist`; `the loopback allowlist is the three loopback spellings and nothing else` pins which binds are loopback at all, `a bind is read as a host and a port, and a malformed one says which part it is` pins every `--addr` refusal, and `the banner names the bound address, IPv4 plainly and IPv6 bracketed` pins what the banner prints |
 | **No authentication** | There is no credential, token or session cookie on either transport. Over stdio, spawning the process *is* the authorization. | structural: no auth code path exists on either transport, which is how the rule is kept — a test asserting an absence would only say the tree had not grown one yet |
 | **`Host` allowlisted on a loopback bind** | When the bind address names `localhost`, `127.0.0.1` or `::1`, only requests whose `Host` header names one of those three are served; anything else is refused `403`. Comparison is case-insensitive and the port is stripped, and **a bracketed host has to carry a port**, which is what Go's split produces: `Host: [::1]` with no port is refused, and so is one that opens a bracket it never closes. A non-loopback bind has no allowlist. | `TestHostAllowlist`, `TestLoopbackHosts`. Zig: `a Host header is compared without its port and without case` and `a bind that is not loopback has no allowlist, so nothing is refused`, against a real listener — refused as an `error.response` carrying `unrecognized_host`, which is what `D1` fixed in Go |
 | **`Origin` refused on every route** | A request carrying any `Origin` header is refused `403 cross_origin_request`. The check wraps the whole mux rather than living in the routes that read a body, so it covers `close` and every route not yet written. | `TestEveryRouteRefusesABrowserOrigin`, `TestReadRequestRefusesBrowserOrigins`, `TestTheOriginBoundaryHoldsWithoutAHostAllowlist`. Zig: `a request carrying both an Origin and a foreign Host is refused the Origin first` and `the daemon answers over a real socket, and the bytes say which refusal it was` — both over a real listener, so the order and the bytes on the wire are pinned rather than asserted |
@@ -81,7 +81,7 @@ member is refused, and the refusal names the first unknown member in sorted
 order so it does not depend on map iteration. Trailing data after the object is
 refused.
 
-`oapx hub` reads the same document through the same decoder, so the two trees
+`oapx serve` reads the same document through the same decoder, so the two trees
 judge one document the same way. Without `--config` the hub serves the built-in
 memory reference adapter alone; with it, every entry is constructed at startup
 and an entry whose own requirements are not met is refused before the hub
@@ -112,9 +112,9 @@ and models. An open naming a model the catalog lacks is refused
 session's life over the hub: the adapter does not advertise
 `run.model_selection`, so a submit carrying `model_id` is refused
 `unsupported_feature`, and the hub has no op for `session.model.switch`.
-This type is Zig's alone: Go has no counterpart adapter, so `goap hub` refuses
+This type is Zig's alone: Go has no counterpart adapter, so `goap serve` refuses
 the entry as an unknown type, and `examples/oap-serve.json` does not carry one
-because `goap hub` reads that file too (D27).
+because `goap serve` reads that file too (D27).
 
 A tool source entry takes exactly `kind`, `display_name`, `protocol`,
 `endpoint`, `command`, `args`, `environment`. A `process` entry must carry a
@@ -131,7 +131,7 @@ environment variable twice is refused.
 | Without a config, the built-in memory adapter is served | `TestDefaultRegistry`, `TestLoadRegistryMemory` |
 | Every adapter constructor is reached, and its requirements surface at startup | `TestLoadRegistryProcessAdapters`, `TestLoadRegistryConstructorErrors`; Zig: `the hub's registry refuses an entry of a type it does not know, naming the entry and the type` and `the hub's registry reports a known adapter's own requirement once, not as an unknown type` |
 | **Each entry gets its own adapter instance**, so a document naming two entries of one type serves two adapters rather than one of them twice | Zig: `two entries of one type are two adapters, each with its own executable`. Go's `buildAdapter` returns a fresh adapter per entry, so no Go test names this and the two trees are here by the same rule rather than by a shared test |
-| A refusal from the loader names the entry it came from | Go: `goap hub` refuses at decode, naming the adapter. Zig: `Hub.load` writes into a `config.Diagnostic` before answering `ConfigRefused`, so the operator is told which entry — pinned by the negative half of `the registry takes the first journal capacity an entry names, a zero keeps the default, and a negative is refused` |
+| A refusal from the loader names the entry it came from | Go: `goap serve` refuses at decode, naming the adapter. Zig: `Hub.load` writes into a `config.Diagnostic` before answering `ConfigRefused`, so the operator is told which entry — pinned by the negative half of `the registry takes the first journal capacity an entry names, a zero keeps the default, and a negative is refused` |
 | A document that is not one JSON object is refused | `TestLoadRegistryDocumentErrors` |
 | A tool source loads into the registry and is attachable by id | `TestLoadRegistryToolSources` |
 | A tool source needs a kind; a `process` one needs a command | `TestLoadRegistryToolSourceNeedsKind`, `TestLoadRegistryProcessToolSourceNeedsCommand` |
@@ -375,7 +375,7 @@ ran which session, under which pin, in which home and directory, with which
 model, reasoning level and compaction policy — and what it must never hold. A reopen reads it: when the hub holds no
 record for the session in memory (it restarted), the latest entry in the file
 names the adapter and the native session id handed back to it. Both hubs take
-the flag (`goap hub` and `oapx hub`) and write the same line, a CRC-32 of the
+the flag (`goap serve` and `oapx serve`) and write the same line, a CRC-32 of the
 JSON entry and the entry, so either hub reads the other's file. `oapx` rewrites
 the file atomically on every append, so its own writes are never torn, and
 refuses a reopen when the file holds a record that does not check out rather
@@ -1458,7 +1458,7 @@ nowhere to put a reason (D12).
   answered on its own route, and one naming nothing, an unadvertised setting or
   an absent session is refused` and `a settings update reaches the session's
   adapter, and one naming nothing or another session is refused before it`.
-  `oapx hub --stdio` serves the op through the same `Frontend.settingsControl`
+  `oapx serve --stdio` serves the op through the same `Frontend.settingsControl`
   the daemon route runs.
 
 ### `close`
@@ -1521,8 +1521,8 @@ specification: where a client refuses something this document permits, the
 client is what a real host does and a port must satisfy it too.
 
 The `clients/ts` integration suite runs against **both** hubs: `ci.yml` builds
-`goap hub`, and the `hub-clients-ts` job in `ci-zig.yml` runs the same suite
-unchanged against the built `oapx hub`, selected by `OAP_TS_HUB`. It covers a
+`goap serve`, and the `hub-clients-ts` job in `ci-zig.yml` runs the same suite
+unchanged against the built `oapx serve`, selected by `OAP_TS_HUB`. It covers a
 whole lifecycle with both gates answered, a queued run, a reconnect after a
 client drops its stream mid-run (G2, #399), and a request body cut short by a
 half-close, which both hubs refuse `400 request_read` (G10).
@@ -1664,7 +1664,7 @@ for the next exit. Go's context cancels the same call, which is why Go's
 | Every run a snapshot lists is cancelled | `TestCloseCancelsEveryRunTheSnapshotLists` |
 | A run named only as the active run is still cancelled | `TestCloseFallsBackToTheNamedActiveRun` |
 | The window is 10 s for the hub, 5 s per stdio stage | every shutdown test drives a short custom window (`TestShutdownBoundedWhileWorkerStuck`, `TestTeardownStopsWhenAWriteParksForever`); **gap G8** — only the defaults are unpinned |
-| SIGINT and SIGTERM end every session inside that window and exit zero | Go: `runHub` returns nil on either. Zig: `oapx hub` installs both handlers before it serves, and the serve loop ends on either, so the sweep runs on the signal path exactly as it runs on a hangup |
+| SIGINT and SIGTERM end every session inside that window and exit zero | Go: `runHub` returns nil on either. Zig: `oapx serve` installs both handlers before it serves, and the serve loop ends on either, so the sweep runs on the signal path exactly as it runs on a hangup |
 | **Where a signal can be taken, it is; where the loop cannot observe one, the default disposition stands** | Zig: `hubTakesSignals` gates the handler and the pollable handle on the same answer, because installing a handler the loop never polls for is worse than not installing one. On Windows the stdio read is not pollable, so the hub installs no console handler, says so on stderr, and Ctrl+C terminates the process as it did before — a bounded sweep on a signal is [#460](https://github.com/lsm/open-agent-protocol/issues/460)'s work, not this rule's |
 
 ## Known gaps
@@ -1852,8 +1852,8 @@ draft's "refuse one that disagrees with the descriptor" check possible at all.
 
 **D21 — a chunked body is refused, where Go de-chunks it.** A request carrying
 any `Transfer-Encoding` is answered a bare `400`; `net/http` decodes chunked
-transparently, so a streaming client works against `goap hub` and not against
-`oapx hub`. This is a gap rather than a decision. The routes that read a body are
+transparently, so a streaming client works against `goap serve` and not against
+`oapx serve`. This is a gap rather than a decision. The routes that read a body are
 written now, so the decoder has a consumer; it belongs beside `readBody`, under
 the same 16 MiB cap, and is not part of the change that wired the routes. Until then the refusal is
 the safe one: a body whose framing this daemon cannot read is not a body it
@@ -1943,21 +1943,22 @@ are "stamped with the revision the lister served it under", and both name
 | **The fix** | `hub.OpenRequest` carries `capability_revision`. An open that **subscribes or attaches tool sources** compares it against the registered adapter's revision and returns `StaleCapabilities` on a disagreement — **after** the adapter's probe and **before** the `session_exists` lookup, so a probe failure answers ahead of it (`probe_failed` in Go, and the same here) and the gate still wins over a name collision and over an unadvertised feature. A request that states no revision is not gated, which is Go's own `revision != ""` guard and not a hole. The two Go gates differ only in which support feature they then check, and that half already exists as the election check, so one comparison covers both. The `expected`/`current` pair is assembled by the frontend, which reads the registered revision from `hub.listing` — the same route the `adapters` op already uses. |
 | **What it is not** | The stdio `open` arm, which is [#387](https://github.com/lsm/open-agent-protocol/issues/387)'s next step and depends on this. |
 
-### D11 — a `submit` on an open is refused in Zig and admitted in Go
+### D11 — a `submit` on an open is refused in Zig and admitted in Go (closed 2026-10-06)
 
 | | |
 | --- | --- |
 | **The draft says** | `open`'s params are `adapter` and `request`, and the request's `message` is a first-class member of `openRequest`. A message admitted at open time is **queued**: the answer carries `admitted_submit_requests` and the submission runs under the session it was admitted into. |
 | **Go does** | `OpenCompound` admits it: it opens, submits the message, and reports the admission in the answer. The subscription is registered *before* the message runs, so the open misses nothing. |
-| **Zig does** | Refuses it `unsupported_feature`. `hub.OpenRequest` has **no `message` member**, so there is nothing to admit into; the stdio op says so rather than dropping the submission. |
+| **Zig does** | Admits it, as Go does, on both transports: `Frontend.openSession` opens (holding the subscription when the open subscribes), then submits the message as a `session.message.submit.request` carrying the open's envelope id, and answers with the run in `active_runs`, its `admitted_submit_requests` naming that id. A refused message closes the session it opened and answers the submit's refusal — Zig: `an open carrying a message admits it, and its answer names the run the message started`, `an open whose message the adapter refuses answers that refusal and leaves no session behind`. The rows below record how it was refused before. |
 | **Why it matters** | The refusal is the honest answer and the alternative is worse — Go's `refuseUnadvertisedOpen` exists and refuses a message on the *endpoint* surface, so "a message is unsatisfiable here" is already a shape this tree knows. What is missing is the machinery, not the will. |
 | **The fix** | `hub.OpenRequest` gains `message_json`, the hub registers the subscription before running the submission, and the answer carries `admitted_submit_requests`. For the subscribing case, the `Frontend` needs a held subscription — the same thing `events` needs — so both unblock together. This is `submit`'s work, not `open`'s: the same PR that serves `submit` on the wire is the one that can admit a message at open time. |
 | **The refusal's precedence** | It is checked **before** the adapter is looked up and before the revision gate runs, so an open naming an unregistered adapter *and* carrying a message answers `unsupported_feature` where Go answers `unknown_adapter`, and a subscribing open citing a stale revision answers `unsupported_feature` where Go answers `stale_capabilities`. Go's `openOp` looks the adapter up first and gates second, so both of those win there. Hoisting the refusal means it lives in the hub rather than the frontend, which is where it stops existing: the moment `submit` admits a message and `events` admits a subscription, neither refusal is there to be out of order. It is recorded rather than fixed because every input that reaches the difference is already divergent under this row. |
-| **Over HTTP** | The subscribing half is served: `POST /adapters/{name}/sessions` holds the subscription the open registered, and the `events` request with no cursor adopts it — Zig: `a subscribing open holds its subscription, and the events request with no cursor adopts it from the first envelope`. The `message` half is still refused on both transports, and the stdio op still refuses `subscribe`, because stdio has no `events` op to drain it. |
-| **Stdio controls, 2026-10-06** | `oapx hub --stdio` now serves `submit`, `resolve`, `cancel` and `settings`, each through the `Frontend` function the daemon route calls (`submitControl`, `resolveControl`, `cancelControl`, `settingsControl`), so the two transports answer one implementation. Zig: `submit, resolve and cancel answer over stdio as they do over HTTP, each correlated to its request` and `the control ops refuse as the HTTP routes do`. **`events` is still not served over stdio**, so a run admitted there can be cancelled and answered but not watched, and the two refusals below stand until it is. |
-| **Also refused here** | **A subscribing open, for the same reason and a sharper one.** `hub.open` registers a `Subscription` when `subscribe` is set, and the stdio op discarded it — the wire accepted a subscription it cannot deliver, and once `submit` lands its envelopes would queue against a subscription nothing drains. Go holds the subscription in its `Frontend`; there is no equivalent here yet, so the honest answer is to refuse until `events` exists. **This is a second divergence from the same cause** and it is why `open`'s parity cases carry no `subscribe` at all. |
+| **Over HTTP** | The subscribing half is served: `POST /adapters/{name}/sessions` holds the subscription the open registered, and the `events` request with no cursor adopts it — Zig: `a subscribing open holds its subscription, and the events request with no cursor adopts it from the first envelope`. The `message` half is still refused on both transports, and the stdio op still refuses `subscribe`: stdio serves `events` now (the row below), but the open does not yet hand its subscription to it. |
+| **Stdio events, 2026-10-06** | `oapx serve --stdio` serves `events`: it acknowledges with `null`, then writes each envelope as `{"event":"envelope","id":N,"session_id":…,"sequence":…,"envelope":…}` on the request's id, and ends at the run's terminal, or with `oap-replay-gap`, `oap-subscribed` first when it joined mid-run, `oap-overflow`, `oap-session-closed`, `oap-stream-failed` or `oap-frame-limit`, in Go's shapes. Zig: `events acknowledges, then streams the run's envelopes on its own id and ends at the terminal`, `events refuses an absent session ahead of everything, an unreadable cursor, a run without a cursor and a parameter it does not take` (an `after` that is not an unsigned sequence is `invalid_cursor`), `a subscription whose session closes ends with oap-session-closed`. A subscribing **open** is still refused over stdio: adopting the open's subscription the way the HTTP daemon does is the remaining half. |
+| **Stdio controls, 2026-10-06** | `oapx serve --stdio` now serves `submit`, `resolve`, `cancel` and `settings`, each through the `Frontend` function the daemon route calls (`submitControl`, `resolveControl`, `cancelControl`, `settingsControl`), so the two transports answer one implementation. Zig: `submit, resolve and cancel answer over stdio as they do over HTTP, each correlated to its request` and `the control ops refuse as the HTTP routes do`. `events` followed in the next change (the row above). |
+| **Also refused here** | **A subscribing open, for the same reason and a sharper one.** `hub.open` registers a `Subscription` when `subscribe` is set, and the stdio op discarded it — the wire accepted a subscription it cannot deliver, and once `submit` lands its envelopes would queue against a subscription nothing drains. Go holds the subscription in its `Frontend`; there is no equivalent here yet, so the honest answer is to refuse until the open can hand its subscription to `events`, which stdio now serves. **This is a second divergence from the same cause** and it is why `open`'s parity cases carry no `subscribe` at all. |
 
-### D27 — an `oapx` registry entry is served by `oapx hub` and refused by `goap hub`
+### D27 — an `oapx` registry entry is served by `oapx serve` and refused by `goap serve`
 
 | | |
 | --- | --- |
@@ -2054,7 +2055,7 @@ are "stamped with the revision the lister served it under", and both name
 | **Go does** | `ResolveAttachments` (`serve/attach.go:89`) replaces the wire entry with `hub.Registry().ToolSource` and merges the operator's `environment` before the adapter runs. |
 | **Zig does** | **Fixed.** `openSession` handed the raw `tool_sources_json` to `hub.open`, so the adapter saw the host's own description of a source the operator had pinned. `substitutedSources` now runs between the trust check and the hub: the check still reads the **wire**, which is the untrusted thing, and the adapter receives the **registry**. A source the operator left unconfigured is passed through exactly as written, so a daemon with no registry behaves as it did. |
 | **How it is tested, and what is not** | A Zig unit test sends an open naming a pinned source and an unconfigured one, and asserts on what the adapter was handed: the operator's `endpoint`, the operator's `environment` values kept even where the wire named the same variables, the caller's bare names appended, and the unconfigured source verbatim. |
-| **The differential case that is owed** | **There is no differential scenario for it, and that is a real gap rather than an impossibility.** I first recorded this as unreachable on the grounds that `oapx hub` refuses `--config` and `adapter/memory` refuses every unconfigured source. **Both were wrong.** `runHub` parses `--config` and feeds `file.tool_sources` into `Hub.init` (`makai.zig:2641`), and `adapter/memory` admits any id outside its own declared set whose kind it can attach (`adapter.zig:1098`). So a config declaring `pinned` as a `local` source and an open naming `{"id":"pinned","kind":"local"}` is admitted today, and before this change the session carried the wire's description of a source the operator had pinned. **The case is therefore expressible, and writing it is owed.** It needs the differential harness to pass a per-tree `--config`, which it cannot today — `hubCommand` runs `hub --stdio` with no arguments. That is the follow-up, and until it lands this row is the only place the divergence is recorded, which is a weaker guarantee than the other rows have. |
+| **The differential case that is owed** | **There is no differential scenario for it, and that is a real gap rather than an impossibility.** I first recorded this as unreachable on the grounds that `oapx serve` refuses `--config` and `adapter/memory` refuses every unconfigured source. **Both were wrong.** `runHub` parses `--config` and feeds `file.tool_sources` into `Hub.init` (`makai.zig:2641`), and `adapter/memory` admits any id outside its own declared set whose kind it can attach (`adapter.zig:1098`). So a config declaring `pinned` as a `local` source and an open naming `{"id":"pinned","kind":"local"}` is admitted today, and before this change the session carried the wire's description of a source the operator had pinned. **The case is therefore expressible, and writing it is owed.** It needs the differential harness to pass a per-tree `--config`, which it cannot today — `hubCommand` runs `hub --stdio` with no arguments. That is the follow-up, and until it lands this row is the only place the divergence is recorded, which is a weaker guarantee than the other rows have. |
 
 ### D23 — the media gate sits on the head, so 413 wins where Go answers 415
 

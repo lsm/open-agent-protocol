@@ -125,17 +125,17 @@ func TestHubRefusesAConfigItCannotReadAndNamesTheFile(t *testing.T) {
 	}
 	for _, each := range cases {
 		t.Run(each.argument, func(t *testing.T) {
-			command := exec.Command(oapx, "hub", each.argument, "--session-history=")
+			command := exec.Command(oapx, "serve", each.argument, "--session-history=")
 			command.Stdin = strings.NewReader("")
 			output, err := command.CombinedOutput()
 			if err == nil {
-				t.Errorf("oapx hub %s exited 0; a flag it cannot honour must exit non-zero", each.argument)
+				t.Errorf("oapx serve %s exited 0; a flag it cannot honour must exit non-zero", each.argument)
 			}
 			if !strings.Contains(string(output), each.wants) {
-				t.Errorf("oapx hub %s did not name %q in its refusal:\n%s", each.argument, each.wants, output)
+				t.Errorf("oapx serve %s did not name %q in its refusal:\n%s", each.argument, each.wants, output)
 			}
 			if strings.Contains(string(output), "{\"id\"") {
-				t.Errorf("oapx hub %s answered a request rather than refusing the flag", each.argument)
+				t.Errorf("oapx serve %s answered a request rather than refusing the flag", each.argument)
 			}
 		})
 	}
@@ -146,11 +146,11 @@ func TestHubStdioEndsCleanlyWhenTheHostClosesThePipe(t *testing.T) {
 	if oapx == "" {
 		t.Skip("set OAP_OAPX_BIN to an oapx binary to check it ends cleanly")
 	}
-	command := exec.Command(oapx, "hub", "--stdio", "--session-history=")
+	command := exec.Command(oapx, "serve", "--stdio", "--session-history=")
 	command.Stdin = strings.NewReader("")
 	command.Stderr = os.Stderr
 	if err := command.Run(); err != nil {
-		t.Fatalf("oapx hub --stdio with a host that sent nothing and closed: %v", err)
+		t.Fatalf("oapx serve --stdio with a host that sent nothing and closed: %v", err)
 	}
 }
 
@@ -161,7 +161,7 @@ func TestHubAddrBindsLoopbackAndEndsOnAnInterrupt(t *testing.T) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
-	command := exec.CommandContext(ctx, oapx, "hub", "--addr=127.0.0.1:0", "--session-history=")
+	command := exec.CommandContext(ctx, oapx, "serve", "--addr=127.0.0.1:0", "--session-history=")
 	command.Stdin = strings.NewReader("")
 	var stderr strings.Builder
 	command.Stderr = &stderr
@@ -189,32 +189,32 @@ func TestHubAddrBindsLoopbackAndEndsOnAnInterrupt(t *testing.T) {
 	case address = <-bound:
 	case <-ctx.Done():
 		_ = command.Process.Kill()
-		t.Fatalf("oapx hub --addr never reported a bound address:\n%s", stderr.String())
+		t.Fatalf("oapx serve --addr never reported a bound address:\n%s", stderr.String())
 	}
 	if address == "" {
 		_ = command.Process.Kill()
-		t.Fatalf("oapx hub --addr bound nothing:\n%s", stderr.String())
+		t.Fatalf("oapx serve --addr bound nothing:\n%s", stderr.String())
 	}
 	if err := command.Process.Signal(os.Interrupt); err != nil {
 		_ = command.Process.Kill()
-		t.Fatalf("oapx hub --addr could not be interrupted: %v", err)
+		t.Fatalf("oapx serve --addr could not be interrupted: %v", err)
 	}
 	done := make(chan error, 1)
 	go func() { done <- command.Wait() }()
 	select {
 	case err := <-done:
 		if err != nil {
-			t.Fatalf("oapx hub --addr ended on an interrupt with %v:\n%s", err, stderr.String())
+			t.Fatalf("oapx serve --addr ended on an interrupt with %v:\n%s", err, stderr.String())
 		}
 	case <-time.After(30 * time.Second):
 		_ = command.Process.Kill()
-		t.Fatalf("oapx hub --addr ignored an interrupt:\n%s", stderr.String())
+		t.Fatalf("oapx serve --addr ignored an interrupt:\n%s", stderr.String())
 	}
 }
 
 func hubCommand(t *testing.T, binary string) *exec.Cmd {
 	t.Helper()
-	command := exec.Command(binary, "hub", "--stdio", "--session-history=")
+	command := exec.Command(binary, "serve", "--stdio", "--session-history=")
 	return command
 }
 
