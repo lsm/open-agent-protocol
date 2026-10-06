@@ -109,6 +109,10 @@ pub const OapExecution = struct {
         return self;
     }
 
+    pub fn setHistory(self: *OapExecution, loader: oapx_adapter.HistoryLoader) void {
+        if (self.adapter) |held| held.history = loader;
+    }
+
     pub fn attach(allocator: std.mem.Allocator, base: []const u8, adapter_name: []const u8) !*OapExecution {
         const link = try hub_link.HubLink.create(allocator, base, adapter_name);
         errdefer link.destroy();
@@ -233,6 +237,10 @@ pub const OapExecution = struct {
         try metadata.put(oapx_adapter.settings_key, settings_map.value());
         var open = Map.init(a);
         try open.put("metadata", metadata.value());
+        if (settings.resume_session_id) |saved| {
+            try open.put("session_id", .{ .string = saved });
+            try open.put("reopen", .{ .bool = true });
+        }
         const opened = self.exchange(a, "session.open.request", open.value(), true) catch |err| retry: {
             if (err != error.OapRequestRefused or self.hub == null or settings.model == null) return err;
             _ = settings_map.map.swapRemove("model");
@@ -1323,6 +1331,7 @@ const Script = struct {
     hold_first: bool = false,
     released: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
     last_thinking: ai_types.ThinkingLevel = .off,
+    last_context_messages: usize = 0,
 };
 
 fn scriptedMessage(allocator: std.mem.Allocator, text: []const u8, reason: ai_types.StopReason) !ai_types.AssistantMessage {
@@ -1376,8 +1385,8 @@ fn bareMessage(reason: ai_types.StopReason) ai_types.AssistantMessage {
 
 fn scriptedStream(ctx: ?*anyopaque, model: ai_types.Model, context: ai_types.Context, options: agent.ProtocolOptions, allocator: std.mem.Allocator) anyerror!*event_stream.AssistantMessageEventStream {
     _ = model;
-    _ = context;
     const script: *Script = @ptrCast(@alignCast(ctx.?));
+    script.last_context_messages = context.messages.len;
     script.last_thinking = options.thinking_level;
     script.calls += 1;
     if (script.hold_first and script.calls == 1) {
@@ -1706,6 +1715,37 @@ test "a follow-up sent while no turn runs over OAP starts one" {
     try drainTurn(&runtime, &seen);
     try testing.expectEqual(@as(?tui_session.TuiEndReason, .completed), seen.end);
     try testing.expectEqual(@as(usize, 1), script.calls);
+}
+
+const SavedTranscript = struct {
+    fn load(ctx: *anyopaque, arena: std.mem.Allocator, session_id: []const u8) anyerror!?[]const ai_types.Message {
+        _ = ctx;
+        if (!std.mem.eql(u8, session_id, "saved-session")) return null;
+        const messages = try arena.alloc(ai_types.Message, 1);
+        messages[0] = .{ .user = .{ .content = .{ .text = try arena.dupe(u8, "earlier question") }, .timestamp = 0 } };
+        return messages;
+    }
+};
+
+test "a saved session reopened over OAP carries its transcript into the next run" {
+    var script = Script{};
+    var execution: *OapExecution = undefined;
+    var runtime = try remoteRuntime(&script, &execution, .low);
+    defer execution.destroy();
+    defer runtime.deinit();
+    var saved = SavedTranscript{};
+    execution.setHistory(.{ .ctx = &saved, .load = SavedTranscript.load });
+
+    try runtime.start();
+    try runtime.reopenSaved("saved-session");
+    try testing.expectEqualStrings("saved-session", execution.session_id);
+    try runtime.submitTurn("and now");
+    var seen = Seen{};
+    defer seen.deinit();
+    try drainTurn(&runtime, &seen);
+    try testing.expectEqual(@as(?tui_session.TuiEndReason, .completed), seen.end);
+    try testing.expectEqual(@as(usize, 2), script.last_context_messages);
+    try testing.expectError(error.OapRequestRefused, runtime.reopenSaved("never-saved"));
 }
 
 test "a runtime over OAP refuses what the protocol path cannot carry yet" {

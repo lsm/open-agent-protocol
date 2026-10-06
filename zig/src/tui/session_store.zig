@@ -443,6 +443,11 @@ pub const Store = struct {
     pub fn resumeSession(self: Store, session_id: []const u8, runtime: *tui_runtime.TuiRuntime) !LoadedSession {
         var loaded = try self.load(session_id);
         errdefer loaded.deinit(self.allocator);
+        if (runtime.remote != null) {
+            try runtime.reopenSaved(session_id);
+            if (loaded.metadata.model.len > 0) loaded.model_unavailable = !try selectSavedModel(runtime, loaded.metadata.provider, loaded.metadata.model);
+            return loaded;
+        }
         try runtime.start();
         if (loaded.metadata.model.len > 0) loaded.model_unavailable = !try selectSavedModel(runtime, loaded.metadata.provider, loaded.metadata.model);
         try runtime.replaceMessages(loaded.messages.items);

@@ -62,6 +62,7 @@ pub const RemoteSettings = struct {
     output: agent.OutputSetting,
     permission_mode: PermissionMode,
     workspace_root: []const u8,
+    resume_session_id: ?[]const u8 = null,
 };
 
 pub const RemoteExecution = struct {
@@ -433,14 +434,7 @@ pub const TuiRuntime = struct {
     pub fn start(self: *TuiRuntime) !void {
         if (self.started) return;
         if (self.remote) |remote| {
-            try remote.vtable.start(remote.ctx, .{ .ctx = self, .push = pushRemote }, .{
-                .model = self.currentModel(),
-                .thinking_level = self.thinking_level,
-                .context_window = self.context_window,
-                .output = self.output,
-                .permission_mode = self.permission_mode,
-                .workspace_root = self.workspace_root,
-            });
+            try remote.vtable.start(remote.ctx, .{ .ctx = self, .push = pushRemote }, self.remoteSettings(null));
             self.started = true;
             return;
         }
@@ -655,6 +649,29 @@ pub const TuiRuntime = struct {
     pub fn contextWindowIsReported(self: *const TuiRuntime) bool {
         const index = self.selected_model_index orelse return false;
         return model_catalog.contextWindowIsReported(self.models[index]);
+    }
+
+    fn remoteSettings(self: *TuiRuntime, resume_session_id: ?[]const u8) RemoteSettings {
+        return .{
+            .model = self.currentModel(),
+            .thinking_level = self.thinking_level,
+            .context_window = self.context_window,
+            .output = self.output,
+            .permission_mode = self.permission_mode,
+            .workspace_root = self.workspace_root,
+            .resume_session_id = resume_session_id,
+        };
+    }
+
+    pub fn reopenSaved(self: *TuiRuntime, session_id: []const u8) !void {
+        const remote = self.remote orelse return error.UnavailableOverOap;
+        if (self.stream_active) return error.AgentAlreadyStreaming;
+        if (self.started) {
+            remote.vtable.stop(remote.ctx);
+            self.started = false;
+        }
+        try remote.vtable.start(remote.ctx, .{ .ctx = self, .push = pushRemote }, self.remoteSettings(session_id));
+        self.started = true;
     }
 
     fn settingsFixedOverOap(self: *const TuiRuntime) bool {

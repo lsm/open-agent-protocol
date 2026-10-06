@@ -5700,11 +5700,14 @@ pub fn runWith(allocator: std.mem.Allocator, io: std.Io, context_window: ?u32, e
     }
     var execution: ?*tui_oap_execution.OapExecution = null;
     defer if (execution) |owned| owned.destroy();
+    var history_store: ?session_store.Store = session_store.Store.initDefault(allocator) catch null;
+    defer if (history_store) |*store| store.deinit();
     if (execution_mode != .local) {
         execution = switch (execution_mode) {
             .attach => |target| try tui_oap_execution.OapExecution.attach(allocator, target.url, target.adapter),
             else => try tui_oap_execution.OapExecution.create(allocator, options),
         };
+        if (history_store) |*store| execution.?.setHistory(.{ .ctx = store, .load = loadSavedHistory });
         options.remote = execution.?.remote();
         options.generate_titles = false;
         options.auto_worktree = false;
@@ -5714,6 +5717,15 @@ pub fn runWith(allocator: std.mem.Allocator, io: std.Io, context_window: ?u32, e
     program.model = .{ .options = options, .autocompact = production.mode_settings.autocompact, .verbosity = production.mode_settings.verbosity };
     defer program.deinit();
     try program.run();
+}
+
+fn loadSavedHistory(ctx: *anyopaque, arena: std.mem.Allocator, session_id: []const u8) anyerror!?[]const ai_types.Message {
+    const store: *session_store.Store = @ptrCast(@alignCast(ctx));
+    var loaded = try store.load(session_id);
+    defer loaded.deinit(store.allocator);
+    const messages = try arena.alloc(ai_types.Message, loaded.messages.items.len);
+    for (loaded.messages.items, messages) |message, *slot| slot.* = try ai_types.cloneMessage(arena, message);
+    return messages;
 }
 
 const StderrRedirect = struct {
