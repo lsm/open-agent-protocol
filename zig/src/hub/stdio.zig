@@ -1668,7 +1668,7 @@ fn waitOn(frontend: *Frontend, stream: Stream, arena: std.mem.Allocator, wait_ns
     const awoken = std.posix.poll(watched.items, budget) catch 0;
     if (awoken == 0) return false;
     const input_events = watched.items[watched.items.len - 1].revents;
-    return (input_events & (std.posix.POLL.IN | std.posix.POLL.HUP)) != 0;
+    return (input_events & (std.posix.POLL.IN | std.posix.POLL.HUP | std.posix.POLL.ERR | std.posix.POLL.NVAL)) != 0;
 }
 
 const Recorder = struct {
@@ -2164,6 +2164,24 @@ const Scripted = struct {
     }
 };
 
+var null_device_cycles: usize = 0;
+
+fn giveUpOnNullDevice() bool {
+    null_device_cycles += 1;
+    return null_device_cycles > 40;
+}
+
+test "input on a device poll cannot watch, such as /dev/null on macOS, still reaches its end" {
+    if (comptime !pollable) return error.SkipZigTest;
+    var device = try std.Io.Dir.cwd().openFile(testing.io, "/dev/null", .{});
+    defer device.close(testing.io);
+    const harness = try ScriptedHarness.init(testing.allocator, .{}, .{}, &.{});
+    defer harness.deinit();
+    null_device_cycles = 0;
+    try harness.runWithHandleUntilStopped(device.handle, giveUpOnNullDevice);
+    try testing.expect(null_device_cycles <= 1);
+}
+
 const RefusesWrites = struct {
     fn write(_: *anyopaque, _: []const u8) anyerror!void {
         return Error.OutputStalled;
@@ -2217,6 +2235,17 @@ const ScriptedHarness = struct {
             .read = Scripted.read,
             .context = &self.scripted,
             .readable = handle,
+        });
+    }
+
+    fn runWithHandleUntilStopped(self: *ScriptedHarness, handle: std.Io.File.Handle, stop: *const fn () bool) !void {
+        var frontend = try Frontend.init(self.allocator, &self.backing.hub, self.backing.recorder.sink(), .{});
+        defer frontend.deinit();
+        try serve(self.allocator, &frontend, .{
+            .read = Scripted.read,
+            .context = &self.scripted,
+            .readable = handle,
+            .stop = stop,
         });
     }
 
