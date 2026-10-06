@@ -683,7 +683,7 @@ pub const Hub = struct {
         const updated = updater(entry.session.ptr, arena, request, refusal) catch |err| switch (err) {
             error.SessionClosed => {
                 self.releaseSession(entry);
-                return error.UnknownSession;
+                return error.SessionClosed;
             },
             else => |failure| return failure,
         };
@@ -3963,6 +3963,52 @@ test "a settings update reaches the session's adapter, and one naming nothing or
     const updated = try hub.updateSettings(arena, "set", &.{ .session_id = "set", .compaction_policy_json = "{\"kind\":\"off\"}" }, &refusal);
     try testing.expect(std.mem.indexOf(u8, updated.compaction_policy_json.?, "off") != null);
     try hub.close(arena, "set");
+}
+
+const ClosingSettings = struct {
+    inner: *memory.Adapter,
+    session_vtable: contract.Session.VTable = undefined,
+
+    fn adapter(self: *ClosingSettings) contract.Adapter {
+        return .{ .ptr = self, .vtable = &.{ .probe = probe, .open = open } };
+    }
+
+    fn probe(ptr: *anyopaque, refusal: *contract.Refusal) contract.Failure!contract.Descriptor {
+        const self: *ClosingSettings = @ptrCast(@alignCast(ptr));
+        return self.inner.adapter().probe(refusal);
+    }
+
+    fn open(ptr: *anyopaque, arena: std.mem.Allocator, request: contract.OpenRequest, refusal: *contract.Refusal) contract.Failure!contract.Session {
+        const self: *ClosingSettings = @ptrCast(@alignCast(ptr));
+        const session = try self.inner.adapter().open(arena, request, refusal);
+        self.session_vtable = session.vtable.*;
+        self.session_vtable.update_settings = closed;
+        return .{ .ptr = session.ptr, .vtable = &self.session_vtable };
+    }
+
+    fn closed(ptr: *anyopaque, arena: std.mem.Allocator, request: *const oap_types.SessionSettingsUpdateRequest, refusal: *contract.Refusal) contract.Failure!contract.Updated {
+        _ = ptr;
+        _ = arena;
+        _ = request;
+        _ = refusal;
+        return error.SessionClosed;
+    }
+};
+
+test "a settings update the adapter finds closed answers session_closed and releases the session" {
+    var inner = memory.Adapter.init(testing.allocator);
+    defer inner.deinit();
+    var closing = ClosingSettings{ .inner = &inner };
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    var hub = Hub.init(testing.allocator, testClock, .{});
+    defer hub.deinit();
+    try hub.register("closing", closing.adapter());
+    _ = try hub.open(arena, "closing", .{ .session_id = "gone" });
+    var refusal = contract.Refusal{};
+    try testing.expectError(error.SessionClosed, hub.updateSettings(arena, "gone", &.{ .session_id = "gone", .compaction_policy_json = "{\"kind\":\"off\"}" }, &refusal));
+    try testing.expect(!hub.knows("gone"));
 }
 
 test {

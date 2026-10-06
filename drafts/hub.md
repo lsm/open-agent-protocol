@@ -1953,6 +1953,14 @@ are "stamped with the revision the lister served it under", and both name
 | **Zig does** | Builds it from the same production runtime `oapx serve agent --backend oapx` uses. |
 | **Why it matters** | One document is not portable between the two hubs once it names an `oapx` entry, which is why `examples/oap-serve.json` does not name one. Closing it needs a Go adapter that spawns `oapx serve agent --backend oapx` over the endpoint binding, which is adapter work rather than hub work. |
 
+### D28 — a control that finds its session closed answers `unknown_session` in Zig
+
+| | |
+| --- | --- |
+| **Go does** | `serve.Session` marks itself closed when the adapter answers `ErrSessionClosed`, and `submit`, `resolve`, `cancel` and `settings` answer `409 session_closed`, as their rows say. |
+| **Zig does** | `Hub.submit`, `resolve`, `resolveCall`, `cancel` and `compact` release the session on the adapter's `SessionClosed` and answer `404 unknown_session`. `Hub.updateSettings` releases it too but answers `session_closed`, matching Go and its row, because it was written after the draft named the code. |
+| **Why it is open** | The four older controls predate the rows' `session_closed`; moving them is a behaviour change on routes clients already drive, so it is recorded here rather than folded into the settings route. |
+
 ### D12 — an open's `unsupported_feature` and `capability_degraded` carried no `feature`
 
 | | |
