@@ -925,7 +925,11 @@ pub const Frontend = struct {
 
     pub fn workStatus(self: *Frontend, arena: std.mem.Allocator, session_id: []const u8) !Outcome {
         if (!self.hub.knows(session_id)) {
-            if (try self.unheld(arena, session_id)) |entry| return .{ .answer = try unheldJson(arena, entry) };
+            switch (try self.unheld(arena, session_id)) {
+                .entry => |entry| return .{ .answer = try unheldJson(arena, entry) },
+                .unreadable => return .{ .refused = history_unreadable },
+                .absent => {},
+            }
         }
         const found = self.hub.work(arena, session_id) catch |err| {
             return .{ .refused = try self.stateRefusal(arena, err, session_id) };
@@ -940,14 +944,28 @@ pub const Frontend = struct {
         return value == .bool and value.bool;
     }
 
-    fn latestBindings(self: *Frontend, arena: std.mem.Allocator) !?[]const hubmod.binding.Entry {
-        const store = self.hub.bindings orelse return null;
+    const History = union(enum) {
+        none,
+        entries: []const hubmod.binding.Entry,
+        unreadable,
+    };
+
+    const history_unreadable = Refusal{ .code = "history_failed", .message = "the session history could not be read" };
+
+    fn latestBindings(self: *Frontend, arena: std.mem.Allocator) !History {
+        const store = self.hub.bindings orelse return .none;
         const recorded = store.sessions(arena) catch |err| switch (err) {
             error.OutOfMemory => return error.OutOfMemory,
-            else => return null,
+            else => return .unreadable,
         };
-        return try hubmod.binding.latestEach(arena, recorded);
+        return .{ .entries = try hubmod.binding.latestEach(arena, recorded) };
     }
+
+    const Unheld = union(enum) {
+        absent,
+        entry: hubmod.binding.Entry,
+        unreadable,
+    };
 
     fn unheldJson(arena: std.mem.Allocator, entry: hubmod.binding.Entry) !std.json.Value {
         var ref = try emptyObject(arena);
@@ -962,10 +980,26 @@ pub const Frontend = struct {
         return .{ .object = object };
     }
 
-    fn unheld(self: *Frontend, arena: std.mem.Allocator, session_id: []const u8) !?hubmod.binding.Entry {
-        const latest = (try self.latestBindings(arena)) orelse return null;
+    fn unheld(self: *Frontend, arena: std.mem.Allocator, session_id: []const u8) !Unheld {
+        const latest = switch (try self.latestBindings(arena)) {
+            .none => return .absent,
+            .unreadable => return .unreadable,
+            .entries => |entries| entries,
+        };
         for (latest) |entry| {
-            if (std.mem.eql(u8, entry.record.session_id, session_id)) return entry;
+            if (std.mem.eql(u8, entry.record.session_id, session_id)) return .{ .entry = entry };
+        }
+        return .absent;
+    }
+
+    fn boundSession(self: *Frontend, arena: std.mem.Allocator, adapter: []const u8, native_id: []const u8) !?[]const u8 {
+        if (self.hub.sessionForNative(adapter, native_id)) |held| return held;
+        const latest = switch (try self.latestBindings(arena)) {
+            .entries => |entries| entries,
+            else => return null,
+        };
+        for (latest) |entry| {
+            if (std.mem.eql(u8, entry.record.adapter, adapter) and std.mem.eql(u8, entry.record.native_session_id, native_id)) return entry.record.session_id;
         }
         return null;
     }
@@ -998,8 +1032,10 @@ pub const Frontend = struct {
             try pieces.append(arena, .{ .directory = piece.directory, .at_ms = piece.updated_at_ms, .value = try workJson(arena, piece) });
         }
         var known_native: std.ArrayList([]const u8) = .empty;
-        if (try self.latestBindings(arena)) |latest| {
-            for (latest) |entry| {
+        const recorded = try self.latestBindings(arena);
+        if (recorded == .unreadable) return .{ .refused = history_unreadable };
+        if (recorded == .entries) {
+            for (recorded.entries) |entry| {
                 if (entry.record.native_session_id.len > 0) try known_native.append(arena, entry.record.native_session_id);
                 if (self.hub.knows(entry.record.session_id)) continue;
                 if (entry.action == .closed and !options.include_closed) continue;
@@ -1126,6 +1162,7 @@ pub const Frontend = struct {
 
     fn workAdopt(self: *Frontend, arena: std.mem.Allocator, adapter: []const u8, native_id: []const u8, params: ?std.json.Value) !Outcome {
         if (native_id.len == 0) return .{ .refused = .{ .code = "invalid_request", .message = "request.native_id is a non-empty string" } };
+        if (try self.boundSession(arena, adapter, native_id)) |session_id| return self.workSend(arena, session_id, params);
         if (try self.hub.nativeRunning(arena, adapter, native_id)) return .{ .refused = .{ .code = "run_active", .message = "another process is running this session; continuing it here would fork the conversation" } };
         var refused: hubmod.OpenRefusal = .{};
         const opened = self.hub.openReporting(arena, adapter, .{ .reopen = true, .adopt_native_id = native_id }, &refused) catch |err| {
@@ -1139,8 +1176,10 @@ pub const Frontend = struct {
     pub fn workSend(self: *Frontend, arena: std.mem.Allocator, session_id: []const u8, params: ?std.json.Value) !Outcome {
         if (workParamsRefusal(params, "message")) |refusal| return .{ .refused = refusal };
         if (!self.hub.knows(session_id)) {
-            if (try self.unheld(arena, session_id)) |entry| {
-                if (try self.reopenFor(arena, entry)) |refusal| return .{ .refused = refusal };
+            switch (try self.unheld(arena, session_id)) {
+                .entry => |entry| if (try self.reopenFor(arena, entry)) |refusal| return .{ .refused = refusal },
+                .unreadable => return .{ .refused = history_unreadable },
+                .absent => {},
             }
         }
         var submitted = (try userMessage(arena, workText(params, "message").?)).object;
@@ -1174,7 +1213,11 @@ pub const Frontend = struct {
 
     pub fn workStop(self: *Frontend, arena: std.mem.Allocator, session_id: []const u8) !Outcome {
         if (!self.hub.knows(session_id)) {
-            if (try self.unheld(arena, session_id)) |entry| return .{ .answer = try unheldJson(arena, entry) };
+            switch (try self.unheld(arena, session_id)) {
+                .entry => |entry| return .{ .answer = try unheldJson(arena, entry) },
+                .unreadable => return .{ .refused = history_unreadable },
+                .absent => {},
+            }
         }
         const current = self.hub.work(arena, session_id) catch |err| {
             return .{ .refused = try self.stateRefusal(arena, err, session_id) };
@@ -1201,10 +1244,14 @@ pub const Frontend = struct {
             bound = @intCast(given);
         }
         if (!self.hub.knows(session_id)) {
-            if (try self.unheld(arena, session_id) != null) {
-                var empty = try emptyObject(arena);
-                try empty.put(arena, "turns", try jsonArray(arena, &.{}));
-                return .{ .answer = .{ .object = empty } };
+            switch (try self.unheld(arena, session_id)) {
+                .entry => {
+                    var empty = try emptyObject(arena);
+                    try empty.put(arena, "turns", try jsonArray(arena, &.{}));
+                    return .{ .answer = .{ .object = empty } };
+                },
+                .unreadable => return .{ .refused = history_unreadable },
+                .absent => {},
             }
         }
         const read = self.hub.transcript(session_id, after, bound) catch |err| {
@@ -3967,6 +4014,24 @@ test "work.list shows a session serve no longer holds from its binding, live by 
     try harness.send("{\"id\":5,\"op\":\"work.stop\",\"session_id\":\"left\"}");
     try testing.expectEqual(false, (try harness.lastValue()).object.get("result").?.object.get("held").?.bool);
     try testing.expectEqual(@as(usize, 0), harness.hub.sessionCount());
+}
+
+test "an unreadable session history is history_failed for work.list and work.status, not an unknown session" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const cwd = try std.process.currentPathAlloc(testing.io, testing.allocator);
+    defer testing.allocator.free(cwd);
+    const path = try std.fs.path.join(testing.allocator, &.{ cwd, ".zig-cache", "tmp", tmp.sub_path[0..], "sessions.jsonl" });
+    defer testing.allocator.free(path);
+    var store = try hubmod.binding.Store.open(testing.allocator, path);
+    defer store.deinit();
+    try tmp.dir.writeFile(testing.io, .{ .sub_path = "sessions.jsonl", .data = "not a record" });
+    const harness = try Harness.init(testing.allocator, .{ .bindings = &store }, .{});
+    defer harness.deinit();
+    try harness.send("{\"id\":1,\"op\":\"work.list\"}");
+    try testing.expectEqualStrings("history_failed", try harness.code());
+    try harness.send("{\"id\":2,\"op\":\"work.status\",\"session_id\":\"gone\"}");
+    try testing.expectEqualStrings("history_failed", try harness.code());
 }
 
 test "the history op answers the store's sessions and refuses as the route does" {

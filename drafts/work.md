@@ -42,9 +42,12 @@ in the capabilities answer, that the verb is missing before it is called.
 
 `{"adapter": "...", "session_id": "..."}` for a session this endpoint holds or
 has a binding for, or `{"adapter": "...", "native_id": "..."}` for a harness
-session no binding names. A native reference is only ever answered by
-`work.list`; `work.start`, `work.send` and `work.stop` take a native reference
-only once adoption (0047 decision 3) lands, and refuse it until then.
+session no binding names. `work.start` given a `native_id` adopts that
+session (0047 decision 3): it resumes it under a new OAP id and submits the
+message. A native id `serve` already holds or has a binding for is not adopted
+twice; the message goes to that session instead. One the harness lists as
+running is refused `run_active`. `work.status`, `work.send`, `work.stop` and
+`work.read` take the OAP id from then on.
 
 ## Statuses
 

@@ -170,7 +170,7 @@ pub const Adapter = struct {
             const updated = thread.object.get("updatedAt");
             try listed.append(arena, .{
                 .native_id = id,
-                .title = if (name.len > 0) name else first_line[0..@min(first_line.len, 120)],
+                .title = if (name.len > 0) name else first_line[0..titleCut(first_line, 120)],
                 .directory = textOf(thread, "cwd"),
                 .updated_at_ms = if (updated) |seconds| (if (seconds == .integer) seconds.integer * std.time.ms_per_s else 0) else 0,
                 .running = std.mem.eql(u8, kind, "active"),
@@ -178,6 +178,13 @@ pub const Adapter = struct {
             });
         }
         return listed.items;
+    }
+
+    fn titleCut(text: []const u8, limit: usize) usize {
+        if (text.len <= limit) return text.len;
+        var cut = limit;
+        while (cut > 0 and text[cut] & 0xC0 == 0x80) cut -= 1;
+        return cut;
     }
 
     fn textOf(value: std.json.Value, name: []const u8) []const u8 {
@@ -1394,4 +1401,6 @@ test "a thread/list answer becomes native sessions, titled by name or the previe
     try std.testing.expect(!listed[1].running);
     try std.testing.expectEqualStrings("/w", listed[1].directory);
     try std.testing.expectEqualStrings("codex://threads/t2", listed[1].link);
+    const long = "a" ** 119 ++ "\u{00e9}" ++ "b";
+    try std.testing.expectEqual(@as(usize, 119), Adapter.titleCut(long, 120));
 }

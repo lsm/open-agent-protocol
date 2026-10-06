@@ -874,6 +874,13 @@ pub const Hub = struct {
         return .{ .sessions = found_sessions.items, .failures = failures.items };
     }
 
+    pub fn sessionForNative(self: *Hub, adapter: []const u8, native_id: []const u8) ?[]const u8 {
+        for (self.bound.items) |record| {
+            if (std.mem.eql(u8, record.adapter_name, adapter) and std.mem.eql(u8, record.native_id, native_id) and self.findSession(record.session_id) != null) return record.session_id;
+        }
+        return null;
+    }
+
     fn boundNative(self: *const Hub, adapter: []const u8, native_id: []const u8) bool {
         for (self.bound.items) |record| {
             if (std.mem.eql(u8, record.adapter_name, adapter) and std.mem.eql(u8, record.native_id, native_id)) return true;
