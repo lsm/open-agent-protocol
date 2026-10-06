@@ -1082,10 +1082,10 @@ and the run it wants is usually the one that just ended under it.
 | Fan-out reaches every subscriber of a run | `TestHubFansOutToSubscribers` |
 | A subscriber's context cancellation ends its subscription | `TestHubSubscriptionContextCancel` |
 | A live stream error surfaces to the subscriber as itself | `TestHubLiveStreamErrorSurfaces` |
-| An adapter's own stream overflow reaches only the subscribers exposed to that run | `TestHubAdapterStreamOverflow`, `TestAdapterOverflowScopedToExposedSubscribers` — **D7**: the Zig contract cannot say whose stream failed, so a stream failure ends the session |
-| Overflow follows the run the subscriber actually read | `TestOverflowFollowsDeliveredRuns`, `TestAdapterOverflowScopesByAcknowledgedRun` — ported for the run a **queue** overflow names (`lossRun`); the per-run scoping half is **D7** |
-| An acknowledged position overrides a stale pending one | `TestAcknowledgedPositionOverridesStalePending` — **D7**: a single mailbox has no stale pending position to override |
-| A late overflow does not cut a newer run | `TestLateOverflowDoesNotCutNewerRun` — **D7**: a late stream failure ends the whole session |
+| An adapter's own stream overflow reaches only the subscribers exposed to that run | `TestHubAdapterStreamOverflow`, `TestAdapterOverflowScopedToExposedSubscribers`; Zig: `an adapter's stream overflow on one run ends only the subscriptions exposed to that run` (D7, fixed) |
+| Overflow follows the run the subscriber actually read | `TestOverflowFollowsDeliveredRuns`, `TestAdapterOverflowScopesByAcknowledgedRun` — ported for the run a **queue** overflow names (`lossRun`), and for a stream overflow by `exposedTo` (D7, fixed) |
+| An acknowledged position overrides a stale pending one | `TestAcknowledgedPositionOverridesStalePending`; in Zig `exposedTo` judges the run last delivered first, so a queued event of an older run does not expose it (D7, fixed) |
+| A late overflow does not cut a newer run | `TestLateOverflowDoesNotCutNewerRun`; Zig: `a stream failure on an older run spares a subscription reading a newer one, and one on the current run ends them all` (D7, fixed) |
 
 ## Compound open and the held subscription
 
@@ -1617,7 +1617,7 @@ whole reason for existing:
    session's current run, preferring a run the session has not finished; the cursor
    is the position the client stopped at after draining rather than where the queue
    filled. Pinned in Zig by the four overflow tests in `zig/src/hub/hub.zig`.
-   **D7** covers what a *stream* overflow cannot do here.
+   A *stream* overflow an adapter attributes to a run is scoped the same way (D7, fixed).
 3. **An overflow is scoped to the run the subscriber was actually reading.** A
    subscriber that has moved on is not told about an earlier run's overflow, and
    one still reading it is. Pinned: `TestOverflowFollowsDeliveredRuns`,
@@ -1915,13 +1915,12 @@ one surface that did accept a metadata-carrying open and discard it is the endpo
 `stale_capabilities` is reachable and the answer's `capability_revision` reports a
 revision that was checked rather than one that was merely sent.
 
-**D4, D7, D8 and D9 are what is left.** Three of them are the Zig side and all of one
+**D4, D8 and D9 are what is left** (D7 was fixed 2026-10-06). Two of them are the Zig side and all of one
 kind: each names something the Zig tree cannot carry that the draft specifies — a member
 that does not exist, or a signal with nowhere to report it. None of them changes a byte
 on the wire today, and each is a small contract change rather than a re-decision, so they
-are queued rather than fixed here: D7, D8 and D9 in
-[#407](https://github.com/lsm/open-agent-protocol/issues/407). D7 is the per-run exposure
-a stream failure needs; D8 is that `request_cancelled` has no signal to come from; D9 is
+are queued rather than fixed here: D8 and D9 in
+[#407](https://github.com/lsm/open-agent-protocol/issues/407). D8 is that `request_cancelled` has no signal to come from; D9 is
 a gap **both** trees share, which is why fixing it on one side would be the wrong move.
 D4 is different in one respect: its negative-capacity half is a Go change, queued in
 [#406](https://github.com/lsm/open-agent-protocol/issues/406). **D6 is fixed**, and the
@@ -2283,15 +2282,15 @@ wedged session is given a share of the window, and the session beside it is stil
 closed` and `the sweep waits no longer than the window it was given`, all four in
 `zig/src/hub/hub.zig`.
 
-### D7 — a stream failure ends the whole session in Zig, not the subscribers exposed to the run
+### D7 — a stream failure ended the whole session in Zig, not the subscribers exposed to the run — FIXED
 
 | | |
 | --- | --- |
 | **The draft says** | Four overflow rules, each pinned by a Go test: *an adapter's own stream overflow reaches only the subscribers exposed to that run* (`TestHubAdapterStreamOverflow`, `TestAdapterOverflowScopedToExposedSubscribers`); *overflow follows the run the subscriber actually read* (`TestOverflowFollowsDeliveredRuns`); *an acknowledged position overrides a stale pending one* (`TestAcknowledgedPositionOverridesStalePending`); and *a late overflow does not cut a newer run* (`TestLateOverflowDoesNotCutNewerRun`). |
 | **Go does** | A subscriber tracks exposure **per run** — the run it is attached to, the run it has acknowledged, and every run with a queued event — and `exposedTo` decides whether a given run's stream failure reaches it at all. A run-a stream overflow therefore never reaches a subscriber that has acknowledged run-b, and a late overflow on an older run cannot cut a newer one. |
-| **Zig does** | One mailbox per subscription and no per-run exposure. `contract.Session.drain` reports a failure, not *whose* stream failed, so a stream failure is not an overflow and not attributable to a run: `pump` ends the **session** with `.stream_failed` and every subscription on it. `lossRun` names the right run for a *queue* overflow, and the cursor is the post-drain position, but there is no way to express "this run's stream overflowed, and only its readers care". |
+| **Zig does** | **Fixed (2026-10-06).** `contract.Session` gains an optional `stream_failure` that names the run whose stream failed and whether it overflowed, and `Hub.failStream` reads it after a failed `pump` or `drain`. A subscription records the run it attached at, and `exposedTo` is Go's rule: before anything is delivered, the attached run or a run with a queued event at or after it; after, the run last delivered, or a later one with a queued event. An overflow ends only the exposed subscriptions, as `.overflow` naming the run; an error ends only them unless it is the current run, which ends them all, as Go's `exitReader` does. A failure no adapter attributes still ends every subscription, which is what every shipped Zig adapter does today, since none implements `stream_failure` yet. Zig: `an adapter's stream overflow on one run ends only the subscriptions exposed to that run`, `a stream failure on an older run spares a subscription reading a newer one, and one on the current run ends them all`. |
 | **Why it matters** | A backend that overflows one run's stream takes down every subscriber on the session in Zig, where Go confines it. A host watching a healthy newer run is disconnected by an older run's failure. The rules are not merely unimplemented — the contract has no member that would let a port implement them, which is the same class as D3 to D6. |
-| **The fix** | `contract`'s drain reports the run that failed and whether it was an overflow, beside the failure, and `Subscription` tracks the run set it is exposed to the way Go's `subscriber` does. Two members, and all four rules become implementable. |
+| **The fix** | Landed as described: the contract member, and the exposure set on `Subscription`. What remains is an adapter that reports its own stream failures by run, which is that adapter's change, not the hub's. |
 | **What *is* ported** | Which run a **queue** overflow names, and where its cursor points. `lossRun` considers the dropped event's run, every run with a queued event, the run the subscription is reading and the session's current run, preferring a run the session has not finished — Go's candidate set, including the current run. The cursor is the position the client stopped at **after** draining, not where the queue filled, so a resume neither skips nor repeats. Pinned by `zig/src/hub/hub.zig`'s `a subscriber that falls behind is ended with a cursor on the run that overflowed`, `a loss on a newer run names the newer run rather than the one being read`, `the overflow cursor is where the client stopped after draining, not where the queue filled` and `a loss on a settled run names the live current run, which is what Go's candidate set reaches`. |
 
 ### Recorded, and not divergences

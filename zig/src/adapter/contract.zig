@@ -178,6 +178,11 @@ pub const Updated = struct {
     state: oap_types.SessionState,
 };
 
+pub const StreamFailure = struct {
+    run_id: []const u8,
+    overflow: bool = false,
+};
+
 pub const Session = struct {
     ptr: *anyopaque,
     vtable: *const VTable,
@@ -201,6 +206,7 @@ pub const Session = struct {
         replay: ?*const fn (ptr: *anyopaque, allocator: std.mem.Allocator, run_id: []const u8, after: u64, refusal: *Refusal) Failure!Replay = null,
         readable: ?*const fn (ptr: *anyopaque) ?std.Io.File.Handle = null,
         native_id: ?*const fn (ptr: *anyopaque) []const u8 = null,
+        stream_failure: ?*const fn (ptr: *anyopaque) ?StreamFailure = null,
     };
 
     pub fn id(self: Session) []const u8 {
@@ -209,6 +215,11 @@ pub const Session = struct {
 
     pub fn nativeId(self: Session) []const u8 {
         const read = self.vtable.native_id orelse return "";
+        return read(self.ptr);
+    }
+
+    pub fn streamFailure(self: Session) ?StreamFailure {
+        const read = self.vtable.stream_failure orelse return null;
         return read(self.ptr);
     }
 
