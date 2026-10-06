@@ -1,6 +1,6 @@
 # Decision 0016: The Model Provider Profile
 
-Status: proposed
+Status: accepted 2026-10-06 (its surface is on main)
 Date: 2026-09-17
 Protocol: `open-agent-protocol` version `0.1`
 Profile: introduces `open-agent-protocol.model-provider-core`

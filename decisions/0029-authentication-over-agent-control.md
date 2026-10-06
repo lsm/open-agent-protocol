@@ -1,6 +1,6 @@
 # Decision 0029: Authentication Over Agent Control
 
-Status: proposed (the `auth.providers.response` row amended by
+Status: accepted 2026-10-06 (its surface is on main) (the `auth.providers.response` row amended by
 [Decision 0043](0043-auth-providers-carry-how-they-accept-a-credential.md),
 which adds each row's credential kinds, because a payload of id, name,
 status and an optional error cannot express a provider that takes an API

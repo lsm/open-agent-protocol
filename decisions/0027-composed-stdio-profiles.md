@@ -1,6 +1,6 @@
 # Decision 0027: Compose Profiles on One stdio Connection
 
-Status: proposed
+Status: accepted 2026-10-06 (its surface is on main)
 Date: 2026-09-22
 Protocol: `open-agent-protocol` version `0.1`
 Profiles: `open-agent-protocol.agent-control-core`,
