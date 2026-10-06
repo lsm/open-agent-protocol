@@ -249,6 +249,19 @@ pub const Session = struct {
     }
 };
 
+pub const NativeSession = struct {
+    native_id: []const u8,
+    title: []const u8 = "",
+    directory: []const u8 = "",
+    updated_at_ms: i64 = 0,
+    running: bool = false,
+};
+
+pub const NativeListRequest = struct {
+    directory: []const u8 = "",
+    limit: usize = 50,
+};
+
 pub const Adapter = struct {
     ptr: *anyopaque,
     vtable: *const VTable,
@@ -256,7 +269,13 @@ pub const Adapter = struct {
     pub const VTable = struct {
         probe: *const fn (ptr: *anyopaque, refusal: *Refusal) Failure!Descriptor,
         open: *const fn (ptr: *anyopaque, arena: std.mem.Allocator, request: OpenRequest, refusal: *Refusal) Failure!Session,
+        native_list: ?*const fn (ptr: *anyopaque, arena: std.mem.Allocator, request: NativeListRequest, refusal: *Refusal) Failure![]const NativeSession = null,
     };
+
+    pub fn nativeList(self: Adapter, arena: std.mem.Allocator, request: NativeListRequest, refusal: *Refusal) ?Failure![]const NativeSession {
+        const listed = self.vtable.native_list orelse return null;
+        return listed(self.ptr, arena, request, refusal);
+    }
 
     pub fn probe(self: Adapter, refusal: *Refusal) Failure!Descriptor {
         return self.vtable.probe(self.ptr, refusal);

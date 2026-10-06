@@ -121,7 +121,7 @@ pub const Daemon = struct {
             .adapters => self.listing(arena, try self.frontend.adapters(arena)),
             .sessions => self.listing(arena, try self.frontend.sessions(arena)),
             .history => self.history(arena, request.split.query),
-            .work_list => self.outcome(arena, try self.frontend.workList(arena, try self.includeClosed(arena, request.split.query)), .{}),
+            .work_list => self.outcome(arena, try self.frontend.workList(arena, .{ .include_closed = try self.queryFlag(arena, request.split.query, "include_closed"), .include_native = try self.queryFlag(arena, request.split.query, "include_native") }), .{}),
             .work_status => |id| self.outcome(arena, try self.frontend.workStatus(arena, id), .{ .session_id = id }),
             .work_start => |name| self.workStart(arena, name, request.body),
             .work_send => |id| self.workSend(arena, id, request.body),
@@ -214,9 +214,9 @@ pub const Daemon = struct {
         return self.outcome(arena, try self.frontend.openSession(arena, name, request, true), correlation);
     }
 
-    fn includeClosed(self: *Daemon, arena: std.mem.Allocator, query: []const u8) !bool {
+    fn queryFlag(self: *Daemon, arena: std.mem.Allocator, query: []const u8, name: []const u8) !bool {
         _ = self;
-        const given = (try queryValue(arena, query, "include_closed")) orelse return false;
+        const given = (try queryValue(arena, query, name)) orelse return false;
         return std.mem.eql(u8, given, "true") or std.mem.eql(u8, given, "1");
     }
 

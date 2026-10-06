@@ -19,12 +19,16 @@ export type WorkStatus = 'queued' | 'running' | 'needs_you' | 'done' | 'failed' 
 
 export interface WorkRef {
   adapter: string;
-  session_id: string;
+  session_id?: string;
+  native_id?: string;
 }
 
 export interface Work {
   ref: WorkRef;
-  status: WorkStatus;
+  status?: WorkStatus;
+  held?: false;
+  native?: true;
+  state?: 'live' | 'closed' | 'running' | 'idle';
   directory?: string;
   title?: string;
   run_id?: string;
@@ -152,9 +156,20 @@ export class OapClient {
     return listing.adapters ?? [];
   }
 
-  async workList(): Promise<WorkGroup[]> {
-    const listed = await this.plain<{ groups?: WorkGroup[] }>('GET', '/work', null, 'list work');
-    return listed.groups ?? [];
+  async workList(
+    options: { includeClosed?: boolean; includeNative?: boolean } = {},
+  ): Promise<{ groups: WorkGroup[]; unavailable: { adapter: string; message: string }[] }> {
+    const query = new URLSearchParams();
+    if (options.includeClosed) query.set('include_closed', 'true');
+    if (options.includeNative) query.set('include_native', 'true');
+    const suffix = query.toString() ? `?${query.toString()}` : '';
+    const listed = await this.plain<{ groups?: WorkGroup[]; unavailable?: { adapter: string; message: string }[] }>(
+      'GET',
+      `/work${suffix}`,
+      null,
+      'list work',
+    );
+    return { groups: listed.groups ?? [], unavailable: listed.unavailable ?? [] };
   }
 
   async workStatus(sessionId: string): Promise<Work> {

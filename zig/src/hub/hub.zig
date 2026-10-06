@@ -180,6 +180,23 @@ pub const Work = struct {
     updated_at_ms: i64,
 };
 
+pub const Native = struct {
+    adapter: []const u8,
+    session: contract.NativeSession,
+};
+
+pub const NativeFailure = struct {
+    adapter: []const u8,
+    message: []const u8,
+};
+
+pub const Natives = struct {
+    sessions: []const Native,
+    failures: []const NativeFailure,
+};
+
+pub const native_list_limit: usize = 50;
+
 pub const last_reply_limit: usize = 4096;
 pub const turn_text_limit: usize = 64 * 1024;
 pub const turns_kept: usize = 512;
@@ -821,6 +838,41 @@ pub const Hub = struct {
         const from: usize = if (start_index <= entry.turns_dropped) 0 else @intCast(@min(start_index - entry.turns_dropped, entry.turns.items.len));
         const to = @min(entry.turns.items.len, from + limit);
         return .{ .first_index = entry.turns_dropped + from, .turns = entry.turns.items[from..to] };
+    }
+
+    pub fn natives(self: *Hub, arena: std.mem.Allocator, known: []const []const u8) Failure!Natives {
+        var found_sessions = std.ArrayList(Native).empty;
+        var failures = std.ArrayList(NativeFailure).empty;
+        for (self.adapters.items) |registered| {
+            var refusal = contract.Refusal{};
+            const answered = registered.adapter.nativeList(arena, .{ .directory = registered.directory, .limit = native_list_limit }, &refusal) orelse continue;
+            const listed = answered catch |err| switch (err) {
+                error.OutOfMemory => return error.OutOfMemory,
+                else => {
+                    try failures.append(arena, .{ .adapter = registered.name, .message = if (refusal.message.len > 0) refusal.message else @errorName(err) });
+                    continue;
+                },
+            };
+            for (listed) |found| {
+                if (self.boundNative(registered.name, found.native_id) or declared(known, found.native_id)) continue;
+                try found_sessions.append(arena, .{ .adapter = registered.name, .session = found });
+            }
+        }
+        return .{ .sessions = found_sessions.items, .failures = failures.items };
+    }
+
+    fn boundNative(self: *const Hub, adapter: []const u8, native_id: []const u8) bool {
+        for (self.bound.items) |record| {
+            if (std.mem.eql(u8, record.adapter_name, adapter) and std.mem.eql(u8, record.native_id, native_id)) return true;
+        }
+        return false;
+    }
+
+    fn declared(known: []const []const u8, native_id: []const u8) bool {
+        for (known) |candidate| {
+            if (std.mem.eql(u8, candidate, native_id)) return true;
+        }
+        return false;
     }
 
     pub fn adapterDirectory(self: *Hub, name: []const u8) ?[]const u8 {

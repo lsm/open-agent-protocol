@@ -774,7 +774,7 @@ pub const Frontend = struct {
         }
         if (std.mem.eql(u8, request.op, op_work_list)) {
             if (try request.only(arena, request_parameter)) |refusal| return .{ .refused = refusal };
-            return self.workList(arena, workFlag(request.payload, "include_closed"));
+            return self.workList(arena, .{ .include_closed = workFlag(request.payload, "include_closed"), .include_native = workFlag(request.payload, "include_native") });
         }
         if (std.mem.eql(u8, request.op, op_capabilities)) {
             if (try request.only(arena, adapter_parameter)) |refusal| return .{ .refused = refusal };
@@ -969,17 +969,52 @@ pub const Frontend = struct {
         return null;
     }
 
-    pub fn workList(self: *Frontend, arena: std.mem.Allocator, include_closed: bool) !Outcome {
+    pub const ListOptions = struct {
+        include_closed: bool = false,
+        include_native: bool = false,
+    };
+
+    fn nativeJson(arena: std.mem.Allocator, found: hubmod.Native) !std.json.Value {
+        var ref = try emptyObject(arena);
+        try ref.put(arena, "adapter", .{ .string = found.adapter });
+        try ref.put(arena, "native_id", .{ .string = found.session.native_id });
+        var object = try emptyObject(arena);
+        try object.put(arena, "ref", .{ .object = ref });
+        try object.put(arena, "held", .{ .bool = false });
+        try object.put(arena, "native", .{ .bool = true });
+        try object.put(arena, "state", .{ .string = if (found.session.running) "running" else "idle" });
+        if (found.session.title.len > 0) try object.put(arena, "title", .{ .string = found.session.title });
+        if (found.session.directory.len > 0) try object.put(arena, "directory", .{ .string = found.session.directory });
+        try object.put(arena, "updated_at_ms", .{ .integer = found.session.updated_at_ms });
+        return .{ .object = object };
+    }
+
+    pub fn workList(self: *Frontend, arena: std.mem.Allocator, options: ListOptions) !Outcome {
         const Piece = struct { directory: []const u8, at_ms: i64, value: std.json.Value };
         var pieces: std.ArrayList(Piece) = .empty;
         for (try self.hub.works(arena)) |piece| {
             try pieces.append(arena, .{ .directory = piece.directory, .at_ms = piece.updated_at_ms, .value = try workJson(arena, piece) });
         }
+        var known_native: std.ArrayList([]const u8) = .empty;
         if (try self.latestBindings(arena)) |latest| {
             for (latest) |entry| {
+                if (entry.record.native_session_id.len > 0) try known_native.append(arena, entry.record.native_session_id);
                 if (self.hub.knows(entry.record.session_id)) continue;
-                if (entry.action == .closed and !include_closed) continue;
+                if (entry.action == .closed and !options.include_closed) continue;
                 try pieces.append(arena, .{ .directory = entry.record.directory, .at_ms = entry.time_ms, .value = try unheldJson(arena, entry) });
+            }
+        }
+        var unavailable: std.ArrayList(std.json.Value) = .empty;
+        if (options.include_native) {
+            const found = try self.hub.natives(arena, known_native.items);
+            for (found.sessions) |native| {
+                try pieces.append(arena, .{ .directory = native.session.directory, .at_ms = native.session.updated_at_ms, .value = try nativeJson(arena, native) });
+            }
+            for (found.failures) |failure| {
+                var object = try emptyObject(arena);
+                try object.put(arena, "adapter", .{ .string = failure.adapter });
+                try object.put(arena, "message", .{ .string = try trim(arena, failure.message) });
+                try unavailable.append(arena, .{ .object = object });
             }
         }
         std.mem.sort(Piece, pieces.items, {}, struct {
@@ -1011,6 +1046,7 @@ pub const Frontend = struct {
         }
         var root = try emptyObject(arena);
         try root.put(arena, "groups", try jsonArray(arena, groups.items));
+        if (unavailable.items.len > 0) try root.put(arena, "unavailable", try jsonArray(arena, unavailable.items));
         return .{ .answer = .{ .object = root } };
     }
 
@@ -2238,6 +2274,7 @@ const ReferenceState = struct {
     saw_tool_sources_json: []const u8 = "",
     running: bool = false,
     submit_refuses: bool = false,
+    native_fails: bool = false,
     state_fails: bool = false,
     lister_closed: bool = false,
     closed: bool = false,
@@ -2247,7 +2284,7 @@ const ReferenceState = struct {
 var reference_holder: ReferenceState = .{};
 
 fn reference() contract.Adapter {
-    return .{ .ptr = @ptrCast(@constCast(&reference_holder)), .vtable = &.{ .probe = referenceProbe, .open = referenceOpen } };
+    return .{ .ptr = @ptrCast(@constCast(&reference_holder)), .vtable = &.{ .probe = referenceProbe, .open = referenceOpen, .native_list = referenceNativeList } };
 }
 
 fn referenceProbe(ptr: *anyopaque, refusal: *contract.Refusal) contract.Failure!contract.Descriptor {
@@ -2330,6 +2367,16 @@ fn referenceState(ptr: *anyopaque, arena: std.mem.Allocator, refusal: *contract.
     const run = try arena.dupe(u8, "run-1");
     const runs = try arena.dupe(oap_types.ActiveRun, &.{.{ .run_id = run, .status = .running, .relationship = "primary" }});
     return .{ .session_id = session_id, .status = .running, .active_run_id = run, .active_runs = runs };
+}
+
+fn referenceNativeList(ptr: *anyopaque, arena: std.mem.Allocator, request: contract.NativeListRequest, refusal: *contract.Refusal) contract.Failure![]const contract.NativeSession {
+    const state: *ReferenceState = @ptrCast(@alignCast(ptr));
+    _ = request;
+    if (state.native_fails) return refusal.fail(error.BackendFailed, "the harness would not list");
+    return try arena.dupe(contract.NativeSession, &.{
+        .{ .native_id = "thread-a", .title = "older thread", .directory = "/work/a", .updated_at_ms = 5 },
+        .{ .native_id = "thread-b", .title = "busy thread", .directory = "/work/a", .updated_at_ms = 7, .running = true },
+    });
 }
 
 fn referenceSubmit(ptr: *anyopaque, arena: std.mem.Allocator, request: *const oap_types.MessageSubmitRequest, envelope_id: []const u8, refusal: *contract.Refusal) contract.Failure!oap_types.MessageSubmitResponse {
@@ -3123,6 +3170,34 @@ test "work.status names an idle session that never ran done, a running one runni
 
     try harness.send("{\"id\":5,\"op\":\"work.status\",\"session_id\":\"absent\"}");
     try testing.expectEqualStrings("unknown_session", try harness.code());
+}
+
+test "work.list adds an adapter's own sessions only on include_native, and names an adapter that could not list" {
+    const harness = try Harness.init(testing.allocator, .{}, .{});
+    defer harness.deinit();
+    try harness.send("{\"id\":1,\"op\":\"work.list\"}");
+    try testing.expectEqual(@as(usize, 0), (try harness.lastValue()).object.get("result").?.object.get("groups").?.array.items.len);
+
+    try harness.send("{\"id\":2,\"op\":\"work.list\",\"request\":{\"include_native\":true}}");
+    const groups = (try harness.lastValue()).object.get("result").?.object.get("groups").?.array.items;
+    try testing.expectEqual(@as(usize, 1), groups.len);
+    try testing.expectEqualStrings("/work/a", groups[0].object.get("directory").?.string);
+    const work = groups[0].object.get("work").?.array.items;
+    try testing.expectEqual(@as(usize, 4), work.len);
+    try testing.expectEqualStrings("thread-b", work[0].object.get("ref").?.object.get("native_id").?.string);
+    try testing.expectEqualStrings("running", work[0].object.get("state").?.string);
+    try testing.expectEqual(true, work[0].object.get("native").?.bool);
+    try testing.expectEqualStrings("older thread", work[3].object.get("title").?.string);
+
+    reference_holder.native_fails = true;
+    defer reference_holder.native_fails = false;
+    try harness.send("{\"id\":3,\"op\":\"work.list\",\"request\":{\"include_native\":true}}");
+    const failed = (try harness.lastValue()).object.get("result").?.object;
+    try testing.expectEqual(@as(usize, 0), failed.get("groups").?.array.items.len);
+    const unavailable = failed.get("unavailable").?.array.items;
+    try testing.expectEqual(@as(usize, 2), unavailable.len);
+    try testing.expectEqualStrings("reference", unavailable[0].object.get("adapter").?.string);
+    try testing.expectEqualStrings("the harness would not list", unavailable[0].object.get("message").?.string);
 }
 
 test "work.status answers session_closed for a session it finds closed, releases it, and is then unknown; work.list releases it too" {

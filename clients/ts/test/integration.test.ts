@@ -361,8 +361,9 @@ test(
     const started = await client.workStart('memory', { message: 'hello there', title: 'first task' });
     assert.equal(started.ref.adapter, 'memory');
     assert.equal(started.title, 'first task');
-    assert.ok(['queued', 'running', 'needs_you', 'done'].includes(started.status), started.status);
-    const sessionId = started.ref.session_id;
+    assert.ok(['queued', 'running', 'needs_you', 'done'].includes(started.status ?? ''), started.status);
+    const sessionId = started.ref.session_id ?? '';
+    assert.ok(sessionId);
 
     await assert.rejects(client.workStart('memory', { message: 'x', directory: '/nowhere' }), /invalid_request/);
     await assert.rejects(client.workStatus('nope'), /unknown_session/);
@@ -377,7 +378,7 @@ test(
     assert.equal(paged.length, 1);
     assert.equal(paged[0]?.index, 1);
 
-    const groups = await client.workList();
+    const { groups } = await client.workList();
     assert.ok(groups.some((group) => group.work.some((piece) => piece.ref.session_id === sessionId)));
 
     const stopped = await client.workStop(sessionId);

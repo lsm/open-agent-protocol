@@ -92,7 +92,88 @@ pub const Adapter = struct {
     }
 
     pub fn adapter(self: *Adapter) contract.Adapter {
-        return .{ .ptr = self, .vtable = &.{ .probe = probe, .open = open } };
+        return .{ .ptr = self, .vtable = &.{ .probe = probe, .open = open, .native_list = nativeList } };
+    }
+
+    fn nativeList(ptr: *anyopaque, arena: std.mem.Allocator, request: contract.NativeListRequest, refusal: *contract.Refusal) contract.Failure![]const contract.NativeSession {
+        const self: *Adapter = @ptrCast(@alignCast(ptr));
+        const config = self.config;
+        const argv = try std.mem.concat(arena, []const u8, &.{ config.args, try serverArgs(arena, config) });
+        const transport = process.Transport.open(self.allocator, .{
+            .executable = config.executable,
+            .args = argv,
+            .environment = config.environment,
+            .working_directory = config.working_directory,
+            .frame_limit = config.frame_limit,
+            .exit_grace_ns = config.exit_grace_ns,
+        }) catch |err| {
+            if (err == error.OutOfMemory) return error.OutOfMemory;
+            return refusal.fail(error.BackendFailed, try std.fmt.allocPrint(arena, "the codex app-server could not start: {s}", .{@errorName(err)}));
+        };
+        defer transport.deinit();
+        const directory = if (request.directory.len > 0) request.directory else config.working_directory orelse "";
+        var params = std.json.ObjectMap.empty;
+        try params.put(arena, "limit", .{ .integer = @intCast(request.limit) });
+        if (directory.len > 0) try params.put(arena, "cwd", .{ .string = directory });
+        const listing = try std.json.Stringify.valueAlloc(arena, std.json.Value{ .object = params }, .{});
+        const lines = [_][]const u8{
+            "{\"jsonrpc\":\"2.0\",\"id\":0,\"method\":\"initialize\",\"params\":{\"clientInfo\":{\"name\":\"oapx\",\"version\":\"0\"}}}",
+            "{\"jsonrpc\":\"2.0\",\"method\":\"initialized\",\"params\":{}}",
+            try std.fmt.allocPrint(arena, "{{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"thread/list\",\"params\":{s}}}", .{listing}),
+        };
+        for (lines) |line| transport.write(line) catch return refusal.fail(error.BackendFailed, "the codex app-server closed before answering thread/list");
+        const started = monotonic();
+        while (monotonic() -| started < config.request_timeout_ns) {
+            const polled = transport.poll(config.poll_ns) catch return refusal.fail(error.BackendFailed, "the codex app-server's answer could not be read");
+            const frame = switch (polled) {
+                .frame => |frame| frame,
+                .quiet => continue,
+                .ended => return refusal.fail(error.BackendFailed, "the codex app-server exited before answering thread/list"),
+            };
+            const parsed = std.json.parseFromSliceLeaky(std.json.Value, arena, frame, .{}) catch continue;
+            if (parsed != .object) continue;
+            const id = parsed.object.get("id") orelse continue;
+            if (id != .integer or id.integer != 1) continue;
+            if (parsed.object.get("error")) |failure| {
+                const text = if (failure == .object) (if (failure.object.get("message")) |m| (if (m == .string) m.string else "") else "") else "";
+                return refusal.fail(error.BackendFailed, try std.fmt.allocPrint(arena, "codex thread/list refused: {s}", .{text}));
+            }
+            return threadsOf(arena, parsed.object.get("result"));
+        }
+        return refusal.fail(error.BackendFailed, "the codex app-server did not answer thread/list in time");
+    }
+
+    fn threadsOf(arena: std.mem.Allocator, result: ?std.json.Value) ![]const contract.NativeSession {
+        const body = result orelse return &.{};
+        if (body != .object) return &.{};
+        const data = body.object.get("data") orelse return &.{};
+        if (data != .array) return &.{};
+        var listed: std.ArrayList(contract.NativeSession) = .empty;
+        for (data.array.items) |thread| {
+            if (thread != .object) continue;
+            const id = textOf(thread, "id");
+            if (id.len == 0) continue;
+            const name = textOf(thread, "name");
+            const preview = textOf(thread, "preview");
+            const first_line = preview[0 .. std.mem.indexOfScalar(u8, preview, '\n') orelse preview.len];
+            const status = thread.object.get("status");
+            const kind = if (status) |given| (if (given == .object) textOf(given, "type") else "") else "";
+            const updated = thread.object.get("updatedAt");
+            try listed.append(arena, .{
+                .native_id = id,
+                .title = if (name.len > 0) name else first_line[0..@min(first_line.len, 120)],
+                .directory = textOf(thread, "cwd"),
+                .updated_at_ms = if (updated) |seconds| (if (seconds == .integer) seconds.integer * std.time.ms_per_s else 0) else 0,
+                .running = std.mem.eql(u8, kind, "active"),
+            });
+        }
+        return listed.items;
+    }
+
+    fn textOf(value: std.json.Value, name: []const u8) []const u8 {
+        if (value != .object) return "";
+        const member = value.object.get(name) orelse return "";
+        return if (member == .string) member.string else "";
     }
 
     fn probe(ptr: *anyopaque, refusal: *contract.Refusal) contract.Failure!contract.Descriptor {
@@ -1284,4 +1365,22 @@ test "a session compacts only once no run is active and its events are drained" 
 
     try probe.handle.?.drain(scratch, &drained);
     try testing.expect(try live.compact());
+}
+
+test "a thread/list answer becomes native sessions, titled by name or the preview's first line" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const answer = try std.json.parseFromSliceLeaky(std.json.Value, arena.allocator(),
+        \\{"data":[{"id":"t1","name":"named","preview":"ignored","cwd":"/w","updatedAt":1700000000,"status":{"type":"active"}},
+        \\{"id":"t2","name":null,"preview":"first line\nsecond","cwd":"/w","updatedAt":1700000001,"status":{"type":"notLoaded"}},
+        \\{"name":"no id"}]}
+    , .{});
+    const listed = try Adapter.threadsOf(arena.allocator(), answer);
+    try std.testing.expectEqual(@as(usize, 2), listed.len);
+    try std.testing.expectEqualStrings("named", listed[0].title);
+    try std.testing.expect(listed[0].running);
+    try std.testing.expectEqual(@as(i64, 1700000000000), listed[0].updated_at_ms);
+    try std.testing.expectEqualStrings("first line", listed[1].title);
+    try std.testing.expect(!listed[1].running);
+    try std.testing.expectEqualStrings("/w", listed[1].directory);
 }
