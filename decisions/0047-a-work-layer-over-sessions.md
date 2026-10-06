@@ -1,6 +1,8 @@
-# Decision 0047: A Work Layer Over Sessions
+# Decision 0047: A Work Profile Over Sessions
 
-Status: proposed
+Status: proposed (the owner answered its four open questions on 2026-10-06;
+see "Owner answers". Its six verbs over held sessions are #919; native lists
+and adoption are not executable yet)
 Date: 2026-10-06
 Protocol: `open-agent-protocol` version `0.1`
 Profile: a new `open-agent-protocol.work` profile over
@@ -25,13 +27,13 @@ The core already does most of what the five verbs need:
 
 | Verb | What the core has |
 | --- | --- |
-| `start` | open, then submit. A message carried on the open is still refused in Zig (hub draft, D11). |
+| `start` | open, then submit. When this record was proposed, the Zig hub refused a message carried on the open (hub draft, D11); #914 closed that. |
 | `send` | submit, steer ([0013](0013-steer.md)) and queue ([0007](0007-queue-delivery.md)) |
 | `stop` | cancel, on every adapter but DeepSeek's, whose wire has no cancel request |
 | `status` | `session.state` and the event stream, with no summary a caller can read in one call |
-| `find` | only the sessions a host opened (0046); none a harness holds |
+| `list` (HyperNeo's `find`) | only the sessions a host opened (0046); none a harness holds |
 
-Session bindings already outlive a restart in both hubs (`--bindings`, #893).
+Session bindings already outlive a restart in both hubs (`--session-history`, first `--bindings`, #893).
 
 ### What a Claude Code session is, probed on 2026-10-06
 
@@ -95,10 +97,11 @@ Two more probes, the same day:
 
 ### 1. A work profile, built on the core
 
-`open-agent-protocol.work` defines the five verbs over core operations, so an
+`open-agent-protocol.work` defines the verbs over core operations (five here,
+and `work.read` added with [the draft](../drafts/work.md)), so an
 endpoint gains it without new run machinery:
 
-- `work.find {text?, directory?, adapters?, include_closed?, limit?, cursor?}`:
+- `work.list {directory?, adapters?, include_closed?, limit?, cursor?}`:
   groups by directory, newest first, the host's sessions (0046) and the
   sessions each adapter can list natively (decision 2).
 - `work.start {adapter, directory, title, message}`: open with the message.
@@ -127,9 +130,9 @@ The rule: a native session no binding names is listed with its native id and
 **no** OAP session id. It gets an OAP id only when a host adopts it (decision
 3), and the adoption writes the binding. Both of 0046's rules stand. The list
 never invents an identity. And `session.list` still never carries a native id
-or a home directory: native entries appear only in `work.find`, which must
+or a home directory: native entries appear only in `work.list`, which must
 carry the native id because adopting needs it, so an endpoint serves
-`work.find` only to a caller it trusts with the harness's own pointers, as it
+`work.list` only to a caller it trusts with the harness's own pointers, as it
 trusts its binding file.
 
 Sources, by harness: Codex `thread/list`, ACP `session/list` when advertised,
@@ -193,12 +196,27 @@ stays as an alias for one release.
   the harnesses with no desktop app, and keep its relay for a Claude session
   the app is running.
 
-## Open questions for review
+## Owner answers, 2026-10-06
 
-1. Should the work profile be in this repository, or left to callers like
-   HyperNeo over the core?
-2. Is reading Claude's and Pi's private stores for listing acceptable?
-3. Should an adopting Claude adapter also write the app's session record, so a
-   resumed session shows in the app? That is writing another product's private
-   file.
-4. Is `serve` the right name, given `serve agent` already exists?
+1. **The work layer is in this repository, as its own profile.**
+   `open-agent-protocol.work` sits over `agent-control-core` the way
+   `presentation-control` does. It is not an affordance: in this repository an
+   affordance is presentation state, what a surface may do
+   ([0036](0036-a-presentation-layer-is-not-evidence-for-its-own-profile.md),
+   [0037](0037-presentation-state-is-versioned-and-every-intent-is-idempotent.md)),
+   and the work verbs are operations a caller runs. Each verb is a capability
+   key an endpoint advertises (`work.list`, `work.start`, `work.send`,
+   `work.status`, `work.stop`, `work.read`), so a missing one, such as `work.stop` over
+   DeepSeek, is known before it is called.
+2. **Reading Claude's and Pi's own stores for listing is accepted, read-only.**
+   A store whose format changed lists nothing; it is never written.
+3. **An adopting Claude adapter does not write the app's session record.** A
+   caller that wants the session in the app uses `claude --desktop --resume`.
+4. **The name is `serve`.** It landed in #913, with `hub` as an alias for one
+   release.
+   The work verbs are served by `serve` itself, next to its own operations
+   ([work](../drafts/work.md)), not by a separate `oapx work` command as
+   decision 4 first said.
+5. **The listing verb is `work.list`, not `work.find`** (owner, 2026-10-06).
+   It lists and filters; it does not search. Search, by text or meaning, is
+   the caller's, built on its own index over what OAP hands it.
