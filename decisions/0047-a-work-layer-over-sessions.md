@@ -211,3 +211,6 @@ stays as an alias for one release.
    caller that wants the session in the app uses `claude --desktop --resume`.
 4. **The name is `serve`.** It landed in #913, with `hub` as an alias for one
    release.
+   The work verbs are served by `serve` itself, next to its own operations
+   ([work](../drafts/work.md)), not by a separate `oapx work` command as
+   decision 4 first said.

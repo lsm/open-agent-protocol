@@ -96,7 +96,9 @@ truncated to 4 KiB. `pending` is present only when `status` is `needs_you`.
 
 Request `{"text"?, "directory"?, "adapters"?, "include_closed"?, "limit"?, "cursor"?}`.
 Answer `{"groups": [...], "next_cursor"?}`, where each group is
-`{"directory", "last_activity_ms", "work": [<work.status answer>...]}`,
+`{"directory", "last_activity_ms", "work": [<entry>...]}`, where an entry is a
+held session's `work.status` answer or an unheld or native entry as
+[Statuses](#statuses) describes,
 newest first. A group appears even when it holds no open work, so a caller can
 start work in a place it named. `limit` is 1 to 100, default 50, counting
 pieces of work; the cursor is opaque, as in 0046.
