@@ -1183,7 +1183,10 @@ it is reported against that run, and the session takes the next submit. From
 then on every op naming the session answers `unknown_session` (404), a second
 `close` included, and `sessions` no longer lists it. `session_closed` (409) in
 the rows below is a session that stops being open while the request is in
-flight.
+flight. A subscription the close ends still delivers every envelope it had
+already queued, then signals the close — Go: `TestMarkClosedDefersFinishToReader`;
+Zig: `a subscription delivers the events it had queued before it reports the
+session closed`.
 
 ### `adapters`
 

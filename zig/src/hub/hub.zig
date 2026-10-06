@@ -233,7 +233,7 @@ pub const Subscription = struct {
     pub fn next(self: *Subscription) ?Delivery {
         const allocator = self.hub.allocator;
         self.trim(allocator);
-        if (self.ending != .open and self.ending != .overflow) return null;
+        if (self.ending == .run_terminal or self.ending == .expired) return null;
         if (self.replay.items.len > 0) {
             const event = self.replay.items[0];
             self.replay_at = 1;
@@ -272,6 +272,8 @@ pub const Subscription = struct {
         if (!std.mem.eql(u8, self.run_id, event.run_id)) {
             const owned = self.hub.allocator.dupe(u8, event.run_id) catch {
                 self.ending = .stream_failed;
+                self.replay_at = self.replay.items.len;
+                self.queue_at = self.queue.items.len;
                 return;
             };
             if (self.run_id.len > 0) self.hub.allocator.free(self.run_id);
@@ -2402,6 +2404,41 @@ test "closing a session ends every subscription under it, and releases the sessi
     const request = try submitFor(arena, "closing");
     try testing.expectError(error.UnknownSession, hub.submit(arena, "closing", &request, ""));
     try testing.expectError(error.UnknownSession, hub.state(arena, "absent"));
+}
+
+test "a subscription delivers the events it had queued before it reports the session closed" {
+    var adapter = memory.Adapter.init(testing.allocator);
+    defer adapter.deinit();
+    var hub = Hub.init(testing.allocator, testClock, .{ .stream_queue = 64 });
+    defer hub.deinit();
+    try hub.register("memory", adapter.adapter());
+    var scratch = std.heap.ArenaAllocator.init(testing.allocator);
+    defer scratch.deinit();
+    const arena = scratch.allocator();
+
+    const opened = try hub.open(arena, "memory", .{ .session_id = "drained" });
+    const subscription = try hub.subscribe(arena, opened.session_id, .{});
+    const request = try submitFor(arena, "drained");
+    const started = try hub.submit(arena, "drained", &request, "");
+    try hub.pump(testing.allocator, 0);
+    _ = try hub.cancel(arena, "drained", started.run_id.?);
+    try hub.pump(testing.allocator, 0);
+    const queued = subscription.queue.items.len;
+    try testing.expect(queued > 0);
+
+    try hub.close(arena, opened.session_id);
+    try testing.expectEqual(Ending.session_closed, subscription.ending);
+    var delivered: usize = 0;
+    var last: []const u8 = "";
+    while (subscription.next()) |event| {
+        delivered += 1;
+        last = try arena.dupe(u8, event.line);
+    }
+    try testing.expectEqual(queued, delivered);
+    try testing.expect(try Hub.terminal(arena, last));
+    try testing.expectEqual(Ending.session_closed, subscription.ending);
+    subscription.close();
+    try hub.pump(testing.allocator, 0);
 }
 
 test "a released session's id is free again, and its memory is gone" {
