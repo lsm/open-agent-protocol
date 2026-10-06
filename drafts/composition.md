@@ -175,13 +175,15 @@ individually hides it:
 
 1. **A protocol for the boundary.** Agent control has one. Tools have MCP and
    the source kinds. Providers have 0016 and
-   [its draft](model-provider-core.md), both proposed and neither executable.
+   [its draft](model-provider-core.md), served by `oapx serve provider` and still
+   proposed, because 0016 waits on an implementation outside this repository.
 2. **Discovery** — what is available here. `action.tools.list`; `models.list`
    plus 0014's provider descriptors.
 3. **Provision and selection by the client** — attach a source, supply a tool,
-   choose a model. Complete for tools; proposed but not executable for
-   providers, since 0014 and 0017 are both proposed and neither has an
-   implementation outside this repository.
+   choose a model. Complete for tools. For providers, 0014's descriptors are
+   accepted, and 0028's live model and provider control is on the wire but still
+   proposed, since live attachment is not yet implemented; 0017, which 0028
+   superseded, never was.
 
 A capability absent from one column is not a small gap. It is the layer below
 becoming something the client cannot see or steer, which is the thing layering

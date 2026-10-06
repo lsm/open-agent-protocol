@@ -1,6 +1,6 @@
 # Decision 0023: A Denylist Does Not Assert the Catalog
 
-Status: proposed
+Status: accepted 2026-10-06 (its surface is on main)
 Date: 2026-09-20
 Protocol: `open-agent-protocol` version `0.1`
 Profile: `open-agent-protocol.agent-control-core`

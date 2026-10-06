@@ -30,7 +30,7 @@ const features = [_]contract.Feature{
     .{ .key = "session.message.delivery.auto", .level = .native },
     .{ .key = "session.message.delivery.queue", .level = .native },
     .{ .key = "session.message.delivery.steer", .level = .native, .reason = "guidance joins the running loop after its current tool result or turn; guidance still waiting when the run ends is dropped" },
-    .{ .key = "action.permissions", .level = .native, .scope = "call", .reason = "ask mode waits for the declared responder; bypass mode skips prompts" },
+    .{ .key = "action.permissions", .level = .native, .scope = "call", .reason = "ask mode waits for the declared responder, and approve_always or reject_always settles a call that names a path or a command for the rest of the session, as the loop remembers it; bypass mode skips prompts" },
     .{ .key = "user_input", .level = .native, .reason = "request_user_input asks text or choice questions and validates answers before returning them to the tool" },
     .{ .key = "run.streaming", .level = .native },
     .{ .key = "run.status", .level = .native },
@@ -64,10 +64,16 @@ pub const HistoryLoader = struct {
     load: *const fn (ctx: *anyopaque, arena: std.mem.Allocator, session_id: []const u8) anyerror!?[]const ai_types.Message,
 };
 
+pub const TranscriptStore = struct {
+    ctx: *anyopaque,
+    save: *const fn (ctx: *anyopaque, allocator: std.mem.Allocator, session_id: []const u8, index: usize, history: []const ai_types.Message) ?[]u8,
+};
+
 pub const Adapter = struct {
     allocator: std.mem.Allocator,
     options: tui_runtime.TuiRuntimeOptions,
     history: ?HistoryLoader = null,
+    transcripts: ?TranscriptStore = null,
     ids: u64 = 0,
     now_ms: *const fn () i64 = wallClock,
 
@@ -247,7 +253,7 @@ pub const Session = struct {
         var scratch = std.heap.ArenaAllocator.init(self.gpa);
         defer scratch.deinit();
         const at = try compactAt(scratch.allocator(), raw, self.runtime, refusal);
-        self.runtime.armAutoCompact(at, &.{}, null) catch |err| switch (err) {
+        self.runtime.armAutoCompact(at, self.runtime.run_transcripts.items, self.transcriptWriter()) catch |err| switch (err) {
             error.OutOfMemory => return error.OutOfMemory,
             else => return refusal.fail(error.BackendFailed, @errorName(err)),
         };
@@ -263,10 +269,33 @@ pub const Session = struct {
             error.OutOfMemory => return error.OutOfMemory,
             else => return,
         };
-        self.runtime.armAutoCompact(at, &.{}, null) catch |err| switch (err) {
+        self.runtime.armAutoCompact(at, self.runtime.run_transcripts.items, self.transcriptWriter()) catch |err| switch (err) {
             error.OutOfMemory => return error.OutOfMemory,
             else => {},
         };
+    }
+
+    fn transcriptWriter(self: *Session) ?tui_runtime.TuiRuntime.TranscriptWriter {
+        if (self.owner.transcripts == null) return null;
+        return .{ .ctx = self, .save_fn = saveTranscript };
+    }
+
+    fn saveTranscript(ctx: ?*anyopaque, allocator: std.mem.Allocator, index: usize, history: []const ai_types.Message) ?[]u8 {
+        const self: *Session = @ptrCast(@alignCast(ctx.?));
+        const store = self.owner.transcripts orelse return null;
+        return store.save(store.ctx, allocator, self.id, index, history);
+    }
+
+    fn compactionTranscripts(self: *Session, arena: std.mem.Allocator) error{ OutOfMemory, TranscriptSaveFailed }![]const []const u8 {
+        const kept = self.runtime.run_transcripts.items;
+        const history = self.runtime.history();
+        if (self.owner.transcripts == null or history.len == 0 or agent.compaction.isCompacted(history)) return arena.dupe([]const u8, @ptrCast(kept));
+        const saved = saveTranscript(self, self.runtime.allocator, kept.len + 1, history) orelse return error.TranscriptSaveFailed;
+        self.runtime.run_transcripts.append(self.runtime.allocator, saved) catch |err| {
+            self.runtime.allocator.free(saved);
+            return err;
+        };
+        return arena.dupe([]const u8, @ptrCast(self.runtime.run_transcripts.items));
     }
 
     fn compact(ptr: *anyopaque, arena: std.mem.Allocator, request: *const oap_types.SessionCompactRequest, envelope_id: []const u8, refusal: *contract.Refusal) contract.Failure!oap_types.MessageSubmitResponse {
@@ -674,7 +703,11 @@ pub const Session = struct {
         }
         self.gate.cancelled.store(false, .release);
         if (run.compaction) {
-            self.runtime.compact(.{ .focus = run.compact_focus }) catch |err| switch (err) {
+            const transcripts = self.compactionTranscripts(a) catch |err| switch (err) {
+                error.OutOfMemory => return error.OutOfMemory,
+                error.TranscriptSaveFailed => return refusal.fail(error.BackendFailed, "the transcript could not be saved, so the history was kept"),
+            };
+            self.runtime.compact(.{ .focus = run.compact_focus, .transcripts = transcripts }) catch |err| switch (err) {
                 error.OutOfMemory => return error.OutOfMemory,
                 error.NothingToCompact => return refusal.fail(error.InvalidSubmission, "the session has no history to compact"),
                 else => return refusal.fail(error.BackendFailed, @errorName(err)),
@@ -736,12 +769,12 @@ pub const Session = struct {
                 if (pending.kind != .permission) return error.InvalidResolution;
                 if (answer.updated_arguments_json != null) return refusal.unsupportedField("action.permissions", contract.reason_unsatisfiable, "updated_arguments_json");
                 const choice = answer.choice_id orelse return error.InvalidResolution;
-                const granted = if (std.mem.eql(u8, choice, "approve")) true else if (std.mem.eql(u8, choice, "deny")) false else return error.InvalidResolution;
+                const granted = if (std.mem.eql(u8, choice, "approve") or std.mem.eql(u8, choice, "approve_always")) true else if (std.mem.eql(u8, choice, "deny") or std.mem.eql(u8, choice, "reject_always")) false else return error.InvalidResolution;
                 if (granted != answer.granted) return error.InvalidResolution;
                 try resolved.put("outcome", .{ .string = "resolved" });
                 try resolved.put("choice_id", .{ .string = choice });
                 try resolved.put("granted", .{ .bool = granted });
-                break :answer try self.gpa.dupe(u8, if (granted) "approve" else "deny");
+                break :answer try self.gpa.dupe(u8, choice);
             },
             .input => |answer| answer: {
                 if (pending.kind != .input) return error.InvalidResolution;
@@ -833,7 +866,7 @@ pub const Session = struct {
         if (native.kind == .permission) {
             try payload.put("title", .{ .string = native.tool_name });
             try payload.put("arguments_json", try jsonOrString(a, native.arguments));
-            try payload.put("choices", try parseValue(a, "[{\"id\":\"approve\",\"label\":\"Allow once\"},{\"id\":\"deny\",\"label\":\"Deny\"}]"));
+            try payload.put("choices", try parseValue(a, "[{\"id\":\"approve\",\"label\":\"Allow once\"},{\"id\":\"approve_always\",\"label\":\"Always allow\"},{\"id\":\"deny\",\"label\":\"Deny\"},{\"id\":\"reject_always\",\"label\":\"Always deny\"}]"));
         } else {
             const prompt = try parseValue(a, native.arguments);
             try payload.put("title", prompt.object.get("title") orelse .{ .string = "User input" });
@@ -856,7 +889,7 @@ pub const Session = struct {
         if (std.mem.eql(u8, request.tool_name, "request_user_input")) return .approve;
         const answer = self.gate.wait(self.gpa, .permission, request.tool_call_id, request.tool_name, request.args_json, null) catch return .reject;
         defer self.gpa.free(answer);
-        return if (std.mem.eql(u8, answer, "approve")) .approve else .reject;
+        return decisionFor(answer);
     }
 
     fn inputTool(self: *Session) agent.AgentTool {
@@ -1242,6 +1275,13 @@ pub const Session = struct {
 };
 
 pub const settings_key = "oapx";
+
+fn decisionFor(answer: []const u8) tui_session.ToolApprovalDecision {
+    if (std.mem.eql(u8, answer, "approve")) return .approve;
+    if (std.mem.eql(u8, answer, "approve_always")) return .approve_always;
+    if (std.mem.eql(u8, answer, "reject_always")) return .reject_always;
+    return .reject;
+}
 
 fn thinkingLevel(text: []const u8, refusal: *contract.Refusal) contract.Failure!ai_types.ThinkingLevel {
     const level = std.meta.stringToEnum(ai_types.ThinkingLevel, text) orelse return refusal.unsupportedField(contract.feature_session_reasoning, contract.reason_unsatisfiable, "reasoning_level");
@@ -1998,6 +2038,43 @@ fn permissionAnswer(harness: *Harness, pending: PendingInteraction) oap_types.Pe
     return .{ .interaction_id = pending.id, .requested_by = endpoint_id, .responded_by = "user", .session_id = harness.session.id(), .run_id = Session.cast(harness.session.ptr).run.?.id, .granted = true, .choice_id = "approve" };
 }
 
+test "each permission choice reaches the loop as its own decision, and anything else is a refusal" {
+    try testing.expectEqual(tui_session.ToolApprovalDecision.approve, decisionFor("approve"));
+    try testing.expectEqual(tui_session.ToolApprovalDecision.approve_always, decisionFor("approve_always"));
+    try testing.expectEqual(tui_session.ToolApprovalDecision.reject_always, decisionFor("reject_always"));
+    try testing.expectEqual(tui_session.ToolApprovalDecision.reject, decisionFor("deny"));
+    try testing.expectEqual(tui_session.ToolApprovalDecision.reject, decisionFor("approve_forever"));
+}
+
+test "a permission prompt offers the always choices, and an always answer is accepted and published as chosen" {
+    var script = Script{ .tool_first = true };
+    var harness: Harness = undefined;
+    try harness.init(&script);
+    defer harness.deinit();
+    try Session.cast(harness.session.ptr).runtime.setPermissionMode(.ask);
+    _ = try harness.submit("use the tool");
+    const pending = try waitForPrompt(&harness);
+    var offered: usize = 0;
+    for (harness.seen.items) |parsed| {
+        if (!std.mem.eql(u8, parsed.value.object.get("type").?.string, "action.permission.requested")) continue;
+        for (parsed.value.object.get("payload").?.object.get("choices").?.array.items) |choice| {
+            const id = choice.object.get("id").?.string;
+            if (std.mem.eql(u8, id, "approve_always") or std.mem.eql(u8, id, "reject_always")) offered += 1;
+        }
+    }
+    try testing.expectEqual(@as(usize, 2), offered);
+    var always = permissionAnswer(&harness, pending);
+    always.choice_id = "approve_always";
+    var refusal = contract.Refusal{};
+    try harness.session.resolve(harness.arena.allocator(), .{ .permission = &always }, &refusal);
+    try harness.untilTerminal();
+    try testing.expectEqual(@as(usize, 1), harness.count("action.call.completed"));
+    for (harness.seen.items) |parsed| {
+        if (!std.mem.eql(u8, parsed.value.object.get("type").?.string, "action.permission.resolved")) continue;
+        try testing.expectEqualStrings("approve_always", parsed.value.object.get("payload").?.object.get("choice_id").?.string);
+    }
+}
+
 test "an ask-mode tool blocks for its declared responder, refuses contradictory and repeated answers, and executes after approval" {
     var script = Script{ .tool_first = true };
     var harness: Harness = undefined;
@@ -2023,7 +2100,7 @@ test "an ask-mode tool blocks for its declared responder, refuses contradictory 
             3 => wrong.session_id = "another-session",
             4 => wrong.interaction_id = "another-interaction",
             5 => wrong.granted = false,
-            6 => wrong.choice_id = "approve_always",
+            6 => wrong.choice_id = "approve_forever",
             else => unreachable,
         }
         try testing.expectError(error.InvalidResolution, harness.session.resolve(harness.arena.allocator(), .{ .permission = &wrong }, &refusal));
@@ -2659,6 +2736,82 @@ test "a compaction on an idle session is a run of its own that settles compacted
     try testing.expectEqualStrings("compacted", completed.get("stop_reason").?.string);
     try testing.expectEqualStrings(ended.get("summary").?.object.get("content").?.string, completed.get("final_response").?.object.get("content").?.string);
     try testing.expectEqual(@as(usize, 2), script.calls);
+}
+
+const SavedTranscripts = struct {
+    saved: usize = 0,
+    session_id: [64]u8 = undefined,
+    session_len: usize = 0,
+    messages: usize = 0,
+
+    fn save(ctx: *anyopaque, allocator: std.mem.Allocator, session_id: []const u8, index: usize, history: []const ai_types.Message) ?[]u8 {
+        const self: *SavedTranscripts = @ptrCast(@alignCast(ctx));
+        self.saved += 1;
+        self.session_len = @min(session_id.len, self.session_id.len);
+        @memcpy(self.session_id[0..self.session_len], session_id[0..self.session_len]);
+        self.messages = history.len;
+        return std.fmt.allocPrint(allocator, "/saved/{s}-compaction-{d}.jsonl", .{ session_id, index }) catch null;
+    }
+};
+
+test "a requested compaction saves the session's transcript through the store and hands its path to the loop, and one with nothing to compact saves nothing" {
+    var script = Script{ .reply = "the session so far" };
+    var harness: Harness = undefined;
+    try harness.init(&script);
+    defer harness.deinit();
+    var store = SavedTranscripts{};
+    harness.owner.transcripts = .{ .ctx = &store, .save = SavedTranscripts.save };
+    var empty_refusal = contract.Refusal{};
+    try testing.expectError(error.InvalidSubmission, compactRequest(&harness, "nothing yet", &empty_refusal));
+    try testing.expectEqual(@as(usize, 0), store.saved);
+    _ = try harness.submit("remember the parser");
+    try harness.untilTerminal();
+    harness.reset();
+
+    var refusal = contract.Refusal{};
+    _ = try compactRequest(&harness, "the parser", &refusal);
+    try harness.untilTerminal();
+    try testing.expectEqual(@as(usize, 1), store.saved);
+    try testing.expectEqualStrings(harness.session.id(), store.session_id[0..store.session_len]);
+    try testing.expect(store.messages > 0);
+    const runtime = Session.cast(harness.session.ptr).runtime;
+    try testing.expectEqual(@as(usize, 1), runtime.run_transcripts.items.len);
+    try testing.expect(std.mem.endsWith(u8, runtime.run_transcripts.items[0], "-compaction-1.jsonl"));
+}
+
+fn refuseTranscript(ctx: *anyopaque, allocator: std.mem.Allocator, session_id: []const u8, index: usize, history: []const ai_types.Message) ?[]u8 {
+    const saved: *usize = @ptrCast(@alignCast(ctx));
+    saved.* += 1;
+    _ = allocator;
+    _ = session_id;
+    _ = index;
+    _ = history;
+    return null;
+}
+
+test "a requested compaction whose transcript the store cannot save fails and keeps the history" {
+    var script = Script{ .reply = "the session so far" };
+    var harness: Harness = undefined;
+    try harness.init(&script);
+    defer harness.deinit();
+    var attempts: usize = 0;
+    harness.owner.transcripts = .{ .ctx = &attempts, .save = refuseTranscript };
+    _ = try harness.submit("remember the parser");
+    try harness.untilTerminal();
+    harness.reset();
+    const runtime = Session.cast(harness.session.ptr).runtime;
+    const before = runtime.history().len;
+    const calls = script.calls;
+
+    var refusal = contract.Refusal{};
+    try testing.expectError(error.BackendFailed, compactRequest(&harness, "the parser", &refusal));
+    try testing.expectEqualStrings("the transcript could not be saved, so the history was kept", refusal.message);
+    try testing.expectEqual(@as(usize, 1), attempts);
+    try testing.expect(ofType(&harness, "run.compaction.started") == null);
+    try testing.expectEqual(calls, script.calls);
+    try testing.expectEqual(before, runtime.history().len);
+    try testing.expect(!agent.compaction.isCompacted(runtime.history()));
+    try testing.expectEqual(@as(usize, 0), runtime.run_transcripts.items.len);
 }
 
 test "a compaction is refused for what the loop cannot do, and on a busy session it waits its turn" {
