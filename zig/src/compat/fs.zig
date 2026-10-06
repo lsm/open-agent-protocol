@@ -55,7 +55,22 @@ pub fn atomicReplace(dir: Dir, target_path: []const u8, tmp_path: []const u8, da
 }
 
 pub fn createDir(dir: Dir, path: []const u8) !void {
-    try dir.createDirPath(defaultIo(), path);
+    dir.createDirPath(defaultIo(), path) catch |err| switch (err) {
+        error.NotDir => try createDirFollowingLinks(dir, path),
+        else => return err,
+    };
+}
+
+fn createDirFollowingLinks(dir: Dir, path: []const u8) !void {
+    if (dir.openDir(defaultIo(), path, .{})) |existing| {
+        existing.close(defaultIo());
+        return;
+    } else |_| {}
+    if (std.fs.path.dirname(path)) |parent| try createDirFollowingLinks(dir, parent);
+    dir.createDir(defaultIo(), path, .default_dir) catch |err| switch (err) {
+        error.PathAlreadyExists => {},
+        else => return err,
+    };
 }
 
 pub const private_dir_mode: std.Io.File.Permissions = @enumFromInt(0o700);
@@ -200,4 +215,16 @@ test "compat modifiedMillis reports a fresh file's write time" {
     try std.testing.expect(modified >= before - 2000);
     try std.testing.expect(modified <= after + 2000);
     try std.testing.expectError(error.FileNotFound, modifiedMillis(tmp.dir, "missing.txt"));
+}
+
+test "createDir accepts a parent reached through a symbolic link to a directory" {
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.createDir(std.testing.io, "real", .default_dir);
+    try tmp.dir.symLink(std.testing.io, "real", "linked", .{ .is_directory = true });
+    try createDir(tmp.dir, "linked");
+    try createDir(tmp.dir, "linked/inner/deeper");
+    var made = try tmp.dir.openDir(std.testing.io, "real/inner/deeper", .{});
+    made.close(std.testing.io);
 }
