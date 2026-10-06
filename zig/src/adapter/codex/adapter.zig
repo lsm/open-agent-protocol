@@ -182,6 +182,7 @@ pub const Adapter = struct {
             if (cursor.len > 0) try params.put(arena, "cursor", .{ .string = cursor });
             const page = try shot.call(arena, "thread/turns/list", params, refusal) orelse break;
             try turnsOf(arena, page, &found);
+            if (found.items.len >= request.max_turns) break;
             cursor = if (page == .object) textOf(page, "nextCursor") else "";
             if (cursor.len == 0) break;
         }

@@ -280,6 +280,7 @@ pub const NativeTurn = struct {
 pub const NativeReadRequest = struct {
     native_id: []const u8,
     directory: []const u8 = "",
+    max_turns: usize = std.math.maxInt(usize),
 };
 
 pub const NativeListRequest = struct {

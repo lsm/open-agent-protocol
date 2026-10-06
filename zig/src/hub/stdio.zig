@@ -1257,12 +1257,13 @@ pub const Frontend = struct {
         } else native = self.hub.heldNative(session_id);
         if (native) |ref| {
             var refusal = contract.Refusal{};
-            if (self.hub.nativeTranscript(arena, ref, &refusal)) |answered| {
-                const read = answered catch |err| switch (err) {
+            const wanted = (if (after) |given| given +| 1 else 0) +| bound;
+            if (self.hub.nativeTranscript(arena, ref, @intCast(@min(wanted, std.math.maxInt(usize))), &refusal)) |answered| {
+                const read: []const contract.NativeTurn = answered catch |err| switch (err) {
                     error.OutOfMemory => return error.OutOfMemory,
-                    else => return .{ .refused = .{ .code = "internal", .message = if (refusal.message.len > 0) refusal.message else @errorName(err) } },
+                    else => &.{},
                 };
-                if (read.len > 0 or !held) return .{ .answer = try nativeTurnsJson(arena, read, after, bound) };
+                if (read.len > 0) return .{ .answer = try nativeTurnsJson(arena, read, after, bound) };
             }
         }
         if (!held) {
@@ -2391,7 +2392,7 @@ const reference_transcript = [_]contract.NativeTurn{
 fn referenceNativeRead(ptr: *anyopaque, arena: std.mem.Allocator, request: contract.NativeReadRequest, refusal: *contract.Refusal) contract.Failure![]const contract.NativeTurn {
     _ = ptr;
     _ = arena;
-    _ = refusal;
+    if (std.mem.eql(u8, request.native_id, "thread-broken")) return refusal.fail(error.BackendFailed, "the harness would not read");
     if (std.mem.eql(u8, request.native_id, "thread-a") and (request.directory.len == 0 or std.mem.eql(u8, request.directory, "/work/a"))) return &reference_transcript;
     return &.{};
 }
@@ -4075,7 +4076,7 @@ fn fadingProbe(ptr: *anyopaque, refusal: *contract.Refusal) contract.Failure!con
     return fading_descriptor;
 }
 
-test "work.read of a session with a native id reads the harness's own transcript, held or not, paged by after and limit, and a held one whose transcript is empty reads serve's turns" {
+test "work.read of a session with a native id reads the harness's own transcript, held or not, paged by after and limit, and a held one whose transcript is empty or unreadable reads serve's turns" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     const cwd = try std.process.currentPathAlloc(testing.io, testing.allocator);
@@ -4114,6 +4115,16 @@ test "work.read of a session with a native id reads the harness's own transcript
     const own = (try fresh.lastValue()).object.get("result").?.object.get("turns").?.array.items;
     try testing.expectEqual(@as(usize, 1), own.len);
     try testing.expectEqualStrings("own turn", own[0].object.get("text").?.string);
+
+    const broken = try Harness.init(testing.allocator, .{}, .{});
+    defer broken.deinit();
+    reference_holder.opens_native = "thread-broken";
+    try broken.send(try openLine(broken.arena(), "reference", open_envelope));
+    try broken.send(try controlLine(broken.arena(), 8, op_submit, "s1", "{" ++ control_head ++ ",\"type\":\"session.message.submit.request\",\"id\":\"sub-3\",\"session_id\":\"s1\",\"payload\":{\"session_id\":\"s1\",\"delivery\":\"auto\",\"messages\":[{\"role\":\"user\",\"content\":\"kept turn\"}]}}"));
+    try broken.send("{\"id\":9,\"op\":\"work.read\",\"session_id\":\"s1\"}");
+    const kept = (try broken.lastValue()).object.get("result").?.object.get("turns").?.array.items;
+    try testing.expectEqual(@as(usize, 1), kept.len);
+    try testing.expectEqualStrings("kept turn", kept[0].object.get("text").?.string);
 }
 
 test "work.list shows a session serve no longer holds from its binding, live by default and closed on request, and work.status, work.read and work.stop answer it without reopening" {

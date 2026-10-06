@@ -105,9 +105,27 @@ fn userText(arena: std.mem.Allocator, content: ?std.json.Value) !?[]const u8 {
         },
         else => return null,
     }
-    const said = std.mem.trim(u8, joined.items, " \t\r\n");
-    if (said.len == 0 or said[0] == '<') return null;
+    const said = withoutWrappers(joined.items);
+    if (said.len == 0) return null;
     return said;
+}
+
+const wrappers = [_][]const u8{ "command-name", "command-message", "command-args", "local-command-stdout", "local-command-stderr", "local-command-caveat", "system-reminder", "bash-input", "bash-stdout", "bash-stderr" };
+
+fn withoutWrappers(said: []const u8) []const u8 {
+    var rest = std.mem.trim(u8, said, " \t\r\n");
+    outer: while (rest.len > 0 and rest[0] == '<') {
+        for (wrappers) |name| {
+            if (rest.len < name.len + 2 or !std.mem.eql(u8, rest[1 .. name.len + 1], name) or rest[name.len + 1] != '>') continue;
+            var closing_buffer: [64]u8 = undefined;
+            const closing = std.fmt.bufPrint(&closing_buffer, "</{s}>", .{name}) catch return rest;
+            const at = std.mem.indexOf(u8, rest, closing) orelse return rest;
+            rest = std.mem.trim(u8, rest[at + closing.len ..], " \t\r\n");
+            continue :outer;
+        }
+        break;
+    }
+    return rest;
 }
 
 fn assistantText(arena: std.mem.Allocator, content: ?std.json.Value) ![]const u8 {
@@ -148,7 +166,7 @@ pub fn isoMillis(stamp: []const u8) ?i64 {
     return ((days * 24 + hour) * 60 + minute) * 60_000 + second * 1000 + millis;
 }
 
-test "a transcript reads as its user messages and the replies between them, leaving out tool results, thinking, meta and side chains" {
+test "a transcript reads as its user messages and the replies between them, leaving out tool results, thinking, meta, side chains and Claude Code's own wrappers but not a message that opens with markup" {
     var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena_state.deinit();
     const arena = arena_state.allocator();
@@ -161,19 +179,23 @@ test "a transcript reads as its user messages and the replies between them, leav
         \\{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"t1","content":"x"}]}}
         \\{"type":"user","isSidechain":true,"message":{"role":"user","content":"side"}}
         \\{"type":"user","message":{"role":"user","content":"<command-name>/clear</command-name>"}}
+        \\{"type":"user","message":{"role":"user","content":"<div>pasted markup</div> what is this?"}}
+        \\{"type":"user","message":{"role":"user","content":"<system-reminder>noise</system-reminder>\nafter the reminder"}}
         \\{"type":"user","timestamp":"2026-10-06T20:13:00.000Z","message":{"role":"user","content":[{"type":"text","text":"Which word?"}]}}
         \\{"type":"assistant","message":{"id":"m2","content":[{"type":"text","text":"Checking."},{"type":"tool_use","id":"t2","name":"x","input":{}}]}}
         \\{"type":"assistant","message":{"id":"m3","content":[{"type":"text","text":"mango"}]}}
     ;
     const read_turns = try turns(arena, lines);
-    try std.testing.expectEqual(@as(usize, 4), read_turns.len);
+    try std.testing.expectEqual(@as(usize, 6), read_turns.len);
     try std.testing.expectEqual(contract.NativeTurn.Role.user, read_turns[0].role);
     try std.testing.expectEqualStrings("Remember the word mango.", read_turns[0].text);
     try std.testing.expectEqual(@as(i64, 1791317553250), read_turns[0].at_ms);
     try std.testing.expectEqual(contract.NativeTurn.Role.assistant, read_turns[1].role);
     try std.testing.expectEqualStrings("ok", read_turns[1].text);
-    try std.testing.expectEqualStrings("Which word?", read_turns[2].text);
-    try std.testing.expectEqualStrings("mango", read_turns[3].text);
+    try std.testing.expectEqualStrings("<div>pasted markup</div> what is this?", read_turns[2].text);
+    try std.testing.expectEqualStrings("after the reminder", read_turns[3].text);
+    try std.testing.expectEqualStrings("Which word?", read_turns[4].text);
+    try std.testing.expectEqualStrings("mango", read_turns[5].text);
 }
 
 test "a transcript is found under its directory's project folder, or under any project when the directory is unknown, and an id that could leave the folder reads nothing" {

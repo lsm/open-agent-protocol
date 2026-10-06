@@ -963,9 +963,9 @@ pub const Hub = struct {
         return .{ .adapter = record.adapter_name, .native_id = record.native_id, .directory = record.directory };
     }
 
-    pub fn nativeTranscript(self: *Hub, arena: std.mem.Allocator, ref: NativeRef, refusal: *contract.Refusal) ?Failure![]const contract.NativeTurn {
+    pub fn nativeTranscript(self: *Hub, arena: std.mem.Allocator, ref: NativeRef, max_turns: usize, refusal: *contract.Refusal) ?Failure![]const contract.NativeTurn {
         const registered = self.find(ref.adapter) orelse return null;
-        return registered.adapter.nativeRead(arena, .{ .native_id = ref.native_id, .directory = if (ref.directory.len > 0) ref.directory else registered.directory }, refusal);
+        return registered.adapter.nativeRead(arena, .{ .native_id = ref.native_id, .directory = if (ref.directory.len > 0) ref.directory else registered.directory, .max_turns = max_turns }, refusal);
     }
 
     pub fn adapterDirectory(self: *Hub, name: []const u8) ?[]const u8 {

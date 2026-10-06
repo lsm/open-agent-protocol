@@ -180,7 +180,9 @@ included, and still there after `serve` restarts, so `serve` writes no message
 text of its own to disk. A turn there carries no `run_id` or `outcome`; its
 index is its place in the transcript, and its text is cut at 64 KiB. A session
 `serve` no longer holds is read the same way from its binding's native id. A
-held session whose harness transcript is still empty is answered as below.
+held session whose harness transcript is still empty, or cannot be read, is answered as below; a
+session `serve` no longer holds then answers no turns. A Codex read pages only as
+far as `after` and `limit` need.
 
 Otherwise `serve` answers from what it recorded: a `user` turn for each message
 a submit admits (from `work.start`, `work.send` or the core's own submit) and an
