@@ -1,0 +1,61 @@
+[
+  {
+    "protocol": "open-agent-protocol",
+    "version": "0.1",
+    "profile": "open-agent-protocol.agent-control-core",
+    "type": "capabilities.request",
+    "id": "capq",
+    "payload": {}
+  },
+  {
+    "protocol": "open-agent-protocol",
+    "version": "0.1",
+    "profile": "open-agent-protocol.agent-control-core",
+    "type": "capabilities.response",
+    "id": "capr",
+    "in_reply_to": "capq",
+    "capability_revision": "cap-v1",
+    "payload": {
+      "endpoint": {
+        "id": "fixture.endpoint",
+        "name": "Session list fixture endpoint"
+      },
+      "features": {
+        "session.message.delivery.auto": {
+          "level": "native"
+        },
+        "session.list": {
+          "level": "native"
+        }
+      }
+    }
+  },
+  {
+    "protocol": "open-agent-protocol",
+    "version": "0.1",
+    "profile": "open-agent-protocol.agent-control-core",
+    "type": "session.list.request",
+    "id": "l1",
+    "capability_revision": "cap-v1",
+    "payload": {}
+  },
+  {
+    "protocol": "open-agent-protocol",
+    "version": "0.1",
+    "profile": "open-agent-protocol.agent-control-core",
+    "type": "session.list.response",
+    "id": "l1r",
+    "in_reply_to": "l1",
+    "capability_revision": "cap-v1",
+    "payload": {
+      "sessions": [
+        {
+          "session_id": "s1",
+          "adapter": "memory",
+          "state": "failed",
+          "updated_at_ms": 1000
+        }
+      ]
+    }
+  }
+]

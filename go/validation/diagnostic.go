@@ -89,6 +89,10 @@ const (
 
 	CodeAuthFlowOrder       = "auth_flow_order"
 	CodeMissingAuthTerminal = "missing_auth_terminal"
+
+	CodeSessionListOverLimit  = "session_list_over_limit"
+	CodeSessionListOrder      = "session_list_order"
+	CodeDuplicateSessionEntry = "duplicate_session_entry"
 )
 
 type Diagnostic struct {

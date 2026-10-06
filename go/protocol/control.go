@@ -148,6 +148,8 @@ const FeatureOpenSubscribe = "session.open.subscribe"
 
 const FeatureOpenReopen = "session.open.reopen"
 
+const FeatureSessionList = "session.list"
+
 const (
 	FeatureSessionReasoning = "session.reasoning"
 	FeatureCompactionPolicy = "session.compaction.policy"
@@ -430,6 +432,45 @@ type SessionOpenResponse = SessionState
 
 type SessionStateRequest struct {
 	SessionID SessionID `json:"session_id"`
+}
+
+type SessionListRequest struct {
+	Cursor                string   `json:"cursor,omitempty"`
+	Limit                 int      `json:"limit,omitempty"`
+	AllowDegradedFeatures []string `json:"allow_degraded_features,omitempty"`
+}
+
+func (r SessionListRequest) AllowsDegraded(key string) bool {
+	for _, allowed := range r.AllowDegradedFeatures {
+		if allowed == key {
+			return true
+		}
+	}
+	return false
+}
+
+const SessionListDefaultLimit = 50
+
+type SessionListState string
+
+const (
+	SessionListLive   SessionListState = "live"
+	SessionListClosed SessionListState = "closed"
+)
+
+type SessionListEntry struct {
+	SessionID      SessionID        `json:"session_id"`
+	Adapter        string           `json:"adapter"`
+	HarnessVersion string           `json:"harness_version,omitempty"`
+	State          SessionListState `json:"state"`
+	UpdatedAtMS    int64            `json:"updated_at_ms"`
+	Model          string           `json:"model,omitempty"`
+	Directory      string           `json:"directory,omitempty"`
+}
+
+type SessionListResponse struct {
+	Sessions   []SessionListEntry `json:"sessions"`
+	NextCursor string             `json:"next_cursor,omitempty"`
 }
 
 type SessionModelSwitchRequest struct {
