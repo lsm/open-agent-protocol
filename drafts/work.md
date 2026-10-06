@@ -31,6 +31,7 @@ answer (stdio op `work.capabilities`), per adapter:
 | `work.send` | submit, `delivery: auto` | never |
 | `work.status` | session state, plus the latest run's terminal envelope | never |
 | `work.stop` | `run.cancel` | the adapter does not advertise `run.cancel` (DeepSeek) |
+| `work.read` | the turns `serve` records as messages are submitted and runs end | never |
 
 A verb an adapter cannot serve is refused `unsupported_feature` naming the
 core feature it rests on, as the core's own refusal does: `work.stop` over
@@ -115,8 +116,7 @@ pieces of work; the cursor is opaque, as in 0046.
 the caller's job: a control layer such as HyperNeo keeps its own index, ranks
 by its own rules and knows what its user is looking for. OAP's part is to hand
 over what such an index needs. Today that is the list and each entry's
-`last_reply`; reading a session's conversation is a later verb (`work.read`),
-not part of this draft. Where a harness's own list takes a search term (Codex
+`last_reply`; reading what was said is `work.read`. Where a harness's own list takes a search term (Codex
 `thread/list`'s `searchTerm`), a native listing may pass one through once
 native lists land, but `serve` builds no index of its own.
 
@@ -144,10 +144,26 @@ on an idle session and queues on a busy one. Answers `work.status`.
 Request `{"ref"}`. Cancels the active run. Answers `work.status`. A session
 with no active run answers its status unchanged.
 
+### `work.read`
+
+Request `{"ref", "after"?, "limit"?}`. Answer `{"turns": [...]}`, each turn
+`{"index", "role", "text", "run_id"?, "outcome"?, "at_ms"}`, oldest first,
+after index `after`, at most `limit` (1 to 500, default 100).
+
+`serve` records a `user` turn for each message a submit admits (from
+`work.start`, `work.send` or the core's own submit) and an `assistant` turn
+when a run ends, with `outcome` (`completed`, `failed`, `cancelled`) and, for a
+completed run, its reply text. It keeps the last 512 turns of a session it
+holds, each cut at 64 KiB on a character boundary; an index stays stable as old
+turns drop. This is what `serve` saw, not the harness's own transcript:
+reasoning, tool calls and anything said before `serve` held the session are
+not in it. Reading a harness's transcript is a later verb, with adoption.
+
+This is the content a caller's own search indexes (see `work.list`).
+
 ## Order of work
 
-1. `work.status` and `work.list` over the sessions `serve` holds.
-2. `work.start`, `work.send`, `work.stop`.
+1. All six verbs over the sessions `serve` holds (#919).
 3. Native lists in `work.list` (Codex `thread/list`, ACP `session/list`,
    OpenCode, Hermes; Claude and Pi read-only from their stores).
 4. Adoption by native reference: `attach`, `resume`, `observe`, refuse.
