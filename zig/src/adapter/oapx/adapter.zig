@@ -262,9 +262,13 @@ pub const Session = struct {
 
     fn compactionTranscripts(self: *Session, arena: std.mem.Allocator) error{OutOfMemory}![]const []const u8 {
         const kept = self.runtime.run_transcripts.items;
-        const saved = saveTranscript(self, self.runtime.allocator, kept.len + 1, self.runtime.history()) orelse return arena.dupe([]const u8, @ptrCast(kept));
-        errdefer self.runtime.allocator.free(saved);
-        try self.runtime.run_transcripts.append(self.runtime.allocator, saved);
+        const history = self.runtime.history();
+        if (history.len == 0 or agent.compaction.isCompacted(history)) return arena.dupe([]const u8, @ptrCast(kept));
+        const saved = saveTranscript(self, self.runtime.allocator, kept.len + 1, history) orelse return arena.dupe([]const u8, @ptrCast(kept));
+        self.runtime.run_transcripts.append(self.runtime.allocator, saved) catch |err| {
+            self.runtime.allocator.free(saved);
+            return err;
+        };
         return arena.dupe([]const u8, @ptrCast(self.runtime.run_transcripts.items));
     }
 
@@ -2674,13 +2678,16 @@ const SavedTranscripts = struct {
     }
 };
 
-test "a requested compaction saves the session's transcript through the store and hands its path to the loop" {
+test "a requested compaction saves the session's transcript through the store and hands its path to the loop, and one with nothing to compact saves nothing" {
     var script = Script{ .reply = "the session so far" };
     var harness: Harness = undefined;
     try harness.init(&script);
     defer harness.deinit();
     var store = SavedTranscripts{};
     harness.owner.transcripts = .{ .ctx = &store, .save = SavedTranscripts.save };
+    var empty_refusal = contract.Refusal{};
+    try testing.expectError(error.InvalidSubmission, compactRequest(&harness, "nothing yet", &empty_refusal));
+    try testing.expectEqual(@as(usize, 0), store.saved);
     _ = try harness.submit("remember the parser");
     try harness.untilTerminal();
     harness.reset();
