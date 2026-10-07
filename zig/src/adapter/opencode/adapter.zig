@@ -67,6 +67,55 @@ fn runStatus(status: session.Status) oap_types.RunStatus {
     };
 }
 
+const native_read_page: usize = 200;
+const native_read_pages_max: usize = 16;
+
+fn textOf(value: ?std.json.Value) []const u8 {
+    const present = value orelse return "";
+    return if (present == .string) present.string else "";
+}
+
+fn createdOf(message: std.json.ObjectMap) i64 {
+    const time = message.get("time") orelse return 0;
+    if (time != .object) return 0;
+    const created = time.object.get("created") orelse return 0;
+    return switch (created) {
+        .integer => |value| value,
+        .number_string => |text| std.fmt.parseInt(i64, text, 10) catch 0,
+        else => 0,
+    };
+}
+
+pub fn turnsOf(arena: std.mem.Allocator, messages: []const std.json.Value) std.mem.Allocator.Error![]const contract.NativeTurn {
+    var found: std.ArrayList(contract.NativeTurn) = .empty;
+    var reply: []const u8 = "";
+    var reply_at: i64 = 0;
+    for (messages) |message| {
+        if (message != .object) continue;
+        const kind = textOf(message.object.get("type"));
+        if (std.mem.eql(u8, kind, "user")) {
+            const said = std.mem.trim(u8, textOf(message.object.get("text")), " \t\r\n");
+            if (said.len == 0) continue;
+            if (reply.len > 0) try found.append(arena, .{ .role = .assistant, .text = reply, .at_ms = reply_at });
+            reply = "";
+            try found.append(arena, .{ .role = .user, .text = said, .at_ms = createdOf(message.object) });
+        } else if (std.mem.eql(u8, kind, "assistant")) {
+            const content = message.object.get("content") orelse continue;
+            if (content != .array) continue;
+            var piece: std.ArrayList(u8) = .empty;
+            for (content.array.items) |part| {
+                if (part != .object or !std.mem.eql(u8, textOf(part.object.get("type")), "text")) continue;
+                try piece.appendSlice(arena, textOf(part.object.get("text")));
+            }
+            if (piece.items.len == 0) continue;
+            reply = piece.items;
+            reply_at = createdOf(message.object);
+        }
+    }
+    if (reply.len > 0) try found.append(arena, .{ .role = .assistant, .text = reply, .at_ms = reply_at });
+    return found.items;
+}
+
 fn wallClock() i64 {
     return compat.time.nowMillis();
 }
@@ -85,7 +134,7 @@ pub const Adapter = struct {
     }
 
     pub fn adapter(self: *Adapter) contract.Adapter {
-        return .{ .ptr = self, .vtable = &.{ .probe = probe, .open = open, .native_list = nativeList } };
+        return .{ .ptr = self, .vtable = &.{ .probe = probe, .open = open, .native_list = nativeList, .native_read = nativeRead } };
     }
 
     fn probe(ptr: *anyopaque, refusal: *contract.Refusal) contract.Failure!contract.Descriptor {
@@ -98,6 +147,30 @@ pub const Adapter = struct {
         const self: *Adapter = @ptrCast(@alignCast(ptr));
         const opened = try Session.open(self, arena, request, refusal);
         return opened.handle();
+    }
+
+    fn nativeRead(ptr: *anyopaque, arena: std.mem.Allocator, request: contract.NativeReadRequest, refusal: *contract.Refusal) contract.Failure![]const contract.NativeTurn {
+        const self: *Adapter = @ptrCast(@alignCast(ptr));
+        const config = self.config;
+        const target = client.parseEndpoint(arena, config.endpoint) catch |err| {
+            if (err == error.OutOfMemory) return error.OutOfMemory;
+            return refusal.fail(error.BackendFailed, try std.fmt.allocPrint(arena, "the OpenCode endpoint \"{s}\" is not a plain http URL", .{config.endpoint}));
+        };
+        const endpoint = httpapi.Endpoint{ .base_path = target.base_path, .username = config.username, .password = config.password };
+        var messages: std.ArrayList(std.json.Value) = .empty;
+        var cursor: []const u8 = "";
+        var pages: usize = 0;
+        while (pages < native_read_pages_max) : (pages += 1) {
+            const response = client.roundTrip(self.allocator, arena, target, try httpapi.messages(arena, endpoint, request.native_id, cursor, native_read_page), config.frame_limit, config.request_timeout_ns) catch |err| return refusal.fail(error.BackendFailed, try describe(arena, "read OpenCode session", err));
+            const page = switch (try httpapi.messagesResult(arena, response, request.native_id, config.frame_limit)) {
+                .ok => |value| value,
+                .failed => |failure| return refusal.fail(error.BackendFailed, try std.fmt.allocPrint(arena, "read OpenCode session: {s}", .{failure.message})),
+            };
+            try messages.appendSlice(arena, page.messages);
+            if (page.next.len == 0 or std.mem.eql(u8, page.next, cursor)) break;
+            cursor = page.next;
+        }
+        return turnsOf(arena, messages.items);
     }
 
     fn nativeList(ptr: *anyopaque, arena: std.mem.Allocator, request: contract.NativeListRequest, refusal: *contract.Refusal) contract.Failure![]const contract.NativeSession {
@@ -636,6 +709,7 @@ pub const FakeServer = struct {
     event_target_len: usize = 0,
     list_target: [256]u8 = undefined,
     list_target_len: usize = 0,
+    message_pages: std.atomic.Value(usize) = .init(0),
 
     pub fn start(self: *FakeServer) !void {
         if (builtin.os.tag == .windows) return error.SkipZigTest;
@@ -720,6 +794,17 @@ pub const FakeServer = struct {
                     }
                     try conn.stream.writeAll("HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\n\r\ndata: {\"id\":\"evt_connected\",\"type\":\"server.connected\",\"data\":{}}\n\n");
                     sse = conn;
+                    continue;
+                }
+                if (std.mem.eql(u8, method, "GET") and std.mem.startsWith(u8, target, "/api/session/" ++ fake_session ++ "/message?")) {
+                    _ = self.message_pages.fetchAdd(1, .acq_rel);
+                    if (std.mem.eql(u8, target, "/api/session/" ++ fake_session ++ "/message?limit=200&order=asc")) {
+                        try respond(conn, "200 OK", "{\"data\":[{\"id\":\"msg_oap0000000000000004\",\"time\":{\"created\":1791355196016},\"text\":\"ping\",\"type\":\"user\"}],\"cursor\":{\"next\":\"n1\"}}");
+                    } else if (std.mem.eql(u8, target, "/api/session/" ++ fake_session ++ "/message?cursor=n1&limit=200")) {
+                        try respond(conn, "200 OK", "{\"data\":[{\"id\":\"msg_115171275001rAuxAEcEKY0hMl\",\"time\":{\"created\":1791355196218,\"streamed\":1791355196225,\"completed\":1791355196251},\"type\":\"assistant\",\"agent\":\"build\",\"model\":{\"id\":\"model\",\"providerID\":\"fixture\",\"variant\":\"default\"},\"content\":[{\"type\":\"text\",\"text\":\"pong\"}],\"snapshot\":{\"start\":\"c39d615bfd58868b7b93674a96f1ecdffd8cc887\",\"end\":\"c39d615bfd58868b7b93674a96f1ecdffd8cc887\",\"files\":[]},\"finish\":\"stop\",\"rawFinish\":\"stop\",\"cost\":0,\"tokens\":{\"input\":3,\"output\":2,\"reasoning\":0,\"cache\":{\"read\":0,\"write\":0}}},{\"id\":\"msg_11517135c002bb2WKpxce9lFyt\",\"time\":{\"created\":1791355196252},\"type\":\"idle\",\"outcome\":\"succeeded\"}],\"cursor\":{\"next\":\"n2\"}}");
+                    } else {
+                        try respond(conn, "200 OK", "{\"data\":[],\"cursor\":{}}");
+                    }
                     continue;
                 }
                 if (std.mem.eql(u8, method, "GET") and std.mem.startsWith(u8, target, "/api/session?")) {
@@ -1146,4 +1231,42 @@ test "the native list asks OpenCode for the directory's root sessions newest fir
     try testing.expect(listed[0].running);
     try testing.expectEqualStrings("ses_idle0000000000000000", listed[1].native_id);
     try testing.expect(!listed[1].running);
+}
+
+test "the native read follows the server's message pages and reads back a turn the pinned server recorded" {
+    var probe: Probe = undefined;
+    try probe.init(&.{}, &.{});
+    defer probe.deinit();
+    var refusal = contract.Refusal{};
+    const read = try probe.adapter.adapter().nativeRead(probe.arena.allocator(), .{ .native_id = fake_session }, &refusal).?;
+    try testing.expectEqual(@as(usize, 3), probe.fake.message_pages.load(.acquire));
+    try testing.expectEqual(@as(usize, 2), read.len);
+    try testing.expectEqualStrings("ping", read[0].text);
+    try testing.expectEqual(@as(i64, 1791355196016), read[0].at_ms);
+    try testing.expectEqual(@as(i64, 1791355196218), read[1].at_ms);
+    try testing.expectEqual(contract.NativeTurn.Role.assistant, read[1].role);
+    try testing.expectEqualStrings("pong", read[1].text);
+}
+
+test "a session's messages read as each user message and the last reply before the next, leaving out reasoning and tools" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const scratch = arena.allocator();
+    const document = try std.json.parseFromSliceLeaky(std.json.Value, scratch,
+        \\[{"id":"m0","time":{"created":1},"type":"model-switched","model":{"id":"x","providerID":"y"}},
+        \\ {"id":"m1","time":{"created":10},"text":" first ask \n","type":"user"},
+        \\ {"id":"m2","time":{"created":11},"type":"assistant","content":[{"type":"reasoning","text":"hm"},{"type":"text","text":"Let me look."}]},
+        \\ {"id":"m3","time":{"created":12},"type":"assistant","content":[{"type":"reasoning","text":"thinking"},{"type":"tool","id":"t","name":"bash","state":{"status":"completed"},"time":{"created":12}},{"type":"text","text":"Found "},{"type":"text","text":"it."}]},
+        \\ {"id":"m4","time":{"created":13},"type":"idle","outcome":"succeeded"},
+        \\ {"id":"m5","time":{"created":20},"text":"   ","type":"user"},
+        \\ 7,
+        \\ {"id":"m6","time":{"created":21},"text":"thanks","type":"user"}]
+    , .{});
+    const turns = try turnsOf(scratch, document.array.items);
+    try testing.expectEqual(@as(usize, 3), turns.len);
+    try testing.expectEqualStrings("first ask", turns[0].text);
+    try testing.expectEqual(@as(i64, 10), turns[0].at_ms);
+    try testing.expectEqualStrings("Found it.", turns[1].text);
+    try testing.expectEqual(@as(i64, 12), turns[1].at_ms);
+    try testing.expectEqualStrings("thanks", turns[2].text);
 }

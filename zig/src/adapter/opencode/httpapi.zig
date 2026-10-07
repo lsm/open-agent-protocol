@@ -337,6 +337,28 @@ pub fn sessions(arena: std.mem.Allocator, endpoint: Endpoint, directory: []const
     return build(arena, endpoint, "GET", "/api/session", query, "application/json", null);
 }
 
+pub fn messages(arena: std.mem.Allocator, endpoint: Endpoint, session: []const u8, cursor: []const u8, limit: usize) std.mem.Allocator.Error!Request {
+    const query = if (cursor.len > 0)
+        try std.fmt.allocPrint(arena, "cursor={s}&limit={d}", .{ try queryEscape(arena, cursor), limit })
+    else
+        try std.fmt.allocPrint(arena, "limit={d}&order=asc", .{limit});
+    return build(arena, endpoint, "GET", try sessionPath(arena, session, "/message"), query, "application/json", null);
+}
+
+pub const MessagePage = struct { messages: []const std.json.Value, next: []const u8 };
+
+pub fn messagesResult(arena: std.mem.Allocator, response: Response, session: []const u8, limit: usize) std.mem.Allocator.Error!Outcome(MessagePage) {
+    const document = switch (try check(arena, response, try sessionPath(arena, session, "/message"), limit, &native.messages_response)) {
+        .document => |value| value,
+        .failed => |failure| return .{ .failed = failure },
+    };
+    if (document != .object) return .{ .ok = .{ .messages = &.{}, .next = "" } };
+    const data = document.object.get("data") orelse std.json.Value.null;
+    const cursor = document.object.get("cursor") orelse std.json.Value.null;
+    const next = if (cursor == .object) cursor.object.get("next") orelse std.json.Value.null else std.json.Value.null;
+    return .{ .ok = .{ .messages = if (data == .array) data.array.items else &.{}, .next = if (next == .string) next.string else "" } };
+}
+
 pub fn active(arena: std.mem.Allocator, endpoint: Endpoint) std.mem.Allocator.Error!Request {
     return build(arena, endpoint, "GET", "/api/session/active", "", "application/json", null);
 }
@@ -712,4 +734,21 @@ test "a session list decodes every row strictly and refuses one that is not a se
     try testing.expectEqualStrings("/api/session?limit=3&order=desc&parentID=null", request.target);
     const scoped = try sessions(scratch, .{}, "/x/R&D+a=b c~", 3);
     try testing.expectEqualStrings("/api/session?directory=%2Fx%2FR%26D%2Ba%3Db+c~&limit=3&order=desc&parentID=null", scoped.target);
+}
+
+test "a message page is asked oldest first, then by its cursor alone, and keeps every message raw" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const scratch = arena.allocator();
+    try testing.expectEqualStrings("/api/session/ses%20a/message?limit=200&order=asc", (try messages(scratch, .{}, "ses a", "", 200)).target);
+    try testing.expectEqualStrings("/api/session/ses%20a/message?cursor=n%2B1&limit=200", (try messages(scratch, .{}, "ses a", "n+1", 200)).target);
+    const page = try messagesResult(scratch, .{ .status = 200, .body = "{\"data\":[{\"type\":\"user\",\"text\":\"x\",\"anything\":1},7],\"cursor\":{\"next\":\"n1\"}}" }, "ses_a", 0);
+    try testing.expectEqual(@as(usize, 2), page.ok.messages.len);
+    try testing.expectEqualStrings("n1", page.ok.next);
+    const last = try messagesResult(scratch, .{ .status = 200, .body = "{\"data\":[],\"cursor\":{}}" }, "ses_a", 0);
+    try testing.expectEqualStrings("", last.ok.next);
+    const strict = try messagesResult(scratch, .{ .status = 200, .body = "{\"data\":[],\"cursor\":{},\"surprise\":1}" }, "ses_a", 0);
+    try testing.expect(strict == .failed);
+    const empty = try messagesResult(scratch, .{ .status = 200, .body = "null" }, "ses_a", 0);
+    try testing.expectEqual(@as(usize, 0), empty.ok.messages.len);
 }

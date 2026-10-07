@@ -107,6 +107,10 @@ type fakeClient struct {
 	listed    []native.SessionInfo
 	listErr   error
 	listAsked []string
+
+	pages     []httpapi.MessagePage
+	readErr   error
+	readAsked []string
 }
 
 func newFakeClient() *fakeClient {
@@ -205,6 +209,15 @@ func (f *fakeClient) Sessions(ctx context.Context, directory string, limit int) 
 		return nil, ctx.Err()
 	}
 	return listed, err
+}
+func (f *fakeClient) Messages(_ context.Context, session native.SessionID, cursor string, limit int) (httpapi.MessagePage, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.readAsked = append(f.readAsked, fmt.Sprintf("%s|%s|%d", session, cursor, limit))
+	if f.readErr != nil || len(f.readAsked) > len(f.pages) {
+		return httpapi.MessagePage{}, f.readErr
+	}
+	return f.pages[len(f.readAsked)-1], nil
 }
 func (f *fakeClient) Active(ctx context.Context) (map[native.SessionID]bool, error) {
 	f.mu.Lock()

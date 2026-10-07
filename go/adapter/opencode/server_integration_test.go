@@ -211,4 +211,12 @@ func TestOpenCodeServerRunsATurnToCompletionAgainstALocalProvider(t *testing.T) 
 	if !ok || len(parts) != 1 || parts[0].Type != protocol.ContentText || parts[0].Text != "pong" {
 		t.Fatalf("final response = %s, want the provider's one text part", completed.FinalResponse.Content)
 	}
+	nativeID := opened.(interface{ NativeSessionID() string }).NativeSessionID()
+	read, err := adapter.NativeRead(ctx, base.NativeReadRequest{NativeID: nativeID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(read) != 2 || read[0].Role != "user" || read[0].Text != "ping" || read[1].Role != "assistant" || read[1].Text != "pong" || read[0].AtMS <= 0 || read[1].AtMS < read[0].AtMS {
+		t.Fatalf("the server's own record of the turn read %+v", read)
+	}
 }
