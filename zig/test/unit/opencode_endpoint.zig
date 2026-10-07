@@ -181,7 +181,7 @@ test "an OpenCode turn served through the endpoint completes, a queued one follo
 
 test "an OpenCode run cancelled through the endpoint is acknowledged before it settles cancelled, and the exchange validates" {
     var conversation: Conversation = undefined;
-    try conversation.init(&.{&opencode.open_turn}, &.{opencode.step_aborted});
+    try conversation.init(&.{&opencode.open_turn}, &opencode.interrupted_turn);
     defer conversation.deinit();
     try conversation.open();
 

@@ -168,10 +168,11 @@ func (f *fakeOpenCode) serve(w http.ResponseWriter, r *http.Request) {
 	}
 	f.mu.Unlock()
 	switch {
-	case strings.HasPrefix(path, "/api/session/"+fakeOpenCodeSession+"/event"):
+	case path == "/api/event":
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.WriteHeader(http.StatusOK)
 		flusher, _ := w.(http.Flusher)
+		fmt.Fprint(w, "data: {\"id\":\"evt_connected\",\"type\":\"server.connected\",\"data\":{}}\n\n")
 		flusher.Flush()
 		for {
 			select {
@@ -188,36 +189,32 @@ func (f *fakeOpenCode) serve(w http.ResponseWriter, r *http.Request) {
 		var prompt struct {
 			ID       string `json:"id"`
 			Delivery string `json:"delivery"`
-			Prompt   struct {
-				Text string `json:"text"`
-			} `json:"prompt"`
+			Text     string `json:"text"`
 		}
 		_ = json.Unmarshal(body, &prompt)
-		f.mu.Lock()
-		turn := f.seq
-		f.mu.Unlock()
-		writeJSON(w, fmt.Sprintf(`{"data":{"admittedSeq":1,"id":%q,"sessionID":"%s","prompt":{"text":%q},"delivery":%q,"timeCreated":1,"promotedSeq":%d}}`, prompt.ID, fakeOpenCodeSession, prompt.Prompt.Text, prompt.Delivery, turn+1))
+		writeJSON(w, fmt.Sprintf(`{"data":{"id":%q,"sessionID":"%s","time":{"created":1},"type":"user","payload":{"text":%q},"delivery":%q}}`, prompt.ID, fakeOpenCodeSession, prompt.Text, prompt.Delivery))
 		for _, event := range []string{
-			`"prompted",` + `"data":{"timestamp":%SEQ%,"sessionID":"` + fakeOpenCodeSession + `","messageID":"%MSG%","prompt":{"text":"hello"},"delivery":"steer"}`,
-			`"step.started",` + `"data":{"timestamp":%SEQ%,"sessionID":"` + fakeOpenCodeSession + `","assistantMessageID":"msg_a1","agent":"build","model":{"id":"fixture","providerID":"fixture"}}`,
-			`"text.ended",` + `"data":{"timestamp":%SEQ%,"sessionID":"` + fakeOpenCodeSession + `","assistantMessageID":"msg_a1","textID":"t1","text":"done"}`,
-			`"step.ended",` + `"data":{"timestamp":%SEQ%,"sessionID":"` + fakeOpenCodeSession + `","assistantMessageID":"msg_a1","finish":"stop","cost":0,"tokens":{"input":2,"output":5,"reasoning":0,"cache":{"read":0,"write":0}}}`,
+			`inbox.delivered,"inboxID":"%MSG%"`,
+			`step.started,"assistantMessageID":"msg_a1","agent":"build","model":{"id":"fixture","providerID":"fixture"},"started":1`,
+			`text.ended,"assistantMessageID":"msg_a1","ordinal":0,"text":"done"`,
+			`step.ended,"assistantMessageID":"msg_a1","finish":"stop","cost":0,"tokens":{"input":2,"output":5,"reasoning":0,"cache":{"read":0,"write":0}}`,
+			`execution.succeeded,`,
 		} {
 			f.mu.Lock()
 			f.seq++
 			seq := fmt.Sprint(f.seq)
 			f.mu.Unlock()
 			kind, data, _ := strings.Cut(event, ",")
-			line := `{"id":"evt_` + seq + `","type":"session.next.` + strings.Trim(kind, `"`) + `","durable":{"aggregateID":"` + fakeOpenCodeSession + `","seq":` + seq + `,"version":1},` + data + `}`
-			line = strings.ReplaceAll(strings.ReplaceAll(line, "%SEQ%", seq), "%MSG%", prompt.ID)
-			f.stream <- line
+			if data != "" {
+				data = "," + data
+			}
+			line := `{"id":"evt_` + seq + `","created":` + seq + `,"type":"session.` + kind + `","durable":{"aggregateID":"` + fakeOpenCodeSession + `","seq":` + seq + `,"version":1},"data":{"sessionID":"` + fakeOpenCodeSession + `"` + data + `}}`
+			f.stream <- strings.ReplaceAll(line, "%MSG%", prompt.ID)
 		}
 	case strings.HasSuffix(path, "/interrupt"):
-		w.WriteHeader(http.StatusNoContent)
+		writeJSON(w, `{"interrupted":false}`)
 	case path == "/api/session/active":
 		writeJSON(w, `{"data":{}}`)
-	case strings.Contains(path, "/history"):
-		writeJSON(w, `{"data":[],"hasMore":false}`)
 	default:
 		w.WriteHeader(http.StatusNotFound)
 		_, _ = io.WriteString(w, "{}")

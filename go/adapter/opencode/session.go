@@ -8,7 +8,6 @@ import (
 	"io"
 	"math"
 	"sort"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -41,11 +40,9 @@ type session struct {
 	subscription Subscription
 	events       <-chan native.Event
 	clock        base.Clock
+	timeout      time.Duration
 	ids          base.IDGenerator
 	capacity     int
-	historyLimit int
-	pollMin      time.Duration
-	pollMax      time.Duration
 	nativeID     native.SessionID
 	model        *native.ModelRef
 	participant  protocol.ParticipantID
@@ -60,20 +57,19 @@ type session struct {
 
 	nextToolOrder uint64
 
-	settled []protocol.SettledRun
-	runs    map[protocol.RunID]*runState
-	pending map[native.MessageID]*runState
-	tools   map[string]*toolState
-	reduced map[int64]bool
+	settled   []protocol.SettledRun
+	runs      map[protocol.RunID]*runState
+	pending   map[native.MessageID]*runState
+	tools     map[string]*toolState
+	toolNames map[string]string
+	reduced   map[int64]bool
 
-	models       []string
-	journal      []protocol.Envelope
-	lastSeq      int64
-	stop         chan struct{}
-	stopOnce     sync.Once
-	subCancel    context.CancelFunc
-	settleCtx    context.Context
-	settleCancel context.CancelFunc
+	models    []string
+	journal   []protocol.Envelope
+	lastSeq   int64
+	stop      chan struct{}
+	stopOnce  sync.Once
+	subCancel context.CancelFunc
 }
 
 const (
@@ -89,8 +85,6 @@ type runState struct {
 	prompted bool
 
 	promotionSeen bool
-	holding       bool
-	held          []heldEvent
 
 	publishedSeq uint64
 
@@ -111,11 +105,6 @@ type runState struct {
 	openSteps       int
 	admitted        chan struct{}
 	subscribers     []chan base.Result
-}
-
-type heldEvent struct {
-	envelope protocol.Envelope
-	terminal bool
 }
 
 type toolState struct {
@@ -208,7 +197,10 @@ func (s *session) Submit(ctx context.Context, submit base.SubmitRequest) (protoc
 	s.mu.Lock()
 	s.pending[nativeMessage] = run
 	s.mu.Unlock()
-	admitted, err := s.client.Prompt(ctx, s.nativeID, native.PromptRequest{ID: nativeMessage, Prompt: native.Prompt{Text: promptText}, Delivery: delivery})
+	if behind {
+		delivery = native.DeliveryQueue
+	}
+	admitted, err := s.client.Prompt(ctx, s.nativeID, native.PromptRequest{ID: nativeMessage, Text: promptText, Delivery: delivery})
 	if err != nil {
 		s.mu.Lock()
 		delete(s.pending, nativeMessage)
@@ -226,8 +218,7 @@ func (s *session) Submit(ctx context.Context, submit base.SubmitRequest) (protoc
 		return reservation, stream, nil
 	}
 	reservation.MessageIDs = []protocol.MessageID{protocol.MessageID(admitted.ID)}
-	if admitted.PromotedSeq != nil && !behind && req.Delivery != protocol.DeliveryQueue {
-
+	if !behind && req.Delivery != protocol.DeliveryQueue {
 		reservation.Admission = protocol.AdmissionStarted
 		reservation.EffectiveDelivery = protocol.DeliveryStart
 		reservation.Status = protocol.RunRunning
@@ -236,7 +227,6 @@ func (s *session) Submit(ctx context.Context, submit base.SubmitRequest) (protoc
 			run.status = protocol.RunRunning
 			run.queuedAdmission = false
 			if s.reserved == run {
-
 				s.reserved, s.active = nil, run
 			}
 			s.refreshStateLocked()
@@ -380,7 +370,7 @@ func (s *session) UpdateSettings(ctx context.Context, req protocol.SessionSettin
 	return response, s.state, nil
 }
 
-func published(run *runState) bool { return run != nil && (!run.terminal || run.holding) }
+func published(run *runState) bool { return run != nil && !run.terminal }
 
 func reservationOf(run *runState) bool { return run.queuedAdmission && !run.startPublished }
 
@@ -423,86 +413,115 @@ func (s *session) dispatch() {
 }
 
 func (s *session) handleEventLocked(event native.Event) {
-	if event.Durable.AggregateID != string(s.nativeID) {
-		s.abandon(nil, "opencode_foreign_session", "durable event belongs to another session", "")
+	if event.SessionID != s.nativeID {
+		s.abandon(nil, "opencode_foreign_session", "event belongs to another session", "")
 		return
 	}
 	s.mu.Lock()
-	if s.reduced[event.Durable.Seq] {
-		s.mu.Unlock()
-		return
-	}
-	s.reduced[event.Durable.Seq] = true
-	if event.Durable.Seq > s.lastSeq {
-		s.lastSeq = event.Durable.Seq
-		s.state.TranscriptCursor = formatSeq(s.lastSeq)
+	if event.Durable != nil {
+		if s.reduced[event.Durable.Seq] {
+			s.mu.Unlock()
+			return
+		}
+		s.reduced[event.Durable.Seq] = true
+		if event.Durable.Seq > s.lastSeq {
+			s.lastSeq = event.Durable.Seq
+			s.state.TranscriptCursor = formatSeq(s.lastSeq)
+		}
 	}
 	run := s.reductionTargetLocked()
 	s.mu.Unlock()
 	switch event.Type {
-	case native.TypePromptAdmitted:
-		var data native.PromptedData
+	case native.TypeInboxEnqueued:
+		var data native.InboxEnqueuedData
 		if err := native.DecodeData(event, &data); err != nil {
-			s.failActive(run, "opencode_invalid_prompt_event", err.Error())
+			s.failActive(run, "opencode_invalid_inbox_event", err.Error())
+		}
+	case native.TypeInboxDelivered:
+		var data native.InboxRefData
+		if err := native.DecodeData(event, &data); err != nil {
+			s.failActive(run, "opencode_invalid_inbox_event", err.Error())
 			return
 		}
-
-		return
-	case native.TypePrompted:
-		var data native.PromptedData
+		s.delivered(data.InboxID)
+	case native.TypeInboxCancelled:
+		var data native.InboxRefData
 		if err := native.DecodeData(event, &data); err != nil {
-			s.failActive(run, "opencode_invalid_prompt_event", err.Error())
+			s.failActive(run, "opencode_invalid_inbox_event", err.Error())
 			return
 		}
 		s.mu.Lock()
-		pending := s.pending[data.MessageID]
-		delete(s.pending, data.MessageID)
-		var owner *runState
-		switch {
-		case pending == nil || pending.terminal:
-
-		case pending == s.reserved:
-
-			owner = pending
-			pending.promotionSeen = true
-			pending.holding = s.active != nil && !s.active.terminal
-		case pending == s.active:
-			owner = pending
-		}
-
-		s.suppressed = owner == nil
-		reservation := owner != nil && owner == s.reserved
+		pending := s.pending[data.InboxID]
+		delete(s.pending, data.InboxID)
 		s.mu.Unlock()
-		if owner == nil {
+		if pending == nil || pending.terminal {
 			return
 		}
-		<-owner.admitted
-		if err := s.emit(owner, protocol.TypeRunStarted, protocol.RunStartedPayload{SessionID: s.state.SessionID, RunID: owner.id, Status: protocol.RunRunning, ModelID: s.state.CurrentModelID, StartedAtMS: s.clock.Now().UnixMilli()}, false); err != nil {
+		<-pending.admitted
+		_ = s.emitWith(pending, protocol.TypeRunCancelled, protocol.RunCancelledPayload{SessionID: s.state.SessionID, RunID: pending.id, Reason: "OpenCode cancelled the input before delivering it"}, true, s.reportedRunCost(pending))
+	case native.TypeInboxDeliveryChanged:
+		var data native.InboxDeliveryChangedData
+		if err := native.DecodeData(event, &data); err != nil {
+			s.failActive(run, "opencode_invalid_inbox_event", err.Error())
+		}
+	case native.TypeExecutionStarted:
+		var data native.ExecutionData
+		if err := native.DecodeData(event, &data); err != nil {
+			s.failActive(run, "opencode_invalid_execution_event", err.Error())
+		}
+	case native.TypeExecutionSucceeded:
+		var data native.ExecutionData
+		if err := native.DecodeData(event, &data); err != nil {
+			s.failActive(run, "opencode_invalid_execution_event", err.Error())
 			return
 		}
-
+		if run != nil && run.prompted {
+			<-run.admitted
+			s.settleRunLocked(run)
+		}
+	case native.TypeExecutionFailed:
+		var data native.ExecutionFailedData
+		if err := native.DecodeData(event, &data); err != nil {
+			s.failActive(run, "opencode_invalid_execution_event", err.Error())
+			return
+		}
+		if run != nil && run.prompted {
+			<-run.admitted
+			s.mu.Lock()
+			stepFailed := run.failure != nil
+			s.mu.Unlock()
+			if stepFailed {
+				s.settleRunLocked(run)
+				return
+			}
+			s.failRun(run, "opencode_execution_failed", data.Error.Message)
+		}
+	case native.TypeExecutionInterrupted:
+		var data native.ExecutionInterruptedData
+		if err := native.DecodeData(event, &data); err != nil {
+			s.failActive(run, "opencode_invalid_execution_event", err.Error())
+			return
+		}
+		if run == nil || !run.prompted {
+			return
+		}
+		<-run.admitted
 		s.mu.Lock()
-		owner.prompted = true
+		cancelled := run.cancelRequested
 		s.mu.Unlock()
-		if reservation {
-
-			s.promoteReserved()
+		if cancelled {
+			s.settleTools(run, true)
+			_ = s.emitWith(run, protocol.TypeRunCancelled, protocol.RunCancelledPayload{SessionID: s.state.SessionID, RunID: run.id, Reason: "OpenCode interrupted the execution"}, true, s.reportedRunCost(run))
+			return
 		}
+		s.failRun(run, "opencode_execution_interrupted", "OpenCode interrupted the execution: "+data.Reason)
 	case native.TypeStepStarted:
 		var data native.StepStartedData
 		if err := native.DecodeData(event, &data); err != nil {
 			s.failActive(run, "opencode_invalid_step_event", err.Error())
 			return
 		}
-
 		s.observeModel(normalizeModelRef(&data.Model))
-		if run != nil {
-			s.mu.Lock()
-			if !run.terminal {
-				run.openSteps++
-			}
-			s.mu.Unlock()
-		}
 	case native.TypeStepEnded:
 		var data native.StepEndedData
 		if err := native.DecodeData(event, &data); err != nil {
@@ -514,21 +533,14 @@ func (s *session) handleEventLocked(event native.Event) {
 		}
 		<-run.admitted
 		s.mu.Lock()
-		if run.terminal {
-			s.mu.Unlock()
-			return
+		if !run.terminal {
+			run.lastFinish = data.Finish
+			run.cost += data.Cost
+			run.usage.InputTokens += tokenCount(data.Tokens.Input)
+			run.usage.OutputTokens += tokenCount(data.Tokens.Output)
+			run.usage.TotalTokens += tokenCount(data.Tokens.Input) + tokenCount(data.Tokens.Output)
 		}
-		run.openSteps--
-		run.lastFinish = data.Finish
-		run.cost += data.Cost
-		run.usage.InputTokens += tokenCount(data.Tokens.Input)
-		run.usage.OutputTokens += tokenCount(data.Tokens.Output)
-		run.usage.TotalTokens += tokenCount(data.Tokens.Input) + tokenCount(data.Tokens.Output)
-		open := run.openSteps
 		s.mu.Unlock()
-		if open <= 0 {
-			s.confirmSettlementLocked(run, event.Durable.Seq)
-		}
 	case native.TypeStepFailed:
 		var data native.StepFailedData
 		if err := native.DecodeData(event, &data); err != nil {
@@ -540,20 +552,16 @@ func (s *session) handleEventLocked(event native.Event) {
 		}
 		<-run.admitted
 		s.mu.Lock()
-		if run.terminal {
-			s.mu.Unlock()
-			return
+		if !run.terminal && !run.cancelRequested {
+			failure := data.Error
+			run.failure = &failure
 		}
-		run.openSteps--
-		failure := data.Error
-		run.failure = &failure
-		open := run.openSteps
+		if data.Cost != nil {
+			run.cost += *data.Cost
+		}
 		s.mu.Unlock()
-		if open <= 0 {
-			s.confirmSettlementLocked(run, event.Durable.Seq)
-		}
-	case native.TypeTextEnded:
-		var data native.TextEndedData
+	case native.TypeTextEnded, native.TypeReasoningEnded:
+		var data native.PartEndedData
 		if err := native.DecodeData(event, &data); err != nil {
 			s.failActive(run, "opencode_invalid_text_event", err.Error())
 			return
@@ -562,44 +570,39 @@ func (s *session) handleEventLocked(event native.Event) {
 			return
 		}
 		<-run.admitted
+		part := protocol.ContentPart{Type: protocol.ContentText, Text: data.Text}
+		if event.Type == native.TypeReasoningEnded {
+			part = protocol.ContentPart{Type: protocol.ContentReasoning, Reasoning: data.Text}
+		}
 		s.mu.Lock()
 		terminal := run.terminal
 		if !terminal {
-			run.parts = append(run.parts, protocol.ContentPart{Type: protocol.ContentText, Text: data.Text})
+			run.parts = append(run.parts, part)
 		}
 		s.mu.Unlock()
 		if terminal {
 			return
 		}
-
-		_ = s.emit(run, protocol.TypeContentDelta, protocol.ContentDeltaPayload{SessionID: s.state.SessionID, RunID: run.id, MessageID: run.messageID, Part: protocol.ContentPart{Type: protocol.ContentText, Text: data.Text}}, false)
-	case native.TypeReasoningEnded:
-		var data native.ReasoningEndedData
+		_ = s.emit(run, protocol.TypeContentDelta, protocol.ContentDeltaPayload{SessionID: s.state.SessionID, RunID: run.id, MessageID: run.messageID, Part: part}, false)
+	case native.TypeToolInputStarted:
+		var data native.ToolInputStartedData
 		if err := native.DecodeData(event, &data); err != nil {
-			s.failActive(run, "opencode_invalid_reasoning_event", err.Error())
+			s.failActive(run, "opencode_invalid_tool_event", err.Error())
 			return
 		}
-		if run == nil {
-			return
-		}
-		<-run.admitted
 		s.mu.Lock()
-		terminal := run.terminal
-		if !terminal {
-			run.parts = append(run.parts, protocol.ContentPart{Type: protocol.ContentReasoning, Reasoning: data.Text})
-		}
+		s.toolNames[data.ID] = data.Name
 		s.mu.Unlock()
-		if terminal {
-			return
-		}
-		_ = s.emit(run, protocol.TypeContentDelta, protocol.ContentDeltaPayload{SessionID: s.state.SessionID, RunID: run.id, MessageID: run.messageID, Part: protocol.ContentPart{Type: protocol.ContentReasoning, Reasoning: data.Text}}, false)
 	case native.TypeToolCalled:
 		var data native.ToolCalledData
 		if err := native.DecodeData(event, &data); err != nil {
 			s.failActive(run, "opencode_invalid_tool_event", err.Error())
 			return
 		}
-		if run == nil || data.CallID == "" || data.Tool == "" {
+		s.mu.Lock()
+		name := s.toolNames[data.ID]
+		s.mu.Unlock()
+		if run == nil || data.ID == "" || name == "" {
 			return
 		}
 		<-run.admitted
@@ -608,7 +611,7 @@ func (s *session) handleEventLocked(event native.Event) {
 			s.failRun(run, "opencode_invalid_tool_arguments", err.Error())
 			return
 		}
-		s.startTool(run, data.CallID, data.Tool, args)
+		s.startTool(run, data.ID, name, args)
 	case native.TypeToolProgress:
 		var data native.ToolProgressData
 		if err := native.DecodeData(event, &data); err != nil {
@@ -618,23 +621,19 @@ func (s *session) handleEventLocked(event native.Event) {
 		if run == nil {
 			return
 		}
-		progress, err := json.Marshal(data.Content)
-		if err != nil {
-			s.failRun(run, "opencode_invalid_tool_progress", err.Error())
-			return
-		}
-		s.updateTool(run, data.CallID, progress)
+		s.updateTool(run, data.ID, data.Metadata)
 	case native.TypeToolSuccess, native.TypeToolFailed:
 		failed := event.Type == native.TypeToolFailed
-		var failure native.UnknownErrorBlock
+		var failure native.SessionError
 		var content json.RawMessage
+		var callID string
 		if failed {
 			var data native.ToolFailedData
 			if err := native.DecodeData(event, &data); err != nil {
 				s.failActive(run, "opencode_invalid_tool_event", err.Error())
 				return
 			}
-			failure = data.Error
+			failure, callID = data.Error, data.ID
 			if raw, err := json.Marshal(data.Error); err == nil {
 				content = raw
 			}
@@ -644,6 +643,7 @@ func (s *session) handleEventLocked(event native.Event) {
 				s.failActive(run, "opencode_invalid_tool_event", err.Error())
 				return
 			}
+			callID = data.ID
 			if raw, err := json.Marshal(data.Content); err == nil {
 				content = raw
 			}
@@ -651,16 +651,62 @@ func (s *session) handleEventLocked(event native.Event) {
 		if run == nil {
 			return
 		}
-		s.endTool(run, event, failed, failure, content)
-	case native.TypeAgentSwitched, native.TypeModelSwitched, native.TypeMoved, native.TypeContextUpdated,
-		native.TypeSynthetic, native.TypeShellStarted, native.TypeShellEnded, native.TypeTextStarted,
-		native.TypeReasoningStarted, native.TypeToolInputStarted, native.TypeToolInputEnded, native.TypeRetried,
-		native.TypeCompactionStarted, native.TypeCompactionEnded, native.TypeRevertStaged, native.TypeRevertCleared,
-		native.TypeRevertCommitted:
-
-		return
+		s.endTool(run, callID, failed, failure, content)
 	default:
-		s.failActive(run, "opencode_unknown_event", fmt.Sprintf("unknown durable event %q", event.Type))
+		if !event.Type.Supported() {
+			s.failActive(run, "opencode_unknown_event", fmt.Sprintf("unknown event %q", event.Type))
+		}
+	}
+}
+
+func (s *session) delivered(inbox native.MessageID) {
+	s.mu.Lock()
+	pending := s.pending[inbox]
+	delete(s.pending, inbox)
+	var owner, previous *runState
+	switch {
+	case pending == nil || pending.terminal:
+	case pending == s.reserved:
+		owner = pending
+		pending.promotionSeen = true
+		if s.active != nil && !s.active.terminal && s.active != pending {
+			previous = s.active
+		}
+	case pending == s.active:
+		owner = pending
+	}
+	s.suppressed = owner == nil
+	if owner == nil && s.active != nil && !s.active.terminal && s.active.prompted {
+		previous = s.active
+	}
+	s.mu.Unlock()
+	if owner == nil {
+		if previous != nil {
+			<-previous.admitted
+			s.settleRunLocked(previous)
+		}
+		return
+	}
+	if previous != nil {
+		<-previous.admitted
+		s.settleRunLocked(previous)
+	}
+	<-owner.admitted
+	s.promoteReserved()
+	if err := s.emit(owner, protocol.TypeRunStarted, protocol.RunStartedPayload{SessionID: s.state.SessionID, RunID: owner.id, Status: protocol.RunRunning, ModelID: s.state.CurrentModelID, StartedAtMS: s.clock.Now().UnixMilli()}, false); err != nil {
+		return
+	}
+	s.mu.Lock()
+	owner.prompted = true
+	late := owner.cancelRequested
+	s.mu.Unlock()
+	if late {
+		ctx, cancel := context.WithTimeout(context.Background(), s.timeout)
+		_, err := s.client.Interrupt(ctx, s.nativeID)
+		cancel()
+		if err != nil {
+			s.abandon(owner, "opencode_cancellation_ambiguous", err.Error(), settledByFor(err))
+		}
 	}
 }
 
@@ -670,120 +716,6 @@ func (s *session) failActive(run *runState, code, message string) {
 	}
 	<-run.admitted
 	s.failRun(run, code, message)
-}
-
-func (s *session) awaitQuiescenceLocked(run *runState) (bool, error) {
-	delay := s.pollMin
-	for {
-		active, err := s.client.Active(s.settleContext())
-		if err != nil {
-			return false, err
-		}
-		if !active[s.nativeID] {
-			return true, nil
-		}
-
-		s.drainEnqueuedLocked()
-		s.mu.Lock()
-		terminal, open := run.terminal, run.openSteps
-		s.mu.Unlock()
-		if terminal || open > 0 {
-			return false, nil
-		}
-		if err := s.sleepSettle(delay); err != nil {
-			return false, err
-		}
-		delay *= 2
-		if delay > s.pollMax {
-			delay = s.pollMax
-		}
-	}
-}
-
-func (s *session) sleepSettle(delay time.Duration) error {
-	timer := time.NewTimer(delay)
-	defer timer.Stop()
-	ctx := s.settleContext()
-	select {
-	case <-ctx.Done():
-		return ctx.Err()
-	case <-s.stop:
-		return context.Canceled
-	case <-timer.C:
-		return nil
-	}
-}
-
-func (s *session) confirmSettlementLocked(run *runState, watermark int64) {
-	s.mu.Lock()
-	if run.terminal || run.settling {
-		s.mu.Unlock()
-		return
-	}
-	run.settling = true
-	s.mu.Unlock()
-	defer func() {
-		s.mu.Lock()
-		run.settling = false
-		s.mu.Unlock()
-	}()
-	proceed, err := s.awaitQuiescenceLocked(run)
-	if err != nil {
-		s.abandon(run, "opencode_quiescence_failed", err.Error(), settledByFor(err))
-		return
-	}
-	if !proceed {
-		return
-	}
-
-	s.drainEnqueuedLocked()
-	after := watermark
-	for {
-		s.mu.Lock()
-		terminal := run.terminal
-		s.mu.Unlock()
-		if terminal {
-			return
-		}
-		page, err := s.client.History(s.settleContext(), s.nativeID, after, s.historyLimit)
-		if err != nil {
-			s.abandon(run, "opencode_history_failed", err.Error(), settledByFor(err))
-			return
-		}
-		for _, event := range page.Events {
-			s.handleEventLocked(event)
-		}
-		if !page.HasMore || len(page.Events) == 0 {
-			break
-		}
-		after = page.Events[len(page.Events)-1].Durable.Seq
-	}
-
-	s.drainEnqueuedLocked()
-	s.mu.Lock()
-	terminal := run.terminal
-	open := run.openSteps
-	s.mu.Unlock()
-	if terminal {
-		return
-	}
-	if open > 0 {
-
-		return
-	}
-	<-run.admitted
-	s.settleRunLocked(run)
-}
-
-func (s *session) drainEnqueuedLocked() {
-	for {
-		select {
-		case event := <-s.events:
-			s.handleEventLocked(event)
-		default:
-			return
-		}
-	}
 }
 
 func (s *session) settleRunLocked(run *runState) {
@@ -803,6 +735,9 @@ func (s *session) settleRunLocked(run *runState) {
 	if failure != nil {
 		s.failRun(run, "opencode_step_failed", failure.Message)
 		return
+	}
+	if finish == "" {
+		finish = "unknown"
 	}
 	content := protocol.MessageContent(protocol.TextContent(""))
 	if len(parts) > 0 {
@@ -825,15 +760,6 @@ func reportedCost(total float64) map[string]json.RawMessage {
 		return nil
 	}
 	return map[string]json.RawMessage{costExtension: value}
-}
-
-func (s *session) settleContext() context.Context {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.settleCtx == nil {
-		s.settleCtx, s.settleCancel = context.WithCancel(context.Background())
-	}
-	return s.settleCtx
 }
 
 func (s *session) startTool(run *runState, nativeID, name string, args json.RawMessage) {
@@ -878,13 +804,9 @@ func (s *session) updateTool(run *runState, nativeID string, progress json.RawMe
 	_, _ = s.emitEnvelope(run, protocol.TypeActionCallProgress, payload, false, tool.startedEvent)
 }
 
-func (s *session) endTool(run *runState, event native.Event, failed bool, failure native.UnknownErrorBlock, content json.RawMessage) {
+func (s *session) endTool(run *runState, callID string, failed bool, failure native.SessionError, content json.RawMessage) {
 	s.mu.Lock()
-	var data struct {
-		CallID string `json:"callID"`
-	}
-	_ = native.DecodeData(event, &data)
-	tool := s.tools[toolKey(run, data.CallID)]
+	tool := s.tools[toolKey(run, callID)]
 	if tool == nil {
 		s.mu.Unlock()
 		s.failRun(run, "opencode_invalid_tool_lifecycle", "tool end without active start")
@@ -1046,17 +968,21 @@ func (s *session) Cancel(ctx context.Context, id protocol.RunID) (protocol.RunCa
 	}
 	prompted := run.prompted
 
-	reservation := run == s.reserved && !run.promotionSeen
+	reservation := !prompted && !run.promotionSeen
 	run.cancelRequested = true
 	run.status = protocol.RunCancelling
 	s.mu.Unlock()
 	if reservation {
-
 		<-run.admitted
-		_ = s.emitWith(run, protocol.TypeRunCancelled, protocol.RunCancelledPayload{SessionID: s.state.SessionID, RunID: id, Reason: "reservation cancelled before promotion", SettledBy: protocol.SettledByInferred}, true, s.reportedRunCost(run))
+		if run.nativeMessageID != "" {
+			if err := s.client.CancelInbox(ctx, s.nativeID, run.nativeMessageID); err != nil {
+				s.abandon(run, "opencode_cancellation_ambiguous", err.Error(), settledByFor(err))
+				return protocol.RunCancelResponse{}, err
+			}
+		}
 		return protocol.RunCancelResponse{SessionID: s.state.SessionID, RunID: id, Accepted: true, Status: protocol.RunCancelling}, nil
 	}
-	if err := s.client.Interrupt(ctx, s.nativeID); err != nil {
+	if _, err := s.client.Interrupt(ctx, s.nativeID); err != nil {
 		s.abandon(run, "opencode_cancellation_ambiguous", err.Error(), settledByFor(err))
 		return protocol.RunCancelResponse{}, err
 	}
@@ -1112,7 +1038,7 @@ func (s *session) Resume(ctx context.Context, request base.ResumeRequest) (base.
 	for _, event := range suffix {
 		stream <- base.Result{Envelope: event}
 	}
-	if run.terminal && !run.holding {
+	if run.terminal {
 		close(stream)
 	} else {
 		run.subscribers = append(run.subscribers, stream)
@@ -1141,13 +1067,9 @@ func (s *session) Close(ctx context.Context) error {
 	s.state.ActiveRunID = ""
 	s.state.UpdatedAtMS = s.clock.Now().UnixMilli()
 	subscribers := s.allSubscribersLocked()
-	cancel := s.settleCancel
 	subCancel := s.subCancel
 	s.mu.Unlock()
 	s.stopOnce.Do(func() { close(s.stop) })
-	if cancel != nil {
-		cancel()
-	}
 	if subCancel != nil {
 		subCancel()
 	}
@@ -1276,15 +1198,10 @@ func (s *session) promoteReserved() {
 		return
 	}
 	s.reserved = nil
-	held := reserved.held
-	reserved.held, reserved.holding = nil, false
 	if !reserved.terminal {
 
 		s.active = reserved
 		reserved.status = protocol.RunRunning
-	}
-	for _, event := range held {
-		s.publishLocked(reserved, event.envelope, event.terminal)
 	}
 	s.refreshStateLocked()
 	s.mu.Unlock()
@@ -1342,7 +1259,7 @@ func (s *session) emitEnvelopeWith(run *runState, typ protocol.EnvelopeType, pay
 		event.ToolCallID = action.ToolCallID
 	}
 	s.state.UpdatedAtMS = now
-	if typ == protocol.TypeRunStarted && !run.holding {
+	if typ == protocol.TypeRunStarted {
 
 		run.status = protocol.RunRunning
 	}
@@ -1359,16 +1276,10 @@ func (s *session) emitEnvelopeWith(run *runState, typ protocol.EnvelopeType, pay
 		if s.active == run {
 			s.active = nil
 		}
-		if s.reserved == run && !run.holding {
+		if s.reserved == run {
 
 			s.reserved = nil
 		}
-	}
-	if run.holding {
-
-		run.held = append(run.held, heldEvent{envelope: event, terminal: terminal})
-		s.refreshStateLocked()
-		return event, nil
 	}
 	s.publishLocked(run, event, terminal)
 
@@ -1426,7 +1337,5 @@ func (s *session) allSubscribersLocked() []chan base.Result {
 }
 
 func cloneRaw(value json.RawMessage) json.RawMessage { return append(json.RawMessage(nil), value...) }
-
-func formatCursor(seq int64) string { return strconv.FormatInt(seq, 10) }
 
 var _ base.Session = (*session)(nil)

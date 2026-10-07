@@ -15,10 +15,10 @@ pub const goldens_relative = "go/adapter/opencode/testdata/port-goldens.json";
 const native_session = "ses_fake00000000000000";
 
 pub const cases = [_][]const u8{
-    "completed-text",   "text-streaming",   "reasoning-text",  "tool-lifecycle",
-    "tool-failed",      "multi-step",       "step-failure",    "cancel-active",
-    "queued-admission", "history-fence",    "foreign-session", "stream-exit",
-    "observed-only",    "message-conflict", "interrupt-idle",
+    "completed-text",   "text-streaming",  "reasoning-text", "tool-lifecycle",
+    "tool-failed",      "multi-step",      "step-failure",   "cancel-active",
+    "queued-admission", "foreign-session", "stream-exit",    "observed-only",
+    "message-conflict", "interrupt-idle",
 };
 
 fn readFile(allocator: std.mem.Allocator, path: []const u8) ![]u8 {
@@ -54,6 +54,7 @@ pub fn compact(arena: std.mem.Allocator, text: []const u8) std.mem.Allocator.Err
 const Definition = struct {
     cancel: bool = false,
     admission_rejected: bool = false,
+    delivery: []const u8 = "auto",
     catalog: []const u8 = "",
 };
 
@@ -65,13 +66,13 @@ fn definitionOf(scratch: std.mem.Allocator, text: []const u8) !Definition {
     if (parsed.object.get("cancel")) |value| definition.cancel = value == .bool and value.bool;
     if (parsed.object.get("admission_rejected")) |value| definition.admission_rejected = value == .bool and value.bool;
     if (adapter_corpus.stringMember(parsed.object, "catalog")) |name| definition.catalog = name;
+    if (adapter_corpus.stringMember(parsed.object, "delivery")) |delivery| definition.delivery = delivery;
     return definition;
 }
 
 const Action = enum { observe, cancel, cancel_idle, stream_failure };
 
 const Frame = struct {
-    history: bool,
     observed_only: bool,
     action: Action,
     event: ?native.Event = null,
@@ -86,16 +87,17 @@ fn actionOf(named: []const u8) !Action {
 }
 
 fn decodeStreamFrame(scratch: std.mem.Allocator, raw: []const u8) !native.Event {
-    var stream = httpapi.Stream.init(scratch, httpapi.default_frame_limit);
-    defer stream.deinit();
+    var decoder = httpapi.Decoder.init(scratch, httpapi.default_frame_limit);
+    defer decoder.deinit();
     const wire = try std.mem.concat(scratch, u8, &.{ "event: message\ndata: ", raw, "\n\n" });
-    const batch = try stream.feed(scratch, wire);
-    if (batch.failure) |message| {
-        std.debug.print("production SSE decode refused a corpus frame: {s}\n", .{message});
-        return error.ProductionCodecRefusedCorpusFrame;
-    }
-    if (batch.events.len != 1) return error.ProductionCodecYieldedNoFrame;
-    return batch.events[0];
+    var diag = native.Diagnostic{};
+    var frames = std.ArrayList(httpapi.Frame).empty;
+    try decoder.feed(scratch, wire, &frames, &diag);
+    if (frames.items.len != 1 or !std.mem.eql(u8, frames.items[0].name, "message")) return error.ProductionCodecYieldedNoFrame;
+    return native.decodeEvent(scratch, frames.items[0].data, &diag) catch |err| {
+        std.debug.print("production decode refused a corpus frame: {s}\n", .{diag.message});
+        return err;
+    };
 }
 
 fn loadFrames(scratch: std.mem.Allocator, text: []const u8) ![]const Frame {
@@ -105,31 +107,18 @@ fn loadFrames(scratch: std.mem.Allocator, text: []const u8) ![]const Frame {
         const script = try std.json.parseFromSliceLeaky(std.json.Value, scratch, line, .{});
         if (script != .object) return error.InvalidScriptLine;
         const source = adapter_corpus.stringMember(script.object, "source") orelse return error.InvalidScriptLine;
-        const history = std.mem.eql(u8, source, "history");
-        if (!history and !std.mem.eql(u8, source, "stream")) return error.InvalidScriptLine;
+        if (!std.mem.eql(u8, source, "stream")) return error.InvalidScriptLine;
         const classification = adapter_corpus.stringMember(script.object, "classification") orelse return error.InvalidScriptLine;
         const action = try actionOf(adapter_corpus.stringMember(script.object, "action") orelse "");
-        var frame = Frame{ .history = history, .observed_only = std.mem.eql(u8, classification, "observed-only"), .action = action };
-        if (action == .observe) {
-            const raw = try adapter_corpus.memberSource(scratch, line, "raw");
-            if (history) {
-                var diag = native.Diagnostic{};
-                frame.event = native.decodeEvent(scratch, raw, &diag) catch |err| {
-                    std.debug.print("production decode refused a history frame: {s}\n", .{diag.message});
-                    return err;
-                };
-            } else frame.event = try decodeStreamFrame(scratch, raw);
-        }
+        var frame = Frame{ .observed_only = std.mem.eql(u8, classification, "observed-only"), .action = action };
+        if (action == .observe) frame.event = try decodeStreamFrame(scratch, try adapter_corpus.memberSource(scratch, line, "raw"));
         try frames.append(scratch, frame);
     }
     return frames.items;
 }
 
 const Fake = struct {
-    promoted: bool,
     rejected: bool,
-    fed: bool = false,
-    preset: []const native.Event,
     prompts: std.ArrayList(native.PromptRequest) = .empty,
     admitted: usize = 0,
     interrupts: usize = 0,
@@ -146,43 +135,26 @@ const Fake = struct {
             return .{ .failed = .{ .message = try conflict.message(arena), .api = true } };
         }
         self.admitted += 1;
-        const count: i64 = @intCast(self.admitted);
-        return .{ .admitted = .{
-            .admitted_seq = count,
-            .id = request.id,
-            .session_id = session_id,
-            .prompt = request.prompt,
-            .delivery = request.delivery,
-            .time_created = 1,
-            .promoted_seq = if (self.promoted) count else null,
-        } };
+        return .{ .admitted = .{ .id = request.id, .session_id = session_id, .kind = "user", .delivery = request.delivery, .time_created = 1 } };
     }
 
-    fn interrupt(context: *anyopaque, arena: std.mem.Allocator, session_id: []const u8) std.mem.Allocator.Error!?session.Failure {
+    fn interrupt(context: *anyopaque, arena: std.mem.Allocator, session_id: []const u8) std.mem.Allocator.Error!session.InterruptOutcome {
         _ = arena;
         _ = session_id;
         from(context).interrupts += 1;
+        return .{ .interrupted = true };
+    }
+
+    fn cancelInbox(context: *anyopaque, arena: std.mem.Allocator, session_id: []const u8, inbox: []const u8) std.mem.Allocator.Error!?session.Failure {
+        _ = context;
+        _ = arena;
+        _ = session_id;
+        _ = inbox;
         return null;
     }
 
-    fn active(context: *anyopaque, arena: std.mem.Allocator, session_id: []const u8) std.mem.Allocator.Error!session.ActiveOutcome {
-        _ = arena;
-        _ = session_id;
-        return .{ .listed = !from(context).fed };
-    }
-
-    fn history(context: *anyopaque, arena: std.mem.Allocator, session_id: []const u8, after: i64, limit: usize) std.mem.Allocator.Error!session.HistoryOutcome {
-        _ = session_id;
-        _ = limit;
-        var page = std.ArrayList(native.Event).empty;
-        for (from(context).preset) |event| {
-            if (event.durable.seq > after) try page.append(arena, event);
-        }
-        return .{ .page = .{ .events = page.items } };
-    }
-
     fn client(self: *Fake) session.Native {
-        return .{ .context = self, .prompt = prompt, .interrupt = interrupt, .active = active, .history = history };
+        return .{ .context = self, .prompt = prompt, .interrupt = interrupt, .cancel_inbox = cancelInbox };
     }
 
     fn admittedMessage(self: *Fake) []const u8 {
@@ -190,6 +162,18 @@ const Fake = struct {
         return self.prompts.items[0].id;
     }
 };
+
+fn rebindInbox(scratch: std.mem.Allocator, event: native.Event, admitted: []const u8) !native.Event {
+    const kind = event.kind orelse return event;
+    switch (kind) {
+        .inbox_enqueued, .inbox_delivered, .inbox_cancelled => {},
+        else => return event,
+    }
+    var rebound = event;
+    const quoted = try std.mem.concat(scratch, u8, &.{ "\"", admitted, "\"" });
+    rebound.data = try std.mem.replaceOwned(u8, scratch, event.data, "\"inboxID\":\"msg_rebind\"", try std.mem.concat(scratch, u8, &.{ "\"inboxID\":", quoted }));
+    return rebound;
+}
 
 const Played = struct {
     reducer: session.Reducer,
@@ -200,19 +184,14 @@ const Played = struct {
 
 fn play(arena: *std.heap.ArenaAllocator, id: []const u8, definition: Definition, frames: []const Frame) !Played {
     const scratch = arena.allocator();
-    var preset = std.ArrayList(native.Event).empty;
-    for (frames) |frame| {
-        if (frame.history and frame.action == .observe) try preset.append(scratch, frame.event.?);
-    }
     const fake = try scratch.create(Fake);
-    fake.* = .{
-        .promoted = definition.admission_rejected or std.mem.indexOf(u8, id, "queued") == null,
-        .rejected = definition.admission_rejected,
-        .preset = preset.items,
-    };
+    fake.* = .{ .rejected = definition.admission_rejected };
     var reducer = session.Reducer.init(arena, .{ .native_id = native_session, .message_prefix = "msg_fake" }, fake.client());
     try reducer.open();
-    const admission = try reducer.submit("session", "hello", "auto");
+    const admission = try reducer.submit("session", "hello", definition.delivery);
+    if (std.mem.eql(u8, definition.delivery, "queue") and (!std.mem.eql(u8, admission.admission, "queued") or !std.mem.eql(u8, admission.effective_delivery, "queue"))) {
+        return error.QueueWasNotQueued;
+    }
     if (definition.admission_rejected and (!std.mem.eql(u8, admission.admission, "queued") or !std.mem.eql(u8, admission.effective_delivery, "queue") or admission.run_id.len == 0)) {
         return error.ConflictWasNotAReservation;
     }
@@ -220,17 +199,7 @@ fn play(arena: *std.heap.ArenaAllocator, id: []const u8, definition: Definition,
     for (frames, 0..) |frame, index| {
         const before = reducer.envelopes.items.len;
         switch (frame.action) {
-            .observe => {
-                if (frame.history) continue;
-                var event = frame.event.?;
-                if (event.kind == .prompted) {
-                    var diag = native.Diagnostic{};
-                    var data = try native.decodePrompted(scratch, event, &diag);
-                    data.message_id = fake.admittedMessage();
-                    event.data = try native.marshalPromptedData(scratch, data);
-                }
-                try reducer.observe(event);
-            },
+            .observe => try reducer.observe(try rebindInbox(scratch, frame.event.?, fake.admittedMessage())),
             .cancel, .cancel_idle => _ = try reducer.cancel(admission.run_id),
             .stream_failure => try reducer.transportFailed("corpus stream failure"),
         }
@@ -239,8 +208,6 @@ fn play(arena: *std.heap.ArenaAllocator, id: []const u8, definition: Definition,
             return error.ObservedOnlyFrameEmitted;
         }
     }
-    fake.fed = true;
-    try reducer.poll();
     return .{ .reducer = reducer, .admission = admission, .prompts = fake.prompts.items, .envelopes = reducer.envelopes.items };
 }
 
@@ -442,7 +409,11 @@ fn runCase(allocator: std.mem.Allocator, registry: *const jsonschema.Registry, g
     }
 
     if (played.prompts.len != 1) return error.PromptNotSentOnce;
-    try expectRequest(try goldens.request("prompt"), try httpapi.prompt(scratch, authorized(goldens), native_session, played.prompts[0]));
+    var sent = played.prompts[0];
+    const queued = std.mem.eql(u8, definition.delivery, "queue");
+    try testing.expectEqualStrings(if (queued) "queue" else "steer", sent.delivery);
+    sent.delivery = "steer";
+    try expectRequest(try goldens.request("prompt"), try httpapi.prompt(scratch, authorized(goldens), native_session, sent));
     return .{ .emitted = played.envelopes.len, .exact = exact };
 }
 
@@ -517,20 +488,19 @@ test "every request the port encodes is the request the Go adapter sends" {
     const bare = httpapi.Endpoint{ .base_path = goldens.endpoint };
     try expectRequest(try goldens.request("create-session"), try httpapi.createSession(scratch, authed, .{ .agent = "build", .model = .{ .id = "fixture", .provider_id = "fixture", .variant = "high" } }));
     try expectRequest(try goldens.request("create-session-bare"), try httpapi.createSession(scratch, bare, .{}));
-    try expectRequest(try goldens.request("prompt"), try httpapi.prompt(scratch, authed, native_session, .{ .id = "msg_fake0000000000000004", .prompt = .{ .text = "hello" }, .delivery = "steer" }));
+    try expectRequest(try goldens.request("prompt"), try httpapi.prompt(scratch, authed, native_session, .{ .id = "msg_fake0000000000000004", .text = "hello", .delivery = "steer" }));
     try expectRequest(try goldens.request("prompt-escaped-queue"), try httpapi.prompt(scratch, authed, native_session, .{
         .id = "msg_fake0000000000000009",
-        .prompt = .{ .text = "a<b>&c \"q\" \\ \u{2028}\u{2029}\n\t\r\x08\x0c\x01\x1f\x7f \u{e9}" },
+        .text = "a<b>&c \"q\" \\   \n\t\r\x08\x0c\x01\x1f\x7f \u{e9}",
         .delivery = "queue",
     }));
     try expectRequest(try goldens.request("interrupt"), try httpapi.interrupt(scratch, authed, native_session));
+    try expectRequest(try goldens.request("cancel-inbox"), try httpapi.cancelInbox(scratch, authed, native_session, "msg_fake0000000000000009"));
     try expectRequest(try goldens.request("session-record"), try httpapi.getSession(scratch, authed, native_session));
-    try expectRequest(try goldens.request("history-from-start"), try httpapi.history(scratch, authed, native_session, 0, 100));
     try expectRequest(try goldens.request("active"), try httpapi.active(scratch, authed));
-    try expectRequest(try goldens.request("history"), try httpapi.history(scratch, authed, native_session, 3, 100));
-    try expectRequest(try goldens.request("subscribe"), try httpapi.subscribe(scratch, authed, native_session, -1));
-    try expectRequest(try goldens.request("subscribe-after"), try httpapi.subscribe(scratch, authed, native_session, 5));
-    try testing.expectEqual(@as(usize, 11), goldens.requests.items.len);
+    try expectRequest(try goldens.request("info"), try httpapi.serverInfo(scratch, authed));
+    try expectRequest(try goldens.request("subscribe"), try httpapi.subscribe(scratch, authed));
+    try testing.expectEqual(@as(usize, 10), goldens.requests.items.len);
 }
 
 test "the port advertises the descriptor and revision the Go adapter advertises" {
@@ -545,12 +515,9 @@ test "the port advertises the descriptor and revision the Go adapter advertises"
 pub const scenarios_relative = "go/adapter/opencode/testdata/port-scenarios.json";
 
 const ScenarioClient = struct {
-    gated: bool,
-    active_error: []const u8,
-    history_error: []const u8,
     foreign_admission: bool,
-    fed: bool = false,
-    admitted: usize = 0,
+    cancelled: std.ArrayList([]const u8) = .empty,
+    cancel_seq: i64 = 1000,
 
     fn from(context: *anyopaque) *ScenarioClient {
         return @ptrCast(@alignCast(context));
@@ -559,41 +526,36 @@ const ScenarioClient = struct {
     fn prompt(context: *anyopaque, arena: std.mem.Allocator, session_id: []const u8, request: native.PromptRequest) std.mem.Allocator.Error!session.PromptOutcome {
         _ = arena;
         const self = from(context);
-        if (self.foreign_admission) {
-            return .{ .admitted = .{ .admitted_seq = 1, .id = "msg_foreign", .session_id = session_id, .prompt = request.prompt, .delivery = request.delivery, .time_created = 1 } };
-        }
-        self.admitted += 1;
-        const count: i64 = @intCast(self.admitted);
-        return .{ .admitted = .{ .admitted_seq = count, .id = request.id, .session_id = session_id, .prompt = request.prompt, .delivery = request.delivery, .time_created = 1, .promoted_seq = count } };
+        const delivery = if (request.delivery.len > 0) request.delivery else "steer";
+        if (self.foreign_admission) return .{ .admitted = .{ .id = "msg_foreign", .session_id = session_id, .kind = "user", .delivery = delivery, .time_created = 1 } };
+        return .{ .admitted = .{ .id = request.id, .session_id = session_id, .kind = "user", .delivery = delivery, .time_created = 1 } };
     }
 
-    fn interrupt(context: *anyopaque, arena: std.mem.Allocator, session_id: []const u8) std.mem.Allocator.Error!?session.Failure {
+    fn interrupt(context: *anyopaque, arena: std.mem.Allocator, session_id: []const u8) std.mem.Allocator.Error!session.InterruptOutcome {
         _ = context;
         _ = arena;
         _ = session_id;
+        return .{ .interrupted = true };
+    }
+
+    fn cancelInbox(context: *anyopaque, arena: std.mem.Allocator, session_id: []const u8, inbox: []const u8) std.mem.Allocator.Error!?session.Failure {
+        _ = session_id;
+        try from(context).cancelled.append(arena, inbox);
         return null;
     }
 
-    fn active(context: *anyopaque, arena: std.mem.Allocator, session_id: []const u8) std.mem.Allocator.Error!session.ActiveOutcome {
-        _ = arena;
-        _ = session_id;
-        const self = from(context);
-        if (self.active_error.len > 0) return .{ .failed = .{ .message = self.active_error } };
-        return .{ .listed = self.gated and !self.fed };
-    }
-
-    fn history(context: *anyopaque, arena: std.mem.Allocator, session_id: []const u8, after: i64, limit: usize) std.mem.Allocator.Error!session.HistoryOutcome {
-        _ = arena;
-        _ = session_id;
-        _ = after;
-        _ = limit;
-        const self = from(context);
-        if (self.history_error.len > 0) return .{ .failed = .{ .message = self.history_error } };
-        return .{ .page = .{} };
-    }
-
     fn client(self: *ScenarioClient) session.Native {
-        return .{ .context = self, .prompt = prompt, .interrupt = interrupt, .active = active, .history = history };
+        return .{ .context = self, .prompt = prompt, .interrupt = interrupt, .cancel_inbox = cancelInbox };
+    }
+
+    fn echoCancels(self: *ScenarioClient, scratch: std.mem.Allocator, reducer: *session.Reducer) !void {
+        for (self.cancelled.items) |inbox| {
+            self.cancel_seq += 1;
+            const wire = try std.fmt.allocPrint(scratch, "{{\"id\":\"evt_fake{d}\",\"type\":\"session.inbox.cancelled\",\"durable\":{{\"aggregateID\":\"" ++ native_session ++ "\",\"seq\":{d},\"version\":1}},\"data\":{{\"sessionID\":\"" ++ native_session ++ "\",\"inboxID\":\"{s}\"}}}}", .{ self.cancel_seq, self.cancel_seq, inbox });
+            var diag = native.Diagnostic{};
+            try reducer.observe(try native.decodeEvent(scratch, wire, &diag));
+        }
+        self.cancelled.clearRetainingCapacity();
     }
 };
 
@@ -606,12 +568,7 @@ fn replayScenario(arena: *std.heap.ArenaAllocator, scenario: std.json.ObjectMap)
     const name = scenario.get("name").?.string;
     const knobs = scenario.get("client").?.object;
     const fake = try scratch.create(ScenarioClient);
-    fake.* = .{
-        .gated = memberOr(knobs, "gated") == .bool,
-        .active_error = adapter_corpus.stringMember(knobs, "active_error") orelse "",
-        .history_error = adapter_corpus.stringMember(knobs, "history_error") orelse "",
-        .foreign_admission = memberOr(knobs, "foreign_admission") == .bool,
-    };
+    fake.* = .{ .foreign_admission = memberOr(knobs, "foreign_admission") == .bool };
     var reducer = session.Reducer.init(arena, .{ .native_id = native_session, .message_prefix = "msg_fake" }, fake.client());
     try reducer.open();
     var admissions = std.ArrayList(session.Admission).empty;
@@ -626,9 +583,7 @@ fn replayScenario(arena: *std.heap.ArenaAllocator, scenario: std.json.ObjectMap)
         } else if (std.mem.eql(u8, kind, "cancel")) {
             const which: usize = if (op.get("submission")) |index| try std.fmt.parseInt(usize, index.number_string, 10) else 0;
             _ = try reducer.cancel(admissions.items[which].run_id);
-        } else if (std.mem.eql(u8, kind, "idle")) {
-            fake.fed = true;
-            try reducer.poll();
+            try fake.echoCancels(scratch, &reducer);
         } else if (std.mem.eql(u8, kind, "fail")) {
             try reducer.transportFailed(op.get("message").?.string);
         } else if (!std.mem.eql(u8, kind, "await")) return error.UnroutedScenarioOp;
@@ -698,7 +653,7 @@ test "replaying a case propagates every allocation failure and leaks nothing" {
     const scratch = arena.allocator();
     const root = try adapter_corpus.corpusRoot(scratch, corpus_relative);
     var loaded = std.ArrayList(Loaded).empty;
-    for ([_][]const u8{ "tool-lifecycle", "history-fence", "cancel-active", "message-conflict" }) |id| {
+    for ([_][]const u8{ "tool-lifecycle", "queued-admission", "cancel-active", "message-conflict" }) |id| {
         const dir = try std.fs.path.join(scratch, &.{ root, id });
         try loaded.append(scratch, .{
             .id = id,

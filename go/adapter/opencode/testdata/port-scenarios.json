@@ -1,9 +1,7 @@
 [
   {
     "name": "holding",
-    "client": {
-      "gated": true
-    },
+    "client": {},
     "script": [
       {
         "op": "submit",
@@ -14,20 +12,15 @@
         "op": "event",
         "raw": {
           "id": "evt_s0001",
-          "type": "session.next.prompted",
+          "type": "session.inbox.delivered",
+          "data": {
+            "sessionID": "ses_fake00000000000000",
+            "inboxID": "msg_fake0000000000000004"
+          },
           "durable": {
             "aggregateID": "ses_fake00000000000000",
-            "seq": 1,
+            "seq": 10,
             "version": 1
-          },
-          "data": {
-            "timestamp": 1,
-            "sessionID": "ses_fake00000000000000",
-            "messageID": "msg_fake0000000000000004",
-            "prompt": {
-              "text": "hello"
-            },
-            "delivery": "steer"
           }
         }
       },
@@ -35,21 +28,21 @@
         "op": "event",
         "raw": {
           "id": "evt_s0002",
-          "type": "session.next.step.started",
-          "durable": {
-            "aggregateID": "ses_fake00000000000000",
-            "seq": 2,
-            "version": 1
-          },
+          "type": "session.step.started",
           "data": {
-            "timestamp": 2,
             "sessionID": "ses_fake00000000000000",
             "assistantMessageID": "msg_a1",
             "agent": "build",
             "model": {
               "id": "fixture",
               "providerID": "fixture"
-            }
+            },
+            "started": 2
+          },
+          "durable": {
+            "aggregateID": "ses_fake00000000000000",
+            "seq": 20,
+            "version": 1
           }
         }
       },
@@ -57,18 +50,17 @@
         "op": "event",
         "raw": {
           "id": "evt_s0003",
-          "type": "session.next.text.ended",
-          "durable": {
-            "aggregateID": "ses_fake00000000000000",
-            "seq": 3,
-            "version": 1
-          },
+          "type": "session.text.ended",
           "data": {
-            "timestamp": 3,
             "sessionID": "ses_fake00000000000000",
             "assistantMessageID": "msg_a1",
-            "textID": "t3",
+            "ordinal": 0,
             "text": "first"
+          },
+          "durable": {
+            "aggregateID": "ses_fake00000000000000",
+            "seq": 30,
+            "version": 1
           }
         }
       },
@@ -76,14 +68,8 @@
         "op": "event",
         "raw": {
           "id": "evt_s0004",
-          "type": "session.next.step.ended",
-          "durable": {
-            "aggregateID": "ses_fake00000000000000",
-            "seq": 4,
-            "version": 1
-          },
+          "type": "session.step.ended",
           "data": {
-            "timestamp": 4,
             "sessionID": "ses_fake00000000000000",
             "assistantMessageID": "msg_a1",
             "finish": "stop",
@@ -97,6 +83,11 @@
                 "write": 0
               }
             }
+          },
+          "durable": {
+            "aggregateID": "ses_fake00000000000000",
+            "seq": 40,
+            "version": 1
           }
         }
       },
@@ -113,20 +104,15 @@
         "op": "event",
         "raw": {
           "id": "evt_s0005",
-          "type": "session.next.prompted",
+          "type": "session.inbox.delivered",
+          "data": {
+            "sessionID": "ses_fake00000000000000",
+            "inboxID": "msg_fake0000000000000010"
+          },
           "durable": {
             "aggregateID": "ses_fake00000000000000",
-            "seq": 5,
+            "seq": 50,
             "version": 1
-          },
-          "data": {
-            "timestamp": 5,
-            "sessionID": "ses_fake00000000000000",
-            "messageID": "msg_fake0000000000000010",
-            "prompt": {
-              "text": "later"
-            },
-            "delivery": "queue"
           }
         }
       },
@@ -134,21 +120,21 @@
         "op": "event",
         "raw": {
           "id": "evt_s0006",
-          "type": "session.next.step.started",
-          "durable": {
-            "aggregateID": "ses_fake00000000000000",
-            "seq": 6,
-            "version": 1
-          },
+          "type": "session.step.started",
           "data": {
-            "timestamp": 6,
             "sessionID": "ses_fake00000000000000",
             "assistantMessageID": "msg_a2",
             "agent": "build",
             "model": {
               "id": "fixture",
               "providerID": "fixture"
-            }
+            },
+            "started": 6
+          },
+          "durable": {
+            "aggregateID": "ses_fake00000000000000",
+            "seq": 60,
+            "version": 1
           }
         }
       },
@@ -156,40 +142,26 @@
         "op": "event",
         "raw": {
           "id": "evt_s0007",
-          "type": "session.next.text.ended",
-          "durable": {
-            "aggregateID": "ses_fake00000000000000",
-            "seq": 7,
-            "version": 1
-          },
+          "type": "session.text.ended",
           "data": {
-            "timestamp": 7,
             "sessionID": "ses_fake00000000000000",
             "assistantMessageID": "msg_a2",
-            "textID": "t7",
+            "ordinal": 0,
             "text": "second"
+          },
+          "durable": {
+            "aggregateID": "ses_fake00000000000000",
+            "seq": 70,
+            "version": 1
           }
         }
       },
       {
-        "op": "idle"
-      },
-      {
-        "op": "await",
-        "count": 1
-      },
-      {
         "op": "event",
         "raw": {
-          "id": "evt_s0008",
-          "type": "session.next.step.ended",
-          "durable": {
-            "aggregateID": "ses_fake00000000000000",
-            "seq": 8,
-            "version": 1
-          },
+          "id": "evt_s0009",
+          "type": "session.step.ended",
           "data": {
-            "timestamp": 8,
             "sessionID": "ses_fake00000000000000",
             "assistantMessageID": "msg_a2",
             "finish": "stop",
@@ -203,8 +175,32 @@
                 "write": 0
               }
             }
+          },
+          "durable": {
+            "aggregateID": "ses_fake00000000000000",
+            "seq": 90,
+            "version": 1
           }
         }
+      },
+      {
+        "op": "event",
+        "raw": {
+          "id": "evt_x9010",
+          "type": "session.execution.succeeded",
+          "data": {
+            "sessionID": "ses_fake00000000000000"
+          },
+          "durable": {
+            "aggregateID": "ses_fake00000000000000",
+            "seq": 9010,
+            "version": 1
+          }
+        }
+      },
+      {
+        "op": "await",
+        "count": 1
       }
     ],
     "admissions": [
@@ -254,7 +250,7 @@
           "timestamp_ms": 4,
           "session_id": "session",
           "run_id": "run-1",
-          "capability_revision": "opencode-v1.18.34-oap-v5"
+          "capability_revision": "opencode-v2.0.24-oap-v1"
         },
         {
           "protocol": "open-agent-protocol",
@@ -275,14 +271,14 @@
           "timestamp_ms": 5,
           "session_id": "session",
           "run_id": "run-1",
-          "capability_revision": "opencode-v1.18.34-oap-v5"
+          "capability_revision": "opencode-v2.0.24-oap-v1"
         },
         {
           "protocol": "open-agent-protocol",
           "version": "0.1",
           "profile": "open-agent-protocol.agent-control-core",
           "type": "run.completed",
-          "id": "event-13",
+          "id": "event-11",
           "payload": {
             "session_id": "session",
             "run_id": "run-1",
@@ -300,10 +296,10 @@
             "usage": {}
           },
           "sequence": 3,
-          "timestamp_ms": 10,
+          "timestamp_ms": 7,
           "session_id": "session",
           "run_id": "run-1",
-          "capability_revision": "opencode-v1.18.34-oap-v5",
+          "capability_revision": "opencode-v2.0.24-oap-v1",
           "extensions": {
             "io.github.anomalyco.opencode.cost": {
               "total_cost_usd": 0
@@ -317,25 +313,25 @@
           "version": "0.1",
           "profile": "open-agent-protocol.agent-control-core",
           "type": "run.started",
-          "id": "event-11",
+          "id": "event-12",
           "payload": {
             "session_id": "session",
             "run_id": "run-7",
             "status": "running",
-            "started_at_ms": 7
+            "started_at_ms": 8
           },
           "sequence": 1,
-          "timestamp_ms": 8,
+          "timestamp_ms": 9,
           "session_id": "session",
           "run_id": "run-7",
-          "capability_revision": "opencode-v1.18.34-oap-v5"
+          "capability_revision": "opencode-v2.0.24-oap-v1"
         },
         {
           "protocol": "open-agent-protocol",
           "version": "0.1",
           "profile": "open-agent-protocol.agent-control-core",
           "type": "content.delta",
-          "id": "event-12",
+          "id": "event-13",
           "payload": {
             "session_id": "session",
             "run_id": "run-7",
@@ -346,10 +342,10 @@
             }
           },
           "sequence": 2,
-          "timestamp_ms": 9,
+          "timestamp_ms": 10,
           "session_id": "session",
           "run_id": "run-7",
-          "capability_revision": "opencode-v1.18.34-oap-v5"
+          "capability_revision": "opencode-v2.0.24-oap-v1"
         },
         {
           "protocol": "open-agent-protocol",
@@ -377,7 +373,7 @@
           "timestamp_ms": 11,
           "session_id": "session",
           "run_id": "run-7",
-          "capability_revision": "opencode-v1.18.34-oap-v5",
+          "capability_revision": "opencode-v2.0.24-oap-v1",
           "extensions": {
             "io.github.anomalyco.opencode.cost": {
               "total_cost_usd": 0
@@ -400,20 +396,15 @@
         "op": "event",
         "raw": {
           "id": "evt_s0001",
-          "type": "session.next.prompted",
+          "type": "session.inbox.delivered",
+          "data": {
+            "sessionID": "ses_fake00000000000000",
+            "inboxID": "msg_fake0000000000000004"
+          },
           "durable": {
             "aggregateID": "ses_fake00000000000000",
-            "seq": 1,
+            "seq": 10,
             "version": 1
-          },
-          "data": {
-            "timestamp": 1,
-            "sessionID": "ses_fake00000000000000",
-            "messageID": "msg_fake0000000000000004",
-            "prompt": {
-              "text": "hello"
-            },
-            "delivery": "steer"
           }
         }
       },
@@ -421,21 +412,21 @@
         "op": "event",
         "raw": {
           "id": "evt_s0002",
-          "type": "session.next.step.started",
-          "durable": {
-            "aggregateID": "ses_fake00000000000000",
-            "seq": 2,
-            "version": 1
-          },
+          "type": "session.step.started",
           "data": {
-            "timestamp": 2,
             "sessionID": "ses_fake00000000000000",
             "assistantMessageID": "msg_a1",
             "agent": "build",
             "model": {
               "id": "fixture",
               "providerID": "fixture"
-            }
+            },
+            "started": 2
+          },
+          "durable": {
+            "aggregateID": "ses_fake00000000000000",
+            "seq": 20,
+            "version": 1
           }
         }
       },
@@ -443,18 +434,17 @@
         "op": "event",
         "raw": {
           "id": "evt_s0003",
-          "type": "session.next.text.ended",
-          "durable": {
-            "aggregateID": "ses_fake00000000000000",
-            "seq": 3,
-            "version": 1
-          },
+          "type": "session.text.ended",
           "data": {
-            "timestamp": 3,
             "sessionID": "ses_fake00000000000000",
             "assistantMessageID": "msg_a1",
-            "textID": "t3",
+            "ordinal": 0,
             "text": "first"
+          },
+          "durable": {
+            "aggregateID": "ses_fake00000000000000",
+            "seq": 30,
+            "version": 1
           }
         }
       },
@@ -480,20 +470,15 @@
         "op": "event",
         "raw": {
           "id": "evt_s0004",
-          "type": "session.next.prompted",
+          "type": "session.inbox.delivered",
+          "data": {
+            "sessionID": "ses_fake00000000000000",
+            "inboxID": "msg_fake0000000000000010"
+          },
           "durable": {
             "aggregateID": "ses_fake00000000000000",
-            "seq": 4,
+            "seq": 40,
             "version": 1
-          },
-          "data": {
-            "timestamp": 4,
-            "sessionID": "ses_fake00000000000000",
-            "messageID": "msg_fake0000000000000010",
-            "prompt": {
-              "text": "later"
-            },
-            "delivery": "queue"
           }
         }
       },
@@ -501,21 +486,21 @@
         "op": "event",
         "raw": {
           "id": "evt_s0005",
-          "type": "session.next.step.started",
-          "durable": {
-            "aggregateID": "ses_fake00000000000000",
-            "seq": 5,
-            "version": 1
-          },
+          "type": "session.step.started",
           "data": {
-            "timestamp": 5,
             "sessionID": "ses_fake00000000000000",
             "assistantMessageID": "msg_a2",
             "agent": "build",
             "model": {
               "id": "fixture",
               "providerID": "fixture"
-            }
+            },
+            "started": 5
+          },
+          "durable": {
+            "aggregateID": "ses_fake00000000000000",
+            "seq": 50,
+            "version": 1
           }
         }
       },
@@ -523,18 +508,17 @@
         "op": "event",
         "raw": {
           "id": "evt_s0006",
-          "type": "session.next.text.ended",
-          "durable": {
-            "aggregateID": "ses_fake00000000000000",
-            "seq": 6,
-            "version": 1
-          },
+          "type": "session.text.ended",
           "data": {
-            "timestamp": 6,
             "sessionID": "ses_fake00000000000000",
             "assistantMessageID": "msg_a2",
-            "textID": "t6",
+            "ordinal": 0,
             "text": "abandoned"
+          },
+          "durable": {
+            "aggregateID": "ses_fake00000000000000",
+            "seq": 60,
+            "version": 1
           }
         }
       },
@@ -542,14 +526,8 @@
         "op": "event",
         "raw": {
           "id": "evt_s0007",
-          "type": "session.next.step.ended",
-          "durable": {
-            "aggregateID": "ses_fake00000000000000",
-            "seq": 7,
-            "version": 1
-          },
+          "type": "session.step.ended",
           "data": {
-            "timestamp": 7,
             "sessionID": "ses_fake00000000000000",
             "assistantMessageID": "msg_a2",
             "finish": "stop",
@@ -563,6 +541,26 @@
                 "write": 0
               }
             }
+          },
+          "durable": {
+            "aggregateID": "ses_fake00000000000000",
+            "seq": 70,
+            "version": 1
+          }
+        }
+      },
+      {
+        "op": "event",
+        "raw": {
+          "id": "evt_x9080",
+          "type": "session.execution.succeeded",
+          "data": {
+            "sessionID": "ses_fake00000000000000"
+          },
+          "durable": {
+            "aggregateID": "ses_fake00000000000000",
+            "seq": 9080,
+            "version": 1
           }
         }
       },
@@ -618,7 +616,7 @@
           "timestamp_ms": 4,
           "session_id": "session",
           "run_id": "run-1",
-          "capability_revision": "opencode-v1.18.34-oap-v5"
+          "capability_revision": "opencode-v2.0.24-oap-v1"
         },
         {
           "protocol": "open-agent-protocol",
@@ -639,28 +637,35 @@
           "timestamp_ms": 5,
           "session_id": "session",
           "run_id": "run-1",
-          "capability_revision": "opencode-v1.18.34-oap-v5"
+          "capability_revision": "opencode-v2.0.24-oap-v1"
         },
         {
           "protocol": "open-agent-protocol",
           "version": "0.1",
           "profile": "open-agent-protocol.agent-control-core",
-          "type": "run.failed",
+          "type": "run.completed",
           "id": "event-12",
           "payload": {
             "session_id": "session",
             "run_id": "run-1",
-            "error": {
-              "code": "opencode_stream_failed",
-              "message": "stream gone"
+            "final_response": {
+              "id": "message-2",
+              "role": "assistant",
+              "content": [
+                {
+                  "type": "text",
+                  "text": "first"
+                }
+              ]
             },
-            "settled_by": "inferred"
+            "stop_reason": "unknown",
+            "usage": {}
           },
           "sequence": 3,
           "timestamp_ms": 8,
           "session_id": "session",
           "run_id": "run-1",
-          "capability_revision": "opencode-v1.18.34-oap-v5",
+          "capability_revision": "opencode-v2.0.24-oap-v1",
           "extensions": {
             "io.github.anomalyco.opencode.cost": {
               "total_cost_usd": 0
@@ -678,14 +683,13 @@
           "payload": {
             "session_id": "session",
             "run_id": "run-7",
-            "reason": "reservation cancelled before promotion",
-            "settled_by": "inferred"
+            "reason": "OpenCode cancelled the input before delivering it"
           },
           "sequence": 1,
           "timestamp_ms": 7,
           "session_id": "session",
           "run_id": "run-7",
-          "capability_revision": "opencode-v1.18.34-oap-v5",
+          "capability_revision": "opencode-v2.0.24-oap-v1",
           "extensions": {
             "io.github.anomalyco.opencode.cost": {
               "total_cost_usd": 0
@@ -708,20 +712,15 @@
         "op": "event",
         "raw": {
           "id": "evt_s0001",
-          "type": "session.next.prompted",
+          "type": "session.inbox.delivered",
+          "data": {
+            "sessionID": "ses_fake00000000000000",
+            "inboxID": "msg_fake0000000000000004"
+          },
           "durable": {
             "aggregateID": "ses_fake00000000000000",
-            "seq": 1,
+            "seq": 10,
             "version": 1
-          },
-          "data": {
-            "timestamp": 1,
-            "sessionID": "ses_fake00000000000000",
-            "messageID": "msg_fake0000000000000004",
-            "prompt": {
-              "text": "hello"
-            },
-            "delivery": "steer"
           }
         }
       },
@@ -729,21 +728,21 @@
         "op": "event",
         "raw": {
           "id": "evt_s0002",
-          "type": "session.next.step.started",
-          "durable": {
-            "aggregateID": "ses_fake00000000000000",
-            "seq": 2,
-            "version": 1
-          },
+          "type": "session.step.started",
           "data": {
-            "timestamp": 2,
             "sessionID": "ses_fake00000000000000",
             "assistantMessageID": "msg_a1",
             "agent": "build",
             "model": {
               "id": "fixture",
               "providerID": "fixture"
-            }
+            },
+            "started": 2
+          },
+          "durable": {
+            "aggregateID": "ses_fake00000000000000",
+            "seq": 20,
+            "version": 1
           }
         }
       },
@@ -808,7 +807,7 @@
           "timestamp_ms": 4,
           "session_id": "session",
           "run_id": "run-1",
-          "capability_revision": "opencode-v1.18.34-oap-v5"
+          "capability_revision": "opencode-v2.0.24-oap-v1"
         },
         {
           "protocol": "open-agent-protocol",
@@ -829,7 +828,7 @@
           "timestamp_ms": 6,
           "session_id": "session",
           "run_id": "run-1",
-          "capability_revision": "opencode-v1.18.34-oap-v5",
+          "capability_revision": "opencode-v2.0.24-oap-v1",
           "extensions": {
             "io.github.anomalyco.opencode.cost": {
               "total_cost_usd": 0
@@ -857,7 +856,7 @@
           "timestamp_ms": 7,
           "session_id": "session",
           "run_id": "run-6",
-          "capability_revision": "opencode-v1.18.34-oap-v5",
+          "capability_revision": "opencode-v2.0.24-oap-v1",
           "extensions": {
             "io.github.anomalyco.opencode.cost": {
               "total_cost_usd": 0
@@ -880,20 +879,15 @@
         "op": "event",
         "raw": {
           "id": "evt_s0001",
-          "type": "session.next.prompted",
+          "type": "session.inbox.delivered",
+          "data": {
+            "sessionID": "ses_fake00000000000000",
+            "inboxID": "msg_fake0000000000000004"
+          },
           "durable": {
             "aggregateID": "ses_fake00000000000000",
-            "seq": 1,
+            "seq": 10,
             "version": 1
-          },
-          "data": {
-            "timestamp": 1,
-            "sessionID": "ses_fake00000000000000",
-            "messageID": "msg_fake0000000000000004",
-            "prompt": {
-              "text": "hello"
-            },
-            "delivery": "steer"
           }
         }
       },
@@ -901,21 +895,39 @@
         "op": "event",
         "raw": {
           "id": "evt_s0002",
-          "type": "session.next.step.started",
-          "durable": {
-            "aggregateID": "ses_fake00000000000000",
-            "seq": 2,
-            "version": 1
-          },
+          "type": "session.step.started",
           "data": {
-            "timestamp": 2,
             "sessionID": "ses_fake00000000000000",
             "assistantMessageID": "msg_a1",
             "agent": "build",
             "model": {
               "id": "fixture",
               "providerID": "fixture"
-            }
+            },
+            "started": 2
+          },
+          "durable": {
+            "aggregateID": "ses_fake00000000000000",
+            "seq": 20,
+            "version": 1
+          }
+        }
+      },
+      {
+        "op": "event",
+        "raw": {
+          "id": "evt_s0003i",
+          "type": "session.tool.input.started",
+          "data": {
+            "sessionID": "ses_fake00000000000000",
+            "assistantMessageID": "msg_a1",
+            "id": "call_1",
+            "name": "bash"
+          },
+          "durable": {
+            "aggregateID": "ses_fake00000000000000",
+            "seq": 25,
+            "version": 1
           }
         }
       },
@@ -923,18 +935,11 @@
         "op": "event",
         "raw": {
           "id": "evt_s0003",
-          "type": "session.next.tool.called",
-          "durable": {
-            "aggregateID": "ses_fake00000000000000",
-            "seq": 3,
-            "version": 1
-          },
+          "type": "session.tool.called",
           "data": {
-            "timestamp": 3,
             "sessionID": "ses_fake00000000000000",
             "assistantMessageID": "msg_a1",
-            "callID": "call_1",
-            "tool": "bash",
+            "id": "call_1",
             "input": {
               "cmd": "a \u0026\u0026 b \u003c c",
               "n": 1.5,
@@ -945,9 +950,12 @@
               ],
               "a": null
             },
-            "provider": {
-              "executed": true
-            }
+            "executed": true
+          },
+          "durable": {
+            "aggregateID": "ses_fake00000000000000",
+            "seq": 30,
+            "version": 1
           }
         }
       },
@@ -955,28 +963,23 @@
         "op": "event",
         "raw": {
           "id": "evt_s0004",
-          "type": "session.next.tool.progress",
-          "durable": {
-            "aggregateID": "ses_fake00000000000000",
-            "seq": 4,
-            "version": 1
-          },
+          "type": "session.tool.progress",
           "data": {
-            "timestamp": 4,
             "sessionID": "ses_fake00000000000000",
             "assistantMessageID": "msg_a1",
-            "callID": "call_1",
-            "structured": {},
-            "content": [
-              {
-                "type": "text",
-                "text": "half",
-                "extra": 1
-              },
-              {
-                "type": "image"
-              }
-            ]
+            "id": "call_1",
+            "metadata": {
+              "content": [
+                {
+                  "type": "text",
+                  "text": "half",
+                  "extra": 1
+                },
+                {
+                  "type": "image"
+                }
+              ]
+            }
           }
         }
       },
@@ -991,14 +994,8 @@
         "op": "event",
         "raw": {
           "id": "evt_s0005",
-          "type": "session.next.step.ended",
-          "durable": {
-            "aggregateID": "ses_fake00000000000000",
-            "seq": 5,
-            "version": 1
-          },
+          "type": "session.step.ended",
           "data": {
-            "timestamp": 5,
             "sessionID": "ses_fake00000000000000",
             "assistantMessageID": "msg_a1",
             "finish": "aborted",
@@ -1012,6 +1009,27 @@
                 "write": 0
               }
             }
+          },
+          "durable": {
+            "aggregateID": "ses_fake00000000000000",
+            "seq": 50,
+            "version": 1
+          }
+        }
+      },
+      {
+        "op": "event",
+        "raw": {
+          "id": "evt_x9050",
+          "type": "session.execution.interrupted",
+          "data": {
+            "sessionID": "ses_fake00000000000000",
+            "reason": "user"
+          },
+          "durable": {
+            "aggregateID": "ses_fake00000000000000",
+            "seq": 9050,
+            "version": 1
           }
         }
       }
@@ -1049,7 +1067,7 @@
           "timestamp_ms": 4,
           "session_id": "session",
           "run_id": "run-1",
-          "capability_revision": "opencode-v1.18.34-oap-v5"
+          "capability_revision": "opencode-v2.0.24-oap-v1"
         },
         {
           "protocol": "open-agent-protocol",
@@ -1080,7 +1098,7 @@
           "session_id": "session",
           "run_id": "run-1",
           "tool_call_id": "tool-call-6",
-          "capability_revision": "opencode-v1.18.34-oap-v5"
+          "capability_revision": "opencode-v2.0.24-oap-v1"
         },
         {
           "protocol": "open-agent-protocol",
@@ -1102,7 +1120,7 @@
           "session_id": "session",
           "run_id": "run-1",
           "tool_call_id": "tool-call-6",
-          "capability_revision": "opencode-v1.18.34-oap-v5"
+          "capability_revision": "opencode-v2.0.24-oap-v1"
         },
         {
           "protocol": "open-agent-protocol",
@@ -1117,15 +1135,18 @@
             "requested_by": "opencode.server",
             "execution_owner": "opencode-server",
             "name": "bash",
-            "progress": [
-              {
-                "type": "text",
-                "text": "half"
-              },
-              {
-                "type": "image"
-              }
-            ]
+            "progress": {
+              "content": [
+                {
+                  "type": "text",
+                  "text": "half",
+                  "extra": 1
+                },
+                {
+                  "type": "image"
+                }
+              ]
+            }
           },
           "sequence": 4,
           "timestamp_ms": 7,
@@ -1133,7 +1154,7 @@
           "session_id": "session",
           "run_id": "run-1",
           "tool_call_id": "tool-call-6",
-          "capability_revision": "opencode-v1.18.34-oap-v5"
+          "capability_revision": "opencode-v2.0.24-oap-v1"
         },
         {
           "protocol": "open-agent-protocol",
@@ -1151,7 +1172,7 @@
           "timestamp_ms": 9,
           "session_id": "session",
           "run_id": "run-1",
-          "capability_revision": "opencode-v1.18.34-oap-v5"
+          "capability_revision": "opencode-v2.0.24-oap-v1"
         },
         {
           "protocol": "open-agent-protocol",
@@ -1166,15 +1187,18 @@
             "requested_by": "opencode.server",
             "execution_owner": "opencode-server",
             "name": "bash",
-            "progress": [
-              {
-                "type": "text",
-                "text": "half"
-              },
-              {
-                "type": "image"
-              }
-            ]
+            "progress": {
+              "content": [
+                {
+                  "type": "text",
+                  "text": "half",
+                  "extra": 1
+                },
+                {
+                  "type": "image"
+                }
+              ]
+            }
           },
           "sequence": 6,
           "timestamp_ms": 10,
@@ -1182,7 +1206,7 @@
           "session_id": "session",
           "run_id": "run-1",
           "tool_call_id": "tool-call-6",
-          "capability_revision": "opencode-v1.18.34-oap-v5"
+          "capability_revision": "opencode-v2.0.24-oap-v1"
         },
         {
           "protocol": "open-agent-protocol",
@@ -1193,13 +1217,13 @@
           "payload": {
             "session_id": "session",
             "run_id": "run-1",
-            "reason": "OpenCode interrupt confirmed idle"
+            "reason": "OpenCode interrupted the execution"
           },
           "sequence": 7,
           "timestamp_ms": 11,
           "session_id": "session",
           "run_id": "run-1",
-          "capability_revision": "opencode-v1.18.34-oap-v5",
+          "capability_revision": "opencode-v2.0.24-oap-v1",
           "extensions": {
             "io.github.anomalyco.opencode.cost": {
               "total_cost_usd": 0.1
@@ -1211,9 +1235,7 @@
   },
   {
     "name": "failed-tool",
-    "client": {
-      "gated": true
-    },
+    "client": {},
     "script": [
       {
         "op": "submit",
@@ -1224,20 +1246,15 @@
         "op": "event",
         "raw": {
           "id": "evt_s0001",
-          "type": "session.next.prompted",
+          "type": "session.inbox.delivered",
+          "data": {
+            "sessionID": "ses_fake00000000000000",
+            "inboxID": "msg_fake0000000000000004"
+          },
           "durable": {
             "aggregateID": "ses_fake00000000000000",
-            "seq": 1,
+            "seq": 10,
             "version": 1
-          },
-          "data": {
-            "timestamp": 1,
-            "sessionID": "ses_fake00000000000000",
-            "messageID": "msg_fake0000000000000004",
-            "prompt": {
-              "text": "hello"
-            },
-            "delivery": "steer"
           }
         }
       },
@@ -1245,21 +1262,21 @@
         "op": "event",
         "raw": {
           "id": "evt_s0002",
-          "type": "session.next.step.started",
-          "durable": {
-            "aggregateID": "ses_fake00000000000000",
-            "seq": 2,
-            "version": 1
-          },
+          "type": "session.step.started",
           "data": {
-            "timestamp": 2,
             "sessionID": "ses_fake00000000000000",
             "assistantMessageID": "msg_a1",
             "agent": "build",
             "model": {
               "id": "fixture",
               "providerID": "fixture"
-            }
+            },
+            "started": 2
+          },
+          "durable": {
+            "aggregateID": "ses_fake00000000000000",
+            "seq": 20,
+            "version": 1
           }
         }
       },
@@ -1267,14 +1284,8 @@
         "op": "event",
         "raw": {
           "id": "evt_s0003",
-          "type": "session.next.step.ended",
-          "durable": {
-            "aggregateID": "ses_fake00000000000000",
-            "seq": 3,
-            "version": 1
-          },
+          "type": "session.step.ended",
           "data": {
-            "timestamp": 3,
             "sessionID": "ses_fake00000000000000",
             "assistantMessageID": "msg_a1",
             "finish": "tool_use",
@@ -1288,6 +1299,11 @@
                 "write": 0
               }
             }
+          },
+          "durable": {
+            "aggregateID": "ses_fake00000000000000",
+            "seq": 30,
+            "version": 1
           }
         }
       },
@@ -1295,21 +1311,39 @@
         "op": "event",
         "raw": {
           "id": "evt_s0004",
-          "type": "session.next.step.started",
-          "durable": {
-            "aggregateID": "ses_fake00000000000000",
-            "seq": 4,
-            "version": 1
-          },
+          "type": "session.step.started",
           "data": {
-            "timestamp": 4,
             "sessionID": "ses_fake00000000000000",
             "assistantMessageID": "msg_a2",
             "agent": "build",
             "model": {
               "id": "fixture",
               "providerID": "fixture"
-            }
+            },
+            "started": 4
+          },
+          "durable": {
+            "aggregateID": "ses_fake00000000000000",
+            "seq": 40,
+            "version": 1
+          }
+        }
+      },
+      {
+        "op": "event",
+        "raw": {
+          "id": "evt_s0005i",
+          "type": "session.tool.input.started",
+          "data": {
+            "sessionID": "ses_fake00000000000000",
+            "assistantMessageID": "msg_a2",
+            "id": "call_9",
+            "name": "read"
+          },
+          "durable": {
+            "aggregateID": "ses_fake00000000000000",
+            "seq": 45,
+            "version": 1
           }
         }
       },
@@ -1317,18 +1351,18 @@
         "op": "event",
         "raw": {
           "id": "evt_s0005",
-          "type": "session.next.tool.called",
-          "durable": {
-            "aggregateID": "ses_fake00000000000000",
-            "seq": 5,
-            "version": 1
-          },
+          "type": "session.tool.called",
           "data": {
-            "timestamp": 5,
             "sessionID": "ses_fake00000000000000",
             "assistantMessageID": "msg_a2",
-            "callID": "call_9",
-            "tool": "read"
+            "id": "call_9",
+            "input": {},
+            "executed": true
+          },
+          "durable": {
+            "aggregateID": "ses_fake00000000000000",
+            "seq": 50,
+            "version": 1
           }
         }
       },
@@ -1336,25 +1370,36 @@
         "op": "event",
         "raw": {
           "id": "evt_s0006",
-          "type": "session.next.step.failed",
-          "durable": {
-            "aggregateID": "ses_fake00000000000000",
-            "seq": 6,
-            "version": 1
-          },
+          "type": "session.step.failed",
           "data": {
-            "timestamp": 6,
             "sessionID": "ses_fake00000000000000",
             "assistantMessageID": "msg_a2",
             "error": {
               "type": "ProviderError",
               "message": "upstream refused"
             }
+          },
+          "durable": {
+            "aggregateID": "ses_fake00000000000000",
+            "seq": 60,
+            "version": 1
           }
         }
       },
       {
-        "op": "idle"
+        "op": "event",
+        "raw": {
+          "id": "evt_x9020",
+          "type": "session.execution.succeeded",
+          "data": {
+            "sessionID": "ses_fake00000000000000"
+          },
+          "durable": {
+            "aggregateID": "ses_fake00000000000000",
+            "seq": 9020,
+            "version": 1
+          }
+        }
       }
     ],
     "admissions": [
@@ -1390,7 +1435,7 @@
           "timestamp_ms": 4,
           "session_id": "session",
           "run_id": "run-1",
-          "capability_revision": "opencode-v1.18.34-oap-v5"
+          "capability_revision": "opencode-v2.0.24-oap-v1"
         },
         {
           "protocol": "open-agent-protocol",
@@ -1405,14 +1450,14 @@
             "requested_by": "opencode.server",
             "execution_owner": "opencode-server",
             "name": "read",
-            "arguments_json": null
+            "arguments_json": {}
           },
           "sequence": 2,
           "timestamp_ms": 5,
           "session_id": "session",
           "run_id": "run-1",
           "tool_call_id": "tool-call-6",
-          "capability_revision": "opencode-v1.18.34-oap-v5"
+          "capability_revision": "opencode-v2.0.24-oap-v1"
         },
         {
           "protocol": "open-agent-protocol",
@@ -1434,7 +1479,7 @@
           "session_id": "session",
           "run_id": "run-1",
           "tool_call_id": "tool-call-6",
-          "capability_revision": "opencode-v1.18.34-oap-v5"
+          "capability_revision": "opencode-v2.0.24-oap-v1"
         },
         {
           "protocol": "open-agent-protocol",
@@ -1460,7 +1505,7 @@
           "session_id": "session",
           "run_id": "run-1",
           "tool_call_id": "tool-call-6",
-          "capability_revision": "opencode-v1.18.34-oap-v5"
+          "capability_revision": "opencode-v2.0.24-oap-v1"
         },
         {
           "protocol": "open-agent-protocol",
@@ -1480,7 +1525,7 @@
           "timestamp_ms": 8,
           "session_id": "session",
           "run_id": "run-1",
-          "capability_revision": "opencode-v1.18.34-oap-v5",
+          "capability_revision": "opencode-v2.0.24-oap-v1",
           "extensions": {
             "io.github.anomalyco.opencode.cost": {
               "total_cost_usd": 0.25
@@ -1503,20 +1548,15 @@
         "op": "event",
         "raw": {
           "id": "evt_s0001",
-          "type": "session.next.prompted",
+          "type": "session.inbox.delivered",
+          "data": {
+            "sessionID": "ses_fake00000000000000",
+            "inboxID": "msg_fake0000000000000004"
+          },
           "durable": {
             "aggregateID": "ses_fake00000000000000",
-            "seq": 1,
+            "seq": 10,
             "version": 1
-          },
-          "data": {
-            "timestamp": 1,
-            "sessionID": "ses_fake00000000000000",
-            "messageID": "msg_fake0000000000000004",
-            "prompt": {
-              "text": "hello"
-            },
-            "delivery": "steer"
           }
         }
       },
@@ -1524,21 +1564,39 @@
         "op": "event",
         "raw": {
           "id": "evt_s0002",
-          "type": "session.next.step.started",
-          "durable": {
-            "aggregateID": "ses_fake00000000000000",
-            "seq": 2,
-            "version": 1
-          },
+          "type": "session.step.started",
           "data": {
-            "timestamp": 2,
             "sessionID": "ses_fake00000000000000",
             "assistantMessageID": "msg_a1",
             "agent": "build",
             "model": {
               "id": "fixture",
               "providerID": "fixture"
-            }
+            },
+            "started": 2
+          },
+          "durable": {
+            "aggregateID": "ses_fake00000000000000",
+            "seq": 20,
+            "version": 1
+          }
+        }
+      },
+      {
+        "op": "event",
+        "raw": {
+          "id": "evt_s0003i",
+          "type": "session.tool.input.started",
+          "data": {
+            "sessionID": "ses_fake00000000000000",
+            "assistantMessageID": "msg_a1",
+            "id": "call_1",
+            "name": "read"
+          },
+          "durable": {
+            "aggregateID": "ses_fake00000000000000",
+            "seq": 25,
+            "version": 1
           }
         }
       },
@@ -1546,22 +1604,18 @@
         "op": "event",
         "raw": {
           "id": "evt_s0003",
-          "type": "session.next.tool.called",
-          "durable": {
-            "aggregateID": "ses_fake00000000000000",
-            "seq": 3,
-            "version": 1
-          },
+          "type": "session.tool.called",
           "data": {
-            "timestamp": 3,
             "sessionID": "ses_fake00000000000000",
             "assistantMessageID": "msg_a1",
-            "callID": "call_1",
-            "tool": "read",
+            "id": "call_1",
             "input": {},
-            "provider": {
-              "executed": true
-            }
+            "executed": true
+          },
+          "durable": {
+            "aggregateID": "ses_fake00000000000000",
+            "seq": 30,
+            "version": 1
           }
         }
       },
@@ -1569,27 +1623,23 @@
         "op": "event",
         "raw": {
           "id": "evt_s0004",
-          "type": "session.next.tool.success",
-          "durable": {
-            "aggregateID": "ses_fake00000000000000",
-            "seq": 4,
-            "version": 1
-          },
+          "type": "session.tool.success",
           "data": {
-            "timestamp": 4,
             "sessionID": "ses_fake00000000000000",
             "assistantMessageID": "msg_a1",
-            "callID": "call_1",
-            "structured": {},
+            "id": "call_1",
             "content": [
               {
                 "type": "text",
                 "text": "\u003cok\u003e"
               }
             ],
-            "provider": {
-              "executed": true
-            }
+            "executed": true
+          },
+          "durable": {
+            "aggregateID": "ses_fake00000000000000",
+            "seq": 40,
+            "version": 1
           }
         }
       },
@@ -1597,24 +1647,36 @@
         "op": "event",
         "raw": {
           "id": "evt_s0005",
-          "type": "session.next.tool.failed",
-          "durable": {
-            "aggregateID": "ses_fake00000000000000",
-            "seq": 5,
-            "version": 1
-          },
+          "type": "session.tool.failed",
           "data": {
-            "timestamp": 5,
             "sessionID": "ses_fake00000000000000",
             "assistantMessageID": "msg_a1",
-            "callID": "call_1",
+            "id": "call_1",
             "error": {
               "type": "unknown",
               "message": "late"
             },
-            "provider": {
-              "executed": true
-            }
+            "executed": true
+          },
+          "durable": {
+            "aggregateID": "ses_fake00000000000000",
+            "seq": 50,
+            "version": 1
+          }
+        }
+      },
+      {
+        "op": "event",
+        "raw": {
+          "id": "evt_x9070",
+          "type": "session.execution.succeeded",
+          "data": {
+            "sessionID": "ses_fake00000000000000"
+          },
+          "durable": {
+            "aggregateID": "ses_fake00000000000000",
+            "seq": 9070,
+            "version": 1
           }
         }
       }
@@ -1652,7 +1714,7 @@
           "timestamp_ms": 4,
           "session_id": "session",
           "run_id": "run-1",
-          "capability_revision": "opencode-v1.18.34-oap-v5"
+          "capability_revision": "opencode-v2.0.24-oap-v1"
         },
         {
           "protocol": "open-agent-protocol",
@@ -1674,7 +1736,7 @@
           "session_id": "session",
           "run_id": "run-1",
           "tool_call_id": "tool-call-6",
-          "capability_revision": "opencode-v1.18.34-oap-v5"
+          "capability_revision": "opencode-v2.0.24-oap-v1"
         },
         {
           "protocol": "open-agent-protocol",
@@ -1696,7 +1758,7 @@
           "session_id": "session",
           "run_id": "run-1",
           "tool_call_id": "tool-call-6",
-          "capability_revision": "opencode-v1.18.34-oap-v5"
+          "capability_revision": "opencode-v2.0.24-oap-v1"
         },
         {
           "protocol": "open-agent-protocol",
@@ -1724,7 +1786,7 @@
           "session_id": "session",
           "run_id": "run-1",
           "tool_call_id": "tool-call-6",
-          "capability_revision": "opencode-v1.18.34-oap-v5"
+          "capability_revision": "opencode-v2.0.24-oap-v1"
         },
         {
           "protocol": "open-agent-protocol",
@@ -1744,7 +1806,7 @@
           "timestamp_ms": 8,
           "session_id": "session",
           "run_id": "run-1",
-          "capability_revision": "opencode-v1.18.34-oap-v5",
+          "capability_revision": "opencode-v2.0.24-oap-v1",
           "extensions": {
             "io.github.anomalyco.opencode.cost": {
               "total_cost_usd": 0
@@ -1767,20 +1829,15 @@
         "op": "event",
         "raw": {
           "id": "evt_s0001",
-          "type": "session.next.prompted",
+          "type": "session.inbox.delivered",
+          "data": {
+            "sessionID": "ses_fake00000000000000",
+            "inboxID": "msg_fake0000000000000004"
+          },
           "durable": {
             "aggregateID": "ses_fake00000000000000",
-            "seq": 1,
+            "seq": 10,
             "version": 1
-          },
-          "data": {
-            "timestamp": 1,
-            "sessionID": "ses_fake00000000000000",
-            "messageID": "msg_fake0000000000000004",
-            "prompt": {
-              "text": "hello"
-            },
-            "delivery": "steer"
           }
         }
       },
@@ -1788,21 +1845,21 @@
         "op": "event",
         "raw": {
           "id": "evt_s0002",
-          "type": "session.next.step.started",
-          "durable": {
-            "aggregateID": "ses_fake00000000000000",
-            "seq": 2,
-            "version": 1
-          },
+          "type": "session.step.started",
           "data": {
-            "timestamp": 2,
             "sessionID": "ses_fake00000000000000",
             "assistantMessageID": "msg_a1",
             "agent": "build",
             "model": {
               "id": "fixture",
               "providerID": "fixture"
-            }
+            },
+            "started": 2
+          },
+          "durable": {
+            "aggregateID": "ses_fake00000000000000",
+            "seq": 20,
+            "version": 1
           }
         }
       },
@@ -1810,19 +1867,14 @@
         "op": "event",
         "raw": {
           "id": "evt_s0003",
-          "type": "session.next.tool.progress",
-          "durable": {
-            "aggregateID": "ses_fake00000000000000",
-            "seq": 3,
-            "version": 1
-          },
+          "type": "session.tool.progress",
           "data": {
-            "timestamp": 3,
             "sessionID": "ses_fake00000000000000",
             "assistantMessageID": "msg_a1",
-            "callID": "call_x",
-            "structured": {},
-            "content": null
+            "id": "call_x",
+            "metadata": {
+              "content": null
+            }
           }
         }
       }
@@ -1860,7 +1912,7 @@
           "timestamp_ms": 4,
           "session_id": "session",
           "run_id": "run-1",
-          "capability_revision": "opencode-v1.18.34-oap-v5"
+          "capability_revision": "opencode-v2.0.24-oap-v1"
         },
         {
           "protocol": "open-agent-protocol",
@@ -1880,301 +1932,7 @@
           "timestamp_ms": 5,
           "session_id": "session",
           "run_id": "run-1",
-          "capability_revision": "opencode-v1.18.34-oap-v5",
-          "extensions": {
-            "io.github.anomalyco.opencode.cost": {
-              "total_cost_usd": 0
-            }
-          }
-        }
-      ]
-    ]
-  },
-  {
-    "name": "quiescence-failure",
-    "client": {
-      "active_error": "active down"
-    },
-    "script": [
-      {
-        "op": "submit",
-        "delivery": "auto",
-        "text": "hello"
-      },
-      {
-        "op": "event",
-        "raw": {
-          "id": "evt_s0001",
-          "type": "session.next.prompted",
-          "durable": {
-            "aggregateID": "ses_fake00000000000000",
-            "seq": 1,
-            "version": 1
-          },
-          "data": {
-            "timestamp": 1,
-            "sessionID": "ses_fake00000000000000",
-            "messageID": "msg_fake0000000000000004",
-            "prompt": {
-              "text": "hello"
-            },
-            "delivery": "steer"
-          }
-        }
-      },
-      {
-        "op": "event",
-        "raw": {
-          "id": "evt_s0002",
-          "type": "session.next.step.started",
-          "durable": {
-            "aggregateID": "ses_fake00000000000000",
-            "seq": 2,
-            "version": 1
-          },
-          "data": {
-            "timestamp": 2,
-            "sessionID": "ses_fake00000000000000",
-            "assistantMessageID": "msg_a1",
-            "agent": "build",
-            "model": {
-              "id": "fixture",
-              "providerID": "fixture"
-            }
-          }
-        }
-      },
-      {
-        "op": "event",
-        "raw": {
-          "id": "evt_s0003",
-          "type": "session.next.step.ended",
-          "durable": {
-            "aggregateID": "ses_fake00000000000000",
-            "seq": 3,
-            "version": 1
-          },
-          "data": {
-            "timestamp": 3,
-            "sessionID": "ses_fake00000000000000",
-            "assistantMessageID": "msg_a1",
-            "finish": "stop",
-            "cost": 0,
-            "tokens": {
-              "input": 0,
-              "output": 0,
-              "reasoning": 0,
-              "cache": {
-                "read": 0,
-                "write": 0
-              }
-            }
-          }
-        }
-      }
-    ],
-    "admissions": [
-      {
-        "session_id": "session",
-        "accepted": true,
-        "submission_id": "submission-3",
-        "requested_delivery": "auto",
-        "effective_delivery": "start",
-        "admission": "started",
-        "run_id": "run-1",
-        "status": "running",
-        "message_ids": [
-          "msg_fake0000000000000004"
-        ]
-      }
-    ],
-    "runs": [
-      [
-        {
-          "protocol": "open-agent-protocol",
-          "version": "0.1",
-          "profile": "open-agent-protocol.agent-control-core",
-          "type": "run.started",
-          "id": "event-5",
-          "payload": {
-            "session_id": "session",
-            "run_id": "run-1",
-            "status": "running",
-            "started_at_ms": 3
-          },
-          "sequence": 1,
-          "timestamp_ms": 4,
-          "session_id": "session",
-          "run_id": "run-1",
-          "capability_revision": "opencode-v1.18.34-oap-v5"
-        },
-        {
-          "protocol": "open-agent-protocol",
-          "version": "0.1",
-          "profile": "open-agent-protocol.agent-control-core",
-          "type": "run.failed",
-          "id": "event-6",
-          "payload": {
-            "session_id": "session",
-            "run_id": "run-1",
-            "error": {
-              "code": "opencode_quiescence_failed",
-              "message": "active down"
-            },
-            "settled_by": "inferred"
-          },
-          "sequence": 2,
-          "timestamp_ms": 5,
-          "session_id": "session",
-          "run_id": "run-1",
-          "capability_revision": "opencode-v1.18.34-oap-v5",
-          "extensions": {
-            "io.github.anomalyco.opencode.cost": {
-              "total_cost_usd": 0
-            }
-          }
-        }
-      ]
-    ]
-  },
-  {
-    "name": "history-failure",
-    "client": {
-      "history_error": "history down"
-    },
-    "script": [
-      {
-        "op": "submit",
-        "delivery": "auto",
-        "text": "hello"
-      },
-      {
-        "op": "event",
-        "raw": {
-          "id": "evt_s0001",
-          "type": "session.next.prompted",
-          "durable": {
-            "aggregateID": "ses_fake00000000000000",
-            "seq": 1,
-            "version": 1
-          },
-          "data": {
-            "timestamp": 1,
-            "sessionID": "ses_fake00000000000000",
-            "messageID": "msg_fake0000000000000004",
-            "prompt": {
-              "text": "hello"
-            },
-            "delivery": "steer"
-          }
-        }
-      },
-      {
-        "op": "event",
-        "raw": {
-          "id": "evt_s0002",
-          "type": "session.next.step.started",
-          "durable": {
-            "aggregateID": "ses_fake00000000000000",
-            "seq": 2,
-            "version": 1
-          },
-          "data": {
-            "timestamp": 2,
-            "sessionID": "ses_fake00000000000000",
-            "assistantMessageID": "msg_a1",
-            "agent": "build",
-            "model": {
-              "id": "fixture",
-              "providerID": "fixture"
-            }
-          }
-        }
-      },
-      {
-        "op": "event",
-        "raw": {
-          "id": "evt_s0003",
-          "type": "session.next.step.ended",
-          "durable": {
-            "aggregateID": "ses_fake00000000000000",
-            "seq": 3,
-            "version": 1
-          },
-          "data": {
-            "timestamp": 3,
-            "sessionID": "ses_fake00000000000000",
-            "assistantMessageID": "msg_a1",
-            "finish": "stop",
-            "cost": 0,
-            "tokens": {
-              "input": 0,
-              "output": 0,
-              "reasoning": 0,
-              "cache": {
-                "read": 0,
-                "write": 0
-              }
-            }
-          }
-        }
-      }
-    ],
-    "admissions": [
-      {
-        "session_id": "session",
-        "accepted": true,
-        "submission_id": "submission-3",
-        "requested_delivery": "auto",
-        "effective_delivery": "start",
-        "admission": "started",
-        "run_id": "run-1",
-        "status": "running",
-        "message_ids": [
-          "msg_fake0000000000000004"
-        ]
-      }
-    ],
-    "runs": [
-      [
-        {
-          "protocol": "open-agent-protocol",
-          "version": "0.1",
-          "profile": "open-agent-protocol.agent-control-core",
-          "type": "run.started",
-          "id": "event-5",
-          "payload": {
-            "session_id": "session",
-            "run_id": "run-1",
-            "status": "running",
-            "started_at_ms": 3
-          },
-          "sequence": 1,
-          "timestamp_ms": 4,
-          "session_id": "session",
-          "run_id": "run-1",
-          "capability_revision": "opencode-v1.18.34-oap-v5"
-        },
-        {
-          "protocol": "open-agent-protocol",
-          "version": "0.1",
-          "profile": "open-agent-protocol.agent-control-core",
-          "type": "run.failed",
-          "id": "event-6",
-          "payload": {
-            "session_id": "session",
-            "run_id": "run-1",
-            "error": {
-              "code": "opencode_history_failed",
-              "message": "history down"
-            },
-            "settled_by": "inferred"
-          },
-          "sequence": 2,
-          "timestamp_ms": 5,
-          "session_id": "session",
-          "run_id": "run-1",
-          "capability_revision": "opencode-v1.18.34-oap-v5",
+          "capability_revision": "opencode-v2.0.24-oap-v1",
           "extensions": {
             "io.github.anomalyco.opencode.cost": {
               "total_cost_usd": 0
@@ -2197,20 +1955,15 @@
         "op": "event",
         "raw": {
           "id": "evt_s0001",
-          "type": "session.next.prompted",
+          "type": "session.inbox.delivered",
+          "data": {
+            "sessionID": "ses_fake00000000000000",
+            "inboxID": "msg_fake0000000000000004"
+          },
           "durable": {
             "aggregateID": "ses_fake00000000000000",
-            "seq": 1,
+            "seq": 10,
             "version": 1
-          },
-          "data": {
-            "timestamp": 1,
-            "sessionID": "ses_fake00000000000000",
-            "messageID": "msg_fake0000000000000004",
-            "prompt": {
-              "text": "hello"
-            },
-            "delivery": "steer"
           }
         }
       },
@@ -2218,21 +1971,22 @@
         "op": "event",
         "raw": {
           "id": "evt_s0002",
-          "type": "session.next.step.started",
-          "durable": {
-            "aggregateID": "ses_fake00000000000000",
-            "seq": 2,
-            "version": 1
-          },
+          "type": "session.step.started",
           "data": {
-            "timestamp": 2,
             "sessionID": "ses_fake00000000000000",
             "assistantMessageID": "msg_a1",
+            "agent": "build",
             "model": {
               "id": "m",
               "providerID": "p"
             },
+            "started": 2,
             "surprise": true
+          },
+          "durable": {
+            "aggregateID": "ses_fake00000000000000",
+            "seq": 20,
+            "version": 1
           }
         }
       }
@@ -2270,7 +2024,7 @@
           "timestamp_ms": 4,
           "session_id": "session",
           "run_id": "run-1",
-          "capability_revision": "opencode-v1.18.34-oap-v5"
+          "capability_revision": "opencode-v2.0.24-oap-v1"
         },
         {
           "protocol": "open-agent-protocol",
@@ -2283,14 +2037,14 @@
             "run_id": "run-1",
             "error": {
               "code": "opencode_invalid_step_event",
-              "message": "opencode native: invalid wire payload: session.next.step.started data: json: unknown field \"surprise\""
+              "message": "opencode native: invalid wire payload: session.step.started data: json: unknown field \"surprise\""
             }
           },
           "sequence": 2,
           "timestamp_ms": 5,
           "session_id": "session",
           "run_id": "run-1",
-          "capability_revision": "opencode-v1.18.34-oap-v5",
+          "capability_revision": "opencode-v2.0.24-oap-v1",
           "extensions": {
             "io.github.anomalyco.opencode.cost": {
               "total_cost_usd": 0
@@ -2313,20 +2067,15 @@
         "op": "event",
         "raw": {
           "id": "evt_s0001",
-          "type": "session.next.prompted",
+          "type": "session.inbox.delivered",
+          "data": {
+            "sessionID": "ses_fake00000000000000",
+            "inboxID": "msg_fake0000000000000004"
+          },
           "durable": {
             "aggregateID": "ses_fake00000000000000",
-            "seq": 1,
+            "seq": 10,
             "version": 1
-          },
-          "data": {
-            "timestamp": 1,
-            "sessionID": "ses_fake00000000000000",
-            "messageID": "msg_fake0000000000000004",
-            "prompt": {
-              "text": "go"
-            },
-            "delivery": "queue"
           }
         }
       },
@@ -2334,21 +2083,21 @@
         "op": "event",
         "raw": {
           "id": "evt_s0002",
-          "type": "session.next.step.started",
-          "durable": {
-            "aggregateID": "ses_fake00000000000000",
-            "seq": 2,
-            "version": 1
-          },
+          "type": "session.step.started",
           "data": {
-            "timestamp": 2,
             "sessionID": "ses_fake00000000000000",
             "assistantMessageID": "msg_a1",
             "agent": "build",
             "model": {
               "id": "fixture",
               "providerID": "fixture"
-            }
+            },
+            "started": 2
+          },
+          "durable": {
+            "aggregateID": "ses_fake00000000000000",
+            "seq": 20,
+            "version": 1
           }
         }
       },
@@ -2356,18 +2105,17 @@
         "op": "event",
         "raw": {
           "id": "evt_s0003",
-          "type": "session.next.reasoning.ended",
-          "durable": {
-            "aggregateID": "ses_fake00000000000000",
-            "seq": 3,
-            "version": 1
-          },
+          "type": "session.reasoning.ended",
           "data": {
-            "timestamp": 3,
             "sessionID": "ses_fake00000000000000",
             "assistantMessageID": "msg_a1",
-            "reasoningID": "r1",
+            "ordinal": 0,
             "text": ""
+          },
+          "durable": {
+            "aggregateID": "ses_fake00000000000000",
+            "seq": 30,
+            "version": 1
           }
         }
       },
@@ -2375,14 +2123,8 @@
         "op": "event",
         "raw": {
           "id": "evt_s0004",
-          "type": "session.next.step.ended",
-          "durable": {
-            "aggregateID": "ses_fake00000000000000",
-            "seq": 4,
-            "version": 1
-          },
+          "type": "session.step.ended",
           "data": {
-            "timestamp": 4,
             "sessionID": "ses_fake00000000000000",
             "assistantMessageID": "msg_a1",
             "finish": "stop",
@@ -2396,6 +2138,26 @@
                 "write": 0
               }
             }
+          },
+          "durable": {
+            "aggregateID": "ses_fake00000000000000",
+            "seq": 40,
+            "version": 1
+          }
+        }
+      },
+      {
+        "op": "event",
+        "raw": {
+          "id": "evt_x9060",
+          "type": "session.execution.succeeded",
+          "data": {
+            "sessionID": "ses_fake00000000000000"
+          },
+          "durable": {
+            "aggregateID": "ses_fake00000000000000",
+            "seq": 9060,
+            "version": 1
           }
         }
       }
@@ -2433,7 +2195,7 @@
           "timestamp_ms": 4,
           "session_id": "session",
           "run_id": "run-1",
-          "capability_revision": "opencode-v1.18.34-oap-v5"
+          "capability_revision": "opencode-v2.0.24-oap-v1"
         },
         {
           "protocol": "open-agent-protocol",
@@ -2454,7 +2216,7 @@
           "timestamp_ms": 5,
           "session_id": "session",
           "run_id": "run-1",
-          "capability_revision": "opencode-v1.18.34-oap-v5"
+          "capability_revision": "opencode-v2.0.24-oap-v1"
         },
         {
           "protocol": "open-agent-protocol",
@@ -2482,7 +2244,7 @@
           "timestamp_ms": 6,
           "session_id": "session",
           "run_id": "run-1",
-          "capability_revision": "opencode-v1.18.34-oap-v5",
+          "capability_revision": "opencode-v2.0.24-oap-v1",
           "extensions": {
             "io.github.anomalyco.opencode.cost": {
               "total_cost_usd": 0
@@ -2536,7 +2298,7 @@
           "timestamp_ms": 3,
           "session_id": "session",
           "run_id": "run-1",
-          "capability_revision": "opencode-v1.18.34-oap-v5",
+          "capability_revision": "opencode-v2.0.24-oap-v1",
           "extensions": {
             "io.github.anomalyco.opencode.cost": {
               "total_cost_usd": 0
@@ -2548,9 +2310,7 @@
   },
   {
     "name": "dedup-and-usage",
-    "client": {
-      "gated": true
-    },
+    "client": {},
     "script": [
       {
         "op": "submit",
@@ -2561,20 +2321,15 @@
         "op": "event",
         "raw": {
           "id": "evt_s0001",
-          "type": "session.next.prompted",
+          "type": "session.inbox.delivered",
+          "data": {
+            "sessionID": "ses_fake00000000000000",
+            "inboxID": "msg_fake0000000000000004"
+          },
           "durable": {
             "aggregateID": "ses_fake00000000000000",
-            "seq": 1,
+            "seq": 10,
             "version": 1
-          },
-          "data": {
-            "timestamp": 1,
-            "sessionID": "ses_fake00000000000000",
-            "messageID": "msg_fake0000000000000004",
-            "prompt": {
-              "text": "hello"
-            },
-            "delivery": "steer"
           }
         }
       },
@@ -2582,21 +2337,21 @@
         "op": "event",
         "raw": {
           "id": "evt_s0002",
-          "type": "session.next.step.started",
-          "durable": {
-            "aggregateID": "ses_fake00000000000000",
-            "seq": 2,
-            "version": 1
-          },
+          "type": "session.step.started",
           "data": {
-            "timestamp": 2,
             "sessionID": "ses_fake00000000000000",
             "assistantMessageID": "msg_a1",
             "agent": "build",
             "model": {
               "id": "fixture",
               "providerID": "fixture"
-            }
+            },
+            "started": 2
+          },
+          "durable": {
+            "aggregateID": "ses_fake00000000000000",
+            "seq": 20,
+            "version": 1
           }
         }
       },
@@ -2604,18 +2359,17 @@
         "op": "event",
         "raw": {
           "id": "evt_s0003",
-          "type": "session.next.text.ended",
-          "durable": {
-            "aggregateID": "ses_fake00000000000000",
-            "seq": 3,
-            "version": 1
-          },
+          "type": "session.text.ended",
           "data": {
-            "timestamp": 3,
             "sessionID": "ses_fake00000000000000",
             "assistantMessageID": "msg_a1",
-            "textID": "t3",
+            "ordinal": 0,
             "text": "a"
+          },
+          "durable": {
+            "aggregateID": "ses_fake00000000000000",
+            "seq": 30,
+            "version": 1
           }
         }
       },
@@ -2623,18 +2377,17 @@
         "op": "event",
         "raw": {
           "id": "evt_s0033",
-          "type": "session.next.text.ended",
-          "durable": {
-            "aggregateID": "ses_fake00000000000000",
-            "seq": 3,
-            "version": 1
-          },
+          "type": "session.text.ended",
           "data": {
-            "timestamp": 3,
             "sessionID": "ses_fake00000000000000",
             "assistantMessageID": "msg_a1",
-            "textID": "t3",
+            "ordinal": 0,
             "text": "b"
+          },
+          "durable": {
+            "aggregateID": "ses_fake00000000000000",
+            "seq": 30,
+            "version": 1
           }
         }
       },
@@ -2642,14 +2395,8 @@
         "op": "event",
         "raw": {
           "id": "evt_s0004",
-          "type": "session.next.step.ended",
-          "durable": {
-            "aggregateID": "ses_fake00000000000000",
-            "seq": 4,
-            "version": 1
-          },
+          "type": "session.step.ended",
           "data": {
-            "timestamp": 4,
             "sessionID": "ses_fake00000000000000",
             "assistantMessageID": "msg_a1",
             "finish": "tool_use",
@@ -2663,6 +2410,11 @@
                 "write": 0
               }
             }
+          },
+          "durable": {
+            "aggregateID": "ses_fake00000000000000",
+            "seq": 40,
+            "version": 1
           }
         }
       },
@@ -2670,21 +2422,21 @@
         "op": "event",
         "raw": {
           "id": "evt_s0005",
-          "type": "session.next.step.started",
-          "durable": {
-            "aggregateID": "ses_fake00000000000000",
-            "seq": 5,
-            "version": 1
-          },
+          "type": "session.step.started",
           "data": {
-            "timestamp": 5,
             "sessionID": "ses_fake00000000000000",
             "assistantMessageID": "msg_a1",
             "agent": "build",
             "model": {
               "id": "fixture",
               "providerID": "fixture"
-            }
+            },
+            "started": 5
+          },
+          "durable": {
+            "aggregateID": "ses_fake00000000000000",
+            "seq": 50,
+            "version": 1
           }
         }
       },
@@ -2692,14 +2444,8 @@
         "op": "event",
         "raw": {
           "id": "evt_s0006",
-          "type": "session.next.step.ended",
-          "durable": {
-            "aggregateID": "ses_fake00000000000000",
-            "seq": 6,
-            "version": 1
-          },
+          "type": "session.step.ended",
           "data": {
-            "timestamp": 6,
             "sessionID": "ses_fake00000000000000",
             "assistantMessageID": "msg_a1",
             "finish": "stop",
@@ -2713,11 +2459,28 @@
                 "write": 0
               }
             }
+          },
+          "durable": {
+            "aggregateID": "ses_fake00000000000000",
+            "seq": 60,
+            "version": 1
           }
         }
       },
       {
-        "op": "idle"
+        "op": "event",
+        "raw": {
+          "id": "evt_x9030",
+          "type": "session.execution.succeeded",
+          "data": {
+            "sessionID": "ses_fake00000000000000"
+          },
+          "durable": {
+            "aggregateID": "ses_fake00000000000000",
+            "seq": 9030,
+            "version": 1
+          }
+        }
       }
     ],
     "admissions": [
@@ -2753,7 +2516,7 @@
           "timestamp_ms": 4,
           "session_id": "session",
           "run_id": "run-1",
-          "capability_revision": "opencode-v1.18.34-oap-v5"
+          "capability_revision": "opencode-v2.0.24-oap-v1"
         },
         {
           "protocol": "open-agent-protocol",
@@ -2774,7 +2537,7 @@
           "timestamp_ms": 5,
           "session_id": "session",
           "run_id": "run-1",
-          "capability_revision": "opencode-v1.18.34-oap-v5"
+          "capability_revision": "opencode-v2.0.24-oap-v1"
         },
         {
           "protocol": "open-agent-protocol",
@@ -2806,7 +2569,7 @@
           "timestamp_ms": 6,
           "session_id": "session",
           "run_id": "run-1",
-          "capability_revision": "opencode-v1.18.34-oap-v5",
+          "capability_revision": "opencode-v2.0.24-oap-v1",
           "extensions": {
             "io.github.anomalyco.opencode.cost": {
               "total_cost_usd": 0.30000000000000004
@@ -2818,9 +2581,7 @@
   },
   {
     "name": "foreign-input-quarantine",
-    "client": {
-      "gated": true
-    },
+    "client": {},
     "script": [
       {
         "op": "submit",
@@ -2831,20 +2592,15 @@
         "op": "event",
         "raw": {
           "id": "evt_s0001",
-          "type": "session.next.prompted",
+          "type": "session.inbox.delivered",
+          "data": {
+            "sessionID": "ses_fake00000000000000",
+            "inboxID": "msg_fake0000000000000004"
+          },
           "durable": {
             "aggregateID": "ses_fake00000000000000",
-            "seq": 1,
+            "seq": 10,
             "version": 1
-          },
-          "data": {
-            "timestamp": 1,
-            "sessionID": "ses_fake00000000000000",
-            "messageID": "msg_fake0000000000000004",
-            "prompt": {
-              "text": "hello"
-            },
-            "delivery": "steer"
           }
         }
       },
@@ -2852,21 +2608,21 @@
         "op": "event",
         "raw": {
           "id": "evt_s0002",
-          "type": "session.next.step.started",
-          "durable": {
-            "aggregateID": "ses_fake00000000000000",
-            "seq": 2,
-            "version": 1
-          },
+          "type": "session.step.started",
           "data": {
-            "timestamp": 2,
             "sessionID": "ses_fake00000000000000",
             "assistantMessageID": "msg_a1",
             "agent": "build",
             "model": {
               "id": "fixture",
               "providerID": "fixture"
-            }
+            },
+            "started": 2
+          },
+          "durable": {
+            "aggregateID": "ses_fake00000000000000",
+            "seq": 20,
+            "version": 1
           }
         }
       },
@@ -2874,18 +2630,17 @@
         "op": "event",
         "raw": {
           "id": "evt_s0003",
-          "type": "session.next.text.ended",
-          "durable": {
-            "aggregateID": "ses_fake00000000000000",
-            "seq": 3,
-            "version": 1
-          },
+          "type": "session.text.ended",
           "data": {
-            "timestamp": 3,
             "sessionID": "ses_fake00000000000000",
             "assistantMessageID": "msg_a1",
-            "textID": "t3",
+            "ordinal": 0,
             "text": "mine"
+          },
+          "durable": {
+            "aggregateID": "ses_fake00000000000000",
+            "seq": 30,
+            "version": 1
           }
         }
       },
@@ -2893,14 +2648,8 @@
         "op": "event",
         "raw": {
           "id": "evt_s0004",
-          "type": "session.next.step.ended",
-          "durable": {
-            "aggregateID": "ses_fake00000000000000",
-            "seq": 4,
-            "version": 1
-          },
+          "type": "session.step.ended",
           "data": {
-            "timestamp": 4,
             "sessionID": "ses_fake00000000000000",
             "assistantMessageID": "msg_a1",
             "finish": "stop",
@@ -2914,6 +2663,11 @@
                 "write": 0
               }
             }
+          },
+          "durable": {
+            "aggregateID": "ses_fake00000000000000",
+            "seq": 40,
+            "version": 1
           }
         }
       },
@@ -2925,20 +2679,15 @@
         "op": "event",
         "raw": {
           "id": "evt_s0005",
-          "type": "session.next.prompted",
+          "type": "session.inbox.delivered",
+          "data": {
+            "sessionID": "ses_fake00000000000000",
+            "inboxID": "msg_elsewhere"
+          },
           "durable": {
             "aggregateID": "ses_fake00000000000000",
-            "seq": 5,
+            "seq": 50,
             "version": 1
-          },
-          "data": {
-            "timestamp": 5,
-            "sessionID": "ses_fake00000000000000",
-            "messageID": "msg_elsewhere",
-            "prompt": {
-              "text": "theirs"
-            },
-            "delivery": "steer"
           }
         }
       },
@@ -2946,21 +2695,21 @@
         "op": "event",
         "raw": {
           "id": "evt_s0006",
-          "type": "session.next.step.started",
-          "durable": {
-            "aggregateID": "ses_fake00000000000000",
-            "seq": 6,
-            "version": 1
-          },
+          "type": "session.step.started",
           "data": {
-            "timestamp": 6,
             "sessionID": "ses_fake00000000000000",
             "assistantMessageID": "msg_a2",
             "agent": "build",
             "model": {
               "id": "fixture",
               "providerID": "fixture"
-            }
+            },
+            "started": 6
+          },
+          "durable": {
+            "aggregateID": "ses_fake00000000000000",
+            "seq": 60,
+            "version": 1
           }
         }
       },
@@ -2968,18 +2717,17 @@
         "op": "event",
         "raw": {
           "id": "evt_s0007",
-          "type": "session.next.text.ended",
-          "durable": {
-            "aggregateID": "ses_fake00000000000000",
-            "seq": 7,
-            "version": 1
-          },
+          "type": "session.text.ended",
           "data": {
-            "timestamp": 7,
             "sessionID": "ses_fake00000000000000",
             "assistantMessageID": "msg_a2",
-            "textID": "t7",
+            "ordinal": 0,
             "text": "theirs"
+          },
+          "durable": {
+            "aggregateID": "ses_fake00000000000000",
+            "seq": 70,
+            "version": 1
           }
         }
       },
@@ -2987,14 +2735,8 @@
         "op": "event",
         "raw": {
           "id": "evt_s0008",
-          "type": "session.next.step.ended",
-          "durable": {
-            "aggregateID": "ses_fake00000000000000",
-            "seq": 8,
-            "version": 1
-          },
+          "type": "session.step.ended",
           "data": {
-            "timestamp": 8,
             "sessionID": "ses_fake00000000000000",
             "assistantMessageID": "msg_a2",
             "finish": "stop",
@@ -3008,11 +2750,28 @@
                 "write": 0
               }
             }
+          },
+          "durable": {
+            "aggregateID": "ses_fake00000000000000",
+            "seq": 80,
+            "version": 1
           }
         }
       },
       {
-        "op": "idle"
+        "op": "event",
+        "raw": {
+          "id": "evt_x9040",
+          "type": "session.execution.succeeded",
+          "data": {
+            "sessionID": "ses_fake00000000000000"
+          },
+          "durable": {
+            "aggregateID": "ses_fake00000000000000",
+            "seq": 9040,
+            "version": 1
+          }
+        }
       }
     ],
     "admissions": [
@@ -3048,7 +2807,7 @@
           "timestamp_ms": 4,
           "session_id": "session",
           "run_id": "run-1",
-          "capability_revision": "opencode-v1.18.34-oap-v5"
+          "capability_revision": "opencode-v2.0.24-oap-v1"
         },
         {
           "protocol": "open-agent-protocol",
@@ -3069,7 +2828,7 @@
           "timestamp_ms": 5,
           "session_id": "session",
           "run_id": "run-1",
-          "capability_revision": "opencode-v1.18.34-oap-v5"
+          "capability_revision": "opencode-v2.0.24-oap-v1"
         },
         {
           "protocol": "open-agent-protocol",
@@ -3097,7 +2856,242 @@
           "timestamp_ms": 6,
           "session_id": "session",
           "run_id": "run-1",
-          "capability_revision": "opencode-v1.18.34-oap-v5",
+          "capability_revision": "opencode-v2.0.24-oap-v1",
+          "extensions": {
+            "io.github.anomalyco.opencode.cost": {
+              "total_cost_usd": 0
+            }
+          }
+        }
+      ]
+    ]
+  },
+  {
+    "name": "execution-failed",
+    "client": {},
+    "script": [
+      {
+        "op": "submit",
+        "delivery": "auto",
+        "text": "hello"
+      },
+      {
+        "op": "event",
+        "raw": {
+          "id": "evt_d10",
+          "type": "session.inbox.delivered",
+          "data": {
+            "sessionID": "ses_fake00000000000000",
+            "inboxID": "msg_fake0000000000000004"
+          },
+          "durable": {
+            "aggregateID": "ses_fake00000000000000",
+            "seq": 10,
+            "version": 1
+          }
+        }
+      },
+      {
+        "op": "event",
+        "raw": {
+          "id": "evt_s20",
+          "type": "session.step.started",
+          "data": {
+            "sessionID": "ses_fake00000000000000",
+            "assistantMessageID": "msg_a1",
+            "agent": "build",
+            "model": {
+              "id": "fixture",
+              "providerID": "fixture"
+            },
+            "started": 1
+          },
+          "durable": {
+            "aggregateID": "ses_fake00000000000000",
+            "seq": 20,
+            "version": 1
+          }
+        }
+      },
+      {
+        "op": "event",
+        "raw": {
+          "id": "evt_x9090",
+          "type": "session.execution.failed",
+          "data": {
+            "sessionID": "ses_fake00000000000000",
+            "error": {
+              "type": "provider",
+              "message": "the provider refused"
+            }
+          },
+          "durable": {
+            "aggregateID": "ses_fake00000000000000",
+            "seq": 9090,
+            "version": 1
+          }
+        }
+      }
+    ],
+    "admissions": [
+      {
+        "session_id": "session",
+        "accepted": true,
+        "submission_id": "submission-3",
+        "requested_delivery": "auto",
+        "effective_delivery": "start",
+        "admission": "started",
+        "run_id": "run-1",
+        "status": "running",
+        "message_ids": [
+          "msg_fake0000000000000004"
+        ]
+      }
+    ],
+    "runs": [
+      [
+        {
+          "protocol": "open-agent-protocol",
+          "version": "0.1",
+          "profile": "open-agent-protocol.agent-control-core",
+          "type": "run.started",
+          "id": "event-5",
+          "payload": {
+            "session_id": "session",
+            "run_id": "run-1",
+            "status": "running",
+            "started_at_ms": 3
+          },
+          "sequence": 1,
+          "timestamp_ms": 4,
+          "session_id": "session",
+          "run_id": "run-1",
+          "capability_revision": "opencode-v2.0.24-oap-v1"
+        },
+        {
+          "protocol": "open-agent-protocol",
+          "version": "0.1",
+          "profile": "open-agent-protocol.agent-control-core",
+          "type": "run.failed",
+          "id": "event-6",
+          "payload": {
+            "session_id": "session",
+            "run_id": "run-1",
+            "error": {
+              "code": "opencode_execution_failed",
+              "message": "the provider refused"
+            }
+          },
+          "sequence": 2,
+          "timestamp_ms": 5,
+          "session_id": "session",
+          "run_id": "run-1",
+          "capability_revision": "opencode-v2.0.24-oap-v1",
+          "extensions": {
+            "io.github.anomalyco.opencode.cost": {
+              "total_cost_usd": 0
+            }
+          }
+        }
+      ]
+    ]
+  },
+  {
+    "name": "interrupted-unasked",
+    "client": {},
+    "script": [
+      {
+        "op": "submit",
+        "delivery": "auto",
+        "text": "hello"
+      },
+      {
+        "op": "event",
+        "raw": {
+          "id": "evt_d10",
+          "type": "session.inbox.delivered",
+          "data": {
+            "sessionID": "ses_fake00000000000000",
+            "inboxID": "msg_fake0000000000000004"
+          },
+          "durable": {
+            "aggregateID": "ses_fake00000000000000",
+            "seq": 10,
+            "version": 1
+          }
+        }
+      },
+      {
+        "op": "event",
+        "raw": {
+          "id": "evt_x9100",
+          "type": "session.execution.interrupted",
+          "data": {
+            "sessionID": "ses_fake00000000000000",
+            "reason": "shutdown"
+          },
+          "durable": {
+            "aggregateID": "ses_fake00000000000000",
+            "seq": 9100,
+            "version": 1
+          }
+        }
+      }
+    ],
+    "admissions": [
+      {
+        "session_id": "session",
+        "accepted": true,
+        "submission_id": "submission-3",
+        "requested_delivery": "auto",
+        "effective_delivery": "start",
+        "admission": "started",
+        "run_id": "run-1",
+        "status": "running",
+        "message_ids": [
+          "msg_fake0000000000000004"
+        ]
+      }
+    ],
+    "runs": [
+      [
+        {
+          "protocol": "open-agent-protocol",
+          "version": "0.1",
+          "profile": "open-agent-protocol.agent-control-core",
+          "type": "run.started",
+          "id": "event-5",
+          "payload": {
+            "session_id": "session",
+            "run_id": "run-1",
+            "status": "running",
+            "started_at_ms": 3
+          },
+          "sequence": 1,
+          "timestamp_ms": 4,
+          "session_id": "session",
+          "run_id": "run-1",
+          "capability_revision": "opencode-v2.0.24-oap-v1"
+        },
+        {
+          "protocol": "open-agent-protocol",
+          "version": "0.1",
+          "profile": "open-agent-protocol.agent-control-core",
+          "type": "run.failed",
+          "id": "event-6",
+          "payload": {
+            "session_id": "session",
+            "run_id": "run-1",
+            "error": {
+              "code": "opencode_execution_interrupted",
+              "message": "OpenCode interrupted the execution: shutdown"
+            }
+          },
+          "sequence": 2,
+          "timestamp_ms": 5,
+          "session_id": "session",
+          "run_id": "run-1",
+          "capability_revision": "opencode-v2.0.24-oap-v1",
           "extensions": {
             "io.github.anomalyco.opencode.cost": {
               "total_cost_usd": 0

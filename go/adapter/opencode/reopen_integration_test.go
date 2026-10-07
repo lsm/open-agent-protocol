@@ -27,7 +27,7 @@ func serveInHome(t *testing.T, ctx context.Context, binary, home string, environ
 	port := listener.Addr().(*net.TCPAddr).Port
 	_ = listener.Close()
 	command := exec.CommandContext(ctx, binary, "serve", "--hostname", "127.0.0.1", "--port", fmt.Sprint(port))
-	command.Env = append([]string{"HOME=" + home, "PATH=" + os.Getenv("PATH"), "NO_COLOR=1"}, environment...)
+	command.Env = append([]string{"HOME=" + home, "PATH=" + os.Getenv("PATH"), "NO_COLOR=1", "OPENCODE_PASSWORD=" + integrationPassword}, environment...)
 	stderr, err := os.Create(filepath.Join(home, fmt.Sprintf("stderr-%d.log", port)))
 	if err != nil {
 		t.Fatal(err)
@@ -45,7 +45,12 @@ func serveInHome(t *testing.T, ctx context.Context, binary, home string, environ
 	client := &http.Client{Timeout: 10 * time.Second}
 	deadline := time.Now().Add(60 * time.Second)
 	for {
-		response, err := client.Get(endpoint + "/api/health")
+		request, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint+"/api/info", nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		request.SetBasicAuth("opencode", integrationPassword)
+		response, err := client.Do(request)
 		if err == nil {
 			_ = response.Body.Close()
 			if response.StatusCode == http.StatusOK {
@@ -71,7 +76,7 @@ func TestOpenCodeServerReopensItsBoundSessionAfterARestart(t *testing.T) {
 	environment := []string{"OPENCODE_CONFIG_CONTENT=" + config}
 	home := t.TempDir()
 	endpoint, stop := serveInHome(t, ctx, binary, home, environment)
-	first, err := New(Config{Endpoint: endpoint, Model: &native.ModelRef{ID: "model", ProviderID: "fixture"}, Clock: systemClock{}, IDs: &sequenceIDs{}})
+	first, err := New(integrationConfig(endpoint, &native.ModelRef{ID: "model", ProviderID: "fixture"}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -83,13 +88,13 @@ func TestOpenCodeServerReopensItsBoundSessionAfterARestart(t *testing.T) {
 		t.Fatal(err)
 	}
 	binding := opened.(base.NativeSession).NativeSessionID()
-	stored := waitForStoredEvents(t, ctx, opened.(*session).client, native.SessionID(binding))
+	waitForObservedEvents(t, opened)
 	stop()
 	_ = opened.Close(context.Background())
 
 	restarted, stopRestarted := serveInHome(t, ctx, binary, home, environment)
 	defer stopRestarted()
-	second, err := New(Config{Endpoint: restarted, Model: &native.ModelRef{ID: "model", ProviderID: "fixture"}, Clock: systemClock{}, IDs: &sequenceIDs{}})
+	second, err := New(integrationConfig(restarted, &native.ModelRef{ID: "model", ProviderID: "fixture"}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -103,7 +108,7 @@ func TestOpenCodeServerReopensItsBoundSessionAfterARestart(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if state.Recovery == nil || !state.Recovery.Recovered || state.CurrentModelID != "fixture/model" || state.Status != protocol.SessionIdle || state.ActiveRunID != "" || state.TranscriptCursor != formatSeq(stored) {
+	if state.Recovery == nil || !state.Recovery.Recovered || state.CurrentModelID != "fixture/model" || state.Status != protocol.SessionIdle || state.ActiveRunID != "" {
 		t.Fatalf("recovered state = %+v; the stored history must not replay as a run", state)
 	}
 	if got := reopened.(base.NativeSession).NativeSessionID(); got != binding {
@@ -117,16 +122,16 @@ func TestOpenCodeServerReopensItsBoundSessionAfterARestart(t *testing.T) {
 	}
 }
 
-func waitForStoredEvents(t *testing.T, ctx context.Context, client Client, id native.SessionID) int64 {
+func waitForObservedEvents(t *testing.T, opened base.Session) {
 	t.Helper()
 	deadline := time.Now().Add(30 * time.Second)
 	for {
-		last, err := lastDurableSeq(ctx, client, id)
-		if err == nil && last >= 2 {
-			return last
+		state, err := opened.State(context.Background())
+		if err == nil && state.TranscriptCursor != "" {
+			return
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("the first run stored no events: last=%d err=%v", last, err)
+			t.Fatalf("the first run's events never arrived: state=%+v err=%v", state, err)
 		}
 		time.Sleep(250 * time.Millisecond)
 	}

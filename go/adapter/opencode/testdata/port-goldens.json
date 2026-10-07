@@ -1,10 +1,10 @@
 {
-  "capability_revision": "opencode-v1.18.34-oap-v5",
+  "capability_revision": "opencode-v2.0.24-oap-v1",
   "capabilities": {
     "endpoint": {
       "id": "opencode.server",
       "name": "OpenCode Server Adapter",
-      "version": "v1.18.34",
+      "version": "v2.0.24",
       "adapter": "opencode-http-sse"
     },
     "protocol_versions": [
@@ -16,7 +16,7 @@
     "features": {
       "action.permissions": {
         "level": "unavailable",
-        "reason": "durable stream carries no permission events; the polling surface is unexercised"
+        "reason": "permission.asked travels only on the volatile global event stream and is not served"
       },
       "action.tools": {
         "level": "native",
@@ -40,11 +40,11 @@
       },
       "run.cancel": {
         "level": "degraded",
-        "reason": "interrupt is intent with idle no-op; settlement derived from durable evidence and the active set"
+        "reason": "interrupt is intent with an idle no-op; a running run settles at session.execution.interrupted and a queued one at session.inbox.cancelled"
       },
       "run.reconciliation": {
         "level": "emulated",
-        "reason": "adapter-owned projection over active and durable sequence"
+        "reason": "adapter-owned projection over the session events; the event stream does not replay"
       },
       "run.replay": {
         "level": "degraded",
@@ -56,11 +56,11 @@
       },
       "run.status": {
         "level": "native",
-        "reason": "session.active and durable step events"
+        "reason": "session.inbox.delivered starts a run and session.execution.* settles it"
       },
       "run.streaming": {
         "level": "degraded",
-        "reason": "durable stream carries full-value text.ended boundaries, not live deltas"
+        "reason": "text and reasoning are forwarded whole at session.text.ended and session.reasoning.ended; the live deltas are not forwarded"
       },
       "session.compaction.policy": {
         "level": "unavailable",
@@ -68,11 +68,11 @@
       },
       "session.message.delivery.auto": {
         "level": "emulated",
-        "reason": "no native auto; maps to steer which starts immediately when idle"
+        "reason": "no native auto; steer when the session is idle, queue behind an open run"
       },
       "session.message.delivery.queue": {
         "level": "native",
-        "reason": "SessionInput.Admitted carries delivery=queue with promotedSeq; a reservation is admitted durably and promoted by session.next.prompted"
+        "reason": "a prompt with delivery=queue is admitted to the session inbox and starts its run at session.inbox.delivered"
       },
       "session.message.delivery.steer": {
         "level": "unavailable",
@@ -88,7 +88,7 @@
       },
       "session.open.reopen": {
         "level": "native",
-        "reason": "GET /api/session/:id attaches to the bound server session and its events resume after the last stored sequence; an unknown or running session is refused"
+        "reason": "GET /api/session/:id attaches to the bound server session and follows its events from the attach on; an unknown or running session is refused"
       },
       "session.reasoning": {
         "level": "native",
@@ -140,7 +140,7 @@
         "Authorization": "Basic b3BlbmNvZGU6c2VjcmV0",
         "Content-Type": "application/json"
       },
-      "body": "{\"id\":\"msg_fake0000000000000004\",\"prompt\":{\"text\":\"hello\"},\"delivery\":\"steer\"}"
+      "body": "{\"id\":\"msg_fake0000000000000004\",\"text\":\"hello\",\"delivery\":\"steer\"}"
     },
     {
       "name": "prompt-escaped-queue",
@@ -151,7 +151,7 @@
         "Authorization": "Basic b3BlbmNvZGU6c2VjcmV0",
         "Content-Type": "application/json"
       },
-      "body": "{\"id\":\"msg_fake0000000000000009\",\"prompt\":{\"text\":\"a\\u003cb\\u003e\\u0026c \\\"q\\\" \\\\ \\u2028\\u2029\\n\\t\\r\\b\\f\\u0001\\u001f é\"},\"delivery\":\"queue\"}"
+      "body": "{\"id\":\"msg_fake0000000000000009\",\"text\":\"a\\u003cb\\u003e\\u0026c \\\"q\\\" \\\\   \\n\\t\\r\\b\\f\\u0001\\u001f é\",\"delivery\":\"queue\"}"
     },
     {
       "name": "interrupt",
@@ -159,24 +159,22 @@
       "target": "/base/api/session/ses_fake00000000000000/interrupt",
       "headers": {
         "Accept": "application/json",
-        "Authorization": "Basic b3BlbmNvZGU6c2VjcmV0",
-        "Content-Type": "application/json"
-      },
-      "body": "{}"
+        "Authorization": "Basic b3BlbmNvZGU6c2VjcmV0"
+      }
     },
     {
-      "name": "session-record",
-      "method": "GET",
-      "target": "/base/api/session/ses_fake00000000000000",
+      "name": "cancel-inbox",
+      "method": "DELETE",
+      "target": "/base/api/session/ses_fake00000000000000/inbox/msg_fake0000000000000009",
       "headers": {
         "Accept": "application/json",
         "Authorization": "Basic b3BlbmNvZGU6c2VjcmV0"
       }
     },
     {
-      "name": "history-from-start",
+      "name": "session-record",
       "method": "GET",
-      "target": "/base/api/session/ses_fake00000000000000/history?after=0\u0026limit=100",
+      "target": "/base/api/session/ses_fake00000000000000",
       "headers": {
         "Accept": "application/json",
         "Authorization": "Basic b3BlbmNvZGU6c2VjcmV0"
@@ -192,9 +190,9 @@
       }
     },
     {
-      "name": "history",
+      "name": "info",
       "method": "GET",
-      "target": "/base/api/session/ses_fake00000000000000/history?after=3\u0026limit=100",
+      "target": "/base/api/info",
       "headers": {
         "Accept": "application/json",
         "Authorization": "Basic b3BlbmNvZGU6c2VjcmV0"
@@ -203,16 +201,7 @@
     {
       "name": "subscribe",
       "method": "GET",
-      "target": "/base/api/session/ses_fake00000000000000/event",
-      "headers": {
-        "Accept": "text/event-stream",
-        "Authorization": "Basic b3BlbmNvZGU6c2VjcmV0"
-      }
-    },
-    {
-      "name": "subscribe-after",
-      "method": "GET",
-      "target": "/base/api/session/ses_fake00000000000000/event?after=5",
+      "target": "/base/api/event",
       "headers": {
         "Accept": "text/event-stream",
         "Authorization": "Basic b3BlbmNvZGU6c2VjcmV0"

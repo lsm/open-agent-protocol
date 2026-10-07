@@ -358,6 +358,7 @@ func buildAdapter(name string, entry adapterEntry, environ func(string) (string,
 	case "opencode":
 		implementation, err := opencode.New(opencode.Config{
 			Endpoint: entry.Endpoint, Agent: entry.Agent, JournalCapacity: entry.JournalCapacity,
+			Username: "opencode", Password: opencodePassword(environment),
 		})
 		return implementation, wrapBuild(name, err)
 	case "pi":
@@ -446,4 +447,16 @@ func resolveEnvironment(entries []string, environ func(string) (string, bool)) (
 		}
 	}
 	return resolved, nil
+}
+
+func opencodePassword(environment []string) string {
+	found := ""
+	for _, name := range []string{"OPENCODE_SERVER_PASSWORD", "OPENCODE_PASSWORD"} {
+		for _, entry := range environment {
+			if value, ok := strings.CutPrefix(entry, name+"="); ok {
+				found = value
+			}
+		}
+	}
+	return found
 }

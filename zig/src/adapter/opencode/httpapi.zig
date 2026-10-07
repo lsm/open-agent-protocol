@@ -117,15 +117,17 @@ pub const Decoder = struct {
     }
 };
 
-pub const Batch = struct { events: []const native.Event, failure: ?[]const u8 = null };
+pub const Batch = struct { events: []const native.Event, failure: ?[]const u8 = null, connected: bool = false };
 
 pub const Stream = struct {
     decoder: Decoder,
+    session: []const u8,
     last_seq: i64 = -1,
     failed: bool = false,
+    connected: bool = false,
 
-    pub fn init(gpa: std.mem.Allocator, limit: usize) Stream {
-        return .{ .decoder = Decoder.init(gpa, limit) };
+    pub fn init(gpa: std.mem.Allocator, limit: usize, session: []const u8) Stream {
+        return .{ .decoder = Decoder.init(gpa, limit), .session = session };
     }
 
     pub fn deinit(self: *Stream) void {
@@ -134,7 +136,7 @@ pub const Stream = struct {
     }
 
     pub fn feed(self: *Stream, arena: std.mem.Allocator, chunk: []const u8) std.mem.Allocator.Error!Batch {
-        if (self.failed) return .{ .events = &.{} };
+        if (self.failed) return .{ .events = &.{}, .connected = self.connected };
         var diag = native.Diagnostic{};
         var events = std.ArrayList(native.Event).empty;
         var frames = std.ArrayList(Frame).empty;
@@ -147,18 +149,29 @@ pub const Stream = struct {
             if (frame.name.len > 0 and !std.mem.eql(u8, frame.name, "message")) {
                 return self.fail(events.items, try std.fmt.allocPrint(arena, invalid_frame ++ ": unexpected SSE event name {s}", .{goquote.quote(arena, frame.name)}));
             }
-            const event = native.decodeEvent(arena, frame.data, &diag) catch |err| switch (err) {
+            var decoded = native.Diagnostic{};
+            const event = native.decodeEvent(arena, frame.data, &decoded) catch |err| switch (err) {
                 error.OutOfMemory => return error.OutOfMemory,
-                error.InvalidWire, error.UnsupportedType => return self.fail(events.items, diag.message),
+                error.InvalidWire, error.UnsupportedType => {
+                    if (decoded.session_id.len == 0 or std.mem.eql(u8, decoded.session_id, self.session)) return self.fail(events.items, decoded.message);
+                    continue;
+                },
             };
-            if (event.durable.seq <= self.last_seq) {
-                return self.fail(events.items, try std.fmt.allocPrint(arena, subscription_failed ++ ": non-increasing durable sequence {d} after {d}", .{ event.durable.seq, self.last_seq }));
+            if (std.mem.eql(u8, event.type_name, native.server_connected)) {
+                self.connected = true;
+                continue;
             }
-            self.last_seq = event.durable.seq;
+            if (!std.mem.eql(u8, event.session_id, self.session)) continue;
+            if (event.durable) |position| {
+                if (position.seq <= self.last_seq) {
+                    return self.fail(events.items, try std.fmt.allocPrint(arena, subscription_failed ++ ": non-increasing durable sequence {d} after {d}", .{ position.seq, self.last_seq }));
+                }
+                self.last_seq = position.seq;
+            }
             try events.append(arena, event);
         }
         if (framing) |message| return self.fail(events.items, message);
-        return .{ .events = events.items };
+        return .{ .events = events.items, .connected = self.connected };
     }
 
     pub fn finish(self: *Stream, arena: std.mem.Allocator) std.mem.Allocator.Error![]const u8 {
@@ -174,7 +187,7 @@ pub const Stream = struct {
 
     fn fail(self: *Stream, events: []const native.Event, message: []const u8) Batch {
         self.failed = true;
-        return .{ .events = events, .failure = message };
+        return .{ .events = events, .failure = message, .connected = self.connected };
     }
 };
 
@@ -280,7 +293,16 @@ pub fn prompt(arena: std.mem.Allocator, endpoint: Endpoint, session: []const u8,
 }
 
 pub fn interrupt(arena: std.mem.Allocator, endpoint: Endpoint, session: []const u8) std.mem.Allocator.Error!Request {
-    return build(arena, endpoint, "POST", try sessionPath(arena, session, "/interrupt"), "", "application/json", "{}");
+    return build(arena, endpoint, "POST", try sessionPath(arena, session, "/interrupt"), "", "application/json", null);
+}
+
+pub fn cancelInbox(arena: std.mem.Allocator, endpoint: Endpoint, session: []const u8, inbox: []const u8) std.mem.Allocator.Error!Request {
+    const leaf = try std.mem.concat(arena, u8, &.{ "/inbox/", try pathEscape(arena, inbox) });
+    return build(arena, endpoint, "DELETE", try sessionPath(arena, session, leaf), "", "application/json", null);
+}
+
+pub fn serverInfo(arena: std.mem.Allocator, endpoint: Endpoint) std.mem.Allocator.Error!Request {
+    return build(arena, endpoint, "GET", "/api/info", "", "application/json", null);
 }
 
 pub fn switchModel(arena: std.mem.Allocator, endpoint: Endpoint, session: []const u8, model: native.ModelRef) std.mem.Allocator.Error!Request {
@@ -299,19 +321,8 @@ pub fn active(arena: std.mem.Allocator, endpoint: Endpoint) std.mem.Allocator.Er
     return build(arena, endpoint, "GET", "/api/session/active", "", "application/json", null);
 }
 
-fn cursorQuery(arena: std.mem.Allocator, after: i64, limit: usize) std.mem.Allocator.Error![]const u8 {
-    var out = std.ArrayList(u8).empty;
-    if (after >= 0) try out.print(arena, "after={d}", .{after});
-    if (limit > 0) try out.print(arena, "{s}limit={d}", .{ if (out.items.len > 0) "&" else "", limit });
-    return out.items;
-}
-
-pub fn history(arena: std.mem.Allocator, endpoint: Endpoint, session: []const u8, after: i64, limit: usize) std.mem.Allocator.Error!Request {
-    return build(arena, endpoint, "GET", try sessionPath(arena, session, "/history"), try cursorQuery(arena, after, limit), "application/json", null);
-}
-
-pub fn subscribe(arena: std.mem.Allocator, endpoint: Endpoint, session: []const u8, after: i64) std.mem.Allocator.Error!Request {
-    return build(arena, endpoint, "GET", try sessionPath(arena, session, "/event"), try cursorQuery(arena, after, 0), "text/event-stream", null);
+pub fn subscribe(arena: std.mem.Allocator, endpoint: Endpoint) std.mem.Allocator.Error!Request {
+    return build(arena, endpoint, "GET", "/api/event", "", "text/event-stream", null);
 }
 
 pub const Response = struct { status: u16, body: []const u8 = "" };
@@ -368,9 +379,24 @@ pub fn promptResult(arena: std.mem.Allocator, response: Response, session: []con
     return .{ .ok = admitted };
 }
 
-pub fn interruptResult(arena: std.mem.Allocator, response: Response, session: []const u8, limit: usize) std.mem.Allocator.Error!?Failure {
+pub fn interruptResult(arena: std.mem.Allocator, response: Response, session: []const u8, limit: usize) std.mem.Allocator.Error!Outcome(bool) {
+    return switch (try check(arena, response, try sessionPath(arena, session, "/interrupt"), limit, &native.interrupt_response)) {
+        .document => |document| .{ .ok = native.interruptedOf(document) },
+        .failed => |failure| .{ .failed = failure },
+    };
+}
+
+pub fn cancelInboxResult(arena: std.mem.Allocator, response: Response, session: []const u8, inbox: []const u8, limit: usize) std.mem.Allocator.Error!?Failure {
     if (response.status == 204) return null;
-    return refusal(arena, response, try sessionPath(arena, session, "/interrupt"), limit);
+    const leaf = try std.mem.concat(arena, u8, &.{ "/inbox/", try pathEscape(arena, inbox) });
+    return refusal(arena, response, try sessionPath(arena, session, leaf), limit);
+}
+
+pub fn infoResult(arena: std.mem.Allocator, response: Response, limit: usize) std.mem.Allocator.Error!?Failure {
+    return switch (try check(arena, response, "/api/info", limit, &native.info_response)) {
+        .document => null,
+        .failed => |failure| failure,
+    };
 }
 
 pub fn switchModelResult(arena: std.mem.Allocator, response: Response, session: []const u8, limit: usize) std.mem.Allocator.Error!?Failure {
@@ -396,19 +422,6 @@ pub fn activeResult(arena: std.mem.Allocator, response: Response, limit: usize) 
         .document => |document| .{ .ok = try native.runningSessions(arena, document) },
         .failed => |failure| .{ .failed = failure },
     };
-}
-
-pub fn historyResult(arena: std.mem.Allocator, response: Response, session: []const u8, limit: usize) std.mem.Allocator.Error!Outcome(native.HistoryPage) {
-    const document = switch (try check(arena, response, try sessionPath(arena, session, "/history"), limit, &native.history_response)) {
-        .document => |value| value,
-        .failed => |failure| return .{ .failed = failure },
-    };
-    var diag = native.Diagnostic{};
-    const page = native.historyOf(arena, document, &diag) catch |err| switch (err) {
-        error.OutOfMemory => return error.OutOfMemory,
-        error.InvalidWire, error.UnsupportedType => return .{ .failed = .{ .message = diag.message } },
-    };
-    return .{ .ok = page };
 }
 
 const testing = std.testing;
@@ -483,13 +496,14 @@ test "a stream that ends mid-line is unterminated, and one that ends cleanly is 
     try testing.expectEqualStrings("EOF", diag.message);
 }
 
-const frame_one = "event: message\ndata: {\"id\":\"evt_1\",\"type\":\"session.next.moved\",\"durable\":{\"aggregateID\":\"ses_a\",\"seq\":1,\"version\":1},\"data\":{}}\n\n";
-const frame_two = "event: message\ndata: {\"id\":\"evt_2\",\"type\":\"session.next.moved\",\"durable\":{\"aggregateID\":\"ses_a\",\"seq\":2,\"version\":1},\"data\":{}}\n\n";
+const frame_one = "event: message\ndata: {\"id\":\"evt_1\",\"type\":\"session.renamed\",\"durable\":{\"aggregateID\":\"ses_a\",\"seq\":1,\"version\":1},\"data\":{\"sessionID\":\"ses_a\",\"title\":\"t\"}}\n\n";
+const frame_two = "event: message\ndata: {\"id\":\"evt_2\",\"type\":\"session.renamed\",\"durable\":{\"aggregateID\":\"ses_a\",\"seq\":2,\"version\":1},\"data\":{\"sessionID\":\"ses_a\",\"title\":\"t\"}}\n\n";
+const connected_frame = "data: {\"id\":\"evt_connected\",\"type\":\"server.connected\",\"data\":{}}\n\n";
 
-test "a subscription replays durable events and fails on a sequence that does not advance" {
+test "a subscription follows one session's events and fails on a sequence that does not advance" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
-    var stream = Stream.init(testing.allocator, 0);
+    var stream = Stream.init(testing.allocator, 0, "ses_a");
     defer stream.deinit();
     const batch = try stream.feed(arena.allocator(), frame_one ++ frame_two ++ frame_two);
     try testing.expectEqual(@as(usize, 2), batch.events.len);
@@ -500,10 +514,35 @@ test "a subscription replays durable events and fails on a sequence that does no
     try testing.expectEqual(@as(?[]const u8, null), after.failure);
 }
 
+test "a subscription reports server.connected and passes over every other session and every unscoped event" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var stream = Stream.init(testing.allocator, 0, "ses_a");
+    defer stream.deinit();
+    const before = try stream.feed(arena.allocator(), ": heartbeat\n\n");
+    try testing.expect(!before.connected);
+    const batch = try stream.feed(arena.allocator(), connected_frame ++
+        "data: {\"id\":\"evt_b1\",\"type\":\"session.renamed\",\"durable\":{\"aggregateID\":\"ses_b\",\"seq\":9,\"version\":1},\"data\":{\"sessionID\":\"ses_b\",\"title\":\"t\"}}\n\n" ++
+        "data: {\"id\":\"evt_b2\",\"type\":\"session.brand.new\",\"data\":{\"sessionID\":\"ses_b\"}}\n\n" ++
+        "data: {\"id\":\"evt_p\",\"created\":1,\"type\":\"project.updated\",\"data\":{\"id\":\"p\"}}\n\n" ++
+        frame_one ++
+        "data: {\"id\":\"evt_d\",\"type\":\"session.text.delta\",\"data\":{\"sessionID\":\"ses_a\",\"assistantMessageID\":\"msg_1\",\"ordinal\":0,\"delta\":\"h\"}}\n\n");
+    try testing.expect(batch.connected);
+    try testing.expectEqual(@as(?[]const u8, null), batch.failure);
+    try testing.expectEqual(@as(usize, 2), batch.events.len);
+    try testing.expectEqualStrings("evt_1", batch.events[0].id);
+    try testing.expectEqualStrings("evt_d", batch.events[1].id);
+
+    var own = Stream.init(testing.allocator, 0, "ses_a");
+    defer own.deinit();
+    const refused = try own.feed(arena.allocator(), "data: {\"id\":\"evt_n\",\"type\":\"session.brand.new\",\"data\":{\"sessionID\":\"ses_a\"}}\n\n");
+    try testing.expectEqualStrings("opencode native: unsupported event type \"session.brand.new\"", refused.failure.?);
+}
+
 test "a framing failure still delivers the events decoded before it" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
-    var stream = Stream.init(testing.allocator, 0);
+    var stream = Stream.init(testing.allocator, 0, "ses_a");
     defer stream.deinit();
     const batch = try stream.feed(arena.allocator(), frame_one ++ "data: a\rb\n\n" ++ frame_two);
     try testing.expectEqual(@as(usize, 1), batch.events.len);
@@ -514,12 +553,12 @@ test "a framing failure still delivers the events decoded before it" {
 test "a subscription fails on a frame name other than message and on a malformed payload" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
-    var named = Stream.init(testing.allocator, 0);
+    var named = Stream.init(testing.allocator, 0, "ses_a");
     defer named.deinit();
     const renamed = try named.feed(arena.allocator(), "event: ping\ndata: {}\n\n");
     try testing.expectEqualStrings(invalid_frame ++ ": unexpected SSE event name \"ping\"", renamed.failure.?);
 
-    var malformed = Stream.init(testing.allocator, 0);
+    var malformed = Stream.init(testing.allocator, 0, "ses_a");
     defer malformed.deinit();
     const refused = try malformed.feed(arena.allocator(), frame_one ++ "data: {\"id\":\"bad\"}\n\n");
     try testing.expectEqual(@as(usize, 1), refused.events.len);
@@ -576,57 +615,49 @@ test "a response is refused the way the oracle's client refuses it" {
     const bodiless = try createSessionResult(scratch, .{ .status = 204 }, 0);
     try testing.expectEqualStrings("opencode httpapi: unexpected 204 for /api/session", bodiless.failed.message);
 
-    const foreign = try promptResult(scratch, .{ .status = 200, .body = "{\"data\":{\"admittedSeq\":1,\"id\":\"msg_a\",\"sessionID\":\"ses_b\",\"prompt\":{\"text\":\"x\"},\"delivery\":\"steer\",\"timeCreated\":1}}" }, "ses_a", 0);
+    const located = try createSessionResult(scratch, .{ .status = 200, .body = "{\"data\":{\"id\":\"ses_a\",\"projectID\":\"p\",\"outcome\":\"succeeded\",\"time\":{\"created\":1,\"updated\":1,\"idle\":2},\"location\":{\"directory\":\"/w\"}}}" }, 0);
+    try testing.expectEqualStrings("/w", located.ok.directory);
+
+    const foreign = try promptResult(scratch, .{ .status = 200, .body = "{\"data\":{\"id\":\"msg_a\",\"sessionID\":\"ses_b\",\"time\":{\"created\":1},\"type\":\"user\",\"payload\":{\"text\":\"x\"},\"delivery\":\"steer\"}}" }, "ses_a", 0);
     try testing.expectEqualStrings(subscription_failed ++ ": admitted receipt for foreign session ses_b", foreign.failed.message);
 
-    const receipt = try promptResult(scratch, .{ .status = 200, .body = "{\"data\":{\"admittedSeq\":1,\"id\":\"msg_a\",\"sessionID\":\"ses_a\",\"prompt\":{\"text\":\"x\"},\"delivery\":\"steer\",\"timeCreated\":1}}" }, "ses_a", 0);
-    try testing.expectEqual(@as(?i64, null), receipt.ok.promoted_seq);
-    const promoted = try promptResult(scratch, .{ .status = 200, .body = "{\"data\":{\"admittedSeq\":1,\"id\":\"msg_a\",\"sessionID\":\"ses_a\",\"prompt\":{\"text\":\"x\"},\"delivery\":\"queue\",\"timeCreated\":1,\"promotedSeq\":3}}" }, "ses_a", 0);
-    try testing.expectEqual(@as(?i64, 3), promoted.ok.promoted_seq);
+    const receipt = try promptResult(scratch, .{ .status = 200, .body = "{\"data\":{\"id\":\"msg_a\",\"sessionID\":\"ses_a\",\"time\":{\"created\":1},\"type\":\"user\",\"payload\":{\"text\":\"x\"},\"delivery\":\"queue\"}}" }, "ses_a", 0);
+    try testing.expectEqualStrings("queue", receipt.ok.delivery);
 
-    const invalid = try promptResult(scratch, .{ .status = 200, .body = "{\"data\":{\"admittedSeq\":1,\"id\":\"msg_a\",\"sessionID\":\"ses_a\",\"prompt\":{\"text\":\"x\"},\"delivery\":\"now\",\"timeCreated\":1}}" }, "ses_a", 0);
+    const invalid = try promptResult(scratch, .{ .status = 200, .body = "{\"data\":{\"id\":\"msg_a\",\"sessionID\":\"ses_a\",\"time\":{\"created\":1},\"type\":\"user\",\"payload\":{},\"delivery\":\"now\"}}" }, "ses_a", 0);
     try testing.expectEqualStrings(native.invalid_wire ++ ": invalid admitted receipt", invalid.failed.message);
 }
 
-test "interrupt accepts no content and the active set keeps only running sessions" {
+test "interrupt says whether it interrupted, an inbox cancel accepts no content, and the active set keeps only running sessions" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const scratch = arena.allocator();
-    try testing.expectEqual(@as(?Failure, null), try interruptResult(scratch, .{ .status = 204 }, "ses_a", 0));
-    const unavailable = (try interruptResult(scratch, .{ .status = 503, .body = "{\"_tag\":\"ServiceUnavailableError\"}" }, "ses_a", 0)).?;
-    try testing.expectEqualStrings("opencode native: HTTP 503 ServiceUnavailableError", unavailable.message);
+    try testing.expect((try interruptResult(scratch, .{ .status = 200, .body = "{\"interrupted\":true}" }, "ses_a", 0)).ok);
+    try testing.expect(!(try interruptResult(scratch, .{ .status = 200, .body = "{\"interrupted\":false}" }, "ses_a", 0)).ok);
+    const unavailable = try interruptResult(scratch, .{ .status = 503, .body = "{\"_tag\":\"ServiceUnavailableError\"}" }, "ses_a", 0);
+    try testing.expectEqualStrings("opencode native: HTTP 503 ServiceUnavailableError", unavailable.failed.message);
+    try testing.expectEqual(@as(?Failure, null), try cancelInboxResult(scratch, .{ .status = 204 }, "ses_a", "msg_1", 0));
+    const missing = (try cancelInboxResult(scratch, .{ .status = 404, .body = "{\"_tag\":\"SessionNotFoundError\"}" }, "ses_a", "msg_1", 0)).?;
+    try testing.expectEqualStrings("opencode native: HTTP 404 SessionNotFoundError", missing.message);
 
     const listed = try activeResult(scratch, .{ .status = 200, .body = "{\"data\":{\"ses_a\":{\"type\":\"running\"},\"ses_b\":{\"type\":\"idle\"},\"ses_c\":null}}" }, 0);
     try testing.expectEqual(@as(usize, 1), listed.ok.len);
     try testing.expectEqualStrings("ses_a", listed.ok[0]);
     const strict = try activeResult(scratch, .{ .status = 200, .body = "{\"data\":{\"ses_a\":{\"type\":\"running\",\"since\":1}}}" }, 0);
     try testing.expectEqualStrings("opencode httpapi: decode /api/session/active response: json: unknown field \"since\"", strict.failed.message);
-}
-
-test "a history page decodes every durable event it carries" {
-    var arena = std.heap.ArenaAllocator.init(testing.allocator);
-    defer arena.deinit();
-    const scratch = arena.allocator();
-    const page = try historyResult(scratch, .{ .status = 200, .body = "{\"data\":[{\"id\":\"evt_4\",\"type\":\"session.next.text.ended\",\"durable\":{\"aggregateID\":\"ses_a\",\"seq\":4,\"version\":1},\"data\":{\"text\":\"a<b\"}}],\"hasMore\":true}" }, "ses_a", 0);
-    try testing.expect(page.ok.has_more);
-    try testing.expectEqual(@as(i64, 4), page.ok.events[0].durable.seq);
-    var diag = native.Diagnostic{};
-    try testing.expectEqualStrings("a<b", (try native.decodeTextEnded(scratch, page.ok.events[0], &diag)).text);
-
-    const refused = try historyResult(scratch, .{ .status = 200, .body = "{\"data\":[{\"id\":\"nope\"}],\"hasMore\":false}" }, "ses_a", 0);
-    try testing.expectEqualStrings(native.invalid_wire ++ ": invalid event id", refused.failed.message);
+    try testing.expectEqual(@as(?Failure, null), try infoResult(scratch, .{ .status = 200, .body = "{\"version\":\"2.0.24\",\"pid\":1,\"urls\":[],\"paths\":{},\"capabilities\":{}}" }, 0));
 }
 
 fn streamEveryShape(allocator: std.mem.Allocator) !void {
     var arena = std.heap.ArenaAllocator.init(allocator);
     defer arena.deinit();
-    var stream = Stream.init(allocator, 0);
+    var stream = Stream.init(allocator, 0, "ses_a");
     defer stream.deinit();
-    const batch = try stream.feed(arena.allocator(), ": keepalive\n\n" ++ frame_one ++ frame_two);
+    const batch = try stream.feed(arena.allocator(), ": keepalive\n\n" ++ connected_frame ++ frame_one ++ frame_two);
     if (batch.events.len != 2) return error.TestUnexpectedResult;
     _ = try stream.finish(arena.allocator());
-    _ = try historyResult(arena.allocator(), .{ .status = 200, .body = "{\"data\":[{\"id\":\"evt_4\",\"type\":\"session.next.moved\",\"durable\":{\"aggregateID\":\"ses_a\",\"seq\":4,\"version\":1},\"data\":{}}],\"hasMore\":false}" }, "ses_a", 0);
-    _ = try prompt(arena.allocator(), .{ .base_path = "/base", .username = "u", .password = "p" }, "ses_a", .{ .id = "msg_a", .prompt = .{ .text = "hi" }, .delivery = "steer" });
+    _ = try prompt(arena.allocator(), .{ .base_path = "/base", .username = "u", .password = "p" }, "ses_a", .{ .id = "msg_a", .text = "hi", .delivery = "steer" });
+    _ = try cancelInbox(arena.allocator(), .{ .base_path = "/base" }, "ses_a", "msg_a");
 }
 
 test "the SSE decoder and the codec propagate every allocation failure and leak nothing" {

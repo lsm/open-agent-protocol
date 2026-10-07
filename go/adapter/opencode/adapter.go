@@ -25,12 +25,9 @@ var (
 )
 
 const (
-	endpointID          = "opencode.server"
-	defaultJournalCap   = 256
-	defaultHistoryLimit = 100
-
-	defaultSettlePollMin = 10 * time.Millisecond
-	defaultSettlePollMax = 500 * time.Millisecond
+	endpointID            = "opencode.server"
+	defaultJournalCap     = 256
+	defaultRequestTimeout = 60 * time.Second
 )
 
 var (
@@ -50,10 +47,10 @@ type Client interface {
 	Session(ctx context.Context, session native.SessionID) (native.SessionInfo, error)
 	SwitchModel(ctx context.Context, session native.SessionID, model native.ModelRef) error
 	Prompt(ctx context.Context, session native.SessionID, request native.PromptRequest) (native.Admitted, error)
-	Interrupt(ctx context.Context, session native.SessionID) error
+	Interrupt(ctx context.Context, session native.SessionID) (bool, error)
+	CancelInbox(ctx context.Context, session native.SessionID, inbox native.MessageID) error
 	Active(ctx context.Context) (map[native.SessionID]bool, error)
-	History(ctx context.Context, session native.SessionID, after int64, limit int) (native.HistoryPage, error)
-	Subscribe(ctx context.Context, session native.SessionID, after int64) (Subscription, error)
+	Subscribe(ctx context.Context, session native.SessionID) (Subscription, error)
 	Close() error
 }
 
@@ -77,10 +74,7 @@ type Config struct {
 	JournalCapacity int
 	FrameLimit      int
 	QueueCapacity   int
-	HistoryLimit    int
-
-	SettlePollMin time.Duration
-	SettlePollMax time.Duration
+	RequestTimeout  time.Duration
 }
 
 type Adapter struct {
@@ -102,17 +96,8 @@ func New(config Config) (*Adapter, error) {
 	if config.JournalCapacity <= 0 {
 		config.JournalCapacity = defaultJournalCap
 	}
-	if config.HistoryLimit <= 0 {
-		config.HistoryLimit = defaultHistoryLimit
-	}
-	if config.SettlePollMin <= 0 {
-		config.SettlePollMin = defaultSettlePollMin
-	}
-	if config.SettlePollMax < config.SettlePollMin {
-		config.SettlePollMax = defaultSettlePollMax
-	}
-	if config.SettlePollMax < config.SettlePollMin {
-		config.SettlePollMax = config.SettlePollMin
+	if config.RequestTimeout <= 0 {
+		config.RequestTimeout = defaultRequestTimeout
 	}
 	if config.Factory == nil {
 		options := httpapi.Options{Username: config.Username, Password: config.Password, HTTP: config.HTTP, FrameLimit: config.FrameLimit, QueueCapacity: config.QueueCapacity}
@@ -135,18 +120,18 @@ func advertisedFeatures() map[string]protocol.FeatureSupport {
 		protocol.FeatureOpenReopen:       {Level: protocol.SupportNative, Reason: reopenSupportReason},
 		"session.state":                  {Level: protocol.SupportEmulated, Reason: "active set and adapter-owned projection"},
 		"session.message.submit":         {Level: protocol.SupportNative, Reason: "durable admission receipt with typed conflict rejection"},
-		"session.message.delivery.auto":  {Level: protocol.SupportEmulated, Reason: "no native auto; maps to steer which starts immediately when idle"},
-		"session.message.delivery.queue": {Level: protocol.SupportNative, Reason: "SessionInput.Admitted carries delivery=queue with promotedSeq; a reservation is admitted durably and promoted by session.next.prompted"},
+		"session.message.delivery.auto":  {Level: protocol.SupportEmulated, Reason: "no native auto; steer when the session is idle, queue behind an open run"},
+		"session.message.delivery.queue": {Level: protocol.SupportNative, Reason: "a prompt with delivery=queue is admitted to the session inbox and starts its run at session.inbox.delivered"},
 		"session.message.delivery.steer": {Level: protocol.SupportUnavailable, Reason: "an explicit steer request is rejected as outside the v0.1 subset; the server's default delivery is exposed through an auto request"},
-		"run.streaming":                  {Level: protocol.SupportDegraded, Reason: "durable stream carries full-value text.ended boundaries, not live deltas"},
-		"run.status":                     {Level: protocol.SupportNative, Reason: "session.active and durable step events"},
-		"run.cancel":                     {Level: protocol.SupportDegraded, Reason: "interrupt is intent with idle no-op; settlement derived from durable evidence and the active set"},
+		"run.streaming":                  {Level: protocol.SupportDegraded, Reason: "text and reasoning are forwarded whole at session.text.ended and session.reasoning.ended; the live deltas are not forwarded"},
+		"run.status":                     {Level: protocol.SupportNative, Reason: "session.inbox.delivered starts a run and session.execution.* settles it"},
+		"run.cancel":                     {Level: protocol.SupportDegraded, Reason: "interrupt is intent with an idle no-op; a running run settles at session.execution.interrupted and a queued one at session.inbox.cancelled"},
 		"run.resume":                     {Level: protocol.SupportDegraded, Reason: "conversation resume exists natively but is not exercised; OAP resume replays the adapter journal"},
-		"run.reconciliation":             {Level: protocol.SupportEmulated, Reason: "adapter-owned projection over active and durable sequence"},
+		"run.reconciliation":             {Level: protocol.SupportEmulated, Reason: "adapter-owned projection over the session events; the event stream does not replay"},
 		"run.replay":                     {Level: protocol.SupportDegraded, Reason: "bounded adapter journal; the native durable cursor is exposed as the transcript cursor"},
 		"action.tools":                   {Level: protocol.SupportNative, Reason: "tool.called/progress/success/failed lifecycle observed natively"},
 		"action.tools.execute":           {Level: protocol.SupportUnavailable, Reason: "tools execute server-side; no client-hosted execution surface"},
-		"action.permissions":             {Level: protocol.SupportUnavailable, Reason: "durable stream carries no permission events; the polling surface is unexercised"},
+		"action.permissions":             {Level: protocol.SupportUnavailable, Reason: "permission.asked travels only on the volatile global event stream and is not served"},
 
 		protocol.FeatureSessionReasoning: {Level: protocol.SupportNative, Modes: []string{protocol.ModeSessionOpen, protocol.ModeSessionLive}, Reason: "the session's model carries the level as its variant, which the runner sends on every step: set at create and between runs by switching the session to the same model with the new variant; it needs a model, and a variant the session record does not confirm is refused"},
 		protocol.FeatureCompactionPolicy: {Level: protocol.SupportUnavailable, Reason: "compaction is the server's config, fixed when its operator starts it; the adapter attaches to a running server"},
@@ -211,9 +196,8 @@ func (a *Adapter) Open(ctx context.Context, req base.OpenRequest) (base.Session,
 		return nil, err
 	}
 	var info native.SessionInfo
-	var after int64 = -1
 	if req.Reopen {
-		info, after, err = reloadBinding(ctx, client, req.NativeSessionID)
+		info, err = reloadBinding(ctx, client, req.NativeSessionID)
 		if err != nil {
 			_ = client.Close()
 			if ctx.Err() != nil {
@@ -231,10 +215,23 @@ func (a *Adapter) Open(ctx context.Context, req base.OpenRequest) (base.Session,
 	}
 
 	subCtx, subCancel := context.WithCancel(context.Background())
-	subscription, err := client.Subscribe(subCtx, info.ID, after)
-	if err != nil {
+	waitCtx, waitCancel := context.WithTimeout(ctx, a.config.RequestTimeout)
+	stopWaiting := context.AfterFunc(waitCtx, subCancel)
+	subscription, err := client.Subscribe(subCtx, info.ID)
+	waited := !stopWaiting()
+	waitCancel()
+	if err != nil || waited {
+		if err == nil {
+			_ = subscription.Close()
+		}
 		subCancel()
 		_ = client.Close()
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+		if waited {
+			return nil, errors.New("subscribe OpenCode session events: no server.connected within the request timeout")
+		}
 		return nil, fmt.Errorf("subscribe OpenCode session events: %w", err)
 	}
 	id := req.SessionID
@@ -254,9 +251,7 @@ func (a *Adapter) Open(ctx context.Context, req base.OpenRequest) (base.Session,
 		clock:        a.clock,
 		ids:          a.ids,
 		capacity:     a.config.JournalCapacity,
-		historyLimit: a.config.HistoryLimit,
-		pollMin:      a.config.SettlePollMin,
-		pollMax:      a.config.SettlePollMax,
+		timeout:      a.config.RequestTimeout,
 		nativeID:     info.ID,
 		model:        info.Model,
 		participant:  req.Participant.ID,
@@ -264,13 +259,14 @@ func (a *Adapter) Open(ctx context.Context, req base.OpenRequest) (base.Session,
 		runs:         map[protocol.RunID]*runState{},
 		pending:      map[native.MessageID]*runState{},
 		tools:        map[string]*toolState{},
+		toolNames:    map[string]string{},
 		reduced:      map[int64]bool{},
 		stop:         make(chan struct{}),
 		subCancel:    subCancel,
 	}
 
 	if req.Reopen {
-		s.restoreState(after)
+		s.restoreState()
 	}
 	s.observeModel(model)
 	go s.dispatch()
@@ -305,8 +301,8 @@ type clientBridge struct {
 	*httpapi.Client
 }
 
-func (b *clientBridge) Subscribe(ctx context.Context, session native.SessionID, after int64) (Subscription, error) {
-	subscription, err := b.Client.Subscribe(ctx, session, after)
+func (b *clientBridge) Subscribe(ctx context.Context, session native.SessionID) (Subscription, error) {
+	subscription, err := b.Client.Subscribe(ctx, session)
 	if err != nil {
 		return nil, err
 	}

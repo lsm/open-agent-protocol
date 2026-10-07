@@ -9159,7 +9159,25 @@ fn opencodeBackendConfig(
         try surface.refuse("{s} \"{s}\" is an OpenCode server and needs a --config entry naming its \"endpoint\"", .{ surface.noun, entry.name });
         return error.BackendRefused;
     }
-    return .{ .endpoint = entry.endpoint, .agent = entry.agent };
+    return .{ .endpoint = entry.endpoint, .agent = entry.agent, .username = "opencode", .password = opencodePassword(entry.environment) };
+}
+
+fn opencodePassword(environment: []const []const u8) []const u8 {
+    var found: []const u8 = "";
+    for ([_][]const u8{ "OPENCODE_SERVER_PASSWORD=", "OPENCODE_PASSWORD=" }) |prefix| {
+        for (environment) |entry| {
+            if (std.mem.startsWith(u8, entry, prefix)) found = entry[prefix.len..];
+        }
+    }
+    return found;
+}
+
+test "an OpenCode entry takes its server password from its allowlist, preferring the current name" {
+    try std.testing.expectEqualStrings("", opencodePassword(&.{}));
+    try std.testing.expectEqualStrings("", opencodePassword(&.{"OTHER=x"}));
+    try std.testing.expectEqualStrings("legacy", opencodePassword(&.{"OPENCODE_SERVER_PASSWORD=legacy"}));
+    try std.testing.expectEqualStrings("current", opencodePassword(&.{ "OPENCODE_PASSWORD=current", "OPENCODE_SERVER_PASSWORD=legacy" }));
+    try std.testing.expectEqualStrings("current", opencodePassword(&.{ "OPENCODE_SERVER_PASSWORD=legacy", "OPENCODE_PASSWORD=current" }));
 }
 
 var backend_write_stall_ns: u64 = 2 * 60 * std.time.ns_per_s;

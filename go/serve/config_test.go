@@ -528,3 +528,20 @@ func TestLoadRegistryKeepsTheDefaultForAZeroJournalCapacity(t *testing.T) {
 		t.Fatal("entry did not load with the default capacity")
 	}
 }
+
+func TestAnOpenCodeEntryTakesItsServerPasswordFromItsAllowlistPreferringTheCurrentName(t *testing.T) {
+	for _, tc := range []struct {
+		environment []string
+		want        string
+	}{
+		{nil, ""},
+		{[]string{"OTHER=x"}, ""},
+		{[]string{"OPENCODE_SERVER_PASSWORD=legacy"}, "legacy"},
+		{[]string{"OPENCODE_PASSWORD=current", "OPENCODE_SERVER_PASSWORD=legacy"}, "current"},
+		{[]string{"OPENCODE_SERVER_PASSWORD=legacy", "OPENCODE_PASSWORD=current"}, "current"},
+	} {
+		if got := opencodePassword(tc.environment); got != tc.want {
+			t.Fatalf("opencodePassword(%v) = %q, want %q", tc.environment, got, tc.want)
+		}
+	}
+}

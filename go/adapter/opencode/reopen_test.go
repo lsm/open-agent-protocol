@@ -20,18 +20,9 @@ func reopenAdapter(t *testing.T, client *fakeClient) *Adapter {
 	return adapter
 }
 
-func durableHistory(seqs ...int64) native.HistoryPage {
-	var page native.HistoryPage
-	for _, seq := range seqs {
-		page.Events = append(page.Events, native.Event{ID: native.EventID("evt_" + strings.Repeat("0", int(seq))), Type: native.TypePrompted, Durable: &native.DurablePosition{AggregateID: "ses_fake00000000000000", Seq: seq, Version: 1}})
-	}
-	return page
-}
-
-func TestReopenAttachesToTheBoundServerSessionAfterItsLastStoredEvent(t *testing.T) {
+func TestReopenAttachesToTheBoundServerSessionWithoutCreatingOne(t *testing.T) {
 	client := newFakeClient()
 	client.model = &native.ModelRef{ID: "fixture", ProviderID: "fixture"}
-	client.historyPage = durableHistory(1, 2, 3)
 	session, err := reopenAdapter(t, client).Open(context.Background(), base.OpenRequest{SessionID: "after", Reopen: true, NativeSessionID: "ses_fake00000000000000"})
 	if err != nil {
 		t.Fatal(err)
@@ -41,17 +32,17 @@ func TestReopenAttachesToTheBoundServerSessionAfterItsLastStoredEvent(t *testing
 	if err != nil {
 		t.Fatal(err)
 	}
-	if state.Recovery == nil || !state.Recovery.Recovered || state.CurrentModelID != "fixture/fixture" || state.TranscriptCursor != "3" {
+	if state.Recovery == nil || !state.Recovery.Recovered || state.CurrentModelID != "fixture/fixture" {
 		t.Fatalf("recovered state = %+v", state)
 	}
 	if got := session.(base.NativeSession).NativeSessionID(); got != "ses_fake00000000000000" {
 		t.Fatalf("binding = %q", got)
 	}
 	client.mu.Lock()
-	after, creates := client.subscribedAfter, client.creates
+	creates, subscribed := client.creates, client.subscribeCtx != nil
 	client.mu.Unlock()
-	if after != 3 || creates != 0 {
-		t.Fatalf("subscribed after %d with %d creates; a reopen must resume after the last stored event without creating a session", after, creates)
+	if creates != 0 || !subscribed {
+		t.Fatalf("creates = %d, subscribed = %v; a reopen follows the bound session without creating one", creates, subscribed)
 	}
 }
 
@@ -66,10 +57,10 @@ func TestAFreshOpenBindsTheSessionTheServerCreated(t *testing.T) {
 		t.Fatalf("binding = %q", got)
 	}
 	client.mu.Lock()
-	after := client.subscribedAfter
+	creates := client.creates
 	client.mu.Unlock()
-	if after != -1 {
-		t.Fatalf("a fresh session subscribed after %d, want from its start", after)
+	if creates != 1 {
+		t.Fatalf("creates = %d", creates)
 	}
 }
 
@@ -87,9 +78,9 @@ func TestReopenRefusesASessionItCannotAttach(t *testing.T) {
 		{name: "still running", binding: "ses_fake00000000000000", prepare: func(f *fakeClient) {
 			f.activeFor = 1
 		}, detail: "still running"},
-		{name: "history unreadable", binding: "ses_fake00000000000000", prepare: func(f *fakeClient) {
-			f.historyErr = errors.New("history down")
-		}, detail: "history down"},
+		{name: "active set unreadable", binding: "ses_fake00000000000000", prepare: func(f *fakeClient) {
+			f.activeErr = errors.New("active down")
+		}, detail: "active down"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
