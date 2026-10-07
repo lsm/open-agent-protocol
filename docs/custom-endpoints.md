@@ -341,17 +341,20 @@ values discovery does not carry are the same defaults a custom provider starts
 from, 128000 and 8192, until a wire reports better ones.
 
 A row whose listing names models without their limits can name a `models_dev`
-key, as both OpenCode rows do. A discovered model with no context window, output
+key, as both OpenCode rows and the coding-plan rows do. A discovered model with no context window, output
 limit, reasoning flag or image input of its own then takes the figure
 [models.dev](https://models.dev) publishes for the same model id under that key;
 a figure the listing or the row's `models` entry gives is never replaced, and a
 model models.dev does not list keeps the defaults. The full listing is fetched
 without credentials only when such a row has a credential and a model lacking a
 limit, and the providers the catalog names are kept at
-`~/.oapx/model_catalog/models-dev.json`. An ordinary load reads that copy however
-old and fetches only when there is none, so models.dev being unreachable never
-delays a start that has fetched once; a model refresh fetches it again, falling
-back to the copy, then to the defaults.
+`~/.oapx/model_catalog/models-dev.json`, together with the keys that fetch
+sought. An ordinary load reads that copy however old and fetches only when there
+is none, or when the catalog has gained a key the copy was not fetched for. That
+second fetch is tried once: if it fails, the copy is kept and marked as having
+sought the new keys, so models.dev being unreachable delays at most one start
+after an upgrade. A model refresh fetches it again, falling back to the copy, then
+to the defaults.
 
 The base URL a discovered row uses is resolved the way every other row's is, in
 the order `provider_base_url` documents: `OAPX_BASE_URL` first, then the row's
