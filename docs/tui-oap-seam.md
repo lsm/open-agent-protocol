@@ -19,7 +19,10 @@ window, output, permission mode, workspace root) travel in the open request's
 `session.reasoning` with `session_live`, all five change between runs on a
 `session.settings.update.request`, the four under `extensions.oapx` beside the
 current thinking level. Over `--attach` only the thinking level changes, through
-the hub's settings route; the other four stay fixed once the session opens. Tool approvals cross too: in ask mode the adapter's
+the hub's settings route; the other four stay fixed once the session opens.
+Automatic worktrees follow from that: the first turn creates the session's Git
+worktree and moves the workspace root to it live, so they are on wherever the
+endpoint takes live settings, and off over `--attach`. Tool approvals cross too: in ask mode the adapter's
 `action.permission.requested` becomes the TUI's approval prompt, and the answer goes
 back as `action.permission.resolve.request` naming the choice the user made: the
 `oapx` adapter offers `approve_always` and `reject_always` beside `approve` and
@@ -124,7 +127,7 @@ without going through the ops table.
 `oapx --tui` and again on `oapx tui`, then compares the two runs' saved
 session records field by field, JSON-valued fields parsed, leaving out only the
 record types `UNCOMPARED_EVENT_TYPES` and the fields `UNCOMPARED_EVENT_FIELDS`
-name, each with a reason, and the timings `UNCOMPARED_RESULT_FIELDS` strips from
+name, each with a reason, and the timings and byte counts `UNCOMPARED_RESULT_FIELDS` strips from
 a tool's result; `UNORDERED_EVENT_TYPES` are compared as a set. `OAP_KNOWN_GAPS` lists the
 scenarios `oapx tui` fails today and `KNOWN_DIVERGENCES` the ones whose
 records differ; an entry that stops failing fails the sweep, so both lists

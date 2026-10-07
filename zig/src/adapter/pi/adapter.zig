@@ -8,6 +8,7 @@ const compat = @import("compat");
 const json_encode = @import("json_encode");
 const session = @import("session.zig");
 const rpc = @import("rpc.zig");
+pub const native = @import("native.zig");
 
 pub const endpoint_id = session.endpoint_id;
 pub const capability_revision = harness_pins.pi_capability_revision;
@@ -127,7 +128,25 @@ pub const Adapter = struct {
     }
 
     pub fn adapter(self: *Adapter) contract.Adapter {
-        return .{ .ptr = self, .vtable = &.{ .probe = probe, .open = open } };
+        return .{ .ptr = self, .vtable = &.{ .probe = probe, .open = open, .native_list = nativeList, .native_read = nativeRead } };
+    }
+
+    fn agentDir(self: *Adapter, arena: std.mem.Allocator) ![]const u8 {
+        const home = compat.getEnvVarOwned(arena, "HOME") catch "";
+        return native.agentDir(arena, self.config.environment, home);
+    }
+
+    fn nativeList(ptr: *anyopaque, arena: std.mem.Allocator, request: contract.NativeListRequest, refusal: *contract.Refusal) contract.Failure![]const contract.NativeSession {
+        const self: *Adapter = @ptrCast(@alignCast(ptr));
+        _ = refusal;
+        const directory = if (request.directory.len > 0) request.directory else self.config.working_directory orelse "";
+        return try native.list(arena, try self.agentDir(arena), directory, request.limit);
+    }
+
+    fn nativeRead(ptr: *anyopaque, arena: std.mem.Allocator, request: contract.NativeReadRequest, refusal: *contract.Refusal) contract.Failure![]const contract.NativeTurn {
+        _ = ptr;
+        _ = refusal;
+        return try native.read(arena, request.native_id);
     }
 
     fn probe(ptr: *anyopaque, refusal: *contract.Refusal) contract.Failure!contract.Descriptor {
@@ -2204,4 +2223,8 @@ test "Pi replays the captured reload exchange through its native loader" {
         while (members.next()) |member| try testing.expectEqualStrings(member.value_ptr.string, textOf(actual, member.key_ptr.*));
     }
     try testing.expect(sent.next() == null);
+}
+
+test {
+    _ = native;
 }

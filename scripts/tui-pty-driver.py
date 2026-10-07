@@ -14,6 +14,8 @@
 # encoding `text:...|tool:<name>[#<args-json>]|hold|error:...` (see
 # FixtureRuntime in zig/src/tui/app.zig); plain values stay a single canned
 # reply. A literal `|` or `\` inside a step payload is escaped as `\|` / `\\`.
+# A tool step's `$WORKSPACE_ROOT` becomes the workspace root the agent's system
+# prompt names when the step is streamed, as a model would read it there.
 #
 # The provider-* scenarios unset OAPX_TUI_FIXTURE and register
 # scripts/tui-fake-provider.py as a custom provider in $HOME/.oapx/providers.json,
@@ -409,7 +411,7 @@ class VtScreen:
 
 
 class PtySession:
-    def __init__(self, args, fixture_text=None, home=None, use_fixture=True, extra_env=None, argv=None):
+    def __init__(self, args, fixture_text=None, home=None, use_fixture=True, extra_env=None, argv=None, cwd=None):
         self.binary = args.binary
         self.width = args.width
         self.height = args.height
@@ -445,6 +447,7 @@ class PtySession:
                     stdin=slave,
                     stdout=slave,
                     stderr=slave,
+                    cwd=cwd,
                     start_new_session=True,
                     env=env,
                 )
@@ -827,7 +830,7 @@ def assert_status_bar_whole_segments(run, what):
 
 
 class SweepRun:
-    def __init__(self, args, name, fixture_text, width=None, height=None, home=None, use_fixture=True, extra_env=None, argv=None):
+    def __init__(self, args, name, fixture_text, width=None, height=None, home=None, use_fixture=True, extra_env=None, argv=None, cwd=None):
         self.args = args
         self.name = name
         self.notes = []
@@ -841,7 +844,7 @@ class SweepRun:
         if height is not None:
             frame_args.height = height
         try:
-            self.session = PtySession(frame_args, fixture_text=fixture_text, home=home, use_fixture=use_fixture, extra_env=extra_env, argv=argv)
+            self.session = PtySession(frame_args, fixture_text=fixture_text, home=home, use_fixture=use_fixture, extra_env=extra_env, argv=argv, cwd=cwd)
         except OSError as err:
             raise ScenarioError(f"failed to start {args.binary} in a pseudo-terminal: {err}")
 
@@ -1494,6 +1497,44 @@ def scenario_session_commands(args):
     return run
 
 
+def scenario_auto_worktree(args):
+    home = tempfile.mkdtemp(prefix="makai-pty-home-worktree-")
+    repo = tempfile.mkdtemp(prefix="makai-pty-repo-")
+    try:
+        os.makedirs(os.path.join(home, ".oapx"))
+        with open(os.path.join(home, ".oapx", "config.json"), "w") as handle:
+            json.dump({"mode": {"auto_worktree": True}}, handle)
+        git_env = dict(os.environ, HOME=home, GIT_AUTHOR_NAME="pty", GIT_AUTHOR_EMAIL="pty@example.invalid", GIT_COMMITTER_NAME="pty", GIT_COMMITTER_EMAIL="pty@example.invalid")
+        for command in (["git", "init", "-q", "-b", "main"], ["git", "commit", "-q", "--allow-empty", "-m", "start"]):
+            subprocess.run(command, cwd=repo, env=git_env, check=True, capture_output=True)
+        run = SweepRun(args, "auto-worktree", 'tool:Shell#{"description":"print the working directory","workspace_root":"$WORKSPACE_ROOT","command":"pwd"}|text:worktree-turn-done', home=home, cwd=repo)
+        try:
+            run.session.wait_for(WELCOME_MARKER, args.startup_timeout, "welcome banner")
+            run.settle()
+            run.session.type_text("work in a worktree")
+            run.session.send(KEY_ENTER, "Enter (submit)")
+            run.session.wait_for(b"Git worktree ready for this session.", 20.0, "the worktree notice")
+            run.session.wait_for(b"worktree-turn-done", 15.0, "the turn after the worktree")
+            run.settle(0.5)
+            run.frame("worktree-turn")
+            run.quit()
+            worktrees = os.path.join(home, ".oapx", "worktrees") + "/"
+            results = [event for event in session_events(home) if event.get("type") == "message_end" and event.get("role") == "tool_result"]
+            if not results or results[-1].get("is_error"):
+                raise ScenarioError(f"auto-worktree: the shell call left no successful result in the session: {results!r}")
+            if worktrees not in results[-1].get("text", ""):
+                raise ScenarioError(f"auto-worktree: the shell's pwd printed {results[-1].get('text', '')!r}, not a directory under {worktrees}")
+            run.note("with automatic worktrees on, the first turn creates a Git worktree for the session, and the shell the agent runs with the root its prompt names prints a directory inside it, as the saved tool result records")
+        except ScenarioError as err:
+            run.error = str(err)
+        finally:
+            run.close()
+        return run
+    finally:
+        shutil.rmtree(home, ignore_errors=True)
+        shutil.rmtree(repo, ignore_errors=True)
+
+
 FAKE_PROVIDER_SCRIPT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "tui-fake-provider.py")
 FAKE_PROVIDER_MODEL = "pty-fake-model"
 FAKE_PROVIDER_DELTAS = 5
@@ -1706,6 +1747,7 @@ SCENARIOS = {
     "provider-https": scenario_provider_https,
     "hub-attach": scenario_hub_attach,
     "session-commands": scenario_session_commands,
+    "auto-worktree": scenario_auto_worktree,
 }
 
 LOCAL_ONLY_SCENARIOS = {"hub-attach"}
@@ -1731,11 +1773,37 @@ UNCOMPARED_EVENT_TYPES = {
 UNCOMPARED_EVENT_FIELDS = {
     "at_ms": "a wall-clock stamp",
     "generation": "a counter local to the runtime that produced the event",
+    "raw_total_bytes": "the size of a tool's result, which carries a timing whose digits vary",
+    "returned_total_bytes": "as raw_total_bytes",
+    "estimated_returned_tokens": "derived from returned_total_bytes",
 }
 JSON_EVENT_FIELDS = ("result_json", "args_json", "tool_calls_json", "content_json", "details_json", "artifacts_json")
 
 
-UNCOMPARED_RESULT_FIELDS = ("duration_ms",)
+UNCOMPARED_RESULT_FIELDS = {
+    "duration_ms": "a wall-clock measure",
+    "stdout_bytes": "output that names a per-run path is as long as that path; the output text itself is compared in the tool's result message",
+    "stderr_bytes": "as stdout_bytes",
+    "raw_bytes": "as stdout_bytes",
+}
+
+
+STABILIZED_PATHS = (
+    (re.compile(re.escape(tempfile.gettempdir()) + r"/makai-pty-[A-Za-z0-9_-]+"), "<tmp>", "each run gets its own temporary home and repository"),
+    (re.compile(r"worktrees/[^/\\\"\s]+"), "worktrees/<session>", "a session's worktree is named after its session id"),
+)
+
+
+def stabilized(value):
+    if isinstance(value, str):
+        for pattern, replacement, _ in STABILIZED_PATHS:
+            value = pattern.sub(replacement, value)
+        return value
+    if isinstance(value, list):
+        return [stabilized(item) for item in value]
+    if isinstance(value, dict):
+        return {key: stabilized(item) for key, item in value.items()}
+    return value
 
 
 def without_timings(result_json):
@@ -1764,6 +1832,7 @@ def normalized_events(events):
         for field in JSON_EVENT_FIELDS:
             if field in record:
                 record[field] = without_timings(record[field])
+        record = stabilized(record)
         (unordered if event.get("type") in UNORDERED_EVENT_TYPES else kept).append(record)
     return kept + sorted(unordered, key=lambda record: json.dumps(record, sort_keys=True))
 
