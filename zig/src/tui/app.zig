@@ -5733,7 +5733,10 @@ pub fn runWith(allocator: std.mem.Allocator, io: std.Io, context_window: ?u32, e
         if (history_store) |*store| execution.?.setHistory(.{ .ctx = store, .load = loadSavedHistory });
         if (history_store) |*store| execution.?.setTranscripts(.{ .ctx = store, .save = saveSessionTranscript });
         options.remote = execution.?.remote();
-        if (execution_mode == .attach) options.generate_titles = false;
+        if (execution_mode == .attach) {
+            options.generate_titles = false;
+            options.auto_worktree = false;
+        }
     }
 
     var program = zz.Program(TuiModel).initWithOptions(allocator, io, &environ_map, tuiProgramOptions());

@@ -1773,6 +1773,9 @@ UNCOMPARED_EVENT_TYPES = {
 UNCOMPARED_EVENT_FIELDS = {
     "at_ms": "a wall-clock stamp",
     "generation": "a counter local to the runtime that produced the event",
+    "raw_total_bytes": "the size of a tool's result, which carries a timing whose digits vary",
+    "returned_total_bytes": "as raw_total_bytes",
+    "estimated_returned_tokens": "derived from returned_total_bytes",
 }
 JSON_EVENT_FIELDS = ("result_json", "args_json", "tool_calls_json", "content_json", "details_json", "artifacts_json")
 
