@@ -200,6 +200,7 @@ type ListRequest struct {
 	IncludeNative bool
 	Limit         *int
 	Cursor        string
+	Search        string
 }
 
 type listCursor struct {
@@ -223,9 +224,13 @@ func ParseListRequest(params json.RawMessage) (ListRequest, *Refusal) {
 		IncludeNative *bool    `json:"include_native"`
 		Limit         *int     `json:"limit"`
 		Cursor        *string  `json:"cursor"`
+		Search        *string  `json:"search"`
 	}
 	if err := json.Unmarshal(params, &given); err != nil {
-		return request, &Refusal{Code: "invalid_request", Message: "request is an object of directory, adapters, include_closed, include_native, limit and cursor"}
+		return request, &Refusal{Code: "invalid_request", Message: "request is an object of directory, adapters, include_closed, include_native, limit, cursor and search"}
+	}
+	if given.Search != nil {
+		request.Search = *given.Search
 	}
 	if given.Directory != nil {
 		request.Directory = *given.Directory
@@ -269,13 +274,17 @@ func (f *Front) List(ctx context.Context, request ListRequest) (any, *Refusal) {
 		key       string
 		value     workJSON
 	}
+	searching := request.Search != ""
 	var pieces []piece
+	held := map[protocol.SessionID]serve.Work{}
 	for _, found := range f.hub.Works(ctx) {
-		if wanted(found.Adapter, found.Directory) {
+		held[found.SessionID] = found
+		if !searching && wanted(found.Adapter, found.Directory) {
 			pieces = append(pieces, piece{directory: found.Directory, at: found.UpdatedAtMS, key: "s:" + string(found.SessionID), value: heldWork(found)})
 		}
 	}
 	known := map[string]bool{}
+	unheld := map[string]binding.Entry{}
 	recorded := f.latest(ctx)
 	if recorded.unreadable {
 		return nil, historyUnreadable
@@ -290,7 +299,10 @@ func (f *Front) List(ctx context.Context, request ListRequest) (any, *Refusal) {
 		if entry.Action == binding.ActionClosed && !request.IncludeClosed {
 			continue
 		}
-		if wanted(entry.Record.Adapter, entry.Record.Directory) {
+		if entry.Record.NativeSessionID != "" {
+			unheld[entry.Record.Adapter+"/"+entry.Record.NativeSessionID] = entry
+		}
+		if !searching && wanted(entry.Record.Adapter, entry.Record.Directory) {
 			pieces = append(pieces, piece{directory: entry.Record.Directory, at: entry.TimeMS, key: "s:" + entry.Record.SessionID, value: unheldWork(entry)})
 		}
 	}
@@ -299,9 +311,26 @@ func (f *Front) List(ctx context.Context, request ListRequest) (any, *Refusal) {
 		depth = after.Depth
 	}
 	var missing []unavailable
-	if request.IncludeNative {
-		found, failures := f.hub.NativesFor(ctx, known, serve.NativeQuery{Adapters: request.Adapters, Directory: request.Directory, Limit: min(depth+limit+1, nativeDepthMax)})
+	if request.IncludeNative || searching {
+		found, failures := f.hub.NativesFor(ctx, known, serve.NativeQuery{Adapters: request.Adapters, Directory: request.Directory, Limit: min(depth+limit+1, nativeDepthMax), Search: request.Search})
 		for _, native := range found {
+			if searching {
+				if session, ok := held[f.hub.SessionForNative(native.Adapter, native.Session.NativeID)]; ok {
+					if wanted(session.Adapter, session.Directory) {
+						pieces = append(pieces, piece{directory: session.Directory, at: session.UpdatedAtMS, key: "s:" + string(session.SessionID), value: heldWork(session)})
+					}
+					continue
+				}
+				if entry, ok := unheld[native.Adapter+"/"+native.Session.NativeID]; ok {
+					if wanted(entry.Record.Adapter, entry.Record.Directory) {
+						pieces = append(pieces, piece{directory: entry.Record.Directory, at: entry.TimeMS, key: "s:" + entry.Record.SessionID, value: unheldWork(entry)})
+					}
+					continue
+				}
+				if known[native.Session.NativeID] {
+					continue
+				}
+			}
 			if wanted(native.Adapter, native.Session.Directory) {
 				pieces = append(pieces, piece{directory: native.Session.Directory, at: native.Session.UpdatedAtMS, key: "n:" + native.Adapter + "/" + native.Session.NativeID, value: nativeWork(native)})
 			}
@@ -603,8 +632,9 @@ func cut(text string, limit int) string {
 }
 
 type nativeReach struct {
-	List bool `json:"list"`
-	Read bool `json:"read"`
+	List   bool `json:"list"`
+	Read   bool `json:"read"`
+	Search bool `json:"search"`
 }
 
 type reachJSON struct {
@@ -651,7 +681,7 @@ func (f *Front) Capabilities(ctx context.Context) (any, *Refusal) {
 			}
 			served = append(served, verb.op)
 		}
-		out.Adapters = append(out.Adapters, reachJSON{Adapter: reach.Name, Directory: reach.Directory, AnyDirectory: reach.AnyDirectory, Verbs: served, Native: nativeReach{List: reach.NativeList, Read: reach.NativeRead}})
+		out.Adapters = append(out.Adapters, reachJSON{Adapter: reach.Name, Directory: reach.Directory, AnyDirectory: reach.AnyDirectory, Verbs: served, Native: nativeReach{List: reach.NativeList, Read: reach.NativeRead, Search: reach.NativeSearch}})
 	}
 	return out, nil
 }

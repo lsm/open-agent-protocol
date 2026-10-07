@@ -92,7 +92,7 @@ var malformedWork = &workwire.Refusal{Code: "malformed_json", Message: "the requ
 
 func (s *Server) handleWorkList(w http.ResponseWriter, r *http.Request) {
 	query := r.URL.Query()
-	request := workwire.ListRequest{Directory: query.Get("directory"), IncludeClosed: queryFlag(r, "include_closed"), IncludeNative: queryFlag(r, "include_native"), Cursor: query.Get("cursor")}
+	request := workwire.ListRequest{Directory: query.Get("directory"), IncludeClosed: queryFlag(r, "include_closed"), IncludeNative: queryFlag(r, "include_native"), Cursor: query.Get("cursor"), Search: query.Get("search")}
 	if adapters := query.Get("adapters"); adapters != "" {
 		request.Adapters = strings.Split(adapters, ",")
 	}

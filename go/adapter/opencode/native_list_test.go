@@ -107,3 +107,24 @@ func TestTheNativeListFollowsTheServersCursorUntilItHasTheRowsAsked(t *testing.T
 		t.Fatalf("a last page with no next cursor listed %d after %v", len(listed), client.listAsked)
 	}
 }
+
+func TestTheNativeSearchAsksTheServerForTheTermAndMapsWhatItMatched(t *testing.T) {
+	client := newFakeClient()
+	found := fakeSessionInfo(client.session, nil)
+	found.Title, found.Time.Updated = "apple pie", 4
+	client.listed = []native.SessionInfo{found}
+	adapter, err := New(Config{Factory: ClientFactoryFunc(func(context.Context) (Client, error) { return client, nil })})
+	if err != nil {
+		t.Fatal(err)
+	}
+	listed, err := adapter.NativeSearch(context.Background(), base.NativeSearchRequest{Directory: "/w", Limit: 3, Term: "apple"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(client.listAsked, []string{"/w||3|search=apple"}) {
+		t.Fatalf("asked %v", client.listAsked)
+	}
+	if len(listed) != 1 || listed[0].NativeID != string(client.session) || listed[0].Title != "apple pie" {
+		t.Fatalf("listed %+v", listed)
+	}
+}

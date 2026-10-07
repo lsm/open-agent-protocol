@@ -207,12 +207,14 @@ pub const NativeTarget = struct {
     adapter: contract.Adapter,
     directory: []const u8,
     limit: usize = native_list_limit,
+    search: []const u8 = "",
 };
 
 pub const NativeQuery = struct {
     adapters: []const []const u8 = &.{},
     directory: []const u8 = "",
     limit: usize = native_list_limit,
+    search: []const u8 = "",
 };
 
 pub const NativeListing = struct {
@@ -225,7 +227,11 @@ pub fn listTargets(arena: std.mem.Allocator, targets: []const NativeTarget) std.
     const listed = try arena.alloc(NativeListing, targets.len);
     for (targets, listed) |target, *slot| {
         var refusal = contract.Refusal{};
-        const answered = target.adapter.nativeList(arena, .{ .directory = target.directory, .limit = target.limit }, &refusal) orelse {
+        const asked = if (target.search.len > 0)
+            target.adapter.nativeSearch(arena, .{ .directory = target.directory, .limit = target.limit, .term = target.search }, &refusal)
+        else
+            target.adapter.nativeList(arena, .{ .directory = target.directory, .limit = target.limit }, &refusal);
+        const answered = asked orelse {
             slot.* = .{ .name = target.name };
             continue;
         };
@@ -964,17 +970,18 @@ pub const Hub = struct {
     pub fn nativeTargets(self: *Hub, arena: std.mem.Allocator, query: NativeQuery) std.mem.Allocator.Error![]const NativeTarget {
         var targets = std.ArrayList(NativeTarget).empty;
         for (self.adapters.items) |registered| {
-            if (registered.adapter.vtable.native_list == null) continue;
+            if (query.search.len == 0 and registered.adapter.vtable.native_list == null) continue;
             if (query.adapters.len > 0 and !declared(query.adapters, registered.name)) continue;
             const name = try arena.dupe(u8, registered.name);
             const place = if (query.directory.len > 0 and registered.template != null) query.directory else registered.directory;
             const directory = try arena.dupe(u8, place);
-            try targets.append(arena, .{ .name = name, .adapter = registered.adapter, .directory = directory, .limit = query.limit });
+            const search = try arena.dupe(u8, query.search);
+            try targets.append(arena, .{ .name = name, .adapter = registered.adapter, .directory = directory, .limit = query.limit, .search = search });
         }
         return targets.items;
     }
 
-    pub fn keepNatives(self: *Hub, arena: std.mem.Allocator, listed: []const NativeListing, known: []const []const u8) std.mem.Allocator.Error!Natives {
+    pub fn keepNatives(self: *Hub, arena: std.mem.Allocator, listed: []const NativeListing, known: []const []const u8, searching: bool) std.mem.Allocator.Error!Natives {
         var found_sessions = std.ArrayList(Native).empty;
         var failures = std.ArrayList(NativeFailure).empty;
         for (listed) |each| {
@@ -983,7 +990,7 @@ pub const Hub = struct {
                 continue;
             }
             for (each.sessions) |found| {
-                if (self.boundNative(each.name, found.native_id) or declared(known, found.native_id)) continue;
+                if (!searching and (self.boundNative(each.name, found.native_id) or declared(known, found.native_id))) continue;
                 try found_sessions.append(arena, .{ .adapter = each.name, .session = found });
             }
         }
@@ -1058,6 +1065,7 @@ pub const Hub = struct {
         any_directory: bool,
         native_list: bool,
         native_read: bool,
+        native_search: bool,
         descriptor: ?contract.Descriptor,
         message: []const u8 = "",
     };
@@ -1080,6 +1088,7 @@ pub const Hub = struct {
                 .any_directory = registered.template != null,
                 .native_list = registered.adapter.vtable.native_list != null,
                 .native_read = registered.adapter.vtable.native_read != null,
+                .native_search = registered.adapter.vtable.native_search != null,
                 .descriptor = descriptor,
                 .message = if (descriptor == null) (if (refusal.message.len > 0) refusal.message else "the adapter could not be probed") else "",
             });

@@ -346,10 +346,11 @@ pub fn getSession(arena: std.mem.Allocator, endpoint: Endpoint, session: []const
     return build(arena, endpoint, "GET", try sessionPath(arena, session, ""), "", "application/json", null);
 }
 
-pub fn sessions(arena: std.mem.Allocator, endpoint: Endpoint, directory: []const u8, cursor: []const u8, limit: usize) std.mem.Allocator.Error!Request {
+pub fn sessions(arena: std.mem.Allocator, endpoint: Endpoint, directory: []const u8, search: []const u8, cursor: []const u8, limit: usize) std.mem.Allocator.Error!Request {
     if (cursor.len > 0) return build(arena, endpoint, "GET", "/api/session", try std.fmt.allocPrint(arena, "cursor={s}&limit={d}", .{ try queryEscape(arena, cursor), limit }), "application/json", null);
     const scope = if (directory.len > 0) try std.mem.concat(arena, u8, &.{ "directory=", try queryEscape(arena, directory), "&" }) else "";
-    const query = try std.fmt.allocPrint(arena, "{s}limit={d}&order=desc&parentID=null", .{ scope, limit });
+    const matching = if (search.len > 0) try std.mem.concat(arena, u8, &.{ "&search=", try queryEscape(arena, search) }) else "";
+    const query = try std.fmt.allocPrint(arena, "{s}limit={d}&order=desc&parentID=null{s}", .{ scope, limit, matching });
     return build(arena, endpoint, "GET", "/api/session", query, "application/json", null);
 }
 
@@ -759,10 +760,12 @@ test "a session list decodes every row strictly and refuses one that is not a se
     try testing.expect(strict == .failed);
     const invalid = try sessionsResult(scratch, .{ .status = 200, .body = "{\"data\":[{\"id\":\"ses_a\",\"projectID\":\"\"}],\"cursor\":{}}" }, 0);
     try testing.expectEqualStrings(native.invalid_wire ++ ": invalid session info", invalid.failed.message);
-    const request = try sessions(scratch, .{}, "", "", 3);
+    const request = try sessions(scratch, .{}, "", "", "", 3);
     try testing.expectEqualStrings("/api/session?limit=3&order=desc&parentID=null", request.target);
-    try testing.expectEqualStrings("/api/session?cursor=n%2B1&limit=3", (try sessions(scratch, .{}, "/x", "n+1", 3)).target);
-    const scoped = try sessions(scratch, .{}, "/x/R&D+a=b c~", "", 3);
+    try testing.expectEqualStrings("/api/session?cursor=n%2B1&limit=3", (try sessions(scratch, .{}, "/x", "", "n+1", 3)).target);
+    try testing.expectEqualStrings("/api/session?directory=%2Fx&limit=3&order=desc&parentID=null&search=apple+pie", (try sessions(scratch, .{}, "/x", "apple pie", "", 3)).target);
+    try testing.expectEqualStrings("/api/session?cursor=n%2B1&limit=3", (try sessions(scratch, .{}, "/x", "apple pie", "n+1", 3)).target);
+    const scoped = try sessions(scratch, .{}, "/x/R&D+a=b c~", "", "", 3);
     try testing.expectEqualStrings("/api/session?directory=%2Fx%2FR%26D%2Ba%3Db+c~&limit=3&order=desc&parentID=null", scoped.target);
 }
 

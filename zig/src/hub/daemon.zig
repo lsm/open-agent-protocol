@@ -245,6 +245,7 @@ pub const Daemon = struct {
             .include_native = try self.queryFlag(arena, query, "include_native"),
             .directory = (try queryValue(arena, query, "directory")) orelse "",
             .cursor = (try queryValue(arena, query, "cursor")) orelse "",
+            .search = (try queryValue(arena, query, "search")) orelse "",
         };
         if (try queryValue(arena, query, "adapters")) |listed| {
             if (listed.len > 0) {
@@ -1322,7 +1323,7 @@ test "a known path asked with the wrong method is 405 naming the method it takes
     try testing.expectEqualStrings("200 OK", headed.status);
 }
 
-test "a work list that asks the adapters for their own sessions is deferred, and settles into its answer once the listing is done" {
+test "a work list that asks the adapters for their own sessions or searches them is deferred, and settles into its answer once the listing is done" {
     var fixture: Fixture = undefined;
     try fixture.init(.{});
     defer fixture.deinit();
@@ -1338,6 +1339,15 @@ test "a work list that asks the adapters for their own sessions is deferred, and
     try testing.expectEqualStrings("200 OK", settled.?.answer.status);
     try testing.expectEqualStrings("{\"groups\":[]}", settled.?.answer.body);
     try testing.expectEqual(@as(usize, 0), fixture.daemon.frontend.jobs.items.len);
+    const searched = try fixture.ask("GET", "/work?search=apple%20pie", "");
+    try testing.expect(searched == .deferred);
+    settled = null;
+    waits = 0;
+    while (settled == null and waits < 5000) : (waits += 1) {
+        settled = try fixture.daemon.settleDeferred(arena, searched.deferred);
+        if (settled == null) std.testing.io.sleep(.fromNanoseconds(std.time.ns_per_ms), .boot) catch {};
+    }
+    try testing.expectEqualStrings("{\"groups\":[]}", settled.?.answer.body);
 }
 
 test "events refuse an unknown session, a cursor that is not a sequence, a run with no cursor, and a cursor on a session with no run" {

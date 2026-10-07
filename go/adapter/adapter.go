@@ -124,6 +124,16 @@ type NativeLister interface {
 	NativeList(context.Context, NativeListRequest) ([]NativeListing, error)
 }
 
+type NativeSearchRequest struct {
+	Directory string
+	Limit     int
+	Term      string
+}
+
+type NativeSearcher interface {
+	NativeSearch(context.Context, NativeSearchRequest) ([]NativeListing, error)
+}
+
 type NativeTurn struct {
 	Role string
 	Text string

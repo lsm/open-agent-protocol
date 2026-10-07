@@ -139,7 +139,7 @@ pub const Adapter = struct {
     }
 
     pub fn adapter(self: *Adapter) contract.Adapter {
-        return .{ .ptr = self, .vtable = &.{ .probe = probe, .open = open, .native_list = nativeList, .native_read = nativeRead } };
+        return .{ .ptr = self, .vtable = &.{ .probe = probe, .open = open, .native_list = nativeList, .native_read = nativeRead, .native_search = nativeSearch } };
     }
 
     fn probe(ptr: *anyopaque, refusal: *contract.Refusal) contract.Failure!contract.Descriptor {
@@ -180,6 +180,15 @@ pub const Adapter = struct {
 
     fn nativeList(ptr: *anyopaque, arena: std.mem.Allocator, request: contract.NativeListRequest, refusal: *contract.Refusal) contract.Failure![]const contract.NativeSession {
         const self: *Adapter = @ptrCast(@alignCast(ptr));
+        return self.sessionsMatching(arena, request.directory, request.limit, "", refusal);
+    }
+
+    fn nativeSearch(ptr: *anyopaque, arena: std.mem.Allocator, request: contract.NativeSearchRequest, refusal: *contract.Refusal) contract.Failure![]const contract.NativeSession {
+        const self: *Adapter = @ptrCast(@alignCast(ptr));
+        return self.sessionsMatching(arena, request.directory, request.limit, request.term, refusal);
+    }
+
+    fn sessionsMatching(self: *Adapter, arena: std.mem.Allocator, directory: []const u8, limit: usize, term: []const u8, refusal: *contract.Refusal) contract.Failure![]const contract.NativeSession {
         const config = self.config;
         const target = client.parseEndpoint(arena, config.endpoint) catch |err| {
             if (err == error.OutOfMemory) return error.OutOfMemory;
@@ -189,8 +198,8 @@ pub const Adapter = struct {
         var gathered: std.ArrayList(native.SessionInfo) = .empty;
         var cursor: []const u8 = "";
         var pages: usize = 0;
-        while (pages < native_read_pages_max and gathered.items.len < request.limit) : (pages += 1) {
-            const listed_response = client.roundTrip(self.allocator, arena, target, try httpapi.sessions(arena, endpoint, request.directory, cursor, request.limit - gathered.items.len), config.frame_limit, config.request_timeout_ns) catch |err| return refusal.fail(error.BackendFailed, try describe(arena, "list OpenCode sessions", err));
+        while (pages < native_read_pages_max and gathered.items.len < limit) : (pages += 1) {
+            const listed_response = client.roundTrip(self.allocator, arena, target, try httpapi.sessions(arena, endpoint, directory, term, cursor, limit - gathered.items.len), config.frame_limit, config.request_timeout_ns) catch |err| return refusal.fail(error.BackendFailed, try describe(arena, "list OpenCode sessions", err));
             const page = switch (try httpapi.sessionsResult(arena, listed_response, config.frame_limit)) {
                 .ok => |value| value,
                 .failed => |failure| return refusal.fail(error.BackendFailed, try std.fmt.allocPrint(arena, "list OpenCode sessions: {s}", .{failure.message})),
@@ -1516,6 +1525,16 @@ test "the native list asks OpenCode for the directory's root sessions newest fir
     try testing.expect(listed[0].running);
     try testing.expectEqualStrings("ses_idle0000000000000000", listed[1].native_id);
     try testing.expect(!listed[1].running);
+}
+
+test "the native search asks OpenCode for the directory's root sessions whose title matches the term" {
+    var probe: Probe = undefined;
+    try probe.init(&.{}, &.{});
+    defer probe.deinit();
+    var refusal = contract.Refusal{};
+    const found = try probe.adapter.adapter().nativeSearch(probe.arena.allocator(), .{ .directory = "/w", .limit = 4, .term = "busy one" }, &refusal).?;
+    try testing.expectEqualStrings("/api/session?directory=%2Fw&limit=4&order=desc&parentID=null&search=busy+one", probe.fake.list_target[0..probe.fake.list_target_len]);
+    try testing.expectEqualStrings(fake_session, found[0].native_id);
 }
 
 test "the native read follows the server's message pages and reads back a turn the pinned server recorded" {

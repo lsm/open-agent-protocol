@@ -214,21 +214,25 @@ func (f *fakeClient) CancelInbox(_ context.Context, _ native.SessionID, inbox na
 	}
 	return nil
 }
-func (f *fakeClient) Sessions(ctx context.Context, directory, cursor string, limit int) (httpapi.SessionPage, error) {
+func (f *fakeClient) Sessions(ctx context.Context, directory, search, cursor string, limit int) (httpapi.SessionPage, error) {
 	f.mu.Lock()
-	f.listAsked = append(f.listAsked, fmt.Sprintf("%s|%s|%d", directory, cursor, limit))
+	asked := fmt.Sprintf("%s|%s|%d", directory, cursor, limit)
+	if search != "" {
+		asked += "|search=" + search
+	}
+	f.listAsked = append(f.listAsked, asked)
 	listed, err, stalls, pages := f.listed, f.listErr, f.stalls, f.listPages
-	asked := len(f.listAsked)
+	count := len(f.listAsked)
 	f.mu.Unlock()
 	if stalls {
 		<-ctx.Done()
 		return httpapi.SessionPage{}, ctx.Err()
 	}
 	if pages != nil {
-		if asked > len(pages) {
+		if count > len(pages) {
 			return httpapi.SessionPage{}, nil
 		}
-		return pages[asked-1], err
+		return pages[count-1], err
 	}
 	return httpapi.SessionPage{Data: listed}, err
 }

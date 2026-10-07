@@ -89,6 +89,20 @@ func TestAThreadListAnswerBecomesNativeSessionsTitledByNameOrThePreviewsFirstLin
 	}
 }
 
+func TestANativeSearchAsksThreadListForTheTermInTheDirectory(t *testing.T) {
+	client := &askClient{answers: map[string][]string{"thread/list": {`{"data":[{"id":"t1","name":"apple pie","cwd":"/elsewhere","updatedAt":1700000000,"status":{"type":"idle"}}]}`}}}
+	listed, err := askingAdapter(t, client).NativeSearch(context.Background(), adapter.NativeSearchRequest{Directory: "/elsewhere", Limit: 3, Term: "apple"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(client.asked) != 1 || client.asked[0] != `thread/list {"cwd":"/elsewhere","limit":3,"searchTerm":"apple"}` {
+		t.Fatalf("asked %v", client.asked)
+	}
+	if len(listed) != 1 || listed[0].NativeID != "t1" || listed[0].Title != "apple pie" {
+		t.Fatalf("listed %+v", listed)
+	}
+}
+
 func TestAThreadTurnsPageBecomesTheUserMessageAndFinalReplyOfEachTurnFollowingTheCursor(t *testing.T) {
 	client := &askClient{answers: map[string][]string{"thread/turns/list": {
 		`{"data":[{"id":"u1","status":"completed","startedAt":1791311072,"completedAt":1791311075,"items":[

@@ -325,14 +325,14 @@ func TestSubscriptionCloseInterruptsBlockedRead(t *testing.T) {
 	}
 }
 
-func TestSessionsAsksForTheDirectorysRootSessionsNewestFirstAndRefusesARowThatIsNotASession(t *testing.T) {
+func TestSessionsAsksForTheDirectorysRootSessionsNewestFirstMatchingASearchAndRefusesARowThatIsNotASession(t *testing.T) {
 	var target string
 	body := `{"data":[{"id":"ses_a","projectID":"p","title":"t","cost":0,"tokens":{"input":0,"output":0,"reasoning":0,"cache":{"read":0,"write":0}},"time":{"created":1,"updated":2},"location":{"directory":"/x/R&D"}}],"cursor":{"next":"n"}}`
 	client := newTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		target = r.URL.RequestURI()
 		_, _ = w.Write([]byte(body))
 	}), Options{})
-	listed, err := client.Sessions(context.Background(), "/x/R&D+a=b c~", "", 3)
+	listed, err := client.Sessions(context.Background(), "/x/R&D+a=b c~", "", "", 3)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -342,18 +342,24 @@ func TestSessionsAsksForTheDirectorysRootSessionsNewestFirstAndRefusesARowThatIs
 	if len(listed.Data) != 1 || listed.Data[0].Title != "t" || listed.Data[0].Time.Updated != 2 || listed.Next != "n" {
 		t.Fatalf("listed %+v", listed)
 	}
-	if _, err := client.Sessions(context.Background(), "", "", 3); err != nil || target != "/api/session?limit=3&order=desc&parentID=null" {
+	if _, err := client.Sessions(context.Background(), "", "", "", 3); err != nil || target != "/api/session?limit=3&order=desc&parentID=null" {
 		t.Fatalf("an unscoped list asked %s, %v", target, err)
 	}
-	if _, err := client.Sessions(context.Background(), "/x", "n", 3); err != nil || target != "/api/session?cursor=n&limit=3" {
+	if _, err := client.Sessions(context.Background(), "/x", "", "n", 3); err != nil || target != "/api/session?cursor=n&limit=3" {
 		t.Fatalf("a next page asked %s, %v", target, err)
 	}
+	if _, err := client.Sessions(context.Background(), "/x", "apple pie", "", 3); err != nil || target != "/api/session?directory=%2Fx&limit=3&order=desc&parentID=null&search=apple+pie" {
+		t.Fatalf("a search asked %s, %v", target, err)
+	}
+	if _, err := client.Sessions(context.Background(), "/x", "apple pie", "n", 3); err != nil || target != "/api/session?cursor=n&limit=3" {
+		t.Fatalf("a next page of a search asked %s, %v; the cursor carries the term", target, err)
+	}
 	body = `{"data":[{"id":"ses_a","projectID":"","time":{"created":1,"updated":2}}],"cursor":{}}`
-	if _, err := client.Sessions(context.Background(), "", "", 3); err == nil {
+	if _, err := client.Sessions(context.Background(), "", "", "", 3); err == nil {
 		t.Fatal("a row with no project was admitted")
 	}
 	body = `{"data":[{"id":"ses_a","projectID":"p","surprise":1}],"cursor":{}}`
-	if _, err := client.Sessions(context.Background(), "", "", 3); err == nil {
+	if _, err := client.Sessions(context.Background(), "", "", "", 3); err == nil {
 		t.Fatal("a row with an unknown member was admitted")
 	}
 }

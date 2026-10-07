@@ -288,6 +288,12 @@ pub const NativeListRequest = struct {
     limit: usize = 50,
 };
 
+pub const NativeSearchRequest = struct {
+    directory: []const u8 = "",
+    limit: usize = 50,
+    term: []const u8,
+};
+
 pub const Adapter = struct {
     ptr: *anyopaque,
     vtable: *const VTable,
@@ -298,7 +304,13 @@ pub const Adapter = struct {
         native_list: ?*const fn (ptr: *anyopaque, arena: std.mem.Allocator, request: NativeListRequest, refusal: *Refusal) Failure![]const NativeSession = null,
         native_link: ?*const fn (ptr: *anyopaque, arena: std.mem.Allocator, native_id: []const u8) std.mem.Allocator.Error![]const u8 = null,
         native_read: ?*const fn (ptr: *anyopaque, arena: std.mem.Allocator, request: NativeReadRequest, refusal: *Refusal) Failure![]const NativeTurn = null,
+        native_search: ?*const fn (ptr: *anyopaque, arena: std.mem.Allocator, request: NativeSearchRequest, refusal: *Refusal) Failure![]const NativeSession = null,
     };
+
+    pub fn nativeSearch(self: Adapter, arena: std.mem.Allocator, request: NativeSearchRequest, refusal: *Refusal) ?Failure![]const NativeSession {
+        const searched = self.vtable.native_search orelse return null;
+        return searched(self.ptr, arena, request, refusal);
+    }
 
     pub fn nativeRead(self: Adapter, arena: std.mem.Allocator, request: NativeReadRequest, refusal: *Refusal) ?Failure![]const NativeTurn {
         if (request.native_id.len == 0) return null;

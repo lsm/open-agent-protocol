@@ -246,7 +246,7 @@ type SessionPage struct {
 	Next string
 }
 
-func (c *Client) Sessions(ctx context.Context, directory, cursor string, limit int) (SessionPage, error) {
+func (c *Client) Sessions(ctx context.Context, directory, search, cursor string, limit int) (SessionPage, error) {
 	query := url.Values{"limit": {strconv.Itoa(limit)}}
 	if cursor != "" {
 		query.Set("cursor", cursor)
@@ -255,6 +255,9 @@ func (c *Client) Sessions(ctx context.Context, directory, cursor string, limit i
 		query.Set("parentID", "null")
 		if directory != "" {
 			query.Set("directory", directory)
+		}
+		if search != "" {
+			query.Set("search", search)
 		}
 	}
 	var response struct {
