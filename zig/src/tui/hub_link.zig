@@ -63,7 +63,7 @@ pub const HubLink = struct {
         const id = textOf(root, "id") orelse "";
         if (std.mem.eql(u8, kind, "capabilities.request")) return self.call(a, .GET, try self.path(a, "/adapters/", self.adapter, "/capabilities"), null, id, false);
         if (std.mem.eql(u8, kind, "session.open.request")) return self.call(a, .POST, try self.path(a, "/adapters/", self.adapter, "/sessions"), line, id, false);
-        if (std.mem.eql(u8, kind, "models.request")) return self.call(a, .GET, try self.path(a, "/sessions/", self.session_id, "/models"), null, id, false);
+        if (std.mem.eql(u8, kind, "models.request")) return self.call(a, .GET, try self.consenting(a, try self.path(a, "/sessions/", self.session_id, "/models"), root), null, id, false);
         if (std.mem.eql(u8, kind, "session.message.submit.request") or std.mem.eql(u8, kind, "session.compact.request")) return self.call(a, .POST, try self.path(a, "/sessions/", self.session_id, "/submit"), line, id, std.mem.eql(u8, kind, "session.message.submit.request") and followsUp(root));
         if (std.mem.eql(u8, kind, "run.cancel.request")) return self.call(a, .POST, try self.path(a, "/sessions/", self.session_id, "/cancel"), line, id, false);
         if (std.mem.eql(u8, kind, "session.settings.update.request")) return self.call(a, .POST, try self.path(a, "/sessions/", self.session_id, "/settings"), line, id, false);
@@ -292,6 +292,22 @@ pub const HubLink = struct {
 
     fn lock(self: *HubLink) void {
         while (!self.outbound_mutex.tryLock()) std.atomic.spinLoopHint();
+    }
+
+    fn consenting(self: *HubLink, a: std.mem.Allocator, target: []const u8, root: std.json.ObjectMap) ![]const u8 {
+        _ = self;
+        const payload = root.get("payload") orelse return target;
+        if (payload != .object) return target;
+        const features = payload.object.get("allow_degraded_features") orelse return target;
+        if (features != .array) return target;
+        var built: std.ArrayList(u8) = .empty;
+        try built.appendSlice(a, target);
+        for (features.array.items) |feature| {
+            if (feature != .string) continue;
+            try built.appendSlice(a, if (built.items.len == target.len) "?allow_degraded=" else "&allow_degraded=");
+            try built.appendSlice(a, try escapeSegment(a, feature.string));
+        }
+        return built.items;
     }
 
     fn path(self: *HubLink, a: std.mem.Allocator, head: []const u8, segment: []const u8, tail: []const u8) ![]const u8 {
@@ -662,6 +678,30 @@ test "a follow-up the hub queues behind this terminal's run is followed once tha
         }
     }
     try testing.expect(link.popOutbound() == null);
+}
+
+test "a models request carries its degraded consent to the hub as the query the hub reads" {
+    if (comptime !pollable) return error.SkipZigTest;
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    var fake = FakeHub{
+        .listener = try compat.net.tcpListen(try compat.net.resolveAddress(a, "127.0.0.1", 0), .{ .reuse_address = true }),
+        .answer = "{" ++ envelope_head ++ ",\"type\":\"models.response\",\"id\":\"hub-4\",\"session_id\":\"s1\",\"payload\":{\"session_id\":\"s1\",\"models\":[]}}",
+        .connections = 1,
+    };
+    defer compat.net.closeServer(&fake.listener);
+    const base = try std.fmt.allocPrint(a, "http://127.0.0.1:{d}", .{compat.net.listenAddress(&fake.listener).getPort()});
+    const thread = try std.Thread.spawn(.{}, FakeHub.serve, .{&fake});
+    const link = try HubLink.create(testing.allocator, base, "oapx");
+    defer link.destroy();
+    link.session_id = try testing.allocator.dupe(u8, "s1");
+    try link.handleLine("{" ++ envelope_head ++ ",\"type\":\"models.request\",\"id\":\"models-1\",\"session_id\":\"s1\",\"payload\":{\"session_id\":\"s1\",\"allow_degraded_features\":[\"models.list\"]}}");
+    thread.join();
+    try testing.expectEqualStrings("GET /sessions/s1/models?allow_degraded=models.list HTTP/1.1", fake.target(0));
+    const answer = link.popOutbound() orelse return error.TestNoAnswer;
+    defer testing.allocator.free(answer);
+    try testing.expect(std.mem.indexOf(u8, answer, "\"in_reply_to\":\"models-1\"") != null);
 }
 
 test "a settings update goes to the hub's settings route and its answer is correlated to the request" {
