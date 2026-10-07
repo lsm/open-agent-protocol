@@ -1,0 +1,1 @@
+{"source":"stream","classification":"mapped","fidelity":"synthesized","raw":{"id":"evt_c001","type":"session.inbox.delivered","durable":{"aggregateID":"ses_other00000000000000","seq":10,"version":1},"data":{"sessionID":"ses_other00000000000000","inboxID":"msg_rebind"}}}

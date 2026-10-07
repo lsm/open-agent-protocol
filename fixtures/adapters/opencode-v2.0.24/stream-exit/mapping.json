@@ -1,0 +1,5 @@
+[
+    {"index": 1, "type": "session.inbox.delivered", "source": "stream", "classification": "mapped", "fidelity": "normalized", "oap": "run.started"},
+    {"index": 2, "type": "session.step.started", "source": "stream", "classification": "observed-only", "fidelity": "normalized", "oap": ""},
+    {"index": 3, "type": "action", "source": "stream", "classification": "mapped", "fidelity": "synthesized", "oap": "run.failed"}
+]

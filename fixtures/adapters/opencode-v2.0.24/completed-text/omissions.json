@@ -1,0 +1,12 @@
+[
+    {"index": 1, "type": "session.inbox.enqueued", "reason": "the prompt response already admitted this input"},
+    {"index": 2, "type": "session.execution.started", "reason": "an execution is a busy period; the run starts at the input's delivery"},
+    {"index": 3, "type": "session.instructions.updated", "reason": "system prompt bookkeeping; no core OAP claim"},
+    {"index": 5, "type": "session.step.started", "reason": "step accounting only; no core OAP event"},
+    {"index": 6, "type": "session.text.started", "reason": "text arrives whole at session.text.ended"},
+    {"index": 7, "type": "session.text.delta", "reason": "live deltas are not forwarded; session.text.ended carries the whole text"},
+    {"index": 9, "type": "session.step.streamed", "reason": "provider response boundary; no core OAP event"},
+    {"index": 11, "type": "session.usage.updated", "reason": "session totals; the run's usage comes from its steps"},
+    {"index": 13, "type": "session.usage.updated", "reason": "session totals; the run's usage comes from its steps"},
+    {"index": 14, "type": "session.renamed", "reason": "title bookkeeping after the run; no core OAP claim"}
+]

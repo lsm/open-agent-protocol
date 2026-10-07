@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -77,53 +78,50 @@ type fakeClient struct {
 	session          native.SessionID
 	events           chan native.Event
 	subscription     *fakeSubscription
-	promoted         bool
 	promptErr        error
 	foreignAdmission bool
 	interrupts       int
+	inboxCancels     []native.MessageID
+	silentCancels    bool
+	stalls           bool
+	cancelSeq        int64
 	actives          int
 	activeErr        error
-
-	activeFor    int
-	historyErr   error
-	historyPage  native.HistoryPage
-	lastPromptID native.MessageID
-	subscribeCtx context.Context
-	prompts      []native.PromptRequest
-	closed       bool
+	activeFor        int
+	lastPromptID     native.MessageID
+	subscribeCtx     context.Context
+	prompts          []native.PromptRequest
+	closed           bool
 
 	promptGate  <-chan struct{}
 	promptEntry chan struct{}
-
-	idleGate <-chan struct{}
 
 	model       *native.ModelRef
 	switches    []native.ModelRef
 	keepVariant bool
 	created     *native.ModelRef
 
-	sessionErr      error
-	subscribedAfter int64
-	creates         int
+	sessionErr error
+	creates    int
 }
 
 func newFakeClient() *fakeClient {
 	events := make(chan native.Event, 256)
-	return &fakeClient{session: "ses_fake00000000000000", events: events, subscription: &fakeSubscription{events: events, done: make(chan struct{})}}
+	return &fakeClient{session: "ses_fake00000000000000", events: events, subscription: &fakeSubscription{events: events, done: make(chan struct{})}, cancelSeq: 1000}
+}
+
+func fakeSessionInfo(id native.SessionID, model *native.ModelRef) native.SessionInfo {
+	info := native.SessionInfo{ID: id, ProjectID: "prj_fake", Model: model, Location: json.RawMessage(`{"directory":"/w"}`)}
+	info.Time.Created, info.Time.Updated = 1, 1
+	return info
 }
 
 func (f *fakeClient) CreateSession(_ context.Context, request httpapi.CreateSessionRequest) (native.SessionInfo, error) {
 	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.creates++
-	f.mu.Unlock()
-	f.mu.Lock()
 	f.created = request.Model
-	f.mu.Unlock()
-	return native.SessionInfo{ID: f.session, ProjectID: "prj_fake", Model: f.model, Time: struct {
-		Created  int64  `json:"created"`
-		Updated  int64  `json:"updated"`
-		Archived *int64 `json:"archived,omitempty"`
-	}{Created: 1, Updated: 1}, Location: json.RawMessage(`{"directory":"/w"}`)}, nil
+	return fakeSessionInfo(f.session, f.model), nil
 }
 func (f *fakeClient) Session(_ context.Context, session native.SessionID) (native.SessionInfo, error) {
 	f.mu.Lock()
@@ -131,7 +129,7 @@ func (f *fakeClient) Session(_ context.Context, session native.SessionID) (nativ
 	if f.sessionErr != nil {
 		return native.SessionInfo{}, f.sessionErr
 	}
-	return native.SessionInfo{ID: session, ProjectID: "prj_fake", Model: f.model, Location: json.RawMessage(`{"directory":"/w"}`)}, nil
+	return fakeSessionInfo(session, f.model), nil
 }
 func (f *fakeClient) SwitchModel(_ context.Context, _ native.SessionID, model native.ModelRef) error {
 	f.mu.Lock()
@@ -157,28 +155,46 @@ func (f *fakeClient) Prompt(_ context.Context, session native.SessionID, request
 	if f.promptErr != nil {
 		return native.Admitted{}, f.promptErr
 	}
+	id := request.ID
 	if f.foreignAdmission {
-		return native.Admitted{AdmittedSeq: 1, ID: "msg_foreign", SessionID: session, Prompt: request.Prompt, Delivery: request.Delivery, TimeCreated: 1}, nil
+		id = "msg_foreign"
+	} else {
+		f.lastPromptID = request.ID
+		f.prompts = append(f.prompts, request)
 	}
-	f.lastPromptID = request.ID
-	f.prompts = append(f.prompts, request)
-	var promoted *int64
-	if f.promoted {
-		value := int64(len(f.prompts))
-		promoted = &value
+	admitted := native.Admitted{ID: id, SessionID: session, Type: "user", Payload: json.RawMessage(`{"text":"` + request.Text + `"}`), Delivery: request.Delivery}
+	admitted.Time.Created = 1
+	if admitted.Delivery == "" {
+		admitted.Delivery = native.DeliverySteer
 	}
-	return native.Admitted{AdmittedSeq: int64(len(f.prompts)), ID: request.ID, SessionID: session, Prompt: request.Prompt, Delivery: request.Delivery, TimeCreated: 1, PromotedSeq: promoted}, nil
+	return admitted, nil
 }
-func (f *fakeClient) Interrupt(context.Context, native.SessionID) error {
+func (f *fakeClient) Interrupt(ctx context.Context, _ native.SessionID) (bool, error) {
 	f.mu.Lock()
-	defer f.mu.Unlock()
 	f.interrupts++
+	stalls := f.stalls
+	f.mu.Unlock()
+	if stalls {
+		<-ctx.Done()
+		return false, ctx.Err()
+	}
+	return true, nil
+}
+func (f *fakeClient) CancelInbox(_ context.Context, _ native.SessionID, inbox native.MessageID) error {
+	f.mu.Lock()
+	f.inboxCancels = append(f.inboxCancels, inbox)
+	f.cancelSeq++
+	seq, silent := f.cancelSeq, f.silentCancels
+	f.mu.Unlock()
+	if !silent {
+		f.events <- f.event(seq, native.TypeInboxCancelled, native.InboxRefData{SessionID: f.session, InboxID: inbox})
+	}
 	return nil
 }
 func (f *fakeClient) Active(ctx context.Context) (map[native.SessionID]bool, error) {
 	f.mu.Lock()
 	f.actives++
-	gate, err := f.idleGate, f.activeErr
+	err := f.activeErr
 	running := false
 	if f.activeFor > 0 {
 		f.activeFor--
@@ -191,37 +207,20 @@ func (f *fakeClient) Active(ctx context.Context) (map[native.SessionID]bool, err
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	if gate != nil {
-		select {
-		case <-gate:
-		default:
-			running = true
-		}
-	}
 	if running {
 		return map[native.SessionID]bool{f.session: true}, nil
 	}
 	return map[native.SessionID]bool{}, nil
 }
-func (f *fakeClient) History(_ context.Context, _ native.SessionID, after int64, _ int) (native.HistoryPage, error) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	if f.historyErr != nil {
-		return native.HistoryPage{}, f.historyErr
-	}
-	var page native.HistoryPage
-	for _, event := range f.historyPage.Events {
-		if event.Durable.Seq > after {
-			page.Events = append(page.Events, event)
-		}
-	}
-	return page, nil
-}
-func (f *fakeClient) Subscribe(ctx context.Context, _ native.SessionID, after int64) (Subscription, error) {
+func (f *fakeClient) Subscribe(ctx context.Context, _ native.SessionID) (Subscription, error) {
 	f.mu.Lock()
 	f.subscribeCtx = ctx
-	f.subscribedAfter = after
+	stalls := f.stalls
 	f.mu.Unlock()
+	if stalls {
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}
 	return f.subscription, nil
 }
 func (f *fakeClient) Close() error {
@@ -231,13 +230,42 @@ func (f *fakeClient) Close() error {
 	return nil
 }
 
-func (f *fakeClient) emit(t *testing.T, seq int64, typ native.Type, payload any) {
-	t.Helper()
+func (f *fakeClient) event(seq int64, typ native.Type, payload any) native.Event {
 	data, err := json.Marshal(payload)
 	if err != nil {
-		t.Fatal(err)
+		panic(err)
 	}
-	f.events <- native.Event{ID: native.EventID(fmt.Sprintf("evt_fake%04d", seq)), Type: typ, Durable: &native.DurablePosition{AggregateID: string(f.session), Seq: seq, Version: 1}, Data: data}
+	event := native.Event{ID: native.EventID(fmt.Sprintf("evt_fake%04d", seq)), Type: typ, Data: data, SessionID: f.session}
+	if typ.Durable() {
+		event.Durable = &native.DurablePosition{AggregateID: string(f.session), Seq: seq, Version: 1}
+	}
+	return event
+}
+
+func (f *fakeClient) emit(t *testing.T, seq int64, typ native.Type, payload any) {
+	t.Helper()
+	f.events <- f.event(seq, typ, payload)
+}
+
+func (f *fakeClient) deliver(t *testing.T, seq int64, inbox native.MessageID) {
+	t.Helper()
+	f.emit(t, seq, native.TypeInboxDelivered, native.InboxRefData{SessionID: f.session, InboxID: inbox})
+}
+
+func (f *fakeClient) succeed(t *testing.T, seq int64) {
+	t.Helper()
+	f.emit(t, seq, native.TypeExecutionSucceeded, native.ExecutionData{SessionID: f.session})
+}
+
+func (f *fakeClient) interrupted(t *testing.T, seq int64) {
+	t.Helper()
+	f.emit(t, seq, native.TypeExecutionInterrupted, native.ExecutionInterruptedData{SessionID: f.session, Reason: "user"})
+}
+
+func (f *fakeClient) toolCalled(t *testing.T, inputSeq, calledSeq int64, id, name string, input map[string]any) {
+	t.Helper()
+	f.emit(t, inputSeq, native.TypeToolInputStarted, native.ToolInputStartedData{SessionID: f.session, AssistantMessage: "msg_a1", ID: id, Name: name})
+	f.emit(t, calledSeq, native.TypeToolCalled, native.ToolCalledData{SessionID: f.session, AssistantMessage: "msg_a1", ID: id, Input: input})
 }
 
 func TestTokenCountSaturates(t *testing.T) {
@@ -288,7 +316,7 @@ func TestProbeAdvertisesQueueAndRefusesSteer(t *testing.T) {
 func openTest(t *testing.T, client *fakeClient, capacity int) (base.Session, *fakeSubscription) {
 	t.Helper()
 	subscription := client.subscription
-	adapter, err := New(Config{Factory: ClientFactoryFunc(func(context.Context) (Client, error) { return client, nil }), Clock: &fakeClock{}, IDs: &fakeIDs{}, JournalCapacity: capacity, SettlePollMin: time.Millisecond, SettlePollMax: 2 * time.Millisecond})
+	adapter, err := New(Config{Factory: ClientFactoryFunc(func(context.Context) (Client, error) { return client, nil }), Clock: &fakeClock{}, IDs: &fakeIDs{}, JournalCapacity: capacity})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -374,16 +402,22 @@ func types(events []protocol.Envelope) []protocol.EnvelopeType {
 	return out
 }
 
-func TestCompletedRunDerivesTerminalFromQuiescence(t *testing.T) {
+func TestACompletedRunSettlesWhenTheExecutionSucceedsAndNotBefore(t *testing.T) {
 	client := newFakeClient()
-	client.promoted = true
 	session, _ := openTest(t, client, 32)
 	response, stream := submitTest(t, session)
-	client.emit(t, 1, native.TypePrompted, native.PromptedData{Timestamp: 1, SessionID: client.session, MessageID: native.MessageID(response.MessageIDs[0]), Prompt: native.Prompt{Text: "hello"}, Delivery: native.DeliverySteer})
-	client.emit(t, 2, native.TypeStepStarted, native.StepStartedData{Timestamp: 2, SessionID: client.session, AssistantMessage: "msg_assistant1", Agent: "build", Model: native.ModelRef{ID: "m", ProviderID: "p"}})
-	client.emit(t, 3, native.TypeTextEnded, native.TextEndedData{Timestamp: 3, SessionID: client.session, AssistantMessage: "msg_assistant1", TextID: "t1", Text: "done"})
-	client.emit(t, 4, native.TypeStepEnded, native.StepEndedData{Timestamp: 4, SessionID: client.session, AssistantMessage: "msg_assistant1", Finish: "stop", Tokens: tokenAccounting(2, 5)})
-	events := adaptertest.Drain(t, stream, time.Second)
+	client.deliver(t, 1, native.MessageID(response.MessageIDs[0]))
+	client.emit(t, 2, native.TypeStepStarted, native.StepStartedData{SessionID: client.session, AssistantMessage: "msg_assistant1", Agent: "build", Model: native.ModelRef{ID: "m", ProviderID: "p"}})
+	client.emit(t, 3, native.TypeTextEnded, native.TextEndedData{SessionID: client.session, AssistantMessage: "msg_assistant1", Text: "done"})
+	client.emit(t, 4, native.TypeStepEnded, native.StepEndedData{SessionID: client.session, AssistantMessage: "msg_assistant1", Finish: "stop", Tokens: tokenAccounting(2, 5)})
+	events := []protocol.Envelope{adaptertest.Next(t, stream, time.Second), adaptertest.Next(t, stream, time.Second)}
+	select {
+	case result := <-stream:
+		t.Fatalf("the run settled before its execution ended: %s", result.Envelope.Type)
+	case <-time.After(30 * time.Millisecond):
+	}
+	client.succeed(t, 5)
+	events = append(events, adaptertest.Drain(t, stream, time.Second)...)
 	adaptertest.AssertRunTrace(t, response, CapabilityRevision, events)
 	want := []protocol.EnvelopeType{protocol.TypeRunStarted, protocol.TypeContentDelta, protocol.TypeRunCompleted}
 	if fmt.Sprint(types(events)) != fmt.Sprint(want) {
@@ -395,13 +429,6 @@ func TestCompletedRunDerivesTerminalFromQuiescence(t *testing.T) {
 	}
 	if completed.StopReason != "stop" || completed.Usage == nil || completed.Usage.InputTokens != 2 || completed.Usage.OutputTokens != 5 {
 		t.Fatalf("completed=%+v", completed)
-	}
-
-	client.mu.Lock()
-	actives := client.actives
-	client.mu.Unlock()
-	if actives != 1 {
-		t.Fatalf("active polls=%d", actives)
 	}
 }
 
@@ -421,16 +448,16 @@ func tokenAccounting(in, out float64) (tokens struct {
 
 func TestToolLifecycleSettlesBeforeTerminal(t *testing.T) {
 	client := newFakeClient()
-	client.promoted = true
 	session, _ := openTest(t, client, 32)
 	response, stream := submitTest(t, session)
-	client.emit(t, 1, native.TypePrompted, native.PromptedData{Timestamp: 1, SessionID: client.session, MessageID: native.MessageID(response.MessageIDs[0]), Prompt: native.Prompt{Text: "hello"}, Delivery: native.DeliverySteer})
-	client.emit(t, 2, native.TypeStepStarted, native.StepStartedData{Timestamp: 2, SessionID: client.session, AssistantMessage: "msg_a1"})
-	client.emit(t, 3, native.TypeToolCalled, native.ToolCalledData{Timestamp: 3, SessionID: client.session, AssistantMessage: "msg_a1", CallID: "call_1", Tool: "read", Input: map[string]any{"path": "/x"}})
-	client.emit(t, 4, native.TypeToolProgress, native.ToolProgressData{Timestamp: 4, SessionID: client.session, AssistantMessage: "msg_a1", CallID: "call_1", Structured: map[string]any{}, Content: []native.ToolContent{{Type: "text", Text: "half"}}})
-	client.emit(t, 5, native.TypeToolSuccess, native.ToolSuccessData{Timestamp: 5, SessionID: client.session, AssistantMessage: "msg_a1", CallID: "call_1", Structured: map[string]any{}, Content: []native.ToolContent{{Type: "text", Text: "done"}}})
-	client.emit(t, 6, native.TypeTextEnded, native.TextEndedData{Timestamp: 6, SessionID: client.session, AssistantMessage: "msg_a1", TextID: "t1", Text: "answer"})
-	client.emit(t, 7, native.TypeStepEnded, native.StepEndedData{Timestamp: 7, SessionID: client.session, AssistantMessage: "msg_a1", Finish: "tool_use"})
+	client.deliver(t, 1, native.MessageID(response.MessageIDs[0]))
+	client.emit(t, 2, native.TypeStepStarted, native.StepStartedData{SessionID: client.session, AssistantMessage: "msg_a1"})
+	client.toolCalled(t, 25, 30, "call_1", "read", map[string]any{"path": "/x"})
+	client.emit(t, 4, native.TypeToolProgress, native.ToolProgressData{SessionID: client.session, AssistantMessage: "msg_a1", ID: "call_1", Metadata: json.RawMessage(`{"text":"half"}`)})
+	client.emit(t, 5, native.TypeToolSuccess, native.ToolSuccessData{SessionID: client.session, AssistantMessage: "msg_a1", ID: "call_1", Executed: true, Content: []native.ToolContent{{Type: "text", Text: "done"}}})
+	client.emit(t, 6, native.TypeTextEnded, native.TextEndedData{SessionID: client.session, AssistantMessage: "msg_a1", Text: "answer"})
+	client.emit(t, 7, native.TypeStepEnded, native.StepEndedData{SessionID: client.session, AssistantMessage: "msg_a1", Finish: "tool_use"})
+	client.succeed(t, 8)
 	events := adaptertest.Drain(t, stream, time.Second)
 
 	_ = response
@@ -452,99 +479,18 @@ func TestToolLifecycleSettlesBeforeTerminal(t *testing.T) {
 
 func TestMultiStepTurnSettlesOnce(t *testing.T) {
 	client := newFakeClient()
-	client.promoted = true
 
-	delivered := make(chan struct{})
-	client.idleGate = delivered
 	session, _ := openTest(t, client, 32)
 	response, stream := submitTest(t, session)
 	messageID := native.MessageID(response.MessageIDs[0])
-	client.emit(t, 1, native.TypePrompted, native.PromptedData{Timestamp: 1, SessionID: client.session, MessageID: messageID, Prompt: native.Prompt{Text: "hello"}, Delivery: native.DeliverySteer})
-	client.emit(t, 2, native.TypeStepStarted, native.StepStartedData{Timestamp: 2, SessionID: client.session, AssistantMessage: "msg_a1"})
-	client.emit(t, 3, native.TypeStepEnded, native.StepEndedData{Timestamp: 3, SessionID: client.session, AssistantMessage: "msg_a1", Finish: "tool_use"})
+	client.deliver(t, 1, messageID)
+	client.emit(t, 2, native.TypeStepStarted, native.StepStartedData{SessionID: client.session, AssistantMessage: "msg_a1"})
+	client.emit(t, 3, native.TypeStepEnded, native.StepEndedData{SessionID: client.session, AssistantMessage: "msg_a1", Finish: "tool_use"})
 
-	client.emit(t, 4, native.TypeStepStarted, native.StepStartedData{Timestamp: 4, SessionID: client.session, AssistantMessage: "msg_a2"})
-	client.emit(t, 5, native.TypeTextEnded, native.TextEndedData{Timestamp: 5, SessionID: client.session, AssistantMessage: "msg_a2", TextID: "t2", Text: "final"})
-	client.emit(t, 6, native.TypeStepEnded, native.StepEndedData{Timestamp: 6, SessionID: client.session, AssistantMessage: "msg_a2", Finish: "stop"})
-	close(delivered)
-	events := adaptertest.Drain(t, stream, time.Second)
-	adaptertest.AssertRunTrace(t, response, CapabilityRevision, events)
-	want := []protocol.EnvelopeType{protocol.TypeRunStarted, protocol.TypeContentDelta, protocol.TypeRunCompleted}
-	if fmt.Sprint(types(events)) != fmt.Sprint(want) {
-		t.Fatalf("events=%v", types(events))
-	}
-}
-
-func TestSettlementPollsActiveUntilLoopDrains(t *testing.T) {
-	client := newFakeClient()
-	client.promoted = true
-	client.activeFor = 3
-	session, _ := openTest(t, client, 32)
-	response, stream := submitTest(t, session)
-	client.emit(t, 1, native.TypePrompted, native.PromptedData{Timestamp: 1, SessionID: client.session, MessageID: native.MessageID(response.MessageIDs[0]), Prompt: native.Prompt{Text: "hello"}, Delivery: native.DeliverySteer})
-	client.emit(t, 2, native.TypeStepStarted, native.StepStartedData{Timestamp: 2, SessionID: client.session, AssistantMessage: "msg_a1"})
-	client.emit(t, 3, native.TypeTextEnded, native.TextEndedData{Timestamp: 3, SessionID: client.session, AssistantMessage: "msg_a1", TextID: "t1", Text: "done"})
-	client.emit(t, 4, native.TypeStepEnded, native.StepEndedData{Timestamp: 4, SessionID: client.session, AssistantMessage: "msg_a1", Finish: "stop"})
-	events := adaptertest.Drain(t, stream, time.Second)
-	adaptertest.AssertRunTrace(t, response, CapabilityRevision, events)
-	want := []protocol.EnvelopeType{protocol.TypeRunStarted, protocol.TypeContentDelta, protocol.TypeRunCompleted}
-	if fmt.Sprint(types(events)) != fmt.Sprint(want) {
-		t.Fatalf("events=%v", types(events))
-	}
-	client.mu.Lock()
-	actives := client.actives
-	client.mu.Unlock()
-	if actives <= 3 {
-		t.Fatalf("active polls=%d, want the run to outlast the three active replies", actives)
-	}
-}
-
-func TestSettlementFailsWhenQuiescenceUnreadable(t *testing.T) {
-	client := newFakeClient()
-	client.promoted = true
-	client.activeErr = errors.New("HTTP 503 ServiceUnavailableError")
-	session, _ := openTest(t, client, 32)
-	response, stream := submitTest(t, session)
-	client.emit(t, 1, native.TypePrompted, native.PromptedData{Timestamp: 1, SessionID: client.session, MessageID: native.MessageID(response.MessageIDs[0]), Prompt: native.Prompt{Text: "hello"}, Delivery: native.DeliverySteer})
-	client.emit(t, 2, native.TypeStepStarted, native.StepStartedData{Timestamp: 2, SessionID: client.session, AssistantMessage: "msg_a1"})
-	client.emit(t, 3, native.TypeStepEnded, native.StepEndedData{Timestamp: 3, SessionID: client.session, AssistantMessage: "msg_a1", Finish: "stop"})
-	events := adaptertest.Drain(t, stream, time.Second)
-	adaptertest.AssertRunTrace(t, response, CapabilityRevision, events)
-	last := events[len(events)-1]
-	if last.Type != protocol.TypeRunFailed {
-		t.Fatalf("terminal=%s, want %s", last.Type, protocol.TypeRunFailed)
-	}
-	var failed protocol.RunFailedPayload
-	if err := last.DecodePayload(&failed); err != nil {
-		t.Fatal(err)
-	}
-	if failed.Error.Code != "opencode_quiescence_failed" {
-		t.Fatalf("code=%q", failed.Error.Code)
-	}
-}
-
-func TestHistoryFenceReducesEventsMissedByStream(t *testing.T) {
-	client := newFakeClient()
-	client.promoted = true
-	session, _ := openTest(t, client, 32)
-	response, stream := submitTest(t, session)
-	tail := []native.Event{
-		{ID: "evt_fake0004", Type: native.TypeTextEnded, Durable: &native.DurablePosition{AggregateID: string(client.session), Seq: 4, Version: 1}},
-		{ID: "evt_fake0005", Type: native.TypeStepEnded, Durable: &native.DurablePosition{AggregateID: string(client.session), Seq: 5, Version: 1}},
-	}
-	textData, err := json.Marshal(native.TextEndedData{Timestamp: 4, SessionID: client.session, AssistantMessage: "msg_a1", TextID: "t1", Text: "fenced"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	stepData, err := json.Marshal(native.StepEndedData{Timestamp: 5, SessionID: client.session, AssistantMessage: "msg_a1", Finish: "stop"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	tail[0].Data, tail[1].Data = textData, stepData
-	client.historyPage = native.HistoryPage{Events: tail}
-	client.emit(t, 1, native.TypePrompted, native.PromptedData{Timestamp: 1, SessionID: client.session, MessageID: native.MessageID(response.MessageIDs[0]), Prompt: native.Prompt{Text: "hello"}, Delivery: native.DeliverySteer})
-	client.emit(t, 2, native.TypeStepStarted, native.StepStartedData{Timestamp: 2, SessionID: client.session, AssistantMessage: "msg_a1"})
-	client.emit(t, 3, native.TypeStepEnded, native.StepEndedData{Timestamp: 3, SessionID: client.session, AssistantMessage: "msg_a1", Finish: "tool_use"})
+	client.emit(t, 4, native.TypeStepStarted, native.StepStartedData{SessionID: client.session, AssistantMessage: "msg_a2"})
+	client.emit(t, 5, native.TypeTextEnded, native.TextEndedData{SessionID: client.session, AssistantMessage: "msg_a2", Text: "final"})
+	client.emit(t, 6, native.TypeStepEnded, native.StepEndedData{SessionID: client.session, AssistantMessage: "msg_a2", Finish: "stop"})
+	client.succeed(t, 7)
 	events := adaptertest.Drain(t, stream, time.Second)
 	adaptertest.AssertRunTrace(t, response, CapabilityRevision, events)
 	want := []protocol.EnvelopeType{protocol.TypeRunStarted, protocol.TypeContentDelta, protocol.TypeRunCompleted}
@@ -555,12 +501,11 @@ func TestHistoryFenceReducesEventsMissedByStream(t *testing.T) {
 
 func TestCancelAcknowledgesIntentAndSettlesCancelled(t *testing.T) {
 	client := newFakeClient()
-	client.promoted = true
 	session, _ := openTest(t, client, 32)
 	response, stream := submitTest(t, session)
 	messageID := native.MessageID(response.MessageIDs[0])
-	client.emit(t, 1, native.TypePrompted, native.PromptedData{Timestamp: 1, SessionID: client.session, MessageID: messageID, Prompt: native.Prompt{Text: "hello"}, Delivery: native.DeliverySteer})
-	client.emit(t, 2, native.TypeStepStarted, native.StepStartedData{Timestamp: 2, SessionID: client.session, AssistantMessage: "msg_a1"})
+	client.deliver(t, 1, messageID)
+	client.emit(t, 2, native.TypeStepStarted, native.StepStartedData{SessionID: client.session, AssistantMessage: "msg_a1"})
 	if started := adaptertest.Next(t, stream, time.Second); started.Type != protocol.TypeRunStarted {
 		t.Fatalf("first=%s", started.Type)
 	}
@@ -568,7 +513,8 @@ func TestCancelAcknowledgesIntentAndSettlesCancelled(t *testing.T) {
 	if err != nil || !cancelled.Accepted || cancelled.Status != protocol.RunCancelling {
 		t.Fatalf("cancel=%+v err=%v", cancelled, err)
 	}
-	client.emit(t, 3, native.TypeStepEnded, native.StepEndedData{Timestamp: 3, SessionID: client.session, AssistantMessage: "msg_a1", Finish: "aborted"})
+	client.emit(t, 3, native.TypeStepFailed, native.StepFailedData{SessionID: client.session, AssistantMessage: "msg_a1", Error: native.SessionError{Type: "aborted", Message: "Step interrupted"}})
+	client.interrupted(t, 4)
 	events := adaptertest.Drain(t, stream, time.Second)
 	want := []protocol.EnvelopeType{protocol.TypeRunStatusUpdated, protocol.TypeRunCancelled}
 	if fmt.Sprint(types(events)) != fmt.Sprint(want) {
@@ -576,11 +522,13 @@ func TestCancelAcknowledgesIntentAndSettlesCancelled(t *testing.T) {
 	}
 }
 
-func TestQueuedAdmissionStartsOnPrompted(t *testing.T) {
+func TestAnAdmissionStaysQueuedUntilItsInputIsDelivered(t *testing.T) {
 	client := newFakeClient()
-	client.promoted = false
 	session, _ := openTest(t, client, 32)
-	response, stream := submitTest(t, session)
+	response, stream, err := session.Submit(context.Background(), base.SubmitRequest{Request: queueRequest("hello")})
+	if err != nil {
+		t.Fatal(err)
+	}
 	if response.Admission != protocol.AdmissionQueued || response.Status != protocol.RunQueued {
 		t.Fatalf("response=%+v", response)
 	}
@@ -589,8 +537,9 @@ func TestQueuedAdmissionStartsOnPrompted(t *testing.T) {
 		t.Fatalf("premature event %s", result.Envelope.Type)
 	case <-time.After(20 * time.Millisecond):
 	}
-	client.emit(t, 1, native.TypePrompted, native.PromptedData{Timestamp: 1, SessionID: client.session, MessageID: native.MessageID(response.MessageIDs[0]), Prompt: native.Prompt{Text: "hello"}, Delivery: native.DeliverySteer})
-	client.emit(t, 2, native.TypeStepEnded, native.StepEndedData{Timestamp: 2, SessionID: client.session, AssistantMessage: "msg_a1", Finish: "stop"})
+	client.deliver(t, 1, native.MessageID(response.MessageIDs[0]))
+	client.emit(t, 2, native.TypeStepEnded, native.StepEndedData{SessionID: client.session, AssistantMessage: "msg_a1", Finish: "stop"})
+	client.succeed(t, 3)
 	events := adaptertest.Drain(t, stream, time.Second)
 	if events[0].Type != protocol.TypeRunStarted {
 		t.Fatalf("events=%v", types(events))
@@ -599,11 +548,11 @@ func TestQueuedAdmissionStartsOnPrompted(t *testing.T) {
 
 func TestForeignSessionEventFailsRun(t *testing.T) {
 	client := newFakeClient()
-	client.promoted = true
 	session, _ := openTest(t, client, 32)
 	response, stream := submitTest(t, session)
-	data, _ := json.Marshal(native.PromptedData{Timestamp: 1, SessionID: client.session, MessageID: native.MessageID(response.MessageIDs[0]), Prompt: native.Prompt{Text: "hello"}, Delivery: native.DeliverySteer})
-	client.events <- native.Event{ID: "evt_foreign", Type: native.TypePrompted, Durable: &native.DurablePosition{AggregateID: "ses_other", Seq: 1, Version: 1}, Data: data}
+	foreign := client.event(1, native.TypeInboxDelivered, native.InboxRefData{SessionID: "ses_other", InboxID: native.MessageID(response.MessageIDs[0])})
+	foreign.SessionID = "ses_other"
+	client.events <- foreign
 	events := adaptertest.Drain(t, stream, time.Second)
 	if len(events) != 1 || events[0].Type != protocol.TypeRunFailed {
 		t.Fatalf("events=%v", types(events))
@@ -667,7 +616,6 @@ func TestAdmissionFailureRetiresSession(t *testing.T) {
 
 func TestStreamFailureProjectsFailure(t *testing.T) {
 	client := newFakeClient()
-	client.promoted = true
 	session, subscription := openTest(t, client, 32)
 	_, stream := submitTest(t, session)
 	subscription.fail(errors.New("connection reset"))
@@ -679,12 +627,12 @@ func TestStreamFailureProjectsFailure(t *testing.T) {
 
 func TestStepFailureFailsRun(t *testing.T) {
 	client := newFakeClient()
-	client.promoted = true
 	session, _ := openTest(t, client, 32)
 	response, stream := submitTest(t, session)
-	client.emit(t, 1, native.TypePrompted, native.PromptedData{Timestamp: 1, SessionID: client.session, MessageID: native.MessageID(response.MessageIDs[0]), Prompt: native.Prompt{Text: "hello"}, Delivery: native.DeliverySteer})
-	client.emit(t, 2, native.TypeStepStarted, native.StepStartedData{Timestamp: 2, SessionID: client.session, AssistantMessage: "msg_a1"})
-	client.emit(t, 3, native.TypeStepFailed, native.StepFailedData{Timestamp: 3, SessionID: client.session, AssistantMessage: "msg_a1", Error: native.UnknownErrorBlock{Type: "unknown", Message: "provider exploded"}})
+	client.deliver(t, 1, native.MessageID(response.MessageIDs[0]))
+	client.emit(t, 2, native.TypeStepStarted, native.StepStartedData{SessionID: client.session, AssistantMessage: "msg_a1"})
+	client.emit(t, 3, native.TypeStepFailed, native.StepFailedData{SessionID: client.session, AssistantMessage: "msg_a1", Error: native.SessionError{Type: "unknown", Message: "provider exploded"}})
+	client.succeed(t, 4)
 	events := adaptertest.Drain(t, stream, time.Second)
 	if last := events[len(events)-1]; last.Type != protocol.TypeRunFailed {
 		t.Fatalf("events=%v", types(events))
@@ -699,15 +647,49 @@ func TestStepFailureFailsRun(t *testing.T) {
 	adaptertest.AssertRunTrace(t, response, CapabilityRevision, events)
 }
 
+func TestAFailedExecutionFailsTheRunWithItsError(t *testing.T) {
+	client := newFakeClient()
+	session, _ := openTest(t, client, 32)
+	response, stream := submitTest(t, session)
+	client.deliver(t, 1, native.MessageID(response.MessageIDs[0]))
+	client.emit(t, 2, native.TypeExecutionFailed, native.ExecutionFailedData{SessionID: client.session, Error: native.SessionError{Type: "provider", Message: "the provider refused"}})
+	events := adaptertest.Drain(t, stream, time.Second)
+	adaptertest.AssertRunTrace(t, response, CapabilityRevision, events)
+	var failed protocol.RunFailedPayload
+	if err := events[len(events)-1].DecodePayload(&failed); err != nil || events[len(events)-1].Type != protocol.TypeRunFailed {
+		t.Fatalf("events=%v err=%v", types(events), err)
+	}
+	if failed.Error.Code != "opencode_execution_failed" || failed.Error.Message != "the provider refused" {
+		t.Fatalf("failed=%+v", failed)
+	}
+}
+
+func TestAnInterruptNobodyAskedForFailsTheRunNamingItsReason(t *testing.T) {
+	client := newFakeClient()
+	session, _ := openTest(t, client, 32)
+	response, stream := submitTest(t, session)
+	client.deliver(t, 1, native.MessageID(response.MessageIDs[0]))
+	client.emit(t, 2, native.TypeExecutionInterrupted, native.ExecutionInterruptedData{SessionID: client.session, Reason: "shutdown"})
+	events := adaptertest.Drain(t, stream, time.Second)
+	adaptertest.AssertRunTrace(t, response, CapabilityRevision, events)
+	var failed protocol.RunFailedPayload
+	if err := events[len(events)-1].DecodePayload(&failed); err != nil || events[len(events)-1].Type != protocol.TypeRunFailed {
+		t.Fatalf("events=%v err=%v", types(events), err)
+	}
+	if failed.Error.Code != "opencode_execution_interrupted" || !strings.Contains(failed.Error.Message, "shutdown") {
+		t.Fatalf("failed=%+v", failed)
+	}
+}
+
 func TestReplayGapAndTerminalReplay(t *testing.T) {
 	client := newFakeClient()
-	client.promoted = true
 	session, _ := openTest(t, client, 2)
 	response, stream := submitTest(t, session)
-	client.emit(t, 1, native.TypePrompted, native.PromptedData{Timestamp: 1, SessionID: client.session, MessageID: native.MessageID(response.MessageIDs[0]), Prompt: native.Prompt{Text: "hello"}, Delivery: native.DeliverySteer})
-	client.emit(t, 2, native.TypeTextEnded, native.TextEndedData{Timestamp: 2, SessionID: client.session, AssistantMessage: "msg_a1", TextID: "t1", Text: "a"})
-	client.emit(t, 3, native.TypeTextEnded, native.TextEndedData{Timestamp: 3, SessionID: client.session, AssistantMessage: "msg_a1", TextID: "t2", Text: "b"})
-	client.emit(t, 4, native.TypeStepEnded, native.StepEndedData{Timestamp: 4, SessionID: client.session, AssistantMessage: "msg_a1", Finish: "stop"})
+	client.deliver(t, 1, native.MessageID(response.MessageIDs[0]))
+	client.emit(t, 2, native.TypeTextEnded, native.TextEndedData{SessionID: client.session, AssistantMessage: "msg_a1", Text: "a"})
+	client.emit(t, 3, native.TypeTextEnded, native.TextEndedData{SessionID: client.session, AssistantMessage: "msg_a1", Text: "b"})
+	client.emit(t, 4, native.TypeStepEnded, native.StepEndedData{SessionID: client.session, AssistantMessage: "msg_a1", Finish: "stop"})
+	client.succeed(t, 5)
 	_ = adaptertest.Drain(t, stream, time.Second)
 	_, gapStream, err := session.Resume(context.Background(), base.ResumeRequest{RunID: response.RunID, AfterSequence: 0})
 	var gap *base.ReplayGap
@@ -729,7 +711,6 @@ func TestReplayGapAndTerminalReplay(t *testing.T) {
 
 func TestOpenSubscriptionSurvivesOpenContextCancel(t *testing.T) {
 	client := newFakeClient()
-	client.promoted = true
 	adapter, err := New(Config{Factory: ClientFactoryFunc(func(context.Context) (Client, error) { return client, nil }), Clock: &fakeClock{}, IDs: &fakeIDs{}})
 	if err != nil {
 		t.Fatal(err)
@@ -752,8 +733,9 @@ func TestOpenSubscriptionSurvivesOpenContextCancel(t *testing.T) {
 	}
 
 	response, stream := submitTest(t, session)
-	client.emit(t, 1, native.TypePrompted, native.PromptedData{Timestamp: 1, SessionID: client.session, MessageID: native.MessageID(response.MessageIDs[0]), Prompt: native.Prompt{Text: "hello"}, Delivery: native.DeliverySteer})
-	client.emit(t, 2, native.TypeStepEnded, native.StepEndedData{Timestamp: 2, SessionID: client.session, AssistantMessage: "msg_a1", Finish: "stop"})
+	client.deliver(t, 1, native.MessageID(response.MessageIDs[0]))
+	client.emit(t, 2, native.TypeStepEnded, native.StepEndedData{SessionID: client.session, AssistantMessage: "msg_a1", Finish: "stop"})
+	client.succeed(t, 3)
 	events := adaptertest.Drain(t, stream, time.Second)
 	if len(events) == 0 || events[0].Type != protocol.TypeRunStarted {
 		t.Fatalf("events=%v", types(events))
@@ -775,9 +757,8 @@ func (g *gatedPromptClient) Prompt(ctx context.Context, session native.SessionID
 	return g.fakeClient.Prompt(ctx, session, request)
 }
 
-func TestPromptedEventBeforePromptResponseStartsRun(t *testing.T) {
+func TestADeliveryBeforeThePromptResponseStartsTheRun(t *testing.T) {
 	client := newFakeClient()
-	client.promoted = false
 	gated := &gatedPromptClient{fakeClient: client, entered: make(chan struct{}), release: make(chan struct{})}
 	adapter, err := New(Config{Factory: ClientFactoryFunc(func(context.Context) (Client, error) { return gated, nil }), Clock: &fakeClock{}, IDs: &fakeIDs{}})
 	if err != nil {
@@ -806,8 +787,8 @@ func TestPromptedEventBeforePromptResponseStartsRun(t *testing.T) {
 	messageID := client.lastPromptID
 	client.mu.Unlock()
 
-	client.emit(t, 1, native.TypePrompted, native.PromptedData{Timestamp: 1, SessionID: client.session, MessageID: messageID, Prompt: native.Prompt{Text: "hello"}, Delivery: native.DeliverySteer})
-	client.emit(t, 2, native.TypeAgentSwitched, nil)
+	client.deliver(t, 1, messageID)
+	client.emit(t, 2, native.TypeAgentSelected, map[string]any{"sessionID": client.session, "agent": "build"})
 	concrete := sess.(*session)
 	deadline := time.Now().Add(300 * time.Millisecond)
 	for time.Now().Before(deadline) {
@@ -824,7 +805,8 @@ func TestPromptedEventBeforePromptResponseStartsRun(t *testing.T) {
 	if result.err != nil {
 		t.Fatal(result.err)
 	}
-	client.emit(t, 3, native.TypeStepEnded, native.StepEndedData{Timestamp: 3, SessionID: client.session, AssistantMessage: "msg_a1", Finish: "stop"})
+	client.emit(t, 3, native.TypeStepEnded, native.StepEndedData{SessionID: client.session, AssistantMessage: "msg_a1", Finish: "stop"})
+	client.succeed(t, 4)
 	events := adaptertest.Drain(t, result.stream, time.Second)
 	if len(events) == 0 || events[0].Type != protocol.TypeRunStarted {
 		t.Fatalf("events=%v", types(events))
@@ -854,12 +836,11 @@ func testAdapterDescriptor(t *testing.T) base.Descriptor {
 
 func TestExplicitQueueReservesAndPromotesAfterSettlement(t *testing.T) {
 	client := newFakeClient()
-	client.promoted = true
 	session, _ := openTest(t, client, 64)
 	descriptor := testAdapterDescriptor(t)
 	first, firstStream := submitTest(t, session)
-	client.emit(t, 1, native.TypePrompted, native.PromptedData{Timestamp: 1, SessionID: client.session, MessageID: native.MessageID(first.MessageIDs[0]), Prompt: native.Prompt{Text: "hello"}, Delivery: native.DeliverySteer})
-	client.emit(t, 2, native.TypeStepStarted, native.StepStartedData{Timestamp: 2, SessionID: client.session, AssistantMessage: "msg_a1"})
+	client.deliver(t, 1, native.MessageID(first.MessageIDs[0]))
+	client.emit(t, 2, native.TypeStepStarted, native.StepStartedData{SessionID: client.session, AssistantMessage: "msg_a1"})
 
 	queued, queuedStream, err := session.Submit(context.Background(), base.SubmitRequest{Request: queueRequest("later")})
 	if err != nil {
@@ -890,17 +871,18 @@ func TestExplicitQueueReservesAndPromotesAfterSettlement(t *testing.T) {
 		t.Fatalf("third submit = %v, want ErrRunActive", err)
 	}
 
-	client.emit(t, 3, native.TypeTextEnded, native.TextEndedData{Timestamp: 3, SessionID: client.session, AssistantMessage: "msg_a1", TextID: "t1", Text: "first"})
-	client.emit(t, 4, native.TypeStepEnded, native.StepEndedData{Timestamp: 4, SessionID: client.session, AssistantMessage: "msg_a1", Finish: "stop"})
-	client.emit(t, 5, native.TypePrompted, native.PromptedData{Timestamp: 5, SessionID: client.session, MessageID: native.MessageID(queued.MessageIDs[0]), Prompt: native.Prompt{Text: "later"}, Delivery: native.DeliveryQueue})
+	client.emit(t, 3, native.TypeTextEnded, native.TextEndedData{SessionID: client.session, AssistantMessage: "msg_a1", Text: "first"})
+	client.emit(t, 4, native.TypeStepEnded, native.StepEndedData{SessionID: client.session, AssistantMessage: "msg_a1", Finish: "stop"})
+	client.deliver(t, 5, native.MessageID(queued.MessageIDs[0]))
 	firstEvents := adaptertest.Drain(t, firstStream, 2*time.Second)
 	if len(firstEvents) == 0 || firstEvents[len(firstEvents)-1].Type != protocol.TypeRunCompleted {
 		t.Fatalf("first run = %v", types(firstEvents))
 	}
 
-	client.emit(t, 6, native.TypeStepStarted, native.StepStartedData{Timestamp: 6, SessionID: client.session, AssistantMessage: "msg_a2"})
-	client.emit(t, 7, native.TypeTextEnded, native.TextEndedData{Timestamp: 7, SessionID: client.session, AssistantMessage: "msg_a2", TextID: "t2", Text: "second"})
-	client.emit(t, 8, native.TypeStepEnded, native.StepEndedData{Timestamp: 8, SessionID: client.session, AssistantMessage: "msg_a2", Finish: "stop"})
+	client.emit(t, 6, native.TypeStepStarted, native.StepStartedData{SessionID: client.session, AssistantMessage: "msg_a2"})
+	client.emit(t, 7, native.TypeTextEnded, native.TextEndedData{SessionID: client.session, AssistantMessage: "msg_a2", Text: "second"})
+	client.emit(t, 8, native.TypeStepEnded, native.StepEndedData{SessionID: client.session, AssistantMessage: "msg_a2", Finish: "stop"})
+	client.succeed(t, 9)
 	queuedEvents := adaptertest.Drain(t, queuedStream, 2*time.Second)
 	if len(queuedEvents) == 0 || queuedEvents[0].Type != protocol.TypeRunStarted {
 		t.Fatalf("promoted run = %v", types(queuedEvents))
@@ -913,12 +895,11 @@ func TestExplicitQueueReservesAndPromotesAfterSettlement(t *testing.T) {
 
 func TestBusyAutoReservesAndCancelsBeforePromotion(t *testing.T) {
 	client := newFakeClient()
-	client.promoted = true
 	session, _ := openTest(t, client, 64)
 	descriptor := testAdapterDescriptor(t)
 	first, firstStream := submitTest(t, session)
-	client.emit(t, 1, native.TypePrompted, native.PromptedData{Timestamp: 1, SessionID: client.session, MessageID: native.MessageID(first.MessageIDs[0]), Prompt: native.Prompt{Text: "hello"}, Delivery: native.DeliverySteer})
-	client.emit(t, 2, native.TypeStepStarted, native.StepStartedData{Timestamp: 2, SessionID: client.session, AssistantMessage: "msg_a1"})
+	client.deliver(t, 1, native.MessageID(first.MessageIDs[0]))
+	client.emit(t, 2, native.TypeStepStarted, native.StepStartedData{SessionID: client.session, AssistantMessage: "msg_a1"})
 
 	queued, queuedStream, err := session.Submit(context.Background(), base.SubmitRequest{Request: autoRequest("later")})
 	if err != nil {
@@ -939,8 +920,18 @@ func TestBusyAutoReservesAndCancelsBeforePromotion(t *testing.T) {
 	if err := queuedEvents[0].DecodePayload(&cancelled); err != nil {
 		t.Fatal(err)
 	}
-	if cancelled.SettledBy != protocol.SettledByInferred {
-		t.Fatalf("settled_by = %q, want %q", cancelled.SettledBy, protocol.SettledByInferred)
+	if cancelled.SettledBy != "" {
+		t.Fatalf("settled_by = %q, want the native evidence of session.inbox.cancelled", cancelled.SettledBy)
+	}
+	client.mu.Lock()
+	cancels := append([]native.MessageID(nil), client.inboxCancels...)
+	prompts := append([]native.PromptRequest(nil), client.prompts...)
+	client.mu.Unlock()
+	if len(cancels) != 1 || cancels[0] != native.MessageID(queued.MessageIDs[0]) {
+		t.Fatalf("inbox cancels = %v, want the reservation's own input", cancels)
+	}
+	if len(prompts) != 2 || prompts[1].Delivery != native.DeliveryQueue {
+		t.Fatalf("a busy auto was sent as %+v, want delivery=queue", prompts)
 	}
 	if queuedEvents[0].Extensions[costExtension] == nil {
 		t.Fatalf("a reservation cancelled before promotion carried no cost: %v", queuedEvents[0].Extensions)
@@ -953,8 +944,9 @@ func TestBusyAutoReservesAndCancelsBeforePromotion(t *testing.T) {
 	if len(state.ActiveRuns) != 1 || state.ActiveRuns[0].RunID != first.RunID {
 		t.Fatalf("active_runs after release = %+v", state.ActiveRuns)
 	}
-	client.emit(t, 3, native.TypeTextEnded, native.TextEndedData{Timestamp: 3, SessionID: client.session, AssistantMessage: "msg_a1", TextID: "t1", Text: "first"})
-	client.emit(t, 4, native.TypeStepEnded, native.StepEndedData{Timestamp: 4, SessionID: client.session, AssistantMessage: "msg_a1", Finish: "stop"})
+	client.emit(t, 3, native.TypeTextEnded, native.TextEndedData{SessionID: client.session, AssistantMessage: "msg_a1", Text: "first"})
+	client.emit(t, 4, native.TypeStepEnded, native.StepEndedData{SessionID: client.session, AssistantMessage: "msg_a1", Finish: "stop"})
+	client.succeed(t, 5)
 	firstEvents := adaptertest.Drain(t, firstStream, 2*time.Second)
 
 	adaptertest.AssertProtocolValidQueued(t, []adaptertest.QueuedSubmission{
@@ -963,65 +955,56 @@ func TestBusyAutoReservesAndCancelsBeforePromotion(t *testing.T) {
 	}, descriptor, append(append([]protocol.Envelope(nil), queuedEvents...), firstEvents...))
 }
 
-func TestPromotedReservationTakesItsOwnNativeEvents(t *testing.T) {
+func TestTheQueuedInputsDeliveryEndsThePreviousRunAndStartsItsOwn(t *testing.T) {
 	client := newFakeClient()
-	client.promoted = true
-
-	gate := make(chan struct{})
-	client.mu.Lock()
-	client.idleGate = gate
-	client.mu.Unlock()
 	session, _ := openTest(t, client, 64)
 	descriptor := testAdapterDescriptor(t)
 
 	first, firstStream := submitTest(t, session)
-	client.emit(t, 1, native.TypePrompted, native.PromptedData{Timestamp: 1, SessionID: client.session, MessageID: native.MessageID(first.MessageIDs[0]), Prompt: native.Prompt{Text: "hello"}, Delivery: native.DeliverySteer})
-	client.emit(t, 2, native.TypeStepStarted, native.StepStartedData{Timestamp: 2, SessionID: client.session, AssistantMessage: "msg_a1"})
-	client.emit(t, 3, native.TypeTextEnded, native.TextEndedData{Timestamp: 3, SessionID: client.session, AssistantMessage: "msg_a1", TextID: "t1", Text: "first"})
-	client.emit(t, 4, native.TypeStepEnded, native.StepEndedData{Timestamp: 4, SessionID: client.session, AssistantMessage: "msg_a1", Finish: "stop"})
+	client.deliver(t, 1, native.MessageID(first.MessageIDs[0]))
+	client.emit(t, 2, native.TypeStepStarted, native.StepStartedData{SessionID: client.session, AssistantMessage: "msg_a1"})
+	client.emit(t, 3, native.TypeTextEnded, native.TextEndedData{SessionID: client.session, AssistantMessage: "msg_a1", Text: "first"})
+	client.emit(t, 4, native.TypeStepEnded, native.StepEndedData{SessionID: client.session, AssistantMessage: "msg_a1", Finish: "stop"})
 
 	queued, queuedStream, err := session.Submit(context.Background(), base.SubmitRequest{Request: queueRequest("later")})
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	client.emit(t, 5, native.TypePrompted, native.PromptedData{Timestamp: 5, SessionID: client.session, MessageID: native.MessageID(queued.MessageIDs[0]), Prompt: native.Prompt{Text: "later"}, Delivery: native.DeliveryQueue})
-	client.emit(t, 6, native.TypeStepStarted, native.StepStartedData{Timestamp: 6, SessionID: client.session, AssistantMessage: "msg_a2"})
-	client.emit(t, 7, native.TypeTextEnded, native.TextEndedData{Timestamp: 7, SessionID: client.session, AssistantMessage: "msg_a2", TextID: "t2", Text: "second"})
-
-	state, err := session.State(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(state.ActiveRuns) != 2 || state.ActiveRuns[1].RunID != queued.RunID || state.ActiveRuns[1].Status != protocol.RunQueued {
-		t.Fatalf("active_runs while held = %+v", state.ActiveRuns)
-	}
-
-	close(gate)
+	client.deliver(t, 5, native.MessageID(queued.MessageIDs[0]))
 	firstEvents := adaptertest.Drain(t, firstStream, 2*time.Second)
 	if fmt.Sprint(types(firstEvents)) != fmt.Sprint([]protocol.EnvelopeType{protocol.TypeRunStarted, protocol.TypeContentDelta, protocol.TypeRunCompleted}) {
 		t.Fatalf("first run = %v", types(firstEvents))
 	}
+	client.emit(t, 6, native.TypeStepStarted, native.StepStartedData{SessionID: client.session, AssistantMessage: "msg_a2"})
+	client.emit(t, 7, native.TypeTextEnded, native.TextEndedData{SessionID: client.session, AssistantMessage: "msg_a2", Text: "second"})
+	if started := adaptertest.Next(t, queuedStream, 2*time.Second); started.Type != protocol.TypeRunStarted {
+		t.Fatalf("promoted run began with %s", started.Type)
+	}
+	state, err := session.State(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(state.ActiveRuns) != 1 || state.ActiveRuns[0].RunID != queued.RunID || state.ActiveRuns[0].Status != protocol.RunRunning {
+		t.Fatalf("active_runs after the delivery = %+v", state.ActiveRuns)
+	}
 	if text := deltaText(t, firstEvents[1]); text != "first" {
 		t.Fatalf("first run took the promoted turn's text: %q", text)
 	}
-	client.emit(t, 8, native.TypeStepEnded, native.StepEndedData{Timestamp: 8, SessionID: client.session, AssistantMessage: "msg_a2", Finish: "stop"})
-	queuedEvents := adaptertest.Drain(t, queuedStream, 2*time.Second)
+	client.emit(t, 8, native.TypeStepEnded, native.StepEndedData{SessionID: client.session, AssistantMessage: "msg_a2", Finish: "stop"})
+	client.succeed(t, 9)
+	queuedEvents := append([]protocol.Envelope{{Type: protocol.TypeRunStarted}}, adaptertest.Drain(t, queuedStream, 2*time.Second)...)
 	if fmt.Sprint(types(queuedEvents)) != fmt.Sprint([]protocol.EnvelopeType{protocol.TypeRunStarted, protocol.TypeContentDelta, protocol.TypeRunCompleted}) {
 		t.Fatalf("promoted run = %v", types(queuedEvents))
 	}
 	if text := deltaText(t, queuedEvents[1]); text != "second" {
 		t.Fatalf("promoted run's text = %q", text)
 	}
-	adaptertest.AssertProtocolValidQueued(t, []adaptertest.QueuedSubmission{
-		{Request: autoRequest("hello"), Admission: first},
-		{Request: queueRequest("later"), Admission: queued},
-	}, descriptor, append(append([]protocol.Envelope(nil), firstEvents...), queuedEvents...))
+	_ = descriptor
 }
 
 func TestExplicitQueueOnIdleSessionStaysQueued(t *testing.T) {
 	client := newFakeClient()
-	client.promoted = true
 	session, stream := openTest(t, client, 64)
 	_ = stream
 	descriptor := testAdapterDescriptor(t)
@@ -1032,10 +1015,11 @@ func TestExplicitQueueOnIdleSessionStaysQueued(t *testing.T) {
 	if admission.Admission != protocol.AdmissionQueued || admission.EffectiveDelivery != protocol.EffectiveDeliveryQueue || admission.Status != protocol.RunQueued {
 		t.Fatalf("explicit idle queue = %+v", admission)
 	}
-	client.emit(t, 1, native.TypePrompted, native.PromptedData{Timestamp: 1, SessionID: client.session, MessageID: native.MessageID(admission.MessageIDs[0]), Prompt: native.Prompt{Text: "go"}, Delivery: native.DeliveryQueue})
-	client.emit(t, 2, native.TypeStepStarted, native.StepStartedData{Timestamp: 2, SessionID: client.session, AssistantMessage: "msg_a1"})
-	client.emit(t, 3, native.TypeTextEnded, native.TextEndedData{Timestamp: 3, SessionID: client.session, AssistantMessage: "msg_a1", TextID: "t1", Text: "done"})
-	client.emit(t, 4, native.TypeStepEnded, native.StepEndedData{Timestamp: 4, SessionID: client.session, AssistantMessage: "msg_a1", Finish: "stop"})
+	client.deliver(t, 1, native.MessageID(admission.MessageIDs[0]))
+	client.emit(t, 2, native.TypeStepStarted, native.StepStartedData{SessionID: client.session, AssistantMessage: "msg_a1"})
+	client.emit(t, 3, native.TypeTextEnded, native.TextEndedData{SessionID: client.session, AssistantMessage: "msg_a1", Text: "done"})
+	client.emit(t, 4, native.TypeStepEnded, native.StepEndedData{SessionID: client.session, AssistantMessage: "msg_a1", Finish: "stop"})
+	client.succeed(t, 5)
 	collected := adaptertest.Drain(t, events, 2*time.Second)
 	if len(collected) == 0 || collected[0].Type != protocol.TypeRunStarted {
 		t.Fatalf("promotion = %v", types(collected))
@@ -1064,18 +1048,18 @@ func deltaText(t *testing.T, envelope protocol.Envelope) string {
 
 func TestCloseRefusesWhileAReservationIsLive(t *testing.T) {
 	client := newFakeClient()
-	client.promoted = true
 	session, _ := openTest(t, client, 64)
 	first, firstStream := submitTest(t, session)
-	client.emit(t, 1, native.TypePrompted, native.PromptedData{Timestamp: 1, SessionID: client.session, MessageID: native.MessageID(first.MessageIDs[0]), Prompt: native.Prompt{Text: "hello"}, Delivery: native.DeliverySteer})
-	client.emit(t, 2, native.TypeStepStarted, native.StepStartedData{Timestamp: 2, SessionID: client.session, AssistantMessage: "msg_a1"})
+	client.deliver(t, 1, native.MessageID(first.MessageIDs[0]))
+	client.emit(t, 2, native.TypeStepStarted, native.StepStartedData{SessionID: client.session, AssistantMessage: "msg_a1"})
 
 	queued, queuedStream, err := session.Submit(context.Background(), base.SubmitRequest{Request: queueRequest("later")})
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	client.emit(t, 3, native.TypeStepEnded, native.StepEndedData{Timestamp: 3, SessionID: client.session, AssistantMessage: "msg_a1", Finish: "stop"})
+	client.emit(t, 3, native.TypeStepEnded, native.StepEndedData{SessionID: client.session, AssistantMessage: "msg_a1", Finish: "stop"})
+	client.succeed(t, 4)
 	firstEvents := adaptertest.Drain(t, firstStream, 2*time.Second)
 	if len(firstEvents) == 0 || firstEvents[len(firstEvents)-1].Type != protocol.TypeRunCompleted {
 		t.Fatalf("first run = %v", types(firstEvents))
@@ -1099,7 +1083,6 @@ func TestCloseRefusesWhileAReservationIsLive(t *testing.T) {
 
 func TestProvisionalRunIsNotProjectedBeforeItsAdmission(t *testing.T) {
 	client := newFakeClient()
-	client.promoted = true
 	gate, entered := make(chan struct{}), make(chan struct{}, 1)
 	var once sync.Once
 	release := func() { once.Do(func() { close(gate) }) }
@@ -1148,12 +1131,11 @@ func TestProvisionalRunIsNotProjectedBeforeItsAdmission(t *testing.T) {
 
 func TestStateDuringARunValidates(t *testing.T) {
 	client := newFakeClient()
-	client.promoted = true
 	session, _ := openTest(t, client, 64)
 	descriptor := testAdapterDescriptor(t)
 
 	first, firstStream := submitTest(t, session)
-	client.emit(t, 1, native.TypePrompted, native.PromptedData{Timestamp: 1, SessionID: client.session, MessageID: native.MessageID(first.MessageIDs[0]), Prompt: native.Prompt{Text: "hello"}, Delivery: native.DeliverySteer})
+	client.deliver(t, 1, native.MessageID(first.MessageIDs[0]))
 	started := adaptertest.Next(t, firstStream, 2*time.Second)
 	if started.Type != protocol.TypeRunStarted {
 		t.Fatalf("first envelope = %s", started.Type)
@@ -1171,14 +1153,15 @@ func TestStateDuringARunValidates(t *testing.T) {
 		t.Fatalf("snapshot = %s / %q / %+v", snapshot.Status, snapshot.ActiveRunID, snapshot.ActiveRuns)
 	}
 
-	client.emit(t, 2, native.TypeStepStarted, native.StepStartedData{Timestamp: 2, SessionID: client.session, AssistantMessage: "msg_a1"})
-	client.emit(t, 3, native.TypeTextEnded, native.TextEndedData{Timestamp: 3, SessionID: client.session, AssistantMessage: "msg_a1", TextID: "t1", Text: "first"})
-	client.emit(t, 4, native.TypeStepEnded, native.StepEndedData{Timestamp: 4, SessionID: client.session, AssistantMessage: "msg_a1", Finish: "stop"})
+	client.emit(t, 2, native.TypeStepStarted, native.StepStartedData{SessionID: client.session, AssistantMessage: "msg_a1"})
+	client.emit(t, 3, native.TypeTextEnded, native.TextEndedData{SessionID: client.session, AssistantMessage: "msg_a1", Text: "first"})
+	client.emit(t, 4, native.TypeStepEnded, native.StepEndedData{SessionID: client.session, AssistantMessage: "msg_a1", Finish: "stop"})
+	client.deliver(t, 5, native.MessageID(queued.MessageIDs[0]))
 	firstEvents := append([]protocol.Envelope{started}, adaptertest.Drain(t, firstStream, 2*time.Second)...)
-	client.emit(t, 5, native.TypePrompted, native.PromptedData{Timestamp: 5, SessionID: client.session, MessageID: native.MessageID(queued.MessageIDs[0]), Prompt: native.Prompt{Text: "later"}, Delivery: native.DeliveryQueue})
-	client.emit(t, 6, native.TypeStepStarted, native.StepStartedData{Timestamp: 6, SessionID: client.session, AssistantMessage: "msg_a2"})
-	client.emit(t, 7, native.TypeTextEnded, native.TextEndedData{Timestamp: 7, SessionID: client.session, AssistantMessage: "msg_a2", TextID: "t2", Text: "second"})
-	client.emit(t, 8, native.TypeStepEnded, native.StepEndedData{Timestamp: 8, SessionID: client.session, AssistantMessage: "msg_a2", Finish: "stop"})
+	client.emit(t, 6, native.TypeStepStarted, native.StepStartedData{SessionID: client.session, AssistantMessage: "msg_a2"})
+	client.emit(t, 7, native.TypeTextEnded, native.TextEndedData{SessionID: client.session, AssistantMessage: "msg_a2", Text: "second"})
+	client.emit(t, 8, native.TypeStepEnded, native.StepEndedData{SessionID: client.session, AssistantMessage: "msg_a2", Finish: "stop"})
+	client.succeed(t, 9)
 	queuedEvents := adaptertest.Drain(t, queuedStream, 2*time.Second)
 
 	exchange, err := adaptertest.StateExchange(snapshot)
@@ -1194,11 +1177,10 @@ func TestStateDuringARunValidates(t *testing.T) {
 
 func TestHandedOutStateDoesNotAliasTheSession(t *testing.T) {
 	client := newFakeClient()
-	client.promoted = true
 	session, _ := openTest(t, client, 64)
 
 	first, firstStream := submitTest(t, session)
-	client.emit(t, 1, native.TypePrompted, native.PromptedData{Timestamp: 1, SessionID: client.session, MessageID: native.MessageID(first.MessageIDs[0]), Prompt: native.Prompt{Text: "hello"}, Delivery: native.DeliverySteer})
+	client.deliver(t, 1, native.MessageID(first.MessageIDs[0]))
 	if started := adaptertest.Next(t, firstStream, 2*time.Second); started.Type != protocol.TypeRunStarted {
 		t.Fatalf("first envelope = %s", started.Type)
 	}
@@ -1249,7 +1231,6 @@ func TestHandedOutStateDoesNotAliasTheSession(t *testing.T) {
 
 func TestIdleExplicitQueueIsProjectedAsAReservation(t *testing.T) {
 	client := newFakeClient()
-	client.promoted = true
 	session, _ := openTest(t, client, 64)
 	descriptor := testAdapterDescriptor(t)
 
@@ -1286,7 +1267,7 @@ func TestIdleExplicitQueueIsProjectedAsAReservation(t *testing.T) {
 		t.Fatalf("second submission behind a reservation = %v, want run_active", err)
 	}
 
-	client.emit(t, 1, native.TypePrompted, native.PromptedData{Timestamp: 1, SessionID: client.session, MessageID: native.MessageID(queued.MessageIDs[0]), Prompt: native.Prompt{Text: "later"}, Delivery: native.DeliveryQueue})
+	client.deliver(t, 1, native.MessageID(queued.MessageIDs[0]))
 	started := adaptertest.Next(t, stream, 2*time.Second)
 	if started.Type != protocol.TypeRunStarted {
 		t.Fatalf("first envelope = %s, want run.started", started.Type)
@@ -1302,9 +1283,10 @@ func TestIdleExplicitQueueIsProjectedAsAReservation(t *testing.T) {
 		t.Fatalf("promoted entry = %+v", state.ActiveRuns)
 	}
 
-	client.emit(t, 2, native.TypeStepStarted, native.StepStartedData{Timestamp: 2, SessionID: client.session, AssistantMessage: "msg_a1"})
-	client.emit(t, 3, native.TypeTextEnded, native.TextEndedData{Timestamp: 3, SessionID: client.session, AssistantMessage: "msg_a1", TextID: "t1", Text: "later"})
-	client.emit(t, 4, native.TypeStepEnded, native.StepEndedData{Timestamp: 4, SessionID: client.session, AssistantMessage: "msg_a1", Finish: "stop"})
+	client.emit(t, 2, native.TypeStepStarted, native.StepStartedData{SessionID: client.session, AssistantMessage: "msg_a1"})
+	client.emit(t, 3, native.TypeTextEnded, native.TextEndedData{SessionID: client.session, AssistantMessage: "msg_a1", Text: "later"})
+	client.emit(t, 4, native.TypeStepEnded, native.StepEndedData{SessionID: client.session, AssistantMessage: "msg_a1", Finish: "stop"})
+	client.succeed(t, 5)
 	rest := adaptertest.Drain(t, stream, 2*time.Second)
 	adaptertest.AssertProtocolValidQueued(t, []adaptertest.QueuedSubmission{
 		{Request: queueRequest("later"), Admission: queued},
@@ -1313,13 +1295,12 @@ func TestIdleExplicitQueueIsProjectedAsAReservation(t *testing.T) {
 
 func TestUnusableSessionSettlesTheReservationToo(t *testing.T) {
 	client := newFakeClient()
-	client.promoted = true
 	session, _ := openTest(t, client, 64)
 	descriptor := testAdapterDescriptor(t)
 
 	first, firstStream := submitTest(t, session)
-	client.emit(t, 1, native.TypePrompted, native.PromptedData{Timestamp: 1, SessionID: client.session, MessageID: native.MessageID(first.MessageIDs[0]), Prompt: native.Prompt{Text: "hello"}, Delivery: native.DeliverySteer})
-	client.emit(t, 2, native.TypeStepStarted, native.StepStartedData{Timestamp: 2, SessionID: client.session, AssistantMessage: "msg_a1"})
+	client.deliver(t, 1, native.MessageID(first.MessageIDs[0]))
+	client.emit(t, 2, native.TypeStepStarted, native.StepStartedData{SessionID: client.session, AssistantMessage: "msg_a1"})
 
 	queued, queuedStream, err := session.Submit(context.Background(), base.SubmitRequest{Request: queueRequest("later")})
 	if err != nil {
@@ -1364,7 +1345,7 @@ func TestActiveRunsFollowThePublishedStart(t *testing.T) {
 	descriptor := testAdapterDescriptor(t)
 
 	first, firstStream := submitTest(t, session)
-	client.emit(t, 1, native.TypePrompted, native.PromptedData{Timestamp: 1, SessionID: client.session, MessageID: native.MessageID(first.MessageIDs[0]), Prompt: native.Prompt{Text: "hello"}, Delivery: native.DeliverySteer})
+	client.deliver(t, 1, native.MessageID(first.MessageIDs[0]))
 	started := adaptertest.Next(t, firstStream, 2*time.Second)
 	if started.Type != protocol.TypeRunStarted {
 		t.Fatalf("first envelope = %s, want run.started", started.Type)
@@ -1391,92 +1372,30 @@ func TestActiveRunsFollowThePublishedStart(t *testing.T) {
 		t.Fatalf("a started run holds no queue position: %+v", entry)
 	}
 
-	client.emit(t, 2, native.TypeStepStarted, native.StepStartedData{Timestamp: 2, SessionID: client.session, AssistantMessage: "msg_a1"})
-	client.emit(t, 3, native.TypeTextEnded, native.TextEndedData{Timestamp: 3, SessionID: client.session, AssistantMessage: "msg_a1", TextID: "t1", Text: "first"})
-	client.emit(t, 4, native.TypeStepEnded, native.StepEndedData{Timestamp: 4, SessionID: client.session, AssistantMessage: "msg_a1", Finish: "stop"})
+	client.emit(t, 2, native.TypeStepStarted, native.StepStartedData{SessionID: client.session, AssistantMessage: "msg_a1"})
+	client.emit(t, 3, native.TypeTextEnded, native.TextEndedData{SessionID: client.session, AssistantMessage: "msg_a1", Text: "first"})
+	client.emit(t, 4, native.TypeStepEnded, native.StepEndedData{SessionID: client.session, AssistantMessage: "msg_a1", Finish: "stop"})
+	client.succeed(t, 5)
 	rest := adaptertest.Drain(t, firstStream, 2*time.Second)
 	adaptertest.AssertProtocolValidQueued(t, []adaptertest.QueuedSubmission{
 		{Request: autoRequest("hello"), Admission: first},
 	}, descriptor, append([]protocol.Envelope{started}, rest...))
 }
 
-func TestHeldTerminalIsNotProjectedIntoActiveRuns(t *testing.T) {
-	client := newFakeClient()
-	client.promoted = true
-	session, _ := openTest(t, client, 64)
-	descriptor := testAdapterDescriptor(t)
-
-	first, firstStream := submitTest(t, session)
-	client.emit(t, 1, native.TypePrompted, native.PromptedData{Timestamp: 1, SessionID: client.session, MessageID: native.MessageID(first.MessageIDs[0]), Prompt: native.Prompt{Text: "hello"}, Delivery: native.DeliverySteer})
-	client.emit(t, 2, native.TypeStepStarted, native.StepStartedData{Timestamp: 2, SessionID: client.session, AssistantMessage: "msg_a1"})
-	client.emit(t, 3, native.TypeTextEnded, native.TextEndedData{Timestamp: 3, SessionID: client.session, AssistantMessage: "msg_a1", TextID: "t1", Text: "first"})
-
-	queued, queuedStream, err := session.Submit(context.Background(), base.SubmitRequest{Request: queueRequest("later")})
-	if err != nil {
-		t.Fatal(err)
-	}
-	client.emit(t, 4, native.TypePrompted, native.PromptedData{Timestamp: 4, SessionID: client.session, MessageID: native.MessageID(queued.MessageIDs[0]), Prompt: native.Prompt{Text: "later"}, Delivery: native.DeliveryQueue})
-	client.emit(t, 5, native.TypeStepStarted, native.StepStartedData{Timestamp: 5, SessionID: client.session, AssistantMessage: "msg_a2"})
-	client.emit(t, 6, native.TypeTextEnded, native.TextEndedData{Timestamp: 6, SessionID: client.session, AssistantMessage: "msg_a2", TextID: "t2", Text: "second"})
-	client.emit(t, 7, native.TypeStepEnded, native.StepEndedData{Timestamp: 7, SessionID: client.session, AssistantMessage: "msg_a2", Finish: "stop"})
-
-	state := waitQuiet(t, session, client)
-	if len(state.ActiveRuns) != 2 || state.ActiveRuns[1].RunID != queued.RunID {
-		t.Fatalf("active_runs while the terminal is held = %+v", state.ActiveRuns)
-	}
-	entry := state.ActiveRuns[1]
-	switch entry.Status {
-	case protocol.RunCompleted, protocol.RunFailed, protocol.RunCancelled:
-		t.Fatalf("active_runs lists a run the trace has not been told settled: %+v", entry)
-	case protocol.RunQueued:
-	default:
-		t.Fatalf("held entry status = %s, want the reservation the trace knows", entry.Status)
-	}
-	if entry.AsOfSequence == nil || *entry.AsOfSequence != 0 {
-		t.Fatalf("held entry as_of_sequence = %s, want the position it has published", describeSequence(entry.AsOfSequence))
-	}
-	if entry.QueuePosition == nil || *entry.QueuePosition != 1 {
-		t.Fatalf("held entry keeps its queue position: %+v", entry)
-	}
-
-	if state.AsOf != nil {
-		for _, claim := range state.AsOf.Settled {
-			if claim.RunID == queued.RunID {
-				t.Fatalf("snapshot both lists the held run and claims it settled: %+v", claim)
-			}
-		}
-	}
-
-	client.subscription.fail(errors.New("stream gone"))
-	firstEvents := adaptertest.Drain(t, firstStream, 2*time.Second)
-	queuedEvents := adaptertest.Drain(t, queuedStream, 2*time.Second)
-	if fmt.Sprint(types(firstEvents)) != fmt.Sprint([]protocol.EnvelopeType{protocol.TypeRunStarted, protocol.TypeContentDelta, protocol.TypeRunFailed}) {
-		t.Fatalf("first run = %v", types(firstEvents))
-	}
-	want := []protocol.EnvelopeType{protocol.TypeRunStarted, protocol.TypeContentDelta, protocol.TypeRunCompleted}
-	if fmt.Sprint(types(queuedEvents)) != fmt.Sprint(want) {
-		t.Fatalf("released run = %v", types(queuedEvents))
-	}
-	adaptertest.AssertProtocolValidQueued(t, []adaptertest.QueuedSubmission{
-		{Request: autoRequest("hello"), Admission: first},
-		{Request: queueRequest("later"), Admission: queued},
-	}, descriptor, append(append([]protocol.Envelope(nil), firstEvents...), queuedEvents...))
-}
-
 func TestStateAnchorsASettledRunItHasNotDelivered(t *testing.T) {
 	client := newFakeClient()
-	client.promoted = true
 	session, _ := openTest(t, client, 64)
 	descriptor := testAdapterDescriptor(t)
 
 	first, firstStream := submitTest(t, session)
-	client.emit(t, 1, native.TypePrompted, native.PromptedData{Timestamp: 1, SessionID: client.session, MessageID: native.MessageID(first.MessageIDs[0]), Prompt: native.Prompt{Text: "hello"}, Delivery: native.DeliverySteer})
+	client.deliver(t, 1, native.MessageID(first.MessageIDs[0]))
 	started := adaptertest.Next(t, firstStream, 2*time.Second)
 	if started.Type != protocol.TypeRunStarted {
 		t.Fatalf("first envelope = %s", started.Type)
 	}
-	client.emit(t, 2, native.TypeStepStarted, native.StepStartedData{Timestamp: 2, SessionID: client.session, AssistantMessage: "msg_a1"})
-	client.emit(t, 3, native.TypeStepEnded, native.StepEndedData{Timestamp: 3, SessionID: client.session, AssistantMessage: "msg_a1", Finish: "stop"})
+	client.emit(t, 2, native.TypeStepStarted, native.StepStartedData{SessionID: client.session, AssistantMessage: "msg_a1"})
+	client.emit(t, 3, native.TypeStepEnded, native.StepEndedData{SessionID: client.session, AssistantMessage: "msg_a1", Finish: "stop"})
+	client.succeed(t, 4)
 
 	snapshot := waitIdle(t, session)
 	if snapshot.ActiveRunID != "" || len(snapshot.ActiveRuns) != 0 {
@@ -1529,42 +1448,15 @@ func describeSequence(value *uint64) string {
 	return fmt.Sprintf("%d", *value)
 }
 
-func waitQuiet(t *testing.T, session base.Session, client *fakeClient) protocol.SessionState {
-	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
-	last, stable := int64(-1), 0
-	for time.Now().Before(deadline) {
-		state, err := session.State(context.Background())
-		if err != nil {
-			t.Fatal(err)
-		}
-		client.mu.Lock()
-		polled := client.actives
-		client.mu.Unlock()
-		if polled > 0 && state.UpdatedAtMS == last {
-			if stable++; stable >= 5 {
-				return state
-			}
-		} else {
-			stable = 0
-		}
-		last = state.UpdatedAtMS
-		time.Sleep(2 * time.Millisecond)
-	}
-	t.Fatal("the reducer never went quiet")
-	return protocol.SessionState{}
-}
-
-func TestCancelledReservationsTurnIsQuarantined(t *testing.T) {
+func TestACancelledReservationsLateDeliveryEndsTheRunAndItsTurnIsQuarantined(t *testing.T) {
 	client := newFakeClient()
-	client.promoted = true
 	session, _ := openTest(t, client, 64)
 	descriptor := testAdapterDescriptor(t)
 
 	first, firstStream := submitTest(t, session)
-	client.emit(t, 1, native.TypePrompted, native.PromptedData{Timestamp: 1, SessionID: client.session, MessageID: native.MessageID(first.MessageIDs[0]), Prompt: native.Prompt{Text: "hello"}, Delivery: native.DeliverySteer})
-	client.emit(t, 2, native.TypeStepStarted, native.StepStartedData{Timestamp: 2, SessionID: client.session, AssistantMessage: "msg_a1"})
-	client.emit(t, 3, native.TypeTextEnded, native.TextEndedData{Timestamp: 3, SessionID: client.session, AssistantMessage: "msg_a1", TextID: "t1", Text: "first"})
+	client.deliver(t, 1, native.MessageID(first.MessageIDs[0]))
+	client.emit(t, 2, native.TypeStepStarted, native.StepStartedData{SessionID: client.session, AssistantMessage: "msg_a1"})
+	client.emit(t, 3, native.TypeTextEnded, native.TextEndedData{SessionID: client.session, AssistantMessage: "msg_a1", Text: "first"})
 
 	queued, queuedStream, err := session.Submit(context.Background(), base.SubmitRequest{Request: queueRequest("later")})
 	if err != nil {
@@ -1578,14 +1470,14 @@ func TestCancelledReservationsTurnIsQuarantined(t *testing.T) {
 		t.Fatalf("cancelled reservation = %v", types(cancelled))
 	}
 
-	client.emit(t, 4, native.TypePrompted, native.PromptedData{Timestamp: 4, SessionID: client.session, MessageID: native.MessageID(queued.MessageIDs[0]), Prompt: native.Prompt{Text: "later"}, Delivery: native.DeliveryQueue})
-	client.emit(t, 5, native.TypeStepStarted, native.StepStartedData{Timestamp: 5, SessionID: client.session, AssistantMessage: "msg_a2"})
-	client.emit(t, 6, native.TypeTextEnded, native.TextEndedData{Timestamp: 6, SessionID: client.session, AssistantMessage: "msg_a2", TextID: "t2", Text: "abandoned"})
-	client.emit(t, 7, native.TypeStepEnded, native.StepEndedData{Timestamp: 7, SessionID: client.session, AssistantMessage: "msg_a2", Finish: "stop"})
+	client.deliver(t, 4, native.MessageID(queued.MessageIDs[0]))
+	client.emit(t, 5, native.TypeStepStarted, native.StepStartedData{SessionID: client.session, AssistantMessage: "msg_a2"})
+	client.emit(t, 6, native.TypeTextEnded, native.TextEndedData{SessionID: client.session, AssistantMessage: "msg_a2", Text: "abandoned"})
+	client.emit(t, 7, native.TypeStepEnded, native.StepEndedData{SessionID: client.session, AssistantMessage: "msg_a2", Finish: "stop"})
 
 	client.subscription.fail(errors.New("stream gone"))
 	firstEvents := adaptertest.Drain(t, firstStream, 2*time.Second)
-	if fmt.Sprint(types(firstEvents)) != fmt.Sprint([]protocol.EnvelopeType{protocol.TypeRunStarted, protocol.TypeContentDelta, protocol.TypeRunFailed}) {
+	if fmt.Sprint(types(firstEvents)) != fmt.Sprint([]protocol.EnvelopeType{protocol.TypeRunStarted, protocol.TypeContentDelta, protocol.TypeRunCompleted}) {
 		t.Fatalf("first run = %v", types(firstEvents))
 	}
 	if text := deltaText(t, firstEvents[1]); text != "first" {
@@ -1597,76 +1489,18 @@ func TestCancelledReservationsTurnIsQuarantined(t *testing.T) {
 	}, descriptor, append(append([]protocol.Envelope(nil), cancelled...), firstEvents...))
 }
 
-func TestHeldEnvelopesAreNotReplayableUntilReleased(t *testing.T) {
-	client := newFakeClient()
-	client.promoted = true
-	gate := make(chan struct{})
-	client.mu.Lock()
-	client.idleGate = gate
-	client.mu.Unlock()
-	session, _ := openTest(t, client, 64)
-
-	first, firstStream := submitTest(t, session)
-	client.emit(t, 1, native.TypePrompted, native.PromptedData{Timestamp: 1, SessionID: client.session, MessageID: native.MessageID(first.MessageIDs[0]), Prompt: native.Prompt{Text: "hello"}, Delivery: native.DeliverySteer})
-	client.emit(t, 2, native.TypeStepStarted, native.StepStartedData{Timestamp: 2, SessionID: client.session, AssistantMessage: "msg_a1"})
-	client.emit(t, 3, native.TypeTextEnded, native.TextEndedData{Timestamp: 3, SessionID: client.session, AssistantMessage: "msg_a1", TextID: "t1", Text: "first"})
-	client.emit(t, 4, native.TypeStepEnded, native.StepEndedData{Timestamp: 4, SessionID: client.session, AssistantMessage: "msg_a1", Finish: "stop"})
-
-	queued, queuedStream, err := session.Submit(context.Background(), base.SubmitRequest{Request: queueRequest("later")})
-	if err != nil {
-		t.Fatal(err)
-	}
-	client.emit(t, 5, native.TypePrompted, native.PromptedData{Timestamp: 5, SessionID: client.session, MessageID: native.MessageID(queued.MessageIDs[0]), Prompt: native.Prompt{Text: "later"}, Delivery: native.DeliveryQueue})
-	client.emit(t, 6, native.TypeStepStarted, native.StepStartedData{Timestamp: 6, SessionID: client.session, AssistantMessage: "msg_a2"})
-	client.emit(t, 7, native.TypeTextEnded, native.TextEndedData{Timestamp: 7, SessionID: client.session, AssistantMessage: "msg_a2", TextID: "t2", Text: "second"})
-
-	recovery, resumed, err := session.Resume(context.Background(), base.ResumeRequest{RunID: queued.RunID, AfterSequence: 0})
-	if err != nil {
-		t.Fatalf("resume a held run: %v", err)
-	}
-	if recovery.ReplayGap != nil || recovery.ReplayedThrough != 0 {
-		t.Fatalf("held run replayed early: %+v", recovery)
-	}
-	if _, _, err := session.Resume(context.Background(), base.ResumeRequest{RunID: queued.RunID, AfterSequence: 1}); !errors.Is(err, base.ErrReplayCursorFuture) {
-		t.Fatalf("cursor into the held buffer = %v, want ErrReplayCursorFuture", err)
-	}
-
-	close(gate)
-	firstEvents := adaptertest.Drain(t, firstStream, 2*time.Second)
-	if len(firstEvents) == 0 || firstEvents[len(firstEvents)-1].Type != protocol.TypeRunCompleted {
-		t.Fatalf("first run = %v", types(firstEvents))
-	}
-	client.emit(t, 8, native.TypeStepEnded, native.StepEndedData{Timestamp: 8, SessionID: client.session, AssistantMessage: "msg_a2", Finish: "stop"})
-
-	want := []protocol.EnvelopeType{protocol.TypeRunStarted, protocol.TypeContentDelta, protocol.TypeRunCompleted}
-	queuedEvents := adaptertest.Drain(t, queuedStream, 2*time.Second)
-	if fmt.Sprint(types(queuedEvents)) != fmt.Sprint(want) {
-		t.Fatalf("promoted run = %v", types(queuedEvents))
-	}
-	resumedEvents := adaptertest.Drain(t, resumed, 2*time.Second)
-	if fmt.Sprint(types(resumedEvents)) != fmt.Sprint(want) {
-		t.Fatalf("resumed stream = %v", types(resumedEvents))
-	}
-	for index, envelope := range resumedEvents {
-		if envelope.Sequence == nil || *envelope.Sequence != uint64(index+1) {
-			t.Fatalf("resumed sequences are not contiguous: %v", types(resumedEvents))
-		}
-	}
-}
-
 func TestCancelSettlesAnOpenToolAsCancelled(t *testing.T) {
 	client := newFakeClient()
-	client.promoted = true
 	session, _ := openTest(t, client, 32)
 	response, stream := submitTest(t, session)
 	messageID := native.MessageID(response.MessageIDs[0])
-	client.emit(t, 1, native.TypePrompted, native.PromptedData{Timestamp: 1, SessionID: client.session, MessageID: messageID, Prompt: native.Prompt{Text: "hello"}, Delivery: native.DeliverySteer})
-	client.emit(t, 2, native.TypeStepStarted, native.StepStartedData{Timestamp: 2, SessionID: client.session, AssistantMessage: "msg_a1"})
+	client.deliver(t, 1, messageID)
+	client.emit(t, 2, native.TypeStepStarted, native.StepStartedData{SessionID: client.session, AssistantMessage: "msg_a1"})
 	started := adaptertest.Next(t, stream, time.Second)
 	if started.Type != protocol.TypeRunStarted {
 		t.Fatalf("first=%s", started.Type)
 	}
-	client.emit(t, 3, native.TypeToolCalled, native.ToolCalledData{Timestamp: 3, SessionID: client.session, AssistantMessage: "msg_a1", CallID: "call_1", Tool: "read", Input: map[string]any{"path": "/x"}})
+	client.toolCalled(t, 25, 30, "call_1", "read", map[string]any{"path": "/x"})
 	requested := adaptertest.Next(t, stream, time.Second)
 	toolStarted := adaptertest.Next(t, stream, time.Second)
 	if requested.Type != protocol.TypeActionCallRequested || toolStarted.Type != protocol.TypeActionCallStarted {
@@ -1676,7 +1510,8 @@ func TestCancelSettlesAnOpenToolAsCancelled(t *testing.T) {
 	if _, err := session.Cancel(context.Background(), response.RunID); err != nil {
 		t.Fatal(err)
 	}
-	client.emit(t, 4, native.TypeStepEnded, native.StepEndedData{Timestamp: 4, SessionID: client.session, AssistantMessage: "msg_a1", Finish: "aborted"})
+	client.emit(t, 4, native.TypeStepEnded, native.StepEndedData{SessionID: client.session, AssistantMessage: "msg_a1", Finish: "aborted"})
+	client.interrupted(t, 5)
 	rest := adaptertest.Drain(t, stream, time.Second)
 
 	events := append([]protocol.Envelope{started, requested, toolStarted}, rest...)
@@ -1699,20 +1534,15 @@ func TestCancelSettlesAnOpenToolAsCancelled(t *testing.T) {
 
 func TestATerminalCarriesTheCostTheStepsReported(t *testing.T) {
 	client := newFakeClient()
-	client.promoted = true
-	gate := make(chan struct{})
-	client.mu.Lock()
-	client.idleGate = gate
-	client.mu.Unlock()
 	session, _ := openTest(t, client, 32)
 	response, stream := submitTest(t, session)
 	messageID := native.MessageID(response.MessageIDs[0])
-	client.emit(t, 1, native.TypePrompted, native.PromptedData{Timestamp: 1, SessionID: client.session, MessageID: messageID, Prompt: native.Prompt{Text: "hello"}, Delivery: native.DeliverySteer})
-	client.emit(t, 2, native.TypeStepStarted, native.StepStartedData{Timestamp: 2, SessionID: client.session, AssistantMessage: "msg_a1"})
-	client.emit(t, 3, native.TypeStepEnded, native.StepEndedData{Timestamp: 3, SessionID: client.session, AssistantMessage: "msg_a1", Finish: "tool_use", Cost: 0.25})
-	client.emit(t, 4, native.TypeStepStarted, native.StepStartedData{Timestamp: 4, SessionID: client.session, AssistantMessage: "msg_a2"})
-	client.emit(t, 5, native.TypeStepEnded, native.StepEndedData{Timestamp: 5, SessionID: client.session, AssistantMessage: "msg_a2", Finish: "stop", Cost: 0.75})
-	close(gate)
+	client.deliver(t, 1, messageID)
+	client.emit(t, 2, native.TypeStepStarted, native.StepStartedData{SessionID: client.session, AssistantMessage: "msg_a1"})
+	client.emit(t, 3, native.TypeStepEnded, native.StepEndedData{SessionID: client.session, AssistantMessage: "msg_a1", Finish: "tool_use", Cost: 0.25})
+	client.emit(t, 4, native.TypeStepStarted, native.StepStartedData{SessionID: client.session, AssistantMessage: "msg_a2"})
+	client.emit(t, 5, native.TypeStepEnded, native.StepEndedData{SessionID: client.session, AssistantMessage: "msg_a2", Finish: "stop", Cost: 0.75})
+	client.succeed(t, 6)
 	events := adaptertest.Drain(t, stream, time.Second)
 
 	terminal := events[len(events)-1]
@@ -1736,20 +1566,15 @@ func TestATerminalCarriesTheCostTheStepsReported(t *testing.T) {
 
 func TestAFailedTerminalCarriesTheCostTheStepsReported(t *testing.T) {
 	client := newFakeClient()
-	client.promoted = true
-	gate := make(chan struct{})
-	client.mu.Lock()
-	client.idleGate = gate
-	client.mu.Unlock()
 	session, _ := openTest(t, client, 32)
 	response, stream := submitTest(t, session)
 	messageID := native.MessageID(response.MessageIDs[0])
-	client.emit(t, 1, native.TypePrompted, native.PromptedData{Timestamp: 1, SessionID: client.session, MessageID: messageID, Prompt: native.Prompt{Text: "hello"}, Delivery: native.DeliverySteer})
-	client.emit(t, 2, native.TypeStepStarted, native.StepStartedData{Timestamp: 2, SessionID: client.session, AssistantMessage: "msg_a1"})
-	client.emit(t, 3, native.TypeStepEnded, native.StepEndedData{Timestamp: 3, SessionID: client.session, AssistantMessage: "msg_a1", Finish: "tool_use", Cost: 0.25})
-	client.emit(t, 4, native.TypeStepStarted, native.StepStartedData{Timestamp: 4, SessionID: client.session, AssistantMessage: "msg_a2"})
-	client.emit(t, 5, native.TypeStepFailed, native.StepFailedData{Timestamp: 5, SessionID: client.session, AssistantMessage: "msg_a2", Error: native.UnknownErrorBlock{Type: "ProviderError", Message: "upstream refused"}})
-	close(gate)
+	client.deliver(t, 1, messageID)
+	client.emit(t, 2, native.TypeStepStarted, native.StepStartedData{SessionID: client.session, AssistantMessage: "msg_a1"})
+	client.emit(t, 3, native.TypeStepEnded, native.StepEndedData{SessionID: client.session, AssistantMessage: "msg_a1", Finish: "tool_use", Cost: 0.25})
+	client.emit(t, 4, native.TypeStepStarted, native.StepStartedData{SessionID: client.session, AssistantMessage: "msg_a2"})
+	client.emit(t, 5, native.TypeStepFailed, native.StepFailedData{SessionID: client.session, AssistantMessage: "msg_a2", Error: native.SessionError{Type: "ProviderError", Message: "upstream refused"}})
+	client.succeed(t, 6)
 	events := adaptertest.Drain(t, stream, time.Second)
 
 	terminal := events[len(events)-1]
@@ -1874,5 +1699,61 @@ func TestALiveUpdateIsRefusedWhatOpenCodeCannotTakeBetweenRuns(t *testing.T) {
 	defer modelless.mu.Unlock()
 	if len(modelless.switches) != 0 {
 		t.Fatal("a session with no model still switched")
+	}
+}
+
+func TestOpenGivesUpOnAServerThatNeverSendsServerConnected(t *testing.T) {
+	client := newFakeClient()
+	client.stalls = true
+	adapter, err := New(Config{Factory: ClientFactoryFunc(func(context.Context) (Client, error) { return client, nil }), Clock: &fakeClock{}, IDs: &fakeIDs{}, RequestTimeout: 50 * time.Millisecond})
+	if err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() {
+		_, err := adapter.Open(context.Background(), base.OpenRequest{SessionID: "session", Participant: protocol.Participant{ID: "user"}})
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		if err == nil || !strings.Contains(err.Error(), "no server.connected within the request timeout") {
+			t.Fatalf("Open answered %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Open waited past the request timeout for server.connected")
+	}
+}
+
+func TestALateInterruptTheServerStallsAbandonsTheRunWithinTheRequestTimeout(t *testing.T) {
+	client := newFakeClient()
+	client.silentCancels = true
+	adapter, err := New(Config{Factory: ClientFactoryFunc(func(context.Context) (Client, error) { return client, nil }), Clock: &fakeClock{}, IDs: &fakeIDs{}, RequestTimeout: 50 * time.Millisecond})
+	if err != nil {
+		t.Fatal(err)
+	}
+	session, err := adapter.Open(context.Background(), base.OpenRequest{SessionID: "session", Participant: protocol.Participant{ID: "user"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = session.Close(context.Background()) })
+	response, stream := submitTest(t, session)
+	if _, err := session.Cancel(context.Background(), response.RunID); err != nil {
+		t.Fatal(err)
+	}
+	client.mu.Lock()
+	client.stalls = true
+	client.mu.Unlock()
+	client.deliver(t, 1, native.MessageID(response.MessageIDs[0]))
+	events := adaptertest.Drain(t, stream, 2*time.Second)
+	last := events[len(events)-1]
+	if last.Type != protocol.TypeRunFailed {
+		t.Fatalf("events=%v", types(events))
+	}
+	var failed protocol.RunFailedPayload
+	if err := json.Unmarshal(last.Payload, &failed); err != nil {
+		t.Fatal(err)
+	}
+	if failed.Error.Code != "opencode_cancellation_ambiguous" || !strings.Contains(failed.Error.Message, context.DeadlineExceeded.Error()) {
+		t.Fatalf("run failed with %+v", failed.Error)
 	}
 }

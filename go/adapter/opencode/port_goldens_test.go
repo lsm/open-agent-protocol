@@ -75,16 +75,20 @@ func (r *requestRecorder) ServeHTTP(w http.ResponseWriter, request *http.Request
 	case bytes.HasSuffix([]byte(path), []byte("/prompt")):
 		var sent native.PromptRequest
 		_ = json.Unmarshal(payload, &sent)
-		promoted := int64(1)
-		admitted, _ := json.Marshal(map[string]any{"data": native.Admitted{AdmittedSeq: 1, ID: sent.ID, SessionID: "ses_fake00000000000000", Prompt: sent.Prompt, Delivery: sent.Delivery, TimeCreated: 1, PromotedSeq: &promoted}})
-		_, _ = w.Write(admitted)
+		admitted := native.Admitted{ID: sent.ID, SessionID: "ses_fake00000000000000", Type: "user", Payload: json.RawMessage(`{"text":"hello"}`), Delivery: sent.Delivery}
+		admitted.Time.Created = 1
+		encoded, _ := json.Marshal(map[string]any{"data": admitted})
+		_, _ = w.Write(encoded)
 	case bytes.HasSuffix([]byte(path), []byte("/interrupt")):
+		_, _ = w.Write([]byte(`{"interrupted":true}`))
+	case bytes.Contains([]byte(path), []byte("/inbox/")) && request.Method == http.MethodDelete:
 		w.WriteHeader(http.StatusNoContent)
-	case bytes.HasSuffix([]byte(path), []byte("/history")):
-		_, _ = w.Write([]byte(`{"data":[],"hasMore":false}`))
-	case bytes.HasSuffix([]byte(path), []byte("/event")):
+	case path == "/base/api/info":
+		_, _ = w.Write([]byte(`{"version":"2.0.24","pid":1,"urls":["http://127.0.0.1:1"],"paths":{},"capabilities":{}}`))
+	case path == "/base/api/event":
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("data: {\"id\":\"evt_connected\",\"type\":\"server.connected\",\"data\":{}}\n\n"))
 	default:
 		w.WriteHeader(http.StatusNotFound)
 	}
@@ -121,40 +125,32 @@ func TestPortGoldensAreWhatTheGoAdapterSendsAndAdvertises(t *testing.T) {
 			return err
 		}},
 		{"prompt", func() error {
-			_, err := authed.Prompt(ctx, session, native.PromptRequest{ID: "msg_fake0000000000000004", Prompt: native.Prompt{Text: "hello"}, Delivery: native.DeliverySteer})
+			_, err := authed.Prompt(ctx, session, native.PromptRequest{ID: "msg_fake0000000000000004", Text: "hello", Delivery: native.DeliverySteer})
 			return err
 		}},
 		{"prompt-escaped-queue", func() error {
-			_, err := authed.Prompt(ctx, session, native.PromptRequest{ID: "msg_fake0000000000000009", Prompt: native.Prompt{Text: "a<b>&c \"q\" \\   \n\t\r\b\f\x01\x1f\x7f é"}, Delivery: native.DeliveryQueue})
+			_, err := authed.Prompt(ctx, session, native.PromptRequest{ID: "msg_fake0000000000000009", Text: "a<b>&c \"q\" \\   \n\t\r\b\f\x01\x1f\x7f é", Delivery: native.DeliveryQueue})
 			return err
 		}},
-		{"interrupt", func() error { return authed.Interrupt(ctx, session) }},
+		{"interrupt", func() error {
+			_, err := authed.Interrupt(ctx, session)
+			return err
+		}},
+		{"cancel-inbox", func() error { return authed.CancelInbox(ctx, session, "msg_fake0000000000000009") }},
 		{"session-record", func() error {
 			_, err := authed.Session(ctx, session)
-			return err
-		}},
-		{"history-from-start", func() error {
-			_, err := authed.History(ctx, session, 0, historyPageLimit)
 			return err
 		}},
 		{"active", func() error {
 			_, err := authed.Active(ctx)
 			return err
 		}},
-		{"history", func() error {
-			_, err := authed.History(ctx, session, 3, 100)
+		{"info", func() error {
+			_, err := authed.Info(ctx)
 			return err
 		}},
 		{"subscribe", func() error {
-			subscription, err := authed.Subscribe(ctx, session, -1)
-			if err != nil {
-				return err
-			}
-			<-subscription.Done()
-			return subscription.Close()
-		}},
-		{"subscribe-after", func() error {
-			subscription, err := authed.Subscribe(ctx, session, 5)
+			subscription, err := authed.Subscribe(ctx, session)
 			if err != nil {
 				return err
 			}

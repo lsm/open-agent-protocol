@@ -12,7 +12,6 @@ pub const pinned_commit = harness_pins.opencode_opencode_commit;
 pub const cost_extension = "io.github.anomalyco.opencode.cost";
 pub const max_active_runs = 2;
 pub const max_queued_runs = 1;
-pub const default_history_limit: usize = 100;
 
 pub const Error = error{
     InvalidSubmission,
@@ -30,15 +29,13 @@ pub const Status = enum { queued, running, cancelling, completed, failed, cancel
 pub const Failure = struct { message: []const u8, api: bool = false };
 
 pub const PromptOutcome = union(enum) { admitted: native.Admitted, failed: Failure };
-pub const ActiveOutcome = union(enum) { listed: bool, failed: Failure };
-pub const HistoryOutcome = union(enum) { page: native.HistoryPage, failed: Failure };
+pub const InterruptOutcome = union(enum) { interrupted: bool, failed: Failure };
 
 pub const Native = struct {
     context: *anyopaque,
     prompt: *const fn (context: *anyopaque, arena: std.mem.Allocator, session: []const u8, request: native.PromptRequest) std.mem.Allocator.Error!PromptOutcome,
-    interrupt: *const fn (context: *anyopaque, arena: std.mem.Allocator, session: []const u8) std.mem.Allocator.Error!?Failure,
-    active: *const fn (context: *anyopaque, arena: std.mem.Allocator, session: []const u8) std.mem.Allocator.Error!ActiveOutcome,
-    history: *const fn (context: *anyopaque, arena: std.mem.Allocator, session: []const u8, after: i64, limit: usize) std.mem.Allocator.Error!HistoryOutcome,
+    interrupt: *const fn (context: *anyopaque, arena: std.mem.Allocator, session: []const u8) std.mem.Allocator.Error!InterruptOutcome,
+    cancel_inbox: *const fn (context: *anyopaque, arena: std.mem.Allocator, session: []const u8, inbox: []const u8) std.mem.Allocator.Error!?Failure,
 };
 
 pub const Options = struct {
@@ -46,7 +43,6 @@ pub const Options = struct {
     native_id: []const u8,
     model: []const u8 = "",
     message_prefix: []const u8 = "msg_oap",
-    history_limit: usize = default_history_limit,
     revision: []const u8 = capability_revision,
     counter: ?*u64 = null,
     now_ms: ?*const fn () i64 = null,
@@ -77,6 +73,7 @@ pub const Settled = struct {
 pub const Run = struct {
     id: []const u8,
     message_id: []const u8,
+    native_id: []const u8 = "",
     status: Status = .queued,
     next: u64 = 1,
     terminal: bool = false,
@@ -88,7 +85,6 @@ pub const Run = struct {
     published_seq: u64 = 0,
     queued_admission: bool = true,
     cancel_requested: bool = false,
-    settling: bool = false,
     parts: std.ArrayList(Part) = .empty,
     input_tokens: u64 = 0,
     output_tokens: u64 = 0,
@@ -96,7 +92,6 @@ pub const Run = struct {
     cost: f64 = 0,
     last_finish: []const u8 = "",
     failure: ?[]const u8 = null,
-    open_steps: i64 = 0,
 };
 
 const Tool = struct {
@@ -112,8 +107,6 @@ const Tool = struct {
 };
 
 const Pending = struct { native_id: []const u8, run: *Run };
-
-const Settlement = struct { run: *Run, watermark: i64, fencing: bool = false };
 
 const ToolFields = struct {
     arguments: bool = false,
@@ -163,7 +156,7 @@ pub const Reducer = struct {
     tools: std.ArrayList(*Tool) = .empty,
     reduced: std.AutoHashMapUnmanaged(i64, void) = .empty,
     catalog: std.ArrayList([]const u8) = .empty,
-    settlements: std.ArrayList(Settlement) = .empty,
+    tool_names: std.StringArrayHashMapUnmanaged([]const u8) = .empty,
     envelopes: std.ArrayList(std.json.Value) = .empty,
     last_seq: i64 = 0,
     settled: std.ArrayList(Settled) = .empty,
@@ -269,9 +262,10 @@ pub const Reducer = struct {
             try self.abandon(run, "opencode_invalid_message_id", "ID generator must produce a msg_-prefixed identity for kind opencode-message", "inferred");
             return admission;
         }
+        run.native_id = native_message;
         try self.pending.append(self.allocator(), .{ .native_id = native_message, .run = run });
 
-        const request = native.PromptRequest{ .id = native_message, .prompt = .{ .text = text }, .delivery = if (queue) "queue" else "steer" };
+        const request = native.PromptRequest{ .id = native_message, .text = text, .delivery = if (queue or behind) "queue" else "steer" };
         const admitted = switch (try self.client.prompt(self.client.context, self.allocator(), self.options.native_id, request)) {
             .failed => |failure| {
                 _ = self.takePending(native_message);
@@ -287,7 +281,7 @@ pub const Reducer = struct {
             return admission;
         }
         admission.message_ids = try self.allocator().dupe([]const u8, &.{admitted.id});
-        if (admitted.promoted_seq != null and !behind and !queue) {
+        if (!behind and !queue) {
             admission.admission = "started";
             admission.effective_delivery = "start";
             admission.status = .running;
@@ -323,16 +317,7 @@ pub const Reducer = struct {
     }
 
     pub fn observe(self: *Reducer, event: native.Event) Error!void {
-        try self.handle(event);
-        var index: usize = self.settlements.items.len;
-        while (index > 0) {
-            index -= 1;
-            const pending = self.settlements.items[index];
-            if (pending.fencing) continue;
-            if (!pending.run.terminal and pending.run.open_steps <= 0) continue;
-            pending.run.settling = false;
-            _ = self.settlements.orderedRemove(index);
-        }
+        return self.handle(event);
     }
 
     fn decodeFor(
@@ -354,30 +339,66 @@ pub const Reducer = struct {
     }
 
     fn handle(self: *Reducer, event: native.Event) Error!void {
-        if (!std.mem.eql(u8, event.durable.aggregate_id, self.options.native_id)) {
-            return self.abandon(null, "opencode_foreign_session", "durable event belongs to another session", "");
+        if (!std.mem.eql(u8, event.session_id, self.options.native_id)) {
+            return self.abandon(null, "opencode_foreign_session", "event belongs to another session", "");
         }
-        const seen = try self.reduced.getOrPut(self.allocator(), event.durable.seq);
-        if (!seen.found_existing and event.durable.seq > self.last_seq) self.last_seq = event.durable.seq;
-        if (seen.found_existing) return;
+        if (event.durable) |position| {
+            const seen = try self.reduced.getOrPut(self.allocator(), position.seq);
+            if (seen.found_existing) return;
+            if (position.seq > self.last_seq) self.last_seq = position.seq;
+        }
         const run = self.reductionTarget();
-        switch (event.kind) {
-            .prompt_admitted => _ = try self.decodeFor(native.PromptedData, native.decodePrompted, event, run, "opencode_invalid_prompt_event"),
-            .prompted => {
-                const data = (try self.decodeFor(native.PromptedData, native.decodePrompted, event, run, "opencode_invalid_prompt_event")) orelse return;
-                try self.promote(data.message_id);
+        const kind = event.kind orelse return;
+        switch (kind) {
+            .inbox_enqueued => _ = try self.decodeFor(native.InboxData, native.decodeInboxEnqueued, event, run, "opencode_invalid_inbox_event"),
+            .inbox_delivered => {
+                const data = (try self.decodeFor(native.InboxData, native.decodeInboxRef, event, run, "opencode_invalid_inbox_event")) orelse return;
+                try self.delivered(data.inbox_id);
+            },
+            .inbox_cancelled => {
+                const data = (try self.decodeFor(native.InboxData, native.decodeInboxRef, event, run, "opencode_invalid_inbox_event")) orelse return;
+                const pending = self.takePending(data.inbox_id) orelse return;
+                if (pending.terminal) return;
+                var payload = try self.scoped(pending);
+                try self.put(&payload, "reason", str("OpenCode cancelled the input before delivering it"));
+                _ = try self.emitWith(pending, "run.cancelled", payload, true, try self.reportedCost(pending));
+            },
+            .inbox_delivery_changed => _ = try self.decodeFor(native.InboxData, native.decodeInboxDeliveryChanged, event, run, "opencode_invalid_inbox_event"),
+            .execution_started => _ = try self.decodeFor(void, native.decodeExecution, event, run, "opencode_invalid_execution_event"),
+            .execution_succeeded => {
+                (try self.decodeFor(void, native.decodeExecution, event, run, "opencode_invalid_execution_event")) orelse return;
+                const target = run orelse return;
+                if (target.prompted) try self.settleRun(target);
+            },
+            .execution_failed => {
+                const data = (try self.decodeFor(native.ExecutionFailedData, native.decodeExecutionFailed, event, run, "opencode_invalid_execution_event")) orelse return;
+                const target = run orelse return;
+                if (!target.prompted) return;
+                if (target.failure != null) return self.settleRun(target);
+                try self.failRun(target, "opencode_execution_failed", data.failure.message);
+            },
+            .execution_interrupted => {
+                const data = (try self.decodeFor(native.ExecutionInterruptedData, native.decodeExecutionInterrupted, event, run, "opencode_invalid_execution_event")) orelse return;
+                const target = run orelse return;
+                if (!target.prompted) return;
+                if (target.cancel_requested) {
+                    try self.settleTools(target, true);
+                    var payload = try self.scoped(target);
+                    try self.put(&payload, "reason", str("OpenCode interrupted the execution"));
+                    _ = try self.emitWith(target, "run.cancelled", payload, true, try self.reportedCost(target));
+                    return;
+                }
+                const message = try std.mem.concat(self.allocator(), u8, &.{ "OpenCode interrupted the execution: ", data.reason });
+                try self.failRun(target, "opencode_execution_interrupted", message);
             },
             .step_started => {
                 const data = (try self.decodeFor(native.StepStartedData, native.decodeStepStarted, event, run, "opencode_invalid_step_event")) orelse return;
                 try self.observeModel(try normalizeModel(self.allocator(), data.model));
-                const target = run orelse return;
-                if (!target.terminal) target.open_steps += 1;
             },
             .step_ended => {
                 const data = (try self.decodeFor(native.StepEndedData, native.decodeStepEnded, event, run, "opencode_invalid_step_event")) orelse return;
                 const target = run orelse return;
                 if (target.terminal) return;
-                target.open_steps -= 1;
                 target.last_finish = data.finish;
                 target.cost += data.cost;
                 const input = tokenCount(data.input_tokens);
@@ -385,60 +406,71 @@ pub const Reducer = struct {
                 target.input_tokens +%= input;
                 target.output_tokens +%= output;
                 target.total_tokens +%= input +% output;
-                if (target.open_steps <= 0) try self.beginSettlement(target, event.durable.seq);
             },
             .step_failed => {
                 const data = (try self.decodeFor(native.StepFailedData, native.decodeStepFailed, event, run, "opencode_invalid_step_event")) orelse return;
                 const target = run orelse return;
-                if (target.terminal) return;
-                target.open_steps -= 1;
-                target.failure = data.failure.message;
-                if (target.open_steps <= 0) try self.beginSettlement(target, event.durable.seq);
+                if (!target.terminal and !target.cancel_requested) target.failure = data.failure.message;
+                target.cost += data.cost;
             },
             .text_ended => {
-                const data = (try self.decodeFor(native.TextData, native.decodeTextEnded, event, run, "opencode_invalid_text_event")) orelse return;
+                const data = (try self.decodeFor(native.TextData, native.decodePartEnded, event, run, "opencode_invalid_text_event")) orelse return;
                 try self.appendPart(run orelse return, false, data.text);
             },
             .reasoning_ended => {
-                const data = (try self.decodeFor(native.TextData, native.decodeReasoningEnded, event, run, "opencode_invalid_reasoning_event")) orelse return;
+                const data = (try self.decodeFor(native.TextData, native.decodePartEnded, event, run, "opencode_invalid_text_event")) orelse return;
                 try self.appendPart(run orelse return, true, data.text);
+            },
+            .tool_input_started => {
+                const data = (try self.decodeFor(native.ToolInputData, native.decodeToolInputStarted, event, run, "opencode_invalid_tool_event")) orelse return;
+                try self.tool_names.put(self.allocator(), data.id, data.name);
             },
             .tool_called => {
                 const data = (try self.decodeFor(native.ToolCalledData, native.decodeToolCalled, event, run, "opencode_invalid_tool_event")) orelse return;
+                const name = self.tool_names.get(data.id) orelse "";
                 const target = run orelse return;
-                if (data.call_id.len == 0 or data.tool.len == 0) return;
-                try self.startTool(target, data.call_id, data.tool, try gomarshal.canonicalAny(self.allocator(), data.input));
+                if (data.id.len == 0 or name.len == 0) return;
+                try self.startTool(target, data.id, name, try gomarshal.canonicalAny(self.allocator(), data.input));
             },
             .tool_progress => {
-                const data = (try self.decodeFor(native.ToolContentData, native.decodeToolProgress, event, run, "opencode_invalid_tool_event")) orelse return;
-                try self.updateTool(run orelse return, data.call_id, try self.contentValue(data.content));
+                const data = (try self.decodeFor(native.ToolProgressData, native.decodeToolProgress, event, run, "opencode_invalid_tool_event")) orelse return;
+                try self.updateTool(run orelse return, data.id, data.metadata);
             },
             .tool_success => {
                 const data = (try self.decodeFor(native.ToolContentData, native.decodeToolSuccess, event, run, "opencode_invalid_tool_event")) orelse return;
-                try self.endTool(run orelse return, data.call_id, null, try self.contentValue(data.content));
+                try self.endTool(run orelse return, data.id, null, try self.contentValue(data.content));
             },
             .tool_failed => {
                 const data = (try self.decodeFor(native.ToolFailedData, native.decodeToolFailed, event, run, "opencode_invalid_tool_event")) orelse return;
-                try self.endTool(run orelse return, data.call_id, data.failure.message, .null);
+                try self.endTool(run orelse return, data.id, data.failure.message, .null);
             },
-            .agent_switched, .model_switched, .moved, .context_updated, .synthetic, .shell_started, .shell_ended, .text_started, .reasoning_started, .tool_input_started, .tool_input_ended, .retried, .compaction_started, .compaction_ended, .revert_staged, .revert_cleared, .revert_committed => {},
+            else => {},
         }
     }
 
-    fn promote(self: *Reducer, message_id: []const u8) Error!void {
+    fn delivered(self: *Reducer, inbox: []const u8) Error!void {
         var owner: ?*Run = null;
-        if (self.takePending(message_id)) |candidate| {
+        var previous: ?*Run = null;
+        if (self.takePending(inbox)) |candidate| {
             if (!candidate.terminal) {
                 if (self.reserved == candidate) {
                     owner = candidate;
                     candidate.promotion_seen = true;
-                    candidate.holding = if (self.active) |current| !current.terminal else false;
+                    if (self.active) |current| {
+                        if (!current.terminal and current != candidate) previous = current;
+                    }
                 } else if (self.active == candidate) owner = candidate;
             }
         }
         self.suppressed = owner == null;
-        const run = owner orelse return;
-        const reservation = self.reserved == run;
+        const run = owner orelse {
+            if (self.active) |current| {
+                if (!current.terminal and current.prompted) try self.settleRun(current);
+            }
+            return;
+        };
+        if (previous) |current| try self.settleRun(current);
+        try self.promoteReserved();
         const started_at = self.now();
         var payload = try self.scoped(run);
         try self.put(&payload, "status", str("running"));
@@ -446,7 +478,12 @@ pub const Reducer = struct {
         try self.put(&payload, "started_at_ms", int(started_at));
         if (!try self.emitWith(run, "run.started", payload, false, null)) return;
         run.prompted = true;
-        if (reservation) try self.promoteReserved();
+        if (run.cancel_requested) {
+            switch (try self.client.interrupt(self.client.context, self.allocator(), self.options.native_id)) {
+                .interrupted => {},
+                .failed => |failure| try self.abandon(run, "opencode_cancellation_ambiguous", failure.message, settledBy(failure)),
+            }
+        }
     }
 
     fn appendPart(self: *Reducer, run: *Run, reasoning: bool, text: []const u8) Error!void {
@@ -472,6 +509,9 @@ pub const Reducer = struct {
             var entry: std.json.ObjectMap = .empty;
             try self.put(&entry, "type", str(item.kind));
             if (item.text.len > 0) try self.put(&entry, "text", str(item.text));
+            if (item.uri.len > 0) try self.put(&entry, "uri", str(item.uri));
+            if (item.mime.len > 0) try self.put(&entry, "mime", str(item.mime));
+            if (item.name.len > 0) try self.put(&entry, "name", str(item.name));
             array.appendAssumeCapacity(.{ .object = entry });
         }
         return .{ .array = array };
@@ -569,60 +609,6 @@ pub const Reducer = struct {
         return .{ .object = extensions };
     }
 
-    fn beginSettlement(self: *Reducer, run: *Run, watermark: i64) Error!void {
-        if (run.terminal or run.settling) return;
-        run.settling = true;
-        try self.settlements.append(self.allocator(), .{ .run = run, .watermark = watermark });
-        try self.poll();
-    }
-
-    pub fn poll(self: *Reducer) Error!void {
-        while (self.settlements.items.len > 0) {
-            const index = self.settlements.items.len - 1;
-            const pending = self.settlements.items[index];
-            if (pending.fencing) return;
-            const run = pending.run;
-            if (run.terminal or run.open_steps > 0) {
-                run.settling = false;
-                _ = self.settlements.orderedRemove(index);
-                continue;
-            }
-            switch (try self.client.active(self.client.context, self.allocator(), self.options.native_id)) {
-                .failed => |failure| {
-                    run.settling = false;
-                    _ = self.settlements.orderedRemove(index);
-                    try self.abandon(run, "opencode_quiescence_failed", failure.message, settledBy(failure));
-                },
-                .listed => |listed| {
-                    if (listed) return;
-                    try self.fence(index);
-                },
-            }
-        }
-    }
-
-    fn fence(self: *Reducer, index: usize) Error!void {
-        self.settlements.items[index].fencing = true;
-        const run = self.settlements.items[index].run;
-        var after = self.settlements.items[index].watermark;
-        while (!run.terminal) {
-            const page = switch (try self.client.history(self.client.context, self.allocator(), self.options.native_id, after, self.options.history_limit)) {
-                .failed => |failure| {
-                    _ = self.settlements.orderedRemove(index);
-                    run.settling = false;
-                    return self.abandon(run, "opencode_history_failed", failure.message, settledBy(failure));
-                },
-                .page => |page| page,
-            };
-            for (page.events) |event| try self.handle(event);
-            if (!page.has_more or page.events.len == 0) break;
-            after = page.events[page.events.len - 1].durable.seq;
-        }
-        _ = self.settlements.orderedRemove(index);
-        if (!run.terminal and run.open_steps <= 0) try self.settleRun(run);
-        run.settling = false;
-    }
-
     fn settleRun(self: *Reducer, run: *Run) Error!void {
         const cancel_requested = run.cancel_requested;
         const reported = try self.reportedCost(run);
@@ -646,7 +632,7 @@ pub const Reducer = struct {
             try self.put(&response, "content", .{ .array = parts });
         }
         try self.put(&payload, "final_response", .{ .object = response });
-        try self.put(&payload, "stop_reason", str(run.last_finish));
+        try self.put(&payload, "stop_reason", str(if (run.last_finish.len > 0) run.last_finish else "unknown"));
         var usage: std.json.ObjectMap = .empty;
         if (run.input_tokens != 0) try self.put(&usage, "input_tokens", try unsigned(self.allocator(), run.input_tokens));
         if (run.output_tokens != 0) try self.put(&usage, "output_tokens", try unsigned(self.allocator(), run.output_tokens));
@@ -700,19 +686,24 @@ pub const Reducer = struct {
         }
         if (run.cancel_requested) return .{ .session_id = response.session_id, .run_id = run.id, .status = run.status };
         const prompted = run.prompted;
-        const reservation = self.reserved == run and !run.promotion_seen;
+        const reservation = !prompted and !run.promotion_seen;
         run.cancel_requested = true;
         run.status = .cancelling;
         if (reservation) {
-            var payload = try self.scoped(run);
-            try self.put(&payload, "reason", str("reservation cancelled before promotion"));
-            try self.put(&payload, "settled_by", str("inferred"));
-            _ = try self.emitWith(run, "run.cancelled", payload, true, try self.reportedCost(run));
+            if (run.native_id.len > 0) {
+                if (try self.client.cancel_inbox(self.client.context, self.allocator(), self.options.native_id, run.native_id)) |failure| {
+                    try self.abandon(run, "opencode_cancellation_ambiguous", failure.message, settledBy(failure));
+                    return error.CancellationAmbiguous;
+                }
+            }
             return response;
         }
-        if (try self.client.interrupt(self.client.context, self.allocator(), self.options.native_id)) |failure| {
-            try self.abandon(run, "opencode_cancellation_ambiguous", failure.message, settledBy(failure));
-            return error.CancellationAmbiguous;
+        switch (try self.client.interrupt(self.client.context, self.allocator(), self.options.native_id)) {
+            .interrupted => {},
+            .failed => |failure| {
+                try self.abandon(run, "opencode_cancellation_ambiguous", failure.message, settledBy(failure));
+                return error.CancellationAmbiguous;
+            },
         }
         if (prompted) {
             const updated = self.now();
@@ -845,25 +836,25 @@ pub fn admissionValue(arena: std.mem.Allocator, admission: Admission) std.mem.Al
 const Feature = struct { key: []const u8, level: []const u8, reason: []const u8, modes: []const []const u8 = &.{} };
 
 const features = [_]Feature{
-    .{ .key = "action.permissions", .level = "unavailable", .reason = "durable stream carries no permission events; the polling surface is unexercised" },
+    .{ .key = "action.permissions", .level = "unavailable", .reason = "permission.asked travels only on the volatile global event stream and is not served" },
     .{ .key = "action.tools", .level = "native", .reason = "tool.called/progress/success/failed lifecycle observed natively" },
     .{ .key = "action.tools.execute", .level = "unavailable", .reason = "tools execute server-side; no client-hosted execution surface" },
     .{ .key = "capabilities", .level = "emulated", .reason = "descriptor synthesized from the pinned route inventory" },
     .{ .key = "models.list", .level = "degraded", .reason = "the models this session is observed to run, projected from the native session record and durable step events; the server's own model.list route has no pinned response shape at this revision" },
     .{ .key = "protocol.initialize", .level = "emulated", .reason = "OpenCode has no initialize handshake; OpenAPI and catalogs describe the server" },
-    .{ .key = "run.cancel", .level = "degraded", .reason = "interrupt is intent with idle no-op; settlement derived from durable evidence and the active set" },
-    .{ .key = "run.reconciliation", .level = "emulated", .reason = "adapter-owned projection over active and durable sequence" },
+    .{ .key = "run.cancel", .level = "degraded", .reason = "interrupt is intent with an idle no-op; a running run settles at session.execution.interrupted and a queued one at session.inbox.cancelled" },
+    .{ .key = "run.reconciliation", .level = "emulated", .reason = "adapter-owned projection over the session events; the event stream does not replay" },
     .{ .key = "run.replay", .level = "degraded", .reason = "bounded adapter journal; the native durable cursor is exposed as the transcript cursor" },
     .{ .key = "run.resume", .level = "degraded", .reason = "conversation resume exists natively but is not exercised; OAP resume replays the adapter journal" },
-    .{ .key = "run.status", .level = "native", .reason = "session.active and durable step events" },
-    .{ .key = "run.streaming", .level = "degraded", .reason = "durable stream carries full-value text.ended boundaries, not live deltas" },
+    .{ .key = "run.status", .level = "native", .reason = "session.inbox.delivered starts a run and session.execution.* settles it" },
+    .{ .key = "run.streaming", .level = "degraded", .reason = "text and reasoning are forwarded whole at session.text.ended and session.reasoning.ended; the live deltas are not forwarded" },
     .{ .key = "session.compaction.policy", .level = "unavailable", .reason = "compaction is the server's config, fixed when its operator starts it; the adapter attaches to a running server" },
-    .{ .key = "session.message.delivery.auto", .level = "emulated", .reason = "no native auto; maps to steer which starts immediately when idle" },
-    .{ .key = "session.message.delivery.queue", .level = "native", .reason = "SessionInput.Admitted carries delivery=queue with promotedSeq; a reservation is admitted durably and promoted by session.next.prompted" },
+    .{ .key = "session.message.delivery.auto", .level = "emulated", .reason = "no native auto; steer when the session is idle, queue behind an open run" },
+    .{ .key = "session.message.delivery.queue", .level = "native", .reason = "a prompt with delivery=queue is admitted to the session inbox and starts its run at session.inbox.delivered" },
     .{ .key = "session.message.delivery.steer", .level = "unavailable", .reason = "an explicit steer request is rejected as outside the v0.1 subset; the server's default delivery is exposed through an auto request" },
     .{ .key = "session.message.submit", .level = "native", .reason = "durable admission receipt with typed conflict rejection" },
     .{ .key = "session.open", .level = "native", .reason = "POST /api/session with server-assigned identity" },
-    .{ .key = "session.open.reopen", .level = "native", .reason = "GET /api/session/:id attaches to the bound server session and its events resume after the last stored sequence; an unknown or running session is refused" },
+    .{ .key = "session.open.reopen", .level = "native", .reason = "GET /api/session/:id attaches to the bound server session and follows its events from the attach on; an unknown or running session is refused" },
     .{ .key = "session.reasoning", .level = "native", .reason = "the session's model carries the level as its variant, which the runner sends on every step: set at create and between runs by switching the session to the same model with the new variant; it needs a model, and a variant the session record does not confirm is refused", .modes = &.{ "session_open", "session_live" } },
     .{ .key = "session.state", .level = "emulated", .reason = "active set and adapter-owned projection" },
 };
@@ -905,9 +896,10 @@ pub fn capabilities(arena: std.mem.Allocator) std.mem.Allocator.Error!std.json.V
 const testing = std.testing;
 
 const Fake = struct {
-    listed: bool = false,
     interrupt_failure: ?Failure = null,
     prompts: usize = 0,
+    interrupts: usize = 0,
+    cancelled: std.ArrayList([]const u8) = .empty,
 
     fn from(context: *anyopaque) *Fake {
         return @ptrCast(@alignCast(context));
@@ -917,33 +909,26 @@ const Fake = struct {
         _ = arena;
         const self = from(context);
         self.prompts += 1;
-        const count: i64 = @intCast(self.prompts);
-        return .{ .admitted = .{ .admitted_seq = count, .id = request.id, .session_id = session_id, .delivery = request.delivery, .promoted_seq = count } };
+        return .{ .admitted = .{ .id = request.id, .session_id = session_id, .kind = "user", .delivery = request.delivery, .time_created = 1 } };
     }
 
-    fn interrupt(context: *anyopaque, arena: std.mem.Allocator, session_id: []const u8) std.mem.Allocator.Error!?Failure {
+    fn interrupt(context: *anyopaque, arena: std.mem.Allocator, session_id: []const u8) std.mem.Allocator.Error!InterruptOutcome {
         _ = arena;
         _ = session_id;
-        return from(context).interrupt_failure;
+        const self = from(context);
+        self.interrupts += 1;
+        if (self.interrupt_failure) |failure| return .{ .failed = failure };
+        return .{ .interrupted = true };
     }
 
-    fn active(context: *anyopaque, arena: std.mem.Allocator, session_id: []const u8) std.mem.Allocator.Error!ActiveOutcome {
-        _ = arena;
+    fn cancelInbox(context: *anyopaque, arena: std.mem.Allocator, session_id: []const u8, inbox: []const u8) std.mem.Allocator.Error!?Failure {
         _ = session_id;
-        return .{ .listed = from(context).listed };
-    }
-
-    fn history(context: *anyopaque, arena: std.mem.Allocator, session_id: []const u8, after: i64, limit: usize) std.mem.Allocator.Error!HistoryOutcome {
-        _ = context;
-        _ = arena;
-        _ = session_id;
-        _ = after;
-        _ = limit;
-        return .{ .page = .{} };
+        try from(context).cancelled.append(arena, inbox);
+        return null;
     }
 
     fn client(self: *Fake) Native {
-        return .{ .context = self, .prompt = prompt, .interrupt = interrupt, .active = active, .history = history };
+        return .{ .context = self, .prompt = prompt, .interrupt = interrupt, .cancel_inbox = cancelInbox };
     }
 };
 
@@ -951,20 +936,28 @@ const native_session = "ses_fake00000000000000";
 
 fn nativeEvent(arena: std.mem.Allocator, seq: i64, kind: []const u8, data: []const u8) !native.Event {
     var diag = native.Diagnostic{};
-    const wire = try std.fmt.allocPrint(arena, "{{\"id\":\"evt_{d}\",\"type\":\"session.next.{s}\",\"durable\":{{\"aggregateID\":\"" ++ native_session ++ "\",\"seq\":{d},\"version\":1}},\"data\":{s}}}", .{ seq, kind, seq, data });
+    const rest = if (data.len > 2) try std.mem.concat(arena, u8, &.{ ",", data[1..] }) else "}";
+    const scoped_data = try std.mem.concat(arena, u8, &.{ "{\"sessionID\":\"" ++ native_session ++ "\"", rest });
+    const durable = (native.EventType.parse(try std.mem.concat(arena, u8, &.{ "session.", kind })) orelse return error.UnknownKind).durable();
+    const position = if (durable) try std.fmt.allocPrint(arena, ",\"durable\":{{\"aggregateID\":\"" ++ native_session ++ "\",\"seq\":{d},\"version\":1}}", .{seq}) else "";
+    const wire = try std.fmt.allocPrint(arena, "{{\"id\":\"evt_{d}\",\"type\":\"session.{s}\"{s},\"data\":{s}}}", .{ seq, kind, position, scoped_data });
     return native.decodeEvent(arena, wire, &diag);
 }
 
-fn promptedEvent(arena: std.mem.Allocator, seq: i64, message: []const u8) !native.Event {
-    return nativeEvent(arena, seq, "prompted", try std.fmt.allocPrint(arena, "{{\"messageID\":\"{s}\",\"prompt\":{{\"text\":\"hello\"}},\"delivery\":\"steer\"}}", .{message}));
+fn deliveredEvent(arena: std.mem.Allocator, seq: i64, message: []const u8) !native.Event {
+    return nativeEvent(arena, seq, "inbox.delivered", try std.fmt.allocPrint(arena, "{{\"inboxID\":\"{s}\"}}", .{message}));
 }
 
 fn stepStarted(arena: std.mem.Allocator, seq: i64, model: []const u8) !native.Event {
-    return nativeEvent(arena, seq, "step.started", try std.fmt.allocPrint(arena, "{{\"model\":{{\"id\":\"{s}\",\"providerID\":\"fixture\"}}}}", .{model}));
+    return nativeEvent(arena, seq, "step.started", try std.fmt.allocPrint(arena, "{{\"assistantMessageID\":\"msg_a\",\"agent\":\"build\",\"model\":{{\"id\":\"{s}\",\"providerID\":\"fixture\"}},\"started\":1}}", .{model}));
 }
 
 fn stepEnded(arena: std.mem.Allocator, seq: i64) !native.Event {
-    return nativeEvent(arena, seq, "step.ended", "{\"finish\":\"stop\",\"cost\":0,\"tokens\":{\"input\":1,\"output\":1}}");
+    return nativeEvent(arena, seq, "step.ended", "{\"assistantMessageID\":\"msg_a\",\"finish\":\"stop\",\"cost\":0,\"tokens\":{\"input\":1,\"output\":1,\"reasoning\":0,\"cache\":{\"read\":0,\"write\":0}}}");
+}
+
+fn succeeded(arena: std.mem.Allocator, seq: i64) !native.Event {
+    return nativeEvent(arena, seq, "execution.succeeded", "{}");
 }
 
 fn expectKinds(reducer: *Reducer, want: []const []const u8) !void {
@@ -1045,34 +1038,28 @@ test "an identity generator that breaks the message pattern settles the reservat
     try testing.expectEqualStrings("inferred", payloadOf(reducer.envelopes.items[0]).get("settled_by").?.string);
 }
 
-test "a settlement waits while the session is listed and is dropped when a step reopens the turn" {
+test "a run starts at its input's delivery and settles when the execution succeeds, not at a step's end" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const scratch = arena.allocator();
-    var fake = Fake{ .listed = true };
+    var fake = Fake{};
     var reducer = Reducer.init(&arena, .{ .native_id = native_session }, fake.client());
     try reducer.open();
     const admission = try reducer.submit("session", "hi", "auto");
-    try reducer.observe(try promptedEvent(scratch, 1, admission.message_ids[0]));
-    try reducer.observe(try stepStarted(scratch, 2, "a"));
-    try reducer.observe(try stepEnded(scratch, 3));
-    try reducer.poll();
-    try testing.expectEqual(@as(usize, 1), reducer.settlements.items.len);
-    try testing.expectEqual(@as(i64, 3), reducer.settlements.items[0].watermark);
-    try reducer.observe(try stepStarted(scratch, 4, "a"));
-    try testing.expectEqual(@as(usize, 0), reducer.settlements.items.len);
-    try testing.expect(!reducer.find(admission.run_id).?.settling);
-    try reducer.observe(try stepEnded(scratch, 5));
-    try testing.expectEqual(@as(i64, 5), reducer.settlements.items[0].watermark);
+    try reducer.observe(try nativeEvent(scratch, 1, "execution.started", "{}"));
+    try expectKinds(&reducer, &.{});
+    try reducer.observe(try deliveredEvent(scratch, 2, admission.message_ids[0]));
+    try reducer.observe(try stepStarted(scratch, 3, "a"));
+    try reducer.observe(try stepEnded(scratch, 4));
+    try reducer.observe(try stepStarted(scratch, 5, "a"));
+    try reducer.observe(try stepEnded(scratch, 6));
     try expectKinds(&reducer, &.{"run.started"});
-    fake.listed = false;
-    try reducer.poll();
-    try reducer.poll();
+    try reducer.observe(try succeeded(scratch, 7));
     try expectKinds(&reducer, &.{ "run.started", "run.completed" });
     try testing.expectEqual(@as(i64, 4), payloadOf(reducer.envelopes.items[1]).get("usage").?.object.get("total_tokens").?.integer);
 }
 
-test "cancel answers by the run's settled status, repeats its intent, and fails the session when the interrupt is refused" {
+test "cancel answers by the run's settled status, deletes an undelivered input, and fails the session when the interrupt is refused" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const scratch = arena.allocator();
@@ -1081,21 +1068,32 @@ test "cancel answers by the run's settled status, repeats its intent, and fails 
     try reducer.open();
     try testing.expectError(error.RunNotFound, reducer.cancel("run-9"));
     const done = try reducer.submit("session", "hi", "auto");
-    try reducer.observe(try promptedEvent(scratch, 1, done.message_ids[0]));
+    try reducer.observe(try deliveredEvent(scratch, 1, done.message_ids[0]));
     try reducer.observe(try stepStarted(scratch, 2, "a"));
     try reducer.observe(try stepEnded(scratch, 3));
+    try reducer.observe(try succeeded(scratch, 4));
     try testing.expectEqual(Status.completed, reducer.runStatus(done.run_id).?);
     try testing.expectError(error.RunTerminal, reducer.cancel(done.run_id));
 
     const cancelled = try reducer.submit("session", "again", "auto");
-    try reducer.observe(try promptedEvent(scratch, 4, cancelled.message_ids[0]));
+    try reducer.observe(try deliveredEvent(scratch, 5, cancelled.message_ids[0]));
     try testing.expectEqual(Status.cancelling, (try reducer.cancel(cancelled.run_id)).status);
     try testing.expectEqual(Status.cancelling, (try reducer.cancel(cancelled.run_id)).status);
-    try reducer.observe(try stepStarted(scratch, 5, "a"));
-    try reducer.observe(try stepEnded(scratch, 6));
+    try testing.expectEqual(@as(usize, 1), fake.interrupts);
+    try reducer.observe(try nativeEvent(scratch, 6, "step.failed", "{\"assistantMessageID\":\"msg_a\",\"error\":{\"type\":\"aborted\",\"message\":\"Step interrupted\"}}"));
+    try reducer.observe(try nativeEvent(scratch, 7, "execution.interrupted", "{\"reason\":\"user\"}"));
     try testing.expectEqual(Status.cancelled, (try reducer.cancel(cancelled.run_id)).status);
 
-    const refused = try reducer.submit("session", "third", "auto");
+    const undelivered = try reducer.submit("session", "third", "auto");
+    _ = try reducer.cancel(undelivered.run_id);
+    try testing.expectEqual(@as(usize, 1), fake.cancelled.items.len);
+    try testing.expectEqualStrings(undelivered.message_ids[0], fake.cancelled.items[0]);
+    try testing.expectEqual(@as(usize, 1), fake.interrupts);
+    try reducer.observe(try nativeEvent(scratch, 8, "inbox.cancelled", try std.fmt.allocPrint(scratch, "{{\"inboxID\":\"{s}\"}}", .{undelivered.message_ids[0]})));
+    try testing.expectEqual(Status.cancelled, reducer.runStatus(undelivered.run_id).?);
+
+    const refused = try reducer.submit("session", "fourth", "auto");
+    try reducer.observe(try deliveredEvent(scratch, 9, refused.message_ids[0]));
     fake.interrupt_failure = .{ .message = "opencode native: HTTP 500", .api = true };
     try testing.expectError(error.CancellationAmbiguous, reducer.cancel(refused.run_id));
     const last = reducer.envelopes.items[reducer.envelopes.items.len - 1];
@@ -1104,25 +1102,40 @@ test "cancel answers by the run's settled status, repeats its intent, and fails 
     try testing.expectEqual(@as(?std.json.Value, null), payloadOf(last).get("settled_by"));
 }
 
-test "a promoted reservation fails with the transport's code, not as a dropped reservation" {
+test "the queued input's delivery ends the previous run, and the promoted one fails with the transport's code" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const scratch = arena.allocator();
-    var fake = Fake{ .listed = true };
+    var fake = Fake{};
     var reducer = Reducer.init(&arena, .{ .native_id = native_session }, fake.client());
     try reducer.open();
     const first = try reducer.submit("session", "hi", "auto");
-    try reducer.observe(try promptedEvent(scratch, 1, first.message_ids[0]));
+    try reducer.observe(try deliveredEvent(scratch, 1, first.message_ids[0]));
     try reducer.observe(try stepStarted(scratch, 2, "a"));
     try reducer.observe(try stepEnded(scratch, 3));
     const second = try reducer.submit("session", "later", "queue");
-    try reducer.observe(try promptedEvent(scratch, 4, second.message_ids[0]));
-    try testing.expect(reducer.find(second.run_id).?.holding);
+    try reducer.observe(try deliveredEvent(scratch, 4, second.message_ids[0]));
+    try expectKinds(&reducer, &.{ "run.started", "run.completed", "run.started" });
     try reducer.transportFailed("gone");
-    try expectKinds(&reducer, &.{ "run.started", "run.failed", "run.started", "run.failed" });
+    try expectKinds(&reducer, &.{ "run.started", "run.completed", "run.started", "run.failed" });
     try testing.expectEqualStrings(first.run_id, reducer.envelopes.items[1].object.get("run_id").?.string);
     try testing.expectEqualStrings(second.run_id, reducer.envelopes.items[3].object.get("run_id").?.string);
     try testing.expectEqualStrings("opencode_stream_failed", errorCode(reducer.envelopes.items[3]));
+}
+
+test "another client's delivered input ends this run and its turn is not taken" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const scratch = arena.allocator();
+    var fake = Fake{};
+    var reducer = Reducer.init(&arena, .{ .native_id = native_session }, fake.client());
+    try reducer.open();
+    const first = try reducer.submit("session", "hi", "auto");
+    try reducer.observe(try deliveredEvent(scratch, 1, first.message_ids[0]));
+    try reducer.observe(try deliveredEvent(scratch, 2, "msg_someone"));
+    try reducer.observe(try nativeEvent(scratch, 3, "text.ended", "{\"assistantMessageID\":\"msg_b\",\"ordinal\":0,\"text\":\"theirs\"}"));
+    try expectKinds(&reducer, &.{ "run.started", "run.completed" });
+    try testing.expectEqualStrings("unknown", payloadOf(reducer.envelopes.items[1]).get("stop_reason").?.string);
 }
 
 test "the catalog needs degraded consent, answers only this session, and grows with step evidence" {
@@ -1154,29 +1167,29 @@ test "a token count converts the way the oracle converts it on arm64" {
     try testing.expectEqual(@as(u64, 18446744073709549568), tokenCount(18446744073709549568.0));
 }
 
-fn holdAndRelease(allocator: std.mem.Allocator) !void {
+fn queueAndSettle(allocator: std.mem.Allocator) !void {
     var arena = std.heap.ArenaAllocator.init(allocator);
     defer arena.deinit();
     const scratch = arena.allocator();
-    var fake = Fake{ .listed = true };
+    var fake = Fake{};
     var reducer = Reducer.init(&arena, .{ .native_id = native_session }, fake.client());
     try reducer.open();
     const first = try reducer.submit("session", "hi", "auto");
-    try reducer.observe(try promptedEvent(scratch, 1, first.message_ids[0]));
+    try reducer.observe(try deliveredEvent(scratch, 1, first.message_ids[0]));
     try reducer.observe(try stepStarted(scratch, 2, "a"));
-    try reducer.observe(try nativeEvent(scratch, 3, "tool.called", "{\"callID\":\"c\",\"tool\":\"t\",\"input\":{\"b\":1,\"a\":2}}"));
-    try reducer.observe(try stepEnded(scratch, 4));
+    try reducer.observe(try nativeEvent(scratch, 3, "tool.input.started", "{\"assistantMessageID\":\"msg_a\",\"id\":\"c\",\"name\":\"t\"}"));
+    try reducer.observe(try nativeEvent(scratch, 4, "tool.called", "{\"assistantMessageID\":\"msg_a\",\"id\":\"c\",\"input\":{\"b\":1,\"a\":2},\"executed\":true}"));
+    try reducer.observe(try stepEnded(scratch, 5));
     const second = try reducer.submit("session", "later", "queue");
-    try reducer.observe(try promptedEvent(scratch, 5, second.message_ids[0]));
-    try reducer.observe(try stepStarted(scratch, 6, "b"));
-    try reducer.observe(try nativeEvent(scratch, 7, "text.ended", "{\"text\":\"second\"}"));
-    fake.listed = false;
-    try reducer.poll();
-    try reducer.observe(try stepEnded(scratch, 8));
+    try reducer.observe(try deliveredEvent(scratch, 6, second.message_ids[0]));
+    try reducer.observe(try stepStarted(scratch, 7, "b"));
+    try reducer.observe(try nativeEvent(scratch, 8, "text.ended", "{\"assistantMessageID\":\"msg_b\",\"ordinal\":0,\"text\":\"second\"}"));
+    try reducer.observe(try stepEnded(scratch, 9));
+    try reducer.observe(try succeeded(scratch, 10));
     if (reducer.envelopes.items.len != 8) return error.TestUnexpectedResult;
     for (reducer.envelopes.items) |envelope| _ = try gomarshal.marshal(scratch, envelope);
 }
 
-test "holding and releasing a promoted reservation propagates every allocation failure and leaks nothing" {
-    try testing.checkAllAllocationFailures(testing.allocator, holdAndRelease, .{});
+test "queueing and settling a promoted run propagates every allocation failure and leaks nothing" {
+    try testing.checkAllAllocationFailures(testing.allocator, queueAndSettle, .{});
 }

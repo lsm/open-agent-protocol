@@ -13,12 +13,9 @@ import (
 	"net/url"
 	"strconv"
 	"sync"
-	"time"
 
 	"github.com/lsm/open-agent-protocol/go/adapter/opencode/internal/native"
 )
-
-const subscribeEstablishGrace = 250 * time.Millisecond
 
 const DefaultQueueCapacity = 256
 
@@ -220,14 +217,43 @@ func (c *Client) Prompt(ctx context.Context, session native.SessionID, request n
 	return response.Data, nil
 }
 
-func (c *Client) Interrupt(ctx context.Context, session native.SessionID) error {
+func (c *Client) Interrupt(ctx context.Context, session native.SessionID) (bool, error) {
 	path := "/api/session/" + url.PathEscape(string(session)) + "/interrupt"
-	return c.do(ctx, http.MethodPost, path, nil, struct{}{}, nil)
+	var response struct {
+		Interrupted bool `json:"interrupted"`
+	}
+	if err := c.do(ctx, http.MethodPost, path, nil, nil, &response); err != nil {
+		return false, err
+	}
+	return response.Interrupted, nil
 }
 
-func (c *Client) WaitIdle(ctx context.Context, session native.SessionID) error {
-	path := "/api/session/" + url.PathEscape(string(session)) + "/wait"
-	return c.do(ctx, http.MethodPost, path, nil, struct{}{}, nil)
+func (c *Client) CancelInbox(ctx context.Context, session native.SessionID, inbox native.MessageID) error {
+	path := "/api/session/" + url.PathEscape(string(session)) + "/inbox/" + url.PathEscape(string(inbox))
+	return c.do(ctx, http.MethodDelete, path, nil, nil, nil)
+}
+
+func (c *Client) Info(ctx context.Context) (native.ServerInfo, error) {
+	var response native.ServerInfo
+	if err := c.do(ctx, http.MethodGet, "/api/info", nil, nil, &response); err != nil {
+		return native.ServerInfo{}, err
+	}
+	return response, nil
+}
+
+func (c *Client) Sessions(ctx context.Context, limit int) ([]native.SessionInfo, error) {
+	query := url.Values{}
+	if limit > 0 {
+		query.Set("limit", strconv.Itoa(limit))
+	}
+	var response struct {
+		Data   []native.SessionInfo `json:"data"`
+		Cursor json.RawMessage      `json:"cursor"`
+	}
+	if err := c.do(ctx, http.MethodGet, "/api/session", query, nil, &response); err != nil {
+		return nil, err
+	}
+	return response.Data, nil
 }
 
 func (c *Client) Active(ctx context.Context) (map[native.SessionID]bool, error) {
@@ -248,46 +274,14 @@ func (c *Client) Active(ctx context.Context) (map[native.SessionID]bool, error) 
 	return active, nil
 }
 
-func (c *Client) History(ctx context.Context, session native.SessionID, after int64, limit int) (native.HistoryPage, error) {
-	query := url.Values{}
-	if after >= 0 {
-		query.Set("after", strconv.FormatInt(after, 10))
-	}
-	if limit > 0 {
-		query.Set("limit", strconv.Itoa(limit))
-	}
-	path := "/api/session/" + url.PathEscape(string(session)) + "/history"
-	var raw struct {
-		Data    []json.RawMessage `json:"data"`
-		HasMore bool              `json:"hasMore"`
-	}
-	if err := c.do(ctx, http.MethodGet, path, query, nil, &raw); err != nil {
-		return native.HistoryPage{}, err
-	}
-	page := native.HistoryPage{HasMore: raw.HasMore}
-	for _, encoded := range raw.Data {
-		event, err := native.DecodeEvent(encoded)
-		if err != nil {
-			return native.HistoryPage{}, err
-		}
-		page.Events = append(page.Events, event)
-	}
-	return page, nil
-}
-
-func (c *Client) Subscribe(ctx context.Context, session native.SessionID, after int64) (*Subscription, error) {
+func (c *Client) Subscribe(ctx context.Context, session native.SessionID) (*Subscription, error) {
 	c.mu.Lock()
 	closed := c.closed
 	c.mu.Unlock()
 	if closed {
 		return nil, ErrClosed
 	}
-	query := url.Values{}
-	if after >= 0 {
-		query.Set("after", strconv.FormatInt(after, 10))
-	}
-	target := c.endpoint.JoinPath("/api/session/" + url.PathEscape(string(session)) + "/event")
-	target.RawQuery = query.Encode()
+	target := c.endpoint.JoinPath("/api/event")
 
 	requestCtx, cancel := context.WithCancel(ctx)
 	request, err := http.NewRequestWithContext(requestCtx, http.MethodGet, target.String(), nil)
@@ -299,47 +293,30 @@ func (c *Client) Subscribe(ctx context.Context, session native.SessionID, after 
 	if c.password != "" {
 		request.Header.Set("Authorization", "Basic "+base64.StdEncoding.EncodeToString([]byte(c.username+":"+c.password)))
 	}
-	sub := &Subscription{events: make(chan native.Event, c.queue), done: make(chan struct{}), cancel: cancel}
-	type outcome struct {
-		response *http.Response
-		err      error
-	}
-	settled := make(chan outcome, 1)
-	go func() {
-		response, err := c.http.Do(request)
-		settled <- outcome{response: response, err: err}
-	}()
-	consume := func(result outcome) error {
-		if result.err != nil {
-			return result.err
-		}
-		if result.response.StatusCode != http.StatusOK {
-			payload, _ := io.ReadAll(io.LimitReader(result.response.Body, 1<<20))
-			_ = result.response.Body.Close()
-			return native.DecodeAPIError(result.response.StatusCode, payload)
-		}
-		go sub.pump(result.response, c.frame)
-		return nil
-	}
-	timer := time.NewTimer(subscribeEstablishGrace)
-	defer timer.Stop()
-	select {
-	case result := <-settled:
-		if err := consume(result); err != nil {
-			cancel()
-			return nil, err
-		}
-		return sub, nil
-	case <-timer.C:
-
-		go func() {
-			if err := consume(<-settled); err != nil {
-				sub.fail(err)
-			}
-		}()
-		return sub, nil
-	case <-ctx.Done():
+	sub := &Subscription{session: session, events: make(chan native.Event, c.queue), done: make(chan struct{}), ready: make(chan struct{}), cancel: cancel}
+	response, err := c.http.Do(request)
+	if err != nil {
 		cancel()
+		return nil, err
+	}
+	if response.StatusCode != http.StatusOK {
+		payload, _ := io.ReadAll(io.LimitReader(response.Body, 1<<20))
+		_ = response.Body.Close()
+		cancel()
+		return nil, native.DecodeAPIError(response.StatusCode, payload)
+	}
+	go sub.pump(response, c.frame)
+	select {
+	case <-sub.ready:
+		return sub, nil
+	case <-sub.done:
+		err := sub.Err()
+		if err == nil {
+			err = io.EOF
+		}
+		return nil, fmt.Errorf("%w: the event stream ended before server.connected: %w", ErrSubscription, err)
+	case <-ctx.Done():
+		sub.Close()
 		return nil, ctx.Err()
 	}
 }
@@ -356,6 +333,9 @@ func (c *Client) Close() error {
 }
 
 type Subscription struct {
+	session   native.SessionID
+	ready     chan struct{}
+	connected bool
 	events    chan native.Event
 	done      chan struct{}
 	cancel    context.CancelFunc
@@ -425,15 +405,27 @@ func (s *Subscription) pump(response *http.Response, frameLimit int) {
 			return
 		}
 		event, err := native.DecodeEvent(frame.Data)
-		if err != nil {
+		if err != nil && (event.SessionID == "" || event.SessionID == s.session) {
 			s.fail(err)
 			return
 		}
-		if event.Durable.Seq <= lastSeq {
-			s.fail(fmt.Errorf("%w: non-increasing durable sequence %d after %d", ErrSubscription, event.Durable.Seq, lastSeq))
-			return
+		if event.Type == native.TypeServerConnected {
+			if !s.connected {
+				s.connected = true
+				close(s.ready)
+			}
+			continue
 		}
-		lastSeq = event.Durable.Seq
+		if event.SessionID != s.session {
+			continue
+		}
+		if event.Durable != nil {
+			if event.Durable.Seq <= lastSeq {
+				s.fail(fmt.Errorf("%w: non-increasing durable sequence %d after %d", ErrSubscription, event.Durable.Seq, lastSeq))
+				return
+			}
+			lastSeq = event.Durable.Seq
+		}
 		select {
 		case s.events <- event:
 		case <-s.done:

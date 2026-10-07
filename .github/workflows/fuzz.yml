@@ -50,7 +50,7 @@ jobs:
           - package: ./go/adapter/hermes/internal/native
             target: FuzzAStrictDecodeAdmitsOnlyOneWholeJSONDocument
           - package: ./go/adapter/opencode/internal/native
-            target: FuzzAnEventIsAdmittedOnlyWithAValidIDTypeAndDurablePosition
+            target: FuzzASessionEventIsAdmittedOnlyWithItsSessionAndTheDurabilityItsTypeDeclares
           - package: ./go/adapter/opencode/internal/native
             target: FuzzAnAdmittedEventsDataIsAWholeJSONValueOrNothing
           - package: ./go/adapter/pi/internal/native

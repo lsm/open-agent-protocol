@@ -1,0 +1,24 @@
+[
+  {
+    "protocol": "open-agent-protocol",
+    "version": "0.1",
+    "profile": "open-agent-protocol.agent-control-core",
+    "type": "run.cancelled",
+    "id": "event-5",
+    "payload": {
+      "session_id": "session",
+      "run_id": "run-1",
+      "reason": "OpenCode cancelled the input before delivering it"
+    },
+    "sequence": 1,
+    "timestamp_ms": 3,
+    "session_id": "session",
+    "run_id": "run-1",
+    "capability_revision": "opencode-v2.0.24-oap-v1",
+    "extensions": {
+      "io.github.anomalyco.opencode.cost": {
+        "total_cost_usd": 0
+      }
+    }
+  }
+]
