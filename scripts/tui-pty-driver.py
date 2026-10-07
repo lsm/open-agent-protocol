@@ -1738,7 +1738,11 @@ UNCOMPARED_EVENT_TYPES = {
     "agent_start": "a marker replay ignores; over OAP the user's message is echoed when the run starts, so it lands on the other side of it",
     "prompt_segment_usage": "token accounting the session file keeps and nothing reads back; OAP does not carry it",
 }
-COMPARED_EVENT_FIELDS = ("type", "role", "text", "message", "outcome", "tool_name", "is_error", "reason", "stop_reason", "result_json", "steering")
+UNCOMPARED_EVENT_FIELDS = {
+    "at_ms": "a wall-clock stamp",
+    "generation": "a counter local to the runtime that produced the event",
+}
+JSON_EVENT_FIELDS = ("result_json", "args_json", "tool_calls_json", "content_json", "details_json", "artifacts_json")
 
 
 UNCOMPARED_RESULT_FIELDS = ("duration_ms",)
@@ -1760,9 +1764,10 @@ def normalized_events(events):
     for event in events or []:
         if event.get("type") in UNCOMPARED_EVENT_TYPES:
             continue
-        record = {field: event[field] for field in COMPARED_EVENT_FIELDS if field in event}
-        if "result_json" in record:
-            record["result_json"] = without_timings(record["result_json"])
+        record = {field: value for field, value in event.items() if field not in UNCOMPARED_EVENT_FIELDS}
+        for field in JSON_EVENT_FIELDS:
+            if field in record:
+                record[field] = without_timings(record[field])
         kept.append(record)
     return kept
 
