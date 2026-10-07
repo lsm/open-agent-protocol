@@ -663,6 +663,14 @@ pub const TuiRuntime = struct {
         };
     }
 
+    pub fn pauseRemote(self: *TuiRuntime) !void {
+        const remote = self.remote orelse return;
+        if (!self.started) return;
+        if (self.stream_active) return error.AgentAlreadyStreaming;
+        remote.vtable.stop(remote.ctx);
+        self.started = false;
+    }
+
     pub fn reopenSaved(self: *TuiRuntime, session_id: []const u8) !void {
         const remote = self.remote orelse return error.UnavailableOverOap;
         if (self.stream_active) return error.AgentAlreadyStreaming;

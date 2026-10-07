@@ -1574,12 +1574,14 @@ pub const App = struct {
                 break :root try self.allocator.dupe(u8, self.launch_dir);
             };
             defer self.allocator.free(root);
+            try runtime.pauseRemote();
             try runtime.setWorkspaceRoot(root);
             try replaceOwnedString(self.allocator, &self.working_dir, root);
             try self.refreshCwdDisplay();
         } else {
             self.worktree_attempted = false;
             if (self.launch_dir.len > 0) {
+                try runtime.pauseRemote();
                 try runtime.setWorkspaceRoot(self.launch_dir);
                 try replaceOwnedString(self.allocator, &self.working_dir, self.launch_dir);
                 try self.refreshCwdDisplay();
@@ -10005,6 +10007,32 @@ test "resume of a session without a worktree resets the workspace to the launch 
     try app.resumeSelectedSession();
     try std.testing.expectEqualStrings(app.launch_dir, app.working_dir);
     try std.testing.expect(!app.worktree_attempted);
+}
+
+test "resume over OAP reopens the saved session after a turn has opened one, with the saved session's workspace" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const base = try sessionStoreBaseForAppTest(std.testing.allocator, &tmp);
+    defer std.testing.allocator.free(base);
+    var provider = fixture_provider.MockProvider.init(.{ .steps = &.{.{ .text = "a reply" }} });
+    const models = [_]ai_types.Model{defaultModel()};
+    const execution = try tui_oap_execution.OapExecution.create(std.testing.allocator, .{ .protocol = provider.protocolClient(), .models = &models });
+    defer execution.destroy();
+    var app = try App.init(std.testing.allocator, .{ .models = &models, .remote = execution.remote() });
+    defer app.deinit();
+    if (app.store) |*store| store.deinit();
+    app.store = try session_store.Store.init(std.testing.allocator, base);
+    execution.setHistory(.{ .ctx = &app.store.?, .load = loadSavedHistory });
+    try saveTestSession(app.store.?, "saved-over-oap", 1);
+    try app.loadSessions();
+
+    try app.runtime.?.start();
+    try std.testing.expect(app.runtime.?.started);
+    app.worktree_attempted = true;
+    try app.resumeSelectedSession();
+    try std.testing.expectEqualStrings("saved-over-oap", app.session_id);
+    try std.testing.expectEqualStrings("saved-over-oap", execution.session_id);
+    try std.testing.expectEqualStrings(app.launch_dir, app.runtime.?.workingDirectory());
 }
 
 const MockProvider = struct {

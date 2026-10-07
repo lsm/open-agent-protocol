@@ -266,7 +266,7 @@ pub const OapExecution = struct {
                 self.thread = try std.Thread.spawn(.{}, run, .{self});
                 return error.OapReopenRefused;
             }
-            if (err != error.OapRequestRefused or self.hub == null or settings.model == null) return err;
+            if (err != error.OapRequestRefused or self.hub == null or settings.model == null or settings.resume_session_id != null) return err;
             _ = settings_map.map.swapRemove("model");
             try metadata.put(oapx_adapter.settings_key, settings_map.value());
             try open.put("metadata", metadata.value());
