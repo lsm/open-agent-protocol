@@ -215,6 +215,20 @@ fn unescapedInSegment(byte: u8) bool {
     };
 }
 
+pub fn queryEscape(arena: std.mem.Allocator, value: []const u8) std.mem.Allocator.Error![]const u8 {
+    var out = std.ArrayList(u8).empty;
+    for (value) |byte| {
+        if (std.ascii.isAlphanumeric(byte) or byte == '-' or byte == '_' or byte == '.' or byte == '~') {
+            try out.append(arena, byte);
+        } else if (byte == ' ') {
+            try out.append(arena, '+');
+        } else {
+            try out.print(arena, "%{X:0>2}", .{byte});
+        }
+    }
+    return out.items;
+}
+
 pub fn pathEscape(arena: std.mem.Allocator, segment: []const u8) std.mem.Allocator.Error![]const u8 {
     var out = std.ArrayList(u8).empty;
     for (segment) |byte| {
@@ -318,7 +332,7 @@ pub fn getSession(arena: std.mem.Allocator, endpoint: Endpoint, session: []const
 }
 
 pub fn sessions(arena: std.mem.Allocator, endpoint: Endpoint, directory: []const u8, limit: usize) std.mem.Allocator.Error!Request {
-    const scope = if (directory.len > 0) try std.mem.concat(arena, u8, &.{ "directory=", try pathEscape(arena, directory), "&" }) else "";
+    const scope = if (directory.len > 0) try std.mem.concat(arena, u8, &.{ "directory=", try queryEscape(arena, directory), "&" }) else "";
     const query = try std.fmt.allocPrint(arena, "{s}limit={d}&order=desc&parentID=null", .{ scope, limit });
     return build(arena, endpoint, "GET", "/api/session", query, "application/json", null);
 }
@@ -696,4 +710,6 @@ test "a session list decodes every row strictly and refuses one that is not a se
     try testing.expectEqualStrings(native.invalid_wire ++ ": invalid session info", invalid.failed.message);
     const request = try sessions(scratch, .{}, "", 3);
     try testing.expectEqualStrings("/api/session?limit=3&order=desc&parentID=null", request.target);
+    const scoped = try sessions(scratch, .{}, "/x/R&D+a=b c~", 3);
+    try testing.expectEqualStrings("/api/session?directory=%2Fx%2FR%26D%2Ba%3Db+c~&limit=3&order=desc&parentID=null", scoped.target);
 }

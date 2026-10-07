@@ -1137,7 +1137,7 @@ test "the native list asks OpenCode for the directory's root sessions newest fir
     probe.fake.busy_polls = 1;
     var refusal = contract.Refusal{};
     const listed = try probe.adapter.adapter().nativeList(probe.arena.allocator(), .{ .directory = "/w ork", .limit = 7 }, &refusal).?;
-    try testing.expectEqualStrings("/api/session?directory=%2Fw%20ork&limit=7&order=desc&parentID=null", probe.fake.list_target[0..probe.fake.list_target_len]);
+    try testing.expectEqualStrings("/api/session?directory=%2Fw+ork&limit=7&order=desc&parentID=null", probe.fake.list_target[0..probe.fake.list_target_len]);
     try testing.expectEqual(@as(usize, 2), listed.len);
     try testing.expectEqualStrings(fake_session, listed[0].native_id);
     try testing.expectEqualStrings("busy one", listed[0].title);
