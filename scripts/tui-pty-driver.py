@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# PTY driver for the oapx TUI (#259): launches `oapx --tui` inside a
+# PTY driver for the oapx TUI (#259): launches bare `oapx` inside a
 # pseudo-terminal, replays scripted scenarios, captures every rendered byte
 # stream with timestamps, and reports a performance baseline. Determinism
 # comes from OAPX_TUI_FIXTURE (see zig/src/tui/fixture_provider.zig): the
@@ -24,15 +24,9 @@
 # provider-https needs --tls-dir (a gen-certs directory whose ca.pem the system
 # trust store holds) and is reported as skipped without it.
 #
-# Every sweep scenario runs on both terminal UIs by default: `oapx --tui`, the
-# local loop, and bare `oapx`, which starts `oapx tui`, the same UI over OAP
-# through the in-process endpoint (--tui-mode local|oap|both). With both, the driver also compares the
-# two runs' saved session records, normalized to what a user would see, and
-# fails on any difference. That comparison is the parity gate: `oapx tui` can
-# replace `--tui` when every scenario passes on both and no record differs.
-# OAP_KNOWN_GAPS lists what `oapx tui` is known to fail today, each with its
-# reason; a listed scenario that passes over OAP fails the sweep too, so the
-# list can only shrink. command-coverage fails when a command in
+# Every sweep scenario runs bare `oapx`, the terminal UI over OAP through the
+# in-process endpoint; hub-attach runs it over the hub with `oapx tui --attach`.
+# command-coverage fails when a command in
 # zig/src/tui/commands.zig is driven by no scenario and is not listed in
 # UNDRIVEN_COMMANDS.
 #
@@ -443,7 +437,7 @@ class PtySession:
                 env.update(extra_env or {})
                 self.spawned_at = time.monotonic()
                 self.proc = subprocess.Popen(
-                    [self.binary] + (argv if argv is not None else list(getattr(args, "tui_argv", ["--tui"]))),
+                    [self.binary] + (argv if argv is not None else []),
                     stdin=slave,
                     stdout=slave,
                     stderr=slave,
@@ -837,7 +831,6 @@ class SweepRun:
         self.frames = []
         self.error = None
         self.dump_dir = None
-        self.events = None
         frame_args = argparse.Namespace(**vars(args))
         if width is not None:
             frame_args.width = width
@@ -928,8 +921,6 @@ class SweepRun:
             raise ScenarioError(f"{self.name}: TUI exited with code {exit_code}, expected 0")
 
     def close(self):
-        if self.events is None:
-            self.events = session_events(self.session.home)
         self.session.close()
 
     def dump(self, output_dir):
@@ -1750,103 +1741,7 @@ SCENARIOS = {
     "auto-worktree": scenario_auto_worktree,
 }
 
-LOCAL_ONLY_SCENARIOS = {"hub-attach"}
-
-OAP_KNOWN_GAPS = {}
-
-KNOWN_DIVERGENCES = {}
-
 UNDRIVEN_COMMANDS = {}
-
-UNCOMPARED_EVENT_TYPES = {
-    "text_delta": "streaming chunks: the transport may split one reply differently, and message_end carries the whole text",
-    "thinking_delta": "streaming chunks, as text_delta",
-    "tool_call_delta": "streaming chunks, as text_delta; the session loader skips it",
-    "provider_event": "the provider's raw wire event, kept for diagnosis; the session loader skips it",
-    "message_update": "streaming snapshots, as text_delta",
-    "tool_execution_update": "streaming tool output; tool_execution_end carries the result, and the session loader skips it",
-    "message_start": "an empty marker the matching message_end follows",
-    "context_usage": "an estimate that depends on when each path measures it",
-    "agent_start": "a marker replay ignores; over OAP the user's message is echoed when the run starts, so it lands on the other side of it",
-    "prompt_segment_usage": "token accounting the session file keeps and nothing reads back; OAP does not carry it",
-}
-UNCOMPARED_EVENT_FIELDS = {
-    "at_ms": "a wall-clock stamp",
-    "generation": "a counter local to the runtime that produced the event",
-    "raw_total_bytes": "the size of a tool's result, which carries a timing whose digits vary",
-    "returned_total_bytes": "as raw_total_bytes",
-    "estimated_returned_tokens": "derived from returned_total_bytes",
-}
-JSON_EVENT_FIELDS = ("result_json", "args_json", "tool_calls_json", "content_json", "details_json", "artifacts_json")
-
-
-UNCOMPARED_RESULT_FIELDS = {
-    "duration_ms": "a wall-clock measure",
-    "stdout_bytes": "output that names a per-run path is as long as that path; the output text itself is compared in the tool's result message",
-    "stderr_bytes": "as stdout_bytes",
-    "raw_bytes": "as stdout_bytes",
-}
-
-
-STABILIZED_PATHS = (
-    (re.compile(re.escape(tempfile.gettempdir()) + r"/makai-pty-[A-Za-z0-9_-]+"), "<tmp>", "each run gets its own temporary home and repository"),
-    (re.compile(r"worktrees/[^/\\\"\s]+"), "worktrees/<session>", "a session's worktree is named after its session id"),
-)
-
-
-def stabilized(value):
-    if isinstance(value, str):
-        for pattern, replacement, _ in STABILIZED_PATHS:
-            value = pattern.sub(replacement, value)
-        return value
-    if isinstance(value, list):
-        return [stabilized(item) for item in value]
-    if isinstance(value, dict):
-        return {key: stabilized(item) for key, item in value.items()}
-    return value
-
-
-def without_timings(result_json):
-    try:
-        result = json.loads(result_json)
-    except (TypeError, ValueError):
-        return result_json
-    if isinstance(result, dict):
-        for field in UNCOMPARED_RESULT_FIELDS:
-            result.pop(field, None)
-    return result
-
-
-UNORDERED_EVENT_TYPES = {
-    "tool_approval_requested": "the local loop raises it from its approval callback, outside the event stream, so where it lands among the stream's records races; it is compared as a set",
-}
-
-
-def normalized_events(events):
-    kept = []
-    unordered = []
-    for event in events or []:
-        if event.get("type") in UNCOMPARED_EVENT_TYPES:
-            continue
-        record = {field: value for field, value in event.items() if field not in UNCOMPARED_EVENT_FIELDS}
-        for field in JSON_EVENT_FIELDS:
-            if field in record:
-                record[field] = without_timings(record[field])
-        record = stabilized(record)
-        (unordered if event.get("type") in UNORDERED_EVENT_TYPES else kept).append(record)
-    return kept + sorted(unordered, key=lambda record: json.dumps(record, sort_keys=True))
-
-
-def first_difference(local, oap):
-    for index, (left, right) in enumerate(zip(local, oap)):
-        if left != right:
-            return f"record {index}: oapx --tui {left!r}, oapx {right!r}"
-    if len(local) != len(oap):
-        longer = "oapx --tui" if len(local) > len(oap) else "oapx"
-        extra = local[len(oap):] if len(local) > len(oap) else oap[len(local):]
-        return f"oapx --tui saved {len(local)} records and oapx {len(oap)}; {longer} also saved {extra[0]!r}"
-    return None
-
 
 def command_coverage(repo_root):
     table = open(os.path.join(repo_root, "zig", "src", "tui", "commands.zig")).read()
@@ -1937,57 +1832,26 @@ def run_core_loop(args, repo_root):
     return None
 
 
-def path_args(args, path):
-    scoped = argparse.Namespace(**vars(args))
-    scoped.tui_argv = [] if path == "oap" else ["--tui"]
-    if path == "oap":
-        scoped.output_dir = os.path.join(args.output_dir, "oap")
-    return scoped
-
-
-def run_sweep_scenario(args, repo_root, name, path="local"):
+def run_sweep_scenario(args, repo_root, name):
     runner = SCENARIOS[name]
-    scoped = path_args(args, path)
-    label = name if path == "local" else f"{name}@oap"
+    label = name
     try:
-        run = runner(scoped)
-        output_dir = run.dump_dir or os.path.join(scoped.output_dir, name)
+        run = runner(args)
+        output_dir = run.dump_dir or os.path.join(args.output_dir, name)
         run.dump(output_dir)
         if run.error is not None:
-            return {"scenario": label, "result": "fail", "error": run.error, "frames": len(run.frames), "notes": run.notes, "output_dir": output_dir}, run.events
+            return {"scenario": label, "result": "fail", "error": run.error, "frames": len(run.frames), "notes": run.notes, "output_dir": output_dir}
         return {
             "scenario": label,
             "result": "pass",
             "frames": len(run.frames),
             "notes": run.notes,
             "output_dir": output_dir,
-        }, run.events
+        }
     except ScenarioSkipped as err:
-        return {"scenario": label, "result": "skip", "reason": str(err), "notes": []}, None
+        return {"scenario": label, "result": "skip", "reason": str(err), "notes": []}
     except (ScenarioError, OSError) as err:
-        return {"scenario": label, "result": "fail", "error": str(err), "notes": []}, None
-
-
-def judge_oap(name, result):
-    gap = OAP_KNOWN_GAPS.get(name)
-    if gap is None or result["result"] == "skip":
-        return result
-    if result["result"] == "fail":
-        return dict(result, result="known-gap", reason=gap)
-    return dict(result, result="fail", error=f"listed in OAP_KNOWN_GAPS ({gap}) but passed over OAP; remove the entry")
-
-
-def judge_parity(name, local_events, oap_events):
-    label = f"{name}@parity"
-    difference = first_difference(normalized_events(local_events), normalized_events(oap_events))
-    divergence = KNOWN_DIVERGENCES.get(name)
-    if difference is None and divergence is None:
-        return {"scenario": label, "result": "pass", "notes": [f"{len(normalized_events(local_events))} saved records match"]}
-    if difference is None:
-        return {"scenario": label, "result": "fail", "error": f"listed in KNOWN_DIVERGENCES ({divergence}) but the saved records match; remove the entry", "notes": []}
-    if divergence is not None:
-        return {"scenario": label, "result": "known-gap", "reason": divergence, "detail": difference, "notes": []}
-    return {"scenario": label, "result": "fail", "error": f"the saved session records differ between oapx --tui and oapx: {difference}", "notes": []}
+        return {"scenario": label, "result": "fail", "error": str(err), "notes": []}
 
 
 def main():
@@ -2002,7 +1866,6 @@ def main():
     parser.add_argument("--scenario", default="core-loop", choices=list(SCENARIOS) + ["all"])
     parser.add_argument("--startup-timeout", type=float, default=15.0)
     parser.add_argument("--stream-timeout", type=float, default=15.0)
-    parser.add_argument("--tui-mode", default="both", choices=["local", "oap", "both"], help="which terminal UI the sweep scenarios drive: oapx --tui, bare oapx (oapx tui), or both and compare them")
     parser.add_argument("--tls-dir", help="gen-certs output of scripts/tui-fake-provider.py whose ca.pem the system trust store holds; enables provider-https")
     args = parser.parse_args()
     if sys.platform == "darwin":
@@ -2038,26 +1901,15 @@ def main():
     if args.scenario == "all":
         results.append(command_coverage(repo_root))
     for name in names:
-        paths = ["local"] if name in LOCAL_ONLY_SCENARIOS else {"local": ["local"], "oap": ["oap"], "both": ["local", "oap"]}[args.tui_mode]
-        events = {}
-        passed = {}
-        for path in paths:
-            result, events[path] = run_sweep_scenario(args, repo_root, name, path)
-            if path == "oap":
-                result = judge_oap(name, result)
-            passed[path] = result["result"] == "pass"
-            results.append(result)
-        if len(paths) == 2 and passed["local"] and passed["oap"]:
-            results.append(judge_parity(name, events["local"], events["oap"]))
+        results.append(run_sweep_scenario(args, repo_root, name))
     for result in results:
-        status = {"pass": "OK", "skip": f"SKIP: {result.get('reason', '')}", "known-gap": f"KNOWN GAP: {result.get('reason', '')}"}.get(result["result"], f"FAIL: {result.get('error', '')}")
+        status = {"pass": "OK", "skip": f"SKIP: {result.get('reason', '')}"}.get(result["result"], f"FAIL: {result.get('error', '')}")
         print(f"tui-pty-driver: {result['scenario']}: {status}", file=sys.stderr)
 
     summary = {
         "schema": 1,
         "harness": "scripts/tui-pty-driver.py",
         "scenario": args.scenario,
-        "tui_mode": args.tui_mode,
         "git_revision": git_revision(repo_root),
         "results": results,
     }

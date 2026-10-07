@@ -2377,7 +2377,6 @@ fn printUsage(file: std.Io.File) !void {
         \\Usage:
         \\  oapx                                              Start the terminal UI
         \\  oapx tui [--context-window <tokens>]          The terminal UI, over OAP through the in-process endpoint; what oapx alone starts
-        \\  oapx --tui [--context-window <tokens>]        The terminal UI on its own loop, without OAP (superseded by oapx tui)
         \\                                                   --context-window takes a whole number, optionally with k or m
         \\  oapx tui --attach <url> [--adapter <name>]    The terminal UI over a running oapx serve's HTTP wire; adapter defaults to oapx
         \\  oapx run [--agent] [--storage] [--model <id>] "<prompt>"
@@ -2438,7 +2437,7 @@ fn printUsage(file: std.Io.File) !void {
         \\  --version        Print binary version
         \\  --stdio          Start the legacy Makai stdio mode; SDKs use serve
         \\
-        \\Superseded flags, still accepted: --tui, -p, --oap, --oap-provider
+        \\Superseded flags, still accepted: -p, --oap, --oap-provider
         \\
     );
 }
@@ -2499,29 +2498,6 @@ fn runTuiOverOap(allocator: std.mem.Allocator, io: std.Io, args: []const []const
     try tui_app.runWith(allocator, io, parsed.context_window, mode);
 }
 
-fn localTuiRefusal(parsed: TuiArgs) ?[]const u8 {
-    if (parsed.attach != null or parsed.adapter_named) return "--attach and --adapter belong to oapx tui, not oapx --tui\n\n";
-    return null;
-}
-
-fn runTui(allocator: std.mem.Allocator, io: std.Io, args: []const []const u8, stderr: std.Io.File) !void {
-    const parsed = parseTuiArgs(args) catch |err| {
-        switch (err) {
-            error.MissingContextWindow => try compat.stdio.writeAll(stderr, "--context-window takes a token count\n\n"),
-            error.ContextWindowNotATokenCount => try compat.stdio.writeAll(stderr, "--context-window takes a whole number of tokens, optionally with k or m\n\n"),
-            error.UnknownOption => try compat.stdio.writeAll(stderr, "unknown argument to --tui\n\n"),
-        }
-        try printUsage(stderr);
-        return error.InvalidArgument;
-    };
-    if (localTuiRefusal(parsed)) |refusal| {
-        try compat.stdio.writeAll(stderr, refusal);
-        try printUsage(stderr);
-        return error.InvalidArgument;
-    }
-    try tui_app.run(allocator, io, parsed.context_window);
-}
-
 test "the tui takes a context window and refuses anything else" {
     const none = try parseTuiArgs(&.{});
     try std.testing.expect(none.context_window == null);
@@ -2536,12 +2512,6 @@ test "the tui takes a context window and refuses anything else" {
     try std.testing.expectError(error.ContextWindowNotATokenCount, parseTuiArgs(&.{ "--context-window", "loads" }));
     try std.testing.expectError(error.ContextWindowNotATokenCount, parseTuiArgs(&.{ "--context-window", "0" }));
     try std.testing.expectError(error.UnknownOption, parseTuiArgs(&.{ "--model", "gpt-5-codex" }));
-}
-
-test "oapx --tui refuses --adapter as it refuses --attach, rather than dropping it" {
-    try std.testing.expect(localTuiRefusal(try parseTuiArgs(&.{ "--adapter", "memory" })) != null);
-    try std.testing.expect(localTuiRefusal(try parseTuiArgs(&.{ "--attach", "http://127.0.0.1:1" })) != null);
-    try std.testing.expect(localTuiRefusal(try parseTuiArgs(&.{})) == null);
 }
 
 const DEFAULT_PRINT_MODEL_ID = "kimi-k2.7-code";
@@ -6734,11 +6704,8 @@ pub fn main(init: std.process.Init) !void {
     }
 
     if (std.mem.eql(u8, args[1], "--tui")) {
-        runTui(allocator, init.io, args[2..], stderr) catch |err| switch (err) {
-            error.InvalidArgument => return error.InvalidArgument,
-            else => return err,
-        };
-        return;
+        try compat.stdio.writeAll(stderr, "oapx --tui was removed; run oapx, which starts the terminal UI over OAP\n");
+        return error.InvalidArgument;
     }
 
     if (std.mem.eql(u8, args[1], "-p")) {
