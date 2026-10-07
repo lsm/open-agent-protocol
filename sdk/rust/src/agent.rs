@@ -924,18 +924,26 @@ fn open_payload(session_id: &str, request: &ExecutionRequest) -> Result<serde_js
         }
         fields.insert("tools".to_owned(), serde_json::Value::Array(provided));
     }
+    if request.options.reasoning_effort == Some(crate::types::ReasoningEffort::Minimal) {
+        return Err(crate::oap::unsupported(
+            "minimal reasoning, which the agent loop runs as low",
+        ));
+    }
     if let Some(effort) = &request.options.reasoning_effort {
         fields.insert(
             "reasoning_level".to_owned(),
             serde_json::to_value(effort).map_err(|err| Error::invalid_request(err.to_string()))?,
         );
     }
+    let mut settings = serde_json::Map::new();
+    settings.insert("user_input".to_owned(), json!(false));
     if let Some(max_tokens) = request.options.max_tokens {
-        fields.insert(
-            "metadata".to_owned(),
-            json!({ "oapx": { "output": max_tokens } }),
-        );
+        if max_tokens == 0 {
+            return Err(Error::invalid_request("max_tokens must be at least 1"));
+        }
+        settings.insert("output".to_owned(), json!(max_tokens));
     }
+    fields.insert("metadata".to_owned(), json!({ "oapx": settings }));
     Ok(payload)
 }
 

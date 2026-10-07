@@ -112,7 +112,7 @@ println!("{}", response.text());
 # }
 ```
 
-For streaming, iterate `agent().stream(request)` and handle `AgentStart`, wrapped provider deltas, and terminal `AgentEnd`. The stream also yields `ToolExecutionStart` and `ToolExecutionEnd` for every call, the endpoint's own tools included. An agent run's `reasoning_effort` becomes the session's reasoning level and `max_tokens` the oapx output limit, both at open; `temperature` fails with `unsupported_feature`, since the agent loop takes none. All three remain supported for direct provider inference.
+For streaming, iterate `agent().stream(request)` and handle `AgentStart`, wrapped provider deltas, and terminal `AgentEnd`. The stream also yields `ToolExecutionStart` and `ToolExecutionEnd` for every call, the endpoint's own tools included. An agent run's `reasoning_effort` becomes the session's reasoning level and `max_tokens` (at least 1) the oapx output limit, both at open; `temperature` and `ReasoningEffort::Minimal` fail with `unsupported_feature`, since the agent loop takes no temperature and runs minimal as low. The open also turns off the loop's `request_user_input` tool, which the SDK cannot answer. All three remain supported for direct provider inference.
 
 ### Agent model discovery
 

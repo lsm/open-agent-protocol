@@ -272,7 +272,20 @@ async fn agent_tools_and_settings_travel_over_oap_and_temperature_is_refused() {
     let settings = client.agent().run(configured).await.expect("settings run");
     assert_eq!(
         settings.text(),
-        "reasoning=\"high\" output=32 participant=\"rust-sdk\""
+        "reasoning=\"high\" output=32 user_input=false participant=\"rust-sdk\""
+    );
+    let zero =
+        ExecutionRequest::prompt("fixture/openai-responses@settings", "hello").with_max_tokens(0);
+    assert!(client.agent().run(zero).await.is_err());
+    let mut minimal = ExecutionRequest::prompt("fixture/openai-responses@settings", "hello");
+    minimal.options.reasoning_effort = Some(oap_sdk::ReasoningEffort::Minimal);
+    let error = client
+        .agent()
+        .run(minimal)
+        .await
+        .expect_err("minimal refused");
+    assert!(
+        matches!(error, Error::Protocol { code: Some(code), .. } if code == "unsupported_feature")
     );
     let mut warm = ExecutionRequest::prompt("fixture/openai-responses@mock", "hello");
     warm.options.temperature = Some(0.5);

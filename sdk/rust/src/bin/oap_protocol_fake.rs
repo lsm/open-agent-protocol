@@ -394,9 +394,10 @@ fn main() {
                 }
                 if effective_model.ends_with("@settings") {
                     let said = format!(
-                        "reasoning={} output={} participant={}",
+                        "reasoning={} output={} user_input={} participant={}",
                         opened["reasoning_level"],
                         opened["metadata"]["oapx"]["output"],
+                        opened["metadata"]["oapx"]["user_input"],
                         participant
                     );
                     emit(
