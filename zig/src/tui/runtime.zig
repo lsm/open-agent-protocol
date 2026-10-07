@@ -74,6 +74,7 @@ pub const RemoteExecution = struct {
         cancel: *const fn (ctx: *anyopaque) void,
         switch_model: *const fn (ctx: *anyopaque, model: ai_types.Model) anyerror!void,
         set_reasoning: *const fn (ctx: *anyopaque, level: ai_types.ThinkingLevel) anyerror!void,
+        set_catalog: *const fn (ctx: *anyopaque, models: []const ai_types.Model) anyerror!void,
         compacts: *const fn (ctx: *anyopaque) bool,
         take_record: *const fn (ctx: *anyopaque) ?TuiEvent,
         records_session: *const fn (ctx: *anyopaque) bool,
@@ -212,7 +213,7 @@ fn requestTitleText(allocator: std.mem.Allocator, protocol: agent.ProtocolClient
     return cleanTitle(allocator, text.items);
 }
 
-fn cloneModels(allocator: std.mem.Allocator, models: []const ai_types.Model) ![]ai_types.Model {
+pub fn cloneModels(allocator: std.mem.Allocator, models: []const ai_types.Model) ![]ai_types.Model {
     const cloned = try allocator.alloc(ai_types.Model, models.len);
     var initialized: usize = 0;
     errdefer {
@@ -226,7 +227,7 @@ fn cloneModels(allocator: std.mem.Allocator, models: []const ai_types.Model) ![]
     return cloned;
 }
 
-fn deinitModels(allocator: std.mem.Allocator, models: []ai_types.Model) void {
+pub fn deinitModels(allocator: std.mem.Allocator, models: []ai_types.Model) void {
     for (models) |*model| model.deinit(allocator);
     allocator.free(models);
 }
@@ -571,6 +572,7 @@ pub const TuiRuntime = struct {
         }
         if (self.remote) |remote| {
             if (self.stream_active) return error.AgentAlreadyStreaming;
+            try remote.vtable.set_catalog(remote.ctx, owned_next);
             if (self.started) {
                 const before = if (self.selected_model_index) |idx| self.models[idx] else null;
                 const after = if (next_selected) |idx| owned_next[idx] else null;

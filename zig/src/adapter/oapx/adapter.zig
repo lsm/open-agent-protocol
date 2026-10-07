@@ -11,7 +11,7 @@ const permission = @import("permission");
 const interactions = @import("interactions.zig");
 
 pub const endpoint_id = "oapx.agent";
-pub const capability_revision = "oapx-agent-v8";
+pub const capability_revision = "oapx-agent-v9";
 
 pub const journal_capacity: usize = 1 << 16;
 pub const queue_capacity: usize = 8;
@@ -39,7 +39,7 @@ const features = [_]contract.Feature{
     .{ .key = "action.tools", .level = .native, .reason = "the agent loop runs its own workspace tools" },
     .{ .key = "action.tools.execute", .level = .native, .reason = "the agent loop runs its own workspace tools" },
     .{ .key = contract.feature_tools_list, .level = .native },
-    .{ .key = contract.feature_models_list, .level = .native, .reason = "the catalog is the one the terminal UI offers" },
+    .{ .key = contract.feature_models_list, .level = .degraded, .reason = "the catalog is the one the terminal UI offers, and a refresh there moves it at the session's next model switch under the same revision, with no capabilities.updated" },
     .{ .key = contract.feature_model_switch, .level = .native },
     .{ .key = contract.feature_session_compact, .level = .native, .reason = "a compaction is a run of its own in which the loop summarizes the history with the session's model, the focus as its instructions, admitted under submit's rules; continue is refused" },
     .{ .key = "run.compaction", .level = .native, .reason = "the loop compacts between turns once its estimate of the history reaches the session's threshold, and on request; it does not compact on a provider's overflow" },
@@ -71,6 +71,8 @@ pub const Recorder = struct {
 pub const Adapter = struct {
     allocator: std.mem.Allocator,
     options: tui_runtime.TuiRuntimeOptions,
+    catalog: ?[]ai_types.Model = null,
+    catalog_generation: u64 = 0,
     transcripts: ?TranscriptStore = null,
     recorder: ?Recorder = null,
     ids: u64 = 0,
@@ -81,6 +83,18 @@ pub const Adapter = struct {
         runtime_options.run_async = true;
         runtime_options.generate_titles = false;
         return .{ .allocator = allocator, .options = runtime_options };
+    }
+
+    pub fn deinit(self: *Adapter) void {
+        if (self.catalog) |held| tui_runtime.deinitModels(self.allocator, held);
+        self.catalog = null;
+    }
+
+    pub fn setCatalog(self: *Adapter, models: []const ai_types.Model) !void {
+        const next = try tui_runtime.cloneModels(self.allocator, models);
+        if (self.catalog) |held| tui_runtime.deinitModels(self.allocator, held);
+        self.catalog = next;
+        self.catalog_generation += 1;
     }
 
     pub fn adapter(self: *Adapter) contract.Adapter {
@@ -162,6 +176,7 @@ pub const Session = struct {
     runtime: *tui_runtime.TuiRuntime,
     engine: ?*permission.PermissionEngine = null,
     updated_at_ms: i64,
+    catalog_seen: u64 = 0,
     run: ?*Run = null,
     runs: std.ArrayList(*Run) = .empty,
     gate: interactions.Gate = .{},
@@ -182,8 +197,9 @@ pub const Session = struct {
         @memcpy(session_tools[0..owner.options.tools.len], owner.options.tools);
         if (offers_input) session_tools[owner.options.tools.len] = inputTool(self);
         var options = sessionOptions(owner.options, request.metadata);
+        options.models = owner.catalog orelse owner.options.models;
         if (request.reasoning_level) |level| options.thinking_level = try thinkingLevel(level, refusal);
-        if (try requestedModel(gpa, owner.options.models, request.metadata, refusal)) |chosen| options.initial_model = chosen;
+        if (try requestedModel(gpa, options.models, request.metadata, refusal)) |chosen| options.initial_model = chosen;
         const engine = try ownEngine(gpa, owner.options.permission_engine, options.workspace_root);
         errdefer if (engine) |held| {
             held.deinit();
@@ -198,7 +214,7 @@ pub const Session = struct {
             else => return refusal.fail(error.BackendFailed, @errorName(err)),
         };
         errdefer runtime.deinit();
-        self.* = .{ .owner = owner, .gpa = gpa, .keep = std.heap.ArenaAllocator.init(gpa), .id = "", .participant = "", .runtime = runtime, .engine = engine, .updated_at_ms = owner.now_ms() };
+        self.* = .{ .owner = owner, .gpa = gpa, .keep = std.heap.ArenaAllocator.init(gpa), .id = "", .participant = "", .runtime = runtime, .engine = engine, .updated_at_ms = owner.now_ms(), .catalog_seen = owner.catalog_generation };
         errdefer self.keep.deinit();
         const keep = self.keep.allocator();
         self.participant = try keep.dupe(u8, request.participant);
@@ -406,6 +422,17 @@ pub const Session = struct {
         try applyLiveSettings(self.runtime, extended, refusal);
         self.updated_at_ms = self.owner.now_ms();
         return .{ .response = response, .state = try self.snapshot(arena) };
+    }
+
+    fn syncCatalog(self: *Session) contract.Failure!void {
+        const catalog = self.owner.catalog orelse return;
+        if (self.catalog_seen == self.owner.catalog_generation) return;
+        if (self.live() != null or !self.runtime.isIdle()) return error.RunActive;
+        self.runtime.replaceModels(catalog, self.runtime.currentModel()) catch |err| switch (err) {
+            error.OutOfMemory => return error.OutOfMemory,
+            else => return,
+        };
+        self.catalog_seen = self.owner.catalog_generation;
     }
 
     fn cast(ptr: *anyopaque) *Session {
@@ -1213,9 +1240,9 @@ pub const Session = struct {
     }
 
     fn models(ptr: *anyopaque, arena: std.mem.Allocator, request: *const oap_types.ModelsRequest, refusal: *contract.Refusal) contract.Failure!contract.Catalog {
-        _ = refusal;
         const self = cast(ptr);
         if (request.session_id.len > 0 and !std.mem.eql(u8, request.session_id, self.id)) return error.InvalidSubmission;
+        if (!request.allowsDegraded(contract.feature_models_list)) return refusal.degraded(contract.feature_models_list);
         const current = try self.currentModelRef(arena);
         const available = self.runtime.availableModels();
         var catalog = try std.ArrayList(oap_types.ModelDescriptor).initCapacity(arena, available.len);
@@ -1243,6 +1270,7 @@ pub const Session = struct {
         const self = cast(ptr);
         if (!std.mem.eql(u8, request.session_id, self.id)) return error.InvalidSubmission;
         if (self.live() != null or self.queuedCount() > 0) return error.RunActive;
+        try self.syncCatalog();
         const chosen = findModel(arena, self.runtime.availableModels(), request.model_id) catch |err| switch (err) {
             error.OutOfMemory => return error.OutOfMemory,
         } orelse return refusal.missingModel(request.model_id);
@@ -1712,6 +1740,7 @@ const Harness = struct {
         for (self.seen.items) |*parsed| parsed.deinit();
         self.seen.deinit(testing.allocator);
         self.session.teardown();
+        self.owner.deinit();
         self.arena.deinit();
     }
 
@@ -1878,7 +1907,7 @@ test "models lists the runtime's catalog as model refs, and a switch takes one r
     const a = harness.arena.allocator();
     var refusal = contract.Refusal{};
 
-    const catalog = try harness.session.vtable.models.?(harness.session.ptr, a, &.{ .session_id = harness.session.id() }, &refusal);
+    const catalog = try harness.session.vtable.models.?(harness.session.ptr, a, &.{ .session_id = harness.session.id(), .allow_degraded_features = &.{contract.feature_models_list} }, &refusal);
     try testing.expectEqual(@as(usize, 2), catalog.response.models.len);
     try testing.expectEqualStrings("scripted/openai-completions@scripted-model", catalog.response.current_model_id.?);
     try testing.expect(catalog.response.models[0].default);
@@ -1889,6 +1918,47 @@ test "models lists the runtime's catalog as model refs, and a switch takes one r
 
     try testing.expectError(error.ModelNotFound, harness.session.vtable.switch_model.?(harness.session.ptr, a, &.{ .session_id = harness.session.id(), .model_id = "scripted/openai-completions@missing" }, &refusal));
     try testing.expectEqualStrings("scripted/openai-completions@missing", refusal.model_id);
+}
+
+test "a catalog the terminal UI refreshes is served once the session next switches, and a listing before that keeps the one it serves" {
+    var script = Script{};
+    var harness: Harness = undefined;
+    try harness.init(&script);
+    defer harness.deinit();
+    const a = harness.arena.allocator();
+    var refusal = contract.Refusal{};
+    var fresh = other_model;
+    fresh.id = "fresh-model";
+    try harness.owner.setCatalog(&.{ test_model, other_model, fresh });
+
+    try testing.expectError(error.CapabilityDegraded, harness.session.vtable.models.?(harness.session.ptr, a, &.{ .session_id = harness.session.id() }, &refusal));
+    try testing.expectEqualStrings(contract.feature_models_list, refusal.feature);
+    const before = try harness.session.vtable.models.?(harness.session.ptr, a, &.{ .session_id = harness.session.id(), .allow_degraded_features = &.{contract.feature_models_list} }, &refusal);
+    try testing.expectEqual(@as(usize, 2), before.response.models.len);
+
+    const switched = try harness.session.vtable.switch_model.?(harness.session.ptr, a, &.{ .session_id = harness.session.id(), .model_id = "scripted/openai-completions@fresh-model" }, &refusal);
+    try testing.expectEqualStrings("scripted/openai-completions@fresh-model", switched.state.current_model_id.?);
+    const after = try harness.session.vtable.models.?(harness.session.ptr, a, &.{ .session_id = harness.session.id(), .allow_degraded_features = &.{contract.feature_models_list} }, &refusal);
+    try testing.expectEqual(@as(usize, 3), after.response.models.len);
+}
+
+test "a session opened after a catalog refresh serves the refreshed catalog and can open on a model only it holds" {
+    var script = Script{};
+    var harness: Harness = undefined;
+    try harness.init(&script);
+    defer harness.deinit();
+    const a = harness.arena.allocator();
+    var refusal = contract.Refusal{};
+    var fresh = other_model;
+    fresh.id = "fresh-model";
+    try harness.owner.setCatalog(&.{ test_model, other_model, fresh });
+
+    const metadata = try std.json.parseFromSliceLeaky(std.json.Value, a, "{\"oapx\":{\"model\":\"scripted/openai-completions@fresh-model\"}}", .{});
+    const opened = try harness.owner.adapter().open(a, .{ .participant = "user", .metadata = metadata }, &refusal);
+    defer opened.teardown();
+    const listed = try opened.vtable.models.?(opened.ptr, a, &.{ .session_id = "", .allow_degraded_features = &.{contract.feature_models_list} }, &refusal);
+    try testing.expectEqual(@as(usize, 3), listed.response.models.len);
+    try testing.expectEqualStrings("scripted/openai-completions@fresh-model", listed.response.current_model_id.?);
 }
 
 test "the tool catalog is the loop's own tools, each owned by the endpoint" {

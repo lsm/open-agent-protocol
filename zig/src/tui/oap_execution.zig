@@ -44,6 +44,7 @@ pub const OapExecution = struct {
     in_assistant: bool = false,
     text: std.ArrayList(u8) = .empty,
     session_models: std.ArrayList([]u8) = .empty,
+    pending_catalog: ?[]ai_types.Model = null,
     live_reasoning: bool = false,
     live_compaction: bool = false,
     has_history: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
@@ -198,8 +199,12 @@ pub const OapExecution = struct {
         allocator.free(self.sent_policy);
         allocator.free(self.session_id);
         allocator.free(self.run_id);
+        if (self.pending_catalog) |held| tui_runtime.deinitModels(allocator, held);
         allocator.free(self.submitted);
-        if (self.adapter) |adapter| allocator.destroy(adapter);
+        if (self.adapter) |adapter| {
+            adapter.deinit();
+            allocator.destroy(adapter);
+        }
         allocator.destroy(self);
     }
 
@@ -213,6 +218,7 @@ pub const OapExecution = struct {
         .cancel = cancel,
         .switch_model = switchModel,
         .set_reasoning = setReasoning,
+        .set_catalog = setCatalog,
         .compacts = compacts,
         .take_record = takeRecord,
         .records_session = recordsSession,
@@ -301,6 +307,7 @@ pub const OapExecution = struct {
 
         var listing = Map.init(a);
         try listing.put("session_id", .{ .string = self.session_id });
+        try listing.put("allow_degraded_features", try strings(a, &.{"models.list"}));
         const listed = try self.exchange(a, "models.request", listing.value(), true);
         self.forgetSessionModels();
         if (listed.object.get("payload")) |models_payload| {
@@ -684,6 +691,43 @@ pub const OapExecution = struct {
         _ = try self.enqueue(a, "session.model.switch.request", "switch", payload.value(), null);
     }
 
+    fn setCatalog(ctx: *anyopaque, models: []const ai_types.Model) anyerror!void {
+        const self = cast(ctx);
+        if (self.adapter == null) return;
+        const staged = try tui_runtime.cloneModels(self.allocator, models);
+        errdefer tui_runtime.deinitModels(self.allocator, staged);
+        var refs: std.ArrayList([]u8) = .empty;
+        errdefer {
+            for (refs.items) |ref| self.allocator.free(ref);
+            refs.deinit(self.allocator);
+        }
+        for (models) |model| {
+            const ref = modelRef(self.allocator, model) catch |err| switch (err) {
+                error.OutOfMemory => return error.OutOfMemory,
+                else => continue,
+            };
+            errdefer self.allocator.free(ref);
+            try refs.append(self.allocator, ref);
+        }
+        self.lockInbound();
+        defer self.inbound_mutex.unlock();
+        if (self.pending_catalog) |held| tui_runtime.deinitModels(self.allocator, held);
+        self.pending_catalog = staged;
+        self.forgetSessionModels();
+        self.session_models.deinit(self.allocator);
+        self.session_models = refs;
+    }
+
+    fn applyPendingCatalog(self: *OapExecution) !void {
+        self.lockInbound();
+        const staged = self.pending_catalog;
+        self.pending_catalog = null;
+        self.inbound_mutex.unlock();
+        const models = staged orelse return;
+        defer tui_runtime.deinitModels(self.allocator, models);
+        if (self.adapter) |adapter| try adapter.setCatalog(models);
+    }
+
     fn setReasoning(ctx: *anyopaque, level: ai_types.ThinkingLevel) anyerror!void {
         const self = cast(ctx);
         if (!self.live_reasoning) return error.UnavailableOverOap;
@@ -948,8 +992,10 @@ pub const OapExecution = struct {
 
     fn cycle(self: *OapExecution) !bool {
         var moved = false;
+        try self.applyPendingCatalog();
         while (self.takeInbound()) |line| {
             defer self.allocator.free(line);
+            try self.applyPendingCatalog();
             try self.sendLine(line);
             moved = true;
         }
@@ -1473,6 +1519,8 @@ const Script = struct {
     hold_first: bool = false,
     released: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
     last_thinking: ai_types.ThinkingLevel = .off,
+    last_model: [64]u8 = undefined,
+    last_model_len: usize = 0,
     last_max_tokens: ?u32 = null,
 };
 
@@ -1526,9 +1574,10 @@ fn bareMessage(reason: ai_types.StopReason) ai_types.AssistantMessage {
 }
 
 fn scriptedStream(ctx: ?*anyopaque, model: ai_types.Model, context: ai_types.Context, options: agent.ProtocolOptions, allocator: std.mem.Allocator) anyerror!*event_stream.AssistantMessageEventStream {
-    _ = model;
     _ = context;
     const script: *Script = @ptrCast(@alignCast(ctx.?));
+    script.last_model_len = @min(model.id.len, script.last_model.len);
+    @memcpy(script.last_model[0..script.last_model_len], model.id[0..script.last_model_len]);
     script.last_thinking = options.thinking_level;
     script.last_max_tokens = options.max_tokens;
     script.calls += 1;
@@ -1875,6 +1924,27 @@ test "the first message of a turn over OAP comes back as the user's message, as 
     try testing.expectEqualStrings("name this session", seen.user_text.items);
 }
 
+test "a model a catalog refresh adds can be switched to over OAP, and the next run uses it" {
+    var script = Script{};
+    var execution: *OapExecution = undefined;
+    var runtime = try remoteRuntime(&script, &execution, .low);
+    defer execution.destroy();
+    defer runtime.deinit();
+
+    try runtime.start();
+    var fresh = scripted_model;
+    fresh.id = "fresh-model";
+    const refreshed = [_]ai_types.Model{ scripted_model, fresh };
+    try runtime.replaceModels(&refreshed, null);
+    try runtime.switchModel("fresh-model");
+    try runtime.submitTurn("on the new one");
+    var seen = Seen{};
+    defer seen.deinit();
+    try drainTurn(&runtime, &seen);
+    try testing.expectEqual(@as(?tui_session.TuiEndReason, .completed), seen.end);
+    try testing.expectEqualStrings("fresh-model", script.last_model[0..script.last_model_len]);
+}
+
 test "a runtime over OAP refuses what the protocol path cannot carry yet" {
     var script = Script{};
     var execution: *OapExecution = undefined;
@@ -2196,7 +2266,7 @@ test "a denied call over OAP shows the loop's own result text beside its details
     try testing.expect(text_seen);
 }
 
-test "a switch to a model the OAP session does not list is refused before the app's selection moves" {
+test "a switch to a model the OAP session does not list is refused until a catalog refresh lists it" {
     var script = Script{};
     const models = [_]ai_types.Model{scripted_model};
     var unlisted = scripted_model;
@@ -2218,8 +2288,8 @@ test "a switch to a model the OAP session does not list is refused before the ap
 
     try testing.expectError(error.ModelNotFound, runtime.switchModel("unlisted-model"));
     try testing.expectEqualStrings(scripted_model.id, runtime.currentModel().?.id);
-    try testing.expectError(error.ModelNotFound, runtime.replaceModels(&.{unlisted}, null));
-    try testing.expectEqualStrings(scripted_model.id, runtime.currentModel().?.id);
+    try runtime.replaceModels(&.{unlisted}, null);
+    try testing.expectEqualStrings("unlisted-model", runtime.currentModel().?.id);
 }
 
 test "a lost stream warns and ends the turn instead of leaving it to stream forever" {
