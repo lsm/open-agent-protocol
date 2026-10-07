@@ -1105,7 +1105,7 @@ pub const App = struct {
         };
         errdefer app.deinit();
         app.session = app.runtime.?.createSession();
-        if (options.remote != null) try app.state.appendTranscript(.system, over_oap_notice);
+        if (options.remote != null and !app.runtime.?.recordsFromEndpoint()) try app.state.appendTranscript(.system, over_oap_notice);
         app.state.permission_mode = app.runtime.?.permissionMode();
         app.state.thinking_level = app.runtime.?.thinkingLevel();
         try app.state.setRegisteredTools(app.runtime.?.availableTools());
@@ -5686,9 +5686,9 @@ fn preferredContextWindow(stored: ?u32, flag: ?u32) ?u32 {
     return flag orelse stored;
 }
 
-pub const over_oap_notice = "oapx tui: this session runs over OAP, through the in-process endpoint or the hub it is attached to. The model's questions to you are not carried over OAP yet, resume is not carried on an attached hub, queued follow-ups and the autocompact setting are not carried on an attached hub, an \"always\" answer to a tool approval applies to that call only unless the endpoint offers it, the context window, output limit and workspace are fixed when the session opens, and so is the thinking level unless the endpoint advertises changing it live; use oapx --tui for them.";
+pub const over_oap_notice = "oapx tui --attach: this session runs on the hub's endpoint. Resume and automatic worktrees are not carried over the hub, the context window, output limit, permission mode and workspace are fixed when the session opens, and an \"always\" answer to a tool approval applies to that call only unless the endpoint offers it; run oapx without --attach for them.";
 pub const over_oap_setting_refusal = tui_commands.over_oap_setting_refusal;
-pub const over_oap_compaction_refusal = "this session's endpoint does not take a compaction over OAP; use oapx --tui to compact.";
+pub const over_oap_compaction_refusal = "this session's endpoint does not take a compaction over OAP; run oapx without --attach to compact.";
 
 pub fn run(allocator: std.mem.Allocator, io: std.Io, context_window: ?u32) !void {
     return runWith(allocator, io, context_window, .local);
@@ -5706,7 +5706,7 @@ pub fn runWith(allocator: std.mem.Allocator, io: std.Io, context_window: ?u32, e
 
     var stderr_redirect = redirectStderrToLog(allocator, &environ_map);
     defer stderr_redirect.restore();
-    if (stderr_redirect.active()) std.debug.print("--- oapx --tui session started at {d} ms (stderr redirected here while the TUI owns the terminal) ---\n", .{compat.time.nowMillis()});
+    if (stderr_redirect.active()) std.debug.print("--- oapx terminal UI session started at {d} ms (stderr redirected here while the TUI owns the terminal) ---\n", .{compat.time.nowMillis()});
 
     const fixture = try FixtureRuntime.fromEnv(allocator, &environ_map);
     defer if (fixture) |runtime| runtime.deinit();
@@ -7081,6 +7081,24 @@ test "App init takes mode settings from options, not the environment" {
     defer opted_in.deinit();
     try std.testing.expect(opted_in.mode_settings.auto_worktree);
     try std.testing.expect(opted_in.mode_settings.compact_output);
+}
+
+test "an app over the in-process endpoint opens without the attached-hub notice, which only an attached session shows" {
+    const models = [_]ai_types.Model{auto_compact_test_model};
+    const execution = try tui_oap_execution.OapExecution.create(std.testing.allocator, .{ .models = &models });
+    defer execution.destroy();
+    var app = try App.init(std.testing.allocator, .{ .models = &models, .remote = execution.remote() });
+    defer app.deinit();
+    for (app.state.transcript.items) |entry| try std.testing.expect(!std.mem.eql(u8, entry.text.items, over_oap_notice));
+
+    const adapter = execution.adapter.?;
+    execution.adapter = null;
+    defer execution.adapter = adapter;
+    var attached = try App.init(std.testing.allocator, .{ .models = &models, .remote = execution.remote() });
+    defer attached.deinit();
+    var shown = false;
+    for (attached.state.transcript.items) |entry| shown = shown or std.mem.eql(u8, entry.text.items, over_oap_notice);
+    try std.testing.expect(shown);
 }
 
 test "an app over OAP creates an automatic worktree only when its endpoint moves the workspace live" {

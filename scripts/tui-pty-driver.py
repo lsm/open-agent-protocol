@@ -25,8 +25,8 @@
 # trust store holds) and is reported as skipped without it.
 #
 # Every sweep scenario runs on both terminal UIs by default: `oapx --tui`, the
-# local loop, and `oapx tui`, the same UI over OAP through the in-process
-# endpoint (--tui-mode local|oap|both). With both, the driver also compares the
+# local loop, and bare `oapx`, which starts `oapx tui`, the same UI over OAP
+# through the in-process endpoint (--tui-mode local|oap|both). With both, the driver also compares the
 # two runs' saved session records, normalized to what a user would see, and
 # fails on any difference. That comparison is the parity gate: `oapx tui` can
 # replace `--tui` when every scenario passes on both and no record differs.
@@ -443,7 +443,7 @@ class PtySession:
                 env.update(extra_env or {})
                 self.spawned_at = time.monotonic()
                 self.proc = subprocess.Popen(
-                    [self.binary] + (argv or list(getattr(args, "tui_argv", ["--tui"]))),
+                    [self.binary] + (argv if argv is not None else list(getattr(args, "tui_argv", ["--tui"]))),
                     stdin=slave,
                     stdout=slave,
                     stderr=slave,
@@ -1840,11 +1840,11 @@ def normalized_events(events):
 def first_difference(local, oap):
     for index, (left, right) in enumerate(zip(local, oap)):
         if left != right:
-            return f"record {index}: --tui {left!r}, tui {right!r}"
+            return f"record {index}: oapx --tui {left!r}, oapx {right!r}"
     if len(local) != len(oap):
-        longer = "--tui" if len(local) > len(oap) else "tui"
+        longer = "oapx --tui" if len(local) > len(oap) else "oapx"
         extra = local[len(oap):] if len(local) > len(oap) else oap[len(local):]
-        return f"--tui saved {len(local)} records and tui {len(oap)}; {longer} also saved {extra[0]!r}"
+        return f"oapx --tui saved {len(local)} records and oapx {len(oap)}; {longer} also saved {extra[0]!r}"
     return None
 
 
@@ -1939,7 +1939,7 @@ def run_core_loop(args, repo_root):
 
 def path_args(args, path):
     scoped = argparse.Namespace(**vars(args))
-    scoped.tui_argv = ["tui"] if path == "oap" else ["--tui"]
+    scoped.tui_argv = [] if path == "oap" else ["--tui"]
     if path == "oap":
         scoped.output_dir = os.path.join(args.output_dir, "oap")
     return scoped
@@ -1987,7 +1987,7 @@ def judge_parity(name, local_events, oap_events):
         return {"scenario": label, "result": "fail", "error": f"listed in KNOWN_DIVERGENCES ({divergence}) but the saved records match; remove the entry", "notes": []}
     if divergence is not None:
         return {"scenario": label, "result": "known-gap", "reason": divergence, "detail": difference, "notes": []}
-    return {"scenario": label, "result": "fail", "error": f"the saved session records differ between --tui and tui: {difference}", "notes": []}
+    return {"scenario": label, "result": "fail", "error": f"the saved session records differ between oapx --tui and oapx: {difference}", "notes": []}
 
 
 def main():
@@ -2002,7 +2002,7 @@ def main():
     parser.add_argument("--scenario", default="core-loop", choices=list(SCENARIOS) + ["all"])
     parser.add_argument("--startup-timeout", type=float, default=15.0)
     parser.add_argument("--stream-timeout", type=float, default=15.0)
-    parser.add_argument("--tui-mode", default="both", choices=["local", "oap", "both"], help="which terminal UI the sweep scenarios drive: oapx --tui, oapx tui, or both and compare them")
+    parser.add_argument("--tui-mode", default="both", choices=["local", "oap", "both"], help="which terminal UI the sweep scenarios drive: oapx --tui, bare oapx (oapx tui), or both and compare them")
     parser.add_argument("--tls-dir", help="gen-certs output of scripts/tui-fake-provider.py whose ca.pem the system trust store holds; enables provider-https")
     args = parser.parse_args()
     if sys.platform == "darwin":
