@@ -2,6 +2,8 @@ package opencode
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"github.com/lsm/open-agent-protocol/harnesses"
@@ -91,7 +93,7 @@ func New(config Config) (*Adapter, error) {
 		config.Clock = systemClock{}
 	}
 	if config.IDs == nil {
-		config.IDs = &sequenceIDs{}
+		config.IDs = newSequenceIDs()
 	}
 	if config.JournalCapacity <= 0 {
 		config.JournalCapacity = defaultJournalCap
@@ -283,13 +285,22 @@ type systemClock struct{}
 
 func (systemClock) Now() time.Time { return time.Now() }
 
-type sequenceIDs struct{ next atomic.Uint64 }
+type sequenceIDs struct {
+	next    atomic.Uint64
+	message string
+}
+
+func newSequenceIDs() *sequenceIDs {
+	var nonce [8]byte
+	_, _ = rand.Read(nonce[:])
+	return &sequenceIDs{message: "msg_oap" + hex.EncodeToString(nonce[:])}
+}
 
 func (g *sequenceIDs) NewID(kind string) string {
 	n := g.next.Add(1)
 	switch kind {
 	case "opencode-message":
-		return fmt.Sprintf("msg_oap%016d", n)
+		return fmt.Sprintf("%s%016d", g.message, n)
 	default:
 		return fmt.Sprintf("%s-%d", kind, n)
 	}

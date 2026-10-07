@@ -69,7 +69,12 @@ and no credentials or config:
 - `POST /api/session/<id>/prompt {"id","text"[,"delivery"]}` → `200
   {"data":{id, sessionID, time:{created}, type:"user", payload:{text},
   delivery}}`. The server keeps the supplied `msg_…` id. A prompt without
-  `delivery` is admitted as `steer`.
+  `delivery` is admitted as `steer`. The id is unique across the server's
+  whole store, not per session: reusing one, even in a new session, is
+  `409 ConflictError`. So each adapter mints `msg_oap<16 hex>`, a random
+  nonce per adapter, then a 16-digit counter. Before that the id was the
+  counter alone, so a runtime restarted against a long-lived server had every
+  prompt refused.
 - `GET /api/session/<id>/inbox` lists inputs admitted but not yet delivered.
 - `GET /api/session/<id>/permission` → `{"data":[]}`.
 
