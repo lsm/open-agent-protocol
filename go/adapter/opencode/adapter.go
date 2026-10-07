@@ -50,7 +50,6 @@ type Client interface {
 	Interrupt(ctx context.Context, session native.SessionID) (bool, error)
 	CancelInbox(ctx context.Context, session native.SessionID, inbox native.MessageID) error
 	Active(ctx context.Context) (map[native.SessionID]bool, error)
-	Sessions(ctx context.Context, directory string, limit int) ([]native.SessionInfo, error)
 	Subscribe(ctx context.Context, session native.SessionID) (Subscription, error)
 	Close() error
 }

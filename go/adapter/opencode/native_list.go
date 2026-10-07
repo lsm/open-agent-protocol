@@ -6,7 +6,12 @@ import (
 	"fmt"
 
 	base "github.com/lsm/open-agent-protocol/go/adapter"
+	"github.com/lsm/open-agent-protocol/go/adapter/opencode/internal/native"
 )
+
+type sessionLister interface {
+	Sessions(ctx context.Context, directory string, limit int) ([]native.SessionInfo, error)
+}
 
 func (a *Adapter) NativeList(ctx context.Context, request base.NativeListRequest) ([]base.NativeListing, error) {
 	client, err := a.config.Factory.Start(ctx)
@@ -14,7 +19,11 @@ func (a *Adapter) NativeList(ctx context.Context, request base.NativeListRequest
 		return nil, fmt.Errorf("list OpenCode sessions: %w", err)
 	}
 	defer func() { _ = client.Close() }()
-	infos, err := client.Sessions(ctx, request.Directory, request.Limit)
+	lister, ok := client.(sessionLister)
+	if !ok {
+		return nil, nil
+	}
+	infos, err := lister.Sessions(ctx, request.Directory, request.Limit)
 	if err != nil {
 		return nil, fmt.Errorf("list OpenCode sessions: %w", err)
 	}
