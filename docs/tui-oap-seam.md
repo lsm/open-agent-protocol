@@ -11,12 +11,13 @@ envelopes back into `TuiEvent`s. Runs, streaming, tools, cancel and model switch
 cross the boundary as OAP. A `/model refresh` hands the in-process endpoint the
 refreshed catalog beside the wire, and the session serves it from its next model
 switch under the same revision, which is why the `oapx` adapter advertises
-`models.list` as `degraded`; the settings the protocol has no verb for (context
-window, permission mode, workspace root) travel once, in the open request's
-`metadata.oapx`. The thinking level travels there too, and changes between runs
-through `session.settings.update.request` when the endpoint advertises
-`session.reasoning` with `session_live`, over `--attach` through the hub's settings
-route. Tool approvals cross too: in ask mode the adapter's
+`models.list` as `degraded`. The settings the protocol has no verb for (context
+window, output, permission mode, workspace root) travel in the open request's
+`metadata.oapx` with the thinking level. When the endpoint advertises
+`session.reasoning` with `session_live`, all five change between runs on a
+`session.settings.update.request`, the four under `extensions.oapx` beside the
+current thinking level. Over `--attach` only the thinking level changes, through
+the hub's settings route; the other four stay fixed once the session opens. Tool approvals cross too: in ask mode the adapter's
 `action.permission.requested` becomes the TUI's approval prompt, and the answer goes
 back as `action.permission.resolve.request` naming the choice the user made: the
 `oapx` adapter offers `approve_always` and `reject_always` beside `approve` and
@@ -272,7 +273,13 @@ tool definitions are #374's subject and gate the TUI's tools step. Filed as
   keeps it regardless of how the control layer moves.
 - **Transcript storage.** `~/.oapx/sessions` is the TUI's own; the endpoint
   declines to replay it (G1), so this does not become `transcript.load` unless
-  G1 is closed.
+  G1 is closed. Over the in-process endpoint the records in it come from the
+  endpoint's own loop, handed to the TUI beside the wire through the adapter's
+  `Recorder`, because the wire cannot rebuild them: no event says which tool
+  calls one assistant message made, or what text the model saw as a tool's
+  result. The TUI writes them, so its titles, index and compaction offsets
+  stay where they were. An attached hub has no such channel, and the TUI saves
+  what it renders from the wire.
 
 ## What the endpoint actually puts on the wire
 

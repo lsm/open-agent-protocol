@@ -63,12 +63,18 @@ pub const TranscriptStore = struct {
     save: *const fn (ctx: *anyopaque, allocator: std.mem.Allocator, session_id: []const u8, index: usize, history: []const ai_types.Message) ?[]u8,
 };
 
+pub const Recorder = struct {
+    ctx: *anyopaque,
+    record: *const fn (ctx: *anyopaque, session_id: []const u8, event: *const tui_session.TuiEvent) void,
+};
+
 pub const Adapter = struct {
     allocator: std.mem.Allocator,
     options: tui_runtime.TuiRuntimeOptions,
     catalog: ?[]ai_types.Model = null,
     catalog_generation: u64 = 0,
     transcripts: ?TranscriptStore = null,
+    recorder: ?Recorder = null,
     ids: u64 = 0,
     now_ms: *const fn () i64 = wallClock,
 
@@ -397,8 +403,10 @@ pub const Session = struct {
         if (!std.mem.eql(u8, request.session_id, self.id)) return error.RunNotFound;
         if (request.reasoning_level == null and request.compaction_policy_json == null) return error.InvalidSubmission;
         const level: ?ai_types.ThinkingLevel = if (request.reasoning_level) |asked| try thinkingLevel(asked, refusal) else null;
+        const extended = if (request.extensions_json) |raw| try parseLiveSettings(arena, raw, refusal) else LiveSettings{};
         if (request.compaction_policy_json) |raw| _ = try compactAt(arena, raw, self.runtime, refusal);
         if (self.live() != null or self.queuedCount() > 0 or !self.runtime.isIdle()) return error.RunActive;
+        try checkLiveSettings(self.runtime, extended, refusal);
         var response = oap_types.SessionSettingsUpdateResponse{ .session_id = self.id };
         if (level) |chosen| {
             response.previous_reasoning_level = @tagName(self.runtime.thinkingLevel());
@@ -410,6 +418,7 @@ pub const Session = struct {
             try self.applyPolicy(raw, refusal);
             response.compaction_policy_json = self.policy_json;
         }
+        try applyLiveSettings(self.runtime, extended, refusal);
         self.updated_at_ms = self.owner.now_ms();
         return .{ .response = response, .state = try self.snapshot(arena) };
     }
@@ -962,6 +971,7 @@ pub const Session = struct {
         while (stream.poll()) |event| {
             var owned = event;
             defer owned.deinit(self.gpa);
+            if (self.owner.recorder) |recorder| recorder.record(recorder.ctx, self.id, &owned);
             try self.translate(owned);
             moved = true;
         }
@@ -999,7 +1009,10 @@ pub const Session = struct {
                 if (payload.is_error) {
                     var failure = Payload.init(a);
                     try failure.put("code", .{ .string = "tool_failed" });
-                    try failure.put("message", .{ .string = try errorText(a, payload.result_json.slice()) });
+                    const text = payload.result_text.slice();
+                    try failure.put("message", .{ .string = if (text.len > 0) text else try errorText(a, payload.result_json.slice()) });
+                    const details = try jsonOrString(a, payload.result_json.slice());
+                    if (details == .object and details.object.count() > 0) try failure.put("details", details);
                     try ended.put("error", failure.value());
                     try self.emit(run, "action.call.failed", ended.value(), false);
                 } else {
@@ -1295,6 +1308,79 @@ fn offersUserInput(metadata: ?std.json.Value) bool {
     if (settings != .object) return true;
     const offered = settings.object.get("user_input") orelse return true;
     return !(offered == .bool and !offered.bool);
+}
+
+const ContextWindowSetting = union(enum) {
+    default,
+    tokens: u32,
+};
+
+const LiveSettings = struct {
+    context_window: ?ContextWindowSetting = null,
+    output: ?agent.OutputSetting = null,
+    permission_mode: ?tui_runtime.PermissionMode = null,
+    workspace_root: ?[]const u8 = null,
+};
+
+fn parseLiveSettings(arena: std.mem.Allocator, raw: []const u8, refusal: *contract.Refusal) contract.Failure!LiveSettings {
+    var settings = LiveSettings{};
+    const document = std.json.parseFromSliceLeaky(std.json.Value, arena, raw, .{}) catch return settings;
+    if (document != .object) return settings;
+    const named = document.object.get(settings_key) orelse return settings;
+    if (named != .object) return settings;
+    const fields = named.object;
+    if (fields.get("context_window")) |value| {
+        settings.context_window = switch (value) {
+            .null => .default,
+            .integer => |count| if (count > 0 and count <= std.math.maxInt(u32)) .{ .tokens = @intCast(count) } else return refusal.fail(error.InvalidSubmission, "context_window must be a positive token count or null"),
+            else => return refusal.fail(error.InvalidSubmission, "context_window must be a positive token count or null"),
+        };
+    }
+    if (fields.get("output")) |value| {
+        settings.output = switch (value) {
+            .string => |text| if (std.mem.eql(u8, text, "auto")) .auto else if (std.mem.eql(u8, text, "max")) .max else return refusal.fail(error.InvalidSubmission, "output must be auto, max or a token count"),
+            .integer => |count| if (count > 0 and count <= std.math.maxInt(u32)) .{ .tokens = @intCast(count) } else return refusal.fail(error.InvalidSubmission, "output must be auto, max or a token count"),
+            else => return refusal.fail(error.InvalidSubmission, "output must be auto, max or a token count"),
+        };
+    }
+    if (fields.get("permission_mode")) |value| {
+        const mode = if (value == .string) std.meta.stringToEnum(tui_runtime.PermissionMode, value.string) else null;
+        settings.permission_mode = mode orelse return refusal.fail(error.InvalidSubmission, "permission_mode is not a mode the loop has");
+    }
+    if (fields.get("workspace_root")) |value| {
+        if (value != .string or value.string.len == 0) return refusal.fail(error.InvalidSubmission, "workspace_root must be a directory");
+        settings.workspace_root = value.string;
+    }
+    return settings;
+}
+
+fn checkLiveSettings(runtime: *tui_runtime.TuiRuntime, settings: LiveSettings, refusal: *contract.Refusal) contract.Failure!void {
+    if (settings.context_window) |window| if (window == .tokens) {
+        if (runtime.contextWindowMaximum()) |ceiling| {
+            if (window.tokens > ceiling) return refusal.fail(error.InvalidSubmission, "context_window is above the model's window");
+        }
+    };
+    if (settings.output) |setting| if (setting == .tokens) {
+        if (runtime.currentModel()) |model| {
+            if (model.max_tokens > 0 and setting.tokens > model.max_tokens) return refusal.fail(error.InvalidSubmission, "output is above the model's output limit");
+        }
+    };
+}
+
+fn applyLiveSettings(runtime: *tui_runtime.TuiRuntime, settings: LiveSettings, refusal: *contract.Refusal) contract.Failure!void {
+    if (settings.context_window) |window| runtime.setContextWindow(switch (window) {
+        .default => null,
+        .tokens => |count| count,
+    }) catch |err| return refusal.fail(error.InvalidSubmission, @errorName(err));
+    if (settings.output) |setting| runtime.setOutput(setting) catch |err| return refusal.fail(error.InvalidSubmission, @errorName(err));
+    if (settings.permission_mode) |mode| runtime.setPermissionMode(mode) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        else => return refusal.fail(error.BackendFailed, @errorName(err)),
+    };
+    if (settings.workspace_root) |root| runtime.setWorkspaceRoot(root) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        else => return refusal.fail(error.BackendFailed, @errorName(err)),
+    };
 }
 
 pub fn sessionOptions(base: tui_runtime.TuiRuntimeOptions, metadata: ?std.json.Value) tui_runtime.TuiRuntimeOptions {
@@ -3043,4 +3129,28 @@ test "a steer with no running loop to take it names why" {
     refusal = .{};
     try testing.expectError(error.InvalidSteerTarget, harness.steer("change course", finished.run_id, &refusal));
     try testing.expectEqualStrings("terminal", refusal.reason);
+}
+
+fn updateWith(harness: *Harness, extensions: []const u8, refusal: *contract.Refusal) contract.Failure!contract.Updated {
+    const request = oap_types.SessionSettingsUpdateRequest{ .session_id = harness.session.id(), .reasoning_level = "low", .extensions_json = extensions };
+    return harness.session.vtable.update_settings.?(harness.session.ptr, harness.arena.allocator(), &request, refusal);
+}
+
+test "a live update sets the context window, a null clears it, and a refused update changes none of its keys, the reasoning level included" {
+    var script = Script{};
+    var harness: Harness = undefined;
+    try harness.init(&script);
+    defer harness.deinit();
+    const runtime = Session.cast(harness.session.ptr).runtime;
+    var refusal = contract.Refusal{};
+
+    _ = try updateWith(&harness, "{\"oapx\":{\"context_window\":4096}}", &refusal);
+    try testing.expectEqual(@as(?u32, 4096), runtime.contextWindowOverride());
+    _ = try updateWith(&harness, "{\"oapx\":{\"context_window\":null}}", &refusal);
+    try testing.expectEqual(@as(?u32, null), runtime.contextWindowOverride());
+
+    try runtime.setThinkingLevel(.high);
+    try testing.expectError(error.InvalidSubmission, updateWith(&harness, "{\"oapx\":{\"context_window\":2048,\"output\":4000000000}}", &refusal));
+    try testing.expectEqual(@as(?u32, null), runtime.contextWindowOverride());
+    try testing.expectEqual(ai_types.ThinkingLevel.high, runtime.thinkingLevel());
 }

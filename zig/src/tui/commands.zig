@@ -321,6 +321,7 @@ fn handlePermissions(ctx: CommandContext, command: Command) !CommandResult {
         const runtime = ctx.runtime orelse return error.NoRuntimeConfigured;
         runtime.setPermissionMode(mode) catch |err| switch (err) {
             error.UnavailableOverOap => return .{ .output = try ctx.allocator.dupe(u8, over_oap_setting_refusal), .is_error = true },
+            error.AgentAlreadyStreaming => return .{ .output = try ctx.allocator.dupe(u8, "A turn is running; set the permission mode once it finishes."), .is_error = true },
             else => return err,
         };
         ctx.state.permission_mode = mode;

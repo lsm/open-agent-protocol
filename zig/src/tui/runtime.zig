@@ -76,8 +76,12 @@ pub const RemoteExecution = struct {
         set_reasoning: *const fn (ctx: *anyopaque, level: ai_types.ThinkingLevel) anyerror!void,
         set_catalog: *const fn (ctx: *anyopaque, models: []const ai_types.Model) anyerror!void,
         compacts: *const fn (ctx: *anyopaque) bool,
+        take_record: *const fn (ctx: *anyopaque) ?TuiEvent,
+        records_session: *const fn (ctx: *anyopaque) bool,
+        compactable: *const fn (ctx: *anyopaque) bool,
         compact: *const fn (ctx: *anyopaque, focus: []const u8) anyerror!void,
         set_compaction_policy: *const fn (ctx: *anyopaque, policy_json: []const u8) anyerror!void,
+        set_settings: *const fn (ctx: *anyopaque, level: ai_types.ThinkingLevel, settings_json: []const u8) anyerror!void,
         decide_approval: *const fn (ctx: *anyopaque, tool_call_id: []const u8, decision: ToolApprovalDecision) anyerror!void,
         follow_up: *const fn (ctx: *anyopaque, text: []const u8) anyerror!void,
         steer: *const fn (ctx: *anyopaque, text: []const u8) anyerror!void,
@@ -659,12 +663,21 @@ pub const TuiRuntime = struct {
         return model_catalog.contextWindowIsReported(self.models[index]);
     }
 
-    fn settingsFixedOverOap(self: *const TuiRuntime) bool {
+    fn openOverOap(self: *const TuiRuntime) bool {
         return self.remote != null and self.started;
     }
 
+    fn sendRemoteSetting(self: *TuiRuntime, settings: anytype) error{ AgentAlreadyStreaming, UnavailableOverOap }!void {
+        const remote = self.remote.?;
+        const json = std.json.Stringify.valueAlloc(self.allocator, .{ .oapx = settings }, .{}) catch return error.UnavailableOverOap;
+        defer self.allocator.free(json);
+        remote.vtable.set_settings(remote.ctx, self.thinking_level, json) catch |err| return switch (err) {
+            error.RunInProgress => error.AgentAlreadyStreaming,
+            else => error.UnavailableOverOap,
+        };
+    }
+
     pub fn setContextWindow(self: *TuiRuntime, window: ?u32) error{ AboveMaximum, AgentAlreadyStreaming, UnavailableOverOap }!void {
-        if (self.settingsFixedOverOap()) return error.UnavailableOverOap;
         if (self.local_agent) |*local| {
             if (!local.isIdle()) return error.AgentAlreadyStreaming;
         }
@@ -673,6 +686,7 @@ pub const TuiRuntime = struct {
                 if (held > ceiling) return error.AboveMaximum;
             }
         }
+        if (self.openOverOap()) try self.sendRemoteSetting(.{ .context_window = window });
         self.context_window = window;
         self.suspended_context_window = null;
         self.context_window_refused = null;
@@ -746,7 +760,7 @@ pub const TuiRuntime = struct {
 
     pub fn setThinkingLevel(self: *TuiRuntime, level: ai_types.ThinkingLevel) !void {
         const normalized = normalizeTuiThinkingLevel(level);
-        if (self.settingsFixedOverOap()) try self.remote.?.vtable.set_reasoning(self.remote.?.ctx, normalized);
+        if (self.openOverOap()) try self.remote.?.vtable.set_reasoning(self.remote.?.ctx, normalized);
         self.thinking_level = normalized;
         if (self.local_agent) |*local| local.setThinkingLevel(normalized);
     }
@@ -756,7 +770,6 @@ pub const TuiRuntime = struct {
     }
 
     pub fn setOutput(self: *TuiRuntime, setting: agent.OutputSetting) error{ AboveMaximum, AgentAlreadyStreaming, UnavailableOverOap }!void {
-        if (self.settingsFixedOverOap()) return error.UnavailableOverOap;
         if (self.local_agent) |*local| {
             if (!local.isIdle()) return error.AgentAlreadyStreaming;
         }
@@ -765,12 +778,16 @@ pub const TuiRuntime = struct {
                 if (model.max_tokens > 0 and setting.tokens > model.max_tokens) return error.AboveMaximum;
             }
         }
+        if (self.openOverOap()) switch (setting) {
+            .tokens => |count| try self.sendRemoteSetting(.{ .output = count }),
+            else => try self.sendRemoteSetting(.{ .output = @tagName(setting) }),
+        };
         self.output = setting;
         if (self.local_agent) |*local| local.setOutput(setting);
     }
 
     pub fn setPermissionMode(self: *TuiRuntime, mode: PermissionMode) !void {
-        if (self.settingsFixedOverOap()) return error.UnavailableOverOap;
+        if (self.openOverOap()) try self.sendRemoteSetting(.{ .permission_mode = @tagName(mode) });
         self.permission_mode = mode;
         if (self.permission_engine) |engine| engine.setBypassAll(mode == .bypass);
         self.rebuildWrappedTools();
@@ -783,7 +800,7 @@ pub const TuiRuntime = struct {
     }
 
     pub fn setWorkspaceRoot(self: *TuiRuntime, root: []const u8) !void {
-        if (self.settingsFixedOverOap()) return error.UnavailableOverOap;
+        if (self.openOverOap()) try self.sendRemoteSetting(.{ .workspace_root = root });
         if (self.local_agent) |*local| {
             if (!local.isIdle()) return error.AgentAlreadyStreaming;
         }
@@ -1094,6 +1111,7 @@ pub const TuiRuntime = struct {
             if (!self.started) try self.start();
             if (!remote.vtable.compacts(remote.ctx)) return error.UnavailableOverOap;
             if (self.stream_active) return error.AgentAlreadyStreaming;
+            if (!remote.vtable.compactable(remote.ctx)) return error.NothingToCompact;
             if (self.currentModel() == null) return error.NoModelConfigured;
             self.resetEventStreamForTurn();
             self.cancelled.store(false, .release);
@@ -1240,6 +1258,16 @@ pub const TuiRuntime = struct {
         self.pending_approval.cancelled = true;
         self.pending_approval.decision = .reject;
         self.approval_mutex.unlock();
+    }
+
+    pub fn recordsFromEndpoint(self: *const TuiRuntime) bool {
+        const remote = self.remote orelse return false;
+        return remote.vtable.records_session(remote.ctx);
+    }
+
+    pub fn takeEndpointRecord(self: *TuiRuntime) ?TuiEvent {
+        const remote = self.remote orelse return null;
+        return remote.vtable.take_record(remote.ctx);
     }
 
     pub fn streamEvents(self: *TuiRuntime) *TuiEventStream {
@@ -1508,6 +1536,24 @@ pub const TuiRuntime = struct {
 
     fn dupeOwned(self: *TuiRuntime, value: []const u8) !OwnedSlice(u8) {
         return OwnedSlice(u8).initOwned(try self.allocator.dupe(u8, value));
+    }
+
+    fn firstContentText(self: *TuiRuntime, content_json: []const u8) !OwnedSlice(u8) {
+        if (content_json.len == 0) return OwnedSlice(u8).initBorrowed("");
+        const parsed = std.json.parseFromSlice(std.json.Value, self.allocator, content_json, .{}) catch |err| switch (err) {
+            error.OutOfMemory => return error.OutOfMemory,
+            else => return OwnedSlice(u8).initBorrowed(""),
+        };
+        defer parsed.deinit();
+        if (parsed.value != .array) return OwnedSlice(u8).initBorrowed("");
+        for (parsed.value.array.items) |part| {
+            if (part != .object) continue;
+            const kind = part.object.get("type") orelse continue;
+            if (kind != .string or !std.mem.eql(u8, kind.string, "text")) continue;
+            const text = part.object.get("text") orelse continue;
+            if (text == .string) return self.dupeOwned(text.string);
+        }
+        return OwnedSlice(u8).initBorrowed("");
     }
 
     fn handleAgentEndEvent(self: *TuiRuntime) anyerror!void {
@@ -1788,6 +1834,7 @@ pub const TuiRuntime = struct {
                 .estimated_returned_tokens = payload.estimated_returned_tokens,
                 .artifact_count = payload.artifact_count,
                 .artifact_refs = try self.formatArtifactRefs(payload.artifacts),
+                .result_text = try self.firstContentText(payload.content_json.slice()),
             } }),
             .turn_end => |payload| {
                 self.last_turn_stop_reason = payload.message.stop_reason;
