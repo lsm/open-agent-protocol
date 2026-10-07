@@ -182,8 +182,10 @@ index is its place in the transcript, and its text is cut at 64 KiB. A session
 held session whose harness transcript is still empty, or cannot be read, is answered as below; a
 session `serve` no longer holds then answers no turns. A Codex read pages only as
 far as `after` and `limit` need, with no cap of its own. A read runs on `serve`'s
-one loop, so while a Codex app-server answers it, other operations and event
-delivery wait; Claude's read is a local file.
+one loop. The Codex adapter keeps one app-server for its lists and reads,
+started on first use and again only if it dies, so a read waits on a local
+round trip of a few milliseconds rather than a process start; Claude's read is a
+local file.
 
 Otherwise `serve` answers from what it recorded: a `user` turn for each message
 a submit admits (from `work.start`, `work.send` or the core's own submit) and an
