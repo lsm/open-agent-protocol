@@ -105,7 +105,7 @@ absolute directory gets a session from an adapter built from this entry with
 that `working_directory`, one per directory and kept for the hub's life, and
 its binding records that directory so a reopen, also after a restart, runs
 there again. Native lists and every other operation use the entry as written.
-Go reads the member and ignores it, since its hub has no work profile.
+Both trees serve it: Go builds the template in `LoadRegistry` and places one adapter per directory through `Registry.Place`.
 
 An entry of type **`oapx`** serves oapx's own agent loop, built the way
 `oapx serve agent --backend oapx` builds it: the providers, credentials and
