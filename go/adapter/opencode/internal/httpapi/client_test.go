@@ -176,6 +176,7 @@ func TestSubscribeFollowsOneSessionOnTheGlobalStream(t *testing.T) {
 		connected,
 		sessionEvent("ses_b", 1, "session.execution.started", `{"sessionID":"ses_b"}`),
 		sessionEvent("ses_b", 2, "session.brand.new", `{"sessionID":"ses_b"}`),
+		`{"id":"evt_undurable","created":1,"type":"session.execution.started","data":{"sessionID":"ses_b"}}`,
 		`{"id":"evt_project","created":1,"type":"project.updated","data":{"id":"p"}}`,
 		sessionEvent("ses_a", 1, "session.execution.started", `{"sessionID":"ses_a"}`),
 		`{"id":"evt_delta","created":1,"type":"session.text.delta","data":{"sessionID":"ses_a","assistantMessageID":"msg_1","ordinal":0,"delta":"h"}}`,

@@ -291,10 +291,10 @@ func DecodeEvent(data []byte) (Event, error) {
 	}
 	if envelope.Type.Durable() {
 		if envelope.Durable == nil || envelope.Durable.AggregateID != string(scope.SessionID) || envelope.Durable.Seq < 0 {
-			return Event{}, fmt.Errorf("%w: %s without its durable position", ErrInvalidWire, envelope.Type)
+			return Event{SessionID: scope.SessionID}, fmt.Errorf("%w: %s without its durable position", ErrInvalidWire, envelope.Type)
 		}
 	} else if envelope.Durable != nil {
-		return Event{}, fmt.Errorf("%w: ephemeral %s with a durable position", ErrInvalidWire, envelope.Type)
+		return Event{SessionID: scope.SessionID}, fmt.Errorf("%w: ephemeral %s with a durable position", ErrInvalidWire, envelope.Type)
 	}
 	return event, nil
 }
