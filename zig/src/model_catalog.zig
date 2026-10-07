@@ -1762,7 +1762,7 @@ fn anthropicLimits(listed: ?*const std.json.ObjectMap, dev: ?*const std.json.Obj
         limits.max_tokens = positiveU32(objectU32(item, "max_tokens"));
     }
     const models = dev orelse return limits;
-    const entry = models.getPtr(id) orelse return limits;
+    const entry = models.getPtr(id) orelse models.getPtr(withoutDateSuffix(id)) orelse return limits;
     if (entry.* != .object) return limits;
     const limit = entry.object.getPtr("limit") orelse return limits;
     if (limit.* != .object) return limits;
@@ -1772,6 +1772,16 @@ fn anthropicLimits(listed: ?*const std.json.ObjectMap, dev: ?*const std.json.Obj
     }
     if (limits.max_tokens == null) limits.max_tokens = positiveU32(objectU32(&limit.object, "output"));
     return limits;
+}
+
+fn withoutDateSuffix(id: []const u8) []const u8 {
+    const dash = std.mem.lastIndexOfScalar(u8, id, '-') orelse return id;
+    const suffix = id[dash + 1 ..];
+    if (suffix.len != 8) return id;
+    for (suffix) |c| {
+        if (!std.ascii.isDigit(c)) return id;
+    }
+    return id[0..dash];
 }
 
 fn anthropicModel(allocator: std.mem.Allocator, id_text: []const u8, name_text: []const u8, limits: AnthropicLimits) !ai_types.Model {
@@ -2511,10 +2521,10 @@ test "parseAnthropicModels maps the models endpoint into owned Anthropic models"
     try std.testing.expect(models[2].reasoning);
 }
 
-test "an Anthropic model takes the listing's limits first, then models.dev's, then the fixed figures" {
+test "an Anthropic model takes the listing's limits first, then models.dev's under its dateless id, then the fixed figures" {
     const allocator = std.testing.allocator;
     const body =
-        \\{"data":[{"id":"claude-listed","max_input_tokens":500000,"max_tokens":50000},{"id":"claude-opus-5"},{"id":"claude-opus-4-1"}]}
+        \\{"data":[{"id":"claude-listed","max_input_tokens":500000,"max_tokens":50000},{"id":"claude-opus-5-20260101"},{"id":"claude-opus-4-1"}]}
     ;
     var dev = try parseModelsDev(allocator,
         \\{"claude-listed":{"limit":{"context":900000,"output":90000}},"claude-opus-5":{"limit":{"context":1000000,"output":128000}}}

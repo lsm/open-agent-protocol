@@ -2822,7 +2822,7 @@ test "a base-less request follows an override only on rows that accept one" {
     defer registry.deinit();
     var server = ProtocolServer.init(std.testing.allocator, &registry, .{});
     defer server.deinit();
-    auth_resolver.test_override_config = "{\"overrides\":[{\"id\":\"deepseek\",\"base_url\":\"https://proxy.example/deepseek\"},{\"id\":\"anthropic\",\"base_url\":\"https://proxy.example/anthropic\"},{\"id\":\"xiaomi-token-plan-cn\",\"base_url\":\"https://proxy.example/xiaomi\"}]}";
+    auth_resolver.test_override_config = "{\"overrides\":[{\"id\":\"deepseek\",\"base_url\":\"https://proxy.example/deepseek\"},{\"id\":\"anthropic\",\"base_url\":\"https://proxy.example/anthropic\"},{\"id\":\"google\",\"base_url\":\"https://proxy.example/google\"}]}";
 
     var routed_model = testModel();
     routed_model.provider = "deepseek";
@@ -2841,12 +2841,12 @@ test "a base-less request follows an override only on rows that accept one" {
     try std.testing.expectEqualStrings("https://proxy.example/anthropic", vendor.model.base_url);
 
     var unaccepted_model = testModel();
-    unaccepted_model.provider = "xiaomi-token-plan-cn";
-    unaccepted_model.api = "openai-completions";
+    unaccepted_model.provider = "google";
+    unaccepted_model.api = "google-generative-ai";
     unaccepted_model.base_url = "";
     var unaccepted = try modelWithProtocolDefaults(&server, unaccepted_model);
     defer unaccepted.deinit(std.testing.allocator);
-    try std.testing.expect(!std.mem.eql(u8, unaccepted.model.base_url, "https://proxy.example/xiaomi"));
+    try std.testing.expect(!std.mem.eql(u8, unaccepted.model.base_url, "https://proxy.example/google"));
 }
 
 test "an override's headers ride every request it applies to, including one that keeps the row's endpoint, and no other" {
