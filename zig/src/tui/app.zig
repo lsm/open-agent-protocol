@@ -5676,7 +5676,7 @@ fn defaultModel() ai_types.Model {
         .base_url = anthropic_messages_base_url,
         .reasoning = true,
         .input = &.{"text"},
-        .cost = .{ .input = 2.0, .output = 10.0, .cache_read = 0.20, .cache_write = 2.5 },
+        .cost = .{ .input = 2.0, .output = 10.0, .cache_read = 0.10, .cache_write = 2.5 },
         .context_window = 200_000,
         .max_tokens = 128_000,
     };
