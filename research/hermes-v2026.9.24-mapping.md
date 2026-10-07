@@ -495,11 +495,13 @@ gateway's own `session.list`. Read from the source at this pin's commit
   converted to milliseconds. A row carries no working directory, so the entry
   has none rather than borrowing the adapter's.
 - **Cost.** Each listing starts a gateway, waits for `gateway.ready`, calls
-  `session.list` once and closes it. At this commit `serve` runs that on its
-  one loop, so a native listing or an adoption stalls every other caller until
-  the gateway answers or times out; moving native list and read onto job
-  threads is #947, and keeping one gateway alive across listings, as Codex
-  keeps its app-server, is a follow-up.
+  `session.list` once and closes it. `oapx serve` runs that on a job thread
+  (#947) and `goap serve` in the request's own goroutine, so neither stalls
+  other callers; keeping one gateway alive across listings, as Codex keeps its
+  app-server, is a follow-up.
+- **Trees.** Zig and Go map a row the same way, down to `started_at`: an
+  integer saturates at the `int64` bounds and a float beyond 1e15 seconds
+  reads as 0.
 
 This is read from source only: no gateway at this pin was run for it, so the
 shape above has no recorded exchange behind it yet.
