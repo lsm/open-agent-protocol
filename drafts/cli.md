@@ -21,7 +21,7 @@ not a second product.
 
 | verb | meaning | `oapx` (released) | `goap` (repository tool) |
 |---|---|---|---|
-| `tui [--context-window N]` | the terminal UI as an `agent-control-core` client: its runs go as envelopes through the in-process endpoint to the `oapx` backend, beside `--tui`, which calls the loop directly, until it covers the same ground | experimental | — |
+| `tui [--context-window N]` | the terminal UI as an `agent-control-core` client: its runs go as envelopes through the in-process endpoint to the `oapx` backend; bare `oapx` starts it | yes | — |
 | `tui --attach URL [--adapter NAME]` | the same client over a running `oapx serve`'s HTTP wire: it opens a session on the named adapter (`oapx` by default), follows each run's SSE stream from its first event, and closes the session on exit. The model is chosen at open through `metadata.oapx.model`, since the hub has no switch route | experimental | — |
 | `serve agent [--backend B] [--config F] [--stdio]` | one agent loop over `agent-control-core`, raw envelopes per [endpoint-stdio](endpoint-stdio.md); no `--backend` means the binary's own loop | native loop; harness backends as they are wired | the Go adapters (today `goap endpoint --adapter`) |
 | `serve provider [--stdio \| --http ADDR] [--specimens]` | `model-provider-core` | yes | answers `unavailable` |
@@ -78,5 +78,5 @@ a pipe answers the requests that fit it and is silent about the rest.
   with a role still selects one endpoint, so no command changes meaning.
 - `goap endpoint --adapter A` becomes `goap serve agent --backend A`. `endpoint`
   stays as an alias until the conformance runner and its callers move.
-- `oapx`'s superseded flags (`--tui`, `-p`, `--oap`, `--oap-provider`) keep
-  working, as they do today.
+- `oapx`'s superseded flags (`-p`, `--oap`, `--oap-provider`) keep working, as
+  they do today. `--tui` was removed: it now says to run `oapx`.

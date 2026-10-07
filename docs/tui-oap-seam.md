@@ -5,8 +5,8 @@ Part of #365. This is #373's deliverable: what `zig/src/tui/` calls today, what
 can actually answer. It is a map, not a plan — the step order lives in #375.
 
 **Status, 2026-10-07.** `oapx tui` is the terminal UI over this seam, and what
-`oapx` alone starts; `oapx --tui` keeps the local loop without OAP, superseded,
-until the parity sweep's evidence retires it: `TuiRuntime`
+`oapx` alone starts; `oapx --tui`, the local loop without OAP, was removed once
+the parity sweep showed no difference: `TuiRuntime`
 takes an injected `RemoteExecution` (`zig/src/tui/oap_execution.zig`) that hosts
 `zig/src/adapter/endpoint.zig` with the `oapx` adapter in-process and turns its
 envelopes back into `TuiEvent`s. Runs, streaming, tools, cancel and model switch
@@ -26,8 +26,7 @@ endpoint takes live settings, and off over `--attach`. Tool approvals cross too:
 `action.permission.requested` becomes the TUI's approval prompt, and the answer goes
 back as `action.permission.resolve.request` naming the choice the user made: the
 `oapx` adapter offers `approve_always` and `reject_always` beside `approve` and
-`deny`, and passes an always answer to its loop, which remembers it as `--tui`
-does; an endpoint that does not offer them gets `approve` or `deny`. The model's questions (`user.input.*`) stay off: the
+`deny`, and passes an always answer to its loop, which remembers it for the session; an endpoint that does not offer them gets `approve` or `deny`. The model's questions (`user.input.*`) stay off: the
 open declines `user_input`, because the TUI has no prompt for them. A run's terminal
 event carries `usage.output_tokens`, and the oapx adapter adds the context the run
 filled as `extensions.oapx.context_tokens`, which the TUI shows on its context gauge
@@ -123,17 +122,12 @@ without going through the ops table.
 
 ## Measuring parity
 
-`scripts/tui-pty-driver.py --scenario all` runs every sweep scenario on
-`oapx --tui` and again on `oapx tui`, then compares the two runs' saved
-session records field by field, JSON-valued fields parsed, leaving out only the
-record types `UNCOMPARED_EVENT_TYPES` and the fields `UNCOMPARED_EVENT_FIELDS`
-name, each with a reason, and the timings and byte counts `UNCOMPARED_RESULT_FIELDS` strips from
-a tool's result; `UNORDERED_EVENT_TYPES` are compared as a set. `OAP_KNOWN_GAPS` lists the
-scenarios `oapx tui` fails today and `KNOWN_DIVERGENCES` the ones whose
-records differ; an entry that stops failing fails the sweep, so both lists
-only shrink. A command in `zig/src/tui/commands.zig` that no scenario drives
-fails the sweep too. `oapx tui` has parity with `--tui` when both lists are
-empty, and that is the bar for making it the default.
+Parity was measured by `scripts/tui-pty-driver.py --scenario all`, which ran
+every sweep scenario on `oapx --tui` and again on `oapx tui` and compared the
+two runs' saved session records field by field. With no scenario failing and no
+record differing, `oapx tui` became the default and `--tui` was removed. The
+sweep now runs every scenario on `oapx` alone, and a command in
+`zig/src/tui/commands.zig` that no scenario drives still fails it.
 
 ## Gaps
 

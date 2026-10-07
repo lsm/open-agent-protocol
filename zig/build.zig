@@ -2834,7 +2834,6 @@ pub fn build(b: *std.Build) void {
     run_step.dependOn(&run_cmd.step);
 
     const run_tui_cmd = b.addRunArtifact(makai_cli);
-    run_tui_cmd.addArg("--tui");
     const run_tui_step = b.step("run-tui", "Run the Makai TUI");
     run_tui_step.dependOn(&run_tui_cmd.step);
 

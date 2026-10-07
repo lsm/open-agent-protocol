@@ -1,6 +1,6 @@
 # TUI rendering model
 
-Date: 2026-09-15. Describes how `makai --tui` paints the terminal after the inline
+Date: 2026-09-15. Describes how the terminal UI (`oapx`) paints the terminal after the inline
 renderer rewrite, what each layer owns, and the invariants tests and future changes
 must keep. The previous scroll-region design (bottom-anchored frame plus DECSTBM
 history insertion) is gone; this document replaces the implicit contract it had.
@@ -464,7 +464,7 @@ closes; reopening a picker clears its filter.
 The window in effect is the model's own `context_window` until the session says
 otherwise. `/context` with no argument reports it, naming the model, the provider and
 the ceiling; `/context <tokens>` sets it for the session, and `/context default`
-restores the catalog's window. `oapx --tui --context-window <tokens>` sets the same
+restores the catalog's window. `oapx tui --context-window <tokens>` sets the same
 window at startup, and a later `/context` in that session replaces it. A count is a
 whole number, optionally scaled by `k` or `m`, so `1m`, `272k` and `1000000` are the
 same request; anything else — a sign, a decimal, an empty string, a count that
