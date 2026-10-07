@@ -1711,18 +1711,12 @@ SCENARIOS = {
 LOCAL_ONLY_SCENARIOS = {"hub-attach"}
 
 OAP_KNOWN_GAPS = {
-    "commands": "/permissions is refused once the OAP session is open (#930)",
-    "approval-deny": "/permissions is refused once the OAP session is open (#930), and a denied call carries {\"rejected\":true} rather than the loop's rejection text",
-    "approval-allow": "/permissions is refused once the OAP session is open (#930)",
     "session-roundtrip": "resume is refused over OAP (#931)",
     "tool-loss-reconcile": "resume is refused over OAP (#931)",
     "tool-loss-flush-release": "resume is refused over OAP (#931)",
-    "session-commands": "the settings commands are refused once the OAP session is open (#930)",
 }
 
-KNOWN_DIVERGENCES = {
-    "steer-abort": "over OAP the session file lacks the assistant's aborted and tool-call messages, turn_end and the tool's result message, so a resumed session loses its tool turns",
-}
+KNOWN_DIVERGENCES = {}
 
 UNDRIVEN_COMMANDS = {}
 
@@ -1759,8 +1753,14 @@ def without_timings(result_json):
     return result
 
 
+UNORDERED_EVENT_TYPES = {
+    "tool_approval_requested": "the local loop raises it from its approval callback, outside the event stream, so where it lands among the stream's records races; it is compared as a set",
+}
+
+
 def normalized_events(events):
     kept = []
+    unordered = []
     for event in events or []:
         if event.get("type") in UNCOMPARED_EVENT_TYPES:
             continue
@@ -1768,8 +1768,8 @@ def normalized_events(events):
         for field in JSON_EVENT_FIELDS:
             if field in record:
                 record[field] = without_timings(record[field])
-        kept.append(record)
-    return kept
+        (unordered if event.get("type") in UNORDERED_EVENT_TYPES else kept).append(record)
+    return kept + sorted(unordered, key=lambda record: json.dumps(record, sort_keys=True))
 
 
 def first_difference(local, oap):
