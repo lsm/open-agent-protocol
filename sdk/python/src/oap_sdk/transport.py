@@ -281,6 +281,7 @@ class StdioTransport:
                 "type": "protocol.initialize.request",
                 "id": initialize_id,
                 "payload": {
+                    "participant": {"id": "sdk", "name": "OAP Python SDK"},
                     "protocol_versions": ["0.1"],
                     "profiles": ["open-agent-protocol.agent-control-core"],
                 },

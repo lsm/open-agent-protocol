@@ -3,7 +3,7 @@
 import sys
 import unittest
 
-from oap_sdk import AuthFlowHandlers, AuthOptions, AuthPromptEvent, MakaiAuthError, MakaiProtocolError, MakaiStreamError, RunOptions, ToolDefinition, connect
+from oap_sdk import AuthFlowHandlers, AuthOptions, AuthPromptEvent, MakaiAuthError, MakaiProtocolError, MakaiStreamError, RunOptions, ToolContext, ToolDefinition, connect
 from oap_sdk._oap import _messages
 
 
@@ -18,6 +18,7 @@ def emit(profile, kind, reply=None, scope=None, payload=None):
     if scope: message.update(scope)
     print(json.dumps(message), flush=True)
 auth_ready = False
+provided, opened_settings = "", ""
 for line in sys.stdin:
     request = json.loads(line)
     assert request["protocol"] == "open-agent-protocol"
@@ -26,6 +27,7 @@ for line in sys.stdin:
     if request["profile"] == A and kind not in ("protocol.initialize.request", "capabilities.request"):
         assert request.get("capability_revision") == "fixture-rev-1"
     if kind == "protocol.initialize.request":
+        participant = (request["payload"].get("participant") or {}).get("id")
         emit(A, "protocol.initialize.response", rid, payload={"protocol_version":"0.1", "profile":A,
              "endpoint":{"id":"fixture"}})
     elif kind == "capabilities.request":
@@ -67,6 +69,11 @@ for line in sys.stdin:
              "stop_reason":"stop","usage":{"input_tokens":1,"output_tokens":2}})
     elif kind == "session.open.request":
         sid=request["payload"].get("session_id") or "session-1"
+        tools=request["payload"].get("tools") or []
+        if tools:
+            provided="%s owned by %s" % (tools[0]["name"], tools[0]["execution_owner"])
+        opened_settings="reasoning=%s output=%s participant=%s" % (request["payload"].get("reasoning_level"),
+            ((request["payload"].get("metadata") or {}).get("oapx") or {}).get("output"), participant)
         emit(A, "session.open.response", rid, {"session_id":sid}, {"session_id":sid,"status":"idle"})
     elif kind == "session.model.switch.request":
         sid=request["payload"]["session_id"]
@@ -83,6 +90,15 @@ for line in sys.stdin:
              {"accepted":True,"run_id":"run-1", "model_id":request["payload"].get("model_id", "fixture/other:test@ok")})
         emit(A, "run.started", scope=scope, payload={"session_id":sid,"run_id":"run-1",
              "model_id":request["payload"].get("model_id", "fixture/other:test@ok")})
+        if request["payload"].get("model_id", "").endswith("@settings"):
+            emit(A, "run.completed", scope=scope, payload={"session_id":sid,"run_id":"run-1",
+                 "final_response":{"role":"assistant","content":opened_settings}, "stop_reason":"stop"})
+            continue
+        if request["payload"].get("model_id", "").endswith("@tool"):
+            emit(A, "action.call.requested", scope=scope, payload={"session_id":sid,"run_id":"run-1",
+                 "tool_call_id":"call-1","name":"lookup","execution_owner":"sdk","interaction_id":"interaction-1",
+                 "requested_by":"fixture","responded_by":"sdk","arguments_json":{"word":"oap"}})
+            continue
         if request["payload"].get("model_id", "").endswith("@auth-once") and not auth_ready:
             emit(A, "run.failed", scope=scope, payload={"session_id":sid,"run_id":"run-1",
                  "error":{"code":"credential_missing","message":"login required"}})
@@ -115,6 +131,18 @@ for line in sys.stdin:
     elif kind == "session.provider.attach.request":
         emit(A, "error.response", rid, payload={"error":{
              "code":"unsupported_feature", "message":"attachment not supported"}})
+    elif kind == "action.call.resolve.request":
+        answer=request["payload"]
+        sid=answer["session_id"]
+        scope={"session_id":sid,"run_id":"run-1"}
+        emit(A, "action.call.resolve.response", rid, {"session_id":sid}, {"interaction_id":answer["interaction_id"],
+             "session_id":sid,"run_id":"run-1","tool_call_id":answer["tool_call_id"],"accepted":True})
+        emit(A, "action.call.started", scope=scope, payload={"session_id":sid,"run_id":"run-1","tool_call_id":"call-1","name":"lookup"})
+        emit(A, "action.call.completed", scope=scope, payload={"session_id":sid,"run_id":"run-1","tool_call_id":"call-1",
+             "name":"lookup","result":answer.get("result")})
+        said="%s said %s (error %s) as %s" % (provided, answer.get("result"), (answer.get("error") or {}).get("message"), answer["responded_by"])
+        emit(A, "run.completed", scope=scope, payload={"session_id":sid,"run_id":"run-1",
+             "final_response":{"role":"assistant","content":said}, "stop_reason":"stop"})
     elif kind in ("inference.cancel.request", "run.cancel.request"):
         pass
     else:
@@ -181,15 +209,27 @@ class OAPWireTests(unittest.IsolatedAsyncioTestCase):
                 messages=[{"role": "user", "content": "hi"}],
                 options=RunOptions(session_id="session-1"))
             self.assertEqual(agent_response.text, "agent")
-            with self.assertRaises(MakaiProtocolError) as unsupported_tools:
-                await client.agent.run(model_ref="fixture/other:test@ok",
-                    messages=[{"role": "user", "content": "hi"}],
-                    tools=[ToolDefinition(name="tool", description="", parameters_schema_json="{}")])
-            self.assertEqual(unsupported_tools.exception.code, "unsupported_feature")
+            invoked = []
+            def lookup(args: dict, context: ToolContext) -> str:
+                invoked.append((args, context.tool_call_id, context.tool_name))
+                return "open agent protocol"
+            tool_response = await client.agent.run(model_ref="fixture/other:test@tool",
+                messages=[{"role": "user", "content": "hi"}],
+                tools=[ToolDefinition(name="lookup", description="", parameters_schema_json="{}", execute=lookup)])
+            self.assertEqual(tool_response.text, "lookup owned by sdk said open agent protocol (error None) as sdk")
+            self.assertEqual(invoked, [({"word": "oap"}, "call-1", "lookup")])
+            tool_events = [event.type async for event in client.agent.stream(model_ref="fixture/other:test@tool",
+                messages=[{"role": "user", "content": "hi"}],
+                tools=[ToolDefinition(name="lookup", description="", parameters_schema_json="{}", execute=lookup)])]
+            self.assertEqual(tool_events, ["agent_start", "tool_execution_start", "tool_execution_end", "agent_end"])
+            settings = await client.agent.run(model_ref="fixture/other:test@settings",
+                messages=[{"role": "user", "content": "hi"}],
+                options=RunOptions(max_tokens=10, reasoning_effort="high"))
+            self.assertEqual(settings.text, "reasoning=high output=10 participant=sdk")
             with self.assertRaises(MakaiProtocolError) as unsupported_options:
                 await client.agent.run(model_ref="fixture/other:test@ok",
                     messages=[{"role": "user", "content": "hi"}],
-                    options=RunOptions(max_tokens=10))
+                    options=RunOptions(temperature=0.5))
             self.assertEqual(unsupported_options.exception.code, "unsupported_feature")
             with self.assertRaises(MakaiStreamError) as unsupported_attachment:
                 await client.agent.attach_provider("session-1", {"id": "alias", "provider_id": "fixture"})

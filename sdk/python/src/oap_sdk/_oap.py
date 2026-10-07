@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import inspect
 import json
 import time
 from dataclasses import replace
@@ -22,12 +23,13 @@ from .types import (
     CompletionResponse, ContentPart, ListModelsResponse, MessageEnd, MessageStart,
     ModelDescriptor, ModelLifecycle, ModelSource, ProviderStreamEvent, RunOptions,
     StreamError, TextDelta,
-    ThinkingDelta, ToolCall, ToolDefinition, Usage,
+    ThinkingDelta, ToolCall, ToolContext, ToolDefinition, ToolExecutionEnd, ToolExecutionStart, Usage,
 )
 
 PROTOCOL = "open-agent-protocol"
 VERSION = "0.1"
 AGENT = "open-agent-protocol.agent-control-core"
+SDK_PARTICIPANT = "sdk"
 PROVIDER = "open-agent-protocol.model-provider-core"
 
 
@@ -441,6 +443,50 @@ class OAPProviderApi:
                     yield StreamError(message=err.message, code=err.code, provider_id=provider)
 
 
+def _open_payload(session_id: str, tools: Optional[Sequence[ToolDefinition]],
+                  options: Optional[RunOptions]) -> Dict[str, Any]:
+    payload: Dict[str, Any] = {"session_id": session_id}
+    if tools:
+        payload["tools"] = [{"name": tool.name, "description": tool.description,
+                             "input_schema": json.loads(tool.parameters_schema_json),
+                             "execution_owner": SDK_PARTICIPANT} for tool in tools]
+    if options and options.reasoning_effort is not None:
+        payload["reasoning_level"] = options.reasoning_effort
+    if options and options.max_tokens is not None:
+        payload["metadata"] = {"oapx": {"output": options.max_tokens}}
+    return payload
+
+
+async def _resolve_call(call: Mapping[str, Any], session_id: str, run_id: str,
+                        tools: Mapping[str, ToolDefinition]) -> Frame:
+    tool_call_id = str(call.get("tool_call_id", ""))
+    tool_name = str(call.get("name", ""))
+    arguments = call.get("arguments_json")
+    args_json = arguments if isinstance(arguments, str) else json.dumps(arguments if arguments is not None else {})
+    answer: Dict[str, Any] = {"interaction_id": call.get("interaction_id"), "session_id": session_id,
+                              "run_id": run_id, "tool_call_id": tool_call_id,
+                              "requested_by": call.get("requested_by"), "responded_by": SDK_PARTICIPANT}
+    tool = tools.get(tool_name)
+    if tool is None or tool.execute is None:
+        answer["error"] = {"code": "tool_unavailable",
+                           "message": f"Tool '{tool_name}' is not executable by this client"}
+    else:
+        try:
+            parsed = json.loads(args_json) if args_json else {}
+            if not isinstance(parsed, dict):
+                raise ValueError("tool arguments must be a JSON object")
+            result = tool.execute(parsed, ToolContext(tool_call_id, tool_name, args_json))
+            if inspect.isawaitable(result):
+                result = await result
+            answer["result"] = result if isinstance(result, str) else "".join(
+                str(part.get("text", "")) for part in result)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            answer["error"] = {"code": "tool_failed", "message": str(exc)}
+    return envelope(AGENT, "action.call.resolve.request", answer, session_id=session_id, run_id=run_id)
+
+
 class OAPAgentApi:
     def __init__(self, transport: StdioTransport, *, response_timeout: float = 30.0,
                  auth_retry_policy: Optional[str] = None, auth: Any = None,
@@ -470,21 +516,18 @@ class OAPAgentApi:
     async def _frames(self, model_ref: Optional[str], messages: Sequence[ChatMessage],
                       tools: Optional[Sequence[ToolDefinition]], options: Optional[RunOptions]
                       ) -> AsyncGenerator[Frame, None]:
-        if tools:
-            raise MakaiProtocolError("client-executed tools are not advertised by this OAP agent endpoint",
-                                     "unsupported_feature")
-        if options and (options.max_tokens is not None or options.temperature is not None or
-                        options.reasoning_effort is not None):
-            raise MakaiProtocolError("agent sampling and token options have no OAP 0.1 projection",
-                                     "unsupported_feature")
+        if options and options.temperature is not None:
+            raise MakaiProtocolError("the agent loop takes no temperature", "unsupported_feature")
         if not model_ref and not (options and options.session_id):
             raise MakaiProtocolError("a model_ref or an existing session_id is required", "invalid_request")
         session_id = options.session_id if options and options.session_id else new_ulid()
         async with self._transport.route(session_id=session_id) as events:
             opened = await _request(self._transport, AGENT, "session.open.request",
-                                    {"session_id": session_id}, self._timeout, session_id=session_id)
+                                    _open_payload(session_id, tools, options), self._timeout,
+                                    session_id=session_id)
             if opened.get("type") != "session.open.response":
                 raise MakaiProtocolError("expected session.open.response", "malformed_response")
+            provided = {tool.name: tool for tool in tools or ()}
             payload: Dict[str, Any] = {"session_id": session_id, "messages": _messages(messages),
                                        "delivery": "auto"}
             if model_ref:
@@ -506,6 +549,15 @@ class OAPAgentApi:
                     if run_id and frame.get("run_id") not in (None, run_id):
                         continue
                     kind = frame.get("type")
+                    if kind == "action.call.requested" and _payload(frame).get("execution_owner") == SDK_PARTICIPANT:
+                        await self._transport.send(await _resolve_call(_payload(frame), session_id, str(run_id or ""), provided))
+                        continue
+                    if kind == "action.call.resolve.response":
+                        answer = _payload(frame)
+                        if answer.get("accepted") is False and answer.get("reason") != "already_resolved":
+                            raise MakaiProtocolError(f"the endpoint refused a tool result: {answer.get('reason')}",
+                                                     "malformed_response")
+                        continue
                     if kind == "run.started":
                         selected_ref = str(_payload(frame).get("model_id") or selected_ref)
                     if kind == "content.delta":
@@ -572,6 +624,12 @@ class OAPAgentApi:
                             yield TextDelta(delta=str(part.get("text", "")))
                         elif part.get("type") == "reasoning":
                             yield ThinkingDelta(delta=str(part.get("reasoning", "")))
+                elif kind == "action.call.started":
+                    yield ToolExecutionStart(tool_call_id=str(value.get("tool_call_id", "")),
+                                             tool_name=str(value.get("name", "")))
+                elif kind in ("action.call.completed", "action.call.failed", "action.call.cancelled"):
+                    yield ToolExecutionEnd(tool_call_id=str(value.get("tool_call_id", "")),
+                                           is_error=kind != "action.call.completed")
                 elif kind == "run.completed":
                     actual_ref = value.get("model_id") or model_ref or ""
                     provider, wire, _ = _model_parts(actual_ref)
