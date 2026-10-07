@@ -316,3 +316,33 @@ func TestSubscriptionCloseInterruptsBlockedRead(t *testing.T) {
 		t.Fatal("Close did not disconnect the idle SSE request")
 	}
 }
+
+func TestSessionsAsksForTheDirectorysRootSessionsNewestFirstAndRefusesARowThatIsNotASession(t *testing.T) {
+	var target string
+	body := `{"data":[{"id":"ses_a","projectID":"p","title":"t","cost":0,"tokens":{"input":0,"output":0,"reasoning":0,"cache":{"read":0,"write":0}},"time":{"created":1,"updated":2},"location":{"directory":"/x/R&D"}}],"cursor":{"next":"n"}}`
+	client := newTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		target = r.URL.RequestURI()
+		_, _ = w.Write([]byte(body))
+	}), Options{})
+	listed, err := client.Sessions(context.Background(), "/x/R&D+a=b c~", 3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if target != "/api/session?directory=%2Fx%2FR%26D%2Ba%3Db+c~&limit=3&order=desc&parentID=null" {
+		t.Fatalf("asked %s", target)
+	}
+	if len(listed) != 1 || listed[0].Title != "t" || listed[0].Time.Updated != 2 {
+		t.Fatalf("listed %+v", listed)
+	}
+	if _, err := client.Sessions(context.Background(), "", 3); err != nil || target != "/api/session?limit=3&order=desc&parentID=null" {
+		t.Fatalf("an unscoped list asked %s, %v", target, err)
+	}
+	body = `{"data":[{"id":"ses_a","projectID":"","time":{"created":1,"updated":2}}],"cursor":{}}`
+	if _, err := client.Sessions(context.Background(), "", 3); err == nil {
+		t.Fatal("a row with no project was admitted")
+	}
+	body = `{"data":[{"id":"ses_a","projectID":"p","surprise":1}],"cursor":{}}`
+	if _, err := client.Sessions(context.Background(), "", 3); err == nil {
+		t.Fatal("a row with an unknown member was admitted")
+	}
+}

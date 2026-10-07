@@ -241,10 +241,10 @@ func (c *Client) Info(ctx context.Context) (native.ServerInfo, error) {
 	return response, nil
 }
 
-func (c *Client) Sessions(ctx context.Context, limit int) ([]native.SessionInfo, error) {
-	query := url.Values{}
-	if limit > 0 {
-		query.Set("limit", strconv.Itoa(limit))
+func (c *Client) Sessions(ctx context.Context, directory string, limit int) ([]native.SessionInfo, error) {
+	query := url.Values{"limit": {strconv.Itoa(limit)}, "order": {"desc"}, "parentID": {"null"}}
+	if directory != "" {
+		query.Set("directory", directory)
 	}
 	var response struct {
 		Data   []native.SessionInfo `json:"data"`
@@ -252,6 +252,11 @@ func (c *Client) Sessions(ctx context.Context, limit int) ([]native.SessionInfo,
 	}
 	if err := c.do(ctx, http.MethodGet, "/api/session", query, nil, &response); err != nil {
 		return nil, err
+	}
+	for _, info := range response.Data {
+		if err := info.Validate(); err != nil {
+			return nil, err
+		}
 	}
 	return response.Data, nil
 }

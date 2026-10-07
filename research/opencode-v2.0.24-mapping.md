@@ -264,5 +264,6 @@ milliseconds. A session is running when `GET /api/session/active` names it. One
 page is read; the cursor is not followed. A fresh session carries no `title`.
 Against the pinned darwin-arm64 binary, a session created in a directory came
 back from `oapx serve --stdio`'s `work.list` with `include_native` as an idle
-native entry under that directory. The Zig adapter lists; the Go adapter does
-not yet.
+native entry under that directory. Both adapters list, with the same query
+and the same strict rows; against the same binary, `goap hub --stdio` and
+`oapx serve --stdio` answered the same entries.

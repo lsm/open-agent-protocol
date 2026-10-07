@@ -103,6 +103,10 @@ type fakeClient struct {
 
 	sessionErr error
 	creates    int
+
+	listed    []native.SessionInfo
+	listErr   error
+	listAsked []string
 }
 
 func newFakeClient() *fakeClient {
@@ -190,6 +194,17 @@ func (f *fakeClient) CancelInbox(_ context.Context, _ native.SessionID, inbox na
 		f.events <- f.event(seq, native.TypeInboxCancelled, native.InboxRefData{SessionID: f.session, InboxID: inbox})
 	}
 	return nil
+}
+func (f *fakeClient) Sessions(ctx context.Context, directory string, limit int) ([]native.SessionInfo, error) {
+	f.mu.Lock()
+	f.listAsked = append(f.listAsked, fmt.Sprintf("%s|%d", directory, limit))
+	listed, err, stalls := f.listed, f.listErr, f.stalls
+	f.mu.Unlock()
+	if stalls {
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}
+	return listed, err
 }
 func (f *fakeClient) Active(ctx context.Context) (map[native.SessionID]bool, error) {
 	f.mu.Lock()
