@@ -197,8 +197,9 @@ pub const Session = struct {
         @memcpy(session_tools[0..owner.options.tools.len], owner.options.tools);
         if (offers_input) session_tools[owner.options.tools.len] = inputTool(self);
         var options = sessionOptions(owner.options, request.metadata);
+        options.models = owner.catalog orelse owner.options.models;
         if (request.reasoning_level) |level| options.thinking_level = try thinkingLevel(level, refusal);
-        if (try requestedModel(gpa, owner.options.models, request.metadata, refusal)) |chosen| options.initial_model = chosen;
+        if (try requestedModel(gpa, options.models, request.metadata, refusal)) |chosen| options.initial_model = chosen;
         const engine = try ownEngine(gpa, owner.options.permission_engine, options.workspace_root);
         errdefer if (engine) |held| {
             held.deinit();
@@ -213,7 +214,7 @@ pub const Session = struct {
             else => return refusal.fail(error.BackendFailed, @errorName(err)),
         };
         errdefer runtime.deinit();
-        self.* = .{ .owner = owner, .gpa = gpa, .keep = std.heap.ArenaAllocator.init(gpa), .id = "", .participant = "", .runtime = runtime, .engine = engine, .updated_at_ms = owner.now_ms() };
+        self.* = .{ .owner = owner, .gpa = gpa, .keep = std.heap.ArenaAllocator.init(gpa), .id = "", .participant = "", .runtime = runtime, .engine = engine, .updated_at_ms = owner.now_ms(), .catalog_seen = owner.catalog_generation };
         errdefer self.keep.deinit();
         const keep = self.keep.allocator();
         self.participant = try keep.dupe(u8, request.participant);
@@ -1239,9 +1240,9 @@ pub const Session = struct {
     }
 
     fn models(ptr: *anyopaque, arena: std.mem.Allocator, request: *const oap_types.ModelsRequest, refusal: *contract.Refusal) contract.Failure!contract.Catalog {
-        _ = refusal;
         const self = cast(ptr);
         if (request.session_id.len > 0 and !std.mem.eql(u8, request.session_id, self.id)) return error.InvalidSubmission;
+        if (!request.allowsDegraded(contract.feature_models_list)) return refusal.degraded(contract.feature_models_list);
         const current = try self.currentModelRef(arena);
         const available = self.runtime.availableModels();
         var catalog = try std.ArrayList(oap_types.ModelDescriptor).initCapacity(arena, available.len);
@@ -1906,7 +1907,7 @@ test "models lists the runtime's catalog as model refs, and a switch takes one r
     const a = harness.arena.allocator();
     var refusal = contract.Refusal{};
 
-    const catalog = try harness.session.vtable.models.?(harness.session.ptr, a, &.{ .session_id = harness.session.id() }, &refusal);
+    const catalog = try harness.session.vtable.models.?(harness.session.ptr, a, &.{ .session_id = harness.session.id(), .allow_degraded_features = &.{contract.feature_models_list} }, &refusal);
     try testing.expectEqual(@as(usize, 2), catalog.response.models.len);
     try testing.expectEqualStrings("scripted/openai-completions@scripted-model", catalog.response.current_model_id.?);
     try testing.expect(catalog.response.models[0].default);
@@ -1930,13 +1931,34 @@ test "a catalog the terminal UI refreshes is served once the session next switch
     fresh.id = "fresh-model";
     try harness.owner.setCatalog(&.{ test_model, other_model, fresh });
 
-    const before = try harness.session.vtable.models.?(harness.session.ptr, a, &.{ .session_id = harness.session.id() }, &refusal);
+    try testing.expectError(error.CapabilityDegraded, harness.session.vtable.models.?(harness.session.ptr, a, &.{ .session_id = harness.session.id() }, &refusal));
+    try testing.expectEqualStrings(contract.feature_models_list, refusal.feature);
+    const before = try harness.session.vtable.models.?(harness.session.ptr, a, &.{ .session_id = harness.session.id(), .allow_degraded_features = &.{contract.feature_models_list} }, &refusal);
     try testing.expectEqual(@as(usize, 2), before.response.models.len);
 
     const switched = try harness.session.vtable.switch_model.?(harness.session.ptr, a, &.{ .session_id = harness.session.id(), .model_id = "scripted/openai-completions@fresh-model" }, &refusal);
     try testing.expectEqualStrings("scripted/openai-completions@fresh-model", switched.state.current_model_id.?);
-    const after = try harness.session.vtable.models.?(harness.session.ptr, a, &.{ .session_id = harness.session.id() }, &refusal);
+    const after = try harness.session.vtable.models.?(harness.session.ptr, a, &.{ .session_id = harness.session.id(), .allow_degraded_features = &.{contract.feature_models_list} }, &refusal);
     try testing.expectEqual(@as(usize, 3), after.response.models.len);
+}
+
+test "a session opened after a catalog refresh serves the refreshed catalog and can open on a model only it holds" {
+    var script = Script{};
+    var harness: Harness = undefined;
+    try harness.init(&script);
+    defer harness.deinit();
+    const a = harness.arena.allocator();
+    var refusal = contract.Refusal{};
+    var fresh = other_model;
+    fresh.id = "fresh-model";
+    try harness.owner.setCatalog(&.{ test_model, other_model, fresh });
+
+    const metadata = try std.json.parseFromSliceLeaky(std.json.Value, a, "{\"oapx\":{\"model\":\"scripted/openai-completions@fresh-model\"}}", .{});
+    const opened = try harness.owner.adapter().open(a, .{ .participant = "user", .metadata = metadata }, &refusal);
+    defer opened.teardown();
+    const listed = try opened.vtable.models.?(opened.ptr, a, &.{ .session_id = "", .allow_degraded_features = &.{contract.feature_models_list} }, &refusal);
+    try testing.expectEqual(@as(usize, 3), listed.response.models.len);
+    try testing.expectEqualStrings("scripted/openai-completions@fresh-model", listed.response.current_model_id.?);
 }
 
 test "the tool catalog is the loop's own tools, each owned by the endpoint" {

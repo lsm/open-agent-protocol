@@ -307,6 +307,7 @@ pub const OapExecution = struct {
 
         var listing = Map.init(a);
         try listing.put("session_id", .{ .string = self.session_id });
+        try listing.put("allow_degraded_features", try strings(a, &.{"models.list"}));
         const listed = try self.exchange(a, "models.request", listing.value(), true);
         self.forgetSessionModels();
         if (listed.object.get("payload")) |models_payload| {
