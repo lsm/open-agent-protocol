@@ -588,18 +588,24 @@ pub const Session = struct {
         const current_model_id: ?[]const u8 = if (model.len > 0) try arena.dupe(u8, model) else null;
         var entries = std.ArrayList(oap_types.ActiveRun).empty;
         var started: ?[]const u8 = null;
+        var waiting = false;
         var position: u64 = 0;
         for ([_]?*session.Run{ self.reducer.active, self.reducer.reserved }) |candidate| {
             const run = candidate orelse continue;
             if (run.terminal and !run.holding) continue;
             const reservation = run.queued_admission and !run.start_published;
-            if (!reservation) started = run.id else position += 1;
+            const pending: []const []const u8 = if (reservation) &.{} else try self.reducer.openGates(arena);
+            if (!reservation) {
+                started = run.id;
+                waiting = pending.len > 0;
+            } else position += 1;
             try entries.append(arena, .{
                 .run_id = try arena.dupe(u8, run.id),
                 .status = if (reservation) .queued else runStatus(run.status),
                 .relationship = "primary",
                 .queue_position = if (reservation) position else null,
                 .as_of_sequence = if (reservation) run.published_seq else run.next - 1,
+                .pending_interactions = pending,
             });
         }
         const settled = try arena.alloc(oap_types.RunPosition, self.reducer.settled.items.len);
@@ -608,7 +614,7 @@ pub const Session = struct {
         const transcript_cursor: ?[]const u8 = if (self.reducer.last_seq > 0) try std.fmt.allocPrint(arena, "{d}", .{self.reducer.last_seq}) else null;
         return .{
             .session_id = self.id,
-            .status = if (started != null) .running else if (entries.items.len > 0) .queued else .idle,
+            .status = if (waiting) .waiting_for_input else if (started != null) .running else if (entries.items.len > 0) .queued else .idle,
             .active_run_id = active_run_id,
             .active_runs = entries.items,
             .current_model_id = current_model_id,
@@ -1343,6 +1349,35 @@ test "a run whose event stream drops fails when the session record does not hold
     const failed = try probe.pumpUntil("run.failed", &seen);
     try testing.expect(std.mem.indexOf(u8, failed.line, "opencode_stream_failed") != null);
     try testing.expectError(error.SessionClosed, probe.handle.?.state(probe.arena.allocator(), &refusal));
+}
+
+const tool_input_started = fakeEvent("tool.input.started", ",\"assistantMessageID\":\"msg_a1\",\"id\":\"call_1\",\"name\":\"shell\"");
+const tool_called = fakeEvent("tool.called", ",\"assistantMessageID\":\"msg_a1\",\"id\":\"call_1\",\"input\":{\"command\":\"echo hi\"},\"executed\":false");
+const permission_asked = "{\"id\":\"evt_%SEQ%\",\"created\":%SEQ%,\"type\":\"permission.asked\",\"location\":{\"directory\":\"/w\"},\"data\":{\"id\":\"per_1\",\"sessionID\":\"" ++ fake_session ++ "\",\"action\":\"shell\",\"resources\":[\"echo hi\"],\"source\":{\"type\":\"tool\",\"messageID\":\"msg_a1\",\"id\":\"call_1\"}}}";
+const gated_turn = [_][]const u8{ delivered, step_started, tool_input_started, tool_called, permission_asked };
+
+test "the session waits for input and lists the permission on the started run while one is open" {
+    var probe: Probe = undefined;
+    try probe.init(&.{&gated_turn}, &.{});
+    defer probe.deinit();
+    var refusal = contract.Refusal{};
+    _ = try probe.open(&refusal);
+    _ = try probe.submit(.auto, &refusal);
+    var seen = std.ArrayList(contract.Event).empty;
+    const asked = try probe.pumpUntil("action.permission.requested", &seen);
+    const state_now = try probe.handle.?.state(probe.arena.allocator(), &refusal);
+    try testing.expectEqual(oap_types.SessionStatus.waiting_for_input, state_now.status);
+    try testing.expectEqual(@as(usize, 1), state_now.active_runs.len);
+    try testing.expectEqual(@as(usize, 1), state_now.active_runs[0].pending_interactions.len);
+    const interaction = state_now.active_runs[0].pending_interactions[0];
+    try testing.expect(std.mem.indexOf(u8, asked.line, try std.fmt.allocPrint(probe.arena.allocator(), "\"interaction_id\":\"{s}\"", .{interaction})) != null);
+    const queued = try probe.submit(.auto, &refusal);
+    try testing.expectEqual(oap_types.Admission.queued, queued.admission);
+    const behind = try probe.handle.?.state(probe.arena.allocator(), &refusal);
+    try testing.expectEqual(@as(usize, 2), behind.active_runs.len);
+    try testing.expectEqual(@as(usize, 1), behind.active_runs[0].pending_interactions.len);
+    try testing.expectEqualStrings(queued.run_id.?, behind.active_runs[1].run_id);
+    try testing.expectEqual(@as(usize, 0), behind.active_runs[1].pending_interactions.len);
 }
 
 test "the degraded models catalog is served only to a caller that opts into it" {

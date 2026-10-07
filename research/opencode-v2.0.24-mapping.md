@@ -292,7 +292,10 @@ Both trees, under capability revision `opencode-v2.0.24-oap-v4`:
   (`opencode_permission_replied_elsewhere`), a run that ends with one open
   cancels it (`run_settled`), and a permission outside a tool call the run
   started fails the run (`opencode_permission_without_tool`), since an OAP
-  permission requires a `tool_call_id`. Live against the pinned binary, both
+  permission requires a `tool_call_id`. While one is open, `session.state`
+  reports the session `waiting_for_input` and lists the open interactions,
+  in the order they were asked, as the started run's
+  `pending_interactions`. Live against the pinned binary, both
   trees produced the same trace for `once` (the call completes and the run
   ends `run.completed`) and for `reject` (the call fails and the run ends
   `opencode_permission_declined`); the Go gates

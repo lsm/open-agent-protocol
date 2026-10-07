@@ -793,6 +793,14 @@ pub const Reducer = struct {
         gate.requested = (try self.emitEnvelope(run, "action.permission.requested", payload, false, "", null)) orelse "";
     }
 
+    pub fn openGates(self: *Reducer, arena: std.mem.Allocator) std.mem.Allocator.Error![]const []const u8 {
+        var pending: std.ArrayList([]const u8) = .empty;
+        for (self.gates.items) |gate| {
+            if (!gate.resolved) try pending.append(arena, try arena.dupe(u8, gate.id));
+        }
+        return pending.items;
+    }
+
     fn gateResolution(self: *Reducer, gate: *Gate, outcome: []const u8, choice: []const u8, granted: ?bool, reason: ?[2][]const u8) std.mem.Allocator.Error!std.json.ObjectMap {
         var payload = try self.scoped(gate.run);
         try self.put(&payload, "interaction_id", str(gate.id));
@@ -1665,6 +1673,22 @@ fn gatedReducer(arena: *std.heap.ArenaAllocator, fake: *Fake) !struct { reducer:
 
 fn lastType(reducer: *Reducer) []const u8 {
     return reducer.envelopes.items[reducer.envelopes.items.len - 1].object.get("type").?.string;
+}
+
+test "the open permissions are listed in the order they were asked, until each is answered" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const scratch = arena.allocator();
+    var fake = Fake{};
+    var gated = try gatedReducer(&arena, &fake);
+    const reducer = &gated.reducer;
+    try reducer.observe(try nativeEvent(scratch, 4, "tool.input.started", "{\"assistantMessageID\":\"msg_a\",\"id\":\"call_2\",\"name\":\"shell\"}"));
+    try reducer.observe(try nativeEvent(scratch, 5, "tool.called", "{\"assistantMessageID\":\"msg_a\",\"id\":\"call_2\",\"input\":{\"command\":\"echo bye\"},\"executed\":false}"));
+    try reducer.observe(try permissionEvent(scratch, "asked", "{\"id\":\"per_2\",\"action\":\"shell\",\"resources\":[\"echo bye\"],\"source\":{\"type\":\"tool\",\"messageID\":\"msg_a\",\"id\":\"call_2\"}}"));
+    const second = payloadOf(reducer.envelopes.items[reducer.envelopes.items.len - 1]).get("interaction_id").?.string;
+    try expectLabels(&.{ gated.interaction, second }, try reducer.openGates(scratch));
+    try reducer.resolvePermission(gated.interaction, gated.run_id, "user", "", "once", true, "");
+    try expectLabels(&.{second}, try reducer.openGates(scratch));
 }
 
 test "an asked permission becomes a request for its tool call, and an allowed one lets the run finish" {

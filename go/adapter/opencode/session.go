@@ -1,12 +1,14 @@
 package opencode
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"math"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -130,6 +132,7 @@ type permissionGate struct {
 	order     uint64
 	resolved  bool
 	settling  bool
+	open      bool
 }
 
 type permissionReplier interface {
@@ -321,17 +324,19 @@ func (s *session) refreshStateLocked() {
 	var entries []protocol.ActiveRun
 	position := 0
 	started := protocol.RunID("")
+	waiting := false
 	for _, run := range []*runState{s.active, s.reserved} {
 		if !published(run) || !run.answered {
 			continue
 		}
 		if !reservationOf(run) {
-			entries = append(entries, activeRunEntry(run, 0))
-			started = run.id
+			entry := s.activeRunEntry(run, 0)
+			entries = append(entries, entry)
+			started, waiting = run.id, len(entry.PendingInteractions) > 0
 			continue
 		}
 		position++
-		entries = append(entries, activeRunEntry(run, position))
+		entries = append(entries, s.activeRunEntry(run, position))
 	}
 	s.state.ActiveRuns = entries
 
@@ -341,6 +346,9 @@ func (s *session) refreshStateLocked() {
 	switch {
 	case started != "":
 		s.state.Status = protocol.SessionRunning
+		if waiting {
+			s.state.Status = protocol.SessionWaitingForInput
+		}
 		s.state.ActiveRunID = started
 	case len(entries) > 0:
 		s.state.Status = protocol.SessionQueued
@@ -405,16 +413,34 @@ func (s *session) UpdateSettings(ctx context.Context, req protocol.SessionSettin
 	return response, s.state, nil
 }
 
+func (s *session) openGates() []protocol.InteractionID {
+	var open []*permissionGate
+	for _, gate := range s.gates {
+		if gate.open {
+			open = append(open, gate)
+		}
+	}
+	slices.SortFunc(open, func(a, b *permissionGate) int { return cmp.Compare(a.order, b.order) })
+	var ids []protocol.InteractionID
+	for _, gate := range open {
+		ids = append(ids, gate.id)
+	}
+	return ids
+}
+
 func published(run *runState) bool { return run != nil && !run.terminal }
 
 func reservationOf(run *runState) bool { return run.queuedAdmission && !run.startPublished }
 
-func activeRunEntry(run *runState, position int) protocol.ActiveRun {
+func (s *session) activeRunEntry(run *runState, position int) protocol.ActiveRun {
 	sequence, status := run.next-1, run.status
 	if reservationOf(run) {
 		sequence, status = run.publishedSeq, protocol.RunQueued
 	}
 	entry := protocol.ActiveRun{RunID: run.id, Status: status, Relationship: protocol.RelationshipPrimary, AsOfSequence: &sequence}
+	if position == 0 {
+		entry.PendingInteractions = s.openGates()
+	}
 	if position > 0 {
 		entry.QueuePosition = &position
 	}
@@ -1543,6 +1569,17 @@ func (s *session) emitEnvelopeWith(run *runState, typ protocol.EnvelopeType, pay
 		}
 		_ = json.Unmarshal(event.Payload, &action)
 		event.ToolCallID = action.ToolCallID
+	}
+	if typ == protocol.TypeActionPermissionRequested || typ == protocol.TypeActionPermissionResolved {
+		var interaction struct {
+			InteractionID protocol.InteractionID `json:"interaction_id"`
+		}
+		_ = json.Unmarshal(event.Payload, &interaction)
+		for _, gate := range s.gates {
+			if gate.id == interaction.InteractionID {
+				gate.open = typ == protocol.TypeActionPermissionRequested
+			}
+		}
 	}
 	s.state.UpdatedAtMS = now
 	if typ == protocol.TypeRunStarted {

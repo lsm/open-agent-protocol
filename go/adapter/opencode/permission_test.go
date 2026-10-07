@@ -203,3 +203,80 @@ func TestAPermissionOutsideAToolCallTheRunStartedFailsTheRun(t *testing.T) {
 		t.Fatalf("ended %s %+v", last.Type, failed)
 	}
 }
+
+func stateAt(t *testing.T, session base.Session, tag string) (protocol.SessionState, []protocol.Envelope) {
+	t.Helper()
+	state, err := session.State(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	exchange, err := adaptertest.StateExchange(state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	exchange[0].ID += protocol.EnvelopeID(tag)
+	exchange[1].ID += protocol.EnvelopeID(tag)
+	exchange[1].InReplyTo = exchange[0].ID
+	return state, exchange
+}
+
+func spliceAtSequence(t *testing.T, events []protocol.Envelope, sequence uint64, exchange []protocol.Envelope) []protocol.Envelope {
+	t.Helper()
+	for _, event := range events {
+		if event.Sequence != nil && *event.Sequence == sequence {
+			return adaptertest.SpliceAfter(t, events, event.ID, exchange)
+		}
+	}
+	t.Fatalf("no event at sequence %d", sequence)
+	return nil
+}
+
+func TestStateWaitsOnAnOpenPermissionAndListsItAsPendingUntilItIsAnswered(t *testing.T) {
+	g := openGatedRun(t)
+	asked, askedExchange := stateAt(t, g.session, "-asked")
+	if asked.Status != protocol.SessionWaitingForInput || len(asked.ActiveRuns) != 1 || !slices.Equal(asked.ActiveRuns[0].PendingInteractions, []protocol.InteractionID{g.request.InteractionID}) {
+		t.Fatalf("state while asked %+v", asked.ActiveRuns)
+	}
+	if err := g.answer("once", ""); err != nil {
+		t.Fatal(err)
+	}
+	answered, answeredExchange := stateAt(t, g.session, "-answered")
+	if answered.Status != protocol.SessionRunning || len(answered.ActiveRuns) != 1 || len(answered.ActiveRuns[0].PendingInteractions) != 0 {
+		t.Fatalf("state once answered %+v", answered.ActiveRuns)
+	}
+	g.client.emit(t, 4, native.TypeToolSuccess, native.ToolSuccessData{SessionID: g.client.session, AssistantMessage: "msg_a1", ID: "call_1", Content: []native.ToolContent{{Type: "text", Text: "hi"}}})
+	g.client.emit(t, 5, native.TypeStepEnded, native.StepEndedData{SessionID: g.client.session, AssistantMessage: "msg_a1", Finish: "stop"})
+	g.client.succeed(t, 6)
+	events := g.finish(t)
+	events = spliceAtSequence(t, events, *asked.ActiveRuns[0].AsOfSequence, askedExchange)
+	events = spliceAtSequence(t, events, *answered.ActiveRuns[0].AsOfSequence, answeredExchange)
+	adaptertest.AssertProtocolValidWithDescriptor(t, g.response, g.descriptor, events)
+}
+
+func TestStateListsOpenPermissionsOnTheStartedRunInTheOrderTheServerAskedThem(t *testing.T) {
+	g := openGatedRun(t)
+	g.client.toolCalled(t, 4, 5, "call_2", "shell", map[string]any{"command": "echo bye"})
+	g.client.emit(t, 0, native.TypePermissionAsked, native.PermissionAskedData{ID: "per_2", SessionID: g.client.session, Action: "shell", Resources: []string{"echo bye"}, Source: &native.PermissionSource{Type: "tool", MessageID: "msg_a1", ID: "call_2"}})
+	var second protocol.PermissionRequestedPayload
+	for second.InteractionID == "" {
+		event := adaptertest.Next(t, g.stream, time.Second)
+		if event.Type == protocol.TypeActionPermissionRequested {
+			if err := event.DecodePayload(&second); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	queued, _ := submitTest(t, g.session)
+	if queued.Admission != protocol.AdmissionQueued {
+		t.Fatalf("second submit %+v", queued)
+	}
+	for range 20 {
+		state, _ := stateAt(t, g.session, "")
+		if len(state.ActiveRuns) != 2 || !slices.Equal(state.ActiveRuns[0].PendingInteractions, []protocol.InteractionID{g.request.InteractionID, second.InteractionID}) {
+			t.Fatalf("pending %+v, want %s then %s", state.ActiveRuns, g.request.InteractionID, second.InteractionID)
+		}
+		if state.ActiveRuns[1].RunID != queued.RunID || len(state.ActiveRuns[1].PendingInteractions) != 0 {
+			t.Fatalf("the queued run %+v carries the started run's permissions", state.ActiveRuns[1])
+		}
+	}
+}
