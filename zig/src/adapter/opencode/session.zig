@@ -99,6 +99,7 @@ pub const Run = struct {
     streamed: std.StringHashMapUnmanaged(std.ArrayList(u8)) = .empty,
     ended_parts: [2]std.StringHashMapUnmanaged(void) = .{ .empty, .empty },
     steps: [2]std.StringHashMapUnmanaged(void) = .{ .empty, .empty },
+    tool_seen: [2]std.StringHashMapUnmanaged(void) = .{ .empty, .empty },
     input_tokens: u64 = 0,
     output_tokens: u64 = 0,
     total_tokens: u64 = 0,
@@ -510,19 +511,26 @@ pub const Reducer = struct {
                 const name = self.tool_names.get(data.id) orelse "";
                 const target = run orelse return;
                 if (data.id.len == 0 or name.len == 0) return;
+                if (!try self.sighted(&target.tool_seen, try self.toolKey(false, data.id))) return;
                 try self.startTool(target, data.id, name, try gomarshal.canonicalAny(self.allocator(), data.input));
             },
             .tool_progress => {
                 const data = (try self.decodeFor(native.ToolProgressData, native.decodeToolProgress, event, run, "opencode_invalid_tool_event")) orelse return;
-                try self.updateTool(run orelse return, data.id, data.metadata);
+                const target = run orelse return;
+                if (target.tool_seen[1].contains(try self.toolKey(true, data.id))) return;
+                try self.updateTool(target, data.id, data.metadata);
             },
             .tool_success => {
                 const data = (try self.decodeFor(native.ToolContentData, native.decodeToolSuccess, event, run, "opencode_invalid_tool_event")) orelse return;
-                try self.endTool(run orelse return, data.id, null, try self.contentValue(data.content));
+                const target = run orelse return;
+                if (!try self.sighted(&target.tool_seen, try self.toolKey(true, data.id))) return;
+                try self.endTool(target, data.id, null, try self.contentValue(data.content));
             },
             .tool_failed => {
                 const data = (try self.decodeFor(native.ToolFailedData, native.decodeToolFailed, event, run, "opencode_invalid_tool_event")) orelse return;
-                try self.endTool(run orelse return, data.id, data.failure.message, .null);
+                const target = run orelse return;
+                if (!try self.sighted(&target.tool_seen, try self.toolKey(true, data.id))) return;
+                try self.endTool(target, data.id, data.failure.message, .null);
             },
             else => {},
         }
@@ -608,6 +616,8 @@ pub const Reducer = struct {
                     } else if (std.mem.eql(u8, part_kind, "reasoning")) {
                         if (done or completedAt(part) > 0) try self.replayEvent("session.reasoning.ended", .{ .sessionID = scope, .assistantMessageID = id, .ordinal = thoughts, .text = recordText(part, "text") });
                         thoughts += 1;
+                    } else if (std.mem.eql(u8, part_kind, "tool")) {
+                        try self.replayTool(id, part);
                     }
                 };
                 if (!done) continue;
@@ -634,6 +644,38 @@ pub const Reducer = struct {
     fn replayEvent(self: *Reducer, comptime name: []const u8, data: anytype) Error!void {
         const text = try std.json.Stringify.valueAlloc(self.allocator(), data, .{});
         try self.handle(.{ .id = "", .type_name = name, .kind = native.EventType.parse(name), .session_id = self.options.native_id, .data = text });
+    }
+
+    fn toolKey(self: *Reducer, end: bool, id: []const u8) Error![]const u8 {
+        return std.fmt.allocPrint(self.allocator(), "{c}:{s}", .{ @as(u8, if (end) 'e' else 's'), id });
+    }
+
+    fn replayTool(self: *Reducer, message: []const u8, part: std.json.Value) Error!void {
+        const scope = self.options.native_id;
+        const state = part.object.get("state") orelse std.json.Value.null;
+        if (state != .object) return;
+        const status = recordText(state, "status");
+        const ended = std.mem.eql(u8, status, "completed") or std.mem.eql(u8, status, "error");
+        if (!ended and !std.mem.eql(u8, status, "running")) return;
+        const id = recordText(part, "id");
+        const flag = part.object.get("executed") orelse std.json.Value.null;
+        const executed = flag == .bool and flag.bool;
+        const input = state.object.get("input") orelse std.json.Value.null;
+        try self.replayEvent("session.tool.input.started", .{ .sessionID = scope, .assistantMessageID = message, .id = id, .name = recordText(part, "name") });
+        try self.replayEvent("session.tool.called", .{ .sessionID = scope, .assistantMessageID = message, .id = id, .input = if (input == .object) input else std.json.Value{ .object = .empty }, .executed = executed });
+        if (std.mem.eql(u8, status, "completed")) {
+            const content = state.object.get("content") orelse std.json.Value.null;
+            if (content == .array) {
+                try self.replayEvent("session.tool.success", .{ .sessionID = scope, .assistantMessageID = message, .id = id, .content = content, .executed = executed });
+            } else {
+                try self.replayEvent("session.tool.success", .{ .sessionID = scope, .assistantMessageID = message, .id = id, .executed = executed });
+            }
+        } else if (std.mem.eql(u8, status, "error")) {
+            const failure = state.object.get("error") orelse std.json.Value.null;
+            const kind = if (failure == .object) recordText(failure, "type") else "";
+            const text = if (failure == .object) recordText(failure, "message") else "";
+            try self.replayEvent("session.tool.failed", .{ .sessionID = scope, .assistantMessageID = message, .id = id, .@"error" = .{ .type = kind, .message = text }, .executed = executed });
+        }
     }
 
     fn partKey(self: *Reducer, reasoning: bool, data: native.TextData) Error![]const u8 {
@@ -1120,7 +1162,7 @@ const features = [_]Feature{
     .{ .key = "models.list", .level = "degraded", .reason = "the models this session is observed to run, projected from the native session record and durable step events; the server's own model.list route has no pinned response shape at this revision" },
     .{ .key = "protocol.initialize", .level = "emulated", .reason = "OpenCode has no initialize handshake; OpenAPI and catalogs describe the server" },
     .{ .key = "run.cancel", .level = "degraded", .reason = "interrupt is intent with an idle no-op; a running run settles at session.execution.interrupted and a queued one at session.inbox.cancelled" },
-    .{ .key = "run.reconciliation", .level = "emulated", .reason = "adapter-owned projection over the session events; when the event stream ends it subscribes again once and reconciles the open runs from the session record" },
+    .{ .key = "run.reconciliation", .level = "emulated", .reason = "adapter-owned projection over the session events; when the event stream ends it subscribes again, retrying with backoff within the request timeout, and reconciles the open runs from the session record" },
     .{ .key = "run.replay", .level = "degraded", .reason = "bounded adapter journal; the native durable cursor is exposed as the transcript cursor" },
     .{ .key = "run.resume", .level = "degraded", .reason = "conversation resume exists natively but is not exercised; OAP resume replays the adapter journal" },
     .{ .key = "run.status", .level = "native", .reason = "session.inbox.delivered starts a run and session.execution.* settles it" },
@@ -1629,6 +1671,82 @@ test "a replayed record fails a run the record shows failed, and one the server 
     try reducer.observe(try deliveredEvent(scratch, 2, stopped));
     try reducer.replay(try recordsOf(scratch, try std.fmt.allocPrint(scratch, "[{{\"id\":\"{s}\",\"type\":\"user\"}}]", .{stopped})), stopped, false);
     try testing.expectEqualStrings("opencode_execution_interrupted", errorCode(reducer.envelopes.items[reducer.envelopes.items.len - 1]));
+}
+
+fn callLabels(arena: std.mem.Allocator, reducer: *Reducer) ![]const []const u8 {
+    var labels: std.ArrayList([]const u8) = .empty;
+    for (reducer.envelopes.items) |envelope| {
+        const kind = envelope.object.get("type").?.string;
+        if (!std.mem.startsWith(u8, kind, "action.call.") or std.mem.eql(u8, kind, "action.call.progress")) continue;
+        const payload = payloadOf(envelope);
+        var detail: []const u8 = "";
+        if (payload.get("arguments_json")) |arguments| detail = try std.json.Stringify.valueAlloc(arena, arguments, .{});
+        if (payload.get("result")) |result| detail = try std.json.Stringify.valueAlloc(arena, result, .{});
+        if (payload.get("error")) |failure| detail = failure.object.get("message").?.string;
+        try labels.append(arena, try std.fmt.allocPrint(arena, "{s} {s} {s}", .{ kind, payload.get("name").?.string, detail }));
+    }
+    return labels.items;
+}
+
+fn countKind(reducer: *Reducer, kind: []const u8) usize {
+    var count: usize = 0;
+    for (reducer.envelopes.items) |envelope| {
+        if (std.mem.eql(u8, envelope.object.get("type").?.string, kind)) count += 1;
+    }
+    return count;
+}
+
+test "a replayed record runs and finishes a tool call the stream missed, and skips one still pending" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const scratch = arena.allocator();
+    var fake = Fake{};
+    var reducer = Reducer.init(&arena, .{ .native_id = native_session }, fake.client());
+    try reducer.open();
+    const admission = try reducer.submit("session", "hi", "auto");
+    const input = admission.message_ids[0];
+    try reducer.observe(try deliveredEvent(scratch, 1, input));
+    const records = try recordsOf(scratch, try std.fmt.allocPrint(scratch, "[{{\"id\":\"{s}\",\"type\":\"user\"}},{{\"id\":\"msg_a1\",\"type\":\"assistant\",\"content\":[{{\"type\":\"tool\",\"id\":\"call_1\",\"name\":\"shell\",\"executed\":false,\"state\":{{\"status\":\"completed\",\"input\":{{\"command\":\"echo hi\"}},\"content\":[{{\"type\":\"text\",\"text\":\"hi\"}}],\"metadata\":{{\"exit\":0}}}}}},{{\"type\":\"tool\",\"id\":\"call_2\",\"name\":\"read\",\"executed\":false,\"state\":{{\"status\":\"pending\",\"input\":{{}}}}}}],\"finish\":\"tool-calls\",\"tokens\":{{\"input\":1,\"output\":1,\"reasoning\":0,\"cache\":{{\"read\":0,\"write\":0}}}},\"time\":{{\"created\":2,\"completed\":3}}}},{{\"id\":\"msg_a2\",\"type\":\"assistant\",\"content\":[{{\"type\":\"text\",\"text\":\"done\"}}],\"finish\":\"stop\",\"tokens\":{{\"input\":1,\"output\":1,\"reasoning\":0,\"cache\":{{\"read\":0,\"write\":0}}}},\"time\":{{\"created\":4,\"completed\":5}}}},{{\"id\":\"msg_idle\",\"type\":\"idle\",\"outcome\":\"succeeded\"}}]", .{input}));
+    try reducer.replay(records, input, true);
+    try expectLabels(&.{
+        "action.call.requested shell {\"command\":\"echo hi\"}",
+        "action.call.started shell ",
+        "action.call.completed shell [{\"type\":\"text\",\"text\":\"hi\"}]",
+    }, try callLabels(scratch, &reducer));
+    try testing.expectEqualStrings("run.completed", reducer.envelopes.items[reducer.envelopes.items.len - 1].object.get("type").?.string);
+    try expectLabels(&.{"text:done"}, try finalLabels(scratch, &reducer));
+}
+
+test "a replayed record ends a live tool call and starts one the stream missed, and their live repeats are dropped" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const scratch = arena.allocator();
+    var fake = Fake{};
+    var reducer = Reducer.init(&arena, .{ .native_id = native_session }, fake.client());
+    try reducer.open();
+    const admission = try reducer.submit("session", "hi", "auto");
+    const input = admission.message_ids[0];
+    try reducer.observe(try deliveredEvent(scratch, 1, input));
+    try reducer.observe(try nativeEvent(scratch, 2, "tool.input.started", "{\"assistantMessageID\":\"msg_a1\",\"id\":\"call_1\",\"name\":\"shell\"}"));
+    try reducer.observe(try nativeEvent(scratch, 3, "tool.called", "{\"assistantMessageID\":\"msg_a1\",\"id\":\"call_1\",\"input\":{\"command\":\"rm\"},\"executed\":false}"));
+    const records = try recordsOf(scratch, try std.fmt.allocPrint(scratch, "[{{\"id\":\"{s}\",\"type\":\"user\"}},{{\"id\":\"msg_a1\",\"type\":\"assistant\",\"content\":[{{\"type\":\"tool\",\"id\":\"call_1\",\"name\":\"shell\",\"executed\":false,\"state\":{{\"status\":\"error\",\"input\":{{\"command\":\"rm\"}},\"error\":{{\"type\":\"aborted\",\"message\":\"declined\"}}}}}},{{\"type\":\"tool\",\"id\":\"call_2\",\"name\":\"read\",\"executed\":false,\"state\":{{\"status\":\"running\",\"input\":{{\"path\":\"a\"}}}}}}],\"time\":{{\"created\":2}}}}]", .{input}));
+    try reducer.replay(records, input, true);
+    try reducer.observe(try nativeEvent(scratch, 5, "tool.failed", "{\"assistantMessageID\":\"msg_a1\",\"id\":\"call_1\",\"error\":{\"type\":\"aborted\",\"message\":\"declined\"},\"executed\":false}"));
+    try reducer.observe(try nativeEvent(scratch, 6, "tool.progress", "{\"assistantMessageID\":\"msg_a1\",\"id\":\"call_1\",\"metadata\":{\"late\":true}}"));
+    try reducer.observe(try nativeEvent(scratch, 7, "tool.progress", "{\"assistantMessageID\":\"msg_a1\",\"id\":\"call_2\",\"metadata\":{\"line\":1}}"));
+    try reducer.observe(try nativeEvent(scratch, 8, "tool.success", "{\"assistantMessageID\":\"msg_a1\",\"id\":\"call_2\",\"content\":[{\"type\":\"text\",\"text\":\"a\"}],\"executed\":false}"));
+    try reducer.observe(try nativeEvent(scratch, 9, "step.ended", "{\"assistantMessageID\":\"msg_a1\",\"finish\":\"tool-calls\",\"cost\":0,\"tokens\":{\"input\":1,\"output\":1,\"reasoning\":0,\"cache\":{\"read\":0,\"write\":0}}}"));
+    try reducer.observe(try succeeded(scratch, 10));
+    try expectLabels(&.{
+        "action.call.requested shell {\"command\":\"rm\"}",
+        "action.call.started shell ",
+        "action.call.failed shell declined",
+        "action.call.requested read {\"path\":\"a\"}",
+        "action.call.started read ",
+        "action.call.completed read [{\"type\":\"text\",\"text\":\"a\"}]",
+    }, try callLabels(scratch, &reducer));
+    try testing.expectEqual(@as(usize, 1), countKind(&reducer, "action.call.progress"));
+    try testing.expectEqualStrings("run.completed", reducer.envelopes.items[reducer.envelopes.items.len - 1].object.get("type").?.string);
 }
 
 test "a second replay of the same record does not apply the first one again" {

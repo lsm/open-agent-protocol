@@ -163,7 +163,7 @@ func runOpenCodeCorpusCase(t *testing.T, root string, entry opencodeCorpusCaseEn
 	if definition.AdmissionRejected {
 		client.promptErr = &native.APIError{Status: 409, Tag: "ConflictError", Fields: map[string]json.RawMessage{}}
 	}
-	implementation, err := New(Config{Factory: ClientFactoryFunc(func(context.Context) (Client, error) { return client, nil }), Clock: &fakeClock{}, IDs: &fakeIDs{}, JournalCapacity: capacity})
+	implementation, err := New(Config{Factory: ClientFactoryFunc(func(context.Context) (Client, error) { return client, nil }), Clock: &fakeClock{}, IDs: &fakeIDs{}, JournalCapacity: capacity, RequestTimeout: 250 * time.Millisecond})
 	if err != nil {
 		t.Fatal(err)
 	}

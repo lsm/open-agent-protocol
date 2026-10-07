@@ -133,34 +133,46 @@ Because the stream does not replay, loss is detected by disconnection rather
 than by seq. Since revision `oap-v3`, both trees reconcile from the session's
 record instead of failing every open run:
 
-- When `/api/event` ends, the adapter subscribes again once and waits for
-  `server.connected` within the request timeout. Events that arrive on the new
-  stream are held until the reconciliation below has been reduced.
+- When `/api/event` ends, the adapter subscribes again (since revision
+  `oap-v5`, retrying as below; before it, once) and waits for
+  `server.connected`. A subscribe the server refuses, a stream that ends before
+  greeting, and a record or `active` read that fails are retried with backoff
+  (100 ms doubling to 2 s) until the request timeout has passed since the loss,
+  which covers a server restart. Events that arrive on the new stream are held
+  until the reconciliation below has been reduced.
 - It then reads `GET /api/session/<id>/message?order=desc` back to the oldest
   open run's input, up to 16 pages of 200. The record carries what the stream
   missed: `user` rows for delivered inputs, `assistant` rows whose `content`
   holds each ended text and reasoning part (text is written at `text.ended`,
-  reasoning carries `time.completed`), with `finish`, `error`, `cost` and
+  reasoning carries `time.completed`) and each tool call as a `tool` part
+  (`id`, `name`, `executed`, and a `state` whose `status` is `pending`,
+  `running`, `completed` or `error`, with `input`, and `content` or `error`
+  once it ended), with `finish`, `error`, `cost` and
   `tokens` once the step completed, and an `idle` row with `outcome`
   `succeeded`, `failed` or `interrupted` when the execution ended. A shutdown
   interruption writes no `idle` row.
 - The record becomes the native events it projects (`inbox.delivered`,
-  `text.ended`, `reasoning.ended`, `step.ended`, `step.failed`,
-  `execution.*`), and they go through the same reducer. A part's ordinal is its
+  `text.ended`, `reasoning.ended`, `tool.input.started` and `tool.called` for
+  a tool part that is `running` or ended, `tool.success` or `tool.failed` for
+  one that ended, `step.ended`, `step.failed`, `execution.*`), in the order
+  the parts are stored, and they go through the same reducer. A `pending`
+  tool part has not been called yet and is left to the live stream. A part's ordinal is its
   index among parts of its kind in that assistant row, which is how the runner
-  allocates them. A part, step or delivery the reducer has already seen live is
-  not applied twice, and a live repeat of one the record supplied is dropped.
+  allocates them. A part, step, tool call start or end, or delivery the
+  reducer has already seen live is not applied twice, and a live repeat of one
+  the record supplied is dropped, as is live progress for a call the record
+  ended.
 - If the newest turn has no `idle` row, `GET /api/session/active` decides: a
   running session is followed on the new stream, and one that is no longer
   running fails with `opencode_execution_interrupted`.
 - Only what cannot be reconciled still fails, with `opencode_stream_failed`:
-  a resubscribe that fails, a record that does not hold an open run's input,
-  or a read that errors. A queued input the record does not show yet stays
-  queued.
+  a server that still refuses the stream or the record when the request
+  timeout runs out, or a record that does not hold an open run's input, which
+  is not retried. A queued input the record does not show yet stays queued.
 
-What it does not recover: deltas sent during the gap (the ended text carries
-them), tool calls started or ended during the gap (an open tool settles with
-its run), and a race in which an execution ends between the resubscribe and
+What it does not recover: deltas and tool progress sent during the gap (the
+ended text and the call's result carry them), and a race in which an execution
+ends between the resubscribe and
 the record read, whose `execution.*` event can then arrive on the new stream
 after the record has already settled that turn.
 
@@ -226,7 +238,7 @@ observed-only.
 
 ## What the adapters do
 
-Both trees, under capability revision `opencode-v2.0.24-oap-v4`:
+Both trees, under capability revision `opencode-v2.0.24-oap-v5`:
 
 - **Auth.** `opencode serve` always requires basic auth: without
   `OPENCODE_PASSWORD` it generates a password and prints it. The registry entry

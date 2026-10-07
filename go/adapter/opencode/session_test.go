@@ -110,12 +110,16 @@ type fakeClient struct {
 	listErr   error
 	listAsked []string
 
-	pages     []httpapi.MessagePage
-	readErr   error
-	readAsked []string
+	pages        []httpapi.MessagePage
+	readErr      error
+	readFailures int
+	readAsked    []string
 
 	resubscription *fakeSubscription
 	subscribes     int
+	refusals       int
+	attempts       int
+	renew          bool
 
 	permissionReplies []string
 	replyErr          error
@@ -235,6 +239,10 @@ func (f *fakeClient) Sessions(ctx context.Context, directory, cursor string, lim
 func (f *fakeClient) Messages(_ context.Context, session native.SessionID, cursor string, limit int, newestFirst bool) (httpapi.MessagePage, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.readFailures > 0 {
+		f.readFailures--
+		return httpapi.MessagePage{}, errors.New("connection refused")
+	}
 	f.readAsked = append(f.readAsked, fmt.Sprintf("%s|%s|%d", session, cursor, limit))
 	if newestFirst {
 		f.readAsked[len(f.readAsked)-1] += "|desc"
@@ -278,6 +286,14 @@ func (f *fakeClient) Subscribe(ctx context.Context, _ native.SessionID) (Subscri
 	defer f.mu.Unlock()
 	select {
 	case <-f.subscription.done:
+		f.attempts++
+		if f.refusals > 0 {
+			f.refusals--
+			return nil, errors.New("connection refused")
+		}
+		if f.resubscription == nil && f.renew {
+			f.resubscription = &fakeSubscription{events: f.events, done: make(chan struct{})}
+		}
 		if f.resubscription == nil {
 			return nil, errors.New("connection refused")
 		}
@@ -379,8 +395,13 @@ func TestProbeAdvertisesQueueAndRefusesSteer(t *testing.T) {
 
 func openTest(t *testing.T, client *fakeClient, capacity int) (base.Session, *fakeSubscription) {
 	t.Helper()
+	return openTestWithin(t, client, capacity, 250*time.Millisecond)
+}
+
+func openTestWithin(t *testing.T, client *fakeClient, capacity int, timeout time.Duration) (base.Session, *fakeSubscription) {
+	t.Helper()
 	subscription := client.subscription
-	adapter, err := New(Config{Factory: ClientFactoryFunc(func(context.Context) (Client, error) { return client, nil }), Clock: &fakeClock{}, IDs: &fakeIDs{}, JournalCapacity: capacity})
+	adapter, err := New(Config{Factory: ClientFactoryFunc(func(context.Context) (Client, error) { return client, nil }), Clock: &fakeClock{}, IDs: &fakeIDs{}, JournalCapacity: capacity, RequestTimeout: timeout})
 	if err != nil {
 		t.Fatal(err)
 	}

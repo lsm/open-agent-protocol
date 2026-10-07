@@ -1,5 +1,5 @@
 {
-  "capability_revision": "opencode-v2.0.24-oap-v4",
+  "capability_revision": "opencode-v2.0.24-oap-v5",
   "capabilities": {
     "endpoint": {
       "id": "opencode.server",
@@ -44,7 +44,7 @@
       },
       "run.reconciliation": {
         "level": "emulated",
-        "reason": "adapter-owned projection over the session events; when the event stream ends it subscribes again once and reconciles the open runs from the session record"
+        "reason": "adapter-owned projection over the session events; when the event stream ends it subscribes again, retrying with backoff within the request timeout, and reconciles the open runs from the session record"
       },
       "run.replay": {
         "level": "degraded",
