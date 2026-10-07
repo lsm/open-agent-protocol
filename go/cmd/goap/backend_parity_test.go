@@ -113,7 +113,7 @@ func exchangeWithChild(t *testing.T, fixture, backend string, scenario []string,
 	cmd.Dir = work
 	out := settledExchange(t, cmd, scenario)
 	if server != nil {
-		return out, server.transcript()
+		return out, messageEntropy.ReplaceAllString(server.transcript(), "msg_oap@ENTROPY@${1}")
 	}
 	written, err := os.ReadFile(filepath.Join(work, "stdin.log"))
 	if err != nil && !os.IsNotExist(err) {
@@ -123,6 +123,8 @@ func exchangeWithChild(t *testing.T, fixture, backend string, scenario []string,
 }
 
 var requestEntropy = regexp.MustCompile(`\b(req_[0-9]+)_[0-9a-f]{8}\b`)
+
+var messageEntropy = regexp.MustCompile(`\bmsg_oap[0-9a-f]{16}([0-9]{16})\b`)
 
 var turnEntropy = regexp.MustCompile(`\bturn-[0-9a-f]{16}-([0-9]+)\b`)
 
@@ -303,7 +305,7 @@ func settledExchange(t *testing.T, cmd *exec.Cmd, lines []string) []string {
 	_ = cmd.Wait()
 	normalized := make([]string, 0, len(out))
 	for _, line := range normalizeSelectedNativeBindings(t, out) {
-		normalized = append(normalized, normalizedLine(t, requestEntropy.ReplaceAllString(line, "${1}_@ENTROPY@")))
+		normalized = append(normalized, normalizedLine(t, messageEntropy.ReplaceAllString(requestEntropy.ReplaceAllString(line, "${1}_@ENTROPY@"), "msg_oap@ENTROPY@${1}")))
 	}
 	return normalized
 }

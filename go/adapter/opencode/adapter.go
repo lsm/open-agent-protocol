@@ -2,6 +2,8 @@ package opencode
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"github.com/lsm/open-agent-protocol/harnesses"
@@ -91,7 +93,7 @@ func New(config Config) (*Adapter, error) {
 		config.Clock = systemClock{}
 	}
 	if config.IDs == nil {
-		config.IDs = &sequenceIDs{}
+		config.IDs = newSequenceIDs()
 	}
 	if config.JournalCapacity <= 0 {
 		config.JournalCapacity = defaultJournalCap
@@ -127,7 +129,7 @@ func advertisedFeatures() map[string]protocol.FeatureSupport {
 		"run.status":                     {Level: protocol.SupportNative, Reason: "session.inbox.delivered starts a run and session.execution.* settles it"},
 		"run.cancel":                     {Level: protocol.SupportDegraded, Reason: "interrupt is intent with an idle no-op; a running run settles at session.execution.interrupted and a queued one at session.inbox.cancelled"},
 		"run.resume":                     {Level: protocol.SupportDegraded, Reason: "conversation resume exists natively but is not exercised; OAP resume replays the adapter journal"},
-		"run.reconciliation":             {Level: protocol.SupportEmulated, Reason: "adapter-owned projection over the session events; the event stream does not replay"},
+		"run.reconciliation":             {Level: protocol.SupportEmulated, Reason: "adapter-owned projection over the session events; when the event stream ends it subscribes again once and reconciles the open runs from the session record"},
 		"run.replay":                     {Level: protocol.SupportDegraded, Reason: "bounded adapter journal; the native durable cursor is exposed as the transcript cursor"},
 		"action.tools":                   {Level: protocol.SupportNative, Reason: "tool.called/progress/success/failed lifecycle observed natively"},
 		"action.tools.execute":           {Level: protocol.SupportUnavailable, Reason: "tools execute server-side; no client-hosted execution surface"},
@@ -283,13 +285,22 @@ type systemClock struct{}
 
 func (systemClock) Now() time.Time { return time.Now() }
 
-type sequenceIDs struct{ next atomic.Uint64 }
+type sequenceIDs struct {
+	next    atomic.Uint64
+	message string
+}
+
+func newSequenceIDs() *sequenceIDs {
+	var nonce [8]byte
+	_, _ = rand.Read(nonce[:])
+	return &sequenceIDs{message: "msg_oap" + hex.EncodeToString(nonce[:])}
+}
 
 func (g *sequenceIDs) NewID(kind string) string {
 	n := g.next.Add(1)
 	switch kind {
 	case "opencode-message":
-		return fmt.Sprintf("msg_oap%016d", n)
+		return fmt.Sprintf("%s%016d", g.message, n)
 	default:
 		return fmt.Sprintf("%s-%d", kind, n)
 	}

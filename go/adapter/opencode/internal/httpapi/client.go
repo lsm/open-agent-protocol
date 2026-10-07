@@ -284,11 +284,14 @@ type MessagePage struct {
 	} `json:"cursor"`
 }
 
-func (c *Client) Messages(ctx context.Context, session native.SessionID, cursor string, limit int) (MessagePage, error) {
+func (c *Client) Messages(ctx context.Context, session native.SessionID, cursor string, limit int, newestFirst bool) (MessagePage, error) {
 	query := url.Values{"limit": {strconv.Itoa(limit)}}
-	if cursor != "" {
+	switch {
+	case cursor != "":
 		query.Set("cursor", cursor)
-	} else {
+	case newestFirst:
+		query.Set("order", "desc")
+	default:
 		query.Set("order", "asc")
 	}
 	var page MessagePage

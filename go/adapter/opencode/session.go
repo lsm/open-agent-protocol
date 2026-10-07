@@ -64,6 +64,9 @@ type session struct {
 	toolNames map[string]string
 	reduced   map[int64]bool
 
+	reconciled map[native.MessageID]bool
+	replaying  bool
+
 	models    []string
 	journal   []protocol.Envelope
 	lastSeq   int64
@@ -99,6 +102,8 @@ type runState struct {
 	nativeMessageID native.MessageID
 	parts           []protocol.ContentPart
 	streamed        map[partKey]*strings.Builder
+	endedParts      [2]map[partKey]bool
+	steps           [2]map[native.MessageID]bool
 	usage           protocol.Usage
 	cost            float64
 	lastFinish      string
@@ -395,25 +400,35 @@ func activeRunEntry(run *runState, position int) protocol.ActiveRun {
 
 func (s *session) dispatch() {
 	for {
+		s.mu.Lock()
+		events, done := s.events, s.subscription.Done()
+		s.mu.Unlock()
 		select {
-		case event := <-s.events:
+		case event := <-events:
 			s.transitionMu.Lock()
 			s.handleEventLocked(event)
 			s.transitionMu.Unlock()
-		case <-s.subscription.Done():
-
-			for {
-				select {
-				case event := <-s.events:
-					s.transitionMu.Lock()
-					s.handleEventLocked(event)
-					s.transitionMu.Unlock()
-				default:
-					s.transportFailed()
-					return
-				}
+		case <-done:
+			s.drain(events)
+			if s.recover() {
+				continue
 			}
+			s.transportFailed()
+			return
 		case <-s.stop:
+			return
+		}
+	}
+}
+
+func (s *session) drain(events <-chan native.Event) {
+	for {
+		select {
+		case event := <-events:
+			s.transitionMu.Lock()
+			s.handleEventLocked(event)
+			s.transitionMu.Unlock()
+		default:
 			return
 		}
 	}
@@ -450,7 +465,18 @@ func (s *session) handleEventLocked(event native.Event) {
 			s.failActive(run, "opencode_invalid_inbox_event", err.Error())
 			return
 		}
-		s.delivered(data.InboxID)
+		s.mu.Lock()
+		repeated := s.reconciled[data.InboxID]
+		if s.replaying {
+			if s.reconciled == nil {
+				s.reconciled = map[native.MessageID]bool{}
+			}
+			s.reconciled[data.InboxID] = true
+		}
+		s.mu.Unlock()
+		if !repeated {
+			s.delivered(data.InboxID)
+		}
 	case native.TypeInboxCancelled:
 		var data native.InboxRefData
 		if err := native.DecodeData(event, &data); err != nil {
@@ -540,6 +566,10 @@ func (s *session) handleEventLocked(event native.Event) {
 		}
 		<-run.admitted
 		s.mu.Lock()
+		if !sighted(&run.steps, data.AssistantMessage, s.replaying) {
+			s.mu.Unlock()
+			return
+		}
 		if !run.terminal {
 			run.lastFinish = data.Finish
 			run.cost += data.Cost
@@ -559,6 +589,10 @@ func (s *session) handleEventLocked(event native.Event) {
 		}
 		<-run.admitted
 		s.mu.Lock()
+		if !sighted(&run.steps, data.AssistantMessage, s.replaying) {
+			s.mu.Unlock()
+			return
+		}
 		if !run.terminal && !run.cancelRequested {
 			failure := data.Error
 			run.failure = &failure
@@ -606,6 +640,10 @@ func (s *session) handleEventLocked(event native.Event) {
 		<-run.admitted
 		key := partKey{message: data.AssistantMessage, ordinal: data.Ordinal, reasoning: event.Type == native.TypeReasoningEnded}
 		s.mu.Lock()
+		if !sighted(&run.endedParts, key, s.replaying) {
+			s.mu.Unlock()
+			return
+		}
 		terminal := run.terminal
 		rest := data.Text
 		if !terminal {
@@ -696,6 +734,21 @@ func (s *session) handleEventLocked(event native.Event) {
 			s.failActive(run, "opencode_unknown_event", fmt.Sprintf("unknown event %q", event.Type))
 		}
 	}
+}
+
+func sighted[K comparable](seen *[2]map[K]bool, key K, replaying bool) bool {
+	own, other := 0, 1
+	if replaying {
+		own, other = 1, 0
+	}
+	if seen[other][key] || replaying && seen[own][key] {
+		return false
+	}
+	if seen[own] == nil {
+		seen[own] = map[K]bool{}
+	}
+	seen[own][key] = true
+	return true
 }
 
 func textPart(reasoning bool, text string) protocol.ContentPart {
@@ -1113,13 +1166,13 @@ func (s *session) Close(ctx context.Context) error {
 	s.state.ActiveRunID = ""
 	s.state.UpdatedAtMS = s.clock.Now().UnixMilli()
 	subscribers := s.allSubscribersLocked()
-	subCancel := s.subCancel
+	subCancel, subscription := s.subCancel, s.subscription
 	s.mu.Unlock()
 	s.stopOnce.Do(func() { close(s.stop) })
 	if subCancel != nil {
 		subCancel()
 	}
-	_ = s.subscription.Close()
+	_ = subscription.Close()
 	err := s.client.Close()
 	for _, stream := range subscribers {
 		close(stream)

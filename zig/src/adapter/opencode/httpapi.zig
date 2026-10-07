@@ -338,11 +338,11 @@ pub fn sessions(arena: std.mem.Allocator, endpoint: Endpoint, directory: []const
     return build(arena, endpoint, "GET", "/api/session", query, "application/json", null);
 }
 
-pub fn messages(arena: std.mem.Allocator, endpoint: Endpoint, session: []const u8, cursor: []const u8, limit: usize) std.mem.Allocator.Error!Request {
+pub fn messages(arena: std.mem.Allocator, endpoint: Endpoint, session: []const u8, cursor: []const u8, limit: usize, newest_first: bool) std.mem.Allocator.Error!Request {
     const query = if (cursor.len > 0)
         try std.fmt.allocPrint(arena, "cursor={s}&limit={d}", .{ try queryEscape(arena, cursor), limit })
     else
-        try std.fmt.allocPrint(arena, "limit={d}&order=asc", .{limit});
+        try std.fmt.allocPrint(arena, "limit={d}&order={s}", .{ limit, if (newest_first) "desc" else "asc" });
     return build(arena, endpoint, "GET", try sessionPath(arena, session, "/message"), query, "application/json", null);
 }
 
@@ -755,8 +755,9 @@ test "a message page is asked oldest first, then by its cursor alone, and keeps 
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const scratch = arena.allocator();
-    try testing.expectEqualStrings("/api/session/ses%20a/message?limit=200&order=asc", (try messages(scratch, .{}, "ses a", "", 200)).target);
-    try testing.expectEqualStrings("/api/session/ses%20a/message?cursor=n%2B1&limit=200", (try messages(scratch, .{}, "ses a", "n+1", 200)).target);
+    try testing.expectEqualStrings("/api/session/ses%20a/message?limit=200&order=asc", (try messages(scratch, .{}, "ses a", "", 200, false)).target);
+    try testing.expectEqualStrings("/api/session/ses%20a/message?limit=200&order=desc", (try messages(scratch, .{}, "ses a", "", 200, true)).target);
+    try testing.expectEqualStrings("/api/session/ses%20a/message?cursor=n%2B1&limit=200", (try messages(scratch, .{}, "ses a", "n+1", 200, true)).target);
     const page = try messagesResult(scratch, .{ .status = 200, .body = "{\"data\":[{\"type\":\"user\",\"text\":\"x\",\"anything\":1},7],\"cursor\":{\"next\":\"n1\"}}" }, "ses_a", 0);
     try testing.expectEqual(@as(usize, 2), page.ok.messages.len);
     try testing.expectEqualStrings("n1", page.ok.next);
