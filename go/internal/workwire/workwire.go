@@ -146,7 +146,7 @@ func (f *Front) unheld(ctx context.Context, id string) (binding.Entry, bool, *Re
 func (f *Front) stateRefusal(err error, id string) *Refusal {
 	var closed *serve.SessionClosedError
 	if errors.As(err, &closed) || errors.Is(err, base.ErrSessionClosed) {
-		return &Refusal{Code: "session_closed", Message: fmt.Sprintf("session %q is closed", id)}
+		return &Refusal{Code: "session_closed", Message: fmt.Sprintf("the session %q is closed", id)}
 	}
 	return &Refusal{Code: "unknown_session", Message: fmt.Sprintf("no session %q", id)}
 }

@@ -382,3 +382,20 @@ func TestWorkStartRefusesToAdoptASessionItCannotTellIsNotRunning(t *testing.T) {
 		})
 	}
 }
+
+func TestWorkRefusesAClosedOrUnknownSessionInTheWordsZigUses(t *testing.T) {
+	front := &Front{}
+	for _, c := range []struct {
+		err     error
+		code    string
+		message string
+	}{
+		{base.ErrSessionClosed, "session_closed", `the session "s1" is closed`},
+		{base.ErrUnknownSession, "unknown_session", `no session "s1"`},
+	} {
+		refusal := front.stateRefusal(c.err, "s1")
+		if refusal.Code != c.code || refusal.Message != c.message {
+			t.Fatalf("%v refused %s %q, want %s %q", c.err, refusal.Code, refusal.Message, c.code, c.message)
+		}
+	}
+}
