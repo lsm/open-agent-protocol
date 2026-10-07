@@ -2372,8 +2372,8 @@ fn printUsage(file: std.Io.File) !void {
     try compat.stdio.writeAll(file,
         \\Usage:
         \\  oapx                                              Start the terminal UI
-        \\  oapx --tui --context-window <tokens>            Start the terminal UI on a window
-        \\  oapx tui [--context-window <tokens>]          The terminal UI over OAP, through the in-process endpoint (experimental)
+        \\  oapx tui [--context-window <tokens>]          The terminal UI, over OAP through the in-process endpoint; what oapx alone starts
+        \\  oapx --tui [--context-window <tokens>]        The terminal UI on its own loop, without OAP (superseded by oapx tui)
         \\  oapx tui --attach <url> [--adapter <name>]    The terminal UI over a running oapx serve's HTTP wire; adapter defaults to oapx
         \\                                                   (a whole number, optionally with k or m)
         \\  oapx run [--agent] [--storage] [--model <id>] "<prompt>"
@@ -6581,7 +6581,10 @@ pub fn main(init: std.process.Init) !void {
     defer allocator.free(args);
 
     if (args.len <= 1) {
-        try runTui(allocator, init.io, &.{}, stderr);
+        runTuiOverOap(allocator, init.io, &.{}, stderr) catch |err| switch (err) {
+            error.InvalidArgument => return error.InvalidArgument,
+            else => return err,
+        };
         return;
     }
 

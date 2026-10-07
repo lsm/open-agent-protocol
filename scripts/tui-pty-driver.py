@@ -23,8 +23,8 @@
 # trust store holds) and is reported as skipped without it.
 #
 # Every sweep scenario runs on both terminal UIs by default: `oapx --tui`, the
-# local loop, and `oapx tui`, the same UI over OAP through the in-process
-# endpoint (--tui-mode local|oap|both). With both, the driver also compares the
+# local loop, and bare `oapx`, which starts `oapx tui`, the same UI over OAP
+# through the in-process endpoint (--tui-mode local|oap|both). With both, the driver also compares the
 # two runs' saved session records, normalized to what a user would see, and
 # fails on any difference. That comparison is the parity gate: `oapx tui` can
 # replace `--tui` when every scenario passes on both and no record differs.
@@ -441,7 +441,7 @@ class PtySession:
                 env.update(extra_env or {})
                 self.spawned_at = time.monotonic()
                 self.proc = subprocess.Popen(
-                    [self.binary] + (argv or list(getattr(args, "tui_argv", ["--tui"]))),
+                    [self.binary] + (argv if argv is not None else list(getattr(args, "tui_argv", ["--tui"]))),
                     stdin=slave,
                     stdout=slave,
                     stderr=slave,
@@ -1870,7 +1870,7 @@ def run_core_loop(args, repo_root):
 
 def path_args(args, path):
     scoped = argparse.Namespace(**vars(args))
-    scoped.tui_argv = ["tui"] if path == "oap" else ["--tui"]
+    scoped.tui_argv = [] if path == "oap" else ["--tui"]
     if path == "oap":
         scoped.output_dir = os.path.join(args.output_dir, "oap")
     return scoped

@@ -28,7 +28,7 @@ install: build
 	tmp="$(PREFIX)/bin/.oapx.install.$$$$" && trap 'rm -f "$$tmp"' EXIT && cp zig/zig-out/bin/oapx "$$tmp" && mv -f "$$tmp" "$(PREFIX)/bin/oapx"
 
 tui: build
-	./zig/zig-out/bin/oapx --tui $(ARGS)
+	./zig/zig-out/bin/oapx $(ARGS)
 
 test:
 	$(ZIG) build --build-file zig/build.zig test
