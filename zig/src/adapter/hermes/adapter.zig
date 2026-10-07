@@ -148,6 +148,9 @@ pub const Session = struct {
             return alone.listSessions(arena, request, refusal);
         }
         defer owner.lister_lock.unlock();
+        defer if (owner.lister) |kept| {
+            _ = kept.reducer_arena.reset(.retain_capacity);
+        };
         const reused = owner.lister != null;
         if (owner.lister == null) owner.lister = try listing(owner, arena, refusal);
         if (owner.lister.?.listSessions(arena, request, refusal)) |found| return found else |err| {
@@ -1454,4 +1457,22 @@ test "a listing gateway that breaks on its first call is not started again" {
     var refusal = contract.Refusal{};
     try testing.expectError(error.BackendFailed, probe.adapter.adapter().nativeList(probe.arena.allocator(), .{ .limit = 1 }, &refusal).?);
     try testing.expectEqual(@as(usize, 1), try launchesOf(&probe));
+}
+
+test "the kept listing gateway holds no more memory after many listings than after one" {
+    var probe: Probe = undefined;
+    comptime var script: []const u8 = counted_prelude;
+    inline for (1..41) |id| {
+        script = script ++ std.fmt.comptimePrint("take; printf '{{\"id\":{d},\"jsonrpc\":\"2.0\",\"result\":{{\"sessions\":[{{\"id\":\"key{d:0>4}\",\"title\":\"a listing title long enough to take some room in the arena\"}}]}}}}\\n'\n", .{ id, id });
+    }
+    try probe.init(script ++ "while take; do :; done\n");
+    defer probe.deinit();
+    var refusal = contract.Refusal{};
+    var scratch = std.heap.ArenaAllocator.init(testing.allocator);
+    defer scratch.deinit();
+    _ = try probe.adapter.adapter().nativeList(scratch.allocator(), .{ .limit = 1 }, &refusal).?;
+    const after_one = probe.adapter.lister.?.reducer_arena.queryCapacity();
+    for (0..39) |_| _ = try probe.adapter.adapter().nativeList(scratch.allocator(), .{ .limit = 1 }, &refusal).?;
+    try testing.expectEqual(@as(usize, 1), try launchesOf(&probe));
+    try testing.expect(probe.adapter.lister.?.reducer_arena.queryCapacity() <= after_one);
 }
