@@ -1055,7 +1055,13 @@ pub const Session = struct {
                     try ended.put("error", failure.value());
                     try self.emit(run, "action.call.failed", ended.value(), false);
                 } else {
-                    try ended.put("result", try jsonOrString(a, payload.result_json.slice()));
+                    const details = try jsonOrString(a, payload.result_json.slice());
+                    if (payload.result_text.slice().len > 0) {
+                        var result = Payload.init(a);
+                        try result.put("text", .{ .string = payload.result_text.slice() });
+                        try result.put("details", details);
+                        try ended.put("result", result.value());
+                    } else try ended.put("result", details);
                     try self.emit(run, "action.call.completed", ended.value(), false);
                 }
             },

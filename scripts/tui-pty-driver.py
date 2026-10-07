@@ -1195,7 +1195,7 @@ def scenario_steer_abort(args):
     return run
 
 
-ALLOW_SHELL_ARGS = '{"description":"print a probe marker","workspace_root":"/tmp","command":"printf allow-probe-output"}'
+ALLOW_SHELL_ARGS = '{"description":"print a probe marker","workspace_root":"/tmp","command":"printf allow-%s probe-output"}'
 
 
 def scenario_approval_deny(args):
