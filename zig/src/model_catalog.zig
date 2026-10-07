@@ -1732,7 +1732,7 @@ const anthropic_known_models = [_]AnthropicSpec{
     .{ .prefix = "claude-sonnet-5-5", .cost = .{ .input = 2.0, .output = 10.0, .cache_read = 0.10, .cache_write = 2.5 }, .max_tokens = 128_000 },
     .{ .prefix = "claude-sonnet-5", .cost = .{ .input = 2.0, .output = 10.0, .cache_read = 0.20, .cache_write = 2.5 }, .max_tokens = 128_000 },
     .{ .prefix = "claude-sonnet-4-6", .cost = .{ .input = 3.0, .output = 15.0, .cache_read = 0.30, .cache_write = 3.75 }, .max_tokens = 128_000 },
-    .{ .prefix = "claude-haiku-5-5", .cost = .{ .input = 0.10, .output = 0.50, .cache_read = 0.01, .cache_write = 0.125 }, .max_tokens = 128_000 },
+    .{ .prefix = "claude-haiku-5-5", .cost = .{ .input = 0.10, .output = 0.50, .cache_read = 0.01, .cache_write = 0.125, .tier = .{ .above_input_tokens = 100_000, .rates = .{ .input = 0.50, .output = 2.50, .cache_read = 0.05, .cache_write = 0.625 } } }, .max_tokens = 128_000 },
     .{ .prefix = "claude-haiku-4-5", .cost = .{ .input = 1.0, .output = 5.0, .cache_read = 0.10, .cache_write = 1.25 }, .max_tokens = 64_000 },
 };
 
@@ -2542,6 +2542,8 @@ test "a Claude id takes its own row's price, not the price of an older id it ext
     try std.testing.expectEqual(@as(f64, 4.0), anthropicSpec("claude-opus-5-5").?.cost.input);
     try std.testing.expectEqual(@as(f64, 5.0), anthropicSpec("claude-opus-5").?.cost.input);
     try std.testing.expectEqual(@as(f64, 0.10), anthropicSpec("claude-haiku-5-5").?.cost.input);
+    try std.testing.expectEqual(@as(f64, 2.50), anthropicSpec("claude-haiku-5-5").?.cost.ratesFor(100_001).output);
+    try std.testing.expectEqual(@as(f64, 0.50), anthropicSpec("claude-haiku-5-5").?.cost.ratesFor(100_000).output);
     try std.testing.expectEqual(@as(f64, 0.10), anthropicSpec("claude-sonnet-5-5").?.cost.cache_read);
     try std.testing.expectEqual(@as(f64, 0.20), anthropicSpec("claude-sonnet-5").?.cost.cache_read);
     try std.testing.expectEqual(@as(f64, 0.25), anthropicSpec("claude-fable-5-1").?.cost.cache_read);
