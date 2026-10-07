@@ -742,7 +742,7 @@ pub const Session = struct {
         try started.put("status", .{ .string = "running" });
         if (run.model_id.len > 0) try started.put("model_id", .{ .string = run.model_id });
         try started.put("started_at_ms", .{ .integer = self.owner.now_ms() });
-        const prepared = try self.prepareEvent(run, "run.started", started.value(), false);
+        const prepared = try self.prepareEvent(run, "run.started", started.value(), false, "");
         errdefer {
             self.gpa.free(prepared.line);
             self.gpa.free(prepared.kept);
@@ -1056,7 +1056,7 @@ pub const Session = struct {
                     try self.emit(run, "action.call.failed", ended.value(), false);
                 } else {
                     try ended.put("result", try jsonOrString(a, payload.result_json.slice()));
-                    try self.emit(run, "action.call.completed", ended.value(), false);
+                    try self.emitWithText(run, "action.call.completed", ended.value(), payload.result_text.slice());
                 }
             },
             .turn_end => |payload| run.stop_reason = stopReasonText(payload.stop_reason),
@@ -1143,10 +1143,15 @@ pub const Session = struct {
 
     fn emit(self: *Session, run: *Run, kind: []const u8, payload: std.json.Value, terminal: bool) contract.Failure!void {
         if (run.terminal) return;
-        self.publishEvent(run, try self.prepareEvent(run, kind, payload, terminal), kind, terminal);
+        self.publishEvent(run, try self.prepareEvent(run, kind, payload, terminal, ""), kind, terminal);
     }
 
-    fn prepareEvent(self: *Session, run: *Run, kind: []const u8, payload: std.json.Value, terminal: bool) contract.Failure!PreparedEvent {
+    fn emitWithText(self: *Session, run: *Run, kind: []const u8, payload: std.json.Value, result_text: []const u8) contract.Failure!void {
+        if (run.terminal) return;
+        self.publishEvent(run, try self.prepareEvent(run, kind, payload, false, result_text), kind, false);
+    }
+
+    fn prepareEvent(self: *Session, run: *Run, kind: []const u8, payload: std.json.Value, terminal: bool, result_text: []const u8) contract.Failure!PreparedEvent {
         var scratch = std.heap.ArenaAllocator.init(self.gpa);
         defer scratch.deinit();
         const a = scratch.allocator();
@@ -1167,11 +1172,12 @@ pub const Session = struct {
             if (payload.object.get("tool_call_id")) |tool_call_id| try envelope.put("tool_call_id", tool_call_id);
         }
         try envelope.put("capability_revision", .{ .string = capability_revision });
-        if (terminal and run.context_tokens > 0) {
-            var context = Payload.init(a);
-            try context.put("context_tokens", .{ .integer = @intCast(run.context_tokens) });
+        var ours = Payload.init(a);
+        if (terminal and run.context_tokens > 0) try ours.put("context_tokens", .{ .integer = @intCast(run.context_tokens) });
+        if (result_text.len > 0) try ours.put("result_text", .{ .string = result_text });
+        if (ours.map.count() > 0) {
             var extensions = Payload.init(a);
-            try extensions.put(settings_key, context.value());
+            try extensions.put(settings_key, ours.value());
             try envelope.put("extensions", extensions.value());
         }
         const line = try json_encode.valueAlloc(self.gpa, envelope.value());
