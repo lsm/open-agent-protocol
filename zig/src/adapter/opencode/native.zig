@@ -184,13 +184,14 @@ pub const ExecutionInterruptedData = struct { reason: []const u8 = "" };
 pub const StepStartedData = struct { model: ModelRef = .{} };
 
 pub const StepEndedData = struct {
+    message: []const u8 = "",
     finish: []const u8 = "",
     cost: f64 = 0,
     input_tokens: f64 = 0,
     output_tokens: f64 = 0,
 };
 
-pub const StepFailedData = struct { failure: ErrorBlock = .{}, cost: f64 = 0 };
+pub const StepFailedData = struct { message: []const u8 = "", failure: ErrorBlock = .{}, cost: f64 = 0 };
 
 pub const TextData = struct { message: []const u8 = "", ordinal: i64 = 0, text: []const u8 = "" };
 
@@ -890,6 +891,7 @@ pub fn decodeStepStarted(arena: std.mem.Allocator, event: Event, diag: *Diagnost
 pub fn decodeStepEnded(arena: std.mem.Allocator, event: Event, diag: *Diagnostic) Error!StepEndedData {
     const document = try decodeData(arena, event, &step_ended_fields, diag);
     return .{
+        .message = textAt(document, &.{"assistantMessageID"}),
         .finish = textAt(document, &.{"finish"}),
         .cost = floatAt(document, &.{"cost"}),
         .input_tokens = floatAt(document, &.{ "tokens", "input" }),
@@ -899,7 +901,7 @@ pub fn decodeStepEnded(arena: std.mem.Allocator, event: Event, diag: *Diagnostic
 
 pub fn decodeStepFailed(arena: std.mem.Allocator, event: Event, diag: *Diagnostic) Error!StepFailedData {
     const document = try decodeData(arena, event, &step_failed_fields, diag);
-    return .{ .failure = errorOf(document), .cost = floatAt(document, &.{"cost"}) };
+    return .{ .message = textAt(document, &.{"assistantMessageID"}), .failure = errorOf(document), .cost = floatAt(document, &.{"cost"}) };
 }
 
 pub fn decodePartEnded(arena: std.mem.Allocator, event: Event, diag: *Diagnostic) Error!TextData {

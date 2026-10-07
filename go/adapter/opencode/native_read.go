@@ -17,7 +17,7 @@ const (
 )
 
 type messageReader interface {
-	Messages(ctx context.Context, session native.SessionID, cursor string, limit int) (httpapi.MessagePage, error)
+	Messages(ctx context.Context, session native.SessionID, cursor string, limit int, newestFirst bool) (httpapi.MessagePage, error)
 }
 
 type storedMessage struct {
@@ -47,7 +47,7 @@ func (a *Adapter) NativeRead(ctx context.Context, request base.NativeReadRequest
 	var messages []json.RawMessage
 	cursor := ""
 	for pages := 0; pages < nativeReadPagesMax; pages++ {
-		page, err := reader.Messages(ctx, native.SessionID(request.NativeID), cursor, nativeReadPage)
+		page, err := reader.Messages(ctx, native.SessionID(request.NativeID), cursor, nativeReadPage, false)
 		if err != nil {
 			return nil, fmt.Errorf("read OpenCode session: %w", err)
 		}

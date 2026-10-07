@@ -112,6 +112,9 @@ type fakeClient struct {
 	pages     []httpapi.MessagePage
 	readErr   error
 	readAsked []string
+
+	resubscription *fakeSubscription
+	subscribes     int
 }
 
 func newFakeClient() *fakeClient {
@@ -211,10 +214,13 @@ func (f *fakeClient) Sessions(ctx context.Context, directory string, limit int) 
 	}
 	return listed, err
 }
-func (f *fakeClient) Messages(_ context.Context, session native.SessionID, cursor string, limit int) (httpapi.MessagePage, error) {
+func (f *fakeClient) Messages(_ context.Context, session native.SessionID, cursor string, limit int, newestFirst bool) (httpapi.MessagePage, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.readAsked = append(f.readAsked, fmt.Sprintf("%s|%s|%d", session, cursor, limit))
+	if newestFirst {
+		f.readAsked[len(f.readAsked)-1] += "|desc"
+	}
 	if f.readErr != nil || len(f.readAsked) > len(f.pages) {
 		return httpapi.MessagePage{}, f.readErr
 	}
@@ -249,6 +255,17 @@ func (f *fakeClient) Subscribe(ctx context.Context, _ native.SessionID) (Subscri
 	if stalls {
 		<-ctx.Done()
 		return nil, ctx.Err()
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	select {
+	case <-f.subscription.done:
+		if f.resubscription == nil {
+			return nil, errors.New("connection refused")
+		}
+		f.subscription, f.resubscription = f.resubscription, nil
+		f.subscribes++
+	default:
 	}
 	return f.subscription, nil
 }
