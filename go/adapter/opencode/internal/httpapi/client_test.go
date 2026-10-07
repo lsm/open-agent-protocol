@@ -347,20 +347,23 @@ func TestSessionsAsksForTheDirectorysRootSessionsNewestFirstAndRefusesARowThatIs
 	}
 }
 
-func TestMessagesAsksOldestFirstAndThenFollowsTheCursorAlone(t *testing.T) {
+func TestMessagesAsksInTheOrderGivenAndThenFollowsTheCursorAlone(t *testing.T) {
 	var targets []string
 	client := newTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		targets = append(targets, r.URL.RequestURI())
 		_, _ = w.Write([]byte(`{"data":[{"id":"m1","type":"user","text":"x","time":{"created":1}}],"cursor":{"next":"n1"}}`))
 	}), Options{})
-	page, err := client.Messages(context.Background(), "ses a", "", 200)
+	page, err := client.Messages(context.Background(), "ses a", "", 200, false)
 	if err != nil || len(page.Data) != 1 || page.Cursor.Next != "n1" {
 		t.Fatalf("page %+v, %v", page, err)
 	}
-	if _, err := client.Messages(context.Background(), "ses a", "n1", 200); err != nil {
+	if _, err := client.Messages(context.Background(), "ses a", "n1", 200, true); err != nil {
 		t.Fatal(err)
 	}
-	if len(targets) != 2 || targets[0] != "/api/session/ses%20a/message?limit=200&order=asc" || targets[1] != "/api/session/ses%20a/message?cursor=n1&limit=200" {
+	if _, err := client.Messages(context.Background(), "ses a", "", 200, true); err != nil {
+		t.Fatal(err)
+	}
+	if len(targets) != 3 || targets[0] != "/api/session/ses%20a/message?limit=200&order=asc" || targets[1] != "/api/session/ses%20a/message?cursor=n1&limit=200" || targets[2] != "/api/session/ses%20a/message?limit=200&order=desc" {
 		t.Fatalf("asked %v", targets)
 	}
 }

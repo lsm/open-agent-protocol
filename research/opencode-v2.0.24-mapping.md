@@ -125,11 +125,39 @@ periodically. Each frame is one `data:` line:
   Live, seq 11 was skipped. A gap is therefore not evidence of loss.
 
 Because the stream does not replay, loss is detected by disconnection rather
-than by seq. Neither tree reconciles after it: when `/api/event` ends or fails
-while a run is open, the adapters fail the open runs and end the session's
-stream rather than inventing continuity, and a resume past the journal answers
-a `ReplayGap`. Reconciling from `GET /api/session/active` and the session's
-messages and inbox is a follow-up.
+than by seq. Since revision `oap-v3`, both trees reconcile from the session's
+record instead of failing every open run:
+
+- When `/api/event` ends, the adapter subscribes again once and waits for
+  `server.connected` within the request timeout. Events that arrive on the new
+  stream are held until the reconciliation below has been reduced.
+- It then reads `GET /api/session/<id>/message?order=desc` back to the oldest
+  open run's input, up to 16 pages of 200. The record carries what the stream
+  missed: `user` rows for delivered inputs, `assistant` rows whose `content`
+  holds each ended text and reasoning part (text is written at `text.ended`,
+  reasoning carries `time.completed`), with `finish`, `error`, `cost` and
+  `tokens` once the step completed, and an `idle` row with `outcome`
+  `succeeded`, `failed` or `interrupted` when the execution ended. A shutdown
+  interruption writes no `idle` row.
+- The record becomes the native events it projects (`inbox.delivered`,
+  `text.ended`, `reasoning.ended`, `step.ended`, `step.failed`,
+  `execution.*`), and they go through the same reducer. A part's ordinal is its
+  index among parts of its kind in that assistant row, which is how the runner
+  allocates them. A part, step or delivery the reducer has already seen live is
+  not applied twice, and a live repeat of one the record supplied is dropped.
+- If the newest turn has no `idle` row, `GET /api/session/active` decides: a
+  running session is followed on the new stream, and one that is no longer
+  running fails with `opencode_execution_interrupted`.
+- Only what cannot be reconciled still fails, with `opencode_stream_failed`:
+  a resubscribe that fails, a record that does not hold an open run's input,
+  or a read that errors. A queued input the record does not show yet stays
+  queued.
+
+What it does not recover: deltas sent during the gap (the ended text carries
+them), tool calls started or ended during the gap (an open tool settles with
+its run), and a race in which an execution ends between the resubscribe and
+the record read, whose `execution.*` event can then arrive on the new stream
+after the record has already settled that turn.
 
 ## Run boundaries
 
@@ -193,7 +221,7 @@ observed-only.
 
 ## What the adapters do
 
-Both trees, under capability revision `opencode-v2.0.24-oap-v2`:
+Both trees, under capability revision `opencode-v2.0.24-oap-v3`:
 
 - **Auth.** `opencode serve` always requires basic auth: without
   `OPENCODE_PASSWORD` it generates a password and prints it. The registry entry
