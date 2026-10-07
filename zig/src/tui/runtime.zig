@@ -77,6 +77,7 @@ pub const RemoteExecution = struct {
         set_reasoning: *const fn (ctx: *anyopaque, level: ai_types.ThinkingLevel) anyerror!void,
         set_catalog: *const fn (ctx: *anyopaque, models: []const ai_types.Model) anyerror!void,
         compacts: *const fn (ctx: *anyopaque) bool,
+        settings_live: *const fn (ctx: *anyopaque) bool,
         take_record: *const fn (ctx: *anyopaque) ?TuiEvent,
         records_session: *const fn (ctx: *anyopaque) bool,
         compactable: *const fn (ctx: *anyopaque) bool,
@@ -1285,6 +1286,11 @@ pub const TuiRuntime = struct {
         self.pending_approval.cancelled = true;
         self.pending_approval.decision = .reject;
         self.approval_mutex.unlock();
+    }
+
+    pub fn movesWorkspaceLive(self: *const TuiRuntime) bool {
+        const remote = self.remote orelse return true;
+        return remote.vtable.settings_live(remote.ctx);
     }
 
     pub fn recordsFromEndpoint(self: *const TuiRuntime) bool {

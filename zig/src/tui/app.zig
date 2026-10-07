@@ -4017,7 +4017,7 @@ pub const App = struct {
     fn createsWorktree(self: *const App) bool {
         if (!self.mode_settings.auto_worktree) return false;
         const runtime = self.runtime orelse return true;
-        return runtime.remote == null;
+        return runtime.movesWorkspaceLive();
     }
 
     fn cycleThinkingLevel(self: *App) void {
@@ -5733,8 +5733,10 @@ pub fn runWith(allocator: std.mem.Allocator, io: std.Io, context_window: ?u32, e
         if (history_store) |*store| execution.?.setHistory(.{ .ctx = store, .load = loadSavedHistory });
         if (history_store) |*store| execution.?.setTranscripts(.{ .ctx = store, .save = saveSessionTranscript });
         options.remote = execution.?.remote();
-        if (execution_mode == .attach) options.generate_titles = false;
-        options.auto_worktree = false;
+        if (execution_mode == .attach) {
+            options.generate_titles = false;
+            options.auto_worktree = false;
+        }
     }
 
     var program = zz.Program(TuiModel).initWithOptions(allocator, io, &environ_map, tuiProgramOptions());
@@ -7081,13 +7083,17 @@ test "App init takes mode settings from options, not the environment" {
     try std.testing.expect(opted_in.mode_settings.compact_output);
 }
 
-test "an app over OAP never creates an automatic worktree, since its workspace is fixed when the session opens" {
+test "an app over OAP creates an automatic worktree only when its endpoint moves the workspace live" {
     const models = [_]ai_types.Model{auto_compact_test_model};
     const execution = try tui_oap_execution.OapExecution.create(std.testing.allocator, .{ .models = &models });
     defer execution.destroy();
     var app = try App.init(std.testing.allocator, .{ .models = &models, .auto_worktree = true, .remote = execution.remote() });
     defer app.deinit();
     try std.testing.expect(app.mode_settings.auto_worktree);
+    try std.testing.expect(!app.createsWorktree());
+    try app.runtime.?.start();
+    try std.testing.expect(app.createsWorktree());
+    execution.live_reasoning = false;
     try std.testing.expect(!app.createsWorktree());
 
     var local = try App.init(std.testing.allocator, .{ .models = &models, .auto_worktree = true });
