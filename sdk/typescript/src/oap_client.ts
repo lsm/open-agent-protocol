@@ -596,7 +596,8 @@ async function resolveProvidedCall(call: Record<string, unknown>, tools: ToolDef
     const result = await tool.execute(parsed, { tool_call_id: toolCallId, tool_name: toolName, args_json: argsJson });
     return { ...answer, result: typeof result === "string" ? result : result.map((part) => part.text).join("") };
   } catch (error) {
-    return { ...answer, error: { code: "tool_failed", message: error instanceof Error ? error.message : String(error) } };
+    const message = error instanceof Error ? error.message || error.name : String(error);
+    return { ...answer, error: { code: "tool_failed", message: message || "the tool failed" } };
   }
 }
 
