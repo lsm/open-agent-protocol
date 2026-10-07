@@ -5686,7 +5686,7 @@ fn preferredContextWindow(stored: ?u32, flag: ?u32) ?u32 {
     return flag orelse stored;
 }
 
-pub const over_oap_notice = "oapx tui --attach: this session runs on the hub's endpoint. Resume, queued follow-ups, the autocompact setting and automatic worktrees are not carried over the hub, the context window, output limit, permission mode and workspace are fixed when the session opens, and an \"always\" answer to a tool approval applies to that call only unless the endpoint offers it; run oapx without --attach for them.";
+pub const over_oap_notice = "oapx tui --attach: this session runs on the hub's endpoint. Resume and automatic worktrees are not carried over the hub, the context window, output limit, permission mode and workspace are fixed when the session opens, and an \"always\" answer to a tool approval applies to that call only unless the endpoint offers it; run oapx without --attach for them.";
 pub const over_oap_setting_refusal = tui_commands.over_oap_setting_refusal;
 pub const over_oap_compaction_refusal = "this session's endpoint does not take a compaction over OAP; run oapx without --attach to compact.";
 

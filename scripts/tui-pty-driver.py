@@ -1933,7 +1933,7 @@ def main():
     parser.add_argument("--scenario", default="core-loop", choices=list(SCENARIOS) + ["all"])
     parser.add_argument("--startup-timeout", type=float, default=15.0)
     parser.add_argument("--stream-timeout", type=float, default=15.0)
-    parser.add_argument("--tui-mode", default="both", choices=["local", "oap", "both"], help="which terminal UI the sweep scenarios drive: oapx --tui, oapx tui, or both and compare them")
+    parser.add_argument("--tui-mode", default="both", choices=["local", "oap", "both"], help="which terminal UI the sweep scenarios drive: oapx --tui, bare oapx (oapx tui), or both and compare them")
     parser.add_argument("--tls-dir", help="gen-certs output of scripts/tui-fake-provider.py whose ca.pem the system trust store holds; enables provider-https")
     args = parser.parse_args()
     if sys.platform == "darwin":

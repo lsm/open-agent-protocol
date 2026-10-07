@@ -10,7 +10,7 @@ ZIG_GLOBAL_CACHE := $(shell $(ZIG) env 2>/dev/null | sed -n 's/.*global_cache_di
 help:
 	@echo "make build      build oapx into zig/zig-out/bin, ReleaseSafe (OPTIMIZE=Debug for a debug build; OAPX_CODESIGN_IDENTITY=<sha1> to sign)"
 	@echo "make install    build, then put oapx in $(PREFIX)/bin (PREFIX=<dir> to change)"
-	@echo "make tui        build, then start the TUI (extra flags: make tui ARGS='--model ...')"
+	@echo "make tui        build, then start the TUI (extra flags: make tui ARGS='tui --context-window 200k')"
 	@echo "make test       run every unit test group"
 	@echo "make test-tui   run the TUI unit tests"
 	@echo "make check      run the no-comments and Zig pattern guardrails"
