@@ -1526,10 +1526,45 @@ fn loadModelsDev(allocator: std.mem.Allocator, mode: CatalogLoadMode) ?std.json.
         return parseModelsDev(allocator, body) catch null;
     }
     if (mode == .allow_cache) {
-        if (loadCachedModelsDev(allocator)) |parsed| return parsed;
+        if (loadCachedModelsDev(allocator)) |cached| {
+            if (soughtEveryKey(cached.value)) return cached;
+            if (fetchModelsDev(allocator)) |parsed| {
+                var stale = cached;
+                stale.deinit();
+                return parsed;
+            }
+            saveModelsDevSubset(allocator, cached.value);
+            return cached;
+        }
     }
     if (fetchModelsDev(allocator)) |parsed| return parsed;
     return loadCachedModelsDev(allocator);
+}
+
+const models_dev_sought_key = "$sought";
+
+fn soughtEveryKey(root: std.json.Value) bool {
+    if (root != .object) return false;
+    const sought = root.object.get(models_dev_sought_key) orelse return false;
+    if (sought != .array) return false;
+    for (provider_catalog.all) |row| {
+        const key = row.models_dev orelse continue;
+        if (!containsString(sought.array.items, key)) return false;
+    }
+    return true;
+}
+
+fn containsString(items: []const std.json.Value, wanted: []const u8) bool {
+    for (items) |item| {
+        if (item == .string and std.mem.eql(u8, item.string, wanted)) return true;
+    }
+    return false;
+}
+
+fn saveModelsDevSubset(allocator: std.mem.Allocator, root: std.json.Value) void {
+    const subset = modelsDevSubset(allocator, root) catch return;
+    defer allocator.free(subset);
+    saveMakaiCatalog(allocator, models_dev_cache_name, subset) catch {};
 }
 
 fn parseModelsDev(allocator: std.mem.Allocator, body: []const u8) !std.json.Parsed(std.json.Value) {
@@ -1560,20 +1595,22 @@ fn fetchModelsDev(allocator: std.mem.Allocator) ?std.json.Parsed(std.json.Value)
     defer fetched.deinit(allocator);
     if (fetched.status != 200) return null;
     const parsed = parseModelsDev(allocator, fetched.body) catch return null;
-    const subset = modelsDevSubset(allocator, parsed.value) catch return parsed;
-    defer allocator.free(subset);
-    saveMakaiCatalog(allocator, models_dev_cache_name, subset) catch {};
+    saveModelsDevSubset(allocator, parsed.value);
     return parsed;
 }
 
 fn modelsDevSubset(allocator: std.mem.Allocator, root: std.json.Value) ![]u8 {
     var kept: std.json.ObjectMap = .empty;
     defer kept.deinit(allocator);
+    var sought: std.json.Array = .init(allocator);
+    defer sought.deinit();
     for (provider_catalog.all) |row| {
         const key = row.models_dev orelse continue;
+        try sought.append(.{ .string = key });
         const listed = root.object.get(key) orelse continue;
         try kept.put(allocator, key, listed);
     }
+    try kept.put(allocator, models_dev_sought_key, .{ .array = sought });
     return std.json.Stringify.valueAlloc(allocator, std.json.Value{ .object = kept }, .{});
 }
 
@@ -5305,6 +5342,7 @@ const models_dev_fixture =
     \\{"opencode-go":{"id":"opencode-go","models":{
     \\  "deepseek-v4-flash":{"id":"deepseek-v4-flash","reasoning":true,"modalities":{"input":["text","image"],"output":["text"]},"limit":{"context":1000000,"output":384000}},
     \\  "zero-limits":{"id":"zero-limits","limit":{"context":0,"output":0}}}},
+    \\ "zai-coding-plan":{"id":"zai-coding-plan","models":{"glm-5.3":{"id":"glm-5.3","reasoning":true,"limit":{"context":1000000,"output":131072}}}},
     \\ "vercel":{"id":"vercel","models":{"anthropic/claude-sonnet-4.5":{"limit":{"context":777777,"output":77777},"reasoning":true}}},
     \\ "uncatalogued":{"id":"uncatalogued","models":{}}}
 ;
@@ -5350,6 +5388,32 @@ test "an OpenCode Go model keeps the generic defaults when models.dev cannot be 
 
     try std.testing.expectEqual(catalog_context_window, models[0].context_window);
     try std.testing.expectEqual(catalog_max_output_tokens, models[0].max_tokens);
+}
+
+test "a Z.AI Coding Plan model its listing gives no limits takes models.dev's window and output" {
+    test_models_dev = models_dev_fixture;
+    defer test_models_dev = null;
+    const models = try loadOneRow("zai-coding-plan", "ZHIPU_API_KEY", &.{"glm-5.3"});
+    defer deinitModels(std.testing.allocator, models);
+
+    try std.testing.expectEqual(@as(u32, 1_000_000), models[0].context_window);
+    try std.testing.expectEqual(@as(u32, 131_072), models[0].max_tokens);
+    try std.testing.expect(contextWindowIsReported(models[0]));
+}
+
+test "a cached models.dev copy is trusted once it was sought for every catalogued key, listed or not" {
+    var older = try parseModelsDev(std.testing.allocator, "{\"opencode-go\":{\"models\":{}}}");
+    defer older.deinit();
+    try std.testing.expect(!soughtEveryKey(older.value));
+
+    var fixture = try parseModelsDev(std.testing.allocator, models_dev_fixture);
+    defer fixture.deinit();
+    const subset = try modelsDevSubset(std.testing.allocator, fixture.value);
+    defer std.testing.allocator.free(subset);
+    var saved = try parseModelsDev(std.testing.allocator, subset);
+    defer saved.deinit();
+    try std.testing.expect(saved.value.object.get("alibaba-coding-plan") == null);
+    try std.testing.expect(soughtEveryKey(saved.value));
 }
 
 test "a row the catalog gives no models_dev key never takes models.dev's figures" {

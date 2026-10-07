@@ -173,6 +173,7 @@
         }
       ],
       "models_endpoint": "/models",
+      "models_dev": "zai-coding-plan",
       "docs": "https://docs.z.ai/devpack/overview"
     },
     {
@@ -264,6 +265,7 @@
         }
       ],
       "models_endpoint": "/models",
+      "models_dev": "alibaba-coding-plan",
       "docs": "https://www.alibabacloud.com/help/en/model-studio/coding-plan"
     },
     {
@@ -289,6 +291,7 @@
         }
       ],
       "models_endpoint": "/models",
+      "models_dev": "minimax-coding-plan",
       "docs": "https://platform.minimax.io/docs/token-plan/intro"
     },
     {
@@ -314,6 +317,7 @@
         }
       ],
       "models_endpoint": "/models",
+      "models_dev": "tencent-coding-plan",
       "docs": "https://cloud.tencent.com/document/product/1772/128947"
     },
     {
@@ -339,6 +343,7 @@
         }
       ],
       "models_endpoint": "/models",
+      "models_dev": "volcengine-coding-plan",
       "docs": "https://www.volcengine.com/docs/82379/1928261"
     },
     {
