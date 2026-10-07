@@ -8,6 +8,7 @@ const tui_runtime = @import("tui_runtime");
 const tui_session = @import("tui_session");
 const model_ref = @import("model_ref");
 const permission = @import("permission");
+const local_tools = @import("tools/registry");
 const interactions = @import("interactions.zig");
 
 pub const endpoint_id = "oapx.agent";
@@ -1027,7 +1028,11 @@ pub const Session = struct {
     fn endCall(self: *Session, a: std.mem.Allocator, run: *Run, tool_call_id: []const u8) contract.Failure!void {
         const call = run.callFor(tool_call_id) orelse return;
         if (call.closed) return;
-        const settled = call.settled orelse return self.cancelOpenCall(a, run);
+        return self.cancelOpenCall(a, run);
+    }
+
+    fn settleCall(self: *Session, a: std.mem.Allocator, run: *Run, call: *ProvidedCall) contract.Failure!void {
+        const settled = call.settled.?;
         if (!call.acknowledged) {
             var started = try self.providedPayload(a, run, call, settled.request_id);
             try self.emit(run, "action.call.started", started.value(), false);
@@ -1074,10 +1079,6 @@ pub const Session = struct {
             arm = .@"error";
         }
         if (arms != 1) return refusedCall(answer, "unknown_interaction", null);
-        if (call.settled) |settled| {
-            if (arm == .started and call.settlement_id.len == 0) return refusedCall(answer, "late_acknowledgement", null);
-            return refusedCall(answer, "already_resolved", if (call.settlement_id.len > 0) call.settlement_id else settled.request_id);
-        }
         if (call.closed) return refusedCall(answer, "already_resolved", call.settlement_id);
         if (arm == .started and call.acknowledged) return refusedCall(answer, "repeated_acknowledgement", null);
 
@@ -1100,6 +1101,7 @@ pub const Session = struct {
         const native = try json_encode.valueAlloc(a, reply.value());
         try self.call_gate.post(self.gpa, call.tool_call_id, native);
         call.settled = .{ .arm = arm, .request_id = try keep.dupe(u8, request_id), .payload_json = payload_json };
+        try self.settleCall(a, run, call);
         if (run.status == .waiting_for_input and self.pending == null) run.status = .running;
         _ = arena;
         return accepted;
@@ -1859,6 +1861,7 @@ fn admissibleDialect(schema: ?std.json.Value) bool {
 }
 
 fn namedIn(tools: []const agent.AgentTool, offers_input: bool, provided: []const oap_types.ToolDefinition, name: []const u8) bool {
+    for (local_tools.defaultTools()) |tool| if (std.mem.eql(u8, tool.name, name)) return true;
     for (tools) |tool| if (std.mem.eql(u8, tool.name, name)) return true;
     if (offers_input and std.mem.eql(u8, name, "request_user_input")) return true;
     for (provided) |definition| if (std.mem.eql(u8, definition.name, name)) return true;
@@ -3721,6 +3724,28 @@ test "a resolution of a provided call is refused with the highest reason it sati
     try provided.wire.validate();
 }
 
+test "a resolution retried before the loop resumes is refused as already resolved, naming the published terminal" {
+    var script = Script{ .tool_first = true, .tool_name = "lookup", .tool_arguments = "{}" };
+    var provided: ProvidedWire = .{ .wire = undefined };
+    try provided.start(&script);
+    defer provided.wire.deinit();
+
+    try testing.expect((try provided.resolve("{\"started\":{}}", &.{})).get("accepted").?.bool);
+    try testing.expect((try provided.resolve("{\"result\":\"found\"}", &.{})).get("accepted").?.bool);
+    const retried = try provided.resolve("{\"result\":\"found\"}", &.{});
+    try testing.expectEqualStrings("already_resolved", retried.get("reason").?.string);
+    const late = try provided.resolve("{\"started\":{}}", &.{});
+    try testing.expectEqualStrings("already_resolved", late.get("reason").?.string);
+    const named = retried.get("details").?.object.get("settlement_id").?.string;
+    var terminal_id: []const u8 = "";
+    for (provided.wire.trace.items) |event| {
+        if (std.mem.eql(u8, event.object.get("type").?.string, "action.call.completed")) terminal_id = event.object.get("id").?.string;
+    }
+    try testing.expectEqualStrings(terminal_id, named);
+    _ = try provided.wire.wait("run.completed");
+    try provided.wire.validate();
+}
+
 test "cancelling a run closes its pending provided call before the run's terminal" {
     var script = Script{ .tool_first = true, .tool_name = "lookup", .tool_arguments = "{}" };
     var provided: ProvidedWire = .{ .wire = undefined };
@@ -3762,6 +3787,12 @@ test "an open is refused, naming the tool, when a provided definition breaks a r
         try testing.expectEqualStrings(contract.feature_tools_provide, refusal.feature);
         try testing.expectEqualStrings(contract.reason_unsatisfiable, refusal.reason);
         try testing.expectEqualStrings(case.tool, refusal.tool);
+    }
+    for (local_tools.defaultTools()) |builtin_tool| {
+        const shadowing = try std.fmt.allocPrint(arena.allocator(), "[{{\"name\":\"{s}\",\"input_schema\":{{}},\"execution_owner\":\"user\"}}]", .{builtin_tool.name});
+        var refusal = contract.Refusal{};
+        try testing.expectError(error.UnsupportedFeature, owner.adapter().open(arena.allocator(), .{ .participant = "user", .tools_json = shadowing }, &refusal));
+        try testing.expectEqualStrings(builtin_tool.name, refusal.tool);
     }
     var many: std.ArrayList(u8) = .empty;
     defer many.deinit(testing.allocator);
