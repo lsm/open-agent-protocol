@@ -278,6 +278,49 @@ test('cancel returns the acknowledgement and state returns the snapshot', async 
   assert.equal(state.session_id, 's-1');
 });
 
+test('workList sends every filter and the page it continues, and returns the next cursor', async () => {
+  const transport = new FakeTransport([
+    {
+      match: '/work?',
+      body: () => JSON.stringify({
+        groups: [{ directory: '/w', last_activity_ms: 2, work: [{ ref: { adapter: 'codex', native_id: 't1' }, native: true, updated_at_ms: 2 }] }],
+        next_cursor: 'c2',
+        unavailable: [{ adapter: 'pi', message: 'down' }],
+      }),
+    },
+  ]);
+  const client = dial(BASE, { fetch: transport.fetch });
+  const listed = await client.workList({
+    directory: '/w',
+    adapters: ['codex', 'claude'],
+    includeClosed: true,
+    includeNative: true,
+    limit: 1,
+    cursor: 'c1',
+  });
+  const sent = new URL(transport.calls[0].url);
+  assert.equal(sent.pathname, '/work');
+  assert.deepEqual(Object.fromEntries(sent.searchParams), {
+    directory: '/w',
+    adapters: 'codex,claude',
+    include_closed: 'true',
+    include_native: 'true',
+    limit: '1',
+    cursor: 'c1',
+  });
+  assert.equal(listed.nextCursor, 'c2');
+  assert.equal(listed.groups[0].work[0].ref.native_id, 't1');
+  assert.deepEqual(listed.unavailable, [{ adapter: 'pi', message: 'down' }]);
+});
+
+test('workList asks for the default page when given no options and reports no next cursor on the last page', async () => {
+  const transport = new FakeTransport([{ match: '/work', body: () => JSON.stringify({ groups: [] }) }]);
+  const client = dial(BASE, { fetch: transport.fetch });
+  const listed = await client.workList();
+  assert.equal(transport.calls[0].url, `${BASE}/work`);
+  assert.deepEqual(listed, { groups: [], unavailable: [] });
+});
+
 test('close accepts exactly 204 No Content', async () => {
   const transport = new FakeTransport([{ match: '/close', status: 204, body: '' }]);
   const session = openedSession(transport);
