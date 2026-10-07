@@ -537,7 +537,7 @@ pub const Reducer = struct {
 
     fn sighted(self: *Reducer, seen: *[2]std.StringHashMapUnmanaged(void), key: []const u8) Error!bool {
         const own: usize = if (self.replaying) 1 else 0;
-        if (seen[1 - own].contains(key)) return false;
+        if (seen[1 - own].contains(key) or (self.replaying and seen[own].contains(key))) return false;
         try seen[own].put(self.allocator(), key, {});
         return true;
     }
@@ -1484,4 +1484,24 @@ test "a replayed record fails a run the record shows failed, and one the server 
     try reducer.observe(try deliveredEvent(scratch, 2, stopped));
     try reducer.replay(try recordsOf(scratch, try std.fmt.allocPrint(scratch, "[{{\"id\":\"{s}\",\"type\":\"user\"}}]", .{stopped})), stopped, false);
     try testing.expectEqualStrings("opencode_execution_interrupted", errorCode(reducer.envelopes.items[reducer.envelopes.items.len - 1]));
+}
+
+test "a second replay of the same record does not apply the first one again" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const scratch = arena.allocator();
+    var fake = Fake{};
+    var reducer = Reducer.init(&arena, .{ .native_id = native_session }, fake.client());
+    try reducer.open();
+    const input = (try reducer.submit("session", "hi", "auto")).message_ids[0];
+    try reducer.observe(try deliveredEvent(scratch, 1, input));
+    const records = try recordsOf(scratch, try std.fmt.allocPrint(scratch, "[{{\"id\":\"{s}\",\"type\":\"user\"}},{{\"id\":\"msg_a1\",\"type\":\"assistant\",\"content\":[{{\"type\":\"text\",\"text\":\"first\"}}],\"finish\":\"tool-calls\",\"cost\":1,\"tokens\":{{\"input\":2,\"output\":2,\"reasoning\":0,\"cache\":{{\"read\":0,\"write\":0}}}},\"time\":{{\"created\":2,\"completed\":3}}}}]", .{input}));
+    try reducer.replay(records, input, true);
+    try reducer.replay(records, input, true);
+    try reducer.observe(try nativeEvent(scratch, 4, "text.ended", "{\"assistantMessageID\":\"msg_a2\",\"ordinal\":0,\"text\":\"second\"}"));
+    try reducer.observe(try stepEnded(scratch, 5));
+    try reducer.observe(try succeeded(scratch, 6));
+    try expectLabels(&.{ "text:first", "text:second" }, try streamedLabels(scratch, &reducer));
+    try expectLabels(&.{ "text:first", "text:second" }, try finalLabels(scratch, &reducer));
+    try testing.expectEqual(@as(i64, 6), lastPayload(&reducer).get("usage").?.object.get("total_tokens").?.integer);
 }

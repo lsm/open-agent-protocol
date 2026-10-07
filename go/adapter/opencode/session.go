@@ -741,7 +741,7 @@ func sighted[K comparable](seen *[2]map[K]bool, key K, replaying bool) bool {
 	if replaying {
 		own, other = 1, 0
 	}
-	if seen[other][key] {
+	if seen[other][key] || replaying && seen[own][key] {
 		return false
 	}
 	if seen[own] == nil {

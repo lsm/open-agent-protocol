@@ -30,7 +30,7 @@ func userRecord(id string) string {
 func (f *fakeClient) loseStream(t *testing.T, pages ...httpapi.MessagePage) {
 	t.Helper()
 	f.mu.Lock()
-	f.pages = pages
+	f.pages, f.readAsked = pages, nil
 	f.resubscription = &fakeSubscription{events: f.events, done: make(chan struct{})}
 	old := f.subscription
 	f.mu.Unlock()
@@ -222,5 +222,39 @@ func TestALostStreamFailsARunTheRecordDoesNotHold(t *testing.T) {
 	}
 	if _, _, err := session.Submit(t.Context(), base.SubmitRequest{Request: protocol.MessageSubmitRequest{SessionID: "session", Delivery: protocol.DeliveryAuto, Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("again")}}}}); !errors.Is(err, base.ErrSessionClosed) {
 		t.Fatalf("submit after an unreconciled loss: %v", err)
+	}
+}
+
+func TestASecondLostStreamDoesNotApplyTheFirstReplayAgain(t *testing.T) {
+	client := newFakeClient()
+	session, _ := openTest(t, client, 32)
+	response, stream := submitTest(t, session)
+	input := response.MessageIDs[0]
+	client.deliver(t, 1, native.MessageID(input))
+	running := recordPage(
+		`{"id":"msg_a1","type":"assistant","content":[{"type":"text","text":"first"}],"finish":"tool-calls","cost":1,"tokens":{"input":2,"output":2},"time":{"created":2,"completed":3}}`,
+		userRecord(string(input)),
+	)
+	client.mu.Lock()
+	client.activeFor = 2
+	client.mu.Unlock()
+	client.loseStream(t, running)
+	client.resubscribed(t)
+	client.mu.Lock()
+	client.subscribes = 0
+	client.mu.Unlock()
+	client.loseStream(t, running)
+	client.resubscribed(t)
+	client.emit(t, 4, native.TypeTextEnded, native.TextEndedData{SessionID: client.session, AssistantMessage: "msg_a2", Text: "second"})
+	client.emit(t, 5, native.TypeStepEnded, native.StepEndedData{SessionID: client.session, AssistantMessage: "msg_a2", Finish: "stop", Tokens: native.TokenAccounting{Input: 1, Output: 1}})
+	client.succeed(t, 6)
+	events := adaptertest.Drain(t, stream, time.Second)
+	adaptertest.AssertRunTrace(t, response, CapabilityRevision, events)
+	final, completed := finalTexts(t, events[len(events)-1])
+	if !slices.Equal(final, []string{"first", "second"}) || completed.Usage.TotalTokens != 6 {
+		t.Fatalf("final %q usage %+v after two losses", final, completed.Usage)
+	}
+	if got := streamedTexts(t, events); !slices.Equal(got, []string{"first", "second"}) {
+		t.Fatalf("streamed %q after two losses", got)
 	}
 }
