@@ -343,6 +343,7 @@ type NativeQuery struct {
 	Adapters  []string
 	Directory string
 	Limit     int
+	Search    string
 }
 
 func (h *Hub) Natives(ctx context.Context, known map[string]bool) ([]Native, []NativeFailure) {
@@ -361,21 +362,31 @@ func (h *Hub) NativesFor(ctx context.Context, known map[string]bool, query Nativ
 			continue
 		}
 		implementation, _ := h.registry.Lookup(name)
-		lister, ok := implementation.(base.NativeLister)
-		if !ok {
-			continue
-		}
 		directory := h.registry.WorkingDirectory(name)
 		if query.Directory != "" && h.registry.ServesAnyDirectory(name) {
 			directory = query.Directory
 		}
-		listed, err := lister.NativeList(ctx, base.NativeListRequest{Directory: directory, Limit: limit})
+		var listed []base.NativeListing
+		var err error
+		if query.Search != "" {
+			searcher, ok := implementation.(base.NativeSearcher)
+			if !ok {
+				continue
+			}
+			listed, err = searcher.NativeSearch(ctx, base.NativeSearchRequest{Directory: directory, Limit: limit, Term: query.Search})
+		} else {
+			lister, ok := implementation.(base.NativeLister)
+			if !ok {
+				continue
+			}
+			listed, err = lister.NativeList(ctx, base.NativeListRequest{Directory: directory, Limit: limit})
+		}
 		if err != nil {
 			failures = append(failures, NativeFailure{Adapter: name, Message: err.Error()})
 			continue
 		}
 		for _, session := range listed {
-			if known[session.NativeID] || h.boundNative(name, session.NativeID) {
+			if query.Search == "" && (known[session.NativeID] || h.boundNative(name, session.NativeID)) {
 				continue
 			}
 			found = append(found, Native{Adapter: name, Session: session})
@@ -463,6 +474,7 @@ type WorkReach struct {
 	AnyDirectory bool
 	NativeList   bool
 	NativeRead   bool
+	NativeSearch bool
 	Descriptor   *base.Descriptor
 	Message      string
 }
@@ -475,7 +487,8 @@ func (h *Hub) WorkReach(ctx context.Context) []WorkReach {
 		implementation, _ := h.registry.Lookup(name)
 		_, lists := implementation.(base.NativeLister)
 		_, reads := implementation.(base.NativeReader)
-		reach := WorkReach{Name: name, Directory: h.registry.WorkingDirectory(name), AnyDirectory: h.registry.ServesAnyDirectory(name), NativeList: lists, NativeRead: reads}
+		_, searches := implementation.(base.NativeSearcher)
+		reach := WorkReach{Name: name, Directory: h.registry.WorkingDirectory(name), AnyDirectory: h.registry.ServesAnyDirectory(name), NativeList: lists, NativeRead: reads, NativeSearch: searches}
 		descriptor, err := implementation.Probe(ctx)
 		switch {
 		case err != nil:

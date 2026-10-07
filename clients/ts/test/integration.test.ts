@@ -394,6 +394,9 @@ test(
       { directory: '/nowhere', last_activity_ms: 0, work: [] },
     ]);
     await assert.rejects(client.workList({ limit: 0 }), /invalid_request/);
+    assert.deepEqual((await client.workList({ search: 'hello' })).groups, []);
+    const memory = (await client.workCapabilities()).adapters.find((reach) => reach.adapter === 'memory');
+    assert.deepEqual(memory?.native, { list: false, read: false, search: false });
     await client.workStop(other.ref.session_id ?? '');
 
     const stopped = await client.workStop(sessionId);

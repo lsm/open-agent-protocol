@@ -126,13 +126,23 @@ func broken(client Client, err error) bool {
 }
 
 func (implementation *Adapter) NativeList(ctx context.Context, request adapter.NativeListRequest) ([]adapter.NativeListing, error) {
-	directory := request.Directory
+	return implementation.threads(ctx, request.Directory, request.Limit, "")
+}
+
+func (implementation *Adapter) NativeSearch(ctx context.Context, request adapter.NativeSearchRequest) ([]adapter.NativeListing, error) {
+	return implementation.threads(ctx, request.Directory, request.Limit, request.Term)
+}
+
+func (implementation *Adapter) threads(ctx context.Context, directory string, limit int, term string) ([]adapter.NativeListing, error) {
 	if directory == "" {
 		directory = implementation.config.WorkingDirectory
 	}
-	params := map[string]any{"limit": request.Limit}
+	params := map[string]any{"limit": limit}
 	if directory != "" {
 		params["cwd"] = directory
+	}
+	if term != "" {
+		params["searchTerm"] = term
 	}
 	result, err := implementation.ask(ctx, "thread/list", params)
 	if err != nil {

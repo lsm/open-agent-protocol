@@ -245,6 +245,14 @@ specification.
   v1 list (the v2 ledger is #949, in review). DeepSeek lists
   nothing native, as decided. A native list runs off the serve loop, so a slow
   harness does not stall other callers (#947, in review).
+- **Search is the harness's (decision 5).** `work.list` takes a `search`
+  term and hands it to the native lists that take one, Codex `thread/list`'s
+  `searchTerm` and OpenCode `GET /api/session`'s `search`, both a title
+  substring; the answer is only what they matched, each answered as the held,
+  recorded or native work it is. `serve` still matches nothing itself, so held
+  and recorded work the harness did not match, and every adapter whose list
+  takes no term, are left out. `work.capabilities` names the adapters that
+  take one as `native.search`.
 - **Reading.** `work.read` reads the harness's own transcript where one is
   readable (Claude Code's project jsonl, Codex `thread/turns/list`, Pi's
   session file) for held and unheld sessions, and otherwise the turns `serve`

@@ -125,7 +125,7 @@ pub const Adapter = struct {
     }
 
     pub fn adapter(self: *Adapter) contract.Adapter {
-        return .{ .ptr = self, .vtable = &.{ .probe = probe, .open = open, .native_list = nativeList, .native_link = nativeLink, .native_read = nativeRead } };
+        return .{ .ptr = self, .vtable = &.{ .probe = probe, .open = open, .native_list = nativeList, .native_link = nativeLink, .native_read = nativeRead, .native_search = nativeSearch } };
     }
 
     const OneShot = struct {
@@ -196,10 +196,20 @@ pub const Adapter = struct {
 
     fn nativeList(ptr: *anyopaque, arena: std.mem.Allocator, request: contract.NativeListRequest, refusal: *contract.Refusal) contract.Failure![]const contract.NativeSession {
         const self: *Adapter = @ptrCast(@alignCast(ptr));
-        const directory = if (request.directory.len > 0) request.directory else self.config.working_directory orelse "";
+        return self.threads(arena, request.directory, request.limit, "", refusal);
+    }
+
+    fn nativeSearch(ptr: *anyopaque, arena: std.mem.Allocator, request: contract.NativeSearchRequest, refusal: *contract.Refusal) contract.Failure![]const contract.NativeSession {
+        const self: *Adapter = @ptrCast(@alignCast(ptr));
+        return self.threads(arena, request.directory, request.limit, request.term, refusal);
+    }
+
+    fn threads(self: *Adapter, arena: std.mem.Allocator, asked_directory: []const u8, limit: usize, term: []const u8, refusal: *contract.Refusal) contract.Failure![]const contract.NativeSession {
+        const directory = if (asked_directory.len > 0) asked_directory else self.config.working_directory orelse "";
         var params = std.json.ObjectMap.empty;
-        try params.put(arena, "limit", .{ .integer = @intCast(request.limit) });
+        try params.put(arena, "limit", .{ .integer = @intCast(limit) });
         if (directory.len > 0) try params.put(arena, "cwd", .{ .string = directory });
+        if (term.len > 0) try params.put(arena, "searchTerm", .{ .string = term });
         return threadsOf(arena, try self.ask(arena, "thread/list", params, refusal));
     }
 
@@ -1598,6 +1608,24 @@ test "a codex app-server that refuses a call is kept for the next one" {
     try testing.expectEqualStrings("codex thread/list refused: no such thread", refusal.message);
     refusal = .{};
     try testing.expectEqualStrings("spawn-1", try listedId(&adapter, arena.allocator(), &refusal));
+}
+
+test "a native search asks thread/list for the term in the directory" {
+    var fake = try FakeCodex.init(testing.allocator, reader_script_head ++
+        \\take; id=$(printf '%s' "$line" | sed -n 's/.*"id":\([0-9]*\),.*/\1/p')
+        \\case "$line" in *'"method":"thread/list"'*'"cwd":"/elsewhere"'*'"searchTerm":"apple pie"'*) found=matched ;; *) found=unmatched ;; esac
+        \\printf '{"id":%s,"result":{"data":[{"id":"%s","name":"apple pie"}]}}\n' "$id" "$found"
+        \\
+    );
+    defer fake.deinit(testing.allocator);
+    var adapter = Adapter.init(testing.allocator, fake.config());
+    defer adapter.deinit();
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var refusal = contract.Refusal{};
+    const found = try adapter.adapter().nativeSearch(arena.allocator(), .{ .directory = "/elsewhere", .limit = 3, .term = "apple pie" }, &refusal).?;
+    try testing.expectEqual(@as(usize, 1), found.len);
+    try testing.expectEqualStrings("matched", found[0].native_id);
 }
 
 test "a thread/list answer becomes native sessions, titled by name or the preview's first line" {

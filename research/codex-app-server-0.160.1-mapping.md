@@ -74,3 +74,13 @@ byte-identical to the 0.160.0 recording, and only `codex_commit`,
 
 Not re-run: approval, file-change, MCP and user-input turns against the real
 process; the schema and wire are unchanged.
+
+## Native list search
+
+A `work.list` `search` is sent as `thread/list`'s `searchTerm`, beside `cwd`
+and `limit`. `codex app-server generate-json-schema` run on the binary above
+describes `ThreadListParams.searchTerm` as an optional, nullable "substring
+filter for the extracted thread title", so the harness matches titles and the
+adapters forward its answer as they forward a plain list. Not run against a
+populated thread store: which titles match, and whether case is ignored, rest
+on that description.

@@ -1160,19 +1160,21 @@ pub const Frontend = struct {
         adapters: []const []const u8 = &.{},
         limit: ?i64 = null,
         cursor: []const u8 = "",
+        search: []const u8 = "",
 
         fn owned(self: ListOptions, arena: std.mem.Allocator) std.mem.Allocator.Error!ListOptions {
             const names = try arena.alloc([]const u8, self.adapters.len);
             for (self.adapters, names) |name, *slot| slot.* = try arena.dupe(u8, name);
             const directory = try arena.dupe(u8, self.directory);
             const cursor = try arena.dupe(u8, self.cursor);
-            return .{ .include_closed = self.include_closed, .include_native = self.include_native, .directory = directory, .adapters = names, .limit = self.limit, .cursor = cursor };
+            const search = try arena.dupe(u8, self.search);
+            return .{ .include_closed = self.include_closed, .include_native = self.include_native, .directory = directory, .adapters = names, .limit = self.limit, .cursor = cursor, .search = search };
         }
     };
 
     pub const ListParse = union(enum) { options: ListOptions, refused: Refusal };
 
-    const list_shape = Refusal{ .code = "invalid_request", .message = "request is an object of directory, adapters, include_closed, include_native, limit and cursor" };
+    const list_shape = Refusal{ .code = "invalid_request", .message = "request is an object of directory, adapters, include_closed, include_native, limit, cursor and search" };
     const list_limit_default: i64 = 50;
     const list_limit_max: i64 = 100;
     const native_depth_max: usize = 500;
@@ -1190,6 +1192,11 @@ pub const Frontend = struct {
         if (given.object.get("cursor")) |value| switch (value) {
             .null => {},
             .string => |text| options.cursor = text,
+            else => return .{ .refused = list_shape },
+        };
+        if (given.object.get("search")) |value| switch (value) {
+            .null => {},
+            .string => |text| options.search = text,
             else => return .{ .refused = list_shape },
         };
         if (given.object.get("limit")) |value| switch (value) {
@@ -1283,12 +1290,12 @@ pub const Frontend = struct {
             .refused => |refusal| return .{ .refused = refusal },
             .plan => |value| value,
         };
-        if (!options.include_native) return self.composeList(arena, options, &.{});
+        if (!options.include_native and options.search.len == 0) return self.composeList(arena, options, &.{});
         const depth = if (plan.after) |after| after.depth else 0;
         const job = try self.newJob();
         errdefer self.dropJob(job);
         const kept = try options.owned(job.arena.allocator());
-        job.kind = .{ .list = .{ .options = kept, .targets = try self.hub.nativeTargets(job.arena.allocator(), .{ .adapters = kept.adapters, .directory = kept.directory, .limit = @min(depth + plan.limit + 1, native_depth_max) }) } };
+        job.kind = .{ .list = .{ .options = kept, .targets = try self.hub.nativeTargets(job.arena.allocator(), .{ .adapters = kept.adapters, .directory = kept.directory, .limit = @min(depth + plan.limit + 1, native_depth_max), .search = kept.search }) } };
         return self.deferJob(job);
     }
 
@@ -1298,12 +1305,15 @@ pub const Frontend = struct {
             .plan => |value| value,
         };
         const Piece = struct { directory: []const u8, at_ms: i64, key: []const u8, value: std.json.Value };
+        const searching = options.search.len > 0;
         var pieces: std.ArrayList(Piece) = .empty;
-        for (try self.hub.works(arena)) |piece| {
-            if (!listWanted(options, piece.adapter, piece.directory)) continue;
+        const held = try self.hub.works(arena);
+        for (held) |piece| {
+            if (searching or !listWanted(options, piece.adapter, piece.directory)) continue;
             try pieces.append(arena, .{ .directory = piece.directory, .at_ms = piece.updated_at_ms, .key = try std.mem.concat(arena, u8, &.{ "s:", piece.session_id }), .value = try workJson(arena, piece) });
         }
         var known_native: std.ArrayList([]const u8) = .empty;
+        var unheld_native: std.ArrayList(hubmod.binding.Entry) = .empty;
         const recorded = try self.latestBindings(arena);
         if (recorded == .unreadable) return .{ .refused = history_unreadable };
         if (recorded == .entries) {
@@ -1311,14 +1321,32 @@ pub const Frontend = struct {
                 if (entry.record.native_session_id.len > 0) try known_native.append(arena, entry.record.native_session_id);
                 if (self.hub.knows(entry.record.session_id)) continue;
                 if (entry.action == .closed and !options.include_closed) continue;
-                if (!listWanted(options, entry.record.adapter, entry.record.directory)) continue;
+                if (entry.record.native_session_id.len > 0) try unheld_native.append(arena, entry);
+                if (searching or !listWanted(options, entry.record.adapter, entry.record.directory)) continue;
                 try pieces.append(arena, .{ .directory = entry.record.directory, .at_ms = entry.time_ms, .key = try std.mem.concat(arena, u8, &.{ "s:", entry.record.session_id }), .value = try unheldJson(arena, entry) });
             }
         }
         var unavailable: std.ArrayList(std.json.Value) = .empty;
-        if (options.include_native) {
-            const found = try self.hub.keepNatives(arena, native_listing, known_native.items);
-            for (found.sessions) |native| {
+        if (options.include_native or searching) {
+            const found = try self.hub.keepNatives(arena, native_listing, known_native.items, searching);
+            native: for (found.sessions) |native| {
+                if (searching) {
+                    if (self.hub.sessionForNative(native.adapter, native.session.native_id)) |session_id| {
+                        for (held) |piece| {
+                            if (!std.mem.eql(u8, piece.session_id, session_id)) continue;
+                            if (listWanted(options, piece.adapter, piece.directory)) try pieces.append(arena, .{ .directory = piece.directory, .at_ms = piece.updated_at_ms, .key = try std.mem.concat(arena, u8, &.{ "s:", piece.session_id }), .value = try workJson(arena, piece) });
+                            continue :native;
+                        }
+                    }
+                    for (unheld_native.items) |entry| {
+                        if (!std.mem.eql(u8, entry.record.adapter, native.adapter) or !std.mem.eql(u8, entry.record.native_session_id, native.session.native_id)) continue;
+                        if (listWanted(options, entry.record.adapter, entry.record.directory)) try pieces.append(arena, .{ .directory = entry.record.directory, .at_ms = entry.time_ms, .key = try std.mem.concat(arena, u8, &.{ "s:", entry.record.session_id }), .value = try unheldJson(arena, entry) });
+                        continue :native;
+                    }
+                    for (known_native.items) |known| {
+                        if (std.mem.eql(u8, known, native.session.native_id)) continue :native;
+                    }
+                }
                 if (!listWanted(options, native.adapter, native.session.directory)) continue;
                 try pieces.append(arena, .{ .directory = native.session.directory, .at_ms = native.session.updated_at_ms, .key = try std.mem.concat(arena, u8, &.{ "n:", native.adapter, "/", native.session.native_id }), .value = try nativeJson(arena, native) });
             }
@@ -1625,6 +1653,7 @@ pub const Frontend = struct {
             var native = try emptyObject(arena);
             try native.put(arena, "list", .{ .bool = reach.native_list });
             try native.put(arena, "read", .{ .bool = reach.native_read });
+            try native.put(arena, "search", .{ .bool = reach.native_search });
             var object = try emptyObject(arena);
             try object.put(arena, "adapter", .{ .string = reach.name });
             if (reach.directory.len > 0) try object.put(arena, "directory", .{ .string = reach.directory });
@@ -4801,6 +4830,82 @@ fn listedNatives(arena: std.mem.Allocator, answered: std.json.Value) ![]const u8
         }
     }
     return ids.items;
+}
+
+var searched_terms: [8][16]u8 = undefined;
+var searched_lengths: [8]usize = undefined;
+var searches: usize = 0;
+
+fn titledNativeSearch(ptr: *anyopaque, arena: std.mem.Allocator, request: contract.NativeSearchRequest, refusal: *contract.Refusal) contract.Failure![]const contract.NativeSession {
+    _ = ptr;
+    _ = refusal;
+    if (searches < searched_terms.len) {
+        const kept = @min(request.term.len, 16);
+        @memcpy(searched_terms[searches][0..kept], request.term[0..kept]);
+        searched_lengths[searches] = kept;
+    }
+    searches += 1;
+    const rows = [_]contract.NativeSession{
+        .{ .native_id = "n1", .title = "Apple pie", .directory = "/work/a", .updated_at_ms = 90 },
+        .{ .native_id = "n2", .title = "pie crust", .directory = "/work/a", .updated_at_ms = 75 },
+        .{ .native_id = "n3", .title = "pie chart", .directory = "/work/a", .updated_at_ms = 60 },
+        .{ .native_id = "n4", .title = "banana", .directory = "/work/a", .updated_at_ms = 50 },
+        .{ .native_id = "n5", .title = "humble pie", .directory = "/work/a", .updated_at_ms = 30 },
+    };
+    var matched: std.ArrayList(contract.NativeSession) = .empty;
+    for (rows) |row| {
+        if (std.ascii.indexOfIgnoreCase(row.title, request.term) != null and matched.items.len < request.limit) try matched.append(arena, row);
+    }
+    return matched.items;
+}
+
+test "work.list search asks the native lists that search, and answers each match as the work it is" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const cwd = try std.process.currentPathAlloc(testing.io, testing.allocator);
+    defer testing.allocator.free(cwd);
+    const path = try std.fs.path.join(testing.allocator, &.{ cwd, ".zig-cache", "tmp", tmp.sub_path[0..], "sessions.jsonl" });
+    defer testing.allocator.free(path);
+    var store = try hubmod.binding.Store.open(testing.allocator, path);
+    defer store.deinit();
+    try store.append(.{ .action = .opened, .time_ms = 75, .record = .{ .session_id = "u1", .adapter = "reference", .directory = "/work/a" } });
+    try store.append(.{ .action = .opened, .time_ms = 40, .record = .{ .session_id = "u3", .adapter = "searching", .native_session_id = "n3", .directory = "/work/a" } });
+    try store.append(.{ .action = .closed, .time_ms = 20, .record = .{ .session_id = "u4", .adapter = "searching", .native_session_id = "n5", .directory = "/work/a" } });
+    const harness = try Harness.init(testing.allocator, .{ .bindings = &store }, .{});
+    defer harness.deinit();
+    try harness.hub.register("searching", .{ .ptr = &reference_holder, .vtable = &.{ .probe = referenceProbe, .open = referenceOpen, .native_list = pagedNativeList, .native_search = titledNativeSearch } });
+    defer reference_holder.opens_native = "";
+    reference_holder.opens_native = "n2";
+    try harness.send(try openLine(harness.arena(), "searching", open_envelope));
+    reference_holder.opens_native = "";
+    searches = 0;
+    paged_asks = 0;
+    const arena = harness.arena();
+    const held = harness.hub.sessionForNative("searching", "n2").?;
+
+    const found = try settledList(harness, "{\"id\":1,\"op\":\"work.list\",\"request\":{\"search\":\"pie\"}}");
+    try testing.expectEqualStrings(try std.fmt.allocPrint(arena, "n1 u3 {s} ", .{held}), try listedNatives(arena, found));
+    try testing.expectEqual(@as(usize, 1), searches);
+    try testing.expectEqualStrings("pie", searched_terms[0][0..searched_lengths[0]]);
+    try testing.expectEqual(@as(usize, 0), paged_asks);
+
+    const closed = try settledList(harness, "{\"id\":2,\"op\":\"work.list\",\"request\":{\"search\":\"humble\",\"include_closed\":true}}");
+    try testing.expectEqualStrings("u4 ", try listedNatives(arena, closed));
+    const hidden = try settledList(harness, "{\"id\":3,\"op\":\"work.list\",\"request\":{\"search\":\"humble\"}}");
+    try testing.expectEqualStrings("", try listedNatives(arena, hidden));
+    const asked = searches;
+    const elsewhere = try settledList(harness, "{\"id\":4,\"op\":\"work.list\",\"request\":{\"search\":\"pie\",\"adapters\":[\"reference\"]}}");
+    try testing.expectEqualStrings("", try listedNatives(arena, elsewhere));
+    try testing.expectEqual(asked, searches);
+    try harness.send("{\"id\":5,\"op\":\"work.list\",\"request\":{\"search\":7}}");
+    try testing.expectEqualStrings("invalid_request", try harness.code());
+
+    try harness.send("{\"id\":6,\"op\":\"work.capabilities\"}");
+    for ((try harness.lastValue()).object.get("result").?.object.get("adapters").?.array.items) |reach| {
+        const name = reach.object.get("adapter").?.string;
+        const searchable = reach.object.get("native").?.object.get("search").?.bool;
+        try testing.expectEqual(std.mem.eql(u8, name, "searching"), searchable);
+    }
 }
 
 test "work.list pages newest first with ties in key order, asks the native lists deeper each page, and keeps only what the filters name" {

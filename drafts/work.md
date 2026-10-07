@@ -26,10 +26,10 @@ verb says so and refuses it rather than inventing surface.
 Each verb is a key the endpoint advertises in its `GET /work/capabilities`
 answer (stdio op `work.capabilities`, no parameters), per adapter:
 `{"adapters": [{"adapter", "directory"?, "any_directory", "verbs": [...],
-"native": {"list", "read"}}], "unavailable"?: [{"adapter", "message"}]}`.
-`native` says whether the adapter lists its harness's own sessions and reads
-their transcripts; an adapter that could not be probed is named in
-`unavailable`.
+"native": {"list", "read", "search"}}], "unavailable"?: [{"adapter", "message"}]}`.
+`native` says whether the adapter lists its harness's own sessions, reads
+their transcripts, and passes a `work.list` search term to its harness's own
+list; an adapter that could not be probed is named in `unavailable`.
 
 | Key | Built from | Unadvertised when |
 | --- | --- | --- |
@@ -133,7 +133,7 @@ truncated to 4 KiB. `pending` is present only when `status` is `needs_you`.
 
 ### `work.list`
 
-Request `{"directory"?, "adapters"?, "include_closed"?, "include_native"?, "limit"?, "cursor"?}`.
+Request `{"directory"?, "adapters"?, "include_closed"?, "include_native"?, "limit"?, "cursor"?, "search"?}`.
 Answer `{"groups": [...], "next_cursor"?, "unavailable"?}`, where each group is
 `{"directory", "last_activity_ms", "work": [<entry>...]}`, where an entry is a
 held session's `work.status` answer or an unheld or native entry as
@@ -163,14 +163,26 @@ pieces of work; the cursor is opaque, as in 0046.
   `adapters` comma-separated.
 - OpenCode's own list follows the server's cursor (`GET /api/session?cursor=`)
   until it has the rows asked, up to 16 pages.
+- `search` hands a term to the native lists that take one, and the answer is
+  what they matched. Codex passes it as `thread/list`'s `searchTerm`, and
+  OpenCode as `GET /api/session`'s `search`, which matches the title, ignoring
+  case, and which the server's cursor carries to later pages; `native.search`
+  in `work.capabilities` names the adapters that pass it. A match is answered
+  as the work it is: a held session's entry when `serve` holds the harness
+  session, the history's entry when one binds it (a closed one only on
+  `include_closed`), and a native entry otherwise. Nothing else is listed, since
+  `serve` matches nothing itself: held and recorded work the harness did not
+  match is left out, and so is every adapter whose list takes no term.
+  `search` implies `include_native`, and `directory`, `adapters`, `limit` and
+  `cursor` apply as they do to a list.
 
-`work.list` lists; it does not search. Finding work by what was said in it is
-the caller's job: a control layer such as HyperNeo keeps its own index, ranks
-by its own rules and knows what its user is looking for. OAP's part is to hand
-over what such an index needs. Today that is the list and each entry's
-`last_reply`; reading what was said is `work.read`. Where a harness's own list takes a search term (Codex
-`thread/list`'s `searchTerm`), a native listing may pass one through once
-native lists land, but `serve` builds no index of its own.
+`work.list` lists; `serve` does not search. Finding work by what was said in
+it is the caller's job: a control layer such as HyperNeo keeps its own index,
+ranks by its own rules and knows what its user is looking for. OAP's part is to
+hand over what such an index needs. Today that is the list and each entry's
+`last_reply`; reading what was said is `work.read`. Where a harness's own list
+takes a search term, `search` passes one through, but `serve` builds no index
+of its own and matches nothing itself.
 
 ### `work.start`
 

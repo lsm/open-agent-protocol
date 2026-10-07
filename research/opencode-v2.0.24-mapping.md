@@ -354,6 +354,16 @@ native entry under that directory. Both adapters list, with the same query
 and the same strict rows; against the same binary, `goap hub --stdio` and
 `oapx serve --stdio` answered the same entries.
 
+A `work.list` `search` adds `&search=<term>` to the first page's query, and
+only to it. Live against the pinned binary, four sessions titled
+`apple one`, `banana`, `apple two` and `Apple three` answered `search=apple`
+with the three apple ones newest first and `search=APPLE` the same, so the
+term matches the title as a substring, ignoring case; `search=one` answered
+`apple one` alone. Paged with `limit=1`, the first page's `cursor.next`
+decoded to JSON carrying `"search":"apple"` beside the directory and order, and
+following it answered `apple two` and then `apple one`, never `banana`, so the
+cursor carries the term as it carries the other filters.
+
 ## Native session read
 
 `work.read` reads a session OpenCode holds through
