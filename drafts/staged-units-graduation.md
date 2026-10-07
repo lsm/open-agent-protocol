@@ -102,7 +102,7 @@ Decision 0003's four steps translate into these exit criteria for every unit:
 | 8 | T6 transcript load | pi `get_entries` with `since`; ACP `session/load` replaying the conversation through `session/update` | pi (degraded) | ACP |
 | 9 | T8 session list | a host's binding records; ACP's optional native list | accepted (0046) | — |
 
-Ledgers: [Codex](../research/codex-app-server-0.160.0-mapping.md) ·
+Ledgers: [Codex](../research/codex-app-server-0.160.1-mapping.md) ·
 [Claude Code](../research/claude-code-agent-sdk-2.1.288-mapping.md) ·
 [OpenCode](../research/opencode-v1.18.34-mapping.md) ·
 [pi](../research/pi-v1.0.1-mapping.md) ·
