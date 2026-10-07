@@ -25,8 +25,9 @@ var (
 )
 
 const (
-	endpointID        = "opencode.server"
-	defaultJournalCap = 256
+	endpointID            = "opencode.server"
+	defaultJournalCap     = 256
+	defaultRequestTimeout = 60 * time.Second
 )
 
 var (
@@ -73,6 +74,7 @@ type Config struct {
 	JournalCapacity int
 	FrameLimit      int
 	QueueCapacity   int
+	RequestTimeout  time.Duration
 }
 
 type Adapter struct {
@@ -93,6 +95,9 @@ func New(config Config) (*Adapter, error) {
 	}
 	if config.JournalCapacity <= 0 {
 		config.JournalCapacity = defaultJournalCap
+	}
+	if config.RequestTimeout <= 0 {
+		config.RequestTimeout = defaultRequestTimeout
 	}
 	if config.Factory == nil {
 		options := httpapi.Options{Username: config.Username, Password: config.Password, HTTP: config.HTTP, FrameLimit: config.FrameLimit, QueueCapacity: config.QueueCapacity}
@@ -210,10 +215,23 @@ func (a *Adapter) Open(ctx context.Context, req base.OpenRequest) (base.Session,
 	}
 
 	subCtx, subCancel := context.WithCancel(context.Background())
+	waitCtx, waitCancel := context.WithTimeout(ctx, a.config.RequestTimeout)
+	stopWaiting := context.AfterFunc(waitCtx, subCancel)
 	subscription, err := client.Subscribe(subCtx, info.ID)
-	if err != nil {
+	waited := !stopWaiting()
+	waitCancel()
+	if err != nil || waited {
+		if err == nil {
+			_ = subscription.Close()
+		}
 		subCancel()
 		_ = client.Close()
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+		if waited {
+			return nil, errors.New("subscribe OpenCode session events: no server.connected within the request timeout")
+		}
 		return nil, fmt.Errorf("subscribe OpenCode session events: %w", err)
 	}
 	id := req.SessionID
@@ -233,6 +251,7 @@ func (a *Adapter) Open(ctx context.Context, req base.OpenRequest) (base.Session,
 		clock:        a.clock,
 		ids:          a.ids,
 		capacity:     a.config.JournalCapacity,
+		timeout:      a.config.RequestTimeout,
 		nativeID:     info.ID,
 		model:        info.Model,
 		participant:  req.Participant.ID,

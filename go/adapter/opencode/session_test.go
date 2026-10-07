@@ -83,6 +83,7 @@ type fakeClient struct {
 	interrupts       int
 	inboxCancels     []native.MessageID
 	silentCancels    bool
+	stalls           bool
 	cancelSeq        int64
 	actives          int
 	activeErr        error
@@ -168,10 +169,15 @@ func (f *fakeClient) Prompt(_ context.Context, session native.SessionID, request
 	}
 	return admitted, nil
 }
-func (f *fakeClient) Interrupt(context.Context, native.SessionID) (bool, error) {
+func (f *fakeClient) Interrupt(ctx context.Context, _ native.SessionID) (bool, error) {
 	f.mu.Lock()
-	defer f.mu.Unlock()
 	f.interrupts++
+	stalls := f.stalls
+	f.mu.Unlock()
+	if stalls {
+		<-ctx.Done()
+		return false, ctx.Err()
+	}
 	return true, nil
 }
 func (f *fakeClient) CancelInbox(_ context.Context, _ native.SessionID, inbox native.MessageID) error {
@@ -209,7 +215,12 @@ func (f *fakeClient) Active(ctx context.Context) (map[native.SessionID]bool, err
 func (f *fakeClient) Subscribe(ctx context.Context, _ native.SessionID) (Subscription, error) {
 	f.mu.Lock()
 	f.subscribeCtx = ctx
+	stalls := f.stalls
 	f.mu.Unlock()
+	if stalls {
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}
 	return f.subscription, nil
 }
 func (f *fakeClient) Close() error {
@@ -1688,5 +1699,61 @@ func TestALiveUpdateIsRefusedWhatOpenCodeCannotTakeBetweenRuns(t *testing.T) {
 	defer modelless.mu.Unlock()
 	if len(modelless.switches) != 0 {
 		t.Fatal("a session with no model still switched")
+	}
+}
+
+func TestOpenGivesUpOnAServerThatNeverSendsServerConnected(t *testing.T) {
+	client := newFakeClient()
+	client.stalls = true
+	adapter, err := New(Config{Factory: ClientFactoryFunc(func(context.Context) (Client, error) { return client, nil }), Clock: &fakeClock{}, IDs: &fakeIDs{}, RequestTimeout: 50 * time.Millisecond})
+	if err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() {
+		_, err := adapter.Open(context.Background(), base.OpenRequest{SessionID: "session", Participant: protocol.Participant{ID: "user"}})
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		if err == nil || !strings.Contains(err.Error(), "no server.connected within the request timeout") {
+			t.Fatalf("Open answered %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Open waited past the request timeout for server.connected")
+	}
+}
+
+func TestALateInterruptTheServerStallsAbandonsTheRunWithinTheRequestTimeout(t *testing.T) {
+	client := newFakeClient()
+	client.silentCancels = true
+	adapter, err := New(Config{Factory: ClientFactoryFunc(func(context.Context) (Client, error) { return client, nil }), Clock: &fakeClock{}, IDs: &fakeIDs{}, RequestTimeout: 50 * time.Millisecond})
+	if err != nil {
+		t.Fatal(err)
+	}
+	session, err := adapter.Open(context.Background(), base.OpenRequest{SessionID: "session", Participant: protocol.Participant{ID: "user"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = session.Close(context.Background()) })
+	response, stream := submitTest(t, session)
+	if _, err := session.Cancel(context.Background(), response.RunID); err != nil {
+		t.Fatal(err)
+	}
+	client.mu.Lock()
+	client.stalls = true
+	client.mu.Unlock()
+	client.deliver(t, 1, native.MessageID(response.MessageIDs[0]))
+	events := adaptertest.Drain(t, stream, 2*time.Second)
+	last := events[len(events)-1]
+	if last.Type != protocol.TypeRunFailed {
+		t.Fatalf("events=%v", types(events))
+	}
+	var failed protocol.RunFailedPayload
+	if err := json.Unmarshal(last.Payload, &failed); err != nil {
+		t.Fatal(err)
+	}
+	if failed.Error.Code != "opencode_cancellation_ambiguous" || !strings.Contains(failed.Error.Message, context.DeadlineExceeded.Error()) {
+		t.Fatalf("run failed with %+v", failed.Error)
 	}
 }

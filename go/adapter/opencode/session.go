@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"time"
 
 	base "github.com/lsm/open-agent-protocol/go/adapter"
 	"github.com/lsm/open-agent-protocol/go/adapter/opencode/internal/native"
@@ -39,6 +40,7 @@ type session struct {
 	subscription Subscription
 	events       <-chan native.Event
 	clock        base.Clock
+	timeout      time.Duration
 	ids          base.IDGenerator
 	capacity     int
 	nativeID     native.SessionID
@@ -706,7 +708,10 @@ func (s *session) delivered(inbox native.MessageID) {
 	late := owner.cancelRequested
 	s.mu.Unlock()
 	if late {
-		if _, err := s.client.Interrupt(context.Background(), s.nativeID); err != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), s.timeout)
+		_, err := s.client.Interrupt(ctx, s.nativeID)
+		cancel()
+		if err != nil {
 			s.abandon(owner, "opencode_cancellation_ambiguous", err.Error(), settledByFor(err))
 		}
 	}
