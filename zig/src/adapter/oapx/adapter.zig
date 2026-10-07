@@ -976,7 +976,10 @@ pub const Session = struct {
                 if (payload.is_error) {
                     var failure = Payload.init(a);
                     try failure.put("code", .{ .string = "tool_failed" });
-                    try failure.put("message", .{ .string = try errorText(a, payload.result_json.slice()) });
+                    const text = payload.result_text.slice();
+                    try failure.put("message", .{ .string = if (text.len > 0) text else try errorText(a, payload.result_json.slice()) });
+                    const details = try jsonOrString(a, payload.result_json.slice());
+                    if (details == .object and details.object.count() > 0) try failure.put("details", details);
                     try ended.put("error", failure.value());
                     try self.emit(run, "action.call.failed", ended.value(), false);
                 } else {

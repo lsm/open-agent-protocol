@@ -1524,6 +1524,24 @@ pub const TuiRuntime = struct {
         return OwnedSlice(u8).initOwned(try self.allocator.dupe(u8, value));
     }
 
+    fn firstContentText(self: *TuiRuntime, content_json: []const u8) !OwnedSlice(u8) {
+        if (content_json.len == 0) return OwnedSlice(u8).initBorrowed("");
+        const parsed = std.json.parseFromSlice(std.json.Value, self.allocator, content_json, .{}) catch |err| switch (err) {
+            error.OutOfMemory => return error.OutOfMemory,
+            else => return OwnedSlice(u8).initBorrowed(""),
+        };
+        defer parsed.deinit();
+        if (parsed.value != .array) return OwnedSlice(u8).initBorrowed("");
+        for (parsed.value.array.items) |part| {
+            if (part != .object) continue;
+            const kind = part.object.get("type") orelse continue;
+            if (kind != .string or !std.mem.eql(u8, kind.string, "text")) continue;
+            const text = part.object.get("text") orelse continue;
+            if (text == .string) return self.dupeOwned(text.string);
+        }
+        return OwnedSlice(u8).initBorrowed("");
+    }
+
     fn handleAgentEndEvent(self: *TuiRuntime) anyerror!void {
         const cancelled = self.cancelled.load(.acquire);
         if (!cancelled and self.last_turn_stop_reason == .length) {
@@ -1802,6 +1820,7 @@ pub const TuiRuntime = struct {
                 .estimated_returned_tokens = payload.estimated_returned_tokens,
                 .artifact_count = payload.artifact_count,
                 .artifact_refs = try self.formatArtifactRefs(payload.artifacts),
+                .result_text = try self.firstContentText(payload.content_json.slice()),
             } }),
             .turn_end => |payload| {
                 self.last_turn_stop_reason = payload.message.stop_reason;
