@@ -24,7 +24,7 @@ const features = [_]contract.Feature{
     .{ .key = "models.list", .level = .degraded, .reason = "the models this session is observed to run, projected from the native session record and durable step events; the server's own model.list route has no pinned response shape at this revision" },
     .{ .key = "protocol.initialize", .level = .emulated, .reason = "OpenCode has no initialize handshake; OpenAPI and catalogs describe the server" },
     .{ .key = "run.cancel", .level = .degraded, .reason = "interrupt is intent with an idle no-op; a running run settles at session.execution.interrupted and a queued one at session.inbox.cancelled" },
-    .{ .key = "run.reconciliation", .level = .emulated, .reason = "adapter-owned projection over the session events; the event stream does not replay" },
+    .{ .key = "run.reconciliation", .level = .emulated, .reason = "adapter-owned projection over the session events; when the event stream ends it subscribes again once and reconciles the open runs from the session record" },
     .{ .key = "run.replay", .level = .degraded, .reason = "bounded adapter journal; the native durable cursor is exposed as the transcript cursor" },
     .{ .key = "run.resume", .level = .degraded, .reason = "conversation resume exists natively but is not exercised; OAP resume replays the adapter journal" },
     .{ .key = "run.status", .level = .native, .reason = "session.inbox.delivered starts a run and session.execution.* settles it" },
@@ -166,7 +166,7 @@ pub const Adapter = struct {
         var cursor: []const u8 = "";
         var pages: usize = 0;
         while (pages < native_read_pages_max) : (pages += 1) {
-            const response = client.roundTrip(self.allocator, arena, target, try httpapi.messages(arena, endpoint, request.native_id, cursor, native_read_page), config.frame_limit, config.request_timeout_ns) catch |err| return refusal.fail(error.BackendFailed, try describe(arena, "read OpenCode session", err));
+            const response = client.roundTrip(self.allocator, arena, target, try httpapi.messages(arena, endpoint, request.native_id, cursor, native_read_page, false), config.frame_limit, config.request_timeout_ns) catch |err| return refusal.fail(error.BackendFailed, try describe(arena, "read OpenCode session", err));
             const page = switch (try httpapi.messagesResult(arena, response, request.native_id, config.frame_limit)) {
                 .ok => |value| value,
                 .failed => |failure| return refusal.fail(error.BackendFailed, try std.fmt.allocPrint(arena, "read OpenCode session: {s}", .{failure.message})),
@@ -186,11 +186,20 @@ pub const Adapter = struct {
             return refusal.fail(error.BackendFailed, try std.fmt.allocPrint(arena, "the OpenCode endpoint \"{s}\" is not a plain http URL", .{config.endpoint}));
         };
         const endpoint = httpapi.Endpoint{ .base_path = target.base_path, .username = config.username, .password = config.password };
-        const listed_response = client.roundTrip(self.allocator, arena, target, try httpapi.sessions(arena, endpoint, request.directory, request.limit), config.frame_limit, config.request_timeout_ns) catch |err| return refusal.fail(error.BackendFailed, try describe(arena, "list OpenCode sessions", err));
-        const infos = switch (try httpapi.sessionsResult(arena, listed_response, config.frame_limit)) {
-            .ok => |value| value,
-            .failed => |failure| return refusal.fail(error.BackendFailed, try std.fmt.allocPrint(arena, "list OpenCode sessions: {s}", .{failure.message})),
-        };
+        var gathered: std.ArrayList(native.SessionInfo) = .empty;
+        var cursor: []const u8 = "";
+        var pages: usize = 0;
+        while (pages < native_read_pages_max and gathered.items.len < request.limit) : (pages += 1) {
+            const listed_response = client.roundTrip(self.allocator, arena, target, try httpapi.sessions(arena, endpoint, request.directory, cursor, request.limit - gathered.items.len), config.frame_limit, config.request_timeout_ns) catch |err| return refusal.fail(error.BackendFailed, try describe(arena, "list OpenCode sessions", err));
+            const page = switch (try httpapi.sessionsResult(arena, listed_response, config.frame_limit)) {
+                .ok => |value| value,
+                .failed => |failure| return refusal.fail(error.BackendFailed, try std.fmt.allocPrint(arena, "list OpenCode sessions: {s}", .{failure.message})),
+            };
+            try gathered.appendSlice(arena, page.infos);
+            if (page.infos.len == 0 or page.next.len == 0 or std.mem.eql(u8, page.next, cursor)) break;
+            cursor = page.next;
+        }
+        const infos = gathered.items;
         const active_response = client.roundTrip(self.allocator, arena, target, try httpapi.active(arena, endpoint), config.frame_limit, config.request_timeout_ns) catch |err| return refusal.fail(error.BackendFailed, try describe(arena, "list running OpenCode sessions", err));
         const running = switch (try httpapi.activeResult(arena, active_response, config.frame_limit)) {
             .ok => |value| value,
@@ -466,7 +475,100 @@ pub const Session = struct {
         if (self.ended) return;
         self.ended = true;
         if (self.subscription) |subscription| subscription.shut();
+        if (try self.recover()) return;
         self.reducer.transportFailed(message) catch |err| return lift(err);
+    }
+
+    fn recover(self: *Session) contract.Failure!bool {
+        if (self.reducer.unusable) return false;
+        const gpa = self.gpa;
+        const config = self.owner.config;
+        const own = self.owned();
+        const subscription = client.Connection.start(gpa, self.target, try client.encode(own, self.target, try httpapi.subscribe(own, self.endpoint)), config.frame_limit) catch |err| {
+            if (err == error.OutOfMemory) return error.OutOfMemory;
+            return false;
+        };
+        var stream = httpapi.Stream.init(gpa, config.frame_limit, self.native_id);
+        var swapped = false;
+        defer if (!swapped) {
+            subscription.destroy(gpa);
+            stream.deinit();
+        };
+        var held: std.ArrayList(native.Event) = .empty;
+        const started = monotonic();
+        while (!stream.connected) {
+            if (subscription.reader.head_done and subscription.reader.status != 200) return false;
+            if (monotonic() -| started > config.request_timeout_ns) return false;
+            const got = subscription.poll(20) catch return false;
+            const chunk = try subscription.reader.take(own);
+            if (chunk.len > 0) {
+                const batch = try stream.feed(own, chunk);
+                try held.appendSlice(own, batch.events);
+                if (batch.failure != null) return false;
+            } else if (!got and !subscription.open) return false;
+        }
+        const wanted = self.reducer.reconcileTarget();
+        var records: ?[]const std.json.Value = null;
+        var live = true;
+        if (wanted.oldest.len > 0) {
+            records = self.recordsFrom(wanted.oldest) catch |err| {
+                if (err == error.OutOfMemory) return error.OutOfMemory;
+                return false;
+            };
+            if (records) |found| {
+                if (!session.recordSettled(found)) live = self.stillRunning() catch |err| {
+                    if (err == error.OutOfMemory) return error.OutOfMemory;
+                    return false;
+                };
+            } else if (wanted.delivered.len > 0) return false;
+        }
+        if (self.subscription) |previous| previous.destroy(gpa);
+        self.subscription = subscription;
+        self.stream.deinit();
+        self.stream = stream;
+        swapped = true;
+        self.ended = false;
+        if (records) |found| self.reducer.replay(found, wanted.delivered, live) catch |err| return lift(err);
+        for (held.items) |observed| self.reducer.observe(observed) catch |err| return lift(err);
+        return true;
+    }
+
+    fn recordsFrom(self: *Session, oldest: []const u8) !?[]const std.json.Value {
+        const own = self.owned();
+        var newest: std.ArrayList(std.json.Value) = .empty;
+        var cursor: []const u8 = "";
+        var pages: usize = 0;
+        while (pages < native_read_pages_max) : (pages += 1) {
+            const response = try self.exchange(try httpapi.messages(own, self.endpoint, self.native_id, cursor, native_read_page, true));
+            const page = switch (try httpapi.messagesResult(own, response, self.native_id, self.owner.config.frame_limit)) {
+                .ok => |value| value,
+                .failed => return error.RecordUnreadable,
+            };
+            for (page.messages) |record| {
+                try newest.append(own, record);
+                if (record != .object) continue;
+                const id = record.object.get("id") orelse continue;
+                if (id == .string and std.mem.eql(u8, id.string, oldest)) {
+                    std.mem.reverse(std.json.Value, newest.items);
+                    return newest.items;
+                }
+            }
+            if (page.next.len == 0 or std.mem.eql(u8, page.next, cursor)) break;
+            cursor = page.next;
+        }
+        return null;
+    }
+
+    fn stillRunning(self: *Session) !bool {
+        const own = self.owned();
+        const listed = switch (try httpapi.activeResult(own, try self.exchange(try httpapi.active(own, self.endpoint)), self.owner.config.frame_limit)) {
+            .ok => |value| value,
+            .failed => return error.RecordUnreadable,
+        };
+        for (listed) |id| {
+            if (std.mem.eql(u8, id, self.native_id)) return true;
+        }
+        return false;
     }
 
     fn idOf(ptr: *anyopaque) []const u8 {
@@ -716,6 +818,14 @@ pub const FakeServer = struct {
     list_target: [256]u8 = undefined,
     list_target_len: usize = 0,
     message_pages: std.atomic.Value(usize) = .init(0),
+    list_paged: bool = false,
+    list_calls: std.atomic.Value(usize) = .init(0),
+    drop_stream: bool = false,
+    record: []const u8 = "",
+    last_prompt: [64]u8 = undefined,
+    last_prompt_len: usize = 0,
+    subscribes: std.atomic.Value(usize) = .init(0),
+    after_reconnect: []const []const u8 = &.{},
 
     pub fn start(self: *FakeServer) !void {
         if (builtin.os.tag == .windows) return error.SkipZigTest;
@@ -794,11 +904,19 @@ pub const FakeServer = struct {
                 if (std.mem.eql(u8, target, "/api/event")) {
                     @memcpy(self.event_target[0..target.len], target);
                     self.event_target_len = target.len;
+                    _ = self.subscribes.fetchAdd(1, .acq_rel);
                     if (self.refuse_events) {
                         try respond(conn, "500 Internal Server Error", "{}");
                         continue;
                     }
-                    try conn.stream.writeAll("HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\n\r\ndata: {\"id\":\"evt_connected\",\"type\":\"server.connected\",\"data\":{}}\n\n");
+                    var opening: std.ArrayList(u8) = .empty;
+                    try opening.appendSlice(arena, "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\n\r\ndata: {\"id\":\"evt_connected\",\"type\":\"server.connected\",\"data\":{}}\n\n");
+                    if (self.subscribes.load(.acquire) > 1) for (self.after_reconnect) |template| {
+                        seq += 1;
+                        const numbered = try std.mem.replaceOwned(u8, arena, template, "%SEQ%", try std.fmt.allocPrint(arena, "{d}", .{seq}));
+                        try opening.appendSlice(arena, try std.mem.concat(arena, u8, &.{ "data: ", numbered, "\n\n" }));
+                    };
+                    try conn.stream.writeAll(opening.items);
                     sse = conn;
                     continue;
                 }
@@ -806,6 +924,8 @@ pub const FakeServer = struct {
                     _ = self.message_pages.fetchAdd(1, .acq_rel);
                     if (std.mem.eql(u8, target, "/api/session/" ++ fake_session ++ "/message?limit=200&order=asc")) {
                         try respond(conn, "200 OK", "{\"data\":[{\"id\":\"msg_oap0000000000000004\",\"time\":{\"created\":1791355196016},\"text\":\"ping\",\"type\":\"user\"}],\"cursor\":{\"next\":\"n1\"}}");
+                    } else if (self.record.len > 0 and std.mem.eql(u8, target, "/api/session/" ++ fake_session ++ "/message?limit=200&order=desc")) {
+                        try respond(conn, "200 OK", try std.mem.replaceOwned(u8, arena, self.record, "%MSG%", self.last_prompt[0..self.last_prompt_len]));
                     } else if (std.mem.eql(u8, target, "/api/session/" ++ fake_session ++ "/message?cursor=n1&limit=200")) {
                         try respond(conn, "200 OK", "{\"data\":[{\"id\":\"msg_115171275001rAuxAEcEKY0hMl\",\"time\":{\"created\":1791355196218,\"streamed\":1791355196225,\"completed\":1791355196251},\"type\":\"assistant\",\"agent\":\"build\",\"model\":{\"id\":\"model\",\"providerID\":\"fixture\",\"variant\":\"default\"},\"content\":[{\"type\":\"text\",\"text\":\"pong\"}],\"snapshot\":{\"start\":\"c39d615bfd58868b7b93674a96f1ecdffd8cc887\",\"end\":\"c39d615bfd58868b7b93674a96f1ecdffd8cc887\",\"files\":[]},\"finish\":\"stop\",\"rawFinish\":\"stop\",\"cost\":0,\"tokens\":{\"input\":3,\"output\":2,\"reasoning\":0,\"cache\":{\"read\":0,\"write\":0}}},{\"id\":\"msg_11517135c002bb2WKpxce9lFyt\",\"time\":{\"created\":1791355196252},\"type\":\"idle\",\"outcome\":\"succeeded\"}],\"cursor\":{\"next\":\"n2\"}}");
                     } else {
@@ -816,6 +936,15 @@ pub const FakeServer = struct {
                 if (std.mem.eql(u8, method, "GET") and std.mem.startsWith(u8, target, "/api/session?")) {
                     @memcpy(self.list_target[0..target.len], target);
                     self.list_target_len = target.len;
+                    _ = self.list_calls.fetchAdd(1, .acq_rel);
+                    if (self.list_paged) {
+                        if (std.mem.indexOf(u8, target, "cursor=n1") != null) {
+                            try respond(conn, "200 OK", "{\"data\":[{\"id\":\"ses_idle0000000000000000\",\"projectID\":\"prj_fake\",\"title\":\"\",\"time\":{\"created\":1,\"updated\":4},\"location\":{\"directory\":\"/w\"}}],\"cursor\":{}}");
+                        } else {
+                            try respond(conn, "200 OK", "{\"data\":[{\"id\":\"" ++ fake_session ++ "\",\"projectID\":\"prj_fake\",\"title\":\"busy one\",\"time\":{\"created\":1,\"updated\":9},\"location\":{\"directory\":\"/w\"}}],\"cursor\":{\"next\":\"n1\"}}");
+                        }
+                        continue;
+                    }
                     try respond(conn, "200 OK", "{\"data\":[{\"id\":\"" ++ fake_session ++ "\",\"projectID\":\"prj_fake\",\"title\":\"busy one\",\"time\":{\"created\":1,\"updated\":9},\"location\":{\"directory\":\"/w\"}},{\"id\":\"ses_idle0000000000000000\",\"projectID\":\"prj_fake\",\"title\":\"\",\"time\":{\"created\":1,\"updated\":4},\"location\":{\"directory\":\"/w\"}}],\"cursor\":{}}");
                     continue;
                 }
@@ -832,8 +961,17 @@ pub const FakeServer = struct {
                     const delivery = parsed.object.get("delivery").?.string;
                     const text = parsed.object.get("text").?.string;
                     const receipt = try std.fmt.allocPrint(arena, "{{\"data\":{{\"id\":\"{s}\",\"sessionID\":\"" ++ fake_session ++ "\",\"time\":{{\"created\":1}},\"type\":\"user\",\"payload\":{{\"text\":\"{s}\"}},\"delivery\":\"{s}\"}}}}", .{ message_id, text, delivery });
+                    @memcpy(self.last_prompt[0..message_id.len], message_id);
+                    self.last_prompt_len = message_id.len;
                     try respond(conn, "200 OK", receipt);
                     if (turn < self.turns.len) try emit(arena, sse, self.turns[turn], message_id, &seq);
+                    if (self.drop_stream) {
+                        if (sse) |stream| {
+                            stream.open = false;
+                            stream.stream.close();
+                        }
+                        sse = null;
+                    }
                 } else if (std.mem.eql(u8, method, "POST") and std.mem.endsWith(u8, target, "/model")) {
                     _ = self.switches.fetchAdd(1, .acq_rel);
                     const parsed = try std.json.parseFromSliceLeaky(std.json.Value, arena, body, .{});
@@ -1117,6 +1255,71 @@ test "a server that closes the event stream mid-run fails the run and closes the
     try testing.expectError(error.SessionClosed, probe.handle.?.state(probe.arena.allocator(), &refusal));
 }
 
+test "a run whose event stream drops settles from the session record and the session stays usable" {
+    var probe: Probe = undefined;
+    try probe.init(&.{&open_turn}, &.{});
+    defer probe.deinit();
+    probe.fake.drop_stream = true;
+    probe.fake.record = "{\"data\":[{\"id\":\"msg_idle\",\"type\":\"idle\",\"outcome\":\"succeeded\",\"time\":{\"created\":4}},{\"id\":\"msg_a1\",\"type\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"pong\"}],\"finish\":\"stop\",\"cost\":0,\"tokens\":{\"input\":3,\"output\":2,\"reasoning\":0,\"cache\":{\"read\":0,\"write\":0}},\"time\":{\"created\":2,\"completed\":3}},{\"id\":\"%MSG%\",\"type\":\"user\",\"text\":\"hello\",\"time\":{\"created\":1}}],\"cursor\":{}}";
+    var refusal = contract.Refusal{};
+    _ = try probe.open(&refusal);
+    _ = try probe.submit(.auto, &refusal);
+    var seen = std.ArrayList(contract.Event).empty;
+    const completed = try probe.pumpUntil("run.completed", &seen);
+    try testing.expect(std.mem.indexOf(u8, completed.line, "\"text\":\"pong\"") != null);
+    try testing.expect(std.mem.indexOf(u8, completed.line, "\"total_tokens\":5") != null);
+    try testing.expectEqual(@as(usize, 2), probe.fake.subscribes.load(.acquire));
+    try testing.expectEqual(@as(usize, 1), probe.fake.message_pages.load(.acquire));
+    _ = try probe.handle.?.state(probe.arena.allocator(), &refusal);
+}
+
+test "a run whose event stream drops follows the new stream while the server still runs it, from the events sent with its greeting" {
+    var probe: Probe = undefined;
+    try probe.init(&.{&open_turn}, &.{});
+    defer probe.deinit();
+    probe.fake.drop_stream = true;
+    probe.fake.busy_polls = 1000;
+    probe.fake.after_reconnect = &.{ text_ended, step_ended, execution_succeeded };
+    probe.fake.record = "{\"data\":[{\"id\":\"%MSG%\",\"type\":\"user\",\"text\":\"hello\",\"time\":{\"created\":1}}],\"cursor\":{}}";
+    var refusal = contract.Refusal{};
+    _ = try probe.open(&refusal);
+    _ = try probe.submit(.auto, &refusal);
+    var seen = std.ArrayList(contract.Event).empty;
+    const completed = try probe.pumpUntil("run.completed", &seen);
+    try testing.expect(std.mem.indexOf(u8, completed.line, "\"text\":\"done\"") != null);
+    try testing.expectEqual(@as(usize, 1), probe.fake.actives.load(.acquire));
+}
+
+test "a run whose event stream drops fails when the server no longer runs it and the record shows no end" {
+    var probe: Probe = undefined;
+    try probe.init(&.{&open_turn}, &.{});
+    defer probe.deinit();
+    probe.fake.drop_stream = true;
+    probe.fake.record = "{\"data\":[{\"id\":\"%MSG%\",\"type\":\"user\",\"text\":\"hello\",\"time\":{\"created\":1}}],\"cursor\":{}}";
+    var refusal = contract.Refusal{};
+    _ = try probe.open(&refusal);
+    _ = try probe.submit(.auto, &refusal);
+    var seen = std.ArrayList(contract.Event).empty;
+    const failed = try probe.pumpUntil("run.failed", &seen);
+    try testing.expect(std.mem.indexOf(u8, failed.line, "opencode_execution_interrupted") != null);
+    _ = try probe.handle.?.state(probe.arena.allocator(), &refusal);
+}
+
+test "a run whose event stream drops fails when the session record does not hold its input" {
+    var probe: Probe = undefined;
+    try probe.init(&.{&open_turn}, &.{});
+    defer probe.deinit();
+    probe.fake.drop_stream = true;
+    probe.fake.record = "{\"data\":[{\"id\":\"msg_someone\",\"type\":\"user\",\"text\":\"hi\",\"time\":{\"created\":1}}],\"cursor\":{}}";
+    var refusal = contract.Refusal{};
+    _ = try probe.open(&refusal);
+    _ = try probe.submit(.auto, &refusal);
+    var seen = std.ArrayList(contract.Event).empty;
+    const failed = try probe.pumpUntil("run.failed", &seen);
+    try testing.expect(std.mem.indexOf(u8, failed.line, "opencode_stream_failed") != null);
+    try testing.expectError(error.SessionClosed, probe.handle.?.state(probe.arena.allocator(), &refusal));
+}
+
 test "the degraded models catalog is served only to a caller that opts into it" {
     var probe: Probe = undefined;
     try probe.init(&.{}, &.{});
@@ -1219,6 +1422,22 @@ test "a reopen refuses a session it cannot attach" {
         try testing.expectEqualStrings(contract.reason_unsatisfiable, refusal.reason);
         try testing.expectEqual(@as(usize, 0), probe.fake.event_target_len);
     }
+}
+
+test "the native list follows the server's cursor for the rows it still needs" {
+    var probe: Probe = undefined;
+    try probe.init(&.{}, &.{});
+    defer probe.deinit();
+    probe.fake.list_paged = true;
+    var refusal = contract.Refusal{};
+    const listed = try probe.adapter.adapter().nativeList(probe.arena.allocator(), .{ .directory = "/w", .limit = 7 }, &refusal).?;
+    try testing.expectEqual(@as(usize, 2), listed.len);
+    try testing.expectEqualStrings("ses_idle0000000000000000", listed[1].native_id);
+    try testing.expectEqual(@as(usize, 2), probe.fake.list_calls.load(.acquire));
+    try testing.expectEqualStrings("/api/session?cursor=n1&limit=6", probe.fake.list_target[0..probe.fake.list_target_len]);
+    const one = try probe.adapter.adapter().nativeList(probe.arena.allocator(), .{ .directory = "/w", .limit = 1 }, &refusal).?;
+    try testing.expectEqual(@as(usize, 1), one.len);
+    try testing.expectEqual(@as(usize, 3), probe.fake.list_calls.load(.acquire));
 }
 
 test "the native list asks OpenCode for the directory's root sessions newest first and marks the ones it runs" {

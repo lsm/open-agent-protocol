@@ -21,7 +21,12 @@ func (s *Server) workOp(ctx context.Context, request requestLine) (json.RawMessa
 		if werr := request.only(paramRequest); werr != nil {
 			return nil, werr
 		}
-		answer, refusal = s.work.List(ctx, flag(request.Request, "include_closed"), flag(request.Request, "include_native"))
+		listed, parseRefusal := workwire.ParseListRequest(request.Request)
+		if parseRefusal != nil {
+			refusal = parseRefusal
+			break
+		}
+		answer, refusal = s.work.List(ctx, listed)
 	case opWorkStatus:
 		if werr := request.only(paramSession); werr != nil {
 			return nil, werr
@@ -69,13 +74,4 @@ func (s *Server) workOp(ctx context.Context, request requestLine) (json.RawMessa
 		return nil, internalError(err)
 	}
 	return encoded, nil
-}
-
-func flag(params json.RawMessage, name string) bool {
-	var object map[string]json.RawMessage
-	if json.Unmarshal(params, &object) != nil {
-		return false
-	}
-	var value bool
-	return json.Unmarshal(object[name], &value) == nil && value
 }

@@ -2,10 +2,12 @@ package workwire
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"sync/atomic"
@@ -181,18 +183,97 @@ type unavailable struct {
 
 type listJSON struct {
 	Groups      []group       `json:"groups"`
+	NextCursor  string        `json:"next_cursor,omitempty"`
 	Unavailable []unavailable `json:"unavailable,omitempty"`
 }
 
-func (f *Front) List(ctx context.Context, includeClosed, includeNative bool) (any, *Refusal) {
+const (
+	listLimitDefault = 50
+	listLimitMax     = 100
+	nativeDepthMax   = 500
+)
+
+type ListRequest struct {
+	Directory     string
+	Adapters      []string
+	IncludeClosed bool
+	IncludeNative bool
+	Limit         *int
+	Cursor        string
+}
+
+type listCursor struct {
+	At    int64  `json:"at"`
+	Key   string `json:"key"`
+	Depth int    `json:"depth"`
+}
+
+var badListCursor = &Refusal{Code: "invalid_request", Message: "cursor is not one this list issued"}
+
+func ParseListRequest(params json.RawMessage) (ListRequest, *Refusal) {
+	var request ListRequest
+	trimmed := strings.TrimSpace(string(params))
+	if trimmed == "" || trimmed == "null" {
+		return request, nil
+	}
+	var given struct {
+		Directory     *string  `json:"directory"`
+		Adapters      []string `json:"adapters"`
+		IncludeClosed *bool    `json:"include_closed"`
+		IncludeNative *bool    `json:"include_native"`
+		Limit         *int     `json:"limit"`
+		Cursor        *string  `json:"cursor"`
+	}
+	if err := json.Unmarshal(params, &given); err != nil {
+		return request, &Refusal{Code: "invalid_request", Message: "request is an object of directory, adapters, include_closed, include_native, limit and cursor"}
+	}
+	if given.Directory != nil {
+		request.Directory = *given.Directory
+	}
+	request.Adapters = given.Adapters
+	request.IncludeClosed = given.IncludeClosed != nil && *given.IncludeClosed
+	request.IncludeNative = given.IncludeNative != nil && *given.IncludeNative
+	request.Limit = given.Limit
+	if given.Cursor != nil {
+		request.Cursor = *given.Cursor
+	}
+	return request, nil
+}
+
+func (f *Front) List(ctx context.Context, request ListRequest) (any, *Refusal) {
+	limit := listLimitDefault
+	if request.Limit != nil {
+		if *request.Limit < 1 || *request.Limit > listLimitMax {
+			return nil, &Refusal{Code: "invalid_request", Message: "limit is 1 to 100"}
+		}
+		limit = *request.Limit
+	}
+	var after *listCursor
+	if request.Cursor != "" {
+		raw, err := base64.RawURLEncoding.DecodeString(request.Cursor)
+		var decoded listCursor
+		if err != nil || json.Unmarshal(raw, &decoded) != nil || decoded.Key == "" || decoded.Depth < 1 {
+			return nil, badListCursor
+		}
+		after = &decoded
+	}
+	wanted := func(adapter, directory string) bool {
+		if len(request.Adapters) > 0 && !slices.Contains(request.Adapters, adapter) {
+			return false
+		}
+		return request.Directory == "" || directory == request.Directory
+	}
 	type piece struct {
 		directory string
 		at        int64
+		key       string
 		value     workJSON
 	}
 	var pieces []piece
 	for _, found := range f.hub.Works(ctx) {
-		pieces = append(pieces, piece{directory: found.Directory, at: found.UpdatedAtMS, value: heldWork(found)})
+		if wanted(found.Adapter, found.Directory) {
+			pieces = append(pieces, piece{directory: found.Directory, at: found.UpdatedAtMS, key: "s:" + string(found.SessionID), value: heldWork(found)})
+		}
 	}
 	known := map[string]bool{}
 	recorded := f.latest(ctx)
@@ -206,34 +287,61 @@ func (f *Front) List(ctx context.Context, includeClosed, includeNative bool) (an
 		if f.hub.Knows(protocol.SessionID(entry.Record.SessionID)) {
 			continue
 		}
-		if entry.Action == binding.ActionClosed && !includeClosed {
+		if entry.Action == binding.ActionClosed && !request.IncludeClosed {
 			continue
 		}
-		pieces = append(pieces, piece{directory: entry.Record.Directory, at: entry.TimeMS, value: unheldWork(entry)})
+		if wanted(entry.Record.Adapter, entry.Record.Directory) {
+			pieces = append(pieces, piece{directory: entry.Record.Directory, at: entry.TimeMS, key: "s:" + entry.Record.SessionID, value: unheldWork(entry)})
+		}
+	}
+	depth := 0
+	if after != nil {
+		depth = after.Depth
 	}
 	var missing []unavailable
-	if includeNative {
-		found, failures := f.hub.Natives(ctx, known)
+	if request.IncludeNative {
+		found, failures := f.hub.NativesFor(ctx, known, serve.NativeQuery{Adapters: request.Adapters, Directory: request.Directory, Limit: min(depth+limit+1, nativeDepthMax)})
 		for _, native := range found {
-			pieces = append(pieces, piece{directory: native.Session.Directory, at: native.Session.UpdatedAtMS, value: nativeWork(native)})
+			if wanted(native.Adapter, native.Session.Directory) {
+				pieces = append(pieces, piece{directory: native.Session.Directory, at: native.Session.UpdatedAtMS, key: "n:" + native.Adapter + "/" + native.Session.NativeID, value: nativeWork(native)})
+			}
 		}
 		for _, failure := range failures {
 			missing = append(missing, unavailable{Adapter: failure.Adapter, Message: strings.TrimSpace(failure.Message)})
 		}
 	}
-	sort.SliceStable(pieces, func(i, j int) bool { return pieces[i].at > pieces[j].at })
-	groups := []group{}
+	sort.SliceStable(pieces, func(i, j int) bool {
+		if pieces[i].at != pieces[j].at {
+			return pieces[i].at > pieces[j].at
+		}
+		return pieces[i].key < pieces[j].key
+	})
+	if after != nil {
+		pieces = slices.DeleteFunc(pieces, func(each piece) bool {
+			return each.at > after.At || (each.at == after.At && each.key <= after.Key)
+		})
+	}
+	out := listJSON{Groups: []group{}, Unavailable: missing}
+	if len(pieces) > limit {
+		last := pieces[limit-1]
+		encoded, _ := json.Marshal(listCursor{At: last.at, Key: last.key, Depth: depth + limit})
+		out.NextCursor = base64.RawURLEncoding.EncodeToString(encoded)
+		pieces = pieces[:limit]
+	}
 	at := map[string]int{}
 	for _, each := range pieces {
 		index, seen := at[each.directory]
 		if !seen {
-			index = len(groups)
+			index = len(out.Groups)
 			at[each.directory] = index
-			groups = append(groups, group{Directory: each.directory, LastActivityMS: each.at})
+			out.Groups = append(out.Groups, group{Directory: each.directory, LastActivityMS: each.at, Work: []workJSON{}})
 		}
-		groups[index].Work = append(groups[index].Work, each.value)
+		out.Groups[index].Work = append(out.Groups[index].Work, each.value)
 	}
-	return listJSON{Groups: groups, Unavailable: missing}, nil
+	if request.Directory != "" && after == nil && len(out.Groups) == 0 {
+		out.Groups = append(out.Groups, group{Directory: request.Directory, Work: []workJSON{}})
+	}
+	return out, nil
 }
 
 func text(params json.RawMessage, name string) (string, bool) {

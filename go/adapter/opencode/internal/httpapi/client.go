@@ -241,24 +241,39 @@ func (c *Client) Info(ctx context.Context) (native.ServerInfo, error) {
 	return response, nil
 }
 
-func (c *Client) Sessions(ctx context.Context, directory string, limit int) ([]native.SessionInfo, error) {
-	query := url.Values{"limit": {strconv.Itoa(limit)}, "order": {"desc"}, "parentID": {"null"}}
-	if directory != "" {
-		query.Set("directory", directory)
+type SessionPage struct {
+	Data []native.SessionInfo
+	Next string
+}
+
+func (c *Client) Sessions(ctx context.Context, directory, cursor string, limit int) (SessionPage, error) {
+	query := url.Values{"limit": {strconv.Itoa(limit)}}
+	if cursor != "" {
+		query.Set("cursor", cursor)
+	} else {
+		query.Set("order", "desc")
+		query.Set("parentID", "null")
+		if directory != "" {
+			query.Set("directory", directory)
+		}
 	}
 	var response struct {
 		Data   []native.SessionInfo `json:"data"`
 		Cursor json.RawMessage      `json:"cursor"`
 	}
 	if err := c.do(ctx, http.MethodGet, "/api/session", query, nil, &response); err != nil {
-		return nil, err
+		return SessionPage{}, err
 	}
 	for _, info := range response.Data {
 		if err := info.Validate(); err != nil {
-			return nil, err
+			return SessionPage{}, err
 		}
 	}
-	return response.Data, nil
+	var position struct {
+		Next string `json:"next"`
+	}
+	_ = json.Unmarshal(response.Cursor, &position)
+	return SessionPage{Data: response.Data, Next: position.Next}, nil
 }
 
 type MessagePage struct {
@@ -269,11 +284,14 @@ type MessagePage struct {
 	} `json:"cursor"`
 }
 
-func (c *Client) Messages(ctx context.Context, session native.SessionID, cursor string, limit int) (MessagePage, error) {
+func (c *Client) Messages(ctx context.Context, session native.SessionID, cursor string, limit int, newestFirst bool) (MessagePage, error) {
 	query := url.Values{"limit": {strconv.Itoa(limit)}}
-	if cursor != "" {
+	switch {
+	case cursor != "":
 		query.Set("cursor", cursor)
-	} else {
+	case newestFirst:
+		query.Set("order", "desc")
+	default:
 		query.Set("order", "asc")
 	}
 	var page MessagePage

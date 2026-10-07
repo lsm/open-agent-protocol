@@ -331,17 +331,18 @@ pub fn getSession(arena: std.mem.Allocator, endpoint: Endpoint, session: []const
     return build(arena, endpoint, "GET", try sessionPath(arena, session, ""), "", "application/json", null);
 }
 
-pub fn sessions(arena: std.mem.Allocator, endpoint: Endpoint, directory: []const u8, limit: usize) std.mem.Allocator.Error!Request {
+pub fn sessions(arena: std.mem.Allocator, endpoint: Endpoint, directory: []const u8, cursor: []const u8, limit: usize) std.mem.Allocator.Error!Request {
+    if (cursor.len > 0) return build(arena, endpoint, "GET", "/api/session", try std.fmt.allocPrint(arena, "cursor={s}&limit={d}", .{ try queryEscape(arena, cursor), limit }), "application/json", null);
     const scope = if (directory.len > 0) try std.mem.concat(arena, u8, &.{ "directory=", try queryEscape(arena, directory), "&" }) else "";
     const query = try std.fmt.allocPrint(arena, "{s}limit={d}&order=desc&parentID=null", .{ scope, limit });
     return build(arena, endpoint, "GET", "/api/session", query, "application/json", null);
 }
 
-pub fn messages(arena: std.mem.Allocator, endpoint: Endpoint, session: []const u8, cursor: []const u8, limit: usize) std.mem.Allocator.Error!Request {
+pub fn messages(arena: std.mem.Allocator, endpoint: Endpoint, session: []const u8, cursor: []const u8, limit: usize, newest_first: bool) std.mem.Allocator.Error!Request {
     const query = if (cursor.len > 0)
         try std.fmt.allocPrint(arena, "cursor={s}&limit={d}", .{ try queryEscape(arena, cursor), limit })
     else
-        try std.fmt.allocPrint(arena, "limit={d}&order=asc", .{limit});
+        try std.fmt.allocPrint(arena, "limit={d}&order={s}", .{ limit, if (newest_first) "desc" else "asc" });
     return build(arena, endpoint, "GET", try sessionPath(arena, session, "/message"), query, "application/json", null);
 }
 
@@ -459,7 +460,9 @@ pub fn getSessionResult(arena: std.mem.Allocator, response: Response, session: [
     return .{ .ok = info };
 }
 
-pub fn sessionsResult(arena: std.mem.Allocator, response: Response, limit: usize) std.mem.Allocator.Error!Outcome([]const native.SessionInfo) {
+pub const SessionPage = struct { infos: []const native.SessionInfo, next: []const u8 };
+
+pub fn sessionsResult(arena: std.mem.Allocator, response: Response, limit: usize) std.mem.Allocator.Error!Outcome(SessionPage) {
     const document = switch (try check(arena, response, "/api/session", limit, &native.sessions_response)) {
         .document => |value| value,
         .failed => |failure| return .{ .failed = failure },
@@ -468,7 +471,17 @@ pub fn sessionsResult(arena: std.mem.Allocator, response: Response, limit: usize
     for (infos) |info| {
         if (!native.validSessionInfo(info)) return .{ .failed = .{ .message = native.invalid_wire ++ ": invalid session info" } };
     }
-    return .{ .ok = infos };
+    var next: []const u8 = "";
+    if (document == .object) {
+        if (document.object.get("cursor")) |cursor| {
+            if (cursor == .object) {
+                if (cursor.object.get("next")) |value| {
+                    if (value == .string) next = value.string;
+                }
+            }
+        }
+    }
+    return .{ .ok = .{ .infos = infos, .next = next } };
 }
 
 pub fn activeResult(arena: std.mem.Allocator, response: Response, limit: usize) std.mem.Allocator.Error!Outcome([]const []const u8) {
@@ -723,16 +736,18 @@ test "a session list decodes every row strictly and refuses one that is not a se
     defer arena.deinit();
     const scratch = arena.allocator();
     const listed = try sessionsResult(scratch, .{ .status = 200, .body = "{\"data\":[{\"id\":\"ses_a\",\"projectID\":\"p\",\"title\":\"t\",\"time\":{\"created\":1,\"updated\":2}}],\"cursor\":{\"next\":\"x\"}}" }, 0);
-    try testing.expectEqual(@as(usize, 1), listed.ok.len);
-    try testing.expectEqualStrings("t", listed.ok[0].title);
-    try testing.expectEqual(@as(i64, 2), listed.ok[0].updated);
+    try testing.expectEqual(@as(usize, 1), listed.ok.infos.len);
+    try testing.expectEqualStrings("t", listed.ok.infos[0].title);
+    try testing.expectEqual(@as(i64, 2), listed.ok.infos[0].updated);
+    try testing.expectEqualStrings("x", listed.ok.next);
     const strict = try sessionsResult(scratch, .{ .status = 200, .body = "{\"data\":[{\"id\":\"ses_a\",\"projectID\":\"p\",\"surprise\":1}],\"cursor\":{}}" }, 0);
     try testing.expect(strict == .failed);
     const invalid = try sessionsResult(scratch, .{ .status = 200, .body = "{\"data\":[{\"id\":\"ses_a\",\"projectID\":\"\"}],\"cursor\":{}}" }, 0);
     try testing.expectEqualStrings(native.invalid_wire ++ ": invalid session info", invalid.failed.message);
-    const request = try sessions(scratch, .{}, "", 3);
+    const request = try sessions(scratch, .{}, "", "", 3);
     try testing.expectEqualStrings("/api/session?limit=3&order=desc&parentID=null", request.target);
-    const scoped = try sessions(scratch, .{}, "/x/R&D+a=b c~", 3);
+    try testing.expectEqualStrings("/api/session?cursor=n%2B1&limit=3", (try sessions(scratch, .{}, "/x", "n+1", 3)).target);
+    const scoped = try sessions(scratch, .{}, "/x/R&D+a=b c~", "", 3);
     try testing.expectEqualStrings("/api/session?directory=%2Fx%2FR%26D%2Ba%3Db+c~&limit=3&order=desc&parentID=null", scoped.target);
 }
 
@@ -740,8 +755,9 @@ test "a message page is asked oldest first, then by its cursor alone, and keeps 
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const scratch = arena.allocator();
-    try testing.expectEqualStrings("/api/session/ses%20a/message?limit=200&order=asc", (try messages(scratch, .{}, "ses a", "", 200)).target);
-    try testing.expectEqualStrings("/api/session/ses%20a/message?cursor=n%2B1&limit=200", (try messages(scratch, .{}, "ses a", "n+1", 200)).target);
+    try testing.expectEqualStrings("/api/session/ses%20a/message?limit=200&order=asc", (try messages(scratch, .{}, "ses a", "", 200, false)).target);
+    try testing.expectEqualStrings("/api/session/ses%20a/message?limit=200&order=desc", (try messages(scratch, .{}, "ses a", "", 200, true)).target);
+    try testing.expectEqualStrings("/api/session/ses%20a/message?cursor=n%2B1&limit=200", (try messages(scratch, .{}, "ses a", "n+1", 200, true)).target);
     const page = try messagesResult(scratch, .{ .status = 200, .body = "{\"data\":[{\"type\":\"user\",\"text\":\"x\",\"anything\":1},7],\"cursor\":{\"next\":\"n1\"}}" }, "ses_a", 0);
     try testing.expectEqual(@as(usize, 2), page.ok.messages.len);
     try testing.expectEqualStrings("n1", page.ok.next);

@@ -921,7 +921,10 @@ pub const Frontend = struct {
         }
         if (std.mem.eql(u8, request.op, op_work_list)) {
             if (try request.only(arena, request_parameter)) |refusal| return .{ .refused = refusal };
-            return self.workList(arena, .{ .include_closed = workFlag(request.payload, "include_closed"), .include_native = workFlag(request.payload, "include_native") });
+            return switch (try listOptions(arena, request.payload)) {
+                .options => |options| self.workList(arena, options),
+                .refused => |refusal| .{ .refused = refusal },
+            };
         }
         if (std.mem.eql(u8, request.op, op_capabilities)) {
             if (try request.only(arena, adapter_parameter)) |refusal| return .{ .refused = refusal };
@@ -1153,7 +1156,111 @@ pub const Frontend = struct {
     pub const ListOptions = struct {
         include_closed: bool = false,
         include_native: bool = false,
+        directory: []const u8 = "",
+        adapters: []const []const u8 = &.{},
+        limit: ?i64 = null,
+        cursor: []const u8 = "",
+
+        fn owned(self: ListOptions, arena: std.mem.Allocator) std.mem.Allocator.Error!ListOptions {
+            const names = try arena.alloc([]const u8, self.adapters.len);
+            for (self.adapters, names) |name, *slot| slot.* = try arena.dupe(u8, name);
+            const directory = try arena.dupe(u8, self.directory);
+            const cursor = try arena.dupe(u8, self.cursor);
+            return .{ .include_closed = self.include_closed, .include_native = self.include_native, .directory = directory, .adapters = names, .limit = self.limit, .cursor = cursor };
+        }
     };
+
+    pub const ListParse = union(enum) { options: ListOptions, refused: Refusal };
+
+    const list_shape = Refusal{ .code = "invalid_request", .message = "request is an object of directory, adapters, include_closed, include_native, limit and cursor" };
+    const list_limit_default: i64 = 50;
+    const list_limit_max: i64 = 100;
+    const native_depth_max: usize = 500;
+
+    pub fn listOptions(arena: std.mem.Allocator, params: ?std.json.Value) std.mem.Allocator.Error!ListParse {
+        const given = params orelse return .{ .options = .{} };
+        if (given == .null) return .{ .options = .{} };
+        if (given != .object) return .{ .refused = list_shape };
+        var options = ListOptions{};
+        if (given.object.get("directory")) |value| switch (value) {
+            .null => {},
+            .string => |text| options.directory = text,
+            else => return .{ .refused = list_shape },
+        };
+        if (given.object.get("cursor")) |value| switch (value) {
+            .null => {},
+            .string => |text| options.cursor = text,
+            else => return .{ .refused = list_shape },
+        };
+        if (given.object.get("limit")) |value| switch (value) {
+            .null => {},
+            .integer => |number| options.limit = number,
+            else => return .{ .refused = list_shape },
+        };
+        inline for (.{ "include_closed", "include_native" }) |name| {
+            if (given.object.get(name)) |value| switch (value) {
+                .null => {},
+                .bool => |flag| @field(options, name) = flag,
+                else => return .{ .refused = list_shape },
+            };
+        }
+        if (given.object.get("adapters")) |value| switch (value) {
+            .null => {},
+            .array => |items| {
+                for (items.items) |item| if (item != .string and item != .null) return .{ .refused = list_shape };
+                const names = try arena.alloc([]const u8, items.items.len);
+                for (items.items, names) |item, *slot| slot.* = if (item == .string) item.string else "";
+                options.adapters = names;
+            },
+            else => return .{ .refused = list_shape },
+        };
+        return .{ .options = options };
+    }
+
+    const ListCursor = struct { at: i64 = 0, key: []const u8, depth: usize };
+
+    const ListPlan = union(enum) {
+        refused: Refusal,
+        plan: struct { limit: usize, after: ?ListCursor },
+    };
+
+    fn listPlan(arena: std.mem.Allocator, options: ListOptions) std.mem.Allocator.Error!ListPlan {
+        var limit = list_limit_default;
+        if (options.limit) |given| {
+            if (given < 1 or given > list_limit_max) return .{ .refused = .{ .code = "invalid_request", .message = "limit is 1 to 100" } };
+            limit = given;
+        }
+        if (options.cursor.len == 0) return .{ .plan = .{ .limit = @intCast(limit), .after = null } };
+        const not_issued = Refusal{ .code = "invalid_request", .message = "cursor is not one this list issued" };
+        const decoder = std.base64.url_safe_no_pad.Decoder;
+        const size = decoder.calcSizeForSlice(options.cursor) catch return .{ .refused = not_issued };
+        const raw = try arena.alloc(u8, size);
+        decoder.decode(raw, options.cursor) catch return .{ .refused = not_issued };
+        const decoded = std.json.parseFromSliceLeaky(std.json.Value, arena, raw, .{}) catch |err| switch (err) {
+            error.OutOfMemory => return error.OutOfMemory,
+            else => return .{ .refused = not_issued },
+        };
+        if (decoded != .object) return .{ .refused = not_issued };
+        const key = decoded.object.get("key") orelse return .{ .refused = not_issued };
+        const depth = decoded.object.get("depth") orelse return .{ .refused = not_issued };
+        if (key != .string or key.string.len == 0 or depth != .integer or depth.integer < 1) return .{ .refused = not_issued };
+        var at: i64 = 0;
+        if (decoded.object.get("at")) |value| switch (value) {
+            .null => {},
+            .integer => |number| at = number,
+            else => return .{ .refused = not_issued },
+        };
+        return .{ .plan = .{ .limit = @intCast(limit), .after = .{ .at = at, .key = key.string, .depth = @intCast(depth.integer) } } };
+    }
+
+    fn listWanted(options: ListOptions, adapter: []const u8, directory: []const u8) bool {
+        if (options.adapters.len > 0) {
+            for (options.adapters) |name| {
+                if (std.mem.eql(u8, name, adapter)) break;
+            } else return false;
+        }
+        return options.directory.len == 0 or std.mem.eql(u8, directory, options.directory);
+    }
 
     fn nativeJson(arena: std.mem.Allocator, found: hubmod.Native) !std.json.Value {
         var ref = try emptyObject(arena);
@@ -1172,18 +1279,29 @@ pub const Frontend = struct {
     }
 
     pub fn workList(self: *Frontend, arena: std.mem.Allocator, options: ListOptions) Error!Outcome {
+        const plan = switch (try listPlan(arena, options)) {
+            .refused => |refusal| return .{ .refused = refusal },
+            .plan => |value| value,
+        };
         if (!options.include_native) return self.composeList(arena, options, &.{});
+        const depth = if (plan.after) |after| after.depth else 0;
         const job = try self.newJob();
         errdefer self.dropJob(job);
-        job.kind = .{ .list = .{ .options = options, .targets = try self.hub.nativeTargets(job.arena.allocator()) } };
+        const kept = try options.owned(job.arena.allocator());
+        job.kind = .{ .list = .{ .options = kept, .targets = try self.hub.nativeTargets(job.arena.allocator(), .{ .adapters = kept.adapters, .directory = kept.directory, .limit = @min(depth + plan.limit + 1, native_depth_max) }) } };
         return self.deferJob(job);
     }
 
     fn composeList(self: *Frontend, arena: std.mem.Allocator, options: ListOptions, native_listing: []const hubmod.NativeListing) Error!Outcome {
-        const Piece = struct { directory: []const u8, at_ms: i64, value: std.json.Value };
+        const plan = switch (try listPlan(arena, options)) {
+            .refused => |refusal| return .{ .refused = refusal },
+            .plan => |value| value,
+        };
+        const Piece = struct { directory: []const u8, at_ms: i64, key: []const u8, value: std.json.Value };
         var pieces: std.ArrayList(Piece) = .empty;
         for (try self.hub.works(arena)) |piece| {
-            try pieces.append(arena, .{ .directory = piece.directory, .at_ms = piece.updated_at_ms, .value = try workJson(arena, piece) });
+            if (!listWanted(options, piece.adapter, piece.directory)) continue;
+            try pieces.append(arena, .{ .directory = piece.directory, .at_ms = piece.updated_at_ms, .key = try std.mem.concat(arena, u8, &.{ "s:", piece.session_id }), .value = try workJson(arena, piece) });
         }
         var known_native: std.ArrayList([]const u8) = .empty;
         const recorded = try self.latestBindings(arena);
@@ -1193,14 +1311,16 @@ pub const Frontend = struct {
                 if (entry.record.native_session_id.len > 0) try known_native.append(arena, entry.record.native_session_id);
                 if (self.hub.knows(entry.record.session_id)) continue;
                 if (entry.action == .closed and !options.include_closed) continue;
-                try pieces.append(arena, .{ .directory = entry.record.directory, .at_ms = entry.time_ms, .value = try unheldJson(arena, entry) });
+                if (!listWanted(options, entry.record.adapter, entry.record.directory)) continue;
+                try pieces.append(arena, .{ .directory = entry.record.directory, .at_ms = entry.time_ms, .key = try std.mem.concat(arena, u8, &.{ "s:", entry.record.session_id }), .value = try unheldJson(arena, entry) });
             }
         }
         var unavailable: std.ArrayList(std.json.Value) = .empty;
         if (options.include_native) {
             const found = try self.hub.keepNatives(arena, native_listing, known_native.items);
             for (found.sessions) |native| {
-                try pieces.append(arena, .{ .directory = native.session.directory, .at_ms = native.session.updated_at_ms, .value = try nativeJson(arena, native) });
+                if (!listWanted(options, native.adapter, native.session.directory)) continue;
+                try pieces.append(arena, .{ .directory = native.session.directory, .at_ms = native.session.updated_at_ms, .key = try std.mem.concat(arena, u8, &.{ "n:", native.adapter, "/", native.session.native_id }), .value = try nativeJson(arena, native) });
             }
             for (found.failures) |failure| {
                 var object = try emptyObject(arena);
@@ -1211,13 +1331,32 @@ pub const Frontend = struct {
         }
         std.mem.sort(Piece, pieces.items, {}, struct {
             fn newer(_: void, left: Piece, right: Piece) bool {
-                return left.at_ms > right.at_ms;
+                if (left.at_ms != right.at_ms) return left.at_ms > right.at_ms;
+                return std.mem.lessThan(u8, left.key, right.key);
             }
         }.newer);
+        var remaining = pieces.items;
+        if (plan.after) |after| {
+            var kept: std.ArrayList(Piece) = .empty;
+            for (pieces.items) |piece| {
+                if (piece.at_ms > after.at or (piece.at_ms == after.at and !std.mem.lessThan(u8, after.key, piece.key))) continue;
+                try kept.append(arena, piece);
+            }
+            remaining = kept.items;
+        }
+        var next_cursor: ?[]const u8 = null;
+        if (remaining.len > plan.limit) {
+            const last = remaining[plan.limit - 1];
+            const depth = (if (plan.after) |after| after.depth else 0) + plan.limit;
+            const encoded = try std.json.Stringify.valueAlloc(arena, .{ .at = last.at_ms, .key = last.key, .depth = depth }, .{});
+            const out = try arena.alloc(u8, std.base64.url_safe_no_pad.Encoder.calcSize(encoded.len));
+            next_cursor = std.base64.url_safe_no_pad.Encoder.encode(out, encoded);
+            remaining = remaining[0..plan.limit];
+        }
         var directories: std.ArrayList([]const u8) = .empty;
         var members: std.ArrayList(std.ArrayList(std.json.Value)) = .empty;
         var latest_at: std.ArrayList(i64) = .empty;
-        for (pieces.items) |piece| {
+        for (remaining) |piece| {
             const at = for (directories.items, 0..) |directory, index| {
                 if (std.mem.eql(u8, directory, piece.directory)) break index;
             } else blk: {
@@ -1227,6 +1366,11 @@ pub const Frontend = struct {
                 break :blk directories.items.len - 1;
             };
             try members.items[at].append(arena, piece.value);
+        }
+        if (options.directory.len > 0 and plan.after == null and directories.items.len == 0) {
+            try directories.append(arena, options.directory);
+            try members.append(arena, .empty);
+            try latest_at.append(arena, 0);
         }
         var groups: std.ArrayList(std.json.Value) = .empty;
         for (directories.items, members.items, latest_at.items) |directory, listed, last| {
@@ -1238,6 +1382,7 @@ pub const Frontend = struct {
         }
         var root = try emptyObject(arena);
         try root.put(arena, "groups", try jsonArray(arena, groups.items));
+        if (next_cursor) |cursor| try root.put(arena, "next_cursor", .{ .string = cursor });
         if (unavailable.items.len > 0) try root.put(arena, "unavailable", try jsonArray(arena, unavailable.items));
         return .{ .answer = .{ .object = root } };
     }
@@ -4612,4 +4757,87 @@ test "the history op answers the store's sessions and refuses as the route does"
     defer bare.deinit();
     try bare.send("{\"id\":5,\"op\":\"history\"}");
     try testing.expectEqualStrings("unsupported_feature", try bare.code());
+}
+
+var paged_limits: [8]usize = undefined;
+var paged_asks: usize = 0;
+var paged_directory: [64]u8 = undefined;
+var paged_directory_len: usize = 0;
+
+fn pagedNativeList(ptr: *anyopaque, arena: std.mem.Allocator, request: contract.NativeListRequest, refusal: *contract.Refusal) contract.Failure![]const contract.NativeSession {
+    _ = ptr;
+    _ = refusal;
+    if (paged_asks < paged_limits.len) paged_limits[paged_asks] = request.limit;
+    paged_asks += 1;
+    @memcpy(paged_directory[0..request.directory.len], request.directory);
+    paged_directory_len = request.directory.len;
+    const rows = [_]contract.NativeSession{
+        .{ .native_id = "n1", .directory = "/work/a", .updated_at_ms = 90 },
+        .{ .native_id = "n2", .directory = "/work/a", .updated_at_ms = 75 },
+        .{ .native_id = "n3", .directory = "/work/a", .updated_at_ms = 75 },
+        .{ .native_id = "n4", .directory = "/work/b", .updated_at_ms = 60 },
+        .{ .native_id = "n5", .directory = "/work/a", .updated_at_ms = 30 },
+    };
+    return try arena.dupe(contract.NativeSession, rows[0..@min(request.limit, rows.len)]);
+}
+
+fn settledList(harness: anytype, line: []const u8) !std.json.Value {
+    try harness.frontend.handleLine(line);
+    while (harness.frontend.jobs.items.len > 0) {
+        try harness.frontend.answerJobs();
+        std.Thread.yield() catch {};
+    }
+    return harness.lastValue();
+}
+
+fn listedNatives(arena: std.mem.Allocator, answered: std.json.Value) ![]const u8 {
+    var ids: std.ArrayList(u8) = .empty;
+    for (answered.object.get("result").?.object.get("groups").?.array.items) |group| {
+        for (group.object.get("work").?.array.items) |piece| {
+            const ref = piece.object.get("ref").?.object;
+            const id = if (ref.get("native_id")) |native| native.string else ref.get("session_id").?.string;
+            try ids.appendSlice(arena, id);
+            try ids.append(arena, ' ');
+        }
+    }
+    return ids.items;
+}
+
+test "work.list pages newest first with ties in key order, asks the native lists deeper each page, and keeps only what the filters name" {
+    const harness = try Harness.init(testing.allocator, .{}, .{});
+    defer harness.deinit();
+    var paged_state: u8 = 0;
+    try harness.hub.register("paged", .{ .ptr = &paged_state, .vtable = &.{ .probe = referenceProbe, .open = gatedOpen, .native_list = pagedNativeList } });
+    try harness.send(try openLine(harness.arena(), "reference", open_envelope));
+    paged_asks = 0;
+    const arena = harness.arena();
+    var pages: std.ArrayList(u8) = .empty;
+    var line: []const u8 = "{\"id\":1,\"op\":\"work.list\",\"request\":{\"include_native\":true,\"adapters\":[\"paged\"],\"limit\":2}}";
+    var rounds: usize = 0;
+    while (rounds < 5) : (rounds += 1) {
+        const answered = try settledList(harness, line);
+        try pages.appendSlice(arena, try listedNatives(arena, answered));
+        try pages.append(arena, '|');
+        const next = answered.object.get("result").?.object.get("next_cursor") orelse break;
+        line = try std.fmt.allocPrint(arena, "{{\"id\":1,\"op\":\"work.list\",\"request\":{{\"include_native\":true,\"adapters\":[\"paged\"],\"limit\":2,\"cursor\":\"{s}\"}}}}", .{next.string});
+    }
+    try testing.expectEqualStrings("n1 n2 |n3 n4 |n5 |", pages.items);
+    try testing.expectEqual(@as(usize, 3), paged_asks);
+    try testing.expectEqualSlices(usize, &.{ 3, 5, 7 }, paged_limits[0..3]);
+
+    const filtered = try settledList(harness, "{\"id\":2,\"op\":\"work.list\",\"request\":{\"include_native\":true,\"directory\":\"/work/b\"}}");
+    try testing.expectEqualStrings("n4 ", try listedNatives(arena, filtered));
+    const asked = paged_asks;
+    const other = try settledList(harness, "{\"id\":3,\"op\":\"work.list\",\"request\":{\"include_native\":true,\"adapters\":[\"nobody\"]}}");
+    try testing.expectEqualStrings("", try listedNatives(arena, other));
+    try testing.expectEqual(asked, paged_asks);
+    const named = try settledList(harness, "{\"id\":4,\"op\":\"work.list\",\"request\":{\"directory\":\"/work/none\"}}");
+    const groups = named.object.get("result").?.object.get("groups").?.array.items;
+    try testing.expectEqual(@as(usize, 1), groups.len);
+    try testing.expectEqualStrings("/work/none", groups[0].object.get("directory").?.string);
+    try testing.expectEqual(@as(usize, 0), groups[0].object.get("work").?.array.items.len);
+    for ([_][]const u8{ "{\"id\":5,\"op\":\"work.list\",\"request\":{\"limit\":101}}", "{\"id\":6,\"op\":\"work.list\",\"request\":{\"cursor\":\"eyJhdCI6MSwia2V5IjoiIiwiZGVwdGgiOjF9\"}}" }) |refused| {
+        try harness.send(refused);
+        try testing.expectEqualStrings("invalid_request", try harness.code());
+    }
 }

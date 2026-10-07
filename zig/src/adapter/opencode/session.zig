@@ -87,6 +87,8 @@ pub const Run = struct {
     cancel_requested: bool = false,
     parts: std.ArrayList(Part) = .empty,
     streamed: std.StringHashMapUnmanaged(std.ArrayList(u8)) = .empty,
+    ended_parts: [2]std.StringHashMapUnmanaged(void) = .{ .empty, .empty },
+    steps: [2]std.StringHashMapUnmanaged(void) = .{ .empty, .empty },
     input_tokens: u64 = 0,
     output_tokens: u64 = 0,
     total_tokens: u64 = 0,
@@ -142,6 +144,46 @@ pub fn normalizeModel(arena: std.mem.Allocator, model: ?native.ModelRef) std.mem
     return ref.id;
 }
 
+pub const ReconcileTarget = struct { oldest: []const u8 = "", delivered: []const u8 = "" };
+
+pub fn recordSettled(records: []const std.json.Value) bool {
+    var settled = true;
+    for (records) |record| {
+        if (record != .object) continue;
+        const kind = recordText(record, "type");
+        if (std.mem.eql(u8, kind, "user")) settled = false;
+        if (std.mem.eql(u8, kind, "idle")) settled = true;
+    }
+    return settled;
+}
+
+fn recordText(record: std.json.Value, name: []const u8) []const u8 {
+    const value = record.object.get(name) orelse return "";
+    return if (value == .string) value.string else "";
+}
+
+fn recordNumber(record: std.json.Value, name: []const u8) f64 {
+    const value = record.object.get(name) orelse return 0;
+    return switch (value) {
+        .integer => |number| @floatFromInt(number),
+        .float => |number| number,
+        .number_string => |text| std.fmt.parseFloat(f64, text) catch 0,
+        else => 0,
+    };
+}
+
+fn completedAt(record: std.json.Value) i64 {
+    const time = record.object.get("time") orelse return 0;
+    if (time != .object) return 0;
+    const completed = time.object.get("completed") orelse return 0;
+    return switch (completed) {
+        .integer => |number| number,
+        .float => |number| if (number > 0) 1 else 0,
+        .number_string => |text| if (std.fmt.parseFloat(f64, text) catch 0 > 0) 1 else 0,
+        else => 0,
+    };
+}
+
 pub const Reducer = struct {
     arena: *std.heap.ArenaAllocator,
     options: Options,
@@ -161,6 +203,8 @@ pub const Reducer = struct {
     envelopes: std.ArrayList(std.json.Value) = .empty,
     last_seq: i64 = 0,
     settled: std.ArrayList(Settled) = .empty,
+    reconciled: std.StringHashMapUnmanaged(void) = .empty,
+    replaying: bool = false,
 
     pub fn init(arena: *std.heap.ArenaAllocator, options: Options, client: Native) Reducer {
         return .{ .arena = arena, .options = options, .client = client };
@@ -354,7 +398,9 @@ pub const Reducer = struct {
             .inbox_enqueued => _ = try self.decodeFor(native.InboxData, native.decodeInboxEnqueued, event, run, "opencode_invalid_inbox_event"),
             .inbox_delivered => {
                 const data = (try self.decodeFor(native.InboxData, native.decodeInboxRef, event, run, "opencode_invalid_inbox_event")) orelse return;
-                try self.delivered(data.inbox_id);
+                const repeated = self.reconciled.contains(data.inbox_id);
+                if (self.replaying) try self.reconciled.put(self.allocator(), data.inbox_id, {});
+                if (!repeated) try self.delivered(data.inbox_id);
             },
             .inbox_cancelled => {
                 const data = (try self.decodeFor(native.InboxData, native.decodeInboxRef, event, run, "opencode_invalid_inbox_event")) orelse return;
@@ -399,6 +445,7 @@ pub const Reducer = struct {
             .step_ended => {
                 const data = (try self.decodeFor(native.StepEndedData, native.decodeStepEnded, event, run, "opencode_invalid_step_event")) orelse return;
                 const target = run orelse return;
+                if (!try self.sighted(&target.steps, data.message)) return;
                 if (target.terminal) return;
                 target.last_finish = data.finish;
                 target.cost += data.cost;
@@ -411,6 +458,7 @@ pub const Reducer = struct {
             .step_failed => {
                 const data = (try self.decodeFor(native.StepFailedData, native.decodeStepFailed, event, run, "opencode_invalid_step_event")) orelse return;
                 const target = run orelse return;
+                if (!try self.sighted(&target.steps, data.message)) return;
                 if (!target.terminal and !target.cancel_requested) target.failure = data.failure.message;
                 target.cost += data.cost;
             },
@@ -487,6 +535,76 @@ pub const Reducer = struct {
         }
     }
 
+    fn sighted(self: *Reducer, seen: *[2]std.StringHashMapUnmanaged(void), key: []const u8) Error!bool {
+        const own: usize = if (self.replaying) 1 else 0;
+        if (seen[1 - own].contains(key) or (self.replaying and seen[own].contains(key))) return false;
+        try seen[own].put(self.allocator(), key, {});
+        return true;
+    }
+
+    pub fn reconcileTarget(self: *Reducer) ReconcileTarget {
+        if (self.active) |run| {
+            if (!run.terminal) return .{ .oldest = run.native_id, .delivered = if (run.prompted) run.native_id else "" };
+        }
+        if (self.reserved) |run| {
+            if (!run.terminal) return .{ .oldest = run.native_id };
+        }
+        return .{};
+    }
+
+    pub fn replay(self: *Reducer, records: []const std.json.Value, delivered_id: []const u8, live: bool) Error!void {
+        self.replaying = true;
+        defer self.replaying = false;
+        const scope = self.options.native_id;
+        for (records) |record| {
+            if (record != .object) continue;
+            const kind = recordText(record, "type");
+            const id = recordText(record, "id");
+            if (std.mem.eql(u8, kind, "user")) {
+                if (!std.mem.eql(u8, id, delivered_id)) try self.replayEvent("session.inbox.delivered", .{ .sessionID = scope, .inboxID = id });
+            } else if (std.mem.eql(u8, kind, "assistant")) {
+                const done = completedAt(record) > 0;
+                var texts: i64 = 0;
+                var thoughts: i64 = 0;
+                const content = record.object.get("content") orelse std.json.Value.null;
+                if (content == .array) for (content.array.items) |part| {
+                    if (part != .object) continue;
+                    const part_kind = recordText(part, "type");
+                    if (std.mem.eql(u8, part_kind, "text")) {
+                        const text = recordText(part, "text");
+                        if (done or text.len > 0) try self.replayEvent("session.text.ended", .{ .sessionID = scope, .assistantMessageID = id, .ordinal = texts, .text = text });
+                        texts += 1;
+                    } else if (std.mem.eql(u8, part_kind, "reasoning")) {
+                        if (done or completedAt(part) > 0) try self.replayEvent("session.reasoning.ended", .{ .sessionID = scope, .assistantMessageID = id, .ordinal = thoughts, .text = recordText(part, "text") });
+                        thoughts += 1;
+                    }
+                };
+                if (!done) continue;
+                const failure = record.object.get("error") orelse std.json.Value.null;
+                if (failure == .object) {
+                    try self.replayEvent("session.step.failed", .{ .sessionID = scope, .assistantMessageID = id, .@"error" = .{ .type = recordText(failure, "type"), .message = recordText(failure, "message") }, .cost = recordNumber(record, "cost") });
+                    continue;
+                }
+                try self.replayEvent("session.step.ended", .{ .sessionID = scope, .assistantMessageID = id, .finish = recordText(record, "finish"), .cost = recordNumber(record, "cost"), .tokens = record.object.get("tokens") orelse std.json.Value.null });
+            } else if (std.mem.eql(u8, kind, "idle")) {
+                const outcome = recordText(record, "outcome");
+                if (std.mem.eql(u8, outcome, "succeeded")) {
+                    try self.replayEvent("session.execution.succeeded", .{ .sessionID = scope });
+                } else if (std.mem.eql(u8, outcome, "failed")) {
+                    try self.replayEvent("session.execution.failed", .{ .sessionID = scope, .@"error" = .{ .type = "unknown", .message = "OpenCode recorded the execution as failed" } });
+                } else if (std.mem.eql(u8, outcome, "interrupted")) {
+                    try self.replayEvent("session.execution.interrupted", .{ .sessionID = scope, .reason = "recorded while the event stream was down" });
+                }
+            }
+        }
+        if (!live) try self.replayEvent("session.execution.interrupted", .{ .sessionID = scope, .reason = "the server ended the execution without recording it while the event stream was down" });
+    }
+
+    fn replayEvent(self: *Reducer, comptime name: []const u8, data: anytype) Error!void {
+        const text = try std.json.Stringify.valueAlloc(self.allocator(), data, .{});
+        try self.handle(.{ .id = "", .type_name = name, .kind = native.EventType.parse(name), .session_id = self.options.native_id, .data = text });
+    }
+
     fn partKey(self: *Reducer, reasoning: bool, data: native.TextData) Error![]const u8 {
         return std.fmt.allocPrint(self.allocator(), "{c}{d}:{s}", .{ @as(u8, if (reasoning) 'r' else 't'), data.ordinal, data.message });
     }
@@ -500,6 +618,7 @@ pub const Reducer = struct {
     }
 
     fn appendPart(self: *Reducer, run: *Run, reasoning: bool, data: native.TextData) Error!void {
+        if (!try self.sighted(&run.ended_parts, try self.partKey(reasoning, data))) return;
         if (run.terminal) return;
         try run.parts.append(self.allocator(), .{ .reasoning = reasoning, .text = data.text });
         var rest = data.text;
@@ -865,7 +984,7 @@ const features = [_]Feature{
     .{ .key = "models.list", .level = "degraded", .reason = "the models this session is observed to run, projected from the native session record and durable step events; the server's own model.list route has no pinned response shape at this revision" },
     .{ .key = "protocol.initialize", .level = "emulated", .reason = "OpenCode has no initialize handshake; OpenAPI and catalogs describe the server" },
     .{ .key = "run.cancel", .level = "degraded", .reason = "interrupt is intent with an idle no-op; a running run settles at session.execution.interrupted and a queued one at session.inbox.cancelled" },
-    .{ .key = "run.reconciliation", .level = "emulated", .reason = "adapter-owned projection over the session events; the event stream does not replay" },
+    .{ .key = "run.reconciliation", .level = "emulated", .reason = "adapter-owned projection over the session events; when the event stream ends it subscribes again once and reconciles the open runs from the session record" },
     .{ .key = "run.replay", .level = "degraded", .reason = "bounded adapter journal; the native durable cursor is exposed as the transcript cursor" },
     .{ .key = "run.resume", .level = "degraded", .reason = "conversation resume exists natively but is not exercised; OAP resume replays the adapter journal" },
     .{ .key = "run.status", .level = "native", .reason = "session.inbox.delivered starts a run and session.execution.* settles it" },
@@ -1248,4 +1367,141 @@ test "text and reasoning deltas stream" {
     const whole = [_][]const u8{ "reasoning:think", "text:hello", "text:plain", "text:pl!" };
     try testing.expectEqual(whole.len, final.len);
     for (whole, final) |want, part| try testing.expectEqualStrings(want, try partLabel(scratch, part));
+}
+
+fn recordsOf(arena: std.mem.Allocator, text: []const u8) ![]const std.json.Value {
+    var diag = native.Diagnostic{};
+    const document = try native.parseDocument(arena, text, &diag);
+    return document.array.items;
+}
+
+fn lastPayload(reducer: *Reducer) std.json.ObjectMap {
+    return payloadOf(reducer.envelopes.items[reducer.envelopes.items.len - 1]);
+}
+
+fn finalLabels(arena: std.mem.Allocator, reducer: *Reducer) ![]const []const u8 {
+    var labels: std.ArrayList([]const u8) = .empty;
+    for (lastPayload(reducer).get("final_response").?.object.get("content").?.array.items) |part| try labels.append(arena, try partLabel(arena, part));
+    return labels.items;
+}
+
+fn streamedLabels(arena: std.mem.Allocator, reducer: *Reducer) ![]const []const u8 {
+    var labels: std.ArrayList([]const u8) = .empty;
+    for (reducer.envelopes.items) |envelope| {
+        if (!std.mem.eql(u8, envelope.object.get("type").?.string, "content.delta")) continue;
+        try labels.append(arena, try partLabel(arena, payloadOf(envelope).get("part").?));
+    }
+    return labels.items;
+}
+
+fn expectLabels(want: []const []const u8, got: []const []const u8) !void {
+    try testing.expectEqual(want.len, got.len);
+    for (want, got) |expected, actual| try testing.expectEqualStrings(expected, actual);
+}
+
+test "a replayed record settles a run the record shows finished" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const scratch = arena.allocator();
+    var fake = Fake{};
+    var reducer = Reducer.init(&arena, .{ .native_id = native_session }, fake.client());
+    try reducer.open();
+    const admission = try reducer.submit("session", "hi", "auto");
+    const input = admission.message_ids[0];
+    try reducer.observe(try deliveredEvent(scratch, 1, input));
+    try reducer.observe(try nativeEvent(scratch, 0, "text.delta", "{\"assistantMessageID\":\"msg_a1\",\"ordinal\":0,\"delta\":\"po\"}"));
+    const wanted = reducer.reconcileTarget();
+    try testing.expectEqualStrings(input, wanted.oldest);
+    try testing.expectEqualStrings(input, wanted.delivered);
+    const records = try recordsOf(scratch, try std.fmt.allocPrint(scratch, "[{{\"id\":\"{s}\",\"type\":\"user\",\"text\":\"hi\"}},{{\"id\":\"msg_a1\",\"type\":\"assistant\",\"content\":[{{\"type\":\"text\",\"text\":\"pong\"}}],\"finish\":\"stop\",\"cost\":0.5,\"tokens\":{{\"input\":3,\"output\":2,\"reasoning\":0,\"cache\":{{\"read\":0,\"write\":0}}}},\"time\":{{\"created\":2,\"completed\":3}}}},{{\"id\":\"msg_idle\",\"type\":\"idle\",\"outcome\":\"succeeded\"}}]", .{input}));
+    try testing.expect(recordSettled(records));
+    try reducer.replay(records, wanted.delivered, true);
+    try expectLabels(&.{ "text:po", "text:ng" }, try streamedLabels(scratch, &reducer));
+    try testing.expectEqualStrings("run.completed", reducer.envelopes.items[reducer.envelopes.items.len - 1].object.get("type").?.string);
+    try expectLabels(&.{"text:pong"}, try finalLabels(scratch, &reducer));
+    try testing.expectEqual(@as(i64, 5), lastPayload(&reducer).get("usage").?.object.get("total_tokens").?.integer);
+    try testing.expectEqualStrings("stop", lastPayload(&reducer).get("stop_reason").?.string);
+}
+
+test "a replayed record of a running turn lets the live stream finish it without repeating a part" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const scratch = arena.allocator();
+    var fake = Fake{};
+    var reducer = Reducer.init(&arena, .{ .native_id = native_session }, fake.client());
+    try reducer.open();
+    const admission = try reducer.submit("session", "hi", "auto");
+    const input = admission.message_ids[0];
+    try reducer.observe(try deliveredEvent(scratch, 1, input));
+    const records = try recordsOf(scratch, try std.fmt.allocPrint(scratch, "[{{\"id\":\"{s}\",\"type\":\"user\"}},{{\"id\":\"msg_a1\",\"type\":\"assistant\",\"content\":[{{\"type\":\"reasoning\",\"text\":\"hmm\",\"time\":{{\"created\":2,\"completed\":2}}}},{{\"type\":\"text\",\"text\":\"first\"}},{{\"type\":\"reasoning\",\"text\":\"deep\",\"time\":{{\"created\":2,\"completed\":2}}}},{{\"type\":\"text\",\"text\":\"\"}}],\"time\":{{\"created\":2}}}}]", .{input}));
+    try testing.expect(!recordSettled(records));
+    try reducer.replay(records, input, true);
+    try reducer.observe(try nativeEvent(scratch, 3, "reasoning.ended", "{\"assistantMessageID\":\"msg_a1\",\"ordinal\":0,\"text\":\"hmm\"}"));
+    try reducer.observe(try nativeEvent(scratch, 4, "text.ended", "{\"assistantMessageID\":\"msg_a1\",\"ordinal\":1,\"text\":\"second\"}"));
+    try reducer.observe(try nativeEvent(scratch, 5, "step.ended", "{\"assistantMessageID\":\"msg_a1\",\"finish\":\"stop\",\"cost\":0,\"tokens\":{\"input\":1,\"output\":1,\"reasoning\":0,\"cache\":{\"read\":0,\"write\":0}}}"));
+    try reducer.observe(try succeeded(scratch, 6));
+    try expectLabels(&.{ "reasoning:hmm", "text:first", "reasoning:deep", "text:second" }, try streamedLabels(scratch, &reducer));
+    try expectLabels(&.{ "reasoning:hmm", "text:first", "reasoning:deep", "text:second" }, try finalLabels(scratch, &reducer));
+    try testing.expectEqual(@as(i64, 2), lastPayload(&reducer).get("usage").?.object.get("total_tokens").?.integer);
+}
+
+test "a replayed record starts a queued run it shows delivered and ignores the live repeat of that delivery" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const scratch = arena.allocator();
+    var fake = Fake{};
+    var reducer = Reducer.init(&arena, .{ .native_id = native_session }, fake.client());
+    try reducer.open();
+    const first = (try reducer.submit("session", "one", "auto")).message_ids[0];
+    try reducer.observe(try deliveredEvent(scratch, 1, first));
+    const second = (try reducer.submit("session", "two", "auto")).message_ids[0];
+    const wanted = reducer.reconcileTarget();
+    try testing.expectEqualStrings(first, wanted.oldest);
+    const records = try recordsOf(scratch, try std.fmt.allocPrint(scratch, "[{{\"id\":\"{s}\",\"type\":\"user\"}},{{\"id\":\"msg_a1\",\"type\":\"assistant\",\"content\":[{{\"type\":\"text\",\"text\":\"one\"}}],\"finish\":\"stop\",\"cost\":0,\"time\":{{\"created\":2,\"completed\":3}}}},{{\"id\":\"msg_idle1\",\"type\":\"idle\",\"outcome\":\"succeeded\"}},{{\"id\":\"{s}\",\"type\":\"user\"}}]", .{ first, second }));
+    try testing.expect(!recordSettled(records));
+    try reducer.replay(records, wanted.delivered, true);
+    try reducer.observe(try deliveredEvent(scratch, 10, second));
+    try reducer.observe(try nativeEvent(scratch, 11, "text.ended", "{\"assistantMessageID\":\"msg_a2\",\"ordinal\":0,\"text\":\"two\"}"));
+    try reducer.observe(try stepEnded(scratch, 12));
+    try reducer.observe(try succeeded(scratch, 13));
+    try expectKinds(&reducer, &.{ "run.started", "content.delta", "run.completed", "run.started", "content.delta", "run.completed" });
+    try expectLabels(&.{"text:two"}, try finalLabels(scratch, &reducer));
+}
+
+test "a replayed record fails a run the record shows failed, and one the server stopped without recording" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const scratch = arena.allocator();
+    var fake = Fake{};
+    var reducer = Reducer.init(&arena, .{ .native_id = native_session }, fake.client());
+    try reducer.open();
+    const failing = (try reducer.submit("session", "one", "auto")).message_ids[0];
+    try reducer.observe(try deliveredEvent(scratch, 1, failing));
+    try reducer.replay(try recordsOf(scratch, try std.fmt.allocPrint(scratch, "[{{\"id\":\"{s}\",\"type\":\"user\"}},{{\"id\":\"msg_a1\",\"type\":\"assistant\",\"content\":[],\"finish\":\"error\",\"error\":{{\"type\":\"provider\",\"message\":\"bad request\",\"status\":400}},\"cost\":0,\"time\":{{\"created\":2,\"completed\":3}}}},{{\"id\":\"msg_idle\",\"type\":\"idle\",\"outcome\":\"failed\"}}]", .{failing})), failing, true);
+    try testing.expectEqualStrings("opencode_step_failed", errorCode(reducer.envelopes.items[reducer.envelopes.items.len - 1]));
+    try testing.expectEqualStrings("bad request", lastPayload(&reducer).get("error").?.object.get("message").?.string);
+    const stopped = (try reducer.submit("session", "two", "auto")).message_ids[0];
+    try reducer.observe(try deliveredEvent(scratch, 2, stopped));
+    try reducer.replay(try recordsOf(scratch, try std.fmt.allocPrint(scratch, "[{{\"id\":\"{s}\",\"type\":\"user\"}}]", .{stopped})), stopped, false);
+    try testing.expectEqualStrings("opencode_execution_interrupted", errorCode(reducer.envelopes.items[reducer.envelopes.items.len - 1]));
+}
+
+test "a second replay of the same record does not apply the first one again" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const scratch = arena.allocator();
+    var fake = Fake{};
+    var reducer = Reducer.init(&arena, .{ .native_id = native_session }, fake.client());
+    try reducer.open();
+    const input = (try reducer.submit("session", "hi", "auto")).message_ids[0];
+    try reducer.observe(try deliveredEvent(scratch, 1, input));
+    const records = try recordsOf(scratch, try std.fmt.allocPrint(scratch, "[{{\"id\":\"{s}\",\"type\":\"user\"}},{{\"id\":\"msg_a1\",\"type\":\"assistant\",\"content\":[{{\"type\":\"text\",\"text\":\"first\"}}],\"finish\":\"tool-calls\",\"cost\":1,\"tokens\":{{\"input\":2,\"output\":2,\"reasoning\":0,\"cache\":{{\"read\":0,\"write\":0}}}},\"time\":{{\"created\":2,\"completed\":3}}}}]", .{input}));
+    try reducer.replay(records, input, true);
+    try reducer.replay(records, input, true);
+    try reducer.observe(try nativeEvent(scratch, 4, "text.ended", "{\"assistantMessageID\":\"msg_a2\",\"ordinal\":0,\"text\":\"second\"}"));
+    try reducer.observe(try stepEnded(scratch, 5));
+    try reducer.observe(try succeeded(scratch, 6));
+    try expectLabels(&.{ "text:first", "text:second" }, try streamedLabels(scratch, &reducer));
+    try expectLabels(&.{ "text:first", "text:second" }, try finalLabels(scratch, &reducer));
+    try testing.expectEqual(@as(i64, 6), lastPayload(&reducer).get("usage").?.object.get("total_tokens").?.integer);
 }

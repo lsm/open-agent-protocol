@@ -106,12 +106,16 @@ type fakeClient struct {
 	creates    int
 
 	listed    []native.SessionInfo
+	listPages []httpapi.SessionPage
 	listErr   error
 	listAsked []string
 
 	pages     []httpapi.MessagePage
 	readErr   error
 	readAsked []string
+
+	resubscription *fakeSubscription
+	subscribes     int
 }
 
 func newFakeClient() *fakeClient {
@@ -200,21 +204,31 @@ func (f *fakeClient) CancelInbox(_ context.Context, _ native.SessionID, inbox na
 	}
 	return nil
 }
-func (f *fakeClient) Sessions(ctx context.Context, directory string, limit int) ([]native.SessionInfo, error) {
+func (f *fakeClient) Sessions(ctx context.Context, directory, cursor string, limit int) (httpapi.SessionPage, error) {
 	f.mu.Lock()
-	f.listAsked = append(f.listAsked, fmt.Sprintf("%s|%d", directory, limit))
-	listed, err, stalls := f.listed, f.listErr, f.stalls
+	f.listAsked = append(f.listAsked, fmt.Sprintf("%s|%s|%d", directory, cursor, limit))
+	listed, err, stalls, pages := f.listed, f.listErr, f.stalls, f.listPages
+	asked := len(f.listAsked)
 	f.mu.Unlock()
 	if stalls {
 		<-ctx.Done()
-		return nil, ctx.Err()
+		return httpapi.SessionPage{}, ctx.Err()
 	}
-	return listed, err
+	if pages != nil {
+		if asked > len(pages) {
+			return httpapi.SessionPage{}, nil
+		}
+		return pages[asked-1], err
+	}
+	return httpapi.SessionPage{Data: listed}, err
 }
-func (f *fakeClient) Messages(_ context.Context, session native.SessionID, cursor string, limit int) (httpapi.MessagePage, error) {
+func (f *fakeClient) Messages(_ context.Context, session native.SessionID, cursor string, limit int, newestFirst bool) (httpapi.MessagePage, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.readAsked = append(f.readAsked, fmt.Sprintf("%s|%s|%d", session, cursor, limit))
+	if newestFirst {
+		f.readAsked[len(f.readAsked)-1] += "|desc"
+	}
 	if f.readErr != nil || len(f.readAsked) > len(f.pages) {
 		return httpapi.MessagePage{}, f.readErr
 	}
@@ -249,6 +263,17 @@ func (f *fakeClient) Subscribe(ctx context.Context, _ native.SessionID) (Subscri
 	if stalls {
 		<-ctx.Done()
 		return nil, ctx.Err()
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	select {
+	case <-f.subscription.done:
+		if f.resubscription == nil {
+			return nil, errors.New("connection refused")
+		}
+		f.subscription, f.resubscription = f.resubscription, nil
+		f.subscribes++
+	default:
 	}
 	return f.subscription, nil
 }
