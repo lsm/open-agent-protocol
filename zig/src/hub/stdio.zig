@@ -522,6 +522,121 @@ pub const Frontend = struct {
     next_envelope: u64 = 0,
     streams: std.ArrayList(Watched) = .empty,
     stopped: bool = false,
+    jobs: std.ArrayList(*Job) = .empty,
+    next_ticket: u64 = 0,
+
+    pub const Job = struct {
+        ticket: u64,
+        request_id: ?i64 = null,
+        arena: std.heap.ArenaAllocator,
+        thread: ?std.Thread = null,
+        done: std.atomic.Value(bool) = .init(false),
+        abandoned: bool = false,
+        kind: Kind,
+
+        pub const Kind = union(enum) {
+            list: struct { options: ListOptions, targets: []const hubmod.NativeTarget, listed: []const hubmod.NativeListing = &.{} },
+            read: struct { session_id: []const u8, held: bool, after: ?u64, bound: usize, target: Hub.ReadTarget, turns: []const contract.NativeTurn = &.{} },
+        };
+
+        fn run(job: *Job) void {
+            const a = job.arena.allocator();
+            switch (job.kind) {
+                .list => |*list| list.listed = hubmod.listTargets(a, list.targets) catch &.{},
+                .read => |*read| {
+                    var refusal = contract.Refusal{};
+                    if (read.target.adapter.nativeRead(a, read.target.request, &refusal)) |answered| read.turns = answered catch &.{};
+                },
+            }
+            job.done.store(true, .release);
+        }
+    };
+
+    fn startJob(self: *Frontend, job: *Job) Error!u64 {
+        try self.jobs.ensureUnusedCapacity(self.allocator, 1);
+        job.thread = std.Thread.spawn(.{}, Job.run, .{job}) catch return Error.Unavailable;
+        self.jobs.appendAssumeCapacity(job);
+        return job.ticket;
+    }
+
+    fn newJob(self: *Frontend) Error!*Job {
+        const job = try self.allocator.create(Job);
+        self.next_ticket += 1;
+        job.* = .{ .ticket = self.next_ticket, .arena = std.heap.ArenaAllocator.init(self.allocator), .kind = undefined };
+        return job;
+    }
+
+    fn dropJob(self: *Frontend, job: *Job) void {
+        job.arena.deinit();
+        self.allocator.destroy(job);
+    }
+
+    pub fn finishedJob(self: *Frontend, ticket: u64) ?*Job {
+        for (self.jobs.items, 0..) |job, index| {
+            if (job.ticket != ticket or !job.done.load(.acquire)) continue;
+            if (job.thread) |thread| thread.join();
+            job.thread = null;
+            _ = self.jobs.orderedRemove(index);
+            return job;
+        }
+        return null;
+    }
+
+    pub fn abandon(self: *Frontend, ticket: u64) void {
+        for (self.jobs.items) |job| {
+            if (job.ticket == ticket) job.abandoned = true;
+        }
+    }
+
+    pub fn sweepAbandoned(self: *Frontend) void {
+        var index: usize = 0;
+        while (index < self.jobs.items.len) {
+            const job = self.jobs.items[index];
+            if (!job.abandoned or !job.done.load(.acquire)) {
+                index += 1;
+                continue;
+            }
+            _ = self.jobs.orderedRemove(index);
+            self.releaseJob(job);
+        }
+    }
+
+    pub fn releaseJob(self: *Frontend, job: *Job) void {
+        if (job.thread) |thread| thread.join();
+        job.thread = null;
+        self.dropJob(job);
+    }
+
+    pub fn finish(self: *Frontend, arena: std.mem.Allocator, job: *Job) Error!Outcome {
+        return switch (job.kind) {
+            .list => |list| self.composeList(arena, list.options, list.listed),
+            .read => |read| self.composeRead(arena, read.session_id, read.held, read.after, read.bound, read.turns),
+        };
+    }
+
+    pub fn answerJobs(self: *Frontend) Error!void {
+        var index: usize = 0;
+        while (index < self.jobs.items.len) {
+            const job = self.jobs.items[index];
+            const request_id = job.request_id orelse {
+                index += 1;
+                continue;
+            };
+            const finished = self.finishedJob(job.ticket) orelse {
+                index += 1;
+                continue;
+            };
+            defer self.releaseJob(finished);
+            var scratch = std.heap.ArenaAllocator.init(self.allocator);
+            defer scratch.deinit();
+            switch (try self.finish(scratch.allocator(), finished)) {
+                .answer => |value| try self.answer(request_id, value),
+                .answer_line => |payload| try self.answerLine(request_id, payload),
+                .refused => |refusal| try self.refuse(scratch.allocator(), request_id, refusal),
+                .streaming, .deferred => {},
+            }
+        }
+    }
 
     const Watched = struct {
         id: i64,
@@ -543,6 +658,8 @@ pub const Frontend = struct {
     }
 
     pub fn deinit(self: *Frontend) void {
+        for (self.jobs.items) |job| self.releaseJob(job);
+        self.jobs.deinit(self.allocator);
         for (self.streams.items) |*watched| {
             watched.subscription.close();
             watched.run.deinit(self.allocator);
@@ -718,7 +835,7 @@ pub const Frontend = struct {
                 return Error.MalformedLine;
             },
         };
-        if (self.in_flight >= self.max_ops) {
+        if (self.in_flight + self.jobs.items.len >= self.max_ops) {
             const message = try std.fmt.allocPrint(arena, "the frontend is already running {d} operations; send this request again", .{self.max_ops});
             return self.refuse(arena, request.id, .{ .code = "busy", .message = message });
         }
@@ -730,6 +847,9 @@ pub const Frontend = struct {
             .answer_line => |payload| try self.answerLine(request.id, payload),
             .refused => |refusal| try self.refuse(arena, request.id, refusal),
             .streaming => return,
+            .deferred => |ticket| for (self.jobs.items) |job| {
+                if (job.ticket == ticket) job.request_id = request.id;
+            },
         }
     }
 
@@ -738,6 +858,7 @@ pub const Frontend = struct {
         answer_line: []const u8,
         refused: Refusal,
         streaming,
+        deferred: u64,
     };
 
     fn dispatch(self: *Frontend, arena: std.mem.Allocator, request: Request) Error!Outcome {
@@ -1026,7 +1147,15 @@ pub const Frontend = struct {
         return .{ .object = object };
     }
 
-    pub fn workList(self: *Frontend, arena: std.mem.Allocator, options: ListOptions) !Outcome {
+    pub fn workList(self: *Frontend, arena: std.mem.Allocator, options: ListOptions) Error!Outcome {
+        if (!options.include_native) return self.composeList(arena, options, &.{});
+        const job = try self.newJob();
+        errdefer self.dropJob(job);
+        job.kind = .{ .list = .{ .options = options, .targets = try self.hub.nativeTargets(job.arena.allocator()) } };
+        return .{ .deferred = try self.startJob(job) };
+    }
+
+    fn composeList(self: *Frontend, arena: std.mem.Allocator, options: ListOptions, native_listing: []const hubmod.NativeListing) Error!Outcome {
         const Piece = struct { directory: []const u8, at_ms: i64, value: std.json.Value };
         var pieces: std.ArrayList(Piece) = .empty;
         for (try self.hub.works(arena)) |piece| {
@@ -1045,7 +1174,7 @@ pub const Frontend = struct {
         }
         var unavailable: std.ArrayList(std.json.Value) = .empty;
         if (options.include_native) {
-            const found = try self.hub.natives(arena, known_native.items);
+            const found = try self.hub.keepNatives(arena, native_listing, known_native.items);
             for (found.sessions) |native| {
                 try pieces.append(arena, .{ .directory = native.session.directory, .at_ms = native.session.updated_at_ms, .value = try nativeJson(arena, native) });
             }
@@ -1244,7 +1373,7 @@ pub const Frontend = struct {
         return self.workStatus(arena, session_id);
     }
 
-    pub fn workRead(self: *Frontend, arena: std.mem.Allocator, session_id: []const u8, after: ?u64, limit: ?i64) !Outcome {
+    pub fn workRead(self: *Frontend, arena: std.mem.Allocator, session_id: []const u8, after: ?u64, limit: ?i64) Error!Outcome {
         var bound: usize = work_read_default;
         if (limit) |given| {
             if (given < 1 or given > work_read_max) return .{ .refused = .{ .code = "invalid_request", .message = std.fmt.comptimePrint("work.read: limit must be from 1 to {d}", .{work_read_max}) } };
@@ -1263,16 +1392,21 @@ pub const Frontend = struct {
             }
         } else native = self.hub.heldNative(session_id);
         if (native) |ref| {
-            var refusal = contract.Refusal{};
             const wanted = (if (after) |given| given +| 1 else 0) +| bound;
-            if (self.hub.nativeTranscript(arena, ref, @intCast(@min(wanted, std.math.maxInt(usize))), &refusal)) |answered| {
-                const read: []const contract.NativeTurn = answered catch |err| switch (err) {
-                    error.OutOfMemory => return error.OutOfMemory,
-                    else => &.{},
-                };
-                if (read.len > 0) return .{ .answer = try nativeTurnsJson(arena, read, after, bound) };
+            const job = try self.newJob();
+            errdefer self.dropJob(job);
+            const job_arena = job.arena.allocator();
+            if (try self.hub.readTarget(job_arena, ref, @intCast(@min(wanted, std.math.maxInt(usize))))) |target| {
+                job.kind = .{ .read = .{ .session_id = try job_arena.dupe(u8, session_id), .held = held, .after = after, .bound = bound, .target = target } };
+                return .{ .deferred = try self.startJob(job) };
             }
+            self.dropJob(job);
         }
+        return self.composeRead(arena, session_id, held, after, bound, &.{});
+    }
+
+    fn composeRead(self: *Frontend, arena: std.mem.Allocator, session_id: []const u8, held: bool, after: ?u64, bound: usize, native_turns: []const contract.NativeTurn) Error!Outcome {
+        if (native_turns.len > 0) return .{ .answer = try nativeTurnsJson(arena, native_turns, after, bound) };
         if (!held) {
             var empty = try emptyObject(arena);
             try empty.put(arena, "turns", try jsonArray(arena, &.{}));
@@ -2238,7 +2372,12 @@ pub fn serve(allocator: std.mem.Allocator, frontend: *Frontend, stream: Stream) 
         }
         try frontend.hub.pump(allocator, 0);
         try frontend.pumpStreams();
+        try frontend.answerJobs();
         if (input_ready and !more) {
+            while (frontend.jobs.items.len > 0) {
+                try frontend.answerJobs();
+                if (frontend.jobs.items.len > 0) std.Thread.yield() catch {};
+            }
             if (pending.items.len > 0) {
                 frontend.noteDefect(pending.items);
                 return error.StdinFailed;
@@ -2349,6 +2488,10 @@ const Harness = struct {
 
     fn send(self: *Harness, line: []const u8) !void {
         try self.frontend.handleLine(line);
+        while (self.frontend.jobs.items.len > 0) {
+            try self.frontend.answerJobs();
+            if (self.frontend.jobs.items.len > 0) std.Thread.yield() catch {};
+        }
     }
 
     fn lastValue(self: *Harness) !std.json.Value {
@@ -3283,6 +3426,54 @@ const cancelled_line = "{" ++ event_head ++ ",\"type\":\"run.cancelled\",\"id\":
 fn workResult(harness: *Harness, id: i64) !std.json.ObjectMap {
     try harness.send(try std.fmt.allocPrint(harness.arena(), "{{\"id\":{d},\"op\":\"work.status\",\"session_id\":\"s1\"}}", .{id}));
     return (try harness.lastValue()).object.get("result").?.object;
+}
+
+var list_gate = std.atomic.Value(bool).init(false);
+
+fn gatedOpen(ptr: *anyopaque, arena: std.mem.Allocator, request: contract.OpenRequest, refusal: *contract.Refusal) contract.Failure!contract.Session {
+    _ = ptr;
+    _ = arena;
+    _ = request;
+    return refusal.fail(error.BackendFailed, "not opened in this test");
+}
+
+fn gatedNativeList(ptr: *anyopaque, arena: std.mem.Allocator, request: contract.NativeListRequest, refusal: *contract.Refusal) contract.Failure![]const contract.NativeSession {
+    _ = ptr;
+    _ = request;
+    _ = refusal;
+    var waits: usize = 0;
+    while (list_gate.load(.acquire) and waits < 5000) : (waits += 1) std.testing.io.sleep(.fromNanoseconds(std.time.ns_per_ms), .boot) catch {};
+    return try arena.dupe(contract.NativeSession, &.{.{ .native_id = "slow-thread", .title = "listed late", .directory = "/work/slow", .updated_at_ms = 3 }});
+}
+
+test "a native list runs off the loop: another request is answered while it lists, and the list is answered once it finishes" {
+    const harness = try Harness.init(testing.allocator, .{}, .{});
+    defer harness.deinit();
+    var gated_state: u8 = 0;
+    try harness.hub.register("gated", .{ .ptr = &gated_state, .vtable = &.{ .probe = referenceProbe, .open = gatedOpen, .native_list = gatedNativeList } });
+    list_gate.store(true, .release);
+    defer list_gate.store(false, .release);
+    try harness.frontend.handleLine("{\"id\":1,\"op\":\"work.list\",\"request\":{\"include_native\":true}}");
+    try testing.expectEqual(@as(usize, 1), harness.frontend.jobs.items.len);
+    try harness.frontend.handleLine("{\"id\":2,\"op\":\"adapters\"}");
+    try testing.expectEqual(@as(i64, 2), (try harness.lastValue()).object.get("id").?.integer);
+    try harness.frontend.answerJobs();
+    try testing.expectEqual(@as(i64, 2), (try harness.lastValue()).object.get("id").?.integer);
+    list_gate.store(false, .release);
+    while (harness.frontend.jobs.items.len > 0) {
+        try harness.frontend.answerJobs();
+        std.Thread.yield() catch {};
+    }
+    const answered = try harness.lastValue();
+    try testing.expectEqual(@as(i64, 1), answered.object.get("id").?.integer);
+    const groups = answered.object.get("result").?.object.get("groups").?.array.items;
+    var found = false;
+    for (groups) |group| {
+        for (group.object.get("work").?.array.items) |piece| {
+            if (piece.object.get("ref").?.object.get("native_id")) |native| found = found or std.mem.eql(u8, native.string, "slow-thread");
+        }
+    }
+    try testing.expect(found);
 }
 
 test "work.status names an idle session that never ran done, a running one running, and an absent one unknown_session" {

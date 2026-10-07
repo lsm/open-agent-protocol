@@ -87,6 +87,7 @@ pub const Adapter = struct {
     config: Config,
     ids: usize = 0,
     reader: ?OneShot = null,
+    reader_lock: std.atomic.Mutex = .unlocked,
 
     pub fn init(allocator: std.mem.Allocator, config: Config) Adapter {
         return .{ .allocator = allocator, .config = config };
@@ -98,6 +99,8 @@ pub const Adapter = struct {
     }
 
     fn ask(self: *Adapter, arena: std.mem.Allocator, method: []const u8, params: std.json.ObjectMap, refusal: *contract.Refusal) contract.Failure!?std.json.Value {
+        while (!self.reader_lock.tryLock()) compat.time.sleepMs(1);
+        defer self.reader_lock.unlock();
         const reused = self.reader != null;
         if (self.reader == null) self.reader = try OneShot.open(self, arena, refusal);
         if (self.reader.?.call(arena, method, params, refusal)) |answered| return answered else |err| {
