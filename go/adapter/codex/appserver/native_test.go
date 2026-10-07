@@ -96,6 +96,9 @@ func TestAThreadTurnsPageBecomesTheUserMessageAndFinalReplyOfEachTurnFollowingTh
 	if len(client.asked) != 2 || client.asked[0] != `thread/turns/list {"itemsView":"full","limit":100,"sortDirection":"asc","threadId":"th"}` || client.asked[1] != `thread/turns/list {"cursor":"c2","itemsView":"full","limit":100,"sortDirection":"asc","threadId":"th"}` {
 		t.Fatalf("asked %v", client.asked)
 	}
+	if client.closes != 1 {
+		t.Fatalf("a two-page read started %d app-servers", client.closes)
+	}
 }
 
 func TestANativeReadStopsOnceItHasTheTurnsAskedForAndFailsWithTheAppServer(t *testing.T) {

@@ -18,12 +18,7 @@ func (implementation *Adapter) NativeLink(nativeID string) string {
 	return "codex://threads/" + nativeID
 }
 
-func (implementation *Adapter) ask(ctx context.Context, method string, params any) (json.RawMessage, error) {
-	client, err := implementation.config.Factory.Start(ctx)
-	if err != nil {
-		return nil, err
-	}
-	defer func() { _ = client.Close() }()
+func ask(ctx context.Context, client Client, method string, params any) (json.RawMessage, error) {
 	var result json.RawMessage
 	if err := client.Call(ctx, method, params, &result); err != nil {
 		return nil, err
@@ -40,7 +35,12 @@ func (implementation *Adapter) NativeList(ctx context.Context, request adapter.N
 	if directory != "" {
 		params["cwd"] = directory
 	}
-	result, err := implementation.ask(ctx, "thread/list", params)
+	client, err := implementation.config.Factory.Start(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = client.Close() }()
+	result, err := ask(ctx, client, "thread/list", params)
 	if err != nil {
 		return nil, err
 	}
@@ -84,6 +84,11 @@ func (implementation *Adapter) threadsOf(result json.RawMessage) []adapter.Nativ
 }
 
 func (implementation *Adapter) NativeRead(ctx context.Context, request adapter.NativeReadRequest) ([]adapter.NativeTurn, error) {
+	client, err := implementation.config.Factory.Start(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = client.Close() }()
 	var found []adapter.NativeTurn
 	cursor := ""
 	pagesMax := request.MaxTurns/nativeTurnPage + 2
@@ -92,7 +97,7 @@ func (implementation *Adapter) NativeRead(ctx context.Context, request adapter.N
 		if cursor != "" {
 			params["cursor"] = cursor
 		}
-		page, err := implementation.ask(ctx, "thread/turns/list", params)
+		page, err := ask(ctx, client, "thread/turns/list", params)
 		if err != nil {
 			return nil, err
 		}
