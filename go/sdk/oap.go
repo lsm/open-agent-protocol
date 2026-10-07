@@ -798,7 +798,11 @@ func (state *oapAgentState) resolveCall(p jsonObject) error {
 	default:
 		result, err := tool.Execute(state.ctx, invocation)
 		if err != nil {
-			answer["error"] = map[string]any{"code": "tool_failed", "message": err.Error()}
+			message := err.Error()
+			if message == "" {
+				message = fmt.Sprintf("%T", err)
+			}
+			answer["error"] = map[string]any{"code": "tool_failed", "message": message}
 		} else {
 			answer["result"] = result
 		}
