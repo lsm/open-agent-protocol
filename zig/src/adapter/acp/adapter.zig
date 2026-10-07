@@ -105,6 +105,7 @@ pub const descriptor = contract.Descriptor{
 };
 
 pub const default_compact_above: usize = 256 * 1024;
+const list_pages_max: usize = 16;
 
 pub const Config = struct {
     executable: []const u8,
@@ -135,7 +136,12 @@ pub const Adapter = struct {
     }
 
     pub fn adapter(self: *Adapter) contract.Adapter {
-        return .{ .ptr = self, .vtable = &.{ .probe = probe, .open = open } };
+        return .{ .ptr = self, .vtable = &.{ .probe = probe, .open = open, .native_list = nativeList } };
+    }
+
+    fn nativeList(ptr: *anyopaque, arena: std.mem.Allocator, request: contract.NativeListRequest, refusal: *contract.Refusal) contract.Failure![]const contract.NativeSession {
+        const self: *Adapter = @ptrCast(@alignCast(ptr));
+        return Session.list(self, arena, request, refusal);
     }
 
     fn probe(ptr: *anyopaque, refusal: *contract.Refusal) contract.Failure!contract.Descriptor {
@@ -384,6 +390,46 @@ pub const Session = struct {
             self.reported_level = try self.owned().dupe(u8, level);
         }
         return self;
+    }
+
+    fn list(owner: *Adapter, arena: std.mem.Allocator, request: contract.NativeListRequest, refusal: *contract.Refusal) contract.Failure![]const contract.NativeSession {
+        const self = try construct(owner, arena, .{ .participant = "" }, refusal);
+        defer self.destroy();
+        const initialized = try self.call(arena, "initialize", try self.initializeParams(), refusal);
+        const capabilities = memberOf(initialized, "agentCapabilities") orelse return &.{};
+        const session_capabilities = memberOf(capabilities, "sessionCapabilities") orelse return &.{};
+        const listing = memberOf(session_capabilities, "list") orelse return &.{};
+        if (listing == .null) return &.{};
+        const directory = if (request.directory.len > 0) request.directory else owner.config.working_directory;
+        var listed: std.ArrayList(contract.NativeSession) = .empty;
+        var cursor: []const u8 = "";
+        var pages: usize = 0;
+        while (listed.items.len < request.limit and pages < list_pages_max) : (pages += 1) {
+            var params: std.json.ObjectMap = .empty;
+            try params.put(arena, "cwd", .{ .string = directory });
+            if (cursor.len > 0) try params.put(arena, "cursor", .{ .string = cursor });
+            const page = try self.call(arena, "session/list", .{ .object = params }, refusal);
+            const sessions = memberOf(page, "sessions") orelse break;
+            if (sessions != .array) break;
+            for (sessions.array.items) |entry| {
+                if (listed.items.len >= request.limit) break;
+                const native_id = fieldText(entry, "sessionId");
+                if (native_id.len == 0) continue;
+                const kept_id = try arena.dupe(u8, native_id);
+                const title = try arena.dupe(u8, fieldText(entry, "title"));
+                const cwd = try arena.dupe(u8, fieldText(entry, "cwd"));
+                try listed.append(arena, .{
+                    .native_id = kept_id,
+                    .title = title,
+                    .directory = cwd,
+                    .updated_at_ms = compat.time.isoMillis(fieldText(entry, "updatedAt")) orelse 0,
+                });
+            }
+            const next = fieldText(page, "nextCursor");
+            if (next.len == 0 or std.mem.eql(u8, next, cursor)) break;
+            cursor = try arena.dupe(u8, next);
+        }
+        return listed.items;
     }
 
     fn resumedSettings(self: *Session, offered: ?std.json.Value) contract.Failure!void {
@@ -1742,4 +1788,59 @@ test "a malformed or contradictory native load reply cannot report recovered sta
         try testing.expectEqualStrings(contract.feature_open_reopen, refusal.feature);
         try testing.expectEqualStrings(contract.reason_unsatisfiable, refusal.reason);
     }
+}
+
+test "a native list pages session/list in the working directory when the agent advertises it, and asks nothing otherwise" {
+    var probe: Probe = undefined;
+    try probe.init(
+        \\#!/bin/sh
+        \\exec 3>>"$(dirname "$0")/stdin.log"
+        \\take() { IFS= read -r line || exit 0; printf '%s\n' "$line" >&3; }
+        \\take; printf '{"id":1,"jsonrpc":"2.0","result":{"agentCapabilities":{"sessionCapabilities":{"list":{}}},"protocolVersion":1}}\n'
+        \\take; printf '{"id":2,"jsonrpc":"2.0","result":{"sessions":[{"sessionId":"a","cwd":"/w","title":"first","updatedAt":"2026-10-06T22:42:33.250+02:30"},{"cwd":"/w"}],"nextCursor":"p2"}}\n'
+        \\take; printf '{"id":3,"jsonrpc":"2.0","result":{"sessions":[{"sessionId":"b","cwd":"/w"}]}}\n'
+        \\while take; do :; done
+        \\
+    );
+    defer probe.deinit();
+    const scratch = probe.arena.allocator();
+    var refusal = contract.Refusal{};
+    const listed = try probe.adapter.adapter().nativeList(scratch, .{ .directory = "/w" }, &refusal).?;
+    try testing.expectEqual(@as(usize, 2), listed.len);
+    try testing.expectEqualStrings("a", listed[0].native_id);
+    try testing.expectEqualStrings("first", listed[0].title);
+    try testing.expectEqualStrings("/w", listed[0].directory);
+    try testing.expectEqual(@as(i64, 1791317553250), listed[0].updated_at_ms);
+    try testing.expectEqualStrings("b", listed[1].native_id);
+    const written = try probe.fake.written(scratch);
+    try testing.expect(std.mem.indexOf(u8, written, "{\"id\":2,\"jsonrpc\":\"2.0\",\"method\":\"session/list\",\"params\":{\"cwd\":\"/w\"}}") != null);
+    try testing.expect(std.mem.indexOf(u8, written, "{\"id\":3,\"jsonrpc\":\"2.0\",\"method\":\"session/list\",\"params\":{\"cwd\":\"/w\",\"cursor\":\"p2\"}}") != null);
+
+    var bare: Probe = undefined;
+    try bare.init(fake_prelude ++ fake_idle);
+    defer bare.deinit();
+    const none = try bare.adapter.adapter().nativeList(bare.arena.allocator(), .{}, &refusal).?;
+    try testing.expectEqual(@as(usize, 0), none.len);
+    const asked = try bare.fake.written(bare.arena.allocator());
+    try testing.expect(std.mem.indexOf(u8, asked, "session/list") == null);
+}
+
+test "a native list stops paging after a bounded number of pages when the agent keeps minting cursors" {
+    var probe: Probe = undefined;
+    try probe.init(
+        \\#!/bin/sh
+        \\exec 3>>"$(dirname "$0")/stdin.log"
+        \\take() { IFS= read -r line || exit 0; printf '%s\n' "$line" >&3; }
+        \\take; printf '{"id":1,"jsonrpc":"2.0","result":{"agentCapabilities":{"sessionCapabilities":{"list":{}}},"protocolVersion":1}}\n'
+        \\i=2
+        \\while take; do printf '{"id":%s,"jsonrpc":"2.0","result":{"sessions":[{"cwd":"/w"}],"nextCursor":"c%s"}}\n' "$i" "$i"; i=$((i+1)); done
+        \\
+    );
+    defer probe.deinit();
+    const scratch = probe.arena.allocator();
+    var refusal = contract.Refusal{};
+    const listed = try probe.adapter.adapter().nativeList(scratch, .{ .directory = "/w" }, &refusal).?;
+    try testing.expectEqual(@as(usize, 0), listed.len);
+    const written = try probe.fake.written(scratch);
+    try testing.expectEqual(list_pages_max, std.mem.count(u8, written, "session/list"));
 }
