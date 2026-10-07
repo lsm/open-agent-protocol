@@ -170,6 +170,7 @@ pub const SessionInfo = struct {
     created: i64 = 0,
     updated: i64 = 0,
     directory: []const u8 = "",
+    title: []const u8 = "",
 };
 
 pub const ErrorBlock = struct { kind: []const u8 = "", message: []const u8 = "" };
@@ -239,6 +240,7 @@ pub const Kind = union(enum) {
     record: []const Field,
     optional_record: []const Field,
     record_map: []const Field,
+    record_list: []const Field,
     contents,
 };
 
@@ -448,6 +450,7 @@ const info_fields = [_]Field{
 
 pub const admitted_response = [_]Field{.{ .name = "data", .kind = .{ .record = &admitted_fields } }};
 pub const session_info_response = [_]Field{.{ .name = "data", .kind = .{ .record = &session_info_fields } }};
+pub const sessions_response = [_]Field{ .{ .name = "data", .kind = .{ .record_list = &session_info_fields } }, .{ .name = "cursor", .kind = .raw } };
 pub const active_response = [_]Field{.{ .name = "data", .kind = .{ .record_map = &active_entry_fields } }};
 pub const interrupt_response = interrupted_fields;
 pub const info_response = info_fields;
@@ -684,6 +687,10 @@ fn checkKind(arena: std.mem.Allocator, diag: *Diagnostic, value: std.json.Value,
         .record_map => |fields| {
             if (value != .object) return mismatch(arena, diag, value, field.name);
             for (value.object.values()) |entry| try checkRecord(arena, diag, entry, fields, field.name, strict);
+        },
+        .record_list => |fields| {
+            if (value != .array) return mismatch(arena, diag, value, field.name);
+            for (value.array.items) |item| try checkRecord(arena, diag, item, fields, field.name, strict);
         },
         .contents => {
             if (value != .array) return mismatch(arena, diag, value, field.name);
@@ -945,7 +952,18 @@ pub fn validAdmitted(admitted: Admitted) bool {
 }
 
 pub fn sessionInfoOf(document: std.json.Value) SessionInfo {
-    const data = memberAt(document, &.{"data"}) orelse std.json.Value.null;
+    return sessionInfoFrom(memberAt(document, &.{"data"}) orelse std.json.Value.null);
+}
+
+pub fn sessionsOf(arena: std.mem.Allocator, document: std.json.Value) std.mem.Allocator.Error![]const SessionInfo {
+    const data = memberAt(document, &.{"data"}) orelse return &.{};
+    if (data != .array) return &.{};
+    const infos = try arena.alloc(SessionInfo, data.array.items.len);
+    for (data.array.items, infos) |item, *info| info.* = sessionInfoFrom(item);
+    return infos;
+}
+
+fn sessionInfoFrom(data: std.json.Value) SessionInfo {
     const model: ?ModelRef = if (present(data, "model")) .{
         .id = textAt(data, &.{ "model", "id" }),
         .provider_id = textAt(data, &.{ "model", "providerID" }),
@@ -959,6 +977,7 @@ pub fn sessionInfoOf(document: std.json.Value) SessionInfo {
         .created = integerAt(data, &.{ "time", "created" }),
         .updated = integerAt(data, &.{ "time", "updated" }),
         .directory = textAt(data, &.{ "location", "directory" }),
+        .title = textAt(data, &.{"title"}),
     };
 }
 

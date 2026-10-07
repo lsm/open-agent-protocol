@@ -215,6 +215,20 @@ fn unescapedInSegment(byte: u8) bool {
     };
 }
 
+pub fn queryEscape(arena: std.mem.Allocator, value: []const u8) std.mem.Allocator.Error![]const u8 {
+    var out = std.ArrayList(u8).empty;
+    for (value) |byte| {
+        if (std.ascii.isAlphanumeric(byte) or byte == '-' or byte == '_' or byte == '.' or byte == '~') {
+            try out.append(arena, byte);
+        } else if (byte == ' ') {
+            try out.append(arena, '+');
+        } else {
+            try out.print(arena, "%{X:0>2}", .{byte});
+        }
+    }
+    return out.items;
+}
+
 pub fn pathEscape(arena: std.mem.Allocator, segment: []const u8) std.mem.Allocator.Error![]const u8 {
     var out = std.ArrayList(u8).empty;
     for (segment) |byte| {
@@ -317,6 +331,12 @@ pub fn getSession(arena: std.mem.Allocator, endpoint: Endpoint, session: []const
     return build(arena, endpoint, "GET", try sessionPath(arena, session, ""), "", "application/json", null);
 }
 
+pub fn sessions(arena: std.mem.Allocator, endpoint: Endpoint, directory: []const u8, limit: usize) std.mem.Allocator.Error!Request {
+    const scope = if (directory.len > 0) try std.mem.concat(arena, u8, &.{ "directory=", try queryEscape(arena, directory), "&" }) else "";
+    const query = try std.fmt.allocPrint(arena, "{s}limit={d}&order=desc&parentID=null", .{ scope, limit });
+    return build(arena, endpoint, "GET", "/api/session", query, "application/json", null);
+}
+
 pub fn active(arena: std.mem.Allocator, endpoint: Endpoint) std.mem.Allocator.Error!Request {
     return build(arena, endpoint, "GET", "/api/session/active", "", "application/json", null);
 }
@@ -415,6 +435,18 @@ pub fn getSessionResult(arena: std.mem.Allocator, response: Response, session: [
         return .{ .failed = .{ .message = try std.fmt.allocPrint(arena, subscription_failed ++ ": session record for foreign session {s}", .{info.id}) } };
     }
     return .{ .ok = info };
+}
+
+pub fn sessionsResult(arena: std.mem.Allocator, response: Response, limit: usize) std.mem.Allocator.Error!Outcome([]const native.SessionInfo) {
+    const document = switch (try check(arena, response, "/api/session", limit, &native.sessions_response)) {
+        .document => |value| value,
+        .failed => |failure| return .{ .failed = failure },
+    };
+    const infos = try native.sessionsOf(arena, document);
+    for (infos) |info| {
+        if (!native.validSessionInfo(info)) return .{ .failed = .{ .message = native.invalid_wire ++ ": invalid session info" } };
+    }
+    return .{ .ok = infos };
 }
 
 pub fn activeResult(arena: std.mem.Allocator, response: Response, limit: usize) std.mem.Allocator.Error!Outcome([]const []const u8) {
@@ -662,4 +694,22 @@ fn streamEveryShape(allocator: std.mem.Allocator) !void {
 
 test "the SSE decoder and the codec propagate every allocation failure and leak nothing" {
     try testing.checkAllAllocationFailures(testing.allocator, streamEveryShape, .{});
+}
+
+test "a session list decodes every row strictly and refuses one that is not a session" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const scratch = arena.allocator();
+    const listed = try sessionsResult(scratch, .{ .status = 200, .body = "{\"data\":[{\"id\":\"ses_a\",\"projectID\":\"p\",\"title\":\"t\",\"time\":{\"created\":1,\"updated\":2}}],\"cursor\":{\"next\":\"x\"}}" }, 0);
+    try testing.expectEqual(@as(usize, 1), listed.ok.len);
+    try testing.expectEqualStrings("t", listed.ok[0].title);
+    try testing.expectEqual(@as(i64, 2), listed.ok[0].updated);
+    const strict = try sessionsResult(scratch, .{ .status = 200, .body = "{\"data\":[{\"id\":\"ses_a\",\"projectID\":\"p\",\"surprise\":1}],\"cursor\":{}}" }, 0);
+    try testing.expect(strict == .failed);
+    const invalid = try sessionsResult(scratch, .{ .status = 200, .body = "{\"data\":[{\"id\":\"ses_a\",\"projectID\":\"\"}],\"cursor\":{}}" }, 0);
+    try testing.expectEqualStrings(native.invalid_wire ++ ": invalid session info", invalid.failed.message);
+    const request = try sessions(scratch, .{}, "", 3);
+    try testing.expectEqualStrings("/api/session?limit=3&order=desc&parentID=null", request.target);
+    const scoped = try sessions(scratch, .{}, "/x/R&D+a=b c~", 3);
+    try testing.expectEqualStrings("/api/session?directory=%2Fx%2FR%26D%2Ba%3Db+c~&limit=3&order=desc&parentID=null", scoped.target);
 }
