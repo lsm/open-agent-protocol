@@ -1,0 +1,4 @@
+[
+    {"index": 1, "type": "action", "source": "stream", "classification": "mapped", "fidelity": "normalized", "oap": ""},
+    {"index": 2, "type": "session.inbox.cancelled", "source": "stream", "classification": "mapped", "fidelity": "normalized", "oap": "run.cancelled"}
+]

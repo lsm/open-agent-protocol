@@ -50,10 +50,7 @@ func TestModelsRequiresTheDegradedOptin(t *testing.T) {
 
 func TestCatalogGrowsWithDurableStepEvidence(t *testing.T) {
 	client := newFakeClient()
-	client.promoted = true
 
-	delivered := make(chan struct{})
-	client.idleGate = delivered
 	session, _ := openTest(t, client, 32)
 	lister := session.(base.ModelLister)
 
@@ -75,14 +72,14 @@ func TestCatalogGrowsWithDurableStepEvidence(t *testing.T) {
 	}
 
 	response, stream := submitTest(t, session)
-	client.emit(t, 1, native.TypePrompted, native.PromptedData{Timestamp: 1, SessionID: client.session, MessageID: native.MessageID(response.MessageIDs[0]), Prompt: native.Prompt{Text: "hello"}, Delivery: native.DeliverySteer})
-	client.emit(t, 2, native.TypeStepStarted, native.StepStartedData{Timestamp: 2, SessionID: client.session, AssistantMessage: "msg_a1", Agent: "build", Model: native.ModelRef{ID: "m", ProviderID: "p"}})
-	client.emit(t, 3, native.TypeStepEnded, native.StepEndedData{Timestamp: 3, SessionID: client.session, AssistantMessage: "msg_a1", Finish: "tool_use"})
+	client.deliver(t, 1, native.MessageID(response.MessageIDs[0]))
+	client.emit(t, 2, native.TypeStepStarted, native.StepStartedData{SessionID: client.session, AssistantMessage: "msg_a1", Agent: "build", Model: native.ModelRef{ID: "m", ProviderID: "p"}})
+	client.emit(t, 3, native.TypeStepEnded, native.StepEndedData{SessionID: client.session, AssistantMessage: "msg_a1", Finish: "tool_use"})
 
-	client.emit(t, 4, native.TypeStepStarted, native.StepStartedData{Timestamp: 4, SessionID: client.session, AssistantMessage: "msg_a2", Agent: "build", Model: native.ModelRef{ID: "m", ProviderID: "p"}})
-	client.emit(t, 5, native.TypeTextEnded, native.TextEndedData{Timestamp: 5, SessionID: client.session, AssistantMessage: "msg_a2", TextID: "t2", Text: "done"})
-	client.emit(t, 6, native.TypeStepEnded, native.StepEndedData{Timestamp: 6, SessionID: client.session, AssistantMessage: "msg_a2", Finish: "stop", Tokens: tokenAccounting(2, 5)})
-	close(delivered)
+	client.emit(t, 4, native.TypeStepStarted, native.StepStartedData{SessionID: client.session, AssistantMessage: "msg_a2", Agent: "build", Model: native.ModelRef{ID: "m", ProviderID: "p"}})
+	client.emit(t, 5, native.TypeTextEnded, native.TextEndedData{SessionID: client.session, AssistantMessage: "msg_a2", Text: "done"})
+	client.emit(t, 6, native.TypeStepEnded, native.StepEndedData{SessionID: client.session, AssistantMessage: "msg_a2", Finish: "stop", Tokens: tokenAccounting(2, 5)})
+	client.succeed(t, 7)
 	events := adaptertest.Drain(t, stream, 2*time.Second)
 
 	adapter, err := New(Config{Endpoint: "http://127.0.0.1:1"})

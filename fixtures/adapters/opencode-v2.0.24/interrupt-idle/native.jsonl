@@ -1,0 +1,2 @@
+{"source":"stream","classification":"mapped","fidelity":"normalized","action":"cancel-idle"}
+{"source":"stream","classification":"mapped","fidelity":"normalized","raw":{"id":"evt_c001","type":"session.inbox.cancelled","durable":{"aggregateID":"ses_fake00000000000000","seq":10,"version":1},"data":{"sessionID":"ses_fake00000000000000","inboxID":"msg_rebind"}}}

@@ -45,7 +45,7 @@ func serveInHome(t *testing.T, ctx context.Context, binary, home string, environ
 	client := &http.Client{Timeout: 10 * time.Second}
 	deadline := time.Now().Add(60 * time.Second)
 	for {
-		response, err := client.Get(endpoint + "/api/health")
+		response, err := client.Get(endpoint + "/api/info")
 		if err == nil {
 			_ = response.Body.Close()
 			if response.StatusCode == http.StatusOK {
@@ -83,7 +83,7 @@ func TestOpenCodeServerReopensItsBoundSessionAfterARestart(t *testing.T) {
 		t.Fatal(err)
 	}
 	binding := opened.(base.NativeSession).NativeSessionID()
-	stored := waitForStoredEvents(t, ctx, opened.(*session).client, native.SessionID(binding))
+	waitForObservedEvents(t, opened)
 	stop()
 	_ = opened.Close(context.Background())
 
@@ -103,7 +103,7 @@ func TestOpenCodeServerReopensItsBoundSessionAfterARestart(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if state.Recovery == nil || !state.Recovery.Recovered || state.CurrentModelID != "fixture/model" || state.Status != protocol.SessionIdle || state.ActiveRunID != "" || state.TranscriptCursor != formatSeq(stored) {
+	if state.Recovery == nil || !state.Recovery.Recovered || state.CurrentModelID != "fixture/model" || state.Status != protocol.SessionIdle || state.ActiveRunID != "" {
 		t.Fatalf("recovered state = %+v; the stored history must not replay as a run", state)
 	}
 	if got := reopened.(base.NativeSession).NativeSessionID(); got != binding {
@@ -117,16 +117,16 @@ func TestOpenCodeServerReopensItsBoundSessionAfterARestart(t *testing.T) {
 	}
 }
 
-func waitForStoredEvents(t *testing.T, ctx context.Context, client Client, id native.SessionID) int64 {
+func waitForObservedEvents(t *testing.T, opened base.Session) {
 	t.Helper()
 	deadline := time.Now().Add(30 * time.Second)
 	for {
-		last, err := lastDurableSeq(ctx, client, id)
-		if err == nil && last >= 2 {
-			return last
+		state, err := opened.State(context.Background())
+		if err == nil && state.TranscriptCursor != "" {
+			return
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("the first run stored no events: last=%d err=%v", last, err)
+			t.Fatalf("the first run's events never arrived: state=%+v err=%v", state, err)
 		}
 		time.Sleep(250 * time.Millisecond)
 	}

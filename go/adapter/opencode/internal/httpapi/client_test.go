@@ -10,7 +10,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
@@ -67,23 +66,20 @@ func TestCreateSessionRejectsUnknownResponseFields(t *testing.T) {
 
 func TestPromptReturnsAdmittedAndTypedConflicts(t *testing.T) {
 	client := newTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/api/session/ses_a/event" {
-			if r.URL.Path == "/api/session/ses_a/prompt" {
-				var body native.PromptRequest
-				_ = json.NewDecoder(r.Body).Decode(&body)
-				if body.ID == native.MessageID("msg_conflict") {
-					w.WriteHeader(http.StatusConflict)
-					_, _ = w.Write([]byte(`{"_tag":"ConflictError","message":"id in use"}`))
-					return
-				}
-				_, _ = w.Write([]byte(`{"data":{"admittedSeq":3,"id":"` + body.ID + `","sessionID":"ses_a","prompt":{"text":"hi"},"delivery":"steer","timeCreated":9}}`))
-				return
-			}
+		if r.URL.Path != "/api/session/ses_a/prompt" {
 			t.Fatalf("unexpected path %s", r.URL.Path)
 		}
+		var body native.PromptRequest
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		if body.ID == native.MessageID("msg_conflict") {
+			w.WriteHeader(http.StatusConflict)
+			_, _ = w.Write([]byte(`{"_tag":"ConflictError","message":"id in use"}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"data":{"id":"` + string(body.ID) + `","sessionID":"ses_a","time":{"created":9},"type":"user","payload":{"text":"hi"},"delivery":"` + string(body.Delivery) + `"}}`))
 	}), Options{})
-	admitted, err := client.Prompt(context.Background(), "ses_a", native.PromptRequest{ID: "msg_ok", Prompt: native.Prompt{Text: "hi"}, Delivery: native.DeliverySteer})
-	if err != nil || admitted.AdmittedSeq != 3 || admitted.ID != native.MessageID("msg_ok") {
+	admitted, err := client.Prompt(context.Background(), "ses_a", native.PromptRequest{ID: "msg_ok", Text: "hi", Delivery: native.DeliveryQueue})
+	if err != nil || admitted.ID != native.MessageID("msg_ok") || admitted.Delivery != native.DeliveryQueue || admitted.Time.Created != 9 {
 		t.Fatalf("admitted=%+v err=%v", admitted, err)
 	}
 	_, err = client.Prompt(context.Background(), "ses_a", native.PromptRequest{ID: "msg_conflict"})
@@ -95,7 +91,7 @@ func TestPromptReturnsAdmittedAndTypedConflicts(t *testing.T) {
 
 func TestPromptRejectsForeignAdmissionReceipt(t *testing.T) {
 	client := newTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		_, _ = w.Write([]byte(`{"data":{"admittedSeq":1,"id":"msg_1","sessionID":"ses_other","prompt":{"text":"hi"},"delivery":"steer","timeCreated":1}}`))
+		_, _ = w.Write([]byte(`{"data":{"id":"msg_1","sessionID":"ses_other","time":{"created":1},"type":"user","payload":{"text":"hi"},"delivery":"steer"}}`))
 	}), Options{})
 	_, err := client.Prompt(context.Background(), "ses_a", native.PromptRequest{ID: "msg_1"})
 	if !errors.Is(err, ErrSubscription) {
@@ -103,39 +99,36 @@ func TestPromptRejectsForeignAdmissionReceipt(t *testing.T) {
 	}
 }
 
-func TestWaitIdleSurfacesPinnedUnavailable(t *testing.T) {
-	client := newTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusServiceUnavailable)
-		_, _ = w.Write([]byte(`{"_tag":"ServiceUnavailableError","message":"Session wait is not available yet","service":"session.wait"}`))
+func TestInterruptReportsWhetherAnExecutionWasInterrupted(t *testing.T) {
+	answer := `{"interrupted":true}`
+	client := newTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/session/ses_a/interrupt" || r.Method != http.MethodPost {
+			t.Fatalf("%s %s", r.Method, r.URL.Path)
+		}
+		_, _ = w.Write([]byte(answer))
 	}), Options{})
-	err := client.WaitIdle(context.Background(), "ses_a")
-	if err == nil {
-		t.Fatal("wait must not report idle when the route is unavailable")
+	interrupted, err := client.Interrupt(context.Background(), "ses_a")
+	if err != nil || !interrupted {
+		t.Fatalf("interrupted=%v err=%v", interrupted, err)
 	}
-	var apiErr *native.APIError
-	if !errors.As(err, &apiErr) {
-		t.Fatalf("err=%v, want a native APIError", err)
-	}
-	if apiErr.Status != http.StatusServiceUnavailable || apiErr.Tag != "ServiceUnavailableError" {
-		t.Fatalf("status=%d tag=%q", apiErr.Status, apiErr.Tag)
+	answer = `{"interrupted":false}`
+	interrupted, err = client.Interrupt(context.Background(), "ses_a")
+	if err != nil || interrupted {
+		t.Fatalf("an idle interrupt answered interrupted=%v err=%v", interrupted, err)
 	}
 }
 
-func TestInterruptAndWaitAcceptNoContent(t *testing.T) {
-	paths := map[string]bool{}
+func TestCancelInboxDeletesTheInput(t *testing.T) {
+	var seen string
 	client := newTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		paths[r.URL.Path] = true
+		seen = r.Method + " " + r.URL.Path
 		w.WriteHeader(http.StatusNoContent)
 	}), Options{})
-	if err := client.Interrupt(context.Background(), "ses_a"); err != nil {
+	if err := client.CancelInbox(context.Background(), "ses_a", "msg_1"); err != nil {
 		t.Fatal(err)
 	}
-	if err := client.WaitIdle(context.Background(), "ses_a"); err != nil {
-		t.Fatal(err)
-	}
-	if !paths["/api/session/ses_a/interrupt"] || !paths["/api/session/ses_a/wait"] {
-		t.Fatalf("paths=%v", paths)
+	if seen != "DELETE /api/session/ses_a/inbox/msg_1" {
+		t.Fatalf("request = %q", seen)
 	}
 }
 
@@ -152,52 +145,67 @@ func TestActiveFiltersRunningSessions(t *testing.T) {
 	}
 }
 
-func durableEvent(seq int64, typ string, data string) string {
-	return fmt.Sprintf(`{"id":"evt_%03d","type":%q,"durable":{"aggregateID":"ses_a","seq":%d,"version":1},"data":%s}`, seq, typ, seq, data)
+const connected = `{"id":"evt_connected","type":"server.connected","data":{}}`
+
+func sessionEvent(session string, seq int64, typ string, data string) string {
+	return fmt.Sprintf(`{"id":"evt_%s%03d","created":1,"type":%q,"location":{"directory":"/w"},"durable":{"aggregateID":%q,"seq":%d,"version":1},"data":%s}`, strings.TrimPrefix(session, "ses_"), seq, typ, session, seq, data)
 }
 
-func TestHistoryDecodesDurableEvents(t *testing.T) {
-	client := newTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Query().Get("after") != "4" {
-			t.Fatalf("after=%q", r.URL.Query().Get("after"))
-		}
-		_, _ = w.Write([]byte(`{"data":[` + durableEvent(5, "session.next.text.ended", `{"timestamp":1,"sessionID":"ses_a","assistantMessageID":"msg_9","textID":"t1","text":"done"}`) + `],"hasMore":false}`))
-	}), Options{})
-	page, err := client.History(context.Background(), "ses_a", 4, 50)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(page.Events) != 1 || page.Events[0].Durable.Seq != 5 || page.HasMore {
-		t.Fatalf("page=%+v", page)
-	}
-}
-
-func TestSubscribeReplaysThenFailsOnRegression(t *testing.T) {
-	done := make(chan struct{})
-	frames := []string{
-		durableEvent(1, "session.next.prompted", `{"timestamp":1,"sessionID":"ses_a","messageID":"msg_1","prompt":{"text":"hi"},"delivery":"steer"}`),
-		durableEvent(1, "session.next.prompted", `{"timestamp":1,"sessionID":"ses_a","messageID":"msg_1","prompt":{"text":"hi"},"delivery":"steer"}`),
-	}
-	client := newTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Query().Get("after") != "0" {
-			t.Fatalf("after=%q", r.URL.Query().Get("after"))
+func streamFrames(t *testing.T, done <-chan struct{}, frames ...string) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/event" {
+			t.Errorf("path %s", r.URL.Path)
 		}
 		w.Header().Set("Content-Type", "text/event-stream")
 		flusher := w.(http.Flusher)
 		for _, frame := range frames {
-			_, _ = w.Write([]byte("event: message\ndata: " + frame + "\n\n"))
+			_, _ = w.Write([]byte("data: " + frame + "\n\n"))
 			flusher.Flush()
 		}
-		<-done
-	}), Options{})
+		select {
+		case <-done:
+		case <-r.Context().Done():
+		}
+	})
+}
+
+func TestSubscribeFollowsOneSessionOnTheGlobalStream(t *testing.T) {
+	done := make(chan struct{})
 	t.Cleanup(func() { close(done) })
-	subscription, err := client.Subscribe(context.Background(), "ses_a", 0)
+	client := newTestClient(t, streamFrames(t, done,
+		connected,
+		sessionEvent("ses_b", 1, "session.execution.started", `{"sessionID":"ses_b"}`),
+		sessionEvent("ses_b", 2, "session.brand.new", `{"sessionID":"ses_b"}`),
+		`{"id":"evt_project","created":1,"type":"project.updated","data":{"id":"p"}}`,
+		sessionEvent("ses_a", 1, "session.execution.started", `{"sessionID":"ses_a"}`),
+		`{"id":"evt_delta","created":1,"type":"session.text.delta","data":{"sessionID":"ses_a","assistantMessageID":"msg_1","ordinal":0,"delta":"h"}}`,
+	), Options{})
+	subscription, err := client.Subscribe(context.Background(), "ses_a")
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer func() { _ = subscription.Close() }()
 	first := <-subscription.Events()
-	if first.Durable.Seq != 1 {
+	if first.Type != native.TypeExecutionStarted || first.SessionID != "ses_a" || first.Durable.Seq != 1 {
+		t.Fatalf("first=%+v", first)
+	}
+	second := <-subscription.Events()
+	if second.Type != native.TypeTextDelta || second.Durable != nil {
+		t.Fatalf("second=%+v", second)
+	}
+}
+
+func TestSubscribeFailsOnARegressingSequence(t *testing.T) {
+	done := make(chan struct{})
+	t.Cleanup(func() { close(done) })
+	frame := sessionEvent("ses_a", 1, "session.execution.started", `{"sessionID":"ses_a"}`)
+	client := newTestClient(t, streamFrames(t, done, connected, frame, frame), Options{})
+	subscription, err := client.Subscribe(context.Background(), "ses_a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = subscription.Close() }()
+	if first := <-subscription.Events(); first.Durable.Seq != 1 {
 		t.Fatalf("first=%+v", first)
 	}
 	select {
@@ -214,23 +222,18 @@ func TestSubscribeReplaysThenFailsOnRegression(t *testing.T) {
 	}
 }
 
-func TestSubscribeRejectsMalformedPayload(t *testing.T) {
+func TestSubscribeFailsOnAnUnsupportedEventOfItsOwnSession(t *testing.T) {
 	done := make(chan struct{})
-	client := newTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Content-Type", "text/event-stream")
-		_, _ = w.Write([]byte("data: not-json\n\n"))
-		w.(http.Flusher).Flush()
-		<-done
-	}), Options{})
 	t.Cleanup(func() { close(done) })
-	subscription, err := client.Subscribe(context.Background(), "ses_a", -1)
+	client := newTestClient(t, streamFrames(t, done, connected, sessionEvent("ses_a", 1, "session.brand.new", `{"sessionID":"ses_a"}`)), Options{})
+	subscription, err := client.Subscribe(context.Background(), "ses_a")
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer func() { _ = subscription.Close() }()
 	select {
 	case <-subscription.Done():
-		if !errors.Is(subscription.Err(), native.ErrInvalidWire) {
+		if !errors.Is(subscription.Err(), native.ErrUnsupportedType) {
 			t.Fatalf("err=%v", subscription.Err())
 		}
 	case <-time.After(time.Second):
@@ -238,14 +241,24 @@ func TestSubscribeRejectsMalformedPayload(t *testing.T) {
 	}
 }
 
+func TestSubscribeRefusesAStreamThatFailsBeforeItConnects(t *testing.T) {
+	done := make(chan struct{})
+	t.Cleanup(func() { close(done) })
+	client := newTestClient(t, streamFrames(t, done, "not-json"), Options{})
+	_, err := client.Subscribe(context.Background(), "ses_a")
+	if !errors.Is(err, ErrSubscription) || !errors.Is(err, native.ErrInvalidWire) {
+		t.Fatalf("err=%v", err)
+	}
+}
+
 func TestSubscribeSurfacesHTTPErrors(t *testing.T) {
 	client := newTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusNotFound)
-		_, _ = w.Write([]byte(`{"_tag":"SessionNotFoundError","sessionID":"ses_missing","message":"no"}`))
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = w.Write([]byte(`{"_tag":"UnauthorizedError","message":"no"}`))
 	}), Options{})
-	_, err := client.Subscribe(context.Background(), "ses_missing", -1)
+	_, err := client.Subscribe(context.Background(), "ses_a")
 	var apiErr *native.APIError
-	if !errors.As(err, &apiErr) || !apiErr.IsSessionNotFound() {
+	if !errors.As(err, &apiErr) || apiErr.Status != http.StatusUnauthorized {
 		t.Fatalf("err=%v", err)
 	}
 }
@@ -273,32 +286,22 @@ func TestCreateSessionRejectsOversizedBody(t *testing.T) {
 }
 
 func TestSubscriptionCloseInterruptsBlockedRead(t *testing.T) {
-	release := make(chan struct{})
-	var releaseOnce sync.Once
-	releaseNow := func() { releaseOnce.Do(func() { close(release) }) }
-	t.Cleanup(releaseNow)
 	handlerDone := make(chan struct{})
 	client := newTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.WriteHeader(http.StatusOK)
-		if flusher, ok := w.(http.Flusher); ok {
-			flusher.Flush()
-		}
-		select {
-		case <-r.Context().Done():
-		case <-release:
-		}
+		_, _ = w.Write([]byte("data: " + connected + "\n\n"))
+		w.(http.Flusher).Flush()
+		<-r.Context().Done()
 		close(handlerDone)
 	}), Options{})
 
 	streamCtx, cancelStream := context.WithCancel(context.Background())
 	t.Cleanup(cancelStream)
-	subscription, err := client.Subscribe(streamCtx, "ses_a", -1)
+	subscription, err := client.Subscribe(streamCtx, "ses_a")
 	if err != nil {
 		t.Fatal(err)
 	}
-
-	time.Sleep(100 * time.Millisecond)
 	start := time.Now()
 	if err := subscription.Close(); err != nil {
 		t.Fatal(err)
@@ -306,50 +309,9 @@ func TestSubscriptionCloseInterruptsBlockedRead(t *testing.T) {
 	if elapsed := time.Since(start); elapsed > time.Second {
 		t.Fatalf("Close blocked for %v", elapsed)
 	}
-
 	select {
 	case <-handlerDone:
 	case <-time.After(2 * time.Second):
 		t.Fatal("Close did not disconnect the idle SSE request")
-	}
-}
-
-func TestSubscribeReturnsWhenHeadersAreDeferred(t *testing.T) {
-	release := make(chan struct{})
-	var releaseOnce sync.Once
-	releaseNow := func() { releaseOnce.Do(func() { close(release) }) }
-	t.Cleanup(releaseNow)
-	client := newTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/api/session/ses_a/event" {
-			t.Errorf("path %s", r.URL.Path)
-		}
-		<-release
-		w.Header().Set("Content-Type", "text/event-stream")
-		w.WriteHeader(http.StatusOK)
-		flusher, _ := w.(http.Flusher)
-		_, _ = io.WriteString(w, `data: {"id":"evt_1","type":"session.next.prompted","durable":{"aggregateID":"ses_a","seq":1,"version":1},"data":{"timestamp":1,"sessionID":"ses_a","messageID":"msg_1","prompt":{"text":"hi"},"delivery":"steer"}}`+"\n\n")
-		if flusher != nil {
-			flusher.Flush()
-		}
-	}), Options{})
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	start := time.Now()
-	subscription, err := client.Subscribe(ctx, "ses_a", -1)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if elapsed := time.Since(start); elapsed > 2*time.Second {
-		t.Fatalf("Subscribe blocked for %v awaiting deferred headers", elapsed)
-	}
-
-	releaseNow()
-	select {
-	case event := <-subscription.Events():
-		if event.Type != native.TypePrompted || event.Durable.Seq != 1 {
-			t.Fatalf("event = %+v", event)
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("deferred stream never delivered its event")
 	}
 }

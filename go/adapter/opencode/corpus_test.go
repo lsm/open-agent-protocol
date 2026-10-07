@@ -26,12 +26,12 @@ import (
 var opencodeCommitTree = pin.Source("opencode").Tree
 
 const (
-	opencodeSessionEvent  = "3a559c3e38a401218ac36e3f79051172df4dbe3d"
-	opencodeSessionInput  = "40babac105f66671baeb59679e275f6536a5ae26"
-	opencodeDeliveryBlob  = "9b678dabf9f910b173f2b2cfddebacbd11922264"
-	opencodeSessionGroup  = "8ce85ef79686dd5f448c9b31a9416c22608e7665"
-	opencodeServerHandler = "5b7d354b04fc32567e41582e6a8e74537be6e57d"
-	opencodeCoreSession   = "2dabfb2d6fba2eeff6306abcae0f5fb8c99b6f13"
+	opencodeSessionEvent  = "0cffae27ad631740c4b7b59c09c01440b4b603a6"
+	opencodeSessionInput  = "361c0c492ce81aaea18fa31d36d3b00dc8d13c7b"
+	opencodeDeliveryBlob  = "eeed241ae14e30645d4e0904c69d3ebfe919ef38"
+	opencodeSessionGroup  = "d5bf2af1db1281785aa996ed0d63c5f61821d830"
+	opencodeServerHandler = "73a0763352095b093a2bc959ebe6295a5d9515f0"
+	opencodeCoreSession   = "39f5f36d3a56e017a8b474a52f7d3863ee0effaf"
 )
 
 var opencodeLedgerFixtures = map[string]bool{
@@ -39,9 +39,9 @@ var opencodeLedgerFixtures = map[string]bool{
 	"message-conflict": true, "completed-text": true, "streaming-deltas": true,
 	"reasoning-deltas": true, "tool-lifecycle": true, "tool-failed": true,
 	"multi-step": true, "step-failure": true, "interrupt-idle": true,
-	"interrupt-active": true, "settlement": true, "history-page": true,
+	"interrupt-active": true, "settlement": true,
 	"foreign-session": true, "process-exit": true, "observed-only": true,
-	"queued-admission": true, "history-fence": true, "no-implied-run-id": true,
+	"queued-admission": true, "no-implied-run-id": true,
 }
 
 type opencodeCorpusManifest struct {
@@ -153,33 +153,16 @@ func runOpenCodeCorpusCase(t *testing.T, root string, entry opencodeCorpusCaseEn
 	omissions := opencodeLoadJSON[[]opencodeCorpusOmission](t, filepath.Join(dir, definition.Omissions))
 	assertOpenCodeClassifications(t, frames, decoded, mappings, omissions)
 
-	var presetHistory []native.Event
-	for index, frame := range frames {
-		if frame.Source != "history" || frame.Action != "" {
-			continue
-		}
-		presetHistory = append(presetHistory, decoded[index])
-	}
-
 	capacity := definition.Journal
 	if capacity == 0 {
 		capacity = 64
 	}
 	client := newFakeClient()
-
-	fed := make(chan struct{})
-	client.mu.Lock()
-	client.historyPage = native.HistoryPage{Events: presetHistory}
-	client.idleGate = fed
-	client.mu.Unlock()
+	client.silentCancels = true
 	if definition.AdmissionRejected {
-
 		client.promptErr = &native.APIError{Status: 409, Tag: "ConflictError", Fields: map[string]json.RawMessage{}}
-		client.promoted = true
-	} else {
-		client.promoted = !strings.Contains(entry.ID, "queued")
 	}
-	implementation, err := New(Config{Factory: ClientFactoryFunc(func(context.Context) (Client, error) { return client, nil }), Clock: &fakeClock{}, IDs: &fakeIDs{}, JournalCapacity: capacity, SettlePollMin: time.Millisecond, SettlePollMax: 2 * time.Millisecond})
+	implementation, err := New(Config{Factory: ClientFactoryFunc(func(context.Context) (Client, error) { return client, nil }), Clock: &fakeClock{}, IDs: &fakeIDs{}, JournalCapacity: capacity})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -211,21 +194,8 @@ func runOpenCodeCorpusCase(t *testing.T, root string, entry opencodeCorpusCaseEn
 		switch frame.Action {
 		case "", "observe":
 			event := decoded[i]
-			if event.Type == native.TypePrompted {
-
-				var data native.PromptedData
-				if err := native.DecodeData(event, &data); err != nil {
-					t.Fatal(err)
-				}
-				data.MessageID = admittedMessage
-				reencoded, err := json.Marshal(data)
-				if err != nil {
-					t.Fatal(err)
-				}
-				event.Data = reencoded
-			}
-			if frame.Source == "history" {
-				continue
+			if event.Type == native.TypeInboxEnqueued || event.Type == native.TypeInboxDelivered || event.Type == native.TypeInboxCancelled {
+				event.Data = rebindInbox(t, event.Data, admittedMessage)
 			}
 			client.events <- event
 		case "cancel":
@@ -258,7 +228,6 @@ func runOpenCodeCorpusCase(t *testing.T, root string, entry opencodeCorpusCaseEn
 		}
 	}
 
-	close(fed)
 	events := append(collected, adaptertest.Drain(t, stream, time.Second)...)
 
 	canonical := len(events) > 0 && (events[0].Type == protocol.TypeRunStarted || events[0].Type == protocol.TypeRunFailed || events[0].Type == protocol.TypeRunCancelled)
@@ -297,6 +266,27 @@ func runOpenCodeCorpusCase(t *testing.T, root string, entry opencodeCorpusCaseEn
 	}
 }
 
+func rebindInbox(t *testing.T, data json.RawMessage, admitted native.MessageID) json.RawMessage {
+	t.Helper()
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(data, &fields); err != nil {
+		t.Fatal(err)
+	}
+	if string(fields["inboxID"]) != `"msg_rebind"` {
+		return data
+	}
+	encoded, err := json.Marshal(admitted)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fields["inboxID"] = encoded
+	rebound, err := json.Marshal(fields)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return rebound
+}
+
 func opencodeLoadFrames(t *testing.T, filename string) ([]opencodeCorpusFrame, []native.Event) {
 	t.Helper()
 	data, err := os.ReadFile(filename)
@@ -312,7 +302,7 @@ func opencodeLoadFrames(t *testing.T, filename string) ([]opencodeCorpusFrame, [
 	for index, line := range lines {
 		var frame opencodeCorpusFrame
 		opencodeDecodeStrict(t, line, &frame, fmt.Sprintf("%s frame %d", filename, index+1))
-		if frame.Source != "stream" && frame.Source != "history" {
+		if frame.Source != "stream" {
 			t.Fatalf("frame %d: invalid source %q", index+1, frame.Source)
 		}
 		frames = append(frames, frame)
@@ -327,7 +317,7 @@ func opencodeDecodeFrame(t *testing.T, filename string, index int, frame opencod
 		return native.Event{}
 	}
 	payload := frame.Raw
-	if frame.Source == "stream" {
+	{
 		var wire bytes.Buffer
 		wire.WriteString("event: message\ndata: ")
 		wire.Write(frame.Raw)

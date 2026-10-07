@@ -7,11 +7,11 @@ import (
 	"github.com/lsm/open-agent-protocol/go/internal/fuzzseed"
 )
 
-func FuzzAnEventIsAdmittedOnlyWithAValidIDTypeAndDurablePosition(f *testing.F) {
+func FuzzASessionEventIsAdmittedOnlyWithItsSessionAndTheDurabilityItsTypeDeclares(f *testing.F) {
 	for _, seed := range corpusSeeds(f) {
 		f.Add(seed)
 	}
-	for _, seed := range []string{`{}`, `{"id":"evt_1","type":"session.next.prompted","durable":{"aggregateID":"ses_1","seq":1,"version":1},"data":{}}`} {
+	for _, seed := range []string{`{}`, `{"id":"evt_1","type":"session.execution.started","durable":{"aggregateID":"ses_1","seq":1,"version":1},"data":{"sessionID":"ses_1"}}`, `{"id":"evt_2","type":"session.text.delta","data":{"sessionID":"ses_1","assistantMessageID":"msg_1","ordinal":0,"delta":"x"}}`} {
 		f.Add(seed)
 	}
 	f.Fuzz(func(t *testing.T, raw string) {
@@ -22,10 +22,16 @@ func FuzzAnEventIsAdmittedOnlyWithAValidIDTypeAndDurablePosition(f *testing.F) {
 		if !event.ID.Valid() {
 			t.Fatalf("an admitted event carries the id %q: %q", event.ID, raw)
 		}
-		if !event.Type.Supported() {
-			t.Fatalf("an admitted event carries the unsupported type %q: %q", event.Type, raw)
+		if !event.Type.SessionScoped() {
+			return
 		}
-		if event.Durable == nil || event.Durable.AggregateID == "" || event.Durable.Seq < 0 {
+		if !event.Type.Supported() || !event.SessionID.Valid() {
+			t.Fatalf("an admitted session event carries the type %q and session %q: %q", event.Type, event.SessionID, raw)
+		}
+		if event.Type.Durable() != (event.Durable != nil) {
+			t.Fatalf("an admitted %s carries the durable position %+v: %q", event.Type, event.Durable, raw)
+		}
+		if event.Durable != nil && (event.Durable.AggregateID != string(event.SessionID) || event.Durable.Seq < 0) {
 			t.Fatalf("an admitted event carries the durable position %+v: %q", event.Durable, raw)
 		}
 	})

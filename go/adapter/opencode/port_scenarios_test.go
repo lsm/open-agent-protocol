@@ -29,9 +29,7 @@ type scenarioOp struct {
 }
 
 type scenarioClient struct {
-	Gated            bool   `json:"gated,omitempty"`
 	ActiveError      string `json:"active_error,omitempty"`
-	HistoryError     string `json:"history_error,omitempty"`
 	ForeignAdmission bool   `json:"foreign_admission,omitempty"`
 }
 
@@ -46,18 +44,9 @@ type portScenario struct {
 func runPortScenario(t *testing.T, scenario portScenario) portScenario {
 	t.Helper()
 	client := newFakeClient()
-	client.promoted = true
 	client.foreignAdmission = scenario.Client.ForeignAdmission
 	if scenario.Client.ActiveError != "" {
 		client.activeErr = errors.New(scenario.Client.ActiveError)
-	}
-	if scenario.Client.HistoryError != "" {
-		client.historyErr = errors.New(scenario.Client.HistoryError)
-	}
-	var gate chan struct{}
-	if scenario.Client.Gated {
-		gate = make(chan struct{})
-		client.idleGate = gate
 	}
 	session, _ := openTest(t, client, 64)
 	var admissions []protocol.MessageSubmitResponse
@@ -88,8 +77,6 @@ func runPortScenario(t *testing.T, scenario portScenario) portScenario {
 			if _, err := session.Cancel(context.Background(), admissions[op.Submission].RunID); err != nil {
 				t.Fatalf("%s op %d: %v", scenario.Name, index, err)
 			}
-		case "idle":
-			close(gate)
 		case "fail":
 			client.subscription.fail(errors.New(op.Message))
 		default:

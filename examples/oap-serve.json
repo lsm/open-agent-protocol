@@ -48,7 +48,10 @@
     },
     "opencode": {
       "type": "opencode",
-      "endpoint": "http://127.0.0.1:4096"
+      "endpoint": "http://127.0.0.1:4096",
+      "environment": [
+        "OPENCODE_PASSWORD"
+      ]
     }
   },
   "tool_sources": {
