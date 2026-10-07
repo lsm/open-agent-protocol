@@ -28,7 +28,7 @@ const features = [_]contract.Feature{
     .{ .key = "run.replay", .level = .degraded, .reason = "bounded adapter journal; the native durable cursor is exposed as the transcript cursor" },
     .{ .key = "run.resume", .level = .degraded, .reason = "conversation resume exists natively but is not exercised; OAP resume replays the adapter journal" },
     .{ .key = "run.status", .level = .native, .reason = "session.inbox.delivered starts a run and session.execution.* settles it" },
-    .{ .key = "run.streaming", .level = .degraded, .reason = "text and reasoning are forwarded whole at session.text.ended and session.reasoning.ended; the live deltas are not forwarded" },
+    .{ .key = "run.streaming", .level = .native, .reason = "session.text.delta and session.reasoning.delta are forwarded as they arrive, and a part's ended event adds only the text its deltas did not carry" },
     .{ .key = contract.feature_compaction_policy, .level = .unavailable, .reason = "compaction is the server's config, fixed when its operator starts it; the adapter attaches to a running server" },
     .{ .key = "session.message.delivery.auto", .level = .emulated, .reason = "no native auto; steer when the session is idle, queue behind an open run" },
     .{ .key = "session.message.delivery.queue", .level = .native, .reason = "a prompt with delivery=queue is admitted to the session inbox and starts its run at session.inbox.delivered" },
@@ -1134,7 +1134,7 @@ test "a submission carrying a degraded-feature consent list is admitted, as Go's
     var refusal = contract.Refusal{};
     _ = try probe.open(&refusal);
     const messages = try probe.arena.allocator().dupe(oap_types.Message, &.{.{ .role = .user, .content = .{ .text = "hello" } }});
-    const request = oap_types.MessageSubmitRequest{ .session_id = "s1", .messages = messages, .delivery = .auto, .allow_degraded_features = &.{"run.streaming"} };
+    const request = oap_types.MessageSubmitRequest{ .session_id = "s1", .messages = messages, .delivery = .auto, .allow_degraded_features = &.{"run.cancel"} };
     const admitted = try probe.handle.?.submit(probe.arena.allocator(), &request, "", &refusal);
     try testing.expect(admitted.accepted);
 }

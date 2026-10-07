@@ -123,7 +123,7 @@ func advertisedFeatures() map[string]protocol.FeatureSupport {
 		"session.message.delivery.auto":  {Level: protocol.SupportEmulated, Reason: "no native auto; steer when the session is idle, queue behind an open run"},
 		"session.message.delivery.queue": {Level: protocol.SupportNative, Reason: "a prompt with delivery=queue is admitted to the session inbox and starts its run at session.inbox.delivered"},
 		"session.message.delivery.steer": {Level: protocol.SupportUnavailable, Reason: "an explicit steer request is rejected as outside the v0.1 subset; the server's default delivery is exposed through an auto request"},
-		"run.streaming":                  {Level: protocol.SupportDegraded, Reason: "text and reasoning are forwarded whole at session.text.ended and session.reasoning.ended; the live deltas are not forwarded"},
+		"run.streaming":                  {Level: protocol.SupportNative, Reason: "session.text.delta and session.reasoning.delta are forwarded as they arrive, and a part's ended event adds only the text its deltas did not carry"},
 		"run.status":                     {Level: protocol.SupportNative, Reason: "session.inbox.delivered starts a run and session.execution.* settles it"},
 		"run.cancel":                     {Level: protocol.SupportDegraded, Reason: "interrupt is intent with an idle no-op; a running run settles at session.execution.interrupted and a queued one at session.inbox.cancelled"},
 		"run.resume":                     {Level: protocol.SupportDegraded, Reason: "conversation resume exists natively but is not exercised; OAP resume replays the adapter journal"},

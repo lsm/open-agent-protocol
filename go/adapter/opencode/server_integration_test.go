@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -151,7 +152,7 @@ func TestOpenCodeServerTakesALiveVariant(t *testing.T) {
 	}
 }
 
-func fakeProvider(t *testing.T, reply string) string {
+func fakeProvider(t *testing.T, pieces ...string) string {
 	t.Helper()
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if !strings.HasSuffix(r.URL.Path, "/chat/completions") {
@@ -166,7 +167,13 @@ func fakeProvider(t *testing.T, reply string) string {
 			}
 			return `data: {"id":"c1","object":"chat.completion.chunk","created":1,"model":"model","choices":[{"index":0,"delta":` + delta + `,"finish_reason":` + finishField + `}]}` + "\n\n"
 		}
-		_, _ = io.WriteString(w, chunk(`{"role":"assistant","content":`+strconv.Quote(reply)+`}`, ""))
+		for _, piece := range pieces {
+			_, _ = io.WriteString(w, chunk(`{"role":"assistant","content":`+strconv.Quote(piece)+`}`, ""))
+			if flusher, ok := w.(http.Flusher); ok {
+				flusher.Flush()
+			}
+			time.Sleep(400 * time.Millisecond)
+		}
 		_, _ = io.WriteString(w, chunk(`{}`, "stop"))
 		_, _ = io.WriteString(w, `data: {"id":"c1","object":"chat.completion.chunk","created":1,"model":"model","choices":[],"usage":{"prompt_tokens":3,"completion_tokens":2,"total_tokens":5}}`+"\n\n")
 		_, _ = io.WriteString(w, "data: [DONE]\n\n")
@@ -182,7 +189,7 @@ func TestOpenCodeServerRunsATurnToCompletionAgainstALocalProvider(t *testing.T) 
 	binary := adaptertest.VerifiedBinary(t, "OAP_OPENCODE_BIN", "OAP_OPENCODE_SHA256", "an opencode "+PinnedTag+" binary")
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
-	config := `{"provider":{"fixture":{"npm":"@ai-sdk/openai-compatible","name":"fixture","options":{"baseURL":` + strconv.Quote(fakeProvider(t, "pong")) + `,"apiKey":"fixture"},"models":{"model":{"name":"model"}}}},"model":"fixture/model","small_model":"fixture/model"}`
+	config := `{"provider":{"fixture":{"npm":"@ai-sdk/openai-compatible","name":"fixture","options":{"baseURL":` + strconv.Quote(fakeProvider(t, "po", "ng")) + `,"apiKey":"fixture"},"models":{"model":{"name":"model"}}}},"model":"fixture/model","small_model":"fixture/model"}`
 	endpoint := startPinnedServer(t, ctx, binary, []string{"OPENCODE_CONFIG_CONTENT=" + config})
 	adapter, err := New(integrationConfig(endpoint, &native.ModelRef{ID: "model", ProviderID: "fixture"}))
 	if err != nil {
@@ -210,6 +217,16 @@ func TestOpenCodeServerRunsATurnToCompletionAgainstALocalProvider(t *testing.T) 
 	parts, ok := completed.FinalResponse.Content.Parts()
 	if !ok || len(parts) != 1 || parts[0].Type != protocol.ContentText || parts[0].Text != "pong" {
 		t.Fatalf("final response = %s, want the provider's one text part", completed.FinalResponse.Content)
+	}
+	var streamed []string
+	for _, event := range events {
+		var delta protocol.ContentDeltaPayload
+		if event.Type == protocol.TypeContentDelta && event.DecodePayload(&delta) == nil {
+			streamed = append(streamed, delta.Part.Text)
+		}
+	}
+	if !slices.Equal(streamed, []string{"po", "ng"}) {
+		t.Fatalf("streamed %q, want the provider's two chunks as they arrived", streamed)
 	}
 	nativeID := opened.(interface{ NativeSessionID() string }).NativeSessionID()
 	read, err := adapter.NativeRead(ctx, base.NativeReadRequest{NativeID: nativeID})

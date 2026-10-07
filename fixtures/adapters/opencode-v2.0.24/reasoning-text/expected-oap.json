@@ -15,7 +15,7 @@
     "timestamp_ms": 4,
     "session_id": "session",
     "run_id": "run-1",
-    "capability_revision": "opencode-v2.0.24-oap-v1"
+    "capability_revision": "opencode-v2.0.24-oap-v2"
   },
   {
     "protocol": "open-agent-protocol",
@@ -36,7 +36,7 @@
     "timestamp_ms": 5,
     "session_id": "session",
     "run_id": "run-1",
-    "capability_revision": "opencode-v2.0.24-oap-v1"
+    "capability_revision": "opencode-v2.0.24-oap-v2"
   },
   {
     "protocol": "open-agent-protocol",
@@ -57,7 +57,7 @@
     "timestamp_ms": 6,
     "session_id": "session",
     "run_id": "run-1",
-    "capability_revision": "opencode-v2.0.24-oap-v1"
+    "capability_revision": "opencode-v2.0.24-oap-v2"
   },
   {
     "protocol": "open-agent-protocol",
@@ -93,7 +93,7 @@
     "timestamp_ms": 7,
     "session_id": "session",
     "run_id": "run-1",
-    "capability_revision": "opencode-v2.0.24-oap-v1",
+    "capability_revision": "opencode-v2.0.24-oap-v2",
     "extensions": {
       "io.github.anomalyco.opencode.cost": {
         "total_cost_usd": 0

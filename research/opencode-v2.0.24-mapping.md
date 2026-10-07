@@ -158,7 +158,7 @@ So one OAP run is one admitted input, delimited by deliveries:
 | `session.execution.interrupted` otherwise | `run.failed` naming the reason |
 | `session.inbox.cancelled` (our `inboxID`) before delivery | the queued run settles `cancelled` |
 | `session.step.started` / `step.ended` / `step.failed` | step bookkeeping; `finish` is the stop reason |
-| `session.text.started` / `delta` / `ended` | assistant text; `ended.text` is authoritative |
+| `session.text.started` / `delta` / `ended` | assistant text: each delta streams, and `ended.text` is authoritative for the final message |
 | `session.reasoning.*` | reasoning, same shape as text |
 | `session.tool.input.*`, `tool.called`, `tool.success`, `tool.failed` | the tool lifecycle |
 | `session.usage.updated` | ephemeral session totals; the step's `tokens` are the run's usage |
@@ -193,7 +193,7 @@ observed-only.
 
 ## What the adapters do
 
-Both trees, under capability revision `opencode-v2.0.24-oap-v1`:
+Both trees, under capability revision `opencode-v2.0.24-oap-v2`:
 
 - **Auth.** `opencode serve` always requires basic auth: without
   `OPENCODE_PASSWORD` it generates a password and prints it. The registry entry
@@ -223,10 +223,16 @@ Both trees, under capability revision `opencode-v2.0.24-oap-v1`:
   `session.inbox.cancelled`; a delivered one is interrupted and settles at
   `session.execution.interrupted`. If the delivery wins the race, the run is
   interrupted as soon as it starts.
-- **Streaming stays `degraded`**, not the `native` the event stream would
-  allow: text and reasoning are still forwarded whole at `text.ended` and
-  `reasoning.ended`, and the deltas are dropped. Forwarding them is a later
-  unit.
+- **Streaming is `native`** (revision `oap-v2`; `oap-v1` forwarded each part
+  whole at its `ended` event). Each `text.delta` and `reasoning.delta` is a
+  `content.delta` as it arrives, keyed by `assistantMessageID`, `ordinal` and
+  kind. The part's `ended` event goes into the final message whole, and adds
+  a `content.delta` only for the text after what the deltas carried: all of
+  it when none arrived (they are ephemeral, so a reconnect loses them), and
+  none when the deltas are not a prefix of `ended.text`. That last case is a
+  mismatch recorded, not compensated: the streamed text and the final message
+  then differ, and the final message is the record. An empty delta, or an
+  empty remainder, is not forwarded.
 - **Reopen** attaches to the session record and follows it from the attach on;
   with no replay there is no stored history to fence, so the transcript
   cursor starts empty and advances with the events seen.
