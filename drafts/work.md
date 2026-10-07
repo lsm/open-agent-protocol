@@ -33,8 +33,8 @@ their transcripts; an adapter that could not be probed is named in
 | Key | Built from | Unadvertised when |
 | --- | --- | --- |
 | `work.list` | the hub's sessions, the bindings (0046), and each adapter's native list (0047 decision 2) | never; an adapter with no native list contributes only its sessions |
-| `work.start` | open with a message (D11, closed) | the adapter refuses an open's message |
-| `work.send` | submit, `delivery: auto` | never; but on a busy session it queues only where the adapter advertises `session.message.delivery.queue` (0007) |
+| `work.start` | open with a message (D11, closed) | the adapter does not declare `session.message.submit`, or declares it `unavailable` |
+| `work.send` | submit, `delivery: auto` | the adapter does not declare `session.message.submit`, or declares it `unavailable`; on a busy session it queues only where the adapter advertises `session.message.delivery.queue` (0007) |
 | `work.status` | session state, plus the latest run's terminal envelope | never |
 | `work.stop` | `run.cancel` | the adapter does not advertise `run.cancel` (DeepSeek) |
 | `work.read` | the harness's own transcript where the adapter reads one, else the turns `serve` records as messages are submitted and runs end | never |

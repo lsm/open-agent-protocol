@@ -1006,10 +1006,14 @@ pub const Hub = struct {
         var reached = std.ArrayList(WorkReach).empty;
         for (self.adapters.items) |*registered| {
             var refusal = contract.Refusal{};
-            const descriptor = registered.adapter.probe(&refusal) catch |err| switch (err) {
+            var descriptor = registered.adapter.probe(&refusal) catch |err| switch (err) {
                 error.OutOfMemory => return error.OutOfMemory,
                 else => null,
             };
+            if (descriptor != null and descriptor.?.capability_revision.len == 0) {
+                descriptor = null;
+                refusal.message = "adapter descriptor carries no capability revision";
+            }
             try reached.append(arena, .{
                 .name = registered.name,
                 .directory = registered.directory,

@@ -3360,6 +3360,12 @@ const undeclared_descriptor = contract.Descriptor{
     .features = &.{.{ .key = contract.feature_submit, .level = .native }},
 };
 
+fn unboundProbe(ptr: *anyopaque, refusal: *contract.Refusal) contract.Failure!contract.Descriptor {
+    _ = ptr;
+    _ = refusal;
+    return .{ .endpoint = .{ .id = "unbound", .name = "Unbound", .version = "0.1", .adapter = "script" }, .capability_revision = "", .features = &.{} };
+}
+
 fn undeclaredProbe(ptr: *anyopaque, refusal: *contract.Refusal) contract.Failure!contract.Descriptor {
     _ = ptr;
     _ = refusal;
@@ -3373,12 +3379,14 @@ fn uncancellableOpen(ptr: *anyopaque, arena: std.mem.Allocator, request: contrac
     return refusal.fail(error.BackendFailed, "not opened in this test");
 }
 
-test "work.capabilities names each adapter's verbs, leaving out work.stop where run.cancel is unavailable or undeclared, and whether it lists and reads its own sessions" {
+test "work.capabilities names each adapter's verbs, leaving out work.stop where run.cancel is unavailable or undeclared, whether it lists and reads its own sessions, and an adapter whose descriptor names no revision as unavailable" {
     const harness = try Harness.init(testing.allocator, .{}, .{});
     defer harness.deinit();
     var uncancellable_state: u8 = 0;
     try harness.hub.register("uncancellable", .{ .ptr = &uncancellable_state, .vtable = &.{ .probe = uncancellableProbe, .open = uncancellableOpen } });
     try harness.hub.register("undeclared", .{ .ptr = &uncancellable_state, .vtable = &.{ .probe = undeclaredProbe, .open = uncancellableOpen } });
+    var unbound_state: u8 = 0;
+    try harness.hub.adapters.append(testing.allocator, .{ .name = try testing.allocator.dupe(u8, "unbound"), .adapter = .{ .ptr = &unbound_state, .vtable = &.{ .probe = unboundProbe, .open = uncancellableOpen } } });
     try harness.send("{\"id\":1,\"op\":\"work.capabilities\"}");
     const adapters = (try harness.lastValue()).object.get("result").?.object.get("adapters").?.array.items;
     try testing.expectEqual(@as(usize, 4), adapters.len);
@@ -3398,6 +3406,10 @@ test "work.capabilities names each adapter's verbs, leaving out work.stop where 
     const undeclared = adapters[2].object.get("verbs").?.array.items;
     try testing.expectEqual(@as(usize, 5), undeclared.len);
     for (undeclared) |verb| try testing.expect(!std.mem.eql(u8, verb.string, "work.stop"));
+    const missing = (try harness.lastValue()).object.get("result").?.object.get("unavailable").?.array.items;
+    try testing.expectEqual(@as(usize, 1), missing.len);
+    try testing.expectEqualStrings("unbound", missing[0].object.get("adapter").?.string);
+    try testing.expectEqualStrings("adapter descriptor carries no capability revision", missing[0].object.get("message").?.string);
     try harness.send("{\"id\":2,\"op\":\"work.capabilities\",\"adapter\":\"reference\"}");
     try testing.expectEqualStrings("invalid_request", try harness.code());
 }
