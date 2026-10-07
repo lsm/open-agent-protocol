@@ -18,6 +18,7 @@ type askClient struct {
 	asked    []string
 	fails    error
 	failOnce error
+	cancel   context.CancelFunc
 	closes   int
 	done     chan struct{}
 	inbound  chan rpc.InboundMessage
@@ -31,6 +32,9 @@ func (c *askClient) Call(_ context.Context, method string, params, result any) e
 	}
 	if failure := c.failOnce; failure != nil {
 		c.failOnce = nil
+		if c.cancel != nil {
+			c.cancel()
+		}
 		return failure
 	}
 	queue := c.answers[method]
@@ -209,4 +213,40 @@ func TestTheKeptAppServerHasItsNotificationsDrainedSoItsQueueNeverFills(t *testi
 		t.Fatalf("%d notifications were left queued", len(inbound))
 	}
 	close(client.done)
+}
+
+func TestACallerThatGivesUpLeavesTheKeptAppServerRunning(t *testing.T) {
+	kept := &askClient{answers: listAnswers(2), done: make(chan struct{})}
+	factory := &startingFactory{clients: []*askClient{kept}}
+	implementation, err := New(Config{WorkingDirectory: "/work", Factory: factory})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := implementation.NativeList(context.Background(), adapter.NativeListRequest{Limit: 1}); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	kept.cancel, kept.failOnce = cancel, context.Canceled
+	if _, err := implementation.NativeList(ctx, adapter.NativeListRequest{Limit: 1}); err == nil {
+		t.Fatal("a cancelled list answered")
+	}
+	if factory.starts != 1 || kept.closes != 0 {
+		t.Fatalf("a cancelled caller restarted the app-server: %d starts, %d closes", factory.starts, kept.closes)
+	}
+	if _, err := implementation.NativeList(context.Background(), adapter.NativeListRequest{Limit: 1}); err != nil || factory.starts != 1 {
+		t.Fatalf("the next list after a cancelled one: %v, %d starts", err, factory.starts)
+	}
+	retryCtx, retryCancel := context.WithCancel(context.Background())
+	fresh := &askClient{answers: listAnswers(1), done: make(chan struct{}), failOnce: context.Canceled, cancel: retryCancel}
+	factory.clients = append(factory.clients, fresh)
+	kept.failOnce = errors.New("pipe closed")
+	if _, err := implementation.NativeList(retryCtx, adapter.NativeListRequest{Limit: 1}); err == nil {
+		t.Fatal("a list cancelled during its retry answered")
+	}
+	if factory.starts != 2 || fresh.closes != 0 {
+		t.Fatalf("a caller that gave up during the retry closed the fresh app-server: %d starts, %d closes", factory.starts, fresh.closes)
+	}
+	if _, err := implementation.NativeList(context.Background(), adapter.NativeListRequest{Limit: 1}); err != nil || factory.starts != 2 {
+		t.Fatalf("the list after a cancelled retry: %v, %d starts", err, factory.starts)
+	}
 }

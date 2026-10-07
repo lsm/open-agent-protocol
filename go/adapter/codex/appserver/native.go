@@ -58,7 +58,7 @@ func (implementation *Adapter) ask(ctx context.Context, method string, params an
 		server.client = client
 	}
 	result, err := ask(ctx, server.client, method, params)
-	if err == nil || !broken(server.client, err) {
+	if err == nil || ctx.Err() != nil || !broken(server.client, err) {
 		return result, err
 	}
 	_ = server.client.Close()
@@ -72,7 +72,7 @@ func (implementation *Adapter) ask(ctx context.Context, method string, params an
 	}
 	server.client = client
 	result, err = ask(ctx, client, method, params)
-	if err != nil && broken(client, err) {
+	if err != nil && ctx.Err() == nil && broken(client, err) {
 		_ = client.Close()
 		server.client = nil
 	}
