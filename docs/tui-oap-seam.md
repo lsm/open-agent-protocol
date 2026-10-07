@@ -125,7 +125,7 @@ without going through the ops table.
 `oapx --tui` and again on `oapx tui`, then compares the two runs' saved
 session records field by field, JSON-valued fields parsed, leaving out only the
 record types `UNCOMPARED_EVENT_TYPES` and the fields `UNCOMPARED_EVENT_FIELDS`
-name, each with a reason, and the timings `UNCOMPARED_RESULT_FIELDS` strips from
+name, each with a reason, and the timings and byte counts `UNCOMPARED_RESULT_FIELDS` strips from
 a tool's result; `UNORDERED_EVENT_TYPES` are compared as a set. `OAP_KNOWN_GAPS` lists the
 scenarios `oapx tui` fails today and `KNOWN_DIVERGENCES` the ones whose
 records differ; an entry that stops failing fails the sweep, so both lists

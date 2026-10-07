@@ -14,6 +14,8 @@
 # encoding `text:...|tool:<name>[#<args-json>]|hold|error:...` (see
 # FixtureRuntime in zig/src/tui/app.zig); plain values stay a single canned
 # reply. A literal `|` or `\` inside a step payload is escaped as `\|` / `\\`.
+# A tool step's `$WORKSPACE_ROOT` becomes the workspace root the agent's system
+# prompt names when the step is streamed, as a model would read it there.
 #
 # The provider-* scenarios unset OAPX_TUI_FIXTURE and register
 # scripts/tui-fake-provider.py as a custom provider in $HOME/.oapx/providers.json,
@@ -1505,7 +1507,7 @@ def scenario_auto_worktree(args):
         git_env = dict(os.environ, HOME=home, GIT_AUTHOR_NAME="pty", GIT_AUTHOR_EMAIL="pty@example.invalid", GIT_COMMITTER_NAME="pty", GIT_COMMITTER_EMAIL="pty@example.invalid")
         for command in (["git", "init", "-q", "-b", "main"], ["git", "commit", "-q", "--allow-empty", "-m", "start"]):
             subprocess.run(command, cwd=repo, env=git_env, check=True, capture_output=True)
-        run = SweepRun(args, "auto-worktree", 'tool:Shell#{"description":"print the working directory","command":"pwd"}|text:worktree-turn-done', home=home, cwd=repo)
+        run = SweepRun(args, "auto-worktree", 'tool:Shell#{"description":"print the working directory","workspace_root":"$WORKSPACE_ROOT","command":"pwd"}|text:worktree-turn-done', home=home, cwd=repo)
         try:
             run.session.wait_for(WELCOME_MARKER, args.startup_timeout, "welcome banner")
             run.settle()
@@ -1515,11 +1517,14 @@ def scenario_auto_worktree(args):
             run.session.wait_for(b"worktree-turn-done", 15.0, "the turn after the worktree")
             run.settle(0.5)
             run.frame("worktree-turn")
-            worktrees = os.path.join(home, ".oapx", "worktrees")
-            if b"/.oapx/worktrees/" not in run.session.screen_text():
-                raise ScenarioError("auto-worktree: the shell did not run inside the session's worktree under " + worktrees)
-            run.note("with automatic worktrees on, the first turn creates a Git worktree for the session and the agent's shell runs inside it")
             run.quit()
+            worktrees = os.path.join(home, ".oapx", "worktrees") + "/"
+            results = [event for event in session_events(home) if event.get("type") == "message_end" and event.get("role") == "tool_result"]
+            if not results or results[-1].get("is_error"):
+                raise ScenarioError(f"auto-worktree: the shell call left no successful result in the session: {results!r}")
+            if worktrees not in results[-1].get("text", ""):
+                raise ScenarioError(f"auto-worktree: the shell's pwd printed {results[-1].get('text', '')!r}, not a directory under {worktrees}")
+            run.note("with automatic worktrees on, the first turn creates a Git worktree for the session, and the shell the agent runs with the root its prompt names prints a directory inside it, as the saved tool result records")
         except ScenarioError as err:
             run.error = str(err)
         finally:
@@ -1772,7 +1777,12 @@ UNCOMPARED_EVENT_FIELDS = {
 JSON_EVENT_FIELDS = ("result_json", "args_json", "tool_calls_json", "content_json", "details_json", "artifacts_json")
 
 
-UNCOMPARED_RESULT_FIELDS = ("duration_ms",)
+UNCOMPARED_RESULT_FIELDS = {
+    "duration_ms": "a wall-clock measure",
+    "stdout_bytes": "output that names a per-run path is as long as that path; the output text itself is compared in the tool's result message",
+    "stderr_bytes": "as stdout_bytes",
+    "raw_bytes": "as stdout_bytes",
+}
 
 
 STABILIZED_PATHS = (
