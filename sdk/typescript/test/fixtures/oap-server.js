@@ -160,7 +160,7 @@ createInterface({ input: process.stdin }).on("line", (line) => {
         break;
       }
       if (request.payload.model_id?.endsWith("@settings")) {
-        const said = `reasoning=${opened.reasoning_level} output=${opened.metadata?.oapx?.output} participant=${participant}`;
+        const said = `reasoning=${opened.reasoning_level} output=${opened.metadata?.oapx?.output} user_input=${opened.metadata?.oapx?.user_input} participant=${participant}`;
         event(agent, "run.completed", { session_id: request.payload.session_id, run_id: "run-1", final_response: { role: "assistant", content: said }, stop_reason: "end_turn" }, { session_id: request.payload.session_id, run_id: "run-1", sequence: 2 });
         break;
       }

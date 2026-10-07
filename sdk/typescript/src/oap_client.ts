@@ -659,12 +659,15 @@ class OapAgentApi {
 
   private async *streamOnce(request: AgentRunRequest): AsyncIterable<AgentStreamEvent> {
     if (request.options?.temperature !== undefined) unsupported("temperature on an agent run");
+    if (request.options?.reasoning_effort === "minimal") unsupported("minimal reasoning, which the agent loop runs as low");
+    const maxTokens = request.options?.max_tokens;
+    if (maxTokens !== undefined && (!Number.isInteger(maxTokens) || maxTokens < 1 || maxTokens > 4_294_967_295)) throw new MakaiProtocolError("max_tokens must be an integer between 1 and 4294967295", "invalid_request");
     const sessionId = request.options?.session_id ?? ulid();
     const opened = await this.transport.request(OAP_AGENT_PROFILE, "session.open.request", {
       session_id: sessionId,
       ...(request.tools?.length ? { tools: request.tools.map((tool) => ({ name: tool.name, description: tool.description, input_schema: parseInputSchema(tool.parameters_schema_json), execution_owner: SDK_PARTICIPANT })) } : {}),
       ...(request.options?.reasoning_effort ? { reasoning_level: request.options.reasoning_effort } : {}),
-      ...(request.options?.max_tokens !== undefined ? { metadata: { oapx: { output: request.options.max_tokens } } } : {}),
+      metadata: { oapx: { user_input: false, ...(maxTokens !== undefined ? { output: maxTokens } : {}) } },
     }, { session_id: sessionId });
     if (opened.type !== "session.open.response") throw new MakaiProtocolError(`unexpected ${opened.type}`, "malformed_response");
     const queue = this.transport.subscribe(OAP_AGENT_PROFILE, "session", sessionId);
@@ -687,7 +690,8 @@ class OapAgentApi {
         if (frame.type === "run.started") { yield { type: "agent_start", session_id: sessionId }; continue; }
         if (frame.type === "action.call.requested") {
           if (str(data.execution_owner) === SDK_PARTICIPANT) {
-            const answer = await resolveProvidedCall(data, request.tools ?? [], sessionId, runId ?? "");
+            const answer = await raceWithAbort(resolveProvidedCall(data, request.tools ?? [], sessionId, runId ?? ""), request.options?.signal, "agent run aborted")
+              .catch((error: unknown) => { throw isAbortError(error) ? abortError() : error; });
             this.transport.send(OAP_AGENT_PROFILE, "action.call.resolve.request", answer, { session_id: sessionId, run_id: runId ?? "" });
           }
           continue;
