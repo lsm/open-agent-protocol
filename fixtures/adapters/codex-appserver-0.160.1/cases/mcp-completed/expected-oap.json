@@ -16,7 +16,7 @@
     "timestamp_ms": 5,
     "session_id": "session-1",
     "run_id": "run-02",
-    "capability_revision": "codex-appserver-0.160.0-oap-v2"
+    "capability_revision": "codex-appserver-0.160.1-oap-v2"
   },
   {
     "protocol": "open-agent-protocol",
@@ -30,10 +30,9 @@
       "tool_call_id": "tool-call-06",
       "requested_by": "codex.app-server",
       "execution_owner": "codex.app-server",
-      "name": "codex.command",
+      "name": "mcp.fixture.ping",
       "arguments_json": {
-        "command": "true",
-        "cwd": ""
+        "value": "x"
       }
     },
     "sequence": 2,
@@ -41,7 +40,7 @@
     "session_id": "session-1",
     "run_id": "run-02",
     "tool_call_id": "tool-call-06",
-    "capability_revision": "codex-appserver-0.160.0-oap-v2"
+    "capability_revision": "codex-appserver-0.160.1-oap-v2"
   },
   {
     "protocol": "open-agent-protocol",
@@ -55,10 +54,9 @@
       "tool_call_id": "tool-call-06",
       "requested_by": "codex.app-server",
       "execution_owner": "codex.app-server",
-      "name": "codex.command",
+      "name": "mcp.fixture.ping",
       "arguments_json": {
-        "command": "true",
-        "cwd": ""
+        "value": "x"
       }
     },
     "sequence": 3,
@@ -66,40 +64,23 @@
     "session_id": "session-1",
     "run_id": "run-02",
     "tool_call_id": "tool-call-06",
-    "capability_revision": "codex-appserver-0.160.0-oap-v2"
+    "capability_revision": "codex-appserver-0.160.1-oap-v2"
   },
   {
     "protocol": "open-agent-protocol",
     "version": "0.1",
     "profile": "open-agent-protocol.agent-control-core",
-    "type": "action.permission.requested",
-    "id": "event-10",
+    "type": "action.call.completed",
+    "id": "event-09",
     "payload": {
-      "interaction_id": "interaction-09",
-      "requested_by": "codex.app-server",
-      "responded_by": "user",
       "session_id": "session-1",
       "run_id": "run-02",
       "tool_call_id": "tool-call-06",
-      "title": "Allow Codex action",
-      "description": "needs approval",
-      "choices": [
-        {
-          "id": "accept",
-          "label": "Approve once"
-        },
-        {
-          "id": "decline",
-          "label": "Deny"
-        },
-        {
-          "id": "cancel",
-          "label": "Deny and cancel run"
-        }
-      ],
-      "arguments_json": {
-        "command": "true",
-        "cwd": ""
+      "requested_by": "codex.app-server",
+      "execution_owner": "codex.app-server",
+      "name": "mcp.fixture.ping",
+      "result": {
+        "pong": true
       }
     },
     "sequence": 4,
@@ -107,62 +88,14 @@
     "session_id": "session-1",
     "run_id": "run-02",
     "tool_call_id": "tool-call-06",
-    "capability_revision": "codex-appserver-0.160.0-oap-v2"
-  },
-  {
-    "protocol": "open-agent-protocol",
-    "version": "0.1",
-    "profile": "open-agent-protocol.agent-control-core",
-    "type": "action.permission.resolved",
-    "id": "event-11",
-    "payload": {
-      "interaction_id": "interaction-09",
-      "requested_by": "codex.app-server",
-      "responded_by": "user",
-      "session_id": "session-1",
-      "run_id": "run-02",
-      "tool_call_id": "tool-call-06",
-      "outcome": "resolved",
-      "choice_id": "accept",
-      "granted": true
-    },
-    "sequence": 5,
-    "timestamp_ms": 9,
-    "session_id": "session-1",
-    "run_id": "run-02",
-    "tool_call_id": "tool-call-06",
-    "capability_revision": "codex-appserver-0.160.0-oap-v2"
-  },
-  {
-    "protocol": "open-agent-protocol",
-    "version": "0.1",
-    "profile": "open-agent-protocol.agent-control-core",
-    "type": "action.call.completed",
-    "id": "event-12",
-    "payload": {
-      "session_id": "session-1",
-      "run_id": "run-02",
-      "tool_call_id": "tool-call-06",
-      "requested_by": "codex.app-server",
-      "execution_owner": "codex.app-server",
-      "name": "codex.command",
-      "result": {
-        "output": "ok"
-      }
-    },
-    "sequence": 6,
-    "timestamp_ms": 10,
-    "session_id": "session-1",
-    "run_id": "run-02",
-    "tool_call_id": "tool-call-06",
-    "capability_revision": "codex-appserver-0.160.0-oap-v2"
+    "capability_revision": "codex-appserver-0.160.1-oap-v2"
   },
   {
     "protocol": "open-agent-protocol",
     "version": "0.1",
     "profile": "open-agent-protocol.agent-control-core",
     "type": "run.completed",
-    "id": "event-13",
+    "id": "event-10",
     "payload": {
       "session_id": "session-1",
       "run_id": "run-02",
@@ -173,10 +106,10 @@
       },
       "stop_reason": "end_turn"
     },
-    "sequence": 7,
-    "timestamp_ms": 11,
+    "sequence": 5,
+    "timestamp_ms": 9,
     "session_id": "session-1",
     "run_id": "run-02",
-    "capability_revision": "codex-appserver-0.160.0-oap-v2"
+    "capability_revision": "codex-appserver-0.160.1-oap-v2"
   }
 ]

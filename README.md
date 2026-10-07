@@ -52,7 +52,7 @@ represented by this `oapx` OAP endpoint, so SDKs refuse them explicitly on
 the default path; the old Makai wire is available only by explicit opt-in.
 
 `oapx serve agent --backend claude` serves a Claude Code child (pinned 2.1.288),
-`--backend codex` a Codex app-server child (pinned `rust-v0.160.0`), `--backend pi` a
+`--backend codex` a Codex app-server child (pinned `rust-v0.160.1`), `--backend pi` a
 Pi RPC child (pinned `v1.0.1`), an `acp`
 entry an ACP v1 agent (pinned `v1.10.2`), a `hermes` entry a Hermes gateway (pinned `v2026.9.24`), a `deepseek` entry a DeepSeek harness (pinned `dsh-v0.1.7-rc.2`), and an `opencode` entry an OpenCode server (pinned `v1.18.34`), behind the same stdio door instead of the built-in loop, following
 [the endpoint binding](drafts/endpoint-stdio.md). Without `--config` it runs
@@ -92,7 +92,7 @@ feeds both trees the same traffic and requires identical output. What that job
 is the last check on, and what the corpora cover instead, is written down in
 [docs/parity-job.md](docs/parity-job.md). What each cannot do through this path
 is recorded in its ledger: [claude](research/claude-code-agent-sdk-2.1.288-mapping.md),
-[codex](research/codex-app-server-0.160.0-mapping.md),
+[codex](research/codex-app-server-0.160.1-mapping.md),
 [acp](research/acp-v1.10.2-mapping.md). Without `--config`, codex runs `codex`
 from `PATH` with only `HOME` and `PATH`; an ACP agent has no default and needs
 a `--config` entry naming its `executable`.
@@ -799,7 +799,7 @@ Research:
 
 - [Harness interoperability study](research/harness-interoperability.md)
 - [P0 protocol gaps from harness interoperability](research/p0-protocol-gaps.md)
-- [Pinned Codex app-server mapping](research/codex-app-server-0.160.0-mapping.md)
+- [Pinned Codex app-server mapping](research/codex-app-server-0.160.1-mapping.md)
 - [Pinned OpenCode server mapping](research/opencode-v1.18.34-mapping.md), over the [v1.18.29 base mapping](research/opencode-v1.18.29-mapping.md)
 - [Pinned ACP v1 and Devin Desktop mapping](research/acp-v1.10.2-mapping.md), over the [v1.7.0 base mapping](research/acp-v1.7.0-mapping.md)
 - [Pinned Pi coding-agent mapping](research/pi-v1.0.1-mapping.md), over the [v0.87.1](research/pi-v0.87.1-mapping.md) and [v0.85.1 base](research/pi-v0.85.1-mapping.md) mappings

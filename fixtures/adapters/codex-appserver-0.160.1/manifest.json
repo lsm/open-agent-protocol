@@ -1,7 +1,7 @@
 {
   "version": 1,
   "adapter": "codex-appserver-stdio",
-  "codex_commit": "a956835d020762cb2b570053af06f643a11c0ecc",
+  "codex_commit": "d27764b82f7118f674371e6d6e76271d9d606edb",
   "schema_tree_sha256": "14e6b8ee86b3b1953702bd1ba2bca20594fa751669cc390a779817e589e699d2",
   "cases": [
     {"id":"completed-text","path":"cases/completed-text","ledger_fixtures":["completed-text"]},
