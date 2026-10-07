@@ -32,6 +32,10 @@ pub const catalog_loader_rows = [_][]const u8{
     "volcengine-coding-plan",
     "openai",
     "kimi",
+    "xiaomi-token-plan-cn",
+    "xiaomi-token-plan-sgp",
+    "xiaomi-token-plan-ams",
+    "xiaomi",
 };
 
 pub fn acceptsOverride(id: []const u8) bool {

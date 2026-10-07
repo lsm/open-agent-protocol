@@ -61,6 +61,7 @@
         }
       ],
       "models_endpoint": "/v1/models",
+      "models_dev": "anthropic",
       "oauth_origin": {
         "exact": [
           "https://api.anthropic.com"
@@ -397,6 +398,7 @@
         }
       ],
       "models_endpoint": "/models",
+      "models_dev": "xiaomi-token-plan-cn",
       "docs": "https://platform.xiaomimimo.com/#/docs"
     },
     {
@@ -422,6 +424,7 @@
         }
       ],
       "models_endpoint": "/models",
+      "models_dev": "xiaomi-token-plan-sgp",
       "docs": "https://platform.xiaomimimo.com/#/docs"
     },
     {
@@ -447,6 +450,7 @@
         }
       ],
       "models_endpoint": "/models",
+      "models_dev": "xiaomi-token-plan-ams",
       "docs": "https://platform.xiaomimimo.com/#/docs"
     },
     {
@@ -498,6 +502,7 @@
         }
       ],
       "models_endpoint": "/models",
+      "models_dev": "xiaomi",
       "docs": "https://platform.xiaomimimo.com/#/docs"
     },
     {

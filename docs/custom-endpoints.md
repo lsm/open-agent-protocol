@@ -341,7 +341,9 @@ values discovery does not carry are the same defaults a custom provider starts
 from, 128000 and 8192, until a wire reports better ones.
 
 A row whose listing names models without their limits can name a `models_dev`
-key, as every catalog-loaded row whose listing omits them does. A discovered model with no context window, output
+key, as every catalog-loaded row whose listing omits them does. Anthropic's
+models take the same figures when its listing gives none, before the fixed 200000
+window. A discovered model with no context window, output
 limit, reasoning flag or image input of its own then takes the figure
 [models.dev](https://models.dev) publishes for the same model id under that key,
 the window being its input limit when it gives one, since its context counts the

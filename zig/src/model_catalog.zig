@@ -961,7 +961,7 @@ fn shapeModelBySpec(allocator: std.mem.Allocator, model: *ai_types.Model, spec: 
 
 fn vendorFallbackModels(allocator: std.mem.Allocator, id: []const u8, specs: []const custom_providers.ModelSpec) ![]ai_types.Model {
     if (specs.len == 0) {
-        if (std.mem.eql(u8, id, anthropic_provider_id)) return anthropicStaticModels(allocator);
+        if (std.mem.eql(u8, id, anthropic_provider_id)) return anthropicStaticModels(allocator, null);
         return emptyModels(allocator);
     }
     var built = std.ArrayList(ai_types.Model).empty;
@@ -971,7 +971,7 @@ fn vendorFallbackModels(allocator: std.mem.Allocator, id: []const u8, specs: []c
     }
     for (specs) |spec| {
         var model = if (std.mem.eql(u8, id, anthropic_provider_id))
-            try anthropicModel(allocator, spec.id, spec.name)
+            try anthropicModel(allocator, spec.id, spec.name, .{})
         else blk: {
             var empty: std.json.ObjectMap = .empty;
             break :blk try codexModelFromObject(allocator, &empty, spec.id, catalog_context_window, catalog_max_output_tokens, .{});
@@ -1750,7 +1750,31 @@ fn anthropicSpec(id: []const u8) ?AnthropicSpec {
     return null;
 }
 
-fn anthropicModel(allocator: std.mem.Allocator, id_text: []const u8, name_text: []const u8) !ai_types.Model {
+const AnthropicLimits = struct {
+    context_window: ?u32 = null,
+    max_tokens: ?u32 = null,
+};
+
+fn anthropicLimits(listed: ?*const std.json.ObjectMap, dev: ?*const std.json.ObjectMap, id: []const u8) AnthropicLimits {
+    var limits: AnthropicLimits = .{};
+    if (listed) |item| {
+        limits.context_window = positiveU32(objectU32(item, "max_input_tokens"));
+        limits.max_tokens = positiveU32(objectU32(item, "max_tokens"));
+    }
+    const models = dev orelse return limits;
+    const entry = models.getPtr(id) orelse return limits;
+    if (entry.* != .object) return limits;
+    const limit = entry.object.getPtr("limit") orelse return limits;
+    if (limit.* != .object) return limits;
+    if (limits.context_window == null) {
+        limits.context_window = positiveU32(objectU32(&limit.object, "input")) orelse
+            positiveU32(objectU32(&limit.object, "context"));
+    }
+    if (limits.max_tokens == null) limits.max_tokens = positiveU32(objectU32(&limit.object, "output"));
+    return limits;
+}
+
+fn anthropicModel(allocator: std.mem.Allocator, id_text: []const u8, name_text: []const u8, limits: AnthropicLimits) !ai_types.Model {
     const id = try allocator.dupe(u8, id_text);
     errdefer allocator.free(id);
     const name = try allocator.dupe(u8, name_text);
@@ -1778,25 +1802,25 @@ fn anthropicModel(allocator: std.mem.Allocator, id_text: []const u8, name_text: 
         .reasoning = true,
         .input = input,
         .cost = if (spec) |known| known.cost else .{ .input = 0, .output = 0, .cache_read = 0, .cache_write = 0 },
-        .context_window = 200_000,
-        .max_tokens = if (spec) |known| known.max_tokens else 32_000,
+        .context_window = limits.context_window orelse 200_000,
+        .max_tokens = limits.max_tokens orelse if (spec) |known| known.max_tokens else 32_000,
         .is_owned = true,
     };
 }
 
-fn anthropicStaticModels(allocator: std.mem.Allocator) ![]ai_types.Model {
+fn anthropicStaticModels(allocator: std.mem.Allocator, dev: ?*const std.json.ObjectMap) ![]ai_types.Model {
     var models = std.ArrayList(ai_types.Model).empty;
     errdefer {
         for (models.items) |*model| model.deinit(allocator);
         models.deinit(allocator);
     }
     for (anthropic_static_models) |entry| {
-        try models.append(allocator, try anthropicModel(allocator, entry.id, entry.name));
+        try models.append(allocator, try anthropicModel(allocator, entry.id, entry.name, anthropicLimits(null, dev, entry.id)));
     }
     return models.toOwnedSlice(allocator);
 }
 
-fn parseAnthropicModels(allocator: std.mem.Allocator, data: []const u8) ![]ai_types.Model {
+fn parseAnthropicModels(allocator: std.mem.Allocator, data: []const u8, dev: ?*const std.json.ObjectMap) ![]ai_types.Model {
     var parsed = try std.json.parseFromSlice(std.json.Value, allocator, data, .{});
     defer parsed.deinit();
     if (parsed.value != .object) return error.InvalidModelCatalog;
@@ -1814,7 +1838,7 @@ fn parseAnthropicModels(allocator: std.mem.Allocator, data: []const u8) ![]ai_ty
         const id = objectString(obj, "id") orelse continue;
         if (id.len == 0 or !std.mem.startsWith(u8, id, "claude")) continue;
         const name = objectString(obj, "display_name") orelse id;
-        try models.append(allocator, try anthropicModel(allocator, id, name));
+        try models.append(allocator, try anthropicModel(allocator, id, name, anthropicLimits(obj, dev, id)));
     }
     return models.toOwnedSlice(allocator);
 }
@@ -1865,17 +1889,21 @@ fn isAnthropicOAuthToken(token: []const u8) bool {
 }
 
 fn loadAnthropicModels(allocator: std.mem.Allocator, storage: ?*oauth_storage.AuthStorage, mode: CatalogLoadMode) ![]ai_types.Model {
-    if (builtin.is_test) return if (test_force_anthropic_models) anthropicStaticModels(allocator) else emptyModels(allocator);
+    if (builtin.is_test) return if (test_force_anthropic_models) anthropicStaticModels(allocator, null) else emptyModels(allocator);
 
     const token = (try anthropicCredential(allocator, storage)) orelse return emptyModels(allocator);
     defer secureFree(allocator, token);
 
+    var models_dev: ModelsDev = .{ .mode = mode };
+    defer models_dev.deinit();
+    const dev = if (provider_catalog.modelsDevKey(anthropic_provider_id)) |key| models_dev.provider(allocator, key) else null;
+
     if (mode == .allow_cache) {
-        if (try loadCachedAnthropicModels(allocator, anthropic_catalog_max_age_ms)) |models| return models;
+        if (try loadCachedAnthropicModels(allocator, anthropic_catalog_max_age_ms, dev)) |models| return models;
     }
     if (fetchAnthropicModelsCatalog(allocator, token)) |body| {
         defer allocator.free(body);
-        if (parseAnthropicModels(allocator, body)) |models| {
+        if (parseAnthropicModels(allocator, body, dev)) |models| {
             if (models.len > 0) {
                 saveMakaiCatalog(allocator, makai_anthropic_catalog_name, body) catch {};
                 return models;
@@ -1883,8 +1911,8 @@ fn loadAnthropicModels(allocator: std.mem.Allocator, storage: ?*oauth_storage.Au
             allocator.free(models);
         } else |_| {}
     } else |_| {}
-    if (try loadCachedAnthropicModels(allocator, null)) |models| return models;
-    return anthropicStaticModels(allocator);
+    if (try loadCachedAnthropicModels(allocator, null, dev)) |models| return models;
+    return anthropicStaticModels(allocator, dev);
 }
 
 fn catalogIsFresh(modified_ms: i64, now_ms: i64, max_age_ms: i64) bool {
@@ -1899,7 +1927,7 @@ test "catalogIsFresh accepts caches younger than the window and rejects older on
     try std.testing.expect(!catalogIsFresh(0, 1, 0));
 }
 
-fn loadCachedAnthropicModels(allocator: std.mem.Allocator, max_age_ms: ?i64) !?[]ai_types.Model {
+fn loadCachedAnthropicModels(allocator: std.mem.Allocator, max_age_ms: ?i64, dev: ?*const std.json.ObjectMap) !?[]ai_types.Model {
     const path = makaiCatalogPath(allocator, makai_anthropic_catalog_name) catch return null;
     defer allocator.free(path);
     if (max_age_ms) |max_age| {
@@ -1908,7 +1936,7 @@ fn loadCachedAnthropicModels(allocator: std.mem.Allocator, max_age_ms: ?i64) !?[
     }
     const data = compat.fs.readFileAlloc(allocator, compat.fs.getCwd(), path, max_catalog_bytes) catch return null;
     defer allocator.free(data);
-    const models = parseAnthropicModels(allocator, data) catch return null;
+    const models = parseAnthropicModels(allocator, data, dev) catch return null;
     if (models.len > 0) return models;
     allocator.free(models);
     return null;
@@ -2467,7 +2495,7 @@ test "parseAnthropicModels maps the models endpoint into owned Anthropic models"
     const body =
         \\{"data":[{"type":"model","id":"claude-sonnet-4-5-20250929","display_name":"Claude Sonnet 4.5","created_at":"2025-09-29T00:00:00Z"},{"type":"model","id":"claude-opus-4-1-20250805","display_name":"Claude Opus 4.1"},{"type":"model","id":"claude-future-9","display_name":"Claude Future"},{"type":"model","id":"not-a-claude"}],"has_more":false}
     ;
-    const models = try parseAnthropicModels(std.testing.allocator, body);
+    const models = try parseAnthropicModels(std.testing.allocator, body, null);
     defer deinitModels(std.testing.allocator, models);
     try std.testing.expectEqual(@as(usize, 3), models.len);
     try std.testing.expectEqualStrings("claude-sonnet-4-5-20250929", models[0].id);
@@ -2481,6 +2509,26 @@ test "parseAnthropicModels maps the models endpoint into owned Anthropic models"
     try std.testing.expectEqual(@as(u32, 32_000), models[1].max_tokens);
     try std.testing.expectEqual(@as(f64, 0), models[2].cost.input);
     try std.testing.expect(models[2].reasoning);
+}
+
+test "an Anthropic model takes the listing's limits first, then models.dev's, then the fixed figures" {
+    const allocator = std.testing.allocator;
+    const body =
+        \\{"data":[{"id":"claude-listed","max_input_tokens":500000,"max_tokens":50000},{"id":"claude-opus-5"},{"id":"claude-opus-4-1"}]}
+    ;
+    var dev = try parseModelsDev(allocator,
+        \\{"claude-listed":{"limit":{"context":900000,"output":90000}},"claude-opus-5":{"limit":{"context":1000000,"output":128000}}}
+    );
+    defer dev.deinit();
+    const models = try parseAnthropicModels(allocator, body, &dev.value.object);
+    defer deinitModels(allocator, models);
+
+    try std.testing.expectEqual(@as(u32, 500_000), models[0].context_window);
+    try std.testing.expectEqual(@as(u32, 50_000), models[0].max_tokens);
+    try std.testing.expectEqual(@as(u32, 1_000_000), models[1].context_window);
+    try std.testing.expectEqual(@as(u32, 128_000), models[1].max_tokens);
+    try std.testing.expectEqual(@as(u32, 200_000), models[2].context_window);
+    try std.testing.expectEqual(@as(u32, 32_000), models[2].max_tokens);
 }
 
 const custom_gateway_config =
@@ -4379,7 +4427,7 @@ test "a gateway row with a credential but no discovery contributes nothing" {
     try std.testing.expectEqual(@as(usize, 0), models.len);
 }
 
-test "the production loader enables deepseek, every gateway and every coding plan" {
+test "the production loader enables deepseek, every gateway, every coding plan and the Xiaomi rows" {
     const enabled = [_][]const u8{
         "deepseek",
         "openrouter",
@@ -4395,6 +4443,10 @@ test "the production loader enables deepseek, every gateway and every coding pla
         "volcengine-coding-plan",
         "openai",
         "kimi",
+        "xiaomi-token-plan-cn",
+        "xiaomi-token-plan-sgp",
+        "xiaomi-token-plan-ams",
+        "xiaomi",
     };
     try std.testing.expectEqual(enabled.len, catalog_loader_rows.len);
     for (enabled) |id| {
