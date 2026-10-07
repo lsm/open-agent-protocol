@@ -1711,7 +1711,7 @@ SCENARIOS = {
 LOCAL_ONLY_SCENARIOS = {"hub-attach"}
 
 OAP_KNOWN_GAPS = {
-    "commands": "/permissions is refused once the OAP session is open (#930), and /compact on a session with no history never says there is nothing to compact",
+    "commands": "/permissions is refused once the OAP session is open (#930)",
     "approval-deny": "/permissions is refused once the OAP session is open (#930), and a denied call carries {\"rejected\":true} rather than the loop's rejection text",
     "approval-allow": "/permissions is refused once the OAP session is open (#930)",
     "session-roundtrip": "resume is refused over OAP (#931)",
@@ -1738,7 +1738,7 @@ UNCOMPARED_EVENT_TYPES = {
     "agent_start": "a marker replay ignores; over OAP the user's message is echoed when the run starts, so it lands on the other side of it",
     "prompt_segment_usage": "token accounting the session file keeps and nothing reads back; OAP does not carry it",
 }
-COMPARED_EVENT_FIELDS = ("type", "role", "text", "tool_name", "is_error", "reason", "stop_reason", "result_json", "steering")
+COMPARED_EVENT_FIELDS = ("type", "role", "text", "message", "outcome", "tool_name", "is_error", "reason", "stop_reason", "result_json", "steering")
 
 
 UNCOMPARED_RESULT_FIELDS = ("duration_ms",)

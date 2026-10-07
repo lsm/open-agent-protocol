@@ -116,8 +116,9 @@ without going through the ops table.
 
 `scripts/tui-pty-driver.py --scenario all` runs every sweep scenario on
 `oapx --tui` and again on `oapx tui`, then compares the two runs' saved
-session records, leaving out only the record types its
-`UNCOMPARED_EVENT_TYPES` names with a reason. `OAP_KNOWN_GAPS` lists the
+session records field by field over its `COMPARED_EVENT_FIELDS`, leaving out
+only the record types its `UNCOMPARED_EVENT_TYPES` names with a reason and the
+timings `UNCOMPARED_RESULT_FIELDS` strips from a tool's result. `OAP_KNOWN_GAPS` lists the
 scenarios `oapx tui` fails today and `KNOWN_DIVERGENCES` the ones whose
 records differ; an entry that stops failing fails the sweep, so both lists
 only shrink. A command in `zig/src/tui/commands.zig` that no scenario drives
