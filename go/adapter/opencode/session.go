@@ -85,8 +85,6 @@ type runState struct {
 	prompted bool
 
 	promotionSeen bool
-	holding       bool
-	held          []heldEvent
 
 	publishedSeq uint64
 
@@ -107,11 +105,6 @@ type runState struct {
 	openSteps       int
 	admitted        chan struct{}
 	subscribers     []chan base.Result
-}
-
-type heldEvent struct {
-	envelope protocol.Envelope
-	terminal bool
 }
 
 type toolState struct {
@@ -377,7 +370,7 @@ func (s *session) UpdateSettings(ctx context.Context, req protocol.SessionSettin
 	return response, s.state, nil
 }
 
-func published(run *runState) bool { return run != nil && (!run.terminal || run.holding) }
+func published(run *runState) bool { return run != nil && !run.terminal }
 
 func reservationOf(run *runState) bool { return run.queuedAdmission && !run.startPublished }
 
@@ -1045,7 +1038,7 @@ func (s *session) Resume(ctx context.Context, request base.ResumeRequest) (base.
 	for _, event := range suffix {
 		stream <- base.Result{Envelope: event}
 	}
-	if run.terminal && !run.holding {
+	if run.terminal {
 		close(stream)
 	} else {
 		run.subscribers = append(run.subscribers, stream)
@@ -1205,15 +1198,10 @@ func (s *session) promoteReserved() {
 		return
 	}
 	s.reserved = nil
-	held := reserved.held
-	reserved.held, reserved.holding = nil, false
 	if !reserved.terminal {
 
 		s.active = reserved
 		reserved.status = protocol.RunRunning
-	}
-	for _, event := range held {
-		s.publishLocked(reserved, event.envelope, event.terminal)
 	}
 	s.refreshStateLocked()
 	s.mu.Unlock()
@@ -1271,7 +1259,7 @@ func (s *session) emitEnvelopeWith(run *runState, typ protocol.EnvelopeType, pay
 		event.ToolCallID = action.ToolCallID
 	}
 	s.state.UpdatedAtMS = now
-	if typ == protocol.TypeRunStarted && !run.holding {
+	if typ == protocol.TypeRunStarted {
 
 		run.status = protocol.RunRunning
 	}
@@ -1288,16 +1276,10 @@ func (s *session) emitEnvelopeWith(run *runState, typ protocol.EnvelopeType, pay
 		if s.active == run {
 			s.active = nil
 		}
-		if s.reserved == run && !run.holding {
+		if s.reserved == run {
 
 			s.reserved = nil
 		}
-	}
-	if run.holding {
-
-		run.held = append(run.held, heldEvent{envelope: event, terminal: terminal})
-		s.refreshStateLocked()
-		return event, nil
 	}
 	s.publishLocked(run, event, terminal)
 

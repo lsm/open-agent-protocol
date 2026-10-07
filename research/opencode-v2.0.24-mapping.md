@@ -125,10 +125,11 @@ periodically. Each frame is one `data:` line:
   Live, seq 11 was skipped. A gap is therefore not evidence of loss.
 
 Because the stream does not replay, loss is detected by disconnection rather
-than by seq: when `/api/event` ends or fails while a run is open, the adapter
-reconciles from `GET /api/session/active` and the session's messages and
-inbox, and reports a gap rather than inventing continuity (the `ReplayGap`
-rule).
+than by seq. Neither tree reconciles after it: when `/api/event` ends or fails
+while a run is open, the adapters fail the open runs and end the session's
+stream rather than inventing continuity, and a resume past the journal answers
+a `ReplayGap`. Reconciling from `GET /api/session/active` and the session's
+messages and inbox is a follow-up.
 
 ## Run boundaries
 
