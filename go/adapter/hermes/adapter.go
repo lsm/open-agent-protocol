@@ -115,7 +115,7 @@ func New(config Config) (*Adapter, error) {
 			env = append([]string{}, env...)
 		}
 		pc := rpc.ProcessConfig{Path: config.Executable, Args: append([]string(nil), config.Args...), Dir: config.WorkingDirectory, Env: env, FrameLimit: config.FrameLimit, QueueCapacity: config.QueueCapacity, WriteQueueCapacity: config.WriteQueueCapacity, ExitTimeout: config.ExitTimeout}
-		config.Factory = processClientFactory{processes: config.ProcessFactory, config: pc, model: config.Model}
+		config.Factory = processClientFactory{processes: config.ProcessFactory, config: pc, model: config.Model, lister: &listGateway{}}
 	}
 	return &Adapter{config: config, clock: config.Clock, ids: config.IDs}, nil
 }
@@ -124,6 +124,7 @@ type processClientFactory struct {
 	processes ProcessFactory
 	config    rpc.ProcessConfig
 	model     string
+	lister    *listGateway
 }
 
 func (f processClientFactory) launch(ctx context.Context) (ProcessBridge, Client, chan rpc.InboundMessage, error) {

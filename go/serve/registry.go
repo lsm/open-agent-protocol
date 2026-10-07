@@ -2,6 +2,7 @@ package serve
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -519,4 +520,29 @@ func opencodePassword(environment []string) string {
 		}
 	}
 	return found
+}
+
+type adapterCloser interface {
+	Close(context.Context) error
+}
+
+func (r *Registry) closeAdapters(ctx context.Context, logger interface{ Printf(string, ...any) }) {
+	var all []base.Adapter
+	for _, name := range r.Names() {
+		all = append(all, r.adapters[name])
+	}
+	r.placeMu.Lock()
+	for _, placed := range r.placed {
+		all = append(all, placed)
+	}
+	r.placeMu.Unlock()
+	for _, implementation := range all {
+		closer, ok := implementation.(adapterCloser)
+		if !ok {
+			continue
+		}
+		if err := closer.Close(ctx); err != nil {
+			logger.Printf("serve: close adapter: %v", err)
+		}
+	}
 }
