@@ -450,10 +450,18 @@ def _open_payload(session_id: str, tools: Optional[Sequence[ToolDefinition]],
         payload["tools"] = [{"name": tool.name, "description": tool.description,
                              "input_schema": json.loads(tool.parameters_schema_json),
                              "execution_owner": SDK_PARTICIPANT} for tool in tools]
+    settings: Dict[str, Any] = {"user_input": False}
+    payload["metadata"] = {"oapx": settings}
+    if options and options.reasoning_effort == "minimal":
+        raise MakaiProtocolError("the agent loop runs minimal reasoning as low, so it refuses minimal",
+                                 "unsupported_feature")
     if options and options.reasoning_effort is not None:
         payload["reasoning_level"] = options.reasoning_effort
     if options and options.max_tokens is not None:
-        payload["metadata"] = {"oapx": {"output": options.max_tokens}}
+        if isinstance(options.max_tokens, bool) or not isinstance(options.max_tokens, int) or \
+                not 1 <= options.max_tokens <= 4_294_967_295:
+            raise MakaiProtocolError("max_tokens must be an integer between 1 and 4294967295", "invalid_request")
+        settings["output"] = options.max_tokens
     return payload
 
 

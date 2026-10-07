@@ -73,8 +73,9 @@ for line in sys.stdin:
         tools=request["payload"].get("tools") or []
         if tools:
             provided="%s owned by %s" % (tools[0]["name"], tools[0]["execution_owner"])
-        opened_settings="reasoning=%s output=%s participant=%s" % (request["payload"].get("reasoning_level"),
-            ((request["payload"].get("metadata") or {}).get("oapx") or {}).get("output"), participant)
+        oapx=(request["payload"].get("metadata") or {}).get("oapx") or {}
+        opened_settings="reasoning=%s output=%s user_input=%s participant=%s" % (request["payload"].get("reasoning_level"),
+            oapx.get("output"), oapx.get("user_input"), participant)
         emit(A, "session.open.response", rid, {"session_id":sid}, {"session_id":sid,"status":"idle"})
     elif kind == "session.model.switch.request":
         sid=request["payload"]["session_id"]
@@ -232,7 +233,12 @@ class OAPWireTests(unittest.IsolatedAsyncioTestCase):
             settings = await client.agent.run(model_ref="fixture/other:test@settings",
                 messages=[{"role": "user", "content": "hi"}],
                 options=RunOptions(max_tokens=10, reasoning_effort="high"))
-            self.assertEqual(settings.text, "reasoning=high output=10 participant=sdk")
+            self.assertEqual(settings.text, "reasoning=high output=10 user_input=False participant=sdk")
+            for refused, code in ((RunOptions(max_tokens=0), "invalid_request"), (RunOptions(reasoning_effort="minimal"), "unsupported_feature")):
+                with self.assertRaises(MakaiProtocolError) as rejected:
+                    await client.agent.run(model_ref="fixture/other:test@settings",
+                        messages=[{"role": "user", "content": "hi"}], options=refused)
+                self.assertEqual(rejected.exception.code, code)
             with self.assertRaises(MakaiProtocolError) as unsupported_options:
                 await client.agent.run(model_ref="fixture/other:test@ok",
                     messages=[{"role": "user", "content": "hi"}],
