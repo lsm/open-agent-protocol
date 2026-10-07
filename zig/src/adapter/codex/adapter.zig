@@ -99,7 +99,11 @@ pub const Adapter = struct {
     }
 
     fn ask(self: *Adapter, arena: std.mem.Allocator, method: []const u8, params: std.json.ObjectMap, refusal: *contract.Refusal) contract.Failure!?std.json.Value {
-        while (!self.reader_lock.tryLock()) compat.time.sleepMs(1);
+        if (!self.reader_lock.tryLock()) {
+            var alone = try OneShot.open(self, arena, refusal);
+            defer alone.deinit();
+            return alone.call(arena, method, params, refusal);
+        }
         defer self.reader_lock.unlock();
         const reused = self.reader != null;
         if (self.reader == null) self.reader = try OneShot.open(self, arena, refusal);
@@ -1555,6 +1559,26 @@ test "native lists and reads reuse one codex app-server, and one that died is st
     try testing.expectEqualStrings("spawn-1", try listedId(&adapter, arena.allocator(), &refusal));
     try testing.expectEqualStrings("spawn-1", try listedId(&adapter, arena.allocator(), &refusal));
     try testing.expectEqualStrings("spawn-2", try listedId(&adapter, arena.allocator(), &refusal));
+}
+
+test "a call that finds the shared app-server busy answers from one of its own, and leaves the shared one alone" {
+    var fake = try FakeCodex.init(testing.allocator, reader_script_head ++
+        \\take; id=$(printf '%s' "$line" | sed -n 's/.*"id":\([0-9]*\),.*/\1/p')
+        \\printf '{"id":%s,"result":{"data":[{"id":"spawn-%s"}]}}\n' "$id" "$n"
+        \\
+    );
+    defer fake.deinit(testing.allocator);
+    var adapter = Adapter.init(testing.allocator, fake.config());
+    defer adapter.deinit();
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var refusal = contract.Refusal{};
+    try testing.expect(adapter.reader_lock.tryLock());
+    try testing.expectEqualStrings("spawn-1", try listedId(&adapter, arena.allocator(), &refusal));
+    try testing.expect(adapter.reader == null);
+    adapter.reader_lock.unlock();
+    try testing.expectEqualStrings("spawn-2", try listedId(&adapter, arena.allocator(), &refusal));
+    try testing.expect(adapter.reader != null);
 }
 
 test "a codex app-server that refuses a call is kept for the next one" {

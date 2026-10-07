@@ -285,6 +285,17 @@ entries, journals, cursors, subscribers, holds and the fan-out. It is the only
 thread that touches any of them, so a lock never appears in the hub and the
 sequencing rules in §4 hold by construction rather than by lock discipline.
 
+One exception, which keeps that rule: a harness's own session list or
+transcript (`work.list` with `include_native`, `work.read` of a native
+session) is a call into the harness that the loop cannot wait on and that can
+take seconds. It runs on a **job thread** that touches none of the hub's
+state. The loop resolves what to ask before starting it, the job calls only
+the adapter's `native_list` or `native_read` into its own arena, and the loop
+composes and sends the answer once the job reports done; a job whose caller
+left is dropped by the loop when it finishes. The one lock this adds is
+inside an adapter whose native calls share a process (Codex's reader), and it
+never blocks: a call that finds it held starts a process of its own.
+
 That thread runs **one** loop, and it waits on the readiest of everything it owns
 rather than on each thing in turn:
 
