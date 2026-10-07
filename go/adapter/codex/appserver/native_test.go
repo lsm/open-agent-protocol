@@ -18,23 +18,29 @@ type askClient struct {
 	asked    []string
 	fails    error
 	failOnce error
-	cancel   context.CancelFunc
 	closes   int
 	done     chan struct{}
 	inbound  chan rpc.InboundMessage
 }
 
-func (c *askClient) Call(_ context.Context, method string, params, result any) error {
+func (c *askClient) Call(ctx context.Context, method string, params, result any) error {
 	encoded, _ := json.Marshal(params)
 	c.asked = append(c.asked, method+" "+string(encoded))
+	if err := ctx.Err(); err != nil {
+		if c.done != nil {
+			select {
+			case <-c.done:
+			default:
+				close(c.done)
+			}
+		}
+		return err
+	}
 	if c.fails != nil {
 		return c.fails
 	}
 	if failure := c.failOnce; failure != nil {
 		c.failOnce = nil
-		if c.cancel != nil {
-			c.cancel()
-		}
 		return failure
 	}
 	queue := c.answers[method]
@@ -216,7 +222,7 @@ func TestTheKeptAppServerHasItsNotificationsDrainedSoItsQueueNeverFills(t *testi
 }
 
 func TestACallerThatGivesUpLeavesTheKeptAppServerRunning(t *testing.T) {
-	kept := &askClient{answers: listAnswers(2), done: make(chan struct{})}
+	kept := &askClient{answers: listAnswers(3), done: make(chan struct{})}
 	factory := &startingFactory{clients: []*askClient{kept}}
 	implementation, err := New(Config{WorkingDirectory: "/work", Factory: factory})
 	if err != nil {
@@ -225,28 +231,18 @@ func TestACallerThatGivesUpLeavesTheKeptAppServerRunning(t *testing.T) {
 	if _, err := implementation.NativeList(context.Background(), adapter.NativeListRequest{Limit: 1}); err != nil {
 		t.Fatal(err)
 	}
-	ctx, cancel := context.WithCancel(context.Background())
-	kept.cancel, kept.failOnce = cancel, context.Canceled
-	if _, err := implementation.NativeList(ctx, adapter.NativeListRequest{Limit: 1}); err == nil {
-		t.Fatal("a cancelled list answered")
-	}
-	if factory.starts != 1 || kept.closes != 0 {
-		t.Fatalf("a cancelled caller restarted the app-server: %d starts, %d closes", factory.starts, kept.closes)
+	gone, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, _ = implementation.NativeList(gone, adapter.NativeListRequest{Limit: 1})
+	if ended(kept) || kept.closes != 0 {
+		t.Fatal("a caller that had given up shut the kept app-server down")
 	}
 	if _, err := implementation.NativeList(context.Background(), adapter.NativeListRequest{Limit: 1}); err != nil || factory.starts != 1 {
-		t.Fatalf("the next list after a cancelled one: %v, %d starts", err, factory.starts)
+		t.Fatalf("the list after a cancelled one: %v, %d starts", err, factory.starts)
 	}
-	retryCtx, retryCancel := context.WithCancel(context.Background())
-	fresh := &askClient{answers: listAnswers(1), done: make(chan struct{}), failOnce: context.Canceled, cancel: retryCancel}
-	factory.clients = append(factory.clients, fresh)
-	kept.failOnce = errors.New("pipe closed")
-	if _, err := implementation.NativeList(retryCtx, adapter.NativeListRequest{Limit: 1}); err == nil {
-		t.Fatal("a list cancelled during its retry answered")
-	}
-	if factory.starts != 2 || fresh.closes != 0 {
-		t.Fatalf("a caller that gave up during the retry closed the fresh app-server: %d starts, %d closes", factory.starts, fresh.closes)
-	}
-	if _, err := implementation.NativeList(context.Background(), adapter.NativeListRequest{Limit: 1}); err != nil || factory.starts != 2 {
-		t.Fatalf("the list after a cancelled retry: %v, %d starts", err, factory.starts)
+	expiring, stop := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
+	defer stop()
+	if _, err := implementation.NativeList(expiring, adapter.NativeListRequest{Limit: 1}); err == nil || !ended(kept) {
+		t.Fatalf("a call past its caller's deadline answered %v without timing out", err)
 	}
 }

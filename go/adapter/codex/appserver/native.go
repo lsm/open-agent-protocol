@@ -6,6 +6,7 @@ import (
 	"errors"
 	"strings"
 	"sync"
+	"time"
 	"unicode/utf8"
 
 	"github.com/lsm/open-agent-protocol/go/adapter"
@@ -15,6 +16,7 @@ import (
 const (
 	nativeTurnPage   = 100
 	nativeTitleLimit = 120
+	nativeCallLimit  = 60 * time.Second
 )
 
 func (implementation *Adapter) NativeLink(nativeID string) string {
@@ -45,6 +47,8 @@ func (implementation *Adapter) ask(ctx context.Context, method string, params an
 		return ask(ctx, client, method, params)
 	}
 	defer server.mu.Unlock()
+	ctx, cancel := keptContext(ctx)
+	defer cancel()
 	reused := server.client != nil
 	if reused && ended(server.client) {
 		_ = server.client.Close()
@@ -58,7 +62,7 @@ func (implementation *Adapter) ask(ctx context.Context, method string, params an
 		server.client = client
 	}
 	result, err := ask(ctx, server.client, method, params)
-	if err == nil || ctx.Err() != nil || !broken(server.client, err) {
+	if err == nil || !broken(server.client, err) {
 		return result, err
 	}
 	_ = server.client.Close()
@@ -72,7 +76,7 @@ func (implementation *Adapter) ask(ctx context.Context, method string, params an
 	}
 	server.client = client
 	result, err = ask(ctx, client, method, params)
-	if err != nil && ctx.Err() == nil && broken(client, err) {
+	if err != nil && broken(client, err) {
 		_ = client.Close()
 		server.client = nil
 	}
@@ -97,6 +101,14 @@ func (implementation *Adapter) startKept(ctx context.Context) (Client, error) {
 		}
 	}()
 	return client, nil
+}
+
+func keptContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	detached := context.WithoutCancel(ctx)
+	if deadline, ok := ctx.Deadline(); ok {
+		return context.WithDeadline(detached, deadline)
+	}
+	return context.WithTimeout(detached, nativeCallLimit)
 }
 
 func ended(client Client) bool {
