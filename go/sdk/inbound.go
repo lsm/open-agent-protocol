@@ -8,11 +8,12 @@ import (
 )
 
 type routing struct {
-	Type        string `json:"type"`
-	InReplyTo   string `json:"in_reply_to"`
-	SessionID   string `json:"session_id"`
-	RunID       string `json:"run_id"`
-	InferenceID string `json:"inference_id"`
+	Type        string          `json:"type"`
+	InReplyTo   string          `json:"in_reply_to"`
+	SessionID   string          `json:"session_id"`
+	RunID       string          `json:"run_id"`
+	InferenceID string          `json:"inference_id"`
+	Payload     json.RawMessage `json:"payload"`
 }
 
 type inbound struct {
@@ -120,6 +121,13 @@ func (in *inbound) inference() string {
 		return string(in.provider.InferenceID)
 	}
 	return in.header.InferenceID
+}
+
+func (in *inbound) flow() string {
+	if in.legacy != nil || in.agent != nil || in.provider != nil {
+		return in.body().str("flow_id")
+	}
+	return payloadObject(in.header.Payload).str("flow_id")
 }
 
 func (in *inbound) stream() string {

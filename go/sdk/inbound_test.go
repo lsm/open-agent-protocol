@@ -177,3 +177,19 @@ func TestAnOAPLineOutsideBothProfilesIsBrokenAndStillRoutable(t *testing.T) {
 		}
 	}
 }
+
+func TestAnAuthFlowEventTheProtocolPackageCannotReadFailsTheLoginNamingWhy(t *testing.T) {
+	written := &capturedWrites{}
+	tr := wiredTransport(written)
+	answerOnceSent(t, tr, written, func(start map[string]any) []string {
+		return []string{
+			`{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"auth.login.start.response","id":"r1","in_reply_to":"` + start["id"].(string) + `","payload":{"flow_id":"F1"}}`,
+			`{"protocol":"open-agent-protocol","version":1,"profile":"open-agent-protocol.agent-control-core","type":"auth.login.event","id":"r2","sequence":1,"payload":{"flow_id":"F1","provider_id":"P1","kind":"progress","message":"working"}}`,
+		}
+	})
+	started := time.Now()
+	err := (&AuthService{transport: tr, timeout: 5 * time.Second}).oapLogin(context.Background(), "P1", LoginHandlers{})
+	if err == nil || !strings.Contains(err.Error(), "malformed OAP envelope auth.login.event") || time.Since(started) > 2*time.Second {
+		t.Fatalf("an unreadable flow event answered %v after %v, want the malformed envelope at once", err, time.Since(started))
+	}
+}

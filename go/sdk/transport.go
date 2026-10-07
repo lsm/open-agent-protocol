@@ -236,13 +236,13 @@ func (t *transport) dispatch(in *inbound) {
 			t.inferences[inferenceID] = target
 		}
 		if target != nil && kind == "auth.login.start.response" {
-			if flowID := in.body().str("flow_id"); flowID != "" {
+			if flowID := in.flow(); flowID != "" {
 				t.authFlows[flowID] = target
 			}
 		}
 	}
 	if target == nil && (kind == "auth.login.event" || kind == "auth.login.completed") {
-		target = t.authFlows[in.body().str("flow_id")]
+		target = t.authFlows[in.flow()]
 	}
 	if target == nil && inferenceID != "" {
 		target = t.inferences[inferenceID]
