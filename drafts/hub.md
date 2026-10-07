@@ -482,8 +482,9 @@ in `zig/src/hub/daemon.zig`), all on the hub's one thread, as `DESIGN.md` §8.6
 requires: one loop polls the listener, every connection's socket and every
 session's child output together, reads and writes each socket without
 blocking, runs a request against the hub when its body is complete, and pumps
-the hub once per cycle. No lock appears, because no second thread touches the
-hub. At the bound the loop stops polling the listener rather than answering, so
+the hub once per cycle. No lock appears in the hub, because no second thread
+touches it: a native list or read runs on a job thread that calls only the
+adapter and hands its result back to the loop (`DESIGN.md` §8.6). At the bound the loop stops polling the listener rather than answering, so
 a 65th client waits in the kernel's listen backlog until a connection ends — no
 status is sent for having reached the bound, which is what the rule above asks
 of a port. A stream's socket stays in the poll while it has nothing to write, so

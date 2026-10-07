@@ -31,6 +31,12 @@ pub const Reply = union(enum) {
     no_content,
     stream: *hubmod.Subscription,
     gap: contract.Gap,
+    deferred: Deferred,
+};
+
+pub const Deferred = struct {
+    ticket: u64,
+    correlation: Correlation,
 };
 
 const Correlation = struct {
@@ -104,6 +110,7 @@ pub const Daemon = struct {
 
     pub fn pump(self: *Daemon) !void {
         try self.frontend.hub.pump(self.allocator, 0);
+        self.frontend.sweepAbandoned();
     }
 
     pub fn respond(self: *Daemon, arena: std.mem.Allocator, request: hub_http.Request) !Reply {
@@ -161,7 +168,18 @@ pub const Daemon = struct {
             .answer_line => |line| .{ .answer = .{ .status = ok_status, .body = line } },
             .refused => |refused| self.refusal(arena, refused, correlation),
             .streaming => unreachable,
+            .deferred => |ticket| .{ .deferred = .{ .ticket = ticket, .correlation = correlation } },
         };
+    }
+
+    pub fn settleDeferred(self: *Daemon, arena: std.mem.Allocator, deferred: Deferred) !?Reply {
+        const job = self.frontend.finishedJob(deferred.ticket) orelse return null;
+        defer self.frontend.releaseJob(job);
+        return try self.outcome(arena, try self.frontend.finish(arena, job), deferred.correlation);
+    }
+
+    pub fn abandon(self: *Daemon, ticket: u64) void {
+        self.frontend.abandon(ticket);
     }
 
     fn refusal(self: *Daemon, arena: std.mem.Allocator, refused: hub_stdio.Refusal, correlation: Correlation) !Reply {
@@ -505,6 +523,7 @@ const Phase = enum {
     flushing,
     refusing,
     streaming,
+    awaiting,
     done,
 };
 
@@ -525,6 +544,7 @@ pub const Connection = struct {
     peer_closed: bool = false,
     subscription: ?*hubmod.Subscription = null,
     stream_ended: bool = false,
+    awaiting: ?Deferred = null,
 
     fn create(daemon: *Daemon, stream: compat.net.Stream) !*Connection {
         const connection = try daemon.allocator.create(Connection);
@@ -542,6 +562,7 @@ pub const Connection = struct {
     fn destroy(self: *Connection) void {
         const allocator = self.daemon.allocator;
         if (self.subscription) |subscription| self.daemon.leave(subscription);
+        if (self.awaiting) |deferred| self.daemon.abandon(deferred.ticket);
         self.stream.close();
         self.inbox.deinit(allocator);
         self.out.deinit(allocator);
@@ -563,7 +584,7 @@ pub const Connection = struct {
             .head, .body, .refusing, .streaming, .flushing => if (!self.peer_closed) {
                 wanted |= std.posix.POLL.IN;
             },
-            .done => {},
+            .awaiting, .done => {},
         }
         if (self.pending()) wanted |= std.posix.POLL.OUT;
         return wanted;
@@ -636,11 +657,11 @@ pub const Connection = struct {
                     },
                 }
             },
-            .streaming, .flushing => switch (readSome(self.handle(), &chunk)) {
+            .streaming, .flushing, .awaiting => switch (readSome(self.handle(), &chunk)) {
                 .waiting, .bytes => return,
                 .closed => {
                     self.peer_closed = true;
-                    if (self.phase == .streaming) self.phase = .done;
+                    if (self.phase == .streaming or self.phase == .awaiting) self.phase = .done;
                 },
             },
             .done => {},
@@ -688,7 +709,16 @@ pub const Connection = struct {
             self.queue(render(arena, .{ .status = internal_status, .content_type = text_plain, .body = "internal error" }, self.body_allowed) catch "");
             return;
         };
+        self.deliver(reply);
+    }
+
+    fn deliver(self: *Connection, reply: Reply) void {
+        const arena = self.scratch.allocator();
         switch (reply) {
+            .deferred => |deferred| {
+                self.awaiting = deferred;
+                self.phase = .awaiting;
+            },
             .answer => |given| self.queue(render(arena, given, self.body_allowed) catch ""),
             .no_content => self.queue(no_content_head),
             .gap => |gap| {
@@ -759,6 +789,18 @@ pub const Connection = struct {
             .streaming => {
                 if (self.stream_ended and !self.pending()) self.phase = .done;
             },
+            .awaiting => {
+                const deferred = self.awaiting orelse return;
+                const reply = (self.daemon.settleDeferred(self.scratch.allocator(), deferred) catch {
+                    self.awaiting = null;
+                    self.phase = .flushing;
+                    self.queue(render(self.scratch.allocator(), .{ .status = internal_status, .content_type = text_plain, .body = "internal error" }, self.body_allowed) catch "");
+                    return;
+                }) orelse return;
+                self.awaiting = null;
+                self.phase = .flushing;
+                self.deliver(reply);
+            },
             .done => {},
         }
         if (self.phase != .done and self.pending() and now -| self.progress_ms >= @as(u64, @intCast(hub_http.idle_read_ms))) self.phase = .done;
@@ -816,7 +858,15 @@ fn serveBlocking(daemon: *Daemon, stream: *compat.net.Stream) void {
         stream.writeAll(render(scratch, .{ .status = internal_status, .content_type = text_plain, .body = "internal error" }, body_allowed) catch return) catch {};
         return;
     };
-    switch (reply) {
+    var settled = reply;
+    while (settled == .deferred) {
+        settled = (daemon.settleDeferred(scratch, settled.deferred) catch return) orelse {
+            compat.time.sleepMs(2);
+            continue;
+        };
+    }
+    switch (settled) {
+        .deferred => unreachable,
         .answer => |given| stream.writeAll(render(scratch, given, body_allowed) catch return) catch {},
         .no_content => stream.writeAll(no_content_head) catch {},
         .gap => |gap| {
@@ -1249,6 +1299,24 @@ test "a known path asked with the wrong method is 405 naming the method it takes
 
     const headed = try fixture.answer("HEAD", "/adapters", "");
     try testing.expectEqualStrings("200 OK", headed.status);
+}
+
+test "a work list that asks the adapters for their own sessions is deferred, and settles into its answer once the listing is done" {
+    var fixture: Fixture = undefined;
+    try fixture.init(.{});
+    defer fixture.deinit();
+    const reply = try fixture.ask("GET", "/work?include_native=true", "");
+    try testing.expect(reply == .deferred);
+    const arena = fixture.scratch.allocator();
+    var settled: ?Reply = null;
+    var waits: usize = 0;
+    while (settled == null and waits < 5000) : (waits += 1) {
+        settled = try fixture.daemon.settleDeferred(arena, reply.deferred);
+        if (settled == null) std.testing.io.sleep(.fromNanoseconds(std.time.ns_per_ms), .boot) catch {};
+    }
+    try testing.expectEqualStrings("200 OK", settled.?.answer.status);
+    try testing.expectEqualStrings("{\"groups\":[]}", settled.?.answer.body);
+    try testing.expectEqual(@as(usize, 0), fixture.daemon.frontend.jobs.items.len);
 }
 
 test "events refuse an unknown session, a cursor that is not a sequence, a run with no cursor, and a cursor on a session with no run" {
