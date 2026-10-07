@@ -99,7 +99,7 @@ func runOAPHost() {
 				first, _ := tools[0].(map[string]any)
 				providedTool = fmt.Sprintf("%v owned by %v", first["name"], first["execution_owner"])
 			}
-			openSettings = fmt.Sprintf("reasoning=%v output=%v", opening["reasoning_level"], opening.obj("metadata").obj("oapx")["output"])
+			openSettings = fmt.Sprintf("reasoning=%v output=%v user_input=%v", opening["reasoning_level"], opening.obj("metadata").obj("oapx")["output"], opening.obj("metadata").obj("oapx")["user_input"])
 			response := oapFakeReply(request, "session.open.response", map[string]any{"session_id": sessionID, "status": "idle"})
 			response.SessionID = sessionID
 			fakeEmit(response)
@@ -278,8 +278,15 @@ func TestOAPCombinedFakeHost(t *testing.T) {
 	}
 	response, err = client.Agent.Run(ctx, AgentRequest{ModelRef: "fixture/other:test@settings", Messages: []Message{UserMessage("hi")},
 		Options: &RunOptions{MaxTokens: MaxTokens(10), ReasoningEffort: ReasoningHigh}})
-	if err != nil || response.Message.Text != "reasoning=high output=10" {
+	if err != nil || response.Message.Text != "reasoning=high output=10 user_input=false" {
 		t.Fatalf("agent settings did not reach the open: %v, %+v", err, response)
+	}
+	for _, options := range []*RunOptions{{MaxTokens: MaxTokens(0)}, {ReasoningEffort: ReasoningMinimal}} {
+		_, err = client.Agent.Run(ctx, AgentRequest{ModelRef: "fixture/other:test@settings", Messages: []Message{UserMessage("hi")}, Options: options})
+		var refused *ProtocolError
+		if !errors.As(err, &refused) {
+			t.Fatalf("expected %+v refused before the open, got %v", options, err)
+		}
 	}
 	temperature := 0.5
 	_, err = client.Agent.Run(ctx, AgentRequest{ModelRef: models.Models[0].ModelRef,

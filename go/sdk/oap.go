@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"github.com/lsm/open-agent-protocol/go/protocol"
+	"math"
 	"strings"
 	"time"
 )
@@ -762,14 +763,22 @@ func oapOpenPayload(sessionID string, req AgentRequest) (map[string]any, error) 
 		}
 		payload["tools"] = provided
 	}
+	settings := map[string]any{"user_input": false}
+	payload["metadata"] = map[string]any{"oapx": settings}
 	if req.Options == nil {
 		return payload, nil
+	}
+	if req.Options.ReasoningEffort == ReasoningMinimal {
+		return nil, &ProtocolError{Code: "unsupported_feature", Message: "the agent loop runs minimal reasoning as low, so it refuses minimal"}
 	}
 	if req.Options.ReasoningEffort != "" {
 		payload["reasoning_level"] = string(req.Options.ReasoningEffort)
 	}
 	if req.Options.MaxTokens != nil {
-		payload["metadata"] = map[string]any{"oapx": map[string]any{"output": *req.Options.MaxTokens}}
+		if *req.Options.MaxTokens < 1 || int64(*req.Options.MaxTokens) > math.MaxUint32 {
+			return nil, &ProtocolError{Code: CodeInvalidRequest, Message: "MaxTokens must be between 1 and 4294967295"}
+		}
+		settings["output"] = *req.Options.MaxTokens
 	}
 	return payload, nil
 }
