@@ -8,6 +8,7 @@ import (
 	"math"
 	"strconv"
 	"sync"
+	"time"
 
 	base "github.com/lsm/open-agent-protocol/go/adapter"
 	"github.com/lsm/open-agent-protocol/go/adapter/hermes/internal/rpc"
@@ -47,6 +48,8 @@ func (f processClientFactory) List(ctx context.Context, limit int) (json.RawMess
 		return listOn(ctx, client, limit)
 	}
 	defer kept.mu.Unlock()
+	ctx, cancel := keptContext(ctx)
+	defer cancel()
 	reused := kept.bridge != nil
 	if reused && gatewayEnded(kept.bridge) {
 		_ = kept.bridge.Close(context.Background())
@@ -60,7 +63,7 @@ func (f processClientFactory) List(ctx context.Context, limit int) (json.RawMess
 		kept.bridge = bridge
 	}
 	answered, err := listOn(ctx, kept.bridge.ClientHandle(), limit)
-	if err == nil || ctx.Err() != nil || !gatewayBroken(kept.bridge, err) {
+	if err == nil || !gatewayBroken(kept.bridge, err) {
 		return answered, err
 	}
 	_ = kept.bridge.Close(context.Background())
@@ -74,7 +77,7 @@ func (f processClientFactory) List(ctx context.Context, limit int) (json.RawMess
 	}
 	kept.bridge = bridge
 	answered, err = listOn(ctx, bridge.ClientHandle(), limit)
-	if err != nil && ctx.Err() == nil && gatewayBroken(bridge, err) {
+	if err != nil && gatewayBroken(bridge, err) {
 		_ = bridge.Close(context.Background())
 		kept.bridge = nil
 	}
@@ -103,6 +106,16 @@ func (f processClientFactory) keep(ctx context.Context) (ProcessBridge, error) {
 		}
 	}()
 	return bridge, nil
+}
+
+const listCallLimit = 60 * time.Second
+
+func keptContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	detached := context.WithoutCancel(ctx)
+	if deadline, ok := ctx.Deadline(); ok {
+		return context.WithDeadline(detached, deadline)
+	}
+	return context.WithTimeout(detached, listCallLimit)
 }
 
 func gatewayEnded(bridge ProcessBridge) bool {

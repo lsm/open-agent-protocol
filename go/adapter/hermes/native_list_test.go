@@ -149,43 +149,47 @@ func TestTheKeptGatewayReleasesEachBarrierItsClientQueues(t *testing.T) {
 	_ = f.Close()
 }
 
+type cancelShutClient struct{ *fakeClient }
+
+func (c cancelShutClient) Call(ctx context.Context, method string, params, result any) error {
+	if err := ctx.Err(); err != nil {
+		_ = c.fakeClient.Close()
+		return err
+	}
+	return c.fakeClient.Call(ctx, method, params, result)
+}
+
+type cancelShutBridge struct{ client cancelShutClient }
+
+func (b cancelShutBridge) ClientHandle() Client        { return b.client }
+func (b cancelShutBridge) Done() <-chan struct{}       { return b.client.done }
+func (b cancelShutBridge) WaitError() error            { return nil }
+func (b cancelShutBridge) Close(context.Context) error { return b.client.Close() }
+
 func TestAListingWhoseCallerGivesUpLeavesTheKeptGatewayRunning(t *testing.T) {
-	sessions := reply{result: map[string]any{"sessions": []any{}}}
-	ctx, cancel := context.WithCancel(context.Background())
-	retryCtx, retryCancel := context.WithCancel(context.Background())
 	kept := newFake()
-	for _, r := range []reply{sessions, {err: context.Canceled, before: cancel}, sessions, {err: errors.New("pipe closed")}} {
-		kept.queue(methodSessionList, r)
+	for range 3 {
+		kept.queue(methodSessionList, reply{result: map[string]any{"sessions": []any{}}})
 	}
-	fresh := newFake()
-	for _, r := range []reply{{err: context.Canceled, before: retryCancel}, sessions} {
-		fresh.queue(methodSessionList, r)
-	}
-	gateways := []*fakeClient{kept, fresh}
 	var launches atomic.Int32
 	implementation, err := New(Config{Model: "hermes-test", Clock: &testClock{}, IDs: &testIDs{}, ProcessFactory: ProcessFactoryFunc(func(context.Context, rpc.ProcessConfig) (ProcessBridge, error) {
-		at := int(launches.Add(1)) - 1
-		return fakeBridge{client: gateways[min(at, len(gateways)-1)]}, nil
+		launches.Add(1)
+		return cancelShutBridge{client: cancelShutClient{kept}}, nil
 	})})
 	if err != nil {
 		t.Fatal(err)
 	}
-	list := func(ctx context.Context) error {
-		_, err := implementation.NativeList(ctx, base.NativeListRequest{Limit: 1})
-		return err
+	gone, cancel := context.WithCancel(context.Background())
+	cancel()
+	for _, ctx := range []context.Context{context.Background(), gone, context.Background()} {
+		if _, err := implementation.NativeList(ctx, base.NativeListRequest{Limit: 1}); err != nil {
+			t.Fatal(err)
+		}
 	}
-	closed := func(gateway *fakeClient) bool {
-		gateway.mu.Lock()
-		defer gateway.mu.Unlock()
-		return gateway.closed
-	}
-	if list(context.Background()) != nil || list(ctx) == nil || list(context.Background()) != nil || launches.Load() != 1 || closed(kept) {
-		t.Fatalf("a cancelled listing restarted the gateway: %d launches", launches.Load())
-	}
-	if list(retryCtx) == nil || launches.Load() != 2 || closed(fresh) {
-		t.Fatalf("a caller that gave up during the retry closed the fresh gateway: %d launches", launches.Load())
-	}
-	if list(context.Background()) != nil || launches.Load() != 2 {
-		t.Fatalf("the listing after a cancelled retry launched %d gateways", launches.Load())
+	kept.mu.Lock()
+	closed := kept.closed
+	kept.mu.Unlock()
+	if closed || launches.Load() != 1 {
+		t.Fatalf("a caller that had given up shut the kept gateway down: closed=%v, %d launches", closed, launches.Load())
 	}
 }
