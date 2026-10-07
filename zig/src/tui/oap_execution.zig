@@ -295,6 +295,7 @@ pub const OapExecution = struct {
         try metadata.put(oapx_adapter.settings_key, settings_map.value());
         var open = Map.init(a);
         try open.put("metadata", metadata.value());
+        var reopened_history = settings.resume_session_id != null;
         if (settings.resume_session_id) |saved| {
             try open.put("session_id", .{ .string = saved });
             try open.put("reopen", .{ .bool = true });
@@ -306,6 +307,7 @@ pub const OapExecution = struct {
                     self.thread = try std.Thread.spawn(.{}, run, .{self});
                     return error.OapReopenRefused;
                 }
+                reopened_history = found.?.len > 0;
             };
             if (self.endpoint) |*endpoint| _ = endpoint.closeSession(saved);
         }
@@ -332,6 +334,7 @@ pub const OapExecution = struct {
         const kept_session = try self.allocator.dupe(u8, session_id.string);
         self.allocator.free(self.session_id);
         self.session_id = kept_session;
+        self.has_history.store(reopened_history, .release);
         if (settings.resume_session_id != null and left.len > 0 and !std.mem.eql(u8, left, kept_session)) {
             if (self.endpoint) |*endpoint| _ = endpoint.closeSession(left);
         }
@@ -1971,6 +1974,25 @@ test "a refused reopen before any session opened leaves the runtime unstarted, s
     defer seen.deinit();
     try drainTurn(&runtime, &seen);
     try testing.expectEqual(@as(?tui_session.TuiEndReason, .completed), seen.end);
+}
+
+test "a saved session reopened over OAP compacts before any new turn, as the transcript it loaded is history" {
+    var script = Script{ .reply = "the session so far" };
+    var execution: *OapExecution = undefined;
+    var runtime = try remoteRuntime(&script, &execution, .low);
+    defer execution.destroy();
+    defer runtime.deinit();
+    var saved = SavedTranscript{};
+    execution.setHistory(.{ .ctx = &saved, .load = SavedTranscript.load });
+
+    try runtime.start();
+    try testing.expectError(error.NothingToCompact, runtime.compact(.{}));
+    try runtime.reopenSaved("saved-session", null);
+    try runtime.compact(.{});
+    var seen = Compactions{};
+    defer seen.deinit();
+    try drainCompactions(&runtime, &seen, true);
+    try testing.expectEqual(@as(?CompactionOutcome, .completed), seen.outcome);
 }
 
 test "a saved session reopened over OAP carries its transcript into the next run" {
