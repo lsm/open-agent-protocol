@@ -522,7 +522,7 @@ var verbs = []struct {
 
 func withdrawn(descriptor base.Descriptor, key string) bool {
 	feature, ok := descriptor.Capabilities.Features[key]
-	return ok && feature.Level == protocol.SupportUnavailable
+	return !ok || feature.Level == protocol.SupportUnavailable
 }
 
 func (f *Front) Capabilities(ctx context.Context) (any, *Refusal) {

@@ -2,7 +2,9 @@ package servehttp
 
 import (
 	"encoding/json"
+	"errors"
 	"io"
+	"mime"
 	"net/http"
 	"strconv"
 
@@ -61,9 +63,25 @@ func queryFlag(r *http.Request, name string) bool {
 	return value == "true" || value == "1"
 }
 
-func workBody(r *http.Request) (json.RawMessage, bool) {
-	body, err := io.ReadAll(r.Body)
-	if err != nil || len(body) == 0 || !json.Valid(body) {
+func (s *Server) workBody(w http.ResponseWriter, r *http.Request) (json.RawMessage, bool) {
+	mediaType, _, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
+	if err != nil || mediaType != "application/json" {
+		s.writeError(w, http.StatusUnsupportedMediaType, "unsupported_media_type", "a request with a body declares application/json; the daemon reads no other media type", protocol.Envelope{})
+		return nil, false
+	}
+	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxRequestBytes))
+	if err != nil {
+		var tooLarge *http.MaxBytesError
+		if errors.As(err, &tooLarge) {
+			s.writeError(w, http.StatusRequestEntityTooLarge, "request_too_large", "request body exceeds the daemon limit", protocol.Envelope{})
+		} else {
+			s.writeError(w, http.StatusBadRequest, "request_read", "request body could not be read", protocol.Envelope{})
+		}
+		return nil, false
+	}
+	var object map[string]json.RawMessage
+	if len(body) == 0 || json.Unmarshal(body, &object) != nil || object == nil {
+		s.answerWork(w, nil, malformedWork, "")
 		return nil, false
 	}
 	return body, true
@@ -88,9 +106,8 @@ func (s *Server) handleWorkStatus(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleWorkStart(w http.ResponseWriter, r *http.Request) {
-	body, ok := workBody(r)
+	body, ok := s.workBody(w, r)
 	if !ok {
-		s.answerWork(w, nil, malformedWork, "")
 		return
 	}
 	answer, refusal := s.work.Start(r.Context(), r.PathValue("name"), body)
@@ -98,9 +115,8 @@ func (s *Server) handleWorkStart(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleWorkSend(w http.ResponseWriter, r *http.Request) {
-	body, ok := workBody(r)
+	body, ok := s.workBody(w, r)
 	if !ok {
-		s.answerWork(w, nil, malformedWork, "")
 		return
 	}
 	id := r.PathValue("id")

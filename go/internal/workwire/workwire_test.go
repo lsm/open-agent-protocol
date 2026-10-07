@@ -289,9 +289,9 @@ func TestWorkListGroupsHeldAndUnheldSessionsAndShowsClosedOnesOnlyOnRequest(t *t
 	}
 }
 
-func TestWorkCapabilitiesLeavesOutAVerbWhoseFeatureTheAdapterDeclaresUnavailable(t *testing.T) {
+func TestWorkCapabilitiesLeavesOutAVerbWhoseFeatureTheAdapterDeclaresUnavailableOrDoesNotDeclare(t *testing.T) {
 	front, adapter := harness(t, nil)
-	adapter.features = map[string]protocol.FeatureSupport{"run.cancel": {Level: protocol.SupportUnavailable}}
+	adapter.features = map[string]protocol.FeatureSupport{"run.cancel": {Level: protocol.SupportUnavailable}, "session.message.submit": {Level: protocol.SupportNative}}
 	reach := encoded(t)(front.Capabilities(context.Background()))["adapters"].([]any)[0].(map[string]any)
 	verbs := reach["verbs"].([]any)
 	if len(verbs) != 5 {
@@ -304,6 +304,11 @@ func TestWorkCapabilitiesLeavesOutAVerbWhoseFeatureTheAdapterDeclaresUnavailable
 	}
 	if reach["native"].(map[string]any)["read"] != true || reach["native"].(map[string]any)["list"] != false || reach["directory"] != "/work/a" {
 		t.Fatalf("reach %v", reach)
+	}
+	adapter.features = map[string]protocol.FeatureSupport{"session.message.submit": {Level: protocol.SupportNative}}
+	undeclared := encoded(t)(front.Capabilities(context.Background()))["adapters"].([]any)[0].(map[string]any)["verbs"].([]any)
+	if len(undeclared) != 5 {
+		t.Fatalf("verbs %v, want work.stop left out when run.cancel is undeclared", undeclared)
 	}
 }
 
