@@ -2,6 +2,7 @@
 
 import sys
 import unittest
+from typing import Any, Dict
 
 from oap_sdk import AuthFlowHandlers, AuthOptions, AuthPromptEvent, MakaiAuthError, MakaiProtocolError, MakaiStreamError, RunOptions, ToolContext, ToolDefinition, connect
 from oap_sdk._oap import _messages
@@ -210,7 +211,7 @@ class OAPWireTests(unittest.IsolatedAsyncioTestCase):
                 options=RunOptions(session_id="session-1"))
             self.assertEqual(agent_response.text, "agent")
             invoked = []
-            def lookup(args: dict, context: ToolContext) -> str:
+            def lookup(args: Dict[str, Any], context: ToolContext) -> str:
                 invoked.append((args, context.tool_call_id, context.tool_name))
                 return "open agent protocol"
             tool_response = await client.agent.run(model_ref="fixture/other:test@tool",
@@ -218,6 +219,12 @@ class OAPWireTests(unittest.IsolatedAsyncioTestCase):
                 tools=[ToolDefinition(name="lookup", description="", parameters_schema_json="{}", execute=lookup)])
             self.assertEqual(tool_response.text, "lookup owned by sdk said open agent protocol (error None) as sdk")
             self.assertEqual(invoked, [({"word": "oap"}, "call-1", "lookup")])
+            def silent(args: Dict[str, Any], context: ToolContext) -> str:
+                raise RuntimeError()
+            failed = await client.agent.run(model_ref="fixture/other:test@tool",
+                messages=[{"role": "user", "content": "hi"}],
+                tools=[ToolDefinition(name="lookup", description="", parameters_schema_json="{}", execute=silent)])
+            self.assertEqual(failed.text, "lookup owned by sdk said None (error RuntimeError) as sdk")
             tool_events = [event.type async for event in client.agent.stream(model_ref="fixture/other:test@tool",
                 messages=[{"role": "user", "content": "hi"}],
                 tools=[ToolDefinition(name="lookup", description="", parameters_schema_json="{}", execute=lookup)])]

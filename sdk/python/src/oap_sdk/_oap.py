@@ -483,7 +483,7 @@ async def _resolve_call(call: Mapping[str, Any], session_id: str, run_id: str,
         except asyncio.CancelledError:
             raise
         except Exception as exc:
-            answer["error"] = {"code": "tool_failed", "message": str(exc)}
+            answer["error"] = {"code": "tool_failed", "message": str(exc) or type(exc).__name__}
     return envelope(AGENT, "action.call.resolve.request", answer, session_id=session_id, run_id=run_id)
 
 
