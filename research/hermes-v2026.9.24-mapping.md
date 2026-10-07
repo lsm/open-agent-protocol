@@ -494,11 +494,15 @@ gateway's own `session.list`. Read from the source at this pin's commit
   epoch seconds as a float (`time.time()` in `hermes_state_sessions.py`),
   converted to milliseconds. A row carries no working directory, so the entry
   has none rather than borrowing the adapter's.
-- **Cost.** Each listing starts a gateway, waits for `gateway.ready`, calls
-  `session.list` once and closes it. `oapx serve` runs that on a job thread
+- **Cost.** Both trees keep one gateway for listings, as the Codex adapter
+  keeps its app-server: started on first use (after `gateway.ready`), kept
+  across `session.list` calls, and replaced only when it has exited. A listing
+  that breaks a reused gateway is retried once on a fresh one, an error the
+  gateway answers keeps it, and a listing that finds it busy runs on a gateway
+  of its own. Its events and notifications are read and dropped (Go releases
+  each barrier its client queues). `oapx serve` runs a listing on a job thread
   (#947) and `goap serve` in the request's own goroutine, so neither stalls
-  other callers; keeping one gateway alive across listings, as Codex keeps its
-  app-server, is a follow-up.
+  other callers.
 - **Trees.** Zig and Go map a row the same way, down to `started_at`: an
   integer saturates at the `int64` bounds and a float beyond 1e15 seconds
   reads as 0.

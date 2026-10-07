@@ -4,10 +4,13 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"math"
 	"strconv"
+	"sync"
 
 	base "github.com/lsm/open-agent-protocol/go/adapter"
+	"github.com/lsm/open-agent-protocol/go/adapter/hermes/internal/rpc"
 )
 
 const methodSessionList = "session.list"
@@ -20,17 +23,100 @@ type sessionListParams struct {
 	Limit int `json:"limit"`
 }
 
-func (f processClientFactory) List(ctx context.Context, limit int) (json.RawMessage, error) {
-	p, client, _, err := f.launch(ctx)
-	if err != nil {
-		return nil, err
-	}
-	defer func() { _ = p.Close(context.Background()) }()
+type listGateway struct {
+	mu     sync.Mutex
+	bridge ProcessBridge
+}
+
+func listOn(ctx context.Context, client Client, limit int) (json.RawMessage, error) {
 	var answered json.RawMessage
 	if err := client.Call(ctx, methodSessionList, sessionListParams{Limit: limit}, &answered); err != nil {
 		return nil, err
 	}
 	return answered, nil
+}
+
+func (f processClientFactory) List(ctx context.Context, limit int) (json.RawMessage, error) {
+	kept := f.lister
+	if kept == nil || !kept.mu.TryLock() {
+		p, client, _, err := f.launch(ctx)
+		if err != nil {
+			return nil, err
+		}
+		defer func() { _ = p.Close(context.Background()) }()
+		return listOn(ctx, client, limit)
+	}
+	defer kept.mu.Unlock()
+	reused := kept.bridge != nil
+	if reused && gatewayEnded(kept.bridge) {
+		_ = kept.bridge.Close(context.Background())
+		kept.bridge, reused = nil, false
+	}
+	if kept.bridge == nil {
+		bridge, err := f.keep(ctx)
+		if err != nil {
+			return nil, err
+		}
+		kept.bridge = bridge
+	}
+	answered, err := listOn(ctx, kept.bridge.ClientHandle(), limit)
+	if err == nil || !gatewayBroken(kept.bridge, err) {
+		return answered, err
+	}
+	_ = kept.bridge.Close(context.Background())
+	kept.bridge = nil
+	if !reused {
+		return nil, err
+	}
+	bridge, err := f.keep(ctx)
+	if err != nil {
+		return nil, err
+	}
+	kept.bridge = bridge
+	answered, err = listOn(ctx, bridge.ClientHandle(), limit)
+	if err != nil && gatewayBroken(bridge, err) {
+		_ = bridge.Close(context.Background())
+		kept.bridge = nil
+	}
+	return answered, err
+}
+
+func (f processClientFactory) keep(ctx context.Context) (ProcessBridge, error) {
+	bridge, err := f.processes.Start(context.WithoutCancel(ctx), f.config)
+	if err != nil {
+		return nil, err
+	}
+	client := bridge.ClientHandle()
+	go func() {
+		for {
+			select {
+			case message, open := <-client.Inbound():
+				if !open {
+					return
+				}
+				if message.Barrier != nil {
+					close(message.Barrier)
+				}
+			case <-client.Done():
+				return
+			}
+		}
+	}()
+	return bridge, nil
+}
+
+func gatewayEnded(bridge ProcessBridge) bool {
+	select {
+	case <-bridge.Done():
+		return true
+	default:
+		return false
+	}
+}
+
+func gatewayBroken(bridge ProcessBridge, err error) bool {
+	var remote *rpc.RemoteError
+	return !errors.As(err, &remote) || gatewayEnded(bridge)
 }
 
 func (a *Adapter) NativeList(ctx context.Context, request base.NativeListRequest) ([]base.NativeListing, error) {

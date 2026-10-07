@@ -70,9 +70,16 @@ pub const Adapter = struct {
     allocator: std.mem.Allocator,
     config: Config,
     ids: usize = 0,
+    lister: ?*Session = null,
+    lister_lock: std.atomic.Mutex = .unlocked,
 
     pub fn init(allocator: std.mem.Allocator, config: Config) Adapter {
         return .{ .allocator = allocator, .config = config };
+    }
+
+    pub fn deinit(self: *Adapter) void {
+        if (self.lister) |kept| kept.destroy();
+        self.* = undefined;
     }
 
     pub fn adapter(self: *Adapter) contract.Adapter {
@@ -135,9 +142,39 @@ pub const Session = struct {
     }
 
     fn list(owner: *Adapter, arena: std.mem.Allocator, request: contract.NativeListRequest, refusal: *contract.Refusal) contract.Failure![]const contract.NativeSession {
+        if (!owner.lister_lock.tryLock()) {
+            const alone = try listing(owner, arena, refusal);
+            defer alone.destroy();
+            return alone.listSessions(arena, request, refusal);
+        }
+        defer owner.lister_lock.unlock();
+        const reused = owner.lister != null;
+        if (owner.lister == null) owner.lister = try listing(owner, arena, refusal);
+        if (owner.lister.?.listSessions(arena, request, refusal)) |found| return found else |err| {
+            if (!owner.lister.?.ended) return err;
+            owner.lister.?.destroy();
+            owner.lister = null;
+            if (!reused) return err;
+        }
+        refusal.* = .{};
+        owner.lister = try listing(owner, arena, refusal);
+        return owner.lister.?.listSessions(arena, request, refusal) catch |err| {
+            if (owner.lister.?.ended) {
+                owner.lister.?.destroy();
+                owner.lister = null;
+            }
+            return err;
+        };
+    }
+
+    fn listing(owner: *Adapter, arena: std.mem.Allocator, refusal: *contract.Refusal) contract.Failure!*Session {
         const self = try construct(owner, arena, .{ .participant = "" }, refusal);
-        defer self.destroy();
+        errdefer self.destroy();
         try self.handshake(arena, refusal);
+        return self;
+    }
+
+    fn listSessions(self: *Session, arena: std.mem.Allocator, request: contract.NativeListRequest, refusal: *contract.Refusal) contract.Failure![]const contract.NativeSession {
         var params: std.json.ObjectMap = .empty;
         try params.put(self.owned(), "limit", .{ .integer = @intCast(request.limit) });
         const answered = try self.call(arena, "session.list", .{ .object = params }, refusal);
@@ -886,6 +923,7 @@ const Probe = struct {
 
     fn deinit(self: *Probe) void {
         if (self.handle) |opened| opened.teardown();
+        self.adapter.deinit();
         self.arena.deinit();
         self.fake.deinit(testing.allocator);
     }
@@ -1361,4 +1399,59 @@ test "a native list asks the gateway's session.list for the limit and names each
         \\{"id":1,"jsonrpc":"2.0","method":"session.list","params":{"limit":2}}
         \\
     , try probe.fake.written(scratch));
+}
+
+fn launchesOf(probe: *Probe) !usize {
+    const text = probe.fake.tmp.dir.readFileAlloc(testing.io, "launches.log", probe.arena.allocator(), .limited(4096)) catch |err| switch (err) {
+        error.FileNotFound => return 0,
+        else => |failure| return failure,
+    };
+    return std.mem.count(u8, text, "start");
+}
+
+const counted_prelude =
+    \\#!/bin/sh
+    \\echo start >> "$(dirname "$0")/launches.log"
+    \\exec 3>>"$(dirname "$0")/stdin.log"
+    \\take() { IFS= read -r line || exit 0; printf '%s\n' "$line" >&3; }
+    \\printf '{"jsonrpc":"2.0","method":"event","params":{"type":"gateway.ready","payload":{"skin":{},"change_events":true,"replay_epoch":"e3b0c44298fc1c149afbf4c8996fb924"}}}\n'
+    \\
+;
+
+test "the listings share one gateway, a busy one is bypassed, and only a reused one that breaks is started again" {
+    var probe: Probe = undefined;
+    try probe.init(counted_prelude ++
+        \\take; printf '{"id":1,"jsonrpc":"2.0","result":{"sessions":[{"id":"key0001"}]}}\n'
+        \\take; printf '{"id":2,"jsonrpc":"2.0","result":{"sessions":[{"id":"key0002"}]}}\n'
+        \\take; printf '{"id":3,"jsonrpc":"2.0","error":{"code":-32000,"message":"busy"}}\n'
+        \\take; exit 0
+        \\
+    );
+    defer probe.deinit();
+    const scratch = probe.arena.allocator();
+    var refusal = contract.Refusal{};
+    const lister = probe.adapter.adapter();
+    try testing.expectEqualStrings("key0001", (try lister.nativeList(scratch, .{ .limit = 1 }, &refusal).?)[0].native_id);
+    try testing.expectEqualStrings("key0002", (try lister.nativeList(scratch, .{ .limit = 1 }, &refusal).?)[0].native_id);
+    try testing.expectEqual(@as(usize, 1), try launchesOf(&probe));
+    try testing.expect(probe.adapter.lister_lock.tryLock());
+    const alone = try lister.nativeList(scratch, .{ .limit = 1 }, &refusal).?;
+    probe.adapter.lister_lock.unlock();
+    try testing.expectEqualStrings("key0001", alone[0].native_id);
+    try testing.expectEqual(@as(usize, 2), try launchesOf(&probe));
+    try testing.expectError(error.BackendFailed, lister.nativeList(scratch, .{ .limit = 1 }, &refusal).?);
+    try testing.expectEqual(@as(usize, 2), try launchesOf(&probe));
+    refusal = .{};
+    const retried = try lister.nativeList(scratch, .{ .limit = 1 }, &refusal).?;
+    try testing.expectEqualStrings("key0001", retried[0].native_id);
+    try testing.expectEqual(@as(usize, 3), try launchesOf(&probe));
+}
+
+test "a listing gateway that breaks on its first call is not started again" {
+    var probe: Probe = undefined;
+    try probe.init(counted_prelude ++ "exit 0\n");
+    defer probe.deinit();
+    var refusal = contract.Refusal{};
+    try testing.expectError(error.BackendFailed, probe.adapter.adapter().nativeList(probe.arena.allocator(), .{ .limit = 1 }, &refusal).?);
+    try testing.expectEqual(@as(usize, 1), try launchesOf(&probe));
 }

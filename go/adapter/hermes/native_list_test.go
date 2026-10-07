@@ -6,8 +6,10 @@ import (
 	"math"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	base "github.com/lsm/open-agent-protocol/go/adapter"
+	"github.com/lsm/open-agent-protocol/go/adapter/hermes/internal/rpc"
 )
 
 func TestTheNativeListAsksOneGatewayForItsStoredSessionsTitledByTitleOrPreview(t *testing.T) {
@@ -33,8 +35,62 @@ func TestTheNativeListAsksOneGatewayForItsStoredSessionsTitledByTitleOrPreview(t
 	f.mu.Lock()
 	closed := f.closed
 	f.mu.Unlock()
-	if !closed {
-		t.Fatal("the listing left its gateway running")
+	if closed {
+		t.Fatal("the listing closed the gateway it keeps for the next one")
+	}
+}
+
+func TestTheListingsShareOneGatewayAndStartAnotherOnlyWhenItBreaks(t *testing.T) {
+	sessions := reply{result: map[string]any{"sessions": []any{map[string]any{"id": "stored-a"}}}}
+	var gateways []*fakeClient
+	add := func(replies ...reply) *fakeClient {
+		gateway := newFake()
+		for _, r := range replies {
+			gateway.queue(methodSessionList, r)
+		}
+		gateways = append(gateways, gateway)
+		return gateway
+	}
+	kept := add(sessions, sessions, reply{err: &rpc.RemoteError{Object: rpc.ErrorObject{Code: -32000, Message: "busy"}}}, reply{err: errors.New("pipe closed")})
+	var launches atomic.Int32
+	implementation, err := New(Config{Model: "hermes-test", Clock: &testClock{}, IDs: &testIDs{}, ProcessFactory: ProcessFactoryFunc(func(context.Context, rpc.ProcessConfig) (ProcessBridge, error) {
+		at := int(launches.Add(1)) - 1
+		return fakeBridge{client: gateways[min(at, len(gateways)-1)]}, nil
+	})})
+	if err != nil {
+		t.Fatal(err)
+	}
+	list := func() error {
+		_, err := implementation.NativeList(context.Background(), base.NativeListRequest{Limit: 1})
+		return err
+	}
+	closed := func(gateway *fakeClient) bool {
+		gateway.mu.Lock()
+		defer gateway.mu.Unlock()
+		return gateway.closed
+	}
+	if list() != nil || list() != nil || launches.Load() != 1 || closed(kept) {
+		t.Fatalf("two listings launched %d gateways", launches.Load())
+	}
+	if list() == nil || launches.Load() != 1 || closed(kept) {
+		t.Fatalf("an error the gateway answered dropped it: %d launches", launches.Load())
+	}
+	fresh := add(sessions)
+	if err := list(); err != nil || launches.Load() != 2 || !closed(kept) {
+		t.Fatalf("a broken reused gateway answered %v after %d launches", err, launches.Load())
+	}
+	_ = fresh.Close()
+	third := add(reply{err: errors.New("died at once")}, sessions)
+	if list() == nil || launches.Load() != 3 || len(fresh.calls) != 1 || !closed(third) {
+		t.Fatalf("an exited gateway was used again, or one that broke at once was retried: %d launches", launches.Load())
+	}
+	spare := add(sessions)
+	lister := implementation.config.Factory.(processClientFactory).lister
+	lister.mu.Lock()
+	err = list()
+	lister.mu.Unlock()
+	if err != nil || launches.Load() != 4 || !closed(spare) {
+		t.Fatalf("a listing while the kept gateway was busy did not run on its own: %v, %d launches", err, launches.Load())
 	}
 }
 
@@ -74,4 +130,21 @@ func TestStartedAtReadsSecondsAsMillisecondsSaturatingAnIntegerAndRefusingAnUnbo
 			t.Fatalf("startedMillis(%q) = %d, want %d", c.raw, got, c.want)
 		}
 	}
+}
+
+func TestTheKeptGatewayReleasesEachBarrierItsClientQueues(t *testing.T) {
+	f := newFake()
+	f.queue(methodSessionList, reply{result: map[string]any{"sessions": []any{}}})
+	barrier := make(chan struct{})
+	f.in <- rpc.InboundMessage{Barrier: barrier}
+	var launches atomic.Int32
+	if _, err := processBackedAdapter(t, f, &launches).NativeList(context.Background(), base.NativeListRequest{Limit: 1}); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-barrier:
+	case <-time.After(time.Second):
+		t.Fatal("the kept gateway's barrier was never released")
+	}
+	_ = f.Close()
 }

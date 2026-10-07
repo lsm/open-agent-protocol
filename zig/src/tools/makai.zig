@@ -1423,12 +1423,15 @@ const HubRegistry = struct {
     memories: std.ArrayList(*memory_adapter.Adapter) = .empty,
     claudes: std.ArrayList(*claude_adapter.Adapter) = .empty,
     codexes: std.ArrayList(*codex_adapter.Adapter) = .empty,
+    hermeses: std.ArrayList(*hermes_adapter.Adapter) = .empty,
 
     fn deinit(self: *HubRegistry) void {
         for (self.claudes.items) |claude| claude.deinit();
         self.claudes.deinit(self.allocator);
         for (self.codexes.items) |codex| codex.deinit();
         self.codexes.deinit(self.allocator);
+        for (self.hermeses.items) |hermes| hermes.deinit();
+        self.hermeses.deinit(self.allocator);
         if (self.production) |production| {
             production.deinit();
             self.allocator.destroy(production);
@@ -1492,6 +1495,7 @@ const HubRegistry = struct {
             const config = hermesBackendConfig(self.surface, arena, entry, self.environ) catch |failure| return self.reported(failure);
             const built = try arena.create(hermes_adapter.Adapter);
             built.* = hermes_adapter.Adapter.init(self.allocator, config);
+            try self.hermeses.append(self.allocator, built);
             return built.adapter();
         }
         if (std.mem.eql(u8, entry.kind, "memory")) {
