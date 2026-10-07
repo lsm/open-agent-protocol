@@ -105,6 +105,7 @@ pub const descriptor = contract.Descriptor{
 };
 
 pub const default_compact_above: usize = 256 * 1024;
+const list_pages_max: usize = 16;
 
 pub const Config = struct {
     executable: []const u8,
@@ -402,7 +403,8 @@ pub const Session = struct {
         const directory = if (request.directory.len > 0) request.directory else owner.config.working_directory;
         var listed: std.ArrayList(contract.NativeSession) = .empty;
         var cursor: []const u8 = "";
-        while (listed.items.len < request.limit) {
+        var pages: usize = 0;
+        while (listed.items.len < request.limit and pages < list_pages_max) : (pages += 1) {
             var params: std.json.ObjectMap = .empty;
             try params.put(arena, "cwd", .{ .string = directory });
             if (cursor.len > 0) try params.put(arena, "cursor", .{ .string = cursor });
@@ -1821,4 +1823,24 @@ test "a native list pages session/list in the working directory when the agent a
     try testing.expectEqual(@as(usize, 0), none.len);
     const asked = try bare.fake.written(bare.arena.allocator());
     try testing.expect(std.mem.indexOf(u8, asked, "session/list") == null);
+}
+
+test "a native list stops paging after a bounded number of pages when the agent keeps minting cursors" {
+    var probe: Probe = undefined;
+    try probe.init(
+        \\#!/bin/sh
+        \\exec 3>>"$(dirname "$0")/stdin.log"
+        \\take() { IFS= read -r line || exit 0; printf '%s\n' "$line" >&3; }
+        \\take; printf '{"id":1,"jsonrpc":"2.0","result":{"agentCapabilities":{"sessionCapabilities":{"list":{}}},"protocolVersion":1}}\n'
+        \\i=2
+        \\while take; do printf '{"id":%s,"jsonrpc":"2.0","result":{"sessions":[{"cwd":"/w"}],"nextCursor":"c%s"}}\n' "$i" "$i"; i=$((i+1)); done
+        \\
+    );
+    defer probe.deinit();
+    const scratch = probe.arena.allocator();
+    var refusal = contract.Refusal{};
+    const listed = try probe.adapter.adapter().nativeList(scratch, .{ .directory = "/w" }, &refusal).?;
+    try testing.expectEqual(@as(usize, 0), listed.len);
+    const written = try probe.fake.written(scratch);
+    try testing.expectEqual(list_pages_max, std.mem.count(u8, written, "session/list"));
 }
