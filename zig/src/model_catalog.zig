@@ -1721,25 +1721,19 @@ const AnthropicSpec = struct {
 };
 
 const anthropic_known_models = [_]AnthropicSpec{
-    .{ .prefix = "claude-opus-4-1", .cost = .{ .input = 15.0, .output = 75.0, .cache_read = 1.50, .cache_write = 18.75 }, .max_tokens = 32_000 },
-    .{ .prefix = "claude-opus-4", .cost = .{ .input = 15.0, .output = 75.0, .cache_read = 1.50, .cache_write = 18.75 }, .max_tokens = 32_000 },
-    .{ .prefix = "claude-sonnet-4-5", .cost = .{ .input = 3.0, .output = 15.0, .cache_read = 0.30, .cache_write = 3.75 }, .max_tokens = 64_000 },
-    .{ .prefix = "claude-sonnet-4", .cost = .{ .input = 3.0, .output = 15.0, .cache_read = 0.30, .cache_write = 3.75 }, .max_tokens = 64_000 },
+    .{ .prefix = "claude-fable-5-1", .cost = .{ .input = 10.0, .output = 50.0, .cache_read = 0.25, .cache_write = 12.5 }, .max_tokens = 128_000 },
+    .{ .prefix = "claude-opus-5-5", .cost = .{ .input = 4.0, .output = 20.0, .cache_read = 0.20, .cache_write = 5.0 }, .max_tokens = 128_000 },
+    .{ .prefix = "claude-sonnet-5-5", .cost = .{ .input = 2.0, .output = 10.0, .cache_read = 0.20, .cache_write = 2.5 }, .max_tokens = 128_000 },
     .{ .prefix = "claude-haiku-4-5", .cost = .{ .input = 1.0, .output = 5.0, .cache_read = 0.10, .cache_write = 1.25 }, .max_tokens = 64_000 },
-    .{ .prefix = "claude-3-7-sonnet", .cost = .{ .input = 3.0, .output = 15.0, .cache_read = 0.30, .cache_write = 3.75 }, .max_tokens = 64_000 },
-    .{ .prefix = "claude-3-5-sonnet", .cost = .{ .input = 3.0, .output = 15.0, .cache_read = 0.30, .cache_write = 3.75 }, .max_tokens = 8_192 },
-    .{ .prefix = "claude-3-5-haiku", .cost = .{ .input = 0.80, .output = 4.0, .cache_read = 0.08, .cache_write = 1.0 }, .max_tokens = 8_192 },
 };
 
 const AnthropicStatic = struct { id: []const u8, name: []const u8 };
 
 const anthropic_static_models = [_]AnthropicStatic{
     .{ .id = "claude-fable-5-1", .name = "Claude Fable 5.1" },
-    .{ .id = "claude-opus-5", .name = "Claude Opus 5" },
-    .{ .id = "claude-sonnet-5", .name = "Claude Sonnet 5" },
-    .{ .id = "claude-sonnet-4-5", .name = "Claude Sonnet 4.5" },
+    .{ .id = "claude-opus-5-5", .name = "Claude Opus 5.5" },
+    .{ .id = "claude-sonnet-5-5", .name = "Claude Sonnet 5.5" },
     .{ .id = "claude-haiku-4-5-20251001", .name = "Claude Haiku 4.5" },
-    .{ .id = "claude-opus-4-1", .name = "Claude Opus 4.1" },
 };
 
 fn anthropicSpec(id: []const u8) ?AnthropicSpec {
@@ -2464,20 +2458,20 @@ fn objectU32(obj: *const std.json.ObjectMap, key: []const u8) ?u32 {
 
 test "parseAnthropicModels maps the models endpoint into owned Anthropic models" {
     const body =
-        \\{"data":[{"type":"model","id":"claude-sonnet-4-5-20250929","display_name":"Claude Sonnet 4.5","created_at":"2025-09-29T00:00:00Z"},{"type":"model","id":"claude-opus-4-1-20250805","display_name":"Claude Opus 4.1"},{"type":"model","id":"claude-future-9","display_name":"Claude Future"},{"type":"model","id":"not-a-claude"}],"has_more":false}
+        \\{"data":[{"type":"model","id":"claude-sonnet-5-5","display_name":"Claude Sonnet 5.5","created_at":"2026-09-29T00:00:00Z"},{"type":"model","id":"claude-haiku-4-5-20251001","display_name":"Claude Haiku 4.5"},{"type":"model","id":"claude-future-9","display_name":"Claude Future"},{"type":"model","id":"not-a-claude"}],"has_more":false}
     ;
     const models = try parseAnthropicModels(std.testing.allocator, body);
     defer deinitModels(std.testing.allocator, models);
     try std.testing.expectEqual(@as(usize, 3), models.len);
-    try std.testing.expectEqualStrings("claude-sonnet-4-5-20250929", models[0].id);
-    try std.testing.expectEqualStrings("Claude Sonnet 4.5", models[0].name);
+    try std.testing.expectEqualStrings("claude-sonnet-5-5", models[0].id);
+    try std.testing.expectEqualStrings("Claude Sonnet 5.5", models[0].name);
     try std.testing.expectEqualStrings(anthropic_provider_id, models[0].provider);
     try std.testing.expectEqualStrings(anthropic_api_name, models[0].api);
     try std.testing.expectEqualStrings("https://api.anthropic.com", models[0].base_url);
-    try std.testing.expectEqual(@as(f64, 3.0), models[0].cost.input);
-    try std.testing.expectEqual(@as(u32, 64_000), models[0].max_tokens);
-    try std.testing.expectEqual(@as(f64, 15.0), models[1].cost.input);
-    try std.testing.expectEqual(@as(u32, 32_000), models[1].max_tokens);
+    try std.testing.expectEqual(@as(f64, 2.0), models[0].cost.input);
+    try std.testing.expectEqual(@as(u32, 128_000), models[0].max_tokens);
+    try std.testing.expectEqual(@as(f64, 1.0), models[1].cost.input);
+    try std.testing.expectEqual(@as(u32, 64_000), models[1].max_tokens);
     try std.testing.expectEqual(@as(f64, 0), models[2].cost.input);
     try std.testing.expect(models[2].reasoning);
 }

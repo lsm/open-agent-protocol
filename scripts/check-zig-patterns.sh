@@ -402,7 +402,6 @@ zig/src/tools/permission.zig|                .tool_name = try self.allocator.dup
 zig/src/transport.zig|            .api = try allocator.dupe(u8, ""),
 zig/src/transport.zig|            .api = try allocator.dupe(u8, ""),
 zig/src/transport.zig|            .api = try allocator.dupe(u8, ""),
-zig/src/tui/config.zig|            .model = try allocator.dupe(u8, "claude-sonnet-4-5"),
 zig/src/tui/runtime.zig|                .data = try allocator.dupe(u8, img.data),
 zig/src/tui/runtime.zig|                .id = try allocator.dupe(u8, tc.id),
 zig/src/tui/runtime.zig|                .text = try allocator.dupe(u8, t.text),
