@@ -143,3 +143,13 @@ agent. It verifies the native id was recorded at open and that a reopened
 session uses that binding and returns the agent's settings. The ordered-RPC
 setting regression also ensures a requested thought level can be confirmed
 after load, before the session dispatcher begins consuming the live stream.
+
+## Native session list
+
+Both trees list an agent's own sessions for `work.list` the same way: a
+short-lived agent process, `initialize`, and `session/list {cwd[, cursor]}`
+only when `agentCapabilities.sessionCapabilities.list` is present and not
+null; pages are followed by `nextCursor` until the limit, a repeated cursor,
+or 16 pages. A row without a `sessionId` is skipped, and a member of the wrong
+type reads as absent. Against `devin acp`, `goap hub --stdio` and
+`oapx serve --stdio` listed the same sessions with the same titles and times.
