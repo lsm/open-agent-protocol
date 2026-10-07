@@ -187,20 +187,18 @@ fn parseConfig(allocator: std.mem.Allocator, data: []const u8) !Config {
         else => return error.InvalidConfig,
     };
 
-    const model = try dupStringField(allocator, obj, "model", "claude-sonnet-5-5");
-    errdefer allocator.free(model);
-    const provider = try dupStringField(allocator, obj, "provider", "anthropic");
-    errdefer allocator.free(provider);
-    const api = try dupStringField(allocator, obj, "api", "");
-    errdefer allocator.free(api);
-    const workspace = try dupStringField(allocator, obj, "workspace", "");
-    var cfg = Config{ .model = model, .provider = provider, .api = api, .workspace = workspace };
+    var cfg = cfg: {
+        const model = try dupStringField(allocator, obj, "model", "claude-sonnet-5-5");
+        errdefer allocator.free(model);
+        const provider = try dupStringField(allocator, obj, "provider", "anthropic");
+        errdefer allocator.free(provider);
+        const api = try dupStringField(allocator, obj, "api", "");
+        errdefer allocator.free(api);
+        const named = stringField(obj, "workspace") orelse "";
+        const workspace = try allocator.dupe(u8, if (named.len == 0) "." else named);
+        break :cfg Config{ .model = model, .provider = provider, .api = api, .workspace = workspace };
+    };
     errdefer cfg.deinit(allocator);
-
-    if (cfg.workspace.len == 0) {
-        allocator.free(cfg.workspace);
-        cfg.workspace = try allocator.dupe(u8, ".");
-    }
 
     if (obj.get("permissions")) |value| switch (value) {
         .array => |arr| for (arr.items) |item| {
@@ -210,10 +208,9 @@ fn parseConfig(allocator: std.mem.Allocator, data: []const u8) !Config {
             };
             const tool = stringField(perm_obj, "tool_name") orelse continue;
             const mode_text = stringField(perm_obj, "mode") orelse "ask";
-            try cfg.permissions.append(allocator, .{
-                .tool_name = try allocator.dupe(u8, tool),
-                .mode = parsePermissionMode(mode_text),
-            });
+            const tool_name = try allocator.dupe(u8, tool);
+            errdefer allocator.free(tool_name);
+            try cfg.permissions.append(allocator, .{ .tool_name = tool_name, .mode = parsePermissionMode(mode_text) });
         },
         else => {},
     };
@@ -347,6 +344,17 @@ fn parsePermissionMode(value: []const u8) ToolPermission.Mode {
     if (std.mem.eql(u8, value, "allow")) return .allow;
     if (std.mem.eql(u8, value, "deny")) return .deny;
     return .ask;
+}
+
+test "a parsed config with a blank workspace and permissions leaks nothing and frees nothing twice under allocation failure" {
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, struct {
+        fn run(allocator: std.mem.Allocator) !void {
+            var cfg = try parseConfig(allocator,
+                \\{"model":"m","provider":"p","api":"a","workspace":"","permissions":[{"tool_name":"shell","mode":"allow"},{"tool_name":"edit"}]}
+            );
+            cfg.deinit(allocator);
+        }
+    }.run, .{});
 }
 
 test "the default config leaks nothing under allocation failure" {
