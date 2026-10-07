@@ -988,7 +988,7 @@ def scenario_commands(args):
             raise ScenarioError("commands: composer input not restored after Escape closed the model picker")
         run.session.send(b"\x7f\x7f", "Backspace clears the echo probe")
         run.settle()
-        run.command("/model claude-sonnet-4-5", "model switched to claude-sonnet-4-5")
+        run.command("/model claude-sonnet-5-5", "model switched to claude-sonnet-5-5")
 
         run.command("/login", "Login provider")
         run.key(KEY_ESC, "Escape closes login picker")
@@ -1435,7 +1435,7 @@ def scenario_session_roundtrip(args):
             second.settle()
             picker_from = len(second.session.plain)
             second.command("/resume", "Sessions")
-            picker_row = re.compile("remember the alpha · \\d{4}-\\d\\d-\\d\\d \\d\\d:\\d\\d · claude-sonnet-4-5".encode())
+            picker_row = re.compile("remember the alpha · \\d{4}-\\d\\d-\\d\\d \\d\\d:\\d\\d · claude-sonnet-5-5".encode())
             if not picker_row.search(second.session.plain, picker_from):
                 raise ScenarioError("session-roundtrip: picker row does not show the session's title, time and model")
             second.frame("session-picker")
