@@ -12,11 +12,13 @@ export {
   type ByteBody,
   type StreamReader,
   type Work,
+  type WorkAdapterCapabilities,
   type WorkGroup,
   type WorkRef,
   type WorkStartInput,
   type WorkStatus,
   type WorkTurn,
+  type WorkVerb,
 } from './client.js';
 
 export {

@@ -53,6 +53,16 @@ export interface WorkTurn {
   at_ms: number;
 }
 
+export type WorkVerb = 'work.list' | 'work.start' | 'work.send' | 'work.status' | 'work.stop' | 'work.read';
+
+export interface WorkAdapterCapabilities {
+  adapter: string;
+  directory?: string;
+  any_directory: boolean;
+  verbs: WorkVerb[];
+  native: { list: boolean; read: boolean };
+}
+
 export interface WorkStartInput {
   message: string;
   title?: string;
@@ -172,6 +182,17 @@ export class OapClient {
       'list work',
     );
     return { groups: listed.groups ?? [], unavailable: listed.unavailable ?? [] };
+  }
+
+  async workCapabilities(): Promise<{
+    adapters: WorkAdapterCapabilities[];
+    unavailable: { adapter: string; message: string }[];
+  }> {
+    const answered = await this.plain<{
+      adapters?: WorkAdapterCapabilities[];
+      unavailable?: { adapter: string; message: string }[];
+    }>('GET', '/work/capabilities', null, 'read work capabilities');
+    return { adapters: answered.adapters ?? [], unavailable: answered.unavailable ?? [] };
   }
 
   async workStatus(sessionId: string): Promise<Work> {
