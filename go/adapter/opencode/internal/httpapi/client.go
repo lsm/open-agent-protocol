@@ -276,6 +276,10 @@ func (c *Client) Sessions(ctx context.Context, directory, cursor string, limit i
 	return SessionPage{Data: response.Data, Next: position.Next}, nil
 }
 
+func (c *Client) ReplyPermission(ctx context.Context, session native.SessionID, request string, reply native.PermissionReply) error {
+	return c.do(ctx, http.MethodPost, "/api/session/"+url.PathEscape(string(session))+"/permission/"+url.PathEscape(request)+"/reply", nil, reply, nil)
+}
+
 type MessagePage struct {
 	Data   []json.RawMessage `json:"data"`
 	Cursor struct {

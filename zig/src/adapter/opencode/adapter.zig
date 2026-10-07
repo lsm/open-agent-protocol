@@ -17,7 +17,7 @@ const reopen_support_reason = "GET /api/session/:id attaches to the bound server
 const reopen_recovery_reason = "OpenCode attached to the bound server session and reports the model it records; OAP runs and cursors remain process-local";
 
 const features = [_]contract.Feature{
-    .{ .key = "action.permissions", .level = .unavailable, .reason = "permission.asked travels only on the volatile global event stream and is not served" },
+    .{ .key = "action.permissions", .level = .native, .reason = "permission.asked for a tool call becomes action.permission.requested, answered once, always or reject through POST /api/session/:id/permission/:requestID/reply" },
     .{ .key = "action.tools", .level = .native, .reason = "tool.called/progress/success/failed lifecycle observed natively" },
     .{ .key = "action.tools.execute", .level = .unavailable, .reason = "tools execute server-side; no client-hosted execution surface" },
     .{ .key = "capabilities", .level = .emulated, .reason = "descriptor synthesized from the pinned route inventory" },
@@ -292,12 +292,13 @@ pub const Session = struct {
         self.reducer = session.Reducer.init(reducer_arena, .{
             .session_id = id,
             .native_id = info.id,
+            .participant = try own.dupe(u8, request.participant),
             .model = try session.normalizeModel(own, info.model),
             .revision = capability_revision,
             .counter = &owner.ids,
             .message_prefix = &owner.message_prefix,
             .now_ms = wallClock,
-        }, .{ .context = self, .prompt = prompt, .interrupt = interrupt, .cancel_inbox = cancelInbox });
+        }, .{ .context = self, .prompt = prompt, .interrupt = interrupt, .cancel_inbox = cancelInbox, .reply_permission = replyPermission });
         self.reducer.open() catch |err| return lift(err);
         const started = monotonic();
         while (!self.stream.connected) {
@@ -587,18 +588,24 @@ pub const Session = struct {
         const current_model_id: ?[]const u8 = if (model.len > 0) try arena.dupe(u8, model) else null;
         var entries = std.ArrayList(oap_types.ActiveRun).empty;
         var started: ?[]const u8 = null;
+        var waiting = false;
         var position: u64 = 0;
         for ([_]?*session.Run{ self.reducer.active, self.reducer.reserved }) |candidate| {
             const run = candidate orelse continue;
             if (run.terminal and !run.holding) continue;
             const reservation = run.queued_admission and !run.start_published;
-            if (!reservation) started = run.id else position += 1;
+            const pending: []const []const u8 = if (reservation) &.{} else try self.reducer.openGates(arena);
+            if (!reservation) {
+                started = run.id;
+                waiting = pending.len > 0;
+            } else position += 1;
             try entries.append(arena, .{
                 .run_id = try arena.dupe(u8, run.id),
                 .status = if (reservation) .queued else runStatus(run.status),
                 .relationship = "primary",
                 .queue_position = if (reservation) position else null,
                 .as_of_sequence = if (reservation) run.published_seq else run.next - 1,
+                .pending_interactions = pending,
             });
         }
         const settled = try arena.alloc(oap_types.RunPosition, self.reducer.settled.items.len);
@@ -607,7 +614,7 @@ pub const Session = struct {
         const transcript_cursor: ?[]const u8 = if (self.reducer.last_seq > 0) try std.fmt.allocPrint(arena, "{d}", .{self.reducer.last_seq}) else null;
         return .{
             .session_id = self.id,
-            .status = if (started != null) .running else if (entries.items.len > 0) .queued else .idle,
+            .status = if (waiting) .waiting_for_input else if (started != null) .running else if (entries.items.len > 0) .queued else .idle,
             .active_run_id = active_run_id,
             .active_runs = entries.items,
             .current_model_id = current_model_id,
@@ -665,11 +672,35 @@ pub const Session = struct {
     }
 
     fn resolve(ptr: *anyopaque, arena: std.mem.Allocator, resolution: contract.Resolution, refusal: *contract.Refusal) contract.Failure!void {
-        _ = ptr;
-        _ = arena;
-        _ = resolution;
-        _ = refusal;
-        return error.InteractionNotFound;
+        const self = cast(ptr);
+        const request = switch (resolution) {
+            .permission => |permission| permission,
+            .input => return error.InteractionNotFound,
+        };
+        if (!std.mem.eql(u8, request.session_id, self.id)) return error.InvalidResolution;
+        const own = self.owned();
+        self.reducer.resolvePermission(
+            try own.dupe(u8, request.interaction_id),
+            try own.dupe(u8, request.run_id),
+            try own.dupe(u8, request.responded_by),
+            try own.dupe(u8, request.requested_by),
+            try own.dupe(u8, request.choice_id orelse ""),
+            request.granted,
+            try own.dupe(u8, request.reason orelse ""),
+        ) catch |err| return switch (err) {
+            error.InteractionNotFound, error.InteractionResolved => error.InteractionNotFound,
+            error.WrongResponder, error.InvalidResolution => error.InvalidResolution,
+            error.SessionClosed => error.SessionClosed,
+            error.ReplyFailed => refusal.fail(error.BackendFailed, try std.mem.concat(arena, u8, &.{ "the OpenCode server did not take the permission answer: ", self.reducer.reply_failure })),
+            else => lift(err),
+        };
+    }
+
+    fn replyPermission(context: *anyopaque, arena: std.mem.Allocator, native_session: []const u8, request_id: []const u8, decision: []const u8, message: []const u8) std.mem.Allocator.Error!?session.Failure {
+        const self = cast(context);
+        const response = self.exchange(try httpapi.replyPermission(arena, self.endpoint, native_session, request_id, decision, message)) catch |err| return try self.transportFailure(err);
+        const failure = try httpapi.replyPermissionResult(arena, response, native_session, request_id, self.owner.config.frame_limit) orelse return null;
+        return .{ .message = failure.message, .api = failure.api };
     }
 
     fn cancel(ptr: *anyopaque, arena: std.mem.Allocator, run_id: []const u8, refusal: *contract.Refusal) contract.Failure!oap_types.RunCancelResponse {
@@ -1318,6 +1349,35 @@ test "a run whose event stream drops fails when the session record does not hold
     const failed = try probe.pumpUntil("run.failed", &seen);
     try testing.expect(std.mem.indexOf(u8, failed.line, "opencode_stream_failed") != null);
     try testing.expectError(error.SessionClosed, probe.handle.?.state(probe.arena.allocator(), &refusal));
+}
+
+const tool_input_started = fakeEvent("tool.input.started", ",\"assistantMessageID\":\"msg_a1\",\"id\":\"call_1\",\"name\":\"shell\"");
+const tool_called = fakeEvent("tool.called", ",\"assistantMessageID\":\"msg_a1\",\"id\":\"call_1\",\"input\":{\"command\":\"echo hi\"},\"executed\":false");
+const permission_asked = "{\"id\":\"evt_%SEQ%\",\"created\":%SEQ%,\"type\":\"permission.asked\",\"location\":{\"directory\":\"/w\"},\"data\":{\"id\":\"per_1\",\"sessionID\":\"" ++ fake_session ++ "\",\"action\":\"shell\",\"resources\":[\"echo hi\"],\"source\":{\"type\":\"tool\",\"messageID\":\"msg_a1\",\"id\":\"call_1\"}}}";
+const gated_turn = [_][]const u8{ delivered, step_started, tool_input_started, tool_called, permission_asked };
+
+test "the session waits for input and lists the permission on the started run while one is open" {
+    var probe: Probe = undefined;
+    try probe.init(&.{&gated_turn}, &.{});
+    defer probe.deinit();
+    var refusal = contract.Refusal{};
+    _ = try probe.open(&refusal);
+    _ = try probe.submit(.auto, &refusal);
+    var seen = std.ArrayList(contract.Event).empty;
+    const asked = try probe.pumpUntil("action.permission.requested", &seen);
+    const state_now = try probe.handle.?.state(probe.arena.allocator(), &refusal);
+    try testing.expectEqual(oap_types.SessionStatus.waiting_for_input, state_now.status);
+    try testing.expectEqual(@as(usize, 1), state_now.active_runs.len);
+    try testing.expectEqual(@as(usize, 1), state_now.active_runs[0].pending_interactions.len);
+    const interaction = state_now.active_runs[0].pending_interactions[0];
+    try testing.expect(std.mem.indexOf(u8, asked.line, try std.fmt.allocPrint(probe.arena.allocator(), "\"interaction_id\":\"{s}\"", .{interaction})) != null);
+    const queued = try probe.submit(.auto, &refusal);
+    try testing.expectEqual(oap_types.Admission.queued, queued.admission);
+    const behind = try probe.handle.?.state(probe.arena.allocator(), &refusal);
+    try testing.expectEqual(@as(usize, 2), behind.active_runs.len);
+    try testing.expectEqual(@as(usize, 1), behind.active_runs[0].pending_interactions.len);
+    try testing.expectEqualStrings(queued.run_id.?, behind.active_runs[1].run_id);
+    try testing.expectEqual(@as(usize, 0), behind.active_runs[1].pending_interactions.len);
 }
 
 test "the degraded models catalog is served only to a caller that opts into it" {

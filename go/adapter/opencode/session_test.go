@@ -116,6 +116,16 @@ type fakeClient struct {
 
 	resubscription *fakeSubscription
 	subscribes     int
+
+	permissionReplies []string
+	replyErr          error
+}
+
+func (f *fakeClient) ReplyPermission(_ context.Context, _ native.SessionID, request string, reply native.PermissionReply) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.permissionReplies = append(f.permissionReplies, request+"|"+reply.Decision+"|"+reply.Message)
+	return f.replyErr
 }
 
 func newFakeClient() *fakeClient {

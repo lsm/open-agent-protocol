@@ -226,7 +226,7 @@ observed-only.
 
 ## What the adapters do
 
-Both trees, under capability revision `opencode-v2.0.24-oap-v3`:
+Both trees, under capability revision `opencode-v2.0.24-oap-v4`:
 
 - **Auth.** `opencode serve` always requires basic auth: without
   `OPENCODE_PASSWORD` it generates a password and prints it. The registry entry
@@ -269,9 +269,40 @@ Both trees, under capability revision `opencode-v2.0.24-oap-v3`:
 - **Reopen** attaches to the session record and follows it from the attach on;
   with no replay there is no stored history to fence, so the transcript
   cursor starts empty and advances with the events seen.
-- **Approvals** are out of scope, as in v1: `permission.asked` is ephemeral,
-  and `GET /api/session/:id/permission` lists the pending ones for a later
-  unit.
+- **Approvals** (revision `oap-v4`). A rule with `effect: "ask"` (config
+  `permissions: [{action, resource, effect}]`; the shell tool's action is
+  `shell`) makes the runner publish an ephemeral `permission.asked`
+  (`packages/schema/src/permission.ts`): `{id: "per_…", sessionID, action,
+  resources, save?, metadata?, source?: {type: "tool", messageID, id},
+  message?}`, after the gated call's `session.tool.called`. Its scope is the
+  `sessionID` in its data, so the stream keeps it for the session although
+  its type has no `session.` prefix. Both trees map it to
+  `action.permission.requested` for the tool call `source.id` names, titled
+  `<action>: <resources>`, with three choices: `once`, `always` (OpenCode saves
+  the `save` patterns as a rule) and `reject`. An answer is `POST
+  /api/session/:id/permission/:requestID/reply {"decision", "message"?}` →
+  `204`, then `permission.replied {requestID, reply}`, and becomes
+  `action.permission.resolved` (`resolved` or `rejected`). The OAP `reason`
+  travels as `message`: OpenCode feeds it back to the model and the turn
+  goes on. A reject with no message fails the tool call `aborted` and ends
+  the execution `interrupted` with reason `shutdown` (an interrupt with no
+  reason defaults to it, and it writes no `idle` record), which the
+  adapters settle as `run.failed` `opencode_permission_declined`. A reply
+  the adapter did not send cancels the interaction
+  (`opencode_permission_replied_elsewhere`), a run that ends with one open
+  cancels it (`run_settled`), and a permission outside a tool call the run
+  started fails the run (`opencode_permission_without_tool`), since an OAP
+  permission requires a `tool_call_id`. While one is open, `session.state`
+  reports the session `waiting_for_input` and lists the open interactions,
+  in the order they were asked, as the started run's
+  `pending_interactions`. Live against the pinned binary, both
+  trees produced the same trace for `once` (the call completes and the run
+  ends `run.completed`) and for `reject` (the call fails and the run ends
+  `opencode_permission_declined`); the Go gates
+  `TestOpenCodeServerAsksPermissionForAToolCallAndRunsItOnceAllowed` and
+  `TestOpenCodeServerEndsTheRunAsDeclinedWhenThePermissionIsRejected` pin
+  both. A permission pending while the event stream is down is not
+  re-announced from `GET /api/session/:id/permission`.
 
 Corpus: `fixtures/adapters/opencode-v2.0.24/` carries fourteen of the v1
 cases converted to v2 vocabulary; `history-fence` is dropped because v2

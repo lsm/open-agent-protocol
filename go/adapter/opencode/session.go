@@ -1,12 +1,14 @@
 package opencode
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"math"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -61,6 +63,7 @@ type session struct {
 	runs      map[protocol.RunID]*runState
 	pending   map[native.MessageID]*runState
 	tools     map[string]*toolState
+	gates     map[string]*permissionGate
 	toolNames map[string]string
 	reduced   map[int64]bool
 
@@ -108,6 +111,7 @@ type runState struct {
 	cost            float64
 	lastFinish      string
 	failure         *native.UnknownErrorBlock
+	declined        bool
 	openSteps       int
 	admitted        chan struct{}
 	subscribers     []chan base.Result
@@ -117,6 +121,28 @@ type partKey struct {
 	message   native.MessageID
 	ordinal   int
 	reasoning bool
+}
+
+type permissionGate struct {
+	id        protocol.InteractionID
+	native    string
+	run       *runState
+	tool      *toolState
+	requested protocol.EnvelopeID
+	order     uint64
+	resolved  bool
+	settling  bool
+	open      bool
+}
+
+type permissionReplier interface {
+	ReplyPermission(ctx context.Context, session native.SessionID, request string, reply native.PermissionReply) error
+}
+
+var permissionChoices = []protocol.PermissionChoice{
+	{ID: "once", Label: "Allow once", Description: "allow this call"},
+	{ID: "always", Label: "Always allow", Description: "allow it and save the rule OpenCode offers"},
+	{ID: "reject", Label: "Reject", Description: "decline the call; without a reason OpenCode ends the execution"},
 }
 
 type toolState struct {
@@ -298,17 +324,19 @@ func (s *session) refreshStateLocked() {
 	var entries []protocol.ActiveRun
 	position := 0
 	started := protocol.RunID("")
+	waiting := false
 	for _, run := range []*runState{s.active, s.reserved} {
 		if !published(run) || !run.answered {
 			continue
 		}
 		if !reservationOf(run) {
-			entries = append(entries, activeRunEntry(run, 0))
-			started = run.id
+			entry := s.activeRunEntry(run, 0)
+			entries = append(entries, entry)
+			started, waiting = run.id, len(entry.PendingInteractions) > 0
 			continue
 		}
 		position++
-		entries = append(entries, activeRunEntry(run, position))
+		entries = append(entries, s.activeRunEntry(run, position))
 	}
 	s.state.ActiveRuns = entries
 
@@ -318,6 +346,9 @@ func (s *session) refreshStateLocked() {
 	switch {
 	case started != "":
 		s.state.Status = protocol.SessionRunning
+		if waiting {
+			s.state.Status = protocol.SessionWaitingForInput
+		}
 		s.state.ActiveRunID = started
 	case len(entries) > 0:
 		s.state.Status = protocol.SessionQueued
@@ -382,16 +413,34 @@ func (s *session) UpdateSettings(ctx context.Context, req protocol.SessionSettin
 	return response, s.state, nil
 }
 
+func (s *session) openGates() []protocol.InteractionID {
+	var open []*permissionGate
+	for _, gate := range s.gates {
+		if gate.open {
+			open = append(open, gate)
+		}
+	}
+	slices.SortFunc(open, func(a, b *permissionGate) int { return cmp.Compare(a.order, b.order) })
+	var ids []protocol.InteractionID
+	for _, gate := range open {
+		ids = append(ids, gate.id)
+	}
+	return ids
+}
+
 func published(run *runState) bool { return run != nil && !run.terminal }
 
 func reservationOf(run *runState) bool { return run.queuedAdmission && !run.startPublished }
 
-func activeRunEntry(run *runState, position int) protocol.ActiveRun {
+func (s *session) activeRunEntry(run *runState, position int) protocol.ActiveRun {
 	sequence, status := run.next-1, run.status
 	if reservationOf(run) {
 		sequence, status = run.publishedSeq, protocol.RunQueued
 	}
 	entry := protocol.ActiveRun{RunID: run.id, Status: status, Relationship: protocol.RelationshipPrimary, AsOfSequence: &sequence}
+	if position == 0 {
+		entry.PendingInteractions = s.openGates()
+	}
 	if position > 0 {
 		entry.QueuePosition = &position
 	}
@@ -547,7 +596,32 @@ func (s *session) handleEventLocked(event native.Event) {
 			_ = s.emitWith(run, protocol.TypeRunCancelled, protocol.RunCancelledPayload{SessionID: s.state.SessionID, RunID: run.id, Reason: "OpenCode interrupted the execution"}, true, s.reportedRunCost(run))
 			return
 		}
+		s.mu.Lock()
+		declined := run.declined
+		s.mu.Unlock()
+		if declined {
+			s.failRun(run, "opencode_permission_declined", "a declined tool call ended OpenCode's execution")
+			return
+		}
 		s.failRun(run, "opencode_execution_interrupted", "OpenCode interrupted the execution: "+data.Reason)
+	case native.TypePermissionAsked:
+		var data native.PermissionAskedData
+		if err := native.DecodeData(event, &data); err != nil {
+			s.failActive(run, "opencode_invalid_permission_event", err.Error())
+			return
+		}
+		if run == nil {
+			return
+		}
+		<-run.admitted
+		s.askPermission(run, data)
+	case native.TypePermissionReplied:
+		var data native.PermissionRepliedData
+		if err := native.DecodeData(event, &data); err != nil {
+			s.failActive(run, "opencode_invalid_permission_event", err.Error())
+			return
+		}
+		s.repliedElsewhere(data)
 	case native.TypeStepStarted:
 		var data native.StepStartedData
 		if err := native.DecodeData(event, &data); err != nil {
@@ -1026,11 +1100,148 @@ func (s *session) Models(ctx context.Context, request protocol.ModelsRequest) (b
 	return base.Catalog{Revision: CapabilityRevision, Models: catalog}, nil
 }
 
+func (s *session) askPermission(run *runState, data native.PermissionAskedData) {
+	s.mu.Lock()
+	if run.terminal || !run.prompted || data.ID == "" || s.gates[data.ID] != nil {
+		s.mu.Unlock()
+		return
+	}
+	var tool *toolState
+	if data.Source != nil {
+		tool = s.tools[toolKey(run, data.Source.ID)]
+	}
+	if tool == nil || tool.terminal {
+		s.mu.Unlock()
+		s.failRun(run, "opencode_permission_without_tool", "OpenCode asked permission for "+permissionTitle(data)+" outside a tool call this run started")
+		return
+	}
+	gate := &permissionGate{id: protocol.InteractionID(s.ids.NewID("interaction")), native: data.ID, run: run, tool: tool, order: s.nextToolOrder}
+	s.nextToolOrder++
+	if s.gates == nil {
+		s.gates = map[string]*permissionGate{}
+	}
+	s.gates[data.ID] = gate
+	s.mu.Unlock()
+	payload := protocol.PermissionRequestedPayload{InteractionID: gate.id, RequestedBy: endpointID, RespondedBy: s.participant, SessionID: s.state.SessionID, RunID: run.id, ToolCallID: tool.id, Title: permissionTitle(data), Description: data.Message, Choices: permissionChoices, ArgumentsJSON: cloneRaw(tool.args)}
+	requested, err := s.emitEnvelope(run, protocol.TypeActionPermissionRequested, payload, false, "")
+	if err != nil {
+		return
+	}
+	s.mu.Lock()
+	gate.requested = requested.ID
+	s.mu.Unlock()
+}
+
+func permissionTitle(data native.PermissionAskedData) string {
+	if len(data.Resources) == 0 {
+		return data.Action
+	}
+	return data.Action + ": " + strings.Join(data.Resources, ", ")
+}
+
+func (s *session) repliedElsewhere(data native.PermissionRepliedData) {
+	s.mu.Lock()
+	gate := s.gates[data.RequestID]
+	if gate == nil || gate.resolved || gate.settling || gate.run.terminal {
+		s.mu.Unlock()
+		return
+	}
+	gate.resolved = true
+	s.mu.Unlock()
+	reason := protocol.ProtocolError{Code: "opencode_permission_replied_elsewhere", Message: "OpenCode recorded the reply \"" + data.Reply + "\" from outside this session"}
+	_, _ = s.emitEnvelope(gate.run, protocol.TypeActionPermissionResolved, s.gateResolution(gate, protocol.InteractionCancelled, "", nil, &reason), false, gate.requested)
+}
+
+func (s *session) gateResolution(gate *permissionGate, outcome protocol.InteractionOutcome, choice string, granted *bool, reason *protocol.ProtocolError) protocol.PermissionResolvedPayload {
+	return protocol.PermissionResolvedPayload{InteractionID: gate.id, RequestedBy: endpointID, RespondedBy: s.participant, SessionID: s.state.SessionID, RunID: gate.run.id, ToolCallID: gate.tool.id, Outcome: outcome, ChoiceID: choice, Granted: granted, Reason: reason}
+}
+
+func (s *session) settleGates(run *runState) {
+	s.mu.Lock()
+	var open []*permissionGate
+	for _, gate := range s.gates {
+		if gate.run == run && !gate.resolved {
+			gate.resolved = true
+			open = append(open, gate)
+		}
+	}
+	s.mu.Unlock()
+	sort.Slice(open, func(i, j int) bool { return open[i].order < open[j].order })
+	for _, gate := range open {
+		reason := protocol.ProtocolError{Code: "run_settled", Message: "the run ended before the permission was answered"}
+		_, _ = s.emitEnvelope(run, protocol.TypeActionPermissionResolved, s.gateResolution(gate, protocol.InteractionCancelled, "", nil, &reason), false, gate.requested)
+	}
+}
+
 func (s *session) Resolve(ctx context.Context, resolution base.InteractionResolution) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	return base.ErrInteractionNotFound
+	if resolution.Permission == nil || resolution.Input != nil {
+		return base.ErrInteractionNotFound
+	}
+	replier, ok := s.client.(permissionReplier)
+	if !ok {
+		return base.ErrInteractionNotFound
+	}
+	answer := resolution.Permission
+	s.transitionMu.Lock()
+	defer s.transitionMu.Unlock()
+	s.mu.Lock()
+	var gate *permissionGate
+	for _, candidate := range s.gates {
+		if candidate.id == answer.InteractionID {
+			gate = candidate
+		}
+	}
+	switch {
+	case s.closed:
+		s.mu.Unlock()
+		return base.ErrSessionClosed
+	case gate == nil || gate.run.terminal:
+		s.mu.Unlock()
+		return base.ErrInteractionNotFound
+	case gate.resolved || gate.settling:
+		s.mu.Unlock()
+		return base.ErrInteractionResolved
+	}
+	run := gate.run
+	if (resolution.RunID != "" && resolution.RunID != run.id) || answer.RunID != run.id || answer.SessionID != s.state.SessionID || (answer.RequestedBy != "" && answer.RequestedBy != endpointID) {
+		s.mu.Unlock()
+		return base.ErrInvalidResolution
+	}
+	if (resolution.RespondedBy != "" && resolution.RespondedBy != s.participant) || answer.RespondedBy != s.participant {
+		s.mu.Unlock()
+		return base.ErrWrongResponder
+	}
+	granted := answer.ChoiceID == "once" || answer.ChoiceID == "always"
+	if (!granted && answer.ChoiceID != "reject") || granted != answer.Granted {
+		s.mu.Unlock()
+		return base.ErrInvalidResolution
+	}
+	gate.settling = true
+	s.mu.Unlock()
+	err := replier.ReplyPermission(ctx, s.nativeID, gate.native, native.PermissionReply{Decision: answer.ChoiceID, Message: answer.Reason})
+	s.mu.Lock()
+	gate.settling = false
+	if err != nil || run.terminal {
+		s.mu.Unlock()
+		if err != nil {
+			return err
+		}
+		return base.ErrInteractionNotFound
+	}
+	gate.resolved = true
+	if !granted && answer.Reason == "" {
+		run.declined = true
+	}
+	s.mu.Unlock()
+	outcome := protocol.InteractionRejected
+	if granted {
+		outcome = protocol.InteractionResolved
+	}
+	_, err = s.emitEnvelope(run, protocol.TypeActionPermissionResolved, s.gateResolution(gate, outcome, answer.ChoiceID, &granted, nil), false, gate.requested)
+	return err
 }
 
 func (s *session) Cancel(ctx context.Context, id protocol.RunID) (protocol.RunCancelResponse, error) {
@@ -1181,6 +1392,7 @@ func (s *session) Close(ctx context.Context) error {
 }
 
 func (s *session) settleTools(run *runState, cancel bool) {
+	s.settleGates(run)
 	s.mu.Lock()
 	var tools []*toolState
 	for _, tool := range s.tools {
@@ -1350,12 +1562,24 @@ func (s *session) emitEnvelopeWith(run *runState, typ protocol.EnvelopeType, pay
 	event.InReplyTo = inReplyTo
 	switch typ {
 	case protocol.TypeActionCallRequested, protocol.TypeActionCallStarted, protocol.TypeActionCallProgress,
-		protocol.TypeActionCallCompleted, protocol.TypeActionCallFailed, protocol.TypeActionCallCancelled:
+		protocol.TypeActionCallCompleted, protocol.TypeActionCallFailed, protocol.TypeActionCallCancelled,
+		protocol.TypeActionPermissionRequested, protocol.TypeActionPermissionResolved:
 		var action struct {
 			ToolCallID protocol.ToolCallID `json:"tool_call_id"`
 		}
 		_ = json.Unmarshal(event.Payload, &action)
 		event.ToolCallID = action.ToolCallID
+	}
+	if typ == protocol.TypeActionPermissionRequested || typ == protocol.TypeActionPermissionResolved {
+		var interaction struct {
+			InteractionID protocol.InteractionID `json:"interaction_id"`
+		}
+		_ = json.Unmarshal(event.Payload, &interaction)
+		for _, gate := range s.gates {
+			if gate.id == interaction.InteractionID {
+				gate.open = typ == protocol.TypeActionPermissionRequested
+			}
+		}
 	}
 	s.state.UpdatedAtMS = now
 	if typ == protocol.TypeRunStarted {

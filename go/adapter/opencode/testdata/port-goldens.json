@@ -1,5 +1,5 @@
 {
-  "capability_revision": "opencode-v2.0.24-oap-v3",
+  "capability_revision": "opencode-v2.0.24-oap-v4",
   "capabilities": {
     "endpoint": {
       "id": "opencode.server",
@@ -15,8 +15,8 @@
     ],
     "features": {
       "action.permissions": {
-        "level": "unavailable",
-        "reason": "permission.asked travels only on the volatile global event stream and is not served"
+        "level": "native",
+        "reason": "permission.asked for a tool call becomes action.permission.requested, answered once, always or reject through POST /api/session/:id/permission/:requestID/reply"
       },
       "action.tools": {
         "level": "native",

@@ -36,11 +36,21 @@ pub const Native = struct {
     prompt: *const fn (context: *anyopaque, arena: std.mem.Allocator, session: []const u8, request: native.PromptRequest) std.mem.Allocator.Error!PromptOutcome,
     interrupt: *const fn (context: *anyopaque, arena: std.mem.Allocator, session: []const u8) std.mem.Allocator.Error!InterruptOutcome,
     cancel_inbox: *const fn (context: *anyopaque, arena: std.mem.Allocator, session: []const u8, inbox: []const u8) std.mem.Allocator.Error!?Failure,
+    reply_permission: ?*const fn (context: *anyopaque, arena: std.mem.Allocator, session: []const u8, request_id: []const u8, decision: []const u8, message: []const u8) std.mem.Allocator.Error!?Failure = null,
 };
+
+pub const permission_choices = [_][3][]const u8{
+    .{ "once", "Allow once", "allow this call" },
+    .{ "always", "Always allow", "allow it and save the rule OpenCode offers" },
+    .{ "reject", "Reject", "decline the call; without a reason OpenCode ends the execution" },
+};
+
+pub const ResolveError = error{ InteractionNotFound, InteractionResolved, InvalidResolution, WrongResponder, SessionClosed, ReplyFailed } || Error;
 
 pub const Options = struct {
     session_id: []const u8 = "session",
     native_id: []const u8,
+    participant: []const u8 = "",
     model: []const u8 = "",
     message_prefix: []const u8 = "msg_oap",
     revision: []const u8 = capability_revision,
@@ -95,6 +105,7 @@ pub const Run = struct {
     cost: f64 = 0,
     last_finish: []const u8 = "",
     failure: ?[]const u8 = null,
+    declined: bool = false,
 };
 
 const Tool = struct {
@@ -110,6 +121,15 @@ const Tool = struct {
 };
 
 const Pending = struct { native_id: []const u8, run: *Run };
+
+const Gate = struct {
+    id: []const u8,
+    native_id: []const u8,
+    run: *Run,
+    tool: *Tool,
+    requested: []const u8 = "",
+    resolved: bool = false,
+};
 
 const ToolFields = struct {
     arguments: bool = false,
@@ -197,6 +217,8 @@ pub const Reducer = struct {
     runs: std.ArrayList(*Run) = .empty,
     pending: std.ArrayList(Pending) = .empty,
     tools: std.ArrayList(*Tool) = .empty,
+    gates: std.ArrayList(*Gate) = .empty,
+    reply_failure: []const u8 = "",
     reduced: std.AutoHashMapUnmanaged(i64, void) = .empty,
     catalog: std.ArrayList([]const u8) = .empty,
     tool_names: std.StringArrayHashMapUnmanaged([]const u8) = .empty,
@@ -435,8 +457,17 @@ pub const Reducer = struct {
                     _ = try self.emitWith(target, "run.cancelled", payload, true, try self.reportedCost(target));
                     return;
                 }
+                if (target.declined) return self.failRun(target, "opencode_permission_declined", "a declined tool call ended OpenCode's execution");
                 const message = try std.mem.concat(self.allocator(), u8, &.{ "OpenCode interrupted the execution: ", data.reason });
                 try self.failRun(target, "opencode_execution_interrupted", message);
+            },
+            .permission_asked => {
+                const data = (try self.decodeFor(native.PermissionAskedData, native.decodePermissionAsked, event, run, "opencode_invalid_permission_event")) orelse return;
+                try self.askPermission(run orelse return, data);
+            },
+            .permission_replied => {
+                const data = (try self.decodeFor(native.PermissionRepliedData, native.decodePermissionReplied, event, run, "opencode_invalid_permission_event")) orelse return;
+                try self.repliedElsewhere(data);
             },
             .step_started => {
                 const data = (try self.decodeFor(native.StepStartedData, native.decodeStepStarted, event, run, "opencode_invalid_step_event")) orelse return;
@@ -725,7 +756,112 @@ pub const Reducer = struct {
         _ = try self.emitEnvelope(run, "action.call.completed", try self.toolPayload(tool, .{ .result = true }), false, tool.started_event, null);
     }
 
+    fn permissionTitle(self: *Reducer, data: native.PermissionAskedData) std.mem.Allocator.Error![]const u8 {
+        if (data.resources.len == 0) return data.action;
+        const joined = try std.mem.join(self.allocator(), ", ", data.resources);
+        return std.mem.concat(self.allocator(), u8, &.{ data.action, ": ", joined });
+    }
+
+    fn askPermission(self: *Reducer, run: *Run, data: native.PermissionAskedData) Error!void {
+        if (run.terminal or !run.prompted or data.id.len == 0) return;
+        for (self.gates.items) |gate| {
+            if (std.mem.eql(u8, gate.native_id, data.id)) return;
+        }
+        const title = try self.permissionTitle(data);
+        const tool = self.findTool(run, data.source_id) orelse return self.failRun(run, "opencode_permission_without_tool", try std.mem.concat(self.allocator(), u8, &.{ "OpenCode asked permission for ", title, " outside a tool call this run started" }));
+        if (tool.terminal or data.source_id.len == 0) return self.failRun(run, "opencode_permission_without_tool", try std.mem.concat(self.allocator(), u8, &.{ "OpenCode asked permission for ", title, " outside a tool call this run started" }));
+        const gate = try self.allocator().create(Gate);
+        gate.* = .{ .id = try self.nextID("interaction"), .native_id = data.id, .run = run, .tool = tool };
+        try self.gates.append(self.allocator(), gate);
+        var payload = try self.scoped(run);
+        try self.put(&payload, "interaction_id", str(gate.id));
+        try self.put(&payload, "requested_by", str(endpoint_id));
+        try self.put(&payload, "responded_by", str(self.options.participant));
+        try self.put(&payload, "tool_call_id", str(tool.id));
+        try self.put(&payload, "title", str(title));
+        if (data.message.len > 0) try self.put(&payload, "description", str(data.message));
+        var choices = try std.json.Array.initCapacity(self.allocator(), permission_choices.len);
+        for (permission_choices) |choice| {
+            var entry: std.json.ObjectMap = .empty;
+            try self.put(&entry, "id", str(choice[0]));
+            try self.put(&entry, "label", str(choice[1]));
+            try self.put(&entry, "description", str(choice[2]));
+            choices.appendAssumeCapacity(.{ .object = entry });
+        }
+        try self.put(&payload, "choices", .{ .array = choices });
+        try self.put(&payload, "arguments_json", tool.args);
+        gate.requested = (try self.emitEnvelope(run, "action.permission.requested", payload, false, "", null)) orelse "";
+    }
+
+    pub fn openGates(self: *Reducer, arena: std.mem.Allocator) std.mem.Allocator.Error![]const []const u8 {
+        var pending: std.ArrayList([]const u8) = .empty;
+        for (self.gates.items) |gate| {
+            if (!gate.resolved) try pending.append(arena, try arena.dupe(u8, gate.id));
+        }
+        return pending.items;
+    }
+
+    fn gateResolution(self: *Reducer, gate: *Gate, outcome: []const u8, choice: []const u8, granted: ?bool, reason: ?[2][]const u8) std.mem.Allocator.Error!std.json.ObjectMap {
+        var payload = try self.scoped(gate.run);
+        try self.put(&payload, "interaction_id", str(gate.id));
+        try self.put(&payload, "requested_by", str(endpoint_id));
+        try self.put(&payload, "responded_by", str(self.options.participant));
+        try self.put(&payload, "tool_call_id", str(gate.tool.id));
+        try self.put(&payload, "outcome", str(outcome));
+        if (choice.len > 0) try self.put(&payload, "choice_id", str(choice));
+        if (granted) |value| try self.put(&payload, "granted", .{ .bool = value });
+        if (reason) |problem| {
+            var entry: std.json.ObjectMap = .empty;
+            try self.put(&entry, "code", str(problem[0]));
+            try self.put(&entry, "message", str(problem[1]));
+            try self.put(&payload, "reason", .{ .object = entry });
+        }
+        return payload;
+    }
+
+    fn repliedElsewhere(self: *Reducer, data: native.PermissionRepliedData) Error!void {
+        for (self.gates.items) |gate| {
+            if (!std.mem.eql(u8, gate.native_id, data.request_id)) continue;
+            if (gate.resolved or gate.run.terminal) return;
+            gate.resolved = true;
+            const message = try std.mem.concat(self.allocator(), u8, &.{ "OpenCode recorded the reply \"", data.reply, "\" from outside this session" });
+            _ = try self.emitEnvelope(gate.run, "action.permission.resolved", try self.gateResolution(gate, "cancelled", "", null, .{ "opencode_permission_replied_elsewhere", message }), false, gate.requested, null);
+            return;
+        }
+    }
+
+    fn settleGates(self: *Reducer, run: *Run) Error!void {
+        for (self.gates.items) |gate| {
+            if (gate.run != run or gate.resolved) continue;
+            gate.resolved = true;
+            _ = try self.emitEnvelope(run, "action.permission.resolved", try self.gateResolution(gate, "cancelled", "", null, .{ "run_settled", "the run ended before the permission was answered" }), false, gate.requested, null);
+        }
+    }
+
+    pub fn resolvePermission(self: *Reducer, interaction_id: []const u8, run_id: []const u8, responded_by: []const u8, requested_by: []const u8, choice: []const u8, granted: bool, reason: []const u8) ResolveError!void {
+        if (self.unusable) return error.SessionClosed;
+        const gate = for (self.gates.items) |candidate| {
+            if (std.mem.eql(u8, candidate.id, interaction_id)) break candidate;
+        } else return error.InteractionNotFound;
+        if (gate.run.terminal) return error.InteractionNotFound;
+        if (gate.resolved) return error.InteractionResolved;
+        if (!std.mem.eql(u8, run_id, gate.run.id) or (requested_by.len > 0 and !std.mem.eql(u8, requested_by, endpoint_id))) return error.InvalidResolution;
+        if (!std.mem.eql(u8, responded_by, self.options.participant)) return error.WrongResponder;
+        const allows = std.mem.eql(u8, choice, "once") or std.mem.eql(u8, choice, "always");
+        if ((!allows and !std.mem.eql(u8, choice, "reject")) or allows != granted) return error.InvalidResolution;
+        const reply = self.client.reply_permission orelse return error.InteractionNotFound;
+        if (try reply(self.client.context, self.allocator(), self.options.native_id, gate.native_id, choice, reason)) |failure| {
+            self.reply_failure = failure.message;
+            return error.ReplyFailed;
+        }
+        if (gate.run.terminal) return error.InteractionNotFound;
+        gate.resolved = true;
+        if (!allows and reason.len == 0) gate.run.declined = true;
+        _ = try self.emitEnvelope(gate.run, "action.permission.resolved", try self.gateResolution(gate, if (allows) "resolved" else "rejected", choice, allows, null), false, gate.requested, null);
+    }
+
     fn settleTools(self: *Reducer, run: *Run, cancelled: bool) Error!void {
+        try self.settleGates(run);
         var unfinished = std.ArrayList(*Tool).empty;
         for (self.tools.items) |tool| {
             if (tool.run != run or tool.terminal) continue;
@@ -916,7 +1052,7 @@ pub const Reducer = struct {
         if (in_reply_to.len > 0) try self.put(&envelope, "in_reply_to", str(in_reply_to));
         try self.put(&envelope, "session_id", str(self.options.session_id));
         try self.put(&envelope, "run_id", str(run.id));
-        if (std.mem.startsWith(u8, kind, "action.call.")) {
+        if (std.mem.startsWith(u8, kind, "action.call.") or std.mem.startsWith(u8, kind, "action.permission.")) {
             if (payload.get("tool_call_id")) |carried| try self.put(&envelope, "tool_call_id", carried);
         }
         try self.put(&envelope, "capability_revision", str(self.options.revision));
@@ -977,7 +1113,7 @@ pub fn admissionValue(arena: std.mem.Allocator, admission: Admission) std.mem.Al
 const Feature = struct { key: []const u8, level: []const u8, reason: []const u8, modes: []const []const u8 = &.{} };
 
 const features = [_]Feature{
-    .{ .key = "action.permissions", .level = "unavailable", .reason = "permission.asked travels only on the volatile global event stream and is not served" },
+    .{ .key = "action.permissions", .level = "native", .reason = "permission.asked for a tool call becomes action.permission.requested, answered once, always or reject through POST /api/session/:id/permission/:requestID/reply" },
     .{ .key = "action.tools", .level = "native", .reason = "tool.called/progress/success/failed lifecycle observed natively" },
     .{ .key = "action.tools.execute", .level = "unavailable", .reason = "tools execute server-side; no client-hosted execution surface" },
     .{ .key = "capabilities", .level = "emulated", .reason = "descriptor synthesized from the pinned route inventory" },
@@ -1041,6 +1177,8 @@ const Fake = struct {
     prompts: usize = 0,
     interrupts: usize = 0,
     cancelled: std.ArrayList([]const u8) = .empty,
+    replies: std.ArrayList([]const u8) = .empty,
+    reply_failure: ?Failure = null,
 
     fn from(context: *anyopaque) *Fake {
         return @ptrCast(@alignCast(context));
@@ -1068,8 +1206,15 @@ const Fake = struct {
         return null;
     }
 
+    fn replyPermission(context: *anyopaque, arena: std.mem.Allocator, session_id: []const u8, request_id: []const u8, decision: []const u8, message: []const u8) std.mem.Allocator.Error!?Failure {
+        _ = session_id;
+        const self = from(context);
+        try self.replies.append(arena, try std.mem.concat(arena, u8, &.{ request_id, "|", decision, "|", message }));
+        return self.reply_failure;
+    }
+
     fn client(self: *Fake) Native {
-        return .{ .context = self, .prompt = prompt, .interrupt = interrupt, .cancel_inbox = cancelInbox };
+        return .{ .context = self, .prompt = prompt, .interrupt = interrupt, .cancel_inbox = cancelInbox, .reply_permission = replyPermission };
     }
 };
 
@@ -1504,4 +1649,149 @@ test "a second replay of the same record does not apply the first one again" {
     try expectLabels(&.{ "text:first", "text:second" }, try streamedLabels(scratch, &reducer));
     try expectLabels(&.{ "text:first", "text:second" }, try finalLabels(scratch, &reducer));
     try testing.expectEqual(@as(i64, 6), lastPayload(&reducer).get("usage").?.object.get("total_tokens").?.integer);
+}
+
+fn permissionEvent(arena: std.mem.Allocator, kind: []const u8, data: []const u8) !native.Event {
+    var diag = native.Diagnostic{};
+    const wire = try std.fmt.allocPrint(arena, "{{\"id\":\"evt_p\",\"type\":\"permission.{s}\",\"data\":{{\"sessionID\":\"" ++ native_session ++ "\",{s}}}}}", .{ kind, data[1 .. data.len - 1] });
+    return native.decodeEvent(arena, wire, &diag);
+}
+
+fn gatedReducer(arena: *std.heap.ArenaAllocator, fake: *Fake) !struct { reducer: Reducer, run_id: []const u8, interaction: []const u8 } {
+    const scratch = arena.allocator();
+    var reducer = Reducer.init(arena, .{ .native_id = native_session, .participant = "user" }, fake.client());
+    try reducer.open();
+    const admission = try reducer.submit("session", "run it", "auto");
+    try reducer.observe(try deliveredEvent(scratch, 1, admission.message_ids[0]));
+    try reducer.observe(try nativeEvent(scratch, 2, "tool.input.started", "{\"assistantMessageID\":\"msg_a\",\"id\":\"call_1\",\"name\":\"shell\"}"));
+    try reducer.observe(try nativeEvent(scratch, 3, "tool.called", "{\"assistantMessageID\":\"msg_a\",\"id\":\"call_1\",\"input\":{\"command\":\"echo hi\"},\"executed\":false}"));
+    try reducer.observe(try permissionEvent(scratch, "asked", "{\"id\":\"per_1\",\"action\":\"shell\",\"resources\":[\"echo hi\"],\"save\":[\"echo *\"],\"source\":{\"type\":\"tool\",\"messageID\":\"msg_a\",\"id\":\"call_1\"}}"));
+    const asked = reducer.envelopes.items[reducer.envelopes.items.len - 1];
+    try testing.expectEqualStrings("action.permission.requested", asked.object.get("type").?.string);
+    return .{ .reducer = reducer, .run_id = admission.run_id, .interaction = payloadOf(asked).get("interaction_id").?.string };
+}
+
+fn lastType(reducer: *Reducer) []const u8 {
+    return reducer.envelopes.items[reducer.envelopes.items.len - 1].object.get("type").?.string;
+}
+
+test "the open permissions are listed in the order they were asked, until each is answered" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const scratch = arena.allocator();
+    var fake = Fake{};
+    var gated = try gatedReducer(&arena, &fake);
+    const reducer = &gated.reducer;
+    try reducer.observe(try nativeEvent(scratch, 4, "tool.input.started", "{\"assistantMessageID\":\"msg_a\",\"id\":\"call_2\",\"name\":\"shell\"}"));
+    try reducer.observe(try nativeEvent(scratch, 5, "tool.called", "{\"assistantMessageID\":\"msg_a\",\"id\":\"call_2\",\"input\":{\"command\":\"echo bye\"},\"executed\":false}"));
+    try reducer.observe(try permissionEvent(scratch, "asked", "{\"id\":\"per_2\",\"action\":\"shell\",\"resources\":[\"echo bye\"],\"source\":{\"type\":\"tool\",\"messageID\":\"msg_a\",\"id\":\"call_2\"}}"));
+    const second = payloadOf(reducer.envelopes.items[reducer.envelopes.items.len - 1]).get("interaction_id").?.string;
+    try expectLabels(&.{ gated.interaction, second }, try reducer.openGates(scratch));
+    try reducer.resolvePermission(gated.interaction, gated.run_id, "user", "", "once", true, "");
+    try expectLabels(&.{second}, try reducer.openGates(scratch));
+}
+
+test "an asked permission becomes a request for its tool call, and an allowed one lets the run finish" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const scratch = arena.allocator();
+    var fake = Fake{};
+    var gated = try gatedReducer(&arena, &fake);
+    const reducer = &gated.reducer;
+    const asked = reducer.envelopes.items[reducer.envelopes.items.len - 1];
+    try testing.expectEqualStrings("shell: echo hi", payloadOf(asked).get("title").?.string);
+    try testing.expectEqual(@as(usize, 3), payloadOf(asked).get("choices").?.array.items.len);
+    try testing.expectEqualStrings(payloadOf(asked).get("tool_call_id").?.string, asked.object.get("tool_call_id").?.string);
+    try testing.expectEqualStrings("user", payloadOf(asked).get("responded_by").?.string);
+    try reducer.resolvePermission(gated.interaction, gated.run_id, "user", endpoint_id, "once", true, "");
+    try testing.expectEqualStrings("per_1|once|", fake.replies.items[0]);
+    try testing.expectError(error.InteractionResolved, reducer.resolvePermission(gated.interaction, gated.run_id, "user", "", "once", true, ""));
+    const resolved = payloadOf(reducer.envelopes.items[reducer.envelopes.items.len - 1]);
+    try testing.expectEqualStrings("resolved", resolved.get("outcome").?.string);
+    try testing.expect(resolved.get("granted").?.bool);
+    const before = reducer.envelopes.items.len;
+    try reducer.observe(try permissionEvent(scratch, "replied", "{\"requestID\":\"per_1\",\"reply\":\"once\"}"));
+    try testing.expectEqual(before, reducer.envelopes.items.len);
+    try reducer.observe(try nativeEvent(scratch, 4, "tool.success", "{\"assistantMessageID\":\"msg_a\",\"id\":\"call_1\",\"content\":[{\"type\":\"text\",\"text\":\"hi\"}],\"executed\":false}"));
+    try reducer.observe(try stepEnded(scratch, 5));
+    try reducer.observe(try succeeded(scratch, 6));
+    try testing.expectEqualStrings("run.completed", lastType(reducer));
+}
+
+test "a rejection without a reason ends the run as declined, and one with a reason passes it on" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const scratch = arena.allocator();
+    var fake = Fake{};
+    var gated = try gatedReducer(&arena, &fake);
+    try gated.reducer.resolvePermission(gated.interaction, gated.run_id, "user", "", "reject", false, "");
+    try testing.expectEqualStrings("rejected", payloadOf(gated.reducer.envelopes.items[gated.reducer.envelopes.items.len - 1]).get("outcome").?.string);
+    try gated.reducer.observe(try nativeEvent(scratch, 4, "execution.interrupted", "{\"reason\":\"shutdown\"}"));
+    try testing.expectEqualStrings("opencode_permission_declined", errorCode(gated.reducer.envelopes.items[gated.reducer.envelopes.items.len - 1]));
+
+    var other_arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer other_arena.deinit();
+    var other_fake = Fake{};
+    var reasoned = try gatedReducer(&other_arena, &other_fake);
+    try reasoned.reducer.resolvePermission(reasoned.interaction, reasoned.run_id, "user", "", "reject", false, "use ls instead");
+    try testing.expectEqualStrings("per_1|reject|use ls instead", other_fake.replies.items[0]);
+    try reasoned.reducer.observe(try nativeEvent(other_arena.allocator(), 4, "execution.interrupted", "{\"reason\":\"shutdown\"}"));
+    try testing.expectEqualStrings("opencode_execution_interrupted", errorCode(reasoned.reducer.envelopes.items[reasoned.reducer.envelopes.items.len - 1]));
+}
+
+test "a permission answered elsewhere or left open at the run's end is cancelled" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const scratch = arena.allocator();
+    var fake = Fake{};
+    var gated = try gatedReducer(&arena, &fake);
+    const reducer = &gated.reducer;
+    try reducer.observe(try permissionEvent(scratch, "replied", "{\"requestID\":\"per_1\",\"reply\":\"always\"}"));
+    const elsewhere = payloadOf(reducer.envelopes.items[reducer.envelopes.items.len - 1]);
+    try testing.expectEqualStrings("cancelled", elsewhere.get("outcome").?.string);
+    try testing.expectEqualStrings("opencode_permission_replied_elsewhere", elsewhere.get("reason").?.object.get("code").?.string);
+    try reducer.observe(try nativeEvent(scratch, 4, "tool.input.started", "{\"assistantMessageID\":\"msg_a\",\"id\":\"call_2\",\"name\":\"shell\"}"));
+    try reducer.observe(try nativeEvent(scratch, 5, "tool.called", "{\"assistantMessageID\":\"msg_a\",\"id\":\"call_2\",\"input\":{\"command\":\"rm x\"},\"executed\":false}"));
+    try reducer.observe(try permissionEvent(scratch, "asked", "{\"id\":\"per_2\",\"action\":\"shell\",\"resources\":[\"rm x\"],\"source\":{\"type\":\"tool\",\"messageID\":\"msg_a\",\"id\":\"call_2\"}}"));
+    try reducer.observe(try nativeEvent(scratch, 6, "execution.failed", "{\"error\":{\"type\":\"unknown\",\"message\":\"boom\"}}"));
+    var settled: usize = 0;
+    for (reducer.envelopes.items) |envelope| {
+        if (!std.mem.eql(u8, envelope.object.get("type").?.string, "action.permission.resolved")) continue;
+        const reason = payloadOf(envelope).get("reason") orelse continue;
+        if (std.mem.eql(u8, reason.object.get("code").?.string, "run_settled")) settled += 1;
+    }
+    try testing.expectEqual(@as(usize, 1), settled);
+    try testing.expectEqualStrings("run.failed", lastType(reducer));
+}
+
+test "an answer the server cannot take or that contradicts itself leaves the permission open" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var fake = Fake{};
+    var gated = try gatedReducer(&arena, &fake);
+    const reducer = &gated.reducer;
+    try testing.expectError(error.InvalidResolution, reducer.resolvePermission(gated.interaction, gated.run_id, "user", "", "maybe", true, ""));
+    try testing.expectError(error.InvalidResolution, reducer.resolvePermission(gated.interaction, gated.run_id, "user", "", "reject", true, ""));
+    try testing.expectError(error.WrongResponder, reducer.resolvePermission(gated.interaction, gated.run_id, "someone", "", "once", true, ""));
+    try testing.expectError(error.InteractionNotFound, reducer.resolvePermission("interaction-none", gated.run_id, "user", "", "once", true, ""));
+    fake.reply_failure = .{ .message = "connection refused" };
+    try testing.expectError(error.ReplyFailed, reducer.resolvePermission(gated.interaction, gated.run_id, "user", "", "once", true, ""));
+    try testing.expectEqualStrings("connection refused", reducer.reply_failure);
+    fake.reply_failure = null;
+    try reducer.resolvePermission(gated.interaction, gated.run_id, "user", "", "always", true, "");
+    try testing.expectEqual(@as(usize, 2), fake.replies.items.len);
+    try testing.expectEqualStrings("per_1|always|", fake.replies.items[1]);
+}
+
+test "a permission outside a tool call the run started fails the run" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const scratch = arena.allocator();
+    var fake = Fake{};
+    var reducer = Reducer.init(&arena, .{ .native_id = native_session, .participant = "user" }, fake.client());
+    try reducer.open();
+    const admission = try reducer.submit("session", "run it", "auto");
+    try reducer.observe(try deliveredEvent(scratch, 1, admission.message_ids[0]));
+    try reducer.observe(try permissionEvent(scratch, "asked", "{\"id\":\"per_1\",\"action\":\"external_directory\",\"resources\":[\"/etc\"]}"));
+    try testing.expectEqualStrings("opencode_permission_without_tool", errorCode(reducer.envelopes.items[reducer.envelopes.items.len - 1]));
 }
