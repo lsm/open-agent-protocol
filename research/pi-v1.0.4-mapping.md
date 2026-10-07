@@ -70,4 +70,7 @@ compaction change, and the reopen of a bound session file.
 ## Native sessions
 
 The adapter lists and reads the store read-only (Decision 0047): it is
-`session-manager.ts`, unchanged at this pin.
+`session-manager.ts`, unchanged at this pin. Both trees do, with the same
+rules: the newest files first, titled by the last named `session_info` or the
+first user message, and a read of a file over 64 MiB taking its tail from the
+first whole line.

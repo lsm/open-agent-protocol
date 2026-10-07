@@ -112,9 +112,12 @@ pub fn read(arena: std.mem.Allocator, native_id: []const u8) ![]const contract.N
     const bytes = try arena.alloc(u8, @intCast(size - start));
     const got = file.readPositionalAll(compat.fs.defaultIo(), bytes, start) catch return &.{};
     var whole = bytes[0..got];
-    if (start > 0) whole = whole[(std.mem.indexOfScalar(u8, whole, '\n') orelse whole.len)..];
-    const header = firstLine(arena, whole) orelse return &.{};
-    if (start == 0 and !std.mem.eql(u8, text(header.get("id")) orelse "", binding.sessionId)) return &.{};
+    if (start > 0) {
+        whole = whole[(std.mem.indexOfScalar(u8, whole, '\n') orelse return &.{}) + 1 ..];
+    } else {
+        const header = firstLine(arena, whole) orelse return &.{};
+        if (!std.mem.eql(u8, text(header.get("id")) orelse "", binding.sessionId)) return &.{};
+    }
     return turns(arena, whole[0..(std.mem.lastIndexOfScalar(u8, whole, '\n') orelse 0)]);
 }
 
@@ -232,4 +235,24 @@ test "a project's session files list newest first, named by session_info or the 
     try std.testing.expectEqualStrings("fix the parser\nplease", read_back[0].text);
     try std.testing.expectEqual(@as(usize, 0), (try read(arena, "{\"sessionId\":\"other\",\"sessionFile\":\"" ++ "/nowhere/x.jsonl\"}")).len);
     try std.testing.expectEqual(@as(usize, 0), (try list(arena, agent, "/elsewhere", 10)).len);
+}
+
+test "a session file larger than the read limit reads its tail" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const io = std.testing.io;
+    const filler = "{\"type\":\"message\",\"message\":{\"role\":\"toolResult\",\"content\":\"" ++ "x" ** 1024 ++ "\"}}\n";
+    var data: std.ArrayList(u8) = .empty;
+    try data.appendSlice(arena, "{\"type\":\"session\",\"id\":\"big\"}\n");
+    while (data.items.len < read_limit + 4096) try data.appendSlice(arena, filler);
+    try data.appendSlice(arena, "{\"type\":\"message\",\"message\":{\"role\":\"user\",\"content\":\"the last word\"}}\n");
+    try tmp.dir.writeFile(io, .{ .sub_path = "big.jsonl", .data = data.items });
+    const cwd = try std.process.currentPathAlloc(io, arena);
+    const path = try std.fs.path.join(arena, &.{ cwd, ".zig-cache", "tmp", tmp.sub_path[0..], "big.jsonl" });
+    const read_back = try read(arena, try std.json.Stringify.valueAlloc(arena, Binding{ .sessionId = "big", .sessionFile = path }, .{}));
+    try std.testing.expectEqual(@as(usize, 1), read_back.len);
+    try std.testing.expectEqualStrings("the last word", read_back[0].text);
 }
