@@ -8,7 +8,10 @@ can actually answer. It is a map, not a plan — the step order lives in #375.
 takes an injected `RemoteExecution` (`zig/src/tui/oap_execution.zig`) that hosts
 `zig/src/adapter/endpoint.zig` with the `oapx` adapter in-process and turns its
 envelopes back into `TuiEvent`s. Runs, streaming, tools, cancel and model switch
-cross the boundary as OAP; the settings the protocol has no verb for (context
+cross the boundary as OAP. A `/model refresh` hands the in-process endpoint the
+refreshed catalog beside the wire, and the session serves it from its next model
+switch under the same revision, which is why the `oapx` adapter advertises
+`models.list` as `degraded`; the settings the protocol has no verb for (context
 window, permission mode, workspace root) travel once, in the open request's
 `metadata.oapx`. The thinking level travels there too, and changes between runs
 through `session.settings.update.request` when the endpoint advertises

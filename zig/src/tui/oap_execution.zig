@@ -661,7 +661,10 @@ pub const OapExecution = struct {
             refs.deinit(self.allocator);
         }
         for (models) |model| {
-            const ref = try modelRef(self.allocator, model);
+            const ref = modelRef(self.allocator, model) catch |err| switch (err) {
+                error.OutOfMemory => return error.OutOfMemory,
+                else => continue,
+            };
             errdefer self.allocator.free(ref);
             try refs.append(self.allocator, ref);
         }
