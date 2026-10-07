@@ -216,7 +216,7 @@ This is the content a caller's own search indexes (see `work.list`).
 
 1. All six verbs over the sessions `serve` holds (#919).
 2. Native lists in `work.list` (Codex `thread/list`, ACP `session/list`,
-   OpenCode, Hermes `session.list`; Claude and Pi read-only from their
+   OpenCode `GET /api/session`, Hermes `session.list`; Claude and Pi read-only from their
    stores). Hermes rows carry no working directory, so they are grouped under
    an empty `directory` rather than under the adapter's own.
 3. Adoption by native reference: `attach`, `resume`, `observe`, refuse.

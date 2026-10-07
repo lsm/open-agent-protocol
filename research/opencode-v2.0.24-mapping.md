@@ -250,4 +250,16 @@ completes a real turn against an in-process OpenAI-compatible fake, so it
 reaches no network. `oapx serve agent --backend` against the same binary and
 fake completes a turn whose trace both validators pass.
 
-Native list for `work.list` (`GET /api/session`) is not wired yet.
+## Native session list
+
+`work.list?include_native=true` asks
+`GET /api/session?directory=<dir>&limit=<n>&order=desc&parentID=null`
+(`session.list` in `packages/protocol/src/groups/session.ts` at the pinned
+commit), which answers `{"data":[Session.Info...],"cursor":{"previous"?,"next"?}}`.
+Each row is decoded with the same strict `Session.Info` fields a create or a
+get answers. `parentID=null` keeps the root sessions, so a forked child is not
+listed as its own work. The native id is `id`, the title `title`, the
+directory `location.directory`, and the update time `time.updated` in epoch
+milliseconds. A session is running when `GET /api/session/active` names it. One
+page is read; the cursor is not followed. The Zig adapter lists; the Go
+adapter does not yet.
