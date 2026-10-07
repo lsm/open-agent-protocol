@@ -153,3 +153,21 @@ null; pages are followed by `nextCursor` until the limit, a repeated cursor,
 or 16 pages. A row without a `sessionId` is skipped, and a member of the wrong
 type reads as absent. Against `devin acp`, `goap hub --stdio` and
 `oapx serve --stdio` listed the same sessions with the same titles and times.
+
+## Native session read
+
+`work.read` reads a session an agent holds by loading it: a short-lived agent
+process, `initialize`, and `session/load {sessionId, cwd, mcpServers: []}` only
+when `agentCapabilities.loadSession` is `true`; an agent that only offers
+`session/resume` is not read, since resume replays nothing. The agent replays
+the conversation as `session/update` notifications before it answers the load,
+and both trees keep those that arrive before the answer: consecutive
+`user_message_chunk` texts join into one user turn, trimmed, and
+`agent_message_chunk` texts join per `messageId` (all of them when the agent
+sends none), the last reply before the next user turn kept, as Pi's read does.
+Thoughts, tool calls and every other update are left out, and turns carry no
+time. Loading a session is the one side effect a read has; the owner chose it
+for ACP and not for Hermes, whose resume can restart a turn a crash
+interrupted (2026-10-07). Against `devin acp`, both trees read the same
+session as the same twelve turns.
+
