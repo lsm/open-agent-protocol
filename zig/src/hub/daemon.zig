@@ -121,6 +121,7 @@ pub const Daemon = struct {
             .adapters => self.listing(arena, try self.frontend.adapters(arena)),
             .sessions => self.listing(arena, try self.frontend.sessions(arena)),
             .history => self.history(arena, request.split.query),
+            .work_capabilities => self.outcome(arena, try self.frontend.workCapabilities(arena), .{}),
             .work_list => self.outcome(arena, try self.frontend.workList(arena, .{ .include_closed = try self.queryFlag(arena, request.split.query, "include_closed"), .include_native = try self.queryFlag(arena, request.split.query, "include_native") }), .{}),
             .work_status => |id| self.outcome(arena, try self.frontend.workStatus(arena, id), .{ .session_id = id }),
             .work_start => |name| self.workStart(arena, name, request.body),

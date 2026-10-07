@@ -992,6 +992,42 @@ pub const Hub = struct {
         return registered.adapter.nativeRead(arena, .{ .native_id = ref.native_id, .directory = if (ref.directory.len > 0) ref.directory else registered.directory, .max_turns = max_turns }, refusal);
     }
 
+    pub const WorkReach = struct {
+        name: []const u8,
+        directory: []const u8,
+        any_directory: bool,
+        native_list: bool,
+        native_read: bool,
+        descriptor: ?contract.Descriptor,
+        message: []const u8 = "",
+    };
+
+    pub fn workReach(self: *Hub, arena: std.mem.Allocator) ![]const WorkReach {
+        var reached = std.ArrayList(WorkReach).empty;
+        for (self.adapters.items) |*registered| {
+            var refusal = contract.Refusal{};
+            const descriptor = registered.adapter.probe(&refusal) catch |err| switch (err) {
+                error.OutOfMemory => return error.OutOfMemory,
+                else => null,
+            };
+            try reached.append(arena, .{
+                .name = registered.name,
+                .directory = registered.directory,
+                .any_directory = registered.template != null,
+                .native_list = registered.adapter.vtable.native_list != null,
+                .native_read = registered.adapter.vtable.native_read != null,
+                .descriptor = descriptor,
+                .message = if (descriptor == null) (if (refusal.message.len > 0) refusal.message else "the adapter could not be probed") else "",
+            });
+        }
+        std.mem.sort(WorkReach, reached.items, {}, struct {
+            fn less(_: void, left: WorkReach, right: WorkReach) bool {
+                return std.mem.lessThan(u8, left.name, right.name);
+            }
+        }.less);
+        return reached.items;
+    }
+
     pub fn servesAnyDirectory(self: *Hub, name: []const u8) bool {
         const registered = self.find(name) orelse return false;
         return registered.template != null;

@@ -35,6 +35,7 @@ pub const op_work_start = "work.start";
 pub const op_work_send = "work.send";
 pub const op_work_stop = "work.stop";
 pub const op_work_read = "work.read";
+pub const op_work_capabilities = "work.capabilities";
 pub const work_read_default: usize = 100;
 pub const work_read_max: usize = 500;
 
@@ -774,6 +775,10 @@ pub const Frontend = struct {
             if (request.after_unreadable) return .{ .refused = .{ .code = "invalid_request", .message = "after is a whole number" } };
             return self.workRead(arena, request.session_id orelse "", request.after, request.limit);
         }
+        if (std.mem.eql(u8, request.op, op_work_capabilities)) {
+            if (try request.only(arena, no_parameters)) |refusal| return .{ .refused = refusal };
+            return self.workCapabilities(arena);
+        }
         if (std.mem.eql(u8, request.op, op_work_list)) {
             if (try request.only(arena, request_parameter)) |refusal| return .{ .refused = refusal };
             return self.workList(arena, .{ .include_closed = workFlag(request.payload, "include_closed"), .include_native = workFlag(request.payload, "include_native") });
@@ -1295,6 +1300,57 @@ pub const Frontend = struct {
         var root = try emptyObject(arena);
         try root.put(arena, "turns", try jsonArray(arena, turns));
         return .{ .answer = .{ .object = root } };
+    }
+
+    pub fn workCapabilities(self: *Frontend, arena: std.mem.Allocator) !Outcome {
+        const reached = try self.hub.workReach(arena);
+        var reachable = std.ArrayList(std.json.Value).empty;
+        var unavailable = std.ArrayList(std.json.Value).empty;
+        for (reached) |reach| {
+            const descriptor = reach.descriptor orelse {
+                var failed = try emptyObject(arena);
+                try failed.put(arena, "adapter", .{ .string = reach.name });
+                try failed.put(arena, "message", .{ .string = reach.message });
+                try unavailable.append(arena, .{ .object = failed });
+                continue;
+            };
+            var verbs = std.ArrayList(std.json.Value).empty;
+            for (work_verbs) |verb| {
+                if (verb.rests_on.len > 0 and withdrawn(descriptor, verb.rests_on)) continue;
+                try verbs.append(arena, .{ .string = verb.op });
+            }
+            var native = try emptyObject(arena);
+            try native.put(arena, "list", .{ .bool = reach.native_list });
+            try native.put(arena, "read", .{ .bool = reach.native_read });
+            var object = try emptyObject(arena);
+            try object.put(arena, "adapter", .{ .string = reach.name });
+            if (reach.directory.len > 0) try object.put(arena, "directory", .{ .string = reach.directory });
+            try object.put(arena, "any_directory", .{ .bool = reach.any_directory });
+            try object.put(arena, "verbs", try jsonArray(arena, verbs.items));
+            try object.put(arena, "native", .{ .object = native });
+            try reachable.append(arena, .{ .object = object });
+        }
+        var root = try emptyObject(arena);
+        try root.put(arena, "adapters", try jsonArray(arena, reachable.items));
+        if (unavailable.items.len > 0) try root.put(arena, "unavailable", try jsonArray(arena, unavailable.items));
+        return .{ .answer = .{ .object = root } };
+    }
+
+    const WorkVerb = struct { op: []const u8, rests_on: []const u8 = "" };
+    const work_verbs = [_]WorkVerb{
+        .{ .op = op_work_list },
+        .{ .op = op_work_start, .rests_on = contract.feature_submit },
+        .{ .op = op_work_send, .rests_on = contract.feature_submit },
+        .{ .op = op_work_status },
+        .{ .op = op_work_stop, .rests_on = "run.cancel" },
+        .{ .op = op_work_read },
+    };
+
+    fn withdrawn(descriptor: contract.Descriptor, key: []const u8) bool {
+        for (descriptor.features) |feature| {
+            if (std.mem.eql(u8, feature.key, key)) return feature.level == .unavailable;
+        }
+        return false;
     }
 
     fn nativeTurnsJson(arena: std.mem.Allocator, read: []const contract.NativeTurn, after: ?u64, bound: usize) !std.json.Value {
@@ -3283,6 +3339,49 @@ const cancelled_line = "{" ++ event_head ++ ",\"type\":\"run.cancelled\",\"id\":
 fn workResult(harness: *Harness, id: i64) !std.json.ObjectMap {
     try harness.send(try std.fmt.allocPrint(harness.arena(), "{{\"id\":{d},\"op\":\"work.status\",\"session_id\":\"s1\"}}", .{id}));
     return (try harness.lastValue()).object.get("result").?.object;
+}
+
+const uncancellable_descriptor = contract.Descriptor{
+    .endpoint = .{ .id = "uncancellable", .name = "Uncancellable", .version = "0.1", .adapter = "script" },
+    .capability_revision = "uncancellable-v1",
+    .features = &.{.{ .key = "run.cancel", .level = .unavailable, .reason = "no cancel request" }},
+};
+
+fn uncancellableProbe(ptr: *anyopaque, refusal: *contract.Refusal) contract.Failure!contract.Descriptor {
+    _ = ptr;
+    _ = refusal;
+    return uncancellable_descriptor;
+}
+
+fn uncancellableOpen(ptr: *anyopaque, arena: std.mem.Allocator, request: contract.OpenRequest, refusal: *contract.Refusal) contract.Failure!contract.Session {
+    _ = ptr;
+    _ = arena;
+    _ = request;
+    return refusal.fail(error.BackendFailed, "not opened in this test");
+}
+
+test "work.capabilities names each adapter's verbs, leaving out work.stop where run.cancel is unavailable, and whether it lists and reads its own sessions" {
+    const harness = try Harness.init(testing.allocator, .{}, .{});
+    defer harness.deinit();
+    var uncancellable_state: u8 = 0;
+    try harness.hub.register("uncancellable", .{ .ptr = &uncancellable_state, .vtable = &.{ .probe = uncancellableProbe, .open = uncancellableOpen } });
+    try harness.send("{\"id\":1,\"op\":\"work.capabilities\"}");
+    const adapters = (try harness.lastValue()).object.get("result").?.object.get("adapters").?.array.items;
+    try testing.expectEqual(@as(usize, 3), adapters.len);
+    try testing.expectEqualStrings("reference", adapters[0].object.get("adapter").?.string);
+    const full = adapters[0].object.get("verbs").?.array.items;
+    try testing.expectEqual(@as(usize, 6), full.len);
+    try testing.expectEqualStrings("work.stop", full[4].string);
+    try testing.expect(adapters[0].object.get("native").?.object.get("list").?.bool);
+    try testing.expect(adapters[0].object.get("native").?.object.get("read").?.bool);
+    try testing.expect(!adapters[0].object.get("any_directory").?.bool);
+    try testing.expectEqualStrings("uncancellable", adapters[1].object.get("adapter").?.string);
+    const cut = adapters[1].object.get("verbs").?.array.items;
+    try testing.expectEqual(@as(usize, 5), cut.len);
+    for (cut) |verb| try testing.expect(!std.mem.eql(u8, verb.string, "work.stop"));
+    try testing.expect(!adapters[1].object.get("native").?.object.get("list").?.bool);
+    try harness.send("{\"id\":2,\"op\":\"work.capabilities\",\"adapter\":\"reference\"}");
+    try testing.expectEqualStrings("invalid_request", try harness.code());
 }
 
 test "work.status names an idle session that never ran done, a running one running, and an absent one unknown_session" {

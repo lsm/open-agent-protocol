@@ -1,9 +1,8 @@
 # The Work Profile
 
 Status: draft, from [Decision 0047](../decisions/0047-a-work-layer-over-sessions.md)
-and its owner answers (2026-10-06). The six verbs are served by `oapx serve`
-over stdio and HTTP; the capabilities answer below is not served yet, so a
-missing verb shows only as its refusal.
+and its owner answers (2026-10-06). The six verbs and the capabilities answer
+below are served by `oapx serve` over stdio and HTTP.
 
 Profile: `open-agent-protocol.work`, over `open-agent-protocol.agent-control-core`.
 
@@ -24,7 +23,12 @@ verb says so and refuses it rather than inventing surface.
 ## Capability keys
 
 Each verb is a key the endpoint advertises in its `GET /work/capabilities`
-answer (stdio op `work.capabilities`), per adapter:
+answer (stdio op `work.capabilities`, no parameters), per adapter:
+`{"adapters": [{"adapter", "directory"?, "any_directory", "verbs": [...],
+"native": {"list", "read"}}], "unavailable"?: [{"adapter", "message"}]}`.
+`native` says whether the adapter lists its harness's own sessions and reads
+their transcripts; an adapter that could not be probed is named in
+`unavailable`.
 
 | Key | Built from | Unadvertised when |
 | --- | --- | --- |
