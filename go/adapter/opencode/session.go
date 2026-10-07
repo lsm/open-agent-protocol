@@ -107,6 +107,7 @@ type runState struct {
 	streamed        map[partKey]*strings.Builder
 	endedParts      [2]map[partKey]bool
 	steps           [2]map[native.MessageID]bool
+	toolSeen        [2]map[toolSight]bool
 	usage           protocol.Usage
 	cost            float64
 	lastFinish      string
@@ -757,6 +758,12 @@ func (s *session) handleEventLocked(event native.Event) {
 			return
 		}
 		<-run.admitted
+		s.mu.Lock()
+		fresh := sighted(&run.toolSeen, toolSight{id: data.ID}, s.replaying)
+		s.mu.Unlock()
+		if !fresh {
+			return
+		}
 		args, err := json.Marshal(data.Input)
 		if err != nil {
 			s.failRun(run, "opencode_invalid_tool_arguments", err.Error())
@@ -770,6 +777,12 @@ func (s *session) handleEventLocked(event native.Event) {
 			return
 		}
 		if run == nil {
+			return
+		}
+		s.mu.Lock()
+		ended := run.toolSeen[1][toolSight{id: data.ID, end: true}]
+		s.mu.Unlock()
+		if ended {
 			return
 		}
 		s.updateTool(run, data.ID, data.Metadata)
@@ -802,12 +815,23 @@ func (s *session) handleEventLocked(event native.Event) {
 		if run == nil {
 			return
 		}
+		s.mu.Lock()
+		fresh := sighted(&run.toolSeen, toolSight{id: callID, end: true}, s.replaying)
+		s.mu.Unlock()
+		if !fresh {
+			return
+		}
 		s.endTool(run, callID, failed, failure, content)
 	default:
 		if !event.Type.Supported() {
 			s.failActive(run, "opencode_unknown_event", fmt.Sprintf("unknown event %q", event.Type))
 		}
 	}
+}
+
+type toolSight struct {
+	id  string
+	end bool
 }
 
 func sighted[K comparable](seen *[2]map[K]bool, key K, replaying bool) bool {

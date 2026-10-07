@@ -213,8 +213,17 @@ func TestALostStreamFailsARunTheRecordDoesNotHold(t *testing.T) {
 	session, _ := openTest(t, client, 32)
 	response, stream := submitTest(t, session)
 	client.deliver(t, 1, native.MessageID(response.MessageIDs[0]))
+	client.mu.Lock()
+	client.renew = true
+	client.mu.Unlock()
 	client.loseStream(t, recordPage(userRecord("msg_someone_else")))
 	events := adaptertest.Drain(t, stream, time.Second)
+	client.mu.Lock()
+	attempts := client.attempts
+	client.mu.Unlock()
+	if attempts != 1 {
+		t.Fatalf("subscribed %d times for a record that cannot hold the run", attempts)
+	}
 	var failed protocol.RunFailedPayload
 	last := events[len(events)-1]
 	if last.Type != protocol.TypeRunFailed || last.DecodePayload(&failed) != nil || failed.Error.Code != "opencode_stream_failed" {
@@ -256,5 +265,174 @@ func TestASecondLostStreamDoesNotApplyTheFirstReplayAgain(t *testing.T) {
 	}
 	if got := streamedTexts(t, events); !slices.Equal(got, []string{"first", "second"}) {
 		t.Fatalf("streamed %q after two losses", got)
+	}
+}
+
+func TestALostStreamRetriesTheServerUntilItAnswersAgain(t *testing.T) {
+	for _, down := range []struct {
+		name               string
+		refusals, failures int
+	}{{"refused subscribes", 2, 0}, {"failed record reads", 0, 2}} {
+		t.Run(down.name, func(t *testing.T) {
+			client := newFakeClient()
+			session, _ := openTestWithin(t, client, 32, 5*time.Second)
+			response, stream := submitTest(t, session)
+			input := response.MessageIDs[0]
+			client.deliver(t, 1, native.MessageID(input))
+			client.mu.Lock()
+			client.refusals, client.readFailures, client.renew = down.refusals, down.failures, true
+			client.mu.Unlock()
+			client.loseStream(t, recordPage(
+				`{"id":"msg_idle","type":"idle","outcome":"succeeded","time":{"created":4}}`,
+				`{"id":"msg_a1","type":"assistant","content":[{"type":"text","text":"pong"}],"finish":"stop","tokens":{"input":1,"output":1},"time":{"created":2,"completed":3}}`,
+				userRecord(string(input)),
+			))
+			events := adaptertest.Drain(t, stream, 5*time.Second)
+			adaptertest.AssertRunTrace(t, response, CapabilityRevision, events)
+			if final, _ := finalTexts(t, events[len(events)-1]); !slices.Equal(final, []string{"pong"}) {
+				t.Fatalf("final %q", final)
+			}
+			client.mu.Lock()
+			attempts := client.attempts
+			client.mu.Unlock()
+			if attempts != 3 {
+				t.Fatalf("subscribed %d times, want 3", attempts)
+			}
+		})
+	}
+}
+
+func TestALostStreamGivesUpOnTheServerAtTheRequestTimeout(t *testing.T) {
+	client := newFakeClient()
+	session, _ := openTest(t, client, 32)
+	response, stream := submitTest(t, session)
+	client.deliver(t, 1, native.MessageID(response.MessageIDs[0]))
+	client.mu.Lock()
+	client.refusals = 1000
+	client.mu.Unlock()
+	began := time.Now()
+	client.subscription.fail(errors.New("connection reset"))
+	events := adaptertest.Drain(t, stream, time.Second)
+	waited := time.Since(began)
+	var failed protocol.RunFailedPayload
+	last := events[len(events)-1]
+	if last.Type != protocol.TypeRunFailed || last.DecodePayload(&failed) != nil || failed.Error.Code != "opencode_stream_failed" {
+		t.Fatalf("events %v %+v", types(events), failed)
+	}
+	client.mu.Lock()
+	attempts := client.attempts
+	client.mu.Unlock()
+	if waited < 200*time.Millisecond || attempts < 2 {
+		t.Fatalf("gave up after %v and %d attempts, want retries until the 250ms request timeout", waited, attempts)
+	}
+}
+
+func toolCalls(t *testing.T, events []protocol.Envelope) []string {
+	t.Helper()
+	var calls []string
+	for _, event := range events {
+		switch event.Type {
+		case protocol.TypeActionCallRequested, protocol.TypeActionCallStarted, protocol.TypeActionCallCompleted, protocol.TypeActionCallFailed:
+		default:
+			continue
+		}
+		var call protocol.ActionCallPayload
+		if err := event.DecodePayload(&call); err != nil {
+			t.Fatal(err)
+		}
+		entry := string(event.Type) + " " + call.Name + " " + string(call.ArgumentsJSON) + string(call.Result)
+		if call.Error != nil {
+			entry += call.Error.Message
+		}
+		calls = append(calls, entry)
+	}
+	return calls
+}
+
+func assertToolTrace(t *testing.T, response protocol.MessageSubmitResponse, events []protocol.Envelope) {
+	t.Helper()
+	implementation, err := New(Config{Endpoint: "http://127.0.0.1:1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	descriptor, err := implementation.Probe(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	adaptertest.AssertProtocolValidWithDescriptor(t, response, descriptor, events)
+}
+
+func TestALostStreamReplaysAToolCallTheRecordShowsRunAndFinished(t *testing.T) {
+	client := newFakeClient()
+	session, _ := openTest(t, client, 64)
+	response, stream := submitTest(t, session)
+	input := response.MessageIDs[0]
+	client.deliver(t, 1, native.MessageID(input))
+	client.loseStream(t, recordPage(
+		`{"id":"msg_idle","type":"idle","outcome":"succeeded","time":{"created":6}}`,
+		`{"id":"msg_a2","type":"assistant","content":[{"type":"text","text":"done"}],"finish":"stop","tokens":{"input":1,"output":1},"time":{"created":4,"completed":5}}`,
+		`{"id":"msg_a1","type":"assistant","content":[{"type":"tool","id":"call_1","name":"shell","executed":false,"state":{"status":"completed","input":{"command":"echo hi"},"content":[{"type":"text","text":"hi\n"}],"metadata":{"exit":0}},"time":{"created":2,"completed":3}},{"type":"tool","id":"call_2","name":"read","executed":false,"state":{"status":"pending","input":{}}}],"finish":"tool-calls","tokens":{"input":1,"output":1},"time":{"created":2,"completed":3}}`,
+		userRecord(string(input)),
+	))
+	events := adaptertest.Drain(t, stream, time.Second)
+	assertToolTrace(t, response, events)
+	want := []string{
+		`action.call.requested shell {"command":"echo hi"}`,
+		`action.call.started shell `,
+		`action.call.completed shell [{"type":"text","text":"hi\n"}]`,
+	}
+	if got := toolCalls(t, events); !slices.Equal(got, want) {
+		t.Fatalf("tool calls\n%q\nwant\n%q", got, want)
+	}
+	if final, _ := finalTexts(t, events[len(events)-1]); !slices.Equal(final, []string{"done"}) {
+		t.Fatalf("final %q", final)
+	}
+}
+
+func TestALostStreamTakesToolCallsFromTheRecordAndDropsTheirLiveRepeats(t *testing.T) {
+	client := newFakeClient()
+	session, _ := openTest(t, client, 64)
+	response, stream := submitTest(t, session)
+	input := response.MessageIDs[0]
+	client.deliver(t, 1, native.MessageID(input))
+	client.toolCalled(t, 2, 3, "call_1", "shell", map[string]any{"command": "rm -rf /"})
+	client.mu.Lock()
+	client.activeFor = 1
+	client.mu.Unlock()
+	client.loseStream(t, recordPage(
+		`{"id":"msg_a1","type":"assistant","content":[{"type":"tool","id":"call_1","name":"shell","executed":false,"state":{"status":"error","input":{"command":"rm -rf /"},"error":{"type":"aborted","message":"The user declined this tool call"}}},{"type":"tool","id":"call_2","name":"read","executed":false,"state":{"status":"running","input":{"path":"a"}}}],"time":{"created":2}}`,
+		userRecord(string(input)),
+	))
+	client.resubscribed(t)
+	client.emit(t, 5, native.TypeToolFailed, native.ToolFailedData{SessionID: client.session, AssistantMessage: "msg_a1", ID: "call_1", Error: native.SessionError{Type: "aborted", Message: "The user declined this tool call"}})
+	client.emit(t, 6, native.TypeToolProgress, native.ToolProgressData{SessionID: client.session, AssistantMessage: "msg_a1", ID: "call_1", Metadata: json.RawMessage(`{"late":true}`)})
+	client.emit(t, 8, native.TypeToolProgress, native.ToolProgressData{SessionID: client.session, AssistantMessage: "msg_a1", ID: "call_2", Metadata: json.RawMessage(`{"line":1}`)})
+	client.emit(t, 9, native.TypeToolSuccess, native.ToolSuccessData{SessionID: client.session, AssistantMessage: "msg_a1", ID: "call_2", Content: []native.ToolContent{{Type: "text", Text: "a"}}})
+	client.emit(t, 10, native.TypeStepEnded, native.StepEndedData{SessionID: client.session, AssistantMessage: "msg_a1", Finish: "tool-calls", Tokens: native.TokenAccounting{Input: 1, Output: 1}})
+	client.succeed(t, 11)
+	events := adaptertest.Drain(t, stream, time.Second)
+	assertToolTrace(t, response, events)
+	want := []string{
+		`action.call.requested shell {"command":"rm -rf /"}`,
+		`action.call.started shell `,
+		`action.call.failed shell The user declined this tool call`,
+		`action.call.requested read {"path":"a"}`,
+		`action.call.started read `,
+		`action.call.completed read [{"type":"text","text":"a"}]`,
+	}
+	if got := toolCalls(t, events); !slices.Equal(got, want) {
+		t.Fatalf("tool calls\n%q\nwant\n%q", got, want)
+	}
+	if events[len(events)-1].Type != protocol.TypeRunCompleted {
+		t.Fatalf("ended with %s", events[len(events)-1].Type)
+	}
+	progress := 0
+	for _, event := range events {
+		if event.Type == protocol.TypeActionCallProgress {
+			progress++
+		}
+	}
+	if progress != 1 {
+		t.Fatalf("%d progress events, want only the running call's", progress)
 	}
 }

@@ -24,7 +24,7 @@ const features = [_]contract.Feature{
     .{ .key = "models.list", .level = .degraded, .reason = "the models this session is observed to run, projected from the native session record and durable step events; the server's own model.list route has no pinned response shape at this revision" },
     .{ .key = "protocol.initialize", .level = .emulated, .reason = "OpenCode has no initialize handshake; OpenAPI and catalogs describe the server" },
     .{ .key = "run.cancel", .level = .degraded, .reason = "interrupt is intent with an idle no-op; a running run settles at session.execution.interrupted and a queued one at session.inbox.cancelled" },
-    .{ .key = "run.reconciliation", .level = .emulated, .reason = "adapter-owned projection over the session events; when the event stream ends it subscribes again once and reconciles the open runs from the session record" },
+    .{ .key = "run.reconciliation", .level = .emulated, .reason = "adapter-owned projection over the session events; when the event stream ends it subscribes again, retrying with backoff within the request timeout, and reconciles the open runs from the session record" },
     .{ .key = "run.replay", .level = .degraded, .reason = "bounded adapter journal; the native durable cursor is exposed as the transcript cursor" },
     .{ .key = "run.resume", .level = .degraded, .reason = "conversation resume exists natively but is not exercised; OAP resume replays the adapter journal" },
     .{ .key = "run.status", .level = .native, .reason = "session.inbox.delivered starts a run and session.execution.* settles it" },
@@ -119,6 +119,9 @@ pub fn turnsOf(arena: std.mem.Allocator, messages: []const std.json.Value) std.m
 fn wallClock() i64 {
     return compat.time.nowMillis();
 }
+
+const recover_backoff_first_ns = 100 * std.time.ns_per_ms;
+const recover_backoff_max_ns = 2 * std.time.ns_per_s;
 
 fn monotonic() u64 {
     return compat.time.monotonicNanos() catch 0;
@@ -482,12 +485,30 @@ pub const Session = struct {
 
     fn recover(self: *Session) contract.Failure!bool {
         if (self.reducer.unusable) return false;
+        const timeout = self.owner.config.request_timeout_ns;
+        const started = monotonic();
+        var backoff: u64 = recover_backoff_first_ns;
+        while (true) {
+            switch (try self.resubscribe(started)) {
+                .recovered => return true,
+                .given_up => return false,
+                .retry => {},
+            }
+            if (monotonic() -| started +| backoff >= timeout) return false;
+            compat.time.sleepNs(backoff);
+            backoff = @min(backoff * 2, recover_backoff_max_ns);
+        }
+    }
+
+    const Attempt = enum { recovered, retry, given_up };
+
+    fn resubscribe(self: *Session, started: u64) contract.Failure!Attempt {
         const gpa = self.gpa;
         const config = self.owner.config;
         const own = self.owned();
         const subscription = client.Connection.start(gpa, self.target, try client.encode(own, self.target, try httpapi.subscribe(own, self.endpoint)), config.frame_limit) catch |err| {
             if (err == error.OutOfMemory) return error.OutOfMemory;
-            return false;
+            return .retry;
         };
         var stream = httpapi.Stream.init(gpa, config.frame_limit, self.native_id);
         var swapped = false;
@@ -496,17 +517,16 @@ pub const Session = struct {
             stream.deinit();
         };
         var held: std.ArrayList(native.Event) = .empty;
-        const started = monotonic();
         while (!stream.connected) {
-            if (subscription.reader.head_done and subscription.reader.status != 200) return false;
-            if (monotonic() -| started > config.request_timeout_ns) return false;
-            const got = subscription.poll(20) catch return false;
+            if (subscription.reader.head_done and subscription.reader.status != 200) return .retry;
+            if (monotonic() -| started > config.request_timeout_ns) return .given_up;
+            const got = subscription.poll(20) catch return .retry;
             const chunk = try subscription.reader.take(own);
             if (chunk.len > 0) {
                 const batch = try stream.feed(own, chunk);
                 try held.appendSlice(own, batch.events);
-                if (batch.failure != null) return false;
-            } else if (!got and !subscription.open) return false;
+                if (batch.failure != null) return .retry;
+            } else if (!got and !subscription.open) return .retry;
         }
         const wanted = self.reducer.reconcileTarget();
         var records: ?[]const std.json.Value = null;
@@ -514,14 +534,14 @@ pub const Session = struct {
         if (wanted.oldest.len > 0) {
             records = self.recordsFrom(wanted.oldest) catch |err| {
                 if (err == error.OutOfMemory) return error.OutOfMemory;
-                return false;
+                return .retry;
             };
             if (records) |found| {
                 if (!session.recordSettled(found)) live = self.stillRunning() catch |err| {
                     if (err == error.OutOfMemory) return error.OutOfMemory;
-                    return false;
+                    return .retry;
                 };
-            } else if (wanted.delivered.len > 0) return false;
+            } else if (wanted.delivered.len > 0) return .given_up;
         }
         if (self.subscription) |previous| previous.destroy(gpa);
         self.subscription = subscription;
@@ -531,7 +551,7 @@ pub const Session = struct {
         self.ended = false;
         if (records) |found| self.reducer.replay(found, wanted.delivered, live) catch |err| return lift(err);
         for (held.items) |observed| self.reducer.observe(observed) catch |err| return lift(err);
-        return true;
+        return .recovered;
     }
 
     fn recordsFrom(self: *Session, oldest: []const u8) !?[]const std.json.Value {
@@ -857,6 +877,8 @@ pub const FakeServer = struct {
     last_prompt_len: usize = 0,
     subscribes: std.atomic.Value(usize) = .init(0),
     after_reconnect: []const []const u8 = &.{},
+    refuse_resubscribes: usize = 0,
+    failed_reads: usize = 0,
 
     pub fn start(self: *FakeServer) !void {
         if (builtin.os.tag == .windows) return error.SkipZigTest;
@@ -936,6 +958,11 @@ pub const FakeServer = struct {
                     @memcpy(self.event_target[0..target.len], target);
                     self.event_target_len = target.len;
                     _ = self.subscribes.fetchAdd(1, .acq_rel);
+                    if (self.subscribes.load(.acquire) > 1 and self.refuse_resubscribes > 0) {
+                        self.refuse_resubscribes -= 1;
+                        try respond(conn, "500 Internal Server Error", "{}");
+                        continue;
+                    }
                     if (self.refuse_events) {
                         try respond(conn, "500 Internal Server Error", "{}");
                         continue;
@@ -955,6 +982,9 @@ pub const FakeServer = struct {
                     _ = self.message_pages.fetchAdd(1, .acq_rel);
                     if (std.mem.eql(u8, target, "/api/session/" ++ fake_session ++ "/message?limit=200&order=asc")) {
                         try respond(conn, "200 OK", "{\"data\":[{\"id\":\"msg_oap0000000000000004\",\"time\":{\"created\":1791355196016},\"text\":\"ping\",\"type\":\"user\"}],\"cursor\":{\"next\":\"n1\"}}");
+                    } else if (self.failed_reads > 0 and std.mem.eql(u8, target, "/api/session/" ++ fake_session ++ "/message?limit=200&order=desc")) {
+                        self.failed_reads -= 1;
+                        try respond(conn, "500 Internal Server Error", "{}");
                     } else if (self.record.len > 0 and std.mem.eql(u8, target, "/api/session/" ++ fake_session ++ "/message?limit=200&order=desc")) {
                         try respond(conn, "200 OK", try std.mem.replaceOwned(u8, arena, self.record, "%MSG%", self.last_prompt[0..self.last_prompt_len]));
                     } else if (std.mem.eql(u8, target, "/api/session/" ++ fake_session ++ "/message?cursor=n1&limit=200")) {
@@ -1269,10 +1299,11 @@ test "an endpoint that is not plain http refuses the open, naming it" {
     try testing.expectEqualStrings("the OpenCode endpoint \"https://127.0.0.1:1\" is not a plain http URL", refusal.message);
 }
 
-test "a server that closes the event stream mid-run fails the run and closes the session" {
+test "a server that closes the event stream mid-run fails the run at the request timeout and closes the session" {
     var probe: Probe = undefined;
     try probe.init(&.{&open_turn}, &.{});
     defer probe.deinit();
+    probe.adapter.config.request_timeout_ns = 400 * std.time.ns_per_ms;
     var refusal = contract.Refusal{};
     _ = try probe.open(&refusal);
     _ = try probe.submit(.auto, &refusal);
@@ -1334,6 +1365,40 @@ test "a run whose event stream drops fails when the server no longer runs it and
     const failed = try probe.pumpUntil("run.failed", &seen);
     try testing.expect(std.mem.indexOf(u8, failed.line, "opencode_execution_interrupted") != null);
     _ = try probe.handle.?.state(probe.arena.allocator(), &refusal);
+}
+
+test "a run whose event stream drops retries a server that refuses the new stream or the record until it answers" {
+    for ([_][2]usize{ .{ 2, 0 }, .{ 0, 2 } }) |down| {
+        var probe: Probe = undefined;
+        try probe.init(&.{&open_turn}, &.{});
+        defer probe.deinit();
+        probe.fake.drop_stream = true;
+        probe.fake.refuse_resubscribes = down[0];
+        probe.fake.failed_reads = down[1];
+        probe.fake.record = "{\"data\":[{\"id\":\"msg_idle\",\"type\":\"idle\",\"outcome\":\"succeeded\",\"time\":{\"created\":4}},{\"id\":\"msg_a1\",\"type\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"pong\"}],\"finish\":\"stop\",\"cost\":0,\"tokens\":{\"input\":3,\"output\":2,\"reasoning\":0,\"cache\":{\"read\":0,\"write\":0}},\"time\":{\"created\":2,\"completed\":3}},{\"id\":\"%MSG%\",\"type\":\"user\",\"text\":\"hello\",\"time\":{\"created\":1}}],\"cursor\":{}}";
+        var refusal = contract.Refusal{};
+        _ = try probe.open(&refusal);
+        _ = try probe.submit(.auto, &refusal);
+        var seen = std.ArrayList(contract.Event).empty;
+        const completed = try probe.pumpUntil("run.completed", &seen);
+        try testing.expect(std.mem.indexOf(u8, completed.line, "\"text\":\"pong\"") != null);
+        try testing.expectEqual(@as(usize, 4), probe.fake.subscribes.load(.acquire));
+        _ = try probe.handle.?.state(probe.arena.allocator(), &refusal);
+    }
+}
+
+test "a run whose event stream drops does not retry a record that cannot hold its input" {
+    var probe: Probe = undefined;
+    try probe.init(&.{&open_turn}, &.{});
+    defer probe.deinit();
+    probe.fake.drop_stream = true;
+    probe.fake.record = "{\"data\":[{\"id\":\"msg_someone\",\"type\":\"user\",\"text\":\"hi\",\"time\":{\"created\":1}}],\"cursor\":{}}";
+    var refusal = contract.Refusal{};
+    _ = try probe.open(&refusal);
+    _ = try probe.submit(.auto, &refusal);
+    var seen = std.ArrayList(contract.Event).empty;
+    _ = try probe.pumpUntil("run.failed", &seen);
+    try testing.expectEqual(@as(usize, 2), probe.fake.subscribes.load(.acquire));
 }
 
 test "a run whose event stream drops fails when the session record does not hold its input" {

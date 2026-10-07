@@ -5,11 +5,18 @@ import (
 	"encoding/json"
 	"errors"
 	"slices"
+	"time"
 
 	"github.com/lsm/open-agent-protocol/go/adapter/opencode/internal/native"
 )
 
-const reconcilePagesMax = 16
+const (
+	reconcilePagesMax   = 16
+	recoverBackoffFirst = 100 * time.Millisecond
+	recoverBackoffMax   = 2 * time.Second
+)
+
+var errUnheld = errors.New("the session record does not hold the open run's input")
 
 type storedRecord struct {
 	ID      native.MessageID       `json:"id"`
@@ -23,8 +30,17 @@ type storedRecord struct {
 		Completed int64 `json:"completed"`
 	} `json:"time"`
 	Content []struct {
-		Type string `json:"type"`
-		Text string `json:"text"`
+		Type     string `json:"type"`
+		Text     string `json:"text"`
+		ID       string `json:"id"`
+		Name     string `json:"name"`
+		Executed bool   `json:"executed"`
+		State    struct {
+			Status  string               `json:"status"`
+			Input   map[string]any       `json:"input"`
+			Content []native.ToolContent `json:"content"`
+			Error   native.SessionError  `json:"error"`
+		} `json:"state"`
 		Time struct {
 			Completed int64 `json:"completed"`
 		} `json:"time"`
@@ -38,6 +54,27 @@ func (s *session) recover() bool {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), s.timeout)
 	defer cancel()
+	go func() {
+		select {
+		case <-s.stop:
+			cancel()
+		case <-ctx.Done():
+		}
+	}()
+	for backoff := recoverBackoffFirst; ; backoff = min(2*backoff, recoverBackoffMax) {
+		recovered, retry := s.resubscribe(ctx, reader)
+		if recovered || !retry {
+			return recovered
+		}
+		select {
+		case <-ctx.Done():
+			return false
+		case <-time.After(backoff):
+		}
+	}
+}
+
+func (s *session) resubscribe(ctx context.Context, reader messageReader) (recovered, retry bool) {
 	subCtx, subCancel := context.WithCancel(context.Background())
 	stopWaiting := context.AfterFunc(ctx, subCancel)
 	subscription, err := s.client.Subscribe(subCtx, s.nativeID)
@@ -46,17 +83,18 @@ func (s *session) recover() bool {
 			_ = subscription.Close()
 		}
 		subCancel()
-		return false
+		return false, ctx.Err() == nil
 	}
 	s.transitionMu.Lock()
 	defer s.transitionMu.Unlock()
 	events, err := s.reconciliation(ctx, reader)
 	s.mu.Lock()
 	if err != nil || s.closed {
+		closed := s.closed
 		s.mu.Unlock()
 		_ = subscription.Close()
 		subCancel()
-		return false
+		return false, !closed && !errors.Is(err, errUnheld) && ctx.Err() == nil
 	}
 	previous := s.subCancel
 	s.subscription, s.events, s.subCancel = subscription, subscription.Events(), subCancel
@@ -69,7 +107,7 @@ func (s *session) recover() bool {
 	s.mu.Lock()
 	s.replaying = false
 	s.mu.Unlock()
-	return true
+	return true, false
 }
 
 func (s *session) reconciliation(ctx context.Context, reader messageReader) ([]native.Event, error) {
@@ -95,7 +133,7 @@ func (s *session) reconciliation(ctx context.Context, reader messageReader) ([]n
 	}
 	if records == nil {
 		if delivered != "" {
-			return nil, errors.New("the session record does not hold the open run's input")
+			return nil, errUnheld
 		}
 		return nil, nil
 	}
@@ -175,6 +213,21 @@ func (s *session) replayed(records []storedRecord, delivered native.MessageID, l
 						add(native.TypeReasoningEnded, native.ReasoningEndedData{SessionID: s.nativeID, AssistantMessage: record.ID, Ordinal: thoughts, Text: part.Text})
 					}
 					thoughts++
+				case "tool":
+					switch part.State.Status {
+					case "running", "completed", "error":
+					default:
+						continue
+					}
+					call := native.ToolCalledData{SessionID: s.nativeID, AssistantMessage: record.ID, ID: part.ID, Input: part.State.Input, Executed: part.Executed}
+					add(native.TypeToolInputStarted, native.ToolInputStartedData{SessionID: s.nativeID, AssistantMessage: record.ID, ID: part.ID, Name: part.Name})
+					add(native.TypeToolCalled, call)
+					switch part.State.Status {
+					case "completed":
+						add(native.TypeToolSuccess, native.ToolSuccessData{SessionID: s.nativeID, AssistantMessage: record.ID, ID: part.ID, Content: part.State.Content, Executed: part.Executed})
+					case "error":
+						add(native.TypeToolFailed, native.ToolFailedData{SessionID: s.nativeID, AssistantMessage: record.ID, ID: part.ID, Error: part.State.Error, Executed: part.Executed})
+					}
 				}
 			}
 			if !done {
