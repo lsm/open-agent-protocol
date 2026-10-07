@@ -52,7 +52,10 @@ session no binding names. `work.start` given a `native_id` adopts that
 session (0047 decision 3): it resumes it under a new OAP id and submits the
 message. A native id `serve` already holds or has a binding for is not adopted
 twice; the message goes to that session instead. One the harness lists as
-running is refused `run_active`. `work.status`, `work.send`, `work.stop` and
+running is refused `run_active`, and one whose harness fails to list its
+sessions is refused `backend_failed`, since a failed list is no evidence it is
+idle. An adapter that cannot list at all has no such evidence to consult, so
+its session is adopted. `work.status`, `work.send`, `work.stop` and
 `work.read` take the OAP id from then on.
 
 An adopted session keeps the harness's own posture: the Claude adapter resumes
