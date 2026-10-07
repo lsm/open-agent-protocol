@@ -270,7 +270,13 @@ tool definitions are #374's subject and gate the TUI's tools step. Filed as
   keeps it regardless of how the control layer moves.
 - **Transcript storage.** `~/.oapx/sessions` is the TUI's own; the endpoint
   declines to replay it (G1), so this does not become `transcript.load` unless
-  G1 is closed.
+  G1 is closed. Over the in-process endpoint the records in it come from the
+  endpoint's own loop, handed to the TUI beside the wire through the adapter's
+  `Recorder`, because the wire cannot rebuild them: no event says which tool
+  calls one assistant message made, or what text the model saw as a tool's
+  result. The TUI writes them, so its titles, index and compaction offsets
+  stay where they were. An attached hub has no such channel, and the TUI saves
+  what it renders from the wire.
 
 ## What the endpoint actually puts on the wire
 

@@ -35,6 +35,8 @@ pub const OapExecution = struct {
     ids: u64 = 0,
     inbound: std.ArrayList([]u8) = .empty,
     inbound_mutex: std.atomic.Mutex = .unlocked,
+    records: std.ArrayList(TuiEvent) = .empty,
+    records_mutex: std.atomic.Mutex = .unlocked,
     thread: ?std.Thread = null,
     stopping: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
     turn_open: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
@@ -110,7 +112,38 @@ pub const OapExecution = struct {
         adapter.* = oapx_adapter.Adapter.init(allocator, options);
         const self = try allocator.create(OapExecution);
         self.* = .{ .allocator = allocator, .adapter = adapter, .endpoint = adapter_endpoint.Endpoint.init(allocator, adapter.adapter(), .{ .frame_limit = in_process_frame_limit }) };
+        adapter.recorder = .{ .ctx = self, .record = record };
         return self;
+    }
+
+    fn record(ctx: *anyopaque, session_id: []const u8, event: *const TuiEvent) void {
+        const self = cast(ctx);
+        if (!std.mem.eql(u8, session_id, self.session_id)) return;
+        self.keepRecord(event);
+    }
+
+    fn notice(self: *OapExecution, event: TuiEvent) void {
+        if (self.adapter != null) self.keepRecord(&event);
+        self.deliver(event);
+    }
+
+    fn keepRecord(self: *OapExecution, event: *const TuiEvent) void {
+        var cloned = event.clone(self.allocator) catch return;
+        while (!self.records_mutex.tryLock()) std.atomic.spinLoopHint();
+        defer self.records_mutex.unlock();
+        self.records.append(self.allocator, cloned) catch cloned.deinit(self.allocator);
+    }
+
+    fn takeRecord(ctx: *anyopaque) ?TuiEvent {
+        const self = cast(ctx);
+        while (!self.records_mutex.tryLock()) std.atomic.spinLoopHint();
+        defer self.records_mutex.unlock();
+        if (self.records.items.len == 0) return null;
+        return self.records.orderedRemove(0);
+    }
+
+    fn recordsSession(ctx: *anyopaque) bool {
+        return cast(ctx).adapter != null;
     }
 
     pub fn setTranscripts(self: *OapExecution, store: oapx_adapter.TranscriptStore) void {
@@ -150,6 +183,8 @@ pub const OapExecution = struct {
         }
         for (self.inbound.items) |line| allocator.free(line);
         self.inbound.deinit(allocator);
+        for (self.records.items) |*held| held.deinit(allocator);
+        self.records.deinit(allocator);
         self.text.deinit(allocator);
         self.forgetSessionModels();
         self.session_models.deinit(allocator);
@@ -179,6 +214,8 @@ pub const OapExecution = struct {
         .switch_model = switchModel,
         .set_reasoning = setReasoning,
         .compacts = compacts,
+        .take_record = takeRecord,
+        .records_session = recordsSession,
         .compactable = compactable,
         .compact = compact,
         .set_compaction_policy = setCompactionPolicy,
@@ -251,7 +288,7 @@ pub const OapExecution = struct {
             try open.put("metadata", metadata.value());
             const reopened = try self.exchange(a, "session.open.request", open.value(), true);
             const message = try std.fmt.allocPrint(self.allocator, "the hub refused to open the session on {s}, so it runs on the hub's default model", .{try modelRef(a, settings.model.?)});
-            self.deliver(.{ .system_warning = .{ .message = OwnedSlice(u8).initOwned(message) } });
+            self.notice(.{ .system_warning = .{ .message = OwnedSlice(u8).initOwned(message) } });
             break :retry reopened;
         };
         const payload = opened.object.get("payload") orelse return error.OapOpenFailed;
@@ -290,7 +327,7 @@ pub const OapExecution = struct {
             _ = self.exchange(a, "session.model.switch.request", switch_map.value(), true) catch |err| switch (err) {
                 error.OapRequestRefused => {
                     const message = try std.fmt.allocPrint(self.allocator, "{s} is not in the OAP session's catalog, so the session runs on its own default model; refresh or restart oapx tui to pick it up", .{wanted});
-                    self.deliver(.{ .system_warning = .{ .message = OwnedSlice(u8).initOwned(message) } });
+                    self.notice(.{ .system_warning = .{ .message = OwnedSlice(u8).initOwned(message) } });
                 },
                 else => return err,
             };
@@ -901,7 +938,7 @@ pub const OapExecution = struct {
     fn run(self: *OapExecution) void {
         while (!self.stopping.load(.acquire)) {
             const moved = self.cycle() catch |err| moved: {
-                self.deliver(.{ .@"error" = .{ .message = OwnedSlice(u8).initBorrowed(@errorName(err)) } });
+                self.notice(.{ .@"error" = .{ .message = OwnedSlice(u8).initBorrowed(@errorName(err)) } });
                 if (self.turn_open.load(.acquire)) self.endTurn(.@"error");
                 break :moved false;
             };
@@ -973,7 +1010,7 @@ pub const OapExecution = struct {
         if (stringOf(root, "control")) |control| {
             if (!std.mem.eql(u8, control, "stream.lost")) return;
             const message = stringOf(root, "message") orelse "this run's events stopped reaching the terminal UI";
-            self.deliver(.{ .system_warning = .{ .message = try self.ownedText(message) } });
+            self.notice(.{ .system_warning = .{ .message = try self.ownedText(message) } });
             if (self.turn_open.load(.acquire)) {
                 self.sendCancel() catch {};
                 self.dropQueued();
@@ -996,7 +1033,7 @@ pub const OapExecution = struct {
             if (std.mem.startsWith(u8, reply_to, "compact-")) {
                 try self.settleCompaction(.failed, message);
             } else if (std.mem.startsWith(u8, reply_to, "submit-")) {
-                self.deliver(.{ .@"error" = .{ .message = try self.ownedText(message) } });
+                self.notice(.{ .@"error" = .{ .message = try self.ownedText(message) } });
                 self.closeTurn();
                 self.dropQueued();
                 self.endTurn(.@"error");
@@ -1006,13 +1043,13 @@ pub const OapExecution = struct {
                     pending.deinit(self.allocator);
                 }
                 const note = try std.fmt.allocPrint(self.allocator, "the steer was not applied: {s}", .{message});
-                self.deliver(.{ .system_warning = .{ .message = OwnedSlice(u8).initOwned(note) } });
+                self.notice(.{ .system_warning = .{ .message = OwnedSlice(u8).initOwned(note) } });
             } else if (std.mem.startsWith(u8, reply_to, "queue-")) {
                 self.refuseQueued(reply_to);
-                self.deliver(.{ .system_warning = .{ .message = try self.ownedText(message) } });
+                self.notice(.{ .system_warning = .{ .message = try self.ownedText(message) } });
                 if (self.awaiting_promotion.load(.acquire) and !self.holdOrClose()) self.endTurn(.completed);
             } else {
-                self.deliver(.{ .system_warning = .{ .message = try self.ownedText(message) } });
+                self.notice(.{ .system_warning = .{ .message = try self.ownedText(message) } });
             }
             return;
         }
@@ -1105,7 +1142,7 @@ pub const OapExecution = struct {
                 if (self.cancelling) return;
                 const reason = if (body.get("reason")) |value| (if (value == .object) errorMessage(value.object) else "the run ended first") else "the run ended first";
                 const note = try std.fmt.allocPrint(self.allocator, "the steer was not applied: {s}", .{reason});
-                self.deliver(.{ .system_warning = .{ .message = OwnedSlice(u8).initOwned(note) } });
+                self.notice(.{ .system_warning = .{ .message = OwnedSlice(u8).initOwned(note) } });
                 return;
             }
             try self.closeAssistant(.stop);
@@ -1165,7 +1202,7 @@ pub const OapExecution = struct {
         if (std.mem.eql(u8, kind, "run.completed") or std.mem.eql(u8, kind, "run.failed") or std.mem.eql(u8, kind, "run.cancelled")) {
             if (!self.turn_open.load(.acquire)) return;
             if (!self.isCurrentRun(body)) {
-                if (std.mem.eql(u8, kind, "run.failed")) self.deliver(.{ .system_warning = .{ .message = try self.ownedText(errorMessage(body)) } });
+                if (std.mem.eql(u8, kind, "run.failed")) self.notice(.{ .system_warning = .{ .message = try self.ownedText(errorMessage(body)) } });
                 self.settleReserved(stringOf(body, "run_id") orelse "");
                 if (self.awaiting_promotion.load(.acquire) and !self.holdOrClose()) self.endTurn(.completed);
                 return;
@@ -2012,6 +2049,79 @@ fn askedTurn(decision: tui_runtime.ToolApprovalDecision) !struct { end: ?tui_ses
         std.testing.io.sleep(.fromNanoseconds(std.time.ns_per_ms), .boot) catch {};
     }
     return error.TestTurnNeverEnded;
+}
+
+test "an in-process session hands the loop's own records over, tool calls and results included, which the OAP events cannot rebuild" {
+    var script = Script{ .tool_first = true };
+    const models = [_]ai_types.Model{scripted_model};
+    const execution = try OapExecution.create(testing.allocator, .{
+        .protocol = .{ .stream_fn = scriptedStream, .ctx = &script },
+        .models = &models,
+        .initial_model_id = scripted_model.id,
+        .tools = &echo_tools,
+    });
+    defer execution.destroy();
+    var runtime = try tui_runtime.TuiRuntime.init(testing.allocator, .{
+        .models = &models,
+        .initial_model_id = scripted_model.id,
+        .remote = execution.remote(),
+    });
+    defer runtime.deinit();
+    try testing.expect(runtime.recordsFromEndpoint());
+
+    try runtime.submitTurn("use the tool");
+    var seen = Seen{};
+    defer seen.deinit();
+    try drainTurn(&runtime, &seen);
+    try testing.expectEqual(@as(?tui_session.TuiEndReason, .completed), seen.end);
+
+    var tool_calls: usize = 0;
+    var tool_results: usize = 0;
+    var ends: usize = 0;
+    while (runtime.takeEndpointRecord()) |record| {
+        var owned = record;
+        defer owned.deinit(testing.allocator);
+        switch (owned) {
+            .message_end => |payload| {
+                if (payload.role == .assistant and std.mem.indexOf(u8, payload.tool_calls_json.slice(), "call-1") != null) tool_calls += 1;
+                if (payload.role == .tool_result and std.mem.eql(u8, payload.tool_call_id.slice(), "call-1")) tool_results += 1;
+            },
+            .agent_end => ends += 1,
+            else => {},
+        }
+    }
+    try testing.expectEqual(@as(usize, 1), tool_calls);
+    try testing.expectEqual(@as(usize, 1), tool_results);
+    try testing.expectEqual(@as(usize, 1), ends);
+}
+
+test "a notice the execution writes itself is kept with the endpoint's records, since the loop never saw it" {
+    var script = Script{};
+    var execution: *OapExecution = undefined;
+    var runtime = try remoteRuntime(&script, &execution, .low);
+    defer execution.destroy();
+    defer runtime.deinit();
+    try runtime.start();
+
+    try execution.translateLine("{\"control\":\"stream.lost\",\"message\":\"the stream went away\"}");
+    var kept = runtime.takeEndpointRecord() orelse return error.TestExpectedRecord;
+    defer kept.deinit(testing.allocator);
+    try testing.expectEqualStrings("the stream went away", kept.system_warning.message.slice());
+    try testing.expect(runtime.takeEndpointRecord() == null);
+}
+
+test "a session with no in-process endpoint has no records to hand over" {
+    var script = Script{};
+    var execution: *OapExecution = undefined;
+    var runtime = try remoteRuntime(&script, &execution, .low);
+    defer execution.destroy();
+    defer runtime.deinit();
+    try testing.expect(runtime.recordsFromEndpoint());
+    const adapter = execution.adapter.?;
+    execution.adapter = null;
+    defer execution.adapter = adapter;
+    try testing.expect(!runtime.recordsFromEndpoint());
+    try testing.expect(runtime.takeEndpointRecord() == null);
 }
 
 test "in ask mode over OAP the model's tool call waits for the user's approval and then runs" {

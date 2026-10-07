@@ -75,6 +75,8 @@ pub const RemoteExecution = struct {
         switch_model: *const fn (ctx: *anyopaque, model: ai_types.Model) anyerror!void,
         set_reasoning: *const fn (ctx: *anyopaque, level: ai_types.ThinkingLevel) anyerror!void,
         compacts: *const fn (ctx: *anyopaque) bool,
+        take_record: *const fn (ctx: *anyopaque) ?TuiEvent,
+        records_session: *const fn (ctx: *anyopaque) bool,
         compactable: *const fn (ctx: *anyopaque) bool,
         compact: *const fn (ctx: *anyopaque, focus: []const u8) anyerror!void,
         set_compaction_policy: *const fn (ctx: *anyopaque, policy_json: []const u8) anyerror!void,
@@ -1254,6 +1256,16 @@ pub const TuiRuntime = struct {
         self.pending_approval.cancelled = true;
         self.pending_approval.decision = .reject;
         self.approval_mutex.unlock();
+    }
+
+    pub fn recordsFromEndpoint(self: *const TuiRuntime) bool {
+        const remote = self.remote orelse return false;
+        return remote.vtable.records_session(remote.ctx);
+    }
+
+    pub fn takeEndpointRecord(self: *TuiRuntime) ?TuiEvent {
+        const remote = self.remote orelse return null;
+        return remote.vtable.take_record(remote.ctx);
     }
 
     pub fn streamEvents(self: *TuiRuntime) *TuiEventStream {

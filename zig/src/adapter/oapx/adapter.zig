@@ -63,10 +63,16 @@ pub const TranscriptStore = struct {
     save: *const fn (ctx: *anyopaque, allocator: std.mem.Allocator, session_id: []const u8, index: usize, history: []const ai_types.Message) ?[]u8,
 };
 
+pub const Recorder = struct {
+    ctx: *anyopaque,
+    record: *const fn (ctx: *anyopaque, session_id: []const u8, event: *const tui_session.TuiEvent) void,
+};
+
 pub const Adapter = struct {
     allocator: std.mem.Allocator,
     options: tui_runtime.TuiRuntimeOptions,
     transcripts: ?TranscriptStore = null,
+    recorder: ?Recorder = null,
     ids: u64 = 0,
     now_ms: *const fn () i64 = wallClock,
 
@@ -939,6 +945,7 @@ pub const Session = struct {
         while (stream.poll()) |event| {
             var owned = event;
             defer owned.deinit(self.gpa);
+            if (self.owner.recorder) |recorder| recorder.record(recorder.ctx, self.id, &owned);
             try self.translate(owned);
             moved = true;
         }
