@@ -1710,11 +1710,7 @@ SCENARIOS = {
 
 LOCAL_ONLY_SCENARIOS = {"hub-attach"}
 
-OAP_KNOWN_GAPS = {
-    "session-roundtrip": "resume is refused over OAP (#931)",
-    "tool-loss-reconcile": "resume is refused over OAP (#931)",
-    "tool-loss-flush-release": "resume is refused over OAP (#931)",
-}
+OAP_KNOWN_GAPS = {}
 
 KNOWN_DIVERGENCES = {}
 

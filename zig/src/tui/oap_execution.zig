@@ -44,9 +44,11 @@ pub const OapExecution = struct {
     in_assistant: bool = false,
     text: std.ArrayList(u8) = .empty,
     session_models: std.ArrayList([]u8) = .empty,
+    pending_catalog: ?[]ai_types.Model = null,
     live_reasoning: bool = false,
     live_compaction: bool = false,
     has_history: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
+    opened_root: []u8 = &.{},
     live_policy: bool = false,
     live_steer: bool = false,
     steers: std.ArrayList(PendingSteer) = .empty,
@@ -114,6 +116,10 @@ pub const OapExecution = struct {
         self.* = .{ .allocator = allocator, .adapter = adapter, .endpoint = adapter_endpoint.Endpoint.init(allocator, adapter.adapter(), .{ .frame_limit = in_process_frame_limit }) };
         adapter.recorder = .{ .ctx = self, .record = record };
         return self;
+    }
+
+    pub fn setHistory(self: *OapExecution, loader: oapx_adapter.HistoryLoader) void {
+        if (self.adapter) |held| held.history = loader;
     }
 
     fn record(ctx: *anyopaque, session_id: []const u8, event: *const TuiEvent) void {
@@ -197,9 +203,14 @@ pub const OapExecution = struct {
         allocator.free(self.revision);
         allocator.free(self.sent_policy);
         allocator.free(self.session_id);
+        allocator.free(self.opened_root);
         allocator.free(self.run_id);
+        if (self.pending_catalog) |held| tui_runtime.deinitModels(allocator, held);
         allocator.free(self.submitted);
-        if (self.adapter) |adapter| allocator.destroy(adapter);
+        if (self.adapter) |adapter| {
+            adapter.deinit();
+            allocator.destroy(adapter);
+        }
         allocator.destroy(self);
     }
 
@@ -213,6 +224,7 @@ pub const OapExecution = struct {
         .cancel = cancel,
         .switch_model = switchModel,
         .set_reasoning = setReasoning,
+        .set_catalog = setCatalog,
         .compacts = compacts,
         .take_record = takeRecord,
         .records_session = recordsSession,
@@ -236,6 +248,16 @@ pub const OapExecution = struct {
 
     fn start(ctx: *anyopaque, sink: tui_runtime.EventSink, settings: tui_runtime.RemoteSettings) anyerror!void {
         const self = cast(ctx);
+        const prior_open = settings.resume_session_id != null and self.session_id.len > 0;
+        self.startSession(sink, settings) catch |err| {
+            if (!prior_open or err == error.OapReopenRefused or self.thread != null) return err;
+            self.stopping.store(false, .release);
+            self.thread = std.Thread.spawn(.{}, run, .{self}) catch return err;
+            return error.OapReopenRefused;
+        };
+    }
+
+    fn startSession(self: *OapExecution, sink: tui_runtime.EventSink, settings: tui_runtime.RemoteSettings) anyerror!void {
         self.sink = sink;
         var scratch = std.heap.ArenaAllocator.init(self.allocator);
         defer scratch.deinit();
@@ -281,8 +303,36 @@ pub const OapExecution = struct {
         try metadata.put(oapx_adapter.settings_key, settings_map.value());
         var open = Map.init(a);
         try open.put("metadata", metadata.value());
+        var reopened_history = settings.resume_session_id != null;
+        if (settings.resume_session_id) |saved| if (self.adapter != null and std.mem.eql(u8, saved, self.session_id)) {
+            self.stopping.store(false, .release);
+            self.thread = try std.Thread.spawn(.{}, run, .{self});
+            if (!std.mem.eql(u8, settings.workspace_root, self.opened_root)) return error.OapReopenRefused;
+            return;
+        };
+        if (settings.resume_session_id) |saved| {
+            try open.put("session_id", .{ .string = saved });
+            try open.put("reopen", .{ .bool = true });
+            if (self.adapter) |held| if (held.history) |loader| {
+                const found = loader.load(loader.ctx, a, saved) catch null;
+                if (found == null) {
+                    if (self.session_id.len == 0) return error.OapReopenNotSaved;
+                    self.stopping.store(false, .release);
+                    self.thread = try std.Thread.spawn(.{}, run, .{self});
+                    return error.OapReopenRefused;
+                }
+                reopened_history = found.?.len > 0;
+            };
+            if (self.endpoint) |*endpoint| _ = endpoint.closeSession(saved);
+        }
+        const left = try a.dupe(u8, self.session_id);
         const opened = self.exchange(a, "session.open.request", open.value(), true) catch |err| retry: {
-            if (err != error.OapRequestRefused or self.hub == null or settings.model == null) return err;
+            if (settings.resume_session_id != null and left.len > 0) {
+                self.stopping.store(false, .release);
+                self.thread = try std.Thread.spawn(.{}, run, .{self});
+                return error.OapReopenRefused;
+            }
+            if (err != error.OapRequestRefused or self.hub == null or settings.model == null or settings.resume_session_id != null) return err;
             _ = settings_map.map.swapRemove("model");
             try metadata.put(oapx_adapter.settings_key, settings_map.value());
             try open.put("metadata", metadata.value());
@@ -296,11 +346,19 @@ pub const OapExecution = struct {
         const session_id = payload.object.get("session_id") orelse return error.OapOpenFailed;
         if (session_id != .string) return error.OapOpenFailed;
         const kept_session = try self.allocator.dupe(u8, session_id.string);
+        const kept_root = try self.allocator.dupe(u8, settings.workspace_root);
+        self.allocator.free(self.opened_root);
+        self.opened_root = kept_root;
         self.allocator.free(self.session_id);
         self.session_id = kept_session;
+        self.has_history.store(reopened_history, .release);
+        if (settings.resume_session_id != null and left.len > 0 and !std.mem.eql(u8, left, kept_session)) {
+            if (self.endpoint) |*endpoint| _ = endpoint.closeSession(left);
+        }
 
         var listing = Map.init(a);
         try listing.put("session_id", .{ .string = self.session_id });
+        try listing.put("allow_degraded_features", try strings(a, &.{"models.list"}));
         const listed = try self.exchange(a, "models.request", listing.value(), true);
         self.forgetSessionModels();
         if (listed.object.get("payload")) |models_payload| {
@@ -684,6 +742,43 @@ pub const OapExecution = struct {
         _ = try self.enqueue(a, "session.model.switch.request", "switch", payload.value(), null);
     }
 
+    fn setCatalog(ctx: *anyopaque, models: []const ai_types.Model) anyerror!void {
+        const self = cast(ctx);
+        if (self.adapter == null) return;
+        const staged = try tui_runtime.cloneModels(self.allocator, models);
+        errdefer tui_runtime.deinitModels(self.allocator, staged);
+        var refs: std.ArrayList([]u8) = .empty;
+        errdefer {
+            for (refs.items) |ref| self.allocator.free(ref);
+            refs.deinit(self.allocator);
+        }
+        for (models) |model| {
+            const ref = modelRef(self.allocator, model) catch |err| switch (err) {
+                error.OutOfMemory => return error.OutOfMemory,
+                else => continue,
+            };
+            errdefer self.allocator.free(ref);
+            try refs.append(self.allocator, ref);
+        }
+        self.lockInbound();
+        defer self.inbound_mutex.unlock();
+        if (self.pending_catalog) |held| tui_runtime.deinitModels(self.allocator, held);
+        self.pending_catalog = staged;
+        self.forgetSessionModels();
+        self.session_models.deinit(self.allocator);
+        self.session_models = refs;
+    }
+
+    fn applyPendingCatalog(self: *OapExecution) !void {
+        self.lockInbound();
+        const staged = self.pending_catalog;
+        self.pending_catalog = null;
+        self.inbound_mutex.unlock();
+        const models = staged orelse return;
+        defer tui_runtime.deinitModels(self.allocator, models);
+        if (self.adapter) |adapter| try adapter.setCatalog(models);
+    }
+
     fn setReasoning(ctx: *anyopaque, level: ai_types.ThinkingLevel) anyerror!void {
         const self = cast(ctx);
         if (!self.live_reasoning) return error.UnavailableOverOap;
@@ -948,8 +1043,10 @@ pub const OapExecution = struct {
 
     fn cycle(self: *OapExecution) !bool {
         var moved = false;
+        try self.applyPendingCatalog();
         while (self.takeInbound()) |line| {
             defer self.allocator.free(line);
+            try self.applyPendingCatalog();
             try self.sendLine(line);
             moved = true;
         }
@@ -1473,6 +1570,9 @@ const Script = struct {
     hold_first: bool = false,
     released: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
     last_thinking: ai_types.ThinkingLevel = .off,
+    last_context_messages: usize = 0,
+    last_model: [64]u8 = undefined,
+    last_model_len: usize = 0,
     last_max_tokens: ?u32 = null,
 };
 
@@ -1526,9 +1626,10 @@ fn bareMessage(reason: ai_types.StopReason) ai_types.AssistantMessage {
 }
 
 fn scriptedStream(ctx: ?*anyopaque, model: ai_types.Model, context: ai_types.Context, options: agent.ProtocolOptions, allocator: std.mem.Allocator) anyerror!*event_stream.AssistantMessageEventStream {
-    _ = model;
-    _ = context;
     const script: *Script = @ptrCast(@alignCast(ctx.?));
+    script.last_context_messages = context.messages.len;
+    script.last_model_len = @min(model.id.len, script.last_model.len);
+    @memcpy(script.last_model[0..script.last_model_len], model.id[0..script.last_model_len]);
     script.last_thinking = options.thinking_level;
     script.last_max_tokens = options.max_tokens;
     script.calls += 1;
@@ -1875,6 +1976,180 @@ test "the first message of a turn over OAP comes back as the user's message, as 
     try testing.expectEqualStrings("name this session", seen.user_text.items);
 }
 
+const SavedTranscript = struct {
+    missing: bool = false,
+
+    fn load(ctx: *anyopaque, arena: std.mem.Allocator, session_id: []const u8) anyerror!?[]const ai_types.Message {
+        const self: *SavedTranscript = @ptrCast(@alignCast(ctx));
+        if (self.missing or !std.mem.eql(u8, session_id, "saved-session")) return null;
+        const messages = try arena.alloc(ai_types.Message, 1);
+        messages[0] = .{ .user = .{ .content = .{ .text = try arena.dupe(u8, "earlier question") }, .timestamp = 0 } };
+        return messages;
+    }
+};
+
+test "reopening the open session under another workspace is refused, since the open session keeps the one it opened with" {
+    var script = Script{};
+    var execution: *OapExecution = undefined;
+    var runtime = try remoteRuntime(&script, &execution, .low);
+    defer execution.destroy();
+    defer runtime.deinit();
+    var saved = SavedTranscript{ .missing = true };
+    execution.setHistory(.{ .ctx = &saved, .load = SavedTranscript.load });
+
+    try runtime.start();
+    const open_id = try testing.allocator.dupe(u8, execution.session_id);
+    defer testing.allocator.free(open_id);
+    const root = try testing.allocator.dupe(u8, runtime.workingDirectory());
+    defer testing.allocator.free(root);
+    try testing.expectError(error.OapReopenRefused, runtime.reopenSaved(open_id, "/tmp/another-workspace"));
+    try testing.expectEqualStrings(root, runtime.workingDirectory());
+    try testing.expect(runtime.started);
+    try runtime.reopenSaved(open_id, root);
+    try testing.expectEqualStrings(open_id, execution.session_id);
+}
+
+test "a reopen that fails once the open session has stopped keeps a session pumping, so the next turn is not lost" {
+    var script = Script{};
+    var execution: *OapExecution = undefined;
+    var runtime = try remoteRuntime(&script, &execution, .low);
+    defer execution.destroy();
+    defer runtime.deinit();
+    var saved = SavedTranscript{};
+    execution.setHistory(.{ .ctx = &saved, .load = SavedTranscript.load });
+    try runtime.start();
+
+    var unprintable = scripted_model;
+    unprintable.provider = "";
+    OapExecution.stop(execution);
+    try testing.expectError(error.OapReopenRefused, OapExecution.start(execution, execution.sink.?, .{
+        .model = unprintable,
+        .thinking_level = .low,
+        .context_window = null,
+        .output = .auto,
+        .permission_mode = .bypass,
+        .workspace_root = "",
+        .resume_session_id = "saved-session",
+    }));
+    try testing.expect(execution.thread != null);
+    try runtime.submitTurn("still answered");
+    var seen = Seen{};
+    defer seen.deinit();
+    try drainTurn(&runtime, &seen);
+    try testing.expectEqual(@as(?tui_session.TuiEndReason, .completed), seen.end);
+}
+
+test "reopening the session that is already open keeps it, rather than closing it to open it again" {
+    var script = Script{};
+    var execution: *OapExecution = undefined;
+    var runtime = try remoteRuntime(&script, &execution, .low);
+    defer execution.destroy();
+    defer runtime.deinit();
+    var saved = SavedTranscript{ .missing = true };
+    execution.setHistory(.{ .ctx = &saved, .load = SavedTranscript.load });
+
+    try runtime.submitTurn("remember this");
+    var first = Seen{};
+    defer first.deinit();
+    try drainTurn(&runtime, &first);
+    const open_id = try testing.allocator.dupe(u8, execution.session_id);
+    defer testing.allocator.free(open_id);
+    try runtime.reopenSaved(open_id, null);
+    try testing.expectEqualStrings(open_id, execution.session_id);
+    try runtime.submitTurn("and this");
+    var second = Seen{};
+    defer second.deinit();
+    try drainTurn(&runtime, &second);
+    try testing.expectEqual(@as(?tui_session.TuiEndReason, .completed), second.end);
+    try testing.expectEqual(@as(usize, 3), script.last_context_messages);
+}
+
+test "a refused reopen before any session opened leaves the runtime unstarted, so the next turn opens one" {
+    var script = Script{};
+    var execution: *OapExecution = undefined;
+    var runtime = try remoteRuntime(&script, &execution, .low);
+    defer execution.destroy();
+    defer runtime.deinit();
+    var saved = SavedTranscript{ .missing = true };
+    execution.setHistory(.{ .ctx = &saved, .load = SavedTranscript.load });
+
+    try testing.expectError(error.OapReopenNotSaved, runtime.reopenSaved("saved-session", null));
+    try testing.expect(!runtime.started);
+    try runtime.submitTurn("a fresh start");
+    var seen = Seen{};
+    defer seen.deinit();
+    try drainTurn(&runtime, &seen);
+    try testing.expectEqual(@as(?tui_session.TuiEndReason, .completed), seen.end);
+}
+
+test "a saved session reopened over OAP compacts before any new turn, as the transcript it loaded is history" {
+    var script = Script{ .reply = "the session so far" };
+    var execution: *OapExecution = undefined;
+    var runtime = try remoteRuntime(&script, &execution, .low);
+    defer execution.destroy();
+    defer runtime.deinit();
+    var saved = SavedTranscript{};
+    execution.setHistory(.{ .ctx = &saved, .load = SavedTranscript.load });
+
+    try runtime.start();
+    try testing.expectError(error.NothingToCompact, runtime.compact(.{}));
+    try runtime.reopenSaved("saved-session", null);
+    try runtime.compact(.{});
+    var seen = Compactions{};
+    defer seen.deinit();
+    try drainCompactions(&runtime, &seen, true);
+    try testing.expectEqual(@as(?CompactionOutcome, .completed), seen.outcome);
+}
+
+test "a saved session reopened over OAP carries its transcript into the next run" {
+    var script = Script{};
+    var execution: *OapExecution = undefined;
+    var runtime = try remoteRuntime(&script, &execution, .low);
+    defer execution.destroy();
+    defer runtime.deinit();
+    var saved = SavedTranscript{};
+    execution.setHistory(.{ .ctx = &saved, .load = SavedTranscript.load });
+
+    try runtime.start();
+    try runtime.reopenSaved("saved-session", null);
+    try testing.expectEqualStrings("saved-session", execution.session_id);
+    try runtime.submitTurn("and now");
+    var seen = Seen{};
+    defer seen.deinit();
+    try drainTurn(&runtime, &seen);
+    try testing.expectEqual(@as(?tui_session.TuiEndReason, .completed), seen.end);
+    try testing.expectEqual(@as(usize, 2), script.last_context_messages);
+    try testing.expectError(error.OapReopenRefused, runtime.reopenSaved("never-saved", null));
+    try testing.expectEqualStrings("saved-session", execution.session_id);
+
+    try runtime.submitTurn("still on the open session");
+    var kept = Seen{};
+    defer kept.deinit();
+    try drainTurn(&runtime, &kept);
+    try testing.expectEqual(@as(?tui_session.TuiEndReason, .completed), kept.end);
+}
+
+test "a model a catalog refresh adds can be switched to over OAP, and the next run uses it" {
+    var script = Script{};
+    var execution: *OapExecution = undefined;
+    var runtime = try remoteRuntime(&script, &execution, .low);
+    defer execution.destroy();
+    defer runtime.deinit();
+
+    try runtime.start();
+    var fresh = scripted_model;
+    fresh.id = "fresh-model";
+    const refreshed = [_]ai_types.Model{ scripted_model, fresh };
+    try runtime.replaceModels(&refreshed, null);
+    try runtime.switchModel("fresh-model");
+    try runtime.submitTurn("on the new one");
+    var seen = Seen{};
+    defer seen.deinit();
+    try drainTurn(&runtime, &seen);
+    try testing.expectEqual(@as(?tui_session.TuiEndReason, .completed), seen.end);
+    try testing.expectEqualStrings("fresh-model", script.last_model[0..script.last_model_len]);
+}
+
 test "a runtime over OAP refuses what the protocol path cannot carry yet" {
     var script = Script{};
     var execution: *OapExecution = undefined;
@@ -2196,7 +2471,7 @@ test "a denied call over OAP shows the loop's own result text beside its details
     try testing.expect(text_seen);
 }
 
-test "a switch to a model the OAP session does not list is refused before the app's selection moves" {
+test "a switch to a model the OAP session does not list is refused until a catalog refresh lists it" {
     var script = Script{};
     const models = [_]ai_types.Model{scripted_model};
     var unlisted = scripted_model;
@@ -2218,8 +2493,8 @@ test "a switch to a model the OAP session does not list is refused before the ap
 
     try testing.expectError(error.ModelNotFound, runtime.switchModel("unlisted-model"));
     try testing.expectEqualStrings(scripted_model.id, runtime.currentModel().?.id);
-    try testing.expectError(error.ModelNotFound, runtime.replaceModels(&.{unlisted}, null));
-    try testing.expectEqualStrings(scripted_model.id, runtime.currentModel().?.id);
+    try runtime.replaceModels(&.{unlisted}, null);
+    try testing.expectEqualStrings("unlisted-model", runtime.currentModel().?.id);
 }
 
 test "a lost stream warns and ends the turn instead of leaving it to stream forever" {
