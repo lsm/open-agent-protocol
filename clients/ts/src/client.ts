@@ -60,7 +60,7 @@ export interface WorkAdapterCapabilities {
   directory?: string;
   any_directory: boolean;
   verbs: WorkVerb[];
-  native: { list: boolean; read: boolean };
+  native: { list: boolean; read: boolean; search: boolean };
 }
 
 export interface WorkStartInput {
