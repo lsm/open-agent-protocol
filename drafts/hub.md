@@ -450,6 +450,7 @@ error. That is stated because the four reasons are the whole set.
 | `POST /work/sessions/{id}/send` | `work.send` | the session's `work.status` | `invalid_request` 400, and a submit's refusals |
 | `POST /work/sessions/{id}/stop` | `work.stop` | the session's `work.status` | `unknown_session` 404, `session_closed` 409, and a cancel's refusals |
 | `GET /work/sessions/{id}/read` | `work.read` | `{"turns":[...]}`, after `after` and up to `limit` (1 to 500, default 100) | `invalid_request` 400, `unknown_session` 404 |
+| `GET /work/capabilities` | `work.capabilities` | `{"adapters":[{"adapter","directory"?,"any_directory","verbs","native":{"list","read"}}],"unavailable"?}`, per [the work profile](work.md): every adapter's `work.*` verbs, leaving out one whose core feature the adapter declares `unavailable` | — |
 
 **The daemon serves a bounded number of connections at once, and a stream is
 not a connection to itself.** One connection at a time is enough for the
@@ -654,7 +655,7 @@ needs a whole-body deadline, which is not what either tree has.
 the same for a path no pattern matches, and the draft's codes are
 `invalid_request`, `unknown_adapter` and `unknown_session` — none of which is
 "this URL does not exist". So the answer carries no `error.response` envelope.
-The fourteen core routes and the six work routes are written in both trees (D30 closed): Zig dispatches each to the same
+The fourteen core routes and the seven work routes are written in both trees (D30 closed): Zig dispatches each to the same
 `Frontend` operation the stdio op runs, so an answer's shape is shared rather
 than written twice. A path that is a route asked with another method answers
 `405 Method Not Allowed` with an `Allow` header naming the one it takes, which
