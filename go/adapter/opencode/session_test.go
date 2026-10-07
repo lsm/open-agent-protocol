@@ -106,6 +106,7 @@ type fakeClient struct {
 	creates    int
 
 	listed    []native.SessionInfo
+	listPages []httpapi.SessionPage
 	listErr   error
 	listAsked []string
 
@@ -200,16 +201,23 @@ func (f *fakeClient) CancelInbox(_ context.Context, _ native.SessionID, inbox na
 	}
 	return nil
 }
-func (f *fakeClient) Sessions(ctx context.Context, directory string, limit int) ([]native.SessionInfo, error) {
+func (f *fakeClient) Sessions(ctx context.Context, directory, cursor string, limit int) (httpapi.SessionPage, error) {
 	f.mu.Lock()
-	f.listAsked = append(f.listAsked, fmt.Sprintf("%s|%d", directory, limit))
-	listed, err, stalls := f.listed, f.listErr, f.stalls
+	f.listAsked = append(f.listAsked, fmt.Sprintf("%s|%s|%d", directory, cursor, limit))
+	listed, err, stalls, pages := f.listed, f.listErr, f.stalls, f.listPages
+	asked := len(f.listAsked)
 	f.mu.Unlock()
 	if stalls {
 		<-ctx.Done()
-		return nil, ctx.Err()
+		return httpapi.SessionPage{}, ctx.Err()
 	}
-	return listed, err
+	if pages != nil {
+		if asked > len(pages) {
+			return httpapi.SessionPage{}, nil
+		}
+		return pages[asked-1], err
+	}
+	return httpapi.SessionPage{Data: listed}, err
 }
 func (f *fakeClient) Messages(_ context.Context, session native.SessionID, cursor string, limit int) (httpapi.MessagePage, error) {
 	f.mu.Lock()

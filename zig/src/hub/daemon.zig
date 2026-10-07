@@ -129,7 +129,7 @@ pub const Daemon = struct {
             .sessions => self.listing(arena, try self.frontend.sessions(arena)),
             .history => self.history(arena, request.split.query),
             .work_capabilities => self.outcome(arena, try self.frontend.workCapabilities(arena), .{}),
-            .work_list => self.outcome(arena, try self.frontend.workList(arena, .{ .include_closed = try self.queryFlag(arena, request.split.query, "include_closed"), .include_native = try self.queryFlag(arena, request.split.query, "include_native") }), .{}),
+            .work_list => self.workList(arena, request.split.query),
             .work_status => |id| self.outcome(arena, try self.frontend.workStatus(arena, id), .{ .session_id = id }),
             .work_start => |name| self.workStart(arena, name, request.body),
             .work_send => |id| self.workSend(arena, id, request.body),
@@ -237,6 +237,27 @@ pub const Daemon = struct {
         _ = self;
         const given = (try queryValue(arena, query, name)) orelse return false;
         return std.mem.eql(u8, given, "true") or std.mem.eql(u8, given, "1");
+    }
+
+    fn workList(self: *Daemon, arena: std.mem.Allocator, query: []const u8) !Reply {
+        var options = hub_stdio.Frontend.ListOptions{
+            .include_closed = try self.queryFlag(arena, query, "include_closed"),
+            .include_native = try self.queryFlag(arena, query, "include_native"),
+            .directory = (try queryValue(arena, query, "directory")) orelse "",
+            .cursor = (try queryValue(arena, query, "cursor")) orelse "",
+        };
+        if (try queryValue(arena, query, "adapters")) |listed| {
+            if (listed.len > 0) {
+                var names: std.ArrayList([]const u8) = .empty;
+                var parts = std.mem.splitScalar(u8, listed, ',');
+                while (parts.next()) |name| try names.append(arena, name);
+                options.adapters = names.items;
+            }
+        }
+        if (try queryValue(arena, query, "limit")) |given| {
+            options.limit = std.fmt.parseInt(i64, given, 10) catch return self.outcome(arena, .{ .refused = .{ .code = "invalid_request", .message = "limit is 1 to 100" } }, .{});
+        }
+        return self.outcome(arena, try self.frontend.workList(arena, options), .{});
     }
 
     fn workStart(self: *Daemon, arena: std.mem.Allocator, name: []const u8, body: []const u8) !Reply {

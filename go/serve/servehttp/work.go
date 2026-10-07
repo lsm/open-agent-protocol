@@ -7,6 +7,7 @@ import (
 	"mime"
 	"net/http"
 	"strconv"
+	"strings"
 
 	"github.com/lsm/open-agent-protocol/go/internal/workwire"
 	"github.com/lsm/open-agent-protocol/go/protocol"
@@ -90,7 +91,20 @@ func (s *Server) workBody(w http.ResponseWriter, r *http.Request) (json.RawMessa
 var malformedWork = &workwire.Refusal{Code: "malformed_json", Message: "the request body is not a JSON envelope"}
 
 func (s *Server) handleWorkList(w http.ResponseWriter, r *http.Request) {
-	answer, refusal := s.work.List(r.Context(), queryFlag(r, "include_closed"), queryFlag(r, "include_native"))
+	query := r.URL.Query()
+	request := workwire.ListRequest{Directory: query.Get("directory"), IncludeClosed: queryFlag(r, "include_closed"), IncludeNative: queryFlag(r, "include_native"), Cursor: query.Get("cursor")}
+	if adapters := query.Get("adapters"); adapters != "" {
+		request.Adapters = strings.Split(adapters, ",")
+	}
+	if query.Has("limit") {
+		limit, err := strconv.Atoi(query.Get("limit"))
+		if err != nil {
+			s.answerWork(w, nil, &workwire.Refusal{Code: "invalid_request", Message: "limit is 1 to 100"}, "")
+			return
+		}
+		request.Limit = &limit
+	}
+	answer, refusal := s.work.List(r.Context(), request)
 	s.answerWork(w, answer, refusal, "")
 }
 

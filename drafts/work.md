@@ -133,14 +133,36 @@ truncated to 4 KiB. `pending` is present only when `status` is `needs_you`.
 
 ### `work.list`
 
-Request `{"directory"?, "adapters"?, "include_closed"?, "limit"?, "cursor"?}`.
-Answer `{"groups": [...], "next_cursor"?}`, where each group is
+Request `{"directory"?, "adapters"?, "include_closed"?, "include_native"?, "limit"?, "cursor"?}`.
+Answer `{"groups": [...], "next_cursor"?, "unavailable"?}`, where each group is
 `{"directory", "last_activity_ms", "work": [<entry>...]}`, where an entry is a
 held session's `work.status` answer or an unheld or native entry as
 [Statuses](#statuses) describes,
 newest first. A group appears even when it holds no open work, so a caller can
 start work in a place it named. `limit` is 1 to 100, default 50, counting
 pieces of work; the cursor is opaque, as in 0046.
+
+- `directory` keeps only work whose directory is exactly that one. When it
+  names a place no work is in, the first page still answers that place's group,
+  empty. An adapter with `any_directory` lists its own sessions for that
+  directory; any other adapter lists its working directory's, and the filter
+  then applies.
+- `adapters` keeps only work from the adapters it names, and only they are
+  asked for native lists. An empty or absent list keeps every adapter.
+- Order is by last activity, newest first, and pieces with the same time are
+  ordered by a key: `s:<session id>` for a held or recorded session and
+  `n:<adapter>/<native id>` for a native one. Groups are formed within a page.
+- `next_cursor` is present when more work follows the page. A cursor carries
+  the position of the page's last piece and how many pieces have been
+  answered so far. The next page answers what sorts after that position, so
+  work that became newer in between is not repeated. Native lists are asked
+  for that many pieces plus one more page and one row, up to 500 per adapter.
+- A `limit` out of range, a cursor this list did not issue, or a member of the
+  wrong type is refused `invalid_request`. Unknown members are ignored.
+- Over HTTP, `GET /work` takes the same members as query parameters, with
+  `adapters` comma-separated.
+- OpenCode's own list follows the server's cursor (`GET /api/session?cursor=`)
+  until it has the rows asked, up to 16 pages.
 
 `work.list` lists; it does not search. Finding work by what was said in it is
 the caller's job: a control layer such as HyperNeo keeps its own index, ranks

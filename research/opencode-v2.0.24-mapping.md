@@ -266,8 +266,12 @@ Each row is decoded with the same strict `Session.Info` fields a create or a
 get answers. `parentID=null` keeps the root sessions, so a forked child is not
 listed as its own work. The native id is `id`, the title `title`, the
 directory `location.directory`, and the update time `time.updated` in epoch
-milliseconds. A session is running when `GET /api/session/active` names it. One
-page is read; the cursor is not followed. A fresh session carries no `title`.
+milliseconds. A session is running when `GET /api/session/active` names it. The
+list follows `cursor.next` with `GET /api/session?cursor=<next>&limit=<rows still
+needed>` until it has the rows asked, the page is empty or the cursor stops
+moving, up to 16 pages. Live, the cursor alone carries the directory, order and
+parent filter (it is base64 JSON of them and an anchor), and a `limit` of 500 was
+answered unclipped. A fresh session carries no `title`.
 Against the pinned darwin-arm64 binary, a session created in a directory came
 back from `oapx serve --stdio`'s `work.list` with `include_native` as an idle
 native entry under that directory. Both adapters list, with the same query

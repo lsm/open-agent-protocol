@@ -181,11 +181,20 @@ pub const Adapter = struct {
             return refusal.fail(error.BackendFailed, try std.fmt.allocPrint(arena, "the OpenCode endpoint \"{s}\" is not a plain http URL", .{config.endpoint}));
         };
         const endpoint = httpapi.Endpoint{ .base_path = target.base_path, .username = config.username, .password = config.password };
-        const listed_response = client.roundTrip(self.allocator, arena, target, try httpapi.sessions(arena, endpoint, request.directory, request.limit), config.frame_limit, config.request_timeout_ns) catch |err| return refusal.fail(error.BackendFailed, try describe(arena, "list OpenCode sessions", err));
-        const infos = switch (try httpapi.sessionsResult(arena, listed_response, config.frame_limit)) {
-            .ok => |value| value,
-            .failed => |failure| return refusal.fail(error.BackendFailed, try std.fmt.allocPrint(arena, "list OpenCode sessions: {s}", .{failure.message})),
-        };
+        var gathered: std.ArrayList(native.SessionInfo) = .empty;
+        var cursor: []const u8 = "";
+        var pages: usize = 0;
+        while (pages < native_read_pages_max and gathered.items.len < request.limit) : (pages += 1) {
+            const listed_response = client.roundTrip(self.allocator, arena, target, try httpapi.sessions(arena, endpoint, request.directory, cursor, request.limit - gathered.items.len), config.frame_limit, config.request_timeout_ns) catch |err| return refusal.fail(error.BackendFailed, try describe(arena, "list OpenCode sessions", err));
+            const page = switch (try httpapi.sessionsResult(arena, listed_response, config.frame_limit)) {
+                .ok => |value| value,
+                .failed => |failure| return refusal.fail(error.BackendFailed, try std.fmt.allocPrint(arena, "list OpenCode sessions: {s}", .{failure.message})),
+            };
+            try gathered.appendSlice(arena, page.infos);
+            if (page.infos.len == 0 or page.next.len == 0 or std.mem.eql(u8, page.next, cursor)) break;
+            cursor = page.next;
+        }
+        const infos = gathered.items;
         const active_response = client.roundTrip(self.allocator, arena, target, try httpapi.active(arena, endpoint), config.frame_limit, config.request_timeout_ns) catch |err| return refusal.fail(error.BackendFailed, try describe(arena, "list running OpenCode sessions", err));
         const running = switch (try httpapi.activeResult(arena, active_response, config.frame_limit)) {
             .ok => |value| value,
@@ -710,6 +719,8 @@ pub const FakeServer = struct {
     list_target: [256]u8 = undefined,
     list_target_len: usize = 0,
     message_pages: std.atomic.Value(usize) = .init(0),
+    list_paged: bool = false,
+    list_calls: std.atomic.Value(usize) = .init(0),
 
     pub fn start(self: *FakeServer) !void {
         if (builtin.os.tag == .windows) return error.SkipZigTest;
@@ -810,6 +821,15 @@ pub const FakeServer = struct {
                 if (std.mem.eql(u8, method, "GET") and std.mem.startsWith(u8, target, "/api/session?")) {
                     @memcpy(self.list_target[0..target.len], target);
                     self.list_target_len = target.len;
+                    _ = self.list_calls.fetchAdd(1, .acq_rel);
+                    if (self.list_paged) {
+                        if (std.mem.indexOf(u8, target, "cursor=n1") != null) {
+                            try respond(conn, "200 OK", "{\"data\":[{\"id\":\"ses_idle0000000000000000\",\"projectID\":\"prj_fake\",\"title\":\"\",\"time\":{\"created\":1,\"updated\":4},\"location\":{\"directory\":\"/w\"}}],\"cursor\":{}}");
+                        } else {
+                            try respond(conn, "200 OK", "{\"data\":[{\"id\":\"" ++ fake_session ++ "\",\"projectID\":\"prj_fake\",\"title\":\"busy one\",\"time\":{\"created\":1,\"updated\":9},\"location\":{\"directory\":\"/w\"}}],\"cursor\":{\"next\":\"n1\"}}");
+                        }
+                        continue;
+                    }
                     try respond(conn, "200 OK", "{\"data\":[{\"id\":\"" ++ fake_session ++ "\",\"projectID\":\"prj_fake\",\"title\":\"busy one\",\"time\":{\"created\":1,\"updated\":9},\"location\":{\"directory\":\"/w\"}},{\"id\":\"ses_idle0000000000000000\",\"projectID\":\"prj_fake\",\"title\":\"\",\"time\":{\"created\":1,\"updated\":4},\"location\":{\"directory\":\"/w\"}}],\"cursor\":{}}");
                     continue;
                 }
@@ -1213,6 +1233,22 @@ test "a reopen refuses a session it cannot attach" {
         try testing.expectEqualStrings(contract.reason_unsatisfiable, refusal.reason);
         try testing.expectEqual(@as(usize, 0), probe.fake.event_target_len);
     }
+}
+
+test "the native list follows the server's cursor for the rows it still needs" {
+    var probe: Probe = undefined;
+    try probe.init(&.{}, &.{});
+    defer probe.deinit();
+    probe.fake.list_paged = true;
+    var refusal = contract.Refusal{};
+    const listed = try probe.adapter.adapter().nativeList(probe.arena.allocator(), .{ .directory = "/w", .limit = 7 }, &refusal).?;
+    try testing.expectEqual(@as(usize, 2), listed.len);
+    try testing.expectEqualStrings("ses_idle0000000000000000", listed[1].native_id);
+    try testing.expectEqual(@as(usize, 2), probe.fake.list_calls.load(.acquire));
+    try testing.expectEqualStrings("/api/session?cursor=n1&limit=6", probe.fake.list_target[0..probe.fake.list_target_len]);
+    const one = try probe.adapter.adapter().nativeList(probe.arena.allocator(), .{ .directory = "/w", .limit = 1 }, &refusal).?;
+    try testing.expectEqual(@as(usize, 1), one.len);
+    try testing.expectEqual(@as(usize, 3), probe.fake.list_calls.load(.acquire));
 }
 
 test "the native list asks OpenCode for the directory's root sessions newest first and marks the ones it runs" {
