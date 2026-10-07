@@ -267,3 +267,22 @@ back from `oapx serve --stdio`'s `work.list` with `include_native` as an idle
 native entry under that directory. Both adapters list, with the same query
 and the same strict rows; against the same binary, `goap hub --stdio` and
 `oapx serve --stdio` answered the same entries.
+
+## Native session read
+
+`work.read` reads a session OpenCode holds through
+`GET /api/session/<id>/message` (`session.messages` in
+`packages/protocol/src/groups/message.ts` at the pinned commit):
+`limit=200&order=asc` for the first page, then `cursor=<cursor.next>&limit=200`
+alone, since the contract forbids combining a cursor with `order`, until no
+`next` comes back, a cursor repeats, or 16 pages. The answer is
+`{"data":[Session.Message.Info...],"cursor":{"previous"?,"next"?}}`, checked
+strictly at the top and read leniently below it, since the message union has
+eleven types and a read wants two. A `user` message's `text`, trimmed, is a user
+turn at `time.created`; the `text` parts of an `assistant` message's `content`,
+joined, are a reply, and the last reply before the next user turn is kept, as
+Pi's read does. Reasoning, tool parts and every other message type are left
+out. Against the pinned darwin-arm64 binary, a turn completed through the Go
+adapter (the server gate) read back as the user's `ping` and the provider's
+`pong`, three messages over two pages; the Zig adapter's test serves those same
+three recorded messages.

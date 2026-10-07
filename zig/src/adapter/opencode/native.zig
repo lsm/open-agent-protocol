@@ -450,6 +450,11 @@ const info_fields = [_]Field{
 
 pub const admitted_response = [_]Field{.{ .name = "data", .kind = .{ .record = &admitted_fields } }};
 pub const session_info_response = [_]Field{.{ .name = "data", .kind = .{ .record = &session_info_fields } }};
+const message_cursor_fields = [_]Field{
+    .{ .name = "previous", .kind = .string },
+    .{ .name = "next", .kind = .string },
+};
+pub const messages_response = [_]Field{ .{ .name = "data", .kind = .raws }, .{ .name = "cursor", .kind = .{ .record = &message_cursor_fields } } };
 pub const sessions_response = [_]Field{ .{ .name = "data", .kind = .{ .record_list = &session_info_fields } }, .{ .name = "cursor", .kind = .raw } };
 pub const active_response = [_]Field{.{ .name = "data", .kind = .{ .record_map = &active_entry_fields } }};
 pub const interrupt_response = interrupted_fields;

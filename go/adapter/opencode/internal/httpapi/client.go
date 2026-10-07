@@ -261,6 +261,26 @@ func (c *Client) Sessions(ctx context.Context, directory string, limit int) ([]n
 	return response.Data, nil
 }
 
+type MessagePage struct {
+	Data   []json.RawMessage `json:"data"`
+	Cursor struct {
+		Previous string `json:"previous,omitempty"`
+		Next     string `json:"next,omitempty"`
+	} `json:"cursor"`
+}
+
+func (c *Client) Messages(ctx context.Context, session native.SessionID, cursor string, limit int) (MessagePage, error) {
+	query := url.Values{"limit": {strconv.Itoa(limit)}}
+	if cursor != "" {
+		query.Set("cursor", cursor)
+	} else {
+		query.Set("order", "asc")
+	}
+	var page MessagePage
+	err := c.do(ctx, http.MethodGet, "/api/session/"+url.PathEscape(string(session))+"/message", query, nil, &page)
+	return page, err
+}
+
 func (c *Client) Active(ctx context.Context) (map[native.SessionID]bool, error) {
 	var response struct {
 		Data map[native.SessionID]struct {
