@@ -453,7 +453,7 @@ func (h *Hub) WorkReach(ctx context.Context) []WorkReach {
 		implementation, _ := h.registry.Lookup(name)
 		_, lists := implementation.(base.NativeLister)
 		_, reads := implementation.(base.NativeReader)
-		reach := WorkReach{Name: name, Directory: h.registry.WorkingDirectory(name), NativeList: lists, NativeRead: reads}
+		reach := WorkReach{Name: name, Directory: h.registry.WorkingDirectory(name), AnyDirectory: h.registry.ServesAnyDirectory(name), NativeList: lists, NativeRead: reads}
 		descriptor, err := implementation.Probe(ctx)
 		switch {
 		case err != nil:

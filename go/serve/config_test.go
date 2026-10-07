@@ -557,3 +557,18 @@ func TestLoadRegistryKeepsTheDefaultForAZeroJournalCapacity(t *testing.T) {
 		t.Fatal("entry did not load with the default capacity")
 	}
 }
+
+func TestWorkReachSaysAnAnyDirectoryEntryServesAnyDirectoryAndAPlainOneDoesNot(t *testing.T) {
+	path := writeConfig(t, `{"adapters": {"placed": {"type": "memory", "working_directory": "/base", "any_directory": true}, "fixed": {"type": "memory", "working_directory": "/fixed"}}}`)
+	registry, err := LoadRegistry(path, os.LookupEnv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reached := map[string]bool{}
+	for _, reach := range New(registry, Options{}).WorkReach(context.Background()) {
+		reached[reach.Name] = reach.AnyDirectory
+	}
+	if !reached["placed"] || reached["fixed"] {
+		t.Fatalf("any_directory reached %v", reached)
+	}
+}

@@ -2,7 +2,8 @@
 
 Status: draft, from [Decision 0047](../decisions/0047-a-work-layer-over-sessions.md)
 and its owner answers (2026-10-06). The six verbs and the capabilities answer
-below are served by `oapx serve` over stdio and HTTP.
+below are served by `oapx serve`, and by the repository's internal `goap serve`,
+over stdio and HTTP.
 
 Profile: `open-agent-protocol.work`, over `open-agent-protocol.agent-control-core`.
 
