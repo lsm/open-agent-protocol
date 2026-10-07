@@ -495,9 +495,11 @@ gateway's own `session.list`. Read from the source at this pin's commit
   converted to milliseconds. A row carries no working directory, so the entry
   has none rather than borrowing the adapter's.
 - **Cost.** Each listing starts a gateway, waits for `gateway.ready`, calls
-  `session.list` once and closes it. `serve` runs the listing on a job thread,
-  off its loop, so other callers do not wait on it; keeping one gateway alive
-  across listings, as Codex keeps its app-server, is a follow-up.
+  `session.list` once and closes it. At this commit `serve` runs that on its
+  one loop, so a native listing or an adoption stalls every other caller until
+  the gateway answers or times out; moving native list and read onto job
+  threads is #947, and keeping one gateway alive across listings, as Codex
+  keeps its app-server, is a follow-up.
 
 This is read from source only: no gateway at this pin was run for it, so the
 shape above has no recorded exchange behind it yet.
