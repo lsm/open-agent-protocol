@@ -394,6 +394,7 @@ test(
       { directory: '/nowhere', last_activity_ms: 0, work: [] },
     ]);
     await assert.rejects(client.workList({ limit: 0 }), /invalid_request/);
+    assert.deepEqual((await client.workList({ search: 'hello' })).groups, []);
     await client.workStop(other.ref.session_id ?? '');
 
     const stopped = await client.workStop(sessionId);

@@ -278,7 +278,7 @@ test('cancel returns the acknowledgement and state returns the snapshot', async 
   assert.equal(state.session_id, 's-1');
 });
 
-test('workList sends every filter and the page it continues, and returns the next cursor', async () => {
+test('workList sends every filter, the search term and the page it continues, and returns the next cursor', async () => {
   const transport = new FakeTransport([
     {
       match: '/work?',
@@ -297,6 +297,7 @@ test('workList sends every filter and the page it continues, and returns the nex
     includeNative: true,
     limit: 1,
     cursor: 'c1',
+    search: 'apple pie',
   });
   const sent = new URL(transport.calls[0].url);
   assert.equal(sent.pathname, '/work');
@@ -307,6 +308,7 @@ test('workList sends every filter and the page it continues, and returns the nex
     include_native: 'true',
     limit: '1',
     cursor: 'c1',
+    search: 'apple pie',
   });
   assert.equal(listed.nextCursor, 'c2');
   assert.equal(listed.groups[0].work[0].ref.native_id, 't1');

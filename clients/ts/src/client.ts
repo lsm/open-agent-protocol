@@ -176,6 +176,7 @@ export class OapClient {
       includeNative?: boolean;
       limit?: number;
       cursor?: string;
+      search?: string;
     } = {},
   ): Promise<{ groups: WorkGroup[]; nextCursor?: string; unavailable: { adapter: string; message: string }[] }> {
     const query = new URLSearchParams();
@@ -185,6 +186,7 @@ export class OapClient {
     if (options.includeNative) query.set('include_native', 'true');
     if (options.limit !== undefined) query.set('limit', String(options.limit));
     if (options.cursor) query.set('cursor', options.cursor);
+    if (options.search) query.set('search', options.search);
     const suffix = query.toString() ? `?${query.toString()}` : '';
     const listed = await this.plain<{
       groups?: WorkGroup[];
