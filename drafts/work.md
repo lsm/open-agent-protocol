@@ -1,9 +1,8 @@
 # The Work Profile
 
 Status: draft, from [Decision 0047](../decisions/0047-a-work-layer-over-sessions.md)
-and its owner answers (2026-10-06). The six verbs are served by `oapx serve`
-over stdio and HTTP; the capabilities answer below is not served yet, so a
-missing verb shows only as its refusal.
+and its owner answers (2026-10-06). The six verbs and the capabilities answer
+below are served by `oapx serve` over stdio and HTTP.
 
 Profile: `open-agent-protocol.work`, over `open-agent-protocol.agent-control-core`.
 
@@ -24,13 +23,18 @@ verb says so and refuses it rather than inventing surface.
 ## Capability keys
 
 Each verb is a key the endpoint advertises in its `GET /work/capabilities`
-answer (stdio op `work.capabilities`), per adapter:
+answer (stdio op `work.capabilities`, no parameters), per adapter:
+`{"adapters": [{"adapter", "directory"?, "any_directory", "verbs": [...],
+"native": {"list", "read"}}], "unavailable"?: [{"adapter", "message"}]}`.
+`native` says whether the adapter lists its harness's own sessions and reads
+their transcripts; an adapter that could not be probed is named in
+`unavailable`.
 
 | Key | Built from | Unadvertised when |
 | --- | --- | --- |
 | `work.list` | the hub's sessions, the bindings (0046), and each adapter's native list (0047 decision 2) | never; an adapter with no native list contributes only its sessions |
-| `work.start` | open with a message (D11, closed) | the adapter refuses an open's message |
-| `work.send` | submit, `delivery: auto` | never; but on a busy session it queues only where the adapter advertises `session.message.delivery.queue` (0007) |
+| `work.start` | open with a message (D11, closed) | the adapter does not declare `session.message.submit`, or declares it `unavailable` |
+| `work.send` | submit, `delivery: auto` | the adapter does not declare `session.message.submit`, or declares it `unavailable`; on a busy session it queues only where the adapter advertises `session.message.delivery.queue` (0007) |
 | `work.status` | session state, plus the latest run's terminal envelope | never |
 | `work.stop` | `run.cancel` | the adapter does not advertise `run.cancel` (DeepSeek) |
 | `work.read` | the harness's own transcript where the adapter reads one, else the turns `serve` records as messages are submitted and runs end | never |
