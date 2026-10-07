@@ -353,8 +353,8 @@ function sabotagedEventsFetch(): { fetch: FetchLike; connections(): number } {
 }
 
 test(
-  'integration: the work profile starts, reads, sends to, lists and stops a session on oapx serve',
-  { skip: skip || (hub === '' ? 'goap serve has no work routes yet (D30)' : false) },
+  'integration: the work profile starts, reads, sends to, lists and stops a session',
+  { skip },
   async (t) => {
     const client = dial(await startHub(t));
 

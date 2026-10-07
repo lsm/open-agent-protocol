@@ -654,8 +654,7 @@ needs a whole-body deadline, which is not what either tree has.
 the same for a path no pattern matches, and the draft's codes are
 `invalid_request`, `unknown_adapter` and `unknown_session` — none of which is
 "this URL does not exist". So the answer carries no `error.response` envelope.
-The fourteen core routes are written in both trees, and the six work routes in
-Zig only (D30): Zig dispatches each to the same
+The fourteen core routes and the six work routes are written in both trees (D30 closed): Zig dispatches each to the same
 `Frontend` operation the stdio op runs, so an answer's shape is shared rather
 than written twice. A path that is a route asked with another method answers
 `405 Method Not Allowed` with an `Allow` header naming the one it takes, which
@@ -2038,14 +2037,14 @@ are "stamped with the revision the lister served it under", and both name
 | **Zig does** | Accepts `unix://<path>`: the adapter starts `oapx codex-bridge --sock <path>` in place of `codex app-server`, and the bridge relays the adapter's newline-framed JSON-RPC to that socket's WebSocket. Any other scheme is refused, and so is an entry naming an `endpoint` beside an `executable` or `args`. The relay runs whatever Codex version the daemon is (0.159.2 when probed), not the pinned corpus version: the adapter does not check it. |
 | **Why it matters** | A document naming a codex `endpoint` is not portable between the hubs. Closing it needs the same relay in Go. |
 
-### D30 — the work verbs are served by `oapx serve` and not by `goap serve`
+### D30 — the work verbs are served by `oapx serve` and not by `goap serve` (closed 2026-10-07)
 
 | | |
 | --- | --- |
 | **The draft says** | `serve` answers the work profile's verbs ([work](work.md)), starting with `work.status` and `work.list` over the sessions it holds. |
-| **Go does** | Has none of the ops or routes: `GET /work` answers `404`. |
+| **Go does** | Serves them on both transports since 2026-10-07, through one implementation both call (`go/internal/workwire`): the same projection, history, turns, adoption flag and `any_directory` placement, with the same answers and refusals. The stdio differential (`the work verbs refuse what they cannot serve and list an empty hub`) and the TypeScript client test run the verbs against both trees. Go adapters list and read no native sessions yet, so `include_native` adds nothing in Go. |
 | **Zig does** | Serves both on both transports. A piece of work's status is projected from the session's state and, when it is idle, the latest terminal envelope in its journal; `last_reply` is the latest `run.completed`'s `final_response` text, cut at 4 KiB. `work.list` groups by the adapter's working directory, most recent first, with no filters or paging yet. `work.start` opens with the message (D11) and keeps the title, or, given a `native_id` from `work.list`, adopts that harness session by resuming it under a new OAP id and submits the message to it, refused `run_active` while the harness lists it running; `work.send` submits with `delivery: auto`; `work.stop` cancels the active run and answers a session with none unchanged; A session the history names that `serve` does not hold (closed, or left by a restart) is listed with `held: false` and its `live` or `closed` state, closed ones only on `include_closed`; `work.status`, `work.read` and `work.stop` answer it without reopening, and `work.send` reopens it through its binding (0040) first, which an adapter without `session.open.reopen` refuses. `work.read` reads the harness's own transcript where the adapter can (Claude Code's project jsonl, Codex `thread/turns/list`), for held and unheld sessions, so it survives a restart; otherwise, or when that transcript is empty or unreadable, it returns the turns `serve` recorded in memory: each submitted user message, and each run's outcome with its reply text, the last 512 kept, each cut at 64 KiB. |
-| **Why it matters** | A caller of the work profile has to use `oapx serve` until Go serves it. |
+| **Why it matters** | Recorded as how it was: a caller of the work profile had to use `oapx serve` until Go served it. |
 
 ### D12 — an open's `unsupported_feature` and `capability_degraded` carried no `feature`
 

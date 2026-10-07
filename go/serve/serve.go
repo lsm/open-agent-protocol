@@ -69,8 +69,11 @@ func New(registry *Registry, options Options) *Hub {
 func (h *Hub) Registry() *Registry { return h.registry }
 
 func (h *Hub) Open(ctx context.Context, adapterName string, request base.OpenRequest) (*Session, protocol.SessionState, error) {
-	implementation, ok := h.registry.Lookup(adapterName)
-	if !ok {
+	return h.OpenIn(ctx, adapterName, "", request)
+}
+
+func (h *Hub) OpenIn(ctx context.Context, adapterName, directory string, request base.OpenRequest) (*Session, protocol.SessionState, error) {
+	if _, ok := h.registry.Lookup(adapterName); !ok {
 		return nil, protocol.SessionState{}, &UnknownAdapterError{Name: adapterName}
 	}
 	if request.Participant.ID == "" {
@@ -79,7 +82,8 @@ func (h *Hub) Open(ctx context.Context, adapterName string, request base.OpenReq
 	if _, live := h.sessions.get(request.SessionID); request.Reopen && live {
 		return nil, protocol.SessionState{}, &SessionExistsError{ID: request.SessionID}
 	}
-	if request.Reopen && h.bindings != nil {
+	adopting := request.Reopen && request.Adopted && request.NativeSessionID != ""
+	if request.Reopen && h.bindings != nil && !adopting {
 		bound, found, err := h.bindings.Latest(ctx, string(request.SessionID))
 		if err != nil {
 			return nil, protocol.SessionState{}, err
@@ -88,6 +92,12 @@ func (h *Hub) Open(ctx context.Context, adapterName string, request base.OpenReq
 			return nil, protocol.SessionState{}, &UnknownSessionError{ID: request.SessionID}
 		}
 		request.NativeSessionID = bound.Record.NativeSessionID
+		request.Adopted = bound.Record.Adopted
+		directory = bound.Record.Directory
+	}
+	implementation, placed, err := h.registry.Place(adapterName, directory)
+	if err != nil {
+		return nil, protocol.SessionState{}, err
 	}
 	session, err := implementation.Open(ctx, request)
 	var gone *base.UnknownSessionError
@@ -112,7 +122,8 @@ func (h *Hub) Open(ctx context.Context, adapterName string, request base.OpenReq
 		}
 	})
 	entry.runs = h.sessions.runs
-	opened := h.openRecord(ctx, adapterName, implementation, state, request)
+	entry.work.directory = placed
+	opened := h.openRecord(ctx, adapterName, placed, implementation, state, request)
 	if native, ok := session.(base.NativeSession); ok {
 		opened.NativeSessionID = native.NativeSessionID()
 	}
@@ -153,7 +164,7 @@ func (h *Hub) now() int64 {
 	return time.Now().UnixMilli()
 }
 
-func (h *Hub) openRecord(ctx context.Context, adapterName string, implementation base.Adapter, state protocol.SessionState, request base.OpenRequest) binding.Record {
+func (h *Hub) openRecord(ctx context.Context, adapterName, directory string, implementation base.Adapter, state protocol.SessionState, request base.OpenRequest) binding.Record {
 	if h.bindings == nil {
 		return binding.Record{}
 	}
@@ -165,8 +176,9 @@ func (h *Hub) openRecord(ctx context.Context, adapterName string, implementation
 	for _, source := range request.ToolSources {
 		sources = append(sources, string(source.ID))
 	}
-	record := binding.FromOpen(string(state.SessionID), adapterName, version, state.CurrentModelID, h.home, h.registry.WorkingDirectory(adapterName), sources)
+	record := binding.FromOpen(string(state.SessionID), adapterName, version, state.CurrentModelID, h.home, directory, sources)
 	record.ReasoningLevel = string(request.ReasoningLevel)
+	record.Adopted = request.Adopted
 	if request.CompactionPolicy != nil {
 		policy := *request.CompactionPolicy
 		record.CompactionPolicy = &policy

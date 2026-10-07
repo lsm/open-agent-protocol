@@ -8,6 +8,7 @@ import (
 	"os"
 	"sort"
 	"strings"
+	"sync"
 
 	base "github.com/lsm/open-agent-protocol/go/adapter"
 	"github.com/lsm/open-agent-protocol/go/adapter/acp"
@@ -159,6 +160,59 @@ type Registry struct {
 	adapters    map[string]base.Adapter
 	directories map[string]string
 	toolSources map[string]protocol.ToolSourceAttachment
+
+	placeMu   sync.Mutex
+	templates map[string]template
+	placed    map[placeKey]base.Adapter
+}
+
+type template struct {
+	entry   adapterEntry
+	environ func(string) (string, bool)
+}
+
+type placeKey struct {
+	name      string
+	directory string
+}
+
+func (r *Registry) ServesAnyDirectory(name string) bool {
+	r.placeMu.Lock()
+	defer r.placeMu.Unlock()
+	_, ok := r.templates[name]
+	return ok
+}
+
+func (r *Registry) Place(name, directory string) (base.Adapter, string, error) {
+	implementation, ok := r.adapters[name]
+	if !ok {
+		return nil, "", fmt.Errorf("serve: no adapter %q", name)
+	}
+	configured := r.directories[name]
+	if directory == "" || directory == configured {
+		return implementation, configured, nil
+	}
+	r.placeMu.Lock()
+	defer r.placeMu.Unlock()
+	shape, ok := r.templates[name]
+	if !ok {
+		return implementation, configured, nil
+	}
+	key := placeKey{name: name, directory: directory}
+	if placed, ok := r.placed[key]; ok {
+		return placed, directory, nil
+	}
+	entry := shape.entry
+	entry.WorkingDirectory = directory
+	placed, err := buildAdapter(name, entry, shape.environ)
+	if err != nil {
+		return nil, "", err
+	}
+	if r.placed == nil {
+		r.placed = make(map[placeKey]base.Adapter)
+	}
+	r.placed[key] = placed
+	return placed, directory, nil
 }
 
 func NewRegistry() *Registry {
@@ -285,6 +339,12 @@ func LoadRegistry(path string, environ func(string) (string, bool)) (*Registry, 
 			return nil, err
 		}
 		registry.SetWorkingDirectory(name, file.Adapters[name].WorkingDirectory)
+		if file.Adapters[name].AnyDirectory {
+			if registry.templates == nil {
+				registry.templates = make(map[string]template)
+			}
+			registry.templates[name] = template{entry: file.Adapters[name], environ: environ}
+		}
 	}
 	for _, id := range sortedKeys(file.ToolSources) {
 		entry := file.ToolSources[id]

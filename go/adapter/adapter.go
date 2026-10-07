@@ -98,10 +98,50 @@ type OpenRequest struct {
 	ReasoningLevel protocol.ReasoningLevel
 
 	CompactionPolicy *protocol.CompactionPolicy
+
+	Adopted bool
 }
 
 type NativeSession interface {
 	NativeSessionID() string
+}
+
+type NativeListing struct {
+	NativeID    string
+	Title       string
+	Directory   string
+	UpdatedAtMS int64
+	Running     bool
+	Link        string
+}
+
+type NativeListRequest struct {
+	Directory string
+	Limit     int
+}
+
+type NativeLister interface {
+	NativeList(context.Context, NativeListRequest) ([]NativeListing, error)
+}
+
+type NativeTurn struct {
+	Role string
+	Text string
+	AtMS int64
+}
+
+type NativeReadRequest struct {
+	NativeID  string
+	Directory string
+	MaxTurns  int
+}
+
+type NativeReader interface {
+	NativeRead(context.Context, NativeReadRequest) ([]NativeTurn, error)
+}
+
+type NativeLinker interface {
+	NativeLink(nativeID string) string
 }
 
 func (r OpenRequest) AllowsDegraded(key string) bool {

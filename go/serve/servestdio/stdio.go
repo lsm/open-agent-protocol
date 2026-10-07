@@ -14,6 +14,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/lsm/open-agent-protocol/go/internal/workwire"
 	"github.com/lsm/open-agent-protocol/go/serve"
 	"github.com/lsm/open-agent-protocol/go/validation"
 
@@ -56,6 +57,7 @@ type Server struct {
 	shutdown    time.Duration
 	logger      *log.Logger
 	nextIDValue atomic.Uint64
+	work        *workwire.Front
 }
 
 const maxConcurrentOps = 16
@@ -201,7 +203,7 @@ func New(hub *serve.Hub, options Options) (*Server, error) {
 	if logger == nil {
 		logger = log.New(io.Discard, "", 0)
 	}
-	return &Server{hub: hub, schema: schema, frameLimit: frameLimit, writeQueue: writeQueue, maxOps: maxOps, maxAttach: options.MaxSubscriptions, shutdown: shutdown, logger: logger}, nil
+	return &Server{hub: hub, schema: schema, frameLimit: frameLimit, writeQueue: writeQueue, maxOps: maxOps, maxAttach: options.MaxSubscriptions, shutdown: shutdown, logger: logger, work: workwire.New(hub)}, nil
 }
 
 func (s *Server) Hub() *serve.Hub { return s.hub }

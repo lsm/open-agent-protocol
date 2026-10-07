@@ -19,6 +19,7 @@ import (
 
 	base "github.com/lsm/open-agent-protocol/go/adapter"
 	"github.com/lsm/open-agent-protocol/go/binding"
+	"github.com/lsm/open-agent-protocol/go/internal/workwire"
 	"github.com/lsm/open-agent-protocol/go/protocol"
 	"github.com/lsm/open-agent-protocol/go/serve"
 	"github.com/lsm/open-agent-protocol/go/validation"
@@ -44,6 +45,7 @@ type Server struct {
 	holdFor     time.Duration
 	mu          sync.Mutex
 	held        map[protocol.SessionID]*heldSubscription
+	work        *workwire.Front
 }
 
 func New(hub *serve.Hub, options Options) (*Server, error) {
@@ -60,7 +62,7 @@ func New(hub *serve.Hub, options Options) (*Server, error) {
 		holdFor = DefaultSubscriptionHold
 	}
 	return &Server{hub: hub, schema: schema, allowHosts: allowHosts, holdFor: holdFor,
-		held: map[protocol.SessionID]*heldSubscription{}}, nil
+		held: map[protocol.SessionID]*heldSubscription{}, work: workwire.New(hub)}, nil
 }
 
 func (s *Server) Hub() *serve.Hub { return s.hub }
@@ -81,6 +83,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /sessions/{id}/cancel", s.handleCancel)
 	mux.HandleFunc("POST /sessions/{id}/settings", s.handleSettings)
 	mux.HandleFunc("POST /sessions/{id}/close", s.handleClose)
+	s.routeWork(mux)
 	var handler http.Handler = mux
 	if len(s.allowHosts) > 0 {
 		routed := handler
