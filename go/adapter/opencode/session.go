@@ -98,6 +98,7 @@ type runState struct {
 	messageID       protocol.MessageID
 	nativeMessageID native.MessageID
 	parts           []protocol.ContentPart
+	streamed        map[partKey]*strings.Builder
 	usage           protocol.Usage
 	cost            float64
 	lastFinish      string
@@ -105,6 +106,12 @@ type runState struct {
 	openSteps       int
 	admitted        chan struct{}
 	subscribers     []chan base.Result
+}
+
+type partKey struct {
+	message   native.MessageID
+	ordinal   int
+	reasoning bool
 }
 
 type toolState struct {
@@ -560,6 +567,33 @@ func (s *session) handleEventLocked(event native.Event) {
 			run.cost += *data.Cost
 		}
 		s.mu.Unlock()
+	case native.TypeTextDelta, native.TypeReasoningDelta:
+		var data native.PartDeltaData
+		if err := native.DecodeData(event, &data); err != nil {
+			s.failActive(run, "opencode_invalid_text_event", err.Error())
+			return
+		}
+		if run == nil || data.Delta == "" {
+			return
+		}
+		<-run.admitted
+		key := partKey{message: data.AssistantMessage, ordinal: data.Ordinal, reasoning: event.Type == native.TypeReasoningDelta}
+		s.mu.Lock()
+		terminal := run.terminal
+		if !terminal {
+			if run.streamed == nil {
+				run.streamed = map[partKey]*strings.Builder{}
+			}
+			if run.streamed[key] == nil {
+				run.streamed[key] = &strings.Builder{}
+			}
+			run.streamed[key].WriteString(data.Delta)
+		}
+		s.mu.Unlock()
+		if terminal {
+			return
+		}
+		_ = s.emit(run, protocol.TypeContentDelta, protocol.ContentDeltaPayload{SessionID: s.state.SessionID, RunID: run.id, MessageID: run.messageID, Part: textPart(key.reasoning, data.Delta)}, false)
 	case native.TypeTextEnded, native.TypeReasoningEnded:
 		var data native.PartEndedData
 		if err := native.DecodeData(event, &data); err != nil {
@@ -570,20 +604,25 @@ func (s *session) handleEventLocked(event native.Event) {
 			return
 		}
 		<-run.admitted
-		part := protocol.ContentPart{Type: protocol.ContentText, Text: data.Text}
-		if event.Type == native.TypeReasoningEnded {
-			part = protocol.ContentPart{Type: protocol.ContentReasoning, Reasoning: data.Text}
-		}
+		key := partKey{message: data.AssistantMessage, ordinal: data.Ordinal, reasoning: event.Type == native.TypeReasoningEnded}
 		s.mu.Lock()
 		terminal := run.terminal
+		rest := data.Text
 		if !terminal {
-			run.parts = append(run.parts, part)
+			run.parts = append(run.parts, textPart(key.reasoning, data.Text))
+			if streamed := run.streamed[key]; streamed != nil {
+				var whole bool
+				if rest, whole = strings.CutPrefix(data.Text, streamed.String()); !whole {
+					rest = ""
+				}
+				delete(run.streamed, key)
+			}
 		}
 		s.mu.Unlock()
-		if terminal {
+		if terminal || rest == "" {
 			return
 		}
-		_ = s.emit(run, protocol.TypeContentDelta, protocol.ContentDeltaPayload{SessionID: s.state.SessionID, RunID: run.id, MessageID: run.messageID, Part: part}, false)
+		_ = s.emit(run, protocol.TypeContentDelta, protocol.ContentDeltaPayload{SessionID: s.state.SessionID, RunID: run.id, MessageID: run.messageID, Part: textPart(key.reasoning, rest)}, false)
 	case native.TypeToolInputStarted:
 		var data native.ToolInputStartedData
 		if err := native.DecodeData(event, &data); err != nil {
@@ -657,6 +696,13 @@ func (s *session) handleEventLocked(event native.Event) {
 			s.failActive(run, "opencode_unknown_event", fmt.Sprintf("unknown event %q", event.Type))
 		}
 	}
+}
+
+func textPart(reasoning bool, text string) protocol.ContentPart {
+	if reasoning {
+		return protocol.ContentPart{Type: protocol.ContentReasoning, Reasoning: text}
+	}
+	return protocol.ContentPart{Type: protocol.ContentText, Text: text}
 }
 
 func (s *session) delivered(inbox native.MessageID) {

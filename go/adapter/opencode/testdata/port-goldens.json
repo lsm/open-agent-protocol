@@ -1,5 +1,5 @@
 {
-  "capability_revision": "opencode-v2.0.24-oap-v1",
+  "capability_revision": "opencode-v2.0.24-oap-v2",
   "capabilities": {
     "endpoint": {
       "id": "opencode.server",
@@ -59,8 +59,8 @@
         "reason": "session.inbox.delivered starts a run and session.execution.* settles it"
       },
       "run.streaming": {
-        "level": "degraded",
-        "reason": "text and reasoning are forwarded whole at session.text.ended and session.reasoning.ended; the live deltas are not forwarded"
+        "level": "native",
+        "reason": "session.text.delta and session.reasoning.delta are forwarded as they arrive, and a part's ended event adds only the text its deltas did not carry"
       },
       "session.compaction.policy": {
         "level": "unavailable",

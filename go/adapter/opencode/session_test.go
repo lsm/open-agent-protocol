@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -1783,5 +1784,51 @@ func TestALateInterruptTheServerStallsAbandonsTheRunWithinTheRequestTimeout(t *t
 	}
 	if failed.Error.Code != "opencode_cancellation_ambiguous" || !strings.Contains(failed.Error.Message, context.DeadlineExceeded.Error()) {
 		t.Fatalf("run failed with %+v", failed.Error)
+	}
+}
+
+func TestTextAndReasoningDeltasStream(t *testing.T) {
+	client := newFakeClient()
+	session, _ := openTest(t, client, 2)
+	response, stream := submitTest(t, session)
+	client.deliver(t, 1, native.MessageID(response.MessageIDs[0]))
+	client.emit(t, 2, native.TypeReasoningDelta, native.PartDeltaData{SessionID: client.session, AssistantMessage: "msg_a1", Delta: "th"})
+	client.emit(t, 2, native.TypeReasoningDelta, native.PartDeltaData{SessionID: client.session, AssistantMessage: "msg_a1", Delta: "ink"})
+	client.emit(t, 2, native.TypeTextDelta, native.PartDeltaData{SessionID: client.session, AssistantMessage: "msg_a1", Delta: ""})
+	client.emit(t, 2, native.TypeReasoningEnded, native.ReasoningEndedData{SessionID: client.session, AssistantMessage: "msg_a1", Text: "think"})
+	client.emit(t, 3, native.TypeTextDelta, native.PartDeltaData{SessionID: client.session, AssistantMessage: "msg_a1", Ordinal: 1, Delta: "x"})
+	client.emit(t, 4, native.TypeTextDelta, native.PartDeltaData{SessionID: client.session, AssistantMessage: "msg_a1", Ordinal: 2, Delta: "pl"})
+	client.emit(t, 3, native.TypeTextEnded, native.TextEndedData{SessionID: client.session, AssistantMessage: "msg_a1", Ordinal: 1, Text: "hello"})
+	client.emit(t, 4, native.TypeTextEnded, native.TextEndedData{SessionID: client.session, AssistantMessage: "msg_a1", Ordinal: 2, Text: "plain"})
+	client.emit(t, 5, native.TypeTextEnded, native.TextEndedData{SessionID: client.session, AssistantMessage: "msg_a1", Ordinal: 2, Text: "pl!"})
+	client.emit(t, 6, native.TypeStepEnded, native.StepEndedData{SessionID: client.session, AssistantMessage: "msg_a1", Finish: "stop"})
+	client.succeed(t, 7)
+	events := adaptertest.Drain(t, stream, time.Second)
+	adaptertest.AssertRunTrace(t, response, CapabilityRevision, events)
+	var streamed []string
+	for _, event := range events {
+		if event.Type != protocol.TypeContentDelta {
+			continue
+		}
+		var delta protocol.ContentDeltaPayload
+		if err := event.DecodePayload(&delta); err != nil {
+			t.Fatal(err)
+		}
+		streamed = append(streamed, string(delta.Part.Type)+":"+delta.Part.Text+delta.Part.Reasoning)
+	}
+	if want := []string{"reasoning:th", "reasoning:ink", "text:x", "text:pl", "text:ain", "text:pl!"}; !slices.Equal(streamed, want) {
+		t.Fatalf("streamed %q, want %q", streamed, want)
+	}
+	var completed protocol.RunCompletedPayload
+	if err := events[len(events)-1].DecodePayload(&completed); err != nil {
+		t.Fatal(err)
+	}
+	parts, _ := completed.FinalResponse.Content.Parts()
+	var final []string
+	for _, part := range parts {
+		final = append(final, string(part.Type)+":"+part.Text+part.Reasoning)
+	}
+	if want := []string{"reasoning:think", "text:hello", "text:plain", "text:pl!"}; !slices.Equal(final, want) {
+		t.Fatalf("final %q, want %q", final, want)
 	}
 }

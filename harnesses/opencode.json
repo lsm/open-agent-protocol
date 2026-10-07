@@ -6,7 +6,7 @@
       "label": "v2.0.24",
       "status": "current",
       "endpoint_version": "v2.0.24",
-      "capability_revision": "opencode-v2.0.24-oap-v1",
+      "capability_revision": "opencode-v2.0.24-oap-v2",
       "ledgers": ["research/opencode-v2.0.24-mapping.md"],
       "corpus": "fixtures/adapters/opencode-v2.0.24",
       "components": [

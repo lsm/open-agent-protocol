@@ -192,7 +192,7 @@ pub const StepEndedData = struct {
 
 pub const StepFailedData = struct { failure: ErrorBlock = .{}, cost: f64 = 0 };
 
-pub const TextData = struct { text: []const u8 = "" };
+pub const TextData = struct { message: []const u8 = "", ordinal: i64 = 0, text: []const u8 = "" };
 
 pub const ToolInputData = struct { id: []const u8 = "", name: []const u8 = "" };
 
@@ -351,6 +351,12 @@ const part_ended_fields = [_]Field{
     .{ .name = "ordinal", .kind = .integer },
     .{ .name = "text", .kind = .string },
     .{ .name = "state", .kind = .raw },
+};
+const part_delta_fields = [_]Field{
+    .{ .name = "sessionID", .kind = .string },
+    .{ .name = "assistantMessageID", .kind = .string },
+    .{ .name = "ordinal", .kind = .integer },
+    .{ .name = "delta", .kind = .string },
 };
 const tool_input_started_fields = [_]Field{
     .{ .name = "sessionID", .kind = .string },
@@ -898,7 +904,12 @@ pub fn decodeStepFailed(arena: std.mem.Allocator, event: Event, diag: *Diagnosti
 
 pub fn decodePartEnded(arena: std.mem.Allocator, event: Event, diag: *Diagnostic) Error!TextData {
     const document = try decodeData(arena, event, &part_ended_fields, diag);
-    return .{ .text = textAt(document, &.{"text"}) };
+    return .{ .message = textAt(document, &.{"assistantMessageID"}), .ordinal = integerAt(document, &.{"ordinal"}), .text = textAt(document, &.{"text"}) };
+}
+
+pub fn decodePartDelta(arena: std.mem.Allocator, event: Event, diag: *Diagnostic) Error!TextData {
+    const document = try decodeData(arena, event, &part_delta_fields, diag);
+    return .{ .message = textAt(document, &.{"assistantMessageID"}), .ordinal = integerAt(document, &.{"ordinal"}), .text = textAt(document, &.{"delta"}) };
 }
 
 pub fn decodeToolInputStarted(arena: std.mem.Allocator, event: Event, diag: *Diagnostic) Error!ToolInputData {

@@ -6,7 +6,7 @@
   "mapping": "mapping.json",
   "omissions": "omissions.json",
   "provenance": {"repository": "https://github.com/anomalyco/opencode", "tag": "v2.0.24", "commit": "e7a34f09bfd9134dfade5a8ddb843f7030bc9a69", "commit_tree": "aef0ff8dce5435b3649bdd1fa6feb35015e2b379", "session_event_blob": "0cffae27ad631740c4b7b59c09c01440b4b603a6", "session_input_blob": "361c0c492ce81aaea18fa31d36d3b00dc8d13c7b", "session_delivery_blob": "eeed241ae14e30645d4e0904c69d3ebfe919ef38", "session_group_blob": "d5bf2af1db1281785aa996ed0d63c5f61821d830", "server_handler_blob": "73a0763352095b093a2bc959ebe6295a5d9515f0", "core_session_blob": "39f5f36d3a56e017a8b474a52f7d3863ee0effaf"},
-  "advertised_capabilities": {"session.message.submit": "native", "run.streaming": "degraded", "action.tools": "native"},
+  "advertised_capabilities": {"session.message.submit": "native", "run.streaming": "native", "action.tools": "native"},
   "identity_map": {"ses_fake00000000000000": "session", "msg_rebind": "admitted input (rebound by runner)", "msg_a1": "assistant message"},
   "admission_rejected": true
 }

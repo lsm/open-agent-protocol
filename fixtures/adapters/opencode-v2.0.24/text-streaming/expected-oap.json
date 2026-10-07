@@ -15,7 +15,7 @@
     "timestamp_ms": 4,
     "session_id": "session",
     "run_id": "run-1",
-    "capability_revision": "opencode-v2.0.24-oap-v1"
+    "capability_revision": "opencode-v2.0.24-oap-v2"
   },
   {
     "protocol": "open-agent-protocol",
@@ -29,14 +29,14 @@
       "message_id": "message-2",
       "part": {
         "type": "text",
-        "text": "alpha"
+        "text": "al"
       }
     },
     "sequence": 2,
     "timestamp_ms": 5,
     "session_id": "session",
     "run_id": "run-1",
-    "capability_revision": "opencode-v2.0.24-oap-v1"
+    "capability_revision": "opencode-v2.0.24-oap-v2"
   },
   {
     "protocol": "open-agent-protocol",
@@ -50,21 +50,63 @@
       "message_id": "message-2",
       "part": {
         "type": "text",
-        "text": "beta"
+        "text": "pha"
       }
     },
     "sequence": 3,
     "timestamp_ms": 6,
     "session_id": "session",
     "run_id": "run-1",
-    "capability_revision": "opencode-v2.0.24-oap-v1"
+    "capability_revision": "opencode-v2.0.24-oap-v2"
+  },
+  {
+    "protocol": "open-agent-protocol",
+    "version": "0.1",
+    "profile": "open-agent-protocol.agent-control-core",
+    "type": "content.delta",
+    "id": "event-8",
+    "payload": {
+      "session_id": "session",
+      "run_id": "run-1",
+      "message_id": "message-2",
+      "part": {
+        "type": "text",
+        "text": "be"
+      }
+    },
+    "sequence": 4,
+    "timestamp_ms": 7,
+    "session_id": "session",
+    "run_id": "run-1",
+    "capability_revision": "opencode-v2.0.24-oap-v2"
+  },
+  {
+    "protocol": "open-agent-protocol",
+    "version": "0.1",
+    "profile": "open-agent-protocol.agent-control-core",
+    "type": "content.delta",
+    "id": "event-9",
+    "payload": {
+      "session_id": "session",
+      "run_id": "run-1",
+      "message_id": "message-2",
+      "part": {
+        "type": "text",
+        "text": "ta"
+      }
+    },
+    "sequence": 5,
+    "timestamp_ms": 8,
+    "session_id": "session",
+    "run_id": "run-1",
+    "capability_revision": "opencode-v2.0.24-oap-v2"
   },
   {
     "protocol": "open-agent-protocol",
     "version": "0.1",
     "profile": "open-agent-protocol.agent-control-core",
     "type": "run.completed",
-    "id": "event-8",
+    "id": "event-10",
     "payload": {
       "session_id": "session",
       "run_id": "run-1",
@@ -89,11 +131,11 @@
         "total_tokens": 7
       }
     },
-    "sequence": 4,
-    "timestamp_ms": 7,
+    "sequence": 6,
+    "timestamp_ms": 9,
     "session_id": "session",
     "run_id": "run-1",
-    "capability_revision": "opencode-v2.0.24-oap-v1",
+    "capability_revision": "opencode-v2.0.24-oap-v2",
     "extensions": {
       "io.github.anomalyco.opencode.cost": {
         "total_cost_usd": 0

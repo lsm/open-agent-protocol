@@ -86,6 +86,7 @@ pub const Run = struct {
     queued_admission: bool = true,
     cancel_requested: bool = false,
     parts: std.ArrayList(Part) = .empty,
+    streamed: std.StringHashMapUnmanaged(std.ArrayList(u8)) = .empty,
     input_tokens: u64 = 0,
     output_tokens: u64 = 0,
     total_tokens: u64 = 0,
@@ -413,13 +414,13 @@ pub const Reducer = struct {
                 if (!target.terminal and !target.cancel_requested) target.failure = data.failure.message;
                 target.cost += data.cost;
             },
-            .text_ended => {
-                const data = (try self.decodeFor(native.TextData, native.decodePartEnded, event, run, "opencode_invalid_text_event")) orelse return;
-                try self.appendPart(run orelse return, false, data.text);
+            .text_delta, .reasoning_delta => {
+                const data = (try self.decodeFor(native.TextData, native.decodePartDelta, event, run, "opencode_invalid_text_event")) orelse return;
+                try self.streamPart(run orelse return, kind == .reasoning_delta, data);
             },
-            .reasoning_ended => {
+            .text_ended, .reasoning_ended => {
                 const data = (try self.decodeFor(native.TextData, native.decodePartEnded, event, run, "opencode_invalid_text_event")) orelse return;
-                try self.appendPart(run orelse return, true, data.text);
+                try self.appendPart(run orelse return, kind == .reasoning_ended, data);
             },
             .tool_input_started => {
                 const data = (try self.decodeFor(native.ToolInputData, native.decodeToolInputStarted, event, run, "opencode_invalid_tool_event")) orelse return;
@@ -486,9 +487,30 @@ pub const Reducer = struct {
         }
     }
 
-    fn appendPart(self: *Reducer, run: *Run, reasoning: bool, text: []const u8) Error!void {
+    fn partKey(self: *Reducer, reasoning: bool, data: native.TextData) Error![]const u8 {
+        return std.fmt.allocPrint(self.allocator(), "{c}{d}:{s}", .{ @as(u8, if (reasoning) 'r' else 't'), data.ordinal, data.message });
+    }
+
+    fn streamPart(self: *Reducer, run: *Run, reasoning: bool, data: native.TextData) Error!void {
+        if (run.terminal or data.text.len == 0) return;
+        const slot = try run.streamed.getOrPut(self.allocator(), try self.partKey(reasoning, data));
+        if (!slot.found_existing) slot.value_ptr.* = .empty;
+        try slot.value_ptr.appendSlice(self.allocator(), data.text);
+        try self.emitPart(run, reasoning, data.text);
+    }
+
+    fn appendPart(self: *Reducer, run: *Run, reasoning: bool, data: native.TextData) Error!void {
         if (run.terminal) return;
-        try run.parts.append(self.allocator(), .{ .reasoning = reasoning, .text = text });
+        try run.parts.append(self.allocator(), .{ .reasoning = reasoning, .text = data.text });
+        var rest = data.text;
+        if (run.streamed.fetchRemove(try self.partKey(reasoning, data))) |streamed| {
+            rest = if (std.mem.startsWith(u8, data.text, streamed.value.items)) data.text[streamed.value.items.len..] else "";
+        }
+        if (rest.len == 0) return;
+        try self.emitPart(run, reasoning, rest);
+    }
+
+    fn emitPart(self: *Reducer, run: *Run, reasoning: bool, text: []const u8) Error!void {
         var payload = try self.scoped(run);
         try self.put(&payload, "message_id", str(run.message_id));
         try self.put(&payload, "part", try self.partValue(.{ .reasoning = reasoning, .text = text }));
@@ -847,7 +869,7 @@ const features = [_]Feature{
     .{ .key = "run.replay", .level = "degraded", .reason = "bounded adapter journal; the native durable cursor is exposed as the transcript cursor" },
     .{ .key = "run.resume", .level = "degraded", .reason = "conversation resume exists natively but is not exercised; OAP resume replays the adapter journal" },
     .{ .key = "run.status", .level = "native", .reason = "session.inbox.delivered starts a run and session.execution.* settles it" },
-    .{ .key = "run.streaming", .level = "degraded", .reason = "text and reasoning are forwarded whole at session.text.ended and session.reasoning.ended; the live deltas are not forwarded" },
+    .{ .key = "run.streaming", .level = "native", .reason = "session.text.delta and session.reasoning.delta are forwarded as they arrive, and a part's ended event adds only the text its deltas did not carry" },
     .{ .key = "session.compaction.policy", .level = "unavailable", .reason = "compaction is the server's config, fixed when its operator starts it; the adapter attaches to a running server" },
     .{ .key = "session.message.delivery.auto", .level = "emulated", .reason = "no native auto; steer when the session is idle, queue behind an open run" },
     .{ .key = "session.message.delivery.queue", .level = "native", .reason = "a prompt with delivery=queue is admitted to the session inbox and starts its run at session.inbox.delivered" },
@@ -1192,4 +1214,38 @@ fn queueAndSettle(allocator: std.mem.Allocator) !void {
 
 test "queueing and settling a promoted run propagates every allocation failure and leaks nothing" {
     try testing.checkAllAllocationFailures(testing.allocator, queueAndSettle, .{});
+}
+
+fn partLabel(arena: std.mem.Allocator, part: std.json.Value) ![]const u8 {
+    const kind = part.object.get("type").?.string;
+    return std.mem.concat(arena, u8, &.{ kind, ":", part.object.get(kind).?.string });
+}
+
+test "text and reasoning deltas stream" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const scratch = arena.allocator();
+    var fake = Fake{};
+    var reducer = Reducer.init(&arena, .{ .native_id = native_session }, fake.client());
+    try reducer.open();
+    const admission = try reducer.submit("session", "hi", "auto");
+    try reducer.observe(try deliveredEvent(scratch, 1, admission.message_ids[0]));
+    try reducer.observe(try nativeEvent(scratch, 0, "reasoning.delta", "{\"assistantMessageID\":\"msg_a\",\"ordinal\":0,\"delta\":\"th\"}"));
+    try reducer.observe(try nativeEvent(scratch, 0, "reasoning.delta", "{\"assistantMessageID\":\"msg_a\",\"ordinal\":0,\"delta\":\"ink\"}"));
+    try reducer.observe(try nativeEvent(scratch, 0, "text.delta", "{\"assistantMessageID\":\"msg_a\",\"ordinal\":0,\"delta\":\"\"}"));
+    try reducer.observe(try nativeEvent(scratch, 2, "reasoning.ended", "{\"assistantMessageID\":\"msg_a\",\"ordinal\":0,\"text\":\"think\"}"));
+    try reducer.observe(try nativeEvent(scratch, 0, "text.delta", "{\"assistantMessageID\":\"msg_a\",\"ordinal\":1,\"delta\":\"x\"}"));
+    try reducer.observe(try nativeEvent(scratch, 0, "text.delta", "{\"assistantMessageID\":\"msg_a\",\"ordinal\":2,\"delta\":\"pl\"}"));
+    try reducer.observe(try nativeEvent(scratch, 3, "text.ended", "{\"assistantMessageID\":\"msg_a\",\"ordinal\":1,\"text\":\"hello\"}"));
+    try reducer.observe(try nativeEvent(scratch, 4, "text.ended", "{\"assistantMessageID\":\"msg_a\",\"ordinal\":2,\"text\":\"plain\"}"));
+    try reducer.observe(try nativeEvent(scratch, 5, "text.ended", "{\"assistantMessageID\":\"msg_a\",\"ordinal\":2,\"text\":\"pl!\"}"));
+    try reducer.observe(try stepEnded(scratch, 6));
+    try reducer.observe(try succeeded(scratch, 7));
+    try expectKinds(&reducer, &.{ "run.started", "content.delta", "content.delta", "content.delta", "content.delta", "content.delta", "content.delta", "run.completed" });
+    const streamed = [_][]const u8{ "reasoning:th", "reasoning:ink", "text:x", "text:pl", "text:ain", "text:pl!" };
+    for (streamed, reducer.envelopes.items[1..7]) |want, envelope| try testing.expectEqualStrings(want, try partLabel(scratch, payloadOf(envelope).get("part").?));
+    const final = payloadOf(reducer.envelopes.items[7]).get("final_response").?.object.get("content").?.array.items;
+    const whole = [_][]const u8{ "reasoning:think", "text:hello", "text:plain", "text:pl!" };
+    try testing.expectEqual(whole.len, final.len);
+    for (whole, final) |want, part| try testing.expectEqualStrings(want, try partLabel(scratch, part));
 }
