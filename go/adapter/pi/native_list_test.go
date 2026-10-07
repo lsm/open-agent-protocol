@@ -10,6 +10,7 @@ import (
 	"time"
 
 	base "github.com/lsm/open-agent-protocol/go/adapter"
+	"github.com/lsm/open-agent-protocol/go/adapter/pi/internal/native"
 )
 
 func TestAWorkingDirectoryMapsToTheStoreFolderPiNamesAfterIt(t *testing.T) {
@@ -107,5 +108,16 @@ func TestASessionFileLargerThanTheReadLimitReadsItsTail(t *testing.T) {
 	turns := readSession(bindingText("big", path))
 	if len(turns) != 1 || turns[0].Text != "the last word" {
 		t.Fatalf("turns = %+v", turns)
+	}
+}
+
+func TestAListedSessionAndTheBindingAReopenRecordsSpellTheSameNativeIDForAPathWithMarkup(t *testing.T) {
+	path := "/w/a&b<c>.jsonl"
+	listed := bindingText("abc", path)
+	if held := encodeBinding(native.SessionState{SessionID: "abc", SessionFile: path}); held != listed {
+		t.Fatalf("the reopen binding %s differs from the listed id %s", held, listed)
+	}
+	if listed != `{"sessionId":"abc","sessionFile":"/w/a&b<c>.jsonl"}` {
+		t.Fatalf("the native id is %s, not Zig's spelling", listed)
 	}
 }

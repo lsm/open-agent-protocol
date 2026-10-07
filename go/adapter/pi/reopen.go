@@ -34,8 +34,7 @@ func encodeBinding(state native.SessionState) string {
 	if state.SessionID == "" || !filepath.IsAbs(state.SessionFile) {
 		return ""
 	}
-	raw, _ := json.Marshal(sessionBinding{SessionID: state.SessionID, SessionFile: state.SessionFile})
-	return string(raw)
+	return bindingText(state.SessionID, state.SessionFile)
 }
 
 func readBinding(raw string) (sessionBinding, error) {
