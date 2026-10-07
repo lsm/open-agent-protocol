@@ -172,7 +172,9 @@ Request `{"ref", "after"?, "limit"?}`. Answer `{"turns": [...]}`, each turn
 after index `after`, at most `limit` (1 to 500, default 100).
 
 Where the adapter can read the harness's own transcript (Codex through
-`thread/turns/list`, Claude Code from its project's `<native id>.jsonl`),
+`thread/turns/list`, Claude Code from its project's `<native id>.jsonl`, Pi
+from its session file, reading the file in order, so a branch Pi left reads
+along with the one it kept),
 `work.read` answers from it: every user message
 and the reply that followed, the conversation before `serve` held the session
 included, and still there after `serve` restarts, so `serve` writes no message

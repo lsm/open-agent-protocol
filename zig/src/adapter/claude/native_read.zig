@@ -60,7 +60,7 @@ pub fn turns(arena: std.mem.Allocator, bytes: []const u8) ![]const contract.Nati
         if (flag(parsed.object.get("isSidechain")) or flag(parsed.object.get("isMeta"))) continue;
         const message = parsed.object.get("message") orelse continue;
         if (message != .object) continue;
-        const at = isoMillis(text(parsed.object.get("timestamp")) orelse "") orelse 0;
+        const at = compat.time.isoMillis(text(parsed.object.get("timestamp")) orelse "") orelse 0;
         if (std.mem.eql(u8, kind, "user")) {
             const said = try userText(arena, message.object.get("content")) orelse continue;
             if (reply.items.len > 0) try found.append(arena, .{ .role = .assistant, .text = reply.items, .at_ms = reply_at });
@@ -138,32 +138,6 @@ fn assistantText(arena: std.mem.Allocator, content: ?std.json.Value) ![]const u8
         try joined.appendSlice(arena, text(part.object.get("text")) orelse "");
     }
     return joined.items;
-}
-
-pub fn isoMillis(stamp: []const u8) ?i64 {
-    if (stamp.len < 20 or stamp[4] != '-' or stamp[7] != '-' or stamp[10] != 'T' or stamp[13] != ':' or stamp[16] != ':') return null;
-    const year = std.fmt.parseInt(i64, stamp[0..4], 10) catch return null;
-    const month = std.fmt.parseInt(i64, stamp[5..7], 10) catch return null;
-    const day = std.fmt.parseInt(i64, stamp[8..10], 10) catch return null;
-    const hour = std.fmt.parseInt(i64, stamp[11..13], 10) catch return null;
-    const minute = std.fmt.parseInt(i64, stamp[14..16], 10) catch return null;
-    const second = std.fmt.parseInt(i64, stamp[17..19], 10) catch return null;
-    var millis: i64 = 0;
-    if (stamp[19] == '.') {
-        var index: usize = 20;
-        var scale: i64 = 100;
-        while (index < stamp.len and std.ascii.isDigit(stamp[index])) : (index += 1) {
-            millis += (stamp[index] - '0') * scale;
-            scale = @divTrunc(scale, 10);
-        }
-    }
-    const shifted = if (month <= 2) year - 1 else year;
-    const era = @divFloor(shifted, 400);
-    const of_era = shifted - era * 400;
-    const day_of_year = @divFloor(153 * (month + (if (month > 2) @as(i64, -3) else 9)) + 2, 5) + day - 1;
-    const day_of_era = of_era * 365 + @divFloor(of_era, 4) - @divFloor(of_era, 100) + day_of_year;
-    const days = era * 146097 + day_of_era - 719468;
-    return ((days * 24 + hour) * 60 + minute) * 60_000 + second * 1000 + millis;
 }
 
 test "a transcript reads as its user messages and the replies between them, leaving out tool results, thinking, meta, side chains and Claude Code's own wrappers but not a message that opens with markup" {
