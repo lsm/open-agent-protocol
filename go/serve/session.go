@@ -115,6 +115,8 @@ type Session struct {
 
 	binding binding.Record
 
+	work workLog
+
 	readers      int
 	reservations int
 	finishDue    bool
@@ -494,6 +496,7 @@ func (s *Session) Submit(ctx context.Context, submit base.SubmitRequest) (protoc
 		}
 		return admission, err
 	}
+	s.recordSubmitted(request, admission.RunID, time.Now().UnixMilli())
 	if admission.Admission == protocol.AdmissionSteered {
 		s.releaseReservation()
 		return admission, nil
@@ -598,6 +601,7 @@ func (s *Session) submitSteer(ctx context.Context, submit base.SubmitRequest) (p
 		boundary = *admission.TargetSequence
 	}
 	s.releaseToBoundary(gate, boundary)
+	s.recordSubmitted(submit.Request, admission.RunID, time.Now().UnixMilli())
 	if stream != nil {
 		s.adoptOrphan(stream)
 	} else {
@@ -1171,6 +1175,7 @@ func (s *Session) publish(envelope protocol.Envelope) {
 }
 
 func (s *Session) deliverLocked(envelope protocol.Envelope) {
+	s.observeWorkLocked(envelope, time.Now().UnixMilli())
 	if envelope.Sequence != nil && *envelope.Sequence > s.sequences[envelope.RunID] {
 		s.sequences[envelope.RunID] = *envelope.Sequence
 	}

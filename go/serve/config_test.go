@@ -11,6 +11,7 @@ import (
 
 	base "github.com/lsm/open-agent-protocol/go/adapter"
 	"github.com/lsm/open-agent-protocol/go/adapter/acp"
+	"github.com/lsm/open-agent-protocol/go/binding"
 	"github.com/lsm/open-agent-protocol/go/protocol"
 )
 
@@ -51,14 +52,42 @@ func TestLoadRegistryMemory(t *testing.T) {
 	}
 }
 
-func TestLoadRegistryReadsAnyDirectoryAndServesTheEntryAsWritten(t *testing.T) {
-	path := writeConfig(t, `{"adapters": {"memory": {"type": "memory", "any_directory": true}}}`)
+func TestAnAnyDirectoryEntryBuildsOneAdapterPerDirectoryAndAPlainEntryKeepsItsOwn(t *testing.T) {
+	path := writeConfig(t, `{"adapters": {"placed": {"type": "memory", "working_directory": "/base", "any_directory": true}, "fixed": {"type": "memory", "working_directory": "/fixed"}}}`)
 	registry, err := LoadRegistry(path, os.LookupEnv)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, ok := registry.Lookup("memory"); !ok {
-		t.Fatal("memory adapter missing")
+	if !registry.ServesAnyDirectory("placed") || registry.ServesAnyDirectory("fixed") {
+		t.Fatal("only the any_directory entry serves any directory")
+	}
+	home, _ := registry.Lookup("placed")
+	same, at, err := registry.Place("placed", "/base")
+	if err != nil || same != home || at != "/base" {
+		t.Fatalf("its own directory placed %v at %q, %v", same, at, err)
+	}
+	away, at, err := registry.Place("placed", "/elsewhere")
+	if err != nil || away == home || at != "/elsewhere" {
+		t.Fatalf("another directory placed %v at %q, %v", away, at, err)
+	}
+	if again, _, _ := registry.Place("placed", "/elsewhere"); again != away {
+		t.Fatal("a second placement in the same directory built another adapter")
+	}
+	fixed, _ := registry.Lookup("fixed")
+	if kept, at, _ := registry.Place("fixed", "/elsewhere"); kept != fixed || at != "/fixed" {
+		t.Fatalf("a plain entry placed %v at %q", kept, at)
+	}
+	hub := New(registry, Options{Bindings: binding.Memory()})
+	entry, _, err := hub.OpenIn(context.Background(), "placed", "/elsewhere", base.OpenRequest{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if found, _ := hub.Work(context.Background(), entry.ID()); found.Directory != "/elsewhere" {
+		t.Fatalf("the session works in %q", found.Directory)
+	}
+	recorded, _, _ := hub.Binding().Latest(context.Background(), string(entry.ID()))
+	if recorded.Record.Directory != "/elsewhere" {
+		t.Fatalf("the binding recorded %q", recorded.Record.Directory)
 	}
 }
 
@@ -526,6 +555,21 @@ func TestLoadRegistryKeepsTheDefaultForAZeroJournalCapacity(t *testing.T) {
 	}
 	if _, ok := registry.Lookup("memory"); !ok {
 		t.Fatal("entry did not load with the default capacity")
+	}
+}
+
+func TestWorkReachSaysAnAnyDirectoryEntryServesAnyDirectoryAndAPlainOneDoesNot(t *testing.T) {
+	path := writeConfig(t, `{"adapters": {"placed": {"type": "memory", "working_directory": "/base", "any_directory": true}, "fixed": {"type": "memory", "working_directory": "/fixed"}}}`)
+	registry, err := LoadRegistry(path, os.LookupEnv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reached := map[string]bool{}
+	for _, reach := range New(registry, Options{}).WorkReach(context.Background()) {
+		reached[reach.Name] = reach.AnyDirectory
+	}
+	if !reached["placed"] || reached["fixed"] {
+		t.Fatalf("any_directory reached %v", reached)
 	}
 }
 

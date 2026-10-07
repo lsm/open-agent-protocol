@@ -19,6 +19,7 @@ import (
 
 	base "github.com/lsm/open-agent-protocol/go/adapter"
 	"github.com/lsm/open-agent-protocol/go/binding"
+	"github.com/lsm/open-agent-protocol/go/internal/workwire"
 	"github.com/lsm/open-agent-protocol/go/protocol"
 	"github.com/lsm/open-agent-protocol/go/serve"
 	"github.com/lsm/open-agent-protocol/go/validation"
@@ -44,6 +45,7 @@ type Server struct {
 	holdFor     time.Duration
 	mu          sync.Mutex
 	held        map[protocol.SessionID]*heldSubscription
+	work        *workwire.Front
 }
 
 func New(hub *serve.Hub, options Options) (*Server, error) {
@@ -60,7 +62,7 @@ func New(hub *serve.Hub, options Options) (*Server, error) {
 		holdFor = DefaultSubscriptionHold
 	}
 	return &Server{hub: hub, schema: schema, allowHosts: allowHosts, holdFor: holdFor,
-		held: map[protocol.SessionID]*heldSubscription{}}, nil
+		held: map[protocol.SessionID]*heldSubscription{}, work: workwire.New(hub)}, nil
 }
 
 func (s *Server) Hub() *serve.Hub { return s.hub }
@@ -81,6 +83,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /sessions/{id}/cancel", s.handleCancel)
 	mux.HandleFunc("POST /sessions/{id}/settings", s.handleSettings)
 	mux.HandleFunc("POST /sessions/{id}/close", s.handleClose)
+	s.routeWork(mux)
 	var handler http.Handler = mux
 	if len(s.allowHosts) > 0 {
 		routed := handler
@@ -797,7 +800,7 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 func (s *Server) readRequest(w http.ResponseWriter, r *http.Request, want ...protocol.EnvelopeType) (protocol.Envelope, bool) {
 	mediaType, _, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
 	if err != nil || mediaType != "application/json" {
-		s.writeError(w, http.StatusUnsupportedMediaType, "unsupported_media_type", "the daemon requires Content-Type: application/json", protocol.Envelope{})
+		s.writeError(w, http.StatusUnsupportedMediaType, "unsupported_media_type", "a request with a body declares application/json; the daemon reads no other media type", protocol.Envelope{})
 		return protocol.Envelope{}, false
 	}
 	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxRequestBytes))

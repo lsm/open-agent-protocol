@@ -17,6 +17,26 @@ import (
 const openEnvelopeFields = `"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"session.open.request",`
 
 var hubParityScenarios = map[string][]string{
+	"the work verbs refuse what they cannot serve and list an empty hub": {
+		`{"id":2,"op":"work.list"}`,
+		`{"id":3,"op":"work.status","session_id":"absent"}`,
+		`{"id":4,"op":"work.read","session_id":"absent"}`,
+		`{"id":5,"op":"work.stop","session_id":"absent"}`,
+		`{"id":6,"op":"work.send","session_id":"absent","request":{"message":"hi"}}`,
+		`{"id":7,"op":"work.start","adapter":"memory","request":{}}`,
+		`{"id":8,"op":"work.start","adapter":"nope","request":{"message":"go"}}`,
+		`{"id":9,"op":"work.start","adapter":"memory","request":{"message":"go","directory":"/elsewhere"}}`,
+		`{"id":10,"op":"work.read","session_id":"absent","limit":0}`,
+		`{"id":11,"op":"work.list","request":{"bogus":true}}`,
+		`{"id":12,"op":"work.status"}`,
+		`{"id":13,"op":"work.send","session_id":"absent"}`,
+		`{"id":14,"op":"work.start","request":{"message":"go"}}`,
+		`{"id":16,"op":"work.list","session_id":"x"}`,
+		`{"id":17,"op":"work.read","session_id":"absent","after":-1}`,
+		`{"id":18,"op":"work.start","adapter":"memory","request":{"message":""}}`,
+		`{"id":19,"op":"work.send","session_id":"absent","request":"x"}`,
+		`{"id":20,"op":"work.capabilities"}`,
+	},
 	"the five ops this wire serves": {
 		`{"id":1,"op":"adapters"}`,
 		`{"id":2,"op":"sessions"}`,
