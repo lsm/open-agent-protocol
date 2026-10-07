@@ -41,7 +41,7 @@ sends its setting as the session's `compaction_policy` before each turn, when th
 endpoint advertises them; the TUI's attach link (`zig/src/tui/hub_link.zig`) sends
 the compaction to the hub's submit route and follows the run it starts, and the
 policy to its settings
-route. Resume refuses with `UnavailableOverOap` until its gap below closes. `oapx tui --attach URL` runs the
+route. `/resume` reopens the saved session over OAP: the TUI halts its execution and opens again with `reopen: true` under the saved session's id, and the `oapx` adapter, which advertises `session.open.reopen`, loads that transcript from `~/.oapx/sessions` into a fresh loop and reports the session recovered; a successful reopen closes the in-process session it left, and a refused one keeps it running. Over `--attach` the hub's `oapx` entry keeps no saved sessions yet, so it does not advertise `session.open.reopen` and a resume there is refused `unsupported_feature`. Reopening the session already open keeps it, unless the saved session's workspace differs from the one it opened with, which is refused. `oapx tui --attach URL` runs the
 same execution over a running hub's HTTP wire (`zig/src/tui/hub_link.zig`): each envelope
 goes to its route, and each run is followed on its own SSE stream replayed from its first
 event, read by polling the socket on the execution's pump thread. A model switch, which

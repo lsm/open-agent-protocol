@@ -11,7 +11,7 @@ const permission = @import("permission");
 const interactions = @import("interactions.zig");
 
 pub const endpoint_id = "oapx.agent";
-pub const capability_revision = "oapx-agent-v9";
+pub const capability_revision = "oapx-agent-v10";
 
 pub const journal_capacity: usize = 1 << 16;
 pub const queue_capacity: usize = 8;
@@ -20,7 +20,7 @@ const protocol_name = "open-agent-protocol";
 const protocol_version = "0.1";
 const profile = "open-agent-protocol.agent-control-core";
 
-const features = [_]contract.Feature{
+const unsaved_features = [_]contract.Feature{
     .{ .key = "protocol.initialize", .level = .native },
     .{ .key = "capabilities", .level = .native },
     .{ .key = "session.open", .level = .native },
@@ -47,6 +47,10 @@ const features = [_]contract.Feature{
     .{ .key = contract.feature_session_reasoning, .level = .native, .reason = "the agent loop's thinking level, at open and between runs; minimal, which the loop would run as low, is refused", .modes = &.{ contract.mode_session_open, contract.mode_session_live } },
 };
 
+const features = unsaved_features ++ [_]contract.Feature{
+    .{ .key = contract.feature_open_reopen, .level = .emulated, .reason = "loads the transcript of a session the terminal UI saved under ~/.oapx/sessions into a fresh loop; no run is resumed" },
+};
+
 pub const descriptor = contract.Descriptor{
     .endpoint = .{ .id = endpoint_id, .name = "oapx agent loop", .version = protocol_version, .adapter = "in-process" },
     .capability_revision = capability_revision,
@@ -54,9 +58,21 @@ pub const descriptor = contract.Descriptor{
     .limits = .{ .max_active_runs_per_session = queue_capacity + 1, .max_queued_runs_per_session = queue_capacity },
 };
 
+const unsaved_descriptor = contract.Descriptor{
+    .endpoint = descriptor.endpoint,
+    .capability_revision = capability_revision,
+    .features = &unsaved_features,
+    .limits = descriptor.limits,
+};
+
 fn wallClock() i64 {
     return compat.time.nowMillis();
 }
+
+pub const HistoryLoader = struct {
+    ctx: *anyopaque,
+    load: *const fn (ctx: *anyopaque, arena: std.mem.Allocator, session_id: []const u8) anyerror!?[]const ai_types.Message,
+};
 
 pub const TranscriptStore = struct {
     ctx: *anyopaque,
@@ -71,6 +87,7 @@ pub const Recorder = struct {
 pub const Adapter = struct {
     allocator: std.mem.Allocator,
     options: tui_runtime.TuiRuntimeOptions,
+    history: ?HistoryLoader = null,
     catalog: ?[]ai_types.Model = null,
     catalog_generation: u64 = 0,
     transcripts: ?TranscriptStore = null,
@@ -102,18 +119,36 @@ pub const Adapter = struct {
     }
 
     fn probe(ptr: *anyopaque, refusal: *contract.Refusal) contract.Failure!contract.Descriptor {
-        _ = ptr;
         _ = refusal;
-        return descriptor;
+        const self: *Adapter = @ptrCast(@alignCast(ptr));
+        return if (self.history != null) descriptor else unsaved_descriptor;
     }
 
     fn open(ptr: *anyopaque, arena: std.mem.Allocator, request: contract.OpenRequest, refusal: *contract.Refusal) contract.Failure!contract.Session {
-        _ = arena;
         const self: *Adapter = @ptrCast(@alignCast(ptr));
         if (request.participant.len == 0) return refusal.fail(error.InvalidSubmission, "open requires a non-empty participant id");
         if (contract.carriesEntries(request.tools_json)) return refusal.unsupported(contract.feature_tools_provide, contract.reason_unadvertised);
         if (contract.carriesEntries(request.tool_sources_json)) return refusal.unsupported(contract.feature_tool_sources_attach, contract.reason_unadvertised);
+        var saved: ?[]const ai_types.Message = null;
+        if (request.reopen) {
+            if (request.session_id.len == 0) return refusal.fail(error.UnknownSession, "a reopen names the session it reopens");
+            const loader = self.history orelse return refusal.unsupported(contract.feature_open_reopen, contract.reason_unadvertised);
+            saved = (loader.load(loader.ctx, arena, request.session_id) catch |err| switch (err) {
+                error.OutOfMemory => return error.OutOfMemory,
+                else => return refusal.fail(error.UnknownSession, "no saved session under that id could be read"),
+            }) orelse return refusal.fail(error.UnknownSession, "no saved session under that id");
+        }
         const session = try Session.create(self, request, refusal);
+        if (saved) |messages| {
+            session.runtime.replaceMessages(messages) catch |err| {
+                session.destroy();
+                return switch (err) {
+                    error.OutOfMemory => error.OutOfMemory,
+                    else => refusal.fail(error.BackendFailed, @errorName(err)),
+                };
+            };
+            session.recovered = true;
+        }
         return session.handle();
     }
 
@@ -176,6 +211,7 @@ pub const Session = struct {
     runtime: *tui_runtime.TuiRuntime,
     engine: ?*permission.PermissionEngine = null,
     updated_at_ms: i64,
+    recovered: bool = false,
     catalog_seen: u64 = 0,
     run: ?*Run = null,
     runs: std.ArrayList(*Run) = .empty,
@@ -553,6 +589,8 @@ pub const Session = struct {
             .reasoning_level = @tagName(self.runtime.thinkingLevel()),
             .compaction_policy_json = self.policy_json,
             .as_of = .{ .admitted_submit_requests = admitted.items, .settled = settled.items },
+            .recovered = self.recovered,
+            .recovery_reason = if (self.recovered) "the transcript was loaded from the terminal UI's saved session" else null,
         };
         if (self.live()) |run| {
             result.active_run_id = run.id;
@@ -3151,6 +3189,48 @@ test "a steer with no running loop to take it names why" {
     refusal = .{};
     try testing.expectError(error.InvalidSteerTarget, harness.steer("change course", finished.run_id, &refusal));
     try testing.expectEqualStrings("terminal", refusal.reason);
+}
+
+const SavedSessions = struct {
+    fn load(ctx: *anyopaque, arena: std.mem.Allocator, session_id: []const u8) anyerror!?[]const ai_types.Message {
+        _ = ctx;
+        if (!std.mem.eql(u8, session_id, "saved")) return null;
+        const messages = try arena.alloc(ai_types.Message, 1);
+        messages[0] = .{ .user = .{ .content = .{ .text = try arena.dupe(u8, "what the saved session asked") }, .timestamp = 0 } };
+        return messages;
+    }
+};
+
+fn advertisesReopen(owner: *Adapter) !bool {
+    var refusal = contract.Refusal{};
+    const described = try owner.adapter().probe(&refusal);
+    for (described.features) |feature| if (std.mem.eql(u8, feature.key, contract.feature_open_reopen)) return true;
+    return false;
+}
+
+test "a reopen is advertised only with saved sessions to load, loads the saved transcript into a fresh loop reported recovered, and an unknown one is refused" {
+    var script = Script{};
+    var harness: Harness = undefined;
+    try harness.init(&script);
+    defer harness.deinit();
+    const a = harness.arena.allocator();
+    var refusal = contract.Refusal{};
+    try testing.expect(!try advertisesReopen(&harness.owner));
+    try testing.expectError(error.UnsupportedFeature, harness.owner.adapter().open(a, .{ .participant = "user", .session_id = "saved", .reopen = true }, &refusal));
+    try testing.expectEqualStrings(contract.feature_open_reopen, refusal.feature);
+
+    var saved = SavedSessions{};
+    harness.owner.history = .{ .ctx = &saved, .load = SavedSessions.load };
+    try testing.expect(try advertisesReopen(&harness.owner));
+    const reopened = try harness.owner.adapter().open(a, .{ .participant = "user", .session_id = "saved", .reopen = true }, &refusal);
+    defer reopened.teardown();
+    const state = try reopened.state(a, &refusal);
+    try testing.expect(state.recovered);
+    try testing.expectEqualStrings("saved", state.session_id);
+    const session: *Session = @ptrCast(@alignCast(reopened.ptr));
+    try testing.expectEqual(@as(usize, 1), session.runtime.history().len);
+
+    try testing.expectError(error.UnknownSession, harness.owner.adapter().open(a, .{ .participant = "user", .session_id = "never", .reopen = true }, &refusal));
 }
 
 fn updateWith(harness: *Harness, extensions: []const u8, refusal: *contract.Refusal) contract.Failure!contract.Updated {

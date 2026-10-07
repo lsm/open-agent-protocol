@@ -62,6 +62,7 @@ pub const RemoteSettings = struct {
     output: agent.OutputSetting,
     permission_mode: PermissionMode,
     workspace_root: []const u8,
+    resume_session_id: ?[]const u8 = null,
 };
 
 pub const RemoteExecution = struct {
@@ -438,14 +439,7 @@ pub const TuiRuntime = struct {
     pub fn start(self: *TuiRuntime) !void {
         if (self.started) return;
         if (self.remote) |remote| {
-            try remote.vtable.start(remote.ctx, .{ .ctx = self, .push = pushRemote }, .{
-                .model = self.currentModel(),
-                .thinking_level = self.thinking_level,
-                .context_window = self.context_window,
-                .output = self.output,
-                .permission_mode = self.permission_mode,
-                .workspace_root = self.workspace_root,
-            });
+            try remote.vtable.start(remote.ctx, .{ .ctx = self, .push = pushRemote }, self.remoteSettings(null));
             self.started = true;
             return;
         }
@@ -663,6 +657,35 @@ pub const TuiRuntime = struct {
         return model_catalog.contextWindowIsReported(self.models[index]);
     }
 
+    fn remoteSettings(self: *TuiRuntime, resume_session_id: ?[]const u8) RemoteSettings {
+        return .{
+            .model = self.currentModel(),
+            .thinking_level = self.thinking_level,
+            .context_window = self.context_window,
+            .output = self.output,
+            .permission_mode = self.permission_mode,
+            .workspace_root = self.workspace_root,
+            .resume_session_id = resume_session_id,
+        };
+    }
+
+    pub fn reopenSaved(self: *TuiRuntime, session_id: []const u8, workspace_root: ?[]const u8) !void {
+        const remote = self.remote orelse return error.UnavailableOverOap;
+        if (self.stream_active) return error.AgentAlreadyStreaming;
+        if (self.started) {
+            remote.vtable.stop(remote.ctx);
+            self.started = false;
+        }
+        var settings = self.remoteSettings(session_id);
+        if (workspace_root) |root| settings.workspace_root = root;
+        remote.vtable.start(remote.ctx, .{ .ctx = self, .push = pushRemote }, settings) catch |err| {
+            self.started = err == error.OapReopenRefused;
+            return err;
+        };
+        if (workspace_root) |root| try self.adoptWorkspaceRoot(root);
+        self.started = true;
+    }
+
     fn openOverOap(self: *const TuiRuntime) bool {
         return self.remote != null and self.started;
     }
@@ -799,11 +822,7 @@ pub const TuiRuntime = struct {
         try self.tool_protocol.server.registerTools(self.wrapped_tools);
     }
 
-    pub fn setWorkspaceRoot(self: *TuiRuntime, root: []const u8) !void {
-        if (self.openOverOap()) try self.sendRemoteSetting(.{ .workspace_root = root });
-        if (self.local_agent) |*local| {
-            if (!local.isIdle()) return error.AgentAlreadyStreaming;
-        }
+    fn adoptWorkspaceRoot(self: *TuiRuntime, root: []const u8) !void {
         const owned = try self.allocator.dupe(u8, root);
         const owned_cwd = self.allocator.dupe(u8, root) catch |err| {
             self.allocator.free(owned);
@@ -814,6 +833,14 @@ pub const TuiRuntime = struct {
         self.workspace_root = owned;
         self.session_cwd = owned_cwd;
         if (self.permission_engine) |engine| try engine.setWorkspaceRoot(root);
+    }
+
+    pub fn setWorkspaceRoot(self: *TuiRuntime, root: []const u8) !void {
+        if (self.openOverOap()) try self.sendRemoteSetting(.{ .workspace_root = root });
+        if (self.local_agent) |*local| {
+            if (!local.isIdle()) return error.AgentAlreadyStreaming;
+        }
+        try self.adoptWorkspaceRoot(root);
         if (self.local_agent) |*local| {
             const system_prompt = try self.workspaceSystemPrompt();
             defer self.allocator.free(system_prompt);
