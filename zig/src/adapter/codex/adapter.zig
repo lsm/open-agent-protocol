@@ -86,9 +86,35 @@ pub const Adapter = struct {
     allocator: std.mem.Allocator,
     config: Config,
     ids: usize = 0,
+    reader: ?OneShot = null,
 
     pub fn init(allocator: std.mem.Allocator, config: Config) Adapter {
         return .{ .allocator = allocator, .config = config };
+    }
+
+    pub fn deinit(self: *Adapter) void {
+        if (self.reader) |*kept| kept.deinit();
+        self.* = undefined;
+    }
+
+    fn ask(self: *Adapter, arena: std.mem.Allocator, method: []const u8, params: std.json.ObjectMap, refusal: *contract.Refusal) contract.Failure!?std.json.Value {
+        const reused = self.reader != null;
+        if (self.reader == null) self.reader = try OneShot.open(self, arena, refusal);
+        if (self.reader.?.call(arena, method, params, refusal)) |answered| return answered else |err| {
+            if (!self.reader.?.broken) return err;
+            self.reader.?.deinit();
+            self.reader = null;
+            if (!reused) return err;
+        }
+        refusal.* = .{};
+        self.reader = try OneShot.open(self, arena, refusal);
+        return self.reader.?.call(arena, method, params, refusal) catch |err| {
+            if (self.reader.?.broken) {
+                self.reader.?.deinit();
+                self.reader = null;
+            }
+            return err;
+        };
     }
 
     pub fn adapter(self: *Adapter) contract.Adapter {
@@ -99,6 +125,7 @@ pub const Adapter = struct {
         transport: *process.Transport,
         config: Config,
         next_id: i64 = 1,
+        broken: bool = false,
 
         fn open(self: *Adapter, arena: std.mem.Allocator, refusal: *contract.Refusal) contract.Failure!OneShot {
             const config = self.config;
@@ -132,14 +159,14 @@ pub const Adapter = struct {
             shot.next_id += 1;
             const encoded = try std.json.Stringify.valueAlloc(arena, std.json.Value{ .object = params }, .{});
             const line = try std.fmt.allocPrint(arena, "{{\"jsonrpc\":\"2.0\",\"id\":{d},\"method\":\"{s}\",\"params\":{s}}}", .{ id, method, encoded });
-            shot.transport.write(line) catch return refusal.fail(error.BackendFailed, try std.fmt.allocPrint(arena, "the codex app-server closed before answering {s}", .{method}));
+            shot.transport.write(line) catch return shot.fail(refusal, error.BackendFailed, try std.fmt.allocPrint(arena, "the codex app-server closed before answering {s}", .{method}));
             const started = monotonic();
             while (monotonic() -| started < shot.config.request_timeout_ns) {
-                const polled = shot.transport.poll(shot.config.poll_ns) catch return refusal.fail(error.BackendFailed, "the codex app-server's answer could not be read");
+                const polled = shot.transport.poll(shot.config.poll_ns) catch return shot.fail(refusal, error.BackendFailed, "the codex app-server's answer could not be read");
                 const frame = switch (polled) {
                     .frame => |frame| frame,
                     .quiet => continue,
-                    .ended => return refusal.fail(error.BackendFailed, try std.fmt.allocPrint(arena, "the codex app-server exited before answering {s}", .{method})),
+                    .ended => return shot.fail(refusal, error.BackendFailed, try std.fmt.allocPrint(arena, "the codex app-server exited before answering {s}", .{method})),
                 };
                 const parsed = std.json.parseFromSliceLeaky(std.json.Value, arena, frame, .{}) catch continue;
                 if (parsed != .object) continue;
@@ -151,25 +178,26 @@ pub const Adapter = struct {
                 }
                 return parsed.object.get("result");
             }
-            return refusal.fail(error.BackendFailed, try std.fmt.allocPrint(arena, "the codex app-server did not answer {s} in time", .{method}));
+            return shot.fail(refusal, error.BackendFailed, try std.fmt.allocPrint(arena, "the codex app-server did not answer {s} in time", .{method}));
+        }
+
+        fn fail(shot: *OneShot, refusal: *contract.Refusal, err: contract.Failure, message: []const u8) contract.Failure {
+            shot.broken = true;
+            return refusal.fail(err, message);
         }
     };
 
     fn nativeList(ptr: *anyopaque, arena: std.mem.Allocator, request: contract.NativeListRequest, refusal: *contract.Refusal) contract.Failure![]const contract.NativeSession {
         const self: *Adapter = @ptrCast(@alignCast(ptr));
-        var shot = try OneShot.open(self, arena, refusal);
-        defer shot.deinit();
         const directory = if (request.directory.len > 0) request.directory else self.config.working_directory orelse "";
         var params = std.json.ObjectMap.empty;
         try params.put(arena, "limit", .{ .integer = @intCast(request.limit) });
         if (directory.len > 0) try params.put(arena, "cwd", .{ .string = directory });
-        return threadsOf(arena, try shot.call(arena, "thread/list", params, refusal));
+        return threadsOf(arena, try self.ask(arena, "thread/list", params, refusal));
     }
 
     fn nativeRead(ptr: *anyopaque, arena: std.mem.Allocator, request: contract.NativeReadRequest, refusal: *contract.Refusal) contract.Failure![]const contract.NativeTurn {
         const self: *Adapter = @ptrCast(@alignCast(ptr));
-        var shot = try OneShot.open(self, arena, refusal);
-        defer shot.deinit();
         var found: std.ArrayList(contract.NativeTurn) = .empty;
         var cursor: []const u8 = "";
         const pages_max = request.max_turns / turn_page + 2;
@@ -181,7 +209,7 @@ pub const Adapter = struct {
             try params.put(arena, "sortDirection", .{ .string = "asc" });
             try params.put(arena, "limit", .{ .integer = @intCast(turn_page) });
             if (cursor.len > 0) try params.put(arena, "cursor", .{ .string = cursor });
-            const page = try shot.call(arena, "thread/turns/list", params, refusal) orelse break;
+            const page = try self.ask(arena, "thread/turns/list", params, refusal) orelse break;
             try turnsOf(arena, page, &found);
             if (found.items.len >= request.max_turns) break;
             cursor = if (page == .object) textOf(page, "nextCursor") else "";
@@ -957,6 +985,7 @@ const Probe = struct {
 
     fn deinit(self: *Probe) void {
         if (self.handle) |opened| opened.teardown();
+        self.adapter.deinit();
         self.arena.deinit();
         self.fake.deinit(testing.allocator);
     }
@@ -1489,6 +1518,59 @@ test "a thread/turns/list page becomes the user message and final reply of each 
     try std.testing.expectEqualStrings("one", found.items[1].text);
     try std.testing.expectEqual(@as(i64, 1791311075000), found.items[1].at_ms);
     try std.testing.expectEqualStrings("again", found.items[2].text);
+}
+
+const reader_script_head =
+    \\#!/bin/sh
+    \\d="$(dirname "$0")"
+    \\n=$(cat "$d/spawns" 2>/dev/null || echo 0); n=$((n+1)); echo $n > "$d/spawns"
+    \\take() { IFS= read -r line || exit 0; }
+    \\take; printf '{"id":0,"result":{}}\n'
+    \\take
+    \\
+;
+
+fn listedId(adapter: *Adapter, arena: std.mem.Allocator, refusal: *contract.Refusal) ![]const u8 {
+    const listed = try adapter.adapter().nativeList(arena, .{ .directory = "/w" }, refusal).?;
+    return listed[0].native_id;
+}
+
+test "native lists and reads reuse one codex app-server, and one that died is started again for the call that found it gone" {
+    var fake = try FakeCodex.init(testing.allocator, reader_script_head ++
+        \\take; id=$(printf '%s' "$line" | sed -n 's/.*"id":\([0-9]*\),.*/\1/p')
+        \\printf '{"id":%s,"result":{"data":[{"id":"spawn-%s"}]}}\n' "$id" "$n"
+        \\take; id=$(printf '%s' "$line" | sed -n 's/.*"id":\([0-9]*\),.*/\1/p')
+        \\printf '{"id":%s,"result":{"data":[{"id":"spawn-%s"}]}}\n' "$id" "$n"
+        \\
+    );
+    defer fake.deinit(testing.allocator);
+    var adapter = Adapter.init(testing.allocator, fake.config());
+    defer adapter.deinit();
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var refusal = contract.Refusal{};
+    try testing.expectEqualStrings("spawn-1", try listedId(&adapter, arena.allocator(), &refusal));
+    try testing.expectEqualStrings("spawn-1", try listedId(&adapter, arena.allocator(), &refusal));
+    try testing.expectEqualStrings("spawn-2", try listedId(&adapter, arena.allocator(), &refusal));
+}
+
+test "a codex app-server that refuses a call is kept for the next one" {
+    var fake = try FakeCodex.init(testing.allocator, reader_script_head ++
+        \\take; id=$(printf '%s' "$line" | sed -n 's/.*"id":\([0-9]*\),.*/\1/p')
+        \\printf '{"id":%s,"error":{"code":-32600,"message":"no such thread"}}\n' "$id"
+        \\while take; do id=$(printf '%s' "$line" | sed -n 's/.*"id":\([0-9]*\),.*/\1/p'); printf '{"id":%s,"result":{"data":[{"id":"spawn-%s"}]}}\n' "$id" "$n"; done
+        \\
+    );
+    defer fake.deinit(testing.allocator);
+    var adapter = Adapter.init(testing.allocator, fake.config());
+    defer adapter.deinit();
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var refusal = contract.Refusal{};
+    try testing.expectError(error.BackendFailed, listedId(&adapter, arena.allocator(), &refusal));
+    try testing.expectEqualStrings("codex thread/list refused: no such thread", refusal.message);
+    refusal = .{};
+    try testing.expectEqualStrings("spawn-1", try listedId(&adapter, arena.allocator(), &refusal));
 }
 
 test "a thread/list answer becomes native sessions, titled by name or the preview's first line" {

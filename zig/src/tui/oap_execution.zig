@@ -182,6 +182,7 @@ pub const OapExecution = struct {
         .compactable = compactable,
         .compact = compact,
         .set_compaction_policy = setCompactionPolicy,
+        .set_settings = setSettings,
         .decide_approval = decideApproval,
         .follow_up = followUp,
         .steer = steer,
@@ -659,6 +660,35 @@ pub const OapExecution = struct {
         _ = try self.enqueue(a, "session.settings.update.request", "settings", payload.value(), null);
     }
 
+    fn setSettings(ctx: *anyopaque, level: ai_types.ThinkingLevel, settings_json: []const u8) anyerror!void {
+        const self = cast(ctx);
+        if (!self.live_reasoning or self.hub != null) return error.UnavailableOverOap;
+        if (self.turn_open.load(.acquire) or queuedCount(ctx) > 0) return error.RunInProgress;
+        var scratch = std.heap.ArenaAllocator.init(self.allocator);
+        defer scratch.deinit();
+        const a = scratch.allocator();
+        var payload = Map.init(a);
+        try payload.put("session_id", .{ .string = self.session_id });
+        try payload.put("reasoning_level", .{ .string = @tagName(level) });
+        const id = try self.reserveId(a, "settings");
+        var map = Map.init(a);
+        try map.put("protocol", .{ .string = protocol_name });
+        try map.put("version", .{ .string = protocol_version });
+        try map.put("profile", .{ .string = profile });
+        try map.put("type", .{ .string = "session.settings.update.request" });
+        try map.put("id", .{ .string = id });
+        if (self.revision.len > 0) try map.put("capability_revision", .{ .string = self.revision });
+        if (self.session_id.len > 0) try map.put("session_id", .{ .string = self.session_id });
+        try map.put("extensions", try std.json.parseFromSliceLeaky(std.json.Value, a, settings_json, .{}));
+        try map.put("payload", payload.value());
+        const line = try json_encode.valueAlloc(a, map.value());
+        const owned = try self.allocator.dupe(u8, line);
+        errdefer self.allocator.free(owned);
+        self.lockInbound();
+        defer self.inbound_mutex.unlock();
+        try self.inbound.append(self.allocator, owned);
+    }
+
     fn compacts(ctx: *anyopaque) bool {
         return cast(ctx).live_compaction;
     }
@@ -911,6 +941,26 @@ pub const OapExecution = struct {
         sink.push(sink.ctx, event);
     }
 
+    fn toolEnd(self: *OapExecution, body: std.json.ObjectMap, result: []const u8, failed: bool) !TuiEvent {
+        var call_id = try self.ownedText(stringOf(body, "tool_call_id") orelse "");
+        errdefer call_id.deinit(self.allocator);
+        var name = try self.ownedText(stringOf(body, "name") orelse "");
+        errdefer name.deinit(self.allocator);
+        const result_json = try self.ownedText(result);
+        return .{ .tool_execution_end = .{ .tool_call_id = call_id, .tool_name = name, .result_json = result_json, .is_error = failed } };
+    }
+
+    fn toolResultMessage(self: *OapExecution, body: std.json.ObjectMap, details: []const u8, message: []const u8) !TuiEvent {
+        var call_id = try self.ownedText(stringOf(body, "tool_call_id") orelse "");
+        errdefer call_id.deinit(self.allocator);
+        var name = try self.ownedText(stringOf(body, "name") orelse "");
+        errdefer name.deinit(self.allocator);
+        var details_json = try self.ownedText(details);
+        errdefer details_json.deinit(self.allocator);
+        const text = try self.ownedText(message);
+        return .{ .message_end = .{ .role = .tool_result, .text = text, .tool_call_id = call_id, .tool_name = name, .details_json = details_json, .is_error = true } };
+    }
+
     fn ownedText(self: *OapExecution, text: []const u8) !OwnedSlice(u8) {
         return OwnedSlice(u8).initOwned(try self.allocator.dupe(u8, text));
     }
@@ -1089,17 +1139,27 @@ pub const OapExecution = struct {
         }
         if (std.mem.eql(u8, kind, "action.call.completed") or std.mem.eql(u8, kind, "action.call.failed")) {
             const failed = std.mem.eql(u8, kind, "action.call.failed");
-            const result = if (failed)
-                try jsonText(self.allocator, if (body.get("error")) |value| (if (value == .object) value.object.get("message") else null) else null)
+            const failure: ?std.json.ObjectMap = if (!failed) null else if (body.get("error")) |value| (if (value == .object) value.object else null) else null;
+            const details: ?std.json.Value = if (failure) |held| held.get("details") else null;
+            const message = try jsonText(self.allocator, if (failure) |held| held.get("message") else null);
+            defer self.allocator.free(message);
+            const result = if (!failed)
+                try jsonText(self.allocator, body.get("result"))
+            else if (details) |held|
+                try jsonText(self.allocator, held)
             else
-                try jsonText(self.allocator, body.get("result"));
+                try self.allocator.dupe(u8, message);
             defer self.allocator.free(result);
-            var call_id = try self.ownedText(stringOf(body, "tool_call_id") orelse "");
-            errdefer call_id.deinit(self.allocator);
-            var name = try self.ownedText(stringOf(body, "name") orelse "");
-            errdefer name.deinit(self.allocator);
-            const result_json = try self.ownedText(result);
-            self.deliver(.{ .tool_execution_end = .{ .tool_call_id = call_id, .tool_name = name, .result_json = result_json, .is_error = failed } });
+            var ended = try self.toolEnd(body, result, failed);
+            if (details == null) {
+                self.deliver(ended);
+                return;
+            }
+            errdefer ended.deinit(self.allocator);
+            const shown = try self.toolResultMessage(body, result, message);
+            self.deliver(ended);
+            self.deliver(.{ .message_start = .{ .role = .tool_result } });
+            self.deliver(shown);
             return;
         }
         if (std.mem.eql(u8, kind, "run.completed") or std.mem.eql(u8, kind, "run.failed") or std.mem.eql(u8, kind, "run.cancelled")) {
@@ -1376,6 +1436,7 @@ const Script = struct {
     hold_first: bool = false,
     released: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
     last_thinking: ai_types.ThinkingLevel = .off,
+    last_max_tokens: ?u32 = null,
 };
 
 fn scriptedMessage(allocator: std.mem.Allocator, text: []const u8, reason: ai_types.StopReason) !ai_types.AssistantMessage {
@@ -1432,6 +1493,7 @@ fn scriptedStream(ctx: ?*anyopaque, model: ai_types.Model, context: ai_types.Con
     _ = context;
     const script: *Script = @ptrCast(@alignCast(ctx.?));
     script.last_thinking = options.thinking_level;
+    script.last_max_tokens = options.max_tokens;
     script.calls += 1;
     if (script.hold_first and script.calls == 1) {
         var waits: usize = 0;
@@ -1809,7 +1871,7 @@ test "a submit the endpoint cannot frame ends the turn in an error instead of le
     try testing.expectEqual(@as(?tui_session.TuiEndReason, .completed), next.end);
 }
 
-test "once a session over OAP is open, settings the protocol cannot carry are refused rather than changed locally" {
+test "settings changed on an open OAP session reach the endpoint and the next run, not only the terminal's own state" {
     var script = Script{};
     var execution: *OapExecution = undefined;
     var runtime = try remoteRuntime(&script, &execution, .low);
@@ -1818,17 +1880,34 @@ test "once a session over OAP is open, settings the protocol cannot carry are re
 
     try runtime.setThinkingLevel(.high);
     try runtime.start();
-    try testing.expectError(error.UnavailableOverOap, runtime.setPermissionMode(.ask));
-    try testing.expectError(error.UnavailableOverOap, runtime.setContextWindow(4096));
-    try testing.expectError(error.UnavailableOverOap, runtime.setOutput(.max));
-    try testing.expectError(error.UnavailableOverOap, runtime.setWorkspaceRoot("/elsewhere"));
-    try testing.expectEqual(tui_runtime.PermissionMode.bypass, runtime.permissionMode());
+    try runtime.setPermissionMode(.ask);
+    try runtime.setContextWindow(4096);
+    try runtime.setOutput(.{ .tokens = 512 });
+    try testing.expectEqual(tui_runtime.PermissionMode.ask, runtime.permissionMode());
+    try testing.expectEqual(@as(?u32, 4096), runtime.contextWindowOverride());
 
     try runtime.submitTurn("go");
     var seen = Seen{};
     defer seen.deinit();
     try drainTurn(&runtime, &seen);
     try testing.expectEqual(ai_types.ThinkingLevel.high, script.last_thinking);
+    try testing.expectEqual(@as(?u32, 512), script.last_max_tokens);
+}
+
+test "a setting change over OAP is refused when the session cannot take a live settings update" {
+    var script = Script{};
+    var execution: *OapExecution = undefined;
+    var runtime = try remoteRuntime(&script, &execution, .low);
+    defer execution.destroy();
+    defer runtime.deinit();
+
+    try runtime.start();
+    execution.live_reasoning = false;
+    try testing.expectError(error.UnavailableOverOap, runtime.setPermissionMode(.ask));
+    try testing.expectError(error.UnavailableOverOap, runtime.setContextWindow(4096));
+    try testing.expectError(error.UnavailableOverOap, runtime.setOutput(.max));
+    try testing.expectError(error.UnavailableOverOap, runtime.setWorkspaceRoot("/elsewhere"));
+    try testing.expectEqual(tui_runtime.PermissionMode.bypass, runtime.permissionMode());
 }
 
 test "a thinking level changed on an open OAP session reaches the next run through a live settings update" {
@@ -1947,6 +2026,64 @@ test "in ask mode over OAP a denied tool call never runs and the turn still ends
     try testing.expectEqual(@as(?tui_session.TuiEndReason, .completed), outcome.end);
     try testing.expectEqual(@as(usize, 1), outcome.approvals);
     try testing.expectEqual(@as(usize, 0), outcome.ran);
+}
+
+fn failedCallEvents(allocator: std.mem.Allocator) !void {
+    var execution = OapExecution{ .allocator = allocator };
+    const parsed = try std.json.parseFromSlice(std.json.Value, allocator, "{\"tool_call_id\":\"call-1\",\"name\":\"echo_tool\"}", .{});
+    defer parsed.deinit();
+    var ended = try execution.toolEnd(parsed.value.object, "{\"rejected\":true}", true);
+    defer ended.deinit(allocator);
+    var shown = try execution.toolResultMessage(parsed.value.object, "{\"rejected\":true}", "Tool execution rejected by user");
+    defer shown.deinit(allocator);
+}
+
+test "a failed call's events free what they built at every allocation that fails" {
+    try std.testing.checkAllAllocationFailures(std.heap.smp_allocator, failedCallEvents, .{});
+}
+
+test "a denied call over OAP shows the loop's own result text beside its details, as the local loop shows it" {
+    var script = Script{ .tool_first = true };
+    const models = [_]ai_types.Model{scripted_model};
+    const execution = try OapExecution.create(testing.allocator, .{
+        .protocol = .{ .stream_fn = scriptedStream, .ctx = &script },
+        .models = &models,
+        .initial_model_id = scripted_model.id,
+        .tools = &echo_tools,
+    });
+    defer execution.destroy();
+    var runtime = try tui_runtime.TuiRuntime.init(testing.allocator, .{
+        .models = &models,
+        .initial_model_id = scripted_model.id,
+        .remote = execution.remote(),
+    });
+    defer runtime.deinit();
+    try runtime.setPermissionMode(.ask);
+
+    try runtime.submitTurn("use the tool");
+    var details_seen = false;
+    var text_seen = false;
+    var ended = false;
+    var waits: usize = 0;
+    while (!ended and waits < 5000) : (waits += 1) {
+        while (runtime.streamEvents().poll()) |event| {
+            var owned_event = event;
+            defer owned_event.deinit(testing.allocator);
+            switch (owned_event) {
+                .tool_approval_requested => |payload| try runtime.decideToolApproval(payload.tool_call_id.slice(), .reject),
+                .tool_execution_end => |payload| details_seen = payload.is_error and std.mem.eql(u8, payload.result_json.slice(), "{\"rejected\":true}"),
+                .message_end => |payload| if (payload.role == .tool_result) {
+                    text_seen = payload.is_error and std.mem.eql(u8, payload.text.slice(), "Tool execution rejected by user") and std.mem.eql(u8, payload.tool_call_id.slice(), "call-1");
+                },
+                .agent_end => ended = true,
+                else => {},
+            }
+        }
+        if (!ended) std.testing.io.sleep(.fromNanoseconds(std.time.ns_per_ms), .boot) catch {};
+    }
+    try testing.expect(ended);
+    try testing.expect(details_seen);
+    try testing.expect(text_seen);
 }
 
 test "a switch to a model the OAP session does not list is refused before the app's selection moves" {

@@ -88,6 +88,7 @@ pub const TuiEvent = union(enum) {
         estimated_returned_tokens: u64 = 0,
         artifact_count: u32 = 0,
         artifact_refs: OwnedSlice(u8) = OwnedSlice(u8).initBorrowed(""),
+        result_text: OwnedSlice(u8) = OwnedSlice(u8).initBorrowed(""),
     },
     context_usage: struct {
         generation: u32 = 0,
@@ -288,11 +289,14 @@ pub const TuiEvent = union(enum) {
                 const result_json = try allocator.dupe(u8, p.result_json.slice());
                 errdefer allocator.free(result_json);
                 const artifact_refs = try allocator.dupe(u8, p.artifact_refs.slice());
+                errdefer allocator.free(artifact_refs);
+                const result_text = try allocator.dupe(u8, p.result_text.slice());
 
                 p.tool_call_id = OwnedSlice(u8).initOwned(tool_call_id);
                 p.tool_name = OwnedSlice(u8).initOwned(tool_name);
                 p.result_json = OwnedSlice(u8).initOwned(result_json);
                 p.artifact_refs = OwnedSlice(u8).initOwned(artifact_refs);
+                p.result_text = OwnedSlice(u8).initOwned(result_text);
             },
             .system_warning => |*p| p.message = OwnedSlice(u8).initOwned(try allocator.dupe(u8, p.message.slice())),
             .compaction_end => |*p| {
@@ -349,6 +353,7 @@ pub const TuiEvent = union(enum) {
                 p.tool_name.deinit(allocator);
                 p.result_json.deinit(allocator);
                 p.artifact_refs.deinit(allocator);
+                p.result_text.deinit(allocator);
             },
             .system_warning => |*p| p.message.deinit(allocator),
             .compaction_end => |*p| {
