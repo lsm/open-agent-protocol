@@ -182,6 +182,7 @@ pub const OapExecution = struct {
         .compactable = compactable,
         .compact = compact,
         .set_compaction_policy = setCompactionPolicy,
+        .set_settings = setSettings,
         .decide_approval = decideApproval,
         .follow_up = followUp,
         .steer = steer,
@@ -657,6 +658,35 @@ pub const OapExecution = struct {
         try payload.put("session_id", .{ .string = self.session_id });
         try payload.put("reasoning_level", .{ .string = @tagName(level) });
         _ = try self.enqueue(a, "session.settings.update.request", "settings", payload.value(), null);
+    }
+
+    fn setSettings(ctx: *anyopaque, level: ai_types.ThinkingLevel, settings_json: []const u8) anyerror!void {
+        const self = cast(ctx);
+        if (!self.live_reasoning or self.hub != null) return error.UnavailableOverOap;
+        if (self.turn_open.load(.acquire) or queuedCount(ctx) > 0) return error.RunInProgress;
+        var scratch = std.heap.ArenaAllocator.init(self.allocator);
+        defer scratch.deinit();
+        const a = scratch.allocator();
+        var payload = Map.init(a);
+        try payload.put("session_id", .{ .string = self.session_id });
+        try payload.put("reasoning_level", .{ .string = @tagName(level) });
+        const id = try self.reserveId(a, "settings");
+        var map = Map.init(a);
+        try map.put("protocol", .{ .string = protocol_name });
+        try map.put("version", .{ .string = protocol_version });
+        try map.put("profile", .{ .string = profile });
+        try map.put("type", .{ .string = "session.settings.update.request" });
+        try map.put("id", .{ .string = id });
+        if (self.revision.len > 0) try map.put("capability_revision", .{ .string = self.revision });
+        if (self.session_id.len > 0) try map.put("session_id", .{ .string = self.session_id });
+        try map.put("extensions", try std.json.parseFromSliceLeaky(std.json.Value, a, settings_json, .{}));
+        try map.put("payload", payload.value());
+        const line = try json_encode.valueAlloc(a, map.value());
+        const owned = try self.allocator.dupe(u8, line);
+        errdefer self.allocator.free(owned);
+        self.lockInbound();
+        defer self.inbound_mutex.unlock();
+        try self.inbound.append(self.allocator, owned);
     }
 
     fn compacts(ctx: *anyopaque) bool {
@@ -1376,6 +1406,7 @@ const Script = struct {
     hold_first: bool = false,
     released: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
     last_thinking: ai_types.ThinkingLevel = .off,
+    last_max_tokens: ?u32 = null,
 };
 
 fn scriptedMessage(allocator: std.mem.Allocator, text: []const u8, reason: ai_types.StopReason) !ai_types.AssistantMessage {
@@ -1432,6 +1463,7 @@ fn scriptedStream(ctx: ?*anyopaque, model: ai_types.Model, context: ai_types.Con
     _ = context;
     const script: *Script = @ptrCast(@alignCast(ctx.?));
     script.last_thinking = options.thinking_level;
+    script.last_max_tokens = options.max_tokens;
     script.calls += 1;
     if (script.hold_first and script.calls == 1) {
         var waits: usize = 0;
@@ -1809,7 +1841,7 @@ test "a submit the endpoint cannot frame ends the turn in an error instead of le
     try testing.expectEqual(@as(?tui_session.TuiEndReason, .completed), next.end);
 }
 
-test "once a session over OAP is open, settings the protocol cannot carry are refused rather than changed locally" {
+test "settings changed on an open OAP session reach the endpoint and the next run, not only the terminal's own state" {
     var script = Script{};
     var execution: *OapExecution = undefined;
     var runtime = try remoteRuntime(&script, &execution, .low);
@@ -1818,17 +1850,34 @@ test "once a session over OAP is open, settings the protocol cannot carry are re
 
     try runtime.setThinkingLevel(.high);
     try runtime.start();
-    try testing.expectError(error.UnavailableOverOap, runtime.setPermissionMode(.ask));
-    try testing.expectError(error.UnavailableOverOap, runtime.setContextWindow(4096));
-    try testing.expectError(error.UnavailableOverOap, runtime.setOutput(.max));
-    try testing.expectError(error.UnavailableOverOap, runtime.setWorkspaceRoot("/elsewhere"));
-    try testing.expectEqual(tui_runtime.PermissionMode.bypass, runtime.permissionMode());
+    try runtime.setPermissionMode(.ask);
+    try runtime.setContextWindow(4096);
+    try runtime.setOutput(.{ .tokens = 512 });
+    try testing.expectEqual(tui_runtime.PermissionMode.ask, runtime.permissionMode());
+    try testing.expectEqual(@as(?u32, 4096), runtime.contextWindowOverride());
 
     try runtime.submitTurn("go");
     var seen = Seen{};
     defer seen.deinit();
     try drainTurn(&runtime, &seen);
     try testing.expectEqual(ai_types.ThinkingLevel.high, script.last_thinking);
+    try testing.expectEqual(@as(?u32, 512), script.last_max_tokens);
+}
+
+test "a setting change over OAP is refused when the session cannot take a live settings update" {
+    var script = Script{};
+    var execution: *OapExecution = undefined;
+    var runtime = try remoteRuntime(&script, &execution, .low);
+    defer execution.destroy();
+    defer runtime.deinit();
+
+    try runtime.start();
+    execution.live_reasoning = false;
+    try testing.expectError(error.UnavailableOverOap, runtime.setPermissionMode(.ask));
+    try testing.expectError(error.UnavailableOverOap, runtime.setContextWindow(4096));
+    try testing.expectError(error.UnavailableOverOap, runtime.setOutput(.max));
+    try testing.expectError(error.UnavailableOverOap, runtime.setWorkspaceRoot("/elsewhere"));
+    try testing.expectEqual(tui_runtime.PermissionMode.bypass, runtime.permissionMode());
 }
 
 test "a thinking level changed on an open OAP session reaches the next run through a live settings update" {
