@@ -246,3 +246,32 @@ func TestACallerThatGivesUpLeavesTheKeptAppServerRunning(t *testing.T) {
 		t.Fatalf("a call past its caller's deadline answered %v without timing out", err)
 	}
 }
+
+func TestAKeptAppServerThatNeverInitializesGivesUpAtTheCallsDeadline(t *testing.T) {
+	implementation, err := New(Config{WorkingDirectory: "/work", Factory: ClientFactoryFunc(func(ctx context.Context) (Client, error) {
+		<-ctx.Done()
+		return nil, ctx.Err()
+	})})
+	if err != nil {
+		t.Fatal(err)
+	}
+	answered := make(chan error, 2)
+	go func() {
+		for range 2 {
+			ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+			_, err := implementation.NativeList(ctx, adapter.NativeListRequest{Limit: 1})
+			cancel()
+			answered <- err
+		}
+	}()
+	for range 2 {
+		select {
+		case err := <-answered:
+			if err == nil {
+				t.Fatal("an app-server that never initialized listed")
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatal("a start that never initialized held the kept app-server past the call's deadline")
+		}
+	}
+}

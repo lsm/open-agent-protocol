@@ -84,7 +84,7 @@ func (implementation *Adapter) ask(ctx context.Context, method string, params an
 }
 
 func (implementation *Adapter) startKept(ctx context.Context) (Client, error) {
-	client, err := implementation.config.Factory.Start(context.WithoutCancel(ctx))
+	client, err := implementation.config.Factory.Start(ctx)
 	if err != nil {
 		return nil, err
 	}
