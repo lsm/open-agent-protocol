@@ -60,7 +60,7 @@ func (f processClientFactory) List(ctx context.Context, limit int) (json.RawMess
 		kept.bridge = bridge
 	}
 	answered, err := listOn(ctx, kept.bridge.ClientHandle(), limit)
-	if err == nil || !gatewayBroken(kept.bridge, err) {
+	if err == nil || ctx.Err() != nil || !gatewayBroken(kept.bridge, err) {
 		return answered, err
 	}
 	_ = kept.bridge.Close(context.Background())
@@ -74,7 +74,7 @@ func (f processClientFactory) List(ctx context.Context, limit int) (json.RawMess
 	}
 	kept.bridge = bridge
 	answered, err = listOn(ctx, bridge.ClientHandle(), limit)
-	if err != nil && gatewayBroken(bridge, err) {
+	if err != nil && ctx.Err() == nil && gatewayBroken(bridge, err) {
 		_ = bridge.Close(context.Background())
 		kept.bridge = nil
 	}
