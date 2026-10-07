@@ -54,6 +54,7 @@ pub fn compact(arena: std.mem.Allocator, text: []const u8) std.mem.Allocator.Err
 const Definition = struct {
     cancel: bool = false,
     admission_rejected: bool = false,
+    delivery: []const u8 = "auto",
     catalog: []const u8 = "",
 };
 
@@ -65,6 +66,7 @@ fn definitionOf(scratch: std.mem.Allocator, text: []const u8) !Definition {
     if (parsed.object.get("cancel")) |value| definition.cancel = value == .bool and value.bool;
     if (parsed.object.get("admission_rejected")) |value| definition.admission_rejected = value == .bool and value.bool;
     if (adapter_corpus.stringMember(parsed.object, "catalog")) |name| definition.catalog = name;
+    if (adapter_corpus.stringMember(parsed.object, "delivery")) |delivery| definition.delivery = delivery;
     return definition;
 }
 
@@ -186,7 +188,10 @@ fn play(arena: *std.heap.ArenaAllocator, id: []const u8, definition: Definition,
     fake.* = .{ .rejected = definition.admission_rejected };
     var reducer = session.Reducer.init(arena, .{ .native_id = native_session, .message_prefix = "msg_fake" }, fake.client());
     try reducer.open();
-    const admission = try reducer.submit("session", "hello", "auto");
+    const admission = try reducer.submit("session", "hello", definition.delivery);
+    if (std.mem.eql(u8, definition.delivery, "queue") and (!std.mem.eql(u8, admission.admission, "queued") or !std.mem.eql(u8, admission.effective_delivery, "queue"))) {
+        return error.QueueWasNotQueued;
+    }
     if (definition.admission_rejected and (!std.mem.eql(u8, admission.admission, "queued") or !std.mem.eql(u8, admission.effective_delivery, "queue") or admission.run_id.len == 0)) {
         return error.ConflictWasNotAReservation;
     }
@@ -404,7 +409,11 @@ fn runCase(allocator: std.mem.Allocator, registry: *const jsonschema.Registry, g
     }
 
     if (played.prompts.len != 1) return error.PromptNotSentOnce;
-    try expectRequest(try goldens.request("prompt"), try httpapi.prompt(scratch, authorized(goldens), native_session, played.prompts[0]));
+    var sent = played.prompts[0];
+    const queued = std.mem.eql(u8, definition.delivery, "queue");
+    try testing.expectEqualStrings(if (queued) "queue" else "steer", sent.delivery);
+    sent.delivery = "steer";
+    try expectRequest(try goldens.request("prompt"), try httpapi.prompt(scratch, authorized(goldens), native_session, sent));
     return .{ .emitted = played.envelopes.len, .exact = exact };
 }
 

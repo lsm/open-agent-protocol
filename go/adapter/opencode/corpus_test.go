@@ -71,6 +71,7 @@ type opencodeCorpusCase struct {
 	ReplayAfter       *uint64            `json:"replay_after,omitempty"`
 	Cancel            bool               `json:"cancel,omitempty"`
 	AdmissionRejected bool               `json:"admission_rejected,omitempty"`
+	Delivery          string             `json:"delivery,omitempty"`
 
 	Catalog string `json:"catalog,omitempty"`
 }
@@ -172,7 +173,11 @@ func runOpenCodeCorpusCase(t *testing.T, root string, entry opencodeCorpusCaseEn
 	}
 	adaptertest.AssertDescriptor(t, descriptor)
 	session := adaptertest.AssertInitialState(t, implementation, base.OpenRequest{SessionID: "session", Participant: protocol.Participant{ID: "user"}})
-	response, stream, submitErr := session.Submit(context.Background(), base.SubmitRequest{Request: protocol.MessageSubmitRequest{SessionID: "session", Delivery: protocol.DeliveryAuto, Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("hello")}}}})
+	delivery := protocol.DeliveryAuto
+	if definition.Delivery != "" {
+		delivery = protocol.RequestedDeliveryMode(definition.Delivery)
+	}
+	response, stream, submitErr := session.Submit(context.Background(), base.SubmitRequest{Request: protocol.MessageSubmitRequest{SessionID: "session", Delivery: delivery, Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("hello")}}}})
 	if submitErr != nil {
 		t.Fatal(submitErr)
 	}
@@ -181,6 +186,9 @@ func runOpenCodeCorpusCase(t *testing.T, root string, entry opencodeCorpusCaseEn
 		if !response.Accepted || response.Admission != protocol.AdmissionQueued || response.EffectiveDelivery != protocol.EffectiveDeliveryQueue || response.RunID == "" {
 			t.Fatalf("conflict reservation = %+v", response)
 		}
+	}
+	if delivery == protocol.DeliveryQueue && (response.Admission != protocol.AdmissionQueued || response.EffectiveDelivery != protocol.EffectiveDeliveryQueue) {
+		t.Fatalf("queue submission was admitted %+v", response)
 	}
 	admission := response
 	client.mu.Lock()
