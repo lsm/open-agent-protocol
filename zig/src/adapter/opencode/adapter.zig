@@ -17,7 +17,7 @@ const reopen_support_reason = "GET /api/session/:id attaches to the bound server
 const reopen_recovery_reason = "OpenCode attached to the bound server session and reports the model it records; OAP runs and cursors remain process-local";
 
 const features = [_]contract.Feature{
-    .{ .key = "action.permissions", .level = .unavailable, .reason = "permission.asked travels only on the volatile global event stream and is not served" },
+    .{ .key = "action.permissions", .level = .native, .reason = "permission.asked for a tool call becomes action.permission.requested, answered once, always or reject through POST /api/session/:id/permission/:requestID/reply" },
     .{ .key = "action.tools", .level = .native, .reason = "tool.called/progress/success/failed lifecycle observed natively" },
     .{ .key = "action.tools.execute", .level = .unavailable, .reason = "tools execute server-side; no client-hosted execution surface" },
     .{ .key = "capabilities", .level = .emulated, .reason = "descriptor synthesized from the pinned route inventory" },
@@ -292,12 +292,13 @@ pub const Session = struct {
         self.reducer = session.Reducer.init(reducer_arena, .{
             .session_id = id,
             .native_id = info.id,
+            .participant = try own.dupe(u8, request.participant),
             .model = try session.normalizeModel(own, info.model),
             .revision = capability_revision,
             .counter = &owner.ids,
             .message_prefix = &owner.message_prefix,
             .now_ms = wallClock,
-        }, .{ .context = self, .prompt = prompt, .interrupt = interrupt, .cancel_inbox = cancelInbox });
+        }, .{ .context = self, .prompt = prompt, .interrupt = interrupt, .cancel_inbox = cancelInbox, .reply_permission = replyPermission });
         self.reducer.open() catch |err| return lift(err);
         const started = monotonic();
         while (!self.stream.connected) {
@@ -665,11 +666,35 @@ pub const Session = struct {
     }
 
     fn resolve(ptr: *anyopaque, arena: std.mem.Allocator, resolution: contract.Resolution, refusal: *contract.Refusal) contract.Failure!void {
-        _ = ptr;
-        _ = arena;
-        _ = resolution;
-        _ = refusal;
-        return error.InteractionNotFound;
+        const self = cast(ptr);
+        const request = switch (resolution) {
+            .permission => |permission| permission,
+            .input => return error.InteractionNotFound,
+        };
+        if (!std.mem.eql(u8, request.session_id, self.id)) return error.InvalidResolution;
+        const own = self.owned();
+        self.reducer.resolvePermission(
+            try own.dupe(u8, request.interaction_id),
+            try own.dupe(u8, request.run_id),
+            try own.dupe(u8, request.responded_by),
+            try own.dupe(u8, request.requested_by),
+            try own.dupe(u8, request.choice_id orelse ""),
+            request.granted,
+            try own.dupe(u8, request.reason orelse ""),
+        ) catch |err| return switch (err) {
+            error.InteractionNotFound, error.InteractionResolved => error.InteractionNotFound,
+            error.WrongResponder, error.InvalidResolution => error.InvalidResolution,
+            error.SessionClosed => error.SessionClosed,
+            error.ReplyFailed => refusal.fail(error.BackendFailed, try std.mem.concat(arena, u8, &.{ "the OpenCode server did not take the permission answer: ", self.reducer.reply_failure })),
+            else => lift(err),
+        };
+    }
+
+    fn replyPermission(context: *anyopaque, arena: std.mem.Allocator, native_session: []const u8, request_id: []const u8, decision: []const u8, message: []const u8) std.mem.Allocator.Error!?session.Failure {
+        const self = cast(context);
+        const response = self.exchange(try httpapi.replyPermission(arena, self.endpoint, native_session, request_id, decision, message)) catch |err| return try self.transportFailure(err);
+        const failure = try httpapi.replyPermissionResult(arena, response, native_session, request_id, self.owner.config.frame_limit) orelse return null;
+        return .{ .message = failure.message, .api = failure.api };
     }
 
     fn cancel(ptr: *anyopaque, arena: std.mem.Allocator, run_id: []const u8, refusal: *contract.Refusal) contract.Failure!oap_types.RunCancelResponse {

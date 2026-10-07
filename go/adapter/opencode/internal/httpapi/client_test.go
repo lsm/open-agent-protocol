@@ -180,6 +180,9 @@ func TestSubscribeFollowsOneSessionOnTheGlobalStream(t *testing.T) {
 		`{"id":"evt_project","created":1,"type":"project.updated","data":{"id":"p"}}`,
 		sessionEvent("ses_a", 1, "session.execution.started", `{"sessionID":"ses_a"}`),
 		`{"id":"evt_delta","created":1,"type":"session.text.delta","data":{"sessionID":"ses_a","assistantMessageID":"msg_1","ordinal":0,"delta":"h"}}`,
+		`{"id":"evt_ask_b","created":1,"type":"permission.asked","data":{"id":"per_b","sessionID":"ses_b","action":"shell","resources":["ls"]}}`,
+		`{"id":"evt_ask_a","created":1,"type":"permission.asked","data":{"id":"per_a","sessionID":"ses_a","action":"shell","resources":["ls"],"save":["ls *"],"source":{"type":"tool","messageID":"msg_1","id":"call_1"}}}`,
+		`{"id":"evt_reply_a","created":1,"type":"permission.replied","data":{"sessionID":"ses_a","requestID":"per_a","reply":"once"}}`,
 	), Options{})
 	subscription, err := client.Subscribe(context.Background(), "ses_a")
 	if err != nil {
@@ -193,6 +196,11 @@ func TestSubscribeFollowsOneSessionOnTheGlobalStream(t *testing.T) {
 	second := <-subscription.Events()
 	if second.Type != native.TypeTextDelta || second.Durable != nil {
 		t.Fatalf("second=%+v", second)
+	}
+	asked := <-subscription.Events()
+	replied := <-subscription.Events()
+	if asked.Type != native.TypePermissionAsked || asked.SessionID != "ses_a" || replied.Type != native.TypePermissionReplied || replied.SessionID != "ses_a" {
+		t.Fatalf("permission events %+v then %+v", asked, replied)
 	}
 }
 

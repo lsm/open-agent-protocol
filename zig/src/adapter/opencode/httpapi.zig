@@ -315,6 +315,21 @@ pub fn cancelInbox(arena: std.mem.Allocator, endpoint: Endpoint, session: []cons
     return build(arena, endpoint, "DELETE", try sessionPath(arena, session, leaf), "", "application/json", null);
 }
 
+pub fn replyPermission(arena: std.mem.Allocator, endpoint: Endpoint, session: []const u8, request_id: []const u8, decision: []const u8, message: []const u8) std.mem.Allocator.Error!Request {
+    const leaf = try std.mem.concat(arena, u8, &.{ "/permission/", try pathEscape(arena, request_id), "/reply" });
+    const body = if (message.len > 0)
+        try std.json.Stringify.valueAlloc(arena, .{ .decision = decision, .message = message }, .{})
+    else
+        try std.json.Stringify.valueAlloc(arena, .{ .decision = decision }, .{});
+    return build(arena, endpoint, "POST", try sessionPath(arena, session, leaf), "", "application/json", body);
+}
+
+pub fn replyPermissionResult(arena: std.mem.Allocator, response: Response, session: []const u8, request_id: []const u8, limit: usize) std.mem.Allocator.Error!?Failure {
+    if (response.status == 204) return null;
+    const leaf = try std.mem.concat(arena, u8, &.{ "/permission/", try pathEscape(arena, request_id), "/reply" });
+    return refusal(arena, response, try sessionPath(arena, session, leaf), limit);
+}
+
 pub fn serverInfo(arena: std.mem.Allocator, endpoint: Endpoint) std.mem.Allocator.Error!Request {
     return build(arena, endpoint, "GET", "/api/info", "", "application/json", null);
 }

@@ -64,7 +64,7 @@ func TestOpenCodeServerIntegration(t *testing.T) {
 const integrationPassword = "integration"
 
 func integrationConfig(endpoint string, model *native.ModelRef) Config {
-	return Config{Endpoint: endpoint, Username: "opencode", Password: integrationPassword, Model: model, Clock: systemClock{}, IDs: &sequenceIDs{}}
+	return Config{Endpoint: endpoint, Username: "opencode", Password: integrationPassword, Model: model, Clock: systemClock{}, IDs: newSequenceIDs()}
 }
 
 func startPinnedServer(t *testing.T, ctx context.Context, binary string, environment []string) string {

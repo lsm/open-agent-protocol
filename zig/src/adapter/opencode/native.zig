@@ -62,6 +62,8 @@ pub const EventType = enum {
     revert_staged,
     revert_cleared,
     revert_committed,
+    permission_asked,
+    permission_replied,
 
     const names = [_][]const u8{
         "session.inbox.enqueued",         "session.inbox.delivered",       "session.inbox.cancelled",
@@ -80,7 +82,7 @@ pub const EventType = enum {
         "session.shell.started",          "session.shell.ended",           "session.retry.scheduled",
         "session.compaction.started",     "session.compaction.delta",      "session.compaction.ended",
         "session.compaction.failed",      "session.revert.staged",         "session.revert.cleared",
-        "session.revert.committed",
+        "session.revert.committed",       "permission.asked",              "permission.replied",
     };
 
     pub fn wire(self: EventType) []const u8 {
@@ -96,7 +98,7 @@ pub const EventType = enum {
 
     pub fn durable(self: EventType) bool {
         return switch (self) {
-            .text_delta, .reasoning_delta, .tool_input_delta, .tool_progress, .compaction_delta, .usage_updated => false,
+            .text_delta, .reasoning_delta, .tool_input_delta, .tool_progress, .compaction_delta, .usage_updated, .permission_asked, .permission_replied => false,
             else => true,
         };
     }
@@ -105,7 +107,7 @@ pub const EventType = enum {
 pub const server_connected = "server.connected";
 
 pub fn sessionScoped(type_name: []const u8) bool {
-    return std.mem.startsWith(u8, type_name, "session.");
+    return std.mem.startsWith(u8, type_name, "session.") or std.mem.eql(u8, type_name, "permission.asked") or std.mem.eql(u8, type_name, "permission.replied");
 }
 
 fn patterned(text: []const u8, prefix: []const u8) bool {
@@ -194,6 +196,10 @@ pub const StepEndedData = struct {
 pub const StepFailedData = struct { message: []const u8 = "", failure: ErrorBlock = .{}, cost: f64 = 0 };
 
 pub const TextData = struct { message: []const u8 = "", ordinal: i64 = 0, text: []const u8 = "" };
+
+pub const PermissionAskedData = struct { id: []const u8 = "", action: []const u8 = "", resources: []const []const u8 = &.{}, source_id: []const u8 = "", message: []const u8 = "" };
+
+pub const PermissionRepliedData = struct { request_id: []const u8 = "", reply: []const u8 = "" };
 
 pub const ToolInputData = struct { id: []const u8 = "", name: []const u8 = "" };
 
@@ -358,6 +364,26 @@ const part_delta_fields = [_]Field{
     .{ .name = "assistantMessageID", .kind = .string },
     .{ .name = "ordinal", .kind = .integer },
     .{ .name = "delta", .kind = .string },
+};
+const permission_source_fields = [_]Field{
+    .{ .name = "type", .kind = .string },
+    .{ .name = "messageID", .kind = .string },
+    .{ .name = "id", .kind = .string },
+};
+const permission_asked_fields = [_]Field{
+    .{ .name = "id", .kind = .string },
+    .{ .name = "sessionID", .kind = .string },
+    .{ .name = "action", .kind = .string },
+    .{ .name = "resources", .kind = .strings },
+    .{ .name = "save", .kind = .strings },
+    .{ .name = "metadata", .kind = .raw },
+    .{ .name = "source", .kind = .{ .optional_record = &permission_source_fields } },
+    .{ .name = "message", .kind = .string },
+};
+const permission_replied_fields = [_]Field{
+    .{ .name = "sessionID", .kind = .string },
+    .{ .name = "requestID", .kind = .string },
+    .{ .name = "reply", .kind = .string },
 };
 const tool_input_started_fields = [_]Field{
     .{ .name = "sessionID", .kind = .string },
@@ -912,6 +938,22 @@ pub fn decodePartEnded(arena: std.mem.Allocator, event: Event, diag: *Diagnostic
 pub fn decodePartDelta(arena: std.mem.Allocator, event: Event, diag: *Diagnostic) Error!TextData {
     const document = try decodeData(arena, event, &part_delta_fields, diag);
     return .{ .message = textAt(document, &.{"assistantMessageID"}), .ordinal = integerAt(document, &.{"ordinal"}), .text = textAt(document, &.{"delta"}) };
+}
+
+pub fn decodePermissionAsked(arena: std.mem.Allocator, event: Event, diag: *Diagnostic) Error!PermissionAskedData {
+    const document = try decodeData(arena, event, &permission_asked_fields, diag);
+    var resources: std.ArrayList([]const u8) = .empty;
+    if (memberAt(document, &.{"resources"})) |listed| {
+        if (listed == .array) for (listed.array.items) |item| {
+            if (item == .string) try resources.append(arena, item.string);
+        };
+    }
+    return .{ .id = textAt(document, &.{"id"}), .action = textAt(document, &.{"action"}), .resources = resources.items, .source_id = textAt(document, &.{ "source", "id" }), .message = textAt(document, &.{"message"}) };
+}
+
+pub fn decodePermissionReplied(arena: std.mem.Allocator, event: Event, diag: *Diagnostic) Error!PermissionRepliedData {
+    const document = try decodeData(arena, event, &permission_replied_fields, diag);
+    return .{ .request_id = textAt(document, &.{"requestID"}), .reply = textAt(document, &.{"reply"}) };
 }
 
 pub fn decodeToolInputStarted(arena: std.mem.Allocator, event: Event, diag: *Diagnostic) Error!ToolInputData {

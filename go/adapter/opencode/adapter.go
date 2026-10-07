@@ -133,7 +133,7 @@ func advertisedFeatures() map[string]protocol.FeatureSupport {
 		"run.replay":                     {Level: protocol.SupportDegraded, Reason: "bounded adapter journal; the native durable cursor is exposed as the transcript cursor"},
 		"action.tools":                   {Level: protocol.SupportNative, Reason: "tool.called/progress/success/failed lifecycle observed natively"},
 		"action.tools.execute":           {Level: protocol.SupportUnavailable, Reason: "tools execute server-side; no client-hosted execution surface"},
-		"action.permissions":             {Level: protocol.SupportUnavailable, Reason: "permission.asked travels only on the volatile global event stream and is not served"},
+		"action.permissions":             {Level: protocol.SupportNative, Reason: "permission.asked for a tool call becomes action.permission.requested, answered once, always or reject through POST /api/session/:id/permission/:requestID/reply"},
 
 		protocol.FeatureSessionReasoning: {Level: protocol.SupportNative, Modes: []string{protocol.ModeSessionOpen, protocol.ModeSessionLive}, Reason: "the session's model carries the level as its variant, which the runner sends on every step: set at create and between runs by switching the session to the same model with the new variant; it needs a model, and a variant the session record does not confirm is refused"},
 		protocol.FeatureCompactionPolicy: {Level: protocol.SupportUnavailable, Reason: "compaction is the server's config, fixed when its operator starts it; the adapter attaches to a running server"},

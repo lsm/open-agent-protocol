@@ -192,6 +192,8 @@ const (
 	TypeRenamed              Type = "session.renamed"
 	TypeMetadataUpdated      Type = "session.metadata.updated"
 	TypePermissions          Type = "session.permissions"
+	TypePermissionAsked      Type = "permission.asked"
+	TypePermissionReplied    Type = "permission.replied"
 	TypeViewed               Type = "session.viewed"
 	TypeUsageUpdated         Type = "session.usage.updated"
 	TypeDeleted              Type = "session.deleted"
@@ -222,7 +224,8 @@ func (t Type) Supported() bool {
 		TypeRenamed, TypeMetadataUpdated, TypePermissions, TypeViewed, TypeUsageUpdated, TypeDeleted,
 		TypeForked, TypeInstructionsUpdated, TypeSynthetic, TypeSkillActivated, TypeShellStarted,
 		TypeShellEnded, TypeRetryScheduled, TypeCompactionStarted, TypeCompactionDelta, TypeCompactionEnded,
-		TypeCompactionFailed, TypeRevertStaged, TypeRevertCleared, TypeRevertCommitted:
+		TypeCompactionFailed, TypeRevertStaged, TypeRevertCleared, TypeRevertCommitted,
+		TypePermissionAsked, TypePermissionReplied:
 		return true
 	default:
 		return false
@@ -231,7 +234,8 @@ func (t Type) Supported() bool {
 
 func (t Type) Durable() bool {
 	switch t {
-	case TypeTextDelta, TypeReasoningDelta, TypeToolInputDelta, TypeToolProgress, TypeCompactionDelta, TypeUsageUpdated:
+	case TypeTextDelta, TypeReasoningDelta, TypeToolInputDelta, TypeToolProgress, TypeCompactionDelta, TypeUsageUpdated,
+		TypePermissionAsked, TypePermissionReplied:
 		return false
 	default:
 		return t.Supported()
@@ -239,7 +243,7 @@ func (t Type) Durable() bool {
 }
 
 func (t Type) SessionScoped() bool {
-	return strings.HasPrefix(string(t), "session.")
+	return strings.HasPrefix(string(t), "session.") || t == TypePermissionAsked || t == TypePermissionReplied
 }
 
 type DurablePosition struct {
@@ -433,6 +437,34 @@ type ToolInputEndedData struct {
 	AssistantMessage MessageID `json:"assistantMessageID"`
 	ID               string    `json:"id"`
 	Text             string    `json:"text"`
+}
+
+type PermissionSource struct {
+	Type      string    `json:"type"`
+	MessageID MessageID `json:"messageID"`
+	ID        string    `json:"id"`
+}
+
+type PermissionAskedData struct {
+	ID        string            `json:"id"`
+	SessionID SessionID         `json:"sessionID"`
+	Action    string            `json:"action"`
+	Resources []string          `json:"resources"`
+	Save      []string          `json:"save,omitempty"`
+	Metadata  json.RawMessage   `json:"metadata,omitempty"`
+	Source    *PermissionSource `json:"source,omitempty"`
+	Message   string            `json:"message,omitempty"`
+}
+
+type PermissionRepliedData struct {
+	SessionID SessionID `json:"sessionID"`
+	RequestID string    `json:"requestID"`
+	Reply     string    `json:"reply"`
+}
+
+type PermissionReply struct {
+	Decision string `json:"decision"`
+	Message  string `json:"message,omitempty"`
 }
 
 type ToolCalledData struct {
