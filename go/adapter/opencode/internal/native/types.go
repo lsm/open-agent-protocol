@@ -492,14 +492,6 @@ func (c *ToolContent) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
-func (c ToolContent) MarshalJSON() ([]byte, error) {
-	if len(c.Raw) > 0 {
-		return c.Raw, nil
-	}
-	type plain ToolContent
-	return json.Marshal(plain(c))
-}
-
 type APIError struct {
 	Status int
 	Tag    string

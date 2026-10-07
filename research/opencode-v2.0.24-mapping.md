@@ -1,10 +1,11 @@
 # OpenCode v2.0.24 mapping ledger
 
-Status: research for a pin move from v1.18.34. v2 is a new major line with a
+Status: the current pin, moved from v1.18.34. v2 is a new major line with a
 new served API, so unlike the v1.18.x moves this is not a delta ledger: every
 route and event the adapter reads changes name, and the stream it reads
-changes shape. The v1 ledgers stay normative for the v1 pins only. Neither
-tree implements this yet; this ledger is the spec the port is written to.
+changes shape. The v1 ledgers stay normative for the v1 pins only. Both trees
+implement it; "What the adapters do" records how, and where they depart from
+the mapping above it.
 
 ## Provenance
 
@@ -189,15 +190,63 @@ observed-only.
 | `session.next.model.switched` / `agent.switched` | `session.model.selected` / `session.agent.selected` |
 | permission reply field `reply` | `decision` |
 
-## Capabilities
+## What the adapters do
 
-What the port can claim, given the above:
+Both trees, under capability revision `opencode-v2.0.24-oap-v1`:
 
-- `run.streaming`: `native` — text and reasoning deltas are on `/api/event`.
-- `session.open.reopen`: `native` for an idle session. `GET /api/session/:id`
-  answers from a restarted server; with no replay, the reopened transcript
-  cursor is the session's message list, not an event seq.
-- Approvals stay out of scope, as in v1: `permission.asked` is ephemeral on
-  `/api/event`, and `GET /api/session/:id/permission` lists the pending ones, so
-  a later unit can serve them with reconciliation on reconnect.
-- Native list for `work.list`: `GET /api/session` (with `location.directory`).
+- **Auth.** `opencode serve` always requires basic auth: without
+  `OPENCODE_PASSWORD` it generates a password and prints it. The registry entry
+  passes the password through its `environment` allowlist
+  (`OPENCODE_PASSWORD`, or the legacy `OPENCODE_SERVER_PASSWORD`), user
+  `opencode`; nothing is read from the config file itself.
+- **Stream.** `GET /api/event`, filtered to the session's `data.sessionID`.
+  The open waits for `server.connected` before it returns, so no prompt can be
+  sent before the subscription exists. A frame the codec refuses fails the
+  session when it names this session or no session, and is passed over when
+  it names another one. Durable `seq` must increase; ephemeral frames carry
+  none.
+- **Admission.** An `auto` submission on an idle session is sent `steer` and
+  answered `started`, as v1 answered it from `promotedSeq`: an idle session
+  always starts executing a steer prompt. An `auto` behind an open run is sent
+  `queue`, so each OAP run is one turn; an explicit `queue` is answered
+  `queued` and starts at its `inbox.delivered`.
+- **Settlement.** As the table above: `inbox.delivered` starts a run, and the
+  run settles at `session.execution.*` or when the next input is delivered,
+  including another client's input, whose turn is then not attributed to this
+  session's run. A `step.failed` followed by `execution.failed` settles
+  `opencode_step_failed` with the step's error; `execution.failed` alone
+  settles `opencode_execution_failed`. A run settled with no `step.ended` has
+  stop reason `unknown`.
+- **Cancel.** A run whose input is not yet delivered is cancelled by
+  `DELETE /api/session/:id/inbox/:inboxID` and settles at
+  `session.inbox.cancelled`; a delivered one is interrupted and settles at
+  `session.execution.interrupted`. If the delivery wins the race, the run is
+  interrupted as soon as it starts.
+- **Streaming stays `degraded`**, not the `native` the event stream would
+  allow: text and reasoning are still forwarded whole at `text.ended` and
+  `reasoning.ended`, and the deltas are dropped. Forwarding them is a later
+  unit.
+- **Reopen** attaches to the session record and follows it from the attach on;
+  with no replay there is no stored history to fence, so the transcript
+  cursor starts empty and advances with the events seen.
+- **Approvals** are out of scope, as in v1: `permission.asked` is ephemeral,
+  and `GET /api/session/:id/permission` lists the pending ones for a later
+  unit.
+
+Corpus: `fixtures/adapters/opencode-v2.0.24/` carries fourteen of the v1
+cases converted to v2 vocabulary; `history-fence` is dropped because v2
+serves no history. `completed-text` is the live trace recorded above, with
+the session, inbox and location normalized. `interrupt-idle` is now a cancel
+before delivery that settles at `session.inbox.cancelled`. The Go goldens in
+`go/adapter/opencode/testdata/port-{goldens,scenarios}.json` were
+re-recorded; two scenarios that tested v1's quiescence and history polling
+are replaced by an execution failure and an interrupt nobody asked for.
+
+Live, against the pinned darwin-arm64 binary (sha256 `e68cc32c…`): the four
+`OAP_OPENCODE_INTEGRATION` gates pass three times, among them
+`TestOpenCodeServerRunsATurnToCompletionAgainstALocalProvider`, which
+completes a real turn against an in-process OpenAI-compatible fake, so it
+reaches no network. `oapx serve agent --backend` against the same binary and
+fake completes a turn whose trace both validators pass.
+
+Native list for `work.list` (`GET /api/session`) is not wired yet.
