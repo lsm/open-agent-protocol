@@ -1,8 +1,8 @@
 # Decision 0047: A Work Profile Over Sessions
 
-Status: proposed (the owner answered its four open questions on 2026-10-06;
-see "Owner answers". Its six verbs over held sessions are #919; native lists
-and adoption are not executable yet)
+Status: accepted 2026-10-07 (the owner answered its open questions on
+2026-10-06, see "Owner answers"; what shipped, and where it departs from the
+decisions below, is "What shipped")
 Date: 2026-10-06
 Protocol: `open-agent-protocol` version `0.1`
 Profile: a new `open-agent-protocol.work` profile over
@@ -220,3 +220,51 @@ stays as an alias for one release.
 5. **The listing verb is `work.list`, not `work.find`** (owner, 2026-10-06).
    It lists and filters; it does not search. Search, by text or meaning, is
    the caller's, built on its own index over what OAP hands it.
+
+## What shipped
+
+Recorded 2026-10-07. Where this list and a decision above disagree, this list
+is what the code does, and [the work draft](../drafts/work.md) is its
+specification.
+
+- **The verbs.** `serve` answers `work.list`, `work.status`, `work.start`,
+  `work.send`, `work.stop` and `work.read` over both transports (#919), and
+  `work.capabilities`, which names each adapter's verbs so a missing one is
+  known before it is called (#942): a verb is withdrawn when the feature it
+  rests on is undeclared or `unavailable`, and an adapter that cannot be
+  probed is listed as unavailable with its reason. Owner answer 1 asked for
+  each verb to be a capability key; it is answered per adapter by
+  `work.capabilities` rather than in the core descriptor. `work.start` takes
+  any absolute directory through an `any_directory` registry entry (#928).
+- **Listing (decision 2).** Native entries appear only in `work.list` with
+  `include_native`, carrying `native: true`, the native id and no OAP id.
+  Shipped: Codex `thread/list` (#919), Claude Code's project transcripts and
+  live-session registry read-only (#919), and Pi's session store read-only
+  (#944). ACP `session/list` (#950) and Hermes `session.list` (#951) are in
+  review. OpenCode waits on its v2 port, whose `GET /api/session` replaces the
+  v1 list ([ledger](../research/opencode-v2.0.24-mapping.md)). DeepSeek lists
+  nothing native, as decided. A native list runs off the serve loop, so a slow
+  harness does not stall other callers (#947, in review).
+- **Reading.** `work.read` reads the harness's own transcript where one is
+  readable (Claude Code's project jsonl, Codex `thread/turns/list`, Pi's
+  session file) for held and unheld sessions, and otherwise the turns `serve`
+  recorded (#929). This verb was added by the draft, not by decision 1.
+- **Adoption (decision 3) is one of the four ways, plus refusal.**
+  `work.start` with a `native_id` adopts by **`resume`** only: the adapter
+  resumes the harness session in a process it owns and writes the binding,
+  marked `adopted`. An adopted Claude session runs with the user's own
+  settings and Claude Code's own prompt (#919), as decided. Codex adoption is
+  also a resume, in the adapter's own app-server process; `oapx codex-bridge`
+  (#910) exists, but adoption does not `attach` through it.
+- **No `observe`.** Nothing tails a transcript a foreign process is writing.
+  The prompt hook (`oapx claude-permission-hook`, #911) shipped and answers
+  prompts for any session it is installed in, but no verb builds a read-only
+  session from it.
+- **The refusal is `run_active`, not `session_running_elsewhere`.** A native
+  session its harness lists as running is refused `run_active`, the core's
+  existing code for a session that is busy; no new code was added.
+- **Go serves the profile too** (#943, in review), through one implementation
+  both of its transports call, compared byte for byte against `oapx` on the
+  stdio differential. Its adapters list and read no native sessions yet.
+- **The rename (decision 4)** landed as decided (#913); the work verbs are
+  served by `serve` itself, per owner answer 4, not by a separate command.
