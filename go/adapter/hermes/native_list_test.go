@@ -193,3 +193,54 @@ func TestAListingWhoseCallerGivesUpLeavesTheKeptGatewayRunning(t *testing.T) {
 		t.Fatalf("a caller that had given up shut the kept gateway down: closed=%v, %d launches", closed, launches.Load())
 	}
 }
+
+func TestAKeptGatewayThatNeverGetsReadyGivesUpAtTheListingsDeadline(t *testing.T) {
+	implementation, err := New(Config{Model: "hermes-test", Clock: &testClock{}, IDs: &testIDs{}, ProcessFactory: ProcessFactoryFunc(func(ctx context.Context, _ rpc.ProcessConfig) (ProcessBridge, error) {
+		<-ctx.Done()
+		return nil, ctx.Err()
+	})})
+	if err != nil {
+		t.Fatal(err)
+	}
+	answered := make(chan error, 2)
+	go func() {
+		for range 2 {
+			ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+			_, err := implementation.NativeList(ctx, base.NativeListRequest{Limit: 1})
+			cancel()
+			answered <- err
+		}
+	}()
+	for range 2 {
+		select {
+		case err := <-answered:
+			if err == nil {
+				t.Fatal("a gateway that never got ready listed")
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatal("a launch that never got ready held the kept gateway past the listing's deadline")
+		}
+	}
+}
+
+func TestClosingTheAdapterStopsItsKeptGateway(t *testing.T) {
+	f := newFake()
+	f.queue(methodSessionList, reply{result: map[string]any{"sessions": []any{}}})
+	var launches atomic.Int32
+	implementation := processBackedAdapter(t, f, &launches)
+	if _, err := implementation.NativeList(context.Background(), base.NativeListRequest{Limit: 1}); err != nil {
+		t.Fatal(err)
+	}
+	if err := implementation.Close(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	f.mu.Lock()
+	closed := f.closed
+	f.mu.Unlock()
+	if !closed {
+		t.Fatal("closing the adapter left its listing gateway running")
+	}
+	if err := implementation.Close(context.Background()); err != nil {
+		t.Fatalf("a second close: %v", err)
+	}
+}

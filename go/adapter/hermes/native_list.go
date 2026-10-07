@@ -29,6 +29,21 @@ type listGateway struct {
 	bridge ProcessBridge
 }
 
+func (a *Adapter) Close(ctx context.Context) error {
+	factory, ok := a.config.Factory.(processClientFactory)
+	if !ok || factory.lister == nil {
+		return nil
+	}
+	factory.lister.mu.Lock()
+	defer factory.lister.mu.Unlock()
+	if factory.lister.bridge == nil {
+		return nil
+	}
+	err := factory.lister.bridge.Close(ctx)
+	factory.lister.bridge = nil
+	return err
+}
+
 func listOn(ctx context.Context, client Client, limit int) (json.RawMessage, error) {
 	var answered json.RawMessage
 	if err := client.Call(ctx, methodSessionList, sessionListParams{Limit: limit}, &answered); err != nil {
@@ -85,7 +100,7 @@ func (f processClientFactory) List(ctx context.Context, limit int) (json.RawMess
 }
 
 func (f processClientFactory) keep(ctx context.Context) (ProcessBridge, error) {
-	bridge, err := f.processes.Start(context.WithoutCancel(ctx), f.config)
+	bridge, err := f.processes.Start(ctx, f.config)
 	if err != nil {
 		return nil, err
 	}

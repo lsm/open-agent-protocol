@@ -500,7 +500,10 @@ gateway's own `session.list`. Read from the source at this pin's commit
   that breaks a reused gateway is retried once on a fresh one, an error the
   gateway answers keeps it, and a listing that finds it busy runs on a gateway
   of its own. Its events and notifications are read and dropped (Go releases
-  each barrier its client queues). `oapx serve` runs a listing on a job thread
+  each barrier its client queues). Starting it waits for `gateway.ready` no
+  longer than the listing's deadline, or 60 seconds. It is closed at shutdown:
+  `goap serve` closes every adapter that holds a process after its sessions,
+  and `oapx` deinits the adapter. `oapx serve` runs a listing on a job thread
   (#947) and `goap serve` in the request's own goroutine, so neither stalls
   other callers.
 - **Trees.** Zig and Go map a row the same way, down to `started_at`: an

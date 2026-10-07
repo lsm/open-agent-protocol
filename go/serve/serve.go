@@ -315,6 +315,7 @@ func (h *Hub) CloseSessions(ctx context.Context) {
 		}
 		cancelSession()
 	}
+	h.registry.closeAdapters(sweep, h.logger)
 }
 
 var (

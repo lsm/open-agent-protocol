@@ -9241,6 +9241,8 @@ fn runBackendMode(
     var deepseek: deepseek_adapter.Adapter = undefined;
     var opencode: opencode_adapter.Adapter = undefined;
     var hermes: hermes_adapter.Adapter = undefined;
+    var hermes_held = false;
+    defer if (hermes_held) hermes.deinit();
     var memory: memory_adapter.Adapter = undefined;
     var oapx_production: ?tui_app.ProductionRuntime = null;
     defer if (oapx_production) |*production| production.deinit();
@@ -9265,6 +9267,7 @@ fn runBackendMode(
         break :opencode_served opencode.adapter();
     } else if (std.mem.eql(u8, entry.kind, "hermes")) hermes_served: {
         hermes = hermes_adapter.Adapter.init(allocator, try hermesBackendConfig(surface, arena, entry, &environ));
+        hermes_held = true;
         break :hermes_served hermes.adapter();
     } else if (std.mem.eql(u8, entry.kind, "memory")) memory_served: {
         memory = memory_adapter.Adapter.init(allocator);
