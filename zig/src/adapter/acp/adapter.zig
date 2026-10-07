@@ -136,12 +136,17 @@ pub const Adapter = struct {
     }
 
     pub fn adapter(self: *Adapter) contract.Adapter {
-        return .{ .ptr = self, .vtable = &.{ .probe = probe, .open = open, .native_list = nativeList } };
+        return .{ .ptr = self, .vtable = &.{ .probe = probe, .open = open, .native_list = nativeList, .native_read = nativeRead } };
     }
 
     fn nativeList(ptr: *anyopaque, arena: std.mem.Allocator, request: contract.NativeListRequest, refusal: *contract.Refusal) contract.Failure![]const contract.NativeSession {
         const self: *Adapter = @ptrCast(@alignCast(ptr));
         return Session.list(self, arena, request, refusal);
+    }
+
+    fn nativeRead(ptr: *anyopaque, arena: std.mem.Allocator, request: contract.NativeReadRequest, refusal: *contract.Refusal) contract.Failure![]const contract.NativeTurn {
+        const self: *Adapter = @ptrCast(@alignCast(ptr));
+        return Session.read(self, arena, request, refusal);
     }
 
     fn probe(ptr: *anyopaque, refusal: *contract.Refusal) contract.Failure!contract.Descriptor {
@@ -336,6 +341,7 @@ pub const Session = struct {
     sources: []oap_types.ToolSourceDescriptor = &.{},
     compact_above: usize = default_compact_above,
     retained: usize = 0,
+    replayed: ?*std.ArrayList(std.json.Value) = null,
 
     fn open(owner: *Adapter, arena: std.mem.Allocator, request: contract.OpenRequest, refusal: *contract.Refusal) contract.Failure!*Session {
         if (request.reopen and request.native_session_id.len == 0) return refusal.unsupported(contract.feature_open_reopen, contract.reason_unsatisfiable);
@@ -430,6 +436,24 @@ pub const Session = struct {
             cursor = try arena.dupe(u8, next);
         }
         return listed.items;
+    }
+
+    fn read(owner: *Adapter, arena: std.mem.Allocator, request: contract.NativeReadRequest, refusal: *contract.Refusal) contract.Failure![]const contract.NativeTurn {
+        const self = try construct(owner, arena, .{ .participant = "" }, refusal);
+        defer self.destroy();
+        const initialized = try self.call(arena, "initialize", try self.initializeParams(), refusal);
+        const capabilities = memberOf(initialized, "agentCapabilities") orelse return &.{};
+        const load = memberOf(capabilities, "loadSession") orelse return &.{};
+        if (load != .bool or !load.bool) return &.{};
+        var replayed: std.ArrayList(std.json.Value) = .empty;
+        self.replayed = &replayed;
+        defer self.replayed = null;
+        var params: std.json.ObjectMap = .empty;
+        try params.put(arena, "sessionId", .{ .string = request.native_id });
+        try params.put(arena, "cwd", .{ .string = if (request.directory.len > 0) request.directory else owner.config.working_directory });
+        try params.put(arena, "mcpServers", .{ .array = std.json.Array.init(arena) });
+        _ = try self.call(arena, "session/load", .{ .object = params }, refusal);
+        return replayedTurns(arena, replayed.items);
     }
 
     fn resumedSettings(self: *Session, offered: ?std.json.Value) contract.Failure!void {
@@ -773,6 +797,9 @@ pub const Session = struct {
         if (method_value) |method| {
             const name = if (method == .string) method.string else "";
             const kind: rpc.Kind = if (id_value != null) .request else .notification;
+            if (self.replayed) |into| {
+                if (kind == .notification and std.mem.eql(u8, name, "session/update")) try into.append(self.owned(), parsed);
+            }
             if (!self.opened()) return;
             if (kind == .request) return self.handleRequest(name, id_value.?, parsed);
             self.reducer.observe(.{ .kind = .notification, .method = name, .raw = "" }, parsed) catch |err| return lift(err);
@@ -1035,6 +1062,44 @@ pub const Session = struct {
         cast(ptr).destroy();
     }
 };
+
+pub fn replayedTurns(arena: std.mem.Allocator, frames: []const std.json.Value) std.mem.Allocator.Error![]const contract.NativeTurn {
+    var found: std.ArrayList(contract.NativeTurn) = .empty;
+    var asked: ?std.ArrayList(u8) = null;
+    var reply: std.ArrayList(u8) = .empty;
+    var reply_id: []const u8 = "";
+    for (frames) |frame| {
+        const update = memberOf(memberOf(frame, "params") orelse continue, "update") orelse continue;
+        const kind = fieldText(update, "sessionUpdate");
+        const text = fieldText(memberOf(update, "content") orelse continue, "text");
+        if (std.mem.eql(u8, kind, "user_message_chunk")) {
+            if (asked == null) {
+                if (reply.items.len > 0) try found.append(arena, .{ .role = .assistant, .text = reply.items });
+                reply = .empty;
+                reply_id = "";
+                asked = .empty;
+            }
+            try asked.?.appendSlice(arena, text);
+        } else if (std.mem.eql(u8, kind, "agent_message_chunk")) {
+            if (asked) |said| try appendAsked(arena, &found, said.items);
+            asked = null;
+            const message_id = fieldText(update, "messageId");
+            if (message_id.len > 0 and !std.mem.eql(u8, message_id, reply_id)) {
+                reply = .empty;
+                reply_id = try arena.dupe(u8, message_id);
+            }
+            try reply.appendSlice(arena, text);
+        }
+    }
+    if (asked) |said| try appendAsked(arena, &found, said.items);
+    if (reply.items.len > 0) try found.append(arena, .{ .role = .assistant, .text = reply.items });
+    return found.items;
+}
+
+fn appendAsked(arena: std.mem.Allocator, found: *std.ArrayList(contract.NativeTurn), said: []const u8) std.mem.Allocator.Error!void {
+    const trimmed = std.mem.trim(u8, said, " \t\r\n");
+    if (trimmed.len > 0) try found.append(arena, .{ .role = .user, .text = trimmed });
+}
 
 fn memberOf(value: std.json.Value, key: []const u8) ?std.json.Value {
     if (value != .object) return null;
@@ -1843,4 +1908,64 @@ test "a native list stops paging after a bounded number of pages when the agent 
     try testing.expectEqual(@as(usize, 0), listed.len);
     const written = try probe.fake.written(scratch);
     try testing.expectEqual(list_pages_max, std.mem.count(u8, written, "session/list"));
+}
+
+test "a native read loads the session and reads its replay as each user message and the last reply before the next, and asks nothing of an agent that cannot load" {
+    var probe: Probe = undefined;
+    try probe.init(
+        \\#!/bin/sh
+        \\exec 3>>"$(dirname "$0")/stdin.log"
+        \\take() { IFS= read -r line || exit 0; printf '%s\n' "$line" >&3; }
+        \\take; printf '{"id":1,"jsonrpc":"2.0","result":{"agentCapabilities":{"loadSession":true},"protocolVersion":1}}\n'
+        \\take
+        \\printf '{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s","update":{"sessionUpdate":"user_message_chunk","content":{"type":"text","text":" fix "}}}}\n'
+        \\printf '{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s","update":{"sessionUpdate":"user_message_chunk","content":{"type":"text","text":"it\\n"}}}}\n'
+        \\printf '{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s","update":{"sessionUpdate":"agent_thought_chunk","content":{"type":"text","text":"hm"}}}}\n'
+        \\printf '{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s","update":{"sessionUpdate":"agent_message_chunk","messageId":"m1","content":{"type":"text","text":"Looking."}}}}\n'
+        \\printf '{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s","update":{"sessionUpdate":"tool_call","toolCallId":"t","title":"Read","status":"completed"}}}\n'
+        \\printf '{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s","update":{"sessionUpdate":"agent_message_chunk","messageId":"m2","content":{"type":"text","text":"Fixed "}}}}\n'
+        \\printf '{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s","update":{"sessionUpdate":"agent_message_chunk","messageId":"m2","content":{"type":"text","text":"it."}}}}\n'
+        \\printf '{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s","update":{"sessionUpdate":"user_message_chunk","content":{"type":"text","text":"thanks"}}}}\n'
+        \\printf '{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"You "}}}}\n'
+        \\printf '{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"bet."}}}}\n'
+        \\printf '{"jsonrpc":"2.0","method":"session/other","params":{"sessionId":"s","update":{"sessionUpdate":"user_message_chunk","content":{"type":"text","text":"not a turn"}}}}\n'
+        \\printf '{"id":2,"jsonrpc":"2.0","result":{}}\n'
+        \\while take; do :; done
+        \\
+    );
+    defer probe.deinit();
+    const scratch = probe.arena.allocator();
+    var refusal = contract.Refusal{};
+    const read = try probe.adapter.adapter().nativeRead(scratch, .{ .native_id = "s", .directory = "/w" }, &refusal).?;
+    try testing.expectEqual(@as(usize, 4), read.len);
+    try testing.expectEqualStrings("fix it", read[0].text);
+    try testing.expectEqual(contract.NativeTurn.Role.user, read[0].role);
+    try testing.expectEqualStrings("Fixed it.", read[1].text);
+    try testing.expectEqual(contract.NativeTurn.Role.assistant, read[1].role);
+    try testing.expectEqualStrings("thanks", read[2].text);
+    try testing.expectEqualStrings("You bet.", read[3].text);
+    const written = try probe.fake.written(scratch);
+    try testing.expect(std.mem.indexOf(u8, written, "{\"id\":2,\"jsonrpc\":\"2.0\",\"method\":\"session/load\",\"params\":{\"sessionId\":\"s\",\"cwd\":\"/w\",\"mcpServers\":[]}}") != null);
+
+    var bare: Probe = undefined;
+    try bare.init(fake_prelude ++ fake_idle);
+    defer bare.deinit();
+    const none = try bare.adapter.adapter().nativeRead(bare.arena.allocator(), .{ .native_id = "s" }, &refusal).?;
+    try testing.expectEqual(@as(usize, 0), none.len);
+    const asked = try bare.fake.written(bare.arena.allocator());
+    try testing.expect(std.mem.indexOf(u8, asked, "session/load") == null);
+
+    var declined: Probe = undefined;
+    try declined.init(
+        \\#!/bin/sh
+        \\exec 3>>"$(dirname "$0")/stdin.log"
+        \\take() { IFS= read -r line || exit 0; printf '%s\n' "$line" >&3; }
+        \\take; printf '{"id":1,"jsonrpc":"2.0","result":{"agentCapabilities":{"loadSession":false},"protocolVersion":1}}\n'
+        \\while take; do :; done
+        \\
+    );
+    defer declined.deinit();
+    const unread = try declined.adapter.adapter().nativeRead(declined.arena.allocator(), .{ .native_id = "s" }, &refusal).?;
+    try testing.expectEqual(@as(usize, 0), unread.len);
+    try testing.expect(std.mem.indexOf(u8, try declined.fake.written(declined.arena.allocator()), "session/load") == null);
 }

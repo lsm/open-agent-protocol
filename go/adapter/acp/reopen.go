@@ -37,6 +37,10 @@ func reopenMethod(capabilities rpc.AgentCapabilities) string {
 }
 
 func callReopen(ctx context.Context, client Client, method string, params any, result any) error {
+	return callCollecting(ctx, client, method, params, result, func(rpc.InboundMessage) {})
+}
+
+func callCollecting(ctx context.Context, client Client, method string, params any, result any, collect func(rpc.InboundMessage)) error {
 	ctx, cancel := context.WithTimeout(ctx, 60*time.Second)
 	defer cancel()
 	inbound := client.Inbound()
@@ -53,6 +57,7 @@ func callReopen(ctx context.Context, client Client, method string, params any, r
 			if message.Barrier != nil {
 				close(message.Barrier)
 			}
+			collect(message)
 			if message.Request != nil {
 				if err := message.Request.RespondError(ctx, -32601, "method not supported during session reload", nil); err != nil {
 					return err

@@ -187,7 +187,9 @@ after index `after`, at most `limit` (1 to 500, default 100).
 Where the adapter can read the harness's own transcript (Codex through
 `thread/turns/list`, Claude Code from its project's `<native id>.jsonl`, Pi
 from its session file, reading the file in order, so a branch Pi left reads
-along with the one it kept, OpenCode through `GET /api/session/<id>/message`),
+along with the one it kept, OpenCode through `GET /api/session/<id>/message`,
+an ACP agent through the replay `session/load` sends when its `initialize`
+advertises `loadSession`, in a short-lived agent process),
 `work.read` answers from it: every user message
 and the reply that followed, the conversation before `serve` held the session
 included, and still there after `serve` restarts, so `serve` writes no message
@@ -195,7 +197,9 @@ text of its own to disk. A turn there carries no `run_id` or `outcome`; its
 index is its place in the transcript, and its text is cut at 64 KiB. A session
 `serve` no longer holds is read the same way from its binding's native id. A
 held session whose harness transcript is still empty, or cannot be read, is answered as below; a
-session `serve` no longer holds then answers no turns. A Codex read pages only as
+session `serve` no longer holds then answers no turns. Hermes is listed but not
+read: its gateway reads a stored session only by resuming it, and a resume can
+restart a turn a crash interrupted. A Codex read pages only as
 far as `after` and `limit` need, with no cap of its own. A harness's own list and read run off `serve`'s
 loop, on a thread of their own: the loop goes on answering other requests and
 delivering events, and answers the `work.list` (with `include_native`) or
