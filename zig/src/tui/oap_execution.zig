@@ -48,6 +48,7 @@ pub const OapExecution = struct {
     live_reasoning: bool = false,
     live_compaction: bool = false,
     has_history: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
+    opened_root: []u8 = &.{},
     live_policy: bool = false,
     live_steer: bool = false,
     steers: std.ArrayList(PendingSteer) = .empty,
@@ -202,6 +203,7 @@ pub const OapExecution = struct {
         allocator.free(self.revision);
         allocator.free(self.sent_policy);
         allocator.free(self.session_id);
+        allocator.free(self.opened_root);
         allocator.free(self.run_id);
         if (self.pending_catalog) |held| tui_runtime.deinitModels(allocator, held);
         allocator.free(self.submitted);
@@ -305,6 +307,7 @@ pub const OapExecution = struct {
         if (settings.resume_session_id) |saved| if (self.adapter != null and std.mem.eql(u8, saved, self.session_id)) {
             self.stopping.store(false, .release);
             self.thread = try std.Thread.spawn(.{}, run, .{self});
+            if (!std.mem.eql(u8, settings.workspace_root, self.opened_root)) return error.OapReopenRefused;
             return;
         };
         if (settings.resume_session_id) |saved| {
@@ -343,6 +346,9 @@ pub const OapExecution = struct {
         const session_id = payload.object.get("session_id") orelse return error.OapOpenFailed;
         if (session_id != .string) return error.OapOpenFailed;
         const kept_session = try self.allocator.dupe(u8, session_id.string);
+        const kept_root = try self.allocator.dupe(u8, settings.workspace_root);
+        self.allocator.free(self.opened_root);
+        self.opened_root = kept_root;
         self.allocator.free(self.session_id);
         self.session_id = kept_session;
         self.has_history.store(reopened_history, .release);
@@ -1981,6 +1987,27 @@ const SavedTranscript = struct {
         return messages;
     }
 };
+
+test "reopening the open session under another workspace is refused, since the open session keeps the one it opened with" {
+    var script = Script{};
+    var execution: *OapExecution = undefined;
+    var runtime = try remoteRuntime(&script, &execution, .low);
+    defer execution.destroy();
+    defer runtime.deinit();
+    var saved = SavedTranscript{ .missing = true };
+    execution.setHistory(.{ .ctx = &saved, .load = SavedTranscript.load });
+
+    try runtime.start();
+    const open_id = try testing.allocator.dupe(u8, execution.session_id);
+    defer testing.allocator.free(open_id);
+    const root = try testing.allocator.dupe(u8, runtime.workingDirectory());
+    defer testing.allocator.free(root);
+    try testing.expectError(error.OapReopenRefused, runtime.reopenSaved(open_id, "/tmp/another-workspace"));
+    try testing.expectEqualStrings(root, runtime.workingDirectory());
+    try testing.expect(runtime.started);
+    try runtime.reopenSaved(open_id, root);
+    try testing.expectEqualStrings(open_id, execution.session_id);
+}
 
 test "a reopen that fails once the open session has stopped keeps a session pumping, so the next turn is not lost" {
     var script = Script{};
