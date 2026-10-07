@@ -128,9 +128,14 @@ pub const Adapter = struct {
     allocator: std.mem.Allocator,
     config: Config,
     ids: u64 = 0,
+    message_prefix: [23]u8,
 
     pub fn init(allocator: std.mem.Allocator, config: Config) Adapter {
-        return .{ .allocator = allocator, .config = config };
+        var nonce: [8]u8 = undefined;
+        compat.random.fillSecureBytes(&nonce);
+        var prefix: [23]u8 = "msg_oap".* ++ @as([16]u8, @splat('0'));
+        @memcpy(prefix[7..], &std.fmt.bytesToHex(nonce, .lower));
+        return .{ .allocator = allocator, .config = config, .message_prefix = prefix };
     }
 
     pub fn adapter(self: *Adapter) contract.Adapter {
@@ -281,6 +286,7 @@ pub const Session = struct {
             .model = try session.normalizeModel(own, info.model),
             .revision = capability_revision,
             .counter = &owner.ids,
+            .message_prefix = &owner.message_prefix,
             .now_ms = wallClock,
         }, .{ .context = self, .prompt = prompt, .interrupt = interrupt, .cancel_inbox = cancelInbox });
         self.reducer.open() catch |err| return lift(err);
@@ -976,7 +982,7 @@ test "a steered turn is admitted started, streams its text, and settles when the
     try testing.expectEqual(oap_types.Admission.started, admitted.admission);
     try testing.expectEqualStrings("fixture/fixture", admitted.model_id.?);
     try testing.expectEqual(@as(usize, 1), admitted.message_ids.len);
-    try testing.expect(std.mem.startsWith(u8, admitted.message_ids[0], "msg_oap"));
+    try testing.expect(std.mem.startsWith(u8, admitted.message_ids[0], &probe.adapter.message_prefix));
 
     var seen = std.ArrayList(contract.Event).empty;
     _ = try probe.pumpUntil("run.completed", &seen);
@@ -1269,4 +1275,12 @@ test "a session's messages read as each user message and the last reply before t
     try testing.expectEqualStrings("Found it.", turns[1].text);
     try testing.expectEqual(@as(i64, 12), turns[1].at_ms);
     try testing.expectEqualStrings("thanks", turns[2].text);
+}
+
+test "two adapters mint distinct native message ids" {
+    const first = Adapter.init(testing.allocator, .{ .endpoint = "http://127.0.0.1:1" });
+    const second = Adapter.init(testing.allocator, .{ .endpoint = "http://127.0.0.1:1" });
+    try testing.expect(native.validMessageID(&first.message_prefix));
+    try testing.expect(std.mem.startsWith(u8, &first.message_prefix, "msg_oap"));
+    try testing.expect(!std.mem.eql(u8, &first.message_prefix, &second.message_prefix));
 }
