@@ -1776,7 +1776,7 @@ UNCOMPARED_RESULT_FIELDS = ("duration_ms",)
 
 
 STABILIZED_PATHS = (
-    (re.compile(r"/tmp/makai-pty-[A-Za-z0-9_-]+"), "<tmp>", "each run gets its own temporary home and repository"),
+    (re.compile(re.escape(tempfile.gettempdir()) + r"/makai-pty-[A-Za-z0-9_-]+"), "<tmp>", "each run gets its own temporary home and repository"),
     (re.compile(r"worktrees/[^/\\\"\s]+"), "worktrees/<session>", "a session's worktree is named after its session id"),
 )
 
