@@ -160,3 +160,20 @@ func TestAnAgentRequestAnsweredOutsideTheAgentProfileIsAProtocolError(t *testing
 		t.Fatalf("a provider-profile answer to an agent request answered %v", err)
 	}
 }
+
+func TestAnOAPLineOutsideBothProfilesIsBrokenAndStillRoutable(t *testing.T) {
+	for name, line := range map[string]string{
+		"a misspelled profile": `{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.model-provider","type":"inference.part.delta","id":"e1","in_reply_to":"r0","inference_id":"inf-1","sequence":1,"payload":{}}`,
+		"no profile":           `{"protocol":"open-agent-protocol","version":"0.1","type":"inference.part.delta","id":"e1","in_reply_to":"r0","inference_id":"inf-1","sequence":1,"payload":{}}`,
+		"another protocol":     `{"protocol":"other","version":"0.1","profile":"open-agent-protocol.model-provider-core","type":"inference.part.delta","id":"e1","in_reply_to":"r0","inference_id":"inf-1","sequence":1,"payload":{}}`,
+		"another version":      `{"protocol":"open-agent-protocol","version":"0.2","profile":"open-agent-protocol.model-provider-core","type":"inference.part.delta","id":"e1","in_reply_to":"r0","inference_id":"inf-1","sequence":1,"payload":{}}`,
+	} {
+		in := readLine(t, line)
+		if in.broken == nil || in.agent != nil || in.provider != nil {
+			t.Fatalf("%s was read as %+v, want a broken line", name, in)
+		}
+		if in.inference() != "inf-1" || in.replyTo() != "r0" || !strings.Contains(in.broken.Error(), "not an OAP 0.1 profile") {
+			t.Fatalf("%s lost its routing or its reason: %+v, %v", name, in.header, in.broken)
+		}
+	}
+}

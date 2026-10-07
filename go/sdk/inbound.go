@@ -38,10 +38,15 @@ func decodeInbound(line []byte, legacy bool) (*inbound, error) {
 	}
 	var head struct {
 		routing
-		Profile string `json:"profile"`
+		Protocol string `json:"protocol"`
+		Version  any    `json:"version"`
+		Profile  string `json:"profile"`
 	}
 	if err := json.Unmarshal(line, &head); err != nil {
 		return nil, errMalformedFrame
+	}
+	if head.Protocol != protocol.Protocol || head.Version != protocol.Version || (head.Profile != protocol.Profile && head.Profile != protocol.ProviderProfile) {
+		return &inbound{broken: transportErrorf(nil, "malformed OAP envelope %s: protocol %q, version %v and profile %q are not an OAP 0.1 profile", head.Type, head.Protocol, head.Version, head.Profile), header: head.routing}, nil
 	}
 	if head.Profile == protocol.ProviderProfile {
 		envelope, err := protocol.ParseProviderEnvelope(line)
