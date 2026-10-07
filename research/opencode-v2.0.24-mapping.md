@@ -261,5 +261,8 @@ get answers. `parentID=null` keeps the root sessions, so a forked child is not
 listed as its own work. The native id is `id`, the title `title`, the
 directory `location.directory`, and the update time `time.updated` in epoch
 milliseconds. A session is running when `GET /api/session/active` names it. One
-page is read; the cursor is not followed. The Zig adapter lists; the Go
-adapter does not yet.
+page is read; the cursor is not followed. A fresh session carries no `title`.
+Against the pinned darwin-arm64 binary, a session created in a directory came
+back from `oapx serve --stdio`'s `work.list` with `include_native` as an idle
+native entry under that directory. The Zig adapter lists; the Go adapter does
+not yet.
