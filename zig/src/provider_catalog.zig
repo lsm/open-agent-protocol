@@ -651,7 +651,8 @@ test "a models listing is recorded only where the provider answers one" {
     try std.testing.expect(modelsEndpoint("no-such-provider") == null);
     try std.testing.expectEqualStrings("opencode", modelsDevKey("opencode-zen").?);
     try std.testing.expectEqualStrings("opencode-go", modelsDevKey("opencode-go").?);
-    try std.testing.expect(modelsDevKey("deepseek") == null);
+    try std.testing.expectEqualStrings("deepseek", modelsDevKey("deepseek").?);
+    try std.testing.expect(modelsDevKey("openrouter") == null);
     try std.testing.expect(modelsDevKey("no-such-provider") == null);
 }
 
