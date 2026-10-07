@@ -1,7 +1,6 @@
 package sdk
 
 import (
-	"bytes"
 	"encoding/json"
 	"errors"
 	"io"
@@ -169,21 +168,17 @@ func newFrameReader(r io.Reader) *frameReader {
 var errMalformedFrame = errors.New("oap sdk: malformed JSON frame")
 
 func (fr *frameReader) next() (*frame, error) {
+	in, err := fr.nextInbound(true)
+	if err != nil {
+		return nil, err
+	}
+	return in.legacy, nil
+}
+
+func (fr *frameReader) nextInbound(legacy bool) (*inbound, error) {
 	line, err := fr.reader.readLine()
 	if err != nil {
 		return nil, err
 	}
-	line = bytes.TrimSpace(line)
-	if len(line) == 0 {
-		return nil, errMalformedFrame
-	}
-	var f frame
-	if err := json.Unmarshal(line, &f); err != nil {
-		return nil, errMalformedFrame
-	}
-	if legacyVersion, ok := f.Version.(float64); ok {
-		f.Version = int(legacyVersion)
-	}
-	f.raw = json.RawMessage(append([]byte(nil), line...))
-	return &f, nil
+	return decodeInbound(line, legacy)
 }

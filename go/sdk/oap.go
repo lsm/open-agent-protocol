@@ -21,67 +21,70 @@ func oapFrame(profile, kind string, payload any) protocol.Envelope {
 		Type: protocol.EnvelopeType(kind), ID: protocol.EnvelopeID(newULID()), Payload: mustMarshal(payload)}
 }
 
-func oapRequest(ctx context.Context, t *transport, sub *subscription, timeout time.Duration, request protocol.Envelope) (protocol.Envelope, error) {
-	sub.correlate(string(request.ID))
-	defer sub.uncorrelate(string(request.ID))
-	if err := t.sendEnvelope(request); err != nil {
-		return protocol.Envelope{}, err
+func providerFrame(kind string, payload any) protocol.ProviderEnvelope {
+	return protocol.ProviderEnvelope{Protocol: oapProtocol, Version: oapVersion, Profile: oapProvider,
+		Type: protocol.EnvelopeType(kind), ID: protocol.EnvelopeID(newULID()), Payload: mustMarshal(payload)}
+}
+
+func oapExchange(ctx context.Context, sub *subscription, timeout time.Duration, id protocol.EnvelopeID, operation string, send func() error) (*inbound, error) {
+	sub.correlate(string(id))
+	defer sub.uncorrelate(string(id))
+	if err := send(); err != nil {
+		return nil, err
 	}
 	for {
-		result, err := sub.next(ctx, timeout, string(request.Type))
+		answer, err := sub.next(ctx, timeout, operation)
 		if err != nil {
-			return protocol.Envelope{}, err
+			return nil, err
 		}
-		envelope, err := asEnvelope(result)
-		if err != nil {
-			if result.InReplyTo != string(request.ID) {
-				continue
-			}
-			return protocol.Envelope{}, err
-		}
-		if envelope.InReplyTo != request.ID {
+		if answer.replyTo() != string(id) {
 			continue
 		}
-		if envelope.Type == "error" || envelope.Type == "error.response" {
-			return protocol.Envelope{}, oapFailure(envelope, "")
+		if answer.broken != nil {
+			return nil, answer.broken
 		}
-		return envelope, nil
+		if kind := answer.kind(); kind == "error" || kind == "error.response" {
+			return nil, answer.failure("")
+		}
+		return answer, nil
 	}
 }
 
-func asEnvelope(f *frame) (protocol.Envelope, error) {
-	members := map[string]json.RawMessage{}
-	if err := json.Unmarshal(f.raw, &members); err != nil {
-		return protocol.Envelope{}, transportErrorf(err, "malformed OAP envelope %s", f.Type)
-	}
-	if _, isText := f.Version.(string); !isText {
-		members["version"] = mustMarshal(oapVersion)
-	}
-	var envelope protocol.Envelope
-	if err := json.Unmarshal(mustMarshal(members), &envelope); err != nil {
-		return protocol.Envelope{}, transportErrorf(err, "malformed OAP envelope %s: %v", f.Type, err)
-	}
-	return envelope, nil
-}
-
-func envelopeFailure(f *frame, providerID string) error {
-	envelope, err := asEnvelope(f)
+func oapRequest(ctx context.Context, t *transport, sub *subscription, timeout time.Duration, request protocol.Envelope) (protocol.Envelope, error) {
+	answer, err := oapExchange(ctx, sub, timeout, request.ID, string(request.Type), func() error { return t.sendEnvelope(request) })
 	if err != nil {
-		return err
+		return protocol.Envelope{}, err
 	}
-	return oapFailure(envelope, providerID)
+	if answer.agent == nil {
+		return protocol.Envelope{}, &ProtocolError{Code: CodeMalformedResponse, Message: fmt.Sprintf("%s was answered outside the agent profile", request.Type)}
+	}
+	return *answer.agent, nil
+}
+
+func providerRequest(ctx context.Context, t *transport, sub *subscription, timeout time.Duration, request protocol.ProviderEnvelope) (protocol.ProviderEnvelope, error) {
+	answer, err := oapExchange(ctx, sub, timeout, request.ID, string(request.Type), func() error { return t.sendProviderEnvelope(request) })
+	if err != nil {
+		return protocol.ProviderEnvelope{}, err
+	}
+	if answer.provider == nil {
+		return protocol.ProviderEnvelope{}, &ProtocolError{Code: CodeMalformedResponse, Message: fmt.Sprintf("%s was answered outside the provider profile", request.Type)}
+	}
+	return *answer.provider, nil
 }
 
 func envelopePayload(env protocol.Envelope) jsonObject {
-	payload, _ := decodeObject(env.Payload)
+	return payloadObject(env.Payload)
+}
+
+func payloadObject(raw json.RawMessage) jsonObject {
+	payload, _ := decodeObject(raw)
 	if payload == nil {
 		return jsonObject{}
 	}
 	return payload
 }
 
-func oapFailure(env protocol.Envelope, providerID string) error {
-	payload := envelopePayload(env)
+func oapFailure(payload jsonObject, providerID string) error {
 	if nested := payload.obj("error"); nested != nil {
 		payload = nested
 	}
@@ -206,8 +209,7 @@ func oapUsage(value jsonObject) *Usage {
 	return &Usage{Input: int64(input), Output: int64(output)}
 }
 
-func oapResponse(f *frame, modelRef, messageKey string) (*CompletionResponse, error) {
-	payload := f.payload()
+func oapResponse(payload jsonObject, modelRef, messageKey string) (*CompletionResponse, error) {
 	provider, wire, model := oapModelParts(modelRef)
 	message := payload.obj(messageKey)
 	if message == nil || message.str("role") != string(RoleAssistant) {
@@ -312,13 +314,13 @@ func oapResponseMessage(content any) (ResponseMessage, error) {
 }
 
 func (s *ModelsService) oapList(ctx context.Context, req ListModelsRequest) (*ListModelsResponse, error) {
-	request := oapFrame(oapProvider, "provider.models.list.request", map[string]any{})
+	request := providerFrame("provider.models.list.request", map[string]any{})
 	if req.ProviderID != "" {
 		request.Payload = mustMarshal(map[string]any{"provider_id": req.ProviderID})
 	}
 	sub := s.transport.subscribeStream(string(request.ID))
 	defer sub.close()
-	response, err := oapRequest(ctx, s.transport, sub, s.timeout, request)
+	response, err := providerRequest(ctx, s.transport, sub, s.timeout, request)
 	if err != nil {
 		return nil, err
 	}
@@ -326,7 +328,7 @@ func (s *ModelsService) oapList(ctx context.Context, req ListModelsRequest) (*Li
 		return nil, &ProtocolError{Code: CodeMalformedResponse, Message: "expected provider.models.list.response"}
 	}
 	result := &ListModelsResponse{Models: []ModelDescriptor{}, FetchedAt: time.Now()}
-	for _, raw := range envelopePayload(response).arr("models") {
+	for _, raw := range payloadObject(response.Payload).arr("models") {
 		entry, ok := raw.(map[string]any)
 		if !ok {
 			return nil, &ProtocolError{Code: CodeMalformedResponse, Message: "model entry is not an object"}
@@ -404,7 +406,7 @@ func (s *ModelsService) oapList(ctx context.Context, req ListModelsRequest) (*Li
 		descriptor.Family = model.str("family")
 		result.Models = append(result.Models, descriptor)
 	}
-	if published, ok := envelopePayload(response)["catalog"].(map[string]any); ok {
+	if published, ok := payloadObject(response.Payload)["catalog"].(map[string]any); ok {
 		catalog := &ModelCatalog{}
 		if value, ok := jsonObject(published).num("observed_at_ms"); ok {
 			catalog.ObservedAtMS = int64(value)
@@ -445,10 +447,10 @@ func (s *ProviderService) oapStream(ctx context.Context, req CompletionRequest) 
 			payload["metadata"] = req.Options.Metadata
 		}
 	}
-	request := oapFrame(oapProvider, "inference.create.request", payload)
+	request := providerFrame("inference.create.request", payload)
 	sub := s.transport.subscribeStream(string(request.ID))
 	sub.correlate(string(request.ID))
-	if err := s.transport.sendEnvelope(request); err != nil {
+	if err := s.transport.sendProviderEnvelope(request); err != nil {
 		sub.close()
 		return nil, err
 	}
@@ -479,19 +481,23 @@ func (s *ProviderStream) oapNext() bool {
 		return false
 	}
 	for {
-		f, err := s.sub.next(s.ctx, s.timeout, "OAP inference")
+		in, err := s.sub.next(s.ctx, s.timeout, "OAP inference")
 		if err != nil {
 			s.fail(err)
 			return false
 		}
-		p := f.payload()
-		switch f.Type {
+		if in.broken != nil {
+			s.fail(in.broken)
+			return false
+		}
+		p := in.body()
+		switch in.kind() {
 		case "inference.create.response":
 			if accepted, _ := p.boolean("accepted"); !accepted {
-				s.fail(envelopeFailure(f, s.fallbackProvider))
+				s.fail(in.failure(s.fallbackProvider))
 				return false
 			}
-			s.oapInferenceID = f.InferenceID
+			s.oapInferenceID = protocol.InferenceID(in.inference())
 		case "inference.started":
 			provider, wire, model := oapModelParts(s.oapModelRef)
 			s.current = &MessageStart{ProviderID: provider, API: wire, ModelID: model}
@@ -520,7 +526,7 @@ func (s *ProviderStream) oapNext() bool {
 				return true
 			}
 		case "inference.completed":
-			response, err := oapResponse(f, s.oapModelRef, "message")
+			response, err := oapResponse(p, s.oapModelRef, "message")
 			if err != nil {
 				s.fail(err)
 				return false
@@ -531,10 +537,10 @@ func (s *ProviderStream) oapNext() bool {
 			s.finished = true
 			return true
 		case "inference.failed", "error":
-			s.fail(envelopeFailure(f, s.fallbackProvider))
+			s.fail(in.failure(s.fallbackProvider))
 			return false
 		default:
-			s.fail(&StreamError{Kind: KindTransportError, Message: fmt.Sprintf("unexpected OAP inference event %q", f.Type)})
+			s.fail(&StreamError{Kind: KindTransportError, Message: fmt.Sprintf("unexpected OAP inference event %q", in.kind())})
 			return false
 		}
 	}
@@ -777,16 +783,21 @@ func (s *AgentStream) oapNext() bool {
 	}
 	state := s.oapState
 	for {
-		f, err := state.sub.next(state.ctx, state.timeout, "OAP agent run")
+		in, err := state.sub.next(state.ctx, state.timeout, "OAP agent run")
 		if err != nil {
 			s.fail(err)
 			return false
 		}
-		if f.RunID != "" && f.RunID != state.runID {
+		if run := in.run(); run != "" && run != state.runID {
 			continue
 		}
-		p := f.payload()
-		switch f.Type {
+		if in.broken != nil {
+			state.settled = true
+			s.fail(in.broken)
+			return false
+		}
+		p := in.body()
+		switch in.kind() {
 		case "run.started":
 			if modelRef := p.str("model_id"); modelRef != "" {
 				state.modelRef = modelRef
@@ -808,7 +819,7 @@ func (s *AgentStream) oapNext() bool {
 			if modelRef == "" {
 				modelRef = p.str("model_id")
 			}
-			response, err := oapResponse(f, modelRef, "final_response")
+			response, err := oapResponse(p, modelRef, "final_response")
 			if err != nil {
 				state.settled = true
 				s.fail(err)
@@ -821,12 +832,12 @@ func (s *AgentStream) oapNext() bool {
 			return true
 		case "run.failed", "run.cancelled", "error.response":
 			state.settled = true
-			s.fail(envelopeFailure(f, providerIDFromRef(state.modelRef)))
+			s.fail(in.failure(providerIDFromRef(state.modelRef)))
 			return false
 		case "session.state.updated", "run.status.updated":
 			continue
 		default:
-			s.fail(&StreamError{Kind: KindTransportError, Message: fmt.Sprintf("unexpected OAP agent event %q", f.Type)})
+			s.fail(&StreamError{Kind: KindTransportError, Message: fmt.Sprintf("unexpected OAP agent event %q", in.kind())})
 			return false
 		}
 	}
@@ -976,25 +987,28 @@ func (s *AuthService) oapLogin(ctx context.Context, providerID string, handlers 
 	}()
 	nextSequence := int64(1)
 	for {
-		f, err := sub.next(ctx, s.timeout, "OAP auth login")
+		in, err := sub.next(ctx, s.timeout, "OAP auth login")
 		if err != nil {
 			if ctx.Err() != nil {
 				return &AuthError{Kind: AuthKindCancelled, ProviderID: providerID, FlowID: flowID, Message: "auth login aborted", err: ctx.Err()}
 			}
 			return authErrorFrom(err, providerID, flowID)
 		}
-		if f.Type != "auth.login.event" && f.Type != "auth.login.completed" {
-			return &AuthError{Kind: AuthKindTransportError, ProviderID: providerID, FlowID: flowID, Message: fmt.Sprintf("unexpected OAP auth flow event %q", f.Type)}
+		if in.broken != nil {
+			return authErrorFrom(in.broken, providerID, flowID)
 		}
-		if f.Sequence != nextSequence {
+		if in.kind() != "auth.login.event" && in.kind() != "auth.login.completed" {
+			return &AuthError{Kind: AuthKindTransportError, ProviderID: providerID, FlowID: flowID, Message: fmt.Sprintf("unexpected OAP auth flow event %q", in.kind())}
+		}
+		if in.sequence() != nextSequence {
 			return &AuthError{Kind: AuthKindTransportError, Code: "protocol_violation", ProviderID: providerID, FlowID: flowID, Message: "auth flow sequence gap"}
 		}
 		nextSequence++
-		p := f.payload()
+		p := in.body()
 		if p.str("flow_id") != flowID || p.str("provider_id") != providerID {
 			return &AuthError{Kind: AuthKindTransportError, Code: "protocol_violation", ProviderID: providerID, FlowID: flowID, Message: "auth flow identity changed"}
 		}
-		if f.Type == "auth.login.completed" {
+		if in.kind() == "auth.login.completed" {
 			settled = true
 			switch p.str("status") {
 			case "success":

@@ -2,10 +2,11 @@ package sdk
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
+
+	"github.com/lsm/open-agent-protocol/go/protocol"
 )
 
 type ProviderService struct {
@@ -35,7 +36,7 @@ func (s *ProviderService) Complete(ctx context.Context, req CompletionRequest) (
 	}
 
 	for {
-		f, err := sub.next(ctx, s.timeout, "provider complete_response")
+		f, err := sub.nextFrame(ctx, s.timeout, "provider complete_response")
 		if err != nil {
 
 			cancelStream(s.transport, streamID)
@@ -97,7 +98,7 @@ func (s *ProviderService) Stream(ctx context.Context, req CompletionRequest) (*P
 type ProviderStream struct {
 	oap              bool
 	oapModelRef      string
-	oapInferenceID   string
+	oapInferenceID   protocol.InferenceID
 	oapPartKinds     map[int]string
 	oapResponse      *CompletionResponse
 	ctx              context.Context
@@ -122,7 +123,7 @@ func (s *ProviderStream) Next() bool {
 		return false
 	}
 	for {
-		f, err := s.sub.next(s.ctx, s.timeout, "provider stream event")
+		f, err := s.sub.nextFrame(s.ctx, s.timeout, "provider stream event")
 		if err != nil {
 			s.fail(err)
 			return false
@@ -169,9 +170,9 @@ func (s *ProviderStream) Close() error {
 			return s.err
 		}
 		if !s.finished && s.oapInferenceID != "" {
-			cancel := oapFrame(oapProvider, "inference.cancel.request", map[string]any{"reason": "caller_closed"})
-			cancel.Unknown = map[string]json.RawMessage{"inference_id": mustMarshal(s.oapInferenceID)}
-			s.transport.sendEnvelopeBestEffort(cancel)
+			cancel := providerFrame("inference.cancel.request", map[string]any{"reason": "caller_closed"})
+			cancel.InferenceID = s.oapInferenceID
+			s.transport.sendProviderEnvelopeBestEffort(cancel)
 		}
 		s.sub.close()
 		s.sub = nil
