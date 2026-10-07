@@ -32,7 +32,13 @@ func oapRequest(ctx context.Context, t *transport, sub *subscription, timeout ti
 		if err != nil {
 			return protocol.Envelope{}, err
 		}
-		envelope := asEnvelope(result)
+		envelope, err := asEnvelope(result)
+		if err != nil {
+			if result.InReplyTo != string(request.ID) {
+				continue
+			}
+			return protocol.Envelope{}, err
+		}
 		if envelope.InReplyTo != request.ID {
 			continue
 		}
@@ -43,15 +49,27 @@ func oapRequest(ctx context.Context, t *transport, sub *subscription, timeout ti
 	}
 }
 
-func asEnvelope(f *frame) protocol.Envelope {
+func asEnvelope(f *frame) (protocol.Envelope, error) {
 	members := map[string]json.RawMessage{}
-	_ = json.Unmarshal(f.raw, &members)
+	if err := json.Unmarshal(f.raw, &members); err != nil {
+		return protocol.Envelope{}, transportErrorf(err, "malformed OAP envelope %s", f.Type)
+	}
 	if _, isText := f.Version.(string); !isText {
 		members["version"] = mustMarshal(oapVersion)
 	}
 	var envelope protocol.Envelope
-	_ = json.Unmarshal(mustMarshal(members), &envelope)
-	return envelope
+	if err := json.Unmarshal(mustMarshal(members), &envelope); err != nil {
+		return protocol.Envelope{}, transportErrorf(err, "malformed OAP envelope %s: %v", f.Type, err)
+	}
+	return envelope, nil
+}
+
+func envelopeFailure(f *frame, providerID string) error {
+	envelope, err := asEnvelope(f)
+	if err != nil {
+		return err
+	}
+	return oapFailure(envelope, providerID)
 }
 
 func envelopePayload(env protocol.Envelope) jsonObject {
@@ -470,7 +488,7 @@ func (s *ProviderStream) oapNext() bool {
 		switch f.Type {
 		case "inference.create.response":
 			if accepted, _ := p.boolean("accepted"); !accepted {
-				s.fail(oapFailure(asEnvelope(f), s.fallbackProvider))
+				s.fail(envelopeFailure(f, s.fallbackProvider))
 				return false
 			}
 			s.oapInferenceID = f.InferenceID
@@ -513,7 +531,7 @@ func (s *ProviderStream) oapNext() bool {
 			s.finished = true
 			return true
 		case "inference.failed", "error":
-			s.fail(oapFailure(asEnvelope(f), s.fallbackProvider))
+			s.fail(envelopeFailure(f, s.fallbackProvider))
 			return false
 		default:
 			s.fail(&StreamError{Kind: KindTransportError, Message: fmt.Sprintf("unexpected OAP inference event %q", f.Type)})
@@ -803,7 +821,7 @@ func (s *AgentStream) oapNext() bool {
 			return true
 		case "run.failed", "run.cancelled", "error.response":
 			state.settled = true
-			s.fail(oapFailure(asEnvelope(f), providerIDFromRef(state.modelRef)))
+			s.fail(envelopeFailure(f, providerIDFromRef(state.modelRef)))
 			return false
 		case "session.state.updated", "run.status.updated":
 			continue
