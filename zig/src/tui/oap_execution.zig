@@ -1274,9 +1274,9 @@ pub const OapExecution = struct {
         if (std.mem.eql(u8, kind, "action.call.completed") or std.mem.eql(u8, kind, "action.call.failed")) {
             const failed = std.mem.eql(u8, kind, "action.call.failed");
             const failure: ?std.json.ObjectMap = if (!failed) null else if (body.get("error")) |value| (if (value == .object) value.object else null) else null;
-            const carried: ?std.json.ObjectMap = if (failed) null else resultWithText(body.get("result"));
-            const details: ?std.json.Value = if (failure) |held| held.get("details") else if (carried) |held| held.get("details") else null;
-            const message = try jsonText(self.allocator, if (failure) |held| held.get("message") else if (carried) |held| held.get("text") else null);
+            const carried: ?std.json.Value = if (failed) null else resultText(root);
+            const details: ?std.json.Value = if (failure) |held| held.get("details") else if (carried != null) body.get("result") else null;
+            const message = try jsonText(self.allocator, if (failure) |held| held.get("message") else carried);
             defer self.allocator.free(message);
             const result = if (details) |held|
                 try jsonText(self.allocator, held)
@@ -1528,12 +1528,13 @@ fn contextTokens(root: std.json.ObjectMap) ?u64 {
     return if (tokens == .integer and tokens.integer >= 0) @intCast(tokens.integer) else null;
 }
 
-fn resultWithText(value: ?std.json.Value) ?std.json.ObjectMap {
-    const result = value orelse return null;
-    if (result != .object or result.object.count() != 2) return null;
-    const text = result.object.get("text") orelse return null;
-    if (text != .string or result.object.get("details") == null) return null;
-    return result.object;
+fn resultText(root: std.json.ObjectMap) ?std.json.Value {
+    const extensions = root.get("extensions") orelse return null;
+    if (extensions != .object) return null;
+    const ours = extensions.object.get(oapx_adapter.settings_key) orelse return null;
+    if (ours != .object) return null;
+    const text = ours.object.get("result_text") orelse return null;
+    return if (text == .string) text else null;
 }
 
 fn jsonText(allocator: std.mem.Allocator, value: ?std.json.Value) ![]u8 {
@@ -2462,6 +2463,32 @@ test "a completed call over OAP shows the loop's own result text, as the local l
     try testing.expect(ended);
     try testing.expect(ended_ok);
     try testing.expect(text_seen);
+}
+
+test "another endpoint's result shaped like text and details is shown as it came, since only the oapx extension carries the text" {
+    var script = Script{};
+    var execution: *OapExecution = undefined;
+    var runtime = try remoteRuntime(&script, &execution, .low);
+    defer execution.destroy();
+    defer runtime.deinit();
+    try runtime.start();
+
+    try execution.translateLine("{\"type\":\"action.call.completed\",\"session_id\":\"s\",\"run_id\":\"r\",\"payload\":{\"tool_call_id\":\"c\",\"name\":\"native\",\"result\":{\"text\":\"native text\",\"details\":{\"a\":1}}}}");
+    var raw = false;
+    var shown = false;
+    while (runtime.streamEvents().poll()) |event| {
+        var owned = event;
+        defer owned.deinit(testing.allocator);
+        switch (owned) {
+            .tool_execution_end => |payload| raw = std.mem.indexOf(u8, payload.result_json.slice(), "native text") != null,
+            .message_end => |payload| if (payload.role == .tool_result) {
+                shown = true;
+            },
+            else => {},
+        }
+    }
+    try testing.expect(raw);
+    try testing.expect(!shown);
 }
 
 fn failedCallEvents(allocator: std.mem.Allocator) !void {
