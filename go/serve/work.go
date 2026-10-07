@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"slices"
 	"sort"
 	"strings"
 	"unicode/utf8"
@@ -338,16 +339,37 @@ type NativeFailure struct {
 	Message string
 }
 
+type NativeQuery struct {
+	Adapters  []string
+	Directory string
+	Limit     int
+}
+
 func (h *Hub) Natives(ctx context.Context, known map[string]bool) ([]Native, []NativeFailure) {
+	return h.NativesFor(ctx, known, NativeQuery{})
+}
+
+func (h *Hub) NativesFor(ctx context.Context, known map[string]bool, query NativeQuery) ([]Native, []NativeFailure) {
+	limit := query.Limit
+	if limit <= 0 {
+		limit = NativeListLimit
+	}
 	var found []Native
 	var failures []NativeFailure
 	for _, name := range h.registry.Names() {
+		if len(query.Adapters) > 0 && !slices.Contains(query.Adapters, name) {
+			continue
+		}
 		implementation, _ := h.registry.Lookup(name)
 		lister, ok := implementation.(base.NativeLister)
 		if !ok {
 			continue
 		}
-		listed, err := lister.NativeList(ctx, base.NativeListRequest{Directory: h.registry.WorkingDirectory(name), Limit: NativeListLimit})
+		directory := h.registry.WorkingDirectory(name)
+		if query.Directory != "" && h.registry.ServesAnyDirectory(name) {
+			directory = query.Directory
+		}
+		listed, err := lister.NativeList(ctx, base.NativeListRequest{Directory: directory, Limit: limit})
 		if err != nil {
 			failures = append(failures, NativeFailure{Adapter: name, Message: err.Error()})
 			continue

@@ -5,11 +5,14 @@ import (
 	"fmt"
 
 	base "github.com/lsm/open-agent-protocol/go/adapter"
+	"github.com/lsm/open-agent-protocol/go/adapter/opencode/internal/httpapi"
 	"github.com/lsm/open-agent-protocol/go/adapter/opencode/internal/native"
 )
 
+const nativeListPagesMax = 16
+
 type sessionLister interface {
-	Sessions(ctx context.Context, directory string, limit int) ([]native.SessionInfo, error)
+	Sessions(ctx context.Context, directory, cursor string, limit int) (httpapi.SessionPage, error)
 }
 
 func (a *Adapter) NativeList(ctx context.Context, request base.NativeListRequest) ([]base.NativeListing, error) {
@@ -24,9 +27,18 @@ func (a *Adapter) NativeList(ctx context.Context, request base.NativeListRequest
 	if !ok {
 		return nil, nil
 	}
-	infos, err := lister.Sessions(ctx, request.Directory, request.Limit)
-	if err != nil {
-		return nil, fmt.Errorf("list OpenCode sessions: %w", err)
+	var infos []native.SessionInfo
+	cursor := ""
+	for pages := 0; pages < nativeListPagesMax && len(infos) < request.Limit; pages++ {
+		page, err := lister.Sessions(ctx, request.Directory, cursor, request.Limit-len(infos))
+		if err != nil {
+			return nil, fmt.Errorf("list OpenCode sessions: %w", err)
+		}
+		infos = append(infos, page.Data...)
+		if len(page.Data) == 0 || page.Next == "" || page.Next == cursor {
+			break
+		}
+		cursor = page.Next
 	}
 	running, err := client.Active(ctx)
 	if err != nil {

@@ -281,7 +281,7 @@ func TestWorkListGroupsHeldAndUnheldSessionsAndShowsClosedOnesOnlyOnRequest(t *t
 	}
 	front, _ := harness(t, store)
 	start(t, front, "hi")
-	groups := encoded(t)(front.List(ctx, false, false))["groups"].([]any)
+	groups := encoded(t)(front.List(ctx, ListRequest{}))["groups"].([]any)
 	if len(groups) != 2 || groups[0].(map[string]any)["directory"] != "/work/a" {
 		t.Fatalf("listed %v", groups)
 	}
@@ -289,7 +289,7 @@ func TestWorkListGroupsHeldAndUnheldSessionsAndShowsClosedOnesOnlyOnRequest(t *t
 	if len(left) != 1 || left[0].(map[string]any)["held"] != false || left[0].(map[string]any)["state"] != "live" {
 		t.Fatalf("the unheld group listed %v", left)
 	}
-	all := encoded(t)(front.List(ctx, true, false))["groups"].([]any)[1].(map[string]any)["work"].([]any)
+	all := encoded(t)(front.List(ctx, ListRequest{IncludeClosed: true}))["groups"].([]any)[1].(map[string]any)["work"].([]any)
 	if len(all) != 2 || all[0].(map[string]any)["state"] != "closed" {
 		t.Fatalf("include_closed listed %v", all)
 	}

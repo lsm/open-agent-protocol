@@ -206,6 +206,13 @@ pub const NativeTarget = struct {
     name: []const u8,
     adapter: contract.Adapter,
     directory: []const u8,
+    limit: usize = native_list_limit,
+};
+
+pub const NativeQuery = struct {
+    adapters: []const []const u8 = &.{},
+    directory: []const u8 = "",
+    limit: usize = native_list_limit,
 };
 
 pub const NativeListing = struct {
@@ -218,7 +225,7 @@ pub fn listTargets(arena: std.mem.Allocator, targets: []const NativeTarget) std.
     const listed = try arena.alloc(NativeListing, targets.len);
     for (targets, listed) |target, *slot| {
         var refusal = contract.Refusal{};
-        const answered = target.adapter.nativeList(arena, .{ .directory = target.directory, .limit = native_list_limit }, &refusal) orelse {
+        const answered = target.adapter.nativeList(arena, .{ .directory = target.directory, .limit = target.limit }, &refusal) orelse {
             slot.* = .{ .name = target.name };
             continue;
         };
@@ -954,13 +961,15 @@ pub const Hub = struct {
         return .{ .first_index = entry.turns_dropped + from, .turns = entry.turns.items[from..to] };
     }
 
-    pub fn nativeTargets(self: *Hub, arena: std.mem.Allocator) std.mem.Allocator.Error![]const NativeTarget {
+    pub fn nativeTargets(self: *Hub, arena: std.mem.Allocator, query: NativeQuery) std.mem.Allocator.Error![]const NativeTarget {
         var targets = std.ArrayList(NativeTarget).empty;
         for (self.adapters.items) |registered| {
             if (registered.adapter.vtable.native_list == null) continue;
+            if (query.adapters.len > 0 and !declared(query.adapters, registered.name)) continue;
             const name = try arena.dupe(u8, registered.name);
-            const directory = try arena.dupe(u8, registered.directory);
-            try targets.append(arena, .{ .name = name, .adapter = registered.adapter, .directory = directory });
+            const place = if (query.directory.len > 0 and registered.template != null) query.directory else registered.directory;
+            const directory = try arena.dupe(u8, place);
+            try targets.append(arena, .{ .name = name, .adapter = registered.adapter, .directory = directory, .limit = query.limit });
         }
         return targets.items;
     }
@@ -4927,4 +4936,34 @@ test "a reply longer than the bound is cut on a character boundary" {
     try std.testing.expect(std.unicode.utf8ValidateSlice(long[0..cut]));
     const short = "short";
     try std.testing.expectEqual(short.len, Hub.replyCut(short));
+}
+
+fn listedNothing(ptr: *anyopaque, arena: std.mem.Allocator, request: contract.NativeListRequest, refusal: *contract.Refusal) contract.Failure![]const contract.NativeSession {
+    _ = ptr;
+    _ = arena;
+    _ = request;
+    _ = refusal;
+    return &.{};
+}
+
+test "native targets keep only the named adapters and ask an any-directory one for the named place" {
+    var adapter = memory.Adapter.init(testing.allocator);
+    defer adapter.deinit();
+    var hub = Hub.init(testing.allocator, testClock, .{});
+    defer hub.deinit();
+    const listing = contract.Adapter{ .ptr = adapter.adapter().ptr, .vtable = &.{ .probe = adapter.adapter().vtable.probe, .open = adapter.adapter().vtable.open, .native_list = listedNothing } };
+    for ([_][]const u8{ "placed", "fixed", "skipped" }) |name| try hub.register(name, listing);
+    for (hub.adapters.items) |*registered| registered.directory = try std.mem.concat(hub.allocator, u8, &.{ "/", registered.name });
+    hub.adapters.items[0].template = @as(Template, undefined);
+    var scratch = std.heap.ArenaAllocator.init(testing.allocator);
+    defer scratch.deinit();
+    const targets = try hub.nativeTargets(scratch.allocator(), .{ .adapters = &.{ "placed", "fixed" }, .directory = "/elsewhere", .limit = 7 });
+    try testing.expectEqual(@as(usize, 2), targets.len);
+    try testing.expectEqualStrings("/elsewhere", targets[0].directory);
+    try testing.expectEqual(@as(usize, 7), targets[0].limit);
+    try testing.expectEqualStrings("/fixed", targets[1].directory);
+    const all = try hub.nativeTargets(scratch.allocator(), .{});
+    try testing.expectEqual(@as(usize, 3), all.len);
+    try testing.expectEqualStrings("/placed", all[0].directory);
+    try testing.expectEqual(native_list_limit, all[2].limit);
 }

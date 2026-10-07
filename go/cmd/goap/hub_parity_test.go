@@ -36,6 +36,11 @@ var hubParityScenarios = map[string][]string{
 		`{"id":18,"op":"work.start","adapter":"memory","request":{"message":""}}`,
 		`{"id":19,"op":"work.send","session_id":"absent","request":"x"}`,
 		`{"id":20,"op":"work.capabilities"}`,
+		`{"id":21,"op":"work.list","request":{"limit":0}}`,
+		`{"id":22,"op":"work.list","request":{"limit":101}}`,
+		`{"id":23,"op":"work.list","request":{"cursor":"nope"}}`,
+		`{"id":24,"op":"work.list","request":{"limit":"ten"}}`,
+		`{"id":25,"op":"work.list","request":{"directory":"/nowhere","adapters":["memory"],"limit":5}}`,
 	},
 	"the five ops this wire serves": {
 		`{"id":1,"op":"adapters"}`,
