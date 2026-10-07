@@ -1731,11 +1731,19 @@ UNCOMPARED_EVENT_TYPES = {
 UNCOMPARED_EVENT_FIELDS = {
     "at_ms": "a wall-clock stamp",
     "generation": "a counter local to the runtime that produced the event",
+    "raw_total_bytes": "the size of a tool's result, which carries a timing whose digits vary",
+    "returned_total_bytes": "as raw_total_bytes",
+    "estimated_returned_tokens": "derived from returned_total_bytes",
 }
 JSON_EVENT_FIELDS = ("result_json", "args_json", "tool_calls_json", "content_json", "details_json", "artifacts_json")
 
 
-UNCOMPARED_RESULT_FIELDS = ("duration_ms",)
+UNCOMPARED_RESULT_FIELDS = {
+    "duration_ms": "a wall-clock measure",
+    "stdout_bytes": "output that names a per-run path is as long as that path; the output text itself is compared in the tool's result message",
+    "stderr_bytes": "as stdout_bytes",
+    "raw_bytes": "as stdout_bytes",
+}
 
 
 def without_timings(result_json):
