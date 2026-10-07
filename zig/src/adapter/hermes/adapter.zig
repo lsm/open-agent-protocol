@@ -76,7 +76,12 @@ pub const Adapter = struct {
     }
 
     pub fn adapter(self: *Adapter) contract.Adapter {
-        return .{ .ptr = self, .vtable = &.{ .probe = probe, .open = open } };
+        return .{ .ptr = self, .vtable = &.{ .probe = probe, .open = open, .native_list = nativeList } };
+    }
+
+    fn nativeList(ptr: *anyopaque, arena: std.mem.Allocator, request: contract.NativeListRequest, refusal: *contract.Refusal) contract.Failure![]const contract.NativeSession {
+        const self: *Adapter = @ptrCast(@alignCast(ptr));
+        return Session.list(self, arena, request, refusal);
     }
 
     fn probe(ptr: *anyopaque, refusal: *contract.Refusal) contract.Failure!contract.Descriptor {
@@ -127,6 +132,28 @@ pub const Session = struct {
         });
         self.reducer.?.open();
         return self;
+    }
+
+    fn list(owner: *Adapter, arena: std.mem.Allocator, request: contract.NativeListRequest, refusal: *contract.Refusal) contract.Failure![]const contract.NativeSession {
+        const self = try construct(owner, arena, .{ .participant = "" }, refusal);
+        defer self.destroy();
+        try self.handshake(arena, refusal);
+        var params: std.json.ObjectMap = .empty;
+        try params.put(self.owned(), "limit", .{ .integer = @intCast(request.limit) });
+        const answered = try self.call(arena, "session.list", .{ .object = params }, refusal);
+        const sessions = if (answered == .object) answered.object.get("sessions") orelse return &.{} else return &.{};
+        if (sessions != .array) return &.{};
+        var listed: std.ArrayList(contract.NativeSession) = .empty;
+        for (sessions.array.items) |row| {
+            if (listed.items.len >= request.limit) break;
+            const native_id = member(row, "id");
+            if (native_id.len == 0) continue;
+            const named = member(row, "title");
+            const title = try arena.dupe(u8, if (named.len > 0) named else member(row, "preview"));
+            const kept_id = try arena.dupe(u8, native_id);
+            try listed.append(arena, .{ .native_id = kept_id, .title = title, .updated_at_ms = startedMillis(row) });
+        }
+        return listed.items;
     }
 
     fn createNative(self: *Session, arena: std.mem.Allocator, refusal: *contract.Refusal) contract.Failure![]const u8 {
@@ -694,6 +721,16 @@ fn runningOrBusy(resumed: std.json.Value) bool {
     }
     const status = member(resumed, "status");
     return status.len > 0 and !std.mem.eql(u8, status, "idle");
+}
+
+fn startedMillis(row: std.json.Value) i64 {
+    if (row != .object) return 0;
+    const started = row.object.get("started_at") orelse return 0;
+    return switch (started) {
+        .integer => |seconds| seconds *| 1000,
+        .float => |seconds| if (std.math.isFinite(seconds) and @abs(seconds) < 1e15) @intFromFloat(seconds * 1000) else 0,
+        else => 0,
+    };
 }
 
 fn member(value: std.json.Value, key: []const u8) []const u8 {
@@ -1295,4 +1332,33 @@ test "Hermes replays the captured reload exchanges through its native loader" {
         try testing.expectEqualStrings(stored, member(written.object.get("params").?, "session_id"));
         try testing.expectEqual(@as(usize, 1), written.object.get("params").?.object.count());
     }
+}
+
+test "a native list asks the gateway's session.list for the limit and names each row by its stored id, title or preview, and start" {
+    var probe: Probe = undefined;
+    try probe.init(
+        \\#!/bin/sh
+        \\exec 3>>"$(dirname "$0")/stdin.log"
+        \\take() { IFS= read -r line || exit 0; printf '%s\n' "$line" >&3; }
+        \\printf '{"jsonrpc":"2.0","method":"event","params":{"type":"gateway.ready","payload":{"skin":{},"change_events":true,"replay_epoch":"e3b0c44298fc1c149afbf4c8996fb924"}}}\n'
+        \\take; printf '{"id":1,"jsonrpc":"2.0","result":{"sessions":[{"id":"key0001","title":"named","preview":"hello","started_at":1791317553.25,"message_count":4,"source":"tui"},{"id":"","title":"x"},{"id":"key0002","title":"","preview":"from preview","started_at":1791317500,"message_count":1,"source":"cli"},{"id":"key0003","title":"over","started_at":1}]}}\n'
+        \\while take; do :; done
+        \\
+    );
+    defer probe.deinit();
+    const scratch = probe.arena.allocator();
+    var refusal = contract.Refusal{};
+    const listed = try probe.adapter.adapter().nativeList(scratch, .{ .limit = 2 }, &refusal).?;
+    try testing.expectEqual(@as(usize, 2), listed.len);
+    try testing.expectEqualStrings("key0001", listed[0].native_id);
+    try testing.expectEqualStrings("named", listed[0].title);
+    try testing.expectEqual(@as(i64, 1791317553250), listed[0].updated_at_ms);
+    try testing.expectEqualStrings("", listed[0].directory);
+    try testing.expectEqualStrings("key0002", listed[1].native_id);
+    try testing.expectEqualStrings("from preview", listed[1].title);
+    try testing.expectEqual(@as(i64, 1791317500000), listed[1].updated_at_ms);
+    try testing.expectEqualStrings(
+        \\{"id":1,"jsonrpc":"2.0","method":"session.list","params":{"limit":2}}
+        \\
+    , try probe.fake.written(scratch));
 }

@@ -226,6 +226,7 @@ pub const OapExecution = struct {
         .set_reasoning = setReasoning,
         .set_catalog = setCatalog,
         .compacts = compacts,
+        .settings_live = settingsLive,
         .take_record = takeRecord,
         .records_session = recordsSession,
         .compactable = compactable,
@@ -792,6 +793,11 @@ pub const OapExecution = struct {
         _ = try self.enqueue(a, "session.settings.update.request", "settings", payload.value(), null);
     }
 
+    fn settingsLive(ctx: *anyopaque) bool {
+        const self = cast(ctx);
+        return self.live_reasoning and self.hub == null;
+    }
+
     fn setSettings(ctx: *anyopaque, level: ai_types.ThinkingLevel, settings_json: []const u8) anyerror!void {
         const self = cast(ctx);
         if (!self.live_reasoning or self.hub != null) return error.UnavailableOverOap;
@@ -1084,7 +1090,7 @@ pub const OapExecution = struct {
         return .{ .tool_execution_end = .{ .tool_call_id = call_id, .tool_name = name, .result_json = result_json, .is_error = failed } };
     }
 
-    fn toolResultMessage(self: *OapExecution, body: std.json.ObjectMap, details: []const u8, message: []const u8) !TuiEvent {
+    fn toolResultMessage(self: *OapExecution, body: std.json.ObjectMap, details: []const u8, message: []const u8, failed: bool) !TuiEvent {
         var call_id = try self.ownedText(stringOf(body, "tool_call_id") orelse "");
         errdefer call_id.deinit(self.allocator);
         var name = try self.ownedText(stringOf(body, "name") orelse "");
@@ -1092,7 +1098,7 @@ pub const OapExecution = struct {
         var details_json = try self.ownedText(details);
         errdefer details_json.deinit(self.allocator);
         const text = try self.ownedText(message);
-        return .{ .message_end = .{ .role = .tool_result, .text = text, .tool_call_id = call_id, .tool_name = name, .details_json = details_json, .is_error = true } };
+        return .{ .message_end = .{ .role = .tool_result, .text = text, .tool_call_id = call_id, .tool_name = name, .details_json = details_json, .is_error = failed } };
     }
 
     fn ownedText(self: *OapExecution, text: []const u8) !OwnedSlice(u8) {
@@ -1274,13 +1280,14 @@ pub const OapExecution = struct {
         if (std.mem.eql(u8, kind, "action.call.completed") or std.mem.eql(u8, kind, "action.call.failed")) {
             const failed = std.mem.eql(u8, kind, "action.call.failed");
             const failure: ?std.json.ObjectMap = if (!failed) null else if (body.get("error")) |value| (if (value == .object) value.object else null) else null;
-            const details: ?std.json.Value = if (failure) |held| held.get("details") else null;
-            const message = try jsonText(self.allocator, if (failure) |held| held.get("message") else null);
+            const carried: ?std.json.Value = if (failed) null else resultText(root);
+            const details: ?std.json.Value = if (failure) |held| held.get("details") else if (carried != null) body.get("result") else null;
+            const message = try jsonText(self.allocator, if (failure) |held| held.get("message") else carried);
             defer self.allocator.free(message);
-            const result = if (!failed)
-                try jsonText(self.allocator, body.get("result"))
-            else if (details) |held|
+            const result = if (details) |held|
                 try jsonText(self.allocator, held)
+            else if (!failed)
+                try jsonText(self.allocator, body.get("result"))
             else
                 try self.allocator.dupe(u8, message);
             defer self.allocator.free(result);
@@ -1290,7 +1297,7 @@ pub const OapExecution = struct {
                 return;
             }
             errdefer ended.deinit(self.allocator);
-            const shown = try self.toolResultMessage(body, result, message);
+            const shown = try self.toolResultMessage(body, result, message, failed);
             self.deliver(ended);
             self.deliver(.{ .message_start = .{ .role = .tool_result } });
             self.deliver(shown);
@@ -1525,6 +1532,15 @@ fn contextTokens(root: std.json.ObjectMap) ?u64 {
     if (ours != .object) return null;
     const tokens = ours.object.get("context_tokens") orelse return null;
     return if (tokens == .integer and tokens.integer >= 0) @intCast(tokens.integer) else null;
+}
+
+fn resultText(root: std.json.ObjectMap) ?std.json.Value {
+    const extensions = root.get("extensions") orelse return null;
+    if (extensions != .object) return null;
+    const ours = extensions.object.get(oapx_adapter.settings_key) orelse return null;
+    if (ours != .object) return null;
+    const text = ours.object.get("result_text") orelse return null;
+    return if (text == .string) text else null;
 }
 
 fn jsonText(allocator: std.mem.Allocator, value: ?std.json.Value) ![]u8 {
@@ -2413,13 +2429,81 @@ test "in ask mode over OAP a denied tool call never runs and the turn still ends
     try testing.expectEqual(@as(usize, 0), outcome.ran);
 }
 
+test "a completed call over OAP shows the loop's own result text, as the local loop shows it" {
+    var script = Script{ .tool_first = true };
+    const models = [_]ai_types.Model{scripted_model};
+    const execution = try OapExecution.create(testing.allocator, .{
+        .protocol = .{ .stream_fn = scriptedStream, .ctx = &script },
+        .models = &models,
+        .initial_model_id = scripted_model.id,
+        .tools = &echo_tools,
+    });
+    defer execution.destroy();
+    var runtime = try tui_runtime.TuiRuntime.init(testing.allocator, .{
+        .models = &models,
+        .initial_model_id = scripted_model.id,
+        .remote = execution.remote(),
+    });
+    defer runtime.deinit();
+
+    try runtime.submitTurn("use the tool");
+    var ended_ok = false;
+    var text_seen = false;
+    var ended = false;
+    var waits: usize = 0;
+    while (!ended and waits < 5000) : (waits += 1) {
+        while (runtime.streamEvents().poll()) |event| {
+            var owned_event = event;
+            defer owned_event.deinit(testing.allocator);
+            switch (owned_event) {
+                .tool_execution_end => |payload| ended_ok = !payload.is_error,
+                .message_end => |payload| if (payload.role == .tool_result) {
+                    text_seen = !payload.is_error and std.mem.eql(u8, payload.text.slice(), "echoed") and std.mem.eql(u8, payload.tool_call_id.slice(), "call-1");
+                },
+                .agent_end => ended = true,
+                else => {},
+            }
+        }
+        if (!ended) std.testing.io.sleep(.fromNanoseconds(std.time.ns_per_ms), .boot) catch {};
+    }
+    try testing.expect(ended);
+    try testing.expect(ended_ok);
+    try testing.expect(text_seen);
+}
+
+test "another endpoint's result shaped like text and details is shown as it came, since only the oapx extension carries the text" {
+    var script = Script{};
+    var execution: *OapExecution = undefined;
+    var runtime = try remoteRuntime(&script, &execution, .low);
+    defer execution.destroy();
+    defer runtime.deinit();
+    try runtime.start();
+
+    try execution.translateLine("{\"type\":\"action.call.completed\",\"session_id\":\"s\",\"run_id\":\"r\",\"payload\":{\"tool_call_id\":\"c\",\"name\":\"native\",\"result\":{\"text\":\"native text\",\"details\":{\"a\":1}}}}");
+    var raw = false;
+    var shown = false;
+    while (runtime.streamEvents().poll()) |event| {
+        var owned = event;
+        defer owned.deinit(testing.allocator);
+        switch (owned) {
+            .tool_execution_end => |payload| raw = std.mem.indexOf(u8, payload.result_json.slice(), "native text") != null,
+            .message_end => |payload| if (payload.role == .tool_result) {
+                shown = true;
+            },
+            else => {},
+        }
+    }
+    try testing.expect(raw);
+    try testing.expect(!shown);
+}
+
 fn failedCallEvents(allocator: std.mem.Allocator) !void {
     var execution = OapExecution{ .allocator = allocator };
     const parsed = try std.json.parseFromSlice(std.json.Value, allocator, "{\"tool_call_id\":\"call-1\",\"name\":\"echo_tool\"}", .{});
     defer parsed.deinit();
     var ended = try execution.toolEnd(parsed.value.object, "{\"rejected\":true}", true);
     defer ended.deinit(allocator);
-    var shown = try execution.toolResultMessage(parsed.value.object, "{\"rejected\":true}", "Tool execution rejected by user");
+    var shown = try execution.toolResultMessage(parsed.value.object, "{\"rejected\":true}", "Tool execution rejected by user", true);
     defer shown.deinit(allocator);
 }
 

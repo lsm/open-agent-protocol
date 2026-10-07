@@ -202,6 +202,34 @@ pub const Natives = struct {
 
 pub const native_list_limit: usize = 50;
 
+pub const NativeTarget = struct {
+    name: []const u8,
+    adapter: contract.Adapter,
+    directory: []const u8,
+};
+
+pub const NativeListing = struct {
+    name: []const u8,
+    sessions: []const contract.NativeSession = &.{},
+    failure: ?[]const u8 = null,
+};
+
+pub fn listTargets(arena: std.mem.Allocator, targets: []const NativeTarget) std.mem.Allocator.Error![]const NativeListing {
+    const listed = try arena.alloc(NativeListing, targets.len);
+    for (targets, listed) |target, *slot| {
+        var refusal = contract.Refusal{};
+        const answered = target.adapter.nativeList(arena, .{ .directory = target.directory, .limit = native_list_limit }, &refusal) orelse {
+            slot.* = .{ .name = target.name };
+            continue;
+        };
+        slot.* = if (answered) |sessions| .{ .name = target.name, .sessions = sessions } else |err| switch (err) {
+            error.OutOfMemory => return error.OutOfMemory,
+            else => .{ .name = target.name, .failure = if (refusal.message.len > 0) try arena.dupe(u8, refusal.message) else @errorName(err) },
+        };
+    }
+    return listed;
+}
+
 pub const last_reply_limit: usize = 4096;
 pub const turn_text_limit: usize = 64 * 1024;
 pub const turns_kept: usize = 512;
@@ -926,25 +954,46 @@ pub const Hub = struct {
         return .{ .first_index = entry.turns_dropped + from, .turns = entry.turns.items[from..to] };
     }
 
-    pub fn natives(self: *Hub, arena: std.mem.Allocator, known: []const []const u8) Failure!Natives {
+    pub fn nativeTargets(self: *Hub, arena: std.mem.Allocator) std.mem.Allocator.Error![]const NativeTarget {
+        var targets = std.ArrayList(NativeTarget).empty;
+        for (self.adapters.items) |registered| {
+            if (registered.adapter.vtable.native_list == null) continue;
+            const name = try arena.dupe(u8, registered.name);
+            const directory = try arena.dupe(u8, registered.directory);
+            try targets.append(arena, .{ .name = name, .adapter = registered.adapter, .directory = directory });
+        }
+        return targets.items;
+    }
+
+    pub fn keepNatives(self: *Hub, arena: std.mem.Allocator, listed: []const NativeListing, known: []const []const u8) std.mem.Allocator.Error!Natives {
         var found_sessions = std.ArrayList(Native).empty;
         var failures = std.ArrayList(NativeFailure).empty;
-        for (self.adapters.items) |registered| {
-            var refusal = contract.Refusal{};
-            const answered = registered.adapter.nativeList(arena, .{ .directory = registered.directory, .limit = native_list_limit }, &refusal) orelse continue;
-            const listed = answered catch |err| switch (err) {
-                error.OutOfMemory => return error.OutOfMemory,
-                else => {
-                    try failures.append(arena, .{ .adapter = registered.name, .message = if (refusal.message.len > 0) refusal.message else @errorName(err) });
-                    continue;
-                },
-            };
-            for (listed) |found| {
-                if (self.boundNative(registered.name, found.native_id) or declared(known, found.native_id)) continue;
-                try found_sessions.append(arena, .{ .adapter = registered.name, .session = found });
+        for (listed) |each| {
+            if (each.failure) |message| {
+                try failures.append(arena, .{ .adapter = each.name, .message = message });
+                continue;
+            }
+            for (each.sessions) |found| {
+                if (self.boundNative(each.name, found.native_id) or declared(known, found.native_id)) continue;
+                try found_sessions.append(arena, .{ .adapter = each.name, .session = found });
             }
         }
         return .{ .sessions = found_sessions.items, .failures = failures.items };
+    }
+
+    pub const ReadTarget = struct {
+        adapter: contract.Adapter,
+        request: contract.NativeReadRequest,
+    };
+
+    pub fn readTarget(self: *Hub, arena: std.mem.Allocator, ref: NativeRef, max_turns: usize) std.mem.Allocator.Error!?ReadTarget {
+        if (ref.native_id.len == 0) return null;
+        const registered = self.find(ref.adapter) orelse return null;
+        if (registered.adapter.vtable.native_read == null) return null;
+        const directory = if (ref.directory.len > 0) ref.directory else registered.directory;
+        const native_id = try arena.dupe(u8, ref.native_id);
+        const kept_directory = try arena.dupe(u8, directory);
+        return .{ .adapter = registered.adapter, .request = .{ .native_id = native_id, .directory = kept_directory, .max_turns = max_turns } };
     }
 
     pub fn sessionForNative(self: *Hub, adapter: []const u8, native_id: []const u8) ?[]const u8 {
@@ -968,13 +1017,15 @@ pub const Hub = struct {
         return false;
     }
 
-    pub fn nativeRunning(self: *Hub, arena: std.mem.Allocator, adapter_name: []const u8, native_id: []const u8) Failure!bool {
+    pub fn nativeRunning(self: *Hub, arena: std.mem.Allocator, adapter_name: []const u8, native_id: []const u8, refusal: *contract.Refusal) Failure!bool {
         const registered = self.find(adapter_name) orelse return error.UnknownAdapter;
-        var refusal = contract.Refusal{};
-        const answered = registered.adapter.nativeList(arena, .{ .directory = registered.directory, .limit = native_list_limit }, &refusal) orelse return false;
+        const answered = registered.adapter.nativeList(arena, .{ .directory = registered.directory, .limit = native_list_limit }, refusal) orelse return false;
         const listed = answered catch |err| switch (err) {
             error.OutOfMemory => return error.OutOfMemory,
-            else => return false,
+            else => {
+                if (refusal.message.len == 0) refusal.message = @errorName(err);
+                return error.BackendFailed;
+            },
         };
         for (listed) |found| {
             if (std.mem.eql(u8, found.native_id, native_id)) return found.running;

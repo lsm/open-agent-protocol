@@ -471,6 +471,39 @@ than `idle`, is refused the same way. The marker survives the refusal, so a
 reopen succeeds once Hermes retires it as stale. Both exchanges are in the
 corpus as `session-reopen` and `session-reopen-auto-continue`.
 
+## Native session list at v2026.9.24
+
+`work.list?include_native=true` lists Hermes's stored sessions through the
+gateway's own `session.list`. Read from the source at this pin's commit
+`f97608f178d1ffeca59860195ab7da295f7c8e5f`: the handler in
+`tui_gateway/methods_session.py` (blob
+`a41aeff7b731f99a69dfc8556b5ade04d30a83f7`) and its contract in
+`tui_gateway/contracts/sessions.py`, covered by that directory's tree hash.
+
+- **Request.** `SessionListParams` extends `ProfileParams` with `title`
+  (an exact-title lookup), `limit` (default 200) and `include_hidden`. The
+  adapter sends `{"limit": N}` and nothing else, so the strict dispatcher has
+  nothing extra to refuse.
+- **Result.** `SessionListResult` is `{"sessions": [SessionListRow]}`, most
+  recent first, sub-agent and kanban sources denied. A row is
+  `{id, resolved_id?, title, preview, started_at, message_count, source}`
+  (`_session_row_summary`); `resolved_id` appears only on a title lookup.
+- **Mapping.** The native id is `id`, the stored id `session.resume`
+  takes, so a listed session is adoptable through the reload above. The
+  title is `title`, or `preview` when the title is empty. `started_at` is
+  epoch seconds as a float (`time.time()` in `hermes_state_sessions.py`),
+  converted to milliseconds. A row carries no working directory, so the entry
+  has none rather than borrowing the adapter's.
+- **Cost.** Each listing starts a gateway, waits for `gateway.ready`, calls
+  `session.list` once and closes it. At this commit `serve` runs that on its
+  one loop, so a native listing or an adoption stalls every other caller until
+  the gateway answers or times out; moving native list and read onto job
+  threads is #947, and keeping one gateway alive across listings, as Codex
+  keeps its app-server, is a follow-up.
+
+This is read from source only: no gateway at this pin was run for it, so the
+shape above has no recorded exchange behind it yet.
+
 ## Reasoning level and compaction at v2026.9.24
 
 Recorded for [Decision 0045](../decisions/0045-reasoning-level-and-compaction-policy-are-session-settings.md).

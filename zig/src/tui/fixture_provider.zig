@@ -76,7 +76,12 @@ pub const MockProvider = struct {
 
         switch (step) {
             .text => |text| try pushTextResponse(stream_ptr, allocator, model, text),
-            .tool_calls => |calls| try pushToolCalls(stream_ptr, allocator, model, calls),
+            .tool_calls => |calls| {
+                var arena = std.heap.ArenaAllocator.init(allocator);
+                defer arena.deinit();
+                const placed = try placeWorkspaceRoot(arena.allocator(), calls, workspaceRootOf(context.getSystemPrompt() orelse ""));
+                try pushToolCalls(stream_ptr, allocator, model, placed);
+            },
             .provider_error => |message| stream_ptr.completeWithError(message),
             .wait_for_cancel => {
                 const token = options.cancel_token orelse return error.MissingCancelToken;
@@ -269,6 +274,26 @@ test "mock provider splits a leading think block into thinking and text deltas" 
     try std.testing.expect(saw_text);
 }
 
+pub const workspace_root_placeholder = "$WORKSPACE_ROOT";
+const workspace_root_line = "Default workspace root: ";
+
+fn workspaceRootOf(system_prompt: []const u8) []const u8 {
+    const start = (std.mem.indexOf(u8, system_prompt, workspace_root_line) orelse return "") + workspace_root_line.len;
+    const end = std.mem.indexOfScalarPos(u8, system_prompt, start, '\n') orelse system_prompt.len;
+    return system_prompt[start..end];
+}
+
+fn placeWorkspaceRoot(arena: std.mem.Allocator, calls: []const ToolCallSpec, root: []const u8) ![]const ToolCallSpec {
+    const placed = try arena.alloc(ToolCallSpec, calls.len);
+    for (calls, placed) |call, *slot| {
+        slot.* = call;
+        if (std.mem.indexOf(u8, call.arguments_json, workspace_root_placeholder) == null) continue;
+        const quoted = try std.json.Stringify.valueAlloc(arena, root, .{});
+        slot.arguments_json = try std.mem.replaceOwned(u8, arena, call.arguments_json, workspace_root_placeholder, quoted[1 .. quoted.len - 1]);
+    }
+    return placed;
+}
+
 fn pushToolCalls(stream: *event_stream.AssistantMessageEventStream, allocator: std.mem.Allocator, model: ai_types.Model, calls: []const ToolCallSpec) !void {
     const partial = emptyAssistantMessage(model, .tool_use);
     try stream.push(.{ .start = .{ .partial = partial } });
@@ -281,6 +306,26 @@ fn pushToolCalls(stream: *event_stream.AssistantMessageEventStream, allocator: s
     }
 
     try pushDoneAndComplete(stream, allocator, model, content, .tool_use);
+}
+
+test "a tool call's workspace root placeholder becomes the root the system prompt names" {
+    const calls = [_]ToolCallSpec{.{ .id = "call-1", .name = "Shell", .arguments_json = "{\"workspace_root\":\"$WORKSPACE_ROOT\",\"command\":\"pwd\"}" }};
+    const steps = [_]ResponseStep{.{ .tool_calls = &calls }};
+    var provider = MockProvider.init(.{ .steps = &steps });
+    const client = provider.protocolClient();
+    const prompt = "Default workspace root: /work/tree \"one\"\nPass the default workspace root as `workspace_root`.";
+    const stream_ptr = try client.stream(test_model, .{ .system_prompt = .initBorrowed(prompt), .messages = &.{}, .is_owned = false }, .{}, std.testing.allocator);
+    defer {
+        stream_ptr.deinit();
+        std.testing.allocator.destroy(stream_ptr);
+    }
+    var placed = false;
+    while (stream_ptr.wait()) |event| {
+        const ev = event;
+        defer stream_ptr.releaseEvent(ev);
+        if (ev == .toolcall_delta) placed = std.mem.eql(u8, ev.toolcall_delta.delta, "{\"workspace_root\":\"/work/tree \\\"one\\\"\",\"command\":\"pwd\"}");
+    }
+    try std.testing.expect(placed);
 }
 
 test "mock provider streams canned text" {
