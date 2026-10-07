@@ -2,7 +2,6 @@ package opencode
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 
 	base "github.com/lsm/open-agent-protocol/go/adapter"
@@ -14,6 +13,8 @@ type sessionLister interface {
 }
 
 func (a *Adapter) NativeList(ctx context.Context, request base.NativeListRequest) ([]base.NativeListing, error) {
+	ctx, cancel := context.WithTimeout(ctx, a.config.RequestTimeout)
+	defer cancel()
 	client, err := a.config.Factory.Start(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("list OpenCode sessions: %w", err)
@@ -33,11 +34,7 @@ func (a *Adapter) NativeList(ctx context.Context, request base.NativeListRequest
 	}
 	listed := make([]base.NativeListing, 0, len(infos))
 	for _, info := range infos {
-		var location struct {
-			Directory string `json:"directory"`
-		}
-		_ = json.Unmarshal(info.Location, &location)
-		listed = append(listed, base.NativeListing{NativeID: string(info.ID), Title: info.Title, Directory: location.Directory, UpdatedAtMS: info.Time.Updated, Running: running[info.ID]})
+		listed = append(listed, base.NativeListing{NativeID: string(info.ID), Title: info.Title, Directory: info.Directory(), UpdatedAtMS: info.Time.Updated, Running: running[info.ID]})
 	}
 	return listed, nil
 }

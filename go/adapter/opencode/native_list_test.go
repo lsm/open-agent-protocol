@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"testing"
+	"time"
 
 	base "github.com/lsm/open-agent-protocol/go/adapter"
 	"github.com/lsm/open-agent-protocol/go/adapter/opencode/internal/native"
@@ -51,5 +52,27 @@ func TestTheNativeListFailsWhenTheServerCannotListOrCannotSayWhatRuns(t *testing
 		if _, err := adapter.NativeList(context.Background(), base.NativeListRequest{Limit: 5}); err == nil {
 			t.Fatal("a failing server listed")
 		}
+	}
+}
+
+func TestTheNativeListGivesUpOnAServerThatStallsWithinTheRequestTimeout(t *testing.T) {
+	client := newFakeClient()
+	client.stalls = true
+	adapter, err := New(Config{Factory: ClientFactoryFunc(func(context.Context) (Client, error) { return client, nil }), RequestTimeout: 50 * time.Millisecond})
+	if err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() {
+		_, err := adapter.NativeList(context.Background(), base.NativeListRequest{Limit: 5})
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("a stalled list answered %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("the native list waited past the request timeout")
 	}
 }

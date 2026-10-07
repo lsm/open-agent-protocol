@@ -195,11 +195,16 @@ func (f *fakeClient) CancelInbox(_ context.Context, _ native.SessionID, inbox na
 	}
 	return nil
 }
-func (f *fakeClient) Sessions(_ context.Context, directory string, limit int) ([]native.SessionInfo, error) {
+func (f *fakeClient) Sessions(ctx context.Context, directory string, limit int) ([]native.SessionInfo, error) {
 	f.mu.Lock()
-	defer f.mu.Unlock()
 	f.listAsked = append(f.listAsked, fmt.Sprintf("%s|%d", directory, limit))
-	return f.listed, f.listErr
+	listed, err, stalls := f.listed, f.listErr, f.stalls
+	f.mu.Unlock()
+	if stalls {
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}
+	return listed, err
 }
 func (f *fakeClient) Active(ctx context.Context) (map[native.SessionID]bool, error) {
 	f.mu.Lock()
