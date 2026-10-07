@@ -44,20 +44,13 @@ func oapRequest(ctx context.Context, t *transport, sub *subscription, timeout ti
 }
 
 func asEnvelope(f *frame) protocol.Envelope {
-	envelope := protocol.Envelope{
-		Protocol: f.Protocol, Version: oapVersion, Profile: f.Profile,
-		Type: protocol.EnvelopeType(f.Type), ID: protocol.EnvelopeID(f.ID),
-		Payload: f.Payload, InReplyTo: protocol.EnvelopeID(f.InReplyTo),
-		SessionID: protocol.SessionID(f.SessionID), RunID: protocol.RunID(f.RunID),
-		CapabilityRevision: f.CapabilityRevision,
+	members := map[string]json.RawMessage{}
+	_ = json.Unmarshal(f.raw, &members)
+	if _, isText := f.Version.(string); !isText {
+		members["version"] = mustMarshal(oapVersion)
 	}
-	if text, isText := f.Version.(string); isText {
-		envelope.Version = text
-	}
-	if f.Sequence != 0 {
-		sequence := uint64(f.Sequence)
-		envelope.Sequence = &sequence
-	}
+	var envelope protocol.Envelope
+	_ = json.Unmarshal(mustMarshal(members), &envelope)
 	return envelope
 }
 
