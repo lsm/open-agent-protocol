@@ -381,6 +381,21 @@ test(
     const { groups } = await client.workList();
     assert.ok(groups.some((group) => group.work.some((piece) => piece.ref.session_id === sessionId)));
 
+    const other = await client.workStart('memory', { message: 'another' });
+    const first = await client.workList({ adapters: ['memory'], limit: 1 });
+    assert.equal(first.groups.flatMap((group) => group.work).length, 1);
+    assert.ok(first.nextCursor);
+    const rest = await client.workList({ adapters: ['memory'], limit: 1, cursor: first.nextCursor });
+    const listedIds = [...first.groups, ...rest.groups].flatMap((group) => group.work.map((piece) => piece.ref.session_id));
+    assert.deepEqual([...listedIds].sort(), [sessionId, other.ref.session_id].sort());
+    assert.equal(rest.nextCursor, undefined);
+    assert.deepEqual((await client.workList({ adapters: ['nothing-by-this-name'] })).groups, []);
+    assert.deepEqual((await client.workList({ directory: '/nowhere' })).groups, [
+      { directory: '/nowhere', last_activity_ms: 0, work: [] },
+    ]);
+    await assert.rejects(client.workList({ limit: 0 }), /invalid_request/);
+    await client.workStop(other.ref.session_id ?? '');
+
     const stopped = await client.workStop(sessionId);
     assert.equal(stopped.ref.session_id, sessionId);
   },

@@ -169,19 +169,34 @@ export class OapClient {
   }
 
   async workList(
-    options: { includeClosed?: boolean; includeNative?: boolean } = {},
-  ): Promise<{ groups: WorkGroup[]; unavailable: { adapter: string; message: string }[] }> {
+    options: {
+      directory?: string;
+      adapters?: string[];
+      includeClosed?: boolean;
+      includeNative?: boolean;
+      limit?: number;
+      cursor?: string;
+    } = {},
+  ): Promise<{ groups: WorkGroup[]; nextCursor?: string; unavailable: { adapter: string; message: string }[] }> {
     const query = new URLSearchParams();
+    if (options.directory) query.set('directory', options.directory);
+    if (options.adapters && options.adapters.length > 0) query.set('adapters', options.adapters.join(','));
     if (options.includeClosed) query.set('include_closed', 'true');
     if (options.includeNative) query.set('include_native', 'true');
+    if (options.limit !== undefined) query.set('limit', String(options.limit));
+    if (options.cursor) query.set('cursor', options.cursor);
     const suffix = query.toString() ? `?${query.toString()}` : '';
-    const listed = await this.plain<{ groups?: WorkGroup[]; unavailable?: { adapter: string; message: string }[] }>(
-      'GET',
-      `/work${suffix}`,
-      null,
-      'list work',
-    );
-    return { groups: listed.groups ?? [], unavailable: listed.unavailable ?? [] };
+    const listed = await this.plain<{
+      groups?: WorkGroup[];
+      next_cursor?: string;
+      unavailable?: { adapter: string; message: string }[];
+    }>('GET', `/work${suffix}`, null, 'list work');
+    const answer: { groups: WorkGroup[]; nextCursor?: string; unavailable: { adapter: string; message: string }[] } = {
+      groups: listed.groups ?? [],
+      unavailable: listed.unavailable ?? [],
+    };
+    if (listed.next_cursor) answer.nextCursor = listed.next_cursor;
+    return answer;
   }
 
   async workCapabilities(): Promise<{
