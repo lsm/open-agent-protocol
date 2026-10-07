@@ -187,12 +187,14 @@ fn parseConfig(allocator: std.mem.Allocator, data: []const u8) !Config {
         else => return error.InvalidConfig,
     };
 
-    var cfg = Config{
-        .model = try dupStringField(allocator, obj, "model", "claude-sonnet-5-5"),
-        .provider = try dupStringField(allocator, obj, "provider", "anthropic"),
-        .api = try dupStringField(allocator, obj, "api", ""),
-        .workspace = try dupStringField(allocator, obj, "workspace", ""),
-    };
+    const model = try dupStringField(allocator, obj, "model", "claude-sonnet-5-5");
+    errdefer allocator.free(model);
+    const provider = try dupStringField(allocator, obj, "provider", "anthropic");
+    errdefer allocator.free(provider);
+    const api = try dupStringField(allocator, obj, "api", "");
+    errdefer allocator.free(api);
+    const workspace = try dupStringField(allocator, obj, "workspace", "");
+    var cfg = Config{ .model = model, .provider = provider, .api = api, .workspace = workspace };
     errdefer cfg.deinit(allocator);
 
     if (cfg.workspace.len == 0) {

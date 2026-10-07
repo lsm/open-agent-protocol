@@ -203,7 +203,7 @@ fn ownedTestModel(allocator: std.mem.Allocator, id: []const u8, max_tokens: u32,
 fn datedDefaultCatalog(allocator: std.mem.Allocator) anyerror![]ai_types.Model {
     const models = try allocator.alloc(ai_types.Model, 2);
     errdefer allocator.free(models);
-    models[0] = try ownedTestModel(allocator, "claude-sonnet-4-5-20250929", 64_000, 0);
+    models[0] = try ownedTestModel(allocator, "claude-sonnet-5-5-20260929", 64_000, 0);
     errdefer models[0].deinit(allocator);
     models[1] = try ownedTestModel(allocator, "claude-opus-4-1", 32_000, 15.0);
     return models;
@@ -213,12 +213,12 @@ fn runtimeModelsFoldProbe(allocator: std.mem.Allocator) !void {
     const models = try loadRuntimeModelsWithCatalog(allocator, datedDefaultCatalog, false);
     defer model_catalog.deinitModels(allocator, models);
     try std.testing.expectEqual(@as(usize, 2), models.len);
-    try std.testing.expectEqualStrings("claude-sonnet-4-5", models[0].id);
-    try std.testing.expectEqualStrings("Claude Sonnet 4.5", models[0].name);
+    try std.testing.expectEqualStrings("claude-sonnet-5-5", models[0].id);
+    try std.testing.expectEqualStrings("Claude Sonnet 5.5", models[0].name);
     try std.testing.expect(!models[0].is_owned);
     try std.testing.expectEqual(@as(u32, 64_000), models[0].max_tokens);
     try std.testing.expectEqual(@as(u32, 1_000_000), models[0].context_window);
-    try std.testing.expectEqual(@as(f64, 3.0), models[0].cost.input);
+    try std.testing.expectEqual(@as(f64, 2.0), models[0].cost.input);
     try std.testing.expectEqualStrings("claude-opus-4-1", models[1].id);
     try std.testing.expect(models[1].is_owned);
 }
@@ -5669,16 +5669,16 @@ test "titleLine keeps the first non-empty line, up to a control byte, within 60 
 
 fn defaultModel() ai_types.Model {
     return .{
-        .id = "claude-sonnet-4-5",
-        .name = "Claude Sonnet 4.5",
+        .id = "claude-sonnet-5-5",
+        .name = "Claude Sonnet 5.5",
         .api = "anthropic-messages",
         .provider = "anthropic",
         .base_url = anthropic_messages_base_url,
         .reasoning = true,
         .input = &.{"text"},
-        .cost = .{ .input = 3.0, .output = 15.0, .cache_read = 0.30, .cache_write = 3.75 },
+        .cost = .{ .input = 2.0, .output = 10.0, .cache_read = 0.20, .cache_write = 2.5 },
         .context_window = 200_000,
-        .max_tokens = 8192,
+        .max_tokens = 128_000,
     };
 }
 
