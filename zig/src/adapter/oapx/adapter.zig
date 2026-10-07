@@ -20,11 +20,10 @@ const protocol_name = "open-agent-protocol";
 const protocol_version = "0.1";
 const profile = "open-agent-protocol.agent-control-core";
 
-const features = [_]contract.Feature{
+const unsaved_features = [_]contract.Feature{
     .{ .key = "protocol.initialize", .level = .native },
     .{ .key = "capabilities", .level = .native },
     .{ .key = "session.open", .level = .native },
-    .{ .key = contract.feature_open_reopen, .level = .emulated, .reason = "loads the transcript of a session the terminal UI saved under ~/.oapx/sessions into a fresh loop; no run is resumed" },
     .{ .key = "session.state", .level = .degraded, .reason = "the state is live; no transcript is replayed and a session does not outlive the process" },
     .{ .key = contract.feature_submit, .level = .native },
     .{ .key = "session.message.delivery.auto", .level = .native },
@@ -48,11 +47,22 @@ const features = [_]contract.Feature{
     .{ .key = contract.feature_session_reasoning, .level = .native, .reason = "the agent loop's thinking level, at open and between runs; minimal, which the loop would run as low, is refused", .modes = &.{ contract.mode_session_open, contract.mode_session_live } },
 };
 
+const features = unsaved_features ++ [_]contract.Feature{
+    .{ .key = contract.feature_open_reopen, .level = .emulated, .reason = "loads the transcript of a session the terminal UI saved under ~/.oapx/sessions into a fresh loop; no run is resumed" },
+};
+
 pub const descriptor = contract.Descriptor{
     .endpoint = .{ .id = endpoint_id, .name = "oapx agent loop", .version = protocol_version, .adapter = "in-process" },
     .capability_revision = capability_revision,
     .features = &features,
     .limits = .{ .max_active_runs_per_session = queue_capacity + 1, .max_queued_runs_per_session = queue_capacity },
+};
+
+const unsaved_descriptor = contract.Descriptor{
+    .endpoint = descriptor.endpoint,
+    .capability_revision = capability_revision,
+    .features = &unsaved_features,
+    .limits = descriptor.limits,
 };
 
 fn wallClock() i64 {
@@ -95,9 +105,9 @@ pub const Adapter = struct {
     }
 
     fn probe(ptr: *anyopaque, refusal: *contract.Refusal) contract.Failure!contract.Descriptor {
-        _ = ptr;
         _ = refusal;
-        return descriptor;
+        const self: *Adapter = @ptrCast(@alignCast(ptr));
+        return if (self.history != null) descriptor else unsaved_descriptor;
     }
 
     fn open(ptr: *anyopaque, arena: std.mem.Allocator, request: contract.OpenRequest, refusal: *contract.Refusal) contract.Failure!contract.Session {
@@ -108,7 +118,7 @@ pub const Adapter = struct {
         var saved: ?[]const ai_types.Message = null;
         if (request.reopen) {
             if (request.session_id.len == 0) return refusal.fail(error.UnknownSession, "a reopen names the session it reopens");
-            const loader = self.history orelse return refusal.fail(error.UnknownSession, "this endpoint keeps no saved sessions to reopen");
+            const loader = self.history orelse return refusal.unsupported(contract.feature_open_reopen, contract.reason_unadvertised);
             saved = (loader.load(loader.ctx, arena, request.session_id) catch |err| switch (err) {
                 error.OutOfMemory => return error.OutOfMemory,
                 else => return refusal.fail(error.UnknownSession, "no saved session under that id could be read"),
@@ -3121,17 +3131,27 @@ const SavedSessions = struct {
     }
 };
 
-test "a reopen loads the saved session's transcript into a fresh loop and reports it recovered, and an unknown one is refused" {
+fn advertisesReopen(owner: *Adapter) !bool {
+    var refusal = contract.Refusal{};
+    const described = try owner.adapter().probe(&refusal);
+    for (described.features) |feature| if (std.mem.eql(u8, feature.key, contract.feature_open_reopen)) return true;
+    return false;
+}
+
+test "a reopen is advertised only with saved sessions to load, loads the saved transcript into a fresh loop reported recovered, and an unknown one is refused" {
     var script = Script{};
     var harness: Harness = undefined;
     try harness.init(&script);
     defer harness.deinit();
     const a = harness.arena.allocator();
     var refusal = contract.Refusal{};
-    try testing.expectError(error.UnknownSession, harness.owner.adapter().open(a, .{ .participant = "user", .session_id = "saved", .reopen = true }, &refusal));
+    try testing.expect(!try advertisesReopen(&harness.owner));
+    try testing.expectError(error.UnsupportedFeature, harness.owner.adapter().open(a, .{ .participant = "user", .session_id = "saved", .reopen = true }, &refusal));
+    try testing.expectEqualStrings(contract.feature_open_reopen, refusal.feature);
 
     var saved = SavedSessions{};
     harness.owner.history = .{ .ctx = &saved, .load = SavedSessions.load };
+    try testing.expect(try advertisesReopen(&harness.owner));
     const reopened = try harness.owner.adapter().open(a, .{ .participant = "user", .session_id = "saved", .reopen = true }, &refusal);
     defer reopened.teardown();
     const state = try reopened.state(a, &refusal);

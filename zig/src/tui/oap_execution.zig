@@ -296,6 +296,11 @@ pub const OapExecution = struct {
         var open = Map.init(a);
         try open.put("metadata", metadata.value());
         var reopened_history = settings.resume_session_id != null;
+        if (settings.resume_session_id) |saved| if (self.adapter != null and std.mem.eql(u8, saved, self.session_id)) {
+            self.stopping.store(false, .release);
+            self.thread = try std.Thread.spawn(.{}, run, .{self});
+            return;
+        };
         if (settings.resume_session_id) |saved| {
             try open.put("session_id", .{ .string = saved });
             try open.put("reopen", .{ .bool = true });
@@ -1958,6 +1963,31 @@ test "a reopen that fails once the open session has stopped keeps a session pump
     try testing.expectEqual(@as(?tui_session.TuiEndReason, .completed), seen.end);
 }
 
+test "reopening the session that is already open keeps it, rather than closing it to open it again" {
+    var script = Script{};
+    var execution: *OapExecution = undefined;
+    var runtime = try remoteRuntime(&script, &execution, .low);
+    defer execution.destroy();
+    defer runtime.deinit();
+    var saved = SavedTranscript{ .missing = true };
+    execution.setHistory(.{ .ctx = &saved, .load = SavedTranscript.load });
+
+    try runtime.submitTurn("remember this");
+    var first = Seen{};
+    defer first.deinit();
+    try drainTurn(&runtime, &first);
+    const open_id = try testing.allocator.dupe(u8, execution.session_id);
+    defer testing.allocator.free(open_id);
+    try runtime.reopenSaved(open_id, null);
+    try testing.expectEqualStrings(open_id, execution.session_id);
+    try runtime.submitTurn("and this");
+    var second = Seen{};
+    defer second.deinit();
+    try drainTurn(&runtime, &second);
+    try testing.expectEqual(@as(?tui_session.TuiEndReason, .completed), second.end);
+    try testing.expectEqual(@as(usize, 3), script.last_context_messages);
+}
+
 test "a refused reopen before any session opened leaves the runtime unstarted, so the next turn opens one" {
     var script = Script{};
     var execution: *OapExecution = undefined;
@@ -2016,22 +2046,11 @@ test "a saved session reopened over OAP carries its transcript into the next run
     try testing.expectError(error.OapReopenRefused, runtime.reopenSaved("never-saved", null));
     try testing.expectEqualStrings("saved-session", execution.session_id);
 
-    saved.missing = true;
-    try testing.expectError(error.OapReopenRefused, runtime.reopenSaved("saved-session", null));
-    saved.missing = false;
     try runtime.submitTurn("still on the open session");
     var kept = Seen{};
     defer kept.deinit();
     try drainTurn(&runtime, &kept);
     try testing.expectEqual(@as(?tui_session.TuiEndReason, .completed), kept.end);
-
-    try runtime.reopenSaved("saved-session", null);
-    try runtime.submitTurn("and once more");
-    var again = Seen{};
-    defer again.deinit();
-    try drainTurn(&runtime, &again);
-    try testing.expectEqual(@as(?tui_session.TuiEndReason, .completed), again.end);
-    try testing.expectEqual(@as(usize, 2), script.last_context_messages);
 }
 
 test "a runtime over OAP refuses what the protocol path cannot carry yet" {
