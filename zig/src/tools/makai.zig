@@ -2374,8 +2374,8 @@ fn printUsage(file: std.Io.File) !void {
         \\  oapx                                              Start the terminal UI
         \\  oapx tui [--context-window <tokens>]          The terminal UI, over OAP through the in-process endpoint; what oapx alone starts
         \\  oapx --tui [--context-window <tokens>]        The terminal UI on its own loop, without OAP (superseded by oapx tui)
+        \\                                                   --context-window takes a whole number, optionally with k or m
         \\  oapx tui --attach <url> [--adapter <name>]    The terminal UI over a running oapx serve's HTTP wire; adapter defaults to oapx
-        \\                                                   (a whole number, optionally with k or m)
         \\  oapx run [--agent] [--storage] [--model <id>] "<prompt>"
         \\  oapx serve agent [--stdio] [--model <model-ref>]
         \\  oapx serve agent [--stdio] --backend <name> [--config <path>]
