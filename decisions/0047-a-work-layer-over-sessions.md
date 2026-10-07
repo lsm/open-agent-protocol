@@ -266,5 +266,7 @@ specification.
 - **Go serves the profile too** (#943, in review), through one implementation
   both of its transports call, compared byte for byte against `oapx` on the
   stdio differential. Its adapters list and read no native sessions yet.
-- **The rename (decision 4)** landed as decided (#913); the work verbs are
-  served by `serve` itself, per owner answer 4, not by a separate command.
+- **The rename (decision 4)** landed for the commands (#913), not for the
+  draft: `drafts/hub.md` keeps its name rather than becoming
+  `drafts/serve.md`. The work verbs are served by `serve` itself, per owner
+  answer 4, not by a separate command.
