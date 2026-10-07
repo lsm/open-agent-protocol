@@ -186,11 +186,11 @@ pub const Session = struct {
         self.reducer.open() catch |err| return lift(err);
         const started = monotonic();
         while (!self.stream.connected) {
-            if (self.ended or !subscription.open) return refusal.fail(error.BackendFailed, "subscribe OpenCode session events: the event stream ended before server.connected");
             if (subscription.reader.head_done and subscription.reader.status != 200) {
-                const message = try std.fmt.allocPrint(arena, "subscribe OpenCode session events: HTTP {d}", .{subscription.reader.status});
+                const message = try std.fmt.allocPrint(arena, "subscribe OpenCode session events: opencode native: HTTP {d}", .{subscription.reader.status});
                 return refusal.fail(error.BackendFailed, message);
             }
+            if (self.ended or !subscription.open) return refusal.fail(error.BackendFailed, "subscribe OpenCode session events: the event stream ended before server.connected");
             if (monotonic() -| started > config.request_timeout_ns) return refusal.fail(error.BackendFailed, "subscribe OpenCode session events: no server.connected within the request timeout");
             _ = subscription.poll(20) catch |err| return refusal.fail(error.BackendFailed, try describe(arena, "subscribe OpenCode session events", err));
             try self.feed();
@@ -342,7 +342,7 @@ pub const Session = struct {
     fn feed(self: *Session) contract.Failure!void {
         const subscription = self.subscription orelse return;
         if (subscription.reader.head_done and subscription.reader.status != 200) {
-            return self.end(try std.fmt.allocPrint(self.owned(), "subscribe OpenCode session events: HTTP {d}", .{subscription.reader.status}));
+            return self.end(try std.fmt.allocPrint(self.owned(), "subscribe OpenCode session events: opencode native: HTTP {d}", .{subscription.reader.status}));
         }
         const chunk = try subscription.reader.take(self.owned());
         if (chunk.len > 0) {
@@ -947,6 +947,7 @@ test "an event stream the server refuses refuses the open" {
     probe.fake.refuse_events = true;
     var refusal = contract.Refusal{};
     try testing.expectError(error.BackendFailed, probe.open(&refusal));
+    try testing.expectEqualStrings("subscribe OpenCode session events: opencode native: HTTP 500", refusal.message);
 }
 
 test "a prompt the server refuses is admitted and then failed, closing the session as Go does" {
