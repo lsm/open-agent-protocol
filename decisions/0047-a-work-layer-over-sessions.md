@@ -242,7 +242,7 @@ specification.
   live-session registry read-only (#919), and Pi's session store read-only
   (#944). ACP `session/list` (#950) and Hermes `session.list` (#951) are in
   review. OpenCode waits on its v2 port, whose `GET /api/session` replaces the
-  v1 list ([ledger](../research/opencode-v2.0.24-mapping.md)). DeepSeek lists
+  v1 list (the v2 ledger is #949, in review). DeepSeek lists
   nothing native, as decided. A native list runs off the serve loop, so a slow
   harness does not stall other callers (#947, in review).
 - **Reading.** `work.read` reads the harness's own transcript where one is
