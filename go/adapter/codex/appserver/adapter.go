@@ -70,6 +70,7 @@ type Adapter struct {
 	config Config
 	clock  adapter.Clock
 	ids    adapter.IDGenerator
+	native nativeServer
 }
 
 func New(config Config) (*Adapter, error) {

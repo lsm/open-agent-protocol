@@ -204,8 +204,10 @@ far as `after` and `limit` need, with no cap of its own. A harness's own list an
 loop, on a thread of their own: the loop goes on answering other requests and
 delivering events, and answers the `work.list` (with `include_native`) or
 `work.read` that asked once the harness has answered. The Codex adapter keeps
-one app-server for its lists and reads, started on first use and again only if
-it dies, and serializes calls on it.
+one app-server for its lists and reads, in both trees, started on first use and
+again only if it dies. A call that finds it busy runs on an app-server of its
+own, and a call that breaks a reused one is retried once on a fresh one; an
+error the app-server answers keeps it.
 
 Otherwise `serve` answers from what it recorded: a `user` turn for each message
 a submit admits (from `work.start`, `work.send` or the core's own submit) and an
