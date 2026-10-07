@@ -3,6 +3,7 @@ package workwire
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"sync"
 	"testing"
 	"time"
@@ -338,5 +339,46 @@ func TestWorkStartWithANativeIdAdoptsItAndAReopenFromItsBindingIsAdoptedToo(t *t
 	again := encoded(t)(front.Start(ctx, "scripted", json.RawMessage(`{"native_id":"thread-x","message":"more"}`)))
 	if again["ref"].(map[string]any)["session_id"] != id || len(adapter.opened) != 1 {
 		t.Fatalf("a second adoption answered %v after %d opens", again, len(adapter.opened))
+	}
+}
+
+type listingScripted struct {
+	*scripted
+	listErr error
+	running bool
+}
+
+func (l *listingScripted) NativeList(context.Context, base.NativeListRequest) ([]base.NativeListing, error) {
+	if l.listErr != nil {
+		return nil, l.listErr
+	}
+	return []base.NativeListing{{NativeID: "thread-x", Running: l.running}}, nil
+}
+
+func TestWorkStartRefusesToAdoptASessionItCannotTellIsNotRunning(t *testing.T) {
+	ctx := context.Background()
+	for _, tc := range []struct {
+		name    string
+		adapter *listingScripted
+		code    string
+	}{
+		{"the list failed", &listingScripted{scripted: &scripted{transcript: map[string][]base.NativeTurn{}}, listErr: errors.New("app-server gone")}, "backend_failed"},
+		{"the harness runs it", &listingScripted{scripted: &scripted{transcript: map[string][]base.NativeTurn{}}, running: true}, "run_active"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			registry := serve.NewRegistry()
+			if err := registry.Register("scripted", tc.adapter); err != nil {
+				t.Fatal(err)
+			}
+			registry.SetWorkingDirectory("scripted", "/work/a")
+			front := New(serve.New(registry, serve.Options{Bindings: binding.Memory()}))
+			_, refusal := front.Start(ctx, "scripted", json.RawMessage(`{"native_id":"thread-x","message":"continue"}`))
+			if refusal == nil || refusal.Code != tc.code {
+				t.Fatalf("refusal = %+v, want %s", refusal, tc.code)
+			}
+			if len(tc.adapter.opened) != 0 {
+				t.Fatalf("the adapter was opened %d times", len(tc.adapter.opened))
+			}
+		})
 	}
 }

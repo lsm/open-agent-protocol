@@ -327,7 +327,11 @@ func (f *Front) adopt(ctx context.Context, adapter, native, directory string, pa
 	if held := f.boundSession(ctx, adapter, native); held != "" {
 		return f.Send(ctx, held, params)
 	}
-	if running, _ := f.hub.NativeRunning(ctx, adapter, native); running {
+	running, err := f.hub.NativeRunning(ctx, adapter, native)
+	if err != nil {
+		return nil, &Refusal{Code: "backend_failed", Message: "cannot tell whether another process is running this session: " + err.Error()}
+	}
+	if running {
 		return nil, &Refusal{Code: "run_active", Message: "another process is running this session; continuing it here would fork the conversation"}
 	}
 	entry, _, err := f.hub.OpenIn(ctx, adapter, directory, base.OpenRequest{Reopen: true, Adopted: true, NativeSessionID: native})

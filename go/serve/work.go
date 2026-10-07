@@ -389,7 +389,7 @@ func (h *Hub) NativeRunning(ctx context.Context, adapter, native string) (bool, 
 	}
 	listed, err := lister.NativeList(ctx, base.NativeListRequest{Directory: h.registry.WorkingDirectory(adapter), Limit: NativeListLimit})
 	if err != nil {
-		return false, nil
+		return false, err
 	}
 	for _, session := range listed {
 		if session.NativeID == native {
