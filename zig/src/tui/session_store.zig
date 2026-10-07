@@ -440,11 +440,11 @@ pub const Store = struct {
         return path;
     }
 
-    pub fn resumeSession(self: Store, session_id: []const u8, runtime: *tui_runtime.TuiRuntime) !LoadedSession {
+    pub fn resumeSession(self: Store, session_id: []const u8, runtime: *tui_runtime.TuiRuntime, workspace_root: ?[]const u8) !LoadedSession {
         var loaded = try self.load(session_id);
         errdefer loaded.deinit(self.allocator);
         if (runtime.remote != null) {
-            try runtime.reopenSaved(session_id);
+            try runtime.reopenSaved(session_id, workspace_root);
             if (loaded.metadata.model.len > 0) loaded.model_unavailable = !try selectSavedModel(runtime, loaded.metadata.provider, loaded.metadata.model);
             return loaded;
         }

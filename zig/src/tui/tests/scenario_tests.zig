@@ -366,7 +366,7 @@ test "runtime persistence full save and resume cycle" {
     });
     defer runtime.deinit();
 
-    var loaded = try store.resumeSession("resume-cycle", &runtime);
+    var loaded = try store.resumeSession("resume-cycle", &runtime, null);
     defer loaded.deinit(std.testing.allocator);
     try std.testing.expectEqual(@as(usize, 2), loaded.messages.items.len);
     try std.testing.expect(loaded.messages.items[0] == .user);

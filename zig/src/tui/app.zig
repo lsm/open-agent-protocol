@@ -1523,6 +1523,12 @@ pub const App = struct {
         if (self.state.session_index >= self.state.sessions.items.len and self.state.session_index > 0) self.state.session_index -= 1;
     }
 
+    fn adoptResumeRoot(self: *App, runtime: *tui_runtime.TuiRuntime, root: []const u8) !void {
+        try runtime.setWorkspaceRoot(root);
+        try replaceOwnedString(self.allocator, &self.working_dir, root);
+        try self.refreshCwdDisplay();
+    }
+
     pub fn resumeSelectedSession(self: *App) !void {
         if (self.worktree_job != null or self.worktree_management_job != null) {
             try self.state.appendTranscript(.system, "Wait for worktree setup to finish before resuming another session.");
@@ -1542,6 +1548,8 @@ pub const App = struct {
         const selected = self.state.sessions.items[self.state.session_index];
         const runtime = if (self.runtime) |r| r else return error.NoRuntimeConfigured;
         const id = selected.id;
+        var resume_root: ?[]u8 = null;
+        defer if (resume_root) |held| self.allocator.free(held);
         if (try tui_worktree.readSidecar(self.allocator, store.base_dir, id)) |info_value| {
             var info = info_value;
             defer info.deinit(self.allocator);
@@ -1564,7 +1572,7 @@ pub const App = struct {
                 self.pending_resume_path = pending_path;
                 return;
             }
-            const root = if (tui_worktree.pathExists(info.path))
+            resume_root = if (tui_worktree.pathExists(info.path))
                 try info.workingDir(self.allocator)
             else root: {
                 if (info.prefix.len > 0) {
@@ -1575,22 +1583,18 @@ pub const App = struct {
                 if (tui_worktree.pathExists(info.repo_root)) break :root try self.allocator.dupe(u8, info.repo_root);
                 break :root try self.allocator.dupe(u8, self.launch_dir);
             };
-            defer self.allocator.free(root);
-            try runtime.pauseRemote();
-            try runtime.setWorkspaceRoot(root);
-            try replaceOwnedString(self.allocator, &self.working_dir, root);
-            try self.refreshCwdDisplay();
         } else {
             self.worktree_attempted = false;
-            if (self.launch_dir.len > 0) {
-                try runtime.pauseRemote();
-                try runtime.setWorkspaceRoot(self.launch_dir);
-                try replaceOwnedString(self.allocator, &self.working_dir, self.launch_dir);
-                try self.refreshCwdDisplay();
-            }
+            if (self.launch_dir.len > 0) resume_root = try self.allocator.dupe(u8, self.launch_dir);
         }
-        var loaded = try store.resumeSession(id, runtime);
+        const over_oap = runtime.remote != null;
+        if (!over_oap) if (resume_root) |root| try self.adoptResumeRoot(runtime, root);
+        var loaded = try store.resumeSession(id, runtime, if (over_oap) resume_root else null);
         defer loaded.deinit(self.allocator);
+        if (over_oap) if (resume_root) |root| {
+            try replaceOwnedString(self.allocator, &self.working_dir, root);
+            try self.refreshCwdDisplay();
+        };
         const new_session_id = try self.allocator.dupe(u8, loaded.metadata.session_id);
         self.discardPendingEvents();
         self.pending_session_reset = false;
@@ -10096,6 +10100,42 @@ test "resume over OAP reopens the saved session after a turn has opened one, wit
     try std.testing.expectEqualStrings("saved-over-oap", execution.session_id);
     try std.testing.expectEqualStrings(app.launch_dir, app.runtime.?.workingDirectory());
 }
+
+test "a refused resume over OAP leaves the open session's workspace and the shown directory as they were" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const base = try sessionStoreBaseForAppTest(std.testing.allocator, &tmp);
+    defer std.testing.allocator.free(base);
+    var provider = fixture_provider.MockProvider.init(.{ .steps = &.{.{ .text = "a reply" }} });
+    const models = [_]ai_types.Model{defaultModel()};
+    const execution = try tui_oap_execution.OapExecution.create(std.testing.allocator, .{ .protocol = provider.protocolClient(), .models = &models });
+    defer execution.destroy();
+    var app = try App.init(std.testing.allocator, .{ .models = &models, .remote = execution.remote() });
+    defer app.deinit();
+    if (app.store) |*store| store.deinit();
+    app.store = try session_store.Store.init(std.testing.allocator, base);
+    var nothing_saved = RefusingHistory{};
+    execution.setHistory(.{ .ctx = &nothing_saved, .load = RefusingHistory.load });
+    try saveTestSession(app.store.?, "saved-elsewhere", 1);
+    try app.loadSessions();
+
+    try app.runtime.?.setWorkspaceRoot("/tmp/the-open-session");
+    try App.replaceOwnedString(std.testing.allocator, &app.working_dir, "/tmp/the-open-session");
+    try app.runtime.?.start();
+    try std.testing.expectError(error.OapReopenRefused, app.resumeSelectedSession());
+    try std.testing.expectEqualStrings("/tmp/the-open-session", app.runtime.?.workingDirectory());
+    try std.testing.expectEqualStrings("/tmp/the-open-session", app.working_dir);
+    try std.testing.expect(app.runtime.?.started);
+}
+
+const RefusingHistory = struct {
+    fn load(ctx: *anyopaque, arena: std.mem.Allocator, session_id: []const u8) anyerror!?[]const ai_types.Message {
+        _ = ctx;
+        _ = arena;
+        _ = session_id;
+        return null;
+    }
+};
 
 const MockProvider = struct {
     fn stream(

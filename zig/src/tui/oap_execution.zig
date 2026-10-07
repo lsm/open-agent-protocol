@@ -240,6 +240,16 @@ pub const OapExecution = struct {
 
     fn start(ctx: *anyopaque, sink: tui_runtime.EventSink, settings: tui_runtime.RemoteSettings) anyerror!void {
         const self = cast(ctx);
+        const prior_open = settings.resume_session_id != null and self.session_id.len > 0;
+        self.startSession(sink, settings) catch |err| {
+            if (!prior_open or err == error.OapReopenRefused or self.thread != null) return err;
+            self.stopping.store(false, .release);
+            self.thread = std.Thread.spawn(.{}, run, .{self}) catch return err;
+            return error.OapReopenRefused;
+        };
+    }
+
+    fn startSession(self: *OapExecution, sink: tui_runtime.EventSink, settings: tui_runtime.RemoteSettings) anyerror!void {
         self.sink = sink;
         var scratch = std.heap.ArenaAllocator.init(self.allocator);
         defer scratch.deinit();
@@ -1501,7 +1511,8 @@ const Script = struct {
     released: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
     last_thinking: ai_types.ThinkingLevel = .off,
     last_context_messages: usize = 0,
-    last_max_tokens: ?u32 = null,};
+    last_max_tokens: ?u32 = null,
+};
 
 fn scriptedMessage(allocator: std.mem.Allocator, text: []const u8, reason: ai_types.StopReason) !ai_types.AssistantMessage {
     const blocks = try allocator.alloc(ai_types.AssistantContent, 1);
@@ -1914,6 +1925,36 @@ const SavedTranscript = struct {
     }
 };
 
+test "a reopen that fails once the open session has stopped keeps a session pumping, so the next turn is not lost" {
+    var script = Script{};
+    var execution: *OapExecution = undefined;
+    var runtime = try remoteRuntime(&script, &execution, .low);
+    defer execution.destroy();
+    defer runtime.deinit();
+    var saved = SavedTranscript{};
+    execution.setHistory(.{ .ctx = &saved, .load = SavedTranscript.load });
+    try runtime.start();
+
+    var unprintable = scripted_model;
+    unprintable.provider = "";
+    OapExecution.stop(execution);
+    try testing.expectError(error.OapReopenRefused, OapExecution.start(execution, execution.sink.?, .{
+        .model = unprintable,
+        .thinking_level = .low,
+        .context_window = null,
+        .output = .auto,
+        .permission_mode = .bypass,
+        .workspace_root = "",
+        .resume_session_id = "saved-session",
+    }));
+    try testing.expect(execution.thread != null);
+    try runtime.submitTurn("still answered");
+    var seen = Seen{};
+    defer seen.deinit();
+    try drainTurn(&runtime, &seen);
+    try testing.expectEqual(@as(?tui_session.TuiEndReason, .completed), seen.end);
+}
+
 test "a refused reopen before any session opened leaves the runtime unstarted, so the next turn opens one" {
     var script = Script{};
     var execution: *OapExecution = undefined;
@@ -1923,7 +1964,7 @@ test "a refused reopen before any session opened leaves the runtime unstarted, s
     var saved = SavedTranscript{ .missing = true };
     execution.setHistory(.{ .ctx = &saved, .load = SavedTranscript.load });
 
-    try testing.expectError(error.OapReopenNotSaved, runtime.reopenSaved("saved-session"));
+    try testing.expectError(error.OapReopenNotSaved, runtime.reopenSaved("saved-session", null));
     try testing.expect(!runtime.started);
     try runtime.submitTurn("a fresh start");
     var seen = Seen{};
@@ -1942,7 +1983,7 @@ test "a saved session reopened over OAP carries its transcript into the next run
     execution.setHistory(.{ .ctx = &saved, .load = SavedTranscript.load });
 
     try runtime.start();
-    try runtime.reopenSaved("saved-session");
+    try runtime.reopenSaved("saved-session", null);
     try testing.expectEqualStrings("saved-session", execution.session_id);
     try runtime.submitTurn("and now");
     var seen = Seen{};
@@ -1950,11 +1991,11 @@ test "a saved session reopened over OAP carries its transcript into the next run
     try drainTurn(&runtime, &seen);
     try testing.expectEqual(@as(?tui_session.TuiEndReason, .completed), seen.end);
     try testing.expectEqual(@as(usize, 2), script.last_context_messages);
-    try testing.expectError(error.OapReopenRefused, runtime.reopenSaved("never-saved"));
+    try testing.expectError(error.OapReopenRefused, runtime.reopenSaved("never-saved", null));
     try testing.expectEqualStrings("saved-session", execution.session_id);
 
     saved.missing = true;
-    try testing.expectError(error.OapReopenRefused, runtime.reopenSaved("saved-session"));
+    try testing.expectError(error.OapReopenRefused, runtime.reopenSaved("saved-session", null));
     saved.missing = false;
     try runtime.submitTurn("still on the open session");
     var kept = Seen{};
@@ -1962,7 +2003,7 @@ test "a saved session reopened over OAP carries its transcript into the next run
     try drainTurn(&runtime, &kept);
     try testing.expectEqual(@as(?tui_session.TuiEndReason, .completed), kept.end);
 
-    try runtime.reopenSaved("saved-session");
+    try runtime.reopenSaved("saved-session", null);
     try runtime.submitTurn("and once more");
     var again = Seen{};
     defer again.deinit();
