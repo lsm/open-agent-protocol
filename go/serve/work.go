@@ -454,10 +454,14 @@ func (h *Hub) WorkReach(ctx context.Context) []WorkReach {
 		_, lists := implementation.(base.NativeLister)
 		_, reads := implementation.(base.NativeReader)
 		reach := WorkReach{Name: name, Directory: h.registry.WorkingDirectory(name), NativeList: lists, NativeRead: reads}
-		if descriptor, err := implementation.Probe(ctx); err == nil {
-			reach.Descriptor = &descriptor
-		} else {
+		descriptor, err := implementation.Probe(ctx)
+		switch {
+		case err != nil:
 			reach.Message = err.Error()
+		case descriptor.CapabilityRevision == "":
+			reach.Message = "adapter descriptor carries no capability revision"
+		default:
+			reach.Descriptor = &descriptor
 		}
 		reached = append(reached, reach)
 	}

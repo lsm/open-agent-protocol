@@ -18,6 +18,7 @@ type scripted struct {
 	opened     []base.OpenRequest
 	sessions   []*scriptedSession
 	features   map[string]protocol.FeatureSupport
+	revision   string
 	transcript map[string][]base.NativeTurn
 	readFails  bool
 }
@@ -34,7 +35,11 @@ type scriptedSession struct {
 }
 
 func (a *scripted) Probe(context.Context) (base.Descriptor, error) {
-	return base.Descriptor{Capabilities: protocol.CapabilityDescriptor{Endpoint: protocol.EndpointDescriptor{ID: "scripted", Name: "Scripted", Version: "1"}, Features: a.features}, CapabilityRevision: "scripted-v1"}, nil
+	revision := "scripted-v1"
+	if a.revision == "-" {
+		revision = ""
+	}
+	return base.Descriptor{Capabilities: protocol.CapabilityDescriptor{Endpoint: protocol.EndpointDescriptor{ID: "scripted", Name: "Scripted", Version: "1"}, Features: a.features}, CapabilityRevision: revision}, nil
 }
 
 func (a *scripted) Open(_ context.Context, request base.OpenRequest) (base.Session, error) {
@@ -309,6 +314,11 @@ func TestWorkCapabilitiesLeavesOutAVerbWhoseFeatureTheAdapterDeclaresUnavailable
 	undeclared := encoded(t)(front.Capabilities(context.Background()))["adapters"].([]any)[0].(map[string]any)["verbs"].([]any)
 	if len(undeclared) != 5 {
 		t.Fatalf("verbs %v, want work.stop left out when run.cancel is undeclared", undeclared)
+	}
+	adapter.revision = "-"
+	unbound := encoded(t)(front.Capabilities(context.Background()))
+	if len(unbound["adapters"].([]any)) != 0 || unbound["unavailable"].([]any)[0].(map[string]any)["message"] != "adapter descriptor carries no capability revision" {
+		t.Fatalf("an unbound descriptor answered %v", unbound)
 	}
 }
 
