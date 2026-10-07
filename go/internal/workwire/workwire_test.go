@@ -22,6 +22,7 @@ type scripted struct {
 	revision   string
 	transcript map[string][]base.NativeTurn
 	readFails  bool
+	gone       string
 }
 
 type scriptedSession struct {
@@ -47,6 +48,9 @@ func (a *scripted) Open(_ context.Context, request base.OpenRequest) (base.Sessi
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	a.opened = append(a.opened, request)
+	if a.gone != "" && request.NativeSessionID == a.gone {
+		return nil, &base.UnknownSessionError{ID: request.SessionID}
+	}
 	id := request.SessionID
 	if id == "" {
 		id = protocol.SessionID("s" + string(rune('1'+len(a.sessions))))
@@ -396,6 +400,17 @@ func TestWorkRefusesAClosedOrUnknownSessionInTheWordsZigUses(t *testing.T) {
 		refusal := front.stateRefusal(c.err, "s1")
 		if refusal.Code != c.code || refusal.Message != c.message {
 			t.Fatalf("%v refused %s %q, want %s %q", c.err, refusal.Code, refusal.Message, c.code, c.message)
+		}
+	}
+}
+
+func TestWorkStartRefusesANativeIdTheAdapterCannotLoadAsAnUnsatisfiableReopenWithOrWithoutABindingStore(t *testing.T) {
+	for _, store := range []binding.Store{nil, binding.Memory()} {
+		front, adapter := harness(t, store)
+		adapter.gone = "thread-gone"
+		_, refusal := front.Start(context.Background(), "scripted", json.RawMessage(`{"native_id":"thread-gone","message":"continue"}`))
+		if refusal == nil || refusal.Code != "unsupported_feature" {
+			t.Fatalf("with store %v the refusal was %+v", store != nil, refusal)
 		}
 	}
 }

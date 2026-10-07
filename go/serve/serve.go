@@ -101,7 +101,7 @@ func (h *Hub) OpenIn(ctx context.Context, adapterName, directory string, request
 	}
 	session, err := implementation.Open(ctx, request)
 	var gone *base.UnknownSessionError
-	if request.Reopen && h.bindings != nil && errors.As(err, &gone) {
+	if request.Reopen && (h.bindings != nil || adopting) && errors.As(err, &gone) {
 		return nil, protocol.SessionState{}, &base.UnsupportedControlError{Feature: protocol.FeatureOpenReopen, Reason: base.ControlUnsatisfiable, Detail: "the binding names a session the adapter can no longer load"}
 	}
 	if err != nil {
