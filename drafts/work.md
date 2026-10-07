@@ -84,6 +84,11 @@ and a journal. Two other kinds of entry appear in `work.list` and carry **no
   one only when `include_closed` is set.
 - **Native:** a harness session no binding names (0047 decision 2). It carries
   `native_id` and whatever the harness's own list says, nothing projected.
+  Codex lists through `thread/list`, Claude Code and Pi from their stores, and
+  an ACP agent through `session/list` in the working directory when its
+  `initialize` advertises `sessionCapabilities.list`, which takes a
+  short-lived agent process per listing; an agent that does not advertise it
+  lists nothing.
 
 `work.status`, `work.read` and `work.stop` answer an unheld entry from the
 history (its `held: false` entry, the harness's transcript or no turns, nothing to stop) without starting

@@ -226,6 +226,7 @@ pub const OapExecution = struct {
         .set_reasoning = setReasoning,
         .set_catalog = setCatalog,
         .compacts = compacts,
+        .settings_live = settingsLive,
         .take_record = takeRecord,
         .records_session = recordsSession,
         .compactable = compactable,
@@ -790,6 +791,11 @@ pub const OapExecution = struct {
         try payload.put("session_id", .{ .string = self.session_id });
         try payload.put("reasoning_level", .{ .string = @tagName(level) });
         _ = try self.enqueue(a, "session.settings.update.request", "settings", payload.value(), null);
+    }
+
+    fn settingsLive(ctx: *anyopaque) bool {
+        const self = cast(ctx);
+        return self.live_reasoning and self.hub == null;
     }
 
     fn setSettings(ctx: *anyopaque, level: ai_types.ThinkingLevel, settings_json: []const u8) anyerror!void {
