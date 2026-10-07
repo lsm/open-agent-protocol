@@ -257,10 +257,11 @@ pub const Usage = struct {
     cost: UsageCost = .{},
 
     pub fn calculateCost(self: *Usage, model_cost: Cost) void {
-        self.cost.input = (@as(f64, @floatFromInt(self.input)) / 1_000_000.0) * model_cost.input;
-        self.cost.output = (@as(f64, @floatFromInt(self.output)) / 1_000_000.0) * model_cost.output;
-        self.cost.cache_read = (@as(f64, @floatFromInt(self.cache_read)) / 1_000_000.0) * model_cost.cache_read;
-        self.cost.cache_write = (@as(f64, @floatFromInt(self.cache_write)) / 1_000_000.0) * model_cost.cache_write;
+        const rates = model_cost.ratesFor(self.input + self.cache_read + self.cache_write);
+        self.cost.input = (@as(f64, @floatFromInt(self.input)) / 1_000_000.0) * rates.input;
+        self.cost.output = (@as(f64, @floatFromInt(self.output)) / 1_000_000.0) * rates.output;
+        self.cost.cache_read = (@as(f64, @floatFromInt(self.cache_read)) / 1_000_000.0) * rates.cache_read;
+        self.cost.cache_write = (@as(f64, @floatFromInt(self.cache_write)) / 1_000_000.0) * rates.cache_write;
         self.cost.total = self.cost.input + self.cost.output + self.cost.cache_read + self.cost.cache_write;
     }
 };
@@ -494,11 +495,31 @@ pub const Context = struct {
     }
 };
 
+pub const CostRates = struct {
+    input: f64,
+    output: f64,
+    cache_read: f64,
+    cache_write: f64,
+};
+
+pub const CostTier = struct {
+    above_input_tokens: u64,
+    rates: CostRates,
+};
+
 pub const Cost = struct {
     input: f64,
     output: f64,
     cache_read: f64,
     cache_write: f64,
+    tier: ?CostTier = null,
+
+    pub fn ratesFor(self: Cost, input_tokens: u64) CostRates {
+        if (self.tier) |tier| {
+            if (input_tokens > tier.above_input_tokens) return tier.rates;
+        }
+        return .{ .input = self.input, .output = self.output, .cache_read = self.cache_read, .cache_write = self.cache_write };
+    }
 };
 
 pub const OpenAICompatOptions = struct {
@@ -1504,6 +1525,25 @@ test "Usage.calculateCost computes correct dollar costs" {
     try std.testing.expectApproxEqAbs(0.06, usage.cost.cache_read, 0.0001);
     try std.testing.expectApproxEqAbs(0.375, usage.cost.cache_write, 0.0001);
     try std.testing.expectApproxEqAbs(10.935, usage.cost.total, 0.0001);
+}
+
+test "a request whose input, cache included, passes a cost tier's threshold is charged the tier's rates" {
+    const tiered = Cost{
+        .input = 0.10,
+        .output = 0.50,
+        .cache_read = 0.01,
+        .cache_write = 0.125,
+        .tier = .{ .above_input_tokens = 100_000, .rates = .{ .input = 0.50, .output = 2.50, .cache_read = 0.05, .cache_write = 0.625 } },
+    };
+
+    var within = Usage{ .input = 60_000, .output = 1_000_000, .cache_read = 40_000 };
+    within.calculateCost(tiered);
+    try std.testing.expectApproxEqAbs(0.50, within.cost.output, 0.0001);
+
+    var above = Usage{ .input = 60_000, .output = 1_000_000, .cache_read = 40_001 };
+    above.calculateCost(tiered);
+    try std.testing.expectApproxEqAbs(2.50, above.cost.output, 0.0001);
+    try std.testing.expectApproxEqAbs(0.03, above.cost.input, 0.0001);
 }
 
 test "OpenAICompatOptions defaults are correct" {
