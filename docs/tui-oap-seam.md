@@ -113,6 +113,20 @@ without going through the ops table.
 | `setTools`, MCP bridge (direct) | `action.tools.provide`, `action.tool_sources.attach` | **gap** — G8, unadvertised |
 | `models` / login (direct) | `models.list`; auth stays local | covered / G5 |
 
+## Measuring parity
+
+`scripts/tui-pty-driver.py --scenario all` runs every sweep scenario on
+`oapx --tui` and again on `oapx tui`, then compares the two runs' saved
+session records field by field, JSON-valued fields parsed, leaving out only the
+record types `UNCOMPARED_EVENT_TYPES` and the fields `UNCOMPARED_EVENT_FIELDS`
+name, each with a reason, and the timings `UNCOMPARED_RESULT_FIELDS` strips from
+a tool's result; `UNORDERED_EVENT_TYPES` are compared as a set. `OAP_KNOWN_GAPS` lists the
+scenarios `oapx tui` fails today and `KNOWN_DIVERGENCES` the ones whose
+records differ; an entry that stops failing fails the sweep, so both lists
+only shrink. A command in `zig/src/tui/commands.zig` that no scenario drives
+fails the sweep too. `oapx tui` has parity with `--tui` when both lists are
+empty, and that is the bar for making it the default.
+
 ## Gaps
 
 Each is a proposal. #375 moves a flow only when its gap is closed or its
