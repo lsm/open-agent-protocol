@@ -352,6 +352,7 @@ pub fn messagesResult(arena: std.mem.Allocator, response: Response, session: []c
         .document => |value| value,
         .failed => |failure| return .{ .failed = failure },
     };
+    if (document != .object) return .{ .ok = .{ .messages = &.{}, .next = "" } };
     const data = document.object.get("data") orelse std.json.Value.null;
     const cursor = document.object.get("cursor") orelse std.json.Value.null;
     const next = if (cursor == .object) cursor.object.get("next") orelse std.json.Value.null else std.json.Value.null;
@@ -748,4 +749,6 @@ test "a message page is asked oldest first, then by its cursor alone, and keeps 
     try testing.expectEqualStrings("", last.ok.next);
     const strict = try messagesResult(scratch, .{ .status = 200, .body = "{\"data\":[],\"cursor\":{},\"surprise\":1}" }, "ses_a", 0);
     try testing.expect(strict == .failed);
+    const empty = try messagesResult(scratch, .{ .status = 200, .body = "null" }, "ses_a", 0);
+    try testing.expectEqual(@as(usize, 0), empty.ok.messages.len);
 }
