@@ -533,6 +533,7 @@ pub const Frontend = struct {
         thread: ?std.Thread = null,
         done: std.atomic.Value(bool) = .init(false),
         abandoned: bool = false,
+        out_of_memory: bool = false,
         kind: Kind,
 
         pub const Kind = union(enum) {
@@ -543,10 +544,16 @@ pub const Frontend = struct {
         fn run(job: *Job) void {
             const a = job.arena.allocator();
             switch (job.kind) {
-                .list => |*list| list.listed = hubmod.listTargets(a, list.targets) catch &.{},
+                .list => |*list| list.listed = hubmod.listTargets(a, list.targets) catch blk: {
+                    job.out_of_memory = true;
+                    break :blk &.{};
+                },
                 .read => |*read| {
                     var refusal = contract.Refusal{};
-                    if (read.target.adapter.nativeRead(a, read.target.request, &refusal)) |answered| read.turns = answered catch &.{};
+                    if (read.target.adapter.nativeRead(a, read.target.request, &refusal)) |answered| read.turns = answered catch |err| blk: {
+                        if (err == error.OutOfMemory) job.out_of_memory = true;
+                        break :blk &.{};
+                    };
                 },
             }
             job.done.store(true, .release);
@@ -558,6 +565,17 @@ pub const Frontend = struct {
         job.thread = std.Thread.spawn(.{}, Job.run, .{job}) catch return Error.Unavailable;
         self.jobs.appendAssumeCapacity(job);
         return job.ticket;
+    }
+
+    fn deferJob(self: *Frontend, job: *Job) Error!Outcome {
+        const ticket = self.startJob(job) catch |err| switch (err) {
+            Error.Unavailable => {
+                self.dropJob(job);
+                return .{ .refused = .{ .code = "busy", .message = "the frontend could not start a thread to ask the harness; send this request again" } };
+            },
+            else => return err,
+        };
+        return .{ .deferred = ticket };
     }
 
     fn newJob(self: *Frontend) Error!*Job {
@@ -609,6 +627,7 @@ pub const Frontend = struct {
     }
 
     pub fn finish(self: *Frontend, arena: std.mem.Allocator, job: *Job) Error!Outcome {
+        if (job.out_of_memory) return error.OutOfMemory;
         return switch (job.kind) {
             .list => |list| self.composeList(arena, list.options, list.listed),
             .read => |read| self.composeRead(arena, read.session_id, read.held, read.after, read.bound, read.turns),
@@ -1157,7 +1176,7 @@ pub const Frontend = struct {
         const job = try self.newJob();
         errdefer self.dropJob(job);
         job.kind = .{ .list = .{ .options = options, .targets = try self.hub.nativeTargets(job.arena.allocator()) } };
-        return .{ .deferred = try self.startJob(job) };
+        return self.deferJob(job);
     }
 
     fn composeList(self: *Frontend, arena: std.mem.Allocator, options: ListOptions, native_listing: []const hubmod.NativeListing) Error!Outcome {
@@ -1304,7 +1323,12 @@ pub const Frontend = struct {
     fn workAdopt(self: *Frontend, arena: std.mem.Allocator, adapter: []const u8, native_id: []const u8, directory: []const u8, params: ?std.json.Value) !Outcome {
         if (native_id.len == 0) return .{ .refused = .{ .code = "invalid_request", .message = "request.native_id is a non-empty string" } };
         if (try self.boundSession(arena, adapter, native_id)) |session_id| return self.workSend(arena, session_id, params);
-        if (try self.hub.nativeRunning(arena, adapter, native_id)) return .{ .refused = .{ .code = "run_active", .message = "another process is running this session; continuing it here would fork the conversation" } };
+        var listing = contract.Refusal{};
+        const running = self.hub.nativeRunning(arena, adapter, native_id, &listing) catch |err| switch (err) {
+            error.BackendFailed => return .{ .refused = .{ .code = "backend_failed", .message = try std.mem.concat(arena, u8, &.{ "cannot tell whether another process is running this session: ", listing.message }) } },
+            else => |failure| return failure,
+        };
+        if (running) return .{ .refused = .{ .code = "run_active", .message = "another process is running this session; continuing it here would fork the conversation" } };
         var refused: hubmod.OpenRefusal = .{};
         const opened = self.hub.openReporting(arena, adapter, .{ .reopen = true, .adopt_native_id = native_id, .directory = directory }, &refused) catch |err| {
             try ownRevisions(arena, &refused);
@@ -1403,7 +1427,7 @@ pub const Frontend = struct {
             const job_arena = job.arena.allocator();
             if (try self.hub.readTarget(job_arena, ref, @intCast(@min(wanted, std.math.maxInt(usize))))) |target| {
                 job.kind = .{ .read = .{ .session_id = try job_arena.dupe(u8, session_id), .held = held, .after = after, .bound = bound, .target = target } };
-                return .{ .deferred = try self.startJob(job) };
+                return self.deferJob(job);
             }
             self.dropJob(job);
         }
@@ -2598,6 +2622,7 @@ fn referenceNativeRead(ptr: *anyopaque, arena: std.mem.Allocator, request: contr
     _ = ptr;
     _ = arena;
     if (std.mem.eql(u8, request.native_id, "thread-broken")) return refusal.fail(error.BackendFailed, "the harness would not read");
+    if (std.mem.eql(u8, request.native_id, "thread-starved")) return error.OutOfMemory;
     if (std.mem.eql(u8, request.native_id, "thread-a") and (request.directory.len == 0 or std.mem.eql(u8, request.directory, "/work/a"))) return &reference_transcript;
     return &.{};
 }
@@ -3778,6 +3803,17 @@ test "work.read refuses an unreadable after and answers no turns past the larges
     try testing.expectEqual(@as(usize, 0), read.turns.len);
 }
 
+test "work.start with a native id refuses backend_failed when the harness cannot list its sessions" {
+    const harness = try Harness.init(testing.allocator, .{}, .{});
+    defer harness.deinit();
+    reference_holder.native_fails = true;
+    defer reference_holder.native_fails = false;
+    try harness.send("{\"id\":1,\"op\":\"work.start\",\"adapter\":\"reference\",\"request\":{\"message\":\"go\",\"native_id\":\"thread-a\"}}");
+    try testing.expectEqualStrings("backend_failed", try harness.code());
+    try testing.expectEqualStrings("cannot tell whether another process is running this session: the harness would not list", try harness.message());
+    try testing.expectEqual(@as(usize, 0), harness.hub.sessionCount());
+}
+
 test "work.start with a native id refuses a session another process runs, and an adapter that cannot reopen" {
     const harness = try Harness.init(testing.allocator, .{}, .{});
     defer harness.deinit();
@@ -4473,6 +4509,15 @@ test "work.read of a session with a native id reads the harness's own transcript
     const kept = (try broken.lastValue()).object.get("result").?.object.get("turns").?.array.items;
     try testing.expectEqual(@as(usize, 1), kept.len);
     try testing.expectEqualStrings("kept turn", kept[0].object.get("text").?.string);
+}
+
+test "work.read carries the harness running out of memory out of the job instead of answering no turns" {
+    const harness = try Harness.init(testing.allocator, .{}, .{});
+    defer harness.deinit();
+    reference_holder.opens_native = "thread-starved";
+    defer reference_holder.opens_native = "";
+    try harness.send(try openLine(harness.arena(), "reference", open_envelope));
+    try testing.expectError(error.OutOfMemory, harness.send("{\"id\":2,\"op\":\"work.read\",\"session_id\":\"s1\"}"));
 }
 
 test "work.list shows a session serve no longer holds from its binding, live by default and closed on request, and work.status, work.read and work.stop answer it without reopening" {
