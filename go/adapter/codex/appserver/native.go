@@ -3,19 +3,29 @@ package appserver
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"strings"
+	"sync"
+	"time"
 	"unicode/utf8"
 
 	"github.com/lsm/open-agent-protocol/go/adapter"
+	"github.com/lsm/open-agent-protocol/go/adapter/codex/appserver/internal/rpc"
 )
 
 const (
 	nativeTurnPage   = 100
 	nativeTitleLimit = 120
+	nativeCallLimit  = 60 * time.Second
 )
 
 func (implementation *Adapter) NativeLink(nativeID string) string {
 	return "codex://threads/" + nativeID
+}
+
+type nativeServer struct {
+	mu     sync.Mutex
+	client Client
 }
 
 func ask(ctx context.Context, client Client, method string, params any) (json.RawMessage, error) {
@@ -24,6 +34,95 @@ func ask(ctx context.Context, client Client, method string, params any) (json.Ra
 		return nil, err
 	}
 	return result, nil
+}
+
+func (implementation *Adapter) ask(ctx context.Context, method string, params any) (json.RawMessage, error) {
+	server := &implementation.native
+	if !server.mu.TryLock() {
+		client, err := implementation.config.Factory.Start(ctx)
+		if err != nil {
+			return nil, err
+		}
+		defer func() { _ = client.Close() }()
+		return ask(ctx, client, method, params)
+	}
+	defer server.mu.Unlock()
+	ctx, cancel := keptContext(ctx)
+	defer cancel()
+	reused := server.client != nil
+	if reused && ended(server.client) {
+		_ = server.client.Close()
+		server.client, reused = nil, false
+	}
+	if server.client == nil {
+		client, err := implementation.startKept(ctx)
+		if err != nil {
+			return nil, err
+		}
+		server.client = client
+	}
+	result, err := ask(ctx, server.client, method, params)
+	if err == nil || !broken(server.client, err) {
+		return result, err
+	}
+	_ = server.client.Close()
+	server.client = nil
+	if !reused {
+		return nil, err
+	}
+	client, err := implementation.startKept(ctx)
+	if err != nil {
+		return nil, err
+	}
+	server.client = client
+	result, err = ask(ctx, client, method, params)
+	if err != nil && broken(client, err) {
+		_ = client.Close()
+		server.client = nil
+	}
+	return result, err
+}
+
+func (implementation *Adapter) startKept(ctx context.Context) (Client, error) {
+	client, err := implementation.config.Factory.Start(ctx)
+	if err != nil {
+		return nil, err
+	}
+	go func() {
+		for {
+			select {
+			case _, open := <-client.Inbound():
+				if !open {
+					return
+				}
+			case <-client.Done():
+				return
+			}
+		}
+	}()
+	return client, nil
+}
+
+func keptContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	detached := context.WithoutCancel(ctx)
+	if deadline, ok := ctx.Deadline(); ok {
+		return context.WithDeadline(detached, deadline)
+	}
+	return context.WithTimeout(detached, nativeCallLimit)
+}
+
+func ended(client Client) bool {
+	select {
+	case <-client.Done():
+		return true
+	default:
+		return false
+	}
+}
+
+func broken(client Client, err error) bool {
+	var remote *rpc.RemoteError
+	return !errors.As(err, &remote) || ended(client)
 }
 
 func (implementation *Adapter) NativeList(ctx context.Context, request adapter.NativeListRequest) ([]adapter.NativeListing, error) {
@@ -35,12 +134,7 @@ func (implementation *Adapter) NativeList(ctx context.Context, request adapter.N
 	if directory != "" {
 		params["cwd"] = directory
 	}
-	client, err := implementation.config.Factory.Start(ctx)
-	if err != nil {
-		return nil, err
-	}
-	defer func() { _ = client.Close() }()
-	result, err := ask(ctx, client, "thread/list", params)
+	result, err := implementation.ask(ctx, "thread/list", params)
 	if err != nil {
 		return nil, err
 	}
@@ -84,11 +178,6 @@ func (implementation *Adapter) threadsOf(result json.RawMessage) []adapter.Nativ
 }
 
 func (implementation *Adapter) NativeRead(ctx context.Context, request adapter.NativeReadRequest) ([]adapter.NativeTurn, error) {
-	client, err := implementation.config.Factory.Start(ctx)
-	if err != nil {
-		return nil, err
-	}
-	defer func() { _ = client.Close() }()
 	var found []adapter.NativeTurn
 	cursor := ""
 	pagesMax := request.MaxTurns/nativeTurnPage + 2
@@ -97,7 +186,7 @@ func (implementation *Adapter) NativeRead(ctx context.Context, request adapter.N
 		if cursor != "" {
 			params["cursor"] = cursor
 		}
-		page, err := ask(ctx, client, "thread/turns/list", params)
+		page, err := implementation.ask(ctx, "thread/turns/list", params)
 		if err != nil {
 			return nil, err
 		}

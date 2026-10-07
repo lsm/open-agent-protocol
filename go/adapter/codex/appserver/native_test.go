@@ -7,23 +7,41 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/lsm/open-agent-protocol/go/adapter"
 	"github.com/lsm/open-agent-protocol/go/adapter/codex/appserver/internal/rpc"
 )
 
 type askClient struct {
-	answers map[string][]string
-	asked   []string
-	fails   error
-	closes  int
+	answers  map[string][]string
+	asked    []string
+	fails    error
+	failOnce error
+	closes   int
+	done     chan struct{}
+	inbound  chan rpc.InboundMessage
 }
 
-func (c *askClient) Call(_ context.Context, method string, params, result any) error {
+func (c *askClient) Call(ctx context.Context, method string, params, result any) error {
 	encoded, _ := json.Marshal(params)
 	c.asked = append(c.asked, method+" "+string(encoded))
+	if err := ctx.Err(); err != nil {
+		if c.done != nil {
+			select {
+			case <-c.done:
+			default:
+				close(c.done)
+			}
+		}
+		return err
+	}
 	if c.fails != nil {
 		return c.fails
+	}
+	if failure := c.failOnce; failure != nil {
+		c.failOnce = nil
+		return failure
 	}
 	queue := c.answers[method]
 	if len(queue) == 0 {
@@ -33,8 +51,8 @@ func (c *askClient) Call(_ context.Context, method string, params, result any) e
 	return json.Unmarshal([]byte(queue[0]), result)
 }
 func (c *askClient) Notify(context.Context, string, any) error { return nil }
-func (c *askClient) Inbound() <-chan rpc.InboundMessage        { return nil }
-func (c *askClient) Done() <-chan struct{}                     { return nil }
+func (c *askClient) Inbound() <-chan rpc.InboundMessage        { return c.inbound }
+func (c *askClient) Done() <-chan struct{}                     { return c.done }
 func (c *askClient) Err() error                                { return nil }
 func (c *askClient) Close() error                              { c.closes++; return nil }
 
@@ -62,7 +80,7 @@ func TestAThreadListAnswerBecomesNativeSessionsTitledByNameOrThePreviewsFirstLin
 	if len(listed) != len(want) || listed[0] != want[0] || listed[1] != want[1] {
 		t.Fatalf("listed %+v", listed)
 	}
-	if len(client.asked) != 1 || client.asked[0] != `thread/list {"cwd":"/work","limit":5}` || client.closes != 1 {
+	if len(client.asked) != 1 || client.asked[0] != `thread/list {"cwd":"/work","limit":5}` || client.closes != 0 {
 		t.Fatalf("asked %v, closed %d", client.asked, client.closes)
 	}
 	long := strings.Repeat("a", 119) + "é" + "b"
@@ -96,8 +114,8 @@ func TestAThreadTurnsPageBecomesTheUserMessageAndFinalReplyOfEachTurnFollowingTh
 	if len(client.asked) != 2 || client.asked[0] != `thread/turns/list {"itemsView":"full","limit":100,"sortDirection":"asc","threadId":"th"}` || client.asked[1] != `thread/turns/list {"cursor":"c2","itemsView":"full","limit":100,"sortDirection":"asc","threadId":"th"}` {
 		t.Fatalf("asked %v", client.asked)
 	}
-	if client.closes != 1 {
-		t.Fatalf("a two-page read started %d app-servers", client.closes)
+	if client.closes != 0 {
+		t.Fatalf("a two-page read closed its app-server %d times", client.closes)
 	}
 }
 
@@ -113,5 +131,147 @@ func TestANativeReadStopsOnceItHasTheTurnsAskedForAndFailsWithTheAppServer(t *te
 	}
 	if _, err := askingAdapter(t, failing).NativeRead(context.Background(), adapter.NativeReadRequest{NativeID: "th", MaxTurns: 5}); err == nil {
 		t.Fatal("a failed thread/turns/list read")
+	}
+}
+
+type startingFactory struct {
+	clients []*askClient
+	starts  int
+}
+
+func (f *startingFactory) Start(context.Context) (Client, error) {
+	client := f.clients[min(f.starts, len(f.clients)-1)]
+	f.starts++
+	return client, nil
+}
+
+func listAnswers(count int) map[string][]string {
+	answers := make([]string, count)
+	for i := range answers {
+		answers[i] = `{"data":[{"id":"t1"}]}`
+	}
+	return map[string][]string{"thread/list": answers}
+}
+
+func TestTheNativeCallsShareOneAppServerAndStartAnotherOnlyWhenItBreaks(t *testing.T) {
+	kept := &askClient{answers: listAnswers(4), done: make(chan struct{})}
+	fresh := &askClient{answers: listAnswers(4), done: make(chan struct{})}
+	factory := &startingFactory{clients: []*askClient{kept, fresh}}
+	implementation, err := New(Config{WorkingDirectory: "/work", Factory: factory})
+	if err != nil {
+		t.Fatal(err)
+	}
+	list := func() error {
+		_, err := implementation.NativeList(context.Background(), adapter.NativeListRequest{Limit: 1})
+		return err
+	}
+	if list() != nil || list() != nil || factory.starts != 1 || kept.closes != 0 {
+		t.Fatalf("two lists started %d app-servers and closed %d", factory.starts, kept.closes)
+	}
+	kept.failOnce = &rpc.RemoteError{Object: rpc.ErrorObject{Code: -32600, Message: "refused"}}
+	if list() == nil || factory.starts != 1 || kept.closes != 0 {
+		t.Fatalf("a refused call dropped the app-server: %d starts, %d closes", factory.starts, kept.closes)
+	}
+	kept.failOnce = errors.New("pipe closed")
+	if err := list(); err != nil || factory.starts != 2 || kept.closes != 1 || len(fresh.asked) != 1 {
+		t.Fatalf("a broken reused app-server answered %v after %d starts, %d closes", err, factory.starts, kept.closes)
+	}
+	close(fresh.done)
+	third := &askClient{answers: listAnswers(1), done: make(chan struct{})}
+	factory.clients = append(factory.clients, third)
+	if err := list(); err != nil || factory.starts != 3 || fresh.closes != 1 || len(third.asked) != 1 {
+		t.Fatalf("an app-server that had exited was used again: %v, %d starts", err, factory.starts)
+	}
+	third.failOnce = errors.New("pipe closed")
+	broken := &askClient{answers: listAnswers(1), done: make(chan struct{}), failOnce: errors.New("never answered")}
+	factory.clients = append(factory.clients, broken)
+	if list() == nil || factory.starts != 4 || third.closes != 1 || broken.closes != 1 {
+		t.Fatalf("a reused app-server that broke was retried more than once: %d starts", factory.starts)
+	}
+	spare := &askClient{answers: listAnswers(1), done: make(chan struct{})}
+	factory.clients = append(factory.clients, spare)
+	implementation.native.mu.Lock()
+	err = list()
+	implementation.native.mu.Unlock()
+	if err != nil || factory.starts != 5 || spare.closes != 1 {
+		t.Fatalf("a call while the kept app-server was busy did not run on its own app-server: %v, %d starts, %d closes", err, factory.starts, spare.closes)
+	}
+	starting := &askClient{answers: listAnswers(1), done: make(chan struct{}), failOnce: errors.New("died at once")}
+	factory.clients = append(factory.clients, starting, &askClient{answers: listAnswers(1), done: make(chan struct{})})
+	if list() == nil || factory.starts != 6 {
+		t.Fatalf("an app-server that broke on its first call was retried: %d starts", factory.starts)
+	}
+}
+
+func TestTheKeptAppServerHasItsNotificationsDrainedSoItsQueueNeverFills(t *testing.T) {
+	inbound := make(chan rpc.InboundMessage, 2)
+	inbound <- rpc.InboundMessage{}
+	inbound <- rpc.InboundMessage{}
+	client := &askClient{answers: listAnswers(1), done: make(chan struct{}), inbound: inbound}
+	if _, err := askingAdapter(t, client).NativeList(context.Background(), adapter.NativeListRequest{Limit: 1}); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(time.Second)
+	for len(inbound) > 0 && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if len(inbound) != 0 {
+		t.Fatalf("%d notifications were left queued", len(inbound))
+	}
+	close(client.done)
+}
+
+func TestACallerThatGivesUpLeavesTheKeptAppServerRunning(t *testing.T) {
+	kept := &askClient{answers: listAnswers(3), done: make(chan struct{})}
+	factory := &startingFactory{clients: []*askClient{kept}}
+	implementation, err := New(Config{WorkingDirectory: "/work", Factory: factory})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := implementation.NativeList(context.Background(), adapter.NativeListRequest{Limit: 1}); err != nil {
+		t.Fatal(err)
+	}
+	gone, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, _ = implementation.NativeList(gone, adapter.NativeListRequest{Limit: 1})
+	if ended(kept) || kept.closes != 0 {
+		t.Fatal("a caller that had given up shut the kept app-server down")
+	}
+	if _, err := implementation.NativeList(context.Background(), adapter.NativeListRequest{Limit: 1}); err != nil || factory.starts != 1 {
+		t.Fatalf("the list after a cancelled one: %v, %d starts", err, factory.starts)
+	}
+	expiring, stop := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
+	defer stop()
+	if _, err := implementation.NativeList(expiring, adapter.NativeListRequest{Limit: 1}); err == nil || !ended(kept) {
+		t.Fatalf("a call past its caller's deadline answered %v without timing out", err)
+	}
+}
+
+func TestAKeptAppServerThatNeverInitializesGivesUpAtTheCallsDeadline(t *testing.T) {
+	implementation, err := New(Config{WorkingDirectory: "/work", Factory: ClientFactoryFunc(func(ctx context.Context) (Client, error) {
+		<-ctx.Done()
+		return nil, ctx.Err()
+	})})
+	if err != nil {
+		t.Fatal(err)
+	}
+	answered := make(chan error, 2)
+	go func() {
+		for range 2 {
+			ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+			_, err := implementation.NativeList(ctx, adapter.NativeListRequest{Limit: 1})
+			cancel()
+			answered <- err
+		}
+	}()
+	for range 2 {
+		select {
+		case err := <-answered:
+			if err == nil {
+				t.Fatal("an app-server that never initialized listed")
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatal("a start that never initialized held the kept app-server past the call's deadline")
+		}
 	}
 }

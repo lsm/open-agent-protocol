@@ -510,8 +510,20 @@ gateway's own `session.list`. Read from the source at this pin's commit
   integer saturates at the `int64` bounds and a float beyond 1e15 seconds
   reads as 0.
 
-This is read from source only: no gateway at this pin was run for it, so the
-shape above has no recorded exchange behind it yet.
+This was first read from source only. On 2026-10-07 it was run against the
+pinned checkout (commit `f97608f178d1ffeca59860195ab7da295f7c8e5f`, tree
+`5849eacde63aaea608ca418821cc84771fce3bec`, dependencies from its `uv.lock`
+under CPython 3.12) with an isolated `HOME` and a loopback chat provider:
+
+- `TestHermesProcessListsTheSessionItStoredOnOneKeptGateway` runs a turn, then
+  lists twice. The stored id the session reports (`20261007_…`) comes back as
+  a row titled by its first message, with no directory and a `started_at`
+  from that turn, and both listings run on one gateway: with the kept gateway
+  turned off the test sees two.
+- Through `hub --stdio`, a session `goap` stored by `work.start` was listed by
+  a fresh `oapx` hub and a fresh `goap` hub as the same row (native id, title
+  `Reply with the fixture response.`, state `idle`), each answering a second
+  listing the same with one gateway left running.
 
 ## Reasoning level and compaction at v2026.9.24
 
