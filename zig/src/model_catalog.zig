@@ -1505,7 +1505,8 @@ fn fillFromModelsDev(id: []const u8, model: *DiscoveredModel, listed: *const std
             const declares_window = declared != null and declared.?.context_window != null;
             const declares_output = declared != null and declared.?.max_tokens != null;
             if (model.context_window == null and !declares_window) {
-                model.context_window = positiveU32(objectU32(&limit.object, "context"));
+                model.context_window = positiveU32(objectU32(&limit.object, "input")) orelse
+                    positiveU32(objectU32(&limit.object, "context"));
             }
             if (model.max_tokens == null and !declares_output) {
                 model.max_tokens = positiveU32(objectU32(&limit.object, "output"));
@@ -5342,6 +5343,7 @@ const models_dev_fixture =
     \\{"opencode-go":{"id":"opencode-go","models":{
     \\  "deepseek-v4-flash":{"id":"deepseek-v4-flash","reasoning":true,"modalities":{"input":["text","image"],"output":["text"]},"limit":{"context":1000000,"output":384000}},
     \\  "zero-limits":{"id":"zero-limits","limit":{"context":0,"output":0}}}},
+    \\ "openai":{"id":"openai","models":{"gpt-5":{"id":"gpt-5","reasoning":true,"limit":{"context":400000,"input":272000,"output":128000}}}},
     \\ "zai-coding-plan":{"id":"zai-coding-plan","models":{"glm-5.3":{"id":"glm-5.3","reasoning":true,"limit":{"context":1000000,"output":131072}}}},
     \\ "vercel":{"id":"vercel","models":{"anthropic/claude-sonnet-4.5":{"limit":{"context":777777,"output":77777},"reasoning":true}}},
     \\ "uncatalogued":{"id":"uncatalogued","models":{}}}
@@ -5399,6 +5401,16 @@ test "a Z.AI Coding Plan model its listing gives no limits takes models.dev's wi
     try std.testing.expectEqual(@as(u32, 1_000_000), models[0].context_window);
     try std.testing.expectEqual(@as(u32, 131_072), models[0].max_tokens);
     try std.testing.expect(contextWindowIsReported(models[0]));
+}
+
+test "a model models.dev gives an input limit takes that, not the context that counts the output too" {
+    test_models_dev = models_dev_fixture;
+    defer test_models_dev = null;
+    const models = try loadOneRow("openai", "OPENAI_API_KEY", &.{"gpt-5"});
+    defer deinitModels(std.testing.allocator, models);
+
+    try std.testing.expectEqual(@as(u32, 272_000), models[0].context_window);
+    try std.testing.expectEqual(@as(u32, 128_000), models[0].max_tokens);
 }
 
 test "a cached models.dev copy is trusted once it was sought for every catalogued key, listed or not" {

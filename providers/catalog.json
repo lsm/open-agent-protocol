@@ -30,6 +30,7 @@
         }
       ],
       "models_endpoint": "/v1/models",
+      "models_dev": "openai",
       "max_context_window": 1000000,
       "docs": "https://platform.openai.com/docs"
     },
@@ -60,6 +61,7 @@
         }
       ],
       "models_endpoint": "/v1/models",
+      "models_dev": "anthropic",
       "oauth_origin": {
         "exact": [
           "https://api.anthropic.com"
@@ -148,6 +150,7 @@
         }
       ],
       "models_endpoint": "/v1/models",
+      "models_dev": "deepseek",
       "docs": "https://api-docs.deepseek.com"
     },
     {
@@ -395,6 +398,7 @@
         }
       ],
       "models_endpoint": "/models",
+      "models_dev": "xiaomi-token-plan-cn",
       "docs": "https://platform.xiaomimimo.com/#/docs"
     },
     {
@@ -420,6 +424,7 @@
         }
       ],
       "models_endpoint": "/models",
+      "models_dev": "xiaomi-token-plan-sgp",
       "docs": "https://platform.xiaomimimo.com/#/docs"
     },
     {
@@ -445,6 +450,7 @@
         }
       ],
       "models_endpoint": "/models",
+      "models_dev": "xiaomi-token-plan-ams",
       "docs": "https://platform.xiaomimimo.com/#/docs"
     },
     {
@@ -470,6 +476,7 @@
         }
       ],
       "models_endpoint": "/models",
+      "models_dev": "deepinfra",
       "docs": "https://deepinfra.com/models"
     },
     {
@@ -495,6 +502,7 @@
         }
       ],
       "models_endpoint": "/models",
+      "models_dev": "xiaomi",
       "docs": "https://platform.xiaomimimo.com/#/docs"
     },
     {
@@ -545,6 +553,7 @@
         }
       ],
       "models_endpoint": "/models",
+      "models_dev": "zenmux",
       "docs": "https://docs.zenmux.ai"
     },
     {

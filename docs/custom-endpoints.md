@@ -341,9 +341,11 @@ values discovery does not carry are the same defaults a custom provider starts
 from, 128000 and 8192, until a wire reports better ones.
 
 A row whose listing names models without their limits can name a `models_dev`
-key, as both OpenCode rows and the coding-plan rows do. A discovered model with no context window, output
+key, as every row whose listing omits them does. A discovered model with no context window, output
 limit, reasoning flag or image input of its own then takes the figure
-[models.dev](https://models.dev) publishes for the same model id under that key;
+[models.dev](https://models.dev) publishes for the same model id under that key,
+the window being its input limit when it gives one, since its context counts the
+output too;
 a figure the listing or the row's `models` entry gives is never replaced, and a
 model models.dev does not list keeps the defaults. The full listing is fetched
 without credentials only when such a row has a credential and a model lacking a
