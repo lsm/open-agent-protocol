@@ -8,13 +8,18 @@ const tui_runtime = @import("tui_runtime");
 const tui_session = @import("tui_session");
 const model_ref = @import("model_ref");
 const permission = @import("permission");
+const local_tools = @import("tools/registry");
 const interactions = @import("interactions.zig");
 
 pub const endpoint_id = "oapx.agent";
-pub const capability_revision = "oapx-agent-v10";
+pub const capability_revision = "oapx-agent-v11";
 
 pub const journal_capacity: usize = 1 << 16;
 pub const queue_capacity: usize = 8;
+
+const max_provided_tools = 64;
+const provided_name_pattern = "^[a-zA-Z0-9_-]{1,64}$";
+const provided_dialect = "https://json-schema.org/draft/2020-12/schema";
 
 const protocol_name = "open-agent-protocol";
 const protocol_version = "0.1";
@@ -39,6 +44,7 @@ const unsaved_features = [_]contract.Feature{
     .{ .key = "action.tools", .level = .native, .reason = "the agent loop runs its own workspace tools" },
     .{ .key = "action.tools.execute", .level = .native, .reason = "the agent loop runs its own workspace tools" },
     .{ .key = contract.feature_tools_list, .level = .native },
+    .{ .key = contract.feature_tools_provide, .level = .native, .reason = "a provided tool joins the loop's tools for the session, and each call to it waits for the opener's resolution", .limits_json = "{\"max_tools\":64,\"name_pattern\":\"^[a-zA-Z0-9_-]{1,64}$\",\"schema_dialect\":\"https://json-schema.org/draft/2020-12/schema\"}" },
     .{ .key = contract.feature_models_list, .level = .degraded, .reason = "the catalog is the one the terminal UI offers, and a refresh there moves it at the session's next model switch under the same revision, with no capabilities.updated" },
     .{ .key = contract.feature_model_switch, .level = .native },
     .{ .key = contract.feature_session_compact, .level = .native, .reason = "a compaction is a run of its own in which the loop summarizes the history with the session's model, the focus as its instructions, admitted under submit's rules; continue is refused" },
@@ -127,7 +133,6 @@ pub const Adapter = struct {
     fn open(ptr: *anyopaque, arena: std.mem.Allocator, request: contract.OpenRequest, refusal: *contract.Refusal) contract.Failure!contract.Session {
         const self: *Adapter = @ptrCast(@alignCast(ptr));
         if (request.participant.len == 0) return refusal.fail(error.InvalidSubmission, "open requires a non-empty participant id");
-        if (contract.carriesEntries(request.tools_json)) return refusal.unsupported(contract.feature_tools_provide, contract.reason_unadvertised);
         if (contract.carriesEntries(request.tool_sources_json)) return refusal.unsupported(contract.feature_tool_sources_attach, contract.reason_unadvertised);
         var saved: ?[]const ai_types.Message = null;
         if (request.reopen) {
@@ -138,7 +143,7 @@ pub const Adapter = struct {
                 else => return refusal.fail(error.UnknownSession, "no saved session under that id could be read"),
             }) orelse return refusal.fail(error.UnknownSession, "no saved session under that id");
         }
-        const session = try Session.create(self, request, refusal);
+        const session = try Session.create(self, arena, request, refusal);
         if (saved) |messages| {
             session.runtime.replaceMessages(messages) catch |err| {
                 session.destroy();
@@ -179,6 +184,47 @@ const Run = struct {
     steers: std.ArrayList(PendingSteer) = .empty,
     admitted_steers: std.ArrayList([]const u8) = .empty,
     after_tool: bool = false,
+    calls: std.ArrayList(ProvidedCall) = .empty,
+
+    fn callNamed(self: *Run, interaction_id: []const u8) ?*ProvidedCall {
+        for (self.calls.items) |*call| if (std.mem.eql(u8, call.interaction_id, interaction_id)) return call;
+        return null;
+    }
+
+    fn callFor(self: *Run, tool_call_id: []const u8) ?*ProvidedCall {
+        var found: ?*ProvidedCall = null;
+        for (self.calls.items) |*call| if (std.mem.eql(u8, call.tool_call_id, tool_call_id)) {
+            found = call;
+        };
+        return found;
+    }
+
+    fn openCall(self: *Run) ?*ProvidedCall {
+        for (self.calls.items) |*call| if (call.open()) return call;
+        return null;
+    }
+};
+
+const Arm = enum { started, result, @"error" };
+
+const Settled = struct {
+    arm: Arm,
+    request_id: []const u8,
+    payload_json: []const u8,
+};
+
+const ProvidedCall = struct {
+    interaction_id: []const u8,
+    tool_call_id: []const u8,
+    name: []const u8,
+    acknowledged: bool = false,
+    settled: ?Settled = null,
+    closed: bool = false,
+    settlement_id: []const u8 = "",
+
+    fn open(self: *const ProvidedCall) bool {
+        return self.settled == null and !self.closed;
+    }
 };
 
 const PendingSteer = struct {
@@ -216,22 +262,29 @@ pub const Session = struct {
     run: ?*Run = null,
     runs: std.ArrayList(*Run) = .empty,
     gate: interactions.Gate = .{},
+    call_gate: interactions.CallGate = .{},
+    provided: []const oap_types.ToolDefinition = &.{},
     pending: ?PendingInteraction = null,
     outbox: std.ArrayList(Journaled) = .empty,
     journal: std.ArrayList(Journaled) = .empty,
     policy_json: ?[]const u8 = null,
 
-    fn create(owner: *Adapter, request: contract.OpenRequest, refusal: *contract.Refusal) contract.Failure!*Session {
+    fn create(owner: *Adapter, arena: std.mem.Allocator, request: contract.OpenRequest, refusal: *contract.Refusal) contract.Failure!*Session {
         const gpa = owner.allocator;
         const self = try gpa.create(Session);
         errdefer gpa.destroy(self);
         const runtime = try gpa.create(tui_runtime.TuiRuntime);
         errdefer gpa.destroy(runtime);
+        self.keep = std.heap.ArenaAllocator.init(gpa);
+        errdefer self.keep.deinit();
         const offers_input = offersUserInput(request.metadata);
-        const session_tools = try gpa.alloc(agent.AgentTool, owner.options.tools.len + @intFromBool(offers_input));
+        const provided = try admitProvidedTools(self.keep.allocator(), arena, request.participant, owner.options.tools, offers_input, request.tools_json, refusal);
+        const native_count = owner.options.tools.len + @intFromBool(offers_input);
+        const session_tools = try gpa.alloc(agent.AgentTool, native_count + provided.len);
         defer gpa.free(session_tools);
         @memcpy(session_tools[0..owner.options.tools.len], owner.options.tools);
         if (offers_input) session_tools[owner.options.tools.len] = inputTool(self);
+        for (provided, session_tools[native_count..]) |definition, *slot| slot.* = providedTool(self, definition);
         var options = sessionOptions(owner.options, request.metadata);
         options.models = owner.catalog orelse owner.options.models;
         if (request.reasoning_level) |level| options.thinking_level = try thinkingLevel(level, refusal);
@@ -250,8 +303,8 @@ pub const Session = struct {
             else => return refusal.fail(error.BackendFailed, @errorName(err)),
         };
         errdefer runtime.deinit();
-        self.* = .{ .owner = owner, .gpa = gpa, .keep = std.heap.ArenaAllocator.init(gpa), .id = "", .participant = "", .runtime = runtime, .engine = engine, .updated_at_ms = owner.now_ms(), .catalog_seen = owner.catalog_generation };
-        errdefer self.keep.deinit();
+        const kept = self.keep;
+        self.* = .{ .owner = owner, .gpa = gpa, .keep = kept, .id = "", .participant = "", .runtime = runtime, .engine = engine, .updated_at_ms = owner.now_ms(), .catalog_seen = owner.catalog_generation, .provided = provided };
         const keep = self.keep.allocator();
         self.participant = try keep.dupe(u8, request.participant);
         self.id = if (request.session_id.len > 0) try keep.dupe(u8, request.session_id) else try owner.nextID(keep, "session");
@@ -279,6 +332,7 @@ pub const Session = struct {
         .replay = replay,
         .update_settings = updateSettings,
         .compact = compact,
+        .resolve_call = resolveCall,
     };
 
     fn applyPolicy(self: *Session, raw: []const u8, refusal: *contract.Refusal) contract.Failure!void {
@@ -494,6 +548,7 @@ pub const Session = struct {
         self.journal.deinit(gpa);
         self.runtime.deinit();
         gpa.destroy(self.runtime);
+        self.call_gate.deinit(gpa);
         if (self.engine) |engine| {
             engine.deinit();
             gpa.destroy(engine);
@@ -563,7 +618,14 @@ pub const Session = struct {
                 continue;
             }
             if (!run.started) position += 1;
-            const pending: []const []const u8 = if (run.started and self.pending != null) try arena.dupe([]const u8, &.{self.pending.?.id}) else &.{};
+            var pending_ids: std.ArrayList([]const u8) = .empty;
+            var acknowledged: std.ArrayList([]const u8) = .empty;
+            if (run.started and self.pending != null) try pending_ids.append(arena, self.pending.?.id);
+            if (run.started) if (run.openCall()) |call| {
+                try pending_ids.append(arena, call.interaction_id);
+                if (call.acknowledged) try acknowledged.append(arena, call.interaction_id);
+            };
+            const pending = pending_ids.items;
             const anchors = try arena.alloc([]const u8, 1 + run.admitted_steers.items.len);
             anchors[0] = run.submit_id;
             @memcpy(anchors[1..], run.admitted_steers.items);
@@ -577,6 +639,7 @@ pub const Session = struct {
                 .as_of_sequence = run.next_sequence - 1,
                 .admitted_submit_requests = anchors,
                 .pending_interactions = pending,
+                .acknowledged_interactions = acknowledged.items,
                 .pending_steers = steers,
             });
         }
@@ -594,7 +657,7 @@ pub const Session = struct {
         };
         if (self.live()) |run| {
             result.active_run_id = run.id;
-            result.status = if (self.pending != null) .waiting_for_input else .running;
+            result.status = if (self.pending != null or run.openCall() != null) .waiting_for_input else .running;
         }
         return result;
     }
@@ -748,6 +811,7 @@ pub const Session = struct {
             self.gpa.free(prepared.kept);
         }
         self.gate.cancelled.store(false, .release);
+        self.call_gate.cancelled.store(false, .release);
         if (run.compaction) {
             const transcripts = self.compactionTranscripts(a) catch |err| switch (err) {
                 error.OutOfMemory => return error.OutOfMemory,
@@ -930,9 +994,162 @@ pub const Session = struct {
         return true;
     }
 
+    fn providedNamed(self: *const Session, name: []const u8) ?oap_types.ToolDefinition {
+        for (self.provided) |definition| if (std.mem.eql(u8, definition.name, name)) return definition;
+        return null;
+    }
+
+    fn providedPayload(self: *Session, a: std.mem.Allocator, run: *Run, call: *const ProvidedCall, request_id: []const u8) !Payload {
+        var payload = Payload.init(a);
+        try payload.run(self, run);
+        try payload.put("tool_call_id", .{ .string = call.tool_call_id });
+        try payload.put("name", .{ .string = call.name });
+        try payload.put("execution_owner", .{ .string = self.participant });
+        try payload.put("interaction_id", .{ .string = call.interaction_id });
+        try payload.put("requested_by", .{ .string = endpoint_id });
+        try payload.put("responded_by", .{ .string = self.participant });
+        if (request_id.len > 0) try payload.put("request_id", .{ .string = request_id });
+        return payload;
+    }
+
+    fn requestCall(self: *Session, a: std.mem.Allocator, run: *Run, tool_call_id: []const u8, name: []const u8, arguments: []const u8) contract.Failure!void {
+        const keep = self.keep.allocator();
+        const interaction_id = try self.owner.nextID(keep, "interaction");
+        const owned_call_id = try keep.dupe(u8, tool_call_id);
+        const owned_name = try keep.dupe(u8, name);
+        try run.calls.append(keep, .{ .interaction_id = interaction_id, .tool_call_id = owned_call_id, .name = owned_name });
+        const call = &run.calls.items[run.calls.items.len - 1];
+        var requested = try self.providedPayload(a, run, call, "");
+        try requested.put("arguments_json", try jsonOrString(a, arguments));
+        try self.emit(run, "action.call.requested", requested.value(), false);
+        if (run.status == .running) run.status = .waiting_for_input;
+    }
+
+    fn endCall(self: *Session, a: std.mem.Allocator, run: *Run, tool_call_id: []const u8) contract.Failure!void {
+        const call = run.callFor(tool_call_id) orelse return;
+        if (call.closed) return;
+        return self.cancelOpenCall(a, run);
+    }
+
+    fn settleCall(self: *Session, a: std.mem.Allocator, run: *Run, call: *ProvidedCall) contract.Failure!void {
+        const settled = call.settled.?;
+        if (!call.acknowledged) {
+            var started = try self.providedPayload(a, run, call, settled.request_id);
+            try self.emit(run, "action.call.started", started.value(), false);
+        }
+        var terminal = try self.providedPayload(a, run, call, settled.request_id);
+        const stated = try parseWritten(a, settled.payload_json);
+        if (settled.arm == .@"error") {
+            try terminal.put("error", stated);
+            call.settlement_id = try self.emitKept(run, "action.call.failed", terminal.value());
+        } else {
+            try terminal.put("result", stated);
+            call.settlement_id = try self.emitKept(run, "action.call.completed", terminal.value());
+        }
+        call.closed = true;
+    }
+
+    fn resolveCall(ptr: *anyopaque, arena: std.mem.Allocator, request_id: []const u8, request: *const oap_types.CallResolveRequest, refusal: *contract.Refusal) contract.Failure!oap_types.CallResolveResponse {
+        _ = refusal;
+        const self = cast(ptr);
+        const answer = oap_types.CallResolveResponse{
+            .interaction_id = request.interaction_id,
+            .session_id = request.session_id,
+            .run_id = request.run_id,
+            .tool_call_id = request.tool_call_id,
+            .accepted = false,
+        };
+        if (!std.mem.eql(u8, request.session_id, self.id)) return refusedCall(answer, "unknown_interaction", null);
+        const run = self.findRun(request.run_id) orelse return refusedCall(answer, "unknown_interaction", null);
+        const call = run.callNamed(request.interaction_id) orelse return refusedCall(answer, "unknown_interaction", null);
+        if (!std.mem.eql(u8, request.responded_by, self.participant) or !std.mem.eql(u8, request.requested_by, endpoint_id) or
+            !std.mem.eql(u8, request.tool_call_id, call.tool_call_id)) return refusedCall(answer, "wrong_responder", null);
+        var arms: usize = 0;
+        var arm: Arm = .started;
+        if (request.started) {
+            arms += 1;
+            arm = .started;
+        }
+        if (request.result_json != null) {
+            arms += 1;
+            arm = .result;
+        }
+        if (request.err != null) {
+            arms += 1;
+            arm = .@"error";
+        }
+        if (arms != 1) return refusedCall(answer, "unknown_interaction", null);
+        if (call.closed) return refusedCall(answer, "already_resolved", call.settlement_id);
+        if (arm == .started and call.acknowledged) return refusedCall(answer, "repeated_acknowledgement", null);
+
+        var accepted = answer;
+        accepted.accepted = true;
+        var scratch = std.heap.ArenaAllocator.init(self.gpa);
+        defer scratch.deinit();
+        const a = scratch.allocator();
+        if (arm == .started) {
+            var started = try self.providedPayload(a, run, call, request_id);
+            try self.emit(run, "action.call.started", started.value(), false);
+            call.acknowledged = true;
+            return accepted;
+        }
+        const keep = self.keep.allocator();
+        const stated: std.json.Value = if (request.err) |failure| try errorValue(a, failure) else try parseWritten(a, request.result_json.?);
+        const payload_json = try json_encode.valueAlloc(keep, stated);
+        var reply = Payload.init(a);
+        try reply.put(if (arm == .@"error") "error" else "result", stated);
+        const native = try json_encode.valueAlloc(a, reply.value());
+        try self.call_gate.post(self.gpa, call.tool_call_id, native);
+        call.settled = .{ .arm = arm, .request_id = try keep.dupe(u8, request_id), .payload_json = payload_json };
+        try self.settleCall(a, run, call);
+        if (run.status == .waiting_for_input and self.pending == null) run.status = .running;
+        _ = arena;
+        return accepted;
+    }
+
+    fn providedTool(self: *Session, definition: oap_types.ToolDefinition) agent.AgentTool {
+        return .{
+            .label = definition.name,
+            .name = definition.name,
+            .description = definition.description orelse definition.name,
+            .parameters_schema_json = definition.input_schema_json,
+            .execute = unavailableCall,
+            .runtime_ctx = self,
+            .runtime_execute = executeCall,
+        };
+    }
+
+    fn unavailableCall(tool_call_id: []const u8, args: []const u8, token: ?ai_types.CancelToken, update_ctx: ?*anyopaque, update: ?agent.ToolUpdateCallback, allocator: std.mem.Allocator) anyerror!agent.AgentToolResult {
+        return executeCall(null, tool_call_id, args, token, update_ctx, update, allocator);
+    }
+
+    fn executeCall(ctx: ?*anyopaque, tool_call_id: []const u8, args: []const u8, token: ?ai_types.CancelToken, update_ctx: ?*anyopaque, update: ?agent.ToolUpdateCallback, allocator: std.mem.Allocator) anyerror!agent.AgentToolResult {
+        _ = update_ctx;
+        _ = update;
+        _ = args;
+        const self: *Session = @ptrCast(@alignCast(ctx orelse return error.ProvidedToolUnavailable));
+        const reply = try self.call_gate.wait(self.gpa, tool_call_id, token);
+        defer self.gpa.free(reply);
+        var parsed = try std.json.parseFromSlice(std.json.Value, allocator, reply, .{ .parse_numbers = false });
+        defer parsed.deinit();
+        const failed = parsed.value.object.get("error");
+        const stated = failed orelse parsed.value.object.get("result").?;
+        const text = if (failed) |failure|
+            try allocator.dupe(u8, if (failure.object.get("message")) |message| message.string else "the tool failed")
+        else if (stated == .string)
+            try allocator.dupe(u8, stated.string)
+        else
+            try json_encode.valueAlloc(allocator, stated);
+        errdefer allocator.free(text);
+        const content = try allocator.alloc(ai_types.UserContentPart, 1);
+        content[0] = .{ .text = .{ .text = text } };
+        return .{ .content = @FieldType(agent.AgentToolResult, "content").initOwned(content), .is_error = failed != null };
+    }
+
     fn approveTool(ctx: ?*anyopaque, request: tui_session.ToolApprovalRequest) tui_session.ToolApprovalDecision {
         const self: *Session = @ptrCast(@alignCast(ctx.?));
         if (std.mem.eql(u8, request.tool_name, "request_user_input")) return .approve;
+        if (self.providedNamed(request.tool_name) != null) return .approve;
         const answer = self.gate.wait(self.gpa, .permission, request.tool_call_id, request.tool_name, request.args_json, null) catch return .reject;
         defer self.gpa.free(answer);
         return decisionFor(answer);
@@ -989,6 +1206,7 @@ pub const Session = struct {
         }
         run.status = .cancelling;
         self.gate.cancelled.store(true, .release);
+        self.call_gate.cancelled.store(true, .release);
         self.runtime.cancel();
 
         var scratch = std.heap.ArenaAllocator.init(self.gpa);
@@ -999,7 +1217,15 @@ pub const Session = struct {
         try status.put("status", .{ .string = "cancelling" });
         try status.put("updated_at_ms", .{ .integer = self.owner.now_ms() });
         try self.emit(run, "run.status.updated", status.value(), false);
+        try self.cancelOpenCall(a, run);
         return .{ .session_id = self.id, .run_id = owned_run_id, .accepted = true, .status = .cancelling };
+    }
+
+    fn cancelOpenCall(self: *Session, a: std.mem.Allocator, run: *Run) contract.Failure!void {
+        const call = run.openCall() orelse return;
+        var cancelled = try self.providedPayload(a, run, call, "");
+        call.settlement_id = try self.emitKept(run, "action.call.cancelled", cancelled.value());
+        call.closed = true;
     }
 
     fn pump(ptr: *anyopaque, wait_ns: u64) contract.Failure!bool {
@@ -1035,6 +1261,7 @@ pub const Session = struct {
             },
             .thinking_delta => |payload| try self.emitPart(a, run, "reasoning", "reasoning", payload.delta.slice()),
             .tool_execution_start => |payload| {
+                if (self.providedNamed(payload.tool_name.slice()) != null) return self.requestCall(a, run, payload.tool_call_id.slice(), payload.tool_name.slice(), payload.args_json.slice());
                 var requested = try self.callPayload(a, run, payload.tool_call_id.slice(), payload.tool_name.slice());
                 try requested.put("requested_by", .{ .string = endpoint_id });
                 try requested.put("arguments_json", try jsonOrString(a, payload.args_json.slice()));
@@ -1044,6 +1271,7 @@ pub const Session = struct {
             },
             .tool_execution_end => |payload| {
                 run.after_tool = true;
+                if (self.providedNamed(payload.tool_name.slice()) != null) return self.endCall(a, run, payload.tool_call_id.slice());
                 var ended = try self.callPayload(a, run, payload.tool_call_id.slice(), payload.tool_name.slice());
                 if (payload.is_error) {
                     var failure = Payload.init(a);
@@ -1101,6 +1329,7 @@ pub const Session = struct {
     }
 
     fn settle(self: *Session, a: std.mem.Allocator, run: *Run, reason: tui_session.TuiEndReason) contract.Failure!void {
+        try self.cancelOpenCall(a, run);
         if (self.pending) |pending| {
             var resolved = try self.interactionPayload(a, run, pending);
             if (pending.kind == .permission) {
@@ -1144,6 +1373,24 @@ pub const Session = struct {
     fn emit(self: *Session, run: *Run, kind: []const u8, payload: std.json.Value, terminal: bool) contract.Failure!void {
         if (run.terminal) return;
         self.publishEvent(run, try self.prepareEvent(run, kind, payload, terminal, ""), kind, terminal);
+    }
+
+    fn emitKept(self: *Session, run: *Run, kind: []const u8, payload: std.json.Value) contract.Failure![]const u8 {
+        if (run.terminal) return "";
+        const prepared = try self.prepareEvent(run, kind, payload, false, "");
+        const parsed = std.json.parseFromSlice(struct { id: []const u8 }, self.gpa, prepared.line, .{ .ignore_unknown_fields = true }) catch {
+            self.gpa.free(prepared.line);
+            self.gpa.free(prepared.kept);
+            return error.BackendFailed;
+        };
+        defer parsed.deinit();
+        const id = self.keep.allocator().dupe(u8, parsed.value.id) catch |err| {
+            self.gpa.free(prepared.line);
+            self.gpa.free(prepared.kept);
+            return err;
+        };
+        self.publishEvent(run, prepared, kind, false);
+        return id;
     }
 
     fn emitWithText(self: *Session, run: *Run, kind: []const u8, payload: std.json.Value, result_text: []const u8) contract.Failure!void {
@@ -1261,6 +1508,7 @@ pub const Session = struct {
         const self = cast(ptr);
         if (!force and (self.live() != null or self.queuedCount() > 0)) return error.RunActive;
         self.gate.cancelled.store(true, .release);
+        self.call_gate.cancelled.store(true, .release);
         if (self.live() != null) self.runtime.cancel();
         self.destroy();
     }
@@ -1273,6 +1521,10 @@ pub const Session = struct {
         const available = self.runtime.availableTools();
         const definitions = try arena.alloc(oap_types.ToolDefinition, available.len);
         for (available, definitions) |tool, *slot| {
+            if (self.providedNamed(tool.name)) |definition| {
+                slot.* = definition;
+                continue;
+            }
             slot.* = .{
                 .name = tool.name,
                 .description = tool.description,
@@ -1545,6 +1797,110 @@ fn stopReasonText(reason: ai_types.StopReason) []const u8 {
         .@"error" => "error",
         .aborted => "cancelled",
     };
+}
+
+fn refusedCall(answer: oap_types.CallResolveResponse, reason: []const u8, settlement: ?[]const u8) oap_types.CallResolveResponse {
+    var refused = answer;
+    refused.accepted = false;
+    refused.reason = reason;
+    if (std.mem.eql(u8, reason, "already_resolved")) {
+        if (settlement) |named| {
+            if (named.len > 0) refused.settlement_id = named;
+        }
+    }
+    return refused;
+}
+
+fn errorValue(a: std.mem.Allocator, failure: oap_types.ProtocolError) !std.json.Value {
+    var stated = Payload.init(a);
+    try stated.put("code", .{ .string = failure.code });
+    try stated.put("message", .{ .string = failure.message });
+    if (failure.retriable) |retriable| try stated.put("retriable", .{ .bool = retriable });
+    if (failure.details.len > 0) {
+        var details = Payload.init(a);
+        for (failure.details) |entry| try details.put(entry.key, try jsonOrString(a, entry.value));
+        try stated.put("details", details.value());
+    }
+    return stated.value();
+}
+
+fn parseWritten(a: std.mem.Allocator, text: []const u8) contract.Failure!std.json.Value {
+    return std.json.parseFromSliceLeaky(std.json.Value, a, text, .{ .allocate = .alloc_always, .parse_numbers = false }) catch |err| switch (err) {
+        error.OutOfMemory => error.OutOfMemory,
+        else => error.InvalidResolution,
+    };
+}
+
+fn refuseTool(arena: std.mem.Allocator, refusal: *contract.Refusal, tool: []const u8, detail: []const u8) contract.Failure {
+    refusal.* = .{ .feature = contract.feature_tools_provide, .reason = contract.reason_unsatisfiable, .tool = try arena.dupe(u8, tool), .detail = try arena.dupe(u8, detail) };
+    return error.UnsupportedFeature;
+}
+
+fn stringOf(value: std.json.Value, key: []const u8) []const u8 {
+    if (value != .object) return "";
+    const carried = value.object.get(key) orelse return "";
+    return if (carried == .string) carried.string else "";
+}
+
+fn providedNameMatches(name: []const u8) bool {
+    if (name.len == 0 or name.len > 64) return false;
+    for (name) |c| {
+        if (!(std.ascii.isAlphanumeric(c) or c == '_' or c == '-')) return false;
+    }
+    return true;
+}
+
+fn admissibleDialect(schema: ?std.json.Value) bool {
+    const value = schema orelse return true;
+    if (value == .null) return true;
+    if (value != .object) return false;
+    const declared = value.object.get("$schema") orelse return true;
+    if (declared == .null) return true;
+    if (declared != .string) return false;
+    return declared.string.len == 0 or std.mem.eql(u8, declared.string, provided_dialect);
+}
+
+fn namedIn(tools: []const agent.AgentTool, offers_input: bool, provided: []const oap_types.ToolDefinition, name: []const u8) bool {
+    for (local_tools.defaultTools()) |tool| if (std.mem.eql(u8, tool.name, name)) return true;
+    for (tools) |tool| if (std.mem.eql(u8, tool.name, name)) return true;
+    if (offers_input and std.mem.eql(u8, name, "request_user_input")) return true;
+    for (provided) |definition| if (std.mem.eql(u8, definition.name, name)) return true;
+    return false;
+}
+
+fn admitProvidedTools(keep: std.mem.Allocator, arena: std.mem.Allocator, participant: []const u8, native: []const agent.AgentTool, offers_input: bool, carried: ?[]const u8, refusal: *contract.Refusal) contract.Failure![]const oap_types.ToolDefinition {
+    const text = carried orelse return &.{};
+    const document = std.json.parseFromSliceLeaky(std.json.Value, keep, text, .{ .allocate = .alloc_always, .parse_numbers = false }) catch |err| {
+        if (err == error.OutOfMemory) return error.OutOfMemory;
+        return refuseTool(arena, refusal, "", "the provided tools are not a list of tool definitions");
+    };
+    if (document != .array) return refuseTool(arena, refusal, "", "the provided tools are not a list of tool definitions");
+    const items = document.array.items;
+    if (items.len == 0) return &.{};
+    if (items.len > max_provided_tools) return refuseTool(arena, refusal, stringOf(items[max_provided_tools], "name"), std.fmt.comptimePrint("at most {d} tools may be provided", .{max_provided_tools}));
+    const provided = try keep.alloc(oap_types.ToolDefinition, items.len);
+    for (items, provided, 0..) |item, *slot, index| {
+        const name = stringOf(item, "name");
+        if (name.len == 0) return refuseTool(arena, refusal, "", "a provided tool needs a name");
+        if (!std.mem.eql(u8, stringOf(item, "execution_owner"), participant)) return refuseTool(arena, refusal, name, "execution_owner must be the opening participant");
+        const source = stringOf(item, "source");
+        if (source.len > 0) {
+            refusal.* = .{ .feature = contract.feature_tools_provide, .reason = contract.reason_unsatisfiable, .tool = try arena.dupe(u8, name), .source = try arena.dupe(u8, source), .detail = "the loop declares no tool sources, so a source resolves to nothing" };
+            return error.UnsupportedFeature;
+        }
+        if (namedIn(native, offers_input, provided[0..index], name)) return refuseTool(arena, refusal, name, "the name already resolves to a catalog entry");
+        if (!providedNameMatches(name)) return refuseTool(arena, refusal, name, "the name is outside the disclosed name_pattern " ++ provided_name_pattern);
+        const schema = item.object.get("input_schema");
+        if (!admissibleDialect(schema)) return refuseTool(arena, refusal, name, "the input schema declares a dialect outside the disclosed " ++ provided_dialect);
+        const description = stringOf(item, "description");
+        slot.* = .{
+            .name = name,
+            .description = if (description.len > 0) description else null,
+            .input_schema_json = if (schema) |value| try json_encode.valueAlloc(keep, value) else "{\"type\":\"object\"}",
+            .execution_owner = participant,
+        };
+    }
+    return provided;
 }
 
 fn jsonOrString(arena: std.mem.Allocator, text: []const u8) !std.json.Value {
@@ -2020,11 +2376,9 @@ test "the tool catalog is the loop's own tools, each owned by the endpoint" {
     try testing.expect(saw_echo);
 }
 
-test "an open that provides tools or attaches sources is refused, since neither is advertised" {
+test "an open that attaches sources is refused, since attaching is not advertised" {
     var owner = Adapter.init(testing.allocator, .{});
     var refusal = contract.Refusal{};
-    try testing.expectError(error.UnsupportedFeature, owner.adapter().open(testing.allocator, .{ .participant = "user", .tools_json = "[{\"name\":\"t\"}]" }, &refusal));
-    try testing.expectEqualStrings(contract.feature_tools_provide, refusal.feature);
     try testing.expectError(error.UnsupportedFeature, owner.adapter().open(testing.allocator, .{ .participant = "user", .tool_sources_json = "[{\"id\":\"s\"}]" }, &refusal));
     try testing.expectEqualStrings(contract.feature_tool_sources_attach, refusal.feature);
 }
@@ -3261,4 +3615,219 @@ test "a live update sets the context window, a null clears it, and a refused upd
     try testing.expectError(error.InvalidSubmission, updateWith(&harness, "{\"oapx\":{\"context_window\":2048,\"output\":4000000000}}", &refusal));
     try testing.expectEqual(@as(?u32, null), runtime.contextWindowOverride());
     try testing.expectEqual(ai_types.ThinkingLevel.high, runtime.thinkingLevel());
+}
+
+const provided_lookup =
+    \\[{"name":"lookup","description":"Look a word up","input_schema":{"type":"object"},"execution_owner":"user"}]
+;
+
+const ProvidedWire = struct {
+    wire: Wire,
+    scope: []const u8 = "",
+    run_scope: []const u8 = "",
+    asked: std.json.ObjectMap = undefined,
+
+    fn start(self: *ProvidedWire, script: *Script) !void {
+        self.wire.init(script);
+        const a = self.wire.arena.allocator();
+        try self.wire.send("protocol.initialize.request", "", try parseValue(a,
+            \\{"participant":{"id":"user","name":"Test"},"protocol_versions":["0.1"],"profiles":["open-agent-protocol.agent-control-core"]}
+        ));
+        try self.wire.send("capabilities.request", "", try parseValue(a, "{}"));
+        self.scope = ",\"session_id\":\"wire-session\",\"capability_revision\":\"" ++ capability_revision ++ "\"";
+        try self.wire.send("session.open.request", self.scope, try parseValue(a, "{\"session_id\":\"wire-session\",\"tools\":" ++ provided_lookup ++ "}"));
+        try self.wire.send("session.message.submit.request", self.scope, try parseValue(a,
+            \\{"session_id":"wire-session","delivery":"auto","messages":[{"role":"user","content":"look it up"}]}
+        ));
+        self.asked = (try self.wire.wait("action.call.requested")).object.get("payload").?.object;
+        self.run_scope = try std.fmt.allocPrint(a, "{s},\"run_id\":\"{s}\"", .{ self.scope, self.asked.get("run_id").?.string });
+    }
+
+    fn resolve(self: *ProvidedWire, arm: []const u8, overrides: []const [2][]const u8) !std.json.ObjectMap {
+        const a = self.wire.arena.allocator();
+        var answer = Payload.init(a);
+        for ([_][]const u8{ "interaction_id", "session_id", "run_id", "tool_call_id", "requested_by", "responded_by" }) |key| try answer.put(key, self.asked.get(key).?);
+        for (overrides) |pair| try answer.put(pair[0], .{ .string = pair[1] });
+        const arm_value = try parseValue(a, arm);
+        var arms = arm_value.object.iterator();
+        while (arms.next()) |entry| try answer.put(entry.key_ptr.*, entry.value_ptr.*);
+        const before = self.wire.trace.items.len;
+        try self.wire.send("action.call.resolve.request", self.run_scope, answer.value());
+        for (self.wire.trace.items[before..]) |event| {
+            if (std.mem.eql(u8, event.object.get("type").?.string, "action.call.resolve.response")) return event.object.get("payload").?.object;
+        }
+        return error.ResponseNeverArrived;
+    }
+
+    fn payloadOf(self: *ProvidedWire, kind: []const u8) ?std.json.ObjectMap {
+        for (self.wire.trace.items) |event| {
+            if (std.mem.eql(u8, event.object.get("type").?.string, kind)) return event.object.get("payload").?.object;
+        }
+        return null;
+    }
+};
+
+test "a provided tool's call waits for the opener, and the opener's acknowledgement and result settle it as schema and semantic valid conversations" {
+    for (0..3) |variant| {
+        var script = Script{ .tool_first = true, .tool_name = "lookup", .tool_arguments = "{\"word\":\"oap\"}" };
+        var provided: ProvidedWire = .{ .wire = undefined };
+        try provided.start(&script);
+        defer provided.wire.deinit();
+
+        try testing.expectEqualStrings("user", provided.asked.get("execution_owner").?.string);
+        try testing.expectEqualStrings("user", provided.asked.get("responded_by").?.string);
+        try testing.expectEqualStrings(endpoint_id, provided.asked.get("requested_by").?.string);
+        try testing.expect(provided.payloadOf("action.call.started") == null);
+
+        if (variant == 0) {
+            const acknowledged = try provided.resolve("{\"started\":{}}", &.{});
+            try testing.expect(acknowledged.get("accepted").?.bool);
+            try testing.expect(provided.payloadOf("action.call.started") != null);
+        }
+        const settled = try provided.resolve(if (variant == 2) "{\"error\":{\"code\":\"not_found\",\"message\":\"no such word\"}}" else "{\"result\":{\"meaning\":\"open agent protocol\",\"score\":1.50}}", &.{});
+        try testing.expect(settled.get("accepted").?.bool);
+        _ = try provided.wire.wait("run.completed");
+        try provided.wire.validate();
+
+        const started = provided.payloadOf("action.call.started").?;
+        try testing.expect(started.get("request_id") != null);
+        if (variant == 2) {
+            const failed = provided.payloadOf("action.call.failed").?;
+            try testing.expectEqualStrings("no such word", failed.get("error").?.object.get("message").?.string);
+        } else {
+            const completed = provided.payloadOf("action.call.completed").?;
+            try testing.expectEqualStrings("open agent protocol", completed.get("result").?.object.get("meaning").?.string);
+        }
+    }
+}
+
+test "a resolution of a provided call is refused with the highest reason it satisfies" {
+    var script = Script{ .tool_first = true, .tool_name = "lookup", .tool_arguments = "{}" };
+    var provided: ProvidedWire = .{ .wire = undefined };
+    try provided.start(&script);
+    defer provided.wire.deinit();
+
+    const unknown = try provided.resolve("{\"started\":{}}", &.{.{ "interaction_id", "interaction-none" }});
+    try testing.expectEqualStrings("unknown_interaction", unknown.get("reason").?.string);
+    const foreign = try provided.resolve("{\"started\":{}}", &.{.{ "responded_by", "someone-else" }});
+    try testing.expectEqualStrings("wrong_responder", foreign.get("reason").?.string);
+    try testing.expect((try provided.resolve("{\"started\":{}}", &.{})).get("accepted").?.bool);
+    const repeated = try provided.resolve("{\"started\":{}}", &.{});
+    try testing.expectEqualStrings("repeated_acknowledgement", repeated.get("reason").?.string);
+    const foreign_repeat = try provided.resolve("{\"started\":{}}", &.{.{ "responded_by", "someone-else" }});
+    try testing.expectEqualStrings("wrong_responder", foreign_repeat.get("reason").?.string);
+    try testing.expect((try provided.resolve("{\"result\":\"found\"}", &.{})).get("accepted").?.bool);
+    _ = try provided.wire.wait("run.completed");
+    const again = try provided.resolve("{\"result\":\"found\"}", &.{});
+    try testing.expectEqualStrings("already_resolved", again.get("reason").?.string);
+    try testing.expect(again.get("details").?.object.get("settlement_id") != null);
+    try provided.wire.validate();
+}
+
+test "a resolution retried before the loop resumes is refused as already resolved, naming the published terminal" {
+    var script = Script{ .tool_first = true, .tool_name = "lookup", .tool_arguments = "{}" };
+    var provided: ProvidedWire = .{ .wire = undefined };
+    try provided.start(&script);
+    defer provided.wire.deinit();
+
+    try testing.expect((try provided.resolve("{\"started\":{}}", &.{})).get("accepted").?.bool);
+    try testing.expect((try provided.resolve("{\"result\":\"found\"}", &.{})).get("accepted").?.bool);
+    const retried = try provided.resolve("{\"result\":\"found\"}", &.{});
+    try testing.expectEqualStrings("already_resolved", retried.get("reason").?.string);
+    const late = try provided.resolve("{\"started\":{}}", &.{});
+    try testing.expectEqualStrings("already_resolved", late.get("reason").?.string);
+    const named = retried.get("details").?.object.get("settlement_id").?.string;
+    var terminal_id: []const u8 = "";
+    for (provided.wire.trace.items) |event| {
+        if (std.mem.eql(u8, event.object.get("type").?.string, "action.call.completed")) terminal_id = event.object.get("id").?.string;
+    }
+    try testing.expectEqualStrings(terminal_id, named);
+    _ = try provided.wire.wait("run.completed");
+    try provided.wire.validate();
+}
+
+test "cancelling a run closes its pending provided call before the run's terminal" {
+    var script = Script{ .tool_first = true, .tool_name = "lookup", .tool_arguments = "{}" };
+    var provided: ProvidedWire = .{ .wire = undefined };
+    try provided.start(&script);
+    defer provided.wire.deinit();
+    const a = provided.wire.arena.allocator();
+
+    var cancellation = Payload.init(a);
+    try cancellation.put("session_id", provided.asked.get("session_id").?);
+    try cancellation.put("run_id", provided.asked.get("run_id").?);
+    try provided.wire.send("run.cancel.request", provided.run_scope, cancellation.value());
+    _ = try provided.wire.wait("run.cancelled");
+    try testing.expect(provided.payloadOf("action.call.cancelled") != null);
+    try provided.wire.validate();
+}
+
+test "an open is refused, naming the tool, when a provided definition breaks a rule or a disclosed limit" {
+    var script = Script{};
+    var owner = Adapter.init(testing.allocator, .{
+        .protocol = .{ .stream_fn = scriptedStream, .ctx = &script },
+        .models = &scripted_models,
+        .initial_model_id = test_model.id,
+        .tools = &echo_tools,
+    });
+    defer owner.deinit();
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const cases = [_]struct { tools: []const u8, tool: []const u8 }{
+        .{ .tools = "[{\"name\":\"lookup\",\"input_schema\":{},\"execution_owner\":\"someone-else\"}]", .tool = "lookup" },
+        .{ .tools = "[{\"name\":\"echo_tool\",\"input_schema\":{},\"execution_owner\":\"user\"}]", .tool = "echo_tool" },
+        .{ .tools = "[{\"name\":\"look up\",\"input_schema\":{},\"execution_owner\":\"user\"}]", .tool = "look up" },
+        .{ .tools = "[{\"name\":\"lookup\",\"input_schema\":{\"$schema\":\"http://json-schema.org/draft-07/schema#\"},\"execution_owner\":\"user\"}]", .tool = "lookup" },
+        .{ .tools = "[{\"name\":\"lookup\",\"input_schema\":{},\"execution_owner\":\"user\",\"source\":\"mcp\"}]", .tool = "lookup" },
+        .{ .tools = "[{\"name\":\"lookup\",\"input_schema\":{},\"execution_owner\":\"user\"},{\"name\":\"lookup\",\"input_schema\":{},\"execution_owner\":\"user\"}]", .tool = "lookup" },
+    };
+    for (cases) |case| {
+        var refusal = contract.Refusal{};
+        try testing.expectError(error.UnsupportedFeature, owner.adapter().open(arena.allocator(), .{ .participant = "user", .tools_json = case.tools }, &refusal));
+        try testing.expectEqualStrings(contract.feature_tools_provide, refusal.feature);
+        try testing.expectEqualStrings(contract.reason_unsatisfiable, refusal.reason);
+        try testing.expectEqualStrings(case.tool, refusal.tool);
+    }
+    for (local_tools.defaultTools()) |builtin_tool| {
+        const shadowing = try std.fmt.allocPrint(arena.allocator(), "[{{\"name\":\"{s}\",\"input_schema\":{{}},\"execution_owner\":\"user\"}}]", .{builtin_tool.name});
+        var refusal = contract.Refusal{};
+        try testing.expectError(error.UnsupportedFeature, owner.adapter().open(arena.allocator(), .{ .participant = "user", .tools_json = shadowing }, &refusal));
+        try testing.expectEqualStrings(builtin_tool.name, refusal.tool);
+    }
+    var many: std.ArrayList(u8) = .empty;
+    defer many.deinit(testing.allocator);
+    try many.append(testing.allocator, '[');
+    for (0..max_provided_tools + 1) |index| {
+        if (index > 0) try many.append(testing.allocator, ',');
+        try many.print(testing.allocator, "{{\"name\":\"tool_{d}\",\"input_schema\":{{}},\"execution_owner\":\"user\"}}", .{index});
+    }
+    try many.append(testing.allocator, ']');
+    var refusal = contract.Refusal{};
+    try testing.expectError(error.UnsupportedFeature, owner.adapter().open(arena.allocator(), .{ .participant = "user", .tools_json = many.items }, &refusal));
+    try testing.expectEqualStrings("tool_64", refusal.tool);
+}
+
+test "a provided tool is listed beside the loop's own with the opener as its execution owner" {
+    var script = Script{};
+    var owner = Adapter.init(testing.allocator, .{
+        .protocol = .{ .stream_fn = scriptedStream, .ctx = &script },
+        .models = &scripted_models,
+        .initial_model_id = test_model.id,
+        .tools = &echo_tools,
+    });
+    defer owner.deinit();
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var refusal = contract.Refusal{};
+    const session = try owner.adapter().open(arena.allocator(), .{ .participant = "user", .tools_json = provided_lookup }, &refusal);
+    defer session.teardown();
+    const listed = try session.vtable.tools.?(session.ptr, arena.allocator(), &.{}, &refusal);
+    var saw_provided = false;
+    for (listed.response.tools) |tool| {
+        if (std.mem.eql(u8, tool.name, "lookup")) {
+            saw_provided = true;
+            try testing.expectEqualStrings("user", tool.execution_owner);
+        } else try testing.expectEqualStrings(endpoint_id, tool.execution_owner);
+    }
+    try testing.expect(saw_provided);
 }

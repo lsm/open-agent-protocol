@@ -117,7 +117,7 @@ without going through the ops table.
 | `resume_session` | `session.state.request`, then submit | **gap** — G1 |
 | `replaceMessages` (direct) | `transcript.load` | **gap** — G1 |
 | `waitForIdle` (direct, 6 production call sites) | a terminal run event | **gap** — G7 |
-| `setTools`, MCP bridge (direct) | `action.tools.provide`, `action.tool_sources.attach` | **gap** — G8, unadvertised |
+| `setTools`, MCP bridge (direct) | `action.tools.provide`, `action.tool_sources.attach` | provide covered; attach **gap** — G8 |
 | `models` / login (direct) | `models.list`; auth stays local | covered / G5 |
 
 ## Measuring parity
@@ -270,11 +270,16 @@ no second event mechanism. At six call sites this is a comfortably small PR.
 ### G8 — client tools and attached tool sources
 
 `setTools` and the MCP bridge are `action.tools.provide` and
-`action.tool_sources.attach`, neither advertised and neither dispatched. The
-draft says a source may be described and attached at session open under
-`+tool-sources`, and that nothing in the protocol *manages* one. Client-provided
-tool definitions are #374's subject and gate the TUI's tools step. Filed as
-#618.
+`action.tool_sources.attach`. The `oapx` adapter serves the first under
+Decision 0011: tools supplied at open join the loop's own for the session,
+listed with the opener as `execution_owner`, and each call to one is an
+interaction the opener settles with `action.call.resolve.request` while the
+loop's tool waits. Its limits are 64 tools, names matching
+`^[a-zA-Z0-9_-]{1,64}$`, and JSON Schema 2020-12; a definition naming a
+`source` is refused, because the loop declares none. Attaching sources stays
+unadvertised. The draft says a source may be described and attached at session
+open under `+tool-sources`, and that nothing in the protocol *manages* one.
+Filed as #618.
 
 ## What stays on the TUI side of the line
 
