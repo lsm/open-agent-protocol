@@ -1089,10 +1089,16 @@ pub const OapExecution = struct {
         }
         if (std.mem.eql(u8, kind, "action.call.completed") or std.mem.eql(u8, kind, "action.call.failed")) {
             const failed = std.mem.eql(u8, kind, "action.call.failed");
-            const result = if (failed)
-                try jsonText(self.allocator, if (body.get("error")) |value| (if (value == .object) value.object.get("message") else null) else null)
+            const failure: ?std.json.ObjectMap = if (!failed) null else if (body.get("error")) |value| (if (value == .object) value.object else null) else null;
+            const details: ?std.json.Value = if (failure) |held| held.get("details") else null;
+            const message = try jsonText(self.allocator, if (failure) |held| held.get("message") else null);
+            defer self.allocator.free(message);
+            const result = if (!failed)
+                try jsonText(self.allocator, body.get("result"))
+            else if (details) |held|
+                try jsonText(self.allocator, held)
             else
-                try jsonText(self.allocator, body.get("result"));
+                try self.allocator.dupe(u8, message);
             defer self.allocator.free(result);
             var call_id = try self.ownedText(stringOf(body, "tool_call_id") orelse "");
             errdefer call_id.deinit(self.allocator);
@@ -1100,6 +1106,16 @@ pub const OapExecution = struct {
             errdefer name.deinit(self.allocator);
             const result_json = try self.ownedText(result);
             self.deliver(.{ .tool_execution_end = .{ .tool_call_id = call_id, .tool_name = name, .result_json = result_json, .is_error = failed } });
+            if (details == null) return;
+            var result_call_id = try self.ownedText(stringOf(body, "tool_call_id") orelse "");
+            errdefer result_call_id.deinit(self.allocator);
+            var result_name = try self.ownedText(stringOf(body, "name") orelse "");
+            errdefer result_name.deinit(self.allocator);
+            var details_json = try self.ownedText(result);
+            errdefer details_json.deinit(self.allocator);
+            const text = try self.ownedText(message);
+            self.deliver(.{ .message_start = .{ .role = .tool_result } });
+            self.deliver(.{ .message_end = .{ .role = .tool_result, .text = text, .tool_call_id = result_call_id, .tool_name = result_name, .details_json = details_json, .is_error = true } });
             return;
         }
         if (std.mem.eql(u8, kind, "run.completed") or std.mem.eql(u8, kind, "run.failed") or std.mem.eql(u8, kind, "run.cancelled")) {
@@ -1947,6 +1963,50 @@ test "in ask mode over OAP a denied tool call never runs and the turn still ends
     try testing.expectEqual(@as(?tui_session.TuiEndReason, .completed), outcome.end);
     try testing.expectEqual(@as(usize, 1), outcome.approvals);
     try testing.expectEqual(@as(usize, 0), outcome.ran);
+}
+
+test "a denied call over OAP shows the loop's own result text beside its details, as the local loop shows it" {
+    var script = Script{ .tool_first = true };
+    const models = [_]ai_types.Model{scripted_model};
+    const execution = try OapExecution.create(testing.allocator, .{
+        .protocol = .{ .stream_fn = scriptedStream, .ctx = &script },
+        .models = &models,
+        .initial_model_id = scripted_model.id,
+        .tools = &echo_tools,
+    });
+    defer execution.destroy();
+    var runtime = try tui_runtime.TuiRuntime.init(testing.allocator, .{
+        .models = &models,
+        .initial_model_id = scripted_model.id,
+        .remote = execution.remote(),
+    });
+    defer runtime.deinit();
+    try runtime.setPermissionMode(.ask);
+
+    try runtime.submitTurn("use the tool");
+    var details_seen = false;
+    var text_seen = false;
+    var ended = false;
+    var waits: usize = 0;
+    while (!ended and waits < 5000) : (waits += 1) {
+        while (runtime.streamEvents().poll()) |event| {
+            var owned_event = event;
+            defer owned_event.deinit(testing.allocator);
+            switch (owned_event) {
+                .tool_approval_requested => |payload| try runtime.decideToolApproval(payload.tool_call_id.slice(), .reject),
+                .tool_execution_end => |payload| details_seen = payload.is_error and std.mem.eql(u8, payload.result_json.slice(), "{\"rejected\":true}"),
+                .message_end => |payload| if (payload.role == .tool_result) {
+                    text_seen = payload.is_error and std.mem.eql(u8, payload.text.slice(), "Tool execution rejected by user") and std.mem.eql(u8, payload.tool_call_id.slice(), "call-1");
+                },
+                .agent_end => ended = true,
+                else => {},
+            }
+        }
+        if (!ended) std.testing.io.sleep(.fromNanoseconds(std.time.ns_per_ms), .boot) catch {};
+    }
+    try testing.expect(ended);
+    try testing.expect(details_seen);
+    try testing.expect(text_seen);
 }
 
 test "a switch to a model the OAP session does not list is refused before the app's selection moves" {
