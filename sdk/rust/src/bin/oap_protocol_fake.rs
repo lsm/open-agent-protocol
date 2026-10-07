@@ -29,6 +29,8 @@ fn main() {
         .unwrap_or_else(|| "stated".to_owned());
     let mut authenticated = false;
     let mut selected_model = "fixture/openai-responses@mock".to_owned();
+    let mut opened = Value::Null;
+    let mut participant = Value::Null;
     for line in io::stdin().lock().lines() {
         let Ok(line) = line else { break };
         let Ok(request) = serde_json::from_str::<Value>(&line) else {
@@ -55,15 +57,18 @@ fn main() {
         }
         let data = &request["payload"];
         match (profile, kind) {
-            (AGENT, "protocol.initialize.request") => emit(
-                profile,
-                "protocol.initialize.response",
-                Some(id),
-                json!({
-                    "protocol_version": "0.1", "profile": AGENT, "endpoint": { "id": "fixture" }
-                }),
-                json!({}),
-            ),
+            (AGENT, "protocol.initialize.request") => {
+                participant = data["participant"]["id"].clone();
+                emit(
+                    profile,
+                    "protocol.initialize.response",
+                    Some(id),
+                    json!({
+                        "protocol_version": "0.1", "profile": AGENT, "endpoint": { "id": "fixture" }
+                    }),
+                    json!({}),
+                );
+            }
             (AGENT, "capabilities.request") => emit(
                 profile,
                 "capabilities.response",
@@ -286,13 +291,55 @@ fn main() {
                     json!({ "inference_id": "inf-1", "sequence": if structured { 7 } else { 4 } }),
                 );
             }
-            (AGENT, "session.open.request") => emit(
-                profile,
-                "session.open.response",
-                Some(id),
-                json!({ "session_id": data["session_id"], "status": "idle" }),
-                json!({ "session_id": data["session_id"] }),
-            ),
+            (AGENT, "session.open.request") => {
+                opened = data.clone();
+                emit(
+                    profile,
+                    "session.open.response",
+                    Some(id),
+                    json!({ "session_id": data["session_id"], "status": "idle" }),
+                    json!({ "session_id": data["session_id"] }),
+                );
+            }
+            (AGENT, "action.call.resolve.request") => {
+                let scope = json!({ "session_id": data["session_id"], "run_id": "run-1" });
+                emit(
+                    profile,
+                    "action.call.resolve.response",
+                    Some(id),
+                    json!({ "interaction_id": data["interaction_id"], "session_id": data["session_id"], "run_id": "run-1", "tool_call_id": data["tool_call_id"], "accepted": true }),
+                    json!({ "session_id": data["session_id"] }),
+                );
+                emit(
+                    profile,
+                    "action.call.started",
+                    None,
+                    json!({ "session_id": data["session_id"], "run_id": "run-1", "tool_call_id": "call-1", "name": "lookup" }),
+                    scope.clone(),
+                );
+                emit(
+                    profile,
+                    "action.call.completed",
+                    None,
+                    json!({ "session_id": data["session_id"], "run_id": "run-1", "tool_call_id": "call-1", "name": "lookup", "result": data["result"] }),
+                    scope.clone(),
+                );
+                let said = format!(
+                    "{} owned by {} said {} (error {}) as {}",
+                    opened["tools"][0]["name"],
+                    opened["tools"][0]["execution_owner"],
+                    data["result"],
+                    data["error"]["message"],
+                    data["responded_by"]
+                );
+                emit(
+                    profile,
+                    "run.completed",
+                    None,
+                    json!({ "session_id": data["session_id"], "run_id": "run-1", "final_response": { "role": "assistant", "content": said }, "stop_reason": "end_turn" }),
+                    scope,
+                );
+            }
             (AGENT, "session.message.submit.request") => {
                 if data.get("session_id").and_then(Value::as_str) == Some("existing-session")
                     && data.get("model_id").is_some()
@@ -328,6 +375,39 @@ fn main() {
                     json!({ "session_id": data["session_id"], "accepted": true, "run_id": "run-1", "submission_id": "sub-1", "requested_delivery": "auto", "effective_delivery": "start", "admission": "started" }),
                     json!({ "session_id": data["session_id"] }),
                 );
+                if effective_model.ends_with("@tool") {
+                    emit(
+                        profile,
+                        "run.started",
+                        None,
+                        json!({ "session_id": data["session_id"], "run_id": "run-1", "model_id": effective_model }),
+                        scope.clone(),
+                    );
+                    emit(
+                        profile,
+                        "action.call.requested",
+                        None,
+                        json!({ "session_id": data["session_id"], "run_id": "run-1", "tool_call_id": "call-1", "name": "lookup", "execution_owner": participant, "interaction_id": "interaction-1", "requested_by": "fixture", "responded_by": participant, "arguments_json": { "word": "oap" } }),
+                        scope,
+                    );
+                    continue;
+                }
+                if effective_model.ends_with("@settings") {
+                    let said = format!(
+                        "reasoning={} output={} participant={}",
+                        opened["reasoning_level"],
+                        opened["metadata"]["oapx"]["output"],
+                        participant
+                    );
+                    emit(
+                        profile,
+                        "run.completed",
+                        None,
+                        json!({ "session_id": data["session_id"], "run_id": "run-1", "final_response": { "role": "assistant", "content": said }, "stop_reason": "end_turn" }),
+                        scope,
+                    );
+                    continue;
+                }
                 emit(
                     profile,
                     "run.started",

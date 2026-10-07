@@ -199,7 +199,7 @@ async fn oap_auto_once_retries_streams_before_content() {
 }
 
 #[tokio::test]
-async fn unrepresented_tools_and_agent_sampling_fail_explicitly() {
+async fn agent_tools_and_settings_travel_over_oap_and_temperature_is_refused() {
     let client = ClientBuilder::new()
         .command(env!("CARGO_BIN_EXE_oap-protocol-fake"))
         .args([] as [&str; 0])
@@ -217,23 +217,70 @@ async fn unrepresented_tools_and_agent_sampling_fail_explicitly() {
     assert!(
         matches!(error, Error::Protocol { code: Some(code), .. } if code == "unsupported_feature")
     );
-    let agent = ExecutionRequest::prompt("fixture/openai-responses@mock", "hello")
-        .with_tool(Tool::new("local", "local", "{}"));
-    let error = client
+    let invoked = Arc::new(Mutex::new(Vec::new()));
+    let seen = Arc::clone(&invoked);
+    let lookup = Tool::new("lookup", "look a word up", "{}").on_call(move |invocation| {
+        let seen = Arc::clone(&seen);
+        async move {
+            seen.lock()
+                .expect("lock")
+                .push((invocation.tool_call_id, invocation.args_json));
+            Ok("open agent protocol".to_owned())
+        }
+    });
+    let agent = client
         .agent()
-        .run(agent)
+        .run(
+            ExecutionRequest::prompt("fixture/openai-responses@tool", "hello")
+                .with_tool(lookup.clone()),
+        )
         .await
-        .expect_err("agent tools unsupported");
-    assert!(
-        matches!(error, Error::Protocol { code: Some(code), .. } if code == "unsupported_feature")
+        .expect("provided tool run");
+    assert_eq!(
+        agent.text(),
+        "\"lookup\" owned by \"rust-sdk\" said \"open agent protocol\" (error null) as \"rust-sdk\""
     );
-    let agent =
-        ExecutionRequest::prompt("fixture/openai-responses@mock", "hello").with_max_tokens(32);
+    assert_eq!(
+        invoked.lock().expect("lock").clone(),
+        vec![("call-1".to_owned(), "{\"word\":\"oap\"}".to_owned())]
+    );
+    let mut kinds = Vec::new();
+    let mut events = Box::pin(client.agent().stream(
+        ExecutionRequest::prompt("fixture/openai-responses@tool", "hello").with_tool(lookup),
+    ));
+    while let Some(event) = events.next().await {
+        kinds.push(match event.expect("event") {
+            oap_sdk::AgentEvent::AgentStart { .. } => "agent_start",
+            oap_sdk::AgentEvent::ToolExecutionStart { .. } => "tool_execution_start",
+            oap_sdk::AgentEvent::ToolExecutionEnd { .. } => "tool_execution_end",
+            oap_sdk::AgentEvent::AgentEnd { .. } => "agent_end",
+            _ => "other",
+        });
+    }
+    assert_eq!(
+        kinds,
+        [
+            "agent_start",
+            "tool_execution_start",
+            "tool_execution_end",
+            "agent_end"
+        ]
+    );
+    let mut configured =
+        ExecutionRequest::prompt("fixture/openai-responses@settings", "hello").with_max_tokens(32);
+    configured.options.reasoning_effort = Some(oap_sdk::ReasoningEffort::High);
+    let settings = client.agent().run(configured).await.expect("settings run");
+    assert_eq!(
+        settings.text(),
+        "reasoning=\"high\" output=32 participant=\"rust-sdk\""
+    );
+    let mut warm = ExecutionRequest::prompt("fixture/openai-responses@mock", "hello");
+    warm.options.temperature = Some(0.5);
     let error = client
         .agent()
-        .run(agent)
+        .run(warm)
         .await
-        .expect_err("agent sampling unsupported");
+        .expect_err("temperature unsupported");
     assert!(
         matches!(error, Error::Protocol { code: Some(code), .. } if code == "unsupported_feature")
     );

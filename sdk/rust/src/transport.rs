@@ -43,7 +43,9 @@ use tokio::sync::{mpsc, oneshot, watch};
 use tokio::task::JoinHandle;
 
 use crate::error::{Error, Result};
-use crate::wire::{Envelope, Frame, AGENT_PROFILE, OAP_PROTOCOL, OAP_VERSION, PROVIDER_PROFILE};
+use crate::wire::{
+    Envelope, Frame, AGENT_PROFILE, OAP_PROTOCOL, OAP_VERSION, PROVIDER_PROFILE, SDK_PARTICIPANT,
+};
 
 /// How long a closing transport waits for the child to exit on its own after
 /// stdin is closed, before killing it.
@@ -510,7 +512,7 @@ impl Transport {
                 "protocol.initialize.request",
                 json!({
                     "protocol_versions": [options.expected_protocol_version],
-                    "profiles": [AGENT_PROFILE], "participant": { "id": "rust-sdk" }
+                    "profiles": [AGENT_PROFILE], "participant": { "id": SDK_PARTICIPANT }
                 }),
                 None,
                 options.handshake_timeout,
@@ -619,6 +621,17 @@ impl Transport {
         payload: Value,
         scope: Option<(&str, &str)>,
     ) -> Result<()> {
+        self.send_oap_scoped(profile, kind, id, payload, scope.as_slice())
+    }
+
+    pub(crate) fn send_oap_scoped(
+        &self,
+        profile: &str,
+        kind: &str,
+        id: &str,
+        payload: Value,
+        scopes: &[(&str, &str)],
+    ) -> Result<()> {
         let mut envelope = json!({ "protocol": OAP_PROTOCOL, "version": OAP_VERSION, "profile": profile, "type": kind, "id": id, "payload": payload });
         if profile == AGENT_PROFILE
             && kind != "protocol.initialize.request"
@@ -636,9 +649,9 @@ impl Transport {
                 }
             }
         }
-        if let Some((key, value)) = scope {
+        for (key, value) in scopes {
             if let Some(fields) = envelope.as_object_mut() {
-                fields.insert(key.to_owned(), Value::String(value.to_owned()));
+                fields.insert((*key).to_owned(), Value::String((*value).to_owned()));
             }
         }
         self.send_line(envelope.to_string())

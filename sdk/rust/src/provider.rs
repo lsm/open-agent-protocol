@@ -460,24 +460,7 @@ fn oap_create_payload(request: &ExecutionRequest) -> Result<serde_json::Value> {
         let tools = request
             .tools
             .iter()
-            .map(|tool| -> Result<serde_json::Value> {
-                let mut value = tool.serialize_for_wire();
-                if let Some(obj) = value.as_object_mut() {
-                    if let Some(schema) = obj.remove("parameters_schema_json") {
-                        let raw = schema.as_str().ok_or_else(|| {
-                            Error::invalid_request("tool parameters_schema_json is not a string")
-                        })?;
-                        let parsed =
-                            serde_json::from_str::<serde_json::Value>(raw).map_err(|err| {
-                                Error::invalid_request(format!(
-                                    "tool parameters_schema_json is not valid JSON: {err}"
-                                ))
-                            })?;
-                        obj.insert("input_schema".to_owned(), parsed);
-                    }
-                }
-                Ok(value)
-            })
+            .map(crate::oap::tool_definition)
             .collect::<Result<Vec<_>>>()?;
         fields.insert("tools".to_owned(), json!(tools));
     }
