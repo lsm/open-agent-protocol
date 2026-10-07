@@ -996,6 +996,11 @@ impl AgentApi {
                     fields.insert("result".to_owned(), json!(result));
                 }
                 Some(Err(message)) => {
+                    let message = if message.is_empty() {
+                        "the tool failed".to_owned()
+                    } else {
+                        message
+                    };
                     fields.insert(
                         "error".to_owned(),
                         json!({ "code": "tool_failed", "message": message }),
