@@ -1347,10 +1347,7 @@ pub const Frontend = struct {
     };
 
     fn withdrawn(descriptor: contract.Descriptor, key: []const u8) bool {
-        for (descriptor.features) |feature| {
-            if (std.mem.eql(u8, feature.key, key)) return feature.level == .unavailable;
-        }
-        return false;
+        return descriptor.level(key) == .unavailable;
     }
 
     fn nativeTurnsJson(arena: std.mem.Allocator, read: []const contract.NativeTurn, after: ?u64, bound: usize) !std.json.Value {
@@ -2365,6 +2362,7 @@ const reference_descriptor = contract.Descriptor{
         .{ .key = "session.open.subscribe", .level = .native },
         .{ .key = contract.feature_tool_sources_attach, .level = .native, .modes = &.{"session_open"} },
         .{ .key = "run.cancel", .level = .emulated, .scope = "primary", .modes = &.{"stream"}, .constraints_json = "{\"max\":2}" },
+        .{ .key = contract.feature_submit, .level = .native },
     },
 };
 
@@ -3344,13 +3342,28 @@ fn workResult(harness: *Harness, id: i64) !std.json.ObjectMap {
 const uncancellable_descriptor = contract.Descriptor{
     .endpoint = .{ .id = "uncancellable", .name = "Uncancellable", .version = "0.1", .adapter = "script" },
     .capability_revision = "uncancellable-v1",
-    .features = &.{.{ .key = "run.cancel", .level = .unavailable, .reason = "no cancel request" }},
+    .features = &.{
+        .{ .key = "run.cancel", .level = .unavailable, .reason = "no cancel request" },
+        .{ .key = contract.feature_submit, .level = .native },
+    },
 };
 
 fn uncancellableProbe(ptr: *anyopaque, refusal: *contract.Refusal) contract.Failure!contract.Descriptor {
     _ = ptr;
     _ = refusal;
     return uncancellable_descriptor;
+}
+
+const undeclared_descriptor = contract.Descriptor{
+    .endpoint = .{ .id = "undeclared", .name = "Undeclared", .version = "0.1", .adapter = "script" },
+    .capability_revision = "undeclared-v1",
+    .features = &.{.{ .key = contract.feature_submit, .level = .native }},
+};
+
+fn undeclaredProbe(ptr: *anyopaque, refusal: *contract.Refusal) contract.Failure!contract.Descriptor {
+    _ = ptr;
+    _ = refusal;
+    return undeclared_descriptor;
 }
 
 fn uncancellableOpen(ptr: *anyopaque, arena: std.mem.Allocator, request: contract.OpenRequest, refusal: *contract.Refusal) contract.Failure!contract.Session {
@@ -3360,14 +3373,15 @@ fn uncancellableOpen(ptr: *anyopaque, arena: std.mem.Allocator, request: contrac
     return refusal.fail(error.BackendFailed, "not opened in this test");
 }
 
-test "work.capabilities names each adapter's verbs, leaving out work.stop where run.cancel is unavailable, and whether it lists and reads its own sessions" {
+test "work.capabilities names each adapter's verbs, leaving out work.stop where run.cancel is unavailable or undeclared, and whether it lists and reads its own sessions" {
     const harness = try Harness.init(testing.allocator, .{}, .{});
     defer harness.deinit();
     var uncancellable_state: u8 = 0;
     try harness.hub.register("uncancellable", .{ .ptr = &uncancellable_state, .vtable = &.{ .probe = uncancellableProbe, .open = uncancellableOpen } });
+    try harness.hub.register("undeclared", .{ .ptr = &uncancellable_state, .vtable = &.{ .probe = undeclaredProbe, .open = uncancellableOpen } });
     try harness.send("{\"id\":1,\"op\":\"work.capabilities\"}");
     const adapters = (try harness.lastValue()).object.get("result").?.object.get("adapters").?.array.items;
-    try testing.expectEqual(@as(usize, 3), adapters.len);
+    try testing.expectEqual(@as(usize, 4), adapters.len);
     try testing.expectEqualStrings("reference", adapters[0].object.get("adapter").?.string);
     const full = adapters[0].object.get("verbs").?.array.items;
     try testing.expectEqual(@as(usize, 6), full.len);
@@ -3380,6 +3394,10 @@ test "work.capabilities names each adapter's verbs, leaving out work.stop where 
     try testing.expectEqual(@as(usize, 5), cut.len);
     for (cut) |verb| try testing.expect(!std.mem.eql(u8, verb.string, "work.stop"));
     try testing.expect(!adapters[1].object.get("native").?.object.get("list").?.bool);
+    try testing.expectEqualStrings("undeclared", adapters[2].object.get("adapter").?.string);
+    const undeclared = adapters[2].object.get("verbs").?.array.items;
+    try testing.expectEqual(@as(usize, 5), undeclared.len);
+    for (undeclared) |verb| try testing.expect(!std.mem.eql(u8, verb.string, "work.stop"));
     try harness.send("{\"id\":2,\"op\":\"work.capabilities\",\"adapter\":\"reference\"}");
     try testing.expectEqualStrings("invalid_request", try harness.code());
 }
