@@ -1246,6 +1246,7 @@ pub const App = struct {
             self.state.stream_aborted = false;
             session.compact(.{ .focus = focus }) catch |err| switch (err) {
                 error.UnavailableOverOap => try self.state.appendTranscript(.@"error", over_oap_compaction_refusal),
+                error.NothingToCompact => try self.state.appendTranscript(.system, "Nothing to compact yet."),
                 error.RunInProgress => try self.state.appendTranscript(.@"error", "A run is still open; compact once it ends."),
                 else => return err,
             };
