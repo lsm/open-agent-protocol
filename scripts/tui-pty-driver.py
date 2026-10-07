@@ -1771,11 +1771,11 @@ def normalized_events(events):
 def first_difference(local, oap):
     for index, (left, right) in enumerate(zip(local, oap)):
         if left != right:
-            return f"record {index}: --tui {left!r}, tui {right!r}"
+            return f"record {index}: oapx --tui {left!r}, oapx {right!r}"
     if len(local) != len(oap):
-        longer = "--tui" if len(local) > len(oap) else "tui"
+        longer = "oapx --tui" if len(local) > len(oap) else "oapx"
         extra = local[len(oap):] if len(local) > len(oap) else oap[len(local):]
-        return f"--tui saved {len(local)} records and tui {len(oap)}; {longer} also saved {extra[0]!r}"
+        return f"oapx --tui saved {len(local)} records and oapx {len(oap)}; {longer} also saved {extra[0]!r}"
     return None
 
 
@@ -1918,7 +1918,7 @@ def judge_parity(name, local_events, oap_events):
         return {"scenario": label, "result": "fail", "error": f"listed in KNOWN_DIVERGENCES ({divergence}) but the saved records match; remove the entry", "notes": []}
     if divergence is not None:
         return {"scenario": label, "result": "known-gap", "reason": divergence, "detail": difference, "notes": []}
-    return {"scenario": label, "result": "fail", "error": f"the saved session records differ between --tui and tui: {difference}", "notes": []}
+    return {"scenario": label, "result": "fail", "error": f"the saved session records differ between oapx --tui and oapx: {difference}", "notes": []}
 
 
 def main():
