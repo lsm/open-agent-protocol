@@ -1087,15 +1087,16 @@ pub const App = struct {
 
     pub fn init(allocator: std.mem.Allocator, options: tui_runtime.TuiRuntimeOptions) !App {
         var runtime_options = options;
+        var adopted = false;
         const approval_waiter = try allocator.create(ApprovalWaiter);
-        errdefer allocator.destroy(approval_waiter);
+        errdefer if (!adopted) allocator.destroy(approval_waiter);
         approval_waiter.* = .{ .allocator = allocator };
         runtime_options.tool_approval_ctx = approval_waiter;
         runtime_options.tool_approval_callback = approvalCallback;
         const hosted = if (options.remote == null) try tui_oap_execution.OapExecution.create(allocator, options) else null;
-        errdefer if (hosted) |execution| execution.destroy();
+        errdefer if (!adopted) if (hosted) |execution| execution.destroy();
         const hosted_store = if (hosted) |execution| hostHistory(allocator, execution) else null;
-        errdefer if (hosted_store) |store| dropHostedStore(allocator, store);
+        errdefer if (!adopted) if (hosted_store) |store| dropHostedStore(allocator, store);
         if (hosted) |execution| runtime_options.remote = execution.remote();
         const runtime_ptr = try allocator.create(tui_runtime.TuiRuntime);
         runtime_ptr.* = tui_runtime.TuiRuntime.init(allocator, runtime_options) catch |err| {
@@ -1112,6 +1113,7 @@ pub const App = struct {
             .approval_waiter = approval_waiter,
             .quarantine_buffer = std.ArrayList(tui_runtime.TuiEvent).empty,
         };
+        adopted = true;
         errdefer app.deinit();
         app.session = app.runtime.?.createSession();
         if (options.remote != null and !app.runtime.?.recordsFromEndpoint()) try app.state.appendTranscript(.system, over_oap_notice);
