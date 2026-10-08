@@ -2596,7 +2596,12 @@ fn countingServedLoad(allocator: std.mem.Allocator) anyerror![]ai_types.Model {
     return cloneOapModels(allocator, &oap_test_served_models);
 }
 
-test "a provider awaits a credential only when it is a catalog row that needs one, on an implemented wire" {
+test "a provider awaits a credential only when it is a catalog row that needs one, on an implemented wire, and none resolves" {
+    const allocator = std.testing.allocator;
+    try provider_catalog.blankEnvironment(allocator);
+    defer compat.clearTestEnv();
+    try compat.setTestEnv(allocator, "HOME", "/nonexistent/oapx-awaits-credential-test-home");
+
     try std.testing.expect(oapProviderAwaitsCredential("anthropic"));
     try std.testing.expect(oapProviderAwaitsCredential("deepseek"));
     try std.testing.expect(!oapProviderAwaitsCredential("ollama"));
@@ -2605,6 +2610,20 @@ test "a provider awaits a credential only when it is a catalog row that needs on
     try std.testing.expect(rowAwaitsCredential(.{ .id = "keyed", .auth = &.{.api_key}, .wires = &.{"openai-completions"} }));
     try std.testing.expect(!rowAwaitsCredential(.{ .id = "keyless", .auth = &.{ .none, .api_key }, .wires = &.{"openai-completions"} }));
     try std.testing.expect(!rowAwaitsCredential(.{ .id = "unwired", .auth = &.{.api_key}, .wires = &.{"no-such-wire"} }));
+
+    try compat.setTestEnv(allocator, provider_catalog.credentialEnv("anthropic")[1], "sk-ant-present");
+    try std.testing.expect(!oapProviderAwaitsCredential("anthropic"));
+    try std.testing.expect(oapProviderAwaitsCredential("deepseek"));
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.createDirPath(std.testing.io, ".oapx");
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = ".oapx/auth.json", .data = "{\"deepseek\":{\"api_key\":\"sk-stored\"}}" });
+    const home = try tmp.dir.realPathFileAlloc(std.testing.io, ".", allocator);
+    defer allocator.free(home);
+    try compat.setTestEnv(allocator, "HOME", home);
+    try std.testing.expect(!oapProviderAwaitsCredential("deepseek"));
+    try std.testing.expect(oapProviderAwaitsCredential("openai"));
 }
 
 fn failingServedLoad(allocator: std.mem.Allocator) anyerror![]ai_types.Model {
@@ -3030,7 +3049,14 @@ fn applyServedOapReload(allocator: std.mem.Allocator, server: *oap_provider_serv
 
 fn oapProviderAwaitsCredential(provider_id: []const u8) bool {
     const row = provider_catalog.provider(provider_id) orelse return false;
-    return rowAwaitsCredential(row);
+    return rowAwaitsCredential(row) and !oapCredentialResolves(std.heap.page_allocator, provider_id);
+}
+
+fn oapCredentialResolves(allocator: std.mem.Allocator, provider_id: []const u8) bool {
+    if (provider_catalog.credentialEnvIsSet(allocator, provider_id) catch false) return true;
+    var storage = oauth_storage.AuthStorage.loadDefaultStoredOnly(allocator) catch return false;
+    defer storage.deinit();
+    return storage.providers.get(provider_id) != null;
 }
 
 fn rowAwaitsCredential(row: provider_catalog.Provider) bool {
