@@ -2684,6 +2684,29 @@ test "a reload asked for just before the worker releases is not lost" {
     try std.testing.expect(!cache.reloading.load(.seq_cst));
 }
 
+test "a reload advertises the grant channel the endpoint was started with, and none when it takes no grants" {
+    const allocator = std.testing.allocator;
+    var cache: ServedOapModels = .{};
+    defer cache.deinit();
+    try cache.reload(allocator, countingServedLoad);
+
+    var closed = oapTestProviderServer(allocator);
+    defer closed.deinit();
+    var closed_applied: u64 = 0;
+    try std.testing.expect(try applyServedOapReload(allocator, &closed, &cache, &closed_applied));
+    for (closed.providers.items) |descriptor| {
+        try std.testing.expectEqual(oap_provider_types.CredentialGrantChannel.none, descriptor.credential_grant);
+        try std.testing.expectEqual(@as(usize, 0), descriptor.grant_kinds.len);
+    }
+
+    var open = oap_provider_server.Server.init(allocator, .{ .accepts_inference = true, .grant_channel = .out_of_band });
+    defer open.deinit();
+    var open_applied: u64 = 0;
+    try std.testing.expect(try applyServedOapReload(allocator, &open, &cache, &open_applied));
+    const expected: oap_provider_types.CredentialGrantChannel = if (oap_provider_grant_channel.GrantChannel.supported) .out_of_band else .none;
+    for (open.providers.items) |descriptor| try std.testing.expectEqual(expected, descriptor.credential_grant);
+}
+
 test "a finished reload replaces the providers the endpoint serves, once per generation" {
     const allocator = std.testing.allocator;
     var server = oapTestProviderServer(allocator);
@@ -2826,10 +2849,11 @@ fn populateOapProviderCatalogFrom(allocator: std.mem.Allocator, server: *oap_pro
         errdefer if (!provider_transferred) {
             if (wire_id) |value| allocator.free(value);
         };
-        const grant_kinds = if (oap_provider_grant_channel.GrantChannel.supported)
-            try allocator.dupe(oap_provider_types.GrantKind, &.{.static})
+        const grant = servedOapGrant(server.options.grant_channel);
+        const grant_kinds = if (grant == .none)
+            try allocator.dupe(oap_provider_types.GrantKind, &.{})
         else
-            try allocator.dupe(oap_provider_types.GrantKind, &.{});
+            try allocator.dupe(oap_provider_types.GrantKind, &.{.static});
         errdefer if (!provider_transferred) allocator.free(grant_kinds);
 
         try server.addProvider(.{
@@ -2842,7 +2866,7 @@ fn populateOapProviderCatalogFrom(allocator: std.mem.Allocator, server: *oap_pro
             .snapshot_policies = policies,
             .answers_sync = oap_provider_server.IMPLEMENTS_SYNC,
             .compatibility = oapProviderCompatibility(model.provider, proxy_flags),
-            .credential_grant = if (oap_provider_grant_channel.GrantChannel.supported) .out_of_band else .none,
+            .credential_grant = grant,
             .grant_kinds = grant_kinds,
             .context_window = if (context_window > 0) context_window else null,
             .max_output_tokens = if (max_output_tokens > 0) max_output_tokens else null,
@@ -2879,6 +2903,14 @@ fn servedOapCapabilities(allocator: std.mem.Allocator, found: []const oap_provid
         if (std.mem.indexOfScalar(oap_provider_types.ModelCapability, list.items, capability) == null) try list.append(allocator, capability);
     }
     return list.toOwnedSlice(allocator);
+}
+
+fn servedOapGrant(channel: oap_provider_server.GrantChannel) oap_provider_types.CredentialGrantChannel {
+    return switch (channel) {
+        .out_of_band => if (oap_provider_grant_channel.GrantChannel.supported) .out_of_band else .none,
+        .on_envelope => .on_envelope,
+        .unsupported => .none,
+    };
 }
 
 fn servedBefore(earlier: []const ai_types.Model, provider_id: []const u8) bool {
@@ -3970,12 +4002,6 @@ const HttpProviderRuntime = struct {
         errdefer runtime.deinit();
         try register_builtins.registerBuiltInApiProviders(&runtime.registry);
         runtime.served_generation = try startServingOapCatalog(allocator, &runtime.server);
-        for (runtime.server.providers.items) |*provider| {
-            const empty = try allocator.alloc(oap_provider_types.GrantKind, 0);
-            provider.credential_grant = .none;
-            allocator.free(provider.grant_kinds);
-            provider.grant_kinds = empty;
-        }
         return runtime;
     }
 
