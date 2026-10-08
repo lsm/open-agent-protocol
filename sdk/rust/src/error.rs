@@ -259,12 +259,6 @@ impl Error {
         )
     }
 
-    /// Whether this failure is an `auth_required` that has not yet been through
-    /// the `auto_once` retry, i.e. one a login attempt could still clear.
-    pub(crate) fn is_retryable_auth(&self) -> bool {
-        matches!(self, Self::Stream { code, .. } if code.as_deref() == Some("auth_required"))
-    }
-
     pub(crate) fn message(&self) -> &str {
         match self {
             Self::Stream { message, .. }
@@ -280,26 +274,6 @@ impl Error {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn auth_required_reports_its_code_and_provider() {
-        let err = Error::auth_required("anthropic", "login first");
-        assert_eq!(err.code(), Some("auth_required"));
-        assert_eq!(err.provider_id(), Some("anthropic"));
-        assert!(err.is_auth_required());
-        assert!(!err.is_retryable_auth());
-    }
-
-    #[test]
-    fn retryable_auth_is_the_stream_shaped_one() {
-        let err = Error::provider_stream(
-            "auth_required",
-            Some("auth_required".into()),
-            Some("anthropic".into()),
-        );
-        assert!(err.is_retryable_auth());
-        assert!(err.is_auth_required());
-    }
 
     #[test]
     fn transport_errors_carry_no_code() {

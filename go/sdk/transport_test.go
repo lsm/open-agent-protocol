@@ -13,7 +13,7 @@ import (
 )
 
 func TestHandshakeSucceeds(t *testing.T) {
-	client := newTestClient(t, scenarioProtocol)
+	client := newTestClient(t, scenarioOAP)
 	if client.Auth == nil || client.Models == nil || client.Provider == nil || client.Agent == nil {
 		t.Fatal("expected every namespace to be wired up")
 	}
@@ -27,7 +27,7 @@ func TestHandshakeRejectsUnexpectedProtocolVersion(t *testing.T) {
 	if !errors.Is(err, ErrProtocolVersion) {
 		t.Fatalf("expected ErrProtocolVersion, got %v", err)
 	}
-	if !strings.Contains(err.Error(), `got "2"`) {
+	if !strings.Contains(err.Error(), `got "9.9"`) {
 		t.Errorf("expected the announced version in the message, got %q", err)
 	}
 }
@@ -105,7 +105,7 @@ func TestRequestFailsWhenRuntimeDiesMidRequest(t *testing.T) {
 func TestSendAfterCloseFails(t *testing.T) {
 	client, err := newTestClientWithOptions(t, &Options{
 		BinaryPath: os.Args[0],
-		Env:        fakeHostEnv(scenarioProtocol),
+		Env:        fakeHostEnv(scenarioOAP),
 	})
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -122,7 +122,7 @@ func TestSendAfterCloseFails(t *testing.T) {
 func TestCloseIsIdempotent(t *testing.T) {
 	client, err := newTestClientWithOptions(t, &Options{
 		BinaryPath: os.Args[0],
-		Env:        fakeHostEnv(scenarioProtocol),
+		Env:        fakeHostEnv(scenarioOAP),
 	})
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -169,7 +169,7 @@ func TestCloseLeavesNoGoroutines(t *testing.T) {
 	for i := 0; i < 3; i++ {
 		client, err := newTestClientWithOptions(t, &Options{
 			BinaryPath: os.Args[0],
-			Env:        fakeHostEnv(scenarioProtocol),
+			Env:        fakeHostEnv(scenarioOAP),
 		})
 		if err != nil {
 			t.Fatalf("New: %v", err)
@@ -189,7 +189,7 @@ func TestCancelledStreamLeavesNoGoroutines(t *testing.T) {
 
 	client, err := newTestClientWithOptions(t, &Options{
 		BinaryPath: os.Args[0],
-		Env:        fakeHostEnv(scenarioProtocol, envSuppress+"=stream_request"),
+		Env:        fakeHostEnv(scenarioOAP),
 	})
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -197,7 +197,7 @@ func TestCancelledStreamLeavesNoGoroutines(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	stream, err := client.Provider.Stream(ctx, CompletionRequest{
-		ModelRef: "anthropic/anthropic-messages@claude-sonnet-4-5",
+		ModelRef: "fixture/other:test@silent",
 		Messages: []Message{UserMessage("hi")},
 	})
 	if err != nil {
@@ -235,7 +235,7 @@ func TestCancelledStreamLeavesNoGoroutines(t *testing.T) {
 }
 
 func TestConcurrentCallsAreMultiplexed(t *testing.T) {
-	client := newTestClient(t, scenarioProtocol)
+	client := newTestClient(t, scenarioOAP)
 	ctx := testContext(t)
 
 	const calls = 8
@@ -259,32 +259,32 @@ func TestFrameReaderHandlesLongAndPartialLines(t *testing.T) {
 
 	reader := newFrameReader(strings.NewReader(input))
 
-	first, err := reader.next()
+	first, err := reader.nextInbound()
 	if err != nil {
 		t.Fatalf("first frame: %v", err)
 	}
-	if first.Type != "a" {
-		t.Errorf("Type = %q, want a", first.Type)
+	if first.kind() != "a" {
+		t.Errorf("Type = %q, want a", first.kind())
 	}
-	if got := first.payload().str("text"); len(got) != len(long) {
+	if got := payloadObject(first.header.Payload).str("text"); len(got) != len(long) {
 		t.Errorf("payload text length = %d, want %d", len(got), len(long))
 	}
 
-	second, err := reader.next()
+	second, err := reader.nextInbound()
 	if err != nil {
 		t.Fatalf("second frame: %v", err)
 	}
-	if second.Type != "b" {
-		t.Errorf("Type = %q, want b", second.Type)
+	if second.kind() != "b" {
+		t.Errorf("Type = %q, want b", second.kind())
 	}
-	if _, err := reader.next(); !errors.Is(err, io.EOF) {
+	if _, err := reader.nextInbound(); !errors.Is(err, io.EOF) {
 		t.Fatalf("expected io.EOF at the end, got %v", err)
 	}
 }
 
 func TestFrameReaderRejectsOversizedFrames(t *testing.T) {
 	reader := newFrameReader(strings.NewReader(strings.Repeat("x", maxFrameBytes+1024)))
-	if _, err := reader.next(); err == nil || !strings.Contains(err.Error(), "byte limit") {
+	if _, err := reader.nextInbound(); err == nil || !strings.Contains(err.Error(), "byte limit") {
 		t.Fatalf("expected a size-limit error, got %v", err)
 	}
 }
@@ -293,56 +293,16 @@ func TestFrameReaderReportsMalformedLines(t *testing.T) {
 	reader := newFrameReader(strings.NewReader("not json\n[]\n{\"type\":\"ok\"}\n"))
 
 	for i := 0; i < 2; i++ {
-		if _, err := reader.next(); !errors.Is(err, errMalformedFrame) {
+		if _, err := reader.nextInbound(); !errors.Is(err, errMalformedFrame) {
 			t.Fatalf("line %d: expected errMalformedFrame, got %v", i+1, err)
 		}
 	}
-	f, err := reader.next()
+	f, err := reader.nextInbound()
 	if err != nil {
 		t.Fatalf("third line: %v", err)
 	}
-	if f.Type != "ok" {
-		t.Errorf("Type = %q, want ok", f.Type)
-	}
-}
-
-func TestDispatchRoutesByCorrelationThenRoute(t *testing.T) {
-	tr := &transport{
-		logger:     discardLogger,
-		streams:    map[string][]*subscription{},
-		sessions:   map[string][]*subscription{},
-		correlates: map[string]*subscription{},
-		done:       make(chan struct{}),
-		exited:     make(chan struct{}),
-	}
-	streamSub := tr.subscribeStream("S1")
-	sessionSub := tr.subscribeSession("N1")
-	otherSession := tr.subscribeSession("N1")
-	otherSession.correlate("MSG-OTHER")
-
-	tr.dispatch(legacyLine(&frame{Type: "agent_error", SessionID: "N1", InReplyTo: "MSG-OTHER"}))
-
-	tr.dispatch(legacyLine(&frame{Type: "agent_event", SessionID: "N1"}))
-
-	tr.dispatch(legacyLine(&frame{Type: "models_response", StreamID: "S1"}))
-
-	tr.dispatch(legacyLine(&frame{Type: "orphan", StreamID: "S-UNKNOWN"}))
-
-	ctx := testContext(t)
-	if f, err := otherSession.nextFrame(ctx, time.Second, "correlated"); err != nil || f.Type != "agent_error" {
-		t.Fatalf("correlated waiter got (%v, %v), want agent_error", f, err)
-	}
-	if f, err := sessionSub.nextFrame(ctx, time.Second, "session"); err != nil || f.Type != "agent_event" {
-		t.Fatalf("session waiter got (%v, %v), want agent_event", f, err)
-	}
-	if f, err := streamSub.nextFrame(ctx, time.Second, "stream"); err != nil || f.Type != "models_response" {
-		t.Fatalf("stream waiter got (%v, %v), want models_response", f, err)
-	}
-
-	shortCtx, cancel := context.WithTimeout(ctx, 50*time.Millisecond)
-	defer cancel()
-	if _, err := sessionSub.next(shortCtx, 50*time.Millisecond, "session"); err == nil {
-		t.Fatal("expected no further frames on the session route")
+	if f.kind() != "ok" {
+		t.Errorf("Type = %q, want ok", f.kind())
 	}
 }
 
@@ -378,16 +338,16 @@ func TestSubscriptionOverflowIsReported(t *testing.T) {
 	}
 	sub := tr.subscribeStream("S1")
 	for i := 0; i < routeQueueSize+8; i++ {
-		sub.deliver(legacyLine(&frame{Type: "event", StreamID: "S1"}))
+		sub.deliver(routedLine("event", "", ""))
 	}
 
 	ctx := testContext(t)
 	for i := 0; i < routeQueueSize; i++ {
-		if _, err := sub.nextFrame(ctx, time.Second, "event"); err != nil {
+		if _, err := sub.next(ctx, time.Second, "event"); err != nil {
 			t.Fatalf("frame %d: %v", i, err)
 		}
 	}
-	_, err := sub.nextFrame(ctx, time.Second, "event")
+	_, err := sub.next(ctx, time.Second, "event")
 	var streamErr *StreamError
 	if !errors.As(err, &streamErr) || streamErr.Kind != KindTransportError {
 		t.Fatalf("expected a transport error after overflow, got %v", err)
@@ -410,7 +370,7 @@ func TestFrameReaderSkipsAnOversizedFrameAndResynchronizes(t *testing.T) {
 	oversized := strings.Repeat("x", maxFrameBytes+1024)
 	reader := newFrameReader(strings.NewReader(oversized + "\n" + `{"type":"after"}` + "\n"))
 
-	_, err := reader.next()
+	_, err := reader.nextInbound()
 	if !errors.Is(err, errMalformedFrame) {
 		t.Fatalf("an oversized frame should be recoverable, got %v", err)
 	}
@@ -418,16 +378,20 @@ func TestFrameReaderSkipsAnOversizedFrameAndResynchronizes(t *testing.T) {
 		t.Errorf("error should name the limit, got %v", err)
 	}
 
-	f, err := reader.next()
+	f, err := reader.nextInbound()
 	if err != nil {
 		t.Fatalf("the frame after an oversized one should still be read: %v", err)
 	}
-	if f.Type != "after" {
-		t.Errorf("Type = %q, want after", f.Type)
+	if f.kind() != "after" {
+		t.Errorf("Type = %q, want after", f.kind())
 	}
 }
 
-func TestDispatchPromotesTheAcceptedSessionAttempt(t *testing.T) {
+func routedLine(kind, sessionID, replyTo string) *inbound {
+	return &inbound{header: routing{Type: kind, SessionID: sessionID, InReplyTo: replyTo}}
+}
+
+func TestDispatchRoutesByCorrelationThenSession(t *testing.T) {
 	tr := &transport{
 		logger:     discardLogger,
 		streams:    map[string][]*subscription{},
@@ -436,43 +400,31 @@ func TestDispatchPromotesTheAcceptedSessionAttempt(t *testing.T) {
 		done:       make(chan struct{}),
 		exited:     make(chan struct{}),
 	}
-	const sessionID = "testNanoIdSess1234567"
+	requestSub := tr.subscribeStream("REQ-1")
+	requestSub.correlate("REQ-1")
+	sessionSub := tr.subscribeSession("N1")
+	otherSession := tr.subscribeSession("N1")
+	otherSession.correlate("MSG-OTHER")
 
-	loser := tr.subscribeSession(sessionID)
-	defer loser.close()
-	winner := tr.subscribeSession(sessionID)
-	defer winner.close()
-	winner.correlate("WINNER")
+	tr.dispatch(routedLine("error.response", "N1", "MSG-OTHER"))
+	tr.dispatch(routedLine("run.started", "N1", ""))
+	tr.dispatch(routedLine("models.response", "", "REQ-1"))
+	tr.dispatch(routedLine("orphan", "", "REQ-UNKNOWN"))
 
-	tr.dispatch(legacyLine(&frame{Type: "agent_started", SessionID: sessionID, InReplyTo: "WINNER",
-		Payload: mustMarshal(map[string]any{"session_id": sessionID})}))
-
-	tr.dispatch(legacyLine(&frame{Type: "agent_event", SessionID: sessionID,
-		Payload: mustMarshal(map[string]any{"event_json": `{"type":"text_delta","delta":"mine"}`})}))
-
-	select {
-	case f := <-winner.queue:
-		if f.kind() != "agent_started" {
-			t.Fatalf("first frame = %q, want agent_started", f.kind())
-		}
-	default:
-		t.Fatal("the accepted attempt should have received its own agent_started")
+	ctx := testContext(t)
+	if in, err := otherSession.next(ctx, time.Second, "correlated"); err != nil || in.kind() != "error.response" {
+		t.Fatalf("correlated waiter got (%v, %v), want error.response", in, err)
 	}
-	select {
-	case f := <-winner.queue:
-		if f.kind() != "agent_event" {
-			t.Fatalf("second frame = %q, want agent_event", f.kind())
-		}
-	default:
-		t.Fatal("uncorrelated session output should follow the accepted attempt")
+	if in, err := sessionSub.next(ctx, time.Second, "session"); err != nil || in.kind() != "run.started" {
+		t.Fatalf("session waiter got (%v, %v), want run.started", in, err)
 	}
-	select {
-	case f := <-loser.queue:
-		t.Fatalf("the losing attempt received %q", f.kind())
-	default:
+	if in, err := requestSub.next(ctx, time.Second, "request"); err != nil || in.kind() != "models.response" {
+		t.Fatalf("request waiter got (%v, %v), want models.response", in, err)
 	}
-}
 
-func legacyLine(f *frame) *inbound {
-	return &inbound{legacy: f}
+	shortCtx, cancel := context.WithTimeout(ctx, 50*time.Millisecond)
+	defer cancel()
+	if _, err := sessionSub.next(shortCtx, 50*time.Millisecond, "session"); err == nil {
+		t.Fatal("expected no further frames on the session route")
+	}
 }

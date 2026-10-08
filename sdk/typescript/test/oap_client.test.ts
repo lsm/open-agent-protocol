@@ -106,7 +106,6 @@ test("OAP auth discovery, URL, progress, and terminal completion", async () => {
     const seen: string[] = [];
     await client.auth.login("fixture", {
       onEvent: (event) => seen.push(event.type),
-      onPrompt: () => { throw new Error("unexpected OAP prompt"); },
     });
     assert.deepEqual(seen, ["auth_url", "progress", "success"]);
     assert.equal((await client.auth.listProviders())[0]?.auth_status, "authenticated");
@@ -118,7 +117,7 @@ test("OAP auth discovery, URL, progress, and terminal completion", async () => {
 test("OAP provider and agent auto-once login retry only after auth rejection", async () => {
   for (const channel of ["provider", "agent"] as const) {
     const client = await createOapClient({ command: process.execPath, args: [fixture], auth: {
-      auth_retry_policy: "auto_once", handlers: { onPrompt: () => "code" },
+      auth_retry_policy: "auto_once",
     } });
     try {
       const request = { model_ref: "fixture/openai-responses@needs-login", messages: [{ role: "user" as const, content: "hello" }] };
@@ -140,14 +139,11 @@ test("OAP browser login needs no prompt handler", async () => {
   }
 });
 
-test("OAP manual prompt never calls an answer handler", async () => {
+test("OAP manual prompt fails closed", async () => {
   const client = await createOapClient({ command: process.execPath, args: [fixture] });
   try {
-    let called = false;
-    await assert.rejects(() => client.auth.login("manual", {
-      onPrompt: () => { called = true; return "SENSITIVE_TEST_CODE"; },
-    }), (error: unknown) => error instanceof Error && "code" in error && error.code === "auth_input_unavailable");
-    assert.equal(called, false);
+    await assert.rejects(() => client.auth.login("manual"),
+      (error: unknown) => error instanceof Error && "code" in error && error.code === "auth_input_unavailable");
   } finally {
     await client.close();
   }

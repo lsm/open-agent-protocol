@@ -1,4 +1,4 @@
-//! End-to-end coverage against a real `oapx --stdio` build.
+//! End-to-end coverage against a real `oapx serve agent,provider --stdio` build.
 //!
 //! These need a runtime binary and skip when `OAP_SDK_BINARY_PATH` is unset, which
 //! mirrors `typescript/test/makai_binary_smoke.test.ts`. Build one with:
@@ -26,7 +26,7 @@ mod common;
 use std::time::Duration;
 
 use futures::StreamExt;
-use oap_sdk::{AuthEvent, AuthHandlers, Error, ExecutionRequest, ListModelsRequest};
+use oap_sdk::{Error, ExecutionRequest, ListModelsRequest};
 
 #[tokio::test]
 async fn connects_to_the_real_runtime() {
@@ -48,7 +48,7 @@ async fn a_version_mismatch_against_the_real_runtime_fails_fast() {
         .connect()
         .await
         .unwrap_err();
-    assert_eq!(error.code(), Some("version_mismatch"));
+    assert_eq!(error.code(), Some("unsupported_feature"));
 }
 
 #[tokio::test]
@@ -180,138 +180,7 @@ async fn a_runtime_that_was_not_asked_does_not_serve_the_fixture() {
 }
 
 #[tokio::test]
-async fn an_interactive_login_runs_end_to_end_against_the_real_runtime() {
-    let binary = require_real_binary!();
-    require_unattended_credential_store!();
-    // The fixture provider's credentials are written under HOME, so give it one
-    // that the test owns.
-    let home = tempfile::tempdir().expect("tempdir");
-    let client = common::real_builder_with_fixture(&binary)
-        .env("HOME", home.path().display().to_string())
-        .connect()
-        .await
-        .expect("connects");
-
-    let saw_url = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-    let flag = std::sync::Arc::clone(&saw_url);
-    let handlers = AuthHandlers::new()
-        .on_event(move |event| {
-            if matches!(event, AuthEvent::AuthUrl { .. }) {
-                flag.store(true, std::sync::atomic::Ordering::SeqCst);
-            }
-        })
-        .on_prompt(|prompt| async move {
-            assert!(!prompt.prompt_id.is_empty());
-            Ok("ok".to_owned())
-        });
-
-    client
-        .auth()
-        .login("test-fixture", Some(&handlers))
-        .await
-        .expect("the fixture login succeeds");
-    assert!(saw_url.load(std::sync::atomic::Ordering::SeqCst));
-
-    let auth_file = home.path().join(".oapx").join("auth.json");
-    assert!(
-        auth_file.exists(),
-        "credentials were persisted by the runtime"
-    );
-
-    let providers = client
-        .auth()
-        .list_providers()
-        .await
-        .expect("lists providers");
-    let fixture = providers
-        .iter()
-        .find(|provider| provider.id == "test-fixture")
-        .expect("fixture provider");
-    assert_eq!(fixture.auth_status, oap_sdk::AuthStatus::Authenticated);
-
-    client.close().await;
-}
-
-#[tokio::test]
-async fn a_wrong_code_re_prompts_against_the_real_runtime() {
-    // The fixture provider re-prompts until the answer is right, which exercises
-    // the multi-round prompt loop: several `auth_prompt_response` envelopes on
-    // one flow, each carrying the next outbound sequence.
-    let binary = require_real_binary!();
-    require_unattended_credential_store!();
-    let home = tempfile::tempdir().expect("tempdir");
-    let client = common::real_builder_with_fixture(&binary)
-        .env("HOME", home.path().display().to_string())
-        .connect()
-        .await
-        .expect("connects");
-
-    let prompts = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
-    let retried = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-    let counter = std::sync::Arc::clone(&prompts);
-    let saw_retry = std::sync::Arc::clone(&retried);
-
-    let handlers = AuthHandlers::new()
-        .on_event(move |event| {
-            if let AuthEvent::Progress { message, .. } = event {
-                if message.contains("Invalid fixture code") {
-                    saw_retry.store(true, std::sync::atomic::Ordering::SeqCst);
-                }
-            }
-        })
-        .on_prompt(move |_| {
-            let counter = std::sync::Arc::clone(&counter);
-            async move {
-                let attempt = counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-                Ok(if attempt == 0 { "wrong" } else { "ok" }.to_owned())
-            }
-        });
-
-    client
-        .auth()
-        .login("test-fixture", Some(&handlers))
-        .await
-        .expect("the second answer succeeds");
-    assert_eq!(prompts.load(std::sync::atomic::Ordering::SeqCst), 2);
-    assert!(retried.load(std::sync::atomic::Ordering::SeqCst));
-    client.close().await;
-}
-
-#[tokio::test]
-async fn a_prompt_handler_that_gives_up_cancels_the_real_flow() {
-    let binary = require_real_binary!();
-    let home = tempfile::tempdir().expect("tempdir");
-    let client = common::real_builder_with_fixture(&binary)
-        .env("HOME", home.path().display().to_string())
-        .frame_timeout(Duration::from_millis(3_000))
-        .connect()
-        .await
-        .expect("connects");
-
-    let handlers =
-        AuthHandlers::new().on_prompt(|_| async move { Err("user walked away".to_owned()) });
-    let started = tokio::time::Instant::now();
-    let error = client
-        .auth()
-        .login("test-fixture", Some(&handlers))
-        .await
-        .unwrap_err();
-    assert!(matches!(error, Error::Auth { .. }), "{error:?}");
-    assert!(
-        started.elapsed() < Duration::from_secs(10),
-        "abandoning a flow must not wait out a long timeout"
-    );
-
-    let auth_file = home.path().join(".oapx").join("auth.json");
-    assert!(
-        !auth_file.exists(),
-        "an abandoned flow must not persist credentials"
-    );
-    client.close().await;
-}
-
-#[tokio::test]
-async fn a_login_with_no_prompt_handler_cancels_the_real_flow() {
+async fn a_manual_login_fails_closed_against_the_real_runtime() {
     let binary = require_real_binary!();
     let home = tempfile::tempdir().expect("tempdir");
     let client = common::real_builder_with_fixture(&binary)
@@ -322,7 +191,7 @@ async fn a_login_with_no_prompt_handler_cancels_the_real_flow() {
         .expect("connects");
 
     let error = client.auth().login("test-fixture", None).await.unwrap_err();
-    assert!(error.is_cancelled(), "{error:?}");
+    assert_eq!(error.code(), Some("auth_input_unavailable"), "{error:?}");
     client.close().await;
 }
 
@@ -374,10 +243,7 @@ async fn an_unauthenticated_provider_stream_reaches_the_typed_auth_error() {
 }
 
 #[tokio::test]
-async fn an_unauthenticated_agent_run_walks_the_whole_session_lifecycle() {
-    // The run reaches the provider, fails there for lack of credentials, and
-    // settles through `agent_result` — which exercises agent_start, the
-    // correlated agent_started, agent_message, the event stream, and teardown.
+async fn an_agent_run_on_a_model_outside_the_catalog_is_refused_by_name() {
     let binary = require_real_binary!();
     let home = tempfile::tempdir().expect("tempdir");
     let client = common::real_builder(&binary)
@@ -394,46 +260,7 @@ async fn an_unauthenticated_agent_run_walks_the_whole_session_lifecycle() {
         ))
         .await
         .unwrap_err();
-    assert!(matches!(error, Error::AuthRequired { .. }), "{error:?}");
-    assert_eq!(error.provider_id(), Some("anthropic"));
-    client.close().await;
-}
-
-#[tokio::test]
-async fn an_unauthenticated_agent_stream_emits_lifecycle_before_failing() {
-    let binary = require_real_binary!();
-    let home = tempfile::tempdir().expect("tempdir");
-    let client = common::real_builder(&binary)
-        .env("HOME", home.path().display().to_string())
-        .connect()
-        .await
-        .expect("connects");
-
-    let mut events = Box::pin(client.agent().stream(ExecutionRequest::prompt(
-        "anthropic/anthropic-messages@claude-sonnet-4-5",
-        "hi",
-    )));
-
-    let mut seen = Vec::new();
-    let mut failure = None;
-    while let Some(event) = events.next().await {
-        match event {
-            Ok(event) => seen.push(event),
-            Err(error) => {
-                failure = Some(error);
-                break;
-            }
-        }
-    }
-
-    assert!(
-        seen.iter()
-            .any(|event| matches!(event, oap_sdk::AgentEvent::TurnStart)),
-        "the loop started a turn before failing: {seen:?}"
-    );
-    let failure = failure.expect("the run fails for lack of credentials");
-    assert!(matches!(failure, Error::AuthRequired { .. }), "{failure:?}");
-    drop(events);
+    assert_eq!(error.code(), Some("model_not_found"), "{error:?}");
     client.close().await;
 }
 

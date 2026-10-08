@@ -151,7 +151,7 @@ A strict stack; lower layers never import higher ones.
 | `cmd/goap` parity fixtures | one per harness plus `memory`; what the job is for, and what the corpora cover instead, is [`docs/parity-job.md`](docs/parity-job.md) |
 | `serve/serveendpoint`, `conformance` | One agent loop over raw envelopes, and the runner that checks it |
 | `client`, `clients/ts` | Far-side conformance proofs, invisible SSE resume |
-| `sdk` | The Go client for a running endpoint: it spawns `oapx serve agent,provider --stdio` and exposes `Auth`, `Models`, `Provider`, `Agent` over profiled envelopes. Every OAP envelope it sends or receives is a `protocol.Envelope` or, for the provider profile, a `protocol.ProviderEnvelope`, read from the line's own bytes; a line neither can read fails the request it answers. Its private `frame` is only the v1 SDK wire (`Options.LegacyWire`), and retiring it means dropping `LegacyWire` |
+| `sdk` | The Go client for a running endpoint: it spawns `oapx serve agent,provider --stdio` and exposes `Auth`, `Models`, `Provider`, `Agent` over profiled envelopes. Every OAP envelope it sends or receives is a `protocol.Envelope` or, for the provider profile, a `protocol.ProviderEnvelope`, read from the line's own bytes; a line neither can read fails the request it answers. |
 | `provider`, `internal/providertest` | Provider wire evidence (Z.AI); no Go `model-provider-core` runtime yet |
 | `cmd/goap` | Dispatcher; `serve.go` wires signals, loopback allowlist, bounded shutdown |
 

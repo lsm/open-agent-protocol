@@ -1,10 +1,9 @@
 """OAP catalogue absence: one fake process per case, driven through the public client."""
 
-import json
 import os
 import sys
 import unittest
-from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
+from typing import Any, Dict, Optional, Sequence, Tuple, Union
 
 from oap_sdk import MakaiProtocolError, connect
 from oap_sdk.types import ListModelsResponse
@@ -83,7 +82,7 @@ class CatalogAbsence(unittest.IsolatedAsyncioTestCase):
         if auth_status is not None:
             env["OAP_PY_AUTH_STATUS"] = auth_status
         async with connect(command=sys.executable, args=["-u", "-c", HOST],
-                           legacy_wire=False, env=env) as client:
+                           env=env) as client:
             return await client.models.list(include_deprecated=include_deprecated, api=api,
                                             model_id=model_id,
                                             include_login_required=include_login_required)
@@ -134,7 +133,7 @@ class CatalogAbsence(unittest.IsolatedAsyncioTestCase):
         env["OAP_PY_FIXTURE_SHAPE"] = "resolve-absent"
         env["OAP_PY_FIXTURE_SET"] = ""
         async with connect(command=sys.executable, args=["-u", "-c", HOST],
-                           legacy_wire=False, env=env) as client:
+                           env=env) as client:
             resolved = await client.models.resolve(provider_id="fixture", model_id="ok")
             self.assertIsNone(resolved.source)
             self.assertIsNone(resolved.lifecycle)

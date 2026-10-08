@@ -17,7 +17,7 @@ from typing import Any, AsyncGenerator, Dict, List, Mapping, Optional, Sequence,
 
 from ._ids import new_ulid
 from .errors import MakaiAuthRequiredError, MakaiProtocolError, MakaiStreamError
-from .transport import Frame, FrameRoute, StdioTransport
+from .transport import Frame, StdioTransport
 from .types import (
     AgentEnd, AgentStart, AgentStreamEvent, AssistantMessage, ChatMessage,
     CompletionResponse, ContentPart, ListModelsResponse, MessageEnd, MessageStart,
@@ -239,7 +239,7 @@ def _oap_source(item: Any) -> Optional[ModelSource]:
     )
 
 
-class OAPModelsApi:
+class ModelsApi:
     def __init__(self, transport: StdioTransport, *, response_timeout: float = 5.0) -> None:
         self._transport = transport
         self._timeout = response_timeout
@@ -291,7 +291,7 @@ class OAPModelsApi:
         return response.models[0]
 
 
-class OAPProviderApi:
+class ProviderApi:
     def __init__(self, transport: StdioTransport, *, response_timeout: float = 30.0,
                  auth_retry_policy: Optional[str] = None, auth: Any = None) -> None:
         self._transport = transport
@@ -504,10 +504,10 @@ async def _resolve_call(call: Mapping[str, Any], session_id: str, run_id: str,
     return envelope(AGENT, "action.call.resolve.request", answer, session_id=session_id, run_id=run_id)
 
 
-class OAPAgentApi:
+class AgentApi:
     def __init__(self, transport: StdioTransport, *, response_timeout: float = 30.0,
                  auth_retry_policy: Optional[str] = None, auth: Any = None,
-                 models: OAPModelsApi) -> None:
+                 models: ModelsApi) -> None:
         self._transport = transport
         self._timeout = response_timeout
         self._auth_retry_policy = auth_retry_policy

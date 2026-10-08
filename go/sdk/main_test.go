@@ -2,10 +2,8 @@ package sdk
 
 import (
 	"context"
-	"encoding/json"
 	"os"
 	"runtime"
-	"strings"
 	"testing"
 	"time"
 )
@@ -37,9 +35,6 @@ func newTestClientWithOptions(t *testing.T, opts *Options) (*Client, error) {
 	if opts.Args == nil {
 		opts.Args = []string{}
 	}
-	if !strings.Contains(strings.Join(opts.Env, " "), envFakeHost+"="+scenarioOAP) {
-		opts.LegacyWire = true
-	}
 	if opts.HandshakeTimeout == 0 {
 		opts.HandshakeTimeout = 5 * time.Second
 	}
@@ -69,54 +64,6 @@ func testContext(t *testing.T) context.Context {
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	t.Cleanup(cancel)
 	return ctx
-}
-
-func requestLogPath(t *testing.T) (string, func() []*frame) {
-	t.Helper()
-	path := t.TempDir() + "/requests.jsonl"
-	return path, func() []*frame {
-		raw, err := os.ReadFile(path)
-		if err != nil {
-			return nil
-		}
-		var frames []*frame
-		for _, line := range strings.Split(strings.TrimSpace(string(raw)), "\n") {
-			if line == "" {
-				continue
-			}
-			var f frame
-			if err := json.Unmarshal([]byte(line), &f); err != nil {
-				t.Fatalf("request log line did not decode: %v", err)
-			}
-			f.raw = json.RawMessage(line)
-			frames = append(frames, &f)
-		}
-		return frames
-	}
-}
-
-func waitForFrameType(t *testing.T, readLog func() []*frame, frameType string) []*frame {
-	t.Helper()
-	deadline := time.Now().Add(3 * time.Second)
-	for {
-		if found := framesOfType(readLog(), frameType); len(found) > 0 {
-			return found
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("no %s frame was sent within the deadline", frameType)
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-}
-
-func framesOfType(frames []*frame, frameType string) []*frame {
-	var out []*frame
-	for _, f := range frames {
-		if f.Type == frameType {
-			out = append(out, f)
-		}
-	}
-	return out
 }
 
 func waitForGoroutines(t *testing.T, baseline int) {

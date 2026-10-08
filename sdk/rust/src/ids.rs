@@ -1,9 +1,7 @@
 //! Identifier generation and validation for the protocol's two ID domains.
 //!
-//! Per the V1 spec §3.1 / §13.1 the wire uses two distinct formats:
-//!
 //! * `session_id` — a 21-character alphanumeric NanoID.
-//! * `message_id`, `stream_id`, `flow_id` — a 26-character Crockford Base32 ULID.
+//! * envelope `id` — a 26-character Crockford Base32 ULID.
 //!
 //! Both are opaque to consumers. They are generated here only because the client
 //! side of each exchange allocates them.

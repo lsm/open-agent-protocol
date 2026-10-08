@@ -20,13 +20,16 @@ func oapHostFrame(profile, kind string, payload any) *frame {
 		Type: kind, ID: newULID(), Payload: mustMarshal(payload)}
 }
 
-func runOAPHost() {
+func runOAPHost(scenario string) {
 	reader := newFrameReader(os.Stdin)
 	providedTool, openSettings := "", ""
 	for {
-		request, err := reader.next()
+		request, err := nextTestFrame(reader)
 		if err != nil {
 			return
+		}
+		if scenario == scenarioExitMidRequest && request.Type != "protocol.initialize.request" && request.Type != "capabilities.request" {
+			os.Exit(0)
 		}
 		if request.Profile == oapAgent && request.Type != "protocol.initialize.request" && request.Type != "capabilities.request" && request.CapabilityRevision != "fake-rev-1" {
 			fakeEmit(oapFakeReply(request, "error.response", map[string]any{"error": map[string]any{"code": "stale_capabilities", "message": "missing capability revision"}}))
@@ -34,14 +37,31 @@ func runOAPHost() {
 		}
 		switch request.Type {
 		case "protocol.initialize.request":
+			switch scenario {
+			case scenarioSilent:
+				continue
+			case scenarioHandshakeError:
+				fakeEmit(oapFakeReply(request, "error.response", map[string]any{"error": map[string]any{"code": "startup_failed", "message": "runtime could not start"}}))
+				continue
+			}
+			version := "0.1"
+			if scenario == scenarioBadVersion {
+				version = "9.9"
+			}
 			fakeEmit(oapFakeReply(request, "protocol.initialize.response", map[string]any{
-				"protocol_version": "0.1", "profile": oapAgent, "endpoint": map[string]any{"id": "fake"},
+				"protocol_version": version, "profile": oapAgent, "endpoint": map[string]any{"id": "fake"},
 			}))
 		case "capabilities.request":
 			response := oapFakeReply(request, "capabilities.response", map[string]any{"endpoint": map[string]any{"id": "oapx.agent"},
 				"features": map[string]any{"action.tools.provide": map[string]any{"level": "native"}}})
 			response.CapabilityRevision = "fake-rev-1"
 			fakeEmit(response)
+			switch scenario {
+			case scenarioExitAfterReady:
+				os.Exit(0)
+			case scenarioIgnoreStdin:
+				blockForever()
+			}
 		case "provider.models.list.request":
 			if selected, ok := selectedCatalogModel(); ok {
 				fakeEmit(oapFakeReply(request, "provider.models.list.response", map[string]any{"models": []map[string]any{selected}}))
@@ -50,12 +70,18 @@ func runOAPHost() {
 			fakeEmit(oapFakeReply(request, "provider.models.list.response", map[string]any{"models": []map[string]any{{
 				"model_ref": "fixture/other:test@ok", "model_id": "ok", "provider_id": "fixture", "wire": "other",
 				"auth_status": "authenticated", "lifecycle": "stable", "source": "fallback",
-				"capabilities": []string{"chat", "streaming"},
-			}}}))
+				"capabilities":     []string{"chat", "streaming"},
+				"cost":             map[string]any{"input": 3, "output": 15, "cache_read": 0.3, "cache_write": 3.75},
+				"input_modalities": []string{"text", "image"}, "reasoning_levels": []string{"low", "medium", "high"},
+				"release_date": "2025-09-29", "family": "claude-sonnet",
+			}}, "catalog": map[string]any{"observed_at_ms": 1_759_100_000_000, "complete": true}}))
 		case "inference.create.request":
 			response := oapFakeReply(request, "inference.create.response", map[string]any{"accepted": true})
 			response.InferenceID = "inference-1"
 			fakeEmit(response)
+			if request.payload().str("model_ref") == "fixture/other:test@silent" {
+				continue
+			}
 			if request.payload().str("model_ref") == "fixture/other:test@parts" {
 				completed := oapHostFrame(oapProvider, "inference.completed", map[string]any{
 					"message": map[string]any{"role": "assistant", "content": []map[string]any{
@@ -222,16 +248,10 @@ func runOAPHost() {
 
 func TestOAPManualAuthNeverSendsAnAnswer(t *testing.T) {
 	client := newTestClient(t, scenarioOAP)
-	called := false
-	err := client.Auth.Login(context.Background(), "manual", LoginHandlers{
-		OnPrompt: func(context.Context, AuthPrompt) (string, error) {
-			called = true
-			return "SENSITIVE_TEST_CODE", nil
-		},
-	})
+	err := client.Auth.Login(context.Background(), "manual", LoginHandlers{})
 	var auth *AuthError
-	if !errors.As(err, &auth) || auth.Code != "auth_input_unavailable" || called {
-		t.Fatalf("manual OAP login = %v, prompt callback called=%v", err, called)
+	if !errors.As(err, &auth) || auth.Code != "auth_input_unavailable" {
+		t.Fatalf("manual OAP login = %v", err)
 	}
 }
 
@@ -338,8 +358,7 @@ func TestOAPCombinedFakeHost(t *testing.T) {
 	}
 	var events []AuthEventType
 	err = client.Auth.Login(ctx, "fixture", LoginHandlers{
-		OnEvent:  func(event AuthEvent) { events = append(events, event.Type) },
-		OnPrompt: func(context.Context, AuthPrompt) (string, error) { t.Fatal("unexpected OAP prompt"); return "", nil },
+		OnEvent: func(event AuthEvent) { events = append(events, event.Type) },
 	})
 	if err != nil {
 		t.Fatal(err)

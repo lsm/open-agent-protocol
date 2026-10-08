@@ -4,7 +4,6 @@ Rust SDK published as `oap-sdk`. By default it starts `oapx serve agent,provider
 
 It mirrors the [TypeScript SDK](../typescript/README.md): same protocol, same namespaces, same error taxonomy.
 
-The old Makai v1 wire is available only with the explicit `Client::builder().legacy_wire()` opt-in. There is no automatic fallback.
 
 ## Installation
 
@@ -90,7 +89,7 @@ while let Some(event) = events.next().await {
 
 Exactly one terminal event ends the stream — `MessageEnd` or `Error`. Failures that never reach the event plane (a rejected request, a dead runtime, a timeout) arrive as an `Err` item.
 
-**Cancellation.** Dropping the stream cancels the work: the SDK sends `abort_request` for a provider stream and `agent_stop` for an agent run, so the runtime stops rather than finishing into a queue nobody is reading. Dropping the whole `Client` terminates and reaps the child process.
+**Cancellation.** Dropping the stream cancels the work: the SDK sends `inference.cancel.request` for a provider stream and `run.cancel.request` for an agent run, so the runtime stops rather than finishing into a queue nobody is reading. Dropping the whole `Client` terminates and reaps the child process.
 
 ## Agent runs and model switching
 
@@ -146,7 +145,7 @@ if needs_login {
 # }
 ```
 
-`on_prompt` is only used with explicit Makai V1 compatibility mode, never OAP. Dropping the login future sends `auth.login.cancel.request`, so the runtime does not leave an OAuth listener running.
+Dropping the login future sends `auth.login.cancel.request`, so the runtime does not leave an OAuth listener running.
 
 You can also configure one-shot automatic retry for `provider` and `agent` calls:
 
@@ -193,7 +192,7 @@ for model in &response.models {
 
 ## Sessions
 
-`RunOptions::session_id` identifies an OAP session. Sessions can retain their selected model across runs; use `switch_model` then `run_selected` to change it. Legacy-wire sessions retain their earlier correlation-only behavior.
+`RunOptions::session_id` identifies an OAP session. Sessions can retain their selected model across runs; use `switch_model` then `run_selected` to change it.
 
 ## Configuration
 
@@ -275,7 +274,7 @@ match error {
 ```bash
 cargo run --example complete
 cargo run --example stream
-cargo run --example agent_tools  # explicitly uses legacy_wire() for callbacks
+cargo run --example agent_tools
 cargo run --example login -- anthropic
 ```
 
@@ -287,7 +286,7 @@ cargo clippy --all-targets --all-features -- -D warnings
 cargo test
 ```
 
-`cargo test` needs no credentials and no runtime binary: the OAP integration tests drive `oap-protocol-fake`, and explicit legacy tests drive `makai-protocol-fake`. You can point `ClientBuilder::command` at either built binary to test your own code:
+`cargo test` needs no credentials and no runtime binary: the integration tests drive `oap-protocol-fake`. You can point `ClientBuilder::command` at it to test your own code:
 
 ```rust
 # fn build(fake: std::path::PathBuf) -> oap_sdk::ClientBuilder {
@@ -295,7 +294,6 @@ oap_sdk::ClientBuilder::new()
     .command(fake)
     .args(Vec::<String>::new())
     .env_clear()
-    // Add `.legacy_wire()` when targeting makai-protocol-fake.
 # }
 ```
 
@@ -313,5 +311,3 @@ OAP_SDK_BINARY_PATH=/tmp/oapx-rs/bin/oapx cargo test
 ```
 
 Without `OAP_SDK_BINARY_PATH` the `real_binary` tests skip, mirroring `sdk/typescript/test/makai_binary_smoke.test.ts`.
-
-**On macOS**, the two tests that make the runtime *persist* credentials skip by default: `saveToPreferredStorage` writes to the login Keychain, and creating that item from an unsigned local build blocks in `AuthorizationCopyRights` waiting on a UI prompt no test runner can answer. Everything else runs. Set `OAP_SDK_RUST_SDK_ALLOW_KEYCHAIN=1` to run them on a Mac where the item's ACL is already approved. CI runs on Linux, where the file store is used and the write is unattended.

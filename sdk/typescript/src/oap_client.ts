@@ -751,7 +751,8 @@ class OapAgentApi {
 }
 
 export async function createOapClient(options: CreateMakaiClientOptions = {}): Promise<MakaiClient> {
-  const command = options.command ?? await resolveMakaiBinary(options.resolver ?? {});
+  const resolver = options.logger ? { ...options.resolver, logger: options.logger } : options.resolver ?? {};
+  const command = options.command ?? await resolveMakaiBinary(resolver);
   const transport = new OapStdioTransport(command, options.args ?? ["serve", "agent,provider", "--stdio"], {
     cwd: options.cwd, env: options.env, timeoutMs: options.responseTimeoutMs ?? options.frameTimeoutMs ?? 30_000,
     handshakeTimeoutMs: options.handshakeTimeoutMs ?? 10_000,

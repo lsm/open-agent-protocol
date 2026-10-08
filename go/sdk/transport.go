@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"github.com/lsm/open-agent-protocol/go/protocol"
 	"io"
 	"log/slog"
 	"os"
@@ -13,6 +12,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/lsm/open-agent-protocol/go/protocol"
 )
 
 const routeQueueSize = 1024
@@ -34,7 +35,6 @@ func (k routeKind) String() string {
 }
 
 type transport struct {
-	legacyWire    bool
 	agentRevision string
 	agentEndpoint string
 	agentFeatures map[string]bool
@@ -84,7 +84,6 @@ func startTransport(ctx context.Context, command string, opts *Options) (*transp
 	cmd.Stderr = stderrTail
 
 	t := &transport{
-		legacyWire:    opts.LegacyWire,
 		cmd:           cmd,
 		stdin:         stdin,
 		logger:        opts.logger(),
@@ -106,43 +105,39 @@ func startTransport(ctx context.Context, command string, opts *Options) (*transp
 
 	handshake := make(chan *inbound, 1)
 	go t.readLoop(stdout, handshake)
-	if !opts.LegacyWire {
-		if err := t.sendEnvelope(oapFrame(oapAgent, "protocol.initialize.request", map[string]any{
-			"participant":       map[string]any{"id": sdkParticipant, "name": "OAP Go SDK"},
-			"protocol_versions": []string{"0.1"},
-			"profiles":          []string{"open-agent-protocol.agent-control-core"},
-		})); err != nil {
-			_ = t.close()
-			return nil, err
-		}
+	if err := t.sendEnvelope(oapFrame(oapAgent, "protocol.initialize.request", map[string]any{
+		"participant":       map[string]any{"id": sdkParticipant, "name": "OAP Go SDK"},
+		"protocol_versions": []string{"0.1"},
+		"profiles":          []string{"open-agent-protocol.agent-control-core"},
+	})); err != nil {
+		_ = t.close()
+		return nil, err
 	}
 
 	if err := t.awaitHandshake(ctx, handshake, opts); err != nil {
 		_ = t.close()
 		return nil, err
 	}
-	if !opts.LegacyWire {
-		request := oapFrame(oapAgent, "capabilities.request", map[string]any{})
-		sub := t.subscribeStream(string(request.ID))
-		response, err := oapRequest(ctx, t, sub, opts.handshakeTimeout(), request)
-		sub.close()
-		if err != nil || response.Type != "capabilities.response" || response.CapabilityRevision == "" {
-			_ = t.close()
-			if err != nil {
-				return nil, err
-			}
-			return nil, &ProtocolError{Code: CodeMalformedResponse, Message: "OAP capabilities response omitted capability_revision"}
+	request := oapFrame(oapAgent, "capabilities.request", map[string]any{})
+	sub := t.subscribeStream(string(request.ID))
+	response, err := oapRequest(ctx, t, sub, opts.handshakeTimeout(), request)
+	sub.close()
+	if err != nil || response.Type != "capabilities.response" || response.CapabilityRevision == "" {
+		_ = t.close()
+		if err != nil {
+			return nil, err
 		}
-		t.agentRevision = response.CapabilityRevision
-		described := envelopePayload(response)
-		t.agentEndpoint = described.obj("endpoint").str("id")
-		t.agentFeatures = map[string]bool{}
-		for feature, support := range described.obj("features") {
-			if entry, ok := support.(map[string]any); ok && entry["level"] == "unavailable" {
-				continue
-			}
-			t.agentFeatures[feature] = true
+		return nil, &ProtocolError{Code: CodeMalformedResponse, Message: "OAP capabilities response omitted capability_revision"}
+	}
+	t.agentRevision = response.CapabilityRevision
+	described := envelopePayload(response)
+	t.agentEndpoint = described.obj("endpoint").str("id")
+	t.agentFeatures = map[string]bool{}
+	for feature, support := range described.obj("features") {
+		if entry, ok := support.(map[string]any); ok && entry["level"] == "unavailable" {
+			continue
 		}
+		t.agentFeatures[feature] = true
 	}
 	return t, nil
 }
@@ -155,12 +150,6 @@ func (t *transport) awaitHandshake(ctx context.Context, handshake <-chan *inboun
 	case in, ok := <-handshake:
 		if !ok {
 			return t.terminalError("handshake")
-		}
-		if in.legacy != nil && in.legacy.Type == "ready" {
-			if in.legacy.ProtocolVersion != opts.protocolVersion() {
-				return fmt.Errorf("%w: expected %q, got %q", ErrProtocolVersion, opts.protocolVersion(), in.legacy.ProtocolVersion)
-			}
-			return nil
 		}
 		if in.broken != nil {
 			return in.broken
@@ -212,7 +201,7 @@ func (t *transport) readLoop(stdout io.ReadCloser, handshake chan<- *inbound) {
 	}()
 
 	for {
-		in, err := reader.nextInbound(t.legacyWire)
+		in, err := reader.nextInbound()
 		if errors.Is(err, errMalformedFrame) {
 			t.logger.Warn("oap sdk: discarding malformed frame from runtime")
 			continue
@@ -235,9 +224,9 @@ func (t *transport) readLoop(stdout io.ReadCloser, handshake chan<- *inbound) {
 }
 
 func (t *transport) dispatch(in *inbound) {
-	kind, replyTo, sessionID, inferenceID, streamID := in.kind(), in.replyTo(), in.session(), in.inference(), in.stream()
+	kind, replyTo, sessionID, inferenceID := in.kind(), in.replyTo(), in.session(), in.inference()
 	t.logger.Debug("oap sdk: frame received",
-		"type", kind, "stream_id", streamID, "session_id", sessionID,
+		"type", kind, "session_id", sessionID,
 		"sequence", in.sequence(), "in_reply_to", replyTo)
 
 	t.mu.Lock()
@@ -259,49 +248,20 @@ func (t *transport) dispatch(in *inbound) {
 	if target == nil && inferenceID != "" {
 		target = t.inferences[inferenceID]
 	}
-	if target == nil && streamID != "" {
-		if subs := t.streams[streamID]; len(subs) > 0 {
-			target = subs[0]
-		}
-	}
 	if target == nil && sessionID != "" {
 		if subs := t.sessions[sessionID]; len(subs) > 0 {
 			target = subs[0]
 		}
 	}
 
-	if target != nil && sessionID != "" && kind == "agent_started" {
-		t.promoteSessionLocked(sessionID, target)
-	}
 	t.mu.Unlock()
 
 	if target == nil {
 		t.logger.Debug("oap sdk: dropping unroutable frame", "type", kind,
-			"stream_id", streamID, "session_id", sessionID, "in_reply_to", replyTo)
+			"session_id", sessionID, "in_reply_to", replyTo)
 		return
 	}
 	target.deliver(in)
-}
-
-func (t *transport) promoteSessionLocked(sessionID string, sub *subscription) {
-	subs := t.sessions[sessionID]
-	for i, candidate := range subs {
-		if candidate != sub {
-			continue
-		}
-		if i > 0 {
-			copy(subs[1:i+1], subs[:i])
-			subs[0] = sub
-		}
-		return
-	}
-}
-
-func (t *transport) send(f *frame) error {
-	if f.Profile == oapAgent && f.Type != "protocol.initialize.request" && f.Type != "capabilities.request" {
-		f.CapabilityRevision = t.agentRevision
-	}
-	return t.write(mustMarshal(f), f.Type, f.StreamID, f.SessionID, f.Sequence)
 }
 
 func (t *transport) sendEnvelope(env protocol.Envelope) error {
@@ -341,12 +301,6 @@ func (t *transport) write(encoded []byte, frameType any, streamID, sessionID str
 		return transportErrorf(err, "cannot write %s frame to the runtime: %v", frameType, err)
 	}
 	return nil
-}
-
-func (t *transport) sendBestEffort(f *frame) {
-	if err := t.send(f); err != nil {
-		t.logger.Debug("oap sdk: best-effort frame not sent", "type", f.Type, "error", err)
-	}
 }
 
 func (t *transport) sendEnvelopeBestEffort(env protocol.Envelope) {
@@ -557,17 +511,6 @@ func (s *subscription) signal() {
 	}
 }
 
-func (s *subscription) nextFrame(ctx context.Context, timeout time.Duration, operation string) (*frame, error) {
-	in, err := s.next(ctx, timeout, operation)
-	if err != nil {
-		return nil, err
-	}
-	if in.legacy == nil {
-		return nil, &ProtocolError{Code: CodeMalformedResponse, Message: fmt.Sprintf("%s received an OAP envelope on the legacy wire", operation)}
-	}
-	return in.legacy, nil
-}
-
 func (s *subscription) next(ctx context.Context, timeout time.Duration, operation string) (*inbound, error) {
 	timer := time.NewTimer(timeout)
 	defer timer.Stop()
@@ -609,33 +552,6 @@ func (s *subscription) next(ctx context.Context, timeout time.Duration, operatio
 			default:
 			}
 			return nil, s.transport.terminalError(operation)
-		}
-	}
-}
-
-func (s *subscription) drain(idle, budget time.Duration) {
-	deadline := time.Now().Add(budget)
-	for {
-		remaining := time.Until(deadline)
-		if remaining <= 0 {
-			return
-		}
-		wait := idle
-		if wait > remaining {
-			wait = remaining
-		}
-		timer := time.NewTimer(wait)
-		select {
-		case <-s.queue:
-			timer.Stop()
-		case <-s.wake:
-			timer.Stop()
-		case <-timer.C:
-			timer.Stop()
-			return
-		case <-s.transport.done:
-			timer.Stop()
-			return
 		}
 	}
 }

@@ -3,7 +3,7 @@ package sdk
 import "testing"
 
 func TestAModelEntryCarriesTheFactsItPublished(t *testing.T) {
-	client := newTestClient(t, scenarioProtocol)
+	client := newTestClient(t, scenarioOAP)
 	defer client.Close()
 
 	listed, err := client.Models.List(testContext(t), ListModelsRequest{})
@@ -45,7 +45,7 @@ func TestAModelEntryCarriesTheFactsItPublished(t *testing.T) {
 }
 
 func TestAnAbsentFactStaysAbsentRatherThanBecomingAZero(t *testing.T) {
-	client := newTestClient(t, scenarioProtocol)
+	client := newTestClient(t, scenarioOAP)
 	defer client.Close()
 
 	listed, err := client.Models.List(testContext(t), ListModelsRequest{})

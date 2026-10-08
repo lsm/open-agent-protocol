@@ -32,6 +32,15 @@ fn main() {
     let mut opened = Value::Null;
     let mut submitted_model = String::new();
     let mut participant = Value::Null;
+    let scenario = std::env::var("OAP_SDK_FAKE_SCENARIO").unwrap_or_default();
+    if let Ok(path) = std::env::var("OAP_SDK_FAKE_PID_FILE") {
+        let _ = std::fs::write(path, std::process::id().to_string());
+    }
+    if scenario == "garbage_then_ready" {
+        println!("this is not json");
+        println!("[1,2,3]");
+        let _ = io::stdout().flush();
+    }
     for line in io::stdin().lock().lines() {
         let Ok(line) = line else { break };
         let Ok(request) = serde_json::from_str::<Value>(&line) else {
@@ -57,18 +66,39 @@ fn main() {
             break;
         }
         let data = &request["payload"];
+        let handshake = matches!(
+            kind,
+            "protocol.initialize.request" | "capabilities.request" | "provider.describe.request"
+        );
+        if !handshake && scenario == "die_on_request" {
+            std::process::exit(7);
+        }
+        if !handshake && scenario == "silent" {
+            continue;
+        }
         match (profile, kind) {
             (AGENT, "protocol.initialize.request") => {
                 participant = data["participant"]["id"].clone();
-                emit(
-                    profile,
-                    "protocol.initialize.response",
-                    Some(id),
-                    json!({
-                        "protocol_version": "0.1", "profile": AGENT, "endpoint": { "id": "fixture" }
-                    }),
-                    json!({}),
-                );
+                match scenario.as_str() {
+                    "no_handshake" => {}
+                    "handshake_error" => emit(
+                        profile,
+                        "error.response",
+                        Some(id),
+                        json!({ "error": { "code": "startup_failed", "message": "runtime could not start" } }),
+                        json!({}),
+                    ),
+                    _ => emit(
+                        profile,
+                        "protocol.initialize.response",
+                        Some(id),
+                        json!({
+                            "protocol_version": if scenario == "bad_version" { "99" } else { "0.1" },
+                            "profile": AGENT, "endpoint": { "id": "fixture" }
+                        }),
+                        json!({}),
+                    ),
+                }
             }
             (AGENT, "capabilities.request") => emit(
                 profile,
@@ -246,6 +276,9 @@ fn main() {
                     json!({ "part_index": 0, "delta": "provider works" }),
                     json!({ "inference_id": "inf-1", "sequence": 3 }),
                 );
+                if scenario == "provider_slow" {
+                    std::thread::sleep(std::time::Duration::from_secs(30));
+                }
                 let structured = data
                     .get("model_ref")
                     .and_then(Value::as_str)

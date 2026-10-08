@@ -105,7 +105,7 @@ func TestSmokeModelsList(t *testing.T) {
 		if model.ModelRef == "" || model.ModelID == "" || model.ProviderID == "" || model.API == "" {
 			t.Fatalf("incomplete descriptor: %+v", model)
 		}
-		if !knownAuthStatuses[model.AuthStatus] {
+		if !smokeAuthStatuses[model.AuthStatus] {
 			t.Errorf("unknown auth status %q on %s", model.AuthStatus, model.ModelRef)
 		}
 	}
@@ -203,7 +203,7 @@ func TestSmokeAuthListProviders(t *testing.T) {
 		if provider.ID == "" || provider.Name == "" {
 			t.Errorf("incomplete provider entry: %+v", provider)
 		}
-		if !knownAuthStatuses[provider.Status] {
+		if !smokeAuthStatuses[provider.Status] {
 			t.Errorf("unknown status %q on %q", provider.Status, provider.ID)
 		}
 	}
@@ -228,20 +228,12 @@ func TestSmokeAuthManualCodeFailsClosed(t *testing.T) {
 	client := newFixtureSmokeClient(t)
 	requireFixtureAuthProvider(t, client)
 	var events []AuthEventType
-	called := false
 	err := client.Auth.Login(testContext(t), "test-fixture", LoginHandlers{
 		OnEvent: func(event AuthEvent) { events = append(events, event.Type) },
-		OnPrompt: func(ctx context.Context, prompt AuthPrompt) (string, error) {
-			called = true
-			return "SENSITIVE_TEST_CODE", nil
-		},
 	})
 	var authErr *AuthError
 	if !errors.As(err, &authErr) || authErr.Kind != AuthKindProviderError || authErr.Code != "auth_input_unavailable" {
 		t.Fatalf("manual login should fail closed: %v", err)
-	}
-	if called {
-		t.Fatal("OAP invoked the answer handler")
 	}
 	var sawURL, sawProgress bool
 	for _, event := range events {
@@ -418,4 +410,9 @@ func TestSmokeCloseTerminatesTheRuntime(t *testing.T) {
 	if _, err := client.Models.List(testContext(t), ListModelsRequest{}); !errors.Is(err, ErrClosed) {
 		t.Fatalf("expected ErrClosed after Close, got %v", err)
 	}
+}
+
+var smokeAuthStatuses = map[AuthStatus]bool{
+	AuthAuthenticated: true, AuthLoginRequired: true, AuthExpired: true,
+	AuthRefreshing: true, AuthLoginInProgress: true, AuthFailed: true, AuthUnknown: true,
 }

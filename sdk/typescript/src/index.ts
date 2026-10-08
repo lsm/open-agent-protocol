@@ -4,32 +4,14 @@ export {
   raceWithAbort,
 } from "./abort_signal";
 
-export {
-  MakaiStdioClient,
-  StdioProtocolError,
-  createMakaiStdioClient,
-  type CreateMakaiStdioClientOptions,
-  type FrameWaitOptions,
-  type MakaiStdioClientOptions,
-  type SessionFrameWaitOptions,
-  type StdioFrame,
-  type CreateMakaiClientOptions as DeprecatedCreateMakaiStdioClientOptions,
-  type MakaiClientOptions as DeprecatedMakaiStdioClientOptions,
-} from "./stdio_client";
-
 export { resolveMakaiBinary, type BinaryResolverOptions, type ModuleResolver } from "./binary_resolver";
 
 export {
-  MakaiAuthClient,
   MakaiAuthError,
-  createMakaiAuthClient,
   flattenAuthEvent,
   type AuthFlowHandlers,
   type AuthStatus,
-  type CreateMakaiAuthClientOptions,
   type MakaiAuthApi,
-  type MakaiAuthClientHandle,
-  type MakaiAuthClientOptions,
   type MakaiAuthErrorKind,
   type MakaiAuthEvent,
   type ProviderAuthInfo,
@@ -38,15 +20,7 @@ export {
 } from "./auth_protocol";
 
 export {
-  createMakaiModelsApi,
-  type ModelsApiOptions,
-} from "./models_client";
-
-export {
-  createMakaiAgentApi,
-  createMakaiAgentApiWithModels,
   createMakaiClient,
-  createMakaiProviderApi,
   type CreateMakaiClientOptions,
   type MakaiAgentModelsApi,
   type MakaiClient,
@@ -95,16 +69,6 @@ export {
   type TimeoutDiagnosticContext,
   type TimeoutDiagnostics,
 } from "./timeout_diagnostics";
-
-export {
-  bestEffortCancelStream,
-  bestEffortCancelAgent,
-  bestEffortStopAgent,
-  drainStreamFrames,
-  drainSessionFrames,
-  drainSessionFramesUntilQuiescent,
-  stopAgentWithSequenceProbe,
-} from "./cancel_helpers";
 
 export {
   type MakaiLogger,

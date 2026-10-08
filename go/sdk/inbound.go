@@ -17,25 +17,16 @@ type routing struct {
 }
 
 type inbound struct {
-	legacy   *frame
 	agent    *protocol.Envelope
 	provider *protocol.ProviderEnvelope
 	broken   error
 	header   routing
 }
 
-func decodeInbound(line []byte, legacy bool) (*inbound, error) {
+func decodeInbound(line []byte) (*inbound, error) {
 	line = bytes.TrimSpace(line)
 	if len(line) == 0 {
 		return nil, errMalformedFrame
-	}
-	if legacy {
-		var f frame
-		if err := json.Unmarshal(line, &f); err != nil {
-			return nil, errMalformedFrame
-		}
-		f.raw = json.RawMessage(append([]byte(nil), line...))
-		return &inbound{legacy: &f}, nil
 	}
 	var head struct {
 		routing
@@ -65,8 +56,6 @@ func decodeInbound(line []byte, legacy bool) (*inbound, error) {
 
 func (in *inbound) kind() string {
 	switch {
-	case in.legacy != nil:
-		return in.legacy.Type
 	case in.agent != nil:
 		return string(in.agent.Type)
 	case in.provider != nil:
@@ -77,8 +66,6 @@ func (in *inbound) kind() string {
 
 func (in *inbound) replyTo() string {
 	switch {
-	case in.legacy != nil:
-		return in.legacy.InReplyTo
 	case in.agent != nil:
 		return string(in.agent.InReplyTo)
 	case in.provider != nil:
@@ -89,8 +76,6 @@ func (in *inbound) replyTo() string {
 
 func (in *inbound) session() string {
 	switch {
-	case in.legacy != nil:
-		return in.legacy.SessionID
 	case in.agent != nil:
 		return string(in.agent.SessionID)
 	case in.provider != nil:
@@ -101,8 +86,6 @@ func (in *inbound) session() string {
 
 func (in *inbound) run() string {
 	switch {
-	case in.legacy != nil:
-		return in.legacy.RunID
 	case in.agent != nil:
 		return string(in.agent.RunID)
 	case in.provider != nil:
@@ -113,8 +96,6 @@ func (in *inbound) run() string {
 
 func (in *inbound) inference() string {
 	switch {
-	case in.legacy != nil:
-		return in.legacy.InferenceID
 	case in.agent != nil:
 		return ""
 	case in.provider != nil:
@@ -124,24 +105,15 @@ func (in *inbound) inference() string {
 }
 
 func (in *inbound) flow() string {
-	if in.legacy != nil || in.agent != nil || in.provider != nil {
+	if in.agent != nil || in.provider != nil {
 		return in.body().str("flow_id")
 	}
 	return payloadObject(in.header.Payload).str("flow_id")
 }
 
-func (in *inbound) stream() string {
-	if in.legacy != nil {
-		return in.legacy.StreamID
-	}
-	return ""
-}
-
 func (in *inbound) sequence() int64 {
 	var sequence *uint64
 	switch {
-	case in.legacy != nil:
-		return in.legacy.Sequence
 	case in.agent != nil:
 		sequence = in.agent.Sequence
 	case in.provider != nil:
@@ -156,8 +128,6 @@ func (in *inbound) sequence() int64 {
 func (in *inbound) body() jsonObject {
 	var raw json.RawMessage
 	switch {
-	case in.legacy != nil:
-		return in.legacy.payload()
 	case in.agent != nil:
 		raw = in.agent.Payload
 	case in.provider != nil:

@@ -77,9 +77,8 @@ async fn oap_auth_discovery_progress_and_completion() {
     assert_eq!(providers[0].id, "fixture");
     let seen = Arc::new(Mutex::new(Vec::new()));
     let seen_events = Arc::clone(&seen);
-    let handlers = AuthHandlers::new()
-        .on_event(move |event| seen_events.lock().expect("lock").push(event))
-        .on_prompt(|_| async move { panic!("unexpected OAP prompt") });
+    let handlers =
+        AuthHandlers::new().on_event(move |event| seen_events.lock().expect("lock").push(event));
     client
         .auth()
         .login("fixture", Some(&handlers))
@@ -103,7 +102,6 @@ async fn oap_auto_once_retries_provider_and_agent_after_auth_rejection() {
             .command(env!("CARGO_BIN_EXE_oap-protocol-fake"))
             .args([] as [&str; 0])
             .auth_retry_policy(AuthRetryPolicy::AutoOnce)
-            .auth_handlers(AuthHandlers::new().on_prompt(|_| async { Ok("code".to_owned()) }))
             .connect()
             .await
             .expect("connects");
@@ -138,18 +136,16 @@ async fn oap_browser_login_needs_no_prompt_handler() {
 }
 
 #[tokio::test]
-async fn oap_manual_prompt_never_calls_answer_handler() {
+async fn oap_manual_prompt_fails_closed() {
     let client = ClientBuilder::new()
         .command(env!("CARGO_BIN_EXE_oap-protocol-fake"))
         .args([] as [&str; 0])
         .connect()
         .await
         .expect("connects");
-    let handlers = AuthHandlers::new()
-        .on_prompt(|_| async move { panic!("OAP must not call the answer handler") });
     let error = client
         .auth()
-        .login("manual", Some(&handlers))
+        .login("manual", None)
         .await
         .expect_err("manual prompt fails");
     assert!(matches!(error, Error::Auth { .. }));
@@ -163,7 +159,6 @@ async fn oap_auto_once_retries_streams_before_content() {
             .command(env!("CARGO_BIN_EXE_oap-protocol-fake"))
             .args([] as [&str; 0])
             .auth_retry_policy(AuthRetryPolicy::AutoOnce)
-            .auth_handlers(AuthHandlers::new().on_prompt(|_| async { Ok("code".to_owned()) }))
             .connect()
             .await
             .expect("connects");

@@ -279,8 +279,7 @@ async fn the_builder_command_bypasses_the_environment_override() {
     let _guard = EnvGuard::set(&env);
 
     let client = oap_sdk::ClientBuilder::new()
-        .legacy_wire()
-        .command(env!("CARGO_BIN_EXE_makai-protocol-fake"))
+        .command(env!("CARGO_BIN_EXE_oap-protocol-fake"))
         .args(Vec::<String>::new())
         .env_clear()
         .env("OAP_SDK_FAKE_SCENARIO", "ok")
