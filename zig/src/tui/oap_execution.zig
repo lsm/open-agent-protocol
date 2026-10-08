@@ -22,8 +22,14 @@ const idle_sleep_ns = 2 * std.time.ns_per_ms;
 const startup_attempts = 2000;
 pub const in_process_frame_limit: usize = 64 << 20;
 
+pub const Tap = struct {
+    ctx: *anyopaque,
+    line: *const fn (ctx: *anyopaque, line: []const u8) void,
+};
+
 pub const OapExecution = struct {
     allocator: std.mem.Allocator,
+    tap: ?Tap = null,
     adapter: ?*oapx_adapter.Adapter = null,
     endpoint: ?adapter_endpoint.Endpoint = null,
     hub: ?*hub_link.HubLink = null,
@@ -166,6 +172,7 @@ pub const OapExecution = struct {
     }
 
     fn sendLine(self: *OapExecution, line: []const u8) !void {
+        if (self.tap) |tap| tap.line(tap.ctx, line);
         if (self.hub) |link| return link.handleLine(line);
         try self.endpoint.?.handleLine(line);
     }
@@ -176,8 +183,9 @@ pub const OapExecution = struct {
     }
 
     fn popLine(self: *OapExecution) ?[]u8 {
-        if (self.hub) |link| return link.popOutbound();
-        return self.endpoint.?.popOutbound();
+        const line = if (self.hub) |link| link.popOutbound() else self.endpoint.?.popOutbound();
+        if (self.tap) |tap| if (line) |held| tap.line(tap.ctx, held);
+        return line;
     }
 
     pub fn destroy(self: *OapExecution) void {
@@ -2417,6 +2425,122 @@ fn askedTurn(decision: session_runtime.ToolApprovalDecision) !struct { end: ?ses
         std.testing.io.sleep(.fromNanoseconds(std.time.ns_per_ms), .boot) catch {};
     }
     return error.TestTurnNeverEnded;
+}
+
+const Recorder = struct {
+    mutex: std.atomic.Mutex = .unlocked,
+    lines: std.ArrayList([]u8) = .empty,
+
+    fn tap(self: *Recorder) Tap {
+        return .{ .ctx = self, .line = record };
+    }
+
+    fn record(ctx: *anyopaque, line: []const u8) void {
+        const self: *Recorder = @ptrCast(@alignCast(ctx));
+        while (!self.mutex.tryLock()) std.atomic.spinLoopHint();
+        defer self.mutex.unlock();
+        const kept = testing.allocator.dupe(u8, line) catch @panic("OOM recording the wire");
+        self.lines.append(testing.allocator, kept) catch @panic("OOM recording the wire");
+    }
+
+    fn deinit(self: *Recorder) void {
+        for (self.lines.items) |line| testing.allocator.free(line);
+        self.lines.deinit(testing.allocator);
+    }
+
+    fn validate(self: *Recorder) !void {
+        var registry = try @import("jsonschema").Registry.initFromBundled(testing.allocator);
+        defer registry.deinit();
+        var machine = @import("semantic").Machine.init(testing.allocator);
+        defer machine.deinit();
+        var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+        defer arena_state.deinit();
+        for (self.lines.items, 0..) |line, index| {
+            const event = try std.json.parseFromSliceLeaky(std.json.Value, arena_state.allocator(), line, .{});
+            var validator = @import("jsonschema").Validator.init(testing.allocator, &registry);
+            defer validator.deinit();
+            if (try validator.validate("envelope.schema.json", event)) |failure| {
+                std.debug.print("wire {d} {s} fails {s} at {s}\n", .{ index, event.object.get("type").?.string, failure.keyword, failure.pointer });
+                return error.SchemaInvalid;
+            }
+            try machine.apply(index, event);
+        }
+        try machine.close();
+        for (machine.diagnostics.items) |diagnostic| std.debug.print("wire {d}: {s}\n", .{ diagnostic.index, diagnostic.code });
+        try testing.expectEqual(@as(usize, 0), machine.diagnostics.items.len);
+    }
+};
+
+test "a TUI session over OAP with an approved tool call, a cancelled turn and a completed one is a trace the validator accepts" {
+    var script = Script{ .tool_first = true };
+    const models = [_]ai_types.Model{scripted_model};
+    var recorder = Recorder{};
+    defer recorder.deinit();
+    const execution = try OapExecution.create(testing.allocator, .{
+        .protocol = .{ .stream_fn = scriptedStream, .ctx = &script },
+        .models = &models,
+        .initial_model_id = scripted_model.id,
+        .tools = &echo_tools,
+    });
+    defer execution.destroy();
+    execution.tap = recorder.tap();
+    var runtime = try session_runtime.SessionRuntime.init(testing.allocator, .{
+        .models = &models,
+        .initial_model_id = scripted_model.id,
+        .remote = execution.remote(),
+    });
+    defer runtime.deinit();
+    try runtime.setPermissionMode(.ask);
+
+    try runtime.submitTurn("use the tool");
+    var approvals: usize = 0;
+    var tool_end: ?session_events.SessionEndReason = null;
+    var waits: usize = 0;
+    while (tool_end == null and waits < 5000) : (waits += 1) {
+        while (runtime.streamEvents().poll()) |event| {
+            var owned_event = event;
+            defer owned_event.deinit(testing.allocator);
+            switch (owned_event) {
+                .tool_approval_requested => |payload| {
+                    approvals += 1;
+                    try runtime.decideToolApproval(payload.tool_call_id.slice(), .approve);
+                },
+                .agent_end => |payload| tool_end = payload.reason,
+                else => {},
+            }
+        }
+        std.testing.io.sleep(.fromNanoseconds(std.time.ns_per_ms), .boot) catch {};
+    }
+    try testing.expectEqual(@as(?session_events.SessionEndReason, .completed), tool_end);
+    try testing.expectEqual(@as(usize, 1), approvals);
+
+    script.wait_for_cancel = true;
+    try runtime.submitTurn("wait");
+    waitForRun(execution);
+    runtime.cancel();
+    var cancelled = Seen{};
+    defer cancelled.deinit();
+    try drainTurn(&runtime, &cancelled);
+    try testing.expectEqual(@as(?session_events.SessionEndReason, .cancelled), cancelled.end);
+
+    script.wait_for_cancel = false;
+    try runtime.submitTurn("again");
+    var completed = Seen{};
+    defer completed.deinit();
+    try drainTurn(&runtime, &completed);
+    try testing.expectEqual(@as(?session_events.SessionEndReason, .completed), completed.end);
+
+    runtime.stop();
+    execution.tap = null;
+    var kinds = std.StringHashMap(void).init(testing.allocator);
+    defer kinds.deinit();
+    for (recorder.lines.items) |line| {
+        inline for (.{ "action.permission.requested", "action.permission.resolve.request", "action.call.completed", "run.cancelled", "run.completed" }) |kind| {
+            if (std.mem.indexOf(u8, line, "\"type\":\"" ++ kind ++ "\"") != null) try kinds.put(kind, {});
+        }
+    }
+    try testing.expectEqual(@as(u32, 5), kinds.count());
+    try recorder.validate();
 }
 
 test "an in-process session hands the loop's own records over, tool calls and results included, which the OAP events cannot rebuild" {

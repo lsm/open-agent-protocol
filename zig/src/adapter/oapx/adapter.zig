@@ -15,7 +15,9 @@ const local_loop = @import("local_loop.zig");
 pub const LocalLoop = local_loop.LocalLoop;
 
 pub const endpoint_id = "oapx.agent";
-pub const capability_revision = "oapx-agent-v12";
+pub const capability_revision = "oapx-agent-v13";
+const native_source = "oapx";
+const native_sources = [_]oap_types.ToolSourceDescriptor{.{ .id = native_source, .kind = "native", .display_name = "oapx" }};
 
 pub const journal_capacity: usize = 1 << 16;
 pub const queue_capacity: usize = 8;
@@ -65,6 +67,7 @@ pub const descriptor = contract.Descriptor{
     .endpoint = .{ .id = endpoint_id, .name = "oapx agent loop", .version = protocol_version, .adapter = "in-process" },
     .capability_revision = capability_revision,
     .features = &features,
+    .sources = &native_sources,
     .limits = .{ .max_active_runs_per_session = queue_capacity + 1, .max_queued_runs_per_session = queue_capacity },
 };
 
@@ -72,6 +75,7 @@ const unsaved_descriptor = contract.Descriptor{
     .endpoint = descriptor.endpoint,
     .capability_revision = capability_revision,
     .features = &unsaved_features,
+    .sources = &native_sources,
     .limits = descriptor.limits,
 };
 
@@ -113,10 +117,11 @@ pub const Adapter = struct {
         errdefer self.allocator.free(saved);
         const unsaved = try withFeatures(self.allocator, &unsaved_features, extra);
         self.releaseServed();
-        self.served = .{
-            .saved = .{ .endpoint = descriptor.endpoint, .capability_revision = capability_revision, .features = saved, .limits = descriptor.limits },
-            .unsaved = .{ .endpoint = descriptor.endpoint, .capability_revision = capability_revision, .features = unsaved, .limits = descriptor.limits },
-        };
+        var served_saved = descriptor;
+        served_saved.features = saved;
+        var served_unsaved = unsaved_descriptor;
+        served_unsaved.features = unsaved;
+        self.served = .{ .saved = served_saved, .unsaved = served_unsaved };
     }
 
     fn withFeatures(allocator: std.mem.Allocator, own: []const contract.Feature, extra: []const contract.Feature) ![]contract.Feature {
@@ -1097,6 +1102,7 @@ pub const Session = struct {
         try payload.put("interaction_id", .{ .string = call.interaction_id });
         try payload.put("requested_by", .{ .string = endpoint_id });
         try payload.put("responded_by", .{ .string = self.participant });
+        if (self.providedNamed(call.name)) |definition| if (definition.source) |source| try payload.put("source", .{ .string = source });
         if (request_id.len > 0) try payload.put("request_id", .{ .string = request_id });
         return payload;
     }
@@ -1414,6 +1420,7 @@ pub const Session = struct {
         try call.put("tool_call_id", .{ .string = tool_call_id });
         try call.put("execution_owner", .{ .string = endpoint_id });
         try call.put("name", .{ .string = name });
+        try call.put("source", .{ .string = native_source });
         return call;
     }
 
@@ -1620,10 +1627,11 @@ pub const Session = struct {
                 .description = tool.description,
                 .input_schema_json = tool.parameters_schema_json,
                 .execution_owner = endpoint_id,
+                .source = native_source,
                 .annotations_json = if (tool.label.len > 0) try std.json.Stringify.valueAlloc(arena, .{ .title = tool.label }, .{}) else null,
             };
         }
-        return .{ .revision = capability_revision, .response = .{ .session_id = request.session_id, .tools = definitions } };
+        return .{ .revision = capability_revision, .response = .{ .session_id = request.session_id, .sources = try arena.dupe(oap_types.ToolSourceDescriptor, &native_sources), .tools = definitions } };
     }
 
     fn models(ptr: *anyopaque, arena: std.mem.Allocator, request: *const oap_types.ModelsRequest, refusal: *contract.Refusal) contract.Failure!contract.Catalog {
@@ -1975,8 +1983,8 @@ fn admitProvidedTools(keep: std.mem.Allocator, arena: std.mem.Allocator, partici
         if (name.len == 0) return refuseTool(arena, refusal, "", "a provided tool needs a name");
         if (!std.mem.eql(u8, stringOf(item, "execution_owner"), participant)) return refuseTool(arena, refusal, name, "execution_owner must be the opening participant");
         const source = stringOf(item, "source");
-        if (source.len > 0) {
-            refusal.* = .{ .feature = contract.feature_tools_provide, .reason = contract.reason_unsatisfiable, .tool = try arena.dupe(u8, name), .source = try arena.dupe(u8, source), .detail = "the loop declares no tool sources, so a source resolves to nothing" };
+        if (source.len > 0 and !std.mem.eql(u8, source, native_source)) {
+            refusal.* = .{ .feature = contract.feature_tools_provide, .reason = contract.reason_unsatisfiable, .tool = try arena.dupe(u8, name), .source = try arena.dupe(u8, source), .detail = "the loop declares one tool source, " ++ native_source ++ ", so another resolves to nothing" };
             return error.UnsupportedFeature;
         }
         if (namedIn(native, offers_input, provided[0..index], name)) return refuseTool(arena, refusal, name, "the name already resolves to a catalog entry");
@@ -1989,6 +1997,7 @@ fn admitProvidedTools(keep: std.mem.Allocator, arena: std.mem.Allocator, partici
             .description = if (description.len > 0) description else null,
             .input_schema_json = if (schema) |value| try json_encode.valueAlloc(keep, value) else "{\"type\":\"object\"}",
             .execution_owner = participant,
+            .source = if (source.len > 0) native_source else null,
         };
     }
     return provided;
@@ -3714,8 +3723,14 @@ const provided_lookup =
     \\[{"name":"lookup","description":"Look a word up","input_schema":{"type":"object"},"execution_owner":"user"}]
 ;
 
+const provided_lookup_sourced =
+    \\[{"name":"lookup","description":"Look a word up","input_schema":{"type":"object"},"execution_owner":"user","source":"oapx"}]
+;
+
 const ProvidedWire = struct {
     wire: Wire,
+    tools: []const u8 = provided_lookup,
+    list_first: bool = false,
     scope: []const u8 = "",
     run_scope: []const u8 = "",
     asked: std.json.ObjectMap = undefined,
@@ -3728,7 +3743,8 @@ const ProvidedWire = struct {
         ));
         try self.wire.send("capabilities.request", "", try parseValue(a, "{}"));
         self.scope = ",\"session_id\":\"wire-session\",\"capability_revision\":\"" ++ capability_revision ++ "\"";
-        try self.wire.send("session.open.request", self.scope, try parseValue(a, "{\"session_id\":\"wire-session\",\"tools\":" ++ provided_lookup ++ "}"));
+        try self.wire.send("session.open.request", self.scope, try parseValue(a, try std.fmt.allocPrint(a, "{{\"session_id\":\"wire-session\",\"tools\":{s}}}", .{self.tools})));
+        if (self.list_first) try self.wire.send("action.tools.list.request", self.scope, try parseValue(a, "{\"session_id\":\"wire-session\"}"));
         try self.wire.send("session.message.submit.request", self.scope, try parseValue(a,
             \\{"session_id":"wire-session","delivery":"auto","messages":[{"role":"user","content":"look it up"}]}
         ));
@@ -3791,6 +3807,25 @@ test "a provided tool's call waits for the opener, and the opener's acknowledgem
             const completed = provided.payloadOf("action.call.completed").?;
             try testing.expectEqualStrings("open agent protocol", completed.get("result").?.object.get("meaning").?.string);
         }
+    }
+}
+
+test "a provided tool that names the loop's source keeps it on the listing and on every envelope of its call" {
+    var script = Script{ .tool_first = true, .tool_name = "lookup", .tool_arguments = "{}" };
+    var provided: ProvidedWire = .{ .wire = undefined, .tools = provided_lookup_sourced, .list_first = true };
+    try provided.start(&script);
+    defer provided.wire.deinit();
+
+    try testing.expectEqualStrings(native_source, provided.asked.get("source").?.string);
+    _ = try provided.resolve("{\"started\":{}}", &.{});
+    _ = try provided.resolve("{\"result\":{\"meaning\":\"open agent protocol\"}}", &.{});
+    _ = try provided.wire.wait("run.completed");
+    try provided.wire.validate();
+    try testing.expectEqualStrings(native_source, provided.payloadOf("action.call.started").?.get("source").?.string);
+    try testing.expectEqualStrings(native_source, provided.payloadOf("action.call.completed").?.get("source").?.string);
+    const listed = provided.payloadOf("action.tools.list.response").?.get("tools").?.array.items;
+    for (listed) |tool| {
+        if (std.mem.eql(u8, tool.object.get("name").?.string, "lookup")) try testing.expectEqualStrings(native_source, tool.object.get("source").?.string);
     }
 }
 
@@ -3973,6 +4008,17 @@ test "a served adapter advertises the features its host adds beside its own" {
     const replaced = try owner.adapter().probe(&refusal);
     try testing.expectEqual(oap_types.SupportLevel.native, replaced.level(contract.feature_models_list));
     try testing.expectEqual(unsaved_features.len, replaced.features.len);
+}
+
+test "a served adapter still declares the loop's tool source once its host adds features" {
+    var owner = Adapter.init(testing.allocator, .{});
+    defer owner.deinit();
+    try owner.advertise(&.{.{ .key = "auth.login", .level = .native }});
+    var refusal = contract.Refusal{};
+    const served = try owner.adapter().probe(&refusal);
+    try testing.expectEqual(@as(usize, 1), served.sources.len);
+    try testing.expectEqualStrings(native_source, served.sources[0].id);
+    try testing.expectEqualStrings(capability_revision, served.capability_revision);
 }
 
 test "a steer naming a model is refused as unsatisfiable, since it cannot change the admitted run's model" {

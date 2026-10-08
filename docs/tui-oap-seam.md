@@ -17,11 +17,19 @@ interface, so the runtime the TUI holds carries no agent of its own. Nothing und
 `zig/src/tui/` imports the `agent` module: what it still reads from the agent layer
 is value types and pure helpers, from `agent_types`, `agent_loop` (the output
 setting and token estimates) and `agent_compaction` (the summary header and the
-history split), plus the in-process provider bridge `App` hands the endpoint. Runs,
-streaming, tools, cancel and model switch cross the boundary as OAP, and so does the
-tool list the TUI labels calls from: it lists the session's tools with
-`action.tools.list` once the session opens and shows each by its `annotations.title`,
-falling back to its name. A `/model refresh` hands the in-process endpoint the
+history split), plus the in-process provider bridge `App` hands the endpoint. A
+recorded TUI session — an approved tool call, a cancelled turn and a completed one —
+passes the Zig schema and semantic validators envelope for envelope
+(`oap_execution.zig`, recorded through `OapExecution.tap`). Recording it is what showed
+the `oapx` adapter's tool listing named no source, which both validators read as
+`unmatched_tool_source` once the TUI started listing tools: the adapter now declares
+one native source, `oapx`, in its descriptor and attributes its own tools and calls to
+it. A provided tool supplied without a source is still listed without one, which the
+validators flag; the TUI provides none today. Runs, streaming, tools,
+cancel and model switch cross the boundary as OAP, and so does the tool list the TUI
+labels calls from: it lists the session's tools with `action.tools.list` once the
+session opens and shows each by its `annotations.title`, falling back to its name. A
+`/model refresh` hands the in-process endpoint the
 refreshed catalog beside the wire, and the session serves it from its next model
 switch under the same revision, which is why the `oapx` adapter advertises
 `models.list` as `degraded`. The settings the protocol has no verb for (context
@@ -317,6 +325,18 @@ This section pinned the removed endpoint's payloads against
 `zig/src/tui/oap_ops_parity.zig`, both read at `cbfa3b96d6`. The `oapx` adapter's
 payloads are pinned instead by its own tests in `zig/src/adapter/oapx/adapter.zig`,
 which run every envelope through the schema and semantic validators.
+
+The TUI's side of the same wire is observable through `OapExecution.tap`, a
+`Tap` of a context and a `line` callback that sees every line `OapExecution`
+sends and every line it reads back, in that order. Its contract:
+
+- **The line is borrowed.** `OapExecution` frees it as soon as the callback
+  returns, so a tap that keeps a line copies it.
+- **It runs on whichever thread moved the line.** That is the caller's thread
+  while a session opens, and the session's pump thread once it runs, so a tap
+  that two of those can reach serializes itself.
+- **Set it while no pump runs.** `tap` is a plain field: assign it before the
+  session starts, or after `stop` has joined the pump, never in between.
 
 ## Open against the draft
 

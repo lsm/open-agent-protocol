@@ -1964,6 +1964,8 @@ pub fn build(b: *std.Build) void {
             .{ .name = "oapx_adapter", .module = oapx_adapter_mod },
             .{ .name = "hub_link", .module = tui_hub_link_mod },
             .{ .name = "owned_slice", .module = owned_slice_mod },
+            .{ .name = "jsonschema", .module = jsonschema_mod },
+            .{ .name = "semantic", .module = semantic_mod },
         },
     });
     const tui_oap_execution_test = b.addTest(.{ .root_module = tui_oap_execution_mod });
