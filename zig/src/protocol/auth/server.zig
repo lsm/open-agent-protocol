@@ -424,6 +424,9 @@ pub const AuthProtocolServer = struct {
                     }
                 }
             }
+            if (status == .login_required and try provider_catalog.credentialEnvIsSet(self.allocator, definition.id)) {
+                status = .authenticated;
+            }
 
             const kinds = try self.allocator.dupe(auth_types.AuthKind, definition.auth_kinds);
             errdefer self.allocator.free(kinds);
@@ -1007,6 +1010,35 @@ test "the providers response names the host an override sends a row to, and noth
         }
     }
     try std.testing.expectEqual(@as(usize, 3), seen);
+}
+
+test "the providers response counts a key in the provider's environment variable as signed in, for that provider only" {
+    const allocator = std.testing.allocator;
+    try provider_catalog.blankEnvironment(allocator);
+    defer compat.clearTestEnv();
+    try compat.setTestEnv(allocator, "HOME", "/nonexistent/oapx-auth-status-test-home");
+    var server = AuthProtocolServer.init(allocator, .{
+        .persist_credentials = false,
+        .enable_real_oauth = false,
+    });
+    defer server.deinit();
+
+    var before = try server.buildProvidersResponse();
+    defer before.providers.deinit(allocator);
+    try std.testing.expectEqual(auth_types.AuthStatus.login_required, statusOf(before, "anthropic") orelse return error.TestExpectedProvider);
+
+    try compat.setTestEnv(allocator, provider_catalog.credentialEnv("anthropic")[1], "sk-ant-test");
+    var after = try server.buildProvidersResponse();
+    defer after.providers.deinit(allocator);
+    try std.testing.expectEqual(auth_types.AuthStatus.authenticated, statusOf(after, "anthropic") orelse return error.TestExpectedProvider);
+    try std.testing.expectEqual(auth_types.AuthStatus.login_required, statusOf(after, "openai") orelse return error.TestExpectedProvider);
+}
+
+fn statusOf(response: auth_types.AuthProvidersResponse, id: []const u8) ?auth_types.AuthStatus {
+    for (response.providers.slice()) |info| {
+        if (std.mem.eql(u8, info.id.slice(), id)) return info.auth_status;
+    }
+    return null;
 }
 
 test "AuthProtocolServer type is available" {
