@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import {
+  createOapClient,
   type MakaiLogger,
   getNoopLogger,
   isNoopLogger,
@@ -209,4 +210,17 @@ test("isNoopLogger identifies no-op logger and distinguishes custom loggers", ()
   assert.ok(isNoopLogger(getNoopLogger()), "getNoopLogger() should be identified as no-op");
   const custom = createCapturingLogger();
   assert.ok(!isNoopLogger(custom), "custom logger should not be identified as no-op");
+});
+
+test("createOapClient hands its logger to binary resolution", async () => {
+  const logger = createCapturingLogger();
+  const prev = process.env.OAP_SDK_BINARY_PATH;
+  delete process.env.OAP_SDK_BINARY_PATH;
+  try {
+    await assert.rejects(() => createOapClient({ logger, resolver: { binaryPath: path.join(os.tmpdir(), "no-such-oapx") } }));
+  } finally {
+    if (prev === undefined) delete process.env.OAP_SDK_BINARY_PATH;
+    else process.env.OAP_SDK_BINARY_PATH = prev;
+  }
+  assert.ok(logger.entries.length > 0, "the resolver logged nothing through the client's logger");
 });
