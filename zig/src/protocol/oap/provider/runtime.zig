@@ -144,13 +144,43 @@ pub fn pumpEvent(
             mapStopReason(value.reason),
             null,
         ),
-        .@"error" => try server.settleFailed(
-            inference_id,
-            .provider_unavailable,
-            "the provider stream failed",
-            null,
-        ),
+        .@"error" => |value| {
+            const code = failureCode(value.err.getErrorMessage() orelse "");
+            try server.settleFailed(inference_id, code, failureMessage(code), null);
+        },
     }
+}
+
+pub fn failureCode(message: []const u8) types.ErrorCode {
+    const status = failureStatus(message) orelse return .provider_unavailable;
+    return switch (status) {
+        401, 403 => .credential_rejected,
+        else => .provider_unavailable,
+    };
+}
+
+pub fn failureMessage(code: types.ErrorCode) []const u8 {
+    return switch (code) {
+        .credential_rejected => "the provider refused the credential: sign in again or set a new key",
+        else => "the provider stream failed",
+    };
+}
+
+fn failureStatus(message: []const u8) ?u16 {
+    const marker = "request failed: HTTP ";
+    const start = (std.mem.indexOf(u8, message, marker) orelse return null) + marker.len;
+    var end = start;
+    while (end < message.len and std.ascii.isDigit(message[end])) end += 1;
+    return std.fmt.parseInt(u16, message[start..end], 10) catch null;
+}
+
+test "a provider failure naming HTTP 401 or 403 is a refused credential, and any other is a retry" {
+    try std.testing.expectEqual(types.ErrorCode.credential_rejected, failureCode("anthropic request failed: HTTP 401 (check ANTHROPIC_API_KEY is valid)"));
+    try std.testing.expectEqual(types.ErrorCode.credential_rejected, failureCode("deepseek request failed: HTTP 403{\"error\":\"forbidden\"}"));
+    try std.testing.expectEqual(types.ErrorCode.provider_unavailable, failureCode("openai request failed: HTTP 500"));
+    try std.testing.expectEqual(types.ErrorCode.provider_unavailable, failureCode("openai request failed: HTTP 4010"));
+    try std.testing.expectEqual(types.ErrorCode.provider_unavailable, failureCode("connection reset"));
+    try std.testing.expectEqual(types.ErrorCode.provider_unavailable, failureCode("request failed: HTTP "));
 }
 
 test "every stop reason maps without approximation" {
@@ -344,6 +374,32 @@ test "a keepalive does not consume a sequence number" {
     try pumpEvent(&server, inference_id, .keepalive);
     try std.testing.expect(server.popOutbound() == null);
     try std.testing.expectEqual(@as(u64, 1), server.findInference(inference_id).?.next_sequence);
+}
+
+test "a stream that fails with HTTP 401 settles as a refused credential" {
+    const allocator = std.testing.allocator;
+    var server = try scriptedServer(allocator);
+    defer server.deinit();
+
+    const inference_id = try acceptInference(allocator, &server);
+    defer allocator.free(inference_id);
+
+    try pumpEvent(&server, inference_id, .{ .@"error" = .{ .reason = .@"error", .err = .{
+        .content = &.{},
+        .api = "anthropic-messages",
+        .provider = "anthropic",
+        .model = "m",
+        .usage = .{},
+        .stop_reason = .@"error",
+        .error_message = .initBorrowed("anthropic request failed: HTTP 401"),
+        .timestamp = 0,
+    } } });
+    var failed = false;
+    while (server.popOutbound()) |out| {
+        defer allocator.free(out);
+        if (std.mem.indexOf(u8, out, "\"credential_rejected\"") != null) failed = true;
+    }
+    try std.testing.expect(failed);
 }
 
 test "an opaque carry survives the round trip on both kinds that can hold one" {

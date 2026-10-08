@@ -1815,7 +1815,11 @@ An implementation claiming `open-agent-protocol.model-provider-core`:
    naming a provider that awaits a credential is refused as
    `credential_missing` rather than `model_not_found`, and one whose credential
    is present but whose models are not loaded yet as `provider_unavailable`,
-   which asks for a reload. A provider is described on one wire, its
+   which asks for a reload. One whose key the provider refused when its models
+   were listed is refused as `credential_rejected`, and no reload is asked
+   for: a refused key is terminal, and only a sign-in reloads the catalog. An inference
+   the provider refuses with HTTP 401 or 403 likewise fails
+   `credential_rejected`, never a retryable code. A provider is described on one wire, its
    catalog's first, even where the vendor offers more. A credential grant
    reaches only a provider it describes, so a grant cannot yet introduce the
    key for one it does not (#1013).

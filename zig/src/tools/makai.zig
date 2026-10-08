@@ -2604,7 +2604,8 @@ test "a served lookup on an unnamed wire matches its discriminator and nothing e
 
 var served_snapshot_loads: usize = 0;
 
-fn countingServedLoad(allocator: std.mem.Allocator) anyerror![]ai_types.Model {
+fn countingServedLoad(allocator: std.mem.Allocator, refusals: *model_catalog.KeyRefusals) anyerror![]ai_types.Model {
+    _ = refusals;
     served_snapshot_loads += 1;
     return cloneOapModels(allocator, &oap_test_served_models);
 }
@@ -2647,6 +2648,21 @@ test "an unserved catalog provider that needs a credential is refused as credent
     try compat.setTestEnv(allocator, "HOME", home);
     try std.testing.expectEqual(@as(?oap_provider_types.ErrorCode, .provider_unavailable), oapUnservedCode("deepseek"));
     try std.testing.expectEqual(@as(?oap_provider_types.ErrorCode, .credential_missing), oapUnservedCode("openai"));
+
+    defer {
+        served_oap_models.deinit();
+        served_oap_models = .{};
+    }
+    try served_oap_models.reload(allocator, refusingServedLoad);
+    served_oap_models.last_stale_reload_ms.store(std.math.minInt(i64), .seq_cst);
+    try std.testing.expectEqual(@as(?oap_provider_types.ErrorCode, .credential_rejected), oapUnservedCode("deepseek"));
+    try std.testing.expect(served_oap_models.claimStaleReload(compat.time.nowMillis(), served_oap_stale_reload_interval_ms));
+    try std.testing.expectEqual(@as(?oap_provider_types.ErrorCode, .provider_unavailable), oapUnservedCode("anthropic"));
+}
+
+fn refusingServedLoad(allocator: std.mem.Allocator, refusals: *model_catalog.KeyRefusals) anyerror![]ai_types.Model {
+    try refusals.add("deepseek");
+    return cloneOapModels(allocator, &.{});
 }
 
 test "a stale reload is claimed at most once per interval" {
@@ -2658,8 +2674,9 @@ test "a stale reload is claimed at most once per interval" {
     try std.testing.expect(cache.claimStaleReload(31_000, 30_000));
 }
 
-fn failingServedLoad(allocator: std.mem.Allocator) anyerror![]ai_types.Model {
+fn failingServedLoad(allocator: std.mem.Allocator, refusals: *model_catalog.KeyRefusals) anyerror![]ai_types.Model {
     _ = allocator;
+    try refusals.add("deepseek");
     served_snapshot_loads += 1;
     return error.NetworkUnreachable;
 }
@@ -2679,6 +2696,7 @@ test "a reload that loads replaces the snapshot and advances its generation, and
     try std.testing.expectEqual(@as(u64, 1), cache.generation.load(.seq_cst));
     try std.testing.expectError(error.NetworkUnreachable, cache.reload(allocator, failingServedLoad));
     try std.testing.expectEqual(@as(u64, 1), cache.generation.load(.seq_cst));
+    try std.testing.expect(!cache.refusedKey("deepseek"));
     const kept = try cache.snapshot(allocator);
     defer model_catalog.deinitModels(allocator, kept);
     try std.testing.expectEqual(oap_test_served_models.len, kept.len);
@@ -2688,7 +2706,8 @@ test "a reload that loads replaces the snapshot and advances its generation, and
 var mid_load_cache: ?*ServedOapModels = null;
 var mid_load_requests: usize = 0;
 
-fn loadThatAsksForAnotherReload(allocator: std.mem.Allocator) anyerror![]ai_types.Model {
+fn loadThatAsksForAnotherReload(allocator: std.mem.Allocator, refusals: *model_catalog.KeyRefusals) anyerror![]ai_types.Model {
+    _ = refusals;
     served_snapshot_loads += 1;
     if (mid_load_requests > 0) {
         mid_load_requests -= 1;
@@ -2993,13 +3012,14 @@ fn loadServedOapModels(allocator: std.mem.Allocator) ![]ai_types.Model {
     return served_oap_models.snapshot(allocator);
 }
 
-fn loadProductionServedModels(allocator: std.mem.Allocator) anyerror![]ai_types.Model {
-    return model_catalog.loadProductionModels(allocator);
+fn loadProductionServedModels(allocator: std.mem.Allocator, refusals: *model_catalog.KeyRefusals) anyerror![]ai_types.Model {
+    return model_catalog.loadProductionModelsNotingRefusals(allocator, refusals);
 }
 
 const ServedOapModels = struct {
     mutex: std.Io.Mutex = .init,
     models: ?[]ai_types.Model = null,
+    refusals: ?model_catalog.KeyRefusals = null,
     cache_allocator: ?std.mem.Allocator = null,
     generation: std.atomic.Value(u64) = .init(0),
     reloading: std.atomic.Value(bool) = .init(false),
@@ -3016,15 +3036,26 @@ const ServedOapModels = struct {
     fn reload(
         self: *ServedOapModels,
         cache_allocator: std.mem.Allocator,
-        load: *const fn (std.mem.Allocator) anyerror![]ai_types.Model,
+        load: *const fn (std.mem.Allocator, *model_catalog.KeyRefusals) anyerror![]ai_types.Model,
     ) !void {
-        const fresh = try load(cache_allocator);
+        var refusals = model_catalog.KeyRefusals.init(cache_allocator);
+        errdefer refusals.deinit();
+        const fresh = try load(cache_allocator, &refusals);
         self.mutex.lockUncancelable(hubIo());
         defer self.mutex.unlock(hubIo());
         if (self.models) |previous| model_catalog.deinitModels(self.cache_allocator.?, previous);
+        if (self.refusals) |*previous| previous.deinit();
         self.models = fresh;
+        self.refusals = refusals;
         self.cache_allocator = cache_allocator;
         _ = self.generation.fetchAdd(1, .seq_cst);
+    }
+
+    fn refusedKey(self: *ServedOapModels, provider_id: []const u8) bool {
+        self.mutex.lockUncancelable(hubIo());
+        defer self.mutex.unlock(hubIo());
+        const refusals = self.refusals orelse return false;
+        return refusals.contains(provider_id);
     }
 
     fn claimStaleReload(self: *ServedOapModels, now_ms: i64, interval_ms: i64) bool {
@@ -3041,7 +3072,7 @@ const ServedOapModels = struct {
     fn runReloads(
         self: *ServedOapModels,
         cache_allocator: std.mem.Allocator,
-        load: *const fn (std.mem.Allocator) anyerror![]ai_types.Model,
+        load: *const fn (std.mem.Allocator, *model_catalog.KeyRefusals) anyerror![]ai_types.Model,
     ) void {
         while (true) {
             self.reload_again.store(false, .seq_cst);
@@ -3056,6 +3087,7 @@ const ServedOapModels = struct {
 
     fn deinit(self: *ServedOapModels) void {
         if (self.models) |models| model_catalog.deinitModels(self.cache_allocator.?, models);
+        if (self.refusals) |*refusals| refusals.deinit();
         self.* = undefined;
     }
 };
@@ -3106,6 +3138,9 @@ fn oapUnservedRefusal(provider_id: []const u8) ?oap_provider_server.UnservedRefu
     if (!rowAwaitsCredential(row)) return null;
     if (!oapCredentialResolves(std.heap.page_allocator, provider_id)) {
         return .{ .code = .credential_missing, .message = "this provider is served once it has a credential: sign in or set its key" };
+    }
+    if (served_oap_models.refusedKey(provider_id)) {
+        return .{ .code = .credential_rejected, .message = "the provider refused this key: sign in again or set a new key" };
     }
     if (served_oap_models.claimStaleReload(compat.time.nowMillis(), served_oap_stale_reload_interval_ms)) startServedOapReload();
     return .{ .code = .provider_unavailable, .message = "this provider has a credential but its models are not loaded: retry after they reload" };
@@ -3561,7 +3596,7 @@ fn settleOapInference(
                 null,
             );
         } else {
-            try server.settleFailed(entry.inference_id, .provider_unavailable, message, null);
+            try server.settleFailed(entry.inference_id, oap_provider_runtime.failureCode(message), message, null);
         }
         return;
     }
@@ -5847,6 +5882,7 @@ fn settleTestInference(
     allocator: std.mem.Allocator,
     server: *oap_provider_server.Server,
     cancel_first: bool,
+    failure: []const u8,
 ) !oap_provider_types.ErrorCode {
     const line =
         "{\"protocol\":\"open-agent-protocol\",\"version\":\"0.1\",\"profile\":\"" ++ oap_provider_types.PROFILE ++
@@ -5861,7 +5897,7 @@ fn settleTestInference(
 
     const stream = try allocator.create(event_stream.AssistantMessageStream);
     stream.* = event_stream.AssistantMessageStream.init(allocator);
-    stream.completeWithError("request cancelled");
+    stream.completeWithError(failure);
 
     const cancelled = try allocator.create(std.atomic.Value(bool));
     cancelled.* = std.atomic.Value(bool).init(true);
@@ -5905,16 +5941,26 @@ test "a cancelled inference settles as aborted and a failed one does not" {
     var cancelled_server = oap_provider_server.Server.init(allocator, .{ .accepts_inference = true, .resolves_own_credentials = true });
     defer cancelled_server.deinit();
     try populateOapProviderCatalog(allocator, &cancelled_server);
-    const cancelled_code = try settleTestInference(allocator, &cancelled_server, true);
+    const cancelled_code = try settleTestInference(allocator, &cancelled_server, true, "request cancelled");
     try std.testing.expectEqual(oap_provider_types.ErrorCode.aborted, cancelled_code);
     try std.testing.expectEqual(oap_provider_types.ErrorAction.accept, cancelled_code.action());
 
     var failed_server = oap_provider_server.Server.init(allocator, .{ .accepts_inference = true, .resolves_own_credentials = true });
     defer failed_server.deinit();
     try populateOapProviderCatalog(allocator, &failed_server);
-    const failed_code = try settleTestInference(allocator, &failed_server, false);
+    const failed_code = try settleTestInference(allocator, &failed_server, false, "request cancelled");
     try std.testing.expectEqual(oap_provider_types.ErrorCode.provider_unavailable, failed_code);
     try std.testing.expectEqual(oap_provider_types.ErrorAction.retry, failed_code.action());
+}
+
+test "an inference the provider refuses with HTTP 401 settles as a refused credential, which is not retried" {
+    const allocator = std.testing.allocator;
+    var server = oap_provider_server.Server.init(allocator, .{ .accepts_inference = true, .resolves_own_credentials = true });
+    defer server.deinit();
+    try populateOapProviderCatalog(allocator, &server);
+    const code = try settleTestInference(allocator, &server, false, "ollama request failed: HTTP 401");
+    try std.testing.expectEqual(oap_provider_types.ErrorCode.credential_rejected, code);
+    try std.testing.expectEqual(oap_provider_types.ErrorAction.authenticate, code.action());
 }
 
 test "the host drops a granted secret when the grant passes its expiry" {

@@ -100,15 +100,48 @@ pub fn deinitModels(allocator: std.mem.Allocator, models: []ai_types.Model) void
 }
 
 pub fn loadProductionModels(allocator: std.mem.Allocator) ![]ai_types.Model {
-    return loadProductionModelsWithMode(allocator, .allow_cache, null);
+    return loadProductionModelsWithMode(allocator, .allow_cache, null, null);
 }
 
+pub fn loadProductionModelsNotingRefusals(allocator: std.mem.Allocator, refusals: *KeyRefusals) ![]ai_types.Model {
+    return loadProductionModelsWithMode(allocator, .allow_cache, null, refusals);
+}
+
+pub const KeyRefusals = struct {
+    allocator: std.mem.Allocator,
+    ids: std.ArrayList([]u8) = .empty,
+
+    pub fn init(allocator: std.mem.Allocator) KeyRefusals {
+        return .{ .allocator = allocator };
+    }
+
+    pub fn add(self: *KeyRefusals, id: []const u8) !void {
+        if (self.contains(id)) return;
+        const owned = try self.allocator.dupe(u8, id);
+        errdefer self.allocator.free(owned);
+        try self.ids.append(self.allocator, owned);
+    }
+
+    pub fn contains(self: *const KeyRefusals, id: []const u8) bool {
+        for (self.ids.items) |held| {
+            if (std.mem.eql(u8, held, id)) return true;
+        }
+        return false;
+    }
+
+    pub fn deinit(self: *KeyRefusals) void {
+        for (self.ids.items) |held| self.allocator.free(held);
+        self.ids.deinit(self.allocator);
+        self.* = undefined;
+    }
+};
+
 pub fn refreshProductionModels(allocator: std.mem.Allocator) ![]ai_types.Model {
-    return loadProductionModelsWithMode(allocator, .force_fetch, null);
+    return loadProductionModelsWithMode(allocator, .force_fetch, null, null);
 }
 
 pub fn refreshProductionModelsNoting(allocator: std.mem.Allocator, notes: *RefreshNotes) ![]ai_types.Model {
-    return loadProductionModelsWithMode(allocator, .force_fetch, notes);
+    return loadProductionModelsWithMode(allocator, .force_fetch, notes, null);
 }
 
 pub const RefreshNote = struct {
@@ -150,7 +183,7 @@ fn note(notes: ?*RefreshNotes, source: []const u8, comptime reason_fmt: []const 
     if (notes) |list| list.add(source, reason_fmt, args);
 }
 
-fn loadProductionModelsWithMode(allocator: std.mem.Allocator, mode: CatalogLoadMode, notes: ?*RefreshNotes) ![]ai_types.Model {
+fn loadProductionModelsWithMode(allocator: std.mem.Allocator, mode: CatalogLoadMode, notes: ?*RefreshNotes, refusals: ?*KeyRefusals) ![]ai_types.Model {
     var loaded_storage: ?oauth_storage.AuthStorage = if (builtin.is_test) null else oauth_storage.AuthStorage.loadDefault(allocator) catch null;
     defer if (loaded_storage) |*storage| storage.deinit();
     const storage: ?*oauth_storage.AuthStorage = if (loaded_storage) |*storage| storage else null;
@@ -179,7 +212,7 @@ fn loadProductionModelsWithMode(allocator: std.mem.Allocator, mode: CatalogLoadM
     var custom_models = try loadCustomModels(allocator, storage, mode, notes);
     defer deinitModels(allocator, custom_models);
 
-    var catalog_models = try loadCatalogModels(allocator, storage, mode);
+    var catalog_models = try loadCatalogModelsNotingRefusals(allocator, storage, mode, refusals);
     defer deinitModels(allocator, catalog_models);
 
     if (codex_refresh_error) |err| {
@@ -687,10 +720,19 @@ fn loadCatalogModels(
     storage: ?*oauth_storage.AuthStorage,
     mode: CatalogLoadMode,
 ) ![]ai_types.Model {
+    return loadCatalogModelsNotingRefusals(allocator, storage, mode, null);
+}
+
+fn loadCatalogModelsNotingRefusals(
+    allocator: std.mem.Allocator,
+    storage: ?*oauth_storage.AuthStorage,
+    mode: CatalogLoadMode,
+    refusals: ?*KeyRefusals,
+) ![]ai_types.Model {
     var ids = std.ArrayList([]const u8).empty;
     defer ids.deinit(allocator);
     try orderedCatalogLoaderIds(allocator, &ids);
-    return loadCatalogModelsWithRows(allocator, ids.items, storage, mode);
+    return loadRowsWithProvenance(allocator, ids.items, storage, mode, null, refusals);
 }
 
 fn loadCatalogModelsWithRows(
@@ -699,7 +741,7 @@ fn loadCatalogModelsWithRows(
     storage: ?*oauth_storage.AuthStorage,
     mode: CatalogLoadMode,
 ) ![]ai_types.Model {
-    return loadRowsWithProvenance(allocator, ids, storage, mode, null);
+    return loadRowsWithProvenance(allocator, ids, storage, mode, null, null);
 }
 
 fn loadCatalogSnapshotWithRows(
@@ -710,7 +752,7 @@ fn loadCatalogSnapshotWithRows(
 ) !CatalogSnapshot {
     var provenance = std.ArrayList(ModelProvenance).empty;
     errdefer provenance.deinit(allocator);
-    const models = try loadRowsWithProvenance(allocator, ids, storage, mode, &provenance);
+    const models = try loadRowsWithProvenance(allocator, ids, storage, mode, &provenance, null);
     var models_owned = true;
     errdefer if (models_owned) deinitModels(allocator, models);
     const tags = try provenance.toOwnedSlice(allocator);
@@ -724,6 +766,7 @@ fn loadRowsWithProvenance(
     storage: ?*oauth_storage.AuthStorage,
     mode: CatalogLoadMode,
     provenance: ?*std.ArrayList(ModelProvenance),
+    refusals: ?*KeyRefusals,
 ) ![]ai_types.Model {
     var models = std.ArrayList(ai_types.Model).empty;
     errdefer {
@@ -758,7 +801,7 @@ fn loadRowsWithProvenance(
         } else try catalogEndpointFromEnvironment(allocator, storage, id, file);
         var held = endpoint orelse continue;
         defer held.deinit(allocator);
-        try appendCatalogTargetModels(allocator, &models, held, storage, mode, provenance, &models_dev);
+        try appendCatalogTargetModels(allocator, &models, held, storage, mode, provenance, &models_dev, refusals);
     }
     return models.toOwnedSlice(allocator);
 }
@@ -775,6 +818,7 @@ fn appendCatalogTargetModels(
     mode: CatalogLoadMode,
     provenance: ?*std.ArrayList(ModelProvenance),
     models_dev: *ModelsDev,
+    refusals: ?*KeyRefusals,
 ) !void {
     const environment = try catalogEnvironment(allocator, target.id);
     defer freeEnvironment(allocator, environment);
@@ -795,7 +839,10 @@ fn appendCatalogTargetModels(
         @memcpy(test_last_discovery_token[0..test_last_discovery_token_len], token[0..test_last_discovery_token_len]);
     }
     const discovered = discoverCatalogModels(allocator, target, token, mode, honour_marker) catch |err| switch (err) {
-        error.ModelCatalogRefused, error.ModelCatalogRemembered => return,
+        error.ModelCatalogRefused, error.ModelCatalogRemembered => {
+            if (refusals) |noted| try noted.add(target.id);
+            return;
+        },
         else => return err,
     };
     defer if (discovered) |models| freeDiscoveredModels(allocator, models);
@@ -3634,6 +3681,44 @@ test "a refusal recorded for a stored key does not drop the row once an environm
     try std.testing.expectEqualStrings("plan-model", listed[0].id);
 }
 
+test "a listing the provider refuses is noted as a refused key, and one it answers is not" {
+    const allocator = std.testing.allocator;
+    try provider_catalog.blankEnvironment(allocator);
+    defer compat.clearTestEnv();
+    var tmp = try tempHome(allocator);
+    defer tmp.cleanup();
+
+    const plan = "xiaomi-token-plan-cn";
+    var target = catalogTargetInRegion(plan, null) orelse return error.TestExpectedTarget;
+    defer target.deinit(allocator);
+    test_catalog_environment = &[_]provider_credential.EnvironmentValue{
+        .{ .name = "XIAOMI_API_KEY", .value = "a-key" },
+    };
+    defer test_catalog_environment = null;
+
+    const refusing = [_]CatalogDiscovery{
+        .{ .id = plan, .models_url = target.models_url, .model_ids = &.{}, .refused = true },
+    };
+    test_catalog_discovery = &refusing;
+    defer test_catalog_discovery = null;
+    var refusals = KeyRefusals.init(allocator);
+    defer refusals.deinit();
+    const refused = try loadRowsWithProvenance(allocator, &[_][]const u8{plan}, null, .allow_cache, null, &refusals);
+    defer deinitModels(allocator, refused);
+    try std.testing.expect(refusals.contains(plan));
+
+    const answering = [_]CatalogDiscovery{
+        .{ .id = plan, .models_url = target.models_url, .model_ids = &.{"plan-model"} },
+    };
+    test_catalog_discovery = &answering;
+    var none = KeyRefusals.init(allocator);
+    defer none.deinit();
+    const listed = try loadRowsWithProvenance(allocator, &[_][]const u8{plan}, null, .allow_cache, null, &none);
+    defer deinitModels(allocator, listed);
+    try std.testing.expectEqual(@as(usize, 1), listed.len);
+    try std.testing.expect(!none.contains(plan));
+}
+
 test "a refusal taken under an environment key does not suppress a stored key" {
     const allocator = std.testing.allocator;
     try provider_catalog.blankEnvironment(allocator);
@@ -4061,7 +4146,7 @@ fn countVersions(url: []const u8) usize {
 
 test "a carries-version row's listing and its request agree under an override" {
     const rows = [_][]const u8{
-        "opencode-zen",        "opencode-go",         "openrouter",          "vercel",              "zenmux",                 "deepinfra",
+        "opencode-zen",    "opencode-go",         "openrouter",          "vercel",              "zenmux",                 "deepinfra",
         "zai-coding-plan", "alibaba-coding-plan", "minimax-coding-plan", "tencent-coding-plan", "volcengine-coding-plan",
     };
     for (rows) |id| {
