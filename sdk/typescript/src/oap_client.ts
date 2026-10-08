@@ -85,6 +85,7 @@ export class OapStdioTransport {
   agentRevision?: string;
   agentEndpoint = "";
   agentFeatures: ReadonlySet<string> = new Set();
+  agentSource = "";
 
   constructor(private readonly command: string, private readonly args: string[], private readonly options: { cwd?: string; env?: NodeJS.ProcessEnv; timeoutMs: number; handshakeTimeoutMs?: number }) {}
 
@@ -109,6 +110,7 @@ export class OapStdioTransport {
       this.agentFeatures = new Set(isRecord(capabilities.payload.features)
         ? Object.entries(capabilities.payload.features).filter(([, support]) => !(isRecord(support) && support.level === "unavailable")).map(([name]) => name)
         : []);
+      this.agentSource = declaredToolSource(capabilities.payload.sources);
       const described = await this.request(OAP_PROVIDER_PROFILE, "provider.describe.request", {}, {}, this.options.handshakeTimeoutMs);
       if (described.type !== "provider.describe.response") throw new MakaiProtocolError("OAP provider did not return a descriptor", "protocol_mismatch");
     } catch (error) {
@@ -215,6 +217,19 @@ export class OapStdioTransport {
 function isRecord(value: unknown): value is Record<string, unknown> { return value !== null && typeof value === "object" && !Array.isArray(value); }
 function abortError(): Error { const error = new Error("operation aborted"); error.name = "AbortError"; return error; }
 function str(value: unknown): string { return typeof value === "string" ? value : ""; }
+
+function declaredToolSource(sources: unknown): string {
+  if (!Array.isArray(sources)) return "";
+  let first = "";
+  for (const source of sources) {
+    if (!isRecord(source)) continue;
+    const id = str(source.id);
+    if (!id) continue;
+    if (source.kind === "native") return id;
+    if (!first) first = id;
+  }
+  return first;
+}
 function payload(frame: OapEnvelope): Record<string, unknown> { return frame.payload; }
 function protocolError(frame: OapEnvelope): Error {
   const error = isRecord(frame.payload.error) ? frame.payload.error : frame.payload;
@@ -676,7 +691,7 @@ class OapAgentApi {
     const sessionId = request.options?.session_id ?? ulid();
     const opened = await this.transport.request(OAP_AGENT_PROFILE, "session.open.request", {
       session_id: sessionId,
-      ...(request.tools?.length ? { tools: request.tools.map((tool) => ({ name: tool.name, description: tool.description, input_schema: parseInputSchema(tool.parameters_schema_json), execution_owner: SDK_PARTICIPANT })) } : {}),
+      ...(request.tools?.length ? { tools: request.tools.map((tool) => ({ name: tool.name, description: tool.description, input_schema: parseInputSchema(tool.parameters_schema_json), execution_owner: SDK_PARTICIPANT, ...(this.transport.agentSource ? { source: this.transport.agentSource } : {}) })) } : {}),
       ...(request.options?.reasoning_effort ? { reasoning_level: request.options.reasoning_effort } : {}),
       ...(readsOapxSettings ? { metadata: { oapx: { user_input: false, ...(maxTokens !== undefined ? { output: maxTokens } : {}) } } } : {}),
     }, { session_id: sessionId });

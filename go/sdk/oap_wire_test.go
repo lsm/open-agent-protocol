@@ -53,7 +53,8 @@ func runOAPHost(scenario string) {
 			}))
 		case "capabilities.request":
 			response := oapFakeReply(request, "capabilities.response", map[string]any{"endpoint": map[string]any{"id": "oapx.agent"},
-				"features": map[string]any{"action.tools.provide": map[string]any{"level": "native"}}})
+				"features": map[string]any{"action.tools.provide": map[string]any{"level": "native"}},
+				"sources":  []map[string]any{{"id": "attached-files", "kind": "process"}, {"id": "oapx", "kind": "native"}}})
 			response.CapabilityRevision = "fake-rev-1"
 			fakeEmit(response)
 			switch scenario {
@@ -124,7 +125,7 @@ func runOAPHost(scenario string) {
 			opening := request.payload()
 			if tools, ok := opening["tools"].([]any); ok && len(tools) > 0 {
 				first, _ := tools[0].(map[string]any)
-				providedTool = fmt.Sprintf("%v owned by %v", first["name"], first["execution_owner"])
+				providedTool = fmt.Sprintf("%v owned by %v from %v", first["name"], first["execution_owner"], first["source"])
 			}
 			openSettings = fmt.Sprintf("reasoning=%v output=%v user_input=%v", opening["reasoning_level"], opening.obj("metadata").obj("oapx")["output"], opening.obj("metadata").obj("oapx")["user_input"])
 			response := oapFakeReply(request, "session.open.response", map[string]any{"session_id": sessionID, "status": "idle"})
@@ -291,7 +292,7 @@ func TestOAPCombinedFakeHost(t *testing.T) {
 			invoked = call
 			return "open agent protocol", nil
 		}}}})
-	if err != nil || response.Message.Text != "lookup owned by sdk said open agent protocol (error <nil>) as sdk" {
+	if err != nil || response.Message.Text != "lookup owned by sdk from oapx said open agent protocol (error <nil>) as sdk" {
 		t.Fatalf("provided tool: %v, %+v", err, response)
 	}
 	if invoked.ToolCallID != "call-1" || invoked.ToolName != "lookup" || invoked.ArgumentsJSON != `{"word":"oap"}` {
