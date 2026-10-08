@@ -3,6 +3,7 @@ const ai_types = @import("ai_types");
 const agent = @import("agent");
 const tui_runtime = @import("tui_runtime");
 const tui_state = @import("tui_state");
+const tui_oap_execution = @import("tui/oap_execution");
 
 pub const over_oap_autocompact_refusal = "this session's endpoint does not take a compaction policy over OAP, so /autocompact does not reach it; run oapx without --attach to change it.";
 pub const between_runs_refusal = "the thinking level changes between runs over OAP; set it again once this run ends.";
@@ -744,17 +745,31 @@ const context_test_uncatalogued: ai_types.Model = .{
     .max_tokens = 8_192,
 };
 
-fn contextTestRuntime(models: []const ai_types.Model) !tui_runtime.TuiRuntime {
-    return tui_runtime.TuiRuntime.init(std.testing.allocator, .{ .models = models });
-}
+const OverOap = struct {
+    execution: *tui_oap_execution.OapExecution,
+    runtime: tui_runtime.TuiRuntime,
+
+    fn init(self: *OverOap, models: []const ai_types.Model) !void {
+        self.execution = try tui_oap_execution.OapExecution.create(std.testing.allocator, .{ .models = models });
+        errdefer self.execution.destroy();
+        self.runtime = try tui_runtime.TuiRuntime.init(std.testing.allocator, .{ .models = models, .remote = self.execution.remote() });
+    }
+
+    fn deinit(self: *OverOap) void {
+        self.runtime.deinit();
+        self.execution.destroy();
+    }
+};
 
 test "context sets the window for the session and names the model and the window" {
     const models = [_]ai_types.Model{context_test_model};
-    var runtime = try contextTestRuntime(&models);
-    defer runtime.deinit();
+    var over_oap: OverOap = undefined;
+    try over_oap.init(&models);
+    defer over_oap.deinit();
+    const runtime = &over_oap.runtime;
     var state = tui_state.AppState.init(std.testing.allocator);
     defer state.deinit();
-    const ctx = CommandContext{ .allocator = std.testing.allocator, .state = &state, .runtime = &runtime };
+    const ctx = CommandContext{ .allocator = std.testing.allocator, .state = &state, .runtime = runtime };
 
     var set = try dispatch(ctx, .{ .kind = .context, .arg = "1m" });
     defer set.deinit(std.testing.allocator);
@@ -775,11 +790,13 @@ test "context sets the window for the session and names the model and the window
 
 test "output sets how much a reply asks for, and refuses more than the model writes" {
     const models = [_]ai_types.Model{context_test_model};
-    var runtime = try contextTestRuntime(&models);
-    defer runtime.deinit();
+    var over_oap: OverOap = undefined;
+    try over_oap.init(&models);
+    defer over_oap.deinit();
+    const runtime = &over_oap.runtime;
     var state = tui_state.AppState.init(std.testing.allocator);
     defer state.deinit();
-    const ctx = CommandContext{ .allocator = std.testing.allocator, .state = &state, .runtime = &runtime };
+    const ctx = CommandContext{ .allocator = std.testing.allocator, .state = &state, .runtime = runtime };
 
     var shown = try dispatch(ctx, .{ .kind = .output });
     defer shown.deinit(std.testing.allocator);
@@ -811,11 +828,13 @@ test "output sets how much a reply asks for, and refuses more than the model wri
 
 test "context refuses a window above the ceiling and says what the ceiling is" {
     const models = [_]ai_types.Model{context_test_model};
-    var runtime = try contextTestRuntime(&models);
-    defer runtime.deinit();
+    var over_oap: OverOap = undefined;
+    try over_oap.init(&models);
+    defer over_oap.deinit();
+    const runtime = &over_oap.runtime;
     var state = tui_state.AppState.init(std.testing.allocator);
     defer state.deinit();
-    const ctx = CommandContext{ .allocator = std.testing.allocator, .state = &state, .runtime = &runtime };
+    const ctx = CommandContext{ .allocator = std.testing.allocator, .state = &state, .runtime = runtime };
 
     var refused = try dispatch(ctx, .{ .kind = .context, .arg = "2m" });
     defer refused.deinit(std.testing.allocator);
@@ -826,11 +845,13 @@ test "context refuses a window above the ceiling and says what the ceiling is" {
 
 test "context lowers a window freely and says a model with no window of its own" {
     const models = [_]ai_types.Model{context_test_uncatalogued};
-    var runtime = try contextTestRuntime(&models);
-    defer runtime.deinit();
+    var over_oap: OverOap = undefined;
+    try over_oap.init(&models);
+    defer over_oap.deinit();
+    const runtime = &over_oap.runtime;
     var state = tui_state.AppState.init(std.testing.allocator);
     defer state.deinit();
-    const ctx = CommandContext{ .allocator = std.testing.allocator, .state = &state, .runtime = &runtime };
+    const ctx = CommandContext{ .allocator = std.testing.allocator, .state = &state, .runtime = runtime };
 
     var lowered = try dispatch(ctx, .{ .kind = .context, .arg = "32k" });
     defer lowered.deinit(std.testing.allocator);
@@ -846,11 +867,13 @@ test "context lowers a window freely and says a model with no window of its own"
 
 test "context refuses a value that is not a token count" {
     const models = [_]ai_types.Model{context_test_model};
-    var runtime = try contextTestRuntime(&models);
-    defer runtime.deinit();
+    var over_oap: OverOap = undefined;
+    try over_oap.init(&models);
+    defer over_oap.deinit();
+    const runtime = &over_oap.runtime;
     var state = tui_state.AppState.init(std.testing.allocator);
     defer state.deinit();
-    const ctx = CommandContext{ .allocator = std.testing.allocator, .state = &state, .runtime = &runtime };
+    const ctx = CommandContext{ .allocator = std.testing.allocator, .state = &state, .runtime = runtime };
 
     var refused = try dispatch(ctx, .{ .kind = .context, .arg = "lots" });
     defer refused.deinit(std.testing.allocator);
@@ -1101,19 +1124,21 @@ test "permissions opens picker without argument" {
 test "permissions command switches runtime mode" {
     var state = tui_state.AppState.init(std.testing.allocator);
     defer state.deinit();
-    var runtime = try tui_runtime.TuiRuntime.init(std.testing.allocator, .{});
-    defer runtime.deinit();
+    var over_oap: OverOap = undefined;
+    try over_oap.init(&.{});
+    defer over_oap.deinit();
+    const runtime = &over_oap.runtime;
 
     try std.testing.expectEqual(tui_runtime.PermissionMode.bypass, runtime.permissionMode());
     try std.testing.expectEqual(tui_runtime.PermissionMode.bypass, state.permission_mode);
 
-    var bypass = try dispatch(.{ .allocator = std.testing.allocator, .state = &state, .runtime = &runtime }, .{ .kind = .permissions, .arg = "bypass" });
+    var bypass = try dispatch(.{ .allocator = std.testing.allocator, .state = &state, .runtime = runtime }, .{ .kind = .permissions, .arg = "bypass" });
     defer bypass.deinit(std.testing.allocator);
     try std.testing.expectEqual(tui_runtime.PermissionMode.bypass, runtime.permissionMode());
     try std.testing.expectEqual(tui_runtime.PermissionMode.bypass, state.permission_mode);
     try std.testing.expect(std.mem.indexOf(u8, bypass.output, "permission mode set to bypass") != null);
 
-    var ask = try dispatch(.{ .allocator = std.testing.allocator, .state = &state, .runtime = &runtime }, .{ .kind = .permissions, .arg = "ask" });
+    var ask = try dispatch(.{ .allocator = std.testing.allocator, .state = &state, .runtime = runtime }, .{ .kind = .permissions, .arg = "ask" });
     defer ask.deinit(std.testing.allocator);
     try std.testing.expectEqual(tui_runtime.PermissionMode.ask, runtime.permissionMode());
     try std.testing.expectEqual(tui_runtime.PermissionMode.ask, state.permission_mode);
@@ -1279,33 +1304,37 @@ test "abort does not hold a steer the run already consumed" {
 }
 
 test "logout waits for a turn the status has not caught up with" {
-    var runtime = try tui_runtime.TuiRuntime.init(std.testing.allocator, .{});
-    defer runtime.deinit();
+    var over_oap: OverOap = undefined;
+    try over_oap.init(&.{});
+    defer over_oap.deinit();
+    const runtime = &over_oap.runtime;
     runtime.stream_active = true;
 
     var state = tui_state.AppState.init(std.testing.allocator);
     defer state.deinit();
     try std.testing.expect(!state.status.streaming);
 
-    var result = try dispatch(.{ .allocator = std.testing.allocator, .state = &state, .runtime = &runtime }, try parse("/logout opencode-go"));
+    var result = try dispatch(.{ .allocator = std.testing.allocator, .state = &state, .runtime = runtime }, try parse("/logout opencode-go"));
     defer result.deinit(std.testing.allocator);
     try std.testing.expectEqual(CommandAction.none, result.action);
     try std.testing.expect(result.is_error);
 
-    var refresh = try dispatch(.{ .allocator = std.testing.allocator, .state = &state, .runtime = &runtime }, try parse("/model refresh"));
+    var refresh = try dispatch(.{ .allocator = std.testing.allocator, .state = &state, .runtime = runtime }, try parse("/model refresh"));
     defer refresh.deinit(std.testing.allocator);
     try std.testing.expectEqual(CommandAction.refresh_models, refresh.action);
 }
 
 test "abort cancels active turn before streaming status is set" {
-    var runtime = try tui_runtime.TuiRuntime.init(std.testing.allocator, .{});
-    defer runtime.deinit();
+    var over_oap: OverOap = undefined;
+    try over_oap.init(&.{});
+    defer over_oap.deinit();
+    const runtime = &over_oap.runtime;
     runtime.stream_active = true;
 
     var state = tui_state.AppState.init(std.testing.allocator);
     defer state.deinit();
 
-    var result = try dispatch(.{ .allocator = std.testing.allocator, .state = &state, .runtime = &runtime }, .{ .kind = .abort });
+    var result = try dispatch(.{ .allocator = std.testing.allocator, .state = &state, .runtime = runtime }, .{ .kind = .abort });
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expectEqualStrings("Turn aborted.", result.output);
@@ -1315,13 +1344,15 @@ test "abort cancels active turn before streaming status is set" {
 }
 
 test "a second abort while the run winds down says it is stopping instead of aborting again" {
-    var runtime = try tui_runtime.TuiRuntime.init(std.testing.allocator, .{});
-    defer runtime.deinit();
+    var over_oap: OverOap = undefined;
+    try over_oap.init(&.{});
+    defer over_oap.deinit();
+    const runtime = &over_oap.runtime;
     runtime.stream_active = true;
 
     var state = tui_state.AppState.init(std.testing.allocator);
     defer state.deinit();
-    const ctx = CommandContext{ .allocator = std.testing.allocator, .state = &state, .runtime = &runtime };
+    const ctx = CommandContext{ .allocator = std.testing.allocator, .state = &state, .runtime = runtime };
 
     var first = try dispatch(ctx, .{ .kind = .abort });
     defer first.deinit(std.testing.allocator);
@@ -1485,16 +1516,18 @@ test "think sets the thinking level in the state and the runtime" {
 
     var state = tui_state.AppState.init(std.testing.allocator);
     defer state.deinit();
-    var runtime = try tui_runtime.TuiRuntime.init(std.testing.allocator, .{});
-    defer runtime.deinit();
+    var over_oap: OverOap = undefined;
+    try over_oap.init(&.{});
+    defer over_oap.deinit();
+    const runtime = &over_oap.runtime;
 
-    var result = try dispatch(.{ .allocator = std.testing.allocator, .state = &state, .runtime = &runtime }, command);
+    var result = try dispatch(.{ .allocator = std.testing.allocator, .state = &state, .runtime = runtime }, command);
     defer result.deinit(std.testing.allocator);
     try std.testing.expectEqualStrings("thinking level set to max", result.output);
     try std.testing.expectEqual(ai_types.ThinkingLevel.max, state.thinking_level);
     try std.testing.expectEqual(ai_types.ThinkingLevel.max, runtime.thinkingLevel());
 
-    var off = try dispatch(.{ .allocator = std.testing.allocator, .state = &state, .runtime = &runtime }, .{ .kind = .think, .arg = "off" });
+    var off = try dispatch(.{ .allocator = std.testing.allocator, .state = &state, .runtime = runtime }, .{ .kind = .think, .arg = "off" });
     defer off.deinit(std.testing.allocator);
     try std.testing.expectEqual(ai_types.ThinkingLevel.off, state.thinking_level);
     try std.testing.expectEqual(ai_types.ThinkingLevel.off, runtime.thinkingLevel());
