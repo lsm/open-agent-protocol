@@ -24,6 +24,7 @@ pub const Options = struct {
     accepts_inference: bool = false,
     resolves_own_credentials: bool = false,
     catalog: ?types.ModelCatalogState = null,
+    awaits_credential: ?*const fn (provider_id: []const u8) bool = null,
 };
 
 pub const GrantedCredential = struct {
@@ -889,6 +890,10 @@ pub const Server = struct {
         };
 
         const descriptor = self.findProvider(parsed.provider_id) orelse {
+            if (self.options.awaits_credential) |awaits| if (awaits(parsed.provider_id)) {
+                try self.emitCreateRefusal(env, .credential_missing, "this provider is served once it has a credential: sign in or set its key");
+                return;
+            };
             try self.emitCreateRefusal(env, .model_not_found, "no such provider");
             return;
         };
@@ -2010,6 +2015,46 @@ fn makeRequest(allocator: std.mem.Allocator, type_name: []const u8, payload: []c
         "{{\"protocol\":\"open-agent-protocol\",\"version\":\"0.1\",\"profile\":\"{s}\",\"type\":\"{s}\",\"id\":\"{s}\",\"payload\":{s}}}",
         .{ types.PROFILE, type_name, id, payload },
     );
+}
+
+fn awaitsAcmeCredential(provider_id: []const u8) bool {
+    return std.mem.eql(u8, provider_id, "acme");
+}
+
+fn createRefusalCode(allocator: std.mem.Allocator, server: *Server, model_ref: []const u8) ![]u8 {
+    const payload = try std.fmt.allocPrint(allocator, "{{\"model_ref\":\"{s}\",\"messages\":[]}}", .{model_ref});
+    defer allocator.free(payload);
+    const line = try makeRequest(allocator, "inference.create.request", payload, "c1");
+    defer allocator.free(line);
+    try server.handleLine(line);
+    var code: ?[]u8 = null;
+    while (server.popOutbound()) |out| {
+        defer allocator.free(out);
+        const marker = "\"code\":\"";
+        const start = (std.mem.indexOf(u8, out, marker) orelse continue) + marker.len;
+        const end = std.mem.indexOfScalarPos(u8, out, start, '"') orelse continue;
+        if (code == null) code = try allocator.dupe(u8, out[start..end]);
+    }
+    return code orelse error.NoRefusal;
+}
+
+test "a create for an unserved provider that awaits a credential is refused as credential_missing, and any other as model_not_found" {
+    const allocator = std.testing.allocator;
+    var server = try testServer(allocator, .{ .accepts_inference = true, .awaits_credential = awaitsAcmeCredential });
+    defer server.deinit();
+
+    const awaiting = try createRefusalCode(allocator, &server, "acme/anthropic-messages@m");
+    defer allocator.free(awaiting);
+    try std.testing.expectEqualStrings("credential_missing", awaiting);
+    const unknown = try createRefusalCode(allocator, &server, "nobody/anthropic-messages@m");
+    defer allocator.free(unknown);
+    try std.testing.expectEqualStrings("model_not_found", unknown);
+
+    var plain = try testServer(allocator, .{ .accepts_inference = true });
+    defer plain.deinit();
+    const without_hook = try createRefusalCode(allocator, &plain, "acme/anthropic-messages@m");
+    defer allocator.free(without_hook);
+    try std.testing.expectEqualStrings("model_not_found", without_hook);
 }
 
 test "clearing the catalog empties both lists so a fresh one can be added, leaking nothing" {

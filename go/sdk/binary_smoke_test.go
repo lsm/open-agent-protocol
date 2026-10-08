@@ -308,6 +308,22 @@ func TestSmokeProviderCompleteWithoutCredentials(t *testing.T) {
 	t.Logf("uncredentialed completion failed as expected: kind=%s code=%s", streamErr.Kind, streamErr.Code)
 }
 
+func TestSmokeProviderAsksForACredentialForACatalogProviderWithoutAKey(t *testing.T) {
+	client := newSmokeClient(t)
+	_, err := client.Provider.Complete(testContext(t), CompletionRequest{
+		ModelRef: "anthropic/anthropic-messages@any-model",
+		Messages: []Message{UserMessage("hello")},
+		Options:  &RunOptions{MaxTokens: MaxTokens(16)},
+	})
+	var authErr *AuthRequiredError
+	if !errors.As(err, &authErr) {
+		t.Fatalf("a catalog provider with no key should ask for a credential, got %T: %v", err, err)
+	}
+	if authErr.ProviderID != "anthropic" {
+		t.Errorf("ProviderID = %q, want anthropic", authErr.ProviderID)
+	}
+}
+
 func assertAuthFailureIsTyped(t *testing.T, err error, streamErr *StreamError) {
 	t.Helper()
 	if streamErr.Code != CodeAuthRequired {

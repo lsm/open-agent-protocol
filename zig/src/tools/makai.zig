@@ -2596,6 +2596,17 @@ fn countingServedLoad(allocator: std.mem.Allocator) anyerror![]ai_types.Model {
     return cloneOapModels(allocator, &oap_test_served_models);
 }
 
+test "a provider awaits a credential only when it is a catalog row that needs one, on an implemented wire" {
+    try std.testing.expect(oapProviderAwaitsCredential("anthropic"));
+    try std.testing.expect(oapProviderAwaitsCredential("deepseek"));
+    try std.testing.expect(!oapProviderAwaitsCredential("ollama"));
+    try std.testing.expect(!oapProviderAwaitsCredential("no-such-provider"));
+
+    try std.testing.expect(rowAwaitsCredential(.{ .id = "keyed", .auth = &.{.api_key}, .wires = &.{"openai-completions"} }));
+    try std.testing.expect(!rowAwaitsCredential(.{ .id = "keyless", .auth = &.{ .none, .api_key }, .wires = &.{"openai-completions"} }));
+    try std.testing.expect(!rowAwaitsCredential(.{ .id = "unwired", .auth = &.{.api_key}, .wires = &.{"no-such-wire"} }));
+}
+
 test "an invalidated snapshot is loaded again on the next lookup" {
     const allocator = std.testing.allocator;
     served_snapshot_loads = 0;
@@ -2868,6 +2879,18 @@ const ServedOapModels = struct {
         self.* = undefined;
     }
 };
+
+fn oapProviderAwaitsCredential(provider_id: []const u8) bool {
+    const row = provider_catalog.provider(provider_id) orelse return false;
+    return rowAwaitsCredential(row);
+}
+
+fn rowAwaitsCredential(row: provider_catalog.Provider) bool {
+    for (row.auth) |kind| {
+        if (kind == .none) return false;
+    }
+    return provider_catalog.firstImplementedWire(row) != null;
+}
 
 fn refreshServedOapCatalog(allocator: std.mem.Allocator, server: *oap_provider_server.Server) !void {
     served_oap_models.invalidate();
@@ -3825,6 +3848,7 @@ const HttpProviderRuntime = struct {
             .allocator = allocator,
             .registry = api_registry.ApiRegistry.init(allocator),
             .server = oap_provider_server.Server.init(allocator, .{
+                .awaits_credential = oapProviderAwaitsCredential,
                 .capability_revision = VERSION,
                 .grant_channel = .unsupported,
                 .accepts_inference = true,
@@ -4235,6 +4259,7 @@ fn runOapProviderMode(
     try register_builtins.registerBuiltInApiProviders(&registry);
 
     var server = oap_provider_server.Server.init(allocator, .{
+        .awaits_credential = oapProviderAwaitsCredential,
         .capability_revision = VERSION,
         .grant_channel = if (oap_provider_grant_channel.GrantChannel.supported) .out_of_band else .unsupported,
         .accepts_inference = true,
@@ -4491,6 +4516,7 @@ fn runOapxServe(
     var provider_registry = api_registry.ApiRegistry.init(allocator);
     defer provider_registry.deinit();
     var provider_server = oap_provider_server.Server.init(allocator, .{
+        .awaits_credential = oapProviderAwaitsCredential,
         .capability_revision = VERSION,
         .grant_channel = if (oap_provider_grant_channel.GrantChannel.supported) .out_of_band else .unsupported,
         .accepts_inference = true,
