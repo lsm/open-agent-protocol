@@ -848,6 +848,7 @@ pub const Session = struct {
         defer scratch.deinit();
         const a = scratch.allocator();
         if (run.model_override) try self.overrideModel(a, run, refusal);
+        errdefer self.restoreModel();
         var started = Payload.init(a);
         try started.run(self, run);
         try started.put("status", .{ .string = "running" });

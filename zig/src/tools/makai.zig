@@ -8896,8 +8896,19 @@ fn runOapxServe(
     var chosen: ?model_ref.ParsedModelRef = null;
     defer if (chosen) |*held| held.deinit(allocator);
     if (default_model_ref) |ref| {
-        chosen = model_ref.parseModelRef(allocator, ref) catch null;
-        if (chosen) |held| options.initial_model = .{ .id = held.model_id, .provider = held.provider_id, .api = held.api };
+        chosen = model_ref.parseModelRef(allocator, ref) catch |err| switch (err) {
+            error.OutOfMemory => return error.OutOfMemory,
+            else => {
+                try compat.stdio.writeAll(stderr, "--model takes a model ref, provider/api@model\n");
+                return error.InvalidArgument;
+            },
+        };
+        const held = chosen.?;
+        if (!catalogues(production.models, held)) {
+            try compat.stdio.writeAll(stderr, "--model names a model the catalog does not list\n");
+            return error.InvalidArgument;
+        }
+        options.initial_model = .{ .id = held.model_id, .provider = held.provider_id, .api = held.api };
     }
     var oapx = oapx_adapter.Adapter.init(allocator, options);
     defer oapx.deinit();
@@ -8986,7 +8997,7 @@ fn runOapxServe(
             if (try auth_adapter.handleLine(line)) continue;
             endpoint.handleLine(line) catch |err| {
                 _ = try writeEndpointOutbound(&output, allocator, &endpoint);
-                if (backendFatalMessage(err)) |message| try compat.stdio.writeAll(stderr, message);
+                if (serveFatalMessage(err)) |message| try compat.stdio.writeAll(stderr, message);
                 return err;
             };
             _ = try writeEndpointOutbound(&output, allocator, &endpoint);
@@ -8995,7 +9006,7 @@ fn runOapxServe(
             if (stdin_stream.getError()) |failure| {
                 _ = try writeEndpointOutbound(&output, allocator, &endpoint);
                 if (std.mem.eql(u8, failure, "stdio line too large")) {
-                    try compat.stdio.writeAll(stderr, BACKEND_FRAME_TOO_LARGE_MESSAGE);
+                    try compat.stdio.writeAll(stderr, SERVE_FRAME_TOO_LARGE_MESSAGE);
                     return error.FrameTooLarge;
                 }
                 return error.StdinFailed;
@@ -9035,6 +9046,13 @@ fn runOapxServe(
     if (serve_provider) _ = try drainOapProviderOutbound(&output, allocator, &provider_server);
 }
 
+fn catalogues(models: []const ai_types.Model, wanted: model_ref.ParsedModelRef) bool {
+    for (models) |model| {
+        if (std.mem.eql(u8, model.id, wanted.model_id) and std.mem.eql(u8, model.provider, wanted.provider_id) and std.mem.eql(u8, model.api, wanted.api)) return true;
+    }
+    return false;
+}
+
 fn writeOapAuthOutbound(
     stdout: *bounded_output.Output,
     allocator: std.mem.Allocator,
@@ -9057,6 +9075,9 @@ const BACKEND_UNADDRESSABLE_ENVELOPE_MESSAGE = "oapx serve agent --backend: stdi
 const OUTPUT_STALLED_MESSAGE = "oapx serve agent: stdout made no progress within the stall bound; no host is reading it, so the endpoint stops rather than hold events it cannot deliver\n";
 const BACKEND_OUTPUT_STALLED_MESSAGE = "oapx serve agent --backend: stdout made no progress within the stall bound; no host is reading it, so the endpoint stops rather than hold events it cannot deliver\n";
 const BACKEND_FRAME_TOO_LARGE_MESSAGE = "oapx serve agent --backend: a frame exceeded the 1 MiB line bound; the endpoint will not truncate it or resynchronise\n";
+const SERVE_MALFORMED_LINE_MESSAGE = "oapx serve agent: stdin carried a line that is not an OAP envelope or control frame; the stream's framing is in doubt and the endpoint will not resynchronise\n";
+const SERVE_UNADDRESSABLE_ENVELOPE_MESSAGE = "oapx serve agent: stdin carried an envelope with no id; every response this binding defines is correlated by in_reply_to, so no refusal could be addressed to it\n";
+const SERVE_FRAME_TOO_LARGE_MESSAGE = "oapx serve agent: a frame exceeded the 1 MiB line bound; the endpoint will not truncate it or resynchronise\n";
 
 fn backendClock() u64 {
     return compat.time.monotonicNanos() catch 0;
@@ -9345,6 +9366,16 @@ fn unblockOutput(stdout: std.Io.File) void {
     const status = stdout.stat(backendIo()) catch return;
     if (status.kind != .named_pipe and status.kind != .unix_domain_socket) return;
     compat.stdio.setNonBlocking(stdout) catch {};
+}
+
+fn serveFatalMessage(err: anyerror) ?[]const u8 {
+    return switch (err) {
+        error.OutputStalled => OUTPUT_STALLED_MESSAGE,
+        error.MalformedLine => SERVE_MALFORMED_LINE_MESSAGE,
+        error.UnaddressableEnvelope => SERVE_UNADDRESSABLE_ENVELOPE_MESSAGE,
+        error.FrameTooLarge => SERVE_FRAME_TOO_LARGE_MESSAGE,
+        else => null,
+    };
 }
 
 fn backendFatalMessage(err: anyerror) ?[]const u8 {
