@@ -1,5 +1,6 @@
 const std = @import("std");
-const agent = @import("agent");
+const agent_compaction = @import("agent_compaction");
+const agent_types = @import("agent_types");
 const ai_types = @import("ai_types");
 const session_runtime = @import("session_runtime");
 const compat = @import("compat");
@@ -14,9 +15,9 @@ pub fn autoCompactAt(setting: AutoCompactSetting, model: ai_types.Model) ?u64 {
     if (model.context_window == 0) return null;
     return switch (setting) {
         .off => null,
-        .percent => |percent| agent.compaction.shareAt(model.context_window, percent),
+        .percent => |percent| agent_compaction.shareAt(model.context_window, percent),
         .tokens => |count| count,
-        .auto => agent.compaction.autoCompactAt(model.context_window, model.max_tokens),
+        .auto => agent_compaction.autoCompactAt(model.context_window, model.max_tokens),
     };
 }
 
@@ -314,7 +315,7 @@ pub const RegisteredToolEntry = struct {
     label: []u8,
     short_description: []u8,
 
-    pub fn init(allocator: std.mem.Allocator, tool: agent.AgentTool) !RegisteredToolEntry {
+    pub fn init(allocator: std.mem.Allocator, tool: agent_types.AgentTool) !RegisteredToolEntry {
         const name = try allocator.dupe(u8, tool.name);
         errdefer allocator.free(name);
         const label = try allocator.dupe(u8, tool.label);
@@ -1041,7 +1042,7 @@ pub const AppState = struct {
         try self.transcript.append(self.allocator, entry);
     }
 
-    pub fn setRegisteredTools(self: *AppState, tools: []const agent.AgentTool) !void {
+    pub fn setRegisteredTools(self: *AppState, tools: []const agent_types.AgentTool) !void {
         for (self.registered_tools.items) |*tool| tool.deinit(self.allocator);
         self.registered_tools.clearRetainingCapacity();
         try self.registered_tools.ensureTotalCapacity(self.allocator, tools.len);
@@ -1574,7 +1575,7 @@ pub const AppState = struct {
             try writer.writeAll(" tokens");
         }
         if (payload.transcript.slice().len > 0) try writer.print("\ntranscript: {s}", .{payload.transcript.slice()});
-        try writer.print("\n\n{s}", .{agent.compaction.summaryOf(payload.text.slice())});
+        try writer.print("\n\n{s}", .{agent_compaction.summaryOf(payload.text.slice())});
         return out.toOwnedSlice();
     }
 
@@ -2411,9 +2412,9 @@ pub fn noopToolForTest(
     args_json: []const u8,
     cancel_token: ?ai_types.CancelToken,
     on_update_ctx: ?*anyopaque,
-    on_update: ?agent.ToolUpdateCallback,
+    on_update: ?agent_types.ToolUpdateCallback,
     allocator: std.mem.Allocator,
-) anyerror!agent.AgentToolResult {
+) anyerror!agent_types.AgentToolResult {
     _ = tool_call_id;
     _ = args_json;
     _ = cancel_token;
@@ -2841,7 +2842,7 @@ test "bytes convert at the agent's own divisor" {
 test "AppState applies transcript and tool events" {
     var state = AppState.init(std.testing.allocator);
     defer state.deinit();
-    const tools = [_]agent.AgentTool{.{
+    const tools = [_]agent_types.AgentTool{.{
         .label = "Shell Execute",
         .name = "shell_command",
         .description = "Run shell command",
@@ -3243,7 +3244,7 @@ test "AppState does not append generic agent error after detailed error event" {
 }
 
 test "AppState clones registered tool metadata" {
-    const tools = [_]agent.AgentTool{
+    const tools = [_]agent_types.AgentTool{
         .{
             .label = "Shell Execute",
             .name = "shell_execute",
@@ -3270,7 +3271,7 @@ test "AppState clones registered tool metadata" {
     try std.testing.expectEqualStrings("Run shell commands", state.registered_tools.items[0].short_description);
     try std.testing.expectEqualStrings("", state.registered_tools.items[1].short_description);
 
-    const replacement = [_]agent.AgentTool{.{
+    const replacement = [_]agent_types.AgentTool{.{
         .label = "File Read",
         .name = "file_read",
         .description = "Read file",

@@ -5,7 +5,7 @@ const tool_local_runtime = @import("tool_local_runtime");
 const event_stream_mod = @import("event_stream");
 const types = @import("agent_types");
 const agent_loop = @import("agent_loop");
-const compaction = @import("compaction.zig");
+const compaction = @import("agent_compaction");
 
 fn defaultIo() std.Io {
     return if (@import("builtin").is_test)
