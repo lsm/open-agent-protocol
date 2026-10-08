@@ -756,19 +756,31 @@ test "OAP auth adapter takes the default for a question that allows an empty ans
 
 const FakeCopilotAuth = struct {
     var polls: std.atomic.Value(usize) = .init(0);
+    var granted: bool = false;
+    var copilot_token_calls: std.atomic.Value(usize) = .init(0);
+    var model_policy_calls: std.atomic.Value(usize) = .init(0);
 
     fn fetch(allocator: std.mem.Allocator, url: []const u8, _: compat.http.FetchOptions) compat.http.FetchError!compat.http.Fetched {
         const body: []const u8 = if (std.mem.endsWith(u8, url, "/login/device/code"))
             "{\"device_code\":\"device-secret-3\",\"user_code\":\"GH-0001\",\"verification_uri\":\"https://github.com/login/device\",\"expires_in\":5,\"interval\":1}"
         else if (std.mem.endsWith(u8, url, "/login/oauth/access_token")) blk: {
             _ = polls.fetchAdd(1, .seq_cst);
-            break :blk "{\"error\":\"authorization_pending\"}";
+            break :blk if (granted) "{\"access_token\":\"github-secret-3\"}" else "{\"error\":\"authorization_pending\"}";
+        } else if (std.mem.endsWith(u8, url, "/copilot_internal/v2/token")) blk: {
+            _ = copilot_token_calls.fetchAdd(1, .seq_cst);
+            break :blk "{\"token\":\"tid=copilot-secret-3;proxy-ep=proxy.individual.githubcopilot.com\"}";
+        } else if (std.mem.endsWith(u8, url, "/policy")) blk: {
+            _ = model_policy_calls.fetchAdd(1, .seq_cst);
+            break :blk "{}";
         } else return error.RequestFailed;
         return .{ .status = 200, .body = try allocator.dupe(u8, body) };
     }
 
     fn server() auth_server.AuthProtocolServer {
         polls.store(0, .seq_cst);
+        granted = false;
+        copilot_token_calls.store(0, .seq_cst);
+        model_policy_calls.store(0, .seq_cst);
         return auth_server.AuthProtocolServer.init(std.testing.allocator, .{
             .persist_credentials = false,
             .copilot_fetch = fetch,
@@ -816,6 +828,37 @@ test "OAP auth adapter cancels a Copilot device login that is still waiting for 
     compat.time.sleepMs(1_500);
     try std.testing.expectEqual(settled, FakeCopilotAuth.polls.load(.seq_cst));
     try std.testing.expectEqual(@as(usize, 0), native.activeFlowCount());
+}
+
+test "OAP auth adapter completes an approved Copilot device login through the injected fetch alone, and sends no secret" {
+    var native = FakeCopilotAuth.server();
+    defer native.deinit();
+    FakeCopilotAuth.granted = true;
+    var adapter = Adapter.init(std.testing.allocator, &native);
+    defer adapter.deinit();
+
+    const line =
+        \\{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"auth.login.start.request","id":"start-copilot-granted","payload":{"provider_id":"github-copilot"}}
+    ;
+    try std.testing.expect(try adapter.handleLine(line));
+    var status: ?[]u8 = null;
+    defer if (status) |value| std.testing.allocator.free(value);
+    const deadline = compat.time.nowMillis() + 5_000;
+    while (status == null and compat.time.nowMillis() < deadline) {
+        _ = try adapter.pump();
+        while (adapter.popOutbound()) |event| {
+            defer std.testing.allocator.free(event);
+            try std.testing.expect(std.mem.indexOf(u8, event, "secret") == null);
+            var parsed = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, event, .{});
+            defer parsed.deinit();
+            if (!std.mem.eql(u8, try requiredString(parsed.value.object, "type"), "auth.login.completed")) continue;
+            status = try std.testing.allocator.dupe(u8, try requiredString((parsed.value.object.get("payload") orelse return error.MissingPayload).object, "status"));
+        }
+        if (status == null) compat.time.sleepNs(std.time.ns_per_ms);
+    }
+    try std.testing.expectEqualStrings("success", status orelse return error.LoginNeverCompleted);
+    try std.testing.expectEqual(@as(usize, 1), FakeCopilotAuth.copilot_token_calls.load(.seq_cst));
+    try std.testing.expect(FakeCopilotAuth.model_policy_calls.load(.seq_cst) > 0);
 }
 
 test "auth server shutdown stops a Copilot device login that is still waiting for approval" {

@@ -173,6 +173,7 @@ pub fn getDefaultBaseUrl(allocator: std.mem.Allocator) []const u8 {
 }
 
 pub fn enableModel(
+    fetch: Fetch,
     allocator: std.mem.Allocator,
     token: []const u8,
     model_id: []const u8,
@@ -191,7 +192,7 @@ pub fn enableModel(
     try headers.append(allocator, .{ .name = "openai-intent", .value = "chat-policy" });
     try headers.append(allocator, .{ .name = "x-interaction-type", .value = "chat-policy" });
 
-    var fetched = http.fetch(allocator, url, .{
+    var fetched = fetch(allocator, url, .{
         .method = .POST,
         .extra_headers = headers.items,
         .body = "{\"state\": \"enabled\"}",
@@ -204,6 +205,7 @@ pub fn enableModel(
 }
 
 pub fn enableAllModels(
+    fetch: Fetch,
     allocator: std.mem.Allocator,
     token: []const u8,
     base_url: []const u8,
@@ -216,7 +218,7 @@ pub fn enableAllModels(
     }
 
     for (KNOWN_COPILOT_MODELS) |model| {
-        const success = enableModel(allocator, token, model, base_url) catch false;
+        const success = enableModel(fetch, allocator, token, model, base_url) catch false;
         if (on_progress) |cb| cb(model, success);
 
         if (success) {
@@ -257,7 +259,7 @@ pub fn login(callbacks: Callbacks, allocator: std.mem.Allocator) !Credentials {
         defer if (poll_result.error_msg) |msg| allocator.free(msg);
 
         if (poll_result.access_token) |github_token| {
-            const copilot_token = try getCopilotToken(github_domain, github_token, allocator);
+            const copilot_token = try getCopilotToken(callbacks.fetch, github_domain, github_token, allocator);
 
             const base_url = getBaseUrlFromToken(copilot_token, allocator);
 
@@ -269,7 +271,7 @@ pub fn login(callbacks: Callbacks, allocator: std.mem.Allocator) !Credentials {
             defer if (enterprise_url) |url| allocator.free(url);
 
             const resolved_base_url = base_url orelse DEFAULT_BASE_URL;
-            const enabled_models = try enableAllModels(allocator, copilot_token, resolved_base_url, null);
+            const enabled_models = try enableAllModels(callbacks.fetch, allocator, copilot_token, resolved_base_url, null);
 
             const provider_data = try buildProviderData(allocator, enterprise_url, resolved_base_url, enabled_models);
 
@@ -317,12 +319,12 @@ pub fn refreshToken(credentials: Credentials, allocator: std.mem.Allocator) !Cre
         break :blk "github.com";
     } else "github.com";
 
-    const copilot_token = try getCopilotToken(github_domain, credentials.refresh, allocator);
+    const copilot_token = try getCopilotToken(http.fetch, github_domain, credentials.refresh, allocator);
 
     const base_url = getBaseUrlFromToken(copilot_token, allocator);
 
     const resolved_base_url = base_url orelse DEFAULT_BASE_URL;
-    const enabled_models = try enableAllModels(allocator, copilot_token, resolved_base_url, null);
+    const enabled_models = try enableAllModels(http.fetch, allocator, copilot_token, resolved_base_url, null);
 
     const enterprise_url = if (std.mem.eql(u8, github_domain, "github.com"))
         null
@@ -538,7 +540,7 @@ fn pollForToken(fetch: Fetch, domain: []const u8, device_code: []const u8, alloc
     }
 }
 
-fn getCopilotToken(domain: []const u8, github_token: []const u8, allocator: std.mem.Allocator) ![]const u8 {
+fn getCopilotToken(fetch: Fetch, domain: []const u8, github_token: []const u8, allocator: std.mem.Allocator) ![]const u8 {
     const url = if (std.mem.eql(u8, domain, "github.com"))
         copilot_token_url
     else
@@ -557,7 +559,7 @@ fn getCopilotToken(domain: []const u8, github_token: []const u8, allocator: std.
     try headers.append(allocator, .{ .name = "user-agent", .value = COPILOT_HEADERS.user_agent });
     try headers.append(allocator, .{ .name = "copilot-integration-id", .value = COPILOT_HEADERS.copilot_integration_id });
 
-    var fetched = http.fetch(allocator, url, .{
+    var fetched = fetch(allocator, url, .{
         .method = .GET,
         .extra_headers = headers.items,
         .max_response_bytes = 8192,
