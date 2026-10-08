@@ -1620,6 +1620,7 @@ pub const Session = struct {
                 .description = tool.description,
                 .input_schema_json = tool.parameters_schema_json,
                 .execution_owner = endpoint_id,
+                .annotations_json = if (tool.label.len > 0) try std.json.Stringify.valueAlloc(arena, .{ .title = tool.label }, .{}) else null,
             };
         }
         return .{ .revision = capability_revision, .response = .{ .session_id = request.session_id, .tools = definitions } };

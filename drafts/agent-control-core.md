@@ -558,7 +558,12 @@ Core tool definitions use JSON Schema input:
 - `description`
 - `input_schema`
 - `execution_owner`, the participant that executes this tool
-- `annotations`
+- `annotations`, an open object of hints about the tool. One member is defined:
+  `title`, the tool's human-readable name, taken from MCP's tool annotations so a
+  tool bridged from an MCP server can pass its own through unchanged. A control
+  layer that shows tools by name shows `title` when it is present and `name`
+  otherwise; it never identifies a tool by `title`, because `name` is what a call
+  carries
 - `source`, the id of the `ToolSourceDescriptor` the tool comes from
   (`+tool-sources`, Decision 0008) — never an inline copy of the descriptor,
   so a consumer attributes a tool to an MCP server without parsing its name

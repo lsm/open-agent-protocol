@@ -1119,7 +1119,6 @@ pub const App = struct {
         if (options.remote != null and !app.runtime.?.recordsFromEndpoint()) try app.state.appendTranscript(.system, over_oap_notice);
         app.state.permission_mode = app.runtime.?.permissionMode();
         app.state.thinking_level = app.runtime.?.thinkingLevel();
-        try app.state.setRegisteredTools(app.runtime.?.availableTools());
         if (app.runtime.?.currentModel()) |model| {
             try app.state.status.setModelWithContext(allocator, model.id, model.provider, model.context_window);
             app.state.telemetry.context_window = model.context_window;
@@ -1604,6 +1603,7 @@ pub const App = struct {
         if (!over_oap) if (resume_root) |root| try self.adoptResumeRoot(runtime, root);
         var loaded = try store.resumeSession(id, runtime, if (over_oap) resume_root else null);
         defer loaded.deinit(self.allocator);
+        try self.state.setRegisteredTools(runtime.toolLabels());
         if (over_oap) if (resume_root) |root| {
             try replaceOwnedString(self.allocator, &self.working_dir, root);
             try self.refreshCwdDisplay();
@@ -2933,6 +2933,7 @@ pub const App = struct {
                 try self.state.appendTranscript(.@"error", @errorName(err));
                 return;
             };
+            if (self.runtime) |runtime| try self.state.setRegisteredTools(runtime.toolLabels());
         } else {
             try self.state.status.setError(self.allocator, "no runtime configured");
         }
@@ -5836,16 +5837,22 @@ const TestContext = struct {
     }
 };
 
-test "App init seeds registered tools from runtime" {
+test "App takes its tool labels from the endpoint's tool list once the session starts" {
     var production = try ProductionRuntime.init(std.testing.allocator, .{});
     defer production.deinit();
     production.initBridge();
     var app = try App.init(std.testing.allocator, production.options());
     defer app.deinit();
 
+    try std.testing.expectEqual(@as(usize, 0), app.state.registered_tools.items.len);
+    try app.start();
     try std.testing.expect(app.state.registered_tools.items.len >= 4);
-    try std.testing.expectEqual(app.runtime.?.availableTools().len, app.state.registered_tools.items.len);
-    try std.testing.expectEqualStrings("Shell", app.state.registered_tools.items[0].name);
+    try std.testing.expectEqual(app.runtime.?.toolLabels().len, app.state.registered_tools.items.len);
+    var lists_shell = false;
+    for (app.state.registered_tools.items) |tool| {
+        if (std.mem.eql(u8, tool.name, "Shell")) lists_shell = true;
+    }
+    try std.testing.expect(lists_shell);
     try std.testing.expect(production.permission_engine.workspace_root.len > 0);
 }
 
