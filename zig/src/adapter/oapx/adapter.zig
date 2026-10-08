@@ -15,7 +15,9 @@ const local_loop = @import("local_loop.zig");
 pub const LocalLoop = local_loop.LocalLoop;
 
 pub const endpoint_id = "oapx.agent";
-pub const capability_revision = "oapx-agent-v12";
+pub const capability_revision = "oapx-agent-v13";
+const native_source = "oapx";
+const native_sources = [_]oap_types.ToolSourceDescriptor{.{ .id = native_source, .kind = "native", .display_name = "oapx" }};
 
 pub const journal_capacity: usize = 1 << 16;
 pub const queue_capacity: usize = 8;
@@ -65,6 +67,7 @@ pub const descriptor = contract.Descriptor{
     .endpoint = .{ .id = endpoint_id, .name = "oapx agent loop", .version = protocol_version, .adapter = "in-process" },
     .capability_revision = capability_revision,
     .features = &features,
+    .sources = &native_sources,
     .limits = .{ .max_active_runs_per_session = queue_capacity + 1, .max_queued_runs_per_session = queue_capacity },
 };
 
@@ -72,6 +75,7 @@ const unsaved_descriptor = contract.Descriptor{
     .endpoint = descriptor.endpoint,
     .capability_revision = capability_revision,
     .features = &unsaved_features,
+    .sources = &native_sources,
     .limits = descriptor.limits,
 };
 
@@ -1414,6 +1418,7 @@ pub const Session = struct {
         try call.put("tool_call_id", .{ .string = tool_call_id });
         try call.put("execution_owner", .{ .string = endpoint_id });
         try call.put("name", .{ .string = name });
+        try call.put("source", .{ .string = native_source });
         return call;
     }
 
@@ -1620,10 +1625,11 @@ pub const Session = struct {
                 .description = tool.description,
                 .input_schema_json = tool.parameters_schema_json,
                 .execution_owner = endpoint_id,
+                .source = native_source,
                 .annotations_json = if (tool.label.len > 0) try std.json.Stringify.valueAlloc(arena, .{ .title = tool.label }, .{}) else null,
             };
         }
-        return .{ .revision = capability_revision, .response = .{ .session_id = request.session_id, .tools = definitions } };
+        return .{ .revision = capability_revision, .response = .{ .session_id = request.session_id, .sources = try arena.dupe(oap_types.ToolSourceDescriptor, &native_sources), .tools = definitions } };
     }
 
     fn models(ptr: *anyopaque, arena: std.mem.Allocator, request: *const oap_types.ModelsRequest, refusal: *contract.Refusal) contract.Failure!contract.Catalog {
@@ -1975,8 +1981,8 @@ fn admitProvidedTools(keep: std.mem.Allocator, arena: std.mem.Allocator, partici
         if (name.len == 0) return refuseTool(arena, refusal, "", "a provided tool needs a name");
         if (!std.mem.eql(u8, stringOf(item, "execution_owner"), participant)) return refuseTool(arena, refusal, name, "execution_owner must be the opening participant");
         const source = stringOf(item, "source");
-        if (source.len > 0) {
-            refusal.* = .{ .feature = contract.feature_tools_provide, .reason = contract.reason_unsatisfiable, .tool = try arena.dupe(u8, name), .source = try arena.dupe(u8, source), .detail = "the loop declares no tool sources, so a source resolves to nothing" };
+        if (source.len > 0 and !std.mem.eql(u8, source, native_source)) {
+            refusal.* = .{ .feature = contract.feature_tools_provide, .reason = contract.reason_unsatisfiable, .tool = try arena.dupe(u8, name), .source = try arena.dupe(u8, source), .detail = "the loop declares one tool source, " ++ native_source ++ ", so another resolves to nothing" };
             return error.UnsupportedFeature;
         }
         if (namedIn(native, offers_input, provided[0..index], name)) return refuseTool(arena, refusal, name, "the name already resolves to a catalog entry");
@@ -1989,6 +1995,7 @@ fn admitProvidedTools(keep: std.mem.Allocator, arena: std.mem.Allocator, partici
             .description = if (description.len > 0) description else null,
             .input_schema_json = if (schema) |value| try json_encode.valueAlloc(keep, value) else "{\"type\":\"object\"}",
             .execution_owner = participant,
+            .source = if (source.len > 0) native_source else null,
         };
     }
     return provided;
