@@ -318,6 +318,18 @@ This section pinned the removed endpoint's payloads against
 payloads are pinned instead by its own tests in `zig/src/adapter/oapx/adapter.zig`,
 which run every envelope through the schema and semantic validators.
 
+The TUI's side of the same wire is observable through `OapExecution.tap`, a
+`Tap` of a context and a `line` callback that sees every line `OapExecution`
+sends and every line it reads back, in that order. Its contract:
+
+- **The line is borrowed.** `OapExecution` frees it as soon as the callback
+  returns, so a tap that keeps a line copies it.
+- **It runs on whichever thread moved the line.** That is the caller's thread
+  while a session opens, and the session's pump thread once it runs, so a tap
+  that two of those can reach serializes itself.
+- **Set it while no pump runs.** `tap` is a plain field: assign it before the
+  session starts, or after `stop` has joined the pump, never in between.
+
 ## Open against the draft
 
 The map is complete against what exists. Two things it cannot settle, both now
