@@ -193,9 +193,9 @@ class ToolDefinition:
     """A tool the model may call.
 
     ``parameters_schema_json`` is a JSON Schema string; the OAP provider path
-    parses it to ``input_schema`` and returns calls to the caller. ``execute``
-    is used only by explicit Makai V1 agent mode. The current OAP agent host
-    rejects client-executed tools with ``unsupported_feature``.
+    parses it to ``input_schema`` and returns calls to the caller. On an agent
+    run the tool is provided to the session at open, and ``execute`` answers
+    each call the endpoint routes to the SDK.
     """
 
     name: str
@@ -209,8 +209,9 @@ class RunOptions:
     """Per-request knobs.
 
     ``session_id`` names an OAP agent session; in explicit Makai V1 it remains
-    a one-run correlation key. Agent token/sampling options are not projected
-    on the current OAP submit surface and fail explicitly. On an auto-once
+    a one-run correlation key. On an agent run ``reasoning_effort`` becomes the
+    session's reasoning level and ``max_tokens`` the oapx output limit, both
+    at open; ``temperature`` fails explicitly, since the loop takes none. On an auto-once
     auth retry, a fresh session id is used for the retried attempt.
     """
 
