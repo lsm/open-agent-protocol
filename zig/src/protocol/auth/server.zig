@@ -70,6 +70,7 @@ pub const AuthProtocolServer = struct {
         fixture_asks_default: bool = false,
         copilot_fetch: github_oauth.Fetch = compat.http.fetch,
         answers_prompts: bool = true,
+        anthropic_fetch: anthropic_oauth.Fetch = compat.http.fetch,
         codex_fetch: codex_oauth.Fetch = compat.http.fetch,
     };
 
@@ -619,10 +620,17 @@ pub const AuthProtocolServer = struct {
         g_oauth_thread_context = &context;
         defer g_oauth_thread_context = null;
 
-        const credentials = try anthropic_oauth.login(.{
-            .onAuth = anthropicOnAuth,
-            .onPrompt = anthropicOnPrompt,
-        }, self.allocator);
+        const credentials = if (self.options.answers_prompts or !anthropic_oauth.loopback_supported)
+            try anthropic_oauth.login(.{
+                .onAuth = anthropicOnAuth,
+                .onPrompt = anthropicOnPrompt,
+            }, self.allocator)
+        else
+            try anthropic_oauth.loginWithLoopback(.{
+                .onAuth = anthropicOnAuth,
+                .isCancelled = oauthFlowCancelled,
+                .fetch = self.options.anthropic_fetch,
+            }, self.allocator);
 
         return .{
             .refresh = credentials.refresh,

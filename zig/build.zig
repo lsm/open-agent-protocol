@@ -637,6 +637,15 @@ pub fn build(b: *std.Build) void {
         },
     });
 
+    const oauth_loopback_mod = b.createModule(.{
+        .root_source_file = b.path("src/utils/oauth/loopback.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "compat", .module = compat_mod },
+        },
+    });
+
     const oauth_anthropic_mod = b.createModule(.{
         .root_source_file = b.path("src/utils/oauth/anthropic.zig"),
         .target = target,
@@ -644,6 +653,7 @@ pub fn build(b: *std.Build) void {
         .imports = &.{
             .{ .name = "ai_types", .module = ai_types_mod },
             .{ .name = "oauth/pkce", .module = oauth_utils_pkce_mod },
+            .{ .name = "oauth/loopback", .module = oauth_loopback_mod },
             .{ .name = "compat", .module = compat_mod },
         },
     });
@@ -2200,6 +2210,7 @@ pub fn build(b: *std.Build) void {
 
     const oauth_pkce_test = b.addTest(.{ .root_module = oauth_pkce_mod });
     const oauth_utils_pkce_test = b.addTest(.{ .root_module = oauth_utils_pkce_mod });
+    const oauth_loopback_test = b.addTest(.{ .root_module = oauth_loopback_mod });
     const oauth_anthropic_test = b.addTest(.{ .root_module = oauth_anthropic_mod });
     const oauth_openai_codex_test = b.addTest(.{ .root_module = oauth_openai_codex_mod });
 
@@ -2844,6 +2855,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&b.addRunArtifact(ollama_api_test).step);
     test_step.dependOn(&b.addRunArtifact(oauth_pkce_test).step);
     test_step.dependOn(&b.addRunArtifact(oauth_utils_pkce_test).step);
+    test_step.dependOn(&b.addRunArtifact(oauth_loopback_test).step);
     test_step.dependOn(&b.addRunArtifact(oauth_anthropic_test).step);
     test_step.dependOn(&b.addRunArtifact(oauth_openai_codex_test).step);
     test_step.dependOn(&b.addRunArtifact(oauth_storage_test).step);
@@ -3042,6 +3054,7 @@ pub fn build(b: *std.Build) void {
     test_unit_utils_step.dependOn(&b.addRunArtifact(github_copilot_test).step);
     test_unit_utils_step.dependOn(&b.addRunArtifact(oauth_pkce_test).step);
     test_unit_utils_step.dependOn(&b.addRunArtifact(oauth_utils_pkce_test).step);
+    test_unit_utils_step.dependOn(&b.addRunArtifact(oauth_loopback_test).step);
     test_unit_utils_step.dependOn(&b.addRunArtifact(oauth_anthropic_test).step);
     test_unit_utils_step.dependOn(&b.addRunArtifact(oauth_openai_codex_test).step);
     test_unit_utils_step.dependOn(&b.addRunArtifact(oauth_storage_test).step);
