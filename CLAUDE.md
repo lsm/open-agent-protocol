@@ -24,8 +24,10 @@ The Zig runtime and the SDK wire have their own normative pair, which the
 protocol records do not cover and which is easy to miss now that they live in
 one file: `DESIGN.md` is authoritative for architecture, protocol boundaries,
 ownership, sequencing and transport posture, and
-`docs/v1-sdk-agent-provider-spec.md` is the normative SDK and protocol spec.
-Read those before changing SDK or Zig protocol behavior.
+`docs/v1-sdk-agent-provider-spec.md` was the normative SDK spec for the Makai v1
+wire, which is retired (#376): every SDK now speaks OAP to
+`oapx serve agent,provider --stdio`, and the v1 spec is history, not a
+contract. Read DESIGN.md before changing SDK or Zig protocol behavior.
 
 A `research/` ledger and a `fixtures/adapters/` corpus both record an upstream
 project's vocabulary rather than ours, so never rename an identifier inside
