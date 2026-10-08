@@ -1,21 +1,16 @@
 """Provider auth listing and interactive login over agent-profile ``+auth``.
 
 The runtime owns credentials. A local OAP login is a flow-id-scoped exchange
-of start, URL/prompt/progress events, prompt replies, and one terminal. The
-older Makai V1 exchange remains available only in explicit legacy mode.
+of start, URL/prompt/progress events, prompt replies, and one terminal.
 """
 
 from __future__ import annotations
 
-import asyncio
 import inspect
 import logging
 from typing import Any, Dict, List, Mapping, Optional, Tuple, cast
 
-from ._diagnostics import TimeoutContext, build_diagnostics, format_timeout_message
-from ._ids import new_ulid
-from ._wire import build_stream_envelope, payload_of
-from .errors import TIMEOUT_CODE, MakaiAuthError, MakaiStreamError, is_timeout_error
+from .errors import MakaiAuthError
 from .transport import StdioTransport
 from .types import (
     AuthErrorEvent,
@@ -86,34 +81,7 @@ class AuthApi:
             MakaiAuthError: the request was rejected, timed out, or the
                 response was malformed.
         """
-        if not self._transport.legacy_wire:
-            return await self._oap_list_providers()
-        stream_id = new_ulid()
-        envelope = build_stream_envelope("auth_providers_request", stream_id, {})
-        context = TimeoutContext(
-            "auth_providers_response",
-            self._frame_timeout,
-            stream_id=stream_id,
-            message_id=stream_id,
-        )
-        logger.debug("auth_providers_request stream_id=%s", stream_id)
-
-        async with self._transport.route(stream_id=stream_id) as route:
-            await self._send(envelope)
-            while True:
-                frame = await self._next_frame(route, context)
-                frame_type = frame.get("type")
-                if frame_type == "ack":
-                    continue
-                if frame_type == "nack":
-                    raise _nack_to_auth_error(frame)
-                if frame_type == "auth_providers_response":
-                    return _parse_providers(frame)
-                raise MakaiAuthError(
-                    "unexpected envelope type while awaiting auth_providers_response: "
-                    f"{frame_type}",
-                    kind="transport_error",
-                )
+        return await self._oap_list_providers()
 
     async def login(
         self,
@@ -123,8 +91,9 @@ class AuthApi:
         """Run one interactive login flow for ``provider_id``.
 
         Handler resolution is per-call handlers first, then the client-level
-        handlers, then none (spec §3.7). A ``prompt`` event with no
-        ``on_prompt`` handler cancels the flow rather than hanging.
+        handlers, then none (spec §3.7). OAP carries no prompt answer, so a
+        ``prompt`` event cancels the flow and fails with
+        ``auth_input_unavailable`` rather than hanging.
 
         Returns ``None`` on success -- the TypeScript SDK's ``{status:
         "success"}`` carries no additional information.
@@ -133,120 +102,14 @@ class AuthApi:
             asyncio.CancelledError: when the caller cancels the awaiting task.
                 This propagates rather than being converted, so a cancelled
                 login is indistinguishable from any other cancelled await; the
-                SDK still sends ``auth_cancel`` before re-raising.
+                SDK still sends ``auth.login.cancel.request`` before re-raising.
             MakaiAuthError: ``kind="cancelled"`` when the runtime reports the
-                flow as cancelled, or when the SDK cancels it because a prompt
-                arrived with no ``on_prompt`` handler;
+                flow as cancelled; ``code="auth_input_unavailable"`` when a
+                prompt arrived;
                 ``kind="provider_error"`` when the provider rejected the
                 login; ``kind="transport_error"`` on timeouts.
         """
-        if not self._transport.legacy_wire:
-            return await self._oap_login(provider_id, handlers)
-        effective = handlers or self._default_handlers
-        flow_id = new_ulid()
-        sequence = 1
-        last_error: Optional[Dict[str, Optional[str]]] = None
-        settled = False
-        cancelled_locally = False
-
-        logger.info("auth login provider_id=%s flow_id=%s", provider_id, flow_id)
-        context = TimeoutContext(
-            "auth_login_result/auth_event",
-            self._frame_timeout,
-            stream_id=flow_id,
-            provider_id=provider_id,
-        )
-
-        async with self._transport.route(stream_id=flow_id) as route:
-            await self._send(
-                build_stream_envelope(
-                    "auth_login_start",
-                    flow_id,
-                    {"provider_id": provider_id},
-                    message_id=new_ulid(),
-                    sequence=sequence,
-                )
-            )
-            sequence += 1
-
-            try:
-                while True:
-                    frame = await self._next_frame(route, context)
-                    frame_type = frame.get("type")
-                    if frame_type == "ack":
-                        continue
-                    if frame_type == "nack":
-                        raise _nack_to_auth_error(frame)
-
-                    if frame_type == "auth_event":
-                        event = flatten_auth_event(_require_payload(frame))
-                        await self._emit(effective, event)
-
-                        if isinstance(event, AuthErrorEvent):
-                            last_error = {"code": event.code, "message": event.message}
-                            continue
-                        if isinstance(event, AuthPromptEvent):
-                            if effective is None or effective.on_prompt is None:
-                                cancelled_locally = True
-                                await self._cancel(flow_id, sequence)
-                                sequence += 1
-                                continue
-                            answer = await self._ask(effective, event)
-                            await self._send(
-                                build_stream_envelope(
-                                    "auth_prompt_response",
-                                    flow_id,
-                                    {
-                                        "flow_id": flow_id,
-                                        "prompt_id": event.prompt_id,
-                                        "answer": answer,
-                                    },
-                                    message_id=new_ulid(),
-                                    sequence=sequence,
-                                )
-                            )
-                            sequence += 1
-                        continue
-
-                    if frame_type == "auth_login_result":
-                        settled = True
-                        status = _require_payload(frame).get("status")
-                        if status == "success":
-                            logger.info("auth login succeeded provider_id=%s", provider_id)
-                            return
-                        if status == "cancelled":
-                            message = (last_error or {}).get("message")
-                            if message is None:
-                                message = (
-                                    "auth login cancelled (no on_prompt handler configured)"
-                                    if cancelled_locally
-                                    else "auth login cancelled"
-                                )
-                            raise MakaiAuthError(
-                                message, kind="cancelled", code=(last_error or {}).get("code")
-                            )
-                        if status == "failed":
-                            raise MakaiAuthError(
-                                (last_error or {}).get("message") or "auth login failed",
-                                kind="provider_error",
-                                code=(last_error or {}).get("code"),
-                            )
-                        raise MakaiAuthError(
-                            f"unexpected auth_login_result status: {status}", kind="unknown"
-                        )
-
-                    raise MakaiAuthError(
-                        f"unexpected envelope type during login flow: {frame_type}",
-                        kind="transport_error",
-                    )
-            except BaseException:
-                # Also covers asyncio.CancelledError, which is re-raised
-                # unchanged: converting it to a normal exception would hide
-                # the cancellation from wait_for, task groups, and
-                # Task.cancelled(). The flow is still cancelled on the wire.
-                if not settled:
-                    await self._cancel(flow_id, sequence)
-                raise
+        return await self._oap_login(provider_id, handlers)
 
     async def _oap_list_providers(self) -> List[ProviderAuthInfo]:
         from ._oap import AGENT, envelope
@@ -345,17 +208,6 @@ class AuthApi:
                         AGENT, "auth.login.cancel.request", {"flow_id": flow_id}))
                 raise
 
-    async def _ask(self, handlers: AuthFlowHandlers, event: AuthPromptEvent) -> str:
-        assert handlers.on_prompt is not None
-        try:
-            result = handlers.on_prompt(event)
-            if inspect.isawaitable(result):
-                result = await result
-        except (MakaiAuthError, asyncio.CancelledError):
-            raise
-        except Exception as exc:
-            raise MakaiAuthError(str(exc), kind="unknown") from exc
-        return result if isinstance(result, str) else ""
 
     async def _emit(self, handlers: Optional[AuthFlowHandlers], event: AuthEvent) -> None:
         if handlers is None or handlers.on_event is None:
@@ -368,37 +220,6 @@ class AuthApi:
             raise
         except Exception as exc:
             raise MakaiAuthError(str(exc), kind="unknown") from exc
-
-    async def _cancel(self, flow_id: str, sequence: int) -> None:
-        await self._transport.send_best_effort(
-            build_stream_envelope(
-                "auth_cancel",
-                flow_id,
-                {"flow_id": flow_id},
-                message_id=new_ulid(),
-                sequence=sequence,
-            )
-        )
-
-    async def _send(self, envelope: Mapping[str, Any]) -> None:
-        try:
-            await self._transport.send(dict(envelope))
-        except MakaiStreamError as exc:
-            raise MakaiAuthError(str(exc), kind="transport_error") from exc
-
-    async def _next_frame(self, route: Any, context: TimeoutContext) -> Dict[str, Any]:
-        try:
-            frame: Dict[str, Any] = await route.next_frame(self._frame_timeout)
-        except MakaiStreamError as exc:
-            if is_timeout_error(exc):
-                raise MakaiAuthError(
-                    format_timeout_message(context),
-                    kind="transport_error",
-                    code=TIMEOUT_CODE,
-                    diagnostics=build_diagnostics(context),
-                ) from exc
-            raise MakaiAuthError(exc.message, kind="transport_error", code=exc.code) from exc
-        return frame
 
 
 def flatten_auth_event(payload: Mapping[str, Any]) -> AuthEvent:
@@ -486,49 +307,4 @@ def _require_payload(frame: Mapping[str, Any]) -> Dict[str, Any]:
     return payload
 
 
-def _parse_providers(frame: Mapping[str, Any]) -> List[ProviderAuthInfo]:
-    payload = _require_payload(frame)
-    providers = payload.get("providers")
-    if not isinstance(providers, list):
-        raise MakaiAuthError(
-            "auth_providers_response payload missing providers array", kind="transport_error"
-        )
-    return [_parse_provider(entry, index) for index, entry in enumerate(providers)]
 
-
-def _parse_provider(entry: Any, index: int) -> ProviderAuthInfo:
-    if not isinstance(entry, dict):
-        raise MakaiAuthError(
-            f"provider entry at index {index} is not an object", kind="transport_error"
-        )
-    identifier = entry.get("id")
-    name = entry.get("name")
-    if not isinstance(identifier, str) or not isinstance(name, str):
-        raise MakaiAuthError(
-            f"provider entry at index {index} missing id/name", kind="transport_error"
-        )
-    status = entry.get("auth_status")
-    auth_status: AuthStatus = (
-        cast(AuthStatus, status)
-        if isinstance(status, str) and status in _VALID_AUTH_STATUSES
-        else "unknown"
-    )
-    last_error = entry.get("last_error")
-    return ProviderAuthInfo(
-        id=identifier,
-        name=name,
-        auth_kinds=_auth_kinds(entry.get("auth_kinds")),
-        auth_status=auth_status,
-        last_error=last_error if isinstance(last_error, str) and last_error else None,
-    )
-
-
-def _nack_to_auth_error(frame: Mapping[str, Any]) -> MakaiAuthError:
-    payload = payload_of(frame)
-    reason = payload.get("reason")
-    code = payload.get("error_code")
-    return MakaiAuthError(
-        reason if isinstance(reason, str) else "transport nack",
-        kind="transport_error",
-        code=code if isinstance(code, str) else None,
-    )

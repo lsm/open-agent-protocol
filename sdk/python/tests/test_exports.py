@@ -15,5 +15,5 @@ def test_every_exported_name_resolves() -> None:
 
 
 def test_the_callback_types_a_typed_consumer_annotates_with_are_exported() -> None:
-    for name in ("ToolExecutor", "AuthEventHandler", "AuthPromptHandler", "Role"):
+    for name in ("ToolExecutor", "AuthEventHandler", "Role"):
         assert getattr(oap_sdk, name) is getattr(types, name)

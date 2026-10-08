@@ -98,10 +98,6 @@ message cannot silently turn a timeout into an unrecognised transport error.
 """
 
 
-def is_timeout_error(error: MakaiError) -> bool:
-    """Return ``True`` when ``error`` is a wait that expired."""
-    return error.code == TIMEOUT_CODE
-
 
 class MakaiAuthRequiredError(MakaiStreamError):
     """The provider rejected the call because it needs an interactive login."""

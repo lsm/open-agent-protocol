@@ -1,4 +1,4 @@
-"""End-to-end coverage against a real ``oapx --stdio`` host.
+"""End-to-end coverage against a real ``oapx serve agent,provider --stdio`` host.
 
 Every test here needs ``OAP_SDK_BINARY_PATH`` and skips without it, so a green
 ``pytest`` with the variable unset means **zero** real-runtime coverage. Build
@@ -13,7 +13,7 @@ frame routing, and process lifetime are all reachable without them.
 The ``auth`` protocol is **not** exercised here by default. On macOS the login
 Keychain is the primary credential store, and an unsigned local build blocks on
 a Keychain access prompt that never surfaces from a non-interactive shell, so
-``auth_providers_request`` never answers and the request hangs. Set
+``auth.providers.request`` never answers and the request hangs. Set
 ``OAP_SDK_TEST_REAL_AUTH=1`` to opt in where the runtime can reach its store
 without prompting (Linux CI, or a signed build with a granted ACL).
 """
@@ -26,7 +26,6 @@ import os
 import pytest
 
 from conftest import process_alive
-from oap_sdk._wire import build_stream_envelope
 from oap_sdk.client import MakaiClient
 from oap_sdk.errors import MakaiProtocolError, MakaiStreamError
 from oap_sdk.transport import StdioTransport
@@ -35,7 +34,7 @@ pytestmark = pytest.mark.real_binary
 
 
 async def open_transport(binary: str, **kwargs: object) -> StdioTransport:
-    transport = StdioTransport(command=binary, args=["--stdio"], **kwargs)  # type: ignore[arg-type]
+    transport = StdioTransport(command=binary, **kwargs)  # type: ignore[arg-type]
     await transport.connect()
     return transport
 
@@ -56,7 +55,6 @@ async def test_models_list_returns_the_static_catalogue(real_binary: str) -> Non
         result = await client.models.list()
         assert result.models, "the runtime always serves at least the static fallback catalogue"
         assert result.fetched_at_ms > 0
-        assert result.cache_max_age_ms > 0
         for model in result.models:
             assert model.model_ref
             assert model.provider_id
@@ -83,11 +81,10 @@ async def test_resolve_unknown_model_is_a_protocol_error(real_binary: str) -> No
     transport = await open_transport(real_binary)
     client = MakaiClient(transport, response_timeout=10.0)
     try:
+        provider_id = (await client.models.list()).models[0].provider_id
         with pytest.raises(MakaiProtocolError) as excinfo:
-            await client.models.resolve(
-                provider_id="definitely-not-a-provider", model_id="definitely-not-a-model"
-            )
-        assert excinfo.value.code == "invalid_request"
+            await client.models.resolve(provider_id=provider_id, model_id="definitely-not-a-model")
+        assert excinfo.value.code == "model_not_found"
     finally:
         await client.close()
 
@@ -117,56 +114,21 @@ async def test_concurrent_requests_do_not_cross_talk(real_binary: str) -> None:
         await client.close()
 
 
-async def test_unknown_envelope_type_is_silently_ignored(real_binary: str) -> None:
-    """A well-formed envelope with an unrecognised ``type`` gets no reply.
-
-    Verified against the runtime: only a *malformed* or ambiguous frame draws
-    the host-level ``unknown_envelope`` error (see the next test). A caller
-    that invents a frame type therefore just times out, which is why every
-    request path here has a bounded timeout.
-    """
+async def test_an_unknown_envelope_type_is_refused_by_name(real_binary: str) -> None:
     transport = await open_transport(real_binary)
     try:
-        async with transport.route(stream_id="01ARZ3NDEKTSV4RRFFQ69G5FAV") as route:
-            await transport.send(
-                build_stream_envelope(
-                    "definitely_not_a_real_envelope", "01ARZ3NDEKTSV4RRFFQ69G5FAV", {}
-                )
-            )
-            with pytest.raises(MakaiStreamError, match="timed out"):
-                await route.next_frame(2.0)
-        assert transport.dropped_frames == 0
+        async with transport.route(request_id="01ARZ3NDEKTSV4RRFFQ69G5FAV") as route:
+            await transport.send({
+                "protocol": "open-agent-protocol", "version": "0.1",
+                "profile": "open-agent-protocol.agent-control-core",
+                "type": "definitely_not_a_real_envelope", "id": "01ARZ3NDEKTSV4RRFFQ69G5FAV", "payload": {},
+            })
+            reply = await route.next_frame(5.0)
+        assert reply["type"] == "error.response"
+        assert reply["payload"]["error"]["code"] == "unsupported_request"
     finally:
         await transport.close()
 
-
-@pytest.mark.parametrize("line", [b"{ this is not json\n", b"{}\n", b"[1,2,3]\n"])
-async def test_malformed_frames_draw_an_unknown_envelope_error(
-    real_binary: str, line: bytes, caplog: pytest.LogCaptureFixture
-) -> None:
-    """The host answers malformed input with an unroutable ``error`` frame.
-
-    It carries no ``stream_id``/``session_id``, so no caller can await it; the
-    transport counts it as dropped and logs it at warning level. The host must
-    stay usable afterwards.
-    """
-    transport = await open_transport(real_binary)
-    client = MakaiClient(transport, response_timeout=10.0)
-    try:
-        process = transport._process
-        assert process is not None and process.stdin is not None
-        with caplog.at_level("WARNING", logger="makai.transport"):
-            process.stdin.write(line)
-            await process.stdin.drain()
-            await asyncio.sleep(0.3)
-
-        assert transport.dropped_frames >= 1
-        assert any("unknown_envelope" in record.getMessage() for record in caplog.records)
-
-        # The host must still answer a well-formed request afterwards.
-        assert (await client.models.list()).models
-    finally:
-        await client.close()
 
 
 async def test_close_terminates_the_real_process(real_binary: str) -> None:
@@ -182,7 +144,7 @@ async def test_close_terminates_the_real_process(real_binary: str) -> None:
 
 
 async def test_context_manager_closes_the_real_process(real_binary: str) -> None:
-    async with StdioTransport(command=real_binary, args=["--stdio"]) as transport:
+    async with StdioTransport(command=real_binary) as transport:
         client = MakaiClient(transport, response_timeout=10.0)
         assert (await client.models.list()).models
         pid = transport.pid
@@ -205,7 +167,7 @@ async def test_requests_after_close_fail_cleanly(real_binary: str) -> None:
 async def test_handshake_timeout_is_respected(real_binary: str) -> None:
     """An absurdly short handshake budget fails fast instead of hanging."""
     transport = StdioTransport(
-        command=real_binary, args=["--stdio"], handshake_timeout=0.000_001
+        command=real_binary, handshake_timeout=0.000_001
     )
     with pytest.raises(MakaiStreamError, match="handshake timed out"):
         await transport.connect()

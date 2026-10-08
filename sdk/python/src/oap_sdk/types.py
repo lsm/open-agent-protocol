@@ -76,7 +76,6 @@ __all__ = [
     "AuthErrorEvent",
     "AuthEvent",
     "AuthEventHandler",
-    "AuthPromptHandler",
     "AuthFlowHandlers",
 ]
 
@@ -162,8 +161,7 @@ Content = Union[str, List[ContentPart]]
 class ChatMessage(TypedDict):
     """One conversation turn.
 
-    OAP preserves ``system`` and ``developer`` roles. Makai V1 folds them
-    into its system prompt in explicit legacy mode.
+    OAP preserves ``system`` and ``developer`` roles.
     """
 
     role: Role
@@ -458,17 +456,13 @@ AuthEvent = Union[
 ]
 
 AuthEventHandler = Callable[[AuthEvent], Union[None, Awaitable[None]]]
-AuthPromptHandler = Callable[[AuthPromptEvent], Union[str, Awaitable[str]]]
 
 
 @dataclass(frozen=True)
 class AuthFlowHandlers:
     """Callbacks driving an interactive login.
 
-    ``on_event`` receives every auth event; ``on_prompt`` must return the
-    user's answer for a ``prompt`` event. Either may be a coroutine function.
-    A login that hits a prompt with no ``on_prompt`` handler is cancelled.
+    ``on_event`` receives every auth event and may be a coroutine function.
     """
 
     on_event: Optional[AuthEventHandler] = None
-    on_prompt: Optional[AuthPromptHandler] = None

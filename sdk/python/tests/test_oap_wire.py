@@ -4,7 +4,7 @@ import sys
 import unittest
 from typing import Any, Dict
 
-from oap_sdk import AuthFlowHandlers, MakaiAuthRequiredError, AuthOptions, AuthPromptEvent, MakaiAuthError, MakaiProtocolError, MakaiStreamError, RunOptions, ToolContext, ToolDefinition, connect
+from oap_sdk import AuthFlowHandlers, MakaiAuthRequiredError, AuthOptions, MakaiAuthError, MakaiProtocolError, MakaiStreamError, RunOptions, ToolContext, ToolDefinition, connect
 from oap_sdk._oap import _messages
 
 
@@ -161,20 +161,14 @@ for line in sys.stdin:
 
 
 class OAPWireTests(unittest.IsolatedAsyncioTestCase):
-    async def test_manual_oap_prompt_never_calls_answer_handler(self) -> None:
-        called = []
-        def answer(_: AuthPromptEvent) -> str:
-            called.append("called")
-            return "SENSITIVE_TEST_CODE"
-        async with connect(command=sys.executable, args=["-u", "-c", HOST], legacy_wire=False) as client:
+    async def test_a_manual_oap_prompt_fails_closed(self) -> None:
+        async with connect(command=sys.executable, args=["-u", "-c", HOST]) as client:
             with self.assertRaises(MakaiAuthError) as failure:
-                await client.auth.login("manual", AuthFlowHandlers(
-                    on_prompt=answer))
+                await client.auth.login("manual", AuthFlowHandlers())
             self.assertEqual(failure.exception.code, "auth_input_unavailable")
-            self.assertEqual(called, [])
 
     async def test_combined_profile_models_provider_and_agent(self) -> None:
-        async with connect(command=sys.executable, args=["-u", "-c", HOST], legacy_wire=False) as client:
+        async with connect(command=sys.executable, args=["-u", "-c", HOST]) as client:
             models = await client.models.list()
             self.assertEqual(models.models[0].model_ref, "fixture/other:test@ok")
             self.assertEqual(models.models[0].source, "static_fallback")
@@ -266,21 +260,20 @@ class OAPWireTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(providers[0].auth_status, "login_required")
             received = []
             await client.auth.login("fixture", AuthFlowHandlers(
-                on_event=lambda event: received.append(event.type),
-                on_prompt=lambda _: "test-code"))
+                on_event=lambda event: received.append(event.type)))
             self.assertEqual(received, ["auth_url", "progress", "success"])
 
     async def test_auto_once_retries_only_typed_auth_failure(self) -> None:
-        handlers = AuthFlowHandlers(on_prompt=lambda _: "test-code")
-        async with connect(command=sys.executable, args=["-u", "-c", HOST], legacy_wire=False,
+        handlers = AuthFlowHandlers()
+        async with connect(command=sys.executable, args=["-u", "-c", HOST],
                            auth=AuthOptions(auth_retry_policy="auto_once", handlers=handlers)) as client:
             response = await client.provider.complete(
                 model_ref="fixture/other:test@auth-once", messages=[{"role": "user", "content": "hi"}])
             self.assertEqual(response.text, "hello")
 
     async def test_agent_auto_once_retries_typed_run_failure(self) -> None:
-        handlers = AuthFlowHandlers(on_prompt=lambda _: "test-code")
-        async with connect(command=sys.executable, args=["-u", "-c", HOST], legacy_wire=False,
+        handlers = AuthFlowHandlers()
+        async with connect(command=sys.executable, args=["-u", "-c", HOST],
                            auth=AuthOptions(auth_retry_policy="auto_once", handlers=handlers)) as client:
             response = await client.agent.run(
                 model_ref="fixture/other:test@auth-once", messages=[{"role": "user", "content": "hi"}])
