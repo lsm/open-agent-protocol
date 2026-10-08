@@ -650,6 +650,8 @@ test "OAP auth adapter cancels a Claude login that is still waiting for the brow
 test "auth server shutdown stops a Claude login that is still waiting for the browser" {
     if (!compat.net.supports_unix_channels) return error.SkipZigTest;
     var native = FakeClaudeAuth.server();
+    var shut_down = false;
+    defer if (!shut_down) native.deinit();
     var adapter = Adapter.init(std.testing.allocator, &native);
     defer adapter.deinit();
 
@@ -658,6 +660,7 @@ test "auth server shutdown stops a Claude login that is still waiting for the br
     const url = try FakeClaudeAuth.awaitUrl(&adapter);
     defer std.testing.allocator.free(url);
     const started = compat.time.nowMillis();
+    shut_down = true;
     native.deinit();
     try std.testing.expect(compat.time.nowMillis() - started < 1_000);
 }
@@ -799,6 +802,8 @@ test "auth server shutdown stops a Codex device login that is still waiting for 
         .answers_prompts = false,
         .codex_fetch = FakeCodexAuth.fetch,
     });
+    var shut_down = false;
+    defer if (!shut_down) native.deinit();
     var adapter = Adapter.init(allocator, &native);
     defer adapter.deinit();
 
@@ -819,6 +824,7 @@ test "auth server shutdown stops a Codex device login that is still waiting for 
     try std.testing.expect(url_arrived);
 
     const started = compat.time.nowMillis();
+    shut_down = true;
     native.deinit();
     try std.testing.expect(compat.time.nowMillis() - started < 1_000);
     try std.testing.expect(FakeCodexAuth.polls <= FakeCodexAuth.pending_polls);
