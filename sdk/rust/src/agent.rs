@@ -64,7 +64,7 @@ impl AgentApi {
     /// Runs the agent loop to completion and returns the final assistant message.
     pub async fn run(&self, request: ExecutionRequest) -> Result<CompletionResponse> {
         validate_oap_agent_request(&request)?;
-        return self.run_oap(&request).await;
+        self.run_oap(&request).await
     }
 
     async fn run_oap(&self, request: &ExecutionRequest) -> Result<CompletionResponse> {

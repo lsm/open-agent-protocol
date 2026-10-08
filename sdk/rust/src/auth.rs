@@ -213,7 +213,7 @@ impl AuthApi {
     /// the returned future cancels the flow: the SDK sends `auth_cancel` so the
     /// runtime does not leave an OAuth listener running.
     pub async fn login(&self, provider_id: &str, handlers: Option<&AuthHandlers>) -> Result<()> {
-        return self.login_oap(provider_id, handlers).await;
+        self.login_oap(provider_id, handlers).await
     }
 
     async fn login_oap(&self, provider_id: &str, handlers: Option<&AuthHandlers>) -> Result<()> {

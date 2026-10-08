@@ -41,7 +41,7 @@ impl ProviderApi {
     /// Runs one provider turn and waits for the whole message.
     pub async fn complete(&self, request: ExecutionRequest) -> Result<CompletionResponse> {
         request.validate()?;
-        return self.complete_oap(&request).await;
+        self.complete_oap(&request).await
     }
 
     async fn complete_oap(&self, request: &ExecutionRequest) -> Result<CompletionResponse> {

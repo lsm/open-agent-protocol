@@ -3,7 +3,7 @@ name = "oap-sdk"
 version = "0.1.0"
 edition = "2021"
 rust-version = "1.82"
-description = "Rust SDK for the Open Agent Protocol project's runtime, spoken over the `oapx --stdio` protocol"
+description = "Rust SDK for the Open Agent Protocol project's runtime, spoken as OAP to `oapx serve agent,provider --stdio`"
 repository = "https://github.com/lsm/open-agent-protocol"
 license = "MIT"
 readme = "README.md"
@@ -47,7 +47,7 @@ futures = "0.3"
 tempfile = "3"
 tokio = { version = "1", features = ["rt-multi-thread", "test-util"] }
 
-# Protocol fake used by the integration tests. It is a standalone `oapx --stdio`
+# OAP fake used by the integration tests. It is a standalone `oapx serve agent,provider`
 # look-alike, so downstream crates can point `MakaiClient` at it to test their own
 # code without a real runtime or provider credentials.
 [[bin]]

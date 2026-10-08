@@ -1,4 +1,4 @@
-//! End-to-end coverage against a real `oapx --stdio` build.
+//! End-to-end coverage against a real `oapx serve agent,provider --stdio` build.
 //!
 //! These need a runtime binary and skip when `OAP_SDK_BINARY_PATH` is unset, which
 //! mirrors `typescript/test/makai_binary_smoke.test.ts`. Build one with:
