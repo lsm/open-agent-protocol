@@ -26,9 +26,12 @@
 //!
 //! # Tool execution
 //!
-//! Tools run in this process. The runtime publishes `tool_execute` on the
-//! session route and waits for the correlated `tool_result`; a [`crate::Tool`]
-//! with no handler answers with an error result rather than stalling the loop.
+//! Tools run in this process. Over OAP the tools are provided at session open
+//! and the endpoint publishes `action.call.requested` for each call the SDK
+//! owns, which it answers with `action.call.resolve.request`; on the legacy
+//! wire the runtime publishes `tool_execute` and waits for the correlated
+//! `tool_result`. A [`crate::Tool`] with no handler answers with an error
+//! rather than stalling the loop.
 
 use std::sync::Arc;
 use std::time::Duration;
