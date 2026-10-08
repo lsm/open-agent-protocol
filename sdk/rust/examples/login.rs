@@ -24,27 +24,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .is_none_or(|provider| provider.auth_status != AuthStatus::Authenticated);
 
     if needs_login {
-        let handlers = AuthHandlers::new()
-            .on_event(|event| match event {
-                AuthEvent::AuthUrl {
-                    url, instructions, ..
-                } => {
-                    println!("Open {url}");
-                    if let Some(instructions) = instructions {
-                        println!("{instructions}");
-                    }
+        let handlers = AuthHandlers::new().on_event(|event| match event {
+            AuthEvent::AuthUrl {
+                url, instructions, ..
+            } => {
+                println!("Open {url}");
+                if let Some(instructions) = instructions {
+                    println!("{instructions}");
                 }
-                AuthEvent::Progress { message, .. } => println!("{message}"),
-                _ => {}
-            })
-            .on_prompt(|prompt| async move {
-                println!("{}", prompt.message);
-                let mut answer = String::new();
-                std::io::stdin()
-                    .read_line(&mut answer)
-                    .map_err(|err| err.to_string())?;
-                Ok(answer.trim().to_owned())
-            });
+            }
+            AuthEvent::Progress { message, .. } => println!("{message}"),
+            _ => {}
+        });
 
         client.auth().login(&provider_id, Some(&handlers)).await?;
         println!("{provider_id} is authenticated");

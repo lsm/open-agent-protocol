@@ -4,8 +4,6 @@
 //! `~/.oapx/auth.json`, never shells out to `makai auth ...`, and never hands a
 //! credential back to the caller (spec §3.7).
 
-use std::future::Future;
-use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -75,7 +73,7 @@ pub enum AuthEvent {
         /// What to do once it is open.
         instructions: Option<String>,
     },
-    /// The flow needs an answer. Routed to the prompt handler as well.
+    /// The flow needs an answer, which OAP cannot carry; the login then fails.
     Prompt(AuthPrompt),
     /// Progress detail worth showing.
     Progress {
@@ -106,31 +104,27 @@ pub enum AuthEvent {
     },
 }
 
-type PromptFuture = Pin<Box<dyn Future<Output = std::result::Result<String, String>> + Send>>;
 type EventCallback = Arc<dyn Fn(AuthEvent) + Send + Sync>;
-type PromptCallback = Arc<dyn Fn(AuthPrompt) -> PromptFuture + Send + Sync>;
 
-/// Callbacks that drive an interactive login.
+/// Callbacks that observe an interactive login.
 ///
-/// A flow that reaches a prompt with no [`AuthHandlers::on_prompt`] is cancelled
-/// rather than left hanging (spec §3.7).
+/// OAP carries no prompt answer, so a flow that reaches a prompt fails with
+/// `auth_input_unavailable`.
 #[derive(Clone, Default)]
 pub struct AuthHandlers {
     on_event: Option<EventCallback>,
-    on_prompt: Option<PromptCallback>,
 }
 
 impl std::fmt::Debug for AuthHandlers {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("AuthHandlers")
             .field("on_event", &self.on_event.is_some())
-            .field("on_prompt", &self.on_prompt.is_some())
             .finish()
     }
 }
 
 impl AuthHandlers {
-    /// No handlers. A flow that needs a prompt will be cancelled.
+    /// No handlers.
     pub fn new() -> Self {
         Self::default()
     }
@@ -138,16 +132,6 @@ impl AuthHandlers {
     /// Observes every event in the flow.
     pub fn on_event(mut self, handler: impl Fn(AuthEvent) + Send + Sync + 'static) -> Self {
         self.on_event = Some(Arc::new(handler));
-        self
-    }
-
-    /// Answers prompts. Returning `Err` aborts the flow.
-    pub fn on_prompt<F, Fut>(mut self, handler: F) -> Self
-    where
-        F: Fn(AuthPrompt) -> Fut + Send + Sync + 'static,
-        Fut: Future<Output = std::result::Result<String, String>> + Send + 'static,
-    {
-        self.on_prompt = Some(Arc::new(move |prompt| Box::pin(handler(prompt))));
         self
     }
 }

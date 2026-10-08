@@ -26,7 +26,7 @@ mod common;
 use std::time::Duration;
 
 use futures::StreamExt;
-use oap_sdk::{AuthEvent, AuthHandlers, Error, ExecutionRequest, ListModelsRequest};
+use oap_sdk::{Error, ExecutionRequest, ListModelsRequest};
 
 #[tokio::test]
 async fn connects_to_the_real_runtime() {
@@ -176,137 +176,6 @@ async fn a_runtime_that_was_not_asked_does_not_serve_the_fixture() {
         "a user who did not set the opt-in was offered the CI fixture: {providers:?}"
     );
     assert!(!providers.is_empty());
-    client.close().await;
-}
-
-#[tokio::test]
-async fn an_interactive_login_runs_end_to_end_against_the_real_runtime() {
-    let binary = require_real_binary!();
-    require_unattended_credential_store!();
-    // The fixture provider's credentials are written under HOME, so give it one
-    // that the test owns.
-    let home = tempfile::tempdir().expect("tempdir");
-    let client = common::real_builder_with_fixture(&binary)
-        .env("HOME", home.path().display().to_string())
-        .connect()
-        .await
-        .expect("connects");
-
-    let saw_url = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-    let flag = std::sync::Arc::clone(&saw_url);
-    let handlers = AuthHandlers::new()
-        .on_event(move |event| {
-            if matches!(event, AuthEvent::AuthUrl { .. }) {
-                flag.store(true, std::sync::atomic::Ordering::SeqCst);
-            }
-        })
-        .on_prompt(|prompt| async move {
-            assert!(!prompt.prompt_id.is_empty());
-            Ok("ok".to_owned())
-        });
-
-    client
-        .auth()
-        .login("test-fixture", Some(&handlers))
-        .await
-        .expect("the fixture login succeeds");
-    assert!(saw_url.load(std::sync::atomic::Ordering::SeqCst));
-
-    let auth_file = home.path().join(".oapx").join("auth.json");
-    assert!(
-        auth_file.exists(),
-        "credentials were persisted by the runtime"
-    );
-
-    let providers = client
-        .auth()
-        .list_providers()
-        .await
-        .expect("lists providers");
-    let fixture = providers
-        .iter()
-        .find(|provider| provider.id == "test-fixture")
-        .expect("fixture provider");
-    assert_eq!(fixture.auth_status, oap_sdk::AuthStatus::Authenticated);
-
-    client.close().await;
-}
-
-#[tokio::test]
-async fn a_wrong_code_re_prompts_against_the_real_runtime() {
-    // The fixture provider re-prompts until the answer is right, which exercises
-    // the multi-round prompt loop: several `auth_prompt_response` envelopes on
-    // one flow, each carrying the next outbound sequence.
-    let binary = require_real_binary!();
-    require_unattended_credential_store!();
-    let home = tempfile::tempdir().expect("tempdir");
-    let client = common::real_builder_with_fixture(&binary)
-        .env("HOME", home.path().display().to_string())
-        .connect()
-        .await
-        .expect("connects");
-
-    let prompts = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
-    let retried = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-    let counter = std::sync::Arc::clone(&prompts);
-    let saw_retry = std::sync::Arc::clone(&retried);
-
-    let handlers = AuthHandlers::new()
-        .on_event(move |event| {
-            if let AuthEvent::Progress { message, .. } = event {
-                if message.contains("Invalid fixture code") {
-                    saw_retry.store(true, std::sync::atomic::Ordering::SeqCst);
-                }
-            }
-        })
-        .on_prompt(move |_| {
-            let counter = std::sync::Arc::clone(&counter);
-            async move {
-                let attempt = counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-                Ok(if attempt == 0 { "wrong" } else { "ok" }.to_owned())
-            }
-        });
-
-    client
-        .auth()
-        .login("test-fixture", Some(&handlers))
-        .await
-        .expect("the second answer succeeds");
-    assert_eq!(prompts.load(std::sync::atomic::Ordering::SeqCst), 2);
-    assert!(retried.load(std::sync::atomic::Ordering::SeqCst));
-    client.close().await;
-}
-
-#[tokio::test]
-async fn a_prompt_handler_that_gives_up_cancels_the_real_flow() {
-    let binary = require_real_binary!();
-    let home = tempfile::tempdir().expect("tempdir");
-    let client = common::real_builder_with_fixture(&binary)
-        .env("HOME", home.path().display().to_string())
-        .frame_timeout(Duration::from_millis(3_000))
-        .connect()
-        .await
-        .expect("connects");
-
-    let handlers =
-        AuthHandlers::new().on_prompt(|_| async move { Err("user walked away".to_owned()) });
-    let started = tokio::time::Instant::now();
-    let error = client
-        .auth()
-        .login("test-fixture", Some(&handlers))
-        .await
-        .unwrap_err();
-    assert!(matches!(error, Error::Auth { .. }), "{error:?}");
-    assert!(
-        started.elapsed() < Duration::from_secs(10),
-        "abandoning a flow must not wait out a long timeout"
-    );
-
-    let auth_file = home.path().join(".oapx").join("auth.json");
-    assert!(
-        !auth_file.exists(),
-        "an abandoned flow must not persist credentials"
-    );
     client.close().await;
 }
 
