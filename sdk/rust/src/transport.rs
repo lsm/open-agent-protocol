@@ -1,4 +1,5 @@
-//! The stdio transport: one `oapx --stdio` child process, framed as NDJSON.
+//! The stdio transport: one `oapx serve agent,provider --stdio` child process,
+//! framed as NDJSON.
 //!
 //! # Shape
 //!
@@ -17,13 +18,11 @@
 //!
 //! Unlike the TypeScript SDK, which pulls frames and re-queues the ones that are
 //! not its own, this is a push router: a caller registers its routes *before*
-//! sending, so no frame can arrive before someone is waiting for it. Dispatch
-//! follows spec §13.3:
+//! sending, so no frame can arrive before someone is waiting for it:
 //!
 //! 1. a frame carrying `in_reply_to` goes to the waiter that registered that
-//!    `message_id` — request-correlated delivery (§13.3.1);
-//! 2. otherwise a `stream_id` / `session_id` frame goes to that route —
-//!    session-scoped delivery for asynchronous run output (§13.3.2);
+//!    request `id`;
+//! 2. otherwise an auth flow, inference or session frame goes to that route;
 //! 3. anything left over is dropped.
 //!
 //! Because one subscription can hold several route keys at once, a caller sees
@@ -44,7 +43,7 @@ use tokio::task::JoinHandle;
 
 use crate::error::{Error, Result};
 use crate::wire::{
-    Envelope, Frame, AGENT_PROFILE, OAP_PROTOCOL, OAP_VERSION, PROVIDER_PROFILE, SDK_PARTICIPANT,
+    Frame, AGENT_PROFILE, OAP_PROTOCOL, OAP_VERSION, PROVIDER_PROFILE, SDK_PARTICIPANT,
 };
 
 /// How long a closing transport waits for the child to exit on its own after
@@ -62,7 +61,6 @@ enum RouteKey {
 
 #[derive(Default)]
 struct RouterState {
-    handshake: Option<oneshot::Sender<Frame>>,
     streams: HashMap<String, mpsc::UnboundedSender<Frame>>,
     orphaned_flows: HashMap<String, Vec<Frame>>,
     inferences: HashMap<String, mpsc::UnboundedSender<Frame>>,
@@ -104,20 +102,8 @@ impl Router {
     fn dispatch(&self, frame: Frame) {
         let mut state = self.lock();
 
-        if let Some(handshake) = state.handshake.take() {
-            let _ = handshake.send(frame);
-            return;
-        }
-
         if let Some(reply_to) = frame.in_reply_to.as_deref() {
             if let Some(sender) = state.replies.get(reply_to) {
-                let _ = sender.send(frame);
-                return;
-            }
-        }
-
-        if let Some(stream_id) = frame.stream_id.as_deref() {
-            if let Some(sender) = state.streams.get(stream_id) {
                 let _ = sender.send(frame);
                 return;
             }
@@ -167,7 +153,6 @@ impl Router {
 
         tracing::debug!(
             frame_type = %frame.kind,
-            stream_id = ?frame.stream_id,
             session_id = ?frame.session_id,
             in_reply_to = ?frame.in_reply_to,
             "dropping frame with no registered route"
@@ -180,7 +165,6 @@ impl Router {
         if state.closed.is_none() {
             state.closed = Some(reason);
         }
-        state.handshake = None;
         state.streams.clear();
         state.orphaned_flows.clear();
         state.inferences.clear();
@@ -219,7 +203,6 @@ impl Router {
 /// A caller's view of the frames routed to it.
 pub(crate) struct Subscription {
     router: Arc<Router>,
-    sender: mpsc::UnboundedSender<Frame>,
     receiver: mpsc::UnboundedReceiver<Frame>,
     keys: Vec<RouteKey>,
     closed: watch::Receiver<bool>,
@@ -229,26 +212,6 @@ pub(crate) struct Subscription {
 }
 
 impl Subscription {
-    /// Registers `message_id` so replies to that request land on this queue.
-    pub(crate) fn correlate(&mut self, message_id: &str) {
-        let mut state = self.router.lock();
-        if state.closed.is_some() {
-            return;
-        }
-        state
-            .replies
-            .insert(message_id.to_owned(), self.sender.clone());
-        drop(state);
-        self.keys.push(RouteKey::Reply(message_id.to_owned()));
-    }
-
-    /// Stops routing replies to `message_id` here.
-    pub(crate) fn uncorrelate(&mut self, message_id: &str) {
-        let key = RouteKey::Reply(message_id.to_owned());
-        self.router.unregister(std::slice::from_ref(&key));
-        self.keys.retain(|existing| existing != &key);
-    }
-
     /// Whether this subscription holds the session route, or lost it to a run
     /// that is already using the same caller-supplied `session_id`.
     pub(crate) fn owns_session(&self) -> bool {
@@ -314,13 +277,6 @@ impl Subscription {
             ))),
         }
     }
-
-    /// Drains whatever has already been queued, without waiting. Used after a
-    /// terminal frame so a later run on the same route does not inherit the
-    /// tail of this one (spec §6.1).
-    pub(crate) fn drain_ready(&mut self) {
-        while self.receiver.try_recv().is_ok() {}
-    }
 }
 
 impl Drop for Subscription {
@@ -337,7 +293,6 @@ struct Inner {
     reader: Mutex<Option<JoinHandle<()>>>,
     writer: Mutex<Option<JoinHandle<()>>>,
     closing: AtomicBool,
-    oap: bool,
     agent_revision: Mutex<Option<String>>,
     agent_endpoint: Mutex<String>,
     agent_features: Mutex<Vec<String>>,
@@ -374,7 +329,6 @@ fn take<T>(slot: &Mutex<Option<T>>) -> Option<T> {
 pub(crate) struct TransportOptions {
     pub command: std::path::PathBuf,
     pub args: Vec<String>,
-    pub legacy_wire: bool,
     pub cwd: Option<std::path::PathBuf>,
     pub env: Vec<(String, String)>,
     pub env_clear: bool,
@@ -382,13 +336,13 @@ pub(crate) struct TransportOptions {
     pub handshake_timeout: Duration,
 }
 
-/// A connected `oapx --stdio` runtime.
+/// A connected `oapx serve agent,provider --stdio` runtime.
 pub(crate) struct Transport {
     inner: Arc<Inner>,
 }
 
 impl Transport {
-    /// Spawns the runtime and completes the `ready` handshake.
+    /// Spawns the runtime and completes the OAP initialize handshake.
     pub(crate) async fn connect(options: TransportOptions) -> Result<Self> {
         let mut command = Command::new(&options.command);
         command
@@ -424,11 +378,6 @@ impl Transport {
             .ok_or_else(|| Error::transport("child stdout was not piped"))?;
 
         let router = Arc::new(Router::new());
-        let oap = !options.legacy_wire;
-        let (handshake_tx, handshake_rx) = oneshot::channel();
-        if !oap {
-            router.lock().handshake = Some(handshake_tx);
-        }
 
         let (outbound_tx, mut outbound_rx) = mpsc::unbounded_channel::<String>();
         let writer = tokio::spawn(async move {
@@ -489,24 +438,17 @@ impl Transport {
             reader: Mutex::new(Some(reader)),
             writer: Mutex::new(Some(writer)),
             closing: AtomicBool::new(false),
-            oap,
             agent_revision: Mutex::new(None),
             agent_endpoint: Mutex::new(String::new()),
             agent_features: Mutex::new(Vec::new()),
         });
         let transport = Self { inner };
 
-        let initialized = if oap {
-            transport.initialize_oap(&options).await
-        } else {
-            transport.complete_handshake(handshake_rx, &options).await
-        };
-        initialized.inspect_err(|_| transport.begin_shutdown())?;
+        transport
+            .initialize_oap(&options)
+            .await
+            .inspect_err(|_| transport.begin_shutdown())?;
         Ok(transport)
-    }
-
-    pub(crate) fn is_oap(&self) -> bool {
-        self.inner.oap
     }
 
     pub(crate) fn agent_endpoint(&self) -> String {
@@ -712,10 +654,9 @@ impl Transport {
             .router
             .lock()
             .replies
-            .insert(id.to_owned(), sender.clone());
+            .insert(id.to_owned(), sender);
         Subscription {
             router: Arc::clone(&self.inner.router),
-            sender,
             receiver,
             keys: vec![RouteKey::Reply(id.to_owned())],
             closed: self.inner.router.closed_rx.clone(),
@@ -734,62 +675,11 @@ impl Transport {
         }
         Subscription {
             router: Arc::clone(&self.inner.router),
-            sender,
             receiver,
             keys: vec![RouteKey::Inference(id.to_owned())],
             closed: self.inner.router.closed_rx.clone(),
             owns_session: true,
         }
-    }
-
-    async fn complete_handshake(
-        &self,
-        handshake: oneshot::Receiver<Frame>,
-        options: &TransportOptions,
-    ) -> Result<()> {
-        let frame = match tokio::time::timeout(options.handshake_timeout, handshake).await {
-            Ok(Ok(frame)) => frame,
-            Ok(Err(_)) => {
-                return Err(Error::transport(
-                    self.inner
-                        .router
-                        .closed_reason()
-                        .unwrap_or_else(|| "runtime exited before the handshake".to_owned()),
-                ))
-            }
-            Err(_) => {
-                return Err(Error::transport(format!(
-                    "stdio handshake timed out after {}ms",
-                    options.handshake_timeout.as_millis()
-                )))
-            }
-        };
-
-        if frame.kind == "error" {
-            return Err(Error::protocol(
-                frame
-                    .payload_non_empty("message")
-                    .unwrap_or_else(|| "stdio handshake failed".to_owned()),
-                frame.payload_str("code"),
-            ));
-        }
-        if frame.kind != "ready" {
-            return Err(Error::transport(format!(
-                "unexpected handshake frame type: {}",
-                frame.kind
-            )));
-        }
-        let version = frame.payload_str("protocol_version").unwrap_or_default();
-        if version != options.expected_protocol_version {
-            return Err(Error::protocol(
-                format!(
-                    "protocol version mismatch (expected {}, got {version})",
-                    options.expected_protocol_version
-                ),
-                Some("version_mismatch"),
-            ));
-        }
-        Ok(())
     }
 
     /// Registers a provider/auth stream route before the request is sent.
@@ -804,7 +694,6 @@ impl Transport {
         }
         Subscription {
             router: Arc::clone(&self.inner.router),
-            sender,
             receiver,
             keys: vec![RouteKey::Stream(stream_id.to_owned())],
             closed: self.inner.router.closed_rx.clone(),
@@ -812,7 +701,7 @@ impl Transport {
         }
     }
 
-    /// Registers an agent session route before `agent_start` is sent.
+    /// Registers an agent session route before the session is opened.
     ///
     /// Two overlapping runs may share one caller-supplied `session_id`; per spec
     /// §13.3.3 the runtime rejects the second with `agent_busy`, so only the
@@ -827,26 +716,18 @@ impl Transport {
             if state.sessions.contains_key(session_id) {
                 false
             } else {
-                state.sessions.insert(session_id.to_owned(), sender.clone());
+                state.sessions.insert(session_id.to_owned(), sender);
                 keys.push(RouteKey::Session(session_id.to_owned()));
                 true
             }
         };
         Subscription {
             router: Arc::clone(&self.inner.router),
-            sender,
             receiver,
             keys,
             closed: self.inner.router.closed_rx.clone(),
             owns_session,
         }
-    }
-
-    /// Queues an envelope. Synchronous and non-blocking, so it is safe to call
-    /// from a `Drop` impl that needs to emit a best-effort cancellation.
-    pub(crate) fn send(&self, envelope: &Envelope) -> Result<()> {
-        let line = envelope.to_line();
-        self.send_line(line)
     }
 
     fn send_line(&self, line: String) -> Result<()> {
@@ -867,14 +748,6 @@ impl Transport {
                 )
             }),
             None => Err(Error::transport_stream("transport is closed")),
-        }
-    }
-
-    /// Queues an envelope, swallowing the failure. For cancellation frames,
-    /// where a dead transport has already achieved the goal.
-    pub(crate) fn send_best_effort(&self, envelope: &Envelope) {
-        if let Err(err) = self.send(envelope) {
-            tracing::debug!(error = %err, frame_type = %envelope.kind, "best-effort send dropped");
         }
     }
 
@@ -934,7 +807,6 @@ async fn supervise(mut child: Child, shutdown: oneshot::Receiver<()>, router: Ar
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serde_json::json;
 
     fn frame(line: &str) -> Frame {
         Frame::parse(line).expect("frame parses")
@@ -974,9 +846,9 @@ mod tests {
         // A reply whose owner is gone still falls through to the route rather
         // than being dropped: the route is the only remaining candidate.
         router.dispatch(frame(
-            r#"{"type":"agent_stopped","session_id":"SESS","message_id":"M","in_reply_to":"GONE","payload":{}}"#,
+            r#"{"type":"run.cancelled","session_id":"SESS","id":"M","in_reply_to":"GONE","payload":{}}"#,
         ));
-        assert_eq!(route_rx.recv().await.expect("frame").kind, "agent_stopped");
+        assert_eq!(route_rx.recv().await.expect("frame").kind, "run.cancelled");
     }
 
     #[tokio::test]
@@ -997,7 +869,6 @@ mod tests {
         router.lock().streams.insert("S".to_owned(), tx.clone());
         let mut subscription = Subscription {
             router: Arc::clone(&router),
-            sender: tx,
             receiver: rx,
             keys: vec![RouteKey::Stream("S".to_owned())],
             closed: router.closed_rx.clone(),
@@ -1006,28 +877,5 @@ mod tests {
         router.close("stdio process exited (exit status: 1)".to_owned());
         let err = subscription.next().await.unwrap_err();
         assert!(err.message().contains("exit status: 1"), "{err}");
-    }
-
-    #[tokio::test]
-    async fn the_handshake_slot_takes_the_first_frame_only() {
-        let router = Arc::new(Router::new());
-        let (handshake_tx, handshake_rx) = oneshot::channel();
-        let (stream_tx, mut stream_rx) = mpsc::unbounded_channel();
-        {
-            let mut state = router.lock();
-            state.handshake = Some(handshake_tx);
-            state.streams.insert("S".to_owned(), stream_tx);
-        }
-        router.dispatch(frame(r#"{"type":"ready","protocol_version":"1"}"#));
-        router.dispatch(frame(r#"{"type":"ack","stream_id":"S","payload":{}}"#));
-
-        assert_eq!(handshake_rx.await.expect("ready").kind, "ready");
-        assert_eq!(stream_rx.recv().await.expect("ack").kind, "ack");
-    }
-
-    #[test]
-    fn envelopes_render_as_one_line() {
-        let envelope = Envelope::for_stream("models_request", "S", json!({"provider_id": "x"}));
-        assert_eq!(envelope.to_line().lines().count(), 1);
     }
 }

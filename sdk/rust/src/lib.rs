@@ -1,8 +1,8 @@
 //! Rust SDK for the [Open Agent Protocol](https://github.com/lsm/open-agent-protocol) project's `oapx`, a
 //! Zig-first streaming AI runtime.
 //!
-//! The SDK starts an `oapx --stdio` process and speaks its newline-delimited
-//! JSON protocol, exposing four namespaces that mirror the TypeScript SDK:
+//! The SDK starts an `oapx serve agent,provider --stdio` process and speaks
+//! OAP over newline-delimited JSON, exposing four namespaces that mirror the TypeScript SDK:
 //!
 //! * [`Client::auth`] — list provider auth state, run interactive logins;
 //! * [`Client::models`] — discover models and resolve one by id;
@@ -39,9 +39,9 @@
 //! # Streaming
 //!
 //! Streams are [`futures_core::Stream`]s of `Result` items. Dropping one cancels
-//! the underlying work: the SDK sends `abort_request` for a provider stream and
-//! `agent_stop` for an agent run, so the runtime stops rather than finishing
-//! into a queue nobody is reading.
+//! the underlying work: the SDK sends `inference.cancel.request` for a provider
+//! stream and `run.cancel.request` for an agent run, so the runtime stops rather
+//! than finishing into a queue nobody is reading.
 //!
 //! ```no_run
 //! use futures::StreamExt;

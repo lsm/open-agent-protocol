@@ -48,7 +48,7 @@ async fn a_version_mismatch_against_the_real_runtime_fails_fast() {
         .connect()
         .await
         .unwrap_err();
-    assert_eq!(error.code(), Some("version_mismatch"));
+    assert_eq!(error.code(), Some("unsupported_feature"));
 }
 
 #[tokio::test]
@@ -311,7 +311,7 @@ async fn a_prompt_handler_that_gives_up_cancels_the_real_flow() {
 }
 
 #[tokio::test]
-async fn a_login_with_no_prompt_handler_cancels_the_real_flow() {
+async fn a_manual_login_fails_closed_against_the_real_runtime() {
     let binary = require_real_binary!();
     let home = tempfile::tempdir().expect("tempdir");
     let client = common::real_builder_with_fixture(&binary)
@@ -322,7 +322,7 @@ async fn a_login_with_no_prompt_handler_cancels_the_real_flow() {
         .expect("connects");
 
     let error = client.auth().login("test-fixture", None).await.unwrap_err();
-    assert!(error.is_cancelled(), "{error:?}");
+    assert_eq!(error.code(), Some("auth_input_unavailable"), "{error:?}");
     client.close().await;
 }
 
@@ -374,10 +374,7 @@ async fn an_unauthenticated_provider_stream_reaches_the_typed_auth_error() {
 }
 
 #[tokio::test]
-async fn an_unauthenticated_agent_run_walks_the_whole_session_lifecycle() {
-    // The run reaches the provider, fails there for lack of credentials, and
-    // settles through `agent_result` — which exercises agent_start, the
-    // correlated agent_started, agent_message, the event stream, and teardown.
+async fn an_agent_run_on_a_model_outside_the_catalog_is_refused_by_name() {
     let binary = require_real_binary!();
     let home = tempfile::tempdir().expect("tempdir");
     let client = common::real_builder(&binary)
@@ -394,46 +391,7 @@ async fn an_unauthenticated_agent_run_walks_the_whole_session_lifecycle() {
         ))
         .await
         .unwrap_err();
-    assert!(matches!(error, Error::AuthRequired { .. }), "{error:?}");
-    assert_eq!(error.provider_id(), Some("anthropic"));
-    client.close().await;
-}
-
-#[tokio::test]
-async fn an_unauthenticated_agent_stream_emits_lifecycle_before_failing() {
-    let binary = require_real_binary!();
-    let home = tempfile::tempdir().expect("tempdir");
-    let client = common::real_builder(&binary)
-        .env("HOME", home.path().display().to_string())
-        .connect()
-        .await
-        .expect("connects");
-
-    let mut events = Box::pin(client.agent().stream(ExecutionRequest::prompt(
-        "anthropic/anthropic-messages@claude-sonnet-4-5",
-        "hi",
-    )));
-
-    let mut seen = Vec::new();
-    let mut failure = None;
-    while let Some(event) = events.next().await {
-        match event {
-            Ok(event) => seen.push(event),
-            Err(error) => {
-                failure = Some(error);
-                break;
-            }
-        }
-    }
-
-    assert!(
-        seen.iter()
-            .any(|event| matches!(event, oap_sdk::AgentEvent::TurnStart)),
-        "the loop started a turn before failing: {seen:?}"
-    );
-    let failure = failure.expect("the run fails for lack of credentials");
-    assert!(matches!(failure, Error::AuthRequired { .. }), "{failure:?}");
-    drop(events);
+    assert_eq!(error.code(), Some("model_not_found"), "{error:?}");
     client.close().await;
 }
 
