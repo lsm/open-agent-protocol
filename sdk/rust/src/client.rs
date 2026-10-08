@@ -24,7 +24,6 @@ pub struct ClientBuilder {
     command: Option<PathBuf>,
     resolver: BinaryResolver,
     args: Vec<String>,
-    legacy_wire: bool,
     cwd: Option<PathBuf>,
     env: BTreeMap<String, String>,
     env_clear: bool,
@@ -46,7 +45,6 @@ impl Default for ClientBuilder {
                 "agent,provider".to_owned(),
                 "--stdio".to_owned(),
             ],
-            legacy_wire: false,
             cwd: None,
             env: BTreeMap::new(),
             env_clear: false,
@@ -123,15 +121,6 @@ impl ClientBuilder {
         self
     }
 
-    /// Explicitly opts into the pre-OAP Makai stdio wire for compatibility.
-    /// The default speaks OAP and never falls back automatically.
-    pub fn legacy_wire(mut self) -> Self {
-        self.legacy_wire = true;
-        self.args = vec!["--stdio".to_owned()];
-        self.expected_protocol_version = "1".to_owned();
-        self
-    }
-
     /// The working directory for the runtime process.
     pub fn current_dir(mut self, path: impl Into<PathBuf>) -> Self {
         self.cwd = Some(path.into());
@@ -198,7 +187,6 @@ impl ClientBuilder {
         let transport = Transport::connect(TransportOptions {
             command,
             args: self.args.clone(),
-            legacy_wire: self.legacy_wire,
             cwd: self.cwd.clone(),
             env: self
                 .env
@@ -242,7 +230,7 @@ impl ClientBuilder {
 
 /// A connected Makai runtime.
 ///
-/// Holds one `oapx --stdio` child process. All four namespaces multiplex over
+/// Holds one `oapx serve agent,provider --stdio` child process. All four namespaces multiplex over
 /// it, so one client serves concurrent calls.
 ///
 /// Dropping the client terminates the child. [`Client::close`] does the same

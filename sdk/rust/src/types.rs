@@ -5,11 +5,11 @@ use std::pin::Pin;
 use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Map, Value};
+use serde_json::{json, Value};
 
 use crate::error::{Error, Result};
 use crate::ids::is_session_id;
-use crate::wire::{object_or_empty, opt_string, opt_string_any, str_or_empty};
+use crate::wire::{opt_string, opt_string_any, str_or_empty};
 
 /// Who a [`ChatMessage`] is from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -193,30 +193,6 @@ impl ChatMessage {
             tool_call_id: None,
         }
     }
-
-    pub(crate) fn serialize_for_wire(&self) -> Value {
-        let content = if self.role == Role::Tool {
-            json!(self.content.clone().into_parts())
-        } else {
-            json!(self.content)
-        };
-        let mut object = Map::new();
-        object.insert("role".to_owned(), json!(self.role));
-        object.insert("content".to_owned(), content);
-        if let Some(name) = &self.name {
-            object.insert("name".to_owned(), json!(name));
-        }
-        if self.role == Role::Tool {
-            object.insert(
-                "tool_name".to_owned(),
-                json!(self.name.clone().unwrap_or_default()),
-            );
-        }
-        if let Some(tool_call_id) = &self.tool_call_id {
-            object.insert("tool_call_id".to_owned(), json!(tool_call_id));
-        }
-        Value::Object(object)
-    }
 }
 
 /// How hard the model should think, where the provider supports the knob.
@@ -271,32 +247,6 @@ pub struct RunOptions {
 }
 
 impl RunOptions {
-    pub(crate) fn serialize_with_default_policy(
-        &self,
-        fallback_policy: Option<AuthRetryPolicy>,
-    ) -> Map<String, Value> {
-        let mut out = Map::new();
-        if let Some(policy) = self.auth_retry_policy.or(fallback_policy) {
-            out.insert("auth_retry_policy".to_owned(), json!(policy));
-        }
-        if let Some(temperature) = self.temperature {
-            out.insert("temperature".to_owned(), json!(temperature));
-        }
-        if let Some(max_tokens) = self.max_tokens {
-            out.insert("max_tokens".to_owned(), json!(max_tokens));
-        }
-        if let Some(effort) = self.reasoning_effort {
-            out.insert("reasoning_effort".to_owned(), json!(effort));
-        }
-        if let Some(session_id) = &self.session_id {
-            out.insert("session_id".to_owned(), json!(session_id));
-        }
-        if let Some(metadata) = &self.metadata {
-            out.insert("metadata".to_owned(), json!(metadata));
-        }
-        out
-    }
-
     pub(crate) fn validate(&self) -> Result<()> {
         if let Some(session_id) = &self.session_id {
             if !is_session_id(session_id) {
@@ -502,18 +452,6 @@ impl CompletionResponse {
         }
     }
 
-    /// Parses the `result` / `complete_response` payload shape.
-    pub(crate) fn parse(raw: &Value) -> Self {
-        let outer = object_or_empty(raw);
-        let message = outer
-            .get("message")
-            .filter(|value| value.is_object())
-            .cloned()
-            .unwrap_or_else(|| raw.clone());
-
-        Self::from_message_and_terminal(&message, raw)
-    }
-
     pub(crate) fn from_message_and_terminal(message: &Value, terminal: &Value) -> Self {
         let usage = message
             .get("usage")
@@ -539,34 +477,6 @@ impl CompletionResponse {
             error_message: opt_string(message, "error_message")
                 .or_else(|| opt_string(terminal, "error_message")),
         }
-    }
-
-    /// Parses the agent loop's `result_json`, which may carry either a single
-    /// `message` object or a `messages` transcript.
-    pub(crate) fn parse_agent_result(raw: &Value) -> Self {
-        if raw.get("message").is_some_and(Value::is_object) {
-            return Self::parse(raw);
-        }
-
-        let assistant = raw
-            .get("messages")
-            .and_then(Value::as_array)
-            .and_then(|messages| {
-                messages
-                    .iter()
-                    .rev()
-                    .find(|message| {
-                        message.get("role").and_then(Value::as_str) == Some("assistant")
-                    })
-                    .cloned()
-            })
-            .unwrap_or_else(|| raw.clone());
-        let terminal = raw
-            .get("result")
-            .filter(|value| value.is_object())
-            .cloned()
-            .unwrap_or_else(|| raw.clone());
-        Self::from_message_and_terminal(&assistant, &terminal)
     }
 }
 
@@ -625,50 +535,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn tool_messages_are_serialized_as_parts_with_a_tool_name() {
-        let mut message = ChatMessage::new(Role::Tool, "done");
-        message.name = Some("lookup".to_owned());
-        message.tool_call_id = Some("call-1".to_owned());
-        let wire = message.serialize_for_wire();
-        assert_eq!(wire["role"], json!("tool"));
-        assert_eq!(wire["tool_name"], json!("lookup"));
-        assert_eq!(wire["tool_call_id"], json!("call-1"));
-        assert_eq!(wire["content"], json!([{ "type": "text", "text": "done" }]));
-    }
-
-    #[test]
-    fn user_messages_keep_string_content() {
-        let wire = ChatMessage::user("hello").serialize_for_wire();
-        assert_eq!(wire["content"], json!("hello"));
-        assert!(wire.get("tool_name").is_none());
-    }
-
-    #[test]
-    fn options_merge_the_client_policy_but_the_request_wins() {
-        let options = RunOptions {
-            max_tokens: Some(64),
-            ..Default::default()
-        };
-        let merged = options.serialize_with_default_policy(Some(AuthRetryPolicy::AutoOnce));
-        assert_eq!(merged["auth_retry_policy"], json!("auto_once"));
-        assert_eq!(merged["max_tokens"], json!(64));
-
-        let overridden = RunOptions {
-            auth_retry_policy: Some(AuthRetryPolicy::Manual),
-            ..Default::default()
-        }
-        .serialize_with_default_policy(Some(AuthRetryPolicy::AutoOnce));
-        assert_eq!(overridden["auth_retry_policy"], json!("manual"));
-    }
-
-    #[test]
-    fn empty_options_serialize_to_nothing() {
-        assert!(RunOptions::default()
-            .serialize_with_default_policy(None)
-            .is_empty());
-    }
-
-    #[test]
     fn session_ids_are_validated_before_the_wire() {
         let bad = RunOptions {
             session_id: Some("too-short".to_owned()),
@@ -716,62 +582,6 @@ mod tests {
     }
 
     #[test]
-    fn completion_responses_read_the_flat_runtime_shape() {
-        // The shape the real runtime settles an errored agent turn with.
-        let raw = json!({
-            "type": "result",
-            "stop_reason": "error",
-            "model": "nope",
-            "api": "anthropic-messages",
-            "provider": "anthropic",
-            "input": 0,
-            "output": 0,
-            "content": [{ "type": "text", "text": "" }],
-            "error_message": "auth_required",
-        });
-        let response = CompletionResponse::parse_agent_result(&raw);
-        assert_eq!(response.provider_id, "anthropic");
-        assert_eq!(response.api, "anthropic-messages");
-        assert_eq!(response.model_id, "nope");
-        assert_eq!(response.stop_reason.as_deref(), Some("error"));
-        assert_eq!(response.error_message.as_deref(), Some("auth_required"));
-    }
-
-    #[test]
-    fn completion_responses_read_the_nested_message_shape() {
-        let raw = json!({
-            "message": {
-                "role": "assistant",
-                "content": [{ "type": "text", "text": "hello" }],
-                "usage": { "input": 3, "output": 5, "cache_read": 1 },
-                "provider_id": "anthropic",
-                "api": "anthropic-messages",
-                "model_id": "claude-sonnet-4-5",
-                "stop_reason": "end_turn",
-            }
-        });
-        let response = CompletionResponse::parse(&raw);
-        assert_eq!(response.text(), "hello");
-        assert_eq!(response.usage.map(|u| u.input), Some(3));
-        assert_eq!(response.model_id, "claude-sonnet-4-5");
-    }
-
-    #[test]
-    fn agent_results_pick_the_last_assistant_message() {
-        let raw = json!({
-            "messages": [
-                { "role": "user", "content": "hi" },
-                { "role": "assistant", "content": "first" },
-                { "role": "assistant", "content": "second" },
-            ],
-            "result": { "stop_reason": "end_turn", "provider_id": "anthropic" }
-        });
-        let response = CompletionResponse::parse_agent_result(&raw);
-        assert_eq!(response.text(), "second");
-        assert_eq!(response.stop_reason.as_deref(), Some("end_turn"));
-    }
-
-    #[test]
     fn tool_call_parts_accept_the_id_spelling() {
         let content = parse_content(Some(&json!([
             { "type": "tool_call", "id": "call-1", "name": "lookup", "arguments_json": "{}" }
@@ -783,18 +593,6 @@ mod tests {
             },
             other => panic!("unexpected content: {other:?}"),
         }
-    }
-
-    #[test]
-    fn tool_calls_are_exposed_on_the_response() {
-        let response = CompletionResponse::parse(&json!({
-            "content": [
-                { "type": "text", "text": "let me look" },
-                { "type": "tool_call", "tool_call_id": "c1", "name": "lookup", "arguments_json": "{\"q\":1}" }
-            ]
-        }));
-        assert_eq!(response.tool_calls().len(), 1);
-        assert_eq!(response.text(), "let me look");
     }
 
     #[tokio::test]

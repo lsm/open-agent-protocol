@@ -12,7 +12,7 @@ mod common;
 use std::time::Duration;
 
 use futures::StreamExt;
-use oap_sdk::{Client, ClientBuilder, Error, ExecutionRequest, ListModelsRequest};
+use oap_sdk::{Client, ClientBuilder, Error, ExecutionRequest, ListModelsRequest, StreamErrorKind};
 
 #[tokio::test]
 async fn connects_and_completes_the_handshake() {
@@ -30,8 +30,22 @@ async fn a_missing_handshake_times_out_rather_than_hanging() {
         .connect()
         .await
         .unwrap_err();
-    assert!(matches!(error, Error::Transport { .. }), "{error:?}");
-    assert!(error.to_string().contains("handshake timed out"), "{error}");
+    assert!(
+        matches!(
+            error,
+            Error::Stream {
+                kind: StreamErrorKind::TransportError,
+                ..
+            }
+        ),
+        "{error:?}"
+    );
+    assert!(
+        error
+            .to_string()
+            .contains("timed out waiting for protocol.initialize.request"),
+        "{error}"
+    );
     assert!(started.elapsed() < Duration::from_secs(3));
 }
 
@@ -41,11 +55,7 @@ async fn a_version_mismatch_fails_fast_with_a_typed_code() {
         .connect()
         .await
         .unwrap_err();
-    assert_eq!(error.code(), Some("version_mismatch"));
-    assert!(
-        error.to_string().contains("protocol version mismatch"),
-        "{error}"
-    );
+    assert_eq!(error.code(), Some("protocol_mismatch"));
 }
 
 #[tokio::test]
@@ -108,7 +118,16 @@ async fn a_child_that_dies_mid_request_fails_the_call_rather_than_hanging() {
         .list(ListModelsRequest::default())
         .await
         .unwrap_err();
-    assert!(matches!(error, Error::Protocol { .. }), "{error:?}");
+    assert!(
+        matches!(
+            error,
+            Error::Stream {
+                kind: StreamErrorKind::TransportError,
+                ..
+            }
+        ),
+        "{error:?}"
+    );
     assert!(
         error.to_string().contains("exit") || error.to_string().contains("stdio stream ended"),
         "{error}"
@@ -324,120 +343,23 @@ async fn namespace_handles_outlive_the_client_value() {
         ))
         .await
         .expect("the transport outlives the client value");
-    assert_eq!(response.text(), "hello");
-}
-
-#[tokio::test]
-async fn every_outbound_frame_is_one_ndjson_line_with_the_v1_envelope() {
-    let log = tempfile::NamedTempFile::new().expect("temp file");
-    let client = common::fake_builder("ok")
-        .env("OAP_SDK_FAKE_REQUEST_LOG", log.path().display().to_string())
-        .connect()
-        .await
-        .expect("connects");
-
-    client
-        .models()
-        .list(ListModelsRequest::default())
-        .await
-        .expect("lists");
-    client
-        .provider()
-        .complete(ExecutionRequest::prompt(
-            "anthropic/anthropic-messages@claude-sonnet-4-5",
-            "hi",
-        ))
-        .await
-        .expect("completes");
-    client.close().await;
-
-    let frames = common::read_request_log(log.path());
-    assert!(frames.len() >= 2);
-    for frame in &frames {
-        assert_eq!(frame["version"], serde_json::json!(1), "{frame}");
-        assert!(frame["message_id"].is_string(), "{frame}");
-        assert!(frame["sequence"].is_u64(), "{frame}");
-        assert!(frame["timestamp"].is_i64(), "{frame}");
-        // A frame carries exactly one route key, which is how the stdio host
-        // decides which protocol server to hand it to.
-        let has_stream = frame.get("stream_id").is_some();
-        let has_session = frame.get("session_id").is_some();
-        assert!(has_stream ^ has_session, "{frame}");
-    }
-}
-
-#[tokio::test]
-async fn generated_ids_match_the_wire_formats() {
-    let log = tempfile::NamedTempFile::new().expect("temp file");
-    let client = common::fake_builder("ok")
-        .env("OAP_SDK_FAKE_REQUEST_LOG", log.path().display().to_string())
-        .connect()
-        .await
-        .expect("connects");
-    client
-        .models()
-        .list(ListModelsRequest::default())
-        .await
-        .expect("lists");
-    client
-        .agent()
-        .run(ExecutionRequest::prompt(
-            "anthropic/anthropic-messages@claude-sonnet-4-5",
-            "hi",
-        ))
-        .await
-        .expect("runs");
-    client.close().await;
-
-    let frames = common::read_request_log(log.path());
-    for frame in &frames {
-        let message_id = frame["message_id"].as_str().expect("message_id");
-        assert_eq!(message_id.len(), 26, "message_id is a ULID: {message_id}");
-        assert!(
-            message_id
-                .bytes()
-                .all(|b| b.is_ascii_digit() || b.is_ascii_uppercase()),
-            "message_id is Crockford Base32: {message_id}"
-        );
-        // The runtime rejects a ULID whose 48-bit timestamp segment overflows.
-        assert!(
-            message_id.as_bytes()[0] <= b'7',
-            "ULID timestamp segment overflows: {message_id}"
-        );
-
-        if let Some(stream_id) = frame.get("stream_id").and_then(|id| id.as_str()) {
-            assert_eq!(stream_id.len(), 26, "stream_id is a ULID: {stream_id}");
-        }
-        if let Some(session_id) = frame.get("session_id").and_then(|id| id.as_str()) {
-            assert_eq!(session_id.len(), 21, "session_id is a NanoID: {session_id}");
-            assert!(session_id.bytes().all(|b| b.is_ascii_alphanumeric()));
-        }
-    }
+    assert_eq!(response.text(), "provider works");
 }
 
 #[tokio::test]
 async fn the_builder_controls_the_child_environment() {
     // `env_clear` plus one variable is what the fake sees; if the builder leaked
     // the parent environment, an ambient OAP_SDK_FAKE_SCENARIO would win.
-    let client = ClientBuilder::new()
-        .legacy_wire()
+    let error = ClientBuilder::new()
         .command(common::fake_binary())
         .args(Vec::<String>::new())
         .env_clear()
-        .env("OAP_SDK_FAKE_SCENARIO", "auth_required")
+        .env("OAP_SDK_FAKE_SCENARIO", "handshake_error")
         .handshake_timeout(Duration::from_millis(2_000))
-        .response_timeout(Duration::from_millis(2_000))
         .connect()
         .await
-        .expect("connects");
-
-    let error = client
-        .models()
-        .list(ListModelsRequest::default())
-        .await
         .unwrap_err();
-    assert_eq!(error.code(), Some("auth_required"));
-    client.close().await;
+    assert_eq!(error.code(), Some("startup_failed"));
 }
 
 #[tokio::test]
