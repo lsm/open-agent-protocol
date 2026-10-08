@@ -1649,36 +1649,6 @@ pub fn build(b: *std.Build) void {
         },
     });
 
-    const protocol_oap_server_mod = b.createModule(.{
-        .root_source_file = b.path("src/protocol/oap/server.zig"),
-        .target = target,
-        .optimize = optimize,
-        .imports = &.{
-            .{ .name = "oap_types", .module = protocol_oap_types_mod },
-            .{ .name = "oap_envelope", .module = protocol_oap_envelope_mod },
-            .{ .name = "protocol_types", .module = protocol_types_mod },
-            .{ .name = "model_ref", .module = protocol_model_ref_mod },
-            .{ .name = "json_writer", .module = json_writer_mod },
-            .{ .name = "compat", .module = compat_mod },
-        },
-    });
-
-    const protocol_oap_bridge_mod = b.createModule(.{
-        .root_source_file = b.path("src/protocol/oap/bridge.zig"),
-        .target = target,
-        .optimize = optimize,
-        .imports = &.{
-            .{ .name = "oap_types", .module = protocol_oap_types_mod },
-            .{ .name = "oap_server", .module = protocol_oap_server_mod },
-            .{ .name = "oap_envelope", .module = protocol_oap_envelope_mod },
-            .{ .name = "agent_types", .module = protocol_agent_types_mod },
-            .{ .name = "agent_envelope", .module = protocol_agent_envelope_mod },
-            .{ .name = "json_writer", .module = json_writer_mod },
-            .{ .name = "owned_slice", .module = owned_slice_mod },
-            .{ .name = "compat", .module = compat_mod },
-        },
-    });
-
     const protocol_auth_types_mod = b.createModule(.{
         .root_source_file = b.path("src/protocol/auth/types.zig"),
         .target = target,
@@ -2058,35 +2028,6 @@ pub fn build(b: *std.Build) void {
             .{ .name = "owned_slice", .module = owned_slice_mod },
         },
     });
-
-    const tui_oap_client_mod = b.createModule(.{
-        .root_source_file = b.path("src/tui/oap_client.zig"),
-        .target = target,
-        .optimize = optimize,
-        .imports = &.{
-            .{ .name = "transports/in_process", .module = in_process_transport_mod },
-            .{ .name = "transport", .module = transport_mod },
-            .{ .name = "oap_types", .module = protocol_oap_types_mod },
-            .{ .name = "oap_envelope", .module = protocol_oap_envelope_mod },
-            .{ .name = "oap_server", .module = protocol_oap_server_mod },
-        },
-    });
-    const tui_oap_client_test = b.addTest(.{ .root_module = tui_oap_client_mod });
-    const tui_oap_ops_parity_mod = b.createModule(.{
-        .root_source_file = b.path("src/tui/oap_ops_parity.zig"),
-        .target = target,
-        .optimize = optimize,
-        .imports = &.{
-            .{ .name = "transports/in_process", .module = in_process_transport_mod },
-            .{ .name = "oap_types", .module = protocol_oap_types_mod },
-            .{ .name = "oap_server", .module = protocol_oap_server_mod },
-            .{ .name = "oap_envelope", .module = protocol_oap_envelope_mod },
-            .{ .name = "tui/oap_client", .module = tui_oap_client_mod },
-            .{ .name = "tui_runtime", .module = tui_runtime_mod },
-            .{ .name = "tui/session", .module = tui_session_mod },
-        },
-    });
-    const tui_oap_ops_parity_test = b.addTest(.{ .root_module = tui_oap_ops_parity_mod });
 
     const tui_auto_continue_mod = b.createModule(.{
         .root_source_file = b.path("src/tui/auto_continue.zig"),
@@ -2623,8 +2564,6 @@ pub fn build(b: *std.Build) void {
     const protocol_oap_provider_http_client_test = b.addTest(.{ .root_module = protocol_oap_provider_http_client_mod });
     const protocol_oap_provider_runtime_test = b.addTest(.{ .root_module = protocol_oap_provider_runtime_mod });
     const protocol_oap_envelope_test = b.addTest(.{ .root_module = protocol_oap_envelope_mod });
-    const protocol_oap_server_test = b.addTest(.{ .root_module = protocol_oap_server_mod });
-    const protocol_oap_bridge_test = b.addTest(.{ .root_module = protocol_oap_bridge_mod });
 
     const protocol_auth_types_test = b.addTest(.{ .root_module = protocol_auth_types_mod });
     const protocol_auth_envelope_test = b.addTest(.{ .root_module = protocol_auth_envelope_mod });
@@ -2774,8 +2713,6 @@ pub fn build(b: *std.Build) void {
             .{ .name = "provider_catalog", .module = provider_catalog_mod },
             .{ .name = "tools/agent_tool_bridge", .module = tools_agent_tool_bridge_mod },
             .{ .name = "tools/agent_run", .module = tools_agent_run_mod },
-            .{ .name = "oap_server", .module = protocol_oap_server_mod },
-            .{ .name = "oap_bridge", .module = protocol_oap_bridge_mod },
             .{ .name = "oap_conformance", .module = oap_conformance_runner_mod },
             .{ .name = "oap_auth_adapter", .module = protocol_oap_auth_adapter_mod },
             .{ .name = "oap_provider_types", .module = protocol_oap_provider_types_mod },
@@ -3032,8 +2969,6 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&isolatedHomeRun(b, tui_runtime_test, "test/tui_runtime_test").step);
     test_step.dependOn(&isolatedHomeRun(b, tui_session_store_test, "test/tui_session_store_test").step);
     test_step.dependOn(&isolatedHomeRun(b, tui_state_test, "test/tui_state_test").step);
-    test_step.dependOn(&isolatedHomeRun(b, tui_oap_client_test, "test/tui_oap_client_test").step);
-    test_step.dependOn(&isolatedHomeRun(b, tui_oap_ops_parity_test, "test/tui_oap_ops_parity_test").step);
     test_step.dependOn(&isolatedHomeRun(b, tui_auto_continue_test, "test/tui_auto_continue_test").step);
     test_step.dependOn(&isolatedHomeRun(b, tui_commands_test, "test/tui_commands_test").step);
     test_step.dependOn(&isolatedHomeRun(b, tui_login_test, "test/tui_login_test").step);
@@ -3071,8 +3006,6 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&b.addRunArtifact(protocol_oap_provider_http_client_test).step);
     test_step.dependOn(&b.addRunArtifact(protocol_oap_provider_runtime_test).step);
     test_step.dependOn(&b.addRunArtifact(protocol_oap_envelope_test).step);
-    test_step.dependOn(&b.addRunArtifact(protocol_oap_server_test).step);
-    test_step.dependOn(&b.addRunArtifact(protocol_oap_bridge_test).step);
     test_step.dependOn(&b.addRunArtifact(protocol_oap_auth_adapter_test).step);
     test_step.dependOn(&b.addRunArtifact(acp_rpc_test).step);
     test_step.dependOn(&b.addRunArtifact(adapter_gojson_test).step);
@@ -3187,8 +3120,6 @@ pub fn build(b: *std.Build) void {
     test_unit_protocol_step.dependOn(&b.addRunArtifact(protocol_oap_provider_http_client_test).step);
     test_unit_protocol_step.dependOn(&b.addRunArtifact(protocol_oap_provider_runtime_test).step);
     test_unit_protocol_step.dependOn(&b.addRunArtifact(protocol_oap_envelope_test).step);
-    test_unit_protocol_step.dependOn(&b.addRunArtifact(protocol_oap_server_test).step);
-    test_unit_protocol_step.dependOn(&b.addRunArtifact(protocol_oap_bridge_test).step);
     test_unit_protocol_step.dependOn(&b.addRunArtifact(protocol_oap_auth_adapter_test).step);
     const test_unit_oap_auth_adapter_step = b.step("test-unit-oap-auth-adapter", "Run OAP auth adapter unit tests");
     test_unit_oap_auth_adapter_step.dependOn(&b.addRunArtifact(protocol_oap_auth_adapter_test).step);
@@ -3298,8 +3229,6 @@ pub fn build(b: *std.Build) void {
     test_unit_tui_step.dependOn(&isolatedHomeRun(b, tui_runtime_test, "test-unit-tui/tui_runtime_test").step);
     test_unit_tui_step.dependOn(&isolatedHomeRun(b, tui_session_store_test, "test-unit-tui/tui_session_store_test").step);
     test_unit_tui_step.dependOn(&isolatedHomeRun(b, tui_state_test, "test-unit-tui/tui_state_test").step);
-    test_unit_tui_step.dependOn(&isolatedHomeRun(b, tui_oap_client_test, "test-unit-tui/tui_oap_client_test").step);
-    test_unit_tui_step.dependOn(&isolatedHomeRun(b, tui_oap_ops_parity_test, "test-unit-tui/tui_oap_ops_parity_test").step);
     test_unit_tui_step.dependOn(&isolatedHomeRun(b, tui_auto_continue_test, "test-unit-tui/tui_auto_continue_test").step);
     test_unit_tui_step.dependOn(&isolatedHomeRun(b, tui_oap_execution_test, "test-unit-tui/tui_oap_execution_test").step);
     test_unit_tui_step.dependOn(&isolatedHomeRun(b, tui_hub_link_test, "test-unit-tui/tui_hub_link_test").step);

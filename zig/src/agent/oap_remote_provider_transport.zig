@@ -16,7 +16,10 @@ pub const Config = struct {
     }
 };
 
-pub fn discoverModels(allocator: std.mem.Allocator, config: *const Config) ![][]u8 {
+const default_context_window: u32 = 128_000;
+const default_max_tokens: u32 = 8192;
+
+pub fn discoverModels(allocator: std.mem.Allocator, config: *const Config) ![]ai_types.Model {
     var client = try http_client.Client.init(allocator, config.base_url, config.security);
     defer client.deinit();
     const describe_request = try provider_envelope.serializeEnvelope(.{
@@ -49,10 +52,10 @@ pub fn discoverModels(allocator: std.mem.Allocator, config: *const Config) ![][]
     defer list.deinit(allocator);
     if (!std.mem.eql(u8, list.in_reply_to orelse "", "remote-models")) return error.InvalidProviderServiceResponse;
     if (list.payload != .provider_models_list_response) return error.InvalidProviderServiceResponse;
-    var refs = std.ArrayList([]u8).empty;
+    var models = std.ArrayList(ai_types.Model).empty;
     errdefer {
-        for (refs.items) |ref| allocator.free(ref);
-        refs.deinit(allocator);
+        for (models.items) |*model| model.deinit(allocator);
+        models.deinit(allocator);
     }
     for (list.payload.provider_models_list_response.models) |model| {
         const parsed = provider_types.parseModelRef(model.model_ref) orelse return error.InvalidProviderServiceResponse;
@@ -70,11 +73,26 @@ pub fn discoverModels(allocator: std.mem.Allocator, config: *const Config) ![][]
             known = true;
         }
         if (!known) return error.InvalidProviderServiceResponse;
-        const ref = try allocator.dupe(u8, model.model_ref);
-        errdefer allocator.free(ref);
-        try refs.append(allocator, ref);
+        const slash = std.mem.findScalar(u8, model.model_ref, '/') orelse return error.InvalidProviderServiceResponse;
+        const at = std.mem.findScalarPos(u8, model.model_ref, slash, '@') orelse return error.InvalidProviderServiceResponse;
+        var reasoning = false;
+        for (model.capabilities) |capability| reasoning = reasoning or capability == .reasoning;
+        var built = try ai_types.cloneModel(allocator, .{
+            .id = model.model_id,
+            .name = model.display_name orelse model.model_id,
+            .api = model.model_ref[slash + 1 .. at],
+            .provider = model.provider_id,
+            .base_url = "",
+            .reasoning = reasoning,
+            .input = &.{"text"},
+            .cost = .{ .input = 0, .output = 0, .cache_read = 0, .cache_write = 0 },
+            .context_window = model.context_window orelse default_context_window,
+            .max_tokens = model.max_output_tokens orelse default_max_tokens,
+        });
+        errdefer built.deinit(allocator);
+        try models.append(allocator, built);
     }
-    return refs.toOwnedSlice(allocator);
+    return models.toOwnedSlice(allocator);
 }
 
 const State = struct {
@@ -352,11 +370,13 @@ test "remote provider discovery accepts managed credentials and rejects grant ch
         if (std.mem.eql(u8, grant, "none")) {
             const models = try discoverModels(std.testing.allocator, &config);
             defer {
-                for (models) |model| std.testing.allocator.free(model);
+                for (models) |*model| model.deinit(std.testing.allocator);
                 std.testing.allocator.free(models);
             }
             try std.testing.expectEqual(@as(usize, 1), models.len);
-            try std.testing.expectEqualStrings("remote/other:mock@sample", models[0]);
+            try std.testing.expectEqualStrings("remote", models[0].provider);
+            try std.testing.expectEqualStrings("other:mock", models[0].api);
+            try std.testing.expectEqualStrings("sample", models[0].id);
         } else {
             try std.testing.expectError(error.RemoteProviderCredentialGrantUnsupported, discoverModels(std.testing.allocator, &config));
         }

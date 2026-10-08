@@ -7,9 +7,9 @@ The current first-party host is `oapx serve agent,provider --stdio`: one
 JSONL stdio process routes by OAP `profile` and exposes independent agent and
 model-provider cores. The agent default can be changed mid-session through
 `session.model.switch`; `+models` and local-stdio `+auth` are implemented.
-The agent core is the `oapx` adapter, the same loop the terminal UI runs, and it
-calls its models directly; with `OAPX_PROVIDER_SERVICE_URL` set, the older loop
-whose inference crosses a remote model-provider-core service still serves. See Decisions
+The agent core is the `oapx` adapter, the same loop the terminal UI runs. It
+calls its models directly, or, with `OAPX_PROVIDER_SERVICE_URL` set, through the
+remote model-provider-core service, whose catalog it then offers. See Decisions
 [0027](../decisions/0027-composed-stdio-profiles.md),
 [0028](../decisions/0028-live-model-and-provider-control.md), and
 [0029](../decisions/0029-authentication-over-agent-control.md) for the current
@@ -195,9 +195,10 @@ own validator (`go run ./go/cmd/goap validate`; the command was
 3. a cancellation (intent acknowledged, `run.status.updated: cancelling`,
    authoritative `run.cancelled`, session `closed`).
 
-The frame-by-frame shape of all three is pinned in CI by the golden-trace tests
-in `zig/src/protocol/oap/bridge.zig` (`zig build test-unit-protocol`), so a
-regression that would break external validation fails a unit test first.
+The frame-by-frame shape of all three was pinned by golden-trace tests in
+`zig/src/protocol/oap/bridge.zig`, which went with the loop it tested when
+`oapx serve agent` moved to the `oapx` adapter; that adapter's tests now validate
+its traces.
 
 The endpoint also passes the OAP repository's own conformance harness end to
 end — `go run ./go/cmd/goap conformance --command "oapx serve agent --stdio"`
