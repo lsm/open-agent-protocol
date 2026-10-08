@@ -291,7 +291,7 @@ void main();
 
 ## Configuration
 
-`createMakaiClient(...)`, `createMakaiStdioClient(...)`, and `createMakaiAuthClient(...)` accept stdio transport options and binary resolver options.
+`createMakaiClient(...)` and `createOapClient(...)` accept stdio transport options and binary resolver options.
 
 ### Explicit binary path
 

@@ -138,8 +138,7 @@ try {
     join(workDir, "consumer.ts"),
     `import {
   createMakaiClient,
-  createMakaiStdioClient,
-  createMakaiModelsApi,
+  createOapClient,
   resolveMakaiBinary,
   isAbortError,
   getNoopLogger,
@@ -148,12 +147,12 @@ try {
   type UsageSummary,
   type ProviderStreamEvent,
   type MakaiClient,
-  type StdioFrame,
+  type OapEnvelope,
 } from "oap-sdk";
 
 const messages: ChatMessage[] = [{ role: "user", content: "hello" }];
 const usage: UsageSummary = { input: 1, output: 2 };
-const frame: StdioFrame = { type: "ping" };
+const frame: OapEnvelope = { protocol: "open-agent-protocol", version: "0.1", profile: "open-agent-protocol.agent-control-core", type: "ping", id: "1", payload: {} };
 
 function describeEvent(event: ProviderStreamEvent): string {
   return event.type;
@@ -167,8 +166,7 @@ if (!(protocolError instanceof Error)) {
 
 async function main(): Promise<void> {
   const client: MakaiClient = await createMakaiClient({ logger: getNoopLogger() });
-  const transport = await createMakaiStdioClient();
-  const models = createMakaiModelsApi(transport, { logger: getNoopLogger() });
+  const models = (await createOapClient()).models;
   void client;
   void models;
   void frame;

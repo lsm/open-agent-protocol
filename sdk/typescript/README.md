@@ -2,7 +2,7 @@
 
 TypeScript SDK published as `oap-sdk`. The default client spawns `oapx serve agent,provider --stdio` and speaks OAP v0.1 on both profiles: agent sessions and authentication on `agent-control-core`, direct inference and provider model discovery on `model-provider-core`.
 
-`createOapClient()` is the preferred entry point. `createMakaiClient()` remains an alias that now defaults to OAP; it never silently falls back to the old wire. Pass `{ wireProtocol: "legacy" }` only when you explicitly need a still-unmigrated Makai feature. The low-level `createMakaiStdioClient`, `createMakaiAuthClient`, and related factories are legacy-wire APIs and deprecated for new integrations.
+`createOapClient()` is the preferred entry point. `createMakaiClient()` remains an alias for it.
 
 ## Installation
 
@@ -134,7 +134,7 @@ async function main(): Promise<void> {
 void main();
 ```
 
-For agent streaming, iterate over `client.agent.stream(request)` and handle `agent_start`, content deltas, and the terminal `agent_end` event. Client-side tool callbacks remain available only under explicit `{ wireProtocol: "legacy" }` until `+control-tools` is implemented.
+For agent streaming, iterate over `client.agent.stream(request)` and handle `agent_start`, content deltas, and the terminal `agent_end` event. Tools with an `execute` callback run in your process when the endpoint advertises `action.tools.provide`.
 
 ### Agent model discovery
 
@@ -260,7 +260,7 @@ void main();
 
 ## Configuration
 
-`createOapClient(...)` and `createMakaiClient(...)` accept stdio transport and binary resolver options. The low-level `createMakaiStdioClient(...)` and `createMakaiAuthClient(...)` remain legacy-wire only.
+`createOapClient(...)` and `createMakaiClient(...)` accept stdio transport and binary resolver options.
 
 ### Explicit binary path
 
@@ -324,7 +324,7 @@ On Windows the executable name is `oapx.exe`.
 
 Step 1 outranks both local build paths, so an installed platform package wins over a fresh `zig build`. It is no longer an optional dependency of `oap-sdk`, so it is only consulted when you install it yourself. Set `OAP_SDK_BINARY_PATH` (or `resolver.binaryPath`) to pin an exact binary.
 
-There is no legacy `ready` frame on OAP. The client initializes the agent profile and describes the provider profile. `responseTimeoutMs` bounds provider and agent replies; `frameTimeoutMs` bounds auth event waits. A failed connection closes the spawned process.
+The client initializes the agent profile and describes the provider profile. `responseTimeoutMs` bounds provider and agent replies; `frameTimeoutMs` bounds auth event waits. A failed connection closes the spawned process.
 
 ```ts
 import { createMakaiClient } from "oap-sdk";
@@ -392,7 +392,7 @@ async function main(): Promise<void> {
 void main;
 ```
 
-Leaving an OAP stream early also cancels it: the SDK sends a best-effort `inference.cancel.request` for direct inference or `run.cancel.request` for an agent run. Explicit legacy mode uses its original `abort_request`/`agent_stop` frames.
+Leaving an OAP stream early also cancels it: the SDK sends a best-effort `inference.cancel.request` for direct inference or `run.cancel.request` for an agent run.
 
 ## Error handling
 
