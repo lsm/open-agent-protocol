@@ -2812,94 +2812,6 @@ fn resolveOapStoredCredential(
     return resolved;
 }
 
-const AgentOapProviderTransport = struct {
-    allocator: std.mem.Allocator,
-    registry: api_registry.ApiRegistry,
-    server: oap_provider_server.Server,
-    running: std.ArrayList(RunningOapInference) = .empty,
-    api_key: ?[]u8 = null,
-
-    fn deinit(self: *AgentOapProviderTransport) void {
-        for (self.running.items) |*entry| entry.deinit(self.allocator);
-        self.running.deinit(self.allocator);
-        self.server.deinit();
-        self.registry.deinit();
-        if (self.api_key) |key| self.allocator.free(key);
-        self.allocator.destroy(self);
-    }
-};
-
-fn openAgentOapProviderTransport(
-    _: ?*anyopaque,
-    allocator: std.mem.Allocator,
-    _: ai_types.Model,
-    api_key: ?[]const u8,
-) anyerror!agent_oap_provider_bridge.Transport {
-    const provider_transport = try allocator.create(AgentOapProviderTransport);
-    errdefer allocator.destroy(provider_transport);
-    provider_transport.* = .{
-        .allocator = allocator,
-        .registry = api_registry.ApiRegistry.init(allocator),
-        .server = oap_provider_server.Server.init(allocator, .{
-            .capability_revision = VERSION,
-            .grant_channel = .unsupported,
-            .accepts_inference = true,
-            .resolves_own_credentials = true,
-            .profile_revision = OAP_PROVIDER_PROFILE_REVISION,
-            .catalog = oapFallbackCatalogState(),
-        }),
-    };
-    errdefer {
-        provider_transport.server.deinit();
-        provider_transport.registry.deinit();
-    }
-    if (api_key) |key| provider_transport.api_key = try allocator.dupe(u8, key);
-    errdefer if (provider_transport.api_key) |key| allocator.free(key);
-    try register_builtins.registerBuiltInApiProviders(&provider_transport.registry);
-    try populateOapProviderCatalog(allocator, &provider_transport.server);
-    return .{
-        .ctx = provider_transport,
-        .send_line_fn = agentOapProviderSendLine,
-        .pump_fn = agentOapProviderPump,
-        .recv_line_fn = agentOapProviderRecvLine,
-        .close_fn = agentOapProviderClose,
-    };
-}
-
-fn agentOapProviderSendLine(context: ?*anyopaque, line: []const u8) anyerror!void {
-    const provider_transport: *AgentOapProviderTransport = @ptrCast(@alignCast(context));
-    try provider_transport.server.handleLine(line);
-    while (provider_transport.server.popPendingStart()) |inference_id| {
-        defer provider_transport.allocator.free(inference_id);
-        try startOapInference(
-            provider_transport.allocator,
-            &provider_transport.registry,
-            &provider_transport.server,
-            &provider_transport.running,
-            inference_id,
-            &.{},
-            provider_transport.api_key,
-        );
-    }
-}
-
-fn agentOapProviderPump(context: ?*anyopaque) anyerror!void {
-    const provider_transport: *AgentOapProviderTransport = @ptrCast(@alignCast(context));
-    _ = try pumpOapInferences(provider_transport.allocator, &provider_transport.server, &provider_transport.running, 120_000);
-}
-
-fn agentOapProviderRecvLine(context: ?*anyopaque, allocator: std.mem.Allocator) anyerror!?[]u8 {
-    const provider_transport: *AgentOapProviderTransport = @ptrCast(@alignCast(context));
-    const line = provider_transport.server.popOutbound() orelse return null;
-    defer provider_transport.allocator.free(line);
-    return try allocator.dupe(u8, line);
-}
-
-fn agentOapProviderClose(context: ?*anyopaque) void {
-    const provider_transport: *AgentOapProviderTransport = @ptrCast(@alignCast(context));
-    provider_transport.deinit();
-}
-
 fn startOapInference(
     allocator: std.mem.Allocator,
     registry: *api_registry.ApiRegistry,
@@ -2907,7 +2819,6 @@ fn startOapInference(
     running: *std.ArrayList(RunningOapInference),
     inference_id: []const u8,
     granted: []const OapGrantedValue,
-    trusted_api_key: ?[]const u8,
 ) !void {
     const inference = server.findInference(inference_id) orelse return;
 
@@ -2947,8 +2858,6 @@ fn startOapInference(
     var options: ai_types.StreamOptions = .{};
     var resolved_credential: ?auth_resolver.ResolvedKey = null;
     defer if (resolved_credential) |*key| key.deinit(allocator);
-
-    if (trusted_api_key) |key| options.api_key = @TypeOf(options.api_key).initBorrowed(key);
 
     if (options.getApiKey() == null) if (inference.credential_ref) |reference| {
         if (grantedValueFor(granted, reference)) |value| options.api_key = @TypeOf(options.api_key).initBorrowed(value);
@@ -3760,7 +3669,7 @@ fn handleHttpProviderConnectionFallible(runtime: *HttpProviderRuntime, stream: *
     };
     while (runtime.server.popPendingStart()) |inference_id| {
         defer allocator.free(inference_id);
-        startOapInference(allocator, &runtime.registry, &runtime.server, &runtime.running, inference_id, &.{}, null) catch |err| {
+        startOapInference(allocator, &runtime.registry, &runtime.server, &runtime.running, inference_id, &.{}) catch |err| {
             runtime.mutex.unlock(httpProviderIo());
             unregisterHttpProviderExchange(runtime, &exchange);
             return err;
@@ -4006,7 +3915,7 @@ fn runOapProviderMode(
 
         while (server.popPendingStart()) |inference_id| {
             defer allocator.free(inference_id);
-            try startOapInference(allocator, &registry, &server, &running, inference_id, granted_values.items, null);
+            try startOapInference(allocator, &registry, &server, &running, inference_id, granted_values.items);
             did_work = true;
         }
 
@@ -4283,7 +4192,7 @@ fn runOapxServe(
             if (try pumpOapGrants(allocator, &provider_server, &grant_channels, &granted_values, compat.time.nowMillis())) did_work = true;
             while (provider_server.popPendingStart()) |inference_id| {
                 defer allocator.free(inference_id);
-                try startOapInference(allocator, &provider_registry, &provider_server, &running_inferences, inference_id, granted_values.items, null);
+                try startOapInference(allocator, &provider_registry, &provider_server, &running_inferences, inference_id, granted_values.items);
                 did_work = true;
             }
             if (try pumpOapInferences(allocator, &provider_server, &running_inferences, provider_idle_ttl_ms)) did_work = true;
@@ -5365,7 +5274,7 @@ test "a failed start releases the inference it could not run" {
     const inference_id = try allocator.dupe(u8, server.active.items[0].id);
     defer allocator.free(inference_id);
 
-    try startOapInference(allocator, &registry, &server, &running, inference_id, &.{}, null);
+    try startOapInference(allocator, &registry, &server, &running, inference_id, &.{});
 
     try std.testing.expectEqual(@as(usize, 0), running.items.len);
     if (server.active.items.len != 0) {
