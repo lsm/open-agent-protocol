@@ -14,8 +14,7 @@ both profiles are co-hosted. See Decisions
 [0029](../decisions/0029-authentication-over-agent-control.md) for the current
 contract. Dynamic provider attachment remains optional and remote provider
 transport is follow-up work. The `oapx` adapter advertises
-`action.tools.provide` (Decision 0011); `oapx serve agent` does not yet serve
-it. Every SDK provides a request's tools at open and resolves their calls on an
+`action.tools.provide` (Decision 0011). Every SDK provides a request's tools at open and resolves their calls on an
 endpoint that advertises the feature, refuses them client-side on one that does
 not, and retains the legacy wire only by explicit opt-in.
 
