@@ -94,7 +94,7 @@ Exactly one terminal event ends the stream — `MessageEnd` or `Error`. Failures
 
 ## Agent runs and model switching
 
-`agent().run(...)` and `agent().stream(...)` drive an OAP agent session. `switch_model(session_id, model_ref)` changes the selected model mid-session; `run_selected(session_id, messages)` uses that selection. Client-executed tools (`Tool::on_call`) are not yet exposed by the OAP endpoint: agent requests containing tools and direct provider requests containing executable callbacks fail explicitly with `unsupported_feature`. Direct provider calls can still pass declaration-only tool schemas. The old callback path is available only under `legacy_wire()`.
+`agent().run(...)` and `agent().stream(...)` drive an OAP agent session. `switch_model(session_id, model_ref)` changes the selected model mid-session; `run_selected(session_id, messages)` uses that selection. Agent requests provide their tools to the session at open (`action.tools.provide`), owned by the SDK's participant `rust-sdk`; when the model calls one, the SDK runs its `Tool::on_call` handler and answers with `action.call.resolve.request`, and a tool without a handler is answered with an error. Direct provider requests containing executable callbacks still fail with `unsupported_feature`; they can pass declaration-only tool schemas.
 
 ```rust
 use oap_sdk::{Client, ExecutionRequest};
@@ -112,7 +112,7 @@ println!("{}", response.text());
 # }
 ```
 
-For streaming, iterate `agent().stream(request)` and handle `AgentStart`, wrapped provider deltas, and terminal `AgentEnd`. Per-run agent sampling controls (`max_tokens`, `temperature`, `reasoning_effort`) also fail explicitly until represented on the OAP agent profile; these controls remain supported for direct provider inference.
+For streaming, iterate `agent().stream(request)` and handle `AgentStart`, wrapped provider deltas, and terminal `AgentEnd`. The stream also yields `ToolExecutionStart` and `ToolExecutionEnd` for every call, the endpoint's own tools included. An agent run's `reasoning_effort` becomes the session's reasoning level and `max_tokens` (at least 1) the oapx output limit, both at open; `temperature` and `ReasoningEffort::Minimal` fail with `unsupported_feature`, since the agent loop takes no temperature and runs minimal as low. The open also turns off the loop's `request_user_input` tool, which the SDK cannot answer. All three remain supported for direct provider inference.
 
 ### Agent model discovery
 

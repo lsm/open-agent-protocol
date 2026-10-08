@@ -51,7 +51,7 @@ use crate::models::ModelsApi;
 use crate::provider::{frame_to_error, nack_to_error, promote_auth_error};
 use crate::transport::{Subscription, Transport};
 use crate::types::{AuthRetryPolicy, ChatMessage, CompletionResponse, ToolInvocation, Usage};
-use crate::wire::{Envelope, Frame, AGENT_PROFILE};
+use crate::wire::{Envelope, Frame, AGENT_PROFILE, SDK_PARTICIPANT};
 
 /// How long the SDK waits for the tail of a settled session before giving up.
 const DRAIN_BUDGET: Duration = Duration::from_millis(250);
@@ -274,6 +274,9 @@ impl AgentApi {
                 continue;
             }
             match frame.kind.as_str() {
+                "action.call.requested" | "action.call.resolve.response" => {
+                    self.answer_call(&frame, request, &run_id).await?;
+                }
                 "run.completed" => {
                     guard.settle();
                     let message = frame.payload().get("final_response").ok_or_else(|| {
@@ -325,14 +328,8 @@ impl AgentApi {
         &self,
         request: &ExecutionRequest,
     ) -> Result<(String, String, Subscription)> {
-        if !request.tools.is_empty() {
-            return Err(crate::oap::unsupported("client-executed tools (+tools)"));
-        }
-        if request.options.temperature.is_some()
-            || request.options.max_tokens.is_some()
-            || request.options.reasoning_effort.is_some()
-        {
-            return Err(crate::oap::unsupported("agent sampling controls"));
+        if request.options.temperature.is_some() {
+            return Err(crate::oap::unsupported("temperature on an agent run"));
         }
         let session_id = request
             .options
@@ -344,7 +341,7 @@ impl AgentApi {
             .request_oap(
                 AGENT_PROFILE,
                 "session.open.request",
-                json!({ "session_id": session_id }),
+                open_payload(&session_id, request)?,
                 Some(("session_id", &session_id)),
                 self.response_timeout,
             )
@@ -643,6 +640,21 @@ impl AgentApi {
                         if frame.run_id.as_deref().is_some_and(|id| id != run_id) { continue; }
                         let data = frame.payload();
                         match frame.kind.as_str() {
+                            "action.call.requested" | "action.call.resolve.response" => this.answer_call(&frame, &request, &run_id).await?,
+                            "action.call.started" => {
+                                if let Some(start) = start.take() { yield start; }
+                                yield AgentEvent::ToolExecutionStart {
+                                    tool_call_id: data.get("tool_call_id").and_then(serde_json::Value::as_str).unwrap_or_default().to_owned(),
+                                    tool_name: data.get("name").and_then(serde_json::Value::as_str).unwrap_or_default().to_owned(),
+                                };
+                            }
+                            "action.call.completed" | "action.call.failed" | "action.call.cancelled" => {
+                                if let Some(start) = start.take() { yield start; }
+                                yield AgentEvent::ToolExecutionEnd {
+                                    tool_call_id: data.get("tool_call_id").and_then(serde_json::Value::as_str).unwrap_or_default().to_owned(),
+                                    is_error: Some(frame.kind != "action.call.completed"),
+                                };
+                            }
                             "run.started" => start = Some(AgentEvent::AgentStart { session_id: Some(session_id.clone()) }),
                             "content.delta" => {
                                 if let Some(part) = data.get("part") {
@@ -893,6 +905,127 @@ impl AgentApi {
                 }
             }
         }
+    }
+}
+
+fn open_payload(session_id: &str, request: &ExecutionRequest) -> Result<serde_json::Value> {
+    let mut payload = json!({ "session_id": session_id });
+    let fields = payload
+        .as_object_mut()
+        .ok_or_else(|| Error::invalid_request("session open payload"))?;
+    if !request.tools.is_empty() {
+        let mut provided = Vec::with_capacity(request.tools.len());
+        for tool in &request.tools {
+            let mut definition = crate::oap::tool_definition(tool)?;
+            if let Some(entry) = definition.as_object_mut() {
+                entry.insert("execution_owner".to_owned(), json!(SDK_PARTICIPANT));
+            }
+            provided.push(definition);
+        }
+        fields.insert("tools".to_owned(), serde_json::Value::Array(provided));
+    }
+    if request.options.reasoning_effort == Some(crate::types::ReasoningEffort::Minimal) {
+        return Err(crate::oap::unsupported(
+            "minimal reasoning, which the agent loop runs as low",
+        ));
+    }
+    if let Some(effort) = &request.options.reasoning_effort {
+        fields.insert(
+            "reasoning_level".to_owned(),
+            serde_json::to_value(effort).map_err(|err| Error::invalid_request(err.to_string()))?,
+        );
+    }
+    let mut settings = serde_json::Map::new();
+    settings.insert("user_input".to_owned(), json!(false));
+    if let Some(max_tokens) = request.options.max_tokens {
+        if max_tokens == 0 {
+            return Err(Error::invalid_request("max_tokens must be at least 1"));
+        }
+        settings.insert("output".to_owned(), json!(max_tokens));
+    }
+    fields.insert("metadata".to_owned(), json!({ "oapx": settings }));
+    Ok(payload)
+}
+
+impl AgentApi {
+    async fn answer_call(
+        &self,
+        frame: &Frame,
+        request: &ExecutionRequest,
+        run_id: &str,
+    ) -> Result<()> {
+        let data = frame.payload();
+        let text = |key: &str| {
+            data.get(key)
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_default()
+                .to_owned()
+        };
+        if frame.kind == "action.call.resolve.response" {
+            if data.get("accepted").and_then(serde_json::Value::as_bool) == Some(false)
+                && text("reason") != "already_resolved"
+            {
+                return Err(Error::protocol(
+                    format!("the endpoint refused a tool result: {}", text("reason")),
+                    Some("malformed_response"),
+                ));
+            }
+            return Ok(());
+        }
+        if text("execution_owner") != SDK_PARTICIPANT {
+            return Ok(());
+        }
+        let session_id = text("session_id");
+        let invocation = ToolInvocation {
+            tool_call_id: text("tool_call_id"),
+            tool_name: text("name"),
+            args_json: match data.get("arguments_json") {
+                Some(serde_json::Value::String(raw)) => raw.clone(),
+                Some(value) => value.to_string(),
+                None => "{}".to_owned(),
+            },
+        };
+        let mut answer = json!({
+            "interaction_id": text("interaction_id"),
+            "session_id": session_id,
+            "run_id": run_id,
+            "tool_call_id": invocation.tool_call_id,
+            "requested_by": text("requested_by"),
+            "responded_by": SDK_PARTICIPANT,
+        });
+        let tool_name = invocation.tool_name.clone();
+        let outcome = match request.tools.iter().find(|tool| tool.name() == tool_name) {
+            Some(tool) => tool.call(invocation).await,
+            None => None,
+        };
+        if let Some(fields) = answer.as_object_mut() {
+            match outcome {
+                Some(Ok(result)) => {
+                    fields.insert("result".to_owned(), json!(result));
+                }
+                Some(Err(message)) => {
+                    let message = if message.is_empty() {
+                        "the tool failed".to_owned()
+                    } else {
+                        message
+                    };
+                    fields.insert(
+                        "error".to_owned(),
+                        json!({ "code": "tool_failed", "message": message }),
+                    );
+                }
+                None => {
+                    fields.insert("error".to_owned(), json!({ "code": "tool_unavailable", "message": format!("Tool '{tool_name}' is not executable by this client") }));
+                }
+            }
+        }
+        self.transport.send_oap_scoped(
+            AGENT_PROFILE,
+            "action.call.resolve.request",
+            &crate::ids::new_ulid(),
+            answer,
+            &[("session_id", &session_id), ("run_id", run_id)],
+        )
     }
 }
 

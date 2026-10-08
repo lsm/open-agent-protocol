@@ -16,6 +16,7 @@ pub(crate) const ENVELOPE_VERSION: u32 = 1;
 pub(crate) const OAP_PROTOCOL: &str = "open-agent-protocol";
 pub(crate) const OAP_VERSION: &str = "0.1";
 pub(crate) const AGENT_PROFILE: &str = "open-agent-protocol.agent-control-core";
+pub(crate) const SDK_PARTICIPANT: &str = "rust-sdk";
 pub(crate) const PROVIDER_PROFILE: &str = "open-agent-protocol.model-provider-core";
 
 /// An outbound envelope.

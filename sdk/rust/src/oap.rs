@@ -88,6 +88,24 @@ pub(crate) fn messages(request: &ExecutionRequest) -> Result<Value> {
     Ok(Value::Array(messages))
 }
 
+pub(crate) fn tool_definition(tool: &crate::types::Tool) -> Result<Value> {
+    let mut value = tool.serialize_for_wire();
+    if let Some(obj) = value.as_object_mut() {
+        if let Some(schema) = obj.remove("parameters_schema_json") {
+            let raw = schema.as_str().ok_or_else(|| {
+                Error::invalid_request("tool parameters_schema_json is not a string")
+            })?;
+            let parsed = serde_json::from_str::<Value>(raw).map_err(|err| {
+                Error::invalid_request(format!(
+                    "tool parameters_schema_json is not valid JSON: {err}"
+                ))
+            })?;
+            obj.insert("input_schema".to_owned(), parsed);
+        }
+    }
+    Ok(value)
+}
+
 pub(crate) fn unsupported(feature: &str) -> Error {
     Error::protocol(
         format!("OAP endpoint does not support {feature}"),

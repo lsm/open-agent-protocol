@@ -384,8 +384,8 @@ impl Tool {
 
     /// Attaches the handler that runs when the agent loop calls this tool.
     ///
-    /// Tools execute in the caller's process: the runtime publishes
-    /// `tool_execute` and waits for the correlated `tool_result`.
+    /// Tools execute in the caller's process: the endpoint publishes
+    /// `action.call.requested` and waits for the SDK's resolution.
     pub fn on_call<F, Fut>(mut self, handler: F) -> Self
     where
         F: Fn(ToolInvocation) -> Fut + Send + Sync + 'static,
