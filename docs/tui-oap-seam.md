@@ -17,7 +17,10 @@ interface, so the runtime the TUI holds carries no agent of its own. Nothing und
 `zig/src/tui/` imports the `agent` module: what it still reads from the agent layer
 is value types and pure helpers, from `agent_types`, `agent_loop` (the output
 setting and token estimates) and `agent_compaction` (the summary header and the
-history split), plus the in-process provider bridge `App` hands the endpoint. Runs, streaming, tools, cancel and model switch
+history split), plus the in-process provider bridge `App` hands the endpoint. A
+recorded TUI session — an approved tool call, a cancelled turn and a completed one —
+passes the Zig schema and semantic validators envelope for envelope
+(`oap_execution.zig`, recorded through `OapExecution.tap`). Runs, streaming, tools, cancel and model switch
 cross the boundary as OAP. A `/model refresh` hands the in-process endpoint the
 refreshed catalog beside the wire, and the session serves it from its next model
 switch under the same revision, which is why the `oapx` adapter advertises
