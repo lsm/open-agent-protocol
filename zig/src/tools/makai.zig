@@ -2510,7 +2510,7 @@ fn oapTestProviderServer(allocator: std.mem.Allocator) oap_provider_server.Serve
     });
 }
 
-test "the provider endpoint serves one row per provider it discovered models for, with every discovered model on that row's wire" {
+test "the provider endpoint serves one row per provider it loaded models for, with every loaded model on that row's wire and no claimed source" {
     const allocator = std.testing.allocator;
     var server = oapTestProviderServer(allocator);
     defer server.deinit();
@@ -2532,9 +2532,24 @@ test "the provider endpoint serves one row per provider it discovered models for
     try std.testing.expectEqual(refs.len, server.models.items.len);
     for (refs, server.models.items) |ref, entry| {
         try std.testing.expectEqualStrings(ref, entry.model_ref);
-        try std.testing.expectEqual(@as(?oap_provider_types.ModelSource, .discovered), entry.source);
-        try std.testing.expectEqual(oap_provider_types.AuthStatus.authenticated, entry.auth_status);
+        try std.testing.expectEqual(@as(?oap_provider_types.ModelSource, null), entry.source);
+        try std.testing.expectEqual(oap_provider_types.AuthStatus.unknown, entry.auth_status);
     }
+}
+
+test "a served model reads as signed in only when its endpoint takes no credential" {
+    const allocator = std.testing.allocator;
+    var server = oapTestProviderServer(allocator);
+    defer server.deinit();
+    try populateOapProviderCatalogFrom(allocator, &server, &oap_test_served_models);
+    var checked: usize = 0;
+    for (server.models.items) |entry| {
+        const anonymous = std.mem.eql(u8, entry.provider_id, "ollama");
+        const expected: oap_provider_types.AuthStatus = if (anonymous) .authenticated else .unknown;
+        try std.testing.expectEqual(expected, entry.auth_status);
+        checked += 1;
+    }
+    try std.testing.expectEqual(oap_test_served_models.len, checked);
 }
 
 test "the provider endpoint serves no provider when it discovered no model, as with no key present" {
@@ -2688,7 +2703,8 @@ fn populateOapProviderCatalogFrom(allocator: std.mem.Allocator, server: *oap_pro
             allocator.free(entries);
         }
         for (entries) |*entry| {
-            entry.auth_status = .authenticated;
+            entry.source = null;
+            entry.auth_status = if (model.allows_anonymous) .authenticated else .unknown;
             entry.output_modalities = try allocator.dupe(oap_provider_types.Modality, &oap_served_output_modalities);
             try server.addModel(entry.*);
             added += 1;

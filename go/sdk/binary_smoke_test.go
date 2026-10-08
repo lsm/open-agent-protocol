@@ -4,10 +4,28 @@ import (
 	"context"
 	"errors"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 )
+
+const smokeProviders = `{"providers":[
+{"id":"smoke","name":"Smoke","api":"openai-completions","base_url":"http://127.0.0.1:9/v1","auth":"none","models":["smoke-model"]},
+{"id":"smoke-keyed","name":"Smoke Keyed","api":"openai-completions","base_url":"http://127.0.0.1:9/v1","auth":{"env":"OAP_SMOKE_KEY_THAT_IS_NEVER_SET"},"models":["keyed-model"]}]}`
+
+func smokeHome(t *testing.T) string {
+	t.Helper()
+	home := t.TempDir()
+	dir := filepath.Join(home, ".oapx")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "providers.json"), []byte(smokeProviders), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return home
+}
 
 func newSmokeClient(t *testing.T) *Client {
 	return newSmokeClientWithClosePolicy(t, false)
@@ -24,7 +42,7 @@ func newFixtureSmokeClientWithClosePolicy(t *testing.T, allowNonzeroExit bool) *
 		t.Skip("OAP_SDK_BINARY_PATH is not set")
 	}
 
-	home := t.TempDir()
+	home := smokeHome(t)
 	env := append(os.Environ(),
 		"HOME="+home,
 		"XDG_CONFIG_HOME="+home,
@@ -56,7 +74,7 @@ func newSmokeClientWithClosePolicy(t *testing.T, allowNonzeroExit bool) *Client 
 		t.Skip("OAP_SDK_BINARY_PATH is not set")
 	}
 
-	home := t.TempDir()
+	home := smokeHome(t)
 	env := append(os.Environ(),
 		"HOME="+home,
 		"XDG_CONFIG_HOME="+home,
@@ -161,7 +179,7 @@ func TestSmokeModelsResolveRejectsAnUnknownModel(t *testing.T) {
 	client := newSmokeClient(t)
 
 	_, err := client.Models.Resolve(testContext(t), ResolveModelRequest{
-		ProviderID: "anthropic", ModelID: "no-such-model-" + newULID(),
+		ProviderID: "smoke", ModelID: "no-such-model-" + newULID(),
 	})
 	var protocolErr *ProtocolError
 	if !errors.As(err, &protocolErr) {
@@ -266,12 +284,12 @@ func TestSmokeProviderCompleteWithoutCredentials(t *testing.T) {
 	client := newSmokeClient(t)
 	ctx := testContext(t)
 
-	models, err := client.Models.List(ctx, ListModelsRequest{ProviderID: "anthropic"})
+	models, err := client.Models.List(ctx, ListModelsRequest{ProviderID: "smoke-keyed"})
 	if err != nil {
 		t.Fatalf("List: %v", err)
 	}
 	if len(models.Models) == 0 {
-		t.Skip("the runtime lists no anthropic models")
+		t.Fatal("the runtime lists no model for the declared endpoint whose key is unset")
 	}
 
 	_, err = client.Provider.Complete(ctx, CompletionRequest{
@@ -280,7 +298,7 @@ func TestSmokeProviderCompleteWithoutCredentials(t *testing.T) {
 		Options:  &RunOptions{MaxTokens: MaxTokens(16)},
 	})
 	if err == nil {
-		t.Skip("the runtime completed the call, so credentials were available after all")
+		t.Fatal("a call to an endpoint whose key is unset completed")
 	}
 	var streamErr *StreamError
 	if !errors.As(err, &streamErr) {
@@ -308,20 +326,24 @@ func TestSmokeAgentRunWithoutCredentials(t *testing.T) {
 	client := newSmokeClient(t)
 	ctx := testContext(t)
 
-	models, err := client.Models.List(ctx, ListModelsRequest{ProviderID: "anthropic"})
+	sessionID, err := client.Agent.OpenSession(ctx, "")
 	if err != nil {
-		t.Fatalf("List: %v", err)
+		t.Fatalf("OpenSession: %v", err)
 	}
-	if len(models.Models) == 0 {
-		t.Skip("the runtime lists no anthropic models")
+	_, current, err := client.Agent.ListSessionModels(ctx, sessionID)
+	if err != nil {
+		t.Fatalf("ListSessionModels: %v", err)
+	}
+	if current == "" {
+		t.Fatal("the agent names no current model")
 	}
 
 	_, err = client.Agent.Run(ctx, AgentRequest{
-		ModelRef: models.Models[0].ModelRef,
+		ModelRef: current,
 		Messages: []Message{UserMessage("hello")},
 	})
 	if err == nil {
-		t.Skip("the runtime completed the run, so credentials were available after all")
+		t.Fatal("a run on an endpoint whose key is unset completed")
 	}
 	var streamErr *StreamError
 	if !errors.As(err, &streamErr) {
