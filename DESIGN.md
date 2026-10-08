@@ -9,7 +9,7 @@ Makai is a Zig-first streaming AI runtime with:
 - distributed auth protocol,
 - multi-provider streaming abstraction,
 - distributed provider protocol,
-- distributed agent protocol,
+- an OAP agent-control endpoint (`oapx serve agent`),
 - distributed tool protocol,
 - agent loop + tool execution bridge,
 - pluggable transports.
@@ -34,9 +34,13 @@ Makai is organized into four runtime layers:
 3. **Protocol Layer**
    - **auth protocol** (`protocol/auth/*`)
    - **provider protocol** (`protocol/provider/*`)
-   - **agent protocol** (`protocol/agent/*`)
    - **tool protocol** (`protocol/tool/*`)
    - envelope serialization, sequence validation, client/server handlers
+   - the agent boundary is OAP agent-control-core, served by `adapter/oapx` through
+     `oapx serve agent`; the Makai v1 agent protocol (`protocol/agent/*`) and the bare
+     `oapx --stdio` host are retired (#376), and every SDK speaks OAP to
+     `oapx serve agent,provider --stdio`. The auth and provider protocols above stay as
+     internal boundaries: the OAP auth adapter and the in-process provider bridge use them.
 
 4. **Agent Layer**
    - agent loop
@@ -63,10 +67,6 @@ Design boundary:
   - pumps auth protocol client/server messages
   - routes interactive auth flow events (`auth_url`, `prompt`, `progress`, terminal result)
   - used for SDK auth APIs and CLI wrapper mode
-
-- `protocol/agent/runtime.zig`
-  - pumps agent protocol client/server messages and outbox
-  - routes outbound agent events/results to clients
 
 These runtimes are typically hosted on the **server side** of each protocol boundary. In-process setups may host both sides in one process, but ownership is still logically client/server.
 
@@ -404,7 +404,7 @@ flowchart LR
   subgraph M["Makai Binary Runtime"]
     AR["Auth Protocol Runtime"]
     PR["Provider Protocol Runtime"]
-    GR["Agent Protocol Runtime"]
+    GR["OAP Agent Endpoint"]
     TRR["Tool Protocol Runtime"]
     ST["Credential Storage"]
   end
@@ -480,31 +480,31 @@ sequenceDiagram
 
 ```mermaid
 sequenceDiagram
-  participant C as "TS SDK agent client"
-  participant G as "Agent protocol runtime"
+  participant C as "SDK agent client"
+  participant G as "OAP agent endpoint (adapter/oapx)"
   participant P as "Provider protocol runtime"
   participant T as "Tool protocol runtime"
   participant U as "Upstream AI provider"
 
-  C->>G: "agent stream request"
-  G-->>C: "agent_start"
+  C->>G: "session.open + session.message.submit"
+  G-->>C: "run.started"
   G->>P: "provider stream request"
   alt "provider returns auth_required"
     P-->>G: "nack auth_required"
-    G-->>C: "error terminal event (auth_required)"
+    G-->>C: "run.failed (auth_required)"
   else "provider stream succeeds"
     P->>U: "model stream call"
     U-->>P: "text and thinking and tool_call"
     P-->>G: "provider stream events"
-    G-->>C: "turn_start and deltas and turn_end"
+    G-->>C: "content.delta"
     opt "tool call needed"
-      G-->>C: "tool_execution_start"
-      G->>T: "tool_request"
+      G-->>C: "action.call.requested (client-provided) or action.call.started"
+      G->>T: "tool_request (endpoint-owned tools)"
       T-->>G: "tool_response or tool error"
-      G-->>C: "tool_execution_end"
+      G-->>C: "action.call.completed or action.call.failed"
       G->>P: "next provider turn with tool result"
     end
-    G-->>C: "agent_end with usage and stop_reason"
+    G-->>C: "run.completed with usage and stop_reason"
   end
 ```
 

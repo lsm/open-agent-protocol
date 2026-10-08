@@ -1,6 +1,9 @@
 # Makai V1 SDK + Protocol Spec
 
-Status: approved for implementation
+Status: retired (#376). Every SDK now speaks OAP to
+`oapx serve agent,provider --stdio`; `oapx --stdio`, the v1 agent protocol and the
+SDKs' legacy-wire switches are removed. This document is kept as the record of
+what the v1 wire was. It is not a contract for any current behaviour.
 
 Naming: the TypeScript identifiers in §3 (`MakaiAuthApi`, `MakaiClient`,
 `createMakaiClient`, `MakaiStreamError`, and the rest) are the **shipped public
