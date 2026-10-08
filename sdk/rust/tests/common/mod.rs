@@ -98,33 +98,6 @@ macro_rules! require_real_binary {
     };
 }
 
-/// Whether the runtime can persist credentials without a human at the keyboard.
-///
-/// On macOS `saveToPreferredStorage` writes to the login Keychain, and creating
-/// that item from an unsigned local build blocks in `AuthorizationCopyRights`
-/// waiting on a UI prompt no test runner can answer. Everywhere else — including
-/// CI, which is Linux — the file store is used and the write is unattended.
-/// Set `OAP_SDK_RUST_SDK_ALLOW_KEYCHAIN=1` to run these anyway on a Mac where the
-/// item's ACL has already been approved.
-pub fn credential_writes_are_unattended() -> bool {
-    !cfg!(target_os = "macos")
-        || std::env::var("OAP_SDK_RUST_SDK_ALLOW_KEYCHAIN").as_deref() == Ok("1")
-}
-
-/// Skips the test body when the runtime would block on a credential-store prompt.
-#[macro_export]
-macro_rules! require_unattended_credential_store {
-    () => {
-        if !$crate::common::credential_writes_are_unattended() {
-            eprintln!(
-                "skipping: the macOS login Keychain would prompt; \
-                 set OAP_SDK_RUST_SDK_ALLOW_KEYCHAIN=1 to run anyway"
-            );
-            return;
-        }
-    };
-}
-
 /// Reads the frames the fake recorded, in order.
 pub fn read_request_log(path: &std::path::Path) -> Vec<serde_json::Value> {
     let Ok(text) = std::fs::read_to_string(path) else {
