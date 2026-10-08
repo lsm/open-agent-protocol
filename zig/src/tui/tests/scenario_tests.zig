@@ -6,11 +6,42 @@ const session_store = @import("tui_session_store");
 const mock_provider = @import("tui_fixture");
 const fixtures = @import("tui_tests_fixtures");
 const ai_types = @import("ai_types");
+const oapx_adapter = @import("oapx_adapter");
 
 const TuiRuntime = tui_runtime.TuiRuntime;
 const TuiSession = tui_runtime.TuiSession;
 const ToolApprovalDecision = tui_runtime.ToolApprovalDecision;
 const ToolApprovalRequest = tui_runtime.ToolApprovalRequest;
+
+const Engine = struct {
+    loop: oapx_adapter.LocalLoop,
+    runtime: TuiRuntime,
+
+    fn init(allocator: std.mem.Allocator, options: tui_runtime.TuiRuntimeOptions) !*Engine {
+        const self = try allocator.create(Engine);
+        errdefer allocator.destroy(self);
+        self.loop = oapx_adapter.LocalLoop.init(allocator, .{
+            .protocol = options.protocol,
+            .permission_engine = options.permission_engine,
+            .permission_mode = options.permission_mode,
+            .tool_approval_ctx = options.tool_approval_ctx,
+            .tool_approval_callback = options.tool_approval_callback,
+            .run_async = options.run_async,
+        });
+        errdefer self.loop.deinit();
+        var with_loop = options;
+        with_loop.loop = self.loop.loop();
+        self.runtime = try TuiRuntime.init(allocator, with_loop);
+        return self;
+    }
+
+    fn deinit(self: *Engine) void {
+        const allocator = self.loop.allocator;
+        self.runtime.deinit();
+        self.loop.deinit();
+        allocator.destroy(self);
+    }
+};
 
 const EventSummary = struct {
     turn_start: bool = false,
@@ -56,12 +87,13 @@ test "local runtime lifecycle submits turn and supports cancel" {
     const text_steps = [_]mock_provider.ResponseStep{.{ .text = fixtures.expected_text }};
     var provider = mock_provider.MockProvider.init(.{ .steps = &text_steps });
     const models = [_]@TypeOf(mock_provider.test_model){mock_provider.test_model};
-    var runtime = try TuiRuntime.init(std.testing.allocator, .{
+    const runtime_engine = try Engine.init(std.testing.allocator, .{
         .protocol = provider.protocolClient(),
         .models = &models,
         .run_async = false,
     });
-    defer runtime.deinit();
+    defer runtime_engine.deinit();
+    const runtime = &runtime_engine.runtime;
 
     var session = runtime.createSession();
     try session.start();
@@ -81,18 +113,19 @@ test "local runtime lifecycle submits turn and supports cancel" {
 
     const cancel_steps = [_]mock_provider.ResponseStep{.{ .wait_for_cancel = {} }};
     var cancel_provider = mock_provider.MockProvider.init(.{ .steps = &cancel_steps });
-    var cancel_runtime = try TuiRuntime.init(std.testing.allocator, .{
+    const cancel_runtime_engine = try Engine.init(std.testing.allocator, .{
         .protocol = cancel_provider.protocolClient(),
         .models = &models,
         .run_async = true,
     });
-    defer cancel_runtime.deinit();
+    defer cancel_runtime_engine.deinit();
+    const cancel_runtime = &cancel_runtime_engine.runtime;
 
     var cancel_session = cancel_runtime.createSession();
     try cancel_session.start();
     try cancel_session.submitTurn("wait");
     cancel_session.cancel();
-    if (cancel_runtime.local_agent) |*local| local.waitForIdle();
+    if (cancel_runtime_engine.loop.local_agent) |*local| local.waitForIdle();
 
     var cancel_summary = EventSummary{};
     try drainUntilAgentEnd(&cancel_session, &cancel_summary);
@@ -108,13 +141,14 @@ test "tool execution fixtures run shell read edit and search" {
     };
     var provider = mock_provider.MockProvider.init(.{ .steps = &steps });
     const models = [_]@TypeOf(mock_provider.test_model){mock_provider.test_model};
-    var runtime = try TuiRuntime.init(std.testing.allocator, .{
+    const runtime_engine = try Engine.init(std.testing.allocator, .{
         .protocol = provider.protocolClient(),
         .models = &models,
         .tools = &tools,
         .run_async = false,
     });
-    defer runtime.deinit();
+    defer runtime_engine.deinit();
+    const runtime = &runtime_engine.runtime;
 
     var session = runtime.createSession();
     try session.start();
@@ -151,13 +185,14 @@ test "tool fixture error case emits error tool end" {
     };
     var provider = mock_provider.MockProvider.init(.{ .steps = &steps });
     const models = [_]@TypeOf(mock_provider.test_model){mock_provider.test_model};
-    var runtime = try TuiRuntime.init(std.testing.allocator, .{
+    const runtime_engine = try Engine.init(std.testing.allocator, .{
         .protocol = provider.protocolClient(),
         .models = &models,
         .tools = &tools,
         .run_async = false,
     });
-    defer runtime.deinit();
+    defer runtime_engine.deinit();
+    const runtime = &runtime_engine.runtime;
 
     var session = runtime.createSession();
     try session.start();
@@ -193,12 +228,13 @@ test "provider error injection propagates through session" {
     const steps = [_]mock_provider.ResponseStep{.{ .provider_error = "fixture provider error" }};
     var provider = mock_provider.MockProvider.init(.{ .steps = &steps });
     const models = [_]@TypeOf(mock_provider.test_model){mock_provider.test_model};
-    var runtime = try TuiRuntime.init(std.testing.allocator, .{
+    const runtime_engine = try Engine.init(std.testing.allocator, .{
         .protocol = provider.protocolClient(),
         .models = &models,
         .run_async = false,
     });
-    defer runtime.deinit();
+    defer runtime_engine.deinit();
+    const runtime = &runtime_engine.runtime;
 
     var session = runtime.createSession();
     try session.start();
@@ -231,7 +267,7 @@ test "tool approval approve runs tool and reject skips executor" {
     };
     var approve_provider = mock_provider.MockProvider.init(.{ .steps = &approve_steps });
     var approve_state = ApprovalState{ .decision = .approve };
-    var approve_runtime = try TuiRuntime.init(std.testing.allocator, .{
+    const approve_runtime_engine = try Engine.init(std.testing.allocator, .{
         .protocol = approve_provider.protocolClient(),
         .models = &models,
         .tools = &approve_tools,
@@ -240,7 +276,8 @@ test "tool approval approve runs tool and reject skips executor" {
         .permission_mode = .ask,
         .run_async = false,
     });
-    defer approve_runtime.deinit();
+    defer approve_runtime_engine.deinit();
+    const approve_runtime = &approve_runtime_engine.runtime;
 
     var approve_session = approve_runtime.createSession();
     try approve_session.start();
@@ -269,7 +306,7 @@ test "tool approval approve runs tool and reject skips executor" {
     };
     var reject_provider = mock_provider.MockProvider.init(.{ .steps = &reject_steps });
     var reject_state = ApprovalState{ .decision = .reject };
-    var reject_runtime = try TuiRuntime.init(std.testing.allocator, .{
+    const reject_runtime_engine = try Engine.init(std.testing.allocator, .{
         .protocol = reject_provider.protocolClient(),
         .models = &models,
         .tools = &reject_tools,
@@ -278,7 +315,8 @@ test "tool approval approve runs tool and reject skips executor" {
         .permission_mode = .ask,
         .run_async = false,
     });
-    defer reject_runtime.deinit();
+    defer reject_runtime_engine.deinit();
+    const reject_runtime = &reject_runtime_engine.runtime;
 
     var reject_session = reject_runtime.createSession();
     try reject_session.start();
@@ -358,15 +396,16 @@ test "runtime persistence full save and resume cycle" {
     const steps = [_]mock_provider.ResponseStep{.{ .text = fixtures.expected_text }};
     var provider = mock_provider.MockProvider.init(.{ .steps = &steps });
     const models = [_]ai_types.Model{ alternate_model, mock_provider.test_model };
-    var runtime = try TuiRuntime.init(std.testing.allocator, .{
+    const runtime_engine = try Engine.init(std.testing.allocator, .{
         .protocol = provider.protocolClient(),
         .models = &models,
         .initial_model_id = alternate_model.id,
         .run_async = false,
     });
-    defer runtime.deinit();
+    defer runtime_engine.deinit();
+    const runtime = &runtime_engine.runtime;
 
-    var loaded = try store.resumeSession("resume-cycle", &runtime, null);
+    var loaded = try store.resumeSession("resume-cycle", runtime, null);
     defer loaded.deinit(std.testing.allocator);
     try std.testing.expectEqual(@as(usize, 2), loaded.messages.items.len);
     try std.testing.expect(loaded.messages.items[0] == .user);

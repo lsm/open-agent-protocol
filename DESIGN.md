@@ -169,8 +169,9 @@ Consequences, all of which the ownership tests check:
    pushes a terminal event alongside `stream.complete()`, and because those are two
    separately allocated messages, the event clone and the stream result are released
    once each. Not every stream in the tree is covered, and a consumer still has to
-   branch on `stream.ownership.isOwned()`: the tui runtime's own mock stream
-   (`zig/src/tui/runtime.zig`) is not built by a provider module and is borrowed,
+   branch on `stream.ownership.isOwned()`: the mock streams in the tests of
+   `zig/src/tui/runtime.zig` and `zig/src/adapter/oapx/local_loop.zig` are not
+   built by a provider module and are borrowed,
    so the rule above does not reach it.
 2. `StreamOptions.requires_owned_stream_events` **has been removed** rather than
    left inert. It used to let a caller choose the borrowed mode, and a

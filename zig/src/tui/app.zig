@@ -2278,9 +2278,7 @@ pub const App = struct {
 
     fn runtimeBusy(self: *App) bool {
         const runtime = self.runtime orelse return false;
-        if (runtime.remote != null) return !runtime.isIdle();
-        const local = if (runtime.local_agent) |*agent_ref| agent_ref else return false;
-        return !local.isIdle();
+        return !runtime.isIdle();
     }
 
     fn refreshModelsInBackground(self: *App) !void {
@@ -2341,9 +2339,6 @@ pub const App = struct {
 
     fn applyPendingModelsBeforeResume(self: *App) !void {
         if (self.pending_models == null) return;
-        if (self.runtime) |runtime| {
-            if (runtime.local_agent) |*local| local.waitForIdle();
-        }
         try self.applyPendingModels();
     }
 
@@ -3139,11 +3134,6 @@ pub const App = struct {
 
     fn drainQueuedWorktreeMessageIfIdle(self: *App) !void {
         if (self.worktree_job != null or self.worktree_management_job != null or self.state.status.streaming or self.queued_worktree_messages.items.len == 0) return;
-        if (self.runtime) |runtime| {
-            if (runtime.local_agent) |*local| {
-                if (!local.isIdle()) return;
-            }
-        }
         const message = self.queued_worktree_messages.orderedRemove(0);
         defer self.allocator.free(message);
         try self.submit(message);
@@ -3207,19 +3197,8 @@ pub const App = struct {
         self.syncModelTelemetry();
         try self.noteDroppedContextWindow();
         self.collectGeneratedTitle();
-        if (self.pending_session_reset and !self.state.status.streaming) {
-            if (self.runtime) |runtime| {
-                if (runtime.local_agent) |*local| {
-                    if (local.isIdle()) {
-                        self.dropHeldCompaction();
-                        local.clearAllQueues();
-                        local.replaceMessages(&.{}) catch {};
-                        self.pending_session_reset = false;
-                    }
-                }
-            } else {
-                self.pending_session_reset = false;
-            }
+        if (self.pending_session_reset and !self.state.status.streaming and self.runtime == null) {
+            self.pending_session_reset = false;
         }
         try self.collectModelFetch();
         try self.applyPendingModels();
@@ -3293,7 +3272,6 @@ pub const App = struct {
     fn applyPendingModelSwitchBeforeRun(self: *App) !void {
         const runtime = self.runtime orelse return;
         if (runtime.pending_model_index == null) return;
-        if (runtime.local_agent) |*local| local.waitForIdle();
         if (!runtime.isIdle()) return;
         if (runtime.applyPendingModelSwitch()) |switched| {
             if (switched) |model| {
@@ -3350,11 +3328,6 @@ pub const App = struct {
         }
         const focus = self.pending_compaction orelse return;
         if (self.state.status.streaming or self.state.status.compacting or self.state.queue.total() > 0) return;
-        if (self.runtime) |runtime| {
-            if (runtime.local_agent) |*local| {
-                if (!local.isIdle()) return;
-            }
-        }
         self.pending_compaction = null;
         defer self.allocator.free(focus);
         self.startCompaction(focus) catch |err| {
@@ -3468,14 +3441,6 @@ pub const App = struct {
 
     fn applyPendingSessionResetSync(self: *App) !void {
         if (!self.pending_session_reset) return;
-        if (self.runtime) |runtime| {
-            if (runtime.local_agent) |*local| {
-                if (!local.isIdle()) return error.PendingSessionReset;
-                self.dropHeldCompaction();
-                local.clearAllQueues();
-                local.replaceMessages(&.{}) catch {};
-            }
-        }
         self.pending_session_reset = false;
     }
 
@@ -5357,7 +5322,7 @@ pub const TuiModel = struct {
 };
 
 fn switchTiming(runtime: *const tui_runtime.TuiRuntime) []const u8 {
-    return if (runtime.local_agent != null) "before the next turn of this run, or when it ends" else "when this run ends";
+    return if (runtime.loop != null) "before the next turn of this run, or when it ends" else "when this run ends";
 }
 
 fn waitsForRunEnd(command: tui_commands.Command) bool {
@@ -5881,7 +5846,7 @@ test "App init seeds registered tools from runtime" {
     try std.testing.expect(app.state.registered_tools.items.len >= 4);
     try std.testing.expectEqual(app.runtime.?.availableTools().len, app.state.registered_tools.items.len);
     try std.testing.expectEqualStrings("Shell", app.state.registered_tools.items[0].name);
-    try std.testing.expect(app.runtime.?.permission_engine.?.workspace_root.len > 0);
+    try std.testing.expect(production.permission_engine.workspace_root.len > 0);
 }
 
 test "App applies a staged catalog once the runtime is idle" {
@@ -9897,13 +9862,9 @@ test "resume clears a compaction the saved session never finished" {
     const base = try sessionStoreBaseForAppTest(std.testing.allocator, &tmp);
     defer std.testing.allocator.free(base);
 
-    const runtime = try std.testing.allocator.create(tui_runtime.TuiRuntime);
-    errdefer std.testing.allocator.destroy(runtime);
-    runtime.* = try tui_runtime.TuiRuntime.init(std.testing.allocator, .{ .protocol = .{ .stream_fn = unusedStream } });
-    var app = App.initWithoutRuntime(std.testing.allocator);
+    var app = try App.init(std.testing.allocator, .{ .protocol = .{ .stream_fn = unusedStream } });
     defer app.deinit();
-    app.runtime = runtime;
-    app.store = try session_store.Store.init(std.testing.allocator, base);
+    try useStoreAt(&app, base);
 
     var meta = session_store.SessionMetadata{
         .session_id = try std.testing.allocator.dupe(u8, "interrupted"),
@@ -9928,13 +9889,9 @@ test "resuming another session drops messages held from an abort in the one left
     const base = try sessionStoreBaseForAppTest(std.testing.allocator, &tmp);
     defer std.testing.allocator.free(base);
 
-    const runtime = try std.testing.allocator.create(tui_runtime.TuiRuntime);
-    errdefer std.testing.allocator.destroy(runtime);
-    runtime.* = try tui_runtime.TuiRuntime.init(std.testing.allocator, .{ .protocol = .{ .stream_fn = unusedStream } });
-    var app = App.initWithoutRuntime(std.testing.allocator);
+    var app = try App.init(std.testing.allocator, .{ .protocol = .{ .stream_fn = unusedStream } });
     defer app.deinit();
-    app.runtime = runtime;
-    app.store = try session_store.Store.init(std.testing.allocator, base);
+    try useStoreAt(&app, base);
 
     var meta = session_store.SessionMetadata{
         .session_id = try std.testing.allocator.dupe(u8, "elsewhere"),
@@ -9961,13 +9918,10 @@ test "resume restores the session's thinking level, and a change after it is sav
     const base = try sessionStoreBaseForAppTest(std.testing.allocator, &tmp);
     defer std.testing.allocator.free(base);
 
-    const runtime = try std.testing.allocator.create(tui_runtime.TuiRuntime);
-    errdefer std.testing.allocator.destroy(runtime);
-    runtime.* = try tui_runtime.TuiRuntime.init(std.testing.allocator, .{ .protocol = .{ .stream_fn = unusedStream } });
-    var app = App.initWithoutRuntime(std.testing.allocator);
+    var app = try App.init(std.testing.allocator, .{ .protocol = .{ .stream_fn = unusedStream } });
     defer app.deinit();
-    app.runtime = runtime;
-    app.store = try session_store.Store.init(std.testing.allocator, base);
+    try useStoreAt(&app, base);
+    const runtime = app.runtime.?;
     try runtime.setThinkingLevel(.low);
     app.state.thinking_level = .low;
 
@@ -10001,13 +9955,9 @@ test "resume keeps every compaction transcript when it loads from the last compa
     const base = try sessionStoreBaseForAppTest(std.testing.allocator, &tmp);
     defer std.testing.allocator.free(base);
 
-    const runtime = try std.testing.allocator.create(tui_runtime.TuiRuntime);
-    errdefer std.testing.allocator.destroy(runtime);
-    runtime.* = try tui_runtime.TuiRuntime.init(std.testing.allocator, .{ .protocol = .{ .stream_fn = unusedStream } });
-    var app = App.initWithoutRuntime(std.testing.allocator);
+    var app = try App.init(std.testing.allocator, .{ .protocol = .{ .stream_fn = unusedStream } });
     defer app.deinit();
-    app.runtime = runtime;
-    app.store = try session_store.Store.init(std.testing.allocator, base);
+    try useStoreAt(&app, base);
     const store = app.store.?;
 
     var meta = session_store.SessionMetadata{
@@ -10058,7 +10008,6 @@ test "resume selected session clears delete reset flags on success" {
 
     var app = try App.init(std.testing.allocator, production.options());
     defer app.deinit();
-    app.runtime.?.run_async = false;
 
     try useStoreAt(&app, base);
 
@@ -10096,7 +10045,6 @@ test "resume of a session without a worktree resets the workspace to the launch 
 
     var app = try App.init(std.testing.allocator, production.options());
     defer app.deinit();
-    app.runtime.?.run_async = false;
 
     try useStoreAt(&app, base);
 
@@ -10853,7 +10801,6 @@ test "resuming a session whose last run ended in an error does not nudge" {
 
     var app = try App.init(std.testing.allocator, production.options());
     defer app.deinit();
-    app.runtime.?.run_async = false;
 
     try useStoreAt(&app, base);
 

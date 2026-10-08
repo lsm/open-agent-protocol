@@ -9,7 +9,10 @@ can actually answer. It is a map, not a plan — the step order lives in #375.
 the parity sweep showed no difference: `TuiRuntime`
 takes an injected `RemoteExecution` (`zig/src/tui/oap_execution.zig`) that hosts
 `zig/src/adapter/endpoint.zig` with the `oapx` adapter in-process and turns its
-envelopes back into `TuiEvent`s. Runs, streaming, tools, cancel and model switch
+envelopes back into `TuiEvent`s. The agent loop itself is the adapter's: a
+`LocalLoop` (`zig/src/adapter/oapx/local_loop.zig`) owns the agent, its wrapped tools,
+approvals and compaction transcripts, and plugs into a `TuiRuntime` through its `Loop`
+interface, so the runtime the TUI holds carries no agent of its own. Runs, streaming, tools, cancel and model switch
 cross the boundary as OAP. A `/model refresh` hands the in-process endpoint the
 refreshed catalog beside the wire, and the session serves it from its next model
 switch under the same revision, which is why the `oapx` adapter advertises

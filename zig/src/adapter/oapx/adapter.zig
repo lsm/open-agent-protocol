@@ -10,6 +10,9 @@ const model_ref = @import("model_ref");
 const permission = @import("permission");
 const local_tools = @import("tools/registry");
 const interactions = @import("interactions.zig");
+const local_loop = @import("local_loop.zig");
+
+pub const LocalLoop = local_loop.LocalLoop;
 
 pub const endpoint_id = "oapx.agent";
 pub const capability_revision = "oapx-agent-v12";
@@ -296,6 +299,7 @@ pub const Session = struct {
     id: []const u8,
     participant: []const u8,
     runtime: *tui_runtime.TuiRuntime,
+    loop: *local_loop.LocalLoop,
     engine: ?*permission.PermissionEngine = null,
     updated_at_ms: i64,
     recovered: bool = false,
@@ -317,6 +321,8 @@ pub const Session = struct {
         errdefer gpa.destroy(self);
         const runtime = try gpa.create(tui_runtime.TuiRuntime);
         errdefer gpa.destroy(runtime);
+        const loop = try gpa.create(local_loop.LocalLoop);
+        errdefer gpa.destroy(loop);
         self.keep = std.heap.ArenaAllocator.init(gpa);
         errdefer self.keep.deinit();
         const offers_input = offersUserInput(request.metadata);
@@ -338,15 +344,23 @@ pub const Session = struct {
         };
         if (engine) |held| options.permission_engine = held;
         options.tools = session_tools;
-        options.tool_approval_ctx = self;
-        options.tool_approval_callback = approveTool;
+        loop.* = local_loop.LocalLoop.init(gpa, .{
+            .protocol = options.protocol,
+            .permission_engine = options.permission_engine,
+            .permission_mode = options.permission_mode,
+            .tool_approval_ctx = self,
+            .tool_approval_callback = approveTool,
+            .run_async = options.run_async,
+        });
+        errdefer loop.deinit();
+        options.loop = loop.loop();
         runtime.* = tui_runtime.TuiRuntime.init(gpa, options) catch |err| switch (err) {
             error.OutOfMemory => return error.OutOfMemory,
             else => return refusal.fail(error.BackendFailed, @errorName(err)),
         };
         errdefer runtime.deinit();
         const kept = self.keep;
-        self.* = .{ .owner = owner, .gpa = gpa, .keep = kept, .id = "", .participant = "", .runtime = runtime, .engine = engine, .updated_at_ms = owner.now_ms(), .catalog_seen = owner.catalog_generation, .provided = provided };
+        self.* = .{ .owner = owner, .gpa = gpa, .keep = kept, .id = "", .participant = "", .runtime = runtime, .loop = loop, .engine = engine, .updated_at_ms = owner.now_ms(), .catalog_seen = owner.catalog_generation, .provided = provided };
         const keep = self.keep.allocator();
         self.participant = try keep.dupe(u8, request.participant);
         self.id = if (request.session_id.len > 0) try keep.dupe(u8, request.session_id) else try owner.nextID(keep, "session");
@@ -381,7 +395,7 @@ pub const Session = struct {
         var scratch = std.heap.ArenaAllocator.init(self.gpa);
         defer scratch.deinit();
         const at = try compactAt(scratch.allocator(), raw, self.runtime, refusal);
-        self.runtime.armAutoCompact(at, self.runtime.run_transcripts.items, self.transcriptWriter()) catch |err| switch (err) {
+        self.runtime.armAutoCompact(at, self.loop.run_transcripts.items, self.transcriptWriter()) catch |err| switch (err) {
             error.OutOfMemory => return error.OutOfMemory,
             else => return refusal.fail(error.BackendFailed, @errorName(err)),
         };
@@ -397,7 +411,7 @@ pub const Session = struct {
             error.OutOfMemory => return error.OutOfMemory,
             else => return,
         };
-        self.runtime.armAutoCompact(at, self.runtime.run_transcripts.items, self.transcriptWriter()) catch |err| switch (err) {
+        self.runtime.armAutoCompact(at, self.loop.run_transcripts.items, self.transcriptWriter()) catch |err| switch (err) {
             error.OutOfMemory => return error.OutOfMemory,
             else => {},
         };
@@ -415,15 +429,15 @@ pub const Session = struct {
     }
 
     fn compactionTranscripts(self: *Session, arena: std.mem.Allocator) error{ OutOfMemory, TranscriptSaveFailed }![]const []const u8 {
-        const kept = self.runtime.run_transcripts.items;
+        const kept = self.loop.run_transcripts.items;
         const history = self.runtime.history();
         if (self.owner.transcripts == null or history.len == 0 or agent.compaction.isCompacted(history)) return arena.dupe([]const u8, @ptrCast(kept));
         const saved = saveTranscript(self, self.runtime.allocator, kept.len + 1, history) orelse return error.TranscriptSaveFailed;
-        self.runtime.run_transcripts.append(self.runtime.allocator, saved) catch |err| {
+        self.loop.run_transcripts.append(self.runtime.allocator, saved) catch |err| {
             self.runtime.allocator.free(saved);
             return err;
         };
-        return arena.dupe([]const u8, @ptrCast(self.runtime.run_transcripts.items));
+        return arena.dupe([]const u8, @ptrCast(self.loop.run_transcripts.items));
     }
 
     fn compact(ptr: *anyopaque, arena: std.mem.Allocator, request: *const oap_types.SessionCompactRequest, envelope_id: []const u8, refusal: *contract.Refusal) contract.Failure!oap_types.MessageSubmitResponse {
@@ -590,6 +604,8 @@ pub const Session = struct {
         self.journal.deinit(gpa);
         self.runtime.deinit();
         gpa.destroy(self.runtime);
+        self.loop.deinit();
+        gpa.destroy(self.loop);
         self.call_gate.deinit(gpa);
         if (self.engine) |engine| {
             engine.deinit();
@@ -3376,9 +3392,9 @@ test "a requested compaction saves the session's transcript through the store an
     try testing.expectEqual(@as(usize, 1), store.saved);
     try testing.expectEqualStrings(harness.session.id(), store.session_id[0..store.session_len]);
     try testing.expect(store.messages > 0);
-    const runtime = Session.cast(harness.session.ptr).runtime;
-    try testing.expectEqual(@as(usize, 1), runtime.run_transcripts.items.len);
-    try testing.expect(std.mem.endsWith(u8, runtime.run_transcripts.items[0], "-compaction-1.jsonl"));
+    const loop = Session.cast(harness.session.ptr).loop;
+    try testing.expectEqual(@as(usize, 1), loop.run_transcripts.items.len);
+    try testing.expect(std.mem.endsWith(u8, loop.run_transcripts.items[0], "-compaction-1.jsonl"));
 }
 
 fn refuseTranscript(ctx: *anyopaque, allocator: std.mem.Allocator, session_id: []const u8, index: usize, history: []const ai_types.Message) ?[]u8 {
@@ -3413,7 +3429,7 @@ test "a requested compaction whose transcript the store cannot save fails and ke
     try testing.expectEqual(calls, script.calls);
     try testing.expectEqual(before, runtime.history().len);
     try testing.expect(!agent.compaction.isCompacted(runtime.history()));
-    try testing.expectEqual(@as(usize, 0), runtime.run_transcripts.items.len);
+    try testing.expectEqual(@as(usize, 0), Session.cast(harness.session.ptr).loop.run_transcripts.items.len);
 }
 
 test "a compaction is refused for what the loop cannot do, and on a busy session it waits its turn" {
@@ -3541,11 +3557,11 @@ test "a share policy is measured against the window of the model a run starts on
     var refusal = contract.Refusal{};
     _ = try harness.session.vtable.update_settings.?(harness.session.ptr, a, &.{ .session_id = harness.session.id(), .compaction_policy_json = "{\"kind\":\"share\",\"share_percent\":50}" }, &refusal);
     const live: *Session = @ptrCast(@alignCast(harness.session.ptr));
-    try testing.expectEqual(@as(?u64, agent.compaction.shareAt(test_model.context_window, 50)), live.runtime.local_agent.?._auto_compact_at);
+    try testing.expectEqual(@as(?u64, agent.compaction.shareAt(test_model.context_window, 50)), live.loop.local_agent.?._auto_compact_at);
     _ = try harness.session.vtable.switch_model.?(harness.session.ptr, a, &.{ .session_id = harness.session.id(), .model_id = "scripted/openai-completions@other-model" }, &refusal);
     _ = try harness.submit("after the switch");
     try harness.untilTerminal();
-    try testing.expectEqual(@as(?u64, agent.compaction.shareAt(other_model.context_window, 50)), live.runtime.local_agent.?._auto_compact_at);
+    try testing.expectEqual(@as(?u64, agent.compaction.shareAt(other_model.context_window, 50)), live.loop.local_agent.?._auto_compact_at);
 }
 
 test "a steer joins the running loop after its tool result and is applied before the guided turn" {
