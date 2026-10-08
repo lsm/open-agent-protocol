@@ -1,0 +1,199 @@
+name: Release Smoke
+
+# Checks what a release ships rather than what the tree builds: the archives on
+# the GitHub Release, verified against SHA256SUMS.txt, and the npm package a
+# user installs. Every other SDK job builds oapx from source, so a broken asset or
+# an unpublished package passed CI for three releases in a row.
+#
+# A release published with GITHUB_TOKEN raises no event another workflow can
+# hear, so release-binaries.yml calls this one directly after it publishes. It
+# can also be run by hand against any tag, and it runs on a pull request that
+# changes it, against the latest release.
+
+on:
+  workflow_call:
+    inputs:
+      tag:
+        description: Release tag to check, such as v0.1.0-alpha.10
+        required: true
+        type: string
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag to check; empty means the latest release
+        required: false
+        type: string
+  pull_request:
+    paths:
+      - .github/workflows/release-smoke.yml
+
+permissions:
+  contents: read
+
+jobs:
+  resolve:
+    name: Resolve the release
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.tag.outputs.tag }}
+      version: ${{ steps.tag.outputs.version }}
+    steps:
+      - id: tag
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REQUESTED: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          tag="$REQUESTED"
+          if [ -z "$tag" ]; then
+            tag="$(gh release list --repo "$GITHUB_REPOSITORY" --limit 1 --json tagName --jq '.[0].tagName')"
+          fi
+          gh release view "$tag" --repo "$GITHUB_REPOSITORY" --json tagName >/dev/null
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "version=${tag#v}" >> "$GITHUB_OUTPUT"
+
+  assets:
+    name: Released binary - ${{ matrix.platform }}
+    needs: resolve
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-latest
+            platform: linux-x64
+            archive: tar.gz
+            binary: oapx
+            sdk_tests: Smoke
+          - runner: ubuntu-24.04-arm
+            platform: linux-arm64
+            archive: tar.gz
+            binary: oapx
+            sdk_tests: Smoke
+          - runner: macos-latest
+            platform: macos-arm64
+            archive: tar.gz
+            binary: oapx
+            sdk_tests: TestSmokeHandshakeAndClose|TestSmokeModelsList$
+          - runner: windows-latest
+            platform: windows-x64
+            archive: zip
+            binary: oapx.exe
+            sdk_tests: TestSmokeHandshakeAndClose|TestSmokeModelsList$
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.resolve.outputs.tag }}
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.27.x'
+          cache: false
+
+      - name: Download and verify the release archive
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.resolve.outputs.tag }}
+          ASSET: oapx-${{ needs.resolve.outputs.version }}-${{ matrix.platform }}.${{ matrix.archive }}
+        run: |
+          set -euo pipefail
+          temp="$RUNNER_TEMP"
+          if command -v cygpath >/dev/null; then temp="$(cygpath -u "$temp")"; fi
+          dir="$temp/release"
+          mkdir -p "$dir"
+          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --dir "$dir" --pattern "$ASSET" --pattern SHA256SUMS.txt
+          cd "$dir"
+          expected="$(awk -v name="$ASSET" '$2 == name { print $1 }' SHA256SUMS.txt)"
+          if [ -z "$expected" ]; then
+            echo "::error::$ASSET is not listed in SHA256SUMS.txt"
+            exit 1
+          fi
+          if command -v sha256sum >/dev/null; then
+            actual="$(sha256sum "$ASSET" | awk '{ print $1 }')"
+          else
+            actual="$(shasum -a 256 "$ASSET" | awk '{ print $1 }')"
+          fi
+          if [ "$expected" != "$actual" ]; then
+            echo "::error::$ASSET has digest $actual, SHA256SUMS.txt says $expected"
+            exit 1
+          fi
+          mkdir bin
+          case "$ASSET" in
+            *.zip) pwsh -NoProfile -Command "Expand-Archive -Path '$ASSET' -DestinationPath bin" ;;
+            *) tar -xzf "$ASSET" -C bin ;;
+          esac
+          binary="$dir/bin/${{ matrix.binary }}"
+          test -f "$binary"
+          echo "BINARY=$binary" >> "$GITHUB_ENV"
+          if command -v cygpath >/dev/null; then binary="$(cygpath -w "$binary")"; fi
+          echo "OAP_SDK_BINARY_PATH=$binary" >> "$GITHUB_ENV"
+
+      - name: The binary reports the release's version
+        shell: bash
+        env:
+          VERSION: ${{ needs.resolve.outputs.version }}
+        run: |
+          set -euo pipefail
+          reported="$("$BINARY" --version | tr -d '\r')"
+          if [ "$reported" != "$VERSION" ]; then
+            echo "::error::the released binary reports '$reported', the release is $VERSION"
+            exit 1
+          fi
+
+      - name: The Go SDK at this tag runs against the released binary
+        shell: bash
+        env:
+          TESTS: ${{ matrix.sdk_tests }}
+        run: |
+          set -euo pipefail
+          go test -count=1 -run "$TESTS" -v ./go/sdk/ > sdk.log 2>&1 || { cat sdk.log; exit 1; }
+          cat sdk.log
+          if grep -q -- '--- SKIP' sdk.log; then
+            echo "::error::a smoke test skipped, so the released binary was not exercised"
+            exit 1
+          fi
+          grep -c -- '--- PASS' sdk.log
+
+  npm:
+    name: Published npm package
+    needs: resolve
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    continue-on-error: ${{ github.event_name == 'pull_request' }}
+    steps:
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: The release is on npm
+        env:
+          VERSION: ${{ needs.resolve.outputs.version }}
+        run: |
+          set -euo pipefail
+          if ! npm view "oap-sdk@$VERSION" version >/dev/null 2>&1; then
+            echo "::error::oap-sdk@$VERSION is not on npm, so nobody can install this release"
+            exit 1
+          fi
+
+      - name: An installed package finds its runtime and lists providers
+        env:
+          VERSION: ${{ needs.resolve.outputs.version }}
+        run: |
+          set -euo pipefail
+          app="$RUNNER_TEMP/app"
+          mkdir -p "$app" "$RUNNER_TEMP/home"
+          cd "$app"
+          npm init -y >/dev/null
+          npm install --no-audit --no-fund "oap-sdk@$VERSION"
+          HOME="$RUNNER_TEMP/home" node -e '
+            const { createMakaiClient } = require("oap-sdk");
+            (async () => {
+              const client = await createMakaiClient();
+              const providers = await client.auth.listProviders();
+              await client.close();
+              if (!Array.isArray(providers) || providers.length === 0) throw new Error("no providers listed");
+              console.log(`listed ${providers.length} providers`);
+            })().catch((error) => { console.error(error); process.exit(1); });
+          '
