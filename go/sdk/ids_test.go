@@ -1,6 +1,7 @@
 package sdk
 
 import (
+	"regexp"
 	"sort"
 	"strings"
 	"sync"
@@ -77,29 +78,13 @@ func TestNewNanoIDHasTheWireFormat(t *testing.T) {
 	seen := map[string]bool{}
 	for i := 0; i < 500; i++ {
 		id := newNanoID()
-		if !isNanoID(id) {
+		if !regexp.MustCompile(`^[0-9A-Za-z]{21}$`).MatchString(id) {
 			t.Fatalf("%q is not a 21-character alphanumeric NanoID", id)
 		}
 		if seen[id] {
 			t.Fatalf("%q was generated twice", id)
 		}
 		seen[id] = true
-	}
-}
-
-func TestIsNanoID(t *testing.T) {
-	for value, want := range map[string]bool{
-		"testNanoIdSess1234567":  true,
-		"000000000000000000000":  true,
-		"":                       false,
-		"too-short":              false,
-		"testNanoIdSess12345678": false,
-		"testNanoIdSess123456-":  false,
-		"testNanoIdSess123456_":  false,
-	} {
-		if got := isNanoID(value); got != want {
-			t.Errorf("isNanoID(%q) = %v, want %v", value, got, want)
-		}
 	}
 }
 

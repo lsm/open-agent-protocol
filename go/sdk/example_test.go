@@ -139,12 +139,6 @@ func ExampleAuthService_Login() {
 					fmt.Println(event.Message)
 				}
 			},
-			OnPrompt: func(ctx context.Context, prompt sdk.AuthPrompt) (string, error) {
-				fmt.Println(prompt.Message)
-				var answer string
-				_, err := fmt.Scanln(&answer)
-				return answer, err
-			},
 		})
 		if err != nil {
 			log.Fatal(err)

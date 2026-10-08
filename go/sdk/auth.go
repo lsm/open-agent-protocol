@@ -2,7 +2,6 @@ package sdk
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"time"
 
@@ -56,20 +55,8 @@ type AuthEvent struct {
 	Code string
 }
 
-type AuthPrompt struct {
-	FlowID     string
-	PromptID   string
-	ProviderID string
-
-	Message string
-
-	AllowEmpty bool
-}
-
 type LoginHandlers struct {
 	OnEvent func(AuthEvent)
-
-	OnPrompt func(ctx context.Context, prompt AuthPrompt) (string, error)
 }
 
 type AuthService struct {
@@ -78,227 +65,124 @@ type AuthService struct {
 }
 
 func (s *AuthService) ListProviders(ctx context.Context) ([]ProviderAuthInfo, error) {
-	if s.transport != nil && !s.transport.legacyWire {
-		return s.oapListProviders(ctx)
-	}
-	if err := ctx.Err(); err != nil {
-		return nil, &AuthError{Kind: AuthKindCancelled, Message: "auth provider listing aborted", err: err}
-	}
-
-	streamID := newULID()
-	sub := s.transport.subscribeStream(streamID)
+	request := oapFrame(oapAgent, "auth.providers.request", map[string]any{})
+	sub := s.transport.subscribeStream(string(request.ID))
 	defer sub.close()
-
-	if err := s.transport.send(newStreamEnvelope("auth_providers_request", streamID, map[string]any{})); err != nil {
+	response, err := oapRequest(ctx, s.transport, sub, s.timeout, request)
+	if err != nil {
+		if failure, ok := err.(*StreamError); ok {
+			return nil, &AuthError{Kind: AuthKindProviderError, Code: failure.Code, Message: failure.Message}
+		}
 		return nil, authErrorFrom(err, "", "")
 	}
-
-	for {
-		f, err := sub.nextFrame(ctx, s.timeout, "auth_providers_response")
-		if err != nil {
-			return nil, authErrorFrom(err, "", streamID)
+	if response.Type != "auth.providers.response" {
+		return nil, &AuthError{Kind: AuthKindTransportError, Message: "expected auth.providers.response"}
+	}
+	result := make([]ProviderAuthInfo, 0, len(envelopePayload(response).arr("providers")))
+	for _, raw := range envelopePayload(response).arr("providers") {
+		entry, ok := raw.(map[string]any)
+		if !ok {
+			return nil, &AuthError{Kind: AuthKindTransportError, Message: "auth provider entry is not an object"}
 		}
-		switch f.Type {
-		case "ack":
-			continue
-		case "nack":
-			return nil, nackToAuthError(f, "", streamID)
-		case "auth_providers_response":
-			return parseProviders(f, streamID)
-		default:
-			return nil, &AuthError{
-				Kind:    AuthKindTransportError,
-				Message: fmt.Sprintf("unexpected frame type %q while awaiting auth_providers_response", f.Type),
-				FlowID:  streamID,
+		p := jsonObject(entry)
+		raw := make([]protocol.CredentialKind, 0, len(p.arr("auth_kinds")))
+		for _, kind := range p.arr("auth_kinds") {
+			if name, ok := kind.(string); ok {
+				raw = append(raw, protocol.CredentialKind(name))
 			}
 		}
+		result = append(result, ProviderAuthInfo{ID: p.str("id"), Name: p.str("name"), AuthKinds: knownCredentialKinds(raw), Status: AuthStatus(p.str("auth_status")), LastError: p.str("last_error"), OverrideHost: p.str("override_host")})
 	}
+	return result, nil
 }
 
 func (s *AuthService) Login(ctx context.Context, providerID string, handlers LoginHandlers) error {
-	if s.transport != nil && !s.transport.legacyWire {
-		return s.oapLogin(ctx, providerID, handlers)
-	}
 	if providerID == "" {
-		return &AuthError{Kind: AuthKindUnknown, Message: "login requires a provider id"}
+		return &AuthError{Kind: AuthKindProviderError, Code: CodeInvalidRequest, Message: "login requires a provider id"}
 	}
-	if err := ctx.Err(); err != nil {
-		return &AuthError{Kind: AuthKindCancelled, ProviderID: providerID, Message: "auth login aborted", err: err}
-	}
-
-	flowID := newULID()
-	sub := s.transport.subscribeStream(flowID)
+	start := oapFrame(oapAgent, "auth.login.start.request", map[string]any{"provider_id": providerID})
+	sub := s.transport.subscribeStream(string(start.ID))
 	defer sub.close()
-
-	sequence := int64(1)
-	nextSequence := func() int64 {
-		current := sequence
-		sequence++
-		return current
+	response, err := oapRequest(ctx, s.transport, sub, s.timeout, start)
+	if err != nil {
+		if failure, ok := err.(*StreamError); ok {
+			return &AuthError{Kind: AuthKindProviderError, Code: failure.Code, Message: failure.Message, ProviderID: providerID}
+		}
+		return authErrorFrom(err, providerID, "")
 	}
-
-	if err := s.transport.send(newFlowEnvelope("auth_login_start", flowID, nextSequence(), map[string]any{
-		"provider_id": providerID,
-	})); err != nil {
-		return authErrorFrom(err, providerID, flowID)
+	if response.Type != "auth.login.start.response" {
+		return &AuthError{Kind: AuthKindTransportError, ProviderID: providerID, Message: "expected auth.login.start.response"}
 	}
-
-	var lastError struct {
-		code    string
-		message string
+	flowID := envelopePayload(response).str("flow_id")
+	if flowID == "" {
+		return &AuthError{Kind: AuthKindTransportError, ProviderID: providerID, Message: "auth login start omitted flow_id"}
 	}
-	cancelledLocally := false
-
+	settled := false
+	defer func() {
+		if !settled {
+			s.oapCancelFlow(flowID)
+		}
+	}()
+	nextSequence := int64(1)
 	for {
-		f, err := sub.nextFrame(ctx, s.timeout, "auth_login_result")
+		in, err := sub.next(ctx, s.timeout, "OAP auth login")
 		if err != nil {
-			if isAbort(err) {
-				s.cancelFlow(flowID, providerID, nextSequence())
-				return &AuthError{Kind: AuthKindCancelled, ProviderID: providerID, FlowID: flowID,
-					Message: "auth login aborted", err: contextCause(err)}
+			if ctx.Err() != nil {
+				return &AuthError{Kind: AuthKindCancelled, ProviderID: providerID, FlowID: flowID, Message: "auth login aborted", err: ctx.Err()}
 			}
 			return authErrorFrom(err, providerID, flowID)
 		}
-
-		switch f.Type {
-		case "ack":
-			continue
-		case "nack":
-			return nackToAuthError(f, providerID, flowID)
-
-		case "auth_event":
-			event, err := parseAuthEvent(f, providerID, flowID)
-			if err != nil {
-				return err
-			}
-			if handlers.OnEvent != nil {
-				handlers.OnEvent(event)
-			}
-			switch event.Type {
-			case AuthEventError:
-				lastError.code, lastError.message = event.Code, event.Message
-				continue
-			case AuthEventPrompt:
-				if handlers.OnPrompt == nil {
-					cancelledLocally = true
-					s.cancelFlow(flowID, providerID, nextSequence())
-					continue
-				}
-				answer, err := handlers.OnPrompt(ctx, AuthPrompt{
-					FlowID:     event.FlowID,
-					PromptID:   event.PromptID,
-					ProviderID: event.ProviderID,
-					Message:    event.Message,
-					AllowEmpty: event.AllowEmpty,
-				})
-				if err != nil {
-					s.cancelFlow(flowID, providerID, nextSequence())
-					kind := AuthKindUnknown
-					if ctx.Err() != nil {
-						kind = AuthKindCancelled
-					}
-					return &AuthError{Kind: kind, ProviderID: providerID, FlowID: flowID,
-						Message: "auth prompt handler failed: " + err.Error(), err: err}
-				}
-				if err := s.transport.send(newFlowEnvelope("auth_prompt_response", flowID, nextSequence(), map[string]any{
-					"flow_id":   flowID,
-					"prompt_id": event.PromptID,
-					"answer":    answer,
-				})); err != nil {
-					return authErrorFrom(err, providerID, flowID)
-				}
-				continue
-			default:
-				continue
-			}
-
-		case "auth_login_result":
-			switch status := f.payload().str("status"); status {
+		if in.broken != nil {
+			return authErrorFrom(in.broken, providerID, flowID)
+		}
+		if in.kind() != "auth.login.event" && in.kind() != "auth.login.completed" {
+			return &AuthError{Kind: AuthKindTransportError, ProviderID: providerID, FlowID: flowID, Message: fmt.Sprintf("unexpected OAP auth flow event %q", in.kind())}
+		}
+		if in.sequence() != nextSequence {
+			return &AuthError{Kind: AuthKindTransportError, Code: "protocol_violation", ProviderID: providerID, FlowID: flowID, Message: "auth flow sequence gap"}
+		}
+		nextSequence++
+		p := in.body()
+		if p.str("flow_id") != flowID || p.str("provider_id") != providerID {
+			return &AuthError{Kind: AuthKindTransportError, Code: "protocol_violation", ProviderID: providerID, FlowID: flowID, Message: "auth flow identity changed"}
+		}
+		if in.kind() == "auth.login.completed" {
+			settled = true
+			switch p.str("status") {
 			case "success":
+				if handlers.OnEvent != nil {
+					handlers.OnEvent(AuthEvent{Type: AuthEventSuccess, FlowID: flowID, ProviderID: providerID})
+				}
 				return nil
 			case "cancelled":
-				message := lastError.message
-				if message == "" {
-					message = "auth login cancelled"
-					if cancelledLocally {
-						message = "auth login cancelled: no OnPrompt handler is configured"
-					}
-				}
-				return &AuthError{Kind: AuthKindCancelled, Code: lastError.code,
-					ProviderID: providerID, FlowID: flowID, Message: message}
+				failure := p.obj("error")
+				message := failure.strOrDefault("auth login cancelled", "message")
+				return &AuthError{Kind: AuthKindCancelled, Code: failure.str("code"), Message: message, ProviderID: providerID, FlowID: flowID}
 			case "failed":
-				message := lastError.message
-				if message == "" {
-					message = "auth login failed"
-				}
-				return &AuthError{Kind: AuthKindProviderError, Code: lastError.code,
-					ProviderID: providerID, FlowID: flowID, Message: message}
+				failure := p.obj("error")
+				return &AuthError{Kind: AuthKindProviderError, Code: failure.str("code"), Message: failure.strOrDefault("auth login failed", "message"), ProviderID: providerID, FlowID: flowID}
 			default:
-				return &AuthError{Kind: AuthKindUnknown, ProviderID: providerID, FlowID: flowID,
-					Message: fmt.Sprintf("unexpected auth_login_result status %q", status)}
+				return &AuthError{Kind: AuthKindTransportError, ProviderID: providerID, FlowID: flowID, Message: "unknown auth login terminal status"}
 			}
-
+		}
+		event := AuthEvent{FlowID: flowID, ProviderID: providerID}
+		switch p.str("kind") {
+		case "url":
+			event.Type = AuthEventURL
+			event.URL = p.str("url")
+			event.Instructions = p.str("instructions")
+		case "progress":
+			event.Type = AuthEventProgress
+			event.Message = p.str("message")
+		case "prompt":
+			return &AuthError{Kind: AuthKindProviderError, Code: "auth_input_unavailable", ProviderID: providerID, FlowID: flowID, Message: "manual login input cannot be sent over OAP"}
 		default:
-			return &AuthError{Kind: AuthKindTransportError, ProviderID: providerID, FlowID: flowID,
-				Message: fmt.Sprintf("unexpected frame type %q during the login flow", f.Type)}
+			return &AuthError{Kind: AuthKindTransportError, ProviderID: providerID, FlowID: flowID, Message: "unknown OAP auth event kind"}
+		}
+		if handlers.OnEvent != nil {
+			handlers.OnEvent(event)
 		}
 	}
-}
-
-func (s *AuthService) cancelFlow(flowID, providerID string, sequence int64) {
-	s.transport.sendBestEffort(newFlowEnvelope("auth_cancel", flowID, sequence, map[string]any{
-		"flow_id":     flowID,
-		"provider_id": providerID,
-	}))
-}
-
-var authEventVariants = []AuthEventType{
-	AuthEventURL, AuthEventPrompt, AuthEventProgress, AuthEventSuccess, AuthEventError,
-}
-
-func parseAuthEvent(f *frame, providerID, flowID string) (AuthEvent, error) {
-	payload := f.payload()
-	for _, variant := range authEventVariants {
-		data := payload.obj(string(variant))
-		if data == nil {
-			continue
-		}
-		event := AuthEvent{
-			Type:       variant,
-			FlowID:     data.str("flow_id"),
-			ProviderID: data.str("provider_id"),
-		}
-		if event.FlowID == "" || event.ProviderID == "" {
-			return AuthEvent{}, &AuthError{Kind: AuthKindTransportError, ProviderID: providerID, FlowID: flowID,
-				Message: fmt.Sprintf("auth_event %q is missing flow_id or provider_id", variant)}
-		}
-		switch variant {
-		case AuthEventURL:
-			event.URL = data.str("url")
-			event.Instructions = data.str("instructions")
-		case AuthEventPrompt:
-			event.PromptID = data.str("prompt_id")
-			event.Message = data.str("message")
-			event.AllowEmpty, _ = data.boolean("allow_empty")
-		case AuthEventProgress:
-			event.Message = data.str("message")
-		case AuthEventError:
-			event.Message = data.str("message")
-			event.Code = data.str("code")
-		}
-		return event, nil
-	}
-	return AuthEvent{}, &AuthError{Kind: AuthKindUnknown, ProviderID: providerID, FlowID: flowID,
-		Message: "auth_event carries no known variant"}
-}
-
-type wireProviderAuthInfo struct {
-	ID           string                    `json:"id"`
-	Name         string                    `json:"name"`
-	AuthKinds    []protocol.CredentialKind `json:"auth_kinds"`
-	AuthStatus   string                    `json:"auth_status"`
-	LastError    string                    `json:"last_error"`
-	OverrideHost string                    `json:"override_host"`
 }
 
 func knownCredentialKinds(kinds []protocol.CredentialKind) []protocol.CredentialKind {
@@ -310,42 +194,6 @@ func knownCredentialKinds(kinds []protocol.CredentialKind) []protocol.Credential
 		}
 	}
 	return kept
-}
-
-func parseProviders(f *frame, streamID string) ([]ProviderAuthInfo, error) {
-	var payload struct {
-		Providers *[]wireProviderAuthInfo `json:"providers"`
-	}
-	if len(f.Payload) == 0 || json.Unmarshal(f.Payload, &payload) != nil || payload.Providers == nil {
-		return nil, &AuthError{Kind: AuthKindTransportError, FlowID: streamID,
-			Message: "auth_providers_response is missing its providers array"}
-	}
-	providers := make([]ProviderAuthInfo, 0, len(*payload.Providers))
-	for index, raw := range *payload.Providers {
-		if raw.ID == "" || raw.Name == "" {
-			return nil, &AuthError{Kind: AuthKindTransportError, FlowID: streamID,
-				Message: fmt.Sprintf("provider entry at index %d is missing id or name", index)}
-		}
-		status := AuthStatus(raw.AuthStatus)
-		if !knownAuthStatuses[status] {
-			status = AuthUnknown
-		}
-		providers = append(providers, ProviderAuthInfo{
-			ID: raw.ID, Name: raw.Name, AuthKinds: knownCredentialKinds(raw.AuthKinds), Status: status, LastError: raw.LastError, OverrideHost: raw.OverrideHost,
-		})
-	}
-	return providers, nil
-}
-
-func nackToAuthError(f *frame, providerID, flowID string) *AuthError {
-	payload := f.payload()
-	return &AuthError{
-		Kind:       AuthKindTransportError,
-		Code:       payload.str("error_code", "code"),
-		ProviderID: providerID,
-		FlowID:     flowID,
-		Message:    payload.strOrDefault("auth request rejected", "reason", "message"),
-	}
 }
 
 func authErrorFrom(err error, providerID, flowID string) *AuthError {

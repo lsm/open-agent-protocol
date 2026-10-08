@@ -3,7 +3,6 @@ package sdk
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"strings"
 	"sync"
@@ -13,7 +12,7 @@ import (
 	"github.com/lsm/open-agent-protocol/go/protocol"
 )
 
-func TestTheOAPPathBuildsAProtocolEnvelopeAndTheLegacyPathAFrame(t *testing.T) {
+func TestTheOAPPathBuildsAProtocolEnvelope(t *testing.T) {
 	envelope := oapFrame(oapAgent, "session.open.request", map[string]any{"session_id": "s1"})
 	if envelope.Protocol != oapProtocol || envelope.Version != oapVersion || envelope.Profile != oapAgent {
 		t.Fatalf("the OAP path built %+v, which is not the envelope the protocol package describes", envelope)
@@ -23,17 +22,6 @@ func TestTheOAPPathBuildsAProtocolEnvelopeAndTheLegacyPathAFrame(t *testing.T) {
 	}
 	if envelope.ID == "" || len(envelope.Payload) == 0 {
 		t.Fatalf("the OAP path built an envelope with no id or payload: %+v", envelope)
-	}
-	legacy := &frame{Type: "agent_start", ID: newULID(), Version: 1}
-	if legacy.Version == nil {
-		t.Fatal("the legacy frame lost its untyped version, which the V1 wire needs")
-	}
-	encoded, err := json.Marshal(legacy)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if string(encoded) == "" || !json.Valid(encoded) {
-		t.Fatalf("the legacy frame no longer marshals: %q", encoded)
 	}
 }
 
@@ -58,7 +46,7 @@ func TestTheEnvelopesTheOAPPathWritesAreTheOnesTheProtocolPackageDecodes(t *test
 
 func readLine(t *testing.T, line string) *inbound {
 	t.Helper()
-	in, err := newFrameReader(strings.NewReader(line + "\n")).nextInbound(false)
+	in, err := newFrameReader(strings.NewReader(line + "\n")).nextInbound()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -67,7 +55,7 @@ func readLine(t *testing.T, line string) *inbound {
 
 func TestAnAgentLineOnTheOAPWireIsReadAsTheProtocolPackagesEnvelope(t *testing.T) {
 	in := readLine(t, `{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"capabilities.response","id":"env-1","in_reply_to":"env-0","session_id":"s1","run_id":"run-1","capability_revision":"rev-1","sequence":7,"timestamp_ms":42,"turn_id":"turn-1","tool_call_id":"call-1","extensions":{"x.y":{"z":1}},"future":true,"payload":{"capability_revision":"rev-1"}}`)
-	if in.agent == nil || in.provider != nil || in.legacy != nil || in.broken != nil {
+	if in.agent == nil || in.provider != nil || in.broken != nil {
 		t.Fatalf("an agent line was read as %+v", in)
 	}
 	envelope := in.agent
@@ -103,7 +91,7 @@ func TestAProviderLineOnTheOAPWireIsReadAsTheProtocolPackagesProviderEnvelope(t 
 
 func TestAnOAPLineTheProtocolPackageCannotReadIsBrokenButStillRoutable(t *testing.T) {
 	in := readLine(t, `{"protocol":"open-agent-protocol","profile":"open-agent-protocol.agent-control-core","type":"ready","in_reply_to":"env-0","version":1,"payload":{}}`)
-	if in.broken == nil || in.agent != nil || in.legacy != nil {
+	if in.broken == nil || in.agent != nil {
 		t.Fatalf("a numeric version on the OAP wire was read as %+v, want a broken line", in)
 	}
 	if in.kind() != "ready" || in.replyTo() != "env-0" {
@@ -112,12 +100,8 @@ func TestAnOAPLineTheProtocolPackageCannotReadIsBrokenButStillRoutable(t *testin
 	if !errors.Is(in.failure(""), in.broken) {
 		t.Fatalf("a broken line reports %v, not why it broke", in.failure(""))
 	}
-	if _, err := newFrameReader(strings.NewReader("[1]\n")).nextInbound(false); !errors.Is(err, errMalformedFrame) {
+	if _, err := newFrameReader(strings.NewReader("[1]\n")).nextInbound(); !errors.Is(err, errMalformedFrame) {
 		t.Fatalf("a line that is not an object answered %v", err)
-	}
-	legacy, err := newFrameReader(strings.NewReader(`{"type":"ready","version":1,"protocol_version":"1"}` + "\n")).nextInbound(true)
-	if err != nil || legacy.legacy == nil || legacy.legacy.Version != 1 || legacy.legacy.ProtocolVersion != "1" {
-		t.Fatalf("the legacy wire read %+v, %v", legacy, err)
 	}
 }
 
@@ -141,7 +125,7 @@ func TestClosingAnOAPStreamEarlyCancelsItsInferenceByID(t *testing.T) {
 		streams: map[string][]*subscription{}, sessions: map[string][]*subscription{}, correlates: map[string]*subscription{},
 		inferences: map[string]*subscription{}, done: make(chan struct{}), exited: make(chan struct{}),
 	}
-	stream := &ProviderStream{oap: true, transport: tr, sub: tr.subscribeStream("s"), oapInferenceID: "inf-1"}
+	stream := &ProviderStream{transport: tr, sub: tr.subscribeStream("s"), oapInferenceID: "inf-1"}
 	_ = stream.Close()
 	written.mu.Lock()
 	line := bytes.TrimSpace(written.lines.Bytes())

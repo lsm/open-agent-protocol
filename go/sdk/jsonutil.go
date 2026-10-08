@@ -84,16 +84,6 @@ func (o jsonObject) arr(keys ...string) []any {
 	return nil
 }
 
-func (o jsonObject) soleKey() string {
-	if len(o) != 1 {
-		return ""
-	}
-	for key := range o {
-		return key
-	}
-	return ""
-}
-
 type bufferedLineReader struct {
 	reader *bufio.Reader
 	limit  int

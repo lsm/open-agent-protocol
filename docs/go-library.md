@@ -147,9 +147,6 @@ convention:
   wrap the context error, so `errors.Is` against `context.Canceled` and
   `context.DeadlineExceeded` works.
 
-`Options.LegacyWire` connects to an old Makai V1 runtime. There is no automatic
-fallback from OAP to the legacy wire — set it deliberately or not at all.
-
 ## `goap` is the worked example
 
 `goap` is not a separate implementation to keep in step: it is this library,

@@ -15,8 +15,6 @@ const (
 )
 
 type Options struct {
-	LegacyWire bool
-
 	BinaryPath string
 
 	BinaryURL string
@@ -44,9 +42,6 @@ type Options struct {
 
 func (o *Options) args() []string {
 	if o == nil || o.Args == nil {
-		if o != nil && o.LegacyWire {
-			return []string{"--stdio"}
-		}
 		return []string{"serve", "agent,provider", "--stdio"}
 	}
 	return o.Args
@@ -54,9 +49,6 @@ func (o *Options) args() []string {
 
 func (o *Options) protocolVersion() string {
 	if o == nil || o.ExpectedProtocolVersion == "" {
-		if o != nil && o.LegacyWire {
-			return "1"
-		}
 		return "0.1"
 	}
 	return o.ExpectedProtocolVersion
