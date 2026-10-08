@@ -117,10 +117,11 @@ pub const Adapter = struct {
         errdefer self.allocator.free(saved);
         const unsaved = try withFeatures(self.allocator, &unsaved_features, extra);
         self.releaseServed();
-        self.served = .{
-            .saved = .{ .endpoint = descriptor.endpoint, .capability_revision = capability_revision, .features = saved, .limits = descriptor.limits },
-            .unsaved = .{ .endpoint = descriptor.endpoint, .capability_revision = capability_revision, .features = unsaved, .limits = descriptor.limits },
-        };
+        var served_saved = descriptor;
+        served_saved.features = saved;
+        var served_unsaved = unsaved_descriptor;
+        served_unsaved.features = unsaved;
+        self.served = .{ .saved = served_saved, .unsaved = served_unsaved };
     }
 
     fn withFeatures(allocator: std.mem.Allocator, own: []const contract.Feature, extra: []const contract.Feature) ![]contract.Feature {
@@ -4007,6 +4008,17 @@ test "a served adapter advertises the features its host adds beside its own" {
     const replaced = try owner.adapter().probe(&refusal);
     try testing.expectEqual(oap_types.SupportLevel.native, replaced.level(contract.feature_models_list));
     try testing.expectEqual(unsaved_features.len, replaced.features.len);
+}
+
+test "a served adapter still declares the loop's tool source once its host adds features" {
+    var owner = Adapter.init(testing.allocator, .{});
+    defer owner.deinit();
+    try owner.advertise(&.{.{ .key = "auth.login", .level = .native }});
+    var refusal = contract.Refusal{};
+    const served = try owner.adapter().probe(&refusal);
+    try testing.expectEqual(@as(usize, 1), served.sources.len);
+    try testing.expectEqualStrings(native_source, served.sources[0].id);
+    try testing.expectEqualStrings(capability_revision, served.capability_revision);
 }
 
 test "a steer naming a model is refused as unsatisfiable, since it cannot change the admitted run's model" {
