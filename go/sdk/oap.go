@@ -933,7 +933,7 @@ func (s *AgentStream) oapNext() bool {
 			s.current = &ToolExecutionStart{ToolCallID: p.str("tool_call_id"), ToolName: p.str("name")}
 			return true
 		case "action.call.completed", "action.call.failed", "action.call.cancelled":
-			s.current = &ToolExecutionEnd{ToolCallID: p.str("tool_call_id"), IsError: f.Type != "action.call.completed"}
+			s.current = &ToolExecutionEnd{ToolCallID: p.str("tool_call_id"), IsError: in.kind() != "action.call.completed"}
 			return true
 		case "action.call.resolve.response":
 			if accepted, _ := p["accepted"].(bool); !accepted && p.str("reason") != "already_resolved" {
