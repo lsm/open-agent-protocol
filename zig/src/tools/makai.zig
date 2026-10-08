@@ -2656,7 +2656,6 @@ test "a finished reload replaces the providers the endpoint serves, once per gen
     try std.testing.expect(!try applyServedOapReload(allocator, &server, &cache, &applied));
 }
 
-
 test "the provider endpoint serves no provider when it discovered no model, as with no key present" {
     const allocator = std.testing.allocator;
     var server = oapTestProviderServer(allocator);
