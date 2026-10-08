@@ -2,7 +2,7 @@ const std = @import("std");
 const compat = @import("compat");
 const ai_types = @import("ai_types");
 const event_stream = @import("event_stream");
-const agent = @import("agent");
+const agent_types = @import("agent_types");
 
 pub const test_model = ai_types.Model{
     .id = "tui-fixture-model",
@@ -45,7 +45,7 @@ pub const MockProvider = struct {
         return .{ .scenario = scenario };
     }
 
-    pub fn protocolClient(self: *MockProvider) agent.ProtocolClient {
+    pub fn protocolClient(self: *MockProvider) agent_types.ProtocolClient {
         return .{ .stream_fn = stream, .ctx = self };
     }
 
@@ -53,7 +53,7 @@ pub const MockProvider = struct {
         ctx: ?*anyopaque,
         model: ai_types.Model,
         context: ai_types.Context,
-        options: agent.ProtocolOptions,
+        options: agent_types.ProtocolOptions,
         allocator: std.mem.Allocator,
     ) anyerror!*event_stream.AssistantMessageEventStream {
         const self: *MockProvider = @ptrCast(@alignCast(ctx.?));

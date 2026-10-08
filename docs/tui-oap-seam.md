@@ -13,7 +13,11 @@ the parity sweep showed no difference: the TUI's `SessionRuntime`
 envelopes back into `SessionEvent`s. The agent loop itself is the adapter's: a
 `LocalLoop` (`zig/src/adapter/oapx/local_loop.zig`) owns the agent, its wrapped tools,
 approvals and compaction transcripts, and plugs into a `SessionRuntime` through its `Loop`
-interface, so the runtime the TUI holds carries no agent of its own. Runs, streaming, tools, cancel and model switch
+interface, so the runtime the TUI holds carries no agent of its own. Nothing under
+`zig/src/tui/` imports the `agent` module: what it still reads from the agent layer
+is value types and pure helpers, from `agent_types`, `agent_loop` (the output
+setting and token estimates) and `agent_compaction` (the summary header and the
+history split), plus the in-process provider bridge `App` hands the endpoint. Runs, streaming, tools, cancel and model switch
 cross the boundary as OAP. A `/model refresh` hands the in-process endpoint the
 refreshed catalog beside the wire, and the session serves it from its next model
 switch under the same revision, which is why the `oapx` adapter advertises

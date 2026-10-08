@@ -7,7 +7,10 @@ const provider_catalog = @import("provider_catalog");
 const anthropic_messages_base_url = provider_catalog.baseUrlOrCompileError("anthropic", "anthropic-messages", null);
 const api_registry = @import("api_registry");
 const register_builtins = @import("register_builtins");
-const agent = @import("agent");
+const agent_compaction = @import("agent_compaction");
+const agent_loop = @import("agent_loop");
+const agent_types = @import("agent_types");
+const provider_bridge = @import("provider_protocol_bridge");
 const event_stream = @import("event_stream");
 const session_runtime = @import("session_runtime");
 const tui_oap_execution = @import("tui/oap_execution");
@@ -740,7 +743,7 @@ test "TuiModel login picker shows which providers are logged in" {
 pub const ProductionRuntime = struct {
     allocator: std.mem.Allocator,
     registry: api_registry.ApiRegistry,
-    bridge: agent.InProcessProviderProtocolBridge,
+    bridge: provider_bridge.InProcessProviderProtocolBridge,
     permission_engine: permission.PermissionEngine,
     models: []ai_types.Model,
     initial_model: ?SavedModelRef = null,
@@ -816,7 +819,7 @@ pub const ProductionRuntime = struct {
     }
 
     pub fn initBridge(self: *ProductionRuntime) void {
-        self.bridge = agent.InProcessProviderProtocolBridge.init(&self.registry);
+        self.bridge = provider_bridge.InProcessProviderProtocolBridge.init(&self.registry);
     }
 
     pub fn options(self: *ProductionRuntime) session_runtime.SessionRuntimeOptions {
@@ -1267,7 +1270,7 @@ pub const App = struct {
             return;
         };
         const history = session.history();
-        if (history.len == 0 or agent.compaction.isCompacted(history)) {
+        if (history.len == 0 or agent_compaction.isCompacted(history)) {
             try self.state.appendTranscript(.system, "Nothing to compact yet.");
             return;
         }
@@ -3581,8 +3584,8 @@ pub const App = struct {
             .content = .{ .text = text },
             .timestamp = 0,
         } };
-        const counted = @max(self.state.telemetry.estimated_tokens, agent.promptTokens(.{ .messages = history }));
-        return counted + agent.estimateMessageTokens(message);
+        const counted = @max(self.state.telemetry.estimated_tokens, agent_loop.promptTokens(.{ .messages = history }));
+        return counted + agent_loop.estimateMessageTokens(message);
     }
 
     fn compactBeforeTurn(self: *App, text: []const u8) !bool {
@@ -3596,7 +3599,7 @@ pub const App = struct {
         if (self.pending_after_compaction != null) return false;
         if (self.state.status.streaming or self.state.status.compacting) return false;
         const history = if (self.session) |*session| session.history() else return false;
-        if (history.len == 0 or agent.compaction.isCompacted(history)) return false;
+        if (history.len == 0 or agent_compaction.isCompacted(history)) return false;
         const tokens = self.estimatedTokensForTurn(history, text);
         if (tokens < at) return false;
 
@@ -5913,7 +5916,7 @@ test "App steers a model switch and defers run-end commands while a run streams,
     try std.testing.expectEqualStrings("other-model", app.state.status.model);
     try std.testing.expect(runtime.pending_model_index == null);
     try std.testing.expectEqual(@as(usize, 0), app.deferred_commands.items.len);
-    try std.testing.expectEqual(agent.OutputSetting{ .tokens = 4096 }, runtime.outputSetting());
+    try std.testing.expectEqual(agent_loop.OutputSetting{ .tokens = 4096 }, runtime.outputSetting());
 }
 
 test "a pending model switch applies once idle even with follow-ups queued, while held commands wait" {
@@ -7136,7 +7139,7 @@ fn autoCompactTestApp(mock: *MockAppSession) !App {
     return app;
 }
 
-fn agentOutput(setting: tui_config.Output) agent.OutputSetting {
+fn agentOutput(setting: tui_config.Output) agent_loop.OutputSetting {
     return switch (setting) {
         .auto => .auto,
         .max => .max,
@@ -7144,7 +7147,7 @@ fn agentOutput(setting: tui_config.Output) agent.OutputSetting {
     };
 }
 
-fn savedOutput(setting: agent.OutputSetting) tui_config.Output {
+fn savedOutput(setting: agent_loop.OutputSetting) tui_config.Output {
     return switch (setting) {
         .auto => .auto,
         .max => .max,
@@ -7377,7 +7380,7 @@ test "autocompact by default compacts where the window leaves room for a summary
     var app = try autoCompactTestApp(&mock);
     defer app.deinit();
     app.state.autocompact = .auto;
-    const at = agent.compaction.autoCompactAt(auto_compact_test_model.context_window, auto_compact_test_model.max_tokens);
+    const at = agent_compaction.autoCompactAt(auto_compact_test_model.context_window, auto_compact_test_model.max_tokens);
 
     app.state.telemetry.estimated_tokens = at - 1_000;
     try app.submit("under the point");
@@ -7470,11 +7473,11 @@ test "autocompact does not compact a history that is already a summary" {
     defer app.deinit();
     mock.history_messages = &[_]ai_types.Message{
         .{ .user = .{
-            .content = .{ .text = agent.compaction.header ++ "\n\n<summary>\nkept\n</summary>" },
+            .content = .{ .text = agent_compaction.header ++ "\n\n<summary>\nkept\n</summary>" },
             .timestamp = 0,
         } },
         .{ .assistant = .{
-            .content = &.{.{ .text = .{ .text = agent.compaction.acknowledgement } }},
+            .content = &.{.{ .text = .{ .text = agent_compaction.acknowledgement } }},
             .api = "test-api",
             .provider = "test-provider",
             .model = "model-a",
@@ -7522,7 +7525,7 @@ test "App indexes where a completed compaction starts" {
     const offset = try app.store.?.conversationBytes("compaction-index");
     var compacted = session_runtime.SessionEvent{ .compaction_end = .{
         .outcome = .completed,
-        .text = OwnedSlice(u8).initOwned(try std.testing.allocator.dupe(u8, agent.compaction.header ++ " Summary follows.\n\n<summary>\nkept\n</summary>")),
+        .text = OwnedSlice(u8).initOwned(try std.testing.allocator.dupe(u8, agent_compaction.header ++ " Summary follows.\n\n<summary>\nkept\n</summary>")),
     } };
     defer compacted.deinit(std.testing.allocator);
     app.saveEvent(compacted);
@@ -7552,7 +7555,7 @@ test "App keeps the last compaction offset when a compaction record is not writt
     const offset = try app.store.?.conversationBytes("unwritten-compaction");
     var compacted = session_runtime.SessionEvent{ .compaction_end = .{
         .outcome = .completed,
-        .text = OwnedSlice(u8).initOwned(try std.testing.allocator.dupe(u8, agent.compaction.header ++ " Summary follows.\n\n<summary>\nkept\n</summary>")),
+        .text = OwnedSlice(u8).initOwned(try std.testing.allocator.dupe(u8, agent_compaction.header ++ " Summary follows.\n\n<summary>\nkept\n</summary>")),
     } };
     defer compacted.deinit(std.testing.allocator);
     app.saveEvent(compacted);
@@ -9845,7 +9848,7 @@ fn unusedStream(
     ctx: ?*anyopaque,
     model: ai_types.Model,
     context: ai_types.Context,
-    options: agent.ProtocolOptions,
+    options: agent_types.ProtocolOptions,
     allocator: std.mem.Allocator,
 ) anyerror!*event_stream.AssistantMessageEventStream {
     _ = ctx;
@@ -9967,7 +9970,7 @@ test "resume keeps every compaction transcript when it loads from the last compa
         .last_active = 1,
     };
     defer meta.deinit(std.testing.allocator);
-    const summary = agent.compaction.header ++ " Summary follows.\n\n<summary>\nkept\n</summary>";
+    const summary = agent_compaction.header ++ " Summary follows.\n\n<summary>\nkept\n</summary>";
     const first_path = try store.transcriptPath("two-compactions", 1);
     defer std.testing.allocator.free(first_path);
     var first = session_runtime.SessionEvent{ .compaction_end = .{ .outcome = .completed, .text = OwnedSlice(u8).initBorrowed(summary), .transcript = OwnedSlice(u8).initBorrowed(first_path) } };
@@ -10341,7 +10344,7 @@ test "App /compact archives the history and hands the model every transcript so 
     try mock.eventStream().push(.{ .compaction_start = .{} });
     try mock.eventStream().push(.{ .compaction_end = .{
         .outcome = .completed,
-        .text = OwnedSlice(u8).initOwned(try std.testing.allocator.dupe(u8, agent.compaction.header ++ " x\n\n<summary>\nkept state\n</summary>")),
+        .text = OwnedSlice(u8).initOwned(try std.testing.allocator.dupe(u8, agent_compaction.header ++ " x\n\n<summary>\nkept state\n</summary>")),
         .transcript = OwnedSlice(u8).initOwned(try std.testing.allocator.dupe(u8, archive)),
         .messages_before = 2,
         .tokens_before = 2400,
@@ -10378,7 +10381,7 @@ test "App holds a run as streaming through a compaction made inside it, even aft
     try mock.eventStream().push(.{ .compaction_end = .{
         .in_run = true,
         .outcome = .completed,
-        .text = OwnedSlice(u8).initOwned(try std.testing.allocator.dupe(u8, agent.compaction.header ++ " x\n\n<summary>\nkept state\n</summary>")),
+        .text = OwnedSlice(u8).initOwned(try std.testing.allocator.dupe(u8, agent_compaction.header ++ " x\n\n<summary>\nkept state\n</summary>")),
         .transcript = OwnedSlice(u8).initOwned(try std.testing.allocator.dupe(u8, "/s/s1/compaction-1.jsonl")),
         .messages_before = 2,
         .tokens_before = 2400,
@@ -10406,7 +10409,7 @@ test "App /compact reports an empty or freshly compacted history without compact
     const notice = app.state.transcript.items[app.state.transcript.items.len - 1];
     try std.testing.expectEqualStrings("Nothing to compact yet.", notice.text.items);
 
-    var pair = try agent.compaction.historyMessages(std.testing.allocator, agent.compaction.header ++ " x", .{});
+    var pair = try agent_compaction.historyMessages(std.testing.allocator, agent_compaction.header ++ " x", .{});
     defer for (&pair) |*message| message.deinit(std.testing.allocator);
     mock.history_messages = &pair;
     try app.submit("/compact");

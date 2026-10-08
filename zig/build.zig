@@ -1757,6 +1757,17 @@ pub fn build(b: *std.Build) void {
         },
     });
 
+    const agent_compaction_mod = b.createModule(.{
+        .root_source_file = b.path("src/agent/compaction.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "compat", .module = compat_mod },
+            .{ .name = "ai_types", .module = ai_types_mod },
+            .{ .name = "agent_loop", .module = agent_loop_mod },
+        },
+    });
+
     const agent_mod = b.createModule(.{
         .root_source_file = b.path("src/agent/mod.zig"),
         .target = target,
@@ -1767,6 +1778,7 @@ pub fn build(b: *std.Build) void {
             .{ .name = "event_stream", .module = event_stream_mod },
             .{ .name = "agent_types", .module = agent_types_mod },
             .{ .name = "agent_loop", .module = agent_loop_mod },
+            .{ .name = "agent_compaction", .module = agent_compaction_mod },
             .{ .name = "api_registry", .module = api_registry_mod },
             .{ .name = "protocol_server", .module = protocol_server_mod },
             .{ .name = "protocol_client", .module = protocol_client_mod },
@@ -1794,6 +1806,7 @@ pub fn build(b: *std.Build) void {
             .{ .name = "provider_caps", .module = provider_caps_mod },
         },
     });
+    agent_mod.addImport("provider_protocol_bridge", agent_provider_protocol_bridge_mod);
 
     const agent_oap_provider_bridge_mod = b.createModule(.{
         .root_source_file = b.path("src/agent/oap_provider_bridge.zig"),
@@ -1941,7 +1954,7 @@ pub fn build(b: *std.Build) void {
         .imports = &.{
             .{ .name = "compat", .module = compat_mod },
             .{ .name = "ai_types", .module = ai_types_mod },
-            .{ .name = "agent", .module = agent_mod },
+            .{ .name = "agent_types", .module = agent_types_mod },
             .{ .name = "event_stream", .module = event_stream_mod },
             .{ .name = "json_encode", .module = json_encode_mod },
             .{ .name = "model_ref", .module = protocol_model_ref_mod },
@@ -1964,7 +1977,7 @@ pub fn build(b: *std.Build) void {
             .{ .name = "ai_types", .module = ai_types_mod },
             .{ .name = "session_events", .module = session_events_mod },
             .{ .name = "session_runtime", .module = session_runtime_mod },
-            .{ .name = "agent", .module = agent_mod },
+            .{ .name = "agent_compaction", .module = agent_compaction_mod },
             .{ .name = "json/writer", .module = json_writer_mod },
             .{ .name = "json_writer", .module = json_writer_mod },
             .{ .name = "owned_slice", .module = owned_slice_mod },
@@ -1986,7 +1999,8 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
         .imports = &.{
             .{ .name = "compat", .module = compat_mod },
-            .{ .name = "agent", .module = agent_mod },
+            .{ .name = "agent_compaction", .module = agent_compaction_mod },
+            .{ .name = "agent_types", .module = agent_types_mod },
             .{ .name = "ai_types", .module = ai_types_mod },
             .{ .name = "session_runtime", .module = session_runtime_mod },
             .{ .name = "owned_slice", .module = owned_slice_mod },
@@ -1999,7 +2013,7 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
         .imports = &.{
-            .{ .name = "agent", .module = agent_mod },
+            .{ .name = "agent_loop", .module = agent_loop_mod },
             .{ .name = "ai_types", .module = ai_types_mod },
             .{ .name = "compat", .module = compat_mod },
             .{ .name = "session_runtime", .module = session_runtime_mod },
@@ -2053,7 +2067,7 @@ pub fn build(b: *std.Build) void {
             .{ .name = "compat", .module = compat_mod },
             .{ .name = "ai_types", .module = ai_types_mod },
             .{ .name = "event_stream", .module = event_stream_mod },
-            .{ .name = "agent", .module = agent_mod },
+            .{ .name = "agent_types", .module = agent_types_mod },
         },
     });
 
@@ -2070,7 +2084,10 @@ pub fn build(b: *std.Build) void {
             .{ .name = "ai_types", .module = ai_types_mod },
             .{ .name = "api_registry", .module = api_registry_mod },
             .{ .name = "register_builtins", .module = register_builtins_mod },
-            .{ .name = "agent", .module = agent_mod },
+            .{ .name = "agent_compaction", .module = agent_compaction_mod },
+            .{ .name = "agent_loop", .module = agent_loop_mod },
+            .{ .name = "agent_types", .module = agent_types_mod },
+            .{ .name = "provider_protocol_bridge", .module = agent_provider_protocol_bridge_mod },
             .{ .name = "event_stream", .module = event_stream_mod },
             .{ .name = "session_runtime", .module = session_runtime_mod },
             .{ .name = "tui_auto_continue", .module = tui_auto_continue_mod },
@@ -2116,7 +2133,7 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
         .imports = &.{
             .{ .name = "ai_types", .module = ai_types_mod },
-            .{ .name = "agent", .module = agent_mod },
+            .{ .name = "agent_types", .module = agent_types_mod },
             .{ .name = "owned_slice", .module = owned_slice_mod },
             .{ .name = "tui_fixture", .module = tui_fixture_mod },
         },
@@ -2521,6 +2538,7 @@ pub fn build(b: *std.Build) void {
     const agent_loop_test = b.addTest(.{ .root_module = agent_loop_mod });
 
     const agent_mod_test = b.addTest(.{ .root_module = agent_mod });
+    const agent_compaction_test = b.addTest(.{ .root_module = agent_compaction_mod });
 
     const agent_provider_protocol_bridge_test = b.addTest(.{ .root_module = agent_provider_protocol_bridge_mod });
     const agent_oap_provider_bridge_test = b.addTest(.{ .root_module = agent_oap_provider_bridge_mod });
@@ -2872,6 +2890,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&b.addRunArtifact(tools_registry_test).step);
     test_step.dependOn(&b.addRunArtifact(agent_loop_test).step);
     test_step.dependOn(&b.addRunArtifact(agent_mod_test).step);
+    test_step.dependOn(&b.addRunArtifact(agent_compaction_test).step);
     test_step.dependOn(&b.addRunArtifact(agent_provider_protocol_bridge_test).step);
     test_step.dependOn(&b.addRunArtifact(agent_oap_provider_bridge_test).step);
     test_step.dependOn(&b.addRunArtifact(agent_oap_remote_provider_transport_test).step);
@@ -3093,6 +3112,7 @@ pub fn build(b: *std.Build) void {
     test_unit_agent_step.dependOn(test_unit_tools_step);
     test_unit_agent_step.dependOn(&b.addRunArtifact(agent_loop_test).step);
     test_unit_agent_step.dependOn(&b.addRunArtifact(agent_mod_test).step);
+    test_unit_agent_step.dependOn(&b.addRunArtifact(agent_compaction_test).step);
     test_unit_agent_step.dependOn(&b.addRunArtifact(agent_provider_protocol_bridge_test).step);
     test_unit_agent_step.dependOn(&b.addRunArtifact(session_events_test).step);
     test_unit_agent_step.dependOn(&b.addRunArtifact(tui_config_test).step);
@@ -3109,6 +3129,7 @@ pub fn build(b: *std.Build) void {
 
     const test_unit_agent_mod_step = b.step("test-unit-agent-mod", "Run agent module unit tests");
     test_unit_agent_mod_step.dependOn(&b.addRunArtifact(agent_mod_test).step);
+    test_unit_agent_mod_step.dependOn(&b.addRunArtifact(agent_compaction_test).step);
 
     const test_unit_agent_bridge_step = b.step("test-unit-agent-bridge", "Run agent bridge unit tests");
     test_unit_agent_bridge_step.dependOn(&b.addRunArtifact(agent_provider_protocol_bridge_test).step);

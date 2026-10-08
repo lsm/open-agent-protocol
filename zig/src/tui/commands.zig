@@ -1,6 +1,6 @@
 const std = @import("std");
 const ai_types = @import("ai_types");
-const agent = @import("agent");
+const agent_loop = @import("agent_loop");
 const session_runtime = @import("session_runtime");
 const tui_state = @import("tui_state");
 const tui_oap_execution = @import("tui/oap_execution");
@@ -439,7 +439,7 @@ fn handleOutput(ctx: CommandContext, command: Command) !CommandResult {
     const runtime = ctx.runtime orelse return error.NoRuntimeConfigured;
     const model = runtime.currentModel() orelse return error.NoModelConfigured;
     const arg = command.arg orelse return .{ .output = try outputReport(ctx.allocator, runtime) };
-    const setting: agent.OutputSetting = if (std.ascii.eqlIgnoreCase(arg, "auto"))
+    const setting: agent_loop.OutputSetting = if (std.ascii.eqlIgnoreCase(arg, "auto"))
         .auto
     else if (std.ascii.eqlIgnoreCase(arg, "max"))
         .max
@@ -473,10 +473,10 @@ fn outputReport(allocator: std.mem.Allocator, runtime: *session_runtime.SessionR
         .auto => "auto",
         .max => "max",
         .tokens => "set",
-    }, agent.outputRequest(model, setting), model.id });
+    }, agent_loop.outputRequest(model, setting), model.id });
     if (model.max_tokens > 0) {
         try writer.print(", up to {d}", .{model.max_tokens});
-        if (setting == .auto and agent.outputRequest(model, setting) < model.max_tokens) {
+        if (setting == .auto and agent_loop.outputRequest(model, setting) < model.max_tokens) {
             try writer.print(". A reply cut off below that is continued once at {d}", .{model.max_tokens});
         }
     } else {
@@ -805,7 +805,7 @@ test "output sets how much a reply asks for, and refuses more than the model wri
     var set = try dispatch(ctx, .{ .kind = .output, .arg = "8k" });
     defer set.deinit(std.testing.allocator);
     try std.testing.expect(!set.is_error);
-    try std.testing.expectEqual(agent.OutputSetting{ .tokens = 8_000 }, runtime.outputSetting());
+    try std.testing.expectEqual(agent_loop.OutputSetting{ .tokens = 8_000 }, runtime.outputSetting());
     try std.testing.expect(std.mem.indexOf(u8, set.output, "output: set, 8000 tokens a reply") != null);
     try std.testing.expect(std.mem.indexOf(u8, set.output, "continued") == null);
     try std.testing.expect(std.mem.indexOf(u8, shown.output, "continued") == null);
@@ -814,16 +814,16 @@ test "output sets how much a reply asks for, and refuses more than the model wri
     defer refused.deinit(std.testing.allocator);
     try std.testing.expect(refused.is_error);
     try std.testing.expect(std.mem.indexOf(u8, refused.output, "gpt-5-codex writes at most 16384 tokens in a reply; 20000 is above it") != null);
-    try std.testing.expectEqual(agent.OutputSetting{ .tokens = 8_000 }, runtime.outputSetting());
+    try std.testing.expectEqual(agent_loop.OutputSetting{ .tokens = 8_000 }, runtime.outputSetting());
 
     var max = try dispatch(ctx, .{ .kind = .output, .arg = "max" });
     defer max.deinit(std.testing.allocator);
-    try std.testing.expectEqual(agent.OutputSetting.max, runtime.outputSetting());
+    try std.testing.expectEqual(agent_loop.OutputSetting.max, runtime.outputSetting());
 
     var bad = try dispatch(ctx, .{ .kind = .output, .arg = "lots" });
     defer bad.deinit(std.testing.allocator);
     try std.testing.expect(bad.is_error);
-    try std.testing.expectEqual(agent.OutputSetting.max, runtime.outputSetting());
+    try std.testing.expectEqual(agent_loop.OutputSetting.max, runtime.outputSetting());
 }
 
 test "context refuses a window above the ceiling and says what the ceiling is" {

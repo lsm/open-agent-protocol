@@ -1559,7 +1559,7 @@ fn stopReason(text: []const u8) ai_types.StopReason {
 }
 
 const testing = std.testing;
-const agent = @import("agent");
+const agent_types = @import("agent_types");
 const event_stream = @import("event_stream");
 
 const scripted_model = ai_types.Model{
@@ -1616,7 +1616,7 @@ fn toolCallMessage(allocator: std.mem.Allocator, preamble: []const u8) !ai_types
 
 var echo_runs = std.atomic.Value(usize).init(0);
 
-fn echoTool(tool_call_id: []const u8, args_json: []const u8, cancel_token: ?ai_types.CancelToken, on_update_ctx: ?*anyopaque, on_update: ?agent.ToolUpdateCallback, allocator: std.mem.Allocator) anyerror!agent.AgentToolResult {
+fn echoTool(tool_call_id: []const u8, args_json: []const u8, cancel_token: ?ai_types.CancelToken, on_update_ctx: ?*anyopaque, on_update: ?agent_types.ToolUpdateCallback, allocator: std.mem.Allocator) anyerror!agent_types.AgentToolResult {
     _ = tool_call_id;
     _ = args_json;
     _ = cancel_token;
@@ -1626,10 +1626,10 @@ fn echoTool(tool_call_id: []const u8, args_json: []const u8, cancel_token: ?ai_t
     const content = try allocator.alloc(ai_types.UserContentPart, 1);
     errdefer allocator.free(content);
     content[0] = .{ .text = .{ .text = try allocator.dupe(u8, "echoed") } };
-    return .{ .content = @FieldType(agent.AgentToolResult, "content").initOwned(content) };
+    return .{ .content = @FieldType(agent_types.AgentToolResult, "content").initOwned(content) };
 }
 
-const echo_tools = [_]agent.AgentTool{.{
+const echo_tools = [_]agent_types.AgentTool{.{
     .label = "Echo",
     .name = "echo_tool",
     .description = "Echo a word back",
@@ -1641,7 +1641,7 @@ fn bareMessage(reason: ai_types.StopReason) ai_types.AssistantMessage {
     return .{ .content = &.{}, .api = scripted_model.api, .provider = scripted_model.provider, .model = scripted_model.id, .usage = .{}, .stop_reason = reason, .timestamp = 0 };
 }
 
-fn scriptedStream(ctx: ?*anyopaque, model: ai_types.Model, context: ai_types.Context, options: agent.ProtocolOptions, allocator: std.mem.Allocator) anyerror!*event_stream.AssistantMessageEventStream {
+fn scriptedStream(ctx: ?*anyopaque, model: ai_types.Model, context: ai_types.Context, options: agent_types.ProtocolOptions, allocator: std.mem.Allocator) anyerror!*event_stream.AssistantMessageEventStream {
     const script: *Script = @ptrCast(@alignCast(ctx.?));
     script.last_context_messages = context.messages.len;
     script.last_model_len = @min(model.id.len, script.last_model.len);
