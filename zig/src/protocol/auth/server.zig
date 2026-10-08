@@ -68,6 +68,7 @@ pub const AuthProtocolServer = struct {
         enable_real_oauth: bool = true,
         spawn_login_workers: bool = true,
         fixture_asks_default: bool = false,
+        copilot_fetch: github_oauth.Fetch = compat.http.fetch,
     };
 
     pub fn init(allocator: std.mem.Allocator, options: Options) Self {
@@ -636,6 +637,8 @@ pub const AuthProtocolServer = struct {
         const credentials = try github_oauth.login(.{
             .onAuth = githubOnAuth,
             .onPrompt = githubOnPrompt,
+            .isCancelled = oauthFlowCancelled,
+            .fetch = self.options.copilot_fetch,
         }, self.allocator);
 
         if (credentials.enabled_models) |models| {
@@ -923,6 +926,13 @@ fn codexOnAuth(info: codex_oauth.AuthInfo) void {
 fn codexOnPrompt(prompt: codex_oauth.Prompt) []const u8 {
     const context = g_oauth_thread_context orelse @panic("missing oauth context");
     return context.server.promptForAnswer(context.flow, prompt.message, prompt.allow_empty) catch emptyPromptAnswer(context.server.allocator);
+}
+
+fn oauthFlowCancelled() bool {
+    const context = g_oauth_thread_context orelse return true;
+    context.flow.mutex.lockUncancelable(defaultIo());
+    defer context.flow.mutex.unlock(defaultIo());
+    return context.flow.cancelled or context.flow.terminal_emitted;
 }
 
 fn saveOAuthCredentials(provider_id: []const u8, credentials: oauth_storage.Credentials, allocator: std.mem.Allocator) !void {

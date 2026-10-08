@@ -592,6 +592,82 @@ test "OAP auth adapter takes the default for a question that allows an empty ans
     try std.testing.expectEqualStrings("auth_input_unavailable", failure_code orelse return error.LoginNeverCompleted);
 }
 
+const FakeCopilotAuth = struct {
+    var polls: std.atomic.Value(usize) = .init(0);
+
+    fn fetch(allocator: std.mem.Allocator, url: []const u8, _: compat.http.FetchOptions) compat.http.FetchError!compat.http.Fetched {
+        const body: []const u8 = if (std.mem.endsWith(u8, url, "/login/device/code"))
+            "{\"device_code\":\"device-secret-3\",\"user_code\":\"GH-0001\",\"verification_uri\":\"https://github.com/login/device\",\"expires_in\":5,\"interval\":1}"
+        else if (std.mem.endsWith(u8, url, "/login/oauth/access_token")) blk: {
+            _ = polls.fetchAdd(1, .seq_cst);
+            break :blk "{\"error\":\"authorization_pending\"}";
+        } else return error.RequestFailed;
+        return .{ .status = 200, .body = try allocator.dupe(u8, body) };
+    }
+
+    fn server() auth_server.AuthProtocolServer {
+        polls.store(0, .seq_cst);
+        return auth_server.AuthProtocolServer.init(std.testing.allocator, .{
+            .persist_credentials = false,
+            .copilot_fetch = fetch,
+        });
+    }
+
+    fn startAndAwaitUrl(adapter: *Adapter, id: []const u8) ![]u8 {
+        const line = try std.fmt.allocPrint(std.testing.allocator, "{{\"protocol\":\"open-agent-protocol\",\"version\":\"0.1\",\"profile\":\"open-agent-protocol.agent-control-core\",\"type\":\"auth.login.start.request\",\"id\":\"{s}\",\"payload\":{{\"provider_id\":\"github-copilot\"}}}}", .{id});
+        defer std.testing.allocator.free(line);
+        try std.testing.expect(try adapter.handleLine(line));
+        const response = adapter.popOutbound() orelse return error.MissingStartResponse;
+        defer std.testing.allocator.free(response);
+        var parsed = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, response, .{});
+        defer parsed.deinit();
+        const flow_id = try std.testing.allocator.dupe(u8, try requiredString((parsed.value.object.get("payload") orelse return error.MissingPayload).object, "flow_id"));
+        errdefer std.testing.allocator.free(flow_id);
+        const deadline = compat.time.nowMillis() + 5_000;
+        while (compat.time.nowMillis() < deadline) {
+            _ = try adapter.pump();
+            var url_seen = false;
+            while (adapter.popOutbound()) |event| {
+                defer std.testing.allocator.free(event);
+                if (std.mem.indexOf(u8, event, "\"kind\":\"url\"") != null) url_seen = true;
+            }
+            if (url_seen and polls.load(.seq_cst) > 0) return flow_id;
+            compat.time.sleepNs(std.time.ns_per_ms);
+        }
+        return error.NoUrlEvent;
+    }
+};
+
+test "OAP auth adapter cancels a Copilot device login that is still waiting for approval, and it stops polling" {
+    var native = FakeCopilotAuth.server();
+    defer native.deinit();
+    var adapter = Adapter.init(std.testing.allocator, &native);
+    defer adapter.deinit();
+
+    const flow_id = try FakeCopilotAuth.startAndAwaitUrl(&adapter, "start-copilot-cancel");
+    defer std.testing.allocator.free(flow_id);
+    const cancel_line = try std.fmt.allocPrint(std.testing.allocator, "{{\"protocol\":\"open-agent-protocol\",\"version\":\"0.1\",\"profile\":\"open-agent-protocol.agent-control-core\",\"type\":\"auth.login.cancel.request\",\"id\":\"cancel-copilot\",\"payload\":{{\"flow_id\":\"{s}\"}}}}", .{flow_id});
+    defer std.testing.allocator.free(cancel_line);
+    try std.testing.expect(try adapter.handleLine(cancel_line));
+    compat.time.sleepMs(300);
+    const settled = FakeCopilotAuth.polls.load(.seq_cst);
+    compat.time.sleepMs(1_500);
+    try std.testing.expectEqual(settled, FakeCopilotAuth.polls.load(.seq_cst));
+    try std.testing.expectEqual(@as(usize, 0), native.activeFlowCount());
+}
+
+test "auth server shutdown stops a Copilot device login that is still waiting for approval" {
+    var native = FakeCopilotAuth.server();
+    var adapter = Adapter.init(std.testing.allocator, &native);
+    defer adapter.deinit();
+
+    const flow_id = try FakeCopilotAuth.startAndAwaitUrl(&adapter, "start-copilot-shutdown");
+    defer std.testing.allocator.free(flow_id);
+    const started = compat.time.nowMillis();
+    native.deinit();
+    try std.testing.expect(compat.time.nowMillis() - started < 1_000);
+}
+
 test "auth adapter repeats the admitted revision on providers and cancel responses" {
     const allocator = std.testing.allocator;
     var native = auth_server.AuthProtocolServer.init(allocator, .{

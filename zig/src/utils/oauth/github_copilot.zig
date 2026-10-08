@@ -46,10 +46,29 @@ pub const Credentials = struct {
     base_url: ?[]const u8 = null,
 };
 
+pub const Fetch = *const fn (allocator: std.mem.Allocator, url: []const u8, options: http.FetchOptions) http.FetchError!http.Fetched;
+
 pub const Callbacks = struct {
     onAuth: *const fn (info: AuthInfo) void,
     onPrompt: *const fn (prompt: Prompt) []const u8,
+    isCancelled: *const fn () bool = neverCancelled,
+    fetch: Fetch = http.fetch,
 };
+
+fn neverCancelled() bool {
+    return false;
+}
+
+const cancel_check_ms: u64 = 100;
+
+fn waitUnlessCancelled(isCancelled: *const fn () bool, interval_ms: u64) !void {
+    var waited: u64 = 0;
+    while (true) : (waited += cancel_check_ms) {
+        if (isCancelled()) return error.AuthFlowCancelled;
+        if (waited >= interval_ms) return;
+        compat.time.sleepMs(@min(cancel_check_ms, interval_ms - waited));
+    }
+}
 
 pub const AuthInfo = struct {
     url: []const u8,
@@ -216,7 +235,7 @@ pub fn login(callbacks: Callbacks, allocator: std.mem.Allocator) !Credentials {
     const github_domain = if (domain_input.len == 0) "github.com" else domain_input;
     defer if (domain_input.len > 0) allocator.free(domain_input);
 
-    const device_response = try startDeviceFlow(github_domain, allocator);
+    const device_response = try startDeviceFlow(callbacks.fetch, github_domain, allocator);
     defer allocator.free(device_response.device_code);
     defer allocator.free(device_response.user_code);
     defer allocator.free(device_response.verification_uri);
@@ -233,7 +252,7 @@ pub fn login(callbacks: Callbacks, allocator: std.mem.Allocator) !Credentials {
     const deadline = compat.time.nowMillis() + (@as(i64, device_response.expires_in) * 1000);
 
     while (compat.time.nowMillis() < deadline) {
-        const poll_result = try pollForToken(github_domain, device_response.device_code, allocator);
+        const poll_result = try pollForToken(callbacks.fetch, github_domain, device_response.device_code, allocator);
         defer if (poll_result.access_token) |t| allocator.free(t);
         defer if (poll_result.error_msg) |msg| allocator.free(msg);
 
@@ -271,11 +290,11 @@ pub fn login(callbacks: Callbacks, allocator: std.mem.Allocator) !Credentials {
 
         if (poll_result.error_msg) |err_msg| {
             if (std.mem.eql(u8, err_msg, "authorization_pending")) {
-                compat.time.sleepNs(interval_ms * std.time.ns_per_ms);
+                try waitUnlessCancelled(callbacks.isCancelled, interval_ms);
                 continue;
             } else if (std.mem.eql(u8, err_msg, "slow_down")) {
                 interval_ms += 5000;
-                compat.time.sleepNs(interval_ms * std.time.ns_per_ms);
+                try waitUnlessCancelled(callbacks.isCancelled, interval_ms);
                 continue;
             } else {
                 return error.OAuthFailed;
@@ -397,7 +416,7 @@ const DeviceCodeResponse = struct {
     interval: u64,
 };
 
-fn startDeviceFlow(domain: []const u8, allocator: std.mem.Allocator) !DeviceCodeResponse {
+fn startDeviceFlow(fetch: Fetch, domain: []const u8, allocator: std.mem.Allocator) !DeviceCodeResponse {
     const url = if (std.mem.eql(u8, domain, "github.com"))
         device_code_url
     else
@@ -412,7 +431,7 @@ fn startDeviceFlow(domain: []const u8, allocator: std.mem.Allocator) !DeviceCode
     try headers.append(allocator, .{ .name = "accept", .value = "application/json" });
     try headers.append(allocator, .{ .name = "content-type", .value = "application/x-www-form-urlencoded" });
 
-    var fetched = http.fetch(allocator, url, .{
+    var fetched = fetch(allocator, url, .{
         .method = .POST,
         .extra_headers = headers.items,
         .body = body,
@@ -452,7 +471,7 @@ const PollResult = struct {
     error_msg: ?[]const u8 = null,
 };
 
-fn pollForToken(domain: []const u8, device_code: []const u8, allocator: std.mem.Allocator) !PollResult {
+fn pollForToken(fetch: Fetch, domain: []const u8, device_code: []const u8, allocator: std.mem.Allocator) !PollResult {
     const url = if (std.mem.eql(u8, domain, "github.com"))
         token_url
     else
@@ -471,7 +490,7 @@ fn pollForToken(domain: []const u8, device_code: []const u8, allocator: std.mem.
     try headers.append(allocator, .{ .name = "accept", .value = "application/json" });
     try headers.append(allocator, .{ .name = "content-type", .value = "application/x-www-form-urlencoded" });
 
-    var fetched = http.fetch(allocator, url, .{
+    var fetched = fetch(allocator, url, .{
         .method = .POST,
         .extra_headers = headers.items,
         .body = body,
@@ -623,7 +642,7 @@ test "KNOWN_COPILOT_MODELS - contains expected models" {
 }
 
 test "startDeviceFlow - returns valid response (integration test, requires network)" {
-    const response = startDeviceFlow("github.com", std.testing.allocator) catch |err| {
+    const response = startDeviceFlow(http.fetch, "github.com", std.testing.allocator) catch |err| {
         if (err == error.OAuthFailed or err == error.ConnectionRefused or
             err == error.NetworkUnreachable or err == error.SyntaxError or
             err == error.UnexpectedToken)
