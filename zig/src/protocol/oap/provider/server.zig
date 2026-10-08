@@ -152,6 +152,13 @@ pub const Server = struct {
         try self.providers.append(self.allocator, descriptor);
     }
 
+    pub fn clearCatalog(self: *Self) void {
+        for (self.providers.items) |*descriptor| descriptor.deinit(self.allocator);
+        self.providers.clearRetainingCapacity();
+        for (self.models.items) |*entry| entry.deinit(self.allocator);
+        self.models.clearRetainingCapacity();
+    }
+
     pub fn addModel(self: *Self, entry: types.ModelEntry) !void {
         try self.models.append(self.allocator, entry);
     }
@@ -2003,6 +2010,24 @@ fn makeRequest(allocator: std.mem.Allocator, type_name: []const u8, payload: []c
         "{{\"protocol\":\"open-agent-protocol\",\"version\":\"0.1\",\"profile\":\"{s}\",\"type\":\"{s}\",\"id\":\"{s}\",\"payload\":{s}}}",
         .{ types.PROFILE, type_name, id, payload },
     );
+}
+
+test "clearing the catalog empties both lists so a fresh one can be added, leaking nothing" {
+    const allocator = std.testing.allocator;
+    var server = try testServer(allocator, .{});
+    defer server.deinit();
+    try std.testing.expect(server.providers.items.len > 0);
+
+    server.clearCatalog();
+    try std.testing.expectEqual(@as(usize, 0), server.providers.items.len);
+    try std.testing.expectEqual(@as(usize, 0), server.models.items.len);
+
+    const line = try makeRequest(allocator, "provider.describe.request", "{}", "q1");
+    defer allocator.free(line);
+    try server.handleLine(line);
+    var response = try decodeOnly(allocator, &server);
+    defer response.deinit(allocator);
+    try std.testing.expectEqual(@as(usize, 0), response.payload.provider_describe_response.providers.len);
 }
 
 test "describe answers with the configured providers and the versions it speaks" {

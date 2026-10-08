@@ -2596,6 +2596,36 @@ fn countingServedLoad(allocator: std.mem.Allocator) anyerror![]ai_types.Model {
     return cloneOapModels(allocator, &oap_test_served_models);
 }
 
+test "an invalidated snapshot is loaded again on the next lookup" {
+    const allocator = std.testing.allocator;
+    served_snapshot_loads = 0;
+    var cache: ServedOapModels = .{};
+    defer cache.deinit();
+    const first = try cache.snapshot(allocator, allocator, countingServedLoad);
+    model_catalog.deinitModels(allocator, first);
+    cache.invalidate();
+    const second = try cache.snapshot(allocator, allocator, countingServedLoad);
+    model_catalog.deinitModels(allocator, second);
+    try std.testing.expectEqual(@as(usize, 2), served_snapshot_loads);
+}
+
+test "refreshing the served catalog replaces the providers it serves with the ones loaded now" {
+    const allocator = std.testing.allocator;
+    var server = oapTestProviderServer(allocator);
+    defer server.deinit();
+    oap_served_models_for_test = oap_test_served_models[1..2];
+    defer oap_served_models_for_test = null;
+    try populateOapProviderCatalog(allocator, &server);
+    try std.testing.expectEqual(@as(usize, 1), server.providers.items.len);
+    try std.testing.expectEqualStrings("openai", server.providers.items[0].id);
+
+    oap_served_models_for_test = &oap_test_served_models;
+    try refreshServedOapCatalog(allocator, &server);
+    try std.testing.expectEqual(@as(usize, 3), server.providers.items.len);
+    try std.testing.expectEqualStrings("anthropic", server.providers.items[0].id);
+    try std.testing.expectEqual(oap_test_served_models.len, server.models.items.len);
+}
+
 test "the served models are loaded once and every later lookup reads that snapshot" {
     const allocator = std.testing.allocator;
     served_snapshot_loads = 0;
@@ -2826,11 +2856,24 @@ const ServedOapModels = struct {
         return cloneOapModels(allocator, self.models.?);
     }
 
+    fn invalidate(self: *ServedOapModels) void {
+        self.mutex.lockUncancelable(hubIo());
+        defer self.mutex.unlock(hubIo());
+        if (self.models) |models| model_catalog.deinitModels(self.cache_allocator.?, models);
+        self.models = null;
+    }
+
     fn deinit(self: *ServedOapModels) void {
         if (self.models) |models| model_catalog.deinitModels(self.cache_allocator.?, models);
         self.* = undefined;
     }
 };
+
+fn refreshServedOapCatalog(allocator: std.mem.Allocator, server: *oap_provider_server.Server) !void {
+    served_oap_models.invalidate();
+    server.clearCatalog();
+    try populateOapProviderCatalog(allocator, server);
+}
 
 var served_oap_models: ServedOapModels = .{};
 
@@ -4540,6 +4583,7 @@ fn runOapxServe(
             if (try endpoint.pump(if (did_work) 0 else STDIO_IDLE_SLEEP_NS)) did_work = true;
         }
         if (try auth_adapter.pump() > 0) did_work = true;
+        if (auth_adapter.takeSignIn() and serve_provider) try refreshServedOapCatalog(allocator, &provider_server);
         if (serve_provider) {
             if (try announceOapGrants(allocator, &provider_server, &grant_channels, &grant_ordinal)) did_work = true;
             if (try pumpOapGrants(allocator, &provider_server, &grant_channels, &granted_values, compat.time.nowMillis())) did_work = true;
