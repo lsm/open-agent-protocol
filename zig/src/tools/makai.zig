@@ -8646,6 +8646,10 @@ fn runOapMode(
     defer if (env_model) |value| allocator.free(value);
     const default_model_id: ?[]const u8 = parsed.default_model_id orelse env_model;
 
+    if (!try remoteProviderConfigured(allocator)) {
+        return runOapxServe(allocator, stdin, stdout, stderr, serve_provider, parsed.answers_specimens, default_model_id);
+    }
+
     var stdio_loop = try StdioProtocolLoop.initWithBuiltins(allocator);
     defer stdio_loop.deinit();
     const remote_url = try provider_base_url.envOwnedOrNull(allocator, "OAPX_PROVIDER_SERVICE_URL");
@@ -8855,6 +8859,178 @@ fn runOapMode(
     }
 
     _ = try writeOapOutbound(&output, allocator, &oap);
+    _ = try writeOapAuthOutbound(&output, allocator, &auth_adapter);
+    if (serve_provider) _ = try drainOapProviderOutbound(&output, allocator, &provider_server);
+}
+
+fn remoteProviderConfigured(allocator: std.mem.Allocator) !bool {
+    for ([_][]const u8{ "OAPX_PROVIDER_SERVICE_URL", "OAPX_PROVIDER_SERVICE_SECURITY" }) |name| {
+        const value = try provider_base_url.envOwnedOrNull(allocator, name);
+        if (value) |held| {
+            allocator.free(held);
+            return true;
+        }
+    }
+    return false;
+}
+
+const served_features = [_]adapter_contract.Feature{
+    .{ .key = "auth.providers", .level = .native },
+    .{ .key = "auth.login", .level = .native },
+    .{ .key = adapter_contract.feature_models_list, .level = .native, .reason = "the catalog the endpoint loaded at start" },
+};
+
+fn runOapxServe(
+    allocator: std.mem.Allocator,
+    stdin: std.Io.File,
+    stdout: std.Io.File,
+    stderr: std.Io.File,
+    serve_provider: bool,
+    answers_specimens: bool,
+    default_model_ref: ?[]const u8,
+) !void {
+    var production = try tui_app.ProductionRuntime.init(allocator, .{});
+    defer production.deinit();
+    production.initBridge();
+    var options = production.options();
+    var chosen: ?model_ref.ParsedModelRef = null;
+    defer if (chosen) |*held| held.deinit(allocator);
+    if (default_model_ref) |ref| {
+        chosen = model_ref.parseModelRef(allocator, ref) catch null;
+        if (chosen) |held| options.initial_model = .{ .id = held.model_id, .provider = held.provider_id, .api = held.api };
+    }
+    var oapx = oapx_adapter.Adapter.init(allocator, options);
+    defer oapx.deinit();
+    try oapx.advertise(&served_features);
+    var endpoint = adapter_endpoint.Endpoint.init(allocator, oapx.adapter(), .{});
+    defer endpoint.deinit();
+
+    var oap_auth_server = AuthProtocolServer.init(allocator, .{});
+    defer oap_auth_server.deinit();
+    var auth_adapter = oap_auth_adapter.Adapter.init(allocator, &oap_auth_server);
+    defer auth_adapter.deinit();
+    auth_adapter.setCapabilityRevision(oapx_adapter.capability_revision);
+
+    var provider_registry = api_registry.ApiRegistry.init(allocator);
+    defer provider_registry.deinit();
+    var provider_server = oap_provider_server.Server.init(allocator, .{
+        .capability_revision = VERSION,
+        .grant_channel = if (oap_provider_grant_channel.GrantChannel.supported) .out_of_band else .unsupported,
+        .accepts_inference = true,
+        .resolves_own_credentials = true,
+        .profile_revision = OAP_PROVIDER_PROFILE_REVISION,
+        .catalog = oapFallbackCatalogState(),
+    });
+    defer provider_server.deinit();
+    var grant_channels = std.ArrayList(OapGrantChannel).empty;
+    defer {
+        for (grant_channels.items) |*entry| entry.deinit(allocator);
+        grant_channels.deinit(allocator);
+    }
+    var granted_values = std.ArrayList(OapGrantedValue).empty;
+    defer {
+        for (granted_values.items) |*entry| entry.deinit(allocator);
+        granted_values.deinit(allocator);
+    }
+    var grant_ordinal: u64 = 0;
+    var running_inferences = std.ArrayList(RunningOapInference).empty;
+    defer {
+        for (running_inferences.items) |*entry| entry.deinit(allocator);
+        running_inferences.deinit(allocator);
+    }
+    const provider_idle_ttl_ms = oapProviderStreamIdleTtlMs(allocator);
+    if (serve_provider) {
+        try register_builtins.registerBuiltInApiProviders(&provider_registry);
+        try populateOapProviderCatalog(allocator, &provider_server);
+    }
+
+    var async_receiver = stdio.AsyncStdioReceiver.initWithFileAndLimit(stdin, adapter_endpoint.default_frame_limit);
+    var stdin_handle = try async_receiver.receiveStreamWithHandle(allocator);
+    defer _ = stdin_handle.deinit(if (endpoint_signals.received()) 0 else STDIO_THREAD_JOIN_TIMEOUT_MS);
+    const stdin_stream = stdin_handle.getStream();
+
+    if (!serve_provider) unblockOutput(stdout);
+    var output = bounded_output.Output.init(stdout, if (serve_provider) std.math.maxInt(u64) else backend_write_stall_ns);
+    try output.start();
+    defer output.deinit();
+    if (!serve_provider) output.stall_notice = .{ .file = stderr, .message = OUTPUT_STALLED_MESSAGE };
+    var auth_input_closed = false;
+
+    while (true) {
+        var did_work = false;
+        while (if (endpoint_signals.received()) null else stdin_stream.poll()) |chunk| {
+            var owned = chunk;
+            defer owned.deinit(allocator);
+            const line = std.mem.trim(u8, owned.data, " \t\r\n");
+            if (line.len == 0) continue;
+            did_work = true;
+            if (serve_provider) {
+                if (try oapSpecimenRequestId(line, allocator)) |request_id| {
+                    defer allocator.free(request_id);
+                    if (answers_specimens) {
+                        try provider_server.emitSpecimens(request_id);
+                    } else {
+                        try provider_server.emitSpecimenError(request_id, "this endpoint was not started with --specimens");
+                    }
+                    continue;
+                }
+                if (try isProviderOapLine(allocator, line)) {
+                    provider_server.handleLine(line) catch |err| {
+                        _ = try drainOapProviderOutbound(&output, allocator, &provider_server);
+                        try compat.stdio.writeAll(stderr, OAP_PROVIDER_EXHAUSTED_MESSAGE);
+                        return err;
+                    };
+                    continue;
+                }
+            }
+            if (try auth_adapter.handleLine(line)) continue;
+            endpoint.handleLine(line) catch |err| {
+                _ = try writeEndpointOutbound(&output, allocator, &endpoint);
+                if (backendFatalMessage(err)) |message| try compat.stdio.writeAll(stderr, message);
+                return err;
+            };
+            _ = try writeEndpointOutbound(&output, allocator, &endpoint);
+        }
+        if (stdin_stream.isDone() and !stdin_stream.hasPending()) {
+            if (stdin_stream.getError()) |failure| {
+                _ = try writeEndpointOutbound(&output, allocator, &endpoint);
+                if (std.mem.eql(u8, failure, "stdio line too large")) {
+                    try compat.stdio.writeAll(stderr, BACKEND_FRAME_TOO_LARGE_MESSAGE);
+                    return error.FrameTooLarge;
+                }
+                return error.StdinFailed;
+            }
+        }
+
+        if (endpoint.sessionCount() > 0) {
+            if (try endpoint.pump(if (did_work) 0 else STDIO_IDLE_SLEEP_NS)) did_work = true;
+        }
+        if (try auth_adapter.pump() > 0) did_work = true;
+        if (serve_provider) {
+            if (try announceOapGrants(allocator, &provider_server, &grant_channels, &grant_ordinal)) did_work = true;
+            if (try pumpOapGrants(allocator, &provider_server, &grant_channels, &granted_values, compat.time.nowMillis())) did_work = true;
+            while (provider_server.popPendingStart()) |inference_id| {
+                defer allocator.free(inference_id);
+                try startOapInference(allocator, &provider_registry, &provider_server, &running_inferences, inference_id, granted_values.items, null);
+                did_work = true;
+            }
+            if (try pumpOapInferences(allocator, &provider_server, &running_inferences, provider_idle_ttl_ms)) did_work = true;
+        }
+
+        if (oapInputEnded(stdin_stream) and !auth_input_closed) {
+            try auth_adapter.cancelAllOnDisconnect();
+            auth_input_closed = true;
+        }
+
+        if (try writeEndpointOutbound(&output, allocator, &endpoint)) did_work = true;
+        if (try writeOapAuthOutbound(&output, allocator, &auth_adapter)) did_work = true;
+        if (serve_provider and try drainOapProviderOutbound(&output, allocator, &provider_server)) did_work = true;
+
+        if (oapInputEnded(stdin_stream) and !did_work and running_inferences.items.len == 0 and oap_auth_server.activeFlowCount() == 0) break;
+        if (!did_work) compat.time.sleepNs(STDIO_IDLE_SLEEP_NS);
+    }
+    try endpoint.finish(adapter_endpoint.default_settle_window_ns, backendClock);
+    _ = try writeEndpointOutbound(&output, allocator, &endpoint);
     _ = try writeOapAuthOutbound(&output, allocator, &auth_adapter);
     if (serve_provider) _ = try drainOapProviderOutbound(&output, allocator, &provider_server);
 }
