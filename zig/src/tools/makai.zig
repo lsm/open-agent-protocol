@@ -1643,12 +1643,16 @@ fn runPrintTuiRuntime(allocator: std.mem.Allocator, prompt: []const u8) !void {
         .max_tokens = try kimiMaxTokens(),
     }};
 
+    var loop = oapx_adapter.LocalLoop.init(allocator, .{ .protocol = (&bridge).protocolClient(), .run_async = false });
+    defer loop.deinit();
+
     const options = tui_app.TuiRuntimeOptions{
         .protocol = (&bridge).protocolClient(),
         .models = &models,
         .initial_model_id = "kimi-k2.7-code",
         .run_async = false,
         .compact_output = true,
+        .loop = loop.loop(),
     };
 
     var runtime = try tui_app.TuiRuntime.init(allocator, options);
