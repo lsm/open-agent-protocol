@@ -709,7 +709,7 @@ func (s *AgentService) oapBegin(ctx context.Context, req AgentRequest) (*oapAgen
 			sub.close()
 		}
 	}()
-	opening, err := oapOpenPayload(sessionID, req)
+	opening, err := oapOpenPayload(s.transport, sessionID, req)
 	if err != nil {
 		return nil, err
 	}
@@ -751,8 +751,13 @@ func (s *AgentService) oapBegin(ctx context.Context, req AgentRequest) (*oapAgen
 		sessionID: sessionID, runID: runID, modelRef: selectedModelRef, tools: req.Tools}, nil
 }
 
-func oapOpenPayload(sessionID string, req AgentRequest) (map[string]any, error) {
+const oapxAgentEndpoint = "oapx.agent"
+
+func oapOpenPayload(t *transport, sessionID string, req AgentRequest) (map[string]any, error) {
 	payload := map[string]any{"session_id": sessionID}
+	if len(req.Tools) > 0 && !t.agentFeatures["action.tools.provide"] {
+		return nil, &ProtocolError{Code: "unsupported_feature", Message: "this endpoint does not advertise action.tools.provide, so it cannot run client tools"}
+	}
 	if len(req.Tools) > 0 {
 		provided, err := oapTools(req.Tools)
 		if err != nil {
@@ -764,7 +769,9 @@ func oapOpenPayload(sessionID string, req AgentRequest) (map[string]any, error) 
 		payload["tools"] = provided
 	}
 	settings := map[string]any{"user_input": false}
-	payload["metadata"] = map[string]any{"oapx": settings}
+	if t.agentEndpoint == oapxAgentEndpoint {
+		payload["metadata"] = map[string]any{"oapx": settings}
+	}
 	if req.Options == nil {
 		return payload, nil
 	}
@@ -777,6 +784,9 @@ func oapOpenPayload(sessionID string, req AgentRequest) (map[string]any, error) 
 	if req.Options.MaxTokens != nil {
 		if *req.Options.MaxTokens < 1 || int64(*req.Options.MaxTokens) > math.MaxUint32 {
 			return nil, &ProtocolError{Code: CodeInvalidRequest, Message: "MaxTokens must be between 1 and 4294967295"}
+		}
+		if t.agentEndpoint != oapxAgentEndpoint {
+			return nil, &ProtocolError{Code: "unsupported_feature", Message: "only the oapx agent loop takes an output limit at open"}
 		}
 		settings["output"] = *req.Options.MaxTokens
 	}

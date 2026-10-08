@@ -38,7 +38,8 @@ func runOAPHost() {
 				"protocol_version": "0.1", "profile": oapAgent, "endpoint": map[string]any{"id": "fake"},
 			}))
 		case "capabilities.request":
-			response := oapFakeReply(request, "capabilities.response", map[string]any{"features": map[string]any{}})
+			response := oapFakeReply(request, "capabilities.response", map[string]any{"endpoint": map[string]any{"id": "oapx.agent"},
+				"features": map[string]any{"action.tools.provide": map[string]any{"level": "native"}}})
 			response.CapabilityRevision = "fake-rev-1"
 			fakeEmit(response)
 		case "provider.models.list.request":
@@ -471,4 +472,22 @@ func selectedCatalogModel() (map[string]any, bool) {
 		}
 	}
 	return model, true
+}
+
+func TestOAPOpenRefusesWhatTheEndpointWouldIgnore(t *testing.T) {
+	bare := &transport{agentEndpoint: "oapx.agent-control", agentFeatures: map[string]bool{}}
+	for name, req := range map[string]AgentRequest{
+		"tools":      {Tools: []Tool{{Name: "lookup", ParametersSchemaJSON: "{}"}}},
+		"max tokens": {Options: &RunOptions{MaxTokens: MaxTokens(10)}},
+	} {
+		_, err := oapOpenPayload(bare, "session-1", req)
+		var refused *ProtocolError
+		if !errors.As(err, &refused) || refused.Code != "unsupported_feature" {
+			t.Fatalf("%s: an endpoint that would ignore it should be refused client-side, got %v", name, err)
+		}
+	}
+	payload, err := oapOpenPayload(bare, "session-1", AgentRequest{})
+	if err != nil || payload["metadata"] != nil {
+		t.Fatalf("an endpoint other than oapx.agent was sent oapx settings: %v, %+v", err, payload)
+	}
 }
