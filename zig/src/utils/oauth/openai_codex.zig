@@ -11,6 +11,12 @@ const auth_url_base = "https://auth.openai.com/oauth/authorize";
 pub const oauth_request_timeout_ms: u64 = 30_000;
 
 const token_url = "https://auth.openai.com/oauth/token";
+const device_user_code_url = "https://auth.openai.com/api/accounts/deviceauth/usercode";
+const device_token_url = "https://auth.openai.com/api/accounts/deviceauth/token";
+const device_verification_url = "https://auth.openai.com/codex/device";
+const device_redirect_uri = "https://auth.openai.com/deviceauth/callback";
+const device_login_window_ms: i64 = 15 * 60 * 1000;
+const device_cancel_check_ms: u64 = 100;
 
 pub const Credentials = struct {
     refresh: []const u8,
@@ -32,6 +38,14 @@ pub const AuthInfo = struct {
 pub const Prompt = struct {
     message: []const u8,
     allow_empty: bool = false,
+};
+
+pub const Fetch = *const fn (allocator: std.mem.Allocator, url: []const u8, options: http.FetchOptions) http.FetchError!http.Fetched;
+
+pub const DeviceCallbacks = struct {
+    onAuth: *const fn (info: AuthInfo) void,
+    isCancelled: *const fn () bool,
+    fetch: Fetch = http.fetch,
 };
 
 fn isUnreservedUrlByte(byte: u8) bool {
@@ -197,6 +211,143 @@ pub fn login(callbacks: Callbacks, allocator: std.mem.Allocator) !Credentials {
     const expires = compat.time.nowMillis() + (token_response.expires_in * 1000) - (5 * 60 * 1000);
 
     return try buildCredentials(allocator, refresh_token, token_response.access_token, expires, token_response.provider_data);
+}
+
+pub fn loginWithDeviceCode(callbacks: DeviceCallbacks, allocator: std.mem.Allocator) !Credentials {
+    const device = try requestUserCode(callbacks.fetch, allocator);
+    defer device.deinit(allocator);
+
+    const instructions = try std.fmt.allocPrint(allocator, "Enter code: {s}", .{device.user_code});
+    defer allocator.free(instructions);
+    callbacks.onAuth(.{ .url = device_verification_url, .instructions = instructions });
+
+    const grant = try pollDeviceToken(callbacks, device, allocator);
+    defer grant.deinit(allocator);
+
+    const body = try formBody(allocator, &.{
+        .{ "grant_type", "authorization_code" },
+        .{ "code", grant.authorization_code },
+        .{ "redirect_uri", device_redirect_uri },
+        .{ "client_id", client_id },
+        .{ "code_verifier", grant.code_verifier },
+    });
+    defer allocator.free(body);
+
+    const token_response = try exchangeTokensWith(callbacks.fetch, body, "application/x-www-form-urlencoded", allocator);
+    defer deinitTokenResponse(allocator, token_response);
+
+    const refresh_token = token_response.refresh_token orelse return error.ParseError;
+    const expires = compat.time.nowMillis() + (token_response.expires_in * 1000) - (5 * 60 * 1000);
+    return try buildCredentials(allocator, refresh_token, token_response.access_token, expires, token_response.provider_data);
+}
+
+const DeviceCode = struct {
+    device_auth_id: []const u8,
+    user_code: []const u8,
+    interval_ms: u64,
+
+    fn deinit(self: DeviceCode, allocator: std.mem.Allocator) void {
+        allocator.free(self.device_auth_id);
+        allocator.free(self.user_code);
+    }
+};
+
+const DeviceGrant = struct {
+    authorization_code: []const u8,
+    code_verifier: []const u8,
+
+    fn deinit(self: DeviceGrant, allocator: std.mem.Allocator) void {
+        allocator.free(self.authorization_code);
+        allocator.free(self.code_verifier);
+    }
+};
+
+fn postJson(fetch: Fetch, allocator: std.mem.Allocator, url: []const u8, body: []const u8) !http.Fetched {
+    const headers = [_]std.http.Header{
+        .{ .name = "accept", .value = "application/json" },
+        .{ .name = "content-type", .value = "application/json" },
+    };
+    return fetch(allocator, url, .{
+        .method = .POST,
+        .extra_headers = &headers,
+        .body = body,
+        .accept_encoding = "identity",
+        .max_response_bytes = 8192,
+        .timeout_ms = oauth_request_timeout_ms,
+    }) catch |err| switch (err) {
+        error.OutOfMemory => error.OutOfMemory,
+        else => error.OAuthFailed,
+    };
+}
+
+fn requestUserCode(fetch: Fetch, allocator: std.mem.Allocator) !DeviceCode {
+    const body = try std.json.Stringify.valueAlloc(allocator, .{ .client_id = client_id }, .{});
+    defer allocator.free(body);
+    var fetched = try postJson(fetch, allocator, device_user_code_url, body);
+    defer fetched.deinit(allocator);
+    if (fetched.status == 404) return error.DeviceCodeLoginUnavailable;
+    if (fetched.status != 200) return error.OAuthFailed;
+    return try parseUserCodeResponse(allocator, fetched.body);
+}
+
+fn parseUserCodeResponse(allocator: std.mem.Allocator, body: []const u8) !DeviceCode {
+    var parsed = std.json.parseFromSlice(std.json.Value, allocator, body, .{}) catch |err| return if (err == error.OutOfMemory) error.OutOfMemory else error.ParseError;
+    defer parsed.deinit();
+    if (parsed.value != .object) return error.ParseError;
+    const obj = &parsed.value.object;
+    const id = getObjectStringField(obj, "device_auth_id") orelse return error.ParseError;
+    const code = getObjectStringField(obj, "user_code") orelse getObjectStringField(obj, "usercode") orelse return error.ParseError;
+    if (id.len == 0 or code.len == 0) return error.ParseError;
+    const interval_s: u64 = if (obj.get("interval")) |value| switch (value) {
+        .integer => |n| if (n >= 0) @intCast(n) else return error.ParseError,
+        .string => |text| std.fmt.parseInt(u64, std.mem.trim(u8, text, " "), 10) catch return error.ParseError,
+        else => return error.ParseError,
+    } else 5;
+    const device_auth_id = try allocator.dupe(u8, id);
+    errdefer allocator.free(device_auth_id);
+    const user_code = try allocator.dupe(u8, code);
+    return .{
+        .device_auth_id = device_auth_id,
+        .user_code = user_code,
+        .interval_ms = std.math.mul(u64, interval_s, 1000) catch return error.ParseError,
+    };
+}
+
+fn pollDeviceToken(callbacks: DeviceCallbacks, device: DeviceCode, allocator: std.mem.Allocator) !DeviceGrant {
+    const body = try std.json.Stringify.valueAlloc(allocator, .{ .device_auth_id = device.device_auth_id, .user_code = device.user_code }, .{});
+    defer allocator.free(body);
+    const deadline = compat.time.nowMillis() + device_login_window_ms;
+    while (true) {
+        var fetched = try postJson(callbacks.fetch, allocator, device_token_url, body);
+        defer fetched.deinit(allocator);
+        if (fetched.status == 200) return try parseDeviceGrant(allocator, fetched.body);
+        if (fetched.status != 403 and fetched.status != 404) return error.OAuthFailed;
+        if (compat.time.nowMillis() >= deadline) return error.DeviceCodeExpired;
+        try waitUnlessCancelled(callbacks.isCancelled, device.interval_ms);
+    }
+}
+
+fn waitUnlessCancelled(isCancelled: *const fn () bool, interval_ms: u64) !void {
+    var waited: u64 = 0;
+    while (true) : (waited += device_cancel_check_ms) {
+        if (isCancelled()) return error.AuthFlowCancelled;
+        if (waited >= interval_ms) return;
+        compat.time.sleepMs(@min(device_cancel_check_ms, interval_ms - waited));
+    }
+}
+
+fn parseDeviceGrant(allocator: std.mem.Allocator, body: []const u8) !DeviceGrant {
+    var parsed = std.json.parseFromSlice(std.json.Value, allocator, body, .{}) catch |err| return if (err == error.OutOfMemory) error.OutOfMemory else error.ParseError;
+    defer parsed.deinit();
+    if (parsed.value != .object) return error.ParseError;
+    const obj = &parsed.value.object;
+    const code = getObjectStringField(obj, "authorization_code") orelse return error.ParseError;
+    const verifier = getObjectStringField(obj, "code_verifier") orelse return error.ParseError;
+    if (code.len == 0 or verifier.len == 0) return error.ParseError;
+    const authorization_code = try allocator.dupe(u8, code);
+    errdefer allocator.free(authorization_code);
+    const code_verifier = try allocator.dupe(u8, verifier);
+    return .{ .authorization_code = authorization_code, .code_verifier = code_verifier };
 }
 
 pub fn refreshToken(credentials: Credentials, allocator: std.mem.Allocator) !Credentials {
@@ -388,7 +539,8 @@ fn providerDataFromTokenObject(allocator: std.mem.Allocator, obj: *const std.jso
 }
 
 fn parseTokenResponse(response_body: []const u8, allocator: std.mem.Allocator) !TokenResponse {
-    var parsed = std.json.parseFromSlice(std.json.Value, allocator, response_body, .{}) catch {
+    var parsed = std.json.parseFromSlice(std.json.Value, allocator, response_body, .{}) catch |err| {
+        if (err == error.OutOfMemory) return error.OutOfMemory;
         std.debug.print("Failed to parse Codex token response JSON; response body redacted ({d} bytes)\n", .{response_body.len});
         return error.ParseError;
     };
@@ -443,19 +595,23 @@ fn exchangeCode(code: []const u8, verifier: []const u8, allocator: std.mem.Alloc
 }
 
 fn exchangeTokens(body: []const u8, content_type: []const u8, allocator: std.mem.Allocator) !TokenResponse {
+    return exchangeTokensWith(http.fetch, body, content_type, allocator);
+}
+
+fn exchangeTokensWith(fetch: Fetch, body: []const u8, content_type: []const u8, allocator: std.mem.Allocator) !TokenResponse {
     var headers: std.ArrayList(std.http.Header) = .empty;
     defer headers.deinit(allocator);
     try headers.append(allocator, .{ .name = "accept", .value = "application/json" });
     try headers.append(allocator, .{ .name = "content-type", .value = content_type });
 
-    var fetched = http.fetch(allocator, token_url, .{
+    var fetched = fetch(allocator, token_url, .{
         .method = .POST,
         .extra_headers = headers.items,
         .body = body,
         .accept_encoding = "identity",
         .max_response_bytes = 8192,
         .timeout_ms = oauth_request_timeout_ms,
-    }) catch return error.OAuthFailed;
+    }) catch |err| return if (err == error.OutOfMemory) error.OutOfMemory else error.OAuthFailed;
     defer fetched.deinit(allocator);
 
     if (fetched.status != 200) return error.OAuthFailed;
@@ -664,4 +820,153 @@ test "generateState produces distinct values across calls" {
 
     try std.testing.expectEqual(@as(usize, 43), first.len);
     try std.testing.expect(!std.mem.eql(u8, first, second));
+}
+
+const FakeDeviceServer = struct {
+    var pending_polls: usize = 0;
+    var polls: usize = 0;
+    var cancel_at_poll: ?usize = null;
+    var cancel_at_ms: ?i64 = null;
+    var user_code_status: u16 = 200;
+    var interval_seconds: []const u8 = "0";
+    var exchanges: usize = 0;
+    var user_code_request: std.ArrayList(u8) = .empty;
+    var exchange_request: std.ArrayList(u8) = .empty;
+    var shown_url: std.ArrayList(u8) = .empty;
+    var shown_instructions: std.ArrayList(u8) = .empty;
+
+    fn reset() void {
+        pending_polls = 0;
+        polls = 0;
+        cancel_at_poll = null;
+        cancel_at_ms = null;
+        user_code_status = 200;
+        interval_seconds = "0";
+        exchanges = 0;
+    }
+
+    fn deinit() void {
+        user_code_request.clearAndFree(std.testing.allocator);
+        exchange_request.clearAndFree(std.testing.allocator);
+        shown_url.clearAndFree(std.testing.allocator);
+        shown_instructions.clearAndFree(std.testing.allocator);
+    }
+
+    fn respond(allocator: std.mem.Allocator, status: u16, body: []const u8) http.FetchError!http.Fetched {
+        return .{ .status = status, .body = try allocator.dupe(u8, body) };
+    }
+
+    fn fetch(allocator: std.mem.Allocator, url: []const u8, options: http.FetchOptions) http.FetchError!http.Fetched {
+        if (std.mem.eql(u8, url, device_user_code_url)) {
+            user_code_request.appendSlice(std.testing.allocator, options.body orelse "") catch return error.OutOfMemory;
+            const reply = std.fmt.allocPrint(std.testing.allocator, "{{\"device_auth_id\":\"dev-1\",\"user_code\":\"ABCD-1234\",\"interval\":\"{s}\"}}", .{interval_seconds}) catch return error.OutOfMemory;
+            defer std.testing.allocator.free(reply);
+            return respond(allocator, user_code_status, reply);
+        }
+        if (std.mem.eql(u8, url, device_token_url)) {
+            polls += 1;
+            if (polls <= pending_polls) return respond(allocator, 403, "{}");
+            return respond(allocator, 200, "{\"authorization_code\":\"auth-code\",\"code_challenge\":\"c\",\"code_verifier\":\"verifier-1\"}");
+        }
+        if (std.mem.eql(u8, url, token_url)) {
+            exchanges += 1;
+            exchange_request.appendSlice(std.testing.allocator, options.body orelse "") catch return error.OutOfMemory;
+            return respond(allocator, 200, "{\"access_token\":\"acc\",\"refresh_token\":\"ref\",\"expires_in\":3600}");
+        }
+        return error.RequestFailed;
+    }
+
+    fn onAuth(info: AuthInfo) void {
+        shown_url.appendSlice(std.testing.allocator, info.url) catch {};
+        shown_instructions.appendSlice(std.testing.allocator, info.instructions orelse "") catch {};
+    }
+
+    fn isCancelled() bool {
+        if (cancel_at_ms) |at| return compat.time.nowMillis() >= at;
+        const at = cancel_at_poll orelse return false;
+        return polls >= at;
+    }
+
+    const callbacks: DeviceCallbacks = .{ .onAuth = onAuth, .isCancelled = isCancelled, .fetch = fetch };
+};
+
+test "Codex device login shows the verification URL and user code, polls until the code is approved, and exchanges the grant it gets" {
+    FakeDeviceServer.reset();
+    defer FakeDeviceServer.deinit();
+    FakeDeviceServer.pending_polls = 2;
+
+    const credentials = try loginWithDeviceCode(FakeDeviceServer.callbacks, std.testing.allocator);
+    defer std.testing.allocator.free(credentials.refresh);
+    defer std.testing.allocator.free(credentials.access);
+    defer if (credentials.provider_data) |data| std.testing.allocator.free(data);
+
+    try std.testing.expectEqualStrings("{\"client_id\":\"app_EMoamEEZ73f0CkXaXp7hrann\"}", FakeDeviceServer.user_code_request.items);
+    try std.testing.expectEqualStrings("https://auth.openai.com/codex/device", FakeDeviceServer.shown_url.items);
+    try std.testing.expectEqualStrings("Enter code: ABCD-1234", FakeDeviceServer.shown_instructions.items);
+    try std.testing.expectEqual(@as(usize, 3), FakeDeviceServer.polls);
+    try std.testing.expectEqualStrings(
+        "grant_type=authorization_code&code=auth-code&redirect_uri=https%3A%2F%2Fauth.openai.com%2Fdeviceauth%2Fcallback&client_id=app_EMoamEEZ73f0CkXaXp7hrann&code_verifier=verifier-1",
+        FakeDeviceServer.exchange_request.items,
+    );
+    try std.testing.expectEqualStrings("acc", credentials.access);
+    try std.testing.expectEqualStrings("ref", credentials.refresh);
+}
+
+test "Codex device login stops polling once the flow is cancelled and exchanges nothing" {
+    FakeDeviceServer.reset();
+    defer FakeDeviceServer.deinit();
+    FakeDeviceServer.pending_polls = 1000;
+    FakeDeviceServer.cancel_at_poll = 2;
+
+    try std.testing.expectError(error.AuthFlowCancelled, loginWithDeviceCode(FakeDeviceServer.callbacks, std.testing.allocator));
+    try std.testing.expectEqual(@as(usize, 2), FakeDeviceServer.polls);
+    try std.testing.expectEqual(@as(usize, 0), FakeDeviceServer.exchanges);
+}
+
+test "Codex device login notices a cancel while it waits out the polling interval" {
+    FakeDeviceServer.reset();
+    defer FakeDeviceServer.deinit();
+    FakeDeviceServer.pending_polls = 2;
+    FakeDeviceServer.interval_seconds = "2";
+    const started = compat.time.nowMillis();
+    FakeDeviceServer.cancel_at_ms = started + 300;
+
+    try std.testing.expectError(error.AuthFlowCancelled, loginWithDeviceCode(FakeDeviceServer.callbacks, std.testing.allocator));
+    try std.testing.expect(compat.time.nowMillis() - started < 1_000);
+    try std.testing.expectEqual(@as(usize, 1), FakeDeviceServer.polls);
+}
+
+test "Codex device login reports a server without device codes before showing anything" {
+    FakeDeviceServer.reset();
+    defer FakeDeviceServer.deinit();
+    FakeDeviceServer.user_code_status = 404;
+
+    try std.testing.expectError(error.DeviceCodeLoginUnavailable, loginWithDeviceCode(FakeDeviceServer.callbacks, std.testing.allocator));
+    try std.testing.expectEqual(@as(usize, 0), FakeDeviceServer.shown_url.items.len);
+    try std.testing.expectEqual(@as(usize, 0), FakeDeviceServer.polls);
+}
+
+test "Codex device user code response takes a numeric or string interval in seconds" {
+    const numeric = try parseUserCodeResponse(std.testing.allocator, "{\"device_auth_id\":\"d\",\"usercode\":\"U\",\"interval\":7}");
+    defer numeric.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(u64, 7000), numeric.interval_ms);
+    try std.testing.expectEqualStrings("U", numeric.user_code);
+    const text = try parseUserCodeResponse(std.testing.allocator, "{\"device_auth_id\":\"d\",\"user_code\":\"V\",\"interval\":\" 3 \"}");
+    defer text.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(u64, 3000), text.interval_ms);
+    try std.testing.expectError(error.ParseError, parseUserCodeResponse(std.testing.allocator, "{\"device_auth_id\":\"d\",\"user_code\":\"V\",\"interval\":\"soon\"}"));
+}
+
+test "Codex device login survives allocation failures" {
+    FakeDeviceServer.reset();
+    defer FakeDeviceServer.deinit();
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, struct {
+        fn run(allocator: std.mem.Allocator) !void {
+            FakeDeviceServer.polls = 0;
+            const credentials = try loginWithDeviceCode(FakeDeviceServer.callbacks, allocator);
+            allocator.free(credentials.refresh);
+            allocator.free(credentials.access);
+            if (credentials.provider_data) |data| allocator.free(data);
+        }
+    }.run, .{});
 }

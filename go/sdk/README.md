@@ -70,7 +70,7 @@ response, err := client.Agent.Run(ctx, sdk.AgentRequest{
 
 ## Authentication
 
-`client.Auth.ListProviders(ctx)` and `client.Auth.Login(ctx, providerID, handlers)` use agent-profile `+auth` on the same local stdio connection. URL and progress events reach the handlers. The runtime owns credentials; no login code or prompt answer travels in an OAP envelope. A manual-code flow without host-owned input fails with `auth_input_unavailable`.
+`client.Auth.ListProviders(ctx)` and `client.Auth.Login(ctx, providerID, handlers)` use agent-profile `+auth` on the same local stdio connection. URL and progress events reach the handlers. The runtime owns credentials; no login code or prompt answer travels in an OAP envelope. A manual-code flow without host-owned input fails with `auth_input_unavailable`. `openai-codex` signs in with a device code instead: its URL event carries `https://auth.openai.com/codex/device` and the one-time code to enter there from any device, and the ChatGPT account, or its workspace admin, must have device code login turned on in ChatGPT's security settings.
 
 ```go
 err := client.Auth.Login(ctx, "anthropic", sdk.LoginHandlers{
