@@ -26,9 +26,12 @@
 //!
 //! # Tool execution
 //!
-//! Tools run in this process. The runtime publishes `tool_execute` on the
-//! session route and waits for the correlated `tool_result`; a [`crate::Tool`]
-//! with no handler answers with an error result rather than stalling the loop.
+//! Tools run in this process. Over OAP the tools are provided at session open
+//! and the endpoint publishes `action.call.requested` for each call the SDK
+//! owns, which it answers with `action.call.resolve.request`; on the legacy
+//! wire the runtime publishes `tool_execute` and waits for the correlated
+//! `tool_result`. A [`crate::Tool`] with no handler answers with an error
+//! rather than stalling the loop.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -230,7 +233,8 @@ impl AgentApi {
 
     async fn run_oap(&self, request: &ExecutionRequest) -> Result<CompletionResponse> {
         let provider_id = provider_id_from_ref(&request.model_ref);
-        match self.run_oap_once(request).await {
+        let mut tools_ran = false;
+        match self.run_oap_once(request, &mut tools_ran).await {
             Ok(response) => Ok(response),
             Err(error) if crate::oap::is_auth_failure(&error) => {
                 let Some(provider_id) = provider_id else {
@@ -241,7 +245,7 @@ impl AgentApi {
                     .auth_retry_policy
                     .or(self.auth_retry_policy)
                     .unwrap_or_default();
-                if policy != AuthRetryPolicy::AutoOnce {
+                if policy != AuthRetryPolicy::AutoOnce || tools_ran {
                     return Err(Error::auth_required(
                         provider_id,
                         error.message().to_owned(),
@@ -251,19 +255,25 @@ impl AgentApi {
                     .login(&provider_id, None)
                     .await
                     .map_err(|_| Error::auth_required(&provider_id, error.message().to_owned()))?;
-                self.run_oap_once(request).await.map_err(|retry_error| {
-                    if crate::oap::is_auth_failure(&retry_error) {
-                        Error::auth_required(provider_id, retry_error.message().to_owned())
-                    } else {
-                        retry_error
-                    }
-                })
+                self.run_oap_once(request, &mut tools_ran)
+                    .await
+                    .map_err(|retry_error| {
+                        if crate::oap::is_auth_failure(&retry_error) {
+                            Error::auth_required(provider_id, retry_error.message().to_owned())
+                        } else {
+                            retry_error
+                        }
+                    })
             }
             Err(error) => Err(error),
         }
     }
 
-    async fn run_oap_once(&self, request: &ExecutionRequest) -> Result<CompletionResponse> {
+    async fn run_oap_once(
+        &self,
+        request: &ExecutionRequest,
+        tools_ran: &mut bool,
+    ) -> Result<CompletionResponse> {
         let (session_id, run_id, mut subscription) = self.begin_oap(request).await?;
         let mut guard = OapRunGuard::new(Arc::clone(&self.transport), session_id, run_id.clone());
         loop {
@@ -275,7 +285,7 @@ impl AgentApi {
             }
             match frame.kind.as_str() {
                 "action.call.requested" | "action.call.resolve.response" => {
-                    self.answer_call(&frame, request, &run_id).await?;
+                    *tools_ran |= self.answer_call(&frame, request, &run_id).await?;
                 }
                 "run.completed" => {
                     guard.settle();
@@ -341,7 +351,12 @@ impl AgentApi {
             .request_oap(
                 AGENT_PROFILE,
                 "session.open.request",
-                open_payload(&session_id, request)?,
+                open_payload(
+                    &session_id,
+                    request,
+                    &self.transport.agent_endpoint(),
+                    self.transport.advertises("action.tools.provide"),
+                )?,
                 Some(("session_id", &session_id)),
                 self.response_timeout,
             )
@@ -640,7 +655,9 @@ impl AgentApi {
                         if frame.run_id.as_deref().is_some_and(|id| id != run_id) { continue; }
                         let data = frame.payload();
                         match frame.kind.as_str() {
-                            "action.call.requested" | "action.call.resolve.response" => this.answer_call(&frame, &request, &run_id).await?,
+                            "action.call.requested" | "action.call.resolve.response" => {
+                                if this.answer_call(&frame, &request, &run_id).await? { yielded_content = true; }
+                            }
                             "action.call.started" => {
                                 if let Some(start) = start.take() { yield start; }
                                 yield AgentEvent::ToolExecutionStart {
@@ -908,11 +925,23 @@ impl AgentApi {
     }
 }
 
-fn open_payload(session_id: &str, request: &ExecutionRequest) -> Result<serde_json::Value> {
+const OAPX_AGENT_ENDPOINT: &str = "oapx.agent";
+
+pub(crate) fn open_payload(
+    session_id: &str,
+    request: &ExecutionRequest,
+    endpoint: &str,
+    provides_tools: bool,
+) -> Result<serde_json::Value> {
     let mut payload = json!({ "session_id": session_id });
     let fields = payload
         .as_object_mut()
         .ok_or_else(|| Error::invalid_request("session open payload"))?;
+    if !request.tools.is_empty() && !provides_tools {
+        return Err(crate::oap::unsupported(
+            "client tools on an endpoint that does not advertise action.tools.provide",
+        ));
+    }
     if !request.tools.is_empty() {
         let mut provided = Vec::with_capacity(request.tools.len());
         for tool in &request.tools {
@@ -941,9 +970,16 @@ fn open_payload(session_id: &str, request: &ExecutionRequest) -> Result<serde_js
         if max_tokens == 0 {
             return Err(Error::invalid_request("max_tokens must be at least 1"));
         }
+        if endpoint != OAPX_AGENT_ENDPOINT {
+            return Err(crate::oap::unsupported(
+                "an output limit on an endpoint other than the oapx agent loop",
+            ));
+        }
         settings.insert("output".to_owned(), json!(max_tokens));
     }
-    fields.insert("metadata".to_owned(), json!({ "oapx": settings }));
+    if endpoint == OAPX_AGENT_ENDPOINT {
+        fields.insert("metadata".to_owned(), json!({ "oapx": settings }));
+    }
     Ok(payload)
 }
 
@@ -953,7 +989,7 @@ impl AgentApi {
         frame: &Frame,
         request: &ExecutionRequest,
         run_id: &str,
-    ) -> Result<()> {
+    ) -> Result<bool> {
         let data = frame.payload();
         let text = |key: &str| {
             data.get(key)
@@ -970,10 +1006,10 @@ impl AgentApi {
                     Some("malformed_response"),
                 ));
             }
-            return Ok(());
+            return Ok(false);
         }
         if text("execution_owner") != SDK_PARTICIPANT {
-            return Ok(());
+            return Ok(false);
         }
         let session_id = text("session_id");
         let invocation = ToolInvocation {
@@ -1025,7 +1061,8 @@ impl AgentApi {
             &crate::ids::new_ulid(),
             answer,
             &[("session_id", &session_id), ("run_id", run_id)],
-        )
+        )?;
+        Ok(true)
     }
 }
 
@@ -1608,5 +1645,24 @@ mod tests {
                 .text(),
             "hello"
         );
+    }
+}
+
+#[cfg(test)]
+mod open_payload_tests {
+    use super::*;
+    use crate::types::Tool;
+
+    #[test]
+    fn an_endpoint_that_would_ignore_tools_or_an_output_limit_refuses_them_client_side() {
+        let with_tool = ExecutionRequest::prompt("fixture/openai-responses@mock", "hello")
+            .with_tool(Tool::new("lookup", "look", "{}"));
+        assert!(open_payload("s", &with_tool, "oapx.agent-control", false).is_err());
+        let limited =
+            ExecutionRequest::prompt("fixture/openai-responses@mock", "hello").with_max_tokens(10);
+        assert!(open_payload("s", &limited, "oapx.agent-control", true).is_err());
+        let plain = ExecutionRequest::prompt("fixture/openai-responses@mock", "hello");
+        let payload = open_payload("s", &plain, "oapx.agent-control", false).expect("plain open");
+        assert!(payload.get("metadata").is_none());
     }
 }

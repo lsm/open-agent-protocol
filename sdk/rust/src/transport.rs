@@ -339,6 +339,8 @@ struct Inner {
     closing: AtomicBool,
     oap: bool,
     agent_revision: Mutex<Option<String>>,
+    agent_endpoint: Mutex<String>,
+    agent_features: Mutex<Vec<String>>,
 }
 
 impl Drop for Inner {
@@ -489,6 +491,8 @@ impl Transport {
             closing: AtomicBool::new(false),
             oap,
             agent_revision: Mutex::new(None),
+            agent_endpoint: Mutex::new(String::new()),
+            agent_features: Mutex::new(Vec::new()),
         });
         let transport = Self { inner };
 
@@ -503,6 +507,23 @@ impl Transport {
 
     pub(crate) fn is_oap(&self) -> bool {
         self.inner.oap
+    }
+
+    pub(crate) fn agent_endpoint(&self) -> String {
+        self.inner
+            .agent_endpoint
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
+
+    pub(crate) fn advertises(&self, feature: &str) -> bool {
+        self.inner
+            .agent_features
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .iter()
+            .any(|advertised| advertised == feature)
     }
 
     async fn initialize_oap(&self, options: &TransportOptions) -> Result<()> {
@@ -559,6 +580,34 @@ impl Transport {
             .agent_revision
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(revision.to_owned());
+        let described = capabilities.payload();
+        *self
+            .inner
+            .agent_endpoint
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = described
+            .get("endpoint")
+            .and_then(|endpoint| endpoint.get("id"))
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_owned();
+        *self
+            .inner
+            .agent_features
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = described
+            .get("features")
+            .and_then(Value::as_object)
+            .map(|features| {
+                features
+                    .iter()
+                    .filter(|(_, support)| {
+                        support.get("level").and_then(Value::as_str) != Some("unavailable")
+                    })
+                    .map(|(name, _)| name.clone())
+                    .collect()
+            })
+            .unwrap_or_default();
         let describe = self
             .request_oap(
                 PROVIDER_PROFILE,

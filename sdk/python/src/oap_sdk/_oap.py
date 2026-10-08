@@ -443,15 +443,22 @@ class OAPProviderApi:
                     yield StreamError(message=err.message, code=err.code, provider_id=provider)
 
 
-def _open_payload(session_id: str, tools: Optional[Sequence[ToolDefinition]],
+OAPX_AGENT_ENDPOINT = "oapx.agent"
+
+
+def _open_payload(transport: StdioTransport, session_id: str, tools: Optional[Sequence[ToolDefinition]],
                   options: Optional[RunOptions]) -> Dict[str, Any]:
     payload: Dict[str, Any] = {"session_id": session_id}
+    if tools and "action.tools.provide" not in transport.agent_features:
+        raise MakaiProtocolError("this endpoint does not advertise action.tools.provide, so it cannot run client tools",
+                                 "unsupported_feature")
     if tools:
         payload["tools"] = [{"name": tool.name, "description": tool.description,
                              "input_schema": json.loads(tool.parameters_schema_json),
                              "execution_owner": SDK_PARTICIPANT} for tool in tools]
     settings: Dict[str, Any] = {"user_input": False}
-    payload["metadata"] = {"oapx": settings}
+    if transport.agent_endpoint == OAPX_AGENT_ENDPOINT:
+        payload["metadata"] = {"oapx": settings}
     if options and options.reasoning_effort == "minimal":
         raise MakaiProtocolError("the agent loop runs minimal reasoning as low, so it refuses minimal",
                                  "unsupported_feature")
@@ -461,6 +468,8 @@ def _open_payload(session_id: str, tools: Optional[Sequence[ToolDefinition]],
         if isinstance(options.max_tokens, bool) or not isinstance(options.max_tokens, int) or \
                 not 1 <= options.max_tokens <= 4_294_967_295:
             raise MakaiProtocolError("max_tokens must be an integer between 1 and 4294967295", "invalid_request")
+        if transport.agent_endpoint != OAPX_AGENT_ENDPOINT:
+            raise MakaiProtocolError("only the oapx agent loop takes an output limit at open", "unsupported_feature")
         settings["output"] = options.max_tokens
     return payload
 
@@ -522,8 +531,8 @@ class OAPAgentApi:
         return _payload(frame)
 
     async def _frames(self, model_ref: Optional[str], messages: Sequence[ChatMessage],
-                      tools: Optional[Sequence[ToolDefinition]], options: Optional[RunOptions]
-                      ) -> AsyncGenerator[Frame, None]:
+                      tools: Optional[Sequence[ToolDefinition]], options: Optional[RunOptions],
+                      progress: Optional[Dict[str, bool]] = None) -> AsyncGenerator[Frame, None]:
         if options and options.temperature is not None:
             raise MakaiProtocolError("the agent loop takes no temperature", "unsupported_feature")
         if not model_ref and not (options and options.session_id):
@@ -531,7 +540,7 @@ class OAPAgentApi:
         session_id = options.session_id if options and options.session_id else new_ulid()
         async with self._transport.route(session_id=session_id) as events:
             opened = await _request(self._transport, AGENT, "session.open.request",
-                                    _open_payload(session_id, tools, options), self._timeout,
+                                    _open_payload(self._transport, session_id, tools, options), self._timeout,
                                     session_id=session_id)
             if opened.get("type") != "session.open.response":
                 raise MakaiProtocolError("expected session.open.response", "malformed_response")
@@ -558,6 +567,8 @@ class OAPAgentApi:
                         continue
                     kind = frame.get("type")
                     if kind == "action.call.requested" and _payload(frame).get("execution_owner") == SDK_PARTICIPANT:
+                        if progress is not None:
+                            progress["tools_executed"] = True
                         await self._transport.send(await _resolve_call(_payload(frame), session_id, str(run_id or ""), provided))
                         continue
                     if kind == "action.call.resolve.response":
@@ -591,11 +602,12 @@ class OAPAgentApi:
                   tools: Optional[Sequence[ToolDefinition]] = None,
                   options: Optional[RunOptions] = None) -> CompletionResponse:
         policy = options.auth_retry_policy if options and options.auth_retry_policy else self._auth_retry_policy
+        progress: Dict[str, bool] = {"tools_executed": False}
         try:
-            return await self._run_once(model_ref, messages, tools, options)
+            return await self._run_once(model_ref, messages, tools, options, progress)
         except MakaiAuthRequiredError as failure:
             provider_id = failure.provider_id or _model_parts(model_ref or "")[0]
-            if policy != "auto_once" or self._auth is None or not provider_id:
+            if policy != "auto_once" or self._auth is None or not provider_id or progress["tools_executed"]:
                 raise
             await self._auth.login(provider_id)
             retry_options = replace(options, session_id=None) if options and model_ref else options
@@ -603,8 +615,9 @@ class OAPAgentApi:
 
     async def _run_once(self, model_ref: Optional[str], messages: Sequence[ChatMessage],
                         tools: Optional[Sequence[ToolDefinition]],
-                        options: Optional[RunOptions]) -> CompletionResponse:
-        async with contextlib.aclosing(self._frames(model_ref, messages, tools, options)) as frames:
+                        options: Optional[RunOptions],
+                        progress: Optional[Dict[str, bool]] = None) -> CompletionResponse:
+        async with contextlib.aclosing(self._frames(model_ref, messages, tools, options, progress)) as frames:
             async for frame in frames:
                 if frame.get("type") == "run.completed":
                     value = _payload(frame)

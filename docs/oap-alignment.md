@@ -13,11 +13,10 @@ both profiles are co-hosted. See Decisions
 [0028](../decisions/0028-live-model-and-provider-control.md), and
 [0029](../decisions/0029-authentication-over-agent-control.md) for the current
 contract. Dynamic provider attachment remains optional and remote provider
-transport is follow-up work. The `oapx` agent endpoint advertises
-`action.tools.provide` (Decision 0011). The Go SDK provides a request's tools at
-open and resolves their calls; the TypeScript, Python and Rust SDKs still reject
-client-executed tools on their default OAP path until they do the same (#376),
-and every SDK retains the legacy wire only by explicit opt-in.
+transport is follow-up work. The `oapx` adapter advertises
+`action.tools.provide` (Decision 0011). Every SDK provides a request's tools at open and resolves their calls on an
+endpoint that advertises the feature, refuses them client-side on one that does
+not, and retains the legacy wire only by explicit opt-in.
 
 Status: deviations ledger and convergence contract between makai's agent-protocol
 semantics and the Open Agent Protocol (OAP) agent-control core. This is the document

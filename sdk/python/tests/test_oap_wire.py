@@ -4,7 +4,7 @@ import sys
 import unittest
 from typing import Any, Dict
 
-from oap_sdk import AuthFlowHandlers, AuthOptions, AuthPromptEvent, MakaiAuthError, MakaiProtocolError, MakaiStreamError, RunOptions, ToolContext, ToolDefinition, connect
+from oap_sdk import AuthFlowHandlers, MakaiAuthRequiredError, AuthOptions, AuthPromptEvent, MakaiAuthError, MakaiProtocolError, MakaiStreamError, RunOptions, ToolContext, ToolDefinition, connect
 from oap_sdk._oap import _messages
 
 
@@ -19,7 +19,7 @@ def emit(profile, kind, reply=None, scope=None, payload=None):
     if scope: message.update(scope)
     print(json.dumps(message), flush=True)
 auth_ready = False
-provided, opened_settings = "", ""
+provided, opened_settings, submitted_model = "", "", ""
 for line in sys.stdin:
     request = json.loads(line)
     assert request["protocol"] == "open-agent-protocol"
@@ -34,7 +34,8 @@ for line in sys.stdin:
     elif kind == "capabilities.request":
         message = {"protocol":"open-agent-protocol", "version":"0.1", "profile":A,
                    "type":"capabilities.response", "id":"host-capabilities", "in_reply_to":rid,
-                   "capability_revision":"fixture-rev-1", "payload":{"features":{}}}
+                   "capability_revision":"fixture-rev-1", "payload":{"endpoint":{"id":"oapx.agent"},
+                   "features":{"action.tools.provide":{"level":"native"}}}}
         print(json.dumps(message), flush=True)
     elif kind == "provider.models.list.request":
         emit(P, "provider.models.list.response", rid, payload={"models":[{
@@ -96,7 +97,8 @@ for line in sys.stdin:
             emit(A, "run.completed", scope=scope, payload={"session_id":sid,"run_id":"run-1",
                  "final_response":{"role":"assistant","content":opened_settings}, "stop_reason":"stop"})
             continue
-        if request["payload"].get("model_id", "").endswith("@tool"):
+        submitted_model = request["payload"].get("model_id", "")
+        if submitted_model.endswith("@tool") or submitted_model.endswith("@tool-then-login"):
             emit(A, "action.call.requested", scope=scope, payload={"session_id":sid,"run_id":"run-1",
                  "tool_call_id":"call-1","name":"lookup","execution_owner":"sdk","interaction_id":"interaction-1",
                  "requested_by":"fixture","responded_by":"sdk","arguments_json":{"word":"oap"}})
@@ -140,6 +142,12 @@ for line in sys.stdin:
         emit(A, "action.call.resolve.response", rid, {"session_id":sid}, {"interaction_id":answer["interaction_id"],
              "session_id":sid,"run_id":"run-1","tool_call_id":answer["tool_call_id"],"accepted":True})
         emit(A, "action.call.started", scope=scope, payload={"session_id":sid,"run_id":"run-1","tool_call_id":"call-1","name":"lookup"})
+        if submitted_model.endswith("@tool-then-login"):
+            emit(A, "action.call.completed", scope=scope, payload={"session_id":sid,"run_id":"run-1","tool_call_id":"call-1",
+                 "name":"lookup","result":answer.get("result")})
+            emit(A, "run.failed", scope=scope, payload={"session_id":sid,"run_id":"run-1",
+                 "error":{"code":"credential_missing","message":"login required"}})
+            continue
         emit(A, "action.call.completed", scope=scope, payload={"session_id":sid,"run_id":"run-1","tool_call_id":"call-1",
              "name":"lookup","result":answer.get("result")})
         said="%s said %s (error %s) as %s" % (provided, answer.get("result"), (answer.get("error") or {}).get("message"), answer["responded_by"])
@@ -230,6 +238,13 @@ class OAPWireTests(unittest.IsolatedAsyncioTestCase):
                 messages=[{"role": "user", "content": "hi"}],
                 tools=[ToolDefinition(name="lookup", description="", parameters_schema_json="{}", execute=lookup)])]
             self.assertEqual(tool_events, ["agent_start", "tool_execution_start", "tool_execution_end", "agent_end"])
+            invoked.clear()
+            with self.assertRaises(MakaiAuthRequiredError):
+                await client.agent.run(model_ref="fixture/other:test@tool-then-login",
+                    messages=[{"role": "user", "content": "hi"}],
+                    tools=[ToolDefinition(name="lookup", description="", parameters_schema_json="{}", execute=lookup)],
+                    options=RunOptions(auth_retry_policy="auto_once"))
+            self.assertEqual(len(invoked), 1)
             settings = await client.agent.run(model_ref="fixture/other:test@settings",
                 messages=[{"role": "user", "content": "hi"}],
                 options=RunOptions(max_tokens=10, reasoning_effort="high"))
@@ -270,6 +285,18 @@ class OAPWireTests(unittest.IsolatedAsyncioTestCase):
             response = await client.agent.run(
                 model_ref="fixture/other:test@auth-once", messages=[{"role": "user", "content": "hi"}])
             self.assertEqual(response.text, "agent")
+
+class OAPOpenTests(unittest.TestCase):
+    def test_an_endpoint_that_would_ignore_tools_or_an_output_limit_refuses_them_client_side(self) -> None:
+        from types import SimpleNamespace
+        from oap_sdk._oap import _open_payload
+        bare: Any = SimpleNamespace(agent_endpoint="oapx.agent-control", agent_features=frozenset())
+        for tools, options in (([ToolDefinition(name="lookup", description="", parameters_schema_json="{}")], None),
+                               (None, RunOptions(max_tokens=10))):
+            with self.assertRaises(MakaiProtocolError) as refused:
+                _open_payload(bare, "session-1", tools, options)
+            self.assertEqual(refused.exception.code, "unsupported_feature")
+        self.assertNotIn("metadata", _open_payload(bare, "session-1", None, None))
 
 
 if __name__ == "__main__":

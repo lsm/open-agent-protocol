@@ -5,6 +5,7 @@ let authenticated = false;
 let selectedModel = "fixture/openai-responses@mock";
 let opened = {};
 let participant;
+let submittedModel = "";
 const agent = "open-agent-protocol.agent-control-core";
 const provider = "open-agent-protocol.model-provider-core";
 function send(request, type, payload, scope = {}) {
@@ -80,7 +81,9 @@ createInterface({ input: process.stdin }).on("line", (line) => {
       send(request, "protocol.initialize.response", { protocol_version: "0.1", profile: agent, endpoint: { id: "fixture" } });
       break;
     case `${agent}:capabilities.request`:
-      send(request, "capabilities.response", { endpoint: { id: "fixture" }, features: { "auth.providers": true, "auth.login": true } }, { capability_revision: "r1" });
+      send(request, "capabilities.response", process.env.OAP_FIXTURE_BARE
+        ? { endpoint: { id: "oapx.agent-control" }, features: { "auth.providers": true, "auth.login": true } }
+        : { endpoint: { id: "oapx.agent" }, features: { "auth.providers": true, "auth.login": true, "action.tools.provide": { level: "native" } } }, { capability_revision: "r1" });
       break;
     case `${agent}:auth.providers.request`:
       send(request, "auth.providers.response", { providers: [{ id: "fixture", name: "Fixture", auth_kinds: ["api_key"], auth_status: authenticated ? "authenticated" : "login_required" }] });
@@ -155,7 +158,8 @@ createInterface({ input: process.stdin }).on("line", (line) => {
       }
       send(request, "session.message.submit.response", { session_id: request.payload.session_id, accepted: true, run_id: "run-1", submission_id: "sub-1", requested_delivery: "auto", effective_delivery: "start", admission: "started" }, { session_id: request.payload.session_id });
       event(agent, "run.started", { session_id: request.payload.session_id, run_id: "run-1", model_id: request.payload.model_id || selectedModel }, { session_id: request.payload.session_id, run_id: "run-1", sequence: 1 });
-      if (request.payload.model_id?.endsWith("@tool")) {
+      submittedModel = request.payload.model_id ?? "";
+      if (submittedModel.endsWith("@tool") || submittedModel.endsWith("@tool-then-login")) {
         event(agent, "action.call.requested", { session_id: request.payload.session_id, run_id: "run-1", tool_call_id: "call-1", name: "lookup", execution_owner: participant, interaction_id: "interaction-1", requested_by: "fixture", responded_by: participant, arguments_json: { word: "oap" } }, { session_id: request.payload.session_id, run_id: "run-1", tool_call_id: "call-1", sequence: 2 });
         break;
       }
@@ -173,6 +177,10 @@ createInterface({ input: process.stdin }).on("line", (line) => {
       send(request, "action.call.resolve.response", { interaction_id: answer.interaction_id, session_id: answer.session_id, run_id: "run-1", tool_call_id: answer.tool_call_id, accepted: true }, { session_id: answer.session_id, run_id: "run-1" });
       event(agent, "action.call.started", { session_id: answer.session_id, run_id: "run-1", tool_call_id: "call-1", name: "lookup" }, { ...scope, sequence: 3 });
       event(agent, "action.call.completed", { session_id: answer.session_id, run_id: "run-1", tool_call_id: "call-1", name: "lookup", result: answer.result }, { ...scope, sequence: 4 });
+      if (submittedModel.endsWith("@tool-then-login")) {
+        event(agent, "run.failed", { session_id: answer.session_id, run_id: "run-1", error: { code: "credential_missing", message: "login required" } }, { session_id: answer.session_id, run_id: "run-1", sequence: 5 });
+        break;
+      }
       const said = `${opened.tools?.[0]?.name} owned by ${opened.tools?.[0]?.execution_owner} said ${answer.result} (error ${answer.error?.message}) as ${answer.responded_by}`;
       event(agent, "run.completed", { session_id: answer.session_id, run_id: "run-1", final_response: { role: "assistant", content: said }, stop_reason: "end_turn" }, { session_id: answer.session_id, run_id: "run-1", sequence: 5 });
       break;

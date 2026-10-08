@@ -191,6 +191,8 @@ class StdioTransport:
         self._auth_flow_routes: Dict[str, FrameRoute] = {}
         self._handshake: Optional[asyncio.Future[None]] = None
         self._agent_revision: Optional[str] = None
+        self.agent_endpoint = ""
+        self.agent_features: frozenset[str] = frozenset()
         self._closed = False
         self._write_lock = asyncio.Lock()
         self._connect_lock = asyncio.Lock()
@@ -311,6 +313,15 @@ class StdioTransport:
                 if capabilities.get("type") != "capabilities.response" or not isinstance(revision, str) or not revision:
                     raise MakaiStreamError("OAP capabilities response omitted capability_revision", kind="transport_error")
                 self._agent_revision = revision
+                described = capabilities.get("payload")
+                if isinstance(described, dict):
+                    endpoint = described.get("endpoint")
+                    self.agent_endpoint = str(endpoint.get("id", "")) if isinstance(endpoint, dict) else ""
+                    features = described.get("features")
+                    self.agent_features = frozenset(
+                        name for name, support in features.items()
+                        if not (isinstance(support, dict) and support.get("level") == "unavailable")
+                    ) if isinstance(features, dict) else frozenset()
             except BaseException:
                 await self.close()
                 raise

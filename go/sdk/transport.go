@@ -36,6 +36,8 @@ func (k routeKind) String() string {
 type transport struct {
 	legacyWire    bool
 	agentRevision string
+	agentEndpoint string
+	agentFeatures map[string]bool
 	cmd           *exec.Cmd
 	stdin         io.WriteCloser
 	logger        *slog.Logger
@@ -132,6 +134,15 @@ func startTransport(ctx context.Context, command string, opts *Options) (*transp
 			return nil, &ProtocolError{Code: CodeMalformedResponse, Message: "OAP capabilities response omitted capability_revision"}
 		}
 		t.agentRevision = response.CapabilityRevision
+		described := envelopePayload(response)
+		t.agentEndpoint = described.obj("endpoint").str("id")
+		t.agentFeatures = map[string]bool{}
+		for feature, support := range described.obj("features") {
+			if entry, ok := support.(map[string]any); ok && entry["level"] == "unavailable" {
+				continue
+			}
+			t.agentFeatures[feature] = true
+		}
 	}
 	return t, nil
 }

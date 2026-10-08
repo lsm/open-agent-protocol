@@ -47,10 +47,12 @@ provide authenticated cross-Pod exposure. Use the remote-service settings with
 rather than exposing a different, local provider profile. Live
 `session.provider.attach` is not yet implemented.
 The `oapx`
-endpoint serves client-provided tools (`action.tools.provide`, Decision 0011)
+adapter serves client-provided tools (`action.tools.provide`, Decision 0011)
 and takes an agent run's reasoning level and output limit at open, so the SDKs
-provide a request's tools, answer the calls routed to them, and refuse only an
-agent run's `temperature`, which the loop takes none of. The old Makai wire is
+provide a request's tools and answer the calls routed to them wherever the
+endpoint advertises the feature, refuse them client-side where it does not, and refuse an agent
+run's `temperature`, which the loop takes none of, and `minimal` reasoning,
+which it runs as low. The old Makai wire is
 available only by explicit opt-in.
 
 `oapx serve agent --backend claude` serves a Claude Code child (pinned 2.1.288),
