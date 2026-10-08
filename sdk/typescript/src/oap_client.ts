@@ -106,7 +106,9 @@ export class OapStdioTransport {
       if (capabilities.type !== "capabilities.response") throw new MakaiProtocolError("OAP agent did not return capabilities", "protocol_mismatch");
       this.agentRevision = capabilities.capability_revision;
       this.agentEndpoint = isRecord(capabilities.payload.endpoint) ? str(capabilities.payload.endpoint.id) : "";
-      this.agentFeatures = new Set(isRecord(capabilities.payload.features) ? Object.keys(capabilities.payload.features) : []);
+      this.agentFeatures = new Set(isRecord(capabilities.payload.features)
+        ? Object.entries(capabilities.payload.features).filter(([, support]) => !(isRecord(support) && support.level === "unavailable")).map(([name]) => name)
+        : []);
       const described = await this.request(OAP_PROVIDER_PROFILE, "provider.describe.request", {}, {}, this.options.handshakeTimeoutMs);
       if (described.type !== "provider.describe.response") throw new MakaiProtocolError("OAP provider did not return a descriptor", "protocol_mismatch");
     } catch (error) {

@@ -137,7 +137,10 @@ func startTransport(ctx context.Context, command string, opts *Options) (*transp
 		described := envelopePayload(response)
 		t.agentEndpoint = described.obj("endpoint").str("id")
 		t.agentFeatures = map[string]bool{}
-		for feature := range described.obj("features") {
+		for feature, support := range described.obj("features") {
+			if entry, ok := support.(map[string]any); ok && entry["level"] == "unavailable" {
+				continue
+			}
 			t.agentFeatures[feature] = true
 		}
 	}

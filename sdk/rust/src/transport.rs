@@ -598,7 +598,15 @@ impl Transport {
             .unwrap_or_else(std::sync::PoisonError::into_inner) = described
             .get("features")
             .and_then(Value::as_object)
-            .map(|features| features.keys().cloned().collect())
+            .map(|features| {
+                features
+                    .iter()
+                    .filter(|(_, support)| {
+                        support.get("level").and_then(Value::as_str) != Some("unavailable")
+                    })
+                    .map(|(name, _)| name.clone())
+                    .collect()
+            })
             .unwrap_or_default();
         let describe = self
             .request_oap(

@@ -286,11 +286,6 @@ class OAPWireTests(unittest.IsolatedAsyncioTestCase):
                 model_ref="fixture/other:test@auth-once", messages=[{"role": "user", "content": "hi"}])
             self.assertEqual(response.text, "agent")
 
-
-if __name__ == "__main__":
-    unittest.main()
-
-
 class OAPOpenTests(unittest.TestCase):
     def test_an_endpoint_that_would_ignore_tools_or_an_output_limit_refuses_them_client_side(self) -> None:
         from types import SimpleNamespace
@@ -302,3 +297,7 @@ class OAPOpenTests(unittest.TestCase):
                 _open_payload(bare, "session-1", tools, options)
             self.assertEqual(refused.exception.code, "unsupported_feature")
         self.assertNotIn("metadata", _open_payload(bare, "session-1", None, None))
+
+
+if __name__ == "__main__":
+    unittest.main()

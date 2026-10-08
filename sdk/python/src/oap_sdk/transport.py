@@ -318,7 +318,10 @@ class StdioTransport:
                     endpoint = described.get("endpoint")
                     self.agent_endpoint = str(endpoint.get("id", "")) if isinstance(endpoint, dict) else ""
                     features = described.get("features")
-                    self.agent_features = frozenset(features) if isinstance(features, dict) else frozenset()
+                    self.agent_features = frozenset(
+                        name for name, support in features.items()
+                        if not (isinstance(support, dict) and support.get("level") == "unavailable")
+                    ) if isinstance(features, dict) else frozenset()
             except BaseException:
                 await self.close()
                 raise
