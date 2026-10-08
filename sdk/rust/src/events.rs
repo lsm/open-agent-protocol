@@ -1,14 +1,8 @@
-//! Streaming events and the normalization that produces them.
+//! The events a provider or agent stream yields.
 //!
-//! The runtime spells the same logical event several ways depending on which
-//! layer emitted it: a provider `event` envelope, an `agent_event` carrying a
-//! JSON document in a string, or a bare typed frame. Everything funnels through
-//! [`normalize_provider_frame`] and [`normalize_agent_frame`] so that consumers
-//! see one shape.
-//!
-//! Tool calls are buffered, not streamed: spec §3.5 defers incremental tool-call
-//! deltas, so `toolcall_start` / `toolcall_delta` / `toolcall_end` accumulate
-//! into a single [`ProviderEvent::ToolCall`].
+//! The SDK builds them from OAP envelopes: `inference.*` for a provider stream
+//! and `run.*`, `content.delta` and `action.call.*` for an agent run. A tool
+//! call arrives whole, as one [`ProviderEvent::ToolCall`].
 
 use crate::types::Usage;
 
