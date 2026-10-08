@@ -30,6 +30,7 @@ fn main() {
     let mut authenticated = false;
     let mut selected_model = "fixture/openai-responses@mock".to_owned();
     let mut opened = Value::Null;
+    let mut submitted_model = String::new();
     let mut participant = Value::Null;
     for line in io::stdin().lock().lines() {
         let Ok(line) = line else { break };
@@ -73,7 +74,7 @@ fn main() {
                 profile,
                 "capabilities.response",
                 Some(id),
-                json!({ "features": {} }),
+                json!({ "endpoint": { "id": "oapx.agent" }, "features": { "action.tools.provide": { "level": "native" } } }),
                 json!({ "capability_revision": "fixture-rev-1" }),
             ),
             (AGENT, "auth.providers.request") => emit(
@@ -324,6 +325,16 @@ fn main() {
                     json!({ "session_id": data["session_id"], "run_id": "run-1", "tool_call_id": "call-1", "name": "lookup", "result": data["result"] }),
                     scope.clone(),
                 );
+                if submitted_model.ends_with("@tool-then-login") {
+                    emit(
+                        profile,
+                        "run.failed",
+                        None,
+                        json!({ "session_id": data["session_id"], "run_id": "run-1", "error": { "code": "credential_missing", "message": "login required" } }),
+                        scope.clone(),
+                    );
+                    continue;
+                }
                 let said = format!(
                     "{} owned by {} said {} (error {}) as {}",
                     opened["tools"][0]["name"],
@@ -375,7 +386,10 @@ fn main() {
                     json!({ "session_id": data["session_id"], "accepted": true, "run_id": "run-1", "submission_id": "sub-1", "requested_delivery": "auto", "effective_delivery": "start", "admission": "started" }),
                     json!({ "session_id": data["session_id"] }),
                 );
-                if effective_model.ends_with("@tool") {
+                submitted_model = effective_model.to_owned();
+                if effective_model.ends_with("@tool")
+                    || effective_model.ends_with("@tool-then-login")
+                {
                     emit(
                         profile,
                         "run.started",

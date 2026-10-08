@@ -94,7 +94,7 @@ Exactly one terminal event ends the stream — `MessageEnd` or `Error`. Failures
 
 ## Agent runs and model switching
 
-`agent().run(...)` and `agent().stream(...)` drive an OAP agent session. `switch_model(session_id, model_ref)` changes the selected model mid-session; `run_selected(session_id, messages)` uses that selection. Agent requests provide their tools to the session at open (`action.tools.provide`), owned by the SDK's participant `rust-sdk`; when the model calls one, the SDK runs its `Tool::on_call` handler and answers with `action.call.resolve.request`, and a tool without a handler is answered with an error. Direct provider requests containing executable callbacks still fail with `unsupported_feature`; they can pass declaration-only tool schemas.
+`agent().run(...)` and `agent().stream(...)` drive an OAP agent session. `switch_model(session_id, model_ref)` changes the selected model mid-session; `run_selected(session_id, messages)` uses that selection. Agent requests provide their tools to the session at open (`action.tools.provide`), owned by the SDK's participant `rust-sdk`; when the model calls one, the SDK runs its `Tool::on_call` handler and answers with `action.call.resolve.request`, and a tool without a handler is answered with an error. Against an endpoint that does not advertise `action.tools.provide` (today `oapx serve agent` does not; only the oapx adapter does), a request with tools fails with `unsupported_feature` before the open rather than having its tools ignored, and once a tool has run, an `AutoOnce` auth failure is returned as `AuthRequired` rather than retried, so the tool is not run twice. Direct provider requests containing executable callbacks still fail with `unsupported_feature`; they can pass declaration-only tool schemas.
 
 ```rust
 use oap_sdk::{Client, ExecutionRequest};
@@ -112,7 +112,7 @@ println!("{}", response.text());
 # }
 ```
 
-For streaming, iterate `agent().stream(request)` and handle `AgentStart`, wrapped provider deltas, and terminal `AgentEnd`. The stream also yields `ToolExecutionStart` and `ToolExecutionEnd` for every call, the endpoint's own tools included. An agent run's `reasoning_effort` becomes the session's reasoning level and `max_tokens` (at least 1) the oapx output limit, both at open; `temperature` and `ReasoningEffort::Minimal` fail with `unsupported_feature`, since the agent loop takes no temperature and runs minimal as low. The open also turns off the loop's `request_user_input` tool, which the SDK cannot answer. All three remain supported for direct provider inference.
+For streaming, iterate `agent().stream(request)` and handle `AgentStart`, wrapped provider deltas, and terminal `AgentEnd`. The stream also yields `ToolExecutionStart` and `ToolExecutionEnd` for every call, the endpoint's own tools included. An agent run's `reasoning_effort` becomes the session's reasoning level and `max_tokens` (at least 1) the oapx output limit, both at open, the output limit only on the `oapx.agent` endpoint that reads it (elsewhere `unsupported_feature`); `temperature` and `ReasoningEffort::Minimal` fail with `unsupported_feature`, since the agent loop takes no temperature and runs minimal as low. The open also turns off the loop's `request_user_input` tool, which the SDK cannot answer. All three remain supported for direct provider inference.
 
 ### Agent model discovery
 

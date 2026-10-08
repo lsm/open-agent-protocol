@@ -266,6 +266,25 @@ async fn agent_tools_and_settings_travel_over_oap_and_temperature_is_refused() {
             "agent_end"
         ]
     );
+    let calls = Arc::new(Mutex::new(0));
+    let counted = Arc::clone(&calls);
+    let once = Tool::new("lookup", "look a word up", "{}").on_call(move |_| {
+        let counted = Arc::clone(&counted);
+        async move {
+            *counted.lock().expect("lock") += 1;
+            Ok("open agent protocol".to_owned())
+        }
+    });
+    let mut retried = ExecutionRequest::prompt("fixture/openai-responses@tool-then-login", "hello")
+        .with_tool(once);
+    retried.options.auth_retry_policy = Some(AuthRetryPolicy::AutoOnce);
+    let error = client
+        .agent()
+        .run(retried)
+        .await
+        .expect_err("auth failure after a tool is not retried");
+    assert!(matches!(error, Error::AuthRequired { .. }), "{error:?}");
+    assert_eq!(*calls.lock().expect("lock"), 1);
     let mut configured =
         ExecutionRequest::prompt("fixture/openai-responses@settings", "hello").with_max_tokens(32);
     configured.options.reasoning_effort = Some(oap_sdk::ReasoningEffort::High);

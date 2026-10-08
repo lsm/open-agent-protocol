@@ -71,6 +71,34 @@ test("agent tools and settings travel over OAP, and temperature and provider cal
   }
 });
 
+test("an endpoint that would ignore tools or an output limit has them refused client-side", async () => {
+  const client = await createOapClient({ command: process.execPath, args: [fixture], env: { ...process.env, OAP_FIXTURE_BARE: "1" } });
+  try {
+    const messages = [{ role: "user" as const, content: "hello" }];
+    await assert.rejects(() => client.agent.run({ model_ref: "fixture/openai-responses@tool", messages, tools: [{ name: "lookup", description: "", parameters_schema_json: "{}", execute: () => "ok" }] }),
+      (error: unknown) => error instanceof OapUnsupportedFeatureError);
+    await assert.rejects(() => client.agent.run({ model_ref: "fixture/openai-responses@settings", messages, options: { max_tokens: 10 } }),
+      (error: unknown) => error instanceof OapUnsupportedFeatureError);
+    const plain = await client.agent.run({ model_ref: "fixture/openai-responses@settings", messages });
+    assert.match(String(plain.message.content), /output=undefined user_input=undefined/);
+  } finally {
+    await client.close();
+  }
+});
+
+test("an auth failure after a client tool ran is not retried, so the tool runs once", async () => {
+  const client = await createOapClient({ command: process.execPath, args: [fixture], auth: { auth_retry_policy: "auto_once" } });
+  try {
+    let calls = 0;
+    await assert.rejects(() => client.agent.run({ model_ref: "fixture/openai-responses@tool-then-login", messages: [{ role: "user", content: "hello" }],
+      tools: [{ name: "lookup", description: "", parameters_schema_json: "{}", execute: () => { calls += 1; return "ok"; } }] }),
+      (error: unknown) => error instanceof MakaiAuthRequiredError);
+    assert.equal(calls, 1);
+  } finally {
+    await client.close();
+  }
+});
+
 test("OAP auth discovery, URL, progress, and terminal completion", async () => {
   const client = await createOapClient({ command: process.execPath, args: [fixture] });
   try {
