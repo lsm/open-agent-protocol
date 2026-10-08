@@ -2634,6 +2634,56 @@ test "a reload that loads replaces the snapshot and advances its generation, and
     try std.testing.expectEqual(@as(usize, 2), served_snapshot_loads);
 }
 
+var mid_load_cache: ?*ServedOapModels = null;
+var mid_load_requests: usize = 0;
+
+fn loadThatAsksForAnotherReload(allocator: std.mem.Allocator) anyerror![]ai_types.Model {
+    served_snapshot_loads += 1;
+    if (mid_load_requests > 0) {
+        mid_load_requests -= 1;
+        if (mid_load_cache.?.requestReload()) return error.SecondWorkerStarted;
+    }
+    return cloneOapModels(allocator, &oap_test_served_models);
+}
+
+test "a reload asked for while one is loading runs after it, on the same worker" {
+    const allocator = std.testing.allocator;
+    var cache: ServedOapModels = .{};
+    defer cache.deinit();
+    served_snapshot_loads = 0;
+    mid_load_cache = &cache;
+    defer mid_load_cache = null;
+    mid_load_requests = 1;
+
+    try std.testing.expect(cache.requestReload());
+    cache.runReloads(allocator, loadThatAsksForAnotherReload);
+    try std.testing.expectEqual(@as(usize, 2), served_snapshot_loads);
+    try std.testing.expectEqual(@as(u64, 2), cache.generation.load(.seq_cst));
+    try std.testing.expect(!cache.reloading.load(.seq_cst));
+    try std.testing.expect(cache.requestReload());
+}
+
+var window_requests: usize = 0;
+
+fn requestInTheReleaseWindow(cache: *ServedOapModels) void {
+    if (window_requests == 0) return;
+    window_requests -= 1;
+    std.debug.assert(!cache.requestReload());
+}
+
+test "a reload asked for just before the worker releases is not lost" {
+    const allocator = std.testing.allocator;
+    var cache: ServedOapModels = .{ .before_release = requestInTheReleaseWindow };
+    defer cache.deinit();
+    served_snapshot_loads = 0;
+    window_requests = 1;
+
+    try std.testing.expect(cache.requestReload());
+    cache.runReloads(allocator, countingServedLoad);
+    try std.testing.expectEqual(@as(usize, 2), served_snapshot_loads);
+    try std.testing.expect(!cache.reloading.load(.seq_cst));
+}
+
 test "a finished reload replaces the providers the endpoint serves, once per generation" {
     const allocator = std.testing.allocator;
     var server = oapTestProviderServer(allocator);
@@ -2857,6 +2907,7 @@ const ServedOapModels = struct {
     generation: std.atomic.Value(u64) = .init(0),
     reloading: std.atomic.Value(bool) = .init(false),
     reload_again: std.atomic.Value(bool) = .init(false),
+    before_release: ?*const fn (*ServedOapModels) void = null,
 
     fn snapshot(self: *ServedOapModels, allocator: std.mem.Allocator) ![]ai_types.Model {
         self.mutex.lockUncancelable(hubIo());
@@ -2878,6 +2929,27 @@ const ServedOapModels = struct {
         _ = self.generation.fetchAdd(1, .seq_cst);
     }
 
+    fn requestReload(self: *ServedOapModels) bool {
+        self.reload_again.store(true, .seq_cst);
+        return !self.reloading.swap(true, .seq_cst);
+    }
+
+    fn runReloads(
+        self: *ServedOapModels,
+        cache_allocator: std.mem.Allocator,
+        load: *const fn (std.mem.Allocator) anyerror![]ai_types.Model,
+    ) void {
+        while (true) {
+            self.reload_again.store(false, .seq_cst);
+            self.reload(cache_allocator, load) catch {};
+            if (self.reload_again.load(.seq_cst)) continue;
+            if (self.before_release) |hook| hook(self);
+            self.reloading.store(false, .seq_cst);
+            if (!self.reload_again.load(.seq_cst)) return;
+            if (self.reloading.swap(true, .seq_cst)) return;
+        }
+    }
+
     fn deinit(self: *ServedOapModels) void {
         if (self.models) |models| model_catalog.deinitModels(self.cache_allocator.?, models);
         self.* = undefined;
@@ -2890,10 +2962,7 @@ const served_oap_startup_wait_ms: i64 = 2_000;
 
 fn startServedOapReload() void {
     if (@import("builtin").is_test) return;
-    if (served_oap_models.reloading.swap(true, .seq_cst)) {
-        served_oap_models.reload_again.store(true, .seq_cst);
-        return;
-    }
+    if (!served_oap_models.requestReload()) return;
     const thread = std.Thread.spawn(.{}, servedOapReloadThread, .{}) catch {
         served_oap_models.reloading.store(false, .seq_cst);
         return;
@@ -2902,12 +2971,7 @@ fn startServedOapReload() void {
 }
 
 fn servedOapReloadThread() void {
-    while (true) {
-        served_oap_models.reload_again.store(false, .seq_cst);
-        served_oap_models.reload(std.heap.page_allocator, loadProductionServedModels) catch {};
-        if (!served_oap_models.reload_again.load(.seq_cst)) break;
-    }
-    served_oap_models.reloading.store(false, .seq_cst);
+    served_oap_models.runReloads(std.heap.page_allocator, loadProductionServedModels);
 }
 
 fn startServingOapCatalog(allocator: std.mem.Allocator, server: *oap_provider_server.Server) !u64 {

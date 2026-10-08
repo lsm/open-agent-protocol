@@ -24,9 +24,12 @@ without prompting (Linux CI, or a signed build with a granted ACL).
 from __future__ import annotations
 
 import asyncio
+import atexit
 import json
 import os
+import shutil
 import tempfile
+from pathlib import Path
 
 import pytest
 
@@ -49,12 +52,23 @@ SMOKE_PROVIDERS = {
 }
 
 
+def catalog_credential_names() -> set[str]:
+    catalog = json.loads((Path(__file__).resolve().parents[3] / "providers" / "catalog.json").read_text())
+    rows = catalog["providers"] if isinstance(catalog, dict) else catalog
+    return {name for row in rows for name in row.get("credential_env", [])}
+
+
+CATALOG_CREDENTIALS = catalog_credential_names()
+
+
 def smoke_env() -> dict[str, str]:
     home = tempfile.mkdtemp(prefix="oap-sdk-py-home-")
+    atexit.register(shutil.rmtree, home, ignore_errors=True)
     os.makedirs(os.path.join(home, ".oapx"), mode=0o700)
     with open(os.path.join(home, ".oapx", "providers.json"), "w") as handle:
         json.dump(SMOKE_PROVIDERS, handle)
-    return {**os.environ, "HOME": home, "XDG_CONFIG_HOME": home}
+    inherited = {name: value for name, value in os.environ.items() if name not in CATALOG_CREDENTIALS}
+    return {**inherited, "HOME": home, "XDG_CONFIG_HOME": home}
 
 
 async def open_transport(binary: str, **kwargs: object) -> StdioTransport:
