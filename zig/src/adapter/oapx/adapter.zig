@@ -1101,6 +1101,7 @@ pub const Session = struct {
         try payload.put("interaction_id", .{ .string = call.interaction_id });
         try payload.put("requested_by", .{ .string = endpoint_id });
         try payload.put("responded_by", .{ .string = self.participant });
+        if (self.providedNamed(call.name)) |definition| if (definition.source) |source| try payload.put("source", .{ .string = source });
         if (request_id.len > 0) try payload.put("request_id", .{ .string = request_id });
         return payload;
     }
@@ -3721,8 +3722,14 @@ const provided_lookup =
     \\[{"name":"lookup","description":"Look a word up","input_schema":{"type":"object"},"execution_owner":"user"}]
 ;
 
+const provided_lookup_sourced =
+    \\[{"name":"lookup","description":"Look a word up","input_schema":{"type":"object"},"execution_owner":"user","source":"oapx"}]
+;
+
 const ProvidedWire = struct {
     wire: Wire,
+    tools: []const u8 = provided_lookup,
+    list_first: bool = false,
     scope: []const u8 = "",
     run_scope: []const u8 = "",
     asked: std.json.ObjectMap = undefined,
@@ -3735,7 +3742,8 @@ const ProvidedWire = struct {
         ));
         try self.wire.send("capabilities.request", "", try parseValue(a, "{}"));
         self.scope = ",\"session_id\":\"wire-session\",\"capability_revision\":\"" ++ capability_revision ++ "\"";
-        try self.wire.send("session.open.request", self.scope, try parseValue(a, "{\"session_id\":\"wire-session\",\"tools\":" ++ provided_lookup ++ "}"));
+        try self.wire.send("session.open.request", self.scope, try parseValue(a, try std.fmt.allocPrint(a, "{{\"session_id\":\"wire-session\",\"tools\":{s}}}", .{self.tools})));
+        if (self.list_first) try self.wire.send("action.tools.list.request", self.scope, try parseValue(a, "{\"session_id\":\"wire-session\"}"));
         try self.wire.send("session.message.submit.request", self.scope, try parseValue(a,
             \\{"session_id":"wire-session","delivery":"auto","messages":[{"role":"user","content":"look it up"}]}
         ));
@@ -3798,6 +3806,25 @@ test "a provided tool's call waits for the opener, and the opener's acknowledgem
             const completed = provided.payloadOf("action.call.completed").?;
             try testing.expectEqualStrings("open agent protocol", completed.get("result").?.object.get("meaning").?.string);
         }
+    }
+}
+
+test "a provided tool that names the loop's source keeps it on the listing and on every envelope of its call" {
+    var script = Script{ .tool_first = true, .tool_name = "lookup", .tool_arguments = "{}" };
+    var provided: ProvidedWire = .{ .wire = undefined, .tools = provided_lookup_sourced, .list_first = true };
+    try provided.start(&script);
+    defer provided.wire.deinit();
+
+    try testing.expectEqualStrings(native_source, provided.asked.get("source").?.string);
+    _ = try provided.resolve("{\"started\":{}}", &.{});
+    _ = try provided.resolve("{\"result\":{\"meaning\":\"open agent protocol\"}}", &.{});
+    _ = try provided.wire.wait("run.completed");
+    try provided.wire.validate();
+    try testing.expectEqualStrings(native_source, provided.payloadOf("action.call.started").?.get("source").?.string);
+    try testing.expectEqualStrings(native_source, provided.payloadOf("action.call.completed").?.get("source").?.string);
+    const listed = provided.payloadOf("action.tools.list.response").?.get("tools").?.array.items;
+    for (listed) |tool| {
+        if (std.mem.eql(u8, tool.object.get("name").?.string, "lookup")) try testing.expectEqualStrings(native_source, tool.object.get("source").?.string);
     }
 }
 
