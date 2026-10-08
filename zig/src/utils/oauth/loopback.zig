@@ -46,7 +46,10 @@ pub const Listener = struct {
             if (isCancelled()) return error.AuthFlowCancelled;
             if (compat.time.nowMillis() >= deadline) return error.LoginTimedOut;
             if (!try net.readableWithin(net.serverHandle(&self.server), poll_ms)) continue;
-            var stream = net.acceptStream(&self.server) catch continue;
+            var stream = net.acceptStream(&self.server) catch {
+                compat.time.sleepMs(@intCast(poll_ms));
+                continue;
+            };
             defer stream.close();
             if (isCancelled()) {
                 respond(&stream, "409 Conflict", failed_page);
