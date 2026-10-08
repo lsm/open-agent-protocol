@@ -710,6 +710,7 @@ pub const Session = struct {
         try contract.refuseUnadvertisedControls(descriptor, request, refusal);
         if (request.session_id.len == 0 or request.messages.len == 0) return error.InvalidSubmission;
         if (!std.mem.eql(u8, request.session_id, self.id)) return error.RunNotFound;
+        if (request.delivery == .steer and request.model_id != null) return refusal.unsupported("run.model_selection", contract.reason_unsatisfiable);
         if (request.delivery == .steer) return self.steer(arena, request, envelope_id, refusal);
         const busy = self.live() != null or self.queuedCount() > 0;
         const reservation = busy or request.delivery == .queue;
@@ -3955,4 +3956,17 @@ test "a served adapter advertises the features its host adds beside its own" {
     const replaced = try owner.adapter().probe(&refusal);
     try testing.expectEqual(oap_types.SupportLevel.native, replaced.level(contract.feature_models_list));
     try testing.expectEqual(unsaved_features.len, replaced.features.len);
+}
+
+test "a steer naming a model is refused as unsatisfiable, since it cannot change the admitted run's model" {
+    var script = Script{};
+    var harness: Harness = undefined;
+    try harness.init(&script);
+    defer harness.deinit();
+    var refusal = contract.Refusal{};
+    var parts = [_]oap_types.ContentPart{.{ .text = "go elsewhere" }};
+    var messages = [_]oap_types.Message{.{ .role = .user, .content = .{ .parts = &parts } }};
+    try testing.expectError(error.UnsupportedFeature, harness.session.submit(harness.arena.allocator(), &.{ .session_id = harness.session.id(), .messages = &messages, .delivery = .steer, .model_id = "scripted/openai-completions@other-model" }, "steer-envelope", &refusal));
+    try testing.expectEqualStrings("run.model_selection", refusal.feature);
+    try testing.expectEqualStrings(contract.reason_unsatisfiable, refusal.reason);
 }
