@@ -26,17 +26,14 @@ type ChatProviderConfig = {
   models: string[];
 };
 
-type AuthSessionStatus = "running" | "waiting_for_input" | "success" | "error";
+type AuthSessionStatus = "running" | "success" | "error";
 
 type AuthSession = {
   id: string;
   provider: string;
   status: AuthSessionStatus;
   events: MakaiAuthEvent[];
-  pendingPrompt?: Extract<MakaiAuthEvent, { type: "prompt" }>;
   error?: string;
-  resolvePrompt?: (value: string) => void;
-  rejectPrompt?: (error: Error) => void;
   createdAt: number;
   updatedAt: number;
 };
@@ -142,7 +139,6 @@ function cleanupSessions(sessions: Map<string, AuthSession>): void {
   const now = Date.now();
   for (const [id, session] of sessions.entries()) {
     if (now - session.updatedAt > SESSION_TTL_MS) {
-      session.rejectPrompt?.(new Error("auth session expired"));
       sessions.delete(id);
     }
   }
@@ -156,7 +152,6 @@ export function createDemoServer(options: DemoServerOptions = {}): Server {
   function clientOptions(extra?: Partial<CreateMakaiClientOptions>): CreateMakaiClientOptions {
     const env: NodeJS.ProcessEnv = { ...process.env, ...(options.env ?? {}), ...(homeDir ? { HOME: homeDir } : {}) };
     return {
-      wireProtocol: "legacy",
       ...(options.command ? { command: options.command, args: options.args, env } : binaryPath ? { resolver: { binaryPath }, env } : { env, resolver: { binaryPath: "" } }),
       ...extra,
     };
@@ -227,25 +222,10 @@ export function createDemoServer(options: DemoServerOptions = {}): Server {
                 session.status = "success";
               }
             },
-            onPrompt: async (prompt) => {
-              session.pendingPrompt = prompt;
-              session.status = "waiting_for_input";
-              session.updatedAt = Date.now();
-              return await new Promise<string>((resolve, reject) => {
-                session.resolvePrompt = resolve;
-                session.rejectPrompt = reject;
-              });
-            },
           });
-          session.pendingPrompt = undefined;
-          session.resolvePrompt = undefined;
-          session.rejectPrompt = undefined;
           session.status = "success";
           session.updatedAt = Date.now();
         } catch (error: unknown) {
-          session.pendingPrompt = undefined;
-          session.resolvePrompt = undefined;
-          session.rejectPrompt = undefined;
           session.status = "error";
           session.error = error instanceof Error ? error.message : String(error);
           session.updatedAt = Date.now();
@@ -271,38 +251,9 @@ export function createDemoServer(options: DemoServerOptions = {}): Server {
         id: session.id,
         provider: session.provider,
         status: session.status,
-        pendingPrompt: session.pendingPrompt,
         events: session.events,
         error: session.error,
       });
-      return true;
-    }
-
-    const authRespondMatch = pathname.match(/^\/api\/auth\/sessions\/([^/]+)\/respond$/);
-    if (authRespondMatch && req.method === "POST") {
-      const session = authSessions.get(authRespondMatch[1]);
-      if (!session) {
-        json(res, 404, { error: "session not found" });
-        return true;
-      }
-      if (!session.resolvePrompt) {
-        json(res, 409, { error: "session is not waiting for input" });
-        return true;
-      }
-      const body = (await readJsonBody(req)) as { answer?: string };
-      if (typeof body?.answer !== "string") {
-        json(res, 400, { error: "answer is required" });
-        return true;
-      }
-
-      const resolvePrompt = session.resolvePrompt;
-      session.resolvePrompt = undefined;
-      session.rejectPrompt = undefined;
-      session.pendingPrompt = undefined;
-      session.status = "running";
-      session.updatedAt = Date.now();
-      resolvePrompt(body.answer);
-      json(res, 200, { ok: true });
       return true;
     }
 
@@ -390,9 +341,6 @@ export function createDemoServer(options: DemoServerOptions = {}): Server {
   });
 
   server.on("close", () => {
-    for (const session of authSessions.values()) {
-      session.rejectPrompt?.(new Error("server stopped"));
-    }
     authSessions.clear();
   });
 

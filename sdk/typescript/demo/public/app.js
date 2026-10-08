@@ -11,10 +11,6 @@ const authUrlBox = document.getElementById("authUrlBox");
 const authUrlLink = document.getElementById("authUrlLink");
 const authUrlInstructions = document.getElementById("authUrlInstructions");
 const authEvents = document.getElementById("authEvents");
-const authPromptBox = document.getElementById("authPromptBox");
-const authPromptLabel = document.getElementById("authPromptLabel");
-const authPromptInput = document.getElementById("authPromptInput");
-const authPromptSubmit = document.getElementById("authPromptSubmit");
 
 const chatProviderSelect = document.getElementById("chatProvider");
 const chatModelSelect = document.getElementById("chatModel");
@@ -29,17 +25,6 @@ function appendAuthLine(line) {
   authEvents.scrollTop = authEvents.scrollHeight;
 }
 
-function setAuthPrompt(promptEvent) {
-  if (!promptEvent) {
-    authPromptBox.classList.add("hidden");
-    authPromptInput.value = "";
-    return;
-  }
-  authPromptLabel.textContent = promptEvent.message;
-  authPromptBox.classList.remove("hidden");
-  authPromptInput.focus();
-}
-
 function setAuthUrl(urlEvent) {
   if (!urlEvent || !urlEvent.url) {
     authUrlBox.classList.add("hidden");
@@ -52,30 +37,6 @@ function setAuthUrl(urlEvent) {
   authUrlLink.textContent = urlEvent.url;
   authUrlInstructions.textContent = urlEvent.instructions ?? "";
   authUrlBox.classList.remove("hidden");
-}
-
-function normalizePromptAnswer(rawInput) {
-  const raw = (rawInput ?? "").trim();
-  if (!raw) return raw;
-
-  try {
-    const parsed = new URL(raw);
-    const hash = parsed.hash.startsWith("#") ? parsed.hash.slice(1) : parsed.hash;
-    const hashParams = new URLSearchParams(hash);
-    const hashCode = hashParams.get("code");
-    if (hashCode) return hashCode;
-    const queryCode = parsed.searchParams.get("code");
-    if (queryCode) return queryCode;
-  } catch {}
-
-  const fragmentLike = raw.startsWith("#") ? raw.slice(1) : raw;
-  if (fragmentLike.includes("code=")) {
-    const params = new URLSearchParams(fragmentLike);
-    const code = params.get("code");
-    if (code) return code;
-  }
-
-  return raw;
 }
 
 function renderProviderModels() {
@@ -132,7 +93,6 @@ async function pollAuthSession() {
   }
   setAuthUrl(latestAuthUrl);
 
-  setAuthPrompt(payload.pendingPrompt);
 
   if (payload.status === "success" || payload.status === "error") {
     clearInterval(state.authPollTimer);
@@ -154,7 +114,6 @@ function addMessage(role, text) {
 authStartBtn.addEventListener("click", async () => {
   authEvents.textContent = "";
   setAuthUrl(null);
-  setAuthPrompt(null);
   authStatus.textContent = "Starting auth session...";
 
   const response = await fetch("/api/auth/sessions", {
@@ -175,27 +134,6 @@ authStartBtn.addEventListener("click", async () => {
       authStatus.textContent = `Poll failed: ${error.message}`;
     });
   }, 1000);
-  await pollAuthSession();
-});
-
-authPromptSubmit.addEventListener("click", async () => {
-  if (!state.authSessionId) return;
-  const answer = normalizePromptAnswer(authPromptInput.value);
-  if (answer !== authPromptInput.value.trim()) {
-    appendAuthLine("info: extracted code from pasted callback URL");
-  }
-  const response = await fetch(`/api/auth/sessions/${state.authSessionId}/respond`, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ answer }),
-  });
-  const payload = await response.json();
-  if (!response.ok) {
-    appendAuthLine(`prompt submit failed: ${payload.error ?? "unknown error"}`);
-    return;
-  }
-  authPromptInput.value = "";
-  setAuthPrompt(null);
   await pollAuthSession();
 });
 

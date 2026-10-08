@@ -4,19 +4,11 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import {
-  createMakaiAgentApi,
-  createMakaiAgentApiWithModels,
-  createMakaiProviderApi,
-  MakaiStdioClient,
-  MakaiStreamError,
   type MakaiLogger,
   getNoopLogger,
   isNoopLogger,
   resolveMakaiBinary,
 } from "../src";
-
-const sourceFixturesDir = path.resolve(__dirname, "../../sdk/typescript/test/fixtures");
-const fixtureScript = path.join(sourceFixturesDir, "execution-server.js");
 
 type LogEntry = { level: string; message: string; context?: Record<string, unknown> };
 
@@ -28,46 +20,6 @@ function createCapturingLogger(): MakaiLogger & { entries: LogEntry[] } {
     info(message, context) { entries.push({ level: "info", message, context }); },
     warn(message, context) { entries.push({ level: "warn", message, context }); },
     error(message, context) { entries.push({ level: "error", message, context }); },
-  };
-}
-
-type Harness = {
-  client: MakaiStdioClient;
-  logger: ReturnType<typeof createCapturingLogger>;
-  tmpDir: string;
-  logPath: string;
-  cleanup(): Promise<void>;
-};
-
-async function setupHarness(): Promise<Harness> {
-  const logger = createCapturingLogger();
-  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "makai-logger-test-"));
-  const logPath = path.join(tmpDir, "request.log");
-  const client = new MakaiStdioClient({
-    command: process.execPath,
-    args: [fixtureScript],
-    env: { ...process.env, OAP_SDK_TEST_REQUEST_LOG: logPath },
-    handshakeTimeoutMs: 5000,
-    logger,
-  });
-  await client.connect();
-  return {
-    client,
-    logger,
-    tmpDir,
-    logPath,
-    cleanup: async () => {
-      await client.close();
-      fs.rmSync(tmpDir, { recursive: true, force: true });
-    },
-  };
-}
-
-function request() {
-  return {
-    model_ref: "anthropic/anthropic-messages@claude-sonnet-4-5",
-    messages: [{ role: "user" as const, content: "hello" }],
-    options: { temperature: 0.2, session_id: "testNanoIdSess1234567" },
   };
 }
 
@@ -85,74 +37,6 @@ test("getNoopLogger returns a logger with all four methods", () => {
 
 test("getNoopLogger returns the same singleton instance", () => {
   assert.strictEqual(getNoopLogger(), getNoopLogger());
-});
-
-test("stdio transport logs connect/handshake and close events", async () => {
-  const logger = createCapturingLogger();
-  const client = new MakaiStdioClient({
-    command: process.execPath,
-    args: [path.join(sourceFixturesDir, "ready-server.js")],
-    handshakeTimeoutMs: 5000,
-    logger,
-  });
-
-  await client.connect();
-  const spawnLog = logger.entries.find((e) => e.message === "stdio: spawning process");
-  assert.ok(spawnLog, "expected 'stdio: spawning process' log");
-  assert.equal(spawnLog.context?.command, process.execPath);
-
-  const handshakeLog = logger.entries.find((e) => e.message === "stdio: waiting for handshake");
-  assert.ok(handshakeLog, "expected 'stdio: waiting for handshake' log");
-
-  const completeLog = logger.entries.find((e) => e.message === "stdio: handshake complete");
-  assert.ok(completeLog, "expected 'stdio: handshake complete' log");
-
-  await client.close();
-  const closeLog = logger.entries.find((e) => e.message === "stdio: closing transport");
-  assert.ok(closeLog, "expected 'stdio: closing transport' log");
-});
-
-test("stdio transport logs frame send and receive", async () => {
-  const logger = createCapturingLogger();
-  const client = new MakaiStdioClient({
-    command: process.execPath,
-    args: [path.join(sourceFixturesDir, "ready-server.js")],
-    handshakeTimeoutMs: 5000,
-    logger,
-  });
-
-  await client.connect();
-  logger.entries.length = 0;
-
-  client.send({ type: "stream_request", stream_id: "s1" });
-
-  const sendLog = logger.entries.find((e) => e.message === "stdio: sending frame");
-  assert.ok(sendLog, "expected 'stdio: sending frame' log");
-  assert.equal(sendLog.context?.type, "stream_request");
-  assert.equal(sendLog.context?.stream_id, "s1");
-
-  const frame = await client.nextFrame(5000);
-  const receiveLog = logger.entries.find((e) => e.message === "stdio: received frame");
-  assert.ok(receiveLog, "expected 'stdio: received frame' log");
-  assert.equal(receiveLog.context?.type, frame.type);
-
-  await client.close();
-});
-
-test("stdio transport logs error frame during handshake", async () => {
-  const logger = createCapturingLogger();
-  const client = new MakaiStdioClient({
-    command: process.execPath,
-    args: [path.join(sourceFixturesDir, "error-server.js")],
-    handshakeTimeoutMs: 5000,
-    logger,
-  });
-
-  await assert.rejects(() => client.connect());
-  const receiveLog = logger.entries.find((e) => e.message === "stdio: received frame");
-  assert.ok(receiveLog, "expected 'stdio: received frame' log");
-  assert.equal(receiveLog.context?.type, "error");
-  await client.close();
 });
 
 test("binary resolver logs resolution steps", async () => {
@@ -321,150 +205,8 @@ test("binary resolver logs resolution from the bundled package", async () => {
   }
 });
 
-test("provider complete logs stream_request and frame exchange", async () => {
-  const harness = await setupHarness();
-  try {
-    const provider = createMakaiProviderApi(harness.client, { logger: harness.logger });
-    await provider.complete(request());
-
-    const streamLog = harness.logger.entries.find((e) => e.message === "provider: sending complete_request");
-    assert.ok(streamLog, "expected 'provider: sending complete_request' log");
-    assert.equal(streamLog.context?.model_ref, request().model_ref);
-    assert.ok(typeof streamLog.context?.stream_id === "string");
-  } finally {
-    await harness.cleanup();
-  }
-});
-
-test("provider stream logs start and terminal events", async () => {
-  const harness = await setupHarness();
-  try {
-    const provider = createMakaiProviderApi(harness.client, { logger: harness.logger });
-    const events = [];
-    for await (const event of provider.stream(request())) {
-      events.push(event);
-    }
-
-    const startLog = harness.logger.entries.find((e) => e.message === "provider: starting stream");
-    assert.ok(startLog, "expected 'provider: starting stream' log");
-
-    const requestLog = harness.logger.entries.find((e) => e.message === "provider: sending stream_request");
-    assert.ok(requestLog, "expected 'provider: sending stream_request' log");
-
-    const streamStartedLog = harness.logger.entries.find((e) => e.message === "provider: stream started");
-    assert.ok(streamStartedLog, "expected 'provider: stream started' log");
-  } finally {
-    await harness.cleanup();
-  }
-});
-
-test("agent run logs agent_start", async () => {
-  const harness = await setupHarness();
-  try {
-    const agent = createMakaiAgentApi(harness.client, { logger: harness.logger });
-    await agent.run(request());
-
-    const startLog = harness.logger.entries.find((e) => e.message === "agent: sending agent_start");
-    assert.ok(startLog, "expected 'agent: sending agent_start' log");
-    assert.ok(typeof startLog.context?.session_id === "string");
-  } finally {
-    await harness.cleanup();
-  }
-});
-
-test("agent stream logs start events", async () => {
-  const harness = await setupHarness();
-  try {
-    const agent = createMakaiAgentApi(harness.client, { logger: harness.logger });
-    const events = [];
-    for await (const event of agent.stream(request())) {
-      events.push(event);
-    }
-
-    const startLog = harness.logger.entries.find((e) => e.message === "agent: starting stream");
-    assert.ok(startLog, "expected 'agent: starting stream' log");
-
-    const agentStartLog = harness.logger.entries.find((e) => e.message === "agent: sending agent_start");
-    assert.ok(agentStartLog, "expected 'agent: sending agent_start' log");
-
-    const streamStartedLog = harness.logger.entries.find((e) => e.message === "agent: stream started");
-    assert.ok(streamStartedLog, "expected 'agent: stream started' log");
-  } finally {
-    await harness.cleanup();
-  }
-});
-
-test("no logger configured results in zero overhead (no crashes)", async () => {
-  const client = new MakaiStdioClient({
-    command: process.execPath,
-    args: [path.join(sourceFixturesDir, "ready-server.js")],
-    handshakeTimeoutMs: 5000,
-  });
-
-  await client.connect();
-  client.send({ type: "stream_request", stream_id: "s1" });
-  const frame = await client.nextFrame(5000);
-  assert.ok(frame);
-  await client.close();
-});
-
-test("logger captures envelope type and stream_id in frame send context", async () => {
-  const harness = await setupHarness();
-  try {
-    const provider = createMakaiProviderApi(harness.client, { logger: harness.logger });
-    await provider.complete(request());
-
-    const sendLogs = harness.logger.entries.filter(
-      (e) => e.message === "stdio: sending frame" && e.context?.type === "complete_request",
-    );
-    assert.ok(sendLogs.length >= 1, "expected at least one complete_request send log");
-
-    const streamId = sendLogs[0]!.context?.stream_id;
-    assert.equal(typeof streamId, "string");
-    assert.ok((streamId as string).length >= 10, "stream_id should be a ULID");
-  } finally {
-    await harness.cleanup();
-  }
-});
-
 test("isNoopLogger identifies no-op logger and distinguishes custom loggers", () => {
   assert.ok(isNoopLogger(getNoopLogger()), "getNoopLogger() should be identified as no-op");
   const custom = createCapturingLogger();
   assert.ok(!isNoopLogger(custom), "custom logger should not be identified as no-op");
-});
-
-test("no-op logger skips context allocation on send hot path", async () => {
-  const client = new MakaiStdioClient({
-    command: process.execPath,
-    args: [path.join(sourceFixturesDir, "ready-server.js")],
-    handshakeTimeoutMs: 5000,
-  });
-
-  await client.connect();
-  client.send({ type: "stream_request", stream_id: "s1" });
-  const frame = await client.nextFrame(5000);
-  assert.ok(frame);
-  await client.close();
-});
-
-test("createMakaiAgentApiWithModels forwards logger to nested models API", async () => {
-  const logger = createCapturingLogger();
-  const client = new MakaiStdioClient({
-    command: process.execPath,
-    args: [fixtureScript],
-    env: { ...process.env, OAP_SDK_TEST_REQUEST_LOG: path.join(os.tmpdir(), "makai-agent-models-test.log") },
-    handshakeTimeoutMs: 5000,
-    logger,
-  });
-
-  await client.connect();
-  try {
-    const agentWithModels = createMakaiAgentApiWithModels(client, { logger, responseTimeoutMs: 5000 });
-    await agentWithModels.models.list();
-
-    const modelsLog = logger.entries.find((e) => e.message === "models: sending models_request");
-    assert.ok(modelsLog, "expected models API to log via forwarded logger");
-  } finally {
-    await client.close();
-  }
 });

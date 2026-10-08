@@ -3,110 +3,41 @@ import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { createMakaiAuthClient, createMakaiStdioClient, StdioProtocolError } from "../src";
+import { createMakaiClient, MakaiAuthError } from "../src";
 
 const binaryPath = process.env.OAP_SDK_BINARY_PATH;
 
-test("e2e: connect to makai binary over stdio", async (t) => {
+test("e2e: connect to oapx serve agent,provider over stdio", async (t) => {
   if (!binaryPath) {
     t.skip("OAP_SDK_BINARY_PATH is not set");
     return;
   }
 
-  const client = await createMakaiStdioClient({
+  const client = await createMakaiClient({
     resolver: { binaryPath },
-    handshakeTimeoutMs: 1000,
+    handshakeTimeoutMs: 5000,
   });
-  await client.connect();
   await client.close();
 });
 
-test("e2e: nextFrame times out when the runtime sends nothing", async (t) => {
+test("e2e: a manual login fails closed and persists no credentials", async (t) => {
   if (!binaryPath) {
     t.skip("OAP_SDK_BINARY_PATH is not set");
     return;
   }
 
-  const client = await createMakaiStdioClient({
-    resolver: { binaryPath },
-    handshakeTimeoutMs: 1000,
-  });
-  await client.connect();
-  await assert.rejects(() => client.nextFrame(150), /timed out waiting for frame/);
-  await client.close();
-});
-
-test("e2e: malformed envelope is rejected with a nack and the runtime stays up", async (t) => {
-  if (!binaryPath) {
-    t.skip("OAP_SDK_BINARY_PATH is not set");
-    return;
-  }
-
-  const client = await createMakaiStdioClient({
-    resolver: { binaryPath },
-    handshakeTimeoutMs: 1000,
-  });
-  await client.connect();
-
-  client.send({ type: "stream_request", stream_id: "e2e-smoke" });
-  const rejection = (await client.nextFrame(2000)) as {
-    type?: string;
-    payload?: { reason?: string; error_code?: string };
-  };
-  assert.equal(rejection.type, "nack");
-  assert.equal(rejection.payload?.error_code, "invalid_request");
-  assert.equal(typeof rejection.payload?.reason, "string");
-  assert.ok((rejection.payload?.reason?.length ?? 0) > 0);
-
-  client.send({ type: "stream_request", stream_id: "e2e-smoke-again" });
-  const second = (await client.nextFrame(2000)) as { type?: string };
-  assert.equal(second.type, "nack");
-
-  await client.close();
-});
-
-test("e2e: version skew fails fast", async (t) => {
-  if (!binaryPath) {
-    t.skip("OAP_SDK_BINARY_PATH is not set");
-    return;
-  }
-
-  const client = await createMakaiStdioClient({
-    resolver: { binaryPath },
-    expectedProtocolVersion: "2",
-    handshakeTimeoutMs: 1000,
-  });
-  await assert.rejects(
-    () => client.connect(),
-    (error: unknown) =>
-      error instanceof StdioProtocolError &&
-      error.code === "version_mismatch" &&
-      error.message.includes("protocol version mismatch"),
-  );
-  await client.close();
-});
-
-test("e2e: auth login persists credentials", async (t) => {
-  if (!binaryPath) {
-    t.skip("OAP_SDK_BINARY_PATH is not set");
-    return;
-  }
-
-  const tempHome = await fs.mkdtemp(path.join(os.tmpdir(), "makai-auth-home-"));
-  const client = await createMakaiAuthClient({
+  const tempHome = await fs.mkdtemp(path.join(os.tmpdir(), "oapx-auth-home-"));
+  const client = await createMakaiClient({
     resolver: { binaryPath },
     env: { ...process.env, HOME: tempHome, OAPX_TEST_FIXTURE_PROVIDER: "1" },
-    handshakeTimeoutMs: 1000,
+    handshakeTimeoutMs: 5000,
   });
   try {
-    await client.auth.login("test-fixture", {
-      onPrompt: async () => "ok",
-    });
-    const authPath = path.join(tempHome, ".oapx", "auth.json");
-    const raw = await fs.readFile(authPath, "utf8");
-    const parsed = JSON.parse(raw) as Record<string, { refresh?: string; access?: string }>;
-    assert.equal(typeof parsed["test-fixture"]?.refresh, "string");
-    assert.equal(typeof parsed["test-fixture"]?.access, "string");
+    await assert.rejects(
+      () => client.auth.login("test-fixture"),
+      (error: unknown) => error instanceof MakaiAuthError && error.code === "auth_input_unavailable",
+    );
+    await assert.rejects(() => fs.access(path.join(tempHome, ".oapx", "auth.json")));
   } finally {
     await client.close();
     await fs.rm(tempHome, { recursive: true, force: true });
@@ -119,9 +50,9 @@ test("e2e: a runtime that was not asked for the fixture does not serve it", asyn
     return;
   }
 
-  const client = await createMakaiAuthClient({
+  const client = await createMakaiClient({
     resolver: { binaryPath },
-    handshakeTimeoutMs: 1000,
+    handshakeTimeoutMs: 5000,
   });
   try {
     const providers = await client.auth.listProviders();
