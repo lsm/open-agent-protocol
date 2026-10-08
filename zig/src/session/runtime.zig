@@ -123,7 +123,6 @@ pub const SessionRuntimeOptions = struct {
     initial_model_id: ?[]const u8 = null,
     initial_model: ?InitialModelRef = null,
     tools: []const agent.AgentTool = &.{},
-    mcp_config_json: ?[]const u8 = null,
     permission_engine: ?*permission.PermissionEngine = null,
     workspace_root: []const u8 = "",
     tool_approval_ctx: ?*anyopaque = null,
@@ -265,7 +264,6 @@ pub const SessionRuntime = struct {
     pending_model_index: ?usize = null,
     event_stream: SessionEventStream,
     tool_registry: local_tools.ToolRegistry,
-    mcp_bridge: ?*local_tools.mcp_bridge.McpBridge = null,
     original_tools: []agent.AgentTool,
     workspace_root: []u8,
     session_cwd: []u8,
@@ -340,7 +338,6 @@ pub const SessionRuntime = struct {
             .selected_model_index = selected,
             .event_stream = SessionEventStream.init(allocator),
             .tool_registry = tool_registry,
-            .mcp_bridge = null,
             .original_tools = original_tools,
             .workspace_root = workspace_root,
             .session_cwd = session_cwd,
@@ -358,19 +355,6 @@ pub const SessionRuntime = struct {
         workspace_root = &.{};
         session_cwd = &.{};
         tool_registry = local_tools.ToolRegistry.init();
-        errdefer runtime.deinit();
-        if (options.mcp_config_json) |config_json| {
-            const bridge = try allocator.create(local_tools.mcp_bridge.McpBridge);
-            bridge.* = local_tools.mcp_bridge.McpBridge.init(allocator);
-            bridge.bind();
-            runtime.mcp_bridge = bridge;
-            try bridge.loadConfigJson(config_json);
-            try bridge.discover();
-            try runtime.tool_registry.registerMcpBridge(allocator, bridge);
-            const next_original_tools = try allocator.dupe(agent.AgentTool, runtime.tool_registry.list());
-            allocator.free(runtime.original_tools);
-            runtime.original_tools = next_original_tools;
-        }
         runtime.suspendContextWindowAboveCeiling();
         return runtime;
     }
@@ -399,10 +383,6 @@ pub const SessionRuntime = struct {
         self.allocator.free(self.session_cwd);
         self.allocator.free(self.session_id);
         self.allocator.free(self.original_tools);
-        if (self.mcp_bridge) |bridge| {
-            bridge.deinit();
-            self.allocator.destroy(bridge);
-        }
         self.tool_registry.deinit(self.allocator);
         deinitModels(self.allocator, self.models);
         self.* = undefined;
@@ -1744,25 +1724,6 @@ test "a window the model in effect can take survives a switch to another that ca
 
     try std.testing.expectEqual(@as(u64, 200_000), runtime.contextWindow());
     try std.testing.expect(runtime.contextWindowRefused() == null);
-}
-
-test "MCP bridge exec context address remains stable in the session runtime" {
-    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
-    const script = "python3 -u -c 'import json,sys\n" ++
-        "for line in sys.stdin:\n" ++
-        " msg=json.loads(line); method=msg.get(\"method\")\n" ++
-        " if method==\"initialize\": print(json.dumps({\"jsonrpc\":\"2.0\",\"id\":msg[\"id\"],\"result\":{\"protocolVersion\":\"2024-11-05\",\"capabilities\":{},\"serverInfo\":{\"name\":\"fake\",\"version\":\"1\"}}}), flush=True)\n" ++
-        " elif method==\"tools/list\": print(json.dumps({\"jsonrpc\":\"2.0\",\"id\":msg[\"id\"],\"result\":{\"tools\":[{\"name\":\"echo\",\"description\":\"Echo\",\"inputSchema\":{\"type\":\"object\"}}]}}), flush=True)'";
-    const script_json = try std.json.Stringify.valueAlloc(std.testing.allocator, script, .{});
-    defer std.testing.allocator.free(script_json);
-    const config_json = try std.fmt.allocPrint(std.testing.allocator, "[{{\"name\":\"mock\",\"command\":\"/bin/sh\",\"args\":[\"-c\",{s}]}}]", .{script_json});
-    defer std.testing.allocator.free(config_json);
-    var runtime = try SessionRuntime.init(std.testing.allocator, .{ .mcp_config_json = config_json });
-    defer runtime.deinit();
-    const bridge = runtime.mcp_bridge orelse return error.MissingBridge;
-    for (bridge.tools.items) |record| {
-        try std.testing.expect(record.exec_ctx.bridge.* == bridge);
-    }
 }
 
 test "local runtime reports steering available" {

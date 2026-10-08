@@ -295,11 +295,13 @@ Decision 0011: tools supplied at open join the loop's own for the session,
 listed with the opener as `execution_owner`, and each call to one is an
 interaction the opener settles with `action.call.resolve.request` while the
 loop's tool waits. Its limits are 64 tools, names matching
-`^[a-zA-Z0-9_-]{1,64}$`, and JSON Schema 2020-12; a definition naming a
-`source` is refused, because the loop declares none. Attaching sources stays
-unadvertised. The draft says a source may be described and attached at session
-open under `+tool-sources`, and that nothing in the protocol *manages* one.
-Filed as #618.
+`^[a-zA-Z0-9_-]{1,64}$`, and JSON Schema 2020-12; a definition may name the
+one source the loop declares, `oapx`, and naming any other is refused. Attaching
+sources stays unadvertised. The draft says a source may be described and
+attached at session open under `+tool-sources`, and that nothing in the protocol
+*manages* one. #618 is closed with nothing left to carry: no production code
+calls `setTools` or configures the MCP bridge, so the TUI supplies no tools, and
+the session runtime's unused MCP wiring is removed.
 
 ## What stays on the TUI side of the line
 
