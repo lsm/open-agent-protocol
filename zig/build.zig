@@ -1887,18 +1887,11 @@ pub fn build(b: *std.Build) void {
             .{ .name = "ai_types", .module = ai_types_mod },
             .{ .name = "event_stream", .module = event_stream_mod },
             .{ .name = "agent", .module = agent_mod },
-            .{ .name = "agent_types", .module = agent_types_mod },
             .{ .name = "model_catalog", .module = model_catalog_mod },
             .{ .name = "permission", .module = permission_mod },
-            .{ .name = "transport", .module = transport_mod },
-            .{ .name = "json_writer", .module = json_writer_mod },
             .{ .name = "tui_session", .module = tui_session_mod },
             .{ .name = "tools/registry", .module = tools_registry_mod },
-            .{ .name = "tool_local_runtime", .module = protocol_tool_local_runtime_mod },
-            .{ .name = "json/writer", .module = json_writer_mod },
-            .{ .name = "json_writer", .module = json_writer_mod },
             .{ .name = "owned_slice", .module = owned_slice_mod },
-            .{ .name = "json_encode", .module = json_encode_mod },
         },
     });
 
@@ -1919,6 +1912,11 @@ pub fn build(b: *std.Build) void {
             .{ .name = "model_ref", .module = protocol_model_ref_mod },
             .{ .name = "permission", .module = permission_mod },
             .{ .name = "tools/registry", .module = tools_registry_mod },
+            .{ .name = "agent_types", .module = agent_types_mod },
+            .{ .name = "transport", .module = transport_mod },
+            .{ .name = "json_writer", .module = json_writer_mod },
+            .{ .name = "tool_local_runtime", .module = protocol_tool_local_runtime_mod },
+            .{ .name = "owned_slice", .module = owned_slice_mod },
         },
     });
     oapx_adapter_mod.addImport("jsonschema", jsonschema_mod);
@@ -2137,6 +2135,7 @@ pub fn build(b: *std.Build) void {
             .{ .name = "tui_fixture", .module = tui_fixture_mod },
             .{ .name = "tui_tests_mock_transport", .module = tui_tests_mock_transport_mod },
             .{ .name = "tui_tests_fixtures", .module = tui_tests_fixtures_mod },
+            .{ .name = "oapx_adapter", .module = oapx_adapter_mod },
         },
     });
 
