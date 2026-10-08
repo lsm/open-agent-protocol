@@ -67,6 +67,8 @@ pub const AuthProtocolServer = struct {
         persist_credentials: bool = true,
         enable_real_oauth: bool = true,
         spawn_login_workers: bool = true,
+        fixture_asks_default: bool = false,
+        copilot_fetch: github_oauth.Fetch = compat.http.fetch,
         answers_prompts: bool = true,
         codex_fetch: codex_oauth.Fetch = compat.http.fetch,
     };
@@ -583,6 +585,11 @@ pub const AuthProtocolServer = struct {
     }
 
     fn loginTestFixture(self: *Self, flow: *FlowState) !oauth_storage.Credentials {
+        if (self.options.fixture_asks_default) {
+            const domain = try self.promptForAnswer(flow, "Fixture domain (press Enter for the default):", true);
+            defer self.allocator.free(domain);
+            if (domain.len > 0) return error.FixtureDomainUnknown;
+        }
         try self.emitAuthUrl(
             flow,
             "https://example.invalid/makai-test-fixture-login",
@@ -635,6 +642,8 @@ pub const AuthProtocolServer = struct {
         const credentials = try github_oauth.login(.{
             .onAuth = githubOnAuth,
             .onPrompt = githubOnPrompt,
+            .isCancelled = oauthFlowCancelled,
+            .fetch = self.options.copilot_fetch,
         }, self.allocator);
 
         if (credentials.enabled_models) |models| {

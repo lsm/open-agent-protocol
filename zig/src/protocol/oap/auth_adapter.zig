@@ -310,6 +310,7 @@ pub const Adapter = struct {
                 .instructions = value.instructions.slice(),
             }),
             .prompt => |value| {
+                if (value.allow_empty) return self.answerWithDefault(flow, flow_id, value.prompt_id.slice());
                 flow.input_unavailable = true;
                 try self.emit("auth.login.event", null, sequence, null, .{
                     .flow_id = flow_text,
@@ -340,6 +341,26 @@ pub const Adapter = struct {
             .success, .@"error" => unreachable,
         }
         flow.next_event += 1;
+    }
+
+    fn answerWithDefault(self: *Self, flow: *Flow, flow_id: auth_types.Ulid, prompt_id: []const u8) !void {
+        const answer: auth_types.Envelope = .{
+            .stream_id = flow_id,
+            .message_id = auth_types.generateUlid(),
+            .sequence = flow.next_inbound,
+            .timestamp = compat.time.nowMillis(),
+            .payload = .{ .auth_prompt_response = .{
+                .flow_id = flow_id,
+                .prompt_id = OwnedSlice(u8).initBorrowed(prompt_id),
+                .answer = OwnedSlice(u8).initBorrowed(""),
+            } },
+        };
+        if (try self.server.handleEnvelope(answer)) |ack| {
+            var owned = ack;
+            defer owned.deinit(self.server.allocator);
+            if (owned.payload == .nack) return error.AuthDefaultAnswerRejected;
+        }
+        flow.next_inbound += 1;
     }
 
     fn translateResult(self: *Self, result: auth_types.AuthLoginResult) !void {
@@ -656,6 +677,8 @@ test "auth server shutdown stops a Codex device login that is still waiting for 
         .answers_prompts = false,
         .codex_fetch = FakeCodexAuth.fetch,
     });
+    var shut_down = false;
+    defer if (!shut_down) native.deinit();
     var adapter = Adapter.init(allocator, &native);
     defer adapter.deinit();
 
@@ -676,9 +699,184 @@ test "auth server shutdown stops a Codex device login that is still waiting for 
     try std.testing.expect(url_arrived);
 
     const started = compat.time.nowMillis();
+    shut_down = true;
     native.deinit();
     try std.testing.expect(compat.time.nowMillis() - started < 1_000);
     try std.testing.expect(FakeCodexAuth.polls <= FakeCodexAuth.pending_polls);
+}
+
+test "OAP auth adapter takes the default for a question that allows an empty answer and goes on to the login URL" {
+    const allocator = std.testing.allocator;
+    var native = auth_server.AuthProtocolServer.init(allocator, .{
+        .persist_credentials = false,
+        .enable_real_oauth = false,
+        .fixture_asks_default = true,
+    });
+    defer native.deinit();
+    auth_providers.test_fixture_opt_in = true;
+    defer auth_providers.test_fixture_opt_in = null;
+    var adapter = Adapter.init(allocator, &native);
+    defer adapter.deinit();
+
+    const start_line =
+        \\{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"auth.login.start.request","id":"start-default","payload":{"provider_id":"test-fixture"}}
+    ;
+    try std.testing.expect(try adapter.handleLine(start_line));
+    const response = adapter.popOutbound() orelse return error.MissingStartResponse;
+    allocator.free(response);
+
+    var last_sequence: u64 = 0;
+    var url_seen = false;
+    var failure_code: ?[]u8 = null;
+    defer if (failure_code) |code| allocator.free(code);
+    const deadline = compat.time.nowMillis() + 5_000;
+    while (failure_code == null and compat.time.nowMillis() < deadline) {
+        _ = try adapter.pump();
+        while (adapter.popOutbound()) |line| {
+            defer allocator.free(line);
+            try std.testing.expect(std.mem.indexOf(u8, line, "Fixture domain") == null);
+            var parsed = try std.json.parseFromSlice(std.json.Value, allocator, line, .{});
+            defer parsed.deinit();
+            const root = parsed.value.object;
+            const type_name = try requiredString(root, "type");
+            if (!std.mem.eql(u8, type_name, "auth.login.event") and !std.mem.eql(u8, type_name, "auth.login.completed")) continue;
+            const sequence = (root.get("sequence") orelse return error.MissingSequence).integer;
+            try std.testing.expectEqual(last_sequence + 1, @as(u64, @intCast(sequence)));
+            last_sequence += 1;
+            const payload = (root.get("payload") orelse return error.MissingPayload).object;
+            if (std.mem.eql(u8, type_name, "auth.login.event")) {
+                if (std.mem.eql(u8, try requiredString(payload, "kind"), "url")) url_seen = true;
+                continue;
+            }
+            const failure = (payload.get("error") orelse return error.MissingAuthError).object;
+            failure_code = try allocator.dupe(u8, try requiredString(failure, "code"));
+        }
+        if (failure_code == null) compat.time.sleepNs(std.time.ns_per_ms);
+    }
+    try std.testing.expect(url_seen);
+    try std.testing.expectEqualStrings("auth_input_unavailable", failure_code orelse return error.LoginNeverCompleted);
+}
+
+const FakeCopilotAuth = struct {
+    var polls: std.atomic.Value(usize) = .init(0);
+    var granted: bool = false;
+    var copilot_token_calls: std.atomic.Value(usize) = .init(0);
+    var model_policy_calls: std.atomic.Value(usize) = .init(0);
+
+    fn fetch(allocator: std.mem.Allocator, url: []const u8, _: compat.http.FetchOptions) compat.http.FetchError!compat.http.Fetched {
+        const body: []const u8 = if (std.mem.endsWith(u8, url, "/login/device/code"))
+            "{\"device_code\":\"device-secret-3\",\"user_code\":\"GH-0001\",\"verification_uri\":\"https://github.com/login/device\",\"expires_in\":5,\"interval\":1}"
+        else if (std.mem.endsWith(u8, url, "/login/oauth/access_token")) blk: {
+            _ = polls.fetchAdd(1, .seq_cst);
+            break :blk if (granted) "{\"access_token\":\"github-secret-3\"}" else "{\"error\":\"authorization_pending\"}";
+        } else if (std.mem.endsWith(u8, url, "/copilot_internal/v2/token")) blk: {
+            _ = copilot_token_calls.fetchAdd(1, .seq_cst);
+            break :blk "{\"token\":\"tid=copilot-secret-3;proxy-ep=proxy.individual.githubcopilot.com\"}";
+        } else if (std.mem.endsWith(u8, url, "/policy")) blk: {
+            _ = model_policy_calls.fetchAdd(1, .seq_cst);
+            break :blk "{}";
+        } else return error.RequestFailed;
+        return .{ .status = 200, .body = try allocator.dupe(u8, body) };
+    }
+
+    fn server() auth_server.AuthProtocolServer {
+        polls.store(0, .seq_cst);
+        granted = false;
+        copilot_token_calls.store(0, .seq_cst);
+        model_policy_calls.store(0, .seq_cst);
+        return auth_server.AuthProtocolServer.init(std.testing.allocator, .{
+            .persist_credentials = false,
+            .copilot_fetch = fetch,
+        });
+    }
+
+    fn startAndAwaitUrl(adapter: *Adapter, id: []const u8) ![]u8 {
+        const line = try std.fmt.allocPrint(std.testing.allocator, "{{\"protocol\":\"open-agent-protocol\",\"version\":\"0.1\",\"profile\":\"open-agent-protocol.agent-control-core\",\"type\":\"auth.login.start.request\",\"id\":\"{s}\",\"payload\":{{\"provider_id\":\"github-copilot\"}}}}", .{id});
+        defer std.testing.allocator.free(line);
+        try std.testing.expect(try adapter.handleLine(line));
+        const response = adapter.popOutbound() orelse return error.MissingStartResponse;
+        defer std.testing.allocator.free(response);
+        var parsed = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, response, .{});
+        defer parsed.deinit();
+        const flow_id = try std.testing.allocator.dupe(u8, try requiredString((parsed.value.object.get("payload") orelse return error.MissingPayload).object, "flow_id"));
+        errdefer std.testing.allocator.free(flow_id);
+        const deadline = compat.time.nowMillis() + 5_000;
+        var url_seen = false;
+        while (compat.time.nowMillis() < deadline) {
+            _ = try adapter.pump();
+            while (adapter.popOutbound()) |event| {
+                defer std.testing.allocator.free(event);
+                if (std.mem.indexOf(u8, event, "\"kind\":\"url\"") != null) url_seen = true;
+            }
+            if (url_seen and polls.load(.seq_cst) > 0) return flow_id;
+            compat.time.sleepNs(std.time.ns_per_ms);
+        }
+        return error.NoUrlEvent;
+    }
+};
+
+test "OAP auth adapter cancels a Copilot device login that is still waiting for approval, and it stops polling" {
+    var native = FakeCopilotAuth.server();
+    defer native.deinit();
+    var adapter = Adapter.init(std.testing.allocator, &native);
+    defer adapter.deinit();
+
+    const flow_id = try FakeCopilotAuth.startAndAwaitUrl(&adapter, "start-copilot-cancel");
+    defer std.testing.allocator.free(flow_id);
+    const cancel_line = try std.fmt.allocPrint(std.testing.allocator, "{{\"protocol\":\"open-agent-protocol\",\"version\":\"0.1\",\"profile\":\"open-agent-protocol.agent-control-core\",\"type\":\"auth.login.cancel.request\",\"id\":\"cancel-copilot\",\"payload\":{{\"flow_id\":\"{s}\"}}}}", .{flow_id});
+    defer std.testing.allocator.free(cancel_line);
+    try std.testing.expect(try adapter.handleLine(cancel_line));
+    compat.time.sleepMs(300);
+    const settled = FakeCopilotAuth.polls.load(.seq_cst);
+    compat.time.sleepMs(1_500);
+    try std.testing.expectEqual(settled, FakeCopilotAuth.polls.load(.seq_cst));
+    try std.testing.expectEqual(@as(usize, 0), native.activeFlowCount());
+}
+
+test "OAP auth adapter completes an approved Copilot device login through the injected fetch alone, and sends no secret" {
+    var native = FakeCopilotAuth.server();
+    defer native.deinit();
+    FakeCopilotAuth.granted = true;
+    var adapter = Adapter.init(std.testing.allocator, &native);
+    defer adapter.deinit();
+
+    const line =
+        \\{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"auth.login.start.request","id":"start-copilot-granted","payload":{"provider_id":"github-copilot"}}
+    ;
+    try std.testing.expect(try adapter.handleLine(line));
+    var status: ?[]u8 = null;
+    defer if (status) |value| std.testing.allocator.free(value);
+    const deadline = compat.time.nowMillis() + 5_000;
+    while (status == null and compat.time.nowMillis() < deadline) {
+        _ = try adapter.pump();
+        while (adapter.popOutbound()) |event| {
+            defer std.testing.allocator.free(event);
+            try std.testing.expect(std.mem.indexOf(u8, event, "secret") == null);
+            var parsed = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, event, .{});
+            defer parsed.deinit();
+            if (!std.mem.eql(u8, try requiredString(parsed.value.object, "type"), "auth.login.completed")) continue;
+            status = try std.testing.allocator.dupe(u8, try requiredString((parsed.value.object.get("payload") orelse return error.MissingPayload).object, "status"));
+        }
+        if (status == null) compat.time.sleepNs(std.time.ns_per_ms);
+    }
+    try std.testing.expectEqualStrings("success", status orelse return error.LoginNeverCompleted);
+    try std.testing.expectEqual(@as(usize, 1), FakeCopilotAuth.copilot_token_calls.load(.seq_cst));
+    try std.testing.expect(FakeCopilotAuth.model_policy_calls.load(.seq_cst) > 0);
+}
+
+test "auth server shutdown stops a Copilot device login that is still waiting for approval" {
+    var native = FakeCopilotAuth.server();
+    var shut_down = false;
+    defer if (!shut_down) native.deinit();
+    var adapter = Adapter.init(std.testing.allocator, &native);
+    defer adapter.deinit();
+
+    const flow_id = try FakeCopilotAuth.startAndAwaitUrl(&adapter, "start-copilot-shutdown");
+    defer std.testing.allocator.free(flow_id);
+    const started = compat.time.nowMillis();
+    shut_down = true;
+    native.deinit();
+    try std.testing.expect(compat.time.nowMillis() - started < 1_000);
 }
 
 test "auth adapter repeats the admitted revision on providers and cancel responses" {
