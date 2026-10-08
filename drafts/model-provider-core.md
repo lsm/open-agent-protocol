@@ -1806,7 +1806,10 @@ An implementation claiming `open-agent-protocol.model-provider-core`:
    can reach it, as `oapx` does with a credential (#355), may describe none
    until one is present; it still answers, and an `inference.create.request`
    naming a provider that awaits a credential is refused as
-   `credential_missing` rather than `model_not_found`. A credential grant
+   `credential_missing` rather than `model_not_found`, and one whose credential
+   is present but whose models are not loaded yet as `provider_unavailable`,
+   which asks for a reload. A provider is described on one wire, its
+   catalog's first, even where the vendor offers more. A credential grant
    reaches only a provider it describes, so a grant cannot yet introduce the
    key for one it does not (#1013).
 2. Answers `provider.models.list.request`, and every `model_ref` it returns

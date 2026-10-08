@@ -24,7 +24,12 @@ pub const Options = struct {
     accepts_inference: bool = false,
     resolves_own_credentials: bool = false,
     catalog: ?types.ModelCatalogState = null,
-    awaits_credential: ?*const fn (provider_id: []const u8) bool = null,
+    unserved_refusal: ?*const fn (provider_id: []const u8) ?UnservedRefusal = null,
+};
+
+pub const UnservedRefusal = struct {
+    code: types.ErrorCode,
+    message: []const u8,
 };
 
 pub const GrantedCredential = struct {
@@ -890,8 +895,8 @@ pub const Server = struct {
         };
 
         const descriptor = self.findProvider(parsed.provider_id) orelse {
-            if (self.options.awaits_credential) |awaits| if (awaits(parsed.provider_id)) {
-                try self.emitCreateRefusal(env, .credential_missing, "this provider is served once it has a credential: sign in or set its key");
+            if (self.options.unserved_refusal) |refusal_for| if (refusal_for(parsed.provider_id)) |refusal| {
+                try self.emitCreateRefusal(env, refusal.code, refusal.message);
                 return;
             };
             try self.emitCreateRefusal(env, .model_not_found, "no such provider");
@@ -2017,8 +2022,10 @@ fn makeRequest(allocator: std.mem.Allocator, type_name: []const u8, payload: []c
     );
 }
 
-fn awaitsAcmeCredential(provider_id: []const u8) bool {
-    return std.mem.eql(u8, provider_id, "acme");
+fn refuseAcmeAndBeta(provider_id: []const u8) ?UnservedRefusal {
+    if (std.mem.eql(u8, provider_id, "acme")) return .{ .code = .credential_missing, .message = "acme needs a key" };
+    if (std.mem.eql(u8, provider_id, "beta")) return .{ .code = .provider_unavailable, .message = "beta is loading" };
+    return null;
 }
 
 fn createRefusalCode(allocator: std.mem.Allocator, server: *Server, model_ref: []const u8) ![]u8 {
@@ -2038,14 +2045,17 @@ fn createRefusalCode(allocator: std.mem.Allocator, server: *Server, model_ref: [
     return code orelse error.NoRefusal;
 }
 
-test "a create for an unserved provider that awaits a credential is refused as credential_missing, and any other as model_not_found" {
+test "a create for an unserved provider is refused with the code the unserved hook names, and as model_not_found when it names none" {
     const allocator = std.testing.allocator;
-    var server = try testServer(allocator, .{ .accepts_inference = true, .awaits_credential = awaitsAcmeCredential });
+    var server = try testServer(allocator, .{ .accepts_inference = true, .unserved_refusal = refuseAcmeAndBeta });
     defer server.deinit();
 
     const awaiting = try createRefusalCode(allocator, &server, "acme/anthropic-messages@m");
     defer allocator.free(awaiting);
     try std.testing.expectEqualStrings("credential_missing", awaiting);
+    const loading = try createRefusalCode(allocator, &server, "beta/anthropic-messages@m");
+    defer allocator.free(loading);
+    try std.testing.expectEqualStrings("provider_unavailable", loading);
     const unknown = try createRefusalCode(allocator, &server, "nobody/anthropic-messages@m");
     defer allocator.free(unknown);
     try std.testing.expectEqualStrings("model_not_found", unknown);

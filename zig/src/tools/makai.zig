@@ -2501,6 +2501,8 @@ const oap_test_mixed_models = [_]ai_types.Model{
     .{ .id = "x1", .name = "X1", .api = "no-wire-api", .provider = "acme", .base_url = "https://x.test", .reasoning = false, .input = &oap_test_text_input, .cost = .{ .input = 0, .output = 0, .cache_read = 0, .cache_write = 0 }, .context_window = 8_000, .max_tokens = 1_024 },
 };
 
+const oap_test_mixed_models_kimi_first = [_]ai_types.Model{ oap_test_mixed_models[1], oap_test_mixed_models[0], oap_test_mixed_models[3], oap_test_mixed_models[2], oap_test_mixed_models[4] };
+
 fn oapTestProviderServer(allocator: std.mem.Allocator) oap_provider_server.Server {
     return oap_provider_server.Server.init(allocator, .{
         .capability_revision = VERSION,
@@ -2510,8 +2512,15 @@ fn oapTestProviderServer(allocator: std.mem.Allocator) oap_provider_server.Serve
     });
 }
 
-test "the provider endpoint serves one row per provider it loaded models for, with every loaded model on that row's wire and no claimed source" {
+test "the provider endpoint serves one row per provider it loaded models for, on its catalog wire whatever the load order, with every loaded model on that wire and no claimed source" {
     const allocator = std.testing.allocator;
+    var reordered = oapTestProviderServer(allocator);
+    defer reordered.deinit();
+    try populateOapProviderCatalogFrom(allocator, &reordered, &oap_test_mixed_models_kimi_first);
+    try std.testing.expectEqualStrings("kimi", reordered.providers.items[0].id);
+    try std.testing.expectEqual(oap_provider_types.Wire.@"openai-chat-completions", reordered.providers.items[0].wire);
+    try std.testing.expectEqualStrings("https://k.test/v1", reordered.providers.items[0].endpoint);
+
     var server = oapTestProviderServer(allocator);
     defer server.deinit();
     try populateOapProviderCatalogFrom(allocator, &server, &oap_test_mixed_models);
@@ -2525,10 +2534,10 @@ test "the provider endpoint serves one row per provider it loaded models for, wi
     try std.testing.expect(anthropic.round_trips_carry);
     const kimi = server.providers.items[1];
     try std.testing.expectEqualStrings("kimi", kimi.id);
-    try std.testing.expectEqual(oap_provider_types.Wire.@"anthropic-messages", kimi.wire);
+    try std.testing.expectEqual(oap_provider_types.Wire.@"openai-chat-completions", kimi.wire);
     try std.testing.expect(!kimi.round_trips_carry);
 
-    const refs = [_][]const u8{ "anthropic/anthropic-messages@a1", "anthropic/anthropic-messages@a2", "kimi/anthropic-messages@k1" };
+    const refs = [_][]const u8{ "anthropic/anthropic-messages@a1", "anthropic/anthropic-messages@a2", "kimi/openai-chat-completions@k2" };
     try std.testing.expectEqual(refs.len, server.models.items.len);
     for (refs, server.models.items) |ref, entry| {
         try std.testing.expectEqualStrings(ref, entry.model_ref);
@@ -2596,24 +2605,34 @@ fn countingServedLoad(allocator: std.mem.Allocator) anyerror![]ai_types.Model {
     return cloneOapModels(allocator, &oap_test_served_models);
 }
 
-test "a provider awaits a credential only when it is a catalog row that needs one, on an implemented wire, and none resolves" {
+fn oapUnservedCode(provider_id: []const u8) ?oap_provider_types.ErrorCode {
+    const refusal = oapUnservedRefusal(provider_id) orelse return null;
+    return refusal.code;
+}
+
+test "an unserved catalog provider that needs a credential is refused as credential_missing until one resolves, then as provider_unavailable after asking for a reload" {
     const allocator = std.testing.allocator;
     try provider_catalog.blankEnvironment(allocator);
     defer compat.clearTestEnv();
     try compat.setTestEnv(allocator, "HOME", "/nonexistent/oapx-awaits-credential-test-home");
+    served_oap_models.last_stale_reload_ms.store(std.math.minInt(i64), .seq_cst);
+    defer served_oap_models.last_stale_reload_ms.store(std.math.minInt(i64), .seq_cst);
 
-    try std.testing.expect(oapProviderAwaitsCredential("anthropic"));
-    try std.testing.expect(oapProviderAwaitsCredential("deepseek"));
-    try std.testing.expect(!oapProviderAwaitsCredential("ollama"));
-    try std.testing.expect(!oapProviderAwaitsCredential("no-such-provider"));
+    try std.testing.expectEqual(@as(?oap_provider_types.ErrorCode, .credential_missing), oapUnservedCode("anthropic"));
+    try std.testing.expectEqual(@as(?oap_provider_types.ErrorCode, .credential_missing), oapUnservedCode("deepseek"));
+    try std.testing.expectEqual(@as(?oap_provider_types.ErrorCode, null), oapUnservedCode("ollama"));
+    try std.testing.expectEqual(@as(?oap_provider_types.ErrorCode, null), oapUnservedCode("no-such-provider"));
+    try std.testing.expect(served_oap_models.claimStaleReload(0, served_oap_stale_reload_interval_ms));
+    served_oap_models.last_stale_reload_ms.store(std.math.minInt(i64), .seq_cst);
 
     try std.testing.expect(rowAwaitsCredential(.{ .id = "keyed", .auth = &.{.api_key}, .wires = &.{"openai-completions"} }));
     try std.testing.expect(!rowAwaitsCredential(.{ .id = "keyless", .auth = &.{ .none, .api_key }, .wires = &.{"openai-completions"} }));
     try std.testing.expect(!rowAwaitsCredential(.{ .id = "unwired", .auth = &.{.api_key}, .wires = &.{"no-such-wire"} }));
 
     try compat.setTestEnv(allocator, provider_catalog.credentialEnv("anthropic")[1], "sk-ant-present");
-    try std.testing.expect(!oapProviderAwaitsCredential("anthropic"));
-    try std.testing.expect(oapProviderAwaitsCredential("deepseek"));
+    try std.testing.expectEqual(@as(?oap_provider_types.ErrorCode, .provider_unavailable), oapUnservedCode("anthropic"));
+    try std.testing.expect(!served_oap_models.claimStaleReload(compat.time.nowMillis(), served_oap_stale_reload_interval_ms));
+    try std.testing.expectEqual(@as(?oap_provider_types.ErrorCode, .credential_missing), oapUnservedCode("deepseek"));
 
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
@@ -2622,8 +2641,17 @@ test "a provider awaits a credential only when it is a catalog row that needs on
     const home = try tmp.dir.realPathFileAlloc(std.testing.io, ".", allocator);
     defer allocator.free(home);
     try compat.setTestEnv(allocator, "HOME", home);
-    try std.testing.expect(!oapProviderAwaitsCredential("deepseek"));
-    try std.testing.expect(oapProviderAwaitsCredential("openai"));
+    try std.testing.expectEqual(@as(?oap_provider_types.ErrorCode, .provider_unavailable), oapUnservedCode("deepseek"));
+    try std.testing.expectEqual(@as(?oap_provider_types.ErrorCode, .credential_missing), oapUnservedCode("openai"));
+}
+
+test "a stale reload is claimed at most once per interval" {
+    var cache: ServedOapModels = .{};
+    defer cache.deinit();
+    try std.testing.expect(cache.claimStaleReload(1_000, 30_000));
+    try std.testing.expect(!cache.claimStaleReload(1_000, 30_000));
+    try std.testing.expect(!cache.claimStaleReload(30_999, 30_000));
+    try std.testing.expect(cache.claimStaleReload(31_000, 30_000));
 }
 
 fn failingServedLoad(allocator: std.mem.Allocator) anyerror![]ai_types.Model {
@@ -2838,14 +2866,16 @@ fn populateOapProviderCatalog(allocator: std.mem.Allocator, server: *oap_provide
 
 fn populateOapProviderCatalogFrom(allocator: std.mem.Allocator, server: *oap_provider_server.Server, models: []const ai_types.Model) !void {
     const proxy_flags = try provider_base_url.proxyCompatFlagsFromEnv(allocator);
-    for (models, 0..) |model, index| {
+    for (models, 0..) |first, index| {
+        if (oap_provider_catalog.mapApiToWire(first.api) == null) continue;
+        if (servedBefore(models[0..index], first.provider)) continue;
+        const model = servedOapLead(models, first.provider) orelse continue;
         const mapping = oap_provider_catalog.mapApiToWire(model.api) orelse continue;
-        if (servedBefore(models[0..index], model.provider)) continue;
 
         var context_window: u32 = 0;
         var max_output_tokens: u32 = 0;
         var reasons = false;
-        for (models[index..]) |sibling| {
+        for (models) |sibling| {
             if (!std.mem.eql(u8, sibling.provider, model.provider)) continue;
             const sibling_mapping = oap_provider_catalog.mapApiToWire(sibling.api) orelse continue;
             if (sibling_mapping.wire != mapping.wire) continue;
@@ -2932,6 +2962,18 @@ fn servedOapGrant(channel: oap_provider_server.GrantChannel) oap_provider_types.
     };
 }
 
+fn servedOapLead(models: []const ai_types.Model, provider_id: []const u8) ?ai_types.Model {
+    const primary = if (provider_catalog.provider(provider_id)) |row| provider_catalog.firstImplementedWire(row) else null;
+    var lead: ?ai_types.Model = null;
+    for (models) |model| {
+        if (!std.mem.eql(u8, model.provider, provider_id)) continue;
+        if (oap_provider_catalog.mapApiToWire(model.api) == null) continue;
+        if (primary) |wire| if (std.mem.eql(u8, model.api, wire.id)) return model;
+        if (lead == null) lead = model;
+    }
+    return lead;
+}
+
 fn servedBefore(earlier: []const ai_types.Model, provider_id: []const u8) bool {
     for (earlier) |model| {
         if (!std.mem.eql(u8, model.provider, provider_id)) continue;
@@ -2958,6 +3000,7 @@ const ServedOapModels = struct {
     generation: std.atomic.Value(u64) = .init(0),
     reloading: std.atomic.Value(bool) = .init(false),
     reload_again: std.atomic.Value(bool) = .init(false),
+    last_stale_reload_ms: std.atomic.Value(i64) = .init(std.math.minInt(i64)),
     before_release: ?*const fn (*ServedOapModels) void = null,
 
     fn snapshot(self: *ServedOapModels, allocator: std.mem.Allocator) ![]ai_types.Model {
@@ -2978,6 +3021,12 @@ const ServedOapModels = struct {
         self.models = fresh;
         self.cache_allocator = cache_allocator;
         _ = self.generation.fetchAdd(1, .seq_cst);
+    }
+
+    fn claimStaleReload(self: *ServedOapModels, now_ms: i64, interval_ms: i64) bool {
+        const last = self.last_stale_reload_ms.load(.seq_cst);
+        if (now_ms -| last < interval_ms) return false;
+        return self.last_stale_reload_ms.cmpxchgStrong(last, now_ms, .seq_cst, .seq_cst) == null;
     }
 
     fn requestReload(self: *ServedOapModels) bool {
@@ -3010,6 +3059,7 @@ const ServedOapModels = struct {
 var served_oap_models: ServedOapModels = .{};
 
 const served_oap_startup_wait_ms: i64 = 2_000;
+const served_oap_stale_reload_interval_ms: i64 = 30_000;
 
 fn startServedOapReload() void {
     if (@import("builtin").is_test) return;
@@ -3047,9 +3097,14 @@ fn applyServedOapReload(allocator: std.mem.Allocator, server: *oap_provider_serv
     return true;
 }
 
-fn oapProviderAwaitsCredential(provider_id: []const u8) bool {
-    const row = provider_catalog.provider(provider_id) orelse return false;
-    return rowAwaitsCredential(row) and !oapCredentialResolves(std.heap.page_allocator, provider_id);
+fn oapUnservedRefusal(provider_id: []const u8) ?oap_provider_server.UnservedRefusal {
+    const row = provider_catalog.provider(provider_id) orelse return null;
+    if (!rowAwaitsCredential(row)) return null;
+    if (!oapCredentialResolves(std.heap.page_allocator, provider_id)) {
+        return .{ .code = .credential_missing, .message = "this provider is served once it has a credential: sign in or set its key" };
+    }
+    if (served_oap_models.claimStaleReload(compat.time.nowMillis(), served_oap_stale_reload_interval_ms)) startServedOapReload();
+    return .{ .code = .provider_unavailable, .message = "this provider has a credential but its models are not loaded: retry after they reload" };
 }
 
 fn oapCredentialResolves(allocator: std.mem.Allocator, provider_id: []const u8) bool {
@@ -4015,7 +4070,7 @@ const HttpProviderRuntime = struct {
             .allocator = allocator,
             .registry = api_registry.ApiRegistry.init(allocator),
             .server = oap_provider_server.Server.init(allocator, .{
-                .awaits_credential = oapProviderAwaitsCredential,
+                .unserved_refusal = oapUnservedRefusal,
                 .capability_revision = VERSION,
                 .grant_channel = .unsupported,
                 .accepts_inference = true,
@@ -4421,7 +4476,7 @@ fn runOapProviderMode(
     try register_builtins.registerBuiltInApiProviders(&registry);
 
     var server = oap_provider_server.Server.init(allocator, .{
-        .awaits_credential = oapProviderAwaitsCredential,
+        .unserved_refusal = oapUnservedRefusal,
         .capability_revision = VERSION,
         .grant_channel = if (oap_provider_grant_channel.GrantChannel.supported) .out_of_band else .unsupported,
         .accepts_inference = true,
@@ -4679,7 +4734,7 @@ fn runOapxServe(
     var provider_registry = api_registry.ApiRegistry.init(allocator);
     defer provider_registry.deinit();
     var provider_server = oap_provider_server.Server.init(allocator, .{
-        .awaits_credential = oapProviderAwaitsCredential,
+        .unserved_refusal = oapUnservedRefusal,
         .capability_revision = VERSION,
         .grant_channel = if (oap_provider_grant_channel.GrantChannel.supported) .out_of_band else .unsupported,
         .accepts_inference = true,
