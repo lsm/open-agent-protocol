@@ -6,7 +6,7 @@
 oapx serve agent,provider --stdio
 ```
 
-It multiplexes `agent-control-core` and `model-provider-core` profiles over that connection. The public `MakaiClient` name remains for source compatibility; the old Makai V1 wire is used only when `legacy_wire=True` or `OAP_SDK_LEGACY_WIRE=1` is set. There is no silent fallback.
+It multiplexes `agent-control-core` and `model-provider-core` profiles over that connection. The public `MakaiClient` name remains for source compatibility.
 
 The package requires Python 3.11+. Install from a checkout with `pip install ./sdk/python` (it is not yet published to PyPI).
 
@@ -64,14 +64,14 @@ handlers = oap_sdk.AuthFlowHandlers(
 await client.auth.login("anthropic", handlers)
 ```
 
-`on_prompt` is only used with explicit Makai V1 compatibility mode, never OAP. `AuthOptions(auth_retry_policy="auto_once", handlers=handlers)` enables one login and retry after a typed `auth_required` or `credential_*` failure; arbitrary provider-error text never triggers login. For a stream that already emitted user-visible output, the SDK does not replay the call.
+`AuthOptions(auth_retry_policy="auto_once", handlers=handlers)` enables one login and retry after a typed `auth_required` or `credential_*` failure; arbitrary provider-error text never triggers login. For a stream that already emitted user-visible output, the SDK does not replay the call.
 
 ## Configuration and errors
 
 `connect()` accepts `command`, `args`, `cwd`, `env`, a `BinaryResolverOptions`, `auth`, and timeouts in seconds. The default args are `("serve", "agent,provider", "--stdio")`. Binary resolution honors `OAP_SDK_BINARY_PATH`, an explicit path or checksum-verified URL, local `zig-out/bin/oapx` or `zig/zig-out/bin/oapx`, then `PATH`.
 
-`oap_sdk.connect_sync()` supplies the same API through a blocking wrapper for scripts; do not call it inside a running event loop. It also accepts `legacy_wire=True` for an old Makai V1 runtime. The async and sync clients own their child process and should be closed.
+`oap_sdk.connect_sync()` supplies the same API through a blocking wrapper for scripts; do not call it inside a running event loop. The async and sync clients own their child process and should be closed.
 
-Failures are typed as `MakaiStreamError`, `MakaiAuthRequiredError`, `MakaiProtocolError`, or `MakaiAuthError`. Unsupported operations carry code `unsupported_feature`. Legacy class names remain for compatibility, even when the wire is OAP.
+Failures are typed as `MakaiStreamError`, `MakaiAuthRequiredError`, `MakaiProtocolError`, or `MakaiAuthError`. Unsupported operations carry code `unsupported_feature`. The `Makai` class names remain for compatibility.
 
 Run `uv run --with pytest --with pytest-asyncio pytest -q` from `sdk/python` to run the suite. OAP fake-host tests require no credentials.

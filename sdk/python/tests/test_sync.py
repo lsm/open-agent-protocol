@@ -18,51 +18,43 @@ from oap_sdk.sync import SyncMakaiClient, connect_sync
 from oap_sdk.types import MessageEnd, TextDelta
 
 MODEL_REF = "anthropic/anthropic-messages@claude-sonnet-4-5"
+PROVIDER = "open-agent-protocol.model-provider-core"
 
 MODEL = {
     "model_ref": MODEL_REF,
     "model_id": "claude-sonnet-4-5",
     "display_name": "Claude Sonnet 4.5",
     "provider_id": "anthropic",
-    "api": "anthropic-messages",
+    "wire": "anthropic-messages",
     "auth_status": "authenticated",
     "lifecycle": "stable",
     "capabilities": ["chat"],
-    "source": "dynamic",
+    "source": "discovered",
 }
+
+INFERENCE = {"inference_id": "inf-1"}
 
 CONFIG: Dict[str, Any] = {
     "handlers": {
-        "models_request": [
-            {
-                "type": "models_response",
-                "payload": {"models": [MODEL], "fetched_at_ms": 1, "cache_max_age_ms": 2},
-            }
+        "provider.models.list.request": [
+            {"type": "provider.models.list.response", "payload": {"models": [MODEL]}}
         ],
-        "stream_request": [
-            {"type": "text_delta", "payload": {"type": "text_delta", "delta": "sync "}},
-            {"type": "text_delta", "payload": {"type": "text_delta", "delta": "works"}},
-            {
-                "type": "message_end",
-                "payload": {"type": "message_end", "stop_reason": "end_turn"},
-            },
+        "inference.create.request": [
+            {"type": "inference.create.response", "scope": INFERENCE, "payload": {"accepted": True}},
+            {"type": "inference.started", "correlate": False, "scope": INFERENCE,
+             "payload": {"model_ref": MODEL_REF}},
+            {"type": "inference.part.started", "correlate": False, "scope": INFERENCE,
+             "payload": {"part_index": 0, "part_kind": "text"}},
+            {"type": "inference.part.delta", "correlate": False, "scope": INFERENCE,
+             "payload": {"part_index": 0, "delta": "sync "}},
+            {"type": "inference.part.delta", "correlate": False, "scope": INFERENCE,
+             "payload": {"part_index": 0, "delta": "works"}},
+            {"type": "inference.completed", "correlate": False, "scope": INFERENCE,
+             "payload": {"message": {"role": "assistant", "content": "sync works"}, "stop_reason": "stop"}},
         ],
-        "complete_request": [
+        "auth.providers.request": [
             {
-                "type": "result",
-                "payload": {
-                    "role": "assistant",
-                    "content": [{"type": "text", "text": "blocking"}],
-                    "provider_id": "anthropic",
-                    "api": "anthropic-messages",
-                    "model_id": "claude-sonnet-4-5",
-                    "stop_reason": "end_turn",
-                },
-            }
-        ],
-        "auth_providers_request": [
-            {
-                "type": "auth_providers_response",
+                "type": "auth.providers.response",
                 "payload": {
                     "providers": [
                         {"id": "anthropic", "name": "Anthropic", "auth_status": "authenticated"}
@@ -105,7 +97,7 @@ def test_provider_complete(sync_client: SyncMakaiClient) -> None:
     response = sync_client.provider.complete(
         model_ref=MODEL_REF, messages=[{"role": "user", "content": "hi"}]
     )
-    assert response.text == "blocking"
+    assert response.text == "sync works"
 
 
 def test_provider_stream_is_a_plain_iterator(sync_client: SyncMakaiClient) -> None:
@@ -136,8 +128,8 @@ def test_auth_list_providers(sync_client: SyncMakaiClient) -> None:
 
 
 def test_errors_propagate_unchanged(sync_client: SyncMakaiClient) -> None:
-    with pytest.raises(MakaiProtocolError, match="resolve requires provider_id"):
-        sync_client.models.resolve(provider_id="", model_id="m")
+    with pytest.raises(MakaiProtocolError, match="model not found or ambiguous"):
+        sync_client.models.resolve(provider_id="anthropic", model_id="missing")
 
 
 def test_agent_models_alias(sync_client: SyncMakaiClient) -> None:

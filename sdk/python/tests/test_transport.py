@@ -10,9 +10,14 @@ from typing import Any, List
 import pytest
 
 from conftest import FIXTURE_SERVER, FakeServerFactory, process_alive
-from oap_sdk._wire import build_stream_envelope
-from oap_sdk.errors import TIMEOUT_CODE, MakaiStreamError, is_timeout_error
-from oap_sdk.transport import StdioTransport
+from oap_sdk.errors import TIMEOUT_CODE, MakaiStreamError
+from oap_sdk.transport import Frame, StdioTransport
+
+
+def probe_envelope(request_id: str) -> Frame:
+    return {"protocol": "open-agent-protocol", "version": "0.1",
+            "profile": "open-agent-protocol.agent-control-core", "type": "probe",
+            "id": request_id, "payload": {}}
 
 
 async def test_handshake_succeeds(fake: FakeServerFactory) -> None:
@@ -25,7 +30,7 @@ async def test_handshake_rejects_version_mismatch(fake: FakeServerFactory) -> No
     with pytest.raises(MakaiStreamError) as excinfo:
         await fake.transport({"handshake": "bad_version"})
     assert excinfo.value.code == "version_mismatch"
-    assert "expected 1, got 99" in excinfo.value.message
+    assert "expected 0.1, got 99" in excinfo.value.message
 
 
 async def test_handshake_maps_error_frame(fake: FakeServerFactory) -> None:
@@ -47,7 +52,7 @@ async def test_malformed_stdout_does_not_log_sensitive_bytes(caplog: Any) -> Non
         "sys.stdin.readline()"
     )
     transport = StdioTransport(
-        command=sys.executable, args=["-u", "-c", program], legacy_wire=False
+        command=sys.executable, args=["-u", "-c", program]
     )
     with caplog.at_level("WARNING", logger="oap_sdk.transport"):
         with pytest.raises(MakaiStreamError) as failure:
@@ -80,34 +85,24 @@ async def test_spawn_failure_is_typed(fake: FakeServerFactory) -> None:
         await transport.connect()
 
 
-async def test_frames_route_by_stream_id(fake: FakeServerFactory) -> None:
+async def test_frames_route_by_request_id(fake: FakeServerFactory) -> None:
     transport = await fake.transport(
-        {"handlers": {"probe": [{"type": "pong", "payload": {"hello": "stream"}}]}}
+        {"handlers": {"probe": [{"type": "pong", "payload": {"hello": "request"}}]}}
     )
-    async with transport.route(stream_id="STREAM-A") as route:
-        await transport.send(build_stream_envelope("probe", "STREAM-A", {}))
-        first = await route.next_frame(2.0)
-        assert first["type"] == "ack"
-        second = await route.next_frame(2.0)
-        assert second["type"] == "pong"
-        assert second["payload"] == {"hello": "stream"}
+    async with transport.route(request_id="REQUEST-A") as route:
+        await transport.send(probe_envelope("REQUEST-A"))
+        reply = await route.next_frame(2.0)
+        assert reply["type"] == "pong"
+        assert reply["payload"] == {"hello": "request"}
 
 
 async def test_frames_route_by_session_id(fake: FakeServerFactory) -> None:
     transport = await fake.transport(
-        {"ack": False, "handlers": {"probe": [{"type": "pong", "payload": {"hi": "session"}}]}}
+        {"handlers": {"probe": [{"type": "pong", "correlate": False, "scope": {"session_id": "$session_id"},
+                                 "payload": {"hi": "session"}}]}}
     )
     async with transport.route(session_id="sess") as route:
-        await transport.send(
-            {
-                "type": "probe",
-                "session_id": "sess",
-                "message_id": "M1",
-                "sequence": 1,
-                "version": 1,
-                "payload": {},
-            }
-        )
+        await transport.send({**probe_envelope("M1"), "session_id": "sess"})
         frame = await route.next_frame(2.0)
         assert frame["type"] == "pong"
         assert frame["session_id"] == "sess"
@@ -119,15 +114,15 @@ async def test_concurrent_routes_do_not_cross_talk(fake: FakeServerFactory) -> N
             "ack": False,
             "handlers": {
                 "probe": [
-                    {"type": "reply", "payload": {"echo": "$stream_id"}, "delay_ms": 20},
+                    {"type": "reply", "payload": {"echo": "$request_id"}, "delay_ms": 20},
                 ]
             },
         }
     )
 
     async def probe(stream_id: str) -> str:
-        async with transport.route(stream_id=stream_id) as route:
-            await transport.send(build_stream_envelope("probe", stream_id, {}))
+        async with transport.route(request_id=stream_id) as route:
+            await transport.send(probe_envelope(stream_id))
             frame = await route.next_frame(2.0)
             echoed: str = frame["payload"]["echo"]
             return echoed
@@ -138,10 +133,10 @@ async def test_concurrent_routes_do_not_cross_talk(fake: FakeServerFactory) -> N
 
 async def test_unroutable_frames_are_dropped_and_counted(fake: FakeServerFactory) -> None:
     transport = await fake.transport(
-        {"ack": False, "handlers": {"probe": [{"type": "reply", "payload": {}}]}}
+        {"handlers": {"probe": [{"type": "reply", "payload": {}}]}}
     )
     # No route is open, so the reply has nowhere to go.
-    await transport.send(build_stream_envelope("probe", "ORPHAN", {}))
+    await transport.send(probe_envelope("ORPHAN"))
     for _ in range(40):
         if transport.dropped_frames:
             break
@@ -151,9 +146,9 @@ async def test_unroutable_frames_are_dropped_and_counted(fake: FakeServerFactory
 
 async def test_duplicate_route_is_rejected(fake: FakeServerFactory) -> None:
     transport = await fake.transport({})
-    async with transport.route(stream_id="DUP"):
+    async with transport.route(request_id="DUP"):
         with pytest.raises(MakaiStreamError, match="already open"):
-            async with transport.route(stream_id="DUP"):
+            async with transport.route(request_id="DUP"):
                 pass
 
 
@@ -162,29 +157,29 @@ async def test_route_requires_exactly_one_key(fake: FakeServerFactory) -> None:
     with pytest.raises(ValueError):
         transport.route()
     with pytest.raises(ValueError):
-        transport.route(stream_id="a", session_id="b")
+        transport.route(request_id="a", session_id="b")
 
 
 async def test_next_frame_times_out(fake: FakeServerFactory) -> None:
-    transport = await fake.transport({"ack": False})
-    async with transport.route(stream_id="QUIET") as route:
+    transport = await fake.transport({})
+    async with transport.route(request_id="QUIET") as route:
         with pytest.raises(MakaiStreamError, match="timed out waiting for frame"):
             await route.next_frame(0.2)
 
 
 async def test_child_death_fails_open_routes(fake: FakeServerFactory) -> None:
-    transport = await fake.transport({"exit_after": 1, "ack": False})
-    async with transport.route(stream_id="DOOMED") as route:
-        await transport.send(build_stream_envelope("probe", "DOOMED", {}))
+    transport = await fake.transport({"exit_after": 1})
+    async with transport.route(request_id="DOOMED") as route:
+        await transport.send(probe_envelope("DOOMED"))
         with pytest.raises(MakaiStreamError, match="exited"):
             await route.next_frame(3.0)
 
 
 async def test_child_death_fails_every_open_route(fake: FakeServerFactory) -> None:
-    transport = await fake.transport({"exit_after": 1, "ack": False})
+    transport = await fake.transport({"exit_after": 1})
 
     async def wait(stream_id: str) -> BaseException:
-        async with transport.route(stream_id=stream_id) as route:
+        async with transport.route(request_id=stream_id) as route:
             try:
                 await route.next_frame(3.0)
             except BaseException as exc:
@@ -193,7 +188,7 @@ async def test_child_death_fails_every_open_route(fake: FakeServerFactory) -> No
 
     waiters = [asyncio.create_task(wait(f"R{index}")) for index in range(3)]
     await asyncio.sleep(0.1)
-    await transport.send(build_stream_envelope("probe", "TRIGGER", {}))
+    await transport.send(probe_envelope("TRIGGER"))
     errors = await asyncio.gather(*waiters)
     assert all(isinstance(error, MakaiStreamError) for error in errors)
 
@@ -244,8 +239,8 @@ async def test_invalid_json_after_handshake_is_skipped(fake: FakeServerFactory) 
             },
         }
     )
-    async with transport.route(stream_id="AFTER") as route:
-        await transport.send(build_stream_envelope("probe", "AFTER", {}))
+    async with transport.route(request_id="AFTER") as route:
+        await transport.send(probe_envelope("AFTER"))
         frame = await route.next_frame(2.0)
         assert frame["type"] == "reply"
         assert frame["payload"] == {"ok": True}
@@ -301,18 +296,18 @@ async def test_an_oversized_frame_tears_the_transport_down(
     """
     monkeypatch.setattr("oap_sdk.transport._MAX_LINE_BYTES", 4096)
     transport = await fake.transport(
-        {"ack": False, "handlers": {"probe": [{"raw": "x" * 16384}]}}
+        {"handlers": {"probe": [{"raw": "x" * 16384}]}}
     )
     pid = transport.pid
     assert pid is not None
-    async with transport.route(stream_id="HUGE") as route:
-        await transport.send(build_stream_envelope("probe", "HUGE", {}))
+    async with transport.route(request_id="HUGE") as route:
+        await transport.send(probe_envelope("HUGE"))
         with pytest.raises(MakaiStreamError, match="oversized frame"):
             await route.next_frame(3.0)
 
     assert not transport.connected
     with pytest.raises(MakaiStreamError, match="not connected"):
-        await transport.send(build_stream_envelope("probe", "LATER", {}))
+        await transport.send(probe_envelope("LATER"))
     for _ in range(50):
         if not process_alive(pid):
             break
@@ -331,16 +326,16 @@ async def test_a_child_that_exits_marks_the_transport_disconnected(
     _closed False and _process set, so only the next request's typed error
     revealed that the host was gone.
     """
-    transport = await fake.transport({"exit_after": 1, "ack": False})
-    async with transport.route(stream_id="GONE") as route:
-        await transport.send(build_stream_envelope("probe", "GONE", {}))
+    transport = await fake.transport({"exit_after": 1})
+    async with transport.route(request_id="GONE") as route:
+        await transport.send(probe_envelope("GONE"))
         with pytest.raises(MakaiStreamError, match="exited"):
             await route.next_frame(3.0)
 
     assert not transport.connected
     assert transport.pid is None
     with pytest.raises(MakaiStreamError, match="not connected"):
-        await transport.send(build_stream_envelope("probe", "AFTER", {}))
+        await transport.send(probe_envelope("AFTER"))
 
 
 async def test_close_during_connect_does_not_orphan_the_child(
@@ -390,16 +385,9 @@ async def test_a_frame_timeout_is_identified_by_code_not_message(
     Three call sites branch on 'is this a timeout?'; matching the wording of
     the message transport.py happens to emit couples them all to that string.
     """
-    transport = await fake.transport({"ack": False})
-    async with transport.route(stream_id="QUIET") as route:
+    transport = await fake.transport({})
+    async with transport.route(request_id="QUIET") as route:
         with pytest.raises(MakaiStreamError) as excinfo:
             await route.next_frame(0.2)
 
     assert excinfo.value.code == TIMEOUT_CODE
-    assert is_timeout_error(excinfo.value)
-    assert not is_timeout_error(
-        MakaiStreamError("timed out waiting for frame for x", kind="transport_error")
-    )
-    assert not is_timeout_error(
-        MakaiStreamError("transport closed", kind="transport_error")
-    )

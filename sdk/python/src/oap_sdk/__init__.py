@@ -51,8 +51,7 @@ from .errors import (
     MakaiStreamError,
     MakaiStreamErrorKind,
 )
-from .execution import AgentApi, ProviderApi
-from .models import ModelsApi
+from ._oap import AgentApi, ModelsApi, ProviderApi
 from .sync import SyncMakaiClient, connect_sync
 from .transport import Frame, FrameRoute, StdioTransport
 from .types import (
@@ -67,7 +66,6 @@ from .types import (
     AuthFlowHandlers,
     AuthProgressEvent,
     AuthPromptEvent,
-    AuthPromptHandler,
     AuthRetryPolicy,
     AuthStatus,
     AuthSuccessEvent,
@@ -188,7 +186,6 @@ __all__ = [
     "ProviderAuthInfo",
     "AuthFlowHandlers",
     "AuthEventHandler",
-    "AuthPromptHandler",
     "AuthEvent",
     "AuthUrlEvent",
     "AuthPromptEvent",
