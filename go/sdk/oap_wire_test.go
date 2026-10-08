@@ -22,6 +22,7 @@ func oapHostFrame(profile, kind string, payload any) *frame {
 
 func runOAPHost() {
 	reader := newFrameReader(os.Stdin)
+	providedTool, openSettings := "", ""
 	for {
 		request, err := reader.next()
 		if err != nil {
@@ -93,6 +94,12 @@ func runOAPHost() {
 			if sessionID == "" {
 				sessionID = "session-1"
 			}
+			opening := request.payload()
+			if tools, ok := opening["tools"].([]any); ok && len(tools) > 0 {
+				first, _ := tools[0].(map[string]any)
+				providedTool = fmt.Sprintf("%v owned by %v", first["name"], first["execution_owner"])
+			}
+			openSettings = fmt.Sprintf("reasoning=%v output=%v user_input=%v", opening["reasoning_level"], opening.obj("metadata").obj("oapx")["output"], opening.obj("metadata").obj("oapx")["user_input"])
 			response := oapFakeReply(request, "session.open.response", map[string]any{"session_id": sessionID, "status": "idle"})
 			response.SessionID = sessionID
 			fakeEmit(response)
@@ -114,6 +121,21 @@ func runOAPHost() {
 			response := oapFakeReply(request, "session.message.submit.response", map[string]any{"accepted": true, "run_id": "run-1", "model_id": selectedModel})
 			response.SessionID = sessionID
 			fakeEmit(response)
+			if selectedModel == "fixture/other:test@tool" || selectedModel == "fixture/other:test@settings" {
+				started := oapHostFrame(oapAgent, "run.started", map[string]any{"session_id": sessionID, "run_id": "run-1"})
+				started.SessionID, started.RunID = sessionID, "run-1"
+				fakeEmit(started)
+				event := oapHostFrame(oapAgent, "action.call.requested", map[string]any{"session_id": sessionID, "run_id": "run-1",
+					"tool_call_id": "call-1", "name": "lookup", "execution_owner": "sdk", "interaction_id": "interaction-1",
+					"requested_by": "fake", "responded_by": "sdk", "arguments_json": map[string]any{"word": "oap"}})
+				if selectedModel == "fixture/other:test@settings" {
+					event = oapHostFrame(oapAgent, "run.completed", map[string]any{"session_id": sessionID, "run_id": "run-1",
+						"final_response": map[string]any{"role": "assistant", "content": openSettings}, "stop_reason": "stop"})
+				}
+				event.SessionID, event.RunID = sessionID, "run-1"
+				fakeEmit(event)
+				continue
+			}
 			if selectedModel == "fixture/other:test@auth-once" {
 				started := oapHostFrame(oapAgent, "run.started", map[string]any{"session_id": sessionID, "run_id": "run-1", "model_id": selectedModel})
 				started.SessionID, started.RunID = sessionID, "run-1"
@@ -170,6 +192,26 @@ func runOAPHost() {
 			return
 		case "auth.login.cancel.request":
 			fakeEmit(oapFakeReply(request, "auth.login.cancel.response", map[string]any{"flow_id": "flow-1", "accepted": true}))
+		case "action.call.resolve.request":
+			p := request.payload()
+			sessionID := p.str("session_id")
+			response := oapFakeReply(request, "action.call.resolve.response", map[string]any{"interaction_id": p.str("interaction_id"),
+				"session_id": sessionID, "run_id": "run-1", "tool_call_id": p.str("tool_call_id"), "accepted": true})
+			response.SessionID = sessionID
+			fakeEmit(response)
+			said := fmt.Sprintf("%s said %v (error %v) as %s", providedTool, p["result"], p.obj("error")["message"], p.str("responded_by"))
+			for _, item := range []struct {
+				kind    string
+				payload any
+			}{
+				{"action.call.started", map[string]any{"session_id": sessionID, "run_id": "run-1", "tool_call_id": "call-1", "name": "lookup"}},
+				{"action.call.completed", map[string]any{"session_id": sessionID, "run_id": "run-1", "tool_call_id": "call-1", "name": "lookup", "result": p["result"]}},
+				{"run.completed", map[string]any{"session_id": sessionID, "run_id": "run-1", "final_response": map[string]any{"role": "assistant", "content": said}, "stop_reason": "stop"}},
+			} {
+				event := oapHostFrame(oapAgent, item.kind, item.payload)
+				event.SessionID, event.RunID = sessionID, "run-1"
+				fakeEmit(event)
+			}
 		case "run.cancel.request", "inference.cancel.request":
 		default:
 			fakeEmit(oapFakeReply(request, "error.response", map[string]any{"error": map[string]any{"code": "unsupported_feature", "message": request.Type}}))
@@ -222,16 +264,36 @@ func TestOAPCombinedFakeHost(t *testing.T) {
 	if err != nil || response.Message.Text != "agent" {
 		t.Fatalf("agent: %v, %+v", err, response)
 	}
+	var invoked ToolInvocation
+	response, err = client.Agent.Run(ctx, AgentRequest{ModelRef: "fixture/other:test@tool", Messages: []Message{UserMessage("hi")},
+		Tools: []Tool{{Name: "lookup", ParametersSchemaJSON: "{}", Execute: func(_ context.Context, call ToolInvocation) (string, error) {
+			invoked = call
+			return "open agent protocol", nil
+		}}}})
+	if err != nil || response.Message.Text != "lookup owned by sdk said open agent protocol (error <nil>) as sdk" {
+		t.Fatalf("provided tool: %v, %+v", err, response)
+	}
+	if invoked.ToolCallID != "call-1" || invoked.ToolName != "lookup" || invoked.ArgumentsJSON != `{"word":"oap"}` {
+		t.Fatalf("the tool was not called with the endpoint's call: %+v", invoked)
+	}
+	response, err = client.Agent.Run(ctx, AgentRequest{ModelRef: "fixture/other:test@settings", Messages: []Message{UserMessage("hi")},
+		Options: &RunOptions{MaxTokens: MaxTokens(10), ReasoningEffort: ReasoningHigh}})
+	if err != nil || response.Message.Text != "reasoning=high output=10 user_input=false" {
+		t.Fatalf("agent settings did not reach the open: %v, %+v", err, response)
+	}
+	for _, options := range []*RunOptions{{MaxTokens: MaxTokens(0)}, {ReasoningEffort: ReasoningMinimal}} {
+		_, err = client.Agent.Run(ctx, AgentRequest{ModelRef: "fixture/other:test@settings", Messages: []Message{UserMessage("hi")}, Options: options})
+		var refused *ProtocolError
+		if !errors.As(err, &refused) {
+			t.Fatalf("expected %+v refused before the open, got %v", options, err)
+		}
+	}
+	temperature := 0.5
 	_, err = client.Agent.Run(ctx, AgentRequest{ModelRef: models.Models[0].ModelRef,
-		Messages: []Message{UserMessage("hi")}, Tools: []Tool{{Name: "tool", ParametersSchemaJSON: "{}"}}})
+		Messages: []Message{UserMessage("hi")}, Options: &RunOptions{Temperature: &temperature}})
 	var protocol *ProtocolError
 	if !errors.As(err, &protocol) || protocol.Code != "unsupported_feature" {
-		t.Fatalf("expected explicit tool refusal, got %v", err)
-	}
-	_, err = client.Agent.Run(ctx, AgentRequest{ModelRef: models.Models[0].ModelRef,
-		Messages: []Message{UserMessage("hi")}, Options: &RunOptions{MaxTokens: MaxTokens(10)}})
-	if !errors.As(err, &protocol) || protocol.Code != "unsupported_feature" {
-		t.Fatalf("expected explicit agent option refusal, got %v", err)
+		t.Fatalf("expected explicit temperature refusal, got %v", err)
 	}
 	_, err = client.Agent.AttachProvider(ctx, sessionID, ProviderAttachment{ID: "alias", ProviderID: "fixture"})
 	var stream *StreamError

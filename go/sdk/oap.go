@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"github.com/lsm/open-agent-protocol/go/protocol"
+	"math"
 	"strings"
 	"time"
 )
@@ -15,6 +16,8 @@ const (
 	oapAgent    = "open-agent-protocol.agent-control-core"
 	oapProvider = "open-agent-protocol.model-provider-core"
 )
+
+const sdkParticipant = "sdk"
 
 func oapFrame(profile, kind string, payload any) protocol.Envelope {
 	return protocol.Envelope{Protocol: oapProtocol, Version: oapVersion, Profile: profile,
@@ -550,6 +553,7 @@ type oapAgentState struct {
 	modelRef  string
 	response  *CompletionResponse
 	settled   bool
+	tools     []Tool
 }
 
 func (s *AgentService) OpenSession(ctx context.Context, sessionID string) (string, error) {
@@ -680,8 +684,8 @@ func (s *AgentService) SwitchModel(ctx context.Context, sessionID, modelRef stri
 }
 
 func (s *AgentService) oapBegin(ctx context.Context, req AgentRequest) (*oapAgentState, error) {
-	if req.Options != nil && (req.Options.MaxTokens != nil || req.Options.Temperature != nil || req.Options.ReasoningEffort != "") {
-		return nil, &ProtocolError{Code: "unsupported_feature", Message: "agent run sampling and token options have no OAP 0.1 projection"}
+	if req.Options != nil && req.Options.Temperature != nil {
+		return nil, &ProtocolError{Code: "unsupported_feature", Message: "the agent loop takes no temperature"}
 	}
 	if req.ModelRef != "" {
 		if err := validateExecutionRequest(req.ModelRef, req.Messages); err != nil {
@@ -689,9 +693,6 @@ func (s *AgentService) oapBegin(ctx context.Context, req AgentRequest) (*oapAgen
 		}
 	} else if req.Options == nil || req.Options.SessionID == "" {
 		return nil, &ProtocolError{Code: CodeInvalidRequest, Message: "model_ref or an existing session_id is required"}
-	}
-	if len(req.Tools) > 0 {
-		return nil, &ProtocolError{Code: "unsupported_feature", Message: "client-executed tools are not advertised by this OAP agent endpoint"}
 	}
 	sessionID := newNanoID()
 	if req.Options != nil && req.Options.SessionID != "" {
@@ -708,7 +709,11 @@ func (s *AgentService) oapBegin(ctx context.Context, req AgentRequest) (*oapAgen
 			sub.close()
 		}
 	}()
-	open := oapFrame(oapAgent, "session.open.request", map[string]any{"session_id": sessionID})
+	opening, err := oapOpenPayload(sessionID, req)
+	if err != nil {
+		return nil, err
+	}
+	open := oapFrame(oapAgent, "session.open.request", opening)
 	open.SessionID = protocol.SessionID(sessionID)
 	opened, err := oapRequest(ctx, s.transport, sub, s.timeout, open)
 	if err != nil {
@@ -743,7 +748,78 @@ func (s *AgentService) oapBegin(ctx context.Context, req AgentRequest) (*oapAgen
 		selectedModelRef = envelopePayload(admission).str("model_id")
 	}
 	return &oapAgentState{ctx: ctx, transport: s.transport, sub: sub, timeout: s.timeout,
-		sessionID: sessionID, runID: runID, modelRef: selectedModelRef}, nil
+		sessionID: sessionID, runID: runID, modelRef: selectedModelRef, tools: req.Tools}, nil
+}
+
+func oapOpenPayload(sessionID string, req AgentRequest) (map[string]any, error) {
+	payload := map[string]any{"session_id": sessionID}
+	if len(req.Tools) > 0 {
+		provided, err := oapTools(req.Tools)
+		if err != nil {
+			return nil, err
+		}
+		for _, tool := range provided {
+			tool["execution_owner"] = sdkParticipant
+		}
+		payload["tools"] = provided
+	}
+	settings := map[string]any{"user_input": false}
+	payload["metadata"] = map[string]any{"oapx": settings}
+	if req.Options == nil {
+		return payload, nil
+	}
+	if req.Options.ReasoningEffort == ReasoningMinimal {
+		return nil, &ProtocolError{Code: "unsupported_feature", Message: "the agent loop runs minimal reasoning as low, so it refuses minimal"}
+	}
+	if req.Options.ReasoningEffort != "" {
+		payload["reasoning_level"] = string(req.Options.ReasoningEffort)
+	}
+	if req.Options.MaxTokens != nil {
+		if *req.Options.MaxTokens < 1 || int64(*req.Options.MaxTokens) > math.MaxUint32 {
+			return nil, &ProtocolError{Code: CodeInvalidRequest, Message: "MaxTokens must be between 1 and 4294967295"}
+		}
+		settings["output"] = *req.Options.MaxTokens
+	}
+	return payload, nil
+}
+
+func (state *oapAgentState) resolveCall(p jsonObject) error {
+	invocation := ToolInvocation{ToolCallID: p.str("tool_call_id"), ToolName: p.str("name"), ArgumentsJSON: "{}"}
+	if arguments, present := p["arguments_json"]; present && arguments != nil {
+		if text, isText := arguments.(string); isText {
+			invocation.ArgumentsJSON = text
+		} else {
+			invocation.ArgumentsJSON = string(mustMarshal(arguments))
+		}
+	}
+	answer := map[string]any{
+		"interaction_id": p.str("interaction_id"),
+		"session_id":     state.sessionID,
+		"run_id":         state.runID,
+		"tool_call_id":   invocation.ToolCallID,
+		"requested_by":   p.str("requested_by"),
+		"responded_by":   sdkParticipant,
+	}
+	tool := findTool(state.tools, invocation.ToolName)
+	switch {
+	case tool == nil || tool.Execute == nil:
+		answer["error"] = map[string]any{"code": "tool_unavailable", "message": fmt.Sprintf("Tool %q is not executable by this client", invocation.ToolName)}
+	default:
+		result, err := tool.Execute(state.ctx, invocation)
+		if err != nil {
+			message := err.Error()
+			if message == "" {
+				message = fmt.Sprintf("%T", err)
+			}
+			answer["error"] = map[string]any{"code": "tool_failed", "message": message}
+		} else {
+			answer["result"] = result
+		}
+	}
+	resolve := oapFrame(oapAgent, "action.call.resolve.request", answer)
+	resolve.SessionID = protocol.SessionID(state.sessionID)
+	resolve.RunID = protocol.RunID(state.runID)
+	return state.transport.sendEnvelope(resolve)
 }
 
 func (s *AgentService) oapRun(ctx context.Context, req AgentRequest) (*CompletionResponse, error) {
@@ -823,6 +899,28 @@ func (s *AgentStream) oapNext() bool {
 			state.settled = true
 			s.fail(envelopeFailure(f, providerIDFromRef(state.modelRef)))
 			return false
+		case "action.call.requested":
+			if p.str("execution_owner") != sdkParticipant {
+				continue
+			}
+			if err := state.resolveCall(p); err != nil {
+				s.fail(err)
+				return false
+			}
+			continue
+		case "action.call.started":
+			s.current = &ToolExecutionStart{ToolCallID: p.str("tool_call_id"), ToolName: p.str("name")}
+			return true
+		case "action.call.completed", "action.call.failed", "action.call.cancelled":
+			s.current = &ToolExecutionEnd{ToolCallID: p.str("tool_call_id"), IsError: f.Type != "action.call.completed"}
+			return true
+		case "action.call.resolve.response":
+			if accepted, _ := p["accepted"].(bool); !accepted && p.str("reason") != "already_resolved" {
+				state.settled = true
+				s.fail(&ProtocolError{Code: CodeMalformedResponse, Message: "the endpoint refused a tool result: " + p.str("reason")})
+				return false
+			}
+			continue
 		case "session.state.updated", "run.status.updated":
 			continue
 		default:

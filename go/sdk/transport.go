@@ -106,6 +106,7 @@ func startTransport(ctx context.Context, command string, opts *Options) (*transp
 	go t.readLoop(stdout, handshake)
 	if !opts.LegacyWire {
 		if err := t.sendEnvelope(oapFrame(oapAgent, "protocol.initialize.request", map[string]any{
+			"participant":       map[string]any{"id": sdkParticipant, "name": "OAP Go SDK"},
 			"protocol_versions": []string{"0.1"},
 			"profiles":          []string{"open-agent-protocol.agent-control-core"},
 		})); err != nil {
