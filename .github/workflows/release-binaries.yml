@@ -445,3 +445,11 @@ jobs:
               exit 1
             fi
           fi
+
+  smoke:
+    name: Release smoke
+    needs: [release, publish-npm]
+    if: ${{ always() && needs.release.result == 'success' }}
+    uses: ./.github/workflows/release-smoke.yml
+    with:
+      tag: ${{ github.ref_name }}
