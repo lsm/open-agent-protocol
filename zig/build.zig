@@ -664,6 +664,7 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
         .imports = &.{
             .{ .name = "oauth/pkce", .module = oauth_utils_pkce_mod },
+            .{ .name = "oauth/loopback", .module = oauth_loopback_mod },
             .{ .name = "compat", .module = compat_mod },
         },
     });

@@ -16,13 +16,18 @@ const failed_page = "<!doctype html><meta charset=\"utf-8\"><title>Sign-in faile
 pub const Listener = struct {
     server: net.Server,
     port: u16,
+    path: []const u8,
 
     pub fn open() !Listener {
+        return openAt(0, callback_path);
+    }
+
+    pub fn openAt(port: u16, path: []const u8) !Listener {
         if (!supported) return error.UnsupportedPlatform;
-        const address = try net.Address.parse("127.0.0.1", 0);
+        const address = try net.Address.parse("127.0.0.1", port);
         var server = try net.tcpListen(address, .{});
         errdefer net.closeServer(&server);
-        return .{ .server = server, .port = net.listenAddress(&server).getPort() };
+        return .{ .server = server, .port = net.listenAddress(&server).getPort(), .path = path };
     }
 
     pub fn close(self: *Listener) void {
@@ -31,7 +36,7 @@ pub const Listener = struct {
     }
 
     pub fn redirectUri(self: *const Listener, allocator: std.mem.Allocator) ![]u8 {
-        return std.fmt.allocPrint(allocator, "http://localhost:{d}" ++ callback_path, .{self.port});
+        return std.fmt.allocPrint(allocator, "http://localhost:{d}{s}", .{ self.port, self.path });
     }
 
     pub fn waitForCode(
@@ -43,25 +48,33 @@ pub const Listener = struct {
     ) ![]u8 {
         const deadline = compat.time.nowMillis() + wait_ms;
         while (true) {
-            if (isCancelled()) return error.AuthFlowCancelled;
             if (compat.time.nowMillis() >= deadline) return error.LoginTimedOut;
-            if (!try net.readableWithin(net.serverHandle(&self.server), poll_ms)) continue;
-            var stream = net.acceptStream(&self.server) catch {
-                compat.time.sleepMs(@intCast(poll_ms));
-                continue;
-            };
-            defer stream.close();
-            if (isCancelled()) {
-                respond(&stream, "409 Conflict", failed_page);
-                return error.AuthFlowCancelled;
-            }
-            const outcome = try answer(allocator, &stream, expected_state, isCancelled);
-            switch (outcome) {
-                .ignored => continue,
-                .refused => return error.OAuthFailed,
-                .code => |code| return code,
-            }
+            if (try self.take(allocator, expected_state, isCancelled)) |code| return code;
         }
+    }
+
+    pub fn take(
+        self: *Listener,
+        allocator: std.mem.Allocator,
+        expected_state: []const u8,
+        isCancelled: *const fn () bool,
+    ) !?[]u8 {
+        if (isCancelled()) return error.AuthFlowCancelled;
+        if (!try net.readableWithin(net.serverHandle(&self.server), poll_ms)) return null;
+        var stream = net.acceptStream(&self.server) catch {
+            compat.time.sleepMs(@intCast(poll_ms));
+            return null;
+        };
+        defer stream.close();
+        if (isCancelled()) {
+            respond(&stream, "409 Conflict", failed_page);
+            return error.AuthFlowCancelled;
+        }
+        return switch (try answer(allocator, &stream, self.path, expected_state, isCancelled)) {
+            .ignored => null,
+            .refused => error.OAuthFailed,
+            .code => |code| code,
+        };
     }
 };
 
@@ -71,7 +84,7 @@ const Outcome = union(enum) {
     code: []u8,
 };
 
-fn answer(allocator: std.mem.Allocator, stream: *net.Stream, expected_state: []const u8, isCancelled: *const fn () bool) !Outcome {
+fn answer(allocator: std.mem.Allocator, stream: *net.Stream, callback: []const u8, expected_state: []const u8, isCancelled: *const fn () bool) !Outcome {
     var buffer: [max_request_line]u8 = undefined;
     const line = try readRequestLine(stream, &buffer, isCancelled) orelse {
         respond(stream, "400 Bad Request", failed_page);
@@ -83,7 +96,7 @@ fn answer(allocator: std.mem.Allocator, stream: *net.Stream, expected_state: []c
     };
     const query_start = std.mem.indexOfScalar(u8, target, '?');
     const path = target[0 .. query_start orelse target.len];
-    if (!std.mem.eql(u8, path, callback_path)) {
+    if (!std.mem.eql(u8, path, callback)) {
         respond(stream, "404 Not Found", "");
         return .ignored;
     }

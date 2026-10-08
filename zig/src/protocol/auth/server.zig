@@ -72,6 +72,7 @@ pub const AuthProtocolServer = struct {
         answers_prompts: bool = true,
         anthropic_fetch: anthropic_oauth.Fetch = compat.http.fetch,
         codex_fetch: codex_oauth.Fetch = compat.http.fetch,
+        codex_browser_port: ?u16 = codex_oauth.browser_callback_port,
     };
 
     pub fn init(allocator: std.mem.Allocator, options: Options) Self {
@@ -684,10 +685,11 @@ pub const AuthProtocolServer = struct {
                 .onPrompt = codexOnPrompt,
             }, self.allocator)
         else
-            try codex_oauth.loginWithDeviceCode(.{
+            try codex_oauth.loginWithBrowserOrDeviceCode(.{
                 .onAuth = codexOnAuth,
                 .isCancelled = oauthFlowCancelled,
                 .fetch = self.options.codex_fetch,
+                .browser_port = self.options.codex_browser_port,
             }, self.allocator);
 
         return .{
