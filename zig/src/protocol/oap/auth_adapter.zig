@@ -519,6 +519,168 @@ test "OAP auth adapter fails a manual prompt without carrying an answer" {
     try std.testing.expect(!try adapter.handleLine(forbidden));
 }
 
+const FakeCodexAuth = struct {
+    var pending_polls: usize = 0;
+    var polls: usize = 0;
+
+    fn fetch(allocator: std.mem.Allocator, url: []const u8, _: compat.http.FetchOptions) compat.http.FetchError!compat.http.Fetched {
+        if (std.mem.endsWith(u8, url, "/deviceauth/token")) {
+            polls += 1;
+            if (polls <= pending_polls) return .{ .status = 403, .body = try allocator.dupe(u8, "{}") };
+        }
+        const body: []const u8 = if (std.mem.endsWith(u8, url, "/deviceauth/usercode"))
+            if (pending_polls > 0)
+                "{\"device_auth_id\":\"device-secret-1\",\"user_code\":\"WXYZ-0000\",\"interval\":\"1\"}"
+            else
+                "{\"device_auth_id\":\"device-secret-1\",\"user_code\":\"WXYZ-0000\",\"interval\":\"0\"}"
+        else if (std.mem.endsWith(u8, url, "/deviceauth/token"))
+            "{\"authorization_code\":\"authorization-secret-1\",\"code_challenge\":\"c\",\"code_verifier\":\"verifier-secret-1\"}"
+        else if (std.mem.endsWith(u8, url, "/oauth/token"))
+            "{\"access_token\":\"access-secret-1\",\"refresh_token\":\"refresh-secret-1\",\"expires_in\":3600}"
+        else
+            return error.RequestFailed;
+        return .{ .status = 200, .body = try allocator.dupe(u8, body) };
+    }
+};
+
+test "OAP auth adapter logs into Codex with a device code it shows as a URL and user code, and sends no secret" {
+    const allocator = std.testing.allocator;
+    FakeCodexAuth.pending_polls = 0;
+    FakeCodexAuth.polls = 0;
+    var native = auth_server.AuthProtocolServer.init(allocator, .{
+        .persist_credentials = false,
+        .answers_prompts = false,
+        .codex_fetch = FakeCodexAuth.fetch,
+    });
+    defer native.deinit();
+    var adapter = Adapter.init(allocator, &native);
+    defer adapter.deinit();
+
+    const start_line =
+        \\{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"auth.login.start.request","id":"start-codex","payload":{"provider_id":"openai-codex"}}
+    ;
+    try std.testing.expect(try adapter.handleLine(start_line));
+    const response = adapter.popOutbound() orelse return error.MissingStartResponse;
+    allocator.free(response);
+
+    var url_seen = false;
+    var status: ?[]u8 = null;
+    defer if (status) |value| allocator.free(value);
+    const deadline = compat.time.nowMillis() + 5_000;
+    while (status == null and compat.time.nowMillis() < deadline) {
+        _ = try adapter.pump();
+        while (adapter.popOutbound()) |line| {
+            defer allocator.free(line);
+            try std.testing.expect(std.mem.indexOf(u8, line, "secret") == null);
+            var parsed = try std.json.parseFromSlice(std.json.Value, allocator, line, .{});
+            defer parsed.deinit();
+            const root = parsed.value.object;
+            const type_name = try requiredString(root, "type");
+            const payload = (root.get("payload") orelse return error.MissingPayload).object;
+            if (std.mem.eql(u8, type_name, "auth.login.event") and std.mem.eql(u8, try requiredString(payload, "kind"), "url")) {
+                try std.testing.expectEqualStrings("https://auth.openai.com/codex/device", try requiredString(payload, "url"));
+                try std.testing.expectEqualStrings("Enter code: WXYZ-0000", try requiredString(payload, "instructions"));
+                url_seen = true;
+            }
+            if (std.mem.eql(u8, type_name, "auth.login.completed")) status = try allocator.dupe(u8, try requiredString(payload, "status"));
+        }
+        if (status == null) compat.time.sleepNs(std.time.ns_per_ms);
+    }
+    try std.testing.expect(url_seen);
+    try std.testing.expectEqualStrings("success", status orelse return error.LoginNeverCompleted);
+}
+
+test "OAP auth adapter cancels a Codex device login that is still waiting for approval" {
+    const allocator = std.testing.allocator;
+    FakeCodexAuth.pending_polls = 3;
+    FakeCodexAuth.polls = 0;
+    var native = auth_server.AuthProtocolServer.init(allocator, .{
+        .persist_credentials = false,
+        .answers_prompts = false,
+        .codex_fetch = FakeCodexAuth.fetch,
+    });
+    defer native.deinit();
+    var adapter = Adapter.init(allocator, &native);
+    defer adapter.deinit();
+
+    const start_line =
+        \\{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"auth.login.start.request","id":"start-codex-cancel","payload":{"provider_id":"openai-codex"}}
+    ;
+    try std.testing.expect(try adapter.handleLine(start_line));
+    const response = adapter.popOutbound() orelse return error.MissingStartResponse;
+    defer allocator.free(response);
+    var parsed_start = try std.json.parseFromSlice(std.json.Value, allocator, response, .{});
+    defer parsed_start.deinit();
+    const flow_id = try requiredString((parsed_start.value.object.get("payload") orelse return error.MissingPayload).object, "flow_id");
+
+    var cancel_sent = false;
+    var status: ?[]u8 = null;
+    defer if (status) |value| allocator.free(value);
+    const deadline = compat.time.nowMillis() + 5_000;
+    while (status == null and compat.time.nowMillis() < deadline) {
+        _ = try adapter.pump();
+        var url_arrived = false;
+        while (adapter.popOutbound()) |line| {
+            defer allocator.free(line);
+            var parsed = try std.json.parseFromSlice(std.json.Value, allocator, line, .{});
+            defer parsed.deinit();
+            const root = parsed.value.object;
+            const type_name = try requiredString(root, "type");
+            const payload = (root.get("payload") orelse continue).object;
+            if (std.mem.eql(u8, type_name, "auth.login.event") and std.mem.eql(u8, try requiredString(payload, "kind"), "url")) url_arrived = true;
+            if (std.mem.eql(u8, type_name, "auth.login.completed")) status = try allocator.dupe(u8, try requiredString(payload, "status"));
+        }
+        if (url_arrived and !cancel_sent) {
+            const cancel_line = try std.fmt.allocPrint(
+                allocator,
+                "{{\"protocol\":\"open-agent-protocol\",\"version\":\"0.1\",\"profile\":\"open-agent-protocol.agent-control-core\",\"type\":\"auth.login.cancel.request\",\"id\":\"cancel-codex\",\"payload\":{{\"flow_id\":\"{s}\"}}}}",
+                .{flow_id},
+            );
+            defer allocator.free(cancel_line);
+            try std.testing.expect(try adapter.handleLine(cancel_line));
+            cancel_sent = true;
+        }
+        if (status == null) compat.time.sleepNs(std.time.ns_per_ms);
+    }
+    try std.testing.expect(cancel_sent);
+    try std.testing.expectEqualStrings("cancelled", status orelse return error.LoginNeverCompleted);
+    try std.testing.expect(FakeCodexAuth.polls <= FakeCodexAuth.pending_polls);
+}
+
+test "auth server shutdown stops a Codex device login that is still waiting for approval" {
+    const allocator = std.testing.allocator;
+    FakeCodexAuth.pending_polls = 3;
+    FakeCodexAuth.polls = 0;
+    var native = auth_server.AuthProtocolServer.init(allocator, .{
+        .persist_credentials = false,
+        .answers_prompts = false,
+        .codex_fetch = FakeCodexAuth.fetch,
+    });
+    var adapter = Adapter.init(allocator, &native);
+    defer adapter.deinit();
+
+    const start_line =
+        \\{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"auth.login.start.request","id":"start-codex-shutdown","payload":{"provider_id":"openai-codex"}}
+    ;
+    try std.testing.expect(try adapter.handleLine(start_line));
+    var url_arrived = false;
+    const deadline = compat.time.nowMillis() + 5_000;
+    while (!url_arrived and compat.time.nowMillis() < deadline) {
+        _ = try adapter.pump();
+        while (adapter.popOutbound()) |line| {
+            defer allocator.free(line);
+            if (std.mem.indexOf(u8, line, "\"kind\":\"url\"") != null) url_arrived = true;
+        }
+        if (!url_arrived) compat.time.sleepNs(std.time.ns_per_ms);
+    }
+    try std.testing.expect(url_arrived);
+
+    const started = compat.time.nowMillis();
+    native.deinit();
+    try std.testing.expect(compat.time.nowMillis() - started < 1_000);
+    try std.testing.expect(FakeCodexAuth.polls <= FakeCodexAuth.pending_polls);
+}
+
 test "auth adapter repeats the admitted revision on providers and cancel responses" {
     const allocator = std.testing.allocator;
     var native = auth_server.AuthProtocolServer.init(allocator, .{
