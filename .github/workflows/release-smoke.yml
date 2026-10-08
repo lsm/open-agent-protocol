@@ -8,7 +8,8 @@ name: Release Smoke
 # A release published with GITHUB_TOKEN raises no event another workflow can
 # hear, so release-binaries.yml calls this one directly after it publishes. It
 # can also be run by hand against any tag, and it runs on a pull request that
-# changes it, against the latest release.
+# changes it, against the latest release, where a release missing from npm is a
+# warning rather than a failure.
 
 on:
   workflow_call:
@@ -161,23 +162,36 @@ jobs:
     needs: resolve
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    continue-on-error: ${{ github.event_name == 'pull_request' }}
     steps:
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
 
       - name: The release is on npm
+        id: published
         env:
           VERSION: ${{ needs.resolve.outputs.version }}
+          ON_PULL_REQUEST: ${{ github.event_name == 'pull_request' }}
         run: |
           set -euo pipefail
-          if ! npm view "oap-sdk@$VERSION" version >/dev/null 2>&1; then
-            echo "::error::oap-sdk@$VERSION is not on npm, so nobody can install this release"
-            exit 1
+          missing=""
+          for package in oap-sdk @oap-sdk/cli-linux-x64; do
+            if ! npm view "$package@$VERSION" version >/dev/null 2>&1; then missing="$missing $package@$VERSION"; fi
+          done
+          if [ -z "$missing" ]; then
+            echo "published=true" >> "$GITHUB_OUTPUT"
+            exit 0
           fi
+          echo "published=false" >> "$GITHUB_OUTPUT"
+          if [ "$ON_PULL_REQUEST" = "true" ]; then
+            echo "::warning::not on npm:$missing; a release run fails here"
+            exit 0
+          fi
+          echo "::error::not on npm:$missing, so nobody can install this release"
+          exit 1
 
       - name: An installed package finds its runtime and lists providers
+        if: steps.published.outputs.published == 'true'
         env:
           VERSION: ${{ needs.resolve.outputs.version }}
         run: |
@@ -186,7 +200,7 @@ jobs:
           mkdir -p "$app" "$RUNNER_TEMP/home"
           cd "$app"
           npm init -y >/dev/null
-          npm install --no-audit --no-fund "oap-sdk@$VERSION"
+          npm install --no-audit --no-fund "oap-sdk@$VERSION" "@oap-sdk/cli-linux-x64@$VERSION"
           HOME="$RUNNER_TEMP/home" node -e '
             const { createMakaiClient } = require("oap-sdk");
             (async () => {
