@@ -7,8 +7,9 @@ The current first-party host is `oapx serve agent,provider --stdio`: one
 JSONL stdio process routes by OAP `profile` and exposes independent agent and
 model-provider cores. The agent default can be changed mid-session through
 `session.model.switch`; `+models` and local-stdio `+auth` are implemented.
-Agent inference now traverses the OAP model-provider-core interface even when
-both profiles are co-hosted. See Decisions
+The agent core is the `oapx` adapter, the same loop the terminal UI runs, and it
+calls its models directly; with `OAPX_PROVIDER_SERVICE_URL` set, the older loop
+whose inference crosses a remote model-provider-core service still serves. See Decisions
 [0027](../decisions/0027-composed-stdio-profiles.md),
 [0028](../decisions/0028-live-model-and-provider-control.md), and
 [0029](../decisions/0029-authentication-over-agent-control.md) for the current

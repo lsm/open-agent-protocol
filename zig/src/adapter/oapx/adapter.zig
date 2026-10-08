@@ -12,7 +12,7 @@ const local_tools = @import("tools/registry");
 const interactions = @import("interactions.zig");
 
 pub const endpoint_id = "oapx.agent";
-pub const capability_revision = "oapx-agent-v11";
+pub const capability_revision = "oapx-agent-v12";
 
 pub const journal_capacity: usize = 1 << 16;
 pub const queue_capacity: usize = 8;
@@ -47,6 +47,7 @@ const unsaved_features = [_]contract.Feature{
     .{ .key = contract.feature_tools_provide, .level = .native, .reason = "a provided tool joins the loop's tools for the session, and each call to it waits for the opener's resolution", .limits_json = "{\"max_tools\":64,\"name_pattern\":\"^[a-zA-Z0-9_-]{1,64}$\",\"schema_dialect\":\"https://json-schema.org/draft/2020-12/schema\"}" },
     .{ .key = contract.feature_models_list, .level = .degraded, .reason = "the catalog is the one the terminal UI offers, and a refresh there moves it at the session's next model switch under the same revision, with no capabilities.updated" },
     .{ .key = contract.feature_model_switch, .level = .native },
+    .{ .key = "run.model_selection", .level = .native, .scope = "run", .reason = "a submit's model_id runs that run on the model and leaves the session's model as it was" },
     .{ .key = contract.feature_session_compact, .level = .native, .reason = "a compaction is a run of its own in which the loop summarizes the history with the session's model, the focus as its instructions, admitted under submit's rules; continue is refused" },
     .{ .key = "run.compaction", .level = .native, .reason = "the loop compacts between turns once its estimate of the history reaches the session's threshold, and on request; it does not compact on a provider's overflow" },
     .{ .key = contract.feature_compaction_policy, .level = .native, .reason = "auto is the loop's own threshold below the model's window, share a percentage of the window, tokens a count, and off never; it takes effect from the next run", .modes = &.{ contract.mode_session_open, contract.mode_session_live } },
@@ -100,6 +101,39 @@ pub const Adapter = struct {
     recorder: ?Recorder = null,
     ids: u64 = 0,
     now_ms: *const fn () i64 = wallClock,
+    served: ?ServedDescriptors = null,
+
+    const ServedDescriptors = struct { saved: contract.Descriptor, unsaved: contract.Descriptor };
+
+    pub fn advertise(self: *Adapter, extra: []const contract.Feature) !void {
+        const saved = try withFeatures(self.allocator, &features, extra);
+        errdefer self.allocator.free(saved);
+        const unsaved = try withFeatures(self.allocator, &unsaved_features, extra);
+        self.releaseServed();
+        self.served = .{
+            .saved = .{ .endpoint = descriptor.endpoint, .capability_revision = capability_revision, .features = saved, .limits = descriptor.limits },
+            .unsaved = .{ .endpoint = descriptor.endpoint, .capability_revision = capability_revision, .features = unsaved, .limits = descriptor.limits },
+        };
+    }
+
+    fn withFeatures(allocator: std.mem.Allocator, own: []const contract.Feature, extra: []const contract.Feature) ![]contract.Feature {
+        var combined = try std.ArrayList(contract.Feature).initCapacity(allocator, own.len + extra.len);
+        errdefer combined.deinit(allocator);
+        for (own) |feature| {
+            var replaced = false;
+            for (extra) |added| replaced = replaced or std.mem.eql(u8, added.key, feature.key);
+            if (!replaced) combined.appendAssumeCapacity(feature);
+        }
+        combined.appendSliceAssumeCapacity(extra);
+        return combined.toOwnedSlice(allocator);
+    }
+
+    fn releaseServed(self: *Adapter) void {
+        const held = self.served orelse return;
+        self.allocator.free(held.saved.features);
+        self.allocator.free(held.unsaved.features);
+        self.served = null;
+    }
 
     pub fn init(allocator: std.mem.Allocator, options: tui_runtime.TuiRuntimeOptions) Adapter {
         var runtime_options = options;
@@ -111,6 +145,7 @@ pub const Adapter = struct {
     pub fn deinit(self: *Adapter) void {
         if (self.catalog) |held| tui_runtime.deinitModels(self.allocator, held);
         self.catalog = null;
+        self.releaseServed();
     }
 
     pub fn setCatalog(self: *Adapter, models: []const ai_types.Model) !void {
@@ -127,6 +162,11 @@ pub const Adapter = struct {
     fn probe(ptr: *anyopaque, refusal: *contract.Refusal) contract.Failure!contract.Descriptor {
         _ = refusal;
         const self: *Adapter = @ptrCast(@alignCast(ptr));
+        return self.advertised();
+    }
+
+    fn advertised(self: *const Adapter) contract.Descriptor {
+        if (self.served) |held| return if (self.history != null) held.saved else held.unsaved;
         return if (self.history != null) descriptor else unsaved_descriptor;
     }
 
@@ -185,6 +225,7 @@ const Run = struct {
     admitted_steers: std.ArrayList([]const u8) = .empty,
     after_tool: bool = false,
     calls: std.ArrayList(ProvidedCall) = .empty,
+    model_override: bool = false,
 
     fn callNamed(self: *Run, interaction_id: []const u8) ?*ProvidedCall {
         for (self.calls.items) |*call| if (std.mem.eql(u8, call.interaction_id, interaction_id)) return call;
@@ -265,6 +306,7 @@ pub const Session = struct {
     call_gate: interactions.CallGate = .{},
     provided: []const oap_types.ToolDefinition = &.{},
     pending: ?PendingInteraction = null,
+    restore_model: []const u8 = "",
     outbox: std.ArrayList(Journaled) = .empty,
     journal: std.ArrayList(Journaled) = .empty,
     policy_json: ?[]const u8 = null,
@@ -580,6 +622,7 @@ pub const Session = struct {
     }
 
     fn currentModelRef(self: *Session, allocator: std.mem.Allocator) !?[]const u8 {
+        if (self.restore_model.len > 0) return try allocator.dupe(u8, self.restore_model);
         const model = self.runtime.currentModel() orelse return null;
         return refFor(allocator, model) catch |err| switch (err) {
             error.OutOfMemory => return error.OutOfMemory,
@@ -667,6 +710,7 @@ pub const Session = struct {
         try contract.refuseUnadvertisedControls(descriptor, request, refusal);
         if (request.session_id.len == 0 or request.messages.len == 0) return error.InvalidSubmission;
         if (!std.mem.eql(u8, request.session_id, self.id)) return error.RunNotFound;
+        if (request.delivery == .steer and request.model_id != null) return refusal.unsupported("run.model_selection", contract.reason_unsatisfiable);
         if (request.delivery == .steer) return self.steer(arena, request, envelope_id, refusal);
         const busy = self.live() != null or self.queuedCount() > 0;
         const reservation = busy or request.delivery == .queue;
@@ -678,9 +722,13 @@ pub const Session = struct {
         const input_text = try self.gpa.dupe(u8, text);
         errdefer self.gpa.free(input_text);
         const submit_id = try keep.dupe(u8, envelope_id);
-        const model_id = (try self.currentModelRef(keep)) orelse "";
+        if (request.model_id) |wanted| {
+            try self.syncCatalog();
+            if ((try findModel(arena, self.runtime.availableModels(), wanted)) == null) return refusal.missingModel(wanted);
+        }
+        const model_id = if (request.model_id) |wanted| try keep.dupe(u8, wanted) else (try self.currentModelRef(keep)) orelse "";
         const run = try keep.create(Run);
-        run.* = .{ .id = run_id, .input_text = input_text, .submit_id = submit_id, .model_id = model_id, .status = if (reservation) .queued else .running };
+        run.* = .{ .id = run_id, .input_text = input_text, .submit_id = submit_id, .model_id = model_id, .status = if (reservation) .queued else .running, .model_override = request.model_id != null };
         try self.runs.ensureUnusedCapacity(self.gpa, 1);
         const message_ids = try arena.alloc([]const u8, request.messages.len);
         for (request.messages, message_ids) |message, *slot| slot.* = if (message.id) |carried| carried else try self.owner.nextID(arena, "message");
@@ -800,6 +848,8 @@ pub const Session = struct {
         var scratch = std.heap.ArenaAllocator.init(self.gpa);
         defer scratch.deinit();
         const a = scratch.allocator();
+        if (run.model_override) try self.overrideModel(a, run, refusal);
+        errdefer self.restoreModel();
         var started = Payload.init(a);
         try started.run(self, run);
         try started.put("status", .{ .string = "running" });
@@ -838,7 +888,30 @@ pub const Session = struct {
         if (run.compaction) try self.compactionStarted(a, run, "requested");
     }
 
+    fn overrideModel(self: *Session, a: std.mem.Allocator, run: *Run, refusal: *contract.Refusal) contract.Failure!void {
+        const chosen = (try findModel(a, self.runtime.availableModels(), run.model_id)) orelse return refusal.missingModel(run.model_id);
+        const previous = (try self.currentModelRef(self.keep.allocator())) orelse "";
+        self.runtime.switchModelExact(chosen) catch |err| switch (err) {
+            error.ModelNotFound => return refusal.missingModel(run.model_id),
+            else => return refusal.fail(error.BackendFailed, @errorName(err)),
+        };
+        self.restore_model = previous;
+    }
+
+    fn restoreModel(self: *Session) void {
+        if (self.restore_model.len == 0) return;
+        var scratch = std.heap.ArenaAllocator.init(self.gpa);
+        defer scratch.deinit();
+        const restored = (findModel(scratch.allocator(), self.runtime.availableModels(), self.restore_model) catch return) orelse {
+            self.restore_model = "";
+            return;
+        };
+        self.runtime.switchModelExact(restored) catch return;
+        self.restore_model = "";
+    }
+
     fn promote(self: *Session) contract.Failure!bool {
+        if (self.runtime.isIdle()) self.restoreModel();
         if (self.live() != null or !self.runtime.isIdle()) return false;
         for (self.runs.items) |run| {
             if (run.terminal or run.started) continue;
@@ -1445,6 +1518,7 @@ pub const Session = struct {
         self.updated_at_ms = self.owner.now_ms();
         if (!terminal) return;
         run.terminal = true;
+        self.restoreModel();
         if (std.mem.eql(u8, kind, "run.completed")) run.status = .completed;
         if (std.mem.eql(u8, kind, "run.failed")) run.status = .failed;
         if (std.mem.eql(u8, kind, "run.cancelled")) run.status = .cancelled;
@@ -1538,7 +1612,7 @@ pub const Session = struct {
     fn models(ptr: *anyopaque, arena: std.mem.Allocator, request: *const oap_types.ModelsRequest, refusal: *contract.Refusal) contract.Failure!contract.Catalog {
         const self = cast(ptr);
         if (request.session_id.len > 0 and !std.mem.eql(u8, request.session_id, self.id)) return error.InvalidSubmission;
-        if (!request.allowsDegraded(contract.feature_models_list)) return refusal.degraded(contract.feature_models_list);
+        if (self.owner.advertised().level(contract.feature_models_list) == .degraded and !request.allowsDegraded(contract.feature_models_list)) return refusal.degraded(contract.feature_models_list);
         const current = try self.currentModelRef(arena);
         const available = self.runtime.availableModels();
         var catalog = try std.ArrayList(oap_types.ModelDescriptor).initCapacity(arena, available.len);
@@ -2014,6 +2088,7 @@ const other_model = ai_types.Model{
 
 const Script = struct {
     calls: usize = 0,
+    last_model: []const u8 = "",
     reply: []const u8 = "hello",
     tool_first: bool = false,
     tool_name: []const u8 = "echo_tool",
@@ -2056,6 +2131,7 @@ fn finish(stream: *event_stream.AssistantMessageEventStream, allocator: std.mem.
 fn scriptedStream(ctx: ?*anyopaque, model: ai_types.Model, context: ai_types.Context, options: agent.ProtocolOptions, allocator: std.mem.Allocator) anyerror!*event_stream.AssistantMessageEventStream {
     const script: *Script = @ptrCast(@alignCast(ctx.?));
     script.calls += 1;
+    script.last_model = model.id;
     for (context.messages) |message| {
         if (message == .user and message.user.content == .text and std.mem.indexOf(u8, message.user.content.text, "change course") != null) script.saw_steer.store(true, .release);
         if (message != .tool_result) continue;
@@ -3830,4 +3906,67 @@ test "a provided tool is listed beside the loop's own with the opener as its exe
         } else try testing.expectEqualStrings(endpoint_id, tool.execution_owner);
     }
     try testing.expect(saw_provided);
+}
+
+test "a submit's model_id runs that run on the model and leaves the session's model as it was" {
+    var script = Script{ .reply = "answered" };
+    var wire: Wire = undefined;
+    wire.init(&script);
+    defer wire.deinit();
+    const a = wire.arena.allocator();
+    try wire.send("protocol.initialize.request", "", try parseValue(a,
+        \\{"participant":{"id":"user","name":"Test"},"protocol_versions":["0.1"],"profiles":["open-agent-protocol.agent-control-core"]}
+    ));
+    try wire.send("capabilities.request", "", try parseValue(a, "{}"));
+    const scope = ",\"session_id\":\"wire-session\",\"capability_revision\":\"" ++ capability_revision ++ "\"";
+    try wire.send("session.open.request", scope, try parseValue(a, "{\"session_id\":\"wire-session\"}"));
+    try wire.send("session.message.submit.request", scope, try parseValue(a,
+        \\{"session_id":"wire-session","delivery":"auto","model_id":"scripted/openai-completions@other-model","messages":[{"role":"user","content":"use the other model"}]}
+    ));
+    _ = try wire.wait("run.completed");
+    try testing.expectEqualStrings("other-model", script.last_model);
+    try wire.send("session.state.request", scope, try parseValue(a, "{\"session_id\":\"wire-session\"}"));
+    const state = try wire.wait("session.state.response");
+    try testing.expectEqualStrings("scripted/openai-completions@scripted-model", state.object.get("payload").?.object.get("current_model_id").?.string);
+    try wire.validate();
+}
+
+test "a submit naming a model the catalog lacks is refused before a run is admitted" {
+    var script = Script{};
+    var harness: Harness = undefined;
+    try harness.init(&script);
+    defer harness.deinit();
+    var refusal = contract.Refusal{};
+    var parts = [_]oap_types.ContentPart{.{ .text = "hi" }};
+    var messages = [_]oap_types.Message{.{ .role = .user, .content = .{ .parts = &parts } }};
+    try testing.expectError(error.ModelNotFound, harness.session.submit(harness.arena.allocator(), &.{ .session_id = harness.session.id(), .messages = &messages, .delivery = .auto, .model_id = "nowhere/openai-completions@missing" }, "submit-envelope", &refusal));
+    try testing.expectEqual(@as(usize, 0), script.calls);
+}
+
+test "a served adapter advertises the features its host adds beside its own" {
+    var owner = Adapter.init(testing.allocator, .{});
+    defer owner.deinit();
+    try owner.advertise(&.{ .{ .key = "auth.providers", .level = .native }, .{ .key = "auth.login", .level = .native } });
+    var refusal = contract.Refusal{};
+    const served = try owner.adapter().probe(&refusal);
+    try testing.expectEqual(oap_types.SupportLevel.native, served.level("auth.login"));
+    try testing.expectEqual(oap_types.SupportLevel.native, served.level(contract.feature_tools_provide));
+    try testing.expectEqual(unsaved_features.len + 2, served.features.len);
+    try owner.advertise(&.{.{ .key = contract.feature_models_list, .level = .native }});
+    const replaced = try owner.adapter().probe(&refusal);
+    try testing.expectEqual(oap_types.SupportLevel.native, replaced.level(contract.feature_models_list));
+    try testing.expectEqual(unsaved_features.len, replaced.features.len);
+}
+
+test "a steer naming a model is refused as unsatisfiable, since it cannot change the admitted run's model" {
+    var script = Script{};
+    var harness: Harness = undefined;
+    try harness.init(&script);
+    defer harness.deinit();
+    var refusal = contract.Refusal{};
+    var parts = [_]oap_types.ContentPart{.{ .text = "go elsewhere" }};
+    var messages = [_]oap_types.Message{.{ .role = .user, .content = .{ .parts = &parts } }};
+    try testing.expectError(error.UnsupportedFeature, harness.session.submit(harness.arena.allocator(), &.{ .session_id = harness.session.id(), .messages = &messages, .delivery = .steer, .model_id = "scripted/openai-completions@other-model" }, "steer-envelope", &refusal));
+    try testing.expectEqualStrings("run.model_selection", refusal.feature);
+    try testing.expectEqualStrings(contract.reason_unsatisfiable, refusal.reason);
 }
