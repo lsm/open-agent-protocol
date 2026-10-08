@@ -1,5 +1,5 @@
 const std = @import("std");
-const agent = @import("agent");
+const agent_compaction = @import("agent_compaction");
 const ai_types = @import("ai_types");
 const session_runtime = @import("session_runtime");
 const compat = @import("compat");
@@ -14,9 +14,9 @@ pub fn autoCompactAt(setting: AutoCompactSetting, model: ai_types.Model) ?u64 {
     if (model.context_window == 0) return null;
     return switch (setting) {
         .off => null,
-        .percent => |percent| agent.compaction.shareAt(model.context_window, percent),
+        .percent => |percent| agent_compaction.shareAt(model.context_window, percent),
         .tokens => |count| count,
-        .auto => agent.compaction.autoCompactAt(model.context_window, model.max_tokens),
+        .auto => agent_compaction.autoCompactAt(model.context_window, model.max_tokens),
     };
 }
 
@@ -1565,7 +1565,7 @@ pub const AppState = struct {
             try writer.writeAll(" tokens");
         }
         if (payload.transcript.slice().len > 0) try writer.print("\ntranscript: {s}", .{payload.transcript.slice()});
-        try writer.print("\n\n{s}", .{agent.compaction.summaryOf(payload.text.slice())});
+        try writer.print("\n\n{s}", .{agent_compaction.summaryOf(payload.text.slice())});
         return out.toOwnedSlice();
     }
 

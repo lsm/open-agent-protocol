@@ -1,6 +1,6 @@
 const std = @import("std");
 const ai_types = @import("ai_types");
-const agent = @import("agent");
+const agent_types = @import("agent_types");
 const OwnedSlice = @import("owned_slice").OwnedSlice;
 const mock_provider = @import("tui_fixture");
 
@@ -28,7 +28,7 @@ pub const error_tool_calls = [_]mock_provider.ToolCallSpec{
     .{ .id = "call-error", .name = "shell_command", .arguments_json = error_args },
 };
 
-fn resultText(allocator: std.mem.Allocator, text: []const u8, details_json: []const u8) !agent.AgentToolResult {
+fn resultText(allocator: std.mem.Allocator, text: []const u8, details_json: []const u8) !agent_types.AgentToolResult {
     const content = try allocator.alloc(ai_types.UserContentPart, 1);
     errdefer allocator.free(content);
     content[0] = .{ .text = .{ .text = try allocator.dupe(u8, text) } };
@@ -44,7 +44,7 @@ fn maybeFail(args_json: []const u8) !void {
     if (std.mem.indexOf(u8, args_json, "\"error\":true") != null) return error.FixtureToolFailed;
 }
 
-fn emitUpdate(on_update_ctx: ?*anyopaque, on_update: ?agent.ToolUpdateCallback, tool_call_id: []const u8, tool_name: []const u8, phase: []const u8) void {
+fn emitUpdate(on_update_ctx: ?*anyopaque, on_update: ?agent_types.ToolUpdateCallback, tool_call_id: []const u8, tool_name: []const u8, phase: []const u8) void {
     if (on_update) |update| update(on_update_ctx, tool_call_id, tool_name, phase);
 }
 
@@ -53,9 +53,9 @@ fn shellCommand(
     args_json: []const u8,
     cancel_token: ?ai_types.CancelToken,
     on_update_ctx: ?*anyopaque,
-    on_update: ?agent.ToolUpdateCallback,
+    on_update: ?agent_types.ToolUpdateCallback,
     allocator: std.mem.Allocator,
-) anyerror!agent.AgentToolResult {
+) anyerror!agent_types.AgentToolResult {
     _ = cancel_token;
     emitUpdate(on_update_ctx, on_update, tool_call_id, "shell_command", "{\"phase\":\"shell\"}");
     try maybeFail(args_json);
@@ -67,9 +67,9 @@ fn readFile(
     args_json: []const u8,
     cancel_token: ?ai_types.CancelToken,
     on_update_ctx: ?*anyopaque,
-    on_update: ?agent.ToolUpdateCallback,
+    on_update: ?agent_types.ToolUpdateCallback,
     allocator: std.mem.Allocator,
-) anyerror!agent.AgentToolResult {
+) anyerror!agent_types.AgentToolResult {
     _ = cancel_token;
     emitUpdate(on_update_ctx, on_update, tool_call_id, "read_file", "{\"phase\":\"read\"}");
     try maybeFail(args_json);
@@ -81,9 +81,9 @@ fn editFile(
     args_json: []const u8,
     cancel_token: ?ai_types.CancelToken,
     on_update_ctx: ?*anyopaque,
-    on_update: ?agent.ToolUpdateCallback,
+    on_update: ?agent_types.ToolUpdateCallback,
     allocator: std.mem.Allocator,
-) anyerror!agent.AgentToolResult {
+) anyerror!agent_types.AgentToolResult {
     _ = cancel_token;
     emitUpdate(on_update_ctx, on_update, tool_call_id, "edit_file", "{\"phase\":\"edit\"}");
     try maybeFail(args_json);
@@ -95,16 +95,16 @@ fn search(
     args_json: []const u8,
     cancel_token: ?ai_types.CancelToken,
     on_update_ctx: ?*anyopaque,
-    on_update: ?agent.ToolUpdateCallback,
+    on_update: ?agent_types.ToolUpdateCallback,
     allocator: std.mem.Allocator,
-) anyerror!agent.AgentToolResult {
+) anyerror!agent_types.AgentToolResult {
     _ = cancel_token;
     emitUpdate(on_update_ctx, on_update, tool_call_id, "search", "{\"phase\":\"search\"}");
     try maybeFail(args_json);
     return resultText(allocator, "search: needle at README.md:1", "{\"tool\":\"search\",\"ok\":true}");
 }
 
-pub fn tools() [4]agent.AgentTool {
+pub fn tools() [4]agent_types.AgentTool {
     return .{
         .{
             .label = "Shell Command",

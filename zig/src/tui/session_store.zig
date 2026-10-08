@@ -3,7 +3,7 @@ const compat = @import("compat");
 const ai_types = @import("ai_types");
 const session_events = @import("session_events");
 const session_runtime = @import("session_runtime");
-const agent = @import("agent");
+const agent_compaction = @import("agent_compaction");
 const json_writer = @import("json_writer");
 const builtin = @import("builtin");
 const OwnedSlice = @import("owned_slice").OwnedSlice;
@@ -738,7 +738,7 @@ fn replayEvent(allocator: std.mem.Allocator, messages: *std.ArrayList(ai_types.M
             try rememberToolResultMessage(allocator, messages, replay, payload.tool_call_id.slice(), message, .execution_end);
         },
         .compaction_end => |payload| if (payload.outcome == .completed and payload.text.slice().len > 0) {
-            var pair = try agent.compaction.historyMessages(allocator, payload.text.slice(), .{ .provider = meta.provider, .model = meta.model });
+            var pair = try agent_compaction.historyMessages(allocator, payload.text.slice(), .{ .provider = meta.provider, .model = meta.model });
             errdefer for (&pair) |*message| message.deinit(allocator);
             try messages.ensureTotalCapacity(allocator, pair.len);
             for (messages.items) |*message| message.deinit(allocator);
@@ -1931,7 +1931,7 @@ test "load starts at the indexed compaction and keeps a display tail before it" 
     const offset = try store.conversationBytes("indexed");
     var compacted = session_events.SessionEvent{ .compaction_end = .{
         .outcome = .completed,
-        .text = try owned(std.testing.allocator, agent.compaction.header ++ " Summary follows.\n\n<summary>\nkept state\n</summary>"),
+        .text = try owned(std.testing.allocator, agent_compaction.header ++ " Summary follows.\n\n<summary>\nkept state\n</summary>"),
         .messages_before = 21,
     } };
     defer compacted.deinit(std.testing.allocator);
@@ -1946,7 +1946,7 @@ test "load starts at the indexed compaction and keeps a display tail before it" 
     defer loaded.deinit(std.testing.allocator);
     try std.testing.expectEqual(offset, loaded.metadata.compaction_offset);
     try std.testing.expectEqual(@as(usize, 3), loaded.messages.items.len);
-    try std.testing.expectEqualStrings("kept state", agent.compaction.summaryOf(loaded.messages.items[0].user.content.text));
+    try std.testing.expectEqualStrings("kept state", agent_compaction.summaryOf(loaded.messages.items[0].user.content.text));
     try std.testing.expectEqualStrings("after compaction", loaded.messages.items[2].user.content.text);
 
     const events = loaded.events.items;
@@ -1976,7 +1976,7 @@ test "load starts at an indexed compaction made inside a run and keeps it marked
     var compacted = session_events.SessionEvent{ .compaction_end = .{
         .in_run = true,
         .outcome = .completed,
-        .text = try owned(std.testing.allocator, agent.compaction.header ++ " Summary follows.\n\n<summary>\nkept state\n</summary>"),
+        .text = try owned(std.testing.allocator, agent_compaction.header ++ " Summary follows.\n\n<summary>\nkept state\n</summary>"),
         .messages_before = 1,
     } };
     defer compacted.deinit(std.testing.allocator);
@@ -1988,7 +1988,7 @@ test "load starts at an indexed compaction made inside a run and keeps it marked
     var loaded = try store.load("in-run");
     defer loaded.deinit(std.testing.allocator);
     try std.testing.expectEqual(@as(usize, 3), loaded.messages.items.len);
-    try std.testing.expectEqualStrings("kept state", agent.compaction.summaryOf(loaded.messages.items[0].user.content.text));
+    try std.testing.expectEqualStrings("kept state", agent_compaction.summaryOf(loaded.messages.items[0].user.content.text));
     try std.testing.expectEqualStrings("carry on", loaded.messages.items[2].user.content.text);
     const events = loaded.events.items;
     try std.testing.expect(events[events.len - 2] == .compaction_end);
@@ -2043,7 +2043,7 @@ test "load reads the whole file when the indexed compaction record is torn" {
     const offset = try store.conversationBytes("torn");
     var compacted = session_events.SessionEvent{ .compaction_end = .{
         .outcome = .completed,
-        .text = try owned(std.testing.allocator, agent.compaction.header ++ " Summary follows.\n\n<summary>\nkept state\n</summary>"),
+        .text = try owned(std.testing.allocator, agent_compaction.header ++ " Summary follows.\n\n<summary>\nkept state\n</summary>"),
         .messages_before = 21,
     } };
     defer compacted.deinit(std.testing.allocator);
@@ -2372,7 +2372,7 @@ test "load replays a completed compaction as its summary turn and acknowledgemen
     try saveText(store, meta, .assistant, "old answer");
     var completed = session_events.SessionEvent{ .compaction_end = .{
         .outcome = .completed,
-        .text = try owned(std.testing.allocator, agent.compaction.header ++ " Summary follows.\n\n<summary>\nkept state\n</summary>"),
+        .text = try owned(std.testing.allocator, agent_compaction.header ++ " Summary follows.\n\n<summary>\nkept state\n</summary>"),
         .transcript = try owned(std.testing.allocator, "/s/compacted/compaction-1.jsonl"),
         .messages_before = 2,
     } };
@@ -2387,8 +2387,8 @@ test "load replays a completed compaction as its summary turn and acknowledgemen
     defer loaded.deinit(std.testing.allocator);
     const messages = loaded.messages.items;
     try std.testing.expectEqual(@as(usize, 3), messages.len);
-    try std.testing.expectEqualStrings("kept state", agent.compaction.summaryOf(messages[0].user.content.text));
-    try std.testing.expectEqualStrings(agent.compaction.acknowledgement, messages[1].assistant.content[0].text.text);
+    try std.testing.expectEqualStrings("kept state", agent_compaction.summaryOf(messages[0].user.content.text));
+    try std.testing.expectEqualStrings(agent_compaction.acknowledgement, messages[1].assistant.content[0].text.text);
     try std.testing.expectEqualStrings("model-a", messages[1].assistant.model);
     try std.testing.expectEqualStrings("new question", messages[2].user.content.text);
 
