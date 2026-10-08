@@ -121,7 +121,7 @@ fn modelFromCanonicalRef(allocator: std.mem.Allocator, ref: []const u8) !ai_type
     errdefer parsed.deinit(allocator);
 
     if (oap_provider_types.parseModelRef(ref)) |oap_ref| {
-        if (try servedOapModel(allocator, oap_ref.provider_id, oap_ref.wire, oap_ref.model_id)) |served| {
+        if (try servedOapModel(allocator, oap_ref.provider_id, oap_ref.wire, oap_ref.wire_id, oap_ref.model_id)) |served| {
             parsed.deinit(allocator);
             return served;
         }
@@ -2534,7 +2534,12 @@ test "the provider endpoint serves one row per provider it loaded models for, wi
         try std.testing.expectEqualStrings(ref, entry.model_ref);
         try std.testing.expectEqual(@as(?oap_provider_types.ModelSource, null), entry.source);
         try std.testing.expectEqual(oap_provider_types.AuthStatus.unknown, entry.auth_status);
+        for (oap_served_base_capabilities) |capability| {
+            try std.testing.expect(std.mem.indexOfScalar(oap_provider_types.ModelCapability, entry.capabilities, capability) != null);
+        }
     }
+    try std.testing.expect(std.mem.indexOfScalar(oap_provider_types.ModelCapability, server.models.items[0].capabilities, .reasoning) != null);
+    try std.testing.expect(std.mem.indexOfScalar(oap_provider_types.ModelCapability, server.models.items[1].capabilities, .reasoning) == null);
 }
 
 test "a served model reads as signed in only when its endpoint takes no credential" {
@@ -2550,6 +2555,58 @@ test "a served model reads as signed in only when its endpoint takes no credenti
         checked += 1;
     }
     try std.testing.expectEqual(oap_test_served_models.len, checked);
+}
+
+test "a served model accepts an inference that carries tools" {
+    const allocator = std.testing.allocator;
+    var server = oapTestProviderServer(allocator);
+    defer server.deinit();
+    try populateOapProviderCatalog(allocator, &server);
+    const line =
+        "{\"protocol\":\"open-agent-protocol\",\"version\":\"0.1\",\"profile\":\"" ++ oap_provider_types.PROFILE ++
+        "\",\"type\":\"inference.create.request\",\"id\":\"q1\",\"payload\":{\"model_ref\":\"anthropic/anthropic-messages@claude-sonnet-4-5\",\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}],\"tools\":[{\"name\":\"lookup\",\"input_schema\":{\"type\":\"object\"}}]}}";
+    try server.handleLine(line);
+    var refused = false;
+    while (server.popOutbound()) |out| {
+        defer allocator.free(out);
+        if (std.mem.indexOf(u8, out, "\"accepted\":false") != null) refused = true;
+    }
+    try std.testing.expect(!refused);
+    try std.testing.expectEqual(@as(usize, 1), server.active.items.len);
+}
+
+test "a served lookup on an unnamed wire matches its discriminator and nothing else" {
+    const allocator = std.testing.allocator;
+    const google = [_]ai_types.Model{
+        .{ .id = "g1", .name = "G1", .api = "google-generative-ai", .provider = "google", .base_url = "https://g.test", .reasoning = false, .input = &oap_test_text_input, .cost = .{ .input = 0, .output = 0, .cache_read = 0, .cache_write = 0 }, .context_window = 8_000, .max_tokens = 1_024 },
+    };
+    oap_served_models_for_test = &google;
+    defer oap_served_models_for_test = null;
+
+    var found = (try servedOapModel(allocator, "google", .other, "google-generative-ai", "g1")) orelse return error.ServedModelMissing;
+    found.deinit(allocator);
+    try std.testing.expect((try servedOapModel(allocator, "google", .other, "google-gemini-cli", "g1")) == null);
+    try std.testing.expect((try servedOapModel(allocator, "google", .other, null, "g1")) == null);
+}
+
+var served_snapshot_loads: usize = 0;
+
+fn countingServedLoad(allocator: std.mem.Allocator) anyerror![]ai_types.Model {
+    served_snapshot_loads += 1;
+    return cloneOapModels(allocator, &oap_test_served_models);
+}
+
+test "the served models are loaded once and every later lookup reads that snapshot" {
+    const allocator = std.testing.allocator;
+    served_snapshot_loads = 0;
+    var cache: ServedOapModels = .{};
+    defer cache.deinit();
+    for (0..3) |_| {
+        const models = try cache.snapshot(allocator, allocator, countingServedLoad);
+        defer model_catalog.deinitModels(allocator, models);
+        try std.testing.expectEqual(oap_test_served_models.len, models.len);
+    }
+    try std.testing.expectEqual(@as(usize, 1), served_snapshot_loads);
 }
 
 test "the provider endpoint serves no provider when it discovered no model, as with no key present" {
@@ -2703,6 +2760,9 @@ fn populateOapProviderCatalogFrom(allocator: std.mem.Allocator, server: *oap_pro
             allocator.free(entries);
         }
         for (entries) |*entry| {
+            const declared = try servedOapCapabilities(allocator, entry.capabilities);
+            allocator.free(entry.capabilities);
+            entry.capabilities = declared;
             entry.source = null;
             entry.auth_status = if (model.allows_anonymous) .authenticated else .unknown;
             entry.output_modalities = try allocator.dupe(oap_provider_types.Modality, &oap_served_output_modalities);
@@ -2710,6 +2770,18 @@ fn populateOapProviderCatalogFrom(allocator: std.mem.Allocator, server: *oap_pro
             added += 1;
         }
     }
+}
+
+const oap_served_base_capabilities = [_]oap_provider_types.ModelCapability{ .chat, .streaming, .tools };
+
+fn servedOapCapabilities(allocator: std.mem.Allocator, found: []const oap_provider_types.ModelCapability) ![]const oap_provider_types.ModelCapability {
+    var list = std.ArrayList(oap_provider_types.ModelCapability).empty;
+    errdefer list.deinit(allocator);
+    try list.appendSlice(allocator, &oap_served_base_capabilities);
+    for (found) |capability| {
+        if (std.mem.indexOfScalar(oap_provider_types.ModelCapability, list.items, capability) == null) try list.append(allocator, capability);
+    }
+    return list.toOwnedSlice(allocator);
 }
 
 fn servedBefore(earlier: []const ai_types.Model, provider_id: []const u8) bool {
@@ -2724,11 +2796,43 @@ var oap_served_models_for_test: ?[]const ai_types.Model = null;
 
 fn loadServedOapModels(allocator: std.mem.Allocator) ![]ai_types.Model {
     if (@import("builtin").is_test) return cloneOapModels(allocator, oap_served_models_for_test orelse &oap_test_served_models);
+    return served_oap_models.snapshot(allocator, std.heap.page_allocator, loadProductionServedModels);
+}
+
+fn loadProductionServedModels(allocator: std.mem.Allocator) anyerror![]ai_types.Model {
     return model_catalog.loadProductionModels(allocator) catch |err| {
         if (err == error.OutOfMemory) return err;
         return allocator.alloc(ai_types.Model, 0);
     };
 }
+
+const ServedOapModels = struct {
+    mutex: std.Io.Mutex = .init,
+    models: ?[]ai_types.Model = null,
+    cache_allocator: ?std.mem.Allocator = null,
+
+    fn snapshot(
+        self: *ServedOapModels,
+        allocator: std.mem.Allocator,
+        cache_allocator: std.mem.Allocator,
+        load: *const fn (std.mem.Allocator) anyerror![]ai_types.Model,
+    ) ![]ai_types.Model {
+        self.mutex.lockUncancelable(hubIo());
+        defer self.mutex.unlock(hubIo());
+        if (self.models == null) {
+            self.models = try load(cache_allocator);
+            self.cache_allocator = cache_allocator;
+        }
+        return cloneOapModels(allocator, self.models.?);
+    }
+
+    fn deinit(self: *ServedOapModels) void {
+        if (self.models) |models| model_catalog.deinitModels(self.cache_allocator.?, models);
+        self.* = undefined;
+    }
+};
+
+var served_oap_models: ServedOapModels = .{};
 
 fn cloneOapModels(allocator: std.mem.Allocator, models: []const ai_types.Model) ![]ai_types.Model {
     const cloned = try allocator.alloc(ai_types.Model, models.len);
@@ -2744,7 +2848,7 @@ fn cloneOapModels(allocator: std.mem.Allocator, models: []const ai_types.Model) 
     return cloned;
 }
 
-fn servedOapModel(allocator: std.mem.Allocator, provider_id: []const u8, wire: oap_provider_types.Wire, model_id: []const u8) !?ai_types.Model {
+fn servedOapModel(allocator: std.mem.Allocator, provider_id: []const u8, wire: oap_provider_types.Wire, wire_id: ?[]const u8, model_id: []const u8) !?ai_types.Model {
     const models = try loadServedOapModels(allocator);
     defer model_catalog.deinitModels(allocator, models);
     for (models) |model| {
@@ -2752,9 +2856,16 @@ fn servedOapModel(allocator: std.mem.Allocator, provider_id: []const u8, wire: o
         if (!std.mem.eql(u8, model.id, model_id)) continue;
         const mapping = oap_provider_catalog.mapApiToWire(model.api) orelse continue;
         if (mapping.wire != wire) continue;
+        if (wire == .other and !sameWireId(mapping.wire_id, wire_id)) continue;
         return try ai_types.cloneModel(allocator, model);
     }
     return null;
+}
+
+fn sameWireId(served: ?[]const u8, named: ?[]const u8) bool {
+    const left = served orelse return false;
+    const right = named orelse return false;
+    return std.mem.eql(u8, left, right);
 }
 
 const oap_test_text_input = [_][]const u8{"text"};
@@ -3081,7 +3192,7 @@ fn startOapInference(
     };
     const provider_id = parsed.provider_id;
 
-    var served = (try servedOapModel(allocator, provider_id, parsed.wire, parsed.model_id)) orelse {
+    var served = (try servedOapModel(allocator, provider_id, parsed.wire, parsed.wire_id, parsed.model_id)) orelse {
         try failOapInference(server, inference_id, .model_not_found, "this endpoint serves no such model");
         return;
     };
