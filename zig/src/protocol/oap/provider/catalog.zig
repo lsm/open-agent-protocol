@@ -1,8 +1,6 @@
 const std = @import("std");
 const provider_catalog = @import("provider_catalog");
 
-const anthropic_messages_base_url = provider_catalog.baseUrlOrCompileError("anthropic", "anthropic-messages", null);
-const openai_responses_base_url = provider_catalog.baseUrlOrCompileError("openai", "openai-responses", null);
 const types = @import("oap_provider_types");
 const ai_types = @import("ai_types");
 
@@ -51,6 +49,22 @@ pub fn mapApiToWire(api: []const u8) ?WireMapping {
     return null;
 }
 
+pub fn apiForWire(wire: types.Wire, wire_id: ?[]const u8) ?[]const u8 {
+    return switch (wire) {
+        .@"anthropic-messages" => "anthropic-messages",
+        .@"openai-chat-completions" => "openai-completions",
+        .@"openai-responses" => "openai-responses",
+        .other => {
+            const id = wire_id orelse return null;
+            for (OAPX_API_NAMES) |api| {
+                const mapping = mapApiToWire(api) orelse continue;
+                if (mapping.wire == .other and std.mem.eql(u8, mapping.wire_id.?, id)) return api;
+            }
+            return null;
+        },
+    };
+}
+
 fn isExpressible(api: []const u8) bool {
     return mapApiToWire(api) != null;
 }
@@ -68,6 +82,19 @@ fn unnamedWireApis(buffer: [][]const u8) [][]const u8 {
         count += 1;
     }
     return buffer[0..count];
+}
+
+test "every registered api's wire leads back to an api on that same wire" {
+    for (OAPX_API_NAMES) |api| {
+        const mapping = mapApiToWire(api).?;
+        const back = apiForWire(mapping.wire, mapping.wire_id) orelse return error.WireHasNoApi;
+        const again = mapApiToWire(back).?;
+        try std.testing.expectEqual(mapping.wire, again.wire);
+        if (mapping.wire_id) |id| try std.testing.expectEqualStrings(id, again.wire_id.?);
+    }
+    try std.testing.expectEqualStrings("ollama", apiForWire(.other, "ollama-chat").?);
+    try std.testing.expect(apiForWire(.other, "no-such-wire") == null);
+    try std.testing.expect(apiForWire(.other, null) == null);
 }
 
 test "every registered api is describable and five earn a named wire" {
@@ -117,55 +144,6 @@ test "a named wire is never invented for a shape only its originator speaks" {
     try std.testing.expect(!hasNamedWire("google-generative-ai"));
     try std.testing.expect(hasNamedWire("anthropic-messages"));
 }
-
-pub const BuiltInProvider = struct {
-    id: []const u8,
-    api: []const u8,
-    endpoint: []const u8,
-    allows_anonymous: bool,
-    model_id: []const u8,
-    display_name: []const u8,
-    context_window: u32,
-    max_output_tokens: u32,
-    supports_tools: bool = true,
-    supports_reasoning: bool = false,
-    round_trips_carry: bool = false,
-};
-
-pub const BUILT_IN_PROVIDERS = [_]BuiltInProvider{
-    .{
-        .id = "anthropic",
-        .api = "anthropic-messages",
-        .endpoint = anthropic_messages_base_url,
-        .allows_anonymous = false,
-        .model_id = "claude-sonnet-4-5",
-        .display_name = "Claude Sonnet 4.5",
-        .context_window = 200_000,
-        .max_output_tokens = 8_192,
-        .supports_reasoning = true,
-        .round_trips_carry = true,
-    },
-    .{
-        .id = "openai",
-        .api = "openai-responses",
-        .endpoint = openai_responses_base_url,
-        .allows_anonymous = false,
-        .model_id = "gpt-4o",
-        .display_name = "GPT-4o",
-        .context_window = 128_000,
-        .max_output_tokens = 16_384,
-    },
-    .{
-        .id = "ollama",
-        .api = "ollama",
-        .endpoint = "http://127.0.0.1:11434",
-        .allows_anonymous = true,
-        .model_id = "llama3",
-        .display_name = "Llama 3",
-        .context_window = 128_000,
-        .max_output_tokens = 8_192,
-    },
-};
 
 pub fn ownedModelEntriesForRow(
     allocator: std.mem.Allocator,
@@ -286,7 +264,7 @@ test "a row serves every model the snapshot names for it" {
             .provider = "anthropic",
             .base_url = "",
             .reasoning = true,
-            .input = &.{"text", "image"},
+            .input = &.{ "text", "image" },
             .cost = .{ .input = 0, .output = 0, .cache_read = 0, .cache_write = 0 },
             .context_window = 200_000,
             .max_tokens = 8_192,
@@ -407,7 +385,7 @@ fn ownedEntriesProbe(allocator: std.mem.Allocator) !void {
         .provider = "anthropic",
         .base_url = "",
         .reasoning = true,
-        .input = &.{"text", "image"},
+        .input = &.{ "text", "image" },
         .cost = .{ .input = 0, .output = 0, .cache_read = 0, .cache_write = 0 },
         .context_window = 200_000,
         .max_tokens = 8_192,
@@ -463,10 +441,4 @@ test "a named wire carries no discriminator and parses without one" {
     try std.testing.expect(parsed.wire_id == null);
     try std.testing.expectEqualStrings("anthropic", parsed.provider_id);
     try std.testing.expectEqualStrings("claude", parsed.model_id);
-}
-
-test "every built in provider maps to a describable wire" {
-    for (BUILT_IN_PROVIDERS) |provider| {
-        try std.testing.expect(isExpressible(provider.api));
-    }
 }

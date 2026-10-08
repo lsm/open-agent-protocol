@@ -18,12 +18,14 @@ conclusion. `schema/v0.1/provider.schema.json` requires only `model_ref`,
 `model_id`, `provider_id` and `wire` from a published entry, so omission is
 already legal and no schema change is needed.
 
-## Serving behaviour: none for the built-in rows
+## Serving behaviour: the served rows state their source
 
-`populateOapProviderCatalog` already sets `.source = .fallback` explicitly
-on every built-in row. Those rows state their provenance, so the
-`source` change alters nothing about what they publish. It is the *unspecified* case that
-changes: an entry that states nothing now publishes nothing.
+`populateOapProviderCatalog` sets `.source` explicitly on every row it serves.
+Those rows were once three built-in fallbacks marked `.fallback`; they are now
+the models the runtime discovered for each provider with a key present, marked
+`.discovered` (#355). Either way they state their provenance, so the `source`
+change alters nothing about what they publish. It is the *unspecified* case
+that changes: an entry that states nothing now publishes nothing.
 
 ## What this does not fix
 

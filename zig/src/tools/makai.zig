@@ -121,17 +121,15 @@ fn modelFromCanonicalRef(allocator: std.mem.Allocator, ref: []const u8) !ai_type
     errdefer parsed.deinit(allocator);
 
     if (oap_provider_types.parseModelRef(ref)) |oap_ref| {
-        if (builtInForProvider(oap_ref.provider_id)) |builtin| {
-            const mapping = oap_provider_catalog.mapApiToWire(builtin.api) orelse return error.InvalidModelRef;
-            const same_wire_id = if (mapping.wire_id) |wire_id|
-                oap_ref.wire_id != null and std.mem.eql(u8, wire_id, oap_ref.wire_id.?)
-            else
-                oap_ref.wire_id == null;
-            if (mapping.wire != oap_ref.wire or !same_wire_id) return error.InvalidModelRef;
-            const api = try allocator.dupe(u8, builtin.api);
-            allocator.free(parsed.api);
-            parsed.api = api;
+        if (try servedOapModel(allocator, oap_ref.provider_id, oap_ref.wire, oap_ref.model_id)) |served| {
+            parsed.deinit(allocator);
+            return served;
         }
+        const api = oap_provider_catalog.apiForWire(oap_ref.wire, oap_ref.wire_id) orelse return error.InvalidModelRef;
+        if (provider_catalog.provider(oap_ref.provider_id) != null and !provider_catalog.declaresWire(oap_ref.provider_id, api)) return error.InvalidModelRef;
+        const owned_api = try allocator.dupe(u8, api);
+        allocator.free(parsed.api);
+        parsed.api = owned_api;
     }
 
     if (try modelFromProductionCatalog(allocator, parsed)) |model| {
@@ -2228,7 +2226,12 @@ test "OAP model wire reference resolves to local API without changing provider i
     try std.testing.expectEqualStrings("ollama", model.provider);
     try std.testing.expectEqualStrings("ollama", model.api);
     try std.testing.expectEqualStrings("llama3", model.id);
-    try std.testing.expectError(error.InvalidModelRef, modelFromCanonicalRef(allocator, "openai/openai-chat-completions@gpt-test"));
+    try std.testing.expectError(error.InvalidModelRef, modelFromCanonicalRef(allocator, "deepseek/openai-responses@deepseek-chat"));
+    try std.testing.expectError(error.InvalidModelRef, modelFromCanonicalRef(allocator, "anthropic/openai-chat-completions@claude-sonnet-4-5"));
+    var served = try modelFromCanonicalRef(allocator, "anthropic/anthropic-messages@claude-sonnet-4-5");
+    defer served.deinit(allocator);
+    try std.testing.expectEqual(@as(u32, 200_000), served.context_window);
+    try std.testing.expectError(error.InvalidModelRef, modelFromCanonicalRef(allocator, "acme/other:no-such-wire@m"));
 }
 
 test "print mode parses options that follow the prompt" {
@@ -2488,22 +2491,97 @@ fn oapFallbackCatalogState() ?oap_provider_types.ModelCatalogState {
     return .{ .observed_at_ms = null, .complete = false };
 }
 
-const oap_built_in_output_modalities = [_]oap_provider_types.Modality{.text};
+const oap_served_output_modalities = [_]oap_provider_types.Modality{.text};
 
-fn oapModelCapabilities(
-    allocator: std.mem.Allocator,
-    builtin: oap_provider_catalog.BuiltInProvider,
-) ![]const oap_provider_types.ModelCapability {
-    var list = std.ArrayList(oap_provider_types.ModelCapability).empty;
-    errdefer list.deinit(allocator);
-    try list.append(allocator, .chat);
-    try list.append(allocator, .streaming);
-    if (builtin.supports_tools) try list.append(allocator, .tools);
-    if (builtin.supports_reasoning) try list.append(allocator, .reasoning);
-    return list.toOwnedSlice(allocator);
+const oap_test_mixed_models = [_]ai_types.Model{
+    .{ .id = "a1", .name = "A1", .api = "anthropic-messages", .provider = "anthropic", .base_url = "https://a.test", .reasoning = true, .input = &oap_test_text_input, .cost = .{ .input = 0, .output = 0, .cache_read = 0, .cache_write = 0 }, .context_window = 100_000, .max_tokens = 4_096 },
+    .{ .id = "k1", .name = "K1", .api = "anthropic-messages", .provider = "kimi", .base_url = "https://k.test", .reasoning = true, .input = &oap_test_text_input, .cost = .{ .input = 0, .output = 0, .cache_read = 0, .cache_write = 0 }, .context_window = 64_000, .max_tokens = 2_048 },
+    .{ .id = "a2", .name = "A2", .api = "anthropic-messages", .provider = "anthropic", .base_url = "https://a.test", .reasoning = false, .input = &oap_test_text_input, .cost = .{ .input = 0, .output = 0, .cache_read = 0, .cache_write = 0 }, .context_window = 200_000, .max_tokens = 8_192 },
+    .{ .id = "k2", .name = "K2", .api = "openai-completions", .provider = "kimi", .base_url = "https://k.test/v1", .reasoning = false, .input = &oap_test_text_input, .cost = .{ .input = 0, .output = 0, .cache_read = 0, .cache_write = 0 }, .context_window = 64_000, .max_tokens = 2_048 },
+    .{ .id = "x1", .name = "X1", .api = "no-wire-api", .provider = "acme", .base_url = "https://x.test", .reasoning = false, .input = &oap_test_text_input, .cost = .{ .input = 0, .output = 0, .cache_read = 0, .cache_write = 0 }, .context_window = 8_000, .max_tokens = 1_024 },
+};
+
+fn oapTestProviderServer(allocator: std.mem.Allocator) oap_provider_server.Server {
+    return oap_provider_server.Server.init(allocator, .{
+        .capability_revision = VERSION,
+        .grant_channel = .unsupported,
+        .accepts_inference = true,
+        .resolves_own_credentials = true,
+    });
 }
 
-test "the built-in fallback rows publish no lifecycle, because none states one" {
+test "the provider endpoint serves one row per provider it discovered models for, with every discovered model on that row's wire" {
+    const allocator = std.testing.allocator;
+    var server = oapTestProviderServer(allocator);
+    defer server.deinit();
+    try populateOapProviderCatalogFrom(allocator, &server, &oap_test_mixed_models);
+
+    try std.testing.expectEqual(@as(usize, 2), server.providers.items.len);
+    const anthropic = server.providers.items[0];
+    try std.testing.expectEqualStrings("anthropic", anthropic.id);
+    try std.testing.expectEqualStrings("https://a.test", anthropic.endpoint);
+    try std.testing.expectEqual(@as(?u32, 200_000), anthropic.context_window);
+    try std.testing.expectEqual(@as(?u32, 8_192), anthropic.max_output_tokens);
+    try std.testing.expect(anthropic.round_trips_carry);
+    const kimi = server.providers.items[1];
+    try std.testing.expectEqualStrings("kimi", kimi.id);
+    try std.testing.expectEqual(oap_provider_types.Wire.@"anthropic-messages", kimi.wire);
+    try std.testing.expect(!kimi.round_trips_carry);
+
+    const refs = [_][]const u8{ "anthropic/anthropic-messages@a1", "anthropic/anthropic-messages@a2", "kimi/anthropic-messages@k1" };
+    try std.testing.expectEqual(refs.len, server.models.items.len);
+    for (refs, server.models.items) |ref, entry| {
+        try std.testing.expectEqualStrings(ref, entry.model_ref);
+        try std.testing.expectEqual(@as(?oap_provider_types.ModelSource, .discovered), entry.source);
+        try std.testing.expectEqual(oap_provider_types.AuthStatus.authenticated, entry.auth_status);
+    }
+}
+
+test "the provider endpoint serves no provider when it discovered no model, as with no key present" {
+    const allocator = std.testing.allocator;
+    var server = oapTestProviderServer(allocator);
+    defer server.deinit();
+    try populateOapProviderCatalogFrom(allocator, &server, &.{});
+    try std.testing.expectEqual(@as(usize, 0), server.providers.items.len);
+    try std.testing.expectEqual(@as(usize, 0), server.models.items.len);
+}
+
+test "an inference for a model the endpoint does not serve fails as model_not_found, even on a served provider" {
+    const allocator = std.testing.allocator;
+    const refs = [_][]const u8{"anthropic/anthropic-messages@claude-unserved"};
+    for (refs) |ref| {
+        var registry = api_registry.ApiRegistry.init(allocator);
+        defer registry.deinit();
+        var server = oapTestProviderServer(allocator);
+        defer server.deinit();
+        try populateOapProviderCatalog(allocator, &server);
+        var running = std.ArrayList(RunningOapInference).empty;
+        defer running.deinit(allocator);
+
+        const line = try std.fmt.allocPrint(
+            allocator,
+            "{{\"protocol\":\"open-agent-protocol\",\"version\":\"0.1\",\"profile\":\"{s}\",\"type\":\"inference.create.request\",\"id\":\"q1\",\"payload\":{{\"model_ref\":\"{s}\",\"messages\":[{{\"role\":\"user\",\"content\":\"hi\"}}]}}}}",
+            .{ oap_provider_types.PROFILE, ref },
+        );
+        defer allocator.free(line);
+        try server.handleLine(line);
+        while (server.popOutbound()) |out| allocator.free(out);
+        try std.testing.expectEqual(@as(usize, 1), server.active.items.len);
+        const inference_id = try allocator.dupe(u8, server.active.items[0].id);
+        defer allocator.free(inference_id);
+
+        try startOapInference(allocator, &registry, &server, &running, inference_id, &.{}, null);
+        try std.testing.expectEqual(@as(usize, 0), running.items.len);
+        var refused = false;
+        while (server.popOutbound()) |out| {
+            defer allocator.free(out);
+            if (std.mem.indexOf(u8, out, "\"model_not_found\"") != null) refused = true;
+        }
+        try std.testing.expect(refused);
+    }
+}
+
+test "the served rows publish no lifecycle, because none states one" {
     const allocator = std.testing.allocator;
     try provider_catalog.blankEnvironment(allocator);
     defer compat.clearTestEnv();
@@ -2542,27 +2620,43 @@ test "the built-in fallback rows publish no lifecycle, because none states one" 
 }
 
 fn populateOapProviderCatalog(allocator: std.mem.Allocator, server: *oap_provider_server.Server) !void {
+    const models = try loadServedOapModels(allocator);
+    defer model_catalog.deinitModels(allocator, models);
+    try populateOapProviderCatalogFrom(allocator, server, models);
+}
+
+fn populateOapProviderCatalogFrom(allocator: std.mem.Allocator, server: *oap_provider_server.Server, models: []const ai_types.Model) !void {
     const proxy_flags = try provider_base_url.proxyCompatFlagsFromEnv(allocator);
-    for (oap_provider_catalog.BUILT_IN_PROVIDERS) |builtin| {
-        const mapping = oap_provider_catalog.mapApiToWire(builtin.api) orelse continue;
+    for (models, 0..) |model, index| {
+        const mapping = oap_provider_catalog.mapApiToWire(model.api) orelse continue;
+        if (servedBefore(models[0..index], model.provider)) continue;
+
+        var context_window: u32 = 0;
+        var max_output_tokens: u32 = 0;
+        var reasons = false;
+        for (models[index..]) |sibling| {
+            if (!std.mem.eql(u8, sibling.provider, model.provider)) continue;
+            const sibling_mapping = oap_provider_catalog.mapApiToWire(sibling.api) orelse continue;
+            if (sibling_mapping.wire != mapping.wire) continue;
+            context_window = @max(context_window, sibling.context_window);
+            max_output_tokens = @max(max_output_tokens, sibling.max_tokens);
+            reasons = reasons or sibling.reasoning;
+        }
 
         var provider_transferred = false;
-        const id = try allocator.dupe(u8, builtin.id);
+        const id = try allocator.dupe(u8, model.provider);
         errdefer if (!provider_transferred) allocator.free(id);
-        const endpoint = try allocator.dupe(u8, builtin.endpoint);
+        const endpoint = try allocator.dupe(u8, model.base_url);
         errdefer if (!provider_transferred) allocator.free(endpoint);
-
         const policies = try allocator.dupe(
             oap_provider_types.SnapshotPolicy,
             oap_provider_server.IMPLEMENTED_SNAPSHOT_POLICIES,
         );
         errdefer if (!provider_transferred) allocator.free(policies);
-
         const wire_id = if (mapping.wire_id) |value| try allocator.dupe(u8, value) else null;
         errdefer if (!provider_transferred) {
             if (wire_id) |value| allocator.free(value);
         };
-
         const grant_kinds = if (oap_provider_grant_channel.GrantChannel.supported)
             try allocator.dupe(oap_provider_types.GrantKind, &.{.static})
         else
@@ -2575,54 +2669,119 @@ fn populateOapProviderCatalog(allocator: std.mem.Allocator, server: *oap_provide
             .wire_id = wire_id,
             .framing = mapping.framing,
             .endpoint = endpoint,
-            .allows_anonymous = builtin.allows_anonymous,
+            .allows_anonymous = model.allows_anonymous,
             .snapshot_policies = policies,
             .answers_sync = oap_provider_server.IMPLEMENTS_SYNC,
-            .compatibility = oapProviderCompatibility(builtin.id, proxy_flags),
+            .compatibility = oapProviderCompatibility(model.provider, proxy_flags),
             .credential_grant = if (oap_provider_grant_channel.GrantChannel.supported) .out_of_band else .none,
             .grant_kinds = grant_kinds,
-            .context_window = builtin.context_window,
-            .max_output_tokens = builtin.max_output_tokens,
-            .round_trips_carry = builtin.round_trips_carry,
+            .context_window = if (context_window > 0) context_window else null,
+            .max_output_tokens = if (max_output_tokens > 0) max_output_tokens else null,
+            .round_trips_carry = reasons and mapping.wire == .@"anthropic-messages" and std.mem.eql(u8, model.provider, "anthropic"),
         });
         provider_transferred = true;
 
-        var model_transferred = false;
-        const built_model_ref = try oap_provider_catalog.buildModelRef(
-            allocator,
-            builtin.id,
-            mapping.wire,
-            mapping.wire_id,
-            builtin.model_id,
-        );
-        errdefer if (!model_transferred) allocator.free(built_model_ref);
-        const model_id = try allocator.dupe(u8, builtin.model_id);
-        errdefer if (!model_transferred) allocator.free(model_id);
-        const display_name = try allocator.dupe(u8, builtin.display_name);
-        errdefer if (!model_transferred) allocator.free(display_name);
-        const provider_id = try allocator.dupe(u8, builtin.id);
-        errdefer if (!model_transferred) allocator.free(provider_id);
-        const capabilities = try oapModelCapabilities(allocator, builtin);
-        errdefer if (!model_transferred) allocator.free(capabilities);
-        const output_modalities = try allocator.dupe(oap_provider_types.Modality, &oap_built_in_output_modalities);
-        errdefer if (!model_transferred) allocator.free(output_modalities);
-
-        try server.addModel(.{
-            .model_ref = built_model_ref,
-            .model_id = model_id,
-            .display_name = display_name,
-            .provider_id = provider_id,
-            .wire = mapping.wire,
-            .capabilities = capabilities,
-            .context_window = builtin.context_window,
-            .max_output_tokens = builtin.max_output_tokens,
-            .source = .fallback,
-            .auth_status = if (builtin.allows_anonymous) .authenticated else .unknown,
-            .output_modalities = output_modalities,
-        });
-        model_transferred = true;
+        const entries = try oap_provider_catalog.ownedModelEntriesForRow(allocator, models, model.provider, mapping.wire, .discovered);
+        var added: usize = 0;
+        defer {
+            for (entries[added..]) |*entry| entry.deinit(allocator);
+            allocator.free(entries);
+        }
+        for (entries) |*entry| {
+            entry.auth_status = .authenticated;
+            entry.output_modalities = try allocator.dupe(oap_provider_types.Modality, &oap_served_output_modalities);
+            try server.addModel(entry.*);
+            added += 1;
+        }
     }
 }
+
+fn servedBefore(earlier: []const ai_types.Model, provider_id: []const u8) bool {
+    for (earlier) |model| {
+        if (!std.mem.eql(u8, model.provider, provider_id)) continue;
+        if (oap_provider_catalog.mapApiToWire(model.api) != null) return true;
+    }
+    return false;
+}
+
+var oap_served_models_for_test: ?[]const ai_types.Model = null;
+
+fn loadServedOapModels(allocator: std.mem.Allocator) ![]ai_types.Model {
+    if (@import("builtin").is_test) return cloneOapModels(allocator, oap_served_models_for_test orelse &oap_test_served_models);
+    return model_catalog.loadProductionModels(allocator) catch |err| {
+        if (err == error.OutOfMemory) return err;
+        return allocator.alloc(ai_types.Model, 0);
+    };
+}
+
+fn cloneOapModels(allocator: std.mem.Allocator, models: []const ai_types.Model) ![]ai_types.Model {
+    const cloned = try allocator.alloc(ai_types.Model, models.len);
+    var filled: usize = 0;
+    errdefer {
+        for (cloned[0..filled]) |*model| model.deinit(allocator);
+        allocator.free(cloned);
+    }
+    for (models, cloned) |model, *slot| {
+        slot.* = try ai_types.cloneModel(allocator, model);
+        filled += 1;
+    }
+    return cloned;
+}
+
+fn servedOapModel(allocator: std.mem.Allocator, provider_id: []const u8, wire: oap_provider_types.Wire, model_id: []const u8) !?ai_types.Model {
+    const models = try loadServedOapModels(allocator);
+    defer model_catalog.deinitModels(allocator, models);
+    for (models) |model| {
+        if (!std.mem.eql(u8, model.provider, provider_id)) continue;
+        if (!std.mem.eql(u8, model.id, model_id)) continue;
+        const mapping = oap_provider_catalog.mapApiToWire(model.api) orelse continue;
+        if (mapping.wire != wire) continue;
+        return try ai_types.cloneModel(allocator, model);
+    }
+    return null;
+}
+
+const oap_test_text_input = [_][]const u8{"text"};
+
+const oap_test_served_models = [_]ai_types.Model{
+    .{
+        .id = "claude-sonnet-4-5",
+        .name = "Claude Sonnet 4.5",
+        .api = "anthropic-messages",
+        .provider = "anthropic",
+        .base_url = provider_catalog.baseUrlOrCompileError("anthropic", "anthropic-messages", null),
+        .reasoning = true,
+        .input = &oap_test_text_input,
+        .cost = .{ .input = 0, .output = 0, .cache_read = 0, .cache_write = 0 },
+        .context_window = 200_000,
+        .max_tokens = 8_192,
+    },
+    .{
+        .id = "gpt-4o",
+        .name = "GPT-4o",
+        .api = "openai-responses",
+        .provider = "openai",
+        .base_url = provider_catalog.baseUrlOrCompileError("openai", "openai-responses", null),
+        .reasoning = false,
+        .input = &oap_test_text_input,
+        .cost = .{ .input = 0, .output = 0, .cache_read = 0, .cache_write = 0 },
+        .context_window = 128_000,
+        .max_tokens = 16_384,
+    },
+    .{
+        .id = "llama3",
+        .name = "Llama 3",
+        .api = "ollama",
+        .provider = "ollama",
+        .base_url = "http://127.0.0.1:11434",
+        .reasoning = false,
+        .input = &oap_test_text_input,
+        .cost = .{ .input = 0, .output = 0, .cache_read = 0, .cache_write = 0 },
+        .context_window = 128_000,
+        .max_tokens = 8_192,
+        .allows_anonymous = true,
+    },
+};
 
 const OAP_PROVIDER_STREAM_IDLE_TTL_DEFAULT_MS: i64 = 600_000;
 
@@ -2771,13 +2930,6 @@ const RunningOapInference = struct {
     }
 };
 
-fn builtInForProvider(provider_id: []const u8) ?oap_provider_catalog.BuiltInProvider {
-    for (oap_provider_catalog.BUILT_IN_PROVIDERS) |builtin| {
-        if (std.mem.eql(u8, builtin.id, provider_id)) return builtin;
-    }
-    return null;
-}
-
 fn failOapInference(
     server: *oap_provider_server.Server,
     inference_id: []const u8,
@@ -2912,21 +3064,21 @@ fn startOapInference(
         return;
     };
     const provider_id = parsed.provider_id;
-    const model_id = parsed.model_id;
 
-    const builtin = builtInForProvider(provider_id) orelse {
-        try failOapInference(server, inference_id, .model_not_found, "no such provider");
+    var served = (try servedOapModel(allocator, provider_id, parsed.wire, parsed.model_id)) orelse {
+        try failOapInference(server, inference_id, .model_not_found, "this endpoint serves no such model");
         return;
     };
+    defer served.deinit(allocator);
 
-    const provider = registry.getApiProvider(builtin.api) orelse {
+    const provider = registry.getApiProvider(served.api) orelse {
         try failOapInference(server, inference_id, .provider_unavailable, "the api is not registered");
         return;
     };
 
-    var lookup = try auth_resolver.overrideLookup(allocator, builtin.id);
+    var lookup = try auth_resolver.overrideLookup(allocator, provider_id);
     defer lookup.deinit(allocator);
-    var model = try buildOapInferenceModel(allocator, builtin, model_id, lookup);
+    var model = try buildOapInferenceModel(allocator, served, lookup);
     errdefer model.deinit(allocator);
     var context = try buildOapInferenceContext(allocator, inference.messages, .{
         .provider = model.provider,
@@ -2950,7 +3102,7 @@ fn startOapInference(
         if (grantedValueFor(granted, reference)) |value| options.api_key = @TypeOf(options.api_key).initBorrowed(value);
     };
     if (options.getApiKey() == null or options.getApiKey().?.len == 0) {
-        resolved_credential = resolveOapStoredCredential(allocator, builtin.id, model.base_url, lookup);
+        resolved_credential = resolveOapStoredCredential(allocator, provider_id, model.base_url, lookup);
         if (resolved_credential) |key| options.api_key = @TypeOf(options.api_key).initBorrowed(key.api_key);
     }
     options.cancel_token = .{ .cancelled = cancelled };
@@ -3126,51 +3278,38 @@ fn settleOapInference(
 
 fn buildOapInferenceModel(
     allocator: std.mem.Allocator,
-    builtin: oap_provider_catalog.BuiltInProvider,
-    model_id: []const u8,
+    served: ai_types.Model,
     lookup: auth_resolver.OverrideLookup,
 ) !ai_types.Model {
-    const id = try allocator.dupe(u8, model_id);
-    errdefer allocator.free(id);
-    const name = try allocator.dupe(u8, model_id);
-    errdefer allocator.free(name);
-    const api = try allocator.dupe(u8, builtin.api);
-    errdefer allocator.free(api);
-    const provider = try allocator.dupe(u8, builtin.id);
-    errdefer allocator.free(provider);
+    var model = try ai_types.cloneModel(allocator, served);
+    errdefer model.deinit(allocator);
     const file = switch (lookup) {
         .endpoint => |found| found,
         else => null,
     };
-    const base_url = provider_base_url.defaultBaseUrlForRefWithFile(allocator, builtin.id, builtin.api, null, if (file) |found| found.base_url else "") catch
-        try allocator.dupe(u8, builtin.endpoint);
-    errdefer allocator.free(base_url);
-    const from_file = if (file) |found| auth_resolver.overrideApplies(allocator, found, builtin.id, base_url) else false;
-    const carries_version: ?bool = if (from_file and file.?.base_url.len > 0) file.?.carries_version else null;
-    const input = try allocator.alloc([]const u8, 1);
-    errdefer allocator.free(input);
-    input[0] = try allocator.dupe(u8, "text");
-    errdefer allocator.free(input[0]);
-    const headers = if (from_file and file.?.headers.len > 0) try dupeHeaderPairs(allocator, file.?.headers) else null;
-    const withheld = auth_resolver.storedCredentialWithheld(allocator, lookup, builtin.id, base_url);
-
-    return ai_types.Model{
-        .id = id,
-        .name = name,
-        .api = api,
-        .provider = provider,
-        .base_url = base_url,
-        .reasoning = builtin.supports_reasoning,
-        .input = input,
-        .cost = .{ .input = 0, .output = 0, .cache_read = 0, .cache_write = 0 },
-        .context_window = builtin.context_window,
-        .max_tokens = builtin.max_output_tokens,
-        .allows_anonymous = builtin.allows_anonymous,
-        .credential_withheld = withheld,
-        .carries_version = carries_version,
-        .headers = headers,
-        .is_owned = true,
-    };
+    if (file) |found| {
+        if (found.base_url.len > 0) {
+            const base_url = provider_base_url.defaultBaseUrlForRefWithFile(allocator, served.provider, served.api, null, found.base_url) catch
+                try allocator.dupe(u8, found.base_url);
+            allocator.free(model.base_url);
+            model.base_url = base_url;
+        }
+    }
+    const from_file = if (file) |found| auth_resolver.overrideApplies(allocator, found, served.provider, model.base_url) else false;
+    if (from_file and file.?.base_url.len > 0) model.carries_version = file.?.carries_version;
+    if (from_file and file.?.headers.len > 0) {
+        const headers = try dupeHeaderPairs(allocator, file.?.headers);
+        if (model.headers) |previous| {
+            for (previous) |header| {
+                allocator.free(header.name);
+                allocator.free(header.value);
+            }
+            allocator.free(previous);
+        }
+        model.headers = headers;
+    }
+    model.credential_withheld = auth_resolver.storedCredentialWithheld(allocator, lookup, served.provider, model.base_url);
+    return model;
 }
 
 fn dupeHeaderPairs(allocator: std.mem.Allocator, given: []const ai_types.HeaderPair) ![]ai_types.HeaderPair {
@@ -5594,9 +5733,9 @@ test "a descriptor claims the carry round trip only where the provider declares 
         if (!descriptor.round_trips_carry) continue;
         claimed += 1;
         var declares_reasoning = false;
-        for (oap_provider_catalog.BUILT_IN_PROVIDERS) |builtin| {
-            if (!std.mem.eql(u8, builtin.id, descriptor.id)) continue;
-            declares_reasoning = builtin.supports_reasoning;
+        for (oap_test_served_models) |model| {
+            if (!std.mem.eql(u8, model.provider, descriptor.id)) continue;
+            declares_reasoning = declares_reasoning or model.reasoning;
         }
         if (!declares_reasoning) {
             std.debug.print(
@@ -5736,10 +5875,10 @@ test "reasoning options reach the stream options and the model declares reasonin
     try std.testing.expect(options.thinking_enabled);
     try std.testing.expectEqual(@as(?u32, 2048), options.thinking_budget_tokens);
 
-    const builtin = builtInForProvider("anthropic").?;
-    try std.testing.expect(builtin.supports_reasoning);
+    const served = oap_test_served_models[0];
+    try std.testing.expect(served.reasoning);
 
-    var model = try buildOapInferenceModel(allocator, builtin, "claude-sonnet-4-5", .none);
+    var model = try buildOapInferenceModel(allocator, served, .none);
     defer model.deinit(allocator);
     try std.testing.expect(model.reasoning);
 }
@@ -5748,21 +5887,21 @@ test "a served model on an overridden row carries the override's base, headers a
     const allocator = std.testing.allocator;
     try provider_catalog.blankEnvironment(allocator);
     defer compat.clearTestEnv();
-    const builtin = builtInForProvider("openai").?;
+    const served = oap_test_served_models[1];
     var headers = [_]ai_types.HeaderPair{.{ .name = @constCast("X-Tenant"), .value = @constCast("acme") }};
     const lookup = auth_resolver.OverrideLookup{ .endpoint = .{ .base_url = @constCast("https://proxy.example/v1"), .forwards_credential = false, .carries_version = true, .headers = &headers } };
 
-    var model = try buildOapInferenceModel(allocator, builtin, "gpt-4o", lookup);
+    var model = try buildOapInferenceModel(allocator, served, lookup);
     defer model.deinit(allocator);
     try std.testing.expectEqualStrings("https://proxy.example/v1", model.base_url);
     try std.testing.expectEqual(@as(?bool, true), model.carries_version);
     try std.testing.expectEqualStrings("X-Tenant", model.headers.?[0].name);
-    try std.testing.expect(auth_resolver.storedCredentialWithheld(allocator, lookup, builtin.id, model.base_url));
+    try std.testing.expect(auth_resolver.storedCredentialWithheld(allocator, lookup, served.provider, model.base_url));
     try std.testing.expect(model.credential_withheld);
 
     var forwarding = lookup;
     forwarding.endpoint.forwards_credential = true;
-    try std.testing.expect(!auth_resolver.storedCredentialWithheld(allocator, forwarding, builtin.id, model.base_url));
+    try std.testing.expect(!auth_resolver.storedCredentialWithheld(allocator, forwarding, served.provider, model.base_url));
 }
 
 test "describe names a draft revision that identifies a state rather than a stream" {
