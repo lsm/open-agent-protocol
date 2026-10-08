@@ -1646,7 +1646,7 @@ fn runPrintTuiRuntime(allocator: std.mem.Allocator, prompt: []const u8) !void {
     var loop = oapx_adapter.LocalLoop.init(allocator, .{ .protocol = (&bridge).protocolClient(), .run_async = false });
     defer loop.deinit();
 
-    const options = tui_app.TuiRuntimeOptions{
+    const options = tui_app.SessionRuntimeOptions{
         .protocol = (&bridge).protocolClient(),
         .models = &models,
         .initial_model_id = "kimi-k2.7-code",
@@ -1655,7 +1655,7 @@ fn runPrintTuiRuntime(allocator: std.mem.Allocator, prompt: []const u8) !void {
         .loop = loop.loop(),
     };
 
-    var runtime = try tui_app.TuiRuntime.init(allocator, options);
+    var runtime = try tui_app.SessionRuntime.init(allocator, options);
     defer runtime.deinit();
 
     if (runtime.currentModel()) |model| {

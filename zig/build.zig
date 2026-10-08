@@ -1826,8 +1826,8 @@ pub fn build(b: *std.Build) void {
         },
     });
 
-    const tui_session_mod = b.createModule(.{
-        .root_source_file = b.path("src/tui/session.zig"),
+    const session_events_mod = b.createModule(.{
+        .root_source_file = b.path("src/session/events.zig"),
         .target = target,
         .optimize = optimize,
         .imports = &.{
@@ -1879,8 +1879,8 @@ pub fn build(b: *std.Build) void {
         },
     });
 
-    const tui_runtime_mod = b.createModule(.{
-        .root_source_file = b.path("src/tui/runtime.zig"),
+    const session_runtime_mod = b.createModule(.{
+        .root_source_file = b.path("src/session/runtime.zig"),
         .target = target,
         .optimize = optimize,
         .imports = &.{
@@ -1890,7 +1890,7 @@ pub fn build(b: *std.Build) void {
             .{ .name = "agent", .module = agent_mod },
             .{ .name = "model_catalog", .module = model_catalog_mod },
             .{ .name = "permission", .module = permission_mod },
-            .{ .name = "tui_session", .module = tui_session_mod },
+            .{ .name = "session_events", .module = session_events_mod },
             .{ .name = "tools/registry", .module = tools_registry_mod },
             .{ .name = "owned_slice", .module = owned_slice_mod },
         },
@@ -1908,8 +1908,8 @@ pub fn build(b: *std.Build) void {
             .{ .name = "ai_types", .module = ai_types_mod },
             .{ .name = "agent", .module = agent_mod },
             .{ .name = "event_stream", .module = event_stream_mod },
-            .{ .name = "tui_runtime", .module = tui_runtime_mod },
-            .{ .name = "tui_session", .module = tui_session_mod },
+            .{ .name = "session_runtime", .module = session_runtime_mod },
+            .{ .name = "session_events", .module = session_events_mod },
             .{ .name = "model_ref", .module = protocol_model_ref_mod },
             .{ .name = "permission", .module = permission_mod },
             .{ .name = "tools/registry", .module = tools_registry_mod },
@@ -1945,8 +1945,8 @@ pub fn build(b: *std.Build) void {
             .{ .name = "event_stream", .module = event_stream_mod },
             .{ .name = "json_encode", .module = json_encode_mod },
             .{ .name = "model_ref", .module = protocol_model_ref_mod },
-            .{ .name = "tui_runtime", .module = tui_runtime_mod },
-            .{ .name = "tui_session", .module = tui_session_mod },
+            .{ .name = "session_runtime", .module = session_runtime_mod },
+            .{ .name = "session_events", .module = session_events_mod },
             .{ .name = "adapter_endpoint", .module = adapter_endpoint_mod },
             .{ .name = "oapx_adapter", .module = oapx_adapter_mod },
             .{ .name = "hub_link", .module = tui_hub_link_mod },
@@ -1962,8 +1962,8 @@ pub fn build(b: *std.Build) void {
         .imports = &.{
             .{ .name = "compat", .module = compat_mod },
             .{ .name = "ai_types", .module = ai_types_mod },
-            .{ .name = "tui_session", .module = tui_session_mod },
-            .{ .name = "tui_runtime", .module = tui_runtime_mod },
+            .{ .name = "session_events", .module = session_events_mod },
+            .{ .name = "session_runtime", .module = session_runtime_mod },
             .{ .name = "agent", .module = agent_mod },
             .{ .name = "json/writer", .module = json_writer_mod },
             .{ .name = "json_writer", .module = json_writer_mod },
@@ -1988,7 +1988,7 @@ pub fn build(b: *std.Build) void {
             .{ .name = "compat", .module = compat_mod },
             .{ .name = "agent", .module = agent_mod },
             .{ .name = "ai_types", .module = ai_types_mod },
-            .{ .name = "tui_runtime", .module = tui_runtime_mod },
+            .{ .name = "session_runtime", .module = session_runtime_mod },
             .{ .name = "owned_slice", .module = owned_slice_mod },
             .{ .name = "tui_config", .module = tui_config_mod },
         },
@@ -2002,7 +2002,7 @@ pub fn build(b: *std.Build) void {
             .{ .name = "agent", .module = agent_mod },
             .{ .name = "ai_types", .module = ai_types_mod },
             .{ .name = "compat", .module = compat_mod },
-            .{ .name = "tui_runtime", .module = tui_runtime_mod },
+            .{ .name = "session_runtime", .module = session_runtime_mod },
             .{ .name = "tui_state", .module = tui_state_mod },
             .{ .name = "tui/oap_execution", .module = tui_oap_execution_mod },
         },
@@ -2072,7 +2072,7 @@ pub fn build(b: *std.Build) void {
             .{ .name = "register_builtins", .module = register_builtins_mod },
             .{ .name = "agent", .module = agent_mod },
             .{ .name = "event_stream", .module = event_stream_mod },
-            .{ .name = "tui_runtime", .module = tui_runtime_mod },
+            .{ .name = "session_runtime", .module = session_runtime_mod },
             .{ .name = "tui_auto_continue", .module = tui_auto_continue_mod },
             .{ .name = "tui_state", .module = tui_state_mod },
             .{ .name = "tui_commands", .module = tui_commands_mod },
@@ -2129,8 +2129,8 @@ pub fn build(b: *std.Build) void {
         .imports = &.{
             .{ .name = "compat", .module = compat_mod },
             .{ .name = "ai_types", .module = ai_types_mod },
-            .{ .name = "tui_runtime", .module = tui_runtime_mod },
-            .{ .name = "tui_session", .module = tui_session_mod },
+            .{ .name = "session_runtime", .module = session_runtime_mod },
+            .{ .name = "session_events", .module = session_events_mod },
             .{ .name = "tui_session_store", .module = tui_session_store_mod },
             .{ .name = "owned_slice", .module = owned_slice_mod },
             .{ .name = "tui_fixture", .module = tui_fixture_mod },
@@ -2150,9 +2150,9 @@ pub fn build(b: *std.Build) void {
             .{ .name = "zigzag", .module = zigzag_mod },
             .{ .name = "ai_types", .module = ai_types_mod },
             .{ .name = "tui_app", .module = tui_app_mod },
-            .{ .name = "tui_runtime", .module = tui_runtime_mod },
+            .{ .name = "session_runtime", .module = session_runtime_mod },
             .{ .name = "tui_state", .module = tui_state_mod },
-            .{ .name = "tui_session", .module = tui_session_mod },
+            .{ .name = "session_events", .module = session_events_mod },
             .{ .name = "tui_session_store", .module = tui_session_store_mod },
             .{ .name = "tui_config", .module = tui_config_mod },
             .{ .name = "owned_slice", .module = owned_slice_mod },
@@ -2525,9 +2525,9 @@ pub fn build(b: *std.Build) void {
     const agent_provider_protocol_bridge_test = b.addTest(.{ .root_module = agent_provider_protocol_bridge_mod });
     const agent_oap_provider_bridge_test = b.addTest(.{ .root_module = agent_oap_provider_bridge_mod });
     const agent_oap_remote_provider_transport_test = b.addTest(.{ .root_module = agent_oap_remote_provider_transport_mod });
-    const tui_session_test = b.addTest(.{ .root_module = tui_session_mod });
+    const session_events_test = b.addTest(.{ .root_module = session_events_mod });
     const tui_config_test = b.addTest(.{ .root_module = tui_config_mod });
-    const tui_runtime_test = b.addTest(.{ .root_module = tui_runtime_mod });
+    const session_runtime_test = b.addTest(.{ .root_module = session_runtime_mod });
     const tui_session_store_test = b.addTest(.{ .root_module = tui_session_store_mod });
     const tui_state_test = b.addTest(.{ .root_module = tui_state_mod });
     const tui_auto_continue_test = b.addTest(.{ .root_module = tui_auto_continue_mod });
@@ -2875,9 +2875,9 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&b.addRunArtifact(agent_provider_protocol_bridge_test).step);
     test_step.dependOn(&b.addRunArtifact(agent_oap_provider_bridge_test).step);
     test_step.dependOn(&b.addRunArtifact(agent_oap_remote_provider_transport_test).step);
-    test_step.dependOn(&isolatedHomeRun(b, tui_session_test, "test/tui_session_test").step);
+    test_step.dependOn(&isolatedHomeRun(b, session_events_test, "test/session_events_test").step);
     test_step.dependOn(&isolatedHomeRun(b, tui_config_test, "test/tui_config_test").step);
-    test_step.dependOn(&isolatedHomeRun(b, tui_runtime_test, "test/tui_runtime_test").step);
+    test_step.dependOn(&isolatedHomeRun(b, session_runtime_test, "test/session_runtime_test").step);
     test_step.dependOn(&isolatedHomeRun(b, tui_session_store_test, "test/tui_session_store_test").step);
     test_step.dependOn(&isolatedHomeRun(b, tui_state_test, "test/tui_state_test").step);
     test_step.dependOn(&isolatedHomeRun(b, tui_auto_continue_test, "test/tui_auto_continue_test").step);
@@ -3094,9 +3094,9 @@ pub fn build(b: *std.Build) void {
     test_unit_agent_step.dependOn(&b.addRunArtifact(agent_loop_test).step);
     test_unit_agent_step.dependOn(&b.addRunArtifact(agent_mod_test).step);
     test_unit_agent_step.dependOn(&b.addRunArtifact(agent_provider_protocol_bridge_test).step);
-    test_unit_agent_step.dependOn(&b.addRunArtifact(tui_session_test).step);
+    test_unit_agent_step.dependOn(&b.addRunArtifact(session_events_test).step);
     test_unit_agent_step.dependOn(&b.addRunArtifact(tui_config_test).step);
-    test_unit_agent_step.dependOn(&b.addRunArtifact(tui_runtime_test).step);
+    test_unit_agent_step.dependOn(&b.addRunArtifact(session_runtime_test).step);
     test_unit_agent_step.dependOn(&b.addRunArtifact(tui_session_store_test).step);
     test_unit_agent_step.dependOn(&b.addRunArtifact(agent_test).step);
 
@@ -3119,9 +3119,9 @@ pub fn build(b: *std.Build) void {
     test_unit_agent_unit_step.dependOn(&b.addRunArtifact(agent_test).step);
 
     const test_unit_tui_step = b.step("test-unit-tui", "Run TUI runtime unit tests");
-    test_unit_tui_step.dependOn(&isolatedHomeRun(b, tui_session_test, "test-unit-tui/tui_session_test").step);
+    test_unit_tui_step.dependOn(&isolatedHomeRun(b, session_events_test, "test-unit-tui/session_events_test").step);
     test_unit_tui_step.dependOn(&isolatedHomeRun(b, tui_config_test, "test-unit-tui/tui_config_test").step);
-    test_unit_tui_step.dependOn(&isolatedHomeRun(b, tui_runtime_test, "test-unit-tui/tui_runtime_test").step);
+    test_unit_tui_step.dependOn(&isolatedHomeRun(b, session_runtime_test, "test-unit-tui/session_runtime_test").step);
     test_unit_tui_step.dependOn(&isolatedHomeRun(b, tui_session_store_test, "test-unit-tui/tui_session_store_test").step);
     test_unit_tui_step.dependOn(&isolatedHomeRun(b, tui_state_test, "test-unit-tui/tui_state_test").step);
     test_unit_tui_step.dependOn(&isolatedHomeRun(b, tui_auto_continue_test, "test-unit-tui/tui_auto_continue_test").step);

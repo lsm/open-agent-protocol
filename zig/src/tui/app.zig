@@ -9,7 +9,7 @@ const api_registry = @import("api_registry");
 const register_builtins = @import("register_builtins");
 const agent = @import("agent");
 const event_stream = @import("event_stream");
-const tui_runtime = @import("tui_runtime");
+const session_runtime = @import("session_runtime");
 const tui_oap_execution = @import("tui/oap_execution");
 const tui_auto_continue = @import("tui_auto_continue");
 const tui_state = @import("tui_state");
@@ -39,9 +39,9 @@ const OwnedSlice = @import("owned_slice").OwnedSlice;
 extern "c" fn setenv(name: [*:0]const u8, value: [*:0]const u8, overwrite: c_int) c_int;
 extern "c" fn unsetenv(name: [*:0]const u8) c_int;
 
-pub const TuiRuntime = tui_runtime.TuiRuntime;
-pub const TuiRuntimeOptions = tui_runtime.TuiRuntimeOptions;
-pub const parseContextWindow = tui_runtime.parseContextWindow;
+pub const SessionRuntime = session_runtime.SessionRuntime;
+pub const SessionRuntimeOptions = session_runtime.SessionRuntimeOptions;
+pub const parseContextWindow = session_runtime.parseContextWindow;
 
 const max_session_event_jsonl_bytes = 8 * 1024 * 1024;
 const max_session_event_payload_bytes = max_session_event_jsonl_bytes / 2;
@@ -54,7 +54,7 @@ pub const ApprovalWaiter = struct {
     allocator: std.mem.Allocator,
     mutex: std.atomic.Mutex = .unlocked,
     tool_call_id: []u8 = &.{},
-    decision: ?tui_runtime.ToolApprovalDecision = null,
+    decision: ?session_runtime.ToolApprovalDecision = null,
     shutting_down: bool = false,
 
     pub fn cancel(self: *ApprovalWaiter) void {
@@ -819,7 +819,7 @@ pub const ProductionRuntime = struct {
         self.bridge = agent.InProcessProviderProtocolBridge.init(&self.registry);
     }
 
-    pub fn options(self: *ProductionRuntime) tui_runtime.TuiRuntimeOptions {
+    pub fn options(self: *ProductionRuntime) session_runtime.SessionRuntimeOptions {
         return .{
             .protocol = (&self.bridge).protocolClient(),
             .models = self.models,
@@ -1019,10 +1019,10 @@ pub const FixtureRuntime = struct {
 pub const App = struct {
     allocator: std.mem.Allocator,
     state: tui_state.AppState,
-    runtime: ?*tui_runtime.TuiRuntime = null,
+    runtime: ?*session_runtime.SessionRuntime = null,
     hosted_execution: ?*tui_oap_execution.OapExecution = null,
     hosted_store: ?*session_store.Store = null,
-    session: ?tui_runtime.TuiSession = null,
+    session: ?session_runtime.SessionHandle = null,
     approval_waiter: ?*ApprovalWaiter = null,
     login: ?*tui_login.LoginSession = null,
     store: ?session_store.Store = null,
@@ -1056,7 +1056,7 @@ pub const App = struct {
     model_refetch: bool = false,
     quarantine_events: bool = false,
     quarantine_generation: u32 = 0,
-    quarantine_buffer: std.ArrayList(tui_runtime.TuiEvent) = .empty,
+    quarantine_buffer: std.ArrayList(session_runtime.SessionEvent) = .empty,
     pending_clipboard: ?[]u8 = null,
     interrupt_armed_tick: ?u64 = null,
     pending_clear_screen: bool = false,
@@ -1085,7 +1085,7 @@ pub const App = struct {
     replaying_history: bool = false,
     branch_dir: []u8 = &.{},
 
-    pub fn init(allocator: std.mem.Allocator, options: tui_runtime.TuiRuntimeOptions) !App {
+    pub fn init(allocator: std.mem.Allocator, options: session_runtime.SessionRuntimeOptions) !App {
         var runtime_options = options;
         var adopted = false;
         const approval_waiter = try allocator.create(ApprovalWaiter);
@@ -1098,8 +1098,8 @@ pub const App = struct {
         const hosted_store = if (hosted) |execution| hostHistory(allocator, execution) else null;
         errdefer if (!adopted) if (hosted_store) |store| dropHostedStore(allocator, store);
         if (hosted) |execution| runtime_options.remote = execution.remote();
-        const runtime_ptr = try allocator.create(tui_runtime.TuiRuntime);
-        runtime_ptr.* = tui_runtime.TuiRuntime.init(allocator, runtime_options) catch |err| {
+        const runtime_ptr = try allocator.create(session_runtime.SessionRuntime);
+        runtime_ptr.* = session_runtime.SessionRuntime.init(allocator, runtime_options) catch |err| {
             allocator.destroy(runtime_ptr);
             return err;
         };
@@ -1111,7 +1111,7 @@ pub const App = struct {
             .state = tui_state.AppState.init(allocator),
             .runtime = runtime_ptr,
             .approval_waiter = approval_waiter,
-            .quarantine_buffer = std.ArrayList(tui_runtime.TuiEvent).empty,
+            .quarantine_buffer = std.ArrayList(session_runtime.SessionEvent).empty,
         };
         adopted = true;
         errdefer app.deinit();
@@ -1137,7 +1137,7 @@ pub const App = struct {
         return .{
             .allocator = allocator,
             .state = tui_state.AppState.init(allocator),
-            .quarantine_buffer = std.ArrayList(tui_runtime.TuiEvent).empty,
+            .quarantine_buffer = std.ArrayList(session_runtime.SessionEvent).empty,
         };
     }
 
@@ -1301,7 +1301,7 @@ pub const App = struct {
         self.run_error_text = &.{};
     }
 
-    fn noteTerminalEvent(self: *App, event: tui_runtime.TuiEvent) !bool {
+    fn noteTerminalEvent(self: *App, event: session_runtime.SessionEvent) !bool {
         switch (event) {
             .agent_end => |payload| return payload.reason == .completed,
             .compaction_end => |payload| {
@@ -1536,7 +1536,7 @@ pub const App = struct {
         if (self.state.session_index >= self.state.sessions.items.len and self.state.session_index > 0) self.state.session_index -= 1;
     }
 
-    fn adoptResumeRoot(self: *App, runtime: *tui_runtime.TuiRuntime, root: []const u8) !void {
+    fn adoptResumeRoot(self: *App, runtime: *session_runtime.SessionRuntime, root: []const u8) !void {
         try runtime.setWorkspaceRoot(root);
         try replaceOwnedString(self.allocator, &self.working_dir, root);
         try self.refreshCwdDisplay();
@@ -1777,7 +1777,7 @@ pub const App = struct {
         }
     }
 
-    const permission_modes = [_]tui_runtime.PermissionMode{ .bypass, .ask };
+    const permission_modes = [_]session_runtime.PermissionMode{ .bypass, .ask };
 
     fn startCatalogLogin(self: *App, provider_id: []const u8) !*tui_login.LoginSession {
         if (std.mem.eql(u8, provider_id, "anthropic")) return tui_login.LoginSession.start(self.allocator, .anthropic);
@@ -2637,7 +2637,7 @@ pub const App = struct {
         }
     }
 
-    fn saveEvent(self: *App, event: tui_runtime.TuiEvent) void {
+    fn saveEvent(self: *App, event: session_runtime.SessionEvent) void {
         if (self.runtime) |runtime| if (runtime.recordsFromEndpoint()) return;
         self.persistEvent(event);
     }
@@ -2651,7 +2651,7 @@ pub const App = struct {
         }
     }
 
-    fn persistEvent(self: *App, event: tui_runtime.TuiEvent) void {
+    fn persistEvent(self: *App, event: session_runtime.SessionEvent) void {
         const store = self.store orelse return;
         if (event == .message_end and event.message_end.role == .assistant) self.flushPendingThinking(store);
         switch (event) {
@@ -2810,7 +2810,7 @@ pub const App = struct {
         return text[0..len];
     }
 
-    fn saveConversationEvent(self: *App, store: session_store.Store, event: tui_runtime.TuiEvent, force_metadata: bool) bool {
+    fn saveConversationEvent(self: *App, store: session_store.Store, event: session_runtime.SessionEvent, force_metadata: bool) bool {
         const meta = self.currentSessionMetadata();
         const changed = force_metadata or !self.session_written or
             !std.mem.eql(u8, meta.model, self.written_model) or
@@ -2879,7 +2879,7 @@ pub const App = struct {
         self.first_user_text = &.{};
     }
 
-    fn messageEndPayloadSize(payload: @TypeOf(@as(tui_runtime.TuiEvent, undefined).message_end)) usize {
+    fn messageEndPayloadSize(payload: @TypeOf(@as(session_runtime.SessionEvent, undefined).message_end)) usize {
         return jsonStringBudget(payload.text.slice()) +
             jsonStringBudget(payload.content_json.slice()) +
             jsonStringBudget(payload.tool_call_id.slice()) +
@@ -2890,7 +2890,7 @@ pub const App = struct {
             jsonStringBudget(payload.artifacts_json.slice());
     }
 
-    fn toolExecutionEndPayloadSize(payload: @TypeOf(@as(tui_runtime.TuiEvent, undefined).tool_execution_end)) usize {
+    fn toolExecutionEndPayloadSize(payload: @TypeOf(@as(session_runtime.SessionEvent, undefined).tool_execution_end)) usize {
         return jsonStringBudget(payload.result_json.slice()) +
             jsonStringBudget(payload.tool_call_id.slice()) +
             jsonStringBudget(payload.tool_name.slice()) +
@@ -2903,7 +2903,7 @@ pub const App = struct {
             jsonStringBudget(payload.args_json.slice());
     }
 
-    fn toolUpdatePayloadSize(payload: @TypeOf(@as(tui_runtime.TuiEvent, undefined).tool_execution_update)) usize {
+    fn toolUpdatePayloadSize(payload: @TypeOf(@as(session_runtime.SessionEvent, undefined).tool_execution_update)) usize {
         return toolRequestPayloadSize(payload) +
             jsonStringBudget(payload.partial_result_json.slice());
     }
@@ -3373,7 +3373,7 @@ pub const App = struct {
         try self.state.appendTranscript(.@"error", "The queued messages could not be sent; they are back in the composer.");
     }
 
-    fn applyRuntimeEvent(self: *App, event: tui_runtime.TuiEvent) !void {
+    fn applyRuntimeEvent(self: *App, event: session_runtime.SessionEvent) !void {
         if (!self.replaying_history) {
             switch (event) {
                 .@"error" => |payload| try self.rememberRunError(payload.message.slice()),
@@ -4205,7 +4205,7 @@ pub const App = struct {
 
     pub fn decideApproval(self: *App, approved: bool, always: bool) !void {
         const id = self.state.approval.tool_call_id;
-        const decision: tui_runtime.ToolApprovalDecision = if (approved) if (always) .approve_always else .approve else if (always) .reject_always else .reject;
+        const decision: session_runtime.ToolApprovalDecision = if (approved) if (always) .approve_always else .approve else if (always) .reject_always else .reject;
         var matched_waiter = false;
         if (self.approval_waiter) |waiter| {
             while (!waiter.mutex.tryLock()) std.atomic.spinLoopHint();
@@ -4224,7 +4224,7 @@ pub const App = struct {
     }
 };
 
-fn approvalCallback(ctx: ?*anyopaque, request: tui_runtime.ToolApprovalRequest) tui_runtime.ToolApprovalDecision {
+fn approvalCallback(ctx: ?*anyopaque, request: session_runtime.ToolApprovalRequest) session_runtime.ToolApprovalDecision {
     const waiter: *ApprovalWaiter = @ptrCast(@alignCast(ctx.?));
     while (!waiter.mutex.tryLock()) std.atomic.spinLoopHint();
     if (waiter.tool_call_id.len > 0) waiter.allocator.free(waiter.tool_call_id);
@@ -4268,7 +4268,7 @@ pub const RenderMode = enum {
 
 pub const TuiModel = struct {
     app: ?App = null,
-    options: tui_runtime.TuiRuntimeOptions = .{},
+    options: session_runtime.SessionRuntimeOptions = .{},
     autocompact: tui_config.AutoCompact = .auto,
     verbosity: tui_config.Verbosity = .{},
     render_mode: RenderMode = .auto,
@@ -5256,7 +5256,7 @@ pub const TuiModel = struct {
         }
     }
 
-    fn permissionModeDetail(mode: tui_runtime.PermissionMode) []const u8 {
+    fn permissionModeDetail(mode: session_runtime.PermissionMode) []const u8 {
         return switch (mode) {
             .bypass => "run tools without prompts",
             .ask => "ask before tool execution",
@@ -5321,7 +5321,7 @@ pub const TuiModel = struct {
     }
 };
 
-fn switchTiming(runtime: *const tui_runtime.TuiRuntime) []const u8 {
+fn switchTiming(runtime: *const session_runtime.SessionRuntime) []const u8 {
     return if (runtime.loop != null) "before the next turn of this run, or when it ends" else "when this run ends";
 }
 
@@ -5862,9 +5862,9 @@ test "App applies a staged catalog once the runtime is idle" {
         .context_window = 1024,
         .max_tokens = 256,
     };
-    const runtime = try std.testing.allocator.create(tui_runtime.TuiRuntime);
+    const runtime = try std.testing.allocator.create(session_runtime.SessionRuntime);
     errdefer std.testing.allocator.destroy(runtime);
-    runtime.* = try tui_runtime.TuiRuntime.init(std.testing.allocator, .{ .models = &[_]ai_types.Model{defaultModel()}, .initial_model_id = defaultModel().id });
+    runtime.* = try session_runtime.SessionRuntime.init(std.testing.allocator, .{ .models = &[_]ai_types.Model{defaultModel()}, .initial_model_id = defaultModel().id });
     var app = App.initWithoutRuntime(std.testing.allocator);
     defer app.deinit();
     app.runtime = runtime;
@@ -5890,9 +5890,9 @@ test "App steers a model switch and defers run-end commands while a run streams,
     var other = defaultModel();
     other.id = "other-model";
     other.name = "Other";
-    const runtime = try std.testing.allocator.create(tui_runtime.TuiRuntime);
+    const runtime = try std.testing.allocator.create(session_runtime.SessionRuntime);
     errdefer std.testing.allocator.destroy(runtime);
-    runtime.* = try tui_runtime.TuiRuntime.init(std.testing.allocator, .{ .models = &[_]ai_types.Model{ defaultModel(), other }, .initial_model_id = defaultModel().id });
+    runtime.* = try session_runtime.SessionRuntime.init(std.testing.allocator, .{ .models = &[_]ai_types.Model{ defaultModel(), other }, .initial_model_id = defaultModel().id });
     var app = App.initWithoutRuntime(std.testing.allocator);
     defer app.deinit();
     app.runtime = runtime;
@@ -5921,9 +5921,9 @@ test "a pending model switch applies once idle even with follow-ups queued, whil
     defer env.deinit();
     var other = defaultModel();
     other.id = "other-model";
-    const runtime = try std.testing.allocator.create(tui_runtime.TuiRuntime);
+    const runtime = try std.testing.allocator.create(session_runtime.SessionRuntime);
     errdefer std.testing.allocator.destroy(runtime);
-    runtime.* = try tui_runtime.TuiRuntime.init(std.testing.allocator, .{ .models = &[_]ai_types.Model{ defaultModel(), other }, .initial_model_id = defaultModel().id });
+    runtime.* = try session_runtime.SessionRuntime.init(std.testing.allocator, .{ .models = &[_]ai_types.Model{ defaultModel(), other }, .initial_model_id = defaultModel().id });
     var app = App.initWithoutRuntime(std.testing.allocator);
     defer app.deinit();
     app.runtime = runtime;
@@ -5944,9 +5944,9 @@ test "a refreshed model list keeps a pending switch it still lists and reports o
     other.id = "other-model";
     var third = defaultModel();
     third.id = "third-model";
-    const runtime = try std.testing.allocator.create(tui_runtime.TuiRuntime);
+    const runtime = try std.testing.allocator.create(session_runtime.SessionRuntime);
     errdefer std.testing.allocator.destroy(runtime);
-    runtime.* = try tui_runtime.TuiRuntime.init(std.testing.allocator, .{ .models = &[_]ai_types.Model{ defaultModel(), other }, .initial_model_id = defaultModel().id });
+    runtime.* = try session_runtime.SessionRuntime.init(std.testing.allocator, .{ .models = &[_]ai_types.Model{ defaultModel(), other }, .initial_model_id = defaultModel().id });
     var app = App.initWithoutRuntime(std.testing.allocator);
     defer app.deinit();
     app.runtime = runtime;
@@ -5968,9 +5968,9 @@ test "status reports the session, model, usage, run, settings and auth in one pl
     defer env.deinit();
     var other = defaultModel();
     other.id = "other-model";
-    const runtime = try std.testing.allocator.create(tui_runtime.TuiRuntime);
+    const runtime = try std.testing.allocator.create(session_runtime.SessionRuntime);
     errdefer std.testing.allocator.destroy(runtime);
-    runtime.* = try tui_runtime.TuiRuntime.init(std.testing.allocator, .{ .models = &[_]ai_types.Model{ defaultModel(), other }, .initial_model_id = defaultModel().id });
+    runtime.* = try session_runtime.SessionRuntime.init(std.testing.allocator, .{ .models = &[_]ai_types.Model{ defaultModel(), other }, .initial_model_id = defaultModel().id });
     var app = App.initWithoutRuntime(std.testing.allocator);
     defer app.deinit();
     app.runtime = runtime;
@@ -6015,9 +6015,9 @@ test "App refreshes runtime models after login" {
         .context_window = 1024,
         .max_tokens = 256,
     };
-    const runtime = try std.testing.allocator.create(tui_runtime.TuiRuntime);
+    const runtime = try std.testing.allocator.create(session_runtime.SessionRuntime);
     errdefer std.testing.allocator.destroy(runtime);
-    runtime.* = try tui_runtime.TuiRuntime.init(std.testing.allocator, .{ .models = &[_]ai_types.Model{ extra_model, defaultModel() }, .initial_model_id = "temporary-extra-model" });
+    runtime.* = try session_runtime.SessionRuntime.init(std.testing.allocator, .{ .models = &[_]ai_types.Model{ extra_model, defaultModel() }, .initial_model_id = "temporary-extra-model" });
     var app = App.initWithoutRuntime(std.testing.allocator);
     defer app.deinit();
     app.runtime = runtime;
@@ -6882,11 +6882,11 @@ test "App saveEvent keeps conversation events in the session and chunks in its s
     var app = try sessionTestApp(base, "split-events");
     defer app.deinit();
 
-    var thinking = tui_runtime.TuiEvent{ .thinking_delta = .{ .content_index = 0, .delta = OwnedSlice(u8).initOwned(try std.testing.allocator.dupe(u8, "plan")) } };
+    var thinking = session_runtime.SessionEvent{ .thinking_delta = .{ .content_index = 0, .delta = OwnedSlice(u8).initOwned(try std.testing.allocator.dupe(u8, "plan")) } };
     defer thinking.deinit(std.testing.allocator);
     app.saveEvent(thinking);
 
-    var approval = tui_runtime.TuiEvent{ .tool_approval_requested = .{
+    var approval = session_runtime.SessionEvent{ .tool_approval_requested = .{
         .tool_call_id = OwnedSlice(u8).initOwned(try std.testing.allocator.dupe(u8, "call-1")),
         .tool_name = OwnedSlice(u8).initOwned(try std.testing.allocator.dupe(u8, "shell_execute")),
         .args_json = OwnedSlice(u8).initOwned(try std.testing.allocator.dupe(u8, "{\"command\":\"pwd\"}")),
@@ -6894,7 +6894,7 @@ test "App saveEvent keeps conversation events in the session and chunks in its s
     defer approval.deinit(std.testing.allocator);
     app.saveEvent(approval);
 
-    var update = tui_runtime.TuiEvent{ .tool_execution_update = .{
+    var update = session_runtime.SessionEvent{ .tool_execution_update = .{
         .tool_call_id = OwnedSlice(u8).initOwned(try std.testing.allocator.dupe(u8, "call-1")),
         .tool_name = OwnedSlice(u8).initOwned(try std.testing.allocator.dupe(u8, "shell_execute")),
         .args_json = OwnedSlice(u8).initOwned(try std.testing.allocator.dupe(u8, "{\"command\":\"pwd\"}")),
@@ -6903,15 +6903,15 @@ test "App saveEvent keeps conversation events in the session and chunks in its s
     defer update.deinit(std.testing.allocator);
     app.saveEvent(update);
 
-    var provider = tui_runtime.TuiEvent{ .provider_event = .{ .event_json = OwnedSlice(u8).initOwned(try std.testing.allocator.dupe(u8, "{\"type\":\"done\"}")) } };
+    var provider = session_runtime.SessionEvent{ .provider_event = .{ .event_json = OwnedSlice(u8).initOwned(try std.testing.allocator.dupe(u8, "{\"type\":\"done\"}")) } };
     defer provider.deinit(std.testing.allocator);
     app.saveEvent(provider);
 
-    var err = tui_runtime.TuiEvent{ .@"error" = .{ .message = OwnedSlice(u8).initOwned(try std.testing.allocator.dupe(u8, "boom")) } };
+    var err = session_runtime.SessionEvent{ .@"error" = .{ .message = OwnedSlice(u8).initOwned(try std.testing.allocator.dupe(u8, "boom")) } };
     defer err.deinit(std.testing.allocator);
     app.saveEvent(err);
 
-    var start = tui_runtime.TuiEvent{ .tool_execution_start = .{
+    var start = session_runtime.SessionEvent{ .tool_execution_start = .{
         .tool_call_id = OwnedSlice(u8).initOwned(try std.testing.allocator.dupe(u8, "call-1")),
         .tool_name = OwnedSlice(u8).initOwned(try std.testing.allocator.dupe(u8, "shell_execute")),
         .args_json = OwnedSlice(u8).initOwned(try std.testing.allocator.dupe(u8, "{\"command\":\"pwd\"}")),
@@ -6971,11 +6971,11 @@ test "App folds a reply's thinking into one record at the reply's end" {
 
     app.saveEvent(.{ .message_start = .{ .role = .assistant } });
     for ([_][]const u8{ "first ", "second" }) |part| {
-        var delta = tui_runtime.TuiEvent{ .thinking_delta = .{ .content_index = 0, .delta = OwnedSlice(u8).initOwned(try std.testing.allocator.dupe(u8, part)) } };
+        var delta = session_runtime.SessionEvent{ .thinking_delta = .{ .content_index = 0, .delta = OwnedSlice(u8).initOwned(try std.testing.allocator.dupe(u8, part)) } };
         defer delta.deinit(std.testing.allocator);
         app.saveEvent(delta);
     }
-    var end = tui_runtime.TuiEvent{ .message_end = .{ .role = .assistant, .text = OwnedSlice(u8).initOwned(try std.testing.allocator.dupe(u8, "answer")) } };
+    var end = session_runtime.SessionEvent{ .message_end = .{ .role = .assistant, .text = OwnedSlice(u8).initOwned(try std.testing.allocator.dupe(u8, "answer")) } };
     defer end.deinit(std.testing.allocator);
     app.saveEvent(end);
 
@@ -7002,7 +7002,7 @@ test "App splits a reply's thinking into records that fit the session budget" {
     while (sent <= max_session_event_payload_bytes / App.jsonStringBudget("x")) : (sent += part.len) {
         app.saveEvent(.{ .thinking_delta = .{ .content_index = 0, .delta = OwnedSlice(u8).initBorrowed(part) } });
     }
-    var end = tui_runtime.TuiEvent{ .message_end = .{ .role = .assistant, .text = OwnedSlice(u8).initOwned(try std.testing.allocator.dupe(u8, "answer")) } };
+    var end = session_runtime.SessionEvent{ .message_end = .{ .role = .assistant, .text = OwnedSlice(u8).initOwned(try std.testing.allocator.dupe(u8, "answer")) } };
     defer end.deinit(std.testing.allocator);
     app.saveEvent(end);
 
@@ -7516,11 +7516,11 @@ test "App indexes where a completed compaction starts" {
     var app = try sessionTestApp(base, "compaction-index");
     defer app.deinit();
 
-    var before = tui_runtime.TuiEvent{ .message_end = .{ .role = .user, .text = OwnedSlice(u8).initOwned(try std.testing.allocator.dupe(u8, "before")) } };
+    var before = session_runtime.SessionEvent{ .message_end = .{ .role = .user, .text = OwnedSlice(u8).initOwned(try std.testing.allocator.dupe(u8, "before")) } };
     defer before.deinit(std.testing.allocator);
     app.saveEvent(before);
     const offset = try app.store.?.conversationBytes("compaction-index");
-    var compacted = tui_runtime.TuiEvent{ .compaction_end = .{
+    var compacted = session_runtime.SessionEvent{ .compaction_end = .{
         .outcome = .completed,
         .text = OwnedSlice(u8).initOwned(try std.testing.allocator.dupe(u8, agent.compaction.header ++ " Summary follows.\n\n<summary>\nkept\n</summary>")),
     } };
@@ -7546,11 +7546,11 @@ test "App keeps the last compaction offset when a compaction record is not writt
     var app = try sessionTestApp(base, "unwritten-compaction");
     defer app.deinit();
 
-    var before = tui_runtime.TuiEvent{ .message_end = .{ .role = .user, .text = OwnedSlice(u8).initOwned(try std.testing.allocator.dupe(u8, "before")) } };
+    var before = session_runtime.SessionEvent{ .message_end = .{ .role = .user, .text = OwnedSlice(u8).initOwned(try std.testing.allocator.dupe(u8, "before")) } };
     defer before.deinit(std.testing.allocator);
     app.saveEvent(before);
     const offset = try app.store.?.conversationBytes("unwritten-compaction");
-    var compacted = tui_runtime.TuiEvent{ .compaction_end = .{
+    var compacted = session_runtime.SessionEvent{ .compaction_end = .{
         .outcome = .completed,
         .text = OwnedSlice(u8).initOwned(try std.testing.allocator.dupe(u8, agent.compaction.header ++ " Summary follows.\n\n<summary>\nkept\n</summary>")),
     } };
@@ -7579,10 +7579,10 @@ test "App titles a new session with its first message's first line" {
     var app = try sessionTestApp(base, "first-message-title");
     defer app.deinit();
 
-    var first = tui_runtime.TuiEvent{ .message_end = .{ .role = .user, .text = OwnedSlice(u8).initOwned(try std.testing.allocator.dupe(u8, "\n fix the resume freeze\nwith detail")) } };
+    var first = session_runtime.SessionEvent{ .message_end = .{ .role = .user, .text = OwnedSlice(u8).initOwned(try std.testing.allocator.dupe(u8, "\n fix the resume freeze\nwith detail")) } };
     defer first.deinit(std.testing.allocator);
     app.saveEvent(first);
-    var second = tui_runtime.TuiEvent{ .message_end = .{ .role = .user, .text = OwnedSlice(u8).initOwned(try std.testing.allocator.dupe(u8, "another message")) } };
+    var second = session_runtime.SessionEvent{ .message_end = .{ .role = .user, .text = OwnedSlice(u8).initOwned(try std.testing.allocator.dupe(u8, "another message")) } };
     defer second.deinit(std.testing.allocator);
     app.saveEvent(second);
 
@@ -7603,8 +7603,8 @@ test "App over the in-process endpoint saves each message once, from the loop's 
     defer execution.destroy();
     var app = try sessionTestApp(base, "endpoint-records");
     defer app.deinit();
-    const runtime = try std.testing.allocator.create(tui_runtime.TuiRuntime);
-    runtime.* = tui_runtime.TuiRuntime.init(std.testing.allocator, .{ .models = &models, .remote = execution.remote() }) catch |err| {
+    const runtime = try std.testing.allocator.create(session_runtime.SessionRuntime);
+    runtime.* = session_runtime.SessionRuntime.init(std.testing.allocator, .{ .models = &models, .remote = execution.remote() }) catch |err| {
         std.testing.allocator.destroy(runtime);
         return err;
     };
@@ -7646,8 +7646,8 @@ test "App indexes the title the model generates after the first reply" {
     defer app.deinit();
 
     var provider = fixture_provider.MockProvider.init(.{ .steps = &.{.{ .text = "\"Resume freeze fix.\"" }} });
-    const runtime = try std.testing.allocator.create(tui_runtime.TuiRuntime);
-    runtime.* = tui_runtime.TuiRuntime.init(std.testing.allocator, .{
+    const runtime = try std.testing.allocator.create(session_runtime.SessionRuntime);
+    runtime.* = session_runtime.SessionRuntime.init(std.testing.allocator, .{
         .protocol = provider.protocolClient(),
         .models = &[_]ai_types.Model{defaultModel()},
         .generate_titles = true,
@@ -7657,7 +7657,7 @@ test "App indexes the title the model generates after the first reply" {
     };
     app.runtime = runtime;
 
-    var first = tui_runtime.TuiEvent{ .message_end = .{ .role = .user, .text = OwnedSlice(u8).initOwned(try std.testing.allocator.dupe(u8, "the resume freezes on long sessions")) } };
+    var first = session_runtime.SessionEvent{ .message_end = .{ .role = .user, .text = OwnedSlice(u8).initOwned(try std.testing.allocator.dupe(u8, "the resume freezes on long sessions")) } };
     defer first.deinit(std.testing.allocator);
     app.saveEvent(first);
     app.saveEvent(.{ .agent_end = .{ .reason = .completed } });
@@ -7680,8 +7680,8 @@ test "App files a generated title under the session that asked for it" {
     defer app.deinit();
 
     var provider = fixture_provider.MockProvider.init(.{ .steps = &.{.{ .text = "\"Resume freeze fix.\"" }} });
-    const runtime = try std.testing.allocator.create(tui_runtime.TuiRuntime);
-    runtime.* = tui_runtime.TuiRuntime.init(std.testing.allocator, .{
+    const runtime = try std.testing.allocator.create(session_runtime.SessionRuntime);
+    runtime.* = session_runtime.SessionRuntime.init(std.testing.allocator, .{
         .protocol = provider.protocolClient(),
         .models = &[_]ai_types.Model{defaultModel()},
         .generate_titles = true,
@@ -7691,7 +7691,7 @@ test "App files a generated title under the session that asked for it" {
     };
     app.runtime = runtime;
 
-    var first = tui_runtime.TuiEvent{ .message_end = .{ .role = .user, .text = OwnedSlice(u8).initOwned(try std.testing.allocator.dupe(u8, "the resume freezes on long sessions")) } };
+    var first = session_runtime.SessionEvent{ .message_end = .{ .role = .user, .text = OwnedSlice(u8).initOwned(try std.testing.allocator.dupe(u8, "the resume freezes on long sessions")) } };
     defer first.deinit(std.testing.allocator);
     app.saveEvent(first);
     app.saveEvent(.{ .agent_end = .{ .reason = .completed } });
@@ -7723,8 +7723,8 @@ test "App rename names the session and keeps the name over a generated title" {
     defer app.deinit();
 
     var provider = fixture_provider.MockProvider.init(.{ .steps = &.{.{ .text = "\"Resume freeze fix.\"" }} });
-    const runtime = try std.testing.allocator.create(tui_runtime.TuiRuntime);
-    runtime.* = tui_runtime.TuiRuntime.init(std.testing.allocator, .{
+    const runtime = try std.testing.allocator.create(session_runtime.SessionRuntime);
+    runtime.* = session_runtime.SessionRuntime.init(std.testing.allocator, .{
         .protocol = provider.protocolClient(),
         .models = &[_]ai_types.Model{defaultModel()},
         .generate_titles = true,
@@ -7734,7 +7734,7 @@ test "App rename names the session and keeps the name over a generated title" {
     };
     app.runtime = runtime;
 
-    var first = tui_runtime.TuiEvent{ .message_end = .{ .role = .user, .text = OwnedSlice(u8).initOwned(try std.testing.allocator.dupe(u8, "the resume freezes on long sessions")) } };
+    var first = session_runtime.SessionEvent{ .message_end = .{ .role = .user, .text = OwnedSlice(u8).initOwned(try std.testing.allocator.dupe(u8, "the resume freezes on long sessions")) } };
     defer first.deinit(std.testing.allocator);
     app.saveEvent(first);
     app.saveEvent(.{ .agent_end = .{ .reason = .completed } });
@@ -7763,8 +7763,8 @@ test "App rename before the first message keeps the name and asks for no title" 
     defer app.deinit();
 
     var provider = fixture_provider.MockProvider.init(.{ .steps = &.{.{ .text = "\"Resume freeze fix.\"" }} });
-    const runtime = try std.testing.allocator.create(tui_runtime.TuiRuntime);
-    runtime.* = tui_runtime.TuiRuntime.init(std.testing.allocator, .{
+    const runtime = try std.testing.allocator.create(session_runtime.SessionRuntime);
+    runtime.* = session_runtime.SessionRuntime.init(std.testing.allocator, .{
         .protocol = provider.protocolClient(),
         .models = &[_]ai_types.Model{defaultModel()},
         .generate_titles = true,
@@ -7777,7 +7777,7 @@ test "App rename before the first message keeps the name and asks for no title" 
     try app.submit("/rename Freeze hunt");
     try std.testing.expectError(error.FileNotFound, app.store.?.loadIndex("named-first"));
 
-    var first = tui_runtime.TuiEvent{ .message_end = .{ .role = .user, .text = OwnedSlice(u8).initOwned(try std.testing.allocator.dupe(u8, "the resume freezes on long sessions")) } };
+    var first = session_runtime.SessionEvent{ .message_end = .{ .role = .user, .text = OwnedSlice(u8).initOwned(try std.testing.allocator.dupe(u8, "the resume freezes on long sessions")) } };
     defer first.deinit(std.testing.allocator);
     app.saveEvent(first);
     app.saveEvent(.{ .agent_end = .{ .reason = .completed } });
@@ -8053,9 +8053,9 @@ test "App submit abort when streaming cancels and reports transcript" {
 }
 
 test "App submit abort when streaming via runtime-only cancels and reports transcript" {
-    const runtime = try std.testing.allocator.create(tui_runtime.TuiRuntime);
+    const runtime = try std.testing.allocator.create(session_runtime.SessionRuntime);
     errdefer std.testing.allocator.destroy(runtime);
-    runtime.* = try tui_runtime.TuiRuntime.init(std.testing.allocator, .{});
+    runtime.* = try session_runtime.SessionRuntime.init(std.testing.allocator, .{});
     var app = App.initWithoutRuntime(std.testing.allocator);
     defer app.deinit();
     app.runtime = runtime;
@@ -8569,10 +8569,10 @@ const MockAppSession = struct {
     resume_count: usize = 0,
     cancel_count: usize = 0,
     clear_count: usize = 0,
-    queued_counts: tui_runtime.QueuedCounts = .{},
+    queued_counts: session_runtime.QueuedCounts = .{},
     steers_consumed: u64 = 0,
     steer_enabled: bool = true,
-    events: tui_runtime.TuiEventStream = undefined,
+    events: session_runtime.SessionEventStream = undefined,
     events_initialized: bool = false,
     history_messages: []const ai_types.Message = &.{},
     compact_count: usize = 0,
@@ -8583,7 +8583,7 @@ const MockAppSession = struct {
     followed: std.ArrayList([]u8) = .empty,
     submit_error: ?anyerror = null,
 
-    fn session(self: *MockAppSession) tui_runtime.TuiSession {
+    fn session(self: *MockAppSession) session_runtime.SessionHandle {
         return .{
             .ctx = self,
             .ops = .{
@@ -8608,7 +8608,7 @@ const MockAppSession = struct {
         };
     }
 
-    fn compact(ctx: ?*anyopaque, options: tui_runtime.CompactOptions) anyerror!void {
+    fn compact(ctx: ?*anyopaque, options: session_runtime.CompactOptions) anyerror!void {
         const self = ptr(ctx);
         self.compact_count += 1;
         std.testing.allocator.free(self.compact_focus);
@@ -8682,7 +8682,7 @@ const MockAppSession = struct {
         self.queued_counts = .{};
     }
 
-    fn queuedCounts(ctx: ?*anyopaque) tui_runtime.QueuedCounts {
+    fn queuedCounts(ctx: ?*anyopaque) session_runtime.QueuedCounts {
         return ptr(ctx).queued_counts;
     }
 
@@ -8709,21 +8709,21 @@ const MockAppSession = struct {
         return null;
     }
 
-    fn decideToolApproval(ctx: ?*anyopaque, tool_call_id: []const u8, decision: tui_runtime.ToolApprovalDecision) anyerror!void {
+    fn decideToolApproval(ctx: ?*anyopaque, tool_call_id: []const u8, decision: session_runtime.ToolApprovalDecision) anyerror!void {
         _ = ctx;
         _ = tool_call_id;
         _ = decision;
     }
 
-    fn eventStream(self: *MockAppSession) *tui_runtime.TuiEventStream {
+    fn eventStream(self: *MockAppSession) *session_runtime.SessionEventStream {
         if (!self.events_initialized) {
-            self.events = tui_runtime.TuiEventStream.init(std.testing.allocator);
+            self.events = session_runtime.SessionEventStream.init(std.testing.allocator);
             self.events_initialized = true;
         }
         return &self.events;
     }
 
-    fn streamEvents(ctx: ?*anyopaque) *tui_runtime.TuiEventStream {
+    fn streamEvents(ctx: ?*anyopaque) *session_runtime.SessionEventStream {
         return ptr(ctx).eventStream();
     }
 
@@ -9342,8 +9342,8 @@ test "App submit clears pending session reset flag" {
 }
 
 test "setting pickers apply selected values" {
-    const runtime_ptr = try std.testing.allocator.create(tui_runtime.TuiRuntime);
-    runtime_ptr.* = try tui_runtime.TuiRuntime.init(std.testing.allocator, .{});
+    const runtime_ptr = try std.testing.allocator.create(session_runtime.SessionRuntime);
+    runtime_ptr.* = try session_runtime.SessionRuntime.init(std.testing.allocator, .{});
 
     var app = App.initWithoutRuntime(std.testing.allocator);
     defer app.deinit();
@@ -9354,8 +9354,8 @@ test "setting pickers apply selected values" {
     try std.testing.expectEqual(tui_state.PickerKind.permission, app.state.picker_kind);
     app.state.menu_index = 1;
     try app.applySelectedPermission();
-    try std.testing.expectEqual(tui_runtime.PermissionMode.ask, app.state.permission_mode);
-    try std.testing.expectEqual(tui_runtime.PermissionMode.ask, runtime_ptr.permissionMode());
+    try std.testing.expectEqual(session_runtime.PermissionMode.ask, app.state.permission_mode);
+    try std.testing.expectEqual(session_runtime.PermissionMode.ask, runtime_ptr.permissionMode());
 }
 
 test "TuiModel drains events before routing Enter while streaming" {
@@ -9555,9 +9555,9 @@ test "App drain does not auto-resume queued steering after error turn" {
 }
 
 test "TuiModel local streaming Enter steers when steering available" {
-    const runtime = try std.testing.allocator.create(tui_runtime.TuiRuntime);
+    const runtime = try std.testing.allocator.create(session_runtime.SessionRuntime);
     errdefer std.testing.allocator.destroy(runtime);
-    runtime.* = try tui_runtime.TuiRuntime.init(std.testing.allocator, .{});
+    runtime.* = try session_runtime.SessionRuntime.init(std.testing.allocator, .{});
 
     var model = TuiModel{ .app = App.initWithoutRuntime(std.testing.allocator) };
     defer model.deinit();
@@ -9827,9 +9827,9 @@ test "resume selected session clears delete reset flags" {
 }
 
 test "resume selected session allows runtime without protocol" {
-    const runtime = try std.testing.allocator.create(tui_runtime.TuiRuntime);
+    const runtime = try std.testing.allocator.create(session_runtime.SessionRuntime);
     errdefer std.testing.allocator.destroy(runtime);
-    runtime.* = try tui_runtime.TuiRuntime.init(std.testing.allocator, .{});
+    runtime.* = try session_runtime.SessionRuntime.init(std.testing.allocator, .{});
     var app = App.initWithoutRuntime(std.testing.allocator);
     defer app.deinit();
     app.runtime = runtime;
@@ -9970,7 +9970,7 @@ test "resume keeps every compaction transcript when it loads from the last compa
     const summary = agent.compaction.header ++ " Summary follows.\n\n<summary>\nkept\n</summary>";
     const first_path = try store.transcriptPath("two-compactions", 1);
     defer std.testing.allocator.free(first_path);
-    var first = tui_runtime.TuiEvent{ .compaction_end = .{ .outcome = .completed, .text = OwnedSlice(u8).initBorrowed(summary), .transcript = OwnedSlice(u8).initBorrowed(first_path) } };
+    var first = session_runtime.SessionEvent{ .compaction_end = .{ .outcome = .completed, .text = OwnedSlice(u8).initBorrowed(summary), .transcript = OwnedSlice(u8).initBorrowed(first_path) } };
     try store.save(meta, first);
     const filler_text = try std.testing.allocator.alloc(u8, 16 * 1024);
     defer std.testing.allocator.free(filler_text);
@@ -10260,7 +10260,7 @@ test "ProductionRuntime multiple sequential streams reuse stable pointer" {
     }
 }
 
-test "ProductionRuntime outlives stream threads from dropped TuiRuntime" {
+test "ProductionRuntime outlives stream threads from dropped SessionRuntime" {
     const allocator = std.testing.allocator;
     var production = try ProductionRuntime.init(allocator, .{});
     defer production.deinit();
@@ -10420,7 +10420,7 @@ test "App sends the drafts queued during a compaction however the compaction end
     defer mock.deinit();
     app.session = mock.session();
 
-    const outcomes = [_]tui_runtime.TuiEvent.CompactionOutcome{ .cancelled, .failed, .completed };
+    const outcomes = [_]session_runtime.SessionEvent.CompactionOutcome{ .cancelled, .failed, .completed };
     for (outcomes, 1..) |outcome, sent| {
         mock.queued_counts.steering = 1;
         try mock.eventStream().push(.{ .compaction_start = .{} });
@@ -10537,7 +10537,7 @@ test "TuiModel flush budget ignores the composer's grown height" {
     try std.testing.expectEqual(empty_budget, grown_budget);
 }
 
-fn pushErrorRun(app: *App, mock: *MockAppSession, message: []const u8, reason: tui_runtime.TuiEndReason) !void {
+fn pushErrorRun(app: *App, mock: *MockAppSession, message: []const u8, reason: session_runtime.SessionEndReason) !void {
     try mock.eventStream().push(.{ .@"error" = .{ .message = OwnedSlice(u8).initOwned(try app.allocator.dupe(u8, message)) } });
     try mock.eventStream().push(.{ .agent_end = .{ .reason = reason } });
     try app.drainEvents();
@@ -10565,7 +10565,7 @@ const auto_continue_harness = struct {
         std.testing.allocator.destroy(self.mock);
     }
 
-    fn failRun(self: *@This(), message: []const u8, reason: tui_runtime.TuiEndReason) !void {
+    fn failRun(self: *@This(), message: []const u8, reason: session_runtime.SessionEndReason) !void {
         try pushErrorRun(&self.app, self.mock, message, reason);
     }
 

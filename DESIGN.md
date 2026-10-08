@@ -170,7 +170,7 @@ Consequences, all of which the ownership tests check:
    separately allocated messages, the event clone and the stream result are released
    once each. Not every stream in the tree is covered, and a consumer still has to
    branch on `stream.ownership.isOwned()`: the mock streams in the tests of
-   `zig/src/tui/runtime.zig` and `zig/src/adapter/oapx/local_loop.zig` are not
+   `zig/src/session/runtime.zig` and `zig/src/adapter/oapx/local_loop.zig` are not
    built by a provider module and are borrowed,
    so the rule above does not reach it.
 2. `StreamOptions.requires_owned_stream_events` **has been removed** rather than
