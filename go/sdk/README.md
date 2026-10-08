@@ -70,7 +70,7 @@ response, err := client.Agent.Run(ctx, sdk.AgentRequest{
 
 ## Authentication
 
-`client.Auth.ListProviders(ctx)` and `client.Auth.Login(ctx, providerID, handlers)` use agent-profile `+auth` on the same local stdio connection. URL and progress events reach the handlers. The runtime owns credentials; no login code or prompt answer travels in an OAP envelope. A manual-code flow without host-owned input fails with `auth_input_unavailable`.
+`client.Auth.ListProviders(ctx)` and `client.Auth.Login(ctx, providerID, handlers)` use agent-profile `+auth` on the same local stdio connection. URL and progress events reach the handlers. The runtime owns credentials; no login code or prompt answer travels in an OAP envelope. A manual-code flow without host-owned input fails with `auth_input_unavailable`. `anthropic` signs in through a browser on the same computer: its URL returns to a `localhost` callback the runtime listens on (macOS and Linux). Where no browser can reach that computer, give the runtime a Claude subscription token, such as one from `claude setup-token`, as `ANTHROPIC_AUTH_TOKEN` in its environment.
 
 ```go
 err := client.Auth.Login(ctx, "anthropic", sdk.LoginHandlers{

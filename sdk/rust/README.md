@@ -119,7 +119,7 @@ For streaming, iterate `agent().stream(request)` and handle `AgentStart`, wrappe
 
 ## Auth
 
-`auth().list_providers()` inspects auth state; `auth().login(...)` runs a browser flow. Token material and manual-code answers stay within the runtime; no answer travels in an OAP envelope. A flow requiring manual input without a host-owned input path fails with `auth_input_unavailable`.
+`auth().list_providers()` inspects auth state; `auth().login(...)` runs a browser flow. Token material and manual-code answers stay within the runtime; no answer travels in an OAP envelope. A flow requiring manual input without a host-owned input path fails with `auth_input_unavailable`. `anthropic` signs in through a browser on the same computer: its URL returns to a `localhost` callback the runtime listens on (macOS and Linux). Where no browser can reach that computer, give the runtime a Claude subscription token, such as one from `claude setup-token`, as `ANTHROPIC_AUTH_TOKEN` in its environment.
 
 ```rust
 use oap_sdk::{AuthEvent, AuthHandlers, AuthStatus, Client};

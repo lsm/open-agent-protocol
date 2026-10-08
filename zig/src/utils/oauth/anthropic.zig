@@ -2,6 +2,7 @@ const std = @import("std");
 const compat = @import("compat");
 const http = compat.http;
 const pkce_mod = @import("oauth/pkce");
+const loopback = @import("oauth/loopback");
 
 const client_id = "9d1c250a-e61b-44d9-88ed-5944d1962f5e";
 const redirect_uri = "https://console.anthropic.com/oauth/code/callback";
@@ -26,6 +27,17 @@ pub const AuthInfo = struct {
     url: []const u8,
     instructions: ?[]const u8 = null,
 };
+
+pub const Fetch = *const fn (allocator: std.mem.Allocator, url: []const u8, options: http.FetchOptions) http.FetchError!http.Fetched;
+
+pub const LoopbackCallbacks = struct {
+    onAuth: *const fn (info: AuthInfo) void,
+    isCancelled: *const fn () bool,
+    fetch: Fetch = http.fetch,
+    wait_ms: i64 = loopback.default_wait_ms,
+};
+
+pub const loopback_supported = loopback.supported;
 
 pub const Prompt = struct {
     message: []const u8,
@@ -71,6 +83,77 @@ pub fn login(callbacks: Callbacks, allocator: std.mem.Allocator) !Credentials {
         .access = try allocator.dupe(u8, token_response.access_token),
         .expires = expires,
     };
+}
+
+pub fn loginWithLoopback(callbacks: LoopbackCallbacks, allocator: std.mem.Allocator) !Credentials {
+    var listener = try loopback.Listener.open();
+    defer listener.close();
+    const callback_uri = try listener.redirectUri(allocator);
+    defer allocator.free(callback_uri);
+
+    const pkce = try pkce_mod.generate(allocator);
+    defer pkce.deinit(allocator);
+    const state = try generateState(allocator);
+    defer allocator.free(state);
+
+    const auth_url = try buildLoopbackAuthUrl(allocator, callback_uri, pkce.challenge, state);
+    defer allocator.free(auth_url);
+    callbacks.onAuth(.{
+        .url = auth_url,
+        .instructions = "Open this URL in a browser on this computer; the login finishes on its own.",
+    });
+
+    const code = try listener.waitForCode(allocator, state, callbacks.isCancelled, callbacks.wait_ms);
+    defer allocator.free(code);
+
+    const body = try std.json.Stringify.valueAlloc(allocator, .{
+        .grant_type = "authorization_code",
+        .client_id = client_id,
+        .code = code,
+        .state = state,
+        .redirect_uri = callback_uri,
+        .code_verifier = pkce.verifier,
+    }, .{});
+    defer allocator.free(body);
+
+    const token_response = try exchangeTokensWith(callbacks.fetch, body, allocator);
+    defer allocator.free(token_response.refresh_token);
+    defer allocator.free(token_response.access_token);
+
+    const refresh = try allocator.dupe(u8, token_response.refresh_token);
+    errdefer allocator.free(refresh);
+    const access = try allocator.dupe(u8, token_response.access_token);
+    return .{
+        .refresh = refresh,
+        .access = access,
+        .expires = compat.time.nowMillis() + (token_response.expires_in * 1000) - (5 * 60 * 1000),
+    };
+}
+
+fn generateState(allocator: std.mem.Allocator) ![]u8 {
+    var random_bytes: [32]u8 = undefined;
+    compat.random.fillSecureBytes(&random_bytes);
+    const encoder = std.base64.url_safe_no_pad.Encoder;
+    const state = try allocator.alloc(u8, encoder.calcSize(random_bytes.len));
+    _ = encoder.encode(state, &random_bytes);
+    return state;
+}
+
+fn buildLoopbackAuthUrl(allocator: std.mem.Allocator, callback_uri: []const u8, challenge: []const u8, state: []const u8) ![]u8 {
+    var encoded = std.ArrayList(u8).empty;
+    defer encoded.deinit(allocator);
+    for (callback_uri) |byte| {
+        if (std.ascii.isAlphanumeric(byte) or byte == '-' or byte == '_' or byte == '.' or byte == '~') {
+            try encoded.append(allocator, byte);
+        } else {
+            try encoded.print(allocator, "%{X:0>2}", .{byte});
+        }
+    }
+    return try std.fmt.allocPrint(
+        allocator,
+        "{s}?code=true&client_id={s}&redirect_uri={s}&scope={s}&response_type=code&code_challenge={s}&code_challenge_method=S256&state={s}",
+        .{ auth_url_base, client_id, encoded.items, scopes, challenge, state },
+    );
 }
 
 pub fn refreshToken(credentials: Credentials, allocator: std.mem.Allocator) !Credentials {
@@ -258,19 +341,23 @@ fn exchangeCode(code: []const u8, state: []const u8, verifier: []const u8, alloc
 }
 
 fn exchangeTokens(body: []const u8, allocator: std.mem.Allocator) !TokenResponse {
+    return exchangeTokensWith(http.fetch, body, allocator);
+}
+
+fn exchangeTokensWith(fetch: Fetch, body: []const u8, allocator: std.mem.Allocator) !TokenResponse {
     var headers: std.ArrayList(std.http.Header) = .empty;
     defer headers.deinit(allocator);
     try headers.append(allocator, .{ .name = "accept", .value = "application/json" });
     try headers.append(allocator, .{ .name = "content-type", .value = "application/json" });
 
-    var fetched = http.fetch(allocator, token_url, .{
+    var fetched = fetch(allocator, token_url, .{
         .method = .POST,
         .extra_headers = headers.items,
         .body = body,
         .accept_encoding = "identity",
         .max_response_bytes = 8192,
         .timeout_ms = oauth_request_timeout_ms,
-    }) catch return error.OAuthFailed;
+    }) catch |err| return if (err == error.OutOfMemory) error.OutOfMemory else error.OAuthFailed;
     defer fetched.deinit(allocator);
 
     if (fetched.status != 200) return error.OAuthFailed;
@@ -369,4 +456,82 @@ test "parseTokenResponse maps oauth error payload to OAuthFailed" {
         \\{"error":"invalid_grant","error_description":"Invalid 'code' in request."}
     ;
     try std.testing.expectError(error.OAuthFailed, parseTokenResponse(payload, std.testing.allocator));
+}
+
+const FakeClaudeBrowser = struct {
+    var shown_url: [1024]u8 = undefined;
+    var shown_len: usize = 0;
+    var thread: ?std.Thread = null;
+    var exchange_body: std.ArrayList(u8) = .empty;
+    var exchanges: usize = 0;
+
+    fn param(url: []const u8, key: []const u8) []const u8 {
+        const start = (std.mem.indexOf(u8, url, key) orelse return "") + key.len;
+        const end = std.mem.indexOfScalarPos(u8, url, start, '&') orelse url.len;
+        return url[start..end];
+    }
+
+    fn approve() void {
+        const url = shown_url[0..shown_len];
+        const redirect = param(url, "redirect_uri=http%3A%2F%2Flocalhost%3A");
+        const port_end = std.mem.indexOf(u8, redirect, "%2F") orelse return;
+        const port = std.fmt.parseInt(u16, redirect[0..port_end], 10) catch return;
+        var stream = compat.net.tcpConnectHost(std.heap.page_allocator, "127.0.0.1", port) catch return;
+        defer stream.close();
+        var request: [512]u8 = undefined;
+        const line = std.fmt.bufPrint(&request, "GET /callback?code=claude-code-1&state={s} HTTP/1.1\r\n\r\n", .{param(url, "&state=")}) catch return;
+        stream.writeAll(line) catch return;
+        var sink: [256]u8 = undefined;
+        while (compat.net.readableWithin(compat.net.streamHandle(&stream), 3_000) catch false) {
+            if ((stream.readSome(&sink) catch 0) == 0) break;
+        }
+    }
+
+    fn onAuth(info: AuthInfo) void {
+        @memcpy(shown_url[0..info.url.len], info.url);
+        shown_len = info.url.len;
+        thread = std.Thread.spawn(.{}, approve, .{}) catch null;
+    }
+
+    fn isCancelled() bool {
+        return false;
+    }
+
+    fn fetch(allocator: std.mem.Allocator, url: []const u8, options: http.FetchOptions) http.FetchError!http.Fetched {
+        if (!std.mem.eql(u8, url, token_url)) return error.RequestFailed;
+        exchanges += 1;
+        exchange_body.appendSlice(std.testing.allocator, options.body orelse "") catch return error.OutOfMemory;
+        return .{ .status = 200, .body = try allocator.dupe(u8, "{\"access_token\":\"sk-ant-oat01-a\",\"refresh_token\":\"r\",\"expires_in\":3600}") };
+    }
+};
+
+test "Anthropic loopback login sends the browser to a localhost callback and exchanges the code that comes back with the same redirect and state" {
+    defer FakeClaudeBrowser.exchange_body.clearAndFree(std.testing.allocator);
+    const credentials = try loginWithLoopback(.{
+        .onAuth = FakeClaudeBrowser.onAuth,
+        .isCancelled = FakeClaudeBrowser.isCancelled,
+        .fetch = FakeClaudeBrowser.fetch,
+        .wait_ms = 5_000,
+    }, std.testing.allocator);
+    defer std.testing.allocator.free(credentials.refresh);
+    defer std.testing.allocator.free(credentials.access);
+    if (FakeClaudeBrowser.thread) |thread| thread.join();
+
+    const url = FakeClaudeBrowser.shown_url[0..FakeClaudeBrowser.shown_len];
+    try std.testing.expect(std.mem.startsWith(u8, url, "https://claude.ai/oauth/authorize?code=true&client_id=9d1c250a-e61b-44d9-88ed-5944d1962f5e&redirect_uri=http%3A%2F%2Flocalhost%3A"));
+    const state = FakeClaudeBrowser.param(url, "&state=");
+    try std.testing.expect(state.len >= 43);
+    try std.testing.expect(std.mem.indexOf(u8, url, "code_challenge_method=S256") != null);
+
+    var parsed = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, FakeClaudeBrowser.exchange_body.items, .{});
+    defer parsed.deinit();
+    const body = parsed.value.object;
+    try std.testing.expectEqualStrings("claude-code-1", body.get("code").?.string);
+    try std.testing.expectEqualStrings(state, body.get("state").?.string);
+    const port = FakeClaudeBrowser.param(url, "redirect_uri=http%3A%2F%2Flocalhost%3A");
+    const expected_redirect = try std.fmt.allocPrint(std.testing.allocator, "http://localhost:{s}/callback", .{port[0 .. std.mem.indexOf(u8, port, "%2F") orelse port.len]});
+    defer std.testing.allocator.free(expected_redirect);
+    try std.testing.expectEqualStrings(expected_redirect, body.get("redirect_uri").?.string);
+    try std.testing.expect(!std.mem.eql(u8, state, body.get("code_verifier").?.string));
+    try std.testing.expectEqualStrings("sk-ant-oat01-a", credentials.access);
 }

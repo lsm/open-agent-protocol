@@ -8715,7 +8715,7 @@ fn runOapxServe(
     var endpoint = adapter_endpoint.Endpoint.init(allocator, oapx.adapter(), .{});
     defer endpoint.deinit();
 
-    var oap_auth_server = AuthProtocolServer.init(allocator, .{});
+    var oap_auth_server = AuthProtocolServer.init(allocator, .{ .answers_prompts = false });
     defer oap_auth_server.deinit();
     var auth_adapter = oap_auth_adapter.Adapter.init(allocator, &oap_auth_server);
     defer auth_adapter.deinit();

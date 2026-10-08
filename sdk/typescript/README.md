@@ -161,7 +161,7 @@ Prefer `client.models` when you only need model discovery. Use `client.agent.mod
 
 ## Auth
 
-Use `client.auth.listProviders()` to inspect auth state, and `client.auth.login(providerId, handlers)` to start a browser login flow. Token material and manual-code answers stay within the runtime; no answer travels in an OAP envelope. A flow requiring manual input without a host-owned input path fails with `auth_input_unavailable`.
+Use `client.auth.listProviders()` to inspect auth state, and `client.auth.login(providerId, handlers)` to start a browser login flow. Token material and manual-code answers stay within the runtime; no answer travels in an OAP envelope. A flow requiring manual input without a host-owned input path fails with `auth_input_unavailable`. `anthropic` signs in through a browser on the same computer: its URL returns to a `localhost` callback the runtime listens on (macOS and Linux). Where no browser can reach that computer, give the runtime a Claude subscription token, such as one from `claude setup-token`, as `ANTHROPIC_AUTH_TOKEN` in its environment.
 
 ```ts
 import { createMakaiClient, type MakaiAuthEvent } from "oap-sdk";

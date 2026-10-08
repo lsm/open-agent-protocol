@@ -55,7 +55,7 @@ The optional `client.agent.attach_provider(session_id, {"id": ..., "provider_id"
 
 ## Authentication
 
-`client.auth.list_providers()` and `.login()` use agent-profile `+auth` on the local stdio connection. The runtime owns credentials; no login code or prompt answer travels in an OAP envelope. A manual-code flow without host-owned input fails with `auth_input_unavailable`.
+`client.auth.list_providers()` and `.login()` use agent-profile `+auth` on the local stdio connection. The runtime owns credentials; no login code or prompt answer travels in an OAP envelope. A manual-code flow without host-owned input fails with `auth_input_unavailable`. `anthropic` signs in through a browser on the same computer: its URL returns to a `localhost` callback the runtime listens on (macOS and Linux). Where no browser can reach that computer, give the runtime a Claude subscription token, such as one from `claude setup-token`, as `ANTHROPIC_AUTH_TOKEN` in its environment.
 
 ```python
 handlers = oap_sdk.AuthFlowHandlers(

@@ -67,6 +67,8 @@ pub const AuthProtocolServer = struct {
         persist_credentials: bool = true,
         enable_real_oauth: bool = true,
         spawn_login_workers: bool = true,
+        answers_prompts: bool = true,
+        anthropic_fetch: anthropic_oauth.Fetch = compat.http.fetch,
     };
 
     pub fn init(allocator: std.mem.Allocator, options: Options) Self {
@@ -607,10 +609,17 @@ pub const AuthProtocolServer = struct {
         g_oauth_thread_context = &context;
         defer g_oauth_thread_context = null;
 
-        const credentials = try anthropic_oauth.login(.{
-            .onAuth = anthropicOnAuth,
-            .onPrompt = anthropicOnPrompt,
-        }, self.allocator);
+        const credentials = if (self.options.answers_prompts or !anthropic_oauth.loopback_supported)
+            try anthropic_oauth.login(.{
+                .onAuth = anthropicOnAuth,
+                .onPrompt = anthropicOnPrompt,
+            }, self.allocator)
+        else
+            try anthropic_oauth.loginWithLoopback(.{
+                .onAuth = anthropicOnAuth,
+                .isCancelled = oauthFlowCancelled,
+                .fetch = self.options.anthropic_fetch,
+            }, self.allocator);
 
         return .{
             .refresh = credentials.refresh,
@@ -917,6 +926,13 @@ fn codexOnAuth(info: codex_oauth.AuthInfo) void {
 fn codexOnPrompt(prompt: codex_oauth.Prompt) []const u8 {
     const context = g_oauth_thread_context orelse @panic("missing oauth context");
     return context.server.promptForAnswer(context.flow, prompt.message, prompt.allow_empty) catch emptyPromptAnswer(context.server.allocator);
+}
+
+fn oauthFlowCancelled() bool {
+    const context = g_oauth_thread_context orelse return true;
+    context.flow.mutex.lockUncancelable(defaultIo());
+    defer context.flow.mutex.unlock(defaultIo());
+    return context.flow.cancelled or context.flow.terminal_emitted;
 }
 
 fn saveOAuthCredentials(provider_id: []const u8, credentials: oauth_storage.Credentials, allocator: std.mem.Allocator) !void {

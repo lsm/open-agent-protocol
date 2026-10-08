@@ -519,6 +519,149 @@ test "OAP auth adapter fails a manual prompt without carrying an answer" {
     try std.testing.expect(!try adapter.handleLine(forbidden));
 }
 
+const FakeClaudeAuth = struct {
+    fn fetch(allocator: std.mem.Allocator, url: []const u8, _: compat.http.FetchOptions) compat.http.FetchError!compat.http.Fetched {
+        if (!std.mem.endsWith(u8, url, "/v1/oauth/token")) return error.RequestFailed;
+        return .{ .status = 200, .body = try allocator.dupe(u8, "{\"access_token\":\"access-secret-2\",\"refresh_token\":\"refresh-secret-2\",\"expires_in\":3600}") };
+    }
+
+    fn param(url: []const u8, key: []const u8) []const u8 {
+        const start = (std.mem.indexOf(u8, url, key) orelse return "") + key.len;
+        const end = std.mem.indexOfScalarPos(u8, url, start, '&') orelse url.len;
+        return url[start..end];
+    }
+
+    fn approve(url: []const u8, code: []const u8) ![]u8 {
+        const redirect = param(url, "redirect_uri=http%3A%2F%2Flocalhost%3A");
+        const port = try std.fmt.parseInt(u16, redirect[0 .. std.mem.indexOf(u8, redirect, "%2F") orelse return error.NoPort], 10);
+        var stream = try compat.net.tcpConnectHost(std.testing.allocator, "127.0.0.1", port);
+        defer stream.close();
+        var request: [512]u8 = undefined;
+        try stream.writeAll(try std.fmt.bufPrint(&request, "GET /callback?code={s}&state={s} HTTP/1.1\r\n\r\n", .{ code, param(url, "&state=") }));
+        var response = std.ArrayList(u8).empty;
+        errdefer response.deinit(std.testing.allocator);
+        var chunk: [256]u8 = undefined;
+        while (true) {
+            if (!try compat.net.readableWithin(compat.net.streamHandle(&stream), 3_000)) return error.NoAnswer;
+            const read = try stream.readSome(&chunk);
+            if (read == 0) break;
+            try response.appendSlice(std.testing.allocator, chunk[0..read]);
+        }
+        return response.toOwnedSlice(std.testing.allocator);
+    }
+
+    fn startLogin(adapter: *Adapter, id: []const u8) ![]u8 {
+        const line = try std.fmt.allocPrint(std.testing.allocator, "{{\"protocol\":\"open-agent-protocol\",\"version\":\"0.1\",\"profile\":\"open-agent-protocol.agent-control-core\",\"type\":\"auth.login.start.request\",\"id\":\"{s}\",\"payload\":{{\"provider_id\":\"anthropic\"}}}}", .{id});
+        defer std.testing.allocator.free(line);
+        try std.testing.expect(try adapter.handleLine(line));
+        const response = adapter.popOutbound() orelse return error.MissingStartResponse;
+        defer std.testing.allocator.free(response);
+        var parsed = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, response, .{});
+        defer parsed.deinit();
+        return std.testing.allocator.dupe(u8, try requiredString((parsed.value.object.get("payload") orelse return error.MissingPayload).object, "flow_id"));
+    }
+
+    fn awaitUrl(adapter: *Adapter) ![]u8 {
+        const deadline = compat.time.nowMillis() + 5_000;
+        while (compat.time.nowMillis() < deadline) {
+            _ = try adapter.pump();
+            while (adapter.popOutbound()) |line| {
+                defer std.testing.allocator.free(line);
+                var parsed = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, line, .{});
+                defer parsed.deinit();
+                const payload = (parsed.value.object.get("payload") orelse continue).object;
+                const kind = stringField(payload, "kind") orelse continue;
+                if (std.mem.eql(u8, kind, "url")) return std.testing.allocator.dupe(u8, try requiredString(payload, "url"));
+            }
+            compat.time.sleepNs(std.time.ns_per_ms);
+        }
+        return error.NoUrlEvent;
+    }
+
+    fn awaitStatus(adapter: *Adapter) ![]u8 {
+        const deadline = compat.time.nowMillis() + 5_000;
+        while (compat.time.nowMillis() < deadline) {
+            _ = try adapter.pump();
+            while (adapter.popOutbound()) |line| {
+                defer std.testing.allocator.free(line);
+                try std.testing.expect(std.mem.indexOf(u8, line, "secret") == null);
+                var parsed = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, line, .{});
+                defer parsed.deinit();
+                if (!std.mem.eql(u8, try requiredString(parsed.value.object, "type"), "auth.login.completed")) continue;
+                return std.testing.allocator.dupe(u8, try requiredString((parsed.value.object.get("payload") orelse return error.MissingPayload).object, "status"));
+            }
+            compat.time.sleepNs(std.time.ns_per_ms);
+        }
+        return error.LoginNeverCompleted;
+    }
+
+    fn server() auth_server.AuthProtocolServer {
+        return auth_server.AuthProtocolServer.init(std.testing.allocator, .{
+            .persist_credentials = false,
+            .answers_prompts = false,
+            .anthropic_fetch = fetch,
+        });
+    }
+};
+
+test "OAP auth adapter logs into Claude through a localhost callback the browser returns to, and sends no secret" {
+    if (!compat.net.supports_unix_channels) return error.SkipZigTest;
+    var native = FakeClaudeAuth.server();
+    defer native.deinit();
+    var adapter = Adapter.init(std.testing.allocator, &native);
+    defer adapter.deinit();
+
+    const flow_id = try FakeClaudeAuth.startLogin(&adapter, "start-claude");
+    defer std.testing.allocator.free(flow_id);
+    const url = try FakeClaudeAuth.awaitUrl(&adapter);
+    defer std.testing.allocator.free(url);
+    try std.testing.expect(std.mem.startsWith(u8, url, "https://claude.ai/oauth/authorize?"));
+    const page = try FakeClaudeAuth.approve(url, "claude-code-2");
+    defer std.testing.allocator.free(page);
+    try std.testing.expect(std.mem.startsWith(u8, page, "HTTP/1.1 200 OK"));
+    const status = try FakeClaudeAuth.awaitStatus(&adapter);
+    defer std.testing.allocator.free(status);
+    try std.testing.expectEqualStrings("success", status);
+}
+
+test "OAP auth adapter cancels a Claude login that is still waiting for the browser" {
+    if (!compat.net.supports_unix_channels) return error.SkipZigTest;
+    var native = FakeClaudeAuth.server();
+    defer native.deinit();
+    var adapter = Adapter.init(std.testing.allocator, &native);
+    defer adapter.deinit();
+
+    const flow_id = try FakeClaudeAuth.startLogin(&adapter, "start-claude-cancel");
+    defer std.testing.allocator.free(flow_id);
+    const url = try FakeClaudeAuth.awaitUrl(&adapter);
+    defer std.testing.allocator.free(url);
+    const cancel_line = try std.fmt.allocPrint(std.testing.allocator, "{{\"protocol\":\"open-agent-protocol\",\"version\":\"0.1\",\"profile\":\"open-agent-protocol.agent-control-core\",\"type\":\"auth.login.cancel.request\",\"id\":\"cancel-claude\",\"payload\":{{\"flow_id\":\"{s}\"}}}}", .{flow_id});
+    defer std.testing.allocator.free(cancel_line);
+    try std.testing.expect(try adapter.handleLine(cancel_line));
+    const status = try FakeClaudeAuth.awaitStatus(&adapter);
+    defer std.testing.allocator.free(status);
+    try std.testing.expectEqualStrings("cancelled", status);
+    if (FakeClaudeAuth.approve(url, "too-late")) |page| {
+        defer std.testing.allocator.free(page);
+        try std.testing.expect(!std.mem.startsWith(u8, page, "HTTP/1.1 200"));
+    } else |_| {}
+}
+
+test "auth server shutdown stops a Claude login that is still waiting for the browser" {
+    if (!compat.net.supports_unix_channels) return error.SkipZigTest;
+    var native = FakeClaudeAuth.server();
+    var adapter = Adapter.init(std.testing.allocator, &native);
+    defer adapter.deinit();
+
+    const flow_id = try FakeClaudeAuth.startLogin(&adapter, "start-claude-shutdown");
+    defer std.testing.allocator.free(flow_id);
+    const url = try FakeClaudeAuth.awaitUrl(&adapter);
+    defer std.testing.allocator.free(url);
+    const started = compat.time.nowMillis();
+    native.deinit();
+    try std.testing.expect(compat.time.nowMillis() - started < 1_000);
+}
+
 test "auth adapter repeats the admitted revision on providers and cancel responses" {
     const allocator = std.testing.allocator;
     var native = auth_server.AuthProtocolServer.init(allocator, .{
