@@ -308,9 +308,9 @@ program observes and nothing in the tree would say why.
 ## What is not settled here
 
 - **Cancellation scope.** The Zig loop's `cancel_token` ends the run and sets
-  `termination: cancelled`; `oapx`'s OAP server advertises `run.cancel` as
-  `degraded` because its cancellation is a session-scoped teardown
-  (`zig/src/protocol/oap/server.zig:34`). Go's loop should be run-scoped and
+  `termination: cancelled`; `oapx`'s former OAP server advertised `run.cancel` as
+  `degraded` because its cancellation was a session-scoped teardown; the `oapx`
+  adapter that replaced it advertises `run.cancel` with the session left open. Go's loop should be run-scoped and
   advertise `native` — but that is a difference from `oapx` the parity harness
   will report, so it needs the draft it touches updated in the same PR, not
   left to a later reader.

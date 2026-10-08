@@ -32,7 +32,6 @@ const auth_providers = @import("auth/providers");
 const kimi_provider_id = "kimi";
 const kimi_china_base_url = provider_catalog.baseUrlOrCompileError(kimi_provider_id, "openai-completions", "china");
 const kimi_global_base_url = provider_catalog.baseUrlOrCompileError(kimi_provider_id, "openai-completions", "global");
-const oap_server = @import("oap_server");
 const oap_conformance = @import("oap_conformance");
 const oap_auth_adapter = @import("oap_auth_adapter");
 const agent_oap_provider_bridge = @import("agent_oap_provider_bridge");
@@ -50,7 +49,6 @@ const oap_provider_runtime = @import("oap_provider_runtime");
 const oap_provider_grant_channel = @import("oap_provider_grant_channel");
 const auth_resolver = @import("auth_resolver");
 const oap_types = @import("oap_types");
-const oap_bridge = @import("oap_bridge");
 const adapter_endpoint = @import("adapter_endpoint");
 const adapter_contract = @import("adapter_contract");
 const adapter_config = @import("adapter_config");
@@ -8646,12 +8644,6 @@ fn runOapMode(
     defer if (env_model) |value| allocator.free(value);
     const default_model_id: ?[]const u8 = parsed.default_model_id orelse env_model;
 
-    if (!try remoteProviderConfigured(allocator)) {
-        return runOapxServe(allocator, stdin, stdout, stderr, serve_provider, parsed.answers_specimens, default_model_id);
-    }
-
-    var stdio_loop = try StdioProtocolLoop.initWithBuiltins(allocator);
-    defer stdio_loop.deinit();
     const remote_url = try provider_base_url.envOwnedOrNull(allocator, "OAPX_PROVIDER_SERVICE_URL");
     defer if (remote_url) |value| allocator.free(value);
     const remote_security_text = try provider_base_url.envOwnedOrNull(allocator, "OAPX_PROVIDER_SERVICE_SECURITY");
@@ -8663,215 +8655,8 @@ fn runOapMode(
         const security = std.meta.stringToEnum(oap_provider_http_policy.Security, security_text) orelse return error.InvalidProviderServiceSecurity;
         _ = try oap_provider_http_policy.validateBaseUrl(url, security);
         remote_config = .{ .base_url = url, .security = security };
-        stdio_loop.oap_provider_bridge = agent_oap_provider_bridge.InProcessOapProviderBridge.init(remote_config.?.factory());
-    } else {
-        if (remote_security_text != null) return error.ProviderServiceUrlRequired;
-        stdio_loop.useOapProviderCore();
-    }
-
-    var oap = try oap_server.Server.init(allocator, .{
-        .endpoint_version = VERSION,
-        .default_model_id = default_model_id,
-    });
-    defer oap.deinit();
-
-    var oap_auth_server = AuthProtocolServer.init(allocator, .{});
-    defer oap_auth_server.deinit();
-    var auth_adapter = oap_auth_adapter.Adapter.init(allocator, &oap_auth_server);
-    defer auth_adapter.deinit();
-    auth_adapter.setCapabilityRevision(oap.descriptor.capability_revision);
-
-    var bridge = oap_bridge.Bridge.init(allocator);
-    defer bridge.deinit();
-
-    var provider_registry = api_registry.ApiRegistry.init(allocator);
-    defer provider_registry.deinit();
-    var provider_server = oap_provider_server.Server.init(allocator, .{
-        .capability_revision = VERSION,
-        .grant_channel = if (oap_provider_grant_channel.GrantChannel.supported) .out_of_band else .unsupported,
-        .accepts_inference = true,
-        .resolves_own_credentials = true,
-        .profile_revision = OAP_PROVIDER_PROFILE_REVISION,
-        .catalog = oapFallbackCatalogState(),
-    });
-    defer provider_server.deinit();
-    var grant_channels = std.ArrayList(OapGrantChannel).empty;
-    defer {
-        for (grant_channels.items) |*entry| entry.deinit(allocator);
-        grant_channels.deinit(allocator);
-    }
-    var granted_values = std.ArrayList(OapGrantedValue).empty;
-    defer {
-        for (granted_values.items) |*entry| entry.deinit(allocator);
-        granted_values.deinit(allocator);
-    }
-    var grant_ordinal: u64 = 0;
-    var running_inferences = std.ArrayList(RunningOapInference).empty;
-    defer {
-        for (running_inferences.items) |*entry| entry.deinit(allocator);
-        running_inferences.deinit(allocator);
-    }
-    const provider_idle_ttl_ms = oapProviderStreamIdleTtlMs(allocator);
-    try register_builtins.registerBuiltInApiProviders(&provider_registry);
-    try populateOapProviderCatalog(allocator, &provider_server);
-    if (remote_config) |*config| {
-        const remote_models = try oap_remote_provider_transport.discoverModels(allocator, config);
-        defer {
-            for (remote_models) |model| allocator.free(model);
-            allocator.free(remote_models);
-        }
-        for (remote_models) |model| try oap.addModel(model);
-    } else {
-        for (provider_server.models.items) |model| try oap.addModel(model.model_ref);
-    }
-
-    var async_receiver = stdio.AsyncStdioReceiver.initWithFile(stdin);
-    var stdin_handle = try async_receiver.receiveStreamWithHandle(allocator);
-    defer _ = stdin_handle.deinit(if (endpoint_signals.received()) 0 else STDIO_THREAD_JOIN_TIMEOUT_MS);
-    const stdin_stream = stdin_handle.getStream();
-
-    if (!serve_provider) unblockOutput(stdout);
-    var output = bounded_output.Output.init(stdout, if (serve_provider) std.math.maxInt(u64) else backend_write_stall_ns);
-    try output.start();
-    defer output.deinit();
-    if (!serve_provider) output.stall_notice = .{ .file = stderr, .message = OUTPUT_STALLED_MESSAGE };
-    var native_lines = std.ArrayList([]const u8).empty;
-    defer {
-        clearOwnedLines(allocator, &native_lines);
-        native_lines.deinit(allocator);
-    }
-    var submission_lines = std.ArrayList([]const u8).empty;
-    defer {
-        clearOwnedLines(allocator, &submission_lines);
-        submission_lines.deinit(allocator);
-    }
-    var auth_input_closed = false;
-
-    while (true) {
-        var did_work = false;
-
-        while (if (endpoint_signals.received()) null else stdin_stream.poll()) |chunk| {
-            var mutable_chunk = chunk;
-            defer mutable_chunk.deinit(allocator);
-
-            const line = std.mem.trim(u8, mutable_chunk.data, " \t\r\n");
-            if (line.len == 0) continue;
-            if (serve_provider) {
-                if (try oapSpecimenRequestId(line, allocator)) |request_id| {
-                    defer allocator.free(request_id);
-                    if (parsed.answers_specimens) {
-                        try provider_server.emitSpecimens(request_id);
-                    } else {
-                        try provider_server.emitSpecimenError(request_id, "this endpoint was not started with --specimens");
-                    }
-                    did_work = true;
-                    continue;
-                }
-                if (try isProviderOapLine(allocator, line)) {
-                    provider_server.handleLine(line) catch |err| {
-                        _ = try drainOapProviderOutbound(&output, allocator, &provider_server);
-                        try compat.stdio.writeAll(stderr, OAP_PROVIDER_EXHAUSTED_MESSAGE);
-                        return err;
-                    };
-                    did_work = true;
-                    continue;
-                }
-            }
-            if (try auth_adapter.handleLine(line)) {
-                did_work = true;
-                continue;
-            }
-            oap.handleLine(line) catch |err| switch (err) {
-                error.MalformedLine, error.UnaddressableEnvelope => {
-                    _ = try writeOapOutbound(&output, allocator, &oap);
-                    const message = if (err == error.MalformedLine)
-                        OAP_MALFORMED_LINE_MESSAGE
-                    else
-                        OAP_UNADDRESSABLE_ENVELOPE_MESSAGE;
-                    try compat.stdio.writeAll(stderr, message);
-                    return err;
-                },
-                else => return err,
-            };
-            did_work = true;
-        }
-
-        while (oap.popEvictedSession()) |evicted| {
-            defer allocator.free(evicted);
-            bridge.forgetSession(evicted);
-            did_work = true;
-        }
-
-        if (try pumpOapIntents(allocator, &oap, &bridge, &stdio_loop, &submission_lines)) did_work = true;
-        if (try auth_adapter.pump() > 0) did_work = true;
-
-        if (serve_provider) {
-            if (try announceOapGrants(allocator, &provider_server, &grant_channels, &grant_ordinal)) did_work = true;
-            if (try pumpOapGrants(allocator, &provider_server, &grant_channels, &granted_values, compat.time.nowMillis())) did_work = true;
-            while (provider_server.popPendingStart()) |inference_id| {
-                defer allocator.free(inference_id);
-                try startOapInference(allocator, &provider_registry, &provider_server, &running_inferences, inference_id, granted_values.items, null);
-                did_work = true;
-            }
-            if (try pumpOapInferences(allocator, &provider_server, &running_inferences, provider_idle_ttl_ms)) did_work = true;
-        }
-
-        if (oapInputEnded(stdin_stream)) {
-            stdio_loop.markStdinDisconnected();
-            if (!auth_input_closed) {
-                try auth_adapter.cancelAllOnDisconnect();
-                auth_input_closed = true;
-            }
-            if (oap.hasActiveRun()) {
-                if (try bridge.failUnmappedActiveRuns(&oap, OAP_EOF_MESSAGE)) did_work = true;
-            }
-        }
-
-        const forwarded = stdio_loop.pumpBackground() catch |err| blk: {
-            try emitOapRuntimeFailure(&oap, &bridge, @errorName(err));
-            break :blk 0;
-        };
-        if (forwarded > 0) did_work = true;
-
-        const drained = stdio_loop.drainOutbound(&native_lines) catch |err| blk: {
-            try emitOapRuntimeFailure(&oap, &bridge, @errorName(err));
-            break :blk 0;
-        };
-        if (drained > 0 or native_lines.items.len > 0) {
-            for (native_lines.items) |native_line| {
-                try bridge.applyNativeLine(&oap, native_line);
-            }
-            clearOwnedLines(allocator, &native_lines);
-            did_work = true;
-        }
-
-        if (try writeOapOutbound(&output, allocator, &oap)) did_work = true;
-        if (try writeOapAuthOutbound(&output, allocator, &auth_adapter)) did_work = true;
-        if (serve_provider and try drainOapProviderOutbound(&output, allocator, &provider_server)) did_work = true;
-
-        if (oapInputEnded(stdin_stream) and !did_work and running_inferences.items.len == 0 and !stdio_loop.hasActiveProviderStreams() and
-            !stdio_loop.hasActiveAgentRuns() and !stdio_loop.hasActiveAuthFlows() and oap_auth_server.activeFlowCount() == 0)
-        {
-            break;
-        }
-
-        if (!did_work) compat.time.sleepNs(STDIO_IDLE_SLEEP_NS);
-    }
-
-    _ = try writeOapOutbound(&output, allocator, &oap);
-    _ = try writeOapAuthOutbound(&output, allocator, &auth_adapter);
-    if (serve_provider) _ = try drainOapProviderOutbound(&output, allocator, &provider_server);
-}
-
-fn remoteProviderConfigured(allocator: std.mem.Allocator) !bool {
-    for ([_][]const u8{ "OAPX_PROVIDER_SERVICE_URL", "OAPX_PROVIDER_SERVICE_SECURITY" }) |name| {
-        const value = try provider_base_url.envOwnedOrNull(allocator, name);
-        if (value) |held| {
-            allocator.free(held);
-            return true;
-        }
-    }
-    return false;
+    } else if (remote_security_text != null) return error.ProviderServiceUrlRequired;
+    return runOapxServe(allocator, stdin, stdout, stderr, serve_provider, parsed.answers_specimens, default_model_id, if (remote_config) |*config| config else null);
 }
 
 const served_features = [_]adapter_contract.Feature{
@@ -8888,11 +8673,25 @@ fn runOapxServe(
     serve_provider: bool,
     answers_specimens: bool,
     default_model_ref: ?[]const u8,
+    remote: ?*const oap_remote_provider_transport.Config,
 ) !void {
     var production = try tui_app.ProductionRuntime.init(allocator, .{});
     defer production.deinit();
     production.initBridge();
     var options = production.options();
+    var remote_bridge: agent_oap_provider_bridge.InProcessOapProviderBridge = undefined;
+    var remote_models: []ai_types.Model = &.{};
+    defer {
+        for (remote_models) |*model| model.deinit(allocator);
+        if (remote != null) allocator.free(remote_models);
+    }
+    if (remote) |config| {
+        remote_models = try oap_remote_provider_transport.discoverModels(allocator, config);
+        remote_bridge = agent_oap_provider_bridge.InProcessOapProviderBridge.init(config.factory());
+        options.protocol = remote_bridge.protocolClient();
+        options.models = remote_models;
+        options.initial_model = null;
+    }
     var chosen: ?model_ref.ParsedModelRef = null;
     defer if (chosen) |*held| held.deinit(allocator);
     if (default_model_ref) |ref| {
@@ -8904,7 +8703,7 @@ fn runOapxServe(
             },
         };
         const held = chosen.?;
-        if (!catalogues(production.models, held)) {
+        if (!catalogues(options.models, held)) {
             try compat.stdio.writeAll(stderr, "--model names a model the catalog does not list\n");
             return error.InvalidArgument;
         }
@@ -9502,85 +9301,6 @@ fn runBackendMode(
     }
     try endpoint.finish(adapter_endpoint.default_settle_window_ns, backendClock);
     _ = try writeEndpointOutbound(&output, allocator, &endpoint);
-}
-
-const OAP_EOF_MESSAGE = "the makai host reached end of input before the run settled";
-const OAP_MALFORMED_LINE_MESSAGE = "oapx --oap: stdin carried a line that is not an OAP envelope or control frame; the stream's framing is in doubt and the endpoint will not resynchronise\n";
-const OAP_UNADDRESSABLE_ENVELOPE_MESSAGE = "oapx --oap: stdin carried an envelope with no id; every response this binding defines is correlated by in_reply_to, so no refusal could be addressed to it\n";
-
-fn pumpOapIntents(
-    allocator: std.mem.Allocator,
-    oap: *oap_server.Server,
-    bridge: *oap_bridge.Bridge,
-    stdio_loop: *StdioProtocolLoop,
-    submission_lines: *std.ArrayList([]const u8),
-) !bool {
-    var did_work = false;
-
-    while (oap.popPendingSubmission()) |item| {
-        var pending = item;
-        defer pending.deinit(allocator);
-
-        bridge.appendSubmissionLines(pending, submission_lines) catch |err| {
-            clearOwnedLines(allocator, submission_lines);
-            try oap.settleFailed(pending.session_id, oap_types.EmittedErrorCode.internal_error.text(), @errorName(err));
-            did_work = true;
-            continue;
-        };
-        for (submission_lines.items) |line| {
-            const dispatched = stdio_loop.dispatchInboundLine(line) catch |err| {
-                try oap.settleFailed(pending.session_id, oap_types.EmittedErrorCode.internal_error.text(), @errorName(err));
-                break;
-            };
-            if (!dispatched) {
-                try oap.settleFailed(
-                    pending.session_id,
-                    oap_types.EmittedErrorCode.internal_error.text(),
-                    "the native agent host rejected the translated submission",
-                );
-                break;
-            }
-        }
-        clearOwnedLines(allocator, submission_lines);
-        did_work = true;
-    }
-
-    while (oap.popPendingCancel()) |item| {
-        var pending = item;
-        defer pending.deinit(allocator);
-
-        const maybe_line = bridge.cancelLine(pending) catch null;
-        const line = maybe_line orelse continue;
-        defer allocator.free(line);
-        _ = stdio_loop.dispatchInboundLine(line) catch {};
-        did_work = true;
-    }
-
-    return did_work;
-}
-
-fn emitOapRuntimeFailure(
-    oap: *oap_server.Server,
-    bridge: *oap_bridge.Bridge,
-    reason: []const u8,
-) !void {
-    if (!oap.hasActiveRun()) return;
-    try bridge.failActiveRuns(oap, reason);
-}
-
-fn writeOapOutbound(
-    stdout: *bounded_output.Output,
-    allocator: std.mem.Allocator,
-    oap: *oap_server.Server,
-) !bool {
-    var wrote = false;
-    while (oap.popOutbound()) |line| {
-        defer allocator.free(line);
-        try stdout.writeAll(line);
-        try stdout.writeAll("\n");
-        wrote = true;
-    }
-    return wrote;
 }
 
 test "oap mode arguments accept a default model" {
