@@ -2813,7 +2813,7 @@ test "an inference for a model the endpoint does not serve fails as model_not_fo
         const inference_id = try allocator.dupe(u8, server.active.items[0].id);
         defer allocator.free(inference_id);
 
-        try startOapInference(allocator, &registry, &server, &running, inference_id, &.{}, null);
+        try startOapInference(allocator, &registry, &server, &running, inference_id, &.{});
         try std.testing.expectEqual(@as(usize, 0), running.items.len);
         var refused = false;
         while (server.popOutbound()) |out| {
