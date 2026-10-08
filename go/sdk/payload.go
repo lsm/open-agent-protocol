@@ -6,13 +6,10 @@ import (
 )
 
 const (
-	maxModelRefLength     = 4096
-	maxIdentifierLength   = 256
-	maxModelFieldLength   = 512
-	maxProviderIDLength   = 256
-	maxModelIDLength      = 256
-	maxOpaqueRefLength    = maxModelFieldLength
-	systemPromptSeparator = "\n\n"
+	maxModelRefLength   = 4096
+	maxIdentifierLength = 256
+	maxModelFieldLength = 512
+	maxOpaqueRefLength  = maxModelFieldLength
 )
 
 func validateExecutionRequest(modelRef string, messages []Message) error {

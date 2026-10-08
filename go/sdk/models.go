@@ -250,5 +250,3 @@ func (s *ModelsService) Resolve(ctx context.Context, req ResolveModelRequest) (*
 	}
 	return &response.Models[0], nil
 }
-
-var ()
