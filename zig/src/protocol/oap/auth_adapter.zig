@@ -677,6 +677,8 @@ test "auth server shutdown stops a Codex device login that is still waiting for 
         .answers_prompts = false,
         .codex_fetch = FakeCodexAuth.fetch,
     });
+    var shut_down = false;
+    defer if (!shut_down) native.deinit();
     var adapter = Adapter.init(allocator, &native);
     defer adapter.deinit();
 
@@ -697,6 +699,7 @@ test "auth server shutdown stops a Codex device login that is still waiting for 
     try std.testing.expect(url_arrived);
 
     const started = compat.time.nowMillis();
+    shut_down = true;
     native.deinit();
     try std.testing.expect(compat.time.nowMillis() - started < 1_000);
     try std.testing.expect(FakeCodexAuth.polls <= FakeCodexAuth.pending_polls);
@@ -798,9 +801,9 @@ const FakeCopilotAuth = struct {
         const flow_id = try std.testing.allocator.dupe(u8, try requiredString((parsed.value.object.get("payload") orelse return error.MissingPayload).object, "flow_id"));
         errdefer std.testing.allocator.free(flow_id);
         const deadline = compat.time.nowMillis() + 5_000;
+        var url_seen = false;
         while (compat.time.nowMillis() < deadline) {
             _ = try adapter.pump();
-            var url_seen = false;
             while (adapter.popOutbound()) |event| {
                 defer std.testing.allocator.free(event);
                 if (std.mem.indexOf(u8, event, "\"kind\":\"url\"") != null) url_seen = true;
@@ -863,12 +866,15 @@ test "OAP auth adapter completes an approved Copilot device login through the in
 
 test "auth server shutdown stops a Copilot device login that is still waiting for approval" {
     var native = FakeCopilotAuth.server();
+    var shut_down = false;
+    defer if (!shut_down) native.deinit();
     var adapter = Adapter.init(std.testing.allocator, &native);
     defer adapter.deinit();
 
     const flow_id = try FakeCopilotAuth.startAndAwaitUrl(&adapter, "start-copilot-shutdown");
     defer std.testing.allocator.free(flow_id);
     const started = compat.time.nowMillis();
+    shut_down = true;
     native.deinit();
     try std.testing.expect(compat.time.nowMillis() - started < 1_000);
 }
