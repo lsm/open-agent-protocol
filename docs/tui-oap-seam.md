@@ -6,12 +6,13 @@ can actually answer. It is a map, not a plan — the step order lives in #375.
 
 **Status, 2026-10-07.** `oapx tui` is the terminal UI over this seam, and what
 `oapx` alone starts; `oapx --tui`, the local loop without OAP, was removed once
-the parity sweep showed no difference: `TuiRuntime`
-takes an injected `RemoteExecution` (`zig/src/tui/oap_execution.zig`) that hosts
+the parity sweep showed no difference: the TUI's `SessionRuntime`
+(`zig/src/session/runtime.zig`, shared with the `oapx` adapter and so outside
+`zig/src/tui/`) takes an injected `RemoteExecution` (`zig/src/tui/oap_execution.zig`) that hosts
 `zig/src/adapter/endpoint.zig` with the `oapx` adapter in-process and turns its
-envelopes back into `TuiEvent`s. The agent loop itself is the adapter's: a
+envelopes back into `SessionEvent`s. The agent loop itself is the adapter's: a
 `LocalLoop` (`zig/src/adapter/oapx/local_loop.zig`) owns the agent, its wrapped tools,
-approvals and compaction transcripts, and plugs into a `TuiRuntime` through its `Loop`
+approvals and compaction transcripts, and plugs into a `SessionRuntime` through its `Loop`
 interface, so the runtime the TUI holds carries no agent of its own. Runs, streaming, tools, cancel and model switch
 cross the boundary as OAP. A `/model refresh` hands the in-process endpoint the
 refreshed catalog beside the wire, and the session serves it from its next model
@@ -97,7 +98,7 @@ is G2.
 
 ## The map
 
-`TuiSessionOps` (`zig/src/tui/session.zig`) is the TUI's whole control surface:
+`SessionOps` (`zig/src/session/events.zig`) is the TUI's whole control surface:
 seventeen operations. "Direct" marks calls the runtime makes on `local_agent`
 without going through the ops table.
 
@@ -177,7 +178,7 @@ follows, and its settlement arrives on that run's stream.
 `clear_queued_messages`, `steers_consumed` and `queued_counts` are the TUI asking
 about its own queue. `SessionState` carries `session_id`, `status`,
 `active_run_id`, `current_model_id` and `updated_at_ms` (`server.zig:849`) and no
-queue counters, while `TuiSession`'s `QueuedCounts` is `{steering, follow_up}`.
+queue counters, while `SessionHandle`'s `QueuedCounts` is `{steering, follow_up}`.
 None of the three is session state the protocol carries, and none should grow an
 envelope to carry it.
 
@@ -254,7 +255,7 @@ no history between runs, so it has nothing to compact and refuses both.
 
 `waitForIdle` is a synchronous join on the agent's run thread: `agent.zig:734`
 locks the mutex, checks `is_streaming` or a live thread, and blocks until the
-run ends. It appears 31 times in `zig/src/tui/runtime.zig`, but only **six of
+run ends. It appears 31 times in `zig/src/session/runtime.zig`, but only **six of
 those are production code** — `stop`, `submitTurn`, `replaceMessages`,
 `history`, `compact` and `resumeSession`. The other 25 are test call sites, so
 the work is six joins, not thirty-one.
@@ -290,7 +291,7 @@ Filed as #618.
 - **Credentials and login** (G5), on the owner's decision and the draft's own
   section. The endpoint serves `auth.*` today; the TUI does not use it.
 - **The queue counters** in G3, derived locally.
-- **The title request.** `TuiRuntime.protocol` is an `agent.ProtocolClient` —
+- **The title request.** `SessionRuntime.protocol` is an `agent.ProtocolClient` —
   a *model-provider* seam, a different protocol from agent-control, and the TUI
   keeps it regardless of how the control layer moves.
 - **Transcript storage.** `~/.oapx/sessions` is the TUI's own; the endpoint

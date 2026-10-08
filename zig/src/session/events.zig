@@ -4,7 +4,7 @@ const ai_types = @import("ai_types");
 const event_stream = @import("event_stream");
 const OwnedSlice = @import("owned_slice").OwnedSlice;
 
-pub const TuiEndReason = enum {
+pub const SessionEndReason = enum {
     completed,
     cancelled,
     @"error",
@@ -28,7 +28,7 @@ pub const ToolApprovalCallback = *const fn (
     request: ToolApprovalRequest,
 ) ToolApprovalDecision;
 
-pub const TuiEvent = union(enum) {
+pub const SessionEvent = union(enum) {
     agent_start: struct { generation: u32 = 0 },
     turn_start: struct { generation: u32 = 0 },
     message_start: struct { generation: u32 = 0, at_ms: i64 = 0, role: MessageRole },
@@ -109,7 +109,7 @@ pub const TuiEvent = union(enum) {
         item_count: u32 = 0,
     },
     turn_end: struct { generation: u32 = 0, stop_reason: ai_types.StopReason },
-    agent_end: struct { generation: u32 = 0, reason: TuiEndReason },
+    agent_end: struct { generation: u32 = 0, reason: SessionEndReason },
     system_warning: struct { generation: u32 = 0, message: OwnedSlice(u8) },
     backpressure_status: struct { generation: u32 = 0, active: bool, dropped_count: u64 },
     compaction_start: struct { generation: u32 = 0, in_run: bool = false },
@@ -149,7 +149,7 @@ pub const TuiEvent = union(enum) {
         dynamic,
     };
 
-    pub fn generation(self: TuiEvent) u32 {
+    pub fn generation(self: SessionEvent) u32 {
         return switch (self) {
             .agent_start => |p| p.generation,
             .turn_start => |p| p.generation,
@@ -175,7 +175,7 @@ pub const TuiEvent = union(enum) {
         };
     }
 
-    pub fn stamp(self: *TuiEvent, now_ms: i64) void {
+    pub fn stamp(self: *SessionEvent, now_ms: i64) void {
         switch (self.*) {
             .message_start => |*p| p.at_ms = now_ms,
             .text_delta => |*p| p.at_ms = now_ms,
@@ -186,7 +186,7 @@ pub const TuiEvent = union(enum) {
         }
     }
 
-    pub fn setGeneration(self: *TuiEvent, gen: u32) void {
+    pub fn setGeneration(self: *SessionEvent, gen: u32) void {
         switch (self.*) {
             .agent_start => |*p| p.generation = gen,
             .turn_start => |*p| p.generation = gen,
@@ -212,7 +212,7 @@ pub const TuiEvent = union(enum) {
         }
     }
 
-    pub fn clone(self: TuiEvent, allocator: std.mem.Allocator) !TuiEvent {
+    pub fn clone(self: SessionEvent, allocator: std.mem.Allocator) !SessionEvent {
         var copy = self;
         switch (copy) {
             .text_delta => |*p| p.delta = OwnedSlice(u8).initOwned(try allocator.dupe(u8, p.delta.slice())),
@@ -316,7 +316,7 @@ pub const TuiEvent = union(enum) {
         return copy;
     }
 
-    pub fn deinit(self: *TuiEvent, allocator: std.mem.Allocator) void {
+    pub fn deinit(self: *SessionEvent, allocator: std.mem.Allocator) void {
         switch (self.*) {
             .text_delta => |*p| p.delta.deinit(allocator),
             .thinking_delta => |*p| p.delta.deinit(allocator),
@@ -367,16 +367,16 @@ pub const TuiEvent = union(enum) {
     }
 };
 
-pub const TuiSessionResult = struct {
-    reason: TuiEndReason = .completed,
+pub const SessionResult = struct {
+    reason: SessionEndReason = .completed,
 
-    pub fn deinit(self: *TuiSessionResult, allocator: std.mem.Allocator) void {
+    pub fn deinit(self: *SessionResult, allocator: std.mem.Allocator) void {
         _ = self;
         _ = allocator;
     }
 };
 
-pub const TuiEventStream = event_stream.EventStream(TuiEvent, TuiSessionResult);
+pub const SessionEventStream = event_stream.EventStream(SessionEvent, SessionResult);
 
 pub const QueuedCounts = agent.Agent.QueuedCounts;
 
@@ -385,7 +385,7 @@ pub const CompactOptions = struct {
     transcripts: []const []const u8 = &.{},
 };
 
-pub const TuiSessionOps = struct {
+pub const SessionOps = struct {
     start: *const fn (ctx: ?*anyopaque) anyerror!void = undefined,
     resume_session: *const fn (ctx: ?*anyopaque) anyerror!void = undefined,
     compact: *const fn (ctx: ?*anyopaque, options: CompactOptions) anyerror!void = undefined,
@@ -402,105 +402,105 @@ pub const TuiSessionOps = struct {
     switch_model_exact: *const fn (ctx: ?*anyopaque, model: ai_types.Model) anyerror!void = undefined,
     current_model: *const fn (ctx: ?*anyopaque) ?ai_types.Model = undefined,
     decide_tool_approval: *const fn (ctx: ?*anyopaque, tool_call_id: []const u8, decision: ToolApprovalDecision) anyerror!void = undefined,
-    stream_events: *const fn (ctx: ?*anyopaque) *TuiEventStream = undefined,
+    stream_events: *const fn (ctx: ?*anyopaque) *SessionEventStream = undefined,
     request_compaction: ?*const fn (ctx: ?*anyopaque, focus: []const u8) anyerror!void = null,
     take_compaction_request: ?*const fn (ctx: ?*anyopaque, allocator: std.mem.Allocator) anyerror!?[]u8 = null,
 };
 
-pub const TuiSession = struct {
+pub const SessionHandle = struct {
     ctx: ?*anyopaque,
-    ops: TuiSessionOps,
+    ops: SessionOps,
 
-    pub fn start(self: *TuiSession) !void {
+    pub fn start(self: *SessionHandle) !void {
         try self.ops.start(self.ctx);
     }
 
-    pub fn resumeSession(self: *TuiSession) !void {
+    pub fn resumeSession(self: *SessionHandle) !void {
         try self.ops.resume_session(self.ctx);
     }
 
-    pub fn compact(self: *TuiSession, options: CompactOptions) !void {
+    pub fn compact(self: *SessionHandle, options: CompactOptions) !void {
         try self.ops.compact(self.ctx, options);
     }
 
-    pub fn requestCompaction(self: *TuiSession, focus: []const u8) !bool {
+    pub fn requestCompaction(self: *SessionHandle, focus: []const u8) !bool {
         const request = self.ops.request_compaction orelse return false;
         try request(self.ctx, focus);
         return true;
     }
 
-    pub fn takeCompactionRequest(self: *TuiSession, allocator: std.mem.Allocator) !?[]u8 {
+    pub fn takeCompactionRequest(self: *SessionHandle, allocator: std.mem.Allocator) !?[]u8 {
         const take = self.ops.take_compaction_request orelse return null;
         return take(self.ctx, allocator);
     }
 
-    pub fn history(self: *TuiSession) []const ai_types.Message {
+    pub fn history(self: *SessionHandle) []const ai_types.Message {
         return self.ops.history(self.ctx);
     }
 
-    pub fn cancel(self: *TuiSession) void {
+    pub fn cancel(self: *SessionHandle) void {
         self.ops.cancel(self.ctx);
     }
 
-    pub fn submitTurn(self: *TuiSession, text: []const u8) !void {
+    pub fn submitTurn(self: *SessionHandle, text: []const u8) !void {
         try self.ops.submit_turn(self.ctx, text);
     }
 
-    pub fn steer(self: *TuiSession, text: []const u8) !void {
+    pub fn steer(self: *SessionHandle, text: []const u8) !void {
         try self.ops.steer(self.ctx, text);
     }
 
-    pub fn followUp(self: *TuiSession, text: []const u8) !void {
+    pub fn followUp(self: *SessionHandle, text: []const u8) !void {
         try self.ops.follow_up(self.ctx, text);
     }
 
-    pub fn clearQueuedMessages(self: *TuiSession) void {
+    pub fn clearQueuedMessages(self: *SessionHandle) void {
         self.ops.clear_queued_messages(self.ctx);
     }
 
-    pub fn queuedCounts(self: *TuiSession) QueuedCounts {
+    pub fn queuedCounts(self: *SessionHandle) QueuedCounts {
         return self.ops.queued_counts(self.ctx);
     }
 
-    pub fn steersConsumedCount(self: *TuiSession) u64 {
+    pub fn steersConsumedCount(self: *SessionHandle) u64 {
         return self.ops.steers_consumed(self.ctx);
     }
 
-    pub fn canSteer(self: *const TuiSession) bool {
+    pub fn canSteer(self: *const SessionHandle) bool {
         return self.ops.can_steer(self.ctx);
     }
 
-    pub fn switchModel(self: *TuiSession, model_id: []const u8) !void {
+    pub fn switchModel(self: *SessionHandle, model_id: []const u8) !void {
         try self.ops.switch_model(self.ctx, model_id);
     }
 
-    pub fn switchModelExact(self: *TuiSession, model: ai_types.Model) !void {
+    pub fn switchModelExact(self: *SessionHandle, model: ai_types.Model) !void {
         try self.ops.switch_model_exact(self.ctx, model);
     }
 
-    pub fn currentModel(self: *TuiSession) ?ai_types.Model {
+    pub fn currentModel(self: *SessionHandle) ?ai_types.Model {
         return self.ops.current_model(self.ctx);
     }
 
-    pub fn decideToolApproval(self: *TuiSession, tool_call_id: []const u8, decision: ToolApprovalDecision) !void {
+    pub fn decideToolApproval(self: *SessionHandle, tool_call_id: []const u8, decision: ToolApprovalDecision) !void {
         try self.ops.decide_tool_approval(self.ctx, tool_call_id, decision);
     }
 
-    pub fn streamEvents(self: *TuiSession) *TuiEventStream {
+    pub fn streamEvents(self: *SessionHandle) *SessionEventStream {
         return self.ops.stream_events(self.ctx);
     }
 
-    pub fn popEvent(self: *TuiSession) ?TuiEvent {
+    pub fn popEvent(self: *SessionHandle) ?SessionEvent {
         return self.streamEvents().poll();
     }
 
-    pub fn waitEvent(self: *TuiSession) ?TuiEvent {
+    pub fn waitEvent(self: *SessionHandle) ?SessionEvent {
         return self.streamEvents().wait();
     }
 };
 
-test "TuiEvent deinit handles owned strings" {
-    var event = TuiEvent{ .text_delta = .{
+test "SessionEvent deinit handles owned strings" {
+    var event = SessionEvent{ .text_delta = .{
         .content_index = 0,
         .delta = OwnedSlice(u8).initOwned(try std.testing.allocator.dupe(u8, "hello")),
     } };
@@ -508,7 +508,7 @@ test "TuiEvent deinit handles owned strings" {
 }
 
 fn cloneProbe(allocator: std.mem.Allocator) !void {
-    const events = [_]TuiEvent{
+    const events = [_]SessionEvent{
         .{ .message_end = .{
             .role = .assistant,
             .text = OwnedSlice(u8).initBorrowed("final answer text"),
@@ -560,6 +560,6 @@ fn cloneProbe(allocator: std.mem.Allocator) !void {
     }
 }
 
-test "TuiEvent.clone survives an allocation failure at every step" {
+test "SessionEvent.clone survives an allocation failure at every step" {
     try std.testing.checkAllAllocationFailures(std.heap.smp_allocator, cloneProbe, .{});
 }

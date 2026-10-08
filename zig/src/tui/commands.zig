@@ -1,7 +1,7 @@
 const std = @import("std");
 const ai_types = @import("ai_types");
 const agent = @import("agent");
-const tui_runtime = @import("tui_runtime");
+const session_runtime = @import("session_runtime");
 const tui_state = @import("tui_state");
 const tui_oap_execution = @import("tui/oap_execution");
 
@@ -82,8 +82,8 @@ pub const CommandResult = struct {
 pub const CommandContext = struct {
     allocator: std.mem.Allocator,
     state: *tui_state.AppState,
-    runtime: ?*tui_runtime.TuiRuntime = null,
-    session: ?*tui_runtime.TuiSession = null,
+    runtime: ?*session_runtime.SessionRuntime = null,
+    session: ?*session_runtime.SessionHandle = null,
 };
 
 const Handler = *const fn (CommandContext, Command) anyerror!CommandResult;
@@ -335,7 +335,7 @@ fn handlePermissions(ctx: CommandContext, command: Command) !CommandResult {
     return .{ .action = .open_permission_picker };
 }
 
-fn parsePermissionMode(value: []const u8) ?tui_runtime.PermissionMode {
+fn parsePermissionMode(value: []const u8) ?session_runtime.PermissionMode {
     if (std.mem.eql(u8, value, "ask")) return .ask;
     if (std.mem.eql(u8, value, "bypass")) return .bypass;
     return null;
@@ -401,7 +401,7 @@ fn handleContext(ctx: CommandContext, command: Command) !CommandResult {
         };
         return .{ .output = try contextWindowReport(ctx.allocator, runtime) };
     }
-    const window = tui_runtime.parseContextWindow(arg) catch {
+    const window = session_runtime.parseContextWindow(arg) catch {
         return .{
             .output = try std.fmt.allocPrint(ctx.allocator, "not a token count: {s}. Give a whole number, optionally with k or m, such as 1m", .{arg}),
             .is_error = true,
@@ -421,7 +421,7 @@ fn handleContext(ctx: CommandContext, command: Command) !CommandResult {
     return .{ .output = try contextWindowReport(ctx.allocator, runtime) };
 }
 
-fn contextWindowReport(allocator: std.mem.Allocator, runtime: *tui_runtime.TuiRuntime) ![]u8 {
+fn contextWindowReport(allocator: std.mem.Allocator, runtime: *session_runtime.SessionRuntime) ![]u8 {
     const model = runtime.currentModel() orelse return allocator.dupe(u8, "no model");
     var out: std.Io.Writer.Allocating = .init(allocator);
     const writer = &out.writer;
@@ -444,7 +444,7 @@ fn handleOutput(ctx: CommandContext, command: Command) !CommandResult {
     else if (std.ascii.eqlIgnoreCase(arg, "max"))
         .max
     else
-        .{ .tokens = tui_runtime.parseContextWindow(arg) catch {
+        .{ .tokens = session_runtime.parseContextWindow(arg) catch {
             return .{
                 .output = try std.fmt.allocPrint(ctx.allocator, "not a token count: {s}. Give auto, max, or a whole number, optionally with k, such as 64k", .{arg}),
                 .is_error = true,
@@ -464,7 +464,7 @@ fn handleOutput(ctx: CommandContext, command: Command) !CommandResult {
     return .{ .output = try outputReport(ctx.allocator, runtime) };
 }
 
-fn outputReport(allocator: std.mem.Allocator, runtime: *tui_runtime.TuiRuntime) ![]u8 {
+fn outputReport(allocator: std.mem.Allocator, runtime: *session_runtime.SessionRuntime) ![]u8 {
     const model = runtime.currentModel() orelse return allocator.dupe(u8, "no model");
     const setting = runtime.outputSetting();
     var out: std.Io.Writer.Allocating = .init(allocator);
@@ -580,10 +580,10 @@ fn autoCompactReport(ctx: CommandContext) ![]u8 {
 fn parseAutoCompactTokens(value: []const u8) ?u32 {
     const trimmed = std.mem.trim(u8, value, " \t\r\n");
     if (trimmed.len == 0) return null;
-    if (std.ascii.endsWithIgnoreCase(trimmed, "tokens")) return tui_runtime.parseContextWindow(trimmed[0 .. trimmed.len - "tokens".len]) catch null;
+    if (std.ascii.endsWithIgnoreCase(trimmed, "tokens")) return session_runtime.parseContextWindow(trimmed[0 .. trimmed.len - "tokens".len]) catch null;
     const last = trimmed[trimmed.len - 1];
     if (last != 'k' and last != 'K' and last != 'm' and last != 'M') return null;
-    return tui_runtime.parseContextWindow(trimmed) catch null;
+    return session_runtime.parseContextWindow(trimmed) catch null;
 }
 
 fn parseAutoCompactShare(value: []const u8) ?u8 {
@@ -747,12 +747,12 @@ const context_test_uncatalogued: ai_types.Model = .{
 
 const OverOap = struct {
     execution: *tui_oap_execution.OapExecution,
-    runtime: tui_runtime.TuiRuntime,
+    runtime: session_runtime.SessionRuntime,
 
     fn init(self: *OverOap, models: []const ai_types.Model) !void {
         self.execution = try tui_oap_execution.OapExecution.create(std.testing.allocator, .{ .models = models });
         errdefer self.execution.destroy();
-        self.runtime = try tui_runtime.TuiRuntime.init(std.testing.allocator, .{ .models = models, .remote = self.execution.remote() });
+        self.runtime = try session_runtime.SessionRuntime.init(std.testing.allocator, .{ .models = models, .remote = self.execution.remote() });
     }
 
     fn deinit(self: *OverOap) void {
@@ -1129,19 +1129,19 @@ test "permissions command switches runtime mode" {
     defer over_oap.deinit();
     const runtime = &over_oap.runtime;
 
-    try std.testing.expectEqual(tui_runtime.PermissionMode.bypass, runtime.permissionMode());
-    try std.testing.expectEqual(tui_runtime.PermissionMode.bypass, state.permission_mode);
+    try std.testing.expectEqual(session_runtime.PermissionMode.bypass, runtime.permissionMode());
+    try std.testing.expectEqual(session_runtime.PermissionMode.bypass, state.permission_mode);
 
     var bypass = try dispatch(.{ .allocator = std.testing.allocator, .state = &state, .runtime = runtime }, .{ .kind = .permissions, .arg = "bypass" });
     defer bypass.deinit(std.testing.allocator);
-    try std.testing.expectEqual(tui_runtime.PermissionMode.bypass, runtime.permissionMode());
-    try std.testing.expectEqual(tui_runtime.PermissionMode.bypass, state.permission_mode);
+    try std.testing.expectEqual(session_runtime.PermissionMode.bypass, runtime.permissionMode());
+    try std.testing.expectEqual(session_runtime.PermissionMode.bypass, state.permission_mode);
     try std.testing.expect(std.mem.indexOf(u8, bypass.output, "permission mode set to bypass") != null);
 
     var ask = try dispatch(.{ .allocator = std.testing.allocator, .state = &state, .runtime = runtime }, .{ .kind = .permissions, .arg = "ask" });
     defer ask.deinit(std.testing.allocator);
-    try std.testing.expectEqual(tui_runtime.PermissionMode.ask, runtime.permissionMode());
-    try std.testing.expectEqual(tui_runtime.PermissionMode.ask, state.permission_mode);
+    try std.testing.expectEqual(session_runtime.PermissionMode.ask, runtime.permissionMode());
+    try std.testing.expectEqual(session_runtime.PermissionMode.ask, state.permission_mode);
 }
 
 test "perm alias parses as permissions command" {
@@ -1405,14 +1405,14 @@ test "double abort is harmless after first cancellation" {
 }
 
 const MockAbortSession = struct {
-    queued_counts: tui_runtime.QueuedCounts = .{},
+    queued_counts: session_runtime.QueuedCounts = .{},
     cancel_count: usize = 0,
     clear_count: usize = 0,
     steers_consumed: u64 = 0,
-    events: tui_runtime.TuiEventStream = undefined,
+    events: session_runtime.SessionEventStream = undefined,
     events_initialized: bool = false,
 
-    fn session(self: *MockAbortSession) tui_runtime.TuiSession {
+    fn session(self: *MockAbortSession) session_runtime.SessionHandle {
         return .{
             .ctx = self,
             .ops = .{
@@ -1463,7 +1463,7 @@ const MockAbortSession = struct {
         ptr(ctx).clear_count += 1;
     }
 
-    fn mockQueuedCounts(ctx: ?*anyopaque) tui_runtime.QueuedCounts {
+    fn mockQueuedCounts(ctx: ?*anyopaque) session_runtime.QueuedCounts {
         return ptr(ctx).queued_counts;
     }
 
@@ -1486,21 +1486,21 @@ const MockAbortSession = struct {
         return null;
     }
 
-    fn mockDecideToolApproval(ctx: ?*anyopaque, tool_call_id: []const u8, decision: tui_runtime.ToolApprovalDecision) anyerror!void {
+    fn mockDecideToolApproval(ctx: ?*anyopaque, tool_call_id: []const u8, decision: session_runtime.ToolApprovalDecision) anyerror!void {
         _ = ctx;
         _ = tool_call_id;
         _ = decision;
     }
 
-    fn eventStream(self: *MockAbortSession) *tui_runtime.TuiEventStream {
+    fn eventStream(self: *MockAbortSession) *session_runtime.SessionEventStream {
         if (!self.events_initialized) {
-            self.events = tui_runtime.TuiEventStream.init(std.testing.allocator);
+            self.events = session_runtime.SessionEventStream.init(std.testing.allocator);
             self.events_initialized = true;
         }
         return &self.events;
     }
 
-    fn mockStreamEvents(ctx: ?*anyopaque) *tui_runtime.TuiEventStream {
+    fn mockStreamEvents(ctx: ?*anyopaque) *session_runtime.SessionEventStream {
         return ptr(ctx).eventStream();
     }
 

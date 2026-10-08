@@ -1643,7 +1643,7 @@ fn runPrintTuiRuntime(allocator: std.mem.Allocator, prompt: []const u8) !void {
         .max_tokens = try kimiMaxTokens(),
     }};
 
-    const options = tui_app.TuiRuntimeOptions{
+    const options = tui_app.SessionRuntimeOptions{
         .protocol = (&bridge).protocolClient(),
         .models = &models,
         .initial_model_id = "kimi-k2.7-code",
@@ -1651,7 +1651,7 @@ fn runPrintTuiRuntime(allocator: std.mem.Allocator, prompt: []const u8) !void {
         .compact_output = true,
     };
 
-    var runtime = try tui_app.TuiRuntime.init(allocator, options);
+    var runtime = try tui_app.SessionRuntime.init(allocator, options);
     defer runtime.deinit();
 
     if (runtime.currentModel()) |model| {

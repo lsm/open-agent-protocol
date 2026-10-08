@@ -7,30 +7,30 @@ const agent_types = @import("agent_types");
 const transport = @import("transport");
 const json_writer = @import("json_writer");
 const json_encode = @import("json_encode");
-const tui_runtime = @import("tui_runtime");
+const session_runtime = @import("session_runtime");
 const local_tools = @import("tools/registry");
 const tool_local_runtime = @import("tool_local_runtime");
 const permission = @import("permission");
 const OwnedSlice = @import("owned_slice").OwnedSlice;
 
-const TuiRuntime = tui_runtime.TuiRuntime;
-const TuiSession = tui_runtime.TuiSession;
-const TuiEvent = tui_runtime.TuiEvent;
-const TuiEventStream = tui_runtime.TuiEventStream;
-const PermissionMode = tui_runtime.PermissionMode;
-const output_limit_warning = tui_runtime.output_limit_warning;
-const TuiEndReason = tui_runtime.TuiEndReason;
-const QueuedCounts = tui_runtime.QueuedCounts;
-const CompactOptions = tui_runtime.CompactOptions;
-const ToolApprovalCallback = tui_runtime.ToolApprovalCallback;
-const ToolApprovalDecision = tui_runtime.ToolApprovalDecision;
-const ToolApprovalRequest = tui_runtime.ToolApprovalRequest;
-const CompactionEnd = @TypeOf(@as(TuiEvent, undefined).compaction_end);
+const SessionRuntime = session_runtime.SessionRuntime;
+const SessionHandle = session_runtime.SessionHandle;
+const SessionEvent = session_runtime.SessionEvent;
+const SessionEventStream = session_runtime.SessionEventStream;
+const PermissionMode = session_runtime.PermissionMode;
+const output_limit_warning = session_runtime.output_limit_warning;
+const SessionEndReason = session_runtime.SessionEndReason;
+const QueuedCounts = session_runtime.QueuedCounts;
+const CompactOptions = session_runtime.CompactOptions;
+const ToolApprovalCallback = session_runtime.ToolApprovalCallback;
+const ToolApprovalDecision = session_runtime.ToolApprovalDecision;
+const ToolApprovalRequest = session_runtime.ToolApprovalRequest;
+const CompactionEnd = @TypeOf(@as(SessionEvent, undefined).compaction_end);
 
 pub const Options = struct {
     protocol: ?agent.ProtocolClient = null,
     permission_engine: ?*permission.PermissionEngine = null,
-    permission_mode: tui_runtime.PermissionMode = .bypass,
+    permission_mode: session_runtime.PermissionMode = .bypass,
     tool_approval_ctx: ?*anyopaque = null,
     tool_approval_callback: ?ToolApprovalCallback = null,
     run_async: bool = true,
@@ -56,7 +56,7 @@ const ApprovalContext = struct {
 pub const LocalLoop = struct {
     allocator: std.mem.Allocator,
     protocol: ?agent.ProtocolClient,
-    runtime: ?*TuiRuntime = null,
+    runtime: ?*SessionRuntime = null,
     local_agent: ?agent.Agent = null,
     wrapped_tools: []agent.AgentTool = &.{},
     approval_contexts: []ApprovalContext = &.{},
@@ -69,7 +69,7 @@ pub const LocalLoop = struct {
     tool_approval_callback: ?ToolApprovalCallback,
     permission_engine: ?*permission.PermissionEngine,
     compaction_transcript: []u8 = &.{},
-    transcript_writer: ?TuiRuntime.TranscriptWriter = null,
+    transcript_writer: ?SessionRuntime.TranscriptWriter = null,
     run_transcripts: std.ArrayList([]u8) = .empty,
     run_transcript_saved: []const u8 = "",
     run_async: bool,
@@ -98,11 +98,11 @@ pub const LocalLoop = struct {
         self.* = undefined;
     }
 
-    pub fn loop(self: *LocalLoop) tui_runtime.Loop {
+    pub fn loop(self: *LocalLoop) session_runtime.Loop {
         return .{ .ctx = self, .vtable = &vtable };
     }
 
-    const vtable = tui_runtime.Loop.VTable{
+    const vtable = session_runtime.Loop.VTable{
         .bind = bind,
         .start = start,
         .stop = stop,
@@ -139,11 +139,11 @@ pub const LocalLoop = struct {
         return @ptrCast(@alignCast(ctx));
     }
 
-    fn rt(self: *LocalLoop) *TuiRuntime {
+    fn rt(self: *LocalLoop) *SessionRuntime {
         return self.runtime.?;
     }
 
-    fn bind(ctx: *anyopaque, runtime: *TuiRuntime) anyerror!void {
+    fn bind(ctx: *anyopaque, runtime: *SessionRuntime) anyerror!void {
         const self = cast(ctx);
         self.runtime = runtime;
         if (self.tool_protocol != null) return;
@@ -234,7 +234,7 @@ pub const LocalLoop = struct {
         if (self.local_agent) |*local| local.setOutput(setting);
     }
 
-    fn setPermissionMode(ctx: *anyopaque, mode: tui_runtime.PermissionMode) anyerror!void {
+    fn setPermissionMode(ctx: *anyopaque, mode: session_runtime.PermissionMode) anyerror!void {
         const self = cast(ctx);
         if (self.permission_engine) |engine| engine.setBypassAll(mode == .bypass);
         self.rebuildWrappedTools();
@@ -404,7 +404,7 @@ pub const LocalLoop = struct {
         try local.setSessionId(if (session_id.len > 0) session_id else null);
     }
 
-    fn armAutoCompact(ctx: *anyopaque, at: ?u64, transcripts: []const []const u8, writer: ?TuiRuntime.TranscriptWriter) anyerror!void {
+    fn armAutoCompact(ctx: *anyopaque, at: ?u64, transcripts: []const []const u8, writer: ?SessionRuntime.TranscriptWriter) anyerror!void {
         const self = cast(ctx);
         const local = &(self.local_agent orelse return error.RuntimeNotStarted);
         if (!local.isIdle()) return error.AgentAlreadyStreaming;
@@ -641,13 +641,13 @@ pub const LocalLoop = struct {
         const runtime = self.rt();
         const cancelled = runtime.cancelled.load(.acquire);
         if (!cancelled and runtime.last_turn_stop_reason == .length) {
-            runtime.push(.{ .system_warning = .{ .message = OwnedSlice(u8).initBorrowed(tui_runtime.output_limit_warning) } });
+            runtime.push(.{ .system_warning = .{ .message = OwnedSlice(u8).initBorrowed(session_runtime.output_limit_warning) } });
         }
-        const reason: TuiEndReason = if (cancelled) .cancelled else if (runtime.last_turn_stop_reason == .@"error") .@"error" else .completed;
+        const reason: SessionEndReason = if (cancelled) .cancelled else if (runtime.last_turn_stop_reason == .@"error") .@"error" else .completed;
         return runtime.endRun(reason);
     }
 
-    fn messageRole(message: ai_types.Message) TuiEvent.MessageRole {
+    fn messageRole(message: ai_types.Message) SessionEvent.MessageRole {
         return switch (message) {
             .user => .user,
             .assistant => .assistant,
@@ -655,8 +655,8 @@ pub const LocalLoop = struct {
         };
     }
 
-    fn messageEndPayload(self: *LocalLoop, message: ai_types.Message) !@TypeOf(@as(TuiEvent, undefined).message_end) {
-        var payload: @TypeOf(@as(TuiEvent, undefined).message_end) = .{ .role = messageRole(message) };
+    fn messageEndPayload(self: *LocalLoop, message: ai_types.Message) !@TypeOf(@as(SessionEvent, undefined).message_end) {
+        var payload: @TypeOf(@as(SessionEvent, undefined).message_end) = .{ .role = messageRole(message) };
         switch (message) {
             .user => |m| {
                 payload.text = try self.dupeOwned(firstUserContentText(m.content));
@@ -1126,9 +1126,9 @@ fn approveTool(ctx: ?*anyopaque, request: agent.ToolApprovalRequest) agent.ToolA
 
 const LoopRuntime = struct {
     loop: LocalLoop,
-    runtime: TuiRuntime,
+    runtime: SessionRuntime,
 
-    fn init(allocator: std.mem.Allocator, options: tui_runtime.TuiRuntimeOptions) !*LoopRuntime {
+    fn init(allocator: std.mem.Allocator, options: session_runtime.SessionRuntimeOptions) !*LoopRuntime {
         const self = try allocator.create(LoopRuntime);
         errdefer allocator.destroy(self);
         self.loop = LocalLoop.init(allocator, .{
@@ -1142,7 +1142,7 @@ const LoopRuntime = struct {
         errdefer self.loop.deinit();
         var with_loop = options;
         with_loop.loop = self.loop.loop();
-        self.runtime = try TuiRuntime.init(allocator, with_loop);
+        self.runtime = try SessionRuntime.init(allocator, with_loop);
         errdefer self.runtime.deinit();
         try LocalLoop.bind(&self.loop, &self.runtime);
         return self;
@@ -1380,8 +1380,8 @@ fn makeProtocol(ctx: *MockProtocolCtx) agent.ProtocolClient {
     return .{ .stream_fn = mockStream, .ctx = ctx };
 }
 
-fn collectUntilEnd(tui_session: *TuiSession, saw_turn_start: *bool, saw_message_start: *bool, saw_text_delta: *bool, saw_message_end: *bool, saw_turn_end: *bool) void {
-    while (tui_session.popEvent()) |event| {
+fn collectUntilEnd(handle: *SessionHandle, saw_turn_start: *bool, saw_message_start: *bool, saw_text_delta: *bool, saw_message_end: *bool, saw_turn_end: *bool) void {
+    while (handle.popEvent()) |event| {
         var ev = event;
         defer ev.deinit(std.testing.allocator);
         switch (ev) {
@@ -1512,25 +1512,25 @@ const PromptEndHold = struct {
 
 fn compactionEndPayloadProbe(allocator: std.mem.Allocator) !void {
     const completed = agent.compaction.Result{ .completed = .{ .text = @constCast("summary"), .messages_before = 3, .tokens_before = 10, .tokens_after = 2, .head_truncated = false } };
-    var completed_event = TuiEvent{ .compaction_end = try compactionEndPayload(allocator, "/sessions/s1/compaction-1.jsonl", &completed) };
+    var completed_event = SessionEvent{ .compaction_end = try compactionEndPayload(allocator, "/sessions/s1/compaction-1.jsonl", &completed) };
     completed_event.deinit(allocator);
     const failed = agent.compaction.Result{ .failed = @constCast("overloaded") };
-    var failed_event = TuiEvent{ .compaction_end = try compactionEndPayload(allocator, "", &failed) };
+    var failed_event = SessionEvent{ .compaction_end = try compactionEndPayload(allocator, "", &failed) };
     failed_event.deinit(allocator);
 }
 
 const CompactionSeen = struct {
     started: bool = false,
-    outcome: ?TuiEvent.CompactionOutcome = null,
+    outcome: ?SessionEvent.CompactionOutcome = null,
     text_has_summary: bool = false,
     transcript_matches: bool = false,
     message_has_error: bool = false,
     messages_before: u64 = 0,
 };
 
-fn collectCompaction(tui_session: *TuiSession, expected_transcript: []const u8) CompactionSeen {
+fn collectCompaction(handle: *SessionHandle, expected_transcript: []const u8) CompactionSeen {
     var seen = CompactionSeen{};
-    while (tui_session.popEvent()) |event| {
+    while (handle.popEvent()) |event| {
         var ev = event;
         defer ev.deinit(std.testing.allocator);
         switch (ev) {
@@ -1554,10 +1554,10 @@ fn saveNumberedTranscript(ctx: ?*anyopaque, allocator: std.mem.Allocator, index:
     return std.fmt.allocPrint(allocator, "/t/compaction-{d}.jsonl", .{index}) catch null;
 }
 
-fn drainEndOfRun(runtime: *TuiRuntime) !struct { warning: ?[]u8, reason: ?TuiEndReason } {
+fn drainEndOfRun(runtime: *SessionRuntime) !struct { warning: ?[]u8, reason: ?SessionEndReason } {
     var warning: ?[]u8 = null;
     errdefer if (warning) |text| std.testing.allocator.free(text);
-    var reason: ?TuiEndReason = null;
+    var reason: ?SessionEndReason = null;
     while (runtime.event_stream.poll()) |event| {
         var ev = event;
         defer ev.deinit(std.testing.allocator);
@@ -1615,9 +1615,9 @@ test "runtime submit turn emits normalized events" {
     defer runtime_loop.deinit();
     const runtime = &runtime_loop.runtime;
 
-    var tui_session = runtime.createSession();
-    try tui_session.start();
-    try tui_session.submitTurn("hi");
+    var handle = runtime.createSession();
+    try handle.start();
+    try handle.submitTurn("hi");
     if (runtime_loop.loop.local_agent) |*local| local.waitForIdle();
 
     var saw_turn_start = false;
@@ -1625,7 +1625,7 @@ test "runtime submit turn emits normalized events" {
     var saw_text_delta = false;
     var saw_message_end = false;
     var saw_turn_end = false;
-    collectUntilEnd(&tui_session, &saw_turn_start, &saw_message_start, &saw_text_delta, &saw_message_end, &saw_turn_end);
+    collectUntilEnd(&handle, &saw_turn_start, &saw_message_start, &saw_text_delta, &saw_message_end, &saw_turn_end);
 
     try std.testing.expect(saw_turn_start);
     try std.testing.expect(saw_message_start);
@@ -1646,9 +1646,9 @@ test "local runtime includes startup cwd as default workspace root in provider p
     defer runtime_loop.deinit();
     const runtime = &runtime_loop.runtime;
 
-    var tui_session = runtime.createSession();
-    try tui_session.start();
-    try tui_session.submitTurn("pwd");
+    var handle = runtime.createSession();
+    try handle.start();
+    try handle.submitTurn("pwd");
     if (runtime_loop.loop.local_agent) |*local| local.waitForIdle();
 
     try std.testing.expect(mock.saw_workspace_prompt);
@@ -1661,13 +1661,13 @@ test "local runtime surfaces provider error message details" {
     defer runtime_loop.deinit();
     const runtime = &runtime_loop.runtime;
 
-    var tui_session = runtime.createSession();
-    try tui_session.start();
-    try std.testing.expectError(error.AgentLoopFailed, tui_session.submitTurn("hi"));
+    var handle = runtime.createSession();
+    try handle.start();
+    try std.testing.expectError(error.AgentLoopFailed, handle.submitTurn("hi"));
     if (runtime_loop.loop.local_agent) |*local| local.waitForIdle();
 
     var saw_detail = false;
-    while (tui_session.popEvent()) |event| {
+    while (handle.popEvent()) |event| {
         var ev = event;
         defer ev.deinit(std.testing.allocator);
         if (ev == .@"error" and std.mem.eql(u8, ev.@"error".message.slice(), "provider rejected request: missing workspace_root")) {
@@ -1684,14 +1684,14 @@ test "runtime cancel emits cancelled agent_end" {
     defer runtime_loop.deinit();
     const runtime = &runtime_loop.runtime;
 
-    var tui_session = runtime.createSession();
-    try tui_session.start();
-    try tui_session.submitTurn("hi");
-    tui_session.cancel();
+    var handle = runtime.createSession();
+    try handle.start();
+    try handle.submitTurn("hi");
+    handle.cancel();
     if (runtime_loop.loop.local_agent) |*local| local.waitForIdle();
 
     var saw_cancelled = false;
-    while (tui_session.popEvent()) |event| {
+    while (handle.popEvent()) |event| {
         var ev = event;
         defer ev.deinit(std.testing.allocator);
         if (ev == .agent_end) {
@@ -1724,13 +1724,13 @@ test "runtime wrapper preserves context-aware tool execution" {
     defer runtime_loop.deinit();
     const runtime = &runtime_loop.runtime;
 
-    var tui_session = runtime.createSession();
-    try tui_session.start();
-    try tui_session.submitTurn("use context tool");
+    var handle = runtime.createSession();
+    try handle.start();
+    try handle.submitTurn("use context tool");
     if (runtime_loop.loop.local_agent) |*local| local.waitForIdle();
 
     var saw_tool_end = false;
-    while (tui_session.waitEvent()) |event| {
+    while (handle.waitEvent()) |event| {
         var ev = event;
         defer ev.deinit(std.testing.allocator);
         switch (ev) {
@@ -1826,23 +1826,23 @@ test "runtime idle steering resumes immediately" {
     defer runtime_loop.deinit();
     const runtime = &runtime_loop.runtime;
 
-    var tui_session = runtime.createSession();
-    try tui_session.start();
-    try tui_session.submitTurn("first");
+    var handle = runtime.createSession();
+    try handle.start();
+    try handle.submitTurn("first");
 
-    while (tui_session.popEvent()) |event| {
+    while (handle.popEvent()) |event| {
         var ev = event;
         defer ev.deinit(std.testing.allocator);
         if (ev == .agent_end) break;
     }
     try std.testing.expectEqual(@as(usize, 1), mock.call_count);
 
-    try tui_session.steer("steer after idle");
+    try handle.steer("steer after idle");
     try std.testing.expectEqual(@as(usize, 2), mock.call_count);
-    try std.testing.expectEqual(@as(usize, 0), tui_session.queuedCounts().steering);
+    try std.testing.expectEqual(@as(usize, 0), handle.queuedCounts().steering);
 
     var saw_steering_user = false;
-    while (tui_session.popEvent()) |event| {
+    while (handle.popEvent()) |event| {
         var ev = event;
         defer ev.deinit(std.testing.allocator);
         switch (ev) {
@@ -1865,19 +1865,19 @@ test "runtime tags auto-resumed steer prompt with steering provenance" {
     defer runtime_loop.deinit();
     const runtime = &runtime_loop.runtime;
 
-    var tui_session = runtime.createSession();
-    try tui_session.start();
-    try tui_session.submitTurn("first");
-    while (tui_session.popEvent()) |event| {
+    var handle = runtime.createSession();
+    try handle.start();
+    try handle.submitTurn("first");
+    while (handle.popEvent()) |event| {
         var ev = event;
         defer ev.deinit(std.testing.allocator);
         if (ev == .agent_end) break;
     }
 
-    try tui_session.steer("steer after idle");
+    try handle.steer("steer after idle");
 
     var tagged_user_message_end = false;
-    while (tui_session.popEvent()) |event| {
+    while (handle.popEvent()) |event| {
         var ev = event;
         defer ev.deinit(std.testing.allocator);
         switch (ev) {
@@ -1899,21 +1899,21 @@ test "runtime tags async auto-resumed steer prompt with steering provenance" {
     defer runtime_loop.deinit();
     const runtime = &runtime_loop.runtime;
 
-    var tui_session = runtime.createSession();
-    try tui_session.start();
-    try tui_session.submitTurn("first");
+    var handle = runtime.createSession();
+    try handle.start();
+    try handle.submitTurn("first");
     if (runtime_loop.loop.local_agent) |*local| local.waitForIdle();
-    while (tui_session.popEvent()) |event| {
+    while (handle.popEvent()) |event| {
         var ev = event;
         defer ev.deinit(std.testing.allocator);
         if (ev == .agent_end) break;
     }
 
-    try tui_session.steer("steer after idle");
+    try handle.steer("steer after idle");
     if (runtime_loop.loop.local_agent) |*local| local.waitForIdle();
 
     var tagged_user_message_end = false;
-    while (tui_session.popEvent()) |event| {
+    while (handle.popEvent()) |event| {
         var ev = event;
         defer ev.deinit(std.testing.allocator);
         switch (ev) {
@@ -1934,10 +1934,10 @@ test "runtime tags post-tool consumed steer and feeds it to the model" {
     defer runtime_loop.deinit();
     const runtime = &runtime_loop.runtime;
 
-    var tui_session = runtime.createSession();
-    try tui_session.start();
-    try tui_session.submitTurn("first");
-    try tui_session.steer("steer mid tool");
+    var handle = runtime.createSession();
+    try handle.start();
+    try handle.submitTurn("first");
+    try handle.steer("steer mid tool");
 
     if (runtime_loop.loop.local_agent) |*local| local.waitForIdle();
 
@@ -1946,7 +1946,7 @@ test "runtime tags post-tool consumed steer and feeds it to the model" {
     try std.testing.expectEqual(@as(usize, 4), mock.last_message_count);
 
     var tagged_user_message_end = false;
-    while (tui_session.popEvent()) |event| {
+    while (handle.popEvent()) |event| {
         var ev = event;
         defer ev.deinit(std.testing.allocator);
         switch (ev) {
@@ -1968,22 +1968,22 @@ test "a prompt whose end is handled after the loop took a steer is not tagged as
     defer runtime_loop.deinit();
     const runtime = &runtime_loop.runtime;
 
-    var tui_session = runtime.createSession();
-    try tui_session.start();
+    var handle = runtime.createSession();
+    try handle.start();
     const local = &runtime_loop.loop.local_agent.?;
     var hold = PromptEndHold{ .agent = local };
     local.unsubscribeWithContext(&runtime_loop.loop, LocalLoop.onAgentEvent);
     local.subscribeWithContext(&hold, PromptEndHold.onEvent);
     local.subscribeWithContext(&runtime_loop.loop, LocalLoop.onAgentEvent);
-    try tui_session.submitTurn("first");
-    try tui_session.steer("steer mid tool");
+    try handle.submitTurn("first");
+    try handle.steer("steer mid tool");
     local.waitForIdle();
 
     try std.testing.expect(hold.held);
     try std.testing.expectEqual(@as(u64, 1), runtime.steersConsumedCount());
     var prompt_tagged: ?bool = null;
     var steer_tagged: ?bool = null;
-    while (tui_session.popEvent()) |event| {
+    while (handle.popEvent()) |event| {
         var ev = event;
         defer ev.deinit(std.testing.allocator);
         switch (ev) {
@@ -2005,18 +2005,18 @@ test "runtime active steering continues after plain assistant stop" {
     defer runtime_loop.deinit();
     const runtime = &runtime_loop.runtime;
 
-    var tui_session = runtime.createSession();
-    try tui_session.start();
-    try tui_session.submitTurn("first");
-    try tui_session.steer("steer during response");
+    var handle = runtime.createSession();
+    try handle.start();
+    try handle.submitTurn("first");
+    try handle.steer("steer during response");
 
     if (runtime_loop.loop.local_agent) |*local| local.waitForIdle();
 
     try std.testing.expectEqual(@as(usize, 2), mock.call_count);
-    try std.testing.expectEqual(@as(usize, 0), tui_session.queuedCounts().steering);
+    try std.testing.expectEqual(@as(usize, 0), handle.queuedCounts().steering);
 
     var saw_steering_user = false;
-    while (tui_session.popEvent()) |event| {
+    while (handle.popEvent()) |event| {
         var ev = event;
         defer ev.deinit(std.testing.allocator);
         switch (ev) {
@@ -2038,20 +2038,20 @@ test "runtime follow-up runs once the turn stops and is not tagged as steering" 
     defer runtime_loop.deinit();
     const runtime = &runtime_loop.runtime;
 
-    var tui_session = runtime.createSession();
-    try tui_session.start();
-    try tui_session.submitTurn("first");
-    try tui_session.followUp("queued follow-up");
+    var handle = runtime.createSession();
+    try handle.start();
+    try handle.submitTurn("first");
+    try handle.followUp("queued follow-up");
 
     if (runtime_loop.loop.local_agent) |*local| local.waitForIdle();
 
     try std.testing.expectEqual(@as(usize, 2), mock.call_count);
-    try std.testing.expectEqual(@as(usize, 0), tui_session.queuedCounts().follow_up);
+    try std.testing.expectEqual(@as(usize, 0), handle.queuedCounts().follow_up);
     try std.testing.expectEqual(@as(u64, 0), runtime.steersConsumedCount());
 
     var follow_up_ends: usize = 0;
     var follow_up_tagged = false;
-    while (tui_session.popEvent()) |event| {
+    while (handle.popEvent()) |event| {
         var ev = event;
         defer ev.deinit(std.testing.allocator);
         switch (ev) {
@@ -2081,27 +2081,27 @@ test "runtime compaction swaps in the model's summary and reports it with its tr
     defer runtime_loop.deinit();
     const runtime = &runtime_loop.runtime;
 
-    var tui_session = runtime.createSession();
-    try tui_session.start();
-    try tui_session.submitTurn("first");
+    var handle = runtime.createSession();
+    try handle.start();
+    try handle.submitTurn("first");
     if (runtime_loop.loop.local_agent) |*local| local.waitForIdle();
-    _ = collectCompaction(&tui_session, "");
+    _ = collectCompaction(&handle, "");
 
     mock.reply_text = "<summary>\nkept state\n</summary>";
     const transcripts = [_][]const u8{ "/sessions/s1/compaction-1.jsonl", "/sessions/s1/compaction-2.jsonl" };
-    try tui_session.compact(.{ .focus = "tests", .transcripts = &transcripts });
+    try handle.compact(.{ .focus = "tests", .transcripts = &transcripts });
     if (runtime_loop.loop.local_agent) |*local| local.waitForIdle();
 
-    const seen = collectCompaction(&tui_session, "/sessions/s1/compaction-2.jsonl");
+    const seen = collectCompaction(&handle, "/sessions/s1/compaction-2.jsonl");
     try std.testing.expect(seen.started);
-    try std.testing.expectEqual(@as(?TuiEvent.CompactionOutcome, .completed), seen.outcome);
+    try std.testing.expectEqual(@as(?SessionEvent.CompactionOutcome, .completed), seen.outcome);
     try std.testing.expect(seen.text_has_summary);
     try std.testing.expect(seen.transcript_matches);
     try std.testing.expectEqual(@as(u64, 2), seen.messages_before);
     try std.testing.expectEqual(@as(usize, 2), mock.call_count);
     try std.testing.expectEqual(@as(usize, 2), runtime.history().len);
     try std.testing.expect(std.mem.indexOf(u8, runtime.history()[0].user.content.text, "- /sessions/s1/compaction-1.jsonl\n- /sessions/s1/compaction-2.jsonl") != null);
-    try std.testing.expectError(error.NothingToCompact, tui_session.compact(.{}));
+    try std.testing.expectError(error.NothingToCompact, handle.compact(.{}));
 }
 
 test "runtime compaction reports a provider failure and keeps the history" {
@@ -2113,18 +2113,18 @@ test "runtime compaction reports a provider failure and keeps the history" {
     defer runtime_loop.deinit();
     const runtime = &runtime_loop.runtime;
 
-    var tui_session = runtime.createSession();
-    try tui_session.start();
-    try tui_session.submitTurn("first");
+    var handle = runtime.createSession();
+    try handle.start();
+    try handle.submitTurn("first");
     if (runtime_loop.loop.local_agent) |*local| local.waitForIdle();
-    _ = collectCompaction(&tui_session, "");
+    _ = collectCompaction(&handle, "");
 
     mock.provider_error_message = "overloaded";
-    try tui_session.compact(.{});
+    try handle.compact(.{});
     if (runtime_loop.loop.local_agent) |*local| local.waitForIdle();
 
-    const seen = collectCompaction(&tui_session, "");
-    try std.testing.expectEqual(@as(?TuiEvent.CompactionOutcome, .failed), seen.outcome);
+    const seen = collectCompaction(&handle, "");
+    try std.testing.expectEqual(@as(?SessionEvent.CompactionOutcome, .failed), seen.outcome);
     try std.testing.expect(seen.message_has_error);
     try std.testing.expectEqual(@as(usize, 2), runtime.history().len);
     try std.testing.expectEqualStrings("first", runtime.history()[0].user.content.text);
@@ -2137,19 +2137,19 @@ test "runtime tags consumed steer message_end with steering provenance" {
     defer runtime_loop.deinit();
     const runtime = &runtime_loop.runtime;
 
-    var tui_session = runtime.createSession();
-    try tui_session.start();
-    try tui_session.submitTurn("first");
-    try tui_session.steer("steer during response");
+    var handle = runtime.createSession();
+    try handle.start();
+    try handle.submitTurn("first");
+    try handle.steer("steer during response");
 
     if (runtime_loop.loop.local_agent) |*local| local.waitForIdle();
 
     try std.testing.expectEqual(@as(u64, 1), runtime.steersConsumedCount());
-    try std.testing.expectEqual(@as(u64, 1), tui_session.steersConsumedCount());
+    try std.testing.expectEqual(@as(u64, 1), handle.steersConsumedCount());
 
     var steer_message_end_tagged = false;
     var prompt_message_end_untagged = false;
-    while (tui_session.popEvent()) |event| {
+    while (handle.popEvent()) |event| {
         var ev = event;
         defer ev.deinit(std.testing.allocator);
         switch (ev) {
@@ -2170,23 +2170,23 @@ test "runtime tags consumed steer message_end with steering provenance" {
 }
 
 test "steer consumption count and the steered message survive a flood that sheds streaming chunks" {
-    var mock = MockProtocolCtx{ .wait_before_text_first = true, .deliver_flood_second = TuiEventStream.usable_capacity - 2 };
+    var mock = MockProtocolCtx{ .wait_before_text_first = true, .deliver_flood_second = SessionEventStream.usable_capacity - 2 };
     const models = [_]ai_types.Model{test_model_a};
     const runtime_loop = try LoopRuntime.init(std.testing.allocator, .{ .protocol = makeProtocol(&mock), .models = &models, .run_async = true });
     defer runtime_loop.deinit();
     const runtime = &runtime_loop.runtime;
 
-    var tui_session = runtime.createSession();
-    try tui_session.start();
-    try tui_session.submitTurn("first");
-    try tui_session.steer("steer during response");
+    var handle = runtime.createSession();
+    try handle.start();
+    try handle.submitTurn("first");
+    try handle.steer("steer during response");
 
     if (runtime_loop.loop.local_agent) |*local| local.waitForIdle();
     try std.testing.expectEqual(@as(u64, 1), runtime.steersConsumedCount());
     try std.testing.expect(runtime.dropped_event_count > 0);
 
     var saw_user_message_end = false;
-    while (tui_session.popEvent()) |event| {
+    while (handle.popEvent()) |event| {
         var ev = event;
         defer ev.deinit(std.testing.allocator);
         if (ev == .message_end and ev.message_end.role == .user) saw_user_message_end = true;
@@ -2218,14 +2218,14 @@ test "runtime clears queued messages before replacing messages" {
     defer runtime_loop.deinit();
     const runtime = &runtime_loop.runtime;
 
-    var tui_session = runtime.createSession();
-    try tui_session.start();
-    try tui_session.steer("steer now");
-    try std.testing.expectEqual(@as(usize, 1), tui_session.queuedCounts().total());
+    var handle = runtime.createSession();
+    try handle.start();
+    try handle.steer("steer now");
+    try std.testing.expectEqual(@as(usize, 1), handle.queuedCounts().total());
 
     try runtime.replaceMessages(&.{});
 
-    try std.testing.expectEqual(@as(usize, 0), tui_session.queuedCounts().total());
+    try std.testing.expectEqual(@as(usize, 0), handle.queuedCounts().total());
 }
 
 test "event stream resets between turns" {
@@ -2235,18 +2235,18 @@ test "event stream resets between turns" {
     defer runtime_loop.deinit();
     const runtime = &runtime_loop.runtime;
 
-    var tui_session = runtime.createSession();
-    try tui_session.start();
-    try tui_session.submitTurn("first");
+    var handle = runtime.createSession();
+    try handle.start();
+    try handle.submitTurn("first");
 
     var saw_turn_start = false;
     var saw_message_start = false;
     var saw_text_delta = false;
     var saw_message_end = false;
     var saw_turn_end = false;
-    collectUntilEnd(&tui_session, &saw_turn_start, &saw_message_start, &saw_text_delta, &saw_message_end, &saw_turn_end);
+    collectUntilEnd(&handle, &saw_turn_start, &saw_message_start, &saw_text_delta, &saw_message_end, &saw_turn_end);
 
-    try tui_session.submitTurn("second");
+    try handle.submitTurn("second");
     if (runtime_loop.loop.local_agent) |*local| local.waitForIdle();
 
     saw_turn_start = false;
@@ -2254,7 +2254,7 @@ test "event stream resets between turns" {
     saw_text_delta = false;
     saw_message_end = false;
     saw_turn_end = false;
-    collectUntilEnd(&tui_session, &saw_turn_start, &saw_message_start, &saw_text_delta, &saw_message_end, &saw_turn_end);
+    collectUntilEnd(&handle, &saw_turn_start, &saw_message_start, &saw_text_delta, &saw_message_end, &saw_turn_end);
 
     try std.testing.expectEqual(@as(usize, 2), mock.call_count);
     try std.testing.expect(saw_turn_start);
@@ -2265,19 +2265,19 @@ test "event stream resets between turns" {
 }
 
 test "terminal events survive full TUI queue" {
-    var mock = MockProtocolCtx{ .flood_count = TuiEventStream.usable_capacity + 45 };
+    var mock = MockProtocolCtx{ .flood_count = SessionEventStream.usable_capacity + 45 };
     const models = [_]ai_types.Model{test_model_a};
     const runtime_loop = try LoopRuntime.init(std.testing.allocator, .{ .protocol = makeProtocol(&mock), .models = &models, .run_async = false });
     defer runtime_loop.deinit();
     const runtime = &runtime_loop.runtime;
 
-    var tui_session = runtime.createSession();
-    try tui_session.start();
-    try tui_session.submitTurn("flood");
+    var handle = runtime.createSession();
+    try handle.start();
+    try handle.submitTurn("flood");
 
     var saw_turn_end = false;
     var saw_agent_end = false;
-    while (tui_session.waitEvent()) |event| {
+    while (handle.waitEvent()) |event| {
         var ev = event;
         defer ev.deinit(std.testing.allocator);
         switch (ev) {
@@ -2314,13 +2314,13 @@ test "preserves original tool approval when wrapping" {
     defer runtime_loop.deinit();
     const runtime = &runtime_loop.runtime;
 
-    var tui_session = runtime.createSession();
-    try tui_session.start();
-    try tui_session.submitTurn("use tool");
+    var handle = runtime.createSession();
+    try handle.start();
+    try handle.submitTurn("use tool");
     if (runtime_loop.loop.local_agent) |*local| local.waitForIdle();
 
     var saw_rejected_tool = false;
-    while (tui_session.waitEvent()) |event| {
+    while (handle.waitEvent()) |event| {
         var ev = event;
         defer ev.deinit(std.testing.allocator);
         switch (ev) {
@@ -2410,13 +2410,13 @@ test "preserves original tool approval UI when wrapping" {
     defer runtime_loop.deinit();
     const runtime = &runtime_loop.runtime;
 
-    var tui_session = runtime.createSession();
-    try tui_session.start();
-    try tui_session.submitTurn("use tool");
+    var handle = runtime.createSession();
+    try handle.start();
+    try handle.submitTurn("use tool");
     if (runtime_loop.loop.local_agent) |*local| local.waitForIdle();
 
     var saw_tui_approval = false;
-    while (tui_session.waitEvent()) |event| {
+    while (handle.waitEvent()) |event| {
         var ev = event;
         defer ev.deinit(std.testing.allocator);
         switch (ev) {
@@ -2437,10 +2437,10 @@ test "model switch affects next turn" {
     defer runtime_loop.deinit();
     const runtime = &runtime_loop.runtime;
 
-    var tui_session = runtime.createSession();
-    try tui_session.start();
-    try tui_session.switchModel("model-b");
-    try tui_session.submitTurn("hi");
+    var handle = runtime.createSession();
+    try handle.start();
+    try handle.switchModel("model-b");
+    try handle.submitTurn("hi");
     if (runtime_loop.loop.local_agent) |*local| local.waitForIdle();
 
     var saw_turn_start = false;
@@ -2448,7 +2448,7 @@ test "model switch affects next turn" {
     var saw_text_delta = false;
     var saw_message_end = false;
     var saw_turn_end = false;
-    collectUntilEnd(&tui_session, &saw_turn_start, &saw_message_start, &saw_text_delta, &saw_message_end, &saw_turn_end);
+    collectUntilEnd(&handle, &saw_turn_start, &saw_message_start, &saw_text_delta, &saw_message_end, &saw_turn_end);
 
     try std.testing.expectEqualStrings("model-b", mock.last_model_id);
 }
@@ -2460,10 +2460,10 @@ test "thinking level affects next local turn" {
     defer runtime_loop.deinit();
     const runtime = &runtime_loop.runtime;
 
-    var tui_session = runtime.createSession();
-    try tui_session.start();
+    var handle = runtime.createSession();
+    try handle.start();
     try runtime.setThinkingLevel(.high);
-    try tui_session.submitTurn("hi");
+    try handle.submitTurn("hi");
     if (runtime_loop.loop.local_agent) |*local| local.waitForIdle();
 
     var saw_turn_start = false;
@@ -2471,7 +2471,7 @@ test "thinking level affects next local turn" {
     var saw_text_delta = false;
     var saw_message_end = false;
     var saw_turn_end = false;
-    collectUntilEnd(&tui_session, &saw_turn_start, &saw_message_start, &saw_text_delta, &saw_message_end, &saw_turn_end);
+    collectUntilEnd(&handle, &saw_turn_start, &saw_message_start, &saw_text_delta, &saw_message_end, &saw_turn_end);
 
     try std.testing.expectEqual(ai_types.ThinkingLevel.high, mock.last_thinking_level);
 }
@@ -2483,13 +2483,13 @@ test "model switch is rejected while async turn is running" {
     defer runtime_loop.deinit();
     const runtime = &runtime_loop.runtime;
 
-    var tui_session = runtime.createSession();
-    try tui_session.start();
-    try tui_session.submitTurn("hi");
-    try std.testing.expectError(error.AgentAlreadyStreaming, tui_session.switchModel("model-b"));
-    tui_session.cancel();
+    var handle = runtime.createSession();
+    try handle.start();
+    try handle.submitTurn("hi");
+    try std.testing.expectError(error.AgentAlreadyStreaming, handle.switchModel("model-b"));
+    handle.cancel();
     if (runtime_loop.loop.local_agent) |*local| local.waitForIdle();
-    try tui_session.switchModel("model-b");
+    try handle.switchModel("model-b");
     try std.testing.expectEqualStrings("model-b", runtime.currentModel().?.id);
 }
 
@@ -2500,12 +2500,12 @@ test "failed resume does not reset event stream" {
     defer runtime_loop.deinit();
     const runtime = &runtime_loop.runtime;
 
-    var tui_session = runtime.createSession();
-    try tui_session.start();
-    try std.testing.expectError(error.NoMessagesToContinue, tui_session.resumeSession());
+    var handle = runtime.createSession();
+    try handle.start();
+    try std.testing.expectError(error.NoMessagesToContinue, handle.resumeSession());
     try std.testing.expectEqual(@as(usize, 0), mock.call_count);
     try std.testing.expect(!runtime.stream_active);
-    try std.testing.expect(tui_session.popEvent() == null);
+    try std.testing.expect(handle.popEvent() == null);
 }
 
 test "async submit without selected model fails before stream reset" {
@@ -2514,12 +2514,12 @@ test "async submit without selected model fails before stream reset" {
     defer runtime_loop.deinit();
     const runtime = &runtime_loop.runtime;
 
-    var tui_session = runtime.createSession();
-    try tui_session.start();
-    try std.testing.expectError(error.NoModelConfigured, tui_session.submitTurn("hi"));
+    var handle = runtime.createSession();
+    try handle.start();
+    try std.testing.expectError(error.NoModelConfigured, handle.submitTurn("hi"));
     try std.testing.expectEqual(@as(usize, 0), mock.call_count);
     try std.testing.expect(!runtime.stream_active);
-    try std.testing.expect(tui_session.popEvent() == null);
+    try std.testing.expect(handle.popEvent() == null);
 }
 
 test "failed turns emit error end reason" {
@@ -2529,14 +2529,14 @@ test "failed turns emit error end reason" {
     defer runtime_loop.deinit();
     const runtime = &runtime_loop.runtime;
 
-    var tui_session = runtime.createSession();
-    try tui_session.start();
-    try std.testing.expectError(error.AgentLoopFailed, tui_session.submitTurn("fail"));
+    var handle = runtime.createSession();
+    try handle.start();
+    try std.testing.expectError(error.AgentLoopFailed, handle.submitTurn("fail"));
     if (runtime_loop.loop.local_agent) |*local| local.waitForIdle();
 
     var saw_error_detail = false;
     var saw_error_end = false;
-    while (tui_session.waitEvent()) |event| {
+    while (handle.waitEvent()) |event| {
         var ev = event;
         defer ev.deinit(std.testing.allocator);
         switch (ev) {
@@ -2587,14 +2587,14 @@ test "a compaction inside a run that does not complete gives back the transcript
     try std.testing.expect(completed_with_slot);
 }
 
-test "TuiRuntime replaceMessages clears stale backpressure counters" {
+test "SessionRuntime replaceMessages clears stale backpressure counters" {
     var mock = MockProtocolCtx{};
     const models = [_]ai_types.Model{test_model_a};
     const runtime_loop = try LoopRuntime.init(std.testing.allocator, .{ .protocol = makeProtocol(&mock), .models = &models, .run_async = false });
     defer runtime_loop.deinit();
     const runtime = &runtime_loop.runtime;
-    var tui_session = runtime.createSession();
-    try tui_session.start();
+    var handle = runtime.createSession();
+    try handle.start();
 
     runtime.dropped_event_count = 9;
     runtime.dropped_since_warning = 2;
@@ -2618,7 +2618,7 @@ test "runtime warns before ending a run whose last reply hit the output token li
     const ended = try drainEndOfRun(runtime);
     defer if (ended.warning) |text| std.testing.allocator.free(text);
     try std.testing.expectEqualStrings(output_limit_warning, ended.warning.?);
-    try std.testing.expectEqual(@as(?TuiEndReason, .completed), ended.reason);
+    try std.testing.expectEqual(@as(?SessionEndReason, .completed), ended.reason);
 }
 
 test "wrapping a tool preserves the operation kind its definition declares" {
@@ -2715,9 +2715,9 @@ test "a shell result moves the working directory and leaves the prompt alone" {
     defer runtime_loop.deinit();
     const runtime = &runtime_loop.runtime;
 
-    var tui_session = runtime.createSession();
-    try tui_session.start();
-    try tui_session.submitTurn("move");
+    var handle = runtime.createSession();
+    try handle.start();
+    try handle.submitTurn("move");
     try std.testing.expectEqualStrings("/tmp/makai-workspace/sub", runtime.workingDirectory());
 }
 
@@ -2757,5 +2757,5 @@ test "runtime ends a run whose last reply finished without an output-limit warni
     const ended = try drainEndOfRun(runtime);
     defer if (ended.warning) |text| std.testing.allocator.free(text);
     try std.testing.expect(ended.warning == null);
-    try std.testing.expectEqual(@as(?TuiEndReason, .completed), ended.reason);
+    try std.testing.expectEqual(@as(?SessionEndReason, .completed), ended.reason);
 }

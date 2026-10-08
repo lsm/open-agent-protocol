@@ -1,8 +1,8 @@
 const std = @import("std");
 const compat = @import("compat");
 const ai_types = @import("ai_types");
-const tui_session = @import("tui_session");
-const tui_runtime = @import("tui_runtime");
+const session_events = @import("session_events");
+const session_runtime = @import("session_runtime");
 const agent = @import("agent");
 const json_writer = @import("json_writer");
 const builtin = @import("builtin");
@@ -154,7 +154,7 @@ pub const SessionMetadata = struct {
 };
 
 const ReplayState = struct {
-    current_role: ?tui_session.TuiEvent.MessageRole = null,
+    current_role: ?session_events.SessionEvent.MessageRole = null,
     assistant_text: std.ArrayList(u8) = .empty,
     tool_call_json: std.ArrayList(u8) = .empty,
     tool_results: std.ArrayList(ToolResultReplayEntry) = .empty,
@@ -171,7 +171,7 @@ const ReplayState = struct {
 pub const LoadedSession = struct {
     metadata: SessionMetadata,
     model_unavailable: bool = false,
-    events: std.ArrayList(tui_session.TuiEvent) = .empty,
+    events: std.ArrayList(session_events.SessionEvent) = .empty,
     messages: std.ArrayList(ai_types.Message) = .empty,
 
     pub fn deinit(self: *LoadedSession, allocator: std.mem.Allocator) void {
@@ -208,19 +208,19 @@ pub const Store = struct {
         self.* = undefined;
     }
 
-    pub fn save(self: Store, metadata: SessionMetadata, event: tui_session.TuiEvent) !void {
+    pub fn save(self: Store, metadata: SessionMetadata, event: session_events.SessionEvent) !void {
         try self.appendRecord(metadata.session_id, ".jsonl", metadata, event);
     }
 
-    pub fn saveEvent(self: Store, session_id: []const u8, event: tui_session.TuiEvent) !void {
+    pub fn saveEvent(self: Store, session_id: []const u8, event: session_events.SessionEvent) !void {
         try self.appendRecord(session_id, ".jsonl", null, event);
     }
 
-    pub fn saveChunk(self: Store, session_id: []const u8, event: tui_session.TuiEvent) !void {
+    pub fn saveChunk(self: Store, session_id: []const u8, event: session_events.SessionEvent) !void {
         try self.appendRecord(session_id, stream_suffix, null, event);
     }
 
-    fn appendRecord(self: Store, session_id: []const u8, suffix: []const u8, metadata: ?SessionMetadata, event: tui_session.TuiEvent) !void {
+    fn appendRecord(self: Store, session_id: []const u8, suffix: []const u8, metadata: ?SessionMetadata, event: session_events.SessionEvent) !void {
         try compat.fs.createDir(compat.fs.getCwd(), self.base_dir);
         const path = try sessionFilePath(self.allocator, self.base_dir, session_id, suffix);
         defer self.allocator.free(path);
@@ -440,7 +440,7 @@ pub const Store = struct {
         return path;
     }
 
-    pub fn resumeSession(self: Store, session_id: []const u8, runtime: *tui_runtime.TuiRuntime, workspace_root: ?[]const u8) !LoadedSession {
+    pub fn resumeSession(self: Store, session_id: []const u8, runtime: *session_runtime.SessionRuntime, workspace_root: ?[]const u8) !LoadedSession {
         var loaded = try self.load(session_id);
         errdefer loaded.deinit(self.allocator);
         if (runtime.remote != null) {
@@ -455,7 +455,7 @@ pub const Store = struct {
     }
 };
 
-fn selectSavedModel(runtime: *tui_runtime.TuiRuntime, provider: []const u8, model_id: []const u8) !bool {
+fn selectSavedModel(runtime: *session_runtime.SessionRuntime, provider: []const u8, model_id: []const u8) !bool {
     for (runtime.availableModels()) |model| {
         if (std.mem.eql(u8, model.id, model_id) and std.mem.eql(u8, model.provider, provider)) {
             try runtime.switchModelExact(model);
@@ -677,7 +677,7 @@ fn applyLine(allocator: std.mem.Allocator, loaded: *LoadedSession, replay: *Repl
     }
 }
 
-fn replayEvent(allocator: std.mem.Allocator, messages: *std.ArrayList(ai_types.Message), replay: *ReplayState, meta: SessionMetadata, event: tui_session.TuiEvent) !void {
+fn replayEvent(allocator: std.mem.Allocator, messages: *std.ArrayList(ai_types.Message), replay: *ReplayState, meta: SessionMetadata, event: session_events.SessionEvent) !void {
     switch (event) {
         .message_start => |payload| {
             replay.current_role = payload.role;
@@ -793,7 +793,7 @@ fn replaceString(allocator: std.mem.Allocator, target: *[]u8, value: []const u8)
     target.* = next;
 }
 
-fn serializeEventRecord(allocator: std.mem.Allocator, metadata: ?SessionMetadata, event: tui_session.TuiEvent) ![]u8 {
+fn serializeEventRecord(allocator: std.mem.Allocator, metadata: ?SessionMetadata, event: session_events.SessionEvent) ![]u8 {
     var buf: std.ArrayList(u8) = .empty;
     errdefer buf.deinit(allocator);
     var w = json_writer.JsonWriter.init(&buf, allocator);
@@ -816,7 +816,7 @@ fn writeMetadata(w: *json_writer.JsonWriter, meta: SessionMetadata) !void {
     try w.endObject();
 }
 
-fn writeEvent(w: *json_writer.JsonWriter, event: tui_session.TuiEvent) !void {
+fn writeEvent(w: *json_writer.JsonWriter, event: session_events.SessionEvent) !void {
     try w.beginObject();
     switch (event) {
         .agent_start => try w.writeStringField("type", "agent_start"),
@@ -947,7 +947,7 @@ fn writeToolFields(w: *json_writer.JsonWriter, id: []const u8, name: []const u8,
     try w.writeStringField("args_json", args);
 }
 
-fn parseEvent(allocator: std.mem.Allocator, value: std.json.Value) !tui_session.TuiEvent {
+fn parseEvent(allocator: std.mem.Allocator, value: std.json.Value) !session_events.SessionEvent {
     const obj = switch (value) {
         .object => |o| o,
         else => return error.InvalidEvent,
@@ -1503,19 +1503,19 @@ fn uint32Field(obj: std.json.ObjectMap, key: []const u8) ?u32 {
     };
 }
 
-fn parseRole(value: []const u8) tui_session.TuiEvent.MessageRole {
+fn parseRole(value: []const u8) session_events.SessionEvent.MessageRole {
     if (std.mem.eql(u8, value, "user")) return .user;
     if (std.mem.eql(u8, value, "tool_result")) return .tool_result;
     return .assistant;
 }
 
-fn parsePromptSegmentKind(value: []const u8) tui_session.TuiEvent.PromptSegmentKind {
+fn parsePromptSegmentKind(value: []const u8) session_events.SessionEvent.PromptSegmentKind {
     if (std.mem.eql(u8, value, "system_prompt")) return .system_prompt;
     if (std.mem.eql(u8, value, "tool_definitions")) return .tool_definitions;
     return .message_history;
 }
 
-fn parsePromptSegmentCacheRole(value: []const u8) tui_session.TuiEvent.PromptSegmentCacheRole {
+fn parsePromptSegmentCacheRole(value: []const u8) session_events.SessionEvent.PromptSegmentCacheRole {
     if (std.mem.eql(u8, value, "stable")) return .stable;
     return .dynamic;
 }
@@ -1529,13 +1529,13 @@ fn parseStopReason(value: []const u8) ai_types.StopReason {
     return .stop;
 }
 
-fn parseCompactionOutcome(value: []const u8) tui_session.TuiEvent.CompactionOutcome {
+fn parseCompactionOutcome(value: []const u8) session_events.SessionEvent.CompactionOutcome {
     if (std.mem.eql(u8, value, "completed")) return .completed;
     if (std.mem.eql(u8, value, "cancelled")) return .cancelled;
     return .failed;
 }
 
-fn parseEndReason(value: []const u8) tui_session.TuiEndReason {
+fn parseEndReason(value: []const u8) session_events.SessionEndReason {
     if (std.mem.eql(u8, value, "cancelled")) return .cancelled;
     if (std.mem.eql(u8, value, "error")) return .@"error";
     return .completed;
@@ -1566,7 +1566,7 @@ test "save 10 events load replays in order" {
         meta.last_active = @intCast(i + 1);
         const delta = try std.fmt.allocPrint(std.testing.allocator, "d{d}", .{i});
         defer std.testing.allocator.free(delta);
-        var event = tui_session.TuiEvent{ .text_delta = .{ .content_index = i, .delta = try owned(std.testing.allocator, delta) } };
+        var event = session_events.SessionEvent{ .text_delta = .{ .content_index = i, .delta = try owned(std.testing.allocator, delta) } };
         defer event.deinit(std.testing.allocator);
         try store.save(meta, event);
     }
@@ -1685,7 +1685,7 @@ test "message_end replay preserves user image parts" {
     var meta = try testMeta("user-parts");
     defer meta.deinit(std.testing.allocator);
 
-    var event = tui_session.TuiEvent{ .message_end = .{ .role = .user, .text = try owned(std.testing.allocator, "see this"), .content_json = try contentJson(user_parts_json) } };
+    var event = session_events.SessionEvent{ .message_end = .{ .role = .user, .text = try owned(std.testing.allocator, "see this"), .content_json = try contentJson(user_parts_json) } };
     defer event.deinit(std.testing.allocator);
     try store.save(meta, event);
 
@@ -1709,7 +1709,7 @@ test "message_end replay preserves mixed assistant text and tool calls" {
     var meta = try testMeta("assistant-mixed");
     defer meta.deinit(std.testing.allocator);
 
-    var event = tui_session.TuiEvent{ .message_end = .{ .role = .assistant, .text = try owned(std.testing.allocator, "I will call tools"), .content_json = try contentJson(assistant_mixed_json), .stop_reason = .length } };
+    var event = session_events.SessionEvent{ .message_end = .{ .role = .assistant, .text = try owned(std.testing.allocator, "I will call tools"), .content_json = try contentJson(assistant_mixed_json), .stop_reason = .length } };
     defer event.deinit(std.testing.allocator);
     try store.save(meta, event);
 
@@ -1734,7 +1734,7 @@ test "message_end replay preserves assistant image content" {
     var meta = try testMeta("assistant-image");
     defer meta.deinit(std.testing.allocator);
 
-    var event = tui_session.TuiEvent{ .message_end = .{ .role = .assistant, .content_json = try contentJson(assistant_image_json) } };
+    var event = session_events.SessionEvent{ .message_end = .{ .role = .assistant, .content_json = try contentJson(assistant_image_json) } };
     defer event.deinit(std.testing.allocator);
     try store.save(meta, event);
 
@@ -1791,7 +1791,7 @@ test "message_end and tool_execution_end do not duplicate tool result" {
     var meta = try testMeta("tool-dedupe");
     defer meta.deinit(std.testing.allocator);
 
-    var message_end = tui_session.TuiEvent{ .message_end = .{
+    var message_end = session_events.SessionEvent{ .message_end = .{
         .role = .tool_result,
         .tool_call_id = try owned(std.testing.allocator, "call-1"),
         .tool_name = try owned(std.testing.allocator, "demo"),
@@ -1800,7 +1800,7 @@ test "message_end and tool_execution_end do not duplicate tool result" {
     defer message_end.deinit(std.testing.allocator);
     try store.save(meta, message_end);
 
-    var tool_end = tui_session.TuiEvent{ .tool_execution_end = .{
+    var tool_end = session_events.SessionEvent{ .tool_execution_end = .{
         .tool_call_id = try owned(std.testing.allocator, "call-1"),
         .tool_name = try owned(std.testing.allocator, "demo"),
         .result_json = try owned(std.testing.allocator, "result"),
@@ -1826,7 +1826,7 @@ test "tool_execution_end before message_end keeps one rich tool result" {
     var meta = try testMeta("tool-dedupe-normal-order");
     defer meta.deinit(std.testing.allocator);
 
-    var tool_end = tui_session.TuiEvent{ .tool_execution_end = .{
+    var tool_end = session_events.SessionEvent{ .tool_execution_end = .{
         .tool_call_id = try owned(std.testing.allocator, "call-1"),
         .tool_name = try owned(std.testing.allocator, "demo"),
         .result_json = try owned(std.testing.allocator, "fallback"),
@@ -1835,7 +1835,7 @@ test "tool_execution_end before message_end keeps one rich tool result" {
     defer tool_end.deinit(std.testing.allocator);
     try store.save(meta, tool_end);
 
-    var message_end = tui_session.TuiEvent{ .message_end = .{
+    var message_end = session_events.SessionEvent{ .message_end = .{
         .role = .tool_result,
         .tool_call_id = try owned(std.testing.allocator, "call-1"),
         .tool_name = try owned(std.testing.allocator, "demo"),
@@ -1864,7 +1864,7 @@ test "assistant text fallback preserves stop reason" {
     var meta = try testMeta("assistant-stop-reason");
     defer meta.deinit(std.testing.allocator);
 
-    var event = tui_session.TuiEvent{ .message_end = .{ .role = .assistant, .text = try owned(std.testing.allocator, "partial"), .stop_reason = .aborted } };
+    var event = session_events.SessionEvent{ .message_end = .{ .role = .assistant, .text = try owned(std.testing.allocator, "partial"), .stop_reason = .aborted } };
     defer event.deinit(std.testing.allocator);
     try store.save(meta, event);
 
@@ -1885,22 +1885,22 @@ test "load skips the chunk records replay never reads" {
     var meta = try testMeta("skips");
     defer meta.deinit(std.testing.allocator);
 
-    var text = tui_session.TuiEvent{ .text_delta = .{ .content_index = 0, .delta = try owned(std.testing.allocator, "hi") } };
+    var text = session_events.SessionEvent{ .text_delta = .{ .content_index = 0, .delta = try owned(std.testing.allocator, "hi") } };
     defer text.deinit(std.testing.allocator);
-    var provider = tui_session.TuiEvent{ .provider_event = .{ .event_json = try owned(std.testing.allocator, "{\"type\":\"done\"}") } };
+    var provider = session_events.SessionEvent{ .provider_event = .{ .event_json = try owned(std.testing.allocator, "{\"type\":\"done\"}") } };
     defer provider.deinit(std.testing.allocator);
-    var call = tui_session.TuiEvent{ .tool_call_delta = .{ .content_index = 0, .delta = try owned(std.testing.allocator, "{\"x\":") } };
+    var call = session_events.SessionEvent{ .tool_call_delta = .{ .content_index = 0, .delta = try owned(std.testing.allocator, "{\"x\":") } };
     defer call.deinit(std.testing.allocator);
-    var update = tui_session.TuiEvent{ .tool_execution_update = .{
+    var update = session_events.SessionEvent{ .tool_execution_update = .{
         .tool_call_id = try owned(std.testing.allocator, "call-1"),
         .tool_name = try owned(std.testing.allocator, "shell_execute"),
         .args_json = try owned(std.testing.allocator, "{}"),
         .partial_result_json = try owned(std.testing.allocator, "{\"stdout\":\"part\"}"),
     } };
     defer update.deinit(std.testing.allocator);
-    var done = tui_session.TuiEvent{ .message_end = .{ .role = .user, .text = try owned(std.testing.allocator, "done") } };
+    var done = session_events.SessionEvent{ .message_end = .{ .role = .user, .text = try owned(std.testing.allocator, "done") } };
     defer done.deinit(std.testing.allocator);
-    for ([_]tui_session.TuiEvent{ text, provider, call, update, done }) |event| try store.save(meta, event);
+    for ([_]session_events.SessionEvent{ text, provider, call, update, done }) |event| try store.save(meta, event);
 
     var loaded = try store.load("skips");
     defer loaded.deinit(std.testing.allocator);
@@ -1919,24 +1919,24 @@ test "load starts at the indexed compaction and keeps a display tail before it" 
     var meta = try testMeta("indexed");
     defer meta.deinit(std.testing.allocator);
 
-    var first = tui_session.TuiEvent{ .message_end = .{ .role = .user, .text = try owned(std.testing.allocator, "first question") } };
+    var first = session_events.SessionEvent{ .message_end = .{ .role = .user, .text = try owned(std.testing.allocator, "first question") } };
     defer first.deinit(std.testing.allocator);
     try store.save(meta, first);
     const filler_text = try std.testing.allocator.alloc(u8, 16 * 1024);
     defer std.testing.allocator.free(filler_text);
     @memset(filler_text, 'x');
-    const filler = tui_session.TuiEvent{ .system_warning = .{ .message = OwnedSlice(u8).initBorrowed(filler_text) } };
+    const filler = session_events.SessionEvent{ .system_warning = .{ .message = OwnedSlice(u8).initBorrowed(filler_text) } };
     for (0..20) |_| try store.saveEvent("indexed", filler);
 
     const offset = try store.conversationBytes("indexed");
-    var compacted = tui_session.TuiEvent{ .compaction_end = .{
+    var compacted = session_events.SessionEvent{ .compaction_end = .{
         .outcome = .completed,
         .text = try owned(std.testing.allocator, agent.compaction.header ++ " Summary follows.\n\n<summary>\nkept state\n</summary>"),
         .messages_before = 21,
     } };
     defer compacted.deinit(std.testing.allocator);
     try store.save(meta, compacted);
-    var after = tui_session.TuiEvent{ .message_end = .{ .role = .user, .text = try owned(std.testing.allocator, "after compaction") } };
+    var after = session_events.SessionEvent{ .message_end = .{ .role = .user, .text = try owned(std.testing.allocator, "after compaction") } };
     defer after.deinit(std.testing.allocator);
     try store.saveEvent("indexed", after);
     meta.compaction_offset = offset;
@@ -1973,7 +1973,7 @@ test "load starts at an indexed compaction made inside a run and keeps it marked
     try saveText(store, meta, .user, "old question");
     try store.save(meta, .{ .compaction_start = .{ .in_run = true } });
     const offset = try store.conversationBytes("in-run");
-    var compacted = tui_session.TuiEvent{ .compaction_end = .{
+    var compacted = session_events.SessionEvent{ .compaction_end = .{
         .in_run = true,
         .outcome = .completed,
         .text = try owned(std.testing.allocator, agent.compaction.header ++ " Summary follows.\n\n<summary>\nkept state\n</summary>"),
@@ -2005,10 +2005,10 @@ test "load reads the whole file when the indexed offset does not start a compact
     var meta = try testMeta("stale-index");
     defer meta.deinit(std.testing.allocator);
 
-    var one = tui_session.TuiEvent{ .message_end = .{ .role = .user, .text = try owned(std.testing.allocator, "one") } };
+    var one = session_events.SessionEvent{ .message_end = .{ .role = .user, .text = try owned(std.testing.allocator, "one") } };
     defer one.deinit(std.testing.allocator);
     try store.save(meta, one);
-    var two = tui_session.TuiEvent{ .message_end = .{ .role = .user, .text = try owned(std.testing.allocator, "two") } };
+    var two = session_events.SessionEvent{ .message_end = .{ .role = .user, .text = try owned(std.testing.allocator, "two") } };
     defer two.deinit(std.testing.allocator);
     try store.saveEvent("stale-index", two);
     meta.compaction_offset = 5;
@@ -2031,17 +2031,17 @@ test "load reads the whole file when the indexed compaction record is torn" {
     var meta = try testMeta("torn");
     defer meta.deinit(std.testing.allocator);
 
-    var first = tui_session.TuiEvent{ .message_end = .{ .role = .user, .text = try owned(std.testing.allocator, "first question") } };
+    var first = session_events.SessionEvent{ .message_end = .{ .role = .user, .text = try owned(std.testing.allocator, "first question") } };
     defer first.deinit(std.testing.allocator);
     try store.save(meta, first);
     const filler_text = try std.testing.allocator.alloc(u8, 16 * 1024);
     defer std.testing.allocator.free(filler_text);
     @memset(filler_text, 'x');
-    const filler = tui_session.TuiEvent{ .system_warning = .{ .message = OwnedSlice(u8).initBorrowed(filler_text) } };
+    const filler = session_events.SessionEvent{ .system_warning = .{ .message = OwnedSlice(u8).initBorrowed(filler_text) } };
     for (0..20) |_| try store.saveEvent("torn", filler);
 
     const offset = try store.conversationBytes("torn");
-    var compacted = tui_session.TuiEvent{ .compaction_end = .{
+    var compacted = session_events.SessionEvent{ .compaction_end = .{
         .outcome = .completed,
         .text = try owned(std.testing.allocator, agent.compaction.header ++ " Summary follows.\n\n<summary>\nkept state\n</summary>"),
         .messages_before = 21,
@@ -2053,7 +2053,7 @@ test "load reads the whole file when the indexed compaction record is torn" {
     defer std.testing.allocator.free(path);
     try appendFile(path, record[0 .. record.len - 8]);
     try std.testing.expect(startsCompaction(path, offset));
-    var after = tui_session.TuiEvent{ .message_end = .{ .role = .user, .text = try owned(std.testing.allocator, "after compaction") } };
+    var after = session_events.SessionEvent{ .message_end = .{ .role = .user, .text = try owned(std.testing.allocator, "after compaction") } };
     defer after.deinit(std.testing.allocator);
     try store.saveEvent("torn", after);
     meta.compaction_offset = offset;
@@ -2080,7 +2080,7 @@ test "list reads a session's details from its index and skips its stream file" {
     meta.last_active = 22;
 
     try store.saveEvent("indexed-list", .{ .turn_start = .{} });
-    var chunk = tui_session.TuiEvent{ .text_delta = .{ .content_index = 0, .delta = try owned(std.testing.allocator, "streamed") } };
+    var chunk = session_events.SessionEvent{ .text_delta = .{ .content_index = 0, .delta = try owned(std.testing.allocator, "streamed") } };
     defer chunk.deinit(std.testing.allocator);
     try store.saveChunk("indexed-list", chunk);
     try store.saveIndex(meta);
@@ -2352,8 +2352,8 @@ test "assistant message builders survive an allocation failure at every step" {
     try std.testing.checkAllAllocationFailures(std.heap.smp_allocator, assistantMessageBuildersProbe, .{});
 }
 
-fn saveText(store: Store, meta: SessionMetadata, role: tui_session.TuiEvent.MessageRole, text: []const u8) !void {
-    var event = tui_session.TuiEvent{ .message_end = .{ .role = role, .text = try owned(std.testing.allocator, text) } };
+fn saveText(store: Store, meta: SessionMetadata, role: session_events.SessionEvent.MessageRole, text: []const u8) !void {
+    var event = session_events.SessionEvent{ .message_end = .{ .role = role, .text = try owned(std.testing.allocator, text) } };
     defer event.deinit(std.testing.allocator);
     try store.save(meta, event);
 }
@@ -2370,7 +2370,7 @@ test "load replays a completed compaction as its summary turn and acknowledgemen
 
     try saveText(store, meta, .user, "old question");
     try saveText(store, meta, .assistant, "old answer");
-    var completed = tui_session.TuiEvent{ .compaction_end = .{
+    var completed = session_events.SessionEvent{ .compaction_end = .{
         .outcome = .completed,
         .text = try owned(std.testing.allocator, agent.compaction.header ++ " Summary follows.\n\n<summary>\nkept state\n</summary>"),
         .transcript = try owned(std.testing.allocator, "/s/compacted/compaction-1.jsonl"),
@@ -2379,7 +2379,7 @@ test "load replays a completed compaction as its summary turn and acknowledgemen
     defer completed.deinit(std.testing.allocator);
     try store.save(meta, completed);
     try saveText(store, meta, .user, "new question");
-    var failed = tui_session.TuiEvent{ .compaction_end = .{ .outcome = .failed, .message = try owned(std.testing.allocator, "overloaded") } };
+    var failed = session_events.SessionEvent{ .compaction_end = .{ .outcome = .failed, .message = try owned(std.testing.allocator, "overloaded") } };
     defer failed.deinit(std.testing.allocator);
     try store.save(meta, failed);
 
@@ -2394,7 +2394,7 @@ test "load replays a completed compaction as its summary turn and acknowledgemen
 
     try std.testing.expectEqual(@as(usize, 5), loaded.events.items.len);
     const replayed = loaded.events.items[2].compaction_end;
-    try std.testing.expectEqual(tui_session.TuiEvent.CompactionOutcome.completed, replayed.outcome);
+    try std.testing.expectEqual(session_events.SessionEvent.CompactionOutcome.completed, replayed.outcome);
     try std.testing.expectEqualStrings("/s/compacted/compaction-1.jsonl", replayed.transcript.slice());
     try std.testing.expectEqual(@as(u64, 2), replayed.messages_before);
 }
@@ -2409,7 +2409,7 @@ test "deleteSession removes the JSONL and sidecar directory" {
     var meta = try testMeta("delete-me");
     defer meta.deinit(std.testing.allocator);
     try saveText(store, meta, .user, "question");
-    var chunk = tui_session.TuiEvent{ .message_end = .{ .role = .user, .text = try owned(std.testing.allocator, "stream") } };
+    var chunk = session_events.SessionEvent{ .message_end = .{ .role = .user, .text = try owned(std.testing.allocator, "stream") } };
     defer chunk.deinit(std.testing.allocator);
     try store.saveChunk("delete-me", chunk);
     try store.saveIndex(meta);
