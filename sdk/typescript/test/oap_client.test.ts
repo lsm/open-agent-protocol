@@ -32,23 +32,39 @@ test("combined OAP stdio exposes provider models, inference, and agent runs", as
   }
 });
 
-test("unrepresented client tools fail explicitly before a legacy frame is sent", async () => {
+test("agent tools and settings travel over OAP, and temperature and provider callbacks are refused", async () => {
   const client = await createOapClient({ command: process.execPath, args: [fixture] });
   try {
+    const invoked: unknown[] = [];
+    const lookup = { name: "lookup", description: "look a word up", parameters_schema_json: "{}", execute: (args: Record<string, unknown>, context: { tool_call_id: string }) => {
+      invoked.push([args, context.tool_call_id]);
+      return "open agent protocol";
+    } };
+    const ran = await client.agent.run({ model_ref: "fixture/openai-responses@tool", messages: [{ role: "user", content: "hello" }], tools: [lookup] });
+    assert.equal(ran.message.content, "lookup owned by sdk said open agent protocol (error undefined) as sdk");
+    assert.deepEqual(invoked, [[{ word: "oap" }, "call-1"]]);
+    const kinds: string[] = [];
+    for await (const event of client.agent.stream({ model_ref: "fixture/openai-responses@tool", messages: [{ role: "user", content: "hello" }], tools: [lookup] })) kinds.push(event.type);
+    assert.deepEqual(kinds, ["agent_start", "tool_execution_start", "tool_execution_end", "agent_end"]);
+    const settings = await client.agent.run({ model_ref: "fixture/openai-responses@settings", messages: [{ role: "user", content: "hello" }], options: { max_tokens: 32, reasoning_effort: "high" } });
+    assert.equal(settings.message.content, "reasoning=high output=32 user_input=false participant=sdk");
+    await assert.rejects(() => client.agent.run({ model_ref: "fixture/openai-responses@settings", messages: [{ role: "user", content: "hello" }], options: { max_tokens: 0 } }),
+      (error: unknown) => error instanceof Error && (error as { code?: string }).code === "invalid_request");
+    await assert.rejects(() => client.agent.run({ model_ref: "fixture/openai-responses@settings", messages: [{ role: "user", content: "hello" }], options: { reasoning_effort: "minimal" } }),
+      (error: unknown) => error instanceof OapUnsupportedFeatureError);
+    const aborting = new AbortController();
+    const hanging = { name: "lookup", description: "never answers", parameters_schema_json: "{}", execute: () => { aborting.abort(); return new Promise<string>(() => {}); } };
+    await assert.rejects(() => client.agent.run({ model_ref: "fixture/openai-responses@tool", messages: [{ role: "user", content: "hello" }], tools: [hanging], options: { signal: aborting.signal } }),
+      (error: unknown) => error instanceof Error && error.name === "AbortError");
     await assert.rejects(() => client.agent.run({
       model_ref: "fixture/openai-responses@mock",
       messages: [{ role: "user", content: "hello" }],
-      tools: [{ name: "local", description: "local", parameters_schema_json: "{}", execute: () => "ok" }],
+      options: { temperature: 0.5 },
     }), (error: unknown) => error instanceof OapUnsupportedFeatureError && error.code === "unsupported_feature");
     await assert.rejects(() => client.provider.complete({
       model_ref: "fixture/openai-responses@mock",
       messages: [{ role: "user", content: "hello" }],
       tools: [{ name: "local", description: "local", parameters_schema_json: "{}", execute: () => "ok" }],
-    }), (error: unknown) => error instanceof OapUnsupportedFeatureError);
-    await assert.rejects(() => client.agent.run({
-      model_ref: "fixture/openai-responses@mock",
-      messages: [{ role: "user", content: "hello" }],
-      options: { max_tokens: 32 },
     }), (error: unknown) => error instanceof OapUnsupportedFeatureError);
   } finally {
     await client.close();

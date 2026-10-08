@@ -3,6 +3,8 @@ const { createInterface } = require("node:readline");
 let id = 0;
 let authenticated = false;
 let selectedModel = "fixture/openai-responses@mock";
+let opened = {};
+let participant;
 const agent = "open-agent-protocol.agent-control-core";
 const provider = "open-agent-protocol.model-provider-core";
 function send(request, type, payload, scope = {}) {
@@ -74,6 +76,7 @@ createInterface({ input: process.stdin }).on("line", (line) => {
   }
   switch (`${request.profile}:${request.type}`) {
     case `${agent}:protocol.initialize.request`:
+      participant = request.payload.participant?.id;
       send(request, "protocol.initialize.response", { protocol_version: "0.1", profile: agent, endpoint: { id: "fixture" } });
       break;
     case `${agent}:capabilities.request`:
@@ -138,6 +141,7 @@ createInterface({ input: process.stdin }).on("line", (line) => {
           : "provider works" }, stop_reason: "end_turn", usage: { input_tokens: 1, output_tokens: 2 } }, { inference_id: "inf-1", sequence: request.payload.model_ref.endsWith("@structured") ? 8 : 5 });
       break;
     case `${agent}:session.open.request`:
+      opened = request.payload;
       send(request, "session.open.response", { session_id: request.payload.session_id, status: "idle" }, { session_id: request.payload.session_id });
       break;
     case `${agent}:session.message.submit.request`:
@@ -151,9 +155,28 @@ createInterface({ input: process.stdin }).on("line", (line) => {
       }
       send(request, "session.message.submit.response", { session_id: request.payload.session_id, accepted: true, run_id: "run-1", submission_id: "sub-1", requested_delivery: "auto", effective_delivery: "start", admission: "started" }, { session_id: request.payload.session_id });
       event(agent, "run.started", { session_id: request.payload.session_id, run_id: "run-1", model_id: request.payload.model_id || selectedModel }, { session_id: request.payload.session_id, run_id: "run-1", sequence: 1 });
+      if (request.payload.model_id?.endsWith("@tool")) {
+        event(agent, "action.call.requested", { session_id: request.payload.session_id, run_id: "run-1", tool_call_id: "call-1", name: "lookup", execution_owner: participant, interaction_id: "interaction-1", requested_by: "fixture", responded_by: participant, arguments_json: { word: "oap" } }, { session_id: request.payload.session_id, run_id: "run-1", tool_call_id: "call-1", sequence: 2 });
+        break;
+      }
+      if (request.payload.model_id?.endsWith("@settings")) {
+        const said = `reasoning=${opened.reasoning_level} output=${opened.metadata?.oapx?.output} user_input=${opened.metadata?.oapx?.user_input} participant=${participant}`;
+        event(agent, "run.completed", { session_id: request.payload.session_id, run_id: "run-1", final_response: { role: "assistant", content: said }, stop_reason: "end_turn" }, { session_id: request.payload.session_id, run_id: "run-1", sequence: 2 });
+        break;
+      }
       event(agent, "content.delta", { session_id: request.payload.session_id, run_id: "run-1", part: { type: "text", text: "agent works" } }, { session_id: request.payload.session_id, run_id: "run-1", sequence: 2 });
       event(agent, "run.completed", { session_id: request.payload.session_id, run_id: "run-1", final_response: { role: "assistant", content: "agent works" }, model_id: request.payload.model_id || selectedModel, stop_reason: "end_turn", usage: { input_tokens: 2, output_tokens: 3 } }, { session_id: request.payload.session_id, run_id: "run-1", sequence: 3 });
       break;
+    case `${agent}:action.call.resolve.request`: {
+      const answer = request.payload;
+      const scope = { session_id: answer.session_id, run_id: "run-1", tool_call_id: "call-1" };
+      send(request, "action.call.resolve.response", { interaction_id: answer.interaction_id, session_id: answer.session_id, run_id: "run-1", tool_call_id: answer.tool_call_id, accepted: true }, { session_id: answer.session_id, run_id: "run-1" });
+      event(agent, "action.call.started", { session_id: answer.session_id, run_id: "run-1", tool_call_id: "call-1", name: "lookup" }, { ...scope, sequence: 3 });
+      event(agent, "action.call.completed", { session_id: answer.session_id, run_id: "run-1", tool_call_id: "call-1", name: "lookup", result: answer.result }, { ...scope, sequence: 4 });
+      const said = `${opened.tools?.[0]?.name} owned by ${opened.tools?.[0]?.execution_owner} said ${answer.result} (error ${answer.error?.message}) as ${answer.responded_by}`;
+      event(agent, "run.completed", { session_id: answer.session_id, run_id: "run-1", final_response: { role: "assistant", content: said }, stop_reason: "end_turn" }, { session_id: answer.session_id, run_id: "run-1", sequence: 5 });
+      break;
+    }
     case `${agent}:session.model.switch.request`:
       selectedModel = request.payload.model_id;
       send(request, "session.model.switch.response", { session_id: request.payload.session_id, model_id: request.payload.model_id }, { session_id: request.payload.session_id });

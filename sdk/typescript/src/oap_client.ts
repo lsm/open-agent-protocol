@@ -4,7 +4,7 @@ import { ulid } from "ulid";
 import { resolveMakaiBinary } from "./binary_resolver";
 import { isAbortError, raceWithAbort } from "./abort_signal";
 import { AUTH_KINDS, AUTH_STATUSES, MakaiAuthError, type AuthFlowHandlers, type AuthKind, type MakaiAuthApi, type MakaiAuthEvent, type ProviderAuthInfo } from "./auth_protocol";
-import { MakaiAuthRequiredError, MakaiStreamError, type AgentRunRequest, type AgentRunResponse, type AgentStreamEvent, type ChatMessage, type CompletionResponse, type ContentPart, type MakaiProviderApi, type ProviderCompleteRequest, type ProviderStreamEvent, type UsageSummary } from "./execution_types";
+import { MakaiAuthRequiredError, MakaiStreamError, type AgentRunRequest, type AgentRunResponse, type AgentStreamEvent, type ChatMessage, type CompletionResponse, type ContentPart, type MakaiProviderApi, type ProviderCompleteRequest, type ProviderStreamEvent, type ToolDefinition, type UsageSummary } from "./execution_types";
 import { MakaiProtocolError, type ListModelsRequest, type ListModelsResponse, type MakaiModelsApi, type ModelDescriptor, type ModelCost, type ModelLifecycle, type ModelSource, type ResolveModelRequest, type ResolveModelResponse } from "./models_types";
 import type { CreateMakaiClientOptions, MakaiAgentModelsApi, MakaiClient } from "./execution_client";
 
@@ -578,6 +578,29 @@ class OapAuthApi implements MakaiAuthApi {
   }
 }
 
+const SDK_PARTICIPANT = "sdk";
+
+async function resolveProvidedCall(call: Record<string, unknown>, tools: ToolDefinition[], sessionId: string, runId: string): Promise<Record<string, unknown>> {
+  const toolCallId = str(call.tool_call_id);
+  const toolName = str(call.name);
+  const argsJson = typeof call.arguments_json === "string" ? call.arguments_json : JSON.stringify(call.arguments_json ?? {});
+  const answer: Record<string, unknown> = {
+    interaction_id: str(call.interaction_id), session_id: sessionId, run_id: runId, tool_call_id: toolCallId,
+    requested_by: str(call.requested_by), responded_by: SDK_PARTICIPANT,
+  };
+  const tool = tools.find((candidate) => candidate.name === toolName);
+  if (!tool?.execute) return { ...answer, error: { code: "tool_unavailable", message: `Tool '${toolName}' is not executable by this client` } };
+  try {
+    const parsed: unknown = argsJson ? JSON.parse(argsJson) : {};
+    if (!isRecord(parsed)) throw new Error("tool arguments must be a JSON object");
+    const result = await tool.execute(parsed, { tool_call_id: toolCallId, tool_name: toolName, args_json: argsJson });
+    return { ...answer, result: typeof result === "string" ? result : result.map((part) => part.text).join("") };
+  } catch (error) {
+    const message = error instanceof Error ? error.message || error.name : String(error);
+    return { ...answer, error: { code: "tool_failed", message: message || "the tool failed" } };
+  }
+}
+
 class OapAgentApi {
   readonly models: MakaiModelsApi;
   private readonly selectedModels = new Map<string, string>();
@@ -635,10 +658,17 @@ class OapAgentApi {
   }
 
   private async *streamOnce(request: AgentRunRequest): AsyncIterable<AgentStreamEvent> {
-    if (request.tools?.length) unsupported("client-executed tools (+tools)");
-    if (request.options?.temperature !== undefined || request.options?.max_tokens !== undefined || request.options?.reasoning_effort) unsupported("agent sampling controls");
+    if (request.options?.temperature !== undefined) unsupported("temperature on an agent run");
+    if (request.options?.reasoning_effort === "minimal") unsupported("minimal reasoning, which the agent loop runs as low");
+    const maxTokens = request.options?.max_tokens;
+    if (maxTokens !== undefined && (!Number.isInteger(maxTokens) || maxTokens < 1 || maxTokens > 4_294_967_295)) throw new MakaiProtocolError("max_tokens must be an integer between 1 and 4294967295", "invalid_request");
     const sessionId = request.options?.session_id ?? ulid();
-    const opened = await this.transport.request(OAP_AGENT_PROFILE, "session.open.request", { session_id: sessionId }, { session_id: sessionId });
+    const opened = await this.transport.request(OAP_AGENT_PROFILE, "session.open.request", {
+      session_id: sessionId,
+      ...(request.tools?.length ? { tools: request.tools.map((tool) => ({ name: tool.name, description: tool.description, input_schema: parseInputSchema(tool.parameters_schema_json), execution_owner: SDK_PARTICIPANT })) } : {}),
+      ...(request.options?.reasoning_effort ? { reasoning_level: request.options.reasoning_effort } : {}),
+      metadata: { oapx: { user_input: false, ...(maxTokens !== undefined ? { output: maxTokens } : {}) } },
+    }, { session_id: sessionId });
     if (opened.type !== "session.open.response") throw new MakaiProtocolError(`unexpected ${opened.type}`, "malformed_response");
     const queue = this.transport.subscribe(OAP_AGENT_PROFILE, "session", sessionId);
     let runId: string | undefined;
@@ -658,6 +688,23 @@ class OapAgentApi {
         if (runId && frame.run_id && frame.run_id !== runId) continue;
         const data = payload(frame);
         if (frame.type === "run.started") { yield { type: "agent_start", session_id: sessionId }; continue; }
+        if (frame.type === "action.call.requested") {
+          if (str(data.execution_owner) === SDK_PARTICIPANT) {
+            const answer = await raceWithAbort(resolveProvidedCall(data, request.tools ?? [], sessionId, runId ?? ""), request.options?.signal, "agent run aborted")
+              .catch((error: unknown) => { throw isAbortError(error) ? abortError() : error; });
+            this.transport.send(OAP_AGENT_PROFILE, "action.call.resolve.request", answer, { session_id: sessionId, run_id: runId ?? "" });
+          }
+          continue;
+        }
+        if (frame.type === "action.call.resolve.response") {
+          if (data.accepted === false && str(data.reason) !== "already_resolved") throw new MakaiProtocolError(`the endpoint refused a tool result: ${str(data.reason)}`, "malformed_response");
+          continue;
+        }
+        if (frame.type === "action.call.started") { yield { type: "tool_execution_start", tool_call_id: str(data.tool_call_id), tool_name: str(data.name) }; continue; }
+        if (frame.type === "action.call.completed" || frame.type === "action.call.failed" || frame.type === "action.call.cancelled") {
+          yield { type: "tool_execution_end", tool_call_id: str(data.tool_call_id), is_error: frame.type !== "action.call.completed" };
+          continue;
+        }
         if (frame.type === "content.delta" && isRecord(data.part)) {
           if (data.part.type === "text") yield { type: "text_delta", delta: str(data.part.text) };
           if (data.part.type === "reasoning") yield { type: "thinking_delta", delta: str(data.part.reasoning) };

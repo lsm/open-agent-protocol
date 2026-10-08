@@ -46,10 +46,12 @@ provide authenticated cross-Pod exposure. Use the remote-service settings with
 `oapx serve agent --stdio`; the combined `agent,provider` role refuses them
 rather than exposing a different, local provider profile. Live
 `session.provider.attach` is not yet implemented.
-Client-executed
-agent tools and agent sampling options are not yet
-represented by this `oapx` OAP endpoint, so SDKs refuse them explicitly on
-the default path; the old Makai wire is available only by explicit opt-in.
+The `oapx`
+endpoint serves client-provided tools (`action.tools.provide`, Decision 0011)
+and takes an agent run's reasoning level and output limit at open, so the SDKs
+provide a request's tools, answer the calls routed to them, and refuse only an
+agent run's `temperature`, which the loop takes none of. The old Makai wire is
+available only by explicit opt-in.
 
 `oapx serve agent --backend claude` serves a Claude Code child (pinned 2.1.288),
 `--backend codex` a Codex app-server child (pinned `rust-v0.160.1`), `--backend pi` a
