@@ -6,14 +6,30 @@ can actually answer. It is a map, not a plan — the step order lives in #375.
 
 **Status, 2026-10-07.** `oapx tui` is the terminal UI over this seam, and what
 `oapx` alone starts; `oapx --tui`, the local loop without OAP, was removed once
-the parity sweep showed no difference: `TuiRuntime`
-takes an injected `RemoteExecution` (`zig/src/tui/oap_execution.zig`) that hosts
+the parity sweep showed no difference: the TUI's `SessionRuntime`
+(`zig/src/session/runtime.zig`, shared with the `oapx` adapter and so outside
+`zig/src/tui/`) takes an injected `RemoteExecution` (`zig/src/tui/oap_execution.zig`) that hosts
 `zig/src/adapter/endpoint.zig` with the `oapx` adapter in-process and turns its
-envelopes back into `TuiEvent`s. The agent loop itself is the adapter's: a
+envelopes back into `SessionEvent`s. The agent loop itself is the adapter's: a
 `LocalLoop` (`zig/src/adapter/oapx/local_loop.zig`) owns the agent, its wrapped tools,
-approvals and compaction transcripts, and plugs into a `TuiRuntime` through its `Loop`
-interface, so the runtime the TUI holds carries no agent of its own. Runs, streaming, tools, cancel and model switch
-cross the boundary as OAP. A `/model refresh` hands the in-process endpoint the
+approvals and compaction transcripts, and plugs into a `SessionRuntime` through its `Loop`
+interface, so the runtime the TUI holds carries no agent of its own. Nothing under
+`zig/src/tui/` imports the `agent` module: what it still reads from the agent layer
+is value types and pure helpers, from `agent_types`, `agent_loop` (the output
+setting and token estimates) and `agent_compaction` (the summary header and the
+history split), plus the in-process provider bridge `App` hands the endpoint. A
+recorded TUI session — an approved tool call, a cancelled turn and a completed one —
+passes the Zig schema and semantic validators envelope for envelope
+(`oap_execution.zig`, recorded through `OapExecution.tap`). Recording it is what showed
+the `oapx` adapter's tool listing named no source, which both validators read as
+`unmatched_tool_source` once the TUI started listing tools: the adapter now declares
+one native source, `oapx`, in its descriptor and attributes its own tools and calls to
+it. A provided tool supplied without a source is still listed without one, which the
+validators flag; the TUI provides none today. Runs, streaming, tools,
+cancel and model switch cross the boundary as OAP, and so does the tool list the TUI
+labels calls from: it lists the session's tools with `action.tools.list` once the
+session opens and shows each by its `annotations.title`, falling back to its name. A
+`/model refresh` hands the in-process endpoint the
 refreshed catalog beside the wire, and the session serves it from its next model
 switch under the same revision, which is why the `oapx` adapter advertises
 `models.list` as `degraded`. The settings the protocol has no verb for (context
@@ -97,7 +113,7 @@ is G2.
 
 ## The map
 
-`TuiSessionOps` (`zig/src/tui/session.zig`) is the TUI's whole control surface:
+`SessionOps` (`zig/src/session/events.zig`) is the TUI's whole control surface:
 seventeen operations. "Direct" marks calls the runtime makes on `local_agent`
 without going through the ops table.
 
@@ -177,7 +193,7 @@ follows, and its settlement arrives on that run's stream.
 `clear_queued_messages`, `steers_consumed` and `queued_counts` are the TUI asking
 about its own queue. `SessionState` carries `session_id`, `status`,
 `active_run_id`, `current_model_id` and `updated_at_ms` (`server.zig:849`) and no
-queue counters, while `TuiSession`'s `QueuedCounts` is `{steering, follow_up}`.
+queue counters, while `SessionHandle`'s `QueuedCounts` is `{steering, follow_up}`.
 None of the three is session state the protocol carries, and none should grow an
 envelope to carry it.
 
@@ -254,7 +270,7 @@ no history between runs, so it has nothing to compact and refuses both.
 
 `waitForIdle` is a synchronous join on the agent's run thread: `agent.zig:734`
 locks the mutex, checks `is_streaming` or a live thread, and blocks until the
-run ends. It appears 31 times in `zig/src/tui/runtime.zig`, but only **six of
+run ends. It appears 31 times in `zig/src/session/runtime.zig`, but only **six of
 those are production code** — `stop`, `submitTurn`, `replaceMessages`,
 `history`, `compact` and `resumeSession`. The other 25 are test call sites, so
 the work is six joins, not thirty-one.
@@ -279,18 +295,20 @@ Decision 0011: tools supplied at open join the loop's own for the session,
 listed with the opener as `execution_owner`, and each call to one is an
 interaction the opener settles with `action.call.resolve.request` while the
 loop's tool waits. Its limits are 64 tools, names matching
-`^[a-zA-Z0-9_-]{1,64}$`, and JSON Schema 2020-12; a definition naming a
-`source` is refused, because the loop declares none. Attaching sources stays
-unadvertised. The draft says a source may be described and attached at session
-open under `+tool-sources`, and that nothing in the protocol *manages* one.
-Filed as #618.
+`^[a-zA-Z0-9_-]{1,64}$`, and JSON Schema 2020-12; a definition may name the
+one source the loop declares, `oapx`, and naming any other is refused. Attaching
+sources stays unadvertised. The draft says a source may be described and
+attached at session open under `+tool-sources`, and that nothing in the protocol
+*manages* one. #618 is closed with nothing left to carry: no production code
+calls `setTools` or configures the MCP bridge, so the TUI supplies no tools, and
+the session runtime's unused MCP wiring is removed.
 
 ## What stays on the TUI side of the line
 
 - **Credentials and login** (G5), on the owner's decision and the draft's own
   section. The endpoint serves `auth.*` today; the TUI does not use it.
 - **The queue counters** in G3, derived locally.
-- **The title request.** `TuiRuntime.protocol` is an `agent.ProtocolClient` —
+- **The title request.** `SessionRuntime.protocol` is an `agent.ProtocolClient` —
   a *model-provider* seam, a different protocol from agent-control, and the TUI
   keeps it regardless of how the control layer moves.
 - **Transcript storage.** `~/.oapx/sessions` is the TUI's own; the endpoint
@@ -309,6 +327,18 @@ This section pinned the removed endpoint's payloads against
 `zig/src/tui/oap_ops_parity.zig`, both read at `cbfa3b96d6`. The `oapx` adapter's
 payloads are pinned instead by its own tests in `zig/src/adapter/oapx/adapter.zig`,
 which run every envelope through the schema and semantic validators.
+
+The TUI's side of the same wire is observable through `OapExecution.tap`, a
+`Tap` of a context and a `line` callback that sees every line `OapExecution`
+sends and every line it reads back, in that order. Its contract:
+
+- **The line is borrowed.** `OapExecution` frees it as soon as the callback
+  returns, so a tap that keeps a line copies it.
+- **It runs on whichever thread moved the line.** That is the caller's thread
+  while a session opens, and the session's pump thread once it runs, so a tap
+  that two of those can reach serializes itself.
+- **Set it while no pump runs.** `tap` is a plain field: assign it before the
+  session starts, or after `stop` has joined the pump, never in between.
 
 ## Open against the draft
 

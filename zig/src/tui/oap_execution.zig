@@ -3,16 +3,16 @@ const compat = @import("compat");
 const ai_types = @import("ai_types");
 const json_encode = @import("json_encode");
 const model_ref = @import("model_ref");
-const tui_runtime = @import("tui_runtime");
-const tui_session = @import("tui_session");
-const CompactionEnd = @TypeOf(@as(tui_session.TuiEvent, undefined).compaction_end);
+const session_runtime = @import("session_runtime");
+const session_events = @import("session_events");
+const CompactionEnd = @TypeOf(@as(session_events.SessionEvent, undefined).compaction_end);
 const CompactionOutcome = @FieldType(CompactionEnd, "outcome");
 const adapter_endpoint = @import("adapter_endpoint");
 const oapx_adapter = @import("oapx_adapter");
 const hub_link = @import("hub_link");
 const OwnedSlice = @import("owned_slice").OwnedSlice;
 
-const TuiEvent = tui_session.TuiEvent;
+const SessionEvent = session_events.SessionEvent;
 
 const protocol_name = "open-agent-protocol";
 const protocol_version = "0.1";
@@ -22,12 +22,18 @@ const idle_sleep_ns = 2 * std.time.ns_per_ms;
 const startup_attempts = 2000;
 pub const in_process_frame_limit: usize = 64 << 20;
 
+pub const Tap = struct {
+    ctx: *anyopaque,
+    line: *const fn (ctx: *anyopaque, line: []const u8) void,
+};
+
 pub const OapExecution = struct {
     allocator: std.mem.Allocator,
+    tap: ?Tap = null,
     adapter: ?*oapx_adapter.Adapter = null,
     endpoint: ?adapter_endpoint.Endpoint = null,
     hub: ?*hub_link.HubLink = null,
-    sink: ?tui_runtime.EventSink = null,
+    sink: ?session_runtime.EventSink = null,
     revision: []u8 = &.{},
     session_id: []u8 = &.{},
     run_id: []u8 = &.{},
@@ -35,7 +41,7 @@ pub const OapExecution = struct {
     ids: u64 = 0,
     inbound: std.ArrayList([]u8) = .empty,
     inbound_mutex: std.atomic.Mutex = .unlocked,
-    records: std.ArrayList(TuiEvent) = .empty,
+    records: std.ArrayList(SessionEvent) = .empty,
     records_mutex: std.atomic.Mutex = .unlocked,
     thread: ?std.Thread = null,
     stopping: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
@@ -44,6 +50,7 @@ pub const OapExecution = struct {
     in_assistant: bool = false,
     text: std.ArrayList(u8) = .empty,
     session_models: std.ArrayList([]u8) = .empty,
+    tool_labels: std.ArrayList(session_runtime.ToolLabel) = .empty,
     pending_catalog: ?[]ai_types.Model = null,
     live_reasoning: bool = false,
     live_compaction: bool = false,
@@ -108,7 +115,7 @@ pub const OapExecution = struct {
         }
     };
 
-    pub fn create(allocator: std.mem.Allocator, options: tui_runtime.TuiRuntimeOptions) !*OapExecution {
+    pub fn create(allocator: std.mem.Allocator, options: session_runtime.SessionRuntimeOptions) !*OapExecution {
         const adapter = try allocator.create(oapx_adapter.Adapter);
         errdefer allocator.destroy(adapter);
         adapter.* = oapx_adapter.Adapter.init(allocator, options);
@@ -122,25 +129,25 @@ pub const OapExecution = struct {
         if (self.adapter) |held| held.history = loader;
     }
 
-    fn record(ctx: *anyopaque, session_id: []const u8, event: *const TuiEvent) void {
+    fn record(ctx: *anyopaque, session_id: []const u8, event: *const SessionEvent) void {
         const self = cast(ctx);
         if (!std.mem.eql(u8, session_id, self.session_id)) return;
         self.keepRecord(event);
     }
 
-    fn notice(self: *OapExecution, event: TuiEvent) void {
+    fn notice(self: *OapExecution, event: SessionEvent) void {
         if (self.adapter != null) self.keepRecord(&event);
         self.deliver(event);
     }
 
-    fn keepRecord(self: *OapExecution, event: *const TuiEvent) void {
+    fn keepRecord(self: *OapExecution, event: *const SessionEvent) void {
         var cloned = event.clone(self.allocator) catch return;
         while (!self.records_mutex.tryLock()) std.atomic.spinLoopHint();
         defer self.records_mutex.unlock();
         self.records.append(self.allocator, cloned) catch cloned.deinit(self.allocator);
     }
 
-    fn takeRecord(ctx: *anyopaque) ?TuiEvent {
+    fn takeRecord(ctx: *anyopaque) ?SessionEvent {
         const self = cast(ctx);
         while (!self.records_mutex.tryLock()) std.atomic.spinLoopHint();
         defer self.records_mutex.unlock();
@@ -165,6 +172,7 @@ pub const OapExecution = struct {
     }
 
     fn sendLine(self: *OapExecution, line: []const u8) !void {
+        if (self.tap) |tap| tap.line(tap.ctx, line);
         if (self.hub) |link| return link.handleLine(line);
         try self.endpoint.?.handleLine(line);
     }
@@ -175,8 +183,9 @@ pub const OapExecution = struct {
     }
 
     fn popLine(self: *OapExecution) ?[]u8 {
-        if (self.hub) |link| return link.popOutbound();
-        return self.endpoint.?.popOutbound();
+        const line = if (self.hub) |link| link.popOutbound() else self.endpoint.?.popOutbound();
+        if (self.tap) |tap| if (line) |held| tap.line(tap.ctx, held);
+        return line;
     }
 
     pub fn destroy(self: *OapExecution) void {
@@ -194,6 +203,8 @@ pub const OapExecution = struct {
         self.text.deinit(allocator);
         self.forgetSessionModels();
         self.session_models.deinit(allocator);
+        self.forgetToolLabels();
+        self.tool_labels.deinit(allocator);
         self.forgetPermission();
         self.dropCompactionResult();
         for (self.queued_runs.items) |*queued| queued.deinit(allocator);
@@ -205,7 +216,7 @@ pub const OapExecution = struct {
         allocator.free(self.session_id);
         allocator.free(self.opened_root);
         allocator.free(self.run_id);
-        if (self.pending_catalog) |held| tui_runtime.deinitModels(allocator, held);
+        if (self.pending_catalog) |held| session_runtime.deinitModels(allocator, held);
         allocator.free(self.submitted);
         if (self.adapter) |adapter| {
             adapter.deinit();
@@ -214,11 +225,11 @@ pub const OapExecution = struct {
         allocator.destroy(self);
     }
 
-    pub fn remote(self: *OapExecution) tui_runtime.RemoteExecution {
+    pub fn remote(self: *OapExecution) session_runtime.RemoteExecution {
         return .{ .ctx = self, .vtable = &vtable };
     }
 
-    const vtable = tui_runtime.RemoteExecution.VTable{
+    const vtable = session_runtime.RemoteExecution.VTable{
         .start = start,
         .submit = submit,
         .cancel = cancel,
@@ -240,6 +251,7 @@ pub const OapExecution = struct {
         .queued = queuedCount,
         .steers_pending = steersPending,
         .steers_settled = steersSettled,
+        .tool_labels = toolLabels,
         .stop = stop,
     };
 
@@ -247,7 +259,7 @@ pub const OapExecution = struct {
         return @ptrCast(@alignCast(ctx));
     }
 
-    fn start(ctx: *anyopaque, sink: tui_runtime.EventSink, settings: tui_runtime.RemoteSettings) anyerror!void {
+    fn start(ctx: *anyopaque, sink: session_runtime.EventSink, settings: session_runtime.RemoteSettings) anyerror!void {
         const self = cast(ctx);
         const prior_open = settings.resume_session_id != null and self.session_id.len > 0;
         self.startSession(sink, settings) catch |err| {
@@ -258,7 +270,7 @@ pub const OapExecution = struct {
         };
     }
 
-    fn startSession(self: *OapExecution, sink: tui_runtime.EventSink, settings: tui_runtime.RemoteSettings) anyerror!void {
+    fn startSession(self: *OapExecution, sink: session_runtime.EventSink, settings: session_runtime.RemoteSettings) anyerror!void {
         self.sink = sink;
         var scratch = std.heap.ArenaAllocator.init(self.allocator);
         defer scratch.deinit();
@@ -377,6 +389,8 @@ pub const OapExecution = struct {
                 }
             }
         }
+
+        try self.listTools(a);
 
         if (settings.model != null and self.hub == null) {
             const wanted = try modelRef(a, settings.model.?);
@@ -718,6 +732,44 @@ pub const OapExecution = struct {
         _ = try self.enqueue(a, "run.cancel.request", "cancel", payload.value(), run_id);
     }
 
+    fn listTools(self: *OapExecution, a: std.mem.Allocator) !void {
+        self.forgetToolLabels();
+        var listing = Map.init(a);
+        try listing.put("session_id", .{ .string = self.session_id });
+        try listing.put("allow_degraded_features", try strings(a, &.{"action.tools.list"}));
+        const listed = self.exchange(a, "action.tools.list.request", listing.value(), true) catch |err| switch (err) {
+            error.OutOfMemory => return error.OutOfMemory,
+            else => return,
+        };
+        const payload = listed.object.get("payload") orelse return;
+        if (payload != .object) return;
+        const tools = payload.object.get("tools") orelse return;
+        if (tools != .array) return;
+        for (tools.array.items) |entry| {
+            if (entry != .object) continue;
+            const name = stringOf(entry.object, "name") orelse continue;
+            const annotations = entry.object.get("annotations");
+            const title = if (annotations != null and annotations.? == .object) stringOf(annotations.?.object, "title") else null;
+            const kept_name = try self.allocator.dupe(u8, name);
+            errdefer self.allocator.free(kept_name);
+            const kept_label = try self.allocator.dupe(u8, title orelse name);
+            errdefer self.allocator.free(kept_label);
+            try self.tool_labels.append(self.allocator, .{ .name = kept_name, .label = kept_label });
+        }
+    }
+
+    fn forgetToolLabels(self: *OapExecution) void {
+        for (self.tool_labels.items) |entry| {
+            self.allocator.free(entry.name);
+            self.allocator.free(entry.label);
+        }
+        self.tool_labels.clearRetainingCapacity();
+    }
+
+    fn toolLabels(ctx: *anyopaque) []const session_runtime.ToolLabel {
+        return cast(ctx).tool_labels.items;
+    }
+
     fn forgetSessionModels(self: *OapExecution) void {
         for (self.session_models.items) |id| self.allocator.free(id);
         self.session_models.clearRetainingCapacity();
@@ -746,8 +798,8 @@ pub const OapExecution = struct {
     fn setCatalog(ctx: *anyopaque, models: []const ai_types.Model) anyerror!void {
         const self = cast(ctx);
         if (self.adapter == null) return;
-        const staged = try tui_runtime.cloneModels(self.allocator, models);
-        errdefer tui_runtime.deinitModels(self.allocator, staged);
+        const staged = try session_runtime.cloneModels(self.allocator, models);
+        errdefer session_runtime.deinitModels(self.allocator, staged);
         var refs: std.ArrayList([]u8) = .empty;
         errdefer {
             for (refs.items) |ref| self.allocator.free(ref);
@@ -763,7 +815,7 @@ pub const OapExecution = struct {
         }
         self.lockInbound();
         defer self.inbound_mutex.unlock();
-        if (self.pending_catalog) |held| tui_runtime.deinitModels(self.allocator, held);
+        if (self.pending_catalog) |held| session_runtime.deinitModels(self.allocator, held);
         self.pending_catalog = staged;
         self.forgetSessionModels();
         self.session_models.deinit(self.allocator);
@@ -776,7 +828,7 @@ pub const OapExecution = struct {
         self.pending_catalog = null;
         self.inbound_mutex.unlock();
         const models = staged orelse return;
-        defer tui_runtime.deinitModels(self.allocator, models);
+        defer session_runtime.deinitModels(self.allocator, models);
         if (self.adapter) |adapter| try adapter.setCatalog(models);
     }
 
@@ -897,11 +949,11 @@ pub const OapExecution = struct {
     fn dropCompactionResult(self: *OapExecution) void {
         const held = self.compaction_result orelse return;
         self.compaction_result = null;
-        var event: TuiEvent = .{ .compaction_end = held };
+        var event: SessionEvent = .{ .compaction_end = held };
         event.deinit(self.allocator);
     }
 
-    fn decideApproval(ctx: *anyopaque, tool_call_id: []const u8, decision: tui_runtime.ToolApprovalDecision) anyerror!void {
+    fn decideApproval(ctx: *anyopaque, tool_call_id: []const u8, decision: session_runtime.ToolApprovalDecision) anyerror!void {
         const self = cast(ctx);
         var scratch = std.heap.ArenaAllocator.init(self.allocator);
         defer scratch.deinit();
@@ -1072,7 +1124,7 @@ pub const OapExecution = struct {
         return self.inbound.orderedRemove(0);
     }
 
-    fn deliver(self: *OapExecution, event: TuiEvent) void {
+    fn deliver(self: *OapExecution, event: SessionEvent) void {
         const sink = self.sink orelse {
             var owned = event;
             owned.deinit(self.allocator);
@@ -1081,7 +1133,7 @@ pub const OapExecution = struct {
         sink.push(sink.ctx, event);
     }
 
-    fn toolEnd(self: *OapExecution, body: std.json.ObjectMap, result: []const u8, failed: bool) !TuiEvent {
+    fn toolEnd(self: *OapExecution, body: std.json.ObjectMap, result: []const u8, failed: bool) !SessionEvent {
         var call_id = try self.ownedText(stringOf(body, "tool_call_id") orelse "");
         errdefer call_id.deinit(self.allocator);
         var name = try self.ownedText(stringOf(body, "name") orelse "");
@@ -1090,7 +1142,7 @@ pub const OapExecution = struct {
         return .{ .tool_execution_end = .{ .tool_call_id = call_id, .tool_name = name, .result_json = result_json, .is_error = failed } };
     }
 
-    fn toolResultMessage(self: *OapExecution, body: std.json.ObjectMap, details: []const u8, message: []const u8, failed: bool) !TuiEvent {
+    fn toolResultMessage(self: *OapExecution, body: std.json.ObjectMap, details: []const u8, message: []const u8, failed: bool) !SessionEvent {
         var call_id = try self.ownedText(stringOf(body, "tool_call_id") orelse "");
         errdefer call_id.deinit(self.allocator);
         var name = try self.ownedText(stringOf(body, "name") orelse "");
@@ -1413,7 +1465,7 @@ pub const OapExecution = struct {
         }
     }
 
-    fn endTurn(self: *OapExecution, reason: tui_session.TuiEndReason) void {
+    fn endTurn(self: *OapExecution, reason: session_events.SessionEndReason) void {
         self.lockInbound();
         for (self.steers.items) |*pending| pending.deinit(self.allocator);
         _ = self.steers_settled.fetchAdd(self.steers.items.len, .acq_rel);
@@ -1559,7 +1611,7 @@ fn stopReason(text: []const u8) ai_types.StopReason {
 }
 
 const testing = std.testing;
-const agent = @import("agent");
+const agent_types = @import("agent_types");
 const event_stream = @import("event_stream");
 
 const scripted_model = ai_types.Model{
@@ -1616,7 +1668,7 @@ fn toolCallMessage(allocator: std.mem.Allocator, preamble: []const u8) !ai_types
 
 var echo_runs = std.atomic.Value(usize).init(0);
 
-fn echoTool(tool_call_id: []const u8, args_json: []const u8, cancel_token: ?ai_types.CancelToken, on_update_ctx: ?*anyopaque, on_update: ?agent.ToolUpdateCallback, allocator: std.mem.Allocator) anyerror!agent.AgentToolResult {
+fn echoTool(tool_call_id: []const u8, args_json: []const u8, cancel_token: ?ai_types.CancelToken, on_update_ctx: ?*anyopaque, on_update: ?agent_types.ToolUpdateCallback, allocator: std.mem.Allocator) anyerror!agent_types.AgentToolResult {
     _ = tool_call_id;
     _ = args_json;
     _ = cancel_token;
@@ -1626,10 +1678,10 @@ fn echoTool(tool_call_id: []const u8, args_json: []const u8, cancel_token: ?ai_t
     const content = try allocator.alloc(ai_types.UserContentPart, 1);
     errdefer allocator.free(content);
     content[0] = .{ .text = .{ .text = try allocator.dupe(u8, "echoed") } };
-    return .{ .content = @FieldType(agent.AgentToolResult, "content").initOwned(content) };
+    return .{ .content = @FieldType(agent_types.AgentToolResult, "content").initOwned(content) };
 }
 
-const echo_tools = [_]agent.AgentTool{.{
+const echo_tools = [_]agent_types.AgentTool{.{
     .label = "Echo",
     .name = "echo_tool",
     .description = "Echo a word back",
@@ -1641,7 +1693,7 @@ fn bareMessage(reason: ai_types.StopReason) ai_types.AssistantMessage {
     return .{ .content = &.{}, .api = scripted_model.api, .provider = scripted_model.provider, .model = scripted_model.id, .usage = .{}, .stop_reason = reason, .timestamp = 0 };
 }
 
-fn scriptedStream(ctx: ?*anyopaque, model: ai_types.Model, context: ai_types.Context, options: agent.ProtocolOptions, allocator: std.mem.Allocator) anyerror!*event_stream.AssistantMessageEventStream {
+fn scriptedStream(ctx: ?*anyopaque, model: ai_types.Model, context: ai_types.Context, options: agent_types.ProtocolOptions, allocator: std.mem.Allocator) anyerror!*event_stream.AssistantMessageEventStream {
     const script: *Script = @ptrCast(@alignCast(ctx.?));
     script.last_context_messages = context.messages.len;
     script.last_model_len = @min(model.id.len, script.last_model.len);
@@ -1690,7 +1742,7 @@ fn scriptedStream(ctx: ?*anyopaque, model: ai_types.Model, context: ai_types.Con
 const Seen = struct {
     text: std.ArrayList(u8) = .empty,
     final_text: std.ArrayList(u8) = .empty,
-    end: ?tui_session.TuiEndReason = null,
+    end: ?session_events.SessionEndReason = null,
     agent_starts: usize = 0,
     warnings: usize = 0,
     output_limit_warned: bool = false,
@@ -1705,7 +1757,7 @@ const Seen = struct {
     }
 };
 
-fn drainTurn(runtime: *tui_runtime.TuiRuntime, seen: *Seen) !void {
+fn drainTurn(runtime: *session_runtime.SessionRuntime, seen: *Seen) !void {
     var waits: usize = 0;
     while (waits < 5000) : (waits += 1) {
         while (runtime.streamEvents().poll()) |event| {
@@ -1738,15 +1790,15 @@ fn drainTurn(runtime: *tui_runtime.TuiRuntime, seen: *Seen) !void {
     return error.TestTurnNeverEnded;
 }
 
-fn remoteRuntime(script: *Script, execution: **OapExecution, thinking: ai_types.ThinkingLevel) !tui_runtime.TuiRuntime {
+fn remoteRuntime(script: *Script, execution: **OapExecution, thinking: ai_types.ThinkingLevel) !session_runtime.SessionRuntime {
     const models = [_]ai_types.Model{scripted_model};
-    const engine_options = tui_runtime.TuiRuntimeOptions{
+    const engine_options = session_runtime.SessionRuntimeOptions{
         .protocol = .{ .stream_fn = scriptedStream, .ctx = script },
         .models = &models,
         .initial_model_id = scripted_model.id,
     };
     execution.* = try OapExecution.create(testing.allocator, engine_options);
-    return tui_runtime.TuiRuntime.init(testing.allocator, .{
+    return session_runtime.SessionRuntime.init(testing.allocator, .{
         .models = &models,
         .initial_model_id = scripted_model.id,
         .thinking_level = thinking,
@@ -1766,12 +1818,45 @@ test "a turn submitted to a runtime over OAP streams back as the events the term
     defer seen.deinit();
     try drainTurn(&runtime, &seen);
 
-    try testing.expectEqual(@as(?tui_session.TuiEndReason, .completed), seen.end);
+    try testing.expectEqual(@as(?session_events.SessionEndReason, .completed), seen.end);
     try testing.expectEqual(@as(usize, 1), seen.agent_starts);
     try testing.expectEqualStrings("over the wire", seen.text.items);
     try testing.expectEqualStrings("over the wire", seen.final_text.items);
     try testing.expectEqual(ai_types.ThinkingLevel.high, script.last_thinking);
     try testing.expect(runtime.isIdle());
+}
+
+test "a session over OAP labels its tools with the title the endpoint lists for each" {
+    var script = Script{};
+    const models = [_]ai_types.Model{scripted_model};
+    const labelled = [_]agent_types.AgentTool{.{
+        .label = "Echo Back",
+        .name = "echo_tool",
+        .description = "Echo a word back",
+        .parameters_schema_json = "{\"type\":\"object\"}",
+        .execute = echoTool,
+    }};
+    const execution = try OapExecution.create(testing.allocator, .{
+        .protocol = .{ .stream_fn = scriptedStream, .ctx = &script },
+        .models = &models,
+        .initial_model_id = scripted_model.id,
+        .tools = &labelled,
+    });
+    defer execution.destroy();
+    var runtime = try session_runtime.SessionRuntime.init(testing.allocator, .{
+        .models = &models,
+        .initial_model_id = scripted_model.id,
+        .remote = execution.remote(),
+    });
+    defer runtime.deinit();
+
+    try testing.expectEqual(@as(usize, 0), runtime.toolLabels().len);
+    try runtime.start();
+    var label: ?[]const u8 = null;
+    for (runtime.toolLabels()) |tool| {
+        if (std.mem.eql(u8, tool.name, "echo_tool")) label = tool.label;
+    }
+    try testing.expectEqualStrings("Echo Back", label.?);
 }
 
 test "a turn over OAP reports its output tokens and the context it filled to the status bar" {
@@ -1785,7 +1870,7 @@ test "a turn over OAP reports its output tokens and the context it filled to the
     var seen = Seen{};
     defer seen.deinit();
     try drainTurn(&runtime, &seen);
-    try testing.expectEqual(@as(?tui_session.TuiEndReason, .completed), seen.end);
+    try testing.expectEqual(@as(?session_events.SessionEndReason, .completed), seen.end);
     try testing.expectEqual(@as(u64, 42), seen.output_tokens);
     try testing.expect(seen.context_tokens != null);
     try testing.expect(seen.context_tokens.? > 0);
@@ -1801,7 +1886,7 @@ test "a run over OAP with an earlier assistant message leaves its output tokens 
         .tools = &echo_tools,
     });
     defer execution.destroy();
-    var runtime = try tui_runtime.TuiRuntime.init(testing.allocator, .{
+    var runtime = try session_runtime.SessionRuntime.init(testing.allocator, .{
         .models = &models,
         .initial_model_id = scripted_model.id,
         .remote = execution.remote(),
@@ -1812,7 +1897,7 @@ test "a run over OAP with an earlier assistant message leaves its output tokens 
     var seen = Seen{};
     defer seen.deinit();
     try drainTurn(&runtime, &seen);
-    try testing.expectEqual(@as(?tui_session.TuiEndReason, .completed), seen.end);
+    try testing.expectEqual(@as(?session_events.SessionEndReason, .completed), seen.end);
     try testing.expectEqualStrings("over the wire", seen.final_text.items);
     try testing.expectEqual(@as(u64, 0), seen.output_tokens);
 }
@@ -1828,7 +1913,7 @@ test "a reply over OAP that stops at its output token limit warns the user as th
     var seen = Seen{};
     defer seen.deinit();
     try drainTurn(&runtime, &seen);
-    try testing.expectEqual(@as(?tui_session.TuiEndReason, .completed), seen.end);
+    try testing.expectEqual(@as(?session_events.SessionEndReason, .completed), seen.end);
     try testing.expect(seen.output_limit_warned);
 
     script.stop_reason = .stop;
@@ -1859,14 +1944,14 @@ test "cancelling a turn over OAP ends it cancelled and the next turn runs on the
     var cancelled = Seen{};
     defer cancelled.deinit();
     try drainTurn(&runtime, &cancelled);
-    try testing.expectEqual(@as(?tui_session.TuiEndReason, .cancelled), cancelled.end);
+    try testing.expectEqual(@as(?session_events.SessionEndReason, .cancelled), cancelled.end);
 
     script.wait_for_cancel = false;
     try runtime.submitTurn("again");
     var next = Seen{};
     defer next.deinit();
     try drainTurn(&runtime, &next);
-    try testing.expectEqual(@as(?tui_session.TuiEndReason, .completed), next.end);
+    try testing.expectEqual(@as(?session_events.SessionEndReason, .completed), next.end);
 }
 
 fn waitForRun(execution: *OapExecution) void {
@@ -1919,7 +2004,7 @@ test "a follow-up queued during a turn over OAP runs after it inside the same tu
     var seen = Seen{};
     defer seen.deinit();
     try drainTurn(&runtime, &seen);
-    try testing.expectEqual(@as(?tui_session.TuiEndReason, .completed), seen.end);
+    try testing.expectEqual(@as(?session_events.SessionEndReason, .completed), seen.end);
     try testing.expectEqual(@as(usize, 1), seen.agent_starts);
     try testing.expectEqual(@as(usize, 2), script.calls);
     try testing.expectEqualStrings("firstsecond", seen.user_text.items);
@@ -1945,7 +2030,7 @@ test "clearing a follow-up queued over OAP cancels its reservation, so the turn 
     var seen = Seen{};
     defer seen.deinit();
     try drainTurn(&runtime, &seen);
-    try testing.expectEqual(@as(?tui_session.TuiEndReason, .completed), seen.end);
+    try testing.expectEqual(@as(?session_events.SessionEndReason, .completed), seen.end);
     try testing.expectEqual(@as(usize, 1), script.calls);
     try testing.expectEqualStrings("first", seen.user_text.items);
 
@@ -1953,7 +2038,7 @@ test "clearing a follow-up queued over OAP cancels its reservation, so the turn 
     var next = Seen{};
     defer next.deinit();
     try drainTurn(&runtime, &next);
-    try testing.expectEqual(@as(?tui_session.TuiEndReason, .completed), next.end);
+    try testing.expectEqual(@as(?session_events.SessionEndReason, .completed), next.end);
     var settle: usize = 0;
     while (settle < 300 and script.calls <= 2) : (settle += 1) {
         std.testing.io.sleep(.fromNanoseconds(std.time.ns_per_ms), .boot) catch {};
@@ -1973,7 +2058,7 @@ test "a follow-up sent while no turn runs over OAP starts one" {
     var seen = Seen{};
     defer seen.deinit();
     try drainTurn(&runtime, &seen);
-    try testing.expectEqual(@as(?tui_session.TuiEndReason, .completed), seen.end);
+    try testing.expectEqual(@as(?session_events.SessionEndReason, .completed), seen.end);
     try testing.expectEqual(@as(usize, 1), script.calls);
 }
 
@@ -1988,7 +2073,7 @@ test "the first message of a turn over OAP comes back as the user's message, as 
     var seen = Seen{};
     defer seen.deinit();
     try drainTurn(&runtime, &seen);
-    try testing.expectEqual(@as(?tui_session.TuiEndReason, .completed), seen.end);
+    try testing.expectEqual(@as(?session_events.SessionEndReason, .completed), seen.end);
     try testing.expectEqualStrings("name this session", seen.user_text.items);
 }
 
@@ -2052,7 +2137,7 @@ test "a reopen that fails once the open session has stopped keeps a session pump
     var seen = Seen{};
     defer seen.deinit();
     try drainTurn(&runtime, &seen);
-    try testing.expectEqual(@as(?tui_session.TuiEndReason, .completed), seen.end);
+    try testing.expectEqual(@as(?session_events.SessionEndReason, .completed), seen.end);
 }
 
 test "reopening the session that is already open keeps it, rather than closing it to open it again" {
@@ -2076,7 +2161,7 @@ test "reopening the session that is already open keeps it, rather than closing i
     var second = Seen{};
     defer second.deinit();
     try drainTurn(&runtime, &second);
-    try testing.expectEqual(@as(?tui_session.TuiEndReason, .completed), second.end);
+    try testing.expectEqual(@as(?session_events.SessionEndReason, .completed), second.end);
     try testing.expectEqual(@as(usize, 3), script.last_context_messages);
 }
 
@@ -2095,7 +2180,7 @@ test "a refused reopen before any session opened leaves the runtime unstarted, s
     var seen = Seen{};
     defer seen.deinit();
     try drainTurn(&runtime, &seen);
-    try testing.expectEqual(@as(?tui_session.TuiEndReason, .completed), seen.end);
+    try testing.expectEqual(@as(?session_events.SessionEndReason, .completed), seen.end);
 }
 
 test "a saved session reopened over OAP compacts before any new turn, as the transcript it loaded is history" {
@@ -2133,7 +2218,7 @@ test "a saved session reopened over OAP carries its transcript into the next run
     var seen = Seen{};
     defer seen.deinit();
     try drainTurn(&runtime, &seen);
-    try testing.expectEqual(@as(?tui_session.TuiEndReason, .completed), seen.end);
+    try testing.expectEqual(@as(?session_events.SessionEndReason, .completed), seen.end);
     try testing.expectEqual(@as(usize, 2), script.last_context_messages);
     try testing.expectError(error.OapReopenRefused, runtime.reopenSaved("never-saved", null));
     try testing.expectEqualStrings("saved-session", execution.session_id);
@@ -2142,7 +2227,7 @@ test "a saved session reopened over OAP carries its transcript into the next run
     var kept = Seen{};
     defer kept.deinit();
     try drainTurn(&runtime, &kept);
-    try testing.expectEqual(@as(?tui_session.TuiEndReason, .completed), kept.end);
+    try testing.expectEqual(@as(?session_events.SessionEndReason, .completed), kept.end);
 }
 
 test "a model a catalog refresh adds can be switched to over OAP, and the next run uses it" {
@@ -2162,7 +2247,7 @@ test "a model a catalog refresh adds can be switched to over OAP, and the next r
     var seen = Seen{};
     defer seen.deinit();
     try drainTurn(&runtime, &seen);
-    try testing.expectEqual(@as(?tui_session.TuiEndReason, .completed), seen.end);
+    try testing.expectEqual(@as(?session_events.SessionEndReason, .completed), seen.end);
     try testing.expectEqualStrings("fresh-model", script.last_model[0..script.last_model_len]);
 }
 
@@ -2189,14 +2274,14 @@ test "a submit the endpoint cannot frame ends the turn in an error instead of le
     var seen = Seen{};
     defer seen.deinit();
     try drainTurn(&runtime, &seen);
-    try testing.expectEqual(@as(?tui_session.TuiEndReason, .@"error"), seen.end);
+    try testing.expectEqual(@as(?session_events.SessionEndReason, .@"error"), seen.end);
     try testing.expect(runtime.isIdle());
 
     try runtime.submitTurn("after");
     var next = Seen{};
     defer next.deinit();
     try drainTurn(&runtime, &next);
-    try testing.expectEqual(@as(?tui_session.TuiEndReason, .completed), next.end);
+    try testing.expectEqual(@as(?session_events.SessionEndReason, .completed), next.end);
 }
 
 test "settings changed on an open OAP session reach the endpoint and the next run, not only the terminal's own state" {
@@ -2211,7 +2296,7 @@ test "settings changed on an open OAP session reach the endpoint and the next ru
     try runtime.setPermissionMode(.ask);
     try runtime.setContextWindow(4096);
     try runtime.setOutput(.{ .tokens = 512 });
-    try testing.expectEqual(tui_runtime.PermissionMode.ask, runtime.permissionMode());
+    try testing.expectEqual(session_runtime.PermissionMode.ask, runtime.permissionMode());
     try testing.expectEqual(@as(?u32, 4096), runtime.contextWindowOverride());
 
     try runtime.submitTurn("go");
@@ -2235,7 +2320,7 @@ test "a setting change over OAP is refused when the session cannot take a live s
     try testing.expectError(error.UnavailableOverOap, runtime.setContextWindow(4096));
     try testing.expectError(error.UnavailableOverOap, runtime.setOutput(.max));
     try testing.expectError(error.UnavailableOverOap, runtime.setWorkspaceRoot("/elsewhere"));
-    try testing.expectEqual(tui_runtime.PermissionMode.bypass, runtime.permissionMode());
+    try testing.expectEqual(session_runtime.PermissionMode.bypass, runtime.permissionMode());
 }
 
 test "a thinking level changed on an open OAP session reaches the next run through a live settings update" {
@@ -2285,7 +2370,7 @@ test "an open-time model the OAP session does not list leaves the session usable
         .initial_model_id = scripted_model.id,
     });
     defer execution.destroy();
-    var runtime = try tui_runtime.TuiRuntime.init(testing.allocator, .{
+    var runtime = try session_runtime.SessionRuntime.init(testing.allocator, .{
         .models = &app_models,
         .initial_model_id = missing.id,
         .remote = execution.remote(),
@@ -2296,10 +2381,10 @@ test "an open-time model the OAP session does not list leaves the session usable
     var seen = Seen{};
     defer seen.deinit();
     try drainTurn(&runtime, &seen);
-    try testing.expectEqual(@as(?tui_session.TuiEndReason, .completed), seen.end);
+    try testing.expectEqual(@as(?session_events.SessionEndReason, .completed), seen.end);
 }
 
-fn askedTurn(decision: tui_runtime.ToolApprovalDecision) !struct { end: ?tui_session.TuiEndReason, approvals: usize, ran: usize } {
+fn askedTurn(decision: session_runtime.ToolApprovalDecision) !struct { end: ?session_events.SessionEndReason, approvals: usize, ran: usize } {
     var script = Script{ .tool_first = true };
     const models = [_]ai_types.Model{scripted_model};
     const execution = try OapExecution.create(testing.allocator, .{
@@ -2309,7 +2394,7 @@ fn askedTurn(decision: tui_runtime.ToolApprovalDecision) !struct { end: ?tui_ses
         .tools = &echo_tools,
     });
     defer execution.destroy();
-    var runtime = try tui_runtime.TuiRuntime.init(testing.allocator, .{
+    var runtime = try session_runtime.SessionRuntime.init(testing.allocator, .{
         .models = &models,
         .initial_model_id = scripted_model.id,
         .remote = execution.remote(),
@@ -2342,6 +2427,122 @@ fn askedTurn(decision: tui_runtime.ToolApprovalDecision) !struct { end: ?tui_ses
     return error.TestTurnNeverEnded;
 }
 
+const Recorder = struct {
+    mutex: std.atomic.Mutex = .unlocked,
+    lines: std.ArrayList([]u8) = .empty,
+
+    fn tap(self: *Recorder) Tap {
+        return .{ .ctx = self, .line = record };
+    }
+
+    fn record(ctx: *anyopaque, line: []const u8) void {
+        const self: *Recorder = @ptrCast(@alignCast(ctx));
+        while (!self.mutex.tryLock()) std.atomic.spinLoopHint();
+        defer self.mutex.unlock();
+        const kept = testing.allocator.dupe(u8, line) catch @panic("OOM recording the wire");
+        self.lines.append(testing.allocator, kept) catch @panic("OOM recording the wire");
+    }
+
+    fn deinit(self: *Recorder) void {
+        for (self.lines.items) |line| testing.allocator.free(line);
+        self.lines.deinit(testing.allocator);
+    }
+
+    fn validate(self: *Recorder) !void {
+        var registry = try @import("jsonschema").Registry.initFromBundled(testing.allocator);
+        defer registry.deinit();
+        var machine = @import("semantic").Machine.init(testing.allocator);
+        defer machine.deinit();
+        var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+        defer arena_state.deinit();
+        for (self.lines.items, 0..) |line, index| {
+            const event = try std.json.parseFromSliceLeaky(std.json.Value, arena_state.allocator(), line, .{});
+            var validator = @import("jsonschema").Validator.init(testing.allocator, &registry);
+            defer validator.deinit();
+            if (try validator.validate("envelope.schema.json", event)) |failure| {
+                std.debug.print("wire {d} {s} fails {s} at {s}\n", .{ index, event.object.get("type").?.string, failure.keyword, failure.pointer });
+                return error.SchemaInvalid;
+            }
+            try machine.apply(index, event);
+        }
+        try machine.close();
+        for (machine.diagnostics.items) |diagnostic| std.debug.print("wire {d}: {s}\n", .{ diagnostic.index, diagnostic.code });
+        try testing.expectEqual(@as(usize, 0), machine.diagnostics.items.len);
+    }
+};
+
+test "a TUI session over OAP with an approved tool call, a cancelled turn and a completed one is a trace the validator accepts" {
+    var script = Script{ .tool_first = true };
+    const models = [_]ai_types.Model{scripted_model};
+    var recorder = Recorder{};
+    defer recorder.deinit();
+    const execution = try OapExecution.create(testing.allocator, .{
+        .protocol = .{ .stream_fn = scriptedStream, .ctx = &script },
+        .models = &models,
+        .initial_model_id = scripted_model.id,
+        .tools = &echo_tools,
+    });
+    defer execution.destroy();
+    execution.tap = recorder.tap();
+    var runtime = try session_runtime.SessionRuntime.init(testing.allocator, .{
+        .models = &models,
+        .initial_model_id = scripted_model.id,
+        .remote = execution.remote(),
+    });
+    defer runtime.deinit();
+    try runtime.setPermissionMode(.ask);
+
+    try runtime.submitTurn("use the tool");
+    var approvals: usize = 0;
+    var tool_end: ?session_events.SessionEndReason = null;
+    var waits: usize = 0;
+    while (tool_end == null and waits < 5000) : (waits += 1) {
+        while (runtime.streamEvents().poll()) |event| {
+            var owned_event = event;
+            defer owned_event.deinit(testing.allocator);
+            switch (owned_event) {
+                .tool_approval_requested => |payload| {
+                    approvals += 1;
+                    try runtime.decideToolApproval(payload.tool_call_id.slice(), .approve);
+                },
+                .agent_end => |payload| tool_end = payload.reason,
+                else => {},
+            }
+        }
+        std.testing.io.sleep(.fromNanoseconds(std.time.ns_per_ms), .boot) catch {};
+    }
+    try testing.expectEqual(@as(?session_events.SessionEndReason, .completed), tool_end);
+    try testing.expectEqual(@as(usize, 1), approvals);
+
+    script.wait_for_cancel = true;
+    try runtime.submitTurn("wait");
+    waitForRun(execution);
+    runtime.cancel();
+    var cancelled = Seen{};
+    defer cancelled.deinit();
+    try drainTurn(&runtime, &cancelled);
+    try testing.expectEqual(@as(?session_events.SessionEndReason, .cancelled), cancelled.end);
+
+    script.wait_for_cancel = false;
+    try runtime.submitTurn("again");
+    var completed = Seen{};
+    defer completed.deinit();
+    try drainTurn(&runtime, &completed);
+    try testing.expectEqual(@as(?session_events.SessionEndReason, .completed), completed.end);
+
+    runtime.stop();
+    execution.tap = null;
+    var kinds = std.StringHashMap(void).init(testing.allocator);
+    defer kinds.deinit();
+    for (recorder.lines.items) |line| {
+        inline for (.{ "action.permission.requested", "action.permission.resolve.request", "action.call.completed", "run.cancelled", "run.completed" }) |kind| {
+            if (std.mem.indexOf(u8, line, "\"type\":\"" ++ kind ++ "\"") != null) try kinds.put(kind, {});
+        }
+    }
+    try testing.expectEqual(@as(u32, 5), kinds.count());
+    try recorder.validate();
+}
+
 test "an in-process session hands the loop's own records over, tool calls and results included, which the OAP events cannot rebuild" {
     var script = Script{ .tool_first = true };
     const models = [_]ai_types.Model{scripted_model};
@@ -2352,7 +2553,7 @@ test "an in-process session hands the loop's own records over, tool calls and re
         .tools = &echo_tools,
     });
     defer execution.destroy();
-    var runtime = try tui_runtime.TuiRuntime.init(testing.allocator, .{
+    var runtime = try session_runtime.SessionRuntime.init(testing.allocator, .{
         .models = &models,
         .initial_model_id = scripted_model.id,
         .remote = execution.remote(),
@@ -2364,7 +2565,7 @@ test "an in-process session hands the loop's own records over, tool calls and re
     var seen = Seen{};
     defer seen.deinit();
     try drainTurn(&runtime, &seen);
-    try testing.expectEqual(@as(?tui_session.TuiEndReason, .completed), seen.end);
+    try testing.expectEqual(@as(?session_events.SessionEndReason, .completed), seen.end);
 
     var tool_calls: usize = 0;
     var tool_results: usize = 0;
@@ -2417,14 +2618,14 @@ test "a session with no in-process endpoint has no records to hand over" {
 
 test "in ask mode over OAP the model's tool call waits for the user's approval and then runs" {
     const outcome = try askedTurn(.approve);
-    try testing.expectEqual(@as(?tui_session.TuiEndReason, .completed), outcome.end);
+    try testing.expectEqual(@as(?session_events.SessionEndReason, .completed), outcome.end);
     try testing.expectEqual(@as(usize, 1), outcome.approvals);
     try testing.expectEqual(@as(usize, 1), outcome.ran);
 }
 
 test "in ask mode over OAP a denied tool call never runs and the turn still ends" {
     const outcome = try askedTurn(.reject);
-    try testing.expectEqual(@as(?tui_session.TuiEndReason, .completed), outcome.end);
+    try testing.expectEqual(@as(?session_events.SessionEndReason, .completed), outcome.end);
     try testing.expectEqual(@as(usize, 1), outcome.approvals);
     try testing.expectEqual(@as(usize, 0), outcome.ran);
 }
@@ -2439,7 +2640,7 @@ test "a completed call over OAP shows the loop's own result text, as the local l
         .tools = &echo_tools,
     });
     defer execution.destroy();
-    var runtime = try tui_runtime.TuiRuntime.init(testing.allocator, .{
+    var runtime = try session_runtime.SessionRuntime.init(testing.allocator, .{
         .models = &models,
         .initial_model_id = scripted_model.id,
         .remote = execution.remote(),
@@ -2521,7 +2722,7 @@ test "a denied call over OAP shows the loop's own result text beside its details
         .tools = &echo_tools,
     });
     defer execution.destroy();
-    var runtime = try tui_runtime.TuiRuntime.init(testing.allocator, .{
+    var runtime = try session_runtime.SessionRuntime.init(testing.allocator, .{
         .models = &models,
         .initial_model_id = scripted_model.id,
         .remote = execution.remote(),
@@ -2567,7 +2768,7 @@ test "a switch to a model the OAP session does not list is refused until a catal
         .initial_model_id = scripted_model.id,
     });
     defer execution.destroy();
-    var runtime = try tui_runtime.TuiRuntime.init(testing.allocator, .{
+    var runtime = try session_runtime.SessionRuntime.init(testing.allocator, .{
         .models = &app_models,
         .initial_model_id = scripted_model.id,
         .remote = execution.remote(),
@@ -2596,7 +2797,7 @@ test "a lost stream warns and ends the turn instead of leaving it to stream fore
     var seen = Seen{};
     defer seen.deinit();
     try drainTurn(&runtime, &seen);
-    try testing.expectEqual(@as(?tui_session.TuiEndReason, .@"error"), seen.end);
+    try testing.expectEqual(@as(?session_events.SessionEndReason, .@"error"), seen.end);
 }
 
 test "a cancel that lands before the run has started is held and sent once it starts" {
@@ -2610,7 +2811,7 @@ test "a cancel that lands before the run has started is held and sent once it st
     var seen = Seen{};
     defer seen.deinit();
     try drainTurn(&runtime, &seen);
-    try testing.expectEqual(@as(?tui_session.TuiEndReason, .cancelled), seen.end);
+    try testing.expectEqual(@as(?session_events.SessionEndReason, .cancelled), seen.end);
 }
 
 test "a stopped execution restarts with a live pump" {
@@ -2625,7 +2826,7 @@ test "a stopped execution restarts with a live pump" {
     var seen = Seen{};
     defer seen.deinit();
     try drainTurn(&runtime, &seen);
-    try testing.expectEqual(@as(?tui_session.TuiEndReason, .completed), seen.end);
+    try testing.expectEqual(@as(?session_events.SessionEndReason, .completed), seen.end);
 }
 
 test "a model refresh during a turn over OAP is refused rather than switching the running session" {
@@ -2648,11 +2849,11 @@ const Captured = struct {
     user_messages: usize = 0,
     warnings: usize = 0,
 
-    fn sink(self: *Captured) tui_runtime.EventSink {
+    fn sink(self: *Captured) session_runtime.EventSink {
         return .{ .ctx = self, .push = push };
     }
 
-    fn push(ctx: *anyopaque, event: TuiEvent) void {
+    fn push(ctx: *anyopaque, event: SessionEvent) void {
         const self: *Captured = @ptrCast(@alignCast(ctx));
         var owned = event;
         defer owned.deinit(testing.allocator);
@@ -2825,14 +3026,14 @@ const Compactions = struct {
     started: usize = 0,
     outcome: ?CompactionOutcome = null,
     text: std.ArrayList(u8) = .empty,
-    agent_end: ?tui_session.TuiEndReason = null,
+    agent_end: ?session_events.SessionEndReason = null,
 
     fn deinit(self: *Compactions) void {
         self.text.deinit(testing.allocator);
     }
 };
 
-fn drainCompactions(runtime: *tui_runtime.TuiRuntime, seen: *Compactions, until_requested: bool) !void {
+fn drainCompactions(runtime: *session_runtime.SessionRuntime, seen: *Compactions, until_requested: bool) !void {
     var waits: usize = 0;
     while (waits < 5000) : (waits += 1) {
         while (runtime.streamEvents().poll()) |event| {
@@ -2891,7 +3092,7 @@ test "a compaction over OAP runs the endpoint's compaction and ends on its summa
     var after = Seen{};
     defer after.deinit();
     try drainTurn(&runtime, &after);
-    try testing.expectEqual(@as(?tui_session.TuiEndReason, .completed), after.end);
+    try testing.expectEqual(@as(?session_events.SessionEndReason, .completed), after.end);
 }
 
 test "a compaction over OAP with nothing to compact is refused before anything is sent, as the local loop refuses it" {
@@ -2941,7 +3142,7 @@ test "an autocompact setting reaches the endpoint as its policy, and the next ru
     var seen = Compactions{};
     defer seen.deinit();
     try drainCompactions(&runtime, &seen, false);
-    try testing.expectEqual(@as(?tui_session.TuiEndReason, .completed), seen.agent_end);
+    try testing.expectEqual(@as(?session_events.SessionEndReason, .completed), seen.agent_end);
     try testing.expectEqual(@as(usize, 1), seen.in_run_started);
     try testing.expectEqual(@as(usize, 1), seen.in_run_completed);
     try testing.expectEqual(@as(usize, 0), seen.started);
@@ -3004,7 +3205,7 @@ test "a steer sent during a turn over OAP joins it at the next turn boundary and
     var seen = Seen{};
     defer seen.deinit();
     try drainTurn(&runtime, &seen);
-    try testing.expectEqual(@as(?tui_session.TuiEndReason, .completed), seen.end);
+    try testing.expectEqual(@as(?session_events.SessionEndReason, .completed), seen.end);
     try testing.expectEqual(@as(usize, 1), seen.agent_starts);
     try testing.expectEqual(@as(usize, 2), script.calls);
     try testing.expectEqualStrings("firstchange course", seen.user_text.items);
@@ -3025,7 +3226,7 @@ test "a steer sent while no turn runs over OAP starts one and counts as settled"
     var seen = Seen{};
     defer seen.deinit();
     try drainTurn(&runtime, &seen);
-    try testing.expectEqual(@as(?tui_session.TuiEndReason, .completed), seen.end);
+    try testing.expectEqual(@as(?session_events.SessionEndReason, .completed), seen.end);
     try testing.expectEqual(@as(usize, 1), script.calls);
     try testing.expectEqual(@as(u64, 1), runtime.steersConsumedCount());
 }
@@ -3046,7 +3247,7 @@ test "a steer still waiting when the turn is cancelled over OAP settles without 
     var seen = Seen{};
     defer seen.deinit();
     try drainTurn(&runtime, &seen);
-    try testing.expectEqual(@as(?tui_session.TuiEndReason, .cancelled), seen.end);
+    try testing.expectEqual(@as(?session_events.SessionEndReason, .cancelled), seen.end);
     try testing.expectEqual(@as(usize, 0), seen.warnings);
     try testing.expectEqualStrings("first", seen.user_text.items);
     try testing.expectEqual(@as(usize, 0), runtime.queuedCounts().steering);

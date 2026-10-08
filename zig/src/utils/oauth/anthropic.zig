@@ -280,13 +280,13 @@ fn getObjectI64Field(obj: *const std.json.ObjectMap, key: []const u8) ?i64 {
 
 fn parseTokenResponse(response_body: []const u8, allocator: std.mem.Allocator) !TokenResponse {
     var parsed = std.json.parseFromSlice(std.json.Value, allocator, response_body, .{}) catch {
-        std.debug.print("Failed to parse token response JSON: {s}\n", .{response_body});
+        std.debug.print("Failed to parse Anthropic token response JSON; response body redacted ({d} bytes)\n", .{response_body.len});
         return error.ParseError;
     };
     defer parsed.deinit();
 
     if (parsed.value != .object) {
-        std.debug.print("Token response is not an object: {s}\n", .{response_body});
+        std.debug.print("Anthropic token response is not an object; response body redacted ({d} bytes)\n", .{response_body.len});
         return error.ParseError;
     }
 
@@ -302,7 +302,7 @@ fn parseTokenResponse(response_body: []const u8, allocator: std.mem.Allocator) !
 
     const access_token = getObjectStringField(obj, "access_token") orelse
         getObjectStringField(obj, "accessToken") orelse {
-        std.debug.print("Token response missing access_token: {s}\n", .{response_body});
+        std.debug.print("Anthropic token response missing access_token; response body redacted ({d} bytes)\n", .{response_body.len});
         return error.ParseError;
     };
     const refresh_token = getObjectStringField(obj, "refresh_token") orelse

@@ -3,9 +3,9 @@ const compat = @import("compat");
 const zz = @import("zigzag");
 const ai_types = @import("ai_types");
 const tui_app = @import("tui_app");
-const tui_runtime = @import("tui_runtime");
+const session_runtime = @import("session_runtime");
 const tui_state = @import("tui_state");
-const tui_session = @import("tui_session");
+const session_events = @import("session_events");
 const session_store = @import("tui_session_store");
 const tui_config = @import("tui_config");
 const mock_provider = @import("tui_fixture");
@@ -34,7 +34,7 @@ const Driver = struct {
     init_cmd: zz.Cmd(TuiModel.Msg),
     history: std.ArrayList(u8),
 
-    fn init(gpa: std.mem.Allocator, options: tui_runtime.TuiRuntimeOptions, view_opts: DriverOptions) !*Driver {
+    fn init(gpa: std.mem.Allocator, options: session_runtime.SessionRuntimeOptions, view_opts: DriverOptions) !*Driver {
         const self = try gpa.create(Driver);
         errdefer gpa.destroy(self);
 
@@ -430,11 +430,11 @@ test "e2e: /resume opens the picker and resuming replays the saved transcript" {
         defer meta.deinit(std.testing.allocator);
 
         try store.save(meta, .{ .message_start = .{ .role = .user } });
-        var user_end = tui_session.TuiEvent{ .message_end = .{ .role = .user, .text = try ownedText("remembered question") } };
+        var user_end = session_events.SessionEvent{ .message_end = .{ .role = .user, .text = try ownedText("remembered question") } };
         defer user_end.deinit(std.testing.allocator);
         try store.save(meta, user_end);
         try store.save(meta, .{ .message_start = .{ .role = .assistant } });
-        var assistant_delta = tui_session.TuiEvent{ .text_delta = .{ .content_index = 0, .delta = try ownedText("remembered answer") } };
+        var assistant_delta = session_events.SessionEvent{ .text_delta = .{ .content_index = 0, .delta = try ownedText("remembered answer") } };
         defer assistant_delta.deinit(std.testing.allocator);
         try store.save(meta, assistant_delta);
         try store.save(meta, .{ .message_end = .{ .role = .assistant } });

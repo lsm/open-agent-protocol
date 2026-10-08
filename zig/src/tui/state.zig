@@ -1,7 +1,7 @@
 const std = @import("std");
-const agent = @import("agent");
+const agent_compaction = @import("agent_compaction");
 const ai_types = @import("ai_types");
-const tui_runtime = @import("tui_runtime");
+const session_runtime = @import("session_runtime");
 const compat = @import("compat");
 const tui_config = @import("tui_config");
 
@@ -14,9 +14,9 @@ pub fn autoCompactAt(setting: AutoCompactSetting, model: ai_types.Model) ?u64 {
     if (model.context_window == 0) return null;
     return switch (setting) {
         .off => null,
-        .percent => |percent| agent.compaction.shareAt(model.context_window, percent),
+        .percent => |percent| agent_compaction.shareAt(model.context_window, percent),
         .tokens => |count| count,
-        .auto => agent.compaction.autoCompactAt(model.context_window, model.max_tokens),
+        .auto => agent_compaction.autoCompactAt(model.context_window, model.max_tokens),
     };
 }
 
@@ -312,26 +312,17 @@ pub const TranscriptEntry = struct {
 pub const RegisteredToolEntry = struct {
     name: []u8,
     label: []u8,
-    short_description: []u8,
 
-    pub fn init(allocator: std.mem.Allocator, tool: agent.AgentTool) !RegisteredToolEntry {
+    pub fn init(allocator: std.mem.Allocator, tool: session_runtime.ToolLabel) !RegisteredToolEntry {
         const name = try allocator.dupe(u8, tool.name);
         errdefer allocator.free(name);
         const label = try allocator.dupe(u8, tool.label);
-        errdefer allocator.free(label);
-        const short_description = try allocator.dupe(u8, tool.short_description orelse "");
-        errdefer allocator.free(short_description);
-        return .{
-            .name = name,
-            .label = label,
-            .short_description = short_description,
-        };
+        return .{ .name = name, .label = label };
     }
 
     pub fn deinit(self: *RegisteredToolEntry, allocator: std.mem.Allocator) void {
         allocator.free(self.name);
         allocator.free(self.label);
-        allocator.free(self.short_description);
         self.* = undefined;
     }
 };
@@ -589,7 +580,7 @@ pub const TelemetryState = struct {
     rate: TokenRateSet = .{},
 };
 
-pub const QueueState = tui_runtime.QueuedCounts;
+pub const QueueState = session_runtime.QueuedCounts;
 
 pub const StatusState = struct {
     model: []u8 = &.{},
@@ -867,7 +858,7 @@ pub const AppState = struct {
     sessions: std.ArrayList(SessionEntry) = .empty,
     composer: ComposerState = .{},
     approval: ApprovalState = .{},
-    permission_mode: tui_runtime.PermissionMode = .bypass,
+    permission_mode: session_runtime.PermissionMode = .bypass,
     status: StatusState = .{},
     queue: QueueState = .{},
     telemetry: TelemetryState = .{},
@@ -1041,7 +1032,7 @@ pub const AppState = struct {
         try self.transcript.append(self.allocator, entry);
     }
 
-    pub fn setRegisteredTools(self: *AppState, tools: []const agent.AgentTool) !void {
+    pub fn setRegisteredTools(self: *AppState, tools: []const session_runtime.ToolLabel) !void {
         for (self.registered_tools.items) |*tool| tool.deinit(self.allocator);
         self.registered_tools.clearRetainingCapacity();
         try self.registered_tools.ensureTotalCapacity(self.allocator, tools.len);
@@ -1279,14 +1270,14 @@ pub const AppState = struct {
         return self.thinking_level;
     }
 
-    pub fn setQueuedCounts(self: *AppState, counts: tui_runtime.QueuedCounts) void {
+    pub fn setQueuedCounts(self: *AppState, counts: session_runtime.QueuedCounts) void {
         self.queue = counts;
         while (self.pending_follow_ups.items.len > counts.follow_up) {
             self.allocator.free(self.pending_follow_ups.orderedRemove(0));
         }
     }
 
-    pub fn applyEvent(self: *AppState, event: tui_runtime.TuiEvent) !void {
+    pub fn applyEvent(self: *AppState, event: session_runtime.SessionEvent) !void {
         if (self.stream_aborted) switch (event) {
             .turn_end, .agent_end, .@"error", .system_warning, .backpressure_status, .compaction_end => {},
             else => return,
@@ -1555,7 +1546,7 @@ pub const AppState = struct {
         }
     }
 
-    fn compactionNotice(allocator: std.mem.Allocator, payload: @TypeOf(@as(tui_runtime.TuiEvent, undefined).compaction_end)) ![]u8 {
+    fn compactionNotice(allocator: std.mem.Allocator, payload: @TypeOf(@as(session_runtime.SessionEvent, undefined).compaction_end)) ![]u8 {
         var out: std.Io.Writer.Allocating = .init(allocator);
         defer out.deinit();
         const writer = &out.writer;
@@ -1574,7 +1565,7 @@ pub const AppState = struct {
             try writer.writeAll(" tokens");
         }
         if (payload.transcript.slice().len > 0) try writer.print("\ntranscript: {s}", .{payload.transcript.slice()});
-        try writer.print("\n\n{s}", .{agent.compaction.summaryOf(payload.text.slice())});
+        try writer.print("\n\n{s}", .{agent_compaction.summaryOf(payload.text.slice())});
         return out.toOwnedSlice();
     }
 
@@ -2368,7 +2359,7 @@ fn ownedText(text: []const u8) !@import("owned_slice").OwnedSlice(u8) {
     return @import("owned_slice").OwnedSlice(u8).initOwned(try std.testing.allocator.dupe(u8, text));
 }
 
-fn toolStartEvent(id: []const u8, name: []const u8, args_json: []const u8) !tui_runtime.TuiEvent {
+fn toolStartEvent(id: []const u8, name: []const u8, args_json: []const u8) !session_runtime.SessionEvent {
     return .{ .tool_execution_start = .{
         .tool_call_id = try ownedText(id),
         .tool_name = try ownedText(name),
@@ -2376,7 +2367,7 @@ fn toolStartEvent(id: []const u8, name: []const u8, args_json: []const u8) !tui_
     } };
 }
 
-fn toolEndEvent(id: []const u8, name: []const u8, result_json: []const u8, is_error: bool) !tui_runtime.TuiEvent {
+fn toolEndEvent(id: []const u8, name: []const u8, result_json: []const u8, is_error: bool) !session_runtime.SessionEvent {
     return .{ .tool_execution_end = .{
         .tool_call_id = try ownedText(id),
         .tool_name = try ownedText(name),
@@ -2385,7 +2376,7 @@ fn toolEndEvent(id: []const u8, name: []const u8, result_json: []const u8, is_er
     } };
 }
 
-fn toolResultMessageEvent(id: []const u8, name: []const u8, text: []const u8, details_json: []const u8, is_error: bool) !tui_runtime.TuiEvent {
+fn toolResultMessageEvent(id: []const u8, name: []const u8, text: []const u8, details_json: []const u8, is_error: bool) !session_runtime.SessionEvent {
     return .{ .message_end = .{
         .role = .tool_result,
         .tool_call_id = try ownedText(id),
@@ -2404,23 +2395,6 @@ fn countRows(state: *const AppState, summary: bool, id: []const u8) usize {
         count += 1;
     }
     return count;
-}
-
-pub fn noopToolForTest(
-    tool_call_id: []const u8,
-    args_json: []const u8,
-    cancel_token: ?ai_types.CancelToken,
-    on_update_ctx: ?*anyopaque,
-    on_update: ?agent.ToolUpdateCallback,
-    allocator: std.mem.Allocator,
-) anyerror!agent.AgentToolResult {
-    _ = tool_call_id;
-    _ = args_json;
-    _ = cancel_token;
-    _ = on_update_ctx;
-    _ = on_update;
-    _ = allocator;
-    return error.NotImplemented;
 }
 
 test "a reply drained in one pass is timed from when its events were queued, not when they were applied" {
@@ -2841,17 +2815,10 @@ test "bytes convert at the agent's own divisor" {
 test "AppState applies transcript and tool events" {
     var state = AppState.init(std.testing.allocator);
     defer state.deinit();
-    const tools = [_]agent.AgentTool{.{
-        .label = "Shell Execute",
-        .name = "shell_command",
-        .description = "Run shell command",
-        .short_description = "Run shell",
-        .parameters_schema_json = "{}",
-        .execute = noopToolForTest,
-    }};
+    const tools = [_]session_runtime.ToolLabel{.{ .name = "shell_command", .label = "Shell Execute" }};
     try state.setRegisteredTools(&tools);
 
-    var text_event = tui_runtime.TuiEvent{ .text_delta = .{ .content_index = 0, .delta = try ownedText("hello") } };
+    var text_event = session_runtime.SessionEvent{ .text_delta = .{ .content_index = 0, .delta = try ownedText("hello") } };
     defer text_event.deinit(std.testing.allocator);
     try state.applyEvent(text_event);
 
@@ -2859,7 +2826,7 @@ test "AppState applies transcript and tool events" {
     try std.testing.expectEqual(TranscriptKind.assistant, state.transcript.items[0].kind);
     try std.testing.expectEqualStrings("hello", state.transcript.items[0].text.items);
 
-    var final_text_event = tui_runtime.TuiEvent{ .message_end = .{ .role = .assistant, .text = try ownedText("hello world") } };
+    var final_text_event = session_runtime.SessionEvent{ .message_end = .{ .role = .assistant, .text = try ownedText("hello world") } };
     defer final_text_event.deinit(std.testing.allocator);
     try state.applyEvent(final_text_event);
 
@@ -2908,7 +2875,7 @@ test "AppState finalizes transcript from message_end text" {
     var state = AppState.init(std.testing.allocator);
     defer state.deinit();
 
-    var assistant_end = tui_runtime.TuiEvent{ .message_end = .{ .role = .assistant, .text = try ownedText("final response") } };
+    var assistant_end = session_runtime.SessionEvent{ .message_end = .{ .role = .assistant, .text = try ownedText("final response") } };
     defer assistant_end.deinit(std.testing.allocator);
     try state.applyEvent(assistant_end);
 
@@ -2921,15 +2888,15 @@ test "AppState message_end does not duplicate streamed transcript" {
     var state = AppState.init(std.testing.allocator);
     defer state.deinit();
 
-    var delta_a = tui_runtime.TuiEvent{ .text_delta = .{ .content_index = 0, .delta = try ownedText("hel") } };
+    var delta_a = session_runtime.SessionEvent{ .text_delta = .{ .content_index = 0, .delta = try ownedText("hel") } };
     defer delta_a.deinit(std.testing.allocator);
     try state.applyEvent(delta_a);
 
-    var delta_b = tui_runtime.TuiEvent{ .text_delta = .{ .content_index = 0, .delta = try ownedText("lo") } };
+    var delta_b = session_runtime.SessionEvent{ .text_delta = .{ .content_index = 0, .delta = try ownedText("lo") } };
     defer delta_b.deinit(std.testing.allocator);
     try state.applyEvent(delta_b);
 
-    var assistant_end = tui_runtime.TuiEvent{ .message_end = .{ .role = .assistant, .text = try ownedText("hello") } };
+    var assistant_end = session_runtime.SessionEvent{ .message_end = .{ .role = .assistant, .text = try ownedText("hello") } };
     defer assistant_end.deinit(std.testing.allocator);
     try state.applyEvent(assistant_end);
 
@@ -2942,7 +2909,7 @@ test "AppState message_end user text avoids duplicate submitted message" {
     defer state.deinit();
 
     try state.appendUserMessage("hello");
-    var user_end = tui_runtime.TuiEvent{ .message_end = .{ .role = .user, .text = try ownedText("hello") } };
+    var user_end = session_runtime.SessionEvent{ .message_end = .{ .role = .user, .text = try ownedText("hello") } };
     defer user_end.deinit(std.testing.allocator);
     try state.applyEvent(user_end);
 
@@ -2956,7 +2923,7 @@ test "AppState user message_start and message_end do not leave empty transcript 
     defer state.deinit();
 
     try state.applyEvent(.{ .message_start = .{ .role = .user } });
-    var user_end = tui_runtime.TuiEvent{ .message_end = .{ .role = .user, .text = try ownedText("queued prompt") } };
+    var user_end = session_runtime.SessionEvent{ .message_end = .{ .role = .user, .text = try ownedText("queued prompt") } };
     defer user_end.deinit(std.testing.allocator);
     try state.applyEvent(user_end);
 
@@ -3086,7 +3053,7 @@ test "AppState message_end updates active assistant before trailing tool" {
     defer state.deinit();
 
     try state.applyEvent(.{ .message_start = .{ .role = .assistant } });
-    var text_delta = tui_runtime.TuiEvent{ .text_delta = .{ .content_index = 0, .delta = try ownedText("partial") } };
+    var text_delta = session_runtime.SessionEvent{ .text_delta = .{ .content_index = 0, .delta = try ownedText("partial") } };
     defer text_delta.deinit(std.testing.allocator);
     try state.applyEvent(text_delta);
 
@@ -3094,7 +3061,7 @@ test "AppState message_end updates active assistant before trailing tool" {
     defer tool_start.deinit(std.testing.allocator);
     try state.applyEvent(tool_start);
 
-    var assistant_end = tui_runtime.TuiEvent{ .message_end = .{ .role = .assistant, .text = try ownedText("final assistant") } };
+    var assistant_end = session_runtime.SessionEvent{ .message_end = .{ .role = .assistant, .text = try ownedText("final assistant") } };
     defer assistant_end.deinit(std.testing.allocator);
     try state.applyEvent(assistant_end);
 
@@ -3110,7 +3077,7 @@ test "AppState message_end-only assistant appends after prior assistant" {
     defer state.deinit();
 
     try state.appendTranscript(.assistant, "previous response");
-    var assistant_end = tui_runtime.TuiEvent{ .message_end = .{ .role = .assistant, .text = try ownedText("next response") } };
+    var assistant_end = session_runtime.SessionEvent{ .message_end = .{ .role = .assistant, .text = try ownedText("next response") } };
     defer assistant_end.deinit(std.testing.allocator);
     try state.applyEvent(assistant_end);
 
@@ -3125,7 +3092,7 @@ test "AppState message_start opens fresh assistant row after prior assistant" {
 
     try state.appendTranscript(.assistant, "previous response");
     try state.applyEvent(.{ .message_start = .{ .role = .assistant } });
-    var assistant_end = tui_runtime.TuiEvent{ .message_end = .{ .role = .assistant, .text = try ownedText("next response") } };
+    var assistant_end = session_runtime.SessionEvent{ .message_end = .{ .role = .assistant, .text = try ownedText("next response") } };
     defer assistant_end.deinit(std.testing.allocator);
     try state.applyEvent(assistant_end);
 
@@ -3140,7 +3107,7 @@ test "AppState removes empty assistant placeholder on empty message_end" {
 
     try state.appendTranscript(.assistant, "previous response");
     try state.applyEvent(.{ .message_start = .{ .role = .assistant } });
-    var assistant_end = tui_runtime.TuiEvent{ .message_end = .{ .role = .assistant, .text = try ownedText("") } };
+    var assistant_end = session_runtime.SessionEvent{ .message_end = .{ .role = .assistant, .text = try ownedText("") } };
     defer assistant_end.deinit(std.testing.allocator);
     try state.applyEvent(assistant_end);
 
@@ -3155,7 +3122,7 @@ test "AppState removes empty assistant placeholder on aborted turn" {
 
     try state.appendTranscript(.assistant, "previous response");
     try state.applyEvent(.{ .message_start = .{ .role = .assistant } });
-    try state.applyEvent(tui_runtime.TuiEvent{ .agent_end = .{ .reason = .cancelled } });
+    try state.applyEvent(session_runtime.SessionEvent{ .agent_end = .{ .reason = .cancelled } });
 
     try std.testing.expectEqual(@as(usize, 2), state.transcript.items.len);
     try std.testing.expectEqual(TranscriptKind.assistant, state.transcript.items[0].kind);
@@ -3169,16 +3136,16 @@ test "AppState finalizes active assistant after reasoning and tool deltas" {
     defer state.deinit();
 
     try state.applyEvent(.{ .message_start = .{ .role = .assistant } });
-    var thinking_delta = tui_runtime.TuiEvent{ .thinking_delta = .{ .content_index = 0, .delta = try ownedText("plan") } };
+    var thinking_delta = session_runtime.SessionEvent{ .thinking_delta = .{ .content_index = 0, .delta = try ownedText("plan") } };
     defer thinking_delta.deinit(std.testing.allocator);
     try state.applyEvent(thinking_delta);
-    var tool_delta = tui_runtime.TuiEvent{ .tool_call_delta = .{ .content_index = 1, .delta = try ownedText("{\"name\":\"shell\"}") } };
+    var tool_delta = session_runtime.SessionEvent{ .tool_call_delta = .{ .content_index = 1, .delta = try ownedText("{\"name\":\"shell\"}") } };
     defer tool_delta.deinit(std.testing.allocator);
     try state.applyEvent(tool_delta);
-    var text_delta = tui_runtime.TuiEvent{ .text_delta = .{ .content_index = 2, .delta = try ownedText("partial") } };
+    var text_delta = session_runtime.SessionEvent{ .text_delta = .{ .content_index = 2, .delta = try ownedText("partial") } };
     defer text_delta.deinit(std.testing.allocator);
     try state.applyEvent(text_delta);
-    var assistant_end = tui_runtime.TuiEvent{ .message_end = .{ .role = .assistant, .text = try ownedText("final") } };
+    var assistant_end = session_runtime.SessionEvent{ .message_end = .{ .role = .assistant, .text = try ownedText("final") } };
     defer assistant_end.deinit(std.testing.allocator);
     try state.applyEvent(assistant_end);
 
@@ -3195,10 +3162,10 @@ test "AppState keeps identical inline assistant message_end turns" {
     var state = AppState.init(std.testing.allocator);
     defer state.deinit();
 
-    var first_end = tui_runtime.TuiEvent{ .message_end = .{ .role = .assistant, .text = try ownedText("Done") } };
+    var first_end = session_runtime.SessionEvent{ .message_end = .{ .role = .assistant, .text = try ownedText("Done") } };
     defer first_end.deinit(std.testing.allocator);
     try state.applyEvent(first_end);
-    var second_end = tui_runtime.TuiEvent{ .message_end = .{ .role = .assistant, .text = try ownedText("Done") } };
+    var second_end = session_runtime.SessionEvent{ .message_end = .{ .role = .assistant, .text = try ownedText("Done") } };
     defer second_end.deinit(std.testing.allocator);
     try state.applyEvent(second_end);
 
@@ -3212,12 +3179,12 @@ test "AppState clears stale active assistant before next inline message_end" {
     defer state.deinit();
 
     try state.applyEvent(.{ .message_start = .{ .role = .assistant } });
-    var partial = tui_runtime.TuiEvent{ .text_delta = .{ .content_index = 0, .delta = try ownedText("interrupted") } };
+    var partial = session_runtime.SessionEvent{ .text_delta = .{ .content_index = 0, .delta = try ownedText("interrupted") } };
     defer partial.deinit(std.testing.allocator);
     try state.applyEvent(partial);
     try state.applyEvent(.{ .agent_end = .{ .reason = .@"error" } });
 
-    var assistant_end = tui_runtime.TuiEvent{ .message_end = .{ .role = .assistant, .text = try ownedText("next response") } };
+    var assistant_end = session_runtime.SessionEvent{ .message_end = .{ .role = .assistant, .text = try ownedText("next response") } };
     defer assistant_end.deinit(std.testing.allocator);
     try state.applyEvent(assistant_end);
 
@@ -3232,7 +3199,7 @@ test "AppState does not append generic agent error after detailed error event" {
     var state = AppState.init(std.testing.allocator);
     defer state.deinit();
 
-    var error_event = tui_runtime.TuiEvent{ .@"error" = .{ .message = try ownedText("provider failed: bad request") } };
+    var error_event = session_runtime.SessionEvent{ .@"error" = .{ .message = try ownedText("provider failed: bad request") } };
     defer error_event.deinit(std.testing.allocator);
     try state.applyEvent(error_event);
     try state.applyEvent(.{ .agent_end = .{ .reason = .@"error" } });
@@ -3243,22 +3210,9 @@ test "AppState does not append generic agent error after detailed error event" {
 }
 
 test "AppState clones registered tool metadata" {
-    const tools = [_]agent.AgentTool{
-        .{
-            .label = "Shell Execute",
-            .name = "shell_execute",
-            .description = "Run command",
-            .short_description = "Run shell commands",
-            .parameters_schema_json = "{}",
-            .execute = noopToolForTest,
-        },
-        .{
-            .label = "Workspace Info",
-            .name = "workspace_info",
-            .description = "Show workspace",
-            .parameters_schema_json = "{}",
-            .execute = noopToolForTest,
-        },
+    const tools = [_]session_runtime.ToolLabel{
+        .{ .name = "shell_execute", .label = "Shell Execute" },
+        .{ .name = "workspace_info", .label = "Workspace Info" },
     };
     var state = AppState.init(std.testing.allocator);
     defer state.deinit();
@@ -3267,17 +3221,9 @@ test "AppState clones registered tool metadata" {
     try std.testing.expectEqual(@as(usize, 2), state.registered_tools.items.len);
     try std.testing.expectEqualStrings("shell_execute", state.registered_tools.items[0].name);
     try std.testing.expectEqualStrings("Shell Execute", state.registered_tools.items[0].label);
-    try std.testing.expectEqualStrings("Run shell commands", state.registered_tools.items[0].short_description);
-    try std.testing.expectEqualStrings("", state.registered_tools.items[1].short_description);
+    try std.testing.expectEqualStrings("Workspace Info", state.registered_tools.items[1].label);
 
-    const replacement = [_]agent.AgentTool{.{
-        .label = "File Read",
-        .name = "file_read",
-        .description = "Read file",
-        .short_description = "Read files",
-        .parameters_schema_json = "{}",
-        .execute = noopToolForTest,
-    }};
+    const replacement = [_]session_runtime.ToolLabel{.{ .name = "file_read", .label = "File Read" }};
     try state.setRegisteredTools(&replacement);
     try std.testing.expectEqual(@as(usize, 1), state.registered_tools.items.len);
     try std.testing.expectEqualStrings("file_read", state.registered_tools.items[0].name);
@@ -3289,13 +3235,13 @@ test "AppState tool_result message_end updates active tool entry only" {
 
     try state.appendTranscript(.tool, "shell_execute");
     try state.applyEvent(.{ .message_start = .{ .role = .tool_result } });
-    var tool_result_a = tui_runtime.TuiEvent{ .message_end = .{ .role = .tool_result, .text = try ownedText("first result") } };
+    var tool_result_a = session_runtime.SessionEvent{ .message_end = .{ .role = .tool_result, .text = try ownedText("first result") } };
     defer tool_result_a.deinit(std.testing.allocator);
     try state.applyEvent(tool_result_a);
 
     try state.appendTranscript(.tool, "file_read");
     try state.applyEvent(.{ .message_start = .{ .role = .tool_result } });
-    var tool_result_b = tui_runtime.TuiEvent{ .message_end = .{ .role = .tool_result, .text = try ownedText("second result") } };
+    var tool_result_b = session_runtime.SessionEvent{ .message_end = .{ .role = .tool_result, .text = try ownedText("second result") } };
     defer tool_result_b.deinit(std.testing.allocator);
     try state.applyEvent(tool_result_b);
 
@@ -3310,7 +3256,7 @@ test "AppState approval flow transitions pending to approved and rejected" {
     var state = AppState.init(std.testing.allocator);
     defer state.deinit();
 
-    var approval_event = tui_runtime.TuiEvent{ .tool_approval_requested = .{
+    var approval_event = session_runtime.SessionEvent{ .tool_approval_requested = .{
         .tool_call_id = try ownedText("call-2"),
         .tool_name = try ownedText("edit_file"),
         .args_json = try ownedText("{\"path\":\"README.md\"}"),
@@ -3318,7 +3264,7 @@ test "AppState approval flow transitions pending to approved and rejected" {
     defer approval_event.deinit(std.testing.allocator);
     try state.applyEvent(approval_event);
 
-    var hashline_event = tui_runtime.TuiEvent{ .tool_approval_requested = .{
+    var hashline_event = session_runtime.SessionEvent{ .tool_approval_requested = .{
         .tool_call_id = try ownedText("call-hash"),
         .tool_name = try ownedText("Edit"),
         .args_json = try ownedText("{\"path\":\"src/main.zig\",\"operation\":\"hash_range_replace\",\"start_line\":2,\"start_hash\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"content\":\"new line\"}"),
@@ -3328,7 +3274,7 @@ test "AppState approval flow transitions pending to approved and rejected" {
     try std.testing.expect(std.mem.indexOf(u8, state.preview.content, "edit preview") != null);
     try std.testing.expect(std.mem.indexOf(u8, state.preview.content, "+ 2|new line") != null);
 
-    var insert_after_event = tui_runtime.TuiEvent{ .tool_approval_requested = .{
+    var insert_after_event = session_runtime.SessionEvent{ .tool_approval_requested = .{
         .tool_call_id = try ownedText("call-hash-insert-after"),
         .tool_name = try ownedText("Edit"),
         .args_json = try ownedText("{\"path\":\"src/main.zig\",\"operation\":\"insert\",\"start_line\":11,\"start_hash\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"content\":\"inserted\"}"),
@@ -3338,7 +3284,7 @@ test "AppState approval flow transitions pending to approved and rejected" {
     try std.testing.expect(std.mem.indexOf(u8, state.preview.content, "+ 11|inserted") != null);
     try std.testing.expect(std.mem.indexOf(u8, state.preview.content, "+ 10|inserted") == null);
 
-    var blank_line_event = tui_runtime.TuiEvent{ .tool_approval_requested = .{
+    var blank_line_event = session_runtime.SessionEvent{ .tool_approval_requested = .{
         .tool_call_id = try ownedText("call-hash-blank"),
         .tool_name = try ownedText("Edit"),
         .args_json = try ownedText("{\"path\":\"src/main.zig\",\"operation\":\"hash_range_replace\",\"start_line\":2,\"start_hash\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"content\":\"line1\\n\\nline3\"}"),
@@ -3355,7 +3301,7 @@ test "AppState approval flow transitions pending to approved and rejected" {
     }
     const large_args = try std.fmt.allocPrint(std.testing.allocator, "{{\"path\":\"src/main.zig\",\"operation\":\"hash_range_replace\",\"start_line\":2,\"start_hash\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"content\":{f}}}", .{std.json.fmt(large_replacement.items, .{})});
     defer std.testing.allocator.free(large_args);
-    var large_event = tui_runtime.TuiEvent{ .tool_approval_requested = .{
+    var large_event = session_runtime.SessionEvent{ .tool_approval_requested = .{
         .tool_call_id = try ownedText("call-hash-large"),
         .tool_name = try ownedText("Edit"),
         .args_json = try ownedText(large_args),
@@ -3529,7 +3475,7 @@ test "AppState stream_aborted still applies backpressure status and warning" {
     try std.testing.expect(state.backpressure_active);
     try std.testing.expectEqual(@as(u64, 4), state.dropped_event_count);
 
-    var warning = tui_runtime.TuiEvent{ .system_warning = .{ .message = try ownedText("warn") } };
+    var warning = session_runtime.SessionEvent{ .system_warning = .{ .message = try ownedText("warn") } };
     defer warning.deinit(std.testing.allocator);
     try state.applyEvent(warning);
 
@@ -3545,11 +3491,11 @@ test "AppState applies thinking tool call and lifecycle events" {
     try std.testing.expect(state.status.streaming);
     try std.testing.expectEqual(@as(usize, 0), state.transcript.items.len);
 
-    var thinking_event = tui_runtime.TuiEvent{ .thinking_delta = .{ .content_index = 0, .delta = try ownedText("plan") } };
+    var thinking_event = session_runtime.SessionEvent{ .thinking_delta = .{ .content_index = 0, .delta = try ownedText("plan") } };
     defer thinking_event.deinit(std.testing.allocator);
     try state.applyEvent(thinking_event);
 
-    var call_event = tui_runtime.TuiEvent{ .tool_call_delta = .{ .content_index = 1, .delta = try ownedText("{\"name\":\"shell\"}") } };
+    var call_event = session_runtime.SessionEvent{ .tool_call_delta = .{ .content_index = 1, .delta = try ownedText("{\"name\":\"shell\"}") } };
     defer call_event.deinit(std.testing.allocator);
     try state.applyEvent(call_event);
 
@@ -3557,7 +3503,7 @@ test "AppState applies thinking tool call and lifecycle events" {
     try std.testing.expectEqual(TranscriptKind.thinking, state.transcript.items[0].kind);
     try std.testing.expectEqualStrings("plan", state.transcript.items[0].text.items);
 
-    try state.applyEvent(tui_runtime.TuiEvent{ .agent_end = .{ .reason = .cancelled } });
+    try state.applyEvent(session_runtime.SessionEvent{ .agent_end = .{ .reason = .cancelled } });
     try std.testing.expect(!state.status.streaming);
     try std.testing.expectEqualStrings("agent cancelled", state.transcript.items[state.transcript.items.len - 1].text.items);
 }
@@ -3566,7 +3512,7 @@ test "AppState appends tool execution updates" {
     var state = AppState.init(std.testing.allocator);
     defer state.deinit();
 
-    var update_event = tui_runtime.TuiEvent{ .tool_execution_update = .{
+    var update_event = session_runtime.SessionEvent{ .tool_execution_update = .{
         .tool_call_id = try ownedText("call-3"),
         .tool_name = try ownedText("search"),
         .args_json = try ownedText("{\"query\":\"tui\"}"),
@@ -3604,7 +3550,7 @@ test "AppState detects truncated tool execution end events" {
     var state = AppState.init(std.testing.allocator);
     defer state.deinit();
 
-    var end_event = tui_runtime.TuiEvent{ .tool_execution_end = .{
+    var end_event = session_runtime.SessionEvent{ .tool_execution_end = .{
         .tool_call_id = try ownedText("call-trunc"),
         .tool_name = try ownedText("shell_command"),
         .result_json = try ownedText("{\"summary\":true}"),
@@ -3631,7 +3577,7 @@ test "AppState appends visible transcript row for tool execution errors" {
     var state = AppState.init(std.testing.allocator);
     defer state.deinit();
 
-    var end_event = tui_runtime.TuiEvent{ .tool_execution_end = .{
+    var end_event = session_runtime.SessionEvent{ .tool_execution_end = .{
         .tool_call_id = try ownedText("call-error"),
         .tool_name = try ownedText("shell_command"),
         .result_json = try ownedText("OutOfMemory"),
@@ -3723,7 +3669,7 @@ test "AppState drops redundant result text for failed tool calls" {
     try state.applyEvent(end_event);
 
     try state.applyEvent(.{ .message_start = .{ .role = .tool_result } });
-    var result_end = tui_runtime.TuiEvent{ .message_end = .{ .role = .tool_result, .tool_call_id = try ownedText("call-f"), .text = try ownedText("Tool execution failed: FileNotFound") } };
+    var result_end = session_runtime.SessionEvent{ .message_end = .{ .role = .tool_result, .tool_call_id = try ownedText("call-f"), .text = try ownedText("Tool execution failed: FileNotFound") } };
     defer result_end.deinit(std.testing.allocator);
     try state.applyEvent(result_end);
 
@@ -3746,7 +3692,7 @@ test "AppState keeps readable text for rejected tool calls" {
     try state.applyEvent(end_event);
 
     try state.applyEvent(.{ .message_start = .{ .role = .tool_result } });
-    var result_end = tui_runtime.TuiEvent{ .message_end = .{ .role = .tool_result, .tool_call_id = try ownedText("call-r"), .text = try ownedText("Tool execution rejected by user") } };
+    var result_end = session_runtime.SessionEvent{ .message_end = .{ .role = .tool_result, .tool_call_id = try ownedText("call-r"), .text = try ownedText("Tool execution rejected by user") } };
     defer result_end.deinit(std.testing.allocator);
     try state.applyEvent(result_end);
 
@@ -3771,7 +3717,7 @@ test "AppState drops duplicate text for plain-error tool results" {
     try state.applyEvent(end_event);
 
     try state.applyEvent(.{ .message_start = .{ .role = .tool_result } });
-    var result_end = tui_runtime.TuiEvent{ .message_end = .{ .role = .tool_result, .tool_call_id = try ownedText("call-s"), .text = try ownedText("Skipped due to queued user message.") } };
+    var result_end = session_runtime.SessionEvent{ .message_end = .{ .role = .tool_result, .tool_call_id = try ownedText("call-s"), .text = try ownedText("Skipped due to queued user message.") } };
     defer result_end.deinit(std.testing.allocator);
     try state.applyEvent(result_end);
 
@@ -3822,7 +3768,7 @@ test "AppState reconciles result rows when an end arrives after the result" {
     defer state.deinit();
 
     try state.applyEvent(.{ .message_start = .{ .role = .tool_result } });
-    var result_end = tui_runtime.TuiEvent{ .message_end = .{ .role = .tool_result, .tool_call_id = try ownedText("call-r2"), .text = try ownedText("Tool execution failed: FileNotFound") } };
+    var result_end = session_runtime.SessionEvent{ .message_end = .{ .role = .tool_result, .tool_call_id = try ownedText("call-r2"), .text = try ownedText("Tool execution failed: FileNotFound") } };
     defer result_end.deinit(std.testing.allocator);
     try state.applyEvent(result_end);
 
@@ -3848,7 +3794,7 @@ test "AppState keeps result text when error details are absent" {
     try state.applyEvent(end_event);
 
     try state.applyEvent(.{ .message_start = .{ .role = .tool_result } });
-    var result_end = tui_runtime.TuiEvent{ .message_end = .{ .role = .tool_result, .tool_call_id = try ownedText("call-n"), .text = try ownedText("connection reset by peer") } };
+    var result_end = session_runtime.SessionEvent{ .message_end = .{ .role = .tool_result, .tool_call_id = try ownedText("call-n"), .text = try ownedText("connection reset by peer") } };
     defer result_end.deinit(std.testing.allocator);
     try state.applyEvent(result_end);
 
@@ -3865,7 +3811,7 @@ test "AppState recovers replayed tool arguments from assistant tool calls" {
     defer state.deinit();
 
     try state.applyEvent(.{ .message_start = .{ .role = .assistant } });
-    var assistant_end = tui_runtime.TuiEvent{ .message_end = .{ .role = .assistant, .text = try ownedText(""), .tool_calls_json = try ownedText("[{\"type\":\"tool_call\",\"id\":\"call-old\",\"name\":\"shell\",\"arguments_json\":\"{\\\"command\\\":\\\"pwd\\\"}\"}]") } };
+    var assistant_end = session_runtime.SessionEvent{ .message_end = .{ .role = .assistant, .text = try ownedText(""), .tool_calls_json = try ownedText("[{\"type\":\"tool_call\",\"id\":\"call-old\",\"name\":\"shell\",\"arguments_json\":\"{\\\"command\\\":\\\"pwd\\\"}\"}]") } };
     defer assistant_end.deinit(std.testing.allocator);
     try state.applyEvent(assistant_end);
 
@@ -3904,7 +3850,7 @@ test "AppState finalizes running tools as interrupted on cancelled agent end" {
     defer start_event.deinit(std.testing.allocator);
     try state.applyEvent(start_event);
 
-    try state.applyEvent(tui_runtime.TuiEvent{ .agent_end = .{ .reason = .cancelled } });
+    try state.applyEvent(session_runtime.SessionEvent{ .agent_end = .{ .reason = .cancelled } });
 
     try std.testing.expectEqual(ToolStatus.interrupted, state.tools.items[0].status);
     try std.testing.expect(std.mem.indexOf(u8, state.transcript.items[0].text.items, "interrupted") != null);
@@ -3957,7 +3903,7 @@ test "AppState allocates the next occurrence when only ends are replayed" {
     defer state.deinit();
 
     try state.applyEvent(.{ .message_start = .{ .role = .assistant } });
-    var assistant_end = tui_runtime.TuiEvent{ .message_end = .{ .role = .assistant, .text = try ownedText(""), .tool_calls_json = try ownedText("[{\"type\":\"tool_call\",\"id\":\"call-x\",\"name\":\"shell\",\"arguments_json\":\"{\\\"command\\\":\\\"ls\\\"}\"}]") } };
+    var assistant_end = session_runtime.SessionEvent{ .message_end = .{ .role = .assistant, .text = try ownedText(""), .tool_calls_json = try ownedText("[{\"type\":\"tool_call\",\"id\":\"call-x\",\"name\":\"shell\",\"arguments_json\":\"{\\\"command\\\":\\\"ls\\\"}\"}]") } };
     defer assistant_end.deinit(std.testing.allocator);
     try state.applyEvent(assistant_end);
 
@@ -3996,7 +3942,7 @@ test "AppState links result rows to the resolved occurrence" {
     defer first_end.deinit(std.testing.allocator);
     try state.applyEvent(first_end);
     try state.applyEvent(.{ .message_start = .{ .role = .tool_result } });
-    var first_result = tui_runtime.TuiEvent{ .message_end = .{ .role = .tool_result, .tool_call_id = try ownedText("call-x"), .text = try ownedText("all good") } };
+    var first_result = session_runtime.SessionEvent{ .message_end = .{ .role = .tool_result, .tool_call_id = try ownedText("call-x"), .text = try ownedText("all good") } };
     defer first_result.deinit(std.testing.allocator);
     try state.applyEvent(first_result);
 
@@ -4007,7 +3953,7 @@ test "AppState links result rows to the resolved occurrence" {
     defer second_end.deinit(std.testing.allocator);
     try state.applyEvent(second_end);
     try state.applyEvent(.{ .message_start = .{ .role = .tool_result } });
-    var second_result = tui_runtime.TuiEvent{ .message_end = .{ .role = .tool_result, .tool_call_id = try ownedText("call-x"), .text = try ownedText("Tool execution failed: Boom"), .details_json = try ownedText("{\"ok\":false,\"err\":\"Boom\"}"), .is_error = true } };
+    var second_result = session_runtime.SessionEvent{ .message_end = .{ .role = .tool_result, .tool_call_id = try ownedText("call-x"), .text = try ownedText("Tool execution failed: Boom"), .details_json = try ownedText("{\"ok\":false,\"err\":\"Boom\"}"), .is_error = true } };
     defer second_result.deinit(std.testing.allocator);
     try state.applyEvent(second_result);
 
@@ -4148,7 +4094,7 @@ test "AppState inserts a summary row for an interrupted occurrence without one" 
     var state = AppState.init(std.testing.allocator);
     defer state.deinit();
 
-    var approval = tui_runtime.TuiEvent{ .tool_approval_requested = .{
+    var approval = session_runtime.SessionEvent{ .tool_approval_requested = .{
         .tool_call_id = try ownedText("call-a"),
         .tool_name = try ownedText("shell"),
         .args_json = try ownedText("{\"command\":\"ls\"}"),
@@ -4297,7 +4243,7 @@ test "AppState merges the retained result over accumulated preview output" {
     var start_event = try toolStartEvent("call-w", "shell", "{\"command\":\"ls\"}");
     defer start_event.deinit(std.testing.allocator);
     try state.applyEvent(start_event);
-    var update_event = tui_runtime.TuiEvent{ .tool_execution_update = .{
+    var update_event = session_runtime.SessionEvent{ .tool_execution_update = .{
         .tool_call_id = try ownedText("call-w"),
         .tool_name = try ownedText("shell"),
         .args_json = try ownedText(""),
@@ -4327,7 +4273,7 @@ test "AppState keeps result-recovered artifacts against a legacy telemetry-less 
     try state.applyEvent(.{ .turn_end = .{ .stop_reason = .stop } });
 
     try state.applyEvent(.{ .message_start = .{ .role = .tool_result } });
-    var result_event = tui_runtime.TuiEvent{ .message_end = .{
+    var result_event = session_runtime.SessionEvent{ .message_end = .{
         .role = .tool_result,
         .tool_call_id = try ownedText("call-o"),
         .tool_name = try ownedText("shell"),
@@ -4363,7 +4309,7 @@ test "AppState merges end telemetry into result-recovered state" {
     defer state.deinit();
 
     try state.applyEvent(.{ .message_start = .{ .role = .tool_result } });
-    var result_event = tui_runtime.TuiEvent{ .message_end = .{
+    var result_event = session_runtime.SessionEvent{ .message_end = .{
         .role = .tool_result,
         .tool_call_id = try ownedText("call-t"),
         .tool_name = try ownedText("shell"),
@@ -4374,7 +4320,7 @@ test "AppState merges end telemetry into result-recovered state" {
     defer result_event.deinit(std.testing.allocator);
     try state.applyEvent(result_event);
 
-    var end_event = tui_runtime.TuiEvent{ .tool_execution_end = .{
+    var end_event = session_runtime.SessionEvent{ .tool_execution_end = .{
         .tool_call_id = try ownedText("call-t"),
         .tool_name = try ownedText("shell"),
         .result_json = try ownedText("{\"ok\":true}"),
@@ -4572,7 +4518,7 @@ test "AppState surfaces system_warning as visible warning transcript entry" {
     var state = AppState.init(std.testing.allocator);
     defer state.deinit();
 
-    var warning = tui_runtime.TuiEvent{ .system_warning = .{ .message = try ownedText("Warning: 5 events dropped due to backpressure") } };
+    var warning = session_runtime.SessionEvent{ .system_warning = .{ .message = try ownedText("Warning: 5 events dropped due to backpressure") } };
     defer warning.deinit(std.testing.allocator);
     try state.applyEvent(warning);
 

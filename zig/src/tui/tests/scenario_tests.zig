@@ -1,23 +1,23 @@
 const std = @import("std");
 const compat = @import("compat");
-const tui_runtime = @import("tui_runtime");
-const tui_session = @import("tui_session");
+const session_runtime = @import("session_runtime");
+const session_events = @import("session_events");
 const session_store = @import("tui_session_store");
 const mock_provider = @import("tui_fixture");
 const fixtures = @import("tui_tests_fixtures");
 const ai_types = @import("ai_types");
 const oapx_adapter = @import("oapx_adapter");
 
-const TuiRuntime = tui_runtime.TuiRuntime;
-const TuiSession = tui_runtime.TuiSession;
-const ToolApprovalDecision = tui_runtime.ToolApprovalDecision;
-const ToolApprovalRequest = tui_runtime.ToolApprovalRequest;
+const SessionRuntime = session_runtime.SessionRuntime;
+const SessionHandle = session_runtime.SessionHandle;
+const ToolApprovalDecision = session_runtime.ToolApprovalDecision;
+const ToolApprovalRequest = session_runtime.ToolApprovalRequest;
 
 const Engine = struct {
     loop: oapx_adapter.LocalLoop,
-    runtime: TuiRuntime,
+    runtime: SessionRuntime,
 
-    fn init(allocator: std.mem.Allocator, options: tui_runtime.TuiRuntimeOptions) !*Engine {
+    fn init(allocator: std.mem.Allocator, options: session_runtime.SessionRuntimeOptions) !*Engine {
         const self = try allocator.create(Engine);
         errdefer allocator.destroy(self);
         self.loop = oapx_adapter.LocalLoop.init(allocator, .{
@@ -31,7 +31,7 @@ const Engine = struct {
         errdefer self.loop.deinit();
         var with_loop = options;
         with_loop.loop = self.loop.loop();
-        self.runtime = try TuiRuntime.init(allocator, with_loop);
+        self.runtime = try SessionRuntime.init(allocator, with_loop);
         return self;
     }
 
@@ -53,7 +53,7 @@ const EventSummary = struct {
     cancelled: bool = false,
 };
 
-fn drainUntilAgentEnd(session: *TuiSession, summary: *EventSummary) !void {
+fn drainUntilAgentEnd(session: *SessionHandle, summary: *EventSummary) !void {
     var waits: usize = 0;
     while (waits < 1_000) : (waits += 1) {
         if (session.waitEvent()) |event| {
@@ -381,14 +381,14 @@ test "runtime persistence full save and resume cycle" {
     defer meta.deinit(std.testing.allocator);
 
     try store.save(meta, .{ .message_start = .{ .role = .user } });
-    var user_end = tui_session.TuiEvent{ .message_end = .{ .role = .user, .text = try ownedText("hello") } };
+    var user_end = session_events.SessionEvent{ .message_end = .{ .role = .user, .text = try ownedText("hello") } };
     defer user_end.deinit(std.testing.allocator);
     try store.save(meta, user_end);
     try store.save(meta, .{ .message_start = .{ .role = .assistant } });
-    var assistant_a = tui_session.TuiEvent{ .text_delta = .{ .content_index = 0, .delta = try ownedText("hel") } };
+    var assistant_a = session_events.SessionEvent{ .text_delta = .{ .content_index = 0, .delta = try ownedText("hel") } };
     defer assistant_a.deinit(std.testing.allocator);
     try store.save(meta, assistant_a);
-    var assistant_b = tui_session.TuiEvent{ .text_delta = .{ .content_index = 0, .delta = try ownedText("lo") } };
+    var assistant_b = session_events.SessionEvent{ .text_delta = .{ .content_index = 0, .delta = try ownedText("lo") } };
     defer assistant_b.deinit(std.testing.allocator);
     try store.save(meta, assistant_b);
     try store.save(meta, .{ .message_end = .{ .role = .assistant } });
@@ -439,7 +439,7 @@ test "session persistence reconstructs tool call before tool result" {
     defer meta.deinit(std.testing.allocator);
 
     try store.save(meta, .{ .message_start = .{ .role = .assistant } });
-    var assistant_tool = tui_session.TuiEvent{ .message_end = .{
+    var assistant_tool = session_events.SessionEvent{ .message_end = .{
         .role = .assistant,
         .tool_call_id = try ownedText("call-1"),
         .tool_name = try ownedText("demo_tool"),
@@ -447,7 +447,7 @@ test "session persistence reconstructs tool call before tool result" {
     } };
     defer assistant_tool.deinit(std.testing.allocator);
     try store.save(meta, assistant_tool);
-    var tool_result = tui_session.TuiEvent{ .tool_execution_end = .{
+    var tool_result = session_events.SessionEvent{ .tool_execution_end = .{
         .tool_call_id = try ownedText("call-1"),
         .tool_name = try ownedText("demo_tool"),
         .result_json = try ownedText("{\"ok\":true}"),
@@ -467,5 +467,5 @@ test "session persistence reconstructs tool call before tool result" {
 }
 
 test {
-    _ = tui_session;
+    _ = session_events;
 }

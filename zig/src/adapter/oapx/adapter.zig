@@ -4,8 +4,8 @@ const oap_types = @import("oap_types");
 const compat = @import("compat");
 const json_encode = @import("json_encode");
 const ai_types = @import("ai_types");
-const tui_runtime = @import("tui_runtime");
-const tui_session = @import("tui_session");
+const session_runtime = @import("session_runtime");
+const session_events = @import("session_events");
 const model_ref = @import("model_ref");
 const permission = @import("permission");
 const local_tools = @import("tools/registry");
@@ -15,7 +15,9 @@ const local_loop = @import("local_loop.zig");
 pub const LocalLoop = local_loop.LocalLoop;
 
 pub const endpoint_id = "oapx.agent";
-pub const capability_revision = "oapx-agent-v12";
+pub const capability_revision = "oapx-agent-v13";
+const native_source = "oapx";
+const native_sources = [_]oap_types.ToolSourceDescriptor{.{ .id = native_source, .kind = "native", .display_name = "oapx" }};
 
 pub const journal_capacity: usize = 1 << 16;
 pub const queue_capacity: usize = 8;
@@ -65,6 +67,7 @@ pub const descriptor = contract.Descriptor{
     .endpoint = .{ .id = endpoint_id, .name = "oapx agent loop", .version = protocol_version, .adapter = "in-process" },
     .capability_revision = capability_revision,
     .features = &features,
+    .sources = &native_sources,
     .limits = .{ .max_active_runs_per_session = queue_capacity + 1, .max_queued_runs_per_session = queue_capacity },
 };
 
@@ -72,6 +75,7 @@ const unsaved_descriptor = contract.Descriptor{
     .endpoint = descriptor.endpoint,
     .capability_revision = capability_revision,
     .features = &unsaved_features,
+    .sources = &native_sources,
     .limits = descriptor.limits,
 };
 
@@ -91,12 +95,12 @@ pub const TranscriptStore = struct {
 
 pub const Recorder = struct {
     ctx: *anyopaque,
-    record: *const fn (ctx: *anyopaque, session_id: []const u8, event: *const tui_session.TuiEvent) void,
+    record: *const fn (ctx: *anyopaque, session_id: []const u8, event: *const session_events.SessionEvent) void,
 };
 
 pub const Adapter = struct {
     allocator: std.mem.Allocator,
-    options: tui_runtime.TuiRuntimeOptions,
+    options: session_runtime.SessionRuntimeOptions,
     history: ?HistoryLoader = null,
     catalog: ?[]ai_types.Model = null,
     catalog_generation: u64 = 0,
@@ -113,10 +117,11 @@ pub const Adapter = struct {
         errdefer self.allocator.free(saved);
         const unsaved = try withFeatures(self.allocator, &unsaved_features, extra);
         self.releaseServed();
-        self.served = .{
-            .saved = .{ .endpoint = descriptor.endpoint, .capability_revision = capability_revision, .features = saved, .limits = descriptor.limits },
-            .unsaved = .{ .endpoint = descriptor.endpoint, .capability_revision = capability_revision, .features = unsaved, .limits = descriptor.limits },
-        };
+        var served_saved = descriptor;
+        served_saved.features = saved;
+        var served_unsaved = unsaved_descriptor;
+        served_unsaved.features = unsaved;
+        self.served = .{ .saved = served_saved, .unsaved = served_unsaved };
     }
 
     fn withFeatures(allocator: std.mem.Allocator, own: []const contract.Feature, extra: []const contract.Feature) ![]contract.Feature {
@@ -138,7 +143,7 @@ pub const Adapter = struct {
         self.served = null;
     }
 
-    pub fn init(allocator: std.mem.Allocator, options: tui_runtime.TuiRuntimeOptions) Adapter {
+    pub fn init(allocator: std.mem.Allocator, options: session_runtime.SessionRuntimeOptions) Adapter {
         var runtime_options = options;
         runtime_options.run_async = true;
         runtime_options.generate_titles = false;
@@ -146,14 +151,14 @@ pub const Adapter = struct {
     }
 
     pub fn deinit(self: *Adapter) void {
-        if (self.catalog) |held| tui_runtime.deinitModels(self.allocator, held);
+        if (self.catalog) |held| session_runtime.deinitModels(self.allocator, held);
         self.catalog = null;
         self.releaseServed();
     }
 
     pub fn setCatalog(self: *Adapter, models: []const ai_types.Model) !void {
-        const next = try tui_runtime.cloneModels(self.allocator, models);
-        if (self.catalog) |held| tui_runtime.deinitModels(self.allocator, held);
+        const next = try session_runtime.cloneModels(self.allocator, models);
+        if (self.catalog) |held| session_runtime.deinitModels(self.allocator, held);
         self.catalog = next;
         self.catalog_generation += 1;
     }
@@ -298,7 +303,7 @@ pub const Session = struct {
     keep: std.heap.ArenaAllocator,
     id: []const u8,
     participant: []const u8,
-    runtime: *tui_runtime.TuiRuntime,
+    runtime: *session_runtime.SessionRuntime,
     loop: *local_loop.LocalLoop,
     engine: ?*permission.PermissionEngine = null,
     updated_at_ms: i64,
@@ -319,7 +324,7 @@ pub const Session = struct {
         const gpa = owner.allocator;
         const self = try gpa.create(Session);
         errdefer gpa.destroy(self);
-        const runtime = try gpa.create(tui_runtime.TuiRuntime);
+        const runtime = try gpa.create(session_runtime.SessionRuntime);
         errdefer gpa.destroy(runtime);
         const loop = try gpa.create(local_loop.LocalLoop);
         errdefer gpa.destroy(loop);
@@ -354,7 +359,7 @@ pub const Session = struct {
         });
         errdefer loop.deinit();
         options.loop = loop.loop();
-        runtime.* = tui_runtime.TuiRuntime.init(gpa, options) catch |err| switch (err) {
+        runtime.* = session_runtime.SessionRuntime.init(gpa, options) catch |err| switch (err) {
             error.OutOfMemory => return error.OutOfMemory,
             else => return refusal.fail(error.BackendFailed, @errorName(err)),
         };
@@ -417,7 +422,7 @@ pub const Session = struct {
         };
     }
 
-    fn transcriptWriter(self: *Session) ?tui_runtime.TuiRuntime.TranscriptWriter {
+    fn transcriptWriter(self: *Session) ?session_runtime.SessionRuntime.TranscriptWriter {
         if (self.owner.transcripts == null) return null;
         return .{ .ctx = self, .save_fn = saveTranscript };
     }
@@ -1097,6 +1102,7 @@ pub const Session = struct {
         try payload.put("interaction_id", .{ .string = call.interaction_id });
         try payload.put("requested_by", .{ .string = endpoint_id });
         try payload.put("responded_by", .{ .string = self.participant });
+        if (self.providedNamed(call.name)) |definition| if (definition.source) |source| try payload.put("source", .{ .string = source });
         if (request_id.len > 0) try payload.put("request_id", .{ .string = request_id });
         return payload;
     }
@@ -1235,7 +1241,7 @@ pub const Session = struct {
         return .{ .content = @FieldType(agent.AgentToolResult, "content").initOwned(content), .is_error = failed != null };
     }
 
-    fn approveTool(ctx: ?*anyopaque, request: tui_session.ToolApprovalRequest) tui_session.ToolApprovalDecision {
+    fn approveTool(ctx: ?*anyopaque, request: session_events.ToolApprovalRequest) session_events.ToolApprovalDecision {
         const self: *Session = @ptrCast(@alignCast(ctx.?));
         if (std.mem.eql(u8, request.tool_name, "request_user_input")) return .approve;
         if (self.providedNamed(request.tool_name) != null) return .approve;
@@ -1332,7 +1338,7 @@ pub const Session = struct {
         return try self.pumpInteraction() or moved;
     }
 
-    fn translate(self: *Session, event: tui_session.TuiEvent) contract.Failure!void {
+    fn translate(self: *Session, event: session_events.SessionEvent) contract.Failure!void {
         const run = self.live() orelse return;
         var scratch = std.heap.ArenaAllocator.init(self.gpa);
         defer scratch.deinit();
@@ -1414,10 +1420,11 @@ pub const Session = struct {
         try call.put("tool_call_id", .{ .string = tool_call_id });
         try call.put("execution_owner", .{ .string = endpoint_id });
         try call.put("name", .{ .string = name });
+        try call.put("source", .{ .string = native_source });
         return call;
     }
 
-    fn settle(self: *Session, a: std.mem.Allocator, run: *Run, reason: tui_session.TuiEndReason) contract.Failure!void {
+    fn settle(self: *Session, a: std.mem.Allocator, run: *Run, reason: session_events.SessionEndReason) contract.Failure!void {
         try self.cancelOpenCall(a, run);
         if (self.pending) |pending| {
             var resolved = try self.interactionPayload(a, run, pending);
@@ -1620,9 +1627,11 @@ pub const Session = struct {
                 .description = tool.description,
                 .input_schema_json = tool.parameters_schema_json,
                 .execution_owner = endpoint_id,
+                .source = native_source,
+                .annotations_json = if (tool.label.len > 0) try std.json.Stringify.valueAlloc(arena, .{ .title = tool.label }, .{}) else null,
             };
         }
-        return .{ .revision = capability_revision, .response = .{ .session_id = request.session_id, .tools = definitions } };
+        return .{ .revision = capability_revision, .response = .{ .session_id = request.session_id, .sources = try arena.dupe(oap_types.ToolSourceDescriptor, &native_sources), .tools = definitions } };
     }
 
     fn models(ptr: *anyopaque, arena: std.mem.Allocator, request: *const oap_types.ModelsRequest, refusal: *contract.Refusal) contract.Failure!contract.Catalog {
@@ -1675,7 +1684,7 @@ pub const Session = struct {
 
 pub const settings_key = "oapx";
 
-fn decisionFor(answer: []const u8) tui_session.ToolApprovalDecision {
+fn decisionFor(answer: []const u8) session_events.ToolApprovalDecision {
     if (std.mem.eql(u8, answer, "approve")) return .approve;
     if (std.mem.eql(u8, answer, "approve_always")) return .approve_always;
     if (std.mem.eql(u8, answer, "reject_always")) return .reject_always;
@@ -1705,7 +1714,7 @@ const ContextWindowSetting = union(enum) {
 const LiveSettings = struct {
     context_window: ?ContextWindowSetting = null,
     output: ?agent.OutputSetting = null,
-    permission_mode: ?tui_runtime.PermissionMode = null,
+    permission_mode: ?session_runtime.PermissionMode = null,
     workspace_root: ?[]const u8 = null,
 };
 
@@ -1731,7 +1740,7 @@ fn parseLiveSettings(arena: std.mem.Allocator, raw: []const u8, refusal: *contra
         };
     }
     if (fields.get("permission_mode")) |value| {
-        const mode = if (value == .string) std.meta.stringToEnum(tui_runtime.PermissionMode, value.string) else null;
+        const mode = if (value == .string) std.meta.stringToEnum(session_runtime.PermissionMode, value.string) else null;
         settings.permission_mode = mode orelse return refusal.fail(error.InvalidSubmission, "permission_mode is not a mode the loop has");
     }
     if (fields.get("workspace_root")) |value| {
@@ -1741,7 +1750,7 @@ fn parseLiveSettings(arena: std.mem.Allocator, raw: []const u8, refusal: *contra
     return settings;
 }
 
-fn checkLiveSettings(runtime: *tui_runtime.TuiRuntime, settings: LiveSettings, refusal: *contract.Refusal) contract.Failure!void {
+fn checkLiveSettings(runtime: *session_runtime.SessionRuntime, settings: LiveSettings, refusal: *contract.Refusal) contract.Failure!void {
     if (settings.context_window) |window| if (window == .tokens) {
         if (runtime.contextWindowMaximum()) |ceiling| {
             if (window.tokens > ceiling) return refusal.fail(error.InvalidSubmission, "context_window is above the model's window");
@@ -1754,7 +1763,7 @@ fn checkLiveSettings(runtime: *tui_runtime.TuiRuntime, settings: LiveSettings, r
     };
 }
 
-fn applyLiveSettings(runtime: *tui_runtime.TuiRuntime, settings: LiveSettings, refusal: *contract.Refusal) contract.Failure!void {
+fn applyLiveSettings(runtime: *session_runtime.SessionRuntime, settings: LiveSettings, refusal: *contract.Refusal) contract.Failure!void {
     if (settings.context_window) |window| runtime.setContextWindow(switch (window) {
         .default => null,
         .tokens => |count| count,
@@ -1770,7 +1779,7 @@ fn applyLiveSettings(runtime: *tui_runtime.TuiRuntime, settings: LiveSettings, r
     };
 }
 
-pub fn sessionOptions(base: tui_runtime.TuiRuntimeOptions, metadata: ?std.json.Value) tui_runtime.TuiRuntimeOptions {
+pub fn sessionOptions(base: session_runtime.SessionRuntimeOptions, metadata: ?std.json.Value) session_runtime.SessionRuntimeOptions {
     var options = base;
     const document = metadata orelse return options;
     if (document != .object) return options;
@@ -1787,7 +1796,7 @@ pub fn sessionOptions(base: tui_runtime.TuiRuntimeOptions, metadata: ?std.json.V
     }
     if (fields.get("permission_mode")) |value| {
         if (value == .string) {
-            if (std.meta.stringToEnum(tui_runtime.PermissionMode, value.string)) |mode| options.permission_mode = mode;
+            if (std.meta.stringToEnum(session_runtime.PermissionMode, value.string)) |mode| options.permission_mode = mode;
         }
     }
     if (fields.get("output")) |value| {
@@ -1829,7 +1838,7 @@ pub fn requestedModel(
     available: []const ai_types.Model,
     metadata: ?std.json.Value,
     refusal: *contract.Refusal,
-) contract.Failure!?tui_runtime.InitialModelRef {
+) contract.Failure!?session_runtime.InitialModelRef {
     const document = metadata orelse return null;
     if (document != .object) return null;
     const settings = document.object.get(settings_key) orelse return null;
@@ -1974,8 +1983,8 @@ fn admitProvidedTools(keep: std.mem.Allocator, arena: std.mem.Allocator, partici
         if (name.len == 0) return refuseTool(arena, refusal, "", "a provided tool needs a name");
         if (!std.mem.eql(u8, stringOf(item, "execution_owner"), participant)) return refuseTool(arena, refusal, name, "execution_owner must be the opening participant");
         const source = stringOf(item, "source");
-        if (source.len > 0) {
-            refusal.* = .{ .feature = contract.feature_tools_provide, .reason = contract.reason_unsatisfiable, .tool = try arena.dupe(u8, name), .source = try arena.dupe(u8, source), .detail = "the loop declares no tool sources, so a source resolves to nothing" };
+        if (source.len > 0 and !std.mem.eql(u8, source, native_source)) {
+            refusal.* = .{ .feature = contract.feature_tools_provide, .reason = contract.reason_unsatisfiable, .tool = try arena.dupe(u8, name), .source = try arena.dupe(u8, source), .detail = "the loop declares one tool source, " ++ native_source ++ ", so another resolves to nothing" };
             return error.UnsupportedFeature;
         }
         if (namedIn(native, offers_input, provided[0..index], name)) return refuseTool(arena, refusal, name, "the name already resolves to a catalog entry");
@@ -1988,6 +1997,7 @@ fn admitProvidedTools(keep: std.mem.Allocator, arena: std.mem.Allocator, partici
             .description = if (description.len > 0) description else null,
             .input_schema_json = if (schema) |value| try json_encode.valueAlloc(keep, value) else "{\"type\":\"object\"}",
             .execution_owner = participant,
+            .source = if (source.len > 0) native_source else null,
         };
     }
     return provided;
@@ -2041,7 +2051,7 @@ const Payload = struct {
     }
 };
 
-fn compactAt(arena: std.mem.Allocator, raw: []const u8, runtime: *tui_runtime.TuiRuntime, refusal: *contract.Refusal) contract.Failure!?u64 {
+fn compactAt(arena: std.mem.Allocator, raw: []const u8, runtime: *session_runtime.SessionRuntime, refusal: *contract.Refusal) contract.Failure!?u64 {
     const unsatisfiable = contract.reason_unsatisfiable;
     const parsed = std.json.parseFromSliceLeaky(std.json.Value, arena, raw, .{}) catch return refusal.unsupportedField(contract.feature_compaction_policy, unsatisfiable, "compaction_policy");
     if (parsed != .object) return refusal.unsupportedField(contract.feature_compaction_policy, unsatisfiable, "compaction_policy");
@@ -2520,7 +2530,7 @@ test "a full journal drops its oldest half at once, keeping the newest entries i
 }
 
 test "an open's oapx metadata sets the session's thinking level, window, output limit and workspace, and anything else is ignored" {
-    const base = tui_runtime.TuiRuntimeOptions{ .thinking_level = .low, .permission_mode = .bypass, .workspace_root = "/base" };
+    const base = session_runtime.SessionRuntimeOptions{ .thinking_level = .low, .permission_mode = .bypass, .workspace_root = "/base" };
     var parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator,
         \\{"oapx":{"thinking_level":"high","context_window":1000000,"output":64000,"permission_mode":"bypass","workspace_root":"/work","unknown":1}}
     , .{});
@@ -2529,7 +2539,7 @@ test "an open's oapx metadata sets the session's thinking level, window, output 
     try testing.expectEqual(ai_types.ThinkingLevel.high, applied.thinking_level);
     try testing.expectEqual(@as(?u32, 1_000_000), applied.context_window);
     try testing.expectEqual(@as(u32, 64_000), applied.output.tokens);
-    try testing.expectEqual(tui_runtime.PermissionMode.bypass, applied.permission_mode);
+    try testing.expectEqual(session_runtime.PermissionMode.bypass, applied.permission_mode);
     try testing.expectEqualStrings("/work", applied.workspace_root);
 
     var named = try std.json.parseFromSlice(std.json.Value, testing.allocator, "{\"oapx\":{\"output\":\"max\"}}", .{});
@@ -2629,10 +2639,10 @@ test "a permissions file the engine cannot read leaves a session its own empty e
 }
 
 test "an open's oapx metadata can ask for ask mode, which this adapter now answers with permission interactions" {
-    const base = tui_runtime.TuiRuntimeOptions{ .permission_mode = .bypass };
+    const base = session_runtime.SessionRuntimeOptions{ .permission_mode = .bypass };
     var parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator, "{\"oapx\":{\"permission_mode\":\"ask\"}}", .{});
     defer parsed.deinit();
-    try testing.expectEqual(tui_runtime.PermissionMode.ask, sessionOptions(base, parsed.value).permission_mode);
+    try testing.expectEqual(session_runtime.PermissionMode.ask, sessionOptions(base, parsed.value).permission_mode);
 }
 
 fn parseValue(arena: std.mem.Allocator, text: []const u8) contract.Failure!std.json.Value {
@@ -2657,11 +2667,11 @@ fn permissionAnswer(harness: *Harness, pending: PendingInteraction) oap_types.Pe
 }
 
 test "each permission choice reaches the loop as its own decision, and anything else is a refusal" {
-    try testing.expectEqual(tui_session.ToolApprovalDecision.approve, decisionFor("approve"));
-    try testing.expectEqual(tui_session.ToolApprovalDecision.approve_always, decisionFor("approve_always"));
-    try testing.expectEqual(tui_session.ToolApprovalDecision.reject_always, decisionFor("reject_always"));
-    try testing.expectEqual(tui_session.ToolApprovalDecision.reject, decisionFor("deny"));
-    try testing.expectEqual(tui_session.ToolApprovalDecision.reject, decisionFor("approve_forever"));
+    try testing.expectEqual(session_events.ToolApprovalDecision.approve, decisionFor("approve"));
+    try testing.expectEqual(session_events.ToolApprovalDecision.approve_always, decisionFor("approve_always"));
+    try testing.expectEqual(session_events.ToolApprovalDecision.reject_always, decisionFor("reject_always"));
+    try testing.expectEqual(session_events.ToolApprovalDecision.reject, decisionFor("deny"));
+    try testing.expectEqual(session_events.ToolApprovalDecision.reject, decisionFor("approve_forever"));
 }
 
 test "a permission prompt offers the always choices, and an always answer is accepted and published as chosen" {
@@ -3713,8 +3723,14 @@ const provided_lookup =
     \\[{"name":"lookup","description":"Look a word up","input_schema":{"type":"object"},"execution_owner":"user"}]
 ;
 
+const provided_lookup_sourced =
+    \\[{"name":"lookup","description":"Look a word up","input_schema":{"type":"object"},"execution_owner":"user","source":"oapx"}]
+;
+
 const ProvidedWire = struct {
     wire: Wire,
+    tools: []const u8 = provided_lookup,
+    list_first: bool = false,
     scope: []const u8 = "",
     run_scope: []const u8 = "",
     asked: std.json.ObjectMap = undefined,
@@ -3727,7 +3743,8 @@ const ProvidedWire = struct {
         ));
         try self.wire.send("capabilities.request", "", try parseValue(a, "{}"));
         self.scope = ",\"session_id\":\"wire-session\",\"capability_revision\":\"" ++ capability_revision ++ "\"";
-        try self.wire.send("session.open.request", self.scope, try parseValue(a, "{\"session_id\":\"wire-session\",\"tools\":" ++ provided_lookup ++ "}"));
+        try self.wire.send("session.open.request", self.scope, try parseValue(a, try std.fmt.allocPrint(a, "{{\"session_id\":\"wire-session\",\"tools\":{s}}}", .{self.tools})));
+        if (self.list_first) try self.wire.send("action.tools.list.request", self.scope, try parseValue(a, "{\"session_id\":\"wire-session\"}"));
         try self.wire.send("session.message.submit.request", self.scope, try parseValue(a,
             \\{"session_id":"wire-session","delivery":"auto","messages":[{"role":"user","content":"look it up"}]}
         ));
@@ -3790,6 +3807,25 @@ test "a provided tool's call waits for the opener, and the opener's acknowledgem
             const completed = provided.payloadOf("action.call.completed").?;
             try testing.expectEqualStrings("open agent protocol", completed.get("result").?.object.get("meaning").?.string);
         }
+    }
+}
+
+test "a provided tool that names the loop's source keeps it on the listing and on every envelope of its call" {
+    var script = Script{ .tool_first = true, .tool_name = "lookup", .tool_arguments = "{}" };
+    var provided: ProvidedWire = .{ .wire = undefined, .tools = provided_lookup_sourced, .list_first = true };
+    try provided.start(&script);
+    defer provided.wire.deinit();
+
+    try testing.expectEqualStrings(native_source, provided.asked.get("source").?.string);
+    _ = try provided.resolve("{\"started\":{}}", &.{});
+    _ = try provided.resolve("{\"result\":{\"meaning\":\"open agent protocol\"}}", &.{});
+    _ = try provided.wire.wait("run.completed");
+    try provided.wire.validate();
+    try testing.expectEqualStrings(native_source, provided.payloadOf("action.call.started").?.get("source").?.string);
+    try testing.expectEqualStrings(native_source, provided.payloadOf("action.call.completed").?.get("source").?.string);
+    const listed = provided.payloadOf("action.tools.list.response").?.get("tools").?.array.items;
+    for (listed) |tool| {
+        if (std.mem.eql(u8, tool.object.get("name").?.string, "lookup")) try testing.expectEqualStrings(native_source, tool.object.get("source").?.string);
     }
 }
 
@@ -3972,6 +4008,17 @@ test "a served adapter advertises the features its host adds beside its own" {
     const replaced = try owner.adapter().probe(&refusal);
     try testing.expectEqual(oap_types.SupportLevel.native, replaced.level(contract.feature_models_list));
     try testing.expectEqual(unsaved_features.len, replaced.features.len);
+}
+
+test "a served adapter still declares the loop's tool source once its host adds features" {
+    var owner = Adapter.init(testing.allocator, .{});
+    defer owner.deinit();
+    try owner.advertise(&.{.{ .key = "auth.login", .level = .native }});
+    var refusal = contract.Refusal{};
+    const served = try owner.adapter().probe(&refusal);
+    try testing.expectEqual(@as(usize, 1), served.sources.len);
+    try testing.expectEqualStrings(native_source, served.sources[0].id);
+    try testing.expectEqualStrings(capability_revision, served.capability_revision);
 }
 
 test "a steer naming a model is refused as unsatisfiable, since it cannot change the admitted run's model" {

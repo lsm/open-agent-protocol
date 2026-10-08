@@ -37,13 +37,6 @@ pub const ToolRegistry = struct {
         for (defaultTools()) |tool| try self.register(allocator, tool);
     }
 
-    pub fn registerMcpBridge(self: *ToolRegistry, allocator: std.mem.Allocator, bridge: *mcp_bridge.McpBridge) !void {
-        var tools = std.ArrayList(agent.AgentTool).empty;
-        defer tools.deinit(allocator);
-        try bridge.appendAgentTools(&tools);
-        for (tools.items) |tool| try self.replaceOrRegister(allocator, tool);
-    }
-
     pub fn resolve(self: *const ToolRegistry, name: []const u8) ?agent.AgentTool {
         for (self.tools.items) |tool| if (std.mem.eql(u8, tool.name, name)) return tool;
         return null;

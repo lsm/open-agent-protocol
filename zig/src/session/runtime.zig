@@ -3,16 +3,16 @@ const compat = @import("compat");
 const ai_types = @import("ai_types");
 const event_stream = @import("event_stream");
 const agent = @import("agent");
-const session = @import("tui_session");
+const session = @import("session_events");
 const local_tools = @import("tools/registry");
 const permission = @import("permission");
 const OwnedSlice = @import("owned_slice").OwnedSlice;
 const model_catalog = @import("model_catalog");
 
-pub const TuiSession = session.TuiSession;
-pub const TuiEvent = session.TuiEvent;
-pub const TuiEventStream = session.TuiEventStream;
-pub const TuiEndReason = session.TuiEndReason;
+pub const SessionHandle = session.SessionHandle;
+pub const SessionEvent = session.SessionEvent;
+pub const SessionEventStream = session.SessionEventStream;
+pub const SessionEndReason = session.SessionEndReason;
 pub const QueuedCounts = session.QueuedCounts;
 pub const CompactOptions = session.CompactOptions;
 pub const ToolApprovalCallback = session.ToolApprovalCallback;
@@ -21,7 +21,7 @@ pub const ToolApprovalRequest = session.ToolApprovalRequest;
 
 pub const output_limit_warning = "The model's reply hit its output token limit, so the run stopped. Send a message to continue.";
 
-const CompactionEnd = @TypeOf(@as(TuiEvent, undefined).compaction_end);
+const CompactionEnd = @TypeOf(@as(SessionEvent, undefined).compaction_end);
 
 pub const PermissionMode = enum {
     ask,
@@ -30,7 +30,7 @@ pub const PermissionMode = enum {
 
 pub const EventSink = struct {
     ctx: *anyopaque,
-    push: *const fn (ctx: *anyopaque, event: TuiEvent) void,
+    push: *const fn (ctx: *anyopaque, event: SessionEvent) void,
 };
 
 pub const RemoteSettings = struct {
@@ -41,6 +41,11 @@ pub const RemoteSettings = struct {
     permission_mode: PermissionMode,
     workspace_root: []const u8,
     resume_session_id: ?[]const u8 = null,
+};
+
+pub const ToolLabel = struct {
+    name: []const u8,
+    label: []const u8,
 };
 
 pub const RemoteExecution = struct {
@@ -56,7 +61,7 @@ pub const RemoteExecution = struct {
         set_catalog: *const fn (ctx: *anyopaque, models: []const ai_types.Model) anyerror!void,
         compacts: *const fn (ctx: *anyopaque) bool,
         settings_live: *const fn (ctx: *anyopaque) bool,
-        take_record: *const fn (ctx: *anyopaque) ?TuiEvent,
+        take_record: *const fn (ctx: *anyopaque) ?SessionEvent,
         records_session: *const fn (ctx: *anyopaque) bool,
         compactable: *const fn (ctx: *anyopaque) bool,
         compact: *const fn (ctx: *anyopaque, focus: []const u8) anyerror!void,
@@ -69,6 +74,7 @@ pub const RemoteExecution = struct {
         queued: *const fn (ctx: *anyopaque) usize,
         steers_pending: *const fn (ctx: *anyopaque) usize,
         steers_settled: *const fn (ctx: *anyopaque) u64,
+        tool_labels: *const fn (ctx: *anyopaque) []const ToolLabel,
         stop: *const fn (ctx: *anyopaque) void,
     };
 };
@@ -78,7 +84,7 @@ pub const Loop = struct {
     vtable: *const VTable,
 
     pub const VTable = struct {
-        bind: *const fn (ctx: *anyopaque, runtime: *TuiRuntime) anyerror!void,
+        bind: *const fn (ctx: *anyopaque, runtime: *SessionRuntime) anyerror!void,
         start: *const fn (ctx: *anyopaque) anyerror!void,
         stop: *const fn (ctx: *anyopaque) void,
         idle: *const fn (ctx: *anyopaque) bool,
@@ -102,7 +108,7 @@ pub const Loop = struct {
         history: *const fn (ctx: *anyopaque) []const ai_types.Message,
         compact: *const fn (ctx: *anyopaque, options: CompactOptions) anyerror!void,
         set_session_id: *const fn (ctx: *anyopaque) anyerror!void,
-        arm_auto_compact: *const fn (ctx: *anyopaque, at: ?u64, transcripts: []const []const u8, writer: ?TuiRuntime.TranscriptWriter) anyerror!void,
+        arm_auto_compact: *const fn (ctx: *anyopaque, at: ?u64, transcripts: []const []const u8, writer: ?SessionRuntime.TranscriptWriter) anyerror!void,
         resume_session: *const fn (ctx: *anyopaque) anyerror!void,
         cancel: *const fn (ctx: *anyopaque) void,
         decide_approval: *const fn (ctx: *anyopaque, tool_call_id: []const u8, decision: ToolApprovalDecision) anyerror!void,
@@ -111,13 +117,12 @@ pub const Loop = struct {
     };
 };
 
-pub const TuiRuntimeOptions = struct {
+pub const SessionRuntimeOptions = struct {
     protocol: ?agent.ProtocolClient = null,
     models: []const ai_types.Model = &.{},
     initial_model_id: ?[]const u8 = null,
     initial_model: ?InitialModelRef = null,
     tools: []const agent.AgentTool = &.{},
-    mcp_config_json: ?[]const u8 = null,
     permission_engine: ?*permission.PermissionEngine = null,
     workspace_root: []const u8 = "",
     tool_approval_ctx: ?*anyopaque = null,
@@ -158,7 +163,7 @@ pub const InitialModelRef = struct {
     api: []const u8 = "",
 };
 
-fn normalizeTuiThinkingLevel(level: ai_types.ThinkingLevel) ai_types.ThinkingLevel {
+fn normalizeThinkingLevel(level: ai_types.ThinkingLevel) ai_types.ThinkingLevel {
     return switch (level) {
         .minimal => .low,
         else => level,
@@ -251,15 +256,14 @@ pub fn deinitModels(allocator: std.mem.Allocator, models: []ai_types.Model) void
     allocator.free(models);
 }
 
-pub const TuiRuntime = struct {
+pub const SessionRuntime = struct {
     allocator: std.mem.Allocator,
     protocol: ?agent.ProtocolClient,
     models: []ai_types.Model,
     selected_model_index: ?usize,
     pending_model_index: ?usize = null,
-    event_stream: TuiEventStream,
+    event_stream: SessionEventStream,
     tool_registry: local_tools.ToolRegistry,
-    mcp_bridge: ?*local_tools.mcp_bridge.McpBridge = null,
     original_tools: []agent.AgentTool,
     workspace_root: []u8,
     session_cwd: []u8,
@@ -293,7 +297,7 @@ pub const TuiRuntime = struct {
     remote_steers_started: u64 = 0,
     remote_mutex: std.atomic.Mutex = .unlocked,
 
-    pub fn init(allocator: std.mem.Allocator, options: TuiRuntimeOptions) !TuiRuntime {
+    pub fn init(allocator: std.mem.Allocator, options: SessionRuntimeOptions) !SessionRuntime {
         var models = try cloneModels(allocator, options.models);
         errdefer deinitModels(allocator, models);
 
@@ -327,19 +331,18 @@ pub const TuiRuntime = struct {
         var session_cwd = try allocator.dupe(u8, options.workspace_root);
         errdefer allocator.free(session_cwd);
 
-        var runtime = TuiRuntime{
+        var runtime = SessionRuntime{
             .allocator = allocator,
             .protocol = options.protocol,
             .models = models,
             .selected_model_index = selected,
-            .event_stream = TuiEventStream.init(allocator),
+            .event_stream = SessionEventStream.init(allocator),
             .tool_registry = tool_registry,
-            .mcp_bridge = null,
             .original_tools = original_tools,
             .workspace_root = workspace_root,
             .session_cwd = session_cwd,
             .permission_mode = options.permission_mode,
-            .thinking_level = normalizeTuiThinkingLevel(options.thinking_level),
+            .thinking_level = normalizeThinkingLevel(options.thinking_level),
             .context_window = options.context_window,
             .output = options.output,
             .compact_output = options.compact_output,
@@ -352,19 +355,6 @@ pub const TuiRuntime = struct {
         workspace_root = &.{};
         session_cwd = &.{};
         tool_registry = local_tools.ToolRegistry.init();
-        errdefer runtime.deinit();
-        if (options.mcp_config_json) |config_json| {
-            const bridge = try allocator.create(local_tools.mcp_bridge.McpBridge);
-            bridge.* = local_tools.mcp_bridge.McpBridge.init(allocator);
-            bridge.bind();
-            runtime.mcp_bridge = bridge;
-            try bridge.loadConfigJson(config_json);
-            try bridge.discover();
-            try runtime.tool_registry.registerMcpBridge(allocator, bridge);
-            const next_original_tools = try allocator.dupe(agent.AgentTool, runtime.tool_registry.list());
-            allocator.free(runtime.original_tools);
-            runtime.original_tools = next_original_tools;
-        }
         runtime.suspendContextWindowAboveCeiling();
         return runtime;
     }
@@ -383,7 +373,7 @@ pub const TuiRuntime = struct {
         return true;
     }
 
-    pub fn deinit(self: *TuiRuntime) void {
+    pub fn deinit(self: *SessionRuntime) void {
         self.title_cancel.store(true, .release);
         self.waitForTitleRequest();
         if (self.title_result) |title| self.allocator.free(title);
@@ -393,16 +383,12 @@ pub const TuiRuntime = struct {
         self.allocator.free(self.session_cwd);
         self.allocator.free(self.session_id);
         self.allocator.free(self.original_tools);
-        if (self.mcp_bridge) |bridge| {
-            bridge.deinit();
-            self.allocator.destroy(bridge);
-        }
         self.tool_registry.deinit(self.allocator);
         deinitModels(self.allocator, self.models);
         self.* = undefined;
     }
 
-    pub fn start(self: *TuiRuntime) !void {
+    pub fn start(self: *SessionRuntime) !void {
         if (self.started) return;
         if (self.remote) |remote| {
             try remote.vtable.start(remote.ctx, .{ .ctx = self, .push = pushRemote }, self.remoteSettings(null));
@@ -414,27 +400,27 @@ pub const TuiRuntime = struct {
         self.started = true;
     }
 
-    fn boundLoop(self: *TuiRuntime) !?Loop {
+    fn boundLoop(self: *SessionRuntime) !?Loop {
         const loop = self.loop orelse return null;
         try loop.vtable.bind(loop.ctx, self);
         return loop;
     }
 
-    fn loopBusy(self: *const TuiRuntime) bool {
+    fn loopBusy(self: *const SessionRuntime) bool {
         const loop = self.loop orelse return false;
         return !loop.vtable.idle(loop.ctx);
     }
 
-    fn loopSetModel(self: *TuiRuntime, model: ai_types.Model) void {
+    fn loopSetModel(self: *SessionRuntime, model: ai_types.Model) void {
         if (self.loop) |loop| loop.vtable.set_model(loop.ctx, self.effectiveModel(model));
     }
 
-    fn loopRequestModelSwitch(self: *TuiRuntime, model: ?ai_types.Model) void {
+    fn loopRequestModelSwitch(self: *SessionRuntime, model: ?ai_types.Model) void {
         const loop = self.loop orelse return;
         loop.vtable.request_model_switch(loop.ctx, if (model) |held| self.effectiveModel(held) else null);
     }
 
-    pub fn stop(self: *TuiRuntime) void {
+    pub fn stop(self: *SessionRuntime) void {
         if (self.remote) |remote| {
             if (self.started) remote.vtable.stop(remote.ctx);
             self.started = false;
@@ -444,18 +430,18 @@ pub const TuiRuntime = struct {
         self.started = false;
     }
 
-    pub fn isIdle(self: *TuiRuntime) bool {
+    pub fn isIdle(self: *SessionRuntime) bool {
         if (self.stream_active) return false;
         if (self.remote != null) return true;
         if (self.loop) |loop| return loop.vtable.idle(loop.ctx);
         return true;
     }
 
-    pub fn canSteer(_: *const TuiRuntime) bool {
+    pub fn canSteer(_: *const SessionRuntime) bool {
         return true;
     }
 
-    pub fn createSession(self: *TuiRuntime) TuiSession {
+    pub fn createSession(self: *SessionRuntime) SessionHandle {
         return .{
             .ctx = self,
             .ops = .{
@@ -482,11 +468,11 @@ pub const TuiRuntime = struct {
         };
     }
 
-    pub fn availableModels(self: *TuiRuntime) []const ai_types.Model {
+    pub fn availableModels(self: *SessionRuntime) []const ai_types.Model {
         return self.models;
     }
 
-    pub fn replaceModels(self: *TuiRuntime, next_models: []const ai_types.Model, preferred_model: ?ai_types.Model) !void {
+    pub fn replaceModels(self: *SessionRuntime, next_models: []const ai_types.Model, preferred_model: ?ai_types.Model) !void {
         if (self.loopBusy()) return error.AgentAlreadyStreaming;
 
         var owned_next = try cloneModels(self.allocator, next_models);
@@ -543,7 +529,7 @@ pub const TuiRuntime = struct {
         if (next_selected) |idx| self.loopSetModel(self.models[idx]);
     }
 
-    pub fn requestTitle(self: *TuiRuntime, first_message: []const u8) !bool {
+    pub fn requestTitle(self: *SessionRuntime, first_message: []const u8) !bool {
         if (!self.generate_titles or self.title_thread != null) return false;
         const protocol = self.protocol orelse return false;
         const selected = self.currentModel() orelse return false;
@@ -556,13 +542,13 @@ pub const TuiRuntime = struct {
         return true;
     }
 
-    pub fn waitForTitleRequest(self: *TuiRuntime) void {
+    pub fn waitForTitleRequest(self: *SessionRuntime) void {
         const thread = self.title_thread orelse return;
         thread.join();
         self.title_thread = null;
     }
 
-    pub fn takeGeneratedTitle(self: *TuiRuntime) ?[]u8 {
+    pub fn takeGeneratedTitle(self: *SessionRuntime) ?[]u8 {
         while (!self.title_mutex.tryLock()) std.atomic.spinLoopHint();
         defer self.title_mutex.unlock();
         const title = self.title_result orelse return null;
@@ -570,7 +556,7 @@ pub const TuiRuntime = struct {
         return title;
     }
 
-    fn titleThread(self: *TuiRuntime, protocol: agent.ProtocolClient, model: ai_types.Model, prompt: []u8) void {
+    fn titleThread(self: *SessionRuntime, protocol: agent.ProtocolClient, model: ai_types.Model, prompt: []u8) void {
         var owned_model = model;
         defer owned_model.deinit(self.allocator);
         defer self.allocator.free(prompt);
@@ -581,34 +567,34 @@ pub const TuiRuntime = struct {
         self.title_result = title;
     }
 
-    pub fn currentModel(self: *TuiRuntime) ?ai_types.Model {
+    pub fn currentModel(self: *SessionRuntime) ?ai_types.Model {
         if (self.selected_model_index) |idx| return self.effectiveModel(self.models[idx]);
         return null;
     }
 
-    pub fn effectiveModel(self: *const TuiRuntime, model: ai_types.Model) ai_types.Model {
+    pub fn effectiveModel(self: *const SessionRuntime, model: ai_types.Model) ai_types.Model {
         var effective = model;
         if (self.context_window) |window| effective.context_window = window;
         return effective;
     }
 
-    pub fn contextWindow(self: *const TuiRuntime) u64 {
+    pub fn contextWindow(self: *const SessionRuntime) u64 {
         if (self.context_window) |window| return window;
         if (self.selected_model_index) |idx| return self.models[idx].context_window;
         return 0;
     }
 
-    pub fn contextWindowMaximum(self: *const TuiRuntime) ?u32 {
+    pub fn contextWindowMaximum(self: *const SessionRuntime) ?u32 {
         const index = self.selected_model_index orelse return null;
         return model_catalog.contextWindowMaximum(self.models[index]);
     }
 
-    pub fn contextWindowIsReported(self: *const TuiRuntime) bool {
+    pub fn contextWindowIsReported(self: *const SessionRuntime) bool {
         const index = self.selected_model_index orelse return false;
         return model_catalog.contextWindowIsReported(self.models[index]);
     }
 
-    fn remoteSettings(self: *TuiRuntime, resume_session_id: ?[]const u8) RemoteSettings {
+    fn remoteSettings(self: *SessionRuntime, resume_session_id: ?[]const u8) RemoteSettings {
         return .{
             .model = self.currentModel(),
             .thinking_level = self.thinking_level,
@@ -620,7 +606,7 @@ pub const TuiRuntime = struct {
         };
     }
 
-    pub fn reopenSaved(self: *TuiRuntime, session_id: []const u8, workspace_root: ?[]const u8) !void {
+    pub fn reopenSaved(self: *SessionRuntime, session_id: []const u8, workspace_root: ?[]const u8) !void {
         const remote = self.remote orelse return error.UnavailableOverOap;
         if (self.stream_active) return error.AgentAlreadyStreaming;
         if (self.started) {
@@ -637,11 +623,11 @@ pub const TuiRuntime = struct {
         self.started = true;
     }
 
-    fn openOverOap(self: *const TuiRuntime) bool {
+    fn openOverOap(self: *const SessionRuntime) bool {
         return self.remote != null and self.started;
     }
 
-    fn sendRemoteSetting(self: *TuiRuntime, settings: anytype) error{ AgentAlreadyStreaming, UnavailableOverOap }!void {
+    fn sendRemoteSetting(self: *SessionRuntime, settings: anytype) error{ AgentAlreadyStreaming, UnavailableOverOap }!void {
         const remote = self.remote.?;
         const json = std.json.Stringify.valueAlloc(self.allocator, .{ .oapx = settings }, .{}) catch return error.UnavailableOverOap;
         defer self.allocator.free(json);
@@ -651,7 +637,7 @@ pub const TuiRuntime = struct {
         };
     }
 
-    pub fn setContextWindow(self: *TuiRuntime, window: ?u32) error{ AboveMaximum, AgentAlreadyStreaming, UnavailableOverOap }!void {
+    pub fn setContextWindow(self: *SessionRuntime, window: ?u32) error{ AboveMaximum, AgentAlreadyStreaming, UnavailableOverOap }!void {
         if (self.loopBusy()) return error.AgentAlreadyStreaming;
         if (window) |held| {
             if (self.contextWindowMaximum()) |ceiling| {
@@ -665,25 +651,25 @@ pub const TuiRuntime = struct {
         self.applyContextWindowToAgent();
     }
 
-    pub fn contextWindowOverride(self: *const TuiRuntime) ?u32 {
+    pub fn contextWindowOverride(self: *const SessionRuntime) ?u32 {
         return self.context_window;
     }
 
-    pub fn contextWindowRefused(self: *const TuiRuntime) ?u32 {
+    pub fn contextWindowRefused(self: *const SessionRuntime) ?u32 {
         return self.context_window_refused;
     }
 
-    pub fn takeContextWindowRefused(self: *TuiRuntime) ?u32 {
+    pub fn takeContextWindowRefused(self: *SessionRuntime) ?u32 {
         const refused = self.context_window_refused;
         self.context_window_refused = null;
         return refused;
     }
 
-    fn applyContextWindowToAgent(self: *TuiRuntime) void {
+    fn applyContextWindowToAgent(self: *SessionRuntime) void {
         if (self.selected_model_index) |idx| self.loopSetModel(self.models[idx]);
     }
 
-    fn reconcileContextWindowAfterModelSwitch(self: *TuiRuntime) void {
+    fn reconcileContextWindowAfterModelSwitch(self: *SessionRuntime) void {
         if (self.context_window) |held| {
             const index = self.selected_model_index orelse return;
             const ceiling = model_catalog.contextWindowMaximum(self.models[index]) orelse return;
@@ -706,7 +692,7 @@ pub const TuiRuntime = struct {
         }
     }
 
-    fn suspendContextWindowAboveCeiling(self: *TuiRuntime) void {
+    fn suspendContextWindowAboveCeiling(self: *SessionRuntime) void {
         const held = self.context_window orelse return;
         const index = self.selected_model_index orelse return;
         const ceiling = model_catalog.contextWindowMaximum(self.models[index]) orelse return;
@@ -716,30 +702,35 @@ pub const TuiRuntime = struct {
         self.context_window_refused = held;
     }
 
-    pub fn availableTools(self: *TuiRuntime) []const agent.AgentTool {
+    pub fn toolLabels(self: *SessionRuntime) []const ToolLabel {
+        const remote = self.remote orelse return &.{};
+        return remote.vtable.tool_labels(remote.ctx);
+    }
+
+    pub fn availableTools(self: *SessionRuntime) []const agent.AgentTool {
         return self.original_tools;
     }
 
-    pub fn permissionMode(self: *const TuiRuntime) PermissionMode {
+    pub fn permissionMode(self: *const SessionRuntime) PermissionMode {
         return self.permission_mode;
     }
 
-    pub fn thinkingLevel(self: *const TuiRuntime) ai_types.ThinkingLevel {
+    pub fn thinkingLevel(self: *const SessionRuntime) ai_types.ThinkingLevel {
         return self.thinking_level;
     }
 
-    pub fn setThinkingLevel(self: *TuiRuntime, level: ai_types.ThinkingLevel) !void {
-        const normalized = normalizeTuiThinkingLevel(level);
+    pub fn setThinkingLevel(self: *SessionRuntime, level: ai_types.ThinkingLevel) !void {
+        const normalized = normalizeThinkingLevel(level);
         if (self.openOverOap()) try self.remote.?.vtable.set_reasoning(self.remote.?.ctx, normalized);
         self.thinking_level = normalized;
         if (self.loop) |loop| loop.vtable.set_thinking_level(loop.ctx, normalized);
     }
 
-    pub fn outputSetting(self: *const TuiRuntime) agent.OutputSetting {
+    pub fn outputSetting(self: *const SessionRuntime) agent.OutputSetting {
         return self.output;
     }
 
-    pub fn setOutput(self: *TuiRuntime, setting: agent.OutputSetting) error{ AboveMaximum, AgentAlreadyStreaming, UnavailableOverOap }!void {
+    pub fn setOutput(self: *SessionRuntime, setting: agent.OutputSetting) error{ AboveMaximum, AgentAlreadyStreaming, UnavailableOverOap }!void {
         if (self.loopBusy()) return error.AgentAlreadyStreaming;
         if (setting == .tokens) {
             if (self.currentModel()) |model| {
@@ -754,13 +745,13 @@ pub const TuiRuntime = struct {
         if (self.loop) |loop| loop.vtable.set_output(loop.ctx, setting);
     }
 
-    pub fn setPermissionMode(self: *TuiRuntime, mode: PermissionMode) !void {
+    pub fn setPermissionMode(self: *SessionRuntime, mode: PermissionMode) !void {
         if (self.openOverOap()) try self.sendRemoteSetting(.{ .permission_mode = @tagName(mode) });
         self.permission_mode = mode;
         if (try self.boundLoop()) |loop| try loop.vtable.set_permission_mode(loop.ctx, mode);
     }
 
-    fn adoptWorkspaceRoot(self: *TuiRuntime, root: []const u8) !void {
+    fn adoptWorkspaceRoot(self: *SessionRuntime, root: []const u8) !void {
         const owned = try self.allocator.dupe(u8, root);
         const owned_cwd = self.allocator.dupe(u8, root) catch |err| {
             self.allocator.free(owned);
@@ -773,17 +764,17 @@ pub const TuiRuntime = struct {
         if (self.loop) |loop| try loop.vtable.adopt_workspace_root(loop.ctx, root);
     }
 
-    pub fn setWorkspaceRoot(self: *TuiRuntime, root: []const u8) !void {
+    pub fn setWorkspaceRoot(self: *SessionRuntime, root: []const u8) !void {
         if (self.openOverOap()) try self.sendRemoteSetting(.{ .workspace_root = root });
         if (self.loopBusy()) return error.AgentAlreadyStreaming;
         try self.adoptWorkspaceRoot(root);
         if (try self.boundLoop()) |loop| try loop.vtable.set_workspace_root(loop.ctx);
     }
 
-    pub fn workingDirectory(self: *const TuiRuntime) []const u8 {
+    pub fn workingDirectory(self: *const SessionRuntime) []const u8 {
         return self.session_cwd;
     }
-    pub fn adoptWorkingDirectory(self: *TuiRuntime, reported: []const u8) void {
+    pub fn adoptWorkingDirectory(self: *SessionRuntime, reported: []const u8) void {
         if (reported.len == 0) return;
         if (!self.workingDirectoryInsideRoot(reported)) return;
         if (std.mem.eql(u8, reported, self.session_cwd)) return;
@@ -792,7 +783,7 @@ pub const TuiRuntime = struct {
         self.session_cwd = owned;
     }
 
-    fn workingDirectoryInsideRoot(self: *const TuiRuntime, candidate: []const u8) bool {
+    fn workingDirectoryInsideRoot(self: *const SessionRuntime, candidate: []const u8) bool {
         if (!std.Io.Dir.path.isAbsolute(candidate)) return false;
         const root = std.Io.Dir.path.resolve(self.allocator, &.{self.workspace_root}) catch return false;
         defer self.allocator.free(root);
@@ -803,12 +794,12 @@ pub const TuiRuntime = struct {
         return resolved.len > root.len and resolved[root.len] == std.fs.path.sep;
     }
 
-    pub fn setCompactOutput(self: *TuiRuntime, enabled: bool) void {
+    pub fn setCompactOutput(self: *SessionRuntime, enabled: bool) void {
         self.compact_output = enabled;
         if (self.loop) |loop| loop.vtable.set_compact_output(loop.ctx, enabled);
     }
 
-    pub fn switchModel(self: *TuiRuntime, model_id: []const u8) !void {
+    pub fn switchModel(self: *SessionRuntime, model_id: []const u8) !void {
         if (self.loopBusy()) return error.AgentAlreadyStreaming;
 
         for (self.models, 0..) |model, i| {
@@ -826,26 +817,26 @@ pub const TuiRuntime = struct {
         return error.ModelNotFound;
     }
 
-    pub fn requestModelSwitch(self: *TuiRuntime, model_id: []const u8) !ai_types.Model {
+    pub fn requestModelSwitch(self: *SessionRuntime, model_id: []const u8) !ai_types.Model {
         for (self.models, 0..) |model, i| {
             if (std.mem.eql(u8, model.id, model_id)) return self.requestModelSwitchAt(i);
         }
         return error.ModelNotFound;
     }
 
-    pub fn requestModelSwitchAt(self: *TuiRuntime, index: usize) !ai_types.Model {
+    pub fn requestModelSwitchAt(self: *SessionRuntime, index: usize) !ai_types.Model {
         if (index >= self.models.len) return error.ModelNotFound;
         self.pending_model_index = index;
         self.loopRequestModelSwitch(self.models[index]);
         return self.models[index];
     }
 
-    pub fn dropPendingModelSwitch(self: *TuiRuntime) void {
+    pub fn dropPendingModelSwitch(self: *SessionRuntime) void {
         self.pending_model_index = null;
         self.loopRequestModelSwitch(null);
     }
 
-    pub fn applyPendingModelSwitch(self: *TuiRuntime) !?ai_types.Model {
+    pub fn applyPendingModelSwitch(self: *SessionRuntime) !?ai_types.Model {
         const index = self.pending_model_index orelse return null;
         if (index >= self.models.len) {
             self.pending_model_index = null;
@@ -857,7 +848,7 @@ pub const TuiRuntime = struct {
         return self.models[index];
     }
 
-    pub fn switchModelExact(self: *TuiRuntime, selected: ai_types.Model) !void {
+    pub fn switchModelExact(self: *SessionRuntime, selected: ai_types.Model) !void {
         if (self.loopBusy()) return error.AgentAlreadyStreaming;
 
         for (self.models, 0..) |model, i| {
@@ -878,7 +869,7 @@ pub const TuiRuntime = struct {
         return error.ModelNotFound;
     }
 
-    pub fn submitTurn(self: *TuiRuntime, text: []const u8) !void {
+    pub fn submitTurn(self: *SessionRuntime, text: []const u8) !void {
         if (!self.started) try self.start();
         if (self.remote) |remote| {
             if (self.currentModel() == null) return error.NoModelConfigured;
@@ -893,7 +884,7 @@ pub const TuiRuntime = struct {
         try loop.vtable.submit(loop.ctx, text);
     }
 
-    pub fn steer(self: *TuiRuntime, text: []const u8) !void {
+    pub fn steer(self: *SessionRuntime, text: []const u8) !void {
         if (self.remote) |remote| {
             if (!self.started) return error.RuntimeNotStarted;
             if (!self.stream_active) {
@@ -908,16 +899,16 @@ pub const TuiRuntime = struct {
         try loop.vtable.steer(loop.ctx, text);
     }
 
-    pub fn queueSteer(self: *TuiRuntime, text: []const u8) !void {
+    pub fn queueSteer(self: *SessionRuntime, text: []const u8) !void {
         const loop = try self.boundLoop() orelse return error.RuntimeNotStarted;
         try loop.vtable.queue_steer(loop.ctx, text);
     }
 
-    pub fn clearSteers(self: *TuiRuntime) void {
+    pub fn clearSteers(self: *SessionRuntime) void {
         if (self.loop) |loop| loop.vtable.clear_steers(loop.ctx);
     }
 
-    pub fn followUp(self: *TuiRuntime, text: []const u8) !void {
+    pub fn followUp(self: *SessionRuntime, text: []const u8) !void {
         if (self.remote) |remote| {
             if (!self.started) return error.RuntimeNotStarted;
             if (!self.stream_active) return self.submitTurn(text);
@@ -928,24 +919,24 @@ pub const TuiRuntime = struct {
         try loop.vtable.follow_up(loop.ctx, text);
     }
 
-    pub fn clearQueuedMessages(self: *TuiRuntime) void {
+    pub fn clearQueuedMessages(self: *SessionRuntime) void {
         if (self.remote) |remote| return remote.vtable.clear_queued(remote.ctx);
         if (self.loop) |loop| loop.vtable.clear_queued(loop.ctx);
     }
 
-    pub fn queuedCounts(self: *TuiRuntime) QueuedCounts {
+    pub fn queuedCounts(self: *SessionRuntime) QueuedCounts {
         if (self.remote) |remote| return .{ .steering = remote.vtable.steers_pending(remote.ctx), .follow_up = remote.vtable.queued(remote.ctx) };
         const loop = self.loop orelse return .{};
         return loop.vtable.queued_counts(loop.ctx);
     }
 
-    pub fn steersConsumedCount(self: *TuiRuntime) u64 {
+    pub fn steersConsumedCount(self: *SessionRuntime) u64 {
         if (self.remote) |remote| return remote.vtable.steers_settled(remote.ctx) + self.remote_steers_started;
         const loop = self.loop orelse return 0;
         return loop.vtable.steers_consumed(loop.ctx);
     }
 
-    pub fn replaceMessages(self: *TuiRuntime, messages: []const ai_types.Message) !void {
+    pub fn replaceMessages(self: *SessionRuntime, messages: []const ai_types.Message) !void {
         if (self.remote != null) {
             if (messages.len > 0) return error.UnavailableOverOap;
             return;
@@ -955,12 +946,12 @@ pub const TuiRuntime = struct {
         try loop.vtable.replace_messages(loop.ctx, messages);
     }
 
-    pub fn history(self: *TuiRuntime) []const ai_types.Message {
+    pub fn history(self: *SessionRuntime) []const ai_types.Message {
         const loop = self.loop orelse return &.{};
         return loop.vtable.history(loop.ctx);
     }
 
-    pub fn compact(self: *TuiRuntime, options: CompactOptions) !void {
+    pub fn compact(self: *SessionRuntime, options: CompactOptions) !void {
         if (self.remote) |remote| {
             if (!self.started) try self.start();
             if (!remote.vtable.compacts(remote.ctx)) return error.UnavailableOverOap;
@@ -987,7 +978,7 @@ pub const TuiRuntime = struct {
         save_fn: *const fn (ctx: ?*anyopaque, allocator: std.mem.Allocator, index: usize, history: []const ai_types.Message) ?[]u8,
     };
 
-    pub fn setSessionId(self: *TuiRuntime, session_id: []const u8) !void {
+    pub fn setSessionId(self: *SessionRuntime, session_id: []const u8) !void {
         const owned = try self.allocator.dupe(u8, session_id);
         self.allocator.free(self.session_id);
         self.session_id = owned;
@@ -995,20 +986,20 @@ pub const TuiRuntime = struct {
         try loop.vtable.set_session_id(loop.ctx);
     }
 
-    pub fn setCompactionPolicy(self: *TuiRuntime, policy_json: []const u8) !void {
+    pub fn setCompactionPolicy(self: *SessionRuntime, policy_json: []const u8) !void {
         const remote = self.remote orelse return error.NotOverOap;
         if (!self.started) try self.start();
         try remote.vtable.set_compaction_policy(remote.ctx, policy_json);
     }
 
-    pub fn armAutoCompact(self: *TuiRuntime, at: ?u64, transcripts: []const []const u8, writer: ?TranscriptWriter) !void {
+    pub fn armAutoCompact(self: *SessionRuntime, at: ?u64, transcripts: []const []const u8, writer: ?TranscriptWriter) !void {
         if (!self.started) try self.start();
         const loop = try self.boundLoop() orelse return error.RuntimeNotStarted;
         try loop.vtable.arm_auto_compact(loop.ctx, at, transcripts, writer);
     }
 
-    pub fn finishCompaction(self: *TuiRuntime, payload: CompactionEnd) void {
-        const reason: TuiEndReason = switch (payload.outcome) {
+    pub fn finishCompaction(self: *SessionRuntime, payload: CompactionEnd) void {
+        const reason: SessionEndReason = switch (payload.outcome) {
             .completed => .completed,
             .cancelled => .cancelled,
             .failed => .@"error",
@@ -1019,14 +1010,14 @@ pub const TuiRuntime = struct {
         self.event_stream.complete(.{ .reason = reason });
     }
 
-    pub fn resumeSession(self: *TuiRuntime) !void {
+    pub fn resumeSession(self: *SessionRuntime) !void {
         if (self.remote != null) return error.UnavailableOverOap;
         if (!self.started) try self.start();
         const loop = try self.boundLoop() orelse return error.RuntimeNotStarted;
         try loop.vtable.resume_session(loop.ctx);
     }
 
-    pub fn cancel(self: *TuiRuntime) void {
+    pub fn cancel(self: *SessionRuntime) void {
         self.cancelled.store(true, .release);
         if (self.remote) |remote| {
             if (self.stream_active) remote.vtable.cancel(remote.ctx);
@@ -1035,26 +1026,26 @@ pub const TuiRuntime = struct {
         if (self.loop) |loop| loop.vtable.cancel(loop.ctx);
     }
 
-    pub fn movesWorkspaceLive(self: *const TuiRuntime) bool {
+    pub fn movesWorkspaceLive(self: *const SessionRuntime) bool {
         const remote = self.remote orelse return true;
         return remote.vtable.settings_live(remote.ctx);
     }
 
-    pub fn recordsFromEndpoint(self: *const TuiRuntime) bool {
+    pub fn recordsFromEndpoint(self: *const SessionRuntime) bool {
         const remote = self.remote orelse return false;
         return remote.vtable.records_session(remote.ctx);
     }
 
-    pub fn takeEndpointRecord(self: *TuiRuntime) ?TuiEvent {
+    pub fn takeEndpointRecord(self: *SessionRuntime) ?SessionEvent {
         const remote = self.remote orelse return null;
         return remote.vtable.take_record(remote.ctx);
     }
 
-    pub fn streamEvents(self: *TuiRuntime) *TuiEventStream {
+    pub fn streamEvents(self: *SessionRuntime) *SessionEventStream {
         return &self.event_stream;
     }
 
-    pub fn backpressureState(self: *TuiRuntime) struct { active: bool, dropped_count: u64 } {
+    pub fn backpressureState(self: *SessionRuntime) struct { active: bool, dropped_count: u64 } {
         while (!self.backpressure_mutex.tryLock()) std.atomic.spinLoopHint();
         defer self.backpressure_mutex.unlock();
         const active = self.backpressure_active.load(.acquire);
@@ -1069,7 +1060,7 @@ pub const TuiRuntime = struct {
         };
     }
 
-    pub fn resetBackpressureState(self: *TuiRuntime) void {
+    pub fn resetBackpressureState(self: *SessionRuntime) void {
         while (!self.backpressure_mutex.tryLock()) std.atomic.spinLoopHint();
         self.dropped_event_count = 0;
         self.dropped_since_warning = 0;
@@ -1078,13 +1069,13 @@ pub const TuiRuntime = struct {
         self.backpressure_mutex.unlock();
     }
 
-    pub fn decideToolApproval(self: *TuiRuntime, tool_call_id: []const u8, decision: ToolApprovalDecision) !void {
+    pub fn decideToolApproval(self: *SessionRuntime, tool_call_id: []const u8, decision: ToolApprovalDecision) !void {
         if (self.remote) |remote| return remote.vtable.decide_approval(remote.ctx, tool_call_id, decision);
         const loop = self.loop orelse return error.ToolApprovalNotPending;
         try loop.vtable.decide_approval(loop.ctx, tool_call_id, decision);
     }
 
-    pub fn resetEventStreamForTurn(self: *TuiRuntime) void {
+    pub fn resetEventStreamForTurn(self: *SessionRuntime) void {
         const guarded = self.remote != null;
         if (guarded) {
             while (!self.remote_mutex.tryLock()) std.atomic.spinLoopHint();
@@ -1093,13 +1084,13 @@ pub const TuiRuntime = struct {
         self.current_generation +%= 1;
         if (!self.stream_active or self.event_stream.isDone()) {
             self.event_stream.deinit();
-            self.event_stream = TuiEventStream.init(self.allocator);
+            self.event_stream = SessionEventStream.init(self.allocator);
             self.resetBackpressureState();
         }
         self.stream_active = true;
     }
 
-    pub fn push(self: *TuiRuntime, event: TuiEvent) void {
+    pub fn push(self: *SessionRuntime, event: SessionEvent) void {
         var mutable = event;
         mutable.setGeneration(self.current_generation);
         mutable.stamp(compat.time.nowMillis());
@@ -1107,7 +1098,7 @@ pub const TuiRuntime = struct {
         self.flushDroppedWarning();
     }
 
-    pub fn pushTerminal(self: *TuiRuntime, event: TuiEvent) void {
+    pub fn pushTerminal(self: *SessionRuntime, event: SessionEvent) void {
         var mutable = event;
         mutable.setGeneration(self.current_generation);
         mutable.stamp(compat.time.nowMillis());
@@ -1115,7 +1106,7 @@ pub const TuiRuntime = struct {
         self.flushDroppedWarningDroppingOldest();
     }
 
-    fn pushDroppingOldestCounted(self: *TuiRuntime, event: TuiEvent) void {
+    fn pushDroppingOldestCounted(self: *SessionRuntime, event: SessionEvent) void {
         const started_ms = compat.time.nowMillis();
         while (true) {
             if (self.pushUncounted(event)) return;
@@ -1146,32 +1137,32 @@ pub const TuiRuntime = struct {
         }
     }
 
-    fn dropOldestLocked(self: *TuiRuntime) void {
+    fn dropOldestLocked(self: *SessionRuntime) void {
         var dropped = self.event_stream.poll() orelse return;
         dropped.deinit(self.allocator);
         self.countDroppedLocked(1);
     }
 
-    fn isStreamingChunk(event: TuiEvent) bool {
+    fn isStreamingChunk(event: SessionEvent) bool {
         return switch (event) {
             .text_delta, .thinking_delta, .tool_call_delta, .provider_event, .tool_execution_update => true,
             else => false,
         };
     }
 
-    fn evictStreamingChunk(self: *TuiRuntime, event: *TuiEvent) bool {
+    fn evictStreamingChunk(self: *SessionRuntime, event: *SessionEvent) bool {
         if (!isStreamingChunk(event.*)) return false;
         event.deinit(self.allocator);
         return true;
     }
 
-    fn countDroppedLocked(self: *TuiRuntime, count: usize) void {
+    fn countDroppedLocked(self: *SessionRuntime, count: usize) void {
         self.dropped_event_count += count;
         self.dropped_since_warning += count;
         self.backpressure_active.store(true, .release);
     }
 
-    fn shedStreamingLocked(self: *TuiRuntime) usize {
+    fn shedStreamingLocked(self: *SessionRuntime) usize {
         const evicted = self.event_stream.evictWhere(self, evictStreamingChunk);
         if (evicted > 0) {
             self.countDroppedLocked(evicted);
@@ -1181,7 +1172,7 @@ pub const TuiRuntime = struct {
         return 0;
     }
 
-    fn pushUncounted(self: *TuiRuntime, event: TuiEvent) bool {
+    fn pushUncounted(self: *SessionRuntime, event: SessionEvent) bool {
         while (!self.backpressure_mutex.tryLock()) std.atomic.spinLoopHint();
         defer self.backpressure_mutex.unlock();
         self.event_stream.push(event) catch |err| switch (err) {
@@ -1195,11 +1186,11 @@ pub const TuiRuntime = struct {
         return true;
     }
 
-    fn dupeOwned(self: *TuiRuntime, value: []const u8) !OwnedSlice(u8) {
+    fn dupeOwned(self: *SessionRuntime, value: []const u8) !OwnedSlice(u8) {
         return OwnedSlice(u8).initOwned(try self.allocator.dupe(u8, value));
     }
 
-    fn flushDroppedWarning(self: *TuiRuntime) void {
+    fn flushDroppedWarning(self: *SessionRuntime) void {
         while (!self.backpressure_mutex.tryLock()) std.atomic.spinLoopHint();
         defer self.backpressure_mutex.unlock();
         if (self.dropped_since_warning == 0) return;
@@ -1207,7 +1198,7 @@ pub const TuiRuntime = struct {
             self.dropped_since_warning,
             if (self.dropped_since_warning == 1) "" else "s",
         }) catch |err| {
-            var err_event = TuiEvent{ .@"error" = .{ .message = self.dupeOwned(@errorName(err)) catch OwnedSlice(u8).initBorrowed("") } };
+            var err_event = SessionEvent{ .@"error" = .{ .message = self.dupeOwned(@errorName(err)) catch OwnedSlice(u8).initBorrowed("") } };
             err_event.setGeneration(self.current_generation);
             self.event_stream.push(err_event) catch {
                 var mutable = err_event;
@@ -1215,7 +1206,7 @@ pub const TuiRuntime = struct {
             };
             return;
         };
-        var warning = TuiEvent{ .system_warning = .{ .message = OwnedSlice(u8).initOwned(message) } };
+        var warning = SessionEvent{ .system_warning = .{ .message = OwnedSlice(u8).initOwned(message) } };
         warning.setGeneration(self.current_generation);
         self.event_stream.push(warning) catch {
             var mutable = warning;
@@ -1225,7 +1216,7 @@ pub const TuiRuntime = struct {
         self.dropped_since_warning = 0;
     }
 
-    fn flushDroppedWarningDroppingOldest(self: *TuiRuntime) void {
+    fn flushDroppedWarningDroppingOldest(self: *SessionRuntime) void {
         while (true) {
             while (!self.backpressure_mutex.tryLock()) std.atomic.spinLoopHint();
             const count = self.dropped_since_warning;
@@ -1236,7 +1227,7 @@ pub const TuiRuntime = struct {
                 count,
                 if (count == 1) "" else "s",
             }) catch return;
-            var warning = TuiEvent{ .system_warning = .{ .message = OwnedSlice(u8).initOwned(message) } };
+            var warning = SessionEvent{ .system_warning = .{ .message = OwnedSlice(u8).initOwned(message) } };
             warning.setGeneration(self.current_generation);
             if (self.pushUncounted(warning)) {
                 while (!self.backpressure_mutex.tryLock()) std.atomic.spinLoopHint();
@@ -1254,8 +1245,8 @@ pub const TuiRuntime = struct {
         }
     }
 
-    fn pushRemote(ctx: *anyopaque, event: TuiEvent) void {
-        const self: *TuiRuntime = @ptrCast(@alignCast(ctx));
+    fn pushRemote(ctx: *anyopaque, event: SessionEvent) void {
+        const self: *SessionRuntime = @ptrCast(@alignCast(ctx));
         while (!self.remote_mutex.tryLock()) std.atomic.spinLoopHint();
         defer self.remote_mutex.unlock();
         switch (event) {
@@ -1274,7 +1265,7 @@ pub const TuiRuntime = struct {
         }
     }
 
-    pub fn endRun(self: *TuiRuntime, reason: TuiEndReason) anyerror!void {
+    pub fn endRun(self: *SessionRuntime, reason: SessionEndReason) anyerror!void {
         self.completed = true;
         self.stream_active = false;
         self.pushTerminal(.{ .agent_end = .{ .reason = reason } });
@@ -1284,99 +1275,99 @@ pub const TuiRuntime = struct {
 };
 
 fn sessionStart(ctx: ?*anyopaque) anyerror!void {
-    const self: *TuiRuntime = @ptrCast(@alignCast(ctx.?));
+    const self: *SessionRuntime = @ptrCast(@alignCast(ctx.?));
     try self.start();
 }
 
 fn sessionResume(ctx: ?*anyopaque) anyerror!void {
-    const self: *TuiRuntime = @ptrCast(@alignCast(ctx.?));
+    const self: *SessionRuntime = @ptrCast(@alignCast(ctx.?));
     try self.resumeSession();
 }
 
 fn sessionRequestCompaction(ctx: ?*anyopaque, focus: []const u8) anyerror!void {
-    const self: *TuiRuntime = @ptrCast(@alignCast(ctx.?));
+    const self: *SessionRuntime = @ptrCast(@alignCast(ctx.?));
     const loop = self.loop orelse return error.RuntimeNotStarted;
     try loop.vtable.request_compaction(loop.ctx, focus);
 }
 
 fn sessionTakeCompactionRequest(ctx: ?*anyopaque, allocator: std.mem.Allocator) anyerror!?[]u8 {
-    const self: *TuiRuntime = @ptrCast(@alignCast(ctx.?));
+    const self: *SessionRuntime = @ptrCast(@alignCast(ctx.?));
     const loop = self.loop orelse return null;
     return loop.vtable.take_compaction_request(loop.ctx, allocator);
 }
 
 fn sessionCompact(ctx: ?*anyopaque, options: CompactOptions) anyerror!void {
-    const self: *TuiRuntime = @ptrCast(@alignCast(ctx.?));
+    const self: *SessionRuntime = @ptrCast(@alignCast(ctx.?));
     try self.compact(options);
 }
 
 fn sessionHistory(ctx: ?*anyopaque) []const ai_types.Message {
-    const self: *TuiRuntime = @ptrCast(@alignCast(ctx.?));
+    const self: *SessionRuntime = @ptrCast(@alignCast(ctx.?));
     return self.history();
 }
 
 fn sessionCancel(ctx: ?*anyopaque) void {
-    const self: *TuiRuntime = @ptrCast(@alignCast(ctx.?));
+    const self: *SessionRuntime = @ptrCast(@alignCast(ctx.?));
     self.cancel();
 }
 
 fn sessionSubmitTurn(ctx: ?*anyopaque, text: []const u8) anyerror!void {
-    const self: *TuiRuntime = @ptrCast(@alignCast(ctx.?));
+    const self: *SessionRuntime = @ptrCast(@alignCast(ctx.?));
     try self.submitTurn(text);
 }
 
 fn sessionSteer(ctx: ?*anyopaque, text: []const u8) anyerror!void {
-    const self: *TuiRuntime = @ptrCast(@alignCast(ctx.?));
+    const self: *SessionRuntime = @ptrCast(@alignCast(ctx.?));
     try self.steer(text);
 }
 
 fn sessionFollowUp(ctx: ?*anyopaque, text: []const u8) anyerror!void {
-    const self: *TuiRuntime = @ptrCast(@alignCast(ctx.?));
+    const self: *SessionRuntime = @ptrCast(@alignCast(ctx.?));
     try self.followUp(text);
 }
 
 fn sessionClearQueuedMessages(ctx: ?*anyopaque) void {
-    const self: *TuiRuntime = @ptrCast(@alignCast(ctx.?));
+    const self: *SessionRuntime = @ptrCast(@alignCast(ctx.?));
     self.clearQueuedMessages();
 }
 
 fn sessionQueuedCounts(ctx: ?*anyopaque) QueuedCounts {
-    const self: *TuiRuntime = @ptrCast(@alignCast(ctx.?));
+    const self: *SessionRuntime = @ptrCast(@alignCast(ctx.?));
     return self.queuedCounts();
 }
 
 fn sessionSteersConsumed(ctx: ?*anyopaque) u64 {
-    const self: *TuiRuntime = @ptrCast(@alignCast(ctx.?));
+    const self: *SessionRuntime = @ptrCast(@alignCast(ctx.?));
     return self.steersConsumedCount();
 }
 
 fn sessionCanSteer(ctx: ?*anyopaque) bool {
-    const self: *TuiRuntime = @ptrCast(@alignCast(ctx.?));
+    const self: *SessionRuntime = @ptrCast(@alignCast(ctx.?));
     return self.canSteer();
 }
 
 fn sessionSwitchModel(ctx: ?*anyopaque, model_id: []const u8) anyerror!void {
-    const self: *TuiRuntime = @ptrCast(@alignCast(ctx.?));
+    const self: *SessionRuntime = @ptrCast(@alignCast(ctx.?));
     try self.switchModel(model_id);
 }
 
 fn sessionSwitchModelExact(ctx: ?*anyopaque, model: ai_types.Model) anyerror!void {
-    const self: *TuiRuntime = @ptrCast(@alignCast(ctx.?));
+    const self: *SessionRuntime = @ptrCast(@alignCast(ctx.?));
     try self.switchModelExact(model);
 }
 
 fn sessionCurrentModel(ctx: ?*anyopaque) ?ai_types.Model {
-    const self: *TuiRuntime = @ptrCast(@alignCast(ctx.?));
+    const self: *SessionRuntime = @ptrCast(@alignCast(ctx.?));
     return self.currentModel();
 }
 
 fn sessionDecideToolApproval(ctx: ?*anyopaque, tool_call_id: []const u8, decision: ToolApprovalDecision) anyerror!void {
-    const self: *TuiRuntime = @ptrCast(@alignCast(ctx.?));
+    const self: *SessionRuntime = @ptrCast(@alignCast(ctx.?));
     try self.decideToolApproval(tool_call_id, decision);
 }
 
-fn sessionStreamEvents(ctx: ?*anyopaque) *TuiEventStream {
-    const self: *TuiRuntime = @ptrCast(@alignCast(ctx.?));
+fn sessionStreamEvents(ctx: ?*anyopaque) *SessionEventStream {
+    const self: *SessionRuntime = @ptrCast(@alignCast(ctx.?));
     return self.streamEvents();
 }
 
@@ -1616,7 +1607,7 @@ test "a context window is a whole token count, optionally scaled, and nothing el
 
 test "the window in effect is the model's own until a session sets one" {
     const models = [_]ai_types.Model{ test_model_a, test_model_b };
-    var runtime = try TuiRuntime.init(std.testing.allocator, .{ .models = &models });
+    var runtime = try SessionRuntime.init(std.testing.allocator, .{ .models = &models });
     defer runtime.deinit();
 
     try std.testing.expectEqual(@as(u64, 8192), runtime.contextWindow());
@@ -1635,7 +1626,7 @@ test "the window in effect is the model's own until a session sets one" {
 
 test "the model handed to the agent carries the window in effect" {
     const models = [_]ai_types.Model{test_model_a};
-    var runtime = try TuiRuntime.init(std.testing.allocator, .{ .models = &models });
+    var runtime = try SessionRuntime.init(std.testing.allocator, .{ .models = &models });
     defer runtime.deinit();
 
     try std.testing.expectEqual(@as(u32, 8192), runtime.effectiveModel(models[0]).context_window);
@@ -1672,7 +1663,7 @@ const narrow_ceiling_model = ai_types.Model{
 
 test "a session's window the model in effect cannot take is dropped, and named" {
     const models = [_]ai_types.Model{ wide_ceiling_model, narrow_ceiling_model };
-    var runtime = try TuiRuntime.init(std.testing.allocator, .{ .models = &models, .context_window = 1_000_000 });
+    var runtime = try SessionRuntime.init(std.testing.allocator, .{ .models = &models, .context_window = 1_000_000 });
     defer runtime.deinit();
 
     try std.testing.expectEqual(@as(u64, 1_000_000), runtime.contextWindow());
@@ -1687,7 +1678,7 @@ test "a session's window the model in effect cannot take is dropped, and named" 
 
 test "a model switch suspends an oversized context window and restores it when switching back" {
     const models = [_]ai_types.Model{ wide_ceiling_model, narrow_ceiling_model };
-    var runtime = try TuiRuntime.init(std.testing.allocator, .{ .models = &models });
+    var runtime = try SessionRuntime.init(std.testing.allocator, .{ .models = &models });
     defer runtime.deinit();
 
     try runtime.setContextWindow(1_000_000);
@@ -1704,7 +1695,7 @@ test "a model switch suspends an oversized context window and restores it when s
 
 test "a startup window above the selected model ceiling is suspended for a later switch back" {
     const models = [_]ai_types.Model{ narrow_ceiling_model, wide_ceiling_model };
-    var runtime = try TuiRuntime.init(std.testing.allocator, .{ .models = &models, .context_window = 1_000_000 });
+    var runtime = try SessionRuntime.init(std.testing.allocator, .{ .models = &models, .context_window = 1_000_000 });
     defer runtime.deinit();
 
     try std.testing.expectEqual(@as(u64, 262_144), runtime.contextWindow());
@@ -1716,7 +1707,7 @@ test "a startup window above the selected model ceiling is suspended for a later
 
 test "a startup window above the ceiling is dropped before the first turn" {
     const models = [_]ai_types.Model{narrow_ceiling_model};
-    var runtime = try TuiRuntime.init(std.testing.allocator, .{ .models = &models, .context_window = 1_000_000 });
+    var runtime = try SessionRuntime.init(std.testing.allocator, .{ .models = &models, .context_window = 1_000_000 });
     defer runtime.deinit();
 
     try std.testing.expectEqual(@as(u64, 262_144), runtime.contextWindow());
@@ -1725,7 +1716,7 @@ test "a startup window above the ceiling is dropped before the first turn" {
 
 test "a window the model in effect can take survives a switch to another that can" {
     const models = [_]ai_types.Model{ wide_ceiling_model, narrow_ceiling_model };
-    var runtime = try TuiRuntime.init(std.testing.allocator, .{ .models = &models });
+    var runtime = try SessionRuntime.init(std.testing.allocator, .{ .models = &models });
     defer runtime.deinit();
 
     try runtime.setContextWindow(200_000);
@@ -1735,27 +1726,8 @@ test "a window the model in effect can take survives a switch to another that ca
     try std.testing.expect(runtime.contextWindowRefused() == null);
 }
 
-test "MCP bridge exec context address remains stable in TUI runtime" {
-    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
-    const script = "python3 -u -c 'import json,sys\n" ++
-        "for line in sys.stdin:\n" ++
-        " msg=json.loads(line); method=msg.get(\"method\")\n" ++
-        " if method==\"initialize\": print(json.dumps({\"jsonrpc\":\"2.0\",\"id\":msg[\"id\"],\"result\":{\"protocolVersion\":\"2024-11-05\",\"capabilities\":{},\"serverInfo\":{\"name\":\"fake\",\"version\":\"1\"}}}), flush=True)\n" ++
-        " elif method==\"tools/list\": print(json.dumps({\"jsonrpc\":\"2.0\",\"id\":msg[\"id\"],\"result\":{\"tools\":[{\"name\":\"echo\",\"description\":\"Echo\",\"inputSchema\":{\"type\":\"object\"}}]}}), flush=True)'";
-    const script_json = try std.json.Stringify.valueAlloc(std.testing.allocator, script, .{});
-    defer std.testing.allocator.free(script_json);
-    const config_json = try std.fmt.allocPrint(std.testing.allocator, "[{{\"name\":\"mock\",\"command\":\"/bin/sh\",\"args\":[\"-c\",{s}]}}]", .{script_json});
-    defer std.testing.allocator.free(config_json);
-    var runtime = try TuiRuntime.init(std.testing.allocator, .{ .mcp_config_json = config_json });
-    defer runtime.deinit();
-    const bridge = runtime.mcp_bridge orelse return error.MissingBridge;
-    for (bridge.tools.items) |record| {
-        try std.testing.expect(record.exec_ctx.bridge.* == bridge);
-    }
-}
-
 test "local runtime reports steering available" {
-    var runtime = try TuiRuntime.init(std.testing.allocator, .{});
+    var runtime = try SessionRuntime.init(std.testing.allocator, .{});
     defer runtime.deinit();
     try std.testing.expect(runtime.canSteer());
     try std.testing.expect(runtime.createSession().canSteer());
@@ -1787,7 +1759,7 @@ test "exact model switch distinguishes duplicate ids" {
         .max_tokens = 1024,
     };
     const models = [_]ai_types.Model{ first, second };
-    var runtime = try TuiRuntime.init(std.testing.allocator, .{ .models = &models });
+    var runtime = try SessionRuntime.init(std.testing.allocator, .{ .models = &models });
     defer runtime.deinit();
 
     try runtime.switchModelExact(second);
@@ -1799,7 +1771,7 @@ test "exact model switch distinguishes duplicate ids" {
 test "initial model id selects matching model" {
     var mock = MockProtocolCtx{};
     const models = [_]ai_types.Model{ test_model_a, test_model_b };
-    var runtime = try TuiRuntime.init(std.testing.allocator, .{
+    var runtime = try SessionRuntime.init(std.testing.allocator, .{
         .protocol = makeProtocol(&mock),
         .models = &models,
         .initial_model_id = "model-b",
@@ -1836,7 +1808,7 @@ test "initial model ref selects exact duplicate id provider api tuple" {
         .max_tokens = 1024,
     };
     const models = [_]ai_types.Model{ first, second };
-    var runtime = try TuiRuntime.init(std.testing.allocator, .{
+    var runtime = try SessionRuntime.init(std.testing.allocator, .{
         .models = &models,
         .initial_model = .{ .id = "gpt-4o", .provider = "openai", .api = "openai-responses" },
     });
@@ -1851,7 +1823,7 @@ test "a saved model whose provider moved it to another wire is still the one sel
     moved.provider = "deepseek";
     moved.api = "anthropic-messages";
     const models = [_]ai_types.Model{ test_model_a, moved };
-    var runtime = try TuiRuntime.init(std.testing.allocator, .{
+    var runtime = try SessionRuntime.init(std.testing.allocator, .{
         .models = &models,
         .initial_model = .{ .id = "deepseek-flash", .provider = "deepseek", .api = "openai-completions" },
     });
@@ -1863,7 +1835,7 @@ test "a saved model whose provider moved it to another wire is still the one sel
 
 test "replaceModels preserves selected model when still available" {
     const initial = [_]ai_types.Model{ test_model_a, test_model_b };
-    var runtime = try TuiRuntime.init(std.testing.allocator, .{ .models = &initial, .initial_model_id = "model-b" });
+    var runtime = try SessionRuntime.init(std.testing.allocator, .{ .models = &initial, .initial_model_id = "model-b" });
     defer runtime.deinit();
 
     const replacement = [_]ai_types.Model{test_model_b};
@@ -1873,8 +1845,8 @@ test "replaceModels preserves selected model when still available" {
     try std.testing.expectEqualStrings("model-b", runtime.currentModel().?.id);
 }
 
-test "TUI runtime normalizes hidden minimal thinking level" {
-    var runtime = try TuiRuntime.init(std.testing.allocator, .{ .thinking_level = .minimal });
+test "the session runtime normalizes hidden minimal thinking level" {
+    var runtime = try SessionRuntime.init(std.testing.allocator, .{ .thinking_level = .minimal });
     defer runtime.deinit();
 
     try std.testing.expectEqual(ai_types.ThinkingLevel.low, runtime.thinkingLevel());
@@ -1883,11 +1855,11 @@ test "TUI runtime normalizes hidden minimal thinking level" {
 }
 
 test "runtime push preserves newest event when a full queue holds nothing it may shed and nobody drains it" {
-    var runtime = try TuiRuntime.init(std.testing.allocator, .{ .models = &[_]ai_types.Model{test_model_a}, .run_async = false });
+    var runtime = try SessionRuntime.init(std.testing.allocator, .{ .models = &[_]ai_types.Model{test_model_a}, .run_async = false });
     defer runtime.deinit();
     runtime.semantic_wait_ms = 0;
 
-    for (0..TuiEventStream.usable_capacity) |_| {
+    for (0..SessionEventStream.usable_capacity) |_| {
         runtime.push(.{ .turn_start = .{} });
     }
     runtime.push(.{ .@"error" = .{ .message = try runtime.dupeOwned("latest error") } });
@@ -1903,11 +1875,11 @@ test "runtime push preserves newest event when a full queue holds nothing it may
     try std.testing.expect(saw_latest_error);
 }
 
-test "TuiRuntime terminal event sheds streaming chunks from a full queue and warns" {
-    var runtime = try TuiRuntime.init(std.testing.allocator, .{ .models = &[_]ai_types.Model{test_model_a}, .run_async = false });
+test "SessionRuntime terminal event sheds streaming chunks from a full queue and warns" {
+    var runtime = try SessionRuntime.init(std.testing.allocator, .{ .models = &[_]ai_types.Model{test_model_a}, .run_async = false });
     defer runtime.deinit();
 
-    for (0..TuiEventStream.usable_capacity) |i| {
+    for (0..SessionEventStream.usable_capacity) |i| {
         runtime.push(.{ .text_delta = .{ .content_index = i, .delta = OwnedSlice(u8).initBorrowed("x") } });
     }
     try std.testing.expect(runtime.event_stream.isFull());
@@ -1929,19 +1901,19 @@ test "TuiRuntime terminal event sheds streaming chunks from a full queue and war
     try std.testing.expect(saw_warning);
 }
 
-test "TuiRuntime counts dropped events and emits warning" {
-    var runtime = try TuiRuntime.init(std.testing.allocator, .{ .models = &[_]ai_types.Model{test_model_a} });
+test "SessionRuntime counts dropped events and emits warning" {
+    var runtime = try SessionRuntime.init(std.testing.allocator, .{ .models = &[_]ai_types.Model{test_model_a} });
     defer runtime.deinit();
-    var tui_session = runtime.createSession();
+    var handle = runtime.createSession();
 
     var i: usize = 0;
-    while (i < TuiEventStream.usable_capacity) : (i += 1) {
+    while (i < SessionEventStream.usable_capacity) : (i += 1) {
         runtime.push(.{ .text_delta = .{ .content_index = i, .delta = OwnedSlice(u8).initBorrowed("x") } });
     }
     try std.testing.expect(runtime.event_stream.isFull());
 
-    runtime.push(.{ .text_delta = .{ .content_index = TuiEventStream.usable_capacity, .delta = OwnedSlice(u8).initBorrowed("after-full") } });
-    const shed: u64 = TuiEventStream.usable_capacity;
+    runtime.push(.{ .text_delta = .{ .content_index = SessionEventStream.usable_capacity, .delta = OwnedSlice(u8).initBorrowed("after-full") } });
+    const shed: u64 = SessionEventStream.usable_capacity;
     try std.testing.expectEqual(shed, runtime.dropped_event_count);
     try std.testing.expect(runtime.backpressure_active.load(.acquire));
 
@@ -1951,7 +1923,7 @@ test "TuiRuntime counts dropped events and emits warning" {
 
     var saw_warning = false;
     var saw_newest = false;
-    while (tui_session.popEvent()) |event| {
+    while (handle.popEvent()) |event| {
         var ev = event;
         defer ev.deinit(std.testing.allocator);
         if (ev == .text_delta and std.mem.eql(u8, ev.text_delta.delta.slice(), "after-full")) saw_newest = true;
@@ -1969,11 +1941,11 @@ test "TuiRuntime counts dropped events and emits warning" {
 }
 
 test "a full queue sheds only streaming chunks, keeping message and turn events in order" {
-    var runtime = try TuiRuntime.init(std.testing.allocator, .{ .models = &[_]ai_types.Model{test_model_a}, .run_async = false });
+    var runtime = try SessionRuntime.init(std.testing.allocator, .{ .models = &[_]ai_types.Model{test_model_a}, .run_async = false });
     defer runtime.deinit();
 
     runtime.push(.{ .message_start = .{ .role = .assistant } });
-    for (0..TuiEventStream.usable_capacity - 3) |i| {
+    for (0..SessionEventStream.usable_capacity - 3) |i| {
         runtime.push(.{ .text_delta = .{ .content_index = i, .delta = OwnedSlice(u8).initBorrowed("x") } });
     }
     runtime.push(.{ .thinking_delta = .{ .content_index = 0, .delta = OwnedSlice(u8).initBorrowed("t") } });
@@ -1982,8 +1954,8 @@ test "a full queue sheds only streaming chunks, keeping message and turn events 
 
     runtime.push(.{ .turn_end = .{ .stop_reason = .stop } });
 
-    try std.testing.expectEqual(@as(u64, TuiEventStream.usable_capacity - 2), runtime.dropped_event_count);
-    var order: [4]std.meta.Tag(TuiEvent) = undefined;
+    try std.testing.expectEqual(@as(u64, SessionEventStream.usable_capacity - 2), runtime.dropped_event_count);
+    var order: [4]std.meta.Tag(SessionEvent) = undefined;
     var count: usize = 0;
     while (runtime.event_stream.poll()) |event| {
         var ev = event;
@@ -1992,14 +1964,14 @@ test "a full queue sheds only streaming chunks, keeping message and turn events 
         count += 1;
     }
     try std.testing.expectEqual(@as(usize, 4), count);
-    try std.testing.expectEqual(std.meta.Tag(TuiEvent).message_start, order[0]);
-    try std.testing.expectEqual(std.meta.Tag(TuiEvent).message_end, order[1]);
-    try std.testing.expectEqual(std.meta.Tag(TuiEvent).turn_end, order[2]);
-    try std.testing.expectEqual(std.meta.Tag(TuiEvent).system_warning, order[3]);
+    try std.testing.expectEqual(std.meta.Tag(SessionEvent).message_start, order[0]);
+    try std.testing.expectEqual(std.meta.Tag(SessionEvent).message_end, order[1]);
+    try std.testing.expectEqual(std.meta.Tag(SessionEvent).turn_end, order[2]);
+    try std.testing.expectEqual(std.meta.Tag(SessionEvent).system_warning, order[3]);
 }
 
 test "a command's end directory is adopted only while it stays inside the session root" {
-    var runtime = try TuiRuntime.init(std.testing.allocator, .{ .workspace_root = "/workspace" });
+    var runtime = try SessionRuntime.init(std.testing.allocator, .{ .workspace_root = "/workspace" });
     defer runtime.deinit();
     try std.testing.expectEqualStrings("/workspace", runtime.workingDirectory());
 
@@ -2014,7 +1986,7 @@ test "a command's end directory is adopted only while it stays inside the sessio
 }
 
 test "moving the workspace root resets the working directory to it" {
-    var runtime = try TuiRuntime.init(std.testing.allocator, .{ .workspace_root = "/workspace" });
+    var runtime = try SessionRuntime.init(std.testing.allocator, .{ .workspace_root = "/workspace" });
     defer runtime.deinit();
     runtime.adoptWorkingDirectory("/workspace/sub");
     try std.testing.expectEqualStrings("/workspace/sub", runtime.workingDirectory());
@@ -2025,7 +1997,7 @@ test "moving the workspace root resets the working directory to it" {
 
 test "requestTitle keeps the first line of the model's reply, thinking off" {
     var mock = MockProtocolCtx{ .reply_text = "  \"Fix the resume freeze.\"  \nsecond line" };
-    var runtime = try TuiRuntime.init(std.testing.allocator, .{ .protocol = makeProtocol(&mock), .models = &[_]ai_types.Model{test_model_a}, .generate_titles = true });
+    var runtime = try SessionRuntime.init(std.testing.allocator, .{ .protocol = makeProtocol(&mock), .models = &[_]ai_types.Model{test_model_a}, .generate_titles = true });
     defer runtime.deinit();
 
     try std.testing.expect(try runtime.requestTitle("the resume freezes on long sessions"));
@@ -2040,7 +2012,7 @@ test "requestTitle keeps the first line of the model's reply, thinking off" {
 
 test "requestTitle sends nothing unless titles are enabled" {
     var mock = MockProtocolCtx{};
-    var runtime = try TuiRuntime.init(std.testing.allocator, .{ .protocol = makeProtocol(&mock), .models = &[_]ai_types.Model{test_model_a} });
+    var runtime = try SessionRuntime.init(std.testing.allocator, .{ .protocol = makeProtocol(&mock), .models = &[_]ai_types.Model{test_model_a} });
     defer runtime.deinit();
 
     try std.testing.expect(!try runtime.requestTitle("the resume freezes on long sessions"));
