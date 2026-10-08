@@ -94,8 +94,10 @@ store (an `auth.json` under `.oapx` or `.makai`) inside the checkout; both stay
 in `.gitignore`, so nothing else would notice one. A workspace's own `.oapx`
 (tool artifacts, permissions) is expected state, not litter.
 
-Three workflows run on `pull_request`: `ci.yml`, `ci-zig.yml` and
-`benchmark-report.yml`. Each takes one concurrency group per pull request, so a
+Five workflows run on `pull_request`: `ci.yml`, `ci-zig.yml`,
+`benchmark-report.yml`, `compatibility.yml` (which also reruns on a description
+edit) and `release-smoke.yml` (only when a pull request changes it, against the
+latest release). Each takes one concurrency group per pull request, so a
 newer push to that pull request cancels the run the previous push started, and
 that is all the group ever cancels. Both CI files push on `main` only, so a branch
 push produces one run rather than a `push` twin of the `pull_request` one, and a

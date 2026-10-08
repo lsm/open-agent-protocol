@@ -31,6 +31,12 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  # One group per pull request, so a newer push cancels the run the previous one
+  # started; a release or a hand run keys on its own run id and shares nothing.
+  group: release-smoke-${{ github.event_name }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   resolve:
     name: Resolve the release
@@ -93,6 +99,7 @@ jobs:
           cache: false
 
       - name: Download and verify the release archive
+        id: asset
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
@@ -104,13 +111,21 @@ jobs:
           if command -v cygpath >/dev/null; then temp="$(cygpath -u "$temp")"; fi
           dir="$temp/release"
           mkdir -p "$dir"
-          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --dir "$dir" --pattern "$ASSET" --pattern SHA256SUMS.txt
+          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --dir "$dir" --pattern SHA256SUMS.txt
           cd "$dir"
           expected="$(awk -v name="$ASSET" '$2 == name { print $1 }' SHA256SUMS.txt)"
           if [ -z "$expected" ]; then
+            case "$ASSET" in
+              *-macos-*)
+                echo "::warning::$ASSET is not in this release; release-binaries withholds an unsigned macOS build on a prerelease"
+                echo "withheld=true" >> "$GITHUB_OUTPUT"
+                exit 0
+                ;;
+            esac
             echo "::error::$ASSET is not listed in SHA256SUMS.txt"
             exit 1
           fi
+          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --dir "$dir" --pattern "$ASSET"
           if command -v sha256sum >/dev/null; then
             actual="$(sha256sum "$ASSET" | awk '{ print $1 }')"
           else
@@ -132,6 +147,7 @@ jobs:
           echo "OAP_SDK_BINARY_PATH=$binary" >> "$GITHUB_ENV"
 
       - name: The binary reports the release's version
+        if: steps.asset.outputs.withheld != 'true'
         shell: bash
         env:
           VERSION: ${{ needs.resolve.outputs.version }}
@@ -144,6 +160,7 @@ jobs:
           fi
 
       - name: The Go SDK at this tag runs against the released binary
+        if: steps.asset.outputs.withheld != 'true'
         shell: bash
         env:
           TESTS: ${{ matrix.sdk_tests }}
