@@ -3,11 +3,53 @@ package sdk
 import (
 	"context"
 	"errors"
+	"github.com/lsm/open-agent-protocol/go/providercatalog"
+	"github.com/lsm/open-agent-protocol/providers"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 )
+
+const smokeProviders = `{"providers":[
+{"id":"smoke","name":"Smoke","api":"openai-completions","base_url":"http://127.0.0.1:9/v1","auth":"none","models":["smoke-model"]},
+{"id":"smoke-keyed","name":"Smoke Keyed","api":"openai-completions","base_url":"http://127.0.0.1:9/v1","auth":{"env":"OAP_SMOKE_KEY_THAT_IS_NEVER_SET"},"models":["keyed-model"]}]}`
+
+func smokeHome(t *testing.T) string {
+	t.Helper()
+	home := t.TempDir()
+	dir := filepath.Join(home, ".oapx")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "providers.json"), []byte(smokeProviders), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return home
+}
+
+func smokeEnviron(t *testing.T) []string {
+	t.Helper()
+	catalog, err := providercatalog.Load(providers.Files)
+	if err != nil {
+		t.Fatalf("load the provider catalog: %v", err)
+	}
+	credentials := map[string]bool{}
+	for _, row := range catalog.Providers {
+		for _, name := range row.CredentialEnv {
+			credentials[name] = true
+		}
+	}
+	var env []string
+	for _, entry := range os.Environ() {
+		name, _, _ := strings.Cut(entry, "=")
+		if !credentials[name] {
+			env = append(env, entry)
+		}
+	}
+	return env
+}
 
 func newSmokeClient(t *testing.T) *Client {
 	return newSmokeClientWithClosePolicy(t, false)
@@ -24,8 +66,8 @@ func newFixtureSmokeClientWithClosePolicy(t *testing.T, allowNonzeroExit bool) *
 		t.Skip("OAP_SDK_BINARY_PATH is not set")
 	}
 
-	home := t.TempDir()
-	env := append(os.Environ(),
+	home := smokeHome(t)
+	env := append(smokeEnviron(t),
 		"HOME="+home,
 		"XDG_CONFIG_HOME="+home,
 		"OAPX_KEYCHAIN_SERVICE=com.makai.go-sdk-test."+newULID(),
@@ -56,8 +98,8 @@ func newSmokeClientWithClosePolicy(t *testing.T, allowNonzeroExit bool) *Client 
 		t.Skip("OAP_SDK_BINARY_PATH is not set")
 	}
 
-	home := t.TempDir()
-	env := append(os.Environ(),
+	home := smokeHome(t)
+	env := append(smokeEnviron(t),
 		"HOME="+home,
 		"XDG_CONFIG_HOME="+home,
 		"OAPX_KEYCHAIN_SERVICE=com.makai.go-sdk-test."+newULID(),
@@ -161,7 +203,7 @@ func TestSmokeModelsResolveRejectsAnUnknownModel(t *testing.T) {
 	client := newSmokeClient(t)
 
 	_, err := client.Models.Resolve(testContext(t), ResolveModelRequest{
-		ProviderID: "anthropic", ModelID: "no-such-model-" + newULID(),
+		ProviderID: "smoke", ModelID: "no-such-model-" + newULID(),
 	})
 	var protocolErr *ProtocolError
 	if !errors.As(err, &protocolErr) {
@@ -266,12 +308,12 @@ func TestSmokeProviderCompleteWithoutCredentials(t *testing.T) {
 	client := newSmokeClient(t)
 	ctx := testContext(t)
 
-	models, err := client.Models.List(ctx, ListModelsRequest{ProviderID: "anthropic"})
+	models, err := client.Models.List(ctx, ListModelsRequest{ProviderID: "smoke-keyed"})
 	if err != nil {
 		t.Fatalf("List: %v", err)
 	}
 	if len(models.Models) == 0 {
-		t.Skip("the runtime lists no anthropic models")
+		t.Fatal("the runtime lists no model for the declared endpoint whose key is unset")
 	}
 
 	_, err = client.Provider.Complete(ctx, CompletionRequest{
@@ -280,7 +322,7 @@ func TestSmokeProviderCompleteWithoutCredentials(t *testing.T) {
 		Options:  &RunOptions{MaxTokens: MaxTokens(16)},
 	})
 	if err == nil {
-		t.Skip("the runtime completed the call, so credentials were available after all")
+		t.Fatal("a call to an endpoint whose key is unset completed")
 	}
 	var streamErr *StreamError
 	if !errors.As(err, &streamErr) {
@@ -288,6 +330,22 @@ func TestSmokeProviderCompleteWithoutCredentials(t *testing.T) {
 	}
 	assertAuthFailureIsTyped(t, err, streamErr)
 	t.Logf("uncredentialed completion failed as expected: kind=%s code=%s", streamErr.Kind, streamErr.Code)
+}
+
+func TestSmokeProviderAsksForACredentialForACatalogProviderWithoutAKey(t *testing.T) {
+	client := newSmokeClient(t)
+	_, err := client.Provider.Complete(testContext(t), CompletionRequest{
+		ModelRef: "anthropic/anthropic-messages@any-model",
+		Messages: []Message{UserMessage("hello")},
+		Options:  &RunOptions{MaxTokens: MaxTokens(16)},
+	})
+	var authErr *AuthRequiredError
+	if !errors.As(err, &authErr) {
+		t.Fatalf("a catalog provider with no key should ask for a credential, got %T: %v", err, err)
+	}
+	if authErr.ProviderID != "anthropic" {
+		t.Errorf("ProviderID = %q, want anthropic", authErr.ProviderID)
+	}
 }
 
 func assertAuthFailureIsTyped(t *testing.T, err error, streamErr *StreamError) {
@@ -308,20 +366,24 @@ func TestSmokeAgentRunWithoutCredentials(t *testing.T) {
 	client := newSmokeClient(t)
 	ctx := testContext(t)
 
-	models, err := client.Models.List(ctx, ListModelsRequest{ProviderID: "anthropic"})
+	sessionID, err := client.Agent.OpenSession(ctx, "")
 	if err != nil {
-		t.Fatalf("List: %v", err)
+		t.Fatalf("OpenSession: %v", err)
 	}
-	if len(models.Models) == 0 {
-		t.Skip("the runtime lists no anthropic models")
+	_, current, err := client.Agent.ListSessionModels(ctx, sessionID)
+	if err != nil {
+		t.Fatalf("ListSessionModels: %v", err)
+	}
+	if current == "" {
+		t.Fatal("the agent names no current model")
 	}
 
 	_, err = client.Agent.Run(ctx, AgentRequest{
-		ModelRef: models.Models[0].ModelRef,
+		ModelRef: current,
 		Messages: []Message{UserMessage("hello")},
 	})
 	if err == nil {
-		t.Skip("the runtime completed the run, so credentials were available after all")
+		t.Fatal("a run on an endpoint whose key is unset completed")
 	}
 	var streamErr *StreamError
 	if !errors.As(err, &streamErr) {

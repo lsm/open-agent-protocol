@@ -7,8 +7,11 @@ one first::
     zig build install --prefix /tmp/oapx-py
     OAP_SDK_BINARY_PATH=/tmp/oapx-py/bin/oapx pytest
 
-No provider credentials are needed: the model catalogue, envelope validation,
-frame routing, and process lifetime are all reachable without them.
+No provider credentials are needed: each runtime gets a fresh ``HOME`` whose
+``providers.json`` declares two local endpoints, one taking no credential and
+one naming a key that is never set, so the catalogue, envelope validation,
+frame routing, and process lifetime are all reachable without them and without
+the network.
 
 The ``auth`` protocol is **not** exercised here by default. On macOS the login
 Keychain is the primary credential store, and an unsigned local build blocks on
@@ -21,7 +24,12 @@ without prompting (Linux CI, or a signed build with a granted ACL).
 from __future__ import annotations
 
 import asyncio
+import atexit
+import json
 import os
+import shutil
+import tempfile
+from pathlib import Path
 
 import pytest
 
@@ -33,7 +41,38 @@ from oap_sdk.transport import StdioTransport
 pytestmark = pytest.mark.real_binary
 
 
+SMOKE_PROVIDERS = {
+    "providers": [
+        {"id": "smoke", "name": "Smoke", "api": "openai-completions",
+         "base_url": "http://127.0.0.1:9/v1", "auth": "none", "models": ["smoke-model"]},
+        {"id": "smoke-keyed", "name": "Smoke Keyed", "api": "openai-completions",
+         "base_url": "http://127.0.0.1:9/v1", "auth": {"env": "OAP_SMOKE_KEY_THAT_IS_NEVER_SET"},
+         "models": ["keyed-model"]},
+    ]
+}
+
+
+def catalog_credential_names() -> set[str]:
+    catalog = json.loads((Path(__file__).resolve().parents[3] / "providers" / "catalog.json").read_text())
+    rows = catalog["providers"] if isinstance(catalog, dict) else catalog
+    return {name for row in rows for name in row.get("credential_env", [])}
+
+
+CATALOG_CREDENTIALS = catalog_credential_names()
+
+
+def smoke_env() -> dict[str, str]:
+    home = tempfile.mkdtemp(prefix="oap-sdk-py-home-")
+    atexit.register(shutil.rmtree, home, ignore_errors=True)
+    os.makedirs(os.path.join(home, ".oapx"), mode=0o700)
+    with open(os.path.join(home, ".oapx", "providers.json"), "w") as handle:
+        json.dump(SMOKE_PROVIDERS, handle)
+    inherited = {name: value for name, value in os.environ.items() if name not in CATALOG_CREDENTIALS}
+    return {**inherited, "HOME": home, "XDG_CONFIG_HOME": home}
+
+
 async def open_transport(binary: str, **kwargs: object) -> StdioTransport:
+    kwargs.setdefault("env", smoke_env())
     transport = StdioTransport(command=binary, **kwargs)  # type: ignore[arg-type]
     await transport.connect()
     return transport
@@ -48,12 +87,15 @@ async def test_handshake_against_the_real_host(real_binary: str) -> None:
         await transport.close()
 
 
-async def test_models_list_returns_the_static_catalogue(real_binary: str) -> None:
+async def test_models_list_returns_the_declared_endpoints_models(real_binary: str) -> None:
     transport = await open_transport(real_binary)
     client = MakaiClient(transport, response_timeout=10.0)
     try:
         result = await client.models.list()
-        assert result.models, "the runtime always serves at least the static fallback catalogue"
+        assert {model.model_ref for model in result.models} >= {
+            "smoke/openai-chat-completions@smoke-model",
+            "smoke-keyed/openai-chat-completions@keyed-model",
+        }
         assert result.fetched_at_ms > 0
         for model in result.models:
             assert model.model_ref
@@ -144,7 +186,7 @@ async def test_close_terminates_the_real_process(real_binary: str) -> None:
 
 
 async def test_context_manager_closes_the_real_process(real_binary: str) -> None:
-    async with StdioTransport(command=real_binary) as transport:
+    async with StdioTransport(command=real_binary, env=smoke_env()) as transport:
         client = MakaiClient(transport, response_timeout=10.0)
         assert (await client.models.list()).models
         pid = transport.pid

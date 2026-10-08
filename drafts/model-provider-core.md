@@ -341,6 +341,13 @@ Eighteen, in five groups.
 control requires it on `capabilities.response` and `models.response`: the whole
 content is bound to one descriptor snapshot.
 
+**`oapx` diverges here.** It reloads its served catalog after a sign-in, and
+after refusing a provider whose key appeared out of band, so its providers and
+models change while `capability_revision` stays the build's version. A caller
+that caches either list by revision holds stale entries after such a reload.
+Until #355 settles how a reload is revisioned, a caller re-reads both lists
+after a sign-in or a `provider_unavailable` refusal.
+
 #### The model entry
 
 An entry is an object or the response is refused. This is the shape rule stated
@@ -1801,8 +1808,17 @@ rather than after.
 
 An implementation claiming `open-agent-protocol.model-provider-core`:
 
-1. Answers `provider.describe.request` with at least one provider, naming its
-   `wire` and `framing`.
+1. Answers `provider.describe.request`, naming each described provider's
+   `wire` and `framing`. An implementation that serves a provider only once it
+   can reach it, as `oapx` does with a credential (#355), may describe none
+   until one is present; it still answers, and an `inference.create.request`
+   naming a provider that awaits a credential is refused as
+   `credential_missing` rather than `model_not_found`, and one whose credential
+   is present but whose models are not loaded yet as `provider_unavailable`,
+   which asks for a reload. A provider is described on one wire, its
+   catalog's first, even where the vendor offers more. A credential grant
+   reaches only a provider it describes, so a grant cannot yet introduce the
+   key for one it does not (#1013).
 2. Answers `provider.models.list.request`, and every `model_ref` it returns
    resolves to a provider it described.
 3. Emits exactly one terminal per accepted inference, allocates no

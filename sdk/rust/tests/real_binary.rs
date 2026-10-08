@@ -117,7 +117,7 @@ async fn resolving_a_model_that_does_not_exist_is_an_invalid_request() {
         .expect("connects");
     let error = client
         .models()
-        .resolve("anthropic", Some("anthropic-messages"), "no-such-model")
+        .resolve("smoke", Some("openai-completions"), "no-such-model")
         .await
         .unwrap_err();
     assert!(matches!(error, Error::Protocol { .. }), "{error:?}");
@@ -198,9 +198,7 @@ async fn a_manual_login_fails_closed_against_the_real_runtime() {
 #[tokio::test]
 async fn an_unauthenticated_provider_call_reaches_the_typed_auth_error() {
     let binary = require_real_binary!();
-    let home = tempfile::tempdir().expect("tempdir");
     let client = common::real_builder(&binary)
-        .env("HOME", home.path().display().to_string())
         .connect()
         .await
         .expect("connects");
@@ -208,28 +206,26 @@ async fn an_unauthenticated_provider_call_reaches_the_typed_auth_error() {
     let error = client
         .provider()
         .complete(ExecutionRequest::prompt(
-            "anthropic/anthropic-messages@claude-sonnet-4-5",
+            "smoke-keyed/openai-chat-completions@keyed-model",
             "hi",
         ))
         .await
         .unwrap_err();
     assert!(matches!(error, Error::AuthRequired { .. }), "{error:?}");
-    assert_eq!(error.provider_id(), Some("anthropic"));
+    assert_eq!(error.provider_id(), Some("smoke-keyed"));
     client.close().await;
 }
 
 #[tokio::test]
 async fn an_unauthenticated_provider_stream_reaches_the_typed_auth_error() {
     let binary = require_real_binary!();
-    let home = tempfile::tempdir().expect("tempdir");
     let client = common::real_builder(&binary)
-        .env("HOME", home.path().display().to_string())
         .connect()
         .await
         .expect("connects");
 
     let mut events = Box::pin(client.provider().stream(ExecutionRequest::prompt(
-        "anthropic/anthropic-messages@claude-sonnet-4-5",
+        "smoke-keyed/openai-chat-completions@keyed-model",
         "hi",
     )));
     let error = events
@@ -245,9 +241,7 @@ async fn an_unauthenticated_provider_stream_reaches_the_typed_auth_error() {
 #[tokio::test]
 async fn an_agent_run_on_a_model_outside_the_catalog_is_refused_by_name() {
     let binary = require_real_binary!();
-    let home = tempfile::tempdir().expect("tempdir");
     let client = common::real_builder(&binary)
-        .env("HOME", home.path().display().to_string())
         .connect()
         .await
         .expect("connects");

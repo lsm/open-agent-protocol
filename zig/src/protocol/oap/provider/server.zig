@@ -24,6 +24,12 @@ pub const Options = struct {
     accepts_inference: bool = false,
     resolves_own_credentials: bool = false,
     catalog: ?types.ModelCatalogState = null,
+    unserved_refusal: ?*const fn (provider_id: []const u8) ?UnservedRefusal = null,
+};
+
+pub const UnservedRefusal = struct {
+    code: types.ErrorCode,
+    message: []const u8,
 };
 
 pub const GrantedCredential = struct {
@@ -150,6 +156,13 @@ pub const Server = struct {
 
     pub fn addProvider(self: *Self, descriptor: types.ProviderDescriptor) !void {
         try self.providers.append(self.allocator, descriptor);
+    }
+
+    pub fn clearCatalog(self: *Self) void {
+        for (self.providers.items) |*descriptor| descriptor.deinit(self.allocator);
+        self.providers.clearRetainingCapacity();
+        for (self.models.items) |*entry| entry.deinit(self.allocator);
+        self.models.clearRetainingCapacity();
     }
 
     pub fn addModel(self: *Self, entry: types.ModelEntry) !void {
@@ -882,6 +895,10 @@ pub const Server = struct {
         };
 
         const descriptor = self.findProvider(parsed.provider_id) orelse {
+            if (self.options.unserved_refusal) |refusal_for| if (refusal_for(parsed.provider_id)) |refusal| {
+                try self.emitCreateRefusal(env, refusal.code, refusal.message);
+                return;
+            };
             try self.emitCreateRefusal(env, .model_not_found, "no such provider");
             return;
         };
@@ -2003,6 +2020,69 @@ fn makeRequest(allocator: std.mem.Allocator, type_name: []const u8, payload: []c
         "{{\"protocol\":\"open-agent-protocol\",\"version\":\"0.1\",\"profile\":\"{s}\",\"type\":\"{s}\",\"id\":\"{s}\",\"payload\":{s}}}",
         .{ types.PROFILE, type_name, id, payload },
     );
+}
+
+fn refuseAcmeAndBeta(provider_id: []const u8) ?UnservedRefusal {
+    if (std.mem.eql(u8, provider_id, "acme")) return .{ .code = .credential_missing, .message = "acme needs a key" };
+    if (std.mem.eql(u8, provider_id, "beta")) return .{ .code = .provider_unavailable, .message = "beta is loading" };
+    return null;
+}
+
+fn createRefusalCode(allocator: std.mem.Allocator, server: *Server, model_ref: []const u8) ![]u8 {
+    const payload = try std.fmt.allocPrint(allocator, "{{\"model_ref\":\"{s}\",\"messages\":[]}}", .{model_ref});
+    defer allocator.free(payload);
+    const line = try makeRequest(allocator, "inference.create.request", payload, "c1");
+    defer allocator.free(line);
+    try server.handleLine(line);
+    var code: ?[]u8 = null;
+    while (server.popOutbound()) |out| {
+        defer allocator.free(out);
+        const marker = "\"code\":\"";
+        const start = (std.mem.indexOf(u8, out, marker) orelse continue) + marker.len;
+        const end = std.mem.indexOfScalarPos(u8, out, start, '"') orelse continue;
+        if (code == null) code = try allocator.dupe(u8, out[start..end]);
+    }
+    return code orelse error.NoRefusal;
+}
+
+test "a create for an unserved provider is refused with the code the unserved hook names, and as model_not_found when it names none" {
+    const allocator = std.testing.allocator;
+    var server = try testServer(allocator, .{ .accepts_inference = true, .unserved_refusal = refuseAcmeAndBeta });
+    defer server.deinit();
+
+    const awaiting = try createRefusalCode(allocator, &server, "acme/anthropic-messages@m");
+    defer allocator.free(awaiting);
+    try std.testing.expectEqualStrings("credential_missing", awaiting);
+    const loading = try createRefusalCode(allocator, &server, "beta/anthropic-messages@m");
+    defer allocator.free(loading);
+    try std.testing.expectEqualStrings("provider_unavailable", loading);
+    const unknown = try createRefusalCode(allocator, &server, "nobody/anthropic-messages@m");
+    defer allocator.free(unknown);
+    try std.testing.expectEqualStrings("model_not_found", unknown);
+
+    var plain = try testServer(allocator, .{ .accepts_inference = true });
+    defer plain.deinit();
+    const without_hook = try createRefusalCode(allocator, &plain, "acme/anthropic-messages@m");
+    defer allocator.free(without_hook);
+    try std.testing.expectEqualStrings("model_not_found", without_hook);
+}
+
+test "clearing the catalog empties both lists so a fresh one can be added, leaking nothing" {
+    const allocator = std.testing.allocator;
+    var server = try testServer(allocator, .{});
+    defer server.deinit();
+    try std.testing.expect(server.providers.items.len > 0);
+
+    server.clearCatalog();
+    try std.testing.expectEqual(@as(usize, 0), server.providers.items.len);
+    try std.testing.expectEqual(@as(usize, 0), server.models.items.len);
+
+    const line = try makeRequest(allocator, "provider.describe.request", "{}", "q1");
+    defer allocator.free(line);
+    try server.handleLine(line);
+    var response = try decodeOnly(allocator, &server);
+    defer response.deinit(allocator);
+    try std.testing.expectEqual(@as(usize, 0), response.payload.provider_describe_response.providers.len);
 }
 
 test "describe answers with the configured providers and the versions it speaks" {

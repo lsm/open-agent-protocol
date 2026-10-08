@@ -32,6 +32,7 @@ pub const Adapter = struct {
     flows: std.AutoHashMap(auth_types.Ulid, Flow),
     expected_capability_revision: ?[]const u8 = null,
     disconnected: bool = false,
+    signed_in: bool = false,
 
     const Self = @This();
 
@@ -52,6 +53,11 @@ pub const Adapter = struct {
         self.queries.deinit();
         self.flows.deinit();
         self.* = undefined;
+    }
+
+    pub fn takeSignIn(self: *Self) bool {
+        defer self.signed_in = false;
+        return self.signed_in;
     }
 
     pub fn setCapabilityRevision(self: *Self, revision: []const u8) void {
@@ -388,6 +394,7 @@ pub const Adapter = struct {
                 .provider_id = result.provider_id.slice(),
                 .status = @tagName(result.status),
             });
+            if (result.status == .success) self.signed_in = true;
         }
     }
 
@@ -756,6 +763,8 @@ test "OAP auth adapter logs into Codex with a device code it shows as a URL and 
     }
     try std.testing.expect(url_seen);
     try std.testing.expectEqualStrings("success", status orelse return error.LoginNeverCompleted);
+    try std.testing.expect(adapter.takeSignIn());
+    try std.testing.expect(!adapter.takeSignIn());
 }
 
 test "OAP auth adapter cancels a Codex device login that is still waiting for approval" {
@@ -813,6 +822,7 @@ test "OAP auth adapter cancels a Codex device login that is still waiting for ap
     }
     try std.testing.expect(cancel_sent);
     try std.testing.expectEqualStrings("cancelled", status orelse return error.LoginNeverCompleted);
+    try std.testing.expect(!adapter.takeSignIn());
     try std.testing.expect(FakeCodexAuth.polls <= FakeCodexAuth.pending_polls);
 }
 
@@ -1009,6 +1019,8 @@ test "OAP auth adapter completes an approved Copilot device login through the in
         if (status == null) compat.time.sleepNs(std.time.ns_per_ms);
     }
     try std.testing.expectEqualStrings("success", status orelse return error.LoginNeverCompleted);
+    try std.testing.expect(adapter.takeSignIn());
+    try std.testing.expect(!adapter.takeSignIn());
     try std.testing.expectEqual(@as(usize, 1), FakeCopilotAuth.copilot_token_calls.load(.seq_cst));
     try std.testing.expect(FakeCopilotAuth.model_policy_calls.load(.seq_cst) > 0);
 }
