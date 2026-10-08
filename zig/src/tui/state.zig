@@ -1,6 +1,5 @@
 const std = @import("std");
 const agent_compaction = @import("agent_compaction");
-const agent_types = @import("agent_types");
 const ai_types = @import("ai_types");
 const session_runtime = @import("session_runtime");
 const compat = @import("compat");
@@ -313,26 +312,17 @@ pub const TranscriptEntry = struct {
 pub const RegisteredToolEntry = struct {
     name: []u8,
     label: []u8,
-    short_description: []u8,
 
-    pub fn init(allocator: std.mem.Allocator, tool: agent_types.AgentTool) !RegisteredToolEntry {
+    pub fn init(allocator: std.mem.Allocator, tool: session_runtime.ToolLabel) !RegisteredToolEntry {
         const name = try allocator.dupe(u8, tool.name);
         errdefer allocator.free(name);
         const label = try allocator.dupe(u8, tool.label);
-        errdefer allocator.free(label);
-        const short_description = try allocator.dupe(u8, tool.short_description orelse "");
-        errdefer allocator.free(short_description);
-        return .{
-            .name = name,
-            .label = label,
-            .short_description = short_description,
-        };
+        return .{ .name = name, .label = label };
     }
 
     pub fn deinit(self: *RegisteredToolEntry, allocator: std.mem.Allocator) void {
         allocator.free(self.name);
         allocator.free(self.label);
-        allocator.free(self.short_description);
         self.* = undefined;
     }
 };
@@ -1042,7 +1032,7 @@ pub const AppState = struct {
         try self.transcript.append(self.allocator, entry);
     }
 
-    pub fn setRegisteredTools(self: *AppState, tools: []const agent_types.AgentTool) !void {
+    pub fn setRegisteredTools(self: *AppState, tools: []const session_runtime.ToolLabel) !void {
         for (self.registered_tools.items) |*tool| tool.deinit(self.allocator);
         self.registered_tools.clearRetainingCapacity();
         try self.registered_tools.ensureTotalCapacity(self.allocator, tools.len);
@@ -2407,23 +2397,6 @@ fn countRows(state: *const AppState, summary: bool, id: []const u8) usize {
     return count;
 }
 
-pub fn noopToolForTest(
-    tool_call_id: []const u8,
-    args_json: []const u8,
-    cancel_token: ?ai_types.CancelToken,
-    on_update_ctx: ?*anyopaque,
-    on_update: ?agent_types.ToolUpdateCallback,
-    allocator: std.mem.Allocator,
-) anyerror!agent_types.AgentToolResult {
-    _ = tool_call_id;
-    _ = args_json;
-    _ = cancel_token;
-    _ = on_update_ctx;
-    _ = on_update;
-    _ = allocator;
-    return error.NotImplemented;
-}
-
 test "a reply drained in one pass is timed from when its events were queued, not when they were applied" {
     var state = AppState.init(std.testing.allocator);
     defer state.deinit();
@@ -2842,14 +2815,7 @@ test "bytes convert at the agent's own divisor" {
 test "AppState applies transcript and tool events" {
     var state = AppState.init(std.testing.allocator);
     defer state.deinit();
-    const tools = [_]agent_types.AgentTool{.{
-        .label = "Shell Execute",
-        .name = "shell_command",
-        .description = "Run shell command",
-        .short_description = "Run shell",
-        .parameters_schema_json = "{}",
-        .execute = noopToolForTest,
-    }};
+    const tools = [_]session_runtime.ToolLabel{.{ .name = "shell_command", .label = "Shell Execute" }};
     try state.setRegisteredTools(&tools);
 
     var text_event = session_runtime.SessionEvent{ .text_delta = .{ .content_index = 0, .delta = try ownedText("hello") } };
@@ -3244,22 +3210,9 @@ test "AppState does not append generic agent error after detailed error event" {
 }
 
 test "AppState clones registered tool metadata" {
-    const tools = [_]agent_types.AgentTool{
-        .{
-            .label = "Shell Execute",
-            .name = "shell_execute",
-            .description = "Run command",
-            .short_description = "Run shell commands",
-            .parameters_schema_json = "{}",
-            .execute = noopToolForTest,
-        },
-        .{
-            .label = "Workspace Info",
-            .name = "workspace_info",
-            .description = "Show workspace",
-            .parameters_schema_json = "{}",
-            .execute = noopToolForTest,
-        },
+    const tools = [_]session_runtime.ToolLabel{
+        .{ .name = "shell_execute", .label = "Shell Execute" },
+        .{ .name = "workspace_info", .label = "Workspace Info" },
     };
     var state = AppState.init(std.testing.allocator);
     defer state.deinit();
@@ -3268,17 +3221,9 @@ test "AppState clones registered tool metadata" {
     try std.testing.expectEqual(@as(usize, 2), state.registered_tools.items.len);
     try std.testing.expectEqualStrings("shell_execute", state.registered_tools.items[0].name);
     try std.testing.expectEqualStrings("Shell Execute", state.registered_tools.items[0].label);
-    try std.testing.expectEqualStrings("Run shell commands", state.registered_tools.items[0].short_description);
-    try std.testing.expectEqualStrings("", state.registered_tools.items[1].short_description);
+    try std.testing.expectEqualStrings("Workspace Info", state.registered_tools.items[1].label);
 
-    const replacement = [_]agent_types.AgentTool{.{
-        .label = "File Read",
-        .name = "file_read",
-        .description = "Read file",
-        .short_description = "Read files",
-        .parameters_schema_json = "{}",
-        .execute = noopToolForTest,
-    }};
+    const replacement = [_]session_runtime.ToolLabel{.{ .name = "file_read", .label = "File Read" }};
     try state.setRegisteredTools(&replacement);
     try std.testing.expectEqual(@as(usize, 1), state.registered_tools.items.len);
     try std.testing.expectEqualStrings("file_read", state.registered_tools.items[0].name);

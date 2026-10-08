@@ -44,6 +44,7 @@ pub const OapExecution = struct {
     in_assistant: bool = false,
     text: std.ArrayList(u8) = .empty,
     session_models: std.ArrayList([]u8) = .empty,
+    tool_labels: std.ArrayList(session_runtime.ToolLabel) = .empty,
     pending_catalog: ?[]ai_types.Model = null,
     live_reasoning: bool = false,
     live_compaction: bool = false,
@@ -194,6 +195,8 @@ pub const OapExecution = struct {
         self.text.deinit(allocator);
         self.forgetSessionModels();
         self.session_models.deinit(allocator);
+        self.forgetToolLabels();
+        self.tool_labels.deinit(allocator);
         self.forgetPermission();
         self.dropCompactionResult();
         for (self.queued_runs.items) |*queued| queued.deinit(allocator);
@@ -240,6 +243,7 @@ pub const OapExecution = struct {
         .queued = queuedCount,
         .steers_pending = steersPending,
         .steers_settled = steersSettled,
+        .tool_labels = toolLabels,
         .stop = stop,
     };
 
@@ -377,6 +381,8 @@ pub const OapExecution = struct {
                 }
             }
         }
+
+        try self.listTools(a);
 
         if (settings.model != null and self.hub == null) {
             const wanted = try modelRef(a, settings.model.?);
@@ -716,6 +722,44 @@ pub const OapExecution = struct {
         try payload.put("session_id", .{ .string = self.session_id });
         try payload.put("run_id", .{ .string = run_id });
         _ = try self.enqueue(a, "run.cancel.request", "cancel", payload.value(), run_id);
+    }
+
+    fn listTools(self: *OapExecution, a: std.mem.Allocator) !void {
+        self.forgetToolLabels();
+        var listing = Map.init(a);
+        try listing.put("session_id", .{ .string = self.session_id });
+        try listing.put("allow_degraded_features", try strings(a, &.{"action.tools.list"}));
+        const listed = self.exchange(a, "action.tools.list.request", listing.value(), true) catch |err| switch (err) {
+            error.OutOfMemory => return error.OutOfMemory,
+            else => return,
+        };
+        const payload = listed.object.get("payload") orelse return;
+        if (payload != .object) return;
+        const tools = payload.object.get("tools") orelse return;
+        if (tools != .array) return;
+        for (tools.array.items) |entry| {
+            if (entry != .object) continue;
+            const name = stringOf(entry.object, "name") orelse continue;
+            const annotations = entry.object.get("annotations");
+            const title = if (annotations != null and annotations.? == .object) stringOf(annotations.?.object, "title") else null;
+            const kept_name = try self.allocator.dupe(u8, name);
+            errdefer self.allocator.free(kept_name);
+            const kept_label = try self.allocator.dupe(u8, title orelse name);
+            errdefer self.allocator.free(kept_label);
+            try self.tool_labels.append(self.allocator, .{ .name = kept_name, .label = kept_label });
+        }
+    }
+
+    fn forgetToolLabels(self: *OapExecution) void {
+        for (self.tool_labels.items) |entry| {
+            self.allocator.free(entry.name);
+            self.allocator.free(entry.label);
+        }
+        self.tool_labels.clearRetainingCapacity();
+    }
+
+    fn toolLabels(ctx: *anyopaque) []const session_runtime.ToolLabel {
+        return cast(ctx).tool_labels.items;
     }
 
     fn forgetSessionModels(self: *OapExecution) void {
@@ -1772,6 +1816,39 @@ test "a turn submitted to a runtime over OAP streams back as the events the term
     try testing.expectEqualStrings("over the wire", seen.final_text.items);
     try testing.expectEqual(ai_types.ThinkingLevel.high, script.last_thinking);
     try testing.expect(runtime.isIdle());
+}
+
+test "a session over OAP labels its tools with the title the endpoint lists for each" {
+    var script = Script{};
+    const models = [_]ai_types.Model{scripted_model};
+    const labelled = [_]agent_types.AgentTool{.{
+        .label = "Echo Back",
+        .name = "echo_tool",
+        .description = "Echo a word back",
+        .parameters_schema_json = "{\"type\":\"object\"}",
+        .execute = echoTool,
+    }};
+    const execution = try OapExecution.create(testing.allocator, .{
+        .protocol = .{ .stream_fn = scriptedStream, .ctx = &script },
+        .models = &models,
+        .initial_model_id = scripted_model.id,
+        .tools = &labelled,
+    });
+    defer execution.destroy();
+    var runtime = try session_runtime.SessionRuntime.init(testing.allocator, .{
+        .models = &models,
+        .initial_model_id = scripted_model.id,
+        .remote = execution.remote(),
+    });
+    defer runtime.deinit();
+
+    try testing.expectEqual(@as(usize, 0), runtime.toolLabels().len);
+    try runtime.start();
+    var label: ?[]const u8 = null;
+    for (runtime.toolLabels()) |tool| {
+        if (std.mem.eql(u8, tool.name, "echo_tool")) label = tool.label;
+    }
+    try testing.expectEqualStrings("Echo Back", label.?);
 }
 
 test "a turn over OAP reports its output tokens and the context it filled to the status bar" {

@@ -64,6 +64,7 @@ pub const HubLink = struct {
         if (std.mem.eql(u8, kind, "capabilities.request")) return self.call(a, .GET, try self.path(a, "/adapters/", self.adapter, "/capabilities"), null, id, false);
         if (std.mem.eql(u8, kind, "session.open.request")) return self.call(a, .POST, try self.path(a, "/adapters/", self.adapter, "/sessions"), line, id, false);
         if (std.mem.eql(u8, kind, "models.request")) return self.call(a, .GET, try self.consenting(a, try self.path(a, "/sessions/", self.session_id, "/models"), root), null, id, false);
+        if (std.mem.eql(u8, kind, "action.tools.list.request")) return self.call(a, .GET, try self.consenting(a, try self.path(a, "/sessions/", self.session_id, "/tools"), root), null, id, false);
         if (std.mem.eql(u8, kind, "session.message.submit.request") or std.mem.eql(u8, kind, "session.compact.request")) return self.call(a, .POST, try self.path(a, "/sessions/", self.session_id, "/submit"), line, id, std.mem.eql(u8, kind, "session.message.submit.request") and followsUp(root));
         if (std.mem.eql(u8, kind, "run.cancel.request")) return self.call(a, .POST, try self.path(a, "/sessions/", self.session_id, "/cancel"), line, id, false);
         if (std.mem.eql(u8, kind, "session.settings.update.request")) return self.call(a, .POST, try self.path(a, "/sessions/", self.session_id, "/settings"), line, id, false);
@@ -702,6 +703,30 @@ test "a models request carries its degraded consent to the hub as the query the 
     const answer = link.popOutbound() orelse return error.TestNoAnswer;
     defer testing.allocator.free(answer);
     try testing.expect(std.mem.indexOf(u8, answer, "\"in_reply_to\":\"models-1\"") != null);
+}
+
+test "a tools listing goes to the hub's tools route with its degraded consent, and its answer is correlated to the request" {
+    if (comptime !pollable) return error.SkipZigTest;
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    var fake = FakeHub{
+        .listener = try compat.net.tcpListen(try compat.net.resolveAddress(a, "127.0.0.1", 0), .{ .reuse_address = true }),
+        .answer = "{" ++ envelope_head ++ ",\"type\":\"action.tools.list.response\",\"id\":\"hub-5\",\"session_id\":\"s1\",\"payload\":{\"session_id\":\"s1\",\"tools\":[]}}",
+        .connections = 1,
+    };
+    defer compat.net.closeServer(&fake.listener);
+    const base = try std.fmt.allocPrint(a, "http://127.0.0.1:{d}", .{compat.net.listenAddress(&fake.listener).getPort()});
+    const thread = try std.Thread.spawn(.{}, FakeHub.serve, .{&fake});
+    const link = try HubLink.create(testing.allocator, base, "oapx");
+    defer link.destroy();
+    link.session_id = try testing.allocator.dupe(u8, "s1");
+    try link.handleLine("{" ++ envelope_head ++ ",\"type\":\"action.tools.list.request\",\"id\":\"tools-1\",\"session_id\":\"s1\",\"payload\":{\"session_id\":\"s1\",\"allow_degraded_features\":[\"action.tools.list\"]}}");
+    thread.join();
+    try testing.expectEqualStrings("GET /sessions/s1/tools?allow_degraded=action.tools.list HTTP/1.1", fake.target(0));
+    const answer = link.popOutbound() orelse return error.TestNoAnswer;
+    defer testing.allocator.free(answer);
+    try testing.expect(std.mem.indexOf(u8, answer, "\"in_reply_to\":\"tools-1\"") != null);
 }
 
 test "a settings update goes to the hub's settings route and its answer is correlated to the request" {

@@ -17,8 +17,11 @@ interface, so the runtime the TUI holds carries no agent of its own. Nothing und
 `zig/src/tui/` imports the `agent` module: what it still reads from the agent layer
 is value types and pure helpers, from `agent_types`, `agent_loop` (the output
 setting and token estimates) and `agent_compaction` (the summary header and the
-history split), plus the in-process provider bridge `App` hands the endpoint. Runs, streaming, tools, cancel and model switch
-cross the boundary as OAP. A `/model refresh` hands the in-process endpoint the
+history split), plus the in-process provider bridge `App` hands the endpoint. Runs,
+streaming, tools, cancel and model switch cross the boundary as OAP, and so does the
+tool list the TUI labels calls from: it lists the session's tools with
+`action.tools.list` once the session opens and shows each by its `annotations.title`,
+falling back to its name. A `/model refresh` hands the in-process endpoint the
 refreshed catalog beside the wire, and the session serves it from its next model
 switch under the same revision, which is why the `oapx` adapter advertises
 `models.list` as `degraded`. The settings the protocol has no verb for (context
