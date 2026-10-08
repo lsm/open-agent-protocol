@@ -1203,7 +1203,6 @@ fn printUsage(file: std.Io.File) !void {
         \\  oapx auth providers [--json]
         \\  oapx auth login --provider <id> [--json]
         \\  oapx --version
-        \\  oapx --stdio
         \\
         \\Commands:
         \\  hub              The multi-session hub: one process holding many
