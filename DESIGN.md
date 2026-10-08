@@ -86,7 +86,8 @@ Sequence scopes:
 - Auth protocol:
   - standalone query scope = envelope ULID `stream_id` (for example `auth_providers_request`)
   - interactive login scope = ULID `flow_id` (`auth_login_start` -> `auth_event` -> `auth_login_result`)
-- Agent protocol: sequence scope = NanoID `session_id`
+- Agent boundary: OAP agent-control-core, whose run events carry a per-run `sequence`
+  (`drafts/agent-control-core.md`); the v1 per-session agent sequence is retired
 
 ### 4.2 Rules
 For each session/stream independently:
@@ -102,7 +103,7 @@ Client implementations must maintain a sequence counter map keyed by session/str
 
 ## 5) Multiplexing Model (Normative)
 
-Auth/provider/agent protocols are designed for multi-session multiplexing:
+Auth and provider protocols, and the OAP agent endpoint, are designed for multi-session multiplexing:
 - multiple active auth flows concurrently
 - multiple active provider streams concurrently
 - multiple active agent sessions concurrently
@@ -110,7 +111,7 @@ Auth/provider/agent protocols are designed for multi-session multiplexing:
 - ordering guaranteed only within a session/stream, not globally
 
 Implementation objective:
-- auth, provider, and agent clients/servers must support true concurrent multiplexing.
+- auth and provider clients/servers and the OAP agent endpoint must support true concurrent multiplexing.
 
 ### 5.1 Provider protocol client lifecycle API (normative usage)
 
@@ -381,7 +382,7 @@ idiom.
 
 Target end-to-end topology:
 
-1. User/client connects to **auth/agent protocol servers** (same process or distributed)
+1. User/client connects to the **OAP agent endpoint** (`oapx serve agent`), whose `+auth` reaches the auth protocol server
 2. OAuth flows execute through **auth protocol server** when login is required
 3. Agent loop executes on agent node
 4. Agent connects to **provider protocol server** for model streaming

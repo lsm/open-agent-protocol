@@ -1241,7 +1241,6 @@ fn printUsage(file: std.Io.File) !void {
         \\  auth providers   List oauth-capable providers
         \\  auth login       Run OAuth flow and persist credentials
         \\  --version        Print binary version
-        \\  --stdio          Start the legacy Makai stdio mode; SDKs use serve
         \\
         \\Superseded flags, still accepted: -p, --oap, --oap-provider
         \\
