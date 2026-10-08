@@ -1020,6 +1020,8 @@ pub const App = struct {
     allocator: std.mem.Allocator,
     state: tui_state.AppState,
     runtime: ?*tui_runtime.TuiRuntime = null,
+    hosted_execution: ?*tui_oap_execution.OapExecution = null,
+    hosted_store: ?*session_store.Store = null,
     session: ?tui_runtime.TuiSession = null,
     approval_waiter: ?*ApprovalWaiter = null,
     login: ?*tui_login.LoginSession = null,
@@ -1085,17 +1087,25 @@ pub const App = struct {
 
     pub fn init(allocator: std.mem.Allocator, options: tui_runtime.TuiRuntimeOptions) !App {
         var runtime_options = options;
+        var adopted = false;
         const approval_waiter = try allocator.create(ApprovalWaiter);
-        errdefer allocator.destroy(approval_waiter);
+        errdefer if (!adopted) allocator.destroy(approval_waiter);
         approval_waiter.* = .{ .allocator = allocator };
         runtime_options.tool_approval_ctx = approval_waiter;
         runtime_options.tool_approval_callback = approvalCallback;
+        const hosted = if (options.remote == null) try tui_oap_execution.OapExecution.create(allocator, options) else null;
+        errdefer if (!adopted) if (hosted) |execution| execution.destroy();
+        const hosted_store = if (hosted) |execution| hostHistory(allocator, execution) else null;
+        errdefer if (!adopted) if (hosted_store) |store| dropHostedStore(allocator, store);
+        if (hosted) |execution| runtime_options.remote = execution.remote();
         const runtime_ptr = try allocator.create(tui_runtime.TuiRuntime);
         runtime_ptr.* = tui_runtime.TuiRuntime.init(allocator, runtime_options) catch |err| {
             allocator.destroy(runtime_ptr);
             return err;
         };
         var app = App{
+            .hosted_execution = hosted,
+            .hosted_store = hosted_store,
             .allocator = allocator,
             .mode_settings = .{ .compact_output = options.compact_output, .auto_worktree = options.auto_worktree },
             .state = tui_state.AppState.init(allocator),
@@ -1103,6 +1113,7 @@ pub const App = struct {
             .approval_waiter = approval_waiter,
             .quarantine_buffer = std.ArrayList(tui_runtime.TuiEvent).empty,
         };
+        adopted = true;
         errdefer app.deinit();
         app.session = app.runtime.?.createSession();
         if (options.remote != null and !app.runtime.?.recordsFromEndpoint()) try app.state.appendTranscript(.system, over_oap_notice);
@@ -1199,6 +1210,8 @@ pub const App = struct {
             runtime.deinit();
             self.allocator.destroy(runtime);
         }
+        if (self.hosted_execution) |execution| execution.destroy();
+        if (self.hosted_store) |store| dropHostedStore(self.allocator, store);
         if (self.approval_waiter) |waiter| {
             waiter.deinit();
             self.allocator.destroy(waiter);
@@ -5737,6 +5750,22 @@ pub fn runWith(allocator: std.mem.Allocator, io: std.Io, context_window: ?u32, e
     try program.run();
 }
 
+fn hostHistory(allocator: std.mem.Allocator, execution: *tui_oap_execution.OapExecution) ?*session_store.Store {
+    const store = allocator.create(session_store.Store) catch return null;
+    store.* = session_store.Store.initDefault(allocator) catch {
+        allocator.destroy(store);
+        return null;
+    };
+    execution.setHistory(.{ .ctx = store, .load = loadSavedHistory });
+    execution.setTranscripts(.{ .ctx = store, .save = saveSessionTranscript });
+    return store;
+}
+
+fn dropHostedStore(allocator: std.mem.Allocator, store: *session_store.Store) void {
+    store.deinit();
+    allocator.destroy(store);
+}
+
 fn loadSavedHistory(ctx: *anyopaque, arena: std.mem.Allocator, session_id: []const u8) anyerror!?[]const ai_types.Message {
     const store: *session_store.Store = @ptrCast(@alignCast(ctx));
     var loaded = try store.load(session_id);
@@ -5993,13 +6022,13 @@ test "status reports the session, model, usage, run, settings and auth in one pl
     const report = try app.statusReport(std.testing.allocator);
     defer std.testing.allocator.free(report);
     for ([_][]const u8{
-        "Session\n",                                      "title           oap-prs",
-        "\nModel\n",                                     "\nUsage\n",
-        "last reply      500 in, 20 out, 0 cache read",    "this sitting    1500 in, 50 out, 800 cache read",
-        "\nRun\n",                                       "state           streaming",
-        "held commands   /output 4096",                   "model switch    to anthropic/other-model",
-        "\nSettings\n",                                  "status verbose",
-        "\nAuth\n",                                      "signed in       ",
+        "Session\n",                                    "title           oap-prs",
+        "\nModel\n",                                    "\nUsage\n",
+        "last reply      500 in, 20 out, 0 cache read", "this sitting    1500 in, 50 out, 800 cache read",
+        "\nRun\n",                                      "state           streaming",
+        "held commands   /output 4096",                 "model switch    to anthropic/other-model",
+        "\nSettings\n",                                 "status verbose",
+        "\nAuth\n",                                     "signed in       ",
     }) |needle| {
         if (std.mem.indexOf(u8, report, needle) == null) {
             std.debug.print("missing {s} in:\n{s}\n", .{ needle, report });
@@ -7063,6 +7092,15 @@ const auto_compact_history = [_]ai_types.Message{
     } },
 };
 
+fn useStoreAt(app: *App, base: []const u8) !void {
+    if (app.store) |*owned| owned.deinit();
+    app.store = try session_store.Store.init(std.testing.allocator, base);
+    if (app.hosted_store) |hosted| {
+        hosted.deinit();
+        hosted.* = try session_store.Store.init(std.testing.allocator, base);
+    }
+}
+
 test "App init takes mode settings from options, not the environment" {
     var app = try App.init(std.testing.allocator, .{ .models = &[_]ai_types.Model{auto_compact_test_model} });
     defer app.deinit();
@@ -7105,10 +7143,6 @@ test "an app over OAP creates an automatic worktree only when its endpoint moves
     try std.testing.expect(app.createsWorktree());
     execution.live_reasoning = false;
     try std.testing.expect(!app.createsWorktree());
-
-    var local = try App.init(std.testing.allocator, .{ .models = &models, .auto_worktree = true });
-    defer local.deinit();
-    try std.testing.expect(local.createsWorktree());
 }
 
 test "resuming discards a pending worktree sidecar from another session" {
@@ -7445,8 +7479,7 @@ test "a session resume drops a held turn with a note, before the resume runs" {
     defer mock.deinit();
     var app = try autoCompactTestApp(&mock);
     defer app.deinit();
-    if (app.store) |*store| store.deinit();
-    app.store = try session_store.Store.init(std.testing.allocator, base);
+    try useStoreAt(&app, base);
     try saveTestSession(app.store.?, "s1", 1);
     try app.loadSessions();
     app.state.session_index = 0;
@@ -8357,8 +8390,7 @@ test "a resumed session's replayed events leave the rate showing nothing" {
     defer mock.deinit();
     var app = try App.init(std.testing.allocator, production.options());
     defer app.deinit();
-    if (app.store) |*owned| owned.deinit();
-    app.store = try session_store.Store.init(std.testing.allocator, base);
+    try useStoreAt(&app, base);
     app.session = mock.session();
     try app.loadSessions();
     try std.testing.expectEqual(@as(usize, 1), app.state.sessions.items.len);
@@ -8401,8 +8433,7 @@ test "a session whose model is gone resumes on the current model and says so" {
     defer mock.deinit();
     var app = try App.init(std.testing.allocator, production.options());
     defer app.deinit();
-    if (app.store) |*owned| owned.deinit();
-    app.store = try session_store.Store.init(std.testing.allocator, base);
+    try useStoreAt(&app, base);
     app.session = mock.session();
     try app.loadSessions();
     app.state.session_index = 0;
@@ -10029,8 +10060,7 @@ test "resume selected session clears delete reset flags on success" {
     defer app.deinit();
     app.runtime.?.run_async = false;
 
-    if (app.store) |*store| store.deinit();
-    app.store = try session_store.Store.init(std.testing.allocator, base);
+    try useStoreAt(&app, base);
 
     const model = app.runtime.?.currentModel() orelse return error.NoModelConfigured;
     var meta = session_store.SessionMetadata{
@@ -10068,8 +10098,7 @@ test "resume of a session without a worktree resets the workspace to the launch 
     defer app.deinit();
     app.runtime.?.run_async = false;
 
-    if (app.store) |*store| store.deinit();
-    app.store = try session_store.Store.init(std.testing.allocator, base);
+    try useStoreAt(&app, base);
 
     const model = app.runtime.?.currentModel() orelse return error.NoModelConfigured;
     var meta = session_store.SessionMetadata{
@@ -10102,8 +10131,7 @@ test "resume over OAP reopens the saved session after a turn has opened one, wit
     defer execution.destroy();
     var app = try App.init(std.testing.allocator, .{ .models = &models, .remote = execution.remote() });
     defer app.deinit();
-    if (app.store) |*store| store.deinit();
-    app.store = try session_store.Store.init(std.testing.allocator, base);
+    try useStoreAt(&app, base);
     execution.setHistory(.{ .ctx = &app.store.?, .load = loadSavedHistory });
     try saveTestSession(app.store.?, "saved-over-oap", 1);
     try app.loadSessions();
@@ -10128,8 +10156,7 @@ test "a refused resume over OAP leaves the open session's workspace and the show
     defer execution.destroy();
     var app = try App.init(std.testing.allocator, .{ .models = &models, .remote = execution.remote() });
     defer app.deinit();
-    if (app.store) |*store| store.deinit();
-    app.store = try session_store.Store.init(std.testing.allocator, base);
+    try useStoreAt(&app, base);
     var nothing_saved = RefusingHistory{};
     execution.setHistory(.{ .ctx = &nothing_saved, .load = RefusingHistory.load });
     try saveTestSession(app.store.?, "saved-elsewhere", 1);
@@ -10828,8 +10855,7 @@ test "resuming a session whose last run ended in an error does not nudge" {
     defer app.deinit();
     app.runtime.?.run_async = false;
 
-    if (app.store) |*store| store.deinit();
-    app.store = try session_store.Store.init(std.testing.allocator, base);
+    try useStoreAt(&app, base);
 
     const model = app.runtime.?.currentModel() orelse return error.NoModelConfigured;
     var meta = session_store.SessionMetadata{

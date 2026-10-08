@@ -200,6 +200,7 @@ test "e2e: a submitted turn streams the assistant reply into the transcript" {
 
     d.typeText("hello there");
     d.pressEnter();
+    try d.pumpUntilTurnComplete(fixtures.expected_text, 2000);
 
     const screen = d.frame();
     try std.testing.expect(std.mem.indexOf(u8, screen, "hello there") != null);
