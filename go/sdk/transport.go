@@ -104,7 +104,7 @@ func startTransport(ctx context.Context, command string, opts *Options) (*transp
 	}
 	t.logger.Debug("oap sdk: runtime started", "command", command, "args", opts.args(), "pid", cmd.Process.Pid)
 
-	handshake := make(chan *frame, 1)
+	handshake := make(chan *inbound, 1)
 	go t.readLoop(stdout, handshake)
 	if !opts.LegacyWire {
 		if err := t.sendEnvelope(oapFrame(oapAgent, "protocol.initialize.request", map[string]any{
@@ -147,32 +147,35 @@ func startTransport(ctx context.Context, command string, opts *Options) (*transp
 	return t, nil
 }
 
-func (t *transport) awaitHandshake(ctx context.Context, handshake <-chan *frame, opts *Options) error {
+func (t *transport) awaitHandshake(ctx context.Context, handshake <-chan *inbound, opts *Options) error {
 	timer := time.NewTimer(opts.handshakeTimeout())
 	defer timer.Stop()
 
 	select {
-	case f, ok := <-handshake:
+	case in, ok := <-handshake:
 		if !ok {
 			return t.terminalError("handshake")
 		}
-		if t.legacyWire && f.Type == "ready" {
-			if f.ProtocolVersion != opts.protocolVersion() {
-				return fmt.Errorf("%w: expected %q, got %q", ErrProtocolVersion, opts.protocolVersion(), f.ProtocolVersion)
+		if in.legacy != nil && in.legacy.Type == "ready" {
+			if in.legacy.ProtocolVersion != opts.protocolVersion() {
+				return fmt.Errorf("%w: expected %q, got %q", ErrProtocolVersion, opts.protocolVersion(), in.legacy.ProtocolVersion)
 			}
 			return nil
 		}
-		switch f.Type {
+		if in.broken != nil {
+			return in.broken
+		}
+		switch in.kind() {
 		case "protocol.initialize.response":
 			expected := opts.protocolVersion()
-			actual := f.payload().str("protocol_version")
+			actual := in.body().str("protocol_version")
 			if actual != expected {
 				return fmt.Errorf("%w: expected %q, got %q", ErrProtocolVersion, expected, actual)
 			}
 			t.logger.Debug("oap: initialize complete", "protocol_version", actual)
 			return nil
 		case "error", "error.response":
-			payload := f.payload()
+			payload := in.body()
 			if nested := payload.obj("error"); nested != nil {
 				payload = nested
 			}
@@ -181,7 +184,7 @@ func (t *transport) awaitHandshake(ctx context.Context, handshake <-chan *frame,
 				Message: payload.strOrDefault("runtime rejected the handshake", "message", "reason"),
 			}
 		default:
-			return transportErrorf(nil, "unexpected handshake frame type %q", f.Type)
+			return transportErrorf(nil, "unexpected handshake frame type %q", in.kind())
 		}
 	case <-timer.C:
 		return transportErrorf(nil, "timed out waiting for the runtime handshake after %s", opts.handshakeTimeout())
@@ -192,7 +195,7 @@ func (t *transport) awaitHandshake(ctx context.Context, handshake <-chan *frame,
 	}
 }
 
-func (t *transport) readLoop(stdout io.ReadCloser, handshake chan<- *frame) {
+func (t *transport) readLoop(stdout io.ReadCloser, handshake chan<- *inbound) {
 	reader := newFrameReader(stdout)
 	delivered := false
 
@@ -209,7 +212,7 @@ func (t *transport) readLoop(stdout io.ReadCloser, handshake chan<- *frame) {
 	}()
 
 	for {
-		f, err := reader.next()
+		in, err := reader.nextInbound(t.legacyWire)
 		if errors.Is(err, errMalformedFrame) {
 			t.logger.Warn("oap sdk: discarding malformed frame from runtime")
 			continue
@@ -223,60 +226,61 @@ func (t *transport) readLoop(stdout io.ReadCloser, handshake chan<- *frame) {
 		}
 		if !delivered {
 			delivered = true
-			handshake <- f
+			handshake <- in
 			close(handshake)
 			continue
 		}
-		t.dispatch(f)
+		t.dispatch(in)
 	}
 }
 
-func (t *transport) dispatch(f *frame) {
+func (t *transport) dispatch(in *inbound) {
+	kind, replyTo, sessionID, inferenceID, streamID := in.kind(), in.replyTo(), in.session(), in.inference(), in.stream()
 	t.logger.Debug("oap sdk: frame received",
-		"type", f.Type, "stream_id", f.StreamID, "session_id", f.SessionID,
-		"sequence", f.Sequence, "in_reply_to", f.InReplyTo)
+		"type", kind, "stream_id", streamID, "session_id", sessionID,
+		"sequence", in.sequence(), "in_reply_to", replyTo)
 
 	t.mu.Lock()
 	var target *subscription
-	if f.InReplyTo != "" {
-		target = t.correlates[f.InReplyTo]
-		if target != nil && f.Type == "inference.create.response" && f.InferenceID != "" {
-			t.inferences[f.InferenceID] = target
+	if replyTo != "" {
+		target = t.correlates[replyTo]
+		if target != nil && kind == "inference.create.response" && inferenceID != "" {
+			t.inferences[inferenceID] = target
 		}
-		if target != nil && f.Type == "auth.login.start.response" {
-			if flowID := f.payload().str("flow_id"); flowID != "" {
+		if target != nil && kind == "auth.login.start.response" {
+			if flowID := in.flow(); flowID != "" {
 				t.authFlows[flowID] = target
 			}
 		}
 	}
-	if target == nil && (f.Type == "auth.login.event" || f.Type == "auth.login.completed") {
-		target = t.authFlows[f.payload().str("flow_id")]
+	if target == nil && (kind == "auth.login.event" || kind == "auth.login.completed") {
+		target = t.authFlows[in.flow()]
 	}
-	if target == nil && f.InferenceID != "" {
-		target = t.inferences[f.InferenceID]
+	if target == nil && inferenceID != "" {
+		target = t.inferences[inferenceID]
 	}
-	if target == nil && f.StreamID != "" {
-		if subs := t.streams[f.StreamID]; len(subs) > 0 {
+	if target == nil && streamID != "" {
+		if subs := t.streams[streamID]; len(subs) > 0 {
 			target = subs[0]
 		}
 	}
-	if target == nil && f.SessionID != "" {
-		if subs := t.sessions[f.SessionID]; len(subs) > 0 {
+	if target == nil && sessionID != "" {
+		if subs := t.sessions[sessionID]; len(subs) > 0 {
 			target = subs[0]
 		}
 	}
 
-	if target != nil && f.SessionID != "" && f.Type == "agent_started" {
-		t.promoteSessionLocked(f.SessionID, target)
+	if target != nil && sessionID != "" && kind == "agent_started" {
+		t.promoteSessionLocked(sessionID, target)
 	}
 	t.mu.Unlock()
 
 	if target == nil {
-		t.logger.Debug("oap sdk: dropping unroutable frame", "type", f.Type,
-			"stream_id", f.StreamID, "session_id", f.SessionID, "in_reply_to", f.InReplyTo)
+		t.logger.Debug("oap sdk: dropping unroutable frame", "type", kind,
+			"stream_id", streamID, "session_id", sessionID, "in_reply_to", replyTo)
 		return
 	}
-	target.deliver(f)
+	target.deliver(in)
 }
 
 func (t *transport) promoteSessionLocked(sessionID string, sub *subscription) {
@@ -305,6 +309,10 @@ func (t *transport) sendEnvelope(env protocol.Envelope) error {
 		env.CapabilityRevision = t.agentRevision
 	}
 	return t.write(mustMarshal(env), env.Type, "", string(env.SessionID), 0)
+}
+
+func (t *transport) sendProviderEnvelope(env protocol.ProviderEnvelope) error {
+	return t.write(mustMarshal(env), env.Type, "", "", 0)
 }
 
 func (t *transport) write(encoded []byte, frameType any, streamID, sessionID string, sequence int64) error {
@@ -347,6 +355,12 @@ func (t *transport) sendEnvelopeBestEffort(env protocol.Envelope) {
 	}
 }
 
+func (t *transport) sendProviderEnvelopeBestEffort(env protocol.ProviderEnvelope) {
+	if err := t.sendProviderEnvelope(env); err != nil {
+		t.logger.Debug("oap sdk: best-effort envelope not sent", "type", env.Type, "error", err)
+	}
+}
+
 func (t *transport) subscribeStream(id string) *subscription { return t.subscribe(routeStream, id) }
 
 func (t *transport) subscribeSession(id string) *subscription { return t.subscribe(routeSession, id) }
@@ -356,7 +370,7 @@ func (t *transport) subscribe(kind routeKind, id string) *subscription {
 		transport: t,
 		kind:      kind,
 		id:        id,
-		queue:     make(chan *frame, routeQueueSize),
+		queue:     make(chan *inbound, routeQueueSize),
 		wake:      make(chan struct{}, 1),
 	}
 	t.mu.Lock()
@@ -495,7 +509,7 @@ type subscription struct {
 	transport *transport
 	kind      routeKind
 	id        string
-	queue     chan *frame
+	queue     chan *inbound
 	wake      chan struct{}
 	overflow  atomic.Bool
 	closed    atomic.Bool
@@ -521,18 +535,18 @@ func (s *subscription) uncorrelate(messageID string) {
 	s.transport.mu.Unlock()
 }
 
-func (s *subscription) deliver(f *frame) {
+func (s *subscription) deliver(in *inbound) {
 	if s.closed.Load() {
 		return
 	}
 	select {
-	case s.queue <- f:
+	case s.queue <- in:
 		s.signal()
 	default:
 		s.overflow.Store(true)
 		s.signal()
 		s.transport.logger.Error("oap sdk: route queue overflowed, frame dropped",
-			"route", s.kind.String(), "id", s.id, "type", f.Type)
+			"route", s.kind.String(), "id", s.id, "type", in.kind())
 	}
 }
 
@@ -543,7 +557,18 @@ func (s *subscription) signal() {
 	}
 }
 
-func (s *subscription) next(ctx context.Context, timeout time.Duration, operation string) (*frame, error) {
+func (s *subscription) nextFrame(ctx context.Context, timeout time.Duration, operation string) (*frame, error) {
+	in, err := s.next(ctx, timeout, operation)
+	if err != nil {
+		return nil, err
+	}
+	if in.legacy == nil {
+		return nil, &ProtocolError{Code: CodeMalformedResponse, Message: fmt.Sprintf("%s received an OAP envelope on the legacy wire", operation)}
+	}
+	return in.legacy, nil
+}
+
+func (s *subscription) next(ctx context.Context, timeout time.Duration, operation string) (*inbound, error) {
 	timer := time.NewTimer(timeout)
 	defer timer.Stop()
 

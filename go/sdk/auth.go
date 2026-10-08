@@ -94,7 +94,7 @@ func (s *AuthService) ListProviders(ctx context.Context) ([]ProviderAuthInfo, er
 	}
 
 	for {
-		f, err := sub.next(ctx, s.timeout, "auth_providers_response")
+		f, err := sub.nextFrame(ctx, s.timeout, "auth_providers_response")
 		if err != nil {
 			return nil, authErrorFrom(err, "", streamID)
 		}
@@ -150,7 +150,7 @@ func (s *AuthService) Login(ctx context.Context, providerID string, handlers Log
 	cancelledLocally := false
 
 	for {
-		f, err := sub.next(ctx, s.timeout, "auth_login_result")
+		f, err := sub.nextFrame(ctx, s.timeout, "auth_login_result")
 		if err != nil {
 			if isAbort(err) {
 				s.cancelFlow(flowID, providerID, nextSequence())

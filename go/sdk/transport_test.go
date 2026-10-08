@@ -320,22 +320,22 @@ func TestDispatchRoutesByCorrelationThenRoute(t *testing.T) {
 	otherSession := tr.subscribeSession("N1")
 	otherSession.correlate("MSG-OTHER")
 
-	tr.dispatch(&frame{Type: "agent_error", SessionID: "N1", InReplyTo: "MSG-OTHER"})
+	tr.dispatch(legacyLine(&frame{Type: "agent_error", SessionID: "N1", InReplyTo: "MSG-OTHER"}))
 
-	tr.dispatch(&frame{Type: "agent_event", SessionID: "N1"})
+	tr.dispatch(legacyLine(&frame{Type: "agent_event", SessionID: "N1"}))
 
-	tr.dispatch(&frame{Type: "models_response", StreamID: "S1"})
+	tr.dispatch(legacyLine(&frame{Type: "models_response", StreamID: "S1"}))
 
-	tr.dispatch(&frame{Type: "orphan", StreamID: "S-UNKNOWN"})
+	tr.dispatch(legacyLine(&frame{Type: "orphan", StreamID: "S-UNKNOWN"}))
 
 	ctx := testContext(t)
-	if f, err := otherSession.next(ctx, time.Second, "correlated"); err != nil || f.Type != "agent_error" {
+	if f, err := otherSession.nextFrame(ctx, time.Second, "correlated"); err != nil || f.Type != "agent_error" {
 		t.Fatalf("correlated waiter got (%v, %v), want agent_error", f, err)
 	}
-	if f, err := sessionSub.next(ctx, time.Second, "session"); err != nil || f.Type != "agent_event" {
+	if f, err := sessionSub.nextFrame(ctx, time.Second, "session"); err != nil || f.Type != "agent_event" {
 		t.Fatalf("session waiter got (%v, %v), want agent_event", f, err)
 	}
-	if f, err := streamSub.next(ctx, time.Second, "stream"); err != nil || f.Type != "models_response" {
+	if f, err := streamSub.nextFrame(ctx, time.Second, "stream"); err != nil || f.Type != "models_response" {
 		t.Fatalf("stream waiter got (%v, %v), want models_response", f, err)
 	}
 
@@ -378,16 +378,16 @@ func TestSubscriptionOverflowIsReported(t *testing.T) {
 	}
 	sub := tr.subscribeStream("S1")
 	for i := 0; i < routeQueueSize+8; i++ {
-		sub.deliver(&frame{Type: "event", StreamID: "S1"})
+		sub.deliver(legacyLine(&frame{Type: "event", StreamID: "S1"}))
 	}
 
 	ctx := testContext(t)
 	for i := 0; i < routeQueueSize; i++ {
-		if _, err := sub.next(ctx, time.Second, "event"); err != nil {
+		if _, err := sub.nextFrame(ctx, time.Second, "event"); err != nil {
 			t.Fatalf("frame %d: %v", i, err)
 		}
 	}
-	_, err := sub.next(ctx, time.Second, "event")
+	_, err := sub.nextFrame(ctx, time.Second, "event")
 	var streamErr *StreamError
 	if !errors.As(err, &streamErr) || streamErr.Kind != KindTransportError {
 		t.Fatalf("expected a transport error after overflow, got %v", err)
@@ -444,31 +444,35 @@ func TestDispatchPromotesTheAcceptedSessionAttempt(t *testing.T) {
 	defer winner.close()
 	winner.correlate("WINNER")
 
-	tr.dispatch(&frame{Type: "agent_started", SessionID: sessionID, InReplyTo: "WINNER",
-		Payload: mustMarshal(map[string]any{"session_id": sessionID})})
+	tr.dispatch(legacyLine(&frame{Type: "agent_started", SessionID: sessionID, InReplyTo: "WINNER",
+		Payload: mustMarshal(map[string]any{"session_id": sessionID})}))
 
-	tr.dispatch(&frame{Type: "agent_event", SessionID: sessionID,
-		Payload: mustMarshal(map[string]any{"event_json": `{"type":"text_delta","delta":"mine"}`})})
+	tr.dispatch(legacyLine(&frame{Type: "agent_event", SessionID: sessionID,
+		Payload: mustMarshal(map[string]any{"event_json": `{"type":"text_delta","delta":"mine"}`})}))
 
 	select {
 	case f := <-winner.queue:
-		if f.Type != "agent_started" {
-			t.Fatalf("first frame = %q, want agent_started", f.Type)
+		if f.kind() != "agent_started" {
+			t.Fatalf("first frame = %q, want agent_started", f.kind())
 		}
 	default:
 		t.Fatal("the accepted attempt should have received its own agent_started")
 	}
 	select {
 	case f := <-winner.queue:
-		if f.Type != "agent_event" {
-			t.Fatalf("second frame = %q, want agent_event", f.Type)
+		if f.kind() != "agent_event" {
+			t.Fatalf("second frame = %q, want agent_event", f.kind())
 		}
 	default:
 		t.Fatal("uncorrelated session output should follow the accepted attempt")
 	}
 	select {
 	case f := <-loser.queue:
-		t.Fatalf("the losing attempt received %q", f.Type)
+		t.Fatalf("the losing attempt received %q", f.kind())
 	default:
 	}
+}
+
+func legacyLine(f *frame) *inbound {
+	return &inbound{legacy: f}
 }

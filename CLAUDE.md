@@ -137,7 +137,7 @@ A strict stack; lower layers never import higher ones.
 
 | Package | Role |
 | --- | --- |
-| `protocol` | Envelope, typed ID domains, payload structs, `Type*` constants |
+| `protocol` | Envelope and the provider profile's `ProviderEnvelope`, typed ID domains, payload structs, `Type*` constants |
 | `schema` (repo root, `schema/embed.go`) | Embeds `schema/v0.1/*.json` (JSON Schema 2020-12) |
 | `harnesses` (repo root), `harness` | Embeds the harness catalog; `harness` loads it strictly and runs `goap check`'s drift rules |
 | `validation` | Decode (duplicate keys), schema, semantic state machine (`state.go`), typed diagnostic codes |
@@ -149,7 +149,7 @@ A strict stack; lower layers never import higher ones.
 | `cmd/goap` parity fixtures | one per harness plus `memory`; what the job is for, and what the corpora cover instead, is [`docs/parity-job.md`](docs/parity-job.md) |
 | `serve/serveendpoint`, `conformance` | One agent loop over raw envelopes, and the runner that checks it |
 | `client`, `clients/ts` | Far-side conformance proofs, invisible SSE resume |
-| `sdk` | The Go client for a running endpoint: it spawns `oapx serve agent,provider --stdio` and exposes `Auth`, `Models`, `Provider`, `Agent` over profiled envelopes. Every OAP envelope it sends is a `protocol.Envelope`, and one it receives is read back as one from its own bytes. Its private `frame` remains as the v1 SDK wire (`Options.LegacyWire`) and the routing header each received line is decoded into; retiring it needs the provider profile's members (`inference_id`) in `protocol`, or dropping `LegacyWire` |
+| `sdk` | The Go client for a running endpoint: it spawns `oapx serve agent,provider --stdio` and exposes `Auth`, `Models`, `Provider`, `Agent` over profiled envelopes. Every OAP envelope it sends or receives is a `protocol.Envelope` or, for the provider profile, a `protocol.ProviderEnvelope`, read from the line's own bytes; a line neither can read fails the request it answers. Its private `frame` is only the v1 SDK wire (`Options.LegacyWire`), and retiring it means dropping `LegacyWire` |
 | `provider`, `internal/providertest` | Provider wire evidence (Z.AI); no Go `model-provider-core` runtime yet |
 | `cmd/goap` | Dispatcher; `serve.go` wires signals, loopback allowlist, bounded shutdown |
 

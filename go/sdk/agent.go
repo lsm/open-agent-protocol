@@ -251,7 +251,7 @@ type agentRun struct {
 
 func (r *agentRun) pump() ([]AgentEvent, error) {
 	for {
-		f, err := r.sub.next(r.ctx, r.timeout, "agent stream event")
+		f, err := r.sub.nextFrame(r.ctx, r.timeout, "agent stream event")
 		if err != nil {
 			return nil, err
 		}
@@ -457,7 +457,7 @@ func (r *agentRun) stopWithSequenceProbe(reason string) {
 
 func (r *agentRun) awaitStopReply(ctx context.Context, messageID string) (settled, retry bool) {
 	for {
-		f, err := r.sub.next(ctx, drainBudget, "agent_stopped")
+		f, err := r.sub.nextFrame(ctx, drainBudget, "agent_stopped")
 		if err != nil {
 			return false, false
 		}

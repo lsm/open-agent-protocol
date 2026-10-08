@@ -609,14 +609,14 @@ func TestAgentRunSkipsFramesRepliedToAnotherRequest(t *testing.T) {
 	run.ctx = testContext(t)
 	run.timeout = time.Second
 
-	tr.dispatch(&frame{Type: "agent_started", SessionID: run.sessionID, InReplyTo: "THEIRS",
-		Payload: mustMarshal(map[string]any{"session_id": run.sessionID})})
+	tr.dispatch(legacyLine(&frame{Type: "agent_started", SessionID: run.sessionID, InReplyTo: "THEIRS",
+		Payload: mustMarshal(map[string]any{"session_id": run.sessionID})}))
 
-	tr.dispatch(&frame{Type: "agent_event", SessionID: run.sessionID,
-		Payload: mustMarshal(map[string]any{"event_json": `{"type":"text_delta","delta":"stale"}`})})
+	tr.dispatch(legacyLine(&frame{Type: "agent_event", SessionID: run.sessionID,
+		Payload: mustMarshal(map[string]any{"event_json": `{"type":"text_delta","delta":"stale"}`})}))
 
-	tr.dispatch(&frame{Type: "nack", SessionID: run.sessionID, InReplyTo: "MINE",
-		Payload: mustMarshal(map[string]any{"error_code": "agent_busy", "reason": "session already exists"})})
+	tr.dispatch(legacyLine(&frame{Type: "nack", SessionID: run.sessionID, InReplyTo: "MINE",
+		Payload: mustMarshal(map[string]any{"error_code": "agent_busy", "reason": "session already exists"})}))
 
 	_, err := run.pump()
 	var streamErr *StreamError

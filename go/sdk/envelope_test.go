@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"strings"
 	"sync"
 	"testing"
@@ -36,64 +37,87 @@ func TestTheOAPPathBuildsAProtocolEnvelopeAndTheLegacyPathAFrame(t *testing.T) {
 	}
 }
 
-func TestTheEnvelopeTheOAPPathWritesIsTheOneTheProtocolPackageDecodes(t *testing.T) {
-	envelope := oapFrame(oapProvider, "inference.create.request", map[string]any{"model_ref": "fixture/other:test"})
-	encoded, err := json.Marshal(envelope)
+func TestTheEnvelopesTheOAPPathWritesAreTheOnesTheProtocolPackageDecodes(t *testing.T) {
+	agent := oapFrame(oapAgent, "session.open.request", map[string]any{"session_id": "s1"})
+	decoded, err := protocol.ParseEnvelope(mustMarshal(agent))
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("the protocol package cannot read back the agent envelope the SDK writes: %v", err)
 	}
-	var decoded protocol.Envelope
-	if err := json.Unmarshal(encoded, &decoded); err != nil {
-		t.Fatalf("the protocol package cannot read back what the SDK writes: %v", err)
+	if decoded.Type != agent.Type || decoded.ID != agent.ID || decoded.Profile != oapAgent || decoded.CapabilityRevision != "" {
+		t.Fatalf("the agent round trip lost the envelope: wrote %+v, read %+v", agent, decoded)
 	}
-	if decoded.Type != envelope.Type || decoded.ID != envelope.ID || decoded.Profile != envelope.Profile {
-		t.Fatalf("the round trip lost the envelope: wrote %+v, read %+v", envelope, decoded)
+	provider := providerFrame("inference.create.request", map[string]any{"model_ref": "fixture/other:test"})
+	read, err := protocol.ParseProviderEnvelope(mustMarshal(provider))
+	if err != nil {
+		t.Fatalf("the protocol package cannot read back the provider envelope the SDK writes: %v", err)
 	}
-	if decoded.CapabilityRevision != "" {
-		t.Fatalf("a request carries the capability revision %q before the transport stamps it", decoded.CapabilityRevision)
+	if read.Type != provider.Type || read.ID != provider.ID || read.Profile != protocol.ProviderProfile || read.Version != oapVersion {
+		t.Fatalf("the provider round trip lost the envelope: wrote %+v, read %+v", provider, read)
 	}
 }
 
-func readFrame(t *testing.T, line string) *frame {
+func readLine(t *testing.T, line string) *inbound {
 	t.Helper()
-	f, err := newFrameReader(strings.NewReader(line + "\n")).next()
+	in, err := newFrameReader(strings.NewReader(line + "\n")).nextInbound(false)
 	if err != nil {
 		t.Fatal(err)
 	}
-	return f
+	return in
 }
 
-func TestAFrameOnTheOAPWireBecomesTheEnvelopeTheProtocolPackageDescribes(t *testing.T) {
-	f := readFrame(t, `{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"capabilities.response","id":"env-1","in_reply_to":"env-0","session_id":"s1","run_id":"run-1","capability_revision":"rev-1","sequence":7,"timestamp_ms":42,"turn_id":"turn-1","tool_call_id":"call-1","extensions":{"x.y":{"z":1}},"inference_id":"inf-1","payload":{"capability_revision":"rev-1"}}`)
-	envelope, err := asEnvelope(f)
-	if err != nil {
-		t.Fatal(err)
+func TestAnAgentLineOnTheOAPWireIsReadAsTheProtocolPackagesEnvelope(t *testing.T) {
+	in := readLine(t, `{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"capabilities.response","id":"env-1","in_reply_to":"env-0","session_id":"s1","run_id":"run-1","capability_revision":"rev-1","sequence":7,"timestamp_ms":42,"turn_id":"turn-1","tool_call_id":"call-1","extensions":{"x.y":{"z":1}},"future":true,"payload":{"capability_revision":"rev-1"}}`)
+	if in.agent == nil || in.provider != nil || in.legacy != nil || in.broken != nil {
+		t.Fatalf("an agent line was read as %+v", in)
 	}
+	envelope := in.agent
 	if envelope.Type != "capabilities.response" || envelope.ID != "env-1" || envelope.InReplyTo != "env-0" || envelope.Version != "0.1" {
-		t.Fatalf("the conversion lost the envelope's own members: %+v", envelope)
+		t.Fatalf("the read lost the envelope's own members: %+v", envelope)
 	}
 	if envelope.SessionID != "s1" || envelope.RunID != "run-1" || envelope.CapabilityRevision != "rev-1" {
-		t.Fatalf("the conversion lost the addressing members: %+v", envelope)
+		t.Fatalf("the read lost the addressing members: %+v", envelope)
 	}
 	if envelope.Sequence == nil || *envelope.Sequence != 7 || envelope.TimestampMS == nil || *envelope.TimestampMS != 42 {
-		t.Fatalf("the conversion read the sequence as %v and the time as %v, want 7 and 42", envelope.Sequence, envelope.TimestampMS)
+		t.Fatalf("the read took the sequence as %v and the time as %v, want 7 and 42", envelope.Sequence, envelope.TimestampMS)
 	}
-	if envelope.TurnID != "turn-1" || envelope.ToolCallID != "call-1" || string(envelope.Extensions["x.y"]) != `{"z":1}` || string(envelope.Unknown["inference_id"]) != `"inf-1"` {
-		t.Fatalf("the conversion lost a member the hand-copied one dropped: %+v", envelope)
+	if envelope.TurnID != "turn-1" || envelope.ToolCallID != "call-1" || string(envelope.Extensions["x.y"]) != `{"z":1}` || string(envelope.Unknown["future"]) != "true" {
+		t.Fatalf("the read lost a member: %+v", envelope)
 	}
-	if payload := envelopePayload(envelope); payload.str("capability_revision") != "rev-1" {
-		t.Fatalf("the payload is not readable through the envelope: %+v", payload)
+	if in.kind() != "capabilities.response" || in.replyTo() != "env-0" || in.session() != "s1" || in.run() != "run-1" || in.sequence() != 7 || in.body().str("capability_revision") != "rev-1" {
+		t.Fatalf("the routing read disagrees with the envelope: %+v", in)
 	}
 }
 
-func TestTheConversionSubstitutesTheOAPVersionForALegacyNumberAndKeepsTheOAPOne(t *testing.T) {
-	legacy, _ := asEnvelope(readFrame(t, `{"protocol":"open-agent-protocol","profile":"open-agent-protocol.agent-control-core","type":"ready","version":1}`))
-	if legacy.Version != oapVersion || legacy.Type != "ready" {
-		t.Fatalf("a legacy frame carrying the number 1 became %+v, want the OAP version %q: the conversion runs on the OAP path, where a numeric version cannot be the wire's", legacy, oapVersion)
+func TestAProviderLineOnTheOAPWireIsReadAsTheProtocolPackagesProviderEnvelope(t *testing.T) {
+	in := readLine(t, `{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.model-provider-core","type":"inference.part.delta","id":"e2","inference_id":"inf-1","sequence":3,"payload":{"part_index":0,"delta":"hi"}}`)
+	if in.provider == nil || in.agent != nil || in.broken != nil {
+		t.Fatalf("a provider line was read as %+v", in)
 	}
-	oap, _ := asEnvelope(readFrame(t, `{"protocol":"open-agent-protocol","profile":"open-agent-protocol.agent-control-core","type":"capabilities.response","version":"0.1"}`))
-	if oap.Version != oapVersion {
-		t.Fatalf("the conversion rewrote the OAP version to %q, want %q", oap.Version, oapVersion)
+	if in.provider.InferenceID != "inf-1" || in.provider.Sequence == nil || *in.provider.Sequence != 3 || in.provider.Type != "inference.part.delta" {
+		t.Fatalf("the read lost the provider members: %+v", in.provider)
+	}
+	if in.inference() != "inf-1" || in.sequence() != 3 || in.body().str("delta") != "hi" || in.session() != "" {
+		t.Fatalf("the routing read disagrees with the envelope: %+v", in)
+	}
+}
+
+func TestAnOAPLineTheProtocolPackageCannotReadIsBrokenButStillRoutable(t *testing.T) {
+	in := readLine(t, `{"protocol":"open-agent-protocol","profile":"open-agent-protocol.agent-control-core","type":"ready","in_reply_to":"env-0","version":1,"payload":{}}`)
+	if in.broken == nil || in.agent != nil || in.legacy != nil {
+		t.Fatalf("a numeric version on the OAP wire was read as %+v, want a broken line", in)
+	}
+	if in.kind() != "ready" || in.replyTo() != "env-0" {
+		t.Fatalf("a broken line lost its routing: %+v", in.header)
+	}
+	if !errors.Is(in.failure(""), in.broken) {
+		t.Fatalf("a broken line reports %v, not why it broke", in.failure(""))
+	}
+	if _, err := newFrameReader(strings.NewReader("[1]\n")).nextInbound(false); !errors.Is(err, errMalformedFrame) {
+		t.Fatalf("a line that is not an object answered %v", err)
+	}
+	legacy, err := newFrameReader(strings.NewReader(`{"type":"ready","version":1,"protocol_version":"1"}` + "\n")).nextInbound(true)
+	if err != nil || legacy.legacy == nil || legacy.legacy.Version != 1 || legacy.legacy.ProtocolVersion != "1" {
+		t.Fatalf("the legacy wire read %+v, %v", legacy, err)
 	}
 }
 
@@ -122,21 +146,21 @@ func TestClosingAnOAPStreamEarlyCancelsItsInferenceByID(t *testing.T) {
 	written.mu.Lock()
 	line := bytes.TrimSpace(written.lines.Bytes())
 	written.mu.Unlock()
-	var sent protocol.Envelope
-	if err := json.Unmarshal(line, &sent); err != nil {
+	sent, err := protocol.ParseProviderEnvelope(line)
+	if err != nil {
 		t.Fatalf("sent %q: %v", line, err)
 	}
-	if sent.Type != "inference.cancel.request" || sent.Profile != oapProvider || sent.Version != oapVersion || sent.ID == "" || string(sent.Unknown["inference_id"]) != `"inf-1"` {
+	if sent.Type != "inference.cancel.request" || sent.Profile != oapProvider || sent.Version != oapVersion || sent.ID == "" || sent.InferenceID != "inf-1" {
 		t.Fatalf("sent %s", line)
 	}
-	if payload := envelopePayload(sent); payload.str("reason") != "caller_closed" {
+	if payload := payloadObject(sent.Payload); payload.str("reason") != "caller_closed" {
 		t.Fatalf("the cancel carried %s", sent.Payload)
 	}
 }
 
 func TestAnEnvelopeTheProtocolPackageCannotReadIsAnErrorNotAnEmptyEnvelope(t *testing.T) {
-	f := readFrame(t, `{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"capabilities.response","id":"env-1","in_reply_to":"env-0","sequence":-1,"payload":{}}`)
-	if _, err := asEnvelope(f); err == nil {
+	f := readLine(t, `{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"capabilities.response","id":"env-1","in_reply_to":"env-0","sequence":-1,"payload":{}}`)
+	if f.broken == nil {
 		t.Fatal("a negative sequence decoded")
 	}
 	tr := &transport{logger: discardLogger, stdin: &capturedWrites{}, streams: map[string][]*subscription{}, sessions: map[string][]*subscription{}, correlates: map[string]*subscription{}, inferences: map[string]*subscription{}, done: make(chan struct{}), exited: make(chan struct{})}
@@ -146,7 +170,7 @@ func TestAnEnvelopeTheProtocolPackageCannotReadIsAnErrorNotAnEmptyEnvelope(t *te
 	sub.correlate("env-0")
 	go tr.dispatch(f)
 	started := time.Now()
-	if _, err := oapRequest(context.Background(), tr, sub, 5*time.Second, request); err == nil || time.Since(started) > 2*time.Second {
+	if _, err := oapRequest(context.Background(), tr, sub, 5*time.Second, request); err == nil || !strings.Contains(err.Error(), "malformed OAP envelope capabilities.response") || time.Since(started) > 2*time.Second {
 		t.Fatalf("a reply the protocol package cannot read answered %v after %v", err, time.Since(started))
 	}
 }

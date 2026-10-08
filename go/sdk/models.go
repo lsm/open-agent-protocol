@@ -217,7 +217,7 @@ func (s *ModelsService) dispatch(ctx context.Context, req ListModelsRequest) (*L
 	}
 
 	for {
-		f, err := sub.next(ctx, s.timeout, "models_response")
+		f, err := sub.nextFrame(ctx, s.timeout, "models_response")
 		if err != nil {
 			if isAbort(err) {
 				cancelStream(s.transport, streamID)
