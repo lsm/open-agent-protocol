@@ -6,7 +6,7 @@ pub const supported = net.supports_unix_channels;
 
 const callback_path = "/callback";
 const poll_ms: i32 = 100;
-const request_read_ms: i32 = 2_000;
+const request_read_ms: i64 = 2_000;
 const max_request_line = 8192;
 pub const default_wait_ms: i64 = 10 * 60 * 1000;
 
@@ -52,7 +52,7 @@ pub const Listener = struct {
                 respond(&stream, "409 Conflict", failed_page);
                 return error.AuthFlowCancelled;
             }
-            const outcome = try answer(allocator, &stream, expected_state);
+            const outcome = try answer(allocator, &stream, expected_state, isCancelled);
             switch (outcome) {
                 .ignored => continue,
                 .refused => return error.OAuthFailed,
@@ -68,9 +68,9 @@ const Outcome = union(enum) {
     code: []u8,
 };
 
-fn answer(allocator: std.mem.Allocator, stream: *net.Stream, expected_state: []const u8) !Outcome {
+fn answer(allocator: std.mem.Allocator, stream: *net.Stream, expected_state: []const u8, isCancelled: *const fn () bool) !Outcome {
     var buffer: [max_request_line]u8 = undefined;
-    const line = readRequestLine(stream, &buffer) orelse {
+    const line = try readRequestLine(stream, &buffer, isCancelled) orelse {
         respond(stream, "400 Bad Request", failed_page);
         return .ignored;
     };
@@ -102,12 +102,16 @@ fn answer(allocator: std.mem.Allocator, stream: *net.Stream, expected_state: []c
     return .{ .code = code.? };
 }
 
-fn readRequestLine(stream: *net.Stream, buffer: []u8) ?[]const u8 {
+fn readRequestLine(stream: *net.Stream, buffer: []u8, isCancelled: *const fn () bool) !?[]const u8 {
+    const deadline = compat.time.nowMillis() + request_read_ms;
     var filled: usize = 0;
     while (filled < buffer.len) {
         if (std.mem.indexOf(u8, buffer[0..filled], "\r\n")) |end| return buffer[0..end];
-        const ready = net.readableWithin(net.streamHandle(stream), request_read_ms) catch return null;
-        if (!ready) return null;
+        if (isCancelled()) return error.AuthFlowCancelled;
+        const remaining = deadline - compat.time.nowMillis();
+        if (remaining <= 0) return null;
+        const ready = net.readableWithin(net.streamHandle(stream), @intCast(@min(remaining, poll_ms))) catch return null;
+        if (!ready) continue;
         const read = stream.readSome(buffer[filled..]) catch return null;
         if (read == 0) return null;
         filled += read;
@@ -208,6 +212,7 @@ fn cancelledAfterDeadline() bool {
 }
 
 test "loopback listener returns the code from a callback that carries the expected state and tells the browser it is done" {
+    if (!supported) return error.SkipZigTest;
     var listener = try Listener.open();
     defer listener.close();
     const redirect = try listener.redirectUri(std.testing.allocator);
@@ -228,6 +233,7 @@ test "loopback listener returns the code from a callback that carries the expect
 }
 
 test "loopback listener turns away a callback with the wrong state or path and keeps waiting for the right one" {
+    if (!supported) return error.SkipZigTest;
     var listener = try Listener.open();
     defer listener.close();
 
@@ -251,6 +257,7 @@ test "loopback listener turns away a callback with the wrong state or path and k
 }
 
 test "loopback listener fails a callback that carries the expected state but no code" {
+    if (!supported) return error.SkipZigTest;
     var listener = try Listener.open();
     defer listener.close();
 
@@ -262,6 +269,7 @@ test "loopback listener fails a callback that carries the expected state but no 
 }
 
 test "loopback listener tells a browser that reaches it just after a cancel that sign-in failed" {
+    if (!supported) return error.SkipZigTest;
     var listener = try Listener.open();
     defer listener.close();
 
@@ -274,7 +282,62 @@ test "loopback listener tells a browser that reaches it just after a cancel that
     try std.testing.expectEqualStrings("HTTP/1.1 409 Conflict", browser.status());
 }
 
+const Dribbler = struct {
+    port: u16,
+    stop: std.atomic.Value(bool) = .init(false),
+
+    fn run(self: *Dribbler) void {
+        var stream = net.tcpConnectHost(std.heap.page_allocator, "127.0.0.1", self.port) catch return;
+        defer stream.close();
+        const request = "GET /callback?code=slow&state=never HTTP/1.1";
+        for (request) |byte| {
+            if (self.stop.load(.seq_cst)) return;
+            stream.writeAll(&.{byte}) catch return;
+            compat.time.sleepMs(250);
+        }
+    }
+};
+
+test "loopback listener drops a client that never finishes its request line and then takes the genuine callback" {
+    if (!supported) return error.SkipZigTest;
+    var listener = try Listener.open();
+    defer listener.close();
+
+    var slow = Dribbler{ .port = listener.port };
+    const slow_thread = try std.Thread.spawn(.{}, Dribbler.run, .{&slow});
+    defer slow_thread.join();
+    defer slow.stop.store(true, .seq_cst);
+    compat.time.sleepMs(50);
+    var genuine = TestBrowser{ .port = listener.port, .target = "/callback?code=real&state=s-6" };
+    const genuine_thread = try std.Thread.spawn(.{}, TestBrowser.run, .{&genuine});
+
+    const started = compat.time.nowMillis();
+    const code = try listener.waitForCode(std.testing.allocator, "s-6", neverCancelled, 10_000);
+    defer std.testing.allocator.free(code);
+    genuine_thread.join();
+    try std.testing.expectEqualStrings("real", code);
+    try std.testing.expect(compat.time.nowMillis() - started < 4_000);
+}
+
+test "loopback listener notices a cancel while a client is still sending its request line" {
+    if (!supported) return error.SkipZigTest;
+    var listener = try Listener.open();
+    defer listener.close();
+
+    var slow = Dribbler{ .port = listener.port };
+    const slow_thread = try std.Thread.spawn(.{}, Dribbler.run, .{&slow});
+    defer slow_thread.join();
+    defer slow.stop.store(true, .seq_cst);
+    while (!(try net.readableWithin(net.serverHandle(&listener.server), 10))) {}
+
+    const started = compat.time.nowMillis();
+    test_cancel_at = started + 300;
+    try std.testing.expectError(error.AuthFlowCancelled, listener.waitForCode(std.testing.allocator, "s-7", cancelledAfterDeadline, 10_000));
+    try std.testing.expect(compat.time.nowMillis() - started < 1_000);
+}
+
 test "loopback listener stops waiting soon after the flow is cancelled" {
+    if (!supported) return error.SkipZigTest;
     var listener = try Listener.open();
     defer listener.close();
 

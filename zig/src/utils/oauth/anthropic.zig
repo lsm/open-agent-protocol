@@ -506,6 +506,7 @@ const FakeClaudeBrowser = struct {
 };
 
 test "Anthropic loopback login sends the browser to a localhost callback and exchanges the code that comes back with the same redirect and state" {
+    if (!loopback_supported) return error.SkipZigTest;
     defer FakeClaudeBrowser.exchange_body.clearAndFree(std.testing.allocator);
     const credentials = try loginWithLoopback(.{
         .onAuth = FakeClaudeBrowser.onAuth,
