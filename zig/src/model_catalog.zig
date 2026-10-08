@@ -474,6 +474,7 @@ const CatalogDiscovery = struct {
     models_url: []const u8,
     model_ids: []const []const u8,
     refused: bool = false,
+    unpaid: bool = false,
 };
 
 var test_catalog_discovery: ?[]const CatalogDiscovery = null;
@@ -489,6 +490,7 @@ var test_models_dev: ?[]const u8 = null;
 const CatalogListing = struct {
     models: ?[]DiscoveredModel,
     fetched: bool,
+    key_refused: bool = false,
 };
 
 const loader_wires = [_][]const []const u8{
@@ -834,17 +836,19 @@ fn appendCatalogTargetModels(
 
     const token = if (found) |credential| credential.key else "";
     const honour_marker = if (found) |credential| credential.source == .stored else false;
+    var key_refused = false;
     if (builtin.is_test) {
         test_last_discovery_token_len = @min(token.len, test_last_discovery_token.len);
         @memcpy(test_last_discovery_token[0..test_last_discovery_token_len], token[0..test_last_discovery_token_len]);
     }
-    const discovered = discoverCatalogModels(allocator, target, token, mode, honour_marker) catch |err| switch (err) {
+    const discovered = discoverCatalogModels(allocator, target, token, mode, honour_marker, &key_refused) catch |err| switch (err) {
         error.ModelCatalogRefused, error.ModelCatalogRemembered => {
-            if (refusals) |noted| try noted.add(target.id);
+            if (key_refused) if (refusals) |noted| try noted.add(target.id);
             return;
         },
         else => return err,
     };
+    if (key_refused) if (refusals) |noted| try noted.add(target.id);
     defer if (discovered) |models| freeDiscoveredModels(allocator, models);
 
     if (discovered) |models| {
@@ -1223,13 +1227,23 @@ fn refusalIsRemembered(allocator: std.mem.Allocator, name: []const u8) bool {
     return compat.fs.fileKind(compat.fs.getCwd(), path) == .file;
 }
 
-fn rememberRefusal(allocator: std.mem.Allocator, name: []const u8) void {
+const key_refusal_marker = "key";
+
+fn rememberRefusal(allocator: std.mem.Allocator, name: []const u8, key_refused: bool) void {
     const path = makaiCatalogPath(allocator, name) catch return;
     defer allocator.free(path);
     if (std.fs.path.dirname(path)) |dir| {
         compat.fs.createDir(compat.fs.getCwd(), dir) catch {};
     }
-    compat.fs.writeFile(compat.fs.getCwd(), path, "") catch {};
+    compat.fs.writeFile(compat.fs.getCwd(), path, if (key_refused) key_refusal_marker else "") catch {};
+}
+
+fn rememberedKeyRefusal(allocator: std.mem.Allocator, name: []const u8) bool {
+    const path = makaiCatalogPath(allocator, name) catch return false;
+    defer allocator.free(path);
+    const body = compat.fs.readFileAlloc(allocator, compat.fs.getCwd(), path, key_refusal_marker.len + 1) catch return false;
+    defer allocator.free(body);
+    return std.mem.eql(u8, body, key_refusal_marker);
 }
 
 fn forgetRefusal(allocator: std.mem.Allocator, name: []const u8) void {
@@ -1244,22 +1258,27 @@ fn discoverCatalogModels(
     token: []const u8,
     mode: CatalogLoadMode,
     honour_marker: bool,
+    key_refused: *bool,
 ) !?[]DiscoveredModel {
     const marker = try refusalMarkerName(allocator, target.id, target.region);
     defer allocator.free(marker);
     const honouring = honour_marker and refusalMarkersEnabled();
     const marked = honouring and refusalIsRemembered(allocator, marker);
     if (marked and mode == .allow_cache and refusalIsFresh(allocator, marker, anthropic_catalog_max_age_ms)) {
+        key_refused.* = rememberedKeyRefusal(allocator, marker);
         return error.ModelCatalogRefused;
     }
 
     const listing = discoverCatalogModelsCacheThenProbe(allocator, target, token, mode, marked) catch |err| switch (err) {
-        error.ModelCatalogRefused => {
-            if (honouring) rememberRefusal(allocator, marker);
+        error.ModelCatalogRefused, error.ModelCatalogKeyRefused => {
+            const refused_key = err == error.ModelCatalogKeyRefused;
+            if (honouring) rememberRefusal(allocator, marker, refused_key);
+            key_refused.* = refused_key;
             return error.ModelCatalogRefused;
         },
         else => return err,
     };
+    key_refused.* = listing.key_refused;
     if (listing.models != null and listing.fetched and honouring) forgetRefusal(allocator, marker);
     if (marked and !listing.fetched) {
         if (listing.models) |models| freeDiscoveredModels(allocator, models);
@@ -1276,6 +1295,13 @@ fn discoverCatalogModelsCacheThenProbe(
     skip_cache: bool,
 ) !CatalogListing {
     if (builtin.is_test) {
+        if (testCatalogRefusal(target.id, target.models_url)) |refusal| {
+            if (rowDropsOnRefusal(target.id)) return switch (refusal) {
+                .key => error.ModelCatalogKeyRefused,
+                .payment => error.ModelCatalogRefused,
+            };
+            return .{ .models = try testCatalogModels(allocator, target.id, target.models_url), .fetched = false, .key_refused = refusal == .key };
+        }
         const models = try testCatalogModels(allocator, target.id, target.models_url);
         return .{ .models = models, .fetched = models != null };
     }
@@ -1290,9 +1316,11 @@ fn discoverCatalogModelsCacheThenProbe(
 
     const body = fetchCatalogModelsCatalog(allocator, target, token) catch |err| switch (err) {
         error.OutOfMemory => return error.OutOfMemory,
-        error.ModelCatalogRefused => {
-            if (rowDropsOnRefusal(target.id)) return error.ModelCatalogRefused;
-            return cachedOrNothing(allocator, name, skip_cache);
+        error.ModelCatalogRefused, error.ModelCatalogKeyRefused => {
+            if (rowDropsOnRefusal(target.id)) return err;
+            var listing = try cachedOrNothing(allocator, name, skip_cache);
+            listing.key_refused = err == error.ModelCatalogKeyRefused;
+            return listing;
         },
         else => return cachedOrNothing(allocator, name, skip_cache),
     };
@@ -1319,7 +1347,6 @@ fn testCatalogModels(allocator: std.mem.Allocator, id: []const u8, models_url: [
     for (rows) |row| {
         if (!std.mem.eql(u8, row.id, id)) continue;
         if (!std.mem.eql(u8, row.models_url, models_url)) continue;
-        if (row.refused and rowDropsOnRefusal(id)) return error.ModelCatalogRefused;
         const out = try allocator.alloc(DiscoveredModel, row.model_ids.len);
         var filled: usize = 0;
         errdefer {
@@ -1335,12 +1362,28 @@ fn testCatalogModels(allocator: std.mem.Allocator, id: []const u8, models_url: [
     return null;
 }
 
+fn testCatalogRefusal(id: []const u8, models_url: []const u8) ?enum { key, payment } {
+    const rows = test_catalog_discovery orelse return null;
+    for (rows) |row| {
+        if (!std.mem.eql(u8, row.id, id)) continue;
+        if (!std.mem.eql(u8, row.models_url, models_url)) continue;
+        if (row.refused) return .key;
+        if (row.unpaid) return .payment;
+        return null;
+    }
+    return null;
+}
+
 fn refusalMarkersEnabled() bool {
     return !builtin.is_test or test_catalog_refusal_markers;
 }
 
 fn isRefusalStatus(status: u16) bool {
-    return status == 401 or status == 402 or status == 403;
+    return status == 402 or isKeyRefusalStatus(status);
+}
+
+fn isKeyRefusalStatus(status: u16) bool {
+    return status == 401 or status == 403;
 }
 
 fn fetchCatalogModelsCatalog(allocator: std.mem.Allocator, target: CatalogEndpoint, token: []const u8) ![]u8 {
@@ -1370,6 +1413,7 @@ fn fetchCatalogModelsCatalog(allocator: std.mem.Allocator, target: CatalogEndpoi
     }) catch return error.ModelCatalogFetchFailed;
     errdefer fetched.deinit(allocator);
 
+    if (isKeyRefusalStatus(fetched.status)) return error.ModelCatalogKeyRefused;
     if (isRefusalStatus(fetched.status)) return error.ModelCatalogRefused;
     if (fetched.status != 200) return error.ModelCatalogFetchFailed;
     return fetched.body;
@@ -3421,7 +3465,7 @@ test "a remembered refusal is forgotten once the row answers again" {
 
     const marker = try refusalMarkerName(allocator, plan, null);
     defer allocator.free(marker);
-    rememberRefusal(allocator, marker);
+    rememberRefusal(allocator, marker, true);
     try std.testing.expect(refusalIsRemembered(allocator, marker));
 
     const answering = [_]CatalogDiscovery{
@@ -3505,7 +3549,7 @@ test "a marker inside the listing cache's lifetime answers the row without a req
 
     const marker = try refusalMarkerName(allocator, plan, null);
     defer allocator.free(marker);
-    rememberRefusal(allocator, marker);
+    rememberRefusal(allocator, marker, true);
     try std.testing.expect(refusalIsFresh(allocator, marker, anthropic_catalog_max_age_ms));
 
     const answering = [_]CatalogDiscovery{
@@ -3541,7 +3585,7 @@ test "a marker older than the listing cache makes the row probe, and an answer c
 
     const marker = try refusalMarkerName(allocator, plan, null);
     defer allocator.free(marker);
-    rememberRefusal(allocator, marker);
+    rememberRefusal(allocator, marker, true);
     test_refusal_marker_age_ms = anthropic_catalog_max_age_ms + 60_000;
     defer test_refusal_marker_age_ms = null;
     try std.testing.expect(!refusalIsFresh(allocator, marker, anthropic_catalog_max_age_ms));
@@ -3587,7 +3631,7 @@ test "a stale marker keeps a plan row off its declared models when the probe doe
     defer deinitModels(allocator, unmarked);
     try std.testing.expect(unmarked.len > 0);
 
-    rememberRefusal(allocator, marker);
+    rememberRefusal(allocator, marker, true);
     test_refusal_marker_age_ms = anthropic_catalog_max_age_ms + 60_000;
     defer test_refusal_marker_age_ms = null;
     const stale = try loadCatalogModelsWithRows(allocator, &[_][]const u8{kimi_provider_id}, &storage, .allow_cache);
@@ -3618,7 +3662,7 @@ test "a probe that refuses again writes the marker, so a re-probe cannot lapse t
 
     const marker = try refusalMarkerName(allocator, plan, null);
     defer allocator.free(marker);
-    rememberRefusal(allocator, marker);
+    rememberRefusal(allocator, marker, true);
     forgetRefusal(allocator, marker);
     try std.testing.expect(!refusalIsRemembered(allocator, marker));
 
@@ -3681,7 +3725,7 @@ test "a refusal recorded for a stored key does not drop the row once an environm
     try std.testing.expectEqualStrings("plan-model", listed[0].id);
 }
 
-test "a listing the provider refuses is noted as a refused key, and one it answers is not" {
+test "a listing the provider refuses is noted as a refused key, and one refused for payment or answered is not" {
     const allocator = std.testing.allocator;
     try provider_catalog.blankEnvironment(allocator);
     defer compat.clearTestEnv();
@@ -3707,6 +3751,17 @@ test "a listing the provider refuses is noted as a refused key, and one it answe
     defer deinitModels(allocator, refused);
     try std.testing.expect(refusals.contains(plan));
 
+    const unpaid = [_]CatalogDiscovery{
+        .{ .id = plan, .models_url = target.models_url, .model_ids = &.{}, .unpaid = true },
+    };
+    test_catalog_discovery = &unpaid;
+    var billing = KeyRefusals.init(allocator);
+    defer billing.deinit();
+    const dropped = try loadRowsWithProvenance(allocator, &[_][]const u8{plan}, null, .allow_cache, null, &billing);
+    defer deinitModels(allocator, dropped);
+    try std.testing.expectEqual(@as(usize, 0), dropped.len);
+    try std.testing.expect(!billing.contains(plan));
+
     const answering = [_]CatalogDiscovery{
         .{ .id = plan, .models_url = target.models_url, .model_ids = &.{"plan-model"} },
     };
@@ -3717,6 +3772,76 @@ test "a listing the provider refuses is noted as a refused key, and one it answe
     defer deinitModels(allocator, listed);
     try std.testing.expectEqual(@as(usize, 1), listed.len);
     try std.testing.expect(!none.contains(plan));
+}
+
+test "a keyed row that keeps no models when its listing is refused is noted as a refused key too" {
+    const allocator = std.testing.allocator;
+    try provider_catalog.blankEnvironment(allocator);
+    defer compat.clearTestEnv();
+    var tmp = try tempHome(allocator);
+    defer tmp.cleanup();
+
+    var target = catalogTargetInRegion("deepseek", null) orelse return error.TestExpectedTarget;
+    defer target.deinit(allocator);
+    test_catalog_environment = &[_]provider_credential.EnvironmentValue{
+        .{ .name = provider_catalog.credentialEnv("deepseek")[0], .value = "a-key" },
+    };
+    defer test_catalog_environment = null;
+    const refusing = [_]CatalogDiscovery{
+        .{ .id = "deepseek", .models_url = target.models_url, .model_ids = &.{}, .refused = true },
+    };
+    test_catalog_discovery = &refusing;
+    defer test_catalog_discovery = null;
+
+    var refusals = KeyRefusals.init(allocator);
+    defer refusals.deinit();
+    const refused = try loadRowsWithProvenance(allocator, &.{"deepseek"}, null, .allow_cache, null, &refusals);
+    defer deinitModels(allocator, refused);
+    try std.testing.expect(refusals.contains("deepseek"));
+}
+
+test "a fresh refusal marker counts as a refused key only when the provider refused the key, not payment" {
+    const allocator = std.testing.allocator;
+    try provider_catalog.blankEnvironment(allocator);
+    defer compat.clearTestEnv();
+    test_catalog_refusal_markers = true;
+    defer test_catalog_refusal_markers = false;
+    var tmp = try tempHome(allocator);
+    defer tmp.cleanup();
+
+    const plan = "xiaomi-token-plan-cn";
+    var storage = oauth_storage.AuthStorage{
+        .providers = std.StringHashMap(oauth_storage.ProviderAuth).init(allocator),
+        .allocator = allocator,
+    };
+    defer storage.deinit();
+    try putStoredKey(&storage, allocator, plan);
+    const marker = try refusalMarkerName(allocator, plan, null);
+    defer allocator.free(marker);
+    var target = catalogTargetInRegion(plan, null) orelse return error.TestExpectedTarget;
+    defer target.deinit(allocator);
+    test_catalog_discovery = &[_]CatalogDiscovery{
+        .{ .id = plan, .models_url = target.models_url, .model_ids = &.{}, .unpaid = true },
+    };
+    defer test_catalog_discovery = null;
+
+    var unpaid = KeyRefusals.init(allocator);
+    defer unpaid.deinit();
+    const first = try loadRowsWithProvenance(allocator, &[_][]const u8{plan}, &storage, .allow_cache, null, &unpaid);
+    defer deinitModels(allocator, first);
+    try std.testing.expect(refusalIsRemembered(allocator, marker));
+    const again = try loadRowsWithProvenance(allocator, &[_][]const u8{plan}, &storage, .allow_cache, null, &unpaid);
+    defer deinitModels(allocator, again);
+    try std.testing.expectEqual(@as(usize, 0), again.len);
+    try std.testing.expect(!unpaid.contains(plan));
+
+    rememberRefusal(allocator, marker, true);
+    var refused = KeyRefusals.init(allocator);
+    defer refused.deinit();
+    const second = try loadRowsWithProvenance(allocator, &[_][]const u8{plan}, &storage, .allow_cache, null, &refused);
+    defer deinitModels(allocator, second);
+    try std.testing.expectEqual(@as(usize, 0), second.len);
+    try std.testing.expect(refused.contains(plan));
 }
 
 test "a refusal taken under an environment key does not suppress a stored key" {
@@ -3955,6 +4080,10 @@ test "only a 401, a 402 or a 403 says the key was refused, and an outage does no
 
     const others = [_]u16{ 200, 204, 400, 404, 408, 409, 422, 429, 500, 502, 503, 504 };
     for (others) |status| try std.testing.expect(!isRefusalStatus(status));
+
+    try std.testing.expect(isKeyRefusalStatus(401));
+    try std.testing.expect(isKeyRefusalStatus(403));
+    try std.testing.expect(!isKeyRefusalStatus(402));
 }
 
 test "the region resolution a user chose at login reaches discovery and the model's base" {
