@@ -69,6 +69,7 @@ pub const AuthProtocolServer = struct {
         spawn_login_workers: bool = true,
         answers_prompts: bool = true,
         anthropic_fetch: anthropic_oauth.Fetch = compat.http.fetch,
+        codex_fetch: codex_oauth.Fetch = compat.http.fetch,
     };
 
     pub fn init(allocator: std.mem.Allocator, options: Options) Self {
@@ -665,10 +666,17 @@ pub const AuthProtocolServer = struct {
         g_oauth_thread_context = &context;
         defer g_oauth_thread_context = null;
 
-        const credentials = try codex_oauth.login(.{
-            .onAuth = codexOnAuth,
-            .onPrompt = codexOnPrompt,
-        }, self.allocator);
+        const credentials = if (self.options.answers_prompts)
+            try codex_oauth.login(.{
+                .onAuth = codexOnAuth,
+                .onPrompt = codexOnPrompt,
+            }, self.allocator)
+        else
+            try codex_oauth.loginWithDeviceCode(.{
+                .onAuth = codexOnAuth,
+                .isCancelled = oauthFlowCancelled,
+                .fetch = self.options.codex_fetch,
+            }, self.allocator);
 
         return .{
             .refresh = credentials.refresh,

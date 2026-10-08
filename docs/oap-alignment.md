@@ -16,8 +16,8 @@ remote model-provider-core service, whose catalog it then offers. See Decisions
 contract. Dynamic provider attachment remains optional and remote provider
 transport is follow-up work. The `oapx` adapter advertises
 `action.tools.provide` (Decision 0011). Every SDK provides a request's tools at open and resolves their calls on an
-endpoint that advertises the feature, refuses them client-side on one that does
-not, and retains the legacy wire only by explicit opt-in.
+endpoint that advertises the feature and refuses them client-side on one that
+does not. The legacy wire is retired (#376).
 
 Status: deviations ledger and convergence contract between makai's agent-protocol
 semantics and the Open Agent Protocol (OAP) agent-control core. This is the document

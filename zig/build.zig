@@ -1149,69 +1149,6 @@ pub fn build(b: *std.Build) void {
         },
     });
 
-    const protocol_agent_types_mod = b.createModule(.{
-        .root_source_file = b.path("src/protocol/agent/types.zig"),
-        .target = target,
-        .optimize = optimize,
-        .imports = &.{
-            .{ .name = "protocol_types", .module = protocol_types_mod },
-            .{ .name = "model_catalog_types", .module = protocol_model_catalog_types_mod },
-            .{ .name = "owned_slice", .module = owned_slice_mod },
-        },
-    });
-
-    const protocol_agent_envelope_mod = b.createModule(.{
-        .root_source_file = b.path("src/protocol/agent/envelope.zig"),
-        .target = target,
-        .optimize = optimize,
-        .imports = &.{
-            .{ .name = "agent_types", .module = protocol_agent_types_mod },
-            .{ .name = "json_writer", .module = json_writer_mod },
-            .{ .name = "model_catalog_types", .module = protocol_model_catalog_types_mod },
-            .{ .name = "owned_slice", .module = owned_slice_mod },
-            .{ .name = "compat", .module = compat_mod },
-            .{ .name = "envelope_fields", .module = envelope_fields_mod },
-        },
-    });
-
-    const protocol_agent_server_mod = b.createModule(.{
-        .root_source_file = b.path("src/protocol/agent/server.zig"),
-        .target = target,
-        .optimize = optimize,
-        .imports = &.{
-            .{ .name = "agent_types", .module = protocol_agent_types_mod },
-            .{ .name = "owned_slice", .module = owned_slice_mod },
-            .{ .name = "compat", .module = compat_mod },
-        },
-    });
-
-    const protocol_agent_client_mod = b.createModule(.{
-        .root_source_file = b.path("src/protocol/agent/client.zig"),
-        .target = target,
-        .optimize = optimize,
-        .imports = &.{
-            .{ .name = "agent_types", .module = protocol_agent_types_mod },
-            .{ .name = "agent_envelope", .module = protocol_agent_envelope_mod },
-            .{ .name = "transport", .module = transport_mod },
-            .{ .name = "owned_slice", .module = owned_slice_mod },
-            .{ .name = "compat", .module = compat_mod },
-        },
-    });
-
-    const protocol_agent_runtime_mod = b.createModule(.{
-        .root_source_file = b.path("src/protocol/agent/runtime.zig"),
-        .target = target,
-        .optimize = optimize,
-        .imports = &.{
-            .{ .name = "agent_server", .module = protocol_agent_server_mod },
-            .{ .name = "agent_client", .module = protocol_agent_client_mod },
-            .{ .name = "agent_envelope", .module = protocol_agent_envelope_mod },
-            .{ .name = "transports/in_process", .module = in_process_transport_mod },
-            .{ .name = "envelope_fields", .module = envelope_fields_mod },
-            .{ .name = "compat", .module = compat_mod },
-        },
-    });
-
     const protocol_oap_types_mod = b.createModule(.{
         .root_source_file = b.path("src/protocol/oap/types.zig"),
         .target = target,
@@ -1916,10 +1853,6 @@ pub fn build(b: *std.Build) void {
     const tools_file_mod = b.createModule(.{ .root_source_file = b.path("src/tools/file.zig"), .target = target, .optimize = optimize, .imports = &.{ .{ .name = "ai_types", .module = ai_types_mod }, .{ .name = "agent", .module = agent_mod }, .{ .name = "tools/common", .module = tools_common_mod } } });
     const tools_edit_mod = b.createModule(.{ .root_source_file = b.path("src/tools/edit.zig"), .target = target, .optimize = optimize, .imports = &.{ .{ .name = "ai_types", .module = ai_types_mod }, .{ .name = "agent", .module = agent_mod }, .{ .name = "tools/common", .module = tools_common_mod } } });
     const tools_mcp_bridge_mod = b.createModule(.{ .root_source_file = b.path("src/tools/mcp_bridge.zig"), .target = target, .optimize = optimize, .imports = &.{ .{ .name = "compat", .module = compat_mod }, .{ .name = "ai_types", .module = ai_types_mod }, .{ .name = "agent", .module = agent_mod }, .{ .name = "tools/common", .module = tools_common_mod }, .{ .name = "build_options", .module = version_module }, .{ .name = "json_encode", .module = json_encode_mod } } });
-    const tools_agent_tool_bridge_mod = b.createModule(.{ .root_source_file = b.path("src/tools/agent_tool_bridge.zig"), .target = target, .optimize = optimize, .imports = &.{ .{ .name = "agent_types", .module = protocol_agent_types_mod }, .{ .name = "ai_types", .module = ai_types_mod }, .{ .name = "agent_loop", .module = agent_loop_mod }, .{ .name = "compat", .module = compat_mod } } });
-    const tools_agent_tool_bridge_test = b.addTest(.{ .root_module = tools_agent_tool_bridge_mod });
-    const tools_agent_run_mod = b.createModule(.{ .root_source_file = b.path("src/tools/agent_run.zig"), .target = target, .optimize = optimize, .imports = &.{ .{ .name = "agent_types", .module = protocol_agent_types_mod }, .{ .name = "ai_types", .module = ai_types_mod }, .{ .name = "agent_loop", .module = agent_loop_mod }, .{ .name = "tools/agent_tool_bridge", .module = tools_agent_tool_bridge_mod }, .{ .name = "json_writer", .module = json_writer_mod }, .{ .name = "transport", .module = transport_mod }, .{ .name = "compat", .module = compat_mod }, .{ .name = "agent_server", .module = protocol_agent_server_mod } } });
-    const tools_agent_run_test = b.addTest(.{ .root_module = tools_agent_run_mod });
     const tools_registry_mod = b.createModule(.{ .root_source_file = b.path("src/tools/registry.zig"), .target = target, .optimize = optimize, .imports = &.{ .{ .name = "agent", .module = agent_mod }, .{ .name = "permission", .module = permission_mod }, .{ .name = "tools/shell", .module = tools_shell_mod }, .{ .name = "tools/file", .module = tools_file_mod }, .{ .name = "tools/edit", .module = tools_edit_mod }, .{ .name = "tools/mcp_bridge", .module = tools_mcp_bridge_mod } } });
 
     const model_catalog_mod = b.createModule(.{
@@ -2559,12 +2492,6 @@ pub fn build(b: *std.Build) void {
 
     const protocol_runtime_test = b.addTest(.{ .root_module = protocol_runtime_mod });
 
-    const protocol_agent_types_test = b.addTest(.{ .root_module = protocol_agent_types_mod });
-    const protocol_agent_envelope_test = b.addTest(.{ .root_module = protocol_agent_envelope_mod });
-    const protocol_agent_server_test = b.addTest(.{ .root_module = protocol_agent_server_mod });
-    const protocol_agent_client_test = b.addTest(.{ .root_module = protocol_agent_client_mod });
-    const protocol_agent_runtime_test = b.addTest(.{ .root_module = protocol_agent_runtime_mod });
-
     const protocol_oap_types_test = b.addTest(.{ .root_module = protocol_oap_types_mod });
     const protocol_oap_provider_types_test = b.addTest(.{ .root_module = protocol_oap_provider_types_mod });
     const protocol_oap_provider_envelope_test = b.addTest(.{ .root_module = protocol_oap_provider_envelope_mod });
@@ -2648,28 +2575,6 @@ pub fn build(b: *std.Build) void {
         }),
     });
 
-    const agent_protocol_chain_test = b.addTest(.{
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("test/unit/agent_protocol_chain.zig"),
-            .target = target,
-            .optimize = optimize,
-            .imports = &.{
-                .{ .name = "compat", .module = compat_mod },
-                .{ .name = "ai_types", .module = ai_types_mod },
-                .{ .name = "api_registry", .module = api_registry_mod },
-                .{ .name = "event_stream", .module = event_stream_mod },
-                .{ .name = "agent_types", .module = agent_types_mod },
-                .{ .name = "agent_loop", .module = agent_loop_mod },
-                .{ .name = "agent_bridge", .module = agent_provider_protocol_bridge_mod },
-                .{ .name = "protocol_agent_server", .module = protocol_agent_server_mod },
-                .{ .name = "protocol_agent_client", .module = protocol_agent_client_mod },
-                .{ .name = "protocol_agent_runtime", .module = protocol_agent_runtime_mod },
-                .{ .name = "agent_envelope", .module = protocol_agent_envelope_mod },
-                .{ .name = "transports/in_process", .module = in_process_transport_mod },
-            },
-        }),
-    });
-
     const auth_cli_mod = b.createModule(.{
         .root_source_file = b.path("src/tools/auth_cli.zig"),
         .target = target,
@@ -2707,9 +2612,6 @@ pub fn build(b: *std.Build) void {
             .{ .name = "protocol_server", .module = protocol_server_mod },
             .{ .name = "protocol_runtime", .module = protocol_runtime_mod },
             .{ .name = "protocol_envelope", .module = protocol_envelope_mod },
-            .{ .name = "agent_server", .module = protocol_agent_server_mod },
-            .{ .name = "agent_runtime", .module = protocol_agent_runtime_mod },
-            .{ .name = "agent_envelope", .module = protocol_agent_envelope_mod },
             .{ .name = "auth_server", .module = protocol_auth_server_mod },
             .{ .name = "auth_runtime", .module = protocol_auth_runtime_mod },
             .{ .name = "auth_envelope", .module = protocol_auth_envelope_mod },
@@ -2722,8 +2624,6 @@ pub fn build(b: *std.Build) void {
             .{ .name = "compat", .module = compat_mod },
             .{ .name = "provider_base_url", .module = provider_base_url_mod },
             .{ .name = "provider_catalog", .module = provider_catalog_mod },
-            .{ .name = "tools/agent_tool_bridge", .module = tools_agent_tool_bridge_mod },
-            .{ .name = "tools/agent_run", .module = tools_agent_run_mod },
             .{ .name = "oap_conformance", .module = oap_conformance_runner_mod },
             .{ .name = "oap_auth_adapter", .module = protocol_oap_auth_adapter_mod },
             .{ .name = "oap_provider_types", .module = protocol_oap_provider_types_mod },
@@ -2968,8 +2868,6 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&b.addRunArtifact(tools_edit_test).step);
     test_step.dependOn(&b.addRunArtifact(tools_shell_test).step);
     test_step.dependOn(&b.addRunArtifact(tools_mcp_bridge_test).step);
-    test_step.dependOn(&b.addRunArtifact(tools_agent_tool_bridge_test).step);
-    test_step.dependOn(&b.addRunArtifact(tools_agent_run_test).step);
     test_step.dependOn(&b.addRunArtifact(tools_registry_test).step);
     test_step.dependOn(&b.addRunArtifact(agent_loop_test).step);
     test_step.dependOn(&b.addRunArtifact(agent_mod_test).step);
@@ -3005,9 +2903,6 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&isolatedHomeRun(b, tui_tests_fixtures_test, "test/tui_tests_fixtures_test").step);
     test_step.dependOn(&b.addRunArtifact(tools_process_runner_test).step);
     test_step.dependOn(&b.addRunArtifact(agent_test).step);
-    test_step.dependOn(&b.addRunArtifact(agent_protocol_chain_test).step);
-    test_step.dependOn(&b.addRunArtifact(protocol_agent_types_test).step);
-    test_step.dependOn(&b.addRunArtifact(protocol_agent_envelope_test).step);
     test_step.dependOn(&b.addRunArtifact(protocol_oap_types_test).step);
     test_step.dependOn(&b.addRunArtifact(protocol_oap_provider_types_test).step);
     test_step.dependOn(&b.addRunArtifact(protocol_oap_provider_envelope_test).step);
@@ -3068,9 +2963,6 @@ pub fn build(b: *std.Build) void {
     test_unit_adapter_step.dependOn(&b.addRunArtifact(codex_native_test).step);
     test_unit_adapter_step.dependOn(&b.addRunArtifact(codex_session_test).step);
     test_unit_adapter_step.dependOn(&b.addRunArtifact(codex_corpus_test).step);
-    test_step.dependOn(&b.addRunArtifact(protocol_agent_server_test).step);
-    test_step.dependOn(&b.addRunArtifact(protocol_agent_client_test).step);
-    test_step.dependOn(&b.addRunArtifact(protocol_agent_runtime_test).step);
     test_step.dependOn(&b.addRunArtifact(protocol_auth_types_test).step);
     test_step.dependOn(&b.addRunArtifact(protocol_auth_envelope_test).step);
     test_step.dependOn(&b.addRunArtifact(protocol_auth_server_test).step);
@@ -3120,8 +3012,6 @@ pub fn build(b: *std.Build) void {
     test_unit_protocol_step.dependOn(&b.addRunArtifact(protocol_server_test).step);
     test_unit_protocol_step.dependOn(&b.addRunArtifact(protocol_client_test).step);
     test_unit_protocol_step.dependOn(&b.addRunArtifact(protocol_runtime_test).step);
-    test_unit_protocol_step.dependOn(&b.addRunArtifact(protocol_agent_types_test).step);
-    test_unit_protocol_step.dependOn(&b.addRunArtifact(protocol_agent_envelope_test).step);
     test_unit_protocol_step.dependOn(&b.addRunArtifact(protocol_oap_types_test).step);
     test_unit_protocol_step.dependOn(&b.addRunArtifact(protocol_oap_provider_types_test).step);
     test_unit_protocol_step.dependOn(&b.addRunArtifact(protocol_oap_provider_envelope_test).step);
@@ -3137,9 +3027,6 @@ pub fn build(b: *std.Build) void {
     test_unit_oap_auth_adapter_step.dependOn(&b.addRunArtifact(protocol_oap_auth_adapter_test).step);
     test_unit_protocol_step.dependOn(&b.addRunArtifact(oap_endpoint_client_test).step);
     test_unit_protocol_step.dependOn(&b.addRunArtifact(oap_conformance_runner_test).step);
-    test_unit_protocol_step.dependOn(&b.addRunArtifact(protocol_agent_server_test).step);
-    test_unit_protocol_step.dependOn(&b.addRunArtifact(protocol_agent_client_test).step);
-    test_unit_protocol_step.dependOn(&b.addRunArtifact(protocol_agent_runtime_test).step);
     test_unit_protocol_step.dependOn(&b.addRunArtifact(protocol_auth_types_test).step);
     test_unit_protocol_step.dependOn(&b.addRunArtifact(protocol_auth_envelope_test).step);
     test_unit_protocol_step.dependOn(&b.addRunArtifact(protocol_auth_server_test).step);
@@ -3197,8 +3084,6 @@ pub fn build(b: *std.Build) void {
     test_unit_tools_step.dependOn(&b.addRunArtifact(tools_file_test).step);
     test_unit_tools_step.dependOn(&b.addRunArtifact(tools_edit_test).step);
     test_unit_tools_step.dependOn(&b.addRunArtifact(tools_mcp_bridge_test).step);
-    test_unit_tools_step.dependOn(&b.addRunArtifact(tools_agent_tool_bridge_test).step);
-    test_unit_tools_step.dependOn(&b.addRunArtifact(tools_agent_run_test).step);
     test_unit_tools_step.dependOn(&b.addRunArtifact(tools_registry_test).step);
 
     const test_unit_agent_step = b.step("test-unit-agent", "Run agent unit tests");
@@ -3213,7 +3098,6 @@ pub fn build(b: *std.Build) void {
     test_unit_agent_step.dependOn(&b.addRunArtifact(tui_runtime_test).step);
     test_unit_agent_step.dependOn(&b.addRunArtifact(tui_session_store_test).step);
     test_unit_agent_step.dependOn(&b.addRunArtifact(agent_test).step);
-    test_unit_agent_step.dependOn(&b.addRunArtifact(agent_protocol_chain_test).step);
 
     const test_unit_agent_types_step = b.step("test-unit-agent-types", "Run agent types unit tests");
     test_unit_agent_types_step.dependOn(&b.addRunArtifact(permission_test).step);
@@ -3232,9 +3116,6 @@ pub fn build(b: *std.Build) void {
 
     const test_unit_agent_unit_step = b.step("test-unit-agent-unit", "Run agent unit test file");
     test_unit_agent_unit_step.dependOn(&b.addRunArtifact(agent_test).step);
-
-    const test_unit_agent_chain_step = b.step("test-unit-agent-chain", "Run agent protocol chain unit tests");
-    test_unit_agent_chain_step.dependOn(&b.addRunArtifact(agent_protocol_chain_test).step);
 
     const test_unit_tui_step = b.step("test-unit-tui", "Run TUI runtime unit tests");
     test_unit_tui_step.dependOn(&isolatedHomeRun(b, tui_session_test, "test-unit-tui/tui_session_test").step);
