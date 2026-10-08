@@ -2002,7 +2002,6 @@ pub fn build(b: *std.Build) void {
         .imports = &.{
             .{ .name = "compat", .module = compat_mod },
             .{ .name = "agent_compaction", .module = agent_compaction_mod },
-            .{ .name = "agent_types", .module = agent_types_mod },
             .{ .name = "ai_types", .module = ai_types_mod },
             .{ .name = "session_runtime", .module = session_runtime_mod },
             .{ .name = "owned_slice", .module = owned_slice_mod },

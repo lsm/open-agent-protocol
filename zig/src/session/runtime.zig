@@ -43,6 +43,11 @@ pub const RemoteSettings = struct {
     resume_session_id: ?[]const u8 = null,
 };
 
+pub const ToolLabel = struct {
+    name: []const u8,
+    label: []const u8,
+};
+
 pub const RemoteExecution = struct {
     ctx: *anyopaque,
     vtable: *const VTable,
@@ -69,6 +74,7 @@ pub const RemoteExecution = struct {
         queued: *const fn (ctx: *anyopaque) usize,
         steers_pending: *const fn (ctx: *anyopaque) usize,
         steers_settled: *const fn (ctx: *anyopaque) u64,
+        tool_labels: *const fn (ctx: *anyopaque) []const ToolLabel,
         stop: *const fn (ctx: *anyopaque) void,
     };
 };
@@ -714,6 +720,11 @@ pub const SessionRuntime = struct {
         self.suspended_context_window = held;
         self.context_window = null;
         self.context_window_refused = held;
+    }
+
+    pub fn toolLabels(self: *SessionRuntime) []const ToolLabel {
+        const remote = self.remote orelse return &.{};
+        return remote.vtable.tool_labels(remote.ctx);
     }
 
     pub fn availableTools(self: *SessionRuntime) []const agent.AgentTool {
