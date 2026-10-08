@@ -158,3 +158,43 @@ func TestAnEnvelopeTheProtocolPackageCannotReadIsAnErrorNotAnEmptyEnvelope(t *te
 		t.Fatalf("a reply the protocol package cannot read answered %v after %v", err, time.Since(started))
 	}
 }
+
+func TestClosingAnAgentStreamBeforeItSettlesCancelsTheRun(t *testing.T) {
+	written := &capturedWrites{}
+	tr := &transport{
+		logger: discardLogger, stdin: written,
+		streams: map[string][]*subscription{}, sessions: map[string][]*subscription{}, correlates: map[string]*subscription{},
+		inferences: map[string]*subscription{}, done: make(chan struct{}), exited: make(chan struct{}),
+	}
+	stream := &AgentStream{state: &oapAgentState{transport: tr, sub: tr.subscribeSession("session-1"), sessionID: "session-1", runID: "run-1"}}
+	_ = stream.Close()
+	written.mu.Lock()
+	line := bytes.TrimSpace(written.lines.Bytes())
+	written.mu.Unlock()
+	sent, err := protocol.ParseEnvelope(line)
+	if err != nil {
+		t.Fatalf("sent %q: %v", line, err)
+	}
+	if sent.Type != "run.cancel.request" || sent.SessionID != "session-1" || sent.RunID != "run-1" {
+		t.Fatalf("sent %s", line)
+	}
+	if payload := payloadObject(sent.Payload); payload.str("reason") != "caller_closed" || payload.str("run_id") != "run-1" {
+		t.Fatalf("the cancel carried %s", sent.Payload)
+	}
+}
+
+func TestClosingASettledAgentStreamSendsNothing(t *testing.T) {
+	written := &capturedWrites{}
+	tr := &transport{
+		logger: discardLogger, stdin: written,
+		streams: map[string][]*subscription{}, sessions: map[string][]*subscription{}, correlates: map[string]*subscription{},
+		inferences: map[string]*subscription{}, done: make(chan struct{}), exited: make(chan struct{}),
+	}
+	stream := &AgentStream{state: &oapAgentState{transport: tr, sub: tr.subscribeSession("session-1"), sessionID: "session-1", runID: "run-1", settled: true}}
+	_ = stream.Close()
+	written.mu.Lock()
+	defer written.mu.Unlock()
+	if written.lines.Len() != 0 {
+		t.Fatalf("a settled run was cancelled: %s", written.lines.Bytes())
+	}
+}
