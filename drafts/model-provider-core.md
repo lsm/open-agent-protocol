@@ -1801,8 +1801,12 @@ rather than after.
 
 An implementation claiming `open-agent-protocol.model-provider-core`:
 
-1. Answers `provider.describe.request` with at least one provider, naming its
-   `wire` and `framing`.
+1. Answers `provider.describe.request`, naming each described provider's
+   `wire` and `framing`. An implementation that serves a provider only once it
+   can reach it, as `oapx` does with a credential (#355), may describe none
+   until one is present; it still answers, and a call naming a provider that
+   awaits a credential is refused as `credential_missing` rather than
+   `model_not_found`.
 2. Answers `provider.models.list.request`, and every `model_ref` it returns
    resolves to a provider it described.
 3. Emits exactly one terminal per accepted inference, allocates no

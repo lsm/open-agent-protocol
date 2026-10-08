@@ -22,10 +22,11 @@ already legal and no schema change is needed.
 
 `populateOapProviderCatalog` used to serve three built-in fallback rows marked
 `.fallback`. It now serves the models the runtime loaded for each provider with
-a key present (#355), and that list mixes live listings, cached copies of them,
-models.dev data and endpoints' declared lists without recording which a model
-came from. So those rows omit `source`: the runtime cannot say whether a live
-listing produced them, and an absent member says exactly that.
+a key present or that needs none (#355), and that list mixes live listings,
+cached copies of them, models.dev data and endpoints' declared lists without
+recording which a model came from. So those rows omit `source`: the runtime
+cannot say whether a live listing produced them, and an absent member says
+exactly that.
 
 ## What this does not fix
 

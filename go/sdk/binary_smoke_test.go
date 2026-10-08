@@ -3,6 +3,8 @@ package sdk
 import (
 	"context"
 	"errors"
+	"github.com/lsm/open-agent-protocol/go/providercatalog"
+	"github.com/lsm/open-agent-protocol/providers"
 	"os"
 	"path/filepath"
 	"strings"
@@ -27,6 +29,28 @@ func smokeHome(t *testing.T) string {
 	return home
 }
 
+func smokeEnviron(t *testing.T) []string {
+	t.Helper()
+	catalog, err := providercatalog.Load(providers.Files)
+	if err != nil {
+		t.Fatalf("load the provider catalog: %v", err)
+	}
+	credentials := map[string]bool{}
+	for _, row := range catalog.Providers {
+		for _, name := range row.CredentialEnv {
+			credentials[name] = true
+		}
+	}
+	var env []string
+	for _, entry := range os.Environ() {
+		name, _, _ := strings.Cut(entry, "=")
+		if !credentials[name] {
+			env = append(env, entry)
+		}
+	}
+	return env
+}
+
 func newSmokeClient(t *testing.T) *Client {
 	return newSmokeClientWithClosePolicy(t, false)
 }
@@ -43,7 +67,7 @@ func newFixtureSmokeClientWithClosePolicy(t *testing.T, allowNonzeroExit bool) *
 	}
 
 	home := smokeHome(t)
-	env := append(os.Environ(),
+	env := append(smokeEnviron(t),
 		"HOME="+home,
 		"XDG_CONFIG_HOME="+home,
 		"OAPX_KEYCHAIN_SERVICE=com.makai.go-sdk-test."+newULID(),
@@ -75,7 +99,7 @@ func newSmokeClientWithClosePolicy(t *testing.T, allowNonzeroExit bool) *Client 
 	}
 
 	home := smokeHome(t)
-	env := append(os.Environ(),
+	env := append(smokeEnviron(t),
 		"HOME="+home,
 		"XDG_CONFIG_HOME="+home,
 		"OAPX_KEYCHAIN_SERVICE=com.makai.go-sdk-test."+newULID(),

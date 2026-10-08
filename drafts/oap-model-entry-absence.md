@@ -17,9 +17,9 @@ published `"lifecycle":"stable"` the peer never sent.
 The rows `populateOapProviderCatalog` serves were the clearest case. They used
 to be three built-in fallback rows whose type had no `lifecycle` member, so
 they published `stable` only because the type supplied the default. They are
-now the models the runtime loaded for each provider with a key present
-(#355), and loading states no lifecycle either, so their entries omit it,
-and a client reads the absence as unknown, per
+now the models the runtime loaded for each provider that has a key present or
+needs none (#355), and loading states no lifecycle either, so their entries
+omit it, and a client reads the absence as unknown, per
 `drafts/model-provider-core.md:382-390`.
 
 Substituting a row-specific `lifecycle` would need an actual pinned source

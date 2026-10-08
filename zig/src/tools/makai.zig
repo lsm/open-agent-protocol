@@ -2607,20 +2607,34 @@ test "a provider awaits a credential only when it is a catalog row that needs on
     try std.testing.expect(!rowAwaitsCredential(.{ .id = "unwired", .auth = &.{.api_key}, .wires = &.{"no-such-wire"} }));
 }
 
-test "an invalidated snapshot is loaded again on the next lookup" {
+fn failingServedLoad(allocator: std.mem.Allocator) anyerror![]ai_types.Model {
+    _ = allocator;
+    served_snapshot_loads += 1;
+    return error.NetworkUnreachable;
+}
+
+test "a reload that loads replaces the snapshot and advances its generation, and one that fails keeps both" {
     const allocator = std.testing.allocator;
     served_snapshot_loads = 0;
     var cache: ServedOapModels = .{};
     defer cache.deinit();
-    const first = try cache.snapshot(allocator, allocator, countingServedLoad);
-    model_catalog.deinitModels(allocator, first);
-    cache.invalidate();
-    const second = try cache.snapshot(allocator, allocator, countingServedLoad);
-    model_catalog.deinitModels(allocator, second);
+
+    const empty = try cache.snapshot(allocator);
+    defer model_catalog.deinitModels(allocator, empty);
+    try std.testing.expectEqual(@as(usize, 0), empty.len);
+    try std.testing.expectEqual(@as(usize, 0), served_snapshot_loads);
+
+    try cache.reload(allocator, countingServedLoad);
+    try std.testing.expectEqual(@as(u64, 1), cache.generation.load(.seq_cst));
+    try std.testing.expectError(error.NetworkUnreachable, cache.reload(allocator, failingServedLoad));
+    try std.testing.expectEqual(@as(u64, 1), cache.generation.load(.seq_cst));
+    const kept = try cache.snapshot(allocator);
+    defer model_catalog.deinitModels(allocator, kept);
+    try std.testing.expectEqual(oap_test_served_models.len, kept.len);
     try std.testing.expectEqual(@as(usize, 2), served_snapshot_loads);
 }
 
-test "refreshing the served catalog replaces the providers it serves with the ones loaded now" {
+test "a finished reload replaces the providers the endpoint serves, once per generation" {
     const allocator = std.testing.allocator;
     var server = oapTestProviderServer(allocator);
     defer server.deinit();
@@ -2628,27 +2642,20 @@ test "refreshing the served catalog replaces the providers it serves with the on
     defer oap_served_models_for_test = null;
     try populateOapProviderCatalog(allocator, &server);
     try std.testing.expectEqual(@as(usize, 1), server.providers.items.len);
-    try std.testing.expectEqualStrings("openai", server.providers.items[0].id);
 
-    oap_served_models_for_test = &oap_test_served_models;
-    try refreshServedOapCatalog(allocator, &server);
-    try std.testing.expectEqual(@as(usize, 3), server.providers.items.len);
-    try std.testing.expectEqualStrings("anthropic", server.providers.items[0].id);
-    try std.testing.expectEqual(oap_test_served_models.len, server.models.items.len);
-}
-
-test "the served models are loaded once and every later lookup reads that snapshot" {
-    const allocator = std.testing.allocator;
-    served_snapshot_loads = 0;
     var cache: ServedOapModels = .{};
     defer cache.deinit();
-    for (0..3) |_| {
-        const models = try cache.snapshot(allocator, allocator, countingServedLoad);
-        defer model_catalog.deinitModels(allocator, models);
-        try std.testing.expectEqual(oap_test_served_models.len, models.len);
-    }
-    try std.testing.expectEqual(@as(usize, 1), served_snapshot_loads);
+    var applied: u64 = 0;
+    try std.testing.expect(!try applyServedOapReload(allocator, &server, &cache, &applied));
+    try std.testing.expectEqual(@as(usize, 1), server.providers.items.len);
+
+    try cache.reload(allocator, countingServedLoad);
+    try std.testing.expect(try applyServedOapReload(allocator, &server, &cache, &applied));
+    try std.testing.expectEqual(@as(usize, 3), server.providers.items.len);
+    try std.testing.expectEqualStrings("anthropic", server.providers.items[0].id);
+    try std.testing.expect(!try applyServedOapReload(allocator, &server, &cache, &applied));
 }
+
 
 test "the provider endpoint serves no provider when it discovered no model, as with no key present" {
     const allocator = std.testing.allocator;
@@ -2837,41 +2844,39 @@ var oap_served_models_for_test: ?[]const ai_types.Model = null;
 
 fn loadServedOapModels(allocator: std.mem.Allocator) ![]ai_types.Model {
     if (@import("builtin").is_test) return cloneOapModels(allocator, oap_served_models_for_test orelse &oap_test_served_models);
-    return served_oap_models.snapshot(allocator, std.heap.page_allocator, loadProductionServedModels);
+    return served_oap_models.snapshot(allocator);
 }
 
 fn loadProductionServedModels(allocator: std.mem.Allocator) anyerror![]ai_types.Model {
-    return model_catalog.loadProductionModels(allocator) catch |err| {
-        if (err == error.OutOfMemory) return err;
-        return allocator.alloc(ai_types.Model, 0);
-    };
+    return model_catalog.loadProductionModels(allocator);
 }
 
 const ServedOapModels = struct {
     mutex: std.Io.Mutex = .init,
     models: ?[]ai_types.Model = null,
     cache_allocator: ?std.mem.Allocator = null,
+    generation: std.atomic.Value(u64) = .init(0),
+    reloading: std.atomic.Value(bool) = .init(false),
+    reload_again: std.atomic.Value(bool) = .init(false),
 
-    fn snapshot(
-        self: *ServedOapModels,
-        allocator: std.mem.Allocator,
-        cache_allocator: std.mem.Allocator,
-        load: *const fn (std.mem.Allocator) anyerror![]ai_types.Model,
-    ) ![]ai_types.Model {
+    fn snapshot(self: *ServedOapModels, allocator: std.mem.Allocator) ![]ai_types.Model {
         self.mutex.lockUncancelable(hubIo());
         defer self.mutex.unlock(hubIo());
-        if (self.models == null) {
-            self.models = try load(cache_allocator);
-            self.cache_allocator = cache_allocator;
-        }
-        return cloneOapModels(allocator, self.models.?);
+        return cloneOapModels(allocator, self.models orelse &.{});
     }
 
-    fn invalidate(self: *ServedOapModels) void {
+    fn reload(
+        self: *ServedOapModels,
+        cache_allocator: std.mem.Allocator,
+        load: *const fn (std.mem.Allocator) anyerror![]ai_types.Model,
+    ) !void {
+        const fresh = try load(cache_allocator);
         self.mutex.lockUncancelable(hubIo());
         defer self.mutex.unlock(hubIo());
-        if (self.models) |models| model_catalog.deinitModels(self.cache_allocator.?, models);
-        self.models = null;
+        if (self.models) |previous| model_catalog.deinitModels(self.cache_allocator.?, previous);
+        self.models = fresh;
+        self.cache_allocator = cache_allocator;
+        _ = self.generation.fetchAdd(1, .seq_cst);
     }
 
     fn deinit(self: *ServedOapModels) void {
@@ -2879,6 +2884,54 @@ const ServedOapModels = struct {
         self.* = undefined;
     }
 };
+
+var served_oap_models: ServedOapModels = .{};
+
+const served_oap_startup_wait_ms: i64 = 2_000;
+
+fn startServedOapReload() void {
+    if (@import("builtin").is_test) return;
+    if (served_oap_models.reloading.swap(true, .seq_cst)) {
+        served_oap_models.reload_again.store(true, .seq_cst);
+        return;
+    }
+    const thread = std.Thread.spawn(.{}, servedOapReloadThread, .{}) catch {
+        served_oap_models.reloading.store(false, .seq_cst);
+        return;
+    };
+    thread.detach();
+}
+
+fn servedOapReloadThread() void {
+    while (true) {
+        served_oap_models.reload_again.store(false, .seq_cst);
+        served_oap_models.reload(std.heap.page_allocator, loadProductionServedModels) catch {};
+        if (!served_oap_models.reload_again.load(.seq_cst)) break;
+    }
+    served_oap_models.reloading.store(false, .seq_cst);
+}
+
+fn startServingOapCatalog(allocator: std.mem.Allocator, server: *oap_provider_server.Server) !u64 {
+    const before = served_oap_models.generation.load(.seq_cst);
+    startServedOapReload();
+    if (!@import("builtin").is_test) {
+        const deadline = compat.time.nowMillis() + served_oap_startup_wait_ms;
+        while (served_oap_models.generation.load(.seq_cst) == before and compat.time.nowMillis() < deadline) compat.time.sleepMs(10);
+    }
+    try populateOapProviderCatalog(allocator, server);
+    return served_oap_models.generation.load(.seq_cst);
+}
+
+fn applyServedOapReload(allocator: std.mem.Allocator, server: *oap_provider_server.Server, cache: *ServedOapModels, applied: *u64) !bool {
+    const current = cache.generation.load(.seq_cst);
+    if (current == applied.*) return false;
+    const models = try cache.snapshot(allocator);
+    defer model_catalog.deinitModels(allocator, models);
+    server.clearCatalog();
+    try populateOapProviderCatalogFrom(allocator, server, models);
+    applied.* = current;
+    return true;
+}
 
 fn oapProviderAwaitsCredential(provider_id: []const u8) bool {
     const row = provider_catalog.provider(provider_id) orelse return false;
@@ -2891,14 +2944,6 @@ fn rowAwaitsCredential(row: provider_catalog.Provider) bool {
     }
     return provider_catalog.firstImplementedWire(row) != null;
 }
-
-fn refreshServedOapCatalog(allocator: std.mem.Allocator, server: *oap_provider_server.Server) !void {
-    served_oap_models.invalidate();
-    server.clearCatalog();
-    try populateOapProviderCatalog(allocator, server);
-}
-
-var served_oap_models: ServedOapModels = .{};
 
 fn cloneOapModels(allocator: std.mem.Allocator, models: []const ai_types.Model) ![]ai_types.Model {
     const cloned = try allocator.alloc(ai_types.Model, models.len);
@@ -3842,6 +3887,7 @@ const HttpProviderRuntime = struct {
     idle_ttl_ms: i64,
     workers: std.atomic.Value(usize) = std.atomic.Value(usize).init(0),
     stopping: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
+    served_generation: u64 = 0,
 
     fn init(allocator: std.mem.Allocator) !HttpProviderRuntime {
         var runtime = HttpProviderRuntime{
@@ -3860,7 +3906,7 @@ const HttpProviderRuntime = struct {
         };
         errdefer runtime.deinit();
         try register_builtins.registerBuiltInApiProviders(&runtime.registry);
-        try populateOapProviderCatalog(allocator, &runtime.server);
+        runtime.served_generation = try startServingOapCatalog(allocator, &runtime.server);
         for (runtime.server.providers.items) |*provider| {
             const empty = try allocator.alloc(oap_provider_types.GrantKind, 0);
             provider.credential_grant = .none;
@@ -4015,6 +4061,7 @@ fn popHttpProviderFrame(runtime: *HttpProviderRuntime, exchange: *HttpProviderEx
 fn pumpHttpProvider(runtime: *HttpProviderRuntime) void {
     while (!runtime.stopping.load(.acquire)) {
         runtime.mutex.lockUncancelable(httpProviderIo());
+        _ = applyServedOapReload(runtime.allocator, &runtime.server, &served_oap_models, &runtime.served_generation) catch false;
         _ = pumpOapInferences(runtime.allocator, &runtime.server, &runtime.running, runtime.idle_ttl_ms) catch {};
         runtime.dispatch(null) catch {};
         runtime.mutex.unlock(httpProviderIo());
@@ -4292,7 +4339,7 @@ fn runOapProviderMode(
         running.deinit(allocator);
     }
 
-    try populateOapProviderCatalog(allocator, &server);
+    var served_generation = try startServingOapCatalog(allocator, &server);
 
     var async_receiver = stdio.AsyncStdioReceiver.initWithFile(stdin);
     var stdin_handle = try async_receiver.receiveStreamWithHandle(allocator);
@@ -4301,6 +4348,7 @@ fn runOapProviderMode(
 
     while (true) {
         var did_work = false;
+        if (try applyServedOapReload(allocator, &server, &served_oap_models, &served_generation)) did_work = true;
 
         while (if (endpoint_signals.received()) null else stdin_stream.poll()) |chunk| {
             var mutable_chunk = chunk;
@@ -4542,9 +4590,10 @@ fn runOapxServe(
         running_inferences.deinit(allocator);
     }
     const provider_idle_ttl_ms = oapProviderStreamIdleTtlMs(allocator);
+    var served_generation: u64 = 0;
     if (serve_provider) {
         try register_builtins.registerBuiltInApiProviders(&provider_registry);
-        try populateOapProviderCatalog(allocator, &provider_server);
+        served_generation = try startServingOapCatalog(allocator, &provider_server);
     }
 
     var async_receiver = stdio.AsyncStdioReceiver.initWithFileAndLimit(stdin, adapter_endpoint.default_frame_limit);
@@ -4609,8 +4658,9 @@ fn runOapxServe(
             if (try endpoint.pump(if (did_work) 0 else STDIO_IDLE_SLEEP_NS)) did_work = true;
         }
         if (try auth_adapter.pump() > 0) did_work = true;
-        if (auth_adapter.takeSignIn() and serve_provider) try refreshServedOapCatalog(allocator, &provider_server);
+        if (auth_adapter.takeSignIn() and serve_provider) startServedOapReload();
         if (serve_provider) {
+            if (try applyServedOapReload(allocator, &provider_server, &served_oap_models, &served_generation)) did_work = true;
             if (try announceOapGrants(allocator, &provider_server, &grant_channels, &grant_ordinal)) did_work = true;
             if (try pumpOapGrants(allocator, &provider_server, &grant_channels, &granted_values, compat.time.nowMillis())) did_work = true;
             while (provider_server.popPendingStart()) |inference_id| {
