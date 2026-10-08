@@ -2,9 +2,12 @@ const std = @import("std");
 const compat = @import("compat");
 const http = compat.http;
 const pkce_mod = @import("oauth/pkce");
+const loopback = @import("oauth/loopback");
 
 const client_id = "app_EMoamEEZ73f0CkXaXp7hrann";
 const redirect_uri = "http://localhost:1455/auth/callback";
+pub const browser_callback_port: u16 = 1455;
+const browser_callback_path = "/auth/callback";
 const scopes = "openid profile email offline_access api.connectors.read api.connectors.invoke";
 const originator = "codex_cli_rs";
 const auth_url_base = "https://auth.openai.com/oauth/authorize";
@@ -46,6 +49,8 @@ pub const DeviceCallbacks = struct {
     onAuth: *const fn (info: AuthInfo) void,
     isCancelled: *const fn () bool,
     fetch: Fetch = http.fetch,
+    browser_port: ?u16 = browser_callback_port,
+    wait_ms: i64 = device_login_window_ms,
 };
 
 fn isUnreservedUrlByte(byte: u8) bool {
@@ -156,7 +161,7 @@ fn generateStateWithRandom(allocator: std.mem.Allocator, fill_random: fn ([]u8) 
     return state;
 }
 
-fn buildAuthUrl(allocator: std.mem.Allocator, challenge: []const u8, state: []const u8) ![]u8 {
+fn buildAuthUrl(allocator: std.mem.Allocator, challenge: []const u8, state: []const u8, callback_uri: []const u8) ![]u8 {
     var url = std.ArrayList(u8).empty;
     errdefer url.deinit(allocator);
 
@@ -165,7 +170,7 @@ fn buildAuthUrl(allocator: std.mem.Allocator, challenge: []const u8, state: []co
     var first = true;
     try appendQueryParam(allocator, &url, &first, "response_type", "code");
     try appendQueryParam(allocator, &url, &first, "client_id", client_id);
-    try appendQueryParam(allocator, &url, &first, "redirect_uri", redirect_uri);
+    try appendQueryParam(allocator, &url, &first, "redirect_uri", callback_uri);
     try appendQueryParam(allocator, &url, &first, "scope", scopes);
     try appendQueryParam(allocator, &url, &first, "code_challenge", challenge);
     try appendQueryParam(allocator, &url, &first, "code_challenge_method", "S256");
@@ -184,7 +189,7 @@ pub fn login(callbacks: Callbacks, allocator: std.mem.Allocator) !Credentials {
     const state = try generateState(allocator);
     defer allocator.free(state);
 
-    const auth_url = try buildAuthUrl(allocator, pkce.challenge, state);
+    const auth_url = try buildAuthUrl(allocator, pkce.challenge, state, redirect_uri);
     defer allocator.free(auth_url);
 
     callbacks.onAuth(.{
@@ -203,7 +208,7 @@ pub fn login(callbacks: Callbacks, allocator: std.mem.Allocator) !Credentials {
         return error.OAuthStateMismatch;
     }
 
-    const token_response = try exchangeCode(parsed_auth.code, pkce.verifier, allocator);
+    const token_response = try exchangeCode(http.fetch, parsed_auth.code, pkce.verifier, redirect_uri, allocator);
     defer deinitTokenResponse(allocator, token_response);
 
     const refresh_token = token_response.refresh_token orelse return error.ParseError;
@@ -213,29 +218,83 @@ pub fn login(callbacks: Callbacks, allocator: std.mem.Allocator) !Credentials {
     return try buildCredentials(allocator, refresh_token, token_response.access_token, expires, token_response.provider_data);
 }
 
-pub fn loginWithDeviceCode(callbacks: DeviceCallbacks, allocator: std.mem.Allocator) !Credentials {
-    const device = try requestUserCode(callbacks.fetch, allocator);
-    defer device.deinit(allocator);
+pub fn loginWithBrowserOrDeviceCode(callbacks: DeviceCallbacks, allocator: std.mem.Allocator) !Credentials {
+    var listener: ?loopback.Listener = null;
+    if (callbacks.browser_port) |port| {
+        if (loopback.supported) listener = loopback.Listener.openAt(port, browser_callback_path) catch null;
+    }
+    defer if (listener) |*held| held.close();
 
-    const instructions = try std.fmt.allocPrint(allocator, "Enter code: {s}", .{device.user_code});
+    const device: ?DeviceCode = requestUserCode(callbacks.fetch, allocator) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        else => if (listener == null) return err else null,
+    };
+    defer if (device) |held| held.deinit(allocator);
+
+    const pkce = try pkce_mod.generate(allocator);
+    defer pkce.deinit(allocator);
+    const state = try generateState(allocator);
+    defer allocator.free(state);
+    const callback_uri: ?[]u8 = if (listener) |*held| try held.redirectUri(allocator) else null;
+    defer if (callback_uri) |uri| allocator.free(uri);
+
+    try showLogin(callbacks, allocator, pkce.challenge, state, callback_uri, device);
+
+    const poll_body: ?[]u8 = if (device) |held| try std.json.Stringify.valueAlloc(allocator, .{ .device_auth_id = held.device_auth_id, .user_code = held.user_code }, .{}) else null;
+    defer if (poll_body) |body| allocator.free(body);
+    var polling = device != null;
+    var next_poll = compat.time.nowMillis();
+    const deadline = next_poll + callbacks.wait_ms;
+    while (true) {
+        if (callbacks.isCancelled()) return error.AuthFlowCancelled;
+        if (compat.time.nowMillis() >= deadline) return error.LoginTimedOut;
+        if (listener) |*held| {
+            if (try held.take(allocator, state, callbacks.isCancelled)) |code| {
+                defer allocator.free(code);
+                const token_response = try exchangeCode(callbacks.fetch, code, pkce.verifier, callback_uri.?, allocator);
+                return credentialsFrom(token_response, allocator);
+            }
+        } else {
+            compat.time.sleepMs(device_cancel_check_ms);
+        }
+        if (!polling or compat.time.nowMillis() < next_poll) continue;
+        var fetched = try postJson(callbacks.fetch, allocator, device_token_url, poll_body.?);
+        defer fetched.deinit(allocator);
+        if (fetched.status == 200) {
+            const grant = try parseDeviceGrant(allocator, fetched.body);
+            defer grant.deinit(allocator);
+            const token_response = try exchangeCode(callbacks.fetch, grant.authorization_code, grant.code_verifier, device_redirect_uri, allocator);
+            return credentialsFrom(token_response, allocator);
+        }
+        if (fetched.status == 403 or fetched.status == 404) {
+            next_poll = compat.time.nowMillis() + @as(i64, @intCast(device.?.interval_ms));
+        } else if (listener != null) {
+            polling = false;
+        } else {
+            return error.OAuthFailed;
+        }
+    }
+}
+
+fn showLogin(callbacks: DeviceCallbacks, allocator: std.mem.Allocator, challenge: []const u8, state: []const u8, callback_uri: ?[]const u8, device: ?DeviceCode) !void {
+    const uri = callback_uri orelse {
+        const instructions = try std.fmt.allocPrint(allocator, "Enter code: {s}", .{device.?.user_code});
+        defer allocator.free(instructions);
+        callbacks.onAuth(.{ .url = device_verification_url, .instructions = instructions });
+        return;
+    };
+    const auth_url = try buildAuthUrl(allocator, challenge, state, uri);
+    defer allocator.free(auth_url);
+    const instructions = if (device) |held|
+        try std.fmt.allocPrint(allocator, "Open this URL in a browser on this computer. On another device, open " ++ device_verification_url ++ " and enter code {s} instead.", .{held.user_code})
+    else
+        try allocator.dupe(u8, "Open this URL in a browser on this computer; the login finishes on its own.");
     defer allocator.free(instructions);
-    callbacks.onAuth(.{ .url = device_verification_url, .instructions = instructions });
+    callbacks.onAuth(.{ .url = auth_url, .instructions = instructions });
+}
 
-    const grant = try pollDeviceToken(callbacks, device, allocator);
-    defer grant.deinit(allocator);
-
-    const body = try formBody(allocator, &.{
-        .{ "grant_type", "authorization_code" },
-        .{ "code", grant.authorization_code },
-        .{ "redirect_uri", device_redirect_uri },
-        .{ "client_id", client_id },
-        .{ "code_verifier", grant.code_verifier },
-    });
-    defer allocator.free(body);
-
-    const token_response = try exchangeTokensWith(callbacks.fetch, body, "application/x-www-form-urlencoded", allocator);
+fn credentialsFrom(token_response: TokenResponse, allocator: std.mem.Allocator) !Credentials {
     defer deinitTokenResponse(allocator, token_response);
-
     const refresh_token = token_response.refresh_token orelse return error.ParseError;
     const expires = compat.time.nowMillis() + (token_response.expires_in * 1000) - (5 * 60 * 1000);
     return try buildCredentials(allocator, refresh_token, token_response.access_token, expires, token_response.provider_data);
@@ -311,29 +370,6 @@ fn parseUserCodeResponse(allocator: std.mem.Allocator, body: []const u8) !Device
         .user_code = user_code,
         .interval_ms = std.math.mul(u64, interval_s, 1000) catch return error.ParseError,
     };
-}
-
-fn pollDeviceToken(callbacks: DeviceCallbacks, device: DeviceCode, allocator: std.mem.Allocator) !DeviceGrant {
-    const body = try std.json.Stringify.valueAlloc(allocator, .{ .device_auth_id = device.device_auth_id, .user_code = device.user_code }, .{});
-    defer allocator.free(body);
-    const deadline = compat.time.nowMillis() + device_login_window_ms;
-    while (true) {
-        var fetched = try postJson(callbacks.fetch, allocator, device_token_url, body);
-        defer fetched.deinit(allocator);
-        if (fetched.status == 200) return try parseDeviceGrant(allocator, fetched.body);
-        if (fetched.status != 403 and fetched.status != 404) return error.OAuthFailed;
-        if (compat.time.nowMillis() >= deadline) return error.DeviceCodeExpired;
-        try waitUnlessCancelled(callbacks.isCancelled, device.interval_ms);
-    }
-}
-
-fn waitUnlessCancelled(isCancelled: *const fn () bool, interval_ms: u64) !void {
-    var waited: u64 = 0;
-    while (true) : (waited += device_cancel_check_ms) {
-        if (isCancelled()) return error.AuthFlowCancelled;
-        if (waited >= interval_ms) return;
-        compat.time.sleepMs(@min(device_cancel_check_ms, interval_ms - waited));
-    }
 }
 
 fn parseDeviceGrant(allocator: std.mem.Allocator, body: []const u8) !DeviceGrant {
@@ -581,17 +617,17 @@ fn parseTokenResponse(response_body: []const u8, allocator: std.mem.Allocator) !
     };
 }
 
-fn exchangeCode(code: []const u8, verifier: []const u8, allocator: std.mem.Allocator) !TokenResponse {
+fn exchangeCode(fetch: Fetch, code: []const u8, verifier: []const u8, callback_uri: []const u8, allocator: std.mem.Allocator) !TokenResponse {
     const body = try formBody(allocator, &.{
         .{ "grant_type", "authorization_code" },
         .{ "code", code },
-        .{ "redirect_uri", redirect_uri },
+        .{ "redirect_uri", callback_uri },
         .{ "client_id", client_id },
         .{ "code_verifier", verifier },
     });
     defer allocator.free(body);
 
-    return try exchangeTokens(body, "application/x-www-form-urlencoded", allocator);
+    return try exchangeTokensWith(fetch, body, "application/x-www-form-urlencoded", allocator);
 }
 
 fn exchangeTokens(body: []const u8, content_type: []const u8, allocator: std.mem.Allocator) !TokenResponse {
@@ -620,7 +656,7 @@ fn exchangeTokensWith(fetch: Fetch, body: []const u8, content_type: []const u8, 
 }
 
 test "buildAuthUrl includes client_id and PKCE challenge" {
-    const url = try buildAuthUrl(std.testing.allocator, "challenge-value", "state-value");
+    const url = try buildAuthUrl(std.testing.allocator, "challenge-value", "state-value", redirect_uri);
     defer std.testing.allocator.free(url);
 
     try std.testing.expect(std.mem.startsWith(u8, url, "https://auth.openai.com/oauth/authorize?response_type=code"));
@@ -834,8 +870,16 @@ const FakeDeviceServer = struct {
     var exchange_request: std.ArrayList(u8) = .empty;
     var shown_url: std.ArrayList(u8) = .empty;
     var shown_instructions: std.ArrayList(u8) = .empty;
+    var browser_returns: bool = false;
+    var poll_status: u16 = 403;
+    var browser_delay_ms: u64 = 0;
+    var browser: ?std.Thread = null;
 
     fn reset() void {
+        browser_returns = false;
+        browser = null;
+        poll_status = 403;
+        browser_delay_ms = 0;
         pending_polls = 0;
         polls = 0;
         cancel_at_poll = null;
@@ -865,7 +909,7 @@ const FakeDeviceServer = struct {
         }
         if (std.mem.eql(u8, url, device_token_url)) {
             polls += 1;
-            if (polls <= pending_polls) return respond(allocator, 403, "{}");
+            if (polls <= pending_polls) return respond(allocator, poll_status, "{}");
             return respond(allocator, 200, "{\"authorization_code\":\"auth-code\",\"code_challenge\":\"c\",\"code_verifier\":\"verifier-1\"}");
         }
         if (std.mem.eql(u8, url, token_url)) {
@@ -879,6 +923,31 @@ const FakeDeviceServer = struct {
     fn onAuth(info: AuthInfo) void {
         shown_url.appendSlice(std.testing.allocator, info.url) catch {};
         shown_instructions.appendSlice(std.testing.allocator, info.instructions orelse "") catch {};
+        if (browser_returns) browser = std.Thread.spawn(.{}, returnFromBrowser, .{}) catch null;
+    }
+
+    fn param(url: []const u8, key: []const u8) []const u8 {
+        const start = (std.mem.indexOf(u8, url, key) orelse return "") + key.len;
+        const end = std.mem.indexOfScalarPos(u8, url, start, '&') orelse url.len;
+        return url[start..end];
+    }
+
+    fn callbackPort() u16 {
+        const redirect = param(shown_url.items, "redirect_uri=http%3A%2F%2Flocalhost%3A");
+        return std.fmt.parseInt(u16, redirect[0 .. std.mem.indexOf(u8, redirect, "%2F") orelse return 0], 10) catch 0;
+    }
+
+    fn returnFromBrowser() void {
+        compat.time.sleepMs(browser_delay_ms);
+        var stream = compat.net.tcpConnectHost(std.heap.page_allocator, "127.0.0.1", callbackPort()) catch return;
+        defer stream.close();
+        var request: [512]u8 = undefined;
+        const line = std.fmt.bufPrint(&request, "GET /auth/callback?code=browser-code&state={s} HTTP/1.1\r\n\r\n", .{param(shown_url.items, "&state=")}) catch return;
+        stream.writeAll(line) catch return;
+        var sink: [256]u8 = undefined;
+        while (compat.net.readableWithin(compat.net.streamHandle(&stream), 3_000) catch false) {
+            if ((stream.readSome(&sink) catch 0) == 0) break;
+        }
     }
 
     fn isCancelled() bool {
@@ -887,7 +956,8 @@ const FakeDeviceServer = struct {
         return polls >= at;
     }
 
-    const callbacks: DeviceCallbacks = .{ .onAuth = onAuth, .isCancelled = isCancelled, .fetch = fetch };
+    const callbacks: DeviceCallbacks = .{ .onAuth = onAuth, .isCancelled = isCancelled, .fetch = fetch, .browser_port = null, .wait_ms = 5_000 };
+    const with_browser: DeviceCallbacks = .{ .onAuth = onAuth, .isCancelled = isCancelled, .fetch = fetch, .browser_port = 0, .wait_ms = 5_000 };
 };
 
 test "Codex device login shows the verification URL and user code, polls until the code is approved, and exchanges the grant it gets" {
@@ -895,7 +965,7 @@ test "Codex device login shows the verification URL and user code, polls until t
     defer FakeDeviceServer.deinit();
     FakeDeviceServer.pending_polls = 2;
 
-    const credentials = try loginWithDeviceCode(FakeDeviceServer.callbacks, std.testing.allocator);
+    const credentials = try loginWithBrowserOrDeviceCode(FakeDeviceServer.callbacks, std.testing.allocator);
     defer std.testing.allocator.free(credentials.refresh);
     defer std.testing.allocator.free(credentials.access);
     defer if (credentials.provider_data) |data| std.testing.allocator.free(data);
@@ -918,7 +988,7 @@ test "Codex device login stops polling once the flow is cancelled and exchanges 
     FakeDeviceServer.pending_polls = 1000;
     FakeDeviceServer.cancel_at_poll = 2;
 
-    try std.testing.expectError(error.AuthFlowCancelled, loginWithDeviceCode(FakeDeviceServer.callbacks, std.testing.allocator));
+    try std.testing.expectError(error.AuthFlowCancelled, loginWithBrowserOrDeviceCode(FakeDeviceServer.callbacks, std.testing.allocator));
     try std.testing.expectEqual(@as(usize, 2), FakeDeviceServer.polls);
     try std.testing.expectEqual(@as(usize, 0), FakeDeviceServer.exchanges);
 }
@@ -931,7 +1001,7 @@ test "Codex device login notices a cancel while it waits out the polling interva
     const started = compat.time.nowMillis();
     FakeDeviceServer.cancel_at_ms = started + 300;
 
-    try std.testing.expectError(error.AuthFlowCancelled, loginWithDeviceCode(FakeDeviceServer.callbacks, std.testing.allocator));
+    try std.testing.expectError(error.AuthFlowCancelled, loginWithBrowserOrDeviceCode(FakeDeviceServer.callbacks, std.testing.allocator));
     try std.testing.expect(compat.time.nowMillis() - started < 1_000);
     try std.testing.expectEqual(@as(usize, 1), FakeDeviceServer.polls);
 }
@@ -941,9 +1011,93 @@ test "Codex device login reports a server without device codes before showing an
     defer FakeDeviceServer.deinit();
     FakeDeviceServer.user_code_status = 404;
 
-    try std.testing.expectError(error.DeviceCodeLoginUnavailable, loginWithDeviceCode(FakeDeviceServer.callbacks, std.testing.allocator));
+    try std.testing.expectError(error.DeviceCodeLoginUnavailable, loginWithBrowserOrDeviceCode(FakeDeviceServer.callbacks, std.testing.allocator));
     try std.testing.expectEqual(@as(usize, 0), FakeDeviceServer.shown_url.items.len);
     try std.testing.expectEqual(@as(usize, 0), FakeDeviceServer.polls);
+}
+
+test "Codex login offers the browser and the device code together and finishes through the browser callback when it returns" {
+    if (!loopback.supported) return error.SkipZigTest;
+    FakeDeviceServer.reset();
+    defer FakeDeviceServer.deinit();
+    FakeDeviceServer.pending_polls = 1000;
+    FakeDeviceServer.browser_returns = true;
+
+    const credentials = try loginWithBrowserOrDeviceCode(FakeDeviceServer.with_browser, std.testing.allocator);
+    defer std.testing.allocator.free(credentials.refresh);
+    defer std.testing.allocator.free(credentials.access);
+    defer if (credentials.provider_data) |data| std.testing.allocator.free(data);
+    if (FakeDeviceServer.browser) |thread| thread.join();
+
+    try std.testing.expect(std.mem.startsWith(u8, FakeDeviceServer.shown_url.items, "https://auth.openai.com/oauth/authorize?"));
+    try std.testing.expectEqualStrings(
+        "Open this URL in a browser on this computer. On another device, open https://auth.openai.com/codex/device and enter code ABCD-1234 instead.",
+        FakeDeviceServer.shown_instructions.items,
+    );
+    const expected_redirect = try std.fmt.allocPrint(std.testing.allocator, "redirect_uri=http%3A%2F%2Flocalhost%3A{d}%2Fauth%2Fcallback", .{FakeDeviceServer.callbackPort()});
+    defer std.testing.allocator.free(expected_redirect);
+    try std.testing.expect(std.mem.indexOf(u8, FakeDeviceServer.exchange_request.items, "code=browser-code&") != null);
+    try std.testing.expect(std.mem.indexOf(u8, FakeDeviceServer.exchange_request.items, expected_redirect) != null);
+    try std.testing.expectEqualStrings("acc", credentials.access);
+}
+
+test "Codex login finishes through the device code when it is approved while the browser listener waits" {
+    if (!loopback.supported) return error.SkipZigTest;
+    FakeDeviceServer.reset();
+    defer FakeDeviceServer.deinit();
+    FakeDeviceServer.pending_polls = 2;
+
+    const credentials = try loginWithBrowserOrDeviceCode(FakeDeviceServer.with_browser, std.testing.allocator);
+    defer std.testing.allocator.free(credentials.refresh);
+    defer std.testing.allocator.free(credentials.access);
+    defer if (credentials.provider_data) |data| std.testing.allocator.free(data);
+
+    try std.testing.expectEqual(@as(usize, 3), FakeDeviceServer.polls);
+    try std.testing.expect(std.mem.indexOf(u8, FakeDeviceServer.exchange_request.items, "code=auth-code&redirect_uri=https%3A%2F%2Fauth.openai.com%2Fdeviceauth%2Fcallback") != null);
+}
+
+test "Codex login keeps waiting for the browser after the device code poll fails" {
+    if (!loopback.supported) return error.SkipZigTest;
+    FakeDeviceServer.reset();
+    defer FakeDeviceServer.deinit();
+    FakeDeviceServer.pending_polls = 1000;
+    FakeDeviceServer.poll_status = 500;
+    FakeDeviceServer.interval_seconds = "1";
+    FakeDeviceServer.browser_returns = true;
+    FakeDeviceServer.browser_delay_ms = 400;
+
+    const credentials = try loginWithBrowserOrDeviceCode(FakeDeviceServer.with_browser, std.testing.allocator);
+    defer std.testing.allocator.free(credentials.refresh);
+    defer std.testing.allocator.free(credentials.access);
+    defer if (credentials.provider_data) |data| std.testing.allocator.free(data);
+    if (FakeDeviceServer.browser) |thread| thread.join();
+
+    try std.testing.expect(std.mem.indexOf(u8, FakeDeviceServer.exchange_request.items, "code=browser-code&") != null);
+    try std.testing.expect(FakeDeviceServer.polls >= 1);
+}
+
+test "Codex login falls back to the browser alone when the server issues no device codes" {
+    if (!loopback.supported) return error.SkipZigTest;
+    FakeDeviceServer.reset();
+    defer FakeDeviceServer.deinit();
+    FakeDeviceServer.user_code_status = 404;
+    FakeDeviceServer.browser_returns = true;
+
+    const credentials = try loginWithBrowserOrDeviceCode(FakeDeviceServer.with_browser, std.testing.allocator);
+    defer std.testing.allocator.free(credentials.refresh);
+    defer std.testing.allocator.free(credentials.access);
+    defer if (credentials.provider_data) |data| std.testing.allocator.free(data);
+    if (FakeDeviceServer.browser) |thread| thread.join();
+
+    try std.testing.expectEqualStrings("Open this URL in a browser on this computer; the login finishes on its own.", FakeDeviceServer.shown_instructions.items);
+    try std.testing.expectEqual(@as(usize, 0), FakeDeviceServer.polls);
+    try std.testing.expect(std.mem.indexOf(u8, FakeDeviceServer.exchange_request.items, "code=browser-code&") != null);
+}
+
+test "Codex browser callback on its registered port is the redirect OpenAI accepts for this client" {
+    const uri = try std.fmt.allocPrint(std.testing.allocator, "http://localhost:{d}{s}", .{ browser_callback_port, browser_callback_path });
+    defer std.testing.allocator.free(uri);
+    try std.testing.expectEqualStrings(redirect_uri, uri);
 }
 
 test "Codex device user code response takes a numeric or string interval in seconds" {
@@ -963,7 +1117,7 @@ test "Codex device login survives allocation failures" {
     try std.testing.checkAllAllocationFailures(std.testing.allocator, struct {
         fn run(allocator: std.mem.Allocator) !void {
             FakeDeviceServer.polls = 0;
-            const credentials = try loginWithDeviceCode(FakeDeviceServer.callbacks, allocator);
+            const credentials = try loginWithBrowserOrDeviceCode(FakeDeviceServer.callbacks, allocator);
             allocator.free(credentials.refresh);
             allocator.free(credentials.access);
             if (credentials.provider_data) |data| allocator.free(data);

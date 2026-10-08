@@ -718,6 +718,7 @@ test "OAP auth adapter logs into Codex with a device code it shows as a URL and 
         .persist_credentials = false,
         .answers_prompts = false,
         .codex_fetch = FakeCodexAuth.fetch,
+        .codex_browser_port = null,
     });
     defer native.deinit();
     var adapter = Adapter.init(allocator, &native);
@@ -765,6 +766,7 @@ test "OAP auth adapter cancels a Codex device login that is still waiting for ap
         .persist_credentials = false,
         .answers_prompts = false,
         .codex_fetch = FakeCodexAuth.fetch,
+        .codex_browser_port = null,
     });
     defer native.deinit();
     var adapter = Adapter.init(allocator, &native);
@@ -822,6 +824,7 @@ test "auth server shutdown stops a Codex device login that is still waiting for 
         .persist_credentials = false,
         .answers_prompts = false,
         .codex_fetch = FakeCodexAuth.fetch,
+        .codex_browser_port = null,
     });
     var shut_down = false;
     defer if (!shut_down) native.deinit();
