@@ -1,7 +1,6 @@
 package sdk
 
 import (
-	"encoding/json"
 	"testing"
 )
 
@@ -80,35 +79,6 @@ func TestResolveSeesTheSameLifecycleAbsenceAndRefusal(t *testing.T) {
 
 	if _, err := lifecycleResolve(t, "null"); err == nil {
 		t.Error("resolve must refuse an explicit null lifecycle too")
-	}
-}
-
-func TestTheSharedResultSeesAMissingLifecycleAsNilAndStillRejectsABadOne(t *testing.T) {
-	capabilities := []string{"chat"}
-	raw := wireModelDescriptor{ModelRef: "p/wire@m", ModelID: "m", DisplayName: "M", ProviderID: "p",
-		API: "wire", AuthStatus: "authenticated", Capabilities: &capabilities}
-	model, err := parseModelDescriptor(raw, 0, "s")
-	if err != nil {
-		t.Fatalf("a descriptor with no lifecycle must decode as unknown, not fail: %v", err)
-	}
-	if model.Lifecycle != nil {
-		t.Errorf("Lifecycle = %v, want nil", *model.Lifecycle)
-	}
-	raw.Lifecycle = json.RawMessage(`"deprecated"`)
-	stated, err := parseModelDescriptor(raw, 0, "s")
-	if err != nil {
-		t.Fatalf("a stated lifecycle must still decode: %v", err)
-	}
-	if stated.Lifecycle == nil || *stated.Lifecycle != LifecycleDeprecated {
-		t.Errorf("Lifecycle = %v, want deprecated", stated.Lifecycle)
-	}
-	raw.Lifecycle = json.RawMessage(`null`)
-	if _, err := parseModelDescriptor(raw, 0, "s"); err == nil {
-		t.Error("an explicit null lifecycle must be rejected, not read as absent")
-	}
-	raw.Lifecycle = json.RawMessage(`"retired"`)
-	if _, err := parseModelDescriptor(raw, 0, "s"); err == nil {
-		t.Error("an invented lifecycle must be rejected, not defaulted")
 	}
 }
 

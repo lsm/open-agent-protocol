@@ -2,8 +2,8 @@ package sdk
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
-	"strings"
 	"time"
 
 	"github.com/lsm/open-agent-protocol/go/protocol"
@@ -15,88 +15,63 @@ type ProviderService struct {
 }
 
 func (s *ProviderService) Complete(ctx context.Context, req CompletionRequest) (*CompletionResponse, error) {
-	if s.transport != nil && !s.transport.legacyWire {
-		return s.oapComplete(ctx, req)
-	}
-	if err := validateExecutionRequest(req.ModelRef, req.Messages); err != nil {
+	stream, err := s.Stream(ctx, req)
+	if err != nil {
 		return nil, err
 	}
-	if err := ctx.Err(); err != nil {
-		return nil, abortError(err, "provider complete")
+	defer stream.Close()
+	for stream.Next() {
 	}
-
-	fallbackProvider := providerIDFromRef(req.ModelRef)
-	streamID := newULID()
-	sub := s.transport.subscribeStream(streamID)
-	defer sub.close()
-
-	payload := buildExecutionPayload(req.ModelRef, req.Messages, req.Tools, req.Options, false)
-	if err := s.transport.send(newStreamEnvelope("complete_request", streamID, payload)); err != nil {
+	if err := stream.Err(); err != nil {
 		return nil, err
 	}
-
-	for {
-		f, err := sub.nextFrame(ctx, s.timeout, "provider complete_response")
-		if err != nil {
-
-			cancelStream(s.transport, streamID)
-			sub.drain(drainIdle, drainBudget)
-			return nil, withStreamID(err, streamID)
-		}
-		switch f.Type {
-		case "ack":
-			continue
-		case "nack":
-			return nil, nackToError(f, fallbackProvider, streamID, "")
-		case "stream_error":
-			return nil, errorFrameToError(f, fallbackProvider, streamID, "")
-		case "result", "complete_response":
-			return responseOrAuthError(parseCompletionResponse(f.payload()), fallbackProvider)
-		default:
-			cancelStream(s.transport, streamID)
-			sub.drain(drainIdle, drainBudget)
-			return nil, &StreamError{
-				Kind:     KindTransportError,
-				Message:  fmt.Sprintf("unexpected frame type %q while awaiting a provider result", f.Type),
-				StreamID: streamID,
-			}
-		}
+	if stream.oapResponse == nil {
+		return nil, &StreamError{Kind: KindTransportError, Message: "inference ended without completion"}
 	}
+	return stream.oapResponse, nil
 }
 
 func (s *ProviderService) Stream(ctx context.Context, req CompletionRequest) (*ProviderStream, error) {
-	if s.transport != nil && !s.transport.legacyWire {
-		return s.oapStream(ctx, req)
-	}
 	if err := validateExecutionRequest(req.ModelRef, req.Messages); err != nil {
 		return nil, err
 	}
-	if err := ctx.Err(); err != nil {
-		return nil, abortError(err, "provider stream")
+	messages, err := oapMessages(req.Messages)
+	if err != nil {
+		return nil, err
 	}
-
-	streamID := newULID()
-	sub := s.transport.subscribeStream(streamID)
-
-	payload := buildExecutionPayload(req.ModelRef, req.Messages, req.Tools, req.Options, true)
-	if err := s.transport.send(newStreamEnvelope("stream_request", streamID, payload)); err != nil {
+	tools, err := oapTools(req.Tools)
+	if err != nil {
+		return nil, err
+	}
+	payload := map[string]any{"model_ref": req.ModelRef, "messages": messages,
+		"stream": true, "include_snapshot": "never", "tools": tools}
+	if req.Options != nil {
+		if req.Options.Temperature != nil {
+			payload["temperature"] = *req.Options.Temperature
+		}
+		if req.Options.MaxTokens != nil {
+			payload["max_output_tokens"] = *req.Options.MaxTokens
+		}
+		if req.Options.ReasoningEffort != "" {
+			payload["reasoning"] = map[string]any{"enabled": req.Options.ReasoningEffort != ReasoningOff, "effort": string(req.Options.ReasoningEffort)}
+		}
+		if req.Options.Metadata != nil {
+			payload["metadata"] = req.Options.Metadata
+		}
+	}
+	request := providerFrame("inference.create.request", payload)
+	sub := s.transport.subscribeStream(string(request.ID))
+	sub.correlate(string(request.ID))
+	if err := s.transport.sendProviderEnvelope(request); err != nil {
 		sub.close()
 		return nil, err
 	}
-
-	return &ProviderStream{
-		ctx:              ctx,
-		transport:        s.transport,
-		sub:              sub,
-		streamID:         streamID,
-		timeout:          s.timeout,
-		fallbackProvider: providerIDFromRef(req.ModelRef),
-		tools:            newToolBuffer(),
-	}, nil
+	return &ProviderStream{ctx: ctx, transport: s.transport, sub: sub, streamID: string(request.ID),
+		timeout: s.timeout, fallbackProvider: providerIDFromRef(req.ModelRef),
+		oapModelRef: req.ModelRef, oapPartKinds: make(map[int]string)}, nil
 }
 
 type ProviderStream struct {
-	oap              bool
 	oapModelRef      string
 	oapInferenceID   protocol.InferenceID
 	oapPartKinds     map[int]string
@@ -107,7 +82,6 @@ type ProviderStream struct {
 	streamID         string
 	timeout          time.Duration
 	fallbackProvider string
-	tools            *toolBuffer
 
 	current  ProviderEvent
 	err      error
@@ -116,47 +90,72 @@ type ProviderStream struct {
 }
 
 func (s *ProviderStream) Next() bool {
-	if s.oap {
-		return s.oapNext()
-	}
 	if s.done {
 		return false
 	}
 	for {
-		f, err := s.sub.nextFrame(s.ctx, s.timeout, "provider stream event")
+		in, err := s.sub.next(s.ctx, s.timeout, "OAP inference")
 		if err != nil {
 			s.fail(err)
 			return false
 		}
-		switch f.Type {
-		case "ack":
-			continue
-		case "nack":
-			s.fail(nackToError(f, s.fallbackProvider, s.streamID, ""))
+		if in.broken != nil {
+			s.fail(in.broken)
 			return false
 		}
-
-		event := normalizeProviderFrame(f, s.tools)
-		if event == nil {
-			continue
-		}
-		if errEvent, ok := event.(*ErrorEvent); ok {
-
-			if errEvent.Code == CodeAuthRequired {
-				s.fail(newAuthRequiredError(firstNonEmpty(errEvent.ProviderID, s.fallbackProvider), errEvent.Message))
+		p := in.body()
+		switch in.kind() {
+		case "inference.create.response":
+			if accepted, _ := p.boolean("accepted"); !accepted {
+				s.fail(in.failure(s.fallbackProvider))
 				return false
 			}
-			s.current = event
+			s.oapInferenceID = protocol.InferenceID(in.inference())
+		case "inference.started":
+			provider, wire, model := oapModelParts(s.oapModelRef)
+			s.current = &MessageStart{ProviderID: provider, API: wire, ModelID: model}
+			return true
+		case "inference.part.started":
+			s.oapPartKinds[p.intOr(0, "part_index")] = p.str("part_kind")
+		case "inference.part.delta":
+			kind := s.oapPartKinds[p.intOr(0, "part_index")]
+			if kind == "reasoning" {
+				s.current = &ThinkingDelta{Delta: p.str("delta")}
+				return true
+			}
+			if kind == "text" {
+				s.current = &TextDelta{Delta: p.str("delta")}
+				return true
+			}
+		case "inference.part.ended":
+			if p.str("part_kind") == "tool_call" {
+				call := p.obj("tool_call")
+				args := call["arguments_json"]
+				encoded, _ := json.Marshal(args)
+				if text, ok := args.(string); ok {
+					encoded = []byte(text)
+				}
+				s.current = &ToolCallEvent{ToolCallID: call.str("tool_call_id"), Name: call.str("name"), ArgumentsJSON: string(encoded)}
+				return true
+			}
+		case "inference.completed":
+			response, err := oapResponse(p, s.oapModelRef, "message")
+			if err != nil {
+				s.fail(err)
+				return false
+			}
+			s.oapResponse = response
+			s.current = &MessageEnd{Usage: s.oapResponse.Usage, StopReason: s.oapResponse.StopReason}
 			s.done = true
 			s.finished = true
 			return true
+		case "inference.failed", "error":
+			s.fail(in.failure(s.fallbackProvider))
+			return false
+		default:
+			s.fail(&StreamError{Kind: KindTransportError, Message: fmt.Sprintf("unexpected OAP inference event %q", in.kind())})
+			return false
 		}
-		if _, ok := event.(*MessageEnd); ok {
-			s.done = true
-			s.finished = true
-		}
-		s.current = event
-		return true
 	}
 }
 
@@ -165,26 +164,13 @@ func (s *ProviderStream) Event() ProviderEvent { return s.current }
 func (s *ProviderStream) Err() error { return s.err }
 
 func (s *ProviderStream) Close() error {
-	if s.oap {
-		if s.sub == nil {
-			return s.err
-		}
-		if !s.finished && s.oapInferenceID != "" {
-			cancel := providerFrame("inference.cancel.request", map[string]any{"reason": "caller_closed"})
-			cancel.InferenceID = s.oapInferenceID
-			s.transport.sendProviderEnvelopeBestEffort(cancel)
-		}
-		s.sub.close()
-		s.sub = nil
-		s.done = true
-		return s.err
-	}
 	if s.sub == nil {
 		return s.err
 	}
-	if !s.finished {
-		cancelStream(s.transport, s.streamID)
-		s.sub.drain(drainIdle, drainBudget)
+	if !s.finished && s.oapInferenceID != "" {
+		cancel := providerFrame("inference.cancel.request", map[string]any{"reason": "caller_closed"})
+		cancel.InferenceID = s.oapInferenceID
+		s.transport.sendProviderEnvelopeBestEffort(cancel)
 	}
 	s.sub.close()
 	s.sub = nil
@@ -198,100 +184,10 @@ func (s *ProviderStream) fail(err error) {
 	s.current = nil
 }
 
-func nackToError(f *frame, fallbackProvider, streamID, sessionID string) error {
-	payload := f.payload()
-	code := payload.str("error_code", "code")
-	providerID := payload.str("provider_id")
-	if providerID == "" && isAuthCode(code) {
-		providerID = fallbackProvider
-	}
-	message := payload.strOrDefault("request rejected", "reason", "message")
-	if code == CodeAuthRequired {
-		return newAuthRequiredError(providerID, message)
-	}
-	return &StreamError{
-		Kind:       KindProviderError,
-		Code:       code,
-		ProviderID: providerID,
-		Message:    message,
-		StreamID:   streamID,
-		SessionID:  sessionID,
-	}
-}
-
-func errorFrameToError(f *frame, fallbackProvider, streamID, sessionID string) error {
-	payload := f.payload()
-	code := payload.str("code", "error_code")
-	providerID := payload.str("provider_id")
-	if providerID == "" && isAuthCode(code) {
-		providerID = fallbackProvider
-	}
-	message := payload.strOrDefault("stream error", "message", "reason")
-	if code == CodeAuthRequired {
-		return newAuthRequiredError(providerID, message)
-	}
-	return &StreamError{
-		Kind:       KindProviderError,
-		Code:       code,
-		ProviderID: providerID,
-		Message:    message,
-		StreamID:   streamID,
-		SessionID:  sessionID,
-	}
-}
-
-func isAuthCode(code string) bool {
-	return code == CodeAuthRequired || code == CodeAuthExpired || code == CodeAuthRefreshFailed
-}
-
-func responseOrAuthError(response *CompletionResponse, fallbackProvider string) (*CompletionResponse, error) {
-	if response.StopReason != "error" || !isAuthFailureMessage(response.ErrorMessage, response.API) {
-		return response, nil
-	}
-	providerID := firstNonEmpty(response.ProviderID, fallbackProvider)
-	message := response.ErrorMessage
-	if message == "" {
-		message = CodeAuthRequired
-	}
-	return nil, newAuthRequiredError(providerID, message)
-}
-
-func isAuthFailureMessage(message, api string) bool {
-	if message == "" {
-		return false
-	}
-	normalized := strings.ToLower(message)
-	switch normalized {
-	case CodeAuthRequired, CodeAuthExpired, CodeAuthRefreshFailed:
-		return true
-	}
-	for _, needle := range []string{"authentication required", "401", "403", "unauthorized", "forbidden"} {
-		if strings.Contains(normalized, needle) {
-			return true
-		}
-	}
-	if api == "anthropic-messages" {
-		for _, needle := range []string{"authentication_error", "permission_error", "invalid api key"} {
-			if strings.Contains(normalized, needle) {
-				return true
-			}
-		}
-	}
-	return false
-}
-
 func withStreamID(err error, streamID string) error {
 	var streamErr *StreamError
 	if asStreamError(err, &streamErr) && streamErr.StreamID == "" {
 		streamErr.StreamID = streamID
-	}
-	return err
-}
-
-func withSessionID(err error, sessionID string) error {
-	var streamErr *StreamError
-	if asStreamError(err, &streamErr) && streamErr.SessionID == "" {
-		streamErr.SessionID = sessionID
 	}
 	return err
 }

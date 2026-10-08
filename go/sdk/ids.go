@@ -89,23 +89,6 @@ func newNanoID() string {
 	return string(out)
 }
 
-func isNanoID(value string) bool {
-	if len(value) != nanoIDLength {
-		return false
-	}
-	for i := 0; i < len(value); i++ {
-		c := value[i]
-		switch {
-		case c >= '0' && c <= '9':
-		case c >= 'A' && c <= 'Z':
-		case c >= 'a' && c <= 'z':
-		default:
-			return false
-		}
-	}
-	return true
-}
-
 func randomBytes(b []byte) {
 	if _, err := rand.Read(b); err != nil {
 		now := uint64(time.Now().UnixNano())

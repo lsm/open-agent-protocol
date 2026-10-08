@@ -122,22 +122,6 @@ type Usage struct {
 	CacheWrite int64 `json:"cache_write,omitempty"`
 }
 
-func (u *Usage) add(other *Usage) *Usage {
-	if other == nil {
-		return u
-	}
-	if u == nil {
-		clone := *other
-		return &clone
-	}
-	return &Usage{
-		Input:      u.Input + other.Input,
-		Output:     u.Output + other.Output,
-		CacheRead:  u.CacheRead + other.CacheRead,
-		CacheWrite: u.CacheWrite + other.CacheWrite,
-	}
-}
-
 type ResponseMessage struct {
 	Role Role
 

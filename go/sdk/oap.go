@@ -4,10 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"github.com/lsm/open-agent-protocol/go/protocol"
 	"math"
 	"strings"
 	"time"
+
+	"github.com/lsm/open-agent-protocol/go/protocol"
 )
 
 const (
@@ -316,239 +317,6 @@ func oapResponseMessage(content any) (ResponseMessage, error) {
 	return message, nil
 }
 
-func (s *ModelsService) oapList(ctx context.Context, req ListModelsRequest) (*ListModelsResponse, error) {
-	request := providerFrame("provider.models.list.request", map[string]any{})
-	if req.ProviderID != "" {
-		request.Payload = mustMarshal(map[string]any{"provider_id": req.ProviderID})
-	}
-	sub := s.transport.subscribeStream(string(request.ID))
-	defer sub.close()
-	response, err := providerRequest(ctx, s.transport, sub, s.timeout, request)
-	if err != nil {
-		return nil, err
-	}
-	if response.Type != "provider.models.list.response" {
-		return nil, &ProtocolError{Code: CodeMalformedResponse, Message: "expected provider.models.list.response"}
-	}
-	result := &ListModelsResponse{Models: []ModelDescriptor{}, FetchedAt: time.Now()}
-	for _, raw := range payloadObject(response.Payload).arr("models") {
-		entry, ok := raw.(map[string]any)
-		if !ok {
-			return nil, &ProtocolError{Code: CodeMalformedResponse, Message: "model entry is not an object"}
-		}
-		model := jsonObject(entry)
-		source, err := oapModelSource(model)
-		if err != nil {
-			return nil, err
-		}
-		lifecycle, err := oapModelLifecycle(model)
-		if err != nil {
-			return nil, err
-		}
-		auth, err := oapModelAuth(model)
-		if err != nil {
-			return nil, err
-		}
-		if req.API != "" && model.str("wire") != req.API {
-			continue
-		}
-		if req.ModelID != "" && model.str("model_id") != req.ModelID {
-			continue
-		}
-		if req.IncludeDeprecated != nil && !*req.IncludeDeprecated && lifecycle != nil && *lifecycle == LifecycleDeprecated {
-			continue
-		}
-		if req.IncludeLoginRequired != nil && !*req.IncludeLoginRequired && auth == AuthLoginRequired {
-			continue
-		}
-		descriptor := ModelDescriptor{ModelRef: model.str("model_ref"), ModelID: model.str("model_id"),
-			DisplayName: model.str("display_name"), ProviderID: model.str("provider_id"), API: model.str("wire"),
-			AuthStatus: auth, Lifecycle: lifecycle,
-			Source: source, ContextWindow: model.intOr(0, "context_window"),
-			MaxOutputTokens: model.intOr(0, "max_output_tokens"), ReasoningDefault: ReasoningLevel(model.str("reasoning_default"))}
-		if descriptor.DisplayName == "" {
-			descriptor.DisplayName = descriptor.ModelID
-		}
-		for _, item := range model.arr("capabilities") {
-			if name, ok := item.(string); ok {
-				descriptor.Capabilities = append(descriptor.Capabilities, ModelCapability(name))
-			}
-		}
-		if published, ok := model["cost"].(map[string]any); ok {
-			rates := jsonObject(published)
-			descriptor.Cost = &ModelCost{}
-			if value, ok := rates.num("input"); ok {
-				descriptor.Cost.Input = value
-			}
-			if value, ok := rates.num("output"); ok {
-				descriptor.Cost.Output = value
-			}
-			if value, ok := rates.num("cache_read"); ok {
-				descriptor.Cost.CacheRead = value
-			}
-			if value, ok := rates.num("cache_write"); ok {
-				descriptor.Cost.CacheWrite = value
-			}
-		}
-		for _, item := range model.arr("input_modalities") {
-			if name, ok := item.(string); ok {
-				descriptor.InputModalities = append(descriptor.InputModalities, name)
-			}
-		}
-		for _, item := range model.arr("output_modalities") {
-			if name, ok := item.(string); ok {
-				descriptor.OutputModalities = append(descriptor.OutputModalities, name)
-			}
-		}
-		for _, item := range model.arr("reasoning_levels") {
-			if name, ok := item.(string); ok {
-				descriptor.ReasoningLevels = append(descriptor.ReasoningLevels, ReasoningLevel(name))
-			}
-		}
-		descriptor.ReleaseDate = model.str("release_date")
-		descriptor.Family = model.str("family")
-		result.Models = append(result.Models, descriptor)
-	}
-	if published, ok := payloadObject(response.Payload)["catalog"].(map[string]any); ok {
-		catalog := &ModelCatalog{}
-		if value, ok := jsonObject(published).num("observed_at_ms"); ok {
-			catalog.ObservedAtMS = int64(value)
-		}
-		if value, ok := published["complete"].(bool); ok {
-			catalog.Complete = value
-		}
-		result.Catalog = catalog
-	}
-	return result, nil
-}
-
-func (s *ProviderService) oapStream(ctx context.Context, req CompletionRequest) (*ProviderStream, error) {
-	if err := validateExecutionRequest(req.ModelRef, req.Messages); err != nil {
-		return nil, err
-	}
-	messages, err := oapMessages(req.Messages)
-	if err != nil {
-		return nil, err
-	}
-	tools, err := oapTools(req.Tools)
-	if err != nil {
-		return nil, err
-	}
-	payload := map[string]any{"model_ref": req.ModelRef, "messages": messages,
-		"stream": true, "include_snapshot": "never", "tools": tools}
-	if req.Options != nil {
-		if req.Options.Temperature != nil {
-			payload["temperature"] = *req.Options.Temperature
-		}
-		if req.Options.MaxTokens != nil {
-			payload["max_output_tokens"] = *req.Options.MaxTokens
-		}
-		if req.Options.ReasoningEffort != "" {
-			payload["reasoning"] = map[string]any{"enabled": req.Options.ReasoningEffort != ReasoningOff, "effort": string(req.Options.ReasoningEffort)}
-		}
-		if req.Options.Metadata != nil {
-			payload["metadata"] = req.Options.Metadata
-		}
-	}
-	request := providerFrame("inference.create.request", payload)
-	sub := s.transport.subscribeStream(string(request.ID))
-	sub.correlate(string(request.ID))
-	if err := s.transport.sendProviderEnvelope(request); err != nil {
-		sub.close()
-		return nil, err
-	}
-	return &ProviderStream{ctx: ctx, transport: s.transport, sub: sub, streamID: string(request.ID),
-		timeout: s.timeout, fallbackProvider: providerIDFromRef(req.ModelRef),
-		oap: true, oapModelRef: req.ModelRef, oapPartKinds: make(map[int]string)}, nil
-}
-
-func (s *ProviderService) oapComplete(ctx context.Context, req CompletionRequest) (*CompletionResponse, error) {
-	stream, err := s.oapStream(ctx, req)
-	if err != nil {
-		return nil, err
-	}
-	defer stream.Close()
-	for stream.Next() {
-	}
-	if err := stream.Err(); err != nil {
-		return nil, err
-	}
-	if stream.oapResponse == nil {
-		return nil, &StreamError{Kind: KindTransportError, Message: "inference ended without completion"}
-	}
-	return stream.oapResponse, nil
-}
-
-func (s *ProviderStream) oapNext() bool {
-	if s.done {
-		return false
-	}
-	for {
-		in, err := s.sub.next(s.ctx, s.timeout, "OAP inference")
-		if err != nil {
-			s.fail(err)
-			return false
-		}
-		if in.broken != nil {
-			s.fail(in.broken)
-			return false
-		}
-		p := in.body()
-		switch in.kind() {
-		case "inference.create.response":
-			if accepted, _ := p.boolean("accepted"); !accepted {
-				s.fail(in.failure(s.fallbackProvider))
-				return false
-			}
-			s.oapInferenceID = protocol.InferenceID(in.inference())
-		case "inference.started":
-			provider, wire, model := oapModelParts(s.oapModelRef)
-			s.current = &MessageStart{ProviderID: provider, API: wire, ModelID: model}
-			return true
-		case "inference.part.started":
-			s.oapPartKinds[p.intOr(0, "part_index")] = p.str("part_kind")
-		case "inference.part.delta":
-			kind := s.oapPartKinds[p.intOr(0, "part_index")]
-			if kind == "reasoning" {
-				s.current = &ThinkingDelta{Delta: p.str("delta")}
-				return true
-			}
-			if kind == "text" {
-				s.current = &TextDelta{Delta: p.str("delta")}
-				return true
-			}
-		case "inference.part.ended":
-			if p.str("part_kind") == "tool_call" {
-				call := p.obj("tool_call")
-				args := call["arguments_json"]
-				encoded, _ := json.Marshal(args)
-				if text, ok := args.(string); ok {
-					encoded = []byte(text)
-				}
-				s.current = &ToolCallEvent{ToolCallID: call.str("tool_call_id"), Name: call.str("name"), ArgumentsJSON: string(encoded)}
-				return true
-			}
-		case "inference.completed":
-			response, err := oapResponse(p, s.oapModelRef, "message")
-			if err != nil {
-				s.fail(err)
-				return false
-			}
-			s.oapResponse = response
-			s.current = &MessageEnd{Usage: s.oapResponse.Usage, StopReason: s.oapResponse.StopReason}
-			s.done = true
-			s.finished = true
-			return true
-		case "inference.failed", "error":
-			s.fail(in.failure(s.fallbackProvider))
-			return false
-		default:
-			s.fail(&StreamError{Kind: KindTransportError, Message: fmt.Sprintf("unexpected OAP inference event %q", in.kind())})
-			return false
-		}
-	}
-}
-
 type oapAgentState struct {
 	ctx       context.Context
 	transport *transport
@@ -563,9 +331,6 @@ type oapAgentState struct {
 }
 
 func (s *AgentService) OpenSession(ctx context.Context, sessionID string) (string, error) {
-	if s.transport == nil || s.transport.legacyWire {
-		return "", &ProtocolError{Code: "unsupported_feature", Message: "session.open requires the OAP agent profile"}
-	}
 	payload := map[string]any{}
 	if sessionID != "" {
 		payload["session_id"] = sessionID
@@ -598,9 +363,6 @@ type SessionModel struct {
 }
 
 func (s *AgentService) ListSessionModels(ctx context.Context, sessionID string) ([]SessionModel, string, error) {
-	if s.transport == nil || s.transport.legacyWire {
-		return nil, "", &ProtocolError{Code: "unsupported_feature", Message: "agent model discovery requires the OAP agent profile"}
-	}
 	if sessionID == "" {
 		return nil, "", &ProtocolError{Code: CodeInvalidRequest, Message: "session_id is required"}
 	}
@@ -642,9 +404,6 @@ type ProviderAttachment struct {
 }
 
 func (s *AgentService) AttachProvider(ctx context.Context, sessionID string, provider ProviderAttachment) (string, error) {
-	if s.transport == nil || s.transport.legacyWire {
-		return "", &ProtocolError{Code: "unsupported_feature", Message: "provider attachment requires the OAP agent profile"}
-	}
 	if sessionID == "" || provider.ID == "" || provider.ProviderID == "" {
 		return "", &ProtocolError{Code: CodeInvalidRequest, Message: "session_id, provider.id, and provider.provider_id are required"}
 	}
@@ -667,9 +426,6 @@ func (s *AgentService) AttachProvider(ctx context.Context, sessionID string, pro
 }
 
 func (s *AgentService) SwitchModel(ctx context.Context, sessionID, modelRef string) (*ModelSwitchResult, error) {
-	if s.transport == nil || s.transport.legacyWire {
-		return nil, &ProtocolError{Code: "unsupported_feature", Message: "mid-session model switching requires the OAP agent profile"}
-	}
 	if sessionID == "" || modelRef == "" {
 		return nil, &ProtocolError{Code: CodeInvalidRequest, Message: "session_id and model_ref are required"}
 	}
@@ -838,137 +594,6 @@ func (state *oapAgentState) resolveCall(p jsonObject) error {
 	return state.transport.sendEnvelope(resolve)
 }
 
-func (s *AgentService) oapRun(ctx context.Context, req AgentRequest) (*CompletionResponse, error) {
-	stream, err := s.oapStream(ctx, req)
-	if err != nil {
-		return nil, err
-	}
-	defer stream.Close()
-	for stream.Next() {
-	}
-	if err := stream.Err(); err != nil {
-		return nil, err
-	}
-	if stream.oapState == nil || stream.oapState.response == nil {
-		return nil, &StreamError{Kind: KindTransportError, Message: "agent run ended without completion"}
-	}
-	return stream.oapState.response, nil
-}
-
-func (s *AgentService) oapStream(ctx context.Context, req AgentRequest) (*AgentStream, error) {
-	state, err := s.oapBegin(ctx, req)
-	if err != nil {
-		return nil, err
-	}
-	return &AgentStream{oapState: state}, nil
-}
-
-func (s *AgentStream) oapNext() bool {
-	if s.done || s.oapState == nil {
-		return false
-	}
-	state := s.oapState
-	for {
-		in, err := state.sub.next(state.ctx, state.timeout, "OAP agent run")
-		if err != nil {
-			s.fail(err)
-			return false
-		}
-		if run := in.run(); run != "" && run != state.runID {
-			continue
-		}
-		if in.broken != nil {
-			state.settled = true
-			s.fail(in.broken)
-			return false
-		}
-		p := in.body()
-		switch in.kind() {
-		case "run.started":
-			if modelRef := p.str("model_id"); modelRef != "" {
-				state.modelRef = modelRef
-			}
-			s.current = &AgentStart{SessionID: state.sessionID}
-			return true
-		case "content.delta":
-			part := p.obj("part")
-			switch part.str("type") {
-			case "text":
-				s.current = &TextDelta{Delta: part.str("text")}
-				return true
-			case "reasoning":
-				s.current = &ThinkingDelta{Delta: part.str("reasoning")}
-				return true
-			}
-		case "run.completed":
-			modelRef := state.modelRef
-			if modelRef == "" {
-				modelRef = p.str("model_id")
-			}
-			response, err := oapResponse(p, modelRef, "final_response")
-			if err != nil {
-				state.settled = true
-				s.fail(err)
-				return false
-			}
-			state.response = response
-			state.settled = true
-			s.current = agentEndFromResponse(state.response)
-			s.done = true
-			return true
-		case "run.failed", "run.cancelled", "error.response":
-			state.settled = true
-			s.fail(in.failure(providerIDFromRef(state.modelRef)))
-			return false
-		case "action.call.requested":
-			if p.str("execution_owner") != sdkParticipant {
-				continue
-			}
-			if err := state.resolveCall(p); err != nil {
-				s.fail(err)
-				return false
-			}
-			continue
-		case "action.call.started":
-			s.current = &ToolExecutionStart{ToolCallID: p.str("tool_call_id"), ToolName: p.str("name")}
-			return true
-		case "action.call.completed", "action.call.failed", "action.call.cancelled":
-			s.current = &ToolExecutionEnd{ToolCallID: p.str("tool_call_id"), IsError: in.kind() != "action.call.completed"}
-			return true
-		case "action.call.resolve.response":
-			if accepted, _ := p["accepted"].(bool); !accepted && p.str("reason") != "already_resolved" {
-				state.settled = true
-				s.fail(&ProtocolError{Code: CodeMalformedResponse, Message: "the endpoint refused a tool result: " + p.str("reason")})
-				return false
-			}
-			continue
-		case "session.state.updated", "run.status.updated":
-			continue
-		default:
-			s.fail(&StreamError{Kind: KindTransportError, Message: fmt.Sprintf("unexpected OAP agent event %q", in.kind())})
-			return false
-		}
-	}
-}
-
-func (s *AgentStream) oapClose() error {
-	state := s.oapState
-	if state == nil {
-		return s.err
-	}
-	if !state.settled {
-		cancel := oapFrame(oapAgent, "run.cancel.request", map[string]any{
-			"session_id": state.sessionID, "run_id": state.runID, "reason": "caller_closed"})
-		cancel.SessionID = protocol.SessionID(state.sessionID)
-		cancel.RunID = protocol.RunID(state.runID)
-		state.transport.sendEnvelopeBestEffort(cancel)
-	}
-	state.sub.close()
-	s.oapState = nil
-	s.done = true
-	return s.err
-}
-
 func oapModelLifecycle(model jsonObject) (*ModelLifecycle, error) {
 	raw, stated := model["lifecycle"]
 	if !stated {
@@ -1027,130 +652,9 @@ func oapModelAuth(model jsonObject) (AuthStatus, error) {
 	return "", &ProtocolError{Code: CodeMalformedResponse, Message: "auth_status is outside the enum"}
 }
 
-func (s *AuthService) oapListProviders(ctx context.Context) ([]ProviderAuthInfo, error) {
-	request := oapFrame(oapAgent, "auth.providers.request", map[string]any{})
-	sub := s.transport.subscribeStream(string(request.ID))
-	defer sub.close()
-	response, err := oapRequest(ctx, s.transport, sub, s.timeout, request)
-	if err != nil {
-		if failure, ok := err.(*StreamError); ok {
-			return nil, &AuthError{Kind: AuthKindProviderError, Code: failure.Code, Message: failure.Message}
-		}
-		return nil, authErrorFrom(err, "", "")
-	}
-	if response.Type != "auth.providers.response" {
-		return nil, &AuthError{Kind: AuthKindTransportError, Message: "expected auth.providers.response"}
-	}
-	result := make([]ProviderAuthInfo, 0, len(envelopePayload(response).arr("providers")))
-	for _, raw := range envelopePayload(response).arr("providers") {
-		entry, ok := raw.(map[string]any)
-		if !ok {
-			return nil, &AuthError{Kind: AuthKindTransportError, Message: "auth provider entry is not an object"}
-		}
-		p := jsonObject(entry)
-		raw := make([]protocol.CredentialKind, 0, len(p.arr("auth_kinds")))
-		for _, kind := range p.arr("auth_kinds") {
-			if name, ok := kind.(string); ok {
-				raw = append(raw, protocol.CredentialKind(name))
-			}
-		}
-		result = append(result, ProviderAuthInfo{ID: p.str("id"), Name: p.str("name"), AuthKinds: knownCredentialKinds(raw), Status: AuthStatus(p.str("auth_status")), LastError: p.str("last_error"), OverrideHost: p.str("override_host")})
-	}
-	return result, nil
-}
-
 func (s *AuthService) oapCancelFlow(flowID string) {
 	if flowID == "" {
 		return
 	}
 	s.transport.sendEnvelopeBestEffort(oapFrame(oapAgent, "auth.login.cancel.request", map[string]any{"flow_id": flowID}))
-}
-
-func (s *AuthService) oapLogin(ctx context.Context, providerID string, handlers LoginHandlers) error {
-	if providerID == "" {
-		return &AuthError{Kind: AuthKindProviderError, Code: CodeInvalidRequest, Message: "login requires a provider id"}
-	}
-	start := oapFrame(oapAgent, "auth.login.start.request", map[string]any{"provider_id": providerID})
-	sub := s.transport.subscribeStream(string(start.ID))
-	defer sub.close()
-	response, err := oapRequest(ctx, s.transport, sub, s.timeout, start)
-	if err != nil {
-		if failure, ok := err.(*StreamError); ok {
-			return &AuthError{Kind: AuthKindProviderError, Code: failure.Code, Message: failure.Message, ProviderID: providerID}
-		}
-		return authErrorFrom(err, providerID, "")
-	}
-	if response.Type != "auth.login.start.response" {
-		return &AuthError{Kind: AuthKindTransportError, ProviderID: providerID, Message: "expected auth.login.start.response"}
-	}
-	flowID := envelopePayload(response).str("flow_id")
-	if flowID == "" {
-		return &AuthError{Kind: AuthKindTransportError, ProviderID: providerID, Message: "auth login start omitted flow_id"}
-	}
-	settled := false
-	defer func() {
-		if !settled {
-			s.oapCancelFlow(flowID)
-		}
-	}()
-	nextSequence := int64(1)
-	for {
-		in, err := sub.next(ctx, s.timeout, "OAP auth login")
-		if err != nil {
-			if ctx.Err() != nil {
-				return &AuthError{Kind: AuthKindCancelled, ProviderID: providerID, FlowID: flowID, Message: "auth login aborted", err: ctx.Err()}
-			}
-			return authErrorFrom(err, providerID, flowID)
-		}
-		if in.broken != nil {
-			return authErrorFrom(in.broken, providerID, flowID)
-		}
-		if in.kind() != "auth.login.event" && in.kind() != "auth.login.completed" {
-			return &AuthError{Kind: AuthKindTransportError, ProviderID: providerID, FlowID: flowID, Message: fmt.Sprintf("unexpected OAP auth flow event %q", in.kind())}
-		}
-		if in.sequence() != nextSequence {
-			return &AuthError{Kind: AuthKindTransportError, Code: "protocol_violation", ProviderID: providerID, FlowID: flowID, Message: "auth flow sequence gap"}
-		}
-		nextSequence++
-		p := in.body()
-		if p.str("flow_id") != flowID || p.str("provider_id") != providerID {
-			return &AuthError{Kind: AuthKindTransportError, Code: "protocol_violation", ProviderID: providerID, FlowID: flowID, Message: "auth flow identity changed"}
-		}
-		if in.kind() == "auth.login.completed" {
-			settled = true
-			switch p.str("status") {
-			case "success":
-				if handlers.OnEvent != nil {
-					handlers.OnEvent(AuthEvent{Type: AuthEventSuccess, FlowID: flowID, ProviderID: providerID})
-				}
-				return nil
-			case "cancelled":
-				failure := p.obj("error")
-				message := failure.strOrDefault("auth login cancelled", "message")
-				return &AuthError{Kind: AuthKindCancelled, Code: failure.str("code"), Message: message, ProviderID: providerID, FlowID: flowID}
-			case "failed":
-				failure := p.obj("error")
-				return &AuthError{Kind: AuthKindProviderError, Code: failure.str("code"), Message: failure.strOrDefault("auth login failed", "message"), ProviderID: providerID, FlowID: flowID}
-			default:
-				return &AuthError{Kind: AuthKindTransportError, ProviderID: providerID, FlowID: flowID, Message: "unknown auth login terminal status"}
-			}
-		}
-		event := AuthEvent{FlowID: flowID, ProviderID: providerID}
-		switch p.str("kind") {
-		case "url":
-			event.Type = AuthEventURL
-			event.URL = p.str("url")
-			event.Instructions = p.str("instructions")
-		case "progress":
-			event.Type = AuthEventProgress
-			event.Message = p.str("message")
-		case "prompt":
-			return &AuthError{Kind: AuthKindProviderError, Code: "auth_input_unavailable", ProviderID: providerID, FlowID: flowID, Message: "manual login input cannot be sent over OAP"}
-		default:
-			return &AuthError{Kind: AuthKindTransportError, ProviderID: providerID, FlowID: flowID, Message: "unknown OAP auth event kind"}
-		}
-		if handlers.OnEvent != nil {
-			handlers.OnEvent(event)
-		}
-	}
 }

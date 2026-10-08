@@ -2,7 +2,6 @@ package sdk
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"strings"
 	"testing"
@@ -87,9 +86,6 @@ func TestAnUnsupportedAuthSelectorFailsTheListing(t *testing.T) {
 				BinaryPath: osArgsZero(),
 				Args:       []string{},
 				Env:        fakeHostEnv(scenarioOAP, "OAPX_TEST_CATALOG_AUTH="+selector),
-			}
-			if !strings.Contains(strings.Join(opts.Env, " "), envFakeHost+"="+scenarioOAP) {
-				opts.LegacyWire = true
 			}
 			client, err := New(context.Background(), opts)
 			if err != nil {
@@ -182,51 +178,6 @@ func TestResolveSeesTheSameAbsenceAndRefusal(t *testing.T) {
 	defer bad.Close()
 	if _, err := bad.Models.Resolve(testContext(t), ResolveModelRequest{ModelID: "invented"}); err == nil {
 		t.Error("resolve must refuse a present but invalid source too")
-	}
-}
-
-func TestTheSharedResultSeesAMissingSourceAsNilAndStillRejectsABadOne(t *testing.T) {
-	capabilities := []string{"chat"}
-	raw := wireModelDescriptor{ModelRef: "p/wire@m", ModelID: "m", DisplayName: "M", ProviderID: "p",
-		API: "wire", AuthStatus: "authenticated", Lifecycle: json.RawMessage(`"stable"`), Capabilities: &capabilities}
-	model, err := parseModelDescriptor(raw, 0, "s")
-	if err != nil {
-		t.Fatalf("a descriptor with no source must decode as unknown, not fail: %v", err)
-	}
-	if model.Source != nil {
-		t.Errorf("Source = %v, want nil", *model.Source)
-	}
-	bogus := json.RawMessage(`"invented-source"`)
-	raw.Source = bogus
-	_, err = parseModelDescriptor(raw, 0, "stream-7")
-	if err == nil {
-		t.Error("an invalid stated source must still be rejected, not defaulted")
-	} else {
-		protocol, isProtocol := err.(*ProtocolError)
-		if !isProtocol {
-			t.Fatalf("error is %T, want *ProtocolError", err)
-		}
-		if !strings.Contains(protocol.Message, "models[0].source has unknown value") {
-			t.Errorf("Message = %q, want the field path and the offending value", protocol.Message)
-		}
-		if strings.Contains(protocol.Message, "oap sdk") {
-			t.Errorf("Message = %q, must carry the field path, not the rendered error", protocol.Message)
-		}
-		if protocol.StreamID != "stream-7" {
-			t.Errorf("StreamID = %q, want stream-7: the closure must keep it", protocol.StreamID)
-		}
-	}
-	raw.Source = json.RawMessage(`null`)
-	if _, err := parseModelDescriptor(raw, 0, "s"); err == nil {
-		t.Error("an explicit null source must be rejected, not read as absent")
-	}
-	raw.Source = json.RawMessage(`"static_fallback"`)
-	stated, err := parseModelDescriptor(raw, 0, "s")
-	if err != nil {
-		t.Fatalf("a stated source must still decode: %v", err)
-	}
-	if stated.Source == nil || *stated.Source != SourceStaticFallback {
-		t.Errorf("stated Source = %v, want %q", stated.Source, SourceStaticFallback)
 	}
 }
 

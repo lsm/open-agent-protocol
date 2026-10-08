@@ -7,7 +7,7 @@ combined OAP 0.1 stdio endpoint by default:
 oapx serve agent,provider --stdio
 ```
 
-One child process carries profiled `agent-control-core` and `model-provider-core` envelopes. The package is named `sdk`; it was `makai` when this was a module of its own, which is the runtime's old name. The old Makai V1 wire is available only with `Options{LegacyWire: true}`; the SDK never silently falls back to it.
+One child process carries profiled `agent-control-core` and `model-provider-core` envelopes. The package is named `sdk`; it was `makai` when this was a module of its own, which is the runtime's old name.
 
 ## Install and connect
 
@@ -64,7 +64,7 @@ response, err := client.Agent.Run(ctx, sdk.AgentRequest{
 })
 ```
 
-`SwitchModel` changes future runs, not a run already in progress. OAP session IDs are opaque nonempty strings; the old 21-character NanoID restriction applies only to explicit Makai V1 mode. `AttachProvider` sends the optional `session.provider.attach` extension. An endpoint that does not offer attachment refuses it with a typed `unsupported_feature` error; it does not attach implicitly. Remote provider services are a follow-up.
+`SwitchModel` changes future runs, not a run already in progress. Session IDs are opaque nonempty strings. `AttachProvider` sends the optional `session.provider.attach` extension. An endpoint that does not offer attachment refuses it with a typed `unsupported_feature` error; it does not attach implicitly. Remote provider services are a follow-up.
 
 `AgentRequest.Tools` are provided to the session at open (`action.tools.provide`), owned by the SDK's participant `sdk`. When the model calls one, the endpoint publishes `action.call.requested`, the SDK runs the tool's `Execute` and answers with `action.call.resolve.request`: its returned string as the `result`, or its error as the `error`. A tool without `Execute` is answered with an error. The run's stream yields `ToolExecutionStart` and `ToolExecutionEnd` for every call, the endpoint's own tools included. Against an endpoint that does not advertise `action.tools.provide`, a request with tools fails with `unsupported_feature` before the open, rather than having its tools ignored. `ReasoningEffort` becomes the session's `reasoning_level` and `MaxTokens` (1 to 4294967295, else `invalid_request`) the `oapx` output limit, both at open, the output limit only on the endpoint `oapx.agent` that reads it (elsewhere `unsupported_feature`); `Temperature` and `ReasoningMinimal` fail with `unsupported_feature`, because the agent loop takes no temperature and runs minimal as low. The open also turns off the loop's `request_user_input` tool, which the SDK cannot answer. `RunOptions.Metadata` maps to submit metadata.
 
@@ -80,11 +80,11 @@ err := client.Auth.Login(ctx, "anthropic", sdk.LoginHandlers{
 })
 ```
 
-`OnPrompt` is only used with explicit Makai V1 compatibility mode, never OAP. Go uses manual retry: a typed `*AuthRequiredError` from provider or agent calls can be followed by `Login` and one new call. Only typed `auth_required` and `credential_*` failures are classified this way; arbitrary provider errors are not.
+Go uses manual retry: a typed `*AuthRequiredError` from provider or agent calls can be followed by `Login` and one new call. Only typed `auth_required` and `credential_*` failures are classified this way; arbitrary provider errors are not.
 
 ## Configuration and compatibility
 
-`Options` can set `Args`, `Dir`, `Env`, timeouts, logger, and binary resolver settings. The default args are `[]string{"serve", "agent,provider", "--stdio"}`. For an old runtime only, set `LegacyWire: true`, which selects the old `--stdio` launch and V1 handshake. This is an explicit compatibility path, not a fallback.
+`Options` can set `Args`, `Dir`, `Env`, timeouts, logger, and binary resolver settings. The default args are `[]string{"serve", "agent,provider", "--stdio"}`.
 
 Typed failures include `*StreamError`, `*AuthRequiredError`, `*ProtocolError`, and `*AuthError`. Unsupported OAP features carry code `unsupported_feature`.
 

@@ -62,7 +62,7 @@ func answerOnceSent(t *testing.T, tr *transport, written *capturedWrites, answer
 			return
 		}
 		for _, line := range answer(sent[0]) {
-			in, err := decodeInbound([]byte(line), false)
+			in, err := decodeInbound([]byte(line))
 			if err != nil {
 				t.Error(err)
 				return
@@ -74,7 +74,7 @@ func answerOnceSent(t *testing.T, tr *transport, written *capturedWrites, answer
 
 func deliverLine(t *testing.T, tr *transport, line string) {
 	t.Helper()
-	in, err := decodeInbound([]byte(line), false)
+	in, err := decodeInbound([]byte(line))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -84,7 +84,7 @@ func deliverLine(t *testing.T, tr *transport, line string) {
 func TestAnInferenceTheRuntimeAcceptedIsCancelledByTheIDItsAcceptanceNamed(t *testing.T) {
 	written := &capturedWrites{}
 	tr := wiredTransport(written)
-	stream, err := (&ProviderService{transport: tr, timeout: 2 * time.Second}).oapStream(context.Background(), CompletionRequest{ModelRef: "fixture/other:test@m", Messages: []Message{{Role: RoleUser, Parts: []ContentPart{{Type: PartText, Text: "hi"}}}}})
+	stream, err := (&ProviderService{transport: tr, timeout: 2 * time.Second}).Stream(context.Background(), CompletionRequest{ModelRef: "fixture/other:test@m", Messages: []Message{{Role: RoleUser, Parts: []ContentPart{{Type: PartText, Text: "hi"}}}}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -125,7 +125,7 @@ func TestAnAuthFlowEventOutOfSequenceEndsTheLoginAsAProtocolViolation(t *testing
 			`{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"auth.login.event","id":"r2","sequence":2,"payload":{"flow_id":"F1","provider_id":"P1","kind":"progress","message":"working"}}`,
 		}
 	})
-	err := (&AuthService{transport: tr, timeout: 2 * time.Second}).oapLogin(context.Background(), "P1", LoginHandlers{})
+	err := (&AuthService{transport: tr, timeout: 2 * time.Second}).Login(context.Background(), "P1", LoginHandlers{})
 	var authErr *AuthError
 	if !errors.As(err, &authErr) || authErr.Code != "protocol_violation" || authErr.Message != "auth flow sequence gap" {
 		t.Fatalf("a flow that opened at sequence 2 answered %v", err)
@@ -135,7 +135,7 @@ func TestAnAuthFlowEventOutOfSequenceEndsTheLoginAsAProtocolViolation(t *testing
 func TestAHandshakeAnswerTheProtocolPackageCannotReadFailsAsMalformed(t *testing.T) {
 	tr := wiredTransport(&capturedWrites{})
 	handshake := make(chan *inbound, 1)
-	in, err := decodeInbound([]byte(`{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"protocol.initialize.response","id":"r1","sequence":-1,"payload":{"protocol_version":"0.1"}}`), false)
+	in, err := decodeInbound([]byte(`{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"protocol.initialize.response","id":"r1","sequence":-1,"payload":{"protocol_version":"0.1"}}`))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -188,7 +188,7 @@ func TestAnAuthFlowEventTheProtocolPackageCannotReadFailsTheLoginNamingWhy(t *te
 		}
 	})
 	started := time.Now()
-	err := (&AuthService{transport: tr, timeout: 5 * time.Second}).oapLogin(context.Background(), "P1", LoginHandlers{})
+	err := (&AuthService{transport: tr, timeout: 5 * time.Second}).Login(context.Background(), "P1", LoginHandlers{})
 	if err == nil || !strings.Contains(err.Error(), "malformed OAP envelope auth.login.event") || time.Since(started) > 2*time.Second {
 		t.Fatalf("an unreadable flow event answered %v after %v, want the malformed envelope at once", err, time.Since(started))
 	}
