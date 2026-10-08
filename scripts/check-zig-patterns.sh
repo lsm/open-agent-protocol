@@ -17,6 +17,15 @@ if [[ -n "$all_catch_unreachable" ]]; then
   fi
 fi
 
+echo "[patterns] checking OAuth code never prints a response body..."
+oauth_body_prints="$(grep -RnsE 'std\.debug\.print\(.*\{[^}]*(response_body|fetched\.body)[^.}]*\}' zig/src/utils/oauth || true)"
+if [[ -n "$oauth_body_prints" ]]; then
+  echo "[patterns] an OAuth response body reaches stderr, and it can carry tokens:" >&2
+  echo "$oauth_body_prints" >&2
+  echo "[patterns] print its length instead" >&2
+  exit 1
+fi
+
 echo "[patterns] checking direct std.crypto.random usage..."
 all_crypto_random="$(grep -Rns "std\.crypto\.random" zig/src || true)"
 if [[ -n "$all_crypto_random" ]]; then
