@@ -422,6 +422,7 @@ func (s *state) provideExpectations(p protocol.SessionOpenRequest) (defects []*c
 		}}, nil, false
 	}
 
+	lists := affirmative(s.features[protocol.FeatureToolsList])
 	attached := map[string]bool{}
 	for _, attachment := range p.ToolSources {
 		attached[attachment.ID] = true
@@ -445,6 +446,10 @@ func (s *state) provideExpectations(p protocol.SessionOpenRequest) (defects []*c
 		}
 		seen[tool.Name] = true
 		if tool.Source == "" {
+			if lists {
+				defects = append(defects, unsatisfiable(pointer+"/source", "tool", tool.Name, CodeUnmatchedToolSource,
+					"an open supplies a tool naming no source to an endpoint that lists its tools"))
+			}
 			continue
 		}
 		if _, declared := s.declaredSources[tool.Source]; !declared && !attached[tool.Source] {

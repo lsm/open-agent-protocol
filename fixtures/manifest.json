@@ -8238,6 +8238,70 @@
       ]
     },
     {
+      "id": "open-provide-no-source-listed",
+      "path": "valid/open-provide-no-source-listed.json",
+      "kind": "positive",
+      "valid": true,
+      "units": [
+        "control-tools",
+        "tool-sources"
+      ],
+      "provenance": [
+        "decisions/0011-control-layer-provided-tools.md",
+        "decisions/0048-a-provided-tool-names-a-source-when-tools-are-listed.md"
+      ]
+    },
+    {
+      "id": "open-provide-no-source-unlisted",
+      "path": "valid/open-provide-no-source-unlisted.json",
+      "kind": "positive",
+      "valid": true,
+      "units": [
+        "control-tools",
+        "tool-sources"
+      ],
+      "provenance": [
+        "decisions/0011-control-layer-provided-tools.md",
+        "decisions/0048-a-provided-tool-names-a-source-when-tools-are-listed.md"
+      ]
+    },
+    {
+      "id": "open-provide-no-source-listed-admitted",
+      "path": "semantic-invalid/open-provide-no-source-listed-admitted.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "unmatched_tool_source"
+      ],
+      "units": [
+        "control-tools",
+        "tool-sources"
+      ],
+      "provenance": [
+        "decisions/0011-control-layer-provided-tools.md",
+        "decisions/0048-a-provided-tool-names-a-source-when-tools-are-listed.md"
+      ]
+    },
+    {
+      "id": "open-provide-no-source-listed-wrong-refusal",
+      "path": "semantic-invalid/open-provide-no-source-listed-wrong-refusal.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "unmatched_tool_source"
+      ],
+      "units": [
+        "control-tools",
+        "tool-sources"
+      ],
+      "provenance": [
+        "decisions/0011-control-layer-provided-tools.md",
+        "decisions/0048-a-provided-tool-names-a-source-when-tools-are-listed.md"
+      ]
+    },
+    {
       "id": "open-provide-colliding-name-admitted",
       "path": "semantic-invalid/open-provide-colliding-name-admitted.json",
       "kind": "semantic-invalid",

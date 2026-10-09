@@ -1471,7 +1471,8 @@ pub const Session = struct {
             const source = stringOf(item, "source");
             if (name.len == 0) return refuseTool(arena, refusal, "", "a provided tool needs a name");
             if (!std.mem.eql(u8, owner, self.participant)) return refuseTool(arena, refusal, name, "execution_owner must be the opening participant");
-            if (source.len > 0 and !sourceListed(sources, source)) return refuseTool(arena, refusal, name, try std.fmt.allocPrint(keep, "source {s} resolves to no declared or attached source", .{source}));
+            if (source.len == 0) return refuseTool(arena, refusal, name, "a provided tool must name a source, since the session's catalog lists every tool by one");
+            if (!sourceListed(sources, source)) return refuseTool(arena, refusal, name, try std.fmt.allocPrint(keep, "source {s} resolves to no declared or attached source", .{source}));
             if (std.mem.eql(u8, name, scripted_tool) or providedNamed(provided[0..index], name)) return refuseTool(arena, refusal, name, "the name already resolves to a catalog entry");
             if (!namePatternMatches(name)) return refuseTool(arena, refusal, name, "the name is outside the disclosed name_pattern " ++ provided_name_pattern);
             const schema = item.object.get("input_schema");
@@ -2149,12 +2150,13 @@ test "state reports the queued run, the pending call, the cursor, the sources an
 
 test "an open whose tools or sources break a disclosed limit is refused naming the offender" {
     const cases = [_]struct { tools: ?[]const u8, sources: ?[]const u8, feature: []const u8, offender: []const u8 }{
-        .{ .tools = "[{\"name\":\"Bad\",\"execution_owner\":\"user\"}]", .sources = null, .feature = contract.feature_tools_provide, .offender = "Bad" },
-        .{ .tools = "[{\"name\":\"x\",\"execution_owner\":\"someone\"}]", .sources = null, .feature = contract.feature_tools_provide, .offender = "x" },
-        .{ .tools = "[{\"name\":\"scripted_tool\",\"execution_owner\":\"user\"}]", .sources = null, .feature = contract.feature_tools_provide, .offender = "scripted_tool" },
+        .{ .tools = "[{\"name\":\"Bad\",\"execution_owner\":\"user\",\"source\":\"reference-native\"}]", .sources = null, .feature = contract.feature_tools_provide, .offender = "Bad" },
+        .{ .tools = "[{\"name\":\"x\",\"execution_owner\":\"someone\",\"source\":\"reference-native\"}]", .sources = null, .feature = contract.feature_tools_provide, .offender = "x" },
+        .{ .tools = "[{\"name\":\"x\",\"execution_owner\":\"user\"}]", .sources = null, .feature = contract.feature_tools_provide, .offender = "x" },
+        .{ .tools = "[{\"name\":\"scripted_tool\",\"execution_owner\":\"user\",\"source\":\"reference-native\"}]", .sources = null, .feature = contract.feature_tools_provide, .offender = "scripted_tool" },
         .{ .tools = "[{\"name\":\"x\",\"execution_owner\":\"user\",\"source\":\"nowhere\"}]", .sources = null, .feature = contract.feature_tools_provide, .offender = "x" },
-        .{ .tools = "[{\"name\":\"x\",\"execution_owner\":\"user\",\"input_schema\":{\"$schema\":\"http://json-schema.org/draft-07/schema#\"}}]", .sources = null, .feature = contract.feature_tools_provide, .offender = "x" },
-        .{ .tools = "[{\"name\":\"a\",\"execution_owner\":\"user\"},{\"name\":\"b\",\"execution_owner\":\"user\"},{\"name\":\"c\",\"execution_owner\":\"user\"}]", .sources = null, .feature = contract.feature_tools_provide, .offender = "c" },
+        .{ .tools = "[{\"name\":\"x\",\"execution_owner\":\"user\",\"source\":\"reference-native\",\"input_schema\":{\"$schema\":\"http://json-schema.org/draft-07/schema#\"}}]", .sources = null, .feature = contract.feature_tools_provide, .offender = "x" },
+        .{ .tools = "[{\"name\":\"a\",\"execution_owner\":\"user\",\"source\":\"reference-native\"},{\"name\":\"b\",\"execution_owner\":\"user\",\"source\":\"reference-native\"},{\"name\":\"c\",\"execution_owner\":\"user\",\"source\":\"reference-native\"}]", .sources = null, .feature = contract.feature_tools_provide, .offender = "c" },
         .{ .tools = null, .sources = "[{\"id\":\"reference-mcp\",\"kind\":\"local\"}]", .feature = contract.feature_tool_sources_attach, .offender = "reference-mcp" },
         .{ .tools = null, .sources = "[{\"id\":\"s\",\"kind\":\"http\"}]", .feature = contract.feature_tool_sources_attach, .offender = "s" },
         .{ .tools = null, .sources = "[{\"id\":\"s\",\"kind\":\"local\",\"environment\":[\"A\",\"A\"]}]", .feature = contract.feature_tool_sources_attach, .offender = "s" },

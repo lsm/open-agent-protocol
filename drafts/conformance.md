@@ -449,7 +449,9 @@ An implementation:
   `unsupported_feature` with `details.reason: "unsatisfiable"` and the detail
   that names the offending entry: `details.tool` for a foreign
   `execution_owner` or a colliding `name`, `details.source` for a `source`
-  neither the descriptor nor the same open declares. A refusal under another
+  neither the descriptor nor the same open declares, and `details.tool` for a
+  tool naming no `source` when the endpoint advertises `action.tools.list`,
+  whose served catalog must attribute every tool (Decision 0048). A refusal under another
   code, or without that detail, is diagnosed as the defect it failed to name —
   `wrong_tool_owner`, `duplicate_tool_name`, or `unmatched_tool_source` — and so
   is an open admitted despite the defect;

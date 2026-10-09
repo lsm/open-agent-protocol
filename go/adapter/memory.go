@@ -405,6 +405,8 @@ func admitProvidedTools(request OpenRequest, attached []protocol.ToolSourceAttac
 		case tool.ExecutionOwner != request.Participant.ID:
 
 			return nil, refuse(tool.Name, "execution_owner must be the opening participant")
+		case tool.Source == "":
+			return nil, refuse(tool.Name, "a provided tool must name a source, since the session's catalog lists every tool by one")
 		case tool.Source != "" && !resolvable[tool.Source]:
 			return nil, refuse(tool.Name, "source "+tool.Source+" resolves to no declared or attached source")
 		case taken[tool.Name]:

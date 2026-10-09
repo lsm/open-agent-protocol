@@ -19,6 +19,7 @@ func providedTool() protocol.ToolDefinition {
 		Name: "lookup", Description: "A tool the control layer executes.",
 		InputSchema:    json.RawMessage(`{"type":"object","properties":{"operation":{"type":"string"}}}`),
 		ExecutionOwner: "user",
+		Source:         "reference-native",
 	}
 }
 
@@ -331,6 +332,14 @@ func TestProvisioningRefusalsNameTheOffendingTool(t *testing.T) {
 			}()},
 		},
 		{
+			name: "no source", tool: "lookup", want: "must name a source",
+			tools: []protocol.ToolDefinition{func() protocol.ToolDefinition {
+				tool := providedTool()
+				tool.Source = ""
+				return tool
+			}()},
+		},
+		{
 			name: "dangling source", tool: "lookup", want: "resolves to no declared or attached source",
 			tools: []protocol.ToolDefinition{func() protocol.ToolDefinition {
 				tool := providedTool()
@@ -449,6 +458,7 @@ func secondProvidedTool() protocol.ToolDefinition {
 		Name: "annotate", Description: "A second tool the control layer executes.",
 		InputSchema:    json.RawMessage(`{"type":"object","properties":{"operation":{"type":"string"}}}`),
 		ExecutionOwner: "user",
+		Source:         "reference-native",
 	}
 }
 
