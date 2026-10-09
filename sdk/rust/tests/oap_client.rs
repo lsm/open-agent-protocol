@@ -233,7 +233,7 @@ async fn agent_tools_and_settings_travel_over_oap_and_temperature_is_refused() {
         .expect("provided tool run");
     assert_eq!(
         agent.text(),
-        "\"lookup\" owned by \"rust-sdk\" said \"open agent protocol\" (error null) as \"rust-sdk\""
+        "\"lookup\" owned by \"rust-sdk\" from \"oapx\" said \"open agent protocol\" (error null) as \"rust-sdk\""
     );
     assert_eq!(
         invoked.lock().expect("lock").clone(),

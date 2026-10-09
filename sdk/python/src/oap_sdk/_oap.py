@@ -455,7 +455,8 @@ def _open_payload(transport: StdioTransport, session_id: str, tools: Optional[Se
     if tools:
         payload["tools"] = [{"name": tool.name, "description": tool.description,
                              "input_schema": json.loads(tool.parameters_schema_json),
-                             "execution_owner": SDK_PARTICIPANT} for tool in tools]
+                             "execution_owner": SDK_PARTICIPANT,
+                             **({"source": transport.agent_source} if transport.agent_source else {})} for tool in tools]
     settings: Dict[str, Any] = {"user_input": False}
     if transport.agent_endpoint == OAPX_AGENT_ENDPOINT:
         payload["metadata"] = {"oapx": settings}

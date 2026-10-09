@@ -104,7 +104,7 @@ fn main() {
                 profile,
                 "capabilities.response",
                 Some(id),
-                json!({ "endpoint": { "id": "oapx.agent" }, "features": { "action.tools.provide": { "level": "native" } } }),
+                json!({ "endpoint": { "id": "oapx.agent" }, "features": { "action.tools.provide": { "level": "native" } }, "sources": [{ "id": "attached-files", "kind": "process" }, { "id": "oapx", "kind": "native" }] }),
                 json!({ "capability_revision": "fixture-rev-1" }),
             ),
             (AGENT, "auth.providers.request") => emit(
@@ -369,9 +369,10 @@ fn main() {
                     continue;
                 }
                 let said = format!(
-                    "{} owned by {} said {} (error {}) as {}",
+                    "{} owned by {} from {} said {} (error {}) as {}",
                     opened["tools"][0]["name"],
                     opened["tools"][0]["execution_owner"],
+                    opened["tools"][0]["source"],
                     data["result"],
                     data["error"]["message"],
                     data["responded_by"]

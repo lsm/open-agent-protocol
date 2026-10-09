@@ -153,6 +153,20 @@ class _RouteHandle:
         self._transport._close_route(self._kind, self._key, self._route)
 
 
+
+def _declared_tool_source(sources: Any) -> str:
+    first = ""
+    for source in sources if isinstance(sources, list) else []:
+        if not isinstance(source, dict):
+            continue
+        identifier = source.get("id")
+        if not isinstance(identifier, str) or not identifier:
+            continue
+        if source.get("kind") == "native":
+            return identifier
+        first = first or identifier
+    return first
+
 class StdioTransport:
     """Owns the combined OAP child process and routes."""
 
@@ -188,6 +202,7 @@ class StdioTransport:
         self._agent_revision: Optional[str] = None
         self.agent_endpoint = ""
         self.agent_features: frozenset[str] = frozenset()
+        self.agent_source = ""
         self._closed = False
         self._write_lock = asyncio.Lock()
         self._connect_lock = asyncio.Lock()
@@ -309,6 +324,7 @@ class StdioTransport:
                     name for name, support in features.items()
                     if not (isinstance(support, dict) and support.get("level") == "unavailable")
                 ) if isinstance(features, dict) else frozenset()
+                self.agent_source = _declared_tool_source(described.get("sources"))
         except BaseException:
             await self.close()
             raise

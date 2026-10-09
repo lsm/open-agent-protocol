@@ -38,6 +38,7 @@ type transport struct {
 	agentRevision string
 	agentEndpoint string
 	agentFeatures map[string]bool
+	agentSource   string
 	cmd           *exec.Cmd
 	stdin         io.WriteCloser
 	logger        *slog.Logger
@@ -139,6 +140,7 @@ func startTransport(ctx context.Context, command string, opts *Options) (*transp
 		}
 		t.agentFeatures[feature] = true
 	}
+	t.agentSource = declaredToolSource(described.arr("sources"))
 	return t, nil
 }
 
