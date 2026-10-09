@@ -1,6 +1,8 @@
 # Decision 0011: Control-Layer-Provided Tools
 
-Status: accepted 2026-09-17. Assessed against Decision 0003 earlier the same
+Status: accepted 2026-09-17 (the optional `source` amended by
+[Decision 0048](0048-a-provided-tool-names-a-source-when-tools-are-listed.md)
+for an endpoint that lists tools). Assessed against Decision 0003 earlier the same
 day and **held**, correctly: steps 2 and 4 had landed — 58 `control-tools`
 fixtures, the validator rules, this record — and steps 1 and 3 had not, so the
 wire shape was prose and authored files agreeing with each other. That hold is

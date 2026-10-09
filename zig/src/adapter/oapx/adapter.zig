@@ -1983,7 +1983,8 @@ fn admitProvidedTools(keep: std.mem.Allocator, arena: std.mem.Allocator, partici
         if (name.len == 0) return refuseTool(arena, refusal, "", "a provided tool needs a name");
         if (!std.mem.eql(u8, stringOf(item, "execution_owner"), participant)) return refuseTool(arena, refusal, name, "execution_owner must be the opening participant");
         const source = stringOf(item, "source");
-        if (source.len > 0 and !std.mem.eql(u8, source, native_source)) {
+        if (source.len == 0) return refuseTool(arena, refusal, name, "a provided tool must name a source, since the session's catalog lists every tool by one; this loop declares " ++ native_source);
+        if (!std.mem.eql(u8, source, native_source)) {
             refusal.* = .{ .feature = contract.feature_tools_provide, .reason = contract.reason_unsatisfiable, .tool = try arena.dupe(u8, name), .source = try arena.dupe(u8, source), .detail = "the loop declares one tool source, " ++ native_source ++ ", so another resolves to nothing" };
             return error.UnsupportedFeature;
         }
@@ -1997,7 +1998,7 @@ fn admitProvidedTools(keep: std.mem.Allocator, arena: std.mem.Allocator, partici
             .description = if (description.len > 0) description else null,
             .input_schema_json = if (schema) |value| try json_encode.valueAlloc(keep, value) else "{\"type\":\"object\"}",
             .execution_owner = participant,
-            .source = if (source.len > 0) native_source else null,
+            .source = native_source,
         };
     }
     return provided;
@@ -3720,10 +3721,6 @@ test "a live update sets the context window, a null clears it, and a refused upd
 }
 
 const provided_lookup =
-    \\[{"name":"lookup","description":"Look a word up","input_schema":{"type":"object"},"execution_owner":"user"}]
-;
-
-const provided_lookup_sourced =
     \\[{"name":"lookup","description":"Look a word up","input_schema":{"type":"object"},"execution_owner":"user","source":"oapx"}]
 ;
 
@@ -3812,7 +3809,7 @@ test "a provided tool's call waits for the opener, and the opener's acknowledgem
 
 test "a provided tool that names the loop's source keeps it on the listing and on every envelope of its call" {
     var script = Script{ .tool_first = true, .tool_name = "lookup", .tool_arguments = "{}" };
-    var provided: ProvidedWire = .{ .wire = undefined, .tools = provided_lookup_sourced, .list_first = true };
+    var provided: ProvidedWire = .{ .wire = undefined, .list_first = true };
     try provided.start(&script);
     defer provided.wire.deinit();
 
@@ -3901,13 +3898,14 @@ test "an open is refused, naming the tool, when a provided definition breaks a r
     defer owner.deinit();
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
-    const cases = [_]struct { tools: []const u8, tool: []const u8 }{
-        .{ .tools = "[{\"name\":\"lookup\",\"input_schema\":{},\"execution_owner\":\"someone-else\"}]", .tool = "lookup" },
-        .{ .tools = "[{\"name\":\"echo_tool\",\"input_schema\":{},\"execution_owner\":\"user\"}]", .tool = "echo_tool" },
-        .{ .tools = "[{\"name\":\"look up\",\"input_schema\":{},\"execution_owner\":\"user\"}]", .tool = "look up" },
-        .{ .tools = "[{\"name\":\"lookup\",\"input_schema\":{\"$schema\":\"http://json-schema.org/draft-07/schema#\"},\"execution_owner\":\"user\"}]", .tool = "lookup" },
-        .{ .tools = "[{\"name\":\"lookup\",\"input_schema\":{},\"execution_owner\":\"user\",\"source\":\"mcp\"}]", .tool = "lookup" },
-        .{ .tools = "[{\"name\":\"lookup\",\"input_schema\":{},\"execution_owner\":\"user\"},{\"name\":\"lookup\",\"input_schema\":{},\"execution_owner\":\"user\"}]", .tool = "lookup" },
+    const cases = [_]struct { tools: []const u8, tool: []const u8, says: []const u8 }{
+        .{ .tools = "[{\"name\":\"lookup\",\"input_schema\":{},\"execution_owner\":\"someone-else\",\"source\":\"oapx\"}]", .tool = "lookup", .says = "execution_owner" },
+        .{ .tools = "[{\"name\":\"lookup\",\"input_schema\":{},\"execution_owner\":\"user\"}]", .tool = "lookup", .says = "must name a source" },
+        .{ .tools = "[{\"name\":\"echo_tool\",\"input_schema\":{},\"execution_owner\":\"user\",\"source\":\"oapx\"}]", .tool = "echo_tool", .says = "already resolves" },
+        .{ .tools = "[{\"name\":\"look up\",\"input_schema\":{},\"execution_owner\":\"user\",\"source\":\"oapx\"}]", .tool = "look up", .says = "name_pattern" },
+        .{ .tools = "[{\"name\":\"lookup\",\"input_schema\":{\"$schema\":\"http://json-schema.org/draft-07/schema#\"},\"execution_owner\":\"user\",\"source\":\"oapx\"}]", .tool = "lookup", .says = "dialect" },
+        .{ .tools = "[{\"name\":\"lookup\",\"input_schema\":{},\"execution_owner\":\"user\",\"source\":\"mcp\"}]", .tool = "lookup", .says = "resolves to nothing" },
+        .{ .tools = "[{\"name\":\"lookup\",\"input_schema\":{},\"execution_owner\":\"user\",\"source\":\"oapx\"},{\"name\":\"lookup\",\"input_schema\":{},\"execution_owner\":\"user\",\"source\":\"oapx\"}]", .tool = "lookup", .says = "already resolves" },
     };
     for (cases) |case| {
         var refusal = contract.Refusal{};
@@ -3915,9 +3913,10 @@ test "an open is refused, naming the tool, when a provided definition breaks a r
         try testing.expectEqualStrings(contract.feature_tools_provide, refusal.feature);
         try testing.expectEqualStrings(contract.reason_unsatisfiable, refusal.reason);
         try testing.expectEqualStrings(case.tool, refusal.tool);
+        try testing.expect(std.mem.indexOf(u8, refusal.detail, case.says) != null);
     }
     for (local_tools.defaultTools()) |builtin_tool| {
-        const shadowing = try std.fmt.allocPrint(arena.allocator(), "[{{\"name\":\"{s}\",\"input_schema\":{{}},\"execution_owner\":\"user\"}}]", .{builtin_tool.name});
+        const shadowing = try std.fmt.allocPrint(arena.allocator(), "[{{\"name\":\"{s}\",\"input_schema\":{{}},\"execution_owner\":\"user\",\"source\":\"oapx\"}}]", .{builtin_tool.name});
         var refusal = contract.Refusal{};
         try testing.expectError(error.UnsupportedFeature, owner.adapter().open(arena.allocator(), .{ .participant = "user", .tools_json = shadowing }, &refusal));
         try testing.expectEqualStrings(builtin_tool.name, refusal.tool);
@@ -3927,7 +3926,7 @@ test "an open is refused, naming the tool, when a provided definition breaks a r
     try many.append(testing.allocator, '[');
     for (0..max_provided_tools + 1) |index| {
         if (index > 0) try many.append(testing.allocator, ',');
-        try many.print(testing.allocator, "{{\"name\":\"tool_{d}\",\"input_schema\":{{}},\"execution_owner\":\"user\"}}", .{index});
+        try many.print(testing.allocator, "{{\"name\":\"tool_{d}\",\"input_schema\":{{}},\"execution_owner\":\"user\",\"source\":\"oapx\"}}", .{index});
     }
     try many.append(testing.allocator, ']');
     var refusal = contract.Refusal{};

@@ -24,8 +24,8 @@ passes the Zig schema and semantic validators envelope for envelope
 the `oapx` adapter's tool listing named no source, which both validators read as
 `unmatched_tool_source` once the TUI started listing tools: the adapter now declares
 one native source, `oapx`, in its descriptor and attributes its own tools and calls to
-it. A provided tool supplied without a source is still listed without one, which the
-validators flag; the TUI provides none today. Runs, streaming, tools,
+it. A provided tool must now name a declared source wherever tools are listed
+(Decision 0048), so none is listed without one. Runs, streaming, tools,
 cancel and model switch cross the boundary as OAP, and so does the tool list the TUI
 labels calls from: it lists the session's tools with `action.tools.list` once the
 session opens and shows each by its `annotations.title`, falling back to its name. A
@@ -295,8 +295,9 @@ Decision 0011: tools supplied at open join the loop's own for the session,
 listed with the opener as `execution_owner`, and each call to one is an
 interaction the opener settles with `action.call.resolve.request` while the
 loop's tool waits. Its limits are 64 tools, names matching
-`^[a-zA-Z0-9_-]{1,64}$`, and JSON Schema 2020-12; a definition may name the
-one source the loop declares, `oapx`, and naming any other is refused. Attaching
+`^[a-zA-Z0-9_-]{1,64}$`, and JSON Schema 2020-12; a definition must name the
+one source the loop declares, `oapx` (Decision 0048), and naming none or any
+other is refused. Attaching
 sources stays unadvertised. The draft says a source may be described and
 attached at session open under `+tool-sources`, and that nothing in the protocol
 *manages* one. #618 is closed with nothing left to carry: no production code

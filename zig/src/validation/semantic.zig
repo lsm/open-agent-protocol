@@ -1525,6 +1525,7 @@ pub const Machine = struct {
             });
             return;
         }
+        const lists = affirmative(self.features.get(feature_tools_list) orelse "");
         var attached = std.ArrayList([]const u8).empty;
         defer attached.deinit(self.allocator);
         if (sources) |listed| {
@@ -1562,6 +1563,17 @@ pub const Machine = struct {
                     .reason = reason_unsatisfiable,
                     .detail_name = "source",
                     .detail_value = source,
+                    .diagnostic = code_unmatched_tool_source,
+                });
+            } else if (source.len == 0 and lists) {
+                self.propose(&pending.attachment, .{
+                    .rung = rung_unsatisfiable,
+                    .key = key,
+                    .pointer = try self.pointerAt("/payload/tools", at, "/source"),
+                    .code = error_unsupported_feature,
+                    .reason = reason_unsatisfiable,
+                    .detail_name = "tool",
+                    .detail_value = memberString(tool, "name"),
                     .diagnostic = code_unmatched_tool_source,
                 });
             }
