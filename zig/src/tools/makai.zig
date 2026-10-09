@@ -2516,7 +2516,7 @@ fn oapTestProviderServer(allocator: std.mem.Allocator) oap_provider_server.Serve
     });
 }
 
-test "a catalog row awaiting a credential the endpoint does not serve is kept undescribed when it has a fixed endpoint, and a create for it resolves its model from the row" {
+test "a catalog row awaiting a credential the endpoint does not serve is kept undescribed when it has a fixed endpoint, and a create for it resolves its model, limits and capabilities from the row" {
     const allocator = std.testing.allocator;
     var server = oapTestProviderServer(allocator);
     defer server.deinit();
@@ -2554,6 +2554,13 @@ test "a catalog row awaiting a credential the endpoint does not serve is kept un
     defer model.deinit(allocator);
     try std.testing.expectEqualStrings("kimi", model.provider);
     try std.testing.expectEqualStrings("kimi-k2", model.id);
+    const row_model = provider_catalog.declaredModel("kimi", "kimi-k2");
+    const window = ((if (row_model) |declared| declared.context_window else null) orelse provider_catalog.rowContextWindow("kimi")).?;
+    const tokens = ((if (row_model) |declared| declared.max_tokens else null) orelse provider_catalog.rowMaxTokens("kimi")).?;
+    try std.testing.expectEqual(window, model.context_window);
+    try std.testing.expectEqual(tokens, model.max_tokens);
+    try std.testing.expect(oapAwaitingDeclares(ref, .tools));
+    try std.testing.expect(!oapAwaitingDeclares(ref, .vision));
     try std.testing.expect((try awaitingOapModel(allocator, &server, "anthropic", "anthropic/anthropic-messages@claude-sonnet-4-5")) == null);
 }
 
@@ -3269,10 +3276,20 @@ fn servedOapModel(allocator: std.mem.Allocator, provider_id: []const u8, wire: o
 
 fn awaitingOapModel(allocator: std.mem.Allocator, server: *oap_provider_server.Server, provider_id: []const u8, model_ref_text: []const u8) !?ai_types.Model {
     if (server.findAwaitingProvider(provider_id) == null) return null;
-    return modelFromCanonicalRef(allocator, model_ref_text) catch |err| switch (err) {
+    var model = modelFromCanonicalRef(allocator, model_ref_text) catch |err| switch (err) {
         error.OutOfMemory => return error.OutOfMemory,
         else => return null,
     };
+    const declared = provider_catalog.declaredModel(provider_id, model.id);
+    if ((if (declared) |row_model| row_model.context_window else null) orelse provider_catalog.rowContextWindow(provider_id)) |window| model.context_window = window;
+    if ((if (declared) |row_model| row_model.max_tokens else null) orelse provider_catalog.rowMaxTokens(provider_id)) |tokens| model.max_tokens = tokens;
+    return model;
+}
+
+fn oapAwaitingDeclares(model_ref_text: []const u8, capability: oap_provider_types.ModelCapability) bool {
+    const parsed = oap_provider_types.parseModelRef(model_ref_text) orelse return false;
+    if (capability == .reasoning) return isReasoningModelRef(parsed.provider_id, parsed.model_id);
+    return std.mem.indexOfScalar(oap_provider_types.ModelCapability, &oap_served_base_capabilities, capability) != null;
 }
 
 fn sameWireId(served: ?[]const u8, named: ?[]const u8) bool {
@@ -4107,6 +4124,7 @@ const HttpProviderRuntime = struct {
             .registry = api_registry.ApiRegistry.init(allocator),
             .server = oap_provider_server.Server.init(allocator, .{
                 .unserved_refusal = oapUnservedRefusal,
+                .awaiting_declares = oapAwaitingDeclares,
                 .capability_revision = VERSION,
                 .grant_channel = .unsupported,
                 .accepts_inference = true,
@@ -4513,6 +4531,7 @@ fn runOapProviderMode(
 
     var server = oap_provider_server.Server.init(allocator, .{
         .unserved_refusal = oapUnservedRefusal,
+        .awaiting_declares = oapAwaitingDeclares,
         .capability_revision = VERSION,
         .grant_channel = if (oap_provider_grant_channel.GrantChannel.supported) .out_of_band else .unsupported,
         .accepts_inference = true,
@@ -4771,6 +4790,7 @@ fn runOapxServe(
     defer provider_registry.deinit();
     var provider_server = oap_provider_server.Server.init(allocator, .{
         .unserved_refusal = oapUnservedRefusal,
+        .awaiting_declares = oapAwaitingDeclares,
         .capability_revision = VERSION,
         .grant_channel = if (oap_provider_grant_channel.GrantChannel.supported) .out_of_band else .unsupported,
         .accepts_inference = true,
