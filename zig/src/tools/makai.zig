@@ -2516,6 +2516,36 @@ fn oapTestProviderServer(allocator: std.mem.Allocator) oap_provider_server.Serve
     });
 }
 
+test "a catalog row awaiting a credential the endpoint does not serve is kept undescribed when it has a fixed endpoint, and a create for it resolves its model from the row" {
+    const allocator = std.testing.allocator;
+    var server = oapTestProviderServer(allocator);
+    defer server.deinit();
+    try populateOapProviderCatalogFrom(allocator, &server, &oap_test_served_models);
+    try populateAwaitingOapProviders(allocator, &server);
+
+    try std.testing.expect(server.findAwaitingProvider("anthropic") == null);
+    try std.testing.expect(server.findAwaitingProvider("ollama") == null);
+    const kimi = server.findAwaitingProvider("kimi") orelse return error.TestAwaitingRowMissing;
+    try std.testing.expect(server.findProvider("kimi") == null);
+    try std.testing.expect(!kimi.allows_anonymous);
+    for (server.awaiting.items) |awaiting| {
+        try std.testing.expect(rowAwaitsCredential(provider_catalog.provider(awaiting.id).?));
+        try std.testing.expect(server.findProvider(awaiting.id) == null);
+    }
+    const azure = provider_catalog.provider("azure").?;
+    try std.testing.expect(rowAwaitsCredential(azure));
+    try std.testing.expect(provider_catalog.baseUrl("azure", provider_catalog.firstImplementedWire(azure).?.id, null) == null);
+    try std.testing.expect(server.findAwaitingProvider("azure") == null);
+
+    const ref = try std.fmt.allocPrint(allocator, "kimi/{s}@kimi-k2", .{@tagName(kimi.wire)});
+    defer allocator.free(ref);
+    var model = (try awaitingOapModel(allocator, &server, "kimi", ref)) orelse return error.TestAwaitingModelMissing;
+    defer model.deinit(allocator);
+    try std.testing.expectEqualStrings("kimi", model.provider);
+    try std.testing.expectEqualStrings("kimi-k2", model.id);
+    try std.testing.expect((try awaitingOapModel(allocator, &server, "anthropic", "anthropic/anthropic-messages@claude-sonnet-4-5")) == null);
+}
+
 test "the provider endpoint serves one row per provider it loaded models for, on its catalog wire whatever the load order, with every loaded model on that wire and no claimed source" {
     const allocator = std.testing.allocator;
     var reordered = oapTestProviderServer(allocator);
@@ -2885,6 +2915,7 @@ fn populateOapProviderCatalog(allocator: std.mem.Allocator, server: *oap_provide
     const models = try loadServedOapModels(allocator);
     defer model_catalog.deinitModels(allocator, models);
     try populateOapProviderCatalogFrom(allocator, server, models);
+    try populateAwaitingOapProviders(allocator, server);
 }
 
 fn populateOapProviderCatalogFrom(allocator: std.mem.Allocator, server: *oap_provider_server.Server, models: []const ai_types.Model) !void {
@@ -2962,6 +2993,40 @@ fn populateOapProviderCatalogFrom(allocator: std.mem.Allocator, server: *oap_pro
             try server.addModel(entry.*);
             added += 1;
         }
+    }
+}
+
+fn populateAwaitingOapProviders(allocator: std.mem.Allocator, server: *oap_provider_server.Server) !void {
+    for (provider_catalog.all) |row| {
+        if (!rowAwaitsCredential(row)) continue;
+        if (server.findProvider(row.id) != null) continue;
+        const wire = provider_catalog.firstImplementedWire(row) orelse continue;
+        const mapping = oap_provider_catalog.mapApiToWire(wire.id) orelse continue;
+        const base = provider_catalog.baseUrl(row.id, wire.id, provider_catalog.defaultRegion(row.id)) orelse continue;
+
+        var transferred = false;
+        const id = try allocator.dupe(u8, row.id);
+        errdefer if (!transferred) allocator.free(id);
+        const endpoint = try allocator.dupe(u8, base);
+        errdefer if (!transferred) allocator.free(endpoint);
+        const policies = try allocator.dupe(oap_provider_types.SnapshotPolicy, oap_provider_server.IMPLEMENTED_SNAPSHOT_POLICIES);
+        errdefer if (!transferred) allocator.free(policies);
+        const wire_id = if (mapping.wire_id) |value| try allocator.dupe(u8, value) else null;
+        errdefer if (!transferred) {
+            if (wire_id) |value| allocator.free(value);
+        };
+        try server.addAwaitingProvider(.{
+            .id = id,
+            .wire = mapping.wire,
+            .wire_id = wire_id,
+            .framing = mapping.framing,
+            .endpoint = endpoint,
+            .allows_anonymous = false,
+            .snapshot_policies = policies,
+            .answers_sync = oap_provider_server.IMPLEMENTS_SYNC,
+            .credential_grant = servedOapGrant(server.options.grant_channel),
+        });
+        transferred = true;
     }
 }
 
@@ -3129,6 +3194,7 @@ fn applyServedOapReload(allocator: std.mem.Allocator, server: *oap_provider_serv
     defer model_catalog.deinitModels(allocator, models);
     server.clearCatalog();
     try populateOapProviderCatalogFrom(allocator, server, models);
+    try populateAwaitingOapProviders(allocator, server);
     applied.* = current;
     return true;
 }
@@ -3186,6 +3252,14 @@ fn servedOapModel(allocator: std.mem.Allocator, provider_id: []const u8, wire: o
         return try ai_types.cloneModel(allocator, model);
     }
     return null;
+}
+
+fn awaitingOapModel(allocator: std.mem.Allocator, server: *oap_provider_server.Server, provider_id: []const u8, model_ref_text: []const u8) !?ai_types.Model {
+    if (server.findAwaitingProvider(provider_id) == null) return null;
+    return modelFromCanonicalRef(allocator, model_ref_text) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        else => return null,
+    };
 }
 
 fn sameWireId(served: ?[]const u8, named: ?[]const u8) bool {
@@ -3429,7 +3503,8 @@ fn startOapInference(
     };
     const provider_id = parsed.provider_id;
 
-    var served = (try servedOapModel(allocator, provider_id, parsed.wire, parsed.wire_id, parsed.model_id)) orelse {
+    var served = (try servedOapModel(allocator, provider_id, parsed.wire, parsed.wire_id, parsed.model_id)) orelse
+        (try awaitingOapModel(allocator, server, provider_id, inference.model_ref)) orelse {
         try failOapInference(server, inference_id, .model_not_found, "this endpoint serves no such model");
         return;
     };
