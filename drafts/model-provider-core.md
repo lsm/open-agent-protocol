@@ -1821,8 +1821,8 @@ An implementation claiming `open-agent-protocol.model-provider-core`:
    the provider refuses with HTTP 401 or 403 likewise fails
    `credential_rejected`, never a retryable code. A provider is described on one wire, its
    catalog's first, even where the vendor offers more. A credential grant
-   also reaches a provider that awaits a credential and has a fixed endpoint,
-   though it is not described, so a grant can introduce the key for it; an
+   also reaches a provider that awaits a credential, has a fixed endpoint, and
+   declares the wire its model ref would name, though it is not described, so a grant can introduce the key for it; an
    `inference.create.request` for that provider is accepted only when its
    `credential_ref` names a live grant for that same provider, and resolves
    the model from the provider's catalog row. The grant does not make the

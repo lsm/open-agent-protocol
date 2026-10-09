@@ -2531,7 +2531,18 @@ test "a catalog row awaiting a credential the endpoint does not serve is kept un
     for (server.awaiting.items) |awaiting| {
         try std.testing.expect(rowAwaitsCredential(provider_catalog.provider(awaiting.id).?));
         try std.testing.expect(server.findProvider(awaiting.id) == null);
+        const probe = if (awaiting.wire_id) |wire_id|
+            try std.fmt.allocPrint(allocator, "{s}/other:{s}@probe", .{ awaiting.id, wire_id })
+        else
+            try std.fmt.allocPrint(allocator, "{s}/{s}@probe", .{ awaiting.id, @tagName(awaiting.wire) });
+        defer allocator.free(probe);
+        var resolved = (try awaitingOapModel(allocator, &server, awaiting.id, probe)) orelse {
+            std.debug.print("awaiting {s} accepts a grant but resolves no model for {s}\n", .{ awaiting.id, probe });
+            return error.TestAwaitingRowUnresolvable;
+        };
+        resolved.deinit(allocator);
     }
+    try std.testing.expect(server.findAwaitingProvider("openai-codex") == null);
     const azure = provider_catalog.provider("azure").?;
     try std.testing.expect(rowAwaitsCredential(azure));
     try std.testing.expect(provider_catalog.baseUrl("azure", provider_catalog.firstImplementedWire(azure).?.id, null) == null);
@@ -3002,6 +3013,8 @@ fn populateAwaitingOapProviders(allocator: std.mem.Allocator, server: *oap_provi
         if (server.findProvider(row.id) != null) continue;
         const wire = provider_catalog.firstImplementedWire(row) orelse continue;
         const mapping = oap_provider_catalog.mapApiToWire(wire.id) orelse continue;
+        const resolved_api = oap_provider_catalog.apiForWire(mapping.wire, mapping.wire_id) orelse continue;
+        if (!provider_catalog.declaresWire(row.id, resolved_api)) continue;
         const base = provider_catalog.baseUrl(row.id, wire.id, provider_catalog.defaultRegion(row.id)) orelse continue;
 
         var transferred = false;
