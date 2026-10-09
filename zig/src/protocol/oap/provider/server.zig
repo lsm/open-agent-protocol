@@ -325,6 +325,20 @@ pub const Server = struct {
         return null;
     }
 
+    pub fn findDescriptor(self: *Self, id: []const u8, wire: types.Wire, wire_id: ?[]const u8) ?*types.ProviderDescriptor {
+        for (self.providers.items) |*descriptor| {
+            if (!std.mem.eql(u8, descriptor.id, id)) continue;
+            if (descriptor.wire != wire) continue;
+            const described = descriptor.wire_id orelse {
+                if (wire_id == null) return descriptor;
+                continue;
+            };
+            const named = wire_id orelse continue;
+            if (std.mem.eql(u8, described, named)) return descriptor;
+        }
+        return null;
+    }
+
     pub fn findAwaitingProvider(self: *Self, id: []const u8) ?*types.ProviderDescriptor {
         for (self.awaiting.items) |*descriptor| {
             if (std.mem.eql(u8, descriptor.id, id)) return descriptor;
@@ -927,7 +941,7 @@ pub const Server = struct {
             return;
         };
 
-        const served = self.findProvider(parsed.provider_id);
+        const served = self.findDescriptor(parsed.provider_id, parsed.wire, parsed.wire_id) orelse self.findProvider(parsed.provider_id);
         const descriptor = served orelse self.grantedAwaiting(parsed.provider_id, create_request.credential_ref) orelse {
             if (self.options.unserved_refusal) |refusal_for| if (refusal_for(parsed.provider_id)) |refusal| {
                 try self.emitCreateRefusal(env, refusal.code, refusal.message);
@@ -2064,6 +2078,47 @@ fn refuseAcmeAndBeta(provider_id: []const u8) ?UnservedRefusal {
     if (std.mem.eql(u8, provider_id, "acme")) return .{ .code = .credential_missing, .message = "acme needs a key" };
     if (std.mem.eql(u8, provider_id, "beta")) return .{ .code = .provider_unavailable, .message = "beta is loading" };
     return null;
+}
+
+fn addAnonymousAcme(allocator: std.mem.Allocator, server: *Server, wire: types.Wire, wire_id: ?[]const u8) !void {
+    const id = try allocator.dupe(u8, "acme");
+    errdefer allocator.free(id);
+    const endpoint = try allocator.dupe(u8, "https://acme.test");
+    errdefer allocator.free(endpoint);
+    const owned_wire_id = if (wire_id) |value| try allocator.dupe(u8, value) else null;
+    errdefer if (owned_wire_id) |value| allocator.free(value);
+    try server.addProvider(.{ .id = id, .wire = wire, .wire_id = owned_wire_id, .framing = .sse, .endpoint = endpoint, .allows_anonymous = true });
+}
+
+fn createIsAccepted(allocator: std.mem.Allocator, server: *Server, model_ref: []const u8) !bool {
+    const code = createRefusalCode(allocator, server, model_ref) catch |err| switch (err) {
+        error.NoRefusal => return true,
+        else => return err,
+    };
+    allocator.free(code);
+    return false;
+}
+
+test "a provider described on several wires takes a create on each of them, and refuses one it does not describe" {
+    const allocator = std.testing.allocator;
+    var server = try testServer(allocator, .{ .accepts_inference = true });
+    defer server.deinit();
+    try addAnonymousAcme(allocator, &server, .@"anthropic-messages", null);
+    try addAnonymousAcme(allocator, &server, .@"openai-responses", null);
+    try addAnonymousAcme(allocator, &server, .other, "first");
+    try addAnonymousAcme(allocator, &server, .other, "second");
+
+    try std.testing.expect(try createIsAccepted(allocator, &server, "acme/anthropic-messages@m"));
+    try std.testing.expect(try createIsAccepted(allocator, &server, "acme/openai-responses@m"));
+    try std.testing.expect(try createIsAccepted(allocator, &server, "acme/other:second@m"));
+    try std.testing.expect(try createIsAccepted(allocator, &server, "acme/other:first@m"));
+
+    const undescribed = try createRefusalCode(allocator, &server, "acme/openai-chat-completions@m");
+    defer allocator.free(undescribed);
+    try std.testing.expectEqualStrings("invalid_request", undescribed);
+    const unknown_label = try createRefusalCode(allocator, &server, "acme/other:third@m");
+    defer allocator.free(unknown_label);
+    try std.testing.expectEqualStrings("invalid_request", unknown_label);
 }
 
 fn createRefusalCode(allocator: std.mem.Allocator, server: *Server, model_ref: []const u8) ![]u8 {

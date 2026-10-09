@@ -2505,8 +2505,6 @@ const oap_test_mixed_models = [_]ai_types.Model{
     .{ .id = "x1", .name = "X1", .api = "no-wire-api", .provider = "acme", .base_url = "https://x.test", .reasoning = false, .input = &oap_test_text_input, .cost = .{ .input = 0, .output = 0, .cache_read = 0, .cache_write = 0 }, .context_window = 8_000, .max_tokens = 1_024 },
 };
 
-const oap_test_mixed_models_kimi_first = [_]ai_types.Model{ oap_test_mixed_models[1], oap_test_mixed_models[0], oap_test_mixed_models[3], oap_test_mixed_models[2], oap_test_mixed_models[4] };
-
 fn oapTestProviderServer(allocator: std.mem.Allocator) oap_provider_server.Server {
     return oap_provider_server.Server.init(allocator, .{
         .capability_revision = VERSION,
@@ -2564,32 +2562,30 @@ test "a catalog row awaiting a credential the endpoint does not serve is kept un
     try std.testing.expect((try awaitingOapModel(allocator, &server, "anthropic", "anthropic/anthropic-messages@claude-sonnet-4-5")) == null);
 }
 
-test "the provider endpoint serves one row per provider it loaded models for, on its catalog wire whatever the load order, with every loaded model on that wire and no claimed source" {
+test "the provider endpoint serves one row per provider and wire it loaded models for, with every loaded model on its own wire and no claimed source" {
     const allocator = std.testing.allocator;
-    var reordered = oapTestProviderServer(allocator);
-    defer reordered.deinit();
-    try populateOapProviderCatalogFrom(allocator, &reordered, &oap_test_mixed_models_kimi_first);
-    try std.testing.expectEqualStrings("kimi", reordered.providers.items[0].id);
-    try std.testing.expectEqual(oap_provider_types.Wire.@"openai-chat-completions", reordered.providers.items[0].wire);
-    try std.testing.expectEqualStrings("https://k.test/v1", reordered.providers.items[0].endpoint);
-
     var server = oapTestProviderServer(allocator);
     defer server.deinit();
     try populateOapProviderCatalogFrom(allocator, &server, &oap_test_mixed_models);
 
-    try std.testing.expectEqual(@as(usize, 2), server.providers.items.len);
+    try std.testing.expectEqual(@as(usize, 3), server.providers.items.len);
     const anthropic = server.providers.items[0];
     try std.testing.expectEqualStrings("anthropic", anthropic.id);
     try std.testing.expectEqualStrings("https://a.test", anthropic.endpoint);
     try std.testing.expectEqual(@as(?u32, 200_000), anthropic.context_window);
     try std.testing.expectEqual(@as(?u32, 8_192), anthropic.max_output_tokens);
     try std.testing.expect(anthropic.round_trips_carry);
-    const kimi = server.providers.items[1];
-    try std.testing.expectEqualStrings("kimi", kimi.id);
-    try std.testing.expectEqual(oap_provider_types.Wire.@"openai-chat-completions", kimi.wire);
-    try std.testing.expect(!kimi.round_trips_carry);
+    const kimi_messages = server.providers.items[1];
+    try std.testing.expectEqualStrings("kimi", kimi_messages.id);
+    try std.testing.expectEqual(oap_provider_types.Wire.@"anthropic-messages", kimi_messages.wire);
+    try std.testing.expectEqualStrings("https://k.test", kimi_messages.endpoint);
+    try std.testing.expect(!kimi_messages.round_trips_carry);
+    const kimi_completions = server.providers.items[2];
+    try std.testing.expectEqualStrings("kimi", kimi_completions.id);
+    try std.testing.expectEqual(oap_provider_types.Wire.@"openai-chat-completions", kimi_completions.wire);
+    try std.testing.expectEqualStrings("https://k.test/v1", kimi_completions.endpoint);
 
-    const refs = [_][]const u8{ "anthropic/anthropic-messages@a1", "anthropic/anthropic-messages@a2", "kimi/openai-chat-completions@k2" };
+    const refs = [_][]const u8{ "anthropic/anthropic-messages@a1", "anthropic/anthropic-messages@a2", "kimi/anthropic-messages@k1", "kimi/openai-chat-completions@k2" };
     try std.testing.expectEqual(refs.len, server.models.items.len);
     for (refs, server.models.items) |ref, entry| {
         try std.testing.expectEqualStrings(ref, entry.model_ref);
@@ -2601,6 +2597,28 @@ test "the provider endpoint serves one row per provider it loaded models for, on
     }
     try std.testing.expect(std.mem.indexOfScalar(oap_provider_types.ModelCapability, server.models.items[0].capabilities, .reasoning) != null);
     try std.testing.expect(std.mem.indexOfScalar(oap_provider_types.ModelCapability, server.models.items[1].capabilities, .reasoning) == null);
+}
+
+test "two unnamed wires under one provider are two rows, each listing only its own models" {
+    const allocator = std.testing.allocator;
+    const google = [_]ai_types.Model{
+        .{ .id = "g1", .name = "G1", .api = "google-generative-ai", .provider = "google", .base_url = "https://g.test", .reasoning = false, .input = &oap_test_text_input, .cost = .{ .input = 0, .output = 0, .cache_read = 0, .cache_write = 0 }, .context_window = 8_000, .max_tokens = 1_024 },
+        .{ .id = "g2", .name = "G2", .api = "google-gemini-cli", .provider = "google", .base_url = "https://cli.g.test", .reasoning = false, .input = &oap_test_text_input, .cost = .{ .input = 0, .output = 0, .cache_read = 0, .cache_write = 0 }, .context_window = 16_000, .max_tokens = 1_024 },
+    };
+    var server = oapTestProviderServer(allocator);
+    defer server.deinit();
+    try populateOapProviderCatalogFrom(allocator, &server, &google);
+
+    try std.testing.expectEqual(@as(usize, 2), server.providers.items.len);
+    try std.testing.expectEqualStrings("google-generative-ai", server.providers.items[0].wire_id.?);
+    try std.testing.expectEqualStrings("https://g.test", server.providers.items[0].endpoint);
+    try std.testing.expectEqualStrings("google-gemini-cli", server.providers.items[1].wire_id.?);
+    try std.testing.expectEqualStrings("https://cli.g.test", server.providers.items[1].endpoint);
+    try std.testing.expectEqual(@as(?u32, 8_000), server.providers.items[0].context_window);
+    try std.testing.expectEqual(@as(?u32, 16_000), server.providers.items[1].context_window);
+    try std.testing.expectEqual(@as(usize, 2), server.models.items.len);
+    try std.testing.expectEqualStrings("google/other:google-generative-ai@g1", server.models.items[0].model_ref);
+    try std.testing.expectEqualStrings("google/other:google-gemini-cli@g2", server.models.items[1].model_ref);
 }
 
 test "a served model reads as signed in only when its endpoint takes no credential" {
@@ -2938,19 +2956,17 @@ fn populateOapProviderCatalog(allocator: std.mem.Allocator, server: *oap_provide
 
 fn populateOapProviderCatalogFrom(allocator: std.mem.Allocator, server: *oap_provider_server.Server, models: []const ai_types.Model) !void {
     const proxy_flags = try provider_base_url.proxyCompatFlagsFromEnv(allocator);
-    for (models, 0..) |first, index| {
-        if (oap_provider_catalog.mapApiToWire(first.api) == null) continue;
-        if (servedBefore(models[0..index], first.provider)) continue;
-        const model = servedOapLead(models, first.provider) orelse continue;
+    for (models, 0..) |model, index| {
         const mapping = oap_provider_catalog.mapApiToWire(model.api) orelse continue;
+        if (servedBefore(models[0..index], model.provider, mapping)) continue;
 
         var context_window: u32 = 0;
         var max_output_tokens: u32 = 0;
         var reasons = false;
-        for (models) |sibling| {
+        for (models[index..]) |sibling| {
             if (!std.mem.eql(u8, sibling.provider, model.provider)) continue;
             const sibling_mapping = oap_provider_catalog.mapApiToWire(sibling.api) orelse continue;
-            if (sibling_mapping.wire != mapping.wire) continue;
+            if (!oap_provider_catalog.sameWire(sibling_mapping, mapping)) continue;
             context_window = @max(context_window, sibling.context_window);
             max_output_tokens = @max(max_output_tokens, sibling.max_tokens);
             reasons = reasons or sibling.reasoning;
@@ -2995,7 +3011,7 @@ fn populateOapProviderCatalogFrom(allocator: std.mem.Allocator, server: *oap_pro
         });
         provider_transferred = true;
 
-        const entries = try oap_provider_catalog.ownedModelEntriesForRow(allocator, models, model.provider, mapping.wire, .discovered);
+        const entries = try oap_provider_catalog.ownedModelEntriesForWire(allocator, models, model.provider, mapping, .discovered);
         var added: usize = 0;
         defer {
             for (entries[added..]) |*entry| entry.deinit(allocator);
@@ -3070,22 +3086,11 @@ fn servedOapGrant(channel: oap_provider_server.GrantChannel) oap_provider_types.
     };
 }
 
-fn servedOapLead(models: []const ai_types.Model, provider_id: []const u8) ?ai_types.Model {
-    const primary = if (provider_catalog.provider(provider_id)) |row| provider_catalog.firstImplementedWire(row) else null;
-    var lead: ?ai_types.Model = null;
-    for (models) |model| {
-        if (!std.mem.eql(u8, model.provider, provider_id)) continue;
-        if (oap_provider_catalog.mapApiToWire(model.api) == null) continue;
-        if (primary) |wire| if (std.mem.eql(u8, model.api, wire.id)) return model;
-        if (lead == null) lead = model;
-    }
-    return lead;
-}
-
-fn servedBefore(earlier: []const ai_types.Model, provider_id: []const u8) bool {
+fn servedBefore(earlier: []const ai_types.Model, provider_id: []const u8, mapping: oap_provider_catalog.WireMapping) bool {
     for (earlier) |model| {
         if (!std.mem.eql(u8, model.provider, provider_id)) continue;
-        if (oap_provider_catalog.mapApiToWire(model.api) != null) return true;
+        const earlier_mapping = oap_provider_catalog.mapApiToWire(model.api) orelse continue;
+        if (oap_provider_catalog.sameWire(earlier_mapping, mapping)) return true;
     }
     return false;
 }
