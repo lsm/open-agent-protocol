@@ -61,7 +61,8 @@ it surfaced when the `oapx` endpoint's listing was first checked end to end
 - The Go and Zig memory adapters and the `oapx` adapter refuse a source-less
   provided tool, since all three advertise `action.tools.list`.
 - The Go, TypeScript, Python and Rust SDKs name the endpoint's declared source
-  on every tool they provide (#1016), and landed first so no SDK was refused.
+  on every tool they provide (#1016). That change merges before this rule
+  does, because an SDK that sent no source would otherwise be refused by oapx.
 
 ## What this decision does not admit
 
