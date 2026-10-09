@@ -25,6 +25,7 @@ pub const Options = struct {
     resolves_own_credentials: bool = false,
     catalog: ?types.ModelCatalogState = null,
     unserved_refusal: ?*const fn (provider_id: []const u8) ?UnservedRefusal = null,
+    awaiting_declares: ?*const fn (model_ref: []const u8, capability: types.ModelCapability) bool = null,
 };
 
 pub const UnservedRefusal = struct {
@@ -113,6 +114,7 @@ pub const Server = struct {
     allocator: std.mem.Allocator,
     options: Options,
     providers: std.ArrayList(types.ProviderDescriptor),
+    awaiting: std.ArrayList(types.ProviderDescriptor),
     models: std.ArrayList(types.ModelEntry),
     grants: std.ArrayList(GrantedCredential),
     outbound: std.ArrayList([]const u8),
@@ -127,6 +129,7 @@ pub const Server = struct {
             .allocator = allocator,
             .options = options,
             .providers = std.ArrayList(types.ProviderDescriptor).empty,
+            .awaiting = std.ArrayList(types.ProviderDescriptor).empty,
             .models = std.ArrayList(types.ModelEntry).empty,
             .grants = std.ArrayList(GrantedCredential).empty,
             .outbound = std.ArrayList([]const u8).empty,
@@ -139,6 +142,8 @@ pub const Server = struct {
     pub fn deinit(self: *Self) void {
         for (self.providers.items) |*descriptor| descriptor.deinit(self.allocator);
         self.providers.deinit(self.allocator);
+        for (self.awaiting.items) |*descriptor| descriptor.deinit(self.allocator);
+        self.awaiting.deinit(self.allocator);
         for (self.models.items) |*entry| entry.deinit(self.allocator);
         self.models.deinit(self.allocator);
         for (self.grants.items) |*grant| grant.deinit(self.allocator);
@@ -158,9 +163,15 @@ pub const Server = struct {
         try self.providers.append(self.allocator, descriptor);
     }
 
+    pub fn addAwaitingProvider(self: *Self, descriptor: types.ProviderDescriptor) !void {
+        try self.awaiting.append(self.allocator, descriptor);
+    }
+
     pub fn clearCatalog(self: *Self) void {
         for (self.providers.items) |*descriptor| descriptor.deinit(self.allocator);
         self.providers.clearRetainingCapacity();
+        for (self.awaiting.items) |*descriptor| descriptor.deinit(self.allocator);
+        self.awaiting.clearRetainingCapacity();
         for (self.models.items) |*entry| entry.deinit(self.allocator);
         self.models.clearRetainingCapacity();
     }
@@ -312,6 +323,28 @@ pub const Server = struct {
             if (std.mem.eql(u8, descriptor.id, id)) return descriptor;
         }
         return null;
+    }
+
+    pub fn findAwaitingProvider(self: *Self, id: []const u8) ?*types.ProviderDescriptor {
+        for (self.awaiting.items) |*descriptor| {
+            if (std.mem.eql(u8, descriptor.id, id)) return descriptor;
+        }
+        return null;
+    }
+
+    fn grantedAwaiting(self: *Self, provider_id: []const u8, credential_ref: ?[]const u8) ?*types.ProviderDescriptor {
+        const reference = credential_ref orelse return null;
+        const awaiting = self.findAwaitingProvider(provider_id) orelse return null;
+        for (self.grants.items) |grant| {
+            if (std.mem.eql(u8, grant.reference, reference) and std.mem.eql(u8, grant.provider_id, provider_id)) return awaiting;
+        }
+        return null;
+    }
+
+    fn createDeclares(self: *Self, awaiting: bool, model_ref: []const u8, capability: types.ModelCapability) bool {
+        if (!awaiting) return self.modelDeclares(model_ref, capability);
+        const declares = self.options.awaiting_declares orelse return false;
+        return declares(model_ref, capability);
     }
 
     pub fn modelDeclares(self: *Self, model_ref: []const u8, capability: types.ModelCapability) bool {
@@ -779,7 +812,7 @@ pub const Server = struct {
             return;
         }
 
-        if (self.findProvider(grant_request.provider_id) == null) {
+        if (self.findProvider(grant_request.provider_id) == null and self.findAwaitingProvider(grant_request.provider_id) == null) {
             try self.emitGrantRefusal(env, .model_not_found, "no such provider");
             return;
         }
@@ -894,7 +927,8 @@ pub const Server = struct {
             return;
         };
 
-        const descriptor = self.findProvider(parsed.provider_id) orelse {
+        const served = self.findProvider(parsed.provider_id);
+        const descriptor = served orelse self.grantedAwaiting(parsed.provider_id, create_request.credential_ref) orelse {
             if (self.options.unserved_refusal) |refusal_for| if (refusal_for(parsed.provider_id)) |refusal| {
                 try self.emitCreateRefusal(env, refusal.code, refusal.message);
                 return;
@@ -966,7 +1000,7 @@ pub const Server = struct {
             return;
         }
 
-        if (create_request.tools.len > 0 and !self.modelDeclares(create_request.model_ref, .tools)) {
+        if (create_request.tools.len > 0 and !self.createDeclares(served == null, create_request.model_ref, .tools)) {
             try self.emitCreateRefusal(
                 env,
                 .unsupported_feature,
@@ -996,7 +1030,7 @@ pub const Server = struct {
         }
 
         if (create_request.reasoning != null) {
-            if (!self.modelDeclares(create_request.model_ref, .reasoning)) {
+            if (!self.createDeclares(served == null, create_request.model_ref, .reasoning)) {
                 try self.emitCreateRefusal(
                     env,
                     .unsupported_feature,
@@ -2022,6 +2056,10 @@ fn makeRequest(allocator: std.mem.Allocator, type_name: []const u8, payload: []c
     );
 }
 
+fn acmeDeclaresTools(model_ref: []const u8, capability: types.ModelCapability) bool {
+    return std.mem.startsWith(u8, model_ref, "acme/") and capability == .tools;
+}
+
 fn refuseAcmeAndBeta(provider_id: []const u8) ?UnservedRefusal {
     if (std.mem.eql(u8, provider_id, "acme")) return .{ .code = .credential_missing, .message = "acme needs a key" };
     if (std.mem.eql(u8, provider_id, "beta")) return .{ .code = .provider_unavailable, .message = "beta is loading" };
@@ -2589,6 +2627,70 @@ test "a grant past its stated expiry is refused with the actionable code and bur
 
     try std.testing.expectEqual(@as(usize, 0), server.grants.items.len);
     try std.testing.expect(server.findGrant(reference) == null);
+}
+
+test "a grant reaches a provider the endpoint awaits a credential for, and only a create carrying it for that provider is accepted, with the capabilities the host declares, while describe still omits it" {
+    const allocator = std.testing.allocator;
+    var server = try testServer(allocator, .{ .grant_channel = .out_of_band, .accepts_inference = true, .unserved_refusal = refuseAcmeAndBeta, .awaiting_declares = acmeDeclaresTools });
+    defer server.deinit();
+    for ([_][]const u8{ "acme", "beta" }) |id| {
+        try server.addAwaitingProvider(.{
+            .id = try allocator.dupe(u8, id),
+            .wire = .@"anthropic-messages",
+            .framing = .sse,
+            .endpoint = try allocator.dupe(u8, "https://awaiting.test"),
+            .allows_anonymous = false,
+            .snapshot_policies = try allocator.dupe(types.SnapshotPolicy, &.{ .never, .on_part_end }),
+        });
+    }
+
+    const unkeyed = try createRefusalCode(allocator, &server, "acme/anthropic-messages@m");
+    defer allocator.free(unkeyed);
+    try std.testing.expectEqualStrings("credential_missing", unkeyed);
+
+    const grant_line = try makeRequest(allocator, "provider.credential.grant.request", "{\"provider_id\":\"acme\",\"nonce\":\"n1\"}", "q1");
+    defer allocator.free(grant_line);
+    try server.handleLine(grant_line);
+    try server.announceChannel("n1", "/tmp/grant-awaiting.sock");
+    const reference = try server.completeGrant("n1");
+    defer allocator.free(reference);
+    while (server.popOutbound()) |outbound| allocator.free(outbound);
+
+    const elsewhere_payload = try std.fmt.allocPrint(allocator, "{{\"model_ref\":\"beta/anthropic-messages@m\",\"messages\":[],\"stream\":true,\"credential_ref\":\"{s}\"}}", .{reference});
+    defer allocator.free(elsewhere_payload);
+    const elsewhere_line = try makeRequest(allocator, "inference.create.request", elsewhere_payload, "q2");
+    defer allocator.free(elsewhere_line);
+    try server.handleLine(elsewhere_line);
+    var elsewhere = try decodeOnly(allocator, &server);
+    defer elsewhere.deinit(allocator);
+    try std.testing.expectEqual(types.ErrorCode.provider_unavailable, elsewhere.payload.inference_create_response.err.?.code);
+
+    const reasoning_payload = try std.fmt.allocPrint(allocator, "{{\"model_ref\":\"acme/anthropic-messages@m\",\"messages\":[],\"stream\":true,\"reasoning\":{{\"enabled\":true}},\"credential_ref\":\"{s}\"}}", .{reference});
+    defer allocator.free(reasoning_payload);
+    const reasoning_line = try makeRequest(allocator, "inference.create.request", reasoning_payload, "q2b");
+    defer allocator.free(reasoning_line);
+    try server.handleLine(reasoning_line);
+    var reasoning = try decodeOnly(allocator, &server);
+    defer reasoning.deinit(allocator);
+    try std.testing.expectEqual(types.ErrorCode.unsupported_feature, reasoning.payload.inference_create_response.err.?.code);
+
+    const payload = try std.fmt.allocPrint(allocator, "{{\"model_ref\":\"acme/anthropic-messages@m\",\"messages\":[],\"stream\":true,\"tools\":[{{\"name\":\"lookup\",\"input_schema\":{{\"type\":\"object\"}}}}],\"credential_ref\":\"{s}\"}}", .{reference});
+    defer allocator.free(payload);
+    const create_line = try makeRequest(allocator, "inference.create.request", payload, "q3");
+    defer allocator.free(create_line);
+    try server.handleLine(create_line);
+    var accepted = try decodeOnly(allocator, &server);
+    defer accepted.deinit(allocator);
+    try std.testing.expect(accepted.payload.inference_create_response.accepted);
+
+    const describe_line = try makeRequest(allocator, "provider.describe.request", "{}", "q4");
+    defer allocator.free(describe_line);
+    try server.handleLine(describe_line);
+    var described = try decodeOnly(allocator, &server);
+    defer described.deinit(allocator);
+    for (described.payload.provider_describe_response.providers) |provider| {
+        try std.testing.expect(!std.mem.eql(u8, provider.id, "acme"));
+    }
 }
 
 test "describe tells a caller which grant tier the binding uses before it sends anything" {
