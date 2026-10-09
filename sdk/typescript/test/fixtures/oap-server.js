@@ -83,7 +83,7 @@ createInterface({ input: process.stdin }).on("line", (line) => {
     case `${agent}:capabilities.request`:
       send(request, "capabilities.response", process.env.OAP_FIXTURE_BARE
         ? { endpoint: { id: "oapx.agent-control" }, features: { "auth.providers": true, "auth.login": true } }
-        : { endpoint: { id: "oapx.agent" }, features: { "auth.providers": true, "auth.login": true, "action.tools.provide": { level: "native" } } }, { capability_revision: "r1" });
+        : { endpoint: { id: "oapx.agent" }, features: { "auth.providers": true, "auth.login": true, "action.tools.provide": { level: "native" } }, sources: [{ id: "attached-files", kind: "process" }, { id: "oapx", kind: "native" }] }, { capability_revision: "r1" });
       break;
     case `${agent}:auth.providers.request`:
       send(request, "auth.providers.response", { providers: [{ id: "fixture", name: "Fixture", auth_kinds: ["api_key"], auth_status: authenticated ? "authenticated" : "login_required" }] });
@@ -181,7 +181,7 @@ createInterface({ input: process.stdin }).on("line", (line) => {
         event(agent, "run.failed", { session_id: answer.session_id, run_id: "run-1", error: { code: "credential_missing", message: "login required" } }, { session_id: answer.session_id, run_id: "run-1", sequence: 5 });
         break;
       }
-      const said = `${opened.tools?.[0]?.name} owned by ${opened.tools?.[0]?.execution_owner} said ${answer.result} (error ${answer.error?.message}) as ${answer.responded_by}`;
+      const said = `${opened.tools?.[0]?.name} owned by ${opened.tools?.[0]?.execution_owner} from ${opened.tools?.[0]?.source} said ${answer.result} (error ${answer.error?.message}) as ${answer.responded_by}`;
       event(agent, "run.completed", { session_id: answer.session_id, run_id: "run-1", final_response: { role: "assistant", content: said }, stop_reason: "end_turn" }, { session_id: answer.session_id, run_id: "run-1", sequence: 5 });
       break;
     }

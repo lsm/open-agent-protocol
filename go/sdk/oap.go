@@ -515,6 +515,27 @@ func (s *AgentService) oapBegin(ctx context.Context, req AgentRequest) (*oapAgen
 
 const oapxAgentEndpoint = "oapx.agent"
 
+func declaredToolSource(sources []any) string {
+	first := ""
+	for _, entry := range sources {
+		source, ok := entry.(map[string]any)
+		if !ok {
+			continue
+		}
+		id, _ := source["id"].(string)
+		if id == "" {
+			continue
+		}
+		if source["kind"] == "native" {
+			return id
+		}
+		if first == "" {
+			first = id
+		}
+	}
+	return first
+}
+
 func oapOpenPayload(t *transport, sessionID string, req AgentRequest) (map[string]any, error) {
 	payload := map[string]any{"session_id": sessionID}
 	if len(req.Tools) > 0 && !t.agentFeatures["action.tools.provide"] {
@@ -527,6 +548,9 @@ func oapOpenPayload(t *transport, sessionID string, req AgentRequest) (map[strin
 		}
 		for _, tool := range provided {
 			tool["execution_owner"] = sdkParticipant
+			if t.agentSource != "" {
+				tool["source"] = t.agentSource
+			}
 		}
 		payload["tools"] = provided
 	}

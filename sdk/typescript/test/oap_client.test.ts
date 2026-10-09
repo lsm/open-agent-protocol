@@ -41,7 +41,7 @@ test("agent tools and settings travel over OAP, and temperature and provider cal
       return "open agent protocol";
     } };
     const ran = await client.agent.run({ model_ref: "fixture/openai-responses@tool", messages: [{ role: "user", content: "hello" }], tools: [lookup] });
-    assert.equal(ran.message.content, "lookup owned by sdk said open agent protocol (error undefined) as sdk");
+    assert.equal(ran.message.content, "lookup owned by sdk from oapx said open agent protocol (error undefined) as sdk");
     assert.deepEqual(invoked, [[{ word: "oap" }, "call-1"]]);
     const kinds: string[] = [];
     for await (const event of client.agent.stream({ model_ref: "fixture/openai-responses@tool", messages: [{ role: "user", content: "hello" }], tools: [lookup] })) kinds.push(event.type);

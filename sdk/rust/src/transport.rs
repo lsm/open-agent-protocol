@@ -296,6 +296,7 @@ struct Inner {
     agent_revision: Mutex<Option<String>>,
     agent_endpoint: Mutex<String>,
     agent_features: Mutex<Vec<String>>,
+    agent_source: Mutex<String>,
 }
 
 impl Drop for Inner {
@@ -441,6 +442,7 @@ impl Transport {
             agent_revision: Mutex::new(None),
             agent_endpoint: Mutex::new(String::new()),
             agent_features: Mutex::new(Vec::new()),
+            agent_source: Mutex::new(String::new()),
         });
         let transport = Self { inner };
 
@@ -454,6 +456,14 @@ impl Transport {
     pub(crate) fn agent_endpoint(&self) -> String {
         self.inner
             .agent_endpoint
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
+
+    pub(crate) fn agent_source(&self) -> String {
+        self.inner
+            .agent_source
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clone()
@@ -550,6 +560,12 @@ impl Transport {
                     .collect()
             })
             .unwrap_or_default();
+        *self
+            .inner
+            .agent_source
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) =
+            declared_tool_source(described.get("sources"));
         let describe = self
             .request_oap(
                 PROVIDER_PROFILE,
@@ -802,6 +818,26 @@ async fn supervise(mut child: Child, shutdown: oneshot::Receiver<()>, router: Ar
             router.close("transport closed".to_owned());
         }
     }
+}
+
+fn declared_tool_source(sources: Option<&Value>) -> String {
+    let mut first = String::new();
+    for source in sources.and_then(Value::as_array).into_iter().flatten() {
+        let Some(id) = source
+            .get("id")
+            .and_then(Value::as_str)
+            .filter(|id| !id.is_empty())
+        else {
+            continue;
+        };
+        if source.get("kind").and_then(Value::as_str) == Some("native") {
+            return id.to_owned();
+        }
+        if first.is_empty() {
+            first = id.to_owned();
+        }
+    }
+    first
 }
 
 #[cfg(test)]

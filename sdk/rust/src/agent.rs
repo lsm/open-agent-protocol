@@ -192,6 +192,7 @@ impl AgentApi {
                     request,
                     &self.transport.agent_endpoint(),
                     self.transport.advertises("action.tools.provide"),
+                    &self.transport.agent_source(),
                 )?,
                 Some(("session_id", &session_id)),
                 self.response_timeout,
@@ -424,6 +425,7 @@ pub(crate) fn open_payload(
     request: &ExecutionRequest,
     endpoint: &str,
     provides_tools: bool,
+    source: &str,
 ) -> Result<serde_json::Value> {
     let mut payload = json!({ "session_id": session_id });
     let fields = payload
@@ -440,6 +442,9 @@ pub(crate) fn open_payload(
             let mut definition = crate::oap::tool_definition(tool)?;
             if let Some(entry) = definition.as_object_mut() {
                 entry.insert("execution_owner".to_owned(), json!(SDK_PARTICIPANT));
+                if !source.is_empty() {
+                    entry.insert("source".to_owned(), json!(source));
+                }
             }
             provided.push(definition);
         }
@@ -631,12 +636,13 @@ mod open_payload_tests {
     fn an_endpoint_that_would_ignore_tools_or_an_output_limit_refuses_them_client_side() {
         let with_tool = ExecutionRequest::prompt("fixture/openai-responses@mock", "hello")
             .with_tool(Tool::new("lookup", "look", "{}"));
-        assert!(open_payload("s", &with_tool, "oapx.agent-control", false).is_err());
+        assert!(open_payload("s", &with_tool, "oapx.agent-control", false, "").is_err());
         let limited =
             ExecutionRequest::prompt("fixture/openai-responses@mock", "hello").with_max_tokens(10);
-        assert!(open_payload("s", &limited, "oapx.agent-control", true).is_err());
+        assert!(open_payload("s", &limited, "oapx.agent-control", true, "").is_err());
         let plain = ExecutionRequest::prompt("fixture/openai-responses@mock", "hello");
-        let payload = open_payload("s", &plain, "oapx.agent-control", false).expect("plain open");
+        let payload =
+            open_payload("s", &plain, "oapx.agent-control", false, "").expect("plain open");
         assert!(payload.get("metadata").is_none());
     }
 }

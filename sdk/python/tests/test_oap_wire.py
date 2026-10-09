@@ -35,7 +35,8 @@ for line in sys.stdin:
         message = {"protocol":"open-agent-protocol", "version":"0.1", "profile":A,
                    "type":"capabilities.response", "id":"host-capabilities", "in_reply_to":rid,
                    "capability_revision":"fixture-rev-1", "payload":{"endpoint":{"id":"oapx.agent"},
-                   "features":{"action.tools.provide":{"level":"native"}}}}
+                   "features":{"action.tools.provide":{"level":"native"}},
+                   "sources":[{"id":"attached-files","kind":"process"},{"id":"oapx","kind":"native"}]}}
         print(json.dumps(message), flush=True)
     elif kind == "provider.models.list.request":
         emit(P, "provider.models.list.response", rid, payload={"models":[{
@@ -73,7 +74,7 @@ for line in sys.stdin:
         sid=request["payload"].get("session_id") or "session-1"
         tools=request["payload"].get("tools") or []
         if tools:
-            provided="%s owned by %s" % (tools[0]["name"], tools[0]["execution_owner"])
+            provided="%s owned by %s from %s" % (tools[0]["name"], tools[0]["execution_owner"], tools[0].get("source"))
         oapx=(request["payload"].get("metadata") or {}).get("oapx") or {}
         opened_settings="reasoning=%s output=%s user_input=%s participant=%s" % (request["payload"].get("reasoning_level"),
             oapx.get("output"), oapx.get("user_input"), participant)
@@ -220,14 +221,14 @@ class OAPWireTests(unittest.IsolatedAsyncioTestCase):
             tool_response = await client.agent.run(model_ref="fixture/other:test@tool",
                 messages=[{"role": "user", "content": "hi"}],
                 tools=[ToolDefinition(name="lookup", description="", parameters_schema_json="{}", execute=lookup)])
-            self.assertEqual(tool_response.text, "lookup owned by sdk said open agent protocol (error None) as sdk")
+            self.assertEqual(tool_response.text, "lookup owned by sdk from oapx said open agent protocol (error None) as sdk")
             self.assertEqual(invoked, [({"word": "oap"}, "call-1", "lookup")])
             def silent(args: Dict[str, Any], context: ToolContext) -> str:
                 raise RuntimeError()
             failed = await client.agent.run(model_ref="fixture/other:test@tool",
                 messages=[{"role": "user", "content": "hi"}],
                 tools=[ToolDefinition(name="lookup", description="", parameters_schema_json="{}", execute=silent)])
-            self.assertEqual(failed.text, "lookup owned by sdk said None (error RuntimeError) as sdk")
+            self.assertEqual(failed.text, "lookup owned by sdk from oapx said None (error RuntimeError) as sdk")
             tool_events = [event.type async for event in client.agent.stream(model_ref="fixture/other:test@tool",
                 messages=[{"role": "user", "content": "hi"}],
                 tools=[ToolDefinition(name="lookup", description="", parameters_schema_json="{}", execute=lookup)])]
