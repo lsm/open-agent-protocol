@@ -57,6 +57,13 @@
       "request_url": "https://api.z.ai/api/coding/paas/v4/chat/completions"
     },
     {
+      "id": "zai-coding-plan",
+      "wire": "anthropic-messages",
+      "base_url": "https://api.z.ai/api/anthropic/v1",
+      "models_url": "https://api.z.ai/api/anthropic/v1/models",
+      "request_url": "https://api.z.ai/api/anthropic/v1/messages"
+    },
+    {
       "id": "kimi",
       "wire": "openai-completions",
       "region": "china",
