@@ -162,16 +162,23 @@
       "offering": "coding_plan",
       "status": "current",
       "credential_env": [
-        "ZHIPU_API_KEY"
+        "ZHIPU_API_KEY",
+        "GLM_API_KEY"
       ],
       "wires": [
-        "openai-completions"
+        "openai-completions",
+        "anthropic-messages"
       ],
       "base_url_source": "static",
       "endpoints": [
         {
           "wire": "openai-completions",
           "base_url": "https://api.z.ai/api/coding/paas/v4",
+          "carries_version": true
+        },
+        {
+          "wire": "anthropic-messages",
+          "base_url": "https://api.z.ai/api/anthropic/v1",
           "carries_version": true
         }
       ],
