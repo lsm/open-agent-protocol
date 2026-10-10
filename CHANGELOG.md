@@ -21,6 +21,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Merged pull requests
 
+- **fix: refuse routing on a row with no Anthropic endpoint now that Z.AI has one** ([#1031](https://github.com/lsm/open-agent-protocol/pull/1031)): Main fails `Unit Tests - makai-cli`. #1026's refusal test used `zai-coding-plan` as the row with no `anthropic-messages` endpoint, #1029 gave it one, and the two merged ten seconds apart.
+- **providers: list Z.AI's Anthropic-compatible endpoint on the coding plan row** ([#1029](https://github.com/lsm/open-agent-protocol/pull/1029)): Part of #361.
+- **research: record structured_output on a live Claude Code result frame** ([#1028](https://github.com/lsm/open-agent-protocol/pull/1028)): Follow-up to #1023, which relayed `structured_output` from evidence in the Agent SDK's source.
+- **oapx: take a provider ref on the agent loop and report its input tokens** ([#1027](https://github.com/lsm/open-agent-protocol/pull/1027)): Two gaps found driving `oapx serve agent,provider` through the Go SDK with real models (OpenCode Go `deepseek-v4-flash`, Z.AI `glm-5.3`), as hyperneo-review's shadow reviewer will:
+- **oapx: route a claude adapter to a catalog provider through Claude Code's settings** ([#1026](https://github.com/lsm/open-agent-protocol/pull/1026)): Part of #361.
 - **sdk: answer the endpoint's permission requests through a Permit handler** ([#1024](https://github.com/lsm/open-agent-protocol/pull/1024)): `oapx`'s own agent loop runs its built-in `Shell`, `Read`, `Apply` and `Write` without asking unless the session opens in `ask` mode, and the Go SDK failed any run whose endpoint did ask (`unexpected OAP agent event`). hyperneo-review…
 - **claude: relay the harness's structured output on the terminal** ([#1023](https://github.com/lsm/open-agent-protocol/pull/1023)): Claude Code takes `--json-schema` at spawn and returns the result in the result frame's `structured_output`, which both Claude adapters dropped. hyperneo-review needs it to move its review engine from the native `claude -p` driver onto our…
 - **oapx: publish the cost, release date and family models.dev lists** ([#1022](https://github.com/lsm/open-agent-protocol/pull/1022)): Part of #357.
