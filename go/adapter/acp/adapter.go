@@ -76,6 +76,11 @@ type Adapter struct {
 	ids    base.IDGenerator
 }
 
+type (
+	MCPServer   = native.MCPServer
+	EnvVariable = native.EnvVariable
+)
+
 func New(config Config) (*Adapter, error) {
 	if config.Factory == nil && config.Executable == "" {
 		return nil, errors.New("acp adapter: factory or executable is required")
