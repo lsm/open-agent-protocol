@@ -17,6 +17,7 @@ const tui_app = @import("tui_app");
 const model_catalog = @import("model_catalog");
 const provider_base_url = @import("provider_base_url");
 const provider_catalog = @import("provider_catalog");
+const provider_credential = @import("provider_credential");
 const auth_providers = @import("auth/providers");
 
 const kimi_provider_id = "kimi";
@@ -5054,10 +5055,14 @@ fn claudeBackendConfig(
         try surface.refuse("no executable \"{s}\" on PATH for {s} \"{s}\"; name one with \"executable\" in a --config entry", .{ wanted, surface.noun, entry.name });
         return error.BackendRefused;
     };
+    const environment = if (entry.model_provider.len > 0)
+        try routedClaudeEnvironment(surface, arena, entry, environ, claudeRouteStorage)
+    else
+        entry.environment;
     return .{ .backend = .{
         .executable = executable,
         .args = entry.args,
-        .environment = entry.environment,
+        .environment = environment,
         .working_directory = entry.working_directory,
         .model = entry.model,
         .tools = switch (posture) {
@@ -5065,6 +5070,69 @@ fn claudeBackendConfig(
             .allowed => |tools| .{ .allowed = tools },
         },
     } };
+}
+
+const claude_routed_variables = [_][]const u8{ "ANTHROPIC_BASE_URL", "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN" };
+
+const ClaudeRouteStorage = *const fn (std.mem.Allocator) ?oauth_storage.AuthStorage;
+
+fn claudeRouteStorage(allocator: std.mem.Allocator) ?oauth_storage.AuthStorage {
+    if (@import("builtin").is_test) return null;
+    return oauth_storage.AuthStorage.loadDefaultStoredOnly(allocator) catch null;
+}
+
+fn routedClaudeEnvironment(
+    surface: ConfigSurface,
+    arena: std.mem.Allocator,
+    entry: adapter_config.AdapterEntry,
+    environ: *const std.process.Environ.Map,
+    load_storage: ClaudeRouteStorage,
+) ![]const []const u8 {
+    const id = entry.model_provider;
+    const row = provider_catalog.provider(id) orelse {
+        try surface.refuse("{s} \"{s}\" names model_provider \"{s}\", which is no catalog provider", .{ surface.noun, entry.name, id });
+        return error.BackendRefused;
+    };
+    const base = provider_catalog.baseUrl(id, "anthropic-messages", provider_catalog.defaultRegion(id)) orelse {
+        try surface.refuse("{s} \"{s}\" names model_provider \"{s}\", which serves no anthropic-messages endpoint, the only wire Claude Code's provider settings reach", .{ surface.noun, entry.name, id });
+        return error.BackendRefused;
+    };
+    for (entry.environment) |item| {
+        const name = item[0 .. std.mem.indexOfScalar(u8, item, '=') orelse item.len];
+        for (claude_routed_variables) |routed| {
+            if (!std.mem.eql(u8, name, routed)) continue;
+            try surface.refuse("{s} \"{s}\" sets {s} in \"environment\", which model_provider sets; drop one", .{ surface.noun, entry.name, name });
+            return error.BackendRefused;
+        }
+    }
+
+    var values = std.ArrayList(provider_credential.EnvironmentValue).empty;
+    for (row.credential_env) |name| {
+        const value = environ.get(name) orelse continue;
+        try values.append(arena, .{ .name = name, .value = value });
+    }
+    var storage: ?oauth_storage.AuthStorage = null;
+    defer if (storage) |*held| held.deinit();
+    const from_environment = try provider_credential.lookup(arena, values.items, null, id);
+    if (from_environment == null) storage = load_storage(arena);
+    const credential = from_environment orelse (try provider_credential.lookup(arena, values.items, if (storage) |*held| held else null, id)) orelse {
+        const variable = if (row.credential_env.len > 0) row.credential_env[0] else "its key";
+        try surface.refuse("{s} \"{s}\" names model_provider \"{s}\", which has no credential; set {s} or sign in with oapx", .{ surface.noun, entry.name, id, variable });
+        return error.BackendRefused;
+    };
+    if (credential.source == .oauth) {
+        try surface.refuse("{s} \"{s}\" names model_provider \"{s}\", whose credential is an OAuth login, which oapx does not hand to a harness; set an API key", .{ surface.noun, entry.name, id });
+        return error.BackendRefused;
+    }
+
+    const variable = if (std.mem.eql(u8, credential.name, "ANTHROPIC_AUTH_TOKEN")) "ANTHROPIC_AUTH_TOKEN" else "ANTHROPIC_API_KEY";
+    const trimmed = std.mem.trimEnd(u8, base, "/");
+    const endpoint = if (provider_catalog.endpointCarriesVersion(id, base) and std.mem.endsWith(u8, trimmed, "/v1")) trimmed[0 .. trimmed.len - "/v1".len] else trimmed;
+    const environment = try arena.alloc([]const u8, entry.environment.len + 2);
+    @memcpy(environment[0..entry.environment.len], entry.environment);
+    environment[entry.environment.len] = try std.fmt.allocPrint(arena, "ANTHROPIC_BASE_URL={s}", .{endpoint});
+    environment[entry.environment.len + 1] = try std.fmt.allocPrint(arena, "{s}={s}", .{ variable, credential.key });
+    return environment;
 }
 
 fn codexBackendConfig(
@@ -5620,6 +5688,100 @@ test "a codex endpoint relays through this executable to the named socket, only 
     const complained = try readAllFrom(std.testing.allocator, stderr_pipe[0]);
     defer std.testing.allocator.free(complained);
     try std.testing.expect(std.mem.indexOf(u8, complained, "unix://") != null);
+}
+
+fn storageHolding(allocator: std.mem.Allocator, id: []const u8, auth: oauth_storage.ProviderAuth) ?oauth_storage.AuthStorage {
+    var storage = oauth_storage.AuthStorage{ .providers = std.StringHashMap(oauth_storage.ProviderAuth).init(allocator), .allocator = allocator };
+    const key = allocator.dupe(u8, id) catch return null;
+    storage.providers.put(key, auth) catch return null;
+    return storage;
+}
+
+fn storedDeepseekKey(allocator: std.mem.Allocator) ?oauth_storage.AuthStorage {
+    const key = allocator.dupe(u8, "ds-stored") catch return null;
+    return storageHolding(allocator, "deepseek", .{ .api_key = key });
+}
+
+fn storedAnthropicLogin(allocator: std.mem.Allocator) ?oauth_storage.AuthStorage {
+    const access = allocator.dupe(u8, "sk-ant-oat-login") catch return null;
+    const refresh = allocator.dupe(u8, "refresh") catch return null;
+    return storageHolding(allocator, "anthropic", .{ .oauth = .{ .access = access, .refresh = refresh, .expires = std.math.maxInt(i64) } });
+}
+
+fn noStoredCredential(allocator: std.mem.Allocator) ?oauth_storage.AuthStorage {
+    _ = allocator;
+    return null;
+}
+
+fn routedClaudeTestSurface(arena: std.mem.Allocator, stderr: std.Io.File) ConfigSurface {
+    var surface = endpoint_config_surface;
+    surface.stderr = stderr;
+    surface.arena = arena;
+    return surface;
+}
+
+test "a claude entry naming a catalog provider hands the child that row's endpoint and key through Claude Code's own settings, after the variables the entry lists" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    const stderr_pipe = try compat.stdio.pipe();
+    defer compat.stdio.close(stderr_pipe[0]);
+    defer compat.stdio.close(stderr_pipe[1]);
+    const surface = routedClaudeTestSurface(arena, stderr_pipe[1]);
+
+    var environ = std.process.Environ.Map.init(arena);
+    try environ.put("MINIMAX_API_KEY", "mm-env");
+    try environ.put("ANTHROPIC_AUTH_TOKEN", "ambient-token");
+    try environ.put("AWS_SECRET_ACCESS_KEY", "secret");
+
+    const minimax = try claudeBackendConfig(surface, arena, .{ .name = "glm", .kind = "claude", .executable = "/bin/echo", .unrestricted_tools = true, .environment = &.{"HOME=/home/me"}, .model = "MiniMax-M2", .model_provider = "minimax-coding-plan" }, &environ);
+    try std.testing.expectEqual(@as(usize, 3), minimax.backend.environment.len);
+    try std.testing.expectEqualStrings("HOME=/home/me", minimax.backend.environment[0]);
+    try std.testing.expectEqualStrings("ANTHROPIC_BASE_URL=https://api.minimax.io/anthropic", minimax.backend.environment[1]);
+    try std.testing.expectEqualStrings("ANTHROPIC_API_KEY=mm-env", minimax.backend.environment[2]);
+    try std.testing.expectEqualStrings("MiniMax-M2", minimax.backend.model);
+
+    const stored = try routedClaudeEnvironment(surface, arena, .{ .name = "ds", .kind = "claude", .model_provider = "deepseek" }, &environ, storedDeepseekKey);
+    try std.testing.expectEqual(@as(usize, 2), stored.len);
+    try std.testing.expectEqualStrings("ANTHROPIC_BASE_URL=https://api.deepseek.com/anthropic", stored[0]);
+    try std.testing.expectEqualStrings("ANTHROPIC_API_KEY=ds-stored", stored[1]);
+
+    const bearer = try routedClaudeEnvironment(surface, arena, .{ .name = "direct", .kind = "claude", .model_provider = "anthropic" }, &environ, noStoredCredential);
+    try std.testing.expectEqualStrings("ANTHROPIC_BASE_URL=https://api.anthropic.com", bearer[0]);
+    try std.testing.expectEqualStrings("ANTHROPIC_AUTH_TOKEN=ambient-token", bearer[1]);
+
+    const unrouted = try claudeBackendConfig(surface, arena, .{ .name = "plain", .kind = "claude", .executable = "/bin/echo", .unrestricted_tools = true, .environment = &.{"HOME=/home/me"} }, &environ);
+    try std.testing.expectEqual(@as(usize, 1), unrouted.backend.environment.len);
+}
+
+test "a claude entry naming a provider it cannot route to is refused by name before the child starts" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    const stderr_pipe = try compat.stdio.pipe();
+    defer compat.stdio.close(stderr_pipe[0]);
+    const surface = routedClaudeTestSurface(arena, stderr_pipe[1]);
+    var environ = std.process.Environ.Map.init(arena);
+    try environ.put("ZHIPU_API_KEY", "zai-env");
+    try environ.put("DEEPSEEK_API_KEY", "ds-env");
+
+    try std.testing.expectError(error.BackendRefused, routedClaudeEnvironment(surface, arena, .{ .name = "a", .kind = "claude", .model_provider = "nonesuch" }, &environ, noStoredCredential));
+    try std.testing.expectError(error.BackendRefused, routedClaudeEnvironment(surface, arena, .{ .name = "b", .kind = "claude", .model_provider = "zai-coding-plan" }, &environ, noStoredCredential));
+    try std.testing.expectError(error.BackendRefused, routedClaudeEnvironment(surface, arena, .{ .name = "c", .kind = "claude", .environment = &.{"ANTHROPIC_BASE_URL=https://elsewhere.test"}, .model_provider = "deepseek" }, &environ, noStoredCredential));
+    try std.testing.expectError(error.BackendRefused, routedClaudeEnvironment(surface, arena, .{ .name = "d", .kind = "claude", .model_provider = "minimax-coding-plan" }, &environ, noStoredCredential));
+    try std.testing.expectError(error.BackendRefused, routedClaudeEnvironment(surface, arena, .{ .name = "e", .kind = "claude", .model_provider = "anthropic" }, &environ, storedAnthropicLogin));
+    compat.stdio.close(stderr_pipe[1]);
+
+    const complained = try readAllFrom(std.testing.allocator, stderr_pipe[0]);
+    defer std.testing.allocator.free(complained);
+    try std.testing.expectEqualStrings(
+        "oapx serve agent: backend \"a\" names model_provider \"nonesuch\", which is no catalog provider\n" ++
+            "oapx serve agent: backend \"b\" names model_provider \"zai-coding-plan\", which serves no anthropic-messages endpoint, the only wire Claude Code's provider settings reach\n" ++
+            "oapx serve agent: backend \"c\" sets ANTHROPIC_BASE_URL in \"environment\", which model_provider sets; drop one\n" ++
+            "oapx serve agent: backend \"d\" names model_provider \"minimax-coding-plan\", which has no credential; set MINIMAX_API_KEY or sign in with oapx\n" ++
+            "oapx serve agent: backend \"e\" names model_provider \"anthropic\", whose credential is an OAuth login, which oapx does not hand to a harness; set an API key\n",
+        complained,
+    );
 }
 
 test "the hub's registry builds every entry a document names, and a child inherits only the variables its entry lists" {

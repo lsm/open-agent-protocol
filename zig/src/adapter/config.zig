@@ -27,6 +27,7 @@ pub const AdapterEntry = struct {
     system_prompt: []const u8 = "",
     endpoint: []const u8 = "",
     agent: []const u8 = "",
+    model_provider: []const u8 = "",
 };
 
 pub const ToolSource = struct {
@@ -63,7 +64,7 @@ const adapter_members = [_][]const u8{
     "working_directory",  "model",           "journal_capacity", "allowed_tools",
     "unrestricted_tools", "approval_policy", "sandbox",          "provider",
     "max_tokens",         "agent_config",    "system_prompt",    "endpoint",
-    "agent",              "any_directory",
+    "agent",              "any_directory",   "model_provider",
 };
 const source_members = [_][]const u8{ "kind", "display_name", "protocol", "endpoint", "command", "args", "environment" };
 const source_kinds = [_][]const u8{ "native", "local", "process", "remote", "hosted" };
@@ -180,6 +181,11 @@ fn readAdapter(reader: Reader, name: []const u8, value: std.json.Value, environ:
     const where = try std.fmt.allocPrint(reader.arena, "adapter \"{s}\"", .{name});
     const object = try reader.members(value, where, &adapter_members) orelse return .{ .name = name, .kind = name };
     const declared = try reader.string(object, where, "type");
+    const kind = if (declared.len > 0) declared else name;
+    const model_provider = try reader.string(object, where, "model_provider");
+    if (model_provider.len > 0 and !std.mem.eql(u8, kind, "claude")) {
+        return reader.refuse("{s}: \"model_provider\" routes only a claude adapter; a {s} adapter has no provider setting oapx translates it into", .{ where, kind });
+    }
     const args = try reader.strings(object, where, "args") orelse &.{};
     const listed_environment = try reader.strings(object, where, "environment") orelse &.{};
     const environment = try resolveEnvironment(reader, where, listed_environment, environ, false);
@@ -190,7 +196,7 @@ fn readAdapter(reader: Reader, name: []const u8, value: std.json.Value, environ:
     }
     return .{
         .name = name,
-        .kind = if (declared.len > 0) declared else name,
+        .kind = kind,
         .executable = try reader.string(object, where, "executable"),
         .args = args,
         .environment = environment,
@@ -208,6 +214,7 @@ fn readAdapter(reader: Reader, name: []const u8, value: std.json.Value, environ:
         .system_prompt = try reader.string(object, where, "system_prompt"),
         .endpoint = try reader.string(object, where, "endpoint"),
         .agent = try reader.string(object, where, "agent"),
+        .model_provider = model_provider,
     };
 }
 
@@ -601,4 +608,17 @@ fn parseExample(allocator: std.mem.Allocator) !void {
 
 test "parsing frees what it built when any allocation fails" {
     try testing.checkAllAllocationFailures(testing.allocator, parseExample, .{});
+}
+
+test "model_provider is read on a claude adapter and refused by name on any other" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    var environ = std.process.Environ.Map.init(arena);
+    var diagnostic = Diagnostic{};
+    const file = try parse(arena, "{\"adapters\":{\"glm\":{\"type\":\"claude\",\"model_provider\":\"minimax-coding-plan\"}}}", &environ, &diagnostic);
+    try std.testing.expectEqualStrings("minimax-coding-plan", file.adapter("glm").?.model_provider);
+
+    try std.testing.expectError(error.ConfigInvalid, parse(arena, "{\"adapters\":{\"codex\":{\"model_provider\":\"deepseek\"}}}", &environ, &diagnostic));
+    try std.testing.expectEqualStrings("config: adapter \"codex\": \"model_provider\" routes only a claude adapter; a codex adapter has no provider setting oapx translates it into", diagnostic.message);
 }
