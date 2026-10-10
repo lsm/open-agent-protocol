@@ -111,12 +111,11 @@ type writeRequest struct {
 }
 
 type Client struct {
-	decoder       *Decoder
-	encoder       *Encoder
-	closer        io.Closer
-	closerOnce    sync.Once
-	queueCapacity int
-	queueStall    time.Duration
+	decoder    *Decoder
+	encoder    *Encoder
+	closer     io.Closer
+	closerOnce sync.Once
+	queueStall time.Duration
 
 	mu        sync.Mutex
 	pending   map[string]chan controlResult
@@ -160,7 +159,7 @@ func NewClient(reader io.Reader, writer io.Writer, options ClientOptions) *Clien
 	}
 	client := &Client{
 		decoder: NewDecoder(reader, options.FrameLimit), encoder: NewEncoder(writer, options.FrameLimit),
-		closer: options.CloseReadWriter, queueCapacity: capacity, queueStall: stall,
+		closer: options.CloseReadWriter, queueStall: stall,
 		pending: make(map[string]chan controlResult), incoming: make(map[string]*IncomingControl),
 		writes: make(chan writeRequest, writeCapacity), inbound: make(chan InboundMessage, capacity),
 		done: make(chan struct{}), readDone: make(chan struct{}),

@@ -574,14 +574,15 @@ func TestClientHoldsABurstForASlowConsumerInsteadOfFailing(t *testing.T) {
 
 func TestClientFailsClosedOnlyAfterTheConsumerStallsPastTheBound(t *testing.T) {
 	upstreamRead, upstreamWrite := io.Pipe()
-	client := NewClient(upstreamRead, io.Discard, ClientOptions{QueueCapacity: 1, QueueStall: 100 * time.Millisecond})
+	client := NewClient(upstreamRead, io.Discard, ClientOptions{QueueCapacity: 1, QueueStall: 500 * time.Millisecond})
 	go func() {
 		_, _ = upstreamWrite.Write([]byte(`{"type":"command_lifecycle","command_uuid":"u1","state":"queued","session_id":"s1","uuid":"c1"}` + "\n" + `{"type":"command_lifecycle","command_uuid":"u2","state":"queued","session_id":"s1","uuid":"c2"}` + "\n"))
 	}()
+	time.Sleep(50 * time.Millisecond)
 	select {
 	case <-client.Done():
 		t.Fatal("the client closed before the stall bound passed")
-	case <-time.After(50 * time.Millisecond):
+	default:
 	}
 	select {
 	case <-client.Done():
