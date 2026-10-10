@@ -66,6 +66,8 @@ pub const OapExecution = struct {
     pending_permission: ?PendingPermission = null,
     queued_runs: std.ArrayList(QueuedRun) = .empty,
     output_tokens: u64 = 0,
+    input_tokens: u64 = 0,
+    message_reported: bool = false,
     closed_messages: usize = 0,
     awaiting_promotion: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
     cancelling: bool = false,
@@ -1274,6 +1276,15 @@ pub const OapExecution = struct {
             if (self.cancel_pending.swap(false, .acq_rel)) try self.sendCancel();
             return;
         }
+        if (std.mem.eql(u8, kind, "content.completed")) {
+            if (!self.in_assistant) return;
+            const usage = body.get("usage") orelse return;
+            if (usage != .object) return;
+            self.output_tokens = tokenCount(usage.object, "output_tokens");
+            self.input_tokens = tokenCount(usage.object, "input_tokens");
+            self.message_reported = true;
+            return;
+        }
         if (std.mem.eql(u8, kind, "content.delta")) {
             const part = body.get("part") orelse return;
             if (part != .object) return;
@@ -1363,7 +1374,7 @@ pub const OapExecution = struct {
                 if (self.awaiting_promotion.load(.acquire) and !self.holdOrClose()) self.endTurn(.completed);
                 return;
             }
-            self.output_tokens = if (self.closed_messages == 0) usageTokens(body) else 0;
+            if (!self.message_reported) self.output_tokens = if (self.closed_messages == 0) usageTokens(body) else 0;
             if (contextTokens(root)) |tokens| self.deliver(.{ .context_usage = .{ .estimated_tokens = tokens } });
         }
         if (std.mem.eql(u8, kind, "run.completed")) {
@@ -1476,6 +1487,8 @@ pub const OapExecution = struct {
         self.awaiting_promotion.store(false, .release);
         self.turn_open.store(false, .release);
         self.output_tokens = 0;
+        self.input_tokens = 0;
+        self.message_reported = false;
         self.closed_messages = 0;
         self.forgetPermission();
         self.deliver(.{ .agent_end = .{ .reason = reason } });
@@ -1492,9 +1505,12 @@ pub const OapExecution = struct {
         if (!self.in_assistant) return;
         self.in_assistant = false;
         const output_tokens = self.output_tokens;
+        const input_tokens = self.input_tokens;
         self.output_tokens = 0;
+        self.input_tokens = 0;
+        self.message_reported = false;
         self.closed_messages += 1;
-        self.deliver(.{ .message_end = .{ .role = .assistant, .text = try self.ownedText(self.text.items), .stop_reason = stop_reason, .output_tokens = output_tokens } });
+        self.deliver(.{ .message_end = .{ .role = .assistant, .text = try self.ownedText(self.text.items), .stop_reason = stop_reason, .output_tokens = output_tokens, .input_tokens = input_tokens } });
         self.text.clearRetainingCapacity();
     }
 };
@@ -1573,7 +1589,11 @@ fn errorMessage(body: std.json.ObjectMap) []const u8 {
 fn usageTokens(body: std.json.ObjectMap) u64 {
     const usage = body.get("usage") orelse return 0;
     if (usage != .object) return 0;
-    const tokens = usage.object.get("output_tokens") orelse return 0;
+    return tokenCount(usage.object, "output_tokens");
+}
+
+fn tokenCount(usage: std.json.ObjectMap, key: []const u8) u64 {
+    const tokens = usage.get(key) orelse return 0;
     return if (tokens == .integer and tokens.integer > 0) @intCast(tokens.integer) else 0;
 }
 
@@ -1634,6 +1654,7 @@ const Script = struct {
     tool_first: bool = false,
     calls: usize = 0,
     output_tokens: u64 = 0,
+    preamble_tokens: u64 = 0,
     preamble: []const u8 = "",
     hold_first: bool = false,
     released: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
@@ -1712,8 +1733,12 @@ fn scriptedStream(ctx: ?*anyopaque, model: ai_types.Model, context: ai_types.Con
     if (script.tool_first and script.calls == 1) {
         try stream.push(.{ .start = .{ .partial = bareMessage(.tool_use) } });
         if (script.preamble.len > 0) try stream.push(.{ .text_delta = .{ .content_index = 0, .delta = script.preamble, .partial = bareMessage(.tool_use) } });
-        try stream.push(.{ .done = .{ .reason = .tool_use, .message = try toolCallMessage(allocator, script.preamble) } });
-        stream.complete(try toolCallMessage(allocator, script.preamble));
+        var called = try toolCallMessage(allocator, script.preamble);
+        called.usage.output = script.preamble_tokens;
+        try stream.push(.{ .done = .{ .reason = .tool_use, .message = called } });
+        var finished = try toolCallMessage(allocator, script.preamble);
+        finished.usage.output = script.preamble_tokens;
+        stream.complete(finished);
         return stream;
     }
     if (script.wait_for_cancel) {
@@ -1747,10 +1772,12 @@ const Seen = struct {
     warnings: usize = 0,
     output_limit_warned: bool = false,
     output_tokens: u64 = 0,
+    message_tokens: std.ArrayList(u64) = .empty,
     context_tokens: ?u64 = null,
     user_text: std.ArrayList(u8) = .empty,
 
     fn deinit(self: *Seen) void {
+        self.message_tokens.deinit(testing.allocator);
         self.text.deinit(testing.allocator);
         self.final_text.deinit(testing.allocator);
         self.user_text.deinit(testing.allocator);
@@ -1773,6 +1800,7 @@ fn drainTurn(runtime: *session_runtime.SessionRuntime, seen: *Seen) !void {
                 .context_usage => |payload| seen.context_tokens = payload.estimated_tokens,
                 .message_end => |payload| if (payload.role == .assistant) {
                     seen.output_tokens = payload.output_tokens;
+                    try seen.message_tokens.append(testing.allocator, payload.output_tokens);
                     seen.final_text.clearRetainingCapacity();
                     try seen.final_text.appendSlice(testing.allocator, payload.text.slice());
                 } else if (payload.role == .user) {
@@ -1876,8 +1904,8 @@ test "a turn over OAP reports its output tokens and the context it filled to the
     try testing.expect(seen.context_tokens.? > 0);
 }
 
-test "a run over OAP with an earlier assistant message leaves its output tokens to the estimate rather than counting them twice" {
-    var script = Script{ .output_tokens = 42, .tool_first = true, .preamble = "let me check" };
+test "a run over OAP with an earlier assistant message counts each message's output tokens from its own completion, not the run's total" {
+    var script = Script{ .output_tokens = 42, .preamble_tokens = 5, .tool_first = true, .preamble = "let me check" };
     const models = [_]ai_types.Model{scripted_model};
     const execution = try OapExecution.create(testing.allocator, .{
         .protocol = .{ .stream_fn = scriptedStream, .ctx = &script },
@@ -1899,7 +1927,7 @@ test "a run over OAP with an earlier assistant message leaves its output tokens 
     try drainTurn(&runtime, &seen);
     try testing.expectEqual(@as(?session_events.SessionEndReason, .completed), seen.end);
     try testing.expectEqualStrings("over the wire", seen.final_text.items);
-    try testing.expectEqual(@as(u64, 0), seen.output_tokens);
+    try testing.expectEqualSlices(u64, &.{ 5, 42 }, seen.message_tokens.items);
 }
 
 test "a reply over OAP that stops at its output token limit warns the user as the local runtime does" {
@@ -2696,6 +2724,53 @@ test "another endpoint's result shaped like text and details is shown as it came
     }
     try testing.expect(raw);
     try testing.expect(!shown);
+}
+
+fn assistantTokensFrom(runtime: *session_runtime.SessionRuntime, tokens: *std.ArrayList(u64)) !void {
+    while (runtime.streamEvents().poll()) |event| {
+        var owned = event;
+        defer owned.deinit(testing.allocator);
+        switch (owned) {
+            .message_end => |payload| if (payload.role == .assistant) try tokens.append(testing.allocator, payload.output_tokens),
+            else => {},
+        }
+    }
+}
+
+test "an endpoint that sends no content.completed leaves a run of several messages to the estimate rather than crediting its usage to the last" {
+    var script = Script{};
+    var execution: *OapExecution = undefined;
+    var runtime = try remoteRuntime(&script, &execution, .low);
+    defer execution.destroy();
+    defer runtime.deinit();
+    try runtime.start();
+    var tokens = std.ArrayList(u64).empty;
+    defer tokens.deinit(testing.allocator);
+
+    execution.turn_open.store(true, .release);
+    try execution.translateLine("{\"type\":\"content.delta\",\"session_id\":\"s\",\"run_id\":\"r\",\"payload\":{\"session_id\":\"s\",\"run_id\":\"r\",\"part\":{\"type\":\"text\",\"text\":\"let me check\"}}}");
+    try execution.translateLine("{\"type\":\"action.call.requested\",\"session_id\":\"s\",\"run_id\":\"r\",\"payload\":{\"session_id\":\"s\",\"run_id\":\"r\",\"tool_call_id\":\"c\",\"name\":\"native\",\"arguments_json\":{}}}");
+    try execution.translateLine("{\"type\":\"content.delta\",\"session_id\":\"s\",\"run_id\":\"r\",\"payload\":{\"session_id\":\"s\",\"run_id\":\"r\",\"part\":{\"type\":\"text\",\"text\":\"done\"}}}");
+    try execution.translateLine("{\"type\":\"run.completed\",\"session_id\":\"s\",\"run_id\":\"r\",\"payload\":{\"session_id\":\"s\",\"run_id\":\"r\",\"final_response\":{\"role\":\"assistant\",\"content\":\"done\"},\"stop_reason\":\"end_turn\",\"usage\":{\"output_tokens\":42}}}");
+    try assistantTokensFrom(&runtime, &tokens);
+    try testing.expectEqualSlices(u64, &.{ 0, 0 }, tokens.items);
+}
+
+test "an endpoint that sends no content.completed has its run's usage credited to a run of one message" {
+    var script = Script{};
+    var execution: *OapExecution = undefined;
+    var runtime = try remoteRuntime(&script, &execution, .low);
+    defer execution.destroy();
+    defer runtime.deinit();
+    try runtime.start();
+    var tokens = std.ArrayList(u64).empty;
+    defer tokens.deinit(testing.allocator);
+
+    execution.turn_open.store(true, .release);
+    try execution.translateLine("{\"type\":\"content.delta\",\"session_id\":\"s\",\"run_id\":\"r2\",\"payload\":{\"session_id\":\"s\",\"run_id\":\"r2\",\"part\":{\"type\":\"text\",\"text\":\"hi\"}}}");
+    try execution.translateLine("{\"type\":\"run.completed\",\"session_id\":\"s\",\"run_id\":\"r2\",\"payload\":{\"session_id\":\"s\",\"run_id\":\"r2\",\"final_response\":{\"role\":\"assistant\",\"content\":\"hi\"},\"stop_reason\":\"end_turn\",\"usage\":{\"output_tokens\":42}}}");
+    try assistantTokensFrom(&runtime, &tokens);
+    try testing.expectEqualSlices(u64, &.{42}, tokens.items);
 }
 
 fn failedCallEvents(allocator: std.mem.Allocator) !void {
