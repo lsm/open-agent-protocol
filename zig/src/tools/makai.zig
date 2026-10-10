@@ -5056,7 +5056,7 @@ fn claudeBackendConfig(
         return error.BackendRefused;
     };
     const environment = if (entry.model_provider.len > 0)
-        try routedClaudeEnvironment(surface, arena, entry, environ, claudeRouteStorage)
+        try routedClaudeEnvironment(surface, arena, entry, environ, routeStorage)
     else
         entry.environment;
     return .{ .backend = .{
@@ -5074,38 +5074,40 @@ fn claudeBackendConfig(
 
 const claude_routed_variables = [_][]const u8{ "ANTHROPIC_BASE_URL", "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN" };
 
-const ClaudeRouteStorage = *const fn (std.mem.Allocator) ?oauth_storage.AuthStorage;
+const RouteStorage = *const fn (std.mem.Allocator) ?oauth_storage.AuthStorage;
 
-fn claudeRouteStorage(allocator: std.mem.Allocator) ?oauth_storage.AuthStorage {
+fn routeStorage(allocator: std.mem.Allocator) ?oauth_storage.AuthStorage {
     if (@import("builtin").is_test) return null;
     return oauth_storage.AuthStorage.loadDefaultStoredOnly(allocator) catch null;
 }
 
-fn routedClaudeEnvironment(
-    surface: ConfigSurface,
-    arena: std.mem.Allocator,
-    entry: adapter_config.AdapterEntry,
-    environ: *const std.process.Environ.Map,
-    load_storage: ClaudeRouteStorage,
-) ![]const []const u8 {
-    const id = entry.model_provider;
-    const row = provider_catalog.provider(id) orelse {
-        try surface.refuse("{s} \"{s}\" names model_provider \"{s}\", which is no catalog provider", .{ surface.noun, entry.name, id });
+fn routedRow(surface: ConfigSurface, entry: adapter_config.AdapterEntry) !provider_catalog.Provider {
+    return provider_catalog.provider(entry.model_provider) orelse {
+        try surface.refuse("{s} \"{s}\" names model_provider \"{s}\", which is no catalog provider", .{ surface.noun, entry.name, entry.model_provider });
         return error.BackendRefused;
     };
-    const base = provider_catalog.baseUrl(id, "anthropic-messages", provider_catalog.defaultRegion(id)) orelse {
-        try surface.refuse("{s} \"{s}\" names model_provider \"{s}\", which serves no anthropic-messages endpoint, the only wire Claude Code's provider settings reach", .{ surface.noun, entry.name, id });
-        return error.BackendRefused;
-    };
+}
+
+fn refuseRoutedVariables(surface: ConfigSurface, entry: adapter_config.AdapterEntry, routed_names: []const []const u8) !void {
     for (entry.environment) |item| {
         const name = item[0 .. std.mem.indexOfScalar(u8, item, '=') orelse item.len];
-        for (claude_routed_variables) |routed| {
+        for (routed_names) |routed| {
             if (!std.mem.eql(u8, name, routed)) continue;
             try surface.refuse("{s} \"{s}\" sets {s} in \"environment\", which model_provider sets; drop one", .{ surface.noun, entry.name, name });
             return error.BackendRefused;
         }
     }
+}
 
+fn routedCredential(
+    surface: ConfigSurface,
+    arena: std.mem.Allocator,
+    entry: adapter_config.AdapterEntry,
+    row: provider_catalog.Provider,
+    environ: *const std.process.Environ.Map,
+    load_storage: RouteStorage,
+) !provider_credential.Credential {
+    const id = entry.model_provider;
     var values = std.ArrayList(provider_credential.EnvironmentValue).empty;
     for (row.credential_env) |name| {
         const value = environ.get(name) orelse continue;
@@ -5124,6 +5126,24 @@ fn routedClaudeEnvironment(
         try surface.refuse("{s} \"{s}\" names model_provider \"{s}\", whose credential is an OAuth login, which oapx does not hand to a harness; set an API key", .{ surface.noun, entry.name, id });
         return error.BackendRefused;
     }
+    return credential;
+}
+
+fn routedClaudeEnvironment(
+    surface: ConfigSurface,
+    arena: std.mem.Allocator,
+    entry: adapter_config.AdapterEntry,
+    environ: *const std.process.Environ.Map,
+    load_storage: RouteStorage,
+) ![]const []const u8 {
+    const id = entry.model_provider;
+    const row = try routedRow(surface, entry);
+    const base = provider_catalog.baseUrl(id, "anthropic-messages", provider_catalog.defaultRegion(id)) orelse {
+        try surface.refuse("{s} \"{s}\" names model_provider \"{s}\", which serves no anthropic-messages endpoint, the only wire Claude Code's provider settings reach", .{ surface.noun, entry.name, id });
+        return error.BackendRefused;
+    };
+    try refuseRoutedVariables(surface, entry, &claude_routed_variables);
+    const credential = try routedCredential(surface, arena, entry, row, environ, load_storage);
 
     const variable = if (std.mem.eql(u8, credential.name, "ANTHROPIC_AUTH_TOKEN")) "ANTHROPIC_AUTH_TOKEN" else "ANTHROPIC_API_KEY";
     const trimmed = std.mem.trimEnd(u8, base, "/");
@@ -5133,6 +5153,61 @@ fn routedClaudeEnvironment(
     environment[entry.environment.len] = try std.fmt.allocPrint(arena, "ANTHROPIC_BASE_URL={s}", .{endpoint});
     environment[entry.environment.len + 1] = try std.fmt.allocPrint(arena, "{s}={s}", .{ variable, credential.key });
     return environment;
+}
+
+const codex_route_key_variable = "OAPX_PROVIDER_API_KEY";
+
+const CodexRoute = struct {
+    args: []const []const u8,
+    environment: []const []const u8,
+};
+
+fn tomlString(arena: std.mem.Allocator, value: []const u8) ![]const u8 {
+    var out = std.ArrayList(u8).empty;
+    try out.append(arena, '"');
+    for (value) |c| {
+        if (c == '"' or c == '\\') try out.append(arena, '\\');
+        try out.append(arena, c);
+    }
+    try out.append(arena, '"');
+    return out.items;
+}
+
+fn routedCodex(
+    surface: ConfigSurface,
+    arena: std.mem.Allocator,
+    entry: adapter_config.AdapterEntry,
+    environ: *const std.process.Environ.Map,
+    load_storage: RouteStorage,
+) !CodexRoute {
+    const id = entry.model_provider;
+    const row = try routedRow(surface, entry);
+    const request = provider_catalog.requestUrl(id, "openai-responses", provider_catalog.defaultRegion(id)) orelse {
+        try surface.refuse("{s} \"{s}\" names model_provider \"{s}\", which serves no openai-responses endpoint at a fixed address, the only wire Codex's provider settings reach", .{ surface.noun, entry.name, id });
+        return error.BackendRefused;
+    };
+    try refuseRoutedVariables(surface, entry, &.{codex_route_key_variable});
+    const credential = try routedCredential(surface, arena, entry, row, environ, load_storage);
+
+    const base = if (std.mem.endsWith(u8, request, "/responses")) request[0 .. request.len - "/responses".len] else request;
+    const provider = try std.fmt.allocPrint(arena, "oapx-{s}", .{id});
+    const settings = [_][2][]const u8{
+        .{ "model_provider", provider },
+        .{ try std.fmt.allocPrint(arena, "model_providers.{s}.name", .{provider}), row.display_name orelse id },
+        .{ try std.fmt.allocPrint(arena, "model_providers.{s}.base_url", .{provider}), base },
+        .{ try std.fmt.allocPrint(arena, "model_providers.{s}.env_key", .{provider}), codex_route_key_variable },
+        .{ try std.fmt.allocPrint(arena, "model_providers.{s}.wire_api", .{provider}), "responses" },
+    };
+    const args = try arena.alloc([]const u8, entry.args.len + settings.len * 2);
+    @memcpy(args[0..entry.args.len], entry.args);
+    for (settings, 0..) |setting, index| {
+        args[entry.args.len + index * 2] = "-c";
+        args[entry.args.len + index * 2 + 1] = try std.fmt.allocPrint(arena, "{s}={s}", .{ setting[0], try tomlString(arena, setting[1]) });
+    }
+    const environment = try arena.alloc([]const u8, entry.environment.len + 1);
+    @memcpy(environment[0..entry.environment.len], entry.environment);
+    environment[entry.environment.len] = try std.fmt.allocPrint(arena, "{s}={s}", .{ codex_route_key_variable, credential.key });
+    return .{ .args = args, .environment = environment };
 }
 
 fn codexBackendConfig(
@@ -5149,6 +5224,10 @@ fn codexBackendConfig(
         }
         if (entry.executable.len > 0 or entry.args.len > 0) {
             try surface.refuse("{s} \"{s}\" names an endpoint and an executable or args; a codex endpoint relays to a running app-server, so set one or the other", .{ surface.noun, entry.name });
+            return error.BackendRefused;
+        }
+        if (entry.model_provider.len > 0) {
+            try surface.refuse("{s} \"{s}\" names an endpoint and a model_provider; a running app-server chose its provider when it started, so route the executable oapx spawns instead", .{ surface.noun, entry.name });
             return error.BackendRefused;
         }
         const self_path = std.process.executablePathAlloc(backendIo(), arena) catch {
@@ -5170,10 +5249,14 @@ fn codexBackendConfig(
         try surface.refuse("no executable \"{s}\" on PATH for {s} \"{s}\"; name one with \"executable\" in a --config entry", .{ wanted, surface.noun, entry.name });
         return error.BackendRefused;
     };
+    const route: CodexRoute = if (entry.model_provider.len > 0)
+        try routedCodex(surface, arena, entry, environ, routeStorage)
+    else
+        .{ .args = entry.args, .environment = entry.environment };
     return .{
         .executable = executable,
-        .args = entry.args,
-        .environment = entry.environment,
+        .args = route.args,
+        .environment = route.environment,
         .working_directory = entry.working_directory,
         .model = entry.model,
         .approval_policy = entry.approval_policy,
@@ -5785,6 +5868,75 @@ test "a claude entry naming a provider it cannot route to is refused by name bef
             "oapx serve agent: backend \"c\" sets ANTHROPIC_BASE_URL in \"environment\", which model_provider sets; drop one\n" ++
             "oapx serve agent: backend \"d\" names model_provider \"minimax-coding-plan\", which has no credential; set MINIMAX_API_KEY or sign in with oapx\n" ++
             "oapx serve agent: backend \"e\" names model_provider \"anthropic\", whose credential is an OAuth login, which oapx does not hand to a harness; set an API key\n",
+        complained,
+    );
+}
+
+test "a codex entry naming a catalog provider points the child at that row's Responses endpoint through Codex's own -c settings, with the key only in the variable they name" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    const stderr_pipe = try compat.stdio.pipe();
+    defer compat.stdio.close(stderr_pipe[0]);
+    defer compat.stdio.close(stderr_pipe[1]);
+    const surface = routedClaudeTestSurface(arena, stderr_pipe[1]);
+    var environ = std.process.Environ.Map.init(arena);
+    try environ.put("OPENAI_API_KEY", "sk-env");
+
+    const config = try codexBackendConfig(surface, arena, .{ .name = "gpt", .kind = "codex", .executable = "/bin/echo", .args = &.{"--enable-feature"}, .environment = &.{"HOME=/home/me"}, .model = "gpt-6.1-sol", .model_provider = "openai" }, &environ);
+    const want_args = [_][]const u8{
+        "--enable-feature",
+        "-c",
+        "model_provider=\"oapx-openai\"",
+        "-c",
+        "model_providers.oapx-openai.name=\"OpenAI\"",
+        "-c",
+        "model_providers.oapx-openai.base_url=\"https://api.openai.com/v1\"",
+        "-c",
+        "model_providers.oapx-openai.env_key=\"OAPX_PROVIDER_API_KEY\"",
+        "-c",
+        "model_providers.oapx-openai.wire_api=\"responses\"",
+    };
+    try std.testing.expectEqual(want_args.len, config.args.len);
+    for (want_args, config.args) |want, got| try std.testing.expectEqualStrings(want, got);
+    try std.testing.expectEqual(@as(usize, 2), config.environment.len);
+    try std.testing.expectEqualStrings("HOME=/home/me", config.environment[0]);
+    try std.testing.expectEqualStrings("OAPX_PROVIDER_API_KEY=sk-env", config.environment[1]);
+    try std.testing.expectEqualStrings("gpt-6.1-sol", config.model);
+
+    const unrouted = try codexBackendConfig(surface, arena, .{ .name = "plain", .kind = "codex", .executable = "/bin/echo", .environment = &.{"HOME=/home/me"} }, &environ);
+    try std.testing.expectEqual(@as(usize, 0), unrouted.args.len);
+    try std.testing.expectEqual(@as(usize, 1), unrouted.environment.len);
+}
+
+test "a codex entry naming a provider it cannot route to is refused by name before the child starts" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    const stderr_pipe = try compat.stdio.pipe();
+    defer compat.stdio.close(stderr_pipe[0]);
+    var surface = hub_config_surface;
+    surface.stderr = stderr_pipe[1];
+    surface.arena = arena;
+    var environ = std.process.Environ.Map.init(arena);
+    try environ.put("DEEPSEEK_API_KEY", "ds-env");
+    try environ.put("AZURE_OPENAI_API_KEY", "az-env");
+
+    try std.testing.expectError(error.BackendRefused, routedCodex(surface, arena, .{ .name = "a", .kind = "codex", .model_provider = "deepseek" }, &environ, noStoredCredential));
+    try std.testing.expectError(error.BackendRefused, routedCodex(surface, arena, .{ .name = "b", .kind = "codex", .model_provider = "azure" }, &environ, noStoredCredential));
+    try std.testing.expectError(error.BackendRefused, routedCodex(surface, arena, .{ .name = "c", .kind = "codex", .environment = &.{"OAPX_PROVIDER_API_KEY=other"}, .model_provider = "openai" }, &environ, noStoredCredential));
+    try std.testing.expectError(error.BackendRefused, routedCodex(surface, arena, .{ .name = "d", .kind = "codex", .model_provider = "openai" }, &environ, noStoredCredential));
+    try std.testing.expectError(error.BackendRefused, codexBackendConfig(surface, arena, .{ .name = "e", .kind = "codex", .endpoint = "unix:///tmp/codex.sock", .model_provider = "openai" }, &environ));
+    compat.stdio.close(stderr_pipe[1]);
+
+    const complained = try readAllFrom(std.testing.allocator, stderr_pipe[0]);
+    defer std.testing.allocator.free(complained);
+    try std.testing.expectEqualStrings(
+        "oapx serve: adapter \"a\" names model_provider \"deepseek\", which serves no openai-responses endpoint at a fixed address, the only wire Codex's provider settings reach\n" ++
+            "oapx serve: adapter \"b\" names model_provider \"azure\", which serves no openai-responses endpoint at a fixed address, the only wire Codex's provider settings reach\n" ++
+            "oapx serve: adapter \"c\" sets OAPX_PROVIDER_API_KEY in \"environment\", which model_provider sets; drop one\n" ++
+            "oapx serve: adapter \"d\" names model_provider \"openai\", which has no credential; set OPENAI_API_KEY or sign in with oapx\n" ++
+            "oapx serve: adapter \"e\" names an endpoint and a model_provider; a running app-server chose its provider when it started, so route the executable oapx spawns instead\n",
         complained,
     );
 }
