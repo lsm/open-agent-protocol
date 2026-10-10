@@ -21,7 +21,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Merged pull requests
 
+- **oapx: close each assistant message with its own usage, and measure it in the TUI** ([#1032](https://github.com/lsm/open-agent-protocol/pull/1032)): This is the producer and consumer for Decision 0049 (#1030).
 - **fix: refuse routing on a row with no Anthropic endpoint now that Z.AI has one** ([#1031](https://github.com/lsm/open-agent-protocol/pull/1031)): Main fails `Unit Tests - makai-cli`. #1026's refusal test used `zai-coding-plan` as the row with no `anthropic-messages` endpoint, #1029 gave it one, and the two merged ten seconds apart.
+- **protocol: let a message report its own usage with content.completed** ([#1030](https://github.com/lsm/open-agent-protocol/pull/1030)): Agent-control reports usage only once per run, so anything that wants a per-message figure (the TUI's tok/s) has to estimate it whenever a run makes more than one model call.
 - **providers: list Z.AI's Anthropic-compatible endpoint on the coding plan row** ([#1029](https://github.com/lsm/open-agent-protocol/pull/1029)): Part of #361.
 - **research: record structured_output on a live Claude Code result frame** ([#1028](https://github.com/lsm/open-agent-protocol/pull/1028)): Follow-up to #1023, which relayed `structured_output` from evidence in the Agent SDK's source.
 - **oapx: take a provider ref on the agent loop and report its input tokens** ([#1027](https://github.com/lsm/open-agent-protocol/pull/1027)): Two gaps found driving `oapx serve agent,provider` through the Go SDK with real models (OpenCode Go `deepseek-v4-flash`, Z.AI `glm-5.3`), as hyperneo-review's shadow reviewer will:
