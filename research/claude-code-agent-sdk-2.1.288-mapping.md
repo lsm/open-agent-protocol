@@ -299,3 +299,27 @@ through `--settings`, and asked the session to `Write` a file.
 The hook's unit tests pin only the translation from an endpoint's answer to
 this output, so a format change upstream shows up as the host's own prompt
 appearing, not as a failure.
+
+## Structured output and budget (`--json-schema`, `--max-budget-usd`)
+
+Both are spawn flags, not per-turn controls: the TypeScript Agent SDK's
+stream-json transport pushes `--max-budget-usd` and `--json-schema` onto the
+CLI's argv when its `maxBudgetUsd` and `outputFormat` options are set, and its
+success result declares `structured_output?: unknown` beside
+`total_cost_usd` (`sdk.mjs` and `sdk.d.ts` in
+`@anthropic-ai/claude-agent-sdk@0.3.268`, read locally; the pinned 0.3.288 was
+not re-read). A schema therefore binds the whole session, which is why the
+adapter does not advertise `run.structured_output`: that control is per run.
+
+- **Budget:** a host passes `--max-budget-usd` through the adapter's `Args`.
+  Exhausting it ends the run with subtype `error_max_budget_usd`, already
+  settled `run.failed` (`claude_error_max_budget_usd`).
+- **Structured output:** a host passes `--json-schema` through `Args`, and the
+  adapter relays the result frame's `structured_output` on the terminal as
+  `extensions["com.anthropic.claude-code.structured_output"]`, verbatim, beside
+  the cost extension. A null or absent `structured_output` carries nothing.
+  The CLI's own schema failure ends the run with
+  `error_max_structured_output_retries`, settled `run.failed`.
+
+Not verified against a live 2.1.288 run: the field and flags are read from the
+SDK, and the adapter's tests feed the frame shape the SDK declares.
