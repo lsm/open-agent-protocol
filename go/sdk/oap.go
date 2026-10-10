@@ -328,6 +328,8 @@ type oapAgentState struct {
 	response  *CompletionResponse
 	settled   bool
 	tools     []Tool
+	permit    PermissionHandler
+	callNames map[string]string
 }
 
 func (s *AgentService) OpenSession(ctx context.Context, sessionID string) (string, error) {
@@ -510,7 +512,7 @@ func (s *AgentService) oapBegin(ctx context.Context, req AgentRequest) (*oapAgen
 		selectedModelRef = envelopePayload(admission).str("model_id")
 	}
 	return &oapAgentState{ctx: ctx, transport: s.transport, sub: sub, timeout: s.timeout,
-		sessionID: sessionID, runID: runID, modelRef: selectedModelRef, tools: req.Tools}, nil
+		sessionID: sessionID, runID: runID, modelRef: selectedModelRef, tools: req.Tools, permit: req.Permit, callNames: map[string]string{}}, nil
 }
 
 const oapxAgentEndpoint = "oapx.agent"
@@ -555,6 +557,9 @@ func oapOpenPayload(t *transport, sessionID string, req AgentRequest) (map[strin
 		payload["tools"] = provided
 	}
 	settings := map[string]any{"user_input": false}
+	if req.Permit != nil {
+		settings["permission_mode"] = "ask"
+	}
 	if t.agentEndpoint == oapxAgentEndpoint {
 		payload["metadata"] = map[string]any{"oapx": settings}
 	}
@@ -577,6 +582,60 @@ func oapOpenPayload(t *transport, sessionID string, req AgentRequest) (map[strin
 		settings["output"] = *req.Options.MaxTokens
 	}
 	return payload, nil
+}
+
+var (
+	grantChoiceIDs = []string{"approve", "accept", "once", "allow_once", "allow"}
+	denyChoiceIDs  = []string{"deny", "decline", "reject", "reject_once"}
+)
+
+func (state *oapAgentState) resolvePermission(p jsonObject) error {
+	request := PermissionRequest{ToolCallID: p.str("tool_call_id"), Title: p.str("title"), Description: p.str("description")}
+	request.ToolName = state.callNames[request.ToolCallID]
+	if arguments, present := p["arguments_json"]; present && arguments != nil {
+		if text, isText := arguments.(string); isText {
+			request.ArgumentsJSON = text
+		} else {
+			request.ArgumentsJSON = string(mustMarshal(arguments))
+		}
+	}
+	granted := state.permit != nil && state.permit(state.ctx, request)
+	vocabulary := denyChoiceIDs
+	if granted {
+		vocabulary = grantChoiceIDs
+	}
+	offered := map[string]bool{}
+	choices, _ := p["choices"].([]any)
+	for _, raw := range choices {
+		if choice, isObject := raw.(map[string]any); isObject {
+			if id, isText := choice["id"].(string); isText {
+				offered[id] = true
+			}
+		}
+	}
+	wanted := ""
+	for _, id := range vocabulary {
+		if offered[id] {
+			wanted = id
+			break
+		}
+	}
+	if wanted == "" {
+		return &ProtocolError{Code: CodeMalformedResponse, Message: fmt.Sprintf("the endpoint's permission request offers none of %v", vocabulary)}
+	}
+	answer := map[string]any{
+		"interaction_id": p.str("interaction_id"),
+		"session_id":     state.sessionID,
+		"run_id":         state.runID,
+		"requested_by":   p.str("requested_by"),
+		"responded_by":   sdkParticipant,
+		"choice_id":      wanted,
+		"granted":        granted,
+	}
+	resolve := oapFrame(oapAgent, "action.permission.resolve.request", answer)
+	resolve.SessionID = protocol.SessionID(state.sessionID)
+	resolve.RunID = protocol.RunID(state.runID)
+	return state.transport.sendEnvelope(resolve)
 }
 
 func (state *oapAgentState) resolveCall(p jsonObject) error {

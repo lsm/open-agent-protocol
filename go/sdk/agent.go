@@ -104,6 +104,7 @@ func (s *AgentStream) Next() bool {
 			return false
 		case "action.call.requested":
 			if p.str("execution_owner") != sdkParticipant {
+				state.callNames[p.str("tool_call_id")] = p.str("name")
 				continue
 			}
 			if err := state.resolveCall(p); err != nil {
@@ -117,6 +118,23 @@ func (s *AgentStream) Next() bool {
 		case "action.call.completed", "action.call.failed", "action.call.cancelled":
 			s.current = &ToolExecutionEnd{ToolCallID: p.str("tool_call_id"), IsError: in.kind() != "action.call.completed"}
 			return true
+		case "action.permission.requested":
+			if p.str("responded_by") != sdkParticipant {
+				continue
+			}
+			if err := state.resolvePermission(p); err != nil {
+				s.fail(err)
+				return false
+			}
+			continue
+		case "action.permission.resolve.response":
+			if accepted, _ := p["accepted"].(bool); !accepted {
+				s.fail(&ProtocolError{Code: CodeMalformedResponse, Message: "the endpoint refused a permission answer"})
+				return false
+			}
+			continue
+		case "action.permission.resolved":
+			continue
 		case "action.call.resolve.response":
 			if accepted, _ := p["accepted"].(bool); !accepted && p.str("reason") != "already_resolved" {
 				state.settled = true
