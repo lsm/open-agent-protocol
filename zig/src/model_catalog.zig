@@ -1068,6 +1068,10 @@ fn catalogModel(allocator: std.mem.Allocator, target: CatalogEndpoint, model: Di
         input[1] = try allocator.dupe(u8, "image");
         filled = 2;
     }
+    const release_date = if (model.release_date) |value| try allocator.dupe(u8, value) else null;
+    errdefer if (release_date) |value| allocator.free(value);
+    const family = if (model.family) |value| try allocator.dupe(u8, value) else null;
+    errdefer if (family) |value| allocator.free(value);
     const headers = try dupeHeaders(allocator, target.headers);
 
     return .{
@@ -1083,6 +1087,9 @@ fn catalogModel(allocator: std.mem.Allocator, target: CatalogEndpoint, model: Di
         .max_tokens = maxTokensFor(target.id, model),
         .headers = headers,
         .carries_version = target.carries_version,
+        .published_cost = model.published_cost,
+        .release_date = release_date,
+        .family = family,
         .is_owned = true,
     };
 }
@@ -1547,6 +1554,9 @@ const DiscoveredModel = struct {
     max_tokens: ?u32 = null,
     reasoning: ?bool = null,
     image_input: ?bool = null,
+    published_cost: ?ai_types.PublishedCost = null,
+    release_date: ?[]const u8 = null,
+    family: ?[]const u8 = null,
 
     fn deinit(self: DiscoveredModel, allocator: std.mem.Allocator) void {
         allocator.free(self.id);
@@ -1610,6 +1620,39 @@ fn fillFromModelsDev(id: []const u8, model: *DiscoveredModel, listed: *const std
             if (modalities.* == .object and listNamesImage(&modalities.object, "input")) model.image_input = true;
         }
     }
+    if (model.published_cost == null) model.published_cost = modelsDevCost(&entry.object);
+    if (model.release_date == null) model.release_date = nonEmptyString(&entry.object, "release_date");
+    if (model.family == null) model.family = nonEmptyString(&entry.object, "family");
+}
+
+fn modelsDevCost(entry: *const std.json.ObjectMap) ?ai_types.PublishedCost {
+    const cost = entry.getPtr("cost") orelse return null;
+    if (cost.* != .object) return null;
+    const published = ai_types.PublishedCost{
+        .input = objectRate(&cost.object, "input"),
+        .output = objectRate(&cost.object, "output"),
+        .cache_read = objectRate(&cost.object, "cache_read"),
+        .cache_write = objectRate(&cost.object, "cache_write"),
+    };
+    if (published.input == null and published.output == null and published.cache_read == null and published.cache_write == null) return null;
+    return published;
+}
+
+fn objectRate(obj: *const std.json.ObjectMap, key: []const u8) ?f64 {
+    const value = obj.get(key) orelse return null;
+    const rate: f64 = switch (value) {
+        .integer => |v| @floatFromInt(v),
+        .float => |v| v,
+        else => return null,
+    };
+    if (!std.math.isFinite(rate) or rate < 0) return null;
+    return rate;
+}
+
+fn nonEmptyString(obj: *const std.json.ObjectMap, key: []const u8) ?[]const u8 {
+    const value = objectString(obj, key) orelse return null;
+    if (value.len == 0) return null;
+    return value;
 }
 
 fn loadModelsDev(allocator: std.mem.Allocator, mode: CatalogLoadMode) ?std.json.Parsed(std.json.Value) {
@@ -1854,6 +1897,9 @@ fn anthropicSpec(id: []const u8) ?AnthropicSpec {
 const AnthropicLimits = struct {
     context_window: ?u32 = null,
     max_tokens: ?u32 = null,
+    published_cost: ?ai_types.PublishedCost = null,
+    release_date: ?[]const u8 = null,
+    family: ?[]const u8 = null,
 };
 
 fn anthropicLimits(listed: ?*const std.json.ObjectMap, dev: ?*const std.json.ObjectMap, id: []const u8) AnthropicLimits {
@@ -1865,6 +1911,9 @@ fn anthropicLimits(listed: ?*const std.json.ObjectMap, dev: ?*const std.json.Obj
     const models = dev orelse return limits;
     const entry = models.getPtr(id) orelse models.getPtr(withoutDateSuffix(id)) orelse return limits;
     if (entry.* != .object) return limits;
+    limits.published_cost = modelsDevCost(&entry.object);
+    limits.release_date = nonEmptyString(&entry.object, "release_date");
+    limits.family = nonEmptyString(&entry.object, "family");
     const limit = entry.object.getPtr("limit") orelse return limits;
     if (limit.* != .object) return limits;
     if (limits.context_window == null) {
@@ -1902,6 +1951,9 @@ fn anthropicModel(allocator: std.mem.Allocator, id_text: []const u8, name_text: 
     errdefer allocator.free(input[0]);
     input[1] = try allocator.dupe(u8, "image");
     errdefer allocator.free(input[1]);
+    const release_date = if (limits.release_date) |value| try allocator.dupe(u8, value) else null;
+    errdefer if (release_date) |value| allocator.free(value);
+    const family = if (limits.family) |value| try allocator.dupe(u8, value) else null;
 
     const spec = anthropicSpec(id_text);
     return .{
@@ -1915,6 +1967,9 @@ fn anthropicModel(allocator: std.mem.Allocator, id_text: []const u8, name_text: 
         .cost = if (spec) |known| known.cost else .{ .input = 0, .output = 0, .cache_read = 0, .cache_write = 0 },
         .context_window = limits.context_window orelse 200_000,
         .max_tokens = limits.max_tokens orelse if (spec) |known| known.max_tokens else 32_000,
+        .published_cost = limits.published_cost,
+        .release_date = release_date,
+        .family = family,
         .is_owned = true,
     };
 }
@@ -1926,7 +1981,9 @@ fn anthropicStaticModels(allocator: std.mem.Allocator, dev: ?*const std.json.Obj
         models.deinit(allocator);
     }
     for (anthropic_static_models) |entry| {
-        try models.append(allocator, try anthropicModel(allocator, entry.id, entry.name, anthropicLimits(null, dev, entry.id)));
+        var model = try anthropicModel(allocator, entry.id, entry.name, anthropicLimits(null, dev, entry.id));
+        errdefer model.deinit(allocator);
+        try models.append(allocator, model);
     }
     return models.toOwnedSlice(allocator);
 }
@@ -1949,7 +2006,9 @@ fn parseAnthropicModels(allocator: std.mem.Allocator, data: []const u8, dev: ?*c
         const id = objectString(obj, "id") orelse continue;
         if (id.len == 0 or !std.mem.startsWith(u8, id, "claude")) continue;
         const name = objectString(obj, "display_name") orelse id;
-        try models.append(allocator, try anthropicModel(allocator, id, name, anthropicLimits(obj, dev, id)));
+        var model = try anthropicModel(allocator, id, name, anthropicLimits(obj, dev, id));
+        errdefer model.deinit(allocator);
+        try models.append(allocator, model);
     }
     return models.toOwnedSlice(allocator);
 }
@@ -2642,17 +2701,23 @@ test "a Claude id takes its own row's price, not the price of an older id it ext
     try std.testing.expectEqual(@as(f64, 1.0), anthropicSpec("claude-haiku-4-5-20251001").?.cost.input);
 }
 
-test "an Anthropic model takes the listing's limits first, then models.dev's under its dateless id, then the fixed figures" {
+test "an Anthropic model takes the listing's limits first, then models.dev's under its dateless id, then the fixed figures, and publishes the facts models.dev lists for it" {
     const allocator = std.testing.allocator;
     const body =
         \\{"data":[{"id":"claude-listed","max_input_tokens":500000,"max_tokens":50000},{"id":"claude-opus-5-20260101"},{"id":"claude-opus-4-1"}]}
     ;
     var dev = try parseModelsDev(allocator,
-        \\{"claude-listed":{"limit":{"context":900000,"output":90000}},"claude-opus-5":{"limit":{"context":1000000,"output":128000}}}
+        \\{"claude-listed":{"limit":{"context":900000,"output":90000}},"claude-opus-5":{"cost":{"input":5,"output":25},"release_date":"2026-01-01","family":"claude-opus","limit":{"context":1000000,"output":128000}}}
     );
     defer dev.deinit();
     const models = try parseAnthropicModels(allocator, body, &dev.value.object);
     defer deinitModels(allocator, models);
+
+    try std.testing.expectEqual(@as(?f64, 25), models[1].published_cost.?.output);
+    try std.testing.expectEqualStrings("2026-01-01", models[1].release_date.?);
+    try std.testing.expectEqualStrings("claude-opus", models[1].family.?);
+    try std.testing.expect(models[0].published_cost == null);
+    try std.testing.expect(models[0].family == null);
 
     try std.testing.expectEqual(@as(u32, 500_000), models[0].context_window);
     try std.testing.expectEqual(@as(u32, 50_000), models[0].max_tokens);
@@ -5647,8 +5712,8 @@ test "an overridden base still moves the target through the caller, and the list
 
 const models_dev_fixture =
     \\{"opencode-go":{"id":"opencode-go","models":{
-    \\  "deepseek-v4-flash":{"id":"deepseek-v4-flash","reasoning":true,"modalities":{"input":["text","image"],"output":["text"]},"limit":{"context":1000000,"output":384000}},
-    \\  "zero-limits":{"id":"zero-limits","limit":{"context":0,"output":0}}}},
+    \\  "deepseek-v4-flash":{"id":"deepseek-v4-flash","cost":{"input":0.14,"output":0.28,"cache_read":-1,"reasoning":9},"release_date":"2026-04-01","family":"deepseek","reasoning":true,"modalities":{"input":["text","image"],"output":["text"]},"limit":{"context":1000000,"output":384000}},
+    \\  "zero-limits":{"id":"zero-limits","family":"","limit":{"context":0,"output":0}}}},
     \\ "openai":{"id":"openai","models":{"gpt-5":{"id":"gpt-5","reasoning":true,"limit":{"context":400000,"input":272000,"output":128000}}}},
     \\ "zai-coding-plan":{"id":"zai-coding-plan","models":{"glm-5.3":{"id":"glm-5.3","reasoning":true,"limit":{"context":1000000,"output":131072}}}},
     \\ "vercel":{"id":"vercel","models":{"anthropic/claude-sonnet-4.5":{"limit":{"context":777777,"output":77777},"reasoning":true}}},
@@ -5744,6 +5809,25 @@ test "a row the catalog gives no models_dev key never takes models.dev's figures
     try std.testing.expect(models[0].context_window != 777_777);
     try std.testing.expect(models[0].max_tokens != 77_777);
     try std.testing.expect(!models[0].reasoning);
+}
+
+test "a row that consults models.dev carries the cost, release date and family it publishes, and leaves an unpublished fact unknown" {
+    test_models_dev = models_dev_fixture;
+    defer test_models_dev = null;
+    const models = try loadOneRow("opencode-go", "OPENCODE_API_KEY", &.{ "deepseek-v4-flash", "zero-limits" });
+    defer deinitModels(std.testing.allocator, models);
+
+    const cost = models[0].published_cost orelse return error.TestExpectedCost;
+    try std.testing.expectEqual(@as(?f64, 0.14), cost.input);
+    try std.testing.expectEqual(@as(?f64, 0.28), cost.output);
+    try std.testing.expectEqual(@as(?f64, null), cost.cache_read);
+    try std.testing.expectEqual(@as(?f64, null), cost.cache_write);
+    try std.testing.expectEqualStrings("2026-04-01", models[0].release_date.?);
+    try std.testing.expectEqualStrings("deepseek", models[0].family.?);
+
+    try std.testing.expect(models[1].published_cost == null);
+    try std.testing.expect(models[1].release_date == null);
+    try std.testing.expect(models[1].family == null);
 }
 
 test "a limit the listing reports is never replaced by models.dev's" {

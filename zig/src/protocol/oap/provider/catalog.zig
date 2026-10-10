@@ -228,6 +228,9 @@ fn ownedModelEntry(
     errdefer allocator.free(capabilities);
     const input_modalities = try ownedModalities(allocator, model.input);
     errdefer allocator.free(input_modalities);
+    const release_date = if (model.release_date) |value| try allocator.dupe(u8, value) else null;
+    errdefer if (release_date) |value| allocator.free(value);
+    const family = if (model.family) |value| try allocator.dupe(u8, value) else null;
 
     return .{
         .model_ref = model_ref,
@@ -240,6 +243,9 @@ fn ownedModelEntry(
         .capabilities = capabilities,
         .source = source,
         .input_modalities = input_modalities,
+        .cost = if (model.published_cost) |cost| .{ .input = cost.input, .output = cost.output, .cache_read = cost.cache_read, .cache_write = cost.cache_write } else null,
+        .release_date = release_date,
+        .family = family,
     };
 }
 
@@ -286,7 +292,7 @@ pub fn buildModelRef(
     return std.fmt.allocPrint(allocator, "{s}/{s}@{s}", .{ provider_id, wire.toString(), model_id });
 }
 
-test "a row serves every model the snapshot names for it" {
+test "a row serves every model the snapshot names for it, each publishing the facts it was loaded with" {
     const allocator = std.testing.allocator;
     const models = [_]ai_types.Model{
         .{
@@ -300,6 +306,9 @@ test "a row serves every model the snapshot names for it" {
             .cost = .{ .input = 0, .output = 0, .cache_read = 0, .cache_write = 0 },
             .context_window = 200_000,
             .max_tokens = 8_192,
+            .published_cost = .{ .input = 3, .output = 15 },
+            .release_date = "2025-09-29",
+            .family = "claude-sonnet",
         },
         .{
             .id = "claude-opus-4-1",
@@ -349,6 +358,15 @@ test "a row serves every model the snapshot names for it" {
     try std.testing.expectEqual(types.ModelCapability.vision, entries[0].capabilities[0]);
     try std.testing.expectEqual(types.ModelCapability.reasoning, entries[0].capabilities[1]);
     try std.testing.expectEqual(@as(usize, 0), entries[1].capabilities.len);
+    const cost = entries[0].cost orelse return error.TestExpectedCost;
+    try std.testing.expectEqual(@as(?f64, 3), cost.input);
+    try std.testing.expectEqual(@as(?f64, 15), cost.output);
+    try std.testing.expectEqual(@as(?f64, null), cost.cache_read);
+    try std.testing.expectEqualStrings("2025-09-29", entries[0].release_date.?);
+    try std.testing.expectEqualStrings("claude-sonnet", entries[0].family.?);
+    try std.testing.expect(entries[1].cost == null);
+    try std.testing.expect(entries[1].release_date == null);
+    try std.testing.expect(entries[1].family == null);
 }
 
 test "a row the snapshot names no model for serves nothing" {
@@ -421,6 +439,9 @@ fn ownedEntriesProbe(allocator: std.mem.Allocator) !void {
         .cost = .{ .input = 0, .output = 0, .cache_read = 0, .cache_write = 0 },
         .context_window = 200_000,
         .max_tokens = 8_192,
+        .published_cost = .{ .input = 3, .output = 15 },
+        .release_date = "2025-09-29",
+        .family = "claude-sonnet",
     }};
     const entries = try ownedModelEntriesForRow(allocator, &models, "anthropic", types.Wire.@"anthropic-messages", .discovered);
     freeModelEntries(allocator, entries);
