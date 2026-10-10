@@ -161,5 +161,17 @@ type AgentRequest struct {
 
 	Tools []Tool
 
+	Permit PermissionHandler
+
 	Options *RunOptions
 }
+
+type PermissionRequest struct {
+	ToolCallID    string
+	ToolName      string
+	Title         string
+	Description   string
+	ArgumentsJSON string
+}
+
+type PermissionHandler func(ctx context.Context, request PermissionRequest) bool

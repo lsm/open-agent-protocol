@@ -127,7 +127,8 @@ func runOAPHost(scenario string) {
 				first, _ := tools[0].(map[string]any)
 				providedTool = fmt.Sprintf("%v owned by %v from %v", first["name"], first["execution_owner"], first["source"])
 			}
-			openSettings = fmt.Sprintf("reasoning=%v output=%v user_input=%v", opening["reasoning_level"], opening.obj("metadata").obj("oapx")["output"], opening.obj("metadata").obj("oapx")["user_input"])
+			oapxSettings := opening.obj("metadata").obj("oapx")
+			openSettings = fmt.Sprintf("reasoning=%v output=%v user_input=%v permission_mode=%v", opening["reasoning_level"], oapxSettings["output"], oapxSettings["user_input"], oapxSettings["permission_mode"])
 			response := oapFakeReply(request, "session.open.response", map[string]any{"session_id": sessionID, "status": "idle"})
 			response.SessionID = sessionID
 			fakeEmit(response)
@@ -162,6 +163,23 @@ func runOAPHost(scenario string) {
 				}
 				event.SessionID, event.RunID = sessionID, "run-1"
 				fakeEmit(event)
+				continue
+			}
+			if selectedModel == "fixture/other:test@permission" {
+				for _, item := range []struct {
+					kind    string
+					payload any
+				}{
+					{"run.started", map[string]any{"session_id": sessionID, "run_id": "run-1"}},
+					{"action.call.requested", map[string]any{"session_id": sessionID, "run_id": "run-1", "tool_call_id": "call-1", "name": "Shell", "execution_owner": "fake", "arguments_json": map[string]any{"command": "ls"}}},
+					{"action.permission.requested", map[string]any{"session_id": sessionID, "run_id": "run-1", "tool_call_id": "call-1", "interaction_id": "permission-1",
+						"requested_by": "fake", "responded_by": "sdk", "title": "Run ls", "arguments_json": map[string]any{"command": "ls"},
+						"choices": []map[string]any{{"id": "approve", "label": "Approve"}, {"id": "deny", "label": "Deny"}}}},
+				} {
+					event := oapHostFrame(oapAgent, item.kind, item.payload)
+					event.SessionID, event.RunID = sessionID, "run-1"
+					fakeEmit(event)
+				}
 				continue
 			}
 			if selectedModel == "fixture/other:test@auth-once" {
@@ -240,10 +258,55 @@ func runOAPHost(scenario string) {
 				event.SessionID, event.RunID = sessionID, "run-1"
 				fakeEmit(event)
 			}
+		case "action.permission.resolve.request":
+			p := request.payload()
+			sessionID := p.str("session_id")
+			response := oapFakeReply(request, "action.permission.resolve.response", map[string]any{"interaction_id": p.str("interaction_id"),
+				"session_id": sessionID, "run_id": "run-1", "accepted": true})
+			response.SessionID = sessionID
+			fakeEmit(response)
+			said := fmt.Sprintf("%s granted=%v by %s", p.str("choice_id"), p["granted"], p.str("responded_by"))
+			for _, item := range []struct {
+				kind    string
+				payload any
+			}{
+				{"action.permission.resolved", map[string]any{"session_id": sessionID, "run_id": "run-1", "interaction_id": p.str("interaction_id"), "outcome": "resolved", "choice_id": p.str("choice_id"), "granted": p["granted"]}},
+				{"run.completed", map[string]any{"session_id": sessionID, "run_id": "run-1", "final_response": map[string]any{"role": "assistant", "content": said}, "stop_reason": "stop"}},
+			} {
+				event := oapHostFrame(oapAgent, item.kind, item.payload)
+				event.SessionID, event.RunID = sessionID, "run-1"
+				fakeEmit(event)
+			}
 		case "run.cancel.request", "inference.cancel.request":
 		default:
 			fakeEmit(oapFakeReply(request, "error.response", map[string]any{"error": map[string]any{"code": "unsupported_feature", "message": request.Type}}))
 		}
+	}
+}
+
+func TestOAPAgentAnswersAPermissionWithTheHandlersDecisionAndDeniesWithoutOne(t *testing.T) {
+	client := newTestClient(t, scenarioOAP)
+	ctx := context.Background()
+	var asked PermissionRequest
+	response, err := client.Agent.Run(ctx, AgentRequest{ModelRef: "fixture/other:test@permission", Messages: []Message{UserMessage("hi")},
+		Permit: func(_ context.Context, request PermissionRequest) bool {
+			asked = request
+			return request.ToolName == "Shell"
+		}})
+	if err != nil || response.Message.Text != "approve granted=true by sdk" {
+		t.Fatalf("permitted: %v, %+v", err, response)
+	}
+	if asked.ToolCallID != "call-1" || asked.ToolName != "Shell" || asked.Title != "Run ls" || asked.ArgumentsJSON != `{"command":"ls"}` {
+		t.Fatalf("the handler was not asked about the endpoint's call: %+v", asked)
+	}
+	response, err = client.Agent.Run(ctx, AgentRequest{ModelRef: "fixture/other:test@permission", Messages: []Message{UserMessage("hi")}})
+	if err != nil || response.Message.Text != "deny granted=false by sdk" {
+		t.Fatalf("no handler: %v, %+v", err, response)
+	}
+	response, err = client.Agent.Run(ctx, AgentRequest{ModelRef: "fixture/other:test@settings", Messages: []Message{UserMessage("hi")},
+		Permit: func(context.Context, PermissionRequest) bool { return false }})
+	if err != nil || response.Message.Text != "reasoning=<nil> output=<nil> user_input=false permission_mode=ask" {
+		t.Fatalf("a handler did not open the loop in ask mode: %v, %+v", err, response)
 	}
 }
 
@@ -300,7 +363,7 @@ func TestOAPCombinedFakeHost(t *testing.T) {
 	}
 	response, err = client.Agent.Run(ctx, AgentRequest{ModelRef: "fixture/other:test@settings", Messages: []Message{UserMessage("hi")},
 		Options: &RunOptions{MaxTokens: MaxTokens(10), ReasoningEffort: ReasoningHigh}})
-	if err != nil || response.Message.Text != "reasoning=high output=10 user_input=false" {
+	if err != nil || response.Message.Text != "reasoning=high output=10 user_input=false permission_mode=<nil>" {
 		t.Fatalf("agent settings did not reach the open: %v, %+v", err, response)
 	}
 	for _, options := range []*RunOptions{{MaxTokens: MaxTokens(0)}, {ReasoningEffort: ReasoningMinimal}} {
