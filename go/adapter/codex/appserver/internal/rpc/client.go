@@ -1,10 +1,13 @@
 package rpc
 
 import (
+	"time"
+
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/lsm/open-agent-protocol/go/adapter/internal/backpressure"
 	"io"
 	"sync"
 	"sync/atomic"
@@ -107,12 +110,14 @@ type Client struct {
 	inbound     chan InboundMessage
 	diagnostics chan error
 	done        chan struct{}
+	queueStall  time.Duration
 	readDone    chan struct{}
 }
 
 type ClientOptions struct {
 	FrameLimit        int
 	QueueCapacity     int
+	QueueStall        time.Duration
 	FirstRequestID    int64
 	CloseReadWriter   io.Closer
 	StrictResponseIDs bool
@@ -132,8 +137,8 @@ func NewClient(reader io.Reader, writer io.Writer, options ClientOptions) *Clien
 		writes:            make(chan writeRequest),
 		inbound:           make(chan InboundMessage, capacity),
 		diagnostics:       make(chan error, capacity),
-		done:              make(chan struct{}),
-		readDone:          make(chan struct{}),
+		done:              make(chan struct{}), queueStall: options.QueueStall,
+		readDone: make(chan struct{}),
 	}
 	client.nextID.Store(options.FirstRequestID)
 	go client.writeLoop()
@@ -312,13 +317,13 @@ func (client *Client) failPending(pending map[RequestID]chan callResult, reason 
 }
 
 func (client *Client) enqueue(message InboundMessage) bool {
-	select {
-	case client.inbound <- message:
+	switch backpressure.Send(client.inbound, message, client.done, client.queueStall) {
+	case backpressure.Sent:
 		return true
-	default:
+	case backpressure.Stalled:
 		client.shutdown(ErrInboundQueue)
-		return false
 	}
+	return false
 }
 
 func (client *Client) unmatched(id RequestID) bool {

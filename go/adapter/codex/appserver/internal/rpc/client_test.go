@@ -38,10 +38,16 @@ func (closer pipeCloser) Close() error {
 
 func clientPipes(t *testing.T, capacity int) (*Client, *bufio.Reader, *io.PipeWriter) {
 	t.Helper()
+	return stallingClientPipes(t, capacity, 0)
+}
+
+func stallingClientPipes(t *testing.T, capacity int, stall time.Duration) (*Client, *bufio.Reader, *io.PipeWriter) {
+	t.Helper()
 	serverToClientReader, serverToClientWriter := io.Pipe()
 	clientToServerReader, clientToServerWriter := io.Pipe()
 	client := NewClient(serverToClientReader, clientToServerWriter, ClientOptions{
 		QueueCapacity:   capacity,
+		QueueStall:      stall,
 		CloseReadWriter: pipeCloser{in: serverToClientReader, out: clientToServerWriter},
 	})
 	t.Cleanup(func() {
@@ -201,8 +207,31 @@ func TestClientCloseReportsErrClosedNotPipeError(t *testing.T) {
 	}
 }
 
+func TestClientHoldsABurstForASlowConsumerInsteadOfFailing(t *testing.T) {
+	client, _, writer := stallingClientPipes(t, 2, 5*time.Second)
+	const burst = 40
+	go func() {
+		for i := 0; i < burst; i++ {
+			writeWire(t, writer, Notification("burst", nil))
+		}
+	}()
+	for received := 0; received < burst; {
+		select {
+		case in := <-client.Inbound():
+			if in.Notification != nil {
+				received++
+			}
+			time.Sleep(2 * time.Millisecond)
+		case <-client.Done():
+			t.Fatalf("the client closed after %d of %d frames: %v", received, burst, client.Err())
+		case <-time.After(5 * time.Second):
+			t.Fatalf("only %d of %d frames arrived", received, burst)
+		}
+	}
+}
+
 func TestClientQueueOverflowIsTerminal(t *testing.T) {
-	client, _, writer := clientPipes(t, 1)
+	client, _, writer := stallingClientPipes(t, 1, 50*time.Millisecond)
 	writeWire(t, writer, Notification("one", nil))
 	writeWire(t, writer, Notification("two", nil))
 	select {
@@ -312,7 +341,7 @@ func TestClientWriteReturnsWhenContextCancelledWhileQueued(t *testing.T) {
 
 func TestClientReverseRequestOverflowDoesNotBlockShutdown(t *testing.T) {
 	serverToClientReader, serverToClientWriter := io.Pipe()
-	client := NewClient(serverToClientReader, &blockingWriter{entered: make(chan struct{}), release: make(chan struct{})}, ClientOptions{QueueCapacity: 1, CloseReadWriter: serverToClientReader})
+	client := NewClient(serverToClientReader, &blockingWriter{entered: make(chan struct{}), release: make(chan struct{})}, ClientOptions{QueueCapacity: 1, QueueStall: 50 * time.Millisecond, CloseReadWriter: serverToClientReader})
 	t.Cleanup(func() {
 		_ = serverToClientWriter.Close()
 		_ = client.Close()

@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -651,10 +652,55 @@ func TestClientWriteBlockedWithoutCloserReturnsWhenReaderRetires(t *testing.T) {
 	_ = serverWriter.Close()
 }
 
+func TestClientHoldsABurstForASlowConsumerInsteadOfFailing(t *testing.T) {
+	for _, legacy := range []bool{false, true} {
+		clientReader, serverWriter := io.Pipe()
+		client := NewClient(clientReader, io.Discard, ClientOptions{QueueCapacity: 2, QueueStall: 5 * time.Second})
+		var inbound <-chan InboundMessage
+		if !legacy {
+			inbound = client.Inbound()
+		}
+		const burst = 40
+		go func() {
+			var frames strings.Builder
+			for i := 0; i < burst; i++ {
+				frames.WriteString(`{"jsonrpc":"2.0","id":"r` + strconv.Itoa(i) + `","method":"reverse","params":{}}` + "\n")
+			}
+			_, _ = serverWriter.Write([]byte(frames.String()))
+		}()
+		for received := 0; received < burst; {
+			if legacy {
+				select {
+				case <-client.Requests():
+					received++
+					time.Sleep(2 * time.Millisecond)
+				case <-client.Done():
+					t.Fatalf("legacy: the client closed after %d of %d frames: %v", received, burst, client.Err())
+				case <-time.After(5 * time.Second):
+					t.Fatalf("legacy: only %d of %d frames arrived", received, burst)
+				}
+				continue
+			}
+			select {
+			case message := <-inbound:
+				if message.Request != nil {
+					received++
+				}
+				time.Sleep(2 * time.Millisecond)
+			case <-client.Done():
+				t.Fatalf("the client closed after %d of %d frames: %v", received, burst, client.Err())
+			case <-time.After(5 * time.Second):
+				t.Fatalf("only %d of %d frames arrived", received, burst)
+			}
+		}
+		_ = serverWriter.Close()
+	}
+}
+
 func TestClientRefusesResponseWhenBarrierCannotBeEnqueued(t *testing.T) {
 	serverReader, clientWriter := io.Pipe()
 	clientReader, serverWriter := io.Pipe()
-	client := NewClient(clientReader, clientWriter, ClientOptions{QueueCapacity: 1})
+	client := NewClient(clientReader, clientWriter, ClientOptions{QueueCapacity: 1, QueueStall: 50 * time.Millisecond})
 	_ = client.Inbound()
 	result := make(chan error, 1)
 	go func() { result <- client.CallID(context.Background(), IntegerID(1), "prompt.submit", nil, nil) }()
