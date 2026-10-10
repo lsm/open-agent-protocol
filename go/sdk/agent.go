@@ -123,14 +123,12 @@ func (s *AgentStream) Next() bool {
 				continue
 			}
 			if err := state.resolvePermission(p); err != nil {
-				state.settled = true
 				s.fail(err)
 				return false
 			}
 			continue
 		case "action.permission.resolve.response":
 			if accepted, _ := p["accepted"].(bool); !accepted {
-				state.settled = true
 				s.fail(&ProtocolError{Code: CodeMalformedResponse, Message: "the endpoint refused a permission answer"})
 				return false
 			}

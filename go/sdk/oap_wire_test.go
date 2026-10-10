@@ -326,9 +326,19 @@ func TestOAPAgentAnswersAPermissionWithTheHandlersDecisionAndDeniesWithoutOne(t 
 			t.Fatalf("%s denied: %v, %+v", endpoint.model, err, response)
 		}
 	}
-	if _, err = client.Agent.Run(ctx, AgentRequest{ModelRef: "fixture/other:test@permission-unknown", Messages: []Message{UserMessage("hi")}}); err == nil || !strings.Contains(err.Error(), "offers none of") {
+	stream, err := client.Agent.Stream(ctx, AgentRequest{ModelRef: "fixture/other:test@permission-unknown", Messages: []Message{UserMessage("hi")}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for stream.Next() {
+	}
+	if err := stream.Err(); err == nil || !strings.Contains(err.Error(), "offers none of") {
 		t.Fatalf("an unrecognisable choice list was answered: %v", err)
 	}
+	if stream.state.settled {
+		t.Fatal("a run left waiting on an unanswered permission reads as settled, so Close would not cancel it")
+	}
+	_ = stream.Close()
 	response, err = client.Agent.Run(ctx, AgentRequest{ModelRef: "fixture/other:test@settings", Messages: []Message{UserMessage("hi")},
 		Permit: func(context.Context, PermissionRequest) bool { return false }})
 	if err != nil || response.Message.Text != "reasoning=<nil> output=<nil> user_input=false permission_mode=ask" {
