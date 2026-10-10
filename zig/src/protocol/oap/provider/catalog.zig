@@ -145,6 +145,38 @@ test "a named wire is never invented for a shape only its originator speaks" {
     try std.testing.expect(hasNamedWire("anthropic-messages"));
 }
 
+pub fn sameWire(left: WireMapping, right: WireMapping) bool {
+    if (left.wire != right.wire) return false;
+    const left_id = left.wire_id orelse return right.wire_id == null;
+    const right_id = right.wire_id orelse return false;
+    return std.mem.eql(u8, left_id, right_id);
+}
+
+pub fn ownedModelEntriesForWire(
+    allocator: std.mem.Allocator,
+    models: []const ai_types.Model,
+    provider_id: []const u8,
+    wanted: WireMapping,
+    source: types.ModelSource,
+) ![]types.ModelEntry {
+    var entries = std.ArrayList(types.ModelEntry).empty;
+    errdefer {
+        for (entries.items) |*entry| entry.deinit(allocator);
+        entries.deinit(allocator);
+    }
+    for (models) |model| {
+        if (!std.mem.eql(u8, model.provider, provider_id)) continue;
+        const mapping = mapApiToWire(model.api) orelse continue;
+        if (!sameWire(mapping, wanted)) continue;
+        var entry = try ownedModelEntry(allocator, provider_id, model, mapping, source);
+        var entry_owned = true;
+        defer if (entry_owned) entry.deinit(allocator);
+        try entries.append(allocator, entry);
+        entry_owned = false;
+    }
+    return entries.toOwnedSlice(allocator);
+}
+
 pub fn ownedModelEntriesForRow(
     allocator: std.mem.Allocator,
     models: []const ai_types.Model,
