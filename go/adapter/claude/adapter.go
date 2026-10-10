@@ -222,6 +222,21 @@ type Header struct {
 
 const customHeadersVariable = "ANTHROPIC_CUSTOM_HEADERS"
 
+func headerToken(name string) bool {
+	if name == "" {
+		return false
+	}
+	for _, r := range name {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9':
+		case strings.ContainsRune("!#$%&'*+-.^_`|~", r):
+		default:
+			return false
+		}
+	}
+	return true
+}
+
 func withHeaders(environment []string, headers []Header) ([]string, error) {
 	env := append([]string{}, environment...)
 	if len(headers) == 0 {
@@ -229,7 +244,7 @@ func withHeaders(environment []string, headers []Header) ([]string, error) {
 	}
 	lines := make([]string, 0, len(headers))
 	for _, header := range headers {
-		if header.Name == "" || strings.ContainsAny(header.Name, ":\r\n") || strings.ContainsAny(header.Value, "\r\n") {
+		if !headerToken(header.Name) || strings.ContainsAny(header.Value, "\r\n") {
 			return nil, fmt.Errorf("claude adapter: header %q cannot be carried in %s", header.Name, customHeadersVariable)
 		}
 		lines = append(lines, header.Name+": "+header.Value)

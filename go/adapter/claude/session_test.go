@@ -1880,7 +1880,7 @@ func TestHeadersReachTheCLIAsItsCustomHeadersVariable(t *testing.T) {
 		t.Fatalf("env = %q, want it unchanged without headers", none)
 	}
 
-	for _, header := range []Header{{Name: ""}, {Name: "x:y", Value: "v"}, {Name: "x", Value: "line\nbreak"}} {
+	for _, header := range []Header{{Name: ""}, {Name: "x:y", Value: "v"}, {Name: "x session", Value: "v"}, {Name: " x-trace", Value: "v"}, {Name: "x\ty", Value: "v"}, {Name: "x", Value: "line\nbreak"}} {
 		if _, err := New(Config{Executable: "/bin/claude", Tools: UnrestrictedTools(), Headers: []Header{header}}); err == nil {
 			t.Fatalf("header %+v was accepted", header)
 		}
