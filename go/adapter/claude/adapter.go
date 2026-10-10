@@ -132,6 +132,7 @@ type Config struct {
 	Executable       string
 	Args             []string
 	Environment      []string
+	Headers          []Header
 	WorkingDirectory string
 	Model            string
 	Tools            ToolPosture
@@ -179,9 +180,9 @@ func New(config Config) (*Adapter, error) {
 	var processConfig *rpc.ProcessConfig
 	if config.Factory == nil {
 
-		env := config.Environment
-		if env == nil {
-			env = []string{}
+		env, err := withHeaders(config.Environment, config.Headers)
+		if err != nil {
+			return nil, err
 		}
 		if err := config.Tools.validate(); err != nil {
 			return nil, err
@@ -212,6 +213,38 @@ func New(config Config) (*Adapter, error) {
 		})
 	}
 	return &Adapter{config: config, clock: config.Clock, ids: config.IDs, initializeAtOpen: initializeAtOpen, processConfig: processConfig}, nil
+}
+
+type Header struct {
+	Name  string
+	Value string
+}
+
+const customHeadersVariable = "ANTHROPIC_CUSTOM_HEADERS"
+
+func withHeaders(environment []string, headers []Header) ([]string, error) {
+	env := append([]string{}, environment...)
+	if len(headers) == 0 {
+		return env, nil
+	}
+	lines := make([]string, 0, len(headers))
+	for _, header := range headers {
+		if header.Name == "" || strings.ContainsAny(header.Name, ":\r\n") || strings.ContainsAny(header.Value, "\r\n") {
+			return nil, fmt.Errorf("claude adapter: header %q cannot be carried in %s", header.Name, customHeadersVariable)
+		}
+		lines = append(lines, header.Name+": "+header.Value)
+	}
+	joined := strings.Join(lines, "\n")
+	for index, entry := range env {
+		if existing, found := strings.CutPrefix(entry, customHeadersVariable+"="); found {
+			if existing != "" {
+				joined = existing + "\n" + joined
+			}
+			env[index] = customHeadersVariable + "=" + joined
+			return env, nil
+		}
+	}
+	return append(env, customHeadersVariable+"="+joined), nil
 }
 
 type rpcProcess struct{ *rpc.Process }
