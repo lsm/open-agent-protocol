@@ -487,6 +487,68 @@
       "provenance": []
     },
     {
+      "id": "content-completed-per-message-usage",
+      "path": "valid/content-completed-per-message-usage.json",
+      "kind": "positive",
+      "valid": true,
+      "phase": "",
+      "codes": [],
+      "units": [
+        "core"
+      ],
+      "provenance": [
+        "decisions/0049-a-message-reports-its-own-usage.md"
+      ]
+    },
+    {
+      "id": "content-completed-twice",
+      "path": "semantic-invalid/content-completed-twice.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "duplicate_message_completion"
+      ],
+      "units": [
+        "core"
+      ],
+      "provenance": [
+        "decisions/0049-a-message-reports-its-own-usage.md"
+      ]
+    },
+    {
+      "id": "content-after-completion",
+      "path": "semantic-invalid/content-after-completion.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "content_after_completion"
+      ],
+      "units": [
+        "core"
+      ],
+      "provenance": [
+        "decisions/0049-a-message-reports-its-own-usage.md"
+      ]
+    },
+    {
+      "id": "content-completed-without-message-id",
+      "path": "schema-invalid/content-completed-without-message-id.json",
+      "kind": "schema-invalid",
+      "valid": false,
+      "phase": "schema",
+      "codes": [
+        "schema_invalid"
+      ],
+      "units": [
+        "core"
+      ],
+      "provenance": [
+        "decisions/0049-a-message-reports-its-own-usage.md"
+      ]
+    },
+    {
       "id": "cancel-not-settled",
       "path": "semantic-invalid/cancel-not-settled.json",
       "kind": "semantic-invalid",

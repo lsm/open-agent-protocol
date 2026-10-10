@@ -318,6 +318,12 @@ const samples: PayloadSample[] = [
     message_id: 'm-1',
     part: { type: 'text', text: 'chunk' },
   }),
+  sample<protocol.ContentCompletedPayload>('ContentCompletedPayload', 'run.schema.json', 'contentCompleted', {
+    session_id: 's-1',
+    run_id: 'r-1',
+    message_id: 'm-1',
+    usage: { input_tokens: 1, output_tokens: 2, total_tokens: 3 },
+  }),
   sample<protocol.RunCompletedPayload>('RunCompletedPayload', 'run.schema.json', 'completed', {
     session_id: 's-1',
     run_id: 'r-1',

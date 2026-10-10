@@ -118,7 +118,9 @@ satisfies all of the following:
 7. Accepts `session.message.submit.request` and returns
    `session.message.submit.response`.
 8. Emits `run.status.updated` for meaningful run lifecycle changes.
-9. Streams assistant-visible output through `content.delta`.
+9. Streams assistant-visible output through `content.delta`. Where it closes a
+   message with `content.completed` (Decision 0049), it closes it once and
+   streams nothing into it afterwards; emitting the event is optional.
 10. Emits exactly one terminal run event for every accepted run:
    `run.completed`, `run.failed`, or `run.cancelled`.
 11. Supports `run.cancel.request`, or declares cancellation as unavailable in

@@ -22,6 +22,7 @@ const RUN_EVENT_TYPES: ReadonlySet<string> = new Set([
   EnvelopeType.RunStarted,
   EnvelopeType.RunStatusUpdated,
   EnvelopeType.ContentDelta,
+  EnvelopeType.ContentCompleted,
   EnvelopeType.RunCompleted,
   EnvelopeType.RunFailed,
   EnvelopeType.RunCancelled,
