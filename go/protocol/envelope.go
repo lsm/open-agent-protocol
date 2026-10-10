@@ -66,6 +66,7 @@ const (
 	TypeRunStarted                      EnvelopeType = "run.started"
 	TypeRunStatusUpdated                EnvelopeType = "run.status.updated"
 	TypeContentDelta                    EnvelopeType = "content.delta"
+	TypeContentCompleted                EnvelopeType = "content.completed"
 	TypeRunCompleted                    EnvelopeType = "run.completed"
 	TypeRunFailed                       EnvelopeType = "run.failed"
 	TypeRunCancelled                    EnvelopeType = "run.cancelled"

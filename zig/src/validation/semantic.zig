@@ -17,6 +17,8 @@ pub const code_missing_run_started = "missing_run_started";
 pub const code_missing_run_terminal = "missing_run_terminal";
 pub const code_duplicate_run_terminal = "duplicate_run_terminal";
 pub const code_event_after_terminal = "event_after_terminal";
+pub const code_duplicate_message_completion = "duplicate_message_completion";
+pub const code_content_after_completion = "content_after_completion";
 pub const code_sequence_gap = "sequence_gap";
 pub const code_sequence_regression = "sequence_regression";
 pub const code_cancel_not_settled = "cancel_not_settled";
@@ -62,24 +64,24 @@ pub const code_duplicate_session_entry = "duplicate_session_entry";
 const attachment_only_members = [_][]const u8{ "command", "args", "environment" };
 
 pub const implemented = [_][]const u8{
-    code_unmatched_steer,             code_duplicate_steer,             code_pending_steer_at_terminal,
-    code_compaction_unpaired,         code_compaction_ended_without_start, code_compaction_open_at_terminal,
+    code_unmatched_steer,             code_duplicate_steer,                 code_pending_steer_at_terminal,
+    code_compaction_unpaired,         code_compaction_ended_without_start,  code_compaction_open_at_terminal,
     code_compaction_run_mismatch,     code_compaction_stop_reason_mismatch, code_compaction_failed_without_error,
-    code_duplicate_envelope_id,       code_illegal_run_transition,      code_missing_run_started,
-    code_missing_run_terminal,        code_duplicate_run_terminal,      code_event_after_terminal,
-    code_sequence_gap,                code_sequence_regression,         code_cancel_not_settled,
-    code_queue_order_violation,       code_queue_limit_exceeded,        code_undisclosed_queue_limit,
-    code_unavailable_capability,      code_stale_capability_revision,   code_degraded_without_optin,
-    code_unsatisfiable_control,       code_unapplied_control,           code_duplicate_tool_name,
-    code_model_not_in_catalog,        code_duplicate_model_id,          code_duplicate_provider,
-    code_ambiguous_default_model,     code_unannounced_catalog_change,  code_undisclosed_attach_modes,
-    code_duplicate_tool_source,       code_unmatched_tool_source,       code_unattributed_call,
-    code_catalog_mismatch,            code_undisclosed_attach_limit,    code_unmatched_tool,
-    code_illegal_tool_transition,     code_pending_tool_at_terminal,    code_duplicate_interaction,
-    code_unmatched_interaction,       code_wrong_interaction_responder, code_pending_interaction_at_terminal,
-    code_resolution_payload_mismatch, code_wrong_tool_owner,            code_undisclosed_provide_limit,
-    code_attachment_field_in_catalog, code_session_list_over_limit,     code_session_list_order,
-    code_duplicate_session_entry,
+    code_duplicate_envelope_id,       code_illegal_run_transition,          code_missing_run_started,
+    code_missing_run_terminal,        code_duplicate_run_terminal,          code_event_after_terminal,
+    code_sequence_gap,                code_sequence_regression,             code_cancel_not_settled,
+    code_queue_order_violation,       code_queue_limit_exceeded,            code_undisclosed_queue_limit,
+    code_unavailable_capability,      code_stale_capability_revision,       code_degraded_without_optin,
+    code_unsatisfiable_control,       code_unapplied_control,               code_duplicate_tool_name,
+    code_model_not_in_catalog,        code_duplicate_model_id,              code_duplicate_provider,
+    code_ambiguous_default_model,     code_unannounced_catalog_change,      code_undisclosed_attach_modes,
+    code_duplicate_tool_source,       code_unmatched_tool_source,           code_unattributed_call,
+    code_catalog_mismatch,            code_undisclosed_attach_limit,        code_unmatched_tool,
+    code_illegal_tool_transition,     code_pending_tool_at_terminal,        code_duplicate_interaction,
+    code_unmatched_interaction,       code_wrong_interaction_responder,     code_pending_interaction_at_terminal,
+    code_resolution_payload_mismatch, code_wrong_tool_owner,                code_undisclosed_provide_limit,
+    code_attachment_field_in_catalog, code_session_list_over_limit,         code_session_list_order,
+    code_duplicate_session_entry,     code_duplicate_message_completion,    code_content_after_completion,
 };
 
 pub fn isImplemented(code: []const u8) bool {
@@ -95,16 +97,17 @@ pub const Diagnostic = struct {
 };
 
 const run_event_types = [_][]const u8{
-    "run.compaction.started",      "run.compaction.ended",
-    "run.steer.applied",           "run.steer.dropped",
-    "run.started",                 "run.status.updated",
-    "content.delta",               "run.completed",
-    "run.failed",                  "run.cancelled",
-    "action.call.requested",       "action.call.started",
-    "action.call.progress",        "action.call.completed",
-    "action.call.failed",          "action.call.cancelled",
-    "action.permission.requested", "action.permission.resolved",
-    "user.input.requested",        "user.input.resolved",
+    "run.compaction.started",     "run.compaction.ended",
+    "run.steer.applied",          "run.steer.dropped",
+    "run.started",                "run.status.updated",
+    "content.delta",              "content.completed",
+    "run.completed",              "run.failed",
+    "run.cancelled",              "action.call.requested",
+    "action.call.started",        "action.call.progress",
+    "action.call.completed",      "action.call.failed",
+    "action.call.cancelled",      "action.permission.requested",
+    "action.permission.resolved", "user.input.requested",
+    "user.input.resolved",
 };
 
 fn isRunEvent(declared: []const u8) bool {
@@ -234,6 +237,7 @@ const Run = struct {
     prior_unknown: bool = false,
     tools: std.StringArrayHashMapUnmanaged(ToolTrack) = .empty,
     interactions: std.StringArrayHashMapUnmanaged(*Interaction) = .empty,
+    completed_messages: std.StringArrayHashMapUnmanaged(void) = .empty,
 };
 
 const CallStatus = enum { requested, started, progress, completed, failed, cancelled };
@@ -3516,6 +3520,15 @@ pub const Machine = struct {
         if (runEventFeature(declared)) |name| try self.feature(index, envelope, name);
 
         const body = member(envelope, "payload") orelse std.json.Value{ .null = {} };
+        if (std.mem.eql(u8, declared, "content.delta")) {
+            const message = memberString(body, "message_id");
+            if (message.len != 0 and state.completed_messages.contains(message)) try self.add(code_content_after_completion, index);
+        }
+        if (std.mem.eql(u8, declared, "content.completed")) {
+            const message = memberString(body, "message_id");
+            if (state.completed_messages.contains(message)) try self.add(code_duplicate_message_completion, index);
+            try state.completed_messages.put(self.arena.allocator(), message, {});
+        }
         if (callStatusOf(declared)) |next| {
             try self.toolTransition(index, body, state, next);
             switch (next) {

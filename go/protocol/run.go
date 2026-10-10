@@ -50,6 +50,13 @@ type ContentDeltaPayload struct {
 	Part      ContentPart `json:"part"`
 }
 
+type ContentCompletedPayload struct {
+	SessionID SessionID `json:"session_id"`
+	RunID     RunID     `json:"run_id"`
+	MessageID MessageID `json:"message_id"`
+	Usage     *Usage    `json:"usage,omitempty"`
+}
+
 const (
 	SettledByObserved = "observed"
 	SettledByInferred = "inferred"

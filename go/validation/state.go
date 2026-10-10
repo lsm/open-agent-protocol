@@ -49,6 +49,8 @@ type runState struct {
 	recovered bool
 
 	priorUnknown bool
+
+	completedMessages map[protocol.MessageID]bool
 }
 type interactionState struct {
 	kind                     string
@@ -1046,6 +1048,22 @@ func (s *state) runEvent(i, line int, e protocol.Envelope) {
 		}
 	}
 	switch e.Type {
+	case protocol.TypeContentDelta:
+		var p protocol.ContentDeltaPayload
+		_ = e.DecodePayload(&p)
+		if p.MessageID != "" && r.completedMessages[p.MessageID] {
+			s.add(CodeContentAfterCompletion, i, line, e, "/payload/message_id", "content.delta streams into a message its content.completed already closed")
+		}
+	case protocol.TypeContentCompleted:
+		var p protocol.ContentCompletedPayload
+		_ = e.DecodePayload(&p)
+		if r.completedMessages[p.MessageID] {
+			s.add(CodeDuplicateMessageCompletion, i, line, e, "/payload/message_id", "content.completed closes a message a previous content.completed already closed")
+		}
+		if r.completedMessages == nil {
+			r.completedMessages = map[protocol.MessageID]bool{}
+		}
+		r.completedMessages[p.MessageID] = true
 	case protocol.TypeActionCallRequested:
 		s.feature(i, line, e, "tools")
 		s.tool(i, line, e, "requested")
@@ -1594,7 +1612,7 @@ func preStartSettlement(t protocol.EnvelopeType) bool {
 }
 func isRunEvent(t protocol.EnvelopeType) bool {
 	switch t {
-	case protocol.TypeRunCompactionStarted, protocol.TypeRunCompactionEnded, protocol.TypeRunSteerApplied, protocol.TypeRunSteerDropped, protocol.TypeRunStarted, protocol.TypeRunStatusUpdated, protocol.TypeContentDelta, protocol.TypeRunCompleted, protocol.TypeRunFailed, protocol.TypeRunCancelled, protocol.TypeActionCallRequested, protocol.TypeActionCallStarted, protocol.TypeActionCallProgress, protocol.TypeActionCallCompleted, protocol.TypeActionCallFailed, protocol.TypeActionCallCancelled, protocol.TypeActionPermissionRequested, protocol.TypeActionPermissionResolved, protocol.TypeUserInputRequested, protocol.TypeUserInputResolved:
+	case protocol.TypeRunCompactionStarted, protocol.TypeRunCompactionEnded, protocol.TypeRunSteerApplied, protocol.TypeRunSteerDropped, protocol.TypeRunStarted, protocol.TypeRunStatusUpdated, protocol.TypeContentDelta, protocol.TypeContentCompleted, protocol.TypeRunCompleted, protocol.TypeRunFailed, protocol.TypeRunCancelled, protocol.TypeActionCallRequested, protocol.TypeActionCallStarted, protocol.TypeActionCallProgress, protocol.TypeActionCallCompleted, protocol.TypeActionCallFailed, protocol.TypeActionCallCancelled, protocol.TypeActionPermissionRequested, protocol.TypeActionPermissionResolved, protocol.TypeUserInputRequested, protocol.TypeUserInputResolved:
 		return true
 	}
 	return false

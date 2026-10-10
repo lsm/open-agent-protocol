@@ -42,6 +42,8 @@ const (
 	CodeMissingRunTerminal           = "missing_run_terminal"
 	CodeDuplicateRunTerminal         = "duplicate_run_terminal"
 	CodeEventAfterTerminal           = "event_after_terminal"
+	CodeDuplicateMessageCompletion   = "duplicate_message_completion"
+	CodeContentAfterCompletion       = "content_after_completion"
 	CodePendingToolAtTerminal        = "pending_tool_at_terminal"
 	CodePendingInteractionAtTerminal = "pending_interaction_at_terminal"
 	CodeUnmatchedTool                = "unmatched_tool"
