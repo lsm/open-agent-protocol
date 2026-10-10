@@ -1934,6 +1934,8 @@ pub fn build(b: *std.Build) void {
         },
     });
     oapx_adapter_mod.addImport("jsonschema", jsonschema_mod);
+    oapx_adapter_mod.addImport("oap_provider_types", protocol_oap_provider_types_mod);
+    oapx_adapter_mod.addImport("oap_provider_catalog", protocol_oap_provider_catalog_mod);
     oapx_adapter_mod.addImport("endpoint", adapter_endpoint_mod);
     oapx_adapter_mod.addImport("semantic", semantic_mod);
     const oapx_adapter_test = b.addTest(.{ .root_module = oapx_adapter_mod });

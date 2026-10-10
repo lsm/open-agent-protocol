@@ -16,7 +16,7 @@ pub fn isContextOverflow(message: ai_types.AssistantMessage, context_window: ?u6
 
     if (context_window) |window| {
         if (message.stop_reason == .stop) {
-            const input_tokens = message.usage.input + message.usage.cache_read;
+            const input_tokens = message.usage.input +| message.usage.cache_read;
             if (input_tokens > window) {
                 return true;
             }

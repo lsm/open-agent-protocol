@@ -7,6 +7,8 @@ const ai_types = @import("ai_types");
 const session_runtime = @import("session_runtime");
 const session_events = @import("session_events");
 const model_ref = @import("model_ref");
+const oap_provider_types = @import("oap_provider_types");
+const oap_provider_catalog = @import("oap_provider_catalog");
 const permission = @import("permission");
 const local_tools = @import("tools/registry");
 const interactions = @import("interactions.zig");
@@ -225,6 +227,7 @@ const Run = struct {
     stop_reason: []const u8 = "end_turn",
     error_text: std.ArrayList(u8) = .empty,
     output_tokens: u64 = 0,
+    input_tokens: u64 = 0,
     context_tokens: u64 = 0,
     compaction: bool = false,
     compact_focus: []const u8 = "",
@@ -1384,7 +1387,10 @@ pub const Session = struct {
             },
             .turn_end => |payload| run.stop_reason = stopReasonText(payload.stop_reason),
             .message_end => |payload| {
-                if (payload.role == .assistant) run.output_tokens += payload.output_tokens;
+                if (payload.role == .assistant) {
+                    run.output_tokens +|= payload.output_tokens;
+                    run.input_tokens +|= payload.input_tokens;
+                }
                 if (payload.role == .user and payload.steering) try self.applySteer(a, run);
             },
             .context_usage => |payload| run.context_tokens = payload.estimated_tokens,
@@ -1439,9 +1445,11 @@ pub const Session = struct {
         try self.dropSteers(a, run);
         var payload = Payload.init(a);
         try payload.run(self, run);
-        if (run.output_tokens > 0) {
+        if (run.output_tokens > 0 or run.input_tokens > 0) {
             var usage = Payload.init(a);
-            try usage.put("output_tokens", .{ .integer = @intCast(run.output_tokens) });
+            try usage.put("input_tokens", tokenCount(run.input_tokens));
+            try usage.put("output_tokens", tokenCount(run.output_tokens));
+            try usage.put("total_tokens", tokenCount(run.input_tokens +| run.output_tokens));
             try payload.put("usage", usage.value());
         }
         const cancelled = reason == .cancelled or run.status == .cancelling;
@@ -1856,6 +1864,27 @@ fn refFor(allocator: std.mem.Allocator, model: ai_types.Model) ![]u8 {
 }
 
 fn findModel(arena: std.mem.Allocator, available: []const ai_types.Model, wanted: []const u8) error{OutOfMemory}!?ai_types.Model {
+    if (try findModelRef(arena, available, wanted)) |model| return model;
+    return findModelOnWire(available, wanted);
+}
+
+fn findModelOnWire(available: []const ai_types.Model, wanted: []const u8) ?ai_types.Model {
+    const parsed = oap_provider_types.parseModelRef(wanted) orelse return null;
+    const named: oap_provider_catalog.WireMapping = .{ .wire = parsed.wire, .framing = .sse, .wire_id = parsed.wire_id };
+    for (available) |model| {
+        if (!std.mem.eql(u8, model.provider, parsed.provider_id)) continue;
+        if (!std.mem.eql(u8, model.id, parsed.model_id)) continue;
+        const mapping = oap_provider_catalog.mapApiToWire(model.api) orelse continue;
+        if (oap_provider_catalog.sameWire(mapping, named)) return model;
+    }
+    return null;
+}
+
+fn tokenCount(count: u64) std.json.Value {
+    return .{ .integer = @intCast(@min(count, std.math.maxInt(i64))) };
+}
+
+fn findModelRef(arena: std.mem.Allocator, available: []const ai_types.Model, wanted: []const u8) error{OutOfMemory}!?ai_types.Model {
     for (available) |model| {
         const ref = refFor(arena, model) catch |err| switch (err) {
             error.OutOfMemory => return error.OutOfMemory,
@@ -2126,6 +2155,7 @@ const Script = struct {
 };
 
 var held_tool = std.atomic.Value(bool).init(false);
+var scripted_usage: ai_types.Usage = .{ .input = 11, .output = 7 };
 
 fn scriptedMessage(allocator: std.mem.Allocator, model: ai_types.Model, content: []const ai_types.AssistantContent, reason: ai_types.StopReason) !ai_types.AssistantMessage {
     const blocks = try allocator.alloc(ai_types.AssistantContent, content.len);
@@ -2143,7 +2173,7 @@ fn scriptedMessage(allocator: std.mem.Allocator, model: ai_types.Model, content:
             else => unreachable,
         };
     }
-    return .{ .content = blocks, .api = model.api, .provider = model.provider, .model = model.id, .usage = .{}, .stop_reason = reason, .timestamp = 0 };
+    return .{ .content = blocks, .api = model.api, .provider = model.provider, .model = model.id, .usage = scripted_usage, .stop_reason = reason, .timestamp = 0 };
 }
 
 fn bareMessage(model: ai_types.Model, reason: ai_types.StopReason) ai_types.AssistantMessage {
@@ -2335,6 +2365,10 @@ test "a submit streams the agent loop's reply as one run with contiguous sequenc
     try testing.expectEqualStrings("run.completed", settled.get("type").?.string);
     const final = settled.get("payload").?.object.get("final_response").?.object;
     try testing.expectEqualStrings("hello from the loop", final.get("content").?.string);
+    const usage = settled.get("payload").?.object.get("usage").?.object;
+    try testing.expectEqual(@as(i64, 11), usage.get("input_tokens").?.integer);
+    try testing.expectEqual(@as(i64, 7), usage.get("output_tokens").?.integer);
+    try testing.expectEqual(@as(i64, 18), usage.get("total_tokens").?.integer);
     try testing.expectEqual(contract.Activity.idle, harness.session.activity());
 }
 
@@ -2421,6 +2455,72 @@ test "models lists the runtime's catalog as model refs, and a switch takes one r
 
     try testing.expectError(error.ModelNotFound, harness.session.vtable.switch_model.?(harness.session.ptr, a, &.{ .session_id = harness.session.id(), .model_id = "scripted/openai-completions@missing" }, &refusal));
     try testing.expectEqualStrings("scripted/openai-completions@missing", refusal.model_id);
+}
+
+test "a provider ref finds the model whose api serves that wire, even where two apis share it" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var codex = other_model;
+    codex.provider = "openai-codex";
+    codex.api = "openai-codex-responses";
+    codex.id = "gpt-5";
+    var plain = other_model;
+    plain.provider = "openai";
+    plain.api = "openai-responses";
+    plain.id = "gpt-5";
+    var azure = other_model;
+    azure.provider = "azure";
+    azure.api = "azure-openai-responses";
+    azure.id = "gpt-5";
+    var gemini = other_model;
+    gemini.provider = "google";
+    gemini.api = "google-generative-ai";
+    gemini.id = "g1";
+    var gemini_cli = gemini;
+    gemini_cli.api = "google-gemini-cli";
+    const available = [_]ai_types.Model{ test_model, other_model, codex, plain, azure, gemini, gemini_cli };
+
+    const found_codex = (try findModel(arena.allocator(), &available, "openai-codex/openai-responses@gpt-5")) orelse return error.TestExpectedModel;
+    try testing.expectEqualStrings("openai-codex-responses", found_codex.api);
+    const found_plain = (try findModel(arena.allocator(), &available, "openai/openai-responses@gpt-5")) orelse return error.TestExpectedModel;
+    try testing.expectEqualStrings("openai", found_plain.provider);
+    const found_loop = (try findModel(arena.allocator(), &available, "openai-codex/openai-codex-responses@gpt-5")) orelse return error.TestExpectedModel;
+    try testing.expectEqualStrings("openai-codex", found_loop.provider);
+    const found_azure = (try findModel(arena.allocator(), &available, "azure/openai-responses@gpt-5")) orelse return error.TestExpectedModel;
+    try testing.expectEqualStrings("azure", found_azure.provider);
+    const found_cli = (try findModel(arena.allocator(), &available, "google/other:google-gemini-cli@g1")) orelse return error.TestExpectedModel;
+    try testing.expectEqualStrings("google-gemini-cli", found_cli.api);
+    try testing.expect((try findModel(arena.allocator(), &available, "openai-codex/anthropic-messages@gpt-5")) == null);
+    try testing.expect((try findModel(arena.allocator(), &available, "openai-codex/openai-responses@gpt-6")) == null);
+}
+
+test "a run's token counts past what JSON integers hold saturate at the largest one rather than trap" {
+    scripted_usage = .{ .input = (1 << 63) + 1, .output = 7 };
+    defer scripted_usage = .{ .input = 11, .output = 7 };
+    var script = Script{ .tool_first = true, .reply = "big" };
+    var harness: Harness = undefined;
+    try harness.init(&script);
+    defer harness.deinit();
+    _ = try harness.submit("count");
+    try harness.untilTerminal();
+    const usage = harness.terminal().?.object.get("payload").?.object.get("usage").?.object;
+    try testing.expectEqual(@as(i64, std.math.maxInt(i64)), usage.get("input_tokens").?.integer);
+    try testing.expectEqual(@as(i64, 14), usage.get("output_tokens").?.integer);
+    try testing.expectEqual(@as(i64, std.math.maxInt(i64)), usage.get("total_tokens").?.integer);
+}
+
+test "a switch also takes the provider endpoint's ref for a model, which names the wire rather than the loop's api" {
+    var script = Script{};
+    var harness: Harness = undefined;
+    try harness.init(&script);
+    defer harness.deinit();
+    const a = harness.arena.allocator();
+    var refusal = contract.Refusal{};
+
+    const switched = try harness.session.vtable.switch_model.?(harness.session.ptr, a, &.{ .session_id = harness.session.id(), .model_id = "scripted/openai-chat-completions@other-model" }, &refusal);
+    try testing.expectEqualStrings("scripted/openai-completions@other-model", switched.state.current_model_id.?);
+    try testing.expectError(error.ModelNotFound, harness.session.vtable.switch_model.?(harness.session.ptr, a, &.{ .session_id = harness.session.id(), .model_id = "scripted/openai-responses@other-model" }, &refusal));
+    try testing.expectError(error.ModelNotFound, harness.session.vtable.switch_model.?(harness.session.ptr, a, &.{ .session_id = harness.session.id(), .model_id = "scripted/openai-chat-completions@missing" }, &refusal));
 }
 
 test "a catalog the terminal UI refreshes is served once the session next switches, and a listing before that keeps the one it serves" {
