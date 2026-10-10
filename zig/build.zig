@@ -3289,6 +3289,7 @@ fn providerCatalogDataModule(b: *std.Build, target: std.Build.ResolvedTarget, op
         base_url: []const u8,
         region: ?[]const u8 = null,
         carries_version: bool = false,
+        session_header: ?[]const u8 = null,
     };
     const Origin = struct {
         exact: []const []const u8 = &.{},
@@ -3388,7 +3389,7 @@ fn providerCatalogDataModule(b: *std.Build, target: std.Build.ResolvedTarget, op
     out.appendSlice(gpa, "pub const AuthKind = enum { api_key, oauth, none };\n\n") catch @panic("out of memory");
     out.appendSlice(gpa, "pub const Offering = enum { coding_plan, subscription, api_key };\n\n") catch @panic("out of memory");
     out.appendSlice(gpa, "pub const Status = enum { current, supported, withheld };\n\n") catch @panic("out of memory");
-    out.appendSlice(gpa, "pub const Endpoint = struct {\n    wire: []const u8,\n    base_url: []const u8,\n    region: ?[]const u8 = null,\n    carries_version: bool = false,\n};\n\n") catch @panic("out of memory");
+    out.appendSlice(gpa, "pub const Endpoint = struct {\n    wire: []const u8,\n    base_url: []const u8,\n    region: ?[]const u8 = null,\n    carries_version: bool = false,\n    session_header: ?[]const u8 = null,\n};\n\n") catch @panic("out of memory");
     out.appendSlice(gpa, "pub const Model = struct {\n    id: []const u8,\n    name: ?[]const u8 = null,\n    context_window: ?u32 = null,\n    max_context_window: ?u32 = null,\n    max_tokens: ?u32 = null,\n};\n\n") catch @panic("out of memory");
     out.appendSlice(gpa, "pub const OAuthOrigin = struct {\n    exact: []const []const u8 = &.{},\n    domain: ?[]const u8 = null,\n    credential_declares_origin: bool = false,\n};\n\n") catch @panic("out of memory");
     out.appendSlice(gpa, "pub const Provider = struct {\n    id: []const u8,\n    display_name: ?[]const u8 = null,\n    auth: []const AuthKind = &.{},\n    offering: ?Offering = null,\n    status: ?Status = null,\n    credential_env: []const []const u8 = &.{},\n    base_url_env: []const []const u8 = &.{},\n    region_env: ?[]const u8 = null,\n    default_region: ?[]const u8 = null,\n    wires: []const []const u8 = &.{},\n    base_url_source: ?[]const u8 = null,\n    endpoints: []const Endpoint = &.{},\n    models_endpoint: ?[]const u8 = null,\n    models_dev: ?[]const u8 = null,\n    context_window: ?u32 = null,\n    max_context_window: ?u32 = null,\n    max_tokens: ?u32 = null,\n    models: []const Model = &.{},\n    oauth_origin: ?OAuthOrigin = null,\n    docs: ?[]const u8 = null,\n};\n\n") catch @panic("out of memory");
@@ -3436,6 +3437,9 @@ fn providerCatalogDataModule(b: *std.Build, target: std.Build.ResolvedTarget, op
                 }
                 if (endpoint.carries_version) {
                     out.appendSlice(gpa, ", .carries_version = true") catch @panic("out of memory");
+                }
+                if (endpoint.session_header) |header| {
+                    out.print(gpa, ", .session_header = \"{f}\"", .{std.zig.fmtString(header)}) catch @panic("out of memory");
                 }
                 out.appendSlice(gpa, " },\n") catch @panic("out of memory");
             }

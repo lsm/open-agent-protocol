@@ -1145,8 +1145,12 @@ fn pushEvent(stream: *event_stream.AssistantMessageEventStream, event: ai_types.
 
 const client_user_agent = "oapx/" ++ version;
 
+fn sessionHeaderFor(model: ai_types.Model) ?[]const u8 {
+    return provider_catalog.sessionHeader(model.provider, request_wire.id);
+}
+
 fn wantsConversationId(model: ai_types.Model) bool {
-    return std.mem.eql(u8, model.provider, "opencode-go");
+    return sessionHeaderFor(model) != null;
 }
 
 fn hashField(hasher: *std.hash.Wyhash, tag: u8, bytes: []const u8) void {
@@ -1317,13 +1321,13 @@ fn runThread(ctx: *ThreadCtx) void {
         }
     }
 
-    if (ctx.conversation_id) |id| {
-        headers.append(allocator, .{ .name = "x-opencode-session", .value = id }) catch {
+    if (ctx.conversation_id) |id| if (sessionHeaderFor(model)) |header_name| {
+        headers.append(allocator, .{ .name = header_name, .value = id }) catch {
             ctx.deinit();
             stream.completeWithError("oom headers");
             return;
         };
-    }
+    };
 
     const user_agent_override: ?[]const u8 = if (isKimiModel(model))
         "claude-code/0.1.0"

@@ -77,6 +77,10 @@
         "carries_version": {
           "description": "true when base_url already contains the API version (v1, v3, v4…), so the request path is the wire's path without its leading /v1. Absent means the wire's full path is appended.",
           "type": "boolean"
+        },
+        "session_header": {
+          "description": "A request header this endpoint refuses to route without, carrying an opaque id the caller keeps for one conversation and changes for the next. Absent means the endpoint needs none.",
+          "$ref": "#/$defs/nonEmptyString"
         }
       },
       "additionalProperties": false
