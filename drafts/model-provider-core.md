@@ -417,9 +417,11 @@ about a model.
 `oapx` publishes `cost`, `release_date` and `family` from models.dev's entry for
 a model whenever it reads models.dev for that model's limits, which is most
 rows, since few listings carry every limit. A rate models.dev omits, or lists
-as negative, stays absent, and an empty string is not published. It does not
-fetch models.dev for facts alone, so a row whose listing carries every limit
-publishes none of the three.
+as negative, stays absent, and an empty string is not published. A catalog row
+reads models.dev only when its listing lacks a limit, so one whose listing
+carries every limit publishes none of the three. Anthropic always reads it when
+a credential is present, so an Anthropic model models.dev lists publishes its
+facts whatever its listing carries.
 
 **What is judged, and what is only an obligation.** The shape of each member is
 judged, and it is decidable from one response: a list is non-empty, a published
