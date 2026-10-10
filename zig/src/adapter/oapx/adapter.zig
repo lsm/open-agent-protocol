@@ -1388,8 +1388,8 @@ pub const Session = struct {
             .turn_end => |payload| run.stop_reason = stopReasonText(payload.stop_reason),
             .message_end => |payload| {
                 if (payload.role == .assistant) {
-                    run.output_tokens += payload.output_tokens;
-                    run.input_tokens += payload.input_tokens;
+                    run.output_tokens +|= payload.output_tokens;
+                    run.input_tokens +|= payload.input_tokens;
                 }
                 if (payload.role == .user and payload.steering) try self.applySteer(a, run);
             },
@@ -1447,9 +1447,9 @@ pub const Session = struct {
         try payload.run(self, run);
         if (run.output_tokens > 0 or run.input_tokens > 0) {
             var usage = Payload.init(a);
-            try usage.put("input_tokens", .{ .integer = @intCast(run.input_tokens) });
-            try usage.put("output_tokens", .{ .integer = @intCast(run.output_tokens) });
-            try usage.put("total_tokens", .{ .integer = @intCast(run.input_tokens + run.output_tokens) });
+            try usage.put("input_tokens", tokenCount(run.input_tokens));
+            try usage.put("output_tokens", tokenCount(run.output_tokens));
+            try usage.put("total_tokens", tokenCount(run.input_tokens +| run.output_tokens));
             try payload.put("usage", usage.value());
         }
         const cancelled = reason == .cancelled or run.status == .cancelling;
@@ -1865,8 +1865,23 @@ fn refFor(allocator: std.mem.Allocator, model: ai_types.Model) ![]u8 {
 
 fn findModel(arena: std.mem.Allocator, available: []const ai_types.Model, wanted: []const u8) error{OutOfMemory}!?ai_types.Model {
     if (try findModelRef(arena, available, wanted)) |model| return model;
-    const named = (try loopRefForWireRef(arena, wanted)) orelse return null;
-    return findModelRef(arena, available, named);
+    return findModelOnWire(available, wanted);
+}
+
+fn findModelOnWire(available: []const ai_types.Model, wanted: []const u8) ?ai_types.Model {
+    const parsed = oap_provider_types.parseModelRef(wanted) orelse return null;
+    const named: oap_provider_catalog.WireMapping = .{ .wire = parsed.wire, .framing = .sse, .wire_id = parsed.wire_id };
+    for (available) |model| {
+        if (!std.mem.eql(u8, model.provider, parsed.provider_id)) continue;
+        if (!std.mem.eql(u8, model.id, parsed.model_id)) continue;
+        const mapping = oap_provider_catalog.mapApiToWire(model.api) orelse continue;
+        if (oap_provider_catalog.sameWire(mapping, named)) return model;
+    }
+    return null;
+}
+
+fn tokenCount(count: u64) std.json.Value {
+    return .{ .integer = @intCast(@min(count, std.math.maxInt(i64))) };
 }
 
 fn findModelRef(arena: std.mem.Allocator, available: []const ai_types.Model, wanted: []const u8) error{OutOfMemory}!?ai_types.Model {
@@ -1878,15 +1893,6 @@ fn findModelRef(arena: std.mem.Allocator, available: []const ai_types.Model, wan
         if (std.mem.eql(u8, ref, wanted)) return model;
     }
     return null;
-}
-
-fn loopRefForWireRef(arena: std.mem.Allocator, wanted: []const u8) error{OutOfMemory}!?[]const u8 {
-    const parsed = oap_provider_types.parseModelRef(wanted) orelse return null;
-    const api = oap_provider_catalog.apiForWire(parsed.wire, parsed.wire_id) orelse return null;
-    return model_ref.formatModelRef(arena, parsed.provider_id, api, parsed.model_id) catch |err| switch (err) {
-        error.OutOfMemory => return error.OutOfMemory,
-        else => return null,
-    };
 }
 
 fn userText(arena: std.mem.Allocator, messages: []const oap_types.Message) ![]const u8 {
@@ -2149,6 +2155,7 @@ const Script = struct {
 };
 
 var held_tool = std.atomic.Value(bool).init(false);
+var scripted_usage: ai_types.Usage = .{ .input = 11, .output = 7 };
 
 fn scriptedMessage(allocator: std.mem.Allocator, model: ai_types.Model, content: []const ai_types.AssistantContent, reason: ai_types.StopReason) !ai_types.AssistantMessage {
     const blocks = try allocator.alloc(ai_types.AssistantContent, content.len);
@@ -2166,7 +2173,7 @@ fn scriptedMessage(allocator: std.mem.Allocator, model: ai_types.Model, content:
             else => unreachable,
         };
     }
-    return .{ .content = blocks, .api = model.api, .provider = model.provider, .model = model.id, .usage = .{ .input = 11, .output = 7 }, .stop_reason = reason, .timestamp = 0 };
+    return .{ .content = blocks, .api = model.api, .provider = model.provider, .model = model.id, .usage = scripted_usage, .stop_reason = reason, .timestamp = 0 };
 }
 
 fn bareMessage(model: ai_types.Model, reason: ai_types.StopReason) ai_types.AssistantMessage {
@@ -2448,6 +2455,58 @@ test "models lists the runtime's catalog as model refs, and a switch takes one r
 
     try testing.expectError(error.ModelNotFound, harness.session.vtable.switch_model.?(harness.session.ptr, a, &.{ .session_id = harness.session.id(), .model_id = "scripted/openai-completions@missing" }, &refusal));
     try testing.expectEqualStrings("scripted/openai-completions@missing", refusal.model_id);
+}
+
+test "a provider ref finds the model whose api serves that wire, even where two apis share it" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var codex = other_model;
+    codex.provider = "openai-codex";
+    codex.api = "openai-codex-responses";
+    codex.id = "gpt-5";
+    var plain = other_model;
+    plain.provider = "openai";
+    plain.api = "openai-responses";
+    plain.id = "gpt-5";
+    var azure = other_model;
+    azure.provider = "azure";
+    azure.api = "azure-openai-responses";
+    azure.id = "gpt-5";
+    var gemini = other_model;
+    gemini.provider = "google";
+    gemini.api = "google-generative-ai";
+    gemini.id = "g1";
+    var gemini_cli = gemini;
+    gemini_cli.api = "google-gemini-cli";
+    const available = [_]ai_types.Model{ test_model, other_model, codex, plain, azure, gemini, gemini_cli };
+
+    const found_codex = (try findModel(arena.allocator(), &available, "openai-codex/openai-responses@gpt-5")) orelse return error.TestExpectedModel;
+    try testing.expectEqualStrings("openai-codex-responses", found_codex.api);
+    const found_plain = (try findModel(arena.allocator(), &available, "openai/openai-responses@gpt-5")) orelse return error.TestExpectedModel;
+    try testing.expectEqualStrings("openai", found_plain.provider);
+    const found_loop = (try findModel(arena.allocator(), &available, "openai-codex/openai-codex-responses@gpt-5")) orelse return error.TestExpectedModel;
+    try testing.expectEqualStrings("openai-codex", found_loop.provider);
+    const found_azure = (try findModel(arena.allocator(), &available, "azure/openai-responses@gpt-5")) orelse return error.TestExpectedModel;
+    try testing.expectEqualStrings("azure", found_azure.provider);
+    const found_cli = (try findModel(arena.allocator(), &available, "google/other:google-gemini-cli@g1")) orelse return error.TestExpectedModel;
+    try testing.expectEqualStrings("google-gemini-cli", found_cli.api);
+    try testing.expect((try findModel(arena.allocator(), &available, "openai-codex/anthropic-messages@gpt-5")) == null);
+    try testing.expect((try findModel(arena.allocator(), &available, "openai-codex/openai-responses@gpt-6")) == null);
+}
+
+test "a run's token counts past what JSON integers hold saturate at the largest one rather than trap" {
+    scripted_usage = .{ .input = (1 << 63) + 1, .output = 7 };
+    defer scripted_usage = .{ .input = 11, .output = 7 };
+    var script = Script{ .tool_first = true, .reply = "big" };
+    var harness: Harness = undefined;
+    try harness.init(&script);
+    defer harness.deinit();
+    _ = try harness.submit("count");
+    try harness.untilTerminal();
+    const usage = harness.terminal().?.object.get("payload").?.object.get("usage").?.object;
+    try testing.expectEqual(@as(i64, std.math.maxInt(i64)), usage.get("input_tokens").?.integer);
+    try testing.expectEqual(@as(i64, 14), usage.get("output_tokens").?.integer);
+    try testing.expectEqual(@as(i64, std.math.maxInt(i64)), usage.get("total_tokens").?.integer);
 }
 
 test "a switch also takes the provider endpoint's ref for a model, which names the wire rather than the loop's api" {

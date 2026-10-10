@@ -170,7 +170,7 @@ pub fn estimateMessageTokens(message: ai_types.Message) u64 {
 const full_window_output_tokens: u64 = 1024;
 
 fn inflated(estimate: u64) u64 {
-    return estimate + estimate / 3;
+    return estimate +| estimate / 3;
 }
 
 fn headroom(context_window: u64) u64 {
@@ -184,9 +184,9 @@ pub fn promptTokens(context: ai_types.Context) u64 {
         index -= 1;
         if (messages[index] != .assistant) continue;
         const usage = messages[index].assistant.usage;
-        const reported = usage.input + usage.cache_read + usage.cache_write;
+        const reported = usage.input +| usage.cache_read +| usage.cache_write;
         if (reported == 0) continue;
-        return reported + usage.output + inflated(estimateMessages(messages[index + 1 ..]).estimated_tokens);
+        return reported +| usage.output +| inflated(estimateMessages(messages[index + 1 ..]).estimated_tokens);
     }
     return inflated(estimatePromptTokens(context));
 }
@@ -194,7 +194,7 @@ pub fn promptTokens(context: ai_types.Context) u64 {
 pub fn outputLimit(model: ai_types.Model, requested: ?u32, context: ai_types.Context) ?u32 {
     const wanted: u64 = requested orelse model.max_tokens;
     if (model.context_window == 0 or wanted == 0) return requested;
-    const prompt = promptTokens(context) + headroom(model.context_window);
+    const prompt = promptTokens(context) +| headroom(model.context_window);
     if (model.context_window <= prompt) return @intCast(@min(wanted, full_window_output_tokens));
     const room = model.context_window - prompt;
     if (room >= wanted) return requested;
