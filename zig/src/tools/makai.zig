@@ -5746,6 +5746,11 @@ test "a claude entry naming a catalog provider hands the child that row's endpoi
     try std.testing.expectEqualStrings("ANTHROPIC_BASE_URL=https://api.deepseek.com/anthropic", stored[0]);
     try std.testing.expectEqualStrings("ANTHROPIC_API_KEY=ds-stored", stored[1]);
 
+    try environ.put("GLM_API_KEY", "glm-env");
+    const zai = try routedClaudeEnvironment(surface, arena, .{ .name = "glm", .kind = "claude", .model_provider = "zai-coding-plan" }, &environ, noStoredCredential);
+    try std.testing.expectEqualStrings("ANTHROPIC_BASE_URL=https://api.z.ai/api/anthropic", zai[0]);
+    try std.testing.expectEqualStrings("ANTHROPIC_API_KEY=glm-env", zai[1]);
+
     const bearer = try routedClaudeEnvironment(surface, arena, .{ .name = "direct", .kind = "claude", .model_provider = "anthropic" }, &environ, noStoredCredential);
     try std.testing.expectEqualStrings("ANTHROPIC_BASE_URL=https://api.anthropic.com", bearer[0]);
     try std.testing.expectEqualStrings("ANTHROPIC_AUTH_TOKEN=ambient-token", bearer[1]);
@@ -5762,11 +5767,11 @@ test "a claude entry naming a provider it cannot route to is refused by name bef
     defer compat.stdio.close(stderr_pipe[0]);
     const surface = routedClaudeTestSurface(arena, stderr_pipe[1]);
     var environ = std.process.Environ.Map.init(arena);
-    try environ.put("ZHIPU_API_KEY", "zai-env");
+    try environ.put("OPENROUTER_API_KEY", "or-env");
     try environ.put("DEEPSEEK_API_KEY", "ds-env");
 
     try std.testing.expectError(error.BackendRefused, routedClaudeEnvironment(surface, arena, .{ .name = "a", .kind = "claude", .model_provider = "nonesuch" }, &environ, noStoredCredential));
-    try std.testing.expectError(error.BackendRefused, routedClaudeEnvironment(surface, arena, .{ .name = "b", .kind = "claude", .model_provider = "zai-coding-plan" }, &environ, noStoredCredential));
+    try std.testing.expectError(error.BackendRefused, routedClaudeEnvironment(surface, arena, .{ .name = "b", .kind = "claude", .model_provider = "openrouter" }, &environ, noStoredCredential));
     try std.testing.expectError(error.BackendRefused, routedClaudeEnvironment(surface, arena, .{ .name = "c", .kind = "claude", .environment = &.{"ANTHROPIC_BASE_URL=https://elsewhere.test"}, .model_provider = "deepseek" }, &environ, noStoredCredential));
     try std.testing.expectError(error.BackendRefused, routedClaudeEnvironment(surface, arena, .{ .name = "d", .kind = "claude", .model_provider = "minimax-coding-plan" }, &environ, noStoredCredential));
     try std.testing.expectError(error.BackendRefused, routedClaudeEnvironment(surface, arena, .{ .name = "e", .kind = "claude", .model_provider = "anthropic" }, &environ, storedAnthropicLogin));
@@ -5776,7 +5781,7 @@ test "a claude entry naming a provider it cannot route to is refused by name bef
     defer std.testing.allocator.free(complained);
     try std.testing.expectEqualStrings(
         "oapx serve agent: backend \"a\" names model_provider \"nonesuch\", which is no catalog provider\n" ++
-            "oapx serve agent: backend \"b\" names model_provider \"zai-coding-plan\", which serves no anthropic-messages endpoint, the only wire Claude Code's provider settings reach\n" ++
+            "oapx serve agent: backend \"b\" names model_provider \"openrouter\", which serves no anthropic-messages endpoint, the only wire Claude Code's provider settings reach\n" ++
             "oapx serve agent: backend \"c\" sets ANTHROPIC_BASE_URL in \"environment\", which model_provider sets; drop one\n" ++
             "oapx serve agent: backend \"d\" names model_provider \"minimax-coding-plan\", which has no credential; set MINIMAX_API_KEY or sign in with oapx\n" ++
             "oapx serve agent: backend \"e\" names model_provider \"anthropic\", whose credential is an OAuth login, which oapx does not hand to a harness; set an API key\n",
