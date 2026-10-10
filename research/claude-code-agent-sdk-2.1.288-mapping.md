@@ -321,5 +321,9 @@ adapter does not advertise `run.structured_output`: that control is per run.
   The CLI's own schema failure ends the run with
   `error_max_structured_output_retries`, settled `run.failed`.
 
-Not verified against a live 2.1.288 run: the field and flags are read from the
-SDK, and the adapter's tests feed the frame shape the SDK declares.
+Verified live on 2026-10-10 against Claude Code **2.1.295** (installed locally,
+not the pinned 2.1.288): with `--input-format stream-json --output-format
+stream-json --json-schema <object schema>` and one user frame on stdin, the
+`result` frame came back `subtype: "success"` with `structured_output` holding
+the schema's object, and `result` holding the same object as JSON text. Not
+re-run on 2.1.288 itself; the SDK reading above is what covers the pin.
