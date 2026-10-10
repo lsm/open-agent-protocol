@@ -82,7 +82,8 @@ pub fn real_builder(path: &std::path::Path) -> ClientBuilder {
             builder = builder.env(key, value);
         }
     }
-    builder = builder.env("HOME", smoke_home().display().to_string());
+    let home = smoke_home().display().to_string();
+    builder = builder.env("HOME", &home).env("USERPROFILE", &home);
     // On macOS the runtime reads credentials from the login Keychain before it
     // answers anything auth-aware, and an unsigned local build blocks there
     // waiting on a GUI prompt that a test runner can never satisfy. Naming a
