@@ -69,6 +69,7 @@ func newFixtureSmokeClientWithClosePolicy(t *testing.T, allowNonzeroExit bool) *
 	home := smokeHome(t)
 	env := append(smokeEnviron(t),
 		"HOME="+home,
+		"USERPROFILE="+home,
 		"XDG_CONFIG_HOME="+home,
 		"OAPX_KEYCHAIN_SERVICE=com.makai.go-sdk-test."+newULID(),
 		"OAPX_TEST_FIXTURE_PROVIDER=1",
@@ -101,6 +102,7 @@ func newSmokeClientWithClosePolicy(t *testing.T, allowNonzeroExit bool) *Client 
 	home := smokeHome(t)
 	env := append(smokeEnviron(t),
 		"HOME="+home,
+		"USERPROFILE="+home,
 		"XDG_CONFIG_HOME="+home,
 		"OAPX_KEYCHAIN_SERVICE=com.makai.go-sdk-test."+newULID(),
 	)
@@ -455,6 +457,7 @@ func TestSmokeCloseTerminatesTheRuntime(t *testing.T) {
 		BinaryPath: binary,
 		Env: append(os.Environ(),
 			"HOME="+home,
+			"USERPROFILE="+home,
 			"OAPX_KEYCHAIN_SERVICE=com.makai.go-sdk-test."+newULID(),
 		),
 		HandshakeTimeout: 15 * time.Second,

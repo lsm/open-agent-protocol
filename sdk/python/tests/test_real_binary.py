@@ -68,7 +68,7 @@ def smoke_env() -> dict[str, str]:
     with open(os.path.join(home, ".oapx", "providers.json"), "w") as handle:
         json.dump(SMOKE_PROVIDERS, handle)
     inherited = {name: value for name, value in os.environ.items() if name not in CATALOG_CREDENTIALS}
-    return {**inherited, "HOME": home, "XDG_CONFIG_HOME": home}
+    return {**inherited, "HOME": home, "USERPROFILE": home, "XDG_CONFIG_HOME": home}
 
 
 async def open_transport(binary: str, **kwargs: object) -> StdioTransport:
