@@ -10,7 +10,7 @@ written down; the first row below is the evidence that it is a coding plan key. 
 
 | Request | Auth header | Answer |
 | --- | --- | --- |
-| `GET https://api.z.ai/api/coding/paas/v4/models` | `Authorization: Bearer` | `200`, an OpenAI-shaped list (`object: list`, `data[].id`), `glm-4.5` through `glm-5.2` among them |
+| `GET https://api.z.ai/api/coding/paas/v4/models` | `Authorization: Bearer` and `x-api-key` together | `200`, an OpenAI-shaped list (`object: list`, `data[].id`), `glm-4.5` through `glm-5.2` among them |
 | `GET https://api.z.ai/api/anthropic/v1/models` | `x-api-key` alone | `200`, an Anthropic-shaped list (`data[].id`, `display_name`, `created_at`, `type: model`), the same ids |
 | `POST https://api.z.ai/api/anthropic/v1/messages`, model `glm-5.1`, `anthropic-version: 2023-06-01` | `x-api-key` alone | `200`, an Anthropic `message` with `stop_reason: end_turn` and `usage` |
 | `GET https://api.z.ai/api/anthropic/models` | `x-api-key`, then `Authorization: Bearer` | `200` carrying `{"code":500,"msg":"404 NOT_FOUND","success":false}` both times |
