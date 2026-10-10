@@ -1,6 +1,7 @@
 package claude
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -1049,7 +1050,7 @@ func (s *Session) publishTerminal(run *runState, frame *native.ResultFrame) {
 
 	s.sweepRun(run)
 	usage := &protocol.Usage{InputTokens: uint64(frame.Usage.InputTokens), OutputTokens: uint64(frame.Usage.OutputTokens), TotalTokens: uint64(frame.Usage.InputTokens + frame.Usage.OutputTokens)}
-	reported := reportedCost(frame)
+	reported := reportedExtensions(frame)
 	switch {
 	case frame.Cancelled():
 		_, _ = s.emitWith(run, protocol.TypeRunCancelled, protocol.RunCancelledPayload{SessionID: s.state.SessionID, RunID: run.id, Reason: "interrupt confirmed by terminal_reason " + frame.TerminalReason, Usage: usage, DurationMS: reportedDuration(frame.DurationMS)}, true, "", reported)
@@ -1069,17 +1070,25 @@ func (s *Session) publishTerminal(run *runState, frame *native.ResultFrame) {
 	}
 }
 
-const costExtension = "com.anthropic.claude-code.cost"
+const (
+	costExtension             = "com.anthropic.claude-code.cost"
+	structuredOutputExtension = "com.anthropic.claude-code.structured_output"
+)
 
-func reportedCost(frame *native.ResultFrame) map[string]json.RawMessage {
-	if frame.TotalCostUSD == nil {
+func reportedExtensions(frame *native.ResultFrame) map[string]json.RawMessage {
+	reported := map[string]json.RawMessage{}
+	if frame.TotalCostUSD != nil {
+		if value, err := json.Marshal(map[string]float64{"total_cost_usd": *frame.TotalCostUSD}); err == nil {
+			reported[costExtension] = value
+		}
+	}
+	if output := bytes.TrimSpace(frame.StructuredOutput); len(output) > 0 && !bytes.Equal(output, []byte("null")) {
+		reported[structuredOutputExtension] = append(json.RawMessage(nil), output...)
+	}
+	if len(reported) == 0 {
 		return nil
 	}
-	value, err := json.Marshal(map[string]float64{"total_cost_usd": *frame.TotalCostUSD})
-	if err != nil {
-		return nil
-	}
-	return map[string]json.RawMessage{costExtension: value}
+	return reported
 }
 
 func (s *Session) sweepRun(run *runState) {

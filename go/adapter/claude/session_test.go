@@ -2211,6 +2211,28 @@ func TestATerminalCarriesTheCostTheHarnessReported(t *testing.T) {
 	}
 }
 
+func TestATerminalCarriesTheStructuredOutputTheHarnessReported(t *testing.T) {
+	frame := strings.Replace(resultFrame("REPLACE_UUID", "success", false, "completed", "done", 0), `"result":"done",`, `"result":"done","structured_output":{"findings":[{"line":3}]},`, 1)
+	admission, events := settledWithFrame(t, frame)
+	assertValidTrace(t, helloSubmit, admission, events)
+	carried := terminalOf(events).Extensions[structuredOutputExtension]
+	if string(carried) != `{"findings":[{"line":3}]}` {
+		t.Fatalf("structured output extension = %s, want the object the frame reported", carried)
+	}
+	if terminalOf(events).Extensions[costExtension] == nil {
+		t.Fatal("the cost went missing beside the structured output")
+	}
+}
+
+func TestATerminalWhoseStructuredOutputIsNullCarriesNone(t *testing.T) {
+	frame := strings.Replace(resultFrame("REPLACE_UUID", "success", false, "completed", "done", 0), `"result":"done",`, `"result":"done","structured_output":null,`, 1)
+	admission, events := settledWithFrame(t, frame)
+	assertValidTrace(t, helloSubmit, admission, events)
+	if carried, ok := terminalOf(events).Extensions[structuredOutputExtension]; ok {
+		t.Fatalf("structured output extension = %s, want none for a null", carried)
+	}
+}
+
 func TestATerminalWithoutAReportedCostCarriesNoExtension(t *testing.T) {
 	frame := strings.Replace(resultFrame("REPLACE_UUID", "success", false, "completed", "done", 0), `"total_cost_usd":0.0001,`, "", 1)
 	if strings.Contains(frame, "total_cost_usd") {

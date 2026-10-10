@@ -150,6 +150,7 @@ type ResultFrame struct {
 	SessionID         string          `json:"session_id"`
 	StopReason        *string         `json:"stop_reason"`
 	TotalCostUSD      *float64        `json:"total_cost_usd"`
+	StructuredOutput  json.RawMessage `json:"structured_output"`
 	Usage             Usage           `json:"usage"`
 	ModelUsage        json.RawMessage `json:"modelUsage"`
 	PermissionDenials json.RawMessage `json:"permission_denials"`

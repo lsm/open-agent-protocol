@@ -5,6 +5,7 @@ const json_encode = @import("json_encode");
 
 pub const capability_revision = harness_pins.claude_code_capability_revision;
 pub const cost_extension = "com.anthropic.claude-code.cost";
+pub const structured_output_extension = "com.anthropic.claude-code.structured_output";
 const protocol_name = "open-agent-protocol";
 pub const protocol_version = "0.1";
 pub const profile = "open-agent-protocol.agent-control-core";
@@ -290,13 +291,17 @@ pub const Reducer = struct {
         return self.emitEnvelope(run, kind, payload, .{ .extensions = extensions });
     }
 
-    fn reportedCost(self: *Reducer, frame: std.json.ObjectMap) !?std.json.Value {
-        const carried = frame.get("total_cost_usd") orelse return null;
-        if (carried == .null) return null;
-        var cost = self.object();
-        try self.put(&cost, "total_cost_usd", carried);
+    fn reportedExtensions(self: *Reducer, frame: std.json.ObjectMap) !?std.json.Value {
         var extensions = self.object();
-        try self.put(&extensions, cost_extension, .{ .object = cost });
+        if (frame.get("total_cost_usd")) |carried| if (carried != .null) {
+            var cost = self.object();
+            try self.put(&cost, "total_cost_usd", carried);
+            try self.put(&extensions, cost_extension, .{ .object = cost });
+        };
+        if (frame.get("structured_output")) |output| if (output != .null) {
+            try self.put(&extensions, structured_output_extension, output);
+        };
+        if (extensions.count() == 0) return null;
         return .{ .object = extensions };
     }
 
@@ -702,7 +707,7 @@ pub const Reducer = struct {
         try self.sweepRun();
 
         var payload = try self.terminalPayload(run);
-        const reported = try self.reportedCost(frame);
+        const reported = try self.reportedExtensions(frame);
         if (cancelled(frame)) {
             const reason = try std.fmt.allocPrint(self.allocator(), "interrupt confirmed by terminal_reason {s}", .{stringMember(frame, "terminal_reason") orelse ""});
             try self.put(&payload, "reason", str(reason));
@@ -1619,6 +1624,34 @@ test "a terminal carries the cost the harness reported, and none when it reporte
     try startedRun(&silent, free.allocator(), "turn-1");
     try observeText(&silent, free.allocator(),
         \\{"type":"result","session_id":"s","subtype":"success","result":"done","user_message_uuid":"turn-1","queued_turn_count":0,"uuid":"r1"}
+    );
+    const quiet = silent.envelopes.items[silent.envelopes.items.len - 1].object;
+    try testing.expect(quiet.get("extensions") == null);
+}
+
+test "a terminal carries the structured output the harness reported, and none for a null" {
+    var shaped = std.heap.ArenaAllocator.init(testing.allocator);
+    defer shaped.deinit();
+    var reducer = Reducer.init(&shaped, .{});
+    reducer.open();
+    try startedRun(&reducer, shaped.allocator(), "turn-1");
+    try observeText(&reducer, shaped.allocator(),
+        \\{"type":"result","session_id":"s","subtype":"success","result":"done","total_cost_usd":0.0001,"structured_output":{"findings":[{"line":3}]},"user_message_uuid":"turn-1","queued_turn_count":0,"uuid":"r1"}
+    );
+    const terminal = reducer.envelopes.items[reducer.envelopes.items.len - 1].object;
+    const extensions = terminal.get("extensions") orelse return error.NoExtensions;
+    const carried = extensions.object.get(structured_output_extension) orelse return error.NoStructuredOutput;
+    const findings = carried.object.get("findings") orelse return error.NoFindings;
+    try testing.expectEqual(@as(usize, 1), findings.array.items.len);
+    try testing.expect(extensions.object.get(cost_extension) != null);
+
+    var nulled = std.heap.ArenaAllocator.init(testing.allocator);
+    defer nulled.deinit();
+    var silent = Reducer.init(&nulled, .{});
+    silent.open();
+    try startedRun(&silent, nulled.allocator(), "turn-1");
+    try observeText(&silent, nulled.allocator(),
+        \\{"type":"result","session_id":"s","subtype":"success","result":"done","structured_output":null,"user_message_uuid":"turn-1","queued_turn_count":0,"uuid":"r1"}
     );
     const quiet = silent.envelopes.items[silent.envelopes.items.len - 1].object;
     try testing.expect(quiet.get("extensions") == null);
