@@ -5,6 +5,7 @@
     {
       "label": "v2.0.24",
       "status": "current",
+      "admits": ["2.0.24"],
       "endpoint_version": "v2.0.24",
       "capability_revision": "opencode-v2.0.24-oap-v5",
       "ledgers": ["research/opencode-v2.0.24-mapping.md"],
