@@ -1390,6 +1390,7 @@ pub const Session = struct {
                 if (payload.role == .assistant) {
                     run.output_tokens +|= payload.output_tokens;
                     run.input_tokens +|= payload.input_tokens;
+                    try self.completeMessage(a, run, payload.input_tokens, payload.output_tokens);
                 }
                 if (payload.role == .user and payload.steering) try self.applySteer(a, run);
             },
@@ -1405,6 +1406,22 @@ pub const Session = struct {
             },
             else => {},
         }
+    }
+
+    fn completeMessage(self: *Session, a: std.mem.Allocator, run: *Run, input_tokens: u64, output_tokens: u64) contract.Failure!void {
+        if (run.message_id.len == 0) run.message_id = try self.owner.nextID(self.keep.allocator(), "message");
+        var completed = Payload.init(a);
+        try completed.run(self, run);
+        try completed.put("message_id", .{ .string = run.message_id });
+        if (input_tokens > 0 or output_tokens > 0) {
+            var usage = Payload.init(a);
+            try usage.put("input_tokens", tokenCount(input_tokens));
+            try usage.put("output_tokens", tokenCount(output_tokens));
+            try usage.put("total_tokens", tokenCount(input_tokens +| output_tokens));
+            try completed.put("usage", usage.value());
+        }
+        try self.emit(run, "content.completed", completed.value(), false);
+        run.message_id = "";
     }
 
     fn emitPart(self: *Session, a: std.mem.Allocator, run: *Run, kind: []const u8, field: []const u8, text: []const u8) contract.Failure!void {
@@ -2393,6 +2410,60 @@ test "a tool the loop runs is published as an endpoint-owned call, requested, st
         try testing.expectEqualStrings("echo_tool", payload.get("name").?.string);
     }
     try testing.expectEqualStrings("run.completed", harness.terminal().?.object.get("type").?.string);
+}
+
+test "each assistant message is closed by one content.completed carrying that call's usage, and no delta streams into a closed message" {
+    var script = Script{ .tool_first = true, .reply = "done" };
+    var harness: Harness = undefined;
+    try harness.init(&script);
+    defer harness.deinit();
+
+    _ = try harness.submit("use the tool");
+    try harness.untilTerminal();
+
+    try testing.expectEqual(@as(usize, 2), harness.count("content.completed"));
+    var closed = std.ArrayList([]const u8).empty;
+    defer closed.deinit(testing.allocator);
+    var streamed = false;
+    for (harness.seen.items) |parsed| {
+        const kind = parsed.value.object.get("type").?.string;
+        const payload = parsed.value.object.get("payload").?.object;
+        if (std.mem.eql(u8, kind, "content.delta")) {
+            const message = payload.get("message_id").?.string;
+            for (closed.items) |done| try testing.expect(!std.mem.eql(u8, done, message));
+            streamed = true;
+        }
+        if (std.mem.eql(u8, kind, "content.completed")) {
+            const message = payload.get("message_id").?.string;
+            for (closed.items) |done| try testing.expect(!std.mem.eql(u8, done, message));
+            try closed.append(testing.allocator, message);
+            const usage = payload.get("usage").?.object;
+            try testing.expectEqual(@as(i64, 11), usage.get("input_tokens").?.integer);
+            try testing.expectEqual(@as(i64, 7), usage.get("output_tokens").?.integer);
+            try testing.expectEqual(@as(i64, 18), usage.get("total_tokens").?.integer);
+        }
+    }
+    try testing.expect(streamed);
+    const run_usage = harness.terminal().?.object.get("payload").?.object.get("usage").?.object;
+    try testing.expectEqual(@as(i64, 14), run_usage.get("output_tokens").?.integer);
+}
+
+test "a message whose call reported no usage is still closed, without a usage member" {
+    scripted_usage = .{};
+    defer scripted_usage = .{ .input = 11, .output = 7 };
+    var script = Script{ .reply = "quiet" };
+    var harness: Harness = undefined;
+    try harness.init(&script);
+    defer harness.deinit();
+
+    _ = try harness.submit("say it");
+    try harness.untilTerminal();
+
+    try testing.expectEqual(@as(usize, 1), harness.count("content.completed"));
+    for (harness.seen.items) |parsed| {
+        if (!std.mem.eql(u8, parsed.value.object.get("type").?.string, "content.completed")) continue;
+        try testing.expect(parsed.value.object.get("payload").?.object.get("usage") == null);
+    }
 }
 
 test "cancelling a run settles it cancelled and leaves the session able to take the next submit" {

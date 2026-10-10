@@ -49,9 +49,13 @@ back as `action.permission.resolve.request` naming the choice the user made: the
 open declines `user_input`, because the TUI has no prompt for them. A run's terminal
 event carries `usage.output_tokens`, and the oapx adapter adds the context the run
 filled as `extensions.oapx.context_tokens`, which the TUI shows on its context gauge
-once the run ends rather than per model call. The output count is a run total, so it
-replaces the TUI's estimate only for a run with one assistant message; a run that spoke
-before a tool call keeps the per-message estimates rather than counting its tokens twice.
+once the run ends rather than per model call. Each assistant message also ends with a
+`content.completed` (Decision 0049) carrying that model call's own `usage`, and the TUI
+takes the message's input and output counts from it, so every message's rate is
+measured, a run that calls tools included. From an endpoint that sends no
+`content.completed`, the run's output total replaces the estimate only for a run with one
+assistant message; a run that spoke before a tool call keeps the per-message estimates
+rather than counting its tokens twice.
 A follow-up queued during a turn is submitted with `delivery: "queue"`, and the turn stays
 open until each reservation has been promoted and run, so it reads as one turn as it does
 locally; clearing the queue or aborting cancels the reservations. Over `--attach` the hub
