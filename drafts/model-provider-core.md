@@ -341,12 +341,12 @@ Eighteen, in five groups.
 control requires it on `capabilities.response` and `models.response`: the whole
 content is bound to one descriptor snapshot.
 
-**`oapx` diverges here.** It reloads its served catalog after a sign-in, and
-after refusing a provider whose key appeared out of band, so its providers and
-models change while `capability_revision` stays the build's version. A caller
-that caches either list by revision holds stale entries after such a reload.
-Until #355 settles how a reload is revisioned, a caller re-reads both lists
-after a sign-in or a `provider_unavailable` refusal.
+`oapx` reloads its served catalog after a sign-in, and after refusing a
+provider whose key appeared out of band, so its revision follows the catalog:
+it is the build's version, `+`, and a digest of the described providers and
+listed models. A reload that changes either list changes the revision, and one
+serving the same catalog keeps it. `auth_status` is left out of the digest,
+because it is not bound to the revision.
 
 #### The model entry
 

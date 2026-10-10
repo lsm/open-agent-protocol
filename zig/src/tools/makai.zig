@@ -2847,6 +2847,45 @@ test "a finished reload replaces the providers the endpoint serves, once per gen
     try std.testing.expect(!try applyServedOapReload(allocator, &server, &cache, &applied));
 }
 
+fn servedOapDescribeRevision(allocator: std.mem.Allocator, server: *oap_provider_server.Server) ![]u8 {
+    const line =
+        "{\"protocol\":\"open-agent-protocol\",\"version\":\"0.1\",\"profile\":\"" ++ oap_provider_types.PROFILE ++
+        "\",\"type\":\"provider.describe.request\",\"id\":\"q\",\"payload\":{}}";
+    try server.handleLine(line);
+    const out = server.popOutbound() orelse return error.MissingDescribeResponse;
+    defer allocator.free(out);
+    var parsed = try std.json.parseFromSlice(std.json.Value, allocator, out, .{});
+    defer parsed.deinit();
+    return allocator.dupe(u8, parsed.value.object.get("capability_revision").?.string);
+}
+
+test "a reload that changes what the provider endpoint serves changes its capability revision, and one serving the same catalog keeps it" {
+    const allocator = std.testing.allocator;
+    var server = oap_provider_server.Server.init(allocator, servedOapProviderOptions(.unsupported));
+    defer server.deinit();
+    oap_served_models_for_test = oap_test_served_models[1..2];
+    defer oap_served_models_for_test = null;
+    try populateOapProviderCatalog(allocator, &server);
+    const before = try servedOapDescribeRevision(allocator, &server);
+    defer allocator.free(before);
+    try std.testing.expect(std.mem.startsWith(u8, before, VERSION ++ "+"));
+
+    var cache: ServedOapModels = .{};
+    defer cache.deinit();
+    var applied: u64 = 0;
+    try cache.reload(allocator, countingServedLoad);
+    try std.testing.expect(try applyServedOapReload(allocator, &server, &cache, &applied));
+    const reloaded = try servedOapDescribeRevision(allocator, &server);
+    defer allocator.free(reloaded);
+    try std.testing.expect(!std.mem.eql(u8, before, reloaded));
+
+    try cache.reload(allocator, countingServedLoad);
+    try std.testing.expect(try applyServedOapReload(allocator, &server, &cache, &applied));
+    const same = try servedOapDescribeRevision(allocator, &server);
+    defer allocator.free(same);
+    try std.testing.expectEqualStrings(reloaded, same);
+}
+
 test "the provider endpoint serves no provider when it discovered no model, as with no key present" {
     const allocator = std.testing.allocator;
     var server = oapTestProviderServer(allocator);
@@ -3205,6 +3244,20 @@ fn startServingOapCatalog(allocator: std.mem.Allocator, server: *oap_provider_se
     }
     try populateOapProviderCatalog(allocator, server);
     return served_oap_models.generation.load(.seq_cst);
+}
+
+fn servedOapProviderOptions(grant_channel: oap_provider_server.GrantChannel) oap_provider_server.Options {
+    return .{
+        .unserved_refusal = oapUnservedRefusal,
+        .awaiting_declares = oapAwaitingDeclares,
+        .capability_revision = VERSION,
+        .revision_follows_catalog = true,
+        .grant_channel = grant_channel,
+        .accepts_inference = true,
+        .resolves_own_credentials = true,
+        .profile_revision = OAP_PROVIDER_PROFILE_REVISION,
+        .catalog = oapFallbackCatalogState(),
+    };
 }
 
 fn applyServedOapReload(allocator: std.mem.Allocator, server: *oap_provider_server.Server, cache: *ServedOapModels, applied: *u64) !bool {
@@ -4122,16 +4175,7 @@ const HttpProviderRuntime = struct {
         var runtime = HttpProviderRuntime{
             .allocator = allocator,
             .registry = api_registry.ApiRegistry.init(allocator),
-            .server = oap_provider_server.Server.init(allocator, .{
-                .unserved_refusal = oapUnservedRefusal,
-                .awaiting_declares = oapAwaitingDeclares,
-                .capability_revision = VERSION,
-                .grant_channel = .unsupported,
-                .accepts_inference = true,
-                .resolves_own_credentials = true,
-                .profile_revision = OAP_PROVIDER_PROFILE_REVISION,
-                .catalog = oapFallbackCatalogState(),
-            }),
+            .server = oap_provider_server.Server.init(allocator, servedOapProviderOptions(.unsupported)),
             .idle_ttl_ms = oapProviderStreamIdleTtlMs(allocator),
         };
         errdefer runtime.deinit();
@@ -4529,16 +4573,7 @@ fn runOapProviderMode(
     defer registry.deinit();
     try register_builtins.registerBuiltInApiProviders(&registry);
 
-    var server = oap_provider_server.Server.init(allocator, .{
-        .unserved_refusal = oapUnservedRefusal,
-        .awaiting_declares = oapAwaitingDeclares,
-        .capability_revision = VERSION,
-        .grant_channel = if (oap_provider_grant_channel.GrantChannel.supported) .out_of_band else .unsupported,
-        .accepts_inference = true,
-        .resolves_own_credentials = true,
-        .profile_revision = OAP_PROVIDER_PROFILE_REVISION,
-        .catalog = oapFallbackCatalogState(),
-    });
+    var server = oap_provider_server.Server.init(allocator, servedOapProviderOptions(if (oap_provider_grant_channel.GrantChannel.supported) .out_of_band else .unsupported));
     defer server.deinit();
     var output = bounded_output.Output.init(stdout, std.math.maxInt(u64));
     try output.start();
@@ -4788,16 +4823,7 @@ fn runOapxServe(
 
     var provider_registry = api_registry.ApiRegistry.init(allocator);
     defer provider_registry.deinit();
-    var provider_server = oap_provider_server.Server.init(allocator, .{
-        .unserved_refusal = oapUnservedRefusal,
-        .awaiting_declares = oapAwaitingDeclares,
-        .capability_revision = VERSION,
-        .grant_channel = if (oap_provider_grant_channel.GrantChannel.supported) .out_of_band else .unsupported,
-        .accepts_inference = true,
-        .resolves_own_credentials = true,
-        .profile_revision = OAP_PROVIDER_PROFILE_REVISION,
-        .catalog = oapFallbackCatalogState(),
-    });
+    var provider_server = oap_provider_server.Server.init(allocator, servedOapProviderOptions(if (oap_provider_grant_channel.GrantChannel.supported) .out_of_band else .unsupported));
     defer provider_server.deinit();
     var grant_channels = std.ArrayList(OapGrantChannel).empty;
     defer {

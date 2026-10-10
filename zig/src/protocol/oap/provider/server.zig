@@ -18,6 +18,7 @@ pub const IMPLEMENTS_SYNC = true;
 
 pub const Options = struct {
     capability_revision: []const u8 = "r1",
+    revision_follows_catalog: bool = false,
     profile_revision: ?[]const u8 = null,
     grant_channel: GrantChannel = .unsupported,
     default_grant_ttl_ms: u64 = 300_000,
@@ -723,7 +724,7 @@ pub const Server = struct {
             built += 1;
         }
 
-        const revision = try self.allocator.dupe(u8, self.options.capability_revision);
+        const revision = try self.servedRevision();
         errdefer self.allocator.free(revision);
 
         const version_string = try self.allocator.dupe(u8, types.VERSION);
@@ -781,7 +782,7 @@ pub const Server = struct {
             built += 1;
         }
 
-        const revision = try self.allocator.dupe(u8, self.options.capability_revision);
+        const revision = try self.servedRevision();
         errdefer self.allocator.free(revision);
 
         const response = types.Envelope{
@@ -794,6 +795,24 @@ pub const Server = struct {
             } },
         };
         try self.push(response);
+    }
+
+    fn servedRevision(self: *Self) ![]u8 {
+        if (!self.options.revision_follows_catalog) return self.allocator.dupe(u8, self.options.capability_revision);
+        const entries = try self.allocator.alloc(types.ModelEntry, self.models.items.len);
+        defer self.allocator.free(entries);
+        for (self.models.items, entries) |entry, *slot| {
+            slot.* = entry;
+            slot.auth_status = .unknown;
+        }
+        const providers_line = try envelope.serializeEnvelope(.{ .id = "", .payload = .{ .provider_describe_response = .{ .providers = self.providers.items } } }, self.allocator);
+        defer self.allocator.free(providers_line);
+        const models_line = try envelope.serializeEnvelope(.{ .id = "", .payload = .{ .provider_models_list_response = .{ .models = entries } } }, self.allocator);
+        defer self.allocator.free(models_line);
+        var hasher = std.hash.Wyhash.init(0);
+        hasher.update(providers_line);
+        hasher.update(models_line);
+        return std.fmt.allocPrint(self.allocator, "{s}+{x:0>16}", .{ self.options.capability_revision, hasher.final() });
     }
 
     fn entryMatches(self: *Self, entry: types.ModelEntry, filter: ?[]const u8) bool {
@@ -2123,6 +2142,59 @@ test "clearing the catalog empties both lists so a fresh one can be added, leaki
     try std.testing.expectEqual(@as(usize, 0), response.payload.provider_describe_response.providers.len);
 }
 
+fn servedRevisionOf(allocator: std.mem.Allocator, server: *Server, request_type: []const u8) ![]u8 {
+    const line = try makeRequest(allocator, request_type, "{}", "q");
+    defer allocator.free(line);
+    try server.handleLine(line);
+    var response = try decodeOnly(allocator, server);
+    defer response.deinit(allocator);
+    return allocator.dupe(u8, response.capability_revision.?);
+}
+
+test "a revision that follows the catalog names one snapshot of both lists, ignores auth status, and changes with either list" {
+    const allocator = std.testing.allocator;
+    var fixed = try testServer(allocator, .{ .capability_revision = "v9" });
+    defer fixed.deinit();
+    const unchanged = try servedRevisionOf(allocator, &fixed, "provider.describe.request");
+    defer allocator.free(unchanged);
+    try std.testing.expectEqualStrings("v9", unchanged);
+
+    var server = try testServer(allocator, .{ .capability_revision = "v9", .revision_follows_catalog = true });
+    defer server.deinit();
+    const described = try servedRevisionOf(allocator, &server, "provider.describe.request");
+    defer allocator.free(described);
+    try std.testing.expect(std.mem.startsWith(u8, described, "v9+"));
+    const listed = try servedRevisionOf(allocator, &server, "provider.models.list.request");
+    defer allocator.free(listed);
+    try std.testing.expectEqualStrings(described, listed);
+
+    server.models.items[0].auth_status = .unknown;
+    const unauthenticated = try servedRevisionOf(allocator, &server, "provider.models.list.request");
+    defer allocator.free(unauthenticated);
+    try std.testing.expectEqualStrings(described, unauthenticated);
+
+    server.models.items[0].context_window = 1;
+    const model_changed = try servedRevisionOf(allocator, &server, "provider.describe.request");
+    defer allocator.free(model_changed);
+    try std.testing.expect(!std.mem.eql(u8, described, model_changed));
+
+    server.models.items[0].context_window = null;
+    server.providers.items[0].allows_anonymous = false;
+    const provider_changed = try servedRevisionOf(allocator, &server, "provider.models.list.request");
+    defer allocator.free(provider_changed);
+    try std.testing.expect(!std.mem.eql(u8, described, provider_changed));
+
+    server.providers.items[0].allows_anonymous = true;
+    const restored = try servedRevisionOf(allocator, &server, "provider.models.list.request");
+    defer allocator.free(restored);
+    try std.testing.expectEqualStrings(described, restored);
+
+    server.clearCatalog();
+    const cleared = try servedRevisionOf(allocator, &server, "provider.describe.request");
+    defer allocator.free(cleared);
+    try std.testing.expect(!std.mem.eql(u8, described, cleared));
+}
+
 test "describe answers with the configured providers and the versions it speaks" {
     const allocator = std.testing.allocator;
     var server = try testServer(allocator, .{});
@@ -2146,7 +2218,7 @@ test "describe answers with the configured providers and the versions it speaks"
 }
 
 fn modelsListUnderFailure(allocator: std.mem.Allocator) !void {
-    var server = try testServer(allocator, .{});
+    var server = try testServer(allocator, .{ .revision_follows_catalog = true });
     defer server.deinit();
 
     const asked = try makeRequest(allocator, "provider.models.list.request", "{}", "q1");
