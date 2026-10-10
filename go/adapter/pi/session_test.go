@@ -362,6 +362,28 @@ func TestPromptAdmissionDoesNotSynthesizeStartAndPreservesEarlyEvents(t *testing
 	assertValidTrace(t, response, append(events, settled...))
 }
 
+func TestARunWhoseMessagesCarryDurationsAndWhoseSettlementSaysNotAbortedCompletes(t *testing.T) {
+	timed := assistant("done", "stop")
+	timed["durationMs"] = 840.5
+	client := newFakeClient()
+	client.onCall = func(c native.Command) {
+		if c.Type == native.CommandPrompt {
+			client.emit(t, map[string]any{"type": "agent_start"})
+			client.emit(t, map[string]any{"type": "message_start", "message": timed})
+			client.emit(t, map[string]any{"type": "message_end", "message": timed})
+			client.emit(t, map[string]any{"type": "agent_end", "messages": []any{timed}, "willRetry": false})
+			client.emit(t, map[string]any{"type": "agent_settled", "aborted": false})
+		}
+	}
+	s := openTest(t, client, 32)
+	response, stream := submitTest(t, s)
+	events := adaptertest.Drain(t, stream, time.Second)
+	if events[len(events)-1].Type != protocol.TypeRunCompleted {
+		t.Fatalf("events=%v", eventTypes(events))
+	}
+	assertValidTrace(t, response, events)
+}
+
 func TestSlashCommandRejectedWithoutNativeSideEffect(t *testing.T) {
 	client := newFakeClient()
 	s := openTest(t, client, 32)

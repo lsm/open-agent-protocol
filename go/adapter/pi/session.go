@@ -244,6 +244,7 @@ type wireMessage struct {
 	RawStopReason         string            `json:"rawStopReason,omitempty"`
 	EndTurn               *bool             `json:"endTurn,omitempty"`
 	Timestamp             int64             `json:"timestamp"`
+	DurationMS            *float64          `json:"durationMs,omitempty"`
 }
 type wireUserMessage struct {
 	Role      string          `json:"role"`
@@ -269,9 +270,11 @@ type wireToolResultMessage struct {
 	NestedCalls    json.RawMessage `json:"nestedCalls,omitempty"`
 	IsError        bool            `json:"isError"`
 	Timestamp      int64           `json:"timestamp"`
+	DurationMS     *float64        `json:"durationMs,omitempty"`
 }
 type settledEvent struct {
-	Type native.EventType `json:"type"`
+	Type    native.EventType `json:"type"`
+	Aborted *bool            `json:"aborted,omitempty"`
 }
 
 func (r *runState) signalStart(err error) {
