@@ -7,6 +7,124 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+## [0.1.0-alpha.11] - 2026-10-10
+
+### Breaking changes
+
+- **sdk: retire the v1 wire from the Go SDK** ([#991](https://github.com/lsm/open-agent-protocol/pull/991))
+
+- `go/sdk`: removes `Options.LegacyWire`, `LoginHandlers.OnPrompt` and `AuthPrompt`.
+
+- **opencode: move the pin to v2.0.24 in both trees** ([#954](https://github.com/lsm/open-agent-protocol/pull/954))
+
+- `go/adapter/opencode`: `Config` drops `HistoryLimit`, `SettlePollMin` and `SettlePollMax`; the `Client` interface drops `History`, gains `CancelInbox`, `Interrupt` returns `(bool, error)` and `Subscribe` takes no cursor.
+
+### Merged pull requests
+
+- **sdk: answer the endpoint's permission requests through a Permit handler** ([#1024](https://github.com/lsm/open-agent-protocol/pull/1024)): `oapx`'s own agent loop runs its built-in `Shell`, `Read`, `Apply` and `Write` without asking unless the session opens in `ask` mode, and the Go SDK failed any run whose endpoint did ask (`unexpected OAP agent event`). hyperneo-review…
+- **claude: relay the harness's structured output on the terminal** ([#1023](https://github.com/lsm/open-agent-protocol/pull/1023)): Claude Code takes `--json-schema` at spawn and returns the result in the result frame's `structured_output`, which both Claude adapters dropped. hyperneo-review needs it to move its review engine from the native `claude -p` driver onto our…
+- **oapx: publish the cost, release date and family models.dev lists** ([#1022](https://github.com/lsm/open-agent-protocol/pull/1022)): Part of #357.
+- **fixtures: record what oapx serve provider serves from its loaded catalog** ([#1021](https://github.com/lsm/open-agent-protocol/pull/1021)): Closes #355 (its last step: provider fixtures from the new list).
+- **oapx: describe a provider once per wire it serves** ([#1020](https://github.com/lsm/open-agent-protocol/pull/1020)): `oapx serve provider` described each provider on a single wire, so OpenAI's responses-only models (`gpt-5-codex`, `o3-pro`, …) were neither listed nor reachable over OAP.
+- **oapx: make the provider endpoint's revision follow its served catalog** ([#1019](https://github.com/lsm/open-agent-protocol/pull/1019)): Part of #355.
+- **oapx: let a credential grant reach a provider awaiting its key** ([#1018](https://github.com/lsm/open-agent-protocol/pull/1018)): Closes #1013.
+- **validation: require a provided tool to name a source when tools are listed** ([#1017](https://github.com/lsm/open-agent-protocol/pull/1017)): Second of two PRs closing the source-less provided tool gap.
+- **sdk: name the endpoint's tool source on every provided tool** ([#1016](https://github.com/lsm/open-agent-protocol/pull/1016)): First of two PRs closing the source-less provided tool gap.
+- **oapx: answer a refused key as credential_rejected, never a retry** ([#1015](https://github.com/lsm/open-agent-protocol/pull/1015)): A 401/403 from the provider means the key is wrong, so retrying can't help, but `oapx serve provider` answered `provider_unavailable` (retry).
+- **session: drop the runtime's unused MCP bridge** ([#1014](https://github.com/lsm/open-agent-protocol/pull/1014)): Follow-up to closing #618.
+- **tui: validate a recorded TUI session against the protocol** ([#1012](https://github.com/lsm/open-agent-protocol/pull/1012)): Part of #375: its done-criterion is that every TUI session is a valid agent-control trace.
+- **oapx: delete the agent's unused provider transport** ([#1011](https://github.com/lsm/open-agent-protocol/pull/1011)): `openAgentOapProviderTransport`, `AgentOapProviderTransport` and their four callbacks in `makai.zig` have had no caller since #989 deleted the old agent loop; Zig compiles unused functions lazily, so nothing flagged them.
+- **tui: label tools from the endpoint's tool list** ([#1010](https://github.com/lsm/open-agent-protocol/pull/1010)): Part of #375.
+- **tui: read the agent layer through its narrow modules** ([#1009](https://github.com/lsm/open-agent-protocol/pull/1009)): Part of #375, phase 3b.
+- **oapx: serve every provider the runtime discovered models for** ([#1008](https://github.com/lsm/open-agent-protocol/pull/1008)): Part of #355.
+- **zig: move the session runtime out of the TUI** ([#1007](https://github.com/lsm/open-agent-protocol/pull/1007)): Part of #375, phase 3a.
+- **ci: check what a release ships, after it ships** ([#1006](https://github.com/lsm/open-agent-protocol/pull/1006)): Every SDK job builds `oapx` from source, so nothing checked a release's actual assets. npm publishing failed for alpha.8–10 and nothing went red.
+- **oapx: offer the ChatGPT browser sign-in beside the device code over OAP** ([#1005](https://github.com/lsm/open-agent-protocol/pull/1005)): Over OAP, `openai-codex` login only offered the device code, which works only for accounts (or workspaces) that turned on device code login.
+- **oapx: give the print-mode runtime its agent loop** ([#1004](https://github.com/lsm/open-agent-protocol/pull/1004)): Fixes a regression from #1003: `oapx -p --tui-runtime` built a runtime with no `LocalLoop`, so its first turn failed with `NoProtocolConfigured`.
+- **oapx: move the agent loop out of the TUI runtime** ([#1003](https://github.com/lsm/open-agent-protocol/pull/1003)): Part of #375, phase 2.
+- **oapx: never print an Anthropic token response body** ([#1002](https://github.com/lsm/open-agent-protocol/pull/1002)): Three error paths in the Anthropic token exchange printed the whole response body to stderr.
+- **tui: run the command tests over the in-process OAP endpoint** ([#1001](https://github.com/lsm/open-agent-protocol/pull/1001)): Part of #375, phase 1b of splitting `TuiRuntime`.
+- **tui: run every App over OAP** ([#1000](https://github.com/lsm/open-agent-protocol/pull/1000)): Part of #375, phase 1 of splitting `TuiRuntime`.
+- **oapx: count a provider key in its environment variable as signed in** ([#999](https://github.com/lsm/open-agent-protocol/pull/999)): `auth.providers` said `login_required` for a provider whose key was set in its catalog environment variable (e.g.
+- **oapx: log into Claude through a localhost callback over OAP** ([#998](https://github.com/lsm/open-agent-protocol/pull/998)): Over OAP, `anthropic` login always failed with `auth_input_unavailable`: the flow ends by asking for the code to be pasted, and Anthropic has no device-code login.
+- **oapx: log into Codex with a device code over OAP** ([#997](https://github.com/lsm/open-agent-protocol/pull/997)): Over OAP, `openai-codex` login always failed with `auth_input_unavailable`, because the browser flow ends by asking for the pasted redirect URL.
+- **oapx: take the default for a login question that allows an empty answer** ([#996](https://github.com/lsm/open-agent-protocol/pull/996)): The GitHub Copilot device login asks for a GitHub domain (Enter means github.com) before it shows the code.
+- **oapx: retire the v1 wire** ([#995](https://github.com/lsm/open-agent-protocol/pull/995)): Closes #376.
+- **sdk: retire the v1 wire from the TypeScript SDK** ([#994](https://github.com/lsm/open-agent-protocol/pull/994)): Part of #376.
+- **sdk: retire the v1 wire from the Rust SDK** ([#993](https://github.com/lsm/open-agent-protocol/pull/993)): Part of #376.
+- **sdk: retire the v1 wire from the Python SDK** ([#992](https://github.com/lsm/open-agent-protocol/pull/992)): Part of #376.
+- **sdk: retire the v1 wire from the Go SDK** ([#991](https://github.com/lsm/open-agent-protocol/pull/991)): Part of #376.
+- **sdk: fix the Go SDK build on main** ([#990](https://github.com/lsm/open-agent-protocol/pull/990)): `main` doesn't compile: `go/sdk/oap.go:936: undefined: f`. #986 renamed the Go agent stream's frame to an envelope (`in`), and the `action.call.*` terminal branch from #982 still read `f.Type`; they merged side by side.
+- **oapx: serve a remote provider service through the adapter and delete the old loop** ([#989](https://github.com/lsm/open-agent-protocol/pull/989)): Follow-up to #988.
+- **oapx: serve the oapx adapter from serve agent** ([#988](https://github.com/lsm/open-agent-protocol/pull/988)): `oapx serve agent[,provider]`, the SDKs' default host, ran a second agent loop built on the v1 agent wire (`protocol/oap/server.zig` + `bridge.zig`).
+- **sdk: refuse what an endpoint would ignore, and never replay a client tool** ([#987](https://github.com/lsm/open-agent-protocol/pull/987)): Follow-up to #982–#985.
+- **sdk: read OAP lines as protocol envelopes and keep frame for the v1 wire** ([#986](https://github.com/lsm/open-agent-protocol/pull/986)): The Go SDK now reads every OAP line straight into the \`protocol\` type for its profile.
+- **sdk: run client tools and agent settings over OAP in TypeScript** ([#985](https://github.com/lsm/open-agent-protocol/pull/985)): Part of #376, matching #982 (Go), #983 (Python) and #984 (Rust).
+- **sdk: run client tools and agent settings over OAP in Rust** ([#984](https://github.com/lsm/open-agent-protocol/pull/984)): Part of #376, matching #982 (Go) and #983 (Python).
+- **sdk: run client tools and agent settings over OAP in Python** ([#983](https://github.com/lsm/open-agent-protocol/pull/983)): Part of #376, matching #982 for Go.
+- **sdk: run client tools and agent settings over OAP in Go** ([#982](https://github.com/lsm/open-agent-protocol/pull/982)): Part of #376.
+- **oapx: serve client-provided tools on the own loop** ([#981](https://github.com/lsm/open-agent-protocol/pull/981)): Part of #374.
+- **opencode: retry stream recovery through a server restart and replay tool calls** ([#980](https://github.com/lsm/open-agent-protocol/pull/980)): When OpenCode's event stream dropped, recovery tried to resubscribe only once, so a server that was down briefly (a restart, say) failed every open run with \`opencode_stream_failed\`.
+- **work: pass a work.list search term to the native lists that take one** ([#979](https://github.com/lsm/open-agent-protocol/pull/979)): \`work.list\` now takes a \`search\` term, over stdio and as \`GET /work?search=\`, in both trees.
+- **clients/ts: pass work.list's filters and page cursor** ([#978](https://github.com/lsm/open-agent-protocol/pull/978)): The hub's `work.list` accepts `directory`, `adapters`, `limit` and `cursor`, and answers with `next_cursor`.
+- **zig: charge a model's higher tier once a request's input passes it** ([#977](https://github.com/lsm/open-agent-protocol/pull/977)): Haiku 5.5 charges $0.10 / $0.50 per million tokens up to 100k input, and $0.50 / $2.50 beyond that.
+- **tui: remove oapx --tui and run the PTY sweep on oapx alone** ([#976](https://github.com/lsm/open-agent-protocol/pull/976)): The parity sweep showed `oapx tui` matching `oapx --tui` on every scenario, and bare `oapx` has started `oapx tui` since #948.
+- **opencode: map permission requests to action.permission in both trees** ([#975](https://github.com/lsm/open-agent-protocol/pull/975)): OpenCode permission requests can now be answered through OAP in both trees. \`action.permissions\` goes from \`unavailable\` to \`native\`, and the revision moves to \`opencode-v2.0.24-oap-v4\`.
+- **hermes: verify the native list against the pinned gateway** ([#974](https://github.com/lsm/open-agent-protocol/pull/974)): Until now, the ledger said the Hermes native list was mapped from source only.
+- **zig: list the current Claude models and default to Sonnet 5.5** ([#973](https://github.com/lsm/open-agent-protocol/pull/973)): The Anthropic fallback list and price table still named Opus 4.1, Sonnet 4.5 and the 3.x models.
+- **sdk: read received OAP envelopes as protocol.Envelope from their own bytes** ([#972](https://github.com/lsm/open-agent-protocol/pull/972)): On the OAP wire, the Go SDK now sends and receives only \`protocol.Envelope\`.
+- **hermes: keep one gateway for native listings in both trees** ([#971](https://github.com/lsm/open-agent-protocol/pull/971)): Every \`work.list\` with \`include_native\` started a Hermes gateway, waited for \`gateway.ready\` and then closed it.
+- **codex: keep one app-server for the native lists and reads in Go** ([#970](https://github.com/lsm/open-agent-protocol/pull/970)): Go started a Codex app-server for every \`work.list\` and \`work.read\`.
+- **work: filter and page work.list in both trees** ([#969](https://github.com/lsm/open-agent-protocol/pull/969)): \`work.list\` now accepts \`directory\`, \`adapters\`, \`limit\` and \`cursor\`, as \`drafts/work.md\` already specified, over stdio and HTTP in both trees.
+- **opencode: reconcile open runs from the session record when the stream drops** ([#968](https://github.com/lsm/open-agent-protocol/pull/968)): Until now, losing OpenCode's \`/api/event\` stream failed every open run with \`opencode_stream_failed\`, though the server's stored session record holds what the stream missed.
+- **opencode: mint native message ids no other runtime has used** ([#967](https://github.com/lsm/open-agent-protocol/pull/967)): OpenCode refuses a prompt id it has already stored, in any session, with \`409 ConflictError\`.
+- **opencode: stream text and reasoning deltas in both trees** ([#966](https://github.com/lsm/open-agent-protocol/pull/966)): \`run.streaming\` goes from \`degraded\` to \`native\` for OpenCode, in Go and Zig, under the new revision \`opencode-v2.0.24-oap-v2\`.
+- **zig: fill missing model limits from models.dev for every discovered row** ([#965](https://github.com/lsm/open-agent-protocol/pull/965)): Following #964, other providers whose `/models` listing gives no limits still fall back to a fixed window: the generic 128k, or 200k for every Anthropic model. models.dev lists the gpt-5 family at 272k–922k input and most current Claude…
+- **zig: fill the coding plans' missing model limits from models.dev** ([#964](https://github.com/lsm/open-agent-protocol/pull/964)): glm-5.3 on `zai-coding-plan` showed a 128k window, which is the generic fallback.
+- **claude: list, read and link Claude Code's own sessions in Go** ([#963](https://github.com/lsm/open-agent-protocol/pull/963)): Ports the Claude adapter's native list, read and link to Go, matching Zig's rules over the same stores.
+- **codex: list and read the app-server's own threads in Go** ([#962](https://github.com/lsm/open-agent-protocol/pull/962)): Ports Codex's native list, read and link to Go.
+- **acp: read an agent's own session through session/load's replay in both trees** ([#961](https://github.com/lsm/open-agent-protocol/pull/961)): Adds ACP to `work.read`'s harness transcripts in Zig and Go.
+- **opencode: read the server's own record of a session for work.read in both trees** ([#960](https://github.com/lsm/open-agent-protocol/pull/960)): Adds OpenCode to `work.read`'s harness transcripts in Zig and Go.
+- **opencode: list the server's own sessions for work.list in Go** ([#959](https://github.com/lsm/open-agent-protocol/pull/959)): Ports the OpenCode native list (#955) to Go.
+- **hermes: list the gateway's stored sessions through session.list in Go** ([#958](https://github.com/lsm/open-agent-protocol/pull/958)): Ports Hermes's native list (#951) to Go, so `goap`'s `work.list?include_native=true` shows a Hermes gateway's stored sessions.
+- **acp: list the agent's own sessions through session/list in Go** ([#957](https://github.com/lsm/open-agent-protocol/pull/957)): Ports ACP's native list (#950) to Go, so `goap`'s `work.list?include_native=true` shows an ACP agent's sessions.
+- **pi: list and read the harness's own sessions in Go** ([#956](https://github.com/lsm/open-agent-protocol/pull/956)): Ports Pi's native list and read (#944) to Go, so `goap`'s `work.list?include_native=true` shows Pi sessions.
+- **opencode: list the server's own sessions for work.list in Zig** ([#955](https://github.com/lsm/open-agent-protocol/pull/955)): Adds OpenCode to `work.list?include_native=true` in Zig.
+- **opencode: move the pin to v2.0.24 in both trees** ([#954](https://github.com/lsm/open-agent-protocol/pull/954)): Moves OpenCode to v2.0.24 (revision `opencode-v2.0.24-oap-v1`); v1.18.34 is retired. v2 renames every route and event the adapter reads, and its durable session log is empty under `opencode serve`, so both trees now follow the global…
+- **tui: carry a completed call's result text over OAP beside its details** ([#953](https://github.com/lsm/open-agent-protocol/pull/953)): Over OAP, a successful tool call showed its summary row but never its output.
+- **decisions: accept 0047 and record what shipped** ([#952](https://github.com/lsm/open-agent-protocol/pull/952)): Moves Decision 0047 to accepted and adds a "What shipped" section, the record of where the code departs from the decisions:
+- **hermes: list the gateway's stored sessions through session.list** ([#951](https://github.com/lsm/open-agent-protocol/pull/951)): `work.list?include_native=true` now includes Hermes' stored sessions from the gateway's `session.list {limit}`.
+- **acp: list the agent's own sessions through session/list** ([#950](https://github.com/lsm/open-agent-protocol/pull/950)): `work.list?include_native=true` now includes an ACP agent's earlier sessions when its `initialize` advertises `sessionCapabilities.list`.
+- **research: map OpenCode v2.0.24's served wire** ([#949](https://github.com/lsm/open-agent-protocol/pull/949)): Ledger for the OpenCode v2 pin move, written before either tree is ported so the port has a spec.
+- **tui: make oapx tui what oapx alone starts** ([#948](https://github.com/lsm/open-agent-protocol/pull/948)): Bare `oapx` now starts the terminal UI over OAP (`oapx tui`) instead of the local loop.
+- **serve: run a harness's own list and read off the loop** ([#947](https://github.com/lsm/open-agent-protocol/pull/947)): A native `work.list` or `work.read` called the harness on `serve`'s single loop, stalling every other request and event delivery (~0.5 s per Codex `thread/list`, longer for a big Claude store).
+- **tui: create automatic worktrees over the in-process endpoint** ([#946](https://github.com/lsm/open-agent-protocol/pull/946)): `oapx tui` never created an automatic worktree, because the worktree moves the workspace root after the session opens.
+- **pi: pin v1.0.4** ([#945](https://github.com/lsm/open-agent-protocol/pull/945)): Moves the Pi pin to the latest v1 release, `v1.0.4`.
+- **pi: list and read the harness's own sessions from its store** ([#944](https://github.com/lsm/open-agent-protocol/pull/944)): Adds Pi to `work.list?include_native` and `work.read` (Decision 0047: Pi read-only from its store).
+- **serve: serve the work verbs from goap too** ([#943](https://github.com/lsm/open-agent-protocol/pull/943)): Closes D30: `goap serve` answered every work route `404`, so the work profile was `oapx`-only.
+- **serve: answer work.capabilities with each adapter's work verbs** ([#942](https://github.com/lsm/open-agent-protocol/pull/942)): Serves the capabilities answer `drafts/work.md` described but `serve` never sent.
+- **codex: pin rust-v0.160.1** ([#941](https://github.com/lsm/open-agent-protocol/pull/941)): Moves the Codex app-server pin to the latest stable release, `rust-v0.160.1`.
+- **tui: carry a failed call's result text over OAP beside its details** ([#940](https://github.com/lsm/open-agent-protocol/pull/940)): A denied call over OAP showed `Shell failed: {"rejected":true}` but never "Tool execution rejected by user".
+- **codex: keep one app-server for native lists and reads** ([#939](https://github.com/lsm/open-agent-protocol/pull/939)): Every Codex `work.read` and native `work.list` started a fresh `codex app-server` while `serve`'s single loop waited.
+- **tui: save the in-process endpoint's own records as the session over OAP** ([#938](https://github.com/lsm/open-agent-protocol/pull/938)): Over OAP the session file was rebuilt from wire events.
+- **tui: say there is nothing to compact over OAP as the local loop does** ([#937](https://github.com/lsm/open-agent-protocol/pull/937)): Over OAP, `/compact` on a session with no history was sent to the endpoint.
+- **tui: run the PTY sweep on oapx tui too and compare the saved sessions** ([#936](https://github.com/lsm/open-agent-protocol/pull/936)): Makes `oapx tui` parity with `--tui` measurable rather than argued.
+- **tui: let a model a catalog refresh finds be used over OAP** ([#935](https://github.com/lsm/open-agent-protocol/pull/935)): TUI parity with `--tui`: after `/model refresh`, a newly found model could not be selected over OAP, because the in-process adapter kept the catalog it opened with.
+- **tui: keep the saved transcripts a compaction points at over OAP** ([#934](https://github.com/lsm/open-agent-protocol/pull/934)): TUI parity with `--tui`: a compaction there saves the pre-compaction history and passes the paths to the summary, so the model can read details the summary dropped.
+- **tui: echo a turn's first message over OAP, so sessions get titles and keep it** ([#933](https://github.com/lsm/open-agent-protocol/pull/933)): TUI parity with `--tui`:
+- **tui: carry an always answer to a tool approval over OAP** ([#932](https://github.com/lsm/open-agent-protocol/pull/932)): TUI parity with `--tui`: an "always" answer over OAP covered only that one call.
+- **tui: resume a saved session over OAP through session.open.reopen** ([#931](https://github.com/lsm/open-agent-protocol/pull/931)): TUI parity with `--tui`: `/resume` worked only on the direct path.
+- **tui: change permission mode, context window, output and workspace root mid-session over OAP** ([#930](https://github.com/lsm/open-agent-protocol/pull/930)): TUI parity with `--tui`: `oapx tui` refused these four settings once a session was open.
+- **serve: answer work.read from the harness's own transcript where one is readable** ([#929](https://github.com/lsm/open-agent-protocol/pull/929)): `work.read` lost every turn when `serve` restarted, and read nothing from before `serve` held a session.
+- **serve: start work in any directory through an any_directory registry entry** ([#928](https://github.com/lsm/open-agent-protocol/pull/928)): Neo's item 4: let `work.start` run in any folder without a registry entry per folder, and without a protocol change.
+- **hub: end only the subscriptions exposed to a run whose stream failed (D7)** ([#927](https://github.com/lsm/open-agent-protocol/pull/927)): Closes D7 (#407): a stream failure in one run no longer disconnects every subscriber on the Zig hub's session.
+- **hub: pin the configured-source substitution with a differential scenario (D19)** ([#926](https://github.com/lsm/open-agent-protocol/pull/926)): Closes #633's remaining gap: the substitution landed in 247cf7dc71 with only a Zig unit test, because the parity harness couldn't pass a hub a `--config`.
+- **agent: tag a steer when the loop takes it, not when its event is read** ([#925](https://github.com/lsm/open-agent-protocol/pull/925)): Fixes the \`a steer joins the running loop…\` flake in \`Unit Tests - adapter\` (#10).
+- **serveendpoint: answer session.list from an in-process session history (0046)** ([#924](https://github.com/lsm/open-agent-protocol/pull/924)): Step 1 of the `session-list` gate: an endpoint actually serves it.
+- **decisions: accept the eleven records whose surface is already on main** ([#923](https://github.com/lsm/open-agent-protocol/pull/923)): Marks 0012, 0014, 0015, 0018, 0019, 0022, 0023, 0024, 0026, 0029 and 0033 accepted, here, in the README index, and where STABILITY.md and drafts/composition.md stated their status.
+- **serve: the work profile's six verbs, and the TypeScript client's work methods** ([#919](https://github.com/lsm/open-agent-protocol/pull/919)): The work profile on `oapx serve` (`drafts/work.md`, in #918), enough for HyperNeo to drive it.
+- **validation: stop reporting an exhausted allocator as a malformed pack** ([#886](https://github.com/lsm/open-agent-protocol/pull/886)): Two independent fixes found while working in a checkout with a long directory name.
+
 ## [0.1.0-alpha.10] - 2026-10-06
 
 ### Breaking changes
