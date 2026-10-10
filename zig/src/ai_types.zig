@@ -522,6 +522,13 @@ pub const Cost = struct {
     }
 };
 
+pub const PublishedCost = struct {
+    input: ?f64 = null,
+    output: ?f64 = null,
+    cache_read: ?f64 = null,
+    cache_write: ?f64 = null,
+};
+
 pub const OpenAICompatOptions = struct {
     supports_store: ?bool = null,
     supports_developer_role: ?bool = null,
@@ -558,10 +565,16 @@ pub const Model = struct {
     allows_anonymous: bool = false,
     credential_withheld: bool = false,
     carries_version: ?bool = null,
+    published_cost: ?PublishedCost = null,
+    release_date: ?[]const u8 = null,
+    family: ?[]const u8 = null,
     is_owned: bool = false,
 
     pub fn deinit(self: *Model, allocator: std.mem.Allocator) void {
         if (!self.is_owned) return;
+
+        if (self.release_date) |value| allocator.free(value);
+        if (self.family) |value| allocator.free(value);
 
         allocator.free(self.id);
         allocator.free(self.name);
@@ -1278,6 +1291,9 @@ pub fn cloneModel(allocator: std.mem.Allocator, model: Model) !Model {
         }
         allocator.free(hs);
     };
+    const release_date = if (model.release_date) |value| try allocator.dupe(u8, value) else null;
+    errdefer if (release_date) |value| allocator.free(value);
+    const family = if (model.family) |value| try allocator.dupe(u8, value) else null;
 
     return .{
         .id = id,
@@ -1295,6 +1311,9 @@ pub fn cloneModel(allocator: std.mem.Allocator, model: Model) !Model {
         .allows_anonymous = model.allows_anonymous,
         .credential_withheld = model.credential_withheld,
         .carries_version = model.carries_version,
+        .published_cost = model.published_cost,
+        .release_date = release_date,
+        .family = family,
         .is_owned = true,
     };
 }
