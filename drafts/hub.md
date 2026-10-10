@@ -95,10 +95,26 @@ An adapter entry takes exactly these members: `type`, `executable`, `args`,
 `environment`, `working_directory`, `model`, `journal_capacity`,
 `allowed_tools`, `unrestricted_tools`, `approval_policy`, `sandbox`,
 `provider`, `max_tokens`, `agent_config`, `system_prompt`, `endpoint`, `agent`,
-`any_directory`.
+`any_directory`, and in `oapx` also `model_provider`.
 `type` defaults to the entry's own name, so a registry of one memory adapter
 needs nothing but its name. Without `--config` the hub serves the built-in
 memory reference adapter alone.
+
+`model_provider` names a catalog row as a claude entry's model provider (#361),
+and is `oapx`'s own under Decision 0038: Go's decoder refuses it as an unknown
+member, so a document carrying it is an `oapx` document. `oapx` translates it
+into Claude Code's official settings, recorded in the 2.1.282 ledger's
+*Model-provider settings* section, and nothing else: `ANTHROPIC_BASE_URL` is the
+row's catalogued `anthropic-messages` endpoint, without a trailing `/v1` the
+catalog records as part of it, and the row's key goes to the child as
+`ANTHROPIC_API_KEY` (`x-api-key`, as `oapx` sends it itself) or, when it came
+from `ANTHROPIC_AUTH_TOKEN`, under that name. Both are added after the variables
+the entry lists, and the child still inherits nothing else. The endpoint is the
+catalog's: a `base_url_env` or a `providers.json` override moves `oapx`'s own
+requests, not the harness's. Each of these is refused at startup, naming the
+entry: a row that is not catalogued, one with no `anthropic-messages` endpoint, an
+`environment` that already sets one of the three variables, a row with no key,
+a key that is an OAuth login, and `model_provider` on any type but `claude`.
 
 `any_directory: true` makes the entry a template: a `work.start` naming another
 absolute directory gets a session from an adapter built from this entry with
