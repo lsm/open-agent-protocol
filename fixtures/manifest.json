@@ -9602,6 +9602,22 @@
       "scope": "frame"
     },
     {
+      "id": "provider-served-catalog-and-a-missing-key",
+      "path": "provider/valid/served-catalog-and-a-missing-key.json",
+      "kind": "positive",
+      "valid": true,
+      "phase": "",
+      "codes": [],
+      "units": [
+        "provider-core"
+      ],
+      "provenance": [
+        "drafts/model-provider-core.md"
+      ],
+      "profile": "model-provider-core",
+      "scope": "frame"
+    },
+    {
       "id": "provider-sequence-gap",
       "path": "provider/semantic-invalid/sequence-gap.json",
       "kind": "semantic-invalid",
