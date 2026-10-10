@@ -75,6 +75,31 @@ byte-identical to the 0.160.0 recording, and only `codex_commit`,
 Not re-run: approval, file-change, MCP and user-input turns against the real
 process; the schema and wire are unchanged.
 
+## Model-provider settings at this pin
+
+The keys the 0.157.0 ledger's *Model-provider settings* section records hold at
+0.160.1: `model_provider` selects a `[model_providers.<id>]` entry, whose
+`name`, `base_url`, `env_key` and `wire_api` say where requests go and which
+environment variable holds the key, and `-c key=value` sets any of them for one
+run without a config file. `wire_api` still takes only `responses`: the binary
+carries the refusal that `wire_api = "chat"` is no longer supported.
+
+Checked against the installed `codex-cli 0.160.1` with an empty `CODEX_HOME` and
+`--strict-config`, starting `app-server --listen stdio://` on a closed stdin so it
+loads its configuration and exits (2026-10-10):
+
+| `-c` settings | Result |
+| --- | --- |
+| `model_provider="oapx-openai"`, and `name`, `base_url`, `env_key`, `wire_api="responses"` under `model_providers.oapx-openai` | loads and exits 0 |
+| the same entry with `base_ulr` and no `name` | refused: the provider's name must not be empty |
+| the same entry with `wire_api="chat"` | refused at `model_providers.oapx-openai.wire_api` |
+
+The two refusals are the control: they show the `-c` settings are parsed and
+judged, so the clean exit is acceptance rather than an ignored flag. `oapx`
+routes a codex entry's `model_provider` through exactly the first row's
+settings, under the provider id `oapx-<row>` because `openai`, `ollama` and
+`lmstudio` are reserved.
+
 ## Native list search
 
 A `work.list` `search` is sent as `thread/list`'s `searchTerm`, beside `cwd`

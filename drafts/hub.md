@@ -100,7 +100,7 @@ An adapter entry takes exactly these members: `type`, `executable`, `args`,
 needs nothing but its name. Without `--config` the hub serves the built-in
 memory reference adapter alone.
 
-`model_provider` names a catalog row as a claude entry's model provider (#361),
+`model_provider` names a catalog row as a claude or codex entry's model provider (#361),
 and is `oapx`'s own under Decision 0038: Go's decoder refuses it as an unknown
 member, so a document carrying it is an `oapx` document. `oapx` translates it
 into Claude Code's official settings, recorded in the 2.1.282 ledger's
@@ -114,7 +114,19 @@ catalog's: a `base_url_env` or a `providers.json` override moves `oapx`'s own
 requests, not the harness's. Each of these is refused at startup, naming the
 entry: a row that is not catalogued, one with no `anthropic-messages` endpoint, an
 `environment` that already sets one of the three variables, a row with no key,
-a key that is an OAuth login, and `model_provider` on any type but `claude`.
+a key that is an OAuth login, and `model_provider` on any type but `claude` or
+`codex`.
+
+A codex entry is routed through Codex's own `-c` settings, recorded in the
+0.160.1 ledger's *Model-provider settings* section: `model_provider` names a
+provider `oapx-<row>`, whose `base_url` is the row's catalogued
+`openai-responses` request address without its `/responses`, whose `wire_api` is
+`responses`, the only value Codex takes, and whose `env_key` is
+`OAPX_PROVIDER_API_KEY`, the one variable added to the child's environment,
+holding the row's key. The settings follow the entry's own `args`. A row with no
+`openai-responses` endpoint at a fixed address is refused, as are an
+`environment` that sets `OAPX_PROVIDER_API_KEY` and a codex `endpoint`, whose
+running app-server chose its provider when it started.
 
 `any_directory: true` makes the entry a template: a `work.start` naming another
 absolute directory gets a session from an adapter built from this entry with
