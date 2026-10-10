@@ -45,6 +45,7 @@ export const EnvelopeType = {
   RunStarted: 'run.started',
   RunStatusUpdated: 'run.status.updated',
   ContentDelta: 'content.delta',
+  ContentCompleted: 'content.completed',
   RunCompleted: 'run.completed',
   RunFailed: 'run.failed',
   RunCancelled: 'run.cancelled',
@@ -557,6 +558,13 @@ export interface ContentDeltaPayload {
   run_id: string;
   message_id?: string;
   part: ContentPart;
+}
+
+export interface ContentCompletedPayload {
+  session_id: string;
+  run_id: string;
+  message_id: string;
+  usage?: Usage;
 }
 
 export type SettledBy = 'observed' | 'inferred';

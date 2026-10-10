@@ -664,6 +664,28 @@ core conformance.
 This makes non-streaming consumers and history views useful without replaying the
 whole stream.
 
+### A message's own usage
+
+A run's `usage` covers every model call the run made. A run that calls a tool
+and then answers made at least two calls, and a consumer that wants each
+message's own output rate cannot split the run's figure between them.
+
+An endpoint may emit `content.completed` once a message is finished
+([Decision 0049](../decisions/0049-a-message-reports-its-own-usage.md)):
+
+```
+content.completed { session_id, run_id, message_id, usage? }
+```
+
+It is a run event, so it takes the run's next `sequence`, follows `run.started`
+and precedes the terminal. It closes the message `message_id` names: at most
+one per message (`duplicate_message_completion`), and no `content.delta` for
+that message after it (`content_after_completion`). A message that streamed no
+`content.delta`, such as one carrying only a tool call, may still be completed,
+so it can report what it cost. `usage` is the provider's figure for that one
+call; an absent `usage` is unknown, not zero. Emitting the event is optional, a
+consumer must not wait for it, and the run's own `usage` is unchanged by it.
+
 ## Core Capability Keys
 
 Minimum features:

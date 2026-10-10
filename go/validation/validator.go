@@ -592,6 +592,8 @@ func payloadTarget(t protocol.EnvelopeType) any {
 		return &protocol.RunStatusUpdatedPayload{}
 	case protocol.TypeContentDelta:
 		return &protocol.ContentDeltaPayload{}
+	case protocol.TypeContentCompleted:
+		return &protocol.ContentCompletedPayload{}
 	case protocol.TypeRunCompleted:
 		return &protocol.RunCompletedPayload{}
 	case protocol.TypeRunFailed:

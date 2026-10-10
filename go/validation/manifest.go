@@ -182,6 +182,7 @@ func diagnosticCodes() map[string]bool {
 		CodeMissingResponse, CodeDuplicateResponse, CodeSequenceGap,
 		CodeSequenceRegression, CodeIllegalRunTransition, CodeMissingRunStarted,
 		CodeMissingRunTerminal, CodeDuplicateRunTerminal, CodeEventAfterTerminal,
+		CodeDuplicateMessageCompletion, CodeContentAfterCompletion,
 		CodePendingToolAtTerminal, CodePendingInteractionAtTerminal,
 		CodeUnmatchedSteer, CodeDuplicateSteer, CodePendingSteerAtTerminal,
 		CodeCompactionUnpaired, CodeCompactionEndedWithoutStart, CodeCompactionOpenAtTerminal,
