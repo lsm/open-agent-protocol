@@ -1,0 +1,123 @@
+[
+  {
+    "protocol": "open-agent-protocol",
+    "version": "0.1",
+    "profile": "open-agent-protocol.model-provider-core",
+    "type": "provider.describe.request",
+    "id": "d0",
+    "payload": {}
+  },
+  {
+    "protocol": "open-agent-protocol",
+    "version": "0.1",
+    "profile": "open-agent-protocol.model-provider-core",
+    "type": "provider.describe.response",
+    "id": "d1",
+    "in_reply_to": "d0",
+    "capability_revision": "0.1.0-alpha.10+449ba05d53d7a703",
+    "payload": {
+      "profile_revision": "ea5e5b9b29dc27a3e84eb6fe6a0f5055fb437988",
+      "providers": [
+        {
+          "id": "local",
+          "wire": "openai-chat-completions",
+          "framing": "sse",
+          "endpoint": "http://127.0.0.1:9",
+          "snapshot_policies": [
+            "never",
+            "on_part_end",
+            "every_delta"
+          ],
+          "answers_sync": true,
+          "credential_grant": "out_of_band",
+          "grant_kinds": [
+            "static"
+          ],
+          "allows_anonymous": true,
+          "round_trips_carry": false,
+          "context_window": 128000,
+          "max_output_tokens": 8192
+        }
+      ],
+      "protocol_versions": [
+        "0.1"
+      ]
+    }
+  },
+  {
+    "protocol": "open-agent-protocol",
+    "version": "0.1",
+    "profile": "open-agent-protocol.model-provider-core",
+    "type": "provider.models.list.request",
+    "id": "m0",
+    "payload": {}
+  },
+  {
+    "protocol": "open-agent-protocol",
+    "version": "0.1",
+    "profile": "open-agent-protocol.model-provider-core",
+    "type": "provider.models.list.response",
+    "id": "m1",
+    "in_reply_to": "m0",
+    "capability_revision": "0.1.0-alpha.10+449ba05d53d7a703",
+    "payload": {
+      "models": [
+        {
+          "model_ref": "local/openai-chat-completions@local-model",
+          "model_id": "local-model",
+          "display_name": "local-model",
+          "provider_id": "local",
+          "wire": "openai-chat-completions",
+          "context_window": 128000,
+          "max_output_tokens": 8192,
+          "capabilities": [
+            "chat",
+            "streaming",
+            "tools"
+          ],
+          "auth_status": "authenticated",
+          "input_modalities": [
+            "text"
+          ],
+          "output_modalities": [
+            "text"
+          ]
+        }
+      ],
+      "catalog": {
+        "complete": false
+      }
+    }
+  },
+  {
+    "protocol": "open-agent-protocol",
+    "version": "0.1",
+    "profile": "open-agent-protocol.model-provider-core",
+    "type": "inference.create.request",
+    "id": "c0",
+    "payload": {
+      "model_ref": "kimi/openai-chat-completions@kimi-k2",
+      "messages": [
+        {
+          "role": "user",
+          "content": "hi"
+        }
+      ]
+    }
+  },
+  {
+    "protocol": "open-agent-protocol",
+    "version": "0.1",
+    "profile": "open-agent-protocol.model-provider-core",
+    "type": "inference.create.response",
+    "id": "c1",
+    "in_reply_to": "c0",
+    "payload": {
+      "accepted": false,
+      "error": {
+        "code": "credential_missing",
+        "message": "this provider is served once it has a credential: sign in or set its key"
+      }
+    }
+  }
+]
