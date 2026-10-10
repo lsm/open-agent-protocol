@@ -165,7 +165,16 @@ func runOAPHost(scenario string) {
 				fakeEmit(event)
 				continue
 			}
-			if selectedModel == "fixture/other:test@permission" {
+			if strings.HasPrefix(selectedModel, "fixture/other:test@permission") {
+				offered := []map[string]any{{"id": "approve", "label": "Approve"}, {"id": "approve_always", "label": "Always"}, {"id": "deny", "label": "Deny"}}
+				switch selectedModel {
+				case "fixture/other:test@permission-codex":
+					offered = []map[string]any{{"id": "acceptForSession", "label": "Always"}, {"id": "accept", "label": "Accept"}, {"id": "decline", "label": "Decline"}, {"id": "cancel", "label": "Cancel"}}
+				case "fixture/other:test@permission-opencode":
+					offered = []map[string]any{{"id": "always", "label": "Always"}, {"id": "once", "label": "Once"}, {"id": "reject", "label": "Reject"}}
+				case "fixture/other:test@permission-unknown":
+					offered = []map[string]any{{"id": "yes", "label": "Yes"}, {"id": "no", "label": "No"}}
+				}
 				for _, item := range []struct {
 					kind    string
 					payload any
@@ -174,7 +183,7 @@ func runOAPHost(scenario string) {
 					{"action.call.requested", map[string]any{"session_id": sessionID, "run_id": "run-1", "tool_call_id": "call-1", "name": "Shell", "execution_owner": "fake", "arguments_json": map[string]any{"command": "ls"}}},
 					{"action.permission.requested", map[string]any{"session_id": sessionID, "run_id": "run-1", "tool_call_id": "call-1", "interaction_id": "permission-1",
 						"requested_by": "fake", "responded_by": "sdk", "title": "Run ls", "arguments_json": map[string]any{"command": "ls"},
-						"choices": []map[string]any{{"id": "approve", "label": "Approve"}, {"id": "deny", "label": "Deny"}}}},
+						"choices": offered}},
 				} {
 					event := oapHostFrame(oapAgent, item.kind, item.payload)
 					event.SessionID, event.RunID = sessionID, "run-1"
@@ -302,6 +311,23 @@ func TestOAPAgentAnswersAPermissionWithTheHandlersDecisionAndDeniesWithoutOne(t 
 	response, err = client.Agent.Run(ctx, AgentRequest{ModelRef: "fixture/other:test@permission", Messages: []Message{UserMessage("hi")}})
 	if err != nil || response.Message.Text != "deny granted=false by sdk" {
 		t.Fatalf("no handler: %v, %+v", err, response)
+	}
+	for _, endpoint := range []struct{ model, granted, denied string }{
+		{"fixture/other:test@permission-codex", "accept granted=true by sdk", "decline granted=false by sdk"},
+		{"fixture/other:test@permission-opencode", "once granted=true by sdk", "reject granted=false by sdk"},
+	} {
+		response, err = client.Agent.Run(ctx, AgentRequest{ModelRef: endpoint.model, Messages: []Message{UserMessage("hi")},
+			Permit: func(context.Context, PermissionRequest) bool { return true }})
+		if err != nil || response.Message.Text != endpoint.granted {
+			t.Fatalf("%s granted: %v, %+v", endpoint.model, err, response)
+		}
+		response, err = client.Agent.Run(ctx, AgentRequest{ModelRef: endpoint.model, Messages: []Message{UserMessage("hi")}})
+		if err != nil || response.Message.Text != endpoint.denied {
+			t.Fatalf("%s denied: %v, %+v", endpoint.model, err, response)
+		}
+	}
+	if _, err = client.Agent.Run(ctx, AgentRequest{ModelRef: "fixture/other:test@permission-unknown", Messages: []Message{UserMessage("hi")}}); err == nil || !strings.Contains(err.Error(), "offers none of") {
+		t.Fatalf("an unrecognisable choice list was answered: %v", err)
 	}
 	response, err = client.Agent.Run(ctx, AgentRequest{ModelRef: "fixture/other:test@settings", Messages: []Message{UserMessage("hi")},
 		Permit: func(context.Context, PermissionRequest) bool { return false }})

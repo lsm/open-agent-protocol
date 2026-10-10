@@ -584,6 +584,11 @@ func oapOpenPayload(t *transport, sessionID string, req AgentRequest) (map[strin
 	return payload, nil
 }
 
+var (
+	grantChoiceIDs = []string{"approve", "accept", "once", "allow_once", "allow"}
+	denyChoiceIDs  = []string{"deny", "decline", "reject", "reject_once"}
+)
+
 func (state *oapAgentState) resolvePermission(p jsonObject) error {
 	request := PermissionRequest{ToolCallID: p.str("tool_call_id"), Title: p.str("title"), Description: p.str("description")}
 	request.ToolName = state.callNames[request.ToolCallID]
@@ -595,19 +600,28 @@ func (state *oapAgentState) resolvePermission(p jsonObject) error {
 		}
 	}
 	granted := state.permit != nil && state.permit(state.ctx, request)
-	wanted := "deny"
+	vocabulary := denyChoiceIDs
 	if granted {
-		wanted = "approve"
+		vocabulary = grantChoiceIDs
 	}
-	offered := false
+	offered := map[string]bool{}
 	choices, _ := p["choices"].([]any)
 	for _, raw := range choices {
-		if choice, isObject := raw.(map[string]any); isObject && choice["id"] == wanted {
-			offered = true
+		if choice, isObject := raw.(map[string]any); isObject {
+			if id, isText := choice["id"].(string); isText {
+				offered[id] = true
+			}
 		}
 	}
-	if !offered {
-		return &ProtocolError{Code: CodeMalformedResponse, Message: fmt.Sprintf("the endpoint's permission request offers no %q choice", wanted)}
+	wanted := ""
+	for _, id := range vocabulary {
+		if offered[id] {
+			wanted = id
+			break
+		}
+	}
+	if wanted == "" {
+		return &ProtocolError{Code: CodeMalformedResponse, Message: fmt.Sprintf("the endpoint's permission request offers none of %v", vocabulary)}
 	}
 	answer := map[string]any{
 		"interaction_id": p.str("interaction_id"),
