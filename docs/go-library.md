@@ -180,9 +180,9 @@ that hosts have tripped over:
   version, with its per-platform package beside it.
 - **OpenCode v2** is not the npm package `opencode-ai`, which is the v1 line.
   Its binaries come from `https://opencode.ai/files/bin/<version>/<name>`, with
-  the archive names the catalog lists, and the Homebrew formula `opencode-v2`
-  installs the same build: at 2.0.24 its darwin-arm64 binary matches the
-  catalog digest and reports `opencode v2.0.24`.
+  the archive names the catalog lists. The Homebrew formula `opencode-v2`
+  installed the same build at 2.0.24 (its darwin-arm64 binary matched the
+  catalog digest); check a Homebrew build's digest before relying on it.
 
 ## Where to go next
 

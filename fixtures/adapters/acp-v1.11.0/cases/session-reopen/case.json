@@ -1,0 +1,21 @@
+{
+  "version": 1,
+  "id": "session-reopen",
+  "native": "native.jsonl",
+  "expected_oap": "expected-oap.json",
+  "mapping": "mapping.json",
+  "omissions": "omissions.json",
+  "provenance": {
+    "commit": "4cf3dd858c819fc3ab99ae53f76883ede0345a10",
+    "release": "v1.11.0",
+    "repository": "https://github.com/agentclientprotocol/agent-client-protocol",
+    "schema_release": "1.25.0",
+    "schema_tree_sha256": "4bd0b3e7d768f72a8d04181ddc3be48a7cdf8f1a692271b79b9899afbbc3b5ea"
+  },
+  "advertised_capabilities": {
+    "session.open.reopen": "native"
+  },
+  "identity_map": {
+    "66afe7db-dcb7-498c-bb12-1a8c1be8143b": "session"
+  }
+}

@@ -329,6 +329,8 @@ func ValidateEvent(data []byte, eventType EventType) error {
 	}
 	require := func(names ...string) { required = append(required, names...); add(names...) }
 	switch eventType {
+	case EventAgentSettled:
+		add("aborted")
 	case EventAgentEnd:
 		require("messages", "willRetry")
 	case EventTurnEnd:
@@ -345,7 +347,7 @@ func ValidateEvent(data []byte, eventType EventType) error {
 		add("parentToolCallId")
 	case EventToolExecutionEnd:
 		require("toolCallId", "toolName", "result", "isError")
-		add("parentToolCallId")
+		add("parentToolCallId", "durationMs")
 	case EventQueueUpdate:
 		require("steering", "followUp")
 	case EventCompactionStart:

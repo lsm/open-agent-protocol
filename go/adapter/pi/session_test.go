@@ -362,6 +362,28 @@ func TestPromptAdmissionDoesNotSynthesizeStartAndPreservesEarlyEvents(t *testing
 	assertValidTrace(t, response, append(events, settled...))
 }
 
+func TestARunWhoseMessagesCarryDurationsAndWhoseSettlementSaysNotAbortedCompletes(t *testing.T) {
+	timed := assistant("done", "stop")
+	timed["durationMs"] = 840.5
+	client := newFakeClient()
+	client.onCall = func(c native.Command) {
+		if c.Type == native.CommandPrompt {
+			client.emit(t, map[string]any{"type": "agent_start"})
+			client.emit(t, map[string]any{"type": "message_start", "message": timed})
+			client.emit(t, map[string]any{"type": "message_end", "message": timed})
+			client.emit(t, map[string]any{"type": "agent_end", "messages": []any{timed}, "willRetry": false})
+			client.emit(t, map[string]any{"type": "agent_settled", "aborted": false})
+		}
+	}
+	s := openTest(t, client, 32)
+	response, stream := submitTest(t, s)
+	events := adaptertest.Drain(t, stream, time.Second)
+	if events[len(events)-1].Type != protocol.TypeRunCompleted {
+		t.Fatalf("events=%v", eventTypes(events))
+	}
+	assertValidTrace(t, response, events)
+}
+
 func TestSlashCommandRejectedWithoutNativeSideEffect(t *testing.T) {
 	client := newFakeClient()
 	s := openTest(t, client, 32)
@@ -1038,6 +1060,26 @@ func TestFinalToolCallUsesMappedIdentity(t *testing.T) {
 	if !ok || len(parts) != 2 || parts[0].ToolCallID == "native" || parts[0].ToolCallID == "" {
 		t.Fatalf("parts=%+v", parts)
 	}
+}
+
+func TestAToolRunWhoseEndAndResultCarryDurationsCompletesTheCall(t *testing.T) {
+	client := newFakeClient()
+	s := openTest(t, client, 32)
+	response, stream := submitTest(t, s)
+	client.emit(t, map[string]any{"type": "tool_execution_start", "toolCallId": "native", "toolName": "read", "args": map[string]any{"path": "x"}})
+	client.emit(t, map[string]any{"type": "tool_execution_end", "toolCallId": "native", "toolName": "read", "result": map[string]any{"text": "x"}, "isError": false, "durationMs": 12.5})
+	client.emit(t, map[string]any{"type": "message_end", "message": map[string]any{"role": "toolResult", "toolCallId": "native", "toolName": "read", "content": []any{map[string]any{"type": "text", "text": "x"}}, "isError": false, "timestamp": 1, "durationMs": 12.5}})
+	final := assistant("done", "stop")
+	final["content"] = []any{map[string]any{"type": "toolCall", "id": "native", "name": "read", "arguments": map[string]any{"path": "x"}}, map[string]any{"type": "text", "text": "done"}}
+	client.emit(t, map[string]any{"type": "message_end", "message": final})
+	client.emit(t, map[string]any{"type": "agent_end", "messages": []any{final}, "willRetry": false})
+	client.emit(t, map[string]any{"type": "agent_settled", "aborted": false})
+	events := adaptertest.Drain(t, stream, time.Second)
+	kinds := eventTypes(events)
+	if kinds[len(kinds)-1] != protocol.TypeRunCompleted || !slices.Contains(kinds, protocol.TypeActionCallCompleted) {
+		t.Fatalf("events=%v", kinds)
+	}
+	assertValidTrace(t, response, events)
 }
 
 func TestRepeatedIdleSnapshotsRemainProvisionalUntilSettled(t *testing.T) {

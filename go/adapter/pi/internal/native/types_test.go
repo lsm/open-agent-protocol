@@ -107,3 +107,17 @@ func TestToolEventsAdmitTheParentCallOfANestedCall(t *testing.T) {
 		}
 	}
 }
+
+func TestV110EventsAdmitATimedToolEndAndAnAbortedSettlementAndNothingElse(t *testing.T) {
+	for eventType, frame := range map[EventType]string{
+		EventToolExecutionEnd: `{"type":"tool_execution_end","toolCallId":"c","toolName":"n","result":{},"isError":false,"durationMs":12.5}`,
+		EventAgentSettled:     `{"type":"agent_settled","aborted":true}`,
+	} {
+		if err := ValidateEvent([]byte(frame), eventType); err != nil {
+			t.Fatalf("%s: %v", eventType, err)
+		}
+	}
+	if err := ValidateEvent([]byte(`{"type":"agent_settled","aborted":false,"invented":1}`), EventAgentSettled); err == nil {
+		t.Fatal("agent_settled admitted an undeclared member")
+	}
+}

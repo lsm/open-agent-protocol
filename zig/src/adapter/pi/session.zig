@@ -232,9 +232,9 @@ const user_members = [_][]const u8{ "role", "content", "timestamp" };
 const system_members = [_][]const u8{ "role", "content", "sections", "toolsAdded", "toolsRemoved", "timestamp" };
 
 const tool_result_members = [_][]const u8{
-    "role",      "toolCallId",  "toolName", "content",
-    "usage",     "details",     "isError",  "addedToolNames",
-    "timestamp", "nestedCalls",
+    "role",      "toolCallId",  "toolName",   "content",
+    "usage",     "details",     "isError",    "addedToolNames",
+    "timestamp", "nestedCalls", "durationMs",
 };
 
 const assistant_members = [_][]const u8{
@@ -242,7 +242,7 @@ const assistant_members = [_][]const u8{
     "model",         "usage",        "stopReason",            "timestamp",
     "responseModel", "responseId",   "providerThinkingLevel", "diagnostics",
     "deferred",      "errorMessage", "rawStopReason",         "endTurn",
-    "thinkingLevel",
+    "thinkingLevel", "durationMs",
 };
 
 const assistant_required = [_][]const u8{ "content", "api", "provider", "model", "usage", "stopReason", "timestamp" };
@@ -257,13 +257,13 @@ const kind_member = Member{ .name = "type", .need = .text };
 
 const event_shapes = [_]EventShape{
     .{ .name = "agent_start", .members = &.{kind_member} },
-    .{ .name = "agent_settled", .members = &.{kind_member} },
+    .{ .name = "agent_settled", .members = &.{ kind_member, .{ .name = "aborted", .need = .boolean } } },
     .{ .name = "message_update", .members = &.{ kind_member, .{ .name = "usage" }, .{ .name = "assistantMessageEvent" } } },
     .{ .name = "message_end", .members = &.{ kind_member, .{ .name = "message" } } },
     .{ .name = "agent_end", .members = &.{ kind_member, .{ .name = "messages", .need = .array }, .{ .name = "willRetry", .need = .boolean } } },
     .{ .name = "tool_execution_start", .members = &.{ kind_member, .{ .name = "toolCallId", .need = .text }, .{ .name = "toolName", .need = .text }, .{ .name = "args" }, .{ .name = "parentToolCallId", .need = .text } } },
     .{ .name = "tool_execution_update", .members = &.{ kind_member, .{ .name = "toolCallId", .need = .text }, .{ .name = "toolName", .need = .text }, .{ .name = "args" }, .{ .name = "partialResult" }, .{ .name = "parentToolCallId", .need = .text } } },
-    .{ .name = "tool_execution_end", .members = &.{ kind_member, .{ .name = "toolCallId", .need = .text }, .{ .name = "toolName", .need = .text }, .{ .name = "result" }, .{ .name = "isError", .need = .boolean }, .{ .name = "parentToolCallId", .need = .text } } },
+    .{ .name = "tool_execution_end", .members = &.{ kind_member, .{ .name = "toolCallId", .need = .text }, .{ .name = "toolName", .need = .text }, .{ .name = "result" }, .{ .name = "isError", .need = .boolean }, .{ .name = "parentToolCallId", .need = .text }, .{ .name = "durationMs" } } },
     .{ .name = "turn_start", .members = &.{kind_member} },
     .{ .name = "turn_end", .members = &.{ kind_member, .{ .name = "message", .required = true }, .{ .name = "toolResults", .required = true } } },
     .{ .name = "message_start", .members = &.{ kind_member, .{ .name = "message", .required = true } } },
@@ -2721,4 +2721,23 @@ test "a run settling with a compaction open ends it failed just before the termi
     const ended = try compactionEnds(&reducer);
     try std.testing.expectEqualStrings("failed", textOf(ended[0], "outcome"));
     try std.testing.expectEqualStrings("pi_compaction_unfinished", textOf(memberOf(ended[0], "error").?, "code"));
+}
+
+test "v1.1.0 timed messages, a timed tool end and a settlement saying not aborted are all admitted, and the run completes" {
+    const base = "\"role\":\"assistant\",\"api\":\"a\",\"provider\":\"p\",\"model\":\"m\",\"usage\":{},\"stopReason\":\"stop\",\"timestamp\":1,\"content\":[]";
+    try expectFinalMessage("{" ++ base ++ ",\"durationMs\":840.5}", null);
+    try expectFinalMessage("{\"role\":\"toolResult\",\"toolCallId\":\"t1\",\"toolName\":\"grep\",\"content\":[],\"isError\":false,\"timestamp\":1,\"durationMs\":12}", null);
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var reducer = try started(a);
+    try apply(&reducer, try parse(a, "{\"type\":\"tool_execution_start\",\"toolCallId\":\"t1\",\"toolName\":\"grep\",\"args\":{}}"));
+    try apply(&reducer, try parse(a, "{\"type\":\"tool_execution_end\",\"toolCallId\":\"t1\",\"toolName\":\"grep\",\"result\":{},\"isError\":false,\"durationMs\":12}"));
+    try apply(&reducer, try parse(a, "{\"type\":\"agent_end\",\"willRetry\":false,\"messages\":[{" ++ base ++ ",\"durationMs\":840.5}]}"));
+    try apply(&reducer, try parse(a, "{\"type\":\"agent_settled\",\"aborted\":false}"));
+    try std.testing.expect(lastFailure(&reducer) == null);
+    var buffer: [16][]const u8 = undefined;
+    const kinds = typesOf(&reducer, &buffer);
+    try std.testing.expectEqualStrings("run.completed", kinds[kinds.len - 1]);
 }
