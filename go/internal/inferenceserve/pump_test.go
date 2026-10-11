@@ -155,6 +155,9 @@ func TestAnAnthropicReasoningPartEndsWithItsSignatureAsCarry(t *testing.T) {
 	if len(ended) != 2 || ended[0]["part_kind"] != "reasoning" || ended[0]["carry"] != "sig-9" || ended[0]["text"] != "ponder" || ended[1]["text"] != "answer" {
 		t.Fatalf("ended = %v", ended)
 	}
+	if last := envelopes[len(envelopes)-1]; last.Type != "inference.completed" {
+		t.Fatalf("the inference settled %s, want completed", last.Type)
+	}
 	assertValid(t, envelopes)
 }
 
@@ -274,8 +277,6 @@ func TestThePartGatesRefuseWhatZigRefuses(t *testing.T) {
 		{"a delta for another part", []provider.Event{{Kind: provider.EventTextStart}}, provider.Event{Kind: provider.EventTextDelta, ContentIndex: 1}, ErrPartIndexMismatch},
 		{"an end for another part", []provider.Event{{Kind: provider.EventTextStart}}, provider.Event{Kind: provider.EventTextEnd, ContentIndex: 1}, ErrPartIndexMismatch},
 		{"a text end on a tool call", []provider.Event{{Kind: provider.EventToolCallStart, ID: "c", Name: "n"}}, provider.Event{Kind: provider.EventTextEnd}, ErrToolCallNeedsCall},
-		{"a reasoning end on text", []provider.Event{{Kind: provider.EventTextStart}}, provider.Event{Kind: provider.EventThinkingEnd}, ErrPartKindMismatch},
-		{"a tool call end on text", []provider.Event{{Kind: provider.EventTextStart}}, provider.Event{Kind: provider.EventToolCallEnd, ToolCall: &provider.ToolCall{ID: "c", Name: "n"}}, ErrPartKindMismatch},
 		{"a tool call end without its call", []provider.Event{{Kind: provider.EventToolCallStart, ID: "c", Name: "n"}}, provider.Event{Kind: provider.EventToolCallEnd}, ErrToolCallNeedsCall},
 	}
 	for _, c := range cases {
@@ -289,6 +290,26 @@ func TestThePartGatesRefuseWhatZigRefuses(t *testing.T) {
 		out, err := state.Pump(c.event, 1)
 		if !errors.Is(err, c.want) || len(out) != 0 || state.sequence != before {
 			t.Errorf("%s: out = %v, err = %v, want %v and no sequence consumed", c.name, out, err, c.want)
+		}
+	}
+}
+
+func TestAnEndOfAnotherKindThanTheOpenPartIsRefused(t *testing.T) {
+	cases := []struct {
+		name  string
+		start provider.Event
+		end   provider.Event
+	}{
+		{"a reasoning end on text", provider.Event{Kind: provider.EventTextStart}, provider.Event{Kind: provider.EventThinkingEnd}},
+		{"a tool call end on text", provider.Event{Kind: provider.EventTextStart}, provider.Event{Kind: provider.EventToolCallEnd, ToolCall: &provider.ToolCall{ID: "c", Name: "n"}}},
+	}
+	for _, c := range cases {
+		state := NewState(&Ids{}, "i1", "m")
+		if _, err := state.Pump(c.start, 1); err != nil {
+			t.Fatalf("%s: setup refused: %v", c.name, err)
+		}
+		if out, err := state.Pump(c.end, 1); !errors.Is(err, ErrPartKindMismatch) || len(out) != 0 {
+			t.Errorf("%s: out = %v, err = %v, want ErrPartKindMismatch", c.name, out, err)
 		}
 	}
 }
@@ -337,6 +358,9 @@ func TestACompletionsReasoningThenTextTurnPumpsTwoPartsAndAValidTrace(t *testing
 	}
 	if !slices.Equal(kinds, []string{"reasoning:think", "text:answer"}) {
 		t.Fatalf("ended parts = %v", kinds)
+	}
+	if last := envelopes[len(envelopes)-1]; last.Type != "inference.completed" {
+		t.Fatalf("the inference settled %s, want completed", last.Type)
 	}
 	assertValid(t, envelopes)
 }
