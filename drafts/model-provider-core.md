@@ -1828,7 +1828,8 @@ An implementation claiming `open-agent-protocol.model-provider-core`:
    were listed is refused as `credential_rejected`, and no reload is asked
    for: a refused key is terminal, and only a sign-in reloads the catalog. An inference
    the provider refuses with HTTP 401 or 403 likewise fails
-   `credential_rejected`, never a retryable code. A provider is described once per wire it
+   `credential_rejected`, never a retryable code, and one it refuses with HTTP
+   429 fails `rate_limited`. A provider is described once per wire it
    serves models on, so a vendor offering two wires has two descriptors under
    one `id`, and a `model_ref` picks one by its wire (and `wire_id`). A credential grant
    also reaches a provider that awaits a credential, has a fixed endpoint, and
