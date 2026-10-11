@@ -375,10 +375,9 @@ Why the others lose:
   writing a poll over `PeekNamedPipe`, which is the bounded wait again.
 
 What stays an exception: the host's own stdin on `serve --stdio`. The host opens
-that pipe, and a synchronous handle accepts no overlapped read, so on Windows
-the stdio frontend checks it with `PeekNamedPipe` and spends the rest of the
-cycle in the sessions' wait. A session that reports no handle keeps its share of
-the bounded wait on every platform.
+that pipe, and a synchronous handle accepts no overlapped read, so it cannot
+join this wait. A session that reports no handle keeps its share of the bounded
+wait on every platform.
 
 **Both trees.** Go's hub already runs one goroutine per connection behind a
 session mutex. That is Go's shape and is not a normative model for the port;
