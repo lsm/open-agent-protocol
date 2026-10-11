@@ -624,7 +624,7 @@ jobs:
   # =============================================================================
 
   windows-unit:
-    name: Unit Tests - stdio-host (windows)
+    name: Unit Tests - stdio-host and hub (windows)
     runs-on: windows-latest
     timeout-minutes: 15
     steps:
@@ -639,6 +639,10 @@ jobs:
       - name: Run stdio-host unit tests
         shell: bash
         run: zig build --build-file zig/build.zig test-unit-stdio-host --summary all
+
+      - name: Run the multi-session hub's unit tests
+        shell: bash
+        run: zig build --build-file zig/build.zig test-unit-hub --summary all
 
   cross-compile-smoke:
     name: Cross-compile - ${{ matrix.target }}

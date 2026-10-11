@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"slices"
 	"strings"
 	"time"
 
@@ -30,10 +31,18 @@ var oapWires = map[string]string{
 }
 
 type CreateRequest struct {
-	ModelRef        string           `json:"model_ref"`
-	Messages        []RequestMessage `json:"messages"`
-	Tools           []RequestTool    `json:"tools,omitempty"`
-	MaxOutputTokens int              `json:"max_output_tokens,omitempty"`
+	ModelRef              string            `json:"model_ref"`
+	Messages              []RequestMessage  `json:"messages"`
+	Tools                 []RequestTool     `json:"tools,omitempty"`
+	MaxOutputTokens       int               `json:"max_output_tokens,omitempty"`
+	Temperature           *float64          `json:"temperature,omitempty"`
+	TopP                  *float64          `json:"top_p,omitempty"`
+	Stream                *bool             `json:"stream,omitempty"`
+	IncludeSnapshot       string            `json:"include_snapshot,omitempty"`
+	AllowDegradedFeatures []string          `json:"allow_degraded_features,omitempty"`
+	Headers               map[string]string `json:"headers,omitempty"`
+	OutputSchema          json.RawMessage   `json:"output_schema,omitempty"`
+	Reasoning             json.RawMessage   `json:"reasoning,omitempty"`
 }
 
 type RequestMessage struct {
@@ -110,6 +119,10 @@ func (r *Runner) Create(ctx context.Context, requestID string, request CreateReq
 		refuse(CodeCredentialMissing, "this provider needs a credential and none resolved")
 		return
 	}
+	if reason := unforwarded(request); reason != "" {
+		refuse(CodeUnsupportedFeature, reason)
+		return
+	}
 	state := NewState(ids, r.newID(), request.ModelRef)
 	accepted, err := state.Accepted(requestID, Honoured{IncludeSnapshot: "never"})
 	if err != nil {
@@ -124,10 +137,38 @@ func (r *Runner) Create(ctx context.Context, requestID string, request CreateReq
 		return
 	}
 	options := provider.StreamOptions{}
+	anthropic := provider.AnthropicOptions{}
 	if request.MaxOutputTokens > 0 {
 		options.MaxTokens, options.HasMaxTokens = request.MaxOutputTokens, true
+		anthropic.MaxTokens, anthropic.HasMaxTokens = request.MaxOutputTokens, true
 	}
-	r.stream(ctx, state, model, conversation, options, credential.Key, emit)
+	if request.Temperature != nil {
+		options.Temperature, options.HasTemperature = *request.Temperature, true
+		anthropic.Temperature, anthropic.HasTemperature = *request.Temperature, true
+	}
+	r.stream(ctx, state, model, conversation, options, anthropic, credential.Key, emit)
+}
+
+func unforwarded(request CreateRequest) string {
+	if request.IncludeSnapshot != "" && request.IncludeSnapshot != "never" && !slices.Contains(request.AllowDegradedFeatures, "include_snapshot") {
+		return "this provider does not offer the requested include_snapshot policy"
+	}
+	if request.Stream != nil && !*request.Stream {
+		return "this endpoint streams every inference and cannot answer unary"
+	}
+	if request.TopP != nil {
+		return "this endpoint does not forward top_p"
+	}
+	if len(request.Headers) > 0 {
+		return "this endpoint does not forward request headers to a provider"
+	}
+	if len(request.OutputSchema) > 0 {
+		return "this endpoint does not forward a structured output schema"
+	}
+	if len(request.Reasoning) > 0 {
+		return "this endpoint does not forward reasoning options yet"
+	}
+	return ""
 }
 
 func (r *Runner) newID() string {
@@ -208,7 +249,7 @@ func textOf(content json.RawMessage) (string, error) {
 	return joined.String(), nil
 }
 
-func (r *Runner) stream(ctx context.Context, state *State, model provider.Model, conversation provider.Context, options provider.StreamOptions, key string, emit func(Envelope)) {
+func (r *Runner) stream(ctx context.Context, state *State, model provider.Model, conversation provider.Context, options provider.StreamOptions, anthropic provider.AnthropicOptions, key string, emit func(Envelope)) {
 	sink := &provider.EventSink{OnEvent: func(event provider.Event) {
 		out, err := state.Pump(event, r.now())
 		if err != nil {
@@ -221,7 +262,7 @@ func (r *Runner) stream(ctx context.Context, state *State, model provider.Model,
 	var body []byte
 	var headers []provider.Header
 	if model.API == provider.AnthropicWire {
-		body, _ = provider.BuildAnthropicRequestBody(model, conversation, provider.AnthropicOptions{}, key)
+		body, _ = provider.BuildAnthropicRequestBody(model, conversation, anthropic, key)
 		headers = provider.BuildAnthropicHeaders(key, nil)
 	} else {
 		body = provider.BuildRequestBody(model, conversation, options)
@@ -247,7 +288,7 @@ func (r *Runner) stream(ctx context.Context, state *State, model provider.Model,
 	}
 	read := bodyReader(response.Body)
 	if model.API == provider.AnthropicWire {
-		provider.StreamAnthropic(sink, model, conversation, provider.AnthropicOptions{}, read, nil, func() string { return "" })
+		provider.StreamAnthropic(sink, model, conversation, anthropic, read, nil, func() string { return "" })
 	} else {
 		provider.Stream(sink, model, conversation, options, read, nil)
 	}

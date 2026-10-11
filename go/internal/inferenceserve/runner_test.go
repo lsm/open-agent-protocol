@@ -3,6 +3,8 @@ package inferenceserve
 import (
 	"context"
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 
 	"github.com/lsm/open-agent-protocol/go/internal/provider"
@@ -28,8 +30,13 @@ func TestParseModelRefNamesTheProfilesWiresAndNothingElse(t *testing.T) {
 
 func runnerOutcome(t *testing.T, runner *Runner, ref string, messages string) []Envelope {
 	t.Helper()
+	return runnerOutcomeWith(t, runner, `{"model_ref":"`+ref+`","messages":`+messages+`}`)
+}
+
+func runnerOutcomeWith(t *testing.T, runner *Runner, payload string) []Envelope {
+	t.Helper()
 	var request CreateRequest
-	if err := json.Unmarshal([]byte(`{"model_ref":"`+ref+`","messages":`+messages+`}`), &request); err != nil {
+	if err := json.Unmarshal([]byte(payload), &request); err != nil {
 		t.Fatal(err)
 	}
 	var out []Envelope
@@ -86,5 +93,46 @@ func TestAModelTheProviderDoesNotServeIsAcceptedThenFailsAsOapxDoes(t *testing.T
 	}
 	if code := payloadOf(t, out[1])["error"].(map[string]any)["code"]; code != CodeModelNotFound {
 		t.Fatalf("code = %v, want model_not_found", code)
+	}
+}
+
+func TestACreateNamingAFieldThisEndpointDoesNotForwardIsRefused(t *testing.T) {
+	base := `"model_ref":"` + parityModelRef + `","messages":[{"role":"user","content":"hi"}]`
+	for name, extra := range map[string]string{
+		"a snapshot policy": `"include_snapshot":"on_part_end"`,
+		"a unary inference": `"stream":false`,
+		"top_p":             `"top_p":0.9`,
+		"request headers":   `"headers":{"x-a":"b"}`,
+		"an output schema":  `"output_schema":{"type":"object"}`,
+		"reasoning options": `"reasoning":{"enabled":true}`,
+	} {
+		out := runnerOutcomeWith(t, servingDeepSeek(), "{"+base+","+extra+"}")
+		if len(out) != 1 || refusalCode(t, out[0]) != CodeUnsupportedFeature {
+			t.Errorf("%s: out = %v, want an unsupported_feature refusal", name, typesOf(out))
+		}
+	}
+}
+
+func TestBothWiresCarryTheRequestedTokenCapAndTemperature(t *testing.T) {
+	for _, wire := range []string{"openai-completions", "anthropic-messages"} {
+		var body map[string]any
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			json.NewDecoder(r.Body).Decode(&body)
+			w.WriteHeader(http.StatusInternalServerError)
+		}))
+		runner := servingDeepSeek()
+		runner.Catalog.Providers[0].Endpoints = []providercatalog.Endpoint{{Wire: wire, BaseURL: server.URL}}
+		runner.Models[0].Model.API = wire
+		runner.Models[0].Model.BaseURL, runner.Models[0].Model.HasBaseURL = server.URL, true
+		oapWire := map[string]string{"openai-completions": "openai-chat-completions", "anthropic-messages": "anthropic-messages"}[wire]
+		runnerOutcomeWith(t, runner, `{"model_ref":"deepseek/`+oapWire+`@deepseek-v4-pro","messages":[{"role":"user","content":"hi"}],"max_output_tokens":100,"temperature":0.25}`)
+		server.Close()
+		tokens := body["max_tokens"]
+		if tokens == nil {
+			tokens = body["max_completion_tokens"]
+		}
+		if tokens != 100.0 || body["temperature"] != 0.25 {
+			t.Errorf("%s sent max_tokens=%v temperature=%v, want 100 and 0.25", wire, tokens, body["temperature"])
+		}
 	}
 }
