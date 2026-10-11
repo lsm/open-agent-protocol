@@ -169,7 +169,9 @@ the host frames the adapter writes byte for byte:
 Each recorded case now opens with the `session.info` (seq 1) that v0.21.6
 emits straight after `session.create`, before the first `prompt.submit`.
 v2026.9.24 sent it after the submit. Their mapping and omission entries reuse
-the classifications the v2026.9.24 corpus gives each frame type. Their
+the classifications the v2026.9.24 corpus gives each frame type, and an
+interrupted `message.complete` is annotated `run.failed[hermes_interrupted]`,
+as in `settlement-statuses`. Their
 expectations differ from v2026.9.24's only in the clarify question id (`q0`
 rather than `answer`) and the revision.
 

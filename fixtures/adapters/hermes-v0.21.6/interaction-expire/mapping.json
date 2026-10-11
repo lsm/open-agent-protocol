@@ -16,7 +16,7 @@
   {"index":15,"type":"event/request.cancel","direction":"gateway-to-host","classification":"mapped","fidelity":"native","oap":"user.input.resolved(cancelled)"},
   {"index":16,"type":"response:session.interrupt","direction":"gateway-to-host","classification":"mapped","fidelity":"native","oap":"run.cancel.response (intent)"},
   {"index":17,"type":"event/tool.complete","direction":"gateway-to-host","classification":"mapped","fidelity":"native","oap":"action.call.completed"},
-  {"index":18,"type":"event/message.complete","direction":"gateway-to-host","classification":"mapped","fidelity":"native","oap":"run.completed(usage)"},
+  {"index":18,"type":"event/message.complete","direction":"gateway-to-host","classification":"mapped","fidelity":"native","oap":"run.failed[hermes_interrupted]"},
   {"index":19,"type":"event/session.info","direction":"gateway-to-host","classification":"observed-only","fidelity":"native"},
   {"index":20,"type":"event/sessions.changed","direction":"gateway-to-host","classification":"observed-only","fidelity":"native"},
   {"index":21,"type":"sync:wait-submit","direction":"harness-control","classification":"mapped","fidelity":"synthesized","oap":"deterministic submission barrier"},
