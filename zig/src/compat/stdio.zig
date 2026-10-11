@@ -119,7 +119,7 @@ pub fn pipe() !Pipe {
     if (comptime is_windows) {
         var read_end: win.HANDLE = undefined;
         var write_end: win.HANDLE = undefined;
-        if (win.CreatePipe(&read_end, &write_end, null, 0) == .FALSE) return error.Unexpected;
+        if (win.CreatePipe(&read_end, &write_end, null, 4096) == .FALSE) return error.Unexpected;
         return .{ fileFromPipeHandle(read_end), fileFromPipeHandle(write_end) };
     }
     const handles = try std.Io.Threaded.pipe2(.{});

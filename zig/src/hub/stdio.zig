@@ -3381,6 +3381,23 @@ test "a quiet input pipe beside an open session still costs the loop its wait ea
     try testing.expect(spent >= 3 * cycle_budget_ns);
 }
 
+test "an input pipe whose writer goes ends the loop rather than cycling on it" {
+    const ends = try compat.stdio.pipe();
+    defer compat.stdio.close(ends[0]);
+    compat.stdio.close(ends[1]);
+    var input = ends[0];
+    const harness = try Harness.init(testing.allocator, .{}, .{});
+    defer harness.deinit();
+    idle_cycles = 0;
+    try serve(testing.allocator, &harness.frontend, .{ .read = readPipe, .context = &input, .readable = input.handle, .stop = stopAfterManyCycles });
+    try testing.expect(idle_cycles < 100);
+}
+
+fn stopAfterManyCycles() bool {
+    idle_cycles += 1;
+    return idle_cycles >= 100;
+}
+
 test "a line arriving on a quiet input pipe is read and answered" {
     const ends = try compat.stdio.pipe();
     defer compat.stdio.close(ends[0]);
