@@ -278,12 +278,19 @@ func benchFlags() []string {
 	return []string{"--system-prompt", "", "--setting-sources=", "--model", benchModel, "--tools", strings.Join(benchTools, ","), "--allowedTools", "Read", "Grep", "Glob", "--no-session-persistence"}
 }
 
+func benchNativeFlags() []string {
+	if os.Getenv("OAP_CLAUDE_BENCH_NATIVE_SURFACE") == "full" {
+		return []string{"--model", benchModel, "--allowedTools", "Read", "Grep", "Glob", "--no-session-persistence"}
+	}
+	return benchFlags()
+}
+
 const benchPrompt = "Review the repository and answer with the JSON verdict."
 
 func benchNative(t *testing.T, binary string, mock *benchMock, environment []string, workspace string) benchSample {
 	t.Helper()
 	mock.reset(workspace)
-	command := exec.Command(binary, append([]string{"-p", "--output-format", "json"}, benchFlags()...)...)
+	command := exec.Command(binary, append([]string{"-p", "--output-format", "json"}, benchNativeFlags()...)...)
 	command.Dir = workspace
 	command.Env = environment
 	command.Stdin = strings.NewReader(benchPrompt)
@@ -383,7 +390,7 @@ type benchRow struct {
 
 func TestClaudeOAPOverheadAgainstScriptedMessages(t *testing.T) {
 	if os.Getenv("OAP_CLAUDE_BENCH") != "1" {
-		t.Skip("set OAP_CLAUDE_BENCH=1 with absolute OAP_CLAUDE_BIN to measure OAP's overhead over native claude -p against a scripted Messages mock; OAP_CLAUDE_BENCH_N, _TOOL_TURNS, _FIRST_BYTE_MS, _CHUNKS, _CHUNK_MS and _OUT tune and record it")
+		t.Skip("set OAP_CLAUDE_BENCH=1 with absolute OAP_CLAUDE_BIN to measure OAP's overhead over native claude -p against a scripted Messages mock; OAP_CLAUDE_BENCH_N, _TOOL_TURNS, _FIRST_BYTE_MS, _CHUNKS, _CHUNK_MS and _OUT tune and record it, and OAP_CLAUDE_BENCH_NATIVE_SURFACE=full runs native with its default system prompt and every built-in tool")
 	}
 	binary := verifiedClaudeCLI(t)
 	iterations := benchEnvInt("OAP_CLAUDE_BENCH_N", 10)
@@ -429,7 +436,7 @@ func TestClaudeOAPOverheadAgainstScriptedMessages(t *testing.T) {
 	}
 	var rows []benchRow
 	var report strings.Builder
-	fmt.Fprintf(&report, "\nclaude %s, %d iterations, %d tool turns, first byte %s, %d text deltas per block every %s\n", benchModel, iterations, toolTurns, firstByte, chunks, chunk)
+	fmt.Fprintf(&report, "\nnative flags: %s\nclaude %s, %d iterations, %d tool turns, first byte %s, %d text deltas per block every %s\n", strings.Join(benchNativeFlags(), " "), benchModel, iterations, toolTurns, firstByte, chunks, chunk)
 	fmt.Fprintf(&report, "%-52s %21s %21s %10s\n", "phase", "native p50 / p95", "oap p50 / p95", "Δp50")
 	for _, phase := range phases {
 		var nv, ov []time.Duration
