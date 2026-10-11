@@ -85,6 +85,8 @@ type Adapter struct {
 	ids    base.IDGenerator
 }
 
+type ModelRef = native.ModelRef
+
 func New(config Config) (*Adapter, error) {
 	if config.Factory == nil && config.Endpoint == "" {
 		return nil, errors.New("opencode adapter: factory or endpoint is required")
