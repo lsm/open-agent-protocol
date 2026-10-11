@@ -304,7 +304,7 @@ func aliasMinted(node any, aliases map[string]string) {
 				value[key] = float64(0)
 				continue
 			}
-			if text, isText := child.(string); isText && (mintedPerRun[key] || key == "id" && isEnvelope) {
+			if text, isText := child.(string); isText && (mintedPerRun[key] || key == "id" && isEnvelope || key == "in_reply_to" && strings.HasPrefix(text, "oap-request-")) {
 				alias, seen := aliases[key+"\x00"+text]
 				if !seen {
 					alias = fmt.Sprintf("<%s %d>", key, len(aliases)+1)
@@ -322,7 +322,7 @@ func aliasMinted(node any, aliases map[string]string) {
 	}
 }
 
-var mintedPerRun = map[string]bool{"in_reply_to": true, "created_at": true, "as_of": true, "run_id": true, "interaction_id": true, "tool_call_id": true}
+var mintedPerRun = map[string]bool{"created_at": true, "as_of": true, "run_id": true, "interaction_id": true, "tool_call_id": true}
 
 func driveFullSession(t *testing.T, c *child) {
 	t.Helper()
