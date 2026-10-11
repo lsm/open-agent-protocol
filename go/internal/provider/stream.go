@@ -212,6 +212,8 @@ func (s *streamState) applyData(data string) {
 	s.lastDetails = result.details
 }
 
+const LateArgumentsReason = "the provider streamed arguments for a tool call after its part ended"
+
 func (s *streamState) openIndex(kind string) (int, bool) {
 	if !s.open {
 		return 0, false
@@ -355,7 +357,13 @@ func (s *streamState) emitFor(sink *EventSink) {
 			continue
 		}
 		index, open := s.openToolCall(call.apiIndex)
-		if !open || !s.tracker.appendDelta(call.apiIndex, call.arguments) {
+		if !open {
+			if _, tracked := s.tracker.byAPI[call.apiIndex]; tracked {
+				s.lateArguments = true
+			}
+			continue
+		}
+		if !s.tracker.appendDelta(call.apiIndex, call.arguments) {
 			continue
 		}
 		sink.emit(Event{Kind: EventToolCallDelta, ContentIndex: index, Delta: call.arguments, Partial: s.partial(nil)})
@@ -459,6 +467,10 @@ func Stream(sink *EventSink, model Model, ctx Context, options StreamOptions, re
 			state.lastDetails = nil
 			state.applyData(event.Data)
 			state.emitFor(sink)
+			if state.lateArguments {
+				sink.fail(LateArgumentsReason)
+				return
+			}
 		}
 	}
 	state.finish(sink)

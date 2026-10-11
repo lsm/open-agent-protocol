@@ -189,6 +189,7 @@ type streamState struct {
 	hasSig        bool
 	parts         []streamPart
 	open          bool
+	lateArguments bool
 	toolCalls     int
 	tracker       *toolTracker
 	prevText      int
