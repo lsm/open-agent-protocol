@@ -203,9 +203,12 @@ cases, carried forward:
 `extensions["com.anthropic.claude-code.cost"]` on a terminal now carries, beside
 `total_cost_usd`, the result frame's `num_turns` and its `usage`
 `cache_read_input_tokens` and `cache_creation_input_tokens`, each only when
-the frame reports it. `usage.input_tokens` excludes cache reads, which in a
+the frame reports it. The extension is published when any of the four is
+reported, not only with a cost: the harness omits `total_cost_usd` on some
+error results (`error_max_turns`, `error_during_execution`) that still report
+`num_turns`, and those are the runs where the turn count matters most. `usage.input_tokens` excludes cache reads, which in a
 live GLM-5.3 review via Z.AI came to 715K against 57K uncached input
 (2026-10-10, Claude Code 2.1.295), so a host comparing engines by input tokens
 alone compares the wrong thing. The corpus's recorded results carry
 `num_turns` and no cache counts, so only `num_turns` was added to those
-expectations.
+expectations, including on the error terminals that report no cost.

@@ -1077,17 +1077,20 @@ const (
 
 func reportedExtensions(frame *native.ResultFrame) map[string]json.RawMessage {
 	reported := map[string]json.RawMessage{}
+	cost := map[string]any{}
 	if frame.TotalCostUSD != nil {
-		cost := map[string]any{"total_cost_usd": *frame.TotalCostUSD}
-		if frame.NumTurns != nil {
-			cost["num_turns"] = *frame.NumTurns
-		}
-		if frame.Usage.CacheReadInputTokens != nil {
-			cost["cache_read_input_tokens"] = *frame.Usage.CacheReadInputTokens
-		}
-		if frame.Usage.CacheCreationInputTokens != nil {
-			cost["cache_creation_input_tokens"] = *frame.Usage.CacheCreationInputTokens
-		}
+		cost["total_cost_usd"] = *frame.TotalCostUSD
+	}
+	if frame.NumTurns != nil {
+		cost["num_turns"] = *frame.NumTurns
+	}
+	if frame.Usage.CacheReadInputTokens != nil {
+		cost["cache_read_input_tokens"] = *frame.Usage.CacheReadInputTokens
+	}
+	if frame.Usage.CacheCreationInputTokens != nil {
+		cost["cache_creation_input_tokens"] = *frame.Usage.CacheCreationInputTokens
+	}
+	if len(cost) > 0 {
 		if value, err := json.Marshal(cost); err == nil {
 			reported[costExtension] = value
 		}

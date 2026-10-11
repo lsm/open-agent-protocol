@@ -44,7 +44,12 @@
     "timestamp_ms": 4,
     "session_id": "session",
     "run_id": "run-3",
-    "capability_revision": "claude-code-2.1.296-oap-v1"
+    "capability_revision": "claude-code-2.1.296-oap-v1",
+    "extensions": {
+      "com.anthropic.claude-code.cost": {
+        "num_turns": 1
+      }
+    }
   },
   {
     "protocol": "open-agent-protocol",
@@ -91,6 +96,11 @@
     "timestamp_ms": 7,
     "session_id": "session",
     "run_id": "run-8",
-    "capability_revision": "claude-code-2.1.296-oap-v1"
+    "capability_revision": "claude-code-2.1.296-oap-v1",
+    "extensions": {
+      "com.anthropic.claude-code.cost": {
+        "num_turns": 1
+      }
+    }
   }
 ]

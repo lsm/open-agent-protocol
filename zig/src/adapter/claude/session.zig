@@ -293,17 +293,15 @@ pub const Reducer = struct {
 
     fn reportedExtensions(self: *Reducer, frame: std.json.ObjectMap) !?std.json.Value {
         var extensions = self.object();
-        if (frame.get("total_cost_usd")) |carried| if (carried != .null) {
-            var cost = self.object();
-            try self.put(&cost, "total_cost_usd", carried);
-            if (frame.get("num_turns")) |turns| if (turns != .null) try self.put(&cost, "num_turns", turns);
-            if (frame.get("usage")) |usage| if (usage == .object) {
-                for ([_][]const u8{ "cache_read_input_tokens", "cache_creation_input_tokens" }) |key| {
-                    if (usage.object.get(key)) |count| if (count != .null) try self.put(&cost, key, count);
-                }
-            };
-            try self.put(&extensions, cost_extension, .{ .object = cost });
+        var cost = self.object();
+        if (frame.get("total_cost_usd")) |carried| if (carried != .null) try self.put(&cost, "total_cost_usd", carried);
+        if (frame.get("num_turns")) |turns| if (turns != .null) try self.put(&cost, "num_turns", turns);
+        if (frame.get("usage")) |usage| if (usage == .object) {
+            for ([_][]const u8{ "cache_read_input_tokens", "cache_creation_input_tokens" }) |key| {
+                if (usage.object.get(key)) |count| if (count != .null) try self.put(&cost, key, count);
+            }
         };
+        if (cost.count() > 0) try self.put(&extensions, cost_extension, .{ .object = cost });
         if (frame.get("structured_output")) |output| if (output != .null) {
             try self.put(&extensions, structured_output_extension, output);
         };
