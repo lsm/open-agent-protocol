@@ -68,6 +68,7 @@
     "capability_revision": "claude-code-2.1.296-oap-v1",
     "extensions": {
       "com.anthropic.claude-code.cost": {
+        "num_turns": 1,
         "total_cost_usd": 0.0001
       }
     }
@@ -161,6 +162,7 @@
     "capability_revision": "claude-code-2.1.296-oap-v1",
     "extensions": {
       "com.anthropic.claude-code.cost": {
+        "num_turns": 1,
         "total_cost_usd": 0
       }
     }

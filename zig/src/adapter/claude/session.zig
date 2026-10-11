@@ -296,6 +296,12 @@ pub const Reducer = struct {
         if (frame.get("total_cost_usd")) |carried| if (carried != .null) {
             var cost = self.object();
             try self.put(&cost, "total_cost_usd", carried);
+            if (frame.get("num_turns")) |turns| if (turns != .null) try self.put(&cost, "num_turns", turns);
+            if (frame.get("usage")) |usage| if (usage == .object) {
+                for ([_][]const u8{ "cache_read_input_tokens", "cache_creation_input_tokens" }) |key| {
+                    if (usage.object.get(key)) |count| if (count != .null) try self.put(&cost, key, count);
+                }
+            };
             try self.put(&extensions, cost_extension, .{ .object = cost });
         };
         if (frame.get("structured_output")) |output| if (output != .null) {
@@ -1616,6 +1622,20 @@ test "a terminal carries the cost the harness reported, and none when it reporte
     const extensions = terminal.get("extensions") orelse return error.NoExtensions;
     const carried = extensions.object.get(cost_extension) orelse return error.NoCost;
     try testing.expect(carried.object.get("total_cost_usd") != null);
+    try testing.expectEqual(@as(usize, 1), carried.object.count());
+
+    var cached = std.heap.ArenaAllocator.init(testing.allocator);
+    defer cached.deinit();
+    var counted = Reducer.init(&cached, .{});
+    counted.open();
+    try startedRun(&counted, cached.allocator(), "turn-1");
+    try observeText(&counted, cached.allocator(),
+        \\{"type":"result","session_id":"s","subtype":"success","result":"done","num_turns":3,"usage":{"input_tokens":7,"output_tokens":5,"cache_read_input_tokens":715,"cache_creation_input_tokens":0},"total_cost_usd":0.0001,"user_message_uuid":"turn-1","queued_turn_count":0,"uuid":"r1"}
+    );
+    const reported = counted.envelopes.items[counted.envelopes.items.len - 1].object.get("extensions").?.object.get(cost_extension).?.object;
+    try testing.expectEqual(@as(i64, 3), reported.get("num_turns").?.integer);
+    try testing.expectEqual(@as(i64, 715), reported.get("cache_read_input_tokens").?.integer);
+    try testing.expectEqual(@as(i64, 0), reported.get("cache_creation_input_tokens").?.integer);
 
     var free = std.heap.ArenaAllocator.init(testing.allocator);
     defer free.deinit();

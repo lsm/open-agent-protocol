@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"runtime"
 	"slices"
 	"strconv"
@@ -2230,6 +2231,33 @@ func TestATerminalWhoseStructuredOutputIsNullCarriesNone(t *testing.T) {
 	assertValidTrace(t, helloSubmit, admission, events)
 	if carried, ok := terminalOf(events).Extensions[structuredOutputExtension]; ok {
 		t.Fatalf("structured output extension = %s, want none for a null", carried)
+	}
+}
+
+func TestTheCostExtensionCarriesTheTurnsAndCacheCountsTheHarnessReported(t *testing.T) {
+	frame := strings.Replace(resultFrame("REPLACE_UUID", "success", false, "completed", "done", 0), `"usage":{"input_tokens":7,"output_tokens":5}`, `"usage":{"input_tokens":7,"output_tokens":5,"cache_read_input_tokens":715,"cache_creation_input_tokens":0}`, 1)
+	admission, events := settledWithFrame(t, frame)
+	assertValidTrace(t, helloSubmit, admission, events)
+	var reported map[string]json.Number
+	decoder := json.NewDecoder(bytes.NewReader(terminalOf(events).Extensions[costExtension]))
+	decoder.UseNumber()
+	if err := decoder.Decode(&reported); err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]json.Number{"total_cost_usd": "0.0001", "num_turns": "1", "cache_read_input_tokens": "715", "cache_creation_input_tokens": "0"}
+	if !maps.Equal(reported, want) {
+		t.Fatalf("cost extension = %v, want %v", reported, want)
+	}
+
+	bare := strings.Replace(resultFrame("REPLACE_UUID", "success", false, "completed", "done", 0), `"num_turns":1,`, "", 1)
+	admission, events = settledWithFrame(t, bare)
+	assertValidTrace(t, helloSubmit, admission, events)
+	var only map[string]any
+	if err := json.Unmarshal(terminalOf(events).Extensions[costExtension], &only); err != nil {
+		t.Fatal(err)
+	}
+	if len(only) != 1 || only["total_cost_usd"] == nil {
+		t.Fatalf("cost extension = %v, want only the cost when the frame reports no turns or cache counts", only)
 	}
 }
 
