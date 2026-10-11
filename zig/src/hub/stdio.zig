@@ -2673,7 +2673,11 @@ fn waitOn(frontend: *Frontend, stream: Stream, arena: std.mem.Allocator, wait_ns
 fn waitByPeeking(frontend: *Frontend, stream: Stream, wait_ns: u64) !bool {
     const input = stream.readable orelse return true;
     if (compat.stdio.waiting(input) == .ready) return true;
-    if (frontend.hub.entries.items.len == 0) compat.time.sleepNs(wait_ns) else try frontend.hub.pump(frontend.allocator, wait_ns);
+    const started = compat.time.monotonicNanos() catch 0;
+    try frontend.hub.pump(frontend.allocator, wait_ns);
+    try frontend.pumpStreams();
+    const spent = (compat.time.monotonicNanos() catch started) -| started;
+    if (spent < wait_ns) compat.time.sleepNs(wait_ns - spent);
     return compat.stdio.waiting(input) == .ready;
 }
 
@@ -3358,6 +3362,23 @@ test "a quiet input pipe is waited on rather than read, so the loop keeps cyclin
     try serve(testing.allocator, &harness.frontend, .{ .read = readPipe, .context = &input, .readable = input.handle, .stop = stopAfterIdleCycles });
     try testing.expect(idle_cycles > 3);
     try testing.expectEqual(@as(usize, 0), harness.recorder.lines.items.len);
+}
+
+test "a quiet input pipe beside an open session still costs the loop its wait each cycle" {
+    const ends = try compat.stdio.pipe();
+    defer compat.stdio.close(ends[0]);
+    defer compat.stdio.close(ends[1]);
+    var input = ends[0];
+    const harness = try Harness.init(testing.allocator, .{}, .{});
+    defer harness.deinit();
+    var scratch = std.heap.ArenaAllocator.init(testing.allocator);
+    defer scratch.deinit();
+    _ = try harness.hub.open(scratch.allocator(), "reference", .{ .session_id = "open-beside" });
+    idle_cycles = 0;
+    const started = try compat.time.monotonicNanos();
+    try serve(testing.allocator, &harness.frontend, .{ .read = readPipe, .context = &input, .readable = input.handle, .stop = stopAfterIdleCycles });
+    const spent = try compat.time.monotonicNanos() - started;
+    try testing.expect(spent >= 3 * cycle_budget_ns);
 }
 
 test "a line arriving on a quiet input pipe is read and answered" {
