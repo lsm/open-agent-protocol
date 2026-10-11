@@ -17,13 +17,14 @@ func TestParseModelRefNamesTheProfilesWiresAndNothingElse(t *testing.T) {
 		"deepseek/openai-chat-completions@deepseek-v4-pro": {ProviderID: "deepseek", Wire: "openai-completions", ModelID: "deepseek-v4-pro"},
 		"anthropic/anthropic-messages@claude":              {ProviderID: "anthropic", Wire: "anthropic-messages", ModelID: "claude"},
 		"openai/openai-responses@gpt-5":                    {ProviderID: "openai", Wire: "openai-responses", ModelID: "gpt-5"},
+		"ollama/other:ollama-chat@llama3":                  {ProviderID: "ollama", Wire: "other:ollama-chat", ModelID: "llama3"},
 	}
 	for ref, want := range cases {
 		if got, ok := ParseModelRef(ref); !ok || got != want {
 			t.Errorf("ParseModelRef(%q) = %+v, %v, want %+v", ref, got, ok, want)
 		}
 	}
-	for _, ref := range []string{"noslash", "/openai-chat-completions@m", "deepseek/openai-completions@m", "deepseek/openai-chat-completions@", "deepseek/@m"} {
+	for _, ref := range []string{"noslash", "/openai-chat-completions@m", "deepseek/openai-completions@m", "deepseek/openai-chat-completions@", "deepseek/@m", "ollama/other:@m"} {
 		if got, ok := ParseModelRef(ref); ok {
 			t.Errorf("ParseModelRef(%q) = %+v, want refused", ref, got)
 		}
@@ -80,6 +81,7 @@ func TestACreateIsRefusedBeforeAnythingIsAllocatedWhenItCannotBeServed(t *testin
 		{"a message this endpoint does not carry yet", servingDeepSeek(), parityModelRef, `[{"role":"tool","content":"x"}]`, CodeUnsupportedFeature},
 		{"a provider served on another wire", servingDeepSeek(), "deepseek/anthropic-messages@deepseek-v4-pro", `[]`, CodeInvalidRequest},
 		{"the openai-responses wire this layer does not serve yet", servingDeepSeek(), "openai/openai-responses@gpt-5", `[]`, CodeUnsupportedFeature},
+		{"an other wire this layer does not serve yet", servingDeepSeek(), "ollama/other:ollama-chat@llama3", `[]`, CodeUnsupportedFeature},
 	}
 	for _, c := range cases {
 		out := runnerOutcome(t, c.runner, c.ref, c.messages)
@@ -352,5 +354,41 @@ func TestACancelledCreateSettlesAbortedAsOapxDoes(t *testing.T) {
 		if last.Type != "inference.failed" || payloadOf(t, last)["error"].(map[string]any)["code"] != CodeAborted {
 			t.Errorf("%s: settled %s %v, want aborted", when, last.Type, payloadOf(t, last))
 		}
+	}
+}
+
+func TestAStoredCredentialServesAsAnEnvironmentOneDoes(t *testing.T) {
+	key := "sk-oap-stored"
+	stored := func(string) *providercatalog.StoredCredential { return &providercatalog.StoredCredential{APIKey: &key} }
+	unserved := servingDeepSeek()
+	unserved.Models, unserved.Environment, unserved.Stored = nil, nil, stored
+	if out := runnerOutcome(t, unserved, parityModelRef, `[]`); refusalCode(t, out[0]) != CodeProviderUnavailable {
+		t.Fatalf("an unserved provider with a stored key = %v, want provider_unavailable", payloadOf(t, out[0]))
+	}
+	served := servingDeepSeek()
+	served.Environment, served.Stored = nil, stored
+	out := runnerOutcome(t, served, parityModelRef, `[{"role":"user","content":"hi"}]`)
+	if code := payloadOf(t, out[len(out)-1])["error"].(map[string]any)["code"]; code == CodeCredentialMissing {
+		t.Fatal("a served provider with a stored key settled credential_missing")
+	}
+}
+
+func TestOnlyTheDraftsDegradeKeyDowngradesASnapshotPolicy(t *testing.T) {
+	base := `"model_ref":"deepseek/openai-chat-completions@no-such-model","messages":[{"role":"user","content":"hi"}],"include_snapshot":"on_part_end"`
+	if out := runnerOutcomeWith(t, servingDeepSeek(), `{`+base+`,"allow_degraded_features":["inference.snapshot"]}`); payloadOf(t, out[0])["accepted"] != true {
+		t.Fatalf("with inference.snapshot = %v, want accepted", payloadOf(t, out[0]))
+	}
+	if out := runnerOutcomeWith(t, servingDeepSeek(), `{`+base+`,"allow_degraded_features":["include_snapshot"]}`); refusalCode(t, out[0]) != CodeUnsupportedFeature {
+		t.Fatalf("with include_snapshot = %v, want refused", payloadOf(t, out[0]))
+	}
+}
+
+func TestAVendorThePolicyBlocksFromAnonymousUseStillNeedsAKey(t *testing.T) {
+	runner := servingDeepSeek()
+	runner.Environment = nil
+	runner.Models[0].Model.AllowsAnonymous = true
+	out := runnerOutcome(t, runner, parityModelRef, `[{"role":"user","content":"hi"}]`)
+	if code := payloadOf(t, out[len(out)-1])["error"].(map[string]any)["code"]; code != CodeCredentialMissing {
+		t.Fatalf("code = %v, want credential_missing: provider.AllowsAnonymous blocks deepseek", code)
 	}
 }

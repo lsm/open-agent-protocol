@@ -70,6 +70,7 @@ type Runner struct {
 	Environment []providercatalog.EnvironmentValue
 	Models      []provider.ListedModel
 	KeyRefused  []string
+	Stored      func(id string) *providercatalog.StoredCredential
 	Client      *http.Client
 	Ids         *Ids
 	Now         func() int64
@@ -86,9 +87,14 @@ func ParseModelRef(ref string) (ModelRef, bool) {
 	if at <= 0 || at+1 >= len(rest) {
 		return ModelRef{}, false
 	}
-	wire, known := oapWires[rest[:at]]
+	component := rest[:at]
+	wire, known := oapWires[component]
 	if !known {
-		return ModelRef{}, false
+		id, other := strings.CutPrefix(component, "other:")
+		if !other || id == "" {
+			return ModelRef{}, false
+		}
+		wire = component
 	}
 	return ModelRef{ProviderID: ref[:slash], Wire: wire, ModelID: rest[at+1:]}, true
 }
@@ -109,8 +115,8 @@ func (r *Runner) Create(ctx context.Context, requestID string, request CreateReq
 		refuse(CodeInvalidRequest, "model_ref must be provider_id/wire@model_id")
 		return
 	}
-	if ref.Wire == "openai-responses" {
-		refuse(CodeUnsupportedFeature, "this endpoint does not serve the openai-responses wire yet")
+	if ref.Wire != "openai-completions" && ref.Wire != provider.AnthropicWire {
+		refuse(CodeUnsupportedFeature, "this endpoint does not serve the "+ref.Wire+" wire yet")
 		return
 	}
 	if !r.servesProvider(ref.ProviderID) {
@@ -160,8 +166,8 @@ func (r *Runner) Create(ctx context.Context, requestID string, request CreateReq
 		}
 		return
 	}
-	credential, held := providercatalog.LookupCredential(r.Catalog, r.Environment, nil, ref.ProviderID)
-	if !held && !model.AllowsAnonymous {
+	credential, held := providercatalog.LookupCredential(r.Catalog, r.Environment, r.stored(ref.ProviderID), ref.ProviderID)
+	if !held && !provider.AllowsAnonymous(model) {
 		if envelope, err := state.Failed(CodeCredentialMissing, "this provider needs a credential and none resolved"); err == nil {
 			emit(envelope)
 		}
@@ -210,9 +216,16 @@ func toolChoiceOf(raw json.RawMessage) (provider.ToolChoice, bool) {
 	return provider.ToolChoice{Mode: provider.ToolChoiceFunction, Function: named.Function}, true
 }
 
+func (r *Runner) stored(providerID string) *providercatalog.StoredCredential {
+	if r.Stored == nil {
+		return nil
+	}
+	return r.Stored(providerID)
+}
+
 func (r *Runner) anonymous(providerID string) bool {
 	for _, listed := range r.Models {
-		if listed.Model.Provider == providerID && listed.Model.AllowsAnonymous {
+		if listed.Model.Provider == providerID && provider.AllowsAnonymous(listed.Model) {
 			return true
 		}
 	}
@@ -220,7 +233,7 @@ func (r *Runner) anonymous(providerID string) bool {
 }
 
 func unforwarded(request CreateRequest) string {
-	if request.IncludeSnapshot != "" && request.IncludeSnapshot != "never" && !slices.Contains(request.AllowDegradedFeatures, "include_snapshot") {
+	if request.IncludeSnapshot != "" && request.IncludeSnapshot != "never" && !slices.Contains(request.AllowDegradedFeatures, "inference.snapshot") {
 		return "this endpoint does not serve snapshots yet"
 	}
 	if request.Stream != nil && !*request.Stream {
@@ -273,7 +286,7 @@ func (r *Runner) unservedRefusal(providerID string) (string, string) {
 	if !catalogued || !awaitsCredential(row) {
 		return CodeModelNotFound, "no such provider"
 	}
-	if _, held := providercatalog.LookupCredential(r.Catalog, r.Environment, nil, providerID); !held {
+	if _, held := providercatalog.LookupCredential(r.Catalog, r.Environment, r.stored(providerID), providerID); !held {
 		return CodeCredentialMissing, "this provider is served once it has a credential: sign in or set its key"
 	}
 	if slices.Contains(r.KeyRefused, providerID) {
