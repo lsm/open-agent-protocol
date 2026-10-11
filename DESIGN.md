@@ -376,7 +376,9 @@ Why the others lose:
 
 What stays an exception: the host's own stdin on `serve --stdio`. The host opens
 that pipe, and a synchronous handle accepts no overlapped read, so it cannot
-join this wait. A session that reports no handle keeps its share of the bounded
+join this wait. The stdio frontend checks it with `PeekNamedPipe` instead, and
+spends the rest of each cycle in the sessions' wait and then an alertable sleep,
+so a child that writes while stdin is quiet still ends the cycle early. A session that reports no handle keeps its share of the bounded
 wait on every platform.
 
 **Both trees.** Go's hub already runs one goroutine per connection behind a
