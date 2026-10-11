@@ -3,6 +3,25 @@ const std = @import("std");
 pub const File = std.Io.File;
 pub const Pipe = [2]File;
 
+const is_windows = @import("builtin").os.tag == .windows;
+
+const win = if (is_windows) struct {
+    const HANDLE = std.os.windows.HANDLE;
+    const BOOL = std.os.windows.BOOL;
+    const DWORD = std.os.windows.DWORD;
+    extern "kernel32" fn CreatePipe(read: *HANDLE, write: *HANDLE, attributes: ?*anyopaque, size: DWORD) callconv(.winapi) BOOL;
+    extern "kernel32" fn PeekNamedPipe(pipe: HANDLE, buffer: ?*anyopaque, size: DWORD, read: ?*DWORD, available: ?*DWORD, left: ?*DWORD) callconv(.winapi) BOOL;
+} else struct {};
+
+pub const Waiting = enum { ready, quiet };
+
+pub fn waiting(handle: File.Handle) Waiting {
+    if (comptime !is_windows) return .ready;
+    var available: win.DWORD = 0;
+    if (win.PeekNamedPipe(handle, null, 0, null, &available, null) == .FALSE) return .ready;
+    return if (available > 0) .ready else .quiet;
+}
+
 fn defaultIo() std.Io {
     return if (@import("builtin").is_test)
         std.testing.io
@@ -97,7 +116,12 @@ pub fn close(file: File) void {
 }
 
 pub fn pipe() !Pipe {
-    if (@import("builtin").os.tag == .windows) return error.Unsupported;
+    if (comptime is_windows) {
+        var read_end: win.HANDLE = undefined;
+        var write_end: win.HANDLE = undefined;
+        if (win.CreatePipe(&read_end, &write_end, null, 4096) == .FALSE) return error.Unexpected;
+        return .{ fileFromPipeHandle(read_end), fileFromPipeHandle(write_end) };
+    }
     const handles = try std.Io.Threaded.pipe2(.{});
     return .{ fileFromPipeHandle(handles[0]), fileFromPipeHandle(handles[1]) };
 }
