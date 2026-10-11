@@ -156,6 +156,17 @@ pub const ToolCallTracker = struct {
         return null;
     }
 
+    pub fn peekCall(self: *Self, api_index: usize) ?ai_types.ToolCall {
+        const call = self.calls.getPtr(api_index) orelse return null;
+        const signature = call.thought_signature.slice();
+        return .{
+            .id = call.id.slice(),
+            .name = call.name.slice(),
+            .arguments_json = call.json_accumulator.getBuffer(),
+            .thought_signature = if (signature.len > 0) signature else null,
+        };
+    }
+
     pub fn hasCall(self: Self, api_index: usize) bool {
         return self.calls.contains(api_index);
     }
