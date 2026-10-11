@@ -397,6 +397,10 @@ test "the example registry parses, each entry typed and resolved as it is writte
     try testing.expectEqualStrings("Glob", claude.allowed_tools.?[2]);
     try testing.expectEqual(@as(i64, 64), file.adapter("memory").?.journal_capacity.?);
     try testing.expectEqualStrings("http://127.0.0.1:4096", file.adapter("opencode").?.endpoint);
+    const hermes = file.adapter("hermes").?;
+    try testing.expectEqual(@as(usize, 2), hermes.args.len);
+    try testing.expectEqualStrings("-m", hermes.args[0]);
+    try testing.expectEqualStrings("tui_gateway.entry", hermes.args[1]);
     try testing.expect(file.adapter("absent") == null);
 
     try testing.expectEqual(@as(usize, 1), file.tool_sources.len);

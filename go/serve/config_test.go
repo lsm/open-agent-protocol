@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -33,6 +34,24 @@ func staticEnviron(values map[string]string) func(string) (string, bool) {
 
 func mustMemory() base.Adapter {
 	return base.NewMemory(base.Config{})
+}
+
+func TestTheExampleHermesEntryStartsTheGatewayModule(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join("..", "..", "examples", "oap-serve.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var file configFile
+	if err := file.UnmarshalJSON(data); err != nil {
+		t.Fatal(err)
+	}
+	hermes, ok := file.Adapters["hermes"]
+	if !ok || hermes.Type != "hermes" {
+		t.Fatalf("hermes entry = %+v", hermes)
+	}
+	if !slices.Equal(hermes.Args, []string{"-m", "tui_gateway.entry"}) {
+		t.Fatalf("hermes args = %q, want the gateway module the interpreter runs", hermes.Args)
+	}
 }
 
 func TestLoadRegistryMemory(t *testing.T) {
