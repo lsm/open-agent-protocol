@@ -30,10 +30,6 @@ func calculateCost(usage Usage, rates Cost) Cost {
 	return cost
 }
 
-func CanCompletePartialTextOnStreamError(textLen, thinkingLen, toolCallCount int) bool {
-	return toolCallCount == 0 && (textLen > 0 || thinkingLen > 0)
-}
-
 func asObject(v any) (map[string]any, bool) {
 	obj, ok := v.(map[string]any)
 	return obj, ok
@@ -216,10 +212,6 @@ func (s *streamState) applyData(data string) {
 	s.lastDetails = result.details
 }
 
-func canCarryPartial(s *streamState) bool {
-	return CanCompletePartialTextOnStreamError(len(s.text), len(s.thinking), s.toolCalls)
-}
-
 func (s *streamState) openIndex(kind string) (int, bool) {
 	if !s.open {
 		return 0, false
@@ -293,19 +285,13 @@ func (s *streamState) covered(kind string) int {
 	return covered
 }
 
-func (s *streamState) finishTail(sink *EventSink, kind string) {
-	buffer := s.text
-	deltaKind := EventTextDelta
-	if kind == "thinking" {
-		buffer = s.thinking
-		deltaKind = EventThinkingDelta
-	}
-	start := s.covered(kind)
-	if len(buffer) <= start {
+func (s *streamState) finishThinkingTail(sink *EventSink) {
+	start := s.covered("thinking")
+	if len(s.thinking) <= start {
 		return
 	}
-	index := s.continueOrBegin(sink, kind, start)
-	sink.emit(Event{Kind: deltaKind, ContentIndex: index, Delta: buffer[start:], Partial: s.partial(nil)})
+	index := s.continueOrBegin(sink, "thinking", start)
+	sink.emit(Event{Kind: EventThinkingDelta, ContentIndex: index, Delta: s.thinking[start:], Partial: s.partial(nil)})
 	s.close(sink)
 }
 
@@ -389,8 +375,7 @@ func (s *streamState) finish(sink *EventSink) {
 	}
 	s.usage.Cost = calculateCost(s.usage, s.model.Cost)
 	s.close(sink)
-	s.finishTail(sink, "thinking")
-	s.finishTail(sink, "text")
+	s.finishThinkingTail(sink)
 	content := make([]AssistantBlock, 0, len(s.parts))
 	for _, part := range s.parts {
 		content = append(content, s.block(part))
@@ -423,15 +408,6 @@ func (s *streamState) startEvent() Event {
 			Timestamp:  s.clock.millis(),
 		},
 	}
-}
-
-func (s *streamState) completeOnStreamError(sink *EventSink) bool {
-	if !CanCompletePartialTextOnStreamError(len(s.text), len(s.thinking), s.toolCalls) {
-		return false
-	}
-	s.stopReason = StopLength
-	s.finish(sink)
-	return true
 }
 
 func (s *EventSink) fail(reason string) {
