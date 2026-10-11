@@ -71,6 +71,7 @@ var pinnedObservedOnlyEvents = map[string]bool{
 	"tool/ptc-dispatch":                      true,
 	"tool/ptc-dispatch-start":                true,
 	"web/deepseek-search-llm-request":        true,
+	"working-directory/change":               true,
 	"workspace/changes":                      true,
 }
 

@@ -332,6 +332,7 @@ const observed_only_events = [_][]const u8{
     "tool/ptc-dispatch",
     "tool/ptc-dispatch-start",
     "web/deepseek-search-llm-request",
+    "working-directory/change",
     "workspace/changes",
 };
 
@@ -1392,6 +1393,15 @@ test "an observed-only event is not a required one" {
     try std.testing.expect(!reducer.terminal);
     try applyEvent(&reducer, try parse(arena.allocator(), "{\"type\":\"future/unheard-of\",\"data\":{}}"));
     try std.testing.expectEqualStrings("deepseek_unknown_event", lastFailure(&reducer).?);
+}
+
+test "a working-directory change inside a run is observed rather than refused" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var reducer = try admittedRun(arena.allocator());
+    try applyEvent(&reducer, try parse(arena.allocator(), "{\"type\":\"working-directory/change\",\"data\":{\"cwd\":\"/tmp/dsh-cwd/workspace/sub\"}}"));
+    try std.testing.expect(!reducer.terminal);
+    try std.testing.expect(lastFailure(&reducer) == null);
 }
 
 test "a user message whose source is not the user kind does not admit the run" {

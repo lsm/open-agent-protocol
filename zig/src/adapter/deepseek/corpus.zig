@@ -225,6 +225,7 @@ test "every deepseek corpus case replays to the recorded envelopes" {
         .{ .id = "turn-end-reasons", .path = "turn-end-reasons" },
         .{ .id = "unknown-events", .path = "unknown-events" },
         .{ .id = "unsupported-controls", .path = "unsupported-controls" },
+        .{ .id = "working-directory-change", .path = "working-directory-change" },
     });
 }
 

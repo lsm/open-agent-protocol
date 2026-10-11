@@ -52,20 +52,19 @@ var dshCarriedSources = dshCorpusSources{
 }
 
 var dshCurrentSources = dshCorpusSources{
-	SDKProtocolTypes:     "605b97cc6945397563e6351e03ffde7a9436b23f",
+	SDKProtocolTypes:     "9c2fd6335d3db02fb7fabe9f0674e5a63647a09e",
 	SDKProtocolTransport: "36574f46bf3e34738be045408e25bb79932ff609",
-	SDKServer:            "50567c32e78067d7d82cd5c8429e945ca3c7d237",
-	CoreSessionTypes:     "593c86d52a5c26d531913ffaff9aac651732c2da",
-	CoreKnownEvents:      "adaca29255a181c793a73476baddc25324083cb2",
+	SDKServer:            "ab5084ffb723b327d6accc04547698d786f827a6",
+	CoreSessionTypes:     "fbc9a9cccbe3f95d344f8e8078dfe5ddd3786a80",
+	CoreKnownEvents:      "9801de9222f0aee821fd7a33124b07b2ed833959",
 	CoreAgentTypes:       "5cbc81df38c81be4f5c4d85e6a2c8acd5108ed95",
 	CoreAgentInbox:       "ef00887a544c2dededb484ff7b9ce0efe83dea21",
-	CoreAgentRuntime:     "2118507b8cc617a920e7ceae9f98d06daa2d4780",
-	CoreAgentLoop:        "bcd7ad17a82699c395c3a14855cdee6ed4a2b905",
+	CoreAgentRuntime:     "0fa89afc054a819493206cef65dd7907092cdd7f",
+	CoreAgentLoop:        "adf2e33ddcc9b37e8e20e89203a276bcdf18ee5d",
 	LLMMessage:           "d96a63edb6d78d64508875ebc1cc6a1cc5a824b6",
-	LLMTypes:             "54453607f5c07f31baea3e6fd722f94cec71ad5d",
+	LLMTypes:             "794352dc837f0d7c0d9335e3da607e5eb9da91a8",
 	LLMAssistantStream:   "7fca34c5d5bf432f7fad81bd48edfbdaf5083e83",
-	CoreSessionInvariant: "154c95343862f5929c8b55e7df72d120b934ef13",
-	CoreSessionSurface:   "eeedca77b9bafacaf5d2d358c2bdaa6915988d8b",
+	CoreSessionSurface:   "0bb84c030ef595b3d9a17116e7dc7b9deb26369c",
 }
 
 func dshCurrentProvenance() dshCorpusProvenance {
@@ -84,7 +83,7 @@ var dshLedgerFixtures = map[string]bool{
 	"streaming-chunks": true, "tool-lifecycle": true, "tool-failed": true, "injected-origin": true,
 	"subagent-run": true, "child-after-turn-end": true, "settlement": true,
 	"process-exit": true, "shutdown": true,
-	"unknown-ignorable": true, "unknown-required": true,
+	"unknown-ignorable": true, "unknown-required": true, "working-directory-change": true,
 	"native-tolerant-frame": true, "adapter-strict-frame": true,
 	"no-native-cancel": true, "no-wire-claim": true, "no-implied-replay": true,
 }
@@ -111,7 +110,7 @@ type dshCorpusSources struct {
 	LLMMessage           string `json:"llm_message_blob"`
 	LLMTypes             string `json:"llm_types_blob"`
 	LLMAssistantStream   string `json:"llm_assistant_stream_blob"`
-	CoreSessionInvariant string `json:"core_session_invariant_blob"`
+	CoreSessionInvariant string `json:"core_session_invariant_blob,omitempty"`
 	CoreSessionSurface   string `json:"core_session_surface_blob"`
 }
 type dshCorpusManifestCase struct {
@@ -1226,6 +1225,23 @@ func assertDSHLedgerEvidence(t *testing.T, labels []string, definition dshCorpus
 				}
 			}
 			ok = ignorable && hasDSHEnvelopeType(*execution, protocol.TypeRunCompleted)
+		case "working-directory-change":
+			changed, notice := false, false
+			for i := range decoded {
+				if decoded[i].Event == nil {
+					continue
+				}
+				switch decoded[i].Event.Type {
+				case "working-directory/change":
+					changed = true
+				case "user/message":
+					var message native.UserMessage
+					if native.DecodeStrict(decoded[i].Event.Data, &message) == nil && message.Source.Kind == "working-directory" {
+						notice = true
+					}
+				}
+			}
+			ok = changed && notice && hasDSHEnvelopeType(*execution, protocol.TypeActionCallCompleted) && hasDSHEnvelopeType(*execution, protocol.TypeRunCompleted)
 		case "unknown-required":
 			rejected := false
 			for i := range frames {
@@ -1454,9 +1470,12 @@ func TestDSHCorpusPinConstants(t *testing.T) {
 		t.Fatal("missing DeepSeek corpus pin")
 	}
 	for _, sources := range []dshCorpusSources{dshCurrentSources, dshCarriedSources} {
-		if sources.SDKProtocolTypes == "" || sources.SDKProtocolTransport == "" || sources.SDKServer == "" || sources.CoreSessionTypes == "" || sources.CoreKnownEvents == "" || sources.CoreAgentTypes == "" || sources.CoreAgentInbox == "" || sources.CoreAgentRuntime == "" || sources.CoreAgentLoop == "" || sources.LLMMessage == "" || sources.LLMTypes == "" || sources.LLMAssistantStream == "" || sources.CoreSessionInvariant == "" || sources.CoreSessionSurface == "" {
+		if sources.SDKProtocolTypes == "" || sources.SDKProtocolTransport == "" || sources.SDKServer == "" || sources.CoreSessionTypes == "" || sources.CoreKnownEvents == "" || sources.CoreAgentTypes == "" || sources.CoreAgentInbox == "" || sources.CoreAgentRuntime == "" || sources.CoreAgentLoop == "" || sources.LLMMessage == "" || sources.LLMTypes == "" || sources.LLMAssistantStream == "" || sources.CoreSessionSurface == "" {
 			t.Fatal("missing DeepSeek corpus source pin")
 		}
+	}
+	if dshCarriedSources.CoreSessionInvariant == "" || dshCurrentSources.CoreSessionInvariant != "" {
+		t.Fatal("the invariant companion is pinned at the carried release only; the current release deleted it")
 	}
 }
 

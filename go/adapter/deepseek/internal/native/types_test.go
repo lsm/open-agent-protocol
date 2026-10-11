@@ -266,6 +266,16 @@ func TestToolErrorCarriesTheUserFacingReason(t *testing.T) {
 	}
 }
 
+func TestAWorkingDirectoryChangeIsObservedOnlyAndDecodesWithoutAnIgnorableMarker(t *testing.T) {
+	if !ObservedOnly("working-directory/change") {
+		t.Fatal("working-directory/change is required, and this adapter maps nothing of it")
+	}
+	frame := []byte(`{"sessionId":"session","event":{"type":"working-directory/change","seq":16,"time":1,"data":{"cwd":"/tmp/dsh-cwd/workspace/sub"}}}`)
+	if _, err := DecodeNotification(NotifySessionEvent, frame); err != nil {
+		t.Fatalf("working-directory/change refused: %v", err)
+	}
+}
+
 func TestWorkspaceChangesIsObservedOnlyAndImageOffloadIsNot(t *testing.T) {
 	if !ObservedOnly("workspace/changes") {
 		t.Fatal("workspace/changes is required, and this adapter maps nothing of it")
