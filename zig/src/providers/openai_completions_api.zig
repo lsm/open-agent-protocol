@@ -1139,6 +1139,138 @@ fn buildBearerAuthValue(allocator: std.mem.Allocator, token: []const u8) ![]u8 {
     return out;
 }
 
+const PartKind = enum { text, thinking, tool_call };
+
+const Part = struct {
+    kind: PartKind,
+    start: usize = 0,
+    end: usize = 0,
+    api_index: usize = 0,
+};
+
+const PartStream = struct {
+    stream: *event_stream.AssistantMessageEventStream,
+    model: ai_types.Model,
+    text: *const std.ArrayList(u8),
+    thinking: *const std.ArrayList(u8),
+    signature: *const ?[]const u8,
+    tracker: *tool_call_tracker.ToolCallTracker,
+    usage: *const ai_types.Usage,
+    stop_reason: *const ai_types.StopReason,
+    parts: std.ArrayList(Part) = .empty,
+    open: bool = false,
+
+    fn partial(self: *const PartStream) ai_types.AssistantMessage {
+        return .{
+            .content = &.{},
+            .api = self.model.api,
+            .provider = self.model.provider,
+            .model = self.model.id,
+            .usage = self.usage.*,
+            .stop_reason = self.stop_reason.*,
+            .timestamp = compat_mod.time.nowMillis(),
+        };
+    }
+
+    fn openIndex(self: *const PartStream, kind: PartKind) ?usize {
+        if (!self.open) return null;
+        const last = self.parts.items.len - 1;
+        if (self.parts.items[last].kind != kind) return null;
+        return last;
+    }
+
+    fn openToolCall(self: *const PartStream, api_index: usize) ?usize {
+        const index = self.openIndex(.tool_call) orelse return null;
+        if (self.parts.items[index].api_index != api_index) return null;
+        return index;
+    }
+
+    fn begin(self: *PartStream, allocator: std.mem.Allocator, part: Part) !usize {
+        try self.parts.append(allocator, part);
+        self.open = true;
+        return self.parts.items.len - 1;
+    }
+
+    fn continueOrBegin(self: *PartStream, allocator: std.mem.Allocator, kind: PartKind, start: usize) !usize {
+        if (self.openIndex(kind)) |index| return index;
+        try self.close(allocator);
+        const index = try self.begin(allocator, .{ .kind = kind, .start = start });
+        switch (kind) {
+            .text => pushEvent(self.stream, .{ .text_start = .{ .content_index = index, .partial = self.partial() } }),
+            .thinking => pushEvent(self.stream, .{ .thinking_start = .{ .content_index = index, .partial = self.partial() } }),
+            .tool_call => unreachable,
+        }
+        return index;
+    }
+
+    fn block(self: *PartStream, part: Part) ai_types.AssistantContent {
+        return switch (part.kind) {
+            .text => .{ .text = .{ .text = self.text.items[part.start..part.end] } },
+            .thinking => .{ .thinking = .{ .thinking = self.thinking.items[part.start..part.end], .thinking_signature = self.signature.* } },
+            .tool_call => .{ .tool_call = self.tracker.peekCall(part.api_index) orelse .{ .id = "", .name = "", .arguments_json = "" } },
+        };
+    }
+
+    fn close(self: *PartStream, allocator: std.mem.Allocator) !void {
+        if (!self.open) return;
+        const index = self.parts.items.len - 1;
+        const part = &self.parts.items[index];
+        switch (part.kind) {
+            .text => part.end = self.text.items.len,
+            .thinking => part.end = self.thinking.items.len,
+            .tool_call => {},
+        }
+        const held = try allocator.alloc(ai_types.AssistantContent, index + 1);
+        defer allocator.free(held);
+        for (self.parts.items[0 .. index + 1], held) |earlier, *slot| slot.* = self.block(earlier);
+        var carried = self.partial();
+        carried.content = held;
+        self.open = false;
+        switch (held[index]) {
+            .text => |value| pushEvent(self.stream, .{ .text_end = .{ .content_index = index, .content = value.text, .partial = carried } }),
+            .thinking => |value| pushEvent(self.stream, .{ .thinking_end = .{ .content_index = index, .content = value.thinking, .partial = carried } }),
+            .tool_call => |value| pushEvent(self.stream, .{ .toolcall_end = .{ .content_index = index, .tool_call = value, .partial = carried } }),
+            .image => unreachable,
+        }
+    }
+
+    fn assemble(self: *PartStream, allocator: std.mem.Allocator, unstreamed_thinking: bool) ![]ai_types.AssistantContent {
+        var built = std.ArrayList(ai_types.AssistantContent).empty;
+        errdefer {
+            ai_types.deinitAssistantContentElements(allocator, built.items);
+            built.deinit(allocator);
+        }
+        if (unstreamed_thinking) try self.appendThinking(allocator, &built, self.thinking.items);
+        for (self.parts.items) |part| switch (part.kind) {
+            .text => {
+                const owned = try allocator.dupe(u8, self.text.items[part.start..part.end]);
+                built.append(allocator, .{ .text = .{ .text = owned } }) catch |err| {
+                    allocator.free(owned);
+                    return err;
+                };
+            },
+            .thinking => try self.appendThinking(allocator, &built, self.thinking.items[part.start..part.end]),
+            .tool_call => {
+                const call = self.tracker.completeCall(part.api_index, allocator) orelse return error.OutOfMemory;
+                built.append(allocator, .{ .tool_call = call }) catch |err| {
+                    var lost = [_]ai_types.AssistantContent{.{ .tool_call = call }};
+                    ai_types.deinitAssistantContentElements(allocator, &lost);
+                    return err;
+                };
+            },
+        };
+        return built.toOwnedSlice(allocator);
+    }
+
+    fn appendThinking(self: *PartStream, allocator: std.mem.Allocator, built: *std.ArrayList(ai_types.AssistantContent), thinking: []const u8) !void {
+        const owned = try allocator.dupe(u8, thinking);
+        errdefer allocator.free(owned);
+        const signature = if (self.signature.*) |value| try allocator.dupe(u8, value) else null;
+        errdefer if (signature) |value| allocator.free(value);
+        try built.append(allocator, .{ .thinking = .{ .thinking = owned, .thinking_signature = signature } });
+    }
+};
+
 fn pushEvent(stream: *event_stream.AssistantMessageEventStream, event: ai_types.AssistantMessageEvent) void {
     _ = stream.pushBlocking(event);
 }
@@ -1512,8 +1644,18 @@ fn runThread(ctx: *ThreadCtx) void {
         }
         reasoning_detail_events.deinit(allocator);
     }
-    var next_content_index: usize = 0;
     var tool_call_count: usize = 0;
+    var parts: PartStream = .{
+        .stream = stream,
+        .model = model,
+        .text = &text,
+        .thinking = &thinking,
+        .signature = &reasoning_signature,
+        .tracker = &tool_call_tracker_instance,
+        .usage = &usage,
+        .stop_reason = &stop_reason,
+    };
+    defer parts.parts.deinit(allocator);
     var finished = false;
     var trace: ReplyTrace = .{};
     trace.noteHeaders(&response.head);
@@ -1607,42 +1749,30 @@ fn runThread(ctx: *ThreadCtx) void {
                 },
             }
 
-            if (text.items.len > prev_text_len) {
-                const delta = text.items[prev_text_len..];
-                pushEvent(stream, .{
-                    .text_delta = .{
-                        .content_index = 0,
-                        .delta = delta,
-                        .partial = .{
-                            .content = &.{},
-                            .api = model.api,
-                            .provider = model.provider,
-                            .model = model.id,
-                            .usage = usage,
-                            .stop_reason = stop_reason,
-                            .timestamp = compat_mod.time.nowMillis(),
-                        },
-                    },
-                });
+            if (thinking.items.len > prev_thinking_len and !isKimiModel(model)) {
+                const index = parts.continueOrBegin(allocator, .thinking, prev_thinking_len) catch {
+                    ctx.deinit();
+                    stream.completeWithError("oom opening a part");
+                    return;
+                };
+                pushEvent(stream, .{ .thinking_delta = .{
+                    .content_index = index,
+                    .delta = thinking.items[prev_thinking_len..],
+                    .partial = parts.partial(),
+                } });
             }
 
-            if (thinking.items.len > prev_thinking_len and !isKimiModel(model)) {
-                const delta = thinking.items[prev_thinking_len..];
-                pushEvent(stream, .{
-                    .thinking_delta = .{
-                        .content_index = 0,
-                        .delta = delta,
-                        .partial = .{
-                            .content = &.{},
-                            .api = model.api,
-                            .provider = model.provider,
-                            .model = model.id,
-                            .usage = usage,
-                            .stop_reason = stop_reason,
-                            .timestamp = compat_mod.time.nowMillis(),
-                        },
-                    },
-                });
+            if (text.items.len > prev_text_len) {
+                const index = parts.continueOrBegin(allocator, .text, prev_text_len) catch {
+                    ctx.deinit();
+                    stream.completeWithError("oom opening a part");
+                    return;
+                };
+                pushEvent(stream, .{ .text_delta = .{
+                    .content_index = index,
+                    .delta = text.items[prev_text_len..],
+                    .partial = parts.partial(),
+                } });
             }
 
             for (reasoning_detail_events.items) |rde| {
@@ -1651,7 +1781,17 @@ fn runThread(ctx: *ThreadCtx) void {
 
             for (tool_call_events.items) |tce| {
                 if (tce.is_start) {
-                    const content_index = next_content_index;
+                    if (tool_call_tracker_instance.hasCall(tce.api_index)) continue;
+                    parts.close(allocator) catch {
+                        ctx.deinit();
+                        stream.completeWithError("oom closing a part");
+                        return;
+                    };
+                    const content_index = parts.begin(allocator, .{ .kind = .tool_call, .api_index = tce.api_index }) catch {
+                        ctx.deinit();
+                        stream.completeWithError("oom tool call start");
+                        return;
+                    };
                     const id = tce.id orelse "";
                     const name = tce.name orelse "";
                     _ = tool_call_tracker_instance.startCall(tce.api_index, content_index, id, name) catch {
@@ -1659,48 +1799,25 @@ fn runThread(ctx: *ThreadCtx) void {
                         stream.completeWithError("oom tool call start");
                         return;
                     };
-                    next_content_index += 1;
                     tool_call_count += 1;
-
-                    pushEvent(stream, .{
-                        .toolcall_start = .{
-                            .content_index = content_index,
-                            .id = id,
-                            .name = name,
-                            .partial = .{
-                                .content = &.{},
-                                .api = model.api,
-                                .provider = model.provider,
-                                .model = model.id,
-                                .usage = usage,
-                                .stop_reason = stop_reason,
-                                .timestamp = compat_mod.time.nowMillis(),
-                            },
-                        },
-                    });
+                    pushEvent(stream, .{ .toolcall_start = .{
+                        .content_index = content_index,
+                        .id = id,
+                        .name = name,
+                        .partial = parts.partial(),
+                    } });
                 } else if (tce.arguments_delta) |delta| {
                     tool_call_tracker_instance.appendDelta(tce.api_index, delta) catch {
                         ctx.deinit();
                         stream.completeWithError("oom tool call delta");
                         return;
                     };
-
-                    if (tool_call_tracker_instance.getContentIndex(tce.api_index)) |content_index| {
-                        pushEvent(stream, .{
-                            .toolcall_delta = .{
-                                .content_index = content_index,
-                                .delta = delta,
-                                .partial = .{
-                                    .content = &.{},
-                                    .api = model.api,
-                                    .provider = model.provider,
-                                    .model = model.id,
-                                    .usage = usage,
-                                    .stop_reason = stop_reason,
-                                    .timestamp = compat_mod.time.nowMillis(),
-                                },
-                            },
-                        });
+                    if (parts.openToolCall(tce.api_index)) |content_index| {
+                        pushEvent(stream, .{ .toolcall_delta = .{
+                            .content_index = content_index,
+                            .delta = delta,
+                            .partial = parts.partial(),
+                        } });
                     }
                 }
             }
@@ -1710,27 +1827,14 @@ fn runThread(ctx: *ThreadCtx) void {
     if (usage.total_tokens == 0) usage.total_tokens = usage.input + usage.output + usage.cache_read + usage.cache_write;
     usage.calculateCost(model.cost);
 
-    var api_indices = std.ArrayList(usize).empty;
-    defer api_indices.deinit(allocator);
-    api_indices.ensureTotalCapacity(allocator, tool_call_tracker_instance.count()) catch {};
+    parts.close(allocator) catch {
+        ctx.deinit();
+        stream.completeWithError("oom closing a part");
+        return;
+    };
 
-    var tc_iter = tool_call_tracker_instance.calls.iterator();
-    while (tc_iter.next()) |entry| {
-        api_indices.append(allocator, entry.key_ptr.*) catch {};
-    }
-
-    std.mem.sort(usize, api_indices.items, tool_call_tracker_instance, struct {
-        fn lessThan(tracker: tool_call_tracker.ToolCallTracker, a: usize, b: usize) bool {
-            const a_idx = tracker.getContentIndex(a) orelse 0;
-            const b_idx = tracker.getContentIndex(b) orelse 0;
-            return a_idx < b_idx;
-        }
-    }.lessThan);
-
-    const has_thinking = thinking.items.len > 0;
-    const has_text = text.items.len > 0;
-    const content_count: usize = if (has_thinking) 1 else 0;
-    const content_count_final = content_count + (if (has_text) @as(usize, 1) else @as(usize, 0)) + tool_call_count;
+    const unstreamed_thinking = isKimiModel(model) and thinking.items.len > 0;
+    const content_count_final = parts.parts.items.len + @as(usize, if (unstreamed_thinking) 1 else 0);
 
     if (content_count_final == 0 and stop_reason != .length) {
         const summary = if (finished) "the model returned an empty reply" else "the stream ended before the model replied";
@@ -1784,85 +1888,11 @@ fn runThread(ctx: *ThreadCtx) void {
         return;
     }
 
-    var content = allocator.alloc(ai_types.AssistantContent, content_count_final) catch {
+    const content = parts.assemble(allocator, unstreamed_thinking) catch {
         ctx.deinit();
         stream.completeWithError("oom building result");
         return;
     };
-    var idx: usize = 0;
-
-    if (has_thinking) {
-        content[idx] = .{
-            .thinking = .{
-                .thinking = allocator.dupe(u8, thinking.items) catch {
-                    allocator.free(content);
-                    ctx.deinit();
-                    stream.completeWithError("oom building thinking");
-                    return;
-                },
-                .thinking_signature = if (reasoning_signature) |sig| allocator.dupe(u8, sig) catch {
-                    for (content[0..idx]) |*block| {
-                        switch (block.*) {
-                            .thinking => |t| allocator.free(t.thinking),
-                            else => {},
-                        }
-                    }
-                    allocator.free(content);
-                    ctx.deinit();
-                    stream.completeWithError("oom building signature");
-                    return;
-                } else null,
-            },
-        };
-        idx += 1;
-    }
-
-    if (has_text) {
-        content[idx] = .{
-            .text = .{
-                .text = allocator.dupe(u8, text.items) catch {
-                    for (content[0..idx]) |*block| {
-                        switch (block.*) {
-                            .thinking => |t| {
-                                allocator.free(t.thinking);
-                                if (t.thinking_signature) |sig| allocator.free(sig);
-                            },
-                            else => {},
-                        }
-                    }
-                    allocator.free(content);
-                    ctx.deinit();
-                    stream.completeWithError("oom building text");
-                    return;
-                },
-            },
-        };
-        idx += 1;
-    }
-
-    for (api_indices.items) |api_idx| {
-        if (tool_call_tracker_instance.completeCall(api_idx, allocator)) |tc| {
-            content[idx] = .{ .tool_call = tc };
-
-            pushEvent(stream, .{
-                .toolcall_end = .{
-                    .content_index = idx,
-                    .tool_call = tc,
-                    .partial = .{
-                        .content = content[0..idx],
-                        .api = model.api,
-                        .provider = model.provider,
-                        .model = model.id,
-                        .usage = usage,
-                        .stop_reason = stop_reason,
-                        .timestamp = compat_mod.time.nowMillis(),
-                    },
-                },
-            });
-
-            idx += 1;
-        }
-    }
 
     const api = allocator.dupe(u8, model.api) catch {
         ai_types.deinitAssistantContent(allocator, content);
@@ -4015,7 +4045,7 @@ test "an OpenCode Go request names this client and carries the session id" {
     try std.testing.expect(mock.saw_client_agent.load(.acquire));
 }
 
-test "a streamed text thinking and tool call reports indices that diverge from the terminal assembly order" {
+test "a streamed text, thinking and tool call each declare a part, and each part ends before the next starts" {
     const allocator = std.testing.allocator;
 
     var mock = try MockCompletionsServer.listen(MockCompletionsServer.complete_stream);
@@ -4038,36 +4068,38 @@ test "a streamed text thinking and tool call reports indices that diverge from t
         allocator.destroy(stream);
     }
 
-    var text_index: ?usize = null;
-    var thinking_index: ?usize = null;
-    var tool_start_index: ?usize = null;
-    var tool_end_index: ?usize = null;
+    var seen = std.ArrayList(u8).empty;
+    defer seen.deinit(allocator);
+    var carried_signature = false;
 
     while (stream.wait()) |event| {
         var polled = event;
         defer ai_types.deinitAssistantMessageEvent(allocator, &polled);
-        switch (polled) {
-            .text_delta => |td| {
-                try std.testing.expectEqualStrings("hi", td.delta);
-                text_index = td.content_index;
+        const step: ?struct { name: []const u8, index: usize } = switch (polled) {
+            .text_start => |value| .{ .name = "text_start", .index = value.content_index },
+            .text_delta => |value| .{ .name = "text_delta", .index = value.content_index },
+            .text_end => |value| blk: {
+                try std.testing.expectEqualStrings("hi", value.content);
+                break :blk .{ .name = "text_end", .index = value.content_index };
             },
-            .thinking_delta => |td| {
-                try std.testing.expectEqualStrings("plan", td.delta);
-                thinking_index = td.content_index;
+            .thinking_start => |value| .{ .name = "thinking_start", .index = value.content_index },
+            .thinking_delta => |value| .{ .name = "thinking_delta", .index = value.content_index },
+            .thinking_end => |value| blk: {
+                try std.testing.expectEqualStrings("plan", value.content);
+                carried_signature = value.partial.content.len == value.content_index + 1 and
+                    value.partial.content[value.content_index].thinking.thinking_signature != null;
+                break :blk .{ .name = "thinking_end", .index = value.content_index };
             },
-            .toolcall_start => |ts| {
-                try std.testing.expectEqualStrings("call_trace01", ts.id);
-                try std.testing.expectEqualStrings("bash", ts.name);
-                tool_start_index = ts.content_index;
+            .toolcall_start => |value| .{ .name = "toolcall_start", .index = value.content_index },
+            .toolcall_delta => |value| .{ .name = "toolcall_delta", .index = value.content_index },
+            .toolcall_end => |value| blk: {
+                try std.testing.expectEqualStrings("{\"command\":\"ls\"}", value.tool_call.arguments_json);
+                break :blk .{ .name = "toolcall_end", .index = value.content_index };
             },
-            .toolcall_delta => |td| {
-                try std.testing.expectEqualStrings("{\"command\":\"ls\"}", td.delta);
-            },
-            .toolcall_end => |te| {
-                try std.testing.expectEqualStrings("call_trace01", te.tool_call.id);
-                tool_end_index = te.content_index;
-            },
-            else => {},
+            else => null,
+        };
+        if (step) |taken| {
+            try seen.print(allocator, "{s} {d}\n", .{ taken.name, taken.index });
         }
     }
 
@@ -4075,24 +4107,91 @@ test "a streamed text thinking and tool call reports indices that diverge from t
     mock.stop();
     stopped = true;
 
-    try std.testing.expect(stream.waitForThread(5_000));
-
     try std.testing.expect(stream.getError() == null);
-    try std.testing.expect(mock.saw_chat_path.load(.acquire));
-    try std.testing.expect(mock.saw_stream_flag.load(.acquire));
-
-    try std.testing.expectEqual(@as(usize, 0), text_index.?);
-    try std.testing.expectEqual(@as(usize, 0), thinking_index.?);
-    try std.testing.expectEqual(@as(usize, 0), tool_start_index.?);
-    try std.testing.expectEqual(@as(usize, 2), tool_end_index.?);
+    try std.testing.expectEqualStrings(
+        "text_start 0\ntext_delta 0\ntext_end 0\n" ++
+            "thinking_start 1\nthinking_delta 1\nthinking_end 1\n" ++
+            "toolcall_start 2\ntoolcall_delta 2\ntoolcall_end 2\n",
+        seen.items,
+    );
+    try std.testing.expect(carried_signature);
 
     const result = stream.getResult() orelse return error.TestUnexpectedResult;
     try std.testing.expectEqual(@as(usize, 3), result.content.len);
-    try std.testing.expectEqualStrings("plan", result.content[0].thinking.thinking);
-    try std.testing.expectEqualStrings("hi", result.content[1].text.text);
+    try std.testing.expectEqualStrings("hi", result.content[0].text.text);
+    try std.testing.expectEqualStrings("plan", result.content[1].thinking.thinking);
     try std.testing.expectEqualStrings("call_trace01", result.content[2].tool_call.id);
-    try std.testing.expectEqualStrings("bash", result.content[2].tool_call.name);
     try std.testing.expectEqualStrings("{\"command\":\"ls\"}", result.content[2].tool_call.arguments_json);
+}
+
+fn partLifecycleFor(allocator: std.mem.Allocator, body: []const u8) ![]u8 {
+    var mock = try MockCompletionsServer.listen(body);
+    var stopped = false;
+    defer if (!stopped) mock.stop();
+    const base_url = try mock.baseUrl(allocator);
+    defer allocator.free(base_url);
+    try mock.start();
+
+    const stream = try streamOpenAICompletions(
+        traceModel(base_url),
+        traceContext(),
+        .{ .api_key = ai_types.OwnedSlice(u8).initBorrowed("test-key") },
+        allocator,
+    );
+    defer {
+        stream.deinit();
+        allocator.destroy(stream);
+    }
+
+    var seen = std.ArrayList(u8).empty;
+    errdefer seen.deinit(allocator);
+    while (stream.wait()) |event| {
+        var polled = event;
+        defer ai_types.deinitAssistantMessageEvent(allocator, &polled);
+        switch (polled) {
+            .toolcall_start => |value| try seen.print(allocator, "start {d} {s}\n", .{ value.content_index, value.id }),
+            .toolcall_delta => |value| try seen.print(allocator, "delta {d} {s}\n", .{ value.content_index, value.delta }),
+            .toolcall_end => |value| try seen.print(allocator, "end {d} {s} {s}\n", .{ value.content_index, value.tool_call.id, value.tool_call.arguments_json }),
+            else => {},
+        }
+    }
+    try std.testing.expect(stream.waitForThread(5_000));
+    mock.stop();
+    stopped = true;
+    try std.testing.expect(stream.getError() == null);
+    const result = stream.getResult() orelse return error.TestUnexpectedResult;
+    for (result.content) |item| try seen.print(allocator, "result {s} {s}\n", .{ item.tool_call.id, item.tool_call.arguments_json });
+    return seen.toOwnedSlice(allocator);
+}
+
+test "two tool calls each end before the next one starts" {
+    const body =
+        "data: {\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_a\",\"type\":\"function\",\"function\":{\"name\":\"read\",\"arguments\":\"{}\"}}]},\"finish_reason\":null}]}\n\n" ++
+        "data: {\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":1,\"id\":\"call_b\",\"type\":\"function\",\"function\":{\"name\":\"read\",\"arguments\":\"[]\"}}]},\"finish_reason\":null}]}\n\n" ++
+        "data: {\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\n" ++
+        "data: [DONE]\n\n";
+    const seen = try partLifecycleFor(std.testing.allocator, body);
+    defer std.testing.allocator.free(seen);
+    try std.testing.expectEqualStrings(
+        "start 0 call_a\ndelta 0 {}\nend 0 call_a {}\n" ++
+            "start 1 call_b\ndelta 1 []\nend 1 call_b []\n" ++
+            "result call_a {}\nresult call_b []\n",
+        seen,
+    );
+}
+
+test "a tool call whose id is repeated on a later delta stays one part and keeps its arguments" {
+    const body =
+        "data: {\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_a\",\"type\":\"function\",\"function\":{\"name\":\"read\",\"arguments\":\"{\\\"p\\\":\"}}]},\"finish_reason\":null}]}\n\n" ++
+        "data: {\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_a\",\"function\":{\"arguments\":\"1}\"}}]},\"finish_reason\":null}]}\n\n" ++
+        "data: {\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\n" ++
+        "data: [DONE]\n\n";
+    const seen = try partLifecycleFor(std.testing.allocator, body);
+    defer std.testing.allocator.free(seen);
+    try std.testing.expectEqualStrings(
+        "start 0 call_a\ndelta 0 {\"p\":\ndelta 0 1}\nend 0 call_a {\"p\":1}\nresult call_a {\"p\":1}\n",
+        seen,
+    );
 }
 
 var cleanup_hold: std.atomic.Value(usize) = std.atomic.Value(usize).init(0);
