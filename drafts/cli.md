@@ -26,7 +26,7 @@ not a second product.
 | `serve agent [--backend B] [--config F] [--stdio]` | one agent loop over `agent-control-core`, raw envelopes per [endpoint-stdio](endpoint-stdio.md); no `--backend` means the binary's own loop: the `oapx` adapter the terminal UI also runs (endpoint `oapx.agent`), with `auth.*` beside it; with `OAPX_PROVIDER_SERVICE_URL` set it takes its catalog and inference from that remote provider service | native loop; harness backends as they are wired | the Go adapters (today `goap endpoint --adapter`) |
 | `serve provider [--stdio \| --http ADDR] [--specimens]` | `model-provider-core` | yes | answers `unavailable` |
 | `serve agent,provider --stdio` | both profiles on one pipe (Decision 0027) | yes | answers `unavailable` |
-| `serve [--config F] [--addr ADDR \| --stdio]`, and `hub` as its old name | the multi-session daemon: an adapter registry, fan-out, cursor replay, HTTP+SSE or the stdio transport-object wire, per [hub](hub.md) | yes (stdio) | yes |
+| `serve [--config F] [--addr ADDR \| --stdio]`, and `hub` as its old name | the multi-session daemon: an adapter registry, fan-out, cursor replay, HTTP+SSE or the stdio transport-object wire, per [hub](hub.md) | yes | yes |
 | `validate [--format human\|json] [--mode strict\|tolerant] [--pack DIR]... [--provider] TRACE...` | judge traces: decode, schema, semantic | yes (packs, modes and some semantic rules still porting) | yes |
 | `conformance [--command CMD] [--format text\|json]` | drive an endpoint and judge what crossed the pipe | yes, first slice: the handshake and one submitted run; the interaction, tool, queue, model and auth groups are still to come | yes |
 | `check` | the repository's own schemas, fixtures and reference path | not yet | yes |
@@ -47,11 +47,11 @@ and `oapx serve`. A role after it (`agent`, `provider`) selects the one-session
 endpoint instead, so `serve` names serving at every level and the role says how
 much. `hub`, its old verb, still runs it.
 
-`oapx serve` carries the stdio transport today and answers `unavailable` for the
-other two, naming which: `--addr` with the HTTP and SSE transport, and `--config`
-with the hub's registry. Nothing silently falls back — a host that asked for a
-transport this build does not serve is told so rather than handed a pipe, because
-a pipe answers the requests that fit it and is silent about the rest.
+Both binaries carry the registry (`--config`), the stdio transport-object wire
+and HTTP and SSE (`--addr`). A build that lacks one answers `unavailable`, naming
+it, rather than silently falling back — a host that asked for a transport this
+build does not serve is told so rather than handed a pipe, because a pipe answers
+the requests that fit it and is silent about the rest.
 
 ## Rules the verb set follows
 
