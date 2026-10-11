@@ -34,7 +34,7 @@ const features = [_]contract.Feature{
     .{ .key = "session.message.submit", .level = .degraded, .reason = "status-only result; ownership by construction via message.start" },
     .{ .key = "session.open", .level = .native, .reason = "session.create mints the runtime session id" },
     .{ .key = contract.feature_open_reopen, .level = .native, .reason = reopen_support_reason },
-    .{ .key = contract.feature_session_reasoning, .level = .native, .reason = "config.set reasoning, scoped to the session, right after session.create and again between runs; off is Hermes's none", .modes = &.{ contract.mode_session_open, contract.mode_session_live } },
+    .{ .key = contract.feature_session_reasoning, .level = .native, .reason = "session.create's reasoning_effort, then config.set reasoning scoped to the session, which validates it and sets it again between runs; off is Hermes's none", .modes = &.{ contract.mode_session_open, contract.mode_session_live } },
     .{ .key = "session.state", .level = .degraded, .reason = "reducer-owned live projection corroborated by session.info" },
     .{ .key = "user_input", .level = .native, .reason = "approval/clarify/sudo/secret server requests, withdrawn by request.cancel" },
 };
@@ -126,7 +126,7 @@ pub const Session = struct {
         errdefer self.destroy();
         try self.handshake(arena, refusal);
         self.model = owner.config.model;
-        const native_id = if (request.reopen) try self.reopenNative(arena, request.native_session_id, refusal) else try self.createNative(arena, refusal);
+        const native_id = if (request.reopen) try self.reopenNative(arena, request.native_session_id, refusal) else try self.createNative(arena, request.reasoning_level, refusal);
         if (request.reasoning_level) |level| try self.setReasoning(arena, native_id, level, refusal);
         self.reducer = session.Reducer.init(self.reducer_arena, .{
             .session_id = self.id,
@@ -196,9 +196,10 @@ pub const Session = struct {
         return listed.items;
     }
 
-    fn createNative(self: *Session, arena: std.mem.Allocator, refusal: *contract.Refusal) contract.Failure![]const u8 {
+    fn createNative(self: *Session, arena: std.mem.Allocator, reasoning_level: ?[]const u8, refusal: *contract.Refusal) contract.Failure![]const u8 {
         var params: std.json.ObjectMap = .empty;
         if (self.owner.config.model.len > 0) try params.put(self.owned(), "model", .{ .string = self.owner.config.model });
+        if (reasoning_level) |level| try params.put(self.owned(), "reasoning_effort", .{ .string = nativeEffort(level) });
         const created = try self.call(arena, "session.create", .{ .object = params }, refusal);
         const native_id = member(created, "session_id");
         const stored = member(created, "stored_session_id");
@@ -288,7 +289,7 @@ pub const Session = struct {
         var set: std.json.ObjectMap = .empty;
         try set.put(self.owned(), "session_id", .{ .string = native_id });
         try set.put(self.owned(), "key", .{ .string = "reasoning" });
-        try set.put(self.owned(), "value", .{ .string = if (std.mem.eql(u8, level, "off")) "none" else level });
+        try set.put(self.owned(), "value", .{ .string = nativeEffort(level) });
         _ = self.call(arena, "config.set", .{ .object = set }, refusal) catch |err| {
             if (err == error.OutOfMemory) return error.OutOfMemory;
             return refusal.unsupportedField(contract.feature_session_reasoning, contract.reason_unsatisfiable, "reasoning_level");
@@ -658,11 +659,7 @@ pub const Session = struct {
                     answer.selected_option_ids[0];
                 try values.put(own, question.id, .{ .string = value });
             }
-            if (binding.batch) {
-                try result.put(own, "answers", .{ .object = values });
-            } else {
-                try result.put(own, "answer", values.get("answer").?);
-            }
+            try result.put(own, "answers", .{ .object = values });
         }
         var frame: std.json.ObjectMap = .empty;
         try frame.put(own, "id", .{ .string = binding.request_id });
@@ -779,6 +776,10 @@ fn member(value: std.json.Value, key: []const u8) []const u8 {
     return if (found == .string) found.string else "";
 }
 
+fn nativeEffort(level: []const u8) []const u8 {
+    return if (std.mem.eql(u8, level, "off")) "none" else level;
+}
+
 fn encodeStrings(allocator: std.mem.Allocator, values: []const []const u8) ![]const u8 {
     var array = std.json.Array.init(allocator);
     for (values) |value| try array.append(.{ .string = value });
@@ -890,7 +891,7 @@ pub const fake_approval_turn = fake_turn_admitted ++
 ;
 
 pub const fake_clarify_turn = fake_turn_admitted ++
-    \\printf '{"jsonrpc":"2.0","id":"srq-d66621969511","method":"clarify","params":{"session_id":"sess0001","question":"which?","choices":["a (Recommended)","b"]}}\n'
+    \\printf '{"jsonrpc":"2.0","id":"srq-d66621969511","method":"clarify","params":{"session_id":"sess0001","questions":[{"qid":"q0","question":"which?","choices":["a (Recommended)","b"],"multi_select":false}]}}\n'
     \\take
     \\printf '{"jsonrpc":"2.0","method":"event","params":{"type":"message.complete","session_id":"sess0001","seq":2,"payload":{"text":"done","status":"complete","usage":{}}}}\n'
     \\
@@ -1000,7 +1001,7 @@ test "the descriptor serves resume and replay from the endpoint journal under th
     for (features[1..], features[0 .. features.len - 1]) |later, earlier| try testing.expect(std.mem.lessThan(u8, earlier.key, later.key));
 }
 
-test "an open sets the session's reasoning through config.set and reports it" {
+test "an open asks session.create for the level, sets it through config.set, and reports it" {
     var probe: Probe = undefined;
     try probe.init(fake_prelude ++
         \\take; printf '{"id":2,"jsonrpc":"2.0","result":{"key":"reasoning","value":"none"}}\n'
@@ -1011,7 +1012,7 @@ test "an open sets the session's reasoning through config.set and reports it" {
     const opened = try probe.adapter.adapter().open(probe.arena.allocator(), .{ .session_id = "s1", .participant = "user", .reasoning_level = "off" }, &refusal);
     probe.handle = opened;
     try testing.expectEqualStrings(
-        \\{"id":1,"jsonrpc":"2.0","method":"session.create","params":{"model":"hermes-test"}}
+        \\{"id":1,"jsonrpc":"2.0","method":"session.create","params":{"model":"hermes-test","reasoning_effort":"none"}}
         \\{"id":2,"jsonrpc":"2.0","method":"config.set","params":{"session_id":"sess0001","key":"reasoning","value":"none"}}
         \\
     , try probe.fake.written(probe.arena.allocator()));
@@ -1128,11 +1129,11 @@ test "a clarify answer carries the offered choice back under its server request 
 
     var seen = std.ArrayList(contract.Event).empty;
     const asked = try probe.pumpUntil("user.input.requested", &seen);
-    try testing.expectError(error.InvalidResolution, probe.answer(asked, "answer", "a", &refusal));
-    try probe.answer(asked, "answer", "a (Recommended)", &refusal);
+    try testing.expectError(error.InvalidResolution, probe.answer(asked, "q0", "a", &refusal));
+    try probe.answer(asked, "q0", "a (Recommended)", &refusal);
     _ = try probe.pumpUntil("run.completed", &seen);
     const written = try probe.fake.written(probe.arena.allocator());
-    try testing.expect(std.mem.endsWith(u8, written, "{\"id\":\"srq-d66621969511\",\"jsonrpc\":\"2.0\",\"result\":{\"answer\":\"a (Recommended)\"}}\n"));
+    try testing.expect(std.mem.endsWith(u8, written, "{\"id\":\"srq-d66621969511\",\"jsonrpc\":\"2.0\",\"result\":{\"answers\":{\"q0\":\"a (Recommended)\"}}}\n"));
 }
 
 test "a server request the adapter does not map is refused with method not found" {
