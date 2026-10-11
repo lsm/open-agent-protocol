@@ -122,3 +122,27 @@ func TestReopenRefusesAFactoryThatCannotReload(t *testing.T) {
 		t.Fatalf("refusal = %v", err)
 	}
 }
+
+func TestAnOpenAtALevelAsksSessionCreateForItBeforeConfigSet(t *testing.T) {
+	f := newFake()
+	f.queue(native.MethodSessionCreate, reply{result: map[string]any{"session_id": "sess0001", "stored_session_id": "stored-1", "message_count": 0, "messages": []any{}, "info": map[string]any{}}})
+	f.queue(native.MethodConfigSet, reply{result: native.ConfigSetResult{Key: "reasoning", Value: "low"}})
+	var launches atomic.Int32
+	session, err := processBackedAdapter(t, f, &launches).Open(context.Background(), base.OpenRequest{SessionID: "s1", ReasoningLevel: protocol.ReasoningLow})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer session.Close(context.Background())
+	f.callsMu.Lock()
+	calls := append([]recordedCall(nil), f.calls...)
+	f.callsMu.Unlock()
+	if len(calls) < 2 || calls[0].method != native.MethodSessionCreate || calls[1].method != native.MethodConfigSet {
+		t.Fatalf("calls = %+v, want session.create then config.set", calls)
+	}
+	if created := calls[0].params.(native.SessionCreateParams); created != (native.SessionCreateParams{Model: "hermes-test", ReasoningEffort: "low"}) {
+		t.Fatalf("session.create params = %+v", created)
+	}
+	if set := calls[1].params.(native.ConfigSetParams); set != (native.ConfigSetParams{SessionID: "sess0001", Key: "reasoning", Value: "low"}) {
+		t.Fatalf("config.set params = %+v", set)
+	}
+}

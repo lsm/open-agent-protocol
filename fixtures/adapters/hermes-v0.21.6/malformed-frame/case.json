@@ -1,0 +1,42 @@
+{
+  "advertised_capabilities": {
+    "run.streaming": "native"
+  },
+  "expected_oap": "expected-oap.json",
+  "id": "malformed-frame",
+  "identity_map": {
+    "approval request_id (uuid4 hex)": "native approval-queue entry; not an OAP identity",
+    "event seq (per-session, epoch-guarded)": "ordering evidence; never an OAP identity",
+    "message.start…message.complete span": "run_id adapter-allocated",
+    "prompt.submit receipt (status-only)": "submission_id adapter-minted by construction",
+    "replay epoch (uuid4 hex)": "process identity; guards all seq association",
+    "runtime session_id (uuid4 hex[:8])": "oap session association",
+    "server request id (srq-<12 hex>)": "interaction identity; the JSON-RPC id the answer carries",
+    "stored_session_id (session_key)": "adapter-side evidence only",
+    "task_id (btw_*/bg_*)": "side-channel correlation, not projected in v1",
+    "tool_id": "tool_call_id correlation"
+  },
+  "mapping": "mapping.json",
+  "native": "native.jsonl",
+  "omissions": "omissions.json",
+  "provenance": {
+    "commit": "818c13be1dc4fd28987e1e881a9408224afd4535",
+    "commit_tree": "f36c56dd4fe068b0768e50e1ab39909dee2ab51a",
+    "repository": "https://github.com/NousResearch/hermes-agent",
+    "sources": {
+      "contracts_tree": "5bc7227aacba6bdcbfd505d3bd2ccd8381167a5b",
+      "entry_py_blob": "b09f0acb3e06c7acc00a9cf3c0fda84daffd6957",
+      "event_replay_py_blob": "c5dac701896ccb7febf7b44fb0e6b6f57340823a",
+      "methods_prompt_py_blob": "103184b70bda36cc6a42d4ed4d0872f11d3887f5",
+      "methods_session_py_blob": "30b6fdd24a6178795a4450378895a14caa571ff0",
+      "server_py_blob": "d4934a257c97acd7b1ccc5ac943efe93b74b0f17",
+      "server_requests_py_blob": "c38d7ed5fca2339610c8df6314532026efc45da0",
+      "stdin_recovery_py_blob": "add5e841df4bead308a96bd8b0f0e3c5475bd167",
+      "transport_py_blob": "689f5614299c77f3f6a4c779176938b537a8cb4d",
+      "ws_py_blob": "653c1c3b6a934e642b3e330b5f790d1d0a358e1d"
+    },
+    "tag": "v0.21.6"
+  },
+  "server_mode": "malformed",
+  "version": 1
+}

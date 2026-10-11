@@ -57,6 +57,20 @@ const Driver = struct {
         return reducer;
     }
 
+    pub fn prepare(reducer: *Reducer, scratch: std.mem.Allocator, native: []const u8) !void {
+        var lines = std.mem.splitScalar(u8, native, '\n');
+        while (lines.next()) |line| {
+            if (line.len == 0) continue;
+            const script = try std.json.parseFromSliceLeaky(std.json.Value, scratch, line, .{});
+            if (script != .object) continue;
+            const action = corpus.stringMember(script.object, "action") orelse continue;
+            if (!std.mem.eql(u8, action, "submit")) continue;
+            const raw = script.object.get("raw") orelse continue;
+            if (raw != .string) continue;
+            return adoptNativeSession(reducer, scratch, raw.string);
+        }
+    }
+
     pub fn envelopes(reducer: *Reducer) []std.json.Value {
         return reducer.envelopes.items;
     }
@@ -99,7 +113,6 @@ const Driver = struct {
         }
         if (std.mem.eql(u8, action, "submit")) {
             if (refusal(scratch, wire) != null) return error.ProductionCodecRefusedCorpusFrame;
-            try adoptNativeSession(reducer, scratch, wire);
             try reducer.submit();
             return .handled;
         }
@@ -220,6 +233,7 @@ const Declared = struct { id: []const u8, skipped_resumes: usize = 0 };
 const cases = [_]Declared{
     .{ .id = "admission-busy" },
     .{ .id = "admission-orders" },
+    .{ .id = "approval-interrupt" },
     .{ .id = "clarify-batch" },
     .{ .id = "delegation-reentry" },
     .{ .id = "hygiene-globals" },
@@ -246,7 +260,7 @@ test "the Hermes case list is exactly the corpus manifest's" {
     try Harness.expectInventory(std.testing.allocator, &listed);
 }
 
-test "the Zig reducer reproduces every Hermes expectation, all twenty of them" {
+test "the Zig reducer reproduces every Hermes expectation" {
     const allocator = std.testing.allocator;
     const root = try Harness.root(allocator);
     defer allocator.free(root);

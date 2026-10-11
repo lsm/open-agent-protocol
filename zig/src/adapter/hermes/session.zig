@@ -62,7 +62,6 @@ pub const Interaction = struct {
     run_id: []const u8,
     kind: []const u8,
     request_id: []const u8 = "",
-    batch: bool = false,
     requested: []const u8 = "",
     resolved: bool = false,
     questions: []const Question = &.{},
@@ -649,9 +648,6 @@ pub const Reducer = struct {
         } else if (std.mem.eql(u8, method, "clarify")) {
             const members = [_]Member{
                 .{ .name = "session_id", .kind = .string },
-                .{ .name = "question", .kind = .string },
-                .{ .name = "choices", .kind = .strings },
-                .{ .name = "multi_select", .kind = .boolean },
                 .{ .name = "questions", .kind = .objects },
                 .{ .name = "answers", .kind = .any },
             };
@@ -660,33 +656,26 @@ pub const Reducer = struct {
                 return;
             };
             title = "Clarification";
-            const single = stringMember(fields, "question").len > 0 or nonEmptyArray(fields.get("choices"));
-            const batch = batched(fields);
-            if (single == (batch != null)) {
+            const entries = batched(fields) orelse {
                 try self.failRun("hermes_invalid_event", refused);
                 return;
-            }
-            if (batch) |entries| {
-                binding.batch = true;
-                const question_members = [_]Member{
-                    .{ .name = "qid", .kind = .string },
-                    .{ .name = "question", .kind = .string },
-                    .{ .name = "choices", .kind = .strings },
-                    .{ .name = "multi_select", .kind = .boolean },
+            };
+            const question_members = [_]Member{
+                .{ .name = "qid", .kind = .string },
+                .{ .name = "question", .kind = .string },
+                .{ .name = "choices", .kind = .strings },
+                .{ .name = "multi_select", .kind = .boolean },
+            };
+            for (entries.items) |entry| {
+                const carried = strictObject(entry, &question_members) orelse {
+                    try self.failRun("hermes_invalid_event", refused);
+                    return;
                 };
-                for (entries.items) |entry| {
-                    const carried = strictObject(entry, &question_members) orelse {
-                        try self.failRun("hermes_invalid_event", refused);
-                        return;
-                    };
-                    if (stringMember(carried, "qid").len == 0 or stringMember(carried, "question").len == 0) {
-                        try self.failRun("hermes_invalid_event", refused);
-                        return;
-                    }
-                    try questions.append(self.allocator(), try self.questionFrom(stringMember(carried, "qid"), stringMember(carried, "question"), carried.get("choices"), boolMember(carried, "multi_select")));
+                if (stringMember(carried, "qid").len == 0 or stringMember(carried, "question").len == 0) {
+                    try self.failRun("hermes_invalid_event", refused);
+                    return;
                 }
-            } else {
-                try questions.append(self.allocator(), try self.questionFrom("answer", stringMember(fields, "question"), fields.get("choices"), boolMember(fields, "multi_select")));
+                try questions.append(self.allocator(), try self.questionFrom(stringMember(carried, "qid"), stringMember(carried, "question"), carried.get("choices"), boolMember(carried, "multi_select")));
             }
         } else if (std.mem.eql(u8, method, "sudo")) {
             const members = [_]Member{
@@ -898,11 +887,6 @@ fn batched(object: std.json.ObjectMap) ?std.json.Array {
     const value = object.get("questions") orelse return null;
     if (value != .array or value.array.items.len == 0) return null;
     return value.array;
-}
-
-fn nonEmptyArray(value: ?std.json.Value) bool {
-    const present = value orelse return false;
-    return present == .array and present.array.items.len > 0;
 }
 
 fn approvalShape(fields: std.json.ObjectMap) bool {
@@ -1169,17 +1153,17 @@ test "a clarify gate offers the choices it carries and falls back to free text w
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     var offered = try gate(&arena, "clarify",
-        \\{"request_id":"aaaa1111","question":"which?","choices":["a","b"]}
+        \\{"request_id":"aaaa1111","questions":[{"qid":"q0","question":"which?","choices":["a","b"]}]}
     );
     const asked = questionsAt(&offered, 1).items[0].object;
     try testing.expectEqualStrings("Clarification", payloadAt(&offered, 1).get("title").?.string);
     try testing.expect(payloadAt(&offered, 1).get("description") == null);
-    try testing.expectEqualStrings("answer", asked.get("id").?.string);
+    try testing.expectEqualStrings("q0", asked.get("id").?.string);
     try testing.expectEqualStrings("which?", asked.get("prompt").?.string);
     try testing.expectEqualStrings("single_choice", asked.get("kind").?.string);
 
     var free = try gate(&arena, "clarify",
-        \\{"request_id":"aaaa1111","question":"which?"}
+        \\{"request_id":"aaaa1111","questions":[{"qid":"q0","question":"which?"}]}
     );
     const open_ended = questionsAt(&free, 1).items[0].object;
     try testing.expectEqualStrings("text", open_ended.get("kind").?.string);
@@ -1190,7 +1174,7 @@ test "an empty choice list makes a question free text even when it asks for seve
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     var reducer = try gate(&arena, "clarify",
-        \\{"request_id":"aaaa1111","question":"which?","choices":[],"multi_select":true}
+        \\{"request_id":"aaaa1111","questions":[{"qid":"q0","question":"which?","choices":[],"multi_select":true}]}
     );
 
     try testing.expectEqualStrings("text", questionsAt(&reducer, 1).items[0].object.get("kind").?.string);
@@ -1212,9 +1196,12 @@ test "a batch clarify gate mints one question per entry and reads each entry's o
     try testing.expectEqualStrings("multi_choice", questions.items[1].object.get("kind").?.string);
 }
 
-test "a clarify carrying both the single and the batch form is refused" {
+test "the single-question clarify form v0.21.6 retired, and a clarify with no questions, are refused" {
     try expectGateRefused("clarify",
-        \\{"question":"ignored","choices":["z"],"questions":[{"qid":"one","question":"first?","choices":["a"]}]}
+        \\{"question":"which?","choices":["a"]}
+    , "hermes_invalid_event", "invalid clarify gate");
+    try expectGateRefused("clarify",
+        \\{"questions":[]}
     , "hermes_invalid_event", "invalid clarify gate");
 }
 
@@ -1257,7 +1244,7 @@ test "an approval names its queue entry, and every gate is keyed by a string JSO
 
     var numbered = try openRun(&arena);
     try feed(&numbered, scratch,
-        \\{"jsonrpc":"2.0","id":7,"method":"clarify","params":{"session_id":"sess0001","question":"which?","choices":["a"]}}
+        \\{"jsonrpc":"2.0","id":7,"method":"clarify","params":{"session_id":"sess0001","questions":[{"qid":"q0","question":"which?","choices":["a"]}]}}
     );
     try testing.expect(numbered.unusable);
     try testing.expectEqualStrings("clarify request with a non-string id", payloadAt(&numbered, 1).get("error").?.object.get("message").?.string);
@@ -1277,7 +1264,7 @@ test "a gate payload is refused member by member, and each kind names itself whe
         \\{"command":"ls","choices":["once"],"allow_session":"yes"}
     , "hermes_invalid_event", "invalid approval gate");
     try expectGateRefused("clarify",
-        \\{"request_id":"aaaa1111","question":"which?","multi_select":1}
+        \\{"request_id":"aaaa1111","questions":[{"qid":"q0","question":"which?","multi_select":1}]}
     , "hermes_invalid_event", "invalid clarify gate");
     try expectGateRefused("clarify",
         \\{"request_id":"aaaa1111","questions":[{"qid":"one","question":"first?","choices":["a"],"unknown":1}]}
@@ -1344,7 +1331,7 @@ test "a request.cancel settles the gate whose id it names and leaves every other
     defer arena.deinit();
     const scratch = arena.allocator();
     var reducer = try gate(&arena, "clarify",
-        \\{"request_id":"dddd4444","question":"which?","choices":["a","b"]}
+        \\{"request_id":"dddd4444","questions":[{"qid":"q0","question":"which?","choices":["a","b"]}]}
     );
     try feedGate(&reducer, scratch, "secret",
         \\{"request_id":"eeee5555","prompt":"CI token","env_var":"CI_TOKEN"}
@@ -1376,7 +1363,7 @@ test "a request.cancel naming no open gate is silent, and a malformed one fails 
     defer arena.deinit();
     const scratch = arena.allocator();
     var reducer = try gate(&arena, "clarify",
-        \\{"request_id":"dddd4444","question":"which?","choices":["a"]}
+        \\{"request_id":"dddd4444","questions":[{"qid":"q0","question":"which?","choices":["a"]}]}
     );
     try feedCancel(&reducer, scratch, "clarify",
         \\{"request_id":"ffff6666"}
@@ -1450,12 +1437,12 @@ test "a multi-choice answer takes several distinct options but never the same on
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     var reducer = try gate(&arena, "clarify",
-        \\{"request_id":"aaaa1111","question":"which?","choices":["a","b"],"multi_select":true}
+        \\{"request_id":"aaaa1111","questions":[{"qid":"q0","question":"which?","choices":["a","b"],"multi_select":true}]}
     );
     const interaction = payloadAt(&reducer, 1).get("interaction_id").?.string;
 
-    try testing.expectError(Error.InvalidResolution, reducer.resolve(interaction, &[_]Answer{.{ .question_id = "answer", .selected_option_ids = &[_][]const u8{ "a", "a" } }}));
-    try reducer.resolve(interaction, &[_]Answer{.{ .question_id = "answer", .selected_option_ids = &[_][]const u8{ "a", "b" } }});
+    try testing.expectError(Error.InvalidResolution, reducer.resolve(interaction, &[_]Answer{.{ .question_id = "q0", .selected_option_ids = &[_][]const u8{ "a", "a" } }}));
+    try reducer.resolve(interaction, &[_]Answer{.{ .question_id = "q0", .selected_option_ids = &[_][]const u8{ "a", "b" } }});
     try testing.expectEqual(@as(usize, 2), payloadAt(&reducer, 3).get("answers").?.array.items[0].object.get("selected_option_ids").?.array.items.len);
 }
 
@@ -1464,12 +1451,12 @@ test "a gate resolves once, and an expired one is already spoken for" {
     defer arena.deinit();
     const scratch = arena.allocator();
     var reducer = try gate(&arena, "clarify",
-        \\{"request_id":"aaaa1111","question":"which?","choices":["a"]}
+        \\{"request_id":"aaaa1111","questions":[{"qid":"q0","question":"which?","choices":["a"]}]}
     );
     const interaction = payloadAt(&reducer, 1).get("interaction_id").?.string;
-    try reducer.resolve(interaction, &[_]Answer{.{ .question_id = "answer", .selected_option_ids = &[_][]const u8{"a"} }});
-    try testing.expectError(Error.InteractionNotFound, reducer.resolve(interaction, &[_]Answer{.{ .question_id = "answer", .selected_option_ids = &[_][]const u8{"a"} }}));
-    try testing.expectError(Error.InteractionNotFound, reducer.resolve("interaction-z", &[_]Answer{.{ .question_id = "answer", .selected_option_ids = &[_][]const u8{"a"} }}));
+    try reducer.resolve(interaction, &[_]Answer{.{ .question_id = "q0", .selected_option_ids = &[_][]const u8{"a"} }});
+    try testing.expectError(Error.InteractionNotFound, reducer.resolve(interaction, &[_]Answer{.{ .question_id = "q0", .selected_option_ids = &[_][]const u8{"a"} }}));
+    try testing.expectError(Error.InteractionNotFound, reducer.resolve("interaction-z", &[_]Answer{.{ .question_id = "q0", .selected_option_ids = &[_][]const u8{"a"} }}));
 
     try feedCancel(&reducer, scratch, "clarify",
         \\{"request_id":"aaaa1111"}
@@ -1482,7 +1469,7 @@ test "a settled run refuses a resolution instead of emitting past its terminal" 
     defer arena.deinit();
     const scratch = arena.allocator();
     var reducer = try gate(&arena, "clarify",
-        \\{"request_id":"aaaa1111","question":"which?","choices":["a"]}
+        \\{"request_id":"aaaa1111","questions":[{"qid":"q0","question":"which?","choices":["a"]}]}
     );
     const interaction = payloadAt(&reducer, 1).get("interaction_id").?.string;
     try feedEvent(&reducer, scratch, "message.complete",
@@ -1491,7 +1478,7 @@ test "a settled run refuses a resolution instead of emitting past its terminal" 
 
     try testing.expectEqualStrings("user.input.resolved", typeAt(&reducer, 3));
     try testing.expectEqualStrings("run.completed", typeAt(&reducer, 4));
-    try testing.expectError(Error.InteractionNotFound, reducer.resolve(interaction, &[_]Answer{.{ .question_id = "answer", .selected_option_ids = &[_][]const u8{"a"} }}));
+    try testing.expectError(Error.InteractionNotFound, reducer.resolve(interaction, &[_]Answer{.{ .question_id = "q0", .selected_option_ids = &[_][]const u8{"a"} }}));
     try testing.expectEqual(@as(usize, 5), reducer.envelopes.items.len);
 }
 
@@ -1500,7 +1487,7 @@ test "the pending gate a driver looks up is the open one of that kind" {
     defer arena.deinit();
     const scratch = arena.allocator();
     var reducer = try gate(&arena, "clarify",
-        \\{"request_id":"aaaa1111","question":"which?","choices":["a"]}
+        \\{"request_id":"aaaa1111","questions":[{"qid":"q0","question":"which?","choices":["a"]}]}
     );
     try feedGate(&reducer, scratch, "sudo",
         \\{"request_id":"bbbb2222"}
@@ -1509,7 +1496,7 @@ test "the pending gate a driver looks up is the open one of that kind" {
     try testing.expect(reducer.pendingInteraction("secret") == null);
     try testing.expectEqualStrings("sudo", reducer.pendingInteraction("sudo").?.kind);
     const clarify = reducer.pendingInteraction("clarify").?.id;
-    try reducer.resolve(clarify, &[_]Answer{.{ .question_id = "answer", .selected_option_ids = &[_][]const u8{"a"} }});
+    try reducer.resolve(clarify, &[_]Answer{.{ .question_id = "q0", .selected_option_ids = &[_][]const u8{"a"} }});
     try testing.expect(reducer.pendingInteraction("clarify") == null);
 }
 
@@ -1518,7 +1505,7 @@ test "a gate left open by one run is not answerable from the next" {
     defer arena.deinit();
     const scratch = arena.allocator();
     var reducer = try gate(&arena, "clarify",
-        \\{"request_id":"aaaa1111","question":"which?","choices":["a"]}
+        \\{"request_id":"aaaa1111","questions":[{"qid":"q0","question":"which?","choices":["a"]}]}
     );
     const stranded = payloadAt(&reducer, 1).get("interaction_id").?.string;
     try feedEvent(&reducer, scratch, "message.complete",
@@ -1529,7 +1516,7 @@ test "a gate left open by one run is not answerable from the next" {
     try feedBare(&reducer, scratch, "message.start");
 
     try testing.expectEqualStrings("run.started", typeAt(&reducer, 5));
-    try testing.expectError(Error.InteractionNotFound, reducer.resolve(stranded, &[_]Answer{.{ .question_id = "answer", .selected_option_ids = &[_][]const u8{"a"} }}));
+    try testing.expectError(Error.InteractionNotFound, reducer.resolve(stranded, &[_]Answer{.{ .question_id = "q0", .selected_option_ids = &[_][]const u8{"a"} }}));
     try testing.expectEqual(@as(usize, 6), reducer.envelopes.items.len);
 }
 
@@ -1575,7 +1562,7 @@ test "a gate stranded by a settled run is not offered in place of the new run's 
     defer arena.deinit();
     const scratch = arena.allocator();
     var reducer = try gate(&arena, "clarify",
-        \\{"request_id":"aaaa1111","question":"which?","choices":["a"]}
+        \\{"request_id":"aaaa1111","questions":[{"qid":"q0","question":"which?","choices":["a"]}]}
     );
     const stranded = reducer.pendingInteraction("clarify").?.id;
     try feedEvent(&reducer, scratch, "message.complete",
@@ -1587,7 +1574,7 @@ test "a gate stranded by a settled run is not offered in place of the new run's 
     try reducer.admit();
     try feedBare(&reducer, scratch, "message.start");
     try feedGate(&reducer, scratch, "clarify",
-        \\{"request_id":"bbbb2222","question":"again?","choices":["b"]}
+        \\{"request_id":"bbbb2222","questions":[{"qid":"q0","question":"again?","choices":["b"]}]}
     );
 
     const fresh = reducer.pendingInteraction("clarify").?;
@@ -1606,7 +1593,7 @@ test "a gate whose question carries no id, no prompt or no choice is refused, no
         \\{"command":"","choices":["once"]}
     , "hermes_invalid_event", "invalid approval gate");
     try expectGateRefused("clarify",
-        \\{"request_id":"aaaa1111","question":""}
+        \\{"request_id":"aaaa1111","questions":[{"qid":"q0","question":""}]}
     , "hermes_invalid_event", "invalid clarify gate");
     try expectGateRefused("clarify",
         \\{"request_id":"aaaa1111","questions":[{"qid":"","question":"first?","choices":["a"]}]}
@@ -1623,7 +1610,7 @@ test "a clarify gate with an empty choice list is free text, not a choice with n
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     var reducer = try gate(&arena, "clarify",
-        \\{"request_id":"aaaa1111","question":"which?","choices":[]}
+        \\{"request_id":"aaaa1111","questions":[{"qid":"q0","question":"which?","choices":[]}]}
     );
 
     try testing.expectEqualStrings("user.input.requested", typeAt(&reducer, 1));
@@ -1697,7 +1684,7 @@ test "a session that has seen someone else's traffic takes no further instructio
     defer arena.deinit();
     const scratch = arena.allocator();
     var reducer = try gate(&arena, "clarify",
-        \\{"request_id":"aaaa1111","question":"which?","choices":["a"]}
+        \\{"request_id":"aaaa1111","questions":[{"qid":"q0","question":"which?","choices":["a"]}]}
     );
     const interaction = payloadAt(&reducer, 1).get("interaction_id").?.string;
     try feed(&reducer, scratch,
@@ -1706,12 +1693,12 @@ test "a session that has seen someone else's traffic takes no further instructio
 
     try testing.expect(reducer.unusable);
     try testing.expectError(Error.SessionUnusable, reducer.submit());
-    try testing.expectError(Error.SessionUnusable, reducer.resolve(interaction, &[_]Answer{.{ .question_id = "answer", .selected_option_ids = &[_][]const u8{"a"} }}));
+    try testing.expectError(Error.SessionUnusable, reducer.resolve(interaction, &[_]Answer{.{ .question_id = "q0", .selected_option_ids = &[_][]const u8{"a"} }}));
 }
 
 test "a choice that is the empty string is no choice at all" {
     try expectGateRefused("clarify",
-        \\{"request_id":"aaaa1111","question":"which?","choices":[""]}
+        \\{"request_id":"aaaa1111","questions":[{"qid":"q0","question":"which?","choices":[""]}]}
     , "hermes_invalid_event", "gate with a question nobody can answer");
     try expectGateRefused("approval",
         \\{"command":"ls","choices":["once",""]}
@@ -1734,7 +1721,7 @@ test "an event that arrives before the turn opens is kept and replayed, not drop
     try reducer.admit();
 
     try feedGate(&reducer, scratch, "clarify",
-        \\{"request_id":"aaaa1111","question":"which?","choices":["a"]}
+        \\{"request_id":"aaaa1111","questions":[{"qid":"q0","question":"which?","choices":["a"]}]}
     );
     try testing.expectEqual(@as(usize, 0), reducer.envelopes.items.len);
     try testing.expectEqual(@as(usize, 1), reducer.buffered.items.len);
@@ -1918,7 +1905,7 @@ test "a transport that dies takes the session with it, started run or not" {
     try reserved.submit();
     try reserved.admit();
     try feedGate(&reserved, scratch, "clarify",
-        \\{"request_id":"aaaa1111","question":"which?","choices":["a"]}
+        \\{"request_id":"aaaa1111","questions":[{"qid":"q0","question":"which?","choices":["a"]}]}
     );
     try testing.expectEqual(@as(usize, 1), reserved.buffered.items.len);
 

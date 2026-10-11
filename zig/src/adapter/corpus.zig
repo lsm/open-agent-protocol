@@ -261,6 +261,7 @@ pub fn Harness(comptime Driver: type) type {
             if (isBlank(Driver.blank_expectation, expected_text)) return error.BlankExpectation;
 
             var reducer = Driver.open(arena, case);
+            if (@hasDecl(Driver, "prepare")) try Driver.prepare(&reducer, scratch, native);
             try steps(scratch, native, &reducer, case);
 
             return .{ .expected = try expectedEnvelopes(scratch, expected_text), .emitted = Driver.envelopes(&reducer) };
