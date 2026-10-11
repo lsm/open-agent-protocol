@@ -321,7 +321,7 @@ test "provider smoke: one tool call" {
     try testing.expect(saw_tool);
 }
 
-test "provider smoke: an unknown model is refused" {
+test "provider smoke: an unknown model behaves as its row records" {
     var fixture = (try prepare(testing.allocator)) orelse return error.SkipZigTest;
     defer fixture.deinit();
 
