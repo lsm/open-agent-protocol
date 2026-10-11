@@ -126,7 +126,15 @@ func (s *State) partEndedText(index int, kind, text, carry string) (Envelope, er
 	}
 	s.open = nil
 	held := text
-	return s.emit("inference.part.ended", "", PartEnded{PartIndex: index, PartKind: kind, Text: &held, Carry: carry})
+	envelope, err := s.emit("inference.part.ended", "", PartEnded{PartIndex: index, PartKind: kind, Text: &held, Carry: carry})
+	if err == nil {
+		block := TerminalBlock{Type: kind, Text: &held}
+		if kind == "reasoning" {
+			block = TerminalBlock{Type: kind, Reasoning: &held, Carry: carry}
+		}
+		s.ended = append(s.ended, block)
+	}
+	return envelope, err
 }
 
 func (s *State) partEndedToolCall(index int, call *provider.ToolCall) (Envelope, error) {
@@ -147,12 +155,16 @@ func (s *State) partEndedToolCall(index int, call *provider.ToolCall) (Envelope,
 		return s.Failed(CodeProtocolViolation, "the provider streamed a tool call whose arguments_json is not json")
 	}
 	s.open = nil
-	return s.emit("inference.part.ended", "", PartEnded{
+	envelope, err := s.emit("inference.part.ended", "", PartEnded{
 		PartIndex: index,
 		PartKind:  "tool_call",
 		Carry:     call.ThoughtSig,
 		ToolCall:  &EndedToolCall{ToolCallID: call.ID, Name: call.Name, ArgumentsJSON: json.RawMessage(arguments)},
 	})
+	if err == nil {
+		s.ended = append(s.ended, TerminalBlock{Type: "tool_call", ToolCallID: call.ID, Name: call.Name, ArgumentsJSON: json.RawMessage(arguments), Carry: call.ThoughtSig})
+	}
+	return envelope, err
 }
 
 func (s *State) settleDone(message *provider.AssistantMessage) (Envelope, error) {
@@ -164,7 +176,32 @@ func (s *State) settleDone(message *provider.AssistantMessage) (Envelope, error)
 	if message.StopReason == provider.StopError {
 		return s.FailedWithUsage(CodeProviderUnavailable, "the provider reported a failure", &usage)
 	}
-	return s.CompletedWithUsage(string(message.StopReason), partsOf(message.Content), &usage)
+	content := partsOf(message.Content)
+	if !sameBlocks(content, s.ended) && !(len(s.ended) == 0 && emptyText(content)) {
+		return s.FailedWithUsage(CodeEndpointError, "the endpoint could not assemble a terminal for this inference", &usage)
+	}
+	return s.CompletedWithUsage(string(message.StopReason), content, &usage)
+}
+
+func emptyText(blocks []TerminalBlock) bool {
+	for _, block := range blocks {
+		if block.Type != "text" || block.Text == nil || *block.Text != "" {
+			return false
+		}
+	}
+	return true
+}
+
+func sameBlocks(a, b []TerminalBlock) bool {
+	left, err := json.Marshal(a)
+	if err != nil {
+		return false
+	}
+	right, err := json.Marshal(b)
+	if err != nil {
+		return false
+	}
+	return string(left) == string(right)
 }
 
 func (s *State) settleError(reason string) (Envelope, error) {

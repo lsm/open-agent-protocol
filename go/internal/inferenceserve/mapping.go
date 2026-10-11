@@ -108,6 +108,7 @@ type State struct {
 	sequence    int
 	refused     bool
 	open        *openPart
+	ended       []TerminalBlock
 	terminal    bool
 }
 

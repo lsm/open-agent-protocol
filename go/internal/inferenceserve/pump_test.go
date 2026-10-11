@@ -362,3 +362,39 @@ func TestACompletionsTurnWithTwoToolCallsPumpsAValidTrace(t *testing.T) {
 	}
 	assertValid(t, envelopes)
 }
+
+func TestAFinalMessageCarryingABlockNoPartEndedSettlesAnEndpointError(t *testing.T) {
+	state := NewState(&Ids{}, "i1", "m")
+	for _, event := range []provider.Event{
+		{Kind: provider.EventStart},
+		{Kind: provider.EventTextStart, ContentIndex: 0},
+		{Kind: provider.EventTextDelta, ContentIndex: 0, Delta: "answer"},
+		{Kind: provider.EventTextEnd, ContentIndex: 0, Delta: "answer"},
+	} {
+		if _, err := state.Pump(event, 1); err != nil {
+			t.Fatal(err)
+		}
+	}
+	answer := "answer"
+	out, err := state.Pump(provider.Event{Kind: provider.EventDone, Message: &provider.AssistantMessage{
+		StopReason: provider.StopStop,
+		Content:    []provider.AssistantBlock{{Text: &provider.TextPart{Text: answer}}, {Thinking: &provider.ThinkingPart{Thinking: "plan"}}},
+	}}, 1)
+	if err != nil || len(out) != 1 || out[0].Type != "inference.failed" {
+		t.Fatalf("out = %v, err = %v", out, err)
+	}
+	if code := payloadOf(t, out[0])["error"].(map[string]any)["code"]; code != CodeEndpointError {
+		t.Fatalf("code = %v, want endpoint_error", code)
+	}
+}
+
+func TestAnEmptyReplyWithNoPartsCompletesWithItsEmptyText(t *testing.T) {
+	envelopes, refused := pumpAll(t, []provider.Event{
+		{Kind: provider.EventStart},
+		{Kind: provider.EventDone, Message: &provider.AssistantMessage{StopReason: provider.StopLength, Content: []provider.AssistantBlock{{Text: &provider.TextPart{}}}}},
+	})
+	if len(refused) != 0 || envelopes[len(envelopes)-1].Type != "inference.completed" {
+		t.Fatalf("types = %v, refused = %v", typesOf(envelopes), refused)
+	}
+	assertValid(t, envelopes)
+}
