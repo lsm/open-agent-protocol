@@ -81,7 +81,8 @@
         "OPENCODE_API_KEY"
       ],
       "wires": [
-        "openai-completions"
+        "openai-completions",
+        "anthropic-messages"
       ],
       "base_url_source": "static",
       "endpoints": [
@@ -89,6 +90,10 @@
           "wire": "openai-completions",
           "base_url": "https://opencode.ai/zen/v1",
           "carries_version": true
+        },
+        {
+          "wire": "anthropic-messages",
+          "base_url": "https://opencode.ai/zen"
         }
       ],
       "models_endpoint": "/models",
@@ -238,14 +243,21 @@
         "OPENCODE_API_KEY"
       ],
       "wires": [
-        "openai-completions"
+        "openai-completions",
+        "anthropic-messages"
       ],
       "base_url_source": "static",
       "endpoints": [
         {
           "wire": "openai-completions",
           "base_url": "https://opencode.ai/zen/go/v1",
-          "carries_version": true
+          "carries_version": true,
+          "session_header": "x-opencode-session"
+        },
+        {
+          "wire": "anthropic-messages",
+          "base_url": "https://opencode.ai/zen/go",
+          "session_header": "x-opencode-session"
         }
       ],
       "models_endpoint": "/models",

@@ -58,6 +58,7 @@ type Endpoint struct {
 	BaseURL        string `json:"base_url"`
 	Region         string `json:"region,omitempty"`
 	CarriesVersion bool   `json:"carries_version,omitempty"`
+	SessionHeader  string `json:"session_header,omitempty"`
 }
 
 type OAuthOrigin struct {

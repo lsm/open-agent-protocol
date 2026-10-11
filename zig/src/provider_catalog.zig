@@ -390,6 +390,24 @@ pub fn declaresWire(provider_id: []const u8, wire: []const u8) bool {
     return false;
 }
 
+pub fn sessionHeader(provider_id: []const u8, wire: []const u8) ?[]const u8 {
+    const row = provider(provider_id) orelse return null;
+    for (row.endpoints) |endpoint| {
+        if (!std.mem.eql(u8, endpoint.wire, wire)) continue;
+        if (endpoint.session_header) |header| return header;
+    }
+    return null;
+}
+
+test "an endpoint names the session header it needs on each wire, and one that needs none names none" {
+    try std.testing.expectEqualStrings("x-opencode-session", sessionHeader("opencode-go", "openai-completions").?);
+    try std.testing.expectEqualStrings("x-opencode-session", sessionHeader("opencode-go", "anthropic-messages").?);
+    try std.testing.expect(sessionHeader("opencode-go", "openai-responses") == null);
+    try std.testing.expect(sessionHeader("opencode-zen", "openai-completions") == null);
+    try std.testing.expect(sessionHeader("openai", "openai-completions") == null);
+    try std.testing.expect(sessionHeader("no-such-provider", "openai-completions") == null);
+}
+
 pub fn endpointCarriesVersion(provider_id: []const u8, base_url: []const u8) bool {
     const row = provider(provider_id) orelse return false;
     const wanted = std.mem.trimEnd(u8, base_url, "/");
