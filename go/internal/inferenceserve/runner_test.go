@@ -55,7 +55,10 @@ func refusalCode(t *testing.T, envelope Envelope) string {
 
 func servingDeepSeek() *Runner {
 	return &Runner{
-		Catalog:     providercatalog.Catalog{Providers: []providercatalog.Provider{{ID: "deepseek", Auth: []string{"api_key"}, CredentialEnv: []string{"DEEPSEEK_API_KEY"}}}},
+		Catalog: providercatalog.Catalog{Providers: []providercatalog.Provider{
+			{ID: "deepseek", Auth: []string{"api_key"}, CredentialEnv: []string{"DEEPSEEK_API_KEY"}, Wires: []string{"openai-completions"}},
+			{ID: "ollama", Auth: []string{"none", "api_key"}, Wires: []string{"ollama"}},
+		}},
 		Environment: []providercatalog.EnvironmentValue{{Name: "DEEPSEEK_API_KEY", Value: "sk-oap-test"}},
 		Models:      []provider.ListedModel{{Model: provider.Model{ID: "deepseek-v4-pro", API: "openai-completions", Provider: "deepseek"}}},
 		NewID:       func() string { return "i1" },
@@ -73,7 +76,7 @@ func TestACreateIsRefusedBeforeAnythingIsAllocatedWhenItCannotBeServed(t *testin
 		{"a malformed model ref", servingDeepSeek(), "deepseek", `[]`, CodeInvalidRequest},
 		{"a provider this endpoint does not serve", servingDeepSeek(), "openai/openai-chat-completions@gpt", `[]`, CodeModelNotFound},
 		{"a message this endpoint does not carry yet", servingDeepSeek(), parityModelRef, `[{"role":"tool","content":"x"}]`, CodeUnsupportedFeature},
-		{"a provider with no credential", func() *Runner { r := servingDeepSeek(); r.Environment = nil; return r }(), parityModelRef, `[]`, CodeCredentialMissing},
+		{"a provider served on another wire", servingDeepSeek(), "deepseek/anthropic-messages@deepseek-v4-pro", `[]`, CodeInvalidRequest},
 	}
 	for _, c := range cases {
 		out := runnerOutcome(t, c.runner, c.ref, c.messages)
@@ -151,5 +154,83 @@ func TestEverySystemAndDeveloperMessageJoinsTheSystemPromptAsOapxJoinsThem(t *te
 	}
 	if len(conversation.Messages) != 1 || conversation.Messages[0].User == nil {
 		t.Fatalf("messages = %+v, want only the user turn", conversation.Messages)
+	}
+}
+
+func TestAProviderThisEndpointDoesNotServeIsRefusedAsOapxRefusesIt(t *testing.T) {
+	unserved := func(edit func(*Runner)) *Runner {
+		r := servingDeepSeek()
+		r.Models = nil
+		edit(r)
+		return r
+	}
+	cases := []struct {
+		name   string
+		runner *Runner
+		ref    string
+		want   string
+	}{
+		{"a catalogued provider with no credential", unserved(func(r *Runner) { r.Environment = nil }), parityModelRef, CodeCredentialMissing},
+		{"a catalogued provider whose key discovery refused", unserved(func(r *Runner) { r.KeyRefused = []string{"deepseek"} }), parityModelRef, CodeCredentialRejected},
+		{"a catalogued provider whose models have not loaded", unserved(func(*Runner) {}), parityModelRef, CodeProviderUnavailable},
+		{"a provider that needs no credential", unserved(func(*Runner) {}), "ollama/openai-chat-completions@m", CodeModelNotFound},
+		{"a provider the catalog does not hold", unserved(func(*Runner) {}), "nope/openai-chat-completions@m", CodeModelNotFound},
+	}
+	for _, c := range cases {
+		out := runnerOutcome(t, c.runner, c.ref, `[]`)
+		if len(out) != 1 || refusalCode(t, out[0]) != c.want {
+			t.Errorf("%s: out = %v, want %s", c.name, typesOf(out), c.want)
+		}
+	}
+}
+
+func TestAServedProviderWithNoCredentialIsAcceptedThenFailsAsOapxDoes(t *testing.T) {
+	runner := servingDeepSeek()
+	runner.Environment = nil
+	out := runnerOutcome(t, runner, parityModelRef, `[{"role":"user","content":"hi"}]`)
+	if len(out) != 2 || out[0].Type != "inference.create.response" || out[1].Type != "inference.failed" {
+		t.Fatalf("types = %v", typesOf(out))
+	}
+	if code := payloadOf(t, out[1])["error"].(map[string]any)["code"]; code != CodeCredentialMissing {
+		t.Fatalf("code = %v, want credential_missing", code)
+	}
+}
+
+func TestTheFieldRefusalsFollowOapxsOrder(t *testing.T) {
+	out := runnerOutcomeWith(t, servingDeepSeek(), `{"model_ref":"`+parityModelRef+`","messages":[{"role":"tool","content":"x"}],"top_p":0.5,"output_schema":{}}`)
+	if len(out) != 1 {
+		t.Fatalf("out = %v", typesOf(out))
+	}
+	if message := payloadOf(t, out[0])["error"].(map[string]any)["message"]; message != "this endpoint does not forward top_p" {
+		t.Fatalf("message = %v, want top_p refused before the message and the schema", message)
+	}
+	out = runnerOutcomeWith(t, servingDeepSeek(), `{"model_ref":"`+parityModelRef+`","messages":[{"role":"tool","content":"x"}],"output_schema":{}}`)
+	if message := payloadOf(t, out[0])["error"].(map[string]any)["message"]; message == "this endpoint does not forward a structured output schema" {
+		t.Fatalf("message = %v, want the message refused before the schema", message)
+	}
+}
+
+func TestAProviderRefusalIsDescribedAsOapxDescribesIt(t *testing.T) {
+	completions := provider.Model{Provider: "deepseek", API: "openai-completions"}
+	anthropic := provider.Model{Provider: "anthropic", API: provider.AnthropicWire}
+	cases := []struct {
+		model provider.Model
+		body  string
+		want  string
+	}{
+		{completions, `{"error":{"message":"bad key","type":"authentication_error"}}`, "deepseek request failed: HTTP 401 (authentication_error: bad key)"},
+		{completions, `{"error":{"type":"overloaded"}}`, "deepseek request failed: HTTP 401 (overloaded)"},
+		{completions, `{"error":"plain"}`, "deepseek request failed: HTTP 401 (plain)"},
+		{completions, `{"error":null,"detail":"ignored"}`, "deepseek request failed: HTTP 401"},
+		{completions, `{"detail":"from detail"}`, "deepseek request failed: HTTP 401 (from detail)"},
+		{completions, `{"message":"from message"}`, "deepseek request failed: HTTP 401 (from message)"},
+		{completions, `not json`, "deepseek request failed: HTTP 401"},
+		{anthropic, `{"error":{"message":"bad key","type":"authentication_error"}}`, "anthropic request failed: HTTP 401 (check ANTHROPIC_API_KEY is valid) (authentication_error: bad key)"},
+		{anthropic, `{"error":{"type":"overloaded"}}`, "anthropic request failed: HTTP 401 (check ANTHROPIC_API_KEY is valid)"},
+	}
+	for _, c := range cases {
+		if got := httpFailure(c.model, 401, []byte(c.body)); got != c.want {
+			t.Errorf("%s %s = %q, want %q", c.model.API, c.body, got, c.want)
+		}
 	}
 }

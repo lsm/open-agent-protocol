@@ -56,6 +56,9 @@ var parityScenarios = map[string][]string{
 		chunkFrame(`{"tool_calls":[{"index":0,"function":{"arguments":"{\"path\":\"a\"}"}}]}`, "", ""),
 		chunkFrame(`{}`, "tool_calls", parityUsage),
 	},
+	"a refused key": {
+		`refuse {"error":{"message":"Authentication Fails, Your api key is invalid","type":"authentication_error"}}`,
+	},
 	"two tool calls": {
 		chunkFrame(`{"role":"assistant","tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"read","arguments":"{\"path\":\"a\"}"}}]}`, "", ""),
 		chunkFrame(`{"tool_calls":[{"index":1,"id":"call_2","type":"function","function":{"name":"read","arguments":"{\"path\":\"b\"}"}}]}`, "", ""),
@@ -72,6 +75,12 @@ func parityProvider(t *testing.T, frames []string) *httptest.Server {
 			return
 		}
 		io.Copy(io.Discard, r.Body)
+		if len(frames) == 1 && strings.HasPrefix(frames[0], "refuse ") {
+			w.Header().Set("content-type", "application/json")
+			w.WriteHeader(http.StatusUnauthorized)
+			io.WriteString(w, strings.TrimPrefix(frames[0], "refuse "))
+			return
+		}
 		w.Header().Set("content-type", "text/event-stream")
 		for _, frame := range frames {
 			io.WriteString(w, frame)
@@ -190,7 +199,7 @@ func goTrace(t *testing.T, baseURL string) []map[string]any {
 	catalog := heldParityCatalog(t)
 	env := []providercatalog.EnvironmentValue{{Name: "DEEPSEEK_API_KEY", Value: "sk-oap-parity"}, {Name: "DEEPSEEK_BASE_URL", Value: baseURL}}
 	found := provider.Discoverer{Catalog: catalog, Environment: env}.Discover(context.Background(), provider.DiscoverForceFetch)
-	runner := &Runner{Catalog: catalog, Environment: env, Models: found.Models, NewID: func() string { return "i1" }}
+	runner := &Runner{Catalog: catalog, Environment: env, Models: found.Models, KeyRefused: found.KeyRefused, NewID: func() string { return "i1" }}
 	var request CreateRequest
 	encoded, _ := json.Marshal(parityCreate("c0")["payload"])
 	if err := json.Unmarshal(encoded, &request); err != nil {
@@ -265,8 +274,12 @@ func TestInferenceTracesMatchOapx(t *testing.T) {
 			if !reflect.DeepEqual(want, got) {
 				t.Fatalf("the traces differ:\n%s", traceDifference(want, got))
 			}
-			if last := served[len(served)-1]["type"]; last != "inference.completed" {
-				t.Fatalf("both trees settled %v, want inference.completed", last)
+			settled := "inference.completed"
+			if name == "a refused key" {
+				settled = "inference.failed"
+			}
+			if last := served[len(served)-1]["type"]; last != settled {
+				t.Fatalf("both trees settled %v, want %s", last, settled)
 			}
 			assertValidTrace(t, served)
 		})

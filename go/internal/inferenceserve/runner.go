@@ -66,6 +66,7 @@ type Runner struct {
 	Catalog     providercatalog.Catalog
 	Environment []providercatalog.EnvironmentValue
 	Models      []provider.ListedModel
+	KeyRefused  []string
 	Client      *http.Client
 	Ids         *Ids
 	Now         func() int64
@@ -105,8 +106,16 @@ func (r *Runner) Create(ctx context.Context, requestID string, request CreateReq
 		refuse(CodeInvalidRequest, "model_ref must be provider_id/wire@model_id")
 		return
 	}
+	if !r.servesProvider(ref.ProviderID) {
+		refuse(r.unservedRefusal(ref.ProviderID))
+		return
+	}
 	if !r.serves(ref.ProviderID, ref.Wire) {
-		refuse(CodeModelNotFound, "no such provider")
+		refuse(CodeInvalidRequest, "model_ref names a wire this provider does not speak")
+		return
+	}
+	if reason := unforwarded(request); reason != "" {
+		refuse(CodeUnsupportedFeature, reason)
 		return
 	}
 	conversation, err := conversationOf(request)
@@ -114,12 +123,7 @@ func (r *Runner) Create(ctx context.Context, requestID string, request CreateReq
 		refuse(CodeUnsupportedFeature, err.Error())
 		return
 	}
-	credential, held := providercatalog.LookupCredential(r.Catalog, r.Environment, nil, ref.ProviderID)
-	if !held {
-		refuse(CodeCredentialMissing, "this provider needs a credential and none resolved")
-		return
-	}
-	if reason := unforwarded(request); reason != "" {
+	if reason := unforwardedAfterMessages(request); reason != "" {
 		refuse(CodeUnsupportedFeature, reason)
 		return
 	}
@@ -129,6 +133,13 @@ func (r *Runner) Create(ctx context.Context, requestID string, request CreateReq
 		return
 	}
 	emit(accepted)
+	credential, held := providercatalog.LookupCredential(r.Catalog, r.Environment, nil, ref.ProviderID)
+	if !held {
+		if envelope, err := state.Failed(CodeCredentialMissing, "this provider needs a credential and none resolved"); err == nil {
+			emit(envelope)
+		}
+		return
+	}
 	model, found := r.model(ref)
 	if !found {
 		if envelope, err := state.Failed(CodeModelNotFound, "this endpoint serves no such model"); err == nil {
@@ -162,6 +173,10 @@ func unforwarded(request CreateRequest) string {
 	if len(request.Headers) > 0 {
 		return "this endpoint does not forward request headers to a provider"
 	}
+	return ""
+}
+
+func unforwardedAfterMessages(request CreateRequest) string {
 	if len(request.OutputSchema) > 0 {
 		return "this endpoint does not forward a structured output schema"
 	}
@@ -183,6 +198,45 @@ func (r *Runner) now() int64 {
 		return r.Now()
 	}
 	return time.Now().UnixMilli()
+}
+
+func (r *Runner) servesProvider(providerID string) bool {
+	for _, listed := range r.Models {
+		if listed.Model.Provider == providerID {
+			return true
+		}
+	}
+	return false
+}
+
+func (r *Runner) unservedRefusal(providerID string) (string, string) {
+	row, catalogued := catalogRow(r.Catalog, providerID)
+	if !catalogued || !awaitsCredential(row) {
+		return CodeModelNotFound, "no such provider"
+	}
+	if _, held := providercatalog.LookupCredential(r.Catalog, r.Environment, nil, providerID); !held {
+		return CodeCredentialMissing, "this provider is served once it has a credential: sign in or set its key"
+	}
+	if slices.Contains(r.KeyRefused, providerID) {
+		return CodeCredentialRejected, "the provider refused this key: sign in again or set a new key"
+	}
+	return CodeProviderUnavailable, "this provider has a credential but its models are not loaded: retry after they reload"
+}
+
+func catalogRow(catalog providercatalog.Catalog, id string) (providercatalog.Provider, bool) {
+	for _, row := range catalog.Providers {
+		if row.ID == id {
+			return row, true
+		}
+	}
+	return providercatalog.Provider{}, false
+}
+
+func awaitsCredential(row providercatalog.Provider) bool {
+	if slices.Contains(row.Auth, "none") {
+		return false
+	}
+	return providercatalog.FirstImplementedWire(row) != ""
 }
 
 func (r *Runner) serves(providerID, wire string) bool {
@@ -287,7 +341,7 @@ func (r *Runner) stream(ctx context.Context, state *State, model provider.Model,
 	defer response.Body.Close()
 	if response.StatusCode < 200 || response.StatusCode > 299 {
 		detail, _ := io.ReadAll(io.LimitReader(response.Body, maxErrorBody))
-		emitFailure(state, emit, strings.TrimSpace(fmt.Sprintf("%s request failed: HTTP %d %s", model.Provider, response.StatusCode, bytes.TrimSpace(detail))))
+		emitFailure(state, emit, httpFailure(model, response.StatusCode, detail))
 		return
 	}
 	read := bodyReader(response.Body)
@@ -338,4 +392,76 @@ func bodyReader(body io.Reader) provider.ReadChunkFunc {
 		}
 		return nil, nil
 	}
+}
+
+func httpFailure(model provider.Model, status int, body []byte) string {
+	if model.API == provider.AnthropicWire {
+		hint := ""
+		if status == http.StatusUnauthorized {
+			hint = " (check ANTHROPIC_API_KEY is valid)"
+		}
+		return fmt.Sprintf("anthropic request failed: HTTP %d%s%s", status, hint, anthropicErrorDetail(body))
+	}
+	return fmt.Sprintf("%s request failed: HTTP %d%s", model.Provider, status, errorDetail(body))
+}
+
+func nonEmptyString(object map[string]json.RawMessage, key string) string {
+	var text string
+	if json.Unmarshal(object[key], &text) != nil {
+		return ""
+	}
+	return text
+}
+
+func errorDetail(body []byte) string {
+	var root map[string]json.RawMessage
+	if json.Unmarshal(body, &root) != nil || root == nil {
+		return ""
+	}
+	if raw, present := root["error"]; present {
+		var object map[string]json.RawMessage
+		if json.Unmarshal(raw, &object) == nil && object != nil {
+			message, kind := nonEmptyString(object, "message"), nonEmptyString(object, "type")
+			switch {
+			case message != "" && kind != "":
+				return " (" + kind + ": " + message + ")"
+			case message != "":
+				return " (" + message + ")"
+			case kind != "":
+				return " (" + kind + ")"
+			}
+			return ""
+		}
+		var text string
+		if json.Unmarshal(raw, &text) == nil && text != "" {
+			return " (" + text + ")"
+		}
+		return ""
+	}
+	if text := nonEmptyString(root, "detail"); text != "" {
+		return " (" + text + ")"
+	}
+	if text := nonEmptyString(root, "message"); text != "" {
+		return " (" + text + ")"
+	}
+	return ""
+}
+
+func anthropicErrorDetail(body []byte) string {
+	var root map[string]json.RawMessage
+	if json.Unmarshal(body, &root) != nil || root == nil {
+		return ""
+	}
+	var object map[string]json.RawMessage
+	if json.Unmarshal(root["error"], &object) != nil || object == nil {
+		return ""
+	}
+	message := nonEmptyString(object, "message")
+	if message == "" {
+		return ""
+	}
+	if kind := nonEmptyString(object, "type"); kind != "" {
+		return " (" + kind + ": " + message + ")"
+	}
+	return " (" + message + ")"
 }
