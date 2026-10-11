@@ -92,8 +92,9 @@ the fixture, not to the backend test.
 **The provider profile has its own test.** `TestInferenceTracesMatchOapx`
 (`go/internal/inferenceserve`) serves one `inference.create.request` from
 `oapx serve provider` and from the Go `Runner` against the same loopback
-provider, model discovery included, for four turns: text, reasoning then text,
-text then a tool call, and two tool calls. It compares the two traces as parsed
+provider, model discovery included, for five turns: text, reasoning then
+text, text then a tool call, two tool calls, and a provider that refuses the
+key. It compares the two traces as parsed
 JSON in order, normalising only envelope ids, timestamps and the inference id,
 never `sequence`.
 

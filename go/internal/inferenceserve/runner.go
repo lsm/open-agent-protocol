@@ -43,6 +43,8 @@ type CreateRequest struct {
 	Headers               map[string]string `json:"headers,omitempty"`
 	OutputSchema          json.RawMessage   `json:"output_schema,omitempty"`
 	Reasoning             json.RawMessage   `json:"reasoning,omitempty"`
+	ToolChoice            json.RawMessage   `json:"tool_choice,omitempty"`
+	CredentialRef         string            `json:"credential_ref,omitempty"`
 }
 
 type RequestMessage struct {
@@ -114,6 +116,15 @@ func (r *Runner) Create(ctx context.Context, requestID string, request CreateReq
 		refuse(CodeInvalidRequest, "model_ref names a wire this provider does not speak")
 		return
 	}
+	if request.CredentialRef != "" && !r.anonymous(ref.ProviderID) {
+		refuse(CodeCredentialMissing, "credential_ref names no credential this implementation holds")
+		return
+	}
+	choice, ok := toolChoiceOf(request.ToolChoice)
+	if !ok {
+		refuse(CodeInvalidRequest, "tool_choice must be auto, none, required or an object naming a function")
+		return
+	}
 	if reason := unforwarded(request); reason != "" {
 		refuse(CodeUnsupportedFeature, reason)
 		return
@@ -137,16 +148,16 @@ func (r *Runner) Create(ctx context.Context, requestID string, request CreateReq
 		return
 	}
 	emit(accepted)
-	credential, held := providercatalog.LookupCredential(r.Catalog, r.Environment, nil, ref.ProviderID)
-	if !held {
-		if envelope, err := state.Failed(CodeCredentialMissing, "this provider needs a credential and none resolved"); err == nil {
+	model, found := r.model(ref)
+	if !found {
+		if envelope, err := state.Failed(CodeModelNotFound, "this endpoint serves no such model"); err == nil {
 			emit(envelope)
 		}
 		return
 	}
-	model, found := r.model(ref)
-	if !found {
-		if envelope, err := state.Failed(CodeModelNotFound, "this endpoint serves no such model"); err == nil {
+	credential, held := providercatalog.LookupCredential(r.Catalog, r.Environment, nil, ref.ProviderID)
+	if !held && !model.AllowsAnonymous {
+		if envelope, err := state.Failed(CodeCredentialMissing, "this provider needs a credential and none resolved"); err == nil {
 			emit(envelope)
 		}
 		return
@@ -161,7 +172,46 @@ func (r *Runner) Create(ctx context.Context, requestID string, request CreateReq
 		options.Temperature, options.HasTemperature = *request.Temperature, true
 		anthropic.Temperature, anthropic.HasTemperature = *request.Temperature, true
 	}
+	if choice.Mode != "" {
+		options.ToolChoice, options.HasToolChoice = choice, true
+		anthropic.ToolChoiceType, anthropic.ToolChoiceName, anthropic.HasToolChoice = choice.Mode, choice.Function, true
+	}
 	r.stream(ctx, state, model, conversation, options, anthropic, credential.Key, emit)
+}
+
+func present(raw json.RawMessage) bool {
+	trimmed := bytes.TrimSpace(raw)
+	return len(trimmed) > 0 && !bytes.Equal(trimmed, []byte("null"))
+}
+
+func toolChoiceOf(raw json.RawMessage) (provider.ToolChoice, bool) {
+	if !present(raw) {
+		return provider.ToolChoice{}, true
+	}
+	var mode string
+	if json.Unmarshal(raw, &mode) == nil {
+		switch mode {
+		case provider.ToolChoiceAuto, provider.ToolChoiceNone, provider.ToolChoiceRequired:
+			return provider.ToolChoice{Mode: mode}, true
+		}
+		return provider.ToolChoice{}, false
+	}
+	var named struct {
+		Function string `json:"function"`
+	}
+	if json.Unmarshal(raw, &named) != nil || named.Function == "" {
+		return provider.ToolChoice{}, false
+	}
+	return provider.ToolChoice{Mode: provider.ToolChoiceFunction, Function: named.Function}, true
+}
+
+func (r *Runner) anonymous(providerID string) bool {
+	for _, listed := range r.Models {
+		if listed.Model.Provider == providerID && listed.Model.AllowsAnonymous {
+			return true
+		}
+	}
+	return false
 }
 
 func unforwarded(request CreateRequest) string {
@@ -181,10 +231,10 @@ func unforwarded(request CreateRequest) string {
 }
 
 func unforwardedAfterMessages(request CreateRequest) string {
-	if len(request.OutputSchema) > 0 {
+	if present(request.OutputSchema) {
 		return "this endpoint does not forward a structured output schema"
 	}
-	if len(request.Reasoning) > 0 {
+	if present(request.Reasoning) {
 		return "this endpoint does not forward reasoning options yet"
 	}
 	return ""
@@ -355,6 +405,9 @@ func textOf(content json.RawMessage) (string, error) {
 
 func (r *Runner) stream(ctx context.Context, state *State, model provider.Model, conversation provider.Context, options provider.StreamOptions, anthropic provider.AnthropicOptions, key string, emit func(Envelope)) {
 	sink := &provider.EventSink{OnEvent: func(event provider.Event) {
+		if event.Kind == provider.EventError && ctx.Err() != nil {
+			event.Reason = ReasonCancelled
+		}
 		out, err := state.Pump(event, r.now())
 		if err != nil {
 			return
@@ -381,6 +434,12 @@ func (r *Runner) stream(ctx context.Context, state *State, model provider.Model,
 	}
 	response, err := r.send(ctx, url, body, headers)
 	if err != nil {
+		if ctx.Err() != nil {
+			if envelope, err := state.Failed(CodeAborted, "the caller cancelled this inference"); err == nil {
+				emit(envelope)
+			}
+			return
+		}
 		emitFailure(state, emit, model.Provider+" request failed: "+err.Error())
 		return
 	}

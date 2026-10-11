@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/lsm/open-agent-protocol/go/internal/provider"
@@ -116,7 +117,7 @@ func TestACreateNamingAFieldThisEndpointDoesNotForwardIsRefused(t *testing.T) {
 	}
 }
 
-func TestBothWiresCarryTheRequestedTokenCapAndTemperature(t *testing.T) {
+func TestBothWiresCarryTheRequestedTokenCapTemperatureAndToolChoice(t *testing.T) {
 	for _, wire := range []string{"openai-completions", "anthropic-messages"} {
 		var body map[string]any
 		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -128,7 +129,7 @@ func TestBothWiresCarryTheRequestedTokenCapAndTemperature(t *testing.T) {
 		runner.Models[0].Model.API = wire
 		runner.Models[0].Model.BaseURL, runner.Models[0].Model.HasBaseURL = server.URL, true
 		oapWire := map[string]string{"openai-completions": "openai-chat-completions", "anthropic-messages": "anthropic-messages"}[wire]
-		runnerOutcomeWith(t, runner, `{"model_ref":"deepseek/`+oapWire+`@deepseek-v4-pro","messages":[{"role":"user","content":"hi"}],"max_output_tokens":100,"temperature":0.25}`)
+		runnerOutcomeWith(t, runner, `{"model_ref":"deepseek/`+oapWire+`@deepseek-v4-pro","messages":[{"role":"user","content":"hi"}],"max_output_tokens":100,"temperature":0.25,"tool_choice":{"function":"read"},"tools":[{"name":"read","input_schema":{"type":"object"}}]}`)
 		server.Close()
 		tokens := body["max_tokens"]
 		if tokens == nil {
@@ -136,6 +137,9 @@ func TestBothWiresCarryTheRequestedTokenCapAndTemperature(t *testing.T) {
 		}
 		if tokens != 100.0 || body["temperature"] != 0.25 {
 			t.Errorf("%s sent max_tokens=%v temperature=%v, want 100 and 0.25", wire, tokens, body["temperature"])
+		}
+		if choice, _ := json.Marshal(body["tool_choice"]); !strings.Contains(string(choice), `"read"`) {
+			t.Errorf("%s sent tool_choice %s, want the named function", wire, choice)
 		}
 	}
 }
@@ -273,5 +277,78 @@ func TestAnAnthropicReplyWithNoEventsFailsWithTheErrorItsBodyCarries(t *testing.
 	last := out[len(out)-1]
 	if last.Type != "inference.failed" || payloadOf(t, last)["error"].(map[string]any)["message"] != "Overloaded" {
 		t.Fatalf("settled %s %v, want a failure naming the body's error", last.Type, payloadOf(t, last))
+	}
+}
+
+func TestACredentialRefOrAMalformedToolChoiceIsRefusedAsOapxRefusesIt(t *testing.T) {
+	base := `"model_ref":"` + parityModelRef + `","messages":[{"role":"user","content":"hi"}]`
+	cases := []struct {
+		name  string
+		extra string
+		want  string
+	}{
+		{"a credential_ref this endpoint holds no grant for", `"credential_ref":"cr1"`, CodeCredentialMissing},
+		{"a tool_choice naming no mode", `"tool_choice":"sometimes"`, CodeInvalidRequest},
+		{"a tool_choice object without a function", `"tool_choice":{}`, CodeInvalidRequest},
+	}
+	for _, c := range cases {
+		out := runnerOutcomeWith(t, servingDeepSeek(), "{"+base+","+c.extra+"}")
+		if len(out) != 1 || refusalCode(t, out[0]) != c.want {
+			t.Errorf("%s: out = %v, want %s", c.name, typesOf(out), c.want)
+		}
+	}
+}
+
+func TestANullOutputSchemaOrReasoningIsAbsentRatherThanRefused(t *testing.T) {
+	out := runnerOutcomeWith(t, servingDeepSeek(), `{"model_ref":"deepseek/openai-chat-completions@no-such-model","messages":[{"role":"user","content":"hi"}],"output_schema":null,"reasoning":null}`)
+	if len(out) == 0 || out[0].Type != "inference.create.response" || payloadOf(t, out[0])["accepted"] != true {
+		t.Fatalf("out = %v, want the create accepted", typesOf(out))
+	}
+}
+
+func TestAnUnlistedModelFailsBeforeAMissingCredentialIsLookedFor(t *testing.T) {
+	runner := servingDeepSeek()
+	runner.Environment = nil
+	out := runnerOutcome(t, runner, "deepseek/openai-chat-completions@no-such-model", `[{"role":"user","content":"hi"}]`)
+	if code := payloadOf(t, out[len(out)-1])["error"].(map[string]any)["code"]; code != CodeModelNotFound {
+		t.Fatalf("code = %v, want model_not_found, which oapx settles before any credential", code)
+	}
+}
+
+func TestACancelledCreateSettlesAbortedAsOapxDoes(t *testing.T) {
+	release := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("content-type", "text/event-stream")
+		w.Write([]byte("data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"par\"}}]}\n\n"))
+		w.(http.Flusher).Flush()
+		select {
+		case <-release:
+		case <-r.Context().Done():
+		}
+	}))
+	defer server.Close()
+	defer close(release)
+	for _, when := range []string{"before the reply", "mid-stream"} {
+		runner := servingDeepSeek()
+		runner.Catalog.Providers[0].Endpoints = []providercatalog.Endpoint{{Wire: "openai-completions", BaseURL: server.URL}}
+		runner.Models[0].Model.BaseURL, runner.Models[0].Model.HasBaseURL = server.URL, true
+		ctx, cancel := context.WithCancel(context.Background())
+		if when == "before the reply" {
+			cancel()
+		}
+		var request CreateRequest
+		json.Unmarshal([]byte(`{"model_ref":"`+parityModelRef+`","messages":[{"role":"user","content":"hi"}]}`), &request)
+		var out []Envelope
+		runner.Create(ctx, "c0", request, func(envelope Envelope) {
+			out = append(out, envelope)
+			if envelope.Type == "inference.part.delta" {
+				cancel()
+			}
+		})
+		cancel()
+		last := out[len(out)-1]
+		if last.Type != "inference.failed" || payloadOf(t, last)["error"].(map[string]any)["code"] != CodeAborted {
+			t.Errorf("%s: settled %s %v, want aborted", when, last.Type, payloadOf(t, last))
+		}
 	}
 }
