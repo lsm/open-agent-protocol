@@ -116,7 +116,7 @@ func TestResultArbitrationInputs(t *testing.T) {
 	}
 
 	interrupted := mustDecode(t, TypeResult, ResultErrorDuringExecution, `{"type":"result","subtype":"error_during_execution","duration_ms":66,"duration_api_ms":0,"is_error":true,"num_turns":2,"session_id":"`+sessionID+`","stop_reason":null,"usage":{"input_tokens":0,"output_tokens":0},"modelUsage":{},"permission_denials":[],"terminal_reason":"aborted_streaming","errors":["[ede_diagnostic] result_type=user"],"user_message_uuid":"`+turnUUID+`","user_message_uuids":["`+turnUUID+`"],"queued_turn_count":0,"uuid":"r2"}`).(*ResultFrame)
-	if !interrupted.Cancelled() || interrupted.IsError != true || interrupted.NumTurns != 2 {
+	if !interrupted.Cancelled() || interrupted.IsError != true || interrupted.NumTurns == nil || *interrupted.NumTurns != 2 {
 		t.Fatalf("interrupted = %+v", interrupted)
 	}
 

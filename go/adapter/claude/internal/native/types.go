@@ -135,10 +135,10 @@ type AssistantFrame struct {
 }
 
 type Usage struct {
-	InputTokens              int64 `json:"input_tokens"`
-	OutputTokens             int64 `json:"output_tokens"`
-	CacheReadInputTokens     int64 `json:"cache_read_input_tokens"`
-	CacheCreationInputTokens int64 `json:"cache_creation_input_tokens"`
+	InputTokens              int64  `json:"input_tokens"`
+	OutputTokens             int64  `json:"output_tokens"`
+	CacheReadInputTokens     *int64 `json:"cache_read_input_tokens"`
+	CacheCreationInputTokens *int64 `json:"cache_creation_input_tokens"`
 }
 
 type ResultFrame struct {
@@ -146,7 +146,7 @@ type ResultFrame struct {
 	DurationMS        int64           `json:"duration_ms"`
 	DurationAPIMS     int64           `json:"duration_api_ms"`
 	IsError           bool            `json:"is_error"`
-	NumTurns          int             `json:"num_turns"`
+	NumTurns          *int64          `json:"num_turns"`
 	SessionID         string          `json:"session_id"`
 	StopReason        *string         `json:"stop_reason"`
 	TotalCostUSD      *float64        `json:"total_cost_usd"`

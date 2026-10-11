@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"runtime"
 	"slices"
 	"strconv"
@@ -2273,10 +2274,50 @@ func TestATerminalWhoseStructuredOutputIsNullCarriesNone(t *testing.T) {
 	}
 }
 
-func TestATerminalWithoutAReportedCostCarriesNoExtension(t *testing.T) {
-	frame := strings.Replace(resultFrame("REPLACE_UUID", "success", false, "completed", "done", 0), `"total_cost_usd":0.0001,`, "", 1)
-	if strings.Contains(frame, "total_cost_usd") {
-		t.Fatal("the probe frame still names a cost")
+func TestTheCostExtensionCarriesTheTurnsAndCacheCountsTheHarnessReported(t *testing.T) {
+	frame := strings.Replace(resultFrame("REPLACE_UUID", "success", false, "completed", "done", 0), `"usage":{"input_tokens":7,"output_tokens":5}`, `"usage":{"input_tokens":7,"output_tokens":5,"cache_read_input_tokens":715,"cache_creation_input_tokens":0}`, 1)
+	admission, events := settledWithFrame(t, frame)
+	assertValidTrace(t, helloSubmit, admission, events)
+	var reported map[string]json.Number
+	decoder := json.NewDecoder(bytes.NewReader(terminalOf(events).Extensions[costExtension]))
+	decoder.UseNumber()
+	if err := decoder.Decode(&reported); err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]json.Number{"total_cost_usd": "0.0001", "num_turns": "1", "cache_read_input_tokens": "715", "cache_creation_input_tokens": "0"}
+	if !maps.Equal(reported, want) {
+		t.Fatalf("cost extension = %v, want %v", reported, want)
+	}
+
+	bare := strings.Replace(resultFrame("REPLACE_UUID", "success", false, "completed", "done", 0), `"num_turns":1,`, "", 1)
+	admission, events = settledWithFrame(t, bare)
+	assertValidTrace(t, helloSubmit, admission, events)
+	var only map[string]any
+	if err := json.Unmarshal(terminalOf(events).Extensions[costExtension], &only); err != nil {
+		t.Fatal(err)
+	}
+	if len(only) != 1 || only["total_cost_usd"] == nil {
+		t.Fatalf("cost extension = %v, want only the cost when the frame reports no turns or cache counts", only)
+	}
+}
+
+func TestATerminalWithoutACostStillCarriesItsTurnCount(t *testing.T) {
+	frame := strings.Replace(resultFrame("REPLACE_UUID", "error_max_turns", true, "max_turns", "", 0), `"total_cost_usd":0.0001,`, "", 1)
+	admission, events := settledWithFrame(t, frame)
+	assertValidTrace(t, helloSubmit, admission, events)
+	var reported map[string]any
+	if err := json.Unmarshal(terminalOf(events).Extensions[costExtension], &reported); err != nil {
+		t.Fatal(err)
+	}
+	if len(reported) != 1 || reported["num_turns"] != float64(1) {
+		t.Fatalf("cost extension = %v, want only the turn count when the frame reports no cost", reported)
+	}
+}
+
+func TestATerminalWithoutAReportedCostOrCountsCarriesNoExtension(t *testing.T) {
+	frame := strings.Replace(strings.Replace(resultFrame("REPLACE_UUID", "success", false, "completed", "done", 0), `"total_cost_usd":0.0001,`, "", 1), `"num_turns":1,`, "", 1)
+	if strings.Contains(frame, "total_cost_usd") || strings.Contains(frame, "num_turns") {
+		t.Fatal("the probe frame still names a cost or a turn count")
 	}
 	admission, events := settledWithFrame(t, frame)
 	assertValidTrace(t, helloSubmit, admission, events)
