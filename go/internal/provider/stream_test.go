@@ -218,8 +218,9 @@ func TestEveryToolCallEndsAtItsOwnStartIndexWithSeveralCalls(t *testing.T) {
 	events := runStream(t, streamModel(),
 		sseFrame(`{"choices":[{"delta":{"content":"working"}}]}`),
 		sseFrame(`{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"c1","function":{"name":"read"}}]}}]}`),
+		sseFrame(`{"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{}"}}]}}]}`),
 		sseFrame(`{"choices":[{"delta":{"tool_calls":[{"index":1,"id":"c2","function":{"name":"write"}}]}}]}`),
-		sseFrame(`{"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{}"}},{"index":1,"function":{"arguments":"{}"}}]}}]}`),
+		sseFrame(`{"choices":[{"delta":{"tool_calls":[{"index":1,"function":{"arguments":"{}"}}]}}]}`),
 	)
 	starts := map[string]int{}
 	for _, event := range events {
@@ -799,8 +800,8 @@ func TestNoTwoPartsShareAContentIndexWhateverOrderTheyArriveIn(t *testing.T) {
 func TestAContentIndexIsReservedByTheFirstPartThatClaimsIt(t *testing.T) {
 	events := runStream(t, streamModel(),
 		sseFrame(`{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"c1","function":{"name":"f"}}]}}]}`),
-		sseFrame(`{"choices":[{"delta":{"content":"after"}}]}`),
 		sseFrame(`{"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{}"}}]}}]}`),
+		sseFrame(`{"choices":[{"delta":{"content":"after"}}]}`),
 	)
 	start := findEvent(t, events, EventToolCallStart)
 	end := findEvent(t, events, EventToolCallEnd)
@@ -900,8 +901,8 @@ func TestPartsEndInIndexOrder(t *testing.T) {
 	events := runStream(t, streamModel(),
 		sseFrame(`{"choices":[{"delta":{"content":"before"}}]}`),
 		sseFrame(`{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"c1","function":{"name":"f"}}]}}]}`),
-		sseFrame(`{"choices":[{"delta":{"content":"after"}}]}`),
 		sseFrame(`{"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{}"}}]}}]}`),
+		sseFrame(`{"choices":[{"delta":{"content":"after"}}]}`),
 	)
 	var ends []string
 	for _, event := range events {
@@ -923,8 +924,6 @@ func TestAPartEndsAfterEveryPartHoldingALowerIndex(t *testing.T) {
 		sseFrame(`{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"c1","function":{"name":"f"}}]}}]}`),
 		sseFrame(`{"choices":[{"delta":{"tool_calls":[{"index":1,"id":"c2","function":{"name":"g"}}]}}]}`),
 		sseFrame(`{"choices":[{"delta":{"content":"b"}}]}`),
-		sseFrame(`{"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{}"}}]}}]}`),
-		sseFrame(`{"choices":[{"delta":{"tool_calls":[{"index":1,"function":{"arguments":"{}"}}]}}]}`),
 	)
 	var ends []string
 	for _, event := range events {
@@ -944,8 +943,8 @@ func TestACallEndingAfterTheTextKeepsTheTextInItsPartial(t *testing.T) {
 	events := runStream(t, streamModel(),
 		sseFrame(`{"choices":[{"delta":{"content":"before"}}]}`),
 		sseFrame(`{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"c1","function":{"name":"f"}}]}}]}`),
-		sseFrame(`{"choices":[{"delta":{"content":"after"}}]}`),
 		sseFrame(`{"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{}"}}]}}]}`),
+		sseFrame(`{"choices":[{"delta":{"content":"after"}}]}`),
 	)
 	end := findEvent(t, events, EventToolCallEnd)
 	if len(end.Partial.Content) != 1 {
@@ -1062,19 +1061,18 @@ func TestKimiReasoningEndsAsAPartAfterTheText(t *testing.T) {
 	}
 }
 
-func TestArgumentsForAToolCallThatAlreadyEndedAreDropped(t *testing.T) {
+func TestArgumentsForAToolCallThatAlreadyEndedFailTheStreamRatherThanTruncateTheCall(t *testing.T) {
 	events := runStream(t, streamModel(),
-		sseFrame(`{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_a","function":{"name":"read","arguments":"{}"}}]}}]}`),
+		sseFrame(`{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_a","function":{"name":"read","arguments":"{\"p\":"}}]}}]}`),
 		sseFrame(`{"choices":[{"delta":{"tool_calls":[{"index":1,"id":"call_b","function":{"name":"read","arguments":"[]"}}]}}]}`),
-		sseFrame(`{"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"late"}}]}}]}`),
+		sseFrame(`{"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"1}"}}]}}]}`),
 	)
-	want := "toolcall_start 0\ntoolcall_delta 0\ntoolcall_end 0\ntoolcall_start 1\ntoolcall_delta 1\ntoolcall_end 1"
-	if got := lifecycleOf(events); got != want {
-		t.Fatalf("lifecycle =\n%s\nwant\n%s", got, want)
+	last := events[len(events)-1]
+	if last.Kind != EventError || last.Reason != LateArgumentsReason {
+		t.Fatalf("the stream ended with %+v, want the late-arguments failure", last)
 	}
-	blocks := findEvent(t, events, EventDone).Message.Content
-	if len(blocks) != 2 || blocks[0].ToolCall.Arguments != "{}" || blocks[1].ToolCall.Arguments != "[]" {
-		t.Fatalf("the terminal = %+v, want each call with the arguments its part ended with", blocks)
+	if countKind(events, EventDone) != 0 {
+		t.Fatal("a stream that failed also completed")
 	}
 }
 
