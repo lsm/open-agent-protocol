@@ -1229,18 +1229,28 @@ const PartStream = struct {
         switch (held[index]) {
             .text => |value| pushEvent(self.stream, .{ .text_end = .{ .content_index = index, .content = value.text, .partial = carried } }),
             .thinking => |value| pushEvent(self.stream, .{ .thinking_end = .{ .content_index = index, .content = value.thinking, .partial = carried } }),
-            .tool_call => |value| pushEvent(self.stream, .{ .toolcall_end = .{ .content_index = index, .tool_call = value, .partial = carried } }),
+            .tool_call => |value| {
+                carried.content = held[0..index];
+                pushEvent(self.stream, .{ .toolcall_end = .{ .content_index = index, .tool_call = value, .partial = carried } });
+            },
             .image => unreachable,
         }
     }
 
-    fn assemble(self: *PartStream, allocator: std.mem.Allocator, unstreamed_thinking: bool) ![]ai_types.AssistantContent {
+    fn covered(self: *const PartStream, kind: PartKind) usize {
+        var end: usize = 0;
+        for (self.parts.items) |part| {
+            if (part.kind == kind) end = part.end;
+        }
+        return end;
+    }
+
+    fn assemble(self: *PartStream, allocator: std.mem.Allocator) ![]ai_types.AssistantContent {
         var built = std.ArrayList(ai_types.AssistantContent).empty;
         errdefer {
             ai_types.deinitAssistantContentElements(allocator, built.items);
             built.deinit(allocator);
         }
-        if (unstreamed_thinking) try self.appendThinking(allocator, &built, self.thinking.items);
         for (self.parts.items) |part| switch (part.kind) {
             .text => {
                 const owned = try allocator.dupe(u8, self.text.items[part.start..part.end]);
@@ -1259,6 +1269,16 @@ const PartStream = struct {
                 };
             },
         };
+        const thinking_tail = self.thinking.items[self.covered(.thinking)..];
+        if (thinking_tail.len > 0) try self.appendThinking(allocator, &built, thinking_tail);
+        const text_tail = self.text.items[self.covered(.text)..];
+        if (text_tail.len > 0) {
+            const owned = try allocator.dupe(u8, text_tail);
+            built.append(allocator, .{ .text = .{ .text = owned } }) catch |err| {
+                allocator.free(owned);
+                return err;
+            };
+        }
         return built.toOwnedSlice(allocator);
     }
 
@@ -1833,10 +1853,9 @@ fn runThread(ctx: *ThreadCtx) void {
         return;
     };
 
-    const unstreamed_thinking = isKimiModel(model) and thinking.items.len > 0;
-    const content_count_final = parts.parts.items.len + @as(usize, if (unstreamed_thinking) 1 else 0);
+    const has_content = parts.parts.items.len > 0 or thinking.items.len > parts.covered(.thinking) or text.items.len > parts.covered(.text);
 
-    if (content_count_final == 0 and stop_reason != .length) {
+    if (!has_content and stop_reason != .length) {
         const summary = if (finished) "the model returned an empty reply" else "the stream ended before the model replied";
         const message = trace.describe(allocator, summary, usage) catch null;
         defer if (message) |owned| allocator.free(owned);
@@ -1845,7 +1864,7 @@ fn runThread(ctx: *ThreadCtx) void {
         return;
     }
 
-    if (content_count_final == 0) {
+    if (!has_content) {
         var content = allocator.alloc(ai_types.AssistantContent, 1) catch {
             ctx.deinit();
             stream.completeWithError("oom building result");
@@ -1888,7 +1907,7 @@ fn runThread(ctx: *ThreadCtx) void {
         return;
     }
 
-    const content = parts.assemble(allocator, unstreamed_thinking) catch {
+    const content = parts.assemble(allocator) catch {
         ctx.deinit();
         stream.completeWithError("oom building result");
         return;
@@ -4094,6 +4113,7 @@ test "a streamed text, thinking and tool call each declare a part, and each part
             .toolcall_delta => |value| .{ .name = "toolcall_delta", .index = value.content_index },
             .toolcall_end => |value| blk: {
                 try std.testing.expectEqualStrings("{\"command\":\"ls\"}", value.tool_call.arguments_json);
+                try std.testing.expectEqual(value.content_index, value.partial.content.len);
                 break :blk .{ .name = "toolcall_end", .index = value.content_index };
             },
             else => null,
