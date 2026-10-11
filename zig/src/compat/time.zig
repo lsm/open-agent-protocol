@@ -1,5 +1,22 @@
 const std = @import("std");
 
+const is_windows = @import("builtin").os.tag == .windows;
+
+const win = if (is_windows) struct {
+    const DWORD = std.os.windows.DWORD;
+    extern "kernel32" fn SleepEx(ms: DWORD, alertable: std.os.windows.BOOL) callconv(.winapi) DWORD;
+    const wait_io_completion: DWORD = 0xC0;
+} else struct {};
+
+pub fn sleepUntilCompletion(ns: u64) bool {
+    if (comptime !is_windows) {
+        sleepNs(ns);
+        return false;
+    }
+    const ms: win.DWORD = @intCast(@min(ns / std.time.ns_per_ms, std.math.maxInt(win.DWORD) - 1));
+    return win.SleepEx(ms, .TRUE) == win.wait_io_completion;
+}
+
 fn defaultIo() std.Io {
     return if (@import("builtin").is_test)
         std.testing.io

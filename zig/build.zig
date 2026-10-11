@@ -1362,6 +1362,7 @@ pub fn build(b: *std.Build) void {
             .{ .name = "contract", .module = adapter_contract_mod },
             .{ .name = "memory", .module = memory_adapter_mod },
             .{ .name = "compat", .module = compat_mod },
+            .{ .name = "process", .module = adapter_process_mod },
         },
     });
     const hub_routes_mod = b.createModule(.{
