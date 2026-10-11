@@ -2,7 +2,6 @@ package provider
 
 import (
 	"encoding/json"
-	"sort"
 )
 
 var reasoningFields = []string{"reasoning_content", "reasoning", "reasoning_text"}
@@ -221,88 +220,122 @@ func canCarryPartial(s *streamState) bool {
 	return CanCompletePartialTextOnStreamError(len(s.text), len(s.thinking), s.toolCalls)
 }
 
-func (s *streamState) reserve(kind string) int {
-	switch kind {
-	case "thinking":
-		if s.thinkingIndex < 0 {
-			s.thinkingIndex = s.nextIndex
-			s.nextIndex++
-		}
-		return s.thinkingIndex
+func (s *streamState) openIndex(kind string) (int, bool) {
+	if !s.open {
+		return 0, false
+	}
+	last := len(s.parts) - 1
+	if s.parts[last].kind != kind {
+		return 0, false
+	}
+	return last, true
+}
+
+func (s *streamState) openToolCall(apiIndex int) (int, bool) {
+	index, ok := s.openIndex("tool_call")
+	if !ok || s.parts[index].apiIndex != apiIndex {
+		return 0, false
+	}
+	return index, true
+}
+
+func (s *streamState) begin(part streamPart) int {
+	s.parts = append(s.parts, part)
+	s.open = true
+	return len(s.parts) - 1
+}
+
+func (s *streamState) continueOrBegin(sink *EventSink, kind string, start int) int {
+	if index, ok := s.openIndex(kind); ok {
+		return index
+	}
+	s.close(sink)
+	index := s.begin(streamPart{kind: kind, start: start})
+	if kind == "text" {
+		sink.emit(Event{Kind: EventTextStart, ContentIndex: index, Partial: s.partial(nil)})
+	} else {
+		sink.emit(Event{Kind: EventThinkingStart, ContentIndex: index, Partial: s.partial(nil)})
+	}
+	return index
+}
+
+func (s *streamState) block(part streamPart) AssistantBlock {
+	switch part.kind {
 	case "text":
-		if s.textIndex < 0 {
-			s.textIndex = s.nextIndex
-			s.nextIndex++
+		return AssistantBlock{Text: &TextPart{Text: s.text[part.start:part.end]}}
+	case "thinking":
+		thinking := &ThinkingPart{Thinking: s.thinking[part.start:part.end]}
+		if s.hasSig {
+			thinking.Signature = s.signature
 		}
-		return s.textIndex
+		return AssistantBlock{Thinking: thinking}
 	}
-	return s.nextIndex
+	call, _ := s.tracker.completeCall(part.apiIndex)
+	return AssistantBlock{ToolCall: &call}
 }
 
-type terminalSlot struct {
-	index int
-	block AssistantBlock
+func (s *streamState) covered(kind string) int {
+	covered := 0
+	for _, part := range s.parts {
+		if part.kind == kind {
+			covered = part.end
+		}
+	}
+	return covered
 }
 
-func (s *streamState) terminalSlots(hasThinking, hasText bool) []terminalSlot {
-	held := make([]terminalSlot, 0, 2+s.toolCalls)
-	taken := make(map[int]bool, 2+s.toolCalls)
-	if hasThinking && s.thinkingStreamed {
-		held = append(held, terminalSlot{s.thinkingIndex, AssistantBlock{Thinking: s.thinkingPart()}})
-		taken[s.thinkingIndex] = true
+func (s *streamState) close(sink *EventSink) {
+	if !s.open {
+		return
 	}
-	if hasText && s.textStreamed {
-		held = append(held, terminalSlot{s.textIndex, AssistantBlock{Text: &TextPart{Text: s.text}}})
-		taken[s.textIndex] = true
+	s.open = false
+	index := len(s.parts) - 1
+	part := &s.parts[index]
+	switch part.kind {
+	case "text":
+		part.end = len(s.text)
+	case "thinking":
+		part.end = len(s.thinking)
 	}
-	free := s.nextIndex
-	for _, extra := range []struct {
-		held    bool
-		content AssistantBlock
-	}{
-		{hasThinking && !s.thinkingStreamed, AssistantBlock{Thinking: s.thinkingPart()}},
-		{hasText && !s.textStreamed, AssistantBlock{Text: &TextPart{Text: s.text}}},
-	} {
-		if !extra.held {
-			continue
-		}
-		for taken[free] {
-			free++
-		}
-		held = append(held, terminalSlot{free, extra.content})
-		taken[free] = true
+	blocks := make([]AssistantBlock, 0, index+1)
+	for _, earlier := range s.parts[:index+1] {
+		blocks = append(blocks, s.block(earlier))
 	}
-	sort.SliceStable(held, func(i, j int) bool { return held[i].index < held[j].index })
-	return held
+	ended := blocks[index]
+	switch part.kind {
+	case "text":
+		sink.emit(Event{Kind: EventTextEnd, ContentIndex: index, Delta: ended.Text.Text, Partial: s.partial(blocks)})
+	case "thinking":
+		sink.emit(Event{Kind: EventThinkingEnd, ContentIndex: index, Delta: ended.Thinking.Thinking, Partial: s.partial(blocks)})
+	default:
+		sink.emit(Event{Kind: EventToolCallEnd, ContentIndex: index, ToolCall: ended.ToolCall, Partial: s.partial(blocks[:index])})
+	}
 }
 
 func (s *streamState) emitFor(sink *EventSink) {
-	partial := s.partial(nil)
-	if len(s.text) > s.prevText {
-		s.textStreamed = true
-		index := s.reserve("text")
-		if s.prevText == 0 {
-			sink.emit(Event{Kind: EventTextStart, ContentIndex: index, Partial: partial})
-		}
-		sink.emit(Event{Kind: EventTextDelta, ContentIndex: index, Delta: s.text[s.prevText:], Partial: partial})
-	}
-	s.prevText = len(s.text)
 	if len(s.thinking) > s.prevThink && !IsKimiModel(s.model) {
-		index := s.reserve("thinking")
-		s.thinkingStreamed = true
-		sink.emit(Event{Kind: EventThinkingDelta, ContentIndex: index, Delta: s.thinking[s.prevThink:], Partial: partial})
+		index := s.continueOrBegin(sink, "thinking", s.prevThink)
+		sink.emit(Event{Kind: EventThinkingDelta, ContentIndex: index, Delta: s.thinking[s.prevThink:], Partial: s.partial(nil)})
 	}
 	s.prevThink = len(s.thinking)
+	if len(s.text) > s.prevText {
+		index := s.continueOrBegin(sink, "text", s.prevText)
+		sink.emit(Event{Kind: EventTextDelta, ContentIndex: index, Delta: s.text[s.prevText:], Partial: s.partial(nil)})
+	}
+	s.prevText = len(s.text)
 	for _, detail := range s.lastDetails {
 		s.tracker.setSignatureByID(detail.toolCallID, detail.detailJSON)
 	}
 	for _, call := range s.lastToolCalls {
 		if call.isStart {
-			index := s.reserve("tool_call")
+			if _, tracked := s.tracker.byAPI[call.apiIndex]; tracked {
+				continue
+			}
+			s.close(sink)
+			index := s.begin(streamPart{kind: "tool_call", apiIndex: call.apiIndex})
 			s.tracker.startCall(call.apiIndex, index, call.id, call.name)
-			s.nextIndex++
 			s.toolCalls++
-			sink.emit(Event{Kind: EventToolCallStart, ContentIndex: index, ID: call.id, Name: call.name, Partial: partial})
+			sink.emit(Event{Kind: EventToolCallStart, ContentIndex: index, ID: call.id, Name: call.name, Partial: s.partial(nil)})
 			continue
 		}
 		if !call.hasArguments {
@@ -311,8 +344,8 @@ func (s *streamState) emitFor(sink *EventSink) {
 		if !s.tracker.appendDelta(call.apiIndex, call.arguments) {
 			continue
 		}
-		if index, ok := s.tracker.contentIndex(call.apiIndex); ok {
-			sink.emit(Event{Kind: EventToolCallDelta, ContentIndex: index, Delta: call.arguments, Partial: partial})
+		if index, ok := s.openToolCall(call.apiIndex); ok {
+			sink.emit(Event{Kind: EventToolCallDelta, ContentIndex: index, Delta: call.arguments, Partial: s.partial(nil)})
 		}
 	}
 	s.lastToolCalls = nil
@@ -324,77 +357,19 @@ func (s *streamState) finish(sink *EventSink) {
 		s.usage.TotalTokens = s.usage.InputTokens + s.usage.OutputTokens + s.usage.CacheReadTokens + s.usage.CacheWriteTokens
 	}
 	s.usage.Cost = calculateCost(s.usage, s.model.Cost)
-	hasThinking := s.thinking != ""
-	hasText := s.text != ""
-	if !hasThinking && !hasText && s.toolCalls == 0 {
-		sink.emit(Event{
-			Kind:    EventDone,
-			Message: &AssistantMessage{Content: []AssistantBlock{{Text: &TextPart{}}}, API: s.model.API, Provider: s.model.Provider, Model: s.model.ID, Usage: s.usage, StopReason: s.stopReason, Timestamp: s.clock.millis()},
-		})
-		return
+	s.close(sink)
+	content := make([]AssistantBlock, 0, len(s.parts)+2)
+	for _, part := range s.parts {
+		content = append(content, s.block(part))
 	}
-
-	held := s.terminalSlots(hasThinking, hasText)
-	completedAt := make(map[int]AssistantBlock, s.toolCalls)
-	for _, call := range s.tracker.inContentOrder() {
-		completed, ok := s.tracker.completeCall(call.apiIndex)
-		if !ok {
-			continue
-		}
-		index, ok := s.tracker.contentIndex(call.apiIndex)
-		if !ok {
-			continue
-		}
-		completedAt[index] = AssistantBlock{ToolCall: &completed}
+	if tail := s.thinking[s.covered("thinking"):]; tail != "" {
+		content = append(content, s.block(streamPart{kind: "thinking", start: len(s.thinking) - len(tail), end: len(s.thinking)}))
 	}
-	for i := range held {
-		if block, found := completedAt[held[i].index]; found {
-			held[i].block = block
-		}
+	if tail := s.text[s.covered("text"):]; tail != "" {
+		content = append(content, s.block(streamPart{kind: "text", start: len(s.text) - len(tail), end: len(s.text)}))
 	}
-	slots := held
-	for index, block := range completedAt {
-		slots = append(slots, terminalSlot{index, block})
-	}
-	sort.SliceStable(slots, func(i, j int) bool { return slots[i].index < slots[j].index })
-	content := make([]AssistantBlock, 0, len(slots))
-	for _, one := range slots {
-		content = append(content, one.block)
-	}
-	textAt := partIndexUnset
-	if s.textStreamed {
-		textAt = s.textIndex
-	}
-	endedText := false
-	for _, call := range s.tracker.inContentOrder() {
-		completed, ok := s.tracker.completeCall(call.apiIndex)
-		if !ok {
-			continue
-		}
-		index, ok := s.tracker.contentIndex(call.apiIndex)
-		if !ok {
-			continue
-		}
-		if !endedText && textAt >= 0 && textAt < index {
-			sink.emit(Event{Kind: EventTextEnd, ContentIndex: textAt, Delta: s.text, Partial: s.partial(nil)})
-			endedText = true
-		}
-		grown := make([]AssistantBlock, 0, len(content))
-		for _, one := range slots {
-			if one.index >= index {
-				continue
-			}
-			grown = append(grown, one.block)
-		}
-		sink.emit(Event{
-			Kind:         EventToolCallEnd,
-			ContentIndex: index,
-			ToolCall:     &completed,
-			Partial:      s.partial(grown),
-		})
-	}
-	if !endedText && textAt >= 0 {
-		sink.emit(Event{Kind: EventTextEnd, ContentIndex: textAt, Delta: s.text, Partial: s.partial(nil)})
+	if len(content) == 0 {
+		content = []AssistantBlock{{Text: &TextPart{}}}
 	}
 	sink.emit(Event{
 		Kind: EventDone,
