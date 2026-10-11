@@ -27,8 +27,12 @@ func framesReader(frames []string) provider.ReadChunkFunc {
 }
 
 func completionsEvents(frames ...string) []provider.Event {
+	return completionsEventsFrom("deepseek", frames...)
+}
+
+func completionsEventsFrom(providerID string, frames ...string) []provider.Event {
 	sink := &provider.EventSink{}
-	model := provider.Model{ID: "deepseek-v4-pro", API: "openai-completions", Provider: "deepseek", BaseURL: "https://api.deepseek.com", HasBaseURL: true}
+	model := provider.Model{ID: "deepseek-v4-pro", API: "openai-completions", Provider: providerID, BaseURL: "https://api.deepseek.com", HasBaseURL: true}
 	provider.Stream(sink, model, provider.Context{}, provider.StreamOptions{}, framesReader(frames), nil)
 	return sink.Drain()
 }
@@ -419,6 +423,22 @@ func TestAnEmptyReplyWithNoPartsCompletesWithItsEmptyText(t *testing.T) {
 	})
 	if len(refused) != 0 || envelopes[len(envelopes)-1].Type != "inference.completed" {
 		t.Fatalf("types = %v, refused = %v", typesOf(envelopes), refused)
+	}
+	assertValid(t, envelopes)
+}
+
+func TestAKimiReasoningTurnCompletesWithItsReasoningAsAnEndedPart(t *testing.T) {
+	envelopes, refused := pumpAll(t, completionsEventsFrom("kimi",
+		dataFrame(`{"choices":[{"index":0,"delta":{"reasoning_content":"plan"}}]}`),
+		dataFrame(`{"choices":[{"index":0,"delta":{"content":"answer"}}]}`),
+		dataFrame(`{"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`),
+		"data: [DONE]\n\n",
+	))
+	if len(refused) != 0 {
+		t.Fatalf("refused = %v", refused)
+	}
+	if last := envelopes[len(envelopes)-1]; last.Type != "inference.completed" {
+		t.Fatalf("the inference settled %s, want completed", last.Type)
 	}
 	assertValid(t, envelopes)
 }
