@@ -1841,7 +1841,12 @@ fn runThread(ctx: *ThreadCtx) void {
                         .partial = parts.partial(),
                     } });
                 } else if (tce.arguments_delta) |delta| {
-                    const content_index = parts.openToolCall(tce.api_index) orelse continue;
+                    const content_index = parts.openToolCall(tce.api_index) orelse {
+                        if (!tool_call_tracker_instance.hasCall(tce.api_index)) continue;
+                        ctx.deinit();
+                        stream.completeWithError("the provider streamed arguments for a tool call after its part ended");
+                        return;
+                    };
                     tool_call_tracker_instance.appendDelta(tce.api_index, delta) catch {
                         ctx.deinit();
                         stream.completeWithError("oom tool call delta");
@@ -4305,19 +4310,16 @@ test "kimi reasoning that never streamed ends as a part of its own, so every ter
     );
 }
 
-test "arguments for a tool call that already ended are dropped, so its part and the terminal agree" {
+test "arguments for a tool call that already ended fail the stream rather than truncate the call" {
     const body =
-        "data: {\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_a\",\"type\":\"function\",\"function\":{\"name\":\"read\",\"arguments\":\"{}\"}}]},\"finish_reason\":null}]}\n\n" ++
+        "data: {\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_a\",\"type\":\"function\",\"function\":{\"name\":\"read\",\"arguments\":\"{\\\"p\\\":\"}}]},\"finish_reason\":null}]}\n\n" ++
         "data: {\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":1,\"id\":\"call_b\",\"type\":\"function\",\"function\":{\"name\":\"read\",\"arguments\":\"[]\"}}]},\"finish_reason\":null}]}\n\n" ++
-        "data: {\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\"late\"}}]},\"finish_reason\":null}]}\n\n" ++
+        "data: {\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\"1}\"}}]},\"finish_reason\":null}]}\n\n" ++
         "data: {\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\n" ++
         "data: [DONE]\n\n";
-    const seen = try everyPartFor(std.testing.allocator, body, "gateway");
-    defer std.testing.allocator.free(seen);
-    try std.testing.expectEqualStrings(
-        "call 0 {}\ncall 1 []\nresult call {}\nresult call []\n",
-        seen,
-    );
+    const reported = try streamErrorFor(body) orelse return error.TestExpectedStreamError;
+    defer std.testing.allocator.free(reported);
+    try std.testing.expectEqualStrings("the provider streamed arguments for a tool call after its part ended", reported);
 }
 
 test "a tool call's signature lands on its part and its terminal alike, beside its start or later, and one arriving after the part ended is dropped" {
