@@ -356,17 +356,26 @@ func (c *Client) Subscribe(ctx context.Context, session native.SessionID) (*Subs
 		return nil, native.DecodeAPIError(response.StatusCode, payload)
 	}
 	go sub.pump(response, c.frame)
+	return sub.awaitConnected(ctx)
+}
+
+func (s *Subscription) awaitConnected(ctx context.Context) (*Subscription, error) {
 	select {
-	case <-sub.ready:
-		return sub, nil
-	case <-sub.done:
-		err := sub.Err()
+	case <-s.ready:
+		return s, nil
+	case <-s.done:
+		select {
+		case <-s.ready:
+			return s, nil
+		default:
+		}
+		err := s.Err()
 		if err == nil {
 			err = io.EOF
 		}
 		return nil, fmt.Errorf("%w: the event stream ended before server.connected: %w", ErrSubscription, err)
 	case <-ctx.Done():
-		sub.Close()
+		s.Close()
 		return nil, ctx.Err()
 	}
 }
