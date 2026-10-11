@@ -327,3 +327,14 @@ stream-json --json-schema <object schema>` and one user frame on stdin, the
 `result` frame came back `subtype: "success"` with `structured_output` holding
 the schema's object, and `result` holding the same object as JSON text. Not
 re-run on 2.1.288 itself; the SDK reading above is what covers the pin.
+
+## Request headers (`ANTHROPIC_CUSTOM_HEADERS`)
+
+Claude Code sends extra request headers named in `ANTHROPIC_CUSTOM_HEADERS`,
+one `Name: Value` per line. The adapter's `Config.Headers` writes that variable
+into the CLI's environment, appending to a value the host already set there,
+and refuses a header that cannot be carried on one line. The case that needed
+it is OpenCode Go's Anthropic endpoint, which answers 400 `MissingSessionID`
+without `x-opencode-session` (the catalog's `session_header`);
+hyperneo-review drives Claude Code there this way
+(lsm/open-agent-protocol#1035). Not re-checked against a live 2.1.288 run.

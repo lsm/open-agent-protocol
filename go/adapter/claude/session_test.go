@@ -1847,6 +1847,46 @@ func spawnArgv(t *testing.T, config Config) []string {
 	return captured
 }
 
+func spawnEnv(t *testing.T, config Config) []string {
+	t.Helper()
+	var captured []string
+	config.Executable = "/bin/claude"
+	config.Tools = UnrestrictedTools()
+	config.ProcessFactory = ProcessFactoryFunc(func(_ context.Context, c rpc.ProcessConfig) (ProcessBridge, error) {
+		captured = append([]string(nil), c.Env...)
+		return nil, errors.New("not spawning in this test")
+	})
+	implementation, err := New(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _ = implementation.Open(context.Background(), base.OpenRequest{SessionID: "s", Participant: protocol.Participant{ID: "user"}})
+	return captured
+}
+
+func TestHeadersReachTheCLIAsItsCustomHeadersVariable(t *testing.T) {
+	env := spawnEnv(t, Config{Environment: []string{"PATH=/bin"}, Headers: []Header{{Name: "x-opencode-session", Value: "review-1"}, {Name: "x-trace", Value: "a b"}}})
+	want := []string{"PATH=/bin", "ANTHROPIC_CUSTOM_HEADERS=x-opencode-session: review-1\nx-trace: a b"}
+	if !slices.Equal(env, want) {
+		t.Fatalf("env = %q, want %q", env, want)
+	}
+
+	kept := spawnEnv(t, Config{Environment: []string{"ANTHROPIC_CUSTOM_HEADERS=x-from-host: 1"}, Headers: []Header{{Name: "x-opencode-session", Value: "review-2"}}})
+	if !slices.Equal(kept, []string{"ANTHROPIC_CUSTOM_HEADERS=x-from-host: 1\nx-opencode-session: review-2"}) {
+		t.Fatalf("env = %q, want the host's header kept ahead of the configured one", kept)
+	}
+
+	if none := spawnEnv(t, Config{Environment: []string{"PATH=/bin"}}); !slices.Equal(none, []string{"PATH=/bin"}) {
+		t.Fatalf("env = %q, want it unchanged without headers", none)
+	}
+
+	for _, header := range []Header{{Name: ""}, {Name: "x:y", Value: "v"}, {Name: "x session", Value: "v"}, {Name: " x-trace", Value: "v"}, {Name: "x\ty", Value: "v"}, {Name: "x", Value: "line\nbreak"}} {
+		if _, err := New(Config{Executable: "/bin/claude", Tools: UnrestrictedTools(), Headers: []Header{header}}); err == nil {
+			t.Fatalf("header %+v was accepted", header)
+		}
+	}
+}
+
 func TestToolPostureMustBeStated(t *testing.T) {
 	_, err := New(Config{Executable: "/bin/claude"})
 	if !errors.Is(err, ErrToolPostureUnstated) {
