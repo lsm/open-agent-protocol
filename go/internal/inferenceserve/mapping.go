@@ -107,6 +107,9 @@ type State struct {
 	modelRef    string
 	sequence    int
 	refused     bool
+	open        *openPart
+	ended       []TerminalBlock
+	terminal    bool
 }
 
 func NewState(ids *Ids, inferenceID, modelRef string) *State {
@@ -190,30 +193,48 @@ func (s *State) Refused(requestID, code, message string) (Envelope, error) {
 }
 
 func (s *State) Completed(stopReason string, content []TerminalBlock) (Envelope, error) {
+	return s.CompletedWithUsage(stopReason, content, nil)
+}
+
+func (s *State) CompletedWithUsage(stopReason string, content []TerminalBlock, usage *Usage) (Envelope, error) {
 	for _, block := range content {
 		if block.ArgumentsJSON == nil {
 			continue
 		}
 		if !json.Valid(block.ArgumentsJSON) {
-			return s.Failed(CodeProtocolViolation, "the provider streamed a tool call whose arguments_json is not json")
+			return s.FailedWithUsage(CodeProtocolViolation, "the provider streamed a tool call whose arguments_json is not json", usage)
 		}
 	}
-	return s.emit("inference.completed", "", struct {
+	return s.settle("inference.completed", struct {
 		StopReason string          `json:"stop_reason"`
 		Message    TerminalMessage `json:"message"`
-	}{StopReason: stopReason, Message: TerminalMessage{Role: "assistant", Content: content}})
+		Usage      *Usage          `json:"usage,omitempty"`
+	}{StopReason: stopReason, Message: TerminalMessage{Role: "assistant", Content: content}, Usage: usage})
 }
 
 func (s *State) Failed(code, message string) (Envelope, error) {
-	return s.emit("inference.failed", "", struct {
-		Error struct {
-			Code    string `json:"code"`
-			Message string `json:"message"`
-		} `json:"error"`
-	}{Error: struct {
+	return s.FailedWithUsage(code, message, nil)
+}
+
+func (s *State) FailedWithUsage(code, message string, usage *Usage) (Envelope, error) {
+	type providerError struct {
 		Code    string `json:"code"`
 		Message string `json:"message"`
-	}{Code: code, Message: message}})
+	}
+	return s.settle("inference.failed", struct {
+		Error providerError `json:"error"`
+		Usage *Usage        `json:"usage,omitempty"`
+	}{Error: providerError{Code: code, Message: message}, Usage: usage})
+}
+
+func (s *State) settle(typ string, payload any) (Envelope, error) {
+	envelope, err := s.emit(typ, "", payload)
+	if err != nil {
+		return Envelope{}, err
+	}
+	s.terminal = true
+	s.open = nil
+	return envelope, nil
 }
 
 func partsOf(blocks []provider.AssistantBlock) []TerminalBlock {
