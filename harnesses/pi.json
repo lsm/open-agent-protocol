@@ -3,13 +3,28 @@
   "name": "Pi coding agent",
   "versions": [
     {
-      "label": "v1.0.4",
+      "label": "v1.1.0",
       "status": "current",
-      "endpoint_version": "v1.0.4",
-      "capability_revision": "pi-v1.0.4-oap-v1",
-      "admits": ["1.0.4"],
+      "endpoint_version": "v1.1.0",
+      "capability_revision": "pi-v1.1.0-oap-v1",
+      "admits": ["1.1.0"],
+      "ledgers": ["research/pi-v1.1.0-mapping.md", "research/pi-v1.0.4-mapping.md", "research/pi-v1.0.1-mapping.md"],
+      "corpus": "fixtures/adapters/pi-v1.1.0",
+      "components": [
+        { "name": "pi", "version": "v1.1.0", "repository": "https://github.com/earendil-works/pi" }
+      ],
+      "artifacts": [
+        { "component": "pi", "platform": "linux-x64", "kind": "archive", "name": "pi-linux-x64.tar.gz", "sha256": "3faa94666cd3849d37af320ff749407d0271b07a9b94f420c87e30866e10e289" },
+        { "component": "pi", "platform": "darwin-arm64", "kind": "archive", "name": "pi-darwin-arm64.tar.gz", "sha256": "3455b13de35c15a5893cdebc922678199e90a7ce99b06cbc23f37860e90d63c7" }
+      ],
+      "sources": [
+        { "component": "pi", "tag": "v1.1.0", "commit": "abe508e1b89912adde45528136c3221eb69acdd7", "tree": "77d78fae728879c16550b1f874785aed7851233c" }
+      ]
+    },
+    {
+      "label": "v1.0.4",
+      "status": "retired",
       "ledgers": ["research/pi-v1.0.4-mapping.md", "research/pi-v1.0.1-mapping.md"],
-      "corpus": "fixtures/adapters/pi-v1.0.4",
       "components": [
         { "name": "pi", "version": "v1.0.4", "repository": "https://github.com/earendil-works/pi" }
       ],

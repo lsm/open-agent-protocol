@@ -27,11 +27,11 @@ var piCommitTree = pin.Source("pi").Tree
 const (
 	piRPCTypesBlob     = "7fc71516aebb8b68ea019f1df4eef966eeaa17c7"
 	piRPCModeBlob      = "1c0995d36ec752155f1d13b019728f9343bb263c"
-	piAgentSessionBlob = "95b96350df4b818ea408f4f6ebfb117858d02bc3"
+	piAgentSessionBlob = "5decccd805fb2ba4d738b9737ab29b35179c5211"
 	piSessionMgrBlob   = "df5281a0a4258462b14faa7d055efa09783ea6aa"
-	piAgentTypesBlob   = "6e17c3c8c91eeceb6c01e453eec7dc06b9c82443"
+	piAgentTypesBlob   = "dbfba74a084f71951e48285869730b70a405ba3a"
 	piRPCEntryBlob     = "11059a8d47f6d4f22469802f8dca0a6af6c8db88"
-	piCLIArgsBlob      = "c994db0116aabc2e453d009c1ea62da4ea11ffb3"
+	piCLIArgsBlob      = "38d268a9fcf462ae02255c9f0cac035e9dc8b2cf"
 )
 
 var piLedgerFixtures = map[string]bool{

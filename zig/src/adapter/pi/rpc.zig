@@ -24,7 +24,7 @@ pub const EventShape = struct {
 pub const event_shapes = [_]EventShape{
     .{ .name = "agent_start" },
     .{ .name = "agent_end", .required = &.{ "messages", "willRetry" } },
-    .{ .name = "agent_settled" },
+    .{ .name = "agent_settled", .optional = &.{"aborted"} },
     .{ .name = "turn_start" },
     .{ .name = "turn_end", .required = &.{ "message", "toolResults" } },
     .{ .name = "message_start", .required = &.{"message"} },
@@ -32,7 +32,7 @@ pub const event_shapes = [_]EventShape{
     .{ .name = "message_end", .required = &.{"message"} },
     .{ .name = "tool_execution_start", .required = &.{ "toolCallId", "toolName", "args" }, .optional = &.{"parentToolCallId"} },
     .{ .name = "tool_execution_update", .required = &.{ "toolCallId", "toolName", "args", "partialResult" }, .optional = &.{"parentToolCallId"} },
-    .{ .name = "tool_execution_end", .required = &.{ "toolCallId", "toolName", "result", "isError" }, .optional = &.{"parentToolCallId"} },
+    .{ .name = "tool_execution_end", .required = &.{ "toolCallId", "toolName", "result", "isError" }, .optional = &.{ "parentToolCallId", "durationMs" } },
     .{ .name = "queue_update", .required = &.{ "steering", "followUp" } },
     .{ .name = "compaction_start", .required = &.{"reason"} },
     .{ .name = "compaction_end", .required = &.{ "reason", "aborted", "willRetry" }, .optional = &.{ "result", "errorMessage" } },
