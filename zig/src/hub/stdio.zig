@@ -6,6 +6,7 @@ const json_writer = @import("json_writer");
 const contract = @import("contract");
 const jsonschema = @import("jsonschema");
 const hubmod = @import("hub");
+const compat = @import("compat");
 
 pub const Hub = hubmod.Hub;
 
@@ -2656,7 +2657,7 @@ fn pending_bound(limit: usize) usize {
 
 const pollable = @import("builtin").os.tag != .windows;
 fn waitOn(frontend: *Frontend, stream: Stream, arena: std.mem.Allocator, wait_ns: u64) !bool {
-    if (comptime !pollable) return true;
+    if (comptime !pollable) return waitByPeeking(frontend, stream, wait_ns);
     const input = stream.readable orelse return true;
     const children = try frontend.hub.readableHandles(arena);
     var watched: std.ArrayList(std.posix.pollfd) = .empty;
@@ -2667,6 +2668,13 @@ fn waitOn(frontend: *Frontend, stream: Stream, arena: std.mem.Allocator, wait_ns
     if (awoken == 0) return false;
     const input_events = watched.items[watched.items.len - 1].revents;
     return (input_events & (std.posix.POLL.IN | std.posix.POLL.HUP | std.posix.POLL.ERR | std.posix.POLL.NVAL)) != 0;
+}
+
+fn waitByPeeking(frontend: *Frontend, stream: Stream, wait_ns: u64) !bool {
+    const input = stream.readable orelse return true;
+    if (compat.stdio.waiting(input) == .ready) return true;
+    if (frontend.hub.entries.items.len == 0) compat.time.sleepNs(wait_ns) else try frontend.hub.pump(frontend.allocator, wait_ns);
+    return compat.stdio.waiting(input) == .ready;
 }
 
 const Recorder = struct {
@@ -3320,6 +3328,53 @@ test "the serve loop reads even when it has no handle to wait on" {
 
 var stop_at_cycle: usize = 0;
 var stop_cycles: usize = 0;
+
+var idle_cycles: usize = 0;
+var answer_watch: ?*Recorder = null;
+
+fn stopAfterIdleCycles() bool {
+    idle_cycles += 1;
+    return idle_cycles > 3;
+}
+
+fn stopOnceAnswered() bool {
+    idle_cycles += 1;
+    return answer_watch.?.lines.items.len > 0 or idle_cycles > 200;
+}
+
+fn readPipe(context: *anyopaque, buffer: []u8) anyerror!usize {
+    const file: *compat.stdio.File = @ptrCast(@alignCast(context));
+    return compat.stdio.read(file.*, buffer);
+}
+
+test "a quiet input pipe is waited on rather than read, so the loop keeps cycling while the host says nothing" {
+    const ends = try compat.stdio.pipe();
+    defer compat.stdio.close(ends[0]);
+    defer compat.stdio.close(ends[1]);
+    var input = ends[0];
+    const harness = try Harness.init(testing.allocator, .{}, .{});
+    defer harness.deinit();
+    idle_cycles = 0;
+    try serve(testing.allocator, &harness.frontend, .{ .read = readPipe, .context = &input, .readable = input.handle, .stop = stopAfterIdleCycles });
+    try testing.expect(idle_cycles > 3);
+    try testing.expectEqual(@as(usize, 0), harness.recorder.lines.items.len);
+}
+
+test "a line arriving on a quiet input pipe is read and answered" {
+    const ends = try compat.stdio.pipe();
+    defer compat.stdio.close(ends[0]);
+    defer compat.stdio.close(ends[1]);
+    var input = ends[0];
+    const harness = try Harness.init(testing.allocator, .{}, .{});
+    defer harness.deinit();
+    try compat.stdio.writeAll(ends[1], "{\"id\":1,\"op\":\"adapters\"}\n");
+    idle_cycles = 0;
+    answer_watch = &harness.recorder;
+    defer answer_watch = null;
+    try serve(testing.allocator, &harness.frontend, .{ .read = readPipe, .context = &input, .readable = input.handle, .stop = stopOnceAnswered });
+    try testing.expectEqual(@as(usize, 1), harness.recorder.lines.items.len);
+    try testing.expect(std.mem.indexOf(u8, harness.recorder.lines.items[0], "\"ok\":true") != null);
+}
 
 fn stopAfterCycle() bool {
     const reached = stop_cycles >= stop_at_cycle;

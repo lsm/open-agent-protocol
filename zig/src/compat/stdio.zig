@@ -3,6 +3,25 @@ const std = @import("std");
 pub const File = std.Io.File;
 pub const Pipe = [2]File;
 
+const is_windows = @import("builtin").os.tag == .windows;
+
+const win = if (is_windows) struct {
+    const HANDLE = std.os.windows.HANDLE;
+    const BOOL = std.os.windows.BOOL;
+    const DWORD = std.os.windows.DWORD;
+    extern "kernel32" fn CreatePipe(read: *HANDLE, write: *HANDLE, attributes: ?*anyopaque, size: DWORD) callconv(.winapi) BOOL;
+    extern "kernel32" fn PeekNamedPipe(pipe: HANDLE, buffer: ?*anyopaque, size: DWORD, read: ?*DWORD, available: ?*DWORD, left: ?*DWORD) callconv(.winapi) BOOL;
+} else struct {};
+
+pub const Waiting = enum { ready, quiet };
+
+pub fn waiting(handle: File.Handle) Waiting {
+    if (comptime !is_windows) return .ready;
+    var available: win.DWORD = 0;
+    if (win.PeekNamedPipe(handle, null, 0, null, &available, null) == .FALSE) return .ready;
+    return if (available > 0) .ready else .quiet;
+}
+
 fn defaultIo() std.Io {
     return if (@import("builtin").is_test)
         std.testing.io
@@ -97,7 +116,12 @@ pub fn close(file: File) void {
 }
 
 pub fn pipe() !Pipe {
-    if (@import("builtin").os.tag == .windows) return error.Unsupported;
+    if (comptime is_windows) {
+        var read_end: win.HANDLE = undefined;
+        var write_end: win.HANDLE = undefined;
+        if (win.CreatePipe(&read_end, &write_end, null, 0) == .FALSE) return error.Unexpected;
+        return .{ fileFromPipeHandle(read_end), fileFromPipeHandle(write_end) };
+    }
     const handles = try std.Io.Threaded.pipe2(.{});
     return .{ fileFromPipeHandle(handles[0]), fileFromPipeHandle(handles[1]) };
 }
@@ -109,6 +133,23 @@ test "compat stdio helpers construct file handles" {
     _ = in;
     _ = out;
     _ = err;
+}
+
+test "a pipe with nothing written is quiet on Windows, and ready once a byte arrives" {
+    if (comptime !is_windows) return error.SkipZigTest;
+    const p = try pipe();
+    defer close(p[0]);
+    defer close(p[1]);
+    try std.testing.expectEqual(Waiting.quiet, waiting(p[0].handle));
+    try writeAll(p[1], "x");
+    try std.testing.expectEqual(Waiting.ready, waiting(p[0].handle));
+}
+
+test "a pipe whose writer has gone is ready, so the reader sees its end" {
+    const p = try pipe();
+    defer close(p[0]);
+    close(p[1]);
+    try std.testing.expectEqual(Waiting.ready, waiting(p[0].handle));
 }
 
 test "compat stdio helpers round trip through pipe" {

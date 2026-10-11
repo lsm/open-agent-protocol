@@ -1393,6 +1393,7 @@ pub fn build(b: *std.Build) void {
             .{ .name = "jsonschema", .module = jsonschema_mod },
             .{ .name = "json_writer", .module = json_writer_mod },
             .{ .name = "hub", .module = hub_mod },
+            .{ .name = "compat", .module = compat_mod },
         },
     });
     const hub_stdio_test = b.addTest(.{ .root_module = hub_stdio_mod });
