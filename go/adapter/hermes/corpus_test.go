@@ -33,16 +33,16 @@ var (
 const (
 	hmCorpusRepository = "https://github.com/NousResearch/hermes-agent"
 
-	hmBlobEntry          = "aebfbeb8026b4471d00e34072b8efb51cfd58c67"
-	hmBlobTransport      = "5051d6da51ff0f1323e466f049f09323056cfe03"
-	hmBlobServer         = "475d106c4a9bcf7606921d951ee3d4e08ef63642"
-	hmBlobEventReplay    = "b603a67120bd1f9f9b9c66f50331d4467bf47bd4"
+	hmBlobEntry          = "b09f0acb3e06c7acc00a9cf3c0fda84daffd6957"
+	hmBlobTransport      = "689f5614299c77f3f6a4c779176938b537a8cb4d"
+	hmBlobServer         = "d4934a257c97acd7b1ccc5ac943efe93b74b0f17"
+	hmBlobEventReplay    = "c5dac701896ccb7febf7b44fb0e6b6f57340823a"
 	hmBlobStdinRecovery  = "add5e841df4bead308a96bd8b0f0e3c5475bd167"
-	hmBlobWS             = "b90253e0c0a319ffcb1ed2d689fc759d56458509"
-	hmBlobMethodsPrompt  = "aefcf692321dc828672cd30ea336a97fd69eb69e"
-	hmBlobMethodsSession = "a41aeff7b731f99a69dfc8556b5ade04d30a83f7"
-	hmBlobServerRequests = "5aaa044fe2257e8e818008047308b0d95bbac360"
-	hmTreeContracts      = "1eceb85deeeb499c3f00231c6fdedd91a1631753"
+	hmBlobWS             = "653c1c3b6a934e642b3e330b5f790d1d0a358e1d"
+	hmBlobMethodsPrompt  = "103184b70bda36cc6a42d4ed4d0872f11d3887f5"
+	hmBlobMethodsSession = "30b6fdd24a6178795a4450378895a14caa571ff0"
+	hmBlobServerRequests = "c38d7ed5fca2339610c8df6314532026efc45da0"
+	hmTreeContracts      = "5bc7227aacba6bdcbfd505d3bd2ccd8381167a5b"
 )
 
 var hmLedgerFixtures = map[string]bool{
@@ -59,7 +59,7 @@ var hmLedgerFixtures = map[string]bool{
 	"tool-lifecycle": true, "tool-failure-in-result": true,
 
 	"approval-gate": true, "approval-choices": true, "clarify-gate": true,
-	"sudo-gate": true, "secret-gate": true, "expire-sibling": true, "clarify-batch": true,
+	"sudo-gate": true, "secret-gate": true, "expire-sibling": true, "clarify-batch": true, "approval-interrupt": true,
 
 	"btw-delivery": true, "background-prompt": true,
 
@@ -1704,6 +1704,16 @@ func assertHermesLedgerEvidence(t *testing.T, labels []string, frames []hmFrame,
 			ok = options && hmHasRequest(decoded, native.RequestApproval)
 		case "expire-sibling":
 			ok = hmHasEvent(decoded, native.EventRequestCancel) && hmHasRequest(decoded, native.RequestClarify) && !hmAnswered(frames, decoded, native.RequestClarify) &&
+				hmResolvedWith(*execution, protocol.InputCancelled) && hmWrote(*execution, native.MethodSessionInterrupt)
+			terminal := false
+			for _, events := range execution.runs {
+				if _, code := hmRunTerminal(events); code == "hermes_interrupted" {
+					terminal = true
+				}
+			}
+			ok = ok && terminal
+		case "approval-interrupt":
+			ok = hmHasEvent(decoded, native.EventRequestCancel) && hmHasRequest(decoded, native.RequestApproval) && !hmAnswered(frames, decoded, native.RequestApproval) &&
 				hmResolvedWith(*execution, protocol.InputCancelled) && hmWrote(*execution, native.MethodSessionInterrupt)
 			terminal := false
 			for _, events := range execution.runs {

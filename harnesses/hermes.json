@@ -3,12 +3,23 @@
   "name": "Hermes Agent",
   "versions": [
     {
-      "label": "v2026.9.24",
+      "label": "v0.21.6",
       "status": "current",
-      "endpoint_version": "v2026.9.24",
-      "capability_revision": "hermes-v2026.9.24-oap-v4",
+      "endpoint_version": "v0.21.6",
+      "capability_revision": "hermes-v0.21.6-oap-v1",
+      "ledgers": ["research/hermes-v0.21.6-mapping.md", "research/hermes-thinking-delta-note.md"],
+      "corpus": "fixtures/adapters/hermes-v0.21.6",
+      "components": [
+        { "name": "hermes-agent", "version": "v0.21.6", "repository": "https://github.com/NousResearch/hermes-agent" }
+      ],
+      "sources": [
+        { "component": "hermes-agent", "tag": "v0.21.6", "commit": "818c13be1dc4fd28987e1e881a9408224afd4535", "tree": "f36c56dd4fe068b0768e50e1ab39909dee2ab51a" }
+      ]
+    },
+    {
+      "label": "v2026.9.24",
+      "status": "retired",
       "ledgers": ["research/hermes-v2026.9.24-mapping.md", "research/hermes-thinking-delta-note.md"],
-      "corpus": "fixtures/adapters/hermes-v2026.9.24",
       "components": [
         { "name": "hermes-agent", "version": "v2026.9.24", "repository": "https://github.com/NousResearch/hermes-agent" }
       ],

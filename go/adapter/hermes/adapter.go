@@ -138,13 +138,21 @@ func (f processClientFactory) launch(ctx context.Context) (ProcessBridge, Client
 	return p, client, relay, nil
 }
 
+type reasoningStarter interface {
+	startWithReasoning(ctx context.Context, effort string) (Client, string, error)
+}
+
 func (f processClientFactory) Start(ctx context.Context) (Client, string, error) {
+	return f.startWithReasoning(ctx, "")
+}
+
+func (f processClientFactory) startWithReasoning(ctx context.Context, effort string) (Client, string, error) {
 	p, client, relay, err := f.launch(ctx)
 	if err != nil {
 		return nil, "", err
 	}
 	var created native.SessionCreateResult
-	if err := client.Call(ctx, native.MethodSessionCreate, native.SessionCreateParams{Model: f.model}, &created); err != nil {
+	if err := client.Call(ctx, native.MethodSessionCreate, native.SessionCreateParams{Model: f.model, ReasoningEffort: effort}, &created); err != nil {
 		_ = p.Close(context.Background())
 		return nil, "", err
 	}
@@ -260,7 +268,7 @@ func advertisedFeatures() map[string]protocol.FeatureSupport {
 		"action.tools.execute":           {Level: protocol.SupportUnavailable, Reason: "the gateway executes tools internally"},
 		"action.permissions":             {Level: protocol.SupportDegraded, Reason: "approval gates surface as input interactions"},
 		"user_input":                     {Level: protocol.SupportNative, Reason: "approval/clarify/sudo/secret server requests, withdrawn by request.cancel"},
-		protocol.FeatureSessionReasoning: {Level: protocol.SupportNative, Modes: []string{protocol.ModeSessionOpen, protocol.ModeSessionLive}, Reason: "config.set reasoning, scoped to the session, right after session.create and again between runs; off is Hermes's none"},
+		protocol.FeatureSessionReasoning: {Level: protocol.SupportNative, Modes: []string{protocol.ModeSessionOpen, protocol.ModeSessionLive}, Reason: "session.create's reasoning_effort, then config.set reasoning scoped to the session, which validates it and sets it again between runs; off is Hermes's none"},
 		protocol.FeatureCompactionPolicy: {Level: protocol.SupportUnavailable, Reason: "compression is config.yaml under HERMES_HOME, which also holds the gateway's credentials, and no gateway method sets it"},
 	}
 }
@@ -302,7 +310,14 @@ func (a *Adapter) Open(ctx context.Context, req base.OpenRequest) (base.Session,
 		}
 		client, nativeID, resumed = reopened, result.SessionID, &result
 	} else {
-		started, startedID, err := a.config.Factory.Start(ctx)
+		var started Client
+		var startedID string
+		var err error
+		if starter, ok := a.config.Factory.(reasoningStarter); ok && req.ReasoningLevel != "" {
+			started, startedID, err = starter.startWithReasoning(ctx, nativeEffort(req.ReasoningLevel))
+		} else {
+			started, startedID, err = a.config.Factory.Start(ctx)
+		}
 		if err != nil {
 			return nil, err
 		}
@@ -331,13 +346,16 @@ func (a *Adapter) Open(ctx context.Context, req base.OpenRequest) (base.Session,
 	return s, nil
 }
 
-func setReasoning(ctx context.Context, client Client, nativeID string, level protocol.ReasoningLevel) error {
-	effort := string(level)
+func nativeEffort(level protocol.ReasoningLevel) string {
 	if level == protocol.ReasoningOff {
-		effort = "none"
+		return "none"
 	}
+	return string(level)
+}
+
+func setReasoning(ctx context.Context, client Client, nativeID string, level protocol.ReasoningLevel) error {
 	var set native.ConfigSetResult
-	if err := client.Call(ctx, native.MethodConfigSet, native.ConfigSetParams{SessionID: nativeID, Key: "reasoning", Value: effort}, &set); err != nil {
+	if err := client.Call(ctx, native.MethodConfigSet, native.ConfigSetParams{SessionID: nativeID, Key: "reasoning", Value: nativeEffort(level)}, &set); err != nil {
 		return &base.UnsupportedControlError{Feature: protocol.FeatureSessionReasoning, Reason: base.ControlUnsatisfiable, Field: "reasoning_level", Detail: "Hermes refused the reasoning level: " + err.Error()}
 	}
 	return nil

@@ -106,7 +106,7 @@ Ledgers: [Codex](../research/codex-app-server-0.162.1-mapping.md) ·
 [Claude Code](../research/claude-code-agent-sdk-2.1.296-mapping.md) ·
 [OpenCode](../research/opencode-v1.18.34-mapping.md) ·
 [pi](../research/pi-v1.1.0-mapping.md) ·
-[Hermes](../research/hermes-v2026.9.24-mapping.md) ·
+[Hermes](../research/hermes-v0.21.6-mapping.md) ·
 [ACP](../research/acp-v1.11.0-mapping.md) ·
 [Makai](../research/makai-agent-67ad514-mapping.md) ·
 [DeepSeek](../research/deepseek-harness-dsh-v0.1.7-rc.2-mapping.md). DeepSeek

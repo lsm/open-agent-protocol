@@ -625,7 +625,7 @@ func lastInteraction(t *testing.T, s base.Session) protocol.InteractionID {
 func TestExpireSiblingResolvesCancelled(t *testing.T) {
 	s, f := openTest(t)
 	ch := admit(t, s, f, true)
-	f.gate(native.RequestClarify, `{"question":"which?","choices":["a","b"]}`)
+	f.gate(native.RequestClarify, `{"questions":[{"qid":"q0","question":"which?","choices":["a","b"]}]}`)
 	f.event(native.EventRequestCancel, 2, `{"id":"srq-1","method":"clarify","reason":"timeout"}`)
 	f.event(native.EventMessageComplete, 3, settleFrame("complete", ""))
 	got := <-ch
@@ -921,12 +921,12 @@ func TestChoiceLessClarifySurfacesAsText(t *testing.T) {
 
 	s, f := openTest(t)
 	ch := admit(t, s, f, true)
-	f.gate(native.RequestClarify, `{"question":"why?","choices":[]}`)
+	f.gate(native.RequestClarify, `{"questions":[{"qid":"q0","question":"why?","choices":[]}]}`)
 	binding := lastInteraction(t, s)
-	if err := s.Resolve(context.Background(), base.InteractionResolution{Input: &protocol.UserInputResolveRequest{InteractionID: binding, SessionID: "session", Answers: []protocol.InputAnswer{{QuestionID: "answer", Text: "because"}}}}); err != nil {
+	if err := s.Resolve(context.Background(), base.InteractionResolution{Input: &protocol.UserInputResolveRequest{InteractionID: binding, SessionID: "session", Answers: []protocol.InputAnswer{{QuestionID: "q0", Text: "because"}}}}); err != nil {
 		t.Fatal(err)
 	}
-	if answer := f.lastAnswer(t); string(answer.result) != `{"answer":"because"}` {
+	if answer := f.lastAnswer(t); string(answer.result) != `{"answers":{"q0":"because"}}` {
 		t.Fatalf("native answer = %s", answer.result)
 	}
 	f.event(native.EventMessageComplete, 2, settleFrame("complete", ""))
@@ -990,15 +990,15 @@ func TestMultiSelectClarifyPreservesEverySelection(t *testing.T) {
 
 	s, f := openTest(t)
 	ch := admit(t, s, f, true)
-	f.gate(native.RequestClarify, `{"question":"which?","choices":["a","b","c"],"multi_select":true}`)
+	f.gate(native.RequestClarify, `{"questions":[{"qid":"q0","question":"which?","choices":["a","b","c"],"multi_select":true}]}`)
 	binding := lastInteraction(t, s)
-	if err := s.Resolve(context.Background(), base.InteractionResolution{Input: &protocol.UserInputResolveRequest{InteractionID: binding, SessionID: "session", Answers: []protocol.InputAnswer{{QuestionID: "answer", SelectedOptionIDs: []string{"a", "c"}}}}}); err != nil {
+	if err := s.Resolve(context.Background(), base.InteractionResolution{Input: &protocol.UserInputResolveRequest{InteractionID: binding, SessionID: "session", Answers: []protocol.InputAnswer{{QuestionID: "q0", SelectedOptionIDs: []string{"a", "c"}}}}}); err != nil {
 		t.Fatal(err)
 	}
 	if got := f.answerCount(); got != 1 {
 		t.Fatalf("answers = %d", got)
 	}
-	if answer := f.lastAnswer(t); string(answer.result) != `{"answer":"[\"a\",\"c\"]"}` {
+	if answer := f.lastAnswer(t); string(answer.result) != `{"answers":{"q0":"[\"a\",\"c\"]"}}` {
 		t.Fatalf("multi-select answer = %s", answer.result)
 	}
 	f.event(native.EventMessageComplete, 2, settleFrame("complete", ""))
@@ -1026,10 +1026,10 @@ func TestMultiSelectClarifyPreservesEverySelection(t *testing.T) {
 func TestRespondFailureDoesNotProjectSubmitted(t *testing.T) {
 	s, f := openTest(t)
 	ch := admit(t, s, f, true)
-	f.gate(native.RequestClarify, `{"question":"which?","choices":["a","b"]}`)
+	f.gate(native.RequestClarify, `{"questions":[{"qid":"q0","question":"which?","choices":["a","b"]}]}`)
 	binding := lastInteraction(t, s)
 	f.respondErr = errors.New("hermes rpc: client closed")
-	err := s.Resolve(context.Background(), base.InteractionResolution{Input: &protocol.UserInputResolveRequest{InteractionID: binding, SessionID: "session", Answers: []protocol.InputAnswer{{QuestionID: "answer", SelectedOptionIDs: []string{"a"}}}}})
+	err := s.Resolve(context.Background(), base.InteractionResolution{Input: &protocol.UserInputResolveRequest{InteractionID: binding, SessionID: "session", Answers: []protocol.InputAnswer{{QuestionID: "q0", SelectedOptionIDs: []string{"a"}}}}})
 	if err == nil {
 		t.Fatal("a failed answer write projected as submitted")
 	}
@@ -1141,7 +1141,7 @@ func TestRunSettlesItsOpenChildrenBeforeItsTerminal(t *testing.T) {
 	s, f := openTest(t)
 	ch := admit(t, s, f, true)
 	f.event(native.EventToolStart, 2, `{"tool_id":"t1","name":"read","context":"read"}`)
-	f.gate(native.RequestClarify, `{"question":"which?","choices":["a","b"]}`)
+	f.gate(native.RequestClarify, `{"questions":[{"qid":"q0","question":"which?","choices":["a","b"]}]}`)
 	f.event(native.EventMessageComplete, 3, settleFrame("complete", ""))
 	admitted := <-ch
 	events := drain(t, admitted.stream)
@@ -1178,7 +1178,7 @@ func TestFailedRunSettlesItsOpenChildrenToo(t *testing.T) {
 	s, f := openTest(t)
 	ch := admit(t, s, f, true)
 	f.event(native.EventToolStart, 2, `{"tool_id":"t1","name":"read","context":"read"}`)
-	f.gate(native.RequestClarify, `{"question":"which?","choices":["a","b"]}`)
+	f.gate(native.RequestClarify, `{"questions":[{"qid":"q0","question":"which?","choices":["a","b"]}]}`)
 	f.event(native.EventMessageComplete, 3, settleFrame("", ""))
 	admitted := <-ch
 	events := drain(t, admitted.stream)
@@ -1213,7 +1213,6 @@ func TestAGateNobodyCanAnswerIsRefused(t *testing.T) {
 		name  string
 		event string
 	}{
-		{"an empty choice", `{"question":"which?","choices":[""]}`},
 		{"an empty choice in a batch", `{"questions":[{"qid":"q1","question":"pick","choices":[""]}]}`},
 	} {
 		t.Run(frame.name, func(t *testing.T) { assertGateRefused(t, frame.event) })
@@ -1251,7 +1250,7 @@ func assertGateRefused(t *testing.T, frame string) {
 func TestAClarifyWithNoChoicesIsFreeTextRatherThanUnanswerable(t *testing.T) {
 	s, f := openTest(t)
 	ch := admit(t, s, f, true)
-	f.gate(native.RequestClarify, `{"question":"which?","choices":[]}`)
+	f.gate(native.RequestClarify, `{"questions":[{"qid":"q0","question":"which?","choices":[]}]}`)
 	f.event(native.EventMessageComplete, 2, settleFrame("complete", ""))
 	admitted := <-ch
 	events := drain(t, admitted.stream)
@@ -1646,7 +1645,7 @@ func TestAnUnmappedServerRequestNamingNoSessionIsAnsweredMethodNotFound(t *testi
 func TestAServerRequestForAnotherSessionMakesTheSessionUnusable(t *testing.T) {
 	s, f := openTest(t)
 	ch := admit(t, s, f, true)
-	f.gateFor(native.RequestClarify, "other001", `{"question":"which?","choices":["a","b"]}`)
+	f.gateFor(native.RequestClarify, "other001", `{"questions":[{"qid":"q0","question":"which?","choices":["a","b"]}]}`)
 	got := <-ch
 	events := drain(t, got.stream)
 	var failed protocol.RunFailedPayload
@@ -1690,12 +1689,12 @@ func TestAGateArrivingBeforeTheTurnOpensIsHeldUntilItDoes(t *testing.T) {
 func TestACancelThatOvertakesTheAnswerSettlesTheGateCancelled(t *testing.T) {
 	s, f := openTest(t)
 	ch := admit(t, s, f, true)
-	f.gate(native.RequestClarify, `{"question":"which?","choices":["a","b"]}`)
+	f.gate(native.RequestClarify, `{"questions":[{"qid":"q0","question":"which?","choices":["a","b"]}]}`)
 	binding := lastInteraction(t, s)
 	f.respondBefore = func() {
 		f.event(native.EventRequestCancel, 2, `{"id":"srq-1","method":"clarify","reason":"timeout"}`)
 	}
-	err := s.Resolve(context.Background(), base.InteractionResolution{Input: &protocol.UserInputResolveRequest{InteractionID: binding, SessionID: "session", Answers: []protocol.InputAnswer{{QuestionID: "answer", SelectedOptionIDs: []string{"a"}}}}})
+	err := s.Resolve(context.Background(), base.InteractionResolution{Input: &protocol.UserInputResolveRequest{InteractionID: binding, SessionID: "session", Answers: []protocol.InputAnswer{{QuestionID: "q0", SelectedOptionIDs: []string{"a"}}}}})
 	if !errors.Is(err, base.ErrInteractionNotFound) {
 		t.Fatalf("resolve = %v, want ErrInteractionNotFound for a withdrawn request", err)
 	}
@@ -1770,8 +1769,8 @@ func TestPendingToolsAreSettledInTheOrderTheyStarted(t *testing.T) {
 func TestPendingPromptsAreSettledInTheOrderTheyStarted(t *testing.T) {
 	s, f := openTest(t)
 	ch := admit(t, s, f, true)
-	f.gate(native.RequestClarify, `{"question":"first?","choices":["a","b"]}`)
-	f.gate(native.RequestClarify, `{"question":"second?","choices":["c","d"]}`)
+	f.gate(native.RequestClarify, `{"questions":[{"qid":"q0","question":"first?","choices":["a","b"]}]}`)
+	f.gate(native.RequestClarify, `{"questions":[{"qid":"q0","question":"second?","choices":["c","d"]}]}`)
 	f.event(native.EventMessageComplete, 2, settleFrame("complete", ""))
 	admitted := <-ch
 	events := drain(t, admitted.stream)

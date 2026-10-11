@@ -93,7 +93,6 @@ type inputState struct {
 	request   *rpc.IncomingRequest
 	run       *runState
 	questions []protocol.InputQuestion
-	batch     bool
 	resolved  bool
 
 	settling  bool
@@ -568,13 +567,8 @@ func (s *Session) openInteraction(run *runState, request *rpc.IncomingRequest) {
 		binding.questions = []protocol.InputQuestion{{ID: "choice", Prompt: description, Kind: protocol.InputSingleChoice, Required: true, Options: options}}
 	case *native.ClarifyRequestParams:
 		title = "Clarification"
-		if len(payload.Questions) > 0 {
-			binding.batch = true
-			for _, question := range payload.Questions {
-				binding.questions = append(binding.questions, protocol.InputQuestion{ID: question.Qid, Prompt: question.Question, Kind: choiceKind(question.MultiSelect, question.Choices), Required: true, Options: choiceOptions(question.Choices)})
-			}
-		} else {
-			binding.questions = []protocol.InputQuestion{{ID: "answer", Prompt: payload.Question, Kind: choiceKind(payload.MultiSelect, payload.Choices), Required: true, Options: choiceOptions(payload.Choices)}}
+		for _, question := range payload.Questions {
+			binding.questions = append(binding.questions, protocol.InputQuestion{ID: question.Qid, Prompt: question.Question, Kind: choiceKind(question.MultiSelect, question.Choices), Required: true, Options: choiceOptions(question.Choices)})
 		}
 	case *native.SudoRequestParams:
 		title = "Password required"
@@ -735,11 +729,7 @@ func (s *Session) Resolve(ctx context.Context, resolution base.InteractionResolu
 				values[string(question.ID)] = answer.SelectedOptionIDs[0]
 			}
 		}
-		if binding.batch {
-			result = native.ClarifyAnswersResult{Answers: values}
-		} else {
-			result = native.ClarifyAnswerResult{Answer: values["answer"]}
-		}
+		result = native.ClarifyAnswersResult{Answers: values}
 	case native.RequestSudo, native.RequestSecret:
 		if len(answers) != 1 || len(binding.questions) != 1 || base.ValidateInputAnswer(binding.questions[0], answers[0]) != nil {
 			s.reduceMu.Unlock()

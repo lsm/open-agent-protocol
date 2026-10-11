@@ -58,20 +58,22 @@ type InterimPayload struct {
 }
 
 type MessageCompletePayload struct {
-	Text              string          `json:"text"`
-	Usage             Usage           `json:"usage"`
-	Status            string          `json:"status"`
-	Reasoning         string          `json:"reasoning,omitempty"`
-	Warning           string          `json:"warning,omitempty"`
-	ResponsePreviewed bool            `json:"response_previewed,omitempty"`
-	Billing           json.RawMessage `json:"billing,omitempty"`
-	FailureReason     string          `json:"failure_reason,omitempty"`
-	Rendered          string          `json:"rendered,omitempty"`
-	Error             string          `json:"error,omitempty"`
-	Recoverable       bool            `json:"recoverable,omitempty"`
-	ErrorSurface      *ErrorSurface   `json:"error_surface,omitempty"`
-	Partial           bool            `json:"partial,omitempty"`
-	PersistedTurn     json.RawMessage `json:"persisted_turn,omitempty"`
+	Text                string          `json:"text"`
+	Usage               Usage           `json:"usage"`
+	Status              string          `json:"status"`
+	Reasoning           string          `json:"reasoning,omitempty"`
+	Warning             string          `json:"warning,omitempty"`
+	ResponsePreviewed   bool            `json:"response_previewed,omitempty"`
+	ResponseReused      *bool           `json:"response_reused,omitempty"`
+	ResponseTransformed *bool           `json:"response_transformed,omitempty"`
+	Billing             json.RawMessage `json:"billing,omitempty"`
+	FailureReason       string          `json:"failure_reason,omitempty"`
+	Rendered            string          `json:"rendered,omitempty"`
+	Error               string          `json:"error,omitempty"`
+	Recoverable         bool            `json:"recoverable,omitempty"`
+	ErrorSurface        *ErrorSurface   `json:"error_surface,omitempty"`
+	Partial             bool            `json:"partial,omitempty"`
+	PersistedTurn       json.RawMessage `json:"persisted_turn,omitempty"`
 }
 
 type ErrorSurface struct {
@@ -169,12 +171,9 @@ type ClarifyQuestion struct {
 }
 
 type ClarifyRequestParams struct {
-	SessionID   string            `json:"session_id"`
-	Question    string            `json:"question,omitempty"`
-	Choices     []string          `json:"choices,omitempty"`
-	MultiSelect bool              `json:"multi_select,omitempty"`
-	Questions   []ClarifyQuestion `json:"questions,omitempty"`
-	Answers     map[string]string `json:"answers,omitempty"`
+	SessionID string             `json:"session_id"`
+	Questions []ClarifyQuestion  `json:"questions"`
+	Answers   map[string]*string `json:"answers,omitempty"`
 }
 
 type SudoRequestParams struct {
@@ -191,10 +190,6 @@ type SecretRequestParams struct {
 
 type ApprovalResult struct {
 	Choice string `json:"choice"`
-}
-
-type ClarifyAnswerResult struct {
-	Answer string `json:"answer"`
 }
 
 type ClarifyAnswersResult struct {
@@ -258,9 +253,10 @@ type SessionInfoPayload struct {
 }
 
 type SessionCreateParams struct {
-	Title string `json:"title,omitempty"`
-	Cwd   string `json:"cwd,omitempty"`
-	Model string `json:"model,omitempty"`
+	Title           string `json:"title,omitempty"`
+	Cwd             string `json:"cwd,omitempty"`
+	Model           string `json:"model,omitempty"`
+	ReasoningEffort string `json:"reasoning_effort,omitempty"`
 }
 
 type ConfigSetParams struct {
@@ -404,23 +400,24 @@ const (
 )
 
 var observedEvents = map[string]bool{
-	"agent.terminal.output": true, "billing.step_up.verification": true, "bot_relay.outbox.pending": true,
+	"agent.terminal.output": true, "approval.cancelled": true, "billing.step_up.verification": true, "bot_relay.outbox.pending": true,
 	"browser.controller.cancel": true, "browser.controller.command": true, "browser.progress": true,
 	"connection.request": true, "connection.update": true, "cron.changed": true,
 	"display.install.done": true, "display.install.log": true, "display.lease": true, "display.status": true,
-	"layout.apply": true, "message.reaction": true, "moa.aggregating": true, "moa.phase": true,
+	"free_tier.challenge": true,
+	"layout.apply":        true, "message.reaction": true, "moa.aggregating": true, "moa.phase": true,
 	"moa.progress": true, "moa.reference": true, "notice": true, "notification.clear": true,
 	"notification.show": true, "pairing.changed": true, "pane.reveal": true, "pet.changed": true,
 	"pet.generate.progress": true, "pet.hatch.progress": true, "platforms.changed": true,
 	"preview.close": true, "preview.open": true, "preview.restart.complete": true,
-	"preview.restart.progress": true, "reaction": true, "reasoning.available": true,
+	"preview.restart.progress": true, "projects.changed": true, "reaction": true, "reasoning.available": true,
 	"review.summary": true, "session.control.update": true, "session.reclaimed": true,
 	"session.resume_progress": true, "session.title": true, "sessions.changed": true,
 	"setup.ready": true, "skin.changed": true, "status.update": true, "subagent.progress": true,
 	"subagent.spawn_requested": true, "subagent.start": true, "subagent.thinking": true,
 	"subagent.tool": true, "terminal.close": true, "tip.show": true, "todo.updated": true,
 	"tool.generating": true, "tool.output_risk": true, "voice.interrupted": true,
-	"voice.status": true, "voice.transcript": true, "wake.detected": true,
+	"voice.partial": true, "voice.status": true, "voice.transcript": true, "wake.detected": true,
 }
 
 func DecodeNotification(method string, data []byte) (any, error) {
@@ -583,10 +580,8 @@ func DecodeServerRequest(method string, params []byte) (any, error) {
 		if err := DecodeStrict(params, &request); err != nil {
 			return nil, fmt.Errorf("%w: invalid clarify request: %v", ErrInvalid, err)
 		}
-		single := request.Question != "" || len(request.Choices) > 0
-		batch := len(request.Questions) > 0
-		if request.SessionID == "" || single == batch {
-			return nil, fmt.Errorf("%w: clarify request needs a session and exactly one form", ErrInvalid)
+		if request.SessionID == "" || len(request.Questions) == 0 {
+			return nil, fmt.Errorf("%w: clarify request needs a session and at least one question", ErrInvalid)
 		}
 		for _, question := range request.Questions {
 			if question.Qid == "" || question.Question == "" {
