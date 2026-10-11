@@ -1185,6 +1185,12 @@ const PartStream = struct {
         return index;
     }
 
+    fn openToolCallNamed(self: *PartStream, id: []const u8) bool {
+        const index = self.openIndex(.tool_call) orelse return false;
+        const call = self.tracker.peekCall(self.parts.items[index].api_index) orelse return false;
+        return std.mem.eql(u8, call.id, id);
+    }
+
     fn begin(self: *PartStream, allocator: std.mem.Allocator, part: Part) !usize {
         try self.parts.append(allocator, part);
         self.open = true;
@@ -1776,6 +1782,11 @@ fn runThread(ctx: *ThreadCtx) void {
                 },
             }
 
+            for (reasoning_detail_events.items) |rde| {
+                if (!parts.openToolCallNamed(rde.tool_call_id)) continue;
+                tool_call_tracker_instance.setThoughtSignatureById(rde.tool_call_id, rde.detail_json) catch {};
+            }
+
             if (thinking.items.len > prev_thinking_len and !isKimiModel(model)) {
                 const index = parts.continueOrBegin(allocator, .thinking, prev_thinking_len) catch {
                     ctx.deinit();
@@ -1800,10 +1811,6 @@ fn runThread(ctx: *ThreadCtx) void {
                     .delta = text.items[prev_text_len..],
                     .partial = parts.partial(),
                 } });
-            }
-
-            for (reasoning_detail_events.items) |rde| {
-                tool_call_tracker_instance.setThoughtSignatureById(rde.tool_call_id, rde.detail_json) catch {};
             }
 
             for (tool_call_events.items) |tce| {
@@ -4304,6 +4311,49 @@ test "arguments for a tool call that already ended are dropped, so its part and 
         "call 0 {}\ncall 1 []\nresult call {}\nresult call []\n",
         seen,
     );
+}
+
+test "a tool call's signature lands on its part and its terminal alike, and one arriving after the part ended is dropped" {
+    const body =
+        "data: {\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_a\",\"type\":\"function\",\"function\":{\"name\":\"read\",\"arguments\":\"{}\"}}]},\"finish_reason\":null}]}\n\n" ++
+        "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"done\",\"reasoning_details\":[{\"type\":\"reasoning.encrypted\",\"id\":\"call_a\",\"data\":\"sig-a\"}]},\"finish_reason\":null}]}\n\n" ++
+        "data: {\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":1,\"id\":\"call_b\",\"type\":\"function\",\"function\":{\"name\":\"read\",\"arguments\":\"[]\"}}]},\"finish_reason\":null}]}\n\n" ++
+        "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"x\",\"reasoning_details\":[{\"type\":\"reasoning.encrypted\",\"id\":\"call_a\",\"data\":\"late\"}]},\"finish_reason\":null}]}\n\n" ++
+        "data: {\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\n" ++
+        "data: [DONE]\n\n";
+    const allocator = std.testing.allocator;
+    var mock = try MockCompletionsServer.listen(body);
+    var stopped = false;
+    defer if (!stopped) mock.stop();
+    const base_url = try mock.baseUrl(allocator);
+    defer allocator.free(base_url);
+    try mock.start();
+    const stream = try streamOpenAICompletions(traceModel(base_url), traceContext(), .{ .api_key = ai_types.OwnedSlice(u8).initBorrowed("test-key") }, allocator);
+    defer {
+        stream.deinit();
+        allocator.destroy(stream);
+    }
+    var ended_carry: ?[]u8 = null;
+    defer if (ended_carry) |value| allocator.free(value);
+    while (stream.wait()) |event| {
+        var polled = event;
+        defer ai_types.deinitAssistantMessageEvent(allocator, &polled);
+        switch (polled) {
+            .toolcall_end => |value| if (std.mem.eql(u8, value.tool_call.id, "call_a")) {
+                ended_carry = try allocator.dupe(u8, value.tool_call.thought_signature orelse "");
+            },
+            else => {},
+        }
+    }
+    try std.testing.expect(stream.waitForThread(5_000));
+    mock.stop();
+    stopped = true;
+    const result = stream.getResult() orelse return error.TestUnexpectedResult;
+    const terminal_carry = for (result.content) |item| {
+        if (item == .tool_call and std.mem.eql(u8, item.tool_call.id, "call_a")) break item.tool_call.thought_signature orelse "";
+    } else return error.TestUnexpectedResult;
+    try std.testing.expect(std.mem.indexOf(u8, ended_carry.?, "sig-a") != null);
+    try std.testing.expectEqualStrings(ended_carry.?, terminal_carry);
 }
 
 var cleanup_hold: std.atomic.Value(usize) = std.atomic.Value(usize).init(0);
