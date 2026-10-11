@@ -55,10 +55,10 @@ run's `temperature`, which the loop takes none of, and `minimal` reasoning,
 which it runs as low. The old Makai wire is
 available only by explicit opt-in.
 
-`oapx serve agent --backend claude` serves a Claude Code child (pinned 2.1.288),
-`--backend codex` a Codex app-server child (pinned `rust-v0.160.1`), `--backend pi` a
+`oapx serve agent --backend claude` serves a Claude Code child (pinned 2.1.296),
+`--backend codex` a Codex app-server child (pinned `rust-v0.162.1`), `--backend pi` a
 Pi RPC child (pinned `v1.0.1`), an `acp`
-entry an ACP v1 agent (pinned `v1.10.2`), a `hermes` entry a Hermes gateway (pinned `v2026.9.24`), a `deepseek` entry a DeepSeek harness (pinned `dsh-v0.1.7-rc.2`), and an `opencode` entry an OpenCode server (pinned `v2.0.24`), behind the same stdio door instead of the built-in loop, following
+entry an ACP v1 agent (pinned `v1.11.0`), a `hermes` entry a Hermes gateway (pinned `v2026.9.24`), a `deepseek` entry a DeepSeek harness (pinned `dsh-v0.1.7-rc.2`), and an `opencode` entry an OpenCode server (pinned `v2.0.24`), behind the same stdio door instead of the built-in loop, following
 [the endpoint binding](drafts/endpoint-stdio.md). Without `--config` it runs
 `claude` from `PATH` with only `HOME` and `PATH` in its environment and the
 harness-default tool posture, so every gated tool call still reaches the host
@@ -95,9 +95,9 @@ run.
 feeds both trees the same traffic and requires identical output. What that job
 is the last check on, and what the corpora cover instead, is written down in
 [docs/parity-job.md](docs/parity-job.md). What each cannot do through this path
-is recorded in its ledger: [claude](research/claude-code-agent-sdk-2.1.288-mapping.md),
-[codex](research/codex-app-server-0.160.1-mapping.md),
-[acp](research/acp-v1.10.2-mapping.md). Without `--config`, codex runs `codex`
+is recorded in its ledger: [claude](research/claude-code-agent-sdk-2.1.296-mapping.md),
+[codex](research/codex-app-server-0.162.1-mapping.md),
+[acp](research/acp-v1.11.0-mapping.md). Without `--config`, codex runs `codex`
 from `PATH` with only `HOME` and `PATH`; an ACP agent has no default and needs
 a `--config` entry naming its `executable`.
 
@@ -803,13 +803,13 @@ Research:
 
 - [Harness interoperability study](research/harness-interoperability.md)
 - [P0 protocol gaps from harness interoperability](research/p0-protocol-gaps.md)
-- [Pinned Codex app-server mapping](research/codex-app-server-0.160.1-mapping.md)
+- [Pinned Codex app-server mapping](research/codex-app-server-0.162.1-mapping.md)
 - [Pinned OpenCode server mapping](research/opencode-v2.0.24-mapping.md)
-- [Pinned ACP v1 and Devin Desktop mapping](research/acp-v1.10.2-mapping.md), over the [v1.7.0 base mapping](research/acp-v1.7.0-mapping.md)
+- [Pinned ACP v1 and Devin Desktop mapping](research/acp-v1.11.0-mapping.md), over the [v1.10.2](research/acp-v1.10.2-mapping.md) and [v1.7.0 base mapping](research/acp-v1.7.0-mapping.md)
 - [Pinned Pi coding-agent mapping](research/pi-v1.1.0-mapping.md), over the [v1.0.4](research/pi-v1.0.4-mapping.md), [v1.0.1](research/pi-v1.0.1-mapping.md), [v0.87.1](research/pi-v0.87.1-mapping.md) and [v0.85.1 base](research/pi-v0.85.1-mapping.md) mappings
 - [Pinned DeepSeek Harness mapping](research/deepseek-harness-dsh-v0.1.7-rc.2-mapping.md), over the [47f9438 base mapping](research/deepseek-harness-47f9438-mapping.md)
 - [Pinned Hermes agent mapping](research/hermes-v2026.9.24-mapping.md), over the [v2026.8.31 base mapping](research/hermes-v2026.8.31-mapping.md)
-- [Pinned Claude Code CLI and Agent SDK mapping](research/claude-code-agent-sdk-2.1.288-mapping.md), over the [2.1.282](research/claude-code-agent-sdk-2.1.282-mapping.md) and [2.1.280](research/claude-code-agent-sdk-2.1.280-mapping.md) mappings and the [2.1.263 base mapping](research/claude-code-agent-sdk-2.1.263-mapping.md)
+- [Pinned Claude Code CLI and Agent SDK mapping](research/claude-code-agent-sdk-2.1.296-mapping.md), over the [2.1.288](research/claude-code-agent-sdk-2.1.288-mapping.md), [2.1.282](research/claude-code-agent-sdk-2.1.282-mapping.md) and [2.1.280](research/claude-code-agent-sdk-2.1.280-mapping.md) mappings and the [2.1.263 base mapping](research/claude-code-agent-sdk-2.1.263-mapping.md)
 - [Z.ai China Coding Plan evidence matrix](research/zai-china-coding-plan-evidence.md)
 - [OpenCode provider breadth and its model catalog](research/opencode-provider-catalog-mapping.md), with [Decision 0035](decisions/0035-a-model-entry-publishes-its-facts-and-absence-means-unknown.md) accepted on it
 - [Protocol feedback from eight adapter tranches](research/protocol-feedback-2026-09.md)
@@ -960,7 +960,7 @@ survives a new gateway process, and `OAP_HERMES_CAPTURE_DIR` optionally records
 both native reload exchanges.
 
 Claude Code real-process checks follow the same opt-in gate. Provide an
-absolute path to the pinned claude 2.1.288 binary in `OAP_CLAUDE_BIN`, then
+absolute path to the pinned claude 2.1.296 binary in `OAP_CLAUDE_BIN`, then
 set `OAP_CLAUDE_SMOKE=1` for the credential-free spawn/initialize/EOF-teardown
 check or `OAP_CLAUDE_INTEGRATION=1` for the loopback-provider paths (streaming
 Anthropic Messages against an in-process mock, test-owned key only;
@@ -976,13 +976,13 @@ initialize control exchange, and teardown evidence is stdin EOF. Set
 artifact provenance is required. `OAP_CLAUDE_CAPTURE_DIR`, an absolute
 directory outside the repository, records the corpus probes' raw stream-json
 in both directions into that directory; it is how
-`fixtures/adapters/claude-code-2.1.288` was recorded.
+`fixtures/adapters/claude-code-2.1.296` was recorded.
 
 Both ACP adapter trees reopen the binding's native session through the agent's
 advertised load or resume operation. Native load history stays outside the new
 OAP journal, and recovery reports the returned settings. The opt-in ACP gate
 also verifies conversation history survives close and reopen, as recorded in the
-[current mapping ledger](research/acp-v1.10.2-mapping.md).
+[current mapping ledger](research/acp-v1.11.0-mapping.md).
 
 ACP real-process checks follow the same opt-in gate, driven against an
 independent open-source ACP agent rather than a Devin product. Provide an

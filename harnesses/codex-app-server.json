@@ -3,12 +3,29 @@
   "name": "Codex app-server",
   "versions": [
     {
-      "label": "rust-v0.160.1",
+      "label": "rust-v0.162.1",
       "status": "current",
-      "endpoint_version": "d27764b82f7118f674371e6d6e76271d9d606edb",
-      "capability_revision": "codex-appserver-0.160.1-oap-v2",
+      "endpoint_version": "092d3acd6bec3e3a14bdc7e7a2810ab628ab759d",
+      "capability_revision": "codex-appserver-0.162.1-oap-v1",
+      "ledgers": ["research/codex-app-server-0.162.1-mapping.md", "research/codex-app-server-0.160.1-mapping.md"],
+      "corpus": "fixtures/adapters/codex-appserver-0.162.1",
+      "components": [
+        { "name": "codex", "version": "0.162.1", "repository": "https://github.com/openai/codex" }
+      ],
+      "artifacts": [
+        { "component": "codex", "platform": "any", "kind": "source-tree", "name": "codex-rs/app-server-protocol/schema", "sha256": "075997d5cb497bd6518a973a6d7b85fef0eaa64c02428af866e46c725c55fad7" },
+        { "component": "codex", "platform": "darwin-arm64", "kind": "archive", "name": "codex-aarch64-apple-darwin.tar.gz", "sha256": "b293a0fcdd871900a44c0a4f40a1aa401b31e02854f790ebdb8bd5d1177fd1fe", "bytes": 98104184 },
+        { "component": "codex", "platform": "darwin-arm64", "kind": "binary", "name": "codex-aarch64-apple-darwin", "sha256": "74c6a6d263f40d65f99c27a815275f5b4ed0bcc2baecc396b4cf3255498bdfc0", "bytes": 246642624 },
+        { "component": "codex", "platform": "linux-x64", "kind": "archive", "name": "codex-x86_64-unknown-linux-musl.tar.gz", "sha256": "86f268d81b898f3e144c5ecff2ad2fda2c5802e042d6195b72538fe0fa125057", "bytes": 111350218 }
+      ],
+      "sources": [
+        { "component": "codex", "tag": "rust-v0.162.1", "commit": "092d3acd6bec3e3a14bdc7e7a2810ab628ab759d", "tree": "572cdecd45cd985f0ad80b63d8b86ffcb345f47a" }
+      ]
+    },
+    {
+      "label": "rust-v0.160.1",
+      "status": "retired",
       "ledgers": ["research/codex-app-server-0.160.1-mapping.md"],
-      "corpus": "fixtures/adapters/codex-appserver-0.160.1",
       "components": [
         { "name": "codex", "version": "0.160.1", "repository": "https://github.com/openai/codex" }
       ],
