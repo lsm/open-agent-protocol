@@ -352,6 +352,37 @@ wait, which is the old loop and is correct if slower. This is recorded here
 rather than discovered per platform, and it goes away when a wait that covers
 pipe handles does.
 
+**The wait that will cover them (#460): a zero-byte overlapped read per child,
+completed on one I/O completion port.** `std.Io` already opens the parent's end
+of a child's stdout as an asynchronous named pipe (`windowsCreatePipe` with
+`.IO = .ASYNCHRONOUS` in `std/Io/Threaded.zig`), so the handle accepts an
+overlapped read. A read of zero bytes completes when data has arrived and
+consumes none of it, which is readiness rather than a read: the loop learns
+which child is ready and the transport reads its frames exactly as it does
+today. It is libuv's readiness wait for an overlapped pipe (`win/pipe.c`), so
+the behaviour is relied on in production rather than inferred, and the hub's
+Windows job is where it is proven for this tree. Every child's pipe is
+associated with one port, and
+`GetQueuedCompletionStatusEx` waits on all of them at once, with the loop's
+bounded wait as its timeout. A connection's socket joins the same port through a
+zero-byte `WSARecv`, so stdio and HTTP keep one loop.
+
+Why the other two lose:
+
+- **`WaitForMultipleObjects` over each pipe plus a wake event** waits on at most
+  64 objects, and the hub has no session ceiling, so it would need a second
+  thread per 63 sessions, which is the reader-thread shape rejected above. And
+  a pipe handle is not signalled by readiness, so each object would be an event
+  set by an overlapped read anyway: this is the chosen design with a cap.
+- **A `WSAPoll`-shaped extension for pipes** does not exist; writing one is
+  writing a poll over `PeekNamedPipe`, which is the bounded wait again.
+
+What stays an exception: the host's own stdin on `serve --stdio`. The host opens
+that pipe, and a synchronous handle accepts no overlapped read, so on Windows
+the stdio frontend checks it with `PeekNamedPipe` within the loop's bounded
+wait. A host that hands over an asynchronous pipe gets it on the port with the
+children.
+
 **Both trees.** Go's hub already runs one goroutine per connection behind a
 session mutex. That is Go's shape and is not a normative model for the port;
 what is normative is the loop, and Go's is a port of the same spec in its own
