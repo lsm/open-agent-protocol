@@ -16,6 +16,7 @@ func TestParseModelRefNamesTheProfilesWiresAndNothingElse(t *testing.T) {
 	cases := map[string]ModelRef{
 		"deepseek/openai-chat-completions@deepseek-v4-pro": {ProviderID: "deepseek", Wire: "openai-completions", ModelID: "deepseek-v4-pro"},
 		"anthropic/anthropic-messages@claude":              {ProviderID: "anthropic", Wire: "anthropic-messages", ModelID: "claude"},
+		"openai/openai-responses@gpt-5":                    {ProviderID: "openai", Wire: "openai-responses", ModelID: "gpt-5"},
 	}
 	for ref, want := range cases {
 		if got, ok := ParseModelRef(ref); !ok || got != want {
@@ -78,6 +79,7 @@ func TestACreateIsRefusedBeforeAnythingIsAllocatedWhenItCannotBeServed(t *testin
 		{"a provider this endpoint does not serve", servingDeepSeek(), "openai/openai-chat-completions@gpt", `[]`, CodeModelNotFound},
 		{"a message this endpoint does not carry yet", servingDeepSeek(), parityModelRef, `[{"role":"tool","content":"x"}]`, CodeUnsupportedFeature},
 		{"a provider served on another wire", servingDeepSeek(), "deepseek/anthropic-messages@deepseek-v4-pro", `[]`, CodeInvalidRequest},
+		{"the openai-responses wire this layer does not serve yet", servingDeepSeek(), "openai/openai-responses@gpt-5", `[]`, CodeUnsupportedFeature},
 	}
 	for _, c := range cases {
 		out := runnerOutcome(t, c.runner, c.ref, c.messages)
@@ -280,7 +282,7 @@ func TestAnAnthropicReplyWithNoEventsFailsWithTheErrorItsBodyCarries(t *testing.
 	}
 }
 
-func TestACredentialRefOrAMalformedToolChoiceIsRefusedAsOapxRefusesIt(t *testing.T) {
+func TestACredentialRefOrAMalformedToolChoiceIsRefused(t *testing.T) {
 	base := `"model_ref":"` + parityModelRef + `","messages":[{"role":"user","content":"hi"}]`
 	cases := []struct {
 		name  string

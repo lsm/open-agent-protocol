@@ -28,6 +28,7 @@ const (
 var oapWires = map[string]string{
 	"openai-chat-completions": "openai-completions",
 	"anthropic-messages":      "anthropic-messages",
+	"openai-responses":        "openai-responses",
 }
 
 type CreateRequest struct {
@@ -106,6 +107,10 @@ func (r *Runner) Create(ctx context.Context, requestID string, request CreateReq
 	ref, ok := ParseModelRef(request.ModelRef)
 	if !ok {
 		refuse(CodeInvalidRequest, "model_ref must be provider_id/wire@model_id")
+		return
+	}
+	if ref.Wire == "openai-responses" {
+		refuse(CodeUnsupportedFeature, "this endpoint does not serve the openai-responses wire yet")
 		return
 	}
 	if !r.servesProvider(ref.ProviderID) {
