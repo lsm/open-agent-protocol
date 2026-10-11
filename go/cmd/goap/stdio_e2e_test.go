@@ -187,9 +187,13 @@ func (c *child) signal() string {
 
 func (c *child) wait() error {
 	c.t.Helper()
-	for range c.lines {
-
+	trailing := append([]string(nil), c.heldSignals...)
+	c.heldSignals = nil
+	for line := range c.lines {
+		trailing = append(trailing, line)
 	}
+	sort.Strings(trailing)
+	c.transcript = append(c.transcript, trailing...)
 	if err := <-c.readErr; err != nil {
 		c.t.Fatalf("stdout scan: %v", err)
 	}
