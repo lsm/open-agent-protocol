@@ -4211,7 +4211,7 @@ test "a session whose stream fails is ended, its subscribers told, and its child
 }
 
 test "a session that reports a handle is waited on, and handed no wait of its own" {
-    if (!@hasDecl(std.Io.net, "has_unix_sockets") or !std.Io.net.has_unix_sockets) return error.SkipZigTest;
+    if (comptime !pollable) return error.SkipZigTest;
     var flaky = Flaky{ .allocator = testing.allocator, .fail_drain = false };
     flaky.keep = std.heap.ArenaAllocator.init(testing.allocator);
     defer flaky.keep.deinit();
@@ -4238,7 +4238,7 @@ test "a session that reports a handle is waited on, and handed no wait of its ow
 }
 
 test "idle sessions add no per-session delay, however many there are" {
-    if (!std.Io.net.has_unix_sockets) return error.SkipZigTest;
+    if (comptime !pollable) return error.SkipZigTest;
     var idle: [6]Flaky = undefined;
     const ends = try compat.stdio.pipe();
     defer compat.stdio.close(ends[0]);
@@ -4273,7 +4273,7 @@ test "idle sessions add no per-session delay, however many there are" {
 }
 
 test "one silent child does not hold back another session's events" {
-    if (!std.Io.net.has_unix_sockets) return error.SkipZigTest;
+    if (comptime !pollable) return error.SkipZigTest;
     const quiet_ends = try compat.stdio.pipe();
     defer compat.stdio.close(quiet_ends[0]);
     defer compat.stdio.close(quiet_ends[1]);
@@ -4313,7 +4313,7 @@ test "one silent child does not hold back another session's events" {
 }
 
 test "a handle-less session keeps the timed pump beside one that reports a handle" {
-    if (!std.Io.net.has_unix_sockets) return error.SkipZigTest;
+    if (comptime !pollable) return error.SkipZigTest;
     var waiting = Flaky{ .allocator = testing.allocator, .fail_drain = false };
     waiting.keep = std.heap.ArenaAllocator.init(testing.allocator);
     defer waiting.keep.deinit();
