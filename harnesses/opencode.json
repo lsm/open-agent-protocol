@@ -9,6 +9,7 @@
       "capability_revision": "opencode-v2.0.26-oap-v5",
       "ledgers": ["research/opencode-v2.0.26-mapping.md"],
       "corpus": "fixtures/adapters/opencode-v2.0.26",
+      "corpus_from": "v2.0.24",
       "components": [
         { "name": "opencode", "version": "v2.0.26", "repository": "https://github.com/anomalyco/opencode" }
       ],

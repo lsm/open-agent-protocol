@@ -82,7 +82,8 @@ is unchanged, so only the revision's version prefix moves:
 
 ## Corpus
 
-`fixtures/adapters/opencode-v2.0.26` is the v2.0.24 corpus carried forward.
+`fixtures/adapters/opencode-v2.0.26` is the v2.0.24 corpus carried forward
+(`corpus_from: v2.0.24`).
 No case was re-recorded: every `native.jsonl` is byte-identical, and the
 source blobs each case pins are unchanged. Only the provenance (the
 manifest's and each case's `tag`, `commit` and `commit_tree`) and the
