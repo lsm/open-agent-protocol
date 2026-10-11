@@ -109,7 +109,7 @@ Ledgers: [Codex](../research/codex-app-server-0.162.1-mapping.md) ·
 [Hermes](../research/hermes-v0.21.6-mapping.md) ·
 [ACP](../research/acp-v1.11.0-mapping.md) ·
 [Makai](../research/makai-agent-67ad514-mapping.md) ·
-[DeepSeek](../research/deepseek-harness-dsh-v0.1.7-rc.2-mapping.md). DeepSeek
+[DeepSeek](../research/deepseek-harness-dsh-v0.2.1-alpha.2-mapping.md). DeepSeek
 contributes no native evidence to any unit at its pin and advertises each
 `unavailable`.
 

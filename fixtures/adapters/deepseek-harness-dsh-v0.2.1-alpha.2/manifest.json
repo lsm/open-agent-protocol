@@ -1,0 +1,149 @@
+{
+  "adapter": "deepseek-harness-jsonrpc",
+  "cases": [
+    {
+      "id": "initialize-lifecycle",
+      "ledger_fixtures": [
+        "initialize-minimal",
+        "initialize-repeat-rejected",
+        "message-enqueued",
+        "shutdown"
+      ],
+      "path": "initialize-lifecycle"
+    },
+    {
+      "id": "initialize-pre-observe",
+      "ledger_fixtures": [
+        "initialize-before-prompt"
+      ],
+      "path": "initialize-pre-observe"
+    },
+    {
+      "id": "owned-start-completed",
+      "ledger_fixtures": [
+        "owned-start",
+        "completed-turn",
+        "settlement"
+      ],
+      "path": "owned-start-completed"
+    },
+    {
+      "id": "turn-end-reasons",
+      "ledger_fixtures": [
+        "max-tokens-failed",
+        "turn-end-reasons"
+      ],
+      "path": "turn-end-reasons"
+    },
+    {
+      "id": "streaming-chunks",
+      "ledger_fixtures": [
+        "streaming-chunks"
+      ],
+      "path": "streaming-chunks"
+    },
+    {
+      "id": "tool-lifecycle",
+      "ledger_fixtures": [
+        "tool-lifecycle",
+        "tool-failed"
+      ],
+      "path": "tool-lifecycle"
+    },
+    {
+      "id": "injected-origin",
+      "ledger_fixtures": [
+        "injected-origin",
+        "no-wire-claim"
+      ],
+      "path": "injected-origin"
+    },
+    {
+      "id": "subagent-settlement",
+      "ledger_fixtures": [
+        "subagent-run",
+        "child-after-turn-end"
+      ],
+      "path": "subagent-settlement"
+    },
+    {
+      "id": "overlap-rejected",
+      "ledger_fixtures": [
+        "overlap-rejected"
+      ],
+      "path": "overlap-rejected"
+    },
+    {
+      "id": "no-run-paths",
+      "ledger_fixtures": [
+        "intercepted-no-run",
+        "blocked-no-run",
+        "empty-no-run"
+      ],
+      "path": "no-run-paths"
+    },
+    {
+      "id": "unknown-events",
+      "ledger_fixtures": [
+        "unknown-ignorable",
+        "unknown-required"
+      ],
+      "path": "unknown-events"
+    },
+    {
+      "id": "framing-strictness",
+      "ledger_fixtures": [
+        "native-tolerant-frame",
+        "adapter-strict-frame"
+      ],
+      "path": "framing-strictness"
+    },
+    {
+      "id": "unsupported-controls",
+      "ledger_fixtures": [
+        "no-native-cancel"
+      ],
+      "path": "unsupported-controls"
+    },
+    {
+      "id": "journal-replay",
+      "ledger_fixtures": [
+        "no-implied-replay"
+      ],
+      "path": "journal-replay"
+    },
+    {
+      "id": "process-loss",
+      "ledger_fixtures": [
+        "process-exit"
+      ],
+      "path": "process-loss"
+    },
+    {
+      "id": "working-directory-change",
+      "ledger_fixtures": [
+        "working-directory-change"
+      ],
+      "path": "working-directory-change"
+    }
+  ],
+  "commit": "d743267388641bc76f17c45ce8b4c231aed1d32c",
+  "commit_tree": "75a3d23c8b6db770a000081918c4b975912a9c39",
+  "sources": {
+    "core_agent_inbox_blob": "ef00887a544c2dededb484ff7b9ce0efe83dea21",
+    "core_agent_loop_blob": "adf2e33ddcc9b37e8e20e89203a276bcdf18ee5d",
+    "core_agent_runtime_types_blob": "0fa89afc054a819493206cef65dd7907092cdd7f",
+    "core_agent_types_blob": "5cbc81df38c81be4f5c4d85e6a2c8acd5108ed95",
+    "core_session_known_event_types_blob": "9801de9222f0aee821fd7a33124b07b2ed833959",
+    "core_session_surface_blob": "0bb84c030ef595b3d9a17116e7dc7b9deb26369c",
+    "core_session_types_blob": "fbc9a9cccbe3f95d344f8e8078dfe5ddd3786a80",
+    "llm_assistant_stream_blob": "7fca34c5d5bf432f7fad81bd48edfbdaf5083e83",
+    "llm_message_blob": "d96a63edb6d78d64508875ebc1cc6a1cc5a824b6",
+    "llm_types_blob": "794352dc837f0d7c0d9335e3da607e5eb9da91a8",
+    "sdk_protocol_transport_blob": "36574f46bf3e34738be045408e25bb79932ff609",
+    "sdk_protocol_types_blob": "9c2fd6335d3db02fb7fabe9f0674e5a63647a09e",
+    "sdk_server_blob": "ab5084ffb723b327d6accc04547698d786f827a6"
+  },
+  "tag": "dsh-v0.2.1-alpha.2",
+  "version": 1
+}
