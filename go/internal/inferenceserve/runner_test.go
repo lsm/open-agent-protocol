@@ -136,3 +136,20 @@ func TestBothWiresCarryTheRequestedTokenCapAndTemperature(t *testing.T) {
 		}
 	}
 }
+
+func TestEverySystemAndDeveloperMessageJoinsTheSystemPromptAsOapxJoinsThem(t *testing.T) {
+	var request CreateRequest
+	if err := json.Unmarshal([]byte(`{"model_ref":"m","messages":[{"role":"system","content":"be brief"},{"role":"user","content":"hi"},{"role":"developer","content":[{"type":"text","text":"use tools"}]}]}`), &request); err != nil {
+		t.Fatal(err)
+	}
+	conversation, err := conversationOf(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !conversation.HasSystem || conversation.SystemPrompt != "be brief\n\nuse tools" {
+		t.Fatalf("system prompt = %q, want both joined by a blank line", conversation.SystemPrompt)
+	}
+	if len(conversation.Messages) != 1 || conversation.Messages[0].User == nil {
+		t.Fatalf("messages = %+v, want only the user turn", conversation.Messages)
+	}
+}

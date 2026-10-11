@@ -211,8 +211,12 @@ func conversationOf(request CreateRequest) (provider.Context, error) {
 			return provider.Context{}, err
 		}
 		switch message.Role {
-		case "system":
-			conversation.SystemPrompt, conversation.HasSystem = text, true
+		case "system", "developer":
+			if conversation.HasSystem {
+				conversation.SystemPrompt += "\n\n"
+			}
+			conversation.SystemPrompt += text
+			conversation.HasSystem = true
 		case "user":
 			conversation.Messages = append(conversation.Messages, provider.Message{User: &provider.UserContent{Text: text, HasText: true}})
 		case "assistant":

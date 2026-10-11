@@ -89,6 +89,14 @@ ordered comparison.
 trees emit the same envelopes", not "in what order". The order claim belongs to
 the fixture, not to the backend test.
 
+**The provider profile has its own test.** `TestInferenceTracesMatchOapx`
+(`go/internal/inferenceserve`) serves one `inference.create.request` from
+`oapx serve provider` and from the Go `Runner` against the same loopback
+provider, model discovery included, for four turns: text, reasoning then text,
+text then a tool call, and two tool calls. It compares the two traces as parsed
+JSON in order, normalising only envelope ids, timestamps and the inference id,
+never `sequence`.
+
 ## What it is not for
 
 - **It is not conformance.** A tree can agree with the other tree and both be
@@ -111,12 +119,14 @@ the fixture, not to the backend test.
 zig build --build-file zig/build.zig install --prefix /tmp/oapx
 OAP_OAPX_BIN=/tmp/oapx/bin/oapx go test ./go/cmd/goap/ \
   -run 'TestBackendsMatchOapx|TestMemoryBackendMatchesOapx'
+OAP_OAPX_BIN=/tmp/oapx/bin/oapx go test ./go/internal/inferenceserve/ \
+  -run TestInferenceTracesMatchOapx
 ```
 
-Both tests, or you have run one of the two halves. Without `OAP_OAPX_BIN` they
+All three tests, or you have run part of the job. Without `OAP_OAPX_BIN` they
 skip, so an ordinary `go test ./go/...` stays fast and the jobs are the only
 things that pay for it. CI builds `oapx` and runs them on every change in three
-jobs: `backend-parity` for the fixtures, `memory-conformance` for the memory
+jobs: `backend-parity` for the fixtures and the provider traces, `memory-conformance` for the memory
 backend, and `pi-parity-repeat`, which runs the `pi` fixture twenty times
 because that scenario must not depend on goroutine scheduling. It selects that
 one fixture by its directory name, which is what a subtest is called, so
