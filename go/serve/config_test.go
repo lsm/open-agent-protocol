@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -48,7 +49,7 @@ func TestTheExampleHermesEntryStartsTheGatewayModule(t *testing.T) {
 	if !ok || hermes.Type != "hermes" {
 		t.Fatalf("hermes entry = %+v", hermes)
 	}
-	if strings.Join(hermes.Args, " ") != "-m tui_gateway.entry" {
+	if !slices.Equal(hermes.Args, []string{"-m", "tui_gateway.entry"}) {
 		t.Fatalf("hermes args = %q, want the gateway module the interpreter runs", hermes.Args)
 	}
 }
