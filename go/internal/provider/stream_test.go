@@ -1077,3 +1077,20 @@ func TestArgumentsForAToolCallThatAlreadyEndedAreDropped(t *testing.T) {
 		t.Fatalf("the terminal = %+v, want each call with the arguments its part ended with", blocks)
 	}
 }
+
+func TestAToolCallSignatureLandsOnItsPartAndTerminalAlikeAndALateOneIsDropped(t *testing.T) {
+	events := runStream(t, streamModel(),
+		sseFrame(`{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_a","function":{"name":"read","arguments":"{}"}}]}}]}`),
+		sseFrame(`{"choices":[{"delta":{"content":"done","reasoning_details":[{"type":"reasoning.encrypted","id":"call_a","data":"sig-a"}]}}]}`),
+		sseFrame(`{"choices":[{"delta":{"tool_calls":[{"index":1,"id":"call_b","function":{"name":"read","arguments":"[]"}}]}}]}`),
+		sseFrame(`{"choices":[{"delta":{"content":"x","reasoning_details":[{"type":"reasoning.encrypted","id":"call_a","data":"late"}]}}]}`),
+	)
+	ended := findEvent(t, events, EventToolCallEnd).ToolCall
+	if ended == nil || !strings.Contains(ended.ThoughtSig, "sig-a") {
+		t.Fatalf("the part ended with %+v, want call_a carrying its signature", ended)
+	}
+	terminal := findEvent(t, events, EventDone).Message.Content[0].ToolCall
+	if terminal == nil || terminal.ThoughtSig != ended.ThoughtSig {
+		t.Fatalf("the terminal carries %+v, want the signature the part ended with", terminal)
+	}
+}

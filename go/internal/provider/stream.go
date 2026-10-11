@@ -239,6 +239,15 @@ func (s *streamState) openToolCall(apiIndex int) (int, bool) {
 	return index, true
 }
 
+func (s *streamState) openToolCallNamed(id string) bool {
+	index, ok := s.openIndex("tool_call")
+	if !ok {
+		return false
+	}
+	call, tracked := s.tracker.byAPI[s.parts[index].apiIndex]
+	return tracked && call.id == id
+}
+
 func (s *streamState) begin(part streamPart) int {
 	s.parts = append(s.parts, part)
 	s.open = true
@@ -329,6 +338,11 @@ func (s *streamState) close(sink *EventSink) {
 }
 
 func (s *streamState) emitFor(sink *EventSink) {
+	for _, detail := range s.lastDetails {
+		if s.openToolCallNamed(detail.toolCallID) {
+			s.tracker.setSignatureByID(detail.toolCallID, detail.detailJSON)
+		}
+	}
 	if len(s.thinking) > s.prevThink && !IsKimiModel(s.model) {
 		index := s.continueOrBegin(sink, "thinking", s.prevThink)
 		sink.emit(Event{Kind: EventThinkingDelta, ContentIndex: index, Delta: s.thinking[s.prevThink:], Partial: s.partial(nil)})
@@ -339,9 +353,6 @@ func (s *streamState) emitFor(sink *EventSink) {
 		sink.emit(Event{Kind: EventTextDelta, ContentIndex: index, Delta: s.text[s.prevText:], Partial: s.partial(nil)})
 	}
 	s.prevText = len(s.text)
-	for _, detail := range s.lastDetails {
-		s.tracker.setSignatureByID(detail.toolCallID, detail.detailJSON)
-	}
 	for _, call := range s.lastToolCalls {
 		if call.isStart {
 			if _, tracked := s.tracker.byAPI[call.apiIndex]; tracked {
