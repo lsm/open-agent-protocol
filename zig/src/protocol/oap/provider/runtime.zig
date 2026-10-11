@@ -155,6 +155,7 @@ pub fn failureCode(message: []const u8) types.ErrorCode {
     const status = failureStatus(message) orelse return .provider_unavailable;
     return switch (status) {
         401, 403 => .credential_rejected,
+        429 => .rate_limited,
         else => .provider_unavailable,
     };
 }
@@ -162,6 +163,7 @@ pub fn failureCode(message: []const u8) types.ErrorCode {
 pub fn failureMessage(code: types.ErrorCode) []const u8 {
     return switch (code) {
         .credential_rejected => "the provider refused the credential: sign in again or set a new key",
+        .rate_limited => "the provider is limiting requests: retry after a pause",
         else => "the provider stream failed",
     };
 }
@@ -174,10 +176,12 @@ fn failureStatus(message: []const u8) ?u16 {
     return std.fmt.parseInt(u16, message[start..end], 10) catch null;
 }
 
-test "a provider failure naming HTTP 401 or 403 is a refused credential, and any other is a retry" {
+test "a provider failure naming HTTP 401 or 403 is a refused credential, 429 is a rate limit, and any other is unavailable" {
     try std.testing.expectEqual(types.ErrorCode.credential_rejected, failureCode("anthropic request failed: HTTP 401 (check ANTHROPIC_API_KEY is valid)"));
     try std.testing.expectEqual(types.ErrorCode.credential_rejected, failureCode("deepseek request failed: HTTP 403{\"error\":\"forbidden\"}"));
     try std.testing.expectEqual(types.ErrorCode.provider_unavailable, failureCode("openai request failed: HTTP 500"));
+    try std.testing.expectEqual(types.ErrorCode.rate_limited, failureCode("zai-coding-plan request failed: HTTP 429 (Rate limit reached for requests)"));
+    try std.testing.expectEqual(types.ErrorCode.provider_unavailable, failureCode("openai request failed: HTTP 4290"));
     try std.testing.expectEqual(types.ErrorCode.provider_unavailable, failureCode("openai request failed: HTTP 4010"));
     try std.testing.expectEqual(types.ErrorCode.provider_unavailable, failureCode("connection reset"));
     try std.testing.expectEqual(types.ErrorCode.provider_unavailable, failureCode("request failed: HTTP "));

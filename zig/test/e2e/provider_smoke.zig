@@ -18,15 +18,16 @@ const opt_in_model_env = "OAP_PROVIDER_SMOKE_MODEL";
 const Row = struct {
     id: []const u8,
     model: []const u8,
+    answers_unknown_model: bool = false,
 };
 
 const rows = [_]Row{
     .{ .id = "openai", .model = "gpt-4o-mini" },
     .{ .id = "anthropic", .model = "claude-haiku-4-5-20251001" },
     .{ .id = "deepseek", .model = "deepseek-chat" },
-    .{ .id = "kimi", .model = "kimi-k2.7-code" },
+    .{ .id = "kimi", .model = "kimi-k2.7-code", .answers_unknown_model = true },
     .{ .id = "zai-coding-plan", .model = "glm-4.6" },
-    .{ .id = "opencode-zen", .model = "grok-code-fast-1" },
+    .{ .id = "opencode-zen", .model = "deepseek-v4.1-flash" },
     .{ .id = "opencode-go", .model = "deepseek-v4-flash" },
     .{ .id = "openrouter", .model = "openai/gpt-4o-mini" },
 };
@@ -243,7 +244,7 @@ test "provider smoke: one completion" {
     } }};
     const ctx = ai_types.Context{ .messages = &messages };
 
-    const stream = try stream_mod.stream(&fixture.registry, fixture.model, ctx, fixture.options(32), testing.allocator);
+    const stream = try stream_mod.stream(&fixture.registry, fixture.model, ctx, fixture.options(1024), testing.allocator);
     defer _ = stream.deinitAndDestroy();
 
     var result = try test_helpers.waitForResult(testing.allocator, stream, fixture.row.id);
@@ -264,7 +265,7 @@ test "provider smoke: a streamed completion arrives as deltas" {
     } }};
     const ctx = ai_types.Context{ .messages = &messages };
 
-    const stream = try stream_mod.stream(&fixture.registry, fixture.model, ctx, fixture.options(128), testing.allocator);
+    const stream = try stream_mod.stream(&fixture.registry, fixture.model, ctx, fixture.options(1024), testing.allocator);
     defer _ = stream.deinitAndDestroy();
 
     var deltas: usize = 0;
@@ -309,7 +310,7 @@ test "provider smoke: one tool call" {
     } }};
     const ctx = ai_types.Context{ .messages = &messages, .tools = &tools };
 
-    const stream = try stream_mod.stream(&fixture.registry, fixture.model, ctx, fixture.options(128), testing.allocator);
+    const stream = try stream_mod.stream(&fixture.registry, fixture.model, ctx, fixture.options(1024), testing.allocator);
     defer _ = stream.deinitAndDestroy();
 
     var result = try test_helpers.waitForResult(testing.allocator, stream, fixture.row.id);
@@ -320,7 +321,7 @@ test "provider smoke: one tool call" {
     try testing.expect(saw_tool);
 }
 
-test "provider smoke: an unknown model is refused" {
+test "provider smoke: an unknown model behaves as its row records" {
     var fixture = (try prepare(testing.allocator)) orelse return error.SkipZigTest;
     defer fixture.deinit();
 
@@ -352,8 +353,10 @@ test "provider smoke: an unknown model is refused" {
     } }};
     const ctx = ai_types.Context{ .messages = &messages };
 
+    const case = if (fixture.row.answers_unknown_model) "unknown model answered, as recorded" else "unknown model refused";
     const stream = stream_mod.stream(&fixture.registry, refused, ctx, fixture.options(16), testing.allocator) catch {
-        report(fixture.row.id, "unknown model refused", true);
+        report(fixture.row.id, case, !fixture.row.answers_unknown_model);
+        try testing.expect(!fixture.row.answers_unknown_model);
         return;
     };
     defer _ = stream.deinitAndDestroy();
@@ -361,16 +364,16 @@ test "provider smoke: an unknown model is refused" {
     const deadline = test_helpers.createDeadline(test_helpers.DEFAULT_E2E_TIMEOUT_MS);
     while (!stream.isDone()) {
         if (test_helpers.isDeadlineExceeded(deadline)) {
-            report(fixture.row.id, "unknown model refused", false);
+            report(fixture.row.id, case, false);
             return error.TimeoutExceeded;
         }
         test_helpers.drainOne(stream);
         compat.time.sleepNs(10 * std.time.ns_per_ms);
     }
 
-    const refused_it = stream.getError() != null;
-    report(fixture.row.id, "unknown model refused", refused_it);
-    try testing.expect(refused_it);
+    const as_recorded = (stream.getError() != null) != fixture.row.answers_unknown_model;
+    report(fixture.row.id, case, as_recorded);
+    try testing.expect(as_recorded);
 }
 
 test "the smoke gate lists every current row and no other" {

@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"testing"
@@ -76,11 +77,17 @@ type child struct {
 
 	held        map[int64]responseShape
 	heldSignals []string
+	transcript  []string
 }
 
 func spawn(t *testing.T, args ...string) *child {
 	t.Helper()
-	cmd := exec.Command(oapBinary(t), append([]string{"serve", "--stdio"}, args...)...)
+	return spawnBinary(t, oapBinary(t), args...)
+}
+
+func spawnBinary(t *testing.T, binary string, args ...string) *child {
+	t.Helper()
+	cmd := exec.Command(binary, append([]string{"serve", "--stdio"}, args...)...)
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
 		t.Fatal(err)
@@ -160,6 +167,7 @@ func (c *child) signal() string {
 	if len(c.heldSignals) > 0 {
 		line := c.heldSignals[0]
 		c.heldSignals = c.heldSignals[1:]
+		c.transcript = append(c.transcript, line)
 		return line
 	}
 	for {
@@ -172,15 +180,20 @@ func (c *child) signal() string {
 			c.held[shape.ID] = shape
 			continue
 		}
+		c.transcript = append(c.transcript, line)
 		return line
 	}
 }
 
 func (c *child) wait() error {
 	c.t.Helper()
-	for range c.lines {
-
+	trailing := append([]string(nil), c.heldSignals...)
+	c.heldSignals = nil
+	for line := range c.lines {
+		trailing = append(trailing, line)
 	}
+	sort.Strings(trailing)
+	c.transcript = append(c.transcript, trailing...)
 	if err := <-c.readErr; err != nil {
 		c.t.Fatalf("stdout scan: %v", err)
 	}
@@ -193,6 +206,7 @@ func (c *child) decode(line string) responseShape {
 	if err := json.Unmarshal([]byte(line), &shape); err != nil {
 		c.t.Fatalf("line %q: %v", line, err)
 	}
+	shape.raw = line
 	return shape
 }
 
@@ -201,6 +215,7 @@ func (c *child) require(id int64, shape responseShape) responseShape {
 	if !shape.OK {
 		c.t.Fatalf("op %d failed: %s: %s", id, shape.Error.Code, shape.Error.Message)
 	}
+	c.transcript = append(c.transcript, shape.raw)
 	return shape
 }
 
@@ -213,6 +228,7 @@ type responseShape struct {
 		Code    string `json:"code"`
 		Message string `json:"message"`
 	} `json:"error"`
+	raw string
 }
 
 type signalShape struct {
@@ -224,7 +240,92 @@ type signalShape struct {
 
 func TestStdioBinaryDrivesAFullSession(t *testing.T) {
 	c := spawn(t)
+	driveFullSession(t, c)
+	if banner := c.stderr.String(); !strings.Contains(banner, "serving adapters over stdio: memory") {
+		t.Fatalf("stderr carries no banner:\n%s", banner)
+	}
+}
 
+func TestHubStdioDrivesAFullSessionAsGoapDoes(t *testing.T) {
+	oapx := os.Getenv("OAP_OAPX_BIN")
+	if oapx == "" {
+		t.Skip("set OAP_OAPX_BIN to an oapx binary to compare its stdio session with goap's")
+	}
+	if !filepath.IsAbs(oapx) {
+		t.Fatalf("OAP_OAPX_BIN must be absolute, got %q", oapx)
+	}
+	goap := spawnBinary(t, oapBinary(t), "--session-history=")
+	driveFullSession(t, goap)
+	zig := spawnBinary(t, oapx, "--session-history=")
+	driveFullSession(t, zig)
+
+	goLines, zigLines := normalisedTranscript(t, goap.transcript), normalisedTranscript(t, zig.transcript)
+	if len(goLines) != len(zigLines) {
+		t.Errorf("goap answered %d lines and oapx answered %d", len(goLines), len(zigLines))
+	}
+	for i := 0; i < len(goLines) && i < len(zigLines); i++ {
+		if goLines[i] != zigLines[i] {
+			t.Errorf("line %d differs:\ngoap: %s\noapx: %s", i, goLines[i], zigLines[i])
+		}
+	}
+}
+
+func normalisedTranscript(t *testing.T, lines []string) []string {
+	t.Helper()
+	aliases := map[string]string{}
+	normalised := make([]string, 0, len(lines))
+	for _, line := range lines {
+		var parsed map[string]any
+		if err := json.Unmarshal([]byte(line), &parsed); err != nil {
+			t.Fatalf("line %q: %v", line, err)
+		}
+		aliasMinted(parsed, aliases)
+		encoded, err := json.MarshalIndent(parsed, "", "  ")
+		if err != nil {
+			t.Fatal(err)
+		}
+		normalised = append(normalised, string(encoded))
+	}
+	return normalised
+}
+
+func aliasMinted(node any, aliases map[string]string) {
+	switch value := node.(type) {
+	case map[string]any:
+		_, isEnvelope := value["type"].(string)
+		keys := make([]string, 0, len(value))
+		for key := range value {
+			keys = append(keys, key)
+		}
+		sort.Strings(keys)
+		for _, key := range keys {
+			child := value[key]
+			if _, isNumber := child.(float64); isNumber && strings.HasSuffix(key, "_ms") {
+				value[key] = float64(0)
+				continue
+			}
+			if text, isText := child.(string); isText && (mintedPerRun[key] || key == "id" && isEnvelope || key == "in_reply_to" && strings.HasPrefix(text, "oap-request-")) {
+				alias, seen := aliases[key+"\x00"+text]
+				if !seen {
+					alias = fmt.Sprintf("<%s %d>", key, len(aliases)+1)
+					aliases[key+"\x00"+text] = alias
+				}
+				value[key] = alias
+				continue
+			}
+			aliasMinted(child, aliases)
+		}
+	case []any:
+		for _, child := range value {
+			aliasMinted(child, aliases)
+		}
+	}
+}
+
+var mintedPerRun = map[string]bool{"created_at": true, "as_of": true, "run_id": true, "interaction_id": true, "tool_call_id": true}
+
+func driveFullSession(t *testing.T, c *child) {
+	t.Helper()
 	c.send(`{"id":1,"op":"adapters"}`)
 	c.send(`{"id":2,"op":"capabilities","adapter":"memory"}`)
 	c.response(1)
@@ -288,6 +389,9 @@ func TestStdioBinaryDrivesAFullSession(t *testing.T) {
 	if terminal != protocol.TypeRunCompleted {
 		t.Fatalf("run settled %s, want %s", terminal, protocol.TypeRunCompleted)
 	}
+	for id := int64(7); id < nextID; id++ {
+		c.response(id)
+	}
 
 	c.send(`{"id":20,"op":"state","session_id":"e2e"}`)
 	c.response(20)
@@ -318,9 +422,6 @@ func TestStdioBinaryDrivesAFullSession(t *testing.T) {
 	}
 	if err := c.wait(); err != nil {
 		t.Fatalf("clean exit expected, got %v; stderr:\n%s", err, c.stderr)
-	}
-	if banner := c.stderr.String(); !strings.Contains(banner, "serving adapters over stdio: memory") {
-		t.Fatalf("stderr carries no banner:\n%s", banner)
 	}
 }
 

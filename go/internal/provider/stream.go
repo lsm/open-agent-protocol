@@ -239,6 +239,15 @@ func (s *streamState) openToolCall(apiIndex int) (int, bool) {
 	return index, true
 }
 
+func (s *streamState) openToolCallNamed(id string) bool {
+	index, ok := s.openIndex("tool_call")
+	if !ok {
+		return false
+	}
+	call, tracked := s.tracker.byAPI[s.parts[index].apiIndex]
+	return tracked && call.id == id
+}
+
 func (s *streamState) begin(part streamPart) int {
 	s.parts = append(s.parts, part)
 	s.open = true
@@ -284,6 +293,22 @@ func (s *streamState) covered(kind string) int {
 	return covered
 }
 
+func (s *streamState) finishTail(sink *EventSink, kind string) {
+	buffer := s.text
+	deltaKind := EventTextDelta
+	if kind == "thinking" {
+		buffer = s.thinking
+		deltaKind = EventThinkingDelta
+	}
+	start := s.covered(kind)
+	if len(buffer) <= start {
+		return
+	}
+	index := s.continueOrBegin(sink, kind, start)
+	sink.emit(Event{Kind: deltaKind, ContentIndex: index, Delta: buffer[start:], Partial: s.partial(nil)})
+	s.close(sink)
+}
+
 func (s *streamState) close(sink *EventSink) {
 	if !s.open {
 		return
@@ -313,6 +338,11 @@ func (s *streamState) close(sink *EventSink) {
 }
 
 func (s *streamState) emitFor(sink *EventSink) {
+	for _, detail := range s.lastDetails {
+		if s.openToolCallNamed(detail.toolCallID) {
+			s.tracker.setSignatureByID(detail.toolCallID, detail.detailJSON)
+		}
+	}
 	if len(s.thinking) > s.prevThink && !IsKimiModel(s.model) {
 		index := s.continueOrBegin(sink, "thinking", s.prevThink)
 		sink.emit(Event{Kind: EventThinkingDelta, ContentIndex: index, Delta: s.thinking[s.prevThink:], Partial: s.partial(nil)})
@@ -323,9 +353,6 @@ func (s *streamState) emitFor(sink *EventSink) {
 		sink.emit(Event{Kind: EventTextDelta, ContentIndex: index, Delta: s.text[s.prevText:], Partial: s.partial(nil)})
 	}
 	s.prevText = len(s.text)
-	for _, detail := range s.lastDetails {
-		s.tracker.setSignatureByID(detail.toolCallID, detail.detailJSON)
-	}
 	for _, call := range s.lastToolCalls {
 		if call.isStart {
 			if _, tracked := s.tracker.byAPI[call.apiIndex]; tracked {
@@ -341,11 +368,15 @@ func (s *streamState) emitFor(sink *EventSink) {
 		if !call.hasArguments {
 			continue
 		}
-		if !s.tracker.appendDelta(call.apiIndex, call.arguments) {
+		index, open := s.openToolCall(call.apiIndex)
+		if !open || !s.tracker.appendDelta(call.apiIndex, call.arguments) {
 			continue
 		}
-		if index, ok := s.openToolCall(call.apiIndex); ok {
-			sink.emit(Event{Kind: EventToolCallDelta, ContentIndex: index, Delta: call.arguments, Partial: s.partial(nil)})
+		sink.emit(Event{Kind: EventToolCallDelta, ContentIndex: index, Delta: call.arguments, Partial: s.partial(nil)})
+	}
+	for _, detail := range s.lastDetails {
+		if s.openToolCallNamed(detail.toolCallID) {
+			s.tracker.setSignatureByID(detail.toolCallID, detail.detailJSON)
 		}
 	}
 	s.lastToolCalls = nil
@@ -358,15 +389,11 @@ func (s *streamState) finish(sink *EventSink) {
 	}
 	s.usage.Cost = calculateCost(s.usage, s.model.Cost)
 	s.close(sink)
-	content := make([]AssistantBlock, 0, len(s.parts)+2)
+	s.finishTail(sink, "thinking")
+	s.finishTail(sink, "text")
+	content := make([]AssistantBlock, 0, len(s.parts))
 	for _, part := range s.parts {
 		content = append(content, s.block(part))
-	}
-	if tail := s.thinking[s.covered("thinking"):]; tail != "" {
-		content = append(content, s.block(streamPart{kind: "thinking", start: len(s.thinking) - len(tail), end: len(s.thinking)}))
-	}
-	if tail := s.text[s.covered("text"):]; tail != "" {
-		content = append(content, s.block(streamPart{kind: "text", start: len(s.text) - len(tail), end: len(s.text)}))
 	}
 	if len(content) == 0 {
 		content = []AssistantBlock{{Text: &TextPart{}}}
