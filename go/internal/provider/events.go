@@ -179,33 +179,34 @@ func (c *streamClock) millis() int64 {
 }
 
 type streamState struct {
-	model            Model
-	clock            *streamClock
-	usage            Usage
-	stopReason       StopReason
-	thinking         string
-	text             string
-	signature        string
-	hasSig           bool
-	nextIndex        int
-	thinkingIndex    int
-	textIndex        int
-	textStreamed     bool
-	thinkingStreamed bool
-	toolCalls        int
-	tracker          *toolTracker
-	prevText         int
-	prevThink        int
-	lastToolCalls    []toolCallEvent
-	lastDetails      []reasoningDetail
+	model         Model
+	clock         *streamClock
+	usage         Usage
+	stopReason    StopReason
+	thinking      string
+	text          string
+	signature     string
+	hasSig        bool
+	parts         []streamPart
+	open          bool
+	toolCalls     int
+	tracker       *toolTracker
+	prevText      int
+	prevThink     int
+	lastToolCalls []toolCallEvent
+	lastDetails   []reasoningDetail
 }
 
-const partIndexUnset = -1
+type streamPart struct {
+	kind     string
+	start    int
+	end      int
+	apiIndex int
+}
 
 func newStreamState(model Model) *streamState {
 	return &streamState{
 		model: model, stopReason: "stop", tracker: newToolTracker(), clock: &streamClock{},
-		thinkingIndex: partIndexUnset, textIndex: partIndexUnset,
 	}
 }
 
