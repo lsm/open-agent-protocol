@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/lsm/open-agent-protocol/go/adapter/claude/internal/native"
 )
@@ -110,11 +111,11 @@ type writeRequest struct {
 }
 
 type Client struct {
-	decoder       *Decoder
-	encoder       *Encoder
-	closer        io.Closer
-	closerOnce    sync.Once
-	queueCapacity int
+	decoder    *Decoder
+	encoder    *Encoder
+	closer     io.Closer
+	closerOnce sync.Once
+	queueStall time.Duration
 
 	mu        sync.Mutex
 	pending   map[string]chan controlResult
@@ -137,8 +138,11 @@ type ClientOptions struct {
 	FrameLimit         int
 	QueueCapacity      int
 	WriteQueueCapacity int
+	QueueStall         time.Duration
 	CloseReadWriter    io.Closer
 }
+
+const defaultQueueStall = 30 * time.Second
 
 func NewClient(reader io.Reader, writer io.Writer, options ClientOptions) *Client {
 	capacity := options.QueueCapacity
@@ -149,9 +153,13 @@ func NewClient(reader io.Reader, writer io.Writer, options ClientOptions) *Clien
 	if writeCapacity <= 0 {
 		writeCapacity = capacity
 	}
+	stall := options.QueueStall
+	if stall <= 0 {
+		stall = defaultQueueStall
+	}
 	client := &Client{
 		decoder: NewDecoder(reader, options.FrameLimit), encoder: NewEncoder(writer, options.FrameLimit),
-		closer: options.CloseReadWriter, queueCapacity: capacity,
+		closer: options.CloseReadWriter, queueStall: stall,
 		pending: make(map[string]chan controlResult), incoming: make(map[string]*IncomingControl),
 		writes: make(chan writeRequest, writeCapacity), inbound: make(chan InboundMessage, capacity),
 		done: make(chan struct{}), readDone: make(chan struct{}),
@@ -381,6 +389,15 @@ func (client *Client) enqueue(message InboundMessage, overflow error) bool {
 	case client.inbound <- message:
 		return true
 	default:
+	}
+	stalled := time.NewTimer(client.queueStall)
+	defer stalled.Stop()
+	select {
+	case client.inbound <- message:
+		return true
+	case <-client.done:
+		return false
+	case <-stalled.C:
 		client.closeWith(overflow)
 		return false
 	}

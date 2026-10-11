@@ -514,7 +514,7 @@ func TestClientWriteBlockedWithoutCloserReturnsWhenReaderRetires(t *testing.T) {
 func TestClientRefusesResponseWhenBarrierCannotBeEnqueued(t *testing.T) {
 	upstreamRead, upstreamWrite := io.Pipe()
 	downstreamRead, downstreamWrite := io.Pipe()
-	client := NewClient(upstreamRead, downstreamWrite, ClientOptions{QueueCapacity: 1})
+	client := NewClient(upstreamRead, downstreamWrite, ClientOptions{QueueCapacity: 1, QueueStall: 50 * time.Millisecond})
 	result := make(chan error, 1)
 	go func() {
 		result <- client.Call(context.Background(), json.RawMessage(`{"subtype":"initialize","hooks":null}`), nil)
@@ -542,6 +542,57 @@ func TestClientRefusesResponseWhenBarrierCannotBeEnqueued(t *testing.T) {
 	}
 	_ = upstreamWrite.Close()
 	_ = downstreamRead.Close()
+}
+
+func TestClientHoldsABurstForASlowConsumerInsteadOfFailing(t *testing.T) {
+	upstreamRead, upstreamWrite := io.Pipe()
+	client := NewClient(upstreamRead, io.Discard, ClientOptions{QueueCapacity: 2, QueueStall: 5 * time.Second})
+	const burst = 40
+	go func() {
+		var frames strings.Builder
+		for i := 0; i < burst; i++ {
+			frames.WriteString(`{"type":"command_lifecycle","command_uuid":"u` + strconv.Itoa(i) + `","state":"queued","session_id":"s1","uuid":"c` + strconv.Itoa(i) + `"}` + "\n")
+		}
+		_, _ = upstreamWrite.Write([]byte(frames.String()))
+	}()
+	received := 0
+	for received < burst {
+		select {
+		case in := <-client.Inbound():
+			if in.Observation != nil {
+				received++
+			}
+			time.Sleep(2 * time.Millisecond)
+		case <-client.Done():
+			t.Fatalf("the client closed after %d of %d frames: %v", received, burst, client.Err())
+		case <-time.After(5 * time.Second):
+			t.Fatalf("only %d of %d frames arrived", received, burst)
+		}
+	}
+	_ = upstreamWrite.Close()
+}
+
+func TestClientFailsClosedOnlyAfterTheConsumerStallsPastTheBound(t *testing.T) {
+	upstreamRead, upstreamWrite := io.Pipe()
+	client := NewClient(upstreamRead, io.Discard, ClientOptions{QueueCapacity: 1, QueueStall: 500 * time.Millisecond})
+	go func() {
+		_, _ = upstreamWrite.Write([]byte(`{"type":"command_lifecycle","command_uuid":"u1","state":"queued","session_id":"s1","uuid":"c1"}` + "\n" + `{"type":"command_lifecycle","command_uuid":"u2","state":"queued","session_id":"s1","uuid":"c2"}` + "\n"))
+	}()
+	time.Sleep(50 * time.Millisecond)
+	select {
+	case <-client.Done():
+		t.Fatal("the client closed before the stall bound passed")
+	default:
+	}
+	select {
+	case <-client.Done():
+		if !errors.Is(client.Err(), ErrObservationQueue) {
+			t.Fatalf("closed with %v, want the queue overflow", client.Err())
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("a consumer that never reads did not fail the client")
+	}
+	_ = upstreamWrite.Close()
 }
 
 type transportCloseCounter struct {
