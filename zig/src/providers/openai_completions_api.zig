@@ -1245,6 +1245,23 @@ const PartStream = struct {
         return end;
     }
 
+    fn finishTail(self: *PartStream, allocator: std.mem.Allocator, kind: PartKind) !void {
+        const buffer = switch (kind) {
+            .text => self.text.items,
+            .thinking => self.thinking.items,
+            .tool_call => unreachable,
+        };
+        const start = self.covered(kind);
+        if (buffer.len <= start) return;
+        const index = try self.continueOrBegin(allocator, kind, start);
+        switch (kind) {
+            .text => pushEvent(self.stream, .{ .text_delta = .{ .content_index = index, .delta = buffer[start..], .partial = self.partial() } }),
+            .thinking => pushEvent(self.stream, .{ .thinking_delta = .{ .content_index = index, .delta = buffer[start..], .partial = self.partial() } }),
+            .tool_call => unreachable,
+        }
+        try self.close(allocator);
+    }
+
     fn assemble(self: *PartStream, allocator: std.mem.Allocator) ![]ai_types.AssistantContent {
         var built = std.ArrayList(ai_types.AssistantContent).empty;
         errdefer {
@@ -1269,16 +1286,6 @@ const PartStream = struct {
                 };
             },
         };
-        const thinking_tail = self.thinking.items[self.covered(.thinking)..];
-        if (thinking_tail.len > 0) try self.appendThinking(allocator, &built, thinking_tail);
-        const text_tail = self.text.items[self.covered(.text)..];
-        if (text_tail.len > 0) {
-            const owned = try allocator.dupe(u8, text_tail);
-            built.append(allocator, .{ .text = .{ .text = owned } }) catch |err| {
-                allocator.free(owned);
-                return err;
-            };
-        }
         return built.toOwnedSlice(allocator);
     }
 
@@ -1827,18 +1834,17 @@ fn runThread(ctx: *ThreadCtx) void {
                         .partial = parts.partial(),
                     } });
                 } else if (tce.arguments_delta) |delta| {
+                    const content_index = parts.openToolCall(tce.api_index) orelse continue;
                     tool_call_tracker_instance.appendDelta(tce.api_index, delta) catch {
                         ctx.deinit();
                         stream.completeWithError("oom tool call delta");
                         return;
                     };
-                    if (parts.openToolCall(tce.api_index)) |content_index| {
-                        pushEvent(stream, .{ .toolcall_delta = .{
-                            .content_index = content_index,
-                            .delta = delta,
-                            .partial = parts.partial(),
-                        } });
-                    }
+                    pushEvent(stream, .{ .toolcall_delta = .{
+                        .content_index = content_index,
+                        .delta = delta,
+                        .partial = parts.partial(),
+                    } });
                 }
             }
         }
@@ -1852,8 +1858,18 @@ fn runThread(ctx: *ThreadCtx) void {
         stream.completeWithError("oom closing a part");
         return;
     };
+    parts.finishTail(allocator, .thinking) catch {
+        ctx.deinit();
+        stream.completeWithError("oom closing a part");
+        return;
+    };
+    parts.finishTail(allocator, .text) catch {
+        ctx.deinit();
+        stream.completeWithError("oom closing a part");
+        return;
+    };
 
-    const has_content = parts.parts.items.len > 0 or thinking.items.len > parts.covered(.thinking) or text.items.len > parts.covered(.text);
+    const has_content = parts.parts.items.len > 0;
 
     if (!has_content and stop_reason != .length) {
         const summary = if (finished) "the model returned an empty reply" else "the stream ended before the model replied";
@@ -4210,6 +4226,82 @@ test "a tool call whose id is repeated on a later delta stays one part and keeps
     defer std.testing.allocator.free(seen);
     try std.testing.expectEqualStrings(
         "start 0 call_a\ndelta 0 {\"p\":\ndelta 0 1}\nend 0 call_a {\"p\":1}\nresult call_a {\"p\":1}\n",
+        seen,
+    );
+}
+
+fn everyPartFor(allocator: std.mem.Allocator, body: []const u8, provider: []const u8) ![]u8 {
+    var mock = try MockCompletionsServer.listen(body);
+    var stopped = false;
+    defer if (!stopped) mock.stop();
+    const base_url = try mock.baseUrl(allocator);
+    defer allocator.free(base_url);
+    try mock.start();
+
+    var model = traceModel(base_url);
+    model.provider = provider;
+    const stream = try streamOpenAICompletions(
+        model,
+        traceContext(),
+        .{ .api_key = ai_types.OwnedSlice(u8).initBorrowed("test-key") },
+        allocator,
+    );
+    defer {
+        stream.deinit();
+        allocator.destroy(stream);
+    }
+
+    var seen = std.ArrayList(u8).empty;
+    errdefer seen.deinit(allocator);
+    while (stream.wait()) |event| {
+        var polled = event;
+        defer ai_types.deinitAssistantMessageEvent(allocator, &polled);
+        switch (polled) {
+            .text_end => |value| try seen.print(allocator, "text {d} {s}\n", .{ value.content_index, value.content }),
+            .thinking_end => |value| try seen.print(allocator, "thinking {d} {s}\n", .{ value.content_index, value.content }),
+            .toolcall_end => |value| try seen.print(allocator, "call {d} {s}\n", .{ value.content_index, value.tool_call.arguments_json }),
+            else => {},
+        }
+    }
+    try std.testing.expect(stream.waitForThread(5_000));
+    mock.stop();
+    stopped = true;
+    try std.testing.expect(stream.getError() == null);
+    const result = stream.getResult() orelse return error.TestUnexpectedResult;
+    for (result.content) |item| switch (item) {
+        .text => |value| try seen.print(allocator, "result text {s}\n", .{value.text}),
+        .thinking => |value| try seen.print(allocator, "result thinking {s}\n", .{value.thinking}),
+        .tool_call => |value| try seen.print(allocator, "result call {s}\n", .{value.arguments_json}),
+        .image => {},
+    };
+    return seen.toOwnedSlice(allocator);
+}
+
+test "kimi reasoning that never streamed ends as a part of its own, so every terminal block has an ended part" {
+    const body =
+        "data: {\"choices\":[{\"index\":0,\"delta\":{\"reasoning_content\":\"plan\"},\"finish_reason\":null}]}\n\n" ++
+        "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"answer\"},\"finish_reason\":null}]}\n\n" ++
+        "data: {\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n" ++
+        "data: [DONE]\n\n";
+    const seen = try everyPartFor(std.testing.allocator, body, "kimi");
+    defer std.testing.allocator.free(seen);
+    try std.testing.expectEqualStrings(
+        "text 0 answer\nthinking 1 plan\nresult text answer\nresult thinking plan\n",
+        seen,
+    );
+}
+
+test "arguments for a tool call that already ended are dropped, so its part and the terminal agree" {
+    const body =
+        "data: {\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_a\",\"type\":\"function\",\"function\":{\"name\":\"read\",\"arguments\":\"{}\"}}]},\"finish_reason\":null}]}\n\n" ++
+        "data: {\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":1,\"id\":\"call_b\",\"type\":\"function\",\"function\":{\"name\":\"read\",\"arguments\":\"[]\"}}]},\"finish_reason\":null}]}\n\n" ++
+        "data: {\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\"late\"}}]},\"finish_reason\":null}]}\n\n" ++
+        "data: {\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\n" ++
+        "data: [DONE]\n\n";
+    const seen = try everyPartFor(std.testing.allocator, body, "gateway");
+    defer std.testing.allocator.free(seen);
+    try std.testing.expectEqualStrings(
+        "call 0 {}\ncall 1 []\nresult call {}\nresult call []\n",
         seen,
     );
 }
