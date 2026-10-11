@@ -181,16 +181,20 @@ func TestAStreamWithNoThinkingCarriesNoSignature(t *testing.T) {
 	}
 }
 
-func TestKimiThinkingIsNeverStreamedAsADelta(t *testing.T) {
+func TestKimiThinkingArrivesAsOneDeltaWhenTheStreamEnds(t *testing.T) {
 	model := streamModel()
 	model.Provider = "kimi"
-	events := runStream(t, model, sseFrame(`{"choices":[{"delta":{"reasoning_content":"pondering"}}]}`))
-	if countKind(events, EventThinkingDelta) != 0 {
-		t.Error("kimi's thinking is dropped: no thinking delta is emitted")
+	frames := []string{
+		sseFrame(`{"choices":[{"delta":{"reasoning_content":"pon"}}]}`),
+		sseFrame(`{"choices":[{"delta":{"reasoning_content":"dering"}}]}`),
 	}
-	plain := runStream(t, streamModel(), sseFrame(`{"choices":[{"delta":{"reasoning_content":"pondering"}}]}`))
-	if countKind(plain, EventThinkingDelta) != 1 {
-		t.Error("every other model streams its thinking")
+	events := runStream(t, model, frames...)
+	if countKind(events, EventThinkingDelta) != 1 || findEvent(t, events, EventThinkingDelta).Delta != "pondering" {
+		t.Errorf("kimi's thinking = %v, want one delta carrying all of it", kindsOf(events))
+	}
+	plain := runStream(t, streamModel(), frames...)
+	if countKind(plain, EventThinkingDelta) != 2 {
+		t.Error("every other model streams its thinking as it arrives")
 	}
 }
 
@@ -953,7 +957,7 @@ func TestACallEndingAfterTheTextKeepsTheTextInItsPartial(t *testing.T) {
 	}
 }
 
-func TestATextEndIsOnlyEmittedForAPartThatOpened(t *testing.T) {
+func TestTextThatNeverStreamedEndsAsAPartAtFinish(t *testing.T) {
 	state := newStreamState(streamModel())
 	state.text = "partial"
 	sink := &EventSink{}
@@ -961,10 +965,8 @@ func TestATextEndIsOnlyEmittedForAPartThatOpened(t *testing.T) {
 		t.Fatal("with text and no tool call the partial completes")
 	}
 	events := sink.Drain()
-	for _, event := range events {
-		if event.Kind == EventTextEnd {
-			t.Errorf("got a text_end at index %d, want none: no text part ever opened", event.ContentIndex)
-		}
+	if got := lifecycleOf(events); got != "text_start 0\ntext_delta 0\ntext_end 0" {
+		t.Fatalf("lifecycle =\n%s\nwant the text ended as a part of its own", got)
 	}
 	done := findEvent(t, events, EventDone)
 	if done.Message.Content[0].Text == nil || done.Message.Content[0].Text.Text != "partial" {
@@ -1043,18 +1045,35 @@ func TestAToolCallWhoseIDIsRepeatedOnALaterDeltaStaysOnePartAndKeepsItsArguments
 	}
 }
 
-func TestKimiReasoningIsNotStreamedAndFollowsThePartsInTheTerminal(t *testing.T) {
+func TestKimiReasoningEndsAsAPartAfterTheText(t *testing.T) {
 	model := streamModel()
 	model.Provider = "kimi"
 	events := runStream(t, model,
 		sseFrame(`{"choices":[{"delta":{"reasoning_content":"plan"}}]}`),
 		sseFrame(`{"choices":[{"delta":{"content":"answer"}}]}`),
 	)
-	if got := lifecycleOf(events); got != "text_start 0\ntext_delta 0\ntext_end 0" {
-		t.Fatalf("lifecycle =\n%s\nwant only the text part", got)
+	want := "text_start 0\ntext_delta 0\ntext_end 0\nthinking_start 1\nthinking_delta 1\nthinking_end 1"
+	if got := lifecycleOf(events); got != want {
+		t.Fatalf("lifecycle =\n%s\nwant\n%s", got, want)
 	}
 	blocks := findEvent(t, events, EventDone).Message.Content
 	if len(blocks) != 2 || blocks[0].Text == nil || blocks[0].Text.Text != "answer" || blocks[1].Thinking == nil || blocks[1].Thinking.Thinking != "plan" {
-		t.Fatalf("the terminal = %+v, want the text part, then the reasoning that never streamed", blocks)
+		t.Fatalf("the terminal = %+v, want the text part, then the reasoning part", blocks)
+	}
+}
+
+func TestArgumentsForAToolCallThatAlreadyEndedAreDropped(t *testing.T) {
+	events := runStream(t, streamModel(),
+		sseFrame(`{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_a","function":{"name":"read","arguments":"{}"}}]}}]}`),
+		sseFrame(`{"choices":[{"delta":{"tool_calls":[{"index":1,"id":"call_b","function":{"name":"read","arguments":"[]"}}]}}]}`),
+		sseFrame(`{"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"late"}}]}}]}`),
+	)
+	want := "toolcall_start 0\ntoolcall_delta 0\ntoolcall_end 0\ntoolcall_start 1\ntoolcall_delta 1\ntoolcall_end 1"
+	if got := lifecycleOf(events); got != want {
+		t.Fatalf("lifecycle =\n%s\nwant\n%s", got, want)
+	}
+	blocks := findEvent(t, events, EventDone).Message.Content
+	if len(blocks) != 2 || blocks[0].ToolCall.Arguments != "{}" || blocks[1].ToolCall.Arguments != "[]" {
+		t.Fatalf("the terminal = %+v, want each call with the arguments its part ended with", blocks)
 	}
 }
