@@ -118,6 +118,10 @@ func (r *Runner) Create(ctx context.Context, requestID string, request CreateReq
 		refuse(CodeUnsupportedFeature, reason)
 		return
 	}
+	if reason := messageRefusal(request.Messages); reason != "" {
+		refuse(CodeUnsupportedFeature, reason)
+		return
+	}
 	conversation, err := conversationOf(request)
 	if err != nil {
 		refuse(CodeUnsupportedFeature, err.Error())
@@ -162,7 +166,7 @@ func (r *Runner) Create(ctx context.Context, requestID string, request CreateReq
 
 func unforwarded(request CreateRequest) string {
 	if request.IncludeSnapshot != "" && request.IncludeSnapshot != "never" && !slices.Contains(request.AllowDegradedFeatures, "include_snapshot") {
-		return "this provider does not offer the requested include_snapshot policy"
+		return "this endpoint does not serve snapshots yet"
 	}
 	if request.Stream != nil && !*request.Stream {
 		return "this endpoint streams every inference and cannot answer unary"
@@ -257,6 +261,48 @@ func (r *Runner) model(ref ModelRef) (provider.Model, bool) {
 	return provider.Model{}, false
 }
 
+const (
+	refusalTextOnly      = "this endpoint forwards text content only"
+	refusalMisplacedPart = "a reasoning or tool_call part belongs to an assistant message, a tool_result to a user or tool message, and a tool-role message must carry one"
+)
+
+func messageRefusal(messages []RequestMessage) string {
+	for _, message := range messages {
+		var parts []struct {
+			Type string `json:"type"`
+		}
+		if json.Unmarshal(message.Content, &parts) != nil {
+			if message.Role == "tool" {
+				return refusalMisplacedPart
+			}
+			continue
+		}
+		for _, part := range parts {
+			if part.Type == "image" {
+				return refusalTextOnly
+			}
+		}
+		carriesResult := false
+		for _, part := range parts {
+			switch part.Type {
+			case "reasoning", "tool_call":
+				if message.Role != "assistant" {
+					return refusalMisplacedPart
+				}
+			case "tool_result":
+				if message.Role != "user" && message.Role != "tool" {
+					return refusalMisplacedPart
+				}
+				carriesResult = true
+			}
+		}
+		if message.Role == "tool" && !carriesResult {
+			return refusalMisplacedPart
+		}
+	}
+	return ""
+}
+
 func conversationOf(request CreateRequest) (provider.Context, error) {
 	var conversation provider.Context
 	for _, message := range request.Messages {
@@ -344,9 +390,10 @@ func (r *Runner) stream(ctx context.Context, state *State, model provider.Model,
 		emitFailure(state, emit, httpFailure(model, response.StatusCode, detail))
 		return
 	}
-	read := bodyReader(response.Body)
+	var seen bytes.Buffer
+	read := bodyReader(io.TeeReader(response.Body, &limitedWriter{held: &seen, room: maxErrorBody}))
 	if model.API == provider.AnthropicWire {
-		provider.StreamAnthropic(sink, model, conversation, anthropic, read, nil, func() string { return "" })
+		provider.StreamAnthropic(sink, model, conversation, anthropic, read, nil, seen.String)
 	} else {
 		provider.Stream(sink, model, conversation, options, read, nil)
 	}
@@ -464,4 +511,16 @@ func anthropicErrorDetail(body []byte) string {
 		return " (" + kind + ": " + message + ")"
 	}
 	return " (" + message + ")"
+}
+
+type limitedWriter struct {
+	held *bytes.Buffer
+	room int
+}
+
+func (w *limitedWriter) Write(p []byte) (int, error) {
+	if keep := min(len(p), w.room-w.held.Len()); keep > 0 {
+		w.held.Write(p[:keep])
+	}
+	return len(p), nil
 }

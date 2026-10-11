@@ -234,3 +234,44 @@ func TestAProviderRefusalIsDescribedAsOapxDescribesIt(t *testing.T) {
 		}
 	}
 }
+
+func TestAMessageOapxRefusesIsRefusedInOapxsWords(t *testing.T) {
+	cases := []struct {
+		name     string
+		messages string
+		want     string
+	}{
+		{"a tool message of plain text", `[{"role":"tool","content":"x"}]`, refusalMisplacedPart},
+		{"a tool message of text parts and no result", `[{"role":"tool","content":[{"type":"text","text":"x"}]}]`, refusalMisplacedPart},
+		{"an image", `[{"role":"user","content":[{"type":"image","url":"https://x"}]}]`, refusalTextOnly},
+		{"reasoning outside an assistant message", `[{"role":"user","content":[{"type":"reasoning","reasoning":"r"}]}]`, refusalMisplacedPart},
+		{"a tool result in an assistant message", `[{"role":"assistant","content":[{"type":"tool_result","tool_call_id":"c","content":"r"}]}]`, refusalMisplacedPart},
+		{"an image after a message only this layer cannot carry", `[{"role":"tool","content":[{"type":"tool_result","tool_call_id":"c","content":"r"}]},{"role":"user","content":[{"type":"image","url":"https://x"}]}]`, refusalTextOnly},
+	}
+	for _, c := range cases {
+		out := runnerOutcome(t, servingDeepSeek(), parityModelRef, c.messages)
+		if len(out) != 1 {
+			t.Fatalf("%s: out = %v", c.name, typesOf(out))
+		}
+		if message := payloadOf(t, out[0])["error"].(map[string]any)["message"]; message != c.want {
+			t.Errorf("%s: message = %v, want %q", c.name, message, c.want)
+		}
+	}
+}
+
+func TestAnAnthropicReplyWithNoEventsFailsWithTheErrorItsBodyCarries(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("content-type", "text/event-stream")
+		w.Write([]byte(`{"type":"error","error":{"type":"overloaded_error","message":"Overloaded"}}`))
+	}))
+	defer server.Close()
+	runner := servingDeepSeek()
+	runner.Catalog.Providers[0].Endpoints = []providercatalog.Endpoint{{Wire: "anthropic-messages", BaseURL: server.URL}}
+	runner.Models[0].Model.API = "anthropic-messages"
+	runner.Models[0].Model.BaseURL, runner.Models[0].Model.HasBaseURL = server.URL, true
+	out := runnerOutcome(t, runner, "deepseek/anthropic-messages@deepseek-v4-pro", `[{"role":"user","content":"hi"}]`)
+	last := out[len(out)-1]
+	if last.Type != "inference.failed" || payloadOf(t, last)["error"].(map[string]any)["message"] != "Overloaded" {
+		t.Fatalf("settled %s %v, want a failure naming the body's error", last.Type, payloadOf(t, last))
+	}
+}
