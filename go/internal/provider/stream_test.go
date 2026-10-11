@@ -767,8 +767,8 @@ func TestNoTwoPartsShareAContentIndexWhateverOrderTheyArriveIn(t *testing.T) {
 		},
 		"a call then trailing text": {
 			`{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"c1","function":{"name":"f"}}]}}]}`,
-			`{"choices":[{"delta":{"content":"after"}}]}`,
 			`{"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{}"}}]}}]}`,
+			`{"choices":[{"delta":{"content":"after"}}]}`,
 		},
 		"text then a call": {
 			`{"choices":[{"delta":{"content":"a"}}]}`,
@@ -793,6 +793,9 @@ func TestNoTwoPartsShareAContentIndexWhateverOrderTheyArriveIn(t *testing.T) {
 				t.Errorf("%s: %s and %s both hold index %d, and a consumer opens a part by its index", name, previous, event.Kind, event.ContentIndex)
 			}
 			claimed[event.ContentIndex] = event.Kind
+		}
+		if countKind(events, EventDone) != 1 {
+			t.Errorf("%s: the stream did not complete, so its index claims were not a whole turn's", name)
 		}
 	}
 }
