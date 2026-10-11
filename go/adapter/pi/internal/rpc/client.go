@@ -1,10 +1,13 @@
 package rpc
 
 import (
+	"time"
+
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/lsm/open-agent-protocol/go/adapter/internal/backpressure"
 	"io"
 	"strconv"
 	"sync"
@@ -41,6 +44,7 @@ type Inbound struct {
 type ClientOptions struct {
 	FrameLimit         int
 	QueueCapacity      int
+	QueueStall         time.Duration
 	WriteQueueCapacity int
 	FirstRequestID     uint64
 	CloseReadWriter    io.Closer
@@ -78,6 +82,7 @@ type Client struct {
 	writes     chan writeRequest
 	inbound    chan Inbound
 	done       chan struct{}
+	queueStall time.Duration
 	readDone   chan struct{}
 	closeOnce  sync.Once
 }
@@ -93,7 +98,7 @@ func NewClient(reader io.Reader, writer io.Writer, options ClientOptions) *Clien
 	}
 	client := &Client{
 		decoder: NewDecoder(reader, options.FrameLimit), encoder: NewEncoder(writer, options.FrameLimit), closer: options.CloseReadWriter,
-		pending: map[string]pendingCall{}, sent: map[string]struct{}{}, writes: make(chan writeRequest, writeCapacity), inbound: make(chan Inbound, capacity), done: make(chan struct{}), readDone: make(chan struct{}),
+		pending: map[string]pendingCall{}, sent: map[string]struct{}{}, writes: make(chan writeRequest, writeCapacity), inbound: make(chan Inbound, capacity), done: make(chan struct{}), queueStall: options.QueueStall, readDone: make(chan struct{}),
 	}
 	client.nextID.Store(options.FirstRequestID)
 	go client.writeLoop()
@@ -318,12 +323,13 @@ func (c *Client) route(frame Frame) error {
 	}
 }
 func (c *Client) enqueue(message Inbound) error {
-	select {
-	case c.inbound <- message:
+	switch backpressure.Send(c.inbound, message, c.done, c.queueStall) {
+	case backpressure.Sent:
 		return nil
-	default:
-		return ErrInboundQueue
+	case backpressure.Closed:
+		return c.closeError()
 	}
+	return ErrInboundQueue
 }
 func (c *Client) removePending(id string) { c.mu.Lock(); delete(c.pending, id); c.mu.Unlock() }
 

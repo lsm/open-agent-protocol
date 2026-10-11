@@ -23,9 +23,14 @@ type testCloser struct {
 func (c testCloser) Close() error { _ = c.in.Close(); return c.out.Close() }
 func clientPipes(t *testing.T, capacity int) (*Client, *bufio.Reader, *io.PipeWriter) {
 	t.Helper()
+	return stallingClientPipes(t, capacity, 0)
+}
+
+func stallingClientPipes(t *testing.T, capacity int, stall time.Duration) (*Client, *bufio.Reader, *io.PipeWriter) {
+	t.Helper()
 	serverToClientR, serverToClientW := io.Pipe()
 	clientToServerR, clientToServerW := io.Pipe()
-	client := NewClient(serverToClientR, clientToServerW, ClientOptions{QueueCapacity: capacity, WriteQueueCapacity: capacity, CloseReadWriter: testCloser{serverToClientR, clientToServerW}})
+	client := NewClient(serverToClientR, clientToServerW, ClientOptions{QueueCapacity: capacity, QueueStall: stall, WriteQueueCapacity: capacity, CloseReadWriter: testCloser{serverToClientR, clientToServerW}})
 	t.Cleanup(func() { _ = client.Close(); _ = clientToServerR.Close(); _ = serverToClientW.Close() })
 	return client, bufio.NewReader(clientToServerR), serverToClientW
 }
@@ -275,12 +280,37 @@ func TestClientMalformedOutputAndOverflowClose(t *testing.T) {
 	if !errors.Is(client.Err(), ErrInvalidFrame) {
 		t.Fatalf("%v", client.Err())
 	}
-	client2, _, writer2 := clientPipes(t, 1)
+	client2, _, writer2 := stallingClientPipes(t, 1, 50*time.Millisecond)
 	writeLine(t, writer2, `{"type":"agent_start"}`)
 	writeLine(t, writer2, `{"type":"agent_settled"}`)
 	<-client2.Done()
 	if !errors.Is(client2.Err(), ErrInboundQueue) {
 		t.Fatalf("%v", client2.Err())
+	}
+}
+
+func TestClientHoldsABurstForASlowConsumerInsteadOfFailing(t *testing.T) {
+	client, _, writer := stallingClientPipes(t, 2, 5*time.Second)
+	const burst = 40
+	go func() {
+		var frames strings.Builder
+		for i := 0; i < burst; i++ {
+			frames.WriteString(`{"type":"agent_start"}` + "\n")
+		}
+		_, _ = writer.Write([]byte(frames.String()))
+	}()
+	for received := 0; received < burst; {
+		select {
+		case in := <-client.Inbound():
+			if in.Event != nil {
+				received++
+			}
+			time.Sleep(2 * time.Millisecond)
+		case <-client.Done():
+			t.Fatalf("the client closed after %d of %d frames: %v", received, burst, client.Err())
+		case <-time.After(5 * time.Second):
+			t.Fatalf("only %d of %d frames arrived", received, burst)
+		}
 	}
 }
 

@@ -1,10 +1,13 @@
 package rpc
 
 import (
+	"time"
+
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/lsm/open-agent-protocol/go/adapter/internal/backpressure"
 	"io"
 	"sync"
 	"sync/atomic"
@@ -121,6 +124,7 @@ type Client struct {
 	inbound       chan InboundMessage
 	diagnostics   chan error
 	done          chan struct{}
+	queueStall    time.Duration
 	readDone      chan struct{}
 	closeOnce     sync.Once
 }
@@ -128,6 +132,7 @@ type Client struct {
 type ClientOptions struct {
 	FrameLimit         int
 	QueueCapacity      int
+	QueueStall         time.Duration
 	WriteQueueCapacity int
 	FirstRequestID     int64
 	CloseReadWriter    io.Closer
@@ -149,7 +154,7 @@ func NewClient(reader io.Reader, writer io.Writer, options ClientOptions) *Clien
 		pending: make(map[RequestID]chan callResult), incoming: make(map[RequestID]*IncomingRequest),
 		writes: make(chan writeRequest, writeCapacity), requests: make(chan *IncomingRequest, capacity),
 		notifications: make(chan NotificationMessage, capacity), inbound: make(chan InboundMessage, capacity), diagnostics: make(chan error, capacity),
-		done: make(chan struct{}), readDone: make(chan struct{}),
+		done: make(chan struct{}), queueStall: options.QueueStall, readDone: make(chan struct{}),
 	}
 	client.nextID.Store(options.FirstRequestID)
 	go client.writeLoop()
@@ -183,6 +188,9 @@ func (client *Client) Inbound() <-chan InboundMessage {
 }
 
 func (client *Client) activateLegacy() {
+	if client.routeMode.Load() != 0 {
+		return
+	}
 	client.routeMu.Lock()
 	defer client.routeMu.Unlock()
 	if client.routeMode.Load() != 0 {
@@ -414,13 +422,13 @@ func (client *Client) route(message Message) bool {
 			client.backlog = append(client.backlog, observation)
 			return false
 		}
-		select {
-		case client.requests <- incoming:
+		switch backpressure.Send(client.requests, incoming, client.done, client.queueStall) {
+		case backpressure.Sent:
 			return false
-		default:
+		case backpressure.Stalled:
 			client.closeWith(ErrRequestQueue)
-			return true
 		}
+		return true
 	case MessageNotification:
 		value, err := native.DecodeNotification(message.Method, message.Params)
 		if err != nil {
@@ -440,26 +448,26 @@ func (client *Client) route(message Message) bool {
 			client.backlog = append(client.backlog, observation)
 			return false
 		}
-		select {
-		case client.notifications <- notification:
+		switch backpressure.Send(client.notifications, notification, client.done, client.queueStall) {
+		case backpressure.Sent:
 			return false
-		default:
+		case backpressure.Stalled:
 			client.closeWith(ErrNotificationQueue)
-			return true
 		}
+		return true
 	default:
 		return false
 	}
 }
 
 func (client *Client) enqueueInbound(message InboundMessage, overflow error) bool {
-	select {
-	case client.inbound <- message:
+	switch backpressure.Send(client.inbound, message, client.done, client.queueStall) {
+	case backpressure.Sent:
 		return true
-	default:
+	case backpressure.Stalled:
 		client.closeWith(overflow)
-		return false
 	}
+	return false
 }
 
 func (client *Client) barrier() bool {
