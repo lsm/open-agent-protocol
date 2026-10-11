@@ -1854,6 +1854,11 @@ fn runThread(ctx: *ThreadCtx) void {
                     } });
                 }
             }
+
+            for (reasoning_detail_events.items) |rde| {
+                if (!parts.openToolCallNamed(rde.tool_call_id)) continue;
+                tool_call_tracker_instance.setThoughtSignatureById(rde.tool_call_id, rde.detail_json) catch {};
+            }
         }
     }
 
@@ -4151,6 +4156,8 @@ test "a streamed text, thinking and tool call each declare a part, and each part
     stopped = true;
 
     try std.testing.expect(stream.getError() == null);
+    try std.testing.expect(mock.saw_chat_path.load(.acquire));
+    try std.testing.expect(mock.saw_stream_flag.load(.acquire));
     try std.testing.expectEqualStrings(
         "text_start 0\ntext_delta 0\ntext_end 0\n" ++
             "thinking_start 1\nthinking_delta 1\nthinking_end 1\n" ++
@@ -4313,11 +4320,11 @@ test "arguments for a tool call that already ended are dropped, so its part and 
     );
 }
 
-test "a tool call's signature lands on its part and its terminal alike, and one arriving after the part ended is dropped" {
+test "a tool call's signature lands on its part and its terminal alike, beside its start or later, and one arriving after the part ended is dropped" {
     const body =
         "data: {\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_a\",\"type\":\"function\",\"function\":{\"name\":\"read\",\"arguments\":\"{}\"}}]},\"finish_reason\":null}]}\n\n" ++
         "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"done\",\"reasoning_details\":[{\"type\":\"reasoning.encrypted\",\"id\":\"call_a\",\"data\":\"sig-a\"}]},\"finish_reason\":null}]}\n\n" ++
-        "data: {\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":1,\"id\":\"call_b\",\"type\":\"function\",\"function\":{\"name\":\"read\",\"arguments\":\"[]\"}}]},\"finish_reason\":null}]}\n\n" ++
+        "data: {\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":1,\"id\":\"call_b\",\"type\":\"function\",\"function\":{\"name\":\"read\",\"arguments\":\"[]\"}}],\"reasoning_details\":[{\"type\":\"reasoning.encrypted\",\"id\":\"call_b\",\"data\":\"sig-b\"}]},\"finish_reason\":null}]}\n\n" ++
         "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"x\",\"reasoning_details\":[{\"type\":\"reasoning.encrypted\",\"id\":\"call_a\",\"data\":\"late\"}]},\"finish_reason\":null}]}\n\n" ++
         "data: {\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\n" ++
         "data: [DONE]\n\n";
@@ -4335,12 +4342,16 @@ test "a tool call's signature lands on its part and its terminal alike, and one 
     }
     var ended_carry: ?[]u8 = null;
     defer if (ended_carry) |value| allocator.free(value);
+    var ended_b: ?[]u8 = null;
+    defer if (ended_b) |value| allocator.free(value);
     while (stream.wait()) |event| {
         var polled = event;
         defer ai_types.deinitAssistantMessageEvent(allocator, &polled);
         switch (polled) {
             .toolcall_end => |value| if (std.mem.eql(u8, value.tool_call.id, "call_a")) {
                 ended_carry = try allocator.dupe(u8, value.tool_call.thought_signature orelse "");
+            } else if (std.mem.eql(u8, value.tool_call.id, "call_b")) {
+                ended_b = try allocator.dupe(u8, value.tool_call.thought_signature orelse "");
             },
             else => {},
         }
@@ -4354,6 +4365,11 @@ test "a tool call's signature lands on its part and its terminal alike, and one 
     } else return error.TestUnexpectedResult;
     try std.testing.expect(std.mem.indexOf(u8, ended_carry.?, "sig-a") != null);
     try std.testing.expectEqualStrings(ended_carry.?, terminal_carry);
+    const terminal_b = for (result.content) |item| {
+        if (item == .tool_call and std.mem.eql(u8, item.tool_call.id, "call_b")) break item.tool_call.thought_signature orelse "";
+    } else return error.TestUnexpectedResult;
+    try std.testing.expect(std.mem.indexOf(u8, ended_b.?, "sig-b") != null);
+    try std.testing.expectEqualStrings(ended_b.?, terminal_b);
 }
 
 var cleanup_hold: std.atomic.Value(usize) = std.atomic.Value(usize).init(0);
