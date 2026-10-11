@@ -1,6 +1,6 @@
 # oap-client (TypeScript)
 
-The TypeScript client for a local `goap serve` daemon: drives any OAP adapter
+The TypeScript client for a local `oapx serve` or `goap serve` daemon: drives any OAP adapter
 over the daemon's HTTP + SSE surface with verbatim schema/v0.1 envelopes. It
 is the counterpart of the Go `client` package — same wire surface, same
 semantics — so non-Go hosts (HyperNeo and friends) can consume the exact
@@ -406,7 +406,9 @@ npm test
   it with the built-in memory adapter on a loopback port, and drives the full
   lifecycle — open → submit → gates → terminal → disconnect/resume — through
   the platform fetch. It skips (not fails) when the go toolchain is missing;
-  point `OAP_GO` at a go binary that is not on `PATH`.
+  point `OAP_GO` at a go binary that is not on `PATH`. Set `OAP_TS_HUB` to an
+  `oapx` binary to run the same suite against `oapx serve` instead, which is
+  what CI's `hub-clients-ts` job does.
 
 ## Publishing
 

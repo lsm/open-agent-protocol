@@ -344,13 +344,42 @@ connection's, are pollable handles. Where a platform offers no handle for an
 input, that input is a documented exception and the loop falls back to a bounded
 wait for it — named in this section, not discovered in a latency profile.
 
-**The one exception today: Windows has no wait for a child's pipe.** A spawned
-child's standard output is an anonymous pipe, and the wait available there is a
-socket poll, so a pipe handle cannot be waited on. The hub therefore does not
-wait on any handle on that platform: every session keeps its share of the bounded
-wait, which is the old loop and is correct if slower. This is recorded here
-rather than discovered per platform, and it goes away when a wait that covers
-pipe handles does.
+**Windows has no poll for a child's pipe.** The wait available there is a
+socket poll, so a pipe handle cannot be put in a poll set, and the hub waits on
+Windows a different way.
+
+**The wait that covers them (#460): the transport's own overlapped read,
+completed by APC on the hub's thread.** `std.Io` opens the parent's end of a
+child's stdout as an asynchronous named pipe (`windowsCreatePipe` with
+`.IO = .ASYNCHRONOUS` in `std/Io/Threaded.zig`), and the transport's
+`MultiReader` keeps one read outstanding on it at all times: it re-arms after
+every completion and leaves the read pending when its own wait times out.
+`std.Io` issues that read with an APC routine, and an APC runs only on the
+thread that issued it, during an alertable wait. Every transport is read on the
+hub's thread, so one alertable sleep (`SleepEx`) waits on all of them at once:
+it returns early when any child's read completes, the loop pumps every session
+that reports a handle with no wait of its own, and each finds its completion
+already recorded. There is no handle cap, because an APC needs no waitable
+object, and nothing new reads the pipe, so a frame is read exactly as before.
+
+Why the others lose:
+
+- **One I/O completion port with a zero-byte read per child** was the first
+  choice. A handle bound to a port reports its reads to the port rather than by
+  APC, and `std.Io` reads this one by APC, so binding it would take the
+  transport's own read away from the batch that issued it.
+- **`WaitForMultipleObjects` over each pipe plus a wake event** waits on at most
+  64 objects, and the hub has no session ceiling, so it would need a second
+  thread per 63 sessions, which is the reader-thread shape rejected above.
+- **A `WSAPoll`-shaped extension for pipes** does not exist; writing one is
+  writing a poll over `PeekNamedPipe`, which is the bounded wait again.
+
+What stays an exception: the host's own stdin on `serve --stdio`. The host opens
+that pipe, and a synchronous handle accepts no overlapped read, so it cannot
+join this wait. The stdio frontend checks it with `PeekNamedPipe` instead, and
+spends the rest of each cycle in the sessions' wait and then an alertable sleep,
+so a child that writes while stdin is quiet still ends the cycle early. A session that reports no handle keeps its share of the bounded
+wait on every platform.
 
 **Both trees.** Go's hub already runs one goroutine per connection behind a
 session mutex. That is Go's shape and is not a normative model for the port;

@@ -5,6 +5,7 @@ pub const config = @import("config");
 const contract = @import("contract");
 const memory = @import("memory");
 const compat = @import("compat");
+const process = @import("process");
 pub const binding = @import("binding.zig");
 
 pub const default_stream_queue = 64;
@@ -1415,7 +1416,6 @@ pub const Hub = struct {
     }
 
     fn handleOf(entry: *const Entry) ?std.Io.File.Handle {
-        if (!pollable) return null;
         const slot = entry.session.vtable.readable orelse return null;
         return slot(entry.session.ptr);
     }
@@ -1430,7 +1430,7 @@ pub const Hub = struct {
     }
 
     fn awaitAny(self: *Hub, arena: std.mem.Allocator, wait_ns: u64) !bool {
-        if (comptime !pollable) return false;
+        if (comptime !pollable) return self.awaitCompletion(wait_ns);
         var watched = std.ArrayList(std.posix.pollfd).empty;
         for (self.entries.items) |*entry| {
             const handle = handleOf(entry) orelse continue;
@@ -1440,6 +1440,13 @@ pub const Hub = struct {
         const budget: i32 = @intCast(@min(wait_ns / std.time.ns_per_ms, std.math.maxInt(i32)));
         const awoken = std.posix.poll(watched.items, budget) catch 0;
         return awoken > 0;
+    }
+
+    fn awaitCompletion(self: *Hub, wait_ns: u64) bool {
+        for (self.entries.items) |*entry| {
+            if (handleOf(entry) != null) return compat.time.sleepUntilCompletion(wait_ns);
+        }
+        return false;
     }
 
     fn drive(self: *Hub, share: u64) !void {
@@ -3793,6 +3800,7 @@ const Flaky = struct {
     failed_run: []const u8 = "",
     failed_overflow: bool = false,
     read_end: ?std.posix.fd_t = null,
+    child: ?*process.Transport = null,
     write_end: ?std.posix.fd_t = null,
     waits: [8]u64 = .{ 0, 0, 0, 0, 0, 0, 0, 0 },
     wait_len: usize = 0,
@@ -3863,6 +3871,7 @@ fn flakyOpen(ptr: *anyopaque, arena: std.mem.Allocator, request: contract.OpenRe
 fn flakyReadable(ptr: *anyopaque) ?std.Io.File.Handle {
     const self: *Flaky = @ptrCast(@alignCast(ptr));
     if (!self.reported) return null;
+    if (self.child) |child| return child.readable();
     return self.read_end;
 }
 
@@ -3915,7 +3924,13 @@ fn flakyPump(ptr: *anyopaque, wait_ns: u64) contract.Failure!bool {
         self.wait_len += 1;
     }
     if (self.fail_pump) return error.BackendFailed;
-    return false;
+    const child = self.child orelse return false;
+    const arrived = if (child.poll(wait_ns)) |polled| polled != .quiet else |_| true;
+    if (arrived and self.emit_line == null) {
+        self.emit_line = "{\"protocol\":\"open-agent-protocol\",\"version\":\"0.1\",\"type\":\"content.delta\",\"id\":\"a1\"}";
+        self.child = null;
+    }
+    return arrived;
 }
 
 fn flakyDrain(ptr: *anyopaque, allocator: std.mem.Allocator, out: *std.ArrayList(contract.Event)) contract.Failure!void {
@@ -4211,7 +4226,7 @@ test "a session whose stream fails is ended, its subscribers told, and its child
 }
 
 test "a session that reports a handle is waited on, and handed no wait of its own" {
-    if (!@hasDecl(std.Io.net, "has_unix_sockets") or !std.Io.net.has_unix_sockets) return error.SkipZigTest;
+    if (comptime !pollable) return error.SkipZigTest;
     var flaky = Flaky{ .allocator = testing.allocator, .fail_drain = false };
     flaky.keep = std.heap.ArenaAllocator.init(testing.allocator);
     defer flaky.keep.deinit();
@@ -4238,7 +4253,7 @@ test "a session that reports a handle is waited on, and handed no wait of its ow
 }
 
 test "idle sessions add no per-session delay, however many there are" {
-    if (!std.Io.net.has_unix_sockets) return error.SkipZigTest;
+    if (comptime !pollable) return error.SkipZigTest;
     var idle: [6]Flaky = undefined;
     const ends = try compat.stdio.pipe();
     defer compat.stdio.close(ends[0]);
@@ -4273,7 +4288,7 @@ test "idle sessions add no per-session delay, however many there are" {
 }
 
 test "one silent child does not hold back another session's events" {
-    if (!std.Io.net.has_unix_sockets) return error.SkipZigTest;
+    if (comptime !pollable) return error.SkipZigTest;
     const quiet_ends = try compat.stdio.pipe();
     defer compat.stdio.close(quiet_ends[0]);
     defer compat.stdio.close(quiet_ends[1]);
@@ -4312,8 +4327,55 @@ test "one silent child does not hold back another session's events" {
     }
 }
 
+const windows_shell = "C:\\Windows\\System32\\cmd.exe";
+
+fn windowsChild(script: []const u8) !*process.Transport {
+    return process.Transport.open(testing.allocator, .{
+        .executable = windows_shell,
+        .args = &.{ "/c", script },
+        .environment = &.{"SystemRoot=C:\\Windows"},
+        .exit_grace_ns = 100 * std.time.ns_per_ms,
+    });
+}
+
+test "on Windows one silent child does not hold back another child's output for its share of the wait" {
+    if (comptime pollable) return error.SkipZigTest;
+    const silent = try windowsChild("ping -n 30 127.0.0.1 >nul");
+    defer silent.deinit();
+    const talking = try windowsChild("ping -n 2 127.0.0.1 >nul & echo ready");
+    defer talking.deinit();
+
+    var quiet = Flaky{ .allocator = testing.allocator, .fail_drain = false, .child = silent };
+    quiet.keep = std.heap.ArenaAllocator.init(testing.allocator);
+    defer quiet.keep.deinit();
+    var busy = Flaky{ .allocator = testing.allocator, .fail_drain = false, .child = talking };
+    busy.keep = std.heap.ArenaAllocator.init(testing.allocator);
+    defer busy.keep.deinit();
+
+    var hub = Hub.init(testing.allocator, testClock, .{ .stream_queue = 8, .journal_capacity = 64 });
+    defer hub.deinit();
+    try hub.register("quiet", quiet.adapter());
+    try hub.register("busy", busy.adapter());
+    var scratch = std.heap.ArenaAllocator.init(testing.allocator);
+    defer scratch.deinit();
+    const arena = scratch.allocator();
+    _ = try hub.open(arena, "quiet", .{ .session_id = "waiting" });
+    const opened = try hub.open(arena, "busy", .{ .session_id = "talking" });
+    const subscription = try hub.subscribe(arena, opened.session_id, .{});
+
+    const started = std.Io.Clock.awake.now(testing.io);
+    var delivered = false;
+    while (!delivered and started.durationTo(std.Io.Clock.awake.now(testing.io)).toSeconds() < 20) {
+        try hub.pump(testing.allocator, 10 * std.time.ns_per_s);
+        delivered = subscription.next() != null;
+    }
+    const elapsed = started.durationTo(std.Io.Clock.awake.now(testing.io));
+    try testing.expect(delivered);
+    try testing.expect(elapsed.toMilliseconds() < 4000);
+}
+
 test "a handle-less session keeps the timed pump beside one that reports a handle" {
-    if (!std.Io.net.has_unix_sockets) return error.SkipZigTest;
+    if (comptime !pollable) return error.SkipZigTest;
     var waiting = Flaky{ .allocator = testing.allocator, .fail_drain = false };
     waiting.keep = std.heap.ArenaAllocator.init(testing.allocator);
     defer waiting.keep.deinit();
