@@ -326,6 +326,12 @@ func benchOAP(t *testing.T, binary string, mock *benchMock, environment []string
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
+	closed := false
+	defer func() {
+		if !closed {
+			_ = session.Close(context.Background())
+		}
+	}()
 	opened := time.Now()
 	admission, stream, err := session.Submit(ctx, base.SubmitRequest{Request: protocol.MessageSubmitRequest{
 		SessionID: "bench", Delivery: protocol.DeliveryAuto,
@@ -354,6 +360,7 @@ func benchOAP(t *testing.T, binary string, mock *benchMock, environment []string
 		t.Fatalf("oap run ended %s: %s", terminal.Type, terminal.Payload)
 	}
 	closeStart := time.Now()
+	closed = true
 	if err := session.Close(context.Background()); err != nil {
 		t.Fatalf("close: %v", err)
 	}
@@ -394,6 +401,9 @@ func TestClaudeOAPOverheadAgainstScriptedMessages(t *testing.T) {
 	}
 	binary := verifiedClaudeCLI(t)
 	iterations := benchEnvInt("OAP_CLAUDE_BENCH_N", 10)
+	if iterations < 1 {
+		t.Fatal("OAP_CLAUDE_BENCH_N must be at least 1")
+	}
 	toolTurns := benchEnvInt("OAP_CLAUDE_BENCH_TOOL_TURNS", 6)
 	firstByte := time.Duration(benchEnvInt("OAP_CLAUDE_BENCH_FIRST_BYTE_MS", 100)) * time.Millisecond
 	chunk := time.Duration(benchEnvInt("OAP_CLAUDE_BENCH_CHUNK_MS", 5)) * time.Millisecond
