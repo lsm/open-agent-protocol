@@ -549,7 +549,7 @@ fn runHub(
     hub_stdio.serve(allocator, &frontend, .{
         .read = readStdin,
         .context = &input,
-        .readable = if (hubTakesSignals()) input.handle else null,
+        .readable = input.handle,
         .stop = endpoint_signals.received,
     }) catch |err| switch (err) {
         error.OutOfMemory => return error.OutOfMemory,

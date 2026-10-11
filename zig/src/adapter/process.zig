@@ -163,7 +163,6 @@ pub const Transport = struct {
     };
 
     pub fn readable(self: *Transport) ?std.Io.File.Handle {
-        if (builtin.os.tag == .windows) return null;
         const child = self.child orelse return null;
         const stdout = child.stdout orelse return null;
         return stdout.handle;

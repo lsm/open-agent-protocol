@@ -17,7 +17,6 @@ const win = if (is_windows) struct {
     extern "kernel32" fn OpenThread(access: DWORD, inherit: BOOL, id: DWORD) callconv(.winapi) ?HANDLE;
     extern "kernel32" fn GetCurrentThreadId() callconv(.winapi) DWORD;
     extern "kernel32" fn Sleep(ms: DWORD) callconv(.winapi) void;
-    extern "kernel32" fn CreatePipe(read: *HANDLE, write: *HANDLE, attributes: ?*anyopaque, size: DWORD) callconv(.winapi) BOOL;
     const thread_terminate: DWORD = 0x0001;
 } else struct {};
 
@@ -140,12 +139,6 @@ const TestPipe = struct {
     write: std.Io.File,
 
     fn open() !TestPipe {
-        if (is_windows) {
-            var read: win.HANDLE = undefined;
-            var write: win.HANDLE = undefined;
-            if (win.CreatePipe(&read, &write, null, 4096) == .FALSE) return error.Unexpected;
-            return .{ .read = .{ .handle = read, .flags = .{ .nonblocking = false } }, .write = .{ .handle = write, .flags = .{ .nonblocking = false } } };
-        }
         const pipe = try compat.stdio.pipe();
         try compat.stdio.setNonBlocking(pipe[1]);
         return .{ .read = pipe[0], .write = pipe[1] };

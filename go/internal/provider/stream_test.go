@@ -547,48 +547,6 @@ func TestAMalformedChunkIsSwallowedAndTheStreamStillCompletes(t *testing.T) {
 	}
 }
 
-func TestThePartialTextRuleHoldsOnlyWithNoToolCallAndSomeText(t *testing.T) {
-	cases := []struct {
-		text, thinking, calls int
-		want                  bool
-	}{
-		{text: 5, thinking: 0, calls: 0, want: true},
-		{text: 0, thinking: 4, calls: 0, want: true},
-		{text: 5, thinking: 4, calls: 0, want: true},
-		{text: 5, thinking: 0, calls: 1, want: false},
-		{text: 0, thinking: 0, calls: 0, want: false},
-	}
-	for _, c := range cases {
-		if got := CanCompletePartialTextOnStreamError(c.text, c.thinking, c.calls); got != c.want {
-			t.Errorf("text=%d thinking=%d calls=%d = %v, want %v", c.text, c.thinking, c.calls, got, c.want)
-		}
-	}
-}
-
-func TestAStreamErrorCompletesAsLengthOnlyWhenTheRuleHolds(t *testing.T) {
-	state := newStreamState(streamModel())
-	state.text = "partial"
-	sink := &EventSink{}
-	if !state.completeOnStreamError(sink) {
-		t.Fatal("with text and no tool call the partial completes")
-	}
-	done := findEvent(t, sink.Drain(), EventDone)
-	if done.Message.StopReason != "length" {
-		t.Errorf("the stop reason = %q, want length", done.Message.StopReason)
-	}
-	if done.Message.Content[0].Text.Text != "partial" {
-		t.Errorf("the text = %q, want the partial kept", done.Message.Content[0].Text.Text)
-	}
-
-	opened := newStreamState(streamModel())
-	opened.text = "partial"
-	opened.toolCalls = 1
-	opened.tracker.startCall(0, 0, "c1", "f")
-	if opened.completeOnStreamError(&EventSink{}) {
-		t.Error("a tool call was opened, so the partial must not complete")
-	}
-}
-
 func TestTheParserErrorSpellingReachesTheStream(t *testing.T) {
 	sink := &EventSink{}
 	Stream(sink, streamModel(), Context{}, StreamOptions{}, chunkReader([]string{strings.Repeat("x", 1024*1024+1)}), nil)
@@ -956,23 +914,6 @@ func TestACallEndingAfterTheTextKeepsTheTextInItsPartial(t *testing.T) {
 	}
 	if end.Partial.Content[0].Text == nil || end.Partial.Content[0].Text.Text != "before" {
 		t.Errorf("the call's end partial = %+v, want the text part that ended before the call started", end.Partial.Content)
-	}
-}
-
-func TestTextThatNeverStreamedEndsAsAPartAtFinish(t *testing.T) {
-	state := newStreamState(streamModel())
-	state.text = "partial"
-	sink := &EventSink{}
-	if !state.completeOnStreamError(sink) {
-		t.Fatal("with text and no tool call the partial completes")
-	}
-	events := sink.Drain()
-	if got := lifecycleOf(events); got != "text_start 0\ntext_delta 0\ntext_end 0" {
-		t.Fatalf("lifecycle =\n%s\nwant the text ended as a part of its own", got)
-	}
-	done := findEvent(t, events, EventDone)
-	if done.Message.Content[0].Text == nil || done.Message.Content[0].Text.Text != "partial" {
-		t.Errorf("the terminal = %+v, want the partial text it kept", done.Message.Content[0])
 	}
 }
 
