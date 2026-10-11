@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+## [0.1.0-alpha.12] - 2026-10-10
+
+### Merged pull requests
+
+- **claude: carry turns and cache counts in the cost extension** ([#1047](https://github.com/lsm/open-agent-protocol/pull/1047)): hyperneo-review compares its native and OAP claude engines (requested by its devops session).
+- **opencode: pin v2.0.26** ([#1046](https://github.com/lsm/open-agent-protocol/pull/1046)): Moves OpenCode to v2.0.26 (revision `opencode-v2.0.26-oap-v5`); v2.0.24 is retired.
+- **acp: pin v1.11.0 with schema-v1.25.0** ([#1045](https://github.com/lsm/open-agent-protocol/pull/1045)): Part of #1035 (item 4).
+- **pi: pin v1.1.0, admitting the members it adds to settlement and timing** ([#1044](https://github.com/lsm/open-agent-protocol/pull/1044)): Part of #1035 (item 4).
+- **codex: pin rust-v0.162.1** ([#1043](https://github.com/lsm/open-agent-protocol/pull/1043)): Part of #1035 (item 4).
+- **claude: pin 2.1.296** ([#1042](https://github.com/lsm/open-agent-protocol/pull/1042)): Part of #1035 (item 4).
+- **adapter: hold a burst for a slow consumer in every RPC client** ([#1041](https://github.com/lsm/open-agent-protocol/pull/1041)): Follow-up to #1036 for lsm/open-agent-protocol#1035 item 1.
+- **claude: take request headers on the adapter config** ([#1040](https://github.com/lsm/open-agent-protocol/pull/1040)): Part of #1035 (the adapter half of item 6; the catalog half is #1039).
+- **providers: catalog OpenCode's Anthropic endpoints and the session header Go requires** ([#1039](https://github.com/lsm/open-agent-protocol/pull/1039)): Part of #1035 (items 5 and the catalog half of 6).
+- **opencode: admit the pinned CLI version and say where hosts get the build** ([#1038](https://github.com/lsm/open-agent-protocol/pull/1038)): Part of #1035 (item 3).
+- **adapter: export the types a host needs to fill opencode and acp configs** ([#1037](https://github.com/lsm/open-agent-protocol/pull/1037)): Part of #1035 (item 2).
+- **claude: hold a burst for a slow consumer instead of killing the session** ([#1036](https://github.com/lsm/open-agent-protocol/pull/1036)): Part of #1035 (item 1).
+- **oapx: route a codex adapter to a catalog provider through Codex's settings** ([#1034](https://github.com/lsm/open-agent-protocol/pull/1034)): Closes #361 (the Codex step; Claude Code landed in #1026).
+- **sdk: give the real-binary smoke its home on Windows too** ([#1033](https://github.com/lsm/open-agent-protocol/pull/1033)): The `v0.1.0-alpha.11` release smoke failed on windows-x64 (`TestSmokeModelsList`: no models).
+
 ## [0.1.0-alpha.11] - 2026-10-10
 
 ### Breaking changes
