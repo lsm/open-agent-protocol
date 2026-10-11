@@ -324,14 +324,13 @@ adapter's pin — which makes it the first native adapter to exercise the
 degraded opt-in end to end. The reference adapter serves the fixed catalog its
 model gate already enforces.
 
-### Local daemon (`goap serve`)
+### Local daemon (`oapx serve`)
 
-`goap serve` is this repository's own command and is **not installed**: run it
-with `go run`. The same verb is `oapx serve` on the released binary; `hub` is its old name and still works. It carries
-the stdio transport and the registry config (`--config`), and its HTTP daemon
-(`--addr`) binds, holds the trust model below, and answers every route with a
-plain `404` until the routes themselves land — so what the two share is the
-registry, the refusals and the shutdown, not the route table. [Decision 0038](decisions/0038-one-released-binary-and-a-library-for-every-language.md)
+`oapx serve` is the product's multi-session daemon; `hub` is its old name and
+still works. It carries the registry config (`--config`), the stdio
+transport-object wire (`--stdio`) and HTTP + Server-Sent Events (`--addr`).
+`goap serve` is the same daemon in this repository's Go tree, and it is **not
+installed**: run it with `go run`. [Decision 0038](decisions/0038-one-released-binary-and-a-library-for-every-language.md)
 is why there is one released binary, and a library for every language.
 
 `goap serve` exposes the adapter registry over HTTP + Server-Sent Events so any
@@ -342,10 +341,9 @@ wire behavior is the contract the `client` package proves:
 **`go/serve` is the library, and it is for in-process hosts.** A Go host that
 wants the hub driven inside its own test binary imports `go/serve` and calls it
 directly — no socket, no port, no second process. `oapx serve` is the product's
-daemon; on the **stdio** wire the two answer identically, and `go/cmd/goap`'s
-differential asserts that rather than assuming it. It does not extend to HTTP:
-`oapx serve --addr` answers every route `404` until the route table lands, so an
-HTTP+SSE client such as `clients/ts` is served by `goap serve` today.
+daemon, and the two are held to one wire by CI rather than by assumption:
+`go/cmd/goap`'s differential drives both over stdio and compares every line,
+and `clients/ts`'s suite runs against each over HTTP + SSE.
 
 ```sh
 go run ./go/cmd/goap serve [--config examples/oap-serve.json] [--addr 127.0.0.1:6270]
