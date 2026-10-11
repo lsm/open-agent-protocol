@@ -161,6 +161,29 @@ places worth reading first are:
 
 CI builds `goap` and runs it, so neither can drift from the library.
 
+## Running a pinned harness
+
+Each adapter speaks to one release of its harness, and `harnesses/<id>.json`
+is where that release is written down: its `current` version names the release
+tag and commit, lists a SHA-256 for every artifact per platform, and, where the
+pin was checked against the binary, an `admits` list of the versions its
+`--version` reports. A host reads it as `harnesses.Current("<id>")`. Before
+starting a harness, compare the installed binary's `--version` against
+`Admits` and, where you can, its digest against `Artifacts`; an unpinned build
+may run and still speak a different wire, which is how a host gets a session
+that opens and never returns its final text.
+
+Where the pinned builds come from is recorded in each ledger's provenance. Two
+that hosts have tripped over:
+
+- **Claude Code** is the npm package `@anthropic-ai/claude-code` at the pinned
+  version, with its per-platform package beside it.
+- **OpenCode v2** is not the npm package `opencode-ai`, which is the v1 line.
+  Its binaries come from `https://opencode.ai/files/bin/<version>/<name>`, with
+  the archive names the catalog lists. The Homebrew formula `opencode-v2`
+  installed the same build at 2.0.24 (its darwin-arm64 binary matched the
+  catalog digest); check a Homebrew build's digest before relying on it.
+
 ## Where to go next
 
 - To **drive a harness**, start at `ExampleRunToTerminal`, then

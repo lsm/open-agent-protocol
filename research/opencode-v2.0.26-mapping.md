@@ -31,6 +31,11 @@ darwin-arm64 binary reports `opencode v2.0.26`:
 | darwin-arm64 | archive | `opencode-darwin-arm64.zip` | `325fa77c1e0f46e40a8297c168355501965230bd1f32923f367ec1b5ee19fac3` | 85177346 |
 | darwin-arm64 | binary | `opencode` | `1b6418a3bd4211344d8a2b75d7d4367b24283ae548bd6b896cf717f6f8858f26` | 185808848 |
 
+The catalog admits `2.0.26` on that evidence. Without an `admits` list a
+host's version check passed any OpenCode, and hyperneo-review ran v2.0.18
+against the v2.0.24 adapter and got no final text
+(lsm/open-agent-protocol#1035).
+
 ## Source difference, v2.0.24 to v2.0.26
 
 Every blob the corpus pins is byte-identical at both tags:

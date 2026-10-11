@@ -33,6 +33,9 @@ reports `opencode v2.0.24` and is byte-identical to the Homebrew
 | darwin-arm64 | archive | `opencode-darwin-arm64.zip` | `64036a08d34959638a67e09137add101259abb4c8f50d2bf75bc7112ff8c8042` | 77410329 |
 | darwin-arm64 | binary | `opencode` | `e68cc32cb37b1f3242991c668be3934396825778925cb85670dad61038b05fe7` | 179357360 |
 
+On 2026-10-10 the Homebrew `opencode-v2` 2.0.24 binary still matched the
+darwin-arm64 digest above and printed `opencode v2.0.24` for `--version`.
+
 Source blobs this ledger reads:
 
 | Path | Blob |
