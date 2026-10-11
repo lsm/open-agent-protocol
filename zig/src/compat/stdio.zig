@@ -135,23 +135,6 @@ test "compat stdio helpers construct file handles" {
     _ = err;
 }
 
-test "a pipe with nothing written is quiet on Windows, and ready once a byte arrives" {
-    if (comptime !is_windows) return error.SkipZigTest;
-    const p = try pipe();
-    defer close(p[0]);
-    defer close(p[1]);
-    try std.testing.expectEqual(Waiting.quiet, waiting(p[0].handle));
-    try writeAll(p[1], "x");
-    try std.testing.expectEqual(Waiting.ready, waiting(p[0].handle));
-}
-
-test "a pipe whose writer has gone is ready, so the reader sees its end" {
-    const p = try pipe();
-    defer close(p[0]);
-    close(p[1]);
-    try std.testing.expectEqual(Waiting.ready, waiting(p[0].handle));
-}
-
 test "compat stdio helpers round trip through pipe" {
     const p = try pipe();
     const read_file = p[0];

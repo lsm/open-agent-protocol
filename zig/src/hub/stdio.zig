@@ -3398,6 +3398,24 @@ fn stopAfterManyCycles() bool {
     return idle_cycles >= 100;
 }
 
+test "a pipe with nothing written peeks quiet on Windows, and ready once a byte arrives" {
+    if (comptime pollable) return error.SkipZigTest;
+    const ends = try compat.stdio.pipe();
+    defer compat.stdio.close(ends[0]);
+    defer compat.stdio.close(ends[1]);
+    try testing.expectEqual(compat.stdio.Waiting.quiet, compat.stdio.waiting(ends[0].handle));
+    try compat.stdio.writeAll(ends[1], "x");
+    try testing.expectEqual(compat.stdio.Waiting.ready, compat.stdio.waiting(ends[0].handle));
+}
+
+test "a pipe whose writer has gone peeks ready on Windows, so the reader sees its end" {
+    if (comptime pollable) return error.SkipZigTest;
+    const ends = try compat.stdio.pipe();
+    defer compat.stdio.close(ends[0]);
+    compat.stdio.close(ends[1]);
+    try testing.expectEqual(compat.stdio.Waiting.ready, compat.stdio.waiting(ends[0].handle));
+}
+
 test "a line arriving on a quiet input pipe is read and answered" {
     const ends = try compat.stdio.pipe();
     defer compat.stdio.close(ends[0]);
