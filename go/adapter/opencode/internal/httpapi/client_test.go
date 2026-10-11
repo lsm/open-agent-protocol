@@ -204,6 +204,29 @@ func TestSubscribeFollowsOneSessionOnTheGlobalStream(t *testing.T) {
 	}
 }
 
+func TestAStreamThatFailsAfterServerConnectedStillCompletesTheHandshake(t *testing.T) {
+	failure := errors.New("non-increasing durable sequence 1 after 1")
+	sub := &Subscription{ready: make(chan struct{}), done: make(chan struct{}), events: make(chan native.Event), cancel: func() {}, err: failure}
+	close(sub.ready)
+	close(sub.done)
+	for range 100 {
+		got, err := sub.awaitConnected(context.Background())
+		if err != nil || got != sub {
+			t.Fatalf("awaitConnected = %v, %v; want the subscription, whose failure surfaces on its stream", got, err)
+		}
+	}
+}
+
+func TestAStreamThatEndsBeforeServerConnectedFailsTheHandshake(t *testing.T) {
+	failure := errors.New("connection reset")
+	sub := &Subscription{ready: make(chan struct{}), done: make(chan struct{}), events: make(chan native.Event), cancel: func() {}, err: failure}
+	close(sub.done)
+	got, err := sub.awaitConnected(context.Background())
+	if got != nil || !errors.Is(err, ErrSubscription) || !errors.Is(err, failure) || !strings.Contains(err.Error(), "ended before server.connected") {
+		t.Fatalf("awaitConnected = %v, %v", got, err)
+	}
+}
+
 func TestSubscribeFailsOnARegressingSequence(t *testing.T) {
 	done := make(chan struct{})
 	t.Cleanup(func() { close(done) })
