@@ -255,6 +255,11 @@ jobs:
           OAP_OAPX_BIN: /tmp/oapx-parity/bin/oapx
         run: go test ./go/cmd/goap/ -run TestBackendsMatchOapx -v
 
+      - name: Require the Go inference layer to serve the trace oapx serve provider serves
+        env:
+          OAP_OAPX_BIN: /tmp/oapx-parity/bin/oapx
+        run: go test ./go/internal/inferenceserve/ -run TestInferenceTracesMatchOapx -v
+
   pi-parity-repeat:
     name: Parity - the pi scenario twenty times over
     needs: [unit-tests]

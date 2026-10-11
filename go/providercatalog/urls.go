@@ -141,6 +141,14 @@ func RequestURLForStatedBase(catalog Catalog, id, baseURL string, stated *bool, 
 	return joinRequest(baseURL, path, CarriesVersionFor(catalog, id, baseURL, stated))
 }
 
+func RequestURLForWire(catalog Catalog, id, wire, baseURL string) (string, bool) {
+	path, joined := wirePaths[wire]
+	if !joined || path.modelScoped {
+		return "", false
+	}
+	return joinRequest(baseURL, path, CarriesVersion(catalog, id, baseURL)), true
+}
+
 func Resolve(catalog Catalog) []Resolved {
 	var resolved []Resolved
 	for _, provider := range catalog.Providers {
