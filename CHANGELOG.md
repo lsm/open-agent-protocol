@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+## [0.1.0-alpha.13] - 2026-10-11
+
+### Merged pull requests
+
+- **opencode: complete the subscribe handshake when the stream fails right after server.connected** ([#1052](https://github.com/lsm/open-agent-protocol/pull/1052)): Fixes the `TestSubscribeFailsOnARegressingSequence` flake recorded on #10 (seen on #1050).
+- **examples: start the Hermes gateway module in the example entry** ([#1051](https://github.com/lsm/open-agent-protocol/pull/1051)): The `hermes` entry in `examples/oap-serve.json` had no `args`, and neither tree defaults them, so `oapx serve agent --config examples/oap-serve.json --backend hermes` started `python` with no arguments: it read stdin as a script and…
+- **deepseek: pin dsh-v0.2.1-alpha.2** ([#1050](https://github.com/lsm/open-agent-protocol/pull/1050)): Moves DeepSeek Harness to `dsh-v0.2.1-alpha.2` (revision `deepseek-harness-dsh-v0.2.1-alpha.2-oap-v3`), the newest release; every upstream release is a prerelease, and the newest rc is `dsh-v0.2.0-rc.2`.
+- **hermes: pin v0.21.6** ([#1049](https://github.com/lsm/open-agent-protocol/pull/1049)): Moves Hermes to v0.21.6 (revision `hermes-v0.21.6-oap-v1`); v2026.9.24 is retired.
+
 ## [0.1.0-alpha.12] - 2026-10-10
 
 ### Merged pull requests
