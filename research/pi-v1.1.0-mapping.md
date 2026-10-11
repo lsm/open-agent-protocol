@@ -72,8 +72,11 @@ and `omissions.json` of the v1.0.4 corpus forward unchanged; none was
 re-recorded. The manifest's and each case's provenance (tag, commit, tree and
 the three changed blobs) and the expectations' revision changed. Unit tests in
 both trees cover the new members instead: a run whose assistant message
-carries `durationMs`, settled with `aborted: false`, completes, and
-`agent_settled` still refuses a member it does not declare.
+carries `durationMs`, settled with `aborted: false`, completes; a tool run
+whose `tool_execution_end` and tool result message carry `durationMs`
+completes its call; and `agent_settled` still refuses a member it does not
+declare. The tool run is a unit test because none of the real-process gates
+below makes a tool call.
 
 ## Real-process evidence
 

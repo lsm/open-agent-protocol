@@ -192,6 +192,7 @@ type toolEnd struct {
 	Result           json.RawMessage  `json:"result"`
 	IsError          bool             `json:"isError"`
 	ParentToolCallID string           `json:"parentToolCallId,omitempty"`
+	DurationMS       *float64         `json:"durationMs,omitempty"`
 }
 type agentEnd struct {
 	Type      native.EventType  `json:"type"`
