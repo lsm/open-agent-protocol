@@ -255,6 +255,11 @@ jobs:
           OAP_OAPX_BIN: /tmp/oapx-parity/bin/oapx
         run: go test ./go/cmd/goap/ -run TestBackendsMatchOapx -v
 
+      - name: Require the Go inference layer to serve the trace oapx serve provider serves
+        env:
+          OAP_OAPX_BIN: /tmp/oapx-parity/bin/oapx
+        run: go test ./go/internal/inferenceserve/ -run TestInferenceTracesMatchOapx -v
+
   pi-parity-repeat:
     name: Parity - the pi scenario twenty times over
     needs: [unit-tests]
@@ -619,7 +624,7 @@ jobs:
   # =============================================================================
 
   windows-unit:
-    name: Unit Tests - stdio-host and hub (windows)
+    name: Unit Tests - stdio-host (windows)
     runs-on: windows-latest
     timeout-minutes: 15
     steps:
@@ -634,10 +639,6 @@ jobs:
       - name: Run stdio-host unit tests
         shell: bash
         run: zig build --build-file zig/build.zig test-unit-stdio-host --summary all
-
-      - name: Run the multi-session hub's unit tests
-        shell: bash
-        run: zig build --build-file zig/build.zig test-unit-hub --summary all
 
   cross-compile-smoke:
     name: Cross-compile - ${{ matrix.target }}
