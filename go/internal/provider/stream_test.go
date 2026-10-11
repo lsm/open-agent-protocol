@@ -1078,13 +1078,23 @@ func TestArgumentsForAToolCallThatAlreadyEndedAreDropped(t *testing.T) {
 	}
 }
 
-func TestAToolCallSignatureLandsOnItsPartAndTerminalAlikeAndALateOneIsDropped(t *testing.T) {
+func TestAToolCallSignatureLandsOnItsPartAndTerminalAlikeBesideItsStartOrLaterAndALateOneIsDropped(t *testing.T) {
 	events := runStream(t, streamModel(),
 		sseFrame(`{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_a","function":{"name":"read","arguments":"{}"}}]}}]}`),
 		sseFrame(`{"choices":[{"delta":{"content":"done","reasoning_details":[{"type":"reasoning.encrypted","id":"call_a","data":"sig-a"}]}}]}`),
-		sseFrame(`{"choices":[{"delta":{"tool_calls":[{"index":1,"id":"call_b","function":{"name":"read","arguments":"[]"}}]}}]}`),
+		sseFrame(`{"choices":[{"delta":{"tool_calls":[{"index":1,"id":"call_b","function":{"name":"read","arguments":"[]"}}],"reasoning_details":[{"type":"reasoning.encrypted","id":"call_b","data":"sig-b"}]}}]}`),
 		sseFrame(`{"choices":[{"delta":{"content":"x","reasoning_details":[{"type":"reasoning.encrypted","id":"call_a","data":"late"}]}}]}`),
 	)
+	var endedB *ToolCall
+	for _, event := range events {
+		if event.Kind == EventToolCallEnd && event.ToolCall.ID == "call_b" {
+			endedB = event.ToolCall
+		}
+	}
+	terminalB := findEvent(t, events, EventDone).Message.Content[2].ToolCall
+	if endedB == nil || !strings.Contains(endedB.ThoughtSig, "sig-b") || terminalB == nil || terminalB.ThoughtSig != endedB.ThoughtSig {
+		t.Fatalf("call_b ended with %+v and the terminal carries %+v, want the signature sent beside its start on both", endedB, terminalB)
+	}
 	ended := findEvent(t, events, EventToolCallEnd).ToolCall
 	if ended == nil || !strings.Contains(ended.ThoughtSig, "sig-a") {
 		t.Fatalf("the part ended with %+v, want call_a carrying its signature", ended)

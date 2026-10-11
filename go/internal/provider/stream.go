@@ -374,6 +374,11 @@ func (s *streamState) emitFor(sink *EventSink) {
 		}
 		sink.emit(Event{Kind: EventToolCallDelta, ContentIndex: index, Delta: call.arguments, Partial: s.partial(nil)})
 	}
+	for _, detail := range s.lastDetails {
+		if s.openToolCallNamed(detail.toolCallID) {
+			s.tracker.setSignatureByID(detail.toolCallID, detail.detailJSON)
+		}
+	}
 	s.lastToolCalls = nil
 	s.lastDetails = nil
 }
