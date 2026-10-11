@@ -26,6 +26,7 @@
     "hermes": {
       "type": "hermes",
       "executable": "/absolute/path/to/python",
+      "args": ["-m", "tui_gateway.entry"],
       "working_directory": "/absolute/path/to/hermes-agent",
       "model": "glm-5.3"
     },
