@@ -385,6 +385,9 @@ func driveFullSession(t *testing.T, c *child) {
 	if terminal != protocol.TypeRunCompleted {
 		t.Fatalf("run settled %s, want %s", terminal, protocol.TypeRunCompleted)
 	}
+	for id := int64(7); id < nextID; id++ {
+		c.response(id)
+	}
 
 	c.send(`{"id":20,"op":"state","session_id":"e2e"}`)
 	c.response(20)
