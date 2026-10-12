@@ -1085,6 +1085,7 @@ pub const App = struct {
     title_session_id: []u8 = &.{},
     run_error_text: []u8 = &.{},
     auto_continue: tui_auto_continue.Streak = .{},
+    drained_events: u64 = 0,
     replaying_history: bool = false,
     branch_dir: []u8 = &.{},
 
@@ -2976,6 +2977,11 @@ pub const App = struct {
         }
     }
 
+    fn tickMoves(self: *const App) bool {
+        const status = &self.state.status;
+        return status.streaming or status.refreshing_models or self.state.zen.on or self.interrupt_armed_tick != null or self.login != null or self.auto_continue.pending();
+    }
+
     pub fn pumpAutoContinue(self: *App, now_ms: i64) void {
         if (!self.auto_continue.due(now_ms)) return;
         if (self.state.mode != .normal) return;
@@ -3149,6 +3155,7 @@ pub const App = struct {
         var run_ended = false;
         var run_failed = false;
         while (session.popEvent()) |event| {
+            self.drained_events +%= 1;
             var ev = event;
             defer ev.deinit(self.allocator);
 
@@ -4280,6 +4287,8 @@ pub const TuiModel = struct {
     cmds: [3]zz.Cmd(Msg) = .{ .none, .none, .none },
     tab_title: [tab_title_bytes]u8 = undefined,
     tab_title_len: usize = 0,
+    view_stale: bool = true,
+    viewed_entries: usize = 0,
 
     pub const Msg = union(enum) {
         key: zz.KeyEvent,
@@ -4321,6 +4330,7 @@ pub const TuiModel = struct {
     const tab_title_bytes: usize = 128;
 
     pub fn update(self: *TuiModel, msg: Msg, ctx: *zz.Context) zz.Cmd(Msg) {
+        if (msg != .tick) self.view_stale = true;
         if (msg == .resumed) {
             self.wheel_captured = false;
             self.tab_title_len = 0;
@@ -4697,6 +4707,8 @@ pub const TuiModel = struct {
             .mouse => |mouse| handleMouse(app, mouse),
             .window_size => self.refillInlineWindowAfterResize(app, ctx) catch |err| app.recordError(@errorName(err)) catch {},
             .tick => {
+                const moving_before = app.tickMoves();
+                const drained_before = app.drained_events;
                 app.state.anim_tick +%= 1;
                 advanceZen(app);
                 app.drainEvents() catch {};
@@ -4713,6 +4725,7 @@ pub const TuiModel = struct {
                 if (app.state.anim_tick % branch_refresh_ticks == 0) {
                     app.refreshBranchOnSlowTick() catch |err| app.recordError(@errorName(err)) catch {};
                 }
+                if (moving_before or app.tickMoves() or app.drained_events != drained_before or app.state.transcript.items.len != self.viewed_entries or app.state.anim_tick % idle_refresh_ticks == 0) self.view_stale = true;
             },
             .resumed => {},
             .quit => return self.quitCmd(app, ctx),
@@ -4721,7 +4734,7 @@ pub const TuiModel = struct {
             app.pending_clear_screen = false;
             if (self.inlineMode(ctx)) ctx.requestClearScreen();
         }
-        self.flushInlineHistory(app, ctx, false) catch |err| app.recordError(@errorName(err)) catch {};
+        if (self.view_stale) self.flushInlineHistory(app, ctx, false) catch |err| app.recordError(@errorName(err)) catch {};
         app.flushClipboard(ctx);
         return .none;
     }
@@ -4734,6 +4747,11 @@ pub const TuiModel = struct {
     const interrupt_window_ticks: u64 = 30;
 
     const branch_refresh_ticks: u64 = 100;
+    const idle_refresh_ticks: u64 = 20;
+
+    pub fn viewStale(self: *const TuiModel) bool {
+        return self.view_stale;
+    }
 
     fn streamActive(app: *const App) bool {
         if (app.state.status.streaming) return true;
@@ -4802,7 +4820,9 @@ pub const TuiModel = struct {
     }
 
     pub fn view(self: *TuiModel, ctx: *const zz.Context) []const u8 {
+        self.view_stale = false;
         const app = &(self.app orelse return "Makai TUI failed to initialize");
+        self.viewed_entries = app.state.transcript.items.len;
         const width: usize = @max(ctx.width, 20);
         const height: usize = @max(ctx.height, 8);
         app.last_view_height = height;
@@ -6410,6 +6430,45 @@ test "TuiModel inline flush keeps scrollback and window contiguous" {
         try std.testing.expectEqualStrings(std.mem.trimEnd(u8, row, " "), std.mem.trimEnd(u8, got, " "));
     }
     try std.testing.expectEqualStrings("", std.mem.trimEnd(u8, actual.next() orelse return error.TestUnexpectedResult, " "));
+}
+
+test "an idle tick leaves the view current until the slow refresh, and a key, a new entry or a stream makes it stale" {
+    var model = TuiModel{ .app = App.initWithoutRuntime(std.testing.allocator), .render_mode = .inline_history };
+    defer model.deinit();
+    var tctx: TestContext = undefined;
+    tctx.setup();
+    defer tctx.deinit();
+    tctx.ctx.width = 60;
+    tctx.ctx.height = 20;
+    const tick: TuiModel.Msg = .{ .tick = .{ .timestamp = 0, .delta = 0 } };
+
+    try std.testing.expect(model.viewStale());
+    _ = model.view(&tctx.ctx);
+    try std.testing.expect(!model.viewStale());
+    _ = model.update(tick, &tctx.ctx);
+    try std.testing.expect(!model.viewStale());
+
+    _ = model.update(.{ .key = .{ .key = .{ .char = 'a' } } }, &tctx.ctx);
+    try std.testing.expect(model.viewStale());
+    _ = model.view(&tctx.ctx);
+
+    try model.app.?.state.appendTranscript(.system, "logged in");
+    _ = model.update(tick, &tctx.ctx);
+    try std.testing.expect(model.viewStale());
+    _ = model.view(&tctx.ctx);
+
+    model.app.?.state.status.streaming = true;
+    _ = model.update(tick, &tctx.ctx);
+    try std.testing.expect(model.viewStale());
+    model.app.?.state.status.streaming = false;
+    _ = model.view(&tctx.ctx);
+
+    while ((model.app.?.state.anim_tick + 1) % TuiModel.idle_refresh_ticks != 0) {
+        _ = model.update(tick, &tctx.ctx);
+        try std.testing.expect(!model.viewStale());
+    }
+    _ = model.update(tick, &tctx.ctx);
+    try std.testing.expect(model.viewStale());
 }
 
 test "App inline flush stop follows the reconciliation floor" {
