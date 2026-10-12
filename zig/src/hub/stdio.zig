@@ -2676,8 +2676,11 @@ fn waitByPeeking(frontend: *Frontend, stream: Stream, wait_ns: u64) !bool {
     const started = compat.time.monotonicNanos() catch 0;
     try frontend.hub.pump(frontend.allocator, wait_ns);
     try frontend.pumpStreams();
-    const spent = (compat.time.monotonicNanos() catch started) -| started;
-    if (spent < wait_ns) _ = compat.time.sleepUntilCompletion(wait_ns - spent);
+    while (true) {
+        const spent = (compat.time.monotonicNanos() catch break) -| started;
+        if (spent >= wait_ns) break;
+        if (compat.time.sleepUntilCompletion(wait_ns - spent)) break;
+    }
     return compat.stdio.waiting(input) == .ready;
 }
 

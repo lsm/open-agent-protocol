@@ -13,8 +13,20 @@ pub fn sleepUntilCompletion(ns: u64) bool {
         sleepNs(ns);
         return false;
     }
-    const ms: win.DWORD = @intCast(@min(ns / std.time.ns_per_ms, std.math.maxInt(win.DWORD) - 1));
-    return win.SleepEx(ms, .TRUE) == win.wait_io_completion;
+    return win.SleepEx(completionWaitMs(ns), .TRUE) == win.wait_io_completion;
+}
+
+fn completionWaitMs(ns: u64) u32 {
+    const ms = ns / std.time.ns_per_ms + @intFromBool(ns % std.time.ns_per_ms != 0);
+    return @intCast(@min(ms, std.math.maxInt(u32) - 1));
+}
+
+test "a completion wait rounds a partial millisecond up, so it never sleeps short of what was asked" {
+    try std.testing.expectEqual(@as(u32, 50), completionWaitMs(49_500_000));
+    try std.testing.expectEqual(@as(u32, 50), completionWaitMs(50_000_000));
+    try std.testing.expectEqual(@as(u32, 1), completionWaitMs(1));
+    try std.testing.expectEqual(@as(u32, 0), completionWaitMs(0));
+    try std.testing.expectEqual(std.math.maxInt(u32) - 1, completionWaitMs(std.math.maxInt(u64)));
 }
 
 fn defaultIo() std.Io {
