@@ -62,7 +62,62 @@ pub const HttpClient = struct {
 
 pub fn sendRequest(request: *Request, body: []const u8) !void {
     request.transfer_encoding = .{ .content_length = body.len };
-    try request.sendBodyComplete(@constCast(body));
+    var sent = try request.sendBodyUnflushed(&.{});
+    try writeBody(&sent, body);
+    try request.connection.?.flush();
+}
+
+fn writeBody(sent: *std.http.BodyWriter, body: []const u8) std.http.BodyWriter.Error!void {
+    try sent.writer.writeAll(body);
+    try sent.end();
+}
+
+const TricklingOutput = struct {
+    received: std.ArrayList(u8) = .empty,
+    writer: std.Io.Writer = .{ .buffer = &.{}, .vtable = &.{ .drain = drain } },
+
+    const most_per_write = 7;
+
+    fn drain(w: *std.Io.Writer, data: []const []const u8, splat: usize) std.Io.Writer.Error!usize {
+        const self: *TricklingOutput = @alignCast(@fieldParentPtr("writer", w));
+        for (data, 0..) |chunk, index| {
+            if (index == data.len - 1 and splat == 0) break;
+            if (chunk.len == 0) continue;
+            const n = @min(chunk.len, most_per_write);
+            self.received.appendSlice(std.testing.allocator, chunk[0..n]) catch return error.WriteFailed;
+            return n;
+        }
+        return 0;
+    }
+
+    fn bodyWriter(self: *TricklingOutput, buffer: []u8, length: usize) std.http.BodyWriter {
+        return .{
+            .http_protocol_output = &self.writer,
+            .state = .{ .content_length = length },
+            .writer = .{ .buffer = buffer, .vtable = &.{ .drain = std.http.BodyWriter.contentLengthDrain, .sendFile = std.http.BodyWriter.contentLengthSendFile } },
+        };
+    }
+};
+
+test "a body sent a few bytes at a time stays intact for a retry, which the body as its own send buffer does not" {
+    const original = "{\"model\":\"m\",\"messages\":[{\"role\":\"user\",\"content\":\"hello there\"}]}";
+    const body = try std.testing.allocator.dupe(u8, original);
+    defer std.testing.allocator.free(body);
+
+    var output: TricklingOutput = .{};
+    defer output.received.deinit(std.testing.allocator);
+    var sent = output.bodyWriter(&.{}, body.len);
+    try writeBody(&sent, body);
+    try std.testing.expectEqualStrings(original, output.received.items);
+    try std.testing.expectEqualStrings(original, body);
+
+    var buffered: TricklingOutput = .{};
+    defer buffered.received.deinit(std.testing.allocator);
+    var in_place = buffered.bodyWriter(body, body.len);
+    in_place.writer.end = body.len;
+    try in_place.end();
+    try std.testing.expectEqualStrings(original, buffered.received.items);
+    try std.testing.expect(!std.mem.eql(u8, original, body));
 }
 
 pub fn sendBodilessRequest(request: *Request) !void {
