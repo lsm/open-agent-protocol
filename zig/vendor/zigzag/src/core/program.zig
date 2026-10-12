@@ -885,8 +885,16 @@ pub fn Program(comptime Model: type) type {
 
         const resize_debounce_ns: u64 = 150 * std.time.ns_per_ms;
 
+        fn viewCurrent(self: *const Self) bool {
+            if (comptime !@hasDecl(Model, "viewStale")) return false;
+            if (self.last_view_hash == 0 or self.needs_repaint) return false;
+            if (self.context.hasPendingAbove() or self.context.clear_screen_requested) return false;
+            return !self.model.viewStale();
+        }
+
         fn render(self: *Self) !void {
             if (self.resize_deadline != null) return;
+            if (self.viewCurrent()) return;
             const view_output = if (comptime view_fallible)
                 try self.model.view(&self.context)
             else
@@ -1208,6 +1216,66 @@ const AnchorTestModel = struct {
         return "one\ntwo";
     }
 };
+
+const StaleTestModel = struct {
+    pub const Msg = union(enum) { nop: void };
+
+    stale: bool = false,
+
+    pub fn init(_: *StaleTestModel, _: *Context) Cmd(StaleTestModel.Msg) {
+        return .none;
+    }
+
+    pub fn update(_: *StaleTestModel, _: StaleTestModel.Msg, _: *Context) Cmd(StaleTestModel.Msg) {
+        return .none;
+    }
+
+    pub fn view(_: *const StaleTestModel, _: *const Context) []const u8 {
+        return "one";
+    }
+
+    pub fn viewStale(self: *const StaleTestModel) bool {
+        return self.stale;
+    }
+};
+
+test "a model reporting its view current skips the view until it is stale, a repaint is due, or rows wait above" {
+    var env_map: std.process.Environ.Map = .init(std.testing.allocator);
+    defer env_map.deinit();
+    var program = Program(StaleTestModel).init(std.testing.allocator, std.testing.io, &env_map);
+    defer program.deinit();
+    program.context.allocator = program.arena.allocator();
+
+    try std.testing.expect(!program.viewCurrent());
+    program.last_view_hash = 7;
+    try std.testing.expect(program.viewCurrent());
+
+    program.model.stale = true;
+    try std.testing.expect(!program.viewCurrent());
+    program.model.stale = false;
+
+    program.needs_repaint = true;
+    try std.testing.expect(!program.viewCurrent());
+    program.needs_repaint = false;
+
+    program.context.clear_screen_requested = true;
+    try std.testing.expect(!program.viewCurrent());
+    program.context.clear_screen_requested = false;
+
+    try program.context.printAbove("row");
+    try std.testing.expect(!program.viewCurrent());
+    program.context.above_buffer.clearRetainingCapacity();
+    try std.testing.expect(program.viewCurrent());
+}
+
+test "a model without a staleness report has its view called every frame" {
+    var env_map: std.process.Environ.Map = .init(std.testing.allocator);
+    defer env_map.deinit();
+    var program = Program(AnchorTestModel).init(std.testing.allocator, std.testing.io, &env_map);
+    defer program.deinit();
+    program.last_view_hash = 7;
+    try std.testing.expect(!program.viewCurrent());
+}
 
 const QuitTestModel = struct {
     pub const Msg = union(enum) { key: keyboard.KeyEvent };
