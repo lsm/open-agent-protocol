@@ -511,7 +511,7 @@ fn buildRequestBody(model: ai_types.Model, context: ai_types.Context, options: a
                         try w.writeStringField("id", tc.id);
                         try w.writeStringField("name", tc.name);
                         try w.writeKey("input");
-                        try w.writeRawJson(tc.arguments_json);
+                        try w.writeRawJson(try ai_types.replayableToolArguments(allocator, tc.arguments_json));
                         try w.endObject();
                     },
                     .image => |img| {
@@ -2102,6 +2102,51 @@ fn collectToolUseIDs(allocator: std.mem.Allocator, body: []const u8, out: *std.A
             try out.append(allocator, try allocator.dupe(u8, block.object.get("tool_use_id").?.string));
         }
     }
+}
+
+test "a tool call a cut-off reply left unfinished goes back with an empty input, so the body stays valid JSON" {
+    const allocator = std.testing.allocator;
+
+    const messages = [_]ai_types.Message{
+        .{ .user = .{ .content = .{ .text = "go" }, .timestamp = 0 } },
+        .{ .assistant = .{
+            .content = &.{.{ .tool_call = .{ .id = "toolu_cut", .name = "bash", .arguments_json = "{\"cmd\": \"cat > /tmp/x" } }},
+            .api = "anthropic-messages",
+            .provider = "anthropic",
+            .model = "claude-3-5-sonnet-20241022",
+            .usage = .{},
+            .stop_reason = .length,
+            .timestamp = 0,
+        } },
+        anthropicToolResult("toolu_cut"),
+    };
+    const model = ai_types.Model{
+        .id = "claude-3-5-sonnet-20241022",
+        .name = "Claude 3.5 Sonnet",
+        .api = "anthropic-messages",
+        .provider = "anthropic",
+        .base_url = "https://api.anthropic.com",
+        .reasoning = false,
+        .input = &.{},
+        .cost = .{ .input = 3.0, .output = 15.0, .cache_read = 0.3, .cache_write = 3.75 },
+        .context_window = 200000,
+        .max_tokens = 8192,
+    };
+    const body = try buildRequestBody(model, .{ .messages = &messages }, .{ .max_tokens = 1024 }, allocator, false);
+    defer allocator.free(body);
+
+    const parsed = try std.json.parseFromSlice(std.json.Value, allocator, body, .{});
+    defer parsed.deinit();
+    for (parsed.value.object.get("messages").?.array.items) |message| {
+        const content = message.object.get("content").?;
+        if (content != .array) continue;
+        for (content.array.items) |block| {
+            if (!std.mem.eql(u8, block.object.get("type").?.string, "tool_use")) continue;
+            try std.testing.expectEqual(@as(usize, 0), block.object.get("input").?.object.count());
+            return;
+        }
+    }
+    return error.TestExpectedToolUse;
 }
 
 test "a run of only orphaned results writes no message at all" {

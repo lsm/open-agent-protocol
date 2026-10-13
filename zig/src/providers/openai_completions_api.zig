@@ -475,7 +475,7 @@ fn writeMessagesArray(
                         try writer.writeKey("function");
                         try writer.beginObject();
                         try writer.writeStringField("name", tc.name);
-                        try writer.writeStringField("arguments", tc.arguments_json);
+                        try writer.writeStringField("arguments", try ai_types.replayableToolArguments(allocator, tc.arguments_json));
                         try writer.endObject();
                         try writer.endObject();
                     },
@@ -2317,6 +2317,45 @@ test "buildRequestBody with assistant message containing tool_calls" {
     try std.testing.expect(std.mem.find(u8, body, "call_456") != null);
     try std.testing.expect(std.mem.find(u8, body, "bash") != null);
     try std.testing.expect(std.mem.find(u8, body, "ls -la") != null);
+}
+
+test "a tool call a cut-off reply left unfinished goes back with empty arguments, so the history stays sendable" {
+    const allocator = std.testing.allocator;
+
+    const model = ai_types.Model{
+        .id = "databricks-claude-opus-4-8",
+        .name = "Opus",
+        .api = "openai-completions",
+        .provider = "aura",
+        .base_url = "https://gw.test",
+        .reasoning = false,
+        .input = &[_][]const u8{"text"},
+        .cost = .{ .input = 0, .output = 0, .cache_read = 0, .cache_write = 0 },
+        .context_window = 128_000,
+        .max_tokens = 8192,
+    };
+    const assistant_content = [_]ai_types.AssistantContent{.{ .tool_call = .{
+        .id = "call_cut",
+        .name = "write",
+        .arguments_json = "{\"description\": \"Create the mapping dataset\", \"path\": \"/tmp/map",
+    } }};
+    const messages = [_]ai_types.Message{
+        .{ .assistant = .{ .content = &assistant_content, .api = "openai-completions", .provider = "aura", .model = "databricks-claude-opus-4-8", .usage = .{}, .stop_reason = .length, .timestamp = 0 } },
+        .{ .tool_result = .{ .tool_call_id = "call_cut", .tool_name = "write", .content = &.{.{ .text = .{ .text = "not run" } }}, .is_error = true, .timestamp = 0 } },
+    };
+
+    const body = try buildRequestBody(model, .{ .messages = &messages }, .{ .max_tokens = 100 }, allocator);
+    defer allocator.free(body);
+
+    const parsed = try std.json.parseFromSlice(std.json.Value, allocator, body, .{});
+    defer parsed.deinit();
+    for (parsed.value.object.get("messages").?.array.items) |message| {
+        const calls = message.object.get("tool_calls") orelse continue;
+        const arguments = calls.array.items[0].object.get("function").?.object.get("arguments").?.string;
+        try std.testing.expectEqualStrings("{}", arguments);
+        return;
+    }
+    return error.TestExpectedToolCall;
 }
 
 test "stream errors can finalize accumulated text but not partial tool calls" {

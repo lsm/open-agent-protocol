@@ -310,7 +310,7 @@ fn buildBody(context: ai_types.Context, options: ai_types.StreamOptions, model: 
                         try w.beginObject();
                         try w.writeStringField("name", tc.name);
                         try w.writeKey("args");
-                        try w.writeRawJson(tc.arguments_json);
+                        try w.writeRawJson(try ai_types.replayableToolArguments(allocator, tc.arguments_json));
                         try w.endObject();
                         if (tc.thought_signature) |sig| {
                             if (sig.len > 0) {
