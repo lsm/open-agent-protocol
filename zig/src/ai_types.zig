@@ -616,6 +616,22 @@ pub const AssistantMessageEvent = union(enum) {
     keepalive: void,
 };
 
+pub fn replayableToolArguments(allocator: std.mem.Allocator, arguments_json: []const u8) error{OutOfMemory}![]const u8 {
+    const trimmed = std.mem.trim(u8, arguments_json, " \t\r\n");
+    if (trimmed.len == 0 or trimmed[0] != '{') return "{}";
+    return if (try std.json.validate(allocator, trimmed)) arguments_json else "{}";
+}
+
+test "replayableToolArguments keeps a whole object and replaces what a cut-off reply left" {
+    const allocator = std.testing.allocator;
+    try std.testing.expectEqualStrings("{\"path\":\"a\"}", try replayableToolArguments(allocator, "{\"path\":\"a\"}"));
+    try std.testing.expectEqualStrings(" {} ", try replayableToolArguments(allocator, " {} "));
+    try std.testing.expectEqualStrings("{}", try replayableToolArguments(allocator, "{\"description\": \"Create the mapping\", \"path\": \"/tmp/x"));
+    try std.testing.expectEqualStrings("{}", try replayableToolArguments(allocator, ""));
+    try std.testing.expectEqualStrings("{}", try replayableToolArguments(allocator, "[1,2]"));
+    try std.testing.expectEqualStrings("{}", try replayableToolArguments(allocator, "{\"a\":1}{"));
+}
+
 pub fn cloneToolCall(allocator: std.mem.Allocator, tool_call: ToolCall) error{OutOfMemory}!ToolCall {
     const id = try allocator.dupe(u8, tool_call.id);
     errdefer allocator.free(id);

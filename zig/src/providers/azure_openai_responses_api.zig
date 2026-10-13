@@ -139,7 +139,7 @@ fn buildBody(model: ai_types.Model, context: ai_types.Context, options: ai_types
                             try w.writeStringField("type", "function_call");
                             try w.writeStringField("call_id", tc.id);
                             try w.writeStringField("name", tc.name);
-                            try w.writeStringField("arguments", tc.arguments_json);
+                            try w.writeStringField("arguments", try ai_types.replayableToolArguments(allocator, tc.arguments_json));
                             try w.endObject();
                         },
                         .image => {},
