@@ -746,8 +746,8 @@ pub const Session = struct {
         const input_text = try self.gpa.dupe(u8, text);
         errdefer self.gpa.free(input_text);
         const submit_id = try keep.dupe(u8, envelope_id);
+        if (!busy or request.model_id != null) try self.syncCatalog();
         if (request.model_id) |wanted| {
-            try self.syncCatalog();
             if ((try findModel(arena, self.runtime.availableModels(), wanted)) == null) return refusal.missingModel(wanted);
         }
         const model_id = if (request.model_id) |wanted| try keep.dupe(u8, wanted) else (try self.currentModelRef(keep)) orelse "";
@@ -2162,6 +2162,7 @@ const other_model = ai_types.Model{
 const Script = struct {
     calls: usize = 0,
     last_model: []const u8 = "",
+    last_max_tokens: ?u32 = null,
     reply: []const u8 = "hello",
     tool_first: bool = false,
     tool_name: []const u8 = "echo_tool",
@@ -2206,6 +2207,7 @@ fn scriptedStream(ctx: ?*anyopaque, model: ai_types.Model, context: ai_types.Con
     const script: *Script = @ptrCast(@alignCast(ctx.?));
     script.calls += 1;
     script.last_model = model.id;
+    script.last_max_tokens = options.max_tokens;
     for (context.messages) |message| {
         if (message == .user and message.user.content == .text and std.mem.indexOf(u8, message.user.content.text, "change course") != null) script.saw_steer.store(true, .release);
         if (message != .tool_result) continue;
@@ -2614,6 +2616,22 @@ test "a catalog the terminal UI refreshes is served once the session next switch
     try testing.expectEqualStrings("scripted/openai-completions@fresh-model", switched.state.current_model_id.?);
     const after = try harness.session.vtable.models.?(harness.session.ptr, a, &.{ .session_id = harness.session.id(), .allow_degraded_features = &.{contract.feature_models_list} }, &refusal);
     try testing.expectEqual(@as(usize, 3), after.response.models.len);
+}
+
+test "a refreshed catalog that raises the current model's output limit reaches the next run without a model switch" {
+    var script = Script{};
+    var harness: Harness = undefined;
+    try harness.init(&script);
+    defer harness.deinit();
+    var raised = test_model;
+    raised.max_tokens = 4096;
+    try harness.owner.setCatalog(&.{ raised, other_model });
+
+    _ = try harness.submit("say hello");
+    try harness.untilTerminal();
+
+    try testing.expectEqualStrings(test_model.id, script.last_model);
+    try testing.expectEqual(@as(?u32, 4096), script.last_max_tokens);
 }
 
 test "a session opened after a catalog refresh serves the refreshed catalog and can open on a model only it holds" {

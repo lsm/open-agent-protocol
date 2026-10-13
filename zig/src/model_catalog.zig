@@ -238,7 +238,7 @@ fn loadProductionModelsWithMode(allocator: std.mem.Allocator, mode: CatalogLoadM
 }
 
 var test_custom_providers_config: ?[]const u8 = null;
-var test_custom_discovery_ids: ?[]const []const u8 = null;
+var test_custom_discovery_body: ?[]const u8 = null;
 var test_custom_discovery_failure: ?[]const u8 = null;
 
 var test_force_copilot_models: bool = false;
@@ -380,15 +380,15 @@ fn appendCustomProviderModels(
     mode: CatalogLoadMode,
     notes: ?*RefreshNotes,
 ) !void {
-    const discovered = try discoverCustomModelIds(allocator, provider, storage, mode, notes);
-    defer if (discovered) |ids| freeModelIds(allocator, ids);
+    const discovered = try discoverCustomModels(allocator, provider, storage, mode, notes);
+    defer if (discovered) |listed| freeDiscoveredModels(allocator, listed);
 
-    if (discovered) |ids| {
-        for (ids) |id| {
-            if (!provider.allows(id)) continue;
-            const spec = provider.specFor(id);
-            const display = if (spec) |found| found.name else id;
-            var model = try customModel(allocator, provider, id, display, spec);
+    if (discovered) |listed| {
+        for (listed) |found| {
+            if (!provider.allows(found.id)) continue;
+            const spec = provider.specFor(found.id);
+            const display = if (spec) |named| named.name else found.id;
+            var model = try customModel(allocator, provider, found.id, display, spec, found);
             errdefer model.deinit(allocator);
             try models.append(allocator, model);
         }
@@ -396,7 +396,7 @@ fn appendCustomProviderModels(
     }
 
     for (provider.models) |spec| {
-        var model = try customModel(allocator, provider, spec.id, spec.name, spec);
+        var model = try customModel(allocator, provider, spec.id, spec.name, spec, null);
         errdefer model.deinit(allocator);
         try models.append(allocator, model);
     }
@@ -408,6 +408,7 @@ fn customModel(
     id_text: []const u8,
     name_text: []const u8,
     spec: ?custom_providers.ModelSpec,
+    listed: ?DiscoveredModel,
 ) !ai_types.Model {
     const id = try allocator.dupe(u8, id_text);
     errdefer allocator.free(id);
@@ -454,14 +455,18 @@ fn customModel(
         .reasoning = provider.reasoning,
         .input = input,
         .cost = .{ .input = 0, .output = 0, .cache_read = 0, .cache_write = 0 },
-        .context_window = if (spec) |found| (found.context_window orelse provider.context_window) else provider.context_window,
-        .max_tokens = if (spec) |found| (found.max_tokens orelse provider.max_tokens) else provider.max_tokens,
+        .context_window = customLimit(if (spec) |found| found.context_window else null, if (listed) |found| found.context_window else null, provider.context_window) orelse catalog_context_window,
+        .max_tokens = customLimit(if (spec) |found| found.max_tokens else null, if (listed) |found| found.max_tokens else null, provider.max_tokens) orelse catalog_max_output_tokens,
         .headers = headers,
         .compat = provider.compat,
         .allows_anonymous = provider.auth_none,
         .carries_version = provider.carries_version,
         .is_owned = true,
     };
+}
+
+fn customLimit(declared: ?u32, reported: ?u32, provider_wide: ?u32) ?u32 {
+    return declared orelse reported orelse provider_wide;
 }
 
 fn freeModelIds(allocator: std.mem.Allocator, ids: [][]const u8) void {
@@ -1446,35 +1451,25 @@ fn customModelsUrl(allocator: std.mem.Allocator, provider: *const custom_provide
     );
 }
 
-fn discoverCustomModelIds(
+fn discoverCustomModels(
     allocator: std.mem.Allocator,
     provider: *const custom_providers.CustomProvider,
     storage: ?*oauth_storage.AuthStorage,
     mode: CatalogLoadMode,
     notes: ?*RefreshNotes,
-) !?[][]const u8 {
+) !?[]DiscoveredModel {
     if (builtin.is_test) {
         if (test_custom_discovery_failure) |reason| note(notes, provider.id, "{s}", .{reason});
-        const ids = test_custom_discovery_ids orelse return null;
-        const out = try allocator.alloc([]const u8, ids.len);
-        var filled: usize = 0;
-        errdefer {
-            for (out[0..filled]) |value| allocator.free(value);
-            allocator.free(out);
-        }
-        for (ids, 0..) |id, i| {
-            out[i] = try allocator.dupe(u8, id);
-            filled = i + 1;
-        }
-        return out;
+        const body = test_custom_discovery_body orelse return null;
+        return try parseCatalogModels(allocator, body);
     }
 
     const name = try customCatalogName(allocator, provider.id);
     defer allocator.free(name);
 
     if (mode == .allow_cache) {
-        if (try loadCachedModelIds(allocator, name, anthropic_catalog_max_age_ms)) |ids| return ids;
-        return loadCachedModelIds(allocator, name, null);
+        if (try loadCachedCatalogModels(allocator, name, anthropic_catalog_max_age_ms)) |models| return models;
+        return loadCachedCatalogModels(allocator, name, null);
     }
 
     const token = customCredential(allocator, provider, storage);
@@ -1482,32 +1477,17 @@ fn discoverCustomModelIds(
 
     if (fetchCustomModelsCatalog(allocator, provider, token, notes)) |body| {
         defer allocator.free(body);
-        if (parseModelIds(allocator, body)) |ids| {
-            if (ids.len > 0) {
+        if (parseCatalogModels(allocator, body)) |models| {
+            if (models.len > 0) {
                 saveMakaiCatalog(allocator, name, body) catch {};
-                return ids;
+                return models;
             }
-            freeModelIds(allocator, ids);
+            freeDiscoveredModels(allocator, models);
             note(notes, provider.id, "the model list was empty", .{});
         } else |err| note(notes, provider.id, "the model list did not parse ({t})", .{err});
     } else |_| {}
 
-    return loadCachedModelIds(allocator, name, null);
-}
-
-fn loadCachedModelIds(allocator: std.mem.Allocator, name: []const u8, max_age_ms: ?i64) !?[][]const u8 {
-    const path = makaiCatalogPath(allocator, name) catch return null;
-    defer allocator.free(path);
-    if (max_age_ms) |max_age| {
-        const modified = compat.fs.modifiedMillis(compat.fs.getCwd(), path) catch return null;
-        if (!catalogIsFresh(modified, compat.time.nowMillis(), max_age)) return null;
-    }
-    const data = compat.fs.readFileAlloc(allocator, compat.fs.getCwd(), path, max_catalog_bytes) catch return null;
-    defer allocator.free(data);
-    const ids = parseModelIds(allocator, data) catch return null;
-    if (ids.len > 0) return ids;
-    freeModelIds(allocator, ids);
-    return null;
+    return loadCachedCatalogModels(allocator, name, null);
 }
 
 fn loadCachedCatalogModels(allocator: std.mem.Allocator, name: []const u8, max_age_ms: ?i64) !?[]DiscoveredModel {
@@ -1823,27 +1803,6 @@ fn listNamesImage(obj: *const std.json.ObjectMap, key: []const u8) bool {
         if (std.ascii.eqlIgnoreCase(entry.string, "image")) return true;
     }
     return false;
-}
-
-fn parseModelIds(allocator: std.mem.Allocator, data: []const u8) ![][]const u8 {
-    var parsed = try std.json.parseFromSlice(std.json.Value, allocator, data, .{});
-    defer parsed.deinit();
-    if (parsed.value != .object) return error.InvalidModelCatalog;
-    const list = parsed.value.object.get("data") orelse return error.InvalidModelCatalog;
-    if (list != .array) return error.InvalidModelCatalog;
-
-    var ids = std.ArrayList([]const u8).empty;
-    errdefer {
-        for (ids.items) |id| allocator.free(id);
-        ids.deinit(allocator);
-    }
-    for (list.array.items) |item| {
-        if (item != .object) continue;
-        const id = objectString(&item.object, "id") orelse continue;
-        if (id.len == 0) continue;
-        try ids.append(allocator, try allocator.dupe(u8, id));
-    }
-    return ids.toOwnedSlice(allocator);
 }
 
 var test_force_codex_refresh_error: bool = false;
@@ -2745,10 +2704,12 @@ const custom_two_provider_config =
 
 test "discovery result is filtered per provider and never falls back to the declared list" {
     test_custom_providers_config = custom_two_provider_config;
-    test_custom_discovery_ids = &[_][]const u8{ "keep-a", "keep-z", "noisy" };
+    test_custom_discovery_body =
+        \\{"data":[{"id":"keep-a"},{"id":"keep-z"},{"id":"noisy"}]}
+    ;
     defer {
         test_custom_providers_config = null;
-        test_custom_discovery_ids = null;
+        test_custom_discovery_body = null;
     }
 
     const models = try loadCustomModels(std.testing.allocator, null, .allow_cache, null);
@@ -2759,6 +2720,58 @@ test "discovery result is filtered per provider and never falls back to the decl
     try std.testing.expectEqualStrings("aaa", models[0].provider);
     try std.testing.expectEqualStrings("keep-z", models[1].id);
     try std.testing.expectEqualStrings("zzz", models[1].provider);
+}
+
+test "a custom provider takes each model's limits from its model list unless providers.json names them" {
+    test_custom_providers_config =
+        \\{"providers":[{"id":"gw","base_url":"https://gw.test","max_tokens":20000,"context_window":300000,
+        \\ "models":["reported",{"id":"declared","max_tokens":4000,"context_window":64000},"silent"]}]}
+    ;
+    test_custom_discovery_body =
+        \\{"data":[
+        \\ {"id":"reported","max_output_tokens":128000,"context_length":1000000},
+        \\ {"id":"declared","max_output_tokens":128000,"context_length":1000000},
+        \\ {"id":"silent"}
+        \\]}
+    ;
+    defer {
+        test_custom_providers_config = null;
+        test_custom_discovery_body = null;
+    }
+
+    const models = try loadCustomModels(std.testing.allocator, null, .force_fetch, null);
+    defer deinitModels(std.testing.allocator, models);
+
+    try std.testing.expectEqual(@as(usize, 3), models.len);
+    try std.testing.expectEqualStrings("reported", models[0].id);
+    try std.testing.expectEqual(@as(u32, 128_000), models[0].max_tokens);
+    try std.testing.expectEqual(@as(u32, 1_000_000), models[0].context_window);
+    try std.testing.expectEqualStrings("declared", models[1].id);
+    try std.testing.expectEqual(@as(u32, 4_000), models[1].max_tokens);
+    try std.testing.expectEqual(@as(u32, 64_000), models[1].context_window);
+    try std.testing.expectEqualStrings("silent", models[2].id);
+    try std.testing.expectEqual(@as(u32, 20_000), models[2].max_tokens);
+    try std.testing.expectEqual(@as(u32, 300_000), models[2].context_window);
+}
+
+test "a custom model nobody gives limits falls back to the catalog defaults" {
+    test_custom_providers_config =
+        \\{"providers":[{"id":"gw","base_url":"https://gw.test"}]}
+    ;
+    test_custom_discovery_body =
+        \\{"data":[{"id":"bare","max_output_tokens":0}]}
+    ;
+    defer {
+        test_custom_providers_config = null;
+        test_custom_discovery_body = null;
+    }
+
+    const models = try loadCustomModels(std.testing.allocator, null, .force_fetch, null);
+    defer deinitModels(std.testing.allocator, models);
+
+    try std.testing.expectEqual(@as(usize, 1), models.len);
+    try std.testing.expectEqual(catalog_max_output_tokens, models[0].max_tokens);
+    try std.testing.expectEqual(catalog_context_window, models[0].context_window);
 }
 
 test "a custom provider whose discovery fails is named in the refresh notes" {
@@ -2941,8 +2954,10 @@ test "a provider whose discovery is fully filtered contributes nothing regardles
         \\]}
         ,
     };
-    test_custom_discovery_ids = &[_][]const u8{"present"};
-    defer test_custom_discovery_ids = null;
+    test_custom_discovery_body =
+        \\{"data":[{"id":"present"}]}
+    ;
+    defer test_custom_discovery_body = null;
 
     for (orders) |config| {
         test_custom_providers_config = config;

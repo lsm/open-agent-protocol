@@ -77,7 +77,7 @@ declared it says so and names `/provider add` rather than printing an empty list
 | `capabilities` | no | Overrides for what the endpoint supports; see below. |
 | `reasoning` | no | Whether models expose reasoning. Default `false`. |
 | `carries_version` | no | `true` when `base_url` already contains the API version, so the request path is the wire's path without its leading `/v1`. Absent means the wire's full path is appended. This is the only place a user states the fact; see Base URLs below. |
-| `context_window`, `max_tokens` | no | Defaults for models that do not state their own. Default 128000 and 8192. |
+| `context_window`, `max_tokens` | no | Defaults for models whose `models` entry and discovered listing state neither. With none anywhere, 128000 and 8192. |
 
 A malformed entry fails the whole file rather than being skipped, so a typo
 cannot silently drop one provider while the rest keep working. Reserved ids,
@@ -322,6 +322,14 @@ returns. This is what keeps an aggregator usable: OpenRouter lists hundreds of
 models, and naming three keeps `/model` readable. Omit the list entirely and
 every model the endpoint advertises is offered, which is what you want for a
 server hosting one.
+
+A discovered model keeps the limits its listing reports: `max_output_tokens`
+(or `max_tokens`) for the output limit, `context_length` (or `context_window`)
+for the window, a zero counting as unstated. A `models` entry's own figure wins
+over the listing, the listing over the provider-wide `context_window` and
+`max_tokens`, and those over the 128000 and 8192 defaults. The cache holds the
+whole listing, so a cached start keeps the limits too. A session already open
+takes the refreshed limits at its next message, without a model switch.
 
 ### Catalogued rows
 
