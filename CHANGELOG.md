@@ -7,6 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+## [0.1.0-alpha.14] - 2026-10-13
+
+### Merged pull requests
+
+- **claude: take the provider endpoint and auth as typed config** ([#1080](https://github.com/lsm/open-agent-protocol/pull/1080)): Closes #1079.
+- **hub: sleep out the whole Windows stdio cycle unless a completion ends it** ([#1078](https://github.com/lsm/open-agent-protocol/pull/1078)): Fixes the Windows flake in "a quiet input pipe beside an open session still costs the loop its wait each cycle", recorded on #10.
+- **tui: skip the view on frames where nothing it shows has changed** ([#1077](https://github.com/lsm/open-agent-protocol/pull/1077)): An idle TUI re-rendered its on-screen transcript 60 times a second. zigzag's `render()` calls `view()` every frame and only skips the terminal write when the output hashes the same.
+- **compat: send a request body without lending it to the writer as its buffer** ([#1076](https://github.com/lsm/open-agent-protocol/pull/1076)): Every provider retry after a 429 or 5xx resent a corrupted body once the request was larger than one TLS record.
+- **inferenceserve: serve an inference create with the Go clients, and compare its trace with oapx's** ([#1074](https://github.com/lsm/open-agent-protocol/pull/1074)): Step 5 of #358: Go can now serve an `inference.create.request` itself.
+- **hub: let a child's output end the Windows stdio cycle's leftover sleep** ([#1072](https://github.com/lsm/open-agent-protocol/pull/1072)): Part of #460, the follow-up to #1067 and #1068.
+- **provider: fail the stream when a tool call's arguments arrive after its part ended** ([#1070](https://github.com/lsm/open-agent-protocol/pull/1070)): The Go half of the change #1058's review asked for. #1065 dropped argument fragments for a tool call whose part had already ended, which left that call's arguments cut off mid-JSON in both the part and the final message.
+- **provider: drop the stream-error partial completion Go cannot reach** ([#1069](https://github.com/lsm/open-agent-protocol/pull/1069)): #1065's review found that `completeOnStreamError`, which finishes a cut-off completions stream with the text received so far, has no production caller in Go.
+- **hub: wait on Windows children with one alertable sleep** ([#1068](https://github.com/lsm/open-agent-protocol/pull/1068)): Part of #460 (steps 2 and 5).
+- **hub: peek the host's stdin on Windows instead of blocking on it** ([#1067](https://github.com/lsm/open-agent-protocol/pull/1067)): Part of #460.
+- **claude: measure OAP's overhead over native claude -p against a scripted Messages mock** ([#1066](https://github.com/lsm/open-agent-protocol/pull/1066)): A repeatable benchmark for OAP's own latency, asked for by hyperneo-review: production showed oap-claude about 9% slower, but with the model unknown.
+- **provider: end unstreamed text as parts, and drop arguments for a call that already ended** ([#1065](https://github.com/lsm/open-agent-protocol/pull/1065)): Follow-up to #1059, with the same two changes that review asked for in the Zig half (#1058).
+- **inferenceserve: pump provider stream events into inference envelopes** ([#1064](https://github.com/lsm/open-agent-protocol/pull/1064)): The serving layer for #358 step 5: `State.Pump` turns the Go clients' stream events into `inference.*` envelopes.
+- **provider: fail an inference the provider refuses with HTTP 429 as rate_limited** ([#1063](https://github.com/lsm/open-agent-protocol/pull/1063)): `oapx serve provider` now fails an inference with `rate_limited` when the provider refuses it with HTTP 429.
+- **providers: record a live smoke reading per current row, and fix the gate's budgets** ([#1062](https://github.com/lsm/open-agent-protocol/pull/1062)): First live reading of the #356 smoke gate, recorded in `research/provider-smoke-2026-10.md`.
+- **design: choose the hub's Windows wait for a child's pipe** ([#1061](https://github.com/lsm/open-agent-protocol/pull/1061)): Part of #460 (step 1).
+- **ci: run the hub's unit tests on Windows** ([#1060](https://github.com/lsm/open-agent-protocol/pull/1060)): Part of #460 (the Windows job step).
+- **provider: declare each completions part and end it before the next starts** ([#1059](https://github.com/lsm/open-agent-protocol/pull/1059)): Go half of #1057; the Zig half is #1058.
+- **zig: declare each completions part and end it before the next starts** ([#1058](https://github.com/lsm/open-agent-protocol/pull/1058)): Fixes #1057.
+- **provider: discover catalog models and probe shared keys in Go** ([#1056](https://github.com/lsm/open-agent-protocol/pull/1056)): Step 4 of #358: Go now discovers each catalog row's models the way oapx does, so a Go host can learn which models a key opens.
+- **docs: present oapx serve as the daemon and name both hubs** ([#1055](https://github.com/lsm/open-agent-protocol/pull/1055)): Part of #390 (the docs steps).
+- **hub: drive one full stdio session through both hubs and compare every line** ([#1054](https://github.com/lsm/open-agent-protocol/pull/1054)): Part of #387 (step 2).
+
 ## [0.1.0-alpha.13] - 2026-10-11
 
 ### Merged pull requests
