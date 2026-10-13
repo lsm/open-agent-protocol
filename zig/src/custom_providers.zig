@@ -128,8 +128,8 @@ pub const CustomProvider = struct {
     compat: ?ai_types.OpenAICompatOptions = null,
     reasoning: bool = false,
     carries_version: ?bool = null,
-    context_window: u32 = 128_000,
-    max_tokens: u32 = 8_192,
+    context_window: ?u32 = null,
+    max_tokens: ?u32 = null,
 
     pub fn deinit(self: *CustomProvider, allocator: std.mem.Allocator) void {
         allocator.free(self.id);
@@ -562,8 +562,8 @@ fn parseProvider(allocator: std.mem.Allocator, obj: *const std.json.ObjectMap) !
 
     provider.reasoning = objectBool(obj, "reasoning") orelse false;
     provider.carries_version = stated_version;
-    provider.context_window = objectU32(obj, "context_window") orelse 128_000;
-    provider.max_tokens = objectU32(obj, "max_tokens") orelse 8_192;
+    provider.context_window = objectU32(obj, "context_window");
+    provider.max_tokens = objectU32(obj, "max_tokens");
     provider.compat = parseCapabilities(obj);
     return provider;
 }
