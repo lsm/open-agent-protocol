@@ -32,6 +32,7 @@ const codex_models_cache_name = "models_cache.json";
 const makai_catalog_dir_name = "model_catalog";
 const makai_codex_catalog_name = "openai-codex.json";
 const makai_anthropic_catalog_name = "anthropic.json";
+const makai_copilot_catalog_name = "github-copilot.json";
 const anthropic_provider_id = "anthropic";
 const anthropic_api_name = "anthropic-messages";
 const anthropic_base_url = provider_catalog.baseUrlOrCompileError(anthropic_provider_id, anthropic_api_name, null);
@@ -206,7 +207,7 @@ fn loadProductionModelsWithMode(allocator: std.mem.Allocator, mode: CatalogLoadM
     try applyVendorOverride(allocator, &anthropic_models, anthropic_provider_id, overrides);
     try applyVendorOverride(allocator, &codex_models, openai_codex_provider_id, overrides);
 
-    var copilot_models = try loadGitHubCopilotModels(allocator, storage);
+    var copilot_models = try loadGitHubCopilotModels(allocator, storage, mode, notes);
     defer deinitModels(allocator, copilot_models);
 
     var custom_models = try loadCustomModels(allocator, storage, mode, notes);
@@ -242,6 +243,7 @@ var test_custom_discovery_body: ?[]const u8 = null;
 var test_custom_discovery_failure: ?[]const u8 = null;
 
 var test_force_copilot_models: bool = false;
+var test_copilot_listing: ?[]const u8 = null;
 
 fn copilotStringFromProviderData(allocator: std.mem.Allocator, provider_data: []const u8, key: []const u8) !?[]u8 {
     var parsed = std.json.parseFromSlice(std.json.Value, allocator, provider_data, .{}) catch return null;
@@ -275,10 +277,10 @@ fn copilotModelIdsFromProviderData(allocator: std.mem.Allocator, provider_data: 
     return try ids.toOwnedSlice(allocator);
 }
 
-fn copilotModel(allocator: std.mem.Allocator, id_text: []const u8, base_url_text: []const u8) !ai_types.Model {
+fn copilotModel(allocator: std.mem.Allocator, id_text: []const u8, base_url_text: []const u8, listed: ?DiscoveredModel) !ai_types.Model {
     const id = try allocator.dupe(u8, id_text);
     errdefer allocator.free(id);
-    const name = try allocator.dupe(u8, id_text);
+    const name = try allocator.dupe(u8, if (listed) |found| found.name orelse id_text else id_text);
     errdefer allocator.free(name);
     const api = try allocator.dupe(u8, github_copilot_api_name);
     errdefer allocator.free(api);
@@ -286,9 +288,9 @@ fn copilotModel(allocator: std.mem.Allocator, id_text: []const u8, base_url_text
     errdefer allocator.free(provider);
     const base_url = try allocator.dupe(u8, base_url_text);
     errdefer allocator.free(base_url);
-    const input = try allocator.alloc([]const u8, 1);
-    errdefer allocator.free(input);
-    input[0] = try allocator.dupe(u8, "text");
+    const sees_images = if (listed) |found| found.image_input orelse false else false;
+    const input = try modelInputModalities(allocator, sees_images);
+    errdefer freeInput(allocator, input);
 
     return .{
         .id = id,
@@ -299,13 +301,13 @@ fn copilotModel(allocator: std.mem.Allocator, id_text: []const u8, base_url_text
         .reasoning = false,
         .input = input,
         .cost = .{ .input = 0, .output = 0, .cache_read = 0, .cache_write = 0 },
-        .context_window = 128_000,
-        .max_tokens = 16_384,
+        .context_window = if (listed) |found| found.context_window orelse 128_000 else 128_000,
+        .max_tokens = if (listed) |found| found.max_tokens orelse 16_384 else 16_384,
         .is_owned = true,
     };
 }
 
-fn loadGitHubCopilotModels(allocator: std.mem.Allocator, storage: ?*oauth_storage.AuthStorage) ![]ai_types.Model {
+fn loadGitHubCopilotModels(allocator: std.mem.Allocator, storage: ?*oauth_storage.AuthStorage, mode: CatalogLoadMode, notes: ?*RefreshNotes) ![]ai_types.Model {
     if (builtin.is_test and !test_force_copilot_models) return emptyModels(allocator);
 
     const stored = storage orelse return emptyModels(allocator);
@@ -332,19 +334,176 @@ fn loadGitHubCopilotModels(allocator: std.mem.Allocator, storage: ?*oauth_storag
     }
 
     const base_url = base_url_owned orelse github_copilot.DEFAULT_BASE_URL;
-    const ids: []const []const u8 = discovered orelse &github_copilot.KNOWN_COPILOT_MODELS;
 
     var models = std.ArrayList(ai_types.Model).empty;
     errdefer {
         for (models.items) |*model| model.deinit(allocator);
         models.deinit(allocator);
     }
+
+    const access: ?oauth_storage.Credentials = switch (auth) {
+        .oauth => |creds| creds,
+        .api_key => null,
+    };
+    if (try listCopilotModels(allocator, access, base_url, mode, notes)) |listed| {
+        defer freeDiscoveredModels(allocator, listed);
+        for (listed) |found| {
+            var model = try copilotModel(allocator, found.id, base_url, found);
+            errdefer model.deinit(allocator);
+            try models.append(allocator, model);
+        }
+        return models.toOwnedSlice(allocator);
+    }
+
+    const ids: []const []const u8 = discovered orelse &github_copilot.KNOWN_COPILOT_MODELS;
     for (ids) |id| {
-        var model = try copilotModel(allocator, id, base_url);
+        var model = try copilotModel(allocator, id, base_url, null);
         errdefer model.deinit(allocator);
         try models.append(allocator, model);
     }
     return models.toOwnedSlice(allocator);
+}
+
+fn listCopilotModels(
+    allocator: std.mem.Allocator,
+    access: ?oauth_storage.Credentials,
+    base_url: []const u8,
+    mode: CatalogLoadMode,
+    notes: ?*RefreshNotes,
+) !?[]DiscoveredModel {
+    if (builtin.is_test) {
+        const body = test_copilot_listing orelse return null;
+        return try parseCopilotModels(allocator, body);
+    }
+    if (mode == .allow_cache) {
+        if (try loadCachedCopilotModels(allocator, anthropic_catalog_max_age_ms)) |models| return models;
+        return loadCachedCopilotModels(allocator, null);
+    }
+    if (access) |creds| {
+        if (compat.time.nowMillis() < creds.expires) {
+            if (fetchCopilotModelsCatalog(allocator, creds.access, base_url)) |body| {
+                defer allocator.free(body);
+                if (parseCopilotModels(allocator, body)) |models| {
+                    if (models.len > 0) {
+                        saveMakaiCatalog(allocator, makai_copilot_catalog_name, body) catch {};
+                        return models;
+                    }
+                    freeDiscoveredModels(allocator, models);
+                    note(notes, github_copilot_provider_id, "the model list offered no chat model", .{});
+                } else |err| note(notes, github_copilot_provider_id, "the model list did not parse ({t})", .{err});
+            } else |err| note(notes, github_copilot_provider_id, "GET {s}/models failed ({t})", .{ base_url, err });
+        } else note(notes, github_copilot_provider_id, "the stored token has expired; /login github-copilot lists its models again", .{});
+    }
+    return loadCachedCopilotModels(allocator, null);
+}
+
+fn loadCachedCopilotModels(allocator: std.mem.Allocator, max_age_ms: ?i64) !?[]DiscoveredModel {
+    const path = makaiCatalogPath(allocator, makai_copilot_catalog_name) catch return null;
+    defer allocator.free(path);
+    if (max_age_ms) |max_age| {
+        const modified = compat.fs.modifiedMillis(compat.fs.getCwd(), path) catch return null;
+        if (!catalogIsFresh(modified, compat.time.nowMillis(), max_age)) return null;
+    }
+    const data = compat.fs.readFileAlloc(allocator, compat.fs.getCwd(), path, max_catalog_bytes) catch return null;
+    defer allocator.free(data);
+    const models = parseCopilotModels(allocator, data) catch return null;
+    if (models.len > 0) return models;
+    freeDiscoveredModels(allocator, models);
+    return null;
+}
+
+fn fetchCopilotModelsCatalog(allocator: std.mem.Allocator, token: []const u8, base_url: []const u8) ![]u8 {
+    const bearer = try std.fmt.allocPrint(allocator, "Bearer {s}", .{token});
+    defer secureFree(allocator, bearer);
+
+    var headers: std.ArrayList(std.http.Header) = .empty;
+    defer headers.deinit(allocator);
+    try headers.append(allocator, .{ .name = "accept", .value = "application/json" });
+    try headers.append(allocator, .{ .name = "authorization", .value = bearer });
+    try headers.append(allocator, .{ .name = "user-agent", .value = github_copilot.COPILOT_HEADERS.user_agent });
+    try headers.append(allocator, .{ .name = "editor-version", .value = github_copilot.COPILOT_HEADERS.editor_version });
+    try headers.append(allocator, .{ .name = "editor-plugin-version", .value = github_copilot.COPILOT_HEADERS.editor_plugin_version });
+    try headers.append(allocator, .{ .name = "copilot-integration-id", .value = github_copilot.COPILOT_HEADERS.copilot_integration_id });
+
+    const models_url = try std.fmt.allocPrint(allocator, "{s}/models", .{std.mem.trimEnd(u8, base_url, "/")});
+    defer allocator.free(models_url);
+    var fetched = compat.http.fetch(allocator, models_url, .{
+        .method = .GET,
+        .extra_headers = headers.items,
+        .accept_encoding = "identity",
+        .max_response_bytes = max_catalog_bytes,
+        .timeout_ms = catalog_fetch_timeout_ms,
+    }) catch return error.ModelCatalogFetchFailed;
+    errdefer fetched.deinit(allocator);
+
+    if (fetched.status != 200) return error.ModelCatalogFetchFailed;
+    return fetched.body;
+}
+
+fn parseCopilotModels(allocator: std.mem.Allocator, data: []const u8) ![]DiscoveredModel {
+    var parsed = try std.json.parseFromSlice(std.json.Value, allocator, data, .{});
+    defer parsed.deinit();
+    if (parsed.value != .object) return error.InvalidModelCatalog;
+    const list = parsed.value.object.get("data") orelse return error.InvalidModelCatalog;
+    if (list != .array) return error.InvalidModelCatalog;
+
+    var models = std.ArrayList(DiscoveredModel).empty;
+    errdefer {
+        for (models.items) |model| model.deinit(allocator);
+        models.deinit(allocator);
+    }
+    for (list.array.items) |item| {
+        if (item != .object) continue;
+        const id = objectString(&item.object, "id") orelse continue;
+        if (id.len == 0 or !copilotOffersForChat(&item.object)) continue;
+        if (listedAlready(models.items, id)) continue;
+        var model = DiscoveredModel{ .id = try allocator.dupe(u8, id) };
+        errdefer model.deinit(allocator);
+        if (objectString(&item.object, "name")) |name| {
+            if (name.len > 0) model.name = try allocator.dupe(u8, name);
+        }
+        if (objectObject(&item.object, "capabilities")) |capabilities| {
+            if (objectObject(capabilities, "limits")) |limits| {
+                model.context_window = positiveU32(objectU32(limits, "max_prompt_tokens")) orelse
+                    positiveU32(objectU32(limits, "max_context_window_tokens"));
+                model.max_tokens = positiveU32(objectU32(limits, "max_output_tokens"));
+            }
+            if (objectObject(capabilities, "supports")) |supports| model.image_input = objectBool(supports, "vision");
+        }
+        try models.append(allocator, model);
+    }
+    return models.toOwnedSlice(allocator);
+}
+
+fn copilotOffersForChat(item: *const std.json.ObjectMap) bool {
+    if (objectBool(item, "model_picker_enabled")) |shown| {
+        if (!shown) return false;
+    }
+    if (objectObject(item, "capabilities")) |capabilities| {
+        if (objectString(capabilities, "type")) |kind| {
+            if (!std.mem.eql(u8, kind, "chat")) return false;
+        }
+    }
+    if (objectObject(item, "policy")) |policy| {
+        if (objectString(policy, "state")) |state| {
+            if (std.mem.eql(u8, state, "disabled")) return false;
+        }
+    }
+    if (item.get("supported_endpoints")) |endpoints| {
+        if (endpoints != .array) return false;
+        for (endpoints.array.items) |endpoint| {
+            if (endpoint == .string and std.mem.eql(u8, endpoint.string, "/chat/completions")) return true;
+        }
+        return false;
+    }
+    return true;
+}
+
+fn listedAlready(models: []const DiscoveredModel, id: []const u8) bool {
+    for (models) |model| {
+        if (std.mem.eql(u8, model.id, id)) return true;
+    }
+    return false;
 }
 
 fn loadCustomModels(allocator: std.mem.Allocator, storage: ?*oauth_storage.AuthStorage, mode: CatalogLoadMode, notes: ?*RefreshNotes) ![]ai_types.Model {
@@ -2571,6 +2730,22 @@ fn modelSupportsReasoning(obj: *const std.json.ObjectMap) bool {
     return false;
 }
 
+fn modelInputModalities(allocator: std.mem.Allocator, image: bool) ![]const []const u8 {
+    const input = try allocator.alloc([]const u8, if (image) 2 else 1);
+    var filled: usize = 0;
+    errdefer {
+        for (input[0..filled]) |value| allocator.free(value);
+        allocator.free(input);
+    }
+    input[0] = try allocator.dupe(u8, "text");
+    filled = 1;
+    if (image) {
+        input[1] = try allocator.dupe(u8, "image");
+        filled = 2;
+    }
+    return input;
+}
+
 fn freeInput(allocator: std.mem.Allocator, input: []const []const u8) void {
     for (input) |item| allocator.free(item);
     allocator.free(input);
@@ -2596,6 +2771,12 @@ fn reportsEffortLevels(obj: *const std.json.ObjectMap) ?bool {
     const levels = effort.object.get("supported_levels") orelse return null;
     if (levels != .array) return null;
     return if (levels.array.items.len > 0) true else null;
+}
+
+fn objectObject(obj: *const std.json.ObjectMap, key: []const u8) ?*const std.json.ObjectMap {
+    const value = obj.getPtr(key) orelse return null;
+    if (value.* != .object) return null;
+    return &value.object;
 }
 
 fn objectBool(obj: *const std.json.ObjectMap, key: []const u8) ?bool {
@@ -2833,7 +3014,7 @@ test "github copilot models come from the persisted login list" {
         } },
     );
 
-    const models = try loadGitHubCopilotModels(std.testing.allocator, &storage);
+    const models = try loadGitHubCopilotModels(std.testing.allocator, &storage, .allow_cache, null);
     defer deinitModels(std.testing.allocator, models);
 
     try std.testing.expectEqual(@as(usize, 2), models.len);
@@ -2842,6 +3023,60 @@ test "github copilot models come from the persisted login list" {
     try std.testing.expectEqualStrings(github_copilot_api_name, models[0].api);
     try std.testing.expectEqualStrings("https://api.acme.githubcopilot.com", models[0].base_url);
     try std.testing.expectEqualStrings("claude-opus-4.5", models[1].id);
+}
+
+test "github copilot lists the chat models its models endpoint offers, with their limits, ahead of the login list" {
+    test_force_copilot_models = true;
+    test_copilot_listing =
+        \\{"data":[
+        \\ {"id":"claude-opus-5.5","name":"Claude Opus 5.5","model_picker_enabled":true,"policy":{"state":"enabled"},"supported_endpoints":["/chat/completions","/v1/messages"],
+        \\  "capabilities":{"type":"chat","limits":{"max_context_window_tokens":200000,"max_prompt_tokens":168000,"max_output_tokens":32000},"supports":{"vision":true,"tool_calls":true}}},
+        \\ {"id":"gpt-6-sol","name":"GPT-6 Sol","model_picker_enabled":true,"capabilities":{"type":"chat","limits":{"max_context_window_tokens":400000,"max_output_tokens":128000}}},
+        \\ {"id":"gpt-5.3-codex","model_picker_enabled":true,"supported_endpoints":["/responses"],"capabilities":{"type":"chat"}},
+        \\ {"id":"copilot-search-a","model_picker_enabled":false,"capabilities":{"type":"chat"}},
+        \\ {"id":"text-embedding-3-small","capabilities":{"type":"embeddings"}},
+        \\ {"id":"grok-4.7","model_picker_enabled":true,"policy":{"state":"disabled"},"capabilities":{"type":"chat"}},
+        \\ {"id":"gpt-6-sol","name":"GPT-6 Sol again","model_picker_enabled":true,"capabilities":{"type":"chat"}}
+        \\]}
+    ;
+    defer {
+        test_force_copilot_models = false;
+        test_copilot_listing = null;
+    }
+
+    var storage = oauth_storage.AuthStorage{
+        .providers = std.StringHashMap(oauth_storage.ProviderAuth).init(std.testing.allocator),
+        .allocator = std.testing.allocator,
+    };
+    defer storage.deinit();
+    try storage.providers.put(
+        try std.testing.allocator.dupe(u8, github_copilot_provider_id),
+        .{ .oauth = .{
+            .refresh = try std.testing.allocator.dupe(u8, "gho"),
+            .access = try std.testing.allocator.dupe(u8, "tok"),
+            .expires = compat.time.nowMillis() + 3_600_000,
+            .provider_data = try std.testing.allocator.dupe(u8,
+                \\{"models":["claude-opus-4.6"]}
+            ),
+        } },
+    );
+
+    const models = try loadGitHubCopilotModels(std.testing.allocator, &storage, .force_fetch, null);
+    defer deinitModels(std.testing.allocator, models);
+
+    try std.testing.expectEqual(@as(usize, 2), models.len);
+    try std.testing.expectEqualStrings("claude-opus-5.5", models[0].id);
+    try std.testing.expectEqualStrings("Claude Opus 5.5", models[0].name);
+    try std.testing.expectEqual(@as(u32, 168_000), models[0].context_window);
+    try std.testing.expectEqual(@as(u32, 32_000), models[0].max_tokens);
+    try std.testing.expectEqual(@as(usize, 2), models[0].input.len);
+    try std.testing.expectEqualStrings("image", models[0].input[1]);
+    try std.testing.expectEqualStrings(github_copilot.DEFAULT_BASE_URL, models[0].base_url);
+    try std.testing.expectEqualStrings("gpt-6-sol", models[1].id);
+    try std.testing.expectEqualStrings("GPT-6 Sol", models[1].name);
+    try std.testing.expectEqual(@as(u32, 400_000), models[1].context_window);
+    try std.testing.expectEqual(@as(u32, 128_000), models[1].max_tokens);
+    try std.testing.expectEqual(@as(usize, 1), models[1].input.len);
 }
 
 test "github copilot falls back to the known list and the default base url" {
@@ -2862,7 +3097,7 @@ test "github copilot falls back to the known list and the default base url" {
         } },
     );
 
-    const models = try loadGitHubCopilotModels(std.testing.allocator, &storage);
+    const models = try loadGitHubCopilotModels(std.testing.allocator, &storage, .allow_cache, null);
     defer deinitModels(std.testing.allocator, models);
 
     try std.testing.expectEqual(github_copilot.KNOWN_COPILOT_MODELS.len, models.len);
@@ -2890,7 +3125,7 @@ test "an enterprise login with no stored base url contributes nothing" {
         } },
     );
 
-    const models = try loadGitHubCopilotModels(std.testing.allocator, &storage);
+    const models = try loadGitHubCopilotModels(std.testing.allocator, &storage, .allow_cache, null);
     defer deinitModels(std.testing.allocator, models);
     try std.testing.expectEqual(@as(usize, 0), models.len);
 }
@@ -2916,7 +3151,7 @@ test "an enterprise login that stored its base url still lists models there" {
         } },
     );
 
-    const models = try loadGitHubCopilotModels(std.testing.allocator, &storage);
+    const models = try loadGitHubCopilotModels(std.testing.allocator, &storage, .allow_cache, null);
     defer deinitModels(std.testing.allocator, models);
     try std.testing.expectEqual(@as(usize, 1), models.len);
     try std.testing.expectEqualStrings("https://api.acme.githubcopilot.com", models[0].base_url);
@@ -2932,11 +3167,11 @@ test "github copilot contributes nothing when it is not logged in" {
     };
     defer storage.deinit();
 
-    const models = try loadGitHubCopilotModels(std.testing.allocator, &storage);
+    const models = try loadGitHubCopilotModels(std.testing.allocator, &storage, .allow_cache, null);
     defer deinitModels(std.testing.allocator, models);
     try std.testing.expectEqual(@as(usize, 0), models.len);
 
-    const none = try loadGitHubCopilotModels(std.testing.allocator, null);
+    const none = try loadGitHubCopilotModels(std.testing.allocator, null, .allow_cache, null);
     defer deinitModels(std.testing.allocator, none);
     try std.testing.expectEqual(@as(usize, 0), none.len);
 }
