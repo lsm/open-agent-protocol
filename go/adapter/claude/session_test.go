@@ -1888,6 +1888,52 @@ func TestHeadersReachTheCLIAsItsCustomHeadersVariable(t *testing.T) {
 	}
 }
 
+func TestProviderSetsTheCLIEndpointAndOneCredentialPerAuthMode(t *testing.T) {
+	ambient := []string{"PATH=/bin", "ANTHROPIC_BASE_URL=https://ambient.example", "ANTHROPIC_API_KEY=ambient-key", "ANTHROPIC_AUTH_TOKEN=ambient-token", "CLAUDE_CODE_OAUTH_TOKEN=subscription", "HOME=/home/operator"}
+	for _, test := range []struct {
+		provider Provider
+		want     string
+	}{
+		{Provider{BaseURL: "http://bridge.internal:8791", Auth: AuthNone}, "ANTHROPIC_API_KEY=" + unauthenticatedKey},
+		{Provider{BaseURL: "https://api.example/anthropic", Auth: AuthAPIKey, Secret: "key-1"}, "ANTHROPIC_API_KEY=key-1"},
+		{Provider{BaseURL: "https://api.example/anthropic", Auth: AuthToken, Secret: "token-1"}, "ANTHROPIC_AUTH_TOKEN=token-1"},
+	} {
+		provider := test.provider
+		env := spawnEnv(t, Config{Environment: ambient, Provider: &provider})
+		want := []string{"PATH=/bin", "HOME=/home/operator", "ANTHROPIC_BASE_URL=" + provider.BaseURL, test.want}
+		if !slices.Equal(env, want) {
+			t.Fatalf("auth %s: env = %q, want %q", provider.Auth, env, want)
+		}
+	}
+	if kept := spawnEnv(t, Config{Environment: ambient}); !slices.Equal(kept, ambient) {
+		t.Fatalf("env = %q, want the host's environment untouched without a provider", kept)
+	}
+	headed := spawnEnv(t, Config{Provider: &Provider{BaseURL: "https://opencode.example/zen/go", Auth: AuthAPIKey, Secret: "k"}, Headers: []Header{{Name: "x-opencode-session", Value: "r1"}}})
+	if !slices.Equal(headed, []string{"ANTHROPIC_BASE_URL=https://opencode.example/zen/go", "ANTHROPIC_API_KEY=k", "ANTHROPIC_CUSTOM_HEADERS=x-opencode-session: r1"}) {
+		t.Fatalf("env = %q, want the provider and its session header together", headed)
+	}
+}
+
+func TestProviderRefusesWhatItCannotCarry(t *testing.T) {
+	for _, provider := range []Provider{
+		{BaseURL: "", Auth: AuthNone},
+		{BaseURL: "bridge.internal:8791", Auth: AuthNone},
+		{BaseURL: "ftp://bridge.internal", Auth: AuthNone},
+		{BaseURL: "http://bridge.internal\nX: y", Auth: AuthNone},
+		{BaseURL: "http://bridge.internal", Auth: AuthNone, Secret: "stray"},
+		{BaseURL: "http://bridge.internal", Auth: AuthAPIKey},
+		{BaseURL: "http://bridge.internal", Auth: AuthToken},
+		{BaseURL: "http://bridge.internal", Auth: AuthAPIKey, Secret: "a\nb"},
+		{BaseURL: "http://bridge.internal", Auth: "oauth", Secret: "s"},
+		{BaseURL: "http://bridge.internal"},
+	} {
+		provider := provider
+		if _, err := New(Config{Executable: "/bin/claude", Tools: UnrestrictedTools(), Provider: &provider}); err == nil {
+			t.Fatalf("provider %+v was accepted", provider)
+		}
+	}
+}
+
 func TestToolPostureMustBeStated(t *testing.T) {
 	_, err := New(Config{Executable: "/bin/claude"})
 	if !errors.Is(err, ErrToolPostureUnstated) {
