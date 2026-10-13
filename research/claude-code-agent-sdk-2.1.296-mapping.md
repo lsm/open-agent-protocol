@@ -212,3 +212,21 @@ live GLM-5.3 review via Z.AI came to 715K against 57K uncached input
 alone compares the wrong thing. The corpus's recorded results carry
 `num_turns` and no cache counts, so only `num_turns` was added to those
 expectations, including on the error terminals that report no cost.
+
+## The provider endpoint and auth (`Config.Provider`)
+
+A host used to build Claude Code's provider environment itself and pass it in
+`Config.Environment`. `Config.Provider` takes it typed: `BaseURL` and `Auth`, one
+of `none`, `api_key` or `token`, with `Secret`. The adapter writes
+`ANTHROPIC_BASE_URL` and one credential, `ANTHROPIC_API_KEY` for `api_key` and
+`ANTHROPIC_AUTH_TOKEN` for `token`. It first drops those three variables and
+`CLAUDE_CODE_OAUTH_TOKEN` from `Environment`, so the typed fields win, appear
+once, and never meet a subscription login the host forwarded.
+
+`none` is a provider that ignores credentials, such as a bridge in front of
+another account. Claude Code refuses to start without one (`Not logged in ·
+Please run /login`), so the adapter passes the placeholder
+`ANTHROPIC_API_KEY=oap-unauthenticated`. Checked live on 2.1.295, not the pin:
+with `HOME` holding a subscription login and that placeholder set, `claude -p`
+sent `x-api-key: oap-unauthenticated` and no `Authorization` header to a
+loopback endpoint, so the key wins over the stored login.

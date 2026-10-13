@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"github.com/lsm/open-agent-protocol/harnesses"
+	"net/url"
 	"slices"
 	"strings"
 	"sync/atomic"
@@ -132,6 +133,7 @@ type Config struct {
 	Executable       string
 	Args             []string
 	Environment      []string
+	Provider         *Provider
 	Headers          []Header
 	WorkingDirectory string
 	Model            string
@@ -180,7 +182,11 @@ func New(config Config) (*Adapter, error) {
 	var processConfig *rpc.ProcessConfig
 	if config.Factory == nil {
 
-		env, err := withHeaders(config.Environment, config.Headers)
+		env, err := withProvider(config.Environment, config.Provider)
+		if err != nil {
+			return nil, err
+		}
+		env, err = withHeaders(env, config.Headers)
 		if err != nil {
 			return nil, err
 		}
@@ -213,6 +219,64 @@ func New(config Config) (*Adapter, error) {
 		})
 	}
 	return &Adapter{config: config, clock: config.Clock, ids: config.IDs, initializeAtOpen: initializeAtOpen, processConfig: processConfig}, nil
+}
+
+type AuthMode string
+
+const (
+	AuthNone   AuthMode = "none"
+	AuthAPIKey AuthMode = "api_key"
+	AuthToken  AuthMode = "token"
+)
+
+type Provider struct {
+	BaseURL string
+	Auth    AuthMode
+	Secret  string
+}
+
+const unauthenticatedKey = "oap-unauthenticated"
+
+var providerVariables = []string{"ANTHROPIC_BASE_URL", "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN"}
+
+func withProvider(environment []string, provider *Provider) ([]string, error) {
+	if provider == nil {
+		return append([]string{}, environment...), nil
+	}
+	endpoint, err := url.Parse(provider.BaseURL)
+	if err != nil || (endpoint.Scheme != "http" && endpoint.Scheme != "https") || endpoint.Host == "" || strings.ContainsAny(provider.BaseURL, "\r\n") {
+		return nil, fmt.Errorf("claude adapter: provider base URL %q is not an http or https URL", provider.BaseURL)
+	}
+	if strings.ContainsAny(provider.Secret, "\r\n\x00") {
+		return nil, errors.New("claude adapter: provider secret carries a line break or NUL")
+	}
+	var credential string
+	switch provider.Auth {
+	case AuthNone:
+		if provider.Secret != "" {
+			return nil, errors.New("claude adapter: a provider with auth none takes no secret")
+		}
+		credential = "ANTHROPIC_API_KEY=" + unauthenticatedKey
+	case AuthAPIKey, AuthToken:
+		if provider.Secret == "" {
+			return nil, fmt.Errorf("claude adapter: a provider with auth %s needs a secret", provider.Auth)
+		}
+		variable := "ANTHROPIC_API_KEY="
+		if provider.Auth == AuthToken {
+			variable = "ANTHROPIC_AUTH_TOKEN="
+		}
+		credential = variable + provider.Secret
+	default:
+		return nil, fmt.Errorf("claude adapter: provider auth %q is not none, api_key or token", provider.Auth)
+	}
+	env := make([]string, 0, len(environment)+2)
+	for _, entry := range environment {
+		name, _, _ := strings.Cut(entry, "=")
+		if !slices.Contains(providerVariables, name) {
+			env = append(env, entry)
+		}
+	}
+	return append(env, "ANTHROPIC_BASE_URL="+provider.BaseURL, credential), nil
 }
 
 type Header struct {
