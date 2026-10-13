@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+## [0.1.0-alpha.15] - 2026-10-13
+
+### Merged pull requests
+
+- **providers: replay a tool call's arguments only when they are a whole object** ([#1084](https://github.com/lsm/open-agent-protocol/pull/1084)): A reply cut off at the output limit can stop partway through a tool call's arguments.
+- **catalog: list GitHub Copilot models from its models endpoint** ([#1083](https://github.com/lsm/open-agent-protocol/pull/1083)): oapx's Copilot model list was a fixed set of 19 ids compiled into the binary, or whichever of them login managed to enable.
+- **catalog: keep the limits a custom provider's model list reports** ([#1082](https://github.com/lsm/open-agent-protocol/pull/1082)): A custom provider's `/v1/models` discovery kept only the model ids.
+
 ## [0.1.0-alpha.14] - 2026-10-13
 
 ### Merged pull requests
