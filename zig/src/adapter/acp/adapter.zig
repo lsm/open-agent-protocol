@@ -389,6 +389,7 @@ pub const Session = struct {
             .counter = &owner.ids,
             .now_ms = wallClock,
             .id_style = .decimal,
+            .reopened = request.reopen,
         });
         self.reducer.open();
         if (request.reasoning_level) |level| {
@@ -818,7 +819,7 @@ pub const Session = struct {
             self.prompt_id = null;
             if (answered.result) |result| {
                 const stop = memberOf(result, "stopReason") orelse std.json.Value.null;
-                self.reducer.settlePrompt(if (stop == .string) stop.string else "") catch |err| return lift(err);
+                self.reducer.settlePrompt(if (stop == .string) stop.string else "", session.promptUsage(result)) catch |err| return lift(err);
             } else {
                 self.reducer.promptFailed(answered.code, id_value.?, answered.message) catch |err| return lift(err);
             }

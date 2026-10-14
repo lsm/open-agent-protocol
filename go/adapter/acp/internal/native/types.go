@@ -109,7 +109,8 @@ type PromptParams struct {
 	Prompt    []ContentBlock `json:"prompt"`
 }
 type PromptResult struct {
-	StopReason string `json:"stopReason"`
+	StopReason string          `json:"stopReason"`
+	Usage      json.RawMessage `json:"usage,omitempty"`
 }
 type CancelParams struct {
 	SessionID string `json:"sessionId"`

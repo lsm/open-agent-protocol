@@ -45,6 +45,9 @@ type session struct {
 	journal      []protocol.Envelope
 	stop         chan struct{}
 	stopOnce     sync.Once
+	reopened     bool
+	prompted     bool
+	context      *contextUsage
 }
 type runState struct {
 	id              protocol.RunID
@@ -215,16 +218,28 @@ func (s *session) settlePrompt(run *runState, result native.PromptResult, callEr
 	s.opMu.Lock()
 	defer s.opMu.Unlock()
 	s.mu.Lock()
+	firstTurn := !s.reopened && !s.prompted
+	s.prompted = true
 	if run.terminal {
 		s.mu.Unlock()
 		return
 	}
+	context := s.context
 	s.mu.Unlock()
+	var turn *turnUsage
+	if callErr == nil {
+		turn = decodeTurnUsage(result.Usage)
+	}
+	var usage *protocol.Usage
+	if turn != nil && firstTurn {
+		usage = turn.core()
+	}
+	extensions := usageExtensions(turn, context)
 	if callErr != nil {
 		var remote *rpc.RemoteError
 		if errors.As(callErr, &remote) && remote.Object.Code == -32800 && run.cancelRequested {
 			s.settleChildren(run, true)
-			_ = s.emit(run, protocol.TypeRunCancelled, protocol.RunCancelledPayload{SessionID: s.state.SessionID, RunID: run.id, Reason: "ACP prompt cancellation confirmed"}, true)
+			_ = s.emitTerminal(run, protocol.TypeRunCancelled, protocol.RunCancelledPayload{SessionID: s.state.SessionID, RunID: run.id, Reason: "ACP prompt cancellation confirmed"}, extensions)
 			return
 		}
 
@@ -233,7 +248,7 @@ func (s *session) settlePrompt(run *runState, result native.PromptResult, callEr
 			settledBy = ""
 		}
 		s.settleChildren(run, true)
-		_ = s.emit(run, protocol.TypeRunFailed, protocol.RunFailedPayload{SessionID: s.state.SessionID, RunID: run.id, Error: protocol.ProtocolError{Code: "acp_prompt_error", Message: callErr.Error()}, SettledBy: settledBy}, true)
+		_ = s.emitTerminal(run, protocol.TypeRunFailed, protocol.RunFailedPayload{SessionID: s.state.SessionID, RunID: run.id, Error: protocol.ProtocolError{Code: "acp_prompt_error", Message: callErr.Error()}, SettledBy: settledBy}, extensions)
 		return
 	}
 	switch result.StopReason {
@@ -243,16 +258,16 @@ func (s *session) settlePrompt(run *runState, result native.PromptResult, callEr
 		messageID := run.messageID
 		text := run.messageTexts[messageID]
 		s.mu.Unlock()
-		_ = s.emit(run, protocol.TypeRunCompleted, protocol.RunCompletedPayload{SessionID: s.state.SessionID, RunID: run.id, FinalResponse: protocol.Message{ID: messageID, Role: protocol.RoleAssistant, Content: protocol.TextContent(text)}, StopReason: result.StopReason}, true)
+		_ = s.emitTerminal(run, protocol.TypeRunCompleted, protocol.RunCompletedPayload{SessionID: s.state.SessionID, RunID: run.id, FinalResponse: protocol.Message{ID: messageID, Role: protocol.RoleAssistant, Content: protocol.TextContent(text)}, StopReason: result.StopReason, Usage: usage}, extensions)
 	case "cancelled":
 		s.settleChildren(run, true)
-		_ = s.emit(run, protocol.TypeRunCancelled, protocol.RunCancelledPayload{SessionID: s.state.SessionID, RunID: run.id, Reason: "ACP prompt returned cancelled"}, true)
+		_ = s.emitTerminal(run, protocol.TypeRunCancelled, protocol.RunCancelledPayload{SessionID: s.state.SessionID, RunID: run.id, Reason: "ACP prompt returned cancelled", Usage: usage}, extensions)
 	case "refusal":
 		s.settleChildren(run, true)
-		_ = s.emit(run, protocol.TypeRunFailed, protocol.RunFailedPayload{SessionID: s.state.SessionID, RunID: run.id, Error: protocol.ProtocolError{Code: "refusal", Message: "agent refused the prompt"}}, true)
+		_ = s.emitTerminal(run, protocol.TypeRunFailed, protocol.RunFailedPayload{SessionID: s.state.SessionID, RunID: run.id, Error: protocol.ProtocolError{Code: "refusal", Message: "agent refused the prompt"}, Usage: usage}, extensions)
 	default:
 		s.settleChildren(run, true)
-		_ = s.emit(run, protocol.TypeRunFailed, protocol.RunFailedPayload{SessionID: s.state.SessionID, RunID: run.id, Error: protocol.ProtocolError{Code: "acp_invalid_stop_reason", Message: fmt.Sprintf("unsupported ACP stop reason %q", result.StopReason)}}, true)
+		_ = s.emitTerminal(run, protocol.TypeRunFailed, protocol.RunFailedPayload{SessionID: s.state.SessionID, RunID: run.id, Error: protocol.ProtocolError{Code: "acp_invalid_stop_reason", Message: fmt.Sprintf("unsupported ACP stop reason %q", result.StopReason)}, Usage: usage}, extensions)
 	}
 }
 
@@ -288,6 +303,14 @@ func (s *session) handleNotification(n rpc.NotificationMessage) {
 	var h native.UpdateHeader
 	if json.Unmarshal(p.Update, &h) != nil {
 		s.failActive("acp_invalid_update", "malformed session update")
+		return
+	}
+	if h.SessionUpdate == "usage_update" {
+		if context := decodeContextUsage(p.Update); context != nil {
+			s.mu.Lock()
+			s.context = context
+			s.mu.Unlock()
+		}
 		return
 	}
 	s.mu.Lock()
@@ -343,7 +366,7 @@ func (s *session) handleNotification(n rpc.NotificationMessage) {
 
 	case "user_message_chunk", "agent_thought_chunk", "plan", "plan_update", "plan_removed",
 		"available_commands_update", "current_mode_update", "config_option_update",
-		"session_info_update", "usage_update":
+		"session_info_update":
 		return
 	default:
 		if len(h.SessionUpdate) > 0 && h.SessionUpdate[0] == '_' {
@@ -399,7 +422,7 @@ func (s *session) handleRequest(r *rpc.IncomingRequest) {
 	s.interactions[id] = ps
 	s.mu.Unlock()
 
-	_, _ = s.emitRecorded(run, protocol.TypeActionPermissionRequested, protocol.PermissionRequestedPayload{InteractionID: id, RequestedBy: endpointID, RespondedBy: s.participant, SessionID: s.state.SessionID, RunID: run.id, ToolCallID: tool.id, Title: p.ToolCall.Title, Choices: choices, ArgumentsJSON: tool.rawInput}, false, "", func(event protocol.Envelope) { ps.requestEventID = event.ID })
+	_, _ = s.emitRecorded(run, protocol.TypeActionPermissionRequested, protocol.PermissionRequestedPayload{InteractionID: id, RequestedBy: endpointID, RespondedBy: s.participant, SessionID: s.state.SessionID, RunID: run.id, ToolCallID: tool.id, Title: p.ToolCall.Title, Choices: choices, ArgumentsJSON: tool.rawInput}, false, "", func(event *protocol.Envelope) { ps.requestEventID = event.ID })
 }
 
 func definedOptionKind(kind string) bool {
@@ -921,7 +944,12 @@ func (s *session) emitEnvelope(run *runState, typ protocol.EnvelopeType, payload
 	return s.emitRecorded(run, typ, payload, terminal, inReplyTo, nil)
 }
 
-func (s *session) emitRecorded(run *runState, typ protocol.EnvelopeType, payload any, terminal bool, inReplyTo protocol.EnvelopeID, record func(protocol.Envelope)) (protocol.Envelope, error) {
+func (s *session) emitTerminal(run *runState, typ protocol.EnvelopeType, payload any, extensions map[string]json.RawMessage) error {
+	_, err := s.emitRecorded(run, typ, payload, true, "", func(event *protocol.Envelope) { event.Extensions = extensions })
+	return err
+}
+
+func (s *session) emitRecorded(run *runState, typ protocol.EnvelopeType, payload any, terminal bool, inReplyTo protocol.EnvelopeID, record func(*protocol.Envelope)) (protocol.Envelope, error) {
 	s.emitMu.Lock()
 	defer s.emitMu.Unlock()
 	s.mu.Lock()
@@ -952,7 +980,7 @@ func (s *session) emitRecorded(run *runState, typ protocol.EnvelopeType, payload
 		e.ToolCallID = generic.ToolCallID
 	}
 	if record != nil {
-		record(e)
+		record(&e)
 	}
 	s.journal = append(s.journal, e)
 	if len(s.journal) > s.capacity {
