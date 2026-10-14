@@ -16,7 +16,7 @@ func TestAHostOutsideThePackageConfiguresMCPServersThatTheAdapterChecks(t *testi
 	if err == nil || !strings.Contains(err.Error(), "configured twice") {
 		t.Fatalf("New = %v, want the duplicate MCP server refused", err)
 	}
-	if _, err := acp.New(acp.Config{Executable: "agent", WorkingDirectory: "/repo", MCPServers: servers[:1]}); err != nil {
+	if _, err := acp.New(acp.Config{Executable: "agent", WorkingDirectory: "/repo", MCPServers: servers[:1], SessionConfig: map[string]string{"mode": "ask"}}); err != nil {
 		t.Fatal(err)
 	}
 }
