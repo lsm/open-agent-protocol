@@ -58,6 +58,8 @@ func (f ClientFactoryFunc) Start(ctx context.Context) (Client, rpc.InitializeRes
 }
 
 type Config struct {
+	AbortActiveOnClose bool
+
 	Factory          ClientFactory
 	Executable       string
 	Args             []string
@@ -262,7 +264,7 @@ func (a *Adapter) Open(ctx context.Context, req base.OpenRequest) (base.Session,
 		id = protocol.SessionID(a.ids.NewID("session"))
 	}
 	now := a.clock.Now().UnixMilli()
-	s := &session{client: client, inbound: client.Inbound(), clock: a.clock, ids: a.ids, capacity: a.config.JournalCapacity, nativeID: opened.SessionID, participant: req.Participant.ID, state: protocol.SessionState{SessionID: id, Status: protocol.SessionIdle, UpdatedAtMS: now, Sources: a.sessionSources(req.ToolSources), ReasoningLevel: req.ReasoningLevel}, runs: map[protocol.RunID]*runState{}, tools: map[string]*toolState{}, interactions: map[protocol.InteractionID]*permissionState{}, stop: make(chan struct{})}
+	s := &session{client: client, inbound: client.Inbound(), clock: a.clock, ids: a.ids, capacity: a.config.JournalCapacity, nativeID: opened.SessionID, participant: req.Participant.ID, abortActiveOnClose: a.config.AbortActiveOnClose, shutdownTimeout: a.config.ShutdownTimeout, state: protocol.SessionState{SessionID: id, Status: protocol.SessionIdle, UpdatedAtMS: now, Sources: a.sessionSources(req.ToolSources), ReasoningLevel: req.ReasoningLevel}, runs: map[protocol.RunID]*runState{}, tools: map[string]*toolState{}, interactions: map[protocol.InteractionID]*permissionState{}, stop: make(chan struct{})}
 	if req.Reopen || len(a.config.SessionConfig) > 0 {
 		s.state.CurrentModelID, s.state.ReasoningLevel = resumedSettings(opened.ConfigOptions)
 	}
