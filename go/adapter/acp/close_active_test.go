@@ -189,19 +189,29 @@ func TestAbandonedACPHelper(t *testing.T) {
 
 type blockedAdmissionClient struct {
 	*fakeClient
-	writing chan struct{}
+	writing  chan struct{}
+	admitted bool
 }
 
 func (f *blockedAdmissionClient) CallStarted(_ context.Context, _ string, _ any, _ any, started chan<- error) error {
 	close(f.writing)
 	<-f.done
 	err := errors.New("closed during admission")
-	started <- err
+	if f.admitted {
+		started <- nil
+	} else {
+		started <- err
+	}
 	close(started)
 	return err
 }
 func TestOptInClosePreemptsBlockedAdmission(t *testing.T) {
-	f := &blockedAdmissionClient{fakeClient: newFake(), writing: make(chan struct{})}
+	for _, admitted := range []bool{false, true} {
+		t.Run(map[bool]string{false: "failed-write", true: "written-before-close"}[admitted], func(t *testing.T) { testOptInClosePreemptsBlockedAdmission(t, admitted) })
+	}
+}
+func testOptInClosePreemptsBlockedAdmission(t *testing.T, admitted bool) {
+	f := &blockedAdmissionClient{fakeClient: newFake(), writing: make(chan struct{}), admitted: admitted}
 	a, err := New(Config{WorkingDirectory: t.TempDir(), AbortActiveOnClose: true, Factory: ClientFactoryFunc(func(context.Context) (Client, rpc.InitializeResponse, error) {
 		return f, rpc.InitializeResponse{ProtocolVersion: 1, AgentCapabilities: rpc.AgentCapabilities{}}, nil
 	})})

@@ -155,6 +155,12 @@ func (s *session) Submit(ctx context.Context, submit base.SubmitRequest) (protoc
 	}
 	if err := s.emit(run, protocol.TypeRunStarted, protocol.RunStartedPayload{SessionID: s.state.SessionID, RunID: run.id, Status: protocol.RunRunning, ModelID: protocol.Control(req.ModelID), StartedAtMS: s.clock.Now().UnixMilli()}, false); err != nil {
 		close(run.admitted)
+		s.mu.Lock()
+		closed := s.closed
+		s.mu.Unlock()
+		if closed {
+			return protocol.MessageSubmitResponse{}, stream, base.ErrSessionClosed
+		}
 		return protocol.MessageSubmitResponse{}, stream, err
 	}
 	response := protocol.MessageSubmitResponse{SessionID: s.state.SessionID, Accepted: true, SubmissionID: protocol.SubmissionID(s.ids.NewID("submission")), RequestedDelivery: protocol.DeliveryAuto, EffectiveDelivery: protocol.DeliveryStart, DeliveryResolution: "session_idle", Admission: protocol.AdmissionStarted, RunID: run.id, Status: protocol.RunRunning, ModelID: protocol.Control(req.ModelID), MessageIDs: messageIDs}

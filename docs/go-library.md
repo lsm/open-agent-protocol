@@ -200,14 +200,18 @@ that hosts have tripped over:
 The ACP adapter keeps its default active-run guard: `Session.Close` returns
 `adapter.ErrRunActive` until the native run settles. Hosts that must release an
 abandoned local agent can opt into `acp.Config{AbortActiveOnClose: true}`. Closing
-then preempts outstanding transport writes, marks the local session closed, closes event subscriptions, and shuts down
+then preempts outstanding transport writes, marks the local session closed,
+closes event subscriptions, and shuts down
 the client even if the agent never acknowledges cancellation. It does not emit a
 fictional native completion or cancellation event.
 
 Use a fresh cleanup context; an already cancelled context is rejected before
-cleanup. For the built-in process client, shutdown waits up to `ShutdownTimeout`
-(default five seconds) before killing and releasing the child. A forced shutdown
-can return a timeout error after releasing the process. Custom `Client` factories
+cleanup. For the built-in process client, the shutdown wait uses the earlier of
+`ShutdownTimeout` (default five seconds) and the client's fixed five-second
+cleanup context before killing and releasing the child. Values above five seconds
+do not extend that wait. Forced cleanup can return either a shutdown timeout or
+`context.DeadlineExceeded` after releasing the process; at the default, the two
+deadlines race. Custom `Client` factories
 remain responsible for making their own `Close` bounded. This option releases the
 owned agent process; it does not promise termination of detached descendants.
 With this opt-in, native cancellation writes also use `ShutdownTimeout` (default
