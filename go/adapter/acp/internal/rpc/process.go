@@ -176,10 +176,12 @@ func (process *Process) Close(ctx context.Context) error {
 			process.closeErr = process.WaitError()
 		case <-ctx.Done():
 			process.killAndRelease()
+			process.Client.closeWith(ErrClosed)
 			<-process.waitDone
 			process.closeErr = ctx.Err()
 		case <-timer.C:
 			process.killAndRelease()
+			process.Client.closeWith(ErrClosed)
 			<-process.waitDone
 			process.closeErr = errors.New("acp rpc: shutdown timed out")
 		}

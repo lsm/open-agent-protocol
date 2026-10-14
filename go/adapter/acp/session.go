@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strconv"
 	"sync"
+	"time"
 
 	base "github.com/lsm/open-agent-protocol/go/adapter"
 	"github.com/lsm/open-agent-protocol/go/adapter/acp/internal/native"
@@ -20,6 +21,10 @@ var errTerminalWon = errors.New("acp adapter: terminal already selected")
 const streamCapacity = 64
 
 type session struct {
+	abortActiveOnClose bool
+	shutdownTimeout    time.Duration
+	closeMu            sync.Mutex
+
 	mu           sync.Mutex
 	emitMu       sync.Mutex
 	opMu         sync.Mutex
@@ -129,6 +134,11 @@ func (s *session) Submit(ctx context.Context, submit base.SubmitRequest) (protoc
 	}
 	if writeErr != nil {
 		s.mu.Lock()
+		if s.closed {
+			s.mu.Unlock()
+			close(run.admitted)
+			return protocol.MessageSubmitResponse{}, stream, base.ErrSessionClosed
+		}
 		run.terminal = true
 		run.status = protocol.RunFailed
 		delete(s.runs, run.id)
@@ -668,6 +678,15 @@ func (s *session) Resolve(ctx context.Context, res base.InteractionResolution) e
 	return err
 }
 func (s *session) Cancel(ctx context.Context, id protocol.RunID) (protocol.RunCancelResponse, error) {
+	if s.abortActiveOnClose {
+		timeout := s.shutdownTimeout
+		if timeout <= 0 {
+			timeout = 5 * time.Second
+		}
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, timeout)
+		defer cancel()
+	}
 	s.opMu.Lock()
 	defer s.opMu.Unlock()
 	if err := ctx.Err(); err != nil {
@@ -765,8 +784,12 @@ func (s *session) Resume(ctx context.Context, q base.ResumeRequest) (base.Recove
 	return recovery, stream, nil
 }
 func (s *session) Close(ctx context.Context) error {
-	s.opMu.Lock()
-	defer s.opMu.Unlock()
+	s.closeMu.Lock()
+	defer s.closeMu.Unlock()
+	if !s.abortActiveOnClose {
+		s.opMu.Lock()
+		defer s.opMu.Unlock()
+	}
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -776,8 +799,11 @@ func (s *session) Close(ctx context.Context) error {
 		return nil
 	}
 	if s.active != nil && !s.active.terminal {
-		s.mu.Unlock()
-		return base.ErrRunActive
+		if !s.abortActiveOnClose {
+			s.mu.Unlock()
+			return base.ErrRunActive
+		}
+		s.active.terminal = true
 	}
 	s.closed = true
 	s.state.Status = protocol.SessionClosed

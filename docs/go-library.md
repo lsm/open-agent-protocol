@@ -194,3 +194,21 @@ that hosts have tripped over:
   records the wire at the pinned version — the catalog entry names which.
 - To **check your work**, run `go run ./go/cmd/goap check`, `go run ./go/cmd/goap validate` and the adapter
   corpora; `go/adapter/adaptertest` is what they run under.
+
+### Closing an abandoned ACP session
+
+The ACP adapter keeps its default active-run guard: `Session.Close` returns
+`adapter.ErrRunActive` until the native run settles. Hosts that must release an
+abandoned local agent can opt into `acp.Config{AbortActiveOnClose: true}`. Closing
+then preempts outstanding transport writes, marks the local session closed, closes event subscriptions, and shuts down
+the client even if the agent never acknowledges cancellation. It does not emit a
+fictional native completion or cancellation event.
+
+Use a fresh cleanup context; an already cancelled context is rejected before
+cleanup. For the built-in process client, shutdown waits up to `ShutdownTimeout`
+(default five seconds) before killing and releasing the child. A forced shutdown
+can return a timeout error after releasing the process. Custom `Client` factories
+remain responsible for making their own `Close` bounded. This option releases the
+owned agent process; it does not promise termination of detached descendants.
+With this opt-in, native cancellation writes also use `ShutdownTimeout` (default
+five seconds), so a cancellation attempt does not indefinitely block cleanup.
