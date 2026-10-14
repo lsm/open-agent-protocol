@@ -1135,6 +1135,18 @@ pub const OapExecution = struct {
         sink.push(sink.ctx, event);
     }
 
+    fn carryCallUsage(self: *OapExecution, ended: anytype, root: std.json.ObjectMap) !void {
+        const usage = oapxExtension(root, "tool_usage") orelse return;
+        if (usage != .object) return;
+        ended.raw_total_bytes = tokenCount(usage.object, "raw_bytes");
+        ended.returned_total_bytes = tokenCount(usage.object, "returned_bytes");
+        ended.estimated_returned_tokens = tokenCount(usage.object, "estimated_tokens");
+        ended.artifact_count = @intCast(@min(tokenCount(usage.object, "artifacts"), std.math.maxInt(u32)));
+        if (usage.object.get("artifact_refs")) |refs| if (refs == .string) {
+            ended.artifact_refs = try self.ownedText(refs.string);
+        };
+    }
+
     fn toolEnd(self: *OapExecution, body: std.json.ObjectMap, result: []const u8, failed: bool) !SessionEvent {
         var call_id = try self.ownedText(stringOf(body, "tool_call_id") orelse "");
         errdefer call_id.deinit(self.allocator);
@@ -1355,11 +1367,12 @@ pub const OapExecution = struct {
                 try self.allocator.dupe(u8, message);
             defer self.allocator.free(result);
             var ended = try self.toolEnd(body, result, failed);
+            errdefer ended.deinit(self.allocator);
+            try self.carryCallUsage(&ended.tool_execution_end, root);
             if (details == null) {
                 self.deliver(ended);
                 return;
             }
-            errdefer ended.deinit(self.allocator);
             const shown = try self.toolResultMessage(body, result, message, failed);
             self.deliver(ended);
             self.deliver(.{ .message_start = .{ .role = .tool_result } });
@@ -1597,21 +1610,21 @@ fn tokenCount(usage: std.json.ObjectMap, key: []const u8) u64 {
     return if (tokens == .integer and tokens.integer > 0) @intCast(tokens.integer) else 0;
 }
 
-fn contextTokens(root: std.json.ObjectMap) ?u64 {
+fn oapxExtension(root: std.json.ObjectMap, key: []const u8) ?std.json.Value {
     const extensions = root.get("extensions") orelse return null;
     if (extensions != .object) return null;
     const ours = extensions.object.get(oapx_adapter.settings_key) orelse return null;
     if (ours != .object) return null;
-    const tokens = ours.object.get("context_tokens") orelse return null;
+    return ours.object.get(key);
+}
+
+fn contextTokens(root: std.json.ObjectMap) ?u64 {
+    const tokens = oapxExtension(root, "context_tokens") orelse return null;
     return if (tokens == .integer and tokens.integer >= 0) @intCast(tokens.integer) else null;
 }
 
 fn resultText(root: std.json.ObjectMap) ?std.json.Value {
-    const extensions = root.get("extensions") orelse return null;
-    if (extensions != .object) return null;
-    const ours = extensions.object.get(oapx_adapter.settings_key) orelse return null;
-    if (ours != .object) return null;
-    const text = ours.object.get("result_text") orelse return null;
+    const text = oapxExtension(root, "result_text") orelse return null;
     return if (text == .string) text else null;
 }
 
@@ -2698,6 +2711,48 @@ test "a completed call over OAP shows the loop's own result text, as the local l
     try testing.expect(ended);
     try testing.expect(ended_ok);
     try testing.expect(text_seen);
+}
+
+test "a completed call over OAP carries the loop's byte counts and token estimate, which the TUI shows beside the call" {
+    var script = Script{ .tool_first = true };
+    const models = [_]ai_types.Model{scripted_model};
+    const execution = try OapExecution.create(testing.allocator, .{
+        .protocol = .{ .stream_fn = scriptedStream, .ctx = &script },
+        .models = &models,
+        .initial_model_id = scripted_model.id,
+        .tools = &echo_tools,
+    });
+    defer execution.destroy();
+    var runtime = try session_runtime.SessionRuntime.init(testing.allocator, .{
+        .models = &models,
+        .initial_model_id = scripted_model.id,
+        .remote = execution.remote(),
+    });
+    defer runtime.deinit();
+
+    try runtime.submitTurn("use the tool");
+    var returned_bytes: u64 = 0;
+    var estimated_tokens: u64 = 0;
+    var ended = false;
+    var waits: usize = 0;
+    while (!ended and waits < 5000) : (waits += 1) {
+        while (runtime.streamEvents().poll()) |event| {
+            var owned_event = event;
+            defer owned_event.deinit(testing.allocator);
+            switch (owned_event) {
+                .tool_execution_end => |payload| {
+                    returned_bytes = payload.returned_total_bytes;
+                    estimated_tokens = payload.estimated_returned_tokens;
+                },
+                .agent_end => ended = true,
+                else => {},
+            }
+        }
+        if (!ended) std.testing.io.sleep(.fromNanoseconds(std.time.ns_per_ms), .boot) catch {};
+    }
+    try testing.expect(ended);
+    try testing.expect(returned_bytes > 0);
+    try testing.expect(estimated_tokens > 0);
 }
 
 test "another endpoint's result shaped like text and details is shown as it came, since only the oapx extension carries the text" {

@@ -879,7 +879,7 @@ pub const Session = struct {
         try started.put("status", .{ .string = "running" });
         if (run.model_id.len > 0) try started.put("model_id", .{ .string = run.model_id });
         try started.put("started_at_ms", .{ .integer = self.owner.now_ms() });
-        const prepared = try self.prepareEvent(run, "run.started", started.value(), false, "");
+        const prepared = try self.prepareEvent(run, "run.started", started.value(), false, .{});
         errdefer {
             self.gpa.free(prepared.line);
             self.gpa.free(prepared.kept);
@@ -1379,10 +1379,10 @@ pub const Session = struct {
                     const details = try jsonOrString(a, payload.result_json.slice());
                     if (details == .object and details.object.count() > 0) try failure.put("details", details);
                     try ended.put("error", failure.value());
-                    try self.emit(run, "action.call.failed", ended.value(), false);
+                    try self.emitCallEnd(run, "action.call.failed", ended.value(), CallEnd.of(payload, ""));
                 } else {
                     try ended.put("result", try jsonOrString(a, payload.result_json.slice()));
-                    try self.emitWithText(run, "action.call.completed", ended.value(), payload.result_text.slice());
+                    try self.emitCallEnd(run, "action.call.completed", ended.value(), CallEnd.of(payload, payload.result_text.slice()));
                 }
             },
             .turn_end => |payload| run.stop_reason = stopReasonText(payload.stop_reason),
@@ -1493,12 +1493,12 @@ pub const Session = struct {
 
     fn emit(self: *Session, run: *Run, kind: []const u8, payload: std.json.Value, terminal: bool) contract.Failure!void {
         if (run.terminal) return;
-        self.publishEvent(run, try self.prepareEvent(run, kind, payload, terminal, ""), kind, terminal);
+        self.publishEvent(run, try self.prepareEvent(run, kind, payload, terminal, .{}), kind, terminal);
     }
 
     fn emitKept(self: *Session, run: *Run, kind: []const u8, payload: std.json.Value) contract.Failure![]const u8 {
         if (run.terminal) return "";
-        const prepared = try self.prepareEvent(run, kind, payload, false, "");
+        const prepared = try self.prepareEvent(run, kind, payload, false, .{});
         const parsed = std.json.parseFromSlice(struct { id: []const u8 }, self.gpa, prepared.line, .{ .ignore_unknown_fields = true }) catch {
             self.gpa.free(prepared.line);
             self.gpa.free(prepared.kept);
@@ -1514,12 +1514,12 @@ pub const Session = struct {
         return id;
     }
 
-    fn emitWithText(self: *Session, run: *Run, kind: []const u8, payload: std.json.Value, result_text: []const u8) contract.Failure!void {
+    fn emitCallEnd(self: *Session, run: *Run, kind: []const u8, payload: std.json.Value, call: CallEnd) contract.Failure!void {
         if (run.terminal) return;
-        self.publishEvent(run, try self.prepareEvent(run, kind, payload, false, result_text), kind, false);
+        self.publishEvent(run, try self.prepareEvent(run, kind, payload, false, call), kind, false);
     }
 
-    fn prepareEvent(self: *Session, run: *Run, kind: []const u8, payload: std.json.Value, terminal: bool, result_text: []const u8) contract.Failure!PreparedEvent {
+    fn prepareEvent(self: *Session, run: *Run, kind: []const u8, payload: std.json.Value, terminal: bool, call: CallEnd) contract.Failure!PreparedEvent {
         var scratch = std.heap.ArenaAllocator.init(self.gpa);
         defer scratch.deinit();
         const a = scratch.allocator();
@@ -1542,7 +1542,16 @@ pub const Session = struct {
         try envelope.put("capability_revision", .{ .string = capability_revision });
         var ours = Payload.init(a);
         if (terminal and run.context_tokens > 0) try ours.put("context_tokens", .{ .integer = @intCast(run.context_tokens) });
-        if (result_text.len > 0) try ours.put("result_text", .{ .string = result_text });
+        if (call.text.len > 0) try ours.put("result_text", .{ .string = call.text });
+        if (call.measured()) {
+            var usage = Payload.init(a);
+            try usage.put("raw_bytes", .{ .integer = @intCast(call.raw_bytes) });
+            try usage.put("returned_bytes", .{ .integer = @intCast(call.returned_bytes) });
+            try usage.put("estimated_tokens", .{ .integer = @intCast(call.estimated_tokens) });
+            try usage.put("artifacts", .{ .integer = call.artifacts });
+            if (call.artifact_refs.len > 0) try usage.put("artifact_refs", .{ .string = call.artifact_refs });
+            try ours.put("tool_usage", usage.value());
+        }
         if (ours.map.count() > 0) {
             var extensions = Payload.init(a);
             try extensions.put(settings_key, ours.value());
@@ -1708,6 +1717,30 @@ pub const Session = struct {
 };
 
 pub const settings_key = "oapx";
+
+const CallEnd = struct {
+    text: []const u8 = "",
+    raw_bytes: u64 = 0,
+    returned_bytes: u64 = 0,
+    estimated_tokens: u64 = 0,
+    artifacts: u32 = 0,
+    artifact_refs: []const u8 = "",
+
+    fn of(ended: anytype, text: []const u8) CallEnd {
+        return .{
+            .text = text,
+            .raw_bytes = ended.raw_total_bytes,
+            .returned_bytes = ended.returned_total_bytes,
+            .estimated_tokens = ended.estimated_returned_tokens,
+            .artifacts = ended.artifact_count,
+            .artifact_refs = ended.artifact_refs.slice(),
+        };
+    }
+
+    fn measured(self: CallEnd) bool {
+        return self.raw_bytes > 0 or self.returned_bytes > 0 or self.estimated_tokens > 0 or self.artifacts > 0;
+    }
+};
 
 fn decisionFor(answer: []const u8) session_events.ToolApprovalDecision {
     if (std.mem.eql(u8, answer, "approve")) return .approve;

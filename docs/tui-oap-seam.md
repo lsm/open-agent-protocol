@@ -55,7 +55,10 @@ takes the message's input and output counts from it, so every message's rate is
 measured, a run that calls tools included. From an endpoint that sends no
 `content.completed`, the run's output total replaces the estimate only for a run with one
 assistant message; a run that spoke before a tool call keeps the per-message estimates
-rather than counting its tokens twice.
+rather than counting its tokens twice. Each `action.call.completed` or `failed` from the
+oapx adapter carries the loop's raw and returned bytes, its token estimate and its artifact
+count as `extensions.oapx.tool_usage`, which the TUI shows beside the call as `~N tok`; an
+endpoint that sends none leaves the call without one.
 A follow-up queued during a turn is submitted with `delivery: "queue"`, and the turn stays
 open until each reservation has been promoted and run, so it reads as one turn as it does
 locally; clearing the queue or aborting cancels the reservations. Over `--attach` the hub
