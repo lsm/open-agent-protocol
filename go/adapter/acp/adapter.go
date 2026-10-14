@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"github.com/lsm/open-agent-protocol/harnesses"
+	"maps"
 	"path/filepath"
 	"strings"
 	"sync/atomic"
@@ -63,6 +64,7 @@ type Config struct {
 	Environment      []string
 	WorkingDirectory string
 	MCPServers       []native.MCPServer
+	SessionConfig    map[string]string
 	Clock            base.Clock
 	IDs              base.IDGenerator
 	JournalCapacity  int
@@ -82,6 +84,7 @@ type (
 )
 
 func New(config Config) (*Adapter, error) {
+	config.SessionConfig = maps.Clone(config.SessionConfig)
 	if config.Factory == nil && config.Executable == "" {
 		return nil, errors.New("acp adapter: factory or executable is required")
 	}
@@ -239,15 +242,20 @@ func (a *Adapter) Open(ctx context.Context, req base.OpenRequest) (base.Session,
 		_ = client.Close()
 		return nil, fmt.Errorf("%w: session/new returned no session id", ErrNativeProtocol)
 	}
+	setter := openingClient{client}
+	if err := configureSession(ctx, setter, &opened, a.config.SessionConfig); err != nil {
+		_ = client.Close()
+		return nil, err
+	}
 	if req.ReasoningLevel != "" {
-		setter := client
-		if req.Reopen {
-			setter = openingClient{client}
-		}
-		if err := setThoughtLevel(ctx, setter, opened, req.ReasoningLevel); err != nil {
+		if err := setThoughtLevel(ctx, setter, &opened, req.ReasoningLevel); err != nil {
 			_ = client.Close()
 			return nil, err
 		}
+	}
+	if err := confirmSessionConfig(opened.ConfigOptions, a.config.SessionConfig); err != nil {
+		_ = client.Close()
+		return nil, err
 	}
 	id := req.SessionID
 	if id == "" {
@@ -255,18 +263,20 @@ func (a *Adapter) Open(ctx context.Context, req base.OpenRequest) (base.Session,
 	}
 	now := a.clock.Now().UnixMilli()
 	s := &session{client: client, inbound: client.Inbound(), clock: a.clock, ids: a.ids, capacity: a.config.JournalCapacity, nativeID: opened.SessionID, participant: req.Participant.ID, state: protocol.SessionState{SessionID: id, Status: protocol.SessionIdle, UpdatedAtMS: now, Sources: a.sessionSources(req.ToolSources), ReasoningLevel: req.ReasoningLevel}, runs: map[protocol.RunID]*runState{}, tools: map[string]*toolState{}, interactions: map[protocol.InteractionID]*permissionState{}, stop: make(chan struct{})}
+	if req.Reopen || len(a.config.SessionConfig) > 0 {
+		s.state.CurrentModelID, s.state.ReasoningLevel = resumedSettings(opened.ConfigOptions)
+	}
+	if req.ReasoningLevel != "" {
+		s.state.ReasoningLevel = req.ReasoningLevel
+	}
 	if req.Reopen {
 		s.state.Recovery = &protocol.RecoveryMetadata{Recovered: true, Reason: reopenReason}
-		s.state.CurrentModelID, s.state.ReasoningLevel = resumedSettings(opened.ConfigOptions)
-		if req.ReasoningLevel != "" {
-			s.state.ReasoningLevel = req.ReasoningLevel
-		}
 	}
 	go s.dispatch()
 	return s, nil
 }
 
-func setThoughtLevel(ctx context.Context, client Client, opened native.SessionNewResult, level protocol.ReasoningLevel) error {
+func setThoughtLevel(ctx context.Context, client Client, opened *native.SessionNewResult, level protocol.ReasoningLevel) error {
 	refuse := func(detail string) error {
 		return &base.UnsupportedControlError{Feature: protocol.FeatureSessionReasoning, Reason: base.ControlUnsatisfiable, Field: "reasoning_level", Detail: detail}
 	}
@@ -284,6 +294,7 @@ func setThoughtLevel(ctx context.Context, client Client, opened native.SessionNe
 			}
 			for _, confirmed := range set.ConfigOptions {
 				if confirmed.ID == option.ID && confirmed.CurrentValue == value.Value {
+					opened.ConfigOptions = set.ConfigOptions
 					return nil
 				}
 			}
