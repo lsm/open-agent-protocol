@@ -36,7 +36,7 @@ var acpEvidenceFixtures = map[string]bool{
 	"cancel-confirmed": true, "completion-wins-race": true, "tool-lifecycle-permission": true,
 	"refusal": true, "prompt-error": true, "process-exit": true,
 	"malformed-update": true, "update-after-terminal": true, "replay-degradation": true,
-	"session-new-tool-sources": true, "bound-session-reopen": true,
+	"session-new-tool-sources": true, "bound-session-reopen": true, "usage-fold": true,
 }
 
 type acpCorpusManifest struct {
@@ -269,7 +269,17 @@ func runACPCorpusCase(t *testing.T, root string, entry acpCorpusManifestCase) {
 			prefix = append(prefix, adaptertest.Next(t, stream, time.Second))
 		case "complete", "cancelled", "refusal", "complete-await":
 			stop := map[string]string{"complete": "end_turn", "complete-await": "end_turn", "cancelled": "cancelled", "refusal": "refusal"}[frame.Action]
-			client.prompt <- promptOutcome{result: native.PromptResult{StopReason: stop}}
+			var result native.PromptResult
+			if len(message.Result) > 0 {
+				if err := json.Unmarshal(message.Result, &result); err != nil {
+					t.Fatal(err)
+				}
+			}
+			result.StopReason = stop
+			drained := make(chan struct{})
+			client.inbound <- rpc.InboundMessage{Barrier: drained}
+			<-drained
+			client.prompt <- promptOutcome{result: result}
 			if frame.Action == "complete-await" {
 				prefix = append(prefix, adaptertest.Drain(t, stream, time.Second)...)
 			}

@@ -273,6 +273,7 @@ func (a *Adapter) Open(ctx context.Context, req base.OpenRequest) (base.Session,
 	}
 	if req.Reopen {
 		s.state.Recovery = &protocol.RecoveryMetadata{Recovered: true, Reason: reopenReason}
+		s.reopened = true
 	}
 	go s.dispatch()
 	return s, nil

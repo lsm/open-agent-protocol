@@ -50,6 +50,11 @@ byte-identical. Only the provenance (`acp_release`, each case's `release`,
 `commit` and `schema_release`, and the two tree digests) and the
 expectations' `capability_revision` moved.
 
+One case was added later, `usage-fold`, for the usage mapping below. It is
+written from the schema, not recorded from an agent: two identical
+`usage_update`s around a message chunk, then a prompt result carrying the
+unstable `usage` with the counts from the #1090 sample.
+
 ## Process gate
 
 Not re-run at this pin. The agent the gate drives, `docker/cagent`, stays
@@ -60,3 +65,55 @@ building it from source with its Go modules, which this move did not do. The
 schema difference above sends nothing new to or from an agent that has not
 been offered the new capabilities, so the gate's frames are the v1.10.2
 ones.
+
+## Usage (lsm/open-agent-protocol#1090)
+
+Until this change both adapters dropped `usage_update` with the other observed-only
+updates, and decoded only `stopReason` from the prompt result, so a run that the
+agent measured settled with no usage at all. The v1.7.0 ledger already named the
+row (`usage_update` → "retained usage, normally folded into terminal/state",
+fixture `usage-fold`); the fixture did not exist until now.
+
+What the pinned schema says, at commit `4cf3dd85`:
+
+| Member | Schema | Meaning there |
+|---|---|---|
+| `UsageUpdate` (`sessionUpdate: "usage_update"`) | stable; `used` and `size` required `uint64`, `cost` optional and default-on-error | "Tokens currently in context", "Total context window size in tokens", "Cumulative session cost" |
+| `PromptResponse.usage` | unstable only (`schema.unstable.json`); `Usage` with `totalTokens`, `inputTokens`, `outputTokens` required, `thoughtTokens`, `cachedReadTokens`, `cachedWriteTokens` optional and default-on-error | the member says "Token usage for this turn"; its fields say "Sum of all token types across session" and "Total input tokens across all turns" |
+
+The two descriptions disagree, and upstream says so: the End-Turn Token Usage RFD
+lists "Per-turn vs cumulative" as open question 1 and stays Draft "while token
+accounting semantics are still being refined". `usage_update` carries no token
+counts at all. The pinned agent, `docker/cagent` `v1.145.0`, sends only
+`usage_update` (`pkg/acp/commands.go` `emitUsage`: `Size`, `Used`, and `Cost`
+when positive), never a prompt-result `usage`.
+
+The mapping, identical in Go (`go/adapter/acp/usage.go`) and Zig
+(`zig/src/adapter/acp/session.zig`):
+
+| Native | OAP | Fidelity |
+|---|---|---|
+| prompt-result `usage`, on the **first turn of a session opened by `session/new`** | `usage` on the run's terminal: `input_tokens`, `output_tokens`, `total_tokens` | normalized: a turn's count and a session's count are the same number on that turn, so either reading of the RFD gives the same figure |
+| prompt-result `usage` on any later turn, or on any turn of a reopened session | no core `usage`; the counts stay in the extension below | lossy, recorded: projecting them would pick one reading of an open question, and a reloaded session may already carry earlier turns |
+| prompt-result `usage`, every turn | `extensions["com.agentclientprotocol.turn_usage"]`: `total_tokens`, `input_tokens`, `output_tokens`, and `thought_tokens`, `cached_read_tokens`, `cached_write_tokens` when reported | native values, renamed only |
+| the latest valid `usage_update` the session received, before or during the run | `extensions["com.agentclientprotocol.context"]`: `used_tokens`, `size_tokens`, and `cost` (`amount`, `currency`) exactly as reported | native values; folded, not summed |
+
+Rules both trees hold, pinned by tests and the `usage-fold` case:
+
+- Absent usage is not zero usage. A prompt result without `usage`, or with a
+  `usage` missing a required count or carrying a negative or fractional one,
+  settles with no core `usage` and no `turn_usage`. Reported zeros are kept as
+  measured zeros.
+- A bad optional count (`thoughtTokens: -4`) drops only that count, per the
+  member's default-on-error.
+- A `usage_update` missing `used` or `size`, or carrying a bad one, is ignored and
+  the previous snapshot stands; it does not fail the run. A bad `cost` drops only
+  the cost.
+- Repeated `usage_update`s replace the snapshot rather than add to it. `_meta` is
+  never read ("Implementations MUST NOT make assumptions about values at these
+  keys"), so a subagent's copy of an update cannot be told apart from the root's
+  and the latest wins. The sample in #1090 sent identical copies.
+- A prompt that fails with a JSON-RPC error carries the context snapshot but no
+  turn counts. No cost is derived from token counts.
+- Member names are matched as Go's `encoding/json` matches them: case-folded, last
+  duplicate wins.

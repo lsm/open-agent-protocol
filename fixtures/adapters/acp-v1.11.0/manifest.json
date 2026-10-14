@@ -13,6 +13,13 @@
       "path": "cases/new-prompt-completed"
     },
     {
+      "id": "usage-fold",
+      "ledger_fixtures": [
+        "usage-fold"
+      ],
+      "path": "cases/usage-fold"
+    },
+    {
       "id": "cancel-confirmed",
       "ledger_fixtures": [
         "cancel-confirmed"

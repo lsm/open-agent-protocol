@@ -72,7 +72,7 @@ const Driver = struct {
         }
         for (stop_reasons) |settled| {
             if (!std.mem.eql(u8, s.action, settled.action)) continue;
-            try reducer.settlePrompt(settled.stop);
+            try reducer.settlePrompt(settled.stop, session.promptUsage(if (s.raw == .object) s.raw.object.get("result") else null));
             return .handled;
         }
         if (std.mem.eql(u8, s.action, "cancel")) {
@@ -122,9 +122,10 @@ const claimed_cases = [_]Driver.Case{
     .{ .id = "replay-degradation", .path = "cases/replay-degradation" },
     .{ .id = "tool-lifecycle-permission", .path = "cases/tool-lifecycle-permission" },
     .{ .id = "update-after-terminal", .path = "cases/update-after-terminal" },
+    .{ .id = "usage-fold", .path = "cases/usage-fold" },
 };
 
-test "the Zig reducer reproduces every ACP expectation, all eleven of them" {
+test "the Zig reducer reproduces every ACP expectation, all twelve of them" {
     try Harness.expectEveryCase(std.testing.allocator, &claimed_cases);
 }
 

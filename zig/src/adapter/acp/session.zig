@@ -31,7 +31,84 @@ pub const Options = struct {
     counter: ?*usize = null,
     now_ms: ?*const fn () i64 = null,
     id_style: IdStyle = .letter,
+    reopened: bool = false,
 };
+
+pub const turn_usage_extension = "com.agentclientprotocol.turn_usage";
+pub const context_extension = "com.agentclientprotocol.context";
+
+const TurnUsage = struct {
+    total: u64,
+    input: u64,
+    output: u64,
+    thought: ?u64 = null,
+    cached_read: ?u64 = null,
+    cached_write: ?u64 = null,
+};
+
+const ContextUsage = struct {
+    used: u64,
+    size: u64,
+    cost: ?Cost = null,
+};
+
+const Cost = struct {
+    amount: std.json.Value,
+    currency: []const u8,
+};
+
+pub fn promptUsage(result: ?std.json.Value) ?std.json.Value {
+    const held = result orelse return null;
+    if (held != .object) return null;
+    return gojson.foldedLast(held.object, &.{"usage"});
+}
+
+fn present(object: std.json.ObjectMap, key: []const u8) ?std.json.Value {
+    const value = gojson.foldedLast(object, &.{key}) orelse return null;
+    return if (value == .null) null else value;
+}
+
+fn countOf(object: std.json.ObjectMap, key: []const u8) ?u64 {
+    return switch (present(object, key) orelse return null) {
+        .integer => |value| if (value >= 0) @intCast(value) else null,
+        .number_string => |text| std.fmt.parseInt(u64, text, 10) catch null,
+        else => null,
+    };
+}
+
+fn decodeTurnUsage(value: ?std.json.Value) ?TurnUsage {
+    const usage = value orelse return null;
+    if (usage != .object) return null;
+    return .{
+        .total = countOf(usage.object, "totalTokens") orelse return null,
+        .input = countOf(usage.object, "inputTokens") orelse return null,
+        .output = countOf(usage.object, "outputTokens") orelse return null,
+        .thought = countOf(usage.object, "thoughtTokens"),
+        .cached_read = countOf(usage.object, "cachedReadTokens"),
+        .cached_write = countOf(usage.object, "cachedWriteTokens"),
+    };
+}
+
+fn decodeContextUsage(update: std.json.ObjectMap) ?ContextUsage {
+    return .{
+        .used = countOf(update, "used") orelse return null,
+        .size = countOf(update, "size") orelse return null,
+        .cost = decodeCost(present(update, "cost")),
+    };
+}
+
+fn decodeCost(value: ?std.json.Value) ?Cost {
+    const cost = value orelse return null;
+    if (cost != .object) return null;
+    const amount = present(cost.object, "amount") orelse return null;
+    switch (amount) {
+        .integer, .float, .number_string => {},
+        else => return null,
+    }
+    const currency = present(cost.object, "currency") orelse return null;
+    if (currency != .string or currency.string.len == 0) return null;
+    return .{ .amount = amount, .currency = currency.string };
+}
 
 pub const IdStyle = enum { letter, decimal };
 
@@ -119,6 +196,8 @@ pub const Reducer = struct {
     envelopes: std.ArrayList(std.json.Value) = .empty,
     admission: Admission = .{},
     last_sequence: i64 = 0,
+    prompted: bool = false,
+    context: ?ContextUsage = null,
 
     pub fn init(arena: *std.heap.ArenaAllocator, options: Options) Reducer {
         return .{ .arena = arena, .options = options };
@@ -175,6 +254,57 @@ pub const Reducer = struct {
         return .{ .integer = value };
     }
 
+    fn count(self: *Reducer, value: u64) !std.json.Value {
+        if (value <= std.math.maxInt(i64)) return int(@intCast(value));
+        return .{ .number_string = try std.fmt.allocPrint(self.allocator(), "{d}", .{value}) };
+    }
+
+    fn usageExtensions(self: *Reducer, turn: ?TurnUsage) !?std.json.ObjectMap {
+        var extensions = self.object();
+        if (turn) |held| {
+            var fields = self.object();
+            try self.put(&fields, "total_tokens", try self.count(held.total));
+            try self.put(&fields, "input_tokens", try self.count(held.input));
+            try self.put(&fields, "output_tokens", try self.count(held.output));
+            if (held.thought) |value| try self.put(&fields, "thought_tokens", try self.count(value));
+            if (held.cached_read) |value| try self.put(&fields, "cached_read_tokens", try self.count(value));
+            if (held.cached_write) |value| try self.put(&fields, "cached_write_tokens", try self.count(value));
+            try self.put(&extensions, turn_usage_extension, .{ .object = fields });
+        }
+        if (self.context) |held| {
+            var fields = self.object();
+            try self.put(&fields, "used_tokens", try self.count(held.used));
+            try self.put(&fields, "size_tokens", try self.count(held.size));
+            if (held.cost) |cost| {
+                var reported = self.object();
+                try self.put(&reported, "amount", cost.amount);
+                try self.put(&reported, "currency", str(cost.currency));
+                try self.put(&fields, "cost", .{ .object = reported });
+            }
+            try self.put(&extensions, context_extension, .{ .object = fields });
+        }
+        if (extensions.count() == 0) return null;
+        return extensions;
+    }
+
+    fn runUsage(self: *Reducer, turn: TurnUsage) !std.json.Value {
+        var usage = self.object();
+        if (turn.input != 0) try self.put(&usage, "input_tokens", try self.count(turn.input));
+        if (turn.output != 0) try self.put(&usage, "output_tokens", try self.count(turn.output));
+        if (turn.total != 0) try self.put(&usage, "total_tokens", try self.count(turn.total));
+        return .{ .object = usage };
+    }
+
+    fn noteContext(self: *Reducer, update: std.json.ObjectMap) !void {
+        const context = decodeContextUsage(update) orelse return;
+        var kept = context;
+        if (kept.cost) |*cost| {
+            cost.currency = try self.allocator().dupe(u8, cost.currency);
+            if (cost.amount == .number_string) cost.amount = .{ .number_string = try self.allocator().dupe(u8, cost.amount.number_string) };
+        }
+        self.context = kept;
+    }
+
     pub fn submit(self: *Reducer, message_count: usize) !void {
         return self.submitAs(message_count, .{});
     }
@@ -213,6 +343,15 @@ pub const Reducer = struct {
         return self.emitEnvelope(run, kind, payload, "");
     }
 
+    fn emitTerminal(self: *Reducer, run: *Run, kind: []const u8, payload: std.json.Value, extensions: ?std.json.ObjectMap) ![]const u8 {
+        const id = try self.emitEnvelope(run, kind, payload, "");
+        if (extensions) |held| {
+            const envelope = &self.envelopes.items[self.envelopes.items.len - 1].object;
+            try self.put(envelope, "extensions", .{ .object = held });
+        }
+        return id;
+    }
+
     fn emitEnvelope(self: *Reducer, run: *Run, kind: []const u8, payload: std.json.Value, in_reply_to: []const u8) ![]const u8 {
         const id = try self.nextID("event");
         run.sequence += 1;
@@ -248,10 +387,15 @@ pub const Reducer = struct {
         return &self.messages.items[self.messages.items.len - 1];
     }
 
-    pub fn settlePrompt(self: *Reducer, stop_reason: []const u8) !void {
+    pub fn settlePrompt(self: *Reducer, stop_reason: []const u8, usage: ?std.json.Value) !void {
         if (self.run == null) return;
         const run = &self.run.?;
         if (run.terminal) return;
+        const first_turn = !self.options.reopened and !self.prompted;
+        self.prompted = true;
+        const turn = decodeTurnUsage(usage);
+        const extensions = try self.usageExtensions(turn);
+        const run_usage: ?std.json.Value = if (turn != null and first_turn) try self.runUsage(turn.?) else null;
 
         if (std.mem.eql(u8, stop_reason, "end_turn") or
             std.mem.eql(u8, stop_reason, "max_tokens") or
@@ -266,32 +410,35 @@ pub const Reducer = struct {
             var payload = try self.terminalPayload(run);
             try self.put(&payload, "final_response", .{ .object = response });
             try self.put(&payload, "stop_reason", str(stop_reason));
-            _ = try self.emit(run, "run.completed", .{ .object = payload });
+            if (run_usage) |held| try self.put(&payload, "usage", held);
+            _ = try self.emitTerminal(run, "run.completed", .{ .object = payload }, extensions);
             run.terminal = true;
             return;
         }
         if (std.mem.eql(u8, stop_reason, "cancelled")) {
             try self.settleChildren(run, true);
-            try self.emitCancelled(run, "ACP prompt returned cancelled");
+            try self.emitCancelledWith(run, "ACP prompt returned cancelled", run_usage, extensions);
             return;
         }
         if (std.mem.eql(u8, stop_reason, "refusal")) {
             try self.settleChildren(run, true);
-            try self.emitFailure(run, "refusal", "agent refused the prompt", "");
+            try self.emitFailureWith(run, "refusal", "agent refused the prompt", "", run_usage, extensions);
             return;
         }
         try self.settleChildren(run, true);
         const detail = try std.fmt.allocPrint(self.allocator(), "unsupported ACP stop reason {s}", .{goquote.quote(self.allocator(), stop_reason)});
-        try self.emitFailure(run, "acp_invalid_stop_reason", detail, "");
+        try self.emitFailureWith(run, "acp_invalid_stop_reason", detail, "", run_usage, extensions);
     }
 
     pub fn promptFailed(self: *Reducer, code: i64, request: std.json.Value, message: []const u8) !void {
         if (self.run == null) return;
         const run = &self.run.?;
         if (run.terminal) return;
+        self.prompted = true;
+        const extensions = try self.usageExtensions(null);
         if (code == -32800 and run.cancel_requested) {
             try self.settleChildren(run, true);
-            try self.emitCancelled(run, "ACP prompt cancellation confirmed");
+            try self.emitCancelledWith(run, "ACP prompt cancellation confirmed", null, extensions);
             return;
         }
         const named = switch (request) {
@@ -301,7 +448,7 @@ pub const Reducer = struct {
         };
         const detail = try std.fmt.allocPrint(self.allocator(), "acp rpc error {d} for request {s}: {s}", .{ code, named, message });
         try self.settleChildren(run, true);
-        try self.emitFailure(run, "acp_prompt_error", detail, "");
+        try self.emitFailureWith(run, "acp_prompt_error", detail, "", null, extensions);
     }
 
     pub fn cancel(self: *Reducer) !void {
@@ -324,20 +471,30 @@ pub const Reducer = struct {
     }
 
     fn emitCancelled(self: *Reducer, run: *Run, reason: []const u8) !void {
+        try self.emitCancelledWith(run, reason, null, null);
+    }
+
+    fn emitCancelledWith(self: *Reducer, run: *Run, reason: []const u8, usage: ?std.json.Value, extensions: ?std.json.ObjectMap) !void {
         var payload = try self.terminalPayload(run);
         try self.put(&payload, "reason", str(reason));
-        _ = try self.emit(run, "run.cancelled", .{ .object = payload });
+        if (usage) |held| try self.put(&payload, "usage", held);
+        _ = try self.emitTerminal(run, "run.cancelled", .{ .object = payload }, extensions);
         run.terminal = true;
     }
 
     fn emitFailure(self: *Reducer, run: *Run, code: []const u8, message: []const u8, settled_by: []const u8) !void {
+        try self.emitFailureWith(run, code, message, settled_by, null, null);
+    }
+
+    fn emitFailureWith(self: *Reducer, run: *Run, code: []const u8, message: []const u8, settled_by: []const u8, usage: ?std.json.Value, extensions: ?std.json.ObjectMap) !void {
         var failure = self.object();
         try self.put(&failure, "code", str(code));
         try self.put(&failure, "message", str(message));
         var payload = try self.terminalPayload(run);
         try self.put(&payload, "error", .{ .object = failure });
+        if (usage) |held| try self.put(&payload, "usage", held);
         if (settled_by.len > 0) try self.put(&payload, "settled_by", str(settled_by));
-        _ = try self.emit(run, "run.failed", .{ .object = payload });
+        _ = try self.emitTerminal(run, "run.failed", .{ .object = payload }, extensions);
         run.terminal = true;
     }
 
@@ -428,6 +585,14 @@ pub const Reducer = struct {
         if (update != .object and update != .null) {
             try self.failActive("acp_invalid_update", "malformed session update");
             return;
+        }
+        if (update == .object) {
+            if (gojson.foldedSet(update.object, &.{"sessionUpdate"})) |kind| {
+                if (kind == .string and std.mem.eql(u8, kind.string, "usage_update")) {
+                    try self.noteContext(update.object);
+                    return;
+                }
+            }
         }
         if (self.active() == null) return;
         if (update == .null) {
@@ -755,6 +920,15 @@ pub const Reducer = struct {
         kept.ids = self.ids;
         kept.clock = self.clock;
         kept.last_sequence = self.last_sequence;
+        kept.prompted = self.prompted;
+        if (self.context) |context| {
+            var held = context;
+            if (held.cost) |*cost| {
+                cost.currency = try keep.dupe(u8, cost.currency);
+                if (cost.amount == .number_string) cost.amount = .{ .number_string = try keep.dupe(u8, cost.amount.number_string) };
+            }
+            kept.context = held;
+        }
         try kept.tools.ensureTotalCapacity(keep, self.tools.items.len);
         for (self.tools.items) |tool| {
             const native_id = try keep.dupe(u8, tool.native_id);
@@ -953,7 +1127,6 @@ const ignored_updates = [_][]const u8{
     "user_message_chunk",  "agent_thought_chunk",  "plan",
     "plan_update",         "plan_removed",         "available_commands_update",
     "current_mode_update", "config_option_update", "session_info_update",
-    "usage_update",
 };
 
 fn ignoredUpdate(kind: []const u8) bool {
@@ -1155,7 +1328,7 @@ test "a text block with no text member is accepted and contributes nothing" {
     try feed(&reducer, arena.allocator(), wrap(
         \\{"sessionUpdate":"agent_message_chunk","content":{"type":"text"}}
     ));
-    try reducer.settlePrompt("end_turn");
+    try reducer.settlePrompt("end_turn", null);
 
     try testing.expectEqualStrings("content.delta", typeAt(&reducer, 1));
     try testing.expectEqualStrings("", payloadAt(&reducer, 1).get("part").?.object.get("text").?.string);
@@ -1176,7 +1349,7 @@ test "the first native message id adopts the run message and the second mints it
     try feed(&reducer, scratch, wrap(
         \\{"sessionUpdate":"agent_message_chunk","messageId":"m1","content":{"type":"text","text":"three"}}
     ));
-    try reducer.settlePrompt("end_turn");
+    try reducer.settlePrompt("end_turn", null);
 
     try testing.expectEqualStrings("session/message-c", payloadAt(&reducer, 1).get("message_id").?.string);
     try testing.expectEqualStrings("session/message-g", payloadAt(&reducer, 2).get("message_id").?.string);
@@ -1204,7 +1377,7 @@ test "the three completing stop reasons carry the reason they settled on" {
         var arena = std.heap.ArenaAllocator.init(testing.allocator);
         defer arena.deinit();
         var reducer = try openRun(&arena);
-        try reducer.settlePrompt(reason);
+        try reducer.settlePrompt(reason, null);
 
         try testing.expectEqualStrings("run.completed", typeAt(&reducer, 1));
         try testing.expectEqualStrings(reason, payloadAt(&reducer, 1).get("stop_reason").?.string);
@@ -1216,27 +1389,27 @@ test "cancelled and refusal settle differently and an unknown stop reason is quo
     defer arena.deinit();
 
     var cancelled = try openRun(&arena);
-    try cancelled.settlePrompt("cancelled");
+    try cancelled.settlePrompt("cancelled", null);
     try testing.expectEqualStrings("run.cancelled", typeAt(&cancelled, 1));
     try testing.expectEqualStrings("ACP prompt returned cancelled", payloadAt(&cancelled, 1).get("reason").?.string);
 
     var refused = try openRun(&arena);
-    try refused.settlePrompt("refusal");
+    try refused.settlePrompt("refusal", null);
     try testing.expectEqualStrings("run.failed", typeAt(&refused, 1));
     try testing.expectEqualStrings("refusal", codeAt(&refused, 1));
     try testing.expectEqualStrings("agent refused the prompt", messageAt(&refused, 1));
 
     var unknown = try openRun(&arena);
-    try unknown.settlePrompt("end_of_days");
+    try unknown.settlePrompt("end_of_days", null);
     try testing.expectEqualStrings("acp_invalid_stop_reason", codeAt(&unknown, 1));
     try testing.expectEqualStrings("unsupported ACP stop reason \"end_of_days\"", messageAt(&unknown, 1));
 
     var awkward = try openRun(&arena);
-    try awkward.settlePrompt("bad\"\n");
+    try awkward.settlePrompt("bad\"\n", null);
     try testing.expectEqualStrings("unsupported ACP stop reason \"bad\\\"\\n\"", messageAt(&awkward, 1));
 
     var exotic = try openRun(&arena);
-    try exotic.settlePrompt("zero\u{200b}width");
+    try exotic.settlePrompt("zero\u{200b}width", null);
     try testing.expectEqualStrings("unsupported ACP stop reason \"zero\\u200bwidth\"", messageAt(&exotic, 1));
 }
 
@@ -1245,7 +1418,7 @@ test "a settled run absorbs every later frame without emitting or minting" {
     defer arena.deinit();
     const scratch = arena.allocator();
     var reducer = try openRun(&arena);
-    try reducer.settlePrompt("end_turn");
+    try reducer.settlePrompt("end_turn", null);
     const settled = reducer.ids;
 
     try feed(&reducer, scratch, wrap(
@@ -1256,7 +1429,7 @@ test "a settled run absorbs every later frame without emitting or minting" {
     ));
     try feed(&reducer, scratch, tool_call_frame);
     try feed(&reducer, scratch, permission_frame);
-    try reducer.settlePrompt("cancelled");
+    try reducer.settlePrompt("cancelled", null);
     try reducer.transportFailed("gone");
     try reducer.promptFailed(-32603, .{ .integer = 3 }, "gone");
 
@@ -1271,7 +1444,7 @@ test "a tool id seen only after the run settled does not poison the next run" {
     defer arena.deinit();
     const scratch = arena.allocator();
     var reducer = try openRun(&arena);
-    try reducer.settlePrompt("end_turn");
+    try reducer.settlePrompt("end_turn", null);
     try feed(&reducer, scratch, tool_call_frame);
     try reducer.submit(1);
     try feed(&reducer, scratch, tool_call_frame);
@@ -1328,7 +1501,7 @@ test "a native message id is bound within its own run, never across two" {
     try feed(&reducer, scratch, wrap(
         \\{"sessionUpdate":"agent_message_chunk","messageId":"m1","content":{"type":"text","text":"one"}}
     ));
-    try reducer.settlePrompt("end_turn");
+    try reducer.settlePrompt("end_turn", null);
     const first = payloadAt(&reducer, 2).get("final_response").?.object;
     try testing.expectEqualStrings("one", first.get("content").?.string);
 
@@ -1336,7 +1509,7 @@ test "a native message id is bound within its own run, never across two" {
     try feed(&reducer, scratch, wrap(
         \\{"sessionUpdate":"agent_message_chunk","messageId":"m1","content":{"type":"text","text":"two"}}
     ));
-    try reducer.settlePrompt("end_turn");
+    try reducer.settlePrompt("end_turn", null);
 
     const second = payloadAt(&reducer, 5).get("final_response").?.object;
     try testing.expectEqualStrings("two", second.get("content").?.string);
@@ -1440,7 +1613,7 @@ test "cancel refuses a run that does not exist and one that already settled" {
     try testing.expectError(Error.RunNotFound, empty.cancel());
 
     var reducer = try openRun(&arena);
-    try reducer.settlePrompt("end_turn");
+    try reducer.settlePrompt("end_turn", null);
     try testing.expectError(Error.RunTerminal, reducer.cancel());
 }
 
@@ -1499,7 +1672,7 @@ test "a tool id first seen under an earlier run is a reuse, not a patch" {
     const scratch = arena.allocator();
     var reducer = try openRun(&arena);
     try feed(&reducer, scratch, tool_call_frame);
-    try reducer.settlePrompt("end_turn");
+    try reducer.settlePrompt("end_turn", null);
     try reducer.submit(1);
     try feed(&reducer, scratch, tool_call_frame);
 
@@ -1511,7 +1684,7 @@ test "a tool id first seen under an earlier run is a reuse, not a patch" {
 
     var patched = try openRun(&arena);
     try feed(&patched, scratch, tool_call_frame);
-    try patched.settlePrompt("end_turn");
+    try patched.settlePrompt("end_turn", null);
     try patched.submit(1);
     try feed(&patched, scratch, wrap(
         \\{"sessionUpdate":"tool_call_update","toolCallId":"native-tool","status":"completed"}
@@ -1691,7 +1864,7 @@ test "an unfinished tool fails on completion and is cancelled on cancellation" {
 
     var completed = try openRun(&arena);
     try feed(&completed, scratch, tool_call_frame);
-    try completed.settlePrompt("end_turn");
+    try completed.settlePrompt("end_turn", null);
     try testing.expectEqualStrings("action.call.started", typeAt(&completed, 2));
     try testing.expectEqual(@as(usize, 5), completed.envelopes.items.len);
     try testing.expectEqualStrings("Read file", payloadAt(&completed, 2).get("name").?.string);
@@ -1703,7 +1876,7 @@ test "an unfinished tool fails on completion and is cancelled on cancellation" {
 
     var cancelled = try openRun(&arena);
     try feed(&cancelled, scratch, tool_call_frame);
-    try cancelled.settlePrompt("cancelled");
+    try cancelled.settlePrompt("cancelled", null);
     try testing.expectEqualStrings("action.call.cancelled", typeAt(&cancelled, 2));
     try testing.expect(payloadAt(&cancelled, 2).get("error") == null);
     try testing.expect(payloadAt(&cancelled, 2).get("arguments_json") == null);
@@ -1939,7 +2112,7 @@ test "a gate opened under an earlier run is not resolvable from the current one"
     var reducer = try openRun(&arena);
     try feed(&reducer, arena.allocator(), permission_frame);
     const pending = reducer.pendingInteraction().?;
-    try reducer.settlePrompt("end_turn");
+    try reducer.settlePrompt("end_turn", null);
     try reducer.submit(1);
 
     try testing.expectError(Error.InteractionResolved, reducer.resolve(pending, "run-b", "user", "allow", true));
@@ -1950,7 +2123,7 @@ test "a run that settles under an open gate cancels it with the reason it settle
     defer arena.deinit();
     var reducer = try openRun(&arena);
     try feed(&reducer, arena.allocator(), permission_frame);
-    try reducer.settlePrompt("cancelled");
+    try reducer.settlePrompt("cancelled", null);
 
     try testing.expectEqualStrings("action.permission.resolved", typeAt(&reducer, 3));
     try testing.expectEqualStrings("event-i", reducer.envelopes.items[3].object.get("in_reply_to").?.string);
@@ -1970,7 +2143,7 @@ test "every envelope carries the frozen descriptor revision and the session it b
     defer arena.deinit();
     var reducer = try openRun(&arena);
     try feed(&reducer, arena.allocator(), permission_frame);
-    try reducer.settlePrompt("end_turn");
+    try reducer.settlePrompt("end_turn", null);
 
     for (reducer.envelopes.items) |envelope| {
         try testing.expectEqualStrings(capability_revision, envelope.object.get("capability_revision").?.string);
@@ -1986,7 +2159,7 @@ test "only the eight action envelopes carry a tool call id beside their payload"
     defer arena.deinit();
     var reducer = try openRun(&arena);
     try feed(&reducer, arena.allocator(), permission_frame);
-    try reducer.settlePrompt("end_turn");
+    try reducer.settlePrompt("end_turn", null);
 
     for (reducer.envelopes.items) |envelope| {
         const kind = envelope.object.get("type").?.string;
@@ -2007,7 +2180,7 @@ test "a frame arriving before any submit is dropped rather than refused" {
     try feed(&reducer, scratch, wrap(
         \\{"sessionUpdate":"invented_later"}
     ));
-    try reducer.settlePrompt("end_turn");
+    try reducer.settlePrompt("end_turn", null);
     try reducer.transportFailed("gone");
 
     try testing.expectEqual(@as(usize, 0), reducer.envelopes.items.len);
@@ -2411,7 +2584,7 @@ fn settledWithTool(arena: *std.heap.ArenaAllocator) !Reducer {
     var reducer = try openRun(arena);
     try feed(&reducer, scratch, tool_call_frame);
     try feed(&reducer, scratch, permission_frame);
-    try reducer.settlePrompt("end_turn");
+    try reducer.settlePrompt("end_turn", null);
     reducer.envelopes.clearRetainingCapacity();
     return reducer;
 }
@@ -2452,7 +2625,7 @@ test "a reducer with a live run or undrained events refuses compaction" {
     var target = std.heap.ArenaAllocator.init(testing.allocator);
     defer target.deinit();
     try testing.expectError(Error.RunActive, reducer.compactInto(&target, reducer.options));
-    try reducer.settlePrompt("end_turn");
+    try reducer.settlePrompt("end_turn", null);
     try testing.expect(reducer.envelopes.items.len > 0);
     try testing.expectError(Error.RunActive, reducer.compactInto(&target, reducer.options));
 }
@@ -2512,4 +2685,164 @@ test "admitting a resolution checks it without recording it, and committing reco
     try testing.expectEqual(before + 1, reducer.envelopes.items.len);
     try testing.expectEqualStrings("rejected", payloadAt(&reducer, before).get("outcome").?.string);
     try testing.expectError(Error.InteractionResolved, reducer.admitResolution(gate, run_id, "user", "deny", false));
+}
+
+fn usageValue(scratch: std.mem.Allocator, text: []const u8) !std.json.Value {
+    return std.json.parseFromSliceLeaky(std.json.Value, scratch, text, .{});
+}
+
+fn lastEnvelope(reducer: *Reducer) std.json.ObjectMap {
+    return reducer.envelopes.items[reducer.envelopes.items.len - 1].object;
+}
+
+fn extensionAt(reducer: *Reducer, key: []const u8) ?std.json.ObjectMap {
+    const extensions = lastEnvelope(reducer).get("extensions") orelse return null;
+    const value = extensions.object.get(key) orelse return null;
+    return value.object;
+}
+
+const devin_turn_usage =
+    \\{"totalTokens":7301,"inputTokens":7224,"outputTokens":77,"cachedReadTokens":6976}
+;
+
+test "the first turn of a new session reports the agent's token counts as run usage and keeps the rest in extensions" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const scratch = arena.allocator();
+    var reducer = try openRun(&arena);
+    const update = wrap(
+        \\{"sessionUpdate":"usage_update","used":7224,"size":262000,"_meta":{"cognition.ai/inputTokens":7224}}
+    );
+    try feed(&reducer, scratch, update);
+    try feed(&reducer, scratch, update);
+    try reducer.settlePrompt("end_turn", try usageValue(scratch, devin_turn_usage));
+
+    const usage = lastEnvelope(&reducer).get("payload").?.object.get("usage").?.object;
+    try testing.expectEqual(@as(i64, 7224), usage.get("input_tokens").?.integer);
+    try testing.expectEqual(@as(i64, 77), usage.get("output_tokens").?.integer);
+    try testing.expectEqual(@as(i64, 7301), usage.get("total_tokens").?.integer);
+    const turn = extensionAt(&reducer, turn_usage_extension).?;
+    try testing.expectEqual(@as(usize, 4), turn.count());
+    try testing.expectEqual(@as(i64, 6976), turn.get("cached_read_tokens").?.integer);
+    const context = extensionAt(&reducer, context_extension).?;
+    try testing.expectEqual(@as(usize, 2), context.count());
+    try testing.expectEqual(@as(i64, 7224), context.get("used_tokens").?.integer);
+    try testing.expectEqual(@as(i64, 262000), context.get("size_tokens").?.integer);
+}
+
+test "a later turn keeps the agent's counts out of run usage because ACP leaves their scope open" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const scratch = arena.allocator();
+    var reducer = try openRun(&arena);
+    try reducer.settlePrompt("end_turn", try usageValue(scratch, devin_turn_usage));
+    try reducer.submit(1);
+    try reducer.settlePrompt("end_turn", try usageValue(scratch,
+        \\{"totalTokens":9000,"inputTokens":8800,"outputTokens":200}
+    ));
+    try testing.expect(lastEnvelope(&reducer).get("payload").?.object.get("usage") == null);
+    try testing.expectEqual(@as(i64, 9000), extensionAt(&reducer, turn_usage_extension).?.get("total_tokens").?.integer);
+}
+
+test "a reopened session's first turn keeps the agent's counts out of run usage" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var reducer = Reducer.init(&arena, .{ .reopened = true });
+    reducer.open();
+    try reducer.submit(1);
+    try reducer.settlePrompt("end_turn", try usageValue(arena.allocator(), devin_turn_usage));
+    try testing.expect(lastEnvelope(&reducer).get("payload").?.object.get("usage") == null);
+    try testing.expect(extensionAt(&reducer, turn_usage_extension) != null);
+}
+
+test "turn usage that is missing or malformed is reported as unavailable and a bad optional count drops only itself" {
+    const cases = [_]struct { usage: ?[]const u8, run_usage: bool, turn_fields: usize }{
+        .{ .usage = null, .run_usage = false, .turn_fields = 0 },
+        .{ .usage = "null", .run_usage = false, .turn_fields = 0 },
+        .{ .usage = "{\"totalTokens\":10,\"inputTokens\":-1,\"outputTokens\":11}", .run_usage = false, .turn_fields = 0 },
+        .{ .usage = "{\"totalTokens\":10,\"inputTokens\":10}", .run_usage = false, .turn_fields = 0 },
+        .{ .usage = "{\"totalTokens\":10.5,\"inputTokens\":10,\"outputTokens\":0}", .run_usage = false, .turn_fields = 0 },
+        .{ .usage = "[1,2]", .run_usage = false, .turn_fields = 0 },
+        .{ .usage = "{\"totalTokens\":0,\"inputTokens\":0,\"outputTokens\":0}", .run_usage = true, .turn_fields = 3 },
+        .{ .usage = "{\"totalTokens\":12,\"inputTokens\":10,\"outputTokens\":2,\"thoughtTokens\":-4,\"cachedWriteTokens\":3}", .run_usage = true, .turn_fields = 4 },
+    };
+    for (cases) |case| {
+        var arena = std.heap.ArenaAllocator.init(testing.allocator);
+        defer arena.deinit();
+        var reducer = try openRun(&arena);
+        const usage: ?std.json.Value = if (case.usage) |text| try usageValue(arena.allocator(), text) else null;
+        try reducer.settlePrompt("end_turn", usage);
+        try testing.expectEqual(case.run_usage, lastEnvelope(&reducer).get("payload").?.object.get("usage") != null);
+        const fields: usize = if (extensionAt(&reducer, turn_usage_extension)) |turn| turn.count() else 0;
+        try testing.expectEqual(case.turn_fields, fields);
+    }
+}
+
+test "a malformed usage update keeps the last good context and a bad cost drops only the cost" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const scratch = arena.allocator();
+    var reducer = try openRun(&arena);
+    try feed(&reducer, scratch, wrap(
+        \\{"sessionUpdate":"usage_update","used":100,"size":1000,"cost":{"amount":0.25,"currency":"USD"}}
+    ));
+    try feed(&reducer, scratch, wrap(
+        \\{"sessionUpdate":"usage_update","used":-1,"size":1000}
+    ));
+    try testing.expectEqual(@as(u64, 100), reducer.context.?.used);
+    try testing.expect(reducer.context.?.cost != null);
+    try feed(&reducer, scratch, wrap(
+        \\{"sessionUpdate":"usage_update","used":200,"size":1000,"cost":{"amount":"lots","currency":"USD"}}
+    ));
+    try reducer.settlePrompt("end_turn", null);
+    try testing.expectEqualStrings("run.completed", lastEnvelope(&reducer).get("type").?.string);
+    const context = extensionAt(&reducer, context_extension).?;
+    try testing.expectEqual(@as(i64, 200), context.get("used_tokens").?.integer);
+    try testing.expect(context.get("cost") == null);
+}
+
+test "a reported session cost is carried as reported and none is invented without one" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const scratch = arena.allocator();
+    var reducer = try openRun(&arena);
+    try feed(&reducer, scratch, wrap(
+        \\{"sessionUpdate":"usage_update","used":100,"size":1000,"cost":{"amount":0.25,"currency":"USD"}}
+    ));
+    try reducer.settlePrompt("end_turn", try usageValue(scratch, devin_turn_usage));
+    const cost = extensionAt(&reducer, context_extension).?.get("cost").?.object;
+    try testing.expectEqual(@as(f64, 0.25), cost.get("amount").?.float);
+    try testing.expectEqualStrings("USD", cost.get("currency").?.string);
+
+    var bare = try openRun(&arena);
+    try bare.settlePrompt("end_turn", try usageValue(scratch, devin_turn_usage));
+    try testing.expect(extensionAt(&bare, context_extension) == null);
+    try testing.expect(extensionAt(&bare, turn_usage_extension).?.get("cost") == null);
+}
+
+test "a failed prompt carries the context it saw but no turn counts" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var reducer = try openRun(&arena);
+    try feed(&reducer, arena.allocator(), wrap(
+        \\{"sessionUpdate":"usage_update","used":512,"size":262000}
+    ));
+    try reducer.promptFailed(-32603, .{ .integer = 3 }, "agent crashed");
+    try testing.expectEqualStrings("run.failed", lastEnvelope(&reducer).get("type").?.string);
+    try testing.expect(lastEnvelope(&reducer).get("payload").?.object.get("usage") == null);
+    try testing.expect(extensionAt(&reducer, turn_usage_extension) == null);
+    try testing.expectEqual(@as(i64, 512), extensionAt(&reducer, context_extension).?.get("used_tokens").?.integer);
+}
+
+test "a usage update between turns is the context the next turn reports" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var reducer = Reducer.init(&arena, .{});
+    reducer.open();
+    try feed(&reducer, arena.allocator(), wrap(
+        \\{"sessionUpdate":"usage_update","used":0,"size":262000}
+    ));
+    try reducer.submit(1);
+    try reducer.settlePrompt("end_turn", null);
+    try testing.expectEqual(@as(i64, 262000), extensionAt(&reducer, context_extension).?.get("size_tokens").?.integer);
 }
