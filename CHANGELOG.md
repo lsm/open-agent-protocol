@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+## [0.1.0-alpha.16] - 2026-10-14
+
+### Merged pull requests
+
+- **tui: carry a tool call's byte counts and token estimate over OAP** ([#1086](https://github.com/lsm/open-agent-protocol/pull/1086)): The TUI stopped showing `~N tok` beside each tool call once it moved behind the in-process OAP endpoint.
+
 ## [0.1.0-alpha.15] - 2026-10-13
 
 ### Merged pull requests
