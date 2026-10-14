@@ -16,7 +16,7 @@
     "timestamp_ms": 3,
     "session_id": "session",
     "run_id": "run-3",
-    "capability_revision": "claude-code-2.1.296-oap-v1"
+    "capability_revision": "claude-code-2.1.296-oap-v2"
   },
   {
     "protocol": "open-agent-protocol",
@@ -41,7 +41,7 @@
     "session_id": "session",
     "run_id": "run-3",
     "tool_call_id": "tool-call-5",
-    "capability_revision": "claude-code-2.1.296-oap-v1"
+    "capability_revision": "claude-code-2.1.296-oap-v2"
   },
   {
     "protocol": "open-agent-protocol",
@@ -64,7 +64,7 @@
     "session_id": "session",
     "run_id": "run-3",
     "tool_call_id": "tool-call-5",
-    "capability_revision": "claude-code-2.1.296-oap-v1"
+    "capability_revision": "claude-code-2.1.296-oap-v2"
   },
   {
     "protocol": "open-agent-protocol",
@@ -107,7 +107,7 @@
     "run_id": "run-3",
     "turn_id": "interaction-8",
     "tool_call_id": "tool-call-5",
-    "capability_revision": "claude-code-2.1.296-oap-v1"
+    "capability_revision": "claude-code-2.1.296-oap-v2"
   },
   {
     "protocol": "open-agent-protocol",
@@ -126,7 +126,7 @@
     "timestamp_ms": 8,
     "session_id": "session",
     "run_id": "run-3",
-    "capability_revision": "claude-code-2.1.296-oap-v1"
+    "capability_revision": "claude-code-2.1.296-oap-v2"
   },
   {
     "protocol": "open-agent-protocol",
@@ -156,7 +156,7 @@
     "session_id": "session",
     "run_id": "run-3",
     "turn_id": "interaction-8",
-    "capability_revision": "claude-code-2.1.296-oap-v1"
+    "capability_revision": "claude-code-2.1.296-oap-v2"
   },
   {
     "protocol": "open-agent-protocol",
@@ -174,7 +174,7 @@
     "timestamp_ms": 11,
     "session_id": "session",
     "run_id": "run-3",
-    "capability_revision": "claude-code-2.1.296-oap-v1"
+    "capability_revision": "claude-code-2.1.296-oap-v2"
   },
   {
     "protocol": "open-agent-protocol",
@@ -198,7 +198,7 @@
     "session_id": "session",
     "run_id": "run-3",
     "tool_call_id": "tool-call-5",
-    "capability_revision": "claude-code-2.1.296-oap-v1"
+    "capability_revision": "claude-code-2.1.296-oap-v2"
   },
   {
     "protocol": "open-agent-protocol",
@@ -226,7 +226,7 @@
     "timestamp_ms": 13,
     "session_id": "session",
     "run_id": "run-3",
-    "capability_revision": "claude-code-2.1.296-oap-v1",
+    "capability_revision": "claude-code-2.1.296-oap-v2",
     "extensions": {
       "com.anthropic.claude-code.cost": {
         "num_turns": 2
@@ -250,7 +250,7 @@
     "timestamp_ms": 15,
     "session_id": "session",
     "run_id": "run-17",
-    "capability_revision": "claude-code-2.1.296-oap-v1"
+    "capability_revision": "claude-code-2.1.296-oap-v2"
   },
   {
     "protocol": "open-agent-protocol",
@@ -275,7 +275,7 @@
     "session_id": "session",
     "run_id": "run-17",
     "tool_call_id": "tool-call-19",
-    "capability_revision": "claude-code-2.1.296-oap-v1"
+    "capability_revision": "claude-code-2.1.296-oap-v2"
   },
   {
     "protocol": "open-agent-protocol",
@@ -298,7 +298,7 @@
     "session_id": "session",
     "run_id": "run-17",
     "tool_call_id": "tool-call-19",
-    "capability_revision": "claude-code-2.1.296-oap-v1"
+    "capability_revision": "claude-code-2.1.296-oap-v2"
   },
   {
     "protocol": "open-agent-protocol",
@@ -340,7 +340,7 @@
     "run_id": "run-17",
     "turn_id": "interaction-22",
     "tool_call_id": "tool-call-19",
-    "capability_revision": "claude-code-2.1.296-oap-v1"
+    "capability_revision": "claude-code-2.1.296-oap-v2"
   },
   {
     "protocol": "open-agent-protocol",
@@ -359,7 +359,7 @@
     "timestamp_ms": 20,
     "session_id": "session",
     "run_id": "run-17",
-    "capability_revision": "claude-code-2.1.296-oap-v1"
+    "capability_revision": "claude-code-2.1.296-oap-v2"
   },
   {
     "protocol": "open-agent-protocol",
@@ -389,7 +389,7 @@
     "session_id": "session",
     "run_id": "run-17",
     "turn_id": "interaction-22",
-    "capability_revision": "claude-code-2.1.296-oap-v1"
+    "capability_revision": "claude-code-2.1.296-oap-v2"
   },
   {
     "protocol": "open-agent-protocol",
@@ -407,7 +407,7 @@
     "timestamp_ms": 23,
     "session_id": "session",
     "run_id": "run-17",
-    "capability_revision": "claude-code-2.1.296-oap-v1"
+    "capability_revision": "claude-code-2.1.296-oap-v2"
   },
   {
     "protocol": "open-agent-protocol",
@@ -434,7 +434,7 @@
     "session_id": "session",
     "run_id": "run-17",
     "tool_call_id": "tool-call-19",
-    "capability_revision": "claude-code-2.1.296-oap-v1"
+    "capability_revision": "claude-code-2.1.296-oap-v2"
   },
   {
     "protocol": "open-agent-protocol",
@@ -462,7 +462,7 @@
     "timestamp_ms": 25,
     "session_id": "session",
     "run_id": "run-17",
-    "capability_revision": "claude-code-2.1.296-oap-v1",
+    "capability_revision": "claude-code-2.1.296-oap-v2",
     "extensions": {
       "com.anthropic.claude-code.cost": {
         "num_turns": 2

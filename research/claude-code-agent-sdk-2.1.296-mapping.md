@@ -230,3 +230,75 @@ Please run /login`), so the adapter passes the placeholder
 with `HOME` holding a subscription login and that placeholder set, `claude -p`
 sent `x-api-key: oap-unauthenticated` and no `Authorization` header to a
 loopback endpoint, so the key wins over the stored login.
+
+## Compaction progress (`run.compaction`, `claude-code-2.1.296-oap-v2`)
+
+Both trees now publish the CLI's compactions as the run's `run.compaction`
+events (Decision 0044) and advertise `run.compaction` at `native`, so the
+capability revision moves to `claude-code-2.1.296-oap-v2`. Before this the
+reducer dropped the frames below, and a run whose CLI compacted for minutes
+published nothing for that whole time (#1091).
+
+### The wire, checked live on the pin
+
+The pinned darwin-arm64 binary (`c9b53416…`, from the
+`@anthropic-ai/claude-code-darwin-arm64@2.1.296` tarball `50fbf594…`) was
+driven over `--input-format stream-json --output-format stream-json` against a
+loopback Messages mock, with a placeholder key and a throwaway `HOME`. The
+mock refused the second turn's request with HTTP 400 `prompt is too long`, the
+overflow the incident's bridge also produced, so the CLI compacted before
+retrying. Three runs: the summary request succeeded, it was refused, and an
+`interrupt` arrived while it was held open. 2.1.295 emits the same frames.
+
+| Native frame | When | Projection |
+| --- | --- | --- |
+| `system/status`, `status: "compacting"` | the compaction starts, before the turn's first `stream_event`, so before the `user_message_uuid` echo | `run.compaction.started`, `reason: "threshold"`; while the submission is still pending it is also the admission evidence, so `run.started` comes first |
+| `system/status`, `status: null`, `compact_result: "success"` | it ends | `run.compaction.ended`, `outcome: "completed"` |
+| `system/status`, `status: null`, `compact_result: "failed"`, `compact_error` | it fails | `run.compaction.ended`, `outcome: "failed"`, `error: {code: "claude_compaction_failed", message: compact_error}` |
+| `system/compact_boundary` (`compact_metadata.trigger`, `pre_tokens`, `post_tokens`, `duration_ms`) | after a successful end | ends a compaction still open as `completed`; otherwise observed only |
+| the compact-summary `user` frame | after the boundary | observed only |
+
+### Mismatches
+
+- **Reason is inferred.** The CLI says nothing about why it compacts until
+  `compact_boundary.trigger`, which arrives after the end and says only `auto`
+  or `manual`. Every compaction is published with `reason: "threshold"`,
+  including the overflow one the probe triggered. `requested` stays reserved
+  for a run `session.compact.request` admitted, which this adapter does not
+  serve.
+- **An interrupt is a failure.** An interrupt during the compaction ends it with
+  `compact_result: "failed"`, `compact_error: "aborted"`, and the turn then
+  settles with `terminal_reason: "prompt_too_long"`, not `aborted_*`. Both are
+  published as the CLI reports them: a failed compaction and a failed run.
+  `cancelled` is published only for a compaction still open when the run
+  settles `run.cancelled`.
+- **An unreported end is a failure.** A compaction still open when the run
+  settles any other way ends `failed` with `claude_compaction_unreported`,
+  immediately before the terminal, because the barrier needs an end and nothing
+  says the history was replaced. No probe produced one.
+- **Admission moves earlier.** A `compacting` status while a submission is
+  pending admits it. The session was idle when the submission was written and
+  the CLI runs one turn at a time, so the status can only belong to that turn,
+  and the compaction is the run's first act after `run.started`, as Decision
+  0044 places a deferred threshold compaction. Without this, `Submit` waited for
+  the echo through the whole compaction.
+- A second `compacting` while one is open is ignored, and `status:
+  "requesting"` ends nothing.
+
+### Liveness
+
+`adapter.RunToTerminal` takes `RunOptions.CompactionWindow`, by default
+`adapter.DefaultCompactionWindow` (20 minutes). While a compaction is open, the
+stream may stay quiet for that long instead of `StallWindow`, and the
+`StalledError` names whichever window ran out. The window is bounded, so a CLI
+that hangs inside a compaction still fails, and it returns to `StallWindow` at
+the compaction's end.
+
+### Corpus
+
+`compaction` adds the probe's frames for the two outcomes, with the session's
+own stream frames shaped as the other cases': ledger fixtures
+`compaction-progress` (the compaction opens before the echo, ends
+`completed`, and the run completes) and `compaction-failed` (it ends `failed`
+with the CLI's error, and the run fails `claude_api_400`). Every other
+expectation changes only the capability revision.

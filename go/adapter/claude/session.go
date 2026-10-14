@@ -84,6 +84,7 @@ type runState struct {
 	choice *protocol.ToolChoice
 
 	deferred     *native.ResultFrame
+	compaction   protocol.CompactionID
 	children     map[string]bool
 	terminalKind string
 	startResult  chan error
@@ -556,6 +557,11 @@ func (s *Session) associate(observation *rpc.ObservationMessage) {
 }
 
 func (s *Session) reserveObservation(run *runState, observation *rpc.ObservationMessage) {
+	if status, ok := observation.Value.(*native.StatusFrame); ok && status.Compacting() {
+		s.startRun(run)
+		s.applyRunObservation(run, observation)
+		return
+	}
 	if s.echoMatches(run, observation.Value, observation.Raw) {
 		s.mu.Lock()
 		run.echoSeen = true
@@ -655,6 +661,16 @@ func (s *Session) applyRunObservation(run *runState, observation *rpc.Observatio
 	case *native.TaskUpdatedFrame:
 		if frame.Terminal() {
 			s.settleChild(run, frame.TaskID)
+		}
+	case *native.StatusFrame:
+		if frame.Compacting() {
+			s.startCompaction(run)
+		} else if frame.CompactResult != nil {
+			s.endCompaction(run, *frame.CompactResult, frame.CompactError)
+		}
+	case *native.SystemNotice:
+		if frame.Subtype == native.SystemCompactBoundary {
+			s.endCompaction(run, native.CompactResultSuccess, nil)
 		}
 	case *native.SessionStateFrame:
 
@@ -1361,12 +1377,58 @@ func (s *Session) emitEnvelope(run *runState, t protocol.EnvelopeType, p any, te
 	return s.emitWith(run, t, p, terminal, reply, nil)
 }
 
+func (s *Session) startCompaction(run *runState) {
+	s.mu.Lock()
+	if run.terminal || run.compaction != "" {
+		s.mu.Unlock()
+		return
+	}
+	id := protocol.CompactionID(s.ids.NewID("compaction"))
+	run.compaction = id
+	s.mu.Unlock()
+	_ = s.emit(run, protocol.TypeRunCompactionStarted, protocol.RunCompactionStartedPayload{SessionID: s.state.SessionID, RunID: run.id, CompactionID: id, Reason: protocol.CompactionThreshold}, false)
+}
+
+func (s *Session) endCompaction(run *runState, result string, failure *string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if run.terminal || run.compaction == "" {
+		return
+	}
+	ended := protocol.RunCompactionEndedPayload{SessionID: s.state.SessionID, RunID: run.id, CompactionID: run.compaction, Outcome: protocol.CompactionCompleted}
+	if result != native.CompactResultSuccess {
+		message := "the CLI reported its compaction as " + result
+		if failure != nil && *failure != "" {
+			message = *failure
+		}
+		ended.Outcome = protocol.CompactionFailed
+		ended.Error = &protocol.ProtocolError{Code: "claude_compaction_failed", Message: message}
+	}
+	run.compaction = ""
+	_, _ = s.appendLocked(run, protocol.TypeRunCompactionEnded, ended, false, "", nil)
+}
+
 func (s *Session) emitWith(run *runState, t protocol.EnvelopeType, p any, terminal bool, reply protocol.EnvelopeID, extensions map[string]json.RawMessage) (protocol.Envelope, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if run.terminal {
 		return protocol.Envelope{}, errTerminalWon
 	}
+	if terminal && run.compaction != "" {
+		ended := protocol.RunCompactionEndedPayload{SessionID: s.state.SessionID, RunID: run.id, CompactionID: run.compaction, Outcome: protocol.CompactionFailed, Error: &protocol.ProtocolError{Code: "claude_compaction_unreported", Message: "the run ended before the CLI reported how its compaction ended"}}
+		if t == protocol.TypeRunCancelled {
+			ended.Outcome = protocol.CompactionCancelled
+			ended.Error = nil
+		}
+		run.compaction = ""
+		if _, err := s.appendLocked(run, protocol.TypeRunCompactionEnded, ended, false, "", nil); err != nil {
+			return protocol.Envelope{}, err
+		}
+	}
+	return s.appendLocked(run, t, p, terminal, reply, extensions)
+}
+
+func (s *Session) appendLocked(run *runState, t protocol.EnvelopeType, p any, terminal bool, reply protocol.EnvelopeID, extensions map[string]json.RawMessage) (protocol.Envelope, error) {
 	e, err := protocol.NewEnvelope(t, protocol.EnvelopeID(s.ids.NewID("event")), p)
 	if err != nil {
 		return protocol.Envelope{}, err

@@ -228,6 +228,80 @@ func TestRunToTerminalReportsAStall(t *testing.T) {
 	}
 }
 
+func compactionStarted(sequence int) adapter.Result {
+	return adapter.Result{Envelope: envelope(protocol.TypeRunCompactionStarted, sequence, protocol.RunCompactionStartedPayload{SessionID: "session-1", RunID: "run-1", CompactionID: "compaction-1", Reason: protocol.CompactionThreshold})}
+}
+
+func compactionEnded(sequence int) adapter.Result {
+	return adapter.Result{Envelope: envelope(protocol.TypeRunCompactionEnded, sequence, protocol.RunCompactionEndedPayload{SessionID: "session-1", RunID: "run-1", CompactionID: "compaction-1", Outcome: protocol.CompactionCompleted})}
+}
+
+func TestRunToTerminalWaitsOutAnOpenCompactionLongerThanTheStallWindow(t *testing.T) {
+	release := make(chan struct{})
+	session := &scriptedSession{release: release, results: []adapter.Result{
+		compactionStarted(1),
+		compactionEnded(2),
+		{Envelope: envelope(protocol.TypeRunCompleted, 3, protocol.RunCompletedPayload{
+			SessionID: "session-1", RunID: "run-1",
+			FinalResponse: protocol.Message{ID: "message-1", Role: protocol.RoleAssistant, Content: protocol.TextContent("done")},
+		})},
+	}}
+	go func() {
+		time.Sleep(300 * time.Millisecond)
+		close(release)
+	}()
+	outcome, err := adapter.RunToTerminal(context.Background(), session, plainSubmit, adapter.RunOptions{StallWindow: 50 * time.Millisecond, CompactionWindow: 5 * time.Second})
+	if err != nil {
+		t.Fatalf("err = %v, want the run to finish: a compaction quieter than the stall window is not a silent stream", err)
+	}
+	if outcome.Text != "done" {
+		t.Fatalf("text = %q", outcome.Text)
+	}
+}
+
+func TestRunToTerminalGivesAnOpenCompactionTheDefaultWindowWhenNoneIsSet(t *testing.T) {
+	release := make(chan struct{})
+	session := &scriptedSession{release: release, results: []adapter.Result{
+		compactionStarted(1),
+		compactionEnded(2),
+		{Envelope: envelope(protocol.TypeRunCompleted, 3, protocol.RunCompletedPayload{
+			SessionID: "session-1", RunID: "run-1",
+			FinalResponse: protocol.Message{ID: "message-1", Role: protocol.RoleAssistant, Content: protocol.TextContent("done")},
+		})},
+	}}
+	go func() {
+		time.Sleep(300 * time.Millisecond)
+		close(release)
+	}()
+	if _, err := adapter.RunToTerminal(context.Background(), session, plainSubmit, adapter.RunOptions{StallWindow: 50 * time.Millisecond}); err != nil {
+		t.Fatalf("err = %v, want the run to finish within the default compaction window of %s", err, adapter.DefaultCompactionWindow)
+	}
+}
+
+func TestRunToTerminalReportsAStallOnceAnOpenCompactionOutlastsItsWindow(t *testing.T) {
+	session := &scriptedSession{results: []adapter.Result{compactionStarted(1)}, hold: true}
+	_, err := adapter.RunToTerminal(context.Background(), session, plainSubmit, adapter.RunOptions{StallWindow: 20 * time.Millisecond, CompactionWindow: 80 * time.Millisecond})
+	var stalled *adapter.StalledError
+	if !errors.As(err, &stalled) {
+		t.Fatalf("err = %v, want a stall", err)
+	}
+	if stalled.Wait != 80*time.Millisecond {
+		t.Fatalf("stall wait = %s, want the compaction window", stalled.Wait)
+	}
+}
+
+func TestRunToTerminalReturnsToTheStallWindowOnceTheCompactionEnds(t *testing.T) {
+	session := &scriptedSession{results: []adapter.Result{compactionStarted(1), compactionEnded(2)}, hold: true}
+	_, err := adapter.RunToTerminal(context.Background(), session, plainSubmit, adapter.RunOptions{StallWindow: 20 * time.Millisecond, CompactionWindow: 2 * time.Second})
+	var stalled *adapter.StalledError
+	if !errors.As(err, &stalled) {
+		t.Fatalf("err = %v, want a stall", err)
+	}
+	if stalled.Wait != 20*time.Millisecond {
+		t.Fatalf("stall wait = %s, want the stall window again", stalled.Wait)
+	}
+}
+
 func TestRunToTerminalRefusesAnInvalidAnswerBeforeResolving(t *testing.T) {
 	ask := protocol.UserInputRequestedPayload{
 		InteractionID: "interaction-1", RequestedBy: "harness", RespondedBy: "user",

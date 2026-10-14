@@ -361,6 +361,7 @@ func advertisedFeatures() map[string]protocol.FeatureSupport {
 		"session.message.delivery.auto":  {Level: protocol.SupportDegraded, Reason: "accepted only when the CLI session is idle"},
 		"session.message.delivery.queue": {Level: protocol.SupportUnavailable, Reason: "queued continuation turns are not exposed in v1"},
 		"session.message.delivery.steer": {Level: protocol.SupportUnavailable, Reason: "shouldQuery/priority are unexercised"},
+		protocol.FeatureRunCompaction:    {Level: protocol.SupportNative, Reason: "system/status compacting opens a compaction and the status carrying compact_result closes it, completed or failed with compact_error; the CLI does not say why it compacts, so the reason is threshold for an overflow too, and one still open at the terminal ends failed, or cancelled for a cancel"},
 		"run.streaming":                  {Level: protocol.SupportNative, Reason: "stream_event deltas with --include-partial-messages always on"},
 		"run.status":                     {Level: protocol.SupportEmulated},
 		"run.cancel":                     {Level: protocol.SupportDegraded, Reason: "interrupt intent; settlement only via terminal_reason aborted_*"},

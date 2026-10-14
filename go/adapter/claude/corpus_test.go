@@ -89,6 +89,8 @@ var ccLedgerFixtures = map[string]bool{
 	"no-implied-replay": true, "resume-fork": true,
 
 	"tools-catalog-sources": true, "bound-session-reopen": true,
+
+	"compaction-progress": true, "compaction-failed": true,
 }
 
 type ccCorpusSources struct {
@@ -1392,6 +1394,11 @@ func assertClaudeLedgerEvidence(t *testing.T, labels []string, frames []ccFrame,
 				return typ == protocol.TypeRunCompleted
 			})
 			ok = started && notified && completed
+		case "compaction-progress":
+			ok = ccHasObservation(decoded, native.TypeSystem, native.SystemStatus) &&
+				ccCompactionBefore(*execution, protocol.CompactionCompleted, protocol.TypeRunCompleted)
+		case "compaction-failed":
+			ok = ccCompactionBefore(*execution, protocol.CompactionFailed, protocol.TypeRunFailed)
 		case "task-updated-terminal":
 			updated := false
 			for _, i := range ccObserveIndexes(decoded, native.TypeSystem, native.SystemTaskUpdated) {
@@ -1466,6 +1473,32 @@ func ccUserText(user *native.UserFrame) string {
 		}
 	}
 	return strings.Join(texts, "")
+}
+
+func ccCompactionBefore(execution ccExecution, outcome protocol.CompactionOutcome, terminal protocol.EnvelopeType) bool {
+	opened := false
+	var ended protocol.CompactionID
+	for _, envelope := range execution.envelopes {
+		switch envelope.Type {
+		case protocol.TypeRunCompactionStarted:
+			var started protocol.RunCompactionStartedPayload
+			if envelope.DecodePayload(&started) == nil && started.Reason == protocol.CompactionThreshold {
+				opened = true
+				ended = ""
+			}
+		case protocol.TypeRunCompactionEnded:
+			var closed protocol.RunCompactionEndedPayload
+			if opened && envelope.DecodePayload(&closed) == nil && closed.Outcome == outcome && (outcome != protocol.CompactionFailed || closed.Error != nil) {
+				ended = closed.CompactionID
+			}
+		case terminal:
+			if ended != "" {
+				return true
+			}
+			opened = false
+		}
+	}
+	return false
 }
 
 func ccHasControlRequest(decoded []ccDecodedFrame, subtype string) bool {

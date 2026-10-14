@@ -221,9 +221,21 @@ type InitFrame struct {
 }
 
 type StatusFrame struct {
-	Status    *string `json:"status"`
-	SessionID string  `json:"session_id"`
-	UUID      string  `json:"uuid"`
+	Status        *string `json:"status"`
+	CompactResult *string `json:"compact_result"`
+	CompactError  *string `json:"compact_error"`
+	SessionID     string  `json:"session_id"`
+	UUID          string  `json:"uuid"`
+}
+
+const (
+	StatusCompacting     = "compacting"
+	CompactResultSuccess = "success"
+	CompactResultFailed  = "failed"
+)
+
+func (f *StatusFrame) Compacting() bool {
+	return f.Status != nil && *f.Status == StatusCompacting
 }
 
 type SessionStateFrame struct {
