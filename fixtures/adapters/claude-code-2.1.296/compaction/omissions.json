@@ -1,0 +1,4 @@
+[
+  {"index": 7, "type": "observe:system/compact_boundary", "reason": "the status before it already ended the compaction; a boundary closes one only when no compact_result arrived"},
+  {"index": 8, "type": "observe:user", "reason": "the summary the CLI writes into its own history; it arrives after the compaction ended, so it is not the ended event's summary"}
+]

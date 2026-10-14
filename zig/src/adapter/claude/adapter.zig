@@ -31,6 +31,7 @@ const features = [_]contract.Feature{
     .{ .key = "session.message.delivery.auto", .level = .degraded, .reason = "accepted only when the CLI session is idle" },
     .{ .key = "session.message.delivery.queue", .level = .unavailable, .reason = "queued continuation turns are not exposed in v1" },
     .{ .key = "session.message.delivery.steer", .level = .unavailable, .reason = "shouldQuery/priority are unexercised" },
+    .{ .key = "run.compaction", .level = .native, .reason = "system/status compacting opens a compaction and the status carrying compact_result closes it, completed or failed with compact_error; the CLI does not say why it compacts, so the reason is threshold for an overflow too, and one still open at the terminal ends failed, or cancelled for a cancel" },
     .{ .key = "run.streaming", .level = .native, .reason = "stream_event deltas with --include-partial-messages always on" },
     .{ .key = "run.status", .level = .emulated },
     .{ .key = "run.cancel", .level = .degraded, .reason = "interrupt intent; settlement only via terminal_reason aborted_*" },

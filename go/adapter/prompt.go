@@ -13,9 +13,10 @@ import (
 )
 
 const (
-	DefaultStallWindow = 2 * time.Minute
-	DefaultMaxResumes  = 3
-	runEventQueue      = 256
+	DefaultStallWindow      = 2 * time.Minute
+	DefaultCompactionWindow = 20 * time.Minute
+	DefaultMaxResumes       = 3
+	runEventQueue           = 256
 )
 
 var (
@@ -101,10 +102,11 @@ type CallAnswer struct {
 type GatePolicy func(context.Context, Gate) (GateAnswer, error)
 
 type RunOptions struct {
-	Policy      GatePolicy
-	StallWindow time.Duration
-	MaxResumes  int
-	Observe     func(protocol.Envelope)
+	Policy           GatePolicy
+	StallWindow      time.Duration
+	CompactionWindow time.Duration
+	MaxResumes       int
+	Observe          func(protocol.Envelope)
 }
 
 type RunOutcome struct {
@@ -327,6 +329,11 @@ func RunToTerminal(ctx context.Context, session Session, request protocol.Messag
 	queue := make(chan Result, runEventQueue)
 	readerDone := make(chan struct{})
 	go pumpTo(events, queue, done, readerDone)
+	compactionWindow := options.CompactionWindow
+	if compactionWindow <= 0 {
+		compactionWindow = DefaultCompactionWindow
+	}
+	quiet := stall
 	stallTimer := time.NewTimer(stall)
 	defer stallTimer.Stop()
 
@@ -375,13 +382,13 @@ drain:
 				return outcome, gateErr
 			default:
 			}
-			return outcome, &StalledError{Wait: stall}
+			return outcome, &StalledError{Wait: quiet}
 		case result, ok = <-queue:
 		}
 		if !ok {
 			break drain
 		}
-		resetStall(stallTimer, stall)
+		resetStall(stallTimer, quiet)
 		if result.Error != nil {
 			if !errors.Is(result.Error, ErrEventStreamOverflow) {
 				return outcome, result.Error
@@ -394,7 +401,7 @@ drain:
 			}
 			resumes++
 			recovery, replay, resumeErr := session.Resume(ctx, ResumeRequest{RunID: runID, AfterSequence: lastSeq})
-			resetStall(stallTimer, stall)
+			resetStall(stallTimer, quiet)
 			var gap *ReplayGap
 			switch {
 			case errors.As(resumeErr, &gap):
@@ -406,7 +413,7 @@ drain:
 			case replay == nil:
 				return outcome, ErrResumeUnsupported
 			}
-			recovered := time.NewTimer(stall)
+			recovered := time.NewTimer(quiet)
 			select {
 			case <-readerDone:
 			case <-ctx.Done():
@@ -415,7 +422,7 @@ drain:
 			case <-recovered.C:
 			}
 			recovered.Stop()
-			resetStall(stallTimer, stall)
+			resetStall(stallTimer, quiet)
 			queue = make(chan Result, runEventQueue)
 			readerDone = make(chan struct{})
 			go pumpTo(replay, queue, done, readerDone)
@@ -425,7 +432,7 @@ drain:
 		envelope := result.Envelope
 		if options.Observe != nil {
 			options.Observe(envelope)
-			resetStall(stallTimer, stall)
+			resetStall(stallTimer, quiet)
 		}
 		if envelope.RunID != "" {
 			runID = envelope.RunID
@@ -437,6 +444,12 @@ drain:
 			lastSeq = *envelope.Sequence
 		}
 		switch envelope.Type {
+		case protocol.TypeRunCompactionStarted:
+			quiet = compactionWindow
+			resetStall(stallTimer, quiet)
+		case protocol.TypeRunCompactionEnded:
+			quiet = stall
+			resetStall(stallTimer, quiet)
 		case protocol.TypeActionCallRequested:
 			var call protocol.ActionCallPayload
 			if err := envelope.DecodePayload(&call); err != nil {
@@ -451,7 +464,7 @@ drain:
 			}
 			gate := Gate{RunID: runID, InteractionID: call.InteractionID, Call: &call, ToolName: call.Name, ToolArguments: call.ArgumentsJSON, requestID: envelope.ID}
 			answer, err := options.Policy(ctx, gate)
-			resetStall(stallTimer, stall)
+			resetStall(stallTimer, quiet)
 			if err != nil {
 				return outcome, err
 			}
@@ -471,7 +484,7 @@ drain:
 				return outcome, ErrGateUnanswered
 			}
 			answer, err := options.Policy(ctx, gate)
-			resetStall(stallTimer, stall)
+			resetStall(stallTimer, quiet)
 			if err != nil {
 				return outcome, err
 			}
@@ -486,7 +499,7 @@ drain:
 				return outcome, ErrGateUnanswered
 			}
 			answer, err := options.Policy(ctx, gate)
-			resetStall(stallTimer, stall)
+			resetStall(stallTimer, quiet)
 			if err != nil {
 				return outcome, err
 			}

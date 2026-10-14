@@ -5257,6 +5257,11 @@ Step 3, native evidence:
   `session.compact` through Pi's `compact` command, as a run of its own that
   opens with its `requested` compaction, at `native` under
   `pi-v1.0.1-oap-v3`, so step 3 is complete.
+- the Claude Code adapters in both trees publish the CLI's own compactions as
+  the run's `run.compaction` events at `native`, from `system/status` frames
+  recorded against the 2.1.296 binary, under `claude-code-2.1.296-oap-v2`.
+  The CLI does not say why it compacts, so the reason is always `threshold`;
+  `session.compact` stays unserved.
 
 ## T5b. Auth state
 

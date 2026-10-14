@@ -2695,3 +2695,143 @@ func TestALiveUpdateIsRefusedForWhatTheCLICannotTakeAndWhileARunIsOpen(t *testin
 		t.Fatalf("a busy session answered %v, want run_active", err)
 	}
 }
+
+func compactingStatus(uuid string) string {
+	return `{"type":"system","subtype":"status","status":"compacting","compact_output_chars":0,"session_id":"` + peerSession + `","uuid":"` + uuid + `"}`
+}
+
+func compactResult(result, failure string) string {
+	carried := `"compact_result":"` + result + `"`
+	if failure != "" {
+		carried += `,"compact_error":"` + failure + `"`
+	}
+	return `{"type":"system","subtype":"status","status":null,` + carried + `,"session_id":"` + peerSession + `","uuid":"st-end"}`
+}
+
+func compactionEvents(t *testing.T, events []protocol.Envelope) ([]protocol.RunCompactionStartedPayload, []protocol.RunCompactionEndedPayload) {
+	t.Helper()
+	var started []protocol.RunCompactionStartedPayload
+	var ended []protocol.RunCompactionEndedPayload
+	for _, event := range events {
+		switch event.Type {
+		case protocol.TypeRunCompactionStarted:
+			var payload protocol.RunCompactionStartedPayload
+			if err := event.DecodePayload(&payload); err != nil {
+				t.Fatal(err)
+			}
+			started = append(started, payload)
+		case protocol.TypeRunCompactionEnded:
+			var payload protocol.RunCompactionEndedPayload
+			if err := event.DecodePayload(&payload); err != nil {
+				t.Fatal(err)
+			}
+			ended = append(ended, payload)
+		}
+	}
+	return started, ended
+}
+
+func TestACompactingStatusBeforeTheEchoAdmitsTheRunAndOpensItsCompaction(t *testing.T) {
+	_, session, peer := openWire(t)
+	outcome := submit(session)
+	uuid := turnUUIDOf(t, peer.writtenUser())
+	peer.send(initFrame)
+	peer.send(compactingStatus("st1"))
+	admitted := awaitSubmit(t, outcome)
+	if admitted.err != nil {
+		t.Fatalf("submit = %v, want the compaction to admit the run while it is still compacting", admitted.err)
+	}
+	peer.send(compactResult("success", ""))
+	peer.send(streamEcho(uuid))
+	peer.send(textDelta(uuid, "after"))
+	peer.send(resultFrame(uuid, "success", false, "completed", "after", 0))
+	events := adaptertest.Drain(t, admitted.stream, 5*time.Second)
+	assertValidTrace(t, admitted.request, admitted.admission, events)
+	want := []string{"run.started", "run.compaction.started", "run.compaction.ended", "content.delta", "run.completed"}
+	if got := eventTypes(events); !slices.Equal(got, want) {
+		t.Fatalf("events = %v, want %v", got, want)
+	}
+	started, ended := compactionEvents(t, events)
+	if started[0].Reason != protocol.CompactionThreshold || ended[0].CompactionID != started[0].CompactionID || ended[0].Outcome != protocol.CompactionCompleted || ended[0].Error != nil {
+		t.Fatalf("compaction = %+v then %+v", started[0], ended[0])
+	}
+}
+
+func TestAFailedCompactionCarriesTheCLIsErrorAndTheRunStillSettles(t *testing.T) {
+	_, session, peer := openWire(t)
+	uuid, outcome := admit(t, session, peer)
+	peer.send(compactingStatus("st1"))
+	peer.send(compactResult("failed", "API Error: 400 refused"))
+	peer.send(resultFrame(uuid, "success", true, "prompt_too_long", "Prompt is too long", 0))
+	events := adaptertest.Drain(t, outcome.stream, 5*time.Second)
+	assertValidTrace(t, outcome.request, outcome.admission, events)
+	_, ended := compactionEvents(t, events)
+	if len(ended) != 1 || ended[0].Outcome != protocol.CompactionFailed || ended[0].Error == nil || ended[0].Error.Code != "claude_compaction_failed" || ended[0].Error.Message != "API Error: 400 refused" {
+		t.Fatalf("ended = %+v", ended)
+	}
+	if last := terminalOf(events); last.Type != protocol.TypeRunFailed {
+		t.Fatalf("terminal = %s", last.Type)
+	}
+}
+
+func TestACompactionTheCLINeverReportsEndsFailedJustBeforeTheTerminal(t *testing.T) {
+	_, session, peer := openWire(t)
+	uuid, outcome := admit(t, session, peer)
+	peer.send(compactingStatus("st1"))
+	peer.send(resultFrame(uuid, "success", false, "completed", "done", 0))
+	events := adaptertest.Drain(t, outcome.stream, 5*time.Second)
+	assertValidTrace(t, outcome.request, outcome.admission, events)
+	types := eventTypes(events)
+	if len(types) < 2 || types[len(types)-2] != string(protocol.TypeRunCompactionEnded) || types[len(types)-1] != string(protocol.TypeRunCompleted) {
+		t.Fatalf("events = %v, want the compaction ended right before the terminal", types)
+	}
+	_, ended := compactionEvents(t, events)
+	if ended[0].Outcome != protocol.CompactionFailed || ended[0].Error == nil || ended[0].Error.Code != "claude_compaction_unreported" {
+		t.Fatalf("ended = %+v", ended[0])
+	}
+}
+
+func TestACancelledRunEndsItsOpenCompactionCancelled(t *testing.T) {
+	_, session, peer := openWire(t)
+	uuid, outcome := admit(t, session, peer)
+	peer.send(compactingStatus("st1"))
+	go func() {
+		if _, err := session.Cancel(context.Background(), outcome.admission.RunID); err != nil {
+			t.Errorf("cancel: %v", err)
+		}
+	}()
+	message, _ := peer.written()
+	if message.Kind != rpc.KindControlRequest || message.Subtype != "interrupt" {
+		t.Fatalf("expected an interrupt request, got %+v", message)
+	}
+	peer.answerControl(message.RequestID, `{"still_queued":[]}`)
+	peer.send(resultFrame(uuid, "error_during_execution", true, "aborted_streaming", "", 0))
+	events := adaptertest.Drain(t, outcome.stream, 5*time.Second)
+	assertCancelledTrace(t, outcome.request, outcome.admission, events)
+	_, ended := compactionEvents(t, events)
+	if len(ended) != 1 || ended[0].Outcome != protocol.CompactionCancelled || ended[0].Error != nil {
+		t.Fatalf("ended = %+v", ended)
+	}
+	if last := terminalOf(events); last.Type != protocol.TypeRunCancelled {
+		t.Fatalf("terminal = %s", last.Type)
+	}
+}
+
+func TestACompactBoundaryEndsACompactionNoStatusSettledAndARepeatedStartIsOne(t *testing.T) {
+	_, session, peer := openWire(t)
+	uuid, outcome := admit(t, session, peer)
+	peer.send(compactingStatus("st1"))
+	peer.send(compactingStatus("st2"))
+	peer.send(`{"type":"system","subtype":"status","status":"requesting","session_id":"` + peerSession + `","uuid":"st3"}`)
+	peer.send(`{"type":"system","subtype":"compact_boundary","uuid":"cb1","compact_metadata":{"trigger":"auto","pre_tokens":38},"session_id":"` + peerSession + `"}`)
+	peer.send(resultFrame(uuid, "success", false, "completed", "done", 0))
+	events := adaptertest.Drain(t, outcome.stream, 5*time.Second)
+	assertValidTrace(t, outcome.request, outcome.admission, events)
+	started, ended := compactionEvents(t, events)
+	if len(started) != 1 || len(ended) != 1 || ended[0].Outcome != protocol.CompactionCompleted {
+		t.Fatalf("started %+v, ended %+v", started, ended)
+	}
+	if last := terminalOf(events); last.Type != protocol.TypeRunCompleted {
+		t.Fatalf("terminal = %s", last.Type)
+	}
+}
