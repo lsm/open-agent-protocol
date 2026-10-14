@@ -388,11 +388,11 @@ pub const Reducer = struct {
     }
 
     pub fn settlePrompt(self: *Reducer, stop_reason: []const u8, usage: ?std.json.Value) !void {
+        const first_turn = !self.options.reopened and !self.prompted;
+        self.prompted = true;
         if (self.run == null) return;
         const run = &self.run.?;
         if (run.terminal) return;
-        const first_turn = !self.options.reopened and !self.prompted;
-        self.prompted = true;
         const turn = decodeTurnUsage(usage);
         const extensions = try self.usageExtensions(turn);
         const run_usage: ?std.json.Value = if (turn != null and first_turn) try self.runUsage(turn.?) else null;
@@ -431,10 +431,10 @@ pub const Reducer = struct {
     }
 
     pub fn promptFailed(self: *Reducer, code: i64, request: std.json.Value, message: []const u8) !void {
+        self.prompted = true;
         if (self.run == null) return;
         const run = &self.run.?;
         if (run.terminal) return;
-        self.prompted = true;
         const extensions = try self.usageExtensions(null);
         if (code == -32800 and run.cancel_requested) {
             try self.settleChildren(run, true);
@@ -2845,4 +2845,20 @@ test "a usage update between turns is the context the next turn reports" {
     try reducer.submit(1);
     try reducer.settlePrompt("end_turn", null);
     try testing.expectEqual(@as(i64, 262000), extensionAt(&reducer, context_extension).?.get("size_tokens").?.integer);
+}
+
+test "a prompt answered after its run already settled still counts as the session's turn" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const scratch = arena.allocator();
+    var reducer = try openRun(&arena);
+    try feed(&reducer, scratch, wrap(
+        \\{"sessionUpdate":"agent_message_chunk","content":"not a block"}
+    ));
+    try testing.expectEqualStrings("run.failed", lastEnvelope(&reducer).get("type").?.string);
+    try reducer.settlePrompt("end_turn", try usageValue(scratch, devin_turn_usage));
+    try reducer.submit(1);
+    try reducer.settlePrompt("end_turn", try usageValue(scratch, devin_turn_usage));
+    try testing.expectEqualStrings("run.completed", lastEnvelope(&reducer).get("type").?.string);
+    try testing.expect(lastEnvelope(&reducer).get("payload").?.object.get("usage") == null);
 }

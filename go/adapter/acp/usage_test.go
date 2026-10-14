@@ -230,3 +230,39 @@ func TestAUsageUpdateBetweenTurnsIsTheContextTheNextTurnReports(t *testing.T) {
 		t.Fatalf("context=%v", context)
 	}
 }
+
+func TestAPromptAnsweredAfterItsRunAlreadySettledStillCountsAsTheSessionsTurn(t *testing.T) {
+	s, f := openTest(t, 64)
+	_, first := submit(t, s)
+	<-f.promptStarted
+	f.update(t, map[string]any{"sessionUpdate": "agent_message_chunk", "content": "not a block"})
+	events := collect(t, first)
+	if events[len(events)-1].Type != protocol.TypeRunFailed {
+		t.Fatalf("events=%v", types(events))
+	}
+	f.prompt <- promptOutcome{result: native.PromptResult{StopReason: "end_turn", Usage: json.RawMessage(devinTurnUsage)}}
+	impl := s.(*session)
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		impl.mu.Lock()
+		prompted := impl.prompted
+		impl.mu.Unlock()
+		if prompted {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the late answer was never settled")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	_, second := submit(t, s)
+	<-f.promptStarted
+	terminal := settle(t, f, second, promptOutcome{result: native.PromptResult{StopReason: "end_turn", Usage: json.RawMessage(devinTurnUsage)}})
+	var completed protocol.RunCompletedPayload
+	if err := terminal.DecodePayload(&completed); err != nil {
+		t.Fatal(err)
+	}
+	if completed.Usage != nil {
+		t.Fatalf("the turn after a settled run was taken for the session's first: %+v", completed.Usage)
+	}
+}

@@ -218,12 +218,12 @@ func (s *session) settlePrompt(run *runState, result native.PromptResult, callEr
 	s.opMu.Lock()
 	defer s.opMu.Unlock()
 	s.mu.Lock()
+	firstTurn := !s.reopened && !s.prompted
+	s.prompted = true
 	if run.terminal {
 		s.mu.Unlock()
 		return
 	}
-	firstTurn := !s.reopened && !s.prompted
-	s.prompted = true
 	context := s.context
 	s.mu.Unlock()
 	var turn *turnUsage
