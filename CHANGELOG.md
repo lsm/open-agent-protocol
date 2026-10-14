@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+## [0.1.0-alpha.17] - 2026-10-14
+
+### Merged pull requests
+
+- **claude: publish the CLI's compactions as the run's compaction events** ([#1095](https://github.com/lsm/open-agent-protocol/pull/1095)): Closes #1091.
+- **acp: keep the agent's usage, and report it as run usage only where its scope cannot matter** ([#1094](https://github.com/lsm/open-agent-protocol/pull/1094)): Fixes #1090.
+- **Allow bounded cleanup of abandoned ACP sessions** ([#1093](https://github.com/lsm/open-agent-protocol/pull/1093)): Fixes #1092: add opt-in ACP cleanup for abandoned runs while preserving the default active-run close guard.
+- **Confirm ACP session options before admitting a run** ([#1089](https://github.com/lsm/open-agent-protocol/pull/1089)): Confirm advertised ACP mode/model select options before returning a fresh or reopened session. Closes #1088.
+
 ## [0.1.0-alpha.16] - 2026-10-14
 
 ### Merged pull requests
