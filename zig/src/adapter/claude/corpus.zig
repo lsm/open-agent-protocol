@@ -110,6 +110,7 @@ const claimed_cases = [_]ClaudeCase{
     .{ .id = "hygiene-recovery", .path = "hygiene-recovery" },
     .{ .id = "queued-continuation", .path = "queued-continuation" },
     .{ .id = "tools-catalog-sources", .path = "tools-catalog-sources" },
+    .{ .id = "compaction", .path = "compaction" },
 };
 
 test "the Zig reducer reproduces every expectation it claims in the current corpus" {
