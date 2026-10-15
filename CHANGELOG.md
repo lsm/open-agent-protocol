@@ -11,7 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Merged pull requests
 
-- **zig: default an unstated output limit to 32768 tokens** ([#1101](https://github.com/lsm/open-agent-protocol/pull/1101)): a model whose listing, catalog entry and providers.json state no output limit now requests up to 32768 tokens instead of 8192 (Codex too; Copilot keeps 16384), and a provider's refusal naming `max_tokens`, `max_completion_tokens` or `max_output_tokens` ends with where to set the model's real limit in `~/.oapx/providers.json`.
+- **zig: default an unstated output limit to 32768 tokens** ([#1101](https://github.com/lsm/open-agent-protocol/pull/1101)): a model whose listing, catalog entry and providers.json state no output limit now falls back to 32768 tokens (it was 8192, and 16384 for Codex; Copilot keeps 16384), and a provider's refusal naming `max_tokens`, `max_completion_tokens` or `max_output_tokens` ends with where to set the model's real limit in `~/.oapx/providers.json`.
 - **opencode: ignore the delivery of inbox items nobody prompted** ([#1099](https://github.com/lsm/open-agent-protocol/pull/1099)): a plan-mode run no longer ends after its first step; the opencode adapters ignore the delivery of inbox items OpenCode queues itself and settle the run at `session.execution.*` (#1098).
 
 ## [0.1.0-alpha.17] - 2026-10-14
