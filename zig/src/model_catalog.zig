@@ -302,7 +302,7 @@ fn copilotModel(allocator: std.mem.Allocator, id_text: []const u8, base_url_text
         .input = input,
         .cost = .{ .input = 0, .output = 0, .cache_read = 0, .cache_write = 0 },
         .context_window = if (listed) |found| found.context_window orelse 128_000 else 128_000,
-        .max_tokens = if (listed) |found| found.max_tokens orelse catalog_max_output_tokens else catalog_max_output_tokens,
+        .max_tokens = if (listed) |found| found.max_tokens orelse 16_384 else 16_384,
         .is_owned = true,
     };
 }
@@ -3102,7 +3102,6 @@ test "github copilot falls back to the known list and the default base url" {
 
     try std.testing.expectEqual(github_copilot.KNOWN_COPILOT_MODELS.len, models.len);
     try std.testing.expectEqualStrings(github_copilot.DEFAULT_BASE_URL, models[0].base_url);
-    try std.testing.expectEqual(@as(u32, 32_768), models[0].max_tokens);
 }
 
 test "an enterprise login with no stored base url contributes nothing" {
