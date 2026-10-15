@@ -2146,7 +2146,7 @@ fn compactAt(arena: std.mem.Allocator, raw: []const u8, runtime: *session_runtim
     const window = runtime.contextWindow();
     if (window == 0 or window > std.math.maxInt(u32)) return refusal.unsupportedField(contract.feature_compaction_policy, unsatisfiable, "compaction_policy");
     const model = runtime.currentModel() orelse return refusal.unsupportedField(contract.feature_compaction_policy, unsatisfiable, "compaction_policy");
-    if (std.mem.eql(u8, kind.string, "auto")) return agent.compaction.autoCompactAt(@intCast(window), agent.compaction.maxOutputTokens(model));
+    if (std.mem.eql(u8, kind.string, "auto")) return agent.compaction.autoCompactAt(@intCast(window), model.max_tokens);
     if (std.mem.eql(u8, kind.string, "share")) {
         const share = parsed.object.get("share_percent") orelse return refusal.unsupportedField(contract.feature_compaction_policy, unsatisfiable, "compaction_policy");
         if (share != .integer or share.integer < 1 or share.integer > 100) return refusal.unsupportedField(contract.feature_compaction_policy, unsatisfiable, "compaction_policy");
@@ -3795,6 +3795,24 @@ test "a share policy is measured against the window of the model a run starts on
     _ = try harness.submit("after the switch");
     try harness.untilTerminal();
     try testing.expectEqual(@as(?u64, agent.compaction.shareAt(other_model.context_window, 50)), live.loop.local_agent.?._auto_compact_at);
+}
+
+test "an auto policy keeps room for the model's whole reply, as the terminal UI does" {
+    var script = Script{};
+    var harness: Harness = undefined;
+    try harness.init(&script);
+    defer harness.deinit();
+    const a = harness.arena.allocator();
+    var refusal = contract.Refusal{};
+    var wide = other_model;
+    wide.id = "wide-model";
+    wide.context_window = 200_000;
+    wide.max_tokens = 64_000;
+    try harness.owner.setCatalog(&.{ test_model, other_model, wide });
+    _ = try harness.session.vtable.switch_model.?(harness.session.ptr, a, &.{ .session_id = harness.session.id(), .model_id = "scripted/openai-completions@wide-model" }, &refusal);
+    _ = try harness.session.vtable.update_settings.?(harness.session.ptr, a, &.{ .session_id = harness.session.id(), .compaction_policy_json = "{\"kind\":\"auto\"}" }, &refusal);
+    const live: *Session = @ptrCast(@alignCast(harness.session.ptr));
+    try testing.expectEqual(@as(?u64, 148_000), live.loop.local_agent.?._auto_compact_at);
 }
 
 test "a steer joins the running loop after its tool result and is applied before the guided turn" {
