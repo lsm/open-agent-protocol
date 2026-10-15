@@ -6,7 +6,23 @@ fn stringField(obj: std.json.ObjectMap, key: []const u8) ?[]const u8 {
     return value.string;
 }
 
+const output_limit_fields = [_][]const u8{ "max_tokens", "max_completion_tokens", "max_output_tokens", "maxOutputTokens" };
+const output_limit_hint = "; set this model's max_tokens in ~/.oapx/providers.json";
+
+pub fn withOutputLimitHint(allocator: std.mem.Allocator, detail: ?[]u8) !?[]u8 {
+    const text = detail orelse return null;
+    defer allocator.free(text);
+    for (output_limit_fields) |field| {
+        if (std.mem.indexOf(u8, text, field) != null) return try std.mem.concat(allocator, u8, &.{ text, output_limit_hint });
+    }
+    return try allocator.dupe(u8, text);
+}
+
 pub fn describe(allocator: std.mem.Allocator, body: []const u8) !?[]u8 {
+    return withOutputLimitHint(allocator, try summary(allocator, body));
+}
+
+fn summary(allocator: std.mem.Allocator, body: []const u8) !?[]u8 {
     var parsed = std.json.parseFromSlice(std.json.Value, allocator, body, .{}) catch return null;
     defer parsed.deinit();
     if (parsed.value != .object) return null;
@@ -93,6 +109,27 @@ test "describe returns null for bodies it cannot read" {
 
 test "describe keeps the anthropic shape byte identical to the previous formatter" {
     try expectDescribe(
-        \\{"error":{"type":"invalid_request_error","message":"max_tokens is too large"}}
-    , " (invalid_request_error: max_tokens is too large)");
+        \\{"error":{"type":"invalid_request_error","message":"prompt is too long"}}
+    , " (invalid_request_error: prompt is too long)");
+}
+
+test "a refused output limit names where to set the model's limit" {
+    try expectDescribe(
+        \\{"error":{"type":"invalid_request_error","message":"max_tokens is too large: 32768. This model supports at most 8192 completion tokens."}}
+    , " (invalid_request_error: max_tokens is too large: 32768. This model supports at most 8192 completion tokens.); set this model's max_tokens in ~/.oapx/providers.json");
+    try expectDescribe(
+        \\{"detail":"'max_completion_tokens' is too large"}
+    , " ('max_completion_tokens' is too large); set this model's max_tokens in ~/.oapx/providers.json");
+    try expectDescribe(
+        \\{"error":{"message":"max_output_tokens must be at most 4096"}}
+    , " (max_output_tokens must be at most 4096); set this model's max_tokens in ~/.oapx/providers.json");
+}
+
+test "the output limit hint propagates every allocation failure and leaks nothing" {
+    try testing.checkAllAllocationFailures(testing.allocator, struct {
+        fn run(allocator: std.mem.Allocator) !void {
+            const got = try withOutputLimitHint(allocator, try allocator.dupe(u8, " (max_tokens is too large)"));
+            allocator.free(got.?);
+        }
+    }.run, .{});
 }
