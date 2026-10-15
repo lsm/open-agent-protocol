@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+## [0.1.0-alpha.18] - 2026-10-15
+
+### Merged pull requests
+
+- **opencode: ignore the delivery of inbox items nobody prompted** ([#1099](https://github.com/lsm/open-agent-protocol/pull/1099)): a plan-mode run no longer ends after its first step; the opencode adapters ignore the delivery of inbox items OpenCode queues itself and settle the run at `session.execution.*` (#1098).
+
 ## [0.1.0-alpha.17] - 2026-10-14
 
 ### Merged pull requests
