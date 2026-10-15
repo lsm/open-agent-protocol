@@ -316,6 +316,8 @@ type SessionError struct {
 
 type UnknownErrorBlock = SessionError
 
+const InboxItemUser = "user"
+
 type InboxItem struct {
 	Type     string          `json:"type"`
 	Payload  json.RawMessage `json:"payload"`

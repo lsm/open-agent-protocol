@@ -85,6 +85,23 @@ The adapter code does not change in either tree. The capability descriptor
 is unchanged, so only the revision's version prefix moves:
 `opencode-v2.0.26-oap-v5`.
 
+## Inbox items nobody prompted
+
+`packages/schema/src/session-inbox.ts` tags each inbox item `user`,
+`synthetic`, `compaction` or `move`. Only a `user` item is an input; the
+others are queued by OpenCode itself, and the `plan` agent queues a
+`synthetic` reminder on every step, whose `inbox.delivered` arrives
+mid-execution. The v2.0.24 settlement rule ("the run settles when the next
+input is delivered, including another client's") read that delivery as
+another client's input, so a plan-mode run ended after its first step and
+the suppression that follows hid the rest of the turn
+(lsm/open-agent-protocol#1098).
+
+Both trees now record the `inboxID` of every non-`user` item at
+`inbox.enqueued` and ignore its delivery: it neither settles the run nor
+suppresses the stream. The run still settles at `session.execution.*`. The
+capability descriptor is unchanged.
+
 ## Corpus
 
 `fixtures/adapters/opencode-v2.0.26` is the v2.0.24 corpus carried forward
