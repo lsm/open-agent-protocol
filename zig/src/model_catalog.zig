@@ -42,7 +42,7 @@ const models_dev_url = "https://models.dev/api.json";
 const models_dev_cache_name = "models-dev.json";
 const max_models_dev_bytes = 16 * 1024 * 1024;
 const catalog_context_window: u32 = 128_000;
-const catalog_max_output_tokens: u32 = 8_192;
+const catalog_max_output_tokens: u32 = 32_768;
 pub const catalog_fetch_timeout_ms: u64 = 20_000;
 
 const anthropic_catalog_max_age_ms: i64 = 24 * 60 * 60 * 1000;
@@ -3234,7 +3234,7 @@ test "loadProductionModels includes models from a declared custom provider" {
     try std.testing.expectEqualStrings("claude-y", second.id);
     try std.testing.expectEqualStrings("claude-y", second.name);
     try std.testing.expectEqual(@as(u32, 128_000), second.context_window);
-    try std.testing.expectEqual(@as(u32, 8_192), second.max_tokens);
+    try std.testing.expectEqual(@as(u32, 32_768), second.max_tokens);
 }
 
 fn customCatalogProbe(allocator: std.mem.Allocator) !void {
