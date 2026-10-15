@@ -227,6 +227,7 @@ pub const Reducer = struct {
     last_seq: i64 = 0,
     settled: std.ArrayList(Settled) = .empty,
     reconciled: std.StringHashMapUnmanaged(void) = .empty,
+    unprompted: std.StringHashMapUnmanaged(void) = .empty,
     replaying: bool = false,
 
     pub fn init(arena: *std.heap.ArenaAllocator, options: Options, client: Native) Reducer {
@@ -418,10 +419,13 @@ pub const Reducer = struct {
         const run = self.reductionTarget();
         const kind = event.kind orelse return;
         switch (kind) {
-            .inbox_enqueued => _ = try self.decodeFor(native.InboxData, native.decodeInboxEnqueued, event, run, "opencode_invalid_inbox_event"),
+            .inbox_enqueued => {
+                const data = (try self.decodeFor(native.InboxData, native.decodeInboxEnqueued, event, run, "opencode_invalid_inbox_event")) orelse return;
+                if (!std.mem.eql(u8, data.item_type, "user")) try self.unprompted.put(self.allocator(), data.inbox_id, {});
+            },
             .inbox_delivered => {
                 const data = (try self.decodeFor(native.InboxData, native.decodeInboxRef, event, run, "opencode_invalid_inbox_event")) orelse return;
-                const repeated = self.reconciled.contains(data.inbox_id);
+                const repeated = self.reconciled.contains(data.inbox_id) or self.unprompted.contains(data.inbox_id);
                 if (self.replaying) try self.reconciled.put(self.allocator(), data.inbox_id, {});
                 if (!repeated) try self.delivered(data.inbox_id);
             },
@@ -1464,6 +1468,27 @@ test "another client's delivered input ends this run and its turn is not taken" 
     try reducer.observe(try nativeEvent(scratch, 3, "text.ended", "{\"assistantMessageID\":\"msg_b\",\"ordinal\":0,\"text\":\"theirs\"}"));
     try expectKinds(&reducer, &.{ "run.started", "run.completed" });
     try testing.expectEqualStrings("unknown", payloadOf(reducer.envelopes.items[1]).get("stop_reason").?.string);
+}
+
+test "a synthetic inbox item's delivery neither settles nor hides the run" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const scratch = arena.allocator();
+    var fake = Fake{};
+    var reducer = Reducer.init(&arena, .{ .native_id = native_session }, fake.client());
+    try reducer.open();
+    const admission = try reducer.submit("session", "hi", "auto");
+    try reducer.observe(try deliveredEvent(scratch, 1, admission.message_ids[0]));
+    try reducer.observe(try nativeEvent(scratch, 2, "inbox.enqueued", "{\"inboxID\":\"msg_plan\",\"item\":{\"type\":\"synthetic\",\"payload\":{\"text\":\"plan mode\"},\"delivery\":\"queue\"}}"));
+    try reducer.observe(try stepStarted(scratch, 3, "a"));
+    try reducer.observe(try nativeEvent(scratch, 4, "step.ended", "{\"assistantMessageID\":\"msg_a\",\"finish\":\"tool-calls\",\"cost\":0,\"tokens\":{\"input\":1,\"output\":1,\"reasoning\":0,\"cache\":{\"read\":0,\"write\":0}}}"));
+    try reducer.observe(try deliveredEvent(scratch, 5, "msg_plan"));
+    try reducer.observe(try deliveredEvent(scratch, 6, "msg_plan"));
+    try reducer.observe(try nativeEvent(scratch, 7, "text.ended", "{\"assistantMessageID\":\"msg_b\",\"ordinal\":0,\"text\":\"final\"}"));
+    try reducer.observe(try stepEnded(scratch, 8));
+    try reducer.observe(try succeeded(scratch, 9));
+    try expectKinds(&reducer, &.{ "run.started", "content.delta", "run.completed" });
+    try testing.expectEqualStrings("text:final", try partLabel(scratch, payloadOf(reducer.envelopes.items[1]).get("part").?));
 }
 
 test "the catalog needs degraded consent, answers only this session, and grows with step evidence" {

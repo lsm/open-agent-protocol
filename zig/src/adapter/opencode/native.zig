@@ -177,7 +177,7 @@ pub const SessionInfo = struct {
 
 pub const ErrorBlock = struct { kind: []const u8 = "", message: []const u8 = "" };
 
-pub const InboxData = struct { inbox_id: []const u8 = "" };
+pub const InboxData = struct { inbox_id: []const u8 = "", item_type: []const u8 = "" };
 
 pub const ExecutionFailedData = struct { failure: ErrorBlock = .{} };
 
@@ -878,7 +878,7 @@ fn errorOf(document: std.json.Value) ErrorBlock {
 
 pub fn decodeInboxEnqueued(arena: std.mem.Allocator, event: Event, diag: *Diagnostic) Error!InboxData {
     const document = try decodeData(arena, event, &inbox_enqueued_fields, diag);
-    return .{ .inbox_id = textAt(document, &.{"inboxID"}) };
+    return .{ .inbox_id = textAt(document, &.{"inboxID"}), .item_type = textAt(document, &.{ "item", "type" }) };
 }
 
 pub fn decodeInboxRef(arena: std.mem.Allocator, event: Event, diag: *Diagnostic) Error!InboxData {

@@ -588,6 +588,35 @@ func TestMultiStepTurnSettlesOnce(t *testing.T) {
 	}
 }
 
+func TestASyntheticInboxItemsDeliveryNeitherSettlesNorHidesTheRun(t *testing.T) {
+	client := newFakeClient()
+	session, _ := openTest(t, client, 32)
+	response, stream := submitTest(t, session)
+	client.deliver(t, 1, native.MessageID(response.MessageIDs[0]))
+	client.emit(t, 2, native.TypeInboxEnqueued, native.InboxEnqueuedData{SessionID: client.session, InboxID: "msg_plan", Item: native.InboxItem{Type: "synthetic", Payload: json.RawMessage(`{"text":"plan mode"}`), Delivery: "queue"}})
+	client.emit(t, 3, native.TypeStepStarted, native.StepStartedData{SessionID: client.session, AssistantMessage: "msg_a1"})
+	client.emit(t, 4, native.TypeStepEnded, native.StepEndedData{SessionID: client.session, AssistantMessage: "msg_a1", Finish: "tool-calls"})
+	client.deliver(t, 5, "msg_plan")
+	client.deliver(t, 6, "msg_plan")
+	client.emit(t, 7, native.TypeStepStarted, native.StepStartedData{SessionID: client.session, AssistantMessage: "msg_a2"})
+	client.emit(t, 8, native.TypeTextEnded, native.TextEndedData{SessionID: client.session, AssistantMessage: "msg_a2", Text: "final"})
+	client.emit(t, 9, native.TypeStepEnded, native.StepEndedData{SessionID: client.session, AssistantMessage: "msg_a2", Finish: "stop"})
+	client.succeed(t, 10)
+	events := adaptertest.Drain(t, stream, time.Second)
+	adaptertest.AssertRunTrace(t, response, CapabilityRevision, events)
+	want := []protocol.EnvelopeType{protocol.TypeRunStarted, protocol.TypeContentDelta, protocol.TypeRunCompleted}
+	if fmt.Sprint(types(events)) != fmt.Sprint(want) {
+		t.Fatalf("events=%v", types(events))
+	}
+	var delta protocol.ContentDeltaPayload
+	if err := events[1].DecodePayload(&delta); err != nil {
+		t.Fatal(err)
+	}
+	if delta.Part.Text != "final" {
+		t.Fatalf("delta=%+v", delta)
+	}
+}
+
 func TestCancelAcknowledgesIntentAndSettlesCancelled(t *testing.T) {
 	client := newFakeClient()
 	session, _ := openTest(t, client, 32)

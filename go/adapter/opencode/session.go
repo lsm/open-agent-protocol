@@ -69,6 +69,7 @@ type session struct {
 
 	reconciled map[native.MessageID]bool
 	replaying  bool
+	unprompted map[native.MessageID]bool
 
 	models    []string
 	journal   []protocol.Envelope
@@ -508,6 +509,15 @@ func (s *session) handleEventLocked(event native.Event) {
 		var data native.InboxEnqueuedData
 		if err := native.DecodeData(event, &data); err != nil {
 			s.failActive(run, "opencode_invalid_inbox_event", err.Error())
+			return
+		}
+		if data.Item.Type != native.InboxItemUser {
+			s.mu.Lock()
+			if s.unprompted == nil {
+				s.unprompted = map[native.MessageID]bool{}
+			}
+			s.unprompted[data.InboxID] = true
+			s.mu.Unlock()
 		}
 	case native.TypeInboxDelivered:
 		var data native.InboxRefData
@@ -516,7 +526,7 @@ func (s *session) handleEventLocked(event native.Event) {
 			return
 		}
 		s.mu.Lock()
-		repeated := s.reconciled[data.InboxID]
+		repeated := s.reconciled[data.InboxID] || s.unprompted[data.InboxID]
 		if s.replaying {
 			if s.reconciled == nil {
 				s.reconciled = map[native.MessageID]bool{}
