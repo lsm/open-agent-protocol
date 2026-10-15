@@ -599,7 +599,7 @@ a fifth of the window, or room for the 20,000-token summary plus one reply (the 
 output limit, capped at 32,000) when that is more, but never more than half the window. On a
 1M window that is 80%; on 200k with a 64k output limit, 74%; on 128k with 16k, 72%; on 64k
 with 8k, 56%; on 32k, 50%. The window and the output limit are the model's own, from its
-provider's model list, and the catalog's conservative defaults (a 128k window, 8,192 output
+provider's model list, and the catalog's defaults (a 128k window, 32,768 output
 tokens) stand in when the list does not say.
 
 `/autocompact <percent>` sets a share of the window instead, `/autocompact <tokens>` a

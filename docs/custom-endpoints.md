@@ -77,7 +77,7 @@ declared it says so and names `/provider add` rather than printing an empty list
 | `capabilities` | no | Overrides for what the endpoint supports; see below. |
 | `reasoning` | no | Whether models expose reasoning. Default `false`. |
 | `carries_version` | no | `true` when `base_url` already contains the API version, so the request path is the wire's path without its leading `/v1`. Absent means the wire's full path is appended. This is the only place a user states the fact; see Base URLs below. |
-| `context_window`, `max_tokens` | no | Defaults for models whose `models` entry and discovered listing state neither. With none anywhere, 128000 and 8192. |
+| `context_window`, `max_tokens` | no | Defaults for models whose `models` entry and discovered listing state neither. With none anywhere, 128000 and 32768. |
 
 A malformed entry fails the whole file rather than being skipped, so a typo
 cannot silently drop one provider while the rest keep working. Reserved ids,
@@ -327,9 +327,14 @@ A discovered model keeps the limits its listing reports: `max_output_tokens`
 (or `max_tokens`) for the output limit, `context_length` (or `context_window`)
 for the window, a zero counting as unstated. A `models` entry's own figure wins
 over the listing, the listing over the provider-wide `context_window` and
-`max_tokens`, and those over the 128000 and 8192 defaults. The cache holds the
+`max_tokens`, and those over the 128000 and 32768 defaults. The cache holds the
 whole listing, so a cached start keeps the limits too. A session already open
 takes the refreshed limits at its next message, without a model switch.
+
+The 32768 default can be more than an endpoint accepts. When a refusal names an
+output-limit field (`max_tokens`, `max_completion_tokens`, `max_output_tokens`),
+the error ends with `set this model's max_tokens in ~/.oapx/providers.json`:
+give the model's `models` entry its real `max_tokens`, or the provider-wide one.
 
 ### Catalogued rows
 
@@ -346,7 +351,7 @@ produced nothing contributes nothing. The models it does build carry the row's
 own id, wire and base URL, which are read through the catalog rather than
 written here: nothing in this runtime spells a catalogued base URL. The two
 values discovery does not carry are the same defaults a custom provider starts
-from, 128000 and 8192, until a wire reports better ones.
+from, 128000 and 32768, until a wire reports better ones.
 
 A row whose listing names models without their limits can name a `models_dev`
 key, as every catalog-loaded row whose listing omits them does. Anthropic's

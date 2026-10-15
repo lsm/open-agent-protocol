@@ -5,6 +5,7 @@ const compat = @import("compat");
 const ai_types = @import("ai_types");
 const event_stream = @import("event_stream");
 const api_registry = @import("api_registry");
+const error_detail = @import("provider_error_detail");
 const oauth_storage = @import("oauth/storage");
 const sse_parser = @import("sse_parser");
 const json_writer = @import("json_writer");
@@ -1335,7 +1336,7 @@ fn runThread(ctx: *ThreadCtx) void {
         const error_reader = compat.http.responseReader(&response, &error_transfer_buf);
         const error_body = compat.http.allocRemainingResponse(allocator, error_reader, 8192) catch null;
         defer if (error_body) |body| allocator.free(body);
-        const detail = if (error_body) |body| anthropicErrorDetail(allocator, body) catch null else null;
+        const detail = if (error_body) |body| error_detail.withOutputLimitHint(allocator, anthropicErrorDetail(allocator, body) catch null) catch null else null;
         defer if (detail) |text| allocator.free(text);
         last_error = std.fmt.allocPrint(allocator, "anthropic request failed: HTTP {d}{s}{s}", .{
             status_code,

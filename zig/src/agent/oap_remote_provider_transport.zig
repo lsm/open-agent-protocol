@@ -17,7 +17,7 @@ pub const Config = struct {
 };
 
 const default_context_window: u32 = 128_000;
-const default_max_tokens: u32 = 8192;
+const default_max_tokens: u32 = 32_768;
 
 pub fn discoverModels(allocator: std.mem.Allocator, config: *const Config) ![]ai_types.Model {
     var client = try http_client.Client.init(allocator, config.base_url, config.security);
