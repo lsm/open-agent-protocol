@@ -3797,7 +3797,7 @@ test "a share policy is measured against the window of the model a run starts on
     try testing.expectEqual(@as(?u64, agent.compaction.shareAt(other_model.context_window, 50)), live.loop.local_agent.?._auto_compact_at);
 }
 
-test "an auto policy keeps room for the model's whole reply, as the terminal UI does" {
+test "an auto policy measures its reserve with the model's own output limit, as the terminal UI does" {
     var script = Script{};
     var harness: Harness = undefined;
     try harness.init(&script);
