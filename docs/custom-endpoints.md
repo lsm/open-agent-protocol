@@ -351,7 +351,7 @@ produced nothing contributes nothing. The models it does build carry the row's
 own id, wire and base URL, which are read through the catalog rather than
 written here: nothing in this runtime spells a catalogued base URL. The two
 values discovery does not carry are the same defaults a custom provider starts
-from, 128000 and 8192, until a wire reports better ones.
+from, 128000 and 32768, until a wire reports better ones.
 
 A row whose listing names models without their limits can name a `models_dev`
 key, as every catalog-loaded row whose listing omits them does. Anthropic's
