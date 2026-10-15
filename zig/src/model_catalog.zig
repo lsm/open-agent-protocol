@@ -47,7 +47,7 @@ pub const catalog_fetch_timeout_ms: u64 = 20_000;
 
 const anthropic_catalog_max_age_ms: i64 = 24 * 60 * 60 * 1000;
 const default_codex_client_version = "0.0.0";
-const default_max_output_tokens: u32 = 16_384;
+const default_max_output_tokens: u32 = 32_768;
 
 const CodexParseOptions = struct {
     account_id: ?[]const u8 = null,
@@ -302,7 +302,7 @@ fn copilotModel(allocator: std.mem.Allocator, id_text: []const u8, base_url_text
         .input = input,
         .cost = .{ .input = 0, .output = 0, .cache_read = 0, .cache_write = 0 },
         .context_window = if (listed) |found| found.context_window orelse 128_000 else 128_000,
-        .max_tokens = if (listed) |found| found.max_tokens orelse 16_384 else 16_384,
+        .max_tokens = if (listed) |found| found.max_tokens orelse catalog_max_output_tokens else catalog_max_output_tokens,
         .is_owned = true,
     };
 }
@@ -3102,6 +3102,7 @@ test "github copilot falls back to the known list and the default base url" {
 
     try std.testing.expectEqual(github_copilot.KNOWN_COPILOT_MODELS.len, models.len);
     try std.testing.expectEqualStrings(github_copilot.DEFAULT_BASE_URL, models[0].base_url);
+    try std.testing.expectEqual(@as(u32, 32_768), models[0].max_tokens);
 }
 
 test "an enterprise login with no stored base url contributes nothing" {
@@ -4522,7 +4523,7 @@ test "parseCodexModelsCache accepts models response body" {
     try std.testing.expectEqual(@as(usize, 1), models.len);
     try std.testing.expectEqualStrings("gpt-api", models[0].id);
     try std.testing.expectEqual(@as(u32, 128000), models[0].context_window);
-    try std.testing.expectEqual(@as(u32, default_max_output_tokens), models[0].max_tokens);
+    try std.testing.expectEqual(@as(u32, 32_768), models[0].max_tokens);
     try std.testing.expect(models[0].headers == null);
 }
 
