@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+## [0.1.0-alpha.19] - 2026-10-15
+
+### Merged pull requests
+
+- **oapx: measure an auto compaction policy with the model's own output limit** ([#1102](https://github.com/lsm/open-agent-protocol/pull/1102)): an `auto` compaction policy over `oapx serve agent` now reserves room from the model's own output limit, as the TUI does, instead of capping it at the summary's 20000; a 200k window with a 64k output limit now compacts at 148000 in both, not 160000 over OAP.
+
 ## [0.1.0-alpha.18] - 2026-10-15
 
 ### Merged pull requests
