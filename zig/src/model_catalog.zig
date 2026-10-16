@@ -1025,7 +1025,7 @@ fn appendCatalogTargetModels(
                 }
             }
             for (models) |model| {
-                if (servedOnlyInsideOpenCode(target.id, model.id)) continue;
+                if (servedOnlyInsideOpenCode(target, model.id)) continue;
                 var shaped = model;
                 if (target.allowlist.len > 0) {
                     const spec = allowlistSpec(target.allowlist, model.id) orelse continue;
@@ -1424,9 +1424,11 @@ fn forgetRefusal(allocator: std.mem.Allocator, name: []const u8) void {
     compat.fs.removeFile(path);
 }
 
-fn servedOnlyInsideOpenCode(row: []const u8, model: []const u8) bool {
-    const opencode = std.mem.eql(u8, row, "opencode-zen") or std.mem.eql(u8, row, "opencode-go");
-    return opencode and std.mem.endsWith(u8, model, "-free");
+fn servedOnlyInsideOpenCode(target: CatalogEndpoint, model: []const u8) bool {
+    if (!std.mem.eql(u8, target.id, "opencode-zen") and !std.mem.eql(u8, target.id, "opencode-go")) return false;
+    if (target.allowlist.len > 0 or !std.mem.endsWith(u8, model, "-free")) return false;
+    const own = catalogTarget(target.id) orelse return false;
+    return std.mem.eql(u8, target.base_url, own.base_url);
 }
 
 fn discoverCatalogModels(
@@ -6020,6 +6022,18 @@ test "OpenCode's free models, which its gateway serves only to the OpenCode clie
     const elsewhere = try loadOneRow("openrouter", "OPENROUTER_API_KEY", &.{"some-model-free"});
     defer deinitModels(std.testing.allocator, elsewhere);
     try std.testing.expectEqual(@as(usize, 1), elsewhere.len);
+}
+
+test "a free model stays offered when the row is narrowed to named models or moved off OpenCode's gateway" {
+    const zen = catalogTarget("opencode-zen") orelse return error.TestExpectedTarget;
+    try std.testing.expect(servedOnlyInsideOpenCode(zen, "mimo-v2.6-flash-free"));
+    const named = [_]custom_providers.ModelSpec{.{ .id = "mimo-v2.6-flash-free", .name = "mimo-v2.6-flash-free" }};
+    var narrowed = zen;
+    narrowed.allowlist = &named;
+    try std.testing.expect(!servedOnlyInsideOpenCode(narrowed, "mimo-v2.6-flash-free"));
+    var moved = zen;
+    moved.base_url = "https://proxy.example/v1";
+    try std.testing.expect(!servedOnlyInsideOpenCode(moved, "mimo-v2.6-flash-free"));
 }
 
 test "an OpenCode Go model keeps the generic defaults when models.dev cannot be read" {
