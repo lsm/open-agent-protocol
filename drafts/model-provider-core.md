@@ -426,8 +426,10 @@ facts whatever its listing carries.
 `oapx` publishes `lifecycle: deprecated` for a model whose own models.dev entry
 says `status: deprecated`, and reads models.dev for that whenever the row has a
 models.dev key, whatever its listing carries. The entry is matched by the exact
-model id under the row's models.dev key, never a dated or similar id, so
-`glm-5` being deprecated says nothing about `glm-5.3`. Every other model
+model id under the row's models.dev key, so `glm-5` being deprecated says
+nothing about `glm-5.3`; Anthropic, whose listing ids carry a date models.dev's
+keys omit, reads the status from the same entry its limits come from, the dated
+id first and the dateless one only when there is none. Every other model
 publishes no `lifecycle`: models.dev's `alpha` and `beta`, and a model it does
 not list, stay absent rather than becoming `stable` or `preview`. The status is
 advisory, not authoritative: the model stays in the listing and still runs

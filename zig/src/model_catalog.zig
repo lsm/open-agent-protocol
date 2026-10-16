@@ -2055,9 +2055,9 @@ fn anthropicLimits(listed: ?*const std.json.ObjectMap, dev: ?*const std.json.Obj
         limits.max_tokens = positiveU32(objectU32(item, "max_tokens"));
     }
     const models = dev orelse return limits;
-    limits.deprecated = deprecatedIn(models, id);
     const entry = models.getPtr(id) orelse models.getPtr(withoutDateSuffix(id)) orelse return limits;
     if (entry.* != .object) return limits;
+    limits.deprecated = if (objectString(&entry.object, "status")) |status| std.mem.eql(u8, status, "deprecated") else false;
     limits.published_cost = modelsDevCost(&entry.object);
     limits.release_date = nonEmptyString(&entry.object, "release_date");
     limits.family = nonEmptyString(&entry.object, "family");
@@ -6082,14 +6082,15 @@ test "models.dev's deprecated status marks only the model it names exactly, whet
     }
 }
 
-test "an Anthropic model is deprecated only by its own models.dev entry, not one its dateless name shares" {
+test "an Anthropic model takes the deprecated status of the models.dev entry its limits come from, its own id first and then its dateless one" {
     var parsed = try std.json.parseFromSlice(std.json.Value, std.testing.allocator,
-        \\{"claude-x":{"status":"deprecated"},"claude-y-20250101":{"status":"deprecated"}}
+        \\{"claude-x":{"status":"deprecated"},"claude-y":{"status":"deprecated"},"claude-y-20250101":{"status":"beta"},"claude-z":{}}
     , .{});
     defer parsed.deinit();
-    try std.testing.expect(!anthropicLimits(null, &parsed.value.object, "claude-x-20250101").deprecated);
-    try std.testing.expect(anthropicLimits(null, &parsed.value.object, "claude-y-20250101").deprecated);
-    try std.testing.expect(!anthropicLimits(null, null, "claude-y-20250101").deprecated);
+    try std.testing.expect(anthropicLimits(null, &parsed.value.object, "claude-x-20250101").deprecated);
+    try std.testing.expect(!anthropicLimits(null, &parsed.value.object, "claude-y-20250101").deprecated);
+    try std.testing.expect(!anthropicLimits(null, &parsed.value.object, "claude-z-20250101").deprecated);
+    try std.testing.expect(!anthropicLimits(null, null, "claude-x-20250101").deprecated);
 }
 
 test "an OpenCode Go model keeps the generic defaults when models.dev cannot be read" {
