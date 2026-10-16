@@ -827,9 +827,15 @@ func (s *session) handleEventLocked(event native.Event) {
 		}
 		s.mu.Lock()
 		fresh := sighted(&run.toolSeen, toolSight{id: callID, end: true}, s.replaying)
+		name := s.toolNames[callID]
+		uncalled := fresh && s.tools[toolKey(run, callID)] == nil && name != "" && sighted(&run.toolSeen, toolSight{id: callID}, s.replaying)
 		s.mu.Unlock()
 		if !fresh {
 			return
+		}
+		if uncalled {
+			<-run.admitted
+			s.startTool(run, callID, name, json.RawMessage("null"))
 		}
 		s.endTool(run, callID, failed, failure, content)
 	default:

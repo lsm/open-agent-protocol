@@ -566,6 +566,52 @@ func TestToolLifecycleSettlesBeforeTerminal(t *testing.T) {
 	}
 }
 
+func TestAToolOpenCodeFailsBeforeCallingItIsStartedThenFailedAndTheRunGoesOn(t *testing.T) {
+	client := newFakeClient()
+	session, _ := openTest(t, client, 32)
+	response, stream := submitTest(t, session)
+	client.deliver(t, 1, native.MessageID(response.MessageIDs[0]))
+	client.emit(t, 2, native.TypeStepStarted, native.StepStartedData{SessionID: client.session, AssistantMessage: "msg_a1"})
+	client.emit(t, 3, native.TypeToolInputStarted, native.ToolInputStartedData{SessionID: client.session, AssistantMessage: "msg_a1", ID: "call_bad", Name: "read"})
+	client.emit(t, 4, native.TypeToolInputEnded, native.ToolInputEndedData{SessionID: client.session, AssistantMessage: "msg_a1", ID: "call_bad", Text: `{"path":`})
+	client.emit(t, 5, native.TypeToolFailed, native.ToolFailedData{SessionID: client.session, AssistantMessage: "msg_a1", ID: "call_bad", Error: native.SessionError{Type: "tool.input-json", Message: "Tool call arguments were malformed JSON and were not executed. Retry with valid JSON."}})
+	client.emit(t, 6, native.TypeStepEnded, native.StepEndedData{SessionID: client.session, AssistantMessage: "msg_a1", Finish: "tool-calls"})
+	client.emit(t, 7, native.TypeStepStarted, native.StepStartedData{SessionID: client.session, AssistantMessage: "msg_a2"})
+	client.emit(t, 8, native.TypeTextEnded, native.TextEndedData{SessionID: client.session, AssistantMessage: "msg_a2", Text: "retried"})
+	client.emit(t, 9, native.TypeStepEnded, native.StepEndedData{SessionID: client.session, AssistantMessage: "msg_a2", Finish: "stop"})
+	client.succeed(t, 10)
+	events := adaptertest.Drain(t, stream, time.Second)
+	adaptertest.AssertProtocolValidWithDescriptor(t, response, testAdapterDescriptor(t), events)
+	want := []protocol.EnvelopeType{protocol.TypeRunStarted, protocol.TypeActionCallRequested, protocol.TypeActionCallStarted, protocol.TypeActionCallFailed, protocol.TypeContentDelta, protocol.TypeRunCompleted}
+	if fmt.Sprint(types(events)) != fmt.Sprint(want) {
+		t.Fatalf("events=%v", types(events))
+	}
+	var requested protocol.ActionCallPayload
+	if err := events[1].DecodePayload(&requested); err != nil {
+		t.Fatal(err)
+	}
+	if requested.Name != "read" || string(requested.ArgumentsJSON) != "null" {
+		t.Fatalf("requested=%+v", requested)
+	}
+}
+
+func TestAToolEndWithNoInputStartedFailsTheRun(t *testing.T) {
+	client := newFakeClient()
+	session, _ := openTest(t, client, 32)
+	response, stream := submitTest(t, session)
+	client.deliver(t, 1, native.MessageID(response.MessageIDs[0]))
+	client.emit(t, 2, native.TypeStepStarted, native.StepStartedData{SessionID: client.session, AssistantMessage: "msg_a1"})
+	client.emit(t, 3, native.TypeToolFailed, native.ToolFailedData{SessionID: client.session, AssistantMessage: "msg_a1", ID: "call_orphan", Error: native.SessionError{Type: "unknown", Message: "lost"}})
+	events := adaptertest.Drain(t, stream, time.Second)
+	var failed protocol.RunFailedPayload
+	if err := events[len(events)-1].DecodePayload(&failed); err != nil {
+		t.Fatal(err)
+	}
+	if failed.Error.Code != "opencode_invalid_tool_lifecycle" || failed.Error.Message != "tool end without active start" {
+		t.Fatalf("failed=%+v", failed)
+	}
+}
+
 func TestMultiStepTurnSettlesOnce(t *testing.T) {
 	client := newFakeClient()
 
