@@ -42,6 +42,7 @@ pub const OapExecution = struct {
     endpoint: ?adapter_endpoint.Endpoint = null,
     home: ?adapter_endpoint.Endpoint = null,
     away: ?Away = null,
+    away_model: []u8 = &.{},
     settings: ?session_runtime.RemoteSettings = null,
     hub: ?*hub_link.HubLink = null,
     sink: ?session_runtime.EventSink = null,
@@ -221,6 +222,7 @@ pub const OapExecution = struct {
         self.halt();
         if (self.endpoint) |*endpoint| endpoint.deinit();
         if (self.home) |*home| home.deinit();
+        allocator.free(self.away_model);
         if (self.settings) |kept| allocator.free(kept.workspace_root);
         if (self.hub) |link| {
             link.closeSession();
@@ -297,6 +299,7 @@ pub const OapExecution = struct {
             if (std.mem.eql(u8, model.api, away_api)) {
                 try self.placeAway(model);
                 settings.model = null;
+                settings.resume_session_id = null;
             } else self.placeHome();
         }
         const prior_open = settings.resume_session_id != null and self.session_id.len > 0;
@@ -828,11 +831,22 @@ pub const OapExecution = struct {
     fn switchModel(ctx: *anyopaque, model: ai_types.Model) anyerror!void {
         const self = cast(ctx);
         if (std.mem.eql(u8, model.api, away_api)) {
+            if (self.home != null and std.mem.eql(u8, self.away_model, model.id)) return;
             const away = self.away orelse return error.ModelNotFound;
+            const chosen = try self.allocator.dupe(u8, model.id);
+            errdefer self.allocator.free(chosen);
             const served = try away.open(away.ctx, model);
-            return self.moveSession(served, null);
+            try self.moveSession(served, null);
+            self.allocator.free(self.away_model);
+            self.away_model = chosen;
+            return;
         }
-        if (self.home != null) return self.moveSession(null, model);
+        if (self.home != null) {
+            try self.moveSession(null, model);
+            self.allocator.free(self.away_model);
+            self.away_model = &.{};
+            return;
+        }
         var scratch = std.heap.ArenaAllocator.init(self.allocator);
         defer scratch.deinit();
         const a = scratch.allocator();
@@ -898,7 +912,11 @@ pub const OapExecution = struct {
 
     fn placeAway(self: *OapExecution, model: ai_types.Model) !void {
         const away = self.away orelse return error.ModelNotFound;
+        const chosen = try self.allocator.dupe(u8, model.id);
+        errdefer self.allocator.free(chosen);
         const served = try away.open(away.ctx, model);
+        self.allocator.free(self.away_model);
+        self.away_model = chosen;
         self.halt();
         const replaced = self.endpoint.?;
         self.endpoint = adapter_endpoint.Endpoint.init(self.allocator, served, .{ .frame_limit = in_process_frame_limit });
@@ -912,6 +930,8 @@ pub const OapExecution = struct {
 
     fn placeHome(self: *OapExecution) void {
         const home = self.home orelse return;
+        self.allocator.free(self.away_model);
+        self.away_model = &.{};
         self.halt();
         self.endpoint.?.deinit();
         self.endpoint = home;
@@ -3201,6 +3221,61 @@ test "a second OpenCode model opens its session on the adapter opened for it, an
     try testing.expectEqual(@as(*anyopaque, @ptrCast(&second)), execution.endpoint.?.adapter.ptr);
     try testing.expect(execution.home != null);
     try testing.expectEqual(@as(usize, 1), execution.endpoint.?.entries.items.len);
+}
+
+test "picking the OpenCode model already in use keeps its session" {
+    var away = AwayStub{ .memory = @import("memory_adapter").Adapter.init(testing.allocator) };
+    defer away.memory.deinit();
+    var script = Script{};
+    const models = [_]ai_types.Model{scripted_model};
+    const app_models = [_]ai_types.Model{ scripted_model, away_model };
+    const execution = try OapExecution.create(testing.allocator, .{
+        .protocol = .{ .stream_fn = scriptedStream, .ctx = &script },
+        .models = &models,
+        .initial_model_id = scripted_model.id,
+    });
+    defer execution.destroy();
+    execution.setAway(.{ .ctx = &away, .open = AwayStub.open });
+    var runtime = try session_runtime.SessionRuntime.init(testing.allocator, .{
+        .models = &app_models,
+        .initial_model_id = scripted_model.id,
+        .remote = execution.remote(),
+    });
+    defer runtime.deinit();
+    try runtime.start();
+
+    try runtime.switchModelExact(away_model);
+    const moved = try testing.allocator.dupe(u8, execution.session_id);
+    defer testing.allocator.free(moved);
+    try runtime.switchModelExact(away_model);
+    try testing.expectEqual(@as(usize, 1), away.opened);
+    try testing.expectEqualStrings(moved, execution.session_id);
+}
+
+test "a saved loop session reopened on an OpenCode model opens a new OpenCode session instead" {
+    var away = AwayStub{ .memory = @import("memory_adapter").Adapter.init(testing.allocator) };
+    defer away.memory.deinit();
+    var script = Script{};
+    const models = [_]ai_types.Model{scripted_model};
+    const app_models = [_]ai_types.Model{ scripted_model, away_model };
+    const execution = try OapExecution.create(testing.allocator, .{
+        .protocol = .{ .stream_fn = scriptedStream, .ctx = &script },
+        .models = &models,
+        .initial_model_id = scripted_model.id,
+    });
+    defer execution.destroy();
+    execution.setAway(.{ .ctx = &away, .open = AwayStub.open });
+    var runtime = try session_runtime.SessionRuntime.init(testing.allocator, .{
+        .models = &app_models,
+        .initial_model_id = scripted_model.id,
+        .remote = execution.remote(),
+    });
+    defer runtime.deinit();
+
+    try runtime.switchModelExact(away_model);
+    try runtime.reopenSaved("loop-session-saved", null);
+    try testing.expect(execution.home != null);
+    try testing.expect(!std.mem.eql(u8, "loop-session-saved", execution.session_id));
 }
 
 test "a session opened on an OpenCode model opens on OpenCode's endpoint, not the loop's" {
