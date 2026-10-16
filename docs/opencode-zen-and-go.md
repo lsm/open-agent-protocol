@@ -16,6 +16,7 @@ row logs in on its own.
 Both gateways list models whose id ends in `-free`. The gateway serves them only
 to the OpenCode client: a direct call answers `FreeTierError` ("OpenCode's free
 tier can only be used from within OpenCode"). So the `opencode-zen` and
-`opencode-go` rows drop every `-free` id from the listing they discover, and
+`opencode-go` rows offer no `-free` id, discovered or named in
+`~/.oapx/providers.json`, unless that file moves the row to another base URL, and
 oapx reaches those models only through an OpenCode server it runs, never by
 presenting itself as OpenCode's client from its own loop.

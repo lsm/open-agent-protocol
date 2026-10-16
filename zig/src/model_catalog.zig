@@ -1044,6 +1044,7 @@ fn appendCatalogTargetModels(
 
     if (target.allowlist.len > 0) {
         for (target.allowlist) |spec| {
+            if (servedOnlyInsideOpenCode(target, spec.id)) continue;
             var shaped = DiscoveredModel{ .id = spec.id };
             shapeBySpec(&shaped, spec);
             var built = try catalogModel(allocator, target, shaped);
@@ -1426,7 +1427,7 @@ fn forgetRefusal(allocator: std.mem.Allocator, name: []const u8) void {
 
 fn servedOnlyInsideOpenCode(target: CatalogEndpoint, model: []const u8) bool {
     if (!std.mem.eql(u8, target.id, "opencode-zen") and !std.mem.eql(u8, target.id, "opencode-go")) return false;
-    if (target.allowlist.len > 0 or !std.mem.endsWith(u8, model, "-free")) return false;
+    if (!std.mem.endsWith(u8, model, "-free")) return false;
     const own = catalogTarget(target.id) orelse return false;
     return std.mem.eql(u8, target.base_url, own.base_url);
 }
@@ -6024,13 +6025,13 @@ test "OpenCode's free models, which its gateway serves only to the OpenCode clie
     try std.testing.expectEqual(@as(usize, 1), elsewhere.len);
 }
 
-test "a free model stays offered when the row is narrowed to named models or moved off OpenCode's gateway" {
+test "a free model is dropped on OpenCode's gateway even when named, and kept once the row is moved off it" {
     const zen = catalogTarget("opencode-zen") orelse return error.TestExpectedTarget;
     try std.testing.expect(servedOnlyInsideOpenCode(zen, "mimo-v2.6-flash-free"));
     const named = [_]custom_providers.ModelSpec{.{ .id = "mimo-v2.6-flash-free", .name = "mimo-v2.6-flash-free" }};
     var narrowed = zen;
     narrowed.allowlist = &named;
-    try std.testing.expect(!servedOnlyInsideOpenCode(narrowed, "mimo-v2.6-flash-free"));
+    try std.testing.expect(servedOnlyInsideOpenCode(narrowed, "mimo-v2.6-flash-free"));
     var moved = zen;
     moved.base_url = "https://proxy.example/v1";
     try std.testing.expect(!servedOnlyInsideOpenCode(moved, "mimo-v2.6-flash-free"));
