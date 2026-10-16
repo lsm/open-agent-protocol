@@ -15,6 +15,7 @@ pub const Launch = struct {
     port: u16 = 0,
     ready_timeout_ns: u64 = 30 * std.time.ns_per_s,
     exit_grace_ns: u64 = 5 * std.time.ns_per_s,
+    cancel: ?*const std.atomic.Value(bool) = null,
 };
 
 pub fn admitted(version: []const u8) bool {
@@ -126,6 +127,10 @@ pub const Server = struct {
         const endpoint = httpapi.Endpoint{ .base_path = target.base_path, .username = username, .password = &self.password };
         const started = monotonic();
         while (monotonic() -| started < launch.ready_timeout_ns) {
+            if (launch.cancel) |cancel| if (cancel.load(.acquire)) {
+                why.* = "the OpenCode server was no longer wanted when it started";
+                return error.ServerRefused;
+            };
             if (self.gone.load(.acquire)) {
                 why.* = try std.fmt.allocPrint(arena, "{s} serve exited with status {d} before it answered; its log is {s}", .{ launch.executable, self.status, launch.log_path });
                 return error.ServerRefused;
@@ -301,6 +306,23 @@ test "a server that exits before it answers is refused, naming its status and th
     try testing.expectEqualStrings(try std.fmt.allocPrint(arena, "{s} serve exited with status 3 before it answered; its log is {s}", .{ launch.executable, launch.log_path }), why);
     const logged = try compat.fs.getCwd().readFileAlloc(testing.io, launch.log_path, arena, .limited(1024));
     try testing.expectEqualStrings("no config\n", logged);
+}
+
+test "a start nobody waits for any more stops waiting and stops the server" {
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var launch = try launchIn(&tmp, arena, "#!/bin/sh\nexec sleep 30\n", 1);
+    const cancelled: std.atomic.Value(bool) = .init(true);
+    launch.cancel = &cancelled;
+    var why: []const u8 = "";
+    const started = monotonic();
+    try testing.expectError(error.ServerRefused, Server.start(testing.allocator, arena, launch, &why));
+    try testing.expect(monotonic() -| started < 5 * std.time.ns_per_s);
+    try testing.expectEqualStrings("the OpenCode server was no longer wanted when it started", why);
 }
 
 test "only the versions the catalog admits are admitted" {

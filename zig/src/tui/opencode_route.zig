@@ -31,6 +31,7 @@ pub const Route = struct {
     adapter: opencode_adapter.Adapter,
     lock: std.atomic.Mutex = .unlocked,
     chosen: [2][]u8 = .{ &.{}, &.{} },
+    cancelled: std.atomic.Value(bool) = .init(false),
     refused: []u8 = &.{},
 
     pub fn discover(allocator: std.mem.Allocator, environ: *const std.process.Environ.Map) !?*Route {
@@ -52,8 +53,13 @@ pub const Route = struct {
             .executable = executable,
             .environment = entry.environment,
             .log_path = try std.fs.path.join(arena, &.{ home, ".oapx", "opencode", "tui.log" }),
+            .cancel = &self.cancelled,
         };
         return self;
+    }
+
+    pub fn cancel(self: *Route) void {
+        self.cancelled.store(true, .release);
     }
 
     pub fn destroy(self: *Route) void {
@@ -116,7 +122,8 @@ pub const Route = struct {
         const endpoint = httpapi.Endpoint{ .base_path = target.base_path, .username = opencode_server.username, .password = &server.password };
         const started = compat.time.monotonicNanos() catch 0;
         while (true) {
-            const response = try client.roundTrip(allocator, arena, target, try httpapi.models(arena, endpoint), httpapi.default_frame_limit, 10 * std.time.ns_per_s);
+            if (self.cancelled.load(.acquire)) return error.OpenCodeUnavailable;
+            const response = try client.roundTrip(allocator, arena, target, try httpapi.models(arena, endpoint), httpapi.default_frame_limit, 2 * std.time.ns_per_s);
             if (response.status != 200) return error.OpenCodeModelsRefused;
             const listed = try std.json.parseFromSliceLeaky(Listed, arena, response.body, .{ .ignore_unknown_fields = true });
             if (listed.data.len > 0) return modelsOf(allocator, listed);

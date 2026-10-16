@@ -1196,6 +1196,7 @@ pub const App = struct {
             self.pending_models = null;
         }
         if (self.opencode_fetch) |fetch| {
+            fetch.route.cancel();
             if (fetch.finish(self.allocator)) |models| model_catalog.deinitModels(self.allocator, models) else |_| {}
             self.opencode_fetch = null;
         }
@@ -1945,7 +1946,10 @@ pub const App = struct {
             try self.state.appendTranscript(.system, msg);
             return;
         }
-        const moved = (if (self.session) |*session| session.switchModelExact(model) else runtime.switchModelExact(model)) catch |err| {
+        const was = if (runtime.currentModel()) |current| current.id else "";
+        const changed = !std.mem.eql(u8, was, model.id);
+        const away = std.mem.eql(u8, model.api, tui_oap_execution.away_api);
+        (if (self.session) |*session| session.switchModelExact(model) else runtime.switchModelExact(model)) catch |err| {
             if (err != error.OpenCodeUnavailable) return err;
             self.state.mode = .normal;
             const why = if (self.opencode) |route| route.refused else "";
@@ -1954,13 +1958,12 @@ pub const App = struct {
             try self.state.appendTranscript(.@"error", msg);
             return;
         };
-        _ = moved;
-        if (std.mem.eql(u8, model.api, tui_oap_execution.away_api)) try self.state.appendTranscript(.system, "OpenCode runs this model with its own loop and tools, so this is a new session; pick one of oapx's models to come back, on a new session too.");
+        if (away and changed) try self.state.appendTranscript(.system, "OpenCode runs this model with its own loop and tools, so this is a new session; pick one of oapx's models to come back, on a new session too.");
         if (runtime.currentModel()) |m| {
             try self.state.status.setModelWithContext(self.allocator, m.id, m.provider, m.context_window);
             self.state.telemetry.context_window = m.context_window;
         }
-        self.persistCurrentModel();
+        if (!away) self.persistCurrentModel();
         self.state.mode = .normal;
         const msg = try std.fmt.allocPrint(self.allocator, "model switched to {s} ({s})", .{ model.id, model.provider });
         defer self.allocator.free(msg);
@@ -6047,6 +6050,36 @@ test "a pending model switch applies once idle even with follow-ups queued, whil
     try app.runDeferredAfterRun();
     try std.testing.expectEqualStrings("other-model", runtime.currentModel().?.id);
     try std.testing.expectEqual(@as(usize, 1), app.deferred_commands.items.len);
+}
+
+test "picking an OpenCode model says a new session starts only when it changes, and is not kept as the next launch's model" {
+    var opencode_model = defaultModel();
+    opencode_model.id = "opencode/mimo-v2.6-flash-free";
+    opencode_model.api = tui_oap_execution.away_api;
+    opencode_model.provider = tui_oap_execution.away_api;
+    const runtime = try std.testing.allocator.create(session_runtime.SessionRuntime);
+    errdefer std.testing.allocator.destroy(runtime);
+    runtime.* = try session_runtime.SessionRuntime.init(std.testing.allocator, .{ .models = &[_]ai_types.Model{ defaultModel(), opencode_model }, .initial_model_id = defaultModel().id });
+    var app = App.initWithoutRuntime(std.testing.allocator);
+    defer app.deinit();
+    app.runtime = runtime;
+    app.state.picker_kind = .model;
+    app.state.menu_index = 1;
+
+    try app.applySelectedModel();
+    try app.applySelectedModel();
+    var told: usize = 0;
+    for (app.state.transcript.items) |entry| {
+        if (std.mem.indexOf(u8, entry.text.items, "so this is a new session") != null) told += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 1), told);
+    try std.testing.expectEqualStrings(opencode_model.id, runtime.currentModel().?.id);
+
+    var store = try tui_config.Store.initDefault(std.testing.allocator);
+    defer store.deinit();
+    var saved = try store.load();
+    defer saved.deinit(std.testing.allocator);
+    try std.testing.expect(!std.mem.eql(u8, saved.model, opencode_model.id));
 }
 
 test "OpenCode's models stay offered when the catalog refreshes without them" {
