@@ -302,6 +302,13 @@ pub fn builtinCodex(arena: std.mem.Allocator, environ: *const std.process.Enviro
     return .{ .name = "codex", .kind = "codex", .environment = environment };
 }
 
+pub fn builtinOpencode(arena: std.mem.Allocator, environ: *const std.process.Environ.Map) Error!AdapterEntry {
+    var diagnostic = Diagnostic{};
+    const reader = Reader{ .arena = arena, .diagnostic = &diagnostic };
+    const environment = try resolveEnvironment(reader, "the built-in opencode entry", &builtin_environment, environ, false);
+    return .{ .name = "opencode", .kind = "opencode", .environment = environment };
+}
+
 pub fn resolveExecutable(arena: std.mem.Allocator, io: std.Io, name: []const u8, search_path: []const u8) Error!?[]const u8 {
     if (name.len == 0) return null;
     if (std.mem.indexOfScalar(u8, name, '/') != null) return name;

@@ -49,6 +49,7 @@ const acp_adapter = @import("acp_adapter");
 const pi_adapter = @import("pi_adapter");
 const deepseek_adapter = @import("deepseek_adapter");
 const opencode_adapter = @import("opencode_adapter");
+const opencode_server = @import("opencode_server");
 const hermes_adapter = @import("hermes_adapter");
 const memory_adapter = @import("memory_adapter");
 const oapx_adapter = @import("oapx_adapter");
@@ -230,8 +231,11 @@ const HubRegistry = struct {
     claudes: std.ArrayList(*claude_adapter.Adapter) = .empty,
     codexes: std.ArrayList(*codex_adapter.Adapter) = .empty,
     hermeses: std.ArrayList(*hermes_adapter.Adapter) = .empty,
+    opencode_servers: std.ArrayList(*opencode_server.Server) = .empty,
 
     fn deinit(self: *HubRegistry) void {
+        for (self.opencode_servers.items) |server| server.deinit();
+        self.opencode_servers.deinit(self.allocator);
         for (self.claudes.items) |claude| claude.deinit();
         self.claudes.deinit(self.allocator);
         for (self.codexes.items) |codex| codex.deinit();
@@ -292,7 +296,10 @@ const HubRegistry = struct {
             return built.adapter();
         }
         if (std.mem.eql(u8, entry.kind, "opencode")) {
-            const config = opencodeBackendConfig(self.surface, arena, entry) catch |failure| return self.reported(failure);
+            try self.opencode_servers.ensureUnusedCapacity(self.allocator, 1);
+            var started: ?*opencode_server.Server = null;
+            const config = opencodeBackendConfig(self.allocator, self.surface, arena, entry, self.environ, &started) catch |failure| return self.reported(failure);
+            if (started) |server| self.opencode_servers.appendAssumeCapacity(server);
             const built = try arena.create(opencode_adapter.Adapter);
             built.* = opencode_adapter.Adapter.init(self.allocator, config);
             return built.adapter();
@@ -5019,6 +5026,7 @@ fn backendEntry(
         if (std.mem.eql(u8, name, "claude")) return adapter_config.builtinClaude(arena, environ);
         if (std.mem.eql(u8, name, "codex")) return adapter_config.builtinCodex(arena, environ);
         if (std.mem.eql(u8, name, "pi")) return adapter_config.builtinPi(arena, environ);
+        if (std.mem.eql(u8, name, "opencode")) return adapter_config.builtinOpencode(arena, environ);
         return .{ .name = name, .kind = name };
     };
     const bytes = compat.fs.readFileAlloc(arena, compat.fs.getCwd(), path, backend_config_read_limit) catch |err| {
@@ -5369,16 +5377,43 @@ fn deepseekBackendConfig(
 }
 
 fn opencodeBackendConfig(
+    allocator: std.mem.Allocator,
     surface: ConfigSurface,
     arena: std.mem.Allocator,
     entry: adapter_config.AdapterEntry,
+    environ: *const std.process.Environ.Map,
+    started: *?*opencode_server.Server,
 ) !opencode_adapter.Config {
-    _ = arena;
-    if (entry.endpoint.len == 0) {
-        try surface.refuse("{s} \"{s}\" is an OpenCode server and needs a --config entry naming its \"endpoint\"", .{ surface.noun, entry.name });
+    if (entry.endpoint.len > 0) {
+        if (entry.executable.len > 0) {
+            try surface.refuse("{s} \"{s}\" names an endpoint and an executable; an OpenCode endpoint is a server already running, so set one or the other", .{ surface.noun, entry.name });
+            return error.BackendRefused;
+        }
+        return .{ .endpoint = entry.endpoint, .agent = entry.agent, .username = opencode_server.username, .password = opencodePassword(entry.environment) };
+    }
+    const wanted = if (entry.executable.len > 0) entry.executable else "opencode";
+    const executable = try adapter_config.resolveExecutable(arena, backendIo(), wanted, environ.get("PATH") orelse "") orelse {
+        try surface.refuse("no executable \"{s}\" on PATH for {s} \"{s}\"; name one with \"executable\", or a running server with \"endpoint\", in a --config entry", .{ wanted, surface.noun, entry.name });
+        return error.BackendRefused;
+    };
+    const home = environ.get("HOME") orelse "";
+    if (home.len == 0) {
+        try surface.refuse("{s} \"{s}\" starts an OpenCode server, which logs under $HOME/.oapx, and HOME is not set", .{ surface.noun, entry.name });
         return error.BackendRefused;
     }
-    return .{ .endpoint = entry.endpoint, .agent = entry.agent, .username = "opencode", .password = opencodePassword(entry.environment) };
+    var why: []const u8 = "";
+    const server = opencode_server.Server.start(allocator, arena, .{
+        .executable = executable,
+        .environment = entry.environment,
+        .working_directory = entry.working_directory,
+        .log_path = try std.fs.path.join(arena, &.{ home, ".oapx", "opencode", try std.fmt.allocPrint(arena, "{s}.log", .{entry.name}) }),
+    }, &why) catch |err| {
+        if (err != error.ServerRefused) return err;
+        try surface.refuse("{s} \"{s}\": {s}", .{ surface.noun, entry.name, why });
+        return error.BackendRefused;
+    };
+    started.* = server;
+    return .{ .endpoint = server.endpoint, .agent = entry.agent, .username = opencode_server.username, .password = &server.password };
 }
 
 fn opencodePassword(environment: []const []const u8) []const u8 {
@@ -5465,6 +5500,8 @@ fn runBackendMode(
     var acp: acp_adapter.Adapter = undefined;
     var deepseek: deepseek_adapter.Adapter = undefined;
     var opencode: opencode_adapter.Adapter = undefined;
+    var opencode_started: ?*opencode_server.Server = null;
+    defer if (opencode_started) |server| server.deinit();
     var hermes: hermes_adapter.Adapter = undefined;
     var hermes_held = false;
     defer if (hermes_held) hermes.deinit();
@@ -5488,7 +5525,7 @@ fn runBackendMode(
         deepseek = deepseek_adapter.Adapter.init(allocator, try deepseekBackendConfig(surface, arena, entry, &environ));
         break :deepseek_served deepseek.adapter();
     } else if (std.mem.eql(u8, entry.kind, "opencode")) opencode_served: {
-        opencode = opencode_adapter.Adapter.init(allocator, try opencodeBackendConfig(surface, arena, entry));
+        opencode = opencode_adapter.Adapter.init(allocator, try opencodeBackendConfig(allocator, surface, arena, entry, &environ, &opencode_started));
         break :opencode_served opencode.adapter();
     } else if (std.mem.eql(u8, entry.kind, "hermes")) hermes_served: {
         hermes = hermes_adapter.Adapter.init(allocator, try hermesBackendConfig(surface, arena, entry, &environ));
@@ -6021,7 +6058,7 @@ test "the hub's registry reports a known adapter's own requirement once, not as 
     complained_on.close(std.testing.io);
     const complained = try tmp.dir.readFileAlloc(std.testing.io, "stderr", allocator, .limited(4096));
     defer allocator.free(complained);
-    try std.testing.expectEqualStrings("oapx serve: adapter \"a\" is an OpenCode server and needs a --config entry naming its \"endpoint\"\n", complained);
+    try std.testing.expectEqualStrings("oapx serve: no executable \"opencode\" on PATH for adapter \"a\"; name one with \"executable\", or a running server with \"endpoint\", in a --config entry\n", complained);
 }
 
 test "two entries of one type are two adapters, each with its own executable" {

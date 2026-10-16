@@ -465,6 +465,17 @@ pub fn build(b: *std.Build) void {
     opencode_client_mod.addImport("httpapi", opencode_httpapi_mod);
     const opencode_client_test = b.addTest(.{ .root_module = opencode_client_mod });
 
+    const opencode_server_mod = b.createModule(.{
+        .root_source_file = b.path("src/adapter/opencode/server.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    opencode_server_mod.addImport("compat", compat_mod);
+    opencode_server_mod.addImport("client", opencode_client_mod);
+    opencode_server_mod.addImport("httpapi", opencode_httpapi_mod);
+    opencode_server_mod.addImport("harness_pins", harness_pins_mod);
+    const opencode_server_test = b.addTest(.{ .root_module = opencode_server_mod });
+
     const opencode_corpus_mod = b.createModule(.{
         .root_source_file = b.path("src/adapter/opencode/corpus.zig"),
         .target = target,
@@ -2676,6 +2687,7 @@ pub fn build(b: *std.Build) void {
             .{ .name = "pi_adapter", .module = pi_adapter_mod },
             .{ .name = "deepseek_adapter", .module = deepseek_adapter_mod },
             .{ .name = "opencode_adapter", .module = opencode_adapter_mod },
+            .{ .name = "opencode_server", .module = opencode_server_mod },
             .{ .name = "hermes_adapter", .module = hermes_adapter_mod },
             .{ .name = "memory_adapter", .module = memory_adapter_mod },
             .{ .name = "oapx_adapter", .module = oapx_adapter_mod },
@@ -2978,6 +2990,8 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&b.addRunArtifact(opencode_adapter_test).step);
     test_unit_adapter_step.dependOn(&b.addRunArtifact(opencode_client_test).step);
     test_step.dependOn(&b.addRunArtifact(opencode_client_test).step);
+    test_unit_adapter_step.dependOn(&b.addRunArtifact(opencode_server_test).step);
+    test_step.dependOn(&b.addRunArtifact(opencode_server_test).step);
     test_unit_adapter_step.dependOn(&b.addRunArtifact(opencode_session_test).step);
     test_step.dependOn(&b.addRunArtifact(opencode_corpus_test).step);
     test_unit_adapter_step.dependOn(&b.addRunArtifact(opencode_corpus_test).step);

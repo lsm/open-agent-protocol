@@ -266,6 +266,7 @@ zig/src/adapter/deepseek/adapter.zig|            compat.random.fillSecureBytes(&
 zig/src/adapter/codex/bridge.zig|    compat.random.fillSecureBytes(&key_bytes);
 zig/src/adapter/codex/bridge.zig|    compat.random.fillSecureBytes(&mask);
 zig/src/adapter/opencode/adapter.zig|        compat.random.fillSecureBytes(&nonce);
+zig/src/adapter/opencode/server.zig|        compat.random.fillSecureBytes(&secret);
 zig/src/compat/random.zig|        const secure_value = secureIntRangeLessThan(usize, 62);
 zig/src/tools/shell.zig|        compat.random.fillSecureBytes(&bytes);
 zig/src/compat/random.zig|        const secure_value = secureIntRangeLessThan(usize, 62);
