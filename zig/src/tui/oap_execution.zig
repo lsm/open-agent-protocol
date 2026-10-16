@@ -830,9 +830,9 @@ pub const OapExecution = struct {
         if (std.mem.eql(u8, model.api, away_api)) {
             const away = self.away orelse return error.ModelNotFound;
             const served = try away.open(away.ctx, model);
-            return self.moveSession(if (self.home == null) served else null, false, null);
+            return self.moveSession(served, null);
         }
-        if (self.home != null) return self.moveSession(null, true, model);
+        if (self.home != null) return self.moveSession(null, model);
         var scratch = std.heap.ArenaAllocator.init(self.allocator);
         defer scratch.deinit();
         const a = scratch.allocator();
@@ -896,10 +896,15 @@ pub const OapExecution = struct {
     fn placeAway(self: *OapExecution, model: ai_types.Model) !void {
         const away = self.away orelse return error.ModelNotFound;
         const served = try away.open(away.ctx, model);
-        if (self.home != null) return;
         self.halt();
-        self.home = self.endpoint;
+        const replaced = self.endpoint.?;
         self.endpoint = adapter_endpoint.Endpoint.init(self.allocator, served, .{ .frame_limit = in_process_frame_limit });
+        if (self.home == null) {
+            self.home = replaced;
+        } else {
+            var gone = replaced;
+            gone.deinit();
+        }
     }
 
     fn placeHome(self: *OapExecution) void {
@@ -910,41 +915,39 @@ pub const OapExecution = struct {
         self.home = null;
     }
 
-    fn moveSession(self: *OapExecution, served: ?Served, going_home: bool, model: ?ai_types.Model) !void {
+    fn moveSession(self: *OapExecution, served: ?Served, model: ?ai_types.Model) !void {
         const sink = self.sink orelse return error.OapNotStarted;
         var settings = self.settings orelse return error.OapNotStarted;
         settings.model = model;
         self.halt();
         var kept = self.takeKept();
-        var left_endpoint: ?adapter_endpoint.Endpoint = null;
+        const was_home = self.home == null;
+        const left = self.endpoint.?;
         if (served) |adapter| {
-            self.home = self.endpoint;
+            if (was_home) self.home = left;
             self.endpoint = adapter_endpoint.Endpoint.init(self.allocator, adapter, .{ .frame_limit = in_process_frame_limit });
-        } else if (going_home) {
-            left_endpoint = self.endpoint;
+        } else {
             self.endpoint = self.home;
             self.home = null;
         }
         self.startSession(sink, settings) catch |err| {
             if (served != null) {
                 self.endpoint.?.deinit();
-                self.endpoint = self.home;
-                self.home = null;
-            } else if (going_home) {
+                if (was_home) self.home = null;
+            } else {
                 self.home = self.endpoint;
-                self.endpoint = left_endpoint;
             }
+            self.endpoint = left;
             self.restoreKept(kept);
             self.stopping.store(false, .release);
             self.thread = try std.Thread.spawn(.{}, run, .{self});
             return err;
         };
-        if (served != null) {
+        if (was_home) {
             _ = self.home.?.closeSession(kept.session_id);
-        } else if (left_endpoint) |*gone| {
-            gone.deinit();
         } else {
-            _ = self.endpoint.?.closeSession(kept.session_id);
+            var gone = left;
+            gone.deinit();
         }
         self.dropKept(&kept);
         self.has_history.store(false, .release);
@@ -3067,6 +3070,7 @@ test "a switch to a model the OAP session does not list is refused until a catal
 
 const AwayStub = struct {
     memory: @import("memory_adapter").Adapter,
+    second: ?*@import("memory_adapter").Adapter = null,
     opened: usize = 0,
     refuse: bool = false,
     refuse_sessions: bool = false,
@@ -3077,6 +3081,7 @@ const AwayStub = struct {
         if (self.refuse) return error.OpenCodeUnavailable;
         self.opened += 1;
         if (self.refuse_sessions) return .{ .ptr = self, .vtable = &.{ .probe = probe, .open = refuseSession } };
+        if (self.opened > 1) if (self.second) |next| return next.adapter();
         return self.memory.adapter();
     }
 
@@ -3145,6 +3150,40 @@ test "an OpenCode model moves the session onto OpenCode's endpoint, and a loop m
     defer seen.deinit();
     try drainTurn(&runtime, &seen);
     try testing.expectEqualStrings("over the wire", seen.final_text.items);
+}
+
+test "a second OpenCode model opens its session on the adapter opened for it, and the first one's endpoint is let go" {
+    var second = @import("memory_adapter").Adapter.init(testing.allocator);
+    defer second.deinit();
+    var away = AwayStub{ .memory = @import("memory_adapter").Adapter.init(testing.allocator), .second = &second };
+    defer away.memory.deinit();
+    var script = Script{};
+    const models = [_]ai_types.Model{scripted_model};
+    var other = away_model;
+    other.id = "opencode/big-pickle";
+    const app_models = [_]ai_types.Model{ scripted_model, away_model, other };
+    const execution = try OapExecution.create(testing.allocator, .{
+        .protocol = .{ .stream_fn = scriptedStream, .ctx = &script },
+        .models = &models,
+        .initial_model_id = scripted_model.id,
+    });
+    defer execution.destroy();
+    execution.setAway(.{ .ctx = &away, .open = AwayStub.open });
+    var runtime = try session_runtime.SessionRuntime.init(testing.allocator, .{
+        .models = &app_models,
+        .initial_model_id = scripted_model.id,
+        .remote = execution.remote(),
+    });
+    defer runtime.deinit();
+    try runtime.start();
+
+    try runtime.switchModelExact(away_model);
+    try testing.expectEqual(@as(*anyopaque, @ptrCast(&away.memory)), execution.endpoint.?.adapter.ptr);
+    try runtime.switchModelExact(other);
+    try testing.expectEqual(@as(usize, 2), away.opened);
+    try testing.expectEqual(@as(*anyopaque, @ptrCast(&second)), execution.endpoint.?.adapter.ptr);
+    try testing.expect(execution.home != null);
+    try testing.expectEqual(@as(usize, 1), execution.endpoint.?.entries.items.len);
 }
 
 test "a session opened on an OpenCode model opens on OpenCode's endpoint, not the loop's" {
