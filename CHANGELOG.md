@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+## [0.1.0-alpha.20] - 2026-10-16
+
+### Merged pull requests
+
+- **opencode: name the limit and its reset when a usage limit fails a run** ([#1104](https://github.com/lsm/open-agent-protocol/pull/1104)): when a provider's 429 body names a `*UsageLimitError`, the run failure now adds the limit's window and reset from the body, e.g. `Go usage limit exceeded; monthly limit, resets in 6 days`; the reset appears only when the body states it.
+- **opencode: start a tool OpenCode fails before calling it, instead of failing the run** ([#1105](https://github.com/lsm/open-agent-protocol/pull/1105)): a tool OpenCode fails before calling it (malformed or unfinished input) now surfaces as a requested, started and failed call with `arguments_json: null`, and the run continues instead of failing with `opencode_invalid_tool_lifecycle: tool end without active start`.
+
 ## [0.1.0-alpha.19] - 2026-10-15
 
 ### Merged pull requests
