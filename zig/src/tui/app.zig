@@ -1963,7 +1963,7 @@ pub const App = struct {
             try self.state.status.setModelWithContext(self.allocator, m.id, m.provider, m.context_window);
             self.state.telemetry.context_window = m.context_window;
         }
-        if (!away) self.persistCurrentModel();
+        self.persistCurrentModel();
         self.state.mode = .normal;
         const msg = try std.fmt.allocPrint(self.allocator, "model switched to {s} ({s})", .{ model.id, model.provider });
         defer self.allocator.free(msg);
@@ -3926,6 +3926,7 @@ pub const App = struct {
     }
 
     fn persistSelectedModel(self: *App, model: ai_types.Model) !void {
+        if (std.mem.eql(u8, model.api, tui_oap_execution.away_api)) return;
         var store = try tui_config.Store.initDefault(self.allocator);
         defer store.deinit();
         var cfg = try store.load();
