@@ -1996,6 +1996,24 @@ pub fn build(b: *std.Build) void {
     });
     const tui_oap_execution_test = b.addTest(.{ .root_module = tui_oap_execution_mod });
 
+    const tui_opencode_route_mod = b.createModule(.{
+        .root_source_file = b.path("src/tui/opencode_route.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "compat", .module = compat_mod },
+            .{ .name = "ai_types", .module = ai_types_mod },
+            .{ .name = "adapter_config", .module = adapter_config_mod },
+            .{ .name = "opencode_adapter", .module = opencode_adapter_mod },
+            .{ .name = "opencode_server", .module = opencode_server_mod },
+            .{ .name = "opencode_install", .module = opencode_install_mod },
+            .{ .name = "opencode_client", .module = opencode_client_mod },
+            .{ .name = "opencode_httpapi", .module = opencode_httpapi_mod },
+            .{ .name = "tui/oap_execution", .module = tui_oap_execution_mod },
+        },
+    });
+    const tui_opencode_route_test = b.addTest(.{ .root_module = tui_opencode_route_mod });
+
     const tui_session_store_mod = b.createModule(.{
         .root_source_file = b.path("src/tui/session_store.zig"),
         .target = target,
@@ -2105,6 +2123,7 @@ pub fn build(b: *std.Build) void {
         .link_libc = true,
         .imports = &.{
             .{ .name = "tui/oap_execution", .module = tui_oap_execution_mod },
+            .{ .name = "tui/opencode_route", .module = tui_opencode_route_mod },
             .{ .name = "compat", .module = compat_mod },
             .{ .name = "zigzag", .module = zigzag_mod },
             .{ .name = "provider_catalog", .module = provider_catalog_mod },
@@ -2826,6 +2845,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&isolatedHomeRun(b, oapx_adapter_test, "test/oapx_adapter_test").step);
     test_unit_adapter_step.dependOn(&isolatedHomeRun(b, oapx_adapter_test, "test-unit-adapter/oapx_adapter_test").step);
     test_step.dependOn(&isolatedHomeRun(b, tui_oap_execution_test, "test/tui_oap_execution_test").step);
+    test_step.dependOn(&isolatedHomeRun(b, tui_opencode_route_test, "test/tui_opencode_route_test").step);
     test_step.dependOn(&isolatedHomeRun(b, tui_hub_link_test, "test/tui_hub_link_test").step);
     test_step.dependOn(&b.addRunArtifact(deepseek_endpoint_test).step);
     test_unit_adapter_step.dependOn(&b.addRunArtifact(deepseek_endpoint_test).step);
@@ -3181,6 +3201,7 @@ pub fn build(b: *std.Build) void {
     test_unit_tui_step.dependOn(&isolatedHomeRun(b, tui_state_test, "test-unit-tui/tui_state_test").step);
     test_unit_tui_step.dependOn(&isolatedHomeRun(b, tui_auto_continue_test, "test-unit-tui/tui_auto_continue_test").step);
     test_unit_tui_step.dependOn(&isolatedHomeRun(b, tui_oap_execution_test, "test-unit-tui/tui_oap_execution_test").step);
+    test_unit_tui_step.dependOn(&isolatedHomeRun(b, tui_opencode_route_test, "test-unit-tui/tui_opencode_route_test").step);
     test_unit_tui_step.dependOn(&isolatedHomeRun(b, tui_hub_link_test, "test-unit-tui/tui_hub_link_test").step);
     test_unit_tui_step.dependOn(&isolatedHomeRun(b, tui_commands_test, "test-unit-tui/tui_commands_test").step);
     test_unit_tui_step.dependOn(&isolatedHomeRun(b, tui_login_test, "test-unit-tui/tui_login_test").step);

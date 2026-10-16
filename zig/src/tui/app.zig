@@ -14,6 +14,7 @@ const provider_bridge = @import("provider_protocol_bridge");
 const event_stream = @import("event_stream");
 const session_runtime = @import("session_runtime");
 const tui_oap_execution = @import("tui/oap_execution");
+const opencode_route = @import("tui/opencode_route");
 const tui_auto_continue = @import("tui_auto_continue");
 const tui_state = @import("tui_state");
 const tui_commands = @import("tui_commands");
@@ -141,6 +142,33 @@ const ModelFetch = struct {
 
     fn release(models: []ai_types.Model) void {
         model_catalog.deinitModels(fetch_allocator, models);
+    }
+};
+
+const OpenCodeFetch = struct {
+    thread: std.Thread,
+    route: *opencode_route.Route,
+    done: std.atomic.Value(bool) = .init(false),
+    result: anyerror![]ai_types.Model = error.ModelFetchPending,
+
+    fn start(allocator: std.mem.Allocator, route: *opencode_route.Route) !*OpenCodeFetch {
+        const fetch = try allocator.create(OpenCodeFetch);
+        errdefer allocator.destroy(fetch);
+        fetch.* = .{ .thread = undefined, .route = route };
+        fetch.thread = try std.Thread.spawn(.{}, work, .{ fetch, allocator });
+        return fetch;
+    }
+
+    fn work(self: *OpenCodeFetch, allocator: std.mem.Allocator) void {
+        self.result = self.route.models(allocator);
+        self.done.store(true, .release);
+    }
+
+    fn finish(self: *OpenCodeFetch, allocator: std.mem.Allocator) anyerror![]ai_types.Model {
+        self.thread.join();
+        const result = self.result;
+        allocator.destroy(self);
+        return result;
     }
 };
 
@@ -1055,6 +1083,9 @@ pub const App = struct {
     deferred_commands: std.ArrayList([]u8) = .empty,
     pending_compaction: ?[]u8 = null,
     pending_models: ?[]ai_types.Model = null,
+    opencode: ?*opencode_route.Route = null,
+    opencode_fetch: ?*OpenCodeFetch = null,
+    opencode_models: []ai_types.Model = &.{},
     model_fetch: ?*ModelFetch = null,
     model_refetch: bool = false,
     quarantine_events: bool = false,
@@ -1164,6 +1195,12 @@ pub const App = struct {
             model_catalog.deinitModels(self.allocator, models);
             self.pending_models = null;
         }
+        if (self.opencode_fetch) |fetch| {
+            if (fetch.finish(self.allocator)) |models| model_catalog.deinitModels(self.allocator, models) else |_| {}
+            self.opencode_fetch = null;
+        }
+        model_catalog.deinitModels(self.allocator, self.opencode_models);
+        self.opencode_models = &.{};
         if (self.login) |session| {
             session.deinit();
             self.login = null;
@@ -1908,11 +1945,17 @@ pub const App = struct {
             try self.state.appendTranscript(.system, msg);
             return;
         }
-        if (self.session) |*session| {
-            try session.switchModelExact(model);
-        } else {
-            try runtime.switchModelExact(model);
-        }
+        const moved = (if (self.session) |*session| session.switchModelExact(model) else runtime.switchModelExact(model)) catch |err| {
+            if (err != error.OpenCodeUnavailable) return err;
+            self.state.mode = .normal;
+            const why = if (self.opencode) |route| route.refused else "";
+            const msg = try std.fmt.allocPrint(self.allocator, "OpenCode cannot run {s}: {s}", .{ model.id, why });
+            defer self.allocator.free(msg);
+            try self.state.appendTranscript(.@"error", msg);
+            return;
+        };
+        _ = moved;
+        if (std.mem.eql(u8, model.api, tui_oap_execution.away_api)) try self.state.appendTranscript(.system, "OpenCode runs this model with its own loop and tools, so this is a new session; pick one of oapx's models to come back, on a new session too.");
         if (runtime.currentModel()) |m| {
             try self.state.status.setModelWithContext(self.allocator, m.id, m.provider, m.context_window);
             self.state.telemetry.context_window = m.context_window;
@@ -2354,8 +2397,37 @@ pub const App = struct {
         try self.reportModelRefresh(self.applyModels(models), "refreshing models failed");
     }
 
-    fn applyModels(self: *App, models: []const ai_types.Model) !bool {
+    pub fn useOpenCode(self: *App, route: *opencode_route.Route) !void {
+        self.opencode = route;
+        self.opencode_fetch = try OpenCodeFetch.start(self.allocator, route);
+    }
+
+    fn collectOpenCodeFetch(self: *App) !void {
+        const fetch = self.opencode_fetch orelse return;
+        if (!fetch.done.load(.acquire) or self.runtimeBusy()) return;
+        self.opencode_fetch = null;
+        const fetched = fetch.finish(self.allocator) catch |err| {
+            const why = if (self.opencode) |route| route.refused else "";
+            const msg = try std.fmt.allocPrint(self.allocator, "OpenCode's models are not offered: {s}", .{if (why.len > 0) why else @errorName(err)});
+            defer self.allocator.free(msg);
+            try self.state.appendTranscript(.system, msg);
+            return;
+        };
+        model_catalog.deinitModels(self.allocator, self.opencode_models);
+        self.opencode_models = fetched;
+        const runtime = self.runtime orelse return;
+        var own: std.ArrayList(ai_types.Model) = .empty;
+        defer own.deinit(self.allocator);
+        for (runtime.availableModels()) |model| {
+            if (!std.mem.eql(u8, model.api, tui_oap_execution.away_api)) try own.append(self.allocator, model);
+        }
+        _ = try self.applyModels(own.items);
+    }
+
+    fn applyModels(self: *App, offered: []const ai_types.Model) !bool {
         const runtime = self.runtime orelse return false;
+        const models = try std.mem.concat(self.allocator, ai_types.Model, &.{ offered, self.opencode_models });
+        defer self.allocator.free(models);
         const pending: ?[]u8 = if (runtime.pending_model_index) |idx| try std.fmt.allocPrint(self.allocator, "{s}/{s}", .{ runtime.models[idx].provider, runtime.models[idx].id }) else null;
         defer if (pending) |name| self.allocator.free(name);
         try runtime.replaceModels(models, runtime.currentModel());
@@ -3213,6 +3285,7 @@ pub const App = struct {
         }
         try self.collectModelFetch();
         try self.applyPendingModels();
+        try self.collectOpenCodeFetch();
         var resumed_run = false;
         if (completed_agent_end and self.state.queue.total() > 0) {
             try self.applyPendingModelsBeforeResume();
@@ -4280,6 +4353,7 @@ pub const RenderMode = enum {
 pub const TuiModel = struct {
     app: ?App = null,
     options: session_runtime.SessionRuntimeOptions = .{},
+    opencode: ?*opencode_route.Route = null,
     autocompact: tui_config.AutoCompact = .auto,
     verbosity: tui_config.Verbosity = .{},
     render_mode: RenderMode = .auto,
@@ -4318,6 +4392,7 @@ pub const TuiModel = struct {
             };
             app.appendWelcome() catch |err| app.recordError(@errorName(err)) catch {};
             app.warnOnUnreadableCustomProviders();
+            if (self.opencode) |route| app.useOpenCode(route) catch |err| app.recordError(@errorName(err)) catch {};
         }
         return .{ .every = 50 * std.time.ns_per_ms };
     }
@@ -5721,6 +5796,8 @@ pub fn runWith(allocator: std.mem.Allocator, io: std.Io, context_window: ?u32, e
     }
     var history_store: ?session_store.Store = session_store.Store.initDefault(allocator) catch null;
     defer if (history_store) |*store| store.deinit();
+    const route = if (execution_mode == .in_process and fixture == null) opencode_route.Route.discover(allocator, &environ_map) catch null else null;
+    defer if (route) |held| held.destroy();
     const execution = switch (execution_mode) {
         .attach => |target| try tui_oap_execution.OapExecution.attach(allocator, target.url, target.adapter),
         .in_process => try tui_oap_execution.OapExecution.create(allocator, options),
@@ -5730,13 +5807,14 @@ pub fn runWith(allocator: std.mem.Allocator, io: std.Io, context_window: ?u32, e
     if (history_store) |*store| execution.setHistory(.{ .ctx = store, .load = loadSavedHistory });
     if (history_store) |*store| execution.setTranscripts(.{ .ctx = store, .save = saveSessionTranscript });
     options.remote = execution.remote();
+    if (route) |held| execution.setAway(held.away());
     if (execution_mode != .in_process) {
         options.generate_titles = false;
         options.auto_worktree = false;
     }
 
     var program = zz.Program(TuiModel).initWithOptions(allocator, io, &environ_map, tuiProgramOptions());
-    program.model = .{ .options = options, .autocompact = production.mode_settings.autocompact, .verbosity = production.mode_settings.verbosity };
+    program.model = .{ .options = options, .autocompact = production.mode_settings.autocompact, .verbosity = production.mode_settings.verbosity, .opencode = route };
     defer program.deinit();
     try program.run();
 }
@@ -5969,6 +6047,27 @@ test "a pending model switch applies once idle even with follow-ups queued, whil
     try app.runDeferredAfterRun();
     try std.testing.expectEqualStrings("other-model", runtime.currentModel().?.id);
     try std.testing.expectEqual(@as(usize, 1), app.deferred_commands.items.len);
+}
+
+test "OpenCode's models stay offered when the catalog refreshes without them" {
+    var opencode_model = defaultModel();
+    opencode_model.id = "opencode/mimo-v2.6-flash-free";
+    opencode_model.api = tui_oap_execution.away_api;
+    opencode_model.provider = tui_oap_execution.away_api;
+    var third = defaultModel();
+    third.id = "third-model";
+    const runtime = try std.testing.allocator.create(session_runtime.SessionRuntime);
+    errdefer std.testing.allocator.destroy(runtime);
+    runtime.* = try session_runtime.SessionRuntime.init(std.testing.allocator, .{ .models = &[_]ai_types.Model{defaultModel()}, .initial_model_id = defaultModel().id });
+    var app = App.initWithoutRuntime(std.testing.allocator);
+    defer app.deinit();
+    app.runtime = runtime;
+    app.opencode_models = try std.testing.allocator.alloc(ai_types.Model, 1);
+    app.opencode_models[0] = try ai_types.cloneModel(std.testing.allocator, opencode_model);
+
+    _ = try app.applyModels(&[_]ai_types.Model{ defaultModel(), third });
+    try std.testing.expectEqual(@as(usize, 3), runtime.availableModels().len);
+    try std.testing.expectEqualStrings("opencode/mimo-v2.6-flash-free", runtime.availableModels()[2].id);
 }
 
 test "a refreshed model list keeps a pending switch it still lists and reports one it drops" {
