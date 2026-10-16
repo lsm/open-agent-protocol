@@ -850,6 +850,7 @@ pub const OapExecution = struct {
         session_models: std.ArrayList([]u8),
         tool_labels: std.ArrayList(session_runtime.ToolLabel),
         live: [4]bool,
+        history: bool,
     };
 
     fn takeKept(self: *OapExecution) Kept {
@@ -859,6 +860,7 @@ pub const OapExecution = struct {
             .session_models = self.session_models,
             .tool_labels = self.tool_labels,
             .live = .{ self.live_reasoning, self.live_compaction, self.live_policy, self.live_steer },
+            .history = self.has_history.load(.acquire),
         };
         self.session_id = &.{};
         self.revision = &.{};
@@ -891,6 +893,7 @@ pub const OapExecution = struct {
         self.session_models = kept.session_models;
         self.tool_labels = kept.tool_labels;
         self.live_reasoning, self.live_compaction, self.live_policy, self.live_steer = kept.live;
+        self.has_history.store(kept.history, .release);
     }
 
     fn placeAway(self: *OapExecution, model: ai_types.Model) !void {
@@ -3074,6 +3077,9 @@ const AwayStub = struct {
     opened: usize = 0,
     refuse: bool = false,
     refuse_sessions: bool = false,
+    refuse_models: bool = false,
+
+    var unlisted: adapter_contract.Session.VTable = undefined;
 
     fn open(ctx: *anyopaque, model: ai_types.Model) anyerror!Served {
         const self: *AwayStub = @ptrCast(@alignCast(ctx));
@@ -3081,6 +3087,7 @@ const AwayStub = struct {
         if (self.refuse) return error.OpenCodeUnavailable;
         self.opened += 1;
         if (self.refuse_sessions) return .{ .ptr = self, .vtable = &.{ .probe = probe, .open = refuseSession } };
+        if (self.refuse_models) return .{ .ptr = self, .vtable = &.{ .probe = probe, .open = openUnlisted } };
         if (self.opened > 1) if (self.second) |next| return next.adapter();
         return self.memory.adapter();
     }
@@ -3089,6 +3096,16 @@ const AwayStub = struct {
         const self: *AwayStub = @ptrCast(@alignCast(ptr));
         const served = self.memory.adapter();
         return served.vtable.probe(served.ptr, refusal);
+    }
+
+    fn openUnlisted(ptr: *anyopaque, arena: std.mem.Allocator, request: adapter_contract.OpenRequest, refusal: *adapter_contract.Refusal) adapter_contract.Failure!adapter_contract.Session {
+        const self: *AwayStub = @ptrCast(@alignCast(ptr));
+        const served = self.memory.adapter();
+        var opened = try served.vtable.open(served.ptr, arena, request, refusal);
+        unlisted = opened.vtable.*;
+        unlisted.models = null;
+        opened.vtable = &unlisted;
+        return opened;
     }
 
     fn refuseSession(ptr: *anyopaque, arena: std.mem.Allocator, request: adapter_contract.OpenRequest, refusal: *adapter_contract.Refusal) adapter_contract.Failure!adapter_contract.Session {
@@ -3215,15 +3232,26 @@ test "a session opened on an OpenCode model opens on OpenCode's endpoint, not th
 }
 
 test "an OpenCode model that cannot be reached leaves the session where it was" {
-    try expectUnmoved(.{ .memory = @import("memory_adapter").Adapter.init(testing.allocator), .refuse = true }, error.OpenCodeUnavailable);
+    try expectUnmoved(.{ .refuse = true }, error.OpenCodeUnavailable);
 }
 
 test "an OpenCode endpoint that refuses the session hands the loop's own session back, still running" {
-    try expectUnmoved(.{ .memory = @import("memory_adapter").Adapter.init(testing.allocator), .refuse_sessions = true }, error.OapRequestRefused);
+    try expectUnmoved(.{ .refuse_sessions = true }, error.OapRequestRefused);
 }
 
-fn expectUnmoved(stub: AwayStub, expected: anyerror) !void {
-    var away = stub;
+test "an OpenCode session that opens but cannot list its models hands back the loop's session, history and all" {
+    try expectUnmoved(.{ .refuse_models = true }, error.OapRequestRefused);
+}
+
+const Refusing = struct { refuse: bool = false, refuse_sessions: bool = false, refuse_models: bool = false };
+
+fn expectUnmoved(refusing: Refusing, expected: anyerror) !void {
+    try expectUnmovedWith(refusing, expected, false);
+    try expectUnmovedWith(refusing, expected, true);
+}
+
+fn expectUnmovedWith(refusing: Refusing, expected: anyerror, history: bool) !void {
+    var away = AwayStub{ .memory = @import("memory_adapter").Adapter.init(testing.allocator), .refuse = refusing.refuse, .refuse_sessions = refusing.refuse_sessions, .refuse_models = refusing.refuse_models };
     defer away.memory.deinit();
     var script = Script{};
     const models = [_]ai_types.Model{scripted_model};
@@ -3245,8 +3273,10 @@ fn expectUnmoved(stub: AwayStub, expected: anyerror) !void {
 
     const first = try testing.allocator.dupe(u8, execution.session_id);
     defer testing.allocator.free(first);
+    execution.has_history.store(history, .release);
 
     try testing.expectError(expected, runtime.switchModelExact(away_model));
+    try testing.expectEqual(history, execution.has_history.load(.acquire));
     try testing.expect(execution.home == null);
     try testing.expect(runtime.recordsFromEndpoint());
     try testing.expectEqualStrings(first, execution.session_id);
