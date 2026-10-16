@@ -1192,6 +1192,7 @@ fn printUsage(file: std.Io.File) !void {
         \\  oapx tui [--context-window <tokens>]          The terminal UI, over OAP through the in-process endpoint; what oapx alone starts
         \\                                                   --context-window takes a whole number, optionally with k or m
         \\  oapx tui --attach <url> [--adapter <name>]    The terminal UI over a running oapx serve's HTTP wire; adapter defaults to oapx
+        \\  oapx tui --backend opencode [--config <path>]  The terminal UI over an OpenCode server oapx starts, or the entry's endpoint
         \\  oapx run [--agent] [--storage] [--model <id>] "<prompt>"
         \\  oapx serve agent [--stdio] [--model <model-ref>]
         \\  oapx serve agent [--stdio] --backend <name> [--config <path>]
@@ -1264,6 +1265,8 @@ const TuiArgs = struct {
     attach: ?[]const u8 = null,
     adapter: []const u8 = "oapx",
     adapter_named: bool = false,
+    backend: ?[]const u8 = null,
+    config: ?[]const u8 = null,
 };
 
 fn parseTuiArgs(args: []const []const u8) TuiArgError!TuiArgs {
@@ -1271,11 +1274,15 @@ fn parseTuiArgs(args: []const []const u8) TuiArgError!TuiArgs {
     var index: usize = 0;
     while (index < args.len) : (index += 1) {
         const arg = args[index];
-        if (std.mem.eql(u8, arg, "--attach") or std.mem.eql(u8, arg, "--adapter")) {
+        if (std.mem.eql(u8, arg, "--attach") or std.mem.eql(u8, arg, "--adapter") or std.mem.eql(u8, arg, "--backend") or std.mem.eql(u8, arg, "--config")) {
             if (index + 1 >= args.len) return error.UnknownOption;
             index += 1;
             if (std.mem.eql(u8, arg, "--attach")) {
                 parsed.attach = args[index];
+            } else if (std.mem.eql(u8, arg, "--backend")) {
+                parsed.backend = args[index];
+            } else if (std.mem.eql(u8, arg, "--config")) {
+                parsed.config = args[index];
             } else {
                 parsed.adapter = args[index];
                 parsed.adapter_named = true;
@@ -1305,8 +1312,39 @@ fn runTuiOverOap(allocator: std.mem.Allocator, io: std.Io, args: []const []const
         try printUsage(stderr);
         return error.InvalidArgument;
     }
+    if (parsed.config != null and parsed.backend == null) {
+        try compat.stdio.writeAll(stderr, "--config names the registry --backend reads its entry from, so it needs --backend\n\n");
+        try printUsage(stderr);
+        return error.InvalidArgument;
+    }
+    if (parsed.backend) |name| {
+        if (parsed.attach != null) {
+            try compat.stdio.writeAll(stderr, "--attach and --backend each choose where the session runs; name one\n\n");
+            try printUsage(stderr);
+            return error.InvalidArgument;
+        }
+        return runTuiOverBackend(allocator, io, parsed, name, stderr);
+    }
     const mode: tui_app.Execution = if (parsed.attach) |url| .{ .attach = .{ .url = url, .adapter = parsed.adapter } } else .in_process;
     try tui_app.runWith(allocator, io, parsed.context_window, mode);
+}
+
+fn runTuiOverBackend(allocator: std.mem.Allocator, io: std.Io, parsed: TuiArgs, name: []const u8, stderr: std.Io.File) !void {
+    var arena_state = std.heap.ArenaAllocator.init(allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    var environ = try compat.createEnvMap(arena);
+    var sources: []const adapter_config.ToolSource = &.{};
+    const surface = withSurface(tui_config_surface, arena, stderr);
+    const entry = try backendEntry(surface, arena, name, parsed.config, &environ, &sources);
+    if (!std.mem.eql(u8, entry.kind, "opencode")) {
+        try surface.refuse("{s} \"{s}\" is of type \"{s}\"; the terminal UI runs an opencode backend, and oapx serve agent --backend serves the others", .{ surface.noun, entry.name, entry.kind });
+        return error.BackendRefused;
+    }
+    var started: ?*opencode_server.Server = null;
+    defer if (started) |server| server.deinit();
+    var served = opencode_adapter.Adapter.init(allocator, try opencodeBackendConfig(allocator, surface, arena, entry, &environ, &started));
+    try tui_app.runWith(allocator, io, parsed.context_window, .{ .served = served.adapter() });
 }
 
 test "the tui takes a context window and refuses anything else" {
@@ -1323,6 +1361,14 @@ test "the tui takes a context window and refuses anything else" {
     try std.testing.expectError(error.ContextWindowNotATokenCount, parseTuiArgs(&.{ "--context-window", "loads" }));
     try std.testing.expectError(error.ContextWindowNotATokenCount, parseTuiArgs(&.{ "--context-window", "0" }));
     try std.testing.expectError(error.UnknownOption, parseTuiArgs(&.{ "--model", "gpt-5-codex" }));
+}
+
+test "the tui takes a backend and the registry its entry is read from" {
+    const served = try parseTuiArgs(&.{ "--backend", "opencode", "--config", "oap-serve.json" });
+    try std.testing.expectEqualStrings("opencode", served.backend.?);
+    try std.testing.expectEqualStrings("oap-serve.json", served.config.?);
+    try std.testing.expect(served.attach == null);
+    try std.testing.expectError(error.UnknownOption, parseTuiArgs(&.{"--backend"}));
 }
 
 const DEFAULT_PRINT_MODEL_ID = "kimi-k2.7-code";
@@ -2044,6 +2090,7 @@ pub fn main(init: std.process.Init) !void {
     if (std.mem.eql(u8, args[1], "tui")) {
         runTuiOverOap(allocator, init.io, args[2..], stderr) catch |err| switch (err) {
             error.InvalidArgument => return error.InvalidArgument,
+            error.BackendRefused => std.process.exit(1),
             else => return err,
         };
         return;
@@ -5009,6 +5056,7 @@ const ConfigSurface = struct {
 
 const endpoint_config_surface = ConfigSurface{ .label = "oapx serve agent", .noun = "backend" };
 const hub_config_surface = ConfigSurface{ .label = "oapx serve", .noun = "adapter" };
+const tui_config_surface = ConfigSurface{ .label = "oapx tui", .noun = "backend" };
 
 fn withSurface(base: ConfigSurface, arena: std.mem.Allocator, stderr: std.Io.File) ConfigSurface {
     return .{ .label = base.label, .noun = base.noun, .stderr = stderr, .arena = arena };

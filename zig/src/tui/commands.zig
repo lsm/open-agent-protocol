@@ -5,9 +5,9 @@ const session_runtime = @import("session_runtime");
 const tui_state = @import("tui_state");
 const tui_oap_execution = @import("tui/oap_execution");
 
-pub const over_oap_autocompact_refusal = "this session's endpoint does not take a compaction policy over OAP, so /autocompact does not reach it; run oapx without --attach to change it.";
+pub const over_oap_autocompact_refusal = "this session's endpoint does not take a compaction policy over OAP, so /autocompact does not reach it; run oapx without --attach or --backend to change it.";
 pub const between_runs_refusal = "the thinking level changes between runs over OAP; set it again once this run ends.";
-pub const over_oap_setting_refusal = "this session's endpoint fixes this setting when the session opens and cannot change it mid-session over OAP; run oapx without --attach to change it.";
+pub const over_oap_setting_refusal = "this session's endpoint fixes this setting when the session opens and cannot change it mid-session over OAP; run oapx without --attach or --backend to change it.";
 
 pub const CommandKind = enum {
     help,

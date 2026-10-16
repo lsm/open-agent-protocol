@@ -1976,6 +1976,7 @@ pub fn build(b: *std.Build) void {
             .{ .name = "session_runtime", .module = session_runtime_mod },
             .{ .name = "session_events", .module = session_events_mod },
             .{ .name = "adapter_endpoint", .module = adapter_endpoint_mod },
+            .{ .name = "adapter_contract", .module = adapter_contract_mod },
             .{ .name = "oapx_adapter", .module = oapx_adapter_mod },
             .{ .name = "hub_link", .module = tui_hub_link_mod },
             .{ .name = "owned_slice", .module = owned_slice_mod },
