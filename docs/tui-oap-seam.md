@@ -80,7 +80,11 @@ leaves the session on the hub's default with a warning. `oapx tui --backend open
 runs the same execution in process over the OpenCode adapter instead of `oapx`'s own, on
 a server oapx starts or an entry's `endpoint`: the session keeps OpenCode's own model,
 since the TUI asks only its own loop to switch to a catalog model, and a text-only
-message goes out as a string, the one content shape every adapter takes. The map that follows predates
+message goes out as a string, the one content shape every adapter takes. An in-process
+execution given an OpenCode route moves there when the user switches to one of OpenCode's
+models (a model whose `api` is `opencode-server`): it opens a new session on OpenCode's
+endpoint, created on that model, closes the loop's, and switching back to a loop model
+opens a new loop session the same way. A move that fails keeps the session it left. The map that follows predates
 this and still describes the server path `oapx serve agent` without `--backend` uses.
 
 Every claim here was read off `origin/main` at `cbfa3b96d6`. The endpoint's own
