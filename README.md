@@ -65,11 +65,15 @@ harness-default tool posture, so every gated tool call still reaches the host
 as a `user.input` gate. `--config <path>` takes the entry of that name from a
 registry shaped like [`examples/oap-serve.json`](examples/oap-serve.json):
 unknown members are refused and `environment` is an explicit allowlist.
-`--backend opencode` with no `endpoint` starts its own `opencode serve` (from
-`PATH`, or the entry's `executable`) on a loopback port under a fresh password,
+`--backend opencode` with no `endpoint` starts its own `opencode serve` (the
+entry's `executable`, else the one `oapx opencode install` put under
+`~/.oapx/opencode/<version>`, else `opencode` from `PATH`) on a loopback port under a fresh password,
 logs it to `~/.oapx/opencode/<entry>.log`, refuses a server whose `/api/info`
 reports a version the catalog does not admit, and stops it on exit; an entry
-naming an `endpoint` attaches to a server already running instead.
+naming an `endpoint` attaches to a server already running instead. `oapx opencode
+install` downloads the OpenCode build the catalog pins for this platform from
+`https://opencode.ai/files/bin/<version>/`, refuses an archive or binary whose
+sha256 is not the pinned one, and unpacks it under `~/.oapx/opencode/<version>`.
 `--backend oapx` serves `oapx`'s own agent loop as the terminal UI builds it —
 the same model catalog, workspace tools and permission engine —
 through the adapter in `zig/src/adapter/oapx/`, so a session gets every

@@ -145,7 +145,7 @@ pub const Server = struct {
                 return error.ServerRefused;
             };
             if (!admitted(info.version)) {
-                why.* = try std.fmt.allocPrint(arena, "{s} is OpenCode {s}, which oapx has not been tested with; it runs {s}", .{ launch.executable, info.version, harness_pins.opencode_admits[0] });
+                why.* = try std.fmt.allocPrint(arena, "{s} is OpenCode {s}, which oapx has not been tested with; it runs {s}, which oapx opencode install fetches", .{ launch.executable, info.version, harness_pins.opencode_admits[0] });
                 return error.ServerRefused;
             }
             return;
@@ -258,7 +258,7 @@ test "a server of a version oapx has not been tested with is refused, naming bot
     const launch = try launchIn(&tmp, arena, "#!/bin/sh\nexec sleep 30\n", fake.port);
     var why: []const u8 = "";
     try testing.expectError(error.ServerRefused, Server.start(testing.allocator, arena, launch, &why));
-    try testing.expectEqualStrings(try std.fmt.allocPrint(arena, "{s} is OpenCode 0.0.1, which oapx has not been tested with; it runs {s}", .{ launch.executable, harness_pins.opencode_admits[0] }), why);
+    try testing.expectEqualStrings(try std.fmt.allocPrint(arena, "{s} is OpenCode 0.0.1, which oapx has not been tested with; it runs {s}, which oapx opencode install fetches", .{ launch.executable, harness_pins.opencode_admits[0] }), why);
 }
 
 test "a server that exits before it answers is refused, naming its status and the log it wrote" {
