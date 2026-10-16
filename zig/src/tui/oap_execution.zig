@@ -979,14 +979,19 @@ pub const OapExecution = struct {
     fn setCatalog(ctx: *anyopaque, models: []const ai_types.Model) anyerror!void {
         const self = cast(ctx);
         if (self.ownLoop() == null) return;
-        const staged = try session_runtime.cloneModels(self.allocator, models);
+        var own: std.ArrayList(ai_types.Model) = .empty;
+        defer own.deinit(self.allocator);
+        for (models) |model| {
+            if (!std.mem.eql(u8, model.api, away_api)) try own.append(self.allocator, model);
+        }
+        const staged = try session_runtime.cloneModels(self.allocator, own.items);
         errdefer session_runtime.deinitModels(self.allocator, staged);
         var refs: std.ArrayList([]u8) = .empty;
         errdefer {
             for (refs.items) |ref| self.allocator.free(ref);
             refs.deinit(self.allocator);
         }
-        for (models) |model| {
+        for (own.items) |model| {
             const ref = modelRef(self.allocator, model) catch |err| switch (err) {
                 error.OutOfMemory => return error.OutOfMemory,
                 else => continue,

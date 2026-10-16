@@ -84,7 +84,12 @@ message goes out as a string, the one content shape every adapter takes. An in-p
 execution given an OpenCode route moves there when the user switches to one of OpenCode's
 models (a model whose `api` is `opencode-server`): it opens a new session on OpenCode's
 endpoint, created on that model, closes the loop's, and switching back to a loop model
-opens a new loop session the same way. A move that fails keeps the session it left. The map that follows predates
+opens a new loop session the same way. A move that fails keeps the session it left.
+`oapx` alone gives the execution that route whenever an `opencode` on `PATH` is a
+version the catalog admits: it starts that server in the background, lists the models
+its `/api/model` reports (reading only their ids, names, limits and input kinds) in
+`/model` under the provider `opencode-server`, and keeps them there across catalog
+refreshes; a server that is refused is named once in the transcript instead. The map that follows predates
 this and still describes the server path `oapx serve agent` without `--backend` uses.
 
 Every claim here was read off `origin/main` at `cbfa3b96d6`. The endpoint's own

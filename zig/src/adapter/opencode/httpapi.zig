@@ -330,6 +330,10 @@ pub fn replyPermissionResult(arena: std.mem.Allocator, response: Response, sessi
     return refusal(arena, response, try sessionPath(arena, session, leaf), limit);
 }
 
+pub fn models(arena: std.mem.Allocator, endpoint: Endpoint) std.mem.Allocator.Error!Request {
+    return build(arena, endpoint, "GET", "/api/model", "", "application/json", null);
+}
+
 pub fn serverInfo(arena: std.mem.Allocator, endpoint: Endpoint) std.mem.Allocator.Error!Request {
     return build(arena, endpoint, "GET", "/api/info", "", "application/json", null);
 }
