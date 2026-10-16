@@ -135,6 +135,10 @@ pub const Server = struct {
                 self.io().sleep(.fromMilliseconds(100), .awake) catch {};
                 continue;
             };
+            if (response.status == 503) {
+                self.io().sleep(.fromMilliseconds(100), .awake) catch {};
+                continue;
+            }
             if (response.status != 200) {
                 why.* = try std.fmt.allocPrint(arena, "{s} serve answered /api/info with status {d}; its log is {s}", .{ launch.executable, response.status, launch.log_path });
                 return error.ServerRefused;
@@ -178,6 +182,7 @@ const FakeInfo = struct {
     listener: compat.net.Server = undefined,
     port: u16 = 0,
     body: []const u8,
+    unavailable: usize = 0,
     thread: ?std.Thread = null,
     stop: std.atomic.Value(bool) = .init(false),
     authorized: std.atomic.Value(bool) = .init(false),
@@ -204,6 +209,11 @@ const FakeInfo = struct {
             var request: [4096]u8 = undefined;
             const read = stream.readSome(&request) catch continue;
             if (std.mem.indexOf(u8, request[0..read], "Authorization: Basic ") != null) self.authorized.store(true, .release);
+            if (self.unavailable > 0) {
+                self.unavailable -= 1;
+                stream.writeAll("HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\nConnection: close\r\n\r\n") catch {};
+                continue;
+            }
             var head: [128]u8 = undefined;
             const status = std.fmt.bufPrint(&head, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {d}\r\nConnection: close\r\n\r\n", .{self.body.len}) catch continue;
             stream.writeAll(status) catch continue;
@@ -243,6 +253,23 @@ test "a server that answers with a version oapx admits is ready at its endpoint,
     try testing.expectEqualStrings(try std.fmt.allocPrint(arena, "http://127.0.0.1:{d}", .{fake.port}), server.endpoint);
     try testing.expect(fake.authorized.load(.acquire));
     try testing.expect(!server.gone.load(.acquire));
+}
+
+test "a server still starting, which answers 503, is waited for rather than refused" {
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    var fake = FakeInfo{ .body = try std.fmt.allocPrint(arena, "{{\"version\":\"{s}\"}}", .{harness_pins.opencode_admits[0]}), .unavailable = 3 };
+    try fake.start();
+    defer fake.finish();
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const launch = try launchIn(&tmp, arena, "#!/bin/sh\nexec sleep 30\n", fake.port);
+    var why: []const u8 = "";
+    const server = try Server.start(testing.allocator, arena, launch, &why);
+    defer server.deinit();
+    try testing.expectEqual(@as(usize, 0), fake.unavailable);
 }
 
 test "a server of a version oapx has not been tested with is refused, naming both versions" {
