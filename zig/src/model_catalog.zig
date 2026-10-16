@@ -1025,6 +1025,7 @@ fn appendCatalogTargetModels(
                 }
             }
             for (models) |model| {
+                if (servedOnlyInsideOpenCode(target.id, model.id)) continue;
                 var shaped = model;
                 if (target.allowlist.len > 0) {
                     const spec = allowlistSpec(target.allowlist, model.id) orelse continue;
@@ -1421,6 +1422,11 @@ fn forgetRefusal(allocator: std.mem.Allocator, name: []const u8) void {
     const path = makaiCatalogPath(allocator, name) catch return;
     defer allocator.free(path);
     compat.fs.removeFile(path);
+}
+
+fn servedOnlyInsideOpenCode(row: []const u8, model: []const u8) bool {
+    const opencode = std.mem.eql(u8, row, "opencode-zen") or std.mem.eql(u8, row, "opencode-go");
+    return opencode and std.mem.endsWith(u8, model, "-free");
 }
 
 fn discoverCatalogModels(
@@ -6001,6 +6007,19 @@ test "an OpenCode Go model its listing gives no limits takes models.dev's window
     try std.testing.expect(!models[1].reasoning);
     try std.testing.expectEqual(catalog_context_window, models[2].context_window);
     try std.testing.expectEqual(catalog_max_output_tokens, models[2].max_tokens);
+}
+
+test "OpenCode's free models, which its gateway serves only to the OpenCode client, are not offered on its key rows" {
+    for ([_][]const u8{ "opencode-zen", "opencode-go" }) |row| {
+        const models = try loadOneRow(row, "OPENCODE_API_KEY", &.{ "mimo-v2.6-flash-free", "deepseek-v4-flash", "free-model" });
+        defer deinitModels(std.testing.allocator, models);
+        try std.testing.expectEqual(@as(usize, 2), models.len);
+        try std.testing.expectEqualStrings("deepseek-v4-flash", models[0].id);
+        try std.testing.expectEqualStrings("free-model", models[1].id);
+    }
+    const elsewhere = try loadOneRow("openrouter", "OPENROUTER_API_KEY", &.{"some-model-free"});
+    defer deinitModels(std.testing.allocator, elsewhere);
+    try std.testing.expectEqual(@as(usize, 1), elsewhere.len);
 }
 
 test "an OpenCode Go model keeps the generic defaults when models.dev cannot be read" {
