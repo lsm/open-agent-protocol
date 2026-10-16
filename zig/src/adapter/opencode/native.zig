@@ -175,7 +175,7 @@ pub const SessionInfo = struct {
     title: []const u8 = "",
 };
 
-pub const ErrorBlock = struct { kind: []const u8 = "", message: []const u8 = "" };
+pub const ErrorBlock = struct { kind: []const u8 = "", message: []const u8 = "", body: []const u8 = "" };
 
 pub const InboxData = struct { inbox_id: []const u8 = "", item_type: []const u8 = "" };
 
@@ -873,7 +873,7 @@ fn decodeData(arena: std.mem.Allocator, event: Event, fields: []const Field, dia
 }
 
 fn errorOf(document: std.json.Value) ErrorBlock {
-    return .{ .kind = textAt(document, &.{ "error", "type" }), .message = textAt(document, &.{ "error", "message" }) };
+    return .{ .kind = textAt(document, &.{ "error", "type" }), .message = textAt(document, &.{ "error", "message" }), .body = textAt(document, &.{ "error", "response", "body" }) };
 }
 
 pub fn decodeInboxEnqueued(arena: std.mem.Allocator, event: Event, diag: *Diagnostic) Error!InboxData {
