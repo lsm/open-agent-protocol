@@ -13,6 +13,7 @@ pub const Artifact = struct {
     sha256: []const u8,
     bytes: u64,
     binary_sha256: []const u8,
+    binary_bytes: u64,
     archive: Archive,
 };
 
@@ -35,6 +36,7 @@ pub const artifact: ?Artifact = pinned: {
         .sha256 = @field(harness_pins, stem ++ "_archive_sha256"),
         .bytes = @field(harness_pins, stem ++ "_archive_bytes"),
         .binary_sha256 = @field(harness_pins, stem ++ "_binary_sha256"),
+        .binary_bytes = @field(harness_pins, stem ++ "_binary_bytes"),
         .archive = if (std.mem.endsWith(u8, name, ".zip")) .zip else .tar_gz,
     };
 };
@@ -87,7 +89,11 @@ pub fn place(arena: std.mem.Allocator, home: []const u8, pinned: Artifact, body:
     var dir = try cwd.openDir(io, staging, .{});
     defer dir.close(io);
     try unpack(arena, dir, pinned.archive, body);
-    const binary = try dir.readFileAlloc(io, "opencode", arena, .limited(@intCast(pinned.bytes * 4)));
+    const binary = dir.readFileAlloc(io, "opencode", arena, .limited(@intCast(pinned.binary_bytes + 1))) catch |err| {
+        if (err == error.OutOfMemory) return error.OutOfMemory;
+        why.* = try std.fmt.allocPrint(arena, "{s} holds no opencode the catalog pins: {s}", .{ pinned.name, @errorName(err) });
+        return error.InstallRefused;
+    };
     if (!std.mem.eql(u8, &hex(binary), pinned.binary_sha256)) {
         why.* = try std.fmt.allocPrint(arena, "the opencode in {s} is not the binary the catalog pins (sha256 {s})", .{ pinned.name, pinned.binary_sha256 });
         return error.InstallRefused;
@@ -144,7 +150,7 @@ test "a pinned archive is unpacked into the version's own directory as an execut
     defer tmp.cleanup();
     const home = try tmp.dir.realPathFileAlloc(testing.io, ".", arena);
     const body = try gzipTar(arena, "opencode", "#!/bin/sh\n");
-    const pinned = Artifact{ .name = "opencode-linux-x64.tar.gz", .sha256 = &hex(body), .bytes = body.len, .binary_sha256 = &hex("#!/bin/sh\n"), .archive = .tar_gz };
+    const pinned = Artifact{ .name = "opencode-linux-x64.tar.gz", .sha256 = &hex(body), .bytes = body.len, .binary_sha256 = &hex("#!/bin/sh\n"), .binary_bytes = 10, .archive = .tar_gz };
     var why: []const u8 = "";
     const path = try place(arena, home, pinned, body, &why);
     try testing.expectEqualStrings(try installedPath(arena, home), path);
@@ -162,12 +168,15 @@ test "an archive or a binary that is not the one the catalog pins is refused and
     const home = try tmp.dir.realPathFileAlloc(testing.io, ".", arena);
     const body = try gzipTar(arena, "opencode", "#!/bin/sh\n");
     var why: []const u8 = "";
-    const wrong_archive = Artifact{ .name = "opencode-linux-x64.tar.gz", .sha256 = &hex("other"), .bytes = body.len, .binary_sha256 = &hex("#!/bin/sh\n"), .archive = .tar_gz };
+    const wrong_archive = Artifact{ .name = "opencode-linux-x64.tar.gz", .sha256 = &hex("other"), .bytes = body.len, .binary_sha256 = &hex("#!/bin/sh\n"), .binary_bytes = 10, .archive = .tar_gz };
     try testing.expectError(error.InstallRefused, place(arena, home, wrong_archive, body, &why));
     try testing.expect(std.mem.indexOf(u8, why, "is not the archive the catalog pins") != null);
-    const wrong_binary = Artifact{ .name = "opencode-linux-x64.tar.gz", .sha256 = &hex(body), .bytes = body.len, .binary_sha256 = &hex("other"), .archive = .tar_gz };
+    const wrong_binary = Artifact{ .name = "opencode-linux-x64.tar.gz", .sha256 = &hex(body), .bytes = body.len, .binary_sha256 = &hex("other"), .binary_bytes = 10, .archive = .tar_gz };
     try testing.expectError(error.InstallRefused, place(arena, home, wrong_binary, body, &why));
     try testing.expect(std.mem.indexOf(u8, why, "is not the binary the catalog pins") != null);
+    const too_big = Artifact{ .name = "opencode-linux-x64.tar.gz", .sha256 = &hex(body), .bytes = body.len, .binary_sha256 = &hex("#!/bin/sh\n"), .binary_bytes = 4, .archive = .tar_gz };
+    try testing.expectError(error.InstallRefused, place(arena, home, too_big, body, &why));
+    try testing.expect(std.mem.indexOf(u8, why, "holds no opencode the catalog pins") != null);
     try testing.expect(try installed(arena, home) == null);
 }
 
@@ -176,5 +185,6 @@ test "this platform's pinned archive, when the catalog has one, is a download oa
     try testing.expectEqual(@as(usize, 64), pinned.sha256.len);
     try testing.expectEqual(@as(usize, 64), pinned.binary_sha256.len);
     try testing.expect(pinned.bytes > 0);
+    try testing.expect(pinned.binary_bytes > 0);
     try testing.expect(std.mem.endsWith(u8, pinned.name, ".zip") or std.mem.endsWith(u8, pinned.name, ".tar.gz"));
 }
