@@ -246,6 +246,7 @@ fn ownedModelEntry(
         .cost = if (model.published_cost) |cost| .{ .input = cost.input, .output = cost.output, .cache_read = cost.cache_read, .cache_write = cost.cache_write } else null,
         .release_date = release_date,
         .family = family,
+        .lifecycle = if (model.deprecated) .deprecated else null,
     };
 }
 
@@ -321,6 +322,7 @@ test "a row serves every model the snapshot names for it, each publishing the fa
             .cost = .{ .input = 0, .output = 0, .cache_read = 0, .cache_write = 0 },
             .context_window = 200_000,
             .max_tokens = 8_192,
+            .deprecated = true,
         },
         .{
             .id = "gpt-4o",
@@ -367,6 +369,8 @@ test "a row serves every model the snapshot names for it, each publishing the fa
     try std.testing.expect(entries[1].cost == null);
     try std.testing.expect(entries[1].release_date == null);
     try std.testing.expect(entries[1].family == null);
+    try std.testing.expect(entries[0].lifecycle == null);
+    try std.testing.expectEqual(types.ModelLifecycle.deprecated, entries[1].lifecycle.?);
 }
 
 test "a row the snapshot names no model for serves nothing" {

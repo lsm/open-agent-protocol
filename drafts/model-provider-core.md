@@ -423,6 +423,23 @@ carries every limit publishes none of the three. Anthropic always reads it when
 a credential is present, so an Anthropic model models.dev lists publishes its
 facts whatever its listing carries.
 
+`oapx` publishes `lifecycle: deprecated` for a model whose own models.dev entry
+says `status: deprecated`, and reads models.dev for that whenever the row has a
+models.dev key, whatever its listing carries. The entry is matched by the exact
+model id under the row's models.dev key, so `glm-5` being deprecated says
+nothing about `glm-5.3`; Anthropic, whose listing ids carry a date models.dev's
+keys omit, reads the status from the same entry its limits come from, the dated
+id first and the dateless one only when there is none. Every other model
+publishes no `lifecycle`: models.dev's `alpha` and `beta`, and a model it does
+not list, stay absent rather than becoming `stable` or `preview`. The status is
+advisory, not authoritative: the model stays in the listing and still runs
+while the provider serves it, because the provider's own listing decides what
+exists, and a caller that hides deprecated models (the SDKs'
+`include_deprecated`) is what hides it. A listing read from the cache gets the
+same projection, since it is applied after the listing is read, from the
+models.dev copy that load used: a cached listing carries no status of its own,
+so a refresh cannot revive one.
+
 **What is judged, and what is only an obligation.** The shape of each member is
 judged, and it is decidable from one response: a list is non-empty, a published
 string is non-empty, a modality is one of the five, a `cost` is a subset of four
