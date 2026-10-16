@@ -13,6 +13,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -235,5 +236,113 @@ func TestOpenCodeServerRunsATurnToCompletionAgainstALocalProvider(t *testing.T) 
 	}
 	if len(read) != 2 || read[0].Role != "user" || read[0].Text != "ping" || read[1].Role != "assistant" || read[1].Text != "pong" || read[0].AtMS <= 0 || read[1].AtMS < read[0].AtMS {
 		t.Fatalf("the server's own record of the turn read %+v", read)
+	}
+}
+
+func scriptedProvider(t *testing.T, replies ...func(http.ResponseWriter)) (string, func() int) {
+	t.Helper()
+	var mu sync.Mutex
+	calls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.HasSuffix(r.URL.Path, "/chat/completions") {
+			http.NotFound(w, r)
+			return
+		}
+		mu.Lock()
+		reply := replies[min(calls, len(replies)-1)]
+		calls++
+		mu.Unlock()
+		reply(w)
+	}))
+	t.Cleanup(server.Close)
+	return server.URL + "/v1", func() int {
+		mu.Lock()
+		defer mu.Unlock()
+		return calls
+	}
+}
+
+func streamChunks(w http.ResponseWriter, chunks ...string) {
+	w.Header().Set("Content-Type", "text/event-stream")
+	for _, chunk := range chunks {
+		_, _ = io.WriteString(w, `data: {"id":"c1","object":"chat.completion.chunk","created":1,"model":"model","choices":[`+chunk+`]}`+"\n\n")
+	}
+	_, _ = io.WriteString(w, `data: {"id":"c1","object":"chat.completion.chunk","created":1,"model":"model","choices":[],"usage":{"prompt_tokens":3,"completion_tokens":2,"total_tokens":5}}`+"\n\n")
+	_, _ = io.WriteString(w, "data: [DONE]\n\n")
+}
+
+func liveTurn(t *testing.T, provider string, timeout time.Duration) []protocol.Envelope {
+	t.Helper()
+	binary := adaptertest.VerifiedBinary(t, "OAP_OPENCODE_BIN", "OAP_OPENCODE_SHA256", "an opencode "+PinnedTag+" binary")
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	config := `{"provider":{"fixture":{"npm":"@ai-sdk/openai-compatible","name":"fixture","options":{"baseURL":` + strconv.Quote(provider) + `,"apiKey":"fixture"},"models":{"model":{"name":"model","tool_call":true}}}},"model":"fixture/model","small_model":"fixture/model"}`
+	endpoint := startPinnedServer(t, ctx, binary, []string{"OPENCODE_CONFIG_CONTENT=" + config})
+	adapter, err := New(integrationConfig(endpoint, &native.ModelRef{ID: "model", ProviderID: "fixture"}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	opened, err := adapter.Open(ctx, base.OpenRequest{SessionID: "session", Participant: protocol.Participant{ID: "integration"}})
+	if err != nil {
+		t.Fatalf("open against real server: %v", err)
+	}
+	defer opened.Close(context.Background())
+	response, stream, err := opened.Submit(ctx, base.SubmitRequest{Request: protocol.MessageSubmitRequest{SessionID: "session", Delivery: protocol.DeliveryAuto, Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("read the file")}}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	events := adaptertest.Drain(t, stream, timeout)
+	adaptertest.AssertProtocolValidWithDescriptor(t, response, testAdapterDescriptor(t), events)
+	return events
+}
+
+func TestOpenCodeServerFailsAMalformedToolCallAndTheRunGoesOn(t *testing.T) {
+	if os.Getenv("OAP_OPENCODE_INTEGRATION") != "1" {
+		t.Skip("set OAP_OPENCODE_INTEGRATION=1 and absolute OAP_OPENCODE_BIN to run the pinned server gate; optionally set OAP_OPENCODE_SHA256 (64 hex characters) for exact-artifact evidence")
+	}
+	provider, calls := scriptedProvider(t,
+		func(w http.ResponseWriter) {
+			streamChunks(w,
+				`{"index":0,"delta":{"role":"assistant","tool_calls":[{"index":0,"id":"call_bad","type":"function","function":{"name":"read","arguments":"{\"filePath\":"}}]},"finish_reason":null}`,
+				`{"index":0,"delta":{},"finish_reason":"tool_calls"}`)
+		},
+		func(w http.ResponseWriter) {
+			streamChunks(w, `{"index":0,"delta":{"role":"assistant","content":"retried"},"finish_reason":null}`, `{"index":0,"delta":{},"finish_reason":"stop"}`)
+		})
+	events := liveTurn(t, provider, 2*time.Minute)
+	if got := types(events); !slices.Contains(got, protocol.TypeActionCallFailed) || got[len(got)-1] != protocol.TypeRunCompleted {
+		t.Fatalf("events=%v after %d provider calls", got, calls())
+	}
+	for _, event := range events {
+		if event.Type != protocol.TypeActionCallRequested {
+			continue
+		}
+		var requested protocol.ActionCallPayload
+		if err := event.DecodePayload(&requested); err != nil {
+			t.Fatal(err)
+		}
+		if requested.Name != "read" || string(requested.ArgumentsJSON) != "null" {
+			t.Fatalf("requested=%+v", requested)
+		}
+	}
+}
+
+func TestOpenCodeServerNamesAGoUsageLimitAndItsReset(t *testing.T) {
+	if os.Getenv("OAP_OPENCODE_INTEGRATION") != "1" {
+		t.Skip("set OAP_OPENCODE_INTEGRATION=1 and absolute OAP_OPENCODE_BIN to run the pinned server gate; optionally set OAP_OPENCODE_SHA256 (64 hex characters) for exact-artifact evidence")
+	}
+	provider, calls := scriptedProvider(t, func(w http.ResponseWriter) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusTooManyRequests)
+		_, _ = io.WriteString(w, `{"type":"error","error":{"type":"GoUsageLimitError","message":"Monthly usage limit reached. Resets in 6 days. To continue using this model now, enable usage from your available balance: https://opencode.ai/go"},"metadata":{"workspace":"wrk_1","limitName":"monthly"}}`)
+	})
+	events := liveTurn(t, provider, 3*time.Minute)
+	last := events[len(events)-1]
+	var failed protocol.RunFailedPayload
+	if last.Type != protocol.TypeRunFailed || last.DecodePayload(&failed) != nil {
+		t.Fatalf("events=%v after %d provider calls", types(events), calls())
+	}
+	if !strings.HasSuffix(failed.Error.Message, "; monthly limit, resets in 6 days") {
+		t.Fatalf("failed=%+v after %d provider calls", failed.Error, calls())
 	}
 }
