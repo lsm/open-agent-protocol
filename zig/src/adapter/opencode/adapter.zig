@@ -52,6 +52,7 @@ pub const Config = struct {
     username: []const u8 = "",
     password: []const u8 = "",
     agent: []const u8 = "",
+    model: ?native.ModelRef = null,
     frame_limit: usize = httpapi.default_frame_limit,
     request_timeout_ns: u64 = 60 * std.time.ns_per_s,
 };
@@ -282,7 +283,7 @@ pub const Session = struct {
             self.recovered = true;
             break :attached bound;
         } else created: {
-            const created_request = try httpapi.createSession(own, self.endpoint, .{ .agent = config.agent });
+            const created_request = try httpapi.createSession(own, self.endpoint, .{ .agent = config.agent, .model = config.model });
             const created_response = self.exchange(created_request) catch |err| return refusal.fail(error.BackendFailed, try describe(arena, "create OpenCode session", err));
             break :created switch (try httpapi.createSessionResult(own, created_response, config.frame_limit)) {
                 .ok => |value| value,
@@ -884,6 +885,8 @@ pub const FakeServer = struct {
     record: []const u8 = "",
     last_prompt: [64]u8 = undefined,
     last_prompt_len: usize = 0,
+    created: [256]u8 = undefined,
+    created_len: usize = 0,
     subscribes: std.atomic.Value(usize) = .init(0),
     after_reconnect: []const []const u8 = &.{},
     refuse_resubscribes: usize = 0,
@@ -1019,6 +1022,8 @@ pub const FakeServer = struct {
                     continue;
                 }
                 if (std.mem.eql(u8, method, "POST") and std.mem.eql(u8, target, "/api/session")) {
+                    self.created_len = @min(body.len, self.created.len);
+                    @memcpy(self.created[0..self.created_len], body[0..self.created_len]);
                     try respond(conn, "200 OK", "{\"data\":{\"id\":\"" ++ fake_session ++ "\",\"projectID\":\"prj_fake\",\"model\":{\"id\":\"fixture\",\"providerID\":\"fixture\"},\"time\":{\"created\":1,\"updated\":1},\"location\":{\"directory\":\"/w\"}}}");
                 } else if (std.mem.endsWith(u8, target, "/prompt")) {
                     const turn = self.prompts.fetchAdd(1, .acq_rel);
@@ -1177,6 +1182,16 @@ test "the descriptor serves resume and replay from the endpoint journal under th
     try testing.expectEqual(oap_types.SupportLevel.degraded, descriptor.level("run.replay"));
     try testing.expectEqual(oap_types.SupportLevel.degraded, descriptor.level("run.resume"));
     for (features[1..], features[0 .. features.len - 1]) |later, earlier| try testing.expect(std.mem.lessThan(u8, earlier.key, later.key));
+}
+
+test "a configured model is the one the server creates the session on" {
+    var probe: Probe = undefined;
+    try probe.init(&.{}, &.{});
+    defer probe.deinit();
+    probe.adapter.config.model = .{ .id = "mimo-v2.6-flash-free", .provider_id = "opencode" };
+    var refusal = contract.Refusal{};
+    _ = try probe.open(&refusal);
+    try testing.expectEqualStrings("{\"model\":{\"id\":\"mimo-v2.6-flash-free\",\"providerID\":\"opencode\"}}", probe.fake.created[0..probe.fake.created_len]);
 }
 
 test "a steered turn is admitted started, streams its text, and settles when the execution succeeds" {

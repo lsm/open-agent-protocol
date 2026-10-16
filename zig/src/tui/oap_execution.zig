@@ -23,6 +23,12 @@ const idle_sleep_ns = 2 * std.time.ns_per_ms;
 const startup_attempts = 2000;
 pub const in_process_frame_limit: usize = 64 << 20;
 pub const Served = adapter_contract.Adapter;
+pub const away_api = "opencode-server";
+
+pub const Away = struct {
+    ctx: *anyopaque,
+    open: *const fn (ctx: *anyopaque, model: ai_types.Model) anyerror!Served,
+};
 
 pub const Tap = struct {
     ctx: *anyopaque,
@@ -34,6 +40,9 @@ pub const OapExecution = struct {
     tap: ?Tap = null,
     adapter: ?*oapx_adapter.Adapter = null,
     endpoint: ?adapter_endpoint.Endpoint = null,
+    home: ?adapter_endpoint.Endpoint = null,
+    away: ?Away = null,
+    settings: ?session_runtime.RemoteSettings = null,
     hub: ?*hub_link.HubLink = null,
     sink: ?session_runtime.EventSink = null,
     revision: []u8 = &.{},
@@ -129,6 +138,15 @@ pub const OapExecution = struct {
         return self;
     }
 
+    fn ownLoop(self: *const OapExecution) ?*oapx_adapter.Adapter {
+        if (self.home != null) return null;
+        return self.adapter;
+    }
+
+    pub fn setAway(self: *OapExecution, away: Away) void {
+        self.away = away;
+    }
+
     pub fn setHistory(self: *OapExecution, loader: oapx_adapter.HistoryLoader) void {
         if (self.adapter) |held| held.history = loader;
     }
@@ -140,7 +158,7 @@ pub const OapExecution = struct {
     }
 
     fn notice(self: *OapExecution, event: SessionEvent) void {
-        if (self.adapter != null) self.keepRecord(&event);
+        if (self.ownLoop() != null) self.keepRecord(&event);
         self.deliver(event);
     }
 
@@ -160,7 +178,7 @@ pub const OapExecution = struct {
     }
 
     fn recordsSession(ctx: *anyopaque) bool {
-        return cast(ctx).adapter != null;
+        return cast(ctx).ownLoop() != null;
     }
 
     pub fn setTranscripts(self: *OapExecution, store: oapx_adapter.TranscriptStore) void {
@@ -202,6 +220,8 @@ pub const OapExecution = struct {
         const allocator = self.allocator;
         self.halt();
         if (self.endpoint) |*endpoint| endpoint.deinit();
+        if (self.home) |*home| home.deinit();
+        if (self.settings) |kept| allocator.free(kept.workspace_root);
         if (self.hub) |link| {
             link.closeSession();
             link.destroy();
@@ -271,6 +291,7 @@ pub const OapExecution = struct {
 
     fn start(ctx: *anyopaque, sink: session_runtime.EventSink, settings: session_runtime.RemoteSettings) anyerror!void {
         const self = cast(ctx);
+        try self.keepSettings(settings);
         const prior_open = settings.resume_session_id != null and self.session_id.len > 0;
         self.startSession(sink, settings) catch |err| {
             if (!prior_open or err == error.OapReopenRefused or self.thread != null) return err;
@@ -327,7 +348,7 @@ pub const OapExecution = struct {
         var open = Map.init(a);
         try open.put("metadata", metadata.value());
         var reopened_history = settings.resume_session_id != null;
-        if (settings.resume_session_id) |saved| if (self.adapter != null and std.mem.eql(u8, saved, self.session_id)) {
+        if (settings.resume_session_id) |saved| if (self.ownLoop() != null and std.mem.eql(u8, saved, self.session_id)) {
             self.stopping.store(false, .release);
             self.thread = try std.Thread.spawn(.{}, run, .{self});
             if (!std.mem.eql(u8, settings.workspace_root, self.opened_root)) return error.OapReopenRefused;
@@ -336,7 +357,7 @@ pub const OapExecution = struct {
         if (settings.resume_session_id) |saved| {
             try open.put("session_id", .{ .string = saved });
             try open.put("reopen", .{ .bool = true });
-            if (self.adapter) |held| if (held.history) |loader| {
+            if (self.ownLoop()) |held| if (held.history) |loader| {
                 const found = loader.load(loader.ctx, a, saved) catch null;
                 if (found == null) {
                     if (self.session_id.len == 0) return error.OapReopenNotSaved;
@@ -402,7 +423,7 @@ pub const OapExecution = struct {
 
         try self.listTools(a);
 
-        if (settings.model != null and self.adapter != null) {
+        if (settings.model != null and self.ownLoop() != null) {
             const wanted = try modelRef(a, settings.model.?);
             var switch_map = Map.init(a);
             try switch_map.put("session_id", .{ .string = self.session_id });
@@ -787,8 +808,24 @@ pub const OapExecution = struct {
         return false;
     }
 
+    fn keepSettings(self: *OapExecution, settings: session_runtime.RemoteSettings) !void {
+        const root = try self.allocator.dupe(u8, settings.workspace_root);
+        if (self.settings) |kept| self.allocator.free(kept.workspace_root);
+        var kept = settings;
+        kept.model = null;
+        kept.resume_session_id = null;
+        kept.workspace_root = root;
+        self.settings = kept;
+    }
+
     fn switchModel(ctx: *anyopaque, model: ai_types.Model) anyerror!void {
         const self = cast(ctx);
+        if (std.mem.eql(u8, model.api, away_api)) {
+            const away = self.away orelse return error.ModelNotFound;
+            const served = try away.open(away.ctx, model);
+            return self.moveSession(if (self.home == null) served else null, false, null);
+        }
+        if (self.home != null) return self.moveSession(null, true, model);
         var scratch = std.heap.ArenaAllocator.init(self.allocator);
         defer scratch.deinit();
         const a = scratch.allocator();
@@ -800,9 +837,98 @@ pub const OapExecution = struct {
         _ = try self.enqueue(a, "session.model.switch.request", "switch", payload.value(), null);
     }
 
+    const Kept = struct {
+        session_id: []u8,
+        revision: []u8,
+        session_models: std.ArrayList([]u8),
+        tool_labels: std.ArrayList(session_runtime.ToolLabel),
+        live: [4]bool,
+    };
+
+    fn takeKept(self: *OapExecution) Kept {
+        const kept = Kept{
+            .session_id = self.session_id,
+            .revision = self.revision,
+            .session_models = self.session_models,
+            .tool_labels = self.tool_labels,
+            .live = .{ self.live_reasoning, self.live_compaction, self.live_policy, self.live_steer },
+        };
+        self.session_id = &.{};
+        self.revision = &.{};
+        self.session_models = .empty;
+        self.tool_labels = .empty;
+        return kept;
+    }
+
+    fn dropKept(self: *OapExecution, kept: *Kept) void {
+        self.allocator.free(kept.session_id);
+        self.allocator.free(kept.revision);
+        for (kept.session_models.items) |id| self.allocator.free(id);
+        kept.session_models.deinit(self.allocator);
+        for (kept.tool_labels.items) |entry| {
+            self.allocator.free(entry.name);
+            self.allocator.free(entry.label);
+        }
+        kept.tool_labels.deinit(self.allocator);
+    }
+
+    fn restoreKept(self: *OapExecution, kept: Kept) void {
+        self.allocator.free(self.session_id);
+        self.allocator.free(self.revision);
+        self.forgetSessionModels();
+        self.session_models.deinit(self.allocator);
+        self.forgetToolLabels();
+        self.tool_labels.deinit(self.allocator);
+        self.session_id = kept.session_id;
+        self.revision = kept.revision;
+        self.session_models = kept.session_models;
+        self.tool_labels = kept.tool_labels;
+        self.live_reasoning, self.live_compaction, self.live_policy, self.live_steer = kept.live;
+    }
+
+    fn moveSession(self: *OapExecution, served: ?Served, going_home: bool, model: ?ai_types.Model) !void {
+        const sink = self.sink orelse return error.OapNotStarted;
+        var settings = self.settings orelse return error.OapNotStarted;
+        settings.model = model;
+        self.halt();
+        var kept = self.takeKept();
+        var left_endpoint: ?adapter_endpoint.Endpoint = null;
+        if (served) |adapter| {
+            self.home = self.endpoint;
+            self.endpoint = adapter_endpoint.Endpoint.init(self.allocator, adapter, .{ .frame_limit = in_process_frame_limit });
+        } else if (going_home) {
+            left_endpoint = self.endpoint;
+            self.endpoint = self.home;
+            self.home = null;
+        }
+        self.startSession(sink, settings) catch |err| {
+            if (served != null) {
+                self.endpoint.?.deinit();
+                self.endpoint = self.home;
+                self.home = null;
+            } else if (going_home) {
+                self.home = self.endpoint;
+                self.endpoint = left_endpoint;
+            }
+            self.restoreKept(kept);
+            self.stopping.store(false, .release);
+            self.thread = try std.Thread.spawn(.{}, run, .{self});
+            return err;
+        };
+        if (served != null) {
+            _ = self.home.?.closeSession(kept.session_id);
+        } else if (left_endpoint) |*gone| {
+            gone.deinit();
+        } else {
+            _ = self.endpoint.?.closeSession(kept.session_id);
+        }
+        self.dropKept(&kept);
+        self.has_history.store(false, .release);
+    }
+
     fn setCatalog(ctx: *anyopaque, models: []const ai_types.Model) anyerror!void {
         const self = cast(ctx);
-        if (self.adapter == null) return;
+        if (self.ownLoop() == null) return;
         const staged = try session_runtime.cloneModels(self.allocator, models);
         errdefer session_runtime.deinitModels(self.allocator, staged);
         var refs: std.ArrayList([]u8) = .empty;
@@ -2913,6 +3039,132 @@ test "a switch to a model the OAP session does not list is refused until a catal
     try testing.expectEqualStrings(scripted_model.id, runtime.currentModel().?.id);
     try runtime.replaceModels(&.{unlisted}, null);
     try testing.expectEqualStrings("unlisted-model", runtime.currentModel().?.id);
+}
+
+const AwayStub = struct {
+    memory: @import("memory_adapter").Adapter,
+    opened: usize = 0,
+    refuse: bool = false,
+    refuse_sessions: bool = false,
+
+    fn open(ctx: *anyopaque, model: ai_types.Model) anyerror!Served {
+        const self: *AwayStub = @ptrCast(@alignCast(ctx));
+        if (!std.mem.eql(u8, model.api, away_api)) return error.TestUnexpectedResult;
+        if (self.refuse) return error.OpenCodeUnavailable;
+        self.opened += 1;
+        if (self.refuse_sessions) return .{ .ptr = self, .vtable = &.{ .probe = probe, .open = refuseSession } };
+        return self.memory.adapter();
+    }
+
+    fn probe(ptr: *anyopaque, refusal: *adapter_contract.Refusal) adapter_contract.Failure!adapter_contract.Descriptor {
+        const self: *AwayStub = @ptrCast(@alignCast(ptr));
+        const served = self.memory.adapter();
+        return served.vtable.probe(served.ptr, refusal);
+    }
+
+    fn refuseSession(ptr: *anyopaque, arena: std.mem.Allocator, request: adapter_contract.OpenRequest, refusal: *adapter_contract.Refusal) adapter_contract.Failure!adapter_contract.Session {
+        _ = ptr;
+        _ = arena;
+        _ = request;
+        return refusal.fail(error.BackendFailed, "no session today");
+    }
+};
+
+const away_model = ai_types.Model{
+    .id = "mimo-v2.6-flash-free",
+    .name = "MiMo Flash Free",
+    .api = away_api,
+    .provider = "opencode",
+    .base_url = "",
+    .reasoning = false,
+    .input = &.{"text"},
+    .cost = .{ .input = 0, .output = 0, .cache_read = 0, .cache_write = 0 },
+    .context_window = 200_000,
+    .max_tokens = 32_000,
+};
+
+test "an OpenCode model moves the session onto OpenCode's endpoint, and a loop model brings it back on a new session" {
+    var away = AwayStub{ .memory = @import("memory_adapter").Adapter.init(testing.allocator) };
+    defer away.memory.deinit();
+    var script = Script{};
+    const models = [_]ai_types.Model{scripted_model};
+    const app_models = [_]ai_types.Model{ scripted_model, away_model };
+    const execution = try OapExecution.create(testing.allocator, .{
+        .protocol = .{ .stream_fn = scriptedStream, .ctx = &script },
+        .models = &models,
+        .initial_model_id = scripted_model.id,
+    });
+    defer execution.destroy();
+    execution.setAway(.{ .ctx = &away, .open = AwayStub.open });
+    var runtime = try session_runtime.SessionRuntime.init(testing.allocator, .{
+        .models = &app_models,
+        .initial_model_id = scripted_model.id,
+        .remote = execution.remote(),
+    });
+    defer runtime.deinit();
+    try runtime.start();
+    const first = try testing.allocator.dupe(u8, execution.session_id);
+    defer testing.allocator.free(first);
+
+    try runtime.switchModelExact(away_model);
+    try testing.expectEqual(@as(usize, 1), away.opened);
+    try testing.expect(execution.home != null);
+    try testing.expect(!runtime.recordsFromEndpoint());
+    try testing.expectEqualStrings(away_model.id, runtime.currentModel().?.id);
+
+    try runtime.switchModelExact(scripted_model);
+    try testing.expect(execution.home == null);
+    try testing.expect(runtime.recordsFromEndpoint());
+    try testing.expect(!std.mem.eql(u8, first, execution.session_id));
+    try runtime.submitTurn("hello");
+    var seen = Seen{};
+    defer seen.deinit();
+    try drainTurn(&runtime, &seen);
+    try testing.expectEqualStrings("over the wire", seen.final_text.items);
+}
+
+test "an OpenCode model that cannot be reached leaves the session where it was" {
+    try expectUnmoved(.{ .memory = @import("memory_adapter").Adapter.init(testing.allocator), .refuse = true }, error.OpenCodeUnavailable);
+}
+
+test "an OpenCode endpoint that refuses the session hands the loop's own session back, still running" {
+    try expectUnmoved(.{ .memory = @import("memory_adapter").Adapter.init(testing.allocator), .refuse_sessions = true }, error.OapRequestRefused);
+}
+
+fn expectUnmoved(stub: AwayStub, expected: anyerror) !void {
+    var away = stub;
+    defer away.memory.deinit();
+    var script = Script{};
+    const models = [_]ai_types.Model{scripted_model};
+    const app_models = [_]ai_types.Model{ scripted_model, away_model };
+    const execution = try OapExecution.create(testing.allocator, .{
+        .protocol = .{ .stream_fn = scriptedStream, .ctx = &script },
+        .models = &models,
+        .initial_model_id = scripted_model.id,
+    });
+    defer execution.destroy();
+    execution.setAway(.{ .ctx = &away, .open = AwayStub.open });
+    var runtime = try session_runtime.SessionRuntime.init(testing.allocator, .{
+        .models = &app_models,
+        .initial_model_id = scripted_model.id,
+        .remote = execution.remote(),
+    });
+    defer runtime.deinit();
+    try runtime.start();
+
+    const first = try testing.allocator.dupe(u8, execution.session_id);
+    defer testing.allocator.free(first);
+
+    try testing.expectError(expected, runtime.switchModelExact(away_model));
+    try testing.expect(execution.home == null);
+    try testing.expect(runtime.recordsFromEndpoint());
+    try testing.expectEqualStrings(first, execution.session_id);
+    try testing.expectEqualStrings(scripted_model.id, runtime.currentModel().?.id);
+    try runtime.submitTurn("hello");
+    var seen = Seen{};
+    defer seen.deinit();
+    try drainTurn(&runtime, &seen);
+    try testing.expectEqualStrings("over the wire", seen.final_text.items);
 }
 
 test "a lost stream warns and ends the turn instead of leaving it to stream forever" {
