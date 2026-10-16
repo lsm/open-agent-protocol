@@ -476,6 +476,15 @@ pub fn build(b: *std.Build) void {
     opencode_server_mod.addImport("harness_pins", harness_pins_mod);
     const opencode_server_test = b.addTest(.{ .root_module = opencode_server_mod });
 
+    const opencode_install_mod = b.createModule(.{
+        .root_source_file = b.path("src/adapter/opencode/install.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    opencode_install_mod.addImport("compat", compat_mod);
+    opencode_install_mod.addImport("harness_pins", harness_pins_mod);
+    const opencode_install_test = b.addTest(.{ .root_module = opencode_install_mod });
+
     const opencode_corpus_mod = b.createModule(.{
         .root_source_file = b.path("src/adapter/opencode/corpus.zig"),
         .target = target,
@@ -2690,6 +2699,7 @@ pub fn build(b: *std.Build) void {
             .{ .name = "deepseek_adapter", .module = deepseek_adapter_mod },
             .{ .name = "opencode_adapter", .module = opencode_adapter_mod },
             .{ .name = "opencode_server", .module = opencode_server_mod },
+            .{ .name = "opencode_install", .module = opencode_install_mod },
             .{ .name = "hermes_adapter", .module = hermes_adapter_mod },
             .{ .name = "memory_adapter", .module = memory_adapter_mod },
             .{ .name = "oapx_adapter", .module = oapx_adapter_mod },
@@ -2993,6 +3003,8 @@ pub fn build(b: *std.Build) void {
     test_unit_adapter_step.dependOn(&b.addRunArtifact(opencode_client_test).step);
     test_step.dependOn(&b.addRunArtifact(opencode_client_test).step);
     test_unit_adapter_step.dependOn(&b.addRunArtifact(opencode_server_test).step);
+    test_unit_adapter_step.dependOn(&b.addRunArtifact(opencode_install_test).step);
+    test_step.dependOn(&b.addRunArtifact(opencode_install_test).step);
     test_step.dependOn(&b.addRunArtifact(opencode_server_test).step);
     test_unit_adapter_step.dependOn(&b.addRunArtifact(opencode_session_test).step);
     test_step.dependOn(&b.addRunArtifact(opencode_corpus_test).step);
@@ -3579,7 +3591,7 @@ fn harnessPinsModule(b: *std.Build) *std.Build.Module {
         corpus: ?[]const u8 = null,
         admits: ?[]const []const u8 = null,
         sources: []const struct { component: []const u8, tag: ?[]const u8 = null, commit: []const u8, tree: ?[]const u8 = null } = &.{},
-        artifacts: []const struct { component: []const u8, platform: []const u8, kind: []const u8, sha256: []const u8 } = &.{},
+        artifacts: []const struct { component: []const u8, platform: []const u8, kind: []const u8, name: []const u8 = "", sha256: []const u8, bytes: u64 = 0 } = &.{},
     };
     const Entry = struct { versions: []const Version };
     const options = b.addOptions();
@@ -3610,7 +3622,14 @@ fn harnessPinsModule(b: *std.Build) *std.Build.Module {
             if (source.tree) |tree| options.addOption([]const u8, b.fmt("{s}_tree", .{name}), tree);
         }
         for (pin.artifacts) |artifact| {
-            if (!std.mem.eql(u8, artifact.platform, "any")) continue;
+            if (!std.mem.eql(u8, artifact.platform, "any")) {
+                const stem = b.fmt("{s}_{s}_{s}_{s}", .{ prefix, artifact.component, artifact.platform, artifact.kind });
+                std.mem.replaceScalar(u8, stem, '-', '_');
+                options.addOption([]const u8, b.fmt("{s}_name", .{stem}), artifact.name);
+                options.addOption([]const u8, b.fmt("{s}_sha256", .{stem}), artifact.sha256);
+                options.addOption(u64, b.fmt("{s}_bytes", .{stem}), artifact.bytes);
+                continue;
+            }
             const name = b.fmt("{s}_{s}_{s}_sha256", .{ prefix, artifact.component, artifact.kind });
             std.mem.replaceScalar(u8, name, '-', '_');
             options.addOption([]const u8, name, artifact.sha256);

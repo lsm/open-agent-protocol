@@ -50,6 +50,7 @@ const pi_adapter = @import("pi_adapter");
 const deepseek_adapter = @import("deepseek_adapter");
 const opencode_adapter = @import("opencode_adapter");
 const opencode_server = @import("opencode_server");
+const opencode_install = @import("opencode_install");
 const hermes_adapter = @import("hermes_adapter");
 const memory_adapter = @import("memory_adapter");
 const oapx_adapter = @import("oapx_adapter");
@@ -1192,6 +1193,7 @@ fn printUsage(file: std.Io.File) !void {
         \\  oapx tui [--context-window <tokens>]          The terminal UI, over OAP through the in-process endpoint; what oapx alone starts
         \\                                                   --context-window takes a whole number, optionally with k or m
         \\  oapx tui --attach <url> [--adapter <name>]    The terminal UI over a running oapx serve's HTTP wire; adapter defaults to oapx
+        \\  oapx opencode install                             Download the OpenCode oapx is tested with into ~/.oapx/opencode
         \\  oapx tui --backend opencode [--config <path>]  The terminal UI over an OpenCode server oapx starts, or the entry's endpoint
         \\  oapx run [--agent] [--storage] [--model <id>] "<prompt>"
         \\  oapx serve agent [--stdio] [--model <model-ref>]
@@ -2084,6 +2086,18 @@ pub fn main(init: std.process.Init) !void {
 
     if (std.mem.eql(u8, args[1], "--version")) {
         try compat.stdio.writeAll(stdout, VERSION ++ "\n");
+        return;
+    }
+
+    if (std.mem.eql(u8, args[1], "opencode")) {
+        if (args.len != 3 or !std.mem.eql(u8, args[2], "install")) {
+            try printUsage(stderr);
+            return error.InvalidArgument;
+        }
+        installOpenCode(allocator, stdout, stderr) catch |err| {
+            if (err == error.InstallRefused) std.process.exit(1);
+            return err;
+        };
         return;
     }
 
@@ -5424,6 +5438,33 @@ fn deepseekBackendConfig(
     };
 }
 
+fn installOpenCode(allocator: std.mem.Allocator, stdout: std.Io.File, stderr: std.Io.File) !void {
+    var arena_state = std.heap.ArenaAllocator.init(allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    const home = compat.getEnvVarOwned(arena, "HOME") catch "";
+    if (home.len == 0) {
+        try compat.stdio.writeAll(stderr, "oapx opencode install: HOME is not set\n");
+        return error.InstallRefused;
+    }
+    if (try opencode_install.installed(arena, home)) |path| {
+        try compat.stdio.writeAll(stdout, try std.fmt.allocPrint(arena, "OpenCode {s} is already installed at {s}\n", .{ opencode_install.version, path }));
+        return;
+    }
+    const pinned = opencode_install.artifact orelse {
+        try compat.stdio.writeAll(stderr, "oapx opencode install: oapx has not been tested with an OpenCode build for this platform\n");
+        return error.InstallRefused;
+    };
+    try compat.stdio.writeAll(stderr, try std.fmt.allocPrint(arena, "downloading OpenCode {s} ({s}, {d} MB)\n", .{ opencode_install.version, pinned.name, pinned.bytes / (1024 * 1024) }));
+    var why: []const u8 = "";
+    const path = opencode_install.install(allocator, arena, home, &why) catch |err| {
+        if (err != error.InstallRefused) return err;
+        try compat.stdio.writeAll(stderr, try std.fmt.allocPrint(arena, "oapx opencode install: {s}\n", .{why}));
+        return error.InstallRefused;
+    };
+    try compat.stdio.writeAll(stdout, try std.fmt.allocPrint(arena, "OpenCode {s} is installed at {s}\n", .{ opencode_install.version, path }));
+}
+
 fn opencodeBackendConfig(
     allocator: std.mem.Allocator,
     surface: ConfigSurface,
@@ -5439,16 +5480,17 @@ fn opencodeBackendConfig(
         }
         return .{ .endpoint = entry.endpoint, .agent = entry.agent, .username = opencode_server.username, .password = opencodePassword(entry.environment) };
     }
-    const wanted = if (entry.executable.len > 0) entry.executable else "opencode";
-    const executable = try adapter_config.resolveExecutable(arena, backendIo(), wanted, environ.get("PATH") orelse "") orelse {
-        try surface.refuse("no executable \"{s}\" on PATH for {s} \"{s}\"; name one with \"executable\", or a running server with \"endpoint\", in a --config entry", .{ wanted, surface.noun, entry.name });
-        return error.BackendRefused;
-    };
     const home = environ.get("HOME") orelse "";
     if (home.len == 0) {
         try surface.refuse("{s} \"{s}\" starts an OpenCode server, which logs under $HOME/.oapx, and HOME is not set", .{ surface.noun, entry.name });
         return error.BackendRefused;
     }
+    const wanted = if (entry.executable.len > 0) entry.executable else "opencode";
+    const fetched = if (entry.executable.len > 0) null else try opencode_install.installed(arena, home);
+    const executable = fetched orelse try adapter_config.resolveExecutable(arena, backendIo(), wanted, environ.get("PATH") orelse "") orelse {
+        try surface.refuse("no executable \"{s}\" on PATH for {s} \"{s}\"; run oapx opencode install, or name one with \"executable\", or a running server with \"endpoint\", in a --config entry", .{ wanted, surface.noun, entry.name });
+        return error.BackendRefused;
+    };
     var why: []const u8 = "";
     const server = opencode_server.Server.start(allocator, arena, .{
         .executable = executable,
@@ -6106,7 +6148,7 @@ test "the hub's registry reports a known adapter's own requirement once, not as 
     complained_on.close(std.testing.io);
     const complained = try tmp.dir.readFileAlloc(std.testing.io, "stderr", allocator, .limited(4096));
     defer allocator.free(complained);
-    try std.testing.expectEqualStrings("oapx serve: no executable \"opencode\" on PATH for adapter \"a\"; name one with \"executable\", or a running server with \"endpoint\", in a --config entry\n", complained);
+    try std.testing.expectEqualStrings("oapx serve: adapter \"a\" starts an OpenCode server, which logs under $HOME/.oapx, and HOME is not set\n", complained);
 }
 
 test "two entries of one type are two adapters, each with its own executable" {
