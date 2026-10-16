@@ -1025,6 +1025,7 @@ fn appendCatalogTargetModels(
                 }
             }
             for (models) |model| {
+                if (servedOnlyInsideOpenCode(target, model.id)) continue;
                 var shaped = model;
                 if (target.allowlist.len > 0) {
                     const spec = allowlistSpec(target.allowlist, model.id) orelse continue;
@@ -1043,6 +1044,7 @@ fn appendCatalogTargetModels(
 
     if (target.allowlist.len > 0) {
         for (target.allowlist) |spec| {
+            if (servedOnlyInsideOpenCode(target, spec.id)) continue;
             var shaped = DiscoveredModel{ .id = spec.id };
             shapeBySpec(&shaped, spec);
             var built = try catalogModel(allocator, target, shaped);
@@ -1421,6 +1423,13 @@ fn forgetRefusal(allocator: std.mem.Allocator, name: []const u8) void {
     const path = makaiCatalogPath(allocator, name) catch return;
     defer allocator.free(path);
     compat.fs.removeFile(path);
+}
+
+fn servedOnlyInsideOpenCode(target: CatalogEndpoint, model: []const u8) bool {
+    if (!std.mem.eql(u8, target.id, "opencode-zen") and !std.mem.eql(u8, target.id, "opencode-go")) return false;
+    if (!std.mem.endsWith(u8, model, "-free")) return false;
+    const own = catalogTarget(target.id) orelse return false;
+    return std.mem.eql(u8, target.base_url, own.base_url);
 }
 
 fn discoverCatalogModels(
@@ -6001,6 +6010,31 @@ test "an OpenCode Go model its listing gives no limits takes models.dev's window
     try std.testing.expect(!models[1].reasoning);
     try std.testing.expectEqual(catalog_context_window, models[2].context_window);
     try std.testing.expectEqual(catalog_max_output_tokens, models[2].max_tokens);
+}
+
+test "OpenCode's free models, which its gateway serves only to the OpenCode client, are not offered on its key rows" {
+    for ([_][]const u8{ "opencode-zen", "opencode-go" }) |row| {
+        const models = try loadOneRow(row, "OPENCODE_API_KEY", &.{ "mimo-v2.6-flash-free", "deepseek-v4-flash", "free-model" });
+        defer deinitModels(std.testing.allocator, models);
+        try std.testing.expectEqual(@as(usize, 2), models.len);
+        try std.testing.expectEqualStrings("deepseek-v4-flash", models[0].id);
+        try std.testing.expectEqualStrings("free-model", models[1].id);
+    }
+    const elsewhere = try loadOneRow("openrouter", "OPENROUTER_API_KEY", &.{"some-model-free"});
+    defer deinitModels(std.testing.allocator, elsewhere);
+    try std.testing.expectEqual(@as(usize, 1), elsewhere.len);
+}
+
+test "a free model is dropped on OpenCode's gateway even when named, and kept once the row is moved off it" {
+    const zen = catalogTarget("opencode-zen") orelse return error.TestExpectedTarget;
+    try std.testing.expect(servedOnlyInsideOpenCode(zen, "mimo-v2.6-flash-free"));
+    const named = [_]custom_providers.ModelSpec{.{ .id = "mimo-v2.6-flash-free", .name = "mimo-v2.6-flash-free" }};
+    var narrowed = zen;
+    narrowed.allowlist = &named;
+    try std.testing.expect(servedOnlyInsideOpenCode(narrowed, "mimo-v2.6-flash-free"));
+    var moved = zen;
+    moved.base_url = "https://proxy.example/v1";
+    try std.testing.expect(!servedOnlyInsideOpenCode(moved, "mimo-v2.6-flash-free"));
 }
 
 test "an OpenCode Go model keeps the generic defaults when models.dev cannot be read" {
