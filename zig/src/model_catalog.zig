@@ -639,6 +639,7 @@ const CatalogDiscovery = struct {
     model_ids: []const []const u8,
     refused: bool = false,
     unpaid: bool = false,
+    complete: bool = false,
 };
 
 var test_catalog_discovery: ?[]const CatalogDiscovery = null;
@@ -1018,9 +1019,11 @@ fn appendCatalogTargetModels(
     if (discovered) |models| {
         if (models.len > 0) {
             if (provider_catalog.modelsDevKey(target.id)) |key| {
-                if (lacksFigures(models)) {
-                    if (models_dev.provider(allocator, key)) |listed| {
-                        for (models) |*model| fillFromModelsDev(target.id, model, listed);
+                if (models_dev.provider(allocator, key)) |listed| {
+                    const lacking = lacksFigures(models);
+                    for (models) |*model| {
+                        model.deprecated = deprecatedIn(listed, model.id);
+                        if (lacking) fillFromModelsDev(target.id, model, listed);
                     }
                 }
             }
@@ -1256,6 +1259,7 @@ fn catalogModel(allocator: std.mem.Allocator, target: CatalogEndpoint, model: Di
         .published_cost = model.published_cost,
         .release_date = release_date,
         .family = family,
+        .deprecated = model.deprecated,
         .is_owned = true,
     };
 }
@@ -1535,6 +1539,12 @@ fn testCatalogModels(allocator: std.mem.Allocator, id: []const u8, models_url: [
         }
         for (row.model_ids, 0..) |model_id, i| {
             out[i] = .{ .id = try allocator.dupe(u8, model_id) };
+            if (row.complete) {
+                out[i].context_window = 64_000;
+                out[i].max_tokens = 8_000;
+                out[i].reasoning = false;
+                out[i].image_input = false;
+            }
             filled = i + 1;
         }
         return out;
@@ -1705,6 +1715,7 @@ const DiscoveredModel = struct {
     published_cost: ?ai_types.PublishedCost = null,
     release_date: ?[]const u8 = null,
     family: ?[]const u8 = null,
+    deprecated: bool = false,
 
     fn deinit(self: DiscoveredModel, allocator: std.mem.Allocator) void {
         allocator.free(self.id);
@@ -1743,6 +1754,13 @@ fn lacksFigures(models: []const DiscoveredModel) bool {
         if (model.reasoning == null or model.image_input == null) return true;
     }
     return false;
+}
+
+fn deprecatedIn(listed: *const std.json.ObjectMap, id: []const u8) bool {
+    const entry = listed.getPtr(id) orelse return false;
+    if (entry.* != .object) return false;
+    const status = objectString(&entry.object, "status") orelse return false;
+    return std.mem.eql(u8, status, "deprecated");
 }
 
 fn fillFromModelsDev(id: []const u8, model: *DiscoveredModel, listed: *const std.json.ObjectMap) void {
@@ -2027,6 +2045,7 @@ const AnthropicLimits = struct {
     published_cost: ?ai_types.PublishedCost = null,
     release_date: ?[]const u8 = null,
     family: ?[]const u8 = null,
+    deprecated: bool = false,
 };
 
 fn anthropicLimits(listed: ?*const std.json.ObjectMap, dev: ?*const std.json.ObjectMap, id: []const u8) AnthropicLimits {
@@ -2036,6 +2055,7 @@ fn anthropicLimits(listed: ?*const std.json.ObjectMap, dev: ?*const std.json.Obj
         limits.max_tokens = positiveU32(objectU32(item, "max_tokens"));
     }
     const models = dev orelse return limits;
+    limits.deprecated = deprecatedIn(models, id);
     const entry = models.getPtr(id) orelse models.getPtr(withoutDateSuffix(id)) orelse return limits;
     if (entry.* != .object) return limits;
     limits.published_cost = modelsDevCost(&entry.object);
@@ -2097,6 +2117,7 @@ fn anthropicModel(allocator: std.mem.Allocator, id_text: []const u8, name_text: 
         .published_cost = limits.published_cost,
         .release_date = release_date,
         .family = family,
+        .deprecated = limits.deprecated,
         .is_owned = true,
     };
 }
@@ -6035,6 +6056,40 @@ test "a free model is dropped on OpenCode's gateway even when named, and kept on
     var moved = zen;
     moved.base_url = "https://proxy.example/v1";
     try std.testing.expect(!servedOnlyInsideOpenCode(moved, "mimo-v2.6-flash-free"));
+}
+
+test "models.dev's deprecated status marks only the model it names exactly, whether or not the listing carried its own figures" {
+    test_models_dev =
+        \\{"opencode":{"models":{"glm-5":{"status":"deprecated"},"glm-5.3":{"status":"beta"},"kept":{}}}}
+    ;
+    defer test_models_dev = null;
+    const target = catalogTarget("opencode-zen") orelse return error.TestExpectedTarget;
+    test_catalog_environment = &[_]provider_credential.EnvironmentValue{.{ .name = "OPENCODE_API_KEY", .value = "row-key" }};
+    defer {
+        test_catalog_discovery = null;
+        test_catalog_environment = null;
+    }
+    for ([_]bool{ false, true }) |complete| {
+        test_catalog_discovery = &[_]CatalogDiscovery{.{ .id = "opencode-zen", .models_url = target.models_url, .model_ids = &.{ "glm-5", "glm-5.3", "kept", "unlisted" }, .complete = complete }};
+        const models = try loadCatalogModelsWithRows(std.testing.allocator, &.{"opencode-zen"}, null, .allow_cache);
+        defer deinitModels(std.testing.allocator, models);
+        try std.testing.expectEqual(@as(usize, 4), models.len);
+        try std.testing.expectEqualStrings("glm-5", models[0].id);
+        try std.testing.expect(models[0].deprecated);
+        try std.testing.expect(!models[1].deprecated);
+        try std.testing.expect(!models[2].deprecated);
+        try std.testing.expect(!models[3].deprecated);
+    }
+}
+
+test "an Anthropic model is deprecated only by its own models.dev entry, not one its dateless name shares" {
+    var parsed = try std.json.parseFromSlice(std.json.Value, std.testing.allocator,
+        \\{"claude-x":{"status":"deprecated"},"claude-y-20250101":{"status":"deprecated"}}
+    , .{});
+    defer parsed.deinit();
+    try std.testing.expect(!anthropicLimits(null, &parsed.value.object, "claude-x-20250101").deprecated);
+    try std.testing.expect(anthropicLimits(null, &parsed.value.object, "claude-y-20250101").deprecated);
+    try std.testing.expect(!anthropicLimits(null, null, "claude-y-20250101").deprecated);
 }
 
 test "an OpenCode Go model keeps the generic defaults when models.dev cannot be read" {

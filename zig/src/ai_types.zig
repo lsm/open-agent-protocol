@@ -568,6 +568,7 @@ pub const Model = struct {
     published_cost: ?PublishedCost = null,
     release_date: ?[]const u8 = null,
     family: ?[]const u8 = null,
+    deprecated: bool = false,
     is_owned: bool = false,
 
     pub fn deinit(self: *Model, allocator: std.mem.Allocator) void {
@@ -1330,6 +1331,7 @@ pub fn cloneModel(allocator: std.mem.Allocator, model: Model) !Model {
         .published_cost = model.published_cost,
         .release_date = release_date,
         .family = family,
+        .deprecated = model.deprecated,
         .is_owned = true,
     };
 }
