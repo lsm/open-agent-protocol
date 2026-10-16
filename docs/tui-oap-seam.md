@@ -76,7 +76,11 @@ same execution over a running hub's HTTP wire (`zig/src/tui/hub_link.zig`): each
 goes to its route, and each run is followed on its own SSE stream replayed from its first
 event, read by polling the socket on the execution's pump thread. A model switch, which
 the hub has no route for, is refused to its request, and a model the hub's catalog lacks
-leaves the session on the hub's default with a warning. The map that follows predates
+leaves the session on the hub's default with a warning. `oapx tui --backend opencode`
+runs the same execution in process over the OpenCode adapter instead of `oapx`'s own, on
+a server oapx starts or an entry's `endpoint`: the session keeps OpenCode's own model,
+since the TUI asks only its own loop to switch to a catalog model, and a text-only
+message goes out as a string, the one content shape every adapter takes. The map that follows predates
 this and still describes the server path `oapx serve agent` without `--backend` uses.
 
 Every claim here was read off `origin/main` at `cbfa3b96d6`. The endpoint's own
