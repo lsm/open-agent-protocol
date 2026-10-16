@@ -587,7 +587,7 @@ func (s *session) handleEventLocked(event native.Event) {
 				s.settleRunLocked(run)
 				return
 			}
-			s.failRun(run, "opencode_execution_failed", data.Error.Message)
+			s.failRun(run, "opencode_execution_failed", failureText(data.Error))
 		}
 	case native.TypeExecutionInterrupted:
 		var data native.ExecutionInterruptedData
@@ -946,7 +946,7 @@ func (s *session) settleRunLocked(run *runState) {
 		return
 	}
 	if failure != nil {
-		s.failRun(run, "opencode_step_failed", failure.Message)
+		s.failRun(run, "opencode_step_failed", failureText(*failure))
 		return
 	}
 	if finish == "" {

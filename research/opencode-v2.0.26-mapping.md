@@ -102,6 +102,26 @@ Both trees now record the `inboxID` of every non-`user` item at
 suppresses the stream. The run still settles at `session.execution.*`. The
 capability descriptor is unchanged.
 
+## Usage limits
+
+A provider failure reaches `step.failed` and `execution.failed` as
+`packages/schema/src/session-error.ts`'s `{type, message, status, response:
+{body}}`; `packages/core/src/session/to-session-error.ts` copies the upstream
+body into `response.body`. OpenCode's own gateway
+(`packages/console/app/src/routes/zen/util/handler.ts`) answers a spent
+subscription with HTTP 429 and a body naming the limit:
+`{"error":{"type":"GoUsageLimitError","message":"Monthly usage limit reached.
+Resets in 6 days. …"},"metadata":{"limitName":"monthly"}}`. `limitName` is
+`5 hour`, `weekly` or `monthly`; the reset is `formatRetryTime`'s `N days`,
+`Nhr Nmin` or `Nmin`. The `retry-after` header does not reach the event, so the
+message is the only place the reset survives.
+
+Both trees keep the failure's own `message` and, when the body's error `type`
+ends in `UsageLimitError`, append the limit and the reset, spelled out:
+`Go usage limit exceeded; monthly limit, resets in 6 days`, or `…; 5 hour
+limit, resets in 3 hours 1 minute`. Any other body leaves the message as it
+was. A replayed record's error carries the same body. This rests on the source
+above, not on a recorded corpus case.
 ## Tools that fail before they are called
 
 `packages/core/src/session/runner/publish-llm-event.ts` publishes

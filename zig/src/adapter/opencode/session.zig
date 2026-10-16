@@ -178,6 +178,48 @@ pub fn recordSettled(records: []const std.json.Value) bool {
     return settled;
 }
 
+fn failureText(arena: std.mem.Allocator, failure: native.ErrorBlock) Error![]const u8 {
+    if (failure.body.len == 0) return failure.message;
+    const parsed = std.json.parseFromSliceLeaky(std.json.Value, arena, failure.body, .{}) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        else => return failure.message,
+    };
+    if (parsed != .object) return failure.message;
+    const block = parsed.object.get("error") orelse return failure.message;
+    if (block != .object or !std.mem.endsWith(u8, recordText(block, "type"), "UsageLimitError")) return failure.message;
+    const metadata = parsed.object.get("metadata") orelse std.json.Value.null;
+    const limit = if (metadata == .object) recordText(metadata, "limitName") else "";
+    const reset = try resetIn(arena, recordText(block, "message"));
+    if (limit.len == 0 and reset.len == 0) return failure.message;
+    if (reset.len == 0) return std.fmt.allocPrint(arena, "{s}; {s} limit", .{ failure.message, limit });
+    if (limit.len == 0) return std.fmt.allocPrint(arena, "{s}; resets in {s}", .{ failure.message, reset });
+    return std.fmt.allocPrint(arena, "{s}; {s} limit, resets in {s}", .{ failure.message, limit, reset });
+}
+
+fn resetIn(arena: std.mem.Allocator, message: []const u8) Error![]const u8 {
+    for ([_][]const u8{ "resets in ", "retry in " }) |lead| {
+        const at = std.ascii.indexOfIgnoreCase(message, lead) orelse continue;
+        var rest = message[at + lead.len ..];
+        if (std.mem.indexOfScalar(u8, rest, '.')) |end| rest = rest[0..end];
+        var spelled: std.ArrayList(u8) = .empty;
+        var fields = std.mem.tokenizeScalar(u8, rest, ' ');
+        while (fields.next()) |field| {
+            if (spelled.items.len > 0) try spelled.append(arena, ' ');
+            if (std.mem.endsWith(u8, field, "hr")) {
+                try unitCount(arena, &spelled, field[0 .. field.len - 2], "hour");
+            } else if (std.mem.endsWith(u8, field, "min")) {
+                try unitCount(arena, &spelled, field[0 .. field.len - 3], "minute");
+            } else try spelled.appendSlice(arena, field);
+        }
+        return spelled.items;
+    }
+    return "";
+}
+
+fn unitCount(arena: std.mem.Allocator, out: *std.ArrayList(u8), count: []const u8, unit: []const u8) Error!void {
+    try out.print(arena, "{s} {s}{s}", .{ count, unit, if (std.mem.eql(u8, count, "1")) "" else "s" });
+}
+
 fn recordText(record: std.json.Value, name: []const u8) []const u8 {
     const value = record.object.get(name) orelse return "";
     return if (value == .string) value.string else "";
@@ -449,7 +491,7 @@ pub const Reducer = struct {
                 const target = run orelse return;
                 if (!target.prompted) return;
                 if (target.failure != null) return self.settleRun(target);
-                try self.failRun(target, "opencode_execution_failed", data.failure.message);
+                try self.failRun(target, "opencode_execution_failed", try failureText(self.allocator(), data.failure));
             },
             .execution_interrupted => {
                 const data = (try self.decodeFor(native.ExecutionInterruptedData, native.decodeExecutionInterrupted, event, run, "opencode_invalid_execution_event")) orelse return;
@@ -495,7 +537,7 @@ pub const Reducer = struct {
                 const data = (try self.decodeFor(native.StepFailedData, native.decodeStepFailed, event, run, "opencode_invalid_step_event")) orelse return;
                 const target = run orelse return;
                 if (!try self.sighted(&target.steps, data.message)) return;
-                if (!target.terminal and !target.cancel_requested) target.failure = data.failure.message;
+                if (!target.terminal and !target.cancel_requested) target.failure = try failureText(self.allocator(), data.failure);
                 target.cost += data.cost;
             },
             .text_delta, .reasoning_delta => {
@@ -629,7 +671,12 @@ pub const Reducer = struct {
                 if (!done) continue;
                 const failure = record.object.get("error") orelse std.json.Value.null;
                 if (failure == .object) {
-                    try self.replayEvent("session.step.failed", .{ .sessionID = scope, .assistantMessageID = id, .@"error" = .{ .type = recordText(failure, "type"), .message = recordText(failure, "message") }, .cost = recordNumber(record, "cost") });
+                    const response = failure.object.get("response") orelse std.json.Value.null;
+                    if (response == .object) {
+                        try self.replayEvent("session.step.failed", .{ .sessionID = scope, .assistantMessageID = id, .@"error" = .{ .type = recordText(failure, "type"), .message = recordText(failure, "message"), .response = .{ .body = recordText(response, "body") } }, .cost = recordNumber(record, "cost") });
+                    } else {
+                        try self.replayEvent("session.step.failed", .{ .sessionID = scope, .assistantMessageID = id, .@"error" = .{ .type = recordText(failure, "type"), .message = recordText(failure, "message") }, .cost = recordNumber(record, "cost") });
+                    }
                     continue;
                 }
                 try self.replayEvent("session.step.ended", .{ .sessionID = scope, .assistantMessageID = id, .finish = recordText(record, "finish"), .cost = recordNumber(record, "cost"), .tokens = record.object.get("tokens") orelse std.json.Value.null });
@@ -1725,6 +1772,62 @@ test "a replayed record starts a queued run it shows delivered and ignores the l
     try reducer.observe(try succeeded(scratch, 13));
     try expectKinds(&reducer, &.{ "run.started", "content.delta", "run.completed", "run.started", "content.delta", "run.completed" });
     try expectLabels(&.{"text:two"}, try finalLabels(scratch, &reducer));
+}
+
+fn usageLimitFailure(arena: std.mem.Allocator, body: []const u8) !native.ErrorBlock {
+    return .{ .kind = "provider.rate-limit", .message = "Go usage limit exceeded", .body = try arena.dupe(u8, body) };
+}
+
+fn usageLimitData(arena: std.mem.Allocator, prefix: []const u8, body: []const u8) ![]const u8 {
+    const failure = try std.json.Stringify.valueAlloc(arena, .{ .type = "provider.rate-limit", .message = "Go usage limit exceeded", .status = 429, .response = .{ .body = body } }, .{});
+    return std.fmt.allocPrint(arena, "{{{s}\"error\":{s}}}", .{ prefix, failure });
+}
+
+test "a gateway usage limit names its window and when it resets" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const scratch = arena.allocator();
+    const cases = [_]struct { body: []const u8, want: []const u8 }{
+        .{ .body = "{\"type\":\"error\",\"error\":{\"type\":\"GoUsageLimitError\",\"message\":\"Monthly usage limit reached. Resets in 6 days. To continue using this model now, enable usage from your available balance: https://opencode.ai/go\"},\"metadata\":{\"workspace\":\"wrk_1\",\"limitName\":\"monthly\"}}", .want = "Go usage limit exceeded; monthly limit, resets in 6 days" },
+        .{ .body = "{\"type\":\"error\",\"error\":{\"type\":\"GoUsageLimitError\",\"message\":\"5-hour usage limit reached. Resets in 3hr 1min. To continue using this model now, enable usage from your available balance: https://opencode.ai/go\"},\"metadata\":{\"workspace\":\"wrk_1\",\"limitName\":\"5 hour\"}}", .want = "Go usage limit exceeded; 5 hour limit, resets in 3 hours 1 minute" },
+        .{ .body = "{\"type\":\"error\",\"error\":{\"type\":\"BlackUsageLimitError\",\"message\":\"Subscription quota exceeded. Retry in 1hr 20min.\"},\"metadata\":{}}", .want = "Go usage limit exceeded; resets in 1 hour 20 minutes" },
+        .{ .body = "{\"type\":\"error\",\"error\":{\"type\":\"RateLimitError\",\"message\":\"Resets in 2min.\"}}", .want = "Go usage limit exceeded" },
+        .{ .body = "upstream exploded", .want = "Go usage limit exceeded" },
+    };
+    for (cases) |case| try testing.expectEqualStrings(case.want, try failureText(scratch, try usageLimitFailure(scratch, case.body)));
+    try testing.expectEqualStrings("provider exploded", try failureText(scratch, .{ .kind = "unknown", .message = "provider exploded" }));
+}
+
+test "a step or an execution that fails on a usage limit fails the run naming the limit, live and replayed" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const scratch = arena.allocator();
+    var fake = Fake{};
+    var reducer = Reducer.init(&arena, .{ .native_id = native_session }, fake.client());
+    try reducer.open();
+    const weekly = "{\"type\":\"error\",\"error\":{\"type\":\"GoUsageLimitError\",\"message\":\"Weekly usage limit reached. Resets in 2 days.\"},\"metadata\":{\"limitName\":\"weekly\"}}";
+    const monthly = "{\"type\":\"error\",\"error\":{\"type\":\"GoUsageLimitError\",\"message\":\"Monthly usage limit reached. Resets in 6 days.\"},\"metadata\":{\"limitName\":\"monthly\"}}";
+
+    const stepped = (try reducer.submit("session", "one", "auto")).message_ids[0];
+    try reducer.observe(try deliveredEvent(scratch, 1, stepped));
+    try reducer.observe(try stepStarted(scratch, 2, "a"));
+    try reducer.observe(try nativeEvent(scratch, 3, "step.failed", try usageLimitData(scratch, "\"assistantMessageID\":\"msg_a\",", weekly)));
+    try reducer.observe(try nativeEvent(scratch, 4, "execution.failed", "{\"error\":{\"type\":\"unknown\",\"message\":\"step failed\"}}"));
+    try testing.expectEqualStrings("opencode_step_failed", errorCode(reducer.envelopes.items[reducer.envelopes.items.len - 1]));
+    try testing.expectEqualStrings("Go usage limit exceeded; weekly limit, resets in 2 days", lastPayload(&reducer).get("error").?.object.get("message").?.string);
+
+    const executed = (try reducer.submit("session", "two", "auto")).message_ids[0];
+    try reducer.observe(try deliveredEvent(scratch, 5, executed));
+    try reducer.observe(try nativeEvent(scratch, 6, "execution.failed", try usageLimitData(scratch, "", monthly)));
+    try testing.expectEqualStrings("opencode_execution_failed", errorCode(reducer.envelopes.items[reducer.envelopes.items.len - 1]));
+    try testing.expectEqualStrings("Go usage limit exceeded; monthly limit, resets in 6 days", lastPayload(&reducer).get("error").?.object.get("message").?.string);
+
+    const replayed = (try reducer.submit("session", "three", "auto")).message_ids[0];
+    try reducer.observe(try deliveredEvent(scratch, 7, replayed));
+    const record_error = try std.json.Stringify.valueAlloc(scratch, .{ .type = "provider.rate-limit", .message = "Go usage limit exceeded", .status = 429, .response = .{ .body = monthly } }, .{});
+    try reducer.replay(try recordsOf(scratch, try std.fmt.allocPrint(scratch, "[{{\"id\":\"{s}\",\"type\":\"user\"}},{{\"id\":\"msg_a3\",\"type\":\"assistant\",\"content\":[],\"finish\":\"error\",\"error\":{s},\"cost\":0,\"time\":{{\"created\":8,\"completed\":9}}}},{{\"id\":\"msg_idle\",\"type\":\"idle\",\"outcome\":\"failed\"}}]", .{ replayed, record_error })), replayed, true);
+    try testing.expectEqualStrings("opencode_step_failed", errorCode(reducer.envelopes.items[reducer.envelopes.items.len - 1]));
+    try testing.expectEqualStrings("Go usage limit exceeded; monthly limit, resets in 6 days", lastPayload(&reducer).get("error").?.object.get("message").?.string);
 }
 
 test "a replayed record fails a run the record shows failed, and one the server stopped without recording" {
