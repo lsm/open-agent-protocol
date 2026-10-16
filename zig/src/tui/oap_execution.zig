@@ -289,9 +289,16 @@ pub const OapExecution = struct {
         return @ptrCast(@alignCast(ctx));
     }
 
-    fn start(ctx: *anyopaque, sink: session_runtime.EventSink, settings: session_runtime.RemoteSettings) anyerror!void {
+    fn start(ctx: *anyopaque, sink: session_runtime.EventSink, given: session_runtime.RemoteSettings) anyerror!void {
         const self = cast(ctx);
-        try self.keepSettings(settings);
+        try self.keepSettings(given);
+        var settings = given;
+        if (given.model) |model| {
+            if (std.mem.eql(u8, model.api, away_api)) {
+                try self.placeAway(model);
+                settings.model = null;
+            } else self.placeHome();
+        }
         const prior_open = settings.resume_session_id != null and self.session_id.len > 0;
         self.startSession(sink, settings) catch |err| {
             if (!prior_open or err == error.OapReopenRefused or self.thread != null) return err;
@@ -884,6 +891,23 @@ pub const OapExecution = struct {
         self.session_models = kept.session_models;
         self.tool_labels = kept.tool_labels;
         self.live_reasoning, self.live_compaction, self.live_policy, self.live_steer = kept.live;
+    }
+
+    fn placeAway(self: *OapExecution, model: ai_types.Model) !void {
+        const away = self.away orelse return error.ModelNotFound;
+        const served = try away.open(away.ctx, model);
+        if (self.home != null) return;
+        self.halt();
+        self.home = self.endpoint;
+        self.endpoint = adapter_endpoint.Endpoint.init(self.allocator, served, .{ .frame_limit = in_process_frame_limit });
+    }
+
+    fn placeHome(self: *OapExecution) void {
+        const home = self.home orelse return;
+        self.halt();
+        self.endpoint.?.deinit();
+        self.endpoint = home;
+        self.home = null;
     }
 
     fn moveSession(self: *OapExecution, served: ?Served, going_home: bool, model: ?ai_types.Model) !void {
@@ -3121,6 +3145,34 @@ test "an OpenCode model moves the session onto OpenCode's endpoint, and a loop m
     defer seen.deinit();
     try drainTurn(&runtime, &seen);
     try testing.expectEqualStrings("over the wire", seen.final_text.items);
+}
+
+test "a session opened on an OpenCode model opens on OpenCode's endpoint, not the loop's" {
+    var away = AwayStub{ .memory = @import("memory_adapter").Adapter.init(testing.allocator) };
+    defer away.memory.deinit();
+    var script = Script{};
+    const models = [_]ai_types.Model{scripted_model};
+    const app_models = [_]ai_types.Model{ scripted_model, away_model };
+    const execution = try OapExecution.create(testing.allocator, .{
+        .protocol = .{ .stream_fn = scriptedStream, .ctx = &script },
+        .models = &models,
+        .initial_model_id = scripted_model.id,
+    });
+    defer execution.destroy();
+    execution.setAway(.{ .ctx = &away, .open = AwayStub.open });
+    var runtime = try session_runtime.SessionRuntime.init(testing.allocator, .{
+        .models = &app_models,
+        .initial_model_id = scripted_model.id,
+        .remote = execution.remote(),
+    });
+    defer runtime.deinit();
+
+    try runtime.switchModelExact(away_model);
+    try testing.expectEqual(@as(usize, 0), away.opened);
+    try runtime.start();
+    try testing.expectEqual(@as(usize, 1), away.opened);
+    try testing.expect(execution.home != null);
+    try testing.expect(!runtime.recordsFromEndpoint());
 }
 
 test "an OpenCode model that cannot be reached leaves the session where it was" {
