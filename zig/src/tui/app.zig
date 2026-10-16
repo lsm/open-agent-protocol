@@ -5688,13 +5688,14 @@ fn preferredContextWindow(stored: ?u32, flag: ?u32) ?u32 {
     return flag orelse stored;
 }
 
-pub const over_oap_notice = "oapx tui --attach: this session runs on the hub's endpoint. Resume and automatic worktrees are not carried over the hub, the context window, output limit, permission mode and workspace are fixed when the session opens, and an \"always\" answer to a tool approval applies to that call only unless the endpoint offers it; run oapx without --attach for them.";
+pub const over_oap_notice = "this session runs on another endpoint: the hub's with --attach, or the backend's with --backend. Resume and automatic worktrees are not carried over to it, the context window, output limit, permission mode and workspace are fixed when the session opens, and an \"always\" answer to a tool approval applies to that call only unless the endpoint offers it; run oapx without --attach or --backend for them.";
 pub const over_oap_setting_refusal = tui_commands.over_oap_setting_refusal;
-pub const over_oap_compaction_refusal = "this session's endpoint does not take a compaction over OAP; run oapx without --attach to compact.";
+pub const over_oap_compaction_refusal = "this session's endpoint does not take a compaction over OAP; run oapx without --attach or --backend to compact.";
 
 pub const Execution = union(enum) {
     in_process,
     attach: struct { url: []const u8, adapter: []const u8 },
+    served: tui_oap_execution.Served,
 };
 
 pub fn runWith(allocator: std.mem.Allocator, io: std.Io, context_window: ?u32, execution_mode: Execution) !void {
@@ -5723,12 +5724,13 @@ pub fn runWith(allocator: std.mem.Allocator, io: std.Io, context_window: ?u32, e
     const execution = switch (execution_mode) {
         .attach => |target| try tui_oap_execution.OapExecution.attach(allocator, target.url, target.adapter),
         .in_process => try tui_oap_execution.OapExecution.create(allocator, options),
+        .served => |adapter| try tui_oap_execution.OapExecution.over(allocator, adapter),
     };
     defer execution.destroy();
     if (history_store) |*store| execution.setHistory(.{ .ctx = store, .load = loadSavedHistory });
     if (history_store) |*store| execution.setTranscripts(.{ .ctx = store, .save = saveSessionTranscript });
     options.remote = execution.remote();
-    if (execution_mode == .attach) {
+    if (execution_mode != .in_process) {
         options.generate_titles = false;
         options.auto_worktree = false;
     }

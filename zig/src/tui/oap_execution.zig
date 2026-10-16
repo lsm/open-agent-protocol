@@ -8,6 +8,7 @@ const session_events = @import("session_events");
 const CompactionEnd = @TypeOf(@as(session_events.SessionEvent, undefined).compaction_end);
 const CompactionOutcome = @FieldType(CompactionEnd, "outcome");
 const adapter_endpoint = @import("adapter_endpoint");
+const adapter_contract = @import("adapter_contract");
 const oapx_adapter = @import("oapx_adapter");
 const hub_link = @import("hub_link");
 const OwnedSlice = @import("owned_slice").OwnedSlice;
@@ -21,6 +22,7 @@ const participant = "oapx.tui";
 const idle_sleep_ns = 2 * std.time.ns_per_ms;
 const startup_attempts = 2000;
 pub const in_process_frame_limit: usize = 64 << 20;
+pub const Served = adapter_contract.Adapter;
 
 pub const Tap = struct {
     ctx: *anyopaque,
@@ -163,6 +165,12 @@ pub const OapExecution = struct {
 
     pub fn setTranscripts(self: *OapExecution, store: oapx_adapter.TranscriptStore) void {
         if (self.adapter) |held| held.transcripts = store;
+    }
+
+    pub fn over(allocator: std.mem.Allocator, served: Served) !*OapExecution {
+        const self = try allocator.create(OapExecution);
+        self.* = .{ .allocator = allocator, .endpoint = adapter_endpoint.Endpoint.init(allocator, served, .{ .frame_limit = in_process_frame_limit }) };
+        return self;
     }
 
     pub fn attach(allocator: std.mem.Allocator, base: []const u8, adapter_name: []const u8) !*OapExecution {
@@ -394,7 +402,7 @@ pub const OapExecution = struct {
 
         try self.listTools(a);
 
-        if (settings.model != null and self.hub == null) {
+        if (settings.model != null and self.adapter != null) {
             const wanted = try modelRef(a, settings.model.?);
             var switch_map = Map.init(a);
             try switch_map.put("session_id", .{ .string = self.session_id });
@@ -684,14 +692,9 @@ pub const OapExecution = struct {
     }
 
     fn submission(self: *OapExecution, a: std.mem.Allocator, text: []const u8, delivery: []const u8) !std.json.Value {
-        var part = Map.init(a);
-        try part.put("type", .{ .string = "text" });
-        try part.put("text", .{ .string = text });
-        var parts = std.json.Array.init(a);
-        try parts.append(part.value());
         var message = Map.init(a);
         try message.put("role", .{ .string = "user" });
-        try message.put("content", .{ .array = parts });
+        try message.put("content", .{ .string = text });
         var messages = std.json.Array.init(a);
         try messages.append(message.value());
         var payload = Map.init(a);
