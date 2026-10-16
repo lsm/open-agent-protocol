@@ -102,6 +102,25 @@ Both trees now record the `inboxID` of every non-`user` item at
 suppresses the stream. The run still settles at `session.execution.*`. The
 capability descriptor is unchanged.
 
+## Tools that fail before they are called
+
+`packages/core/src/session/runner/publish-llm-event.ts` publishes
+`tool.input.started` for every tool the model begins, then `tool.called` once
+the input parses. When it does not parse (`failMalformedToolInput`, error type
+`tool.input-json`), or the step ends with the input unfinished (`failTool`),
+OpenCode publishes `tool.failed` with `executed: false` and **no
+`tool.called`**. Both trees treated that end as one without a start and failed
+the run with `opencode_invalid_tool_lifecycle`, so a model that sends one
+malformed call (seen with `opencode/mimo-v2.6-flash-free` on Zen) lost the
+whole run, though OpenCode itself tells the model to retry and goes on.
+
+Both trees now start such a tool when its end arrives, from the name
+`tool.input.started` gave it, with `arguments_json: null` because no input
+parsed, and then end it: `action.call.requested`, `action.call.started`,
+`action.call.failed`. An end for a tool no `tool.input.started` named still
+fails the run. A replayed record always carries `tool.called`, so replay is
+unchanged.
+
 ## Corpus
 
 `fixtures/adapters/opencode-v2.0.26` is the v2.0.24 corpus carried forward

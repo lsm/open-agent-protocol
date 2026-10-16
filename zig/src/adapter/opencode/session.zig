@@ -528,12 +528,14 @@ pub const Reducer = struct {
                 const data = (try self.decodeFor(native.ToolContentData, native.decodeToolSuccess, event, run, "opencode_invalid_tool_event")) orelse return;
                 const target = run orelse return;
                 if (!try self.sighted(&target.tool_seen, try self.toolKey(true, data.id))) return;
+                try self.startUncalled(target, data.id);
                 try self.endTool(target, data.id, null, try self.contentValue(data.content));
             },
             .tool_failed => {
                 const data = (try self.decodeFor(native.ToolFailedData, native.decodeToolFailed, event, run, "opencode_invalid_tool_event")) orelse return;
                 const target = run orelse return;
                 if (!try self.sighted(&target.tool_seen, try self.toolKey(true, data.id))) return;
+                try self.startUncalled(target, data.id);
                 try self.endTool(target, data.id, data.failure.message, .null);
             },
             else => {},
@@ -788,6 +790,14 @@ pub const Reducer = struct {
         if (tool.terminal) return self.failRun(run, "opencode_invalid_tool_lifecycle", "tool progress without active start");
         tool.progress = progress;
         _ = try self.emitEnvelope(run, "action.call.progress", try self.toolPayload(tool, .{ .progress = true, .result = true }), false, tool.started_event, null);
+    }
+
+    fn startUncalled(self: *Reducer, run: *Run, native_id: []const u8) Error!void {
+        if (self.findTool(run, native_id) != null) return;
+        const name = self.tool_names.get(native_id) orelse return;
+        if (name.len == 0) return;
+        if (!try self.sighted(&run.tool_seen, try self.toolKey(false, native_id))) return;
+        try self.startTool(run, native_id, name, .null);
     }
 
     fn endTool(self: *Reducer, run: *Run, native_id: []const u8, failure: ?[]const u8, content: std.json.Value) Error!void {
@@ -1489,6 +1499,43 @@ test "a synthetic inbox item's delivery neither settles nor hides the run" {
     try reducer.observe(try succeeded(scratch, 9));
     try expectKinds(&reducer, &.{ "run.started", "content.delta", "run.completed" });
     try testing.expectEqualStrings("text:final", try partLabel(scratch, payloadOf(reducer.envelopes.items[1]).get("part").?));
+}
+
+test "a tool OpenCode fails before calling it is started then failed, and the run goes on" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const scratch = arena.allocator();
+    var fake = Fake{};
+    var reducer = Reducer.init(&arena, .{ .native_id = native_session }, fake.client());
+    try reducer.open();
+    const admission = try reducer.submit("session", "hi", "auto");
+    try reducer.observe(try deliveredEvent(scratch, 1, admission.message_ids[0]));
+    try reducer.observe(try stepStarted(scratch, 2, "a"));
+    try reducer.observe(try nativeEvent(scratch, 3, "tool.input.started", "{\"assistantMessageID\":\"msg_a\",\"id\":\"call_bad\",\"name\":\"read\"}"));
+    try reducer.observe(try nativeEvent(scratch, 4, "tool.input.ended", "{\"assistantMessageID\":\"msg_a\",\"id\":\"call_bad\",\"text\":\"{\\\"path\\\":\"}"));
+    try reducer.observe(try nativeEvent(scratch, 5, "tool.failed", "{\"assistantMessageID\":\"msg_a\",\"id\":\"call_bad\",\"error\":{\"type\":\"tool.input-json\",\"message\":\"Tool call arguments were malformed JSON and were not executed. Retry with valid JSON.\"},\"executed\":false}"));
+    try reducer.observe(try nativeEvent(scratch, 6, "text.ended", "{\"assistantMessageID\":\"msg_b\",\"ordinal\":0,\"text\":\"retried\"}"));
+    try reducer.observe(try stepEnded(scratch, 7));
+    try reducer.observe(try succeeded(scratch, 8));
+    try expectKinds(&reducer, &.{ "run.started", "action.call.requested", "action.call.started", "action.call.failed", "content.delta", "run.completed" });
+    const requested = payloadOf(reducer.envelopes.items[1]);
+    try testing.expectEqualStrings("read", requested.get("name").?.string);
+    try testing.expect(requested.get("arguments_json").? == .null);
+}
+
+test "a tool end with no input started fails the run" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const scratch = arena.allocator();
+    var fake = Fake{};
+    var reducer = Reducer.init(&arena, .{ .native_id = native_session }, fake.client());
+    try reducer.open();
+    const admission = try reducer.submit("session", "hi", "auto");
+    try reducer.observe(try deliveredEvent(scratch, 1, admission.message_ids[0]));
+    try reducer.observe(try stepStarted(scratch, 2, "a"));
+    try reducer.observe(try nativeEvent(scratch, 3, "tool.failed", "{\"assistantMessageID\":\"msg_a\",\"id\":\"call_orphan\",\"error\":{\"type\":\"unknown\",\"message\":\"lost\"},\"executed\":false}"));
+    try testing.expectEqualStrings("opencode_invalid_tool_lifecycle", errorCode(reducer.envelopes.items[reducer.envelopes.items.len - 1]));
+    try testing.expectEqualStrings("tool end without active start", lastPayload(&reducer).get("error").?.object.get("message").?.string);
 }
 
 test "the catalog needs degraded consent, answers only this session, and grows with step evidence" {
