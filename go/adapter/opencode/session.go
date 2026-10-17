@@ -110,6 +110,7 @@ type runState struct {
 	steps           [2]map[native.MessageID]bool
 	toolSeen        [2]map[toolSight]bool
 	usage           protocol.Usage
+	measured        bool
 	cost            float64
 	lastFinish      string
 	failure         *native.UnknownErrorBlock
@@ -658,6 +659,7 @@ func (s *session) handleEventLocked(event native.Event) {
 		if !run.terminal {
 			run.lastFinish = data.Finish
 			run.cost += data.Cost
+			run.measured = true
 			run.usage.InputTokens += tokenCount(data.Tokens.Input)
 			run.usage.OutputTokens += tokenCount(data.Tokens.Output)
 			run.usage.TotalTokens += tokenCount(data.Tokens.Input) + tokenCount(data.Tokens.Output)
@@ -937,7 +939,11 @@ func (s *session) settleRunLocked(run *runState) {
 	failure := run.failure
 	finish := run.lastFinish
 	parts := append([]protocol.ContentPart(nil), run.parts...)
-	usage := run.usage
+	var usage *protocol.Usage
+	if run.measured {
+		measured := run.usage
+		usage = &measured
+	}
 	reported := reportedCost(run.cost)
 	s.mu.Unlock()
 	s.settleTools(run, cancelRequested)
@@ -961,7 +967,7 @@ func (s *session) settleRunLocked(run *runState) {
 		RunID:         run.id,
 		FinalResponse: protocol.Message{ID: run.messageID, Role: protocol.RoleAssistant, Content: content},
 		StopReason:    finish,
-		Usage:         &usage,
+		Usage:         usage,
 	}, true, reported)
 }
 
