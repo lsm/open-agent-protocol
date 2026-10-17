@@ -87,18 +87,19 @@ pub const Poll = struct {
             self.buffer.ptr,
             @intCast(size),
         );
-        switch (status) {
-            .PENDING, .SUCCESS => {},
-            else => {
-                self.state = .idle;
-                return error.PollFailed;
-            },
+        if (failedAtOnce(status)) {
+            self.state = .idle;
+            return error.PollFailed;
         }
     }
 
-    pub fn ready(self: *const Poll) ?[]const HandleInfo {
+    pub fn ready(self: *const Poll) error{PollFailed}!?[]const HandleInfo {
         if (self.state != .done) return null;
-        if (self.iosb.u.Status != .SUCCESS) return &.{};
+        switch (self.iosb.u.Status) {
+            .SUCCESS => {},
+            .CANCELLED => return &.{},
+            else => return error.PollFailed,
+        }
         const signalled: *const Header = @ptrCast(self.buffer.ptr);
         return self.handlesConst(signalled.count);
     }
@@ -109,6 +110,10 @@ pub const Poll = struct {
         _ = windows.ntdll.NtCancelIoFileEx(self.device.?, &self.iosb, &cancel_iosb);
         while (self.state == .pending) _ = compat.time.sleepUntilCompletion(std.time.ns_per_s);
         self.state = .idle;
+    }
+
+    fn failedAtOnce(status: windows.NTSTATUS) bool {
+        return @intFromEnum(status) >> 30 == 3;
     }
 
     fn header(self: *Poll) *Header {
@@ -132,6 +137,14 @@ pub const Poll = struct {
 };
 
 const testing = std.testing;
+
+test "only an error status means the poll was refused before it could complete, because any other status still queues its APC" {
+    try testing.expect(Poll.failedAtOnce(.INVALID_HANDLE));
+    try testing.expect(Poll.failedAtOnce(.INVALID_PARAMETER));
+    try testing.expect(!Poll.failedAtOnce(.SUCCESS));
+    try testing.expect(!Poll.failedAtOnce(.PENDING));
+    try testing.expect(!Poll.failedAtOnce(.BUFFER_OVERFLOW));
+}
 
 test "the poll's wire layout is the one AFD reads" {
     if (comptime !supported) return error.SkipZigTest;
@@ -167,12 +180,12 @@ test "a connection arriving at a polled listener ends an alertable sleep with th
     defer poll.deinit();
     try poll.arm(listener, &.{.{ .handle = listener, .events = .{ .accept = true } }});
     try testing.expect(!settleWithin(&poll, 100));
-    try testing.expectEqual(@as(?[]const HandleInfo, null), poll.ready());
+    try testing.expectEqual(@as(?[]const HandleInfo, null), try poll.ready());
 
     var client = try compat.net.tcpConnect(compat.net.listenAddress(&server));
     defer client.close();
     try testing.expect(settleWithin(&poll, 5000));
-    const signalled = poll.ready().?;
+    const signalled = (try poll.ready()).?;
     try testing.expectEqual(@as(usize, 1), signalled.len);
     try testing.expectEqual(listener, signalled[0].handle);
     try testing.expect(signalled[0].events.accept);
@@ -199,7 +212,7 @@ test "a polled connection stays pending while its peer is quiet and reports rece
 
     try client.writeAll("x");
     try testing.expect(settleWithin(&poll, 5000));
-    const signalled = poll.ready().?;
+    const signalled = (try poll.ready()).?;
     try testing.expectEqual(@as(usize, 1), signalled.len);
     try testing.expectEqual(connection, signalled[0].handle);
     try testing.expect(signalled[0].events.receive);
@@ -216,11 +229,11 @@ test "a cancelled poll has settled by the time cancel returns, and can be armed 
     try poll.arm(listener, &.{.{ .handle = listener, .events = .{ .accept = true } }});
     poll.cancel();
     try testing.expectEqual(Poll.State.idle, poll.state);
-    try testing.expectEqual(@as(?[]const HandleInfo, null), poll.ready());
+    try testing.expectEqual(@as(?[]const HandleInfo, null), try poll.ready());
 
     try poll.arm(listener, &.{.{ .handle = listener, .events = .{ .accept = true } }});
     var client = try compat.net.tcpConnect(compat.net.listenAddress(&server));
     defer client.close();
     try testing.expect(settleWithin(&poll, 5000));
-    try testing.expect(poll.ready().?[0].events.accept);
+    try testing.expect((try poll.ready()).?[0].events.accept);
 }
