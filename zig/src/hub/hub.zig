@@ -837,8 +837,8 @@ pub const Hub = struct {
                 }
             }
         }
-        if (request.session_id.len > 0 and self.findSession(request.session_id) != null) return error.SessionExists;
         try contract.refuseUnadvertisedOpenElections(descriptor, &request.payload(), &refused.reason);
+        if (request.session_id.len > 0 and self.findSession(request.session_id) != null) return error.SessionExists;
         var native_session_id: []const u8 = "";
         var adopted_native = false;
         var directory = request.directory;
@@ -2135,6 +2135,24 @@ test "a hub opens many sessions, each with its own journal" {
 
     const beta_state = try hub.state(arena, "beta");
     try testing.expectEqualStrings("beta", beta_state.session_id);
+}
+
+test "an open electing what the adapter does not advertise is refused for that, ahead of a taken name" {
+    var adapter = memory.Adapter.init(testing.allocator);
+    defer adapter.deinit();
+    var hub = Hub.init(testing.allocator, testClock, .{});
+    defer hub.deinit();
+    try hub.register("memory", adapter.adapter());
+    var scratch = std.heap.ArenaAllocator.init(testing.allocator);
+    defer scratch.deinit();
+    const arena = scratch.allocator();
+
+    _ = try hub.open(arena, "memory", .{ .session_id = "alpha" });
+    var refusal: OpenRefusal = .{};
+    try testing.expectError(error.UnsupportedFeature, hub.openReporting(arena, "memory", .{ .session_id = "alpha", .reasoning_level = "high" }, &refusal));
+    try testing.expectEqualStrings(contract.feature_session_reasoning, refusal.reason.feature);
+    try testing.expectError(error.SessionExists, hub.open(arena, "memory", .{ .session_id = "alpha" }));
+    try testing.expectEqual(@as(usize, 1), hub.sessionCount());
 }
 
 test "an adapter-assigned session id that is already taken is refused, not adopted twice" {
