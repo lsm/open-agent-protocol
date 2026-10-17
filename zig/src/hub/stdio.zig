@@ -1,3 +1,4 @@
+const repeat = @import("repeat").repeat;
 const std = @import("std");
 const oap_types = @import("oap_types");
 const oap_envelope = @import("oap_envelope");
@@ -3014,7 +3015,7 @@ test "a framing defect stops serving, and the daemon says so" {
 test "a refusal that will not fit is reduced, then refused as too large" {
     const harness = try Harness.init(testing.allocator, .{}, .{ .frame_limit = minimum_frame_limit });
     defer harness.deinit();
-    const name = "adapter-" ++ "n" ** 200;
+    const name = "adapter-" ++ repeat("n", 200);
     const line = try std.fmt.allocPrint(harness.arena(), "{{\"id\":1,\"op\":\"capabilities\",\"adapter\":\"{s}\"}}", .{name});
     try harness.send(line);
     const answer = (try harness.lastValue()).object.get("error").?.object;
@@ -3463,7 +3464,7 @@ test "a serve loop told to stop answers nothing further, however many lines the 
 }
 
 test "a request stream that never ends its line is a framing defect, bounded" {
-    const harness = try ScriptedHarness.init(testing.allocator, .{}, .{ .frame_limit = 256 }, &.{"q" ** 400});
+    const harness = try ScriptedHarness.init(testing.allocator, .{}, .{ .frame_limit = 256 }, &.{repeat("q", 400)});
     defer harness.deinit();
     var frontend = try Frontend.init(testing.allocator, &harness.backing.hub, harness.backing.recorder.sink(), .{ .frame_limit = 256 });
     defer frontend.deinit();
@@ -3473,7 +3474,7 @@ test "a request stream that never ends its line is a framing defect, bounded" {
         .readable = null,
     }));
     try testing.expectEqual(@as(usize, 0), harness.backing.recorder.lines.items.len);
-    try testing.expectEqualStrings("q" ** 400, frontend.defect().?);
+    try testing.expectEqualStrings(repeat("q", 400), frontend.defect().?);
     try testing.expect(!frontend.recorded.cut);
 }
 
@@ -3508,7 +3509,7 @@ test "a framing defect names the line that caused it, bounded" {
     try testing.expectEqualStrings("not json", short.defect().?);
     var long = try Frontend.init(testing.allocator, &harness.backing.hub, harness.backing.recorder.sink(), .{});
     defer long.deinit();
-    try testing.expectError(error.MalformedLine, long.handleLine("q" ** 900));
+    try testing.expectError(error.MalformedLine, long.handleLine(repeat("q", 900)));
     try testing.expectEqual(@as(usize, 512), long.defect().?.len);
     try testing.expect(long.recorded.cut);
 }
@@ -3660,7 +3661,7 @@ test "a null parameter is supplied and refused, and a wrongly typed one is a def
 test "a refusal's message is bounded so a long one still frames" {
     const harness = try Harness.init(testing.allocator, .{}, .{});
     defer harness.deinit();
-    const name = "adapter-" ++ "n" ** 400;
+    const name = "adapter-" ++ repeat("n", 400);
     const line = try std.fmt.allocPrint(harness.arena(), "{{\"id\":1,\"op\":\"capabilities\",\"adapter\":\"{s}\"}}", .{name});
     try testing.expect(std.unicode.utf8ValidateSlice(line));
     try harness.send(line);
@@ -3673,7 +3674,7 @@ test "a refusal's message is bounded so a long one still frames" {
 test "a bounded message is cut on a character boundary, not inside one" {
     const harness = try Harness.init(testing.allocator, .{}, .{});
     defer harness.deinit();
-    const name = "adapter-" ++ "\u{00e9}" ** 400;
+    const name = "adapter-" ++ repeat("\u{00e9}", 400);
     const line = try std.fmt.allocPrint(harness.arena(), "{{\"id\":1,\"op\":\"capabilities\",\"adapter\":\"{s}\"}}", .{name});
     try harness.send(line);
     const message = (try harness.lastValue()).object.get("error").?.object.get("message").?.string;
@@ -4197,7 +4198,7 @@ test "a signal too long for the frame limit falls back to its event, id and numb
     const harness = try Harness.init(testing.allocator, .{}, .{ .frame_limit = minimum_frame_limit });
     defer harness.deinit();
     var object = try Frontend.signalObject(harness.arena(), "oap-overflow", 9, "s1");
-    try object.put(harness.arena(), "run_id", .{ .string = &([_]u8{'r'} ** minimum_frame_limit) });
+    try object.put(harness.arena(), "run_id", .{ .string = &(@as([minimum_frame_limit]u8, @splat('r'))) });
     try object.put(harness.arena(), "last_sequence", .{ .integer = 4 });
     try harness.frontend.writeSignal(harness.arena(), object);
     try testing.expectEqualStrings("{\"event\":\"oap-overflow\",\"id\":9,\"last_sequence\":4}", harness.recorder.last());
@@ -4968,7 +4969,7 @@ fn titledNativeSearch(ptr: *anyopaque, arena: std.mem.Allocator, request: contra
     };
     var matched: std.ArrayList(contract.NativeSession) = .empty;
     for (rows) |row| {
-        if (std.ascii.indexOfIgnoreCase(row.title, request.term) != null and matched.items.len < request.limit) try matched.append(arena, row);
+        if (std.ascii.findIgnoreCase(row.title, request.term) != null and matched.items.len < request.limit) try matched.append(arena, row);
     }
     return matched.items;
 }

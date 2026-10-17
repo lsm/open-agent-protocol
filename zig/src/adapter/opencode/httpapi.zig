@@ -1,3 +1,4 @@
+const repeat = @import("repeat").repeat;
 const std = @import("std");
 const native = @import("native");
 const sse_parser = @import("sse_parser");
@@ -552,8 +553,8 @@ test "an SSE frame is refused where the oracle's decoder refuses it" {
     try expectFrameRefusal("event: a\nevent: b\ndata: x\n\n", invalid_frame ++ ": duplicate event field");
     try expectFrameRefusal("id: 1\nid: 2\ndata: x\n\n", invalid_frame ++ ": duplicate id field");
     try expectFrameRefusal("id: a\x00b\ndata: x\n\n", invalid_frame ++ ": id contains NUL");
-    try expectFrameRefusal("data: " ++ "x" ** 70 ++ "\n\n", frame_too_large);
-    try expectFrameRefusal(": " ++ "c" ** 40 ++ "\n: " ++ "c" ** 40 ++ "\n", frame_too_large);
+    try expectFrameRefusal("data: " ++ repeat("x", 70) ++ "\n\n", frame_too_large);
+    try expectFrameRefusal(": " ++ repeat("c", 40) ++ "\n: " ++ repeat("c", 40) ++ "\n", frame_too_large);
 }
 
 test "an empty event is skipped and an empty field does not claim the event" {
@@ -748,7 +749,7 @@ fn streamEveryShape(allocator: std.mem.Allocator) !void {
 }
 
 test "the SSE decoder and the codec propagate every allocation failure and leak nothing" {
-    try testing.checkAllAllocationFailures(testing.allocator, streamEveryShape, .{});
+    try testing.checkAllAllocationFailures(std.heap.smp_allocator, streamEveryShape, .{});
 }
 
 test "a session list decodes every row strictly and refuses one that is not a session" {

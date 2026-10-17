@@ -1,3 +1,4 @@
+const repeat = @import("repeat").repeat;
 const std = @import("std");
 const builtin = @import("builtin");
 const build_options = @import("bench_options");
@@ -55,32 +56,32 @@ const transport_content = [_]ai_types.AssistantContent{
     .{ .text = .{ .text = "A representative provider response with owned text content." } },
     .{ .tool_call = .{ .id = "call-baseline-1", .name = "lookup", .arguments_json = "{\"query\":\"deterministic fixture\"}" } },
 };
-const transport_large_text = "0123456789abcdef" ** 4096;
+const transport_large_text = repeat("0123456789abcdef", 4096);
 const transport_large_content = [_]ai_types.AssistantContent{
     .{ .text = .{ .text = transport_large_text } },
 };
 
 fn transportFixtures() [4]protocol_types.Envelope {
     return .{ .{
-        .stream_id = [_]u8{1} ** 16,
-        .message_id = [_]u8{2} ** 16,
+        .stream_id = @as([16]u8, @splat(1)),
+        .message_id = @as([16]u8, @splat(2)),
         .sequence = 42,
         .timestamp = 1_708_234_567_890,
-        .in_reply_to = [_]u8{3} ** 16,
+        .in_reply_to = @as([16]u8, @splat(3)),
         .payload = .ping,
     }, .{
-        .stream_id = [_]u8{4} ** 16,
-        .message_id = [_]u8{5} ** 16,
+        .stream_id = @as([16]u8, @splat(4)),
+        .message_id = @as([16]u8, @splat(5)),
         .sequence = 43,
         .timestamp = 1_708_234_567_891,
-        .in_reply_to = [_]u8{6} ** 16,
+        .in_reply_to = @as([16]u8, @splat(6)),
         .payload = .{ .pong = .{ .ping_id = protocol_types.OwnedSlice(u8).initBorrowed("representative-provider-ping-id") } },
     }, .{
-        .stream_id = [_]u8{7} ** 16,
-        .message_id = [_]u8{8} ** 16,
+        .stream_id = @as([16]u8, @splat(7)),
+        .message_id = @as([16]u8, @splat(8)),
         .sequence = 44,
         .timestamp = 1_708_234_567_892,
-        .in_reply_to = [_]u8{9} ** 16,
+        .in_reply_to = @as([16]u8, @splat(9)),
         .payload = .{ .result = .{
             .content = &transport_content,
             .api = "openai-responses",
@@ -91,11 +92,11 @@ fn transportFixtures() [4]protocol_types.Envelope {
             .timestamp = 1_708_234_567_892,
         } },
     }, .{
-        .stream_id = [_]u8{10} ** 16,
-        .message_id = [_]u8{11} ** 16,
+        .stream_id = @as([16]u8, @splat(10)),
+        .message_id = @as([16]u8, @splat(11)),
         .sequence = 45,
         .timestamp = 1_708_234_567_893,
-        .in_reply_to = [_]u8{12} ** 16,
+        .in_reply_to = @as([16]u8, @splat(12)),
         .payload = .{ .result = .{
             .content = &transport_large_content,
             .api = "openai-responses",

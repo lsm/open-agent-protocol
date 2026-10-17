@@ -1,3 +1,4 @@
+const repeat = @import("repeat").repeat;
 const std = @import("std");
 const agent_compaction = @import("agent_compaction");
 const ai_types = @import("ai_types");
@@ -4676,7 +4677,7 @@ test "zen's queue keeps the newest lines when it overflows, and clips each line 
     }
     try std.testing.expectEqual(zen_queue_lines, zen.queue_len);
     try std.testing.expectEqualStrings("step 3", zen.queue[0].text());
-    const long = "\u{2026}" ** 100;
+    const long = repeat("\u{2026}", 100);
     const line = ZenLine.of(long);
     try std.testing.expect(line.text().len <= zen_activity_bytes);
     try std.testing.expect(std.unicode.utf8ValidateSlice(line.text()));

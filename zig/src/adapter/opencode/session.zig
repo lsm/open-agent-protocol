@@ -198,7 +198,7 @@ fn failureText(arena: std.mem.Allocator, failure: native.ErrorBlock) Error![]con
 
 fn resetIn(arena: std.mem.Allocator, message: []const u8) Error![]const u8 {
     for ([_][]const u8{ "resets in ", "retry in " }) |lead| {
-        const at = std.ascii.indexOfIgnoreCase(message, lead) orelse continue;
+        const at = std.ascii.findIgnoreCase(message, lead) orelse continue;
         var rest = message[at + lead.len ..];
         if (std.mem.indexOfScalar(u8, rest, '.')) |end| rest = rest[0..end];
         var spelled: std.ArrayList(u8) = .empty;

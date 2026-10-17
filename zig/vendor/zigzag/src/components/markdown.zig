@@ -1,3 +1,4 @@
+const repeat = @import("../testing/repeat.zig").repeat;
 
 const std = @import("std");
 const Writer = std.Io.Writer;
@@ -398,7 +399,7 @@ test "markdown renderer respects long backtick fence length" {
 }
 
 test "markdown code block clamps wide characters on a cell boundary" {
-    const cjk = "漢" ** 40;
+    const cjk = repeat("漢", 40);
     const src = "```\n" ++ cjk ++ "\n```";
     var md = Markdown.init();
     const out = try md.render(std.testing.allocator, src);
@@ -409,7 +410,7 @@ test "markdown code block clamps wide characters on a cell boundary" {
 }
 
 test "markdown code block does not split an emoji" {
-    const emoji = "😀" ** 40;
+    const emoji = repeat("😀", 40);
     const src = "```\n" ++ emoji ++ "\n```";
     var md = Markdown.init();
     const out = try md.render(std.testing.allocator, src);
@@ -419,7 +420,7 @@ test "markdown code block does not split an emoji" {
 }
 
 test "markdown code block pads wide characters by display cells" {
-    const cjk = "漢" ** 40;
+    const cjk = repeat("漢", 40);
     const src = "```\n" ++ cjk ++ "\n```";
     var md = Markdown.init();
     const out = try md.render(std.testing.allocator, src);

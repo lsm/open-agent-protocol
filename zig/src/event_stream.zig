@@ -1420,7 +1420,7 @@ test "multi_producer_stress_preserves_events" {
     }
     start.store(true, .release);
 
-    var seen = [_][per_producer]bool{[_]bool{false} ** per_producer} ** producer_count;
+    var seen = @as([producer_count][per_producer]bool, @splat(@splat(false)));
     var received: usize = 0;
     while (received < expected_total) {
         if (stream.wait()) |event| {

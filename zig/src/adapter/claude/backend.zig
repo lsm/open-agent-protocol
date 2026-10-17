@@ -1,3 +1,4 @@
+const repeat = @import("repeat").repeat;
 const std = @import("std");
 const process = @import("process");
 const session = @import("session");
@@ -445,9 +446,9 @@ test "a config that states no tool posture is refused rather than defaulted" {
 
 test "a turn uuid is alphanumeric with hyphens and at most 128 bytes" {
     try validateTurnUUID("turn-1");
-    try validateTurnUUID("a" ** 128);
+    try validateTurnUUID(repeat("a", 128));
     try std.testing.expectError(Error.InvalidTurnUUID, validateTurnUUID(""));
-    try std.testing.expectError(Error.InvalidTurnUUID, validateTurnUUID("a" ** 129));
+    try std.testing.expectError(Error.InvalidTurnUUID, validateTurnUUID(repeat("a", 129)));
     try std.testing.expectError(Error.InvalidTurnUUID, validateTurnUUID("turn_1"));
     try std.testing.expectError(Error.InvalidTurnUUID, validateTurnUUID("turn 1"));
 }
@@ -589,7 +590,7 @@ test "a settled backend stops pumping rather than reading a closed child again" 
     try std.testing.expect(backend.reducer.unusable);
 }
 
-const filler_frame = "{\"type\":\"" ++ ("Z" ** 100) ++ "\"}";
+const filler_frame = "{\"type\":\"" ++ (repeat("Z", 100)) ++ "\"}";
 
 test "what the reducer keeps from a frame outlives the next frame" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
@@ -636,7 +637,7 @@ const echo_frame = "{\"type\":\"system\",\"user_message_uuid\":\"turn-1\"}";
 test "a reader error names itself, not the status the child happened to exit on" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
-    var backend = try boundedBackend(&arena, "printf '%s\\n' '" ++ echo_frame ++ "' '" ++ ("A" ** 400) ++ "'", 200);
+    var backend = try boundedBackend(&arena, "printf '%s\\n' '" ++ echo_frame ++ "' '" ++ (repeat("A", 400)) ++ "'", 200);
     defer backend.close();
     try backend.submit("turn-1", "go", .{ .run_id = "run-1", .submission_id = "sub-1" });
 
@@ -784,7 +785,7 @@ test "a control frame reaches the child whole, and one written after the child i
 
 const turn_frames = "printf '%s\\n' " ++
     "'{\"type\":\"stream_event\",\"session_id\":\"s\",\"event\":{\"type\":\"message_start\"},\"uuid\":\"e1\",\"user_message_uuid\":\"turn-1\"}' " ++
-    "'{\"type\":\"stream_event\",\"session_id\":\"s\",\"event\":{\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\"" ++ ("w" ** 2048) ++ "\"}},\"uuid\":\"e2\"}' " ++
+    "'{\"type\":\"stream_event\",\"session_id\":\"s\",\"event\":{\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\"" ++ (repeat("w", 2048)) ++ "\"}},\"uuid\":\"e2\"}' " ++
     "'{\"type\":\"result\",\"session_id\":\"s\",\"subtype\":\"success\",\"result\":\"one\",\"user_message_uuid\":\"turn-1\",\"uuid\":\"r1\"}'; " ++
     "read -r second; printf '%s\\n' " ++
     "'{\"type\":\"result\",\"session_id\":\"s\",\"subtype\":\"success\",\"result\":\"two\",\"user_message_uuid\":\"turn-2\",\"uuid\":\"r2\"}'";

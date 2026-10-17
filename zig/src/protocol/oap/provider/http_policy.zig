@@ -18,7 +18,14 @@ pub fn validateBaseUrl(url: []const u8, security: Security) !std.Uri {
     }
 
     var host_buffer: [std.Io.net.HostName.max_len]u8 = undefined;
-    const host = (uri.getHost(&host_buffer) catch return error.InvalidProviderServiceUrl).bytes;
+    const host = host: {
+        const raw = uri.host.?.toRaw(&host_buffer) catch return error.InvalidProviderServiceUrl;
+        if (std.mem.startsWith(u8, raw, "[") and std.mem.endsWith(u8, raw, "]")) {
+            _ = std.Io.net.IpAddress.parseIp6(raw[1 .. raw.len - 1], 0) catch return error.InvalidProviderServiceUrl;
+            break :host raw;
+        }
+        break :host (std.Io.net.HostName.fromUri(uri, &host_buffer) catch return error.InvalidProviderServiceUrl).bytes;
+    };
     const is_loopback = std.mem.eql(u8, host, "127.0.0.1") or
         std.mem.eql(u8, host, "::1") or std.mem.eql(u8, host, "[::1]");
 
@@ -38,9 +45,12 @@ test "provider service policy accepts loopback and authenticated transport choic
     _ = try validateBaseUrl("http://[::1]:8080", .loopback);
     _ = try validateBaseUrl("http://127.0.0.1:15001", .mesh_proxy);
     _ = try validateBaseUrl("https://provider.example:443", .tls);
+    _ = try validateBaseUrl("https://[2001:db8::1]:443", .tls);
 }
 
 test "provider service policy refuses unprotected remote and ambiguous URLs" {
+    try std.testing.expectError(error.UnprotectedProviderService, validateBaseUrl("http://[2001:db8::1]:8080", .loopback));
+    try std.testing.expectError(error.InvalidProviderServiceUrl, validateBaseUrl("https://[not-an-ip]", .tls));
     try std.testing.expectError(error.UnprotectedProviderService, validateBaseUrl("http://provider.default.svc.cluster.local:8080", .loopback));
     try std.testing.expectError(error.UnprotectedProviderService, validateBaseUrl("http://provider.default.svc.cluster.local:8080", .mesh_proxy));
     try std.testing.expectError(error.UnprotectedProviderService, validateBaseUrl("http://127.0.0.1.evil:8080", .loopback));

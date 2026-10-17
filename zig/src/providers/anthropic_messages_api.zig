@@ -42,11 +42,11 @@ fn anthropicGetApiKey(credentials: oauth_storage.Credentials, allocator: std.mem
 fn anthropicIsAuthFailure(err_msg: []const u8) bool {
     return std.mem.find(u8, err_msg, "401") != null or
         std.mem.find(u8, err_msg, "403") != null or
-        std.ascii.indexOfIgnoreCase(err_msg, "unauthorized") != null or
-        std.ascii.indexOfIgnoreCase(err_msg, "forbidden") != null or
-        std.ascii.indexOfIgnoreCase(err_msg, "authentication_error") != null or
-        std.ascii.indexOfIgnoreCase(err_msg, "permission_error") != null or
-        std.ascii.indexOfIgnoreCase(err_msg, "invalid api key") != null;
+        std.ascii.findIgnoreCase(err_msg, "unauthorized") != null or
+        std.ascii.findIgnoreCase(err_msg, "forbidden") != null or
+        std.ascii.findIgnoreCase(err_msg, "authentication_error") != null or
+        std.ascii.findIgnoreCase(err_msg, "permission_error") != null or
+        std.ascii.findIgnoreCase(err_msg, "invalid api key") != null;
 }
 
 fn allowsAnonymous(model: ai_types.Model) bool {

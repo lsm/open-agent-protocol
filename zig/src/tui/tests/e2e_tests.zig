@@ -48,7 +48,7 @@ const Driver = struct {
         self.saved_home = compat.getEnvVarOwned(gpa, "HOME") catch null;
         const rel_home = try std.fmt.allocPrint(gpa, ".zig-cache/tmp/{s}", .{self.tmp.sub_path[0..]});
         defer gpa.free(rel_home);
-        const rel_home_z = try gpa.dupeZ(u8, rel_home);
+        const rel_home_z = try gpa.dupeSentinel(u8, rel_home, 0);
         defer gpa.free(rel_home_z);
         _ = setenv("HOME", rel_home_z.ptr, 1);
 
@@ -75,7 +75,7 @@ const Driver = struct {
 
     fn restoreHome(self: *Driver) void {
         if (self.saved_home) |home| {
-            if (self.gpa.dupeZ(u8, home)) |home_z| {
+            if (self.gpa.dupeSentinel(u8, home, 0)) |home_z| {
                 _ = setenv("HOME", home_z.ptr, 1);
                 self.gpa.free(home_z);
             } else |_| {}

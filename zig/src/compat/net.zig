@@ -38,11 +38,15 @@ pub const Stream = struct {
 
     pub fn readSome(self: *Stream, buffer: []u8) !usize {
         var chunks = [1][]u8{buffer};
-        return defaultIo().vtable.netRead(defaultIo().userdata, self.inner.socket.handle, &chunks);
+        return (try self.inner.readWithControl(defaultIo(), &chunks, &.{})).data_len;
     }
 
     pub fn write(self: *Stream, data: []const u8) !usize {
-        return defaultIo().vtable.netWrite(defaultIo().userdata, self.inner.socket.handle, &.{}, &.{data}, 1);
+        return (try defaultIo().operate(.{ .net_write = .{
+            .socket_handle = self.inner.socket.handle,
+            .data = &.{data},
+            .splat = 1,
+        } })).net_write;
     }
 
     pub fn writeAll(self: *Stream, data: []const u8) !void {

@@ -81,15 +81,19 @@ jobs:
       - name: Setup Zig
         uses: mlugg/setup-zig@v2
         with:
-          version: 0.16.0
+          version: 0.17.0
 
       - name: Cache Zig
         uses: actions/cache@v4
         with:
           path: ~/.cache/zig
-          key: ${{ runner.os }}-zig-${{ hashFiles('zig/build.zig.zon') }}
+          key: ${{ runner.os }}-${{ runner.arch }}-zig-0.17.0-${{ hashFiles('zig/build.zig.zon') }}
           restore-keys: |
-            ${{ runner.os }}-zig-
+            ${{ runner.os }}-${{ runner.arch }}-zig-0.17.0-
+
+      - name: Check configuration cache invalidation
+        if: matrix.group == 'core'
+        run: python3 scripts/check-zig-config-cache.py
 
       - name: Run ${{ matrix.group }} unit tests
         run: zig build --build-file zig/build.zig test-unit-${{ matrix.group }}
@@ -198,7 +202,7 @@ jobs:
       - name: Setup Zig
         uses: mlugg/setup-zig@v2
         with:
-          version: 0.16.0
+          version: 0.17.0
 
       - name: Setup Node
         uses: actions/setup-node@v4
@@ -239,7 +243,7 @@ jobs:
       - name: Setup Zig
         uses: mlugg/setup-zig@v2
         with:
-          version: 0.16.0
+          version: 0.17.0
 
       - name: Setup Go
         uses: actions/setup-go@v5
@@ -272,7 +276,7 @@ jobs:
       - name: Setup Zig
         uses: mlugg/setup-zig@v2
         with:
-          version: 0.16.0
+          version: 0.17.0
 
       - name: Setup Go
         uses: actions/setup-go@v5
@@ -300,7 +304,7 @@ jobs:
       - name: Setup Zig
         uses: mlugg/setup-zig@v2
         with:
-          version: 0.16.0
+          version: 0.17.0
 
       - name: Setup Go
         uses: actions/setup-go@v5
@@ -331,7 +335,7 @@ jobs:
       - name: Setup Zig
         uses: mlugg/setup-zig@v2
         with:
-          version: 0.16.0
+          version: 0.17.0
 
       - name: Setup Go
         uses: actions/setup-go@v5
@@ -401,7 +405,7 @@ jobs:
       - name: Setup Zig
         uses: mlugg/setup-zig@v2
         with:
-          version: 0.16.0
+          version: 0.17.0
 
       - name: Setup Node
         uses: actions/setup-node@v5
@@ -436,7 +440,7 @@ jobs:
       - name: Setup Zig
         uses: mlugg/setup-zig@v2
         with:
-          version: 0.16.0
+          version: 0.17.0
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
@@ -503,7 +507,7 @@ jobs:
       - name: Setup Zig
         uses: mlugg/setup-zig@v2
         with:
-          version: 0.16.0
+          version: 0.17.0
 
       - name: Setup Python
         uses: actions/setup-python@v5
@@ -562,15 +566,15 @@ jobs:
       - name: Setup Zig
         uses: mlugg/setup-zig@v2
         with:
-          version: 0.16.0
+          version: 0.17.0
 
       - name: Cache Zig
         uses: actions/cache@v4
         with:
           path: ~/.cache/zig
-          key: ${{ runner.os }}-zig-${{ hashFiles('zig/build.zig.zon') }}
+          key: ${{ runner.os }}-${{ runner.arch }}-zig-0.17.0-${{ hashFiles('zig/build.zig.zon') }}
           restore-keys: |
-            ${{ runner.os }}-zig-
+            ${{ runner.os }}-${{ runner.arch }}-zig-0.17.0-
 
       - name: Run TUI PTY driver
         run: |
@@ -634,7 +638,7 @@ jobs:
       - name: Setup Zig
         uses: mlugg/setup-zig@v2
         with:
-          version: 0.16.0
+          version: 0.17.0
 
       - name: Run stdio-host unit tests
         shell: bash
@@ -659,6 +663,9 @@ jobs:
             target: x86_64-macos
             binary_name: oapx
           - runner: ubuntu-latest
+            target: x86_64-linux
+            binary_name: oapx
+          - runner: ubuntu-latest
             target: aarch64-linux
             binary_name: oapx
           - runner: ubuntu-latest
@@ -674,7 +681,7 @@ jobs:
       - name: Setup Zig
         uses: mlugg/setup-zig@v2
         with:
-          version: 0.16.0
+          version: 0.17.0
 
       # Zig cannot locate the macOS SDK by itself when an explicit -Dtarget is
       # passed (#196): framework resolution fails with "unable to find
@@ -693,7 +700,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          zig build --build-file zig/build.zig install -Dtarget=${{ matrix.target }} --prefix "$RUNNER_TEMP/makai-smoke-${{ matrix.target }}"
+          zig build --build-file zig/build.zig install -Dtarget=${{ matrix.target }} -Doptimize=safe --prefix "$RUNNER_TEMP/makai-smoke-${{ matrix.target }}"
 
       - name: Verify binary was produced
         shell: bash
@@ -724,13 +731,13 @@ jobs:
       - uses: actions/checkout@v4
       - uses: mlugg/setup-zig@v2
         with:
-          version: 0.16.0
+          version: 0.17.0
       - uses: actions/cache@v4
         with:
           path: ~/.cache/zig
-          key: ${{ runner.os }}-zig-${{ hashFiles('zig/build.zig.zon') }}
+          key: ${{ runner.os }}-${{ runner.arch }}-zig-0.17.0-${{ hashFiles('zig/build.zig.zon') }}
           restore-keys: |
-            ${{ runner.os }}-zig-
+            ${{ runner.os }}-${{ runner.arch }}-zig-0.17.0-
       - name: Run Anthropic E2E tests
         run: zig build --build-file zig/build.zig test-e2e-anthropic
         continue-on-error: true
@@ -748,13 +755,13 @@ jobs:
       - uses: actions/checkout@v4
       - uses: mlugg/setup-zig@v2
         with:
-          version: 0.16.0
+          version: 0.17.0
       - uses: actions/cache@v4
         with:
           path: ~/.cache/zig
-          key: ${{ runner.os }}-zig-${{ hashFiles('zig/build.zig.zon') }}
+          key: ${{ runner.os }}-${{ runner.arch }}-zig-0.17.0-${{ hashFiles('zig/build.zig.zon') }}
           restore-keys: |
-            ${{ runner.os }}-zig-
+            ${{ runner.os }}-${{ runner.arch }}-zig-0.17.0-
       - name: Run OpenAI E2E tests
         run: zig build --build-file zig/build.zig test-e2e-openai
         continue-on-error: true
@@ -772,13 +779,13 @@ jobs:
       - uses: actions/checkout@v4
       - uses: mlugg/setup-zig@v2
         with:
-          version: 0.16.0
+          version: 0.17.0
       - uses: actions/cache@v4
         with:
           path: ~/.cache/zig
-          key: ${{ runner.os }}-zig-${{ hashFiles('zig/build.zig.zon') }}
+          key: ${{ runner.os }}-${{ runner.arch }}-zig-0.17.0-${{ hashFiles('zig/build.zig.zon') }}
           restore-keys: |
-            ${{ runner.os }}-zig-
+            ${{ runner.os }}-${{ runner.arch }}-zig-0.17.0-
       - name: Run Azure E2E tests
         run: zig build --build-file zig/build.zig test-e2e-azure
         env:
@@ -795,13 +802,13 @@ jobs:
       - uses: actions/checkout@v4
       - uses: mlugg/setup-zig@v2
         with:
-          version: 0.16.0
+          version: 0.17.0
       - uses: actions/cache@v4
         with:
           path: ~/.cache/zig
-          key: ${{ runner.os }}-zig-${{ hashFiles('zig/build.zig.zon') }}
+          key: ${{ runner.os }}-${{ runner.arch }}-zig-0.17.0-${{ hashFiles('zig/build.zig.zon') }}
           restore-keys: |
-            ${{ runner.os }}-zig-
+            ${{ runner.os }}-${{ runner.arch }}-zig-0.17.0-
       - name: Run Google E2E tests
         run: zig build --build-file zig/build.zig test-e2e-google
         env:
@@ -817,13 +824,13 @@ jobs:
       - uses: actions/checkout@v4
       - uses: mlugg/setup-zig@v2
         with:
-          version: 0.16.0
+          version: 0.17.0
       - uses: actions/cache@v4
         with:
           path: ~/.cache/zig
-          key: ${{ runner.os }}-zig-${{ hashFiles('zig/build.zig.zon') }}
+          key: ${{ runner.os }}-${{ runner.arch }}-zig-0.17.0-${{ hashFiles('zig/build.zig.zon') }}
           restore-keys: |
-            ${{ runner.os }}-zig-
+            ${{ runner.os }}-${{ runner.arch }}-zig-0.17.0-
       - name: Run Ollama E2E tests
         run: zig build --build-file zig/build.zig test-e2e-ollama
         env:
@@ -841,13 +848,13 @@ jobs:
       - uses: actions/checkout@v4
       - uses: mlugg/setup-zig@v2
         with:
-          version: 0.16.0
+          version: 0.17.0
       - uses: actions/cache@v4
         with:
           path: ~/.cache/zig
-          key: ${{ runner.os }}-zig-${{ hashFiles('zig/build.zig.zon') }}
+          key: ${{ runner.os }}-${{ runner.arch }}-zig-0.17.0-${{ hashFiles('zig/build.zig.zon') }}
           restore-keys: |
-            ${{ runner.os }}-zig-
+            ${{ runner.os }}-${{ runner.arch }}-zig-0.17.0-
       - name: Run GitHub Copilot E2E tests
         run: zig build --build-file zig/build.zig test-e2e-github-copilot
         env:
@@ -862,13 +869,13 @@ jobs:
       - uses: actions/checkout@v4
       - uses: mlugg/setup-zig@v2
         with:
-          version: 0.16.0
+          version: 0.17.0
       - uses: actions/cache@v4
         with:
           path: ~/.cache/zig
-          key: ${{ runner.os }}-zig-${{ hashFiles('zig/build.zig.zon') }}
+          key: ${{ runner.os }}-${{ runner.arch }}-zig-0.17.0-${{ hashFiles('zig/build.zig.zon') }}
           restore-keys: |
-            ${{ runner.os }}-zig-
+            ${{ runner.os }}-${{ runner.arch }}-zig-0.17.0-
       - name: Run Protocol E2E tests (mock-based)
         run: zig build --build-file zig/build.zig test-e2e-protocol
 
@@ -881,13 +888,13 @@ jobs:
       - uses: actions/checkout@v4
       - uses: mlugg/setup-zig@v2
         with:
-          version: 0.16.0
+          version: 0.17.0
       - uses: actions/cache@v4
         with:
           path: ~/.cache/zig
-          key: ${{ runner.os }}-zig-${{ hashFiles('zig/build.zig.zon') }}
+          key: ${{ runner.os }}-${{ runner.arch }}-zig-0.17.0-${{ hashFiles('zig/build.zig.zon') }}
           restore-keys: |
-            ${{ runner.os }}-zig-
+            ${{ runner.os }}-${{ runner.arch }}-zig-0.17.0-
       - name: Run Provider Protocol Fullstack E2E tests (Ollama)
         run: zig build --build-file zig/build.zig test-e2e-provider-protocol-fullstack-ollama
         env:
@@ -905,13 +912,13 @@ jobs:
       - uses: actions/checkout@v4
       - uses: mlugg/setup-zig@v2
         with:
-          version: 0.16.0
+          version: 0.17.0
       - uses: actions/cache@v4
         with:
           path: ~/.cache/zig
-          key: ${{ runner.os }}-zig-${{ hashFiles('zig/build.zig.zon') }}
+          key: ${{ runner.os }}-${{ runner.arch }}-zig-0.17.0-${{ hashFiles('zig/build.zig.zon') }}
           restore-keys: |
-            ${{ runner.os }}-zig-
+            ${{ runner.os }}-${{ runner.arch }}-zig-0.17.0-
       - name: Run Provider Protocol Fullstack E2E tests (GitHub Copilot)
         run: zig build --build-file zig/build.zig test-e2e-provider-protocol-fullstack-github
         env:
@@ -929,13 +936,13 @@ jobs:
       - uses: actions/checkout@v4
       - uses: mlugg/setup-zig@v2
         with:
-          version: 0.16.0
+          version: 0.17.0
       - uses: actions/cache@v4
         with:
           path: ~/.cache/zig
-          key: ${{ runner.os }}-zig-${{ hashFiles('zig/build.zig.zon') }}
+          key: ${{ runner.os }}-${{ runner.arch }}-zig-0.17.0-${{ hashFiles('zig/build.zig.zon') }}
           restore-keys: |
-            ${{ runner.os }}-zig-
+            ${{ runner.os }}-${{ runner.arch }}-zig-0.17.0-
       - name: Run Distributed Fullstack E2E tests (GitHub Copilot)
         run: zig build --build-file zig/build.zig test-e2e-distributed-fullstack-github
         env:

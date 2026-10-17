@@ -1,3 +1,4 @@
+const repeat = @import("repeat").repeat;
 const std = @import("std");
 const json_encode = @import("json_encode");
 const compat = @import("compat");
@@ -266,7 +267,7 @@ test "raisedOutput lifts a limit below the model's maximum to it, and nothing el
 }
 
 test "outputLimit asks for no more output than the context window leaves after an estimated prompt and its headroom, and leaves an unset limit unset when it fits" {
-    const text = "a" ** 3000;
+    const text = repeat("a", 3000);
     const messages = [_]ai_types.Message{.{ .user = .{ .content = .{ .text = text }, .timestamp = 0 } }};
     const context: ai_types.Context = .{ .messages = &messages };
     const prompt = inflated(estimatePromptTokens(context)) + full_window_output_tokens;
@@ -282,7 +283,7 @@ test "outputLimit asks for no more output than the context window leaves after a
 
 test "outputLimit counts the prompt from the provider's last report when a reply carries one" {
     const messages = [_]ai_types.Message{
-        .{ .user = .{ .content = .{ .text = "a" ** 40_000 }, .timestamp = 0 } },
+        .{ .user = .{ .content = .{ .text = repeat("a", 40_000) }, .timestamp = 0 } },
         .{ .assistant = .{
             .content = &.{.{ .text = .{ .text = "ok" } }},
             .api = "test-api",
@@ -292,7 +293,7 @@ test "outputLimit counts the prompt from the provider's last report when a reply
             .stop_reason = .stop,
             .timestamp = 0,
         } },
-        .{ .user = .{ .content = .{ .text = "b" ** 400 }, .timestamp = 0 } },
+        .{ .user = .{ .content = .{ .text = repeat("b", 400) }, .timestamp = 0 } },
     };
     const context: ai_types.Context = .{ .messages = &messages };
     const prompt = 6_000 + 3_000 + 800 + 200 + inflated(estimateMessages(messages[2..]).estimated_tokens) + full_window_output_tokens;
@@ -302,7 +303,7 @@ test "outputLimit counts the prompt from the provider's last report when a reply
 
 test "outputLimit leaves a sixty-fourth of a large window unasked, so a prompt the estimate undercounts still fits" {
     const messages = [_]ai_types.Message{
-        .{ .user = .{ .content = .{ .text = "a" ** 400 }, .timestamp = 0 } },
+        .{ .user = .{ .content = .{ .text = repeat("a", 400) }, .timestamp = 0 } },
         .{ .assistant = .{
             .content = &.{.{ .text = .{ .text = "ok" } }},
             .api = "test-api",
@@ -312,7 +313,7 @@ test "outputLimit leaves a sixty-fourth of a large window unasked, so a prompt t
             .stop_reason = .stop,
             .timestamp = 0,
         } },
-        .{ .user = .{ .content = .{ .text = "b" ** 400 }, .timestamp = 0 } },
+        .{ .user = .{ .content = .{ .text = repeat("b", 400) }, .timestamp = 0 } },
     };
     const context: ai_types.Context = .{ .messages = &messages };
     const window: u32 = 1_048_576;
@@ -559,12 +560,13 @@ const ToolUpdateContext = struct {
 fn onToolUpdate(ctx: ?*anyopaque, tool_call_id: []const u8, tool_name: []const u8, partial_result_json: []const u8) void {
     const context: *ToolUpdateContext = @ptrCast(@alignCast(ctx));
 
-    context.event_stream.push(.{ .tool_execution_update = .{
-        .tool_call_id = tool_call_id,
-        .tool_name = tool_name,
-        .args_json = context.args_json,
-        .partial_result_json = partial_result_json,
-    } }) catch {};
+    const stream = context.event_stream;
+    var payload = types.ToolExecutionUpdatePayload.initOwned(stream.allocator, tool_call_id, tool_name, context.args_json, partial_result_json) catch return;
+    stream.push(.{ .tool_execution_update = payload }) catch {
+        payload.backing.deinit(stream.allocator);
+        return;
+    };
+    if (stream.ownership.isOwned()) payload.backing.deinit(stream.allocator);
 }
 
 fn skipToolCall(
@@ -827,7 +829,7 @@ test "compact output injection grows parsed object with parser arena" {
 }
 
 test "compact output injection keeps model arguments nested past 256 levels whole" {
-    const nested = ("[" ** 400) ++ "1" ++ ("]" ** 400);
+    const nested = (repeat("[", 400)) ++ "1" ++ (repeat("]", 400));
     const injected = try withCompactToolOutput(std.testing.allocator, "{\"command\":\"ls\",\"nested\":" ++ nested ++ "}");
     defer std.testing.allocator.free(injected);
     try std.testing.expectEqualStrings("{\"command\":\"ls\",\"nested\":" ++ nested ++ ",\"compact_output\":true}", injected);
@@ -3326,4 +3328,28 @@ test "an exhausted allocator loses nothing across the tool handoff" {
 
 test "a tool result's working directory survives the loop and is freed with the message" {
     try runDirectoryReportingTool(std.testing.allocator);
+}
+
+test "queued tool updates retain callback bytes after their producer changes them" {
+    const allocator = std.testing.allocator;
+    var stream = AgentEventStream.init(allocator);
+    defer stream.deinit();
+    var id = [_]u8{ 'i', 'd' };
+    var name = [_]u8{ 't', 'o', 'o', 'l' };
+    var args = [_]u8{ '{', '}' };
+    var partial = [_]u8{ 'o', 'k' };
+    var context = ToolUpdateContext{ .event_stream = &stream, .tool_call_id = &id, .tool_name = &name, .args_json = &args };
+    onToolUpdate(&context, &id, &name, &partial);
+    @memset(&id, 'x');
+    @memset(&name, 'x');
+    @memset(&args, 'x');
+    @memset(&partial, 'x');
+    var event = stream.poll().?;
+    defer event.deinit(allocator);
+    try std.testing.expectEqualStrings("id", event.tool_execution_update.tool_call_id);
+    try std.testing.expectEqualStrings("tool", event.tool_execution_update.tool_name);
+    try std.testing.expectEqualStrings("{}", event.tool_execution_update.args_json);
+    try std.testing.expectEqualStrings("ok", event.tool_execution_update.partial_result_json);
+    stream.completeWithError("closed");
+    onToolUpdate(&context, "id", "tool", "discarded");
 }

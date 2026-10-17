@@ -1,3 +1,4 @@
+const repeat = @import("repeat").repeat;
 const std = @import("std");
 const json_encode = @import("json_encode");
 const json_writer = @import("json_writer");
@@ -3160,7 +3161,7 @@ test "an open elects tools and tool sources only when it names at least one" {
 
 test "an open whose provided tool schema nests past 256 levels keeps it whole" {
     const allocator = std.testing.allocator;
-    const schema = ("{\"items\":" ** 400) ++ "{}" ++ ("}" ** 400);
+    const schema = (repeat("{\"items\":", 400)) ++ "{}" ++ (repeat("}", 400));
     const tools = "[{\"name\":\"t\",\"input_schema\":" ++ schema ++ "}]";
     var opened = try deserializeEnvelope("{\"protocol\":\"open-agent-protocol\",\"version\":\"0.1\",\"profile\":\"" ++ oap_types.PROFILE ++
         "\",\"type\":\"session.open.request\",\"id\":\"o\",\"payload\":{\"session_id\":\"s\",\"tools\":" ++ tools ++ "}}", allocator);

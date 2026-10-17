@@ -473,7 +473,7 @@ fn hasHeaderValue(headers: []const u8, name: []const u8, value: []const u8) bool
         const header_name = std.mem.trim(u8, line[0..colon], " \t");
         if (!std.ascii.eqlIgnoreCase(header_name, name)) continue;
         const header_value = std.mem.trim(u8, line[colon + 1 ..], " \t");
-        if (std.ascii.indexOfIgnoreCase(header_value, value) != null) return true;
+        if (std.ascii.findIgnoreCase(header_value, value) != null) return true;
     }
     return false;
 }

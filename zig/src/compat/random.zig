@@ -50,7 +50,7 @@ pub fn randomBytes(allocator: std.mem.Allocator, len: usize) ![]u8 {
 pub fn secureIntRangeLessThan(comptime T: type, upper_bound: T) T {
     std.debug.assert(upper_bound > 0);
 
-    const U = std.meta.Int(.unsigned, @bitSizeOf(T));
+    const U = @Int(.unsigned, @bitSizeOf(T));
     const bound: U = @intCast(upper_bound);
     const limit: U = std.math.maxInt(U) - (std.math.maxInt(U) % bound);
 
@@ -126,8 +126,8 @@ test "compat random range helpers respect upper bound" {
 }
 
 test "compat random range helpers vary across draws" {
-    var secure_seen = [_]bool{false} ** 62;
-    var ordinary_seen = [_]bool{false} ** 62;
+    var secure_seen = @as([62]bool, @splat(false));
+    var ordinary_seen = @as([62]bool, @splat(false));
     var secure_distinct: usize = 0;
     var ordinary_distinct: usize = 0;
 

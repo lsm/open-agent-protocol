@@ -6205,7 +6205,7 @@ fn modelsDevSubsetProbe(allocator: std.mem.Allocator, root: std.json.Value) !voi
 test "the models.dev cache subset frees what it built on every allocation failure" {
     var parsed = try parseModelsDev(std.testing.allocator, models_dev_fixture);
     defer parsed.deinit();
-    try std.testing.checkAllAllocationFailures(std.testing.allocator, modelsDevSubsetProbe, .{parsed.value});
+    try std.testing.checkAllAllocationFailures(std.heap.smp_allocator, modelsDevSubsetProbe, .{parsed.value});
 }
 
 test "a model missing only its reasoning or image input still sends the row to models.dev" {

@@ -1,3 +1,4 @@
+const repeat = @import("repeat").repeat;
 const std = @import("std");
 const zz = @import("zigzag");
 const tui_theme = @import("tui_theme");
@@ -138,7 +139,7 @@ fn layout(arena: std.mem.Allocator, frame: Frame) !Layout {
             const slot = try activitySlot(arena, frame, column);
             for (slot) |row| try content.append(arena, row);
         } else {
-            var rest: [slot_rows][]const u8 = .{""} ** slot_rows;
+            var rest: [slot_rows][]const u8 = @splat("");
             if (frame.farewell == null) rest[slot_centre] = try centered(arena, try gray(arena, soft_level, "zen \u{b7} only the final reply is shown"), column);
             for (rest) |row| try content.append(arena, row);
         }
@@ -324,7 +325,7 @@ fn activityRow(allocator: std.mem.Allocator, frame: Frame, width: usize) ![]cons
 }
 
 fn activitySlot(allocator: std.mem.Allocator, frame: Frame, width: usize) ![slot_rows][]const u8 {
-    var rows: [slot_rows][]const u8 = .{""} ** slot_rows;
+    var rows: [slot_rows][]const u8 = @splat("");
     rows[slot_centre] = try activityRow(allocator, frame, width);
     return rows;
 }
@@ -333,7 +334,7 @@ test "a final reply reads wider than the input bar when the screen allows" {
     try std.testing.expectEqual(@as(usize, 76), columnWidth(200));
     try std.testing.expectEqual(@as(usize, 120), readingWidth(200));
     try std.testing.expectEqual(@as(usize, 92), readingWidth(100));
-    const wide = "w" ** 110;
+    const wide = repeat("w", 110);
     const text = try render(std.testing.allocator, .{ .width = 200, .height = 20, .final_block = wide, .input = "next", .cursor = 4 });
     defer std.testing.allocator.free(text);
     const plain = try plainRows(std.testing.allocator, text);
@@ -439,12 +440,12 @@ test "the trail shows the last ten steps, the tenth as its number" {
     const d = dot ++ " ";
     try std.testing.expectEqualStrings("", try trail(a, .{}));
     try std.testing.expectEqualStrings(d ++ d ++ dot, try trail(a, .{ .thinking = 1, .tools = 1, .messages = 1 }));
-    try std.testing.expectEqualStrings(d ** 8 ++ dot, try trail(a, .{ .tools = 9 }));
-    try std.testing.expectEqualStrings(d ** 9 ++ "10", try trail(a, .{ .tools = 10 }));
-    try std.testing.expectEqualStrings(d ** 6 ++ "10 " ++ d ++ d ++ dot, try trail(a, .{ .tools = 10, .thinking = 3 }));
-    try std.testing.expectEqualStrings(d ** 9 ++ "20", try trail(a, .{ .tools = 20 }));
-    try std.testing.expectEqualStrings("130 " ++ d ** 8 ++ dot, try trail(a, .{ .tools = 139 }));
-    try std.testing.expectEqualStrings(d ** 8 ++ "140 " ++ dot, try trail(a, .{ .tools = 141 }));
+    try std.testing.expectEqualStrings(repeat(d, 8) ++ dot, try trail(a, .{ .tools = 9 }));
+    try std.testing.expectEqualStrings(repeat(d, 9) ++ "10", try trail(a, .{ .tools = 10 }));
+    try std.testing.expectEqualStrings(repeat(d, 6) ++ "10 " ++ d ++ d ++ dot, try trail(a, .{ .tools = 10, .thinking = 3 }));
+    try std.testing.expectEqualStrings(repeat(d, 9) ++ "20", try trail(a, .{ .tools = 20 }));
+    try std.testing.expectEqualStrings("130 " ++ repeat(d, 8) ++ dot, try trail(a, .{ .tools = 139 }));
+    try std.testing.expectEqualStrings(repeat(d, 8) ++ "140 " ++ dot, try trail(a, .{ .tools = 141 }));
 }
 
 test "a secret never reaches the input bar in the clear" {
@@ -527,7 +528,7 @@ test "a stopped frame shows the final reply with its markdown colours" {
 }
 
 test "a long final reply keeps the input bar on screen" {
-    const reply = "line\n" ** 40;
+    const reply = repeat("line\n", 40);
     const text = try render(std.testing.allocator, .{ .width = 60, .height = 12, .final_block = reply, .input = "next", .cursor = 4 });
     defer std.testing.allocator.free(text);
     try std.testing.expectEqual(@as(usize, 12), std.mem.count(u8, text, "\n") + 1);

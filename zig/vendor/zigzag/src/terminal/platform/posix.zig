@@ -83,8 +83,8 @@ pub fn enableRawMode(state: *State) !void {
     raw.lflag.IEXTEN = false;
     raw.lflag.ISIG = false;
 
-    raw.cc[@intFromEnum(posix.V.MIN)] = 0;
-    raw.cc[@intFromEnum(posix.V.TIME)] = 1;
+    raw.cc[@backingInt(posix.V.MIN)] = 0;
+    raw.cc[@backingInt(posix.V.TIME)] = 1;
 
     posix.tcsetattr(state.stdin_fd, .FLUSH, raw) catch {
         return TerminalError.SetAttrFailed;

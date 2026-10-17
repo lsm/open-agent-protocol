@@ -21,7 +21,7 @@ pub const Ulid = [16]u8;
 pub const SESSION_ID_LENGTH: usize = 21;
 pub const SESSION_ID_ALPHABET = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
 pub const SessionId = [SESSION_ID_LENGTH]u8;
-pub const PLACEHOLDER_SESSION_ID: SessionId = [_]u8{'0'} ** SESSION_ID_LENGTH;
+pub const PLACEHOLDER_SESSION_ID: SessionId = @as([SESSION_ID_LENGTH]u8, @splat('0'));
 
 fn generateSessionIdWithRandomInt(random_int_range_less_than: fn (comptime type, usize) usize) SessionId {
     var session_id: SessionId = undefined;
@@ -117,7 +117,7 @@ pub fn parseUlid(str: []const u8) ?Ulid {
     for (str, 0..) |c, i| values[i] = ulidDecode(c) orelse return null;
     if (values[0] > 7) return null;
 
-    var ulid: Ulid = [_]u8{0} ** 16;
+    var ulid: Ulid = @as([16]u8, @splat(0));
     for (values, 0..) |value, i| {
         for (0..5) |j| {
             const padded_bit = i * 5 + j;
@@ -149,7 +149,7 @@ test "parseUlid accepts only canonical uppercase Crockford" {
 test "parseUlid round-trips every canonical character" {
     const alphabet = "0123456789ABCDEFGHJKMNPQRSTVWXYZ";
     for (alphabet) |c| {
-        var buf: [26]u8 = [_]u8{'0'} ** 26;
+        var buf: [26]u8 = @as([26]u8, @splat('0'));
         buf[25] = c;
         const parsed = parseUlid(&buf) orelse return error.TestExpectedCanonicalAccepted;
         var rendered: [26]u8 = undefined;

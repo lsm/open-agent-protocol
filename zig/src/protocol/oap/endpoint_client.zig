@@ -249,7 +249,7 @@ const close_grace_ms: i64 = 250;
 fn tryExitPosix(child: *std.process.Child, io: std.Io) ?std.process.Child.Term {
     if (builtin.os.tag == .windows) return tryExitWindows(child, io);
     const id = child.id orelse return null;
-    var status: if (builtin.link_libc) c_int else u32 = undefined;
+    var status: c_int = undefined;
     while (true) {
         const result = std.posix.system.waitpid(id, &status, std.posix.W.NOHANG);
         switch (std.posix.errno(result)) {

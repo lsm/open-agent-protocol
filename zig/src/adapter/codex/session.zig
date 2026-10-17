@@ -200,7 +200,7 @@ const Interaction = struct {
     tool_call_id: []const u8,
     request: rpc.Id,
     resolved: bool = false,
-    decisions: Decisions = [_]bool{false} ** standard_decisions.len,
+    decisions: Decisions = @as([standard_decisions.len]bool, @splat(false)),
     questions: []const Question = &.{},
 };
 
@@ -962,14 +962,14 @@ pub const Reducer = struct {
             .turn = native.text(value, &.{"turnId"}),
             .item = native.text(value, &.{"itemId"}),
             .reason = "",
-            .decisions = [_]bool{true} ** standard_decisions.len,
+            .decisions = @as([standard_decisions.len]bool, @splat(true)),
         };
         if (scope.thread.len == 0 or scope.turn.len == 0 or scope.item.len == 0) return null;
         if (native.pointer(value, &.{"reason"})) |reason| scope.reason = reason.string;
         if (!command) return scope;
         const available = native.pointer(value, &.{"availableDecisions"}) orelse return scope;
         if (!native.decodes(available, native.approval_decisions)) return null;
-        scope.decisions = [_]bool{false} ** standard_decisions.len;
+        scope.decisions = @as([standard_decisions.len]bool, @splat(false));
         var offered = false;
         for (available.array.items) |entry| {
             const decision = if (entry == .string) entry.string else "";

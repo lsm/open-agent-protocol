@@ -271,8 +271,8 @@ fn serializeConfig(allocator: std.mem.Allocator, cfg: Config) ![]u8 {
     }
     try w.writeKey("verbosity");
     try w.beginObject();
-    inline for (@typeInfo(VerbosityPart).@"enum".fields) |field| {
-        try w.writeStringField(field.name, @tagName(cfg.mode.verbosity.get(@enumFromInt(field.value))));
+    inline for (@typeInfo(VerbosityPart).@"enum".field_names, @typeInfo(VerbosityPart).@"enum".field_values) |name, value_int| {
+        try w.writeStringField(name, @tagName(cfg.mode.verbosity.get(@enumFromInt(value_int))));
     }
     try w.endObject();
     try w.endObject();
@@ -288,9 +288,9 @@ fn verbosityField(obj: std.json.ObjectMap) Verbosity {
         .object => |o| o,
         else => return verbosity,
     };
-    inline for (@typeInfo(VerbosityPart).@"enum".fields) |field| {
-        if (stringField(parts, field.name)) |text| {
-            if (std.meta.stringToEnum(VerbosityLevel, text)) |level| verbosity.set(@enumFromInt(field.value), level);
+    inline for (@typeInfo(VerbosityPart).@"enum".field_names, @typeInfo(VerbosityPart).@"enum".field_values) |name, value_int| {
+        if (stringField(parts, name)) |text| {
+            if (std.meta.stringToEnum(VerbosityLevel, text)) |level| verbosity.set(@enumFromInt(value_int), level);
         }
     }
     return verbosity;

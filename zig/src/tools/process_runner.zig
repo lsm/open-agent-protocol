@@ -194,7 +194,7 @@ fn pollTerm(child: *std.process.Child, io: std.Io) !?std.process.Child.Term {
 
 fn pollTermPosix(child: *std.process.Child) !?std.process.Child.Term {
     if (child.id == null) return null;
-    var status: if (builtin.link_libc) c_int else u32 = undefined;
+    var status: c_int = undefined;
     const pid = child.id.?;
     while (true) {
         const result = std.posix.system.waitpid(pid, &status, std.posix.W.NOHANG);

@@ -1,3 +1,4 @@
+const repeat = @import("repeat").repeat;
 const std = @import("std");
 const provider_catalog = @import("provider_catalog");
 const ai_types = @import("ai_types");
@@ -795,7 +796,7 @@ const ReplyTrace = struct {
     first: Kept = .{},
     last: Kept = .{},
     finish: Kept = .{},
-    headers: [reply_trace_headers.len]Kept = [_]Kept{.{}} ** reply_trace_headers.len,
+    headers: [reply_trace_headers.len]Kept = @as([reply_trace_headers.len]Kept, @splat(.{})),
 
     const Kept = struct {
         buf: [reply_trace_bytes]u8 = undefined,
@@ -4062,7 +4063,7 @@ test "a stream cut before any reply says it saw no finish reason and no usage" {
 
 test "a reply trace keeps a long chunk's head and marks it cut" {
     var trace: ReplyTrace = .{};
-    const long = "{\"choices\":[]," ++ ("\"x\":1," ** 100) ++ "\"y\":2}";
+    const long = "{\"choices\":[]," ++ (repeat("\"x\":1,", 100)) ++ "\"y\":2}";
     trace.observe(long);
     trace.observe("[DONE]");
     try std.testing.expectEqual(@as(usize, 2), trace.chunks);

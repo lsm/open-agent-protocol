@@ -1,3 +1,4 @@
+const repeat = @import("repeat").repeat;
 const std = @import("std");
 const compat = @import("compat");
 const ai_types = @import("ai_types");
@@ -1765,7 +1766,7 @@ test "Agent asks for less output when the prompt leaves less room in the context
     model.context_window = 10_000;
     agent.setModel(model);
 
-    const text = try std.testing.allocator.dupe(u8, "a" ** 8000);
+    const text = try std.testing.allocator.dupe(u8, repeat("a", 8000));
     const message = ai_types.Message{ .user = .{ .content = .{ .text = text }, .timestamp = 0 } };
     const expected = agent_loop.outputLimit(model, model.max_tokens, .{ .messages = &.{message} }).?;
     try std.testing.expect(expected < 8192);

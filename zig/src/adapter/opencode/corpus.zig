@@ -661,7 +661,7 @@ test "replaying a case propagates every allocation failure and leaks nothing" {
             .native_text = try readFile(scratch, try std.fs.path.join(scratch, &.{ dir, "native.jsonl" })),
         });
     }
-    try testing.checkAllAllocationFailures(testing.allocator, replayInMemory, .{@as([]const Loaded, loaded.items)});
+    try testing.checkAllAllocationFailures(std.heap.smp_allocator, replayInMemory, .{@as([]const Loaded, loaded.items)});
 }
 
 test "compaction strips whitespace outside strings and keeps it inside" {

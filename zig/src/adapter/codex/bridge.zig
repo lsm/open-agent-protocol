@@ -260,7 +260,7 @@ test "a client frame is masked and its length takes the shortest form" {
     const short = try encodeFrame(arena.allocator(), .text, "hi", mask);
     try std.testing.expectEqualSlices(u8, &.{ 0x81, 0x82, 1, 2, 3, 4, 'h' ^ 1, 'i' ^ 2 }, short);
 
-    const medium = try encodeFrame(arena.allocator(), .text, &([_]u8{'a'} ** 200), mask);
+    const medium = try encodeFrame(arena.allocator(), .text, &(@as([200]u8, @splat('a'))), mask);
     try std.testing.expectEqual(@as(u8, 0x80 | 126), medium[1]);
     try std.testing.expectEqual(@as(u16, 200), std.mem.readInt(u16, medium[2..4], .big));
     try std.testing.expectEqual(@as(usize, 2 + 2 + 4 + 200), medium.len);
@@ -284,7 +284,7 @@ test "the decoder joins a fragmented message and passes control frames between i
 test "the decoder waits for a frame split across reads" {
     var decoder = Decoder{ .gpa = std.testing.allocator };
     defer decoder.deinit();
-    const payload = [_]u8{'x'} ** 300;
+    const payload = @as([300]u8, @splat('x'));
     var framed: [4 + payload.len]u8 = undefined;
     framed[0] = 0x81;
     framed[1] = 126;

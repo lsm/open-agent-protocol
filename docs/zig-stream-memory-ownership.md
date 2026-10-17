@@ -68,6 +68,19 @@ session read back from disk has neither directory nor flag — deliberate, since
 stored absolute path is stale by construction. Any future resume change must
 decide what to persist and re-validate it.
 
+## Queued tool progress callbacks
+
+A tool callback may lend its call ID, name, arguments, and partial result only
+for the duration of the callback. `onToolUpdate` copies these bytes into one
+`ToolExecutionUpdatePayload.backing` allocation before queueing the event.
+The payload's slices point into that allocation; they do not retain the tool's
+request arena or temporary output buffer. `AgentEvent.deinit` frees the backing
+when the consumer releases an update, and stream teardown releases queued
+updates. A rejected publication releases its producer-owned copy immediately.
+This uses the existing stream ownership contract; it does not add another
+ownership mode. Manually constructed borrowed updates keep the default empty,
+borrowed backing.
+
 ## When a run ends before its message is appended
 
 A turn can end `.aborted`, in error, or part-way through a failure — and a consumer can

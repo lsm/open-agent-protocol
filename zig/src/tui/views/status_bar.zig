@@ -89,7 +89,7 @@ pub fn render(allocator: std.mem.Allocator, state: *const tui_state.AppState, op
         try pushOwnedSegment(&segments, allocator, .session, "session", try allocator.dupe(u8, state.status.session_id));
     }
 
-    var dropped = [_]bool{false} ** max_segments;
+    var dropped = @as([max_segments]bool, @splat(false));
     const mask = dropped[0..segments.items.len];
 
     if (try fitLayout(allocator, segments.items, mask, options.width, options.hint)) |text| return text;
