@@ -252,7 +252,7 @@ pub const ToolCallIdFormat = enum {
     }
 };
 
-pub const DEGRADABLE_SNAPSHOT_KEY = "include_snapshot";
+pub const DEGRADABLE_SNAPSHOT_KEY = "inference.snapshot";
 
 pub fn allowsDegraded(keys: []const []const u8, key: []const u8) bool {
     for (keys) |candidate| {
