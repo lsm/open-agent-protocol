@@ -544,6 +544,7 @@ fn prepare(handle: Socket) bool {
 const Phase = enum {
     head,
     body,
+    chunked,
     flushing,
     refusing,
     streaming,
@@ -569,6 +570,8 @@ pub const Connection = struct {
     subscription: ?*hubmod.Subscription = null,
     stream_ended: bool = false,
     awaiting: ?Deferred = null,
+    chunks: ?hub_http.Chunked = null,
+    decoded: std.ArrayList(u8) = .empty,
 
     fn create(daemon: *Daemon, stream: compat.net.Stream) !*Connection {
         const connection = try daemon.allocator.create(Connection);
@@ -612,7 +615,7 @@ pub const Connection = struct {
     fn interest(self: *const Connection) afd_poll.Events {
         var wanted = afd_poll.Events{};
         switch (self.phase) {
-            .head, .body, .refusing, .streaming, .flushing => if (!self.peer_closed) {
+            .head, .body, .chunked, .refusing, .streaming, .flushing => if (!self.peer_closed) {
                 wanted.receive = true;
                 wanted.disconnect = true;
                 wanted.abort = true;
@@ -634,7 +637,7 @@ pub const Connection = struct {
     fn events(self: *const Connection) i16 {
         var wanted: i16 = 0;
         switch (self.phase) {
-            .head, .body, .refusing, .streaming, .flushing => if (!self.peer_closed) {
+            .head, .body, .chunked, .refusing, .streaming, .flushing => if (!self.peer_closed) {
                 wanted |= std.posix.POLL.IN;
             },
             .awaiting, .done => {},
@@ -699,6 +702,17 @@ pub const Connection = struct {
                     if (self.request.filled == self.request.body.len) self.dispatch();
                 },
             },
+            .chunked => switch (self.receive(&chunk)) {
+                .waiting => return,
+                .closed => {
+                    self.peer_closed = true;
+                    self.transportFailure(error.BodyTruncated, 0);
+                },
+                .bytes => |count| {
+                    self.progress_ms = nowMs();
+                    self.takeChunks(chunk[0..count]);
+                },
+            },
             .refusing => {
                 const room = @min(chunk.len, self.drain_left);
                 if (room == 0) return;
@@ -743,6 +757,11 @@ pub const Connection = struct {
             self.refuse(bytes, self.request.content_length -| leftover.len);
             return;
         }
+        if (self.request.chunked) {
+            self.chunks = .{};
+            self.phase = .chunked;
+            return self.takeChunks(leftover);
+        }
         if (self.request.content_length == 0) return self.dispatch();
         self.request.body = arena.alloc(u8, self.request.content_length) catch {
             self.phase = .done;
@@ -753,6 +772,22 @@ pub const Connection = struct {
         self.request.filled = taken;
         if (self.request.filled == self.request.body.len) return self.dispatch();
         self.phase = .body;
+    }
+
+    fn takeChunks(self: *Connection, bytes: []const u8) void {
+        const decoder = if (self.chunks) |*held| held else return;
+        decoder.feed(self.scratch.allocator(), &self.decoded, bytes) catch |err| switch (err) {
+            error.OutOfMemory => {
+                self.phase = .done;
+                return;
+            },
+            error.BodyTooLarge, error.Malformed => |failure| return self.transportFailure(failure, 0),
+        };
+        if (!decoder.finished()) return;
+        self.request.body = self.decoded.items;
+        self.request.filled = self.decoded.items.len;
+        self.request.content_length = self.decoded.items.len;
+        self.dispatch();
     }
 
     fn dispatch(self: *Connection) void {
@@ -832,7 +867,7 @@ pub const Connection = struct {
     fn settle(self: *Connection, now: u64) void {
         switch (self.phase) {
             .head => if (now -| self.started_ms >= @as(u64, @intCast(hub_http.header_read_ms))) self.transportFailure(error.Timeout, 0),
-            .body => if (now -| self.progress_ms >= @as(u64, @intCast(hub_http.idle_read_ms))) self.transportFailure(error.Timeout, 0),
+            .body, .chunked => if (now -| self.progress_ms >= @as(u64, @intCast(hub_http.idle_read_ms))) self.transportFailure(error.Timeout, 0),
             .flushing => {
                 if (!self.pending()) self.phase = .done;
             },
@@ -1626,6 +1661,43 @@ test "an open event stream does not hold the daemon: another connection is answe
     try testing.expect(try readFor(&submitter, &admitted, "session.message.submit.response", 2000));
     try testing.expect(try readFor(&stream, &streamed, "id: 1\ndata: {", 2000));
     try testing.expect(std.mem.indexOf(u8, streamed.items, "run.started") != null);
+}
+
+test "a chunked body is decoded by the loop and served as if it had declared its length" {
+    var served: Served = undefined;
+    try served.prepare();
+    try served.serve();
+    defer served.stop();
+
+    var stream = try served.dial();
+    defer stream.close();
+    const half = open_demo.len / 2;
+    const head = try std.fmt.allocPrint(testing.allocator, "POST /adapters/memory/sessions HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\nTransfer-Encoding: chunked\r\n\r\n{x};ext=1\r\n{s}", .{ open_demo.len, open_demo[0..half] });
+    defer testing.allocator.free(head);
+    try stream.writeAll(head);
+    compat.time.sleepMs(50);
+    const tail = try std.fmt.allocPrint(testing.allocator, "{s}\r\n0\r\n\r\n", .{open_demo[half..]});
+    defer testing.allocator.free(tail);
+    try stream.writeAll(tail);
+    var answered = std.ArrayList(u8).empty;
+    defer answered.deinit(testing.allocator);
+    try testing.expect(try readFor(&stream, &answered, "session.open.response", 2000));
+    try testing.expect(std.mem.startsWith(u8, answered.items, "HTTP/1.1 200 OK\r\n"));
+}
+
+test "a chunked body with a malformed size is refused by the loop" {
+    var served: Served = undefined;
+    try served.prepare();
+    try served.serve();
+    defer served.stop();
+
+    var stream = try served.dial();
+    defer stream.close();
+    try stream.writeAll("POST /adapters/memory/sessions HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\nTransfer-Encoding: chunked\r\n\r\nzz\r\n");
+    var answered = std.ArrayList(u8).empty;
+    defer answered.deinit(testing.allocator);
+    try testing.expect(try readFor(&stream, &answered, "\r\n\r\n", 2000));
+    try testing.expect(std.mem.startsWith(u8, answered.items, "HTTP/1.1 400 Bad Request\r\n"));
 }
 
 test "a client that hangs up mid-stream releases its stream without an event to write" {

@@ -69,6 +69,7 @@ pub const Request = struct {
     content_type: ?[]const u8 = null,
     last_event_id: ?[]const u8 = null,
     content_length: usize = 0,
+    chunked: bool = false,
     filled: usize = 0,
     body: []u8 = &.{},
 
@@ -202,10 +203,12 @@ pub fn parseHead(allocator: std.mem.Allocator, head: []const u8, body_allowed: *
         } else if (std.ascii.eqlIgnoreCase(name, "last-event-id")) {
             if (request.last_event_id == null) request.last_event_id = try allocator.dupe(u8, value);
         } else if (std.ascii.eqlIgnoreCase(name, "transfer-encoding")) {
-            return error.UnsupportedTransferEncoding;
+            if (request.chunked or !std.ascii.eqlIgnoreCase(value, "chunked")) return error.UnsupportedTransferEncoding;
+            request.chunked = true;
         }
     }
 
+    if (request.chunked and seen_length) return error.Malformed;
     if (request.content_length > max_body_bytes) return error.BodyTooLarge;
     return request;
 }
@@ -241,6 +244,7 @@ pub fn drain(stream: *compat.net.Stream, remaining_in: usize, keep_going: KeepGo
 }
 
 pub fn readBody(allocator: std.mem.Allocator, stream: *compat.net.Stream, request: *Request, idle_wait_ms: i32, cycle_ms: i32, keep_going: KeepGoing) Failure!void {
+    if (request.chunked) return error.UnsupportedTransferEncoding;
     if (request.content_length == 0) return;
     request.body = try allocator.alloc(u8, request.content_length);
     const idle_ms: u64 = @intCast(@max(idle_wait_ms, 0));
@@ -391,8 +395,81 @@ pub fn answer(allow: []const []const u8, request: Request) Answer {
 }
 
 pub fn carriesBody(request: Request) bool {
-    return request.content_length > 0;
+    return request.content_length > 0 or request.chunked;
 }
+
+pub const max_chunk_line_bytes = 4096;
+pub const max_chunked_wire_bytes = 2 * max_body_bytes;
+
+pub const Chunked = struct {
+    state: State = .size,
+    line: [max_chunk_line_bytes]u8 = undefined,
+    line_len: usize = 0,
+    left: usize = 0,
+    wire: usize = 0,
+    trailer: usize = 0,
+
+    const State = enum { size, data, data_end, trailer, done };
+
+    pub const Error = error{ Malformed, BodyTooLarge } || std.mem.Allocator.Error;
+
+    pub fn finished(self: *const Chunked) bool {
+        return self.state == .done;
+    }
+
+    pub fn feed(self: *Chunked, allocator: std.mem.Allocator, body: *std.ArrayList(u8), input: []const u8) Error!void {
+        var at: usize = 0;
+        while (at < input.len and self.state != .done) {
+            if (self.state == .data) {
+                const take = @min(self.left, input.len - at);
+                if (body.items.len + take > max_body_bytes) return error.BodyTooLarge;
+                try body.appendSlice(allocator, input[at .. at + take]);
+                at += take;
+                self.left -= take;
+                if (self.left == 0) self.state = .data_end;
+                continue;
+            }
+            if (self.line_len == self.line.len) return error.Malformed;
+            self.line[self.line_len] = input[at];
+            self.line_len += 1;
+            at += 1;
+            if (self.line_len < 2 or !std.mem.endsWith(u8, self.line[0..self.line_len], "\r\n")) continue;
+            const text = self.line[0 .. self.line_len - 2];
+            self.line_len = 0;
+            try self.endLine(text);
+        }
+        self.wire += at;
+        if (self.wire > max_chunked_wire_bytes) return error.BodyTooLarge;
+    }
+
+    fn endLine(self: *Chunked, text: []const u8) Error!void {
+        switch (self.state) {
+            .size => {
+                const cut = std.mem.indexOfScalar(u8, text, ';') orelse text.len;
+                const size_text = std.mem.trimEnd(u8, text[0..cut], " \t");
+                if (size_text.len == 0) return error.Malformed;
+                for (size_text) |byte| if (!std.ascii.isHex(byte)) return error.Malformed;
+                const size = std.fmt.parseInt(usize, size_text, 16) catch return error.BodyTooLarge;
+                if (size > max_body_bytes) return error.BodyTooLarge;
+                self.left = size;
+                self.state = if (size == 0) .trailer else .data;
+            },
+            .data_end => {
+                if (text.len != 0) return error.Malformed;
+                self.state = .size;
+            },
+            .trailer => {
+                if (text.len == 0) {
+                    self.state = .done;
+                    return;
+                }
+                self.trailer += text.len + 2;
+                if (self.trailer > max_header_bytes) return error.Malformed;
+            },
+            .data, .done => unreachable,
+        }
+    }
+};
 
 pub fn declaresJson(content_type: ?[]const u8) bool {
     const named = content_type orelse return false;
@@ -944,7 +1021,47 @@ test "every header this reader owns is taken once, so a second copy is refused r
     for (cases) |raw| try testing.expectError(error.Malformed, requestOver(raw));
 }
 
-test "a chunked body is refused rather than guessed at" {
+fn decodeChunked(input: []const u8, step: usize) Chunked.Error![]u8 {
+    var decoder = Chunked{};
+    var body = std.ArrayList(u8).empty;
+    errdefer body.deinit(testing.allocator);
+    var at: usize = 0;
+    while (at < input.len) : (at += step) try decoder.feed(testing.allocator, &body, input[at..@min(at + step, input.len)]);
+    if (!decoder.finished()) return error.Malformed;
+    return body.toOwnedSlice(testing.allocator);
+}
+
+test "a chunked body decodes the same whatever bytes each read carries, skipping extensions and a trailer" {
+    const wire = "4;name=value\r\nWiki\r\n6\r\npedia \r\nE\r\nin \r\n\r\nchunks.\r\n0\r\nExpires: never\r\n\r\n";
+    for ([_]usize{ 1, 2, 7, wire.len }) |step| {
+        const body = try decodeChunked(wire, step);
+        defer testing.allocator.free(body);
+        try testing.expectEqualStrings("Wikipedia in \r\n\r\nchunks.", body);
+    }
+}
+
+test "a chunked body with a bad size or framing is malformed, and one over the cap is too large" {
+    try testing.expectError(error.Malformed, decodeChunked("zz\r\nab\r\n0\r\n\r\n", 64));
+    try testing.expectError(error.Malformed, decodeChunked("+2\r\nab\r\n0\r\n\r\n", 64));
+    try testing.expectError(error.Malformed, decodeChunked("2\r\nabX\r\n0\r\n\r\n", 64));
+    try testing.expectError(error.Malformed, decodeChunked("\r\n", 64));
+    try testing.expectError(error.BodyTooLarge, decodeChunked("1000001\r\n", 64));
+    try testing.expectError(error.BodyTooLarge, decodeChunked("ffffffffffffffffffff\r\n", 64));
+}
+
+test "a head naming chunked is taken, another coding is refused, and chunked beside a length is malformed" {
+    var allowed = true;
+    var declared: usize = 0;
+    var chunked = try parseHead(testing.allocator, "POST /a HTTP/1.1\r\nHost: a\r\nTransfer-Encoding: Chunked\r\n\r\n", &allowed, &declared);
+    defer chunked.deinit(testing.allocator);
+    try testing.expect(chunked.chunked);
+    try testing.expect(carriesBody(chunked));
+    try testing.expectError(error.UnsupportedTransferEncoding, parseHead(testing.allocator, "POST /a HTTP/1.1\r\nHost: a\r\nTransfer-Encoding: gzip, chunked\r\n\r\n", &allowed, &declared));
+    try testing.expectError(error.UnsupportedTransferEncoding, parseHead(testing.allocator, "POST /a HTTP/1.1\r\nHost: a\r\nTransfer-Encoding: chunked\r\nTransfer-Encoding: chunked\r\n\r\n", &allowed, &declared));
+    try testing.expectError(error.Malformed, parseHead(testing.allocator, "POST /a HTTP/1.1\r\nHost: a\r\nTransfer-Encoding: chunked\r\nContent-Length: 4\r\n\r\n", &allowed, &declared));
+}
+
+test "the blocking reader still refuses a chunked body rather than guessing at it" {
     try testing.expectError(error.UnsupportedTransferEncoding, requestOver("POST /adapters HTTP/1.1\r\nHost: a\r\nTransfer-Encoding: chunked\r\n\r\n"));
 }
 

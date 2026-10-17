@@ -1933,14 +1933,13 @@ byte-for-byte comparison on their first request.
 stamped with the revision its *lister* served it under, which is what makes the
 draft's "refuse one that disagrees with the descriptor" check possible at all.
 
-**D21 — a chunked body is refused, where Go de-chunks it.** A request carrying
-any `Transfer-Encoding` is answered a bare `400`; `net/http` decodes chunked
-transparently, so a streaming client works against `goap serve` and not against
-`oapx serve`. This is a gap rather than a decision. The routes that read a body are
-written now, so the decoder has a consumer; it belongs beside `readBody`, under
-the same 16 MiB cap, and is not part of the change that wired the routes. Until then the refusal is
-the safe one: a body whose framing this daemon cannot read is not a body it
-should guess at. Pinned by `a chunked body is refused rather than guessed at`.
+**D21 is fixed** ([#1129](https://github.com/lsm/open-agent-protocol/issues/1129)): `oapx serve --addr`
+decodes `Transfer-Encoding: chunked` as `net/http` does, in the loop's body phase and under the
+same 16 MiB cap. Chunk extensions and a trailer are read and dropped. A malformed chunk size or
+framing is a `400`, a decoded body over the cap is `413 request_too_large`, another coding is a bare
+`400`, and `chunked` beside a `Content-Length` is a `400`, as RFC 9112 §6.1 allows. Pinned by `a
+chunked body is decoded by the loop and served as if it had declared its length`, `a chunked body
+with a malformed size is refused by the loop`, and the decoder's own tests in `http.zig`.
 
 **D22 — no `100 Continue` is sent, where Go sends one when the handler reads the
 body.** A client that sends `Expect: 100-continue` waits for the interim answer;
