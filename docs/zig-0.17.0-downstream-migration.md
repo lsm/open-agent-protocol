@@ -31,7 +31,7 @@ CI toolchain pins use 0.17.0, and Zig cache keys include the compiler version an
 - Struct reflection uses parallel `field_names`, `field_types`, and related arrays. Enum reflection also uses `field_names` and `field_values`; runtime compilation identified four additional enum loops beyond the initial struct audit.
 - `std.StaticBitSet` becomes `std.bit_set.Static`, and `.initFull()` becomes `.full`.
 - Prefer `std.lang.Optimize` and the `debug`, `safe`, `fast`, and `small` tags.
-- The compat layer uses `@Int` instead of the removed `std.meta.Int` and the new networking operation interface for socket writes.
+- The compat layer uses `@Int` instead of the removed `std.meta.Int` and the new networking operation interface for socket writes. Linux `waitpid` now takes a signed `i32` status pointer even without libc; process polling uses `c_int` and preserves the status bits when decoding termination.
 
 Deprecated `std.fmt.allocPrint`/`allocPrintSentinel`, `@intFromEnum`/`@enumFromInt`, and builtin target shortcut fields are not all removed by this migration. They still compile in 0.17.0 and can be cleaned up in focused follow-ups. New enum conversions must use the exact backing integer type. The five audited OAP `@bitCast` calls are integer-to-integer conversions, unaffected by the new array/vector logical-bit semantics.
 
