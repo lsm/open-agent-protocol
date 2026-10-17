@@ -560,12 +560,13 @@ const ToolUpdateContext = struct {
 fn onToolUpdate(ctx: ?*anyopaque, tool_call_id: []const u8, tool_name: []const u8, partial_result_json: []const u8) void {
     const context: *ToolUpdateContext = @ptrCast(@alignCast(ctx));
 
-    context.event_stream.push(.{ .tool_execution_update = .{
-        .tool_call_id = tool_call_id,
-        .tool_name = tool_name,
-        .args_json = context.args_json,
-        .partial_result_json = partial_result_json,
-    } }) catch {};
+    const stream = context.event_stream;
+    var payload = types.ToolExecutionUpdatePayload.initOwned(stream.allocator, tool_call_id, tool_name, context.args_json, partial_result_json) catch return;
+    stream.push(.{ .tool_execution_update = payload }) catch {
+        payload.backing.deinit(stream.allocator);
+        return;
+    };
+    if (stream.ownership.isOwned()) payload.backing.deinit(stream.allocator);
 }
 
 fn skipToolCall(
@@ -3327,4 +3328,28 @@ test "an exhausted allocator loses nothing across the tool handoff" {
 
 test "a tool result's working directory survives the loop and is freed with the message" {
     try runDirectoryReportingTool(std.testing.allocator);
+}
+
+test "queued tool updates retain callback bytes after their producer changes them" {
+    const allocator = std.testing.allocator;
+    var stream = AgentEventStream.init(allocator);
+    defer stream.deinit();
+    var id = [_]u8{ 'i', 'd' };
+    var name = [_]u8{ 't', 'o', 'o', 'l' };
+    var args = [_]u8{ '{', '}' };
+    var partial = [_]u8{ 'o', 'k' };
+    var context = ToolUpdateContext{ .event_stream = &stream, .tool_call_id = &id, .tool_name = &name, .args_json = &args };
+    onToolUpdate(&context, &id, &name, &partial);
+    @memset(&id, 'x');
+    @memset(&name, 'x');
+    @memset(&args, 'x');
+    @memset(&partial, 'x');
+    var event = stream.poll().?;
+    defer event.deinit(allocator);
+    try std.testing.expectEqualStrings("id", event.tool_execution_update.tool_call_id);
+    try std.testing.expectEqualStrings("tool", event.tool_execution_update.tool_name);
+    try std.testing.expectEqualStrings("{}", event.tool_execution_update.args_json);
+    try std.testing.expectEqualStrings("ok", event.tool_execution_update.partial_result_json);
+    stream.completeWithError("closed");
+    onToolUpdate(&context, "id", "tool", "discarded");
 }

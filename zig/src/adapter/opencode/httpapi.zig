@@ -749,7 +749,7 @@ fn streamEveryShape(allocator: std.mem.Allocator) !void {
 }
 
 test "the SSE decoder and the codec propagate every allocation failure and leak nothing" {
-    try testing.checkAllAllocationFailures(testing.allocator, streamEveryShape, .{});
+    try testing.checkAllAllocationFailures(std.heap.smp_allocator, streamEveryShape, .{});
 }
 
 test "a session list decodes every row strictly and refuses one that is not a session" {

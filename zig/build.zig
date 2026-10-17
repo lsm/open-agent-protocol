@@ -620,6 +620,8 @@ pub fn build(b: *std.Build) void {
                 &.{ sdk_dir, "System/Library/Frameworks" },
             ) catch @panic("OOM");
             oauth_storage_mod.addFrameworkPath(.{ .cwd_relative = frameworks_dir });
+            const libraries_dir = std.fs.path.join(b.allocator, &.{ sdk_dir, "usr/lib" }) catch @panic("OOM");
+            oauth_storage_mod.addLibraryPath(.{ .cwd_relative = libraries_dir });
         }
         oauth_storage_mod.linkFramework("Security", .{});
         oauth_storage_mod.linkFramework("CoreFoundation", .{});

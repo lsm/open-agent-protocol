@@ -116,6 +116,20 @@ pub const ToolExecutionUpdatePayload = struct {
     tool_name: []const u8,
     args_json: []const u8,
     partial_result_json: []const u8,
+    backing: OwnedSlice(u8) = OwnedSlice(u8).initBorrowed(""),
+
+    pub fn initOwned(allocator: std.mem.Allocator, id: []const u8, name: []const u8, args: []const u8, partial: []const u8) !ToolExecutionUpdatePayload {
+        const bytes = try std.mem.concat(allocator, u8, &.{ id, name, args, partial });
+        const name_end = id.len + name.len;
+        const args_end = name_end + args.len;
+        return .{
+            .tool_call_id = bytes[0..id.len],
+            .tool_name = bytes[id.len..name_end],
+            .args_json = bytes[name_end..args_end],
+            .partial_result_json = bytes[args_end..],
+            .backing = OwnedSlice(u8).initOwned(bytes),
+        };
+    }
 };
 
 pub const ToolExecutionEndPayload = struct {
@@ -162,6 +176,7 @@ pub const AgentEvent = union(enum) {
         switch (self.*) {
             .message_update => |*payload| payload.deinit(allocator),
             .compaction_end => |*payload| payload.deinit(allocator),
+            .tool_execution_update => |*payload| payload.backing.deinit(allocator),
             .tool_execution_end => |*payload| payload.content_json.deinit(allocator),
             .run_failed => |*payload| payload.deinit(allocator),
             else => {},

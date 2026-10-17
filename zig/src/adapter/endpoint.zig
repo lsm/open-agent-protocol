@@ -1934,7 +1934,7 @@ fn driveConversation(allocator: std.mem.Allocator) !void {
 }
 
 test "a whole conversation frees everything it built when any allocation fails" {
-    try testing.checkAllAllocationFailures(testing.allocator, driveConversation, .{});
+    try testing.checkAllAllocationFailures(std.heap.smp_allocator, driveConversation, .{});
 }
 
 test "attachments resolve as the hub resolves them: configured by id, local passed through, wire commands and literal environment refused" {

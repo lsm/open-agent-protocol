@@ -2834,7 +2834,7 @@ test "compaction frees what it built when any allocation fails" {
     var source = std.heap.ArenaAllocator.init(testing.allocator);
     defer source.deinit();
     const reducer = try settledSession(&source);
-    try testing.checkAllAllocationFailures(testing.allocator, compactProbe, .{&reducer});
+    try testing.checkAllAllocationFailures(std.heap.smp_allocator, compactProbe, .{&reducer});
 }
 
 test "a policy-denied call still open when the child dies settles refused_by_policy before the run fails" {
