@@ -4338,6 +4338,7 @@ test "one silent child does not hold back another session's events" {
 }
 
 const windows_shell = "C:\\Windows\\System32\\cmd.exe";
+const windows_ping = "C:\\Windows\\System32\\PING.EXE";
 
 fn windowsChild(script: []const u8) !*process.Transport {
     return process.Transport.open(testing.allocator, .{
@@ -4350,9 +4351,9 @@ fn windowsChild(script: []const u8) !*process.Transport {
 
 test "on Windows one silent child does not hold back another child's output for its share of the wait" {
     if (comptime pollable) return error.SkipZigTest;
-    const silent = try windowsChild("ping -n 30 127.0.0.1 >nul");
+    const silent = try windowsChild(windows_ping ++ " -n 30 127.0.0.1 >nul");
     defer silent.deinit();
-    const talking = try windowsChild("ping -n 2 127.0.0.1 >nul & echo ready");
+    const talking = try windowsChild(windows_ping ++ " -n 2 127.0.0.1 >nul & echo ready");
     defer talking.deinit();
 
     var quiet = Flaky{ .allocator = testing.allocator, .fail_drain = false, .child = silent };
