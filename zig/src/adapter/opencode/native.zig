@@ -1,3 +1,4 @@
+const repeat = @import("repeat").repeat;
 const std = @import("std");
 const harness_pins = @import("harness_pins");
 const gojson = @import("gojson");
@@ -1333,7 +1334,7 @@ test "decoding propagates every allocation failure and leaks nothing" {
 test "an event whose data nests past 256 levels is decoded, not aborted on" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
-    const nested = ("[" ** 300) ++ "1" ++ ("]" ** 300);
+    const nested = (repeat("[", 300)) ++ "1" ++ (repeat("]", 300));
     var diag = Diagnostic{};
     const event = try decodeEvent(arena.allocator(), "{\"id\":\"evt_1\",\"type\":\"session.text.ended\",\"durable\":{\"aggregateID\":\"ses_a\",\"seq\":1,\"version\":1},\"data\":{\"sessionID\":\"ses_a\",\"text\":\"a\",\"extra\":" ++ nested ++ "}}", &diag);
     try testing.expectEqualStrings("evt_1", event.id);

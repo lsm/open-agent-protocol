@@ -1,3 +1,4 @@
+const repeat = @import("repeat").repeat;
 const std = @import("std");
 const zz = @import("zigzag");
 const tui_state = @import("tui_state");
@@ -2270,7 +2271,7 @@ test "a table wider than the transcript wraps inside its cells and stays within 
 test "a horizontal rule spans the width, whatever its marker, and a short run stays text" {
     const plain = try plainTable("a\n---\n* * *\n___\n--\nb", 6);
     defer std.testing.allocator.free(plain);
-    const rule = "\u{2500}" ** 6;
+    const rule = repeat("\u{2500}", 6);
     try std.testing.expectEqualStrings("a\n" ++ rule ++ "\n" ++ rule ++ "\n" ++ rule ++ "\n--\nb", plain);
 }
 
@@ -3569,7 +3570,7 @@ test "transcript expands fenced tabs before rendering" {
 test "transcript expands fenced tabs and clips to bubble width" {
     var state = AppState.init(std.testing.allocator);
     defer state.deinit();
-    try state.appendTranscript(.assistant, "```\n\t" ++ ("x" ** 60) ++ "\n```");
+    try state.appendTranscript(.assistant, "```\n\t" ++ (repeat("x", 60)) ++ "\n```");
 
     const text = try render(std.testing.allocator, &state, .{ .width = 40, .height = 10 });
     defer std.testing.allocator.free(text);

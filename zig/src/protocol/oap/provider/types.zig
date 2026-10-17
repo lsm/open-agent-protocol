@@ -276,8 +276,8 @@ pub const CompatibilityFacts = struct {
     cache_ttl_control: ?bool = null,
 
     pub fn isEmpty(self: CompatibilityFacts) bool {
-        inline for (@typeInfo(CompatibilityFacts).@"struct".fields) |field| {
-            if (@field(self, field.name) != null) return false;
+        inline for (@typeInfo(CompatibilityFacts).@"struct".field_names) |name| {
+            if (@field(self, name) != null) return false;
         }
         return true;
     }

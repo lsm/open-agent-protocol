@@ -562,7 +562,7 @@ test "common path and binary helpers" {
     try std.testing.expect(!isBinary(""));
     try std.testing.expect(!isBinary("abc"));
     try std.testing.expect(isBinary("a\x00b"));
-    var boundary = [_]u8{'a'} ** 4097;
+    var boundary = @as([4097]u8, @splat('a'));
     boundary[4095] = 0;
     try std.testing.expect(isBinary(&boundary));
     boundary[4095] = 'a';

@@ -1,3 +1,4 @@
+const repeat = @import("repeat").repeat;
 const std = @import("std");
 const json_encode = @import("json_encode");
 const compat = @import("compat");
@@ -266,7 +267,7 @@ test "raisedOutput lifts a limit below the model's maximum to it, and nothing el
 }
 
 test "outputLimit asks for no more output than the context window leaves after an estimated prompt and its headroom, and leaves an unset limit unset when it fits" {
-    const text = "a" ** 3000;
+    const text = repeat("a", 3000);
     const messages = [_]ai_types.Message{.{ .user = .{ .content = .{ .text = text }, .timestamp = 0 } }};
     const context: ai_types.Context = .{ .messages = &messages };
     const prompt = inflated(estimatePromptTokens(context)) + full_window_output_tokens;
@@ -282,7 +283,7 @@ test "outputLimit asks for no more output than the context window leaves after a
 
 test "outputLimit counts the prompt from the provider's last report when a reply carries one" {
     const messages = [_]ai_types.Message{
-        .{ .user = .{ .content = .{ .text = "a" ** 40_000 }, .timestamp = 0 } },
+        .{ .user = .{ .content = .{ .text = repeat("a", 40_000) }, .timestamp = 0 } },
         .{ .assistant = .{
             .content = &.{.{ .text = .{ .text = "ok" } }},
             .api = "test-api",
@@ -292,7 +293,7 @@ test "outputLimit counts the prompt from the provider's last report when a reply
             .stop_reason = .stop,
             .timestamp = 0,
         } },
-        .{ .user = .{ .content = .{ .text = "b" ** 400 }, .timestamp = 0 } },
+        .{ .user = .{ .content = .{ .text = repeat("b", 400) }, .timestamp = 0 } },
     };
     const context: ai_types.Context = .{ .messages = &messages };
     const prompt = 6_000 + 3_000 + 800 + 200 + inflated(estimateMessages(messages[2..]).estimated_tokens) + full_window_output_tokens;
@@ -302,7 +303,7 @@ test "outputLimit counts the prompt from the provider's last report when a reply
 
 test "outputLimit leaves a sixty-fourth of a large window unasked, so a prompt the estimate undercounts still fits" {
     const messages = [_]ai_types.Message{
-        .{ .user = .{ .content = .{ .text = "a" ** 400 }, .timestamp = 0 } },
+        .{ .user = .{ .content = .{ .text = repeat("a", 400) }, .timestamp = 0 } },
         .{ .assistant = .{
             .content = &.{.{ .text = .{ .text = "ok" } }},
             .api = "test-api",
@@ -312,7 +313,7 @@ test "outputLimit leaves a sixty-fourth of a large window unasked, so a prompt t
             .stop_reason = .stop,
             .timestamp = 0,
         } },
-        .{ .user = .{ .content = .{ .text = "b" ** 400 }, .timestamp = 0 } },
+        .{ .user = .{ .content = .{ .text = repeat("b", 400) }, .timestamp = 0 } },
     };
     const context: ai_types.Context = .{ .messages = &messages };
     const window: u32 = 1_048_576;
@@ -827,7 +828,7 @@ test "compact output injection grows parsed object with parser arena" {
 }
 
 test "compact output injection keeps model arguments nested past 256 levels whole" {
-    const nested = ("[" ** 400) ++ "1" ++ ("]" ** 400);
+    const nested = (repeat("[", 400)) ++ "1" ++ (repeat("]", 400));
     const injected = try withCompactToolOutput(std.testing.allocator, "{\"command\":\"ls\",\"nested\":" ++ nested ++ "}");
     defer std.testing.allocator.free(injected);
     try std.testing.expectEqualStrings("{\"command\":\"ls\",\"nested\":" ++ nested ++ ",\"compact_output\":true}", injected);

@@ -1,3 +1,4 @@
+const repeat = @import("repeat").repeat;
 const std = @import("std");
 const jsonschema = @import("jsonschema");
 const packs_mod = @import("packs");
@@ -294,7 +295,7 @@ test "a refusal whose rendered line outgrows any fixed buffer still prints its c
     defer tmp.cleanup();
     try tmp.dir.createDir(std.testing.io, "long", .default_dir);
 
-    const long_id = try std.fmt.allocPrint(allocator, "com.example.{s}", .{"x" ** 400});
+    const long_id = try std.fmt.allocPrint(allocator, "com.example.{s}", .{repeat("x", 400)});
     defer allocator.free(long_id);
     try std.testing.expect(long_id.len > 256);
 

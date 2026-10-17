@@ -156,7 +156,7 @@ fn isTopEffort(effort: []const u8) bool {
 
 fn containsAny(haystack: []const u8, needles: []const []const u8) bool {
     for (needles) |needle| {
-        if (std.ascii.indexOfIgnoreCase(haystack, needle) != null) return true;
+        if (std.ascii.findIgnoreCase(haystack, needle) != null) return true;
     }
     return false;
 }

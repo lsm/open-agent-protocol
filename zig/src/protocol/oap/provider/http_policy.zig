@@ -18,7 +18,7 @@ pub fn validateBaseUrl(url: []const u8, security: Security) !std.Uri {
     }
 
     var host_buffer: [std.Io.net.HostName.max_len]u8 = undefined;
-    const host = (uri.getHost(&host_buffer) catch return error.InvalidProviderServiceUrl).bytes;
+    const host = (std.Io.net.HostName.fromUri(uri, &host_buffer) catch return error.InvalidProviderServiceUrl).bytes;
     const is_loopback = std.mem.eql(u8, host, "127.0.0.1") or
         std.mem.eql(u8, host, "::1") or std.mem.eql(u8, host, "[::1]");
 

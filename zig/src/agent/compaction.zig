@@ -1,3 +1,4 @@
+const repeat = @import("repeat").repeat;
 const std = @import("std");
 const compat = @import("compat");
 const ai_types = @import("ai_types");
@@ -247,7 +248,7 @@ pub fn firstIncluded(messages: []const ai_types.Message, budget: ?u64) ?usize {
 
 pub fn isContextOverflow(message: []const u8) bool {
     for (overflow_markers) |marker| {
-        if (std.ascii.indexOfIgnoreCase(message, marker) != null) return true;
+        if (std.ascii.findIgnoreCase(message, marker) != null) return true;
     }
     return false;
 }
@@ -351,7 +352,7 @@ test "OwnedOptions.init survives an allocation failure at every step" {
 test "firstIncluded keeps everything without a budget and cuts at a user turn with one" {
     const call = [_]ai_types.AssistantContent{.{ .tool_call = .{ .id = "c1", .name = "shell", .arguments_json = "{}" } }};
     const messages = [_]ai_types.Message{
-        userText("a" ** 400),
+        userText(repeat("a", 400)),
         assistantText(&call),
         .{ .tool_result = .{ .tool_call_id = "c1", .tool_name = "shell", .content = &.{}, .is_error = false, .timestamp = 0 } },
         userText("recent question"),
@@ -382,7 +383,7 @@ test "autoCompactAt keeps a fifth of a large window free, and room for a summary
 }
 
 test "shrunkBudget keeps three quarters of what the rejected request carried" {
-    const messages = [_]ai_types.Message{ userText("a" ** 400), userText("b" ** 400) };
+    const messages = [_]ai_types.Message{ userText(repeat("a", 400)), userText(repeat("b", 400)) };
     try std.testing.expectEqual(@as(?u64, 157), shrunkBudget(&messages));
     try std.testing.expectEqual(@as(?usize, 1), firstIncluded(&messages, shrunkBudget(&messages)));
 }

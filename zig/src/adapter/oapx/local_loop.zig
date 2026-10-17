@@ -1,3 +1,4 @@
+const repeat = @import("repeat").repeat;
 const std = @import("std");
 const compat = @import("compat");
 const ai_types = @import("ai_types");
@@ -2654,7 +2655,7 @@ test "the rewrite replaces the session root with the working directory and leave
     try std.testing.expectEqualStrings("a.txt", parsed.value.object.get("path").?.string);
 
     try std.testing.expect(try runtime_loop.loop.rewriteWorkspaceRoot("artifact_retrieve", "{\"reference\":\"shell_execute:1\"}", std.testing.allocator) == null);
-    const nested = ("[" ** 400) ++ "1" ++ ("]" ** 400);
+    const nested = (repeat("[", 400)) ++ "1" ++ (repeat("]", 400));
     const deep_args = try std.fmt.allocPrint(std.testing.allocator, "{{\"workspace_root\":\"{s}\",\"path\":\"a.txt\",\"deep\":{s}}}", .{ cwd, nested });
     defer std.testing.allocator.free(deep_args);
     const deep_rewritten = (try runtime_loop.loop.rewriteWorkspaceRoot("file_read", deep_args, std.testing.allocator)).?;

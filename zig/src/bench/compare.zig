@@ -151,7 +151,7 @@ pub fn main(init: std.process.Init) !void {
 }
 
 test "comparison rejects incompatible identity" {
-    const samples = [_]u64{100} ** 15;
+    const samples = @as([15]u64, @splat(100));
     const baseline: Report = .{
         .schema_version = 1,
         .git_revision = "abc123",

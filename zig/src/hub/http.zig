@@ -1,3 +1,4 @@
+const repeat = @import("repeat").repeat;
 const std = @import("std");
 const oap_types = @import("oap_types");
 const oap_envelope = @import("oap_envelope");
@@ -792,7 +793,7 @@ test "sixty-five parameters and a long value are admitted, because the header bo
         defer request.deinit(testing.allocator);
         try testing.expectEqual(Answer.not_found, answer(loopback, request));
     }
-    const long_value = "x" ** 2048;
+    const long_value = repeat("x", 2048);
     const long_raw = try std.fmt.allocPrint(testing.allocator, "POST /adapters/a/sessions HTTP/1.1\r\nHost: 127.0.0.1:6270\r\nContent-Type: application/json; a={s}\r\nContent-Length: 2\r\n\r\n{{}}", .{long_value});
     defer testing.allocator.free(long_raw);
     var long_request = try requestOver(long_raw);
@@ -950,7 +951,7 @@ test "a chunked body is refused rather than guessed at" {
 test "headers over the cap are refused rather than buffered" {
     var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena_state.deinit();
-    const oversized = try std.fmt.allocPrint(arena_state.allocator(), "GET /adapters HTTP/1.1\r\nHost: a\r\nX-Pad: {s}\r\n\r\n", .{"p" ** (max_header_bytes + 16)});
+    const oversized = try std.fmt.allocPrint(arena_state.allocator(), "GET /adapters HTTP/1.1\r\nHost: a\r\nX-Pad: {s}\r\n\r\n", .{repeat("p", (max_header_bytes + 16))});
     try testing.expectError(error.HeaderTooLarge, requestOver(oversized));
     try testing.expectEqualStrings(header_too_large, statusFor(error.HeaderTooLarge));
 }
@@ -1407,7 +1408,7 @@ test "a drain stops at its byte cap and reports what it consumed" {
 }
 
 fn flood(client: *compat.net.Stream, total: usize) void {
-    const block = "z" ** 4096;
+    const block = repeat("z", 4096);
     var sent: usize = 0;
     while (sent < total) {
         const take = @min(block.len, total - sent);
@@ -1420,7 +1421,7 @@ test "a drain reads a positive number of bytes, and stops when keepGoing says st
     if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
     var pipe = try Pipe.open();
     defer pipe.close();
-    try pipe.client.writeAll("u" ** 4096);
+    try pipe.client.writeAll(repeat("u", 4096));
     var one = stop_after_one{};
     const keeping: KeepGoing = .{ .context = &one, .check = stop_after_one.check };
     const first = drain(&pipe.accepted, 4096, always_going);
@@ -1436,7 +1437,7 @@ test "a drain reads on a long-lived process, because its budget is elapsed not u
     const origin = elapsedMs() catch return error.TestUnexpectedResult;
     var pipe = try Pipe.open();
     defer pipe.close();
-    try pipe.client.writeAll("u" ** 4096);
+    try pipe.client.writeAll(repeat("u", 4096));
     try testing.expectEqual(@as(usize, 4096), drain(&pipe.accepted, 4096, always_going));
 
     const wait_ms: u64 = @intCast(@as(u64, @intCast(drain_total_ms)) + 200);
@@ -1445,7 +1446,7 @@ test "a drain reads on a long-lived process, because its budget is elapsed not u
     const up = elapsedMs() catch return error.TestUnexpectedResult;
     try testing.expect(up -| origin >= wait_ms);
     try testing.expect(up > @as(u64, @intCast(drain_total_ms)));
-    try pipe.client.writeAll("v" ** 4096);
+    try pipe.client.writeAll(repeat("v", 4096));
     try testing.expectEqual(@as(usize, 4096), drain(&pipe.accepted, 4096, always_going));
 }
 
@@ -1476,7 +1477,7 @@ const spends_the_budget = struct {
             now = elapsedMs() catch return true;
         }
         self.observed = now -| self.entered;
-        self.client.writeAll("q" ** 4096) catch {
+        self.client.writeAll(repeat("q", 4096)) catch {
             self.write_failed = true;
             return true;
         };

@@ -483,13 +483,13 @@ pub fn Program(comptime Model: type) type {
         }
 
         fn performSuspend(self: *Self) void {
-            if (builtin.os.tag == .windows) return;
+            if (builtin.target.os.tag == .windows) return;
 
             if (self.terminal) |*term| {
                 term.cleanup();
             }
 
-            if (builtin.os.tag != .windows) {
+            if (builtin.target.os.tag != .windows) {
                 const posix = std.posix;
                 _ = posix.raise(posix.SIG.TSTP) catch {};
             }
@@ -643,7 +643,7 @@ pub fn Program(comptime Model: type) type {
                             .file => |path| {
                                 _ = try term.transmitKittyImageFromFile(path, .{
                                     .image_id = cache.image_id,
-                                    .format = @enumFromInt(@intFromEnum(cache.format)),
+                                    .format = @fromBackingInt(@backingInt(cache.format)),
                                     .quiet = cache.quiet,
                                     .pixel_width = cache.pixel_width,
                                     .pixel_height = cache.pixel_height,
@@ -652,7 +652,7 @@ pub fn Program(comptime Model: type) type {
                             .data => |data| {
                                 _ = try term.transmitKittyImage(data, .{
                                     .image_id = cache.image_id,
-                                    .format = @enumFromInt(@intFromEnum(cache.format)),
+                                    .format = @fromBackingInt(@backingInt(cache.format)),
                                     .quiet = cache.quiet,
                                     .pixel_width = cache.pixel_width,
                                     .pixel_height = cache.pixel_height,
@@ -742,7 +742,7 @@ pub fn Program(comptime Model: type) type {
                             .sixel => .sixel,
                         };
                         _ = try term.drawImageDataWithProtocol(image.data, .{
-                            .format = @enumFromInt(@intFromEnum(image.format)),
+                            .format = @fromBackingInt(@backingInt(image.format)),
                             .pixel_width = image.pixel_width,
                             .pixel_height = image.pixel_height,
                             .width_cells = image.width_cells,

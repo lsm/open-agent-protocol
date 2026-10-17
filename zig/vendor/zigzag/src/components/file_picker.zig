@@ -299,7 +299,7 @@ pub const FilePicker = struct {
     }
 
     fn defaultHomePath() []const u8 {
-        return if (comptime builtin.os.tag == .windows) "C:\\" else "/";
+        return if (comptime builtin.target.os.tag == .windows) "C:\\" else "/";
     }
 
     fn ensureVisible(self: *FilePicker) void {

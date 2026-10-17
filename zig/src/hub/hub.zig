@@ -1,3 +1,4 @@
+const repeat = @import("repeat").repeat;
 const std = @import("std");
 const builtin = @import("builtin");
 const oap_types = @import("oap_types");
@@ -5001,7 +5002,7 @@ test {
 }
 
 test "a reply longer than the bound is cut on a character boundary" {
-    const long = "a" ** (last_reply_limit - 1) ++ "\u{00e9}" ++ "b";
+    const long = repeat("a", (last_reply_limit - 1)) ++ "\u{00e9}" ++ "b";
     const cut = Hub.replyCut(long);
     try std.testing.expectEqual(last_reply_limit - 1, cut);
     try std.testing.expect(std.unicode.utf8ValidateSlice(long[0..cut]));

@@ -67,7 +67,7 @@ jobs:
       - name: Setup Zig
         uses: mlugg/setup-zig@v2
         with:
-          version: 0.16.0
+          version: 0.17.0
 
       # Zig cannot locate the macOS SDK by itself when an explicit -Dtarget is
       # passed (#196): framework resolution fails with "unable to find

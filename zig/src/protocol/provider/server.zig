@@ -181,8 +181,8 @@ fn defaultAuthFailureDetector(err_msg: []const u8) bool {
     if (statusFromMessage(err_msg)) |status| return status == 401 or status == 403;
     return std.mem.find(u8, err_msg, "401") != null or
         std.mem.find(u8, err_msg, "403") != null or
-        std.ascii.indexOfIgnoreCase(err_msg, "unauthorized") != null or
-        std.ascii.indexOfIgnoreCase(err_msg, "forbidden") != null;
+        std.ascii.findIgnoreCase(err_msg, "unauthorized") != null or
+        std.ascii.findIgnoreCase(err_msg, "forbidden") != null;
 }
 
 test "an explicit status decides auth failure instead of text anywhere in the message" {

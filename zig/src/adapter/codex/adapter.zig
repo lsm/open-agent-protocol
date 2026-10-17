@@ -1,3 +1,4 @@
+const repeat = @import("repeat").repeat;
 const std = @import("std");
 const harness_pins = @import("harness_pins");
 const builtin = @import("builtin");
@@ -1645,6 +1646,6 @@ test "a thread/list answer becomes native sessions, titled by name or the previe
     try std.testing.expect(!listed[1].running);
     try std.testing.expectEqualStrings("/w", listed[1].directory);
     try std.testing.expectEqualStrings("codex://threads/t2", listed[1].link);
-    const long = "a" ** 119 ++ "\u{00e9}" ++ "b";
+    const long = repeat("a", 119) ++ "\u{00e9}" ++ "b";
     try std.testing.expectEqual(@as(usize, 119), Adapter.titleCut(long, 120));
 }

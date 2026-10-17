@@ -7,10 +7,10 @@ pub const frame = @import("frame.zig");
 const unicode = @import("../unicode.zig");
 const Environment = @import("../core/environment.zig").Environment;
 
-const is_wasm = builtin.os.tag == .wasi or builtin.cpu.arch == .wasm32 or builtin.cpu.arch == .wasm64;
+const is_wasm = builtin.target.os.tag == .wasi or builtin.target.cpu.arch == .wasm32 or builtin.target.cpu.arch == .wasm64;
 const platform = if (is_wasm)
     @import("platform/wasm.zig")
-else if (builtin.os.tag == .windows)
+else if (builtin.target.os.tag == .windows)
     @import("platform/windows.zig")
 else
     @import("platform/posix.zig");
@@ -248,7 +248,7 @@ pub const Terminal = struct {
             const stdout = config.output orelse std.Io.File.stdout();
             const stdin = config.input orelse std.Io.File.stdin();
 
-            if (builtin.os.tag != .windows) {
+            if (builtin.target.os.tag != .windows) {
                 if (config.input) |inp| state.stdin_fd = inp.handle;
                 if (config.output) |o| state.stdout_fd = o.handle;
             } else {
@@ -373,7 +373,7 @@ pub const Terminal = struct {
     pub fn getSize(self: *Terminal) !Size {
         if (is_wasm) {
             return platform.getSize({});
-        } else if (builtin.os.tag == .windows) {
+        } else if (builtin.target.os.tag == .windows) {
             return platform.getSize(self.state.stdout_handle);
         } else {
             return platform.getSize(self.state.stdout_fd);
@@ -396,7 +396,7 @@ pub const Terminal = struct {
     pub fn checkResize(self: *Terminal) bool {
         if (is_wasm) {
             return platform.checkResize();
-        } else if (builtin.os.tag == .windows) {
+        } else if (builtin.target.os.tag == .windows) {
             return platform.checkResize(self.state.stdout_handle);
         } else {
             return platform.checkResize();
@@ -530,7 +530,7 @@ pub const Terminal = struct {
     pub fn isTty(self: *Terminal) bool {
         _ = self;
         if (is_wasm) return true;
-        return platform.isTty(if (builtin.os.tag == .windows)
+        return platform.isTty(if (builtin.target.os.tag == .windows)
             platform.State.init().stdin_handle
         else
             std.posix.STDIN_FILENO);
@@ -566,7 +566,7 @@ pub const Terminal = struct {
         var params_buf: [256]u8 = undefined;
         var params_writer = FixedWriter(&params_buf);
 
-        try params_writer.print("a=T,t=d,f={d}", .{@intFromEnum(options.format)});
+        try params_writer.print("a=T,t=d,f={d}", .{@backingInt(options.format)});
         if (options.quiet) try params_writer.writeAll(",q=2");
         if (options.width_cells) |cols| try params_writer.print(",c={d}", .{cols});
         if (options.height_cells) |rows| try params_writer.print(",r={d}", .{rows});
@@ -937,7 +937,7 @@ pub const Terminal = struct {
             return;
         }
 
-        if (builtin.os.tag != .windows) {
+        if (builtin.target.os.tag != .windows) {
             self.unicode_width_caps.mode_2027 = self.queryMode2027Support() catch false;
             if (self.unicode_width_caps.mode_2027) {
                 self.writeBytes(ansi.unicode_width_mode_enable) catch {};

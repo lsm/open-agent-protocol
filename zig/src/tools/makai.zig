@@ -1,3 +1,4 @@
+const repeat = @import("repeat").repeat;
 const std = @import("std");
 const compat = @import("compat");
 const ai_types = @import("ai_types");
@@ -7493,7 +7494,7 @@ test "validate names the code of a refusal whose pack id is longer than any fixe
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     try tmp.dir.createDir(std.testing.io, "longid", .default_dir);
-    const long_id = try std.fmt.allocPrint(allocator, "com.example.{s}", .{"x" ** 400});
+    const long_id = try std.fmt.allocPrint(allocator, "com.example.{s}", .{repeat("x", 400)});
     defer allocator.free(long_id);
     const descriptor = try std.fmt.allocPrint(allocator,
         \\{{"id": "{s}", "version": "1.0.0", "capability_keys": ["capabilities.request.thing"]}}

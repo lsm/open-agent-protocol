@@ -1,3 +1,4 @@
+const repeat = @import("repeat").repeat;
 const std = @import("std");
 const contract = @import("contract");
 const compat = @import("compat");
@@ -244,7 +245,7 @@ test "a session file larger than the read limit reads its tail" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     const io = std.testing.io;
-    const filler = "{\"type\":\"message\",\"message\":{\"role\":\"toolResult\",\"content\":\"" ++ "x" ** 1024 ++ "\"}}\n";
+    const filler = "{\"type\":\"message\",\"message\":{\"role\":\"toolResult\",\"content\":\"" ++ repeat("x", 1024) ++ "\"}}\n";
     var data: std.ArrayList(u8) = .empty;
     try data.appendSlice(arena, "{\"type\":\"session\",\"id\":\"big\"}\n");
     while (data.items.len < read_limit + 4096) try data.appendSlice(arena, filler);

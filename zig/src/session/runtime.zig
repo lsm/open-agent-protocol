@@ -1,3 +1,4 @@
+const repeat = @import("repeat").repeat;
 const std = @import("std");
 const compat = @import("compat");
 const ai_types = @import("ai_types");
@@ -2036,7 +2037,7 @@ test "cleanTitle takes the first non-empty line, unquoted, within 80 bytes" {
             try std.testing.expect(title == null);
         }
     }
-    const long = try cleanTitle(std.testing.allocator, "é" ** 50);
+    const long = try cleanTitle(std.testing.allocator, repeat("é", 50));
     defer std.testing.allocator.free(long.?);
     try std.testing.expectEqual(@as(usize, 80), long.?.len);
 }

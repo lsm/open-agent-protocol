@@ -75,9 +75,7 @@ pub fn build(b: *std.Build) void {
 
         const run_cmd = b.addRunArtifact(example);
         run_cmd.step.dependOn(&install_example.step);
-        if (b.args) |args| {
-            run_cmd.addArgs(args);
-        }
+        run_cmd.addPassthruArgs();
 
         const run_step = b.step(
             b.fmt("run-{s}", .{example_name}),
@@ -145,7 +143,7 @@ pub fn build(b: *std.Build) void {
         .root_module = b.createModule(.{
             .root_source_file = b.path("src/root.zig"),
             .target = wasm_target,
-            .optimize = .ReleaseSmall,
+            .optimize = .small,
         }),
         .linkage = .static,
     });

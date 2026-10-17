@@ -160,7 +160,7 @@ test "an output nobody reads fails with OutputStalled once the bound passes" {
     var output = Output.init(pipe.write, 200 * std.time.ns_per_ms);
     try output.start();
     defer output.deinit();
-    const filler = [_]u8{'x'} ** (256 * 1024);
+    const filler = @as([(256 * 1024)]u8, @splat('x'));
     const began = clock();
     try std.testing.expectError(error.OutputStalled, output.writeAll(&filler));
     try std.testing.expect(clock() - began >= 200 * std.time.ns_per_ms);
@@ -207,7 +207,7 @@ test "an output with a reader delivers every byte" {
     try output.start();
     var drain = Drain{ .file = pipe.read };
     const reader = try std.Thread.spawn(.{}, Drain.run, .{&drain});
-    const payload = [_]u8{'y'} ** (1024 * 1024);
+    const payload = @as([(1024 * 1024)]u8, @splat('y'));
     try output.writeAll(&payload);
     output.deinit();
     pipe.closeWrite();
@@ -220,7 +220,7 @@ test "a pipe with less room than one atomic chunk counts as a stall, not a write
     var pipe = try TestPipe.open();
     defer pipe.closeRead();
     defer pipe.closeWrite();
-    const filler = [_]u8{'x'} ** 4096;
+    const filler = @as([4096]u8, @splat('x'));
     while (true) {
         const written = std.posix.system.write(pipe.write.handle, &filler, filler.len);
         if (std.posix.errno(written) == .AGAIN) break;

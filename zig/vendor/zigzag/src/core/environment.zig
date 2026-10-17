@@ -99,7 +99,7 @@ pub const Environment = struct {
     }
 
     fn homeDirFromEnvMap(environ_map: *const std.process.Environ.Map) []const u8 {
-        if (comptime builtin.os.tag == .windows) {
+        if (comptime builtin.target.os.tag == .windows) {
             if (environ_map.get("USERPROFILE")) |home| {
                 if (home.len > 0) return home;
             }
@@ -112,7 +112,7 @@ pub const Environment = struct {
     }
 
     fn defaultHomeDir() []const u8 {
-        return if (comptime builtin.os.tag == .windows) "C:\\" else "/";
+        return if (comptime builtin.target.os.tag == .windows) "C:\\" else "/";
     }
 
     fn envValuePresent(environ_map: *const std.process.Environ.Map, name: []const u8) bool {

@@ -15,7 +15,7 @@ const OwnedSlice = owned_slice_mod.OwnedSlice;
 pub const ProtocolClient = struct {
     pub const PendingRequest = struct {
         message_id: protocol_types.Ulid,
-        stream_id: protocol_types.Ulid = [_]u8{0} ** 16,
+        stream_id: protocol_types.Ulid = @as([16]u8, @splat(0)),
         sent_at: i64,
         timeout_ms: u64,
     };

@@ -1,3 +1,4 @@
+const repeat = @import("repeat").repeat;
 const std = @import("std");
 const builtin = @import("builtin");
 const compat = @import("compat");
@@ -118,7 +119,7 @@ pub const Reader = struct {
             const colon = std.mem.indexOfScalar(u8, line, ':') orelse return error.MalformedResponse;
             const name = std.mem.trim(u8, line[0..colon], " \t");
             const value = std.mem.trim(u8, line[colon + 1 ..], " \t");
-            if (std.ascii.eqlIgnoreCase(name, "transfer-encoding") and std.ascii.indexOfIgnoreCase(value, "chunked") != null) {
+            if (std.ascii.eqlIgnoreCase(name, "transfer-encoding") and std.ascii.findIgnoreCase(value, "chunked") != null) {
                 self.framing = .chunk_size;
             } else if (std.ascii.eqlIgnoreCase(name, "content-length") and self.framing == .identity) {
                 self.remaining = std.fmt.parseInt(usize, value, 10) catch return error.MalformedResponse;
@@ -326,7 +327,7 @@ test "a chunk-size or trailer line that never ends is refused once it passes the
     var sized = Reader.init(testing.allocator, 1 << 20);
     defer sized.deinit();
     try sized.push("HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n");
-    const endless = "f" ** 1024;
+    const endless = repeat("f", 1024);
     var refused: ?Error = null;
     var pushed: usize = 0;
     while (pushed < 8 and refused == null) : (pushed += 1) {
@@ -339,7 +340,7 @@ test "a chunk-size or trailer line that never ends is refused once it passes the
     var trailed = Reader.init(testing.allocator, 1 << 20);
     defer trailed.deinit();
     try trailed.push("HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n0\r\n");
-    try testing.expectError(error.MalformedResponse, trailed.push("x" ** (5 * 1024)));
+    try testing.expectError(error.MalformedResponse, trailed.push(repeat("x", (5 * 1024))));
 }
 
 test "an endpoint must be plain http, and its path becomes the base path" {

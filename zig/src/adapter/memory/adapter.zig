@@ -1,3 +1,4 @@
+const repeat = @import("repeat").repeat;
 const std = @import("std");
 const contract = @import("contract");
 const oap_types = @import("oap_types");
@@ -2515,7 +2516,7 @@ test "a run below its threshold is not compacted" {
 }
 
 test "a share policy sets the threshold as a share of the reference window" {
-    const long = "abcd" ** 100;
+    const long = repeat("abcd", 100);
     for ([_]struct { policy: ?[]const u8, compactions: usize }{
         .{ .policy = "{\"kind\":\"share\",\"share_percent\":1}", .compactions = 1 },
         .{ .policy = "{\"kind\":\"share\",\"share_percent\":50}", .compactions = 0 },
@@ -2533,7 +2534,7 @@ test "an off policy opens and never compacts on its own" {
     var probe: Probe = undefined;
     try probe.initPolicy("{\"kind\":\"off\"}");
     defer probe.deinit();
-    _ = try probe.submitText("abcd" ** 100);
+    _ = try probe.submitText(repeat("abcd", 100));
     try testing.expectEqual(@as(usize, 0), try probe.compactionsSeen());
 }
 

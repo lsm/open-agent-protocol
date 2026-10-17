@@ -3,6 +3,7 @@ const std = @import("std");
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
+    const repeat_mod = b.createModule(.{ .root_source_file = b.path("src/compat/repeat.zig") });
     const manifest: struct {
         name: @TypeOf(.makai),
         version: []const u8,
@@ -73,7 +74,7 @@ pub fn build(b: *std.Build) void {
     jsonschema_mod.addImport("schema_bytes", schema_bytes_mod);
     const jsonschema_test = b.addTest(.{ .root_module = jsonschema_mod });
     const gate_options = b.addOptions();
-    gate_options.addOption([]const u8, "repository_root", b.pathFromRoot(".."));
+    gate_options.addOption([]const u8, "repository_root", (b.root.joinString(b.allocator, "..") catch @panic("OOM")));
     const fixture_gate_mod = b.createModule(.{
         .root_source_file = b.path("src/validation/fixture_gate.zig"),
         .target = target,
@@ -112,6 +113,7 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
+    validator_mod.addImport("repeat", repeat_mod);
     validator_mod.addImport("jsonschema", jsonschema_mod);
     validator_mod.addImport("packs", packs_mod);
     validator_mod.addImport("semantic", semantic_mod);
@@ -397,6 +399,7 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
+    claude_backend_mod.addImport("repeat", repeat_mod);
     claude_backend_mod.addImport("rpc", claude_rpc_mod);
     claude_backend_mod.addImport("session", claude_session_mod);
     claude_backend_mod.addImport("process", adapter_process_mod);
@@ -426,6 +429,7 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
+    opencode_native_mod.addImport("repeat", repeat_mod);
 
     opencode_native_mod.addImport("harness_pins", harness_pins_mod);
     opencode_native_mod.addImport("gojson", adapter_gojson_mod);
@@ -439,6 +443,7 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
+    opencode_httpapi_mod.addImport("repeat", repeat_mod);
     opencode_httpapi_mod.addImport("native", opencode_native_mod);
     opencode_httpapi_mod.addImport("sse_parser", sse_parser_mod);
     opencode_httpapi_mod.addImport("goquote", adapter_goquote_mod);
@@ -461,6 +466,7 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
+    opencode_client_mod.addImport("repeat", repeat_mod);
     opencode_client_mod.addImport("compat", compat_mod);
     opencode_client_mod.addImport("httpapi", opencode_httpapi_mod);
     const opencode_client_test = b.addTest(.{ .root_module = opencode_client_mod });
@@ -607,7 +613,6 @@ pub fn build(b: *std.Build) void {
     });
     if (target.result.os.tag == .macos) {
         if (macOsSdkDir(b)) |sdk_dir| {
-            b.sysroot = sdk_dir;
             const frameworks_dir = std.fs.path.join(
                 b.allocator,
                 &.{ sdk_dir, "System/Library/Frameworks" },
@@ -827,6 +832,7 @@ pub fn build(b: *std.Build) void {
             .{ .name = "compat", .module = compat_mod },
         },
     });
+    openai_completions_api_mod.addImport("repeat", repeat_mod);
 
     const anthropic_messages_api_mod = b.createModule(.{
         .root_source_file = b.path("src/providers/anthropic_messages_api.zig"),
@@ -1096,6 +1102,7 @@ pub fn build(b: *std.Build) void {
             .{ .name = "envelope_fields", .module = envelope_fields_mod },
         },
     });
+    protocol_envelope_mod.addImport("repeat", repeat_mod);
 
     const partial_reconstructor_mod = b.createModule(.{
         .root_source_file = b.path("src/protocol/provider/partial_reconstructor.zig"),
@@ -1186,6 +1193,7 @@ pub fn build(b: *std.Build) void {
             .{ .name = "json_encode", .module = json_encode_mod },
         },
     });
+    protocol_oap_envelope_mod.addImport("repeat", repeat_mod);
 
     const oap_conformance_runner_mod = b.createModule(.{
         .root_source_file = b.path("src/protocol/oap/conformance_runner.zig"),
@@ -1222,6 +1230,7 @@ pub fn build(b: *std.Build) void {
             .{ .name = "json_encode", .module = json_encode_mod },
         },
     });
+    adapter_endpoint_mod.addImport("repeat", repeat_mod);
     const adapter_endpoint_test = b.addTest(.{ .root_module = adapter_endpoint_mod });
 
     const adapter_config_mod = b.createModule(.{
@@ -1249,6 +1258,7 @@ pub fn build(b: *std.Build) void {
             .{ .name = "json_encode", .module = json_encode_mod },
         },
     });
+    claude_adapter_mod.addImport("repeat", repeat_mod);
 
     claude_adapter_mod.addImport("harness_pins", harness_pins_mod);
     const claude_adapter_test = b.addTest(.{ .root_module = claude_adapter_mod });
@@ -1303,6 +1313,7 @@ pub fn build(b: *std.Build) void {
             .{ .name = "json_encode", .module = json_encode_mod },
         },
     });
+    codex_adapter_mod.addImport("repeat", repeat_mod);
 
     codex_adapter_mod.addImport("harness_pins", harness_pins_mod);
     codex_adapter_mod.addAnonymousImport("codex_conversation", .{
@@ -1370,6 +1381,7 @@ pub fn build(b: *std.Build) void {
             .{ .name = "jsonschema", .module = jsonschema_mod },
         },
     });
+    memory_adapter_mod.addImport("repeat", repeat_mod);
     const memory_adapter_test = b.addTest(.{ .root_module = memory_adapter_mod });
 
     const hub_mod = b.createModule(.{
@@ -1385,6 +1397,7 @@ pub fn build(b: *std.Build) void {
             .{ .name = "process", .module = adapter_process_mod },
         },
     });
+    hub_mod.addImport("repeat", repeat_mod);
     const hub_routes_mod = b.createModule(.{
         .root_source_file = b.path("src/hub/routes.zig"),
         .target = target,
@@ -1401,6 +1414,7 @@ pub fn build(b: *std.Build) void {
             .{ .name = "compat", .module = compat_mod },
         },
     });
+    hub_http_mod.addImport("repeat", repeat_mod);
     const hub_http_test = b.addTest(.{ .root_module = hub_http_mod });
     const hub_stdio_mod = b.createModule(.{
         .root_source_file = b.path("src/hub/stdio.zig"),
@@ -1417,6 +1431,7 @@ pub fn build(b: *std.Build) void {
             .{ .name = "compat", .module = compat_mod },
         },
     });
+    hub_stdio_mod.addImport("repeat", repeat_mod);
     const hub_stdio_test = b.addTest(.{ .root_module = hub_stdio_mod });
     const hub_test = b.addTest(.{ .root_module = hub_mod });
     const hub_daemon_mod = b.createModule(.{
@@ -1778,6 +1793,7 @@ pub fn build(b: *std.Build) void {
             .{ .name = "json_encode", .module = json_encode_mod },
         },
     });
+    agent_loop_mod.addImport("repeat", repeat_mod);
 
     const agent_compaction_mod = b.createModule(.{
         .root_source_file = b.path("src/agent/compaction.zig"),
@@ -1789,6 +1805,7 @@ pub fn build(b: *std.Build) void {
             .{ .name = "agent_loop", .module = agent_loop_mod },
         },
     });
+    agent_compaction_mod.addImport("repeat", repeat_mod);
 
     const agent_mod = b.createModule(.{
         .root_source_file = b.path("src/agent/mod.zig"),
@@ -1810,6 +1827,7 @@ pub fn build(b: *std.Build) void {
             .{ .name = "provider_caps", .module = provider_caps_mod },
         },
     });
+    agent_mod.addImport("repeat", repeat_mod);
 
     const agent_provider_protocol_bridge_mod = b.createModule(.{
         .root_source_file = b.path("src/agent/provider_protocol_bridge.zig"),
@@ -1930,6 +1948,7 @@ pub fn build(b: *std.Build) void {
             .{ .name = "owned_slice", .module = owned_slice_mod },
         },
     });
+    session_runtime_mod.addImport("repeat", repeat_mod);
 
     const oapx_adapter_mod = b.createModule(.{
         .root_source_file = b.path("src/adapter/oapx/adapter.zig"),
@@ -2052,6 +2071,7 @@ pub fn build(b: *std.Build) void {
             .{ .name = "tui_config", .module = tui_config_mod },
         },
     });
+    tui_state_mod.addImport("repeat", repeat_mod);
 
     const tui_commands_mod = b.createModule(.{
         .root_source_file = b.path("src/tui/commands.zig"),
@@ -2073,12 +2093,15 @@ pub fn build(b: *std.Build) void {
     const tui_shell_highlight_mod = b.createModule(.{ .root_source_file = b.path("src/tui/shell_highlight.zig"), .target = target, .optimize = optimize, .imports = &.{ .{ .name = "zigzag", .module = zigzag_mod }, .{ .name = "tui_theme", .module = tui_theme_mod } } });
 
     const tui_view_transcript_mod = b.createModule(.{ .root_source_file = b.path("src/tui/views/transcript.zig"), .target = target, .optimize = optimize, .imports = &.{ .{ .name = "zigzag", .module = zigzag_mod }, .{ .name = "tui_state", .module = tui_state_mod }, .{ .name = "tui_theme", .module = tui_theme_mod }, .{ .name = "tui_text", .module = tui_text_mod }, .{ .name = "tui_render", .module = tui_render_mod }, .{ .name = "tui_shell_highlight", .module = tui_shell_highlight_mod } } });
+    tui_view_transcript_mod.addImport("repeat", repeat_mod);
     const tui_view_composer_mod = b.createModule(.{ .root_source_file = b.path("src/tui/views/composer.zig"), .target = target, .optimize = optimize, .imports = &.{ .{ .name = "zigzag", .module = zigzag_mod }, .{ .name = "tui_state", .module = tui_state_mod }, .{ .name = "tui_theme", .module = tui_theme_mod }, .{ .name = "tui_text", .module = tui_text_mod }, .{ .name = "tui_render", .module = tui_render_mod } } });
     const tui_view_status_bar_mod = b.createModule(.{ .root_source_file = b.path("src/tui/views/status_bar.zig"), .target = target, .optimize = optimize, .imports = &.{ .{ .name = "zigzag", .module = zigzag_mod }, .{ .name = "tui_state", .module = tui_state_mod }, .{ .name = "tui_theme", .module = tui_theme_mod }, .{ .name = "tui_text", .module = tui_text_mod }, .{ .name = "tui_render", .module = tui_render_mod } } });
     const tui_view_approval_mod = b.createModule(.{ .root_source_file = b.path("src/tui/views/approval.zig"), .target = target, .optimize = optimize, .imports = &.{ .{ .name = "zigzag", .module = zigzag_mod }, .{ .name = "tui_state", .module = tui_state_mod }, .{ .name = "tui_theme", .module = tui_theme_mod }, .{ .name = "tui_text", .module = tui_text_mod }, .{ .name = "tui_render", .module = tui_render_mod }, .{ .name = "json_encode", .module = json_encode_mod } } });
+    tui_view_approval_mod.addImport("repeat", repeat_mod);
     const tui_view_session_picker_mod = b.createModule(.{ .root_source_file = b.path("src/tui/views/session_picker.zig"), .target = target, .optimize = optimize, .imports = &.{ .{ .name = "zigzag", .module = zigzag_mod }, .{ .name = "tui_state", .module = tui_state_mod }, .{ .name = "tui_theme", .module = tui_theme_mod }, .{ .name = "tui_text", .module = tui_text_mod }, .{ .name = "tui_render", .module = tui_render_mod } } });
     const tui_view_menu_picker_mod = b.createModule(.{ .root_source_file = b.path("src/tui/views/menu_picker.zig"), .target = target, .optimize = optimize, .imports = &.{ .{ .name = "tui_theme", .module = tui_theme_mod }, .{ .name = "tui_text", .module = tui_text_mod }, .{ .name = "tui_render", .module = tui_render_mod } } });
     const tui_view_zen_mod = b.createModule(.{ .root_source_file = b.path("src/tui/views/zen.zig"), .target = target, .optimize = optimize, .imports = &.{ .{ .name = "zigzag", .module = zigzag_mod }, .{ .name = "tui_theme", .module = tui_theme_mod }, .{ .name = "tui_text", .module = tui_text_mod } } });
+    tui_view_zen_mod.addImport("repeat", repeat_mod);
 
     const tui_worktree_mod = b.createModule(.{
         .root_source_file = b.path("src/tui/worktree.zig"),
@@ -2163,6 +2186,7 @@ pub fn build(b: *std.Build) void {
             .{ .name = "tui_fixture", .module = tui_fixture_mod },
         },
     });
+    tui_app_mod.addImport("repeat", repeat_mod);
 
     const tui_tests_mock_transport_mod = b.createModule(.{
         .root_source_file = b.path("src/tui/tests/mock_transport.zig"),
@@ -2730,6 +2754,7 @@ pub fn build(b: *std.Build) void {
             .{ .name = "endpoint_signals", .module = endpoint_signals_mod },
         },
     });
+    makai_cli_module.addImport("repeat", repeat_mod);
 
     const makai_cli = b.addExecutable(.{
         .name = "oapx",
@@ -2744,9 +2769,7 @@ pub fn build(b: *std.Build) void {
     b.installArtifact(makai_cli);
 
     const run_cmd = b.addRunArtifact(makai_cli);
-    if (b.args) |args| {
-        run_cmd.addArgs(args);
-    }
+    run_cmd.addPassthruArgs();
     const run_step = b.step("run", "Run the oapx CLI");
     run_step.dependOn(&run_cmd.step);
 
@@ -2775,9 +2798,10 @@ pub fn build(b: *std.Build) void {
             .{ .name = "bench_options", .module = bench_options.createModule() },
         },
     });
+    bench_mod.addImport("repeat", repeat_mod);
     const bench_exe = b.addExecutable(.{ .name = "makai-bench", .root_module = bench_mod });
     const bench_run = b.addRunArtifact(bench_exe);
-    if (b.args) |args| bench_run.addArgs(args);
+    bench_run.addPassthruArgs();
     const bench_step = b.step("bench", "Run deterministic performance and allocation baselines");
     bench_step.dependOn(&bench_run.step);
 
@@ -2789,7 +2813,7 @@ pub fn build(b: *std.Build) void {
     });
     const bench_compare_exe = b.addExecutable(.{ .name = "makai-bench-compare", .root_module = bench_compare_mod });
     const bench_compare_run = b.addRunArtifact(bench_compare_exe);
-    if (b.args) |args| bench_compare_run.addArgs(args);
+    bench_compare_run.addPassthruArgs();
     const bench_compare_step = b.step("bench-compare", "Compare compatible benchmark JSON reports");
     bench_compare_step.dependOn(&bench_compare_run.step);
 
@@ -3307,7 +3331,7 @@ pub fn build(b: *std.Build) void {
 
 fn isolatedHomeRun(b: *std.Build, artifact: *std.Build.Step.Compile, name: []const u8) *std.Build.Step.Run {
     const run = b.addRunArtifact(artifact);
-    const home = b.pathFromRoot(b.fmt(".zig-cache/test-home/{s}", .{name}));
+    const home = (b.root.joinString(b.allocator, b.fmt(".zig-cache/test-home/{s}", .{name})) catch @panic("OOM"));
     run.setEnvironmentVariable("HOME", home);
     if (b.graph.host.result.os.tag != .windows) {
         const wipe = b.addSystemCommand(&.{ "rm", "-rf", home });
@@ -3317,6 +3341,7 @@ fn isolatedHomeRun(b: *std.Build, artifact: *std.Build.Step.Compile, name: []con
 }
 
 fn macOsSdkDir(b: *std.Build) ?[]const u8 {
+    b.graph.poisonCache();
     if (b.graph.environ_map.get("SDKROOT")) |sdkroot| {
         if (sdkroot.len > 0) return sdkroot;
     }
@@ -3334,7 +3359,7 @@ fn macOsSdkDir(b: *std.Build) ?[]const u8 {
     return b.allocator.dupe(u8, sdkroot) catch null;
 }
 
-fn providerCatalogDataModule(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builtin.OptimizeMode) *std.Build.Module {
+fn providerCatalogDataModule(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.lang.Optimize) *std.Build.Module {
     const Endpoint = struct {
         wire: []const u8,
         base_url: []const u8,
@@ -3392,14 +3417,14 @@ fn providerCatalogDataModule(b: *std.Build, target: std.Build.ResolvedTarget, op
     };
 
     const source = b.fmt("../providers/catalog.json", .{});
-    const bytes = b.build_root.handle.readFileAlloc(b.graph.io, source, b.allocator, .limited(1 << 20)) catch |err|
+    const bytes = readConfigFile(b, source) catch |err|
         std.debug.panic("reading providers/catalog.json: {t}", .{err});
     const catalog = std.json.parseFromSliceLeaky(File, b.allocator, bytes, .{ .ignore_unknown_fields = false }) catch |err|
         std.debug.panic("parsing providers/catalog.json: {t}", .{err});
     if (catalog.providers.len == 0) std.debug.panic("providers/catalog.json catalogues no provider", .{});
 
     const pinned_source = b.fmt("../providers/resolved_urls.json", .{});
-    const pinned_bytes = b.build_root.handle.readFileAlloc(b.graph.io, pinned_source, b.allocator, .limited(1 << 20)) catch |err|
+    const pinned_bytes = readConfigFile(b, pinned_source) catch |err|
         std.debug.panic("reading providers/resolved_urls.json: {t}", .{err});
     const pinned = std.json.parseFromSliceLeaky(PinnedFile, b.allocator, pinned_bytes, .{ .ignore_unknown_fields = false }) catch |err|
         std.debug.panic("parsing providers/resolved_urls.json: {t}", .{err});
@@ -3619,9 +3644,9 @@ fn harnessPinsModule(b: *std.Build) *std.Build.Module {
     const ids = [_][]const u8{ "acp", "claude-code", "codex-app-server", "deepseek-harness", "hermes", "opencode", "pi" };
     for (ids) |id| {
         const path = b.fmt("../harnesses/{s}.json", .{id});
-        const bytes = b.build_root.handle.readFileAlloc(b.graph.io, path, b.allocator, .limited(1 << 20)) catch |err| std.debug.panic("reading {s}: {t}", .{ path, err });
+        const bytes = readConfigFile(b, path) catch |err| std.debug.panic("reading {s}: {t}", .{ path, err });
         const entry = std.json.parseFromSliceLeaky(Entry, b.allocator, bytes, .{ .ignore_unknown_fields = true }) catch |err| std.debug.panic("parsing {s}: {t}", .{ path, err });
-        const prefix = b.dupe(id);
+        const prefix = b.allocator.dupe(u8, id) catch @panic("OOM");
         std.mem.replaceScalar(u8, prefix, '-', '_');
         var current: ?Version = null;
         for (entry.versions) |version| {
@@ -3636,7 +3661,7 @@ fn harnessPinsModule(b: *std.Build) *std.Build.Module {
         options.addOption([]const u8, b.fmt("{s}_corpus", .{prefix}), pin.corpus orelse std.debug.panic("{s}: current version has no corpus", .{path}));
         options.addOption([]const []const u8, b.fmt("{s}_admits", .{prefix}), pin.admits orelse &.{});
         for (pin.sources) |source| {
-            const name = b.fmt("{s}_{s}", .{ prefix, source.component });
+            const name = std.fmt.allocPrint(b.allocator, "{s}_{s}", .{ prefix, source.component }) catch @panic("OOM");
             std.mem.replaceScalar(u8, name, '-', '_');
             options.addOption([]const u8, b.fmt("{s}_commit", .{name}), source.commit);
             if (source.tag) |tag| options.addOption([]const u8, b.fmt("{s}_tag", .{name}), tag);
@@ -3651,10 +3676,16 @@ fn harnessPinsModule(b: *std.Build) *std.Build.Module {
                 options.addOption(u64, b.fmt("{s}_bytes", .{stem}), artifact.bytes);
                 continue;
             }
-            const name = b.fmt("{s}_{s}_{s}_sha256", .{ prefix, artifact.component, artifact.kind });
+            const name = std.fmt.allocPrint(b.allocator, "{s}_{s}_{s}_sha256", .{ prefix, artifact.component, artifact.kind }) catch @panic("OOM");
             std.mem.replaceScalar(u8, name, '-', '_');
             options.addOption([]const u8, name, artifact.sha256);
         }
     }
     return options.createModule();
+}
+
+fn readConfigFile(b: *std.Build, path: []const u8) ![]u8 {
+    b.dependOnFileContents(b.path(path));
+    const file_path = try b.root.join(b.allocator, path);
+    return file_path.root_dir.handle.readFileAlloc(b.graph.io, file_path.sub_path, b.allocator, .limited(1 << 20));
 }

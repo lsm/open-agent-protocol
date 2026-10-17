@@ -1,3 +1,4 @@
+const repeat = @import("repeat").repeat;
 const std = @import("std");
 const json_encode = @import("json_encode");
 const tui_state = @import("tui_state");
@@ -296,7 +297,7 @@ test "approval falls back to raw args when the payload is not an object" {
 test "an argument nested past 256 levels renders as its whole encoding" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
-    const nested = ("[" ** 400) ++ "1" ++ ("]" ** 400);
+    const nested = (repeat("[", 400)) ++ "1" ++ (repeat("]", 400));
     const value = try std.json.parseFromSliceLeaky(std.json.Value, arena.allocator(), nested, .{});
     const text = try jsonValueText(std.testing.allocator, value);
     defer std.testing.allocator.free(text);

@@ -5,11 +5,11 @@ pub fn HiveArray(comptime T: type, comptime capacity: u16) type {
         const Self = @This();
 
         buffer: [capacity]T = undefined,
-        available: std.StaticBitSet(capacity),
+        available: std.bit_set.Static(capacity),
 
         pub fn init() Self {
             var self: Self = undefined;
-            self.available = std.StaticBitSet(capacity).initFull();
+            self.available = std.bit_set.Static(capacity).full;
             return self;
         }
 

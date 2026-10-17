@@ -1,3 +1,4 @@
+const repeat = @import("repeat").repeat;
 const std = @import("std");
 const compat = @import("compat");
 const zz = @import("zigzag");
@@ -1077,8 +1078,8 @@ pub const App = struct {
     last_view_height: usize = 8,
     inline_history_flushed: usize = 0,
     inline_flushed_rows: usize = 0,
-    login_status: [provider_catalog.all.len]LoginStatus = [_]LoginStatus{.none} ** provider_catalog.all.len,
-    login_override_details: [provider_catalog.all.len]?[]u8 = [_]?[]u8{null} ** provider_catalog.all.len,
+    login_status: [provider_catalog.all.len]LoginStatus = @as([provider_catalog.all.len]LoginStatus, @splat(.none)),
+    login_override_details: [provider_catalog.all.len]?[]u8 = @splat(null),
     pending_session_reset: bool = false,
     deferred_commands: std.ArrayList([]u8) = .empty,
     pending_compaction: ?[]u8 = null,
@@ -5460,7 +5461,7 @@ fn isSlashDraft(text: []const u8) bool {
 fn filterMatches(filter: []const u8, label: []const u8, detail: []const u8) bool {
     var terms = std.mem.tokenizeScalar(u8, filter, ' ');
     while (terms.next()) |term| {
-        if (std.ascii.indexOfIgnoreCase(label, term) == null and std.ascii.indexOfIgnoreCase(detail, term) == null) return false;
+        if (std.ascii.findIgnoreCase(label, term) == null and std.ascii.findIgnoreCase(detail, term) == null) return false;
     }
     return true;
 }
@@ -5742,7 +5743,7 @@ test "titleLine keeps the first non-empty line, up to a control byte, within 60 
     try std.testing.expectEqualStrings("", titleLine(" \n\t"));
     try std.testing.expectEqualStrings("next tweaks:", titleLine("next tweaks:\r    1. the status line"));
     try std.testing.expectEqualStrings("title", titleLine("title \x1b[2Jcleared"));
-    const long = "é" ** 40;
+    const long = repeat("é", 40);
     const cut = titleLine(long);
     try std.testing.expectEqual(@as(usize, 60), cut.len);
     try std.testing.expect(std.unicode.utf8ValidateSlice(cut));
@@ -7200,7 +7201,7 @@ test "App splits a reply's thinking into records that fit the session budget" {
     var app = try sessionTestApp(base, "long-thinking");
     defer app.deinit();
 
-    const part = "\u{20ac}" ** 1000;
+    const part = repeat("\u{20ac}", 1000);
     app.saveEvent(.{ .message_start = .{ .role = .assistant } });
     var sent: usize = 0;
     while (sent <= max_session_event_payload_bytes / App.jsonStringBudget("x")) : (sent += part.len) {

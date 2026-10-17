@@ -1,3 +1,4 @@
+const repeat = @import("repeat").repeat;
 const std = @import("std");
 const compat = @import("compat");
 pub const protocol_types = @import("protocol_types");
@@ -3078,7 +3079,7 @@ test "serializeEnvelope and deserializeEnvelope roundtrip with models_response" 
 
 test "deserializeEnvelope rejects models_request with oversized provider_id" {
     const allocator = std.testing.allocator;
-    const long_id = "a" ** 257;
+    const long_id = repeat("a", 257);
 
     const json = std.fmt.allocPrint(allocator,
         \\{{
@@ -3101,7 +3102,7 @@ test "deserializeEnvelope rejects models_request with oversized provider_id" {
 
 test "deserializeEnvelope rejects models_request with oversized model_id" {
     const allocator = std.testing.allocator;
-    const long_id = "b" ** 257;
+    const long_id = repeat("b", 257);
 
     const json = std.fmt.allocPrint(allocator,
         \\{{
@@ -3124,7 +3125,7 @@ test "deserializeEnvelope rejects models_request with oversized model_id" {
 
 test "deserializeEnvelope accepts models_request with provider_id at exactly 256 chars" {
     const allocator = std.testing.allocator;
-    const exact_id = "a" ** 256;
+    const exact_id = repeat("a", 256);
 
     const json = std.fmt.allocPrint(allocator,
         \\{{
@@ -3149,7 +3150,7 @@ test "deserializeEnvelope accepts models_request with provider_id at exactly 256
 
 test "deserializeEnvelope rejects stream_request with oversized model id" {
     const allocator = std.testing.allocator;
-    const long_id = "a" ** 513;
+    const long_id = repeat("a", 513);
 
     const json = std.fmt.allocPrint(allocator,
         \\{{
@@ -3179,7 +3180,7 @@ test "deserializeEnvelope rejects stream_request with oversized model id" {
 
 test "deserializeEnvelope rejects stream_request with oversized provider" {
     const allocator = std.testing.allocator;
-    const long_provider = "p" ** 257;
+    const long_provider = repeat("p", 257);
 
     const json = std.fmt.allocPrint(allocator,
         \\{{
@@ -3209,7 +3210,7 @@ test "deserializeEnvelope rejects stream_request with oversized provider" {
 
 test "deserializeEnvelope rejects complete_request with oversized model id" {
     const allocator = std.testing.allocator;
-    const long_id = "x" ** 513;
+    const long_id = repeat("x", 513);
 
     const json = std.fmt.allocPrint(allocator,
         \\{{
@@ -3239,7 +3240,7 @@ test "deserializeEnvelope rejects complete_request with oversized model id" {
 
 test "deserializeEnvelope accepts stream_request with model id at exactly 512 chars" {
     const allocator = std.testing.allocator;
-    const exact_id = "a" ** 512;
+    const exact_id = repeat("a", 512);
 
     const json = std.fmt.allocPrint(allocator,
         \\{{

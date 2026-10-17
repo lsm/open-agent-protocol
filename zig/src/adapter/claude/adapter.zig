@@ -1,3 +1,4 @@
+const repeat = @import("repeat").repeat;
 const std = @import("std");
 const harness_pins = @import("harness_pins");
 const builtin = @import("builtin");
@@ -1196,7 +1197,7 @@ test "an allowed ask reaches the child with the tool's own input, and the run co
 }
 
 test "a tool input nested past 256 levels reaches the call, the prompt and the child whole" {
-    const input = "{\"command\":\"touch /tmp/x\",\"nested\":" ++ ("[" ** 300) ++ "1" ++ ("]" ** 300) ++ "}";
+    const input = "{\"command\":\"touch /tmp/x\",\"nested\":" ++ (repeat("[", 300)) ++ "1" ++ (repeat("]", 300)) ++ "}";
     var probe: Probe = undefined;
     try probe.init(comptime (fake_prelude ++ fakeGatedTurnWithInput("toolu_1", "ask-1", input) ++ fake_idle));
     defer probe.deinit();
