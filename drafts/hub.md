@@ -1961,15 +1961,14 @@ one surface that did accept a metadata-carrying open and discard it is the endpo
 `stale_capabilities` is reachable and the answer's `capability_revision` reports a
 revision that was checked rather than one that was merely sent.
 
-**Of D1 to D10, D4, D8 and D9 are what is left** (D7 was fixed 2026-10-06). Two of them are the Zig side and all of one
+**Of D1 to D10, D8 and D9 are what is left** (D7 was fixed 2026-10-06, D4 2026-10-17). One of them is the Zig side and both are of one
 kind: each names something the Zig tree cannot carry that the draft specifies — a member
 that does not exist, or a signal with nowhere to report it. None of them changes a byte
 on the wire today, and each is a small contract change rather than a re-decision. No
 issue tracks them now: [#407](https://github.com/lsm/open-agent-protocol/issues/407)
 closed with D2, D3, D5 and D6 fixed and these two still open. D8 is that `request_cancelled` has no signal to come from; D9 is
 a gap **both** trees share, which is why fixing it on one side would be the wrong move.
-D4's negative-capacity half is closed: both trees refuse a negative, as its row says, so
-what is left of it is the per-adapter bound. **D6 is fixed**, and the
+**D6 is fixed**, and the
 one place the two trees' shutdowns still differ in kind rather than in answer is written
 down in [Shutdown](#shutdown).
 
@@ -2226,13 +2225,14 @@ are "stamped with the revision the lister served it under", and both name
 | **Why they are not rows here** | A row authorises a port to answer, and the draft pins no status, so the four are asserted null like the stdio-only set — see D24. Go's behaviour is the evidence and the draft is the decision, so following Go here would be following a tree rather than the page. |
 | **What would close it** | Pinning the four in the operation error lists, which is a spec change and unaccepted. Until then the gap is here rather than silent, and a port that needs to answer them cannot without that change. |
 
-### D4 — the registry's `journal_capacity` is hub-wide in Zig, per-adapter in Go
+### D4 — the registry's `journal_capacity` was hub-wide in Zig, per-adapter in Go — FIXED
 
 | | |
 | --- | --- |
 | **The draft says** | `examples/oap-serve.json` carries `journal_capacity` per adapter entry, and a cursor older than a session's journal is `oap-replay-gap`. |
 | **Go does** | The registry passes each entry's `journal_capacity` to that adapter, so two adapters can retain different depths. |
-| **Zig does** | One hub owns every session's journal, so the core takes a single `journal_capacity`; `load` adopts the first entry that names one, which is deterministic because the loader sorts entries by name. |
+| **Zig did** | One hub owns every session's journal, so the core took a single `journal_capacity`; `load` adopted the first entry that named one. |
+| **Now** | A registered adapter keeps its entry's capacity, and a session takes it at open, or the hub's `Options.journal_capacity` when the entry names none; `remember` bounds each session's journal by its own. Pinned by `each session's journal is bounded by its own adapter's capacity, and one that names none takes the hub's` ([#1131](https://github.com/lsm/open-agent-protocol/issues/1131)). |
 | **Why it matters** | A client resuming against session A and session B can be told the same bound where Go would tell it two. The recovery rule is unaffected — a gap names `oldest_available` either way — but a port and Go would disagree about *which* cursors expire. |
 | **The two zeros are not the same zero** | A **document's** `journal_capacity: 0` keeps the default in both trees, because every Go constructor treats `<= 0` as "unspecified" (`go/adapter/memory.go:123`) and the Zig `load` does the same. The Zig **core's** own `Options.journal_capacity = 0` means *retain nothing*, and no config document can reach it — a host that wants no journal sets the option, and a host that writes `0` gets the default. Go has no equivalent: a `0` reaching an adapter always becomes that adapter's own capacity. So the two trees agree on every document, and differ only on a value only a Zig host can set. |
 | **A negative is refused, not defaulted** | Both trees refuse it. The Zig `load` refuses a negative with `ConfigRefused`, and the Go registry refuses a document naming one, because a negative capacity is a malformed document and defaulting it would report success for something the operator did not write. A document naming `0` still keeps the default in both, because that is a request for the default rather than a malformed value. |
