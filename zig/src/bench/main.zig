@@ -212,8 +212,7 @@ fn emitWorkload(
 
 pub fn main(init: std.process.Init) !void {
     const allocator = init.gpa;
-    const args = try init.minimal.args.toSlice(allocator);
-    defer allocator.free(args);
+    const args = try init.minimal.args.toSlice(init.arena.allocator());
     var mode: []const u8 = "latency";
     var host_class: []const u8 = "local";
     var extra_copy = false;

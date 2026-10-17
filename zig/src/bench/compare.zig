@@ -129,8 +129,7 @@ fn compareLine(allocator: std.mem.Allocator, baseline_line: []const u8, candidat
 
 pub fn main(init: std.process.Init) !void {
     const allocator = init.gpa;
-    const args = try init.minimal.args.toSlice(allocator);
-    defer allocator.free(args);
+    const args = try init.minimal.args.toSlice(init.arena.allocator());
     if (args.len != 3) return error.Usage;
     const baseline_data = try compat.fs.readFileAlloc(allocator, compat.fs.getCwd(), args[1], 1024 * 1024);
     defer allocator.free(baseline_data);
