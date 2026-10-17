@@ -62,7 +62,9 @@ other pinned harness frames this way.
 
 - `ping` answers `{message:"pong", timestamp, protocolVersion:3}`;
   `status.get` answers `{version:"1.0.98", protocolVersion:3}`. The catalog's
-  `endpoint_version` is that protocol version, `3`.
+  `endpoint_version` is the CLI version, `1.0.98`, as every other pin reports
+  its release (ACP reports `1.11.0` over wire version 1); the protocol version
+  is checked at startup and recorded here, not reported to clients.
 - With only `HOME` and `PATH` in its environment the server authenticates
   through `gh`: `auth.getStatus` answers `{isAuthenticated:true,
   authType:"gh-cli", …}`. No token is passed on the command line; the SDK's
@@ -126,7 +128,8 @@ In the queue probe two prompts produced two `user.message`s, two
 | `assistant.turn_start` / `turn_end` | turn bookkeeping inside a run; `turnId` restarts at `"0"` per interaction |
 
 `session.send {mode:"immediate"}` interjects into the running turn, which is
-Decision 0002's steer; the probe did not exercise it.
+a steer under [Decision 0013](../decisions/0013-steer.md); the probe did not
+exercise it.
 
 ## Content
 
@@ -142,7 +145,7 @@ Decision 0002's steer; the probe did not exercise it.
 
 | Native | OAP |
 | --- | --- |
-| `tool.execution_start {toolCallId, toolName, arguments, toolTitle}` | `action.call.started` |
+| `tool.execution_start {toolCallId, toolName, arguments, toolTitle}` | `action.call.requested` carrying `toolName` and `arguments`, then `action.call.started` |
 | `permission.requested {requestId, permissionRequest{kind, toolCallId, intention, …}}` | `action.permission.requested`; `kind` is `write`, `shell`, `read`, `mcp`, `url`, … with kind-specific detail (`fileName` and `diff` for write, `fullCommandText` and `commands` for shell) |
 | `session.permissions.handlePendingPermissionRequest {requestId, result:{kind:"approve-once"}}` | an allow answer |
 | the same with `{kind:"reject", feedback}` | a deny answer; the tool then fails with `error.code:"denied"` and the feedback in its message |
@@ -151,9 +154,15 @@ Decision 0002's steer; the probe did not exercise it.
 | `tool.execution_complete {toolCallId, success, result \| error}` | `action.call.completed` or `action.call.failed` |
 
 Native emits `tool.execution_start` **before** `permission.requested`: the
-permission is asked from inside the execution. OAP reads a call as started
-once it runs, so the adapter holds `action.call.started` until the permission
-resolves allow, and a call refused at the gate never starts.
+permission is asked from inside the execution. The adapter projects what the
+harness did: `requested` and `started` at `tool.execution_start`, the
+permission exchange inside the started call, and on a deny the
+`tool.execution_complete {success:false, error.code:"denied"}` that follows
+settles it `action.call.failed`. Holding `started` back until an allow would
+leave a denied call `requested`, from which the validator admits no `failed`
+(`illegal_tool_transition`, the shape
+[Decision 0031](../decisions/0031-a-policy-refusal-is-a-settlement.md)
+records).
 
 `approve-for-session`, `approve-for-location` and
 `approve-read-only-for-session` persist an approval; OAP approves one call,
