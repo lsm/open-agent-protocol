@@ -383,6 +383,19 @@ the sleep runs out the whole cycle: it rounds up to the next millisecond and
 sleeps again if Windows wakes it before the cycle is spent. A session that reports no handle keeps its share of the bounded
 wait on every platform.
 
+**HTTP on Windows (#1073): one AFD poll, completed by APC on the same
+thread.** `std.Io` opens a socket on Windows as a raw AFD handle
+(`openSocketAfd` in `std/Io/Threaded.zig`), not a Winsock socket, so Winsock's
+readiness calls (`WSAEventSelect`, `WSAPoll`) cannot be assumed to accept one.
+The wait that fits is the one libuv and wepoll use: a single
+`IOCTL_AFD_POLL` naming the listener and every connection, issued on an
+asynchronous handle with an APC routine. Its completion is an APC like a
+child's read, so the alertable sleep that waits on the children ends on a
+socket too, and there is no connection cap, because nothing is a waitable
+object. The poll is re-armed each cycle and cancelled before the loop leaves.
+`WSAEventSelect` with `WaitForMultipleObjectsEx` loses twice: it needs Winsock
+sockets, and it waits on at most 64 objects.
+
 **Both trees.** Go's hub already runs one goroutine per connection behind a
 session mutex. That is Go's shape and is not a normative model for the port;
 what is normative is the loop, and Go's is a port of the same spec in its own

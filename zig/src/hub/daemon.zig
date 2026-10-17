@@ -9,6 +9,7 @@ const hubmod = @import("hub");
 const hub_http = @import("hub_http");
 const routes = @import("hub_routes");
 const hub_stdio = @import("hub_stdio");
+const afd_poll = @import("afd_poll.zig");
 
 pub const max_connections: usize = 64;
 pub const io_cycle_ms: i32 = 50;
@@ -983,6 +984,10 @@ fn serveLoop(daemon: *Daemon, listener: *compat.net.Server, poll_ms: i32) ?std.I
 
 const testing = std.testing;
 const memory = @import("memory");
+
+test {
+    _ = afd_poll;
+}
 
 var test_now_ns: u64 = 1_000 * std.time.ns_per_s;
 
