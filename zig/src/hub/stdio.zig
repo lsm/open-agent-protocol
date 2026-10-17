@@ -952,7 +952,7 @@ pub const Frontend = struct {
             if (name.len == 0) {
                 return .{ .refused = .{ .code = "invalid_request", .message = "adapter is required" } };
             }
-            return self.openSession(arena, name, request, false);
+            return self.openSession(arena, name, request, .framed);
         }
         if (std.mem.eql(u8, request.op, op_events)) return self.events(arena, request);
         if (std.mem.eql(u8, request.op, op_submit) or std.mem.eql(u8, request.op, op_resolve) or std.mem.eql(u8, request.op, op_cancel) or std.mem.eql(u8, request.op, op_settings)) {
@@ -1480,7 +1480,7 @@ pub const Frontend = struct {
             .supplied = .{ .adapter = true, .request = true },
             .directory = directory,
         };
-        const opened = try self.openSession(arena, adapter, request, false);
+        const opened = try self.openSession(arena, adapter, request, .internal);
         const line = switch (opened) {
             .answer_line => |answered| answered,
             .refused => |refusal| return .{ .refused = refusal },
@@ -1545,7 +1545,7 @@ pub const Frontend = struct {
             .payload = envelope,
             .supplied = .{ .adapter = true, .request = true },
         };
-        return switch (try self.openSession(arena, entry.record.adapter, request, false)) {
+        return switch (try self.openSession(arena, entry.record.adapter, request, .internal)) {
             .refused => |refusal| refusal,
             else => null,
         };
@@ -2036,13 +2036,16 @@ pub const Frontend = struct {
         return "";
     }
 
+    pub const OpenAnswer = enum { framed, held, internal };
+
     pub fn openSession(
         self: *Frontend,
         arena: std.mem.Allocator,
         adapter: []const u8,
         request: Request,
-        holding: bool,
+        answered_as: OpenAnswer,
     ) Error!Outcome {
+        const holding = answered_as == .held;
         const gated = try self.gateRequest(arena, request.payload);
         var envelope: oap_types.Envelope = switch (gated) {
             .refused => |refusal| return .{ .refused = refusal },
@@ -2139,7 +2142,7 @@ pub const Frontend = struct {
         const named = open.session_id != null;
         envelope.deinit(arena);
         if (holding) return .{ .answer_line = line };
-        if (!self.fits(request.id, line)) {
+        if ((answered_as == .framed or opened.subscription != null) and !self.fits(request.id, line)) {
             if (opened.subscription) |subscription| subscription.close();
             return .{ .refused = self.oversizedOpen(named, opened.session_id) };
         }
