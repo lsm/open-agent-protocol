@@ -2138,11 +2138,11 @@ pub const Frontend = struct {
         const line = try oap_envelope.serializeEnvelope(opened_envelope, arena);
         const named = open.session_id != null;
         envelope.deinit(arena);
+        if (holding) return .{ .answer_line = line };
         if (!self.fits(request.id, line)) {
-            if (!holding) if (opened.subscription) |subscription| subscription.close();
+            if (opened.subscription) |subscription| subscription.close();
             return .{ .refused = self.oversizedOpen(named, opened.session_id) };
         }
-        if (holding) return .{ .answer_line = line };
         const subscription = opened.subscription orelse return .{ .answer_line = line };
         self.answerLine(request.id, line) catch |err| {
             subscription.close();

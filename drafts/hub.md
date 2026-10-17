@@ -2103,8 +2103,8 @@ are "stamped with the revision the lister served it under", and both name
 | --- | --- |
 | **The draft says** | "An open response that cannot be encoded rolls the session back and says so", and "an open whose id the host named is **kept** when its response cannot be framed, and the refusal names it". |
 | **Go does** | `refuseOversizedOpen` and `refuseUnencodableOpen`: a **host-named** session is left open and the refusal says so; an **adapter-minted** one is rolled back, because nobody learned its id and an unreachable session must not leak. |
-| **Zig did** | A subscribing open was fixed in [#912](https://github.com/lsm/open-agent-protocol/pull/912). A **plain** open, and a subscribing one whose subscription is held for the next request, answered through the generic `answerLine`, which answered `response_too_large` and kept the session in both cases. |
-| **Now** | Every open's answer is checked against the frame before it is sent, and one helper, `oversizedOpen`, keeps a named session and says so, or discards a minted one and says it was rolled back. Pinned by `a plain open whose answer cannot be framed keeps a named session and rolls back a minted one`. |
+| **Zig did** | A subscribing open on stdio was fixed in [#912](https://github.com/lsm/open-agent-protocol/pull/912). A **plain** stdio open answered through the generic `answerLine`, which answered `response_too_large` and kept the session in both cases. The HTTP route's open (the one that holds its subscription for the next request) has no frame to exceed and was never affected. |
+| **Now** | Every stdio open's answer is checked against the frame before it is sent, and one helper, `oversizedOpen`, keeps a named session and says so, or discards a minted one and says it was rolled back. The HTTP route still answers whole, as Go's `handleOpen` does, since `response_too_large` is a stdio code. Pinned by `a plain open whose answer cannot be framed keeps a named session and rolls back a minted one`. |
 
 ### D15 — a colliding session name is refused before the adapter ever runs
 
