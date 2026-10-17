@@ -12,6 +12,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Merged pull requests
 
 - **hub: add the AFD poll the Windows HTTP loop will wait on** ([#1123](https://github.com/lsm/open-agent-protocol/pull/1123)): First step of #1073.
+- **provider: accept inference.snapshot as the snapshot degrade key** ([#1122](https://github.com/lsm/open-agent-protocol/pull/1122)): Fixes #1075.
+- **docs: show how oapx works in the README, with diagrams** ([#1121](https://github.com/lsm/open-agent-protocol/pull/1121)): The README opened with a dense paragraph about backends and had no picture of how the pieces fit together.
 - **hub: name PING.EXE by path in the Windows child-wait test** ([#1120](https://github.com/lsm/open-agent-protocol/pull/1120)): The Windows hub test `on Windows one silent child does not hold back another child's output…` gives its children only `SystemRoot`, with no `PATH`, so a bare `ping` depended on cmd's fallback lookup.
 - **zig: run the live provider gates on every invocation** ([#1119](https://github.com/lsm/open-agent-protocol/pull/1119)): Under Zig 0.17.0 the provider smoke gate's run was cached across rows: after one row passed, `OAP_PROVIDER_SMOKE=<another row>` printed `run test cached` and reported success without running a case.
 - **opencode: leave a run's usage absent when no step reported any** ([#1118](https://github.com/lsm/open-agent-protocol/pull/1118)): Fixes #1097.
