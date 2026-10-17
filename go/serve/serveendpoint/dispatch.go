@@ -242,7 +242,9 @@ func (s *Server) open(ctx context.Context, e protocol.Envelope) (protocol.Envelo
 		open.Metadata = make(map[string]any, len(request.Metadata))
 		for key, raw := range request.Metadata {
 			var value any
-			_ = json.Unmarshal(raw, &value)
+			if err := json.Unmarshal(raw, &value); err != nil {
+				return protocol.Envelope{}, &refusal{code: "invalid_payload", message: fmt.Sprintf("metadata %q: %v", key, err)}
+			}
 			open.Metadata[key] = value
 		}
 	}

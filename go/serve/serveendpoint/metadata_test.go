@@ -33,7 +33,7 @@ func TestAnOpensMetadataReachesTheAdapter(t *testing.T) {
 	frame := func(id, payload string) string {
 		return `{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"session.open.request","id":"` + id + `","payload":` + payload + `}`
 	}
-	input := frame("o1", `{"session_id":"a","metadata":{"label":"nightly","depth":2}}`) + "\n" + frame("o2", `{"session_id":"b"}`) + "\n"
+	input := frame("o1", `{"session_id":"a","metadata":{"label":"nightly","depth":2}}`) + "\n" + frame("o2", `{"session_id":"b"}`) + "\n" + frame("o3", `{"session_id":"c","metadata":{"n":1e999}}`) + "\n"
 	out := &syncBuffer{}
 	if err := server.Run(context.Background(), strings.NewReader(input), out); err != nil {
 		t.Fatal(err)
@@ -46,5 +46,8 @@ func TestAnOpensMetadataReachesTheAdapter(t *testing.T) {
 	}
 	if got := adapter.opens[1].Metadata; got != nil {
 		t.Fatalf("second open's metadata = %#v, want none", got)
+	}
+	if !strings.Contains(out.String(), `"invalid_payload"`) || !strings.Contains(out.String(), `metadata \"n\"`) {
+		t.Fatalf("an unrepresentable metadata value was not refused invalid_payload: %s", out.String())
 	}
 }
