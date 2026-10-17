@@ -1175,8 +1175,9 @@ const Fake = struct {
         self.label_len = null;
         if (request.metadata) |metadata| {
             if (metadata.object.get("label")) |label| {
-                @memcpy(self.label[0..label.string.len], label.string);
-                self.label_len = label.string.len;
+                const text = label.string[0..@min(label.string.len, self.label.len)];
+                @memcpy(self.label[0..text.len], text);
+                self.label_len = text.len;
             }
         }
         const session = try self.allocator.create(FakeSession);
