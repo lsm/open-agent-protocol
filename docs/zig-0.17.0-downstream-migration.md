@@ -27,7 +27,7 @@ CI toolchain pins use 0.17.0, and Zig cache keys include the compiler version an
 
 - Array multiplication (`a ** n`) is removed. Single-value arrays use `@splat` with a known array type. Repeated strings use a compile-time helper that copies the whole byte pattern, preserves UTF-8, and provides a trailing zero sentinel. Repeating `"é"`, `"漢"`, or `"😀"` must not become a splat of an individual UTF-8 byte.
 - `std.ascii.indexOfIgnoreCase` becomes `std.ascii.findIgnoreCase`.
-- `Uri.getHost` becomes `std.Io.net.HostName.fromUri`; OAP maps host-validation failures to its existing invalid-provider-URL error and retains its loopback/TLS checks.
+- `Uri.getHost` becomes `std.Io.net.HostName.fromUri`; OAP maps host-validation failures to its existing invalid-provider-URL error and retains its loopback/TLS checks. Bracketed IPv6 literals are validated as IP addresses separately, because HostName validates DNS names and rejects IPv6 colons.
 - Struct reflection uses parallel `field_names`, `field_types`, and related arrays. Enum reflection also uses `field_names` and `field_values`; runtime compilation identified four additional enum loops beyond the initial struct audit.
 - `std.StaticBitSet` becomes `std.bit_set.Static`, and `.initFull()` becomes `.full`.
 - Prefer `std.lang.Optimize` and the `debug`, `safe`, `fast`, and `small` tags.
@@ -49,7 +49,7 @@ Check configuration invalidation by reusing the cache, changing each of the nine
 
 Use a Zig 0.17-compatible ZLS. At the October 17 migration research checkpoint, build integration had landed in ZLS master but the 0.17 stable release was not yet available, and dependency-module resolution still had limitations. Verify navigation and diagnostics for the zigzag dependency separately from successful CLI builds.
 
-Incremental compilation in 0.17 primarily targets x86_64 Linux with `-fincremental --watch`. Do not expect the same incremental rebuild support on Apple Silicon macOS. New SafeAllocator checks exposed a queued hub event borrowing a run ID from a released session. Queued and replayed events now own their run ID until consumed or discarded. The existing close-and-drain test and allocation-failure sweeps cover this boundary. Two allocation-failure sweeps use the repository-recommended `smp_allocator` backing: SafeAllocator remap behavior made their allocation counts nondeterministic; FailingAllocator still injects failures and checks allocated/freed byte counts. Other hub tests retain the testing allocator.
+Incremental compilation in 0.17 primarily targets x86_64 Linux with `-fincremental --watch`. Do not expect the same incremental rebuild support on Apple Silicon macOS. New SafeAllocator checks exposed a queued hub event borrowing a run ID from a released session. Queued and replayed events now own their run ID until consumed or discarded. The existing close-and-drain test and allocation-failure sweeps cover this boundary. Four allocation-failure sweeps use the repository-recommended `smp_allocator` backing: SafeAllocator remap behavior made their allocation counts nondeterministic; FailingAllocator still injects failures and checks allocated/freed byte counts. Other tests retain the testing allocator.
 
 ## Sources
 

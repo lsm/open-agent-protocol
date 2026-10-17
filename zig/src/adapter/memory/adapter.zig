@@ -2196,7 +2196,7 @@ fn provideAndSettle(allocator: std.mem.Allocator) !void {
 }
 
 test "an open with provided tools, a submit and a settled call free everything they built when an allocation fails" {
-    try testing.checkAllAllocationFailures(testing.allocator, provideAndSettle, .{});
+    try testing.checkAllAllocationFailures(std.heap.smp_allocator, provideAndSettle, .{});
 }
 
 test "a provided tool keeps its annotations and its features sorted by key with their modes, constraints and limits, and a null $schema is admitted" {

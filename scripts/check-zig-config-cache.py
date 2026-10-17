@@ -34,7 +34,8 @@ def main():
             try:
                 path.write_bytes(original + b"\ninvalid-zig-config-cache-probe\n")
                 result = configure()
-                if result.returncode == 0 or b"parsing " not in result.stderr:
+                if (result.returncode == 0 or b"parsing " not in result.stderr
+                        or path.name.encode() not in result.stderr):
                     raise RuntimeError("configuration did not reparse " + str(path)
                                        + "\n" + result.stderr.decode(errors="replace"))
             finally:
