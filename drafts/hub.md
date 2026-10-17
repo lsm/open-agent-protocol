@@ -523,9 +523,9 @@ takes over and ends it with `oap-overflow`. A stop closes every connection on
 the next cycle. Zig: `an open event stream does not hold the daemon: another
 connection is answered while it streams`, `a client that hangs up mid-stream
 releases its stream without an event to write`, and `stopping the daemon ends
-an open stream rather than waiting it out`. A platform that cannot poll a
-socket — Windows, #460 — serves connections one at a time instead, and a stream
-there writes what is queued and ends.
+an open stream rather than waiting it out`. On Windows the
+same loop waits on one AFD poll rather than `poll` (#1073, `DESIGN.md` §8.6),
+and the three tests run there too.
 
 Every route that reads a body requires `Content-Type: application/json`, and
 the body is read as UTF-8 whatever `charset` the header names. RFC 8259 §11
@@ -662,13 +662,12 @@ forever. Pinned by `a peer that
 connects and never sends a request is given up on, not waited on forever`;
 Go's bound is `ReadHeaderTimeout` on the same server.
 
-**Both bounds are a property of a platform that can wait on a socket**, and
-Zig's is a `poll`, so neither holds on Windows: a read there blocks with no
-deadline, and a peer that connects and stays silent wedges the daemon. Rather
-than claim a bound it does not have, the Zig daemon says so on stderr when it
-starts there, and the two tests that pin the bound skip. Closing it is #460's
-work, not this route's; the macOS and Linux builds are the ones the release
-covers.
+**Both bounds are a property of a loop that can wait on a socket.** Zig's
+daemon reads only what its wait reports ready, a `poll` on Unix and an AFD
+poll on Windows (#1073), and checks both budgets every cycle, so a peer that
+connects and stays silent is given up on there too. The two tests above drive
+the blocking reader the Windows daemon no longer uses, and they still skip
+there.
 
 **The header budget is absolute, and the body budget is not.** Go's
 `ReadHeaderTimeout` runs from the first byte, so a peer that sends one byte
