@@ -617,7 +617,11 @@ pub const Connection = struct {
                 wanted.disconnect = true;
                 wanted.abort = true;
             },
-            .awaiting, .done => {},
+            .awaiting => if (!self.peer_closed) {
+                wanted.disconnect = true;
+                wanted.abort = true;
+            },
+            .done => {},
         }
         wanted.send = self.pending();
         return wanted;
@@ -883,13 +887,17 @@ fn serveWindows(daemon: *Daemon, listener: *compat.net.Server, poll_ms: i32) ?st
             const wanted = connection.interest();
             if (wanted.any()) watched.append(daemon.allocator, .{ .handle = connection.handle(), .events = wanted }) catch return null;
         }
-        if (watched.items.len > 0) poll.arm(listening, watched.items) catch {};
-        waitCycle(&poll, cycle_ns);
+        var armed = false;
+        if (watched.items.len > 0) {
+            poll.arm(listening, watched.items) catch {};
+            armed = poll.state != .idle;
+        }
+        waitCycle(&poll, armed, cycle_ns);
         poll.cancel();
         if (!daemon.going().yes()) break;
 
         var accepting = false;
-        const signalled_set = (poll.ready() catch null) orelse &.{};
+        const signalled_set = if (armed) (poll.ready() catch null) orelse &.{} else &.{};
         for (signalled_set) |signalled| {
             if (signalled.handle == listening) {
                 accepting = signalled.events.accept;
@@ -943,9 +951,9 @@ fn serveWindows(daemon: *Daemon, listener: *compat.net.Server, poll_ms: i32) ?st
     return null;
 }
 
-fn waitCycle(poll: *const afd_poll.Poll, cycle_ns: u64) void {
+fn waitCycle(poll: *const afd_poll.Poll, armed: bool, cycle_ns: u64) void {
     const started = compat.time.monotonicNanos() catch return;
-    while (poll.state != .done) {
+    while (!armed or poll.state != .done) {
         const spent = (compat.time.monotonicNanos() catch return) -| started;
         if (spent >= cycle_ns) return;
         if (compat.time.sleepUntilCompletion(cycle_ns - spent)) return;
@@ -1568,7 +1576,7 @@ fn readableSoon(stream: *compat.net.Stream, budget_ms: u64) !bool {
     var poll = afd_poll.Poll.init(testing.allocator);
     defer poll.deinit();
     try poll.arm(handle, &.{.{ .handle = handle, .events = .{ .receive = true, .disconnect = true, .abort = true } }});
-    waitCycle(&poll, budget_ms * std.time.ns_per_ms);
+    waitCycle(&poll, true, budget_ms * std.time.ns_per_ms);
     if (poll.state != .done) return false;
     return (try poll.ready()).?.len > 0;
 }
