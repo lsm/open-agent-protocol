@@ -26,6 +26,225 @@ model-provider-core for its own agent inference; it can expose them together
 on one stdio connection. Other agent implementations may still wrap vendor
 SDKs internally.
 
+## Quick start
+
+`oapx` is a single binary. Get one of these two ways:
+
+- Download it from the [latest release](https://github.com/lsm/open-agent-protocol/releases). Builds are published for macOS, Linux and Windows on arm64 and x64, with a `SHA256SUMS.txt`.
+- Or build it from this checkout with Zig 0.17.0. `make install` puts it in `~/.local/bin`.
+
+```sh
+oapx auth providers                      # the providers you can sign in to
+oapx auth login --provider <id>          # store a credential (Keychain first on macOS)
+oapx                                     # the terminal UI
+oapx run --agent "summarize this repo"   # one prompt, every event printed
+oapx serve agent,provider --stdio        # the endpoint the SDKs drive
+```
+
+## How oapx works
+
+`oapx` sits between whatever drives an agent and whatever runs it. Every
+client speaks the same OAP envelopes to it. Behind it there are two kinds of
+backend:
+
+- its own agent loop, which reaches any catalogued model provider;
+- a third-party harness, translated by a pinned adapter.
+
+```mermaid
+flowchart LR
+    subgraph clients["Clients"]
+        direction TB
+        tui["Terminal UI<br/><code>oapx</code>"]
+        sdk["SDKs<br/>Python · Rust · TypeScript · Go"]
+        remote["Any OAP client<br/>stdio or HTTP + SSE"]
+    end
+
+    subgraph oapx["oapx — one binary"]
+        direction TB
+        agent["<b>serve agent</b><br/>agent-control-core"]
+        hub["<b>serve</b><br/>many sessions · replay"]
+        loop["Built-in agent loop<br/>tools · permissions · compaction"]
+        adapters["Harness adapters<br/>pinned per version"]
+        provider["<b>serve provider</b><br/>model-provider-core"]
+    end
+
+    subgraph harnesses["Harnesses"]
+        direction TB
+        h1["Claude Code · Codex · Pi"]
+        h2["ACP agents · Hermes"]
+        h3["DeepSeek · OpenCode"]
+    end
+
+    models[("Model providers<br/>24 catalogued: Anthropic, OpenAI,<br/>Google, Kimi, Z.AI, DeepSeek, …")]
+
+    tui --> agent
+    sdk --> agent
+    remote --> hub
+    hub --> agent
+    agent --> loop
+    agent --> adapters
+    loop -- "inference.*" --> provider
+    provider --> models
+    adapters --> harnesses
+
+    classDef client fill:#e8f1ff,stroke:#3b6fd8,color:#0b1f44
+    classDef core fill:#fff4e0,stroke:#d08a00,color:#3d2600
+    classDef edge fill:#eaf7ee,stroke:#2f9e57,color:#0d3319
+    class tui,sdk,remote client
+    class agent,hub,loop,adapters,provider core
+    class h1,h2,h3,models edge
+```
+
+The two profiles share one envelope and vocabulary:
+
+- **agent-control-core**: sessions, runs, streamed content, tool calls, permission prompts and cancellation.
+- **model-provider-core**: one inference request, and its parts as they stream.
+
+They can be served apart (`serve agent`, `serve provider`) or together on one
+connection (`serve agent,provider`). The built-in loop is itself a client of
+the provider profile, so a remote provider service can stand in for the local
+one.
+
+### One run, end to end
+
+A session opens once. Each submitted message is admitted as a run, and the run
+ends with exactly one terminal event. A tool call that needs approval pauses
+the run until the client answers. Inference happens underneath, on the
+provider profile.
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant C as Client (TUI / SDK)
+    participant A as oapx · agent loop
+    participant P as oapx · provider
+    participant M as Model API
+
+    C->>A: protocol.initialize.request
+    A-->>C: protocol.initialize.response (capabilities)
+    C->>A: session.open.request
+    A-->>C: session.open.response
+    C->>A: session.message.submit.request
+    A-->>C: submit.response (started · start · running)
+    A-->>C: run.started
+
+    A->>P: inference.create.request
+    P->>M: provider HTTP request
+    M-->>P: streamed tokens
+    P-->>A: inference.part.delta …
+    A-->>C: content.delta …
+    P-->>A: inference.completed (tool call)
+
+    A-->>C: action.permission.requested
+    C->>A: action.permission.resolve.request (allow)
+    A-->>C: action.permission.resolved
+    A-->>C: action.call.started → action.call.completed
+
+    A->>P: inference.create.request (with the tool result)
+    P-->>A: inference.part.delta … inference.completed
+    A-->>C: content.delta …
+    A-->>C: run.completed (final response, usage)
+```
+
+A run can be cancelled (`run.cancel.request` → `run.cancelled`) at any point.
+While one run executes, follow-ups queue behind it. A client that reconnects
+can replay the session's events from a cursor, or is told exactly where the
+gap is.
+
+### Inside the built-in loop
+
+```mermaid
+flowchart TB
+    subgraph host["Host: TUI, serve agent, or oapx run"]
+        session["Session<br/>history · settings · compaction policy"]
+    end
+
+    subgraph agentlayer["Agent layer"]
+        loopn["Agent loop<br/>turns · queue · cancellation"]
+        tools["Workspace tools<br/>Read · Write · Edit · Shell · MCP"]
+        perms["Permission engine<br/>ask or bypass"]
+    end
+
+    subgraph providerlayer["Provider layer"]
+        mpc["model-provider-core"]
+        catalog["Model catalog<br/>providers/catalog.json + models.dev"]
+        creds["Credentials<br/>macOS Keychain, else ~/.oapx/auth.json"]
+    end
+
+    apis[("Provider APIs")]
+
+    session --> loopn
+    loopn --> tools
+    tools --> perms
+    perms -. "action.permission.requested" .-> host
+    loopn --> mpc
+    mpc --> catalog
+    mpc --> creds
+    mpc --> apis
+
+    classDef h fill:#e8f1ff,stroke:#3b6fd8,color:#0b1f44
+    classDef a fill:#fff4e0,stroke:#d08a00,color:#3d2600
+    classDef p fill:#f3e8ff,stroke:#8a4fd0,color:#2a0d4d
+    classDef x fill:#eaf7ee,stroke:#2f9e57,color:#0d3319
+    class session h
+    class loopn,tools,perms a
+    class mpc,catalog,creds p
+    class apis x
+```
+
+Each provider's base URL and sign-in origin live in exactly one place,
+[`providers/catalog.json`](providers/catalog.json). The model list comes from
+that catalog plus models.dev, which supplies context limits and whether a model
+is deprecated. State lives under `~/.oapx`.
+
+### Harness backends
+
+`oapx serve agent --backend <name>` swaps the built-in loop for a third-party
+harness. The client sees the same envelopes either way. Each adapter is pinned
+to the harness versions its catalog entry in `harnesses/` names. Its
+`research/` ledger records everything the harness cannot express in OAP, and
+the client is told about those gaps rather than having them hidden.
+
+| Backend | Runs | Pinned |
+| --- | --- | --- |
+| `oapx` | oapx's own loop, as the terminal UI builds it | — |
+| `claude` | a Claude Code child | 2.1.296 |
+| `codex` | a Codex app-server child | `rust-v0.162.1` |
+| `pi` | a Pi RPC child | `v1.0.1` |
+| `acp` | an ACP v1 agent named by a `--config` entry | `v1.11.0` |
+| `hermes` | a Hermes gateway | `v0.21.6` |
+| `deepseek` | a DeepSeek harness | `dsh-v0.2.1-alpha.2` |
+| `opencode` | an OpenCode server, started by oapx or already running | `v2.0.26` |
+| `memory` | the in-memory reference script that conformance runs against | — |
+
+When `opencode` names no endpoint, oapx runs the whole server lifecycle
+itself. The terminal UI uses the same route when you pick an OpenCode model in
+`/model`:
+
+```mermaid
+sequenceDiagram
+    participant O as oapx
+    participant S as opencode serve
+    participant C as Client
+
+    O->>O: pick a binary: entry executable, ~/.oapx/opencode/&lt;version&gt;, else PATH
+    O->>S: spawn on 127.0.0.1:&lt;free port&gt; with a fresh password
+    loop until ready (503 means still starting)
+        O->>S: GET /api/info
+    end
+    alt version not admitted by the catalog
+        O-->>C: refuse, naming the tested version and oapx opencode install
+    else admitted
+        C->>O: session.open / session.message.submit
+        O->>S: create session, prompt
+        S-->>O: native events
+        O-->>C: run.started · content.delta · run.completed
+    end
+    O->>S: SIGTERM, then kill after the grace period
+```
+
+## The combined endpoint
+
 Run the combined endpoint with:
 
 ```sh
@@ -54,6 +273,8 @@ endpoint advertises the feature, refuse them client-side where it does not, and 
 run's `temperature`, which the loop takes none of, and `minimal` reasoning,
 which it runs as low. The old Makai wire is
 available only by explicit opt-in.
+
+## Backends in detail
 
 `oapx serve agent --backend claude` serves a Claude Code child (pinned 2.1.296),
 `--backend codex` a Codex app-server child (pinned `rust-v0.162.1`), `--backend pi` a
@@ -115,6 +336,8 @@ then reads `get_settings` for the actual model, effort and compaction policy.
 Recovery discloses that configuration belongs to the new process; only the
 conversation is restored. Missing native sessions return a typed
 `unsupported_feature` refusal; earlier OAP run events remain unavailable.
+
+## Specifications
 
 Implementing OAP natively? [**STABILITY.md**](STABILITY.md) describes the
 v0.1 pre-release contract: what will freeze at the first tag, what may still
