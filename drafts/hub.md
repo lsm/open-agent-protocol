@@ -1288,8 +1288,11 @@ diverged:**
   object**, and nothing else. An object that breaks the schema anywhere, a
   wrongly typed envelope member such as `"id": 7` included, is `schema_invalid`:
   the envelope member and the payload member are one schema, so they draw one
-  code. The HTTP routes read a body under the same rule. Pinned by
-  `TestOpenOpRefusals`, `TestSubmitRejections` and the hub parity scenario.
+  code. An object that satisfies the schema is not refused at this step at all.
+  The HTTP routes read a body under the same rule. Pinned by
+  `TestOpenOpRefusals`, `TestSubmitRejections` and the hub parity scenario. Go
+  still breaks the last sentence for an integral number spelled `1.0` or `1e2`,
+  which is D31.
 
 #### The `details` a refusal carries, and the `reason` vocabulary
 
@@ -2080,6 +2083,16 @@ are "stamped with the revision the lister served it under", and both name
 | **Go does** | Serves them on both transports since 2026-10-07, through one implementation both call (`go/internal/workwire`): the same projection, history, turns, adoption flag and `any_directory` placement, with the same answers and refusals, including `backend_failed` when a native list fails during adoption. The stdio differential (`the work verbs refuse what they cannot serve and list an empty hub`) and the TypeScript client test run the verbs against both trees. The Go adapters list their native sessions where Zig does (ACP, Claude, Codex, Hermes, OpenCode, Pi), and all of those but Hermes read them. |
 | **Zig does** | Serves both on both transports. A piece of work's status is projected from the session's state and, when it is idle, the latest terminal envelope in its journal; `last_reply` is the latest `run.completed`'s `final_response` text, cut at 4 KiB. `work.list` groups by directory, most recent first, filtered by `directory` and `adapters`, paged by `limit` and `cursor`, and searched through the native lists that take a term, as the draft says. `work.start` opens with the message (D11) and keeps the title, or, given a `native_id` from `work.list`, adopts that harness session by resuming it under a new OAP id and submits the message to it, refused `run_active` while the harness lists it running; `work.send` submits with `delivery: auto`; `work.stop` cancels the active run and answers a session with none unchanged; A session the history names that `serve` does not hold (closed, or left by a restart) is listed with `held: false` and its `live` or `closed` state, closed ones only on `include_closed`; `work.status`, `work.read` and `work.stop` answer it without reopening, and `work.send` reopens it through its binding (0040) first, which an adapter without `session.open.reopen` refuses. `work.read` reads the harness's own transcript where the adapter can (Claude Code's project jsonl, Codex `thread/turns/list`, Pi's session file, OpenCode's `GET /api/session/<id>/message`, an ACP agent's `session/load` replay), for held and unheld sessions, so it survives a restart; otherwise, or when that transcript is empty or unreadable, it returns the turns `serve` recorded in memory: each submitted user message, and each run's outcome with its reply text, the last 512 kept, each cut at 64 KiB. |
 | **Why it matters** | Recorded as how it was: a caller of the work profile had to use `oapx serve` until Go served it. |
+
+### D31 — Go refuses a schema-valid `sequence` spelled `1.0` as `malformed_json`
+
+| | |
+| --- | --- |
+| **The draft says** | An envelope that satisfies the schema is not refused by the envelope gate, and the schema types `sequence` and `timestamp_ms` as `integer`, which JSON Schema 2020-12 satisfies with `1.0` and `1e2`. |
+| **Go does** | Validates, then `ParseEnvelope` fails: `encoding/json` will not put a literal with a fraction or exponent into `*uint64` or `*int64`, so the gate answers `malformed_json`. |
+| **Zig does** | Opens the session. |
+| **Why it matters** | A schema-valid envelope is refused by one tree and served by the other. Reachable on any request, since every envelope may carry `sequence`. |
+| **The fix** | [#1142](https://github.com/lsm/open-agent-protocol/issues/1142): Go decodes the two members through a type that accepts an integral number in any spelling. |
 
 ### D12 — an open's `unsupported_feature` and `capability_degraded` carried no `feature`
 
