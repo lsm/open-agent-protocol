@@ -25,7 +25,7 @@ const rows = [_]Row{
     .{ .id = "openai", .model = "gpt-4o-mini" },
     .{ .id = "anthropic", .model = "claude-haiku-4-5-20251001" },
     .{ .id = "deepseek", .model = "deepseek-chat" },
-    .{ .id = "kimi", .model = "kimi-k2.7-code", .answers_unknown_model = true },
+    .{ .id = "kimi", .model = "kimi-for-coding", .answers_unknown_model = true },
     .{ .id = "zai-coding-plan", .model = "glm-4.6" },
     .{ .id = "opencode-zen", .model = "deepseek-v4.1-flash" },
     .{ .id = "opencode-go", .model = "deepseek-v4-flash" },
