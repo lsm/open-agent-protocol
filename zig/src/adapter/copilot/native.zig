@@ -57,9 +57,11 @@ pub fn parseMessage(arena: std.mem.Allocator, frame: []const u8) Error!Message {
     if (body != .object) return Error.InvalidWire;
     const code = body.object.get("code") orelse return Error.InvalidWire;
     if (code != .integer) return Error.InvalidWire;
+    const said = text(body.object, "message");
+    if (said.len == 0) return Error.InvalidWire;
     message.kind = .failure;
     message.failure_code = code.integer;
-    message.failure_message = text(body.object, "message");
+    message.failure_message = said;
     return message;
 }
 
@@ -190,6 +192,9 @@ test "a frame that is not JSON-RPC 2.0 is refused rather than guessed at" {
         "{\"jsonrpc\":\"2.0\",\"result\":{}}",
         "{\"jsonrpc\":\"2.0\",\"id\":true,\"result\":{}}",
         "{\"jsonrpc\":\"2.0\",\"id\":1,\"error\":{\"message\":\"no code\"}}",
+        "{\"jsonrpc\":\"2.0\",\"id\":1,\"error\":{\"code\":1}}",
+        "{\"jsonrpc\":\"2.0\",\"id\":1,\"error\":{\"code\":1,\"message\":7}}",
+        "{\"jsonrpc\":\"2.0\",\"id\":1,\"error\":{\"code\":1,\"message\":\"\"}}",
         "{\"jsonrpc\":\"2.0\",\"method\":\"\"}",
         "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"m\",\"result\":{}}",
     }) |frame| {
