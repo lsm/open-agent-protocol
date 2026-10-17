@@ -1954,8 +1954,8 @@ so the difference is a recorded one rather than a surprise in a differential run
 **D5 is fixed** ([#516](https://github.com/lsm/open-agent-protocol/pull/516)): a session
 open's `metadata` reaches an adapter through the core, which before it **had no member to
 carry it** — so the member could not arrive rather than arriving and being dropped. The
-one surface that did accept a metadata-carrying open and discard it is the endpoint, in
-**both** trees, and that is D9.
+one surface that still accepts a metadata-carrying open and discards it is Go's endpoint,
+and that is D9.
 
 **D10 is fixed** ([#524](https://github.com/lsm/open-agent-protocol/pull/524)): an open that subscribes or attaches is gated on the revision the host asked for, so
 `stale_capabilities` is reachable and the answer's `capability_revision` reports a
@@ -1967,7 +1967,8 @@ that does not exist, or a signal with nowhere to report it. None of them changes
 on the wire today, and each is a small contract change rather than a re-decision. No
 issue tracks them now: [#407](https://github.com/lsm/open-agent-protocol/issues/407)
 closed with D2, D3, D5 and D6 fixed and these two still open. D8 is that `request_cancelled` has no signal to come from; D9 is
-a gap **both** trees share, which is why fixing it on one side would be the wrong move.
+Go's endpoint alone: the Zig one has forwarded metadata since
+[#803](https://github.com/lsm/open-agent-protocol/pull/803).
 D4's negative-capacity half is closed: both trees refuse a negative, as its row says, so
 what is left of it is the per-adapter bound. **D6 is fixed**, and the
 one place the two trees' shutdowns still differ in kind rather than in answer is written
@@ -2002,16 +2003,15 @@ are "stamped with the revision the lister served it under", and both name
 | **Why it is not fixable here** | It needs `contract`'s slots to report cancellation, which is a member that does not exist — the same kind of gap as D3 and D5, and the reason it is recorded rather than papered over with a mapping the hub cannot actually reach. |
 | **The fix** | `contract`'s slots report cancellation as its own error, as Go's context does, and the transports map it to `request_cancelled`. |
 
-### D9 — the endpoint surface drops an open's `metadata`, in **both** trees
+### D9 — the Go endpoint surface drops an open's `metadata`
 
 | | |
 | --- | --- |
 | **The draft says** | `session.open.request` carries `metadata`, and the schema has the member. |
 | **Go does** | Only the **endpoint** surface drops it: `serveendpoint`'s open path builds a `base.OpenRequest` with no `Metadata`. The other two frontends read it and enforce the draft's `invalid_payload` — `servehttp` and the stdio op both decode each value and refuse one that will not parse. |
-| **Zig does** | The same, and one layer deeper: `oap_types.SessionOpenRequest` has no `metadata` member either, so it cannot reach `endpoint.zig`'s `adapter.open` even now that D5 gave `contract.OpenRequest` one. |
+| **Zig does** | What the draft says. `endpoint.zig` reads `payload.metadata` off the parsed line and hands it to `adapter.open`, and the schema has already refused a value that is not an object. `oap_types.SessionOpenRequest` has no `metadata` member, so the value comes from the line rather than the typed payload, and `endpoint.test.an open's metadata reaches the adapter through the endpoint` pins it. |
 | **Why it matters** | D5 fixed the core's path, so a metadata-carrying open reaches an adapter when it is driven **through the core** and is still dropped when it is driven through an **endpoint**. Two paths to the same adapter, one of which silently discards a request member. |
-| **Why it is not fixed here** | **Both** trees do it. Fixing it on the Zig side alone would make the two *diverge* — the Zig endpoint would forward metadata and the Go one would not — which is the opposite of what Decision 0032 is for. It needs to be a change to both trees, and it is a change to the shared surface rather than to the hub. |
-| **The fix** | `oap_types.SessionOpenRequest` gains `metadata` and both trees' **endpoint** surfaces read it into their `OpenRequest`, in one step — the only two places either tree drops it. The Zig stdio `open` op, when it is written, has to read `metadata` off the wire the way Go's does, or the Zig line becomes a *third* dropper rather than a second reader. |
+| **The fix** | `serveendpoint`'s open path copies `Metadata` into `base.OpenRequest`, as `servehttp` and the stdio op do ([#1127](https://github.com/lsm/open-agent-protocol/issues/1127)). The Zig stdio `open` op, when it is written, has to read `metadata` off the wire too, or it becomes a dropper of its own. |
 
 
 ### D10 — nothing gated an open on the revision the host asked for
@@ -2248,8 +2248,8 @@ is what Go hands an adapter: `base.OpenRequest.Metadata` is a `map[string]any`,
 parsed, not raw text. What this names is that the core had nowhere to put it: a
 host that sent metadata to a Zig hub could not have it delivered, because the
 member the draft specifies did not exist between the wire and the adapter. The
-one surface that *did* accept such an open and drop it is the endpoint, in both
-trees, and that is D9 rather than this row.
+one surface that still accepts such an open and drops it is Go's endpoint, and
+that is D9 rather than this row.
 
 **The value's lifetime is the call's, and that is a rule rather than an accident.**
 `metadata` is a `std.json.Value`, which is a *shallow* copy: its `.object` is a
