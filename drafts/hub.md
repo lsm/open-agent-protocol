@@ -1962,15 +1962,15 @@ one surface that did accept a metadata-carrying open and discard it is the endpo
 `stale_capabilities` is reachable and the answer's `capability_revision` reports a
 revision that was checked rather than one that was merely sent.
 
-**D4, D8 and D9 are what is left** (D7 was fixed 2026-10-06). Two of them are the Zig side and all of one
+**Of D1 to D10, D4, D8 and D9 are what is left** (D7 was fixed 2026-10-06). Two of them are the Zig side and all of one
 kind: each names something the Zig tree cannot carry that the draft specifies — a member
 that does not exist, or a signal with nowhere to report it. None of them changes a byte
-on the wire today, and each is a small contract change rather than a re-decision, so they
-are queued rather than fixed here: D8 and D9 in
-[#407](https://github.com/lsm/open-agent-protocol/issues/407). D8 is that `request_cancelled` has no signal to come from; D9 is
+on the wire today, and each is a small contract change rather than a re-decision. No
+issue tracks them now: [#407](https://github.com/lsm/open-agent-protocol/issues/407)
+closed with D2, D3, D5 and D6 fixed and these two still open. D8 is that `request_cancelled` has no signal to come from; D9 is
 a gap **both** trees share, which is why fixing it on one side would be the wrong move.
-D4 is different in one respect: its negative-capacity half is a Go change, queued in
-[#406](https://github.com/lsm/open-agent-protocol/issues/406). **D6 is fixed**, and the
+D4's negative-capacity half is closed: both trees refuse a negative, as its row says, so
+what is left of it is the per-adapter bound. **D6 is fixed**, and the
 one place the two trees' shutdowns still differ in kind rather than in answer is written
 down in [Shutdown](#shutdown).
 
@@ -2105,6 +2105,7 @@ are "stamped with the revision the lister served it under", and both name
 | **The draft says** | "An open response that cannot be encoded rolls the session back and says so", and "an open whose id the host named is **kept** when its response cannot be framed, and the refusal names it". |
 | **Go does** | `refuseOversizedOpen` and `refuseUnencodableOpen`: a **host-named** session is left open and the refusal says so; an **adapter-minted** one is rolled back, because nobody learned its id and an unreachable session must not leak. |
 | **Zig does** | The answer goes through the generic `answerLine` path, which answers `response_too_large` and **keeps the session in both cases**, with no distinction named. |
+| **Now, half fixed** | A **subscribing** open is fixed ([#912](https://github.com/lsm/open-agent-protocol/pull/912)): when its answer does not fit, the frontend keeps a host-named session and says so, and discards an adapter-minted one and says it was rolled back. A **plain** open still answers through `answerLine`, so the row above still holds for it. |
 | **Why it matters** | A `sessions` listing after such a refusal would show a session the host has no id for. Unreachable with today's registry — one adapter, an 18 MiB frame limit and a small state document — and live the moment a real adapter's state does not fit. |
 | **The fix** | Belongs with the `response_too_large` work, which is its own PR: the rollback needs the hub's own allocator and a shutdown-bounded close, which is the shape D6 gives hub-2 for #389. Recording it here so the follow-up PR starts from the rule rather than from this paragraph. |
 
@@ -2198,13 +2199,14 @@ are "stamped with the revision the lister served it under", and both name
   doubled backslash leaves a literal one after decoding. **Both mutations fail it:** consuming every pair
   regardless of `isTspecial`, and never consuming one. |
 
-### D20 — `type_mismatch` is answered by no test in either tree
+### D20 — `type_mismatch` on the `open` route is answered by no test in either tree
 
 | | |
 | --- | --- |
 | **The draft says** | An envelope whose payload is not a `session.open.request` is refused `type_mismatch`, distinct from `schema_invalid` (the envelope violates its schema) and from `invalid_request` (the request field is missing or the wrong type). |
 | **Go does** | Answered from `serve/servestdio/ops.go`, with no test that sends a schema-valid non-`open` payload to the `open` route. |
 | **Zig does** | Answered at `zig/src/hub/stdio.zig:505`, after the envelope is validated and before it is dispatched, and with no test that reaches it. `malformed_json` is covered by the Zig unit table; `type_mismatch` is not, in either tree. |
+| **Since then** | The code is now tested on the `submit` route in both trees: Go by `TestOpErrorCodesMirrorHTTP` and `TestRequestBudgetMatchesHTTP` in `servestdio`, over stdio and HTTP; Zig by `a body that is not a JSON envelope is malformed_json, and an envelope of the wrong type is type_mismatch` in `daemon.zig`, through the gate the stdio frontend shares. The `open` route's emission is still reached by no test in either tree. |
 | **Why it is not fixed here** | The line that reaches it does not exist yet in either tree, so the check is correct by inspection and unproven by execution. A row that claims coverage it does not have is the same defect as a name that claims an unexercised check, and the ledger is where that claim has to be visible. Renaming the differential scenario that claimed five gate refusals and exercised two is the other half of the same fix. |
 
 ### D24 — five codes the operation rows name without a status a port may use
