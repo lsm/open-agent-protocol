@@ -652,7 +652,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          zig build --build-file zig/build.zig install -Doptimize=ReleaseSafe --prefix "$RUNNER_TEMP/oapx-windows"
+          zig build --build-file zig/build.zig install -Dtarget=x86_64-windows -Doptimize=ReleaseSafe --prefix "$RUNNER_TEMP/oapx-windows"
           "$RUNNER_TEMP/oapx-windows/bin/oapx.exe" --version
           "$RUNNER_TEMP/oapx-windows/bin/oapx.exe" --help > /dev/null
 
