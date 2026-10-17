@@ -2069,8 +2069,7 @@ pub fn main(init: std.process.Init) !void {
     const stderr = compat.stdio.stderr();
     const stdin = compat.stdio.stdin();
 
-    const args = try init.minimal.args.toSlice(allocator);
-    defer allocator.free(args);
+    const args = try init.minimal.args.toSlice(init.arena.allocator());
 
     if (args.len <= 1) {
         runTuiOverOap(allocator, init.io, &.{}, stderr) catch |err| switch (err) {
