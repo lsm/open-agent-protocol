@@ -232,7 +232,7 @@ pub const Daemon = struct {
             .payload = value,
             .supplied = .{ .adapter = true, .request = true },
         };
-        return self.outcome(arena, try self.frontend.openSession(arena, name, request, true), correlation);
+        return self.outcome(arena, try self.frontend.openSession(arena, name, request, .held), correlation);
     }
 
     fn queryFlag(self: *Daemon, arena: std.mem.Allocator, query: []const u8, name: []const u8) !bool {

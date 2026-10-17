@@ -1961,16 +1961,14 @@ and that is D9.
 `stale_capabilities` is reachable and the answer's `capability_revision` reports a
 revision that was checked rather than one that was merely sent.
 
-**Of D1 to D10, D4, D8 and D9 are what is left** (D7 was fixed 2026-10-06). Two of them are the Zig side and all of one
-kind: each names something the Zig tree cannot carry that the draft specifies — a member
-that does not exist, or a signal with nowhere to report it. None of them changes a byte
-on the wire today, and each is a small contract change rather than a re-decision. No
-issue tracks them now: [#407](https://github.com/lsm/open-agent-protocol/issues/407)
-closed with D2, D3, D5 and D6 fixed and these two still open. D8 is that `request_cancelled` has no signal to come from; D9 is
-Go's endpoint alone: the Zig one has forwarded metadata since
-[#803](https://github.com/lsm/open-agent-protocol/pull/803).
-D4's negative-capacity half is closed: both trees refuse a negative, as its row says, so
-what is left of it is the per-adapter bound. **D6 is fixed**, and the
+**Of D1 to D10, D8 and D9 are what is left** (D7 was fixed 2026-10-06, D4 2026-10-17).
+D8 is the Zig side: `request_cancelled` has no signal to come from, a small contract
+change rather than a re-decision, and no issue tracks it now that
+[#407](https://github.com/lsm/open-agent-protocol/issues/407) has closed. D9 is Go's
+endpoint alone: the Zig one has forwarded metadata since
+[#803](https://github.com/lsm/open-agent-protocol/pull/803), and
+[#1127](https://github.com/lsm/open-agent-protocol/issues/1127) tracks the Go half.
+**D6 is fixed**, and the
 one place the two trees' shutdowns still differ in kind rather than in answer is written
 down in [Shutdown](#shutdown).
 
@@ -2097,16 +2095,14 @@ are "stamped with the revision the lister served it under", and both name
 | **The fix** | The envelope module needs a parse step that is "shape only" — unmarshal into the struct without the type dispatch — so the gate can ask Go's two questions in Go's order. That is a change to `protocol/oap/envelope.zig`, shared by every consumer, and it is worth doing once rather than per op. |
 | **Reach** | Reachable today: any open with a number where a string belongs. The differential scenario sends `{"request":7}` and `{"request":[]}`, which both agree on, but not an ill-typed *member*. |
 
-### D14 — an unframable open answer keeps the session silently
+### D14 — an unframable open answer kept the session silently in Zig — CLOSED
 
 | | |
 | --- | --- |
 | **The draft says** | "An open response that cannot be encoded rolls the session back and says so", and "an open whose id the host named is **kept** when its response cannot be framed, and the refusal names it". |
 | **Go does** | `refuseOversizedOpen` and `refuseUnencodableOpen`: a **host-named** session is left open and the refusal says so; an **adapter-minted** one is rolled back, because nobody learned its id and an unreachable session must not leak. |
-| **Zig does** | The answer goes through the generic `answerLine` path, which answers `response_too_large` and **keeps the session in both cases**, with no distinction named. |
-| **Now, half fixed** | A **subscribing** open is fixed ([#912](https://github.com/lsm/open-agent-protocol/pull/912)): when its answer does not fit, the frontend keeps a host-named session and says so, and discards an adapter-minted one and says it was rolled back. A **plain** open still answers through `answerLine`, so the row above still holds for it. |
-| **Why it matters** | A `sessions` listing after such a refusal would show a session the host has no id for. Unreachable with today's registry — one adapter, an 18 MiB frame limit and a small state document — and live the moment a real adapter's state does not fit. |
-| **The fix** | Belongs with the `response_too_large` work, which is its own PR: the rollback needs the hub's own allocator and a shutdown-bounded close, which is the shape D6 gives hub-2 for #389. Recording it here so the follow-up PR starts from the rule rather than from this paragraph. |
+| **Zig did** | A subscribing open on stdio was fixed in [#912](https://github.com/lsm/open-agent-protocol/pull/912). A **plain** stdio open answered through the generic `answerLine`, which answered `response_too_large` and kept the session in both cases. The HTTP route's open (the one that holds its subscription for the next request) has no frame to exceed and was never affected. |
+| **Now** | Every stdio open's answer is checked against the frame before it is sent, and one helper, `oversizedOpen`, keeps a named session and says so, or discards a minted one and says it was rolled back. The HTTP route still answers whole, as Go's `handleOpen` does, since `response_too_large` is a stdio code, and the opens `work.start` and `work.send` make for themselves are read in-process and never framed, as Go's work path never calls `refuseOversizedOpen`. Pinned by `a plain open whose answer cannot be framed keeps a named session and rolls back a minted one`. |
 
 ### D15 — a colliding session name is refused before the adapter ever runs
 
@@ -2114,7 +2110,7 @@ are "stamped with the revision the lister served it under", and both name
 | --- | --- |
 | **The draft says** | `session_exists` (409) is one of `open`'s errors, and `unsupported_feature` (400) is another. The draft does not say which wins when a request is both. |
 | **Go does** | The adapter runs **first**. `hub.Open` opens the session and only detects a duplicate at `serve.go:102`, so the adapter's own refusals — an unattachable tool source, a bound it will not take — are what answer. Measured: opening `s1`, then opening `s1` naming three local tool sources answers `unsupported_feature` in Go. |
-| **Zig does** | `hub.open` pre-checks the name (`hub.zig:448`) and answers `session_exists` before the adapter is asked anything. The same input answers `session_exists`. |
+| **Zig does** | `hub.open` checks the name before the adapter is asked anything, but after the D17 trust check and `refuseUnadvertisedOpenElections`, which read only the descriptor. So an open electing a unit the adapter does not advertise answers `unsupported_feature`, as Go does (pinned by `an open electing what the adapter does not advertise is refused for that, ahead of a taken name`), and the measured example above answers `unsupported_feature` in both trees. What still differs is a refusal the adapter can only make inside `open`, from the request's shape: a compaction policy or provided tools it will not take answer `session_exists` here and the adapter's own code in Go. #1128 moves those into a side-effect-free admission step ahead of the name check. |
 | **Why it matters** | The host is told its id is taken when the real reason its request cannot be served is that the adapter will not attach what it asked for. Fixing the name is then useless and the actual refusal is never reported. Reachable with both trees' own memory adapter, so it needs no exotic adapter to appear. |
 | **The fix, and why it is one change with four others** | Match Go: call `adapter.open`, then check for the duplicate, then close the session just opened. That is a **core** change, and it is the same one **D11** (admit a message, report `admitted_submit_requests`), **D12** (surface the `contract.Refusal` so `feature` and `reason` reach the wire), **D14** (roll an unnamed session back) and the ordering half of **D13** all want. Five rows, one change: `hub.open` should do what Go's `hub.Open` does — run the adapter, apply the checks in Go's order, and report *which* refusal and why. That belongs in its own PR before `submit`, and it is the reason `submit`'s PR is worth its size. |
 
@@ -2228,13 +2224,14 @@ are "stamped with the revision the lister served it under", and both name
 | **Why they are not rows here** | A row authorises a port to answer, and the draft pins no status, so the four are asserted null like the stdio-only set — see D24. Go's behaviour is the evidence and the draft is the decision, so following Go here would be following a tree rather than the page. |
 | **What would close it** | Pinning the four in the operation error lists, which is a spec change and unaccepted. Until then the gap is here rather than silent, and a port that needs to answer them cannot without that change. |
 
-### D4 — the registry's `journal_capacity` is hub-wide in Zig, per-adapter in Go
+### D4 — the registry's `journal_capacity` was hub-wide in Zig, per-adapter in Go — FIXED
 
 | | |
 | --- | --- |
 | **The draft says** | `examples/oap-serve.json` carries `journal_capacity` per adapter entry, and a cursor older than a session's journal is `oap-replay-gap`. |
 | **Go does** | The registry passes each entry's `journal_capacity` to that adapter, so two adapters can retain different depths. |
-| **Zig does** | One hub owns every session's journal, so the core takes a single `journal_capacity`; `load` adopts the first entry that names one, which is deterministic because the loader sorts entries by name. |
+| **Zig did** | One hub owns every session's journal, so the core took a single `journal_capacity`; `load` adopted the first entry that named one. |
+| **Now** | A registered adapter keeps its entry's capacity, and a session takes it at open, or the hub's `Options.journal_capacity` when the entry names none; `remember` bounds each session's journal by its own. Pinned by `each session's journal is bounded by its own adapter's capacity, and one that names none takes the hub's` ([#1131](https://github.com/lsm/open-agent-protocol/issues/1131)). |
 | **Why it matters** | A client resuming against session A and session B can be told the same bound where Go would tell it two. The recovery rule is unaffected — a gap names `oldest_available` either way — but a port and Go would disagree about *which* cursors expire. |
 | **The two zeros are not the same zero** | A **document's** `journal_capacity: 0` keeps the default in both trees, because every Go constructor treats `<= 0` as "unspecified" (`go/adapter/memory.go:123`) and the Zig `load` does the same. The Zig **core's** own `Options.journal_capacity = 0` means *retain nothing*, and no config document can reach it — a host that wants no journal sets the option, and a host that writes `0` gets the default. Go has no equivalent: a `0` reaching an adapter always becomes that adapter's own capacity. So the two trees agree on every document, and differ only on a value only a Zig host can set. |
 | **A negative is refused, not defaulted** | Both trees refuse it. The Zig `load` refuses a negative with `ConfigRefused`, and the Go registry refuses a document naming one, because a negative capacity is a malformed document and defaulting it would report success for something the operator did not write. A document naming `0` still keeps the default in both, because that is a request for the default rather than a malformed value. |
