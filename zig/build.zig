@@ -3258,27 +3258,27 @@ pub fn build(b: *std.Build) void {
     test_unit_tui_step.dependOn(&isolatedHomeRun(b, tui_tests_fixtures_test, "test-unit-tui/tui_tests_fixtures_test").step);
 
     const test_e2e_anthropic_step = b.step("test-e2e-anthropic", "Run Anthropic E2E tests");
-    test_e2e_anthropic_step.dependOn(&b.addRunArtifact(e2e_anthropic_test).step);
+    test_e2e_anthropic_step.dependOn(&liveRun(b, e2e_anthropic_test).step);
 
     const test_e2e_openai_step = b.step("test-e2e-openai", "Run OpenAI E2E tests");
-    test_e2e_openai_step.dependOn(&b.addRunArtifact(e2e_openai_test).step);
+    test_e2e_openai_step.dependOn(&liveRun(b, e2e_openai_test).step);
 
     const test_e2e_provider_smoke_step = b.step("test-e2e-provider-smoke", "Run one catalogued row's live smoke gate (opt-in, never in CI)");
-    test_e2e_provider_smoke_step.dependOn(&b.addRunArtifact(provider_smoke_test).step);
-    test_unit_providers_step.dependOn(&b.addRunArtifact(provider_smoke_test).step);
-    test_step.dependOn(&b.addRunArtifact(provider_smoke_test).step);
+    test_e2e_provider_smoke_step.dependOn(&liveRun(b, provider_smoke_test).step);
+    test_unit_providers_step.dependOn(&liveRun(b, provider_smoke_test).step);
+    test_step.dependOn(&liveRun(b, provider_smoke_test).step);
 
     const test_e2e_azure_step = b.step("test-e2e-azure", "Run Azure E2E tests");
-    test_e2e_azure_step.dependOn(&b.addRunArtifact(e2e_azure_test).step);
+    test_e2e_azure_step.dependOn(&liveRun(b, e2e_azure_test).step);
 
     const test_e2e_google_step = b.step("test-e2e-google", "Run Google E2E tests");
-    test_e2e_google_step.dependOn(&b.addRunArtifact(e2e_google_test).step);
+    test_e2e_google_step.dependOn(&liveRun(b, e2e_google_test).step);
 
     const test_e2e_ollama_step = b.step("test-e2e-ollama", "Run Ollama E2E tests");
-    test_e2e_ollama_step.dependOn(&b.addRunArtifact(e2e_ollama_test).step);
+    test_e2e_ollama_step.dependOn(&liveRun(b, e2e_ollama_test).step);
 
     const test_e2e_provider_protocol_fullstack_ollama_step = b.step("test-e2e-provider-protocol-fullstack-ollama", "Run Provider Protocol Fullstack E2E tests - Ollama");
-    test_e2e_provider_protocol_fullstack_ollama_step.dependOn(&b.addRunArtifact(e2e_provider_protocol_fullstack_ollama_test).step);
+    test_e2e_provider_protocol_fullstack_ollama_step.dependOn(&liveRun(b, e2e_provider_protocol_fullstack_ollama_test).step);
 
     const e2e_github_copilot_test = b.addTest(.{
         .root_module = b.createModule(.{
@@ -3335,6 +3335,12 @@ pub fn build(b: *std.Build) void {
     b.modules.put(b.allocator, b.dupe("transport"), transport_mod) catch @panic("OOM");
     b.modules.put(b.allocator, b.dupe("protocol_runtime"), protocol_runtime_mod) catch @panic("OOM");
     b.modules.put(b.allocator, b.dupe("agent"), agent_mod) catch @panic("OOM");
+}
+
+fn liveRun(b: *std.Build, artifact: *std.Build.Step.Compile) *std.Build.Step.Run {
+    const run = b.addRunArtifact(artifact);
+    run.has_side_effects = true;
+    return run;
 }
 
 fn isolatedHomeRun(b: *std.Build, artifact: *std.Build.Step.Compile, name: []const u8) *std.Build.Step.Run {
