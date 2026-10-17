@@ -36,8 +36,8 @@ SDKs internally.
 ```sh
 oapx auth providers                      # the providers you can sign in to
 oapx auth login --provider <id>          # store a credential (Keychain first on macOS)
-oapx                                     # the terminal UI
-oapx run --agent "summarize this repo"   # one prompt, every event printed
+oapx                                     # the terminal UI, over any stored credential
+KIMI_API_KEY=<key> oapx run --agent "summarize this repo"   # one prompt over Kimi, every event printed
 oapx serve agent,provider --stdio        # the endpoint the SDKs drive
 ```
 
@@ -204,7 +204,7 @@ the client is told about those gaps rather than having them hidden.
 | `oapx` | oapx's own loop, as the terminal UI builds it | — |
 | `claude` | a Claude Code child | 2.1.296 |
 | `codex` | a Codex app-server child | `rust-v0.162.1` |
-| `pi` | a Pi RPC child | `v1.0.1` |
+| `pi` | a Pi RPC child | `v1.1.0` |
 | `acp` | an ACP v1 agent named by a `--config` entry | `v1.11.0` |
 | `hermes` | a Hermes gateway | `v0.21.6` |
 | `deepseek` | a DeepSeek harness | `dsh-v0.2.1-alpha.2` |
@@ -272,7 +272,7 @@ available only by explicit opt-in.
 
 `oapx serve agent --backend claude` serves a Claude Code child (pinned 2.1.296),
 `--backend codex` a Codex app-server child (pinned `rust-v0.162.1`), `--backend pi` a
-Pi RPC child (pinned `v1.0.1`), an `acp`
+Pi RPC child (pinned `v1.1.0`), an `acp`
 entry an ACP v1 agent (pinned `v1.11.0`), a `hermes` entry a Hermes gateway (pinned `v0.21.6`), a `deepseek` entry a DeepSeek harness (pinned `dsh-v0.2.1-alpha.2`), and an `opencode` entry an OpenCode server (pinned `v2.0.26`), behind the same stdio door instead of the built-in loop, following
 [the endpoint binding](drafts/endpoint-stdio.md). Without `--config` it runs
 `claude` from `PATH` with only `HOME` and `PATH` in its environment and the
