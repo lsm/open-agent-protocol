@@ -68,6 +68,32 @@ OpenCode itself. The unknown-model case was refused as expected.
 `MissingSessionID`. The catalog already names that header for the row, and oapx
 sends it; only a hand-made request without it fails.
 
+## Reading 2026-10-17, Zig 0.17.0
+
+Run the same way, from `d8b42da` plus this change.
+
+| Row | Model | completion | streamed | tool call | unknown model | Reading |
+|---|---|---|---|---|---|---|
+| `deepseek` | `deepseek-chat` | pass | pass | pass | refused | all four |
+| `kimi` | `kimi-for-coding` | pass | pass | pass | answered | all four; the default model moved (below) |
+| `zai-coding-plan` | `glm-4.6` | pass | pass | pass | refused | all four, no 429 this time |
+| `opencode-zen` | `deepseek-v4.1-flash` | — | — | — | refused | HTTP 402 again (insufficient funds) |
+| `opencode-go` | | | | | | not run: every model answers HTTP 429 `GoUsageLimitError` (monthly limit) |
+
+**The gate's result was cached across rows.** Under Zig 0.17.0 the build
+runner caches a test run whose inputs did not change, and an environment
+variable is not an input. After one row passed, `OAP_PROVIDER_SMOKE=<another
+row>` printed `run test cached` and reported success without running a case.
+The gate's run steps, and those of the other key-gated e2e tests, now declare
+side effects, so each invocation runs.
+
+**Kimi's coding endpoint no longer lists `kimi-k2.7-code`.** Its models
+endpoint answers `kimi-for-coding`, `kimi-for-coding-highspeed`, `k3` and
+`k3-256k`. The old default still completed, but only because Kimi answers any
+model id, so it proved nothing about a listed model. The gate's default is now
+`kimi-for-coding`. The catalog row's static model list still names
+`kimi-k2.7-code`.
+
 ## Not done here
 
 No row's status changes. A `goap check` rule that requires a ledger reference for
