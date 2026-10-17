@@ -4,6 +4,9 @@ const builtin = @import("builtin");
 pub const default_frame_limit: usize = 8 << 20;
 pub const default_exit_grace_ns: u64 = 5 * std.time.ns_per_s;
 pub const default_read_idle_ns: u64 = 0;
+pub const header_limit: usize = 1024;
+
+pub const Framing = enum { lines, content_length };
 
 pub const Error = error{
     ExecutableRequired,
@@ -24,6 +27,7 @@ pub const Spawn = struct {
     frame_limit: usize = default_frame_limit,
     exit_grace_ns: u64 = default_exit_grace_ns,
     read_idle_ns: u64 = default_read_idle_ns,
+    framing: Framing = .lines,
 };
 
 pub const Departure = enum { running, exited, signalled, stranded };
@@ -67,6 +71,7 @@ pub const Transport = struct {
     limit: usize,
     grace: u64,
     idle: u64,
+    framing: Framing,
     threaded: std.Io.Threaded = undefined,
     child: ?std.process.Child = null,
     streams: std.Io.File.MultiReader.Buffer(1) = undefined,
@@ -99,6 +104,7 @@ pub const Transport = struct {
             .limit = request.frame_limit,
             .grace = request.exit_grace_ns,
             .idle = request.read_idle_ns,
+            .framing = request.framing,
             .threaded = .init(allocator, .{}),
         };
         errdefer self.threaded.deinit();
@@ -137,10 +143,16 @@ pub const Transport = struct {
     }
 
     pub fn write(self: *Transport, frame: []const u8) !void {
-        if (std.mem.indexOfScalar(u8, frame, '\n') != null) return Error.EmbeddedNewline;
+        if (self.framing == .lines and std.mem.indexOfScalar(u8, frame, '\n') != null) return Error.EmbeddedNewline;
         if (frame.len > self.limit) return Error.FrameTooLarge;
         const child = &(self.child orelse return Error.NotRunning);
         const stdin = child.stdin orelse return Error.NotRunning;
+        if (self.framing == .content_length) {
+            var header: [64]u8 = undefined;
+            try stdin.writeStreamingAll(self.io(), try std.fmt.bufPrint(&header, "Content-Length: {d}\r\n\r\n", .{frame.len}));
+            try stdin.writeStreamingAll(self.io(), frame);
+            return;
+        }
         try stdin.writeStreamingAll(self.io(), frame);
         try stdin.writeStreamingAll(self.io(), "\n");
     }
@@ -213,6 +225,7 @@ pub const Transport = struct {
     }
 
     fn take(self: *Transport) !?[]const u8 {
+        if (self.framing == .content_length) return self.takeSized();
         const at = std.mem.indexOfScalar(u8, self.pending.items, '\n') orelse {
             if (self.pending.items.len > self.limit) return Error.FrameTooLarge;
             return null;
@@ -226,6 +239,28 @@ pub const Transport = struct {
         const frame = self.line.items;
         if (frame.len == 0) return Error.InvalidFrame;
         if (std.mem.indexOfScalar(u8, frame, '\r') != null) return Error.InvalidFrame;
+        if (!std.unicode.utf8ValidateSlice(frame)) return Error.InvalidFrame;
+        return frame;
+    }
+
+    fn takeSized(self: *Transport) !?[]const u8 {
+        const end = std.mem.indexOf(u8, self.pending.items, "\r\n\r\n") orelse {
+            if (self.pending.items.len > header_limit) return Error.InvalidFrame;
+            return null;
+        };
+        if (end > header_limit) return Error.InvalidFrame;
+        const length = try contentLength(self.pending.items[0..end]);
+        if (length > self.limit) return Error.FrameTooLarge;
+        const start = end + 4;
+        if (self.pending.items.len - start < length) return null;
+        self.line.clearRetainingCapacity();
+        try self.line.appendSlice(self.allocator, self.pending.items[start..][0..length]);
+        const consumed = start + length;
+        const remaining = self.pending.items.len - consumed;
+        std.mem.copyForwards(u8, self.pending.items, self.pending.items[consumed..]);
+        self.pending.shrinkRetainingCapacity(remaining);
+        const frame = self.line.items;
+        if (frame.len == 0) return Error.InvalidFrame;
         if (!std.unicode.utf8ValidateSlice(frame)) return Error.InvalidFrame;
         return frame;
     }
@@ -302,6 +337,21 @@ pub const Transport = struct {
         return self.failure;
     }
 };
+
+fn contentLength(headers: []const u8) Error!usize {
+    var length: ?usize = null;
+    var lines = std.mem.splitSequence(u8, headers, "\r\n");
+    while (lines.next()) |line| {
+        const colon = std.mem.indexOfScalar(u8, line, ':') orelse return Error.InvalidFrame;
+        if (!std.ascii.eqlIgnoreCase(std.mem.trim(u8, line[0..colon], " "), "Content-Length")) continue;
+        if (length != null) return Error.InvalidFrame;
+        const value = std.mem.trim(u8, line[colon + 1 ..], " ");
+        if (value.len == 0) return Error.InvalidFrame;
+        for (value) |digit| if (!std.ascii.isDigit(digit)) return Error.InvalidFrame;
+        length = std.fmt.parseInt(usize, value, 10) catch return Error.InvalidFrame;
+    }
+    return length orelse Error.InvalidFrame;
+}
 
 const testing = std.testing;
 
@@ -597,4 +647,62 @@ test "an expiry whose child has already been waited on signals nothing" {
 
     try transport.write("{\"a\":1}");
     try testing.expectEqualStrings("{\"a\":1}", (try transport.next()).?);
+}
+
+test "sized frames arrive whole and in order, newlines and all, whatever other headers ride along" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const transport = try shell("printf 'Content-Length: 1\\r\\n\\r\\naContent-Type: x\\r\\ncontent-length:  4\\r\\n\\r\\nb\\nc\\n'", .{ .executable = "", .framing = .content_length });
+    defer transport.deinit();
+
+    const frames = try drain(transport, arena.allocator());
+    try testing.expectEqual(@as(usize, 2), frames.len);
+    try testing.expectEqualStrings("a", frames[0]);
+    try testing.expectEqualStrings("b\nc\n", frames[1]);
+}
+
+test "a sized frame without one plain length, or with an empty body, is a framing defect" {
+    for ([_][]const u8{
+        "printf 'Content-Type: x\\r\\n\\r\\na'",
+        "printf 'Content-Length: 1a\\r\\n\\r\\na'",
+        "printf 'Content-Length: +1\\r\\n\\r\\na'",
+        "printf 'Content-Length: 1\\r\\nContent-Length: 1\\r\\n\\r\\na'",
+        "printf 'Content-Length 1\\r\\n\\r\\na'",
+        "printf 'Content-Length: 0\\r\\n\\r\\n'",
+        "printf 'Content-Length: 1\\r\\n\\r\\n\\377'",
+    }) |script| {
+        const transport = try shell(script, .{ .executable = "", .framing = .content_length });
+        defer transport.deinit();
+        try testing.expectError(Error.InvalidFrame, transport.next());
+    }
+}
+
+test "a header that never ends is refused once it outgrows its bound" {
+    const transport = try shell("i=0; while [ $i -lt 200 ]; do printf 'X-Padding: aaaaaaaa\\r\\n'; i=$((i+1)); done", .{ .executable = "", .framing = .content_length });
+    defer transport.deinit();
+
+    try testing.expectError(Error.InvalidFrame, transport.next());
+}
+
+test "a sized frame past the limit is refused before its body is read" {
+    const transport = try shell("printf 'Content-Length: 10\\r\\n\\r\\n'", .{ .executable = "", .framing = .content_length, .frame_limit = 4 });
+    defer transport.deinit();
+
+    try testing.expectError(Error.FrameTooLarge, transport.next());
+}
+
+test "a sized body cut short when the child goes is an unterminated frame" {
+    const transport = try shell("printf 'Content-Length: 5\\r\\n\\r\\nab'", .{ .executable = "", .framing = .content_length });
+    defer transport.deinit();
+
+    try testing.expectError(Error.UnterminatedFrame, transport.next());
+}
+
+test "a sized frame written to the child carries its length and may carry newlines" {
+    const transport = try shell("cat", .{ .executable = "", .framing = .content_length, .frame_limit = 8 });
+    defer transport.deinit();
+
+    try transport.write("{\"a\":\n1}");
+    try testing.expectEqualStrings("{\"a\":\n1}", (try transport.next()).?);
+    try testing.expectError(Error.FrameTooLarge, transport.write("123456789"));
 }
