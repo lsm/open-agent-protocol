@@ -392,7 +392,11 @@ The wait that fits is the one libuv and wepoll use: a single
 asynchronous handle with an APC routine. Its completion is an APC like a
 child's read, so the alertable sleep that waits on the children ends on a
 socket too, and there is no connection cap, because nothing is a waitable
-object. The poll is re-armed each cycle and cancelled before the loop leaves.
+object. The poll is armed at the top of each cycle and cancelled once the wait
+ends, so a connection that closed during the cycle never stays in a pending
+poll. A socket is read only when the poll reported it ready, and written once
+per readiness, at most 64 KiB, so a client that stops reading holds back only
+its own stream.
 `WSAEventSelect` with `WaitForMultipleObjectsEx` loses twice: it needs Winsock
 sockets, and it waits on at most 64 objects.
 
