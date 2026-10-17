@@ -51,9 +51,9 @@ backend:
 - a third-party harness, translated by a pinned adapter.
 
 ```mermaid
-flowchart LR
+flowchart TB
     subgraph clients["Clients"]
-        direction TB
+        direction LR
         tui["Terminal UI<br/><code>oapx</code>"]
         sdk["SDKs<br/>Python · Rust · TypeScript · Go"]
         remote["Any OAP client<br/>stdio or HTTP + SSE"]
@@ -61,21 +61,15 @@ flowchart LR
 
     subgraph oapx["oapx — one binary"]
         direction TB
-        agent["<b>serve agent</b><br/>agent-control-core"]
         hub["<b>serve</b><br/>many sessions · replay"]
+        agent["<b>serve agent</b><br/>agent-control-core"]
         loop["Built-in agent loop<br/>tools · permissions · compaction"]
         adapters["Harness adapters<br/>pinned per version"]
         provider["<b>serve provider</b><br/>model-provider-core"]
     end
 
-    subgraph harnesses["Harnesses"]
-        direction TB
-        h1["Claude Code · Codex · Pi"]
-        h2["ACP agents · Hermes"]
-        h3["DeepSeek · OpenCode"]
-    end
-
-    models[("Model providers<br/>24 catalogued: Anthropic, OpenAI,<br/>Google, Kimi, Z.AI, DeepSeek, …")]
+    harnesses["Harnesses<br/>Claude Code · Codex · Pi<br/>ACP agents · Hermes<br/>DeepSeek · OpenCode"]
+    models[("Model providers<br/>24 catalogued: Anthropic,<br/>OpenAI, Google, Kimi, Z.AI, …")]
 
     tui --> agent
     sdk --> agent
@@ -92,7 +86,7 @@ flowchart LR
     classDef edge fill:#eaf7ee,stroke:#2f9e57,color:#0d3319
     class tui,sdk,remote client
     class agent,hub,loop,adapters,provider core
-    class h1,h2,h3,models edge
+    class harnesses,models edge
 ```
 
 The two profiles share one envelope and vocabulary:
@@ -227,8 +221,8 @@ sequenceDiagram
     participant S as opencode serve
     participant C as Client
 
-    O->>O: pick a binary: entry executable, ~/.oapx/opencode/&lt;version&gt;, else PATH
-    O->>S: spawn on 127.0.0.1:&lt;free port&gt; with a fresh password
+    O->>O: pick a binary: the entry's executable, else the installed build, else PATH
+    O->>S: spawn on a free loopback port with a fresh password
     loop until ready (503 means still starting)
         O->>S: GET /api/info
     end
