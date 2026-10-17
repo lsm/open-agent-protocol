@@ -2138,14 +2138,12 @@ pub const Frontend = struct {
         const line = try oap_envelope.serializeEnvelope(opened_envelope, arena);
         const named = open.session_id != null;
         envelope.deinit(arena);
+        if (!self.fits(request.id, line)) {
+            if (!holding) if (opened.subscription) |subscription| subscription.close();
+            return .{ .refused = self.oversizedOpen(named, opened.session_id) };
+        }
         if (holding) return .{ .answer_line = line };
         const subscription = opened.subscription orelse return .{ .answer_line = line };
-        if (!self.fits(request.id, line)) {
-            subscription.close();
-            if (named) return .{ .refused = .{ .code = "response_too_large", .message = "the open response exceeds the frame limit; the session is open under the session_id the request supplied" } };
-            self.hub.discardSession(opened.session_id);
-            return .{ .refused = .{ .code = "response_too_large", .message = "the open response exceeds the frame limit; the session was rolled back" } };
-        }
         self.answerLine(request.id, line) catch |err| {
             subscription.close();
             return err;
@@ -2357,6 +2355,12 @@ pub const Frontend = struct {
         var digits: [24]u8 = undefined;
         const counted = std.fmt.bufPrint(&digits, "{d}", .{id}) catch return false;
         return payload.len + counted.len + "{\"id\":,\"ok\":true,\"result\":}".len <= self.frame_limit;
+    }
+
+    fn oversizedOpen(self: *Frontend, named: bool, session_id: []const u8) Refusal {
+        if (named) return .{ .code = "response_too_large", .message = "the open response exceeds the frame limit; the session is open under the session_id the request supplied" };
+        self.hub.discardSession(session_id);
+        return .{ .code = "response_too_large", .message = "the open response exceeds the frame limit; the session was rolled back" };
     }
 
     fn answerLine(self: *Frontend, id: i64, payload: []const u8) Error!void {
@@ -3748,6 +3752,23 @@ const open_envelope =
 
 fn openLine(arena: std.mem.Allocator, adapter: []const u8, envelope: []const u8) ![]const u8 {
     return std.fmt.allocPrint(arena, "{{\"id\":1,\"op\":\"open\",\"adapter\":\"{s}\",\"request\":{s}}}", .{ adapter, envelope });
+}
+
+test "a plain open whose answer cannot be framed keeps a named session and rolls back a minted one" {
+    const minted =
+        "{\"protocol\":\"open-agent-protocol\",\"version\":\"0.1\",\"profile\":\"open-agent-protocol.agent-control-core\",\"type\":\"session.open.request\",\"id\":\"o1\",\"payload\":{}}";
+    const cases = [_]struct { envelope: []const u8, message: []const u8, kept: usize }{
+        .{ .envelope = open_envelope, .message = "the open response exceeds the frame limit; the session is open under the session_id the request supplied", .kept = 1 },
+        .{ .envelope = minted, .message = "the open response exceeds the frame limit; the session was rolled back", .kept = 0 },
+    };
+    for (cases) |case| {
+        const harness = try Harness.init(testing.allocator, .{}, .{ .frame_limit = minimum_frame_limit });
+        defer harness.deinit();
+        try harness.send(try openLine(harness.arena(), "reference", case.envelope));
+        try testing.expectEqualStrings("response_too_large", try harness.code());
+        try testing.expectEqualStrings(case.message, try harness.message());
+        try testing.expectEqual(case.kept, harness.hub.sessionCount());
+    }
 }
 
 fn openResult(harness: *Harness) !std.json.ObjectMap {

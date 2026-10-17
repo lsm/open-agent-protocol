@@ -2097,16 +2097,14 @@ are "stamped with the revision the lister served it under", and both name
 | **The fix** | The envelope module needs a parse step that is "shape only" — unmarshal into the struct without the type dispatch — so the gate can ask Go's two questions in Go's order. That is a change to `protocol/oap/envelope.zig`, shared by every consumer, and it is worth doing once rather than per op. |
 | **Reach** | Reachable today: any open with a number where a string belongs. The differential scenario sends `{"request":7}` and `{"request":[]}`, which both agree on, but not an ill-typed *member*. |
 
-### D14 — an unframable open answer keeps the session silently
+### D14 — an unframable open answer kept the session silently in Zig — CLOSED
 
 | | |
 | --- | --- |
 | **The draft says** | "An open response that cannot be encoded rolls the session back and says so", and "an open whose id the host named is **kept** when its response cannot be framed, and the refusal names it". |
 | **Go does** | `refuseOversizedOpen` and `refuseUnencodableOpen`: a **host-named** session is left open and the refusal says so; an **adapter-minted** one is rolled back, because nobody learned its id and an unreachable session must not leak. |
-| **Zig does** | The answer goes through the generic `answerLine` path, which answers `response_too_large` and **keeps the session in both cases**, with no distinction named. |
-| **Now, half fixed** | A **subscribing** open is fixed ([#912](https://github.com/lsm/open-agent-protocol/pull/912)): when its answer does not fit, the frontend keeps a host-named session and says so, and discards an adapter-minted one and says it was rolled back. A **plain** open still answers through `answerLine`, so the row above still holds for it. |
-| **Why it matters** | A `sessions` listing after such a refusal would show a session the host has no id for. Unreachable with today's registry — one adapter, an 18 MiB frame limit and a small state document — and live the moment a real adapter's state does not fit. |
-| **The fix** | Belongs with the `response_too_large` work, which is its own PR: the rollback needs the hub's own allocator and a shutdown-bounded close, which is the shape D6 gives hub-2 for #389. Recording it here so the follow-up PR starts from the rule rather than from this paragraph. |
+| **Zig did** | A subscribing open was fixed in [#912](https://github.com/lsm/open-agent-protocol/pull/912). A **plain** open, and a subscribing one whose subscription is held for the next request, answered through the generic `answerLine`, which answered `response_too_large` and kept the session in both cases. |
+| **Now** | Every open's answer is checked against the frame before it is sent, and one helper, `oversizedOpen`, keeps a named session and says so, or discards a minted one and says it was rolled back. Pinned by `a plain open whose answer cannot be framed keeps a named session and rolls back a minted one`. |
 
 ### D15 — a colliding session name is refused before the adapter ever runs
 
