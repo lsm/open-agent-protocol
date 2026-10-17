@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+## [0.1.0-alpha.21] - 2026-10-17
+
+### Merged pull requests
+
+- **zig: upgrade OAP and zigzag to Zig 0.17.0** ([#1116](https://github.com/lsm/open-agent-protocol/pull/1116)): Upgrade OAP's Zig runtime (`.makai`, executable `oapx`) and vendored zigzag from Zig 0.16.0 to 0.17.0.
+- **zig: publish models.dev's deprecated status as the model's lifecycle** ([#1115](https://github.com/lsm/open-agent-protocol/pull/1115)): Closes #1113.
+- **zig: list OpenCode's models in /model and run them on OpenCode** ([#1114](https://github.com/lsm/open-agent-protocol/pull/1114)): Finishes the OpenCode route: picking one of OpenCode's models in `/model` runs the conversation on OpenCode, as a new session (#1110).
+- **zig: download the OpenCode oapx is tested with, on request** ([#1112](https://github.com/lsm/open-agent-protocol/pull/1112)): `oapx opencode install` fetches the OpenCode build the catalog pins for this platform from `https://opencode.ai/files/bin/<version>/<name>` (the source the ledger records).
+- **zig: wait out the 503 an OpenCode server answers while it starts** ([#1111](https://github.com/lsm/open-agent-protocol/pull/1111)): `opencode serve` starts listening before it is ready and answers `/api/info` with 503 until then.
+- **zig: move a TUI session to OpenCode when one of its models is chosen** ([#1110](https://github.com/lsm/open-agent-protocol/pull/1110)): Groundwork for picking OpenCode's models in `/model`.
+- **zig: run the terminal UI over an OpenCode backend** ([#1109](https://github.com/lsm/open-agent-protocol/pull/1109)): `oapx tui --backend opencode [--config <path>]` runs the TUI on the OpenCode adapter in process, over the `opencode serve` oapx starts (#1107) or an entry's `endpoint`.
+- **zig: stop offering OpenCode's free models on its key rows** ([#1108](https://github.com/lsm/open-agent-protocol/pull/1108)): OpenCode's Zen and Go gateways list `-free` models but serve them only to the OpenCode client; a direct call answers `FreeTierError`.
+- **zig: start and stop an OpenCode server when an opencode backend names no endpoint** ([#1107](https://github.com/lsm/open-agent-protocol/pull/1107)): First step toward running OpenCode's own models natively from oapx: `--backend opencode` no longer needs a server the user started and passworded.
+
 ## [0.1.0-alpha.20] - 2026-10-16
 
 ### Merged pull requests
