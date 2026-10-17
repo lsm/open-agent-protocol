@@ -238,6 +238,14 @@ func (s *Server) open(ctx context.Context, e protocol.Envelope) (protocol.Envelo
 		ReasoningLevel:        request.ReasoningLevel,
 		CompactionPolicy:      request.CompactionPolicy,
 	}
+	if request.Metadata != nil {
+		open.Metadata = make(map[string]any, len(request.Metadata))
+		for key, raw := range request.Metadata {
+			var value any
+			_ = json.Unmarshal(raw, &value)
+			open.Metadata[key] = value
+		}
+	}
 	entry, state, err := s.hub.Open(ctx, s.adapter, open)
 	if err != nil {
 		return protocol.Envelope{}, err
