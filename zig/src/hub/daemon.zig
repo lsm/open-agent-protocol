@@ -781,7 +781,8 @@ pub const Connection = struct {
                 self.phase = .done;
                 return;
             },
-            error.BodyTooLarge, error.Malformed => |failure| return self.transportFailure(failure, hub_http.drain_total_cap_bytes),
+            error.BodyTooLarge => return self.transportFailure(error.BodyTooLarge, hub_http.drain_total_cap_bytes),
+            error.Malformed => return self.transportFailure(error.ReadFailed, hub_http.drain_total_cap_bytes),
         };
         if (!decoder.finished()) return;
         self.request.body = self.decoded.items;
@@ -1685,7 +1686,7 @@ test "a chunked body is decoded by the loop and served as if it had declared its
     try testing.expect(std.mem.startsWith(u8, answered.items, "HTTP/1.1 200 OK\r\n"));
 }
 
-test "a chunked body with a malformed size is refused by the loop" {
+test "a chunked body with a malformed size is refused request_read by the loop, as an unreadable body is" {
     var served: Served = undefined;
     try served.prepare();
     try served.serve();
@@ -1696,7 +1697,7 @@ test "a chunked body with a malformed size is refused by the loop" {
     try stream.writeAll("POST /adapters/memory/sessions HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\nTransfer-Encoding: chunked\r\n\r\nzz\r\n");
     var answered = std.ArrayList(u8).empty;
     defer answered.deinit(testing.allocator);
-    try testing.expect(try readFor(&stream, &answered, "\r\n\r\n", 2000));
+    try testing.expect(try readFor(&stream, &answered, "request_read", 2000));
     try testing.expect(std.mem.startsWith(u8, answered.items, "HTTP/1.1 400 Bad Request\r\n"));
 }
 

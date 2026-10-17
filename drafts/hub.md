@@ -1938,11 +1938,12 @@ decodes `Transfer-Encoding: chunked` in the loop's body phase, with the 16 MiB c
 body. Chunk extensions and a trailer are read and dropped, and framing overhead is bounded by
 `net/http`'s own rule: 16 bytes per chunk plus twice its data are free, and more than 16 KiB of
 excess is refused, so a body sent a byte per chunk is taken and one padded with extensions is not.
-A malformed chunk size, too much excess or bad framing is a `400`, a decoded body over the cap is
+A malformed chunk size, too much excess or bad framing is `400 request_read`, as any body that
+cannot be read is, and as Go answers a decode error from its reader; a decoded body over the cap is
 `413 request_too_large`, another coding is a bare `400`, and `chunked` beside a `Content-Length` is a
 `400`, as RFC 9112 §6.1 allows. A refusal drains what the client is still sending, as a sized body's
 does. Pinned by `a chunked body is decoded by the loop and served as if it had declared its length`,
-`a chunked body with a malformed size is refused by the loop`, `a refused chunked body leaves its
+`a chunked body with a malformed size is refused request_read by the loop, as an unreadable body is`, `a refused chunked body leaves its
 connection draining what the client may still send, not closing on it`, and the decoder's own tests
 in `http.zig`.
 
