@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+## [0.1.0-alpha.22] - 2026-10-17
+
+### Merged pull requests
+
+- **hub: roll back a minted session whose plain open answer cannot be framed** ([#1139](https://github.com/lsm/open-agent-protocol/pull/1139)): Fixes #1132 (hub D14, the half #912 left).
+- **hub: bound each session's journal by its own adapter's capacity** ([#1136](https://github.com/lsm/open-agent-protocol/pull/1136)): Closes #1131 (hub divergence D4).
+- **hub: refuse an unadvertised election ahead of a taken session name** ([#1135](https://github.com/lsm/open-agent-protocol/pull/1135)): Step 1 of #1128 (hub D15).
+- **zig: take the process arena for the argument slice, which Windows needs** ([#1134](https://github.com/lsm/open-agent-protocol/pull/1134)): Fixes the alpha.21 Windows release: `oapx.exe` panics with `free of invalid memory` on any argument, `--version` included ([release smoke](https://github.com/lsm/open-agent-protocol/actions/runs/39073127154)).
+- **hub: serve HTTP on Windows from the hub's one loop** ([#1126](https://github.com/lsm/open-agent-protocol/pull/1126)): Second step of #1073.
+- **docs: correct the Go/Zig divergence records a sweep found stale** ([#1125](https://github.com/lsm/open-agent-protocol/pull/1125)): A sweep of the Go/Zig divergence records (`drafts/hub.md` and the current-pin adapter ledgers) against main.
+- **research: map GitHub Copilot CLI 1.0.98's headless server onto OAP** ([#1124](https://github.com/lsm/open-agent-protocol/pull/1124)): First step toward a `copilot` backend: the mapping ledger the Zig and Go adapters will be built against.
+
 ## [0.1.0-alpha.21] - 2026-10-17
 
 ### Merged pull requests
