@@ -1967,3 +1967,32 @@ func TestTextAndReasoningDeltasStream(t *testing.T) {
 		t.Fatalf("final %q, want %q", final, want)
 	}
 }
+
+func TestARunReportsUsageOnlyWhenAStepEnded(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		step     bool
+		measured bool
+	}{{"no step ended", false, false}, {"a step ended reporting zero tokens", true, true}} {
+		t.Run(tc.name, func(t *testing.T) {
+			client := newFakeClient()
+			session, _ := openTest(t, client, 32)
+			response, stream := submitTest(t, session)
+			client.deliver(t, 1, native.MessageID(response.MessageIDs[0]))
+			client.emit(t, 2, native.TypeStepStarted, native.StepStartedData{SessionID: client.session, AssistantMessage: "msg_a1"})
+			if tc.step {
+				client.emit(t, 3, native.TypeStepEnded, native.StepEndedData{SessionID: client.session, AssistantMessage: "msg_a1", Finish: "stop", Tokens: tokenAccounting(0, 0)})
+			}
+			client.succeed(t, 4)
+			events := adaptertest.Drain(t, stream, time.Second)
+			adaptertest.AssertRunTrace(t, response, CapabilityRevision, events)
+			var completed protocol.RunCompletedPayload
+			if err := events[len(events)-1].DecodePayload(&completed); err != nil {
+				t.Fatal(err)
+			}
+			if (completed.Usage != nil) != tc.measured {
+				t.Fatalf("usage=%+v, want measured=%v", completed.Usage, tc.measured)
+			}
+		})
+	}
+}

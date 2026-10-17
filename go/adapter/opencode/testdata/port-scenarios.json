@@ -658,8 +658,7 @@
                 }
               ]
             },
-            "stop_reason": "unknown",
-            "usage": {}
+            "stop_reason": "unknown"
           },
           "sequence": 3,
           "timestamp_ms": 8,

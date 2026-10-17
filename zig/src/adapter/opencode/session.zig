@@ -103,6 +103,7 @@ pub const Run = struct {
     input_tokens: u64 = 0,
     output_tokens: u64 = 0,
     total_tokens: u64 = 0,
+    measured: bool = false,
     cost: f64 = 0,
     last_finish: []const u8 = "",
     failure: ?[]const u8 = null,
@@ -527,6 +528,7 @@ pub const Reducer = struct {
                 if (target.terminal) return;
                 target.last_finish = data.finish;
                 target.cost += data.cost;
+                target.measured = true;
                 const input = tokenCount(data.input_tokens);
                 const output = tokenCount(data.output_tokens);
                 target.input_tokens +%= input;
@@ -1013,11 +1015,13 @@ pub const Reducer = struct {
         }
         try self.put(&payload, "final_response", .{ .object = response });
         try self.put(&payload, "stop_reason", str(if (run.last_finish.len > 0) run.last_finish else "unknown"));
-        var usage: std.json.ObjectMap = .empty;
-        if (run.input_tokens != 0) try self.put(&usage, "input_tokens", try unsigned(self.allocator(), run.input_tokens));
-        if (run.output_tokens != 0) try self.put(&usage, "output_tokens", try unsigned(self.allocator(), run.output_tokens));
-        if (run.total_tokens != 0) try self.put(&usage, "total_tokens", try unsigned(self.allocator(), run.total_tokens));
-        try self.put(&payload, "usage", .{ .object = usage });
+        if (run.measured) {
+            var usage: std.json.ObjectMap = .empty;
+            if (run.input_tokens != 0) try self.put(&usage, "input_tokens", try unsigned(self.allocator(), run.input_tokens));
+            if (run.output_tokens != 0) try self.put(&usage, "output_tokens", try unsigned(self.allocator(), run.output_tokens));
+            if (run.total_tokens != 0) try self.put(&usage, "total_tokens", try unsigned(self.allocator(), run.total_tokens));
+            try self.put(&payload, "usage", .{ .object = usage });
+        }
         _ = try self.emitWith(run, "run.completed", payload, true, reported);
     }
 
@@ -1425,6 +1429,24 @@ test "an identity generator that breaks the message pattern settles the reservat
     try expectKinds(&reducer, &.{"run.failed"});
     try testing.expectEqualStrings("opencode_invalid_message_id", errorCode(reducer.envelopes.items[0]));
     try testing.expectEqualStrings("inferred", payloadOf(reducer.envelopes.items[0]).get("settled_by").?.string);
+}
+
+test "a run reports usage only when one of its steps ended, even at zero tokens" {
+    for ([_]bool{ false, true }) |step| {
+        var arena = std.heap.ArenaAllocator.init(testing.allocator);
+        defer arena.deinit();
+        const scratch = arena.allocator();
+        var fake = Fake{};
+        var reducer = Reducer.init(&arena, .{ .native_id = native_session }, fake.client());
+        try reducer.open();
+        const admission = try reducer.submit("session", "hi", "auto");
+        try reducer.observe(try deliveredEvent(scratch, 1, admission.message_ids[0]));
+        try reducer.observe(try stepStarted(scratch, 2, "a"));
+        if (step) try reducer.observe(try nativeEvent(scratch, 3, "step.ended", "{\"assistantMessageID\":\"msg_a\",\"finish\":\"stop\",\"cost\":0,\"tokens\":{\"input\":0,\"output\":0,\"reasoning\":0,\"cache\":{\"read\":0,\"write\":0}}}"));
+        try reducer.observe(try succeeded(scratch, 4));
+        try testing.expectEqualStrings("run.completed", reducer.envelopes.items[reducer.envelopes.items.len - 1].object.get("type").?.string);
+        try testing.expectEqual(step, lastPayload(&reducer).get("usage") != null);
+    }
 }
 
 test "a run starts at its input's delivery and settles when the execution succeeds, not at a step's end" {
