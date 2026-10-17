@@ -2546,7 +2546,7 @@ test "a credential in caller headers is refused with the correct alternative nam
     try std.testing.expectEqualStrings("q1", response.in_reply_to.?);
 }
 
-test "an unsupported snapshot policy is refused unless the caller allows degrading" {
+test "an unsupported snapshot policy is refused unless the caller allows degrading inference.snapshot" {
     const allocator = std.testing.allocator;
     var server = try testServer(allocator, .{});
     defer server.deinit();
@@ -2568,11 +2568,28 @@ test "an unsupported snapshot policy is refused unless the caller allows degradi
     );
     try std.testing.expect(!refusal.payload.inference_create_response.accepted);
 
-    const degradable = try makeRequest(
+    const member_named = try makeRequest(
         allocator,
         "inference.create.request",
         "{\"model_ref\":\"ollama-local/openai-chat-completions@gemma\",\"messages\":[]," ++
             "\"include_snapshot\":\"every_delta\",\"allow_degraded_features\":[\"include_snapshot\"]}",
+        "q3",
+    );
+    defer allocator.free(member_named);
+    try server.handleLine(member_named);
+
+    var member_refusal = try decodeOnly(allocator, &server);
+    defer member_refusal.deinit(allocator);
+    try std.testing.expectEqual(
+        types.ErrorCode.unsupported_feature,
+        member_refusal.payload.inference_create_response.err.?.code,
+    );
+
+    const degradable = try makeRequest(
+        allocator,
+        "inference.create.request",
+        "{\"model_ref\":\"ollama-local/openai-chat-completions@gemma\",\"messages\":[]," ++
+            "\"include_snapshot\":\"every_delta\",\"allow_degraded_features\":[\"inference.snapshot\"]}",
         "q2",
     );
     defer allocator.free(degradable);
@@ -3402,7 +3419,7 @@ test "an unsupported policy is degraded to never and the response says so" {
         allocator,
         "inference.create.request",
         "{\"model_ref\":\"ollama-local/openai-chat-completions@gemma\",\"messages\":[]," ++
-            "\"include_snapshot\":\"every_delta\",\"allow_degraded_features\":[\"include_snapshot\"]}",
+            "\"include_snapshot\":\"every_delta\",\"allow_degraded_features\":[\"inference.snapshot\"]}",
         "q1",
     );
     defer allocator.free(line);
