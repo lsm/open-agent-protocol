@@ -2199,14 +2199,14 @@ are "stamped with the revision the lister served it under", and both name
   doubled backslash leaves a literal one after decoding. **Both mutations fail it:** consuming every pair
   regardless of `isTspecial`, and never consuming one. |
 
-### D20 — `type_mismatch` on the `open` route is answered by no test in either tree
+### D20 — `type_mismatch` on the `open` route is answered by no Zig test
 
 | | |
 | --- | --- |
 | **The draft says** | An envelope whose payload is not a `session.open.request` is refused `type_mismatch`, distinct from `schema_invalid` (the envelope violates its schema) and from `invalid_request` (the request field is missing or the wrong type). |
-| **Go does** | Answered from `serve/servestdio/ops.go`, with no test that sends a schema-valid non-`open` payload to the `open` route. |
+| **Go does** | Answered from `serve/servestdio/ops.go`. When this row was written no test sent a schema-valid non-`open` payload to the `open` route; `TestOpenOpRefusals` (its `wrong envelope type` case) does now. |
 | **Zig does** | Answered at `zig/src/hub/stdio.zig:505`, after the envelope is validated and before it is dispatched, and with no test that reaches it. `malformed_json` is covered by the Zig unit table; `type_mismatch` is not, in either tree. |
-| **Since then** | The code is now tested on the `submit` route in both trees: Go by `TestOpErrorCodesMirrorHTTP` and `TestRequestBudgetMatchesHTTP` in `servestdio`, over stdio and HTTP; Zig by `a body that is not a JSON envelope is malformed_json, and an envelope of the wrong type is type_mismatch` in `daemon.zig`, through the gate the stdio frontend shares. The `open` route's emission is still reached by no test in either tree. |
+| **Since then** | The code is now tested on the `submit` route in both trees: Go by `TestOpErrorCodesMirrorHTTP` and `TestRequestBudgetMatchesHTTP` in `servestdio`, over stdio and HTTP; Zig by `a body that is not a JSON envelope is malformed_json, and an envelope of the wrong type is type_mismatch` in `daemon.zig`, through the gate the stdio frontend shares. Only Zig's `open` route is still reached by no test: its open-gate table has no wrong-type case. |
 | **Why it is not fixed here** | The line that reaches it does not exist yet in either tree, so the check is correct by inspection and unproven by execution. A row that claims coverage it does not have is the same defect as a name that claims an unexercised check, and the ledger is where that claim has to be visible. Renaming the differential scenario that claimed five gate refusals and exercised two is the other half of the same fix. |
 
 ### D24 — five codes the operation rows name without a status a port may use
