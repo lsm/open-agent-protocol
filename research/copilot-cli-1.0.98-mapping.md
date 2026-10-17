@@ -139,7 +139,8 @@ exercise it.
 | `assistant.message {messageId, content, phase, toolRequests}` | authoritative text for the final response; `phase:"final_answer"` marks the last |
 | `assistant.reasoning_delta` / `assistant.reasoning {reasoningId, content}` | reasoning, same shape |
 | `assistant.streaming_delta {totalResponseSizeBytes}` | observed-only: a byte counter, no text |
-| `assistant.usage {inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens, reasoningTokens, cost, model, isAuto, …}` | one per model call; the run's usage is their sum. `cost` is premium requests and goes to a namespaced extension |
+| `assistant.usage {inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens, reasoningTokens, cost, model, isAuto, …}` | one per model call; the run's usage on its terminal is their sum. `cost` is premium requests and goes to a namespaced extension |
+| `assistant.message` that ends a message, with the `assistant.usage` calls since the previous one | `content.completed` carrying that message's own `usage` ([Decision 0049](../decisions/0049-a-message-reports-its-own-usage.md)) |
 
 ## Tools and permissions
 
@@ -192,9 +193,16 @@ wire (`session.start.selectedModel`, `session.model_change.newModel`), but the
 account probed routes every call through Copilot's automatic model selection:
 `session.auto_mode_resolved` listed one available model, and every
 `assistant.usage` reported `isAuto:true` and a model other than the one
-selected. Which model actually answers is therefore an account policy, and
-the adapter reports the model from `assistant.usage`, not the one it asked
-for. `models.list` and `session.model.list` returned empty lists on this
+selected. Which model actually answers is therefore an account policy.
+
+The adapter keeps the two apart. `model_id` on `run.started` and
+`run.completed`, and `current_model_id` in the catalog, stay the model the
+session was admitted with or switched to, as the validator binds them; the
+model that answered each call goes in a namespaced extension
+(`com.github.copilot.routed_model`) on `content.completed` and on the run's
+terminal. Because the selection is not what answers on an account that routes
+automatically, the adapter advertises `session.model.switch` as `degraded`
+and says why in the descriptor. `models.list` and `session.model.list` returned empty lists on this
 account; `session.model.list` did return `modelPriceCategories`.
 
 ## Not mapped
