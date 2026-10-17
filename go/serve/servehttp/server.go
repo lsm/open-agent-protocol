@@ -813,20 +813,19 @@ func (s *Server) readRequest(w http.ResponseWriter, r *http.Request, want ...pro
 		}
 		return protocol.Envelope{}, false
 	}
-	envelope, err := protocol.ParseEnvelope(body)
+	value, err := decodeObject(body)
 	if err != nil {
 		s.writeError(w, http.StatusBadRequest, "malformed_json", err.Error(), protocol.Envelope{})
 		return protocol.Envelope{}, false
 	}
-	var value any
-	decoder := json.NewDecoder(bytes.NewReader(body))
-	decoder.UseNumber()
-	if err := decoder.Decode(&value); err != nil {
-		s.writeError(w, http.StatusBadRequest, "malformed_json", err.Error(), envelope)
+	if err := s.schema.Validate(value); err != nil {
+		correlated, _ := protocol.ParseEnvelope(body)
+		s.writeError(w, http.StatusBadRequest, "schema_invalid", trimMessage(err.Error()), correlated)
 		return protocol.Envelope{}, false
 	}
-	if err := s.schema.Validate(value); err != nil {
-		s.writeError(w, http.StatusBadRequest, "schema_invalid", trimMessage(err.Error()), envelope)
+	envelope, err := protocol.ParseEnvelope(body)
+	if err != nil {
+		s.writeError(w, http.StatusBadRequest, "malformed_json", err.Error(), protocol.Envelope{})
 		return protocol.Envelope{}, false
 	}
 	if len(want) > 0 && !slices.Contains(want, envelope.Type) {
@@ -834,6 +833,23 @@ func (s *Server) readRequest(w http.ResponseWriter, r *http.Request, want ...pro
 		return protocol.Envelope{}, false
 	}
 	return envelope, true
+}
+
+func decodeObject(data []byte) (map[string]any, error) {
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.UseNumber()
+	var value any
+	if err := decoder.Decode(&value); err != nil {
+		return nil, err
+	}
+	if _, err := decoder.Token(); err != io.EOF {
+		return nil, errors.New("the request body is followed by more JSON")
+	}
+	object, ok := value.(map[string]any)
+	if !ok {
+		return nil, errors.New("the request body is not an object")
+	}
+	return object, nil
 }
 
 func envelopeTypes(types []protocol.EnvelopeType) string {

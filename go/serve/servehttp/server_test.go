@@ -717,6 +717,27 @@ func TestSubmitRejections(t *testing.T) {
 	status, errorEnvelope := postEnvelope(t, server, "/sessions/reject/submit", invalid)
 	requireErrorResponse(t, status, http.StatusBadRequest, errorEnvelope, "schema_invalid")
 
+	wellTyped, err := json.Marshal(requestEnvelope(t, protocol.TypeSessionMessageSubmitRequest, "submit-ill-typed", protocol.MessageSubmitRequest{
+		SessionID: "reject", Delivery: protocol.DeliveryAuto,
+		Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("x")}},
+	}, "reject", "", ""))
+	if err != nil {
+		t.Fatal(err)
+	}
+	response, data = post(t, server, "/sessions/reject/submit", "application/json", bytes.Replace(wellTyped, []byte(`"id":"submit-ill-typed"`), []byte(`"id":7`), 1))
+	envelope, err = protocol.ParseEnvelope(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	requireErrorResponse(t, response.StatusCode, http.StatusBadRequest, envelope, "schema_invalid")
+
+	response, data = post(t, server, "/sessions/reject/submit", "application/json", []byte(`[]`))
+	envelope, err = protocol.ParseEnvelope(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	requireErrorResponse(t, response.StatusCode, http.StatusBadRequest, envelope, "malformed_json")
+
 	wrongType := requestEnvelope(t, protocol.TypeSessionOpenRequest, "submit-wrong", protocol.SessionOpenRequest{}, "", "", "")
 	status, errorEnvelope = postEnvelope(t, server, "/sessions/reject/submit", wrongType)
 	requireErrorResponse(t, status, http.StatusBadRequest, errorEnvelope, "type_mismatch")

@@ -1273,7 +1273,7 @@ to**, written here because Go's behaviour is evidence and not authority (Decisio
 | 6 | the id is free | `session_exists` | `TestHubOpenRejections` |
 | 7 | anything else the adapter reports | `session_closed`, `open_failed` | `TestOpenSession`, `TestHubOpenClosesSessionWhenStateFails` |
 
-**Two rules the ordering makes explicit, and both are places the trees had
+**Three rules the ordering makes explicit, and all three are places the trees had
 diverged:**
 
 - **The attachment is gated before the subscription**, because the attachment is
@@ -1284,6 +1284,12 @@ diverged:**
   adapter will not attach what it asked for — and correcting the name does not
   help, so the actual refusal is never reported. The duplicate is detected by
   running the adapter and seeing what it made, not by looking the name up first.
+- **`malformed_json` means the nested envelope is not JSON or not exactly one
+  object**, and nothing else. An object that breaks the schema anywhere, a
+  wrongly typed envelope member such as `"id": 7` included, is `schema_invalid`:
+  the envelope member and the payload member are one schema, so they draw one
+  code. The HTTP routes read a body under the same rule. Pinned by
+  `TestOpenOpRefusals`, `TestSubmitRejections` and the hub parity scenario.
 
 #### The `details` a refusal carries, and the `reason` vocabulary
 
@@ -2086,17 +2092,6 @@ are "stamped with the revision the lister served it under", and both name
 | **Why it matters** | The differential comparison keeps `details` and drops only `message`, so the two trees will disagree on the first open whose elections are unadvertised or degraded. Unreachable today — the only registered adapter advertises all three — and live the moment #389's registry registers a real one. |
 | **The fix** | The hub has to surface the refusal, not just the error: either a `Failure` that carries the `Refusal`, or a variant of `open` that returns it. That is a core change, and it is the same change `submit`, `resolve` and `cancel` will each want, so it belongs in the PR that serves the first of them. |
 
-### D13 — an ill-typed envelope member answers `schema_invalid` where Go answers `malformed_json`
-
-| | |
-| --- | --- |
-| **The draft says** | `open`'s errors distinguish `malformed_json` (the envelope will not decode) from `schema_invalid` (it decodes and does not satisfy the schema). The distinction is the draft's, and it is meaningful. |
-| **Go does** | `gateRequest` runs `ParseEnvelope` first and only then `schema.Validate`. `ParseEnvelope` is "can `encoding/json` unmarshal this into the `Envelope` struct", so a **wrong-typed** member fails it (`json: cannot unmarshal number into Go struct field plain.id`) and answers `malformed_json`, while a **missing** member or an off-schema value parses and answers `schema_invalid`. |
-| **Zig does** | `schema_invalid` for both. `oap_envelope.deserializeEnvelope` decodes *and* dispatches on the type in one step, so the two questions Go asks separately cannot be asked separately here. |
-| **Why neither order fixes it** | Validate-then-decode gives `schema_invalid` for the ill-typed member, as now. Decode-then-validate gives `schema_invalid` for the ill-typed member too — but it *also* answers `malformed_json` for `{"id":"x","type":"nonesuch"}`, where Go answers `schema_invalid`, because the Zig decode rejects the unknown type and Go's parse does not. Measured, not reasoned: both orders were tried and each is wrong on one of the two inputs. |
-| **The fix** | The envelope module needs a parse step that is "shape only" — unmarshal into the struct without the type dispatch — so the gate can ask Go's two questions in Go's order. That is a change to `protocol/oap/envelope.zig`, shared by every consumer, and it is worth doing once rather than per op. |
-| **Reach** | Reachable today: any open with a number where a string belongs. The differential scenario sends `{"request":7}` and `{"request":[]}`, which both agree on, but not an ill-typed *member*. |
-
 ### D14 — an unframable open answer keeps the session silently
 
 | | |
@@ -2116,7 +2111,7 @@ are "stamped with the revision the lister served it under", and both name
 | **Go does** | The adapter runs **first**. `hub.Open` opens the session and only detects a duplicate at `serve.go:102`, so the adapter's own refusals — an unattachable tool source, a bound it will not take — are what answer. Measured: opening `s1`, then opening `s1` naming three local tool sources answers `unsupported_feature` in Go. |
 | **Zig does** | `hub.open` pre-checks the name (`hub.zig:448`) and answers `session_exists` before the adapter is asked anything. The same input answers `session_exists`. |
 | **Why it matters** | The host is told its id is taken when the real reason its request cannot be served is that the adapter will not attach what it asked for. Fixing the name is then useless and the actual refusal is never reported. Reachable with both trees' own memory adapter, so it needs no exotic adapter to appear. |
-| **The fix, and why it is one change with four others** | Match Go: call `adapter.open`, then check for the duplicate, then close the session just opened. That is a **core** change, and it is the same one **D11** (admit a message, report `admitted_submit_requests`), **D12** (surface the `contract.Refusal` so `feature` and `reason` reach the wire), **D14** (roll an unnamed session back) and the ordering half of **D13** all want. Five rows, one change: `hub.open` should do what Go's `hub.Open` does — run the adapter, apply the checks in Go's order, and report *which* refusal and why. That belongs in its own PR before `submit`, and it is the reason `submit`'s PR is worth its size. |
+| **The fix, and why it is one change with three others** | Match Go: call `adapter.open`, then check for the duplicate, then close the session just opened. That is a **core** change, and it is the same one **D11** (admit a message, report `admitted_submit_requests`), **D12** (surface the `contract.Refusal` so `feature` and `reason` reach the wire) and **D14** (roll an unnamed session back) all want. Four rows, one change: `hub.open` should do what Go's `hub.Open` does — run the adapter, apply the checks in Go's order, and report *which* refusal and why. That belongs in its own PR before `submit`, and it is the reason `submit`'s PR is worth its size. |
 
 ### D16 — the envelope size budget is measured on re-serialized bytes
 

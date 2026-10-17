@@ -1176,23 +1176,38 @@ func (s *Server) gateRequest(payload json.RawMessage, want ...protocol.EnvelopeT
 	if len(payload) > maxEnvelopeBytes {
 		return protocol.Envelope{}, &wireError{Code: "request_too_large", Message: "request envelope exceeds the daemon limit"}
 	}
-	envelope, err := protocol.ParseEnvelope(payload)
+	value, err := decodeObject(payload)
 	if err != nil {
-		return protocol.Envelope{}, &wireError{Code: "malformed_json", Message: trimMessage(err.Error())}
-	}
-	var value any
-	decoder := json.NewDecoder(bytes.NewReader(payload))
-	decoder.UseNumber()
-	if err := decoder.Decode(&value); err != nil {
 		return protocol.Envelope{}, &wireError{Code: "malformed_json", Message: trimMessage(err.Error())}
 	}
 	if err := s.schema.Validate(value); err != nil {
 		return protocol.Envelope{}, &wireError{Code: "schema_invalid", Message: trimMessage(err.Error())}
 	}
+	envelope, err := protocol.ParseEnvelope(payload)
+	if err != nil {
+		return protocol.Envelope{}, &wireError{Code: "malformed_json", Message: trimMessage(err.Error())}
+	}
 	if len(want) > 0 && !slices.Contains(want, envelope.Type) {
 		return protocol.Envelope{}, &wireError{Code: "type_mismatch", Message: fmt.Sprintf("op expects %s, got %s", envelopeTypes(want), envelope.Type)}
 	}
 	return envelope, nil
+}
+
+func decodeObject(data []byte) (map[string]any, error) {
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.UseNumber()
+	var value any
+	if err := decoder.Decode(&value); err != nil {
+		return nil, err
+	}
+	if _, err := decoder.Token(); err != io.EOF {
+		return nil, errors.New("the request envelope is followed by more JSON")
+	}
+	object, ok := value.(map[string]any)
+	if !ok {
+		return nil, errors.New("the request envelope is not an object")
+	}
+	return object, nil
 }
 
 func (s *Server) lookupSession(id string) (*serve.Session, *wireError) {
