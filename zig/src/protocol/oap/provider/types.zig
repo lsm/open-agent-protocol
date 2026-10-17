@@ -870,8 +870,8 @@ test "credential header detection catches the named cases and bearer values" {
 }
 
 test "every payload tag round-trips through its wire name" {
-    inline for (@typeInfo(std.meta.Tag(Payload)).@"enum".fields) |field| {
-        const tag: std.meta.Tag(Payload) = @enumFromInt(field.value);
+    inline for (@typeInfo(std.meta.Tag(Payload)).@"enum".field_values) |value| {
+        const tag: std.meta.Tag(Payload) = @enumFromInt(value);
         const name = typeNameForTag(tag);
         const parsed = payloadTypeFromName(name) orelse return error.TestUnexpectedResult;
         try std.testing.expectEqual(tag, parsed);

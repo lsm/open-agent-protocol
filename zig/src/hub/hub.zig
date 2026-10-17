@@ -61,9 +61,14 @@ pub const Ending = enum {
 
 const Pending = struct {
     line: []u8,
-    run_id: []const u8,
+    run_id: []u8,
     sequence: u64,
     terminal: bool,
+
+    fn deinit(self: Pending, allocator: std.mem.Allocator) void {
+        allocator.free(self.line);
+        allocator.free(self.run_id);
+    }
 };
 
 pub const Delivery = struct {
@@ -364,11 +369,11 @@ pub const Subscription = struct {
 
     fn trim(self: *Subscription, allocator: std.mem.Allocator) void {
         while (self.replay_at > 0) {
-            allocator.free(self.replay.orderedRemove(0).line);
+            self.replay.orderedRemove(0).deinit(allocator);
             self.replay_at -= 1;
         }
         while (self.queue_at > 0) {
-            allocator.free(self.queue.orderedRemove(0).line);
+            self.queue.orderedRemove(0).deinit(allocator);
             self.queue_at -= 1;
         }
     }
@@ -399,10 +404,10 @@ pub const Subscription = struct {
     }
 
     fn forgetEvents(self: *Subscription, allocator: std.mem.Allocator) void {
-        for (self.replay.items) |event| allocator.free(event.line);
+        for (self.replay.items) |event| event.deinit(allocator);
         self.replay.clearRetainingCapacity();
         self.replay_at = 0;
-        for (self.queue.items) |event| allocator.free(event.line);
+        for (self.queue.items) |event| event.deinit(allocator);
         self.queue.clearRetainingCapacity();
         self.queue_at = 0;
     }
@@ -1804,8 +1809,10 @@ pub const Hub = struct {
             }
             const copy = try self.allocator.dupe(u8, event.line);
             errdefer self.allocator.free(copy);
+            const run_copy = try self.allocator.dupe(u8, owned_run);
+            errdefer self.allocator.free(run_copy);
             try subscription.queue.ensureUnusedCapacity(self.allocator, 1);
-            subscription.queue.appendAssumeCapacity(.{ .line = copy, .run_id = owned_run, .sequence = event.sequence, .terminal = settled });
+            subscription.queue.appendAssumeCapacity(.{ .line = copy, .run_id = run_copy, .sequence = event.sequence, .terminal = settled });
             index += 1;
         }
     }
@@ -2044,9 +2051,11 @@ pub const Hub = struct {
             }
             const copy = try self.allocator.dupe(u8, kept.line);
             errdefer self.allocator.free(copy);
+            const run_copy = try self.allocator.dupe(u8, kept.run_id);
+            errdefer self.allocator.free(run_copy);
             try subscription.replay.append(self.allocator, .{
                 .line = copy,
-                .run_id = subscription.run_id,
+                .run_id = run_copy,
                 .sequence = kept.sequence,
                 .terminal = try terminal(self.allocator, kept.line),
             });

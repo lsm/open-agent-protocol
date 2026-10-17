@@ -38,7 +38,7 @@ pub const Stream = struct {
 
     pub fn readSome(self: *Stream, buffer: []u8) !usize {
         var chunks = [1][]u8{buffer};
-        return self.inner.read(defaultIo(), &chunks);
+        return (try self.inner.readWithControl(defaultIo(), &chunks, &.{})).data_len;
     }
 
     pub fn write(self: *Stream, data: []const u8) !usize {

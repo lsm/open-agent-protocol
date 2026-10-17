@@ -53,7 +53,7 @@ the memory adapter's script, also run
 check it reports `skipped` is an obligation the endpoint does not carry, not one
 it failed.
 
-Zig 0.16.0, with `build.zig` in `zig/`. A root `Makefile` wraps the everyday
+Zig 0.17.0, with `build.zig` in `zig/`. A root `Makefile` wraps the everyday
 ones (`make build|install|tui|test|test-tui|check|clean|clean-all`) and configures local
 macOS codesigning. `make build` and `make tui` build ReleaseSafe; pass
 `OPTIMIZE=Debug` for a debug build, but not to use the TUI, because Zig's debug

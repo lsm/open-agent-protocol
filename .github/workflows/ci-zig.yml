@@ -91,6 +91,10 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-${{ runner.arch }}-zig-0.17.0-
 
+      - name: Check configuration cache invalidation
+        if: matrix.group == 'core'
+        run: python3 scripts/check-zig-config-cache.py
+
       - name: Run ${{ matrix.group }} unit tests
         run: zig build --build-file zig/build.zig test-unit-${{ matrix.group }}
 
@@ -659,6 +663,9 @@ jobs:
             target: x86_64-macos
             binary_name: oapx
           - runner: ubuntu-latest
+            target: x86_64-linux
+            binary_name: oapx
+          - runner: ubuntu-latest
             target: aarch64-linux
             binary_name: oapx
           - runner: ubuntu-latest
@@ -693,7 +700,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          zig build --build-file zig/build.zig install -Dtarget=${{ matrix.target }} --prefix "$RUNNER_TEMP/makai-smoke-${{ matrix.target }}"
+          zig build --build-file zig/build.zig install -Dtarget=${{ matrix.target }} -Doptimize=safe --prefix "$RUNNER_TEMP/makai-smoke-${{ matrix.target }}"
 
       - name: Verify binary was produced
         shell: bash

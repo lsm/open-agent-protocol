@@ -6210,7 +6210,7 @@ const TempHome = struct {
         errdefer std.testing.allocator.free(home);
         try compat.fs.createDir(compat.fs.getCwd(), home);
         const previous = std.process.Environ.getAlloc(std.testing.environ, std.testing.allocator, "HOME") catch null;
-        const home_z = try std.testing.allocator.dupeZ(u8, home);
+        const home_z = try std.testing.allocator.dupeSentinel(u8, home, 0);
         defer std.testing.allocator.free(home_z);
         _ = setenv("HOME", home_z.ptr, 1);
         return .{ .tmp = tmp, .home = home, .previous = previous };
@@ -6218,7 +6218,7 @@ const TempHome = struct {
 
     fn deinit(self: *TempHome) void {
         if (self.previous) |value| {
-            if (std.testing.allocator.dupeZ(u8, value) catch null) |home_z| {
+            if (std.testing.allocator.dupeSentinel(u8, value, 0) catch null) |home_z| {
                 defer std.testing.allocator.free(home_z);
                 _ = setenv("HOME", home_z.ptr, 1);
             }
@@ -8095,7 +8095,7 @@ test "App saves Kimi login credentials as api key" {
     const previous_home = std.process.Environ.getAlloc(std.testing.environ, std.testing.allocator, "HOME") catch null;
     defer {
         if (previous_home) |value| {
-            const value_z = std.testing.allocator.dupeZ(u8, value) catch null;
+            const value_z = std.testing.allocator.dupeSentinel(u8, value, 0) catch null;
             if (value_z) |home_z| {
                 defer std.testing.allocator.free(home_z);
                 _ = setenv("HOME", home_z.ptr, 1);
@@ -8105,7 +8105,7 @@ test "App saves Kimi login credentials as api key" {
             _ = unsetenv("HOME");
         }
     }
-    const home_z = try std.testing.allocator.dupeZ(u8, home);
+    const home_z = try std.testing.allocator.dupeSentinel(u8, home, 0);
     defer std.testing.allocator.free(home_z);
     _ = setenv("HOME", home_z.ptr, 1);
 
@@ -8138,7 +8138,7 @@ test "App saves a login only for the row that was logged in" {
     const previous_home = std.process.Environ.getAlloc(std.testing.environ, std.testing.allocator, "HOME") catch null;
     defer {
         if (previous_home) |value| {
-            const value_z = std.testing.allocator.dupeZ(u8, value) catch null;
+            const value_z = std.testing.allocator.dupeSentinel(u8, value, 0) catch null;
             if (value_z) |home_z| {
                 defer std.testing.allocator.free(home_z);
                 _ = setenv("HOME", home_z.ptr, 1);
@@ -8148,7 +8148,7 @@ test "App saves a login only for the row that was logged in" {
             _ = unsetenv("HOME");
         }
     }
-    const home_z = try std.testing.allocator.dupeZ(u8, home);
+    const home_z = try std.testing.allocator.dupeSentinel(u8, home, 0);
     defer std.testing.allocator.free(home_z);
     _ = setenv("HOME", home_z.ptr, 1);
 

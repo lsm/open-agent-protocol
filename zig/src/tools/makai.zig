@@ -2547,9 +2547,9 @@ const OAP_PROVIDER_EXHAUSTED_MESSAGE = "oapx --oap-provider: out of memory decod
 
 test "the only failure that escapes handleLine is the one the stderr message names" {
     const E = @typeInfo(@typeInfo(@TypeOf(oap_provider_server.Server.handleLine)).@"fn".return_type.?).error_union.error_set;
-    const escaping = @typeInfo(E).error_set.?;
+    const escaping = @typeInfo(E).error_set.error_names.?;
     try std.testing.expectEqual(@as(usize, 1), escaping.len);
-    try std.testing.expectEqualStrings("OutOfMemory", escaping[0].name);
+    try std.testing.expectEqualStrings("OutOfMemory", escaping[0]);
 }
 
 fn oapProviderCompatibility(
@@ -6927,8 +6927,8 @@ test "populating the oap catalogue leaks nothing when an allocation fails" {
 test "every capability the oap endpoint implements is advertised and honoured" {
     const allocator = std.testing.allocator;
 
-    inline for (@typeInfo(oap_provider_types.SnapshotPolicy).@"enum".fields) |field| {
-        const policy = @field(oap_provider_types.SnapshotPolicy, field.name);
+    inline for (@typeInfo(oap_provider_types.SnapshotPolicy).@"enum".field_names) |name| {
+        const policy = @field(oap_provider_types.SnapshotPolicy, name);
         var implemented = false;
         for (oap_provider_server.IMPLEMENTED_SNAPSHOT_POLICIES) |candidate| {
             if (candidate == policy) implemented = true;
