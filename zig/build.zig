@@ -445,6 +445,7 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
+    copilot_native_mod.addImport("gojson", adapter_gojson_mod);
     const copilot_native_test = b.addTest(.{ .root_module = copilot_native_mod });
 
     const opencode_httpapi_mod = b.createModule(.{

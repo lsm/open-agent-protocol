@@ -1,4 +1,5 @@
 const std = @import("std");
+const gojson = @import("gojson");
 
 pub const Error = error{InvalidWire} || std.mem.Allocator.Error;
 
@@ -22,6 +23,7 @@ pub const Message = struct {
 };
 
 pub fn parseMessage(arena: std.mem.Allocator, frame: []const u8) Error!Message {
+    if (!gojson.withinNestingLimit(frame)) return Error.InvalidWire;
     const document = std.json.parseFromSliceLeaky(std.json.Value, arena, frame, .{}) catch |err| switch (err) {
         error.OutOfMemory => return error.OutOfMemory,
         else => return Error.InvalidWire,
@@ -193,6 +195,23 @@ test "a frame that is not JSON-RPC 2.0 is refused rather than guessed at" {
     }) |frame| {
         try testing.expectError(Error.InvalidWire, parseMessage(arena.allocator(), frame));
     }
+}
+
+fn nested(allocator: std.mem.Allocator, arrays: usize) ![]const u8 {
+    var body = std.ArrayList(u8).empty;
+    try body.appendSlice(allocator, "{\"jsonrpc\":\"2.0\",\"method\":\"x\",\"params\":");
+    try body.appendNTimes(allocator, '[', arrays);
+    try body.appendNTimes(allocator, ']', arrays);
+    try body.appendSlice(allocator, "}");
+    return body.items;
+}
+
+test "a frame nested past ten thousand containers is refused rather than recursed into" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const scratch = arena.allocator();
+    try testing.expectEqual(Kind.notification, (try parseMessage(scratch, try nested(scratch, 9999))).kind);
+    try testing.expectError(Error.InvalidWire, parseMessage(scratch, try nested(scratch, 10000)));
 }
 
 test "a request encodes as JSON-RPC 2.0 with its id, method and params" {
