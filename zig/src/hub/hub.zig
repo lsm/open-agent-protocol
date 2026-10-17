@@ -443,6 +443,7 @@ const Registered = struct {
     revision: []const u8 = "",
     directory: []u8 = &.{},
     template: ?Template = null,
+    journal_capacity: ?usize = null,
 };
 
 const Template = struct {
@@ -463,6 +464,7 @@ const Entry = struct {
     session_closed: bool = false,
     created_at_ms: i64,
     run_id: []u8,
+    journal_capacity: usize,
     journal: std.ArrayList(Journaled) = .empty,
     cursors: std.ArrayList(Cursor) = .empty,
     subscribers: std.ArrayList(*Subscription) = .empty,
@@ -562,21 +564,19 @@ pub const Hub = struct {
     }
 
     pub fn load(self: *Hub, arena: std.mem.Allocator, file: config.File, builder: Builder, diagnostic: *config.Diagnostic) !void {
-        var taken = self.journal_capacity != default_journal_capacity;
         for (file.adapters) |entry| {
             if (entry.journal_capacity) |capacity| {
                 if (capacity < 0) {
                     diagnostic.message = std.fmt.allocPrint(arena, "config: adapter \"{s}\": \"journal_capacity\" must not be negative", .{entry.name}) catch "config: an adapter names a negative \"journal_capacity\"";
                     return error.ConfigRefused;
                 }
-                if (!taken) {
-                    if (capacity > 0) self.journal_capacity = @intCast(capacity);
-                    taken = true;
-                }
             }
             const adapter = try builder.make(builder.context, arena, entry);
             try self.register(entry.name, adapter);
             const registered = self.find(entry.name).?;
+            if (entry.journal_capacity) |capacity| {
+                if (capacity > 0) registered.journal_capacity = @intCast(capacity);
+            }
             if (entry.working_directory) |directory| {
                 if (directory.len > 0) registered.directory = try self.allocator.dupe(u8, directory);
             }
@@ -879,7 +879,7 @@ pub const Hub = struct {
         record.adopted = adopted_native;
         var kept = false;
         errdefer if (!kept) record.deinit(self.allocator);
-        const entry = try self.adopt(adapter_name, session, @intCast(self.clock() / std.time.ns_per_ms));
+        const entry = try self.adopt(adapter_name, session, @intCast(self.clock() / std.time.ns_per_ms), registered.journal_capacity orelse self.journal_capacity);
         adopted = true;
         if (placed.directory.len > 0) entry.directory = try self.allocator.dupe(u8, placed.directory);
         self.keepBound(record);
@@ -1728,11 +1728,11 @@ pub const Hub = struct {
             entry.cursors.items[index].terminal = event.sequence;
             try self.recordOutcome(entry, event);
         }
-        if (self.journal_capacity == 0) return;
+        if (entry.journal_capacity == 0) return;
         const line = try self.allocator.dupe(u8, event.line);
         errdefer self.allocator.free(line);
         try entry.journal.ensureUnusedCapacity(self.allocator, 1);
-        if (entry.journal.items.len == self.journal_capacity) self.allocator.free(entry.journal.orderedRemove(0).line);
+        if (entry.journal.items.len == entry.journal_capacity) self.allocator.free(entry.journal.orderedRemove(0).line);
         entry.journal.appendAssumeCapacity(.{ .line = line, .run_id = entry.cursors.items[index].run_id, .sequence = event.sequence });
     }
 
@@ -1892,7 +1892,7 @@ pub const Hub = struct {
         self.bound.appendAssumeCapacity(record);
     }
 
-    fn adopt(self: *Hub, adapter_name: []const u8, session: contract.Session, created_at_ms: i64) !*Entry {
+    fn adopt(self: *Hub, adapter_name: []const u8, session: contract.Session, created_at_ms: i64, journal_capacity: usize) !*Entry {
         const owned_name = try self.allocator.dupe(u8, adapter_name);
         errdefer self.allocator.free(owned_name);
         const owned_id = try self.allocator.dupe(u8, session.id());
@@ -1906,6 +1906,7 @@ pub const Hub = struct {
             .session = session,
             .created_at_ms = created_at_ms,
             .run_id = owned_run,
+            .journal_capacity = journal_capacity,
         });
         return &self.entries.items[self.entries.items.len - 1];
     }
@@ -2691,7 +2692,7 @@ test "a replay larger than the mailbox seeds a cursor instead of growing without
     try testing.expectEqual(Ending.open, again.ending);
 }
 
-test "a registry document's journal capacity is read, and its zero keeps the default" {
+test "a registry document's journal capacity is read per adapter, and its zero keeps the default" {
     var adapter = memory.Adapter.init(testing.allocator);
     defer adapter.deinit();
     var hub = Hub.init(testing.allocator, testClock, .{});
@@ -2700,19 +2701,54 @@ test "a registry document's journal capacity is read, and its zero keeps the def
     defer scratch.deinit();
     const arena = scratch.allocator();
     var diagnostic = config.Diagnostic{};
-    try hub.load(arena, config.File{ .adapters = &.{.{ .name = "memory", .kind = "memory", .journal_capacity = 12 }} }, .{ .context = &adapter, .make = scripted }, &diagnostic);
-    try testing.expectEqual(@as(usize, 12), hub.journal_capacity);
-
-    var zeroed = Hub.init(testing.allocator, testClock, .{});
-    defer zeroed.deinit();
-    try zeroed.load(arena, config.File{ .adapters = &.{.{ .name = "memory", .kind = "memory", .journal_capacity = 0 }} }, .{ .context = &adapter, .make = scripted }, &diagnostic);
-    try testing.expectEqual(@as(usize, default_journal_capacity), zeroed.journal_capacity);
+    try hub.load(arena, config.File{ .adapters = &.{
+        .{ .name = "big", .kind = "memory", .journal_capacity = 12 },
+        .{ .name = "small", .kind = "memory", .journal_capacity = 2 },
+        .{ .name = "unset", .kind = "memory" },
+        .{ .name = "zeroed", .kind = "memory", .journal_capacity = 0 },
+    } }, .{ .context = &adapter, .make = scripted }, &diagnostic);
+    try testing.expectEqual(@as(?usize, 12), hub.find("big").?.journal_capacity);
+    try testing.expectEqual(@as(?usize, 2), hub.find("small").?.journal_capacity);
+    try testing.expectEqual(@as(?usize, null), hub.find("unset").?.journal_capacity);
+    try testing.expectEqual(@as(?usize, null), hub.find("zeroed").?.journal_capacity);
+    try testing.expectEqual(@as(usize, default_journal_capacity), hub.journal_capacity);
 
     var refused = Hub.init(testing.allocator, testClock, .{});
     defer refused.deinit();
     try testing.expectError(error.ConfigRefused, refused.load(arena, config.File{ .adapters = &.{.{ .name = "memory", .kind = "memory", .journal_capacity = -1 }} }, .{ .context = &adapter, .make = scripted }, &diagnostic));
     try testing.expectEqualStrings("config: adapter \"memory\": \"journal_capacity\" must not be negative", diagnostic.message);
     try testing.expectEqual(@as(usize, 0), refused.sessionCount());
+}
+
+test "each session's journal is bounded by its own adapter's capacity, and one that names none takes the hub's" {
+    var adapter = memory.Adapter.init(testing.allocator);
+    defer adapter.deinit();
+    var hub = Hub.init(testing.allocator, testClock, .{ .journal_capacity = 3 });
+    defer hub.deinit();
+    var scratch = std.heap.ArenaAllocator.init(testing.allocator);
+    defer scratch.deinit();
+    const arena = scratch.allocator();
+    var diagnostic = config.Diagnostic{};
+    try hub.load(arena, config.File{ .adapters = &.{
+        .{ .name = "big", .kind = "memory", .journal_capacity = 64 },
+        .{ .name = "small", .kind = "memory", .journal_capacity = 2 },
+        .{ .name = "unset", .kind = "memory" },
+    } }, .{ .context = &adapter, .make = scripted }, &diagnostic);
+    for ([_][]const u8{ "big", "small", "unset" }) |name| {
+        _ = try hub.open(arena, name, .{ .session_id = name });
+        const request = try submitFor(arena, name);
+        _ = try hub.submit(arena, name, &request, "");
+    }
+    for (0..8) |_| try hub.pump(testing.allocator, 0);
+    const big = hub.findSession("big").?;
+    const small = hub.findSession("small").?;
+    const unset = hub.findSession("unset").?;
+    try testing.expectEqual(@as(usize, 64), big.journal_capacity);
+    try testing.expectEqual(@as(usize, 2), small.journal_capacity);
+    try testing.expectEqual(@as(usize, 3), unset.journal_capacity);
+    try testing.expect(big.journal.items.len > 3);
+    try testing.expectEqual(@as(usize, 2), small.journal.items.len);
+    try testing.expectEqual(@as(usize, 3), unset.journal.items.len);
 }
 
 test "a hub built with no journal capacity keeps nothing" {
