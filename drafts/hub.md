@@ -1934,12 +1934,17 @@ stamped with the revision its *lister* served it under, which is what makes the
 draft's "refuse one that disagrees with the descriptor" check possible at all.
 
 **D21 is fixed** ([#1129](https://github.com/lsm/open-agent-protocol/issues/1129)): `oapx serve --addr`
-decodes `Transfer-Encoding: chunked` as `net/http` does, in the loop's body phase and under the
-same 16 MiB cap. Chunk extensions and a trailer are read and dropped. A malformed chunk size or
-framing is a `400`, a decoded body over the cap is `413 request_too_large`, another coding is a bare
-`400`, and `chunked` beside a `Content-Length` is a `400`, as RFC 9112 §6.1 allows. Pinned by `a
-chunked body is decoded by the loop and served as if it had declared its length`, `a chunked body
-with a malformed size is refused by the loop`, and the decoder's own tests in `http.zig`.
+decodes `Transfer-Encoding: chunked` in the loop's body phase, with the 16 MiB cap on the decoded
+body. Chunk extensions and a trailer are read and dropped, and framing overhead is bounded by
+`net/http`'s own rule: 16 bytes per chunk plus twice its data are free, and more than 16 KiB of
+excess is refused, so a body sent a byte per chunk is taken and one padded with extensions is not.
+A malformed chunk size, too much excess or bad framing is a `400`, a decoded body over the cap is
+`413 request_too_large`, another coding is a bare `400`, and `chunked` beside a `Content-Length` is a
+`400`, as RFC 9112 §6.1 allows. A refusal drains what the client is still sending, as a sized body's
+does. Pinned by `a chunked body is decoded by the loop and served as if it had declared its length`,
+`a chunked body with a malformed size is refused by the loop`, `a refused chunked body leaves its
+connection draining what the client may still send, not closing on it`, and the decoder's own tests
+in `http.zig`.
 
 **D22 — no `100 Continue` is sent, where Go sends one when the handler reads the
 body.** A client that sends `Expect: 100-continue` waits for the interim answer;

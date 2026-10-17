@@ -399,14 +399,14 @@ pub fn carriesBody(request: Request) bool {
 }
 
 pub const max_chunk_line_bytes = 4096;
-pub const max_chunked_wire_bytes = 2 * max_body_bytes;
+pub const max_chunk_excess_bytes = 16 * 1024;
 
 pub const Chunked = struct {
     state: State = .size,
     line: [max_chunk_line_bytes]u8 = undefined,
     line_len: usize = 0,
     left: usize = 0,
-    wire: usize = 0,
+    excess: usize = 0,
     trailer: usize = 0,
 
     const State = enum { size, data, data_end, trailer, done };
@@ -438,8 +438,6 @@ pub const Chunked = struct {
             self.line_len = 0;
             try self.endLine(text);
         }
-        self.wire += at;
-        if (self.wire > max_chunked_wire_bytes) return error.BodyTooLarge;
     }
 
     fn endLine(self: *Chunked, text: []const u8) Error!void {
@@ -451,6 +449,8 @@ pub const Chunked = struct {
                 for (size_text) |byte| if (!std.ascii.isHex(byte)) return error.Malformed;
                 const size = std.fmt.parseInt(usize, size_text, 16) catch return error.BodyTooLarge;
                 if (size > max_body_bytes) return error.BodyTooLarge;
+                self.excess = (self.excess + text.len + 2) -| (16 + 2 * size);
+                if (self.excess > max_chunk_excess_bytes) return error.Malformed;
                 self.left = size;
                 self.state = if (size == 0) .trailer else .data;
             },
@@ -1047,6 +1047,23 @@ test "a chunked body with a bad size or framing is malformed, and one over the c
     try testing.expectError(error.Malformed, decodeChunked("\r\n", 64));
     try testing.expectError(error.BodyTooLarge, decodeChunked("1000001\r\n", 64));
     try testing.expectError(error.BodyTooLarge, decodeChunked("ffffffffffffffffffff\r\n", 64));
+}
+
+test "a body sent a byte per chunk is taken, and chunk extensions outweighing the data are refused, as net/http counts them" {
+    var one_byte_chunks = std.ArrayList(u8).empty;
+    defer one_byte_chunks.deinit(testing.allocator);
+    for (0..20_000) |_| try one_byte_chunks.appendSlice(testing.allocator, "1\r\nX\r\n");
+    try one_byte_chunks.appendSlice(testing.allocator, "0\r\n\r\n");
+    const body = try decodeChunked(one_byte_chunks.items, 4096);
+    defer testing.allocator.free(body);
+    try testing.expectEqual(@as(usize, 20_000), body.len);
+
+    var padded = std.ArrayList(u8).empty;
+    defer padded.deinit(testing.allocator);
+    const extension = ";" ++ repeat("e", 2000);
+    for (0..10) |_| try padded.appendSlice(testing.allocator, "1" ++ extension ++ "\r\nX\r\n");
+    try padded.appendSlice(testing.allocator, "0\r\n\r\n");
+    try testing.expectError(error.Malformed, decodeChunked(padded.items, 4096));
 }
 
 test "a head naming chunked is taken, another coding is refused, and chunked beside a length is malformed" {

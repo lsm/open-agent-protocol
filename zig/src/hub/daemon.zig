@@ -754,7 +754,7 @@ pub const Connection = struct {
                 self.phase = .done;
                 return;
             };
-            self.refuse(bytes, self.request.content_length -| leftover.len);
+            self.refuse(bytes, if (self.request.chunked) hub_http.drain_total_cap_bytes else self.request.content_length -| leftover.len);
             return;
         }
         if (self.request.chunked) {
@@ -781,7 +781,7 @@ pub const Connection = struct {
                 self.phase = .done;
                 return;
             },
-            error.BodyTooLarge, error.Malformed => |failure| return self.transportFailure(failure, 0),
+            error.BodyTooLarge, error.Malformed => |failure| return self.transportFailure(failure, hub_http.drain_total_cap_bytes),
         };
         if (!decoder.finished()) return;
         self.request.body = self.decoded.items;
@@ -1698,6 +1698,25 @@ test "a chunked body with a malformed size is refused by the loop" {
     defer answered.deinit(testing.allocator);
     try testing.expect(try readFor(&stream, &answered, "\r\n\r\n", 2000));
     try testing.expect(std.mem.startsWith(u8, answered.items, "HTTP/1.1 400 Bad Request\r\n"));
+}
+
+test "a refused chunked body leaves its connection draining what the client may still send, not closing on it" {
+    var served: Served = undefined;
+    try served.prepare();
+    defer {
+        compat.net.closeServer(&served.listener);
+        served.fixture.deinit();
+    }
+    var client = try served.dial();
+    defer client.close();
+    const connection = try Connection.create(&served.fixture.daemon, try compat.net.acceptStream(&served.listener));
+    defer connection.destroy();
+    connection.request.chunked = true;
+    connection.chunks = .{};
+    connection.phase = .chunked;
+    connection.takeChunks("zz\r\n");
+    try testing.expectEqual(Phase.refusing, connection.phase);
+    try testing.expectEqual(hub_http.drain_total_cap_bytes, connection.drain_left);
 }
 
 test "a client that hangs up mid-stream releases its stream without an event to write" {
