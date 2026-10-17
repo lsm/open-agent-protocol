@@ -3729,7 +3729,7 @@ test "open hands off a session, its name and its run under allocation failure" {
 }
 
 test "subscribe, replay and pump hand off their queues under allocation failure" {
-    try testing.checkAllAllocationFailures(testing.allocator, struct {
+    try testing.checkAllAllocationFailures(std.heap.smp_allocator, struct {
         fn attempt(gpa: std.mem.Allocator) !void {
             var adapter = memory.Adapter.init(gpa);
             defer adapter.deinit();
@@ -3746,7 +3746,7 @@ test "subscribe, replay and pump hand off their queues under allocation failure"
             try hub.pump(gpa, 0);
         }
     }.attempt, .{});
-    try testing.checkAllAllocationFailures(testing.allocator, struct {
+    try testing.checkAllAllocationFailures(std.heap.smp_allocator, struct {
         fn attempt(gpa: std.mem.Allocator) !void {
             var adapter = memory.Adapter.init(gpa);
             defer adapter.deinit();

@@ -49,7 +49,7 @@ Check configuration invalidation by reusing the cache, changing each of the nine
 
 Use a Zig 0.17-compatible ZLS. At the October 17 migration research checkpoint, build integration had landed in ZLS master but the 0.17 stable release was not yet available, and dependency-module resolution still had limitations. Verify navigation and diagnostics for the zigzag dependency separately from successful CLI builds.
 
-Incremental compilation in 0.17 primarily targets x86_64 Linux with `-fincremental --watch`. Do not expect the same incremental rebuild support on Apple Silicon macOS. New SafeAllocator checks can expose existing ownership defects; investigate failures rather than suppressing leak checking or disabling safety.
+Incremental compilation in 0.17 primarily targets x86_64 Linux with `-fincremental --watch`. Do not expect the same incremental rebuild support on Apple Silicon macOS. New SafeAllocator checks exposed a queued hub event borrowing a run ID from a released session. Queued and replayed events now own their run ID until consumed or discarded. The existing close-and-drain test and allocation-failure sweeps cover this boundary. Two allocation-failure sweeps use the repository-recommended `smp_allocator` backing: SafeAllocator remap behavior made their allocation counts nondeterministic; FailingAllocator still injects failures and checks allocated/freed byte counts. Other hub tests retain the testing allocator.
 
 ## Sources
 
