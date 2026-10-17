@@ -76,7 +76,7 @@ pub fn build(b: *std.Build) void {
     jsonschema_mod.addImport("schema_bytes", schema_bytes_mod);
     const jsonschema_test = b.addTest(.{ .root_module = jsonschema_mod });
     const gate_options = b.addOptions();
-    gate_options.addOption([]const u8, "repository_root", (b.root.joinString(b.allocator, "..") catch @panic("OOM")));
+    gate_options.addOption([]const u8, "repository_root", buildPath(b, ".."));
     const fixture_gate_mod = b.createModule(.{
         .root_source_file = b.path("src/validation/fixture_gate.zig"),
         .target = target,
@@ -3337,7 +3337,7 @@ pub fn build(b: *std.Build) void {
 
 fn isolatedHomeRun(b: *std.Build, artifact: *std.Build.Step.Compile, name: []const u8) *std.Build.Step.Run {
     const run = b.addRunArtifact(artifact);
-    const home = (b.root.joinString(b.allocator, b.fmt(".zig-cache/test-home/{s}", .{name})) catch @panic("OOM"));
+    const home = buildPath(b, b.fmt(".zig-cache/test-home/{s}", .{name}));
     run.setEnvironmentVariable("HOME", home);
     if (b.graph.host.result.os.tag != .windows) {
         const wipe = b.addSystemCommand(&.{ "rm", "-rf", home });
@@ -3694,4 +3694,13 @@ fn readConfigFile(b: *std.Build, path: []const u8) ![]u8 {
     b.dependOnFileContents(b.path(path));
     const file_path = try b.root.join(b.allocator, path);
     return file_path.root_dir.handle.readFileAlloc(b.graph.io, file_path.sub_path, b.allocator, .limited(1 << 20));
+}
+
+fn buildPath(b: *std.Build, path: []const u8) []const u8 {
+    const root = b.root.root_dir.handle.realPathFileAlloc(
+        b.graph.io,
+        if (b.root.sub_path.len == 0) "." else b.root.sub_path,
+        b.allocator,
+    ) catch @panic("resolving build root");
+    return std.fs.path.resolve(b.allocator, &.{ root, path }) catch @panic("OOM");
 }
