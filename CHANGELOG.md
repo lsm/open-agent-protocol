@@ -11,6 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Merged pull requests
 
+- **opencode: leave a run's usage absent when no step reported any** ([#1118](https://github.com/lsm/open-agent-protocol/pull/1118)): Fixes #1097.
 - **zig: upgrade OAP and zigzag to Zig 0.17.0** ([#1116](https://github.com/lsm/open-agent-protocol/pull/1116)): Upgrade OAP's Zig runtime (`.makai`, executable `oapx`) and vendored zigzag from Zig 0.16.0 to 0.17.0.
 - **zig: publish models.dev's deprecated status as the model's lifecycle** ([#1115](https://github.com/lsm/open-agent-protocol/pull/1115)): Closes #1113.
 - **zig: list OpenCode's models in /model and run them on OpenCode** ([#1114](https://github.com/lsm/open-agent-protocol/pull/1114)): Finishes the OpenCode route: picking one of OpenCode's models in `/model` runs the conversation on OpenCode, as a new session (#1110).
