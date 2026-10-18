@@ -53,7 +53,9 @@ A queued run that a shutdown holds, or a crash leaves, keeps no `settled`
 record until the next start re-delivers or withdraws it. Re-delivery is one
 append, `admitted {run_id: new, request, replaces: old}`, and `openRuns` drops
 the run an `admitted` replaces, so a crash at any point leaves exactly one of
-the two open. Withdrawal appends `settled` for the old id.
+the two open. A replacing run takes the admission position of the run it
+replaces, so a crash part-way through re-delivering several prompts never
+changes their order. Withdrawal appends `settled` for the old id.
 
 ### Transcript (Decision 0051, #1205)
 

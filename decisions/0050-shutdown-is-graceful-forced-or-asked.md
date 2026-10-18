@@ -87,10 +87,13 @@ kept with the rest of the session's state, and the next start sends them when
 the session reopens. A kept prompt is always sent again: there is no state in
 which a prompt is kept but not sent. The shutdown response lists them under
 `held`. Holding one settles it `run.cancelled` before start with
-`reason: "held_for_restart"` and no `settled_by`, since the endpoint observed
-its own cancellation (Decision 0010), so a UI can show "will be sent after
-restart"
-rather than a cancellation nobody asked for. The accepted graceful shutdown
+`settled_by: "inferred"`, because a session-scoped stop is inferred under
+Decision 0010 whoever asked for it, and a human-readable `reason` such as
+"held for the next start". A UI tells a held run from a cancelled one by the
+structured lists, never by parsing `reason`, which 0010 keeps as free text: the
+run id is in the shutdown answer's and `endpoint.shutdown.started`'s `held`,
+and after the restart in `recovery.redelivered_runs`. So it can show "will be
+sent after restart" rather than a cancellation nobody asked for. The accepted graceful shutdown
 is that terminal's evidence, as an accepted cancel exchange is for any other
 `run.cancelled`. Its run id is settled, so it takes no `run.cancel`. A host
 that does not want a held prompt sent names it when it reopens the session:
