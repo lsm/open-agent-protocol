@@ -96,8 +96,9 @@ in a row passed. The same cleanup failure appeared once in three runs
 against v0.21.6, so it is not new in this release. Which gateway code path
 starts the CLI was not established. The consequence for anyone running the
 gates: a `copilot` on `PATH` is started inside the isolated `HOME`, outlives
-the gateway, and may reach whatever credentials it keeps outside `HOME`, so
-run the gates with a `PATH` that does not contain it.
+the gateway, and may reach whatever credentials it keeps outside `HOME`. The
+Go gates therefore pass the child a `PATH` without any directory holding a
+`copilot` executable (`gatePath` in `process_integration_test.go`).
 
 ## Corpus
 

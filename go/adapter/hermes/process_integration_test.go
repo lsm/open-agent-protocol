@@ -382,7 +382,7 @@ func hermesEnvironment(t *testing.T, root, loopbackBaseURL string) []string {
 		"ALL_PROXY=http://127.0.0.1:1",
 		"NO_PROXY=127.0.0.1,localhost",
 	}
-	if path := os.Getenv("PATH"); path != "" {
+	if path := gatePath(os.Getenv("PATH")); path != "" {
 		environment = append(environment, "PATH="+path)
 	}
 	if loopbackBaseURL != "" {
@@ -392,4 +392,18 @@ func hermesEnvironment(t *testing.T, root, loopbackBaseURL string) []string {
 		)
 	}
 	return environment
+}
+
+func gatePath(path string) string {
+	var kept []string
+	for _, directory := range filepath.SplitList(path) {
+		if directory == "" {
+			continue
+		}
+		if info, err := os.Stat(filepath.Join(directory, "copilot")); err == nil && !info.IsDir() {
+			continue
+		}
+		kept = append(kept, directory)
+	}
+	return strings.Join(kept, string(os.PathListSeparator))
 }
