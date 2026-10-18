@@ -93,6 +93,28 @@ test("agent tools and settings travel over OAP, and temperature and provider cal
   }
 });
 
+test("an agent-only endpoint connects, runs agents, and refuses the provider and models APIs", async () => {
+  const client = await createOapClient({ command: process.execPath, args: [fixture], env: { ...process.env, OAP_FIXTURE_AGENT_ONLY: "1" } });
+  try {
+    const messages = [{ role: "user" as const, content: "hello" }];
+    assert.equal((await client.agent.run({ model_ref: "fixture/openai-responses@mock", messages })).message.content, "agent works");
+    await assert.rejects(() => client.models.list(), (error: unknown) => error instanceof OapUnsupportedFeatureError);
+    await assert.rejects(() => client.provider.complete({ model_ref: "fixture/openai-responses@mock", messages }), (error: unknown) => error instanceof OapUnsupportedFeatureError);
+  } finally {
+    await client.close();
+  }
+});
+
+test("a provider describe that fails for any reason but a refusal fails the connection", async () => {
+  await assert.rejects(() => createOapClient({ command: process.execPath, args: [fixture], env: { ...process.env, OAP_FIXTURE_DESCRIBE_FAILS: "1" } }).then(async (client) => { await client.close(); return client; }),
+    (error: unknown) => error instanceof Error && error.message === "provider registry unavailable");
+});
+
+test("a malformed provider describe fails the connection rather than reading as agent-only", async () => {
+  await assert.rejects(() => createOapClient({ command: process.execPath, args: [fixture], env: { ...process.env, OAP_FIXTURE_DESCRIBE_GARBAGE: "1" } }).then(async (client) => { await client.close(); return client; }),
+    (error: unknown) => error instanceof Error && (error as { code?: string }).code === "malformed_response");
+});
+
 test("a quiet stream outlives the reply timeout, and only an idle timeout the caller set ends it", async () => {
   const messages = [{ role: "user" as const, content: "hello" }];
   const patient = await createOapClient({ command: process.execPath, args: [fixture], responseTimeoutMs: 150 });

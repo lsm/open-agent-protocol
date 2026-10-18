@@ -350,6 +350,8 @@ async function main(): Promise<void> {
 void main();
 ```
 
+`args` can name a harness backend instead, such as `["serve", "agent", "--stdio", "--backend", "claude"]`. Such an endpoint serves the agent profile alone: the client connects to it and runs agents through it, and `client.provider` and `client.models` fail with `OapUnsupportedFeatureError`. The SDK does not answer permission requests yet, so a run on a backend that asks one waits until a timeout or an abort ends it.
+
 Close clients when done:
 
 ```ts

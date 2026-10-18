@@ -103,13 +103,13 @@ Decision 0003's four steps translate into these exit criteria for every unit:
 | 9 | T8 session list | a host's binding records; ACP's optional native list | accepted (0046) | — |
 
 Ledgers: [Codex](../research/codex-app-server-0.162.1-mapping.md) ·
-[Claude Code](../research/claude-code-agent-sdk-2.1.296-mapping.md) ·
+[Claude Code](../research/claude-code-agent-sdk-2.1.302-mapping.md) ·
 [OpenCode](../research/opencode-v1.18.34-mapping.md) ·
 [pi](../research/pi-v1.3.0-mapping.md) ·
 [Hermes](../research/hermes-v0.22.2-mapping.md) ·
 [ACP](../research/acp-v1.11.0-mapping.md) ·
 [Makai](../research/makai-agent-67ad514-mapping.md) ·
-[DeepSeek](../research/deepseek-harness-dsh-v0.2.1-alpha.2-mapping.md). DeepSeek
+[DeepSeek](../research/deepseek-harness-dsh-v0.2.1-rc.2-mapping.md). DeepSeek
 contributes no native evidence to any unit at its pin and advertises each
 `unavailable`.
 

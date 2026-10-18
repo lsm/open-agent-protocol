@@ -210,6 +210,7 @@ pub const Harness = corpus.Harness(Driver);
 
 test "every deepseek corpus case replays to the recorded envelopes" {
     try Harness.expectEveryCase(std.testing.allocator, &.{
+        .{ .id = "background-job", .path = "background-job" },
         .{ .id = "framing-strictness", .path = "framing-strictness" },
         .{ .id = "initialize-lifecycle", .path = "initialize-lifecycle" },
         .{ .id = "initialize-pre-observe", .path = "initialize-pre-observe" },

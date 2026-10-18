@@ -307,6 +307,8 @@ const observed_only_events = [_][]const u8{
     "goal/change",
     "hook/invoked",
     "hook/result",
+    "job/registered",
+    "job/settled",
     "llm/retry",
     "llm/retry-started",
     "model/selection",
