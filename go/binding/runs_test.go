@@ -138,3 +138,161 @@ func TestASettledRecordALogKeptIsReadAsTheEndOfItsRun(t *testing.T) {
 		t.Fatalf("open runs = %+v, want r2 queued then r3 started, r1 gone", runs)
 	}
 }
+
+func TestARedeliveredRunReplacesItsHeldRunInOneRecord(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "runs.jsonl")
+	file, err := RunsFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, store := range map[string]Runs{"memory": MemoryRuns(), "file": file} {
+		for _, record := range []RunRecord{
+			{Action: RunAdmitted, TimeMS: 1, SessionID: "s", RunID: "held", Request: "{}"},
+			{Action: RunAdmitted, TimeMS: 2, SessionID: "s", RunID: "after", Request: "{}"},
+			{Action: RunAdmitted, TimeMS: 3, SessionID: "s", RunID: "redelivered", Request: "{}", Replaces: "held"},
+		} {
+			if err := store.AppendRun(ctx, record); err != nil {
+				t.Fatal(err)
+			}
+		}
+		runs, err := store.OpenRuns(ctx, "s")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(runs) != 2 || runs[0].RunID != "redelivered" || runs[1].RunID != "after" {
+			t.Fatalf("%s: open runs = %+v, want redelivered in held's slot, then after", name, runs)
+		}
+	}
+	var log []byte
+	for _, record := range []RunRecord{
+		{Action: RunAdmitted, TimeMS: 1, SessionID: "s", RunID: "held"},
+		{Action: RunAdmitted, TimeMS: 2, SessionID: "s", RunID: "redelivered", Replaces: "held"},
+	} {
+		payload, err := marshalRun(record)
+		if err != nil {
+			t.Fatal(err)
+		}
+		log = append(log, frame(payload)...)
+	}
+	kept := filepath.Join(t.TempDir(), "kept.jsonl")
+	if err := os.WriteFile(kept, log, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	reader, err := RunsFile(kept)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if runs, err := reader.OpenRuns(ctx, "s"); err != nil || len(runs) != 1 || runs[0].RunID != "redelivered" {
+		t.Fatalf("a log that kept the held run: %+v, %v; want redelivered alone", runs, err)
+	}
+}
+
+func TestSettlingTheReplacingRunOverAKeptLogDoesNotReviveTheReplacedOne(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "runs.jsonl")
+	var log []byte
+	for _, record := range []RunRecord{
+		{Action: RunAdmitted, TimeMS: 1, SessionID: "s", RunID: "held"},
+		{Action: RunAdmitted, TimeMS: 2, SessionID: "s", RunID: "redelivered", Replaces: "held"},
+	} {
+		payload, err := marshalRun(record)
+		if err != nil {
+			t.Fatal(err)
+		}
+		log = append(log, frame(payload)...)
+	}
+	if err := os.WriteFile(path, log, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	store, err := RunsFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.AppendRun(ctx, RunRecord{Action: RunSettled, TimeMS: 3, SessionID: "s", RunID: "redelivered"}); err != nil {
+		t.Fatal(err)
+	}
+	if runs, err := store.OpenRuns(ctx, "s"); err != nil || len(runs) != 0 {
+		t.Fatalf("open runs = %+v, %v; want none: held was replaced and its replacement settled", runs, err)
+	}
+}
+
+func TestARedeliveredRunKeepsItsPlaceAheadOfARunStillHeldBehindIt(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "runs.jsonl")
+	store, err := RunsFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, record := range []RunRecord{
+		{Action: RunAdmitted, TimeMS: 1, SessionID: "s", RunID: "a"},
+		{Action: RunAdmitted, TimeMS: 2, SessionID: "s", RunID: "b"},
+		{Action: RunAdmitted, TimeMS: 3, SessionID: "s", RunID: "a2", Replaces: "a"},
+		{Action: RunStarted, TimeMS: 4, SessionID: "other", RunID: "x"},
+	} {
+		if err := store.AppendRun(ctx, record); err != nil {
+			t.Fatal(err)
+		}
+	}
+	reread, err := RunsFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if runs, err := reread.OpenRuns(ctx, "s"); err != nil || len(runs) != 2 || runs[0].RunID != "a2" || runs[1].RunID != "b" {
+		t.Fatalf("open runs after a reread = %+v, %v; want a2 in a's place, then b", runs, err)
+	}
+}
+
+func TestARecordAfterARunWasReplacedOrSettledDoesNotReopenIt(t *testing.T) {
+	ctx := context.Background()
+	store := MemoryRuns()
+	for _, record := range []RunRecord{
+		{Action: RunAdmitted, TimeMS: 1, SessionID: "s", RunID: "held"},
+		{Action: RunAdmitted, TimeMS: 2, SessionID: "s", RunID: "redelivered", Replaces: "held"},
+		{Action: RunStarted, TimeMS: 3, SessionID: "s", RunID: "held"},
+	} {
+		if err := store.AppendRun(ctx, record); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if runs, err := store.OpenRuns(ctx, "s"); err != nil || len(runs) != 1 || runs[0].RunID != "redelivered" {
+		t.Fatalf("open runs = %+v, %v; want redelivered alone", runs, err)
+	}
+	if runs := openRuns([]RunRecord{
+		{Action: RunAdmitted, TimeMS: 1, SessionID: "s", RunID: "held"},
+		{Action: RunAdmitted, TimeMS: 2, SessionID: "s", RunID: "redelivered", Replaces: "held"},
+		{Action: RunStarted, TimeMS: 3, SessionID: "s", RunID: "held"},
+		{Action: RunAdmitted, TimeMS: 4, SessionID: "s", RunID: "done"},
+		{Action: RunSettled, TimeMS: 5, SessionID: "s", RunID: "done"},
+		{Action: RunStarted, TimeMS: 6, SessionID: "s", RunID: "done"},
+	}, "s"); len(runs) != 1 || runs[0].RunID != "redelivered" {
+		t.Fatalf("over a kept log: %+v, want redelivered alone", runs)
+	}
+}
+
+func TestAHeldPromptKeepsItsRootRunIDAcrossReDeliveries(t *testing.T) {
+	ctx := context.Background()
+	file, err := RunsFile(filepath.Join(t.TempDir(), "runs.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, store := range map[string]Runs{"memory": MemoryRuns(), "file": file} {
+		for _, record := range []RunRecord{
+			{Action: RunAdmitted, TimeMS: 1, SessionID: "s", RunID: "held"},
+			{Action: RunAdmitted, TimeMS: 2, SessionID: "s", RunID: "after"},
+			{Action: RunAdmitted, TimeMS: 3, SessionID: "s", RunID: "first", Replaces: "held"},
+			{Action: RunAdmitted, TimeMS: 4, SessionID: "s", RunID: "second", Replaces: "first"},
+		} {
+			if err := store.AppendRun(ctx, record); err != nil {
+				t.Fatal(err)
+			}
+		}
+		runs, err := store.OpenRuns(ctx, "s")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(runs) != 2 || runs[0].RunID != "second" || runs[0].Root != "held" || runs[1].Root != "after" {
+			t.Fatalf("%s: open runs = %+v, want second rooted at held, then after rooted at itself", name, runs)
+		}
+	}
+}
