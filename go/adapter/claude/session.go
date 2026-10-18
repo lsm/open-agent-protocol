@@ -42,6 +42,7 @@ type Session struct {
 
 	nativeSessionID string
 	participant     protocol.ParticipantID
+	provided        []protocol.ToolDefinition
 	state           protocol.SessionState
 	closed          bool
 	unusable        bool
@@ -345,6 +346,10 @@ func (s *Session) reduceControl(control *rpc.IncomingControl) {
 		s.answerHook(control, hook)
 		return
 	}
+	if message, ok := control.Value.(*native.MCPMessageRequest); ok {
+		s.answerMCP(control, message)
+		return
+	}
 	ask, ok := control.Value.(*native.CanUseToolRequest)
 	if !ok {
 
@@ -360,7 +365,7 @@ func (s *Session) answerHook(control *rpc.IncomingControl, hook *native.HookCall
 		s.foreignActivity(fmt.Sprintf("hook callback %q", hook.CallbackID))
 		return
 	}
-	if !s.currentRun().excludes(hook.Input.ToolName) {
+	if !s.currentRun().excludes(s.bareName(hook.Input.ToolName)) {
 		_ = control.Respond(context.Background(), native.HookContinue{})
 		return
 	}
@@ -422,7 +427,7 @@ func (s *Session) projectCatalogLocked(init *native.InitFrame) {
 	var servers []string
 	seenServers := make(map[string]bool, len(init.MCPServers))
 	for _, server := range init.MCPServers {
-		if server.Name == "" || seenServers[server.Name] {
+		if server.Name == "" || seenServers[server.Name] || len(s.provided) > 0 && server.Name == providedServer {
 			continue
 		}
 		seenServers[server.Name] = true
@@ -435,6 +440,11 @@ func (s *Session) projectCatalogLocked(init *native.InitFrame) {
 	catalog := make([]protocol.ToolDefinition, 0, len(init.Tools))
 	seen := make(map[string]bool, len(init.Tools))
 	for _, name := range init.Tools {
+		if bare, ok := s.providedName(name); ok {
+			catalog = s.withProvidedLocked(catalog, bare)
+			seen[bare] = true
+			continue
+		}
 		if name == "" || seen[name] {
 			continue
 		}
@@ -841,7 +851,7 @@ func (s *Session) openGate(control *rpc.IncomingControl, ask *native.CanUseToolR
 		s.foreignActivity("can_use_tool outside an owned run")
 		return
 	}
-	if run.excludes(ask.ToolName) {
+	if run.excludes(s.bareName(ask.ToolName)) {
 		s.refuseByPolicy(control, native.PermissionDeny{Behavior: "deny", Message: policyRefusal(ask.ToolName)}, ask.ToolUseID)
 		return
 	}
