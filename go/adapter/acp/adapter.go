@@ -166,6 +166,7 @@ func (a *Adapter) Probe(ctx context.Context) (base.Descriptor, error) {
 		"session.open":                   {Level: protocol.SupportNative},
 		protocol.FeatureOpenReopen:       {Level: protocol.SupportNative, Reason: reopenSupportReason},
 		"session.state":                  {Level: protocol.SupportEmulated, Reason: "adapter-owned projection"},
+		protocol.FeatureModelsList:       {Level: protocol.SupportDegraded, Reason: "the values of the agent's configOption whose category is model, with its currentValue as the current model; the category is a UI hint and the list carries no provider, context window or pricing; an agent that reports none refuses"},
 		protocol.FeatureSessionReasoning: {Level: protocol.SupportEmulated, Modes: []string{protocol.ModeSessionOpen}, Reason: "session/set_config_option on the agent's thought_level option, matched by value or name and confirmed in the returned option list; an agent that offers none refuses every level"},
 		protocol.FeatureCompactionPolicy: {Level: protocol.SupportUnavailable, Reason: "ACP has no compaction setting; an agent's own threshold is its configuration"},
 		"session.message.submit":         {Level: protocol.SupportEmulated, Reason: "admission is synthesized after the prompt request is written"},
@@ -268,6 +269,7 @@ func (a *Adapter) Open(ctx context.Context, req base.OpenRequest) (base.Session,
 	if req.Reopen || len(a.config.SessionConfig) > 0 {
 		s.state.CurrentModelID, s.state.ReasoningLevel = resumedSettings(opened.ConfigOptions)
 	}
+	s.recordModels(opened.ConfigOptions)
 	if req.ReasoningLevel != "" {
 		s.state.ReasoningLevel = req.ReasoningLevel
 	}

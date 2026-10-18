@@ -15,7 +15,7 @@
     "timestamp_ms": 4,
     "session_id": "session",
     "run_id": "run-b",
-    "capability_revision": "acp-v1.11.0-schema-v1.25.0-oap-v5"
+    "capability_revision": "acp-v1.11.0-schema-v1.25.0-oap-v6"
   },
   {
     "protocol": "open-agent-protocol",
@@ -36,7 +36,7 @@
     "timestamp_ms": 5,
     "session_id": "session",
     "run_id": "run-b",
-    "capability_revision": "acp-v1.11.0-schema-v1.25.0-oap-v5"
+    "capability_revision": "acp-v1.11.0-schema-v1.25.0-oap-v6"
   },
   {
     "protocol": "open-agent-protocol",
@@ -63,7 +63,7 @@
     "timestamp_ms": 6,
     "session_id": "session",
     "run_id": "run-b",
-    "capability_revision": "acp-v1.11.0-schema-v1.25.0-oap-v5",
+    "capability_revision": "acp-v1.11.0-schema-v1.25.0-oap-v6",
     "extensions": {
       "com.agentclientprotocol.context": {
         "size_tokens": 262000,

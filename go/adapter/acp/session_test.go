@@ -568,7 +568,7 @@ func TestProbeIsConservative(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, feature := range []string{"filesystem", "terminal", "models.list", "action.tools.list"} {
+	for _, feature := range []string{"filesystem", "terminal", "action.tools.list"} {
 		if _, ok := d.Capabilities.Features[feature]; ok {
 			t.Fatalf("unexpected capability %s", feature)
 		}

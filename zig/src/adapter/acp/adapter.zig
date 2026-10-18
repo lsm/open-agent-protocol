@@ -76,12 +76,33 @@ fn matchingValue(listed: ?std.json.Value, level: []const u8) ?[]const u8 {
     return null;
 }
 
+const ModelValue = struct { value: []const u8, name: []const u8 };
+
+fn collectModels(keep: std.mem.Allocator, listed: ?std.json.Value, out: *std.ArrayList(ModelValue)) !void {
+    const values = listed orelse return;
+    if (values != .array) return;
+    for (values.array.items) |entry| {
+        const value = fieldText(entry, "value");
+        if (value.len != 0) {
+            const kept_value = try keep.dupe(u8, value);
+            const kept_name = try keep.dupe(u8, fieldText(entry, "name"));
+            try out.append(keep, .{ .value = kept_value, .name = kept_name });
+        }
+        try collectModels(keep, memberOf(entry, "options"), out);
+    }
+}
+
+fn usableModel(value: []const u8) bool {
+    return value.len > 0 and !std.mem.eql(u8, value, "default") and !std.mem.eql(u8, value, "current");
+}
+
 const features = [_]contract.Feature{
     .{ .key = "protocol.initialize", .level = .emulated, .reason = "ACP initialize is normalized into the OAP adapter boundary" },
     .{ .key = "capabilities", .level = .emulated, .reason = "effective support is synthesized conservatively from stable ACP v1 and adapter policy" },
     .{ .key = "session.open", .level = .native },
     .{ .key = contract.feature_open_reopen, .level = .native, .reason = reopen_support_reason },
     .{ .key = "session.state", .level = .emulated, .reason = "adapter-owned projection" },
+    .{ .key = contract.feature_models_list, .level = .degraded, .reason = "the values of the agent's configOption whose category is model, with its currentValue as the current model; the category is a UI hint and the list carries no provider, context window or pricing; an agent that reports none refuses" },
     .{ .key = contract.feature_session_reasoning, .level = .emulated, .reason = "session/set_config_option on the agent's thought_level option, matched by value or name and confirmed in the returned option list; an agent that offers none refuses every level", .modes = &.{contract.mode_session_open} },
     .{ .key = contract.feature_compaction_policy, .level = .unavailable, .reason = "ACP has no compaction setting; an agent's own threshold is its configuration" },
     .{ .key = "session.message.submit", .level = .emulated, .reason = "admission is synthesized after the prompt request is written" },
@@ -166,10 +187,11 @@ const Kept = struct {
     native_id: []const u8,
     reported_level: ?[]const u8,
     reported_model: ?[]const u8,
+    models: []ModelValue,
     sources: []oap_types.ToolSourceDescriptor,
     statuses: std.StringHashMapUnmanaged([]const u8),
 
-    fn copy(keep: std.mem.Allocator, native_id: []const u8, sources: []const oap_types.ToolSourceDescriptor, statuses: std.StringHashMapUnmanaged([]const u8), reported_model: ?[]const u8, reported_level: ?[]const u8) !Kept {
+    fn copy(keep: std.mem.Allocator, native_id: []const u8, sources: []const oap_types.ToolSourceDescriptor, statuses: std.StringHashMapUnmanaged([]const u8), reported_model: ?[]const u8, reported_level: ?[]const u8, models: []const ModelValue) !Kept {
         const kept_native_id = try keep.dupe(u8, native_id);
         const kept_sources = try keep.alloc(oap_types.ToolSourceDescriptor, sources.len);
         for (sources, kept_sources) |source, *slot| slot.* = try ownedSource(keep, source);
@@ -183,14 +205,20 @@ const Kept = struct {
         }
         const kept_model = if (reported_model) |model| try keep.dupe(u8, model) else null;
         const kept_level = if (reported_level) |level| try keep.dupe(u8, level) else null;
-        return .{ .native_id = kept_native_id, .sources = kept_sources, .statuses = kept_statuses, .reported_model = kept_model, .reported_level = kept_level };
+        const kept_models = try keep.alloc(ModelValue, models.len);
+        for (models, kept_models) |model, *slot| {
+            const value = try keep.dupe(u8, model.value);
+            const name = try keep.dupe(u8, model.name);
+            slot.* = .{ .value = value, .name = name };
+        }
+        return .{ .native_id = kept_native_id, .sources = kept_sources, .statuses = kept_statuses, .reported_model = kept_model, .reported_level = kept_level, .models = kept_models };
     }
 };
 
 fn keptProbe(allocator: std.mem.Allocator, sources: []const oap_types.ToolSourceDescriptor, statuses: std.StringHashMapUnmanaged([]const u8)) !void {
     var fresh = std.heap.ArenaAllocator.init(allocator);
     defer fresh.deinit();
-    _ = try Kept.copy(fresh.allocator(), "native-session", sources, statuses, "resumed-model", "high");
+    _ = try Kept.copy(fresh.allocator(), "native-session", sources, statuses, "resumed-model", "high", &.{.{ .value = "model-a", .name = "Model A" }});
 }
 
 const Attached = struct {
@@ -322,6 +350,8 @@ pub const Session = struct {
     gpa: std.mem.Allocator,
     reported_level: ?[]const u8 = null,
     reported_model: ?[]const u8 = null,
+    model_values: []ModelValue = &.{},
+    offers_models: bool = false,
     recovered: bool = false,
     id: []u8,
     participant: []u8,
@@ -381,6 +411,7 @@ pub const Session = struct {
             self.native_id = native_session.string;
             break :fresh result;
         };
+        try self.recordModels(memberOf(created, "configOptions"));
         self.reducer = session.Reducer.init(self.reducer_arena, .{
             .session_id = self.id,
             .native_id = self.native_id,
@@ -455,6 +486,21 @@ pub const Session = struct {
         try params.put(arena, "mcpServers", .{ .array = std.json.Array.init(arena) });
         _ = try self.call(arena, "session/load", .{ .object = params }, refusal);
         return replayedTurns(arena, replayed.items);
+    }
+
+    fn recordModels(self: *Session, offered: ?std.json.Value) contract.Failure!void {
+        const options = offered orelse return;
+        if (options != .array) return;
+        for (options.array.items) |option| {
+            if (!std.mem.eql(u8, fieldText(option, "category"), "model")) continue;
+            var listed: std.ArrayList(ModelValue) = .empty;
+            try collectModels(self.owned(), memberOf(option, "options"), &listed);
+            self.model_values = listed.items;
+            self.offers_models = true;
+            const current = fieldText(option, "currentValue");
+            if (self.reported_model == null and usableModel(current)) self.reported_model = try self.owned().dupe(u8, current);
+            return;
+        }
     }
 
     fn resumedSettings(self: *Session, offered: ?std.json.Value) contract.Failure!void {
@@ -551,6 +597,7 @@ pub const Session = struct {
         .id = idOf,
         .native_id = nativeId,
         .state = state,
+        .models = models,
         .submit = submit,
         .resolve = resolve,
         .cancel = cancel,
@@ -598,7 +645,7 @@ pub const Session = struct {
 
         var fresh = std.heap.ArenaAllocator.init(self.gpa);
         errdefer fresh.deinit();
-        const kept = try Kept.copy(fresh.allocator(), self.native_id, self.sources, self.statuses, self.reported_model, self.reported_level);
+        const kept = try Kept.copy(fresh.allocator(), self.native_id, self.sources, self.statuses, self.reported_model, self.reported_level, self.model_values);
 
         var options = self.reducer.options;
         options.native_id = kept.native_id;
@@ -611,6 +658,7 @@ pub const Session = struct {
         self.native_id = kept.native_id;
         self.reported_level = kept.reported_level;
         self.reported_model = kept.reported_model;
+        self.model_values = kept.models;
         self.sources = kept.sources;
         self.statuses = kept.statuses;
         self.asks = .empty;
@@ -878,6 +926,23 @@ pub const Session = struct {
 
     fn idOf(ptr: *anyopaque) []const u8 {
         return cast(ptr).id;
+    }
+
+    fn models(ptr: *anyopaque, arena: std.mem.Allocator, request: *const oap_types.ModelsRequest, refusal: *contract.Refusal) contract.Failure!contract.Catalog {
+        const self = cast(ptr);
+        if (self.ended) return error.SessionClosed;
+        if (!request.allowsDegraded(contract.feature_models_list)) return refusal.degraded(contract.feature_models_list);
+        if (request.session_id.len > 0 and !std.mem.eql(u8, request.session_id, self.id)) return error.RunNotFound;
+        if (!self.offers_models) return refusal.unsupported(contract.feature_models_list, contract.reason_unsatisfiable);
+        const listed = try arena.alloc(oap_types.ModelDescriptor, self.model_values.len);
+        for (self.model_values, listed) |model, *slot| {
+            const model_id = try arena.dupe(u8, model.value);
+            const display_name: ?[]const u8 = if (model.name.len > 0) try arena.dupe(u8, model.name) else null;
+            const current = if (self.reported_model) |reported| std.mem.eql(u8, reported, model.value) else false;
+            slot.* = .{ .id = model_id, .display_name = display_name, .default = current };
+        }
+        const current_model_id: ?[]const u8 = if (self.reported_model) |reported| try arena.dupe(u8, reported) else null;
+        return .{ .revision = capability_revision, .response = .{ .session_id = self.id, .current_model_id = current_model_id, .models = listed } };
     }
 
     fn state(ptr: *anyopaque, arena: std.mem.Allocator, refusal: *contract.Refusal) contract.Failure!oap_types.SessionState {
@@ -1319,6 +1384,46 @@ test "an open sets the agent's thought_level option and reports the level, refus
     defer bare.deinit();
     try testing.expectError(error.UnsupportedFeature, bare.adapter.adapter().open(bare.arena.allocator(), .{ .session_id = "s2", .participant = "user", .reasoning_level = "high" }, &refusal));
     try testing.expectEqualStrings(contract.feature_session_reasoning, refusal.feature);
+}
+
+test "the agent's model option is the models list, its current value the current model, and an agent with none refuses" {
+    var probe: Probe = undefined;
+    try probe.init(
+        \\#!/bin/sh
+        \\exec 3>>"$(dirname "$0")/stdin.log"
+        \\take() { IFS= read -r line || exit 0; printf '%s\n' "$line" >&3; }
+        \\take; printf '{"id":1,"jsonrpc":"2.0","result":{"agentCapabilities":{},"protocolVersion":1}}\n'
+        \\take; printf '{"id":2,"jsonrpc":"2.0","result":{"sessionId":"native-session","configOptions":[{"id":"mode","category":"mode","currentValue":"code","options":[{"value":"code","name":"Code"}]},{"id":"model","name":"Model","category":"model","type":"select","currentValue":"sol-medium","options":[{"value":"adaptive","name":"Adaptive"},{"group":"GPT","options":[{"value":"sol-medium","name":"Sol Medium"},{"value":"luna-medium"}]}]}]}}\n'
+        \\
+    ++ fake_idle);
+    defer probe.deinit();
+    var refusal = contract.Refusal{};
+    const opened = try probe.adapter.adapter().open(probe.arena.allocator(), .{ .session_id = "s1", .participant = "user" }, &refusal);
+    probe.handle = opened;
+    const lister = opened.vtable.models.?;
+    const catalog = try lister(opened.ptr, probe.arena.allocator(), &.{ .session_id = "s1", .allow_degraded_features = &.{"models.list"} }, &refusal);
+    try testing.expectEqualStrings(capability_revision, catalog.revision);
+    try testing.expectEqualStrings("sol-medium", catalog.response.current_model_id.?);
+    try testing.expectEqual(@as(usize, 3), catalog.response.models.len);
+    try testing.expectEqualStrings("adaptive", catalog.response.models[0].id);
+    try testing.expectEqualStrings("Adaptive", catalog.response.models[0].display_name.?);
+    try testing.expect(!catalog.response.models[0].default);
+    try testing.expectEqualStrings("sol-medium", catalog.response.models[1].id);
+    try testing.expect(catalog.response.models[1].default);
+    try testing.expectEqualStrings("luna-medium", catalog.response.models[2].id);
+    try testing.expect(catalog.response.models[2].display_name == null);
+    try testing.expectEqualStrings("sol-medium", (try opened.state(probe.arena.allocator(), &refusal)).current_model_id.?);
+    try testing.expectError(error.CapabilityDegraded, lister(opened.ptr, probe.arena.allocator(), &.{ .session_id = "s1" }, &refusal));
+    try testing.expectError(error.RunNotFound, lister(opened.ptr, probe.arena.allocator(), &.{ .session_id = "elsewhere", .allow_degraded_features = &.{"models.list"} }, &refusal));
+
+    var bare: Probe = undefined;
+    try bare.init(fake_prelude ++ fake_idle);
+    defer bare.deinit();
+    const plain = try bare.adapter.adapter().open(bare.arena.allocator(), .{ .session_id = "s2", .participant = "user" }, &refusal);
+    bare.handle = plain;
+    try testing.expectError(error.UnsupportedFeature, plain.vtable.models.?(plain.ptr, bare.arena.allocator(), &.{ .session_id = "s2", .allow_degraded_features = &.{"models.list"} }, &refusal));
+    try testing.expectEqualStrings(contract.feature_models_list, refusal.feature);
+    try testing.expect((try plain.state(bare.arena.allocator(), &refusal)).current_model_id == null);
 }
 
 test "an open writes initialize and session/new, with the agent's working directory" {
