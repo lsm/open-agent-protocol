@@ -237,6 +237,20 @@ sequenceDiagram
     O->>S: SIGTERM, then kill after the grace period
 ```
 
+To run the terminal UI over OpenCode:
+
+```sh
+oapx opencode install
+oapx tui --backend opencode
+```
+
+`oapx opencode install` downloads the OpenCode build the catalog pins for this
+platform (`v2.0.26`), checks its sha256, and unpacks it under
+`~/.oapx/opencode/<version>`. `oapx tui --backend opencode` then starts that
+server, runs the terminal UI over it, and stops it on exit. With
+`--config <path>` it takes the registry entry named `opencode` instead, and an
+entry naming an `endpoint` attaches to a server that is already running.
+
 ## The combined endpoint
 
 Run the combined endpoint with:

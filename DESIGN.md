@@ -237,7 +237,7 @@ At minimum:
 
 ### 8.3 Low-level socket/C-C++ interop options (Batch G note)
 
-1. **Option A (default): pure Zig + Zig 0.16 `std.Io` networking**
+1. **Option A (default): pure Zig + Zig 0.17 `std.Io` networking**
    - continue improving current websocket transport and tests
    - lowest integration risk and simplest ownership model
    - Makai does not currently depend on `libxev`; any future event-loop backend must pass the objective gate below before adoption
