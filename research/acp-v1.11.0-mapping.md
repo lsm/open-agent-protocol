@@ -117,3 +117,30 @@ Rules both trees hold, pinned by tests and the `usage-fold` case:
   turn counts. No cost is derived from token counts.
 - Member names are matched as Go's `encoding/json` matches them: case-folded, last
   duplicate wins.
+
+## Models list
+
+Both adapters now answer `models.request` from the agent's own model
+configuration. That changes the capability descriptor, so the revision moves
+to `acp-v1.11.0-schema-v1.25.0-oap-v6`. No ACP wire changed.
+
+| ACP | OAP |
+|---|---|
+| the `configOptions` entry whose `category` is `model`, from `session/new` (or from the reopen result) | the session's models list |
+| each of its values, nested groups flattened | a `ModelDescriptor`: `value` is `id`, `name` is `display_name` when present |
+| its `currentValue`, unless empty, `default` or `current` | `current_model_id`, in `session.state` as well as in the list, and `default: true` on that entry |
+
+It is advertised **degraded** and needs `allow_degraded_features:
+["models.list"]`. The v1.7.0 ledger records why: ACP categories are UI hints,
+and a `model` option "does not prove OAP `models.list`, provider metadata,
+context limits, pricing, or per-run selection". The list carries an id and a
+name only, with no `provider_id` or `context_window`. An agent that reports no
+`model` option refuses with `unsupported_feature` (`unsatisfiable`), as one
+with no `thought_level` option refuses a reasoning level.
+
+Live evidence, from lsm/hyperneo-review: Devin's `session/new` (via `devin
+acp`, no prompt) reports a `model` option with about 130 values, alongside
+`mode`, `thought_level` and `model_config`. The corpus's `session-reopen` case
+carries a `model` option, but no corpus case sends `models.request`, so no
+expectation changed beyond the revision. The behaviour is pinned by unit tests
+in both trees.

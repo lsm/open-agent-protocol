@@ -36,6 +36,8 @@ type session struct {
 	nativeID     string
 	participant  protocol.ParticipantID
 	state        protocol.SessionState
+	models       []native.ConfigValue
+	offersModels bool
 	closed       bool
 	active       *runState
 	runs         map[protocol.RunID]*runState
