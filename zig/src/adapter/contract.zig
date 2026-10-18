@@ -301,6 +301,7 @@ pub const Adapter = struct {
     pub const VTable = struct {
         probe: *const fn (ptr: *anyopaque, refusal: *Refusal) Failure!Descriptor,
         open: *const fn (ptr: *anyopaque, arena: std.mem.Allocator, request: OpenRequest, refusal: *Refusal) Failure!Session,
+        admit: ?*const fn (ptr: *anyopaque, arena: std.mem.Allocator, request: OpenRequest, refusal: *Refusal) Failure!void = null,
         native_list: ?*const fn (ptr: *anyopaque, arena: std.mem.Allocator, request: NativeListRequest, refusal: *Refusal) Failure![]const NativeSession = null,
         native_link: ?*const fn (ptr: *anyopaque, arena: std.mem.Allocator, native_id: []const u8) std.mem.Allocator.Error![]const u8 = null,
         native_read: ?*const fn (ptr: *anyopaque, arena: std.mem.Allocator, request: NativeReadRequest, refusal: *Refusal) Failure![]const NativeTurn = null,
@@ -334,7 +335,13 @@ pub const Adapter = struct {
     }
 
     pub fn open(self: Adapter, arena: std.mem.Allocator, request: OpenRequest, refusal: *Refusal) Failure!Session {
+        try self.admit(arena, request, refusal);
         return self.vtable.open(self.ptr, arena, request, refusal);
+    }
+
+    pub fn admit(self: Adapter, arena: std.mem.Allocator, request: OpenRequest, refusal: *Refusal) Failure!void {
+        const admits = self.vtable.admit orelse return;
+        return admits(self.ptr, arena, request, refusal);
     }
 };
 
@@ -607,6 +614,43 @@ fn submitWith(model_id: ?[]const u8, instructions: ?[]const u8, output_schema: ?
         .tool_choice_json = tool_choice,
         .allow_degraded_features = allowed,
     };
+}
+
+const Gated = struct {
+    opened: usize = 0,
+
+    fn adapter(self: *Gated) Adapter {
+        return .{ .ptr = self, .vtable = &.{ .probe = gatedProbe, .open = gatedOpen, .admit = gatedAdmit } };
+    }
+
+    fn gatedProbe(ptr: *anyopaque, refusal: *Refusal) Failure!Descriptor {
+        _ = ptr;
+        return refusal.fail(error.BackendFailed, "not probed");
+    }
+
+    fn gatedOpen(ptr: *anyopaque, arena: std.mem.Allocator, request: OpenRequest, refusal: *Refusal) Failure!Session {
+        _ = arena;
+        _ = request;
+        const self: *Gated = @ptrCast(@alignCast(ptr));
+        self.opened += 1;
+        return refusal.fail(error.BackendFailed, "opened");
+    }
+
+    fn gatedAdmit(ptr: *anyopaque, arena: std.mem.Allocator, request: OpenRequest, refusal: *Refusal) Failure!void {
+        _ = ptr;
+        _ = arena;
+        if (request.reasoning_level != null) return refusal.unsupported(feature_session_reasoning, reason_unsatisfiable);
+    }
+};
+
+test "open admits the request first, so whatever admit refuses is never opened" {
+    var gated = Gated{};
+    var refusal = Refusal{};
+    try testing.expectError(error.UnsupportedFeature, gated.adapter().open(testing.allocator, .{ .participant = "p", .reasoning_level = "max" }, &refusal));
+    try testing.expectEqualStrings(feature_session_reasoning, refusal.feature);
+    try testing.expectEqual(@as(usize, 0), gated.opened);
+    try testing.expectError(error.BackendFailed, gated.adapter().open(testing.allocator, .{ .participant = "p" }, &refusal));
+    try testing.expectEqual(@as(usize, 1), gated.opened);
 }
 
 test "a descriptor reports a key it never listed as unavailable" {
