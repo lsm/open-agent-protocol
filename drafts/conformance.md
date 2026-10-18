@@ -764,7 +764,7 @@ An implementation conforms if it:
 - reports a gap only on a read that named a cursor, resuming at the first entry
   it returns (`transcript_gap_mismatch`).
 
-The 4 MiB page bound and the code-point cut of a `truncated` entry are the
+The 512 KiB page bound and the code-point cut of a `truncated` entry are the
 endpoint's to honour; a trace cannot tell a page that stopped at the byte bound
 from one that stopped at the end.
 

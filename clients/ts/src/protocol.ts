@@ -443,7 +443,7 @@ export interface TranscriptLoadResponse {
   entries: TranscriptEntry[];
   next_cursor?: string;
   complete: boolean;
-  gap?: { reason: 'pruned' | 'unknown_cursor'; resumed_at?: string };
+  gap?: { reason: 'pruned' | 'rewritten'; resumed_at?: string };
 }
 
 export interface SessionStateRequest {

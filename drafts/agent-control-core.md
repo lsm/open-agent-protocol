@@ -508,10 +508,11 @@ an optional opaque `cursor` and a `limit` from 1 to 500, default 100) with
 `transcript.load.response`: entries oldest first, each an `entry_id`, a `kind`
 (`message` carrying a core message, `compaction` carrying its summary, and any
 later kind a host skips), and optionally `at_ms`, `run_id`, `truncated` and
-`extensions`. `complete: false` comes with a `next_cursor`. A cursor whose entry
-the store has dropped answers from the oldest entry held with
-`gap: {reason, resumed_at}`, `resumed_at` naming the first entry returned; one
-the endpoint did not mint is refused `invalid_cursor`
+`extensions`. A page stops before 512 KiB, and `complete: false` comes with a
+`next_cursor`. A cursor whose entry the store no longer holds answers from the
+oldest entry held with `gap: {reason, resumed_at}`, the reason `pruned` or
+`rewritten` and `resumed_at` naming the first entry returned; one that does not
+decode or names another session is refused `invalid_cursor`
 ([Decision 0051](../decisions/0051-transcript-load.md)).
 
 An endpoint advertising `session.reasoning` or `session.compaction.policy` in

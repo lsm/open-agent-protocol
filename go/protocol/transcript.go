@@ -10,7 +10,7 @@ const FeatureTranscriptLoad = "session.transcript.load"
 const (
 	TranscriptLoadDefaultLimit = 100
 	TranscriptLoadMaxLimit     = 500
-	TranscriptPageBytes        = 4 << 20
+	TranscriptPageBytes        = 512 << 10
 )
 
 type TranscriptEntryID string
@@ -52,8 +52,8 @@ type TranscriptEntry struct {
 type TranscriptGapReason string
 
 const (
-	TranscriptGapPruned        TranscriptGapReason = "pruned"
-	TranscriptGapUnknownCursor TranscriptGapReason = "unknown_cursor"
+	TranscriptGapPruned    TranscriptGapReason = "pruned"
+	TranscriptGapRewritten TranscriptGapReason = "rewritten"
 )
 
 type TranscriptGap struct {

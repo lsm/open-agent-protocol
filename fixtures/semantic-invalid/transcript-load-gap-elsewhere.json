@@ -65,7 +65,7 @@
       ],
       "complete": true,
       "gap": {
-        "reason": "unknown_cursor",
+        "reason": "rewritten",
         "resumed_at": "e1"
       }
     }
