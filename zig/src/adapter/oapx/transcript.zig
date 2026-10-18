@@ -250,6 +250,7 @@ test "an entry too large even with every text emptied reduces its parts to their
     try testing.expect((try std.json.Stringify.valueAlloc(a, cut_page.entries[0], .{})).len <= contract.transcript_page_bytes);
     const listed = cut_page.entries[0].object.get("message").?.object.get("content").?.array.items;
     try testing.expect(listed.len >= 2 and listed.len < parts.len);
+    try testing.expectEqualStrings("assistant", cut_page.entries[0].object.get("message").?.object.get("role").?.string);
     try testing.expectEqualStrings("text", listed[1].object.get("type").?.string);
     try testing.expectEqualStrings("tool_call", listed[1].object.get("text").?.string);
 }

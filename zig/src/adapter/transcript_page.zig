@@ -164,8 +164,10 @@ fn cutMessage(arena: std.mem.Allocator, message: std.json.Value, plan: Cut) !std
             var parts = try std.json.Array.initCapacity(arena, kept.len);
             for (kept) |part| parts.appendAssumeCapacity(try cutValue(arena, part, plan));
             try out.put(arena, member.key_ptr.*, .{ .array = parts });
-        } else {
+        } else if (std.mem.eql(u8, member.key_ptr.*, "content")) {
             try out.put(arena, member.key_ptr.*, try cutValue(arena, held, plan));
+        } else {
+            try out.put(arena, member.key_ptr.*, held);
         }
     }
     return .{ .object = out };
