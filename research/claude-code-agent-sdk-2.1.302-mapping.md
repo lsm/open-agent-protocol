@@ -89,7 +89,7 @@ behaviour this adapter depends on:
 
 | Change | Classification |
 | --- | --- |
-| **An omitted `permissionMode` now starts in `default` instead of `auto` on third-party providers, with telemetry off or on a fresh install** | **behaviour change for hosts; the adapter is unchanged.** Checked on both binaries with the adapter's own flags (`-p --input-format stream-json --output-format stream-json --verbose --permission-prompt-tool stdio`), a fresh `HOME` and `CLAUDE_CONFIG_DIR`, a loopback `ANTHROPIC_BASE_URL` and a placeholder key: 2.1.296's `system/init` reports `permissionMode: "auto"`, and 2.1.302's reports `"default"`. The adapter passes no `--permission-mode`. So under a custom base URL, a tool call that `auto` mode would have approved now reaches the host as a `can_use_tool` request, which the adapter projects as `action.permission.requested`. A host that does not answer permission requests will see such a run wait. |
+| **An omitted `permissionMode` now starts in `default` instead of `auto` on third-party providers, with telemetry off or on a fresh install** | **behaviour change for hosts; the adapter is unchanged.** Checked on both binaries with the adapter's own flags (`-p --input-format stream-json --output-format stream-json --verbose --permission-prompt-tool stdio`), a fresh `HOME` and `CLAUDE_CONFIG_DIR`, a loopback `ANTHROPIC_BASE_URL` and a placeholder key: 2.1.296's `system/init` reports `permissionMode: "auto"`, and 2.1.302's reports `"default"`. The adapter passes no `--permission-mode`. So under a custom base URL, a tool call that `auto` mode would have approved now reaches the host as a `can_use_tool` request, which the adapter projects as a `user.input.requested` the opener answers through `user.input.resolve`. A host that does not answer permission requests will see such a run wait. |
 | A structured-output result whose API response was refused is now an error with no `structured_output` | unchanged mapping: an error result settles `run.failed`, and the adapter relays `structured_output` only when present |
 | Fork subagents (`subagent_type: "fork"`) are on by default | ignored: subagent frames already carry `agent_id` and are passed over, as recorded at 2.1.296 |
 | `thinking: { type: 'disabled' }` and `maxThinkingTokens: 0` run as adaptive thinking on models that cannot turn thinking off | unused: the adapter sets neither |
@@ -199,7 +199,7 @@ SDK-hosted server, whose tool stayed listed and ran under `--tools Read`. What
 governs the check is `--allowedTools`. With `mcp__oap__echo` pre-allowed, the
 probe's call reached `tools/call` with no `can_use_tool`; without it, a
 `can_use_tool` naming the tool, with `mcp_server.source: "sdk"`, came first,
-which the adapter projects as `action.permission.requested`.
+which the adapter projects as a `user.input.requested` the opener answers through `user.input.resolve`.
 
 What `action.tools.provide` would map to:
 
