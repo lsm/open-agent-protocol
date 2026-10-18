@@ -5124,10 +5124,11 @@ fn runOapxServe(
         if (try writeOapAuthOutbound(&output, allocator, &auth_adapter)) did_work = true;
         if (serve_provider and try drainOapProviderOutbound(&output, allocator, &provider_server)) did_work = true;
 
+        if (try endpoint.shutdownComplete()) break;
         if (oapInputEnded(stdin_stream) and !did_work and running_inferences.items.len == 0 and oap_auth_server.activeFlowCount() == 0) break;
         if (!did_work) compat.time.sleepNs(STDIO_IDLE_SLEEP_NS);
     }
-    try endpoint.finish(adapter_endpoint.default_settle_window_ns, backendClock);
+    try endpoint.finish(if (endpoint.shutdown == .force) 0 else adapter_endpoint.default_settle_window_ns, backendClock);
     _ = try writeEndpointOutbound(&output, allocator, &endpoint);
     _ = try writeOapAuthOutbound(&output, allocator, &auth_adapter);
     if (serve_provider) _ = try drainOapProviderOutbound(&output, allocator, &provider_server);
@@ -5795,8 +5796,9 @@ fn runBackendMode(
         }
         if (!did_work) compat.time.sleepNs(STDIO_IDLE_SLEEP_NS);
         _ = try writeEndpointOutbound(&output, allocator, &endpoint);
+        if (try endpoint.shutdownComplete()) break;
     }
-    try endpoint.finish(adapter_endpoint.default_settle_window_ns, backendClock);
+    try endpoint.finish(if (endpoint.shutdown == .force) 0 else adapter_endpoint.default_settle_window_ns, backendClock);
     _ = try writeEndpointOutbound(&output, allocator, &endpoint);
 }
 
