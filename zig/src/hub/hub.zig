@@ -2155,6 +2155,9 @@ test "an open electing what the adapter does not advertise is refused for that, 
     try testing.expectEqualStrings(contract.feature_session_reasoning, refusal.reason.feature);
     try testing.expectError(error.SessionExists, hub.open(arena, "memory", .{ .session_id = "alpha" }));
     try testing.expectEqual(@as(usize, 1), hub.sessionCount());
+    refusal = .{};
+    try testing.expectError(error.UnsupportedFeature, hub.openReporting(arena, "memory", .{ .session_id = "alpha", .compaction_policy_json = "{\"kind\":\"sometimes\"}" }, &refusal));
+    try testing.expectEqualStrings(contract.feature_compaction_policy, refusal.reason.feature);
 }
 
 const Admitting = struct {
