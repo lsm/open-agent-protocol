@@ -55,6 +55,30 @@ fn sameRun(a: Record, b: Record) bool {
     return std.mem.eql(u8, a.session_id, b.session_id) and std.mem.eql(u8, a.run_id, b.run_id);
 }
 
+fn collectOpen(arena: std.mem.Allocator, held: []const Record, session_id: []const u8) ![]Open {
+    var open_runs: std.ArrayList(Open) = .empty;
+    for (held) |record| {
+        if (!std.mem.eql(u8, record.session_id, session_id)) continue;
+        const found = for (open_runs.items, 0..) |run, index| {
+            if (std.mem.eql(u8, run.run_id, record.run_id)) break index;
+        } else null;
+        if (record.action == .settled) {
+            if (found) |index| _ = open_runs.orderedRemove(index);
+            continue;
+        }
+        const index = found orelse blk: {
+            try open_runs.append(arena, .{ .run_id = record.run_id, .admitted_ms = record.time_ms, .started = false, .request = null });
+            break :blk open_runs.items.len - 1;
+        };
+        switch (record.action) {
+            .admitted => open_runs.items[index].request = record.request,
+            .started => open_runs.items[index].started = true,
+            .settled => unreachable,
+        }
+    }
+    return open_runs.items;
+}
+
 pub const Store = struct {
     allocator: std.mem.Allocator,
     path: []u8,
@@ -112,31 +136,11 @@ pub const Store = struct {
             try next.appendSlice(arena, try encode(arena, held));
         }
         if (record.action != .settled) try next.appendSlice(arena, try encode(arena, record));
-        try compat.fs.atomicReplace(compat.fs.getCwd(), self.path, self.staging, next.items);
+        try compat.fs.atomicReplaceDurable(compat.fs.getCwd(), self.path, self.staging, next.items);
     }
 
     pub fn openRuns(self: *Store, arena: std.mem.Allocator, session_id: []const u8) ![]Open {
-        var open_runs: std.ArrayList(Open) = .empty;
-        for (try self.records(arena)) |record| {
-            if (!std.mem.eql(u8, record.session_id, session_id)) continue;
-            const found = for (open_runs.items, 0..) |run, index| {
-                if (std.mem.eql(u8, run.run_id, record.run_id)) break index;
-            } else null;
-            if (record.action == .settled) {
-                if (found) |index| _ = open_runs.orderedRemove(index);
-                continue;
-            }
-            const index = found orelse blk: {
-                try open_runs.append(arena, .{ .run_id = record.run_id, .admitted_ms = record.time_ms, .started = false, .request = null });
-                break :blk open_runs.items.len - 1;
-            };
-            switch (record.action) {
-                .admitted => open_runs.items[index].request = record.request,
-                .started => open_runs.items[index].started = true,
-                .settled => unreachable,
-            }
-        }
-        return open_runs.items;
+        return collectOpen(arena, try self.records(arena), session_id);
     }
 
     pub fn runs(self: *Store) Runs {
@@ -155,6 +159,69 @@ pub const Store = struct {
         return self.openRuns(arena, session_id);
     }
 };
+
+pub const Memory = struct {
+    arena: std.heap.ArenaAllocator,
+    records: std.ArrayList(Record) = .empty,
+
+    pub fn init(allocator: std.mem.Allocator) Memory {
+        return .{ .arena = std.heap.ArenaAllocator.init(allocator) };
+    }
+
+    pub fn deinit(self: *Memory) void {
+        self.arena.deinit();
+        self.* = undefined;
+    }
+
+    pub fn runs(self: *Memory) Runs {
+        return .{ .ctx = self, .vtable = &memory_vtable };
+    }
+
+    const memory_vtable = Runs.VTable{ .append = memoryAppend, .openRuns = memoryOpenRuns };
+
+    fn memoryAppend(ctx: *anyopaque, record: Record) anyerror!void {
+        const self: *Memory = @ptrCast(@alignCast(ctx));
+        const arena = self.arena.allocator();
+        if (record.action == .settled) {
+            var index: usize = 0;
+            while (index < self.records.items.len) {
+                if (sameRun(self.records.items[index], record)) {
+                    _ = self.records.orderedRemove(index);
+                } else index += 1;
+            }
+            return;
+        }
+        const session_id = try arena.dupe(u8, record.session_id);
+        const run_id = try arena.dupe(u8, record.run_id);
+        const request = if (record.request) |given| try arena.dupe(u8, given) else null;
+        try self.records.append(arena, .{ .action = record.action, .time_ms = record.time_ms, .session_id = session_id, .run_id = run_id, .request = request });
+    }
+
+    fn memoryOpenRuns(ctx: *anyopaque, arena: std.mem.Allocator, session_id: []const u8) anyerror![]Open {
+        const self: *Memory = @ptrCast(@alignCast(ctx));
+        return collectOpen(arena, self.records.items, session_id);
+    }
+};
+
+pub fn conform(arena: std.mem.Allocator, runs: Runs) !void {
+    const request = "{\"message\":\"<next & then>\"}";
+    for ([_]Record{
+        .{ .action = .admitted, .time_ms = 1, .session_id = "conform-a", .run_id = "r1" },
+        .{ .action = .started, .time_ms = 2, .session_id = "conform-a", .run_id = "r1" },
+        .{ .action = .admitted, .time_ms = 3, .session_id = "conform-a", .run_id = "r2", .request = request },
+        .{ .action = .admitted, .time_ms = 4, .session_id = "conform-b", .run_id = "r1" },
+        .{ .action = .admitted, .time_ms = 5, .session_id = "conform-a", .run_id = "r3" },
+        .{ .action = .settled, .time_ms = 6, .session_id = "conform-a", .run_id = "r3" },
+        .{ .action = .settled, .time_ms = 7, .session_id = "conform-b", .run_id = "r1" },
+    }) |record| try runs.append(record);
+    const open_a = try runs.openRuns(arena, "conform-a");
+    if (open_a.len != 2) return error.RunStoreNonconforming;
+    if (!std.mem.eql(u8, open_a[0].run_id, "r1") or !open_a[0].started or open_a[0].admitted_ms != 1) return error.RunStoreNonconforming;
+    if (!std.mem.eql(u8, open_a[1].run_id, "r2") or open_a[1].started) return error.RunStoreNonconforming;
+    if (!std.mem.eql(u8, open_a[1].request orelse "", request)) return error.RunStoreNonconforming;
+    if ((try runs.openRuns(arena, "conform-b")).len != 0) return error.RunStoreNonconforming;
+    if ((try runs.openRuns(arena, "conform-absent")).len != 0) return error.RunStoreNonconforming;
+}
 
 const testing = std.testing;
 
@@ -255,3 +322,46 @@ test "a settled record a log kept is read as the end of its run" {
     try testing.expectEqual(@as(usize, 1), open_runs.len);
     try testing.expectEqualStrings("r2", open_runs[0].run_id);
 }
+
+test "the JSONL store and the memory store both conform" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const path = try scratchPath(testing.allocator, &tmp, "runs.jsonl");
+    defer testing.allocator.free(path);
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var file = try Store.open(testing.allocator, path);
+    defer file.deinit();
+    try conform(arena.allocator(), file.runs());
+    var memory = Memory.init(testing.allocator);
+    defer memory.deinit();
+    try conform(arena.allocator(), memory.runs());
+}
+
+test "a store that keeps a settled run open does not conform" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var memory = Memory.init(testing.allocator);
+    defer memory.deinit();
+    var forgetful = Forgetful{ .inner = &memory };
+    try testing.expectError(error.RunStoreNonconforming, conform(arena.allocator(), forgetful.runs()));
+}
+
+const Forgetful = struct {
+    inner: *Memory,
+
+    fn runs(self: *Forgetful) Runs {
+        return .{ .ctx = self, .vtable = &.{ .append = append, .openRuns = openRunsOf } };
+    }
+
+    fn append(ctx: *anyopaque, record: Record) anyerror!void {
+        const self: *Forgetful = @ptrCast(@alignCast(ctx));
+        if (record.action == .settled) return;
+        return self.inner.runs().append(record);
+    }
+
+    fn openRunsOf(ctx: *anyopaque, arena: std.mem.Allocator, session_id: []const u8) anyerror![]Open {
+        const self: *Forgetful = @ptrCast(@alignCast(ctx));
+        return self.inner.runs().openRuns(arena, session_id);
+    }
+};

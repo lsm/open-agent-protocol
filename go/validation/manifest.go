@@ -164,6 +164,7 @@ var unitCapabilities = map[string][]string{
 	"compound-open":         {protocol.FeatureOpenSubscribe},
 	"session-reattach":      {protocol.FeatureOpenReopen},
 	"session-list":          {protocol.FeatureSessionList},
+	"transcript-load":       {protocol.FeatureTranscriptLoad},
 	"session-settings":      {protocol.FeatureSessionReasoning, protocol.FeatureCompactionPolicy},
 	"session-settings-live": {protocol.FeatureSessionReasoning, protocol.FeatureCompactionPolicy},
 }
@@ -203,6 +204,7 @@ func diagnosticCodes() map[string]bool {
 		CodeUnmatchedProvider, CodeDuplicateProvider,
 		CodeAuthFlowOrder, CodeMissingAuthTerminal,
 		CodeSessionListOverLimit, CodeSessionListOrder, CodeDuplicateSessionEntry,
+		CodeTranscriptOverLimit, CodeDuplicateTranscriptEntry, CodeTranscriptGapMismatch,
 	}
 	result := make(map[string]bool, len(codes))
 	for _, code := range codes {
