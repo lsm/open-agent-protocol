@@ -310,6 +310,15 @@ func (s *session) handleNotification(n rpc.NotificationMessage) {
 		s.failActive("acp_invalid_update", "malformed session update")
 		return
 	}
+	if h.SessionUpdate == "config_option_update" {
+		var u native.ConfigOptionUpdate
+		if json.Unmarshal(p.Update, &u) != nil {
+			s.failActive("acp_invalid_update", "malformed config option update")
+			return
+		}
+		s.applyConfigOptions(u.ConfigOptions)
+		return
+	}
 	if h.SessionUpdate == "usage_update" {
 		if context := decodeContextUsage(p.Update); context != nil {
 			s.mu.Lock()
@@ -370,8 +379,7 @@ func (s *session) handleNotification(n rpc.NotificationMessage) {
 		s.applyToolUpdate(run, u)
 
 	case "user_message_chunk", "agent_thought_chunk", "plan", "plan_update", "plan_removed",
-		"available_commands_update", "current_mode_update", "config_option_update",
-		"session_info_update":
+		"available_commands_update", "current_mode_update", "session_info_update":
 		return
 	default:
 		if len(h.SessionUpdate) > 0 && h.SessionUpdate[0] == '_' {

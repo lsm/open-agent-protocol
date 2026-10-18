@@ -245,3 +245,55 @@ func TestASwitchThatACloseOvertakesDuringTheAgentCallReportsTheSessionClosed(t *
 		t.Fatalf("a closed session's state took the switch")
 	}
 }
+
+func TestAConfigOptionUpdateOutsideARunReplacesTheRecordedModelsCurrentModelAndReasoning(t *testing.T) {
+	c := configuredClient()
+	c.options[1] = native.ConfigOption{ID: "model", Category: "model", CurrentValue: "sol-medium", Options: json.RawMessage(`[{"value":"sol-medium"},{"value":"luna-medium"}]`)}
+	s, err := configuredAdapter(t, c, nil).Open(context.Background(), base.OpenRequest{SessionID: "s1", Participant: protocol.Participant{ID: "reviewbot"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close(context.Background())
+	if state, _ := s.State(context.Background()); state.CurrentModelID != "sol-medium" || state.ReasoningLevel != "" {
+		t.Fatalf("opened state = %+v", state)
+	}
+
+	c.options[1] = native.ConfigOption{ID: "model", Category: "model", CurrentValue: "luna-medium", Options: json.RawMessage(`[{"value":"luna-medium"},{"value":"adaptive","name":"Adaptive"}]`)}
+	c.options[2].CurrentValue = "high"
+	c.update(t, native.ConfigOptionUpdate{SessionUpdate: "config_option_update", ConfigOptions: c.options})
+	waitForState(t, s, func(state protocol.SessionState) bool {
+		return state.CurrentModelID == "luna-medium" && state.ReasoningLevel == protocol.ReasoningHigh
+	})
+
+	catalog, err := s.(base.ModelLister).Models(context.Background(), protocol.ModelsRequest{SessionID: "s1", AllowDegradedFeatures: []string{protocol.FeatureModelsList}})
+	want := []protocol.ModelDescriptor{{ID: "luna-medium", Default: true}, {ID: "adaptive", DisplayName: "Adaptive"}}
+	if err != nil || catalog.Models.CurrentModelID != "luna-medium" || !reflect.DeepEqual(catalog.Models.Models, want) {
+		t.Fatalf("catalog = %+v, %v", catalog, err)
+	}
+	response, _, err := s.(base.ModelSwitcher).SwitchModel(context.Background(), protocol.SessionModelSwitchRequest{SessionID: "s1", ModelID: "adaptive", AllowDegradedFeatures: []string{protocol.FeatureSessionModelSwitch}})
+	if err != nil || response.PreviousModelID != "luna-medium" {
+		t.Fatalf("switch = %+v, %v", response, err)
+	}
+
+	c.update(t, native.ConfigOptionUpdate{SessionUpdate: "config_option_update", ConfigOptions: []native.ConfigOption{c.options[0]}})
+	waitForState(t, s, func(state protocol.SessionState) bool { return state.ReasoningLevel == "" })
+	var unsupported *base.UnsupportedControlError
+	if _, err := s.(base.ModelLister).Models(context.Background(), protocol.ModelsRequest{SessionID: "s1", AllowDegradedFeatures: []string{protocol.FeatureModelsList}}); !errors.As(err, &unsupported) {
+		t.Fatalf("an update without a model option still lists models: %v", err)
+	}
+}
+
+func waitForState(t *testing.T, s base.Session, done func(protocol.SessionState) bool) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		state, err := s.State(context.Background())
+		if err == nil && done(state) {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("state never settled: %+v, %v", state, err)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}

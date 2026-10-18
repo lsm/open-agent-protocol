@@ -31,6 +31,25 @@ func (s *session) recordModels(options []native.ConfigOption) {
 	}
 }
 
+func (s *session) applyConfigOptions(options []native.ConfigOption) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closed {
+		return
+	}
+	previousModel, previousLevel := s.state.CurrentModelID, s.state.ReasoningLevel
+	s.models, s.modelOption, s.offersModels = nil, "", false
+	s.recordModels(options)
+	model, level := resumedSettings(options)
+	if model != "" {
+		s.state.CurrentModelID = model
+	}
+	s.state.ReasoningLevel = level
+	if s.state.CurrentModelID != previousModel || s.state.ReasoningLevel != previousLevel {
+		s.state.UpdatedAtMS = s.clock.Now().UnixMilli()
+	}
+}
+
 func (s *session) Models(ctx context.Context, request protocol.ModelsRequest) (base.Catalog, error) {
 	if err := ctx.Err(); err != nil {
 		return base.Catalog{}, err
