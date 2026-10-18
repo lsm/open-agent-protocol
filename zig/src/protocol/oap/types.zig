@@ -822,6 +822,10 @@ pub const SessionModelSwitchRequest = struct {
         allocator.free(self.model_id);
         freeStringList(allocator, self.allow_degraded_features);
     }
+
+    pub fn allowsDegraded(self: *const SessionModelSwitchRequest, key: []const u8) bool {
+        return containsKey(self.allow_degraded_features, key);
+    }
 };
 
 pub const SessionModelSwitchResponse = struct {

@@ -451,6 +451,10 @@ pub const Endpoint = struct {
             .capability_revision = request.capability_revision,
             .payload = .{ .session_model_switch_response = switched.response },
         });
+        self.drainEntry(entry) catch |err| switch (err) {
+            error.OutOfMemory => return error.OutOfMemory,
+            else => {},
+        };
         const previous = switched.response.previous_model_id orelse "";
         if (std.mem.eql(u8, previous, switched.response.model_id)) return;
         entry.state_sequence += 1;
@@ -1337,6 +1341,10 @@ const FakeSession = struct {
         _ = arena;
         _ = refusal;
         const self = cast(ptr);
+        if (self.active) {
+            self.active = false;
+            try self.queue("{{\"type\":\"run.completed\",\"run_id\":\"run-{d}\",\"sequence\":2}}", .{self.runs});
+        }
         return .{
             .response = .{ .session_id = self.id_text, .model_id = request.model_id, .previous_model_id = "fake-model" },
             .state = .{ .session_id = self.id_text, .status = .idle, .current_model_id = request.model_id },
@@ -1873,6 +1881,22 @@ test "a backend that offers models, switching and tools is answered through them
     const listed_tools = try harness.send(framed("action.tools.list.request", "tools-2", ",\"session_id\":\"s1\"", "{\"session_id\":\"s1\",\"allow_degraded_features\":[\"action.tools.list\"]}"));
     try testing.expectEqualStrings("action.tools.list.response", field(listed_tools[0], &.{"type"}));
     try testing.expectEqualStrings("fake-lister-v2", field(listed_tools[0], &.{"capability_revision"}));
+}
+
+test "a run that ends while a model switch waits on its backend settles before the switched state" {
+    var harness: Harness = undefined;
+    harness.init(testing.allocator, .{});
+    defer harness.deinit();
+    _ = try harness.send(open_line);
+    harness.offerEverything();
+    _ = try harness.send(submit_line);
+
+    const switched = try harness.send(framed("session.model.switch.request", "switch-1", ",\"session_id\":\"s1\"", "{\"session_id\":\"s1\",\"model_id\":\"other\"}"));
+    try testing.expectEqual(@as(usize, 3), switched.len);
+    try testing.expectEqualStrings("session.model.switch.response", field(switched[0], &.{"type"}));
+    try testing.expectEqualStrings("run.completed", field(switched[1], &.{"type"}));
+    try testing.expectEqualStrings("session.state.updated", field(switched[2], &.{"type"}));
+    try testing.expectEqualStrings("idle", field(switched[2], &.{ "payload", "status" }));
 }
 
 test "an event past the frame limit is reported lost once, later events are dropped, and the terminal still settles the run" {

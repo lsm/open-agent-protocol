@@ -28,6 +28,7 @@ type session struct {
 	mu           sync.Mutex
 	emitMu       sync.Mutex
 	opMu         sync.Mutex
+	switchMu     sync.Mutex
 	client       Client
 	inbound      <-chan rpc.InboundMessage
 	clock        base.Clock
@@ -37,6 +38,7 @@ type session struct {
 	participant  protocol.ParticipantID
 	state        protocol.SessionState
 	models       []native.ConfigValue
+	modelOption  string
 	offersModels bool
 	closed       bool
 	active       *runState
