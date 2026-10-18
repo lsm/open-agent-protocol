@@ -252,11 +252,18 @@ func TestCanUseToolRequestDecode(t *testing.T) {
 	if _, err := DecodeControlRequest(ControlHookCallback, []byte(`{"type":"control_request","request_id":"r","request":{"subtype":"hook_callback"}}`)); err == nil {
 		t.Fatal("hook callback without callback_id accepted")
 	}
-	value, err = DecodeControlRequest("mcp_message", []byte(`{"type":"control_request","request_id":"r","request":{"subtype":"mcp_message"}}`))
+	value, err = DecodeControlRequest(ControlMCPMessage, []byte(`{"type":"control_request","request_id":"r","request":{"subtype":"mcp_message","server_name":"oap","message":{"jsonrpc":"2.0","id":1,"method":"tools/list"}}}`))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if unknown, ok := value.(*UnknownFrame); !ok || unknown.Subtype != "mcp_message" {
+	if message, ok := value.(*MCPMessageRequest); !ok || message.ServerName != "oap" || string(message.Message) != `{"jsonrpc":"2.0","id":1,"method":"tools/list"}` {
+		t.Fatalf("mcp message = %#v", value)
+	}
+	value, err = DecodeControlRequest("elicitation", []byte(`{"type":"control_request","request_id":"r","request":{"subtype":"elicitation"}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if unknown, ok := value.(*UnknownFrame); !ok || unknown.Subtype != "elicitation" {
 		t.Fatalf("unconfigured reverse request = %T", value)
 	}
 }
