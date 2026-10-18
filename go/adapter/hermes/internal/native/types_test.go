@@ -204,6 +204,12 @@ func TestTheEventsV0216AddsAreAdmittedAsObserved(t *testing.T) {
 	}
 }
 
+func TestTheEventV0222AddsIsAdmittedAsObserved(t *testing.T) {
+	if _, err := decodeEvent(t, `{"type":"onboarding.ended","session_id":"s","seq":4,"payload":{"anything":true}}`); err != nil {
+		t.Fatalf("onboarding.ended rejected: %v", err)
+	}
+}
+
 func TestMessageCompleteAdmitsResponseReuseAndTransformFlags(t *testing.T) {
 	event, err := decodeEvent(t, `{"type":"message.complete","session_id":"s","seq":3,"payload":{"text":"hi","status":"complete","response_reused":true,"response_transformed":null}}`)
 	if err != nil {
