@@ -1290,9 +1290,11 @@ diverged:**
   the envelope member and the payload member are one schema, so they draw one
   code. An object that satisfies the schema is not refused at this step at all.
   The HTTP routes read a body under the same rule. Pinned by
-  `TestOpenOpRefusals`, `TestSubmitRejections` and the hub parity scenario. Go
-  still breaks the last sentence for an integral number spelled `1.0` or `1e2`,
-  which is D31.
+  `TestOpenOpRefusals`, `TestSubmitRejections` and the hub parity scenario. An
+  integral `sequence` or `timestamp_ms` spelled `1.0` or `1e2` satisfies the
+  schema and is read as the integer, in both trees: pinned by
+  `TestOpenOpReadsAnIntegralSequenceInAnySpelling`,
+  `TestOpenReadsAnIntegralSequenceInAnySpelling` and the hub parity scenario.
 
 #### The `details` a refusal carries, and the `reason` vocabulary
 
@@ -2074,7 +2076,7 @@ are "stamped with the revision the lister served it under", and both name
 | **Zig does** | Serves both on both transports. A piece of work's status is projected from the session's state and, when it is idle, the latest terminal envelope in its journal; `last_reply` is the latest `run.completed`'s `final_response` text, cut at 4 KiB. `work.list` groups by directory, most recent first, filtered by `directory` and `adapters`, paged by `limit` and `cursor`, and searched through the native lists that take a term, as the draft says. `work.start` opens with the message (D11) and keeps the title, or, given a `native_id` from `work.list`, adopts that harness session by resuming it under a new OAP id and submits the message to it, refused `run_active` while the harness lists it running; `work.send` submits with `delivery: auto`; `work.stop` cancels the active run and answers a session with none unchanged; A session the history names that `serve` does not hold (closed, or left by a restart) is listed with `held: false` and its `live` or `closed` state, closed ones only on `include_closed`; `work.status`, `work.read` and `work.stop` answer it without reopening, and `work.send` reopens it through its binding (0040) first, which an adapter without `session.open.reopen` refuses. `work.read` reads the harness's own transcript where the adapter can (Claude Code's project jsonl, Codex `thread/turns/list`, Pi's session file, OpenCode's `GET /api/session/<id>/message`, an ACP agent's `session/load` replay), for held and unheld sessions, so it survives a restart; otherwise, or when that transcript is empty or unreadable, it returns the turns `serve` recorded in memory: each submitted user message, and each run's outcome with its reply text, the last 512 kept, each cut at 64 KiB. |
 | **Why it matters** | Recorded as how it was: a caller of the work profile had to use `oapx serve` until Go served it. |
 
-### D31 — Go refuses a schema-valid `sequence` spelled `1.0` as `malformed_json`
+### D31 — Go refused a schema-valid `sequence` spelled `1.0` as `malformed_json` — FIXED
 
 | | |
 | --- | --- |
@@ -2082,7 +2084,7 @@ are "stamped with the revision the lister served it under", and both name
 | **Go does** | Validates, then `ParseEnvelope` fails: `encoding/json` will not put a literal with a fraction or exponent into `*uint64` or `*int64`, so the gate answers `malformed_json`. |
 | **Zig does** | Opens the session. |
 | **Why it matters** | A schema-valid envelope is refused by one tree and served by the other. Reachable on any request, since every envelope may carry `sequence`. |
-| **The fix** | [#1142](https://github.com/lsm/open-agent-protocol/issues/1142): Go decodes the two members through a type that accepts an integral number in any spelling. |
+| **Now** | [#1142](https://github.com/lsm/open-agent-protocol/issues/1142): Go's `Envelope.UnmarshalJSON` rewrites an integral `sequence` or `timestamp_ms` spelled with a fraction or an exponent as the integer before decoding, so both trees open the session. A number that is not integral is still refused, and the public field types are unchanged. |
 
 ### D12 — an open's `unsupported_feature` and `capability_degraded` carried no `feature`
 

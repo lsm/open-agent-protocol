@@ -4,6 +4,9 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"math/big"
+	"strconv"
+	"strings"
 )
 
 const (
@@ -140,7 +143,14 @@ func (e *Envelope) UnmarshalJSON(data []byte) error {
 	type plain Envelope
 	var known plain
 	if err := json.Unmarshal(data, &known); err != nil {
-		return err
+		rewritten, ok := integralCounters(data)
+		if !ok {
+			return err
+		}
+		known = plain{}
+		if json.Unmarshal(rewritten, &known) != nil {
+			return err
+		}
 	}
 	var all map[string]json.RawMessage
 	if err := json.Unmarshal(data, &all); err != nil {
@@ -157,6 +167,49 @@ func (e *Envelope) UnmarshalJSON(data []byte) error {
 		e.Unknown = unknown
 	}
 	return nil
+}
+
+var integralCounterFields = []string{"sequence", "timestamp_ms"}
+
+func integralCounters(data []byte) ([]byte, bool) {
+	var all map[string]json.RawMessage
+	if json.Unmarshal(data, &all) != nil {
+		return nil, false
+	}
+	changed := false
+	for key, raw := range all {
+		for _, field := range integralCounterFields {
+			if !strings.EqualFold(key, field) {
+				continue
+			}
+			if spelled, ok := integralSpelling(string(raw)); ok {
+				all[key] = json.RawMessage(spelled)
+				changed = true
+			}
+		}
+	}
+	if !changed {
+		return nil, false
+	}
+	rewritten, err := json.Marshal(all)
+	return rewritten, err == nil
+}
+
+func integralSpelling(number string) (string, bool) {
+	if !strings.ContainsAny(number, ".eE") || !json.Valid([]byte(number)) || strings.HasPrefix(number, "\"") {
+		return "", false
+	}
+	if at := strings.IndexAny(number, "eE"); at >= 0 {
+		exponent, err := strconv.Atoi(strings.TrimPrefix(number[at+1:], "+"))
+		if err != nil || exponent > 40 || exponent < -40 {
+			return "", false
+		}
+	}
+	value, ok := new(big.Rat).SetString(number)
+	if !ok || !value.IsInt() {
+		return "", false
+	}
+	return value.Num().String(), true
 }
 
 func (e Envelope) MarshalJSON() ([]byte, error) {
