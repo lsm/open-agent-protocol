@@ -7,7 +7,10 @@ Date: 2026-10-18
 Protocol: `open-agent-protocol` version `0.1`
 Profile: `open-agent-protocol.agent-control-core`
 Unit: `transcript-load` (claim term `+transcript-load`, plan sub-unit T6)
-Amends: nothing. Graduates the unit
+Amends: [Decision 0039](0039-a-session-is-oaps-and-a-harness-is-where-it-runs.md)'s
+rule that an operation naming a closed session is refused `unknown_session`,
+for this one read, which a session the host holds a binding for also answers.
+Graduates the unit
 [Decision 0012](0012-persistence-is-not-in-v0.1-core.md) staged, under
 [Decision 0039](0039-a-session-is-oaps-and-a-harness-is-where-it-runs.md)'s
 constraint that its entries and cursor are OAP's vocabulary
@@ -76,6 +79,12 @@ reads. It names a position after an entry, not a page. It stays valid across
 reconnects and restarts for as long as the entry it follows is still in the
 store. A host never builds one or compares two.
 
+It is not `session.state`'s `transcript_cursor`, which adapters fill with a
+run sequence today. An endpoint that advertises `transcript.load` reports in
+`transcript_cursor` a cursor this read accepts, positioned after the newest
+entry, so a host that holds the state can read only what is new. An endpoint
+that does not advertise it keeps the member's current meaning.
+
 ### 4. Each page is bounded and says so
 
 `limit` is 1 to 500, default 100. A page also stops before 512 KiB of
@@ -90,7 +99,9 @@ its kind alone, and the entry carries `truncated: true`. No page is a silent pre
 
 A cursor records the entry it follows and that entry's position in the store.
 When the entry is no longer there, the read does not pretend to continue. It
-answers from the oldest entry still held, with `gap: {reason, resumed_at}`,
+answers from the oldest entry still held, with `gap: {reason, resumed_at?}`,
+where `resumed_at` is the `entry_id` of the first entry returned, absent when
+the response carries none,
 and the reason is decided by position alone:
 
 - `pruned` when the oldest entry still held is past the cursor's position, so
@@ -139,6 +150,10 @@ reads again from its last cursor.
 
 ## Consequences
 
+- `drafts/hub.md`'s release rule, that every op naming a closed session
+  answers `unknown_session`, gains `transcript.load` as its exception for a
+  session the host has a binding for, as `work.read` already is in the work
+  profile.
 - Schema, `go/protocol`, the validator, fixtures and `clients/ts` gain the
   pair, the entry, `invalid_cursor` on this request and the gap member.
 - Both hubs route it. The page bound comes from the endpoint binding's frame
