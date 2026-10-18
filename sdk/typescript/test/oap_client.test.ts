@@ -51,7 +51,10 @@ test("agent tools and settings travel over OAP, and temperature and provider cal
     const reused = { model_ref: "fixture/openai-responses@tool", messages: [{ role: "user" as const, content: "hello" }] };
     await client.agent.run({ ...reused, tools: [lookup], options: { session_id: "tooled" } });
     await client.agent.run({ ...reused, options: { session_id: "tooled" } });
-    assert.equal(invoked.length, 4, "a later run on a session uses the tools it was opened with");
+    const spare = { name: "spare", description: "unused", parameters_schema_json: '{"type":"object","properties":{}}' };
+    await client.agent.run({ ...reused, tools: [lookup, spare], options: { session_id: "paired" } });
+    await client.agent.run({ ...reused, tools: [{ ...spare, parameters_schema_json: '{ "properties": {}, "type": "object" }' }, lookup], options: { session_id: "paired" } });
+    assert.equal(invoked.length, 6, "a later run on a session uses the tools it was opened with");
     await assert.rejects(() => client.agent.run({ ...reused, options: { session_id: "tooled", reasoning_effort: "high" } }),
       (error: unknown) => error instanceof OapUnsupportedFeatureError);
     const tuned = { model_ref: "fixture/openai-responses@settings", messages: [{ role: "user" as const, content: "hello" }] };

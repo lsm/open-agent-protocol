@@ -625,8 +625,16 @@ async function resolveProvidedCall(call: Record<string, unknown>, tools: ToolDef
 
 type OpenSession = { declared: string; reasoning?: string; maxTokens?: number; tools: ToolDefinition[] };
 
+function canonical(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(canonical);
+  if (!isRecord(value)) return value;
+  return Object.fromEntries(Object.keys(value).sort().map((key) => [key, canonical(value[key])]));
+}
+
 function declaredTools(tools: ToolDefinition[] | undefined): string {
-  return JSON.stringify((tools ?? []).map((tool) => [tool.name, tool.description, tool.parameters_schema_json]));
+  return JSON.stringify((tools ?? [])
+    .map((tool) => [tool.name, tool.description, canonical(parseInputSchema(tool.parameters_schema_json))])
+    .sort((left, right) => String(left[0]).localeCompare(String(right[0]))));
 }
 
 class OapAgentApi {
