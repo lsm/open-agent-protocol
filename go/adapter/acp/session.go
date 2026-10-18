@@ -28,6 +28,7 @@ type session struct {
 	mu           sync.Mutex
 	emitMu       sync.Mutex
 	opMu         sync.Mutex
+	switchMu     sync.Mutex
 	client       Client
 	inbound      <-chan rpc.InboundMessage
 	clock        base.Clock

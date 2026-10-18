@@ -66,6 +66,8 @@ func (s *session) SwitchModel(ctx context.Context, request protocol.SessionModel
 	refuse := func(detail string) error {
 		return &base.UnsupportedControlError{Feature: protocol.FeatureSessionModelSwitch, Reason: base.ControlUnsatisfiable, Field: "model_id", Detail: detail}
 	}
+	s.switchMu.Lock()
+	defer s.switchMu.Unlock()
 	s.mu.Lock()
 	switch {
 	case s.closed:

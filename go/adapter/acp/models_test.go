@@ -171,3 +171,52 @@ func TestASwitchWaitingOnTheAgentLeavesTheOperationLockFree(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestConcurrentSwitchesReachTheAgentOneAtATimeAndTheLastWritten(t *testing.T) {
+	c := configuredClient()
+	c.options[1] = native.ConfigOption{ID: "picker", Category: "model", CurrentValue: "sol-medium", Options: json.RawMessage(`[{"value":"sol-medium"},{"value":"luna-medium"},{"value":"adaptive"}]`)}
+	s, err := configuredAdapter(t, c, nil).Open(context.Background(), base.OpenRequest{SessionID: "s1", Participant: protocol.Participant{ID: "reviewbot"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close(context.Background())
+	switcher := s.(base.ModelSwitcher)
+	allowed := []string{protocol.FeatureSessionModelSwitch}
+	entered, release := make(chan struct{}), make(chan struct{})
+	c.hook = func(_ *configClient, p native.SetConfigOptionParams) error {
+		if p.Value == "luna-medium" {
+			close(entered)
+			<-release
+		}
+		return nil
+	}
+	first := make(chan error, 1)
+	go func() {
+		_, _, err := switcher.SwitchModel(context.Background(), protocol.SessionModelSwitchRequest{SessionID: "s1", ModelID: "luna-medium", AllowDegradedFeatures: allowed})
+		first <- err
+	}()
+	<-entered
+	second := make(chan error, 1)
+	go func() {
+		_, _, err := switcher.SwitchModel(context.Background(), protocol.SessionModelSwitchRequest{SessionID: "s1", ModelID: "adaptive", AllowDegradedFeatures: allowed})
+		second <- err
+	}()
+	select {
+	case err := <-second:
+		t.Fatalf("the second switch finished while the first was still waiting on the agent: %v", err)
+	case <-time.After(100 * time.Millisecond):
+	}
+	close(release)
+	if err := <-first; err != nil {
+		t.Fatal(err)
+	}
+	if err := <-second; err != nil {
+		t.Fatal(err)
+	}
+	if len(c.calls) != 2 || c.calls[0].Value != "luna-medium" || c.calls[1].Value != "adaptive" {
+		t.Fatalf("calls = %+v", c.calls)
+	}
+	if state, _ := s.State(context.Background()); state.CurrentModelID != "adaptive" {
+		t.Fatalf("state = %+v", state)
+	}
+}
