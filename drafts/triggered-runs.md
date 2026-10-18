@@ -1,7 +1,7 @@
 # Triggered Runs
 
-Status: proposal. The owner directed on 2026-10-18 that OAP support this; the
-shape below is for an owner decision.
+Status: proposal. The owner directed on 2026-10-18 that OAP support this and
+that every host accept it; the rest of the shape is for an owner decision.
 Base protocol: `open-agent-protocol` version `0.1`
 Profile: `open-agent-protocol.agent-control-core`
 
@@ -68,20 +68,18 @@ over it. This draft makes such a turn a first-class run: a **triggered run**.
    | `source_id` | optional opaque id of the job, schedule or sender, scoped to the session, never an OAP identity |
    | `extensions` | the native origin (`task-notification`, `job/settled`), namespaced |
 
-4. **A host elects to receive them.** The capability is a new optional feature,
-   `session.triggered_runs`, with the usual fidelity.
-   - A host elects it at open with `session.open.request.triggered_runs: true`,
-     on the same ladder as `subscribe` (cite the active revision, opt in to a
-     degraded one).
-   - Without the election the endpoint emits no triggered run. It absorbs the
-     turn: no envelope, the session stays open, and `state` reports `running`
-     until the turn ends.
+4. **Every host accepts them** (owner, 2026-10-18). There is no opt-in.
+   - A host must expect a run it did not submit on any session, and an SDK
+     must deliver one rather than drop it.
+   - `capabilities.response` reports `session.triggered_runs` with the usual
+     fidelity, so a host can tell whether the harness behind an endpoint
+     produces them. It is a report, not a switch: no request elects or
+     refuses it.
+   - An endpoint never absorbs a triggered turn it can delimit.
    - An adapter that cannot tell where an unprompted turn ends falls back to
      the closure in
      [harness-initiated-state.md](harness-initiated-state.md#a-harness-that-ends-the-session),
      and must announce it.
-   - The election keeps every existing host and trace valid, and it lets the
-     validator judge a run nothing submitted.
 5. **Everything else is a run.** It can raise permission and input requests,
    and `run.cancel` cancels it. `state.active_runs` lists it, with a
    `trigger` member so a host that reconnects can tell it from its own. The
@@ -102,12 +100,12 @@ over it. This draft makes such a turn a first-class run: a **triggered run**.
 ## Where it lands
 
 1. **Wire:**
-   - `run.schema.json` (`started.trigger`) and `session.schema.json`
-     (`openRequest.triggered_runs`, `activeRun.trigger`);
+   - `run.schema.json` (`started.trigger`), `session.schema.json`
+     (`activeRun.trigger`) and the `session.triggered_runs` capability;
    - `protocol/`, `clients/ts/src/protocol.ts`;
    - the validator: three rules, a run admitted by `trigger`, `trigger` on a
-     reserved run, and a triggered run while another is nonterminal or
-     without the election, each with a fixture.
+     reserved run, and a triggered run while another is nonterminal, each
+     with a fixture.
 2. **Adapter contract:**
    - Go: an optional session interface handing the endpoint each triggered
      run's id, trigger and event stream;
@@ -123,8 +121,8 @@ over it. This draft makes such a turn a first-class run: a **triggered run**.
    a triggered run in place of the observed-only row: `task-notification` maps
    to `background_task`, and any other origin to `other` with the native kind
    in `extensions`.
-5. **SDKs** (TS, Go, Rust, Python): elect at open, and expose triggered runs
-   as a session-level stream.
+5. **SDKs** (TS, Go, Rust, Python): expose triggered runs as a session-level
+   stream, before any adapter emits one, since no host may drop one.
 6. Survey the other pinned harnesses (Codex, OpenCode, Hermes, pi, ACP,
    Copilot) for their own triggers.
 
@@ -132,7 +130,5 @@ over it. This draft makes such a turn a first-class run: a **triggered run**.
 
 - Should the trigger be a member on `run.started`, or a separate
   `run.triggered` event ahead of it?
-- Is opting in at open right, or should every host be required to accept
-  triggered runs?
 - Is the kind set (`background_task`, `schedule`, `message`, `other`) the
   right one?
