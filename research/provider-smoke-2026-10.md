@@ -94,9 +94,42 @@ model id, so it proved nothing about a listed model. The gate's default is now
 `kimi-for-coding`. The catalog row's static model list still names
 `kimi-k2.7-code`.
 
+## Reading 2026-10-18, `openai-codex`
+
+The gate takes a key, and this row signs in with the Codex CLI's ChatGPT login,
+so it was read through `oapx serve provider --stdio` instead, from `006e056`,
+with the same four cases as newline requests. `HOME` and
+`OAPX_KEYCHAIN_SERVICE` were isolated as above, and `CODEX_HOME` pointed at the
+real `~/.codex`, read only: `auth.json` had the same digest before and after,
+and its token was days from expiry, so nothing refreshed it.
+
+| Row | Model | completion | streamed | tool call | unknown model | Reading |
+|---|---|---|---|---|---|---|
+| `openai-codex` | `gpt-6-luna` | pass | pass | pass | refused | all four |
+
+The completion answered `ready`, the stream carried 79 deltas, the tool call
+settled `tool_use` with `record_quirk({"note":"smoke"})`, and the unknown model
+failed `model_not_found` before any request left the process.
+
+**Two fixes came first.** `serve provider` resolved stored credentials only, so
+it never saw the Codex CLI login (#1154). And the Responses decoder left parts
+unended and dropped a finished tool call from the settled message, which the
+tool-call case caught (#1157).
+
+**The served ref names the wire the row maps to.** The catalog row lists
+`openai-codex-responses`, but the provider profile serves it as
+`openai-codex/openai-responses@gpt-6-luna`; the agent path still takes
+`openai-codex/openai-codex-responses@gpt-6-luna`. Both reach the same endpoint.
+
+The row moves to `current` with this reading. The gate cannot reach it: a test
+build never imports the Codex CLI login, and the gate sends neither the
+`ChatGPT-Account-ID` nor the `version` header the row needs. So the gate's test
+names `openai-codex` as the one `current` row read through `serve provider`, and
+holds that it has no key a row could be gated on.
+
 ## Not done here
 
-No row's status changes. A `goap check` rule that requires a ledger reference for
+Only `openai-codex` changes status. A `goap check` rule that requires a ledger reference for
 every `current` row would fail today on `openai`, `anthropic`, `openrouter` and
 `opencode-zen`, which have no reading yet. It lands with the change that records
 the last of them, or with a decision to move them to `supported`.

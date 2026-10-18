@@ -1016,7 +1016,7 @@ OAuth rather than a key) or `api_key` (metered tokens). A `models_endpoint` is
 the path appended to that row's base URL, so a base that already ends in a
 version segment takes `/models`, not `/v1/models`. `status` is where a row sits in the list — `current`
 for the providers it names first (OpenAI, Anthropic, OpenCode, OpenRouter,
-DeepSeek, Z.AI, Kimi), `supported` for the rest, `withheld` for a row the list
+DeepSeek, Z.AI, Kimi, OpenAI Codex), `supported` for the rest, `withheld` for a row the list
 records but does not offer — and the list is ordered so every `current` row
 precedes every other. `max_context_window` is the largest window a model of the
 row can be given: a caller may lower the window a listing reported and raise it
