@@ -152,7 +152,8 @@ pub const OapExecution = struct {
         if (self.adapter) |held| held.history = loader;
     }
 
-    fn record(ctx: *anyopaque, session_id: []const u8, event: *const SessionEvent) void {
+    fn record(ctx: *anyopaque, session_id: []const u8, model: ?ai_types.Model, event: *const SessionEvent) void {
+        _ = model;
         const self = cast(ctx);
         if (!std.mem.eql(u8, session_id, self.session_id)) return;
         self.keepRecord(event);

@@ -410,6 +410,14 @@ one session history is refused while the first holds it, and taken once it
 closes`; Go: `TestASecondHubOnOneSessionHistoryIsRefusedWhileTheFirstHoldsIt`;
 across the trees: `TestHubRefusesASessionHistoryAGoapHubHolds`, which holds
 goap's lock and starts `oapx hub` on the same path.
+
+`--save-oapx-sessions` (Zig only, off by default) has `oapx serve` save each
+session of an `oapx` entry the way the terminal UI saves its own, under
+`~/.oapx/sessions`, and load it back when the session is reopened, so such a
+session outlives the hub process and advertises `session.open.reopen`. Without
+the flag an `oapx` session lives only as long as the process. Pinned by `a
+served oapx session's events are saved, and load back as its conversation once
+the store is opened again`.
 `goap hub` takes the lock on Unix only: on Windows it opens the lock file
 without locking it, a gap recorded here rather than closed, since `goap` is
 never released and CI runs it on Unix. `goap hub` has no

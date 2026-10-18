@@ -15,6 +15,7 @@ const model_ref = @import("model_ref");
 const in_process = @import("transports/in_process");
 const stdio = @import("stdio");
 const tui_app = @import("tui_app");
+const session_store = @import("tui_session_store");
 const model_catalog = @import("model_catalog");
 const provider_base_url = @import("provider_base_url");
 const provider_catalog = @import("provider_catalog");
@@ -224,11 +225,81 @@ fn unavailable(
     return error.Unavailable;
 }
 
+const ServedSessions = struct {
+    allocator: std.mem.Allocator,
+    store: session_store.Store,
+    recorders: std.StringHashMapUnmanaged(session_store.Recorder) = .empty,
+
+    fn init(allocator: std.mem.Allocator, store: session_store.Store) ServedSessions {
+        return .{ .allocator = allocator, .store = store };
+    }
+
+    fn deinit(self: *ServedSessions) void {
+        var held = self.recorders.iterator();
+        while (held.next()) |entry| {
+            entry.value_ptr.deinit(self.allocator);
+            self.allocator.free(entry.key_ptr.*);
+        }
+        self.recorders.deinit(self.allocator);
+        self.store.deinit();
+        self.* = undefined;
+    }
+
+    fn attach(self: *ServedSessions, adapter: *oapx_adapter.Adapter) void {
+        adapter.history = .{ .ctx = self, .load = load };
+        adapter.transcripts = .{ .ctx = self, .save = saveTranscript };
+        adapter.recorder = .{ .ctx = self, .record = record };
+    }
+
+    fn recorderFor(self: *ServedSessions, session_id: []const u8) !*session_store.Recorder {
+        const entry = try self.recorders.getOrPut(self.allocator, session_id);
+        if (!entry.found_existing) {
+            entry.key_ptr.* = self.allocator.dupe(u8, session_id) catch |err| {
+                self.recorders.removeByPtr(entry.key_ptr);
+                return err;
+            };
+            entry.value_ptr.* = .{};
+        }
+        return entry.value_ptr;
+    }
+
+    fn load(ctx: *anyopaque, arena: std.mem.Allocator, session_id: []const u8) anyerror!?[]const ai_types.Message {
+        const self: *ServedSessions = @ptrCast(@alignCast(ctx));
+        var loaded = try self.store.load(session_id);
+        defer loaded.deinit(self.store.allocator);
+        try (try self.recorderFor(session_id)).adopt(self.allocator, loaded.metadata);
+        const messages = try arena.alloc(ai_types.Message, loaded.messages.items.len);
+        for (loaded.messages.items, messages) |message, *slot| slot.* = try ai_types.cloneMessage(arena, message);
+        return messages;
+    }
+
+    fn saveTranscript(ctx: *anyopaque, allocator: std.mem.Allocator, session_id: []const u8, index: usize, history: []const ai_types.Message) ?[]u8 {
+        const self: *ServedSessions = @ptrCast(@alignCast(ctx));
+        const saved = self.store.saveTranscript(session_id, index, history) catch return null;
+        defer self.store.allocator.free(saved);
+        return allocator.dupe(u8, saved) catch null;
+    }
+
+    fn record(ctx: *anyopaque, session_id: []const u8, model: ?ai_types.Model, event: *const tui_app.SessionEvent) void {
+        const self: *ServedSessions = @ptrCast(@alignCast(ctx));
+        const recorder = self.recorderFor(session_id) catch return;
+        const meta = session_store.SessionMetadata{
+            .session_id = @constCast(session_id),
+            .model = @constCast(if (model) |held| held.id else ""),
+            .provider = @constCast(if (model) |held| held.provider else ""),
+            .last_active = compat.time.nowMillis(),
+        };
+        const saved = recorder.record(self.allocator, self.store, meta, event.*) orelse return;
+        if (saved.metadata or event.* == .agent_end) self.store.saveIndex(meta) catch {};
+    }
+};
+
 const HubRegistry = struct {
     allocator: std.mem.Allocator,
     environ: *const std.process.Environ.Map,
     surface: ConfigSurface,
     production: ?*tui_app.ProductionRuntime = null,
+    saved: ?*ServedSessions = null,
     memories: std.ArrayList(*memory_adapter.Adapter) = .empty,
     claudes: std.ArrayList(*claude_adapter.Adapter) = .empty,
     codexes: std.ArrayList(*codex_adapter.Adapter) = .empty,
@@ -323,6 +394,7 @@ const HubRegistry = struct {
             const production = self.runtime() catch |failure| return self.reported(failure);
             const built = try arena.create(oapx_adapter.Adapter);
             built.* = oapx_adapter.Adapter.init(self.allocator, production.options());
+            if (self.saved) |saved| saved.attach(built);
             return built.adapter();
         }
         return self.refuse(entry);
@@ -449,10 +521,13 @@ fn runHub(
     var config: ?[]const u8 = null;
     var addr: ?[]const u8 = null;
     var history_path: ?[]const u8 = null;
+    var save_sessions = false;
     var index: usize = 0;
     while (index < args.len) : (index += 1) {
         const argument = args[index];
-        if (std.mem.eql(u8, argument, "--session-history")) {
+        if (std.mem.eql(u8, argument, "--save-oapx-sessions")) {
+            save_sessions = true;
+        } else if (std.mem.eql(u8, argument, "--session-history")) {
             index += 1;
             if (index >= args.len) return error.InvalidHubOption;
             history_path = args[index];
@@ -503,6 +578,16 @@ fn runHub(
     const tool_sources = try hubConfiguredSources(arena, file.tool_sources);
     var registry = HubRegistry{ .allocator = allocator, .environ = &environ, .surface = surface };
     defer registry.deinit();
+    var saved: ?ServedSessions = null;
+    defer if (saved) |*held| held.deinit();
+    if (save_sessions) {
+        const store = session_store.Store.initDefault(allocator) catch |err| {
+            try surface.refuse("cannot open the oapx session store for --save-oapx-sessions: {s}", .{@errorName(err)});
+            return error.BackendRefused;
+        };
+        saved = ServedSessions.init(allocator, store);
+        registry.saved = &saved.?;
+    }
     var bindings: ?hub.binding.Store = null;
     defer if (bindings) |*store| store.deinit();
     const history = history_path orelse if (compat.getEnvVarOwned(arena, "HOME")) |home| try std.fs.path.join(arena, &.{ home, ".oapx", "sessions.jsonl" }) else |err| switch (err) {
@@ -1203,7 +1288,7 @@ fn printUsage(file: std.Io.File) !void {
         \\  oapx claude-permission-hook --endpoint <url>  A Claude Code PermissionRequest hook: asks <url>, and leaves the prompt to the session when no allow or deny comes back
         \\  oapx serve provider --http 127.0.0.1:<port>
         \\  oapx serve agent,provider --stdio [--model <model-ref>]
-        \\  oapx serve --stdio | --addr <host:port> [--config <path>] [--session-history <path>]
+        \\  oapx serve --stdio | --addr <host:port> [--config <path>] [--session-history <path>] [--save-oapx-sessions]
         \\                                                   Many sessions on one wire; oapx hub is its old name
         \\  oapx validate [--format human|json] [--mode strict|tolerant] [--pack DIR]... <trace.json>...
         \\  oapx conformance --command CMD [--session <id>] [--timeout-ms <n>]
@@ -7527,4 +7612,42 @@ test "validate names the code of a refusal whose pack id is longer than any fixe
     try std.testing.expect(std.mem.indexOf(u8, short_run.said, "pack load refused:") != null);
     try std.testing.expect(std.mem.indexOf(u8, short_run.said, "pack_unprefixed_name") != null);
     try std.testing.expect(std.mem.indexOf(u8, short_run.judged, "\"valid\": true") == null);
+}
+
+test "a served oapx session's events are saved, and load back as its conversation once the store is opened again" {
+    const allocator = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const base = try tmp.dir.realPathFileAlloc(std.testing.io, ".", allocator);
+    defer allocator.free(base);
+    const OwnedText = @FieldType(@FieldType(tui_app.SessionEvent, "text_delta"), "delta");
+    const model = ai_types.Model{ .id = "served-model", .name = "served", .api = "openai-responses", .provider = "served-provider", .base_url = "", .reasoning = false, .input = &.{}, .cost = .{ .input = 0, .output = 0, .cache_read = 0, .cache_write = 0 }, .context_window = 1000, .max_tokens = 100 };
+    {
+        var saved = ServedSessions.init(allocator, try session_store.Store.init(allocator, base));
+        defer saved.deinit();
+        const events = [_]tui_app.SessionEvent{
+            .{ .agent_start = .{} },
+            .{ .message_start = .{ .role = .user } },
+            .{ .message_end = .{ .role = .user, .text = OwnedText.initBorrowed("hello there") } },
+            .{ .message_start = .{ .role = .assistant } },
+            .{ .text_delta = .{ .content_index = 0, .delta = OwnedText.initBorrowed("general ") } },
+            .{ .text_delta = .{ .content_index = 0, .delta = OwnedText.initBorrowed("kenobi") } },
+            .{ .message_end = .{ .role = .assistant, .text = OwnedText.initBorrowed("general kenobi") } },
+            .{ .agent_end = .{ .reason = .completed } },
+        };
+        for (&events) |*event| ServedSessions.record(&saved, "session-1", model, event);
+    }
+    var reopened = ServedSessions.init(allocator, try session_store.Store.init(allocator, base));
+    defer reopened.deinit();
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const messages = (try ServedSessions.load(&reopened, arena.allocator(), "session-1")).?;
+    try std.testing.expectEqual(@as(usize, 2), messages.len);
+    try std.testing.expect(messages[0] == .user);
+    try std.testing.expect(messages[1] == .assistant);
+    try std.testing.expect(reopened.recorders.get("session-1").?.written);
+    var index = try reopened.store.loadIndex("session-1");
+    defer index.deinit(allocator);
+    try std.testing.expectEqualStrings("served-model", index.model);
+    try std.testing.expectEqualStrings("served-provider", index.provider);
 }
