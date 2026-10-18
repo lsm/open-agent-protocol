@@ -948,13 +948,14 @@ fn admitProvided(arena: std.mem.Allocator, participant: []const u8, carried: ?[]
 }
 
 fn copyDefinition(keep: std.mem.Allocator, definition: oap_types.ToolDefinition) !oap_types.ToolDefinition {
-    return .{
-        .name = try keep.dupe(u8, definition.name),
-        .description = if (definition.description) |text| try keep.dupe(u8, text) else null,
-        .input_schema_json = try keep.dupe(u8, definition.input_schema_json),
-        .execution_owner = try keep.dupe(u8, definition.execution_owner),
-        .source = native_source,
-    };
+    const name = try keep.dupe(u8, definition.name);
+    errdefer keep.free(name);
+    const description: ?[]const u8 = if (definition.description) |text| try keep.dupe(u8, text) else null;
+    errdefer if (description) |text| keep.free(text);
+    const schema = try keep.dupe(u8, definition.input_schema_json);
+    errdefer keep.free(schema);
+    const owner = try keep.dupe(u8, definition.execution_owner);
+    return .{ .name = name, .description = description, .input_schema_json = schema, .execution_owner = owner, .source = native_source };
 }
 
 fn refuseTool(arena: std.mem.Allocator, refusal: *contract.Refusal, tool: []const u8, detail: []const u8) contract.Failure {
