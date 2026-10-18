@@ -50,6 +50,16 @@ starting a harness, as `work.read` already does.
 | `compaction` | `{compaction_id?, summary}`: the point where the history the model sees was replaced |
 | `interrupted` | a run that a restart ended ([Decision 0050](0050-shutdown-is-graceful-forced-or-asked.md)), by `run_id` |
 
+**One source per transcript.** A cursor orders entries from one store only,
+so its order is that store's order. Where the transcript is the harness's
+(Claude's project jsonl, Codex's `thread/turns/list`, Pi, OpenCode, ACP), every
+entry comes from the harness, and a harness rewrite such as a Claude
+compaction is that store changing: a cursor it invalidates answers the gap in
+rule 5. OAP's run store is never interleaved into it, so an `interrupted`
+entry appears only where the transcript is OAP's own (`oapx`). For a
+third-party harness, an interrupted run is reported through
+`recovery.interrupted_runs` on reopen (Decision 0050) and nowhere else.
+
 A harness that stores a tree (Pi) is read in file order, as `work.read`
 already reads it. A branch the harness left reads along with the one it kept.
 An entry may carry `extensions` with the harness's own ids. Those never
