@@ -113,6 +113,10 @@ createInterface({ input: process.stdin }).on("line", (line) => {
       });
       break;
     case `${provider}:inference.create.request`:
+      if (request.payload.model_ref.endsWith("@accepted-then-malformed")) {
+        process.stdout.write(JSON.stringify({ protocol: "open-agent-protocol", version: "0.1", profile: request.profile, type: "inference.create.response", id: `server-${++id}`, in_reply_to: request.id, inference_id: "inf-1", payload: { accepted: true } }) + "\n{\"broken\":\n");
+        break;
+      }
       if (request.payload.model_ref.endsWith("@malformed-frame")) {
         process.stdout.write('{"answer":"secret-code",\n');
         break;

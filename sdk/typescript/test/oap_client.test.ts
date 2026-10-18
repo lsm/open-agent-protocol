@@ -80,6 +80,12 @@ test("a quiet stream outlives the reply timeout, and only an idle timeout the ca
   } finally {
     await patient.close();
   }
+  const failing = await createOapClient({ command: process.execPath, args: [fixture] });
+  try {
+    await assert.rejects(() => failing.provider.complete({ model_ref: "fixture/openai-responses@accepted-then-malformed", messages, options: { signal: AbortSignal.timeout(2000) } }), /invalid OAP frame/);
+  } finally {
+    await failing.close();
+  }
   const impatient = await createOapClient({ command: process.execPath, args: [fixture], idleTimeoutMs: 150 });
   try {
     await assert.rejects(() => impatient.agent.run({ model_ref: "fixture/openai-responses@slow", messages }), /timed out waiting for OAP event after 150ms/);

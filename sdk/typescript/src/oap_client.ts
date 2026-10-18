@@ -155,6 +155,7 @@ export class OapStdioTransport {
     const key = `${profile}|${kind}|${id}`;
     if (this.subscriptions.has(key)) throw new Error(`OAP route already subscribed: ${key}`);
     const queue = new FrameQueue();
+    if (this.closed) { queue.close(this.closed); return queue; }
     this.subscriptions.set(key, queue);
     for (const frame of this.orphaned.get(key) ?? []) queue.push(frame);
     this.orphaned.delete(key);
