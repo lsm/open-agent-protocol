@@ -414,3 +414,87 @@ func TestWorkStartRefusesANativeIdTheAdapterCannotLoadAsAnUnsatisfiableReopenWit
 		}
 	}
 }
+
+type paging struct {
+	scripted
+	asked []base.TranscriptRequest
+}
+
+func (a *paging) TranscriptLoad(_ context.Context, request base.TranscriptRequest) (protocol.TranscriptLoadResponse, error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.asked = append(a.asked, request)
+	if request.Cursor == "foreign" {
+		return protocol.TranscriptLoadResponse{}, base.ErrInvalidCursor
+	}
+	page := protocol.TranscriptLoadResponse{Entries: []protocol.TranscriptEntry{{EntryID: protocol.TranscriptEntryID(request.NativeID), Kind: protocol.TranscriptCompaction, Compaction: &protocol.TranscriptCompactionEntry{Summary: "kept"}}}, NextCursor: "after", Complete: true}
+	if request.Cursor == "gone" {
+		page.Gap = &protocol.TranscriptGap{Reason: protocol.TranscriptGapRewritten, ResumedAt: page.Entries[0].EntryID}
+	}
+	return page, nil
+}
+
+func TestTranscriptReadsAHeldOrClosedSessionThroughItsAdapterAndRefusesAsZigDoes(t *testing.T) {
+	ctx := context.Background()
+	store := binding.Memory()
+	for _, entry := range []binding.Entry{
+		{Action: binding.ActionOpened, TimeMS: 10, Record: binding.Record{SessionID: "left", Adapter: "paging", NativeSessionID: "thread-a", Directory: "/work/b"}},
+		{Action: binding.ActionClosed, TimeMS: 11, Record: binding.Record{SessionID: "left", Adapter: "paging", NativeSessionID: "thread-a", Directory: "/work/b"}},
+		{Action: binding.ActionOpened, TimeMS: 12, Record: binding.Record{SessionID: "unread", Adapter: "scripted", NativeSessionID: "thread-p"}},
+	} {
+		if err := store.Append(ctx, entry); err != nil {
+			t.Fatal(err)
+		}
+	}
+	adapter := &paging{scripted: scripted{transcript: map[string][]base.NativeTurn{}}}
+	registry := serve.NewRegistry()
+	if err := registry.Register("paging", adapter); err != nil {
+		t.Fatal(err)
+	}
+	if err := registry.Register("scripted", &scripted{transcript: map[string][]base.NativeTurn{}, sessions: []*scriptedSession{{}}}); err != nil {
+		t.Fatal(err)
+	}
+	front := New(serve.New(registry, serve.Options{Bindings: store}))
+
+	seven := int64(7)
+	closed := encoded(t)(front.Transcript(ctx, "left", "", &seven))
+	if closed["session_id"] != "left" || closed["complete"] != true || closed["next_cursor"] != "after" || closed["entries"].([]any)[0].(map[string]any)["entry_id"] != "thread-a" {
+		t.Fatalf("a closed session's transcript read %v", closed)
+	}
+	if asked := adapter.asked[0]; asked.NativeID != "thread-a" || asked.Directory != "/work/b" || asked.Limit != 7 {
+		t.Fatalf("the adapter was asked %+v", asked)
+	}
+	gap := encoded(t)(front.Transcript(ctx, "left", "gone", nil))["gap"].(map[string]any)
+	if gap["reason"] != "rewritten" || gap["resumed_at"] != "thread-a" || adapter.asked[1].Limit != protocol.TranscriptLoadDefaultLimit {
+		t.Fatalf("a lost cursor read gap %v after asking %+v", gap, adapter.asked[1])
+	}
+
+	over := int64(501)
+	for _, refused := range []struct {
+		id, cursor string
+		limit      *int64
+		code       string
+	}{
+		{"left", "foreign", nil, "invalid_cursor"},
+		{"absent", "", nil, "unknown_session"},
+		{"left", "", &over, "invalid_request"},
+		{"unread", "", nil, "unsupported_feature"},
+	} {
+		if _, refusal := front.Transcript(ctx, refused.id, refused.cursor, refused.limit); refusal == nil || refusal.Code != refused.code {
+			t.Fatalf("%s with cursor %q answered %+v, want %s", refused.id, refused.cursor, refusal, refused.code)
+		}
+	}
+	if _, refusal := front.Transcript(ctx, "unread", "", nil); refusal.Details["feature"] != protocol.FeatureTranscriptLoad {
+		t.Fatalf("the unreadable refusal named %v", refusal.Details)
+	}
+
+	held := encoded(t)(front.Start(ctx, "paging", json.RawMessage(`{"message":"hi"}`)))["ref"].(map[string]any)["session_id"].(string)
+	page := encoded(t)(front.Transcript(ctx, held, "", nil))
+	if page["session_id"] != held || page["entries"].([]any)[0].(map[string]any)["entry_id"] != "native-"+held {
+		t.Fatalf("a held session's transcript read %v", page)
+	}
+	plain := encoded(t)(front.Start(ctx, "scripted", json.RawMessage(`{"message":"hi"}`)))["ref"].(map[string]any)["session_id"].(string)
+	if _, refusal := front.Transcript(ctx, plain, "", nil); refusal == nil || refusal.Code != "unsupported_feature" {
+		t.Fatalf("a held session on an adapter without a reader answered %+v", refusal)
+	}
+}

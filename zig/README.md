@@ -4,7 +4,7 @@ This document was imported with the Makai runtime and describes its legacy
 stdio SDK. For the current OAPX CLI, run `oapx serve agent,provider --stdio`;
 the maintained SDK guides are in [`sdk/typescript`](../sdk/typescript/README.md),
 [`sdk/go`](../sdk/go/README.md), [`sdk/python`](../sdk/python/README.md), and
-[`sdk/rust`](../sdk/rust/README.md). The old `oapx --stdio` wire is retired
+[`rust/sdk`](../rust/sdk/README.md). The old `oapx --stdio` wire is retired
 (#376), so the material below is historical reference only.
 
 TypeScript SDK for Makai's stdio protocol. The SDK starts or connects to a `oapx --stdio` runtime and exposes high-level namespaces for provider completions, streaming, agent runs, auth flows, and model discovery.
@@ -468,7 +468,7 @@ void run();
 
 ## Rust SDK
 
-A Rust SDK for the same stdio protocol lives under [`sdk/rust/`](../sdk/rust/README.md) (crate `makai`). It exposes the same four namespaces — `auth`, `models`, `provider`, `agent` — on tokio, with streams as `futures_core::Stream`s and tools executing in the caller's process. See [`sdk/rust/README.md`](../sdk/rust/README.md) for install and quick-start.
+A Rust SDK for the same stdio protocol lives under [`rust/sdk/`](../rust/sdk/README.md) (crate `makai`). It exposes the same four namespaces — `auth`, `models`, `provider`, `agent` — on tokio, with streams as `futures_core::Stream`s and tools executing in the caller's process. See [`rust/sdk/README.md`](../rust/sdk/README.md) for install and quick-start.
 
 ## Zig core library
 

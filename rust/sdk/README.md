@@ -1,0 +1,315 @@
+# OAP Rust SDK
+
+Rust SDK published as `oap-sdk`. By default it starts `oapx serve agent,provider --stdio` and speaks OAP v0.1 on both profiles. Provider inference and catalog discovery use `model-provider-core`; agent sessions and authentication use `agent-control-core`.
+
+It mirrors the [TypeScript SDK](../../sdk/typescript/README.md): same protocol, same namespaces, same error taxonomy.
+
+
+## Installation
+
+The crate lives in this repository at `rust/sdk/`. Until it is published, depend on it by path or by git:
+
+```toml
+[dependencies]
+oap-sdk = { git = "https://github.com/lsm/open-agent-protocol" }
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+futures = "0.3"
+```
+
+The crate is imported as `oap_sdk`.
+
+You also need the runtime binary. By default the SDK looks for a local build under `zig-out/bin/oapx` or `zig/zig-out/bin/oapx`, then falls back to `oapx` on `PATH`. See [Configuration](#configuration) for explicit options.
+
+```bash
+zig build install --prefix /tmp/oapx
+export OAP_SDK_BINARY_PATH=/tmp/oapx/bin/oapx
+```
+
+## Quick start
+
+Create a client, resolve a model, send one message, print the reply.
+
+```rust,no_run
+use oap_sdk::{Client, ExecutionRequest};
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let client = Client::connect().await?;
+
+    let model = client
+        .models()
+        .resolve("anthropic", Some("anthropic-messages"), "claude-sonnet-4-5")
+        .await?;
+
+    let response = client
+        .provider()
+        .complete(
+            ExecutionRequest::prompt(&model.model_ref, "Write a haiku about streams.")
+                .with_max_tokens(128),
+        )
+        .await?;
+
+    println!("{}", response.text());
+
+    client.close().await;
+    Ok(())
+}
+```
+
+## Streaming completions
+
+`provider().stream(...)` is the streaming form of `complete`. Each `TextDelta` carries newly generated text; deltas concatenate.
+
+```rust
+use futures::StreamExt;
+use oap_sdk::{Client, ExecutionRequest, ProviderEvent};
+
+# async fn run(client: &oap_sdk::Client, model_ref: &str) -> oap_sdk::Result<()> {
+let mut events = Box::pin(
+    client
+        .provider()
+        .stream(ExecutionRequest::prompt(model_ref, "Explain lock-free queues.")),
+);
+
+while let Some(event) = events.next().await {
+    match event? {
+        ProviderEvent::TextDelta { delta } => print!("{delta}"),
+        ProviderEvent::ToolCall { name, arguments_json, .. } => {
+            eprintln!("tool call: {name}({arguments_json})");
+        }
+        ProviderEvent::MessageEnd { stop_reason, .. } => {
+            eprintln!("stop reason: {stop_reason:?}");
+        }
+        _ => {}
+    }
+}
+# Ok(())
+# }
+```
+
+Exactly one terminal event ends the stream — `MessageEnd` or `Error`. Failures that never reach the event plane (a rejected request, a dead runtime, a timeout) arrive as an `Err` item.
+
+**Cancellation.** Dropping the stream cancels the work: the SDK sends `inference.cancel.request` for a provider stream and `run.cancel.request` for an agent run, so the runtime stops rather than finishing into a queue nobody is reading. Dropping the whole `Client` terminates and reaps the child process.
+
+## Agent runs and model switching
+
+`agent().run(...)` and `agent().stream(...)` drive an OAP agent session. `switch_model(session_id, model_ref)` changes the selected model mid-session; `run_selected(session_id, messages)` uses that selection. Agent requests provide their tools to the session at open (`action.tools.provide`), owned by the SDK's participant `rust-sdk`; when the model calls one, the SDK runs its `Tool::on_call` handler and answers with `action.call.resolve.request`, and a tool without a handler is answered with an error. Against an endpoint that does not advertise `action.tools.provide`, a request with tools fails with `unsupported_feature` before the open rather than having its tools ignored, and once a tool has run, an `AutoOnce` auth failure is returned as `AuthRequired` rather than retried, so the tool is not run twice. Direct provider requests containing executable callbacks still fail with `unsupported_feature`; they can pass declaration-only tool schemas.
+
+```rust
+use oap_sdk::{Client, ExecutionRequest};
+
+# async fn run(client: &oap_sdk::Client, model_ref: &str) -> oap_sdk::Result<()> {
+let response = client
+    .agent()
+    .run(
+        ExecutionRequest::prompt(model_ref, "Say hello."),
+    )
+    .await?;
+
+println!("{}", response.text());
+# Ok(())
+# }
+```
+
+For streaming, iterate `agent().stream(request)` and handle `AgentStart`, wrapped provider deltas, and terminal `AgentEnd`. The stream also yields `ToolExecutionStart` and `ToolExecutionEnd` for every call, the endpoint's own tools included. An agent run's `reasoning_effort` becomes the session's reasoning level and `max_tokens` (at least 1) the oapx output limit, both at open, the output limit only on the `oapx.agent` endpoint that reads it (elsewhere `unsupported_feature`); `temperature` and `ReasoningEffort::Minimal` fail with `unsupported_feature`, since the agent loop takes no temperature and runs minimal as low. The open also turns off the loop's `request_user_input` tool, which the SDK cannot answer. All three remain supported for direct provider inference.
+
+### Agent model discovery
+
+`client.agent().models()` is a compatibility alias for the provider model catalog on the same OAP connection.
+
+## Auth
+
+`auth().list_providers()` inspects auth state; `auth().login(...)` runs a browser flow. Token material and manual-code answers stay within the runtime; no answer travels in an OAP envelope. A flow requiring manual input without a host-owned input path fails with `auth_input_unavailable`. `openai-codex` offers two ways at once: its URL is the ChatGPT sign-in, which returns to a `localhost:1455` callback the runtime listens on, and its instructions also give `https://auth.openai.com/codex/device` and a one-time code for signing in from any other device, which needs device code login turned on in ChatGPT's security settings (or by a workspace admin). Whichever finishes first completes the login. `anthropic` signs in through a browser on the same computer: its URL returns to a `localhost` callback the runtime listens on (macOS and Linux). Where no browser can reach that computer, give the runtime a Claude subscription token, such as one from `claude setup-token`, as `ANTHROPIC_AUTH_TOKEN` in its environment.
+
+```rust
+use oap_sdk::{AuthEvent, AuthHandlers, AuthStatus, Client};
+
+# async fn run(client: &oap_sdk::Client) -> oap_sdk::Result<()> {
+let providers = client.auth().list_providers().await?;
+let needs_login = providers
+    .iter()
+    .find(|provider| provider.id == "anthropic")
+    .is_none_or(|provider| provider.auth_status != AuthStatus::Authenticated);
+
+if needs_login {
+    let handlers = AuthHandlers::new()
+        .on_event(|event| {
+            if let AuthEvent::AuthUrl { url, .. } = event {
+                println!("Open {url}");
+            }
+        });
+
+    client.auth().login("anthropic", Some(&handlers)).await?;
+}
+# Ok(())
+# }
+```
+
+Dropping the login future sends `auth.login.cancel.request`, so the runtime does not leave an OAuth listener running.
+
+You can also configure one-shot automatic retry for `provider` and `agent` calls:
+
+```rust
+use oap_sdk::{AuthHandlers, AuthRetryPolicy, Client};
+
+# async fn run() -> oap_sdk::Result<()> {
+let client = Client::builder()
+    .auth_retry_policy(AuthRetryPolicy::AutoOnce)
+    .connect()
+    .await?;
+# let _ = client;
+# Ok(())
+# }
+```
+
+With `AutoOnce`, a call that hits `auth_required` logs in once and retries. If manual input is required but unavailable to the host, it fails with `auth_input_unavailable` rather than hanging.
+
+## Models
+
+Models are discovered through `client.models()`. Use `model_ref` from the returned descriptor in provider and agent requests. **Treat `model_ref` as opaque**: do not parse or construct it.
+
+```rust
+use oap_sdk::{Client, ListModelsRequest};
+
+# async fn run(client: &oap_sdk::Client) -> oap_sdk::Result<()> {
+let response = client
+    .models()
+    .list(ListModelsRequest {
+        provider_id: Some("anthropic".into()),
+        include_login_required: Some(true),
+        ..Default::default()
+    })
+    .await?;
+
+for model in &response.models {
+    println!("{}: {} [{:?}]", model.display_name, model.model_ref, model.auth_status);
+}
+# Ok(())
+# }
+```
+
+`resolve(provider_id, api, model_id)` is the deterministic single-model lookup. Zero or multiple matches are an `invalid_request` failure.
+
+## Sessions
+
+`RunOptions::session_id` identifies an OAP session. Sessions can retain their selected model across runs; use `switch_model` then `run_selected` to change it.
+
+## Configuration
+
+`Client::builder()` configures the transport and binary resolution.
+
+```rust
+use std::time::Duration;
+use oap_sdk::Client;
+
+# async fn run() -> oap_sdk::Result<()> {
+let client = Client::builder()
+    .binary_path("/opt/oapx/bin/oapx")
+    .env("OAPX_LOG", "info")
+    .handshake_timeout(Duration::from_secs(2))
+    .response_timeout(Duration::from_secs(30))
+    .frame_timeout(Duration::from_secs(30))
+    .connect()
+    .await?;
+# let _ = client;
+# Ok(())
+# }
+```
+
+`args` can name a harness backend instead, such as `["serve", "agent", "--stdio", "--backend", "claude"]`. Such an endpoint serves the agent profile alone: the client connects and runs agents through it, and `provider()` and `models()` calls fail with an `unsupported_feature` protocol error before anything is sent. The SDK does not answer permission requests yet, so a run on a backend that asks one waits until a timeout ends it.
+
+### Binary resolution
+
+Mirroring the TypeScript resolver, in order:
+
+1. `OAP_SDK_BINARY_PATH`, then `ClientBuilder::binary_path` / `BinaryResolver::binary_path`;
+2. `OAP_SDK_BINARY_URL` / `binary_url` with a **required** SHA-256 checksum (`OAP_SDK_BINARY_SHA256` / `checksum_sha256`), cached under `~/.cache/makai/bin`;
+3. *(TypeScript only)* the `@oap-sdk/cli-<platform>-<arch>` npm package — **not implemented in Rust**, see below;
+4. `./zig-out/bin/oapx`, then `./zig/zig-out/bin/oapx`;
+5. `oapx` on `PATH`.
+
+On Windows the executable name is `oapx.exe`.
+
+The environment variable outranks the builder option, as in TypeScript, so an operator can redirect an application that hardcoded a path. `ClientBuilder::command(path)` bypasses resolution entirely when that override is not wanted.
+
+**The npm platform-package step is deliberately omitted.** It resolves through Node's module resolution against an optional npm dependency; Rust has no equivalent channel that ships a platform-specific executable alongside a library crate, and inventing one (a `build.rs` download, say) would put a network fetch in the build with none of the checksum guarantees step 2 insists on. Install the binary however you like and point `OAP_SDK_BINARY_PATH` at it, or let step 5 find it on `PATH`.
+
+Downloading from a URL needs the `download` feature (off by default, to keep an HTTP stack out of the default dependency tree):
+
+```toml
+oap-sdk = { version = "0.1", features = ["download"] }
+```
+
+Without it, an already-cached file is still checksum-verified and used, and a cache miss is a clear error rather than a silent fallback to a different binary than you pinned.
+
+## Error handling
+
+All failures are one `Error` enum, mirroring the TypeScript error classes:
+
+| TypeScript | Rust |
+| --- | --- |
+| `MakaiStreamError` | `Error::Stream { kind, code, provider_id, message }` |
+| `MakaiAuthRequiredError` | `Error::AuthRequired { provider_id, message }` |
+| `MakaiProtocolError` | `Error::Protocol { code, message }` |
+| `MakaiAuthError` | `Error::Auth { kind, code, message }` |
+| *(untyped in TS)* | `Error::Transport { message }` — spawn, handshake, binary resolution |
+| *(untyped in TS)* | `Error::InvalidRequest { message }` — rejected before anything is sent |
+
+```rust
+use oap_sdk::Error;
+
+# fn handle(error: oap_sdk::Error) {
+match error {
+    Error::AuthRequired { provider_id, .. } => eprintln!("login required for {provider_id}"),
+    Error::Stream { kind, code, .. } => eprintln!("stream failed ({kind}/{code:?})"),
+    Error::Protocol { code, message } => eprintln!("protocol failed ({code:?}): {message}"),
+    Error::Auth { kind, message, .. } => eprintln!("auth failed ({kind}): {message}"),
+    other => eprintln!("{other}"),
+}
+# }
+```
+
+`Error::code()`, `Error::provider_id()`, `Error::is_auth_required()`, and `Error::is_cancelled()` are available on every variant.
+
+## Examples
+
+```bash
+cargo run --example complete
+cargo run --example stream
+cargo run --example agent_tools
+cargo run --example login -- anthropic
+```
+
+## Development
+
+```bash
+cargo fmt --check
+cargo clippy --all-targets --all-features -- -D warnings
+cargo test
+```
+
+`cargo test` needs no credentials and no runtime binary: the integration tests drive `oap-protocol-fake`. You can point `ClientBuilder::command` at it to test your own code:
+
+```rust
+# fn build(fake: std::path::PathBuf) -> oap_sdk::ClientBuilder {
+oap_sdk::ClientBuilder::new()
+    .command(fake)
+    .args(Vec::<String>::new())
+    .env_clear()
+# }
+```
+
+Inside this crate, `tests/common/mod.rs` gets that path from
+`env!("CARGO_BIN_EXE_oap-protocol-fake")`. Cargo defines that variable only for
+a crate's own integration tests, so from another crate it does not exist: build
+the binary with `cargo build --bin oap-protocol-fake` and pass the path
+yourself.
+
+To also exercise a real runtime:
+
+```bash
+zig build install --prefix /tmp/oapx-rs
+OAP_SDK_BINARY_PATH=/tmp/oapx-rs/bin/oapx cargo test
+```
+
+Without `OAP_SDK_BINARY_PATH` the `real_binary` tests skip, mirroring `sdk/typescript/test/makai_binary_smoke.test.ts`.

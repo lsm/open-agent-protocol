@@ -27,6 +27,8 @@ type RunRecord struct {
 	SessionID string    `json:"session_id"`
 	RunID     string    `json:"run_id"`
 	Request   string    `json:"request,omitempty"`
+	Replaces  string    `json:"replaces,omitempty"`
+	Root      string    `json:"root,omitempty"`
 }
 
 type OpenRun struct {
@@ -34,6 +36,7 @@ type OpenRun struct {
 	AdmittedMS int64
 	Started    bool
 	Request    string
+	Root       string
 }
 
 type Runs interface {
@@ -41,43 +44,92 @@ type Runs interface {
 	OpenRuns(ctx context.Context, sessionID string) ([]OpenRun, error)
 }
 
-func keptAfter(records []RunRecord, record RunRecord) []RunRecord {
-	if record.Action != RunSettled {
-		return append(records, record)
+func stamped(records []RunRecord, record RunRecord) RunRecord {
+	if record.Action != RunAdmitted || record.Replaces == "" || record.Root != "" {
+		return record
 	}
-	kept := records[:0]
-	for _, held := range records {
-		if held.SessionID != record.SessionID || held.RunID != record.RunID {
-			kept = append(kept, held)
+	for _, run := range openRuns(records, record.SessionID) {
+		if run.RunID == record.Replaces {
+			record.Root = run.Root
+			break
+		}
+	}
+	return record
+}
+
+func keptAfter(records []RunRecord, record RunRecord) []RunRecord {
+	all := append(append([]RunRecord(nil), records...), stamped(records, record))
+	var sessions []string
+	seen := make(map[string]bool)
+	for _, held := range all {
+		if !seen[held.SessionID] {
+			seen[held.SessionID] = true
+			sessions = append(sessions, held.SessionID)
+		}
+	}
+	var kept []RunRecord
+	for _, sessionID := range sessions {
+		for _, run := range openRuns(all, sessionID) {
+			for _, held := range all {
+				if held.Action != RunSettled && held.SessionID == sessionID && held.RunID == run.RunID {
+					kept = append(kept, held)
+				}
+			}
 		}
 	}
 	return kept
 }
 
+func removeRun(runs []OpenRun, at map[string]int, runID string) []OpenRun {
+	index, seen := at[runID]
+	if !seen {
+		return runs
+	}
+	runs = append(runs[:index], runs[index+1:]...)
+	delete(at, runID)
+	for other, later := range at {
+		if later > index {
+			at[other] = later - 1
+		}
+	}
+	return runs
+}
+
 func openRuns(records []RunRecord, sessionID string) []OpenRun {
 	var runs []OpenRun
 	at := make(map[string]int)
+	ended := make(map[string]bool)
 	for _, record := range records {
-		if record.SessionID != sessionID {
+		if record.SessionID != sessionID || ended[record.RunID] {
+			continue
+		}
+		if record.Action == RunSettled {
+			ended[record.RunID] = true
+			runs = removeRun(runs, at, record.RunID)
+			continue
+		}
+		if record.Action == RunAdmitted && record.Replaces != "" {
+			ended[record.Replaces] = true
+		}
+		if slot, held := at[record.Replaces]; record.Action == RunAdmitted && record.Replaces != "" && held {
+			delete(at, record.Replaces)
+			at[record.RunID] = slot
+			root := record.Root
+			if root == "" {
+				root = runs[slot].Root
+			}
+			runs[slot] = OpenRun{RunID: record.RunID, AdmittedMS: record.TimeMS, Request: record.Request, Root: root}
 			continue
 		}
 		index, seen := at[record.RunID]
-		if record.Action == RunSettled {
-			if seen {
-				runs = append(runs[:index], runs[index+1:]...)
-				delete(at, record.RunID)
-				for runID, later := range at {
-					if later > index {
-						at[runID] = later - 1
-					}
-				}
-			}
-			continue
-		}
 		if !seen {
 			index = len(runs)
 			at[record.RunID] = index
-			runs = append(runs, OpenRun{RunID: record.RunID, AdmittedMS: record.TimeMS})
+			root := record.Root
+			if root == "" {
+				root = record.RunID
+			}
+			runs = append(runs, OpenRun{RunID: record.RunID, AdmittedMS: record.TimeMS, Root: root})
 		}
 		switch record.Action {
 		case RunAdmitted:

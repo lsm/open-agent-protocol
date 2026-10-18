@@ -32,6 +32,7 @@ var workStatuses = map[string]int{
 	"malformed_json":      http.StatusBadRequest,
 	"invalid_request":     http.StatusBadRequest,
 	"invalid_payload":     http.StatusBadRequest,
+	"invalid_cursor":      http.StatusBadRequest,
 }
 
 func workStatus(code string) int {
@@ -49,6 +50,22 @@ func (s *Server) routeWork(mux *http.ServeMux) {
 	mux.HandleFunc("POST /work/sessions/{id}/send", s.handleWorkSend)
 	mux.HandleFunc("POST /work/sessions/{id}/stop", s.handleWorkStop)
 	mux.HandleFunc("GET /work/sessions/{id}/read", s.handleWorkRead)
+	mux.HandleFunc("GET /sessions/{id}/transcript", s.handleTranscript)
+}
+
+func (s *Server) handleTranscript(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	query := r.URL.Query()
+	var limit *int64
+	if query.Has("limit") {
+		parsed, err := strconv.ParseInt(query.Get("limit"), 10, 64)
+		if err != nil {
+			parsed = 0
+		}
+		limit = &parsed
+	}
+	answer, refusal := s.work.Transcript(r.Context(), id, query.Get("cursor"), limit)
+	s.answerWork(w, answer, refusal, id)
 }
 
 func (s *Server) answerWork(w http.ResponseWriter, answer any, refusal *workwire.Refusal, session string) {

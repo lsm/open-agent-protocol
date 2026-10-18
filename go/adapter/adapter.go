@@ -154,6 +154,17 @@ type NativeReader interface {
 	NativeRead(context.Context, NativeReadRequest) ([]NativeTurn, error)
 }
 
+type TranscriptRequest struct {
+	NativeID  string
+	Directory string
+	Cursor    string
+	Limit     int
+}
+
+type TranscriptLoader interface {
+	TranscriptLoad(context.Context, TranscriptRequest) (protocol.TranscriptLoadResponse, error)
+}
+
 type NativeLinker interface {
 	NativeLink(nativeID string) string
 }
@@ -227,6 +238,7 @@ var (
 	ErrInvalidResolution   = errors.New("adapter: invalid interaction resolution")
 	ErrEventStreamOverflow = errors.New("adapter: event stream consumer fell behind; resume from the last sequence")
 	ErrInvalidSteerTarget  = errors.New("adapter: steer target cannot take guidance")
+	ErrInvalidCursor       = errors.New("adapter: a cursor this endpoint did not mint, or one naming another session")
 )
 
 var ErrModelNotFound = errors.New("adapter: model is not in the effective catalog")

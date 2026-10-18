@@ -40,6 +40,7 @@ const (
 	opWorkSend         = "work.send"
 	opWorkStop         = "work.stop"
 	opWorkRead         = "work.read"
+	opTranscript       = "transcript"
 	opWorkCapabilities = "work.capabilities"
 )
 
@@ -284,7 +285,7 @@ func (s *Server) dispatch(ctx context.Context, request requestLine) (json.RawMes
 			return nil, werr
 		}
 		return s.closeOp(ctx, request.SessionID)
-	case opWorkList, opWorkStatus, opWorkStart, opWorkSend, opWorkStop, opWorkRead, opWorkCapabilities:
+	case opWorkList, opWorkStatus, opWorkStart, opWorkSend, opWorkStop, opWorkRead, opWorkCapabilities, opTranscript:
 		return s.workOp(ctx, request)
 	default:
 		return nil, &wireError{Code: "unknown_op", Message: fmt.Sprintf("no op %q", trimMessage(request.Op))}

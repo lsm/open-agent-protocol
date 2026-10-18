@@ -468,6 +468,26 @@ func (h *Hub) NativeTranscript(ctx context.Context, ref NativeRef, maxTurns int)
 	return turns, true, err
 }
 
+func (h *Hub) TranscriptPage(ctx context.Context, ref NativeRef, cursor string, limit int) (protocol.TranscriptLoadResponse, bool, error) {
+	if ref.NativeID == "" {
+		return protocol.TranscriptLoadResponse{}, false, nil
+	}
+	implementation, ok := h.registry.Lookup(ref.Adapter)
+	if !ok {
+		return protocol.TranscriptLoadResponse{}, false, nil
+	}
+	loader, ok := implementation.(base.TranscriptLoader)
+	if !ok {
+		return protocol.TranscriptLoadResponse{}, false, nil
+	}
+	directory := ref.Directory
+	if directory == "" {
+		directory = h.registry.WorkingDirectory(ref.Adapter)
+	}
+	page, err := loader.TranscriptLoad(ctx, base.TranscriptRequest{NativeID: ref.NativeID, Directory: directory, Cursor: cursor, Limit: limit})
+	return page, true, err
+}
+
 type WorkReach struct {
 	Name         string
 	Directory    string

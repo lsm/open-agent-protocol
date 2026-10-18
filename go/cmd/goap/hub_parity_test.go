@@ -86,6 +86,12 @@ var hubParityScenarios = map[string][]string{
 		`{"id":2,"op":"open","adapter":"memory","request":{` + openEnvelopeFields + `"id":"o2","payload":{"session_id":"s1","metadata":7}}}`,
 		`{"id":3,"op":"sessions"}`,
 	},
+	"the transcript op refuses the same refusals": {
+		`{"id":1,"op":"transcript","session_id":"absent"}`,
+		`{"id":2,"op":"transcript","session_id":"absent","limit":0}`,
+		`{"id":3,"op":"transcript","session_id":"absent","limit":501}`,
+		`{"id":4,"op":"transcript","session_id":"absent","after":1}`,
+	},
 	"the catalog ops refuse the same refusals": {
 		`{"id":1,"op":"models","session_id":"absent"}`,
 		`{"id":2,"op":"tools","session_id":"absent"}`,
