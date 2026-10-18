@@ -104,6 +104,16 @@ func TestOpenOpRefusals(t *testing.T) {
 			code: "type_mismatch",
 		},
 		{
+			name: "an ill-typed envelope member is schema_invalid",
+			line: strings.Replace(openLine(t, 6, "fresh"), `"id":"req-open"`, `"id":7`, 1),
+			code: "schema_invalid",
+		},
+		{
+			name: "a request that is not one object is malformed_json",
+			line: `{"id":7,"op":"open","adapter":"memory","request":7}`,
+			code: "malformed_json",
+		},
+		{
 			name: "no adapter named",
 			line: `{"id":4,"op":"open","request":null}`,
 			code: "invalid_request",

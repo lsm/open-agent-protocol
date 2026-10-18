@@ -66,6 +66,8 @@ var hubParityScenarios = map[string][]string{
 		`{"id":3,"op":"open","adapter":"memory","request":null}`,
 		`{"id":4,"op":"open","adapter":"memory","request":{"id":"x"}}`,
 		`{"id":5,"op":"open","adapter":"memory","request":{` + openEnvelopeFields + `"id":"o5","payload":{"session_id":"s5"}}}`,
+		`{"id":6,"op":"open","adapter":"memory","request":{` + openEnvelopeFields + `"id":7,"payload":{"session_id":"s6"}}}`,
+		`{"id":7,"op":"open","adapter":"memory","request":{` + openEnvelopeFields + `"id":"o7","payload":{"session_id":5}}}`,
 	},
 	"a reopen of a session the hub never closed is unknown to both": {
 		`{"id":1,"op":"open","adapter":"memory","request":{` + openEnvelopeFields + `"id":"o1","payload":{"session_id":"ghost","reopen":true}}}`,
