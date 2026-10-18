@@ -395,8 +395,10 @@ and a subscribing `open` can reach.
 
 A host can also ask: the `shutdown` op, whose optional `request` is
 `{"mode":"graceful"|"force"}`, answers [Decision 0050](../decisions/0050-shutdown-is-graceful-forced-or-asked.md)'s
-`{outcome, active_runs, lost?}`. With no mode and a nonterminal run it answers
-`choose`, listing the runs, and changes nothing. `graceful` cancels every queued
+`{outcome, active_runs, lost?}`. Before any mode is accepted, a request with
+no mode and a nonterminal run answers `choose`, listing the runs, and changes
+nothing; once one is accepted, a request with no mode reports that shutdown's
+progress (`draining` or `stopping`) instead of asking again. `graceful` cancels every queued
 run, lists it under `lost` because nothing holds it for the next start yet, and
 `draining` lets the running runs finish; `force` answers `stopping`, and a later
 graceful never undoes it. Once accepted, `submit`, `open`, `work.start` and
@@ -1260,7 +1262,9 @@ never connects overflows exactly as a slow consumer does, and the adopter reads
 
 ## The operations
 
-Fourteen ops. Each row gives the request line's parameters, the answer, and the
+Fourteen ops, plus `shutdown`, which [Shutdown and exit on
+stdio](#shutdown-and-exit-on-stdio) describes and which has no HTTP route yet.
+Each row gives the request line's parameters, the answer, and the
 errors. A refusal the row does not name is `internal` on both, with two
 exceptions stated once here rather than repeated per row:
 
