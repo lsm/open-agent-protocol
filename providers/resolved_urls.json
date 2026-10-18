@@ -101,6 +101,12 @@
       "request_url": "https://opencode.ai/zen/go/v1/messages"
     },
     {
+      "id": "openai-codex",
+      "wire": "openai-codex-responses",
+      "base_url": "https://chatgpt.com/backend-api/codex",
+      "request_url": "https://chatgpt.com/backend-api/codex/responses"
+    },
+    {
       "id": "alibaba-coding-plan",
       "wire": "openai-completions",
       "base_url": "https://coding-intl.dashscope.aliyuncs.com/v1",
@@ -127,12 +133,6 @@
       "base_url": "https://ark.cn-beijing.volces.com/api/coding/v3",
       "models_url": "https://ark.cn-beijing.volces.com/api/coding/v3/models",
       "request_url": "https://ark.cn-beijing.volces.com/api/coding/v3/chat/completions"
-    },
-    {
-      "id": "openai-codex",
-      "wire": "openai-codex-responses",
-      "base_url": "https://chatgpt.com/backend-api/codex",
-      "request_url": "https://chatgpt.com/backend-api/codex/responses"
     },
     {
       "id": "xiaomi-token-plan-cn",

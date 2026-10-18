@@ -324,7 +324,7 @@ On Windows the executable name is `oapx.exe`.
 
 Step 1 outranks both local build paths, so an installed platform package wins over a fresh `zig build`. It is no longer an optional dependency of `oap-sdk`, so it is only consulted when you install it yourself. Set `OAP_SDK_BINARY_PATH` (or `resolver.binaryPath`) to pin an exact binary.
 
-The client initializes the agent profile and describes the provider profile. `responseTimeoutMs` bounds provider and agent replies; `frameTimeoutMs` bounds auth event waits. A failed connection closes the spawned process.
+The client initializes the agent profile and describes the provider profile. `responseTimeoutMs` bounds the reply to each request; `frameTimeoutMs` bounds auth event waits. A running agent run or provider inference has no idle limit by default, because a tool or a reasoning model can be silent for minutes; set `idleTimeoutMs` to give up after that long without an event, which also cancels the run, or pass an `AbortSignal` to stop it yourself. A failed connection closes the spawned process.
 
 ```ts
 import { createMakaiClient } from "oap-sdk";

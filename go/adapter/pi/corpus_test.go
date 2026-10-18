@@ -27,7 +27,7 @@ var piCommitTree = pin.Source("pi").Tree
 const (
 	piRPCTypesBlob     = "7fc71516aebb8b68ea019f1df4eef966eeaa17c7"
 	piRPCModeBlob      = "1c0995d36ec752155f1d13b019728f9343bb263c"
-	piAgentSessionBlob = "5decccd805fb2ba4d738b9737ab29b35179c5211"
+	piAgentSessionBlob = "8b330d555d0f45469fb291a2206217671d3977d5"
 	piSessionMgrBlob   = "df5281a0a4258462b14faa7d055efa09783ea6aa"
 	piAgentTypesBlob   = "dbfba74a084f71951e48285869730b70a405ba3a"
 	piRPCEntryBlob     = "11059a8d47f6d4f22469802f8dca0a6af6c8db88"

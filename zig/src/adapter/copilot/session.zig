@@ -6,8 +6,13 @@ pub const protocol_version = "0.1";
 pub const profile = "open-agent-protocol.agent-control-core";
 pub const cost_extension = "com.github.copilot.cost";
 pub const routed_model_extension = "com.github.copilot.routed_model";
+pub const endpoint_id = "copilot.headless";
+pub const execution_owner = "copilot-cli";
 
 pub const Error = error{ InvalidSubmission, RunNotFound, RunActive, SessionClosed } || std.mem.Allocator.Error;
+pub const ResolveError = error{ InteractionNotFound, InteractionResolved, InvalidResolution, WrongResponder } || std.mem.Allocator.Error;
+
+const choices = [_][2][]const u8{ .{ "approve-once", "Allow once" }, .{ "reject", "Deny" } };
 
 pub const Status = enum { queued, running, cancelling, completed, failed, cancelled };
 
@@ -15,6 +20,7 @@ pub const Options = struct {
     session_id: []const u8,
     native_id: []const u8,
     revision: []const u8,
+    participant: []const u8 = "user",
     max_queued: usize = 8,
     counter: ?*u64 = null,
     now_ms: ?*const fn () i64 = null,
@@ -46,6 +52,27 @@ pub const Admission = struct {
     status: Status,
 };
 
+pub const Tool = struct {
+    run: *Run,
+    native_id: []const u8,
+    id: []const u8,
+    name: []const u8,
+    arguments: std.json.Value,
+    started_event: []const u8 = "",
+    terminal: bool = false,
+};
+
+pub const Gate = struct {
+    id: []const u8,
+    native_id: []const u8,
+    run: *Run,
+    tool: *Tool,
+    requested: []const u8 = "",
+    resolved: bool = false,
+};
+
+pub const Answer = struct { gate: *Gate, approve: bool };
+
 pub const Plan = enum { settled, abort, withdraw };
 
 pub const Cancel = struct { status: Status, plan: Plan };
@@ -58,6 +85,8 @@ pub const Reducer = struct {
     closed: bool = false,
     runs: std.ArrayList(*Run) = .empty,
     current: ?*Run = null,
+    tools: std.ArrayList(*Tool) = .empty,
+    gates: std.ArrayList(*Gate) = .empty,
     envelopes: std.ArrayList(std.json.Value) = .empty,
 
     pub fn init(arena: *std.heap.ArenaAllocator, options: Options) Reducer {
@@ -186,12 +215,177 @@ pub const Reducer = struct {
                 const run = self.current orelse return;
                 try self.complete(run);
             },
+            .tool_start => try self.startTool(event.data),
+            .tool_partial, .shell_output => {
+                const run = self.current orelse return;
+                const tool = self.findTool(run, native.text(event.data, "toolCallId")) orelse return;
+                if (tool.terminal) return;
+                const said = if (native.text(event.data, "partialOutput").len > 0) native.text(event.data, "partialOutput") else native.text(event.data, "text");
+                var payload = try self.toolPayload(tool);
+                try payload.put(self.allocator(), "progress", .{ .string = try self.allocator().dupe(u8, said) });
+                _ = try self.record(run, "action.call.progress", payload, false, tool.started_event);
+            },
+            .tool_complete => try self.endTool(event.data),
+            .permission_requested => try self.askPermission(event.data),
+            .permission_completed => {
+                const gate = self.findGate(native.text(event.data, "requestId")) orelse return;
+                if (gate.resolved) return;
+                gate.resolved = true;
+                _ = try self.record(gate.run, "action.permission.resolved", try self.resolution(gate, "cancelled", "", null, .{ "copilot_permission_settled_elsewhere", "Copilot settled the permission without this session's answer" }), false, gate.requested);
+            },
             .session_error => {
                 const run = self.current orelse return;
                 const said = native.text(event.data, "message");
                 try self.fail(run, "copilot_session_error", if (said.len > 0) try self.allocator().dupe(u8, said) else "Copilot reported a session error");
             },
             else => {},
+        }
+    }
+
+    fn findTool(self: *Reducer, run: *Run, native_id: []const u8) ?*Tool {
+        for (self.tools.items) |tool| {
+            if (tool.run == run and std.mem.eql(u8, tool.native_id, native_id)) return tool;
+        }
+        return null;
+    }
+
+    fn findGate(self: *Reducer, native_id: []const u8) ?*Gate {
+        for (self.gates.items) |gate| {
+            if (std.mem.eql(u8, gate.native_id, native_id)) return gate;
+        }
+        return null;
+    }
+
+    fn toolPayload(self: *Reducer, tool: *Tool) std.mem.Allocator.Error!std.json.ObjectMap {
+        var payload = try self.scoped(tool.run);
+        try payload.put(self.allocator(), "tool_call_id", .{ .string = tool.id });
+        try payload.put(self.allocator(), "requested_by", .{ .string = endpoint_id });
+        try payload.put(self.allocator(), "execution_owner", .{ .string = execution_owner });
+        try payload.put(self.allocator(), "name", .{ .string = tool.name });
+        return payload;
+    }
+
+    fn startTool(self: *Reducer, data: std.json.ObjectMap) Error!void {
+        const run = self.current orelse return;
+        const native_id = native.text(data, "toolCallId");
+        const name = native.text(data, "toolName");
+        if (native_id.len == 0 or name.len == 0 or self.findTool(run, native_id) != null) return self.fail(run, "copilot_invalid_tool_lifecycle", "a tool start that is unnamed or already started");
+        const kept_native_id = try self.allocator().dupe(u8, native_id);
+        const tool_call_id = try self.nextID("tool-call");
+        const kept_name = try self.allocator().dupe(u8, name);
+        const arguments = try clone(self.allocator(), data.get("arguments") orelse .null);
+        const tool = try self.allocator().create(Tool);
+        tool.* = .{ .run = run, .native_id = kept_native_id, .id = tool_call_id, .name = kept_name, .arguments = arguments };
+        try self.tools.append(self.allocator(), tool);
+        var requested = try self.toolPayload(tool);
+        try requested.put(self.allocator(), "arguments_json", tool.arguments);
+        const asked = try self.record(run, "action.call.requested", requested, false, "") orelse "";
+        tool.started_event = try self.record(run, "action.call.started", try self.toolPayload(tool), false, asked) orelse "";
+    }
+
+    fn endTool(self: *Reducer, data: std.json.ObjectMap) Error!void {
+        const run = self.current orelse return;
+        const tool = self.findTool(run, native.text(data, "toolCallId")) orelse return self.fail(run, "copilot_invalid_tool_lifecycle", "a tool completion without a start in this run");
+        if (tool.terminal) return self.fail(run, "copilot_invalid_tool_lifecycle", "a second completion for one tool call");
+        tool.terminal = true;
+        var payload = try self.toolPayload(tool);
+        const succeeded = data.get("success");
+        if (succeeded != null and succeeded.? == .bool and succeeded.?.bool) {
+            try payload.put(self.allocator(), "result", try clone(self.allocator(), data.get("result") orelse .null));
+            _ = try self.record(run, "action.call.completed", payload, false, tool.started_event);
+            return;
+        }
+        const problem: std.json.ObjectMap = if (data.get("error")) |carried| (if (carried == .object) carried.object else .empty) else .empty;
+        const denied = std.mem.eql(u8, native.text(problem, "code"), "denied");
+        const said = native.text(problem, "message");
+        try payload.put(self.allocator(), "error", try failure(self.allocator(), if (denied) "copilot_tool_denied" else "copilot_tool_failed", if (said.len > 0) said else "Copilot reported the tool call failed"));
+        _ = try self.record(run, "action.call.failed", payload, false, tool.started_event);
+    }
+
+    fn askPermission(self: *Reducer, data: std.json.ObjectMap) Error!void {
+        const run = self.current orelse return;
+        const request_id = native.text(data, "requestId");
+        const asked = data.get("permissionRequest");
+        if (request_id.len == 0 or asked == null or asked.? != .object or self.findGate(request_id) != null) return self.fail(run, "copilot_invalid_permission", "a permission request with no request id, no detail, or one already asked");
+        const detail = asked.?.object;
+        const tool = self.findTool(run, native.text(detail, "toolCallId")) orelse return self.fail(run, "copilot_permission_without_tool", "Copilot asked permission outside a tool call this run started");
+        if (tool.terminal) return self.fail(run, "copilot_permission_without_tool", "Copilot asked permission for a tool call that already ended");
+        const interaction_id = try self.nextID("interaction");
+        const kept_request_id = try self.allocator().dupe(u8, request_id);
+        const gate = try self.allocator().create(Gate);
+        gate.* = .{ .id = interaction_id, .native_id = kept_request_id, .run = run, .tool = tool };
+        try self.gates.append(self.allocator(), gate);
+        const intention = native.text(detail, "intention");
+        const kind = native.text(detail, "kind");
+        var payload = try self.scoped(run);
+        try payload.put(self.allocator(), "interaction_id", .{ .string = gate.id });
+        try payload.put(self.allocator(), "requested_by", .{ .string = endpoint_id });
+        try payload.put(self.allocator(), "responded_by", .{ .string = self.options.participant });
+        try payload.put(self.allocator(), "tool_call_id", .{ .string = tool.id });
+        try payload.put(self.allocator(), "title", .{ .string = try self.allocator().dupe(u8, if (intention.len > 0) intention else if (kind.len > 0) kind else tool.name) });
+        const shown = if (native.text(detail, "fullCommandText").len > 0) native.text(detail, "fullCommandText") else native.text(detail, "fileName");
+        if (shown.len > 0) try payload.put(self.allocator(), "description", .{ .string = try self.allocator().dupe(u8, shown) });
+        var offered = std.json.Array.init(self.allocator());
+        for (choices) |choice| {
+            var entry: std.json.ObjectMap = .empty;
+            try entry.put(self.allocator(), "id", .{ .string = choice[0] });
+            try entry.put(self.allocator(), "label", .{ .string = choice[1] });
+            try offered.append(.{ .object = entry });
+        }
+        try payload.put(self.allocator(), "choices", .{ .array = offered });
+        try payload.put(self.allocator(), "arguments_json", tool.arguments);
+        gate.requested = try self.record(run, "action.permission.requested", payload, false, "") orelse "";
+    }
+
+    fn resolution(self: *Reducer, gate: *Gate, outcome: []const u8, choice: []const u8, granted: ?bool, reason: ?[2][]const u8) std.mem.Allocator.Error!std.json.ObjectMap {
+        var payload = try self.scoped(gate.run);
+        try payload.put(self.allocator(), "interaction_id", .{ .string = gate.id });
+        try payload.put(self.allocator(), "requested_by", .{ .string = endpoint_id });
+        try payload.put(self.allocator(), "responded_by", .{ .string = self.options.participant });
+        try payload.put(self.allocator(), "tool_call_id", .{ .string = gate.tool.id });
+        try payload.put(self.allocator(), "outcome", .{ .string = outcome });
+        if (choice.len > 0) try payload.put(self.allocator(), "choice_id", .{ .string = choice });
+        if (granted) |value| try payload.put(self.allocator(), "granted", .{ .bool = value });
+        if (reason) |problem| try payload.put(self.allocator(), "reason", try failure(self.allocator(), problem[0], problem[1]));
+        return payload;
+    }
+
+    pub fn answer(self: *Reducer, interaction_id: []const u8, run_id: []const u8, responded_by: []const u8, requested_by: []const u8, choice: []const u8, granted: bool) ResolveError!Answer {
+        const gate = for (self.gates.items) |candidate| {
+            if (std.mem.eql(u8, candidate.id, interaction_id)) break candidate;
+        } else return error.InteractionNotFound;
+        if (gate.run.terminal) return error.InteractionNotFound;
+        if (gate.resolved) return error.InteractionResolved;
+        if (!std.mem.eql(u8, run_id, gate.run.id) or (requested_by.len > 0 and !std.mem.eql(u8, requested_by, endpoint_id))) return error.InvalidResolution;
+        if (!std.mem.eql(u8, responded_by, self.options.participant)) return error.WrongResponder;
+        const approve = std.mem.eql(u8, choice, choices[0][0]);
+        if ((!approve and !std.mem.eql(u8, choice, choices[1][0])) or approve != granted) return error.InvalidResolution;
+        return .{ .gate = gate, .approve = approve };
+    }
+
+    pub fn answered(self: *Reducer, given: Answer) Error!void {
+        if (given.gate.resolved or given.gate.run.terminal) return;
+        given.gate.resolved = true;
+        const payload = try self.resolution(given.gate, if (given.approve) "resolved" else "rejected", if (given.approve) choices[0][0] else choices[1][0], given.approve, null);
+        _ = try self.record(given.gate.run, "action.permission.resolved", payload, false, given.gate.requested);
+    }
+
+    fn settleTools(self: *Reducer, run: *Run, cancelled_run: bool) Error!void {
+        for (self.gates.items) |gate| {
+            if (gate.run != run or gate.resolved) continue;
+            gate.resolved = true;
+            _ = try self.record(run, "action.permission.resolved", try self.resolution(gate, "cancelled", "", null, .{ "run_settled", "the run ended before the permission was answered" }), false, gate.requested);
+        }
+        for (self.tools.items) |tool| {
+            if (tool.run != run or tool.terminal) continue;
+            tool.terminal = true;
+            var payload = try self.toolPayload(tool);
+            if (cancelled_run) {
+                _ = try self.record(run, "action.call.cancelled", payload, false, tool.started_event);
+            } else {
+                try payload.put(self.allocator(), "error", try failure(self.allocator(), "incomplete_tool", "the Copilot run settled with an unfinished tool call"));
+                _ = try self.record(run, "action.call.failed", payload, false, tool.started_event);
+            }
         }
     }
 
@@ -240,15 +434,14 @@ pub const Reducer = struct {
     }
 
     fn fail(self: *Reducer, run: *Run, code: []const u8, message: []const u8) Error!void {
-        var failure: std.json.ObjectMap = .empty;
-        try failure.put(self.allocator(), "code", .{ .string = code });
-        try failure.put(self.allocator(), "message", .{ .string = message });
         var payload = try self.scoped(run);
-        try payload.put(self.allocator(), "error", .{ .object = failure });
+        try payload.put(self.allocator(), "error", try failure(self.allocator(), code, message));
         try self.settle(run, "run.failed", payload);
     }
 
     fn settle(self: *Reducer, run: *Run, kind: []const u8, payload_in: std.json.ObjectMap) Error!void {
+        if (run.terminal) return;
+        try self.settleTools(run, std.mem.eql(u8, kind, "run.cancelled"));
         var payload = payload_in;
         if (run.measured) {
             var usage: std.json.ObjectMap = .empty;
@@ -269,7 +462,11 @@ pub const Reducer = struct {
     }
 
     fn emit(self: *Reducer, run: *Run, kind: []const u8, payload: std.json.ObjectMap, terminal: bool) Error!void {
-        if (run.terminal) return;
+        _ = try self.record(run, kind, payload, terminal, "");
+    }
+
+    fn record(self: *Reducer, run: *Run, kind: []const u8, payload: std.json.ObjectMap, terminal: bool, in_reply_to: []const u8) Error!?[]const u8 {
+        if (run.terminal) return null;
         const id = try self.nextID("event");
         const sequence = run.next;
         run.next += 1;
@@ -282,8 +479,10 @@ pub const Reducer = struct {
         try envelope.put(self.allocator(), "payload", .{ .object = payload });
         try envelope.put(self.allocator(), "sequence", try unsigned(self.allocator(), sequence));
         try envelope.put(self.allocator(), "timestamp_ms", .{ .integer = self.now() });
+        if (in_reply_to.len > 0) try envelope.put(self.allocator(), "in_reply_to", .{ .string = in_reply_to });
         try envelope.put(self.allocator(), "session_id", .{ .string = self.options.session_id });
         try envelope.put(self.allocator(), "run_id", .{ .string = run.id });
+        if (payload.get("tool_call_id")) |carried| try envelope.put(self.allocator(), "tool_call_id", carried);
         try envelope.put(self.allocator(), "capability_revision", .{ .string = self.options.revision });
         if (terminal) {
             if (try self.extensions(run)) |carried| try envelope.put(self.allocator(), "extensions", carried);
@@ -291,6 +490,7 @@ pub const Reducer = struct {
             run.status = if (std.mem.eql(u8, kind, "run.completed")) .completed else if (std.mem.eql(u8, kind, "run.cancelled")) .cancelled else .failed;
         }
         try self.envelopes.append(self.allocator(), .{ .object = envelope });
+        return id;
     }
 
     fn extensions(self: *Reducer, run: *Run) std.mem.Allocator.Error!?std.json.Value {
@@ -310,6 +510,32 @@ pub const Reducer = struct {
         return .{ .object = carried };
     }
 };
+
+fn failure(arena: std.mem.Allocator, code: []const u8, message: []const u8) std.mem.Allocator.Error!std.json.Value {
+    var problem: std.json.ObjectMap = .empty;
+    try problem.put(arena, "code", .{ .string = try arena.dupe(u8, code) });
+    try problem.put(arena, "message", .{ .string = try arena.dupe(u8, message) });
+    return .{ .object = problem };
+}
+
+fn clone(arena: std.mem.Allocator, value: std.json.Value) std.mem.Allocator.Error!std.json.Value {
+    return switch (value) {
+        .string => |text| .{ .string = try arena.dupe(u8, text) },
+        .number_string => |digits| .{ .number_string = try arena.dupe(u8, digits) },
+        .array => |items| copied: {
+            var out = try std.json.Array.initCapacity(arena, items.items.len);
+            for (items.items) |item| out.appendAssumeCapacity(try clone(arena, item));
+            break :copied .{ .array = out };
+        },
+        .object => |members| copied: {
+            var out: std.json.ObjectMap = .empty;
+            var walk = members.iterator();
+            while (walk.next()) |member| try out.put(arena, try arena.dupe(u8, member.key_ptr.*), try clone(arena, member.value_ptr.*));
+            break :copied .{ .object = out };
+        },
+        else => value,
+    };
+}
 
 fn unsigned(arena: std.mem.Allocator, value: u64) std.mem.Allocator.Error!std.json.Value {
     if (value <= std.math.maxInt(i64)) return .{ .integer = @intCast(value) };
@@ -514,4 +740,132 @@ test "a cost that overflows is left out rather than written as a non-JSON number
     const extensions = reducer.envelopes.items[1].object.get("extensions").?.object;
     try testing.expect(extensions.get(cost_extension) == null);
     try testing.expectEqualStrings("m", extensions.get(routed_model_extension).?.object.get("model").?.string);
+}
+
+fn expectReply(reducer: *Reducer, index: usize, to: usize) !void {
+    try testing.expectEqualStrings(reducer.envelopes.items[to].object.get("id").?.string, reducer.envelopes.items[index].object.get("in_reply_to").?.string);
+}
+
+const shell_start = "{\"toolCallId\":\"call_1\",\"toolName\":\"bash\",\"arguments\":{\"command\":\"echo ok\"},\"toolTitle\":\"Running command\"}";
+const shell_asked = "{\"requestId\":\"req-1\",\"permissionRequest\":{\"kind\":\"shell\",\"toolCallId\":\"call_1\",\"fullCommandText\":\"echo ok\",\"intention\":\"Run the command\"}}";
+
+test "an approved tool call is requested and started at its start, asks inside the call, and completes with its result" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const scratch = arena.allocator();
+    var reducer = Reducer.init(&arena, .{ .session_id = "s1", .native_id = "ses", .revision = "r", .participant = "reviewer" });
+    const admitted = try reducer.admit("s1");
+    try reducer.bind(admitted.run_id, "m1");
+    try feed(&reducer, scratch, "user.message", "{\"messageId\":\"m1\"}");
+    try feed(&reducer, scratch, "tool.execution_start", shell_start);
+    try feed(&reducer, scratch, "permission.requested", shell_asked);
+    const asked = payloadOf(&reducer, 3);
+    try testing.expectEqualStrings("Run the command", asked.get("title").?.string);
+    try testing.expectEqualStrings("echo ok", asked.get("description").?.string);
+    try testing.expectEqualStrings("reviewer", asked.get("responded_by").?.string);
+    try testing.expectEqualStrings(endpoint_id, asked.get("requested_by").?.string);
+    try testing.expectEqualStrings("echo ok", asked.get("arguments_json").?.object.get("command").?.string);
+    const interaction = asked.get("interaction_id").?.string;
+    try testing.expectError(error.WrongResponder, reducer.answer(interaction, "run-1", "someone", "", "approve-once", true));
+    try testing.expectError(error.InvalidResolution, reducer.answer(interaction, "run-1", "reviewer", "", "approve-once", false));
+    try testing.expectError(error.InvalidResolution, reducer.answer(interaction, "run-1", "reviewer", "", "approve-for-session", true));
+    try testing.expectError(error.InvalidResolution, reducer.answer(interaction, "run-2", "reviewer", "", "approve-once", true));
+    try testing.expectError(error.InteractionNotFound, reducer.answer("interaction-0", "run-1", "reviewer", "", "approve-once", true));
+    const given = try reducer.answer(interaction, "run-1", "reviewer", endpoint_id, "approve-once", true);
+    try testing.expectEqualStrings("req-1", given.gate.native_id);
+    try testing.expect(given.approve);
+    try reducer.answered(given);
+    try testing.expectError(error.InteractionResolved, reducer.answer(interaction, "run-1", "reviewer", "", "approve-once", true));
+    try feed(&reducer, scratch, "permission.completed", "{\"requestId\":\"req-1\",\"toolCallId\":\"call_1\",\"result\":{\"kind\":\"approved\"}}");
+    try feed(&reducer, scratch, "tool.shell_output", "{\"toolCallId\":\"call_1\",\"stream\":\"stdout\",\"text\":\"ok\\n\"}");
+    try feed(&reducer, scratch, "tool.execution_partial_result", "{\"toolCallId\":\"call_1\",\"partialOutput\":\"ok\\n\"}");
+    try feed(&reducer, scratch, "tool.execution_complete", "{\"toolCallId\":\"call_1\",\"success\":true,\"result\":{\"content\":\"ok\"}}");
+    try feed(&reducer, scratch, "session.idle", "{}");
+    try testing.expectEqualStrings("run.started:run-1 action.call.requested:run-1 action.call.started:run-1 action.permission.requested:run-1 action.permission.resolved:run-1 action.call.progress:run-1 action.call.progress:run-1 action.call.completed:run-1 run.completed:run-1", try kinds(&reducer, scratch));
+    try expectReply(&reducer, 2, 1);
+    try expectReply(&reducer, 4, 3);
+    try expectReply(&reducer, 7, 2);
+    try testing.expectEqualStrings("resolved", payloadOf(&reducer, 4).get("outcome").?.string);
+    try testing.expectEqualStrings("approve-once", payloadOf(&reducer, 4).get("choice_id").?.string);
+    try testing.expectEqualStrings("ok\n", payloadOf(&reducer, 5).get("progress").?.string);
+    try testing.expectEqualStrings("ok", payloadOf(&reducer, 7).get("result").?.object.get("content").?.string);
+    const tool_call = payloadOf(&reducer, 1).get("tool_call_id").?.string;
+    for (reducer.envelopes.items[1..8]) |envelope| try testing.expectEqualStrings(tool_call, envelope.object.get("tool_call_id").?.string);
+}
+
+test "a denied tool call fails as denied, and a permission Copilot settles itself resolves cancelled" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const scratch = arena.allocator();
+    var reducer = Reducer.init(&arena, .{ .session_id = "s1", .native_id = "ses", .revision = "r" });
+    const admitted = try reducer.admit("s1");
+    try reducer.bind(admitted.run_id, "m1");
+    try feed(&reducer, scratch, "user.message", "{\"messageId\":\"m1\"}");
+    try feed(&reducer, scratch, "tool.execution_start", shell_start);
+    try feed(&reducer, scratch, "permission.requested", shell_asked);
+    const given = try reducer.answer(payloadOf(&reducer, 3).get("interaction_id").?.string, "run-1", "user", "", "reject", false);
+    try testing.expect(!given.approve);
+    try reducer.answered(given);
+    try feed(&reducer, scratch, "tool.execution_complete", "{\"toolCallId\":\"call_1\",\"success\":false,\"error\":{\"message\":\"The user rejected this tool call.\",\"code\":\"denied\"}}");
+    try feed(&reducer, scratch, "tool.execution_start", "{\"toolCallId\":\"call_2\",\"toolName\":\"view\",\"arguments\":{\"path\":\"a\"}}");
+    try feed(&reducer, scratch, "permission.requested", "{\"requestId\":\"req-2\",\"permissionRequest\":{\"kind\":\"read\",\"toolCallId\":\"call_2\"}}");
+    try feed(&reducer, scratch, "permission.completed", "{\"requestId\":\"req-2\",\"result\":{\"kind\":\"approved\"}}");
+    try feed(&reducer, scratch, "tool.execution_complete", "{\"toolCallId\":\"call_2\",\"success\":false}");
+    try feed(&reducer, scratch, "session.idle", "{}");
+    try testing.expectEqualStrings("run.started:run-1 action.call.requested:run-1 action.call.started:run-1 action.permission.requested:run-1 action.permission.resolved:run-1 action.call.failed:run-1 action.call.requested:run-1 action.call.started:run-1 action.permission.requested:run-1 action.permission.resolved:run-1 action.call.failed:run-1 run.completed:run-1", try kinds(&reducer, scratch));
+    try testing.expectEqualStrings("rejected", payloadOf(&reducer, 4).get("outcome").?.string);
+    try testing.expect(!payloadOf(&reducer, 4).get("granted").?.bool);
+    try testing.expectEqualStrings("copilot_tool_denied", payloadOf(&reducer, 5).get("error").?.object.get("code").?.string);
+    try testing.expectEqualStrings("read", payloadOf(&reducer, 8).get("title").?.string);
+    try testing.expectEqualStrings("cancelled", payloadOf(&reducer, 9).get("outcome").?.string);
+    try testing.expectEqualStrings("copilot_permission_settled_elsewhere", payloadOf(&reducer, 9).get("reason").?.object.get("code").?.string);
+    try testing.expectEqualStrings("copilot_tool_failed", payloadOf(&reducer, 10).get("error").?.object.get("code").?.string);
+}
+
+test "a run that settles with an open permission and an unfinished call settles both, cancelled or failed with the run" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const scratch = arena.allocator();
+    var reducer = Reducer.init(&arena, .{ .session_id = "s1", .native_id = "ses", .revision = "r" });
+    const first = try reducer.admit("s1");
+    try reducer.bind(first.run_id, "m1");
+    try feed(&reducer, scratch, "user.message", "{\"messageId\":\"m1\"}");
+    try feed(&reducer, scratch, "tool.execution_start", shell_start);
+    try feed(&reducer, scratch, "permission.requested", shell_asked);
+    const interaction = payloadOf(&reducer, 3).get("interaction_id").?.string;
+    _ = try reducer.cancel(first.run_id);
+    try feed(&reducer, scratch, "session.idle", "{\"aborted\":true}");
+    try testing.expectError(error.InteractionNotFound, reducer.answer(interaction, "run-1", "user", "", "approve-once", true));
+    const second = try reducer.admit("s1");
+    try reducer.bind(second.run_id, "m2");
+    try feed(&reducer, scratch, "user.message", "{\"messageId\":\"m2\"}");
+    try feed(&reducer, scratch, "tool.execution_start", shell_start);
+    try feed(&reducer, scratch, "session.error", "{\"message\":\"quota exceeded\"}");
+    try testing.expectEqualStrings("run.started:run-1 action.call.requested:run-1 action.call.started:run-1 action.permission.requested:run-1 action.permission.resolved:run-1 action.call.cancelled:run-1 run.cancelled:run-1 run.started:run-12 action.call.requested:run-12 action.call.started:run-12 action.call.failed:run-12 run.failed:run-12", try kinds(&reducer, scratch));
+    try testing.expectEqualStrings("run_settled", payloadOf(&reducer, 4).get("reason").?.object.get("code").?.string);
+    try testing.expectEqualStrings("incomplete_tool", payloadOf(&reducer, 10).get("error").?.object.get("code").?.string);
+}
+
+test "a permission outside any started call, a repeated start, and an unmatched completion fail the run" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const scratch = arena.allocator();
+    var reducer = Reducer.init(&arena, .{ .session_id = "s1", .native_id = "ses", .revision = "r" });
+    const cases = [_][2][]const u8{
+        .{ "permission.requested", shell_asked },
+        .{ "tool.execution_start", shell_start },
+        .{ "tool.execution_complete", "{\"toolCallId\":\"call_9\",\"success\":true}" },
+    };
+    const codes = [_][]const u8{ "copilot_permission_without_tool", "copilot_invalid_tool_lifecycle", "copilot_invalid_tool_lifecycle" };
+    for (cases, codes, 0..) |case, code, index| {
+        const admitted = try reducer.admit("s1");
+        const message_id = try std.fmt.allocPrint(scratch, "m{d}", .{index});
+        try reducer.bind(admitted.run_id, message_id);
+        try feed(&reducer, scratch, "user.message", try std.fmt.allocPrint(scratch, "{{\"messageId\":\"{s}\"}}", .{message_id}));
+        if (index == 1) try feed(&reducer, scratch, "tool.execution_start", shell_start);
+        try feed(&reducer, scratch, case[0], case[1]);
+        const last = reducer.envelopes.items[reducer.envelopes.items.len - 1];
+        try testing.expectEqualStrings("run.failed", last.object.get("type").?.string);
+        try testing.expectEqualStrings(code, last.object.get("payload").?.object.get("error").?.object.get("code").?.string);
+    }
 }
