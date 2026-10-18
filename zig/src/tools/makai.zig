@@ -246,7 +246,7 @@ const ServedSessions = struct {
     }
 
     fn attach(self: *ServedSessions, adapter: *oapx_adapter.Adapter) void {
-        adapter.history = .{ .ctx = self, .load = load };
+        adapter.history = .{ .ctx = self, .load = load, .read = read };
         adapter.transcripts = .{ .ctx = self, .save = saveTranscript };
         adapter.recorder = .{ .ctx = self, .record = record };
     }
@@ -268,8 +268,19 @@ const ServedSessions = struct {
         var loaded = try self.store.load(session_id);
         defer loaded.deinit(self.store.allocator);
         try (try self.recorderFor(session_id)).adopt(self.allocator, loaded.metadata);
-        const messages = try arena.alloc(ai_types.Message, loaded.messages.items.len);
-        for (loaded.messages.items, messages) |message, *slot| slot.* = try ai_types.cloneMessage(arena, message);
+        return try cloneMessages(arena, loaded.messages.items);
+    }
+
+    fn read(ctx: *anyopaque, arena: std.mem.Allocator, session_id: []const u8) anyerror!?[]const ai_types.Message {
+        const self: *ServedSessions = @ptrCast(@alignCast(ctx));
+        var loaded = try self.store.load(session_id);
+        defer loaded.deinit(self.store.allocator);
+        return try cloneMessages(arena, loaded.messages.items);
+    }
+
+    fn cloneMessages(arena: std.mem.Allocator, loaded: []const ai_types.Message) ![]const ai_types.Message {
+        const messages = try arena.alloc(ai_types.Message, loaded.len);
+        for (loaded, messages) |message, *slot| slot.* = try ai_types.cloneMessage(arena, message);
         return messages;
     }
 
@@ -7614,7 +7625,7 @@ test "validate names the code of a refusal whose pack id is longer than any fixe
     try std.testing.expect(std.mem.indexOf(u8, short_run.judged, "\"valid\": true") == null);
 }
 
-test "a served oapx session's events are saved, and load back as its conversation once the store is opened again" {
+test "a served oapx session's events are saved, read back without adopting it, and load back as its conversation once the store is opened again" {
     const allocator = std.testing.allocator;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
@@ -7641,6 +7652,9 @@ test "a served oapx session's events are saved, and load back as its conversatio
     defer reopened.deinit();
     var arena = std.heap.ArenaAllocator.init(allocator);
     defer arena.deinit();
+    const read = (try ServedSessions.read(&reopened, arena.allocator(), "session-1")).?;
+    try std.testing.expectEqual(@as(usize, 2), read.len);
+    try std.testing.expect(reopened.recorders.get("session-1") == null);
     const messages = (try ServedSessions.load(&reopened, arena.allocator(), "session-1")).?;
     try std.testing.expectEqual(@as(usize, 2), messages.len);
     try std.testing.expect(messages[0] == .user);
