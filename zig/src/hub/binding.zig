@@ -275,7 +275,7 @@ pub const Bindings = struct {
     }
 
     pub fn sessions(self: Bindings, arena: std.mem.Allocator) ![]Entry {
-        return self.vtable.sessions(self.ctx, arena);
+        return latestEach(arena, try self.vtable.sessions(self.ctx, arena));
     }
 
     pub fn lastFailure(self: Bindings) ?anyerror {
@@ -493,4 +493,44 @@ test "a session list defaults its limit, refuses one past the ceiling, and refus
     for ([_][]const u8{ "not base64!", "bm8tY29sb24", "eDpzZXNzaW9u", "MTI6" }) |cursor| {
         try testing.expectError(error.InvalidCursor, list(a, sessions, cursor, 0));
     }
+}
+
+const RawRows = struct {
+    rows: []const Entry,
+
+    fn bindings(self: *RawRows) Bindings {
+        return .{ .ctx = self, .vtable = &.{ .append = append, .latest = latest, .sessions = sessions, .lastFailure = lastFailure } };
+    }
+
+    fn append(_: *anyopaque, _: Entry) anyerror!void {}
+
+    fn latest(_: *anyopaque, _: std.mem.Allocator, _: []const u8) anyerror!?Entry {
+        return null;
+    }
+
+    fn sessions(ctx: *anyopaque, arena: std.mem.Allocator) anyerror![]Entry {
+        const self: *RawRows = @ptrCast(@alignCast(ctx));
+        return arena.dupe(Entry, self.rows);
+    }
+
+    fn lastFailure(_: *anyopaque) ?anyerror {
+        return null;
+    }
+};
+
+test "a backend that answers sessions with every row is read as one latest entry per session" {
+    var backend = RawRows{ .rows = &.{
+        .{ .action = .opened, .time_ms = 1, .record = .{ .session_id = "s", .adapter = "pi" } },
+        .{ .action = .opened, .time_ms = 2, .record = .{ .session_id = "t", .adapter = "pi" } },
+        .{ .action = .closed, .time_ms = 3, .record = .{ .session_id = "s", .adapter = "pi" } },
+        .{ .action = .refused, .time_ms = 4, .record = .{ .session_id = "t", .adapter = "pi" } },
+    } };
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const listed = try backend.bindings().sessions(arena.allocator());
+    try testing.expectEqual(@as(usize, 2), listed.len);
+    try testing.expectEqualStrings("s", listed[0].record.session_id);
+    try testing.expectEqual(Action.closed, listed[0].action);
+    try testing.expectEqualStrings("t", listed[1].record.session_id);
+    try testing.expectEqual(Action.opened, listed[1].action);
 }

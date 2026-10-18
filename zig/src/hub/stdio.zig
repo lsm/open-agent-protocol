@@ -1113,7 +1113,7 @@ pub const Frontend = struct {
             error.OutOfMemory => return error.OutOfMemory,
             else => return .unreadable,
         };
-        return .{ .entries = try hubmod.binding.latestEach(arena, recorded) };
+        return .{ .entries = recorded };
     }
 
     const Unheld = union(enum) {
