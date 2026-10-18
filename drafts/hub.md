@@ -738,10 +738,11 @@ and it is the one still open.
   `Content-Type` is answered `415 unsupported_media_type`, **not** the plain `404` the paragraph
   above describes. Go cannot reach the same answer: its media check is at
   `servehttp/server.go:798`, inside `readRequest`, which is called from the **five**
-  body-reading handlers at `:194`, `:330`, `:403`, `:517` and `:565` — five of the fifteen operations
+  body-reading handlers at `:194`, `:330`, `:403`, `:517` and `:565` — five of the fourteen operations
   registered on the mux across `:70`-`:83`, `:69` being the `http.NewServeMux()` construction rather
   than a registration. So a path matching no pattern is answered by the mux before any handler runs,
-  and the other nine registrations read no body at all. So the two trees disagree on one request, and the paragraph above is right about
+  and the other nine registrations read no body at all, nor does the fifteenth, `transcript`, which
+  `routeWork` registers beside the work routes. So the two trees disagree on one request, and the paragraph above is right about
   the rule and incomplete about the case. **Neither tree is wrong against the draft**: the draft
   states the media rule for routes that read a body, and states no rule for a path that does not
   exist. Which answer an unrouted path should give is **not decided here**. The `415`-on-unrouted
