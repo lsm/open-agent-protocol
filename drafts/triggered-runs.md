@@ -299,7 +299,7 @@ call or turn that started it.
 
 | member | meaning |
 | --- | --- |
-| `task_id` | the harness's id where it keeps one across restarts (Claude, DeepSeek), never an OAP identity |
+| `task_id` | an id the endpoint mints, unique within the session like a run id; the harness's own id goes in `extensions`, and the endpoint maps between the two for cancel and output |
 | `kind` | `command`, `agent`, `schedule`, or `other`; the native type in `extensions` |
 | `label` | the harness's description |
 | `status` | `pending`, `running`, `paused`, `completed`, `failed`, or `cancelled` |
@@ -325,9 +325,14 @@ the run the fire triggers names it in `trigger.task_id`.
 
 ### State and requests
 
-- **`session.state.tasks`** lists every task not yet ended, so a host that
-  reconnects starts from the truth. The state document is authoritative, as
-  for runs.
+- **`session.state.tasks`** lists the session's tasks, live and ended, each
+  with its current status. An ended task carries its `summary` and `cause`.
+  - A host that reconnects after a task ended still finds out how it ended,
+    because session events are not replayed.
+  - Ended tasks are kept until the session closes, up to a bound the
+    endpoint chooses. Past the bound the oldest ended tasks are dropped, and
+    `tasks_truncated: true` says so.
+  - The state document is authoritative, as for runs.
 - **`session.task.cancel.request {session_id, task_id}`** answers
   `{outcome: "requested" | "already_ended"}`. The ending arrives as
   `session.task.ended`, because a cancel is intent and not settlement, as for
@@ -379,8 +384,10 @@ as tasks.
    - A host must not assume a process-bound task outlived a close; the
      reopen's `state.tasks` is authoritative for the rest.
 2. **What the harness keeps comes back on reopen** (Decision 0040).
-   - The reopen's `state.tasks` lists every task the harness restored, under
-     the same `task_id` where the harness keeps it.
+   - The reopen's `state.tasks` lists every task the harness restored.
+   - Where the harness keeps its own id across the restart (Claude does), the
+     endpoint keeps the same OAP `task_id`, because it records the mapping
+     with the session's binding.
    - Claude restores a session's crons on `--resume` (recorded) and its
      durable crons from `.claude/scheduled_tasks.json` (read from the binary).
    - Anything absent from `state.tasks` did not survive.
@@ -410,8 +417,9 @@ as tasks.
 
 ## Delivery
 
-Task events and triggered runs both happen between runs, when the endpoint
-is reading no stream. Both need the session-event channel that
+Triggered runs start between runs, when the endpoint is reading no stream.
+Task events happen both between runs and within one, as when a folded notice
+ends a task mid-run. Both need the session-event channel that
 [harness-initiated-state.md](harness-initiated-state.md) proposes, with its
 open question answered here:
 
