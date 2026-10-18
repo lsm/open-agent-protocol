@@ -370,6 +370,7 @@ pub const Endpoint = struct {
         try envelope.put(arena, "type", .{ .string = "endpoint.shutdown.response" });
         try envelope.put(arena, "id", .{ .string = try self.nextId(arena, "response") });
         try envelope.put(arena, "in_reply_to", root.get("id").?);
+        if (root.get("capability_revision")) |revision| try envelope.put(arena, "capability_revision", revision);
         try envelope.put(arena, "payload", .{ .object = answer });
         const line = try json_encode.valueAlloc(self.allocator, .{ .object = envelope });
         errdefer self.allocator.free(line);
@@ -1595,6 +1596,15 @@ test "an endpoint shutdown asks while a run is active, then graceful drains and 
     const forced = try harness.send(shutdown_force);
     try testing.expectEqualStrings("stopping", field(forced[0], &.{ "payload", "outcome" }));
     try testing.expect(try harness.endpoint.shutdownComplete());
+}
+
+test "an endpoint shutdown answer repeats the request's capability revision" {
+    var harness: Harness = undefined;
+    harness.init(testing.allocator, .{});
+    defer harness.deinit();
+    const answered = try harness.send(framed("endpoint.shutdown.request", "sd-4", ",\"capability_revision\":\"fake-v1\"", "{}"));
+    try testing.expectEqualStrings("endpoint.shutdown.response", field(answered[0], &.{"type"}));
+    try testing.expectEqualStrings("fake-v1", field(answered[0], &.{"capability_revision"}));
 }
 
 test "an endpoint shutdown mode other than graceful or force is refused and changes nothing" {
