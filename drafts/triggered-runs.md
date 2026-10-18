@@ -74,15 +74,17 @@ over `stream-json` against the `providertest` loopback.
 - A foreground `Bash` call that runs past a few seconds also emits
   `task_started` and `task_notification`. These frames alone do not mean
   background work.
-- **Cancelling crons from the host.** The model cancels any cron through
-  `CronDelete`. From the host side:
-  - **A durable cron:** removing its entry from
-    `.claude/scheduled_tasks.json` cancels it. The scheduler watches the file,
-    and the removed one-shot never fired while a session-only cron with the
-    same schedule did.
-  - **A session-only cron:** the host has no path. No control request or
-    slash command reaches it. `stop_task` with the cron's id answers
-    `success` and leaves the cron scheduled, as a later `CronList` shows.
+- **Cancelling crons from the host.** Only the model can delete a cron,
+  through `CronDelete`; the SDK has no host control for it.
+  - No control request in SDK 0.3.302 deletes a cron, and `CronDelete` is a
+    model-only built-in tool that `mcp_call` cannot reach.
+  - `stop_task` with the cron's id answers `success` and leaves the cron
+    scheduled, as a later `CronList` shows.
+  - The Stop hook's `session_crons` and `UserPromptSubmit`'s
+    `source: "schedule_wakeup"` only observe.
+  - Removing a durable cron's entry from `.claude/scheduled_tasks.json` does
+    stop it (recorded), but OAP never writes a harness's own files, so no
+    adapter uses that.
 - **Messaging a background agent.** `send_task_message` to a running
   background agent answers `Unsupported control request subtype:
   send_task_message` on this connection.
@@ -275,7 +277,17 @@ inside that rule as follows.
    background tasks.
 7. **Interactions** in a triggered run wait for an answer like any run's, and
    `state.active_runs` lists them under `pending_interactions`. A hub session
-   with no subscriber keeps the run waiting rather than refusing.
+   with no subscriber keeps the run waiting: the protocol neither refuses
+   nor cancels it on its own.
+   - A submit that queues behind a triggered run waiting on an interaction
+     gets a queued response naming the blocking interaction ids, so a
+     returning user's message is not silently stuck behind a question they
+     cannot see. That member is a schema change, listed under *Where it
+     lands*.
+   - A host should surface that interaction first.
+   - A timeout is host policy, never a protocol default. At expiry the host
+     either answers the interaction (for example, denies it) or cancels the
+     run, and either way the outcome is reported, never dropped.
 8. **State and recovery.** `state.active_runs` always lists a nonterminal
    triggered run with its `trigger`, even where Decision 0007 would let
    `active_run_id` alone carry a single started run. Without the entry, a host
@@ -369,7 +381,7 @@ the run the fire triggers names it in `trigger.task_id`.
 | `session.tasks` | `native`: task frames, `background_tasks_changed` | `emulated`: `job/registered`, `job/settled` | not established: `thread/backgroundTerminals/list` exists (experimental), its notifications were not read |
 | `session.task.cancel` | `native`: `stop_task` (commands, agents); not crons, where it answers `success` and does nothing | `unavailable`: `job.kill` is not on this surface | not established: `thread/backgroundTerminals/terminate` exists (experimental) |
 | `session.task.output` | `native`: `get_task_output` (commands, monitors) | `unavailable`: `job.follow` is not on this surface | not established |
-| `session.task.schedules` | `emulated`: from `CronCreate`/`CronDelete` results and the Stop hook's `session_crons`. Cancel is `emulated` for a durable cron, by removing its entry from `.claude/scheduled_tasks.json`, and `unavailable` for a session-only cron | not on this surface | none found |
+| `session.task.schedules` | `emulated`: from `CronCreate`/`CronDelete` results and the Stop hook's `session_crons`. Cancel is `unavailable` for every cron, durable or session-only: only the model can delete a cron, through `CronDelete`; the SDK has no host control | not on this surface | none found |
 
 Hermes's task surface is not established beyond its `background.complete`
 event. OpenCode's tasks are `emulated` from its synthetic completion messages,
@@ -387,6 +399,10 @@ already carries that submit, and the host is where the clock and the user
 are, so the protocol adds no request for a host to create a schedule inside
 the harness. A harness's own schedules are created by its model and reported
 as tasks.
+
+A host that needs schedules it can cancel owns them: it disallows the
+harness's scheduling tools (Claude's `CronCreate`) and submits on its own
+timer.
 
 ## Close and reopen
 
@@ -483,7 +499,8 @@ Each step below is one or more pull requests.
 2. **Wire and validator:**
    - schema members and events: `run.started.trigger`, `activeRun.trigger`,
      `session.task.*`, `state.tasks`, `session.task.cancel.*`,
-     `session.task.output.*`, `tasks_truncated`, and the
+     `session.task.output.*`, `tasks_truncated`, the queued submit
+     response's blocking interaction ids, and the
      `session.run.triggered`, `session.tasks`, `session.task.schedules`,
      `session.task.cancel` and `session.task.output` capabilities;
    - `protocol/` and `clients/ts/src/protocol.ts`;
@@ -505,14 +522,11 @@ Each step below is one or more pull requests.
    - project tasks and schedules;
    - map `stop_task` and `get_task_output`, but never `stop_task` for a
      cron;
-   - cancel a durable cron by removing its entry from
-     `.claude/scheduled_tasks.json`, and report a session-only cron
-     `cancellable: false`;
+   - report every cron, durable or session-only, `cancellable: false`;
    - make every turn without the adapter's echo a triggered run, using the
      mapping table above;
    - add corpus cases from the recordings above: idle notification, notice
-     ahead of a queued prompt, fold, cron fire, stop, output, and a durable
-     cron cancelled through its file.
+     ahead of a queued prompt, fold, cron fire, stop and output.
 5. **DeepSeek, both trees:**
    - project jobs as tasks;
    - make a turn that starts with no reserved run a triggered run;
