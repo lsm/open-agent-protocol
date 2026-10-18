@@ -203,7 +203,7 @@ the client is told about those gaps rather than having them hidden.
 | --- | --- | --- |
 | `oapx` | oapx's own loop, as the terminal UI builds it | — |
 | `claude` | a Claude Code child | 2.1.302 |
-| `codex` | a Codex app-server child | `rust-v0.162.1` |
+| `codex` | a Codex app-server child | `rust-v0.163.0` |
 | `pi` | a Pi RPC child | `v1.3.0` |
 | `acp` | an ACP v1 agent named by a `--config` entry | `v1.11.0` |
 | `hermes` | a Hermes gateway | `v0.22.2` |
@@ -285,7 +285,7 @@ available only by explicit opt-in.
 ## Backends in detail
 
 `oapx serve agent --backend claude` serves a Claude Code child (pinned 2.1.302),
-`--backend codex` a Codex app-server child (pinned `rust-v0.162.1`), `--backend pi` a
+`--backend codex` a Codex app-server child (pinned `rust-v0.163.0`), `--backend pi` a
 Pi RPC child (pinned `v1.3.0`), an `acp`
 entry an ACP v1 agent (pinned `v1.11.0`), a `hermes` entry a Hermes gateway (pinned `v0.22.2`), a `deepseek` entry a DeepSeek harness (pinned `dsh-v0.2.1-rc.2`), and an `opencode` entry an OpenCode server (pinned `v2.0.26`), behind the same stdio door instead of the built-in loop, following
 [the endpoint binding](drafts/endpoint-stdio.md). Without `--config` it runs
@@ -334,7 +334,7 @@ feeds both trees the same traffic and requires identical output. What that job
 is the last check on, and what the corpora cover instead, is written down in
 [docs/parity-job.md](docs/parity-job.md). What each cannot do through this path
 is recorded in its ledger: [claude](research/claude-code-agent-sdk-2.1.302-mapping.md),
-[codex](research/codex-app-server-0.162.1-mapping.md),
+[codex](research/codex-app-server-0.163.0-mapping.md),
 [acp](research/acp-v1.11.0-mapping.md). Without `--config`, codex runs `codex`
 from `PATH` with only `HOME` and `PATH`; an ACP agent has no default and needs
 a `--config` entry naming its `executable`.
@@ -1041,7 +1041,7 @@ Research:
 
 - [Harness interoperability study](research/harness-interoperability.md)
 - [P0 protocol gaps from harness interoperability](research/p0-protocol-gaps.md)
-- [Pinned Codex app-server mapping](research/codex-app-server-0.162.1-mapping.md)
+- [Pinned Codex app-server mapping](research/codex-app-server-0.163.0-mapping.md)
 - [Pinned OpenCode server mapping](research/opencode-v2.0.26-mapping.md), over the [v2.0.24 mapping](research/opencode-v2.0.24-mapping.md)
 - [Pinned ACP v1 and Devin Desktop mapping](research/acp-v1.11.0-mapping.md), over the [v1.10.2](research/acp-v1.10.2-mapping.md) and [v1.7.0 base mapping](research/acp-v1.7.0-mapping.md)
 - [Pinned Pi coding-agent mapping](research/pi-v1.3.0-mapping.md), over the [v1.1.0](research/pi-v1.1.0-mapping.md), [v1.0.4](research/pi-v1.0.4-mapping.md), [v1.0.1](research/pi-v1.0.1-mapping.md), [v0.87.1](research/pi-v0.87.1-mapping.md) and [v0.85.1 base](research/pi-v0.85.1-mapping.md) mappings
