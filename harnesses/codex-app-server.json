@@ -3,12 +3,29 @@
   "name": "Codex app-server",
   "versions": [
     {
-      "label": "rust-v0.162.1",
+      "label": "rust-v0.163.0",
       "status": "current",
-      "endpoint_version": "092d3acd6bec3e3a14bdc7e7a2810ab628ab759d",
-      "capability_revision": "codex-appserver-0.162.1-oap-v1",
-      "ledgers": ["research/codex-app-server-0.162.1-mapping.md", "research/codex-app-server-0.160.1-mapping.md"],
-      "corpus": "fixtures/adapters/codex-appserver-0.162.1",
+      "endpoint_version": "83086188ae0614bd882818ff1aa23f3194962012",
+      "capability_revision": "codex-appserver-0.163.0-oap-v1",
+      "ledgers": ["research/codex-app-server-0.163.0-mapping.md", "research/codex-app-server-0.162.1-mapping.md"],
+      "corpus": "fixtures/adapters/codex-appserver-0.163.0",
+      "components": [
+        { "name": "codex", "version": "0.163.0", "repository": "https://github.com/openai/codex" }
+      ],
+      "artifacts": [
+        { "component": "codex", "platform": "any", "kind": "source-tree", "name": "codex-rs/app-server-protocol/schema", "sha256": "cc92f2c7bdbbf5738859fb11c0f13c344f51acfa2c86667924ae3c606303e160" },
+        { "component": "codex", "platform": "darwin-arm64", "kind": "archive", "name": "codex-aarch64-apple-darwin.tar.gz", "sha256": "61c4d9a92521bdb42b0c1d9f87c673f6da628a06de5945cbdd9a0010632f6d10", "bytes": 99551880 },
+        { "component": "codex", "platform": "darwin-arm64", "kind": "binary", "name": "codex-aarch64-apple-darwin", "sha256": "8813367285524ac798dd96d1b071aea30d58708c7226fd236cd275cf1cfdee31", "bytes": 249952688 },
+        { "component": "codex", "platform": "linux-x64", "kind": "archive", "name": "codex-x86_64-unknown-linux-musl.tar.gz", "sha256": "beb339e8ecd9ba057a6bb2dc81ad8ca474812edfbf0fc5056ca818797648dde4", "bytes": 112589966 }
+      ],
+      "sources": [
+        { "component": "codex", "tag": "rust-v0.163.0", "commit": "83086188ae0614bd882818ff1aa23f3194962012", "tree": "e91f335e7a03e1d14fa1e5fc7fc7620cdfc60842" }
+      ]
+    },
+    {
+      "label": "rust-v0.162.1",
+      "status": "retired",
+      "ledgers": ["research/codex-app-server-0.162.1-mapping.md"],
       "components": [
         { "name": "codex", "version": "0.162.1", "repository": "https://github.com/openai/codex" }
       ],
