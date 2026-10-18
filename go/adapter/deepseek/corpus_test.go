@@ -52,17 +52,17 @@ var dshCarriedSources = dshCorpusSources{
 }
 
 var dshCurrentSources = dshCorpusSources{
-	SDKProtocolTypes:     "9c2fd6335d3db02fb7fabe9f0674e5a63647a09e",
+	SDKProtocolTypes:     "25891197e26f9b6360acf20bc070f2b4b8b8e222",
 	SDKProtocolTransport: "36574f46bf3e34738be045408e25bb79932ff609",
-	SDKServer:            "ab5084ffb723b327d6accc04547698d786f827a6",
-	CoreSessionTypes:     "fbc9a9cccbe3f95d344f8e8078dfe5ddd3786a80",
-	CoreKnownEvents:      "9801de9222f0aee821fd7a33124b07b2ed833959",
+	SDKServer:            "726f430f155190922bdce21807da26b6e1a7b127",
+	CoreSessionTypes:     "e0931f22405b25cf1e9090929fb9f5f45852d6bc",
+	CoreKnownEvents:      "a0f5c17795be074e3c521c525a0eb59ee25248d6",
 	CoreAgentTypes:       "5cbc81df38c81be4f5c4d85e6a2c8acd5108ed95",
 	CoreAgentInbox:       "ef00887a544c2dededb484ff7b9ce0efe83dea21",
 	CoreAgentRuntime:     "0fa89afc054a819493206cef65dd7907092cdd7f",
 	CoreAgentLoop:        "adf2e33ddcc9b37e8e20e89203a276bcdf18ee5d",
 	LLMMessage:           "d96a63edb6d78d64508875ebc1cc6a1cc5a824b6",
-	LLMTypes:             "794352dc837f0d7c0d9335e3da607e5eb9da91a8",
+	LLMTypes:             "8001ab81d8f4e159f1b5e02e12af4f7f6223f625",
 	LLMAssistantStream:   "7fca34c5d5bf432f7fad81bd48edfbdaf5083e83",
 	CoreSessionSurface:   "0bb84c030ef595b3d9a17116e7dc7b9deb26369c",
 }
@@ -83,7 +83,7 @@ var dshLedgerFixtures = map[string]bool{
 	"streaming-chunks": true, "tool-lifecycle": true, "tool-failed": true, "injected-origin": true,
 	"subagent-run": true, "child-after-turn-end": true, "settlement": true,
 	"process-exit": true, "shutdown": true,
-	"unknown-ignorable": true, "unknown-required": true, "working-directory-change": true,
+	"unknown-ignorable": true, "unknown-required": true, "working-directory-change": true, "background-job": true,
 	"native-tolerant-frame": true, "adapter-strict-frame": true,
 	"no-native-cancel": true, "no-wire-claim": true, "no-implied-replay": true,
 }
@@ -1242,6 +1242,20 @@ func assertDSHLedgerEvidence(t *testing.T, labels []string, definition dshCorpus
 				}
 			}
 			ok = changed && notice && hasDSHEnvelopeType(*execution, protocol.TypeActionCallCompleted) && hasDSHEnvelopeType(*execution, protocol.TypeRunCompleted)
+		case "background-job":
+			registered, settled := -1, -1
+			for i := range decoded {
+				if decoded[i].Event == nil {
+					continue
+				}
+				switch decoded[i].Event.Type {
+				case "job/registered":
+					registered = i
+				case "job/settled":
+					settled = i
+				}
+			}
+			ok = registered >= 0 && settled > registered && hasDSHEnvelopeType(*execution, protocol.TypeActionCallCompleted) && hasDSHEnvelopeType(*execution, protocol.TypeRunCompleted)
 		case "unknown-required":
 			rejected := false
 			for i := range frames {
