@@ -47,7 +47,7 @@ pub const Options = struct {
     hold_ns: u64 = default_hold_ns,
     shutdown_ns: u64 = default_shutdown_ns,
     tool_sources: []const contract.ConfiguredSource = &.{},
-    bindings: ?*binding.Store = null,
+    bindings: ?binding.Bindings = null,
 };
 
 pub const Ending = enum {
@@ -509,7 +509,7 @@ pub const Hub = struct {
     subscriptions: std.ArrayList(*Subscription) = .empty,
     holds: std.ArrayList(Held) = .empty,
     bound: std.ArrayList(Bound) = .empty,
-    bindings: ?*binding.Store = null,
+    bindings: ?binding.Bindings = null,
     shutting_down: bool = false,
 
     pub fn init(allocator: std.mem.Allocator, now: *const fn () u64, options: Options) Hub {
@@ -858,7 +858,7 @@ pub const Hub = struct {
                     if (err == error.OutOfMemory) return error.OutOfMemory;
                     return refused.reason.fail(error.BackendFailed, "the binding store holds a record that was not written whole");
                 } orelse {
-                    if (store.last_failure) |failure| return refused.reason.fail(error.BackendFailed, try std.fmt.allocPrint(arena, "no binding is recorded for this session, and the binding store last failed to record one: {s}", .{@errorName(failure)}));
+                    if (store.lastFailure()) |failure| return refused.reason.fail(error.BackendFailed, try std.fmt.allocPrint(arena, "no binding is recorded for this session, and the binding store last failed to record one: {s}", .{@errorName(failure)}));
                     return error.UnknownSession;
                 };
                 if (!std.mem.eql(u8, stored.record.adapter, adapter_name)) return error.UnknownSession;
@@ -3738,7 +3738,7 @@ test "a shutdown leaves the history naming its sessions live, so a restarted hub
         defer store.deinit();
         var memory_adapter = memory.Adapter.init(testing.allocator);
         defer memory_adapter.deinit();
-        var hub = Hub.init(testing.allocator, testClock, .{ .bindings = &store });
+        var hub = Hub.init(testing.allocator, testClock, .{ .bindings = store.bindings() });
         defer hub.deinit();
         try hub.register("memory", memory_adapter.adapter());
         _ = try hub.open(arena, "memory", .{ .session_id = "kept" });
@@ -4850,7 +4850,7 @@ test "a session opened by adopting a native id is reopened as adopted, from the 
     {
         var store = try binding.Store.open(testing.allocator, path);
         defer store.deinit();
-        var hub = Hub.init(testing.allocator, testClock, .{ .bindings = &store });
+        var hub = Hub.init(testing.allocator, testClock, .{ .bindings = store.bindings() });
         defer hub.deinit();
         try hub.register("native", native.adapter());
         adopted_id = try arena.dupe(u8, (try hub.open(arena, "native", .{ .reopen = true, .adopt_native_id = "thread-x" })).session_id);
@@ -4867,7 +4867,7 @@ test "a session opened by adopting a native id is reopened as adopted, from the 
     }
     var store = try binding.Store.open(testing.allocator, path);
     defer store.deinit();
-    var restarted = Hub.init(testing.allocator, testClock, .{ .bindings = &store });
+    var restarted = Hub.init(testing.allocator, testClock, .{ .bindings = store.bindings() });
     defer restarted.deinit();
     try restarted.register("native", native.adapter());
     _ = try restarted.open(arena, "native", .{ .session_id = adopted_id, .reopen = true });
@@ -4893,7 +4893,7 @@ test "a binding recorded before a hub restart is read after it, and a torn store
     {
         var store = try binding.Store.open(testing.allocator, path);
         defer store.deinit();
-        var hub = Hub.init(testing.allocator, testClock, .{ .bindings = &store });
+        var hub = Hub.init(testing.allocator, testClock, .{ .bindings = store.bindings() });
         defer hub.deinit();
         try hub.register("native", native.adapter());
         _ = try hub.open(arena, "native", .{ .session_id = "kept" });
@@ -4901,7 +4901,7 @@ test "a binding recorded before a hub restart is read after it, and a torn store
     }
     var store = try binding.Store.open(testing.allocator, path);
     defer store.deinit();
-    var restarted = Hub.init(testing.allocator, testClock, .{ .bindings = &store });
+    var restarted = Hub.init(testing.allocator, testClock, .{ .bindings = store.bindings() });
     defer restarted.deinit();
     try restarted.register("native", native.adapter());
     try restarted.register("memory", inner.adapter());
@@ -4915,7 +4915,7 @@ test "a binding recorded before a hub restart is read after it, and a torn store
 
     const written = try compat.fs.readFileAlloc(arena, compat.fs.getCwd(), path, binding.max_store_bytes);
     try compat.fs.writeFile(compat.fs.getCwd(), path, try std.mem.concat(arena, u8, &.{ written, "00000000 {}\n" }));
-    var torn = Hub.init(testing.allocator, testClock, .{ .bindings = &store });
+    var torn = Hub.init(testing.allocator, testClock, .{ .bindings = store.bindings() });
     defer torn.deinit();
     try torn.register("native", native.adapter());
     var refused: OpenRefusal = .{};
@@ -4937,7 +4937,7 @@ test "an open records the compaction policy it asked for" {
     const arena = arena_state.allocator();
     var store = try binding.Store.open(testing.allocator, path);
     defer store.deinit();
-    var hub = Hub.init(testing.allocator, testClock, .{ .bindings = &store });
+    var hub = Hub.init(testing.allocator, testClock, .{ .bindings = store.bindings() });
     defer hub.deinit();
     try hub.register("memory", inner.adapter());
     _ = try hub.open(arena, "memory", .{ .session_id = "set", .compaction_policy_json = "{\"kind\":\"share\",\"share_percent\":70}" });
@@ -4957,14 +4957,14 @@ test "a binding the store failed to write is reported at reopen rather than read
     defer arena_state.deinit();
     const arena = arena_state.allocator();
     {
-        var hub = Hub.init(testing.allocator, testClock, .{ .bindings = &store });
+        var hub = Hub.init(testing.allocator, testClock, .{ .bindings = store.bindings() });
         defer hub.deinit();
         try hub.register("native", native.adapter());
         _ = try hub.open(arena, "native", .{ .session_id = "kept" });
         try hub.close(arena, "kept");
     }
     try testing.expect(store.last_failure != null);
-    var restarted = Hub.init(testing.allocator, testClock, .{ .bindings = &store });
+    var restarted = Hub.init(testing.allocator, testClock, .{ .bindings = store.bindings() });
     defer restarted.deinit();
     try restarted.register("native", native.adapter());
     var refused: OpenRefusal = .{};

@@ -222,6 +222,65 @@ pub const Store = struct {
         }
         return latestEach(arena, entries.items);
     }
+
+    pub fn bindings(self: *Store) Bindings {
+        return .{ .ctx = self, .vtable = &store_vtable };
+    }
+
+    const store_vtable = Bindings.VTable{
+        .append = storeAppend,
+        .latest = storeLatest,
+        .sessions = storeSessions,
+        .lastFailure = storeLastFailure,
+    };
+
+    fn storeAppend(ctx: *anyopaque, entry: Entry) anyerror!void {
+        const self: *Store = @ptrCast(@alignCast(ctx));
+        return self.append(entry);
+    }
+
+    fn storeLatest(ctx: *anyopaque, arena: std.mem.Allocator, session_id: []const u8) anyerror!?Entry {
+        const self: *Store = @ptrCast(@alignCast(ctx));
+        return self.latest(arena, session_id);
+    }
+
+    fn storeSessions(ctx: *anyopaque, arena: std.mem.Allocator) anyerror![]Entry {
+        const self: *Store = @ptrCast(@alignCast(ctx));
+        return self.sessions(arena);
+    }
+
+    fn storeLastFailure(ctx: *anyopaque) ?anyerror {
+        const self: *Store = @ptrCast(@alignCast(ctx));
+        return self.last_failure;
+    }
+};
+
+pub const Bindings = struct {
+    ctx: *anyopaque,
+    vtable: *const VTable,
+
+    pub const VTable = struct {
+        append: *const fn (ctx: *anyopaque, entry: Entry) anyerror!void,
+        latest: *const fn (ctx: *anyopaque, arena: std.mem.Allocator, session_id: []const u8) anyerror!?Entry,
+        sessions: *const fn (ctx: *anyopaque, arena: std.mem.Allocator) anyerror![]Entry,
+        lastFailure: *const fn (ctx: *anyopaque) ?anyerror,
+    };
+
+    pub fn append(self: Bindings, entry: Entry) !void {
+        return self.vtable.append(self.ctx, entry);
+    }
+
+    pub fn latest(self: Bindings, arena: std.mem.Allocator, session_id: []const u8) !?Entry {
+        return self.vtable.latest(self.ctx, arena, session_id);
+    }
+
+    pub fn sessions(self: Bindings, arena: std.mem.Allocator) ![]Entry {
+        return self.vtable.sessions(self.ctx, arena);
+    }
+
+    pub fn lastFailure(self: Bindings) ?anyerror {
+        return self.vtable.lastFailure(self.ctx);
+    }
 };
 
 pub const default_limit: usize = 50;
