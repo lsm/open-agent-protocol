@@ -625,6 +625,22 @@ func TestOpenSession(t *testing.T) {
 	requireErrorResponse(t, status, http.StatusConflict, errorEnvelope, "session_exists")
 }
 
+func TestOpenReadsAnIntegralSequenceInAnySpelling(t *testing.T) {
+	server := newMemoryServer(t, 0)
+	for _, spelling := range []string{"1.0", "1e2"} {
+		id := "integral-" + spelling
+		body, err := json.Marshal(requestEnvelope(t, protocol.TypeSessionOpenRequest, id, protocol.SessionOpenRequest{SessionID: protocol.SessionID(id)}, id, "", ""))
+		if err != nil {
+			t.Fatal(err)
+		}
+		body = bytes.Replace(body, []byte(`"id":"`+id+`"`), []byte(`"id":"`+id+`","sequence":`+spelling), 1)
+		response, data := post(t, server, "/adapters/memory/sessions", "application/json", body)
+		if response.StatusCode != http.StatusOK {
+			t.Fatalf("sequence %s: status %d: %s", spelling, response.StatusCode, data)
+		}
+	}
+}
+
 func TestOpenSessionAssignsIdentifier(t *testing.T) {
 	server := newMemoryServer(t, 0)
 	request := requestEnvelope(t, protocol.TypeSessionOpenRequest, "open-anon", protocol.SessionOpenRequest{}, "", "", "")

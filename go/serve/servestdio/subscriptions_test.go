@@ -77,6 +77,22 @@ func TestOpenOpOpensASession(t *testing.T) {
 	}
 }
 
+func TestOpenOpReadsAnIntegralSequenceInAnySpelling(t *testing.T) {
+	hub := newTestHub(t, 64, 64)
+	f := startFrontend(t, hub, Options{})
+	for index, spelling := range []string{"1.0", "1e2"} {
+		id := int64(index + 1)
+		line := strings.Replace(openLine(t, id, fmt.Sprintf("integral-%d", id)), `"id":"req-open"`, `"id":"req-open","sequence":`+spelling, 1)
+		f.send(line)
+		if response := f.expectResponse(id); !response.OK {
+			t.Fatalf("sequence %s: open refused: %+v", spelling, response.Error)
+		}
+	}
+	if err := f.finish(); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestOpenOpRefusals(t *testing.T) {
 	hub := newTestHub(t, 64, 64)
 	openSession(t, hub, "taken")

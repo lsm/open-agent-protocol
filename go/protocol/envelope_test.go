@@ -130,3 +130,42 @@ func TestContentPartWithoutACarryEncodesNone(t *testing.T) {
 		t.Fatalf("a part with no carry encoded one: %s", encoded)
 	}
 }
+
+func TestAnIntegralSequenceOrTimestampIsReadInAnySpelling(t *testing.T) {
+	base := `{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"session.open.request","id":"o1","payload":{}`
+	for _, testCase := range []struct {
+		members   string
+		sequence  uint64
+		timestamp int64
+	}{
+		{members: `,"sequence":1.0,"timestamp_ms":1.7e12`, sequence: 1, timestamp: 1_700_000_000_000},
+		{members: `,"sequence":1e2,"timestamp_ms":-0.0`, sequence: 100, timestamp: 0},
+		{members: `,"sequence":25E-1e1`, sequence: 0, timestamp: 0},
+		{members: `,"sequence":2.50e1,"timestamp_ms":3`, sequence: 25, timestamp: 3},
+	} {
+		envelope, err := ParseEnvelope([]byte(base + testCase.members + `}`))
+		if testCase.sequence == 0 {
+			if err == nil {
+				t.Fatalf("%s: decoded a number JSON does not spell", testCase.members)
+			}
+			continue
+		}
+		if err != nil {
+			t.Fatalf("%s: %v", testCase.members, err)
+		}
+		if envelope.Sequence == nil || *envelope.Sequence != testCase.sequence {
+			t.Fatalf("%s: sequence %v, want %d", testCase.members, envelope.Sequence, testCase.sequence)
+		}
+		if envelope.TimestampMS == nil || *envelope.TimestampMS != testCase.timestamp {
+			t.Fatalf("%s: timestamp %v, want %d", testCase.members, envelope.TimestampMS, testCase.timestamp)
+		}
+		if _, unknown := envelope.Unknown["sequence"]; unknown {
+			t.Fatalf("%s: sequence was kept as an unknown member", testCase.members)
+		}
+	}
+	for _, members := range []string{`,"sequence":1.5`, `,"sequence":1e41`, `,"timestamp_ms":2.25`, `,"sequence":"1.0"`} {
+		if _, err := ParseEnvelope([]byte(base + members + `}`)); err == nil {
+			t.Fatalf("%s: a number that is not integral, or not a number, was decoded", members)
+		}
+	}
+}
