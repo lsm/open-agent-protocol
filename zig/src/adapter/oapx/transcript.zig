@@ -12,12 +12,7 @@ pub const SavedEntry = struct {
 const Error = contract.Failure;
 
 pub fn page(arena: std.mem.Allocator, request: contract.TranscriptRequest, saved: []const SavedEntry) Error!contract.TranscriptPage {
-    const ids = try arena.alloc([]const u8, saved.len);
-    for (saved, ids, 0..) |entry, *id, index| {
-        var repeat: usize = 0;
-        while (repeat < index and saved[index - repeat - 1].offset == entry.offset) repeat += 1;
-        id.* = if (repeat == 0) try std.fmt.allocPrint(arena, "e{d}", .{entry.offset}) else try std.fmt.allocPrint(arena, "e{d}.{d}", .{ entry.offset, repeat });
-    }
+    const ids = try entryIds(arena, saved);
     var start: usize = 0;
     var gap: ?contract.TranscriptGap = null;
     if (request.cursor) |cursor| {
@@ -55,6 +50,22 @@ pub fn page(arena: std.mem.Allocator, request: contract.TranscriptRequest, saved
     const last: ?usize = if (next > start) next - 1 else if (start > 0) start - 1 else null;
     const next_cursor = if (last) |index| try encode(arena, request.native_id, ids[index], saved[index].offset) else try encode(arena, request.native_id, "", 0);
     return .{ .entries = entries.items, .next_cursor = next_cursor, .complete = next >= saved.len, .gap = gap };
+}
+
+pub fn tail(arena: std.mem.Allocator, native_id: []const u8, saved: []const SavedEntry) Error![]const u8 {
+    const ids = try entryIds(arena, saved);
+    if (saved.len == 0) return encode(arena, native_id, "", 0);
+    return encode(arena, native_id, ids[saved.len - 1], saved[saved.len - 1].offset);
+}
+
+fn entryIds(arena: std.mem.Allocator, saved: []const SavedEntry) ![]const []const u8 {
+    const ids = try arena.alloc([]const u8, saved.len);
+    for (saved, ids, 0..) |entry, *id, index| {
+        var repeat: usize = 0;
+        while (repeat < index and saved[index - repeat - 1].offset == entry.offset) repeat += 1;
+        id.* = if (repeat == 0) try std.fmt.allocPrint(arena, "e{d}", .{entry.offset}) else try std.fmt.allocPrint(arena, "e{d}.{d}", .{ entry.offset, repeat });
+    }
+    return ids;
 }
 
 const Position = struct { entry_id: []const u8, offset: u64 };
