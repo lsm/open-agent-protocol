@@ -163,3 +163,9 @@ interaction `action.permission.resolved` with outcome `cancelled` and reason
 `run_cancelling`, before the prompt returns. Unfinished tool calls still
 settle with the run, as before. A unit test in each tree drives an agent that
 reads the cancel and the permission answer before returning `cancelled`.
+
+A permission request that reaches the adapter after the cancel, including one
+that crossed it on the wire, is answered `cancelled` at once and never
+surfaced, since the run it would gate is already cancelling. One already
+registered but not yet published when the cancel lands is settled right after
+its `action.permission.requested`, so its resolution never precedes it.

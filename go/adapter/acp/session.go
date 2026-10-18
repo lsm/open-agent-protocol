@@ -80,6 +80,7 @@ type permissionState struct {
 	requestEventID protocol.EnvelopeID
 	options        map[string]native.PermissionOption
 	resolved       bool
+	published      bool
 	order          uint64
 }
 
@@ -419,12 +420,32 @@ func (s *session) handleRequest(r *rpc.IncomingRequest) {
 		s.failActive("acp_invalid_permission", "empty permission options")
 		return
 	}
+	if run.cancelRequested {
+		s.mu.Unlock()
+		_ = r.Respond(context.Background(), native.PermissionResponse{Outcome: native.PermissionOutcome{Outcome: "cancelled"}})
+		return
+	}
 	ps := &permissionState{id: id, run: run, tool: tool, request: r, options: opts, order: s.nextOrder}
 	s.nextOrder++
 	s.interactions[id] = ps
 	s.mu.Unlock()
 
 	_, _ = s.emitRecorded(run, protocol.TypeActionPermissionRequested, protocol.PermissionRequestedPayload{InteractionID: id, RequestedBy: endpointID, RespondedBy: s.participant, SessionID: s.state.SessionID, RunID: run.id, ToolCallID: tool.id, Title: p.ToolCall.Title, Choices: choices, ArgumentsJSON: tool.rawInput}, false, "", func(event *protocol.Envelope) { ps.requestEventID = event.ID })
+	s.mu.Lock()
+	ps.published = true
+	settled := run.terminal && !ps.resolved
+	if settled {
+		ps.resolved = true
+	}
+	cancelled := run.cancelRequested && !run.terminal
+	s.mu.Unlock()
+	if settled {
+		_ = r.Respond(context.Background(), native.PermissionResponse{Outcome: native.PermissionOutcome{Outcome: "cancelled"}})
+		return
+	}
+	if cancelled {
+		s.settlePermissions(run, cancellingReason)
+	}
 }
 
 func definedOptionKind(kind string) bool {
@@ -758,7 +779,7 @@ func (s *session) Cancel(ctx context.Context, id protocol.RunID) (protocol.RunCa
 	s.mu.Unlock()
 	if live {
 		_ = s.emit(r, protocol.TypeRunStatusUpdated, protocol.RunStatusUpdatedPayload{SessionID: s.state.SessionID, RunID: id, Status: protocol.RunCancelling, UpdatedAtMS: s.clock.Now().UnixMilli()}, false)
-		s.settlePermissions(r, protocol.ProtocolError{Code: "run_cancelling", Message: "the run's cancellation answered the permission request cancelled"})
+		s.settlePermissions(r, cancellingReason)
 	}
 	return protocol.RunCancelResponse{SessionID: s.state.SessionID, RunID: id, Accepted: true, Status: protocol.RunCancelling}, nil
 }
@@ -851,6 +872,8 @@ func (s *session) Close(ctx context.Context) error {
 	return err
 }
 
+var cancellingReason = protocol.ProtocolError{Code: "run_cancelling", Message: "the run's cancellation answered the permission request cancelled"}
+
 func (s *session) settlePermissions(run *runState, reason protocol.ProtocolError) {
 	s.mu.Lock()
 	type settledPermission struct {
@@ -859,7 +882,7 @@ func (s *session) settlePermissions(run *runState, reason protocol.ProtocolError
 	}
 	var permissions []settledPermission
 	for _, p := range s.interactions {
-		if p.run == run && !p.resolved {
+		if p.run == run && p.published && !p.resolved {
 			p.resolved = true
 			permissions = append(permissions, settledPermission{gate: p, requestEventID: p.requestEventID})
 		}

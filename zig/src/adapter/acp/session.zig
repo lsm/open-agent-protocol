@@ -197,6 +197,7 @@ pub const Reducer = struct {
     admission: Admission = .{},
     last_sequence: i64 = 0,
     prompted: bool = false,
+    declined_for_cancel: bool = false,
     context: ?ContextUsage = null,
 
     pub fn init(arena: *std.heap.ArenaAllocator, options: Options) Reducer {
@@ -896,6 +897,10 @@ pub const Reducer = struct {
         }
         if (kept.items.len == 0) {
             try self.failActive("acp_invalid_permission", "empty permission options");
+            return;
+        }
+        if (run.cancel_requested) {
+            self.declined_for_cancel = true;
             return;
         }
         try self.gates.append(self.allocator(), .{ .id = id, .run_id = run.id, .tool = index, .choices = kept.items });
