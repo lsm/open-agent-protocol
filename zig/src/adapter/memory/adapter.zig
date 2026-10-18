@@ -164,7 +164,16 @@ pub const Adapter = struct {
     }
 
     pub fn adapter(self: *Adapter) contract.Adapter {
-        return .{ .ptr = self, .vtable = &.{ .probe = probe, .open = open } };
+        return .{ .ptr = self, .vtable = &.{ .probe = probe, .open = open, .admit = admit } };
+    }
+
+    fn admit(ptr: *anyopaque, arena: std.mem.Allocator, request: contract.OpenRequest, refusal: *contract.Refusal) contract.Failure!void {
+        const self: *Adapter = @ptrCast(@alignCast(ptr));
+        var trial = Session{ .owner = self, .gpa = arena, .keep = std.heap.ArenaAllocator.init(arena), .id = "", .participant = request.participant, .updated_at_ms = 0 };
+        defer trial.keep.deinit();
+        trial.attached = try admitToolSources(arena, arena, request.tool_sources_json, refusal);
+        _ = try trial.admitProvidedTools(arena, request.tools_json, refusal);
+        _ = try compactionThreshold(arena, request.compaction_policy_json, refusal);
     }
 
     fn probe(ptr: *anyopaque, refusal: *contract.Refusal) contract.Failure!contract.Descriptor {
@@ -2172,6 +2181,10 @@ test "an open whose tools or sources break a disclosed limit is refused naming t
         try testing.expectError(error.UnsupportedFeature, adapter.adapter().open(arena.allocator(), .{ .session_id = "s1", .participant = "user", .tools_json = case.tools, .tool_sources_json = case.sources }, &refusal));
         try testing.expectEqualStrings(case.feature, refusal.feature);
         try testing.expectEqualStrings(case.offender, if (refusal.tool.len > 0) refusal.tool else refusal.source);
+        var admitted = contract.Refusal{};
+        try testing.expectError(error.UnsupportedFeature, adapter.adapter().admit(arena.allocator(), .{ .session_id = "s1", .participant = "user", .tools_json = case.tools, .tool_sources_json = case.sources }, &admitted));
+        try testing.expectEqualStrings(case.feature, admitted.feature);
+        try testing.expectEqualStrings(case.offender, if (admitted.tool.len > 0) admitted.tool else admitted.source);
     }
 }
 
@@ -2554,6 +2567,9 @@ test "a share or token count out of range is refused at open" {
         try testing.expectError(error.UnsupportedFeature, adapter.adapter().open(arena.allocator(), .{ .session_id = "s1", .participant = "user", .compaction_policy_json = policy }, &refusal));
         try testing.expectEqualStrings(contract.feature_compaction_policy, refusal.feature);
         try testing.expectEqualStrings("compaction_policy", refusal.field);
+        var admitted = contract.Refusal{};
+        try testing.expectError(error.UnsupportedFeature, adapter.adapter().admit(arena.allocator(), .{ .session_id = "s1", .participant = "user", .compaction_policy_json = policy }, &admitted));
+        try testing.expectEqualStrings("compaction_policy", admitted.field);
     }
 }
 
