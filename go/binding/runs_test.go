@@ -187,3 +187,32 @@ func TestARedeliveredRunReplacesItsHeldRunInOneRecord(t *testing.T) {
 		t.Fatalf("a log that kept the held run: %+v, %v; want redelivered alone", runs, err)
 	}
 }
+
+func TestSettlingTheReplacingRunOverAKeptLogDoesNotReviveTheReplacedOne(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "runs.jsonl")
+	var log []byte
+	for _, record := range []RunRecord{
+		{Action: RunAdmitted, TimeMS: 1, SessionID: "s", RunID: "held"},
+		{Action: RunAdmitted, TimeMS: 2, SessionID: "s", RunID: "redelivered", Replaces: "held"},
+	} {
+		payload, err := marshalRun(record)
+		if err != nil {
+			t.Fatal(err)
+		}
+		log = append(log, frame(payload)...)
+	}
+	if err := os.WriteFile(path, log, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	store, err := RunsFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.AppendRun(ctx, RunRecord{Action: RunSettled, TimeMS: 3, SessionID: "s", RunID: "redelivered"}); err != nil {
+		t.Fatal(err)
+	}
+	if runs, err := store.OpenRuns(ctx, "s"); err != nil || len(runs) != 0 {
+		t.Fatalf("open runs = %+v, %v; want none: held was replaced and its replacement settled", runs, err)
+	}
+}

@@ -42,27 +42,26 @@ type Runs interface {
 	OpenRuns(ctx context.Context, sessionID string) ([]OpenRun, error)
 }
 
-func ends(record, held RunRecord) bool {
-	if held.SessionID != record.SessionID {
-		return false
-	}
-	if record.Action == RunSettled {
-		return held.RunID == record.RunID
-	}
-	return record.Action == RunAdmitted && record.Replaces != "" && held.RunID == record.Replaces
-}
-
 func keptAfter(records []RunRecord, record RunRecord) []RunRecord {
-	kept := records[:0]
-	for _, held := range records {
-		if !ends(record, held) {
+	all := append(append([]RunRecord(nil), records...), record)
+	open := make(map[[2]string]bool)
+	seen := make(map[string]bool)
+	for _, held := range all {
+		if seen[held.SessionID] {
+			continue
+		}
+		seen[held.SessionID] = true
+		for _, run := range openRuns(all, held.SessionID) {
+			open[[2]string{held.SessionID, run.RunID}] = true
+		}
+	}
+	var kept []RunRecord
+	for _, held := range all {
+		if held.Action != RunSettled && open[[2]string{held.SessionID, held.RunID}] {
 			kept = append(kept, held)
 		}
 	}
-	if record.Action == RunSettled {
-		return kept
-	}
-	return append(kept, record)
+	return kept
 }
 
 func removeRun(runs []OpenRun, at map[string]int, runID string) []OpenRun {
