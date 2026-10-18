@@ -113,7 +113,8 @@ export class OapStdioTransport {
         : []);
       this.agentSource = declaredToolSource(capabilities.payload.sources);
       const described = await this.request(OAP_PROVIDER_PROFILE, "provider.describe.request", {}, {}, this.options.handshakeTimeoutMs).catch((error: unknown) => {
-        if (error instanceof MakaiProtocolError || error instanceof OapUnsupportedFeatureError) return undefined;
+        const refused = error instanceof OapUnsupportedFeatureError || (error instanceof MakaiProtocolError && error.code !== "malformed_response");
+        if (refused && !this.closed) return undefined;
         throw error;
       });
       if (described && described.type !== "provider.describe.response") throw new MakaiProtocolError("OAP provider did not return a descriptor", "protocol_mismatch");

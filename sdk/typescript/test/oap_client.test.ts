@@ -83,6 +83,11 @@ test("an agent-only endpoint connects, runs agents, and refuses the provider and
   }
 });
 
+test("a malformed provider describe fails the connection rather than reading as agent-only", async () => {
+  await assert.rejects(() => createOapClient({ command: process.execPath, args: [fixture], env: { ...process.env, OAP_FIXTURE_DESCRIBE_GARBAGE: "1" } }).then(async (client) => { await client.close(); return client; }),
+    (error: unknown) => error instanceof Error && (error as { code?: string }).code === "malformed_response");
+});
+
 test("an endpoint that would ignore tools or an output limit has them refused client-side", async () => {
   const client = await createOapClient({ command: process.execPath, args: [fixture], env: { ...process.env, OAP_FIXTURE_BARE: "1" } });
   try {
