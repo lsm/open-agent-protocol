@@ -6,6 +6,8 @@ let selectedModel = "fixture/openai-responses@mock";
 let opened = {};
 let participant;
 let submittedModel = "";
+const openSessions = new Set();
+const switchedSessions = new Set();
 const agent = "open-agent-protocol.agent-control-core";
 const provider = "open-agent-protocol.model-provider-core";
 function send(request, type, payload, scope = {}) {
@@ -144,11 +146,16 @@ createInterface({ input: process.stdin }).on("line", (line) => {
           : "provider works" }, stop_reason: "end_turn", usage: { input_tokens: 1, output_tokens: 2 } }, { inference_id: "inf-1", sequence: request.payload.model_ref.endsWith("@structured") ? 8 : 5 });
       break;
     case `${agent}:session.open.request`:
+      if (openSessions.has(request.payload.session_id)) {
+        send(request, "error.response", { error: { code: "session_exists", message: `session "${request.payload.session_id}" already exists` } });
+        break;
+      }
+      openSessions.add(request.payload.session_id);
       opened = request.payload;
       send(request, "session.open.response", { session_id: request.payload.session_id, status: "idle" }, { session_id: request.payload.session_id });
       break;
     case `${agent}:session.message.submit.request`:
-      if (request.payload.session_id === "existing-session" && request.payload.model_id !== undefined) {
+      if (switchedSessions.has(request.payload.session_id) && request.payload.model_id !== undefined) {
         send(request, "error.response", { error: { code: "invalid_request", message: "selected run must omit model_id" } });
         break;
       }
@@ -186,6 +193,11 @@ createInterface({ input: process.stdin }).on("line", (line) => {
       break;
     }
     case `${agent}:session.model.switch.request`:
+      if (!openSessions.has(request.payload.session_id)) {
+        send(request, "error.response", { error: { code: "unknown_session", message: `no session "${request.payload.session_id}"` } });
+        break;
+      }
+      switchedSessions.add(request.payload.session_id);
       selectedModel = request.payload.model_id;
       send(request, "session.model.switch.response", { session_id: request.payload.session_id, model_id: request.payload.model_id }, { session_id: request.payload.session_id });
       break;

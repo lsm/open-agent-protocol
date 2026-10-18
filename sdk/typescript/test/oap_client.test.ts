@@ -20,6 +20,8 @@ test("combined OAP stdio exposes provider models, inference, and agent runs", as
     const run = await client.agent.run(request);
     assert.equal(run.message.content, "agent works");
     assert.equal(run.usage?.output, 3);
+    await client.agent.run({ ...request, options: { session_id: "existing-session" } });
+    await client.agent.run({ ...request, options: { session_id: "existing-session" } });
     await client.agent.switchModel("existing-session", "fixture/openai-responses@switched");
     const selected = await client.agent.runSelected("existing-session", request.messages);
     assert.equal(selected.message.content, "agent works");
@@ -46,6 +48,12 @@ test("agent tools and settings travel over OAP, and temperature and provider cal
     const kinds: string[] = [];
     for await (const event of client.agent.stream({ model_ref: "fixture/openai-responses@tool", messages: [{ role: "user", content: "hello" }], tools: [lookup] })) kinds.push(event.type);
     assert.deepEqual(kinds, ["agent_start", "tool_execution_start", "tool_execution_end", "agent_end"]);
+    const reused = { model_ref: "fixture/openai-responses@tool", messages: [{ role: "user" as const, content: "hello" }] };
+    await client.agent.run({ ...reused, tools: [lookup], options: { session_id: "tooled" } });
+    await client.agent.run({ ...reused, options: { session_id: "tooled" } });
+    assert.equal(invoked.length, 4, "a later run on a session uses the tools it was opened with");
+    await assert.rejects(() => client.agent.run({ ...reused, options: { session_id: "tooled", reasoning_effort: "high" } }),
+      (error: unknown) => error instanceof OapUnsupportedFeatureError);
     const settings = await client.agent.run({ model_ref: "fixture/openai-responses@settings", messages: [{ role: "user", content: "hello" }], options: { max_tokens: 32, reasoning_effort: "high" } });
     assert.equal(settings.message.content, "reasoning=high output=32 user_input=false participant=sdk");
     await assert.rejects(() => client.agent.run({ model_ref: "fixture/openai-responses@settings", messages: [{ role: "user", content: "hello" }], options: { max_tokens: 0 } }),

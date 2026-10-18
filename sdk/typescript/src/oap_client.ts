@@ -623,9 +623,16 @@ async function resolveProvidedCall(call: Record<string, unknown>, tools: ToolDef
   }
 }
 
+type OpenSession = { settings: string; tools: ToolDefinition[] };
+
+function openSettings(tools: ToolDefinition[] | undefined, reasoning: string | undefined, maxTokens: number | undefined): string {
+  return JSON.stringify({ tools: (tools ?? []).map((tool) => [tool.name, tool.description, tool.parameters_schema_json]), reasoning: reasoning ?? null, maxTokens: maxTokens ?? null });
+}
+
 class OapAgentApi {
   readonly models: MakaiModelsApi;
   private readonly selectedModels = new Map<string, string>();
+  private readonly openSessions = new Map<string, OpenSession>();
   constructor(private readonly transport: OapStdioTransport, private readonly timeoutMs: number, models: MakaiModelsApi, private readonly authRetryPolicy?: string, private readonly auth?: MakaiAuthApi, private readonly authHandlers?: AuthFlowHandlers) { this.models = models; }
 
   async run(request: AgentRunRequest): Promise<AgentRunResponse> {
@@ -689,13 +696,24 @@ class OapAgentApi {
     const readsOapxSettings = this.transport.agentEndpoint === OAPX_AGENT_ENDPOINT;
     if (maxTokens !== undefined && !readsOapxSettings) unsupported("an output limit on an endpoint other than the oapx agent loop");
     const sessionId = request.options?.session_id ?? ulid();
-    const opened = await this.transport.request(OAP_AGENT_PROFILE, "session.open.request", {
-      session_id: sessionId,
-      ...(request.tools?.length ? { tools: request.tools.map((tool) => ({ name: tool.name, description: tool.description, input_schema: parseInputSchema(tool.parameters_schema_json), execution_owner: SDK_PARTICIPANT, ...(this.transport.agentSource ? { source: this.transport.agentSource } : {}) })) } : {}),
-      ...(request.options?.reasoning_effort ? { reasoning_level: request.options.reasoning_effort } : {}),
-      ...(readsOapxSettings ? { metadata: { oapx: { user_input: false, ...(maxTokens !== undefined ? { output: maxTokens } : {}) } } } : {}),
-    }, { session_id: sessionId });
-    if (opened.type !== "session.open.response") throw new MakaiProtocolError(`unexpected ${opened.type}`, "malformed_response");
+    const settings = openSettings(request.tools, request.options?.reasoning_effort, maxTokens);
+    let session = this.openSessions.get(sessionId);
+    if (session) {
+      const carriesSettings = request.tools !== undefined || request.options?.reasoning_effort !== undefined || maxTokens !== undefined;
+      if (carriesSettings && settings !== session.settings) unsupported("changing the tools, reasoning effort or output limit of a session already open");
+      if (request.tools !== undefined) session = { ...session, tools: request.tools };
+    } else {
+      const opened = await this.transport.request(OAP_AGENT_PROFILE, "session.open.request", {
+        session_id: sessionId,
+        ...(request.tools?.length ? { tools: request.tools.map((tool) => ({ name: tool.name, description: tool.description, input_schema: parseInputSchema(tool.parameters_schema_json), execution_owner: SDK_PARTICIPANT, ...(this.transport.agentSource ? { source: this.transport.agentSource } : {}) })) } : {}),
+        ...(request.options?.reasoning_effort ? { reasoning_level: request.options.reasoning_effort } : {}),
+        ...(readsOapxSettings ? { metadata: { oapx: { user_input: false, ...(maxTokens !== undefined ? { output: maxTokens } : {}) } } } : {}),
+      }, { session_id: sessionId });
+      if (opened.type !== "session.open.response") throw new MakaiProtocolError(`unexpected ${opened.type}`, "malformed_response");
+      session = { settings, tools: request.tools ?? [] };
+      this.openSessions.set(sessionId, session);
+    }
+    const tools = session.tools;
     const queue = this.transport.subscribe(OAP_AGENT_PROFILE, "session", sessionId);
     let runId: string | undefined;
     let settled = false;
@@ -717,7 +735,7 @@ class OapAgentApi {
         if (frame.type === "action.call.requested") {
           if (str(data.execution_owner) === SDK_PARTICIPANT) {
             progress.toolsRan = true;
-            const answer = await raceWithAbort(resolveProvidedCall(data, request.tools ?? [], sessionId, runId ?? ""), request.options?.signal, "agent run aborted")
+            const answer = await raceWithAbort(resolveProvidedCall(data, tools, sessionId, runId ?? ""), request.options?.signal, "agent run aborted")
               .catch((error: unknown) => { throw isAbortError(error) ? abortError() : error; });
             this.transport.send(OAP_AGENT_PROFILE, "action.call.resolve.request", answer, { session_id: sessionId, run_id: runId ?? "" });
           }
