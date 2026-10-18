@@ -7639,11 +7639,11 @@ test "a served oapx session's events are saved, read back without adopting it, a
         const events = [_]tui_app.SessionEvent{
             .{ .agent_start = .{} },
             .{ .message_start = .{ .role = .user } },
-            .{ .message_end = .{ .role = .user, .text = OwnedText.initBorrowed("hello there") } },
+            .{ .message_end = .{ .role = .user, .at_ms = 1_700_000_000_001, .text = OwnedText.initBorrowed("hello there") } },
             .{ .message_start = .{ .role = .assistant } },
             .{ .text_delta = .{ .content_index = 0, .delta = OwnedText.initBorrowed("general ") } },
             .{ .text_delta = .{ .content_index = 0, .delta = OwnedText.initBorrowed("kenobi") } },
-            .{ .message_end = .{ .role = .assistant, .text = OwnedText.initBorrowed("general kenobi") } },
+            .{ .message_end = .{ .role = .assistant, .at_ms = 1_700_000_000_002, .text = OwnedText.initBorrowed("general kenobi") } },
             .{ .agent_end = .{ .reason = .completed } },
         };
         for (&events) |*event| ServedSessions.record(&saved, "session-1", model, event);
@@ -7654,6 +7654,8 @@ test "a served oapx session's events are saved, read back without adopting it, a
     defer arena.deinit();
     const read = (try ServedSessions.read(&reopened, arena.allocator(), "session-1")).?;
     try std.testing.expectEqual(@as(usize, 2), read.len);
+    try std.testing.expectEqual(@as(i64, 1_700_000_000_001), read[0].user.timestamp);
+    try std.testing.expectEqual(@as(i64, 1_700_000_000_002), read[1].assistant.timestamp);
     try std.testing.expect(reopened.recorders.get("session-1") == null);
     const messages = (try ServedSessions.load(&reopened, arena.allocator(), "session-1")).?;
     try std.testing.expectEqual(@as(usize, 2), messages.len);
