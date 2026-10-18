@@ -1131,6 +1131,7 @@ Decisions:
 - [0045 — reasoning level and compaction policy are session settings](decisions/0045-reasoning-level-and-compaction-policy-are-session-settings.md) (accepted)
 - [0046 — a session list is the host's bindings](decisions/0046-a-session-list-is-the-hosts-bindings.md) (accepted)
 - [0047 — a work profile over sessions](decisions/0047-a-work-layer-over-sessions.md) (proposed)
+- [0052 — rust is the third peer, and ports all of go](decisions/0052-rust-is-the-third-peer.md) (proposed)
 
 Decision 0003 defines what `accepted` means and what moves a record from
 proposed to accepted. A record's own `Status:` line is authoritative; this table
