@@ -113,7 +113,7 @@ pub const Poll = struct {
     }
 
     fn failedAtOnce(status: windows.NTSTATUS) bool {
-        return @intFromEnum(status) >> 30 == 3;
+        return @backingInt(status) >> 30 == 3;
     }
 
     fn header(self: *Poll) *Header {

@@ -109,6 +109,10 @@ pub const Daemon = struct {
     pub fn pump(self: *Daemon) !void {
         try self.frontend.hub.pump(self.allocator, 0);
         self.frontend.sweepAbandoned();
+        if (self.frontend.shutdown == null) return;
+        var scratch = std.heap.ArenaAllocator.init(self.allocator);
+        defer scratch.deinit();
+        if (try self.frontend.shutdownComplete(scratch.allocator())) self.stopping.store(true, .release);
     }
 
     pub fn respond(self: *Daemon, arena: std.mem.Allocator, request: hub_http.Request) !Reply {
@@ -122,7 +126,12 @@ pub const Daemon = struct {
             .method_not_allowed => |allowed| return .{ .answer = .{ .status = "405 Method Not Allowed", .content_type = text_plain, .body = "method not allowed", .allow = allowed } },
             .route => |value| value,
         };
+        if (self.frontend.shutdown != null) switch (found) {
+            .open, .submit, .work_start, .work_send => return self.refusal(arena, .{ .code = "shutting_down", .message = "the endpoint is shutting down and admits no new work" }, .{}),
+            else => {},
+        };
         return switch (found) {
+            .shutdown => self.shutdown(arena, request.body),
             .adapters => self.listing(arena, try self.frontend.adapters(arena)),
             .sessions => self.listing(arena, try self.frontend.sessions(arena)),
             .history => self.history(arena, request.split.query),
@@ -146,6 +155,11 @@ pub const Daemon = struct {
             .events => |id| self.events(arena, id, request),
             .transcript => |id| self.transcript(arena, id, request.split.query),
         };
+    }
+
+    fn shutdown(self: *Daemon, arena: std.mem.Allocator, body: []const u8) !Reply {
+        const value: ?std.json.Value = if (std.mem.trim(u8, body, " \t\r\n").len == 0) null else parseBody(arena, body) orelse return self.refusal(arena, malformed, .{});
+        return self.outcome(arena, try self.frontend.shutdownOp(arena, value), .{});
     }
 
     fn history(self: *Daemon, arena: std.mem.Allocator, query: []const u8) !Reply {
@@ -1401,6 +1415,32 @@ test "a close of a session with a run in flight is run_active" {
     const busy = try fixture.answer("POST", "/sessions/demo/close", "");
     try testing.expectEqualStrings("409 Conflict", busy.status);
     try testing.expectEqualStrings("run_active", try fixture.code(busy));
+}
+
+test "a shutdown asks while a run is active, then graceful drains, refuses new work 503, and force stops the daemon" {
+    var fixture: Fixture = undefined;
+    try fixture.init(.{});
+    defer fixture.deinit();
+    _ = try fixture.answer("POST", "/adapters/memory/sessions", open_demo);
+    _ = try fixture.answer("POST", "/sessions/demo/submit", submit_demo);
+
+    const asked = try fixture.answer("POST", "/shutdown", "");
+    try testing.expectEqualStrings("200 OK", asked.status);
+    try testing.expect(std.mem.indexOf(u8, asked.body, "\"choose\"") != null);
+    try testing.expect(fixture.daemon.going().yes());
+
+    const graceful = try fixture.answer("POST", "/shutdown", "{\"mode\":\"graceful\"}");
+    try testing.expect(std.mem.indexOf(u8, graceful.body, "\"draining\"") != null);
+    const refused = try fixture.answer("POST", "/sessions/demo/submit", submit_demo);
+    try testing.expectEqualStrings("503 Service Unavailable", refused.status);
+    try testing.expectEqualStrings("shutting_down", try fixture.code(refused));
+    try fixture.daemon.pump();
+    try testing.expect(fixture.daemon.going().yes());
+
+    const forced = try fixture.answer("POST", "/shutdown", "{\"mode\":\"force\"}");
+    try testing.expect(std.mem.indexOf(u8, forced.body, "\"stopping\"") != null);
+    try fixture.daemon.pump();
+    try testing.expect(!fixture.daemon.going().yes());
 }
 
 test "a known path asked with the wrong method is 405 naming the method it takes, and an unknown path is a plain 404" {

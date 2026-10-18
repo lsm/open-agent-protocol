@@ -418,10 +418,13 @@ mode other than graceful or force is refused and changes nothing`; Go:
 `TestShutdownWithNothingRunningStopsAtOnce`,
 `TestShutdownWithoutAModeAsksTheHostToChooseAndChangesNothing`,
 `TestGracefulShutdownLosesQueuedRunsRefusesNewWorkAndForceStopsIt`,
-`TestShutdownRefusesAModeOtherThanGracefulOrForce`. Neither tree has the HTTP
-route yet. Neither tree yet sends subscribers
-`endpoint.shutdown.started`, which Decision 0050 requires on acceptance; that
-announcement lands with the HTTP route. The signals and stdin EOF still end
+`TestShutdownRefusesAModeOtherThanGracefulOrForce`. Zig also serves it as
+`POST /shutdown`, whose body is the same `request` object or empty, answering
+`200` with the same object and refusing new work `503 shutting_down`; the
+daemon stops once the shutdown completes — Zig: `a shutdown asks while a run is
+active, then graceful drains, refuses new work 503, and force stops the
+daemon`. Go has no HTTP route yet. Neither tree yet sends subscribers
+`endpoint.shutdown.started`, which Decision 0050 requires on acceptance. The signals and stdin EOF still end
 serving as the next paragraph says; rule 4's mapping of them to modes is
 pending too.
 
@@ -535,6 +538,7 @@ error. That is stated because the four reasons are the whole set.
 | `POST /work/sessions/{id}/send` | `work.send` | the session's `work.status` | `invalid_request` 400, and a submit's refusals |
 | `POST /work/sessions/{id}/stop` | `work.stop` | the session's `work.status` | `unknown_session` 404, `session_closed` 409, and a cancel's refusals |
 | `GET /work/sessions/{id}/read` | `work.read` | `{"turns":[...]}`, after `after` and up to `limit` (1 to 500, default 100) | `invalid_request` 400, `unknown_session` 404 |
+| `POST /shutdown` | `shutdown` | Decision 0050's `{outcome, active_runs, lost?}`; the body is `{"mode"?}` or empty, and the daemon stops once the shutdown completes. Zig only so far | `invalid_request` 400, `malformed_json` 400 |
 | `GET /work/capabilities` | `work.capabilities` | `{"adapters":[{"adapter","directory"?,"any_directory","verbs","native":{"list","read","search"}}],"unavailable"?}`, per [the work profile](work.md): every adapter's `work.*` verbs, leaving out one whose core feature the adapter declares `unavailable` | — |
 
 **The daemon serves a bounded number of connections at once, and a stream is
@@ -1274,7 +1278,7 @@ never connects overflows exactly as a slow consumer does, and the adopter reads
 ## The operations
 
 Fifteen ops, plus `shutdown`, which [Shutdown and exit on
-stdio](#shutdown-and-exit-on-stdio) describes and which has no HTTP route yet.
+stdio](#shutdown-and-exit-on-stdio) describes, with `POST /shutdown` in Zig only.
 Each row gives the request line's parameters, the answer, and the errors. A
 refusal the row does not name is `internal` on both, with the
 exceptions stated once here rather than repeated per row:
@@ -1286,7 +1290,7 @@ exceptions stated once here rather than repeated per row:
   exist because a pipe gives no back pressure and has one shape a socket does
   not; a port must not produce any of them over HTTP.
 - **`shutting_down` answers `submit`, `open`, `work.start` and `work.send`**
-  once a `shutdown` is accepted, on stdio only until the HTTP route lands, as
+  once a `shutdown` is accepted, `503` over HTTP (Zig only so far), as
   [Shutdown and exit on stdio](#shutdown-and-exit-on-stdio) says. No row below
   repeats it.
 - **The four decode codes are `400` over HTTP** (owner, 2026-10-17, #1133).

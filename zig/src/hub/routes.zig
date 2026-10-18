@@ -23,6 +23,7 @@ pub const Verb = enum {
     work_stop,
     work_read,
     work_capabilities,
+    shutdown,
 };
 
 pub const Route = union(Verb) {
@@ -48,6 +49,7 @@ pub const Route = union(Verb) {
     work_stop: []const u8,
     work_read: []const u8,
     work_capabilities: void,
+    shutdown: void,
 
     pub fn verb(self: Route) Verb {
         return std.meta.activeTag(self);
@@ -55,7 +57,7 @@ pub const Route = union(Verb) {
 
     pub fn parameterOf(self: Route) []const u8 {
         return switch (self) {
-            inline .adapters, .sessions, .history, .work_list, .work_capabilities => "",
+            inline .adapters, .sessions, .history, .work_list, .work_capabilities, .shutdown => "",
             inline else => |carried| carried,
         };
     }
@@ -100,6 +102,7 @@ pub const table = [_]Entry{
     .{ .method = "POST", .pattern = "/work/sessions/{id}/stop", .verb = .work_stop },
     .{ .method = "GET", .pattern = "/work/sessions/{id}/read", .verb = .work_read },
     .{ .method = "GET", .pattern = "/work/capabilities", .verb = .work_capabilities },
+    .{ .method = "POST", .pattern = "/shutdown", .verb = .shutdown },
 };
 
 pub fn readsBody(method: []const u8, path: []const u8) bool {
@@ -114,7 +117,7 @@ pub fn readsBody(method: []const u8, path: []const u8) bool {
 
 fn bodyVerb(verb: Verb) bool {
     return switch (verb) {
-        .open, .submit, .resolve, .cancel, .settings, .work_start, .work_send => true,
+        .open, .submit, .resolve, .cancel, .settings, .work_start, .work_send, .shutdown => true,
         else => false,
     };
 }
@@ -210,6 +213,7 @@ fn build(verb: Verb, parameter: ?[]const u8) Route {
         .work_stop => .{ .work_stop = parameter.? },
         .work_read => .{ .work_read = parameter.? },
         .work_capabilities => .{ .work_capabilities = {} },
+        .shutdown => .{ .shutdown = {} },
     };
 }
 
@@ -237,8 +241,8 @@ fn matched(arena: std.mem.Allocator, method: []const u8, path: []const u8) !Matc
     return route(arena, method, path);
 }
 
-test "the table is the draft's twenty-two routes, one line each" {
-    try testing.expectEqual(@as(usize, 22), table.len);
+test "the table is the draft's twenty-three routes, one line each" {
+    try testing.expectEqual(@as(usize, 23), table.len);
     const paths = [_][]const u8{
         "/adapters",
         "/adapters/{name}/capabilities",
@@ -262,6 +266,7 @@ test "the table is the draft's twenty-two routes, one line each" {
         "/work/sessions/{id}/stop",
         "/work/sessions/{id}/read",
         "/work/capabilities",
+        "/shutdown",
     };
     for (paths, 0..) |path, index| {
         try testing.expectEqualStrings(path, table[index].pattern);
