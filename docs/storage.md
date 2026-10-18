@@ -44,11 +44,6 @@ do over a whole file into the backend, so SQLite can page with an index.
 
 ### Runs (Decision 0050, #1204)
 
-| operation | does |
-| --- | --- |
-| `appendRun(session_id, record)` | appends `admitted` (with the prompt when queued, and `replaces` naming the held run a re-delivery takes over), `started` or `settled` |
-| `openRuns(session_id)` | runs with no `settled` record and no later `admitted` replacing them, in admission order; a re-delivered run takes the slot of the run it replaces |
-
 A queued run that a shutdown holds, or a crash leaves, keeps no `settled`
 record until the next start re-delivers or withdraws it. Re-delivery is one
 append, `admitted {run_id: new, request, replaces: old}`, and `openRuns` drops
@@ -56,6 +51,11 @@ the run an `admitted` replaces, so a crash at any point leaves exactly one of
 the two open. A replacing run takes the admission position of the run it
 replaces, so a crash part-way through re-delivering several prompts never
 changes their order. Withdrawal appends `settled` for the old id.
+
+| operation | does |
+| --- | --- |
+| `appendRun(session_id, record)` | appends `admitted` (with the prompt when queued, and `replaces` naming the held run a re-delivery takes over), `started` or `settled` |
+| `openRuns(session_id)` | runs with no `settled` record and no later `admitted` replacing them, in admission order; a re-delivered run takes the slot of the run it replaces |
 
 ### Transcript (Decision 0051, #1205)
 
