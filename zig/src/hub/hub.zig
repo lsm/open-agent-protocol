@@ -8,6 +8,7 @@ const memory = @import("memory");
 const compat = @import("compat");
 const process = @import("process");
 pub const binding = @import("binding.zig");
+pub const run_store = @import("run_store.zig");
 
 pub const default_stream_queue = 64;
 pub const default_journal_capacity = 256;
@@ -5126,6 +5127,7 @@ test "a control the adapter finds closed answers session_closed and releases the
 
 test {
     _ = binding;
+    _ = run_store;
 }
 
 test "a reply longer than the bound is cut on a character boundary" {

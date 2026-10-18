@@ -75,10 +75,14 @@ pub fn encode(allocator: std.mem.Allocator, entry: Entry) ![]u8 {
     };
     const payload = try std.json.Stringify.valueAlloc(allocator, wire, .{ .emit_null_optional_fields = false });
     defer allocator.free(payload);
+    return frame(allocator, payload);
+}
+
+pub fn frame(allocator: std.mem.Allocator, payload: []const u8) ![]u8 {
     return std.fmt.allocPrint(allocator, "{x:0>8} {s}\n", .{ std.hash.Crc32.hash(payload), payload });
 }
 
-pub fn decode(arena: std.mem.Allocator, line: []const u8) !Entry {
+pub fn unframe(line: []const u8) ![]const u8 {
     const body = std.mem.trimEnd(u8, line, "\n");
     const space = std.mem.indexOfScalar(u8, body, ' ') orelse return error.TornRecord;
     const sum = body[0..space];
@@ -89,6 +93,11 @@ pub fn decode(arena: std.mem.Allocator, line: []const u8) !Entry {
     }
     const stated = std.fmt.parseInt(u32, sum, 16) catch return error.TornRecord;
     if (stated != std.hash.Crc32.hash(payload)) return error.TornRecord;
+    return payload;
+}
+
+pub fn decode(arena: std.mem.Allocator, line: []const u8) !Entry {
+    const payload = try unframe(line);
     const wire = std.json.parseFromSliceLeaky(WireEntry, arena, payload, .{ .ignore_unknown_fields = true }) catch |err| {
         if (err == error.OutOfMemory) return error.OutOfMemory;
         return error.TornRecord;
