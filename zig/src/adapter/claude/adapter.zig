@@ -22,6 +22,7 @@ const native_source = session.native_source;
 const mcp_protocol_version = "2025-11-25";
 const max_provided_tools = 64;
 const EmptyObject = struct {};
+const builtin_tool_names = [_][]const u8{ "Agent", "Artifact", "AskUserQuestion", "Bash", "ClaudeDesign", "CronCreate", "CronDelete", "CronList", "Edit", "EndConversation", "EnterPlanMode", "EnterWorktree", "ExitPlanMode", "ExitWorktree", "Glob", "Grep", "ListAgents", "ListMcpResourcesTool", "LSP", "Monitor", "NotebookEdit", "OfferChromeSetup", "PowerShell", "Projects", "propose_skills", "ProposeGoal", "PushNotification", "Read", "ReadMcpResourceDirTool", "ReadMcpResourceTool", "ReadNotifications", "RemoteTrigger", "ReportFindings", "ScheduleWakeup", "SendFeedback", "SendMessage", "SendUserFile", "SendUserMessage", "ShareOnboardingGuide", "ShowOnboardingRolePicker", "Skill", "SubagentHandback", "TaskCreate", "TaskGet", "TaskList", "TaskStop", "TaskUpdate", "TodoWrite", "ToolSearch", "WaitForMcpServers", "WebFetch", "WebSearch", "Workflow", "Write", "Task" };
 const provided_name_limit = 64 - session.provided_prefix.len;
 const provided_dialect = "https://json-schema.org/draft/2020-12/schema";
 
@@ -932,6 +933,8 @@ fn admitProvided(arena: std.mem.Allocator, participant: []const u8, carried: ?[]
             return error.UnsupportedFeature;
         }
         for (provided[0..index]) |earlier| if (std.mem.eql(u8, earlier.name, name)) return refuseTool(arena, refusal, name, "the name is provided twice");
+        if (std.mem.startsWith(u8, name, session.mcp_tool_prefix)) return refuseTool(arena, refusal, name, "the name is in the CLI's MCP tool namespace");
+        for (builtin_tool_names) |builtin_name| if (std.mem.eql(u8, builtin_name, name)) return refuseTool(arena, refusal, name, "the name is one of the pinned CLI's built-in tools");
         if (!providedNameFits(name)) return refuseTool(arena, refusal, name, std.fmt.comptimePrint("the name is outside the disclosed name_pattern ^[a-zA-Z0-9_-]{{1,{d}}}$", .{provided_name_limit}));
         const schema = if (item == .object) item.object.get("input_schema") else null;
         if (!admissibleDialect(schema)) return refuseTool(arena, refusal, name, "the input schema declares a dialect outside the disclosed " ++ provided_dialect);
@@ -2022,7 +2025,7 @@ test "provided tools name their server at initialize, are pre-allowed, and the s
     try testing.expect(std.mem.indexOf(u8, argv, "--allowedTools mcp__oap__echo") != null);
 }
 
-test "an open refuses a provided tool another participant owns, under another source, with an unfit name or schema, or twice, naming it" {
+test "an open refuses a provided tool another participant owns, under another source, with an unfit name or schema, twice, or under a built-in or MCP name, naming it" {
     var probe: Probe = undefined;
     try probe.init(fake_prelude ++ fake_idle);
     defer probe.deinit();
@@ -2033,6 +2036,9 @@ test "an open refuses a provided tool another participant owns, under another so
         .{ .tools = "[{\"name\":\"" ++ repeat("x", 55) ++ "\",\"execution_owner\":\"user\",\"source\":\"claude-code-native\"}]", .tool = repeat("x", 55) },
         .{ .tools = "[{\"name\":\"echo\",\"execution_owner\":\"user\",\"source\":\"claude-code-native\",\"input_schema\":{\"$schema\":\"http://json-schema.org/draft-07/schema#\"}}]", .tool = "echo" },
         .{ .tools = "[{\"name\":\"echo\",\"execution_owner\":\"user\",\"source\":\"claude-code-native\"},{\"name\":\"echo\",\"execution_owner\":\"user\",\"source\":\"claude-code-native\"}]", .tool = "echo" },
+        .{ .tools = "[{\"name\":\"Bash\",\"execution_owner\":\"user\",\"source\":\"claude-code-native\"}]", .tool = "Bash" },
+        .{ .tools = "[{\"name\":\"Task\",\"execution_owner\":\"user\",\"source\":\"claude-code-native\"}]", .tool = "Task" },
+        .{ .tools = "[{\"name\":\"mcp__files__read\",\"execution_owner\":\"user\",\"source\":\"claude-code-native\"}]", .tool = "mcp__files__read" },
     };
     for (cases) |case| {
         var refusal = contract.Refusal{};

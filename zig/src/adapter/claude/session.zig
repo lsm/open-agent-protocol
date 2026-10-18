@@ -181,7 +181,7 @@ pub const Reducer = struct {
 
     pub fn excludes(self: *const Reducer, tool_name: []const u8) bool {
         const run = self.run orelse return false;
-        return run.started and self.policy.excludes(tool_name);
+        return run.started and self.policy.excludes(self.providedName(tool_name) orelse tool_name);
     }
 
     pub fn refusedByPolicy(self: *Reducer, tool_use_id: []const u8) !void {
@@ -995,8 +995,12 @@ pub const Reducer = struct {
                 for (listed.array.items) |entry| {
                     if (entry != .string or entry.string.len == 0) continue;
                     if (self.providedName(entry.string)) |name| {
-                        if (self.catalogHolds(name)) continue;
-                        try self.catalog.append(self.allocator(), .{ .name = name, .source = native_source, .owner = self.options.responder });
+                        const provided = CatalogEntry{ .name = name, .source = native_source, .owner = self.options.responder };
+                        if (self.catalogIndex(name)) |index| {
+                            self.catalog.items[index] = provided;
+                            continue;
+                        }
+                        try self.catalog.append(self.allocator(), provided);
                         continue;
                     }
                     if (self.catalogHolds(entry.string)) continue;
@@ -1016,6 +1020,13 @@ pub const Reducer = struct {
         const name = native_name[provided_prefix.len..];
         for (self.options.provided) |provided| {
             if (std.mem.eql(u8, provided, name)) return provided;
+        }
+        return null;
+    }
+
+    fn catalogIndex(self: *Reducer, name: []const u8) ?usize {
+        for (self.catalog.items, 0..) |entry, index| {
+            if (std.mem.eql(u8, entry.name, name)) return index;
         }
         return null;
     }
@@ -1471,6 +1482,36 @@ test "a provided tool is listed under its own name, owned by the opener also aft
     const unprovided = (try plain.listTools()).?;
     try testing.expectEqualStrings("mcp__oap__echo", unprovided[0].name);
     try testing.expectEqualStrings(harness_owner, unprovided[0].owner);
+}
+
+test "a provided tool keeps its name over a same-named native tool whichever init lists first, and the run's tool choice names it bare" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const scratch = arena.allocator();
+    for ([_][]const u8{
+        \\{"type":"system","session_id":"s","subtype":"init","model":"m","tools":["Lookup","mcp__oap__Lookup"],"mcp_servers":[{"name":"oap"}],"uuid":"i1"}
+        ,
+        \\{"type":"system","session_id":"s","subtype":"init","model":"m","tools":["mcp__oap__Lookup","Lookup"],"mcp_servers":[{"name":"oap"}],"uuid":"i1"}
+        ,
+    }) |init| {
+        var reducer = Reducer.init(&arena, .{ .responder = "host", .provided = &.{"Lookup"} });
+        reducer.open();
+        try observeText(&reducer, scratch, init);
+        const served = (try reducer.listTools()).?;
+        try testing.expectEqual(@as(usize, 1), served.len);
+        try testing.expectEqualStrings("Lookup", served[0].name);
+        try testing.expectEqualStrings("host", served[0].owner);
+    }
+
+    var chosen = Reducer.init(&arena, .{ .responder = "host", .provided = &.{"echo"} });
+    chosen.open();
+    try chosen.submit("turn-1");
+    chosen.policy = .{ .allowed = &.{"echo"} };
+    try observeText(&chosen, scratch,
+        \\{"type":"stream_event","session_id":"s","event":{"type":"message_start"},"uuid":"e1","user_message_uuid":"turn-1"}
+    );
+    try testing.expect(!chosen.excludes("mcp__oap__echo"));
+    try testing.expect(chosen.excludes("Bash"));
 }
 
 fn emittedTypes(reducer: *Reducer, arena: std.mem.Allocator) ![]const []const u8 {
