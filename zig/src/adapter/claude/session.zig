@@ -232,7 +232,8 @@ pub const Reducer = struct {
         for (self.catalog.items) |entry| {
             const name = try kept_allocator.dupe(u8, entry.name);
             const source = try kept_allocator.dupe(u8, entry.source);
-            kept.catalog.appendAssumeCapacity(.{ .name = name, .source = source });
+            const owner = if (std.mem.eql(u8, entry.owner, harness_owner)) harness_owner else self.options.responder;
+            kept.catalog.appendAssumeCapacity(.{ .name = name, .source = source, .owner = owner });
         }
         try kept.servers.ensureTotalCapacity(kept_allocator, self.servers.items.len);
         for (self.servers.items) |server| {
@@ -1435,7 +1436,7 @@ test "a call is attributed to the harness only when init advertised the tool" {
     try testing.expectEqualStrings("", sources[2]);
 }
 
-test "a provided tool is listed under its own name, owned by the opener, and the server that carries it is not a source" {
+test "a provided tool is listed under its own name, owned by the opener also after a compaction, and the server that carries it is not a source" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const scratch = arena.allocator();
@@ -1454,6 +1455,12 @@ test "a provided tool is listed under its own name, owned by the opener, and the
     try testing.expectEqualStrings("mcp__oap__other", served[2].name);
     try testing.expectEqualStrings(harness_owner, served[2].owner);
     try testing.expectEqualStrings(harness_owner, served[0].owner);
+    var compact_arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer compact_arena.deinit();
+    const compacted = try reducer.compactInto(&compact_arena);
+    try testing.expectEqualStrings("echo", compacted.catalog.items[1].name);
+    try testing.expectEqualStrings("host", compacted.catalog.items[1].owner);
+    try testing.expectEqualStrings(harness_owner, compacted.catalog.items[0].owner);
 
     var plain = Reducer.init(&arena, .{});
     plain.open();
