@@ -381,9 +381,12 @@ open question answered here:
   each session event as it happens: Go through an optional session interface,
   Zig through the matching `contract.zig` member.
 - **The endpoint publishes.** It writes them in order on stdio, and
-  `state.updated` comes from the same channel.
-- **The hub journals and fans out** session events and triggered runs to
-  every subscription on the session, between runs and within one.
+  `session.state.updated` comes from the same channel.
+- **The hub** journals a triggered run like any run, so its replay and
+  resume are a run's. It delivers session events live to every subscription
+  on the session, between runs and within one, and does not replay them, as
+  [harness-initiated-state.md](harness-initiated-state.md) proposes. A host
+  that reconnects reads `session.state.tasks`.
 
 ## Where it lands
 
