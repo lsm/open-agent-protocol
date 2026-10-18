@@ -368,6 +368,7 @@ pub const Session = struct {
     fn submit(ptr: *anyopaque, arena: std.mem.Allocator, request: *const oap_types.MessageSubmitRequest, envelope_id: []const u8, refusal: *contract.Refusal) contract.Failure!oap_types.MessageSubmitResponse {
         _ = envelope_id;
         const self = cast(ptr);
+        try contract.refuseUnadvertisedControls(descriptor, request, refusal);
         switch (request.delivery) {
             .auto, .queue => {},
             .steer, .btw => {
@@ -389,6 +390,10 @@ pub const Session = struct {
         }
         if (prompt.items.len == 0) return error.InvalidSubmission;
         if (self.ended) return error.SessionClosed;
+        const held_prompt = try self.owned().dupe(u8, prompt.items);
+        var params: std.json.ObjectMap = .empty;
+        try params.put(self.owned(), "sessionId", .{ .string = self.native_id });
+        try params.put(self.owned(), "prompt", .{ .string = held_prompt });
         const busy = self.reducer.live() > 0;
         const admitted = (if (request.delivery == .queue) self.reducer.reserve(request.session_id) else self.reducer.admit(request.session_id)) catch |err| return switch (err) {
             error.InvalidSubmission => error.InvalidSubmission,
@@ -397,9 +402,6 @@ pub const Session = struct {
             error.SessionClosed => error.SessionClosed,
             error.OutOfMemory => error.OutOfMemory,
         };
-        var params: std.json.ObjectMap = .empty;
-        try params.put(self.owned(), "sessionId", .{ .string = self.native_id });
-        try params.put(self.owned(), "prompt", .{ .string = try self.owned().dupe(u8, prompt.items) });
         self.sending = admitted.run_id;
         const sent = self.call(arena, "session.send", .{ .object = params }, refusal) catch |err| {
             try self.release(admitted.run_id, null);
@@ -819,4 +821,19 @@ test "a refused send still delivers the events held while it was outstanding to 
     const completed = try probe.pumpUntil("run.completed", &seen);
     try testing.expectEqualStrings(first.run_id.?, completed.run_id);
     try testing.expect(std.mem.indexOf(u8, completed.line, "first") != null);
+}
+
+test "a submission carrying a run control the descriptor does not advertise is refused before admission" {
+    var probe: Probe = undefined;
+    try probe.init(fake_connect ++ fake_idle);
+    defer probe.deinit();
+    var refusal = contract.Refusal{};
+    _ = try probe.open(&refusal);
+    const messages = try probe.arena.allocator().dupe(oap_types.Message, &.{.{ .role = .user, .content = .{ .text = "hi" } }});
+    try testing.expectError(error.UnsupportedFeature, probe.handle.?.submit(probe.arena.allocator(), &.{ .session_id = "s1", .messages = messages, .delivery = .auto, .instructions = "be terse" }, "", &refusal));
+    try testing.expectEqualStrings("run.instructions", refusal.feature);
+    const idle = try probe.handle.?.state(probe.arena.allocator(), &refusal);
+    try testing.expectEqual(@as(usize, 0), idle.active_runs.len);
+    const written = try probe.fake.written(probe.arena.allocator());
+    try testing.expect(std.mem.indexOf(u8, written, "session.send") == null);
 }
