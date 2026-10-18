@@ -99,6 +99,8 @@ pub const Session = struct {
     awaited: i64 = 0,
     answer: ?Answer = null,
     ended: bool = false,
+    sending: ?[]const u8 = null,
+    held: std.ArrayList(native.Event) = .empty,
 
     fn open(owner: *Adapter, arena: std.mem.Allocator, request: contract.OpenRequest, refusal: *contract.Refusal) contract.Failure!*Session {
         if (request.reopen) return refusal.unsupported(contract.feature_open_reopen, contract.reason_unadvertised);
@@ -159,6 +161,13 @@ pub const Session = struct {
             try self.fail("unexpected protocol version");
             return refusal.fail(error.BackendFailed, "the copilot server does not speak the pinned protocol version 3");
         }
+        const status = try self.call(arena, "status.get", .{ .object = .empty }, refusal);
+        const version = if (status == .object) native.text(status.object, "version") else "";
+        if (!std.mem.eql(u8, version, endpoint_version)) {
+            try self.fail("unexpected copilot version");
+            const message = try std.fmt.allocPrint(arena, "the copilot server reports version \"{s}\"; this adapter is pinned to {s}", .{ version, endpoint_version });
+            return refusal.fail(error.BackendFailed, message);
+        }
         var params: std.json.ObjectMap = .empty;
         try params.put(self.owned(), "clientName", .{ .string = "open-agent-protocol" });
         if (self.owner.config.model.len > 0) try params.put(self.owned(), "model", .{ .string = self.owner.config.model });
@@ -215,7 +224,9 @@ pub const Session = struct {
         self.transport.close();
         self.reducer.closed = true;
         for (self.reducer.runs.items) |run| {
-            if (!run.terminal) self.reducer.refuse(run.id, "copilot_process_exit", detail) catch |err| return lift(err);
+            if (run.terminal) continue;
+            if (self.sending) |provisional| if (std.mem.eql(u8, provisional, run.id)) continue;
+            self.reducer.refuse(run.id, "copilot_process_exit", detail) catch |err| return lift(err);
         }
     }
 
@@ -289,6 +300,7 @@ pub const Session = struct {
                     return self.fail("the copilot server sent a session.event that does not decode");
                 };
                 const event = decoded orelse return;
+                if (self.sending != null and (self.held.items.len > 0 or self.unbound(event))) return self.held.append(self.owned(), event);
                 self.reducer.observe(event) catch |err| return lift(err);
             },
             .request => {
@@ -297,6 +309,23 @@ pub const Session = struct {
                 self.transport.write(refused) catch try self.fail("the copilot server stopped reading");
             },
         }
+    }
+
+    fn unbound(self: *Session, event: native.Event) bool {
+        if (event.kind != .user_message) return false;
+        const message_id = native.text(event.data, "messageId");
+        for (self.reducer.runs.items) |run| {
+            if (std.mem.eql(u8, run.native_message_id, message_id)) return false;
+        }
+        return true;
+    }
+
+    fn release(self: *Session, run_id: []const u8, message_id: ?[]const u8) contract.Failure!void {
+        self.sending = null;
+        defer self.held.clearRetainingCapacity();
+        const bound = message_id orelse return self.reducer.forget(run_id);
+        self.reducer.bind(run_id, bound) catch |err| return lift(err);
+        for (self.held.items) |event| self.reducer.observe(event) catch |err| return lift(err);
     }
 
     fn idOf(ptr: *anyopaque) []const u8 {
@@ -367,16 +396,17 @@ pub const Session = struct {
         var params: std.json.ObjectMap = .empty;
         try params.put(self.owned(), "sessionId", .{ .string = self.native_id });
         try params.put(self.owned(), "prompt", .{ .string = try self.owned().dupe(u8, prompt.items) });
+        self.sending = admitted.run_id;
         const sent = self.call(arena, "session.send", .{ .object = params }, refusal) catch |err| {
-            self.reducer.forget(admitted.run_id);
+            try self.release(admitted.run_id, null);
             return err;
         };
         const message_id = if (sent == .object) native.text(sent.object, "messageId") else "";
         if (message_id.len == 0) {
-            self.reducer.forget(admitted.run_id);
+            try self.release(admitted.run_id, null);
             return refusal.fail(error.BackendFailed, "the copilot server answered session.send with no message id");
         }
-        self.reducer.bind(admitted.run_id, message_id) catch |err| return lift(err);
+        try self.release(admitted.run_id, message_id);
         const started = std.mem.eql(u8, admitted.admission, "started");
         const message_ids = try arena.alloc([]const u8, 1);
         message_ids[0] = try arena.dupe(u8, admitted.message_id);
@@ -517,7 +547,8 @@ const fake_prelude =
 
 const fake_connect = fake_prelude ++
     \\take; say '{"jsonrpc":"2.0","id":1,"result":{"message":"pong","timestamp":1,"protocolVersion":3}}'
-    \\take; say '{"jsonrpc":"2.0","id":2,"result":{"sessionId":"ses-1","workspacePath":"/w"}}'
+    \\take; say '{"jsonrpc":"2.0","id":2,"result":{"version":"1.0.98","protocolVersion":3}}'
+    \\take; say '{"jsonrpc":"2.0","id":3,"result":{"sessionId":"ses-1","workspacePath":"/w"}}'
     \\
 ;
 
@@ -579,7 +610,7 @@ const Probe = struct {
 test "an open checks the protocol version and creates the native session, and a prompt streams to completion at idle" {
     var probe: Probe = undefined;
     try probe.init(fake_connect ++
-        \\take; say '{"jsonrpc":"2.0","id":3,"result":{"messageId":"m-1"}}'
+        \\take; say '{"jsonrpc":"2.0","id":4,"result":{"messageId":"m-1"}}'
         \\
     ++ eventFrame("user.message", "{\"messageId\":\"m-1\",\"interactionId\":\"i-1\",\"content\":\"hi\"}") ++
         eventFrame("assistant.message_delta", "{\"messageId\":\"a-1\",\"deltaContent\":\"pong\"}") ++
@@ -601,7 +632,7 @@ test "an open checks the protocol version and creates the native session, and a 
     try testing.expect(std.mem.indexOf(u8, written, "\"method\":\"ping\"") != null);
     try testing.expect(std.mem.indexOf(u8, written, "\"method\":\"session.create\"") != null);
     try testing.expect(std.mem.indexOf(u8, written, probe.fake.cwd) != null);
-    try testing.expect(std.mem.indexOf(u8, written, "{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"session.send\",\"params\":{\"sessionId\":\"ses-1\",\"prompt\":\"hi\"}}") != null);
+    try testing.expect(std.mem.indexOf(u8, written, "{\"jsonrpc\":\"2.0\",\"id\":4,\"method\":\"session.send\",\"params\":{\"sessionId\":\"ses-1\",\"prompt\":\"hi\"}}") != null);
 }
 
 test "an open refuses a server on another protocol version, and one that answers no session id" {
@@ -618,7 +649,8 @@ test "an open refuses a server on another protocol version, and one that answers
     var anonymous: Probe = undefined;
     try anonymous.init(fake_prelude ++
         \\take; say '{"jsonrpc":"2.0","id":1,"result":{"message":"pong","protocolVersion":3}}'
-        \\take; say '{"jsonrpc":"2.0","id":2,"result":{}}'
+        \\take; say '{"jsonrpc":"2.0","id":2,"result":{"version":"1.0.98","protocolVersion":3}}'
+        \\take; say '{"jsonrpc":"2.0","id":3,"result":{}}'
         \\
     ++ fake_idle);
     defer anonymous.deinit();
@@ -629,8 +661,8 @@ test "an open refuses a server on another protocol version, and one that answers
 test "a second prompt queues behind the open run, and a server that exits fails every open run" {
     var probe: Probe = undefined;
     try probe.init(fake_connect ++
-        \\take; say '{"jsonrpc":"2.0","id":3,"result":{"messageId":"m-1"}}'
-        \\take; say '{"jsonrpc":"2.0","id":4,"result":{"messageId":"m-2"}}'
+        \\take; say '{"jsonrpc":"2.0","id":4,"result":{"messageId":"m-1"}}'
+        \\take; say '{"jsonrpc":"2.0","id":5,"result":{"messageId":"m-2"}}'
         \\
     ++ eventFrame("user.message", "{\"messageId\":\"m-1\"}") ++ "exit 0\n");
     defer probe.deinit();
@@ -663,9 +695,9 @@ test "a second prompt queues behind the open run, and a server that exits fails 
 test "a prompt the server refuses or answers without a message id is not admitted, and leaves no run behind" {
     var probe: Probe = undefined;
     try probe.init(fake_connect ++
-        \\take; say '{"jsonrpc":"2.0","id":3,"error":{"code":-32000,"message":"busy"}}'
-        \\take; say '{"jsonrpc":"2.0","id":4,"result":{}}'
-        \\take; say '{"jsonrpc":"2.0","id":5,"result":{"messageId":"m-3"}}'
+        \\take; say '{"jsonrpc":"2.0","id":4,"error":{"code":-32000,"message":"busy"}}'
+        \\take; say '{"jsonrpc":"2.0","id":5,"result":{}}'
+        \\take; say '{"jsonrpc":"2.0","id":6,"result":{"messageId":"m-3"}}'
         \\
     ++ fake_idle);
     defer probe.deinit();
@@ -686,7 +718,7 @@ test "a prompt the server refuses or answers without a message id is not admitte
 test "an explicit queue on an idle session is a reservation Copilot promotes at once, and steer is refused" {
     var probe: Probe = undefined;
     try probe.init(fake_connect ++
-        \\take; say '{"jsonrpc":"2.0","id":3,"result":{"messageId":"m-1"}}'
+        \\take; say '{"jsonrpc":"2.0","id":4,"result":{"messageId":"m-1"}}'
         \\
     ++ eventFrame("user.message", "{\"messageId\":\"m-1\"}") ++
         eventFrame("assistant.message", "{\"messageId\":\"a-1\",\"content\":\"done\"}") ++
@@ -705,4 +737,59 @@ test "an explicit queue on an idle session is a reservation Copilot promotes at 
     _ = try probe.pumpUntil("run.completed", &seen);
     try testing.expectError(error.UnsupportedFeature, probe.deliver("two", .steer, &refusal));
     try testing.expectEqualStrings("session.message.delivery.steer", refusal.feature);
+}
+
+test "an open refuses a server that reports another Copilot version" {
+    var refusal = contract.Refusal{};
+    var other: Probe = undefined;
+    try other.init(fake_prelude ++
+        \\take; say '{"jsonrpc":"2.0","id":1,"result":{"message":"pong","protocolVersion":3}}'
+        \\take; say '{"jsonrpc":"2.0","id":2,"result":{"version":"1.0.97","protocolVersion":3}}'
+        \\
+    ++ fake_idle);
+    defer other.deinit();
+    try testing.expectError(error.BackendFailed, other.open(&refusal));
+    try testing.expect(std.mem.indexOf(u8, refusal.message, "reports version \"1.0.97\"") != null);
+    const written = try other.fake.written(other.arena.allocator());
+    try testing.expect(std.mem.indexOf(u8, written, "session.create") == null);
+}
+
+test "a run whose user.message arrives before session.send answers still starts and completes" {
+    var probe: Probe = undefined;
+    try probe.init(fake_connect ++ "take\n" ++
+        eventFrame("user.message", "{\"messageId\":\"m-1\"}") ++
+        eventFrame("assistant.message", "{\"messageId\":\"a-1\",\"content\":\"early\"}") ++
+        \\say '{"jsonrpc":"2.0","id":4,"result":{"messageId":"m-1"}}'
+        \\
+    ++ eventFrame("session.idle", "{}") ++ fake_idle);
+    defer probe.deinit();
+    var refusal = contract.Refusal{};
+    _ = try probe.open(&refusal);
+    const admitted = try probe.submit("hi", &refusal);
+    var seen = std.ArrayList(contract.Event).empty;
+    const completed = try probe.pumpUntil("run.completed", &seen);
+    try testing.expectEqualStrings(admitted.run_id.?, completed.run_id);
+    try testing.expect(std.mem.indexOf(u8, completed.line, "early") != null);
+    try testing.expect(std.mem.indexOf(u8, seen.items[0].line, "\"type\":\"run.started\"") != null);
+}
+
+test "a server that exits before answering session.send fails the open run and admits nothing" {
+    var probe: Probe = undefined;
+    try probe.init(fake_connect ++
+        \\take; say '{"jsonrpc":"2.0","id":4,"result":{"messageId":"m-1"}}'
+        \\
+    ++ eventFrame("user.message", "{\"messageId\":\"m-1\"}") ++ "take\nexit 0\n");
+    defer probe.deinit();
+    var refusal = contract.Refusal{};
+    _ = try probe.open(&refusal);
+    const first = try probe.submit("one", &refusal);
+    try testing.expectError(error.BackendFailed, probe.submit("two", &refusal));
+    var drained = std.ArrayList(contract.Event).empty;
+    try probe.handle.?.drain(probe.arena.allocator(), &drained);
+    var failed: usize = 0;
+    for (drained.items) |event| {
+        try testing.expectEqualStrings(first.run_id.?, event.run_id);
+        if (std.mem.indexOf(u8, event.line, "\"type\":\"run.failed\"") != null) failed += 1;
+    }
+    try testing.expectEqual(@as(usize, 1), failed);
 }
