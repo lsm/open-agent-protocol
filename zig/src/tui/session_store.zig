@@ -131,6 +131,146 @@ fn readLastJsonlLines(allocator: std.mem.Allocator, path: []const u8, max_bytes:
     return allocator.realloc(data, read);
 }
 
+pub const max_event_jsonl_bytes = 8 * 1024 * 1024;
+pub const max_event_payload_bytes = max_event_jsonl_bytes / 2;
+
+pub fn jsonStringBudget(value: []const u8) usize {
+    return value.len * 6;
+}
+
+fn messageEndPayloadSize(payload: @TypeOf(@as(session_events.SessionEvent, undefined).message_end)) usize {
+    return jsonStringBudget(payload.text.slice()) +
+        jsonStringBudget(payload.content_json.slice()) +
+        jsonStringBudget(payload.tool_call_id.slice()) +
+        jsonStringBudget(payload.tool_name.slice()) +
+        jsonStringBudget(payload.args_json.slice()) +
+        jsonStringBudget(payload.tool_calls_json.slice()) +
+        jsonStringBudget(payload.details_json.slice()) +
+        jsonStringBudget(payload.artifacts_json.slice());
+}
+
+fn toolExecutionEndPayloadSize(payload: @TypeOf(@as(session_events.SessionEvent, undefined).tool_execution_end)) usize {
+    return jsonStringBudget(payload.result_json.slice()) +
+        jsonStringBudget(payload.tool_call_id.slice()) +
+        jsonStringBudget(payload.tool_name.slice()) +
+        jsonStringBudget(payload.artifact_refs.slice());
+}
+
+fn toolRequestPayloadSize(payload: anytype) usize {
+    return jsonStringBudget(payload.tool_call_id.slice()) +
+        jsonStringBudget(payload.tool_name.slice()) +
+        jsonStringBudget(payload.args_json.slice());
+}
+
+fn toolUpdatePayloadSize(payload: @TypeOf(@as(session_events.SessionEvent, undefined).tool_execution_update)) usize {
+    return toolRequestPayloadSize(payload) +
+        jsonStringBudget(payload.partial_result_json.slice());
+}
+
+fn eventFits(event: session_events.SessionEvent) bool {
+    const size: usize = switch (event) {
+        .message_start, .context_usage, .prompt_segment_usage, .agent_start, .turn_start, .turn_end, .agent_end, .compaction_start, .backpressure_status => 0,
+        .text_delta => |payload| jsonStringBudget(payload.delta.slice()),
+        .thinking_delta => |payload| jsonStringBudget(payload.delta.slice()),
+        .tool_call_delta => |payload| jsonStringBudget(payload.delta.slice()),
+        .tool_execution_start => |payload| toolRequestPayloadSize(payload),
+        .provider_event => |payload| jsonStringBudget(payload.event_json.slice()),
+        .tool_approval_requested => |payload| toolRequestPayloadSize(payload),
+        .tool_execution_update => |payload| toolUpdatePayloadSize(payload),
+        .message_end => |payload| messageEndPayloadSize(payload),
+        .tool_execution_end => |payload| toolExecutionEndPayloadSize(payload),
+        .system_warning => |payload| jsonStringBudget(payload.message.slice()),
+        .compaction_end => |payload| jsonStringBudget(payload.text.slice()) + jsonStringBudget(payload.transcript.slice()) + jsonStringBudget(payload.message.slice()),
+        .@"error" => |payload| jsonStringBudget(payload.message.slice()),
+    };
+    return size <= max_event_payload_bytes;
+}
+
+fn recordPrefix(text: []const u8) []const u8 {
+    const limit = max_event_payload_bytes / jsonStringBudget("x");
+    if (text.len <= limit) return text;
+    var len = limit;
+    while (len > limit - 3 and (text[len] & 0xc0) == 0x80) len -= 1;
+    return text[0..len];
+}
+
+pub const Recorder = struct {
+    written: bool = false,
+    written_model: []u8 = &.{},
+    written_provider: []u8 = &.{},
+    pending_thinking: std.ArrayList(u8) = .empty,
+
+    pub const Saved = struct { metadata: bool, compaction_offset: ?u64 };
+
+    pub fn deinit(self: *Recorder, allocator: std.mem.Allocator) void {
+        if (self.written_model.len > 0) allocator.free(self.written_model);
+        if (self.written_provider.len > 0) allocator.free(self.written_provider);
+        self.pending_thinking.deinit(allocator);
+        self.* = undefined;
+    }
+
+    pub fn adopt(self: *Recorder, allocator: std.mem.Allocator, metadata: SessionMetadata) !void {
+        try self.remember(allocator, metadata.model, metadata.provider);
+        self.written = true;
+        self.pending_thinking.clearRetainingCapacity();
+    }
+
+    pub fn record(self: *Recorder, allocator: std.mem.Allocator, store: Store, meta: SessionMetadata, event: session_events.SessionEvent) ?Saved {
+        if (event == .message_end and event.message_end.role == .assistant) self.flushThinking(allocator, store, meta);
+        if (!eventFits(event)) return null;
+        switch (event) {
+            .text_delta, .tool_call_delta, .provider_event, .tool_execution_update => {
+                store.saveChunk(meta.session_id, event) catch {};
+                return null;
+            },
+            .thinking_delta => |payload| {
+                self.pending_thinking.appendSlice(allocator, payload.delta.slice()) catch {};
+                store.saveChunk(meta.session_id, event) catch {};
+                return null;
+            },
+            .message_start => self.pending_thinking.clearRetainingCapacity(),
+            else => {},
+        }
+        const compaction = event == .compaction_end and event.compaction_end.outcome == .completed;
+        const offset: ?u64 = if (compaction) store.conversationBytes(meta.session_id) catch null else null;
+        return .{ .metadata = self.save(allocator, store, meta, event, compaction), .compaction_offset = offset };
+    }
+
+    fn flushThinking(self: *Recorder, allocator: std.mem.Allocator, store: Store, meta: SessionMetadata) void {
+        defer self.pending_thinking.clearRetainingCapacity();
+        var rest: []const u8 = self.pending_thinking.items;
+        while (rest.len > 0) {
+            const prefix = recordPrefix(rest);
+            _ = self.save(allocator, store, meta, .{ .thinking_delta = .{ .content_index = 0, .delta = OwnedSlice(u8).initBorrowed(prefix) } }, false);
+            rest = rest[prefix.len..];
+        }
+    }
+
+    fn save(self: *Recorder, allocator: std.mem.Allocator, store: Store, meta: SessionMetadata, event: session_events.SessionEvent, force_metadata: bool) bool {
+        const changed = force_metadata or !self.written or
+            !std.mem.eql(u8, meta.model, self.written_model) or
+            !std.mem.eql(u8, meta.provider, self.written_provider);
+        if (!changed) {
+            store.saveEvent(meta.session_id, event) catch {};
+            return false;
+        }
+        store.save(meta, event) catch return false;
+        self.remember(allocator, meta.model, meta.provider) catch {};
+        self.written = true;
+        return true;
+    }
+
+    fn remember(self: *Recorder, allocator: std.mem.Allocator, model: []const u8, provider: []const u8) !void {
+        const next_model = try allocator.dupe(u8, model);
+        errdefer allocator.free(next_model);
+        const next_provider = try allocator.dupe(u8, provider);
+        if (self.written_model.len > 0) allocator.free(self.written_model);
+        if (self.written_provider.len > 0) allocator.free(self.written_provider);
+        self.written_model = next_model;
+        self.written_provider = next_provider;
+    }
+};
+
 pub const SessionMetadata = struct {
     session_id: []u8,
     model: []u8,
@@ -2531,4 +2671,8 @@ test "saveTranscript survives an allocation failure at every step" {
 
 test "serializeTranscript survives an allocation failure at every step" {
     try std.testing.checkAllAllocationFailures(std.heap.smp_allocator, serializeTranscriptProbe, .{});
+}
+
+test "json string budget accounts for worst-case escaping" {
+    try std.testing.expectEqual(@as(usize, 24), jsonStringBudget("\\\\\\\\"));
 }

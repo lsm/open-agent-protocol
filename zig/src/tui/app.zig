@@ -48,8 +48,7 @@ pub const SessionRuntime = session_runtime.SessionRuntime;
 pub const SessionRuntimeOptions = session_runtime.SessionRuntimeOptions;
 pub const parseContextWindow = session_runtime.parseContextWindow;
 
-const max_session_event_jsonl_bytes = 8 * 1024 * 1024;
-const max_session_event_payload_bytes = max_session_event_jsonl_bytes / 2;
+const max_session_event_payload_bytes = session_store.max_event_payload_bytes;
 
 fn isSecretLoginPrompt(message: []const u8) bool {
     return std.mem.indexOf(u8, message, "API key") != null or std.mem.indexOf(u8, message, "api key") != null;
@@ -1100,12 +1099,9 @@ pub const App = struct {
     compaction_transcripts: std.ArrayList([]u8) = .empty,
     rate_model: []u8 = &.{},
     rate_provider: []u8 = &.{},
-    written_model: []u8 = &.{},
-    written_provider: []u8 = &.{},
-    session_written: bool = false,
+    recorder: session_store.Recorder = .{},
     session_created_at: i64 = 0,
     compaction_offset: u64 = 0,
-    pending_thinking: std.ArrayList(u8) = .empty,
     pending_after_compaction: ?[]u8 = null,
     pending_after_compaction_echo: ?[]u8 = null,
     runtime_echo_suppressed: []u8 = &.{},
@@ -1267,9 +1263,7 @@ pub const App = struct {
         self.quarantine_buffer.deinit(self.allocator);
         self.clearCompactionTranscripts();
         self.compaction_transcripts.deinit(self.allocator);
-        if (self.written_model.len > 0) self.allocator.free(self.written_model);
-        if (self.written_provider.len > 0) self.allocator.free(self.written_provider);
-        self.pending_thinking.deinit(self.allocator);
+        self.recorder.deinit(self.allocator);
         if (self.pending_after_compaction) |pending| self.allocator.free(pending);
         if (self.pending_after_compaction_echo) |echo| self.allocator.free(echo);
         if (self.runtime_echo_suppressed.len > 0) self.allocator.free(self.runtime_echo_suppressed);
@@ -2733,69 +2727,17 @@ pub const App = struct {
 
     fn persistEvent(self: *App, event: session_runtime.SessionEvent) void {
         const store = self.store orelse return;
-        if (event == .message_end and event.message_end.role == .assistant) self.flushPendingThinking(store);
-        switch (event) {
-            .message_start, .context_usage, .prompt_segment_usage, .agent_start, .turn_start, .turn_end, .agent_end, .compaction_start => {},
-            .text_delta => |payload| {
-                if (jsonStringBudget(payload.delta.slice()) > max_session_event_payload_bytes) return;
-            },
-            .thinking_delta => |payload| {
-                if (jsonStringBudget(payload.delta.slice()) > max_session_event_payload_bytes) return;
-            },
-            .tool_call_delta => |payload| {
-                if (jsonStringBudget(payload.delta.slice()) > max_session_event_payload_bytes) return;
-            },
-            .tool_execution_start => |payload| {
-                if (toolRequestPayloadSize(payload) > max_session_event_payload_bytes) return;
-            },
-            .provider_event => |payload| {
-                if (jsonStringBudget(payload.event_json.slice()) > max_session_event_payload_bytes) return;
-            },
-            .tool_approval_requested => |payload| {
-                if (toolRequestPayloadSize(payload) > max_session_event_payload_bytes) return;
-            },
-            .tool_execution_update => |payload| {
-                if (toolUpdatePayloadSize(payload) > max_session_event_payload_bytes) return;
-            },
-            .message_end => |payload| {
-                if (messageEndPayloadSize(payload) > max_session_event_payload_bytes) return;
-            },
-            .tool_execution_end => |payload| {
-                if (toolExecutionEndPayloadSize(payload) > max_session_event_payload_bytes) return;
-            },
-            .system_warning => |payload| {
-                if (jsonStringBudget(payload.message.slice()) > max_session_event_payload_bytes) return;
-            },
-            .backpressure_status => {},
-            .compaction_end => |payload| {
-                if (jsonStringBudget(payload.text.slice()) + jsonStringBudget(payload.transcript.slice()) + jsonStringBudget(payload.message.slice()) > max_session_event_payload_bytes) return;
-            },
-            .@"error" => |payload| {
-                if (jsonStringBudget(payload.message.slice()) > max_session_event_payload_bytes) return;
-            },
+        const meta = self.currentSessionMetadata();
+        const saved = self.recorder.record(self.allocator, store, meta, event) orelse return;
+        if (saved.metadata) {
+            self.compaction_offset = saved.compaction_offset orelse self.compaction_offset;
+            if (self.session_created_at == 0) self.session_created_at = meta.last_active;
         }
-        switch (event) {
-            .text_delta, .tool_call_delta, .provider_event, .tool_execution_update => {
-                store.saveChunk(self.session_id, event) catch {};
-                return;
-            },
-            .thinking_delta => |payload| {
-                self.pending_thinking.appendSlice(self.allocator, payload.delta.slice()) catch {};
-                store.saveChunk(self.session_id, event) catch {};
-                return;
-            },
-            .message_start => self.pending_thinking.clearRetainingCapacity(),
-            else => {},
-        }
-        const compaction = event == .compaction_end and event.compaction_end.outcome == .completed;
-        const offset: ?u64 = if (compaction) store.conversationBytes(self.session_id) catch null else null;
-        const wrote_metadata = self.saveConversationEvent(store, event, compaction);
-        if (wrote_metadata) self.compaction_offset = offset orelse self.compaction_offset;
         const titled = switch (event) {
             .message_end => |payload| payload.role == .user and self.titleFromFirstMessage(tui_state.withoutZenNote(std.mem.trim(u8, payload.text.slice(), " \t\r\n"))),
             else => false,
         };
-        if (wrote_metadata or titled or event == .agent_end) self.saveSessionIndex(store);
+        if (saved.metadata or titled or event == .agent_end) self.saveSessionIndex(store);
         if (event == .agent_end) self.requestSessionTitle();
         self.flushPendingWorktreeSidecar();
     }
@@ -2826,7 +2768,7 @@ pub const App = struct {
         self.session_title = title;
         self.session_title_renamed = true;
         self.publishTitle();
-        if (self.session_written) {
+        if (self.recorder.written) {
             if (self.store) |store| self.saveSessionIndex(store);
         }
         const message = try std.fmt.allocPrint(self.allocator, "Session renamed to \"{s}\"", .{title});
@@ -2872,52 +2814,6 @@ pub const App = struct {
         if (self.store) |store| self.saveSessionIndex(store);
     }
 
-    fn flushPendingThinking(self: *App, store: session_store.Store) void {
-        defer self.pending_thinking.clearRetainingCapacity();
-        var rest: []const u8 = self.pending_thinking.items;
-        while (rest.len > 0) {
-            const record = sessionRecordPrefix(rest);
-            _ = self.saveConversationEvent(store, .{ .thinking_delta = .{ .content_index = 0, .delta = OwnedSlice(u8).initBorrowed(record) } }, false);
-            rest = rest[record.len..];
-        }
-    }
-
-    fn sessionRecordPrefix(text: []const u8) []const u8 {
-        const limit = max_session_event_payload_bytes / jsonStringBudget("x");
-        if (text.len <= limit) return text;
-        var len = limit;
-        while (len > limit - 3 and (text[len] & 0xc0) == 0x80) len -= 1;
-        return text[0..len];
-    }
-
-    fn saveConversationEvent(self: *App, store: session_store.Store, event: session_runtime.SessionEvent, force_metadata: bool) bool {
-        const meta = self.currentSessionMetadata();
-        const changed = force_metadata or !self.session_written or
-            !std.mem.eql(u8, meta.model, self.written_model) or
-            !std.mem.eql(u8, meta.provider, self.written_provider);
-        if (!changed) {
-            store.saveEvent(self.session_id, event) catch {};
-            return false;
-        }
-        store.save(meta, event) catch return false;
-        self.rememberWrittenMetadata(meta.model, meta.provider) catch {};
-        if (!self.session_written) {
-            self.session_written = true;
-            if (self.session_created_at == 0) self.session_created_at = meta.last_active;
-        }
-        return true;
-    }
-
-    fn rememberWrittenMetadata(self: *App, model: []const u8, provider: []const u8) !void {
-        const next_model = try self.allocator.dupe(u8, model);
-        errdefer self.allocator.free(next_model);
-        const next_provider = try self.allocator.dupe(u8, provider);
-        if (self.written_model.len > 0) self.allocator.free(self.written_model);
-        if (self.written_provider.len > 0) self.allocator.free(self.written_provider);
-        self.written_model = next_model;
-        self.written_provider = next_provider;
-    }
-
     fn restoreCompactionTranscripts(self: *App, store: session_store.Store, loaded: *const session_store.LoadedSession) !void {
         self.clearCompactionTranscripts();
         for (loaded.events.items) |event| {
@@ -2944,11 +2840,9 @@ pub const App = struct {
     }
 
     fn adoptLoadedSession(self: *App, metadata: session_store.SessionMetadata) !void {
-        try self.rememberWrittenMetadata(metadata.model, metadata.provider);
-        self.session_written = true;
+        try self.recorder.adopt(self.allocator, metadata);
         self.session_created_at = metadata.created_at;
         self.compaction_offset = metadata.compaction_offset;
-        self.pending_thinking.clearRetainingCapacity();
         const title = try self.allocator.dupe(u8, metadata.title);
         if (self.session_title.len > 0) self.allocator.free(self.session_title);
         self.session_title = title;
@@ -2959,42 +2853,6 @@ pub const App = struct {
         self.first_user_text = &.{};
     }
 
-    fn messageEndPayloadSize(payload: @TypeOf(@as(session_runtime.SessionEvent, undefined).message_end)) usize {
-        return jsonStringBudget(payload.text.slice()) +
-            jsonStringBudget(payload.content_json.slice()) +
-            jsonStringBudget(payload.tool_call_id.slice()) +
-            jsonStringBudget(payload.tool_name.slice()) +
-            jsonStringBudget(payload.args_json.slice()) +
-            jsonStringBudget(payload.tool_calls_json.slice()) +
-            jsonStringBudget(payload.details_json.slice()) +
-            jsonStringBudget(payload.artifacts_json.slice());
-    }
-
-    fn toolExecutionEndPayloadSize(payload: @TypeOf(@as(session_runtime.SessionEvent, undefined).tool_execution_end)) usize {
-        return jsonStringBudget(payload.result_json.slice()) +
-            jsonStringBudget(payload.tool_call_id.slice()) +
-            jsonStringBudget(payload.tool_name.slice()) +
-            jsonStringBudget(payload.artifact_refs.slice());
-    }
-
-    fn toolRequestPayloadSize(payload: anytype) usize {
-        return jsonStringBudget(payload.tool_call_id.slice()) +
-            jsonStringBudget(payload.tool_name.slice()) +
-            jsonStringBudget(payload.args_json.slice());
-    }
-
-    fn toolUpdatePayloadSize(payload: @TypeOf(@as(session_runtime.SessionEvent, undefined).tool_execution_update)) usize {
-        return toolRequestPayloadSize(payload) +
-            jsonStringBudget(payload.partial_result_json.slice());
-    }
-
-    fn jsonStringBudget(value: []const u8) usize {
-        return value.len * 6;
-    }
-
-    test "json string budget accounts for worst-case escaping" {
-        try std.testing.expectEqual(@as(usize, 24), jsonStringBudget("\\\\\\\\"));
-    }
 
     fn currentSessionMetadata(self: *App) session_store.SessionMetadata {
         return .{
@@ -4099,7 +3957,7 @@ pub const App = struct {
     }
 
     fn persistThinkingLevel(self: *App) void {
-        if (!self.session_written) return;
+        if (!self.recorder.written) return;
         if (self.store) |store| self.saveSessionIndex(store);
     }
 
@@ -7204,7 +7062,7 @@ test "App splits a reply's thinking into records that fit the session budget" {
     const part = repeat("\u{20ac}", 1000);
     app.saveEvent(.{ .message_start = .{ .role = .assistant } });
     var sent: usize = 0;
-    while (sent <= max_session_event_payload_bytes / App.jsonStringBudget("x")) : (sent += part.len) {
+    while (sent <= max_session_event_payload_bytes / session_store.jsonStringBudget("x")) : (sent += part.len) {
         app.saveEvent(.{ .thinking_delta = .{ .content_index = 0, .delta = OwnedSlice(u8).initBorrowed(part) } });
     }
     var end = session_runtime.SessionEvent{ .message_end = .{ .role = .assistant, .text = OwnedSlice(u8).initOwned(try std.testing.allocator.dupe(u8, "answer")) } };
@@ -7218,7 +7076,7 @@ test "App splits a reply's thinking into records that fit the session budget" {
     for (loaded.events.items) |event| {
         if (event != .thinking_delta) continue;
         const delta = event.thinking_delta.delta.slice();
-        try std.testing.expect(App.jsonStringBudget(delta) <= max_session_event_payload_bytes);
+        try std.testing.expect(session_store.jsonStringBudget(delta) <= max_session_event_payload_bytes);
         try std.testing.expect(std.unicode.utf8ValidateSlice(delta));
         records += 1;
         total += delta.len;
@@ -7237,7 +7095,7 @@ test "App writes a reply's thinking even when the reply is too large to save" {
 
     app.saveEvent(.{ .message_start = .{ .role = .assistant } });
     app.saveEvent(.{ .thinking_delta = .{ .content_index = 0, .delta = OwnedSlice(u8).initBorrowed("weighing it") } });
-    const text = try std.testing.allocator.alloc(u8, max_session_event_payload_bytes / App.jsonStringBudget("x") + 1);
+    const text = try std.testing.allocator.alloc(u8, max_session_event_payload_bytes / session_store.jsonStringBudget("x") + 1);
     defer std.testing.allocator.free(text);
     @memset(text, 'x');
     app.saveEvent(.{ .message_end = .{ .role = .assistant, .text = OwnedSlice(u8).initBorrowed(text) } });
