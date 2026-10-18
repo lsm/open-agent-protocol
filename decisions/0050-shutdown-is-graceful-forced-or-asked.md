@@ -11,10 +11,10 @@ queued reservations, and [Decision 0040](0040-a-session-reopens-through-its-own-
 so a reopen can list them and report an interrupted run;
 [Decision 0001](0001-agent-control-v0.1-executable-core.md), so a run a
 restart cut off settles through a recorded settlement rather than a terminal
-envelope in its stream; and [Decision 0051](0051-transcript-load.md), by
+envelope in its stream; and Decision 0051 (#1205), by
 adding an entry kind. Applies [Decision 0010](0010-terminal-provenance.md):
-that settlement is `inferred`. Lands after 0051 and the storage interface
-([docs/storage.md](../docs/storage.md)). Applies to both trees, to
+that settlement is `inferred`. Lands after Decision 0051 (#1205) and the
+storage interface, `docs/storage.md` (#1206). Applies to both trees, to
 `goap hub` and `oapx hub`, and to `serve agent`
 
 ## Context
@@ -36,22 +36,28 @@ next start can describe honestly.
 
 - **Graceful is a freeze:** stop dispatching at once, let running runs finish,
   save the whole state, then exit. The next start unfreezes it and carries on.
-- **Force:** stop now. It behaves exactly like a crash.
+- **Force:** stop now. For runs it behaves exactly like a crash: none settles
+  at the time. The process still ends its harness children so none is
+  orphaned, inside the existing 5 s window per stage, which bounds that
+  teardown and nothing else.
 - **Crash:** the process dies. Nothing is settled at the time.
 
 After force or a crash, the next start applies one rule, from the store
-([docs/storage.md](../docs/storage.md)):
+(`docs/storage.md`, #1206):
 
 - **The run that was executing settles `failed` with
   `error.code: "interrupted"`** and `details.by: "restart"`. Its partial
-  output stays readable through `transcript.load`
-  ([Decision 0051](0051-transcript-load.md)). It never reruns on its own,
+  output stays readable through `transcript.load` (Decision 0051, #1205). It
+  never reruns on its own,
   because its tool calls may already have had their effects.
 - **Queued prompts that were accepted are delivered again, in their order,
   under their original run ids.** An accepted submit is a promise, and a
   restart does not cancel it.
-- **A pending interaction** is raised again where the harness can resume the
-  run that asked it. Where it cannot, the interaction settles with its run.
+- **A pending interaction settles with its run**, as `run_settled`, because a
+  settled run takes no answer (a terminal is absorbing). Where the harness, once
+  reopened, asks the question again (Claude resuming a turn that was waiting
+  on a permission), it is raised again as a new interaction in a new run,
+  which the host sees like any other. The interrupted run is never revived.
 
 The settlement is not published as a `run.failed` envelope in the old run's
 stream, because the process that held that stream's sequence is gone and a
@@ -95,8 +101,11 @@ or a second signal turns it into force.
 | `held` | the queued runs kept for the next start, as `{session_id, run_id}` |
 | `lost` | queued runs that cannot be kept because the session's store is off (rule 6), as `{session_id, run_id}` |
 
-- **No mode, nothing running:** graceful at once, `outcome: "stopping"`.
-- **No mode, runs active:** nothing changes yet. `outcome: "choose"` lists the
+The split is on nonterminal runs, queued ones included, since a queued run is
+what graceful holds and an off store loses:
+
+- **No mode, no nonterminal run:** graceful at once, `outcome: "stopping"`.
+- **No mode, any nonterminal run:** nothing changes yet. `outcome: "choose"` lists the
   runs, and the requester sends the request again with a mode.
 - **`graceful`:** `outcome: "draining"`, or `stopping` when nothing runs.
 - **`force`:** `outcome: "stopping"`. Sent during a graceful drain, it
@@ -165,14 +174,17 @@ Credentials are never written to either store.
 ## Consequences
 
 - The store gains run records: admitted (with the prompt, for a queued run),
-  started and settled. [docs/storage.md](../docs/storage.md) names the
+  started and settled. `docs/storage.md` (#1206) names the
   operations. A prompt is user content, so a binding still never holds a
   credential or an environment value.
 - Schema: the shutdown pair and event, `shutting_down`,
   `recovery.interrupted_runs`, and the error code `interrupted`, with the
   matching `go/protocol`, validator, fixtures and `clients/ts`.
-- hub.md's shutdown section is rewritten, and the 5 s window applies to force
-  only. So is `drafts/endpoint-stdio.md`'s exit contract, which today makes
+- hub.md's shutdown section is rewritten: the 5 s window bounds force's
+  child teardown only. The process exits 0 once the requested mode completes,
+  graceful or force; runs that force cut off are reported by the next start,
+  not by the exit code, and a stage that outlives its window still exits
+  non-zero as "shutdown stalled". So is `drafts/endpoint-stdio.md`'s exit contract, which today makes
   stdin EOF and the signals settle admitted work and exit 0: EOF becomes force
   and the signals map as rule 4 says.
 - #1207 makes `oapx serve` save its `oapx` sessions by default, as rule 6
