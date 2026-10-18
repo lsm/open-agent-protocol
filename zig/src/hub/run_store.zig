@@ -10,6 +10,7 @@ pub const Record = struct {
     session_id: []const u8,
     run_id: []const u8,
     request: ?[]const u8 = null,
+    replaces: ?[]const u8 = null,
 };
 
 pub const Open = struct {
@@ -55,10 +56,24 @@ fn sameRun(a: Record, b: Record) bool {
     return std.mem.eql(u8, a.session_id, b.session_id) and std.mem.eql(u8, a.run_id, b.run_id);
 }
 
+fn ends(record: Record, held: Record) bool {
+    if (record.action == .settled) return sameRun(record, held);
+    const replaced = record.replaces orelse return false;
+    return record.action == .admitted and std.mem.eql(u8, record.session_id, held.session_id) and std.mem.eql(u8, replaced, held.run_id);
+}
+
 fn collectOpen(arena: std.mem.Allocator, held: []const Record, session_id: []const u8) ![]Open {
     var open_runs: std.ArrayList(Open) = .empty;
     for (held) |record| {
         if (!std.mem.eql(u8, record.session_id, session_id)) continue;
+        if (record.action == .admitted) if (record.replaces) |replaced| {
+            for (open_runs.items, 0..) |run, index| {
+                if (std.mem.eql(u8, run.run_id, replaced)) {
+                    _ = open_runs.orderedRemove(index);
+                    break;
+                }
+            }
+        };
         const found = for (open_runs.items, 0..) |run, index| {
             if (std.mem.eql(u8, run.run_id, record.run_id)) break index;
         } else null;
@@ -132,7 +147,7 @@ pub const Store = struct {
         const arena = scratch.allocator();
         var next: std.ArrayList(u8) = .empty;
         for (try self.records(arena)) |held| {
-            if (record.action == .settled and sameRun(held, record)) continue;
+            if (ends(record, held)) continue;
             try next.appendSlice(arena, try encode(arena, held));
         }
         if (record.action != .settled) try next.appendSlice(arena, try encode(arena, record));
@@ -182,19 +197,18 @@ pub const Memory = struct {
     fn memoryAppend(ctx: *anyopaque, record: Record) anyerror!void {
         const self: *Memory = @ptrCast(@alignCast(ctx));
         const arena = self.arena.allocator();
-        if (record.action == .settled) {
-            var index: usize = 0;
-            while (index < self.records.items.len) {
-                if (sameRun(self.records.items[index], record)) {
-                    _ = self.records.orderedRemove(index);
-                } else index += 1;
-            }
-            return;
+        var index: usize = 0;
+        while (index < self.records.items.len) {
+            if (ends(record, self.records.items[index])) {
+                _ = self.records.orderedRemove(index);
+            } else index += 1;
         }
+        if (record.action == .settled) return;
         const session_id = try arena.dupe(u8, record.session_id);
         const run_id = try arena.dupe(u8, record.run_id);
         const request = if (record.request) |given| try arena.dupe(u8, given) else null;
-        try self.records.append(arena, .{ .action = record.action, .time_ms = record.time_ms, .session_id = session_id, .run_id = run_id, .request = request });
+        const replaces = if (record.replaces) |given| try arena.dupe(u8, given) else null;
+        try self.records.append(arena, .{ .action = record.action, .time_ms = record.time_ms, .session_id = session_id, .run_id = run_id, .request = request, .replaces = replaces });
     }
 
     fn memoryOpenRuns(ctx: *anyopaque, arena: std.mem.Allocator, session_id: []const u8) anyerror![]Open {
@@ -213,6 +227,9 @@ pub fn conform(arena: std.mem.Allocator, runs: Runs) !void {
         .{ .action = .admitted, .time_ms = 5, .session_id = "conform-a", .run_id = "r3" },
         .{ .action = .settled, .time_ms = 6, .session_id = "conform-a", .run_id = "r3" },
         .{ .action = .settled, .time_ms = 7, .session_id = "conform-b", .run_id = "r1" },
+        .{ .action = .admitted, .time_ms = 8, .session_id = "conform-c", .run_id = "held", .request = request },
+        .{ .action = .admitted, .time_ms = 9, .session_id = "conform-c", .run_id = "after", .request = request },
+        .{ .action = .admitted, .time_ms = 10, .session_id = "conform-c", .run_id = "redelivered", .request = request, .replaces = "held" },
     }) |record| try runs.append(record);
     const open_a = try runs.openRuns(arena, "conform-a");
     if (open_a.len != 2) return error.RunStoreNonconforming;
@@ -221,6 +238,9 @@ pub fn conform(arena: std.mem.Allocator, runs: Runs) !void {
     if (!std.mem.eql(u8, open_a[1].request orelse "", request)) return error.RunStoreNonconforming;
     if ((try runs.openRuns(arena, "conform-b")).len != 0) return error.RunStoreNonconforming;
     if ((try runs.openRuns(arena, "conform-absent")).len != 0) return error.RunStoreNonconforming;
+    const open_c = try runs.openRuns(arena, "conform-c");
+    if (open_c.len != 2) return error.RunStoreNonconforming;
+    if (!std.mem.eql(u8, open_c[0].run_id, "after") or !std.mem.eql(u8, open_c[1].run_id, "redelivered")) return error.RunStoreNonconforming;
 }
 
 const testing = std.testing;
@@ -365,3 +385,50 @@ const Forgetful = struct {
         return self.inner.runs().openRuns(arena, session_id);
     }
 };
+
+test "a store that keeps a replaced run open does not conform" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var memory = Memory.init(testing.allocator);
+    defer memory.deinit();
+    var unreplacing = Unreplacing{ .inner = &memory };
+    try testing.expectError(error.RunStoreNonconforming, conform(arena.allocator(), unreplacing.runs()));
+}
+
+const Unreplacing = struct {
+    inner: *Memory,
+
+    fn runs(self: *Unreplacing) Runs {
+        return .{ .ctx = self, .vtable = &.{ .append = append, .openRuns = openRunsOf } };
+    }
+
+    fn append(ctx: *anyopaque, record: Record) anyerror!void {
+        const self: *Unreplacing = @ptrCast(@alignCast(ctx));
+        var kept = record;
+        kept.replaces = null;
+        return self.inner.runs().append(kept);
+    }
+
+    fn openRunsOf(ctx: *anyopaque, arena: std.mem.Allocator, session_id: []const u8) anyerror![]Open {
+        const self: *Unreplacing = @ptrCast(@alignCast(ctx));
+        return self.inner.runs().openRuns(arena, session_id);
+    }
+};
+
+test "a re-delivery replaces its held run in one line" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const path = try scratchPath(testing.allocator, &tmp, "runs.jsonl");
+    defer testing.allocator.free(path);
+    var store = try Store.open(testing.allocator, path);
+    defer store.deinit();
+    try store.append(.{ .action = .admitted, .time_ms = 1, .session_id = "s", .run_id = "held", .request = "{}" });
+    try store.append(.{ .action = .admitted, .time_ms = 2, .session_id = "s", .run_id = "new", .request = "{}", .replaces = "held" });
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const bytes = try compat.fs.readFileAlloc(arena.allocator(), compat.fs.getCwd(), path, binding.max_store_bytes);
+    try testing.expectEqual(@as(usize, 1), std.mem.count(u8, bytes, "\n"));
+    const open_runs = try store.openRuns(arena.allocator(), "s");
+    try testing.expectEqual(@as(usize, 1), open_runs.len);
+    try testing.expectEqualStrings("new", open_runs[0].run_id);
+}
