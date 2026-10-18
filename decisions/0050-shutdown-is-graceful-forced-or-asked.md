@@ -47,8 +47,8 @@ After force or a crash, the next start applies one rule, from the store
 
 The settlement is not published as a `run.failed` envelope in the old run's
 stream, because the process that held that stream's sequence is gone and a
-made-up sequence would be fake continuity. It is reported on reopen (rule 5)
-and in the transcript.
+made-up sequence would be fake continuity. It is reported on reopen (rule 5),
+and also in the transcript where the transcript is OAP's own (Decision 0051).
 
 ### 2. Graceful never dispatches a queued prompt
 
