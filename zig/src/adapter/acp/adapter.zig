@@ -1084,6 +1084,10 @@ pub const Session = struct {
             const frame = self.notificationFrame("session/cancel", .{ .object = params }) catch |err| return lift(err);
             if (!try self.send(frame)) return refusal.fail(error.BackendFailed, "the ACP agent did not take session/cancel");
             self.reducer.cancel() catch |err| return lift(err);
+            for (self.asks.items) |ask| {
+                _ = try self.send(self.resultFrame(ask.native_id, self.permissionOutcome("cancelled", "") catch |err| return lift(err)) catch |err| return lift(err));
+            }
+            self.asks.clearRetainingCapacity();
         }
         return .{ .session_id = self.id, .run_id = try arena.dupe(u8, run_id), .accepted = true, .status = .cancelling };
     }
@@ -1566,6 +1570,30 @@ test "an agent that dies mid-run fails the run with its exit and closes the sess
     try testing.expectEqualStrings("child exited with status 4", failure.get("message").?.string);
     try testing.expectError(error.SessionClosed, probe.handle.?.state(probe.arena.allocator(), &refusal));
     try testing.expectError(error.SessionClosed, probe.submit("after", &refusal));
+}
+
+test "a cancel answers the run's open permission request cancelled, so an agent waiting on it can end the prompt" {
+    var probe: Probe = undefined;
+    try probe.init(fake_prelude ++
+        \\take
+        \\printf '{"id":"permission-1","jsonrpc":"2.0","method":"session/request_permission","params":{"options":[{"kind":"allow_once","name":"Allow once","optionId":"allow"}],"sessionId":"native-session","toolCall":{"kind":"read","rawInput":{"path":"fixture.txt"},"sessionUpdate":"tool_call","status":"pending","title":"Read file","toolCallId":"native-tool"}}}\n'
+        \\take
+        \\take
+        \\printf '{"id":3,"jsonrpc":"2.0","result":{"stopReason":"cancelled"}}\n'
+        \\
+    ++ fake_idle);
+    defer probe.deinit();
+    var refusal = contract.Refusal{};
+    _ = try probe.open(&refusal);
+    const admitted = try probe.submit("read it", &refusal);
+    var seen = std.ArrayList(contract.Event).empty;
+    _ = try probe.pumpUntil("action.permission.requested", &seen);
+    _ = try probe.handle.?.cancel(probe.arena.allocator(), admitted.run_id.?, &refusal);
+    const written = try probe.waitWritten("{\"id\":\"permission-1\",\"jsonrpc\":\"2.0\",\"result\":{\"outcome\":{\"outcome\":\"cancelled\"}}}");
+    try testing.expect(std.mem.indexOf(u8, written, "session/cancel").? < std.mem.indexOf(u8, written, "\"id\":\"permission-1\"").?);
+    const resolved = try probe.pumpUntil("action.permission.resolved", &seen);
+    try testing.expect(std.mem.indexOf(u8, resolved.line, "run_cancelling") != null);
+    _ = try probe.pumpUntil("run.cancelled", &seen);
 }
 
 test "a permission request still open when its run settles is answered cancelled" {

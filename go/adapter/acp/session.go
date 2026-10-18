@@ -758,6 +758,7 @@ func (s *session) Cancel(ctx context.Context, id protocol.RunID) (protocol.RunCa
 	s.mu.Unlock()
 	if live {
 		_ = s.emit(r, protocol.TypeRunStatusUpdated, protocol.RunStatusUpdatedPayload{SessionID: s.state.SessionID, RunID: id, Status: protocol.RunCancelling, UpdatedAtMS: s.clock.Now().UnixMilli()}, false)
+		s.settlePermissions(r, protocol.ProtocolError{Code: "run_cancelling", Message: "the run's cancellation answered the permission request cancelled"})
 	}
 	return protocol.RunCancelResponse{SessionID: s.state.SessionID, RunID: id, Accepted: true, Status: protocol.RunCancelling}, nil
 }
@@ -850,21 +851,37 @@ func (s *session) Close(ctx context.Context) error {
 	return err
 }
 
-func (s *session) settleChildren(run *runState, cancel bool) {
+func (s *session) settlePermissions(run *runState, reason protocol.ProtocolError) {
 	s.mu.Lock()
 	type settledPermission struct {
 		gate           *permissionState
 		requestEventID protocol.EnvelopeID
 	}
 	var permissions []settledPermission
-	var tools []*toolState
 	for _, p := range s.interactions {
 		if p.run == run && !p.resolved {
 			p.resolved = true
-
 			permissions = append(permissions, settledPermission{gate: p, requestEventID: p.requestEventID})
 		}
 	}
+	s.mu.Unlock()
+	sort.Slice(permissions, func(i, j int) bool { return permissions[i].gate.order < permissions[j].gate.order })
+	for _, pending := range permissions {
+		p := pending.gate
+		_ = p.request.Respond(context.Background(), native.PermissionResponse{Outcome: native.PermissionOutcome{Outcome: "cancelled"}})
+		reason := reason
+		if _, err := s.emitEnvelope(run, protocol.TypeActionPermissionResolved, protocol.PermissionResolvedPayload{InteractionID: p.id, RequestedBy: endpointID, RespondedBy: s.participant, SessionID: s.state.SessionID, RunID: run.id, ToolCallID: p.tool.id, Outcome: protocol.InteractionCancelled, Reason: &reason}, false, pending.requestEventID); err != nil {
+			s.mu.Lock()
+			p.resolved = false
+			s.mu.Unlock()
+		}
+	}
+}
+
+func (s *session) settleChildren(run *runState, cancel bool) {
+	s.settlePermissions(run, protocol.ProtocolError{Code: "run_settled", Message: "parent run settled the permission request"})
+	s.mu.Lock()
+	var tools []*toolState
 	for _, t := range s.tools {
 		if t.run == run && !t.terminal {
 			t.terminal = true
@@ -872,18 +889,7 @@ func (s *session) settleChildren(run *runState, cancel bool) {
 		}
 	}
 	s.mu.Unlock()
-	sort.Slice(permissions, func(i, j int) bool { return permissions[i].gate.order < permissions[j].gate.order })
 	sort.Slice(tools, func(i, j int) bool { return tools[i].order < tools[j].order })
-	for _, pending := range permissions {
-		p := pending.gate
-		_ = p.request.Respond(context.Background(), native.PermissionResponse{Outcome: native.PermissionOutcome{Outcome: "cancelled"}})
-		reason := protocol.ProtocolError{Code: "run_settled", Message: "parent run settled the permission request"}
-		if _, err := s.emitEnvelope(run, protocol.TypeActionPermissionResolved, protocol.PermissionResolvedPayload{InteractionID: p.id, RequestedBy: endpointID, RespondedBy: s.participant, SessionID: s.state.SessionID, RunID: run.id, ToolCallID: p.tool.id, Outcome: protocol.InteractionCancelled, Reason: &reason}, false, pending.requestEventID); err != nil {
-			s.mu.Lock()
-			p.resolved = false
-			s.mu.Unlock()
-		}
-	}
 	for _, t := range tools {
 		if !t.started && !cancel {
 			t.started = true

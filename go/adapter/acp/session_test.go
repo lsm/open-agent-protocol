@@ -1618,3 +1618,35 @@ func TestAnOpenSetsTheAgentsThoughtLevelOptionAndRefusesALevelItCannotConfirm(t 
 		t.Fatal("a level the option does not offer was accepted")
 	}
 }
+
+func TestACancelSettlesTheRunsOpenPermissionCancelledBeforeThePromptReturns(t *testing.T) {
+	s, f := openTest(t, 64)
+	admission, stream := submit(t, s)
+	<-f.promptStarted
+	var seen []protocol.Envelope
+	acpAskPermission(t, f, stream, "perm-1", "call-1", &seen)
+	if _, err := s.Cancel(context.Background(), admission.RunID); err != nil {
+		t.Fatal(err)
+	}
+	for {
+		envelope := adaptertest.Next(t, stream, 2*time.Second)
+		seen = append(seen, envelope)
+		if envelope.Type != protocol.TypeActionPermissionResolved {
+			continue
+		}
+		var payload protocol.PermissionResolvedPayload
+		if err := envelope.DecodePayload(&payload); err != nil {
+			t.Fatal(err)
+		}
+		if payload.Outcome != protocol.InteractionCancelled || payload.Reason == nil || payload.Reason.Code != "run_cancelling" {
+			t.Fatalf("resolved = %+v", payload)
+		}
+		break
+	}
+	f.prompt <- promptOutcome{result: native.PromptResult{StopReason: "cancelled"}}
+	events := append(seen, collect(t, stream)...)
+	if events[len(events)-1].Type != protocol.TypeRunCancelled {
+		t.Fatalf("last = %s", events[len(events)-1].Type)
+	}
+	assertCancelledTrace(t, admission, events)
+}

@@ -461,6 +461,7 @@ pub const Reducer = struct {
         try self.put(&payload, "status", str("cancelling"));
         try self.put(&payload, "updated_at_ms", int(self.now()));
         _ = try self.emit(run, "run.status.updated", .{ .object = payload });
+        try self.settleGates(run, "run_cancelling", "the run's cancellation answered the permission request cancelled");
     }
 
     fn terminalPayload(self: *Reducer, run: *Run) !std.json.ObjectMap {
@@ -498,7 +499,7 @@ pub const Reducer = struct {
         run.terminal = true;
     }
 
-    fn settleChildren(self: *Reducer, run: *Run, cancelling: bool) !void {
+    fn settleGates(self: *Reducer, run: *Run, code: []const u8, message: []const u8) !void {
         var gate_index: usize = 0;
         while (gate_index < self.gates.items.len) : (gate_index += 1) {
             const gate = &self.gates.items[gate_index];
@@ -508,8 +509,8 @@ pub const Reducer = struct {
             const requested_event = gate.requested_event;
             const tool_id = self.tools.items[gate.tool].id;
             var reason = self.object();
-            try self.put(&reason, "code", str("run_settled"));
-            try self.put(&reason, "message", str("parent run settled the permission request"));
+            try self.put(&reason, "code", str(code));
+            try self.put(&reason, "message", str(message));
             var payload = self.object();
             try self.put(&payload, "interaction_id", str(gate_id));
             try self.put(&payload, "requested_by", str(self.options.endpoint));
@@ -521,7 +522,10 @@ pub const Reducer = struct {
             try self.put(&payload, "reason", .{ .object = reason });
             _ = try self.emitEnvelope(run, "action.permission.resolved", .{ .object = payload }, requested_event);
         }
+    }
 
+    fn settleChildren(self: *Reducer, run: *Run, cancelling: bool) !void {
+        try self.settleGates(run, "run_settled", "parent run settled the permission request");
         var tool_index: usize = 0;
         while (tool_index < self.tools.items.len) : (tool_index += 1) {
             const tool = &self.tools.items[tool_index];

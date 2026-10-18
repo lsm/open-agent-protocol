@@ -144,3 +144,22 @@ acp`, no prompt) reports a `model` option with about 130 values, alongside
 carries a `model` option, but no corpus case sends `models.request`, so no
 expectation changed beyond the revision. The behaviour is pinned by unit tests
 in both trees.
+
+## Cancellation answers open permission requests
+
+ACP's prompt turn says that when the client sends `session/cancel`, "The
+Client **MUST** respond to all pending `session/request_permission` requests
+with the `cancelled` outcome" (`docs/protocol/v1/prompt-turn.mdx`, unchanged
+since the v1.7.0 pin, whose ledger already lists the rule). v1.12.0's
+`cancellation.mdx` restates it: the client answers them without waiting for
+`$/cancel_request`.
+
+Both adapters answered a pending permission request `cancelled` only once the
+run settled, and the run settles only when the prompt returns. An agent that
+waits for its permission answer before ending the prompt therefore never
+ended it. Both now answer every open permission request of the run
+`cancelled` right after `session/cancel` is written, and settle each
+interaction `action.permission.resolved` with outcome `cancelled` and reason
+`run_cancelling`, before the prompt returns. Unfinished tool calls still
+settle with the run, as before. A unit test in each tree drives an agent that
+reads the cancel and the permission answer before returning `cancelled`.
