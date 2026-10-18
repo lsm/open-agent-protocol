@@ -33,6 +33,8 @@ var hubParityScenarios = map[string][]string{
 		`{"id":14,"op":"work.start","request":{"message":"go"}}`,
 		`{"id":16,"op":"work.list","session_id":"x"}`,
 		`{"id":17,"op":"work.read","session_id":"absent","after":-1}`,
+	},
+	"the work verbs refuse malformed requests and filter an empty list": {
 		`{"id":18,"op":"work.start","adapter":"memory","request":{"message":""}}`,
 		`{"id":19,"op":"work.send","session_id":"absent","request":"x"}`,
 		`{"id":20,"op":"work.capabilities"}`,
