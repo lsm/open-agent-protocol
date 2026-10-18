@@ -105,5 +105,7 @@ planned `transcript.load` would too.
 3. Go: `go/binding.Store` grows the run and transcript groups, and the file
    implementation the paging.
 4. The run and transcript groups fill in as Decisions 0050 and 0051 land.
-5. A conformance test per tree that any backend must pass: lock refusal, torn
-   entry, order, cursor gap. The JSONL backend and the memory one both run it.
+5. A conformance test per tree. Every backend runs order and cursor gap. Lock
+   refusal and torn entry apply only to a backend that locks and writes bytes,
+   which today is JSONL; Go's memory store runs the first two only. Zig has no
+   memory binding store, so its suite runs against JSONL alone.
