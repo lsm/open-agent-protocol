@@ -20,6 +20,8 @@ test("combined OAP stdio exposes provider models, inference, and agent runs", as
     const run = await client.agent.run(request);
     assert.equal(run.message.content, "agent works");
     assert.equal(run.usage?.output, 3);
+    await client.agent.run({ ...request, options: { session_id: "existing-session" } });
+    await client.agent.run({ ...request, options: { session_id: "existing-session" } });
     await client.agent.switchModel("existing-session", "fixture/openai-responses@switched");
     const selected = await client.agent.runSelected("existing-session", request.messages);
     assert.equal(selected.message.content, "agent works");
@@ -46,6 +48,26 @@ test("agent tools and settings travel over OAP, and temperature and provider cal
     const kinds: string[] = [];
     for await (const event of client.agent.stream({ model_ref: "fixture/openai-responses@tool", messages: [{ role: "user", content: "hello" }], tools: [lookup] })) kinds.push(event.type);
     assert.deepEqual(kinds, ["agent_start", "tool_execution_start", "tool_execution_end", "agent_end"]);
+    const reused = { model_ref: "fixture/openai-responses@tool", messages: [{ role: "user" as const, content: "hello" }] };
+    await client.agent.run({ ...reused, tools: [lookup], options: { session_id: "tooled" } });
+    await client.agent.run({ ...reused, options: { session_id: "tooled" } });
+    const spare = { name: "spare", description: "unused", parameters_schema_json: '{"type":"object","properties":{}}' };
+    await client.agent.run({ ...reused, tools: [lookup, spare], options: { session_id: "paired" } });
+    await client.agent.run({ ...reused, tools: [{ ...spare, parameters_schema_json: '{ "properties": {}, "type": "object" }' }, lookup], options: { session_id: "paired" } });
+    const later: unknown[] = [];
+    const replacement = { ...lookup, execute: (args: Record<string, unknown>) => { later.push(args); return "replaced"; } };
+    await client.agent.run({ ...reused, tools: [replacement], options: { session_id: "tooled" } });
+    await client.agent.run({ ...reused, options: { session_id: "tooled" } });
+    assert.equal(later.length, 2, "a run without tools uses the callbacks the latest run on the session supplied");
+    assert.equal(invoked.length, 6, "a later run on a session uses the tools it was opened with");
+    await assert.rejects(() => client.agent.run({ ...reused, options: { session_id: "tooled", reasoning_effort: "high" } }),
+      (error: unknown) => error instanceof OapUnsupportedFeatureError);
+    const tuned = { model_ref: "fixture/openai-responses@settings", messages: [{ role: "user" as const, content: "hello" }] };
+    await client.agent.run({ ...tuned, options: { session_id: "tuned", reasoning_effort: "high", max_tokens: 32 } });
+    assert.equal((await client.agent.run({ ...tuned, options: { session_id: "tuned", max_tokens: 32 } })).message.content, "reasoning=high output=32 user_input=false participant=sdk");
+    await client.agent.run({ ...tuned, tools: [], options: { session_id: "tuned", reasoning_effort: "high" } });
+    await assert.rejects(() => client.agent.run({ ...tuned, options: { session_id: "tuned", max_tokens: 64 } }),
+      (error: unknown) => error instanceof OapUnsupportedFeatureError);
     const settings = await client.agent.run({ model_ref: "fixture/openai-responses@settings", messages: [{ role: "user", content: "hello" }], options: { max_tokens: 32, reasoning_effort: "high" } });
     assert.equal(settings.message.content, "reasoning=high output=32 user_input=false participant=sdk");
     await assert.rejects(() => client.agent.run({ model_ref: "fixture/openai-responses@settings", messages: [{ role: "user", content: "hello" }], options: { max_tokens: 0 } }),
