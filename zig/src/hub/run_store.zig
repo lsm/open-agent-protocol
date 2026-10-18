@@ -11,6 +11,7 @@ pub const Record = struct {
     run_id: []const u8,
     request: ?[]const u8 = null,
     replaces: ?[]const u8 = null,
+    root: ?[]const u8 = null,
 };
 
 pub const Open = struct {
@@ -18,6 +19,7 @@ pub const Open = struct {
     admitted_ms: i64,
     started: bool,
     request: ?[]const u8,
+    root: []const u8,
 };
 
 pub const Runs = struct {
@@ -50,6 +52,18 @@ pub fn decode(arena: std.mem.Allocator, line: []const u8) !Record {
         if (err == error.OutOfMemory) return error.OutOfMemory;
         return error.TornRecord;
     };
+}
+
+fn stamped(arena: std.mem.Allocator, held: []const Record, record: Record) !Record {
+    if (record.action != .admitted or record.root != null) return record;
+    const replaced = record.replaces orelse return record;
+    for (try collectOpen(arena, held, record.session_id)) |run| {
+        if (!std.mem.eql(u8, run.run_id, replaced)) continue;
+        var rooted = record;
+        rooted.root = run.root;
+        return rooted;
+    }
+    return record;
 }
 
 fn compact(arena: std.mem.Allocator, all: []const Record) ![]Record {
@@ -85,7 +99,8 @@ fn collectOpen(arena: std.mem.Allocator, held: []const Record, session_id: []con
                 if (std.mem.eql(u8, run.run_id, replaced)) break index;
             } else null;
             if (slot) |index| {
-                open_runs.items[index] = .{ .run_id = record.run_id, .admitted_ms = record.time_ms, .started = false, .request = record.request };
+                const root = record.root orelse open_runs.items[index].root;
+                open_runs.items[index] = .{ .run_id = record.run_id, .admitted_ms = record.time_ms, .started = false, .request = record.request, .root = root };
                 continue;
             }
         };
@@ -97,7 +112,7 @@ fn collectOpen(arena: std.mem.Allocator, held: []const Record, session_id: []con
             continue;
         }
         const index = found orelse blk: {
-            try open_runs.append(arena, .{ .run_id = record.run_id, .admitted_ms = record.time_ms, .started = false, .request = null });
+            try open_runs.append(arena, .{ .run_id = record.run_id, .admitted_ms = record.time_ms, .started = false, .request = null, .root = record.root orelse record.run_id });
             break :blk open_runs.items.len - 1;
         };
         switch (record.action) {
@@ -160,9 +175,10 @@ pub const Store = struct {
         var scratch = std.heap.ArenaAllocator.init(self.allocator);
         defer scratch.deinit();
         const arena = scratch.allocator();
-        const all = try std.mem.concat(arena, Record, &.{ try self.records(arena), &.{record} });
+        const held = try self.records(arena);
+        const all = try std.mem.concat(arena, Record, &.{ held, &.{try stamped(arena, held, record)} });
         var next: std.ArrayList(u8) = .empty;
-        for (try compact(arena, all)) |held| try next.appendSlice(arena, try encode(arena, held));
+        for (try compact(arena, all)) |kept| try next.appendSlice(arena, try encode(arena, kept));
         try compat.fs.atomicReplaceDurable(compat.fs.getCwd(), self.path, self.staging, next.items);
     }
 
@@ -213,9 +229,10 @@ pub const Memory = struct {
         const run_id = try arena.dupe(u8, record.run_id);
         const request = if (record.request) |given| try arena.dupe(u8, given) else null;
         const replaces = if (record.replaces) |given| try arena.dupe(u8, given) else null;
-        const owned = Record{ .action = record.action, .time_ms = record.time_ms, .session_id = session_id, .run_id = run_id, .request = request, .replaces = replaces };
+        const root = if (record.root) |given| try arena.dupe(u8, given) else null;
         var scratch = std.heap.ArenaAllocator.init(self.arena.child_allocator);
         defer scratch.deinit();
+        const owned = try stamped(scratch.allocator(), self.records.items, .{ .action = record.action, .time_ms = record.time_ms, .session_id = session_id, .run_id = run_id, .request = request, .replaces = replaces, .root = root });
         const all = try std.mem.concat(scratch.allocator(), Record, &.{ self.records.items, &.{owned} });
         const kept = try compact(scratch.allocator(), all);
         var next: std.ArrayList(Record) = .empty;
@@ -242,6 +259,7 @@ pub fn conform(arena: std.mem.Allocator, runs: Runs) !void {
         .{ .action = .admitted, .time_ms = 8, .session_id = "conform-c", .run_id = "held", .request = request },
         .{ .action = .admitted, .time_ms = 9, .session_id = "conform-c", .run_id = "after", .request = request },
         .{ .action = .admitted, .time_ms = 10, .session_id = "conform-c", .run_id = "redelivered", .request = request, .replaces = "held" },
+        .{ .action = .admitted, .time_ms = 11, .session_id = "conform-c", .run_id = "again", .request = request, .replaces = "redelivered" },
     }) |record| try runs.append(record);
     const open_a = try runs.openRuns(arena, "conform-a");
     if (open_a.len != 2) return error.RunStoreNonconforming;
@@ -252,7 +270,8 @@ pub fn conform(arena: std.mem.Allocator, runs: Runs) !void {
     if ((try runs.openRuns(arena, "conform-absent")).len != 0) return error.RunStoreNonconforming;
     const open_c = try runs.openRuns(arena, "conform-c");
     if (open_c.len != 2) return error.RunStoreNonconforming;
-    if (!std.mem.eql(u8, open_c[0].run_id, "redelivered") or !std.mem.eql(u8, open_c[1].run_id, "after")) return error.RunStoreNonconforming;
+    if (!std.mem.eql(u8, open_c[0].run_id, "again") or !std.mem.eql(u8, open_c[1].run_id, "after")) return error.RunStoreNonconforming;
+    if (!std.mem.eql(u8, open_c[0].root, "held") or !std.mem.eql(u8, open_c[1].root, "after")) return error.RunStoreNonconforming;
     if ((try runs.openRuns(arena, "conform-c")).len != 2) return error.RunStoreNonconforming;
 }
 
