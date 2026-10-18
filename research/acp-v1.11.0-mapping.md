@@ -145,6 +145,32 @@ carries a `model` option, but no corpus case sends `models.request`, so no
 expectation changed beyond the revision. The behaviour is pinned by unit tests
 in both trees.
 
+## Model switch
+
+Both adapters now answer `session.model.switch.request` by writing the agent's
+own model option. The descriptor changes, so the revision moves to
+`acp-v1.11.0-schema-v1.25.0-oap-v7`. No ACP wire changed.
+
+| OAP | ACP |
+|---|---|
+| `model_id` that the session's models list holds | `session/set_config_option` with that option's `id` as `configId` and `model_id` as `value` |
+| the returned `configOptions`, that option's `currentValue` equal to `model_id` | `session.model.switch.response`, and `current_model_id` in `session.state` |
+| a `model_id` the list does not hold | `model_not_found`, with nothing written |
+| the agent answers with an error, or its returned `currentValue` differs | `unsupported_feature` (`unsatisfiable`, field `model_id`), with the current model unchanged |
+
+It is advertised **degraded** and needs `allow_degraded_features:
+["session.model.switch"]`, for the reason the models list is: the option is a
+UI hint, so which model then runs is the agent's word. An agent with no
+`model` option refuses with `unsupported_feature` (`unsatisfiable`).
+
+Only listed values are sent. Live evidence, from lsm/hyperneo-review against
+Devin's `devin acp`: the option lists 123 values while `devin models list`
+prints 841; `session/set_config_option` answers `-32602` for a value the option
+does not list; and the `--model` launch flag maps an unknown name to some
+listed model without saying so. So the adapter checks the list before writing
+rather than passing an unlisted id through. No corpus case sends a switch; the
+behaviour is pinned by unit tests in both trees.
+
 ## Cancellation answers open permission requests
 
 ACP's prompt turn says that when the client sends `session/cancel`, "The

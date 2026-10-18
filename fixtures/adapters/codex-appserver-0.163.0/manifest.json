@@ -1,8 +1,8 @@
 {
   "version": 1,
   "adapter": "codex-appserver-stdio",
-  "codex_commit": "092d3acd6bec3e3a14bdc7e7a2810ab628ab759d",
-  "schema_tree_sha256": "075997d5cb497bd6518a973a6d7b85fef0eaa64c02428af866e46c725c55fad7",
+  "codex_commit": "83086188ae0614bd882818ff1aa23f3194962012",
+  "schema_tree_sha256": "cc92f2c7bdbbf5738859fb11c0f13c344f51acfa2c86667924ae3c606303e160",
   "cases": [
     {"id":"completed-text","path":"cases/completed-text","ledger_fixtures":["completed-text"]},
     {"id":"failed-turn","path":"cases/failed-turn","ledger_fixtures":["failed-turn"]},
