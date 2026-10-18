@@ -170,7 +170,7 @@ raw OAP envelopes, one per line, per `drafts/endpoint-stdio.md`.
 `protocol/{auth,provider,agent,tool,oap}/` over `transport.zig` +
 `transports/` over the streaming core (`ai_types`, `event_stream`,
 `api_registry`, `stream`, `model_catalog`) over `providers/` and `compat/`
-(wrappers over Zig 0.16 `std.Io`). `zig/src/adapter/` is the adapter port, run
+(wrappers over Zig 0.17 `std.Io`). `zig/src/adapter/` is the adapter port, run
 against the same corpora as Go.
 
 `oapx serve agent` serves `agent-control-core` over stdio and `oapx serve
