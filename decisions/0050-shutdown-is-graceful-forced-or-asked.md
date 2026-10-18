@@ -58,11 +58,11 @@ After force or a crash, the next start applies one rule, from the store
   only way to keep a queued run from starting is to settle it, and a settled
   run id never runs again. The reopen pairs each new id with the one it
   replaces (rule 5). A crash re-delivers the same way, so one rule covers
-  both. After force or a crash, a queued run's previous id settles
-  `cancelled` with `reason: "held_for_restart"` and `settled_by: "inferred"`,
-  recorded rather than published, for the same reason as the interrupted run
-  below. It is reported only in `recovery.redelivered_runs`, never in
-  `recovery.interrupted_runs`, which is for the run that was executing.
+  both. After force or a crash, a queued run's previous id gets no
+  terminal envelope, since its stream died with the process; the store closes
+  it when the new run's record names it in `replaces`. It is reported only in
+  `recovery.redelivered_runs`, never in `recovery.interrupted_runs`, which is
+  for the run that was executing.
 - **A pending interaction settles with its run**, as `run_settled`, because a
   settled run takes no answer (a terminal is absorbing). Where the harness, once
   reopened, asks the question again (Claude resuming a turn that was waiting
@@ -87,7 +87,9 @@ kept with the rest of the session's state, and the next start sends them when
 the session reopens. A kept prompt is always sent again: there is no state in
 which a prompt is kept but not sent. The shutdown response lists them under
 `held`. Holding one settles it `run.cancelled` before start with
-`reason: "held_for_restart"`, so a UI can show "will be sent after restart"
+`reason: "held_for_restart"` and no `settled_by`, since the endpoint observed
+its own cancellation (Decision 0010), so a UI can show "will be sent after
+restart"
 rather than a cancellation nobody asked for. The accepted graceful shutdown
 is that terminal's evidence, as an accepted cancel exchange is for any other
 `run.cancelled`. Its run id is settled, so it takes no `run.cancel`. A host
