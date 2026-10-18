@@ -50,7 +50,27 @@ byte-identical. Only the provenance (`acp_release`, each case's `release`,
 
 ## Process gate
 
-Not re-run at this pin, for the reason the v1.11.0 ledger gives: the agent the
-gate drives, `docker/cagent`, stays pinned at `v1.145.0`, and the stable schema
-sends nothing new to or from it. Its latest release is `v1.150.0`; moving it
-means building it from source, which this move does not do.
+Re-run at this pin against `docker/cagent` moved to its latest release:
+
+- tag `v1.150.0`, commit `5277e7842058fc3fbb9943a6e88bc05a1c8e6fe2`, tree
+  `723bca4c57ad119ba8187b082f2e17e067e93905` (2026-10-09). Still on
+  `coder/acp-go-sdk v0.13.5`.
+- Built from that tag with `go build .` and Go 1.27.2 on darwin/arm64, the
+  recipe of the v1.10.2 ledger:
+  `988e40cd9fe5dcfa621443ba6c4bc53cb1f62f46e151578b8e4a044cf564a3d2`
+  (180,732,082 bytes).
+- `OAP_ACP_SMOKE=1` and `OAP_ACP_INTEGRATION=1` with that binary and
+  `OAP_ACP_SHA256` bound pass 3x: `TestACPProcessSmoke`,
+  `TestACPProcessAgainstChatCompletionsMock` and
+  `TestACPProcessReopensItsBoundConversation`. Each run had a temporary
+  `HOME`, the loopback Chat Completions mock and its fixture key, no other
+  credentials, and `sandbox-exec` denying the keychain daemons and every
+  non-loopback connection.
+
+From `v1.145.0` to `v1.150.0`, cagent's `pkg/acp` changes one line outside
+its tests: `outcome.go` adds `ErrorCodeRoutingFailed` to the runtime errors
+that fail the prompt, as `ErrorCodeRateLimited` and the others already do. The
+adapter settles a failed prompt `run.failed` whatever its code, so nothing it
+decodes changes. The corpus's `session-reopen` case still reports
+`agentInfo.version` `v1.145.0`, because it was captured from that release; it
+is carried unchanged.
