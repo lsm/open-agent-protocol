@@ -227,7 +227,9 @@ advertises `loadSession`, in a short-lived agent process),
 `work.read` answers from it: every user message
 and the reply that followed, the conversation before `serve` held the session
 included, and still there after `serve` restarts, so `serve` writes no message
-text of its own to disk. A turn there carries no `run_id` or `outcome`; its
+text of its own to disk. The one exception is an `oapx` entry under
+`--save-oapx-sessions`, whose loop saves its sessions under `~/.oapx/sessions`
+as the terminal UI does. A turn there carries no `run_id` or `outcome`; its
 index is its place in the transcript, and its text is cut at 64 KiB. A session
 `serve` no longer holds is read the same way from its binding's native id. A
 held session whose harness transcript is still empty, or cannot be read, is answered as below; a

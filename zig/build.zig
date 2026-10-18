@@ -2732,6 +2732,7 @@ pub fn build(b: *std.Build) void {
             .{ .name = "transports/in_process", .module = in_process_transport_mod },
             .{ .name = "stdio", .module = stdio_transport_mod },
             .{ .name = "tui_app", .module = tui_app_mod },
+            .{ .name = "tui_session_store", .module = tui_session_store_mod },
             .{ .name = "model_catalog", .module = model_catalog_mod },
             .{ .name = "compat", .module = compat_mod },
             .{ .name = "provider_base_url", .module = provider_base_url_mod },

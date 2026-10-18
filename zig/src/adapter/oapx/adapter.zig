@@ -97,7 +97,7 @@ pub const TranscriptStore = struct {
 
 pub const Recorder = struct {
     ctx: *anyopaque,
-    record: *const fn (ctx: *anyopaque, session_id: []const u8, event: *const session_events.SessionEvent) void,
+    record: *const fn (ctx: *anyopaque, session_id: []const u8, model: ?ai_types.Model, event: *const session_events.SessionEvent) void,
 };
 
 pub const Adapter = struct {
@@ -1334,7 +1334,7 @@ pub const Session = struct {
         while (stream.poll()) |event| {
             var owned = event;
             defer owned.deinit(self.gpa);
-            if (self.owner.recorder) |recorder| recorder.record(recorder.ctx, self.id, &owned);
+            if (self.owner.recorder) |recorder| recorder.record(recorder.ctx, self.id, self.runtime.currentModel(), &owned);
             try self.translate(owned);
             moved = true;
         }

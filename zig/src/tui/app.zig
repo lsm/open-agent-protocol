@@ -45,6 +45,7 @@ extern "c" fn setenv(name: [*:0]const u8, value: [*:0]const u8, overwrite: c_int
 extern "c" fn unsetenv(name: [*:0]const u8) c_int;
 
 pub const SessionRuntime = session_runtime.SessionRuntime;
+pub const SessionEvent = session_runtime.SessionEvent;
 pub const SessionRuntimeOptions = session_runtime.SessionRuntimeOptions;
 pub const parseContextWindow = session_runtime.parseContextWindow;
 
