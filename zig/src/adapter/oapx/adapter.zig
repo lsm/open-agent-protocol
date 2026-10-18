@@ -1,5 +1,6 @@
 const std = @import("std");
 const contract = @import("contract");
+pub const transcript = @import("transcript.zig");
 const oap_types = @import("oap_types");
 const compat = @import("compat");
 const json_encode = @import("json_encode");
@@ -89,6 +90,7 @@ pub const HistoryLoader = struct {
     ctx: *anyopaque,
     load: *const fn (ctx: *anyopaque, arena: std.mem.Allocator, session_id: []const u8) anyerror!?[]const ai_types.Message,
     read: ?*const fn (ctx: *anyopaque, arena: std.mem.Allocator, session_id: []const u8) anyerror!?[]const ai_types.Message = null,
+    entries: ?*const fn (ctx: *anyopaque, arena: std.mem.Allocator, session_id: []const u8) anyerror![]const transcript.SavedEntry = null,
 };
 
 pub const TranscriptStore = struct {
@@ -167,6 +169,7 @@ pub const Adapter = struct {
     }
 
     pub fn adapter(self: *Adapter) contract.Adapter {
+        if (self.readsEntries()) return .{ .ptr = self, .vtable = &.{ .probe = probe, .open = open, .native_read = nativeRead, .transcript_load = transcriptLoad } };
         if (self.readsHistory()) return .{ .ptr = self, .vtable = &.{ .probe = probe, .open = open, .native_read = nativeRead } };
         return .{ .ptr = self, .vtable = &.{ .probe = probe, .open = open } };
     }
@@ -174,6 +177,25 @@ pub const Adapter = struct {
     fn readsHistory(self: *const Adapter) bool {
         const loader = self.history orelse return false;
         return loader.read != null;
+    }
+
+    fn readsEntries(self: *const Adapter) bool {
+        const loader = self.history orelse return false;
+        return loader.entries != null;
+    }
+
+    fn transcriptLoad(ptr: *anyopaque, arena: std.mem.Allocator, request: contract.TranscriptRequest, refusal: *contract.Refusal) contract.Failure!contract.TranscriptPage {
+        const self: *Adapter = @ptrCast(@alignCast(ptr));
+        const loader = self.history orelse return refusal.unsupported(contract.feature_transcript_load, contract.reason_unadvertised);
+        const reads = loader.entries orelse return refusal.unsupported(contract.feature_transcript_load, contract.reason_unadvertised);
+        const saved = reads(loader.ctx, arena, request.native_id) catch |err| switch (err) {
+            error.OutOfMemory => return error.OutOfMemory,
+            else => {
+                refusal.message = "the saved session could not be read";
+                return error.BackendFailed;
+            },
+        };
+        return transcript.page(arena, request, saved);
     }
 
     fn nativeRead(ptr: *anyopaque, arena: std.mem.Allocator, request: contract.NativeReadRequest, refusal: *contract.Refusal) contract.Failure![]const contract.NativeTurn {
@@ -4026,6 +4048,46 @@ const ReadableSessions = struct {
         });
     }
 };
+
+const SavedEntries = struct {
+    fn entries(ctx: *anyopaque, arena: std.mem.Allocator, session_id: []const u8) anyerror![]const transcript.SavedEntry {
+        if (std.mem.eql(u8, session_id, "broken")) return error.AccessDenied;
+        const messages = (try ReadableSessions.read(ctx, arena, session_id)) orelse return &.{};
+        const saved = try arena.alloc(transcript.SavedEntry, messages.len);
+        for (messages, saved, 0..) |message, *slot, index| slot.* = .{ .offset = index * 100, .message = message };
+        return saved;
+    }
+};
+
+test "a transcript load is offered only with a saved-entries reader, and carries reasoning, tool calls and tool results as message parts" {
+    var script = Script{};
+    var harness: Harness = undefined;
+    try harness.init(&script);
+    defer harness.deinit();
+    const a = harness.arena.allocator();
+    var refusal = contract.Refusal{};
+    var saved = SavedSessions{};
+    harness.owner.history = .{ .ctx = &saved, .load = SavedSessions.load, .read = ReadableSessions.read };
+    try testing.expect(harness.owner.adapter().vtable.transcript_load == null);
+
+    harness.owner.history = .{ .ctx = &saved, .load = SavedSessions.load, .read = ReadableSessions.read, .entries = SavedEntries.entries };
+    const loaded = try harness.owner.adapter().transcriptLoad(a, .{ .native_id = "saved", .limit = 3 }, &refusal).?;
+    try testing.expectEqual(@as(usize, 3), loaded.entries.len);
+    try testing.expect(!loaded.complete);
+    const draft = loaded.entries[1].object.get("message").?.object;
+    try testing.expectEqualStrings("assistant", draft.get("role").?.string);
+    const parts = draft.get("content").?.array.items;
+    try testing.expectEqualStrings("reasoning", parts[0].object.get("type").?.string);
+    try testing.expectEqualStrings("let me look", parts[0].object.get("reasoning").?.string);
+    try testing.expectEqualStrings("tool_call", parts[2].object.get("type").?.string);
+    try testing.expectEqualStrings("c1", parts[2].object.get("tool_call_id").?.string);
+    try testing.expect(parts[2].object.get("arguments_json").? == .object);
+    const result = loaded.entries[2].object.get("message").?.object;
+    try testing.expectEqualStrings("tool", result.get("role").?.string);
+    try testing.expectEqualStrings("tool_result", result.get("content").?.array.items[0].object.get("type").?.string);
+
+    try testing.expectError(error.BackendFailed, harness.owner.adapter().transcriptLoad(a, .{ .native_id = "broken" }, &refusal).?);
+}
 
 test "a native read is offered only with a history reader, and reads each saved user message and the last reply before the next" {
     var script = Script{};
