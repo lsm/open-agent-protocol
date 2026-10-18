@@ -38,6 +38,7 @@ Conformance units are additive:
 - `+btw`
 - `+session-reattach`
 - `+session-list`
+- `+transcript-load`
 - `+session-settings`
 - `+session-settings-live`
 - `+compaction`
@@ -742,6 +743,36 @@ that file; without the flag it, and both `oapx` endpoints, refuse it naming the
 key.
 The Zig runner does not ask yet, because the Zig tree has no `session.list`
 envelope types to decode the answer with.
+
+
+### `+transcript-load`
+
+The unit is staged, not executable.
+[Decision 0051](../decisions/0051-transcript-load.md) carries its wire shape,
+validator rules and fixtures and is owner-approved but still proposed until its
+native readers land; under
+[Decision 0003](../decisions/0003-staged-unit-graduation.md) no draft claims a
+unit executable until a native adapter proves one. What follows is therefore
+the shape an implementation will be held to, not a claim one may make today.
+
+An implementation will conform if it:
+
+- advertises `transcript.load` above `unavailable`, refuses a
+  `transcript.load.request` against a descriptor that does not with
+  `unsupported_feature` naming the key, and refuses one against a `degraded`
+  disclosure with `capability_degraded` unless the request consents through
+  `allow_degraded_features`;
+- answers with a `transcript.load.response` citing the active capability
+  revision, holding at most the request's `limit` entries (100 when it names
+  none), each entry once (`transcript_over_limit`,
+  `duplicate_transcript_entry`), and a `next_cursor` whenever it is not
+  `complete`, which the schema requires;
+- reports a gap only on a read that named a cursor, resuming at the first entry
+  it returns (`transcript_gap_mismatch`).
+
+The 512 KiB page bound and the code-point cut of a `truncated` entry are the
+endpoint's to honour; a trace cannot tell a page that stopped at the byte bound
+from one that stopped at the end.
 
 ### `+session-settings`
 
