@@ -401,11 +401,14 @@ run, lists it under `lost` because nothing holds it for the next start yet, and
 `draining` lets the running runs finish; `force` answers `stopping`, and a later
 graceful never undoes it. Once accepted, `submit`, `open`, `work.start` and
 `work.send` are refused `shutting_down`, and serving ends once force was asked
-or no nonterminal run is left. Zig only so far — `a shutdown with nothing
-running stops at once, and one with no mode while a run is active asks the
-host to choose`, `a graceful shutdown drains and refuses new work, and force
-stops it`, `a shutdown mode other than graceful or force is refused and changes
-nothing`; Go's op and the HTTP route follow.
+or no nonterminal run is left. Zig: `a shutdown with nothing running stops at
+once, and one with no mode while a run is active asks the host to choose`, `a
+graceful shutdown drains and refuses new work, and force stops it`, `a shutdown
+mode other than graceful or force is refused and changes nothing`; Go:
+`TestShutdownWithNothingRunningStopsAtOnce`,
+`TestShutdownWithoutAModeAsksTheHostToChooseAndChangesNothing`,
+`TestGracefulShutdownLosesQueuedRunsRefusesNewWorkAndForceStopsIt`,
+`TestShutdownRefusesAModeOtherThanGracefulOrForce`. The HTTP route follows.
 
 Shutdown is stdin EOF or SIGINT/SIGTERM. The daemon stops admitting, settles
 the work it already admitted inside its bounded window, closes every session so
