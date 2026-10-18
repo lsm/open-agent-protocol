@@ -2737,6 +2737,7 @@ fn askedShutdown(payload: ?std.json.Value) ??ShutdownMode {
         if (!std.mem.eql(u8, entry.key_ptr.*, "mode")) return null;
     }
     const mode = given.object.get("mode") orelse return @as(?ShutdownMode, null);
+    if (mode == .null) return @as(?ShutdownMode, null);
     if (mode != .string) return null;
     return std.meta.stringToEnum(ShutdownMode, mode.string) orelse return null;
 }
@@ -3439,6 +3440,8 @@ test "a shutdown mode other than graceful or force is refused and changes nothin
     try harness.send("{\"id\":2,\"op\":\"shutdown\",\"request\":{\"mode\":\"force\",\"when\":1}}");
     try testing.expectEqualStrings("invalid_request", try harness.code());
     try testing.expectEqual(@as(?ShutdownMode, null), harness.frontend.shutdown);
+    try harness.send("{\"id\":3,\"op\":\"shutdown\",\"request\":{\"mode\":null}}");
+    try testing.expectEqualStrings("stopping", try textMember(harness.arena(), (try harness.lastValue()).object.get("result").?, "outcome"));
 }
 
 test "a close of a session with a run in flight is run_active" {
