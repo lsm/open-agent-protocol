@@ -350,10 +350,10 @@ as tasks.
 3. **Missed fires catch up after a reopen as triggered runs.**
    - Claude surfaces a missed durable one-shot to the model with an instruction
      to ask the user first, so that run raises an input interaction.
-   - DeepSeek delivers only the latest missed occurrence of a recurring
-     reminder.
-   - Either arrives as a `schedule` triggered run on the idle, reopened
+   - That run arrives as a `schedule` triggered run on the idle, reopened
      session.
+   - DeepSeek's reminders cannot reach an endpoint: they live only in its web
+     host, and its adapter advertises reopen `unavailable` (Decision 0040).
 4. **No harness revives a closed OAP session.** A session is OAP's
    (Decision 0039).
    - A harness path that restores a cold session to deliver a reminder must not
