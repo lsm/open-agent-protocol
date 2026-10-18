@@ -19,6 +19,7 @@ type shutdownState struct {
 	mu        sync.Mutex
 	mode      protocol.ShutdownMode
 	watching  bool
+	flushed   bool
 	finished  bool
 	done      chan struct{}
 }
@@ -36,7 +37,7 @@ func (st *shutdownState) accepted() bool {
 func (st *shutdownState) drained() bool {
 	st.mu.Lock()
 	defer st.mu.Unlock()
-	return st.finished && st.mode == protocol.ShutdownGraceful
+	return st.finished && st.flushed && st.mode == protocol.ShutdownGraceful
 }
 
 func (st *shutdownState) finishLocked() {
@@ -166,11 +167,18 @@ func (s *Server) awaitDrained(ctx context.Context, st *shutdownState) {
 			return
 		case <-ticker.C:
 		}
-		if len(s.nonterminalRuns(ctx)) == 0 {
+		runs := s.nonterminalRuns(ctx)
+		if len(runs) == 0 {
 			st.mu.Lock()
+			st.flushed = true
 			st.finishLocked()
 			st.mu.Unlock()
 			return
+		}
+		for _, run := range runs {
+			if run.Status == protocol.RunQueued {
+				s.cancelQueued(ctx, run)
+			}
 		}
 	}
 }

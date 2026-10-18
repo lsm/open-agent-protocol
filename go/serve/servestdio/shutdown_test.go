@@ -170,15 +170,22 @@ func TestADrainedShutdownWaitsForAttachedPumpsBeforeTeardown(t *testing.T) {
 	}
 }
 
-func TestOnlyAGracefulShutdownThatFinishedCountsAsDrained(t *testing.T) {
+func TestOnlyAGracefulShutdownThatDrainedRunsWaitsOnPumps(t *testing.T) {
 	st := newShutdownState()
 	st.mode = protocol.ShutdownGraceful
 	if st.drained() {
 		t.Fatal("an unfinished graceful shutdown counted as drained")
 	}
+	idle := newShutdownState()
+	idle.mode = protocol.ShutdownGraceful
+	idle.finishLocked()
+	if idle.drained() {
+		t.Fatal("a graceful shutdown with nothing to drain counted as drained, so it would wait on idle pumps")
+	}
+	st.flushed = true
 	st.finishLocked()
 	if !st.drained() {
-		t.Fatal("a finished graceful shutdown did not count as drained")
+		t.Fatal("a graceful shutdown that drained runs did not count as drained")
 	}
 	forced := newShutdownState()
 	forced.mode = protocol.ShutdownForce

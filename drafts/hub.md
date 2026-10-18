@@ -401,7 +401,11 @@ nothing; once one is accepted, a request with no mode reports that shutdown's
 progress (`draining` or `stopping`) instead of asking again. `graceful` cancels every queued
 run, lists it under `lost` because nothing holds it for the next start yet, and
 `draining` lets the running runs finish; `force` answers `stopping`, and a later
-graceful never undoes it. Once accepted, `submit`, `open`, `work.start` and
+graceful never undoes it. Go retries the cancel of a queued run that
+refused it on every drain poll until it settles. After a drain that finished
+runs, Go lets event streams deliver their terminals before teardown, up to the
+shutdown window, which a stream on an idle session holds in full; a shutdown
+with nothing to drain stops at once. Once accepted, `submit`, `open`, `work.start` and
 `work.send` are refused `shutting_down`, and serving ends once force was asked
 or no nonterminal run is left. Zig: `a shutdown with nothing running stops at
 once, and one with no mode while a run is active asks the host to choose`, `a
