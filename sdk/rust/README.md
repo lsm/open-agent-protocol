@@ -216,6 +216,8 @@ let client = Client::builder()
 # }
 ```
 
+`args` can name a harness backend instead, such as `["serve", "agent", "--stdio", "--backend", "claude"]`. Such an endpoint serves the agent profile alone: the client connects and runs agents through it, and `provider()` and `models()` calls fail with an `unsupported_feature` protocol error before anything is sent. The SDK does not answer permission requests yet, so a run on a backend that asks one waits until a timeout ends it.
+
 ### Binary resolution
 
 Mirroring the TypeScript resolver, in order:
