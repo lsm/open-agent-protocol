@@ -7,7 +7,8 @@ runs, and that:
 - the trigger is a member of `run.started`;
 - the trigger kinds are the four below;
 - one run executes at a time;
-- background tasks are designed now, not later.
+- background tasks, schedules and restarts are designed now rather than
+  deferred.
 
 What remains open is listed at the end.
 
@@ -24,41 +25,106 @@ host submitted a message. Several kinds of trigger do this:
 Each of these starts a turn the model answers. OAP has no run the host did not
 submit, so today every adapter either drops such a turn or ends the session
 over it. This draft makes such a turn a first-class run, a **triggered run**.
-It also makes the work behind most triggers, a **background task**, visible
-and cancellable from the host.
+It also makes the work behind most triggers, a **background task**, visible,
+readable and cancellable from the host, and it says what happens to both
+across a close and a reopen.
 
 ## Evidence
 
-- **DeepSeek harness** (`dsh-v0.2.1-alpha.2` and `rc.2`): a `bash` call that
-  outlives its timeout moves to a background job. `job/registered` arrives
-  inside the run and `job/settled` after it. The runtime then splices a notice
-  into the inbox and runs a turn of its own
-  ([ledger](../research/deepseek-harness-dsh-v0.2.1-rc.2-mapping.md#the-runtime-starts-a-turn-of-its-own-when-a-job-settles)).
-  Both adapters treat it as external activity and close the session.
-  - The runtime also has a `job` remote namespace, read from the source of
-    `packages/api/job-controller` at `rc.2`:
-    - `job.list`, a whole-set roster stream;
-    - `job.follow`, an output stream;
-    - `job.kill`, "human-initiated cancellation", answering `requested` or
-      `already-finished`.
-  - That namespace is not on the stdio SDK server the adapters speak.
-- **Claude Code** (2.1.263 onward):
-  - **Injected turns.** A turn injected after a background task ends carries
-    a `result` whose `origin` is `task-notification`, after a fresh
-    `system/init` and with no `user` frame
-    ([2.1.280 ledger](../research/claude-code-agent-sdk-2.1.280-mapping.md)).
-    Both adapters classify it "session-scope observation, not a new run", so
-    the host never sees the turn's text.
-  - **Tasks.** They have lifecycle frames (`task_started`, `task_updated`,
-    `task_notification`), level frames (`system/background_tasks_changed`), a
-    `backgroundTasks()` control and a `stop_task` control
-    ([2.1.263 ledger](../research/claude-code-agent-sdk-2.1.263-mapping.md)).
-  - **Schedules.** The 2.1.302 SDK types name cron summaries in
-    `system/init`. A turn fired by a schedule has not been recorded, and
-    neither has a host control over schedules.
-- [PF-4](../research/protocol-feedback-2026-09.md) deferred background work
-  that outlives its run, because a held terminal covered every case then
-  recorded. A turn *started by* that work is the case it did not cover.
+### Recorded on 2026-10-18
+
+**Claude Code 2.1.302** (binary digest `5262ce9d…6662d37`, the catalog's), driven
+over `stream-json` against the `providertest` loopback.
+
+- **Setup:** HOME and `CLAUDE_CONFIG_DIR` were temporary, a `security`
+  stand-in came first on `PATH`, and `sandbox-exec` denied the keychain daemons
+  and every non-loopback connection. The initialize declared
+  `perTaskStopAffordance`.
+- **A background job settles while the session is idle.** A turn follows at
+  once. Its `result.origin` is
+  `{kind: "task-notification", producer: "session-task", runId}`, and `runId`
+  names the run that started the job. The model sees the notice as a
+  `<system-reminder>` that begins `[SYSTEM NOTIFICATION - NOT USER INPUT]`.
+- **A job settles while a host prompt is queued.** Turn A started a job, then
+  held its next model request. The job settled during that request, the host
+  sent B while A was still running, and A ended. **The notification's turn ran
+  before B**, and B's turn followed.
+- **A job settles while a turn is still calling tools.** The notice is
+  **folded**: it rides into that turn's next model request, and no further
+  turn follows.
+- **A one-shot `CronCreate` fires.** It fires about 40 s later into its own
+  turn. That turn is bracketed by `command_lifecycle` `started` and
+  `completed` frames sharing a `command_uuid`. Its `result` carries **no
+  `origin`**, and the model sees the cron's prompt as a plain user message.
+- **Stopping a task.** `stop_task` on a running background command answers
+  `success`, reports `task_updated {status: "killed"}` and
+  `task_notification {status: "stopped"}`, and **starts no turn**.
+- **Reading a task's output.** `get_task_output` answers
+  `{output, total_bytes, truncated}`, the whole output so far. It works while
+  the task runs and after it ends.
+- **A session cron survives `--resume`.** A session-only recurring cron is
+  still listed by `CronList` after `--resume` of the same session, with the
+  same id. A fresh session in the same directory lists none.
+- A foreground `Bash` call that runs past a few seconds also emits
+  `task_started` and `task_notification`. These frames alone do not mean
+  background work.
+
+**DeepSeek harness `rc.2`**: the runtime's own session log of the
+`background-job` run.
+
+- After `job/settled`, the notice enters the inbox as a `next-turn` splice,
+  and `turn/start` opens turn 2.
+- The notice is replayed as a `user/message` whose `source` is
+  `{kind: "tool-jobs", form: "notice", summary}`, so the turn is attributable
+  from the wire.
+
+### Read from source
+
+- **Claude Code** (SDK types 0.2.168 and 0.3.268, and the 2.1.302 binary's
+  strings):
+  - **Origin kinds:** `human`, `channel`, `peer`, `task-notification` (with
+    subkind `scheduled-trigger`, `peer-send-message`, `projects-relay` or
+    `session-inbox`), `coordinator`, `unclassified`, `observer`,
+    `auto-continuation` and `observer-activity`.
+  - **Task statuses:** `pending`, `running`, `paused`, `completed`, `failed`
+    and `killed`.
+  - **Level frames:** `system/background_tasks_changed` is the full live set,
+    with an `ambient` flag.
+  - **Controls:** `stop_task`, `get_task_output`, `send_task_message` and
+    `background_tasks`.
+  - **Schedules:** crons are created through `CronCreate`, `CronDelete` and
+    `ScheduleWakeup`.
+    - A cron is session-only unless `durable: true`, which writes it to
+      `.claude/scheduled_tasks.json` with its `createdBySessionId`.
+    - A recurring cron auto-expires after 7 days.
+    - At the next start, a missed durable one-shot is surfaced to the model
+      with an instruction to ask the user before running it.
+    - Stop and SubagentStop hook inputs list `session_crons`.
+  - **Interrupts:** without `perTaskStopAffordance`, an interrupt kills the
+    session's background tasks.
+- **DeepSeek harness `rc.2`** (`docs/subsystems/{jobs,schedule,core}.md` and
+  `packages/jobs/tool-jobs`):
+  - **Notices:** a busy owner gets a completion notice injected into its
+    `next-step` inbox, so it is folded. An idle owner is woken with a follow-up
+    turn. A job the model collected, killed, or lost in teardown gets no notice,
+    and neither does an **unowned** job.
+  - **Lifetime:** jobs and pending notices end with their owning session.
+  - **Durable reminders** (`schedule_*` tools) exist, but only in the web host
+    composition, not on the stdio SDK server the adapters speak. That host
+    restores a cold session to deliver them, and sends only the latest missed
+    occurrence.
+  - The inbox claims one `next-turn` message per turn, in order.
+- **Codex 0.163.0** (`rust-v0.163.0`): a message from another agent with
+  `trigger_turn` starts a turn on an idle thread
+  (`maybe_start_turn_for_pending_work`). `thread/backgroundTerminals/list`,
+  `clean` and `terminate` are experimental requests.
+- **Hermes v0.22.2** (`tui_gateway/session_notifications.py`): background
+  completions, loop and heartbeat wake-ups, and kanban events each claim an
+  idle session and run a turn through `_run_prompt_submit`; a racing user
+  prompt wins. `background.complete` and `cron.changed` are events.
+- **OpenCode** registers a session `wake`, which was not confirmed to start a
+  turn. **pi** has no trigger. **ACP** has no turn an agent starts without
+  `session/prompt`.
 
 ## Triggered runs
 
@@ -80,18 +146,42 @@ and cancellable from the host.
 | member | meaning |
 | --- | --- |
 | `kind` | `background_task`, `schedule`, `message`, or `other` |
-| `input` | optional content blocks: the notice the harness gave the model, so a transcript shows why the run exists |
-| `task_id` | the background task that fired, when `kind` is `background_task` or `schedule`; it names a task this session has announced |
-| `source_id` | optional opaque id of a sender, when `kind` is `message`; scoped to the session, never an OAP identity |
-| `extensions` | the native origin (`task-notification`, `job/settled`), namespaced |
+| `input` | optional content blocks: the notice or prompt the harness gave the model |
+| `task_id` | the task that fired, when one did; it names a task this session has announced |
+| `source_id` | optional opaque id of a sender, for `message`; scoped to the session, never an OAP identity |
+| `extensions` | the native origin, namespaced |
+
+How each harness's native origin maps to a kind:
+
+| harness | native | kind |
+| --- | --- | --- |
+| Claude | `task-notification`, no subkind | `background_task` |
+| Claude | `task-notification` / `scheduled-trigger`; a cron fire (no origin, inside `command_lifecycle`, prompt matching a known cron) | `schedule` |
+| Claude | `peer`, `channel`, `observer`, and `task-notification` with `peer-send-message`, `projects-relay` or `session-inbox` | `message` |
+| Claude | `coordinator`, `auto-continuation`, `unclassified`, `observer-activity`, or a turn the adapter did not submit and cannot attribute | `other` |
+| DeepSeek | `source.kind: "tool-jobs"` | `background_task` |
+| Codex | inter-agent mail with `trigger_turn` | `message` |
+| Hermes | a background completion | `background_task` |
+| Hermes | a loop or heartbeat wake-up | `schedule` |
+| Hermes | a kanban or delegation event | `message` |
+
+An adapter tells a triggered turn from its own submission with the
+submission's echo:
+
+- **Claude:** the `user_message_uuid` the adapter stamps on every submit.
+- **DeepSeek:** the prompt's `messageId`.
+- **Hermes:** whether the adapter sent `prompt.submit`.
+
+A turn without its echo is triggered.
 
 ### Every host accepts them
 
 - A host must expect a run it did not submit on any session, and an SDK must
   deliver one rather than drop it.
 - `capabilities.response` reports `session.triggered_runs` with the usual
-  fidelity, so a host can tell whether the harness behind an endpoint produces
-  them. It is a report, not a switch: no request elects or refuses it.
+  fidelity, so a host can tell whether the harness produces them. It is a
+  report, not a switch: no request elects or refuses it. ACP and pi report
+  `unavailable`.
 - An endpoint never absorbs a triggered turn it can delimit. An adapter that
   cannot tell where an unprompted turn ends falls back to the announced
   closure in
@@ -105,27 +195,25 @@ inside that rule as follows.
 
 1. **It starts only on an idle session.** A triggered run may start only when
    no run of the session is started and nonterminal. A `run.started` with
-   `trigger` while another run is executing is `illegal_run_transition`.
-2. **It goes ahead of waiting reservations.** A trigger can fire while host
-   reservations are queued, and the harness, not the host, decides which turn
-   runs next.
-   - A triggered run may therefore start while reservations wait. It enters
-     the admission order at its start, ahead of every reservation still
-     queued, and those reservations keep their relative order and promote
-     after it ends.
+   `trigger` while another run is executing is `illegal_run_transition`. Every
+   harness surveyed starts its own turn only on an idle session.
+2. **It may go ahead of waiting reservations.** Claude did exactly that in the
+   recording above, so the rule follows the harness.
+   - A triggered run may start while reservations wait. It enters the
+     admission order at its start, ahead of every reservation still queued.
+     Those reservations keep their relative order and promote after it ends.
    - This is the one exception to Decision 0007's "in admission order", and
      the validator does not report it as `queue_order_violation`.
    - A reservation's `queue_position` counts reservations only, so it does not
      change.
 3. **A trigger that fires during a run is never a second run.** The harness
    either holds the notice or folds it into the executing run.
-   - **Held:** when the run ends, the notice starts a triggered run, or is
-     consumed by the next reservation's run if the harness promotes that one
-     first.
-   - **Folded or consumed:** the notice is context inside a host run and no
-     triggered run exists. The task's `session.task.ended` (below) still tells
-     the host what happened.
-   - Claude Code and DeepSeek both deliver the notice at a turn boundary.
+   - **Folded:** Claude folds a notice that arrives while the turn still calls
+     tools, and DeepSeek folds every notice for a busy owner. The notice is
+     context inside that run, and no triggered run exists. The task's
+     `session.task.ended` still tells the host what happened.
+   - **Held:** Claude holds a notice that arrives during the turn's final
+     model request. When the run ends, the notice starts a triggered run.
 4. **A submit during a triggered run** is admitted like any submit against an
    executing run. Under Decision 0007 that means a reservation where
    `session.message.delivery.queue` is advertised, and `run_active` otherwise.
@@ -135,19 +223,22 @@ inside that rule as follows.
    the adapter reports one of the legal shapes truthfully. It never reports
    one turn as two runs, or two turns as one.
    - **The trigger's turn began first:** the submit is answered as in 4.
-   - **The prompt's turn began first:** the submit is `started` and the
+     Hermes resolves this race in the user's favour.
+   - **The prompt's turn began first:** the submit is `started`, and the
      trigger is held or folded, as in 3.
    - **The harness merges the prompt and the notice into one turn:** the run
-     is the host's, admitted by its submit, and the notice is folded.
+     is the host's, admitted by its submit, and the notice is folded. Claude
+     can join queued messages into one prompt.
    - An adapter whose harness takes a prompt into a turn already running must
      not hand the harness a prompt it has answered `run_active`. It holds the
      prompt until it knows the session is idle, or answers the submit after
      the harness has.
-   - Each adapter's ledger records which of these its harness does, and its
-     corpus carries the race.
+   - Each adapter's corpus carries the race.
 6. **Cancelling a triggered run** follows Decision 0001. It cancels the run,
-   not the task or schedule that fired it, and cancelling a task (below) never
-   settles a triggered run that already started.
+   not the task or schedule that fired it, and cancelling a task never settles
+   a triggered run that already started. A Claude adapter therefore declares
+   `perTaskStopAffordance`, so the interrupt behind `run.cancel` spares
+   background tasks.
 7. **Interactions** in a triggered run wait for an answer like any run's, and
    `state.active_runs` lists them under `pending_interactions`. A hub session
    with no subscriber keeps the run waiting rather than refusing.
@@ -157,73 +248,130 @@ inside that rule as follows.
    Decision 0007 does for any recovered run.
 9. **Settings and model switches** during a triggered run follow the same
    rules as during any run.
-10. **Closing the session** ends a triggered run as it ends any run. A trigger
-    that fires after the close has no session to run in, and the harness's own
-    schedules die with the session.
+10. **Wake loops are the harness's to bound.** A triggered run can start work
+    whose completion triggers again. DeepSeek bounds this with
+    `maxConsecutiveWakes`. OAP adds no bound and reports each run.
 
 ## Background tasks
 
-A **background task** is session-scoped work the harness tracks beyond a
-turn.
+A **background task** is work the harness tracks for a session beyond the tool
+call or turn that started it.
 
-### Kinds
+### What counts
 
-| kind | example |
+- **Included:** a command or agent the harness reports as backgrounded. That
+  is Claude's `is_backgrounded` at start or in a later `task_updated` patch,
+  and a DeepSeek job. Schedules and watchers are included too.
+- **Excluded:** a foreground call that blocks its turn. Claude reports one as
+  a task, but it is the tool call's lifecycle and stays inside the run.
+- **Excluded:** work the harness does not attribute to this session, namely
+  DeepSeek's unowned jobs and another session's durable crons. A session's
+  task list is that session's, and OAP has no endpoint-wide task list.
+
+### The task
+
+| member | meaning |
 | --- | --- |
-| `command` | a backgrounded shell command |
-| `agent` | a background subagent |
-| `schedule` | a timer or cron entry that fires turns |
-| `other` | anything else |
+| `task_id` | the harness's id where it keeps one across restarts (Claude, DeepSeek), never an OAP identity |
+| `kind` | `command`, `agent`, `schedule`, or `other`; the native type in `extensions` |
+| `label` | the harness's description |
+| `status` | `pending`, `running`, `paused`, `completed`, `failed`, or `cancelled` |
+| `run_id`, `tool_call_id` | the run and call that created it, when one did |
+| `ambient` | true for housekeeping a host should leave out of activity indicators (Claude's `ambient`) |
+| `cancellable` | whether `session.task.cancel` can reach it |
+| `schedule` | for a `schedule`: `expression` when the harness has one, `time_zone`, `next_fire_at_ms`, `recurring`, `durable`, `expires_at_ms` |
 
-The model creates tasks through the harness's own tools. The host observes
-them, and cancels them where the harness allows.
+### Events
 
-### Session-scoped events
+These are session-scoped and carry the session's state-domain `sequence`, the
+same counter as `session.state.updated`.
 
-These carry the session's state-domain `sequence`, the same counter as
-`session.state.updated`.
-
-| event | members |
+| event | carries |
 | --- | --- |
-| `session.task.started` | `task_id`, `kind`, `label`; `run_id` and `tool_call_id` of the call that created it, when one did; for a `schedule`, `next_fire_at_ms` and `recurring` |
-| `session.task.updated` | `task_id`, and what changed: a `schedule`'s `next_fire_at_ms` after it fires, or a progress summary |
-| `session.task.ended` | `task_id`, `status` (`completed`, `failed` or `cancelled`), and an optional summary |
+| `session.task.started` | the task |
+| `session.task.updated` | `task_id` and the members that changed: `status` (`paused` and back), `next_fire_at_ms` after a fire, `label` |
+| `session.task.ended` | `task_id`, `status` (`completed`, `failed` or `cancelled`), an optional `summary`, and `cause` (`finished`, `cancelled_by_host`, `cancelled_by_model`, `expired`, `session_closed`) |
+
+A schedule ends when a one-shot fires, when it is deleted, or when it
+expires. Each fire of a recurring schedule is a `session.task.updated`, and
+the run the fire triggers names it in `trigger.task_id`.
 
 ### State and requests
 
-- `session.state` gains `tasks`: every task not yet ended, so a host that
+- **`session.state.tasks`** lists every task not yet ended, so a host that
   reconnects starts from the truth. The state document is authoritative, as
   for runs.
-- `session.task.cancel.request {session_id, task_id}` answers
-  `{outcome: "requested" | "already_ended"}`. The ending itself arrives as
+- **`session.task.cancel.request {session_id, task_id}`** answers
+  `{outcome: "requested" | "already_ended"}`. The ending arrives as
   `session.task.ended`, because a cancel is intent and not settlement, as for
-  runs.
+  runs. A host's cancel starts no triggered run, which matches the Claude
+  recording.
+- **`session.task.output.request {session_id, task_id, from?}`** answers
+  `{output, next, truncated, ended}`.
+  - `from` and `next` are byte offsets into the task's output.
+  - `truncated` says bytes before `from` are gone.
+  - An adapter over a harness that returns the whole output, as Claude does,
+    slices it itself.
 
 ### Capabilities
 
-| feature | DeepSeek (stdio SDK server) | Claude Code |
-| --- | --- | --- |
-| `session.tasks` (observe) | `emulated`, from `job/registered` and `job/settled` | `native`, from task frames |
-| `session.task.cancel` | `unavailable`, since `job.kill` is not on that surface | `native`, through `stop_task` |
-| schedules | not recorded | `degraded`: summaries only, from `system/init` |
+| feature | Claude 2.1.302 | DeepSeek `rc.2` (stdio SDK server) | Codex 0.163.0 |
+| --- | --- | --- | --- |
+| `session.tasks` | `native`: task frames, `background_tasks_changed` | `emulated`: `job/registered`, `job/settled` | not established: `thread/backgroundTerminals/list` exists (experimental), its notifications were not read |
+| `session.task.cancel` | `native`: `stop_task` (commands, agents) | `unavailable`: `job.kill` is not on this surface | not established: `thread/backgroundTerminals/terminate` exists (experimental) |
+| `session.task.output` | `native`: `get_task_output` (commands, monitors) | `unavailable`: `job.follow` is not on this surface | not established |
+| schedules | `emulated`: from `CronCreate`/`CronDelete` results and the Stop hook's `session_crons`; not cancellable from the host | not on this surface | none found |
 
-### How runs and tasks relate
+Hermes's task surface is not established beyond its `background.complete`
+event.
 
-- A task created by a tool call names the call. A run that backgrounds a
-  command still ends on its own terminal; the held-terminal rules of PF-4
-  stay for children the run itself waits on.
-- A triggered run of kind `background_task` or `schedule` names the task in
-  `trigger.task_id`, so a host can draw "job X finished, and the model
-  answered".
-- A notice folded into a host run is still visible as the task's
-  `session.task.ended`.
+## Schedules created by the host
 
-### Delivery
+A host that wants a reminder submits a message when the reminder is due. OAP
+already carries that submit, and the host is where the clock and the user
+are, so the protocol adds no request for a host to create a schedule inside
+the harness. A harness's own schedules are created by its model and reported
+as tasks.
+
+## Close and reopen
+
+1. **Closing a session ends what the harness ties to its process.**
+   - Claude's background commands and agents end, and so do DeepSeek's jobs
+     and pending notices.
+   - The endpoint reports each as `session.task.ended` with cause
+     `session_closed` before the close completes, where it can.
+   - A host must not assume any task outlived a close.
+2. **What the harness keeps comes back on reopen** (Decision 0040).
+   - The reopen's `state.tasks` lists every task the harness restored, under
+     the same `task_id` where the harness keeps it.
+   - Claude restores a session's crons on `--resume` (recorded) and its
+     durable crons from `.claude/scheduled_tasks.json` (read from the binary).
+   - Anything absent from `state.tasks` did not survive.
+3. **Missed fires catch up after a reopen as triggered runs.**
+   - Claude surfaces a missed durable one-shot to the model with an instruction
+     to ask the user first, so that run raises an input interaction.
+   - DeepSeek delivers only the latest missed occurrence of a recurring
+     reminder.
+   - Either arrives as a `schedule` triggered run on the idle, reopened
+     session.
+4. **No harness revives a closed OAP session.** A session is OAP's
+   (Decision 0039).
+   - A harness path that restores a cold session to deliver a reminder must not
+     be reachable through an endpoint. That is DeepSeek's web host, which the
+     SDK server does not mount.
+   - A due reminder for a closed session waits in the harness for the host's
+     reopen, or is lost if the harness does not keep it. `state.tasks` after
+     the reopen says which.
+5. **A durable schedule outlives the close by design.** A host that wants it
+   gone cancels it before closing, where the harness allows, or after
+   reopening.
+
+## Delivery
 
 Task events and triggered runs both happen between runs, when the endpoint
 is reading no stream. Both need the session-event channel that
 [harness-initiated-state.md](harness-initiated-state.md) proposes, with its
-open question answered by this draft:
+open question answered here:
 
 - **Adapters push.** An adapter hands the endpoint each triggered run and
   each session event as it happens: Go through an optional session interface,
@@ -242,35 +390,39 @@ Each step below is one or more pull requests.
    driving it in tests.
 2. **Wire and validator:**
    - schema members and events: `run.started.trigger`, `activeRun.trigger`,
-     `session.task.*`, `state.tasks`, `session.task.cancel.*`, and the
-     `session.triggered_runs`, `session.tasks` and `session.task.cancel`
+     `session.task.*`, `state.tasks`, `session.task.cancel.*`,
+     `session.task.output.*`, and the `session.triggered_runs`,
+     `session.tasks`, `session.task.cancel` and `session.task.output`
      capabilities;
    - `protocol/` and `clients/ts/src/protocol.ts`;
    - the validator's rules from the sections above, each with a positive and a
      semantic-invalid fixture.
 3. **SDKs** (TS, Go, Rust, Python): a session-level stream of triggered runs
-   and task events, and `cancelTask`. This lands before any real adapter
-   emits, since no host may drop a triggered run.
-4. **DeepSeek, both trees:**
-   - project the job events as tasks;
+   and task events, plus `cancelTask` and `taskOutput`. This lands before any
+   real adapter emits, since no host may drop a triggered run.
+4. **Claude, both trees:**
+   - declare `perTaskStopAffordance`;
+   - project tasks and schedules;
+   - map `stop_task` and `get_task_output`;
+   - make every turn without the adapter's echo a triggered run, using the
+     mapping table above;
+   - add corpus cases from the recordings above: idle notification, notice
+     ahead of a queued prompt, fold, cron fire, stop and output.
+5. **DeepSeek, both trees:**
+   - project jobs as tasks;
    - make a turn that starts with no reserved run a triggered run;
-   - record, past `job/settled`, through the runtime's own turn and through
-     the submit race in rule 5, which `background-job` stops short of.
-5. **Claude, both trees:**
-   - project the task frames as tasks;
-   - map `stop_task` to cancel;
-   - make an injected non-`human` turn a triggered run
-     (`task-notification` is `background_task`, any other origin `other`);
-   - record the race.
-6. **Survey** the other pinned harnesses (Codex, OpenCode, Hermes, pi, ACP,
-   Copilot) for triggers and tasks.
+   - record past `job/settled`, through the runtime's own turn and the submit
+     race.
+6. **Codex and Hermes:** triggered runs from their wake paths, and Codex
+   background terminals as tasks. Each pin needs its own recording first.
 
 ## Still open
 
-- **Recorded order:** what DeepSeek and Claude actually do when a task
-  settles while a host reservation waits. Rule 2 assumes either may run first;
-  a recording may show one order is fixed.
-- **Task output streaming** (`job.follow`, Claude's output files) is not in
-  this draft.
-- **Host-created tasks** (a host that schedules a reminder through OAP rather
-  than through the model) are not in this draft.
+- **OpenCode's session `wake`:** whether it starts a turn nothing submitted
+  needs a run against the pin.
+- **Claude's `send_task_message`** lets a host message a background agent. It
+  was read from the binary, not recorded, so this draft does not define a
+  request for it.
+- **Removing a harness's schedules from the host on Claude:** there is no
+  control for it, only the model's `CronDelete`, so Claude schedule tasks
+  report `cancellable: false`.
