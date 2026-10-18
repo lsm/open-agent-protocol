@@ -723,10 +723,10 @@ is what Go's method-qualified patterns answer, and a `HEAD` is routed as the
 the method it takes, and an unknown path is a plain 404`; Go pins the table by
 `TestTheRouteTableIsComplete`.
 
-Three records that existed only in the historical review of #656 and were **verified against
-current `main` before being recorded here**, rather than carried over on the strength of the old
-thread. They are measurements and an open question. None of them settles anything, and none of them
-was settled by #656 either.
+Four records. The first three existed only in the historical review of #656 and were **verified
+against current `main` before being recorded here**, rather than carried over on the strength of the
+old thread; #656 settled none of them. The fourth is what the Windows runner showed of the third,
+and it is the one still open.
 
 - **A wrong-media request to a path no route matches is `415` here and `404` in Go — MEASURED, both
   sides, from the source.** `answer()` tests the media gate at `http.zig:388` and only then returns
