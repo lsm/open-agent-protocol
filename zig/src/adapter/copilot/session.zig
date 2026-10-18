@@ -73,6 +73,22 @@ pub const Gate = struct {
 
 pub const Answer = struct { gate: *Gate, approve: bool };
 
+pub const Asked = struct {
+    id: []const u8,
+    native_id: []const u8,
+    run: *Run,
+    tool_call_id: []const u8,
+    choices: []const []const u8,
+    requested: []const u8 = "",
+    resolved: bool = false,
+};
+
+pub const Given = struct { question_id: []const u8, text: []const u8 = "", selected_option_ids: []const []const u8 = &.{} };
+
+pub const Reply = struct { asked: *Asked, answer: []const u8, freeform: bool, given: Given };
+
+pub const question_id = "answer";
+
 pub const Plan = enum { settled, abort, withdraw };
 
 pub const Cancel = struct { status: Status, plan: Plan };
@@ -87,6 +103,7 @@ pub const Reducer = struct {
     current: ?*Run = null,
     tools: std.ArrayList(*Tool) = .empty,
     gates: std.ArrayList(*Gate) = .empty,
+    asks: std.ArrayList(*Asked) = .empty,
     envelopes: std.ArrayList(std.json.Value) = .empty,
 
     pub fn init(arena: *std.heap.ArenaAllocator, options: Options) Reducer {
@@ -233,6 +250,13 @@ pub const Reducer = struct {
                 gate.resolved = true;
                 _ = try self.record(gate.run, "action.permission.resolved", try self.resolution(gate, "cancelled", "", null, .{ "copilot_permission_settled_elsewhere", "Copilot settled the permission without this session's answer" }), false, gate.requested);
             },
+            .user_input_requested => try self.askUser(event.data),
+            .user_input_completed => {
+                const asked = self.findAsked(native.text(event.data, "requestId")) orelse return;
+                if (asked.resolved) return;
+                asked.resolved = true;
+                _ = try self.record(asked.run, "user.input.resolved", try self.inputResolution(asked, "cancelled", null), false, asked.requested);
+            },
             .session_error => {
                 const run = self.current orelse return;
                 const said = native.text(event.data, "message");
@@ -370,7 +394,115 @@ pub const Reducer = struct {
         _ = try self.record(given.gate.run, "action.permission.resolved", payload, false, given.gate.requested);
     }
 
+    fn findAsked(self: *Reducer, native_id: []const u8) ?*Asked {
+        for (self.asks.items) |asked| {
+            if (std.mem.eql(u8, asked.native_id, native_id)) return asked;
+        }
+        return null;
+    }
+
+    fn askUser(self: *Reducer, data: std.json.ObjectMap) Error!void {
+        const run = self.current orelse return;
+        const request_id = native.text(data, "requestId");
+        const question = native.text(data, "question");
+        if (request_id.len == 0 or question.len == 0 or self.findAsked(request_id) != null) return self.fail(run, "copilot_invalid_user_input", "a user input request with no request id, no question, or one already asked");
+        var listed: std.ArrayList([]const u8) = .empty;
+        if (data.get("choices")) |offered| {
+            if (offered != .array) return self.fail(run, "copilot_invalid_user_input", "a user input request whose choices are not a list");
+            for (offered.array.items) |choice| {
+                if (choice != .string or choice.string.len == 0) return self.fail(run, "copilot_invalid_user_input", "a user input choice that is not a non-empty string");
+                try listed.append(self.allocator(), try self.allocator().dupe(u8, choice.string));
+            }
+        }
+        const tool_call_id = if (self.findTool(run, native.text(data, "toolCallId"))) |tool| tool.id else "";
+        const interaction_id = try self.nextID("interaction");
+        const kept_request_id = try self.allocator().dupe(u8, request_id);
+        const asked = try self.allocator().create(Asked);
+        asked.* = .{ .id = interaction_id, .native_id = kept_request_id, .run = run, .tool_call_id = tool_call_id, .choices = listed.items };
+        try self.asks.append(self.allocator(), asked);
+        var entry: std.json.ObjectMap = .empty;
+        try entry.put(self.allocator(), "id", .{ .string = question_id });
+        try entry.put(self.allocator(), "prompt", .{ .string = try self.allocator().dupe(u8, question) });
+        try entry.put(self.allocator(), "kind", .{ .string = if (listed.items.len > 0) "single_choice" else "text" });
+        try entry.put(self.allocator(), "required", .{ .bool = true });
+        if (listed.items.len > 0) {
+            var options = std.json.Array.init(self.allocator());
+            for (listed.items, 0..) |label, index| {
+                var option: std.json.ObjectMap = .empty;
+                try option.put(self.allocator(), "id", .{ .string = try std.fmt.allocPrint(self.allocator(), "choice-{d}", .{index + 1}) });
+                try option.put(self.allocator(), "label", .{ .string = label });
+                try options.append(.{ .object = option });
+            }
+            try entry.put(self.allocator(), "options", .{ .array = options });
+        }
+        var questions = std.json.Array.init(self.allocator());
+        try questions.append(.{ .object = entry });
+        var payload = try self.scoped(run);
+        try payload.put(self.allocator(), "interaction_id", .{ .string = asked.id });
+        try payload.put(self.allocator(), "requested_by", .{ .string = endpoint_id });
+        try payload.put(self.allocator(), "responded_by", .{ .string = self.options.participant });
+        if (tool_call_id.len > 0) try payload.put(self.allocator(), "tool_call_id", .{ .string = tool_call_id });
+        try payload.put(self.allocator(), "title", .{ .string = "Copilot asks a question" });
+        try payload.put(self.allocator(), "questions", .{ .array = questions });
+        asked.requested = try self.record(run, "user.input.requested", payload, false, "") orelse "";
+    }
+
+    fn inputResolution(self: *Reducer, asked: *Asked, status: []const u8, given: ?Given) std.mem.Allocator.Error!std.json.ObjectMap {
+        var payload = try self.scoped(asked.run);
+        try payload.put(self.allocator(), "interaction_id", .{ .string = asked.id });
+        try payload.put(self.allocator(), "requested_by", .{ .string = endpoint_id });
+        try payload.put(self.allocator(), "responded_by", .{ .string = self.options.participant });
+        if (asked.tool_call_id.len > 0) try payload.put(self.allocator(), "tool_call_id", .{ .string = asked.tool_call_id });
+        try payload.put(self.allocator(), "status", .{ .string = status });
+        if (given) |reply| {
+            var entry: std.json.ObjectMap = .empty;
+            try entry.put(self.allocator(), "question_id", .{ .string = question_id });
+            if (reply.selected_option_ids.len > 0) {
+                var selected = std.json.Array.init(self.allocator());
+                for (reply.selected_option_ids) |option| try selected.append(.{ .string = try self.allocator().dupe(u8, option) });
+                try entry.put(self.allocator(), "selected_option_ids", .{ .array = selected });
+            } else try entry.put(self.allocator(), "text", .{ .string = try self.allocator().dupe(u8, reply.text) });
+            var answers = std.json.Array.init(self.allocator());
+            try answers.append(.{ .object = entry });
+            try payload.put(self.allocator(), "answers", .{ .array = answers });
+        }
+        return payload;
+    }
+
+    pub fn answerInput(self: *Reducer, interaction_id: []const u8, run_id: []const u8, responded_by: []const u8, requested_by: []const u8, answers: []const Given) ResolveError!Reply {
+        const asked = for (self.asks.items) |candidate| {
+            if (std.mem.eql(u8, candidate.id, interaction_id)) break candidate;
+        } else return error.InteractionNotFound;
+        if (asked.run.terminal) return error.InteractionNotFound;
+        if (asked.resolved) return error.InteractionResolved;
+        if (!std.mem.eql(u8, run_id, asked.run.id) or (requested_by.len > 0 and !std.mem.eql(u8, requested_by, endpoint_id))) return error.InvalidResolution;
+        if (!std.mem.eql(u8, responded_by, self.options.participant)) return error.WrongResponder;
+        if (answers.len != 1 or !std.mem.eql(u8, answers[0].question_id, question_id)) return error.InvalidResolution;
+        const given = answers[0];
+        if (asked.choices.len == 0) {
+            if (given.text.len == 0 or given.selected_option_ids.len > 0) return error.InvalidResolution;
+            return .{ .asked = asked, .answer = given.text, .freeform = true, .given = given };
+        }
+        if (given.text.len > 0 or given.selected_option_ids.len != 1) return error.InvalidResolution;
+        const chosen = given.selected_option_ids[0];
+        if (!std.mem.startsWith(u8, chosen, "choice-")) return error.InvalidResolution;
+        const index = std.fmt.parseInt(usize, chosen["choice-".len..], 10) catch return error.InvalidResolution;
+        if (index == 0 or index > asked.choices.len) return error.InvalidResolution;
+        return .{ .asked = asked, .answer = asked.choices[index - 1], .freeform = false, .given = given };
+    }
+
+    pub fn inputAnswered(self: *Reducer, reply: Reply) Error!void {
+        if (reply.asked.resolved or reply.asked.run.terminal) return;
+        reply.asked.resolved = true;
+        _ = try self.record(reply.asked.run, "user.input.resolved", try self.inputResolution(reply.asked, "submitted", reply.given), false, reply.asked.requested);
+    }
+
     fn settleTools(self: *Reducer, run: *Run, cancelled_run: bool) Error!void {
+        for (self.asks.items) |asked| {
+            if (asked.run != run or asked.resolved) continue;
+            asked.resolved = true;
+            _ = try self.record(run, "user.input.resolved", try self.inputResolution(asked, "cancelled", null), false, asked.requested);
+        }
         for (self.gates.items) |gate| {
             if (gate.run != run or gate.resolved) continue;
             gate.resolved = true;
@@ -868,4 +1000,76 @@ test "a permission outside any started call, a repeated start, and an unmatched 
         try testing.expectEqualStrings("run.failed", last.object.get("type").?.string);
         try testing.expectEqualStrings(code, last.object.get("payload").?.object.get("error").?.object.get("code").?.string);
     }
+}
+
+test "a question with choices asks single choice, and an answer picks a listed choice by its option id" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const scratch = arena.allocator();
+    var reducer = Reducer.init(&arena, .{ .session_id = "s1", .native_id = "ses", .revision = "r", .participant = "reviewer" });
+    const admitted = try reducer.admit("s1");
+    try reducer.bind(admitted.run_id, "m1");
+    try feed(&reducer, scratch, "user.message", "{\"messageId\":\"m1\"}");
+    try feed(&reducer, scratch, "tool.execution_start", "{\"toolCallId\":\"call_1\",\"toolName\":\"ask_user\",\"arguments\":{}}");
+    try feed(&reducer, scratch, "user_input.requested", "{\"requestId\":\"req-1\",\"question\":\"Which colour?\",\"choices\":[\"Blue\",\"Green\"],\"allowFreeform\":true,\"toolCallId\":\"call_1\"}");
+    const asked = payloadOf(&reducer, 3);
+    const question = asked.get("questions").?.array.items[0].object;
+    try testing.expectEqualStrings("single_choice", question.get("kind").?.string);
+    try testing.expectEqualStrings("Which colour?", question.get("prompt").?.string);
+    try testing.expectEqualStrings("choice-2", question.get("options").?.array.items[1].object.get("id").?.string);
+    try testing.expectEqualStrings("Green", question.get("options").?.array.items[1].object.get("label").?.string);
+    try testing.expectEqualStrings(payloadOf(&reducer, 1).get("tool_call_id").?.string, asked.get("tool_call_id").?.string);
+    const interaction = asked.get("interaction_id").?.string;
+    try testing.expectError(error.WrongResponder, reducer.answerInput(interaction, "run-1", "someone", "", &.{.{ .question_id = question_id, .selected_option_ids = &.{"choice-1"} }}));
+    try testing.expectError(error.InvalidResolution, reducer.answerInput(interaction, "run-1", "reviewer", "", &.{.{ .question_id = question_id, .text = "purple" }}));
+    try testing.expectError(error.InvalidResolution, reducer.answerInput(interaction, "run-1", "reviewer", "", &.{.{ .question_id = question_id, .selected_option_ids = &.{"choice-3"} }}));
+    try testing.expectError(error.InvalidResolution, reducer.answerInput(interaction, "run-1", "reviewer", "", &.{.{ .question_id = "other", .selected_option_ids = &.{"choice-1"} }}));
+    const reply = try reducer.answerInput(interaction, "run-1", "reviewer", endpoint_id, &.{.{ .question_id = question_id, .selected_option_ids = &.{"choice-2"} }});
+    try testing.expectEqualStrings("req-1", reply.asked.native_id);
+    try testing.expectEqualStrings("Green", reply.answer);
+    try testing.expect(!reply.freeform);
+    try reducer.inputAnswered(reply);
+    try testing.expectError(error.InteractionResolved, reducer.answerInput(interaction, "run-1", "reviewer", "", &.{.{ .question_id = question_id, .selected_option_ids = &.{"choice-2"} }}));
+    try feed(&reducer, scratch, "user_input.completed", "{\"requestId\":\"req-1\",\"answer\":\"Green\",\"wasFreeform\":false}");
+    try feed(&reducer, scratch, "tool.execution_complete", "{\"toolCallId\":\"call_1\",\"success\":true,\"result\":{\"content\":\"Green\"}}");
+    try feed(&reducer, scratch, "session.idle", "{}");
+    try testing.expectEqualStrings("run.started:run-1 action.call.requested:run-1 action.call.started:run-1 user.input.requested:run-1 user.input.resolved:run-1 action.call.completed:run-1 run.completed:run-1", try kinds(&reducer, scratch));
+    try expectReply(&reducer, 4, 3);
+    const resolved = payloadOf(&reducer, 4);
+    try testing.expectEqualStrings("submitted", resolved.get("status").?.string);
+    try testing.expectEqualStrings("choice-2", resolved.get("answers").?.array.items[0].object.get("selected_option_ids").?.array.items[0].string);
+}
+
+test "a question without choices asks for text, and one Copilot settles itself or the run outlives resolves cancelled" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const scratch = arena.allocator();
+    var reducer = Reducer.init(&arena, .{ .session_id = "s1", .native_id = "ses", .revision = "r" });
+    const admitted = try reducer.admit("s1");
+    try reducer.bind(admitted.run_id, "m1");
+    try feed(&reducer, scratch, "user.message", "{\"messageId\":\"m1\"}");
+    try feed(&reducer, scratch, "user_input.requested", "{\"requestId\":\"req-1\",\"question\":\"Name?\",\"allowFreeform\":true}");
+    const first = payloadOf(&reducer, 1);
+    try testing.expectEqualStrings("text", first.get("questions").?.array.items[0].object.get("kind").?.string);
+    try testing.expect(first.get("questions").?.array.items[0].object.get("options") == null);
+    try testing.expect(first.get("tool_call_id") == null);
+    const interaction = first.get("interaction_id").?.string;
+    try testing.expectError(error.InvalidResolution, reducer.answerInput(interaction, "run-1", "user", "", &.{.{ .question_id = question_id, .selected_option_ids = &.{"choice-1"} }}));
+    const reply = try reducer.answerInput(interaction, "run-1", "user", "", &.{.{ .question_id = question_id, .text = "Ada" }});
+    try testing.expectEqualStrings("Ada", reply.answer);
+    try testing.expect(reply.freeform);
+    try feed(&reducer, scratch, "user_input.completed", "{\"requestId\":\"req-1\",\"answer\":\"elsewhere\",\"wasFreeform\":true}");
+    try testing.expectError(error.InteractionResolved, reducer.answerInput(interaction, "run-1", "user", "", &.{.{ .question_id = question_id, .text = "Ada" }}));
+    try feed(&reducer, scratch, "user_input.requested", "{\"requestId\":\"req-2\",\"question\":\"Again?\"}");
+    try feed(&reducer, scratch, "session.error", "{\"message\":\"gone\"}");
+    try testing.expectEqualStrings("run.started:run-1 user.input.requested:run-1 user.input.resolved:run-1 user.input.requested:run-1 user.input.resolved:run-1 run.failed:run-1", try kinds(&reducer, scratch));
+    try testing.expectEqualStrings("cancelled", payloadOf(&reducer, 2).get("status").?.string);
+    try testing.expectEqualStrings("cancelled", payloadOf(&reducer, 4).get("status").?.string);
+    try feed(&reducer, scratch, "user.message", "{\"messageId\":\"none\"}");
+    const second = try reducer.admit("s1");
+    try reducer.bind(second.run_id, "m2");
+    try feed(&reducer, scratch, "user.message", "{\"messageId\":\"m2\"}");
+    try feed(&reducer, scratch, "user_input.requested", "{\"requestId\":\"req-3\",\"question\":\"Bad\",\"choices\":[7]}");
+    const last = reducer.envelopes.items[reducer.envelopes.items.len - 1];
+    try testing.expectEqualStrings("copilot_invalid_user_input", last.object.get("payload").?.object.get("error").?.object.get("code").?.string);
 }
