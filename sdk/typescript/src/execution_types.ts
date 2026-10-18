@@ -182,6 +182,7 @@ export interface MakaiClientOptions {
     handlers?: AuthFlowHandlers;
   };
   responseTimeoutMs?: number;
+  idleTimeoutMs?: number;
   frameTimeoutMs?: number;
   logger?: MakaiLogger;
 }

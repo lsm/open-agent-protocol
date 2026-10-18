@@ -540,8 +540,8 @@ fn validateSystemContent(raw: std.json.Value) !void {
 fn validateToolCallShape(part: std.json.Value) !void {
     if (part == .null) return;
     if (part != .object) return Error.InvalidFrame;
-    try closedMembers(part, &.{ "type", "id", "name", "arguments", "thoughtSignature", "namespace" });
-    try typedStrings(part, &.{ "type", "id", "name", "thoughtSignature", "namespace" });
+    try closedMembers(part, &.{ "type", "id", "name", "arguments", "thoughtSignature", "namespace", "argumentsError" });
+    try typedStrings(part, &.{ "type", "id", "name", "thoughtSignature", "namespace", "argumentsError" });
 }
 
 fn validateToolCallBlock(part: std.json.Value) !void {
@@ -1835,7 +1835,7 @@ fn wireContentOf(reducer: *Reducer, raw: std.json.Value) !std.json.Value {
             try closedMembers(part, &.{ "type", "thinking", "thinkingSignature", "redacted" });
             try parts.append(reducer.arena, try textPart(reducer, "reasoning", textOf(part, "thinking")));
         } else if (std.mem.eql(u8, kind, "toolCall")) {
-            try closedMembers(part, &.{ "type", "id", "name", "arguments", "thoughtSignature", "namespace" });
+            try closedMembers(part, &.{ "type", "id", "name", "arguments", "thoughtSignature", "namespace", "argumentsError" });
             const tool = findTool(reducer, textOf(part, "id")) orelse return Error.InvalidFrame;
             const name = textOf(part, "name");
             if (!std.mem.eql(u8, name, tool.name)) return Error.InvalidFrame;
@@ -2487,6 +2487,7 @@ test "a nested tool call requires no member and accepts a null for every one" {
         "{\"name\":null}",
         "{\"thoughtSignature\":null}",
         "{\"namespace\":null}",
+        "{\"argumentsError\":null}",
         "{\"id\":\"c\",\"name\":\"grep\"}",
     }) |nested| try expectUpdateAccepted(nested);
 }
@@ -2498,6 +2499,7 @@ test "a nested tool call refuses a wrong type on each string member of its own" 
         "{\"name\":7}",
         "{\"thoughtSignature\":7}",
         "{\"namespace\":7}",
+        "{\"argumentsError\":7}",
     }) |nested| try expectUpdateRefused(nested);
 }
 
@@ -2721,6 +2723,21 @@ test "a run settling with a compaction open ends it failed just before the termi
     const ended = try compactionEnds(&reducer);
     try std.testing.expectEqualStrings("failed", textOf(ended[0], "outcome"));
     try std.testing.expectEqualStrings("pi_compaction_unfinished", textOf(memberOf(ended[0], "error").?, "code"));
+}
+
+test "a v1.3.0 tool call whose arguments did not parse carries argumentsError, and the run that ends with it completes" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var reducer = try started(a);
+    try apply(&reducer, try parse(a, "{\"type\":\"tool_execution_start\",\"toolCallId\":\"t1\",\"toolName\":\"grep\",\"args\":{}}"));
+    try apply(&reducer, try parse(a, "{\"type\":\"tool_execution_end\",\"toolCallId\":\"t1\",\"toolName\":\"grep\",\"result\":{},\"isError\":true}"));
+    try apply(&reducer, try parse(a, "{\"type\":\"agent_end\",\"willRetry\":false,\"messages\":[{\"role\":\"assistant\",\"api\":\"a\",\"provider\":\"p\",\"model\":\"m\",\"usage\":{},\"stopReason\":\"toolUse\",\"timestamp\":1,\"content\":[{\"type\":\"toolCall\",\"id\":\"t1\",\"name\":\"grep\",\"arguments\":{},\"argumentsError\":\"Unexpected end of JSON input\"}]}]}"));
+    try apply(&reducer, try parse(a, "{\"type\":\"agent_settled\",\"aborted\":false}"));
+    try std.testing.expect(lastFailure(&reducer) == null);
+    var buffer: [16][]const u8 = undefined;
+    const kinds = typesOf(&reducer, &buffer);
+    try std.testing.expectEqualStrings("run.completed", kinds[kinds.len - 1]);
 }
 
 test "v1.1.0 timed messages, a timed tool end and a settlement saying not aborted are all admitted, and the run completes" {
