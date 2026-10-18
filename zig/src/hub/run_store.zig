@@ -112,7 +112,7 @@ pub const Store = struct {
             try next.appendSlice(arena, try encode(arena, held));
         }
         if (record.action != .settled) try next.appendSlice(arena, try encode(arena, record));
-        try compat.fs.atomicReplace(compat.fs.getCwd(), self.path, self.staging, next.items);
+        try compat.fs.atomicReplaceDurable(compat.fs.getCwd(), self.path, self.staging, next.items);
     }
 
     pub fn openRuns(self: *Store, arena: std.mem.Allocator, session_id: []const u8) ![]Open {
