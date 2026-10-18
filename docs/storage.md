@@ -50,7 +50,11 @@ append, `admitted {run_id: new, request, replaces: old}`, and `openRuns` drops
 the run an `admitted` replaces, so a crash at any point leaves exactly one of
 the two open. A replacing run takes the admission position of the run it
 replaces, so a crash part-way through re-delivering several prompts never
-changes their order. Withdrawal appends `settled` for the old id.
+changes their order. A replaced run is closed for good: a backend that
+compacts keeps only open runs' records, so the replaced run's records go
+when its replacement is admitted, and settling the replacement later can
+never bring the replaced run back. Withdrawal appends `settled` for the old
+id.
 
 | operation | does |
 | --- | --- |
