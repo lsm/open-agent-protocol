@@ -440,6 +440,14 @@ pub fn build(b: *std.Build) void {
     opencode_native_mod.addImport("json_encode", json_encode_mod);
     const opencode_native_test = b.addTest(.{ .root_module = opencode_native_mod });
 
+    const copilot_native_mod = b.createModule(.{
+        .root_source_file = b.path("src/adapter/copilot/native.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    copilot_native_mod.addImport("gojson", adapter_gojson_mod);
+    const copilot_native_test = b.addTest(.{ .root_module = copilot_native_mod });
+
     const opencode_httpapi_mod = b.createModule(.{
         .root_source_file = b.path("src/adapter/opencode/httpapi.zig"),
         .target = target,
@@ -3044,6 +3052,8 @@ pub fn build(b: *std.Build) void {
     test_unit_adapter_step.dependOn(&b.addRunArtifact(adapter_gomarshal_test).step);
     test_step.dependOn(&b.addRunArtifact(opencode_native_test).step);
     test_unit_adapter_step.dependOn(&b.addRunArtifact(opencode_native_test).step);
+    test_step.dependOn(&b.addRunArtifact(copilot_native_test).step);
+    test_unit_adapter_step.dependOn(&b.addRunArtifact(copilot_native_test).step);
     test_step.dependOn(&b.addRunArtifact(opencode_httpapi_test).step);
     test_unit_adapter_step.dependOn(&b.addRunArtifact(opencode_httpapi_test).step);
     test_step.dependOn(&b.addRunArtifact(opencode_session_test).step);
