@@ -2751,6 +2751,10 @@ pub fn serve(allocator: std.mem.Allocator, frontend: *Frontend, stream: Stream) 
         try frontend.pumpStreams();
         try frontend.answerJobs();
         if (try frontend.shutdownComplete(arena)) {
+            while (frontend.jobs.items.len > 0) {
+                try frontend.answerJobs();
+                if (frontend.jobs.items.len > 0) std.Thread.yield() catch {};
+            }
             frontend.stopped = true;
             return;
         }
