@@ -512,7 +512,11 @@ later kind a host skips), and optionally `at_ms`, `run_id`, `truncated` and
 `next_cursor`. A cursor whose entry the store no longer holds answers from the
 oldest entry held with `gap: {reason, resumed_at}`, the reason `pruned` or
 `rewritten` and `resumed_at` naming the first entry returned; one that does not
-decode or names another session is refused `invalid_cursor`
+decode or names another session is refused `invalid_cursor`. `resumed_at` is
+absent when the page returns no entry. Where `transcript.load` is advertised,
+the session state's `transcript_cursor` is a cursor that read accepts,
+positioned after the newest entry, and the read serves a closed session the
+host still holds a binding for
 ([Decision 0051](../decisions/0051-transcript-load.md)).
 
 An endpoint advertising `session.reasoning` or `session.compaction.policy` in
