@@ -1,6 +1,6 @@
 # Decision 0051: Transcript Load
 
-Status: proposed, for the owner's review
+Status: accepted 2026-10-18 (owner)
 Date: 2026-10-18
 Protocol: `open-agent-protocol` version `0.1`
 Profile: `open-agent-protocol.agent-control-core`
