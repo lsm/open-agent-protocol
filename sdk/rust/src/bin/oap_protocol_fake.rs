@@ -183,8 +183,13 @@ fn main() {
                         }
                         _ => ("internal", "provider registry unavailable"),
                     };
+                    let refused_on = if scenario == "describe_fails" {
+                        PROVIDER
+                    } else {
+                        AGENT
+                    };
                     emit(
-                        profile,
+                        refused_on,
                         "error.response",
                         Some(id),
                         json!({ "error": { "code": code, "message": message } }),

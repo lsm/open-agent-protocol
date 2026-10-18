@@ -617,8 +617,7 @@ impl Transport {
         let mut subscription = self.subscribe_reply(&id);
         self.send_oap(profile, kind, &id, payload, scope)?;
         let response = subscription.next_within(timeout, kind).await?;
-        if response.profile.as_deref() != Some(profile)
-            || response.raw.get("protocol").and_then(Value::as_str) != Some(OAP_PROTOCOL)
+        if response.raw.get("protocol").and_then(Value::as_str) != Some(OAP_PROTOCOL)
             || response.raw.get("version").and_then(Value::as_str) != Some(OAP_VERSION)
         {
             return Err(Error::protocol(
@@ -626,7 +625,14 @@ impl Transport {
                 Some("protocol_mismatch"),
             ));
         }
-        if response.kind == "error.response" || response.kind == "protocol.error" {
+        let refusal = response.kind == "error.response" || response.kind == "protocol.error";
+        if !refusal && response.profile.as_deref() != Some(profile) {
+            return Err(Error::protocol(
+                "response is not on the requested OAP profile and version",
+                Some("protocol_mismatch"),
+            ));
+        }
+        if refusal {
             let err = response
                 .payload()
                 .get("error")
