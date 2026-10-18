@@ -623,10 +623,10 @@ async function resolveProvidedCall(call: Record<string, unknown>, tools: ToolDef
   }
 }
 
-type OpenSession = { settings: string; tools: ToolDefinition[] };
+type OpenSession = { declared: string; reasoning?: string; maxTokens?: number; tools: ToolDefinition[] };
 
-function openSettings(tools: ToolDefinition[] | undefined, reasoning: string | undefined, maxTokens: number | undefined): string {
-  return JSON.stringify({ tools: (tools ?? []).map((tool) => [tool.name, tool.description, tool.parameters_schema_json]), reasoning: reasoning ?? null, maxTokens: maxTokens ?? null });
+function declaredTools(tools: ToolDefinition[] | undefined): string {
+  return JSON.stringify((tools ?? []).map((tool) => [tool.name, tool.description, tool.parameters_schema_json]));
 }
 
 class OapAgentApi {
@@ -696,11 +696,13 @@ class OapAgentApi {
     const readsOapxSettings = this.transport.agentEndpoint === OAPX_AGENT_ENDPOINT;
     if (maxTokens !== undefined && !readsOapxSettings) unsupported("an output limit on an endpoint other than the oapx agent loop");
     const sessionId = request.options?.session_id ?? ulid();
-    const settings = openSettings(request.tools, request.options?.reasoning_effort, maxTokens);
+    const reasoning = request.options?.reasoning_effort;
     let session = this.openSessions.get(sessionId);
     if (session) {
-      const carriesSettings = request.tools !== undefined || request.options?.reasoning_effort !== undefined || maxTokens !== undefined;
-      if (carriesSettings && settings !== session.settings) unsupported("changing the tools, reasoning effort or output limit of a session already open");
+      const changed = (request.tools !== undefined && declaredTools(request.tools) !== session.declared)
+        || (reasoning !== undefined && reasoning !== session.reasoning)
+        || (maxTokens !== undefined && maxTokens !== session.maxTokens);
+      if (changed) unsupported("changing the tools, reasoning effort or output limit of a session already open");
       if (request.tools !== undefined) session = { ...session, tools: request.tools };
     } else {
       const opened = await this.transport.request(OAP_AGENT_PROFILE, "session.open.request", {
@@ -710,7 +712,7 @@ class OapAgentApi {
         ...(readsOapxSettings ? { metadata: { oapx: { user_input: false, ...(maxTokens !== undefined ? { output: maxTokens } : {}) } } } : {}),
       }, { session_id: sessionId });
       if (opened.type !== "session.open.response") throw new MakaiProtocolError(`unexpected ${opened.type}`, "malformed_response");
-      session = { settings, tools: request.tools ?? [] };
+      session = { declared: declaredTools(request.tools), reasoning, maxTokens, tools: request.tools ?? [] };
       this.openSessions.set(sessionId, session);
     }
     const tools = session.tools;
