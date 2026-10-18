@@ -1062,7 +1062,12 @@ pub const Frontend = struct {
     pub fn shutdownComplete(self: *Frontend, arena: std.mem.Allocator) !bool {
         const mode = self.shutdown orelse return false;
         if (mode == .force) return true;
-        return (try self.nonterminalRuns(arena)).len == 0;
+        const runs = try self.nonterminalRuns(arena);
+        for (runs) |entry| {
+            if (entry.run.status != .queued) continue;
+            if (self.hub.cancel(arena, entry.session_id, entry.run.run_id)) |_| {} else |err| if (err == error.OutOfMemory) return error.OutOfMemory;
+        }
+        return runs.len == 0;
     }
 
     pub fn adapters(self: *Frontend, arena: std.mem.Allocator) !std.json.Value {

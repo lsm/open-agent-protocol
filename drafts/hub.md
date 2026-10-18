@@ -405,8 +405,8 @@ in Zig by **none**, [G14](#known-gaps)), and
 `draining` lets the running runs finish; `force` answers `stopping`, and a later
 graceful never undoes it. A `mode` of `null` is no mode. Zig answers in-flight
 jobs before serving ends on graceful and not on force; Go settles admitted
-work inside the window on both. Go retries the cancel of a queued run that
-refused it on every drain poll until it settles. After a drain that finished
+work inside the window on both. Both trees retry the cancel of a queued run
+that refused it on every drain check until it settles. After a drain that finished
 runs, Go lets event streams deliver their terminals before teardown, up to the
 shutdown window, which a stream on an idle session holds in full; a shutdown
 with nothing to drain stops at once. Once accepted, `submit`, `open`, `work.start` and
