@@ -9,6 +9,8 @@ Unit: `core`
 Amends: [Decision 0007](0007-queue-delivery.md), so a reopen can restore
 queued reservations, and [Decision 0040](0040-a-session-reopens-through-its-own-binding.md),
 so a reopen can list them and report an interrupted run;
+[Decision 0002](0002-admission-before-start.md), so an accepted graceful
+shutdown is the evidence for a held run's `run.cancelled`;
 [Decision 0001](0001-agent-control-v0.1-executable-core.md), so a run a
 restart cut off settles through a recorded settlement rather than a terminal
 envelope in its stream; and Decision 0051 (#1205), by
@@ -56,7 +58,11 @@ After force or a crash, the next start applies one rule, from the store
   only way to keep a queued run from starting is to settle it, and a settled
   run id never runs again. The reopen pairs each new id with the one it
   replaces (rule 5). A crash re-delivers the same way, so one rule covers
-  both.
+  both. After force or a crash, a queued run's previous id settles
+  `cancelled` with `reason: "held_for_restart"` and `settled_by: "inferred"`,
+  recorded rather than published, for the same reason as the interrupted run
+  below. It is reported only in `recovery.redelivered_runs`, never in
+  `recovery.interrupted_runs`, which is for the run that was executing.
 - **A pending interaction settles with its run**, as `run_settled`, because a
   settled run takes no answer (a terminal is absorbing). Where the harness, once
   reopened, asks the question again (Claude resuming a turn that was waiting
@@ -156,7 +162,9 @@ Decision 0040 requires a reopen to list no run under way. That changes:
   carries it, as `{previous_run_id, run_id}`, in the original order; each
   `run_id` is also in `state.active_runs` as `queued`. A prompt the reopen
   withdrew is listed as `{previous_run_id, withdrawn: true}` and carries no
-  `run_id`. A `withdraw_held` id that names no held prompt refuses the
+  `run_id`. Every prompt the restart would re-deliver can be withdrawn, whether a
+  graceful shutdown held it or a crash left it queued. A `withdraw_held` id
+  that names no such prompt refuses the
   whole reopen `invalid_request`, naming the id, before anything starts, so a
   typo never sends a prompt the host meant to withdraw.
 
@@ -192,8 +200,11 @@ Credentials are never written to either store.
 ## Consequences
 
 - The store gains run records: admitted (with the prompt, for a queued run),
-  started and settled. `docs/storage.md` (#1206) names the
-  operations. A prompt is user content, so a binding still never holds a
+  started and settled. `docs/storage.md` names the operations. A queued run's
+  `settled` record is written when the next start re-delivers or withdraws
+  it, together with an `admitted` record for the run that now carries it,
+  not when the shutdown cancels it, so `openRuns` still finds it after the
+  restart and never finds it twice. A prompt is user content, so a binding still never holds a
   credential or an environment value.
 - Schema: the shutdown pair and event, `shutting_down`,
   `recovery.interrupted_runs`, `recovery.redelivered_runs`,
