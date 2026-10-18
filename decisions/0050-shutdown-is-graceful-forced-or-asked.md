@@ -7,8 +7,14 @@ Profile: `open-agent-protocol.agent-control-core`
 Unit: `core`
 Amends: [Decision 0007](0007-queue-delivery.md), so a reopen can restore
 queued reservations, and [Decision 0040](0040-a-session-reopens-through-its-own-binding.md),
-so a reopen can list them and report an interrupted run. Applies to both trees,
-to `goap hub` and `oapx hub`, and to `serve agent`
+so a reopen can list them and report an interrupted run;
+[Decision 0001](0001-agent-control-v0.1-executable-core.md), so a run a
+restart cut off settles through a recorded settlement rather than a terminal
+envelope in its stream; and [Decision 0051](0051-transcript-load.md), by
+adding an entry kind. Applies [Decision 0010](0010-terminal-provenance.md):
+that settlement is `inferred`. Lands after 0051 and the storage interface
+([docs/storage.md](../docs/storage.md)). Applies to both trees, to
+`goap hub` and `oapx hub`, and to `serve agent`
 
 ## Context
 
@@ -48,8 +54,13 @@ After force or a crash, the next start applies one rule, from the store
 
 The settlement is not published as a `run.failed` envelope in the old run's
 stream, because the process that held that stream's sequence is gone and a
-made-up sequence would be fake continuity. It is reported on reopen (rule 5),
-and also in the transcript where the transcript is OAP's own (Decision 0051).
+made-up sequence would be fake continuity. It is the run's one terminal all
+the same, and it carries `settled_by: "inferred"`, because the endpoint
+concluded it from the store rather than observing the run end (Decision
+0010). It is reported on reopen (rule 5). Where the transcript is OAP's own
+(`oapx`), `transcript.load` also gains an `interrupted` entry kind,
+`{run_id, settled_by: "inferred"}`, at the point the run stopped; Decision
+0051 keeps OAP's records out of a third-party harness's transcript.
 
 ### 2. Graceful freezes the queue, and the next start resumes it
 
@@ -119,7 +130,7 @@ Decision 0040 requires a reopen to list no run under way. That changes:
   only after the reopen response, as any queued run does;
 - it never lists a run as `running`, since no run survives a restart;
 - `recovery.interrupted_runs` lists each run that settled under rule 1, as
-  `{run_id, cause: "restart"}`.
+  `{run_id, cause: "restart", settled_by: "inferred"}`.
 
 The validator accepts restored queued runs in a recovered open response
 (`recovery.recovered: true`) and nowhere else.
