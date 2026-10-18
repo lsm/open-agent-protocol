@@ -26,7 +26,7 @@ const (
 
 func verifiedClaudeCLI(t *testing.T) string {
 	t.Helper()
-	binary := adaptertest.VerifiedBinary(t, "OAP_CLAUDE_BIN", "OAP_CLAUDE_SHA256", "the pinned claude binary (2.1.296)")
+	binary := adaptertest.VerifiedBinary(t, "OAP_CLAUDE_BIN", "OAP_CLAUDE_SHA256", "the pinned claude binary ("+pin.Component("cli").Version+")")
 	return binary
 }
 
