@@ -592,8 +592,8 @@ and the three tests run there too.
 Every route that reads a body requires `Content-Type: application/json`, and
 the body is read as UTF-8 whatever `charset` the header names. The gate is a
 property of the route, not of the length (owner, 2026-10-17, #1133): `open`,
-`submit`, `resolve`, `cancel`, `settings`, `work.start` and `work.send` are
-gated even when the request declares no body, and a route that reads none, such
+`submit`, `resolve`, `cancel`, `settings`, `work.start`, `work.send` and
+`shutdown` are gated even when the request declares no body, and a route that reads none, such
 as `close` or a listing, is not gated even when it carries one. The media type is
 refused before the length is measured, so a wrong type on a body over 16 MiB is
 `415`, not `413`. Pinned by `a body-reading route is gated on its media type even
@@ -2046,7 +2046,11 @@ here; each was a place a differential test would otherwise not see.
   EOF exit. A graceful exit waits on that job to answer it; a signal breaks
   that wait, but a force request sent meanwhile is not read. Zig's serve loop
   wiring for the shutdown (answering jobs on graceful only, then ending
-  serving) is pinned by no test: the named tests drive the frontend directly. What closes it is a queueing reference adapter with a test of the
+  serving) is pinned by no test: the named tests drive the frontend directly.
+  The same holds over HTTP: no test runs the serve loop through a
+  `POST /shutdown`, so its wait for owed answers and, on graceful, deferred
+  requests, and its 5 s bound, are unpinned; the named test calls the stop
+  check with no connections. What closes it is a queueing reference adapter with a test of the
   `lost` path, and a teardown that abandons a job thread after the window.
 
 One asymmetry is deliberate and is **not** a gap: a cross-origin refusal exists
