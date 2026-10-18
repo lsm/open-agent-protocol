@@ -204,5 +204,5 @@ What `action.tools.provide` would map to:
 **Recommendation.** The best fit of the three harnesses: session-scoped and
 stable, carried on the channel the adapter owns, and needing no MCP transport
 of its own, only MCP's JSON-RPC shapes. It matters for a host that runs other
-models on the Claude Code harness. Claude itself stays on the Agent SDK, per
-the owner's provider and harness matrix.
+models on the Claude Code harness; HyperNeo keeps Claude itself on the Agent
+SDK.
