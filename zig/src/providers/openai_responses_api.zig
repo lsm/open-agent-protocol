@@ -481,6 +481,83 @@ fn buildCompoundId(allocator: std.mem.Allocator, call_id: []const u8, item_id: [
     return out;
 }
 
+fn partialFor(model: ai_types.Model, usage: ai_types.Usage, stop_reason: ai_types.StopReason) ai_types.AssistantMessage {
+    return .{
+        .content = &.{},
+        .api = model.api,
+        .provider = model.provider,
+        .model = model.id,
+        .usage = usage,
+        .stop_reason = stop_reason,
+        .timestamp = compat.time.nowMillis(),
+    };
+}
+
+fn freeToolCall(allocator: std.mem.Allocator, call: ai_types.ToolCall) void {
+    allocator.free(call.id);
+    allocator.free(call.name);
+    if (call.arguments_json.len > 0) allocator.free(call.arguments_json);
+    if (call.thought_signature) |sig| allocator.free(sig);
+}
+
+const Assembled = union(enum) {
+    text: std.ArrayList(u8),
+    thinking: std.ArrayList(u8),
+    call: ?ai_types.ToolCall,
+
+    fn deinit(self: *Assembled, allocator: std.mem.Allocator) void {
+        switch (self.*) {
+            .text, .thinking => |*buffer| buffer.deinit(allocator),
+            .call => |held| if (held) |call| freeToolCall(allocator, call),
+        }
+    }
+};
+
+fn closeOpen(stream: *event_stream.AssistantMessageEventStream, partial: ai_types.AssistantMessage, parts: []Assembled, open: *?usize) void {
+    const at = open.* orelse return;
+    open.* = null;
+    _ = switch (parts[at]) {
+        .text => |buffer| pushEvent(stream, .{ .text_end = .{ .content_index = at, .content = buffer.items, .partial = partial } }),
+        .thinking => |buffer| pushEvent(stream, .{ .thinking_end = .{ .content_index = at, .content = buffer.items, .partial = partial } }),
+        .call => return,
+    } catch {};
+}
+
+fn assembledContent(allocator: std.mem.Allocator, parts: []Assembled) ![]ai_types.AssistantContent {
+    var count: usize = 0;
+    for (parts) |part| switch (part) {
+        .text, .thinking => count += 1,
+        .call => |held| count += @intFromBool(held != null),
+    };
+    if (count == 0) {
+        const empty = try allocator.alloc(ai_types.AssistantContent, 1);
+        empty[0] = .{ .text = .{ .text = "" } };
+        return empty;
+    }
+    const content = try allocator.alloc(ai_types.AssistantContent, count);
+    var filled: usize = 0;
+    errdefer {
+        ai_types.deinitAssistantContentElements(allocator, content[0..filled]);
+        allocator.free(content);
+    }
+    for (parts) |*part| switch (part.*) {
+        .text => |buffer| {
+            content[filled] = .{ .text = .{ .text = try allocator.dupe(u8, buffer.items) } };
+            filled += 1;
+        },
+        .thinking => |buffer| {
+            content[filled] = .{ .thinking = .{ .thinking = try allocator.dupe(u8, buffer.items) } };
+            filled += 1;
+        },
+        .call => |held| if (held) |call| {
+            content[filled] = .{ .tool_call = call };
+            part.* = .{ .call = null };
+            filled += 1;
+        },
+    };
+    return content;
+}
+
 fn pushEvent(stream: *event_stream.AssistantMessageEventStream, event: ai_types.AssistantMessageEvent) !void {
     if (!stream.pushBlocking(event)) return error.StreamCompleted;
 }
@@ -1065,10 +1142,13 @@ fn runThread(ctx: *ThreadCtx) void {
     var read_buf: [8192]u8 = undefined;
     const reader = compat.http.responseReader(&response, &transfer_buf);
 
-    var text = std.ArrayList(u8).empty;
-    defer text.deinit(allocator);
-    var thinking = std.ArrayList(u8).empty;
-    defer thinking.deinit(allocator);
+    var assembled = std.ArrayList(Assembled).empty;
+    defer {
+        for (assembled.items) |*part| part.deinit(allocator);
+        assembled.deinit(allocator);
+    }
+    var open_text: ?usize = null;
+    var open_thinking: ?usize = null;
     var usage = ai_types.Usage{};
     var stop_reason: ai_types.StopReason = .stop;
 
@@ -1095,10 +1175,6 @@ fn runThread(ctx: *ThreadCtx) void {
     }
 
     var next_content_index: usize = 0;
-    var thinking_started = false;
-    var thinking_content_index: ?usize = null;
-    var text_content_index: ?usize = null;
-    var text_started = false;
 
     var last_ping_time: i64 = 0;
     const ping_interval = ctx.ping_interval_ms orelse 0;
@@ -1159,49 +1235,34 @@ fn runThread(ctx: *ThreadCtx) void {
 
             switch (parsed.event_type) {
                 .text_delta => |delta| {
-                    if (!text_started) {
-                        text_content_index = next_content_index;
+                    if (open_text == null) {
+                        closeOpen(stream, partialFor(model, usage, stop_reason), assembled.items, &open_thinking);
+                        assembled.append(allocator, .{ .text = .empty }) catch {
+                        allocator.free(auth);
+                        allocator.free(url);
+                        ctx.deinit();
+                        stream.completeWithError("oom part");
+                        return;
+                        };
+                        open_text = next_content_index;
                         next_content_index += 1;
-                        text_started = true;
-
-                        _ = pushEvent(stream, .{
-                            .text_start = .{
-                                .content_index = text_content_index.?,
-                                .partial = .{
-                                    .content = &.{},
-                                    .api = model.api,
-                                    .provider = model.provider,
-                                    .model = model.id,
-                                    .usage = usage,
-                                    .stop_reason = stop_reason,
-                                    .timestamp = compat.time.nowMillis(),
-                                },
-                            },
-                        }) catch {};
+                        _ = pushEvent(stream, .{ .text_start = .{ .content_index = open_text.?, .partial = partialFor(model, usage, stop_reason) } }) catch {};
                     }
-
-                    text.appendSlice(allocator, delta) catch {};
-
-                    if (text_content_index) |idx| {
-                        _ = pushEvent(stream, .{
-                            .text_delta = .{
-                                .content_index = idx,
-                                .delta = delta,
-                                .partial = .{
-                                    .content = &.{},
-                                    .api = model.api,
-                                    .provider = model.provider,
-                                    .model = model.id,
-                                    .usage = usage,
-                                    .stop_reason = stop_reason,
-                                    .timestamp = compat.time.nowMillis(),
-                                },
-                            },
-                        }) catch {};
-                    }
+                    const at = open_text.?;
+                    assembled.items[at].text.appendSlice(allocator, delta) catch {};
+                    _ = pushEvent(stream, .{ .text_delta = .{ .content_index = at, .delta = delta, .partial = partialFor(model, usage, stop_reason) } }) catch {};
                 },
                 .output_item_added => |item| {
                     if (std.mem.eql(u8, item.item_type, "function_call")) {
+                        closeOpen(stream, partialFor(model, usage, stop_reason), assembled.items, &open_thinking);
+                        closeOpen(stream, partialFor(model, usage, stop_reason), assembled.items, &open_text);
+                        assembled.append(allocator, .{ .call = null }) catch {
+                        allocator.free(auth);
+                        allocator.free(url);
+                        ctx.deinit();
+                        stream.completeWithError("oom part");
+                        return;
+                        };
                         const call_id = item.call_id orelse "";
                         const item_id = item.id orelse "";
                         const name = item.name orelse "";
@@ -1302,77 +1363,36 @@ fn runThread(ctx: *ThreadCtx) void {
                     _ = args;
                 },
                 .reasoning_delta => |delta| {
-                    if (!thinking_started) {
-                        thinking_content_index = next_content_index;
+                    if (open_thinking == null) {
+                        closeOpen(stream, partialFor(model, usage, stop_reason), assembled.items, &open_text);
+                        assembled.append(allocator, .{ .thinking = .empty }) catch {
+                        allocator.free(auth);
+                        allocator.free(url);
+                        ctx.deinit();
+                        stream.completeWithError("oom part");
+                        return;
+                        };
+                        open_thinking = next_content_index;
                         next_content_index += 1;
-                        thinking_started = true;
-
-                        _ = pushEvent(stream, .{
-                            .thinking_start = .{
-                                .content_index = thinking_content_index.?,
-                                .partial = .{
-                                    .content = &.{},
-                                    .api = model.api,
-                                    .provider = model.provider,
-                                    .model = model.id,
-                                    .usage = usage,
-                                    .stop_reason = stop_reason,
-                                    .timestamp = compat.time.nowMillis(),
-                                },
-                            },
-                        }) catch {};
+                        _ = pushEvent(stream, .{ .thinking_start = .{ .content_index = open_thinking.?, .partial = partialFor(model, usage, stop_reason) } }) catch {};
                     }
-
-                    thinking.appendSlice(allocator, delta) catch {};
-
-                    if (thinking_content_index) |idx| {
-                        _ = pushEvent(stream, .{
-                            .thinking_delta = .{
-                                .content_index = idx,
-                                .delta = delta,
-                                .partial = .{
-                                    .content = &.{},
-                                    .api = model.api,
-                                    .provider = model.provider,
-                                    .model = model.id,
-                                    .usage = usage,
-                                    .stop_reason = stop_reason,
-                                    .timestamp = compat.time.nowMillis(),
-                                },
-                            },
-                        }) catch {};
-                    }
+                    const at = open_thinking.?;
+                    assembled.items[at].thinking.appendSlice(allocator, delta) catch {};
+                    _ = pushEvent(stream, .{ .thinking_delta = .{ .content_index = at, .delta = delta, .partial = partialFor(model, usage, stop_reason) } }) catch {};
                 },
                 .reasoning_done => {
-                    if (thinking_content_index) |idx| {
-                        _ = pushEvent(stream, .{
-                            .thinking_end = .{
-                                .content_index = idx,
-                                .content = thinking.items,
-                                .partial = .{
-                                    .content = &.{},
-                                    .api = model.api,
-                                    .provider = model.provider,
-                                    .model = model.id,
-                                    .usage = usage,
-                                    .stop_reason = stop_reason,
-                                    .timestamp = compat.time.nowMillis(),
-                                },
-                            },
-                        }) catch {};
-                    }
+                    closeOpen(stream, partialFor(model, usage, stop_reason), assembled.items, &open_thinking);
                 },
                 .output_item_done => |item| {
+                    if (std.mem.eql(u8, item.item_type, "message")) {
+                        closeOpen(stream, partialFor(model, usage, stop_reason), assembled.items, &open_text);
+                    }
                     if (std.mem.eql(u8, item.item_type, "function_call")) {
                         const item_id = item.id orelse "";
                         if (item_id_to_content_index.get(item_id)) |content_index| {
                             if (tool_call_tracker_instance.completeCall(content_index, allocator)) |tc| {
-                                defer {
-                                    allocator.free(tc.id);
-                                    allocator.free(tc.name);
-                                    if (tc.arguments_json.len > 0) allocator.free(tc.arguments_json);
-                                    if (tc.thought_signature) |sig| allocator.free(sig);
-                                }
+                                assembled.items[content_index].deinit(allocator);
+                                assembled.items[content_index] = .{ .call = tc };
 
                                 _ = pushEvent(stream, .{
                                     .toolcall_end = .{
@@ -1405,6 +1425,12 @@ fn runThread(ctx: *ThreadCtx) void {
         }
     }
 
+    closeOpen(stream, partialFor(model, usage, stop_reason), assembled.items, &open_thinking);
+    closeOpen(stream, partialFor(model, usage, stop_reason), assembled.items, &open_text);
+    for (assembled.items) |part| {
+        if (part == .call and part.call != null and stop_reason == .stop) stop_reason = .tool_use;
+    }
+
     if (usage.total_tokens == 0) usage.total_tokens = usage.input + usage.output;
 
     usage.calculateCost(model.cost);
@@ -1422,69 +1448,13 @@ fn runThread(ctx: *ThreadCtx) void {
         usage.cost.total *= tier_multiplier;
     }
 
-    const has_thinking = thinking.items.len > 0;
-    const has_text = text.items.len > 0;
-    const filled_count: usize = (if (has_thinking) @as(usize, 1) else @as(usize, 0)) +
-        (if (has_text) @as(usize, 1) else @as(usize, 0));
-
-    var content_slice: []ai_types.AssistantContent = undefined;
-    if (filled_count == 0) {
-        content_slice = allocator.alloc(ai_types.AssistantContent, 1) catch {
-            allocator.free(auth);
-            allocator.free(url);
-            ctx.deinit();
-            stream.completeWithError("oom result");
-            return;
-        };
-        content_slice[0] = .{ .text = .{ .text = "" } };
-    } else {
-        content_slice = allocator.alloc(ai_types.AssistantContent, filled_count) catch {
-            allocator.free(auth);
-            allocator.free(url);
-            ctx.deinit();
-            stream.completeWithError("oom building result");
-            return;
-        };
-        var idx: usize = 0;
-
-        if (has_thinking) {
-            content_slice[idx] = .{ .thinking = .{
-                .thinking = allocator.dupe(u8, thinking.items) catch {
-                    allocator.free(content_slice);
-                    allocator.free(auth);
-                    allocator.free(url);
-                    ctx.deinit();
-                    stream.completeWithError("oom building thinking");
-                    return;
-                },
-            } };
-            idx += 1;
-        }
-
-        if (has_text) {
-            content_slice[idx] = .{
-                .text = .{
-                    .text = allocator.dupe(u8, text.items) catch {
-                        for (content_slice[0..idx]) |*block| {
-                            switch (block.*) {
-                                .thinking => |t| allocator.free(t.thinking),
-                                else => {},
-                            }
-                        }
-                        allocator.free(content_slice);
-                        allocator.free(auth);
-                        allocator.free(url);
-                        ctx.deinit();
-                        stream.completeWithError("oom building text");
-                        return;
-                    },
-                },
-            };
-            idx += 1;
-        }
-
-        std.debug.assert(idx == filled_count);
-    }
+    const content_slice = assembledContent(allocator, assembled.items) catch {
+        allocator.free(auth);
+        allocator.free(url);
+        ctx.deinit();
+        stream.completeWithError("oom building result");
+        return;
+    };
 
     const api_dup = allocator.dupe(u8, model.api) catch {
         ai_types.deinitAssistantContent(allocator, content_slice);
@@ -2582,4 +2552,188 @@ test "openai_responses_api producer does not publish done while its own cleanup 
     openai_responses_api_releaseCleanupGate();
     try std.testing.expect(stream.waitForThread(5_000));
     try std.testing.expectEqualStrings("request cancelled", stream.getError().?);
+}
+
+const MockResponsesServer = struct {
+    server: compat.net.Server,
+    body: []const u8,
+    thread: ?std.Thread = null,
+    served: std.atomic.Value(bool) = .init(false),
+
+    fn stop(self: *MockResponsesServer) void {
+        if (self.thread) |thread| {
+            if (!self.served.load(.acquire)) {
+                if (compat.net.tcpConnect(compat.net.listenAddress(&self.server))) |opened| {
+                    var kick = opened;
+                    kick.close();
+                } else |_| {}
+            }
+            thread.join();
+            self.thread = null;
+        }
+        compat.net.closeServer(&self.server);
+    }
+
+    fn listen(body: []const u8) !MockResponsesServer {
+        const address = try compat.net.resolveAddress(std.testing.allocator, "127.0.0.1", 0);
+        return .{ .server = try compat.net.tcpListen(address, .{ .reuse_address = true }), .body = body };
+    }
+
+    fn baseUrl(self: *const MockResponsesServer, allocator: std.mem.Allocator) ![]u8 {
+        return std.fmt.allocPrint(allocator, "http://127.0.0.1:{d}", .{compat.net.listenAddress(&self.server).getPort()});
+    }
+
+    fn serve(self: *MockResponsesServer) void {
+        defer self.served.store(true, .release);
+        var conn = compat.net.accept(&self.server) catch return;
+        defer conn.stream.close();
+        var request: [32768]u8 = undefined;
+        var filled: usize = 0;
+        var declared: usize = 0;
+        var head_end: ?usize = null;
+        while (filled < request.len) {
+            const read = conn.stream.readSome(request[filled..]) catch return;
+            if (read == 0) return;
+            filled += read;
+            if (head_end == null) {
+                if (std.mem.indexOf(u8, request[0..filled], "\r\n\r\n")) |at| {
+                    head_end = at + 4;
+                    var lines = std.mem.splitSequence(u8, request[0..at], "\r\n");
+                    while (lines.next()) |line| {
+                        if (std.ascii.startsWithIgnoreCase(line, "content-length:")) declared = std.fmt.parseInt(usize, std.mem.trim(u8, line["content-length:".len..], " \t"), 10) catch 0;
+                    }
+                }
+            }
+            if (head_end) |end| if (filled >= end + declared) break;
+        }
+        var head_buffer: [256]u8 = undefined;
+        const head = std.fmt.bufPrint(&head_buffer, "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {d}\r\nConnection: close\r\n\r\n", .{self.body.len}) catch return;
+        conn.stream.writeAll(head) catch return;
+        conn.stream.writeAll(self.body) catch return;
+    }
+};
+
+const StreamedParts = struct {
+    kinds: std.ArrayList(u8) = .empty,
+    result: ?ai_types.AssistantMessage = null,
+
+    fn deinit(self: *StreamedParts, allocator: std.mem.Allocator) void {
+        self.kinds.deinit(allocator);
+        if (self.result) |*held| held.deinit(allocator);
+    }
+};
+
+fn streamResponsesBody(body: []const u8) !StreamedParts {
+    const allocator = std.testing.allocator;
+    var mock = try MockResponsesServer.listen(body);
+    defer mock.stop();
+    const base_url = try mock.baseUrl(allocator);
+    defer allocator.free(base_url);
+    mock.thread = try std.Thread.spawn(.{}, MockResponsesServer.serve, .{&mock});
+
+    const messages = [_]ai_types.Message{.{ .user = .{ .content = .{ .text = "hello" }, .timestamp = 0 } }};
+    const stream = try streamOpenAIResponses(.{
+        .id = "gpt-test",
+        .name = "gpt-test",
+        .api = "openai-responses",
+        .provider = "openai",
+        .base_url = base_url,
+        .reasoning = false,
+        .input = &.{"text"},
+        .cost = .{ .input = 0, .output = 0, .cache_read = 0, .cache_write = 0 },
+        .context_window = 1024,
+        .max_tokens = 16,
+    }, .{ .messages = &messages }, .{ .api_key = ai_types.OwnedSlice(u8).initBorrowed("test-key") }, allocator);
+    defer {
+        stream.deinit();
+        allocator.destroy(stream);
+    }
+    var parts = StreamedParts{};
+    errdefer parts.deinit(allocator);
+    while (stream.wait()) |event| {
+        var polled = event;
+        defer ai_types.deinitAssistantMessageEvent(allocator, &polled);
+        const kind: ?u8 = switch (event) {
+            .text_start => 't',
+            .text_end => 'T',
+            .thinking_start => 'r',
+            .thinking_end => 'R',
+            .toolcall_start => 'c',
+            .toolcall_end => 'C',
+            else => null,
+        };
+        if (kind) |byte| try parts.kinds.append(allocator, byte);
+    }
+    try std.testing.expect(stream.waitForThread(5_000));
+    if (stream.getError()) |message| std.debug.print("responses stream failed: {s}\n", .{message});
+    if (stream.getResult()) |result| parts.result = try ai_types.cloneAssistantMessage(allocator, result);
+    return parts;
+}
+
+const responses_text_then_call =
+    "data: {\"type\":\"response.output_item.added\",\"output_index\":0,\"item\":{\"type\":\"message\",\"id\":\"msg_1\"}}\n\n" ++
+    "data: {\"type\":\"response.output_text.delta\",\"output_index\":0,\"delta\":\"rea\"}\n\n" ++
+    "data: {\"type\":\"response.output_text.delta\",\"output_index\":0,\"delta\":\"dy\"}\n\n" ++
+    "data: {\"type\":\"response.output_item.added\",\"output_index\":1,\"item\":{\"type\":\"function_call\",\"id\":\"fc_1\",\"call_id\":\"call_1\",\"name\":\"record_quirk\",\"arguments\":\"\"}}\n\n" ++
+    "data: {\"type\":\"response.function_call_arguments.delta\",\"output_index\":1,\"item_id\":\"fc_1\",\"delta\":\"{\\\"note\\\":\\\"smoke\\\"}\"}\n\n" ++
+    "data: {\"type\":\"response.output_item.done\",\"output_index\":1,\"item\":{\"type\":\"function_call\",\"id\":\"fc_1\",\"call_id\":\"call_1\",\"name\":\"record_quirk\",\"arguments\":\"{\\\"note\\\":\\\"smoke\\\"}\"}}\n\n" ++
+    "data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":3,\"output_tokens\":4}}}\n\n";
+
+test "a responses text part is ended before the stream settles, even when no output item closes it" {
+    const body =
+        "data: {\"type\":\"response.output_text.delta\",\"output_index\":0,\"delta\":\"ready\"}\n\n" ++
+        "data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":3,\"output_tokens\":1}}}\n\n";
+    var parts = try streamResponsesBody(body);
+    defer parts.deinit(std.testing.allocator);
+    try std.testing.expectEqualStrings("tT", parts.kinds.items);
+    const result = parts.result orelse return error.TestExpectedResult;
+    try std.testing.expectEqual(ai_types.StopReason.stop, result.stop_reason);
+    try std.testing.expectEqualStrings("ready", result.content[0].text.text);
+}
+
+test "a responses text part ends before a tool call starts, and the settled message carries the call as tool use" {
+    var parts = try streamResponsesBody(responses_text_then_call);
+    defer parts.deinit(std.testing.allocator);
+    try std.testing.expectEqualStrings("tTcC", parts.kinds.items);
+    const result = parts.result orelse return error.TestExpectedResult;
+    try std.testing.expectEqual(ai_types.StopReason.tool_use, result.stop_reason);
+    try std.testing.expectEqual(@as(usize, 2), result.content.len);
+    try std.testing.expectEqualStrings("ready", result.content[0].text.text);
+    try std.testing.expectEqualStrings("record_quirk", result.content[1].tool_call.name);
+    try std.testing.expectEqualStrings("{\"note\":\"smoke\"}", result.content[1].tool_call.arguments_json);
+}
+
+test "each responses message opens a text part of its own, so a second message is not written into the first after it ended" {
+    const body =
+        "data: {\"type\":\"response.output_item.added\",\"output_index\":0,\"item\":{\"type\":\"message\",\"id\":\"msg_1\"}}\n\n" ++
+        "data: {\"type\":\"response.output_text.delta\",\"output_index\":0,\"delta\":\"one\"}\n\n" ++
+        "data: {\"type\":\"response.output_item.done\",\"output_index\":0,\"item\":{\"type\":\"message\",\"id\":\"msg_1\"}}\n\n" ++
+        "data: {\"type\":\"response.output_item.added\",\"output_index\":1,\"item\":{\"type\":\"message\",\"id\":\"msg_2\"}}\n\n" ++
+        "data: {\"type\":\"response.output_text.delta\",\"output_index\":1,\"delta\":\"two\"}\n\n" ++
+        "data: {\"type\":\"response.output_item.done\",\"output_index\":1,\"item\":{\"type\":\"message\",\"id\":\"msg_2\"}}\n\n" ++
+        "data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":3,\"output_tokens\":2}}}\n\n";
+    var parts = try streamResponsesBody(body);
+    defer parts.deinit(std.testing.allocator);
+    try std.testing.expectEqualStrings("tTtT", parts.kinds.items);
+    const result = parts.result orelse return error.TestExpectedResult;
+    try std.testing.expectEqual(@as(usize, 2), result.content.len);
+    try std.testing.expectEqualStrings("one", result.content[0].text.text);
+    try std.testing.expectEqualStrings("two", result.content[1].text.text);
+}
+
+test "a settled responses message keeps its parts in the order they streamed, a call before the text that follows it" {
+    const body =
+        "data: {\"type\":\"response.output_item.added\",\"output_index\":0,\"item\":{\"type\":\"function_call\",\"id\":\"fc_1\",\"call_id\":\"call_1\",\"name\":\"record_quirk\",\"arguments\":\"\"}}\n\n" ++
+        "data: {\"type\":\"response.function_call_arguments.delta\",\"output_index\":0,\"item_id\":\"fc_1\",\"delta\":\"{}\"}\n\n" ++
+        "data: {\"type\":\"response.output_item.done\",\"output_index\":0,\"item\":{\"type\":\"function_call\",\"id\":\"fc_1\",\"call_id\":\"call_1\",\"name\":\"record_quirk\",\"arguments\":\"{}\"}}\n\n" ++
+        "data: {\"type\":\"response.output_text.delta\",\"output_index\":1,\"delta\":\"after\"}\n\n" ++
+        "data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":3,\"output_tokens\":2}}}\n\n";
+    var parts = try streamResponsesBody(body);
+    defer parts.deinit(std.testing.allocator);
+    try std.testing.expectEqualStrings("cCtT", parts.kinds.items);
+    const result = parts.result orelse return error.TestExpectedResult;
+    try std.testing.expectEqual(@as(usize, 2), result.content.len);
+    try std.testing.expectEqualStrings("record_quirk", result.content[0].tool_call.name);
+    try std.testing.expectEqualStrings("after", result.content[1].text.text);
+    try std.testing.expectEqual(ai_types.StopReason.tool_use, result.stop_reason);
 }

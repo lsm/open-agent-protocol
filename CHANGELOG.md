@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+## [0.1.0-alpha.23] - 2026-10-18
+
+### Merged pull requests
+
+- **sdk: let a session's models request accept a degraded list** ([#1153](https://github.com/lsm/open-agent-protocol/pull/1153)): Lets reviewbot list Devin's models from Go.
+- **acp: list the agent's models from its model configOption** ([#1152](https://github.com/lsm/open-agent-protocol/pull/1152)): Lets reviewbot list Devin's models through OAP.
+- **protocol: read an integral sequence or timestamp_ms spelled 1.0 or 1e2** ([#1150](https://github.com/lsm/open-agent-protocol/pull/1150)): Closes #1142 (hub divergence D31).
+- **zig: give the adapter contract an admission step ahead of open** ([#1149](https://github.com/lsm/open-agent-protocol/pull/1149)): Part of #1128, step 2 (Zig contract).
+- **docs: refresh what the Zig 0.17 upgrade and this week's features left stale** ([#1148](https://github.com/lsm/open-agent-protocol/pull/1148)): Docs only.
+- **docs: name the Zig the compat layer wraps as 0.17** ([#1146](https://github.com/lsm/open-agent-protocol/pull/1146)): CLAUDE.md's architecture section still said the `compat/` layer wraps Zig 0.16 `std.Io` after #1116 moved the tree to 0.17.0 (`minimum_zig_version`).
+- **copilot: parse Copilot CLI's JSON-RPC 2.0 messages and its session events** ([#1145](https://github.com/lsm/open-agent-protocol/pull/1145)): Second Zig step toward a `copilot` backend (ledger: `research/copilot-cli-1.0.98-mapping.md`).
+- **adapter: frame a child's JSON-RPC by Content-Length as well as by line** ([#1143](https://github.com/lsm/open-agent-protocol/pull/1143)): First Zig step toward a `copilot` backend (ledger: `research/copilot-cli-1.0.98-mapping.md`).
+- **hub: decode a chunked request body in oapx serve --addr** ([#1140](https://github.com/lsm/open-agent-protocol/pull/1140)): Closes #1129 (hub divergence D21).
+- **serveendpoint: carry an open's metadata to the adapter** ([#1138](https://github.com/lsm/open-agent-protocol/pull/1138)): Part of #1127 (hub D9).
+- **zig: pin that an endpoint open's metadata reaches the adapter** ([#1137](https://github.com/lsm/open-agent-protocol/pull/1137)): Closes #1127 (hub D9).
+- **serve: answer schema_invalid for any well-formed envelope off the schema** ([#1141](https://github.com/lsm/open-agent-protocol/pull/1141)): Closes #1130 (hub D13).
+
 ## [0.1.0-alpha.22] - 2026-10-17
 
 ### Merged pull requests

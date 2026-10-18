@@ -100,6 +100,14 @@ An adapter entry takes exactly these members: `type`, `executable`, `args`,
 needs nothing but its name. Without `--config` the hub serves the built-in
 memory reference adapter alone.
 
+**A hub may refuse an entry it does not build** (owner, 2026-10-17, #1133). An
+entry whose `type`, or whose way of reaching its harness, the hub has no adapter
+for is refused at load, naming the entry, before anything is served. `goap`
+refuses an `oapx` entry and a `codex` entry naming an `endpoint`, both of which
+only `oapx` builds; under Decision 0038 `goap` is internal and is not obliged to
+build them. A document naming either is an `oapx` document, as one carrying
+`model_provider` is, so `examples/oap-serve.json` names neither.
+
 `model_provider` names a catalog row as a claude or codex entry's model provider (#361),
 and is `oapx`'s own under Decision 0038: Go's decoder refuses it as an unknown
 member, so a document carrying it is an `oapx` document. `oapx` translates it
@@ -528,7 +536,17 @@ same loop waits on one AFD poll rather than `poll` (#1073, `DESIGN.md` §8.6),
 and the three tests run there too.
 
 Every route that reads a body requires `Content-Type: application/json`, and
-the body is read as UTF-8 whatever `charset` the header names. RFC 8259 §11
+the body is read as UTF-8 whatever `charset` the header names. The gate is a
+property of the route, not of the length (owner, 2026-10-17, #1133): `open`,
+`submit`, `resolve`, `cancel`, `settings`, `work.start` and `work.send` are
+gated even when the request declares no body, and a route that reads none, such
+as `close` or a listing, is not gated even when it carries one. The media type is
+refused before the length is measured, so a wrong type on a body over 16 MiB is
+`415`, not `413`. Pinned by `a body-reading route is gated on its media type even
+with no body, and close, which reads none, is not`, `a listing carrying a body
+with a wrong media type is not gated, because a listing reads no body` and `a
+wrong media type is refused before the length is measured, so 415 outranks
+413`. RFC 8259 §11
 records that no `charset` parameter is defined for `application/json` — the
 media type registers no parameters at all — so a sender that names one is
 describing something the grammar does not carry, and a receiver that refuses it
@@ -976,19 +994,21 @@ removed. **That was false, and was measured rather than assumed.** The pinning t
   than judged, and narrowing it would be a policy change this table does not make.
 - **the media gate answered by the daemon itself, with nothing else wrong** — the third gate in
   `answer()` and the only refusal no `go/cmd/goap` test named, so the parity D26 records was pinned
-  in-process only. `TestHubAddrRefusesABodyWhoseMediaTypeIsNotJSONAndNothingElseIsWrong` sends five
+  in-process only. `TestHubAddrRefusesABodyWhoseMediaTypeIsNotJSONAndNothingElseIsWrong` sends six
   requests over a real socket, each with a **Host the hub accepts and no `Origin` at all**, so nothing
   but the media type can decide the answer. `text/plain` with a body is refused a **complete 415** —
   status, `Content-Length` match, `error.response`, `unsupported_media_type`, the fixed
   `open-agent-protocol` / `0.1` / `open-agent-protocol.agent-control-core` triple, and the synthetic
-  correlation `oap-error-N` replying to `oap-request-N`. **Three of the five are counterexamples**, and
-  they are what keep the first from passing on a build that refuses everything: `application/json` with
-  a body is not media-refused, `application/json; charset=utf-8` with a body is not media-refused —
-  so the real daemon agrees with the parameter parity D26 pinned against Go — and `text/plain` with **no
-  body declared** is not media-refused, because the gate reads length. **Three mutations fail it, each
-  on the case it should:** neutralising the gate answers `404` on the refused case, keying the gate on
-  the header instead of the length answers `415` on the body-less case, and admitting a parameter with
-  no `=` again answers `404` on `application/json; charset`. That third one is why that case is here —
+  correlation `oap-error-N` replying to `oap-request-N`, and so is `text/plain` with an **empty body on
+  the open route**, because the gate reads the route, not the length (D26). **Three of the six are
+  counterexamples**, and they are what keep the refused cases from passing on a build that refuses
+  everything: `application/json` with a body is not media-refused, `application/json; charset=utf-8`
+  with a body is not media-refused — so the real daemon agrees with the parameter parity D26 pinned
+  against Go — and `text/plain` on `GET /adapters`, a route that reads no body, is not media-refused.
+  **Mutations fail it on the case they should:** neutralising the gate answers `404` on the refused
+  case, keying the gate on the header instead of the route answers `415` on `GET /adapters`, keying it
+  on the length again passes the empty open body, and admitting a parameter with no `=` again answers
+  `404` on `application/json; charset`. That third one is why that case is here —
   without it, dropping the parameter validation was **invisible to this test**, which I found by running
   the mutation rather than by assuming it would be caught.
 - **the bound holding against a real process** —
@@ -1215,6 +1235,10 @@ exceptions stated once here rather than repeated per row:
   `response_too_large` for a result its frame limit cannot carry. All four
   exist because a pipe gives no back pressure and has one shape a socket does
   not; a port must not produce any of them over HTTP.
+- **The four decode codes are `400` over HTTP** (owner, 2026-10-17, #1133).
+  `malformed_json`, `schema_invalid`, `type_mismatch` and `invalid_payload`
+  carry no status where an operation's error list names them, and wherever one
+  is answered over HTTP its status is `400 Bad Request`, which both trees answer.
 - **The HTTP body gate answers three codes no operation owns.**
   `unsupported_media_type`, `request_too_large` and `request_read`, stated once
   in [the HTTP rules](#the-http-routes-and-sse-framing). `request_too_large` is
@@ -2044,7 +2068,7 @@ are "stamped with the revision the lister served it under", and both name
 | **Stdio controls, 2026-10-06** | `oapx serve --stdio` now serves `submit`, `resolve`, `cancel` and `settings`, each through the `Frontend` function the daemon route calls (`submitControl`, `resolveControl`, `cancelControl`, `settingsControl`), so the two transports answer one implementation. Zig: `submit, resolve and cancel answer over stdio as they do over HTTP, each correlated to its request` and `the control ops refuse as the HTTP routes do`. `events` followed in the next change (the row above). |
 | **No longer refused, 2026-10-06** | A subscribing open was refused over stdio, because the op discarded the subscription the hub registered and stdio had no `events` to drain it. It now answers, then streams that subscription on the open's own id, as Go's `serveOpen` does; it counts against the frontend's subscription ceiling and is `busy` past it, and an answer too large to frame closes the subscription and is `response_too_large`, rolling an unnamed session back. Zig: `a subscribing open answers, then streams the session's envelopes on the open's own id` and `a subscribing open past the subscription ceiling is busy, and one whose answer cannot be framed streams nothing`. |
 
-### D27 — an `oapx` registry entry is served by `oapx serve` and refused by `goap serve`
+### D27 — an `oapx` registry entry is served by `oapx serve` and refused by `goap serve` — CLOSED
 
 | | |
 | --- | --- |
@@ -2052,6 +2076,7 @@ are "stamped with the revision the lister served it under", and both name
 | **Go does** | Refuses the entry: `buildAdapter` has no `oapx` case, because there is no Go adapter over oapx's loop. |
 | **Zig does** | Builds it from the same production runtime `oapx serve agent --backend oapx` uses. |
 | **Why it matters** | One document is not portable between the two hubs once it names an `oapx` entry, which is why `examples/oap-serve.json` does not name one. Closing it needs a Go adapter that spawns `oapx serve agent --backend oapx` over the endpoint binding, which is adapter work rather than hub work. |
+| **Now** | Not a divergence: [the registry](#the-registry) lets a hub refuse an entry it does not build, and `goap`'s refusal is that rule (owner, 2026-10-17, #1133). |
 
 ### D28 — a control that finds its session closed answered `unknown_session` in Zig — CLOSED
 
@@ -2061,7 +2086,7 @@ are "stamped with the revision the lister served it under", and both name
 | **Zig did** | `Hub.submit`, `compact`, `resolve`, `resolveCall` and `cancel` released the session on the adapter's `SessionClosed` and answered `404 unknown_session`. |
 | **Now** | They release it and answer `session_closed`, as `Hub.updateSettings` already did. Pinned by `a control the adapter finds closed answers session_closed and releases the session, as Go does`. A later request for the released session is `unknown_session` in both trees. |
 
-### D29 — a `codex` entry naming an `endpoint` relays to Codex's shared app-server in `oapx serve` and is refused by `goap serve`
+### D29 — a `codex` entry naming an `endpoint` relays to Codex's shared app-server in `oapx serve` and is refused by `goap serve` — CLOSED
 
 | | |
 | --- | --- |
@@ -2069,6 +2094,7 @@ are "stamped with the revision the lister served it under", and both name
 | **Go does** | Refuses a `codex` entry with an `endpoint`: there is no Go client for the WebSocket Codex's managed daemon speaks on its control socket. |
 | **Zig does** | Accepts `unix://<path>`: the adapter starts `oapx codex-bridge --sock <path>` in place of `codex app-server`, and the bridge relays the adapter's newline-framed JSON-RPC to that socket's WebSocket. Any other scheme is refused, and so is an entry naming an `endpoint` beside an `executable` or `args`. The relay runs whatever Codex version the daemon is (0.159.2 when probed), not the pinned corpus version: the adapter does not check it. |
 | **Why it matters** | A document naming a codex `endpoint` is not portable between the hubs. Closing it needs the same relay in Go. |
+| **Now** | Not a divergence: [the registry](#the-registry) lets a hub refuse a way of reaching a harness it does not build, and `goap`'s refusal is that rule (owner, 2026-10-17, #1133). |
 
 ### D30 — the work verbs are served by `oapx serve` and not by `goap serve` (closed 2026-10-07)
 
@@ -2159,7 +2185,12 @@ are "stamped with the revision the lister served it under", and both name
 | **How it is tested, and what is not** | A Zig unit test sends an open naming a pinned source and an unconfigured one, and asserts on what the adapter was handed: the operator's `endpoint`, the operator's `environment` values kept even where the wire named the same variables, the caller's bare names appended, and the unconfigured source verbatim. |
 | **The differential case** | **Pinned.** The scenario `a source the operator pinned reaches the adapter as the operator declared it` in `go/cmd/goap/hub_parity_test.go` runs both hubs with one `--config` declaring `pinned` as a `local` source, and checks three opens on each: one naming `pinned` by id opens with the operator's `display_name` and `endpoint`, one adding a wire `display_name` to it is refused `unsupported_feature`, and an unconfigured source passes through as the host wrote it. The harness gained a per-scenario config for it; it was the gap that kept this row the only record of the divergence. |
 
-### D23 — the media gate sits on the head, so 413 wins where Go answers 415
+### D23 — the media gate sat on the head, so 413 won where Go answers 415 — CLOSED
+
+**Now** (owner, 2026-10-17, #1133): Go's order is the draft's. The Zig gate refuses the media type
+before the length is measured, so both trees answer `415`; the head parser no longer refuses an
+oversize body ahead of the gate. The rows below record how it was.
+
 
 | | |
 | --- | --- |
@@ -2170,7 +2201,13 @@ are "stamped with the revision the lister served it under", and both name
 | **Why it is not decided here** | Choosing would be **settling a precedence the draft does not state**, and a wrong-media *body* has to be either refused or buffered to get there, which is a routing decision this ledger does not own. A draft row saying "a wrong media type is refused before the body is measured" or the reverse would close it; that is a spec change and unaccepted. |
 | **Anchor correction** | These citations were **wrong on arrival on `main`, not staled by later edits.** They landed on `main` in the squash `1ee4a53` (#685), and in **that commit's own tree** `answer()` already stood at `:378` and the media gate at `:381`, while `:364` was a struct field (`refusal: Refusal,`) and `:367` was blank — so `:364`/`:367` were off by 14 the moment they landed. `git diff 1ee4a53 d63e6d8 -- zig/src/hub/http.zig` is **empty**, where `d63e6d8` is the tip of `main` immediately before the #730 squash, so nothing had shifted them as of the point these rows were written. That comparison is **deliberately bounded to `d63e6d8`** and is **not** a claim that the file is unchanged since: #730 has since added 61 lines to `http.zig`, so the same diff against a later `main` is no longer empty. The narrower statement is the one carrying the point — the anchors were off by 14 on arrival, not stale afterwards. They appear to have been carried over from an unlanded pre-squash branch revision, where the numbers did match that tree; that revision is not reachable from `main`, so it is deliberately **not** cited here, and the checkable fact is the squash itself. The two anchors are now given separately on purpose, so a reader following either lands on what the claim names. |
 
-### D26 — the media gate's predicate differs between the trees in two corners the draft leaves open
+### D26 — the media gate's predicate differed between the trees in two corners the draft left open — CLOSED
+
+**Now** (owner, 2026-10-17, #1133): Go's predicate is the draft's. The Zig gate applies to the routes
+that read a body (`routes.readsBody`), whatever the length, so both corners below now answer as Go
+does: an empty `open` with a wrong type is `415`, and a listing carrying a wrong-typed body is served.
+The two corner tests were rewritten to those answers. The rows below record how it was.
+
 
 | | |
 | --- | --- |
@@ -2209,25 +2246,19 @@ are "stamped with the revision the lister served it under", and both name
 | **Since then** | The code is now tested on the `submit` route in both trees: Go by `TestOpErrorCodesMirrorHTTP` and `TestRequestBudgetMatchesHTTP` in `servestdio`, over stdio and HTTP; Zig by `a body that is not a JSON envelope is malformed_json, and an envelope of the wrong type is type_mismatch` in `daemon.zig`, through the gate the stdio frontend shares. Only Zig's `open` route is still reached by no test: its open-gate table has no wrong-type case. |
 | **What closes it** | A wrong-type case in Zig's open-gate table, the counterpart of Go's. Until then the `open` route's emission is correct by inspection and unproven by execution on the Zig side, and a row that claimed coverage it does not have would be the same defect as a name that claims an unexercised check. |
 
-### D24 — five codes the operation rows name without a status a port may use
+### D24 — five codes the operation rows named without a status a port may use — CLOSED
 
 | | |
 | --- | --- |
-| **The rule, which is not in doubt** | `drafts/hub.md:743-748`: the stdio transport "answers four codes no HTTP route can" — `unknown_op`, `invalid_request`, `busy`, `response_too_large` — and "a port must not produce any of them over HTTP". The HTTP refusal table therefore carries no row for those four, and asserts all four null. |
-| **The scope that overlaps it** | `adapters` at `:769`, `capabilities` at `:778` and `open` at `:839` name `invalid_request`, `malformed_json`, `schema_invalid`, `type_mismatch` and `invalid_payload` in their error lists **with no status attached**; the first status any of those lists pins belongs to a later code, `unknown_adapter` (404) at `:841`. Naming a code in an operation's error list says what the operation refuses, not what status a port may answer. |
-| **The emission path, for the code both scopes name** | **Every `invalid_request` either hub frontend emits is from the stdio dispatcher** — `go/serve/servestdio/ops.go:1067, 130, 187, 257` — and `servehttp` emits none, handling invalid payload, unreadable and malformed bodies, and schema failures at `server.go:197, 245, 327, 749-775` instead. Outside the hub frontends the endpoint surface emits it too, at `go/serve/serveendpoint/dispatch.go:46, 52, 522` and `replay.go:58`; those are a different role and a different table, and an earlier revision of this row claimed a universal "every `invalid_request` Go emits", which is false at those sites. The parameter-shape check that produces it is a property of a stdio request object where an op declares which parameters it takes; a port declares a path and a method. |
-| **The current scope of this table** | **Eight** distinct codes are named by operation rows without a status and are therefore **not rows here**, asserted null: the four of `:743-748` plus `malformed_json`, `schema_invalid`, `type_mismatch` and `invalid_payload`. `invalid_request` appears in both halves of that sum and is counted once, which is why five operation-row names plus four stdio-only names is five and eight, not nine. A table row is an authorisation to emit, and the draft has authorised none of the eight. Go's `servehttp` answers three of the four decode codes at 400 (`server.go:764-779`) and `invalid_payload` at 400 separately (`server.go:197`), which is evidence about Go and not a pin — Decision 0032 does not count it as protocol behaviour. |
-| **A proposed change, unaccepted** | Anyone wanting a port to answer any of these eight would be **changing the spec**, by pinning statuses in the operation rows and relaxing `:743-748` for the four it names. **That change is unaccepted**, and nothing in this table authorises emitting any of the eight while the present text stands. This row records the current scope and the fact that a change would be needed; it asks the owner for nothing the existing rule leaves open. |
+| **What it was** | The stdio transport answers four codes no HTTP route can (`unknown_op`, `invalid_request`, `busy`, `response_too_large`), and the operation error lists also named `malformed_json`, `schema_invalid`, `type_mismatch` and `invalid_payload` with no status attached. Eight codes, `invalid_request` counted once, therefore had no status a port might answer, and Zig's refusal table asserted all eight null. Go's `servehttp` answered the four decode codes at 400, which was evidence about Go rather than a pin. |
+| **Now** | Pinned (owner, 2026-10-17, [#1133](https://github.com/lsm/open-agent-protocol/issues/1133)): the four decode codes are `400` over HTTP, stated beside the stdio-only rule, and Zig's `refusal_statuses` carries them at that status. The four stdio-only codes are unchanged: a port must not produce any of them over HTTP, and Zig's table still asserts them null. |
 
-### D25 — four decode codes are answered 400 by Go and pinned by nothing, and one has no Zig hub emission
+### D25 — four decode codes were answered 400 by Go and pinned by nothing, and one has no Zig hub emission — CLOSED
 
 | | |
 | --- | --- |
-| **What the draft says** | `malformed_json`, `schema_invalid`, `type_mismatch` and `invalid_payload` are named bare in the operation error lists at `:839-841`, `:931`, `:951` and `:970`, where the `(400)` parenthetical attaches to `scope_mismatch`, a later entry. **No status is pinned for any of the four.** |
-| **What Go does** | `servehttp/server.go:764-779` answers `malformed_json`, `schema_invalid` and `type_mismatch` at 400, and `invalid_payload` at 400 from a separate site, `server.go:197`, which is the payload decode in `handleOpen` and not the shared reader. |
-| **What Zig does, and the gap** | The Zig hub answers the first three — `zig/src/hub/stdio.zig:655-671` — and has **no `invalid_payload` emission site anywhere under `zig/src/hub/`**: the only `invalid_payload` **emission sites** in the Zig tree are in the endpoint-role adapter at `zig/src/adapter/endpoint.zig:243, 349, 355`, which is a different role. The literal also appears in test and assertion code — `endpoint.zig:1435` and this ledger's own null-assertion list at `zig/src/hub/stdio.zig:2396` — so the claim is about emission, not about the string; an earlier revision said "the only in the Zig tree", which is false at head. Go's stdio dispatcher does emit it (`go/serve/servestdio/ops.go:332`). So a payload that will not decode as a `session.open.request` is answered by Go and **not** by the Zig hub. That is an implementation gap on the Zig side, recorded rather than closed: emitting it over HTTP would be a port producing a code this table does not authorise, which is the change D24's last row says is unaccepted. The gap is named so it is not silent, and no behaviour is invented to fill it. |
-| **Why they are not rows here** | A row authorises a port to answer, and the draft pins no status, so the four are asserted null like the stdio-only set — see D24. Go's behaviour is the evidence and the draft is the decision, so following Go here would be following a tree rather than the page. |
-| **What would close it** | Pinning the four in the operation error lists, which is a spec change and unaccepted. Until then the gap is here rather than silent, and a port that needs to answer them cannot without that change. |
+| **What it was** | No status was pinned for `malformed_json`, `schema_invalid`, `type_mismatch` or `invalid_payload`; Go answered all four at 400 (`servehttp/server.go`), and the Zig hub answered the first three and had no `invalid_payload` emission site under `zig/src/hub/`. |
+| **Now** | Closed with D24 (owner, 2026-10-17, #1133): the four are pinned `400` over HTTP. `invalid_payload` still has no Zig hub emission site, and Go's sites run after schema validation, so neither tree is known to reach it; the pin authorises the status without requiring an emission. |
 
 ### D4 — the registry's `journal_capacity` was hub-wide in Zig, per-adapter in Go — FIXED
 
