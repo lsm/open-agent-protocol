@@ -62,7 +62,10 @@ not been surveyed.
 
 ## Proposal
 
-1. **Adapter to endpoint.** Do not add a push channel. After each pump, the
+1. **Adapter to endpoint.** Answered by
+   [triggered-runs.md](triggered-runs.md#delivery): adapters push session
+   events, so the endpoint does not depend on a pump. The comparison below
+   remains the fallback for a harness with no push. After each pump, the
    endpoint compares the adapter's `State` with the last state it published
    for that session, and emits `session.state.updated` when
    `current_model_id`, `reasoning_level` or `compaction_policy` differ. It

@@ -162,7 +162,8 @@ over `stream-json` against the `providertest` loopback.
    `trigger` member. That event is the run's admission and its start at once,
    and it is the run's sequence 1.
 2. After that, every rule of Decisions 0001, 0002, 0007 and 0013 applies
-   unchanged: contiguous sequence, tools, interactions, cancel evidence, steer
+   unchanged except admission, which rule 1 replaces, since a triggered run
+   has no submit and no admission response: contiguous sequence, tools, interactions, cancel evidence, steer
    where advertised, and one absorbing terminal. The one exception is
    Decision 0007's admission order, which rule 2 under *One run executes at a
    time* amends.
@@ -354,7 +355,9 @@ the run the fire triggers names it in `trigger.task_id`.
   recording.
 - **`session.task.output.request {session_id, task_id, from?}`** answers
   `{output, next, truncated, ended}`.
-  - `from` and `next` are byte offsets into the task's output.
+  - `from` and `next` are byte offsets into the task's UTF-8 output. `next`
+    always falls on a code-point boundary, so `output` never ends mid
+    character, and a `from` that does not is refused `invalid_request`.
   - `truncated` says bytes before `from` are gone.
   - An adapter over a harness that returns the whole output, as Claude does,
     slices it itself.
@@ -373,9 +376,9 @@ event. OpenCode's tasks are `emulated` from its synthetic completion messages,
 and cancelling them and reading their output are `unavailable`, because the
 job service is not on its HTTP API.
 
-No harness lets the host message a background agent: Claude's
-`send_task_message` is refused on the SDK connection. So OAP defines no
-request for it.
+Claude refuses `send_task_message` on the SDK connection, and no other
+harness is established to let the host message a background agent. So OAP
+defines no request for it.
 
 ## Schedules created by the host
 
