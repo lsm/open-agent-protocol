@@ -75,20 +75,29 @@ store. A host never builds one or compares two.
 
 ### 4. Each page is bounded and says so
 
-`limit` is 1 to 500, default 100. A page also stops before 4 MiB of entries,
-so one envelope always fits the hub's frame limit. A page that stopped early
-has `complete: false` and a `next_cursor`. An entry larger than the page
-bound is returned alone with its text parts cut on a code-point boundary, and
-the entry carries `truncated: true`. No page is a silent prefix.
+`limit` is 1 to 500, default 100. A page also stops before 512 KiB of
+entries, so one response fits the smallest frame limit it can travel on: the
+`serve agent` stdio binding's 1 MiB (`drafts/endpoint-stdio.md`), well under
+the hub's 16 MiB. A page that stopped early has `complete: false` and a
+`next_cursor`. An entry larger than the page bound is returned alone, cut to
+fit: its text parts on a code-point boundary and any other part replaced by
+its kind alone, and the entry carries `truncated: true`. No page is a silent prefix.
 
 ### 5. A cursor that is gone is an explicit gap
 
-When the store has dropped the entry a cursor follows (a harness pruned it,
-or the store was rewritten), the read does not pretend to continue. It answers
-from the oldest entry still held, with `gap: {reason, resumed_at}`, where
-`reason` is `pruned` or `unknown_cursor`. This is the transcript's
-`*adapter.ReplayGap`. A cursor this endpoint did not mint, or one that does
-not decode, is refused `invalid_cursor`.
+A cursor records the entry it follows and that entry's position in the store.
+When the entry is no longer there, the read does not pretend to continue. It
+answers from the oldest entry still held, with `gap: {reason, resumed_at}`,
+and the reason is decided by position alone:
+
+- `pruned` when the oldest entry still held is past the cursor's position, so
+  the store dropped the front of the transcript;
+- `rewritten` otherwise: the position is still inside what the store holds but
+  the entry is not, so the store changed under the cursor (a Claude
+  compaction rewriting its jsonl is this case).
+
+This is the transcript's `*adapter.ReplayGap`. A cursor that does not decode,
+or that names another session, is refused `invalid_cursor` and is never a gap.
 
 ### 6. Compaction adds an entry, never removes one
 
@@ -126,7 +135,8 @@ reads again from its last cursor.
 
 - Schema, `go/protocol`, the validator, fixtures and `clients/ts` gain the
   pair, the entry, `invalid_cursor` on this request and the gap member.
-- Both hubs route it, and the hub's frame limit is the page bound's reason.
+- Both hubs route it. The page bound comes from the endpoint binding's frame
+  limit, the smaller of the two.
 - Each adapter's reader moves from `work.read` into its `transcript.load`,
   first `oapx` (the store is ours), then Claude, Codex, Pi, OpenCode and ACP.
 - A run cut off before it settled still shows the output it produced, since
