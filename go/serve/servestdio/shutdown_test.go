@@ -194,3 +194,20 @@ func TestOnlyAGracefulShutdownThatDrainedRunsWaitsOnPumps(t *testing.T) {
 		t.Fatal("a force shutdown counted as drained, so its pumps would be waited on")
 	}
 }
+
+func TestAProgressProbeThatSeesTheDrainEndStillWaitsOnPumps(t *testing.T) {
+	hub := newTestHub(t, 64, 64)
+	openSession(t, hub, "busy")
+	server, err := New(hub, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	server.stopping.mode = protocol.ShutdownGraceful
+	server.stopping.watching = true
+	if _, werr := server.shutdownOp(context.Background(), requestLine{Op: opShutdown}); werr != nil {
+		t.Fatalf("progress probe refused: %+v", werr)
+	}
+	if !server.stopping.drained() {
+		t.Fatal("a probe that finished a watched drain did not count as drained, so teardown would drop the pumps' terminals")
+	}
+}

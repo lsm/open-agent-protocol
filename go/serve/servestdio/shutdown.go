@@ -142,6 +142,9 @@ func (s *Server) shutdownOp(ctx context.Context, request requestLine) (json.RawM
 			go s.awaitDrained(ctx, st)
 		}
 	} else {
+		if st.watching {
+			st.flushed = true
+		}
 		st.finishLocked()
 	}
 	return marshalResult(protocol.EndpointShutdownResponse{Outcome: outcome, ActiveRuns: runs, Lost: lost})
