@@ -21,9 +21,12 @@ npm's OIDC trusted publishing (`id-token: write`, `npm publish --provenance`),
 so the registry must already know this workflow as a trusted publisher for each
 package. Only the repository owner can arrange that: create the `oap-sdk`
 organization on npm, then register `lsm/open-agent-protocol`'s
-`release-binaries.yml` as the trusted publisher on each `@oap-sdk` package.
-Until then a release reaches GitHub and not npm, and a failed `publish-npm` is
-expected rather than a regression.
+`release-binaries.yml` as the trusted publisher on each `@oap-sdk/cli-<platform>`
+package and on the main package, which is published unscoped as `oap-sdk` and
+needs its own ownership and trusted-publisher setup. Until then a release
+reaches GitHub and not npm, and two red jobs on every tag are expected rather
+than a regression: `publish-npm`, and the release smoke's `Published npm
+package`, which runs after a failed publish and finds nothing to install.
 
 ## The steps
 
