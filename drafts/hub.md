@@ -718,7 +718,7 @@ needs a whole-body deadline, which is not what either tree has.
 the same for a path no pattern matches, and the draft's codes are
 `invalid_request`, `unknown_adapter` and `unknown_session` — none of which is
 "this URL does not exist". So the answer carries no `error.response` envelope.
-The fourteen core routes and the seven work routes are written in both trees (D30 closed): Zig dispatches each to the same
+The fourteen core routes and the seven work routes are written in both trees (D30 closed), and a fifteenth core route, `GET /sessions/{id}/transcript`, is Zig's alone until Go serves [transcript](#transcript): Zig dispatches each to the same
 `Frontend` operation the stdio op runs, so an answer's shape is shared rather
 than written twice. A path that is a route asked with another method answers
 `405 Method Not Allowed` with an `Allow` header naming the one it takes, which
@@ -1240,8 +1240,9 @@ never connects overflows exactly as a slow consumer does, and the adopter reads
 
 ## The operations
 
-Fourteen ops. Each row gives the request line's parameters, the answer, and the
-errors. A refusal the row does not name is `internal` on both, with two
+Fourteen ops both trees serve, and a fifteenth, [transcript](#transcript), that
+only Zig serves so far. Each row gives the request line's parameters, the
+answer, and the errors. A refusal the row does not name is `internal` on both, with two
 exceptions stated once here rather than repeated per row:
 
 - **The stdio transport answers four codes no HTTP route can.** `unknown_op` for
