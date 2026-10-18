@@ -52,10 +52,6 @@ pub fn decode(arena: std.mem.Allocator, line: []const u8) !Record {
     };
 }
 
-fn sameRun(a: Record, b: Record) bool {
-    return std.mem.eql(u8, a.session_id, b.session_id) and std.mem.eql(u8, a.run_id, b.run_id);
-}
-
 fn compact(arena: std.mem.Allocator, all: []const Record) ![]Record {
     var sessions: std.ArrayList([]const u8) = .empty;
     for (all) |record| {
@@ -222,8 +218,9 @@ pub const Memory = struct {
         defer scratch.deinit();
         const all = try std.mem.concat(scratch.allocator(), Record, &.{ self.records.items, &.{owned} });
         const kept = try compact(scratch.allocator(), all);
-        self.records.clearRetainingCapacity();
-        try self.records.appendSlice(arena, kept);
+        var next: std.ArrayList(Record) = .empty;
+        try next.appendSlice(arena, kept);
+        self.records = next;
     }
 
     fn memoryOpenRuns(ctx: *anyopaque, arena: std.mem.Allocator, session_id: []const u8) anyerror![]Open {
