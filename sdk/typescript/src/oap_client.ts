@@ -714,7 +714,10 @@ class OapAgentApi {
         || (reasoning !== undefined && reasoning !== session.reasoning)
         || (maxTokens !== undefined && maxTokens !== session.maxTokens);
       if (changed) unsupported("changing the tools, reasoning effort or output limit of a session already open");
-      if (request.tools !== undefined) session = { ...session, tools: request.tools };
+      if (request.tools !== undefined) {
+        session = { ...session, tools: request.tools };
+        this.openSessions.set(sessionId, session);
+      }
     } else {
       const opened = await this.transport.request(OAP_AGENT_PROFILE, "session.open.request", {
         session_id: sessionId,

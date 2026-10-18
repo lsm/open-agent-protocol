@@ -54,6 +54,11 @@ test("agent tools and settings travel over OAP, and temperature and provider cal
     const spare = { name: "spare", description: "unused", parameters_schema_json: '{"type":"object","properties":{}}' };
     await client.agent.run({ ...reused, tools: [lookup, spare], options: { session_id: "paired" } });
     await client.agent.run({ ...reused, tools: [{ ...spare, parameters_schema_json: '{ "properties": {}, "type": "object" }' }, lookup], options: { session_id: "paired" } });
+    const later: unknown[] = [];
+    const replacement = { ...lookup, execute: (args: Record<string, unknown>) => { later.push(args); return "replaced"; } };
+    await client.agent.run({ ...reused, tools: [replacement], options: { session_id: "tooled" } });
+    await client.agent.run({ ...reused, options: { session_id: "tooled" } });
+    assert.equal(later.length, 2, "a run without tools uses the callbacks the latest run on the session supplied");
     assert.equal(invoked.length, 6, "a later run on a session uses the tools it was opened with");
     await assert.rejects(() => client.agent.run({ ...reused, options: { session_id: "tooled", reasoning_effort: "high" } }),
       (error: unknown) => error instanceof OapUnsupportedFeatureError);
