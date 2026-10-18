@@ -53,10 +53,6 @@ const discard = struct {
 };
 
 const bad_request_codes = [_][]const u8{
-    "malformed_json",
-    "schema_invalid",
-    "type_mismatch",
-    "invalid_payload",
     "invalid_request",
     "invalid_steer_target",
 };
