@@ -445,29 +445,37 @@ open question answered here:
   `session.state.updated` comes from the same channel.
 - **The hub** journals a triggered run like any run, so its replay and
   resume are a run's.
-- **A new session subscription.** A hub subscription today ends at its run's
-  terminal envelope ([hub.md](hub.md)), so nothing in it can carry a run
-  nobody subscribed to, or an event between runs. The hub gains a session
-  subscription:
-  - It is `events` with `scope: "session"`, and it lasts until the session
-    closes, it overflows, or the client ends it.
-  - It carries every run's envelopes as `envelope` lines naming their
-    `run_id` and run `sequence`, as today. A triggered run's lines start at
-    its `run.started`.
-  - It carries session events as `session-envelope` lines, with a
-    `session_sequence` in place of `sequence`, so a session sequence is
-    never mistaken for a run cursor.
-  - Session events are delivered live and not replayed, as
-    [harness-initiated-state.md](harness-initiated-state.md) proposes. A host
-    that reconnects reads `session.state.tasks`, and resumes a run through
-    the run's own cursor.
+- **A subscription that follows the session.** A hub subscription today ends
+  at its run's terminal envelope ([hub.md](hub.md)), so nothing in it can
+  carry a run nobody subscribed to. This reuses the recorded T2 design in
+  [staged-units-graduation.md](staged-units-graduation.md) rather than a new
+  one:
+  - A host subscribes with `?follow=session` (a `follow` flag on the stdio
+    `events` op). A subscription without it keeps today's behaviour exactly.
+  - Every line is an `envelope` line, and scope is read from the envelope's
+    own members, never from `sequence`: one carrying `run_id` advances that
+    run's cursor, one carrying `session_id` without `run_id` is
+    session-scoped and touches no run cursor. Session events therefore carry
+    their session-domain `sequence`, as
+    [harness-initiated-state.md](harness-initiated-state.md) proposal 3
+    delivers them.
+  - Before leaving a run's domain the hub writes `oap-run-boundary` for it,
+    and a triggered run's lines start at its `run.started`.
+  - One change to T2: a following subscription does not end at a terminal
+    with no later-admitted run, because a trigger can admit one at any time.
+    It writes `oap-run-boundary` and stays open until the session closes, it
+    overflows, or the client ends it, and only then writes `oap-stream-end`.
+    The T2 section records this.
+  - Session events are delivered live and not replayed. A host that
+    reconnects reads `session.state.tasks`, and resumes a run through the
+    run's own cursor and `?run=`.
 
 ## Where it lands
 
 Each step below is one or more pull requests.
 
 1. **Session-event channel:** the adapter push in both trees, the endpoint
-   publishing, and the hub's session subscription, with `drafts/hub.md`
+   publishing, and the hub's following subscription, with `drafts/hub.md`
    updated in the same change and the memory adapters driving it in tests.
 2. **Wire and validator:**
    - schema members and events: `run.started.trigger`, `activeRun.trigger`,

@@ -2822,7 +2822,10 @@ observation), Hermes `queued` under `busy_input_mode=queue`.
   landed, and both clients read a terminal as the stream's clean end. Under
   T2 a following subscription (`?follow=session`, below) continues past a
   terminal into any later-admitted run's domain, and when the daemon ends
-  a stream on purpose (a terminal with no later-admitted run, a terminal
+  a stream on purpose (a terminal with no later-admitted run on a
+  subscription that does not follow, since a following one now stays open
+  for a run a trigger may admit, as [triggered-runs.md](triggered-runs.md)
+  records; a terminal
   on a subscription that does not follow, or the session closed) it
   writes an explicit
   `event: oap-stream-end` signal (`run_id`, `last_sequence`) before
