@@ -10,7 +10,8 @@ runs, and that:
 - background tasks, schedules and restarts are designed now rather than
   deferred.
 
-What remains open is listed at the end.
+Nothing in the design is left open. What each adapter still has to record
+against its pin is listed under *Where it lands*.
 
 Base protocol: `open-agent-protocol` version `0.1`
 Profile: `open-agent-protocol.agent-control-core`
@@ -68,6 +69,18 @@ over `stream-json` against the `providertest` loopback.
 - A foreground `Bash` call that runs past a few seconds also emits
   `task_started` and `task_notification`. These frames alone do not mean
   background work.
+- **Cancelling crons from the host.** The model cancels any cron through
+  `CronDelete`. From the host side:
+  - **A durable cron:** removing its entry from
+    `.claude/scheduled_tasks.json` cancels it. The scheduler watches the file,
+    and the removed one-shot never fired while a session-only cron with the
+    same schedule did.
+  - **A session-only cron:** the host has no path. No control request or
+    slash command reaches it. `stop_task` with the cron's id answers
+    `success` and leaves the cron scheduled, as a later `CronList` shows.
+- **Messaging a background agent.** `send_task_message` to a running
+  background agent answers `Unsupported control request subtype:
+  send_task_message` on this connection.
 
 **DeepSeek harness `rc.2`**: the runtime's own session log of the
 `background-job` run.
@@ -122,8 +135,18 @@ over `stream-json` against the `providertest` loopback.
   completions, loop and heartbeat wake-ups, and kanban events each claim an
   idle session and run a turn through `_run_prompt_submit`; a racing user
   prompt wins. `background.complete` and `cron.changed` are events.
-- **OpenCode** registers a session `wake`, which was not confirmed to start a
-  turn. **pi** has no trigger. **ACP** has no turn an agent starts without
+- **OpenCode v2.0.32** (`packages/core/src/session/session.ts`,
+  `subagent-completion.ts`, `tool/plugin/shell.ts`, `execution/restart.ts`):
+  - When a background shell command or a background subagent ends, OpenCode
+    writes a synthetic message into the owning session through
+    `sessions.synthetic`. That call resumes the session unless `resume: false`
+    is passed, which only restart notices do. So a completion starts a turn on
+    an idle session.
+  - A subagent's message carries `metadata.source: "subagent"`.
+  - Background shells still running when the server restarts are reported
+    cancelled.
+  - The job service is not exposed on the HTTP API the adapter speaks.
+- **pi** has no trigger. **ACP** has no turn an agent starts without
   `session/prompt`.
 
 ## Triggered runs
@@ -164,6 +187,7 @@ How each harness's native origin maps to a kind:
 | Hermes | a background completion | `background_task` |
 | Hermes | a loop or heartbeat wake-up | `schedule` |
 | Hermes | a kanban or delegation event | `message` |
+| OpenCode | a synthetic shell or subagent completion | `background_task` |
 
 An adapter tells a triggered turn from its own submission with the
 submission's echo:
@@ -318,12 +342,18 @@ the run the fire triggers names it in `trigger.task_id`.
 | feature | Claude 2.1.302 | DeepSeek `rc.2` (stdio SDK server) | Codex 0.163.0 |
 | --- | --- | --- | --- |
 | `session.tasks` | `native`: task frames, `background_tasks_changed` | `emulated`: `job/registered`, `job/settled` | not established: `thread/backgroundTerminals/list` exists (experimental), its notifications were not read |
-| `session.task.cancel` | `native`: `stop_task` (commands, agents) | `unavailable`: `job.kill` is not on this surface | not established: `thread/backgroundTerminals/terminate` exists (experimental) |
+| `session.task.cancel` | `native`: `stop_task` (commands, agents); not crons, where it answers `success` and does nothing | `unavailable`: `job.kill` is not on this surface | not established: `thread/backgroundTerminals/terminate` exists (experimental) |
 | `session.task.output` | `native`: `get_task_output` (commands, monitors) | `unavailable`: `job.follow` is not on this surface | not established |
-| schedules | `emulated`: from `CronCreate`/`CronDelete` results and the Stop hook's `session_crons`; not cancellable from the host | not on this surface | none found |
+| schedules | `emulated`: from `CronCreate`/`CronDelete` results and the Stop hook's `session_crons`. Cancel is `emulated` for a durable cron, by removing its entry from `.claude/scheduled_tasks.json`, and `unavailable` for a session-only cron | not on this surface | none found |
 
 Hermes's task surface is not established beyond its `background.complete`
-event.
+event. OpenCode's tasks are `emulated` from its synthetic completion messages,
+and cancelling them and reading their output are `unavailable`, because the
+job service is not on its HTTP API.
+
+No harness lets the host message a background agent: Claude's
+`send_task_message` is refused on the SDK connection. So OAP defines no
+request for it.
 
 ## Schedules created by the host
 
@@ -410,26 +440,21 @@ Each step below is one or more pull requests.
 4. **Claude, both trees:**
    - declare `perTaskStopAffordance`;
    - project tasks and schedules;
-   - map `stop_task` and `get_task_output`;
+   - map `stop_task` and `get_task_output`, but never `stop_task` for a
+     cron;
+   - cancel a durable cron by removing its entry from
+     `.claude/scheduled_tasks.json`, and report a session-only cron
+     `cancellable: false`;
    - make every turn without the adapter's echo a triggered run, using the
      mapping table above;
    - add corpus cases from the recordings above: idle notification, notice
-     ahead of a queued prompt, fold, cron fire, stop and output.
+     ahead of a queued prompt, fold, cron fire, stop, output, and a durable
+     cron cancelled through its file.
 5. **DeepSeek, both trees:**
    - project jobs as tasks;
    - make a turn that starts with no reserved run a triggered run;
    - record past `job/settled`, through the runtime's own turn and the submit
      race.
-6. **Codex and Hermes:** triggered runs from their wake paths, and Codex
-   background terminals as tasks. Each pin needs its own recording first.
-
-## Still open
-
-- **OpenCode's session `wake`:** whether it starts a turn nothing submitted
-  needs a run against the pin.
-- **Claude's `send_task_message`** lets a host message a background agent. It
-  was read from the binary, not recorded, so this draft does not define a
-  request for it.
-- **Removing a harness's schedules from the host on Claude:** there is no
-  control for it, only the model's `CronDelete`, so Claude schedule tasks
-  report `cancellable: false`.
+6. **Codex, Hermes and OpenCode:** triggered runs from their wake paths,
+   Codex background terminals as tasks, and OpenCode completions as tasks.
+   Each pin needs its own recording first.
