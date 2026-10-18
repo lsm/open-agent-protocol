@@ -1058,6 +1058,20 @@ pub const Hub = struct {
         return false;
     }
 
+    pub const TranscriptTarget = struct {
+        adapter: contract.Adapter,
+        request: contract.TranscriptRequest,
+    };
+
+    pub fn transcriptTarget(self: *Hub, arena: std.mem.Allocator, ref: NativeRef, cursor: ?[]const u8, limit: usize) std.mem.Allocator.Error!?TranscriptTarget {
+        if (ref.native_id.len == 0) return null;
+        const registered = self.find(ref.adapter) orelse return null;
+        if (registered.adapter.vtable.transcript_load == null) return null;
+        const directory = if (ref.directory.len > 0) ref.directory else registered.directory;
+        const kept_cursor: ?[]const u8 = if (cursor) |given| try arena.dupe(u8, given) else null;
+        return .{ .adapter = registered.adapter, .request = .{ .native_id = try arena.dupe(u8, ref.native_id), .directory = try arena.dupe(u8, directory), .cursor = kept_cursor, .limit = limit } };
+    }
+
     pub fn heldNative(self: *Hub, session_id: []const u8) ?NativeRef {
         const record = self.findBound(session_id) orelse return null;
         return .{ .adapter = record.adapter_name, .native_id = record.native_id, .directory = record.directory };

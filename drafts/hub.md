@@ -476,7 +476,7 @@ error. That is stated because the four reasons are the whole set.
 | The verb is `hub`, not `serve` | `TestServeWithoutRoleNamesHub` |
 | The built binary drives a full session, and fails closed on a malformed line | `TestStdioBinaryDrivesAFullSession`, `TestStdioBinaryFailsClosedOnAMalformedLine` |
 | The full lifecycle runs against a real listener | `TestServeLifecycleOverRealListener` |
-| The hub's stdio wire is the fourteen ops, not the endpoint's raw envelopes | `TestCapabilitiesNameTheStdioBinding` |
+| The hub's stdio wire is the fourteen ops both trees serve, and Zig's fifteenth, `transcript`, not the endpoint's raw envelopes | `TestCapabilitiesNameTheStdioBinding` |
 
 ### The HTTP routes and SSE framing
 
@@ -496,6 +496,7 @@ error. That is stated because the four reasons are the whole set.
 | `POST /sessions/{id}/settings` | `settings` | `session.settings.update.response` | see [settings](#settings) |
 | `POST /sessions/{id}/close` | `close` | `204 No Content`, no body | `unknown_session` 404, `run_active` 409, `session_closed` 409, `request_cancelled` 400, `internal` 500 |
 | `GET /sessions/{id}/events` | `events` | an SSE stream, adopting a held subscription when the request named no cursor | see [events](#events) |
+| `GET /sessions/{id}/transcript` | `transcript` | `transcript.load.response`'s payload, after `cursor` and up to `limit` | see [transcript](#transcript) |
 | `GET /work` | `work.list` | `{"groups":[...]}`, per [the work profile](work.md); `?include_closed=true` adds closed sessions from the session history; `?directory=`, `?adapters=a,b`, `?limit=` and `?cursor=` filter and page it as the draft says; `?search=` hands a term to the native lists that take one (Codex's `searchTerm`, OpenCode's `search`) and answers only what they matched; `?include_native=true` adds each adapter's own sessions it can list (Codex through `thread/list`; Claude Code read-only from `~/.claude/projects`, the live-session registry and the desktop app's records; Pi read-only from `<agent dir>/sessions/--<cwd>--/`, the agent dir being `PI_CODING_AGENT_DIR` when the entry's environment sets it, else `~/.pi/agent`, its native id the `{"sessionId","sessionFile"}` binding a reopen takes; Hermes through its gateway's `session.list`, by stored id, with no directory since its rows carry none; OpenCode through `GET /api/session` for the entry's directory, root sessions newest first, running where `GET /api/session/active` names them), and an adapter that could not list is named in `unavailable`. A piece carries `link` when its adapter can name one: `codex://threads/<id>` for Codex, `claude://claude.ai/epitaxy/<local id>` for a Claude Code session the desktop app has a record of | `invalid_request` 400 (a `limit` outside 1 to 100 or not a number, or a `cursor` this list did not issue) |
 | `GET /work/sessions/{id}` | `work.status` | one piece of work, per [the work profile](work.md) | `unknown_session` 404, `session_closed` 409 |
 | `POST /adapters/{name}/work` | `work.start` | the new session's `work.status` | `invalid_request` 400 (a missing message, or a directory other than the adapter's, naming its `working_directory`), `unknown_adapter` 404, and an open's refusals |
@@ -717,7 +718,7 @@ needs a whole-body deadline, which is not what either tree has.
 the same for a path no pattern matches, and the draft's codes are
 `invalid_request`, `unknown_adapter` and `unknown_session` — none of which is
 "this URL does not exist". So the answer carries no `error.response` envelope.
-The fourteen core routes and the seven work routes are written in both trees (D30 closed): Zig dispatches each to the same
+The fourteen core routes and the seven work routes are written in both trees (D30 closed), and a fifteenth core route, `GET /sessions/{id}/transcript`, is Zig's alone until Go serves [transcript](#transcript): Zig dispatches each to the same
 `Frontend` operation the stdio op runs, so an answer's shape is shared rather
 than written twice. A path that is a route asked with another method answers
 `405 Method Not Allowed` with an `Allow` header naming the one it takes, which
@@ -1239,8 +1240,9 @@ never connects overflows exactly as a slow consumer does, and the adopter reads
 
 ## The operations
 
-Fourteen ops. Each row gives the request line's parameters, the answer, and the
-errors. A refusal the row does not name is `internal` on both, with two
+Fourteen ops both trees serve, and a fifteenth, [transcript](#transcript), that
+only Zig serves so far. Each row gives the request line's parameters, the
+answer, and the errors. A refusal the row does not name is `internal` on both, with two
 exceptions stated once here rather than repeated per row:
 
 - **The stdio transport answers four codes no HTTP route can.** `unknown_op` for
@@ -1263,7 +1265,9 @@ A session stops being open when its `close` succeeds, or when its adapter
 reports the session closed. A run's stream failing does not end the session:
 it is reported against that run, and the session takes the next submit. From
 then on every op naming the session answers `unknown_session` (404), a second
-`close` included, and `sessions` no longer lists it. `session_closed` (409) in
+`close` included, and `sessions` no longer lists it. `transcript` is the
+exception ([Decision 0051](../decisions/0051-transcript-load.md)): it reads a
+closed session the session history still binds. `session_closed` (409) in
 the rows below is a session that stops being open while the request is in
 flight. A subscription the close ends still delivers every envelope it had
 already queued, then signals the close — Go: `TestMarkClosedDefersFinishToReader`;
@@ -1456,6 +1460,33 @@ reopens them as left behind, not closed by anyone. Both trees do this.
   `the history op answers the store's sessions and refuses as the route does`,
   `a session list is newest first, ties broken by session id, and pages on the
   cursor Go issues`.
+
+### `transcript`
+
+A session's persisted transcript ([Decision 0051](../decisions/0051-transcript-load.md)),
+read through its adapter's own reader, held or not: a session the hub does not
+hold is read through its latest binding, closed ones included. Over HTTP it is
+`GET /sessions/{id}/transcript?limit=…&cursor=…`.
+
+- **params:** `session_id`, and optionally `limit` (1 to 500, default 100) and
+  `cursor` (a `next_cursor` this read issued).
+- **answer:** `{"session_id":…,"entries":[...],"next_cursor":…,"complete":…,"gap":{"reason","resumed_at"?}}`,
+  the `transcript.load.response` payload: entries oldest first, a page stopping
+  before 512 KiB, `next_cursor` positioned after the last entry returned, and
+  `gap` only when the cursor's entry is gone.
+- **errors:** `invalid_cursor` (400) for a cursor that does not decode or names
+  another session, `invalid_request` (400) for a `limit` outside 1 to 500 or
+  another parameter, `unknown_session` (404) for a session neither held nor
+  bound, `unsupported_feature` (400, `feature` `transcript.load`, `reason`
+  `unadvertised`) when its adapter keeps no transcript it can read, and
+  `history_failed` (500) when the session history cannot be read.
+- **Zig does:** serves it for `oapx` from its saved sessions. **Go does not
+  yet.**
+- **pinned by:** Zig: `transcript reads a held or closed session's page through
+  its adapter, with a gap, and refuses a foreign cursor, an unbound session, a
+  bad limit and an adapter that keeps no transcript`, `GET
+  /sessions/{id}/transcript answers the transcript op: an unknown session is 404
+  and a limit out of range 400`.
 
 ### `state`
 
