@@ -77,6 +77,7 @@ pub const Endpoint = struct {
     outbound: std.ArrayList([]u8) = .empty,
     denial: Denial = .{ .code = "internal", .message = "" },
     shutdown: ?ShutdownMode = null,
+    withdrawn: std.ArrayList([]u8) = .empty,
 
     pub fn init(allocator: std.mem.Allocator, adapter: contract.Adapter, options: Options) Endpoint {
         return .{ .allocator = allocator, .adapter = adapter, .frame_limit = options.frame_limit, .journal_capacity = options.journal_capacity, .tool_sources = options.tool_sources };
@@ -88,6 +89,8 @@ pub const Endpoint = struct {
         for (self.outbound.items) |line| self.allocator.free(line);
         self.outbound.deinit(self.allocator);
         if (self.participant) |owned| self.allocator.free(owned);
+        for (self.withdrawn.items) |run_id| self.allocator.free(run_id);
+        self.withdrawn.deinit(self.allocator);
         self.* = undefined;
     }
 
@@ -348,6 +351,7 @@ pub const Endpoint = struct {
                         if (self.find(entry.session_id)) |held| {
                             var refusal = contract.Refusal{};
                             if (held.session.cancel(arena, entry.run.run_id, &refusal)) |_| {
+                                try self.withdraw(entry.run.run_id);
                                 try lost.append(arena, entry);
                                 continue;
                             } else |err| if (err == error.OutOfMemory) return error.OutOfMemory;
@@ -403,14 +407,33 @@ pub const Endpoint = struct {
         var scratch = std.heap.ArenaAllocator.init(self.allocator);
         defer scratch.deinit();
         const arena = scratch.allocator();
-        const runs = try self.nonterminalRuns(arena);
-        for (runs) |entry| {
+        var left: usize = 0;
+        for (try self.nonterminalRuns(arena)) |entry| {
+            if (self.withdrew(entry.run.run_id)) continue;
+            left += 1;
             if (entry.run.status != .queued) continue;
             const held = self.find(entry.session_id) orelse continue;
             var refusal = contract.Refusal{};
-            if (held.session.cancel(arena, entry.run.run_id, &refusal)) |_| {} else |err| if (err == error.OutOfMemory) return error.OutOfMemory;
+            if (held.session.cancel(arena, entry.run.run_id, &refusal)) |_| {
+                try self.withdraw(entry.run.run_id);
+                left -= 1;
+            } else |err| if (err == error.OutOfMemory) return error.OutOfMemory;
         }
-        return runs.len == 0;
+        return left == 0;
+    }
+
+    fn withdraw(self: *Endpoint, run_id: []const u8) !void {
+        if (self.withdrew(run_id)) return;
+        const owned = try self.allocator.dupe(u8, run_id);
+        errdefer self.allocator.free(owned);
+        try self.withdrawn.append(self.allocator, owned);
+    }
+
+    fn withdrew(self: *const Endpoint, run_id: []const u8) bool {
+        for (self.withdrawn.items) |known| {
+            if (std.mem.eql(u8, known, run_id)) return true;
+        }
+        return false;
     }
 
     fn respond(self: *Endpoint, arena: std.mem.Allocator, request: *const oap_types.Envelope, answer: oap_types.Envelope) Served!void {
