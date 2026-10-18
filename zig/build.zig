@@ -1436,6 +1436,7 @@ pub fn build(b: *std.Build) void {
         },
     });
     hub_http_mod.addImport("repeat", repeat_mod);
+    hub_http_mod.addImport("hub_routes", hub_routes_mod);
     const hub_http_test = b.addTest(.{ .root_module = hub_http_mod });
     const hub_stdio_mod = b.createModule(.{
         .root_source_file = b.path("src/hub/stdio.zig"),

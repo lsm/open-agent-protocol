@@ -1,4 +1,5 @@
 const repeat = @import("repeat").repeat;
+const routes = @import("hub_routes");
 const std = @import("std");
 const oap_types = @import("oap_types");
 const oap_envelope = @import("oap_envelope");
@@ -209,7 +210,6 @@ pub fn parseHead(allocator: std.mem.Allocator, head: []const u8, body_allowed: *
     }
 
     if (request.chunked and seen_length) return error.Malformed;
-    if (request.content_length > max_body_bytes) return error.BodyTooLarge;
     return request;
 }
 
@@ -245,6 +245,7 @@ pub fn drain(stream: *compat.net.Stream, remaining_in: usize, keep_going: KeepGo
 
 pub fn readBody(allocator: std.mem.Allocator, stream: *compat.net.Stream, request: *Request, idle_wait_ms: i32, cycle_ms: i32, keep_going: KeepGoing) Failure!void {
     if (request.chunked) return error.UnsupportedTransferEncoding;
+    if (request.content_length > max_body_bytes) return error.BodyTooLarge;
     if (request.content_length == 0) return;
     request.body = try allocator.alloc(u8, request.content_length);
     const idle_ms: u64 = @intCast(@max(idle_wait_ms, 0));
@@ -390,12 +391,9 @@ pub const media_refused = Refusal{
 pub fn answer(allow: []const []const u8, request: Request) Answer {
     if (request.origin) return .{ .refusal = origin_refused };
     if (hostRefused(allow, request.host)) return .{ .refusal = host_refused };
-    if (carriesBody(request) and !declaresJson(request.content_type)) return .{ .refusal = media_refused };
+    if (routes.readsBody(request.method, request.split.path) and !declaresJson(request.content_type)) return .{ .refusal = media_refused };
+    if (request.content_length > max_body_bytes) return .{ .refusal = too_large };
     return .not_found;
-}
-
-pub fn carriesBody(request: Request) bool {
-    return request.content_length > 0 or request.chunked;
 }
 
 pub const max_chunk_line_bytes = 4096;
@@ -763,15 +761,15 @@ fn requestOver(raw: []const u8) !Request {
 test "a body must declare application/json, and only that" {
     const loopback: []const []const u8 = &.{};
 
-    var wrong = try requestOver("POST /adapters HTTP/1.1\r\nHost: 127.0.0.1:6270\r\nContent-Type: text/plain\r\nContent-Length: 2\r\n\r\n{}");
+    var wrong = try requestOver("POST /adapters/a/sessions HTTP/1.1\r\nHost: 127.0.0.1:6270\r\nContent-Type: text/plain\r\nContent-Length: 2\r\n\r\n{}");
     defer wrong.deinit(testing.allocator);
     try testing.expectEqualStrings("unsupported_media_type", answer(loopback, wrong).refusal.code);
 
-    var silent = try requestOver("POST /adapters HTTP/1.1\r\nHost: 127.0.0.1:6270\r\nContent-Length: 2\r\n\r\n{}");
+    var silent = try requestOver("POST /adapters/a/sessions HTTP/1.1\r\nHost: 127.0.0.1:6270\r\nContent-Length: 2\r\n\r\n{}");
     defer silent.deinit(testing.allocator);
     try testing.expectEqualStrings("unsupported_media_type", answer(loopback, silent).refusal.code);
 
-    var right = try requestOver("POST /adapters HTTP/1.1\r\nHost: 127.0.0.1:6270\r\nContent-Type: application/json\r\nContent-Length: 2\r\n\r\n{}");
+    var right = try requestOver("POST /adapters/a/sessions HTTP/1.1\r\nHost: 127.0.0.1:6270\r\nContent-Type: application/json\r\nContent-Length: 2\r\n\r\n{}");
     defer right.deinit(testing.allocator);
     try testing.expectEqual(Answer.not_found, answer(loopback, right));
 }
@@ -779,15 +777,15 @@ test "a body must declare application/json, and only that" {
 test "a charset is admitted, because application/json registers no parameters" {
     const loopback: []const []const u8 = &.{};
     for ([_][]const u8{ "utf-8", "utf8", "UTF-8", "latin1", "us-ascii", "not-a-charset" }) |charset| {
-        const raw = try std.fmt.allocPrint(testing.allocator, "POST /adapters HTTP/1.1\r\nHost: 127.0.0.1:6270\r\nContent-Type: application/json; charset={s}\r\nContent-Length: 2\r\n\r\n{{}}", .{charset});
+        const raw = try std.fmt.allocPrint(testing.allocator, "POST /adapters/a/sessions HTTP/1.1\r\nHost: 127.0.0.1:6270\r\nContent-Type: application/json; charset={s}\r\nContent-Length: 2\r\n\r\n{{}}", .{charset});
         defer testing.allocator.free(raw);
         var request = try requestOver(raw);
         defer request.deinit(testing.allocator);
         try testing.expectEqual(Answer.not_found, answer(loopback, request));
     }
-    var spaced = try requestOver("POST /adapters HTTP/1.1\r\nHost: 127.0.0.1:6270\r\nContent-Type:  Application/JSON ; charset=utf-8\r\nContent-Length: 2\r\n\r\n{}");
+    var spaced = try requestOver("POST /adapters/a/sessions HTTP/1.1\r\nHost: 127.0.0.1:6270\r\nContent-Type:  Application/JSON ; charset=utf-8\r\nContent-Length: 2\r\n\r\n{}");
     defer spaced.deinit(testing.allocator);
-    var tabbed = try requestOver("POST /adapters HTTP/1.1\r\nHost: 127.0.0.1:6270\r\nContent-Type:\tapplication/json\t;\tcharset=utf-8\r\nContent-Length: 2\r\n\r\n{}");
+    var tabbed = try requestOver("POST /adapters/a/sessions HTTP/1.1\r\nHost: 127.0.0.1:6270\r\nContent-Type:\tapplication/json\t;\tcharset=utf-8\r\nContent-Length: 2\r\n\r\n{}");
     defer tabbed.deinit(testing.allocator);
     try testing.expectEqual(Answer.not_found, answer(loopback, tabbed));
     try testing.expectEqual(Answer.not_found, answer(loopback, spaced));
@@ -933,34 +931,43 @@ test "an empty parameter value is admitted quoted and refused bare, as Go does" 
     }
 }
 
-test "a zero-length body with a wrong media type is not gated, because the gate reads length" {
+test "a body-reading route is gated on its media type even with no body, and close, which reads none, is not" {
     const loopback: []const []const u8 = &.{};
     var posted = try requestOver("POST /adapters/a/sessions HTTP/1.1\r\nHost: 127.0.0.1:6270\r\nContent-Type: text/plain\r\nContent-Length: 0\r\n\r\n");
     defer posted.deinit(testing.allocator);
-    try testing.expect(!carriesBody(posted));
-    try testing.expectEqual(Answer.not_found, answer(loopback, posted));
+    try testing.expectEqualStrings("unsupported_media_type", answer(loopback, posted).refusal.code);
 
     var empty = try requestOver("POST /adapters/a/sessions HTTP/1.1\r\nHost: 127.0.0.1:6270\r\nContent-Type: text/plain\r\n\r\n");
     defer empty.deinit(testing.allocator);
-    try testing.expect(!carriesBody(empty));
-    try testing.expectEqual(Answer.not_found, answer(loopback, empty));
+    try testing.expectEqualStrings("unsupported_media_type", answer(loopback, empty).refusal.code);
 
     var closed = try requestOver("POST /sessions/s/close HTTP/1.1\r\nHost: 127.0.0.1:6270\r\nContent-Type: text/plain\r\nContent-Length: 0\r\n\r\n");
     defer closed.deinit(testing.allocator);
-    try testing.expect(!carriesBody(closed));
     try testing.expectEqual(Answer.not_found, answer(loopback, closed));
 }
 
-test "a listing carrying a body with a wrong media type is gated, because the gate reads the head" {
+test "a listing carrying a body with a wrong media type is not gated, because a listing reads no body" {
     const loopback: []const []const u8 = &.{};
     var listing = try requestOver("GET /adapters HTTP/1.1\r\nHost: 127.0.0.1:6270\r\nContent-Type: text/plain\r\nContent-Length: 4\r\n\r\nbody");
     defer listing.deinit(testing.allocator);
-    try testing.expect(carriesBody(listing));
-    try testing.expectEqualStrings("unsupported_media_type", answer(loopback, listing).refusal.code);
+    try testing.expectEqual(Answer.not_found, answer(loopback, listing));
+}
+
+test "a wrong media type is refused before the length is measured, so 415 outranks 413" {
+    const loopback: []const []const u8 = &.{};
+    var allowed = true;
+    var declared: usize = 0;
+    var oversize = try parseHead(testing.allocator, "POST /adapters/a/sessions HTTP/1.1\r\nHost: 127.0.0.1:6270\r\nContent-Type: text/plain\r\nContent-Length: 20000000\r\n\r\n", &allowed, &declared);
+    defer oversize.deinit(testing.allocator);
+    try testing.expectEqualStrings("unsupported_media_type", answer(loopback, oversize).refusal.code);
+
+    var sized = try parseHead(testing.allocator, "POST /adapters/a/sessions HTTP/1.1\r\nHost: 127.0.0.1:6270\r\nContent-Type: application/json\r\nContent-Length: 20000000\r\n\r\n", &allowed, &declared);
+    defer sized.deinit(testing.allocator);
+    try testing.expectEqualStrings("request_too_large", answer(loopback, sized).refusal.code);
 }
 
 test "the Origin refusal is still the one that comes first" {
-    var request = try requestOver("POST /adapters HTTP/1.1\r\nHost: 127.0.0.1:6270\r\nOrigin: http://elsewhere.test\r\nContent-Type: text/plain\r\nContent-Length: 2\r\n\r\n{}");
+    var request = try requestOver("POST /adapters/a/sessions HTTP/1.1\r\nHost: 127.0.0.1:6270\r\nOrigin: http://elsewhere.test\r\nContent-Type: text/plain\r\nContent-Length: 2\r\n\r\n{}");
     defer request.deinit(testing.allocator);
     try testing.expectEqualStrings("cross_origin_request", answer(&.{}, request).refusal.code);
 }
@@ -1072,14 +1079,13 @@ test "a head naming chunked is taken, another coding is refused, and chunked bes
     var chunked = try parseHead(testing.allocator, "POST /a HTTP/1.1\r\nHost: a\r\nTransfer-Encoding: Chunked\r\n\r\n", &allowed, &declared);
     defer chunked.deinit(testing.allocator);
     try testing.expect(chunked.chunked);
-    try testing.expect(carriesBody(chunked));
     try testing.expectError(error.UnsupportedTransferEncoding, parseHead(testing.allocator, "POST /a HTTP/1.1\r\nHost: a\r\nTransfer-Encoding: gzip, chunked\r\n\r\n", &allowed, &declared));
     try testing.expectError(error.UnsupportedTransferEncoding, parseHead(testing.allocator, "POST /a HTTP/1.1\r\nHost: a\r\nTransfer-Encoding: chunked\r\nTransfer-Encoding: chunked\r\n\r\n", &allowed, &declared));
     try testing.expectError(error.Malformed, parseHead(testing.allocator, "POST /a HTTP/1.1\r\nHost: a\r\nTransfer-Encoding: chunked\r\nContent-Length: 4\r\n\r\n", &allowed, &declared));
 }
 
 test "the blocking reader still refuses a chunked body rather than guessing at it" {
-    try testing.expectError(error.UnsupportedTransferEncoding, requestOver("POST /adapters HTTP/1.1\r\nHost: a\r\nTransfer-Encoding: chunked\r\n\r\n"));
+    try testing.expectError(error.UnsupportedTransferEncoding, requestOver("POST /adapters/a/sessions HTTP/1.1\r\nHost: a\r\nTransfer-Encoding: chunked\r\n\r\n"));
 }
 
 test "headers over the cap are refused rather than buffered" {
