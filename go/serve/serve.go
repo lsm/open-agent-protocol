@@ -43,6 +43,7 @@ type Hub struct {
 	bindings  binding.Store
 	home      string
 	bindingMu sync.Mutex
+	opening   map[protocol.SessionID]struct{}
 	stopping  atomic.Bool
 }
 
@@ -85,9 +86,11 @@ func (h *Hub) OpenIn(ctx context.Context, adapterName, directory string, request
 			return nil, protocol.SessionState{}, err
 		}
 	}
-	if err := h.refuseTaken(ctx, adapterName, request.SessionID); err != nil {
+	release, err := h.reserve(ctx, adapterName, request.SessionID)
+	if err != nil {
 		return nil, protocol.SessionState{}, err
 	}
+	defer release()
 	adopting := request.Reopen && request.Adopted && request.NativeSessionID != ""
 	if request.Reopen && h.bindings != nil && !adopting {
 		history, err := h.bindings.History(ctx, string(request.SessionID))
@@ -163,17 +166,27 @@ func (h *Hub) OpenIn(ctx context.Context, adapterName, directory string, request
 	return entry, state, nil
 }
 
-func (h *Hub) refuseTaken(ctx context.Context, adapterName string, id protocol.SessionID) error {
+func (h *Hub) reserve(ctx context.Context, adapterName string, id protocol.SessionID) (func(), error) {
 	if id == "" {
-		return nil
+		return func() {}, nil
 	}
 	h.bindingMu.Lock()
 	defer h.bindingMu.Unlock()
-	if _, live := h.sessions.get(id); !live {
-		return nil
+	_, live := h.sessions.get(id)
+	_, opening := h.opening[id]
+	if live || opening {
+		h.recordBinding(ctx, binding.FromOpen(string(id), adapterName, "", "", h.home, "", nil), binding.ActionRefused, h.now())
+		return nil, &SessionExistsError{ID: id}
 	}
-	h.recordBinding(ctx, binding.FromOpen(string(id), adapterName, "", "", h.home, "", nil), binding.ActionRefused, h.now())
-	return &SessionExistsError{ID: id}
+	if h.opening == nil {
+		h.opening = map[protocol.SessionID]struct{}{}
+	}
+	h.opening[id] = struct{}{}
+	return func() {
+		h.bindingMu.Lock()
+		defer h.bindingMu.Unlock()
+		delete(h.opening, id)
+	}, nil
 }
 
 func (h *Hub) SetWorkingDirectory(adapter, directory string) {
