@@ -198,8 +198,22 @@ func encode(entry Entry) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	sum := crc32.ChecksumIEEE(payload)
-	return []byte(fmt.Sprintf("%08x %s\n", sum, payload)), nil
+	return frame(payload), nil
+}
+
+func frame(payload []byte) []byte {
+	return []byte(fmt.Sprintf("%08x %s\n", crc32.ChecksumIEEE(payload), payload))
+}
+
+func unframe(line string) ([]byte, error) {
+	sum, payload, found := strings.Cut(strings.TrimSuffix(line, "\n"), " ")
+	if !found {
+		return nil, fmt.Errorf("%w: a record with no checksum", ErrTorn)
+	}
+	if fmt.Sprintf("%08x", crc32.ChecksumIEEE([]byte(payload))) != sum {
+		return nil, fmt.Errorf("%w: a record whose checksum does not match its bytes", ErrTorn)
+	}
+	return []byte(payload), nil
 }
 
 func (s *fileStore) Latest(ctx context.Context, sessionID string) (Entry, bool, error) {
@@ -259,15 +273,12 @@ func (s *fileStore) read(ctx context.Context, keep func(Entry) bool) ([]Entry, e
 }
 
 func decode(line string) (Entry, error) {
-	sum, payload, found := strings.Cut(strings.TrimSuffix(line, "\n"), " ")
-	if !found {
-		return Entry{}, fmt.Errorf("%w: a record with no checksum", ErrTorn)
-	}
-	if fmt.Sprintf("%08x", crc32.ChecksumIEEE([]byte(payload))) != sum {
-		return Entry{}, fmt.Errorf("%w: a record whose checksum does not match its bytes", ErrTorn)
+	payload, err := unframe(line)
+	if err != nil {
+		return Entry{}, err
 	}
 	var entry Entry
-	if err := json.Unmarshal([]byte(payload), &entry); err != nil {
+	if err := json.Unmarshal(payload, &entry); err != nil {
 		return Entry{}, fmt.Errorf("%w: %v", ErrTorn, err)
 	}
 	return entry, nil
