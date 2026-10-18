@@ -98,6 +98,7 @@ func (s *Server) shutdownRequest(ctx context.Context, e protocol.Envelope) (prot
 		return protocol.Envelope{}, err
 	}
 	envelope.InReplyTo = e.ID
+	envelope.CapabilityRevision = e.CapabilityRevision
 	return envelope, nil
 }
 

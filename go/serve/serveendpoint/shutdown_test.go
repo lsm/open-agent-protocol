@@ -133,6 +133,24 @@ func TestAnEndpointShutdownAsksWhileARunIsActiveThenGracefulRefusesNewWorkAndFor
 	live.stops()
 }
 
+func TestAnEndpointShutdownAnswerRepeatsTheRequestsCapabilityRevision(t *testing.T) {
+	live := startLiveEndpoint(t)
+	capabilities := live.ask(requestLine(t, protocol.TypeCapabilitiesRequest, "cap-1", map[string]any{}, ""), "cap-1")
+	envelope, err := protocol.NewEnvelope(protocol.TypeEndpointShutdownRequest, "sd-1", protocol.EndpointShutdownRequest{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	envelope.CapabilityRevision = capabilities.CapabilityRevision
+	line, err := json.Marshal(envelope)
+	if err != nil {
+		t.Fatal(err)
+	}
+	answer := live.ask(string(line), "sd-1")
+	if answer.CapabilityRevision != capabilities.CapabilityRevision {
+		t.Fatalf("the shutdown answer cites revision %q, want the request's %q", answer.CapabilityRevision, capabilities.CapabilityRevision)
+	}
+}
+
 func TestAnEndpointShutdownRefusesAModeOtherThanGracefulOrForce(t *testing.T) {
 	live := startLiveEndpoint(t)
 	refused := live.ask(requestLine(t, protocol.TypeEndpointShutdownRequest, "sd-1", map[string]string{"mode": "later"}, ""), "sd-1")
