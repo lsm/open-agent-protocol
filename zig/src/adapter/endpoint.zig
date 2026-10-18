@@ -197,7 +197,7 @@ pub const Endpoint = struct {
         const payload = root.get("payload") orelse return null;
         if (payload != .object) return null;
         const metadata = payload.object.get("metadata") orelse return null;
-        return if (metadata == .object) metadata else null;
+        return if (metadata == .null) null else metadata;
     }
 
     fn serve(self: *Endpoint, arena: std.mem.Allocator, root: std.json.ObjectMap, line: []const u8) Served!void {
@@ -370,6 +370,12 @@ pub const Endpoint = struct {
     }
 
     fn open(self: *Endpoint, arena: std.mem.Allocator, request: *const oap_types.Envelope, payload: *const oap_types.SessionOpenRequest, metadata: ?std.json.Value, descriptor: contract.Descriptor, refusal: *contract.Refusal) Served!void {
+        if (metadata) |value| {
+            if (value != .object) {
+                const message = try std.fmt.allocPrint(arena, "decode session.open.request payload: json: cannot unmarshal {s} into Go struct field SessionOpenRequest.metadata of type map[string]jsontext.Value", .{goKind(value)});
+                return self.deny("invalid_payload", message, &.{});
+            }
+        }
         if (payload.tools_json) |text| {
             if (try toolsDecodeDefect(arena, text)) |defect| {
                 const message = try std.fmt.allocPrint(arena, "decode session.open.request payload: json: {s}", .{defect});
@@ -1140,6 +1146,8 @@ const Fake = struct {
     closed: usize = 0,
     participant: [32]u8 = undefined,
     participant_len: usize = 0,
+    label: [32]u8 = undefined,
+    label_len: ?usize = null,
     submit_failure: ?contract.Failure = null,
     submit_refusal: contract.Refusal = .{},
     offers_models: bool = false,
@@ -1164,6 +1172,14 @@ const Fake = struct {
         self.opened += 1;
         @memcpy(self.participant[0..request.participant.len], request.participant);
         self.participant_len = request.participant.len;
+        self.label_len = null;
+        if (request.metadata) |metadata| {
+            if (metadata.object.get("label")) |label| {
+                const text = label.string[0..@min(label.string.len, self.label.len)];
+                @memcpy(self.label[0..text.len], text);
+                self.label_len = text.len;
+            }
+        }
         const session = try self.allocator.create(FakeSession);
         errdefer self.allocator.destroy(session);
         const minted = if (request.session_id.len > 0)
@@ -1176,6 +1192,11 @@ const Fake = struct {
 
     fn lastParticipant(self: *const Fake) []const u8 {
         return self.participant[0..self.participant_len];
+    }
+
+    fn lastLabel(self: *const Fake) ?[]const u8 {
+        const len = self.label_len orelse return null;
+        return self.label[0..len];
     }
 };
 
@@ -1554,6 +1575,24 @@ test "an open before any initialize names the default control participant" {
     defer harness.deinit();
     _ = try harness.send(open_line);
     try testing.expectEqualStrings(default_participant, harness.fake.lastParticipant());
+}
+
+test "an open's metadata reaches the adapter through the endpoint, and one that is not an object is invalid_payload" {
+    var harness: Harness = undefined;
+    harness.init(testing.allocator, .{});
+    defer harness.deinit();
+
+    const opened = try harness.send(framed("session.open.request", "open-1", "", "{\"session_id\":\"s1\",\"metadata\":{\"label\":\"nightly\"}}"));
+    try testing.expectEqualStrings("session.open.response", field(opened[0], &.{"type"}));
+    try testing.expectEqualStrings("nightly", harness.fake.lastLabel().?);
+
+    _ = try harness.send(framed("session.open.request", "open-2", "", "{\"session_id\":\"s2\"}"));
+    try testing.expectEqual(@as(?[]const u8, null), harness.fake.lastLabel());
+
+    const refused = try harness.send(framed("session.open.request", "open-3", "", "{\"session_id\":\"s3\",\"metadata\":\"x\"}"));
+    try testing.expectEqualStrings("invalid_payload", field(refused[0], &.{ "payload", "error", "code" }));
+    try testing.expectEqualStrings("decode session.open.request payload: json: cannot unmarshal string into Go struct field SessionOpenRequest.metadata of type map[string]jsontext.Value", field(refused[0], &.{ "payload", "error", "message" }));
+    try testing.expectEqual(@as(usize, 2), harness.fake.opened);
 }
 
 test "initialize refuses a peer offering no version or profile this endpoint serves" {
