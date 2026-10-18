@@ -73,14 +73,20 @@ func (h *Hub) Open(ctx context.Context, adapterName string, request base.OpenReq
 }
 
 func (h *Hub) OpenIn(ctx context.Context, adapterName, directory string, request base.OpenRequest) (*Session, protocol.SessionState, error) {
-	if _, ok := h.registry.Lookup(adapterName); !ok {
+	registered, ok := h.registry.Lookup(adapterName)
+	if !ok {
 		return nil, protocol.SessionState{}, &UnknownAdapterError{Name: adapterName}
 	}
 	if request.Participant.ID == "" {
 		request.Participant.ID = DefaultParticipant
 	}
-	if _, live := h.sessions.get(request.SessionID); request.Reopen && live {
-		return nil, protocol.SessionState{}, &SessionExistsError{ID: request.SessionID}
+	if admitter, ok := registered.(base.Admitter); ok {
+		if err := admitter.Admit(ctx, request); err != nil {
+			return nil, protocol.SessionState{}, err
+		}
+	}
+	if err := h.refuseTaken(ctx, adapterName, request.SessionID); err != nil {
+		return nil, protocol.SessionState{}, err
 	}
 	adopting := request.Reopen && request.Adopted && request.NativeSessionID != ""
 	if request.Reopen && h.bindings != nil && !adopting {
@@ -154,6 +160,19 @@ func (h *Hub) OpenIn(ctx context.Context, adapterName, directory string, request
 		return nil, protocol.SessionState{}, &SessionExistsError{ID: entry.id}
 	}
 	return entry, state, nil
+}
+
+func (h *Hub) refuseTaken(ctx context.Context, adapterName string, id protocol.SessionID) error {
+	if id == "" {
+		return nil
+	}
+	h.bindingMu.Lock()
+	defer h.bindingMu.Unlock()
+	if _, live := h.sessions.get(id); !live {
+		return nil
+	}
+	h.recordBinding(ctx, binding.FromOpen(string(id), adapterName, "", "", h.home, "", nil), binding.ActionRefused, h.now())
+	return &SessionExistsError{ID: id}
 }
 
 func (h *Hub) SetWorkingDirectory(adapter, directory string) {

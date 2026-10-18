@@ -15,6 +15,10 @@ type Adapter interface {
 	Open(context.Context, OpenRequest) (Session, error)
 }
 
+type Admitter interface {
+	Admit(context.Context, OpenRequest) error
+}
+
 type SubmitRequest struct {
 	Request    protocol.MessageSubmitRequest
 	EnvelopeID protocol.EnvelopeID
