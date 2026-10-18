@@ -34,12 +34,23 @@ pub fn page(arena: std.mem.Allocator, request: contract.TranscriptRequest, items
         var size = try encodedLen(arena, value);
         if (bytes + size > contract.transcript_page_bytes) {
             if (entries.items.len > 0) break;
-            var bound = contract.transcript_page_bytes / (partCount(items[next]) * 2);
-            value = try entryValue(arena, ids[next], items[next], bound);
+            const parts = partCount(items[next]);
+            var plan = Cut{ .bound = contract.transcript_page_bytes / (parts * 2), .keep = parts };
+            value = try entryValue(arena, ids[next], items[next], plan);
             size = try encodedLen(arena, value);
-            while (size > contract.transcript_page_bytes and bound > 0) {
-                bound /= 2;
-                value = try entryValue(arena, ids[next], items[next], bound);
+            while (size > contract.transcript_page_bytes and plan.bound > 0) {
+                plan.bound /= 2;
+                value = try entryValue(arena, ids[next], items[next], plan);
+                size = try encodedLen(arena, value);
+            }
+            if (size > contract.transcript_page_bytes) {
+                plan.reduce = true;
+                value = try entryValue(arena, ids[next], items[next], plan);
+                size = try encodedLen(arena, value);
+            }
+            while (size > contract.transcript_page_bytes and plan.keep > 1) {
+                plan.keep /= 2;
+                value = try entryValue(arena, ids[next], items[next], plan);
                 size = try encodedLen(arena, value);
             }
         }
@@ -116,20 +127,22 @@ fn cut(text: []const u8, bound: usize) []const u8 {
     return text[0..len];
 }
 
-fn entryValue(arena: std.mem.Allocator, id: []const u8, entry: Item, bound: ?usize) !std.json.Value {
+const Cut = struct { bound: usize, reduce: bool = false, keep: usize };
+
+fn entryValue(arena: std.mem.Allocator, id: []const u8, entry: Item, plan: ?Cut) !std.json.Value {
     var object: std.json.ObjectMap = .empty;
     try object.put(arena, "entry_id", .{ .string = id });
     if (entry.at_ms > 0) try object.put(arena, "at_ms", .{ .integer = entry.at_ms });
     if (entry.message) |message| {
         try object.put(arena, "kind", .{ .string = "message" });
-        try object.put(arena, "message", if (bound) |max| try cutValue(arena, message, max) else message);
+        try object.put(arena, "message", if (plan) |held| try cutMessage(arena, message, held) else message);
     } else {
         var compaction: std.json.ObjectMap = .empty;
-        try compaction.put(arena, "summary", .{ .string = if (bound) |max| cut(entry.compaction, max) else entry.compaction });
+        try compaction.put(arena, "summary", .{ .string = if (plan) |held| cut(entry.compaction, held.bound) else entry.compaction });
         try object.put(arena, "kind", .{ .string = "compaction" });
         try object.put(arena, "compaction", .{ .object = compaction });
     }
-    if (bound != null) try object.put(arena, "truncated", .{ .bool = true });
+    if (plan != null) try object.put(arena, "truncated", .{ .bool = true });
     return .{ .object = object };
 }
 
@@ -140,20 +153,40 @@ fn cutField(key: []const u8) bool {
     return false;
 }
 
-fn cutValue(arena: std.mem.Allocator, value: std.json.Value, bound: usize) !std.json.Value {
+fn cutMessage(arena: std.mem.Allocator, message: std.json.Value, plan: Cut) !std.json.Value {
+    if (message != .object) return cutValue(arena, message, plan);
+    var out: std.json.ObjectMap = .empty;
+    var members = message.object.iterator();
+    while (members.next()) |member| {
+        const held = member.value_ptr.*;
+        if (std.mem.eql(u8, member.key_ptr.*, "content") and held == .array) {
+            const kept = held.array.items[0..@min(held.array.items.len, plan.keep)];
+            var parts = try std.json.Array.initCapacity(arena, kept.len);
+            for (kept) |part| parts.appendAssumeCapacity(try cutValue(arena, part, plan));
+            try out.put(arena, member.key_ptr.*, .{ .array = parts });
+        } else {
+            try out.put(arena, member.key_ptr.*, try cutValue(arena, held, plan));
+        }
+    }
+    return .{ .object = out };
+}
+
+fn cutValue(arena: std.mem.Allocator, value: std.json.Value, plan: Cut) !std.json.Value {
+    const bound = plan.bound;
     switch (value) {
         .string => |text| return .{ .string = cut(text, bound) },
         .array => |held| {
             var out = try std.json.Array.initCapacity(arena, held.items.len);
-            for (held.items) |item| out.appendAssumeCapacity(try cutValue(arena, item, bound));
+            for (held.items) |item| out.appendAssumeCapacity(try cutValue(arena, item, plan));
             return .{ .array = out };
         },
         .object => |held| {
             const kind = if (held.get("type")) |named| if (named == .string) named.string else "" else "";
-            if (std.mem.eql(u8, kind, "image")) {
+            const reduced = plan.reduce and kind.len > 0 and !std.mem.eql(u8, kind, "text") and !std.mem.eql(u8, kind, "reasoning");
+            if (std.mem.eql(u8, kind, "image") or reduced) {
                 var text: std.json.ObjectMap = .empty;
                 try text.put(arena, "type", .{ .string = "text" });
-                try text.put(arena, "text", .{ .string = "image" });
+                try text.put(arena, "text", .{ .string = kind });
                 return .{ .object = text };
             }
             var out: std.json.ObjectMap = .empty;
@@ -161,7 +194,7 @@ fn cutValue(arena: std.mem.Allocator, value: std.json.Value, bound: usize) !std.
             while (members.next()) |member| {
                 const value_held = member.value_ptr.*;
                 const kept: std.json.Value = if (!cutField(member.key_ptr.*))
-                    (if (value_held == .string) value_held else try cutValue(arena, value_held, bound))
+                    (if (value_held == .string) value_held else try cutValue(arena, value_held, plan))
                 else if (value_held == .string)
                     .{ .string = cut(value_held.string, bound) }
                 else
