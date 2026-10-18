@@ -359,6 +359,11 @@ What a control layer has to assume today, which the spec should state:
 5. oapx's own loop queues at most 8 runs behind the running one
    (`zig/src/adapter/oapx/adapter.zig:25`, `:73`), and the descriptor's
    `max_queued_runs_per_session` says so.
+6. oapx's own loop refuses a model switch `run_active` while a run is live or
+   queued (`zig/src/adapter/oapx/adapter.zig:1701`).
+7. A second hub on one session history is refused while the first holds its
+   lock (`zig/src/hub/binding.zig:146`), so each daemon needs its own
+   `--session-history`.
 
 ## What to do first
 
