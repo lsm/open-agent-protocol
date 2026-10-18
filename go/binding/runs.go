@@ -27,6 +27,7 @@ type RunRecord struct {
 	SessionID string    `json:"session_id"`
 	RunID     string    `json:"run_id"`
 	Request   string    `json:"request,omitempty"`
+	Replaces  string    `json:"replaces,omitempty"`
 }
 
 type OpenRun struct {
@@ -41,17 +42,42 @@ type Runs interface {
 	OpenRuns(ctx context.Context, sessionID string) ([]OpenRun, error)
 }
 
-func keptAfter(records []RunRecord, record RunRecord) []RunRecord {
-	if record.Action != RunSettled {
-		return append(records, record)
+func ends(record, held RunRecord) bool {
+	if held.SessionID != record.SessionID {
+		return false
 	}
+	if record.Action == RunSettled {
+		return held.RunID == record.RunID
+	}
+	return record.Action == RunAdmitted && record.Replaces != "" && held.RunID == record.Replaces
+}
+
+func keptAfter(records []RunRecord, record RunRecord) []RunRecord {
 	kept := records[:0]
 	for _, held := range records {
-		if held.SessionID != record.SessionID || held.RunID != record.RunID {
+		if !ends(record, held) {
 			kept = append(kept, held)
 		}
 	}
-	return kept
+	if record.Action == RunSettled {
+		return kept
+	}
+	return append(kept, record)
+}
+
+func removeRun(runs []OpenRun, at map[string]int, runID string) []OpenRun {
+	index, seen := at[runID]
+	if !seen {
+		return runs
+	}
+	runs = append(runs[:index], runs[index+1:]...)
+	delete(at, runID)
+	for other, later := range at {
+		if later > index {
+			at[other] = later - 1
+		}
+	}
+	return runs
 }
 
 func openRuns(records []RunRecord, sessionID string) []OpenRun {
@@ -61,19 +87,14 @@ func openRuns(records []RunRecord, sessionID string) []OpenRun {
 		if record.SessionID != sessionID {
 			continue
 		}
-		index, seen := at[record.RunID]
 		if record.Action == RunSettled {
-			if seen {
-				runs = append(runs[:index], runs[index+1:]...)
-				delete(at, record.RunID)
-				for runID, later := range at {
-					if later > index {
-						at[runID] = later - 1
-					}
-				}
-			}
+			runs = removeRun(runs, at, record.RunID)
 			continue
 		}
+		if record.Action == RunAdmitted && record.Replaces != "" {
+			runs = removeRun(runs, at, record.Replaces)
+		}
+		index, seen := at[record.RunID]
 		if !seen {
 			index = len(runs)
 			at[record.RunID] = index
