@@ -608,6 +608,21 @@
       "provenance": []
     },
     {
+      "id": "unknown-participant",
+      "path": "semantic-invalid/unknown-participant.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "unknown_participant"
+      ],
+      "units": [
+        "core",
+        "user-input"
+      ],
+      "provenance": []
+    },
+    {
       "id": "unavailable-feature",
       "path": "semantic-invalid/unavailable-feature.json",
       "kind": "semantic-invalid",
@@ -9143,6 +9158,22 @@
     {
       "id": "provider-both-argument-forms-in-a-snapshot",
       "path": "provider/schema-invalid/both-argument-forms-in-a-snapshot.json",
+      "kind": "schema-invalid",
+      "valid": false,
+      "phase": "schema",
+      "codes": [
+        "schema_invalid"
+      ],
+      "units": [
+        "provider-core"
+      ],
+      "provenance": [],
+      "profile": "model-provider-core",
+      "scope": "frame"
+    },
+    {
+      "id": "provider-sequence-not-an-integer",
+      "path": "provider/schema-invalid/sequence-not-an-integer.json",
       "kind": "schema-invalid",
       "valid": false,
       "phase": "schema",
