@@ -1,7 +1,8 @@
 # Decision 0051: Transcript Load
 
-Status: approved by the owner 2026-10-18; accepted once its surface, fixtures
-and native readers land, under Decision 0003's gate
+Status: proposed (the owner approved it on 2026-10-18; it becomes accepted
+once its surface, fixtures and native readers land, under Decision 0003's
+gate)
 Date: 2026-10-18
 Protocol: `open-agent-protocol` version `0.1`
 Profile: `open-agent-protocol.agent-control-core`
@@ -27,7 +28,8 @@ The evidence 0012 and 0039 named is still the evidence: Pi's
 `get_entries { since }`, and ACP's replay through `session/update` on
 `session/load`. Since then `work.read` has grown native readers for Codex
 (`thread/turns/list`), Claude Code (its project `<id>.jsonl`), OpenCode
-(`GET /api/session/<id>/message`), Pi (its session file) and `oapx` (its saved
+(`GET /api/session/<id>/message`), Pi (its session file), ACP (the replay
+`session/load` sends, in a short-lived agent process) and `oapx` (its saved
 sessions). Six harnesses can be read today.
 
 ## Decisions
@@ -121,7 +123,8 @@ limits. The native readers it already has become the adapters'
 
 ### 8. It is declinable
 
-The capability key is `session.transcript.load`. An adapter with no readable
+The capability key is `transcript.load`, the operation's own path, as every
+request pair's key is. An adapter with no readable
 store advertises it `unavailable`, and a request is refused
 `unsupported_feature` naming the key. Hermes is that case at its pin: its
 gateway reads a stored session only by resuming it, and a resume can restart
@@ -140,6 +143,8 @@ reads again from its last cursor.
   pair, the entry, `invalid_cursor` on this request and the gap member.
 - Both hubs route it. The page bound comes from the endpoint binding's frame
   limit, the smaller of the two.
+- `drafts/work.md`'s `work.read` section is rewritten to compute its turns
+  from `transcript.load` (rule 7).
 - Each adapter's reader moves from `work.read` into its `transcript.load`,
   first `oapx` (the store is ours), then Claude, Codex, Pi, OpenCode and ACP.
 - A run cut off before it settled still shows the output it produced, since
