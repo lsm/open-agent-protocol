@@ -166,6 +166,19 @@ func (r *runState) release(size int) {
 	r.work.Done()
 }
 
+func (r *runState) awaitPumps(window time.Duration) {
+	deadline := time.Now().Add(window)
+	for time.Now().Before(deadline) {
+		r.mu.Lock()
+		attached := r.attached
+		r.mu.Unlock()
+		if attached == 0 {
+			return
+		}
+		time.Sleep(drainPoll)
+	}
+}
+
 func (r *runState) closeAdmission() {
 	r.mu.Lock()
 	r.shuttingDown = true
@@ -276,6 +289,9 @@ func (s *Server) Run(ctx context.Context, in io.Reader, out io.Writer) error {
 		}
 	}
 
+	if s.stopping.drained() {
+		run.awaitPumps(s.shutdown)
+	}
 	run.closeAdmission()
 	workDone := make(chan struct{})
 	go func() { run.work.Wait(); close(workDone) }()

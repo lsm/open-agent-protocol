@@ -33,6 +33,12 @@ func (st *shutdownState) accepted() bool {
 	return st.mode != ""
 }
 
+func (st *shutdownState) drained() bool {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	return st.finished && st.mode == protocol.ShutdownGraceful
+}
+
 func (st *shutdownState) finishLocked() {
 	if !st.finished {
 		st.finished = true

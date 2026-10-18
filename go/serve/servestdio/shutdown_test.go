@@ -1,6 +1,7 @@
 package servestdio
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"testing"
@@ -104,5 +105,85 @@ func TestShutdownRefusesAModeOtherThanGracefulOrForce(t *testing.T) {
 	requireOK(t, f.expectResponse(3))
 	if err := f.finish(); err != nil {
 		t.Fatalf("finish: %v", err)
+	}
+}
+
+func TestGracefulShutdownEndsServingOnceTheDrainedRunSettles(t *testing.T) {
+	hub := newTestHub(t, 64, 64)
+	openSession(t, hub, "busy")
+	f := startFrontend(t, hub, Options{})
+	f.send(submitLine(t, 1, "busy"))
+	admitted := f.expectResponse(1)
+	requireOK(t, admitted)
+	var admission protocol.MessageSubmitResponse
+	if err := json.Unmarshal(admitted.Result, &admission); err != nil {
+		t.Fatal(err)
+	}
+	f.send(`{"id":2,"op":"events","session_id":"busy"}`)
+	requireOK(t, f.expectResponse(2))
+	f.send(`{"id":3,"op":"shutdown","request":{"mode":"graceful"}}`)
+	terminal, answered := false, false
+	cancel := requestEnvelope(t, "cancel-4", protocol.TypeRunCancelRequest, protocol.RunCancelRequest{SessionID: "busy", RunID: admission.RunID}, "busy", string(admission.RunID))
+	for !terminal || !answered {
+		line := f.line()
+		var shape struct {
+			ID       int64             `json:"id"`
+			Event    string            `json:"event"`
+			Envelope protocol.Envelope `json:"envelope"`
+		}
+		if err := json.Unmarshal([]byte(line), &shape); err != nil {
+			t.Fatalf("line %q: %v", line, err)
+		}
+		switch {
+		case shape.Event == signalEnvelope && shape.Envelope.Type == protocol.TypeRunCancelled:
+			terminal = true
+		case shape.Event == "" && shape.ID == 3:
+			if answer := shutdownAnswer(t, f.decodeResponse(line)); answer.Outcome != protocol.ShutdownDraining {
+				t.Fatalf("graceful answered %+v, want draining", answer)
+			}
+			f.send(fmt.Sprintf(`{"id":4,"op":"cancel","session_id":"busy","request":%s}`, cancel))
+		case shape.Event == "" && shape.ID == 4:
+			requireOK(t, f.decodeResponse(line))
+			answered = true
+		}
+	}
+	f.stopsServing()
+}
+
+func TestADrainedShutdownWaitsForAttachedPumpsBeforeTeardown(t *testing.T) {
+	run := newRunState(context.Background(), 0, 0, 0)
+	if _, outcome, _ := run.attach(); outcome != admitted {
+		t.Fatal("attach was refused")
+	}
+	returned := make(chan struct{})
+	go func() { run.awaitPumps(5 * time.Second); close(returned) }()
+	select {
+	case <-returned:
+		t.Fatal("awaitPumps returned while a pump was still attached")
+	case <-time.After(10 * drainPoll):
+	}
+	run.detach()
+	select {
+	case <-returned:
+	case <-time.After(5 * time.Second):
+		t.Fatal("awaitPumps did not return once the last pump detached")
+	}
+}
+
+func TestOnlyAGracefulShutdownThatFinishedCountsAsDrained(t *testing.T) {
+	st := newShutdownState()
+	st.mode = protocol.ShutdownGraceful
+	if st.drained() {
+		t.Fatal("an unfinished graceful shutdown counted as drained")
+	}
+	st.finishLocked()
+	if !st.drained() {
+		t.Fatal("a finished graceful shutdown did not count as drained")
+	}
+	forced := newShutdownState()
+	forced.mode = protocol.ShutdownForce
+	forced.finishLocked()
+	if forced.drained() {
+		t.Fatal("a force shutdown counted as drained, so its pumps would be waited on")
 	}
 }
