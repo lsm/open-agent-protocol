@@ -119,17 +119,21 @@ pub const Store = struct {
         var open_runs: std.ArrayList(Open) = .empty;
         for (try self.records(arena)) |record| {
             if (!std.mem.eql(u8, record.session_id, session_id)) continue;
-            const found = for (open_runs.items) |*run| {
-                if (std.mem.eql(u8, run.run_id, record.run_id)) break run;
+            const found = for (open_runs.items, 0..) |run, index| {
+                if (std.mem.eql(u8, run.run_id, record.run_id)) break index;
             } else null;
-            const run = found orelse blk: {
+            if (record.action == .settled) {
+                if (found) |index| _ = open_runs.orderedRemove(index);
+                continue;
+            }
+            const index = found orelse blk: {
                 try open_runs.append(arena, .{ .run_id = record.run_id, .admitted_ms = record.time_ms, .started = false, .request = null });
-                break :blk &open_runs.items[open_runs.items.len - 1];
+                break :blk open_runs.items.len - 1;
             };
             switch (record.action) {
-                .admitted => run.request = record.request,
-                .started => run.started = true,
-                .settled => {},
+                .admitted => open_runs.items[index].request = record.request,
+                .started => open_runs.items[index].started = true,
+                .settled => unreachable,
             }
         }
         return open_runs.items;
@@ -221,8 +225,30 @@ test "a second store on the same path is refused rather than waiting" {
     try testing.expectError(error.RunStoreInUse, Store.open(testing.allocator, path));
 }
 
-test "a run record line is the one the Go store writes" {
+test "a run record line is the checksum of its JSON and the JSON, in fixed member order" {
     const line = try encode(testing.allocator, .{ .action = .admitted, .time_ms = 3, .session_id = "s", .run_id = "r2", .request = "{\"message\":\"next\"}" });
     defer testing.allocator.free(line);
     try testing.expectEqualStrings("34771ed2 {\"action\":\"admitted\",\"time_ms\":3,\"session_id\":\"s\",\"run_id\":\"r2\",\"request\":\"{\\\"message\\\":\\\"next\\\"}\"}\n", line);
+}
+
+test "a settled record a log kept is read as the end of its run" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const path = try scratchPath(testing.allocator, &tmp, "runs.jsonl");
+    defer testing.allocator.free(path);
+    var store = try Store.open(testing.allocator, path);
+    defer store.deinit();
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var log: std.ArrayList(u8) = .empty;
+    for ([_]Record{
+        .{ .action = .admitted, .time_ms = 1, .session_id = "s", .run_id = "r1" },
+        .{ .action = .admitted, .time_ms = 2, .session_id = "s", .run_id = "r2" },
+        .{ .action = .started, .time_ms = 3, .session_id = "s", .run_id = "r1" },
+        .{ .action = .settled, .time_ms = 4, .session_id = "s", .run_id = "r1" },
+    }) |record| try log.appendSlice(arena.allocator(), try encode(arena.allocator(), record));
+    try compat.fs.atomicReplace(compat.fs.getCwd(), path, store.staging, log.items);
+    const open_runs = try store.openRuns(arena.allocator(), "s");
+    try testing.expectEqual(@as(usize, 1), open_runs.len);
+    try testing.expectEqualStrings("r2", open_runs[0].run_id);
 }
