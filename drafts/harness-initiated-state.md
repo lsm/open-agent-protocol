@@ -62,7 +62,10 @@ not been surveyed.
 
 ## Proposal
 
-1. **Adapter to endpoint.** Do not add a push channel. After each pump, the
+1. **Adapter to endpoint.** Answered by
+   [triggered-runs.md](triggered-runs.md#delivery): adapters push session
+   events, so the endpoint does not depend on a pump. The comparison below
+   remains the fallback for a harness with no push. After each pump, the
    endpoint compares the adapter's `State` with the last state it published
    for that session, and emits `session.state.updated` when
    `current_model_id`, `reasoning_level` or `compaction_policy` differ. It
@@ -79,7 +82,9 @@ not been surveyed.
    run has not started yet still receives it. A resumed subscription's
    `after` cursor stays a run cursor, since session events are not replayed.
    A host that reconnects reads `state`, which the draft already makes
-   authoritative.
+   authoritative. "Between runs" needs a subscription that outlives a
+   run, which is T2's `?follow=session`, kept open across idle gaps by
+   [triggered-runs.md](triggered-runs.md).
 4. **Validator.** Keep `unapplied_control` for an endpoint whose own default
    moved while a per-run selection was active, and exempt a state update the
    endpoint marks as the harness's own. Two ways to mark it: a

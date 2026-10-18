@@ -218,3 +218,38 @@ stable, carried on the channel the adapter owns, and needing no MCP transport
 of its own, only MCP's JSON-RPC shapes. It matters for a host that runs other
 models on the Claude Code harness; HyperNeo keeps Claude itself on the Agent
 SDK.
+
+## Triggered turns, tasks and schedules (recorded 2026-10-18)
+
+Evidence for [triggered-runs.md](../drafts/triggered-runs.md).
+
+**Method.** A scratch Go test, not committed, drove the pinned binary
+(`5262ce9d…6662d37`) directly over `stream-json`:
+
+- the adapter's argv, plus `--dangerously-skip-permissions`;
+- `claudeEnvironment` against the `providertest` loopback, with a temporary
+  HOME and `CLAUDE_CONFIG_DIR`;
+- a `security` stand-in first on `PATH`;
+- `sandbox-exec` denying the keychain daemons and every non-loopback
+  connection;
+- an `initialize` declaring `perTaskStopAffordance`.
+
+Ten probes were run. Each claim below was observed in its frames, or in the
+requests the loopback recorded.
+
+| probe | observed |
+| --- | --- |
+| background `Bash`, session idle when it ends | a turn follows at once; its `result.origin` is `{kind: "task-notification", producer: "session-task", runId}`, and `runId` names the run that started the job; the model sees `<system-reminder>[SYSTEM NOTIFICATION - NOT USER INPUT] …` |
+| job ends during a held final request, host prompt B sent meanwhile | after the run ends, the notification's turn runs before B's |
+| job ends while the turn is still calling tools | the notice rides into that turn's next request; no further turn |
+| one-shot `CronCreate` | fires about 40 s later in its own turn, inside `command_lifecycle` `started`/`completed` sharing a `command_uuid`; its `result` has no `origin`; the prompt arrives as a plain user message |
+| `stop_task` on a background command | `success`, then `task_updated {status: "killed"}` and `task_notification {status: "stopped"}`; no turn follows |
+| `get_task_output` | `{output, total_bytes, truncated}` with the whole output so far, both while the task runs and after it ends |
+| session cron, then `--resume` | `CronList` after the resume lists the same id as `[session-only]`; a fresh session in the same directory lists none |
+| durable one-shot cron, entry removed from `.claude/scheduled_tasks.json` | never fires, while a session-only one-shot with the same schedule does |
+| `stop_task` with a cron's id | `success`, but `CronList` still lists the cron |
+| `send_task_message` to a running background `Agent` | `Unsupported control request subtype: send_task_message` |
+
+A foreground `Bash` call that runs past a few seconds also emits
+`task_started` and `task_notification`. Only `is_backgrounded` tells it from
+background work.

@@ -172,3 +172,20 @@ Against the runtime above, three runs each: `OAP_DEEPSEEK_HARNESS_SMOKE=1`
 deepseek` ran the `background-job` script three times to `run.completed`,
 serving `deepseek-harness-dsh-v0.2.1-rc.2-oap-v3`; the traces pass `goap
 validate` and `oapx validate`.
+
+## The runtime's own turn, from its session log
+
+Evidence for [triggered-runs.md](../drafts/triggered-runs.md). The runtime's
+own log of a `background-job` run, `session.v4.jsonl.zstd` under
+`DSH_SESSION_ROOT`, carries the turn the corpus stops short of:
+
+1. `job/settled` (seq 24).
+2. `agent/inbox/spliced`, target `next-turn`, inserting the notice
+   `background job <id> (bash: <label>) finished [status: completed, exit code: 0]. Read its output with job_output.`
+3. `turn/start` for turn 2, and the splice that claims the notice.
+4. `user/message` replaying the notice with
+   `source: {kind: "tool-jobs", form: "notice", summary}`.
+5. `assistant/message`, then `turn/end` with reason `completed`.
+
+`source.kind` tells this turn from a host prompt, whose source is
+`{kind: "user"}`.
