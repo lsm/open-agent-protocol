@@ -102,3 +102,25 @@ func TestAnEntryWhoseTextEscapesToSeveralTimesItsLengthIsCutUntilItsEncodingFits
 		t.Fatalf("the cut entry encodes to %d bytes", len(encoded))
 	}
 }
+
+func TestAnOversizeEntryCutsOnlyItsTextBearingFieldsAndNeverANegativeTime(t *testing.T) {
+	long := strings.Repeat("z", protocol.TranscriptPageBytes)
+	parts := []protocol.ContentPart{{Type: protocol.ContentText, Text: long}}
+	for range 40000 {
+		parts = append(parts, protocol.ContentPart{Type: protocol.ContentToolCall, ToolCallID: "call-identifier", Name: "a_tool_name", ArgumentsJSON: json.RawMessage(`"raw arguments"`)})
+	}
+	item := TranscriptItem{Offset: 0, AtMS: -5, Message: &protocol.Message{Role: protocol.RoleAssistant, Content: protocol.PartsContent(parts)}}
+	page, _ := TranscriptPage(TranscriptRequest{NativeID: "s1", Limit: 100}, []TranscriptItem{item})
+	entry := page.Entries[0]
+	if !entry.Truncated || entry.AtMS != 0 {
+		t.Fatalf("truncated %v at %d", entry.Truncated, entry.AtMS)
+	}
+	cut, _ := entry.Message.Content.Parts()
+	call := cut[len(cut)-1]
+	if call.Type != protocol.ContentToolCall || call.ToolCallID != "call-identifier" || call.Name != "a_tool_name" {
+		t.Fatalf("a structural field was cut: %+v", call)
+	}
+	if arguments := string(call.ArgumentsJSON); strings.HasPrefix(arguments, `"\"`) {
+		t.Fatalf("arguments were cut from their quoted encoding: %s", arguments)
+	}
+}

@@ -135,7 +135,7 @@ func transcriptParts(item TranscriptItem) int {
 }
 
 func transcriptEntry(id protocol.TranscriptEntryID, item TranscriptItem, bound int) (protocol.TranscriptEntry, int) {
-	entry := protocol.TranscriptEntry{EntryID: id, Kind: protocol.TranscriptMessage, AtMS: item.AtMS, Truncated: bound >= 0}
+	entry := protocol.TranscriptEntry{EntryID: id, Kind: protocol.TranscriptMessage, AtMS: max(item.AtMS, 0), Truncated: bound >= 0}
 	if item.Message != nil {
 		message := *item.Message
 		if bound >= 0 {
@@ -170,17 +170,22 @@ func cutTranscript(value any, bound int) any {
 		}
 		out := make(map[string]any, len(held))
 		for key, member := range held {
-			if kind == "tool_call" && key == "arguments_json" {
+			switch text, isText := member.(string); {
+			case !cutField[key]:
+				out[key] = member
+			case isText:
+				out[key] = cutText(text, bound)
+			default:
 				encoded, _ := json.Marshal(member)
 				out[key] = cutText(string(encoded), bound)
-				continue
 			}
-			out[key] = cutTranscript(member, bound)
 		}
 		return out
 	}
 	return value
 }
+
+var cutField = map[string]bool{"text": true, "reasoning": true, "result": true, "arguments_json": true}
 
 func cutText(text string, bound int) string {
 	if bound < 0 || len(text) <= bound {
