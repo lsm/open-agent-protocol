@@ -172,10 +172,20 @@ so the adapter sends only `approve-once` and `reject`.
 ## User input
 
 `user_input.requested {requestId, question, choices, allowFreeform,
-toolCallId}` is OAP's `user.input.requested` with a single question, single
-choice from `choices`, freeform allowed when `allowFreeform`. The answer is
+toolCallId}` is OAP's `user.input.requested` with one question, id `answer`:
+`single_choice` over `choices` (option ids `choice-1`, `choice-2`, …, labels the
+choice text) when Copilot offers any, otherwise `text`. It carries the call's
+`tool_call_id` when the request names a call this run started. The answer is
 `session.ui.handlePendingUserInput {sessionId, requestId, response:{answer,
-wasFreeform}}`, after which `user_input.completed` arrives.
+wasFreeform}}`: the chosen choice's text with `wasFreeform: false`, or the text
+answer with `wasFreeform: true`. `user_input.completed` follows; one arriving for
+a request this session did not answer resolves it `cancelled`, as does a run
+that settles with it open.
+
+**Degraded:** a question with `choices` and `allowFreeform: true` accepts either
+in Copilot, but an OAP question is one kind, so the adapter offers the choices
+and a freeform answer cannot be given. The codex adapter makes the same choice
+for its `isOther` questions.
 
 ## Cancel
 
