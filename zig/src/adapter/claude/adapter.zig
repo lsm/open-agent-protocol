@@ -247,6 +247,20 @@ const Call = struct {
 
 const ControlKind = enum { initialize, apply_flag_settings, get_settings, interrupt };
 
+const HeldCall = struct {
+    tool_use_id: []u8,
+    request_id: []u8 = &.{},
+    rpc_id: []u8 = &.{},
+    reply: []u8 = &.{},
+
+    fn deinit(self: HeldCall, allocator: std.mem.Allocator) void {
+        allocator.free(self.tool_use_id);
+        allocator.free(self.request_id);
+        allocator.free(self.rpc_id);
+        allocator.free(self.reply);
+    }
+};
+
 pub const Session = struct {
     owner: *Adapter,
     gpa: std.mem.Allocator,
@@ -263,6 +277,7 @@ pub const Session = struct {
     settings_arena: std.heap.ArenaAllocator,
     recovered: bool = false,
     provided: []const oap_types.ToolDefinition = &.{},
+    held: std.ArrayList(HeldCall) = .empty,
 
     fn open(owner: *Adapter, arena: std.mem.Allocator, request: contract.OpenRequest, refusal: *contract.Refusal) contract.Failure!*Session {
         if (request.reopen) {
@@ -377,6 +392,7 @@ pub const Session = struct {
         .close = close,
         .tools = tools,
         .update_settings = updateSettings,
+        .resolve_call = resolveCall,
     };
 
     fn updateSettings(ptr: *anyopaque, arena: std.mem.Allocator, request: *const oap_types.SessionSettingsUpdateRequest, refusal: *contract.Refusal) contract.Failure!contract.Updated {
@@ -412,6 +428,8 @@ pub const Session = struct {
         self.engine.close();
         for (self.asks.items) |ask| ask.deinit(gpa);
         self.asks.deinit(gpa);
+        for (self.held.items) |held| held.deinit(gpa);
+        self.held.deinit(gpa);
         self.clearCall();
         self.reducer_arena.deinit();
         gpa.destroy(self.reducer_arena);
@@ -533,6 +551,7 @@ pub const Session = struct {
             });
         }
         if (std.mem.eql(u8, method, "ping")) return self.answerRpc(a, message.request_id, id, EmptyObject{});
+        if (std.mem.eql(u8, method, "tools/call")) return self.holdCall(a, message.request_id, id, rpc_message);
         if (std.mem.eql(u8, method, "tools/list")) {
             var listed = std.json.Array.init(a);
             for (self.provided) |definition| {
@@ -548,6 +567,95 @@ pub const Session = struct {
         }
         const failure = try std.json.Stringify.valueAlloc(a, .{ .jsonrpc = "2.0", .id = id, .@"error" = .{ .code = -32601, .message = "method not found" } }, .{});
         try self.writeFrame(try backend.mcpResponse(a, message.request_id, failure));
+    }
+
+    fn holdCall(self: *Session, a: std.mem.Allocator, request_id: []const u8, id: std.json.Value, rpc_message: std.json.ObjectMap) !void {
+        const params = rpc_message.get("params") orelse std.json.Value.null;
+        const meta = if (params == .object) params.object.get("_meta") orelse std.json.Value.null else std.json.Value.null;
+        const tool_use_id = if (meta == .object) member(meta.object, "claudecode/toolUseId") else "";
+        const rpc_id = try std.json.Stringify.valueAlloc(a, id, .{});
+        if (tool_use_id.len == 0 or self.engine.reducer.providedCall(tool_use_id) == null) {
+            const failure = try std.json.Stringify.valueAlloc(a, .{ .jsonrpc = "2.0", .id = id, .@"error" = .{ .code = -32602, .message = "no provided call matches this tools/call" } }, .{});
+            return self.writeFrame(try backend.mcpResponse(a, request_id, failure));
+        }
+        if (self.heldIndex(tool_use_id)) |index| {
+            const stashed = self.held.items[index];
+            if (stashed.reply.len > 0) {
+                _ = self.held.orderedRemove(index);
+                defer stashed.deinit(self.gpa);
+                return self.writeFrame(try backend.mcpResponse(a, request_id, try callReply(a, rpc_id, stashed.reply)));
+            }
+        }
+        const owned_id = try self.gpa.dupe(u8, tool_use_id);
+        errdefer self.gpa.free(owned_id);
+        const owned_request = try self.gpa.dupe(u8, request_id);
+        errdefer self.gpa.free(owned_request);
+        const owned_rpc = try self.gpa.dupe(u8, rpc_id);
+        errdefer self.gpa.free(owned_rpc);
+        try self.held.append(self.gpa, .{ .tool_use_id = owned_id, .request_id = owned_request, .rpc_id = owned_rpc });
+    }
+
+    fn heldIndex(self: *const Session, tool_use_id: []const u8) ?usize {
+        for (self.held.items, 0..) |held, index| if (std.mem.eql(u8, held.tool_use_id, tool_use_id)) return index;
+        return null;
+    }
+
+    fn answerCall(self: *Session, tool_use_id: []const u8, result: []const u8) !void {
+        var scratch = std.heap.ArenaAllocator.init(self.gpa);
+        defer scratch.deinit();
+        const a = scratch.allocator();
+        if (self.heldIndex(tool_use_id)) |index| {
+            const held = self.held.orderedRemove(index);
+            defer held.deinit(self.gpa);
+            return self.writeFrame(try backend.mcpResponse(a, held.request_id, try callReply(a, held.rpc_id, result)));
+        }
+        const owned_id = try self.gpa.dupe(u8, tool_use_id);
+        errdefer self.gpa.free(owned_id);
+        const owned_reply = try self.gpa.dupe(u8, result);
+        errdefer self.gpa.free(owned_reply);
+        try self.held.append(self.gpa, .{ .tool_use_id = owned_id, .reply = owned_reply });
+    }
+
+    fn resolveCall(ptr: *anyopaque, arena: std.mem.Allocator, request_id: []const u8, request: *const oap_types.CallResolveRequest, refusal: *contract.Refusal) contract.Failure!oap_types.CallResolveResponse {
+        _ = refusal;
+        const self = cast(ptr);
+        var answer = oap_types.CallResolveResponse{ .interaction_id = request.interaction_id, .session_id = request.session_id, .run_id = request.run_id, .tool_call_id = request.tool_call_id, .accepted = false };
+        if (self.engine.settled or !std.mem.eql(u8, request.session_id, self.id)) {
+            answer.reason = "unknown_interaction";
+            return answer;
+        }
+        const arms = @as(usize, @intFromBool(request.started)) + @intFromBool(request.result_json != null) + @intFromBool(request.err != null);
+        const keep = self.reducer_arena.allocator();
+        const arm: ?session.CallArm = if (arms != 1) null else if (request.started) .started else if (request.err != null) .failure else .result;
+        const stated: std.json.Value = if (request.err) |failure| try failureValue(keep, failure) else if (request.result_json) |written| std.json.parseFromSliceLeaky(std.json.Value, keep, written, .{ .allocate = .alloc_always, .parse_numbers = false }) catch |err| switch (err) {
+            error.OutOfMemory => return error.OutOfMemory,
+            else => return error.InvalidResolution,
+        } else .null;
+        const verdict = self.engine.reducer.resolveCall(.{
+            .interaction_id = request.interaction_id,
+            .run_id = request.run_id,
+            .tool_call_id = request.tool_call_id,
+            .requested_by = request.requested_by,
+            .responded_by = request.responded_by,
+            .arm = arm,
+            .stated = stated,
+            .request_id = try keep.dupe(u8, request_id),
+        }) catch |err| return lift(err);
+        switch (verdict) {
+            .refused => |refused| {
+                answer.reason = refused.reason;
+                if (refused.settlement_id.len > 0) answer.settlement_id = try arena.dupe(u8, refused.settlement_id);
+                return answer;
+            },
+            .accepted => |settled| {
+                answer.accepted = true;
+                const tool_use_id = settled orelse return answer;
+                var scratch = std.heap.ArenaAllocator.init(self.gpa);
+                defer scratch.deinit();
+                self.answerCall(tool_use_id, try toolResult(scratch.allocator(), arm.?, stated)) catch |err| return lift(err);
+                return answer;
+            },
+        }
     }
 
     fn answerRpc(self: *Session, a: std.mem.Allocator, request_id: []const u8, id: std.json.Value, result: anytype) !void {
@@ -948,6 +1056,27 @@ fn admitProvided(arena: std.mem.Allocator, participant: []const u8, carried: ?[]
         };
     }
     return provided;
+}
+
+fn callReply(a: std.mem.Allocator, rpc_id: []const u8, result: []const u8) ![]const u8 {
+    return std.mem.concat(a, u8, &.{ "{\"jsonrpc\":\"2.0\",\"id\":", rpc_id, ",\"result\":", result, "}" });
+}
+
+fn toolResult(a: std.mem.Allocator, arm: session.CallArm, stated: std.json.Value) ![]const u8 {
+    const text = switch (stated) {
+        .string => |written| written,
+        .object => |failure| if (arm == .failure) textOf(.{ .object = failure }, "message") else try std.json.Stringify.valueAlloc(a, stated, .{}),
+        else => try std.json.Stringify.valueAlloc(a, stated, .{}),
+    };
+    return std.json.Stringify.valueAlloc(a, .{ .content = .{.{ .type = "text", .text = text }}, .isError = arm == .failure }, .{});
+}
+
+fn failureValue(keep: std.mem.Allocator, failure: oap_types.ProtocolError) !std.json.Value {
+    var stated = std.json.ObjectMap.empty;
+    try stated.put(keep, "code", .{ .string = try keep.dupe(u8, failure.code) });
+    try stated.put(keep, "message", .{ .string = try keep.dupe(u8, failure.message) });
+    if (failure.retriable) |retriable| try stated.put(keep, "retriable", .{ .bool = retriable });
+    return .{ .object = stated };
 }
 
 fn copyDefinition(keep: std.mem.Allocator, definition: oap_types.ToolDefinition) !oap_types.ToolDefinition {
@@ -2050,4 +2179,86 @@ test "an open refuses a provided tool another participant owns, under another so
     const fitting = "[{\"name\":\"" ++ repeat("x", 54) ++ "\",\"execution_owner\":\"user\",\"source\":\"claude-code-native\"}]";
     var refusal = contract.Refusal{};
     probe.handle = try probe.adapter.adapter().open(probe.arena.allocator(), .{ .session_id = "s1", .participant = "user", .tools_json = fitting }, &refusal);
+}
+
+fn fakeProvidedTurn(comptime pause: []const u8) []const u8 {
+    return "take; uuid=$(field uuid)\n" ++
+        "printf '{\"type\":\"system\",\"subtype\":\"init\",\"session_id\":\"native-1\",\"tools\":[\"Bash\",\"mcp__oap__echo\"],\"mcp_servers\":[{\"name\":\"oap\",\"status\":\"connected\",\"source\":\"sdk\"}],\"model\":\"claude-fake\",\"uuid\":\"i1\"}\\n'\n" ++
+        "printf '{\"type\":\"stream_event\",\"event\":{\"type\":\"message_start\"},\"session_id\":\"native-1\",\"parent_tool_use_id\":null,\"uuid\":\"e1\",\"user_message_uuid\":\"%s\"}\\n' \"$uuid\"\n" ++
+        "printf '{\"type\":\"assistant\",\"message\":{\"id\":\"msg_1\",\"model\":\"claude-fake\",\"content\":[{\"type\":\"tool_use\",\"id\":\"toolu_p\",\"name\":\"mcp__oap__echo\",\"input\":{\"text\":\"hi\"}}]},\"parent_tool_use_id\":null,\"session_id\":\"native-1\",\"uuid\":\"a1\"}\\n'\n" ++
+        pause ++
+        "printf '{\"type\":\"control_request\",\"request_id\":\"call-1\",\"request\":{\"subtype\":\"mcp_message\",\"server_name\":\"oap\",\"message\":{\"method\":\"tools/call\",\"params\":{\"name\":\"echo\",\"arguments\":{\"text\":\"hi\"},\"_meta\":{\"claudecode/toolUseId\":\"toolu_p\",\"progressToken\":2}},\"jsonrpc\":\"2.0\",\"id\":7}}}\\n'\n" ++
+        "take\n" ++
+        "printf '{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":[{\"tool_use_id\":\"toolu_p\",\"type\":\"tool_result\",\"content\":[{\"type\":\"text\",\"text\":\"hi back\"}]}]},\"parent_tool_use_id\":null,\"session_id\":\"native-1\",\"uuid\":\"u1\"}\\n'\n" ++
+        "printf '{\"type\":\"result\",\"subtype\":\"success\",\"duration_ms\":12,\"is_error\":false,\"num_turns\":1,\"session_id\":\"native-1\",\"stop_reason\":\"end_turn\",\"usage\":{\"input_tokens\":7,\"output_tokens\":5},\"terminal_reason\":\"completed\",\"result\":\"done\",\"user_message_uuid\":\"%s\",\"queued_turn_count\":0,\"uuid\":\"r1\"}\\n' \"$uuid\"\n";
+}
+
+const fake_provided_turn = fakeProvidedTurn("");
+const fake_provided_late_call = fakeProvidedTurn("sleep 1\n");
+
+fn resolveProvided(probe: *Probe, event: contract.Event, request: oap_types.CallResolveRequest, refusal: *contract.Refusal) !oap_types.CallResolveResponse {
+    _ = event;
+    const live = probe.handle.?;
+    return live.vtable.resolve_call.?(live.ptr, probe.arena.allocator(), "resolve-1", &request, refusal);
+}
+
+fn providedAnswer(probe: *Probe, event: contract.Event) !oap_types.CallResolveRequest {
+    const parsed = try std.json.parseFromSliceLeaky(std.json.Value, probe.arena.allocator(), event.line, .{});
+    const payload = parsed.object.get("payload").?.object;
+    return .{
+        .interaction_id = payload.get("interaction_id").?.string,
+        .session_id = payload.get("session_id").?.string,
+        .run_id = payload.get("run_id").?.string,
+        .tool_call_id = payload.get("tool_call_id").?.string,
+        .requested_by = payload.get("requested_by").?.string,
+        .responded_by = payload.get("responded_by").?.string,
+    };
+}
+
+const provided_reply = "{\"response\":{\"request_id\":\"call-1\",\"response\":{\"mcp_response\":{\"jsonrpc\":\"2.0\",\"id\":7,\"result\":{\"content\":[{\"type\":\"text\",\"text\":\"hi back\"}],\"isError\":false}}},\"subtype\":\"success\"},\"type\":\"control_response\"}";
+
+test "a provided tool's call reaches the opener as an interaction, and its resolution answers the CLI's held tools/call" {
+    var probe: Probe = undefined;
+    try probe.init(fake_prelude ++ fake_provided_turn ++ fake_idle);
+    defer probe.deinit();
+    var refusal = contract.Refusal{};
+    probe.handle = try probe.adapter.adapter().open(probe.arena.allocator(), .{ .session_id = "s1", .participant = "user", .tools_json = provided_tools_json }, &refusal);
+    _ = try probe.submit("use echo", &refusal);
+    var seen = std.ArrayList(contract.Event).empty;
+    const requested = try probe.pumpUntil("action.call.requested", &seen);
+    try testing.expect(std.mem.indexOf(u8, requested.line, "\"execution_owner\":\"user\"") != null);
+    try testing.expect(std.mem.indexOf(u8, requested.line, "\"name\":\"echo\"") != null);
+    try testing.expect(std.mem.indexOf(u8, requested.line, "\"interaction_id\":\"") != null);
+    var request = try providedAnswer(&probe, requested);
+    request.result_json = "\"hi back\"";
+    const accepted = try resolveProvided(&probe, requested, request, &refusal);
+    try testing.expect(accepted.accepted);
+    _ = try probe.waitWritten(provided_reply);
+    _ = try probe.pumpUntil("run.completed", &seen);
+    var completed: usize = 0;
+    for (seen.items) |event| {
+        if (std.mem.indexOf(u8, event.line, "\"type\":\"action.call.completed\"") != null) completed += 1;
+    }
+    try testing.expectEqual(@as(usize, 1), completed);
+    const again = try resolveProvided(&probe, requested, request, &refusal);
+    try testing.expect(!again.accepted);
+    try testing.expectEqualStrings("already_resolved", again.reason.?);
+}
+
+test "a resolution that comes before the CLI's tools/call answers it when it arrives" {
+    var probe: Probe = undefined;
+    try probe.init(fake_prelude ++ fake_provided_late_call ++ fake_idle);
+    defer probe.deinit();
+    var refusal = contract.Refusal{};
+    probe.handle = try probe.adapter.adapter().open(probe.arena.allocator(), .{ .session_id = "s1", .participant = "user", .tools_json = provided_tools_json }, &refusal);
+    _ = try probe.submit("use echo", &refusal);
+    var seen = std.ArrayList(contract.Event).empty;
+    const requested = try probe.pumpUntil("action.call.requested", &seen);
+    var request = try providedAnswer(&probe, requested);
+    request.result_json = "\"hi back\"";
+    try testing.expect((try resolveProvided(&probe, requested, request, &refusal)).accepted);
+    const before = try probe.fake.written(probe.arena.allocator());
+    try testing.expect(std.mem.indexOf(u8, before, "\"request_id\":\"call-1\"") == null);
+    _ = try probe.waitWritten(provided_reply);
+    _ = try probe.pumpUntil("run.completed", &seen);
 }

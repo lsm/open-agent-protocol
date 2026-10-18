@@ -109,6 +109,27 @@ const Tool = struct {
     source: []const u8 = "",
     started_event: []const u8 = "",
     terminal: bool = false,
+    interaction_id: []const u8 = "",
+    acknowledged: bool = false,
+    settlement_id: []const u8 = "",
+};
+
+pub const CallArm = enum { started, result, failure };
+
+pub const CallAnswer = struct {
+    interaction_id: []const u8,
+    run_id: []const u8,
+    tool_call_id: []const u8,
+    requested_by: []const u8,
+    responded_by: []const u8,
+    arm: ?CallArm,
+    stated: std.json.Value = .null,
+    request_id: []const u8 = "",
+};
+
+pub const CallVerdict = union(enum) {
+    accepted: ?[]const u8,
+    refused: struct { reason: []const u8, settlement_id: []const u8 = "" },
 };
 
 const Gate = struct {
@@ -226,7 +247,15 @@ pub const Reducer = struct {
         try kept.tools.ensureTotalCapacity(kept_allocator, self.tools.items.len);
         for (self.tools.items) |tool| {
             const native_id = try kept_allocator.dupe(u8, tool.native_id);
-            kept.tools.appendAssumeCapacity(.{ .native_id = native_id, .id = "", .run_id = "", .name = "", .terminal = true });
+            if (tool.interaction_id.len == 0) {
+                kept.tools.appendAssumeCapacity(.{ .native_id = native_id, .id = "", .run_id = "", .name = "", .terminal = true });
+                continue;
+            }
+            const id = try kept_allocator.dupe(u8, tool.id);
+            const run_id = try kept_allocator.dupe(u8, tool.run_id);
+            const interaction_id = try kept_allocator.dupe(u8, tool.interaction_id);
+            const settlement_id = try kept_allocator.dupe(u8, tool.settlement_id);
+            kept.tools.appendAssumeCapacity(.{ .native_id = native_id, .id = id, .run_id = run_id, .name = "", .terminal = true, .interaction_id = interaction_id, .acknowledged = tool.acknowledged, .settlement_id = settlement_id });
         }
         try kept.catalog.ensureTotalCapacity(kept_allocator, self.catalog.items.len);
         for (self.catalog.items) |entry| {
@@ -418,7 +447,13 @@ pub const Reducer = struct {
         try self.put(&payload, "run_id", str(run.id));
         try self.put(&payload, "tool_call_id", str(tool.id));
         try self.put(&payload, "requested_by", str(self.options.endpoint));
-        try self.put(&payload, "execution_owner", str(harness_owner));
+        if (tool.interaction_id.len > 0) {
+            try self.put(&payload, "execution_owner", str(self.options.responder));
+            try self.put(&payload, "interaction_id", str(tool.interaction_id));
+            try self.put(&payload, "responded_by", str(self.options.responder));
+        } else {
+            try self.put(&payload, "execution_owner", str(harness_owner));
+        }
         if (tool.source.len > 0) try self.put(&payload, "source", str(tool.source));
         try self.put(&payload, "name", str(tool.name));
         return payload;
@@ -442,6 +477,7 @@ pub const Reducer = struct {
             try self.failRun("claude_tool_lifecycle", "duplicate tool call");
             return;
         }
+        if (self.providedName(name)) |provided| return self.requestProvided(run, native_id, provided, input);
         const tool = Tool{
             .native_id = native_id,
             .id = try self.nextID("tool-call"),
@@ -462,6 +498,57 @@ pub const Reducer = struct {
         try self.tools.append(self.allocator(), stored);
     }
 
+    fn requestProvided(self: *Reducer, run: *Run, native_id: []const u8, name: []const u8, input: ?std.json.Value) !void {
+        const tool = Tool{
+            .native_id = native_id,
+            .id = try self.nextID("tool-call"),
+            .run_id = run.id,
+            .name = name,
+            .source = native_source,
+            .interaction_id = try self.nextID("interaction"),
+        };
+        var requested = try self.toolPayload(run, tool);
+        try self.put(&requested, "arguments_json", input orelse .null);
+        _ = try self.emitCorrelated(run, "action.call.requested", .{ .object = requested }, tool.id, "");
+        try self.tools.append(self.allocator(), tool);
+        _ = try self.emit(run, "run.status.updated", try self.statusPayload(run, "waiting_for_input", tool.interaction_id));
+    }
+
+    pub fn providedCall(self: *Reducer, native_id: []const u8) ?Tool {
+        const tool = self.findTool(native_id) orelse return null;
+        if (tool.interaction_id.len == 0) return null;
+        return tool.*;
+    }
+
+    pub fn resolveCall(self: *Reducer, answer: CallAnswer) !CallVerdict {
+        const unknown = CallVerdict{ .refused = .{ .reason = "unknown_interaction" } };
+        const tool = for (self.tools.items) |*candidate| {
+            if (candidate.interaction_id.len > 0 and std.mem.eql(u8, candidate.interaction_id, answer.interaction_id)) break candidate;
+        } else return unknown;
+        if (!std.mem.eql(u8, tool.run_id, answer.run_id)) return unknown;
+        if (!std.mem.eql(u8, answer.responded_by, self.options.responder) or !std.mem.eql(u8, answer.requested_by, self.options.endpoint) or
+            !std.mem.eql(u8, answer.tool_call_id, tool.id)) return .{ .refused = .{ .reason = "wrong_responder" } };
+        const arm = answer.arm orelse return unknown;
+        if (tool.terminal) return .{ .refused = .{ .reason = "already_resolved", .settlement_id = tool.settlement_id } };
+        if (arm == .started and tool.acknowledged) return .{ .refused = .{ .reason = "repeated_acknowledgement" } };
+        const run = if (self.run) |*live| live else return unknown;
+        if (!std.mem.eql(u8, run.id, tool.run_id)) return unknown;
+        if (arm == .started or !tool.acknowledged) {
+            var started = try self.toolPayload(run, tool.*);
+            if (answer.request_id.len > 0) try self.put(&started, "request_id", str(answer.request_id));
+            tool.started_event = try self.emitCorrelated(run, "action.call.started", .{ .object = started }, tool.id, "");
+            tool.acknowledged = true;
+            if (arm == .started) return .{ .accepted = null };
+        }
+        var settled = try self.toolPayload(run, tool.*);
+        if (answer.request_id.len > 0) try self.put(&settled, "request_id", str(answer.request_id));
+        try self.put(&settled, if (arm == .failure) "error" else "result", answer.stated);
+        tool.settlement_id = try self.emitCorrelated(run, if (arm == .failure) "action.call.failed" else "action.call.completed", .{ .object = settled }, tool.id, tool.started_event);
+        tool.terminal = true;
+        _ = try self.emit(run, "run.status.updated", try self.statusPayload(run, "running", ""));
+        return .{ .accepted = tool.native_id };
+    }
+
     fn endTool(self: *Reducer, native_id: []const u8, content: ?std.json.Value, is_error: bool) !void {
         if (self.run == null) return;
         const run = &self.run.?;
@@ -470,6 +557,18 @@ pub const Reducer = struct {
             return;
         };
         if (!std.mem.eql(u8, tool.run_id, run.id)) return;
+        if (tool.interaction_id.len > 0) {
+            if (tool.terminal) return;
+            tool.terminal = true;
+            var unanswered = try self.toolPayload(run, tool.*);
+            var failure = self.object();
+            try self.put(&failure, "code", str("claude_tool_error"));
+            try self.put(&failure, "message", str(toolResultText(content)));
+            try self.put(&unanswered, "error", .{ .object = failure });
+            tool.settlement_id = try self.emitCorrelated(run, "action.call.failed", .{ .object = unanswered }, tool.id, tool.started_event);
+            _ = try self.emit(run, "run.status.updated", try self.statusPayload(run, "running", ""));
+            return;
+        }
         if (tool.terminal) {
             try self.failRun("claude_tool_lifecycle", "unmatched tool completion");
             return;
@@ -494,6 +593,9 @@ pub const Reducer = struct {
         const run = self.run orelse return null;
         for (self.gates.items) |gate| {
             if (!gate.resolved and std.mem.eql(u8, gate.run_id, run.id)) return gate.id;
+        }
+        for (self.tools.items) |tool| {
+            if (tool.interaction_id.len > 0 and !tool.terminal and std.mem.eql(u8, tool.run_id, run.id)) return tool.interaction_id;
         }
         return null;
     }
@@ -892,7 +994,7 @@ pub const Reducer = struct {
                 _ = try self.emitCorrelated(run, "action.call.failed", .{ .object = payload }, tool.id, tool.started_event);
                 continue;
             }
-            _ = try self.emitCorrelated(run, "action.call.cancelled", .{ .object = payload }, tool.id, tool.started_event);
+            tool.settlement_id = try self.emitCorrelated(run, "action.call.cancelled", .{ .object = payload }, tool.id, tool.started_event);
         }
         var kept_gates = std.ArrayList(Gate).empty;
         for (self.gates.items) |*gate| {
@@ -2740,6 +2842,97 @@ fn callingRun(arena: *std.heap.ArenaAllocator, options: Options) !Reducer {
         \\{"type":"assistant","message":{"id":"msg_1","model":"claude-sonnet-4-5","content":[{"type":"tool_use","id":"toolu_01","name":"Bash","input":{"command":"touch /tmp/x"}}],"stop_reason":null,"usage":{"input_tokens":7}},"parent_tool_use_id":null,"session_id":"s","uuid":"a1","user_message_uuid":"turn-1"}
     );
     return reducer;
+}
+
+fn providedRun(arena: *std.heap.ArenaAllocator, tool_use_id: []const u8) !Reducer {
+    const scratch = arena.allocator();
+    var reducer = Reducer.init(arena, .{ .responder = "host", .provided = &.{"echo"} });
+    reducer.open();
+    try reducer.submit("turn-1");
+    try observeText(&reducer, scratch,
+        \\{"type":"stream_event","session_id":"s","event":{"type":"message_start"},"uuid":"e1","user_message_uuid":"turn-1"}
+    );
+    const frame = try std.fmt.allocPrint(scratch, "{{\"type\":\"assistant\",\"message\":{{\"id\":\"msg_1\",\"model\":\"m\",\"content\":[{{\"type\":\"tool_use\",\"id\":\"{s}\",\"name\":\"mcp__oap__echo\",\"input\":{{\"text\":\"hi\"}}}}]}},\"parent_tool_use_id\":null,\"session_id\":\"s\",\"uuid\":\"a1\",\"user_message_uuid\":\"turn-1\"}}", .{tool_use_id});
+    try observeText(&reducer, scratch, frame);
+    return reducer;
+}
+
+fn answerFor(reducer: *Reducer, arm: ?CallArm) CallAnswer {
+    const requested = firstPayload(reducer, "action.call.requested").?;
+    return .{
+        .interaction_id = requested.get("interaction_id").?.string,
+        .run_id = requested.get("run_id").?.string,
+        .tool_call_id = requested.get("tool_call_id").?.string,
+        .requested_by = endpoint_id,
+        .responded_by = "host",
+        .arm = arm,
+        .stated = .{ .string = "hi back" },
+        .request_id = "resolve-1",
+    };
+}
+
+test "a provided call is requested of the opener, and its resolutions are refused by rank, acknowledged once and settled once" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var reducer = try providedRun(&arena, "toolu_p");
+    const requested = firstPayload(&reducer, "action.call.requested").?;
+    try testing.expectEqualStrings("echo", requested.get("name").?.string);
+    try testing.expectEqualStrings("host", requested.get("execution_owner").?.string);
+    try testing.expectEqualStrings(native_source, requested.get("source").?.string);
+    try testing.expectEqual(@as(usize, 0), countKind(&reducer, "action.call.started"));
+    try testing.expectEqualStrings(requested.get("interaction_id").?.string, reducer.pendingInteraction().?);
+
+    var stranger = answerFor(&reducer, .result);
+    stranger.interaction_id = "interaction-none";
+    try testing.expectEqualStrings("unknown_interaction", (try reducer.resolveCall(stranger)).refused.reason);
+    try testing.expectEqualStrings("unknown_interaction", (try reducer.resolveCall(answerFor(&reducer, null))).refused.reason);
+    var foreign = answerFor(&reducer, .result);
+    foreign.responded_by = "someone";
+    try testing.expectEqualStrings("wrong_responder", (try reducer.resolveCall(foreign)).refused.reason);
+
+    try testing.expectEqual(@as(?[]const u8, null), (try reducer.resolveCall(answerFor(&reducer, .started))).accepted);
+    try testing.expectEqual(@as(usize, 1), countKind(&reducer, "action.call.started"));
+    try testing.expectEqualStrings("repeated_acknowledgement", (try reducer.resolveCall(answerFor(&reducer, .started))).refused.reason);
+    try testing.expectEqualStrings("toolu_p", (try reducer.resolveCall(answerFor(&reducer, .result))).accepted.?);
+    try testing.expectEqual(@as(usize, 1), countKind(&reducer, "action.call.completed"));
+    try testing.expectEqual(@as(usize, 1), countKind(&reducer, "action.call.started"));
+    try testing.expectEqual(@as(?[]const u8, null), reducer.pendingInteraction());
+    const settled = (try reducer.resolveCall(answerFor(&reducer, .failure))).refused;
+    try testing.expectEqualStrings("already_resolved", settled.reason);
+    try testing.expect(settled.settlement_id.len > 0);
+
+    try observeText(&reducer, arena.allocator(),
+        \\{"type":"user","message":{"role":"user","content":[{"tool_use_id":"toolu_p","type":"tool_result","content":"hi back"}]},"parent_tool_use_id":null,"session_id":"s","uuid":"u1"}
+    );
+    try testing.expectEqual(@as(usize, 1), countKind(&reducer, "action.call.completed"));
+    try testing.expectEqual(@as(usize, 0), countKind(&reducer, "action.call.failed"));
+}
+
+test "a provided call the CLI settles before any resolution fails, and one a run leaves open is cancelled and stays resolved after a compaction" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var reducer = try providedRun(&arena, "toolu_p");
+    try observeText(&reducer, arena.allocator(),
+        \\{"type":"user","message":{"role":"user","content":[{"tool_use_id":"toolu_p","type":"tool_result","content":"MCP tool call timed out","is_error":true}]},"parent_tool_use_id":null,"session_id":"s","uuid":"u1"}
+    );
+    try testing.expectEqualStrings("claude_tool_error", firstPayload(&reducer, "action.call.failed").?.get("error").?.object.get("code").?.string);
+    try testing.expectEqualStrings("already_resolved", (try reducer.resolveCall(answerFor(&reducer, .result))).refused.reason);
+
+    var open_arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer open_arena.deinit();
+    var left = try providedRun(&open_arena, "toolu_q");
+    try observeText(&left, open_arena.allocator(),
+        \\{"type":"result","subtype":"success","session_id":"s","result":"ok","user_message_uuid":"turn-1","uuid":"r1"}
+    );
+    try testing.expectEqual(@as(usize, 1), countKind(&left, "action.call.cancelled"));
+    const answer = answerFor(&left, .result);
+    left.envelopes.clearRetainingCapacity();
+    var compact_arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer compact_arena.deinit();
+    var compacted = try left.compactInto(&compact_arena);
+    const late = (try compacted.resolveCall(answer)).refused;
+    try testing.expectEqualStrings("already_resolved", late.reason);
+    try testing.expect(late.settlement_id.len > 0);
 }
 
 fn citedBy(reducer: *Reducer, kind: []const u8, member: []const u8) ?[]const u8 {
