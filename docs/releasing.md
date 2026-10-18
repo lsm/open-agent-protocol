@@ -16,11 +16,14 @@ you find out at the end of a long run rather than at the start.
 through `v0.1.0-alpha.21` fails `publish-npm` with `E404` on the first `PUT` to
 `@oap-sdk/cli-<platform>`, and no `@oap-sdk` package exists on the registry
 (`npm view @oap-sdk/cli` answers `E404`). `v0.1.0-alpha.1` to `alpha.3` failed
-earlier, with `ENEEDAUTH`. The token now authenticates; what it lacks is a scope
-it may publish into. Only the repository owner can fix
-that: create the `oap-sdk` organization on npm, or grant the token's account
-publish rights on the scope. Until then a release reaches GitHub and not npm,
-and a failed `publish-npm` is expected rather than a regression.
+earlier, with `ENEEDAUTH`. The job carries no npm token: it publishes through
+npm's OIDC trusted publishing (`id-token: write`, `npm publish --provenance`),
+so the registry must already know this workflow as a trusted publisher for each
+package. Only the repository owner can arrange that: create the `oap-sdk`
+organization on npm, then register `lsm/open-agent-protocol`'s
+`release-binaries.yml` as the trusted publisher on each `@oap-sdk` package.
+Until then a release reaches GitHub and not npm, and a failed `publish-npm` is
+expected rather than a regression.
 
 ## The steps
 
