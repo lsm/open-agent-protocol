@@ -855,6 +855,7 @@ func TestPinnedMessageUpdateShapesAreDiscriminated(t *testing.T) {
 		`{"type":"toolcall_start","contentIndex":2,"id":"call","toolName":"read"}`,
 		`{"type":"toolcall_delta","contentIndex":2,"delta":"{\"path\":"}`,
 		`{"type":"toolcall_end","contentIndex":2,"toolCall":{"type":"toolCall","id":"call","name":"read","arguments":{"path":"x"},"namespace":"fs"}}`,
+		`{"type":"toolcall_end","contentIndex":2,"toolCall":{"type":"toolCall","id":"call","name":"read","arguments":{},"argumentsError":"Unexpected end of JSON input"}}`,
 	}
 	for _, raw := range valid {
 		if _, emit, err := decodeProviderEvent(json.RawMessage(raw)); err != nil || emit {
@@ -1077,6 +1078,25 @@ func TestAToolRunWhoseEndAndResultCarryDurationsCompletesTheCall(t *testing.T) {
 	events := adaptertest.Drain(t, stream, time.Second)
 	kinds := eventTypes(events)
 	if kinds[len(kinds)-1] != protocol.TypeRunCompleted || !slices.Contains(kinds, protocol.TypeActionCallCompleted) {
+		t.Fatalf("events=%v", kinds)
+	}
+	assertValidTrace(t, response, events)
+}
+
+func TestAToolCallWhoseArgumentsDidNotParseFailsTheCallAndTheRunCompletes(t *testing.T) {
+	client := newFakeClient()
+	s := openTest(t, client, 32)
+	response, stream := submitTest(t, s)
+	client.emit(t, map[string]any{"type": "tool_execution_start", "toolCallId": "native", "toolName": "read", "args": map[string]any{}})
+	client.emit(t, map[string]any{"type": "tool_execution_end", "toolCallId": "native", "toolName": "read", "result": map[string]any{"text": "Invalid arguments"}, "isError": true})
+	final := assistant("done", "stop")
+	final["content"] = []any{map[string]any{"type": "toolCall", "id": "native", "name": "read", "arguments": map[string]any{}, "argumentsError": "Unexpected end of JSON input"}, map[string]any{"type": "text", "text": "done"}}
+	client.emit(t, map[string]any{"type": "message_end", "message": final})
+	client.emit(t, map[string]any{"type": "agent_end", "messages": []any{final}, "willRetry": false})
+	client.emit(t, map[string]any{"type": "agent_settled", "aborted": false})
+	events := adaptertest.Drain(t, stream, time.Second)
+	kinds := eventTypes(events)
+	if kinds[len(kinds)-1] != protocol.TypeRunCompleted || !slices.Contains(kinds, protocol.TypeActionCallFailed) {
 		t.Fatalf("events=%v", kinds)
 	}
 	assertValidTrace(t, response, events)
