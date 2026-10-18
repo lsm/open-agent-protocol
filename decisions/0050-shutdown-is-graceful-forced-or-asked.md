@@ -84,9 +84,12 @@ which a prompt is kept but not sent. The shutdown response lists them under
 `reason: "held_for_restart"`, so a UI can show "will be sent after restart"
 rather than a cancellation nobody asked for. The accepted graceful shutdown
 is that terminal's evidence, as an accepted cancel exchange is for any other
-`run.cancelled`. Its run id is settled, so it takes no `run.cancel`; a host
-that does not want the prompt sent cancels the run that carries it after the
-reopen, while it is still queued. A submit that arrives after the request is refused
+`run.cancelled`. Its run id is settled, so it takes no `run.cancel`. A host
+that does not want a held prompt sent names it when it reopens the session:
+`session.open.request {reopen: true, withdraw_held: [previous_run_id, ...]}`.
+A withdrawn prompt is deleted, not kept, and is never sent. Cancelling the
+carrying run after the reopen is not enough, because the first re-delivered
+run starts right after the reopen response. A submit that arrives after the request is refused
 `shutting_down` and never accepted.
 
 Running runs finish, on `oapx`'s own loop and on every third-party harness,
@@ -151,7 +154,9 @@ Decision 0040 requires a reopen to list no run under way. That changes:
   `{run_id, cause: "restart", settled_by: "inferred"}`;
 - `recovery.redelivered_runs` pairs each held prompt with the run that now
   carries it, as `{previous_run_id, run_id}`, in the original order; each
-  `run_id` is also in `state.active_runs` as `queued`.
+  `run_id` is also in `state.active_runs` as `queued`. A prompt the reopen
+  withdrew is listed as `{previous_run_id, withdrawn: true}` and carries no
+  `run_id`. A `withdraw_held` id that names no held prompt is ignored.
 
 The validator accepts restored queued runs in a recovered open response
 (`recovery.recovered: true`) and nowhere else.
@@ -189,7 +194,8 @@ Credentials are never written to either store.
   operations. A prompt is user content, so a binding still never holds a
   credential or an environment value.
 - Schema: the shutdown pair and event, `shutting_down`,
-  `recovery.interrupted_runs`, `recovery.redelivered_runs`, and the error
+  `recovery.interrupted_runs`, `recovery.redelivered_runs`,
+  `session.open.request.withdraw_held`, and the error
   code `interrupted`, with the matching `go/protocol`, validator, fixtures and `clients/ts`.
 - hub.md's shutdown section is rewritten: the 5 s window bounds force's
   child teardown only. The process exits 0 once the requested mode completes,
