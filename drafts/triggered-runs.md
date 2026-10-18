@@ -223,9 +223,9 @@ inside that rule as follows.
    the adapter reports one of the legal shapes truthfully. It never reports
    one turn as two runs, or two turns as one.
    - **The trigger's turn began first:** the submit is answered as in 4.
-     Hermes resolves this race in the user's favour.
    - **The prompt's turn began first:** the submit is `started`, and the
-     trigger is held or folded, as in 3.
+     trigger is held or folded, as in 3. Hermes makes this the outcome of
+     every race, since its triggers claim only an idle session.
    - **The harness merges the prompt and the notice into one turn:** the run
      is the host's, admitted by its submit, and the notice is folded. Claude
      can join queued messages into one prompt.
@@ -335,12 +335,16 @@ as tasks.
 
 ## Close and reopen
 
-1. **Closing a session ends what the harness ties to its process.**
+1. **Closing a session ends the tasks bound to the harness's process.**
    - Claude's background commands and agents end, and so do DeepSeek's jobs
      and pending notices.
    - The endpoint reports each as `session.task.ended` with cause
      `session_closed` before the close completes, where it can.
-   - A host must not assume any task outlived a close.
+   - Schedules the harness persists are not bound to the process. Claude's
+     session and durable crons outlive the close and get no
+     `session.task.ended`.
+   - A host must not assume a process-bound task outlived a close; the
+     reopen's `state.tasks` is authoritative for the rest.
 2. **What the harness keeps comes back on reopen** (Decision 0040).
    - The reopen's `state.tasks` lists every task the harness restored, under
      the same `task_id` where the harness keeps it.
