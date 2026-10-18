@@ -1269,7 +1269,7 @@ to**, written here because Go's behaviour is evidence and not authority (Decisio
 | 2 | the adapter exists | `unknown_adapter` | `TestOpenOpRefusals` |
 | 3 | the **attachment** cites a current revision and is elected | `stale_capabilities`, `unsupported_feature`, `capability_degraded` | `TestAttachingOpenPinsOnlyWhatItCites` (both halves, end to end on HTTP), `TestOpenOpRefusesAStaleRevisionOnTheSubscribePath` |
 | 4 | the **subscription**, same two checks, on `session.open.subscribe` | `stale_capabilities`, `unsupported_feature`, `capability_degraded` | `TestOpenOpRefusesAStaleRevisionOnTheSubscribePath`, `TestSharedGateRefusesADisclosureAnOpenCannotElect` |
-| 5 | the adapter's own refusals, for anything else the request elected | `unsupported_feature`, `capability_degraded`, `probe_failed` | `TestHubOpenRejections`, `TestOpenRefusalsAreBounded` |
+| 5 | the adapter's own refusals, for anything else the request elected, through its side-effect-free admission step | `unsupported_feature`, `capability_degraded`, `probe_failed` | `TestHubOpenRejections`, `TestOpenRefusalsAreBounded`, `TestAnAdmissionRefusalOutranksATakenNameAndATakenNameIsNeverOpened` |
 | 6 | the id is free | `session_exists` | `TestHubOpenRejections` |
 | 7 | anything else the adapter reports | `session_closed`, `open_failed` | `TestOpenSession`, `TestHubOpenClosesSessionWhenStateFails` |
 
@@ -1282,8 +1282,11 @@ diverged:**
 - **The adapter's own refusals come before `session_exists`** (D15). A host is told
   its id is taken when the real reason its request cannot be served is that the
   adapter will not attach what it asked for — and correcting the name does not
-  help, so the actual refusal is never reported. The duplicate is detected by
-  running the adapter and seeing what it made, not by looking the name up first.
+  help, so the actual refusal is never reported. Those refusals come from the
+  adapter's admission step, which starts nothing, and a host-named id is then
+  looked up before the adapter opens anything, so a duplicate is never started.
+  A refusal the adapter can only find by starting a session is outranked by
+  `session_exists`; an id the adapter mints is still checked after it opens.
 - **`malformed_json` means the nested envelope is not JSON or not exactly one
   object**, and nothing else. An object that breaks the schema anywhere, a
   wrongly typed envelope member such as `"id": 7` included, is `schema_invalid`:
