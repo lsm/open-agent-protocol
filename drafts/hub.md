@@ -986,19 +986,21 @@ removed. **That was false, and was measured rather than assumed.** The pinning t
   than judged, and narrowing it would be a policy change this table does not make.
 - **the media gate answered by the daemon itself, with nothing else wrong** — the third gate in
   `answer()` and the only refusal no `go/cmd/goap` test named, so the parity D26 records was pinned
-  in-process only. `TestHubAddrRefusesABodyWhoseMediaTypeIsNotJSONAndNothingElseIsWrong` sends five
+  in-process only. `TestHubAddrRefusesABodyWhoseMediaTypeIsNotJSONAndNothingElseIsWrong` sends six
   requests over a real socket, each with a **Host the hub accepts and no `Origin` at all**, so nothing
   but the media type can decide the answer. `text/plain` with a body is refused a **complete 415** —
   status, `Content-Length` match, `error.response`, `unsupported_media_type`, the fixed
   `open-agent-protocol` / `0.1` / `open-agent-protocol.agent-control-core` triple, and the synthetic
-  correlation `oap-error-N` replying to `oap-request-N`. **Three of the five are counterexamples**, and
-  they are what keep the first from passing on a build that refuses everything: `application/json` with
-  a body is not media-refused, `application/json; charset=utf-8` with a body is not media-refused —
-  so the real daemon agrees with the parameter parity D26 pinned against Go — and `text/plain` with **no
-  body declared** is not media-refused, because the gate reads length. **Three mutations fail it, each
-  on the case it should:** neutralising the gate answers `404` on the refused case, keying the gate on
-  the header instead of the length answers `415` on the body-less case, and admitting a parameter with
-  no `=` again answers `404` on `application/json; charset`. That third one is why that case is here —
+  correlation `oap-error-N` replying to `oap-request-N`, and so is `text/plain` with an **empty body on
+  the open route**, because the gate reads the route, not the length (D26). **Three of the six are
+  counterexamples**, and they are what keep the refused cases from passing on a build that refuses
+  everything: `application/json` with a body is not media-refused, `application/json; charset=utf-8`
+  with a body is not media-refused — so the real daemon agrees with the parameter parity D26 pinned
+  against Go — and `text/plain` on `GET /adapters`, a route that reads no body, is not media-refused.
+  **Mutations fail it on the case they should:** neutralising the gate answers `404` on the refused
+  case, keying the gate on the header instead of the route answers `415` on `GET /adapters`, keying it
+  on the length again passes the empty open body, and admitting a parameter with no `=` again answers
+  `404` on `application/json; charset`. That third one is why that case is here —
   without it, dropping the parameter validation was **invisible to this test**, which I found by running
   the mutation rather than by assuming it would be caught.
 - **the bound holding against a real process** —
