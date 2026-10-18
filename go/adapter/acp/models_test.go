@@ -220,3 +220,28 @@ func TestConcurrentSwitchesReachTheAgentOneAtATimeAndTheLastWritten(t *testing.T
 		t.Fatalf("state = %+v", state)
 	}
 }
+
+func TestASwitchThatACloseOvertakesDuringTheAgentCallReportsTheSessionClosed(t *testing.T) {
+	c := configuredClient()
+	s, err := configuredAdapter(t, c, nil).Open(context.Background(), base.OpenRequest{SessionID: "s1", Participant: protocol.Participant{ID: "reviewbot"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close(context.Background())
+	opened := s.(*session)
+	c.hook = func(*configClient, native.SetConfigOptionParams) error {
+		opened.mu.Lock()
+		opened.closed = true
+		opened.mu.Unlock()
+		return nil
+	}
+	if _, _, err := s.(base.ModelSwitcher).SwitchModel(context.Background(), protocol.SessionModelSwitchRequest{SessionID: "s1", ModelID: "swe-2-high", AllowDegradedFeatures: []string{protocol.FeatureSessionModelSwitch}}); !errors.Is(err, base.ErrSessionClosed) {
+		t.Fatalf("err = %v", err)
+	}
+	opened.mu.Lock()
+	model := opened.state.CurrentModelID
+	opened.mu.Unlock()
+	if model == "swe-2-high" {
+		t.Fatalf("a closed session's state took the switch")
+	}
+}

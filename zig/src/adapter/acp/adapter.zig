@@ -92,6 +92,19 @@ fn collectModels(keep: std.mem.Allocator, listed: ?std.json.Value, out: *std.Arr
     }
 }
 
+fn confirmedOption(entries: []const std.json.Value, config_id: []const u8, value: []const u8) bool {
+    var matched: ?std.json.Value = null;
+    for (entries) |entry| {
+        if (!std.mem.eql(u8, fieldText(entry, "id"), config_id)) continue;
+        if (matched != null) return false;
+        matched = entry;
+    }
+    const option = matched orelse return false;
+    const kind = fieldText(option, "type");
+    if (kind.len > 0 and !std.mem.eql(u8, kind, "select")) return false;
+    return std.mem.eql(u8, fieldText(option, "currentValue"), value);
+}
+
 fn usableModel(value: []const u8) bool {
     return value.len > 0 and !std.mem.eql(u8, value, "default") and !std.mem.eql(u8, value, "current");
 }
@@ -973,9 +986,7 @@ pub const Session = struct {
             return refusal.unsupportedField(contract.feature_model_switch, contract.reason_unsatisfiable, "model_id");
         };
         const confirmed = memberOf(answered, "configOptions") orelse return refusal.unsupportedField(contract.feature_model_switch, contract.reason_unsatisfiable, "model_id");
-        const kept = if (confirmed == .array) for (confirmed.array.items) |entry| {
-            if (std.mem.eql(u8, fieldText(entry, "id"), self.model_option) and std.mem.eql(u8, fieldText(entry, "currentValue"), request.model_id)) break true;
-        } else false else false;
+        const kept = confirmed == .array and confirmedOption(confirmed.array.items, self.model_option, request.model_id);
         if (!kept) return refusal.unsupportedField(contract.feature_model_switch, contract.reason_unsatisfiable, "model_id");
         const previous: ?[]const u8 = if (self.reported_model) |model| try arena.dupe(u8, model) else null;
         self.reported_level = null;
@@ -1440,7 +1451,7 @@ test "an open sets the agent's thought_level option and reports the level, refus
     try testing.expectEqualStrings(contract.feature_session_reasoning, refusal.feature);
 }
 
-test "a model switch sets the agent's model option to a listed value, confirms it and reports the reasoning it leaves, refusing an unlisted, rejected or unconfirmed one" {
+test "a model switch sets the agent's model option to a listed value, confirms it and reports the reasoning it leaves, refusing an unlisted, rejected, unconfirmed, duplicated or non-select one" {
     var probe: Probe = undefined;
     try probe.init(
         \\#!/bin/sh
@@ -1451,6 +1462,8 @@ test "a model switch sets the agent's model option to a listed value, confirms i
         \\take; printf '{"id":3,"jsonrpc":"2.0","result":{"configOptions":[{"id":"picker","category":"model","type":"select","currentValue":"luna-medium","options":[{"value":"sol-medium"},{"value":"luna-medium"},{"value":"adaptive"}]},{"id":"effort","category":"thought_level","type":"select","currentValue":"medium","options":[{"value":"high"},{"value":"medium"}]}]}}\n'
         \\take; printf '{"id":4,"jsonrpc":"2.0","error":{"code":-32602,"message":"Invalid params"}}\n'
         \\take; printf '{"id":5,"jsonrpc":"2.0","result":{"configOptions":[{"id":"picker","category":"model","type":"select","currentValue":"luna-medium","options":[{"value":"sol-medium"},{"value":"luna-medium"},{"value":"adaptive"}]}]}}\n'
+        \\take; printf '{"id":6,"jsonrpc":"2.0","result":{"configOptions":[{"id":"picker","category":"model","type":"select","currentValue":"adaptive"},{"id":"picker","category":"model","type":"select","currentValue":"adaptive"}]}}\n'
+        \\take; printf '{"id":7,"jsonrpc":"2.0","result":{"configOptions":[{"id":"picker","category":"model","type":"boolean","currentValue":"adaptive"}]}}\n'
         \\
     ++ fake_idle);
     defer probe.deinit();
@@ -1471,6 +1484,8 @@ test "a model switch sets the agent's model option to a listed value, confirms i
     try testing.expect(std.mem.endsWith(u8, written, "{\"id\":3,\"jsonrpc\":\"2.0\",\"method\":\"session/set_config_option\",\"params\":{\"sessionId\":\"native-session\",\"configId\":\"picker\",\"value\":\"luna-medium\"}}\n"));
     try testing.expectError(error.UnsupportedFeature, switcher(opened.ptr, arena, &.{ .session_id = "s1", .model_id = "adaptive", .allow_degraded_features = &degraded }, &refusal));
     try testing.expectEqualStrings("model_id", refusal.field);
+    try testing.expectError(error.UnsupportedFeature, switcher(opened.ptr, arena, &.{ .session_id = "s1", .model_id = "adaptive", .allow_degraded_features = &degraded }, &refusal));
+    try testing.expectError(error.UnsupportedFeature, switcher(opened.ptr, arena, &.{ .session_id = "s1", .model_id = "adaptive", .allow_degraded_features = &degraded }, &refusal));
     try testing.expectError(error.UnsupportedFeature, switcher(opened.ptr, arena, &.{ .session_id = "s1", .model_id = "adaptive", .allow_degraded_features = &degraded }, &refusal));
     try testing.expectEqualStrings("luna-medium", (try opened.state(arena, &refusal)).current_model_id.?);
 

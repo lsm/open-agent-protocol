@@ -98,6 +98,9 @@ func (s *session) SwitchModel(ctx context.Context, request protocol.SessionModel
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.closed {
+		return protocol.SessionModelSwitchResponse{}, protocol.SessionState{}, base.ErrSessionClosed
+	}
 	previous := s.state.CurrentModelID
 	_, s.state.ReasoningLevel = resumedSettings(set.ConfigOptions)
 	s.state.CurrentModelID = request.ModelID
