@@ -17,7 +17,7 @@ const local_loop = @import("local_loop.zig");
 pub const LocalLoop = local_loop.LocalLoop;
 
 pub const endpoint_id = "oapx.agent";
-pub const capability_revision = "oapx-agent-v13";
+pub const capability_revision = "oapx-agent-v14";
 const native_source = "oapx";
 const native_sources = [_]oap_types.ToolSourceDescriptor{.{ .id = native_source, .kind = "native", .display_name = "oapx" }};
 
@@ -52,7 +52,7 @@ const unsaved_features = [_]contract.Feature{
     .{ .key = "action.tools.execute", .level = .native, .reason = "the agent loop runs its own workspace tools" },
     .{ .key = contract.feature_tools_list, .level = .native },
     .{ .key = contract.feature_tools_provide, .level = .native, .reason = "a provided tool joins the loop's tools for the session, and each call to it waits for the opener's resolution", .limits_json = "{\"max_tools\":64,\"name_pattern\":\"^[a-zA-Z0-9_-]{1,64}$\",\"schema_dialect\":\"https://json-schema.org/draft/2020-12/schema\"}" },
-    .{ .key = contract.feature_models_list, .level = .degraded, .reason = "the catalog is the one the terminal UI offers, and a refresh there moves it at the session's next model switch under the same revision, with no capabilities.updated" },
+    .{ .key = contract.feature_models_list, .level = .degraded, .reason = "the catalog is the one the terminal UI offers; served by oapx serve it is fixed when the entry is built, and only the terminal UI's own refresh moves it, at the session's next model switch, under the same revision and with no capabilities.updated" },
     .{ .key = contract.feature_model_switch, .level = .native },
     .{ .key = "run.model_selection", .level = .native, .scope = "run", .reason = "a submit's model_id runs that run on the model and leaves the session's model as it was" },
     .{ .key = contract.feature_session_compact, .level = .native, .reason = "a compaction is a run of its own in which the loop summarizes the history with the session's model, the focus as its instructions, admitted under submit's rules; continue is refused" },
