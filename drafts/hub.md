@@ -411,13 +411,16 @@ closes`; Go: `TestASecondHubOnOneSessionHistoryIsRefusedWhileTheFirstHoldsIt`;
 across the trees: `TestHubRefusesASessionHistoryAGoapHubHolds`, which holds
 goap's lock and starts `oapx hub` on the same path.
 
-`--save-oapx-sessions` (Zig only, off by default) has `oapx serve` save each
-session of an `oapx` entry the way the terminal UI saves its own, under
+`oapx serve` (Zig only) saves each
+session of an `oapx` entry by default the way the terminal UI saves its own, under
 `~/.oapx/sessions`, and load it back when the session is reopened, so such a
 session outlives the hub process and advertises `session.open.reopen`. Such a
 session reports its own id as its native id, and `work.read` reads its turns
 from the saved transcript, also once the hub has restarted; reading never
-touches the recorder saving a live session. Without the flag an `oapx` session
+touches the recorder saving a live session. Credentials are never saved.
+`--no-save-oapx-sessions` turns this off, and so does a missing `HOME`, which
+`oapx serve` says on stderr; `--save-oapx-sessions` asks for it explicitly and
+refuses to start when it cannot open the store. Without saving, an `oapx` session
 lives only as long as the process, reports no native id, and is read from the
 hub's memory as before. Pinned by `a served oapx session's events are saved,
 read back without adopting it, and load back as its conversation once the store
