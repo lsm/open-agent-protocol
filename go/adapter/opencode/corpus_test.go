@@ -29,8 +29,8 @@ const (
 	opencodeSessionEvent  = "0cffae27ad631740c4b7b59c09c01440b4b603a6"
 	opencodeSessionInput  = "361c0c492ce81aaea18fa31d36d3b00dc8d13c7b"
 	opencodeDeliveryBlob  = "eeed241ae14e30645d4e0904c69d3ebfe919ef38"
-	opencodeSessionGroup  = "d5bf2af1db1281785aa996ed0d63c5f61821d830"
-	opencodeServerHandler = "73a0763352095b093a2bc959ebe6295a5d9515f0"
+	opencodeSessionGroup  = "a9ee5069e590f9c49077aea0a7c5270245eff3c0"
+	opencodeServerHandler = "dd85c2f4ff519635043c993f4cf39b52c42e999a"
 	opencodeCoreSession   = "39f5f36d3a56e017a8b474a52f7d3863ee0effaf"
 )
 
