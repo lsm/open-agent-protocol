@@ -212,6 +212,7 @@ pub const Session = struct {
     fn fail(self: *Session, detail: []const u8) contract.Failure!void {
         if (self.ended) return;
         self.ended = true;
+        self.transport.close();
         self.reducer.closed = true;
         for (self.reducer.runs.items) |run| {
             if (!run.terminal) self.reducer.refuse(run.id, "copilot_process_exit", detail) catch |err| return lift(err);
@@ -258,6 +259,7 @@ pub const Session = struct {
         switch (polled) {
             .quiet => return false,
             .ended => {
+                self.transport.close();
                 try self.fail(self.transport.departed().text(self.owned()));
                 return true;
             },
@@ -650,7 +652,9 @@ test "a second prompt queues behind the open run, and a server that exits fails 
     _ = try probe.pumpUntil("run.failed", &seen);
     var failed: usize = 0;
     for (seen.items) |event| {
-        if (std.mem.indexOf(u8, event.line, "\"type\":\"run.failed\"") != null) failed += 1;
+        if (std.mem.indexOf(u8, event.line, "\"type\":\"run.failed\"") == null) continue;
+        failed += 1;
+        try testing.expect(std.mem.indexOf(u8, event.line, "child exited with status 0") != null);
     }
     try testing.expectEqual(@as(usize, 2), failed);
     try testing.expectError(error.SessionClosed, probe.handle.?.state(probe.arena.allocator(), &refusal));
