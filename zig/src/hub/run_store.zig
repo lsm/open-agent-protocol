@@ -10,6 +10,8 @@ pub const Record = struct {
     session_id: []const u8,
     run_id: []const u8,
     request: ?[]const u8 = null,
+    replaces: ?[]const u8 = null,
+    root: ?[]const u8 = null,
 };
 
 pub const Open = struct {
@@ -17,6 +19,7 @@ pub const Open = struct {
     admitted_ms: i64,
     started: bool,
     request: ?[]const u8,
+    root: []const u8,
 };
 
 pub const Runs = struct {
@@ -51,14 +54,56 @@ pub fn decode(arena: std.mem.Allocator, line: []const u8) !Record {
     };
 }
 
-fn sameRun(a: Record, b: Record) bool {
-    return std.mem.eql(u8, a.session_id, b.session_id) and std.mem.eql(u8, a.run_id, b.run_id);
+fn stamped(arena: std.mem.Allocator, held: []const Record, record: Record) !Record {
+    if (record.action != .admitted or record.root != null) return record;
+    const replaced = record.replaces orelse return record;
+    for (try collectOpen(arena, held, record.session_id)) |run| {
+        if (!std.mem.eql(u8, run.run_id, replaced)) continue;
+        var rooted = record;
+        rooted.root = run.root;
+        return rooted;
+    }
+    return record;
+}
+
+fn compact(arena: std.mem.Allocator, all: []const Record) ![]Record {
+    var sessions: std.ArrayList([]const u8) = .empty;
+    for (all) |record| {
+        for (sessions.items) |seen| {
+            if (std.mem.eql(u8, seen, record.session_id)) break;
+        } else try sessions.append(arena, record.session_id);
+    }
+    var kept: std.ArrayList(Record) = .empty;
+    for (sessions.items) |session_id| {
+        for (try collectOpen(arena, all, session_id)) |run| {
+            for (all) |record| {
+                if (record.action == .settled) continue;
+                if (!std.mem.eql(u8, record.session_id, session_id) or !std.mem.eql(u8, record.run_id, run.run_id)) continue;
+                try kept.append(arena, record);
+            }
+        }
+    }
+    return kept.items;
 }
 
 fn collectOpen(arena: std.mem.Allocator, held: []const Record, session_id: []const u8) ![]Open {
     var open_runs: std.ArrayList(Open) = .empty;
+    var ended: std.StringHashMapUnmanaged(void) = .empty;
     for (held) |record| {
         if (!std.mem.eql(u8, record.session_id, session_id)) continue;
+        if (ended.contains(record.run_id)) continue;
+        if (record.action == .settled) try ended.put(arena, record.run_id, {});
+        if (record.action == .admitted) if (record.replaces) |replaced| try ended.put(arena, replaced, {});
+        if (record.action == .admitted) if (record.replaces) |replaced| {
+            const slot = for (open_runs.items, 0..) |run, index| {
+                if (std.mem.eql(u8, run.run_id, replaced)) break index;
+            } else null;
+            if (slot) |index| {
+                const root = record.root orelse open_runs.items[index].root;
+                open_runs.items[index] = .{ .run_id = record.run_id, .admitted_ms = record.time_ms, .started = false, .request = record.request, .root = root };
+                continue;
+            }
+        };
         const found = for (open_runs.items, 0..) |run, index| {
             if (std.mem.eql(u8, run.run_id, record.run_id)) break index;
         } else null;
@@ -67,7 +112,7 @@ fn collectOpen(arena: std.mem.Allocator, held: []const Record, session_id: []con
             continue;
         }
         const index = found orelse blk: {
-            try open_runs.append(arena, .{ .run_id = record.run_id, .admitted_ms = record.time_ms, .started = false, .request = null });
+            try open_runs.append(arena, .{ .run_id = record.run_id, .admitted_ms = record.time_ms, .started = false, .request = null, .root = record.root orelse record.run_id });
             break :blk open_runs.items.len - 1;
         };
         switch (record.action) {
@@ -130,12 +175,10 @@ pub const Store = struct {
         var scratch = std.heap.ArenaAllocator.init(self.allocator);
         defer scratch.deinit();
         const arena = scratch.allocator();
+        const held = try self.records(arena);
+        const all = try std.mem.concat(arena, Record, &.{ held, &.{try stamped(arena, held, record)} });
         var next: std.ArrayList(u8) = .empty;
-        for (try self.records(arena)) |held| {
-            if (record.action == .settled and sameRun(held, record)) continue;
-            try next.appendSlice(arena, try encode(arena, held));
-        }
-        if (record.action != .settled) try next.appendSlice(arena, try encode(arena, record));
+        for (try compact(arena, all)) |kept| try next.appendSlice(arena, try encode(arena, kept));
         try compat.fs.atomicReplaceDurable(compat.fs.getCwd(), self.path, self.staging, next.items);
     }
 
@@ -182,19 +225,19 @@ pub const Memory = struct {
     fn memoryAppend(ctx: *anyopaque, record: Record) anyerror!void {
         const self: *Memory = @ptrCast(@alignCast(ctx));
         const arena = self.arena.allocator();
-        if (record.action == .settled) {
-            var index: usize = 0;
-            while (index < self.records.items.len) {
-                if (sameRun(self.records.items[index], record)) {
-                    _ = self.records.orderedRemove(index);
-                } else index += 1;
-            }
-            return;
-        }
         const session_id = try arena.dupe(u8, record.session_id);
         const run_id = try arena.dupe(u8, record.run_id);
         const request = if (record.request) |given| try arena.dupe(u8, given) else null;
-        try self.records.append(arena, .{ .action = record.action, .time_ms = record.time_ms, .session_id = session_id, .run_id = run_id, .request = request });
+        const replaces = if (record.replaces) |given| try arena.dupe(u8, given) else null;
+        const root = if (record.root) |given| try arena.dupe(u8, given) else null;
+        var scratch = std.heap.ArenaAllocator.init(self.arena.child_allocator);
+        defer scratch.deinit();
+        const owned = try stamped(scratch.allocator(), self.records.items, .{ .action = record.action, .time_ms = record.time_ms, .session_id = session_id, .run_id = run_id, .request = request, .replaces = replaces, .root = root });
+        const all = try std.mem.concat(scratch.allocator(), Record, &.{ self.records.items, &.{owned} });
+        const kept = try compact(scratch.allocator(), all);
+        var next: std.ArrayList(Record) = .empty;
+        try next.appendSlice(arena, kept);
+        self.records = next;
     }
 
     fn memoryOpenRuns(ctx: *anyopaque, arena: std.mem.Allocator, session_id: []const u8) anyerror![]Open {
@@ -213,6 +256,10 @@ pub fn conform(arena: std.mem.Allocator, runs: Runs) !void {
         .{ .action = .admitted, .time_ms = 5, .session_id = "conform-a", .run_id = "r3" },
         .{ .action = .settled, .time_ms = 6, .session_id = "conform-a", .run_id = "r3" },
         .{ .action = .settled, .time_ms = 7, .session_id = "conform-b", .run_id = "r1" },
+        .{ .action = .admitted, .time_ms = 8, .session_id = "conform-c", .run_id = "held", .request = request },
+        .{ .action = .admitted, .time_ms = 9, .session_id = "conform-c", .run_id = "after", .request = request },
+        .{ .action = .admitted, .time_ms = 10, .session_id = "conform-c", .run_id = "redelivered", .request = request, .replaces = "held" },
+        .{ .action = .admitted, .time_ms = 11, .session_id = "conform-c", .run_id = "again", .request = request, .replaces = "redelivered" },
     }) |record| try runs.append(record);
     const open_a = try runs.openRuns(arena, "conform-a");
     if (open_a.len != 2) return error.RunStoreNonconforming;
@@ -221,6 +268,11 @@ pub fn conform(arena: std.mem.Allocator, runs: Runs) !void {
     if (!std.mem.eql(u8, open_a[1].request orelse "", request)) return error.RunStoreNonconforming;
     if ((try runs.openRuns(arena, "conform-b")).len != 0) return error.RunStoreNonconforming;
     if ((try runs.openRuns(arena, "conform-absent")).len != 0) return error.RunStoreNonconforming;
+    const open_c = try runs.openRuns(arena, "conform-c");
+    if (open_c.len != 2) return error.RunStoreNonconforming;
+    if (!std.mem.eql(u8, open_c[0].run_id, "again") or !std.mem.eql(u8, open_c[1].run_id, "after")) return error.RunStoreNonconforming;
+    if (!std.mem.eql(u8, open_c[0].root, "held") or !std.mem.eql(u8, open_c[1].root, "after")) return error.RunStoreNonconforming;
+    if ((try runs.openRuns(arena, "conform-c")).len != 2) return error.RunStoreNonconforming;
 }
 
 const testing = std.testing;
@@ -365,3 +417,103 @@ const Forgetful = struct {
         return self.inner.runs().openRuns(arena, session_id);
     }
 };
+
+test "a store that keeps a replaced run open does not conform" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var memory = Memory.init(testing.allocator);
+    defer memory.deinit();
+    var unreplacing = Unreplacing{ .inner = &memory };
+    try testing.expectError(error.RunStoreNonconforming, conform(arena.allocator(), unreplacing.runs()));
+}
+
+const Unreplacing = struct {
+    inner: *Memory,
+
+    fn runs(self: *Unreplacing) Runs {
+        return .{ .ctx = self, .vtable = &.{ .append = append, .openRuns = openRunsOf } };
+    }
+
+    fn append(ctx: *anyopaque, record: Record) anyerror!void {
+        const self: *Unreplacing = @ptrCast(@alignCast(ctx));
+        var kept = record;
+        kept.replaces = null;
+        return self.inner.runs().append(kept);
+    }
+
+    fn openRunsOf(ctx: *anyopaque, arena: std.mem.Allocator, session_id: []const u8) anyerror![]Open {
+        const self: *Unreplacing = @ptrCast(@alignCast(ctx));
+        return self.inner.runs().openRuns(arena, session_id);
+    }
+};
+
+test "a re-delivery replaces its held run in one line" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const path = try scratchPath(testing.allocator, &tmp, "runs.jsonl");
+    defer testing.allocator.free(path);
+    var store = try Store.open(testing.allocator, path);
+    defer store.deinit();
+    try store.append(.{ .action = .admitted, .time_ms = 1, .session_id = "s", .run_id = "held", .request = "{}" });
+    try store.append(.{ .action = .admitted, .time_ms = 2, .session_id = "s", .run_id = "new", .request = "{}", .replaces = "held" });
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const bytes = try compat.fs.readFileAlloc(arena.allocator(), compat.fs.getCwd(), path, binding.max_store_bytes);
+    try testing.expectEqual(@as(usize, 1), std.mem.count(u8, bytes, "\n"));
+    const open_runs = try store.openRuns(arena.allocator(), "s");
+    try testing.expectEqual(@as(usize, 1), open_runs.len);
+    try testing.expectEqualStrings("new", open_runs[0].run_id);
+}
+
+test "settling the replacing run over a kept log does not revive the replaced one" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const path = try scratchPath(testing.allocator, &tmp, "runs.jsonl");
+    defer testing.allocator.free(path);
+    var store = try Store.open(testing.allocator, path);
+    defer store.deinit();
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var log: std.ArrayList(u8) = .empty;
+    for ([_]Record{
+        .{ .action = .admitted, .time_ms = 1, .session_id = "s", .run_id = "held" },
+        .{ .action = .admitted, .time_ms = 2, .session_id = "s", .run_id = "redelivered", .replaces = "held" },
+    }) |record| try log.appendSlice(arena.allocator(), try encode(arena.allocator(), record));
+    try compat.fs.atomicReplace(compat.fs.getCwd(), path, store.staging, log.items);
+    try store.append(.{ .action = .settled, .time_ms = 3, .session_id = "s", .run_id = "redelivered" });
+    try testing.expectEqual(@as(usize, 0), (try store.openRuns(arena.allocator(), "s")).len);
+}
+
+test "a re-delivered run keeps its place ahead of a run still held behind it, across a reread" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const path = try scratchPath(testing.allocator, &tmp, "runs.jsonl");
+    defer testing.allocator.free(path);
+    var store = try Store.open(testing.allocator, path);
+    defer store.deinit();
+    try store.append(.{ .action = .admitted, .time_ms = 1, .session_id = "s", .run_id = "a" });
+    try store.append(.{ .action = .admitted, .time_ms = 2, .session_id = "s", .run_id = "b" });
+    try store.append(.{ .action = .admitted, .time_ms = 3, .session_id = "s", .run_id = "a2", .replaces = "a" });
+    try store.append(.{ .action = .started, .time_ms = 4, .session_id = "other", .run_id = "x" });
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const open_runs = try store.openRuns(arena.allocator(), "s");
+    try testing.expectEqual(@as(usize, 2), open_runs.len);
+    try testing.expectEqualStrings("a2", open_runs[0].run_id);
+    try testing.expectEqualStrings("b", open_runs[1].run_id);
+}
+
+test "a record after a run was replaced or settled does not reopen it" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const open_runs = try collectOpen(arena.allocator(), &.{
+        .{ .action = .admitted, .time_ms = 1, .session_id = "s", .run_id = "held" },
+        .{ .action = .admitted, .time_ms = 2, .session_id = "s", .run_id = "redelivered", .replaces = "held" },
+        .{ .action = .started, .time_ms = 3, .session_id = "s", .run_id = "held" },
+        .{ .action = .admitted, .time_ms = 4, .session_id = "s", .run_id = "done" },
+        .{ .action = .settled, .time_ms = 5, .session_id = "s", .run_id = "done" },
+        .{ .action = .started, .time_ms = 6, .session_id = "s", .run_id = "done" },
+    }, "s");
+    try testing.expectEqual(@as(usize, 1), open_runs.len);
+    try testing.expectEqualStrings("redelivered", open_runs[0].run_id);
+}

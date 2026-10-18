@@ -32,7 +32,7 @@ zig/zig-pkg/
 *.exe
 
 # Rust build artifacts
-sdk/rust/target/
+rust/target/
 
 # Temporary files
 tmp/

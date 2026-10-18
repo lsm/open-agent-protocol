@@ -432,7 +432,7 @@ jobs:
     timeout-minutes: 15
     defaults:
       run:
-        working-directory: sdk/rust
+        working-directory: rust
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -453,10 +453,14 @@ jobs:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
-            sdk/rust/target
-          key: ${{ runner.os }}-cargo-${{ hashFiles('sdk/rust/Cargo.lock') }}
+            rust/target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('rust/Cargo.lock') }}
           restore-keys: |
             ${{ runner.os }}-cargo-
+
+      - name: No comments in .rs files
+        working-directory: .
+        run: cargo run --quiet --manifest-path rust/Cargo.toml -p nocomment -- --check
 
       - name: Check formatting
         run: cargo fmt --check
