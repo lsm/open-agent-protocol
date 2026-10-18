@@ -155,3 +155,54 @@ cases, moved forward:
   expectation.
 - Expectations change only the capability revision. Provenance in
   `manifest.json` and every `case.json` names the 2.1.302 artifacts above.
+
+## Client-provided tools at this pin
+
+Whether `action.tools.provide` ([Decision 0011](../decisions/0011-control-layer-provided-tools.md))
+could be served natively, so that a host's own tools reach a Claude Code
+session. Read from the TypeScript Agent SDK 0.3.302's `sdk.d.ts` (sha256
+`26f9a0c9…`, above), which describes the CLI's stream-json control protocol at
+2.1.302. Not exercised against the binary.
+
+**Possible, over the control channel this adapter already speaks.** The SDK's
+in-process MCP servers (`createSdkMcpServer`, `McpSdkServerConfig` with
+`type: 'sdk'`) are a stable, public SDK feature. On the wire they are three
+control messages:
+
+- the `initialize` control request names them, `sdkMcpServers: string[]`, with
+  optional `sdkMcpServerConfigs` per server: a per-call `timeout` in
+  milliseconds, and a per-tool permission policy (`always_ask` or
+  `always_deny`);
+- `mcp_message` (`SDKControlMcpMessageRequest`) "carries one MCP JSON-RPC
+  message for an SDK-hosted MCP server … the CLI sends it to the client to
+  reach the in-process server". The client answers with a success response
+  whose `mcp_response` is the server's JSON-RPC reply. That covers MCP
+  `initialize`, `tools/list` and `tools/call`;
+- `mcp_set_servers` replaces the dynamically managed servers mid-session, so
+  tools can also be added after the spawn.
+
+The adapter already sends `initialize` (its `PreToolUse` hook) and answers
+`can_use_tool` on the same channel. Hosting a server means answering MCP's
+`initialize` and `tools/list` from the provided definitions, and turning each
+`tools/call` into an OAP call. The scope is the CLI process, which is one
+session, as Decision 0011 requires. The tools reach the model as
+`mcp__<server>__<tool>`, and each call passes the CLI's permission check.
+Under the adapter's tool posture that means `--tools` must admit the names, or
+the call surfaces as `can_use_tool`, which the adapter already projects.
+
+What `action.tools.provide` would map to:
+
+| OAP | Claude Code |
+|---|---|
+| `tools` on `session.open.request` | one SDK server named in `initialize.sdkMcpServers`, whose `tools/list` returns exactly the provided definitions (`input_schema` as `inputSchema`) |
+| a provided tool at reopen | the same server named again in the reopened process's `initialize` |
+| `action.call.requested` | an `mcp_message` carrying `tools/call`; the JSON-RPC id and the stream's `tool_use` id correlate it |
+| `action.call.resolve.request` | the `control_response` to that `mcp_message`, its `mcp_response` an MCP `CallToolResult` (`content` text, `isError` for a failure) |
+| the five refusal reasons | the adapter's own |
+| limits | the per-server `timeout` (the CLI's `MCP_TOOL_TIMEOUT` otherwise), MCP's tool-name rules, and the names `--tools` admits |
+
+**Recommendation.** The best fit of the three harnesses: session-scoped and
+stable, carried on the channel the adapter owns, and needing no MCP transport
+of its own, only MCP's JSON-RPC shapes. It matters for a host that runs other
+models on the Claude Code harness. Claude itself stays on the Agent SDK, per
+the owner's provider and harness matrix.
