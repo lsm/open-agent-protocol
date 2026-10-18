@@ -831,7 +831,9 @@ fn replayEvent(allocator: std.mem.Allocator, messages: *std.ArrayList(ai_types.M
             try replay.tool_call_json.appendSlice(allocator, payload.delta.slice());
         },
         .message_end => |payload| {
+            const appended = messages.items.len;
             defer {
+                if (payload.at_ms > 0) for (messages.items[appended..]) |*message| stampMessage(message, payload.at_ms);
                 replay.current_role = null;
                 replay.assistant_text.clearRetainingCapacity();
                 replay.tool_call_json.clearRetainingCapacity();
@@ -997,6 +999,7 @@ fn writeEvent(w: *json_writer.JsonWriter, event: session_events.SessionEvent) !v
             try w.writeStringField("artifacts_json", p.artifacts_json.slice());
             try w.writeStringField("stop_reason", @tagName(p.stop_reason));
             try w.writeBoolField("is_error", p.is_error);
+            if (p.at_ms > 0) try w.writeIntField("at_ms", p.at_ms);
         },
         .tool_approval_requested => |p| {
             try w.writeStringField("type", "tool_approval_requested");
@@ -1129,6 +1132,7 @@ fn parseEvent(allocator: std.mem.Allocator, value: std.json.Value) !session_even
             .artifacts_json = OwnedSlice(u8).initOwned(artifacts_json),
             .stop_reason = parseStopReason(stringField(obj, "stop_reason") orelse "stop"),
             .is_error = boolField(obj, "is_error", false),
+            .at_ms = intField(obj, "at_ms") orelse 0,
         } };
     }
     if (std.mem.eql(u8, kind, "tool_approval_requested")) {
@@ -1609,6 +1613,14 @@ fn boolField(obj: std.json.ObjectMap, key: []const u8, default: bool) bool {
         .bool => |b| b,
         else => default,
     };
+}
+
+fn stampMessage(message: *ai_types.Message, at_ms: i64) void {
+    switch (message.*) {
+        .user => |*held| held.timestamp = at_ms,
+        .assistant => |*held| held.timestamp = at_ms,
+        .tool_result => |*held| held.timestamp = at_ms,
+    }
 }
 
 fn intField(obj: std.json.ObjectMap, key: []const u8) ?i64 {
@@ -2675,4 +2687,29 @@ test "serializeTranscript survives an allocation failure at every step" {
 
 test "json string budget accounts for worst-case escaping" {
     try std.testing.expectEqual(@as(usize, 24), jsonStringBudget("\\\\\\\\"));
+}
+
+test "a message keeps the time its end was recorded at when the session loads, and a record without one is stamped at load" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const base = try tmpBase(std.testing.allocator, &tmp);
+    defer std.testing.allocator.free(base);
+    var store = try Store.init(std.testing.allocator, base);
+    defer store.deinit();
+    var meta = try defaultMetadata(std.testing.allocator, "s1");
+    defer meta.deinit(std.testing.allocator);
+    try replaceString(std.testing.allocator, &meta.model, "model-a");
+    try replaceString(std.testing.allocator, &meta.provider, "test");
+    const before = compat.time.nowMillis();
+    var user = session_events.SessionEvent{ .message_end = .{ .role = .user, .at_ms = 1_700_000_000_000, .text = try owned(std.testing.allocator, "hello") } };
+    defer user.deinit(std.testing.allocator);
+    try store.save(meta, user);
+    var untimed = session_events.SessionEvent{ .message_end = .{ .role = .user, .text = try owned(std.testing.allocator, "again") } };
+    defer untimed.deinit(std.testing.allocator);
+    try store.saveEvent("s1", untimed);
+    var loaded = try store.load("s1");
+    defer loaded.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(usize, 2), loaded.messages.items.len);
+    try std.testing.expectEqual(@as(i64, 1_700_000_000_000), loaded.messages.items[0].user.timestamp);
+    try std.testing.expect(loaded.messages.items[1].user.timestamp >= before);
 }

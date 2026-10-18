@@ -223,7 +223,9 @@ Where the adapter can read the harness's own transcript (Codex through
 from its session file, reading the file in order, so a branch Pi left reads
 along with the one it kept, OpenCode through `GET /api/session/<id>/message`,
 an ACP agent through the replay `session/load` sends when its `initialize`
-advertises `loadSession`, in a short-lived agent process),
+advertises `loadSession`, in a short-lived agent process, and an `oapx` entry
+under `--save-oapx-sessions` from the transcript it saved, under the session's
+own id),
 `work.read` answers from it: every user message
 and the reply that followed, the conversation before `serve` held the session
 included, and still there after `serve` restarts, so `serve` writes no message

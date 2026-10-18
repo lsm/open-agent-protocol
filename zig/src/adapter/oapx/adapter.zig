@@ -88,6 +88,7 @@ fn wallClock() i64 {
 pub const HistoryLoader = struct {
     ctx: *anyopaque,
     load: *const fn (ctx: *anyopaque, arena: std.mem.Allocator, session_id: []const u8) anyerror!?[]const ai_types.Message,
+    read: ?*const fn (ctx: *anyopaque, arena: std.mem.Allocator, session_id: []const u8) anyerror!?[]const ai_types.Message = null,
 };
 
 pub const TranscriptStore = struct {
@@ -166,7 +167,25 @@ pub const Adapter = struct {
     }
 
     pub fn adapter(self: *Adapter) contract.Adapter {
+        if (self.readsHistory()) return .{ .ptr = self, .vtable = &.{ .probe = probe, .open = open, .native_read = nativeRead } };
         return .{ .ptr = self, .vtable = &.{ .probe = probe, .open = open } };
+    }
+
+    fn readsHistory(self: *const Adapter) bool {
+        const loader = self.history orelse return false;
+        return loader.read != null;
+    }
+
+    fn nativeRead(ptr: *anyopaque, arena: std.mem.Allocator, request: contract.NativeReadRequest, refusal: *contract.Refusal) contract.Failure![]const contract.NativeTurn {
+        _ = refusal;
+        const self: *Adapter = @ptrCast(@alignCast(ptr));
+        const loader = self.history orelse return &.{};
+        const reads = loader.read orelse return &.{};
+        const messages = (reads(loader.ctx, arena, request.native_id) catch |err| switch (err) {
+            error.OutOfMemory => return error.OutOfMemory,
+            else => return &.{},
+        }) orelse return &.{};
+        return savedTurns(arena, messages, request.max_turns);
     }
 
     fn probe(ptr: *anyopaque, refusal: *contract.Refusal) contract.Failure!contract.Descriptor {
@@ -382,6 +401,7 @@ pub const Session = struct {
 
     const vtable = contract.Session.VTable{
         .id = idOf,
+        .native_id = nativeIdOf,
         .state = state,
         .submit = submit,
         .resolve = resolve,
@@ -595,6 +615,11 @@ pub const Session = struct {
 
     fn idOf(ptr: *anyopaque) []const u8 {
         return cast(ptr).id;
+    }
+
+    fn nativeIdOf(ptr: *anyopaque) []const u8 {
+        const self = cast(ptr);
+        return if (self.owner.readsHistory()) self.id else "";
     }
 
     fn live(self: *Session) ?*Run {
@@ -1964,6 +1989,46 @@ fn appendParagraph(arena: std.mem.Allocator, text: *std.ArrayList(u8), value: []
     if (value.len == 0) return;
     if (text.items.len > 0) try text.appendSlice(arena, "\n\n");
     try text.appendSlice(arena, value);
+}
+
+fn savedTurns(arena: std.mem.Allocator, messages: []const ai_types.Message, max_turns: usize) std.mem.Allocator.Error![]const contract.NativeTurn {
+    var found: std.ArrayList(contract.NativeTurn) = .empty;
+    var reply: ?contract.NativeTurn = null;
+    for (messages) |message| switch (message) {
+        .user => |user| {
+            const text = std.mem.trim(u8, savedUserText(user.content), " \t\r\n");
+            if (text.len == 0) continue;
+            if (reply) |held| try found.append(arena, held);
+            reply = null;
+            try found.append(arena, .{ .role = .user, .text = text, .at_ms = user.timestamp });
+        },
+        .assistant => |assistant| {
+            const text = try savedAssistantText(arena, assistant.content);
+            if (text.len > 0) reply = .{ .role = .assistant, .text = text, .at_ms = assistant.timestamp };
+        },
+        .tool_result => {},
+    };
+    if (reply) |held| try found.append(arena, held);
+    return found.items[0..@min(found.items.len, max_turns)];
+}
+
+fn savedUserText(content: ai_types.UserContent) []const u8 {
+    return switch (content) {
+        .text => |text| text,
+        .parts => |parts| for (parts) |part| switch (part) {
+            .text => |text| break text.text,
+            else => {},
+        } else "",
+    };
+}
+
+fn savedAssistantText(arena: std.mem.Allocator, content: []const ai_types.AssistantContent) std.mem.Allocator.Error![]const u8 {
+    var text: std.ArrayList(u8) = .empty;
+    for (content) |block| switch (block) {
+        .text => |part| try text.appendSlice(arena, part.text),
+        else => {},
+    };
+    return text.items;
 }
 
 fn stopReasonText(reason: ai_types.StopReason) []const u8 {
@@ -3934,6 +3999,65 @@ test "a reopen is advertised only with saved sessions to load, loads the saved t
     try testing.expectEqual(@as(usize, 1), session.runtime.history().len);
 
     try testing.expectError(error.UnknownSession, harness.owner.adapter().open(a, .{ .participant = "user", .session_id = "never", .reopen = true }, &refusal));
+}
+
+const ReadableSessions = struct {
+    fn read(ctx: *anyopaque, arena: std.mem.Allocator, session_id: []const u8) anyerror!?[]const ai_types.Message {
+        _ = ctx;
+        if (std.mem.eql(u8, session_id, "broken")) return error.FileNotFound;
+        if (!std.mem.eql(u8, session_id, "saved")) return null;
+        const assistant = ai_types.AssistantMessage{ .content = &.{}, .api = "", .provider = "", .model = "", .usage = .{}, .stop_reason = .stop, .timestamp = 0 };
+        var draft = assistant;
+        draft.content = try arena.dupe(ai_types.AssistantContent, &.{ .{ .thinking = .{ .thinking = "let me look" } }, .{ .text = .{ .text = "a draft" } }, .{ .tool_call = .{ .id = "c1", .name = "read", .arguments_json = "{}" } } });
+        draft.timestamp = 11;
+        var final = assistant;
+        final.content = try arena.dupe(ai_types.AssistantContent, &.{ .{ .text = .{ .text = "the final " } }, .{ .text = .{ .text = "answer" } } });
+        final.timestamp = 13;
+        var silent = assistant;
+        silent.content = try arena.dupe(ai_types.AssistantContent, &.{.{ .tool_call = .{ .id = "c2", .name = "read", .arguments_json = "{}" } }});
+        return try arena.dupe(ai_types.Message, &.{
+            .{ .user = .{ .content = .{ .text = "first ask" }, .timestamp = 10 } },
+            .{ .assistant = draft },
+            .{ .tool_result = .{ .tool_call_id = "c1", .tool_name = "read", .content = &.{}, .is_error = false, .timestamp = 12 } },
+            .{ .assistant = final },
+            .{ .user = .{ .content = .{ .text = "   " }, .timestamp = 14 } },
+            .{ .user = .{ .content = .{ .parts = &.{.{ .text = .{ .text = " second ask " } }} }, .timestamp = 15 } },
+            .{ .assistant = silent },
+        });
+    }
+};
+
+test "a native read is offered only with a history reader, and reads each saved user message and the last reply before the next" {
+    var script = Script{};
+    var harness: Harness = undefined;
+    try harness.init(&script);
+    defer harness.deinit();
+    const a = harness.arena.allocator();
+    var refusal = contract.Refusal{};
+    try testing.expect(harness.owner.adapter().vtable.native_read == null);
+    try testing.expectEqualStrings("", harness.session.nativeId());
+
+    var saved = SavedSessions{};
+    harness.owner.history = .{ .ctx = &saved, .load = SavedSessions.load };
+    try testing.expect(harness.owner.adapter().vtable.native_read == null);
+    try testing.expectEqualStrings("", harness.session.nativeId());
+
+    harness.owner.history = .{ .ctx = &saved, .load = SavedSessions.load, .read = ReadableSessions.read };
+    try testing.expectEqualStrings(harness.session.id(), harness.session.nativeId());
+    const turns = (try harness.owner.adapter().nativeRead(a, .{ .native_id = "saved" }, &refusal).?);
+    try testing.expectEqual(@as(usize, 3), turns.len);
+    try testing.expectEqual(contract.NativeTurn.Role.user, turns[0].role);
+    try testing.expectEqualStrings("first ask", turns[0].text);
+    try testing.expectEqual(@as(i64, 10), turns[0].at_ms);
+    try testing.expectEqual(contract.NativeTurn.Role.assistant, turns[1].role);
+    try testing.expectEqualStrings("the final answer", turns[1].text);
+    try testing.expectEqual(@as(i64, 13), turns[1].at_ms);
+    try testing.expectEqual(contract.NativeTurn.Role.user, turns[2].role);
+    try testing.expectEqualStrings("second ask", turns[2].text);
+
+    try testing.expectEqual(@as(usize, 2), (try harness.owner.adapter().nativeRead(a, .{ .native_id = "saved", .max_turns = 2 }, &refusal).?).len);
+    try testing.expectEqual(@as(usize, 0), (try harness.owner.adapter().nativeRead(a, .{ .native_id = "never" }, &refusal).?).len);
+    try testing.expectEqual(@as(usize, 0), (try harness.owner.adapter().nativeRead(a, .{ .native_id = "broken" }, &refusal).?).len);
 }
 
 fn updateWith(harness: *Harness, extensions: []const u8, refusal: *contract.Refusal) contract.Failure!contract.Updated {
