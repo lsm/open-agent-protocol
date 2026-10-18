@@ -90,10 +90,11 @@ func (h *Hub) OpenIn(ctx context.Context, adapterName, directory string, request
 	}
 	adopting := request.Reopen && request.Adopted && request.NativeSessionID != ""
 	if request.Reopen && h.bindings != nil && !adopting {
-		bound, found, err := h.bindings.Latest(ctx, string(request.SessionID))
+		history, err := h.bindings.History(ctx, string(request.SessionID))
 		if err != nil {
 			return nil, protocol.SessionState{}, err
 		}
+		bound, found := binding.State(history)
 		if !found || bound.Record.Adapter != adapterName {
 			return nil, protocol.SessionState{}, &UnknownSessionError{ID: request.SessionID}
 		}

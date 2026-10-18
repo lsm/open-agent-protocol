@@ -548,3 +548,31 @@ func TestAShutdownLeavesItsSessionsLiveInTheHistoryAndAClientCloseDoesNot(t *tes
 		}
 	}
 }
+
+func TestARefusedDuplicateDoesNotStandInForTheBindingAReopenReads(t *testing.T) {
+	store, err := binding.File(filepath.Join(t.TempDir(), "bindings.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	wrapped := &nativeAdapter{Adapter: base.NewMemory(base.Config{JournalCapacity: 8})}
+	registry := serve.NewRegistry()
+	if err := registry.Register("native", wrapped); err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	before := serve.New(registry, serve.Options{StreamQueue: 8, Bindings: store})
+	if _, _, err := before.Open(ctx, "native", base.OpenRequest{SessionID: "kept"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := before.Open(ctx, "native", base.OpenRequest{SessionID: "kept"}); !errors.Is(err, serve.ErrSessionExists) {
+		t.Fatalf("the duplicate answered %v, want serve.ErrSessionExists", err)
+	}
+	if latest, _, _ := store.Latest(ctx, "kept"); latest.Action != binding.ActionRefused {
+		t.Fatalf("the last entry is %s, want the refusal this test is about", latest.Action)
+	}
+	after := serve.New(registry, serve.Options{StreamQueue: 8, Bindings: store})
+	_, _, _ = after.Open(ctx, "native", base.OpenRequest{SessionID: "kept", Reopen: true})
+	if asked := wrapped.asked[len(wrapped.asked)-1]; !asked.Reopen || asked.NativeSessionID != "native-thread-7" {
+		t.Fatalf("the reopen asked the adapter with %+v, want the native id the open recorded", asked)
+	}
+}
