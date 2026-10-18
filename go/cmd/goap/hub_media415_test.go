@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -101,6 +102,65 @@ func TestHubAddrRefusesABodyWhoseMediaTypeIsNotJSONAndNothingElseIsWrong(t *test
 				t.Logf("the answer does not echo the media type, which is expected: %s", body)
 			}
 			t.Logf("%s: refused 415 unsupported_media_type, correlated as %s replying to %s, %d-byte envelope", c.name, envelope.ID, envelope.InReply, len(body))
+		})
+	}
+}
+
+func TestHubAddrAnswersAComplete415WhenTheBodyOutrunsItsDrain(t *testing.T) {
+	address, stop, cancel := startHubAddr(t)
+	defer cancel()
+	defer stop()
+
+	for _, declared := range []int{1<<20 + 4096, 4 << 20, 16 << 20} {
+		t.Run(strconv.Itoa(declared), func(t *testing.T) {
+			conn, err := net.DialTimeout("tcp", address, 10*time.Second)
+			if err != nil {
+				t.Fatalf("dial the hub: %v", err)
+			}
+			defer conn.Close()
+			_ = conn.SetDeadline(time.Now().Add(90 * time.Second))
+
+			head := fmt.Sprintf("POST /adapters/a/sessions HTTP/1.1\r\nHost: 127.0.0.1:1\r\nContent-Type: text/plain\r\nContent-Length: %d\r\n\r\n", declared)
+			if _, err := io.WriteString(conn, head); err != nil {
+				t.Fatalf("write the head: %v", err)
+			}
+			_ = conn.SetWriteDeadline(time.Now().Add(30 * time.Second))
+			written, err := writeBody(conn, declared)
+			if written < minTransferred {
+				t.Fatalf("wrote only %d of %d bytes, under the %d drain cap, so this case does not exercise it: %v", written, declared, minTransferred, err)
+			}
+			_ = conn.SetDeadline(time.Now().Add(30 * time.Second))
+
+			answer, err := http.ReadResponse(bufio.NewReader(conn), nil)
+			if err != nil {
+				t.Fatalf("read the answer after writing %d of %d bytes: %v", written, declared, err)
+			}
+			body, err := io.ReadAll(answer.Body)
+			_ = answer.Body.Close()
+			if err != nil {
+				t.Fatalf("read the whole refusal after writing %d of %d bytes: %v", written, declared, err)
+			}
+			if answer.StatusCode != http.StatusUnsupportedMediaType {
+				t.Fatalf("a text/plain body of %d bytes answered %d, want 415: %s", declared, answer.StatusCode, body)
+			}
+			if answer.ContentLength <= 0 || int64(len(body)) != answer.ContentLength {
+				t.Fatalf("the body was %d bytes and Content-Length said %d", len(body), answer.ContentLength)
+			}
+			var envelope struct {
+				Type    string `json:"type"`
+				Payload struct {
+					Error struct {
+						Code string `json:"code"`
+					} `json:"error"`
+				} `json:"payload"`
+			}
+			if err := json.Unmarshal(body, &envelope); err != nil {
+				t.Fatalf("the refusal is not parseable JSON (%v): %s", err, body)
+			}
+			if envelope.Type != "error.response" || envelope.Payload.Error.Code != "unsupported_media_type" {
+				t.Fatalf("the refusal was %s / %s, want error.response / unsupported_media_type", envelope.Type, envelope.Payload.Error.Code)
+			}
+			t.Logf("declared %d, wrote %d, answered 415 with a %d-byte body", declared, written, len(body))
 		})
 	}
 }

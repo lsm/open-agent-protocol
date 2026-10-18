@@ -766,22 +766,13 @@ was settled by #656 either.
   policy. They are separate rows because they are separate questions, and nothing here establishes
   that answering one constrains the other. Carried forward from #656, which raised the `405` and left
   it open.
-- **No proof that a media-refused request with a body over 1 MiB still receives a complete answer —
-  an explicit gap, and the stated reason for it has changed.** `drain` is bounded at
-  `drain_total_cap_bytes = 1 MiB` (`:207`) while `max_body_bytes` is 16 MiB (`:7`), so a request
-  declaring between 1 MiB and 16 MiB with a non-JSON `Content-Type` is refused `415` by the gate and
-  then drained **short**, leaving bytes unread at close — which is the condition the drain paragraph
-  below, at `:645`-`:649`, identifies as able to reset the connection and discard the refusal. **No test exercises that
-  case.** The `415` proof sends bodies of `"xx"`, `"{}"` and `""`; the over-cap declared sizes in
-  `hub_toobig_test.go` are the `413` path, not this one. One correction to the reason this gap was
-  previously carried with: it used to be blamed on a test helper that capped writes at 256 KiB, and
-  **that cap no longer exists** — `writeBody` at `hub_largebody_test.go:190` writes the full declared
-  amount in 32 KiB blocks. So the absence is not a helper limitation any more; it is simply that no
-  test asks the question. **What is still unknown is unchanged and is not claimed either way here:**
-  whether the daemon's `415` survives the close in that window. The `413` complete-answer proof,
-  the `413` real-socket proof (`TestHubAddrAnswersAComplete413BeforeTheWholeDeclaredBodyIsSent`),
-  the `403` real-socket proof (`TestHubAddrRefusesALargeRefusedHeadOverARealSocket`) and the
-  drain-cap proof cover their own cases and do not cover this one. Carried forward from #656.
+- **A media-refused request whose body outruns the 1 MiB drain still receives a complete `415`.**
+  `drain` stops at `drain_total_cap_bytes = 1 MiB` while `max_body_bytes` is 16 MiB, so a
+  `text/plain` body declared between the two is refused by the gate and then drained short, leaving
+  bytes unread at close. `TestHubAddrAnswersAComplete415WhenTheBodyOutrunsItsDrain` declares
+  1 MiB+4096, 4 MiB and 16 MiB over a real socket, writes until the daemon stops reading, and reads a
+  complete `415` `unsupported_media_type` each time; the Zig twin is `a media refusal reaches the
+  client though the body outruns the drain`. Raised in #656.
 
 **A body the daemon refused to read is drained before the socket closes.** A
 `403` or a `413` is answered without reading the body the head declared, and a

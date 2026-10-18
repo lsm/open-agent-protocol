@@ -1716,6 +1716,39 @@ test "a refused chunked body leaves its connection draining what the client may 
     try testing.expectEqual(hub_http.drain_total_cap_bytes, connection.drain_left);
 }
 
+test "a media refusal reaches the client though the body outruns the drain" {
+    var served: Served = undefined;
+    try served.prepare();
+    try served.serve();
+    defer served.stop();
+
+    var stream = try served.dial();
+    defer stream.close();
+    const handle = compat.net.streamHandle(&stream);
+    if (comptime @hasDecl(std.posix.SO, "NOSIGPIPE")) {
+        const on: c_int = 1;
+        try std.posix.setsockopt(handle, std.posix.SOL.SOCKET, std.posix.SO.NOSIGPIPE, std.mem.asBytes(&on));
+    }
+    const declared = 4 * hub_http.drain_total_cap_bytes;
+    const head = try std.fmt.allocPrint(testing.allocator, "POST /adapters/memory/sessions HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: text/plain\r\nContent-Length: {d}\r\n\r\n", .{declared});
+    defer testing.allocator.free(head);
+    try stream.writeAll(head);
+    const block: [32 * 1024]u8 = @splat('b');
+    var written: usize = 0;
+    while (written < declared) {
+        switch (writeSome(handle, &block)) {
+            .bytes => |n| written += n,
+            .waiting => {},
+            .closed => break,
+        }
+    }
+    try testing.expect(written > hub_http.drain_total_cap_bytes);
+    var answered = std.ArrayList(u8).empty;
+    defer answered.deinit(testing.allocator);
+    try testing.expect(try readFor(&stream, &answered, "\"unsupported_media_type\"", 2000));
+    try testing.expect(std.mem.startsWith(u8, answered.items, "HTTP/1.1 415 Unsupported Media Type\r\n"));
+}
+
 test "a client that hangs up mid-stream releases its stream without an event to write" {
     var served: Served = undefined;
     try served.prepare();
