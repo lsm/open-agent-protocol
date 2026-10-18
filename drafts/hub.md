@@ -420,8 +420,9 @@ mode other than graceful or force is refused and changes nothing`; Go:
 `TestGracefulShutdownLosesQueuedRunsRefusesNewWorkAndForceStopsIt`,
 `TestShutdownRefusesAModeOtherThanGracefulOrForce`. Zig also serves it as
 `POST /shutdown`, whose body is the same `request` object or empty, answering
-`200` with the same object and refusing new work `503 shutting_down`; the
-daemon stops once the shutdown completes — Zig: `a shutdown asks while a run is
+`200` with the same object and refusing new work `503 shutting_down`; once
+the shutdown completes the daemon writes every answer it owes, and on graceful
+also settles requests still in flight, then stops, waiting at most 5 s — Zig: `a shutdown asks while a run is
 active, then graceful drains, refuses new work 503, and force stops the
 daemon`. Go has no HTTP route yet. Neither tree yet sends subscribers
 `endpoint.shutdown.started`, which Decision 0050 requires on acceptance. The signals and stdin EOF still end

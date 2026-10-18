@@ -13,6 +13,7 @@ const afd_poll = @import("afd_poll.zig");
 
 pub const max_connections: usize = 64;
 pub const io_cycle_ms: i32 = 50;
+pub const shutdown_flush_ms: u64 = 5_000;
 pub const stream_buffer_bytes: usize = 256 * 1024;
 pub const read_chunk_bytes: usize = 16 * 1024;
 const write_chunk_bytes: usize = 64 * 1024;
@@ -71,6 +72,7 @@ pub const Daemon = struct {
     allow: []const []const u8,
     outer: hub_http.KeepGoing,
     stopping: std.atomic.Value(bool) = .init(false),
+    drained_at_ms: ?u64 = null,
     streams: std.atomic.Value(usize) = .init(0),
 
     pub fn init(allocator: std.mem.Allocator, core: *hubmod.Hub, allow: []const []const u8, outer: hub_http.KeepGoing) !Daemon {
@@ -112,7 +114,17 @@ pub const Daemon = struct {
         if (self.frontend.shutdown == null) return;
         var scratch = std.heap.ArenaAllocator.init(self.allocator);
         defer scratch.deinit();
-        if (try self.frontend.shutdownComplete(scratch.allocator())) self.stopping.store(true, .release);
+        if (self.drained_at_ms == null and try self.frontend.shutdownComplete(scratch.allocator())) self.drained_at_ms = nowMs();
+    }
+
+    fn stopOnceAnswered(self: *Daemon, connections: []const *Connection, now: u64) void {
+        const drained = self.drained_at_ms orelse return;
+        const waits_on_jobs = self.frontend.shutdown == .graceful;
+        for (connections) |connection| {
+            if (now -| drained >= shutdown_flush_ms) break;
+            if (connection.pending() or (waits_on_jobs and connection.phase == .awaiting)) return;
+        }
+        self.stopping.store(true, .release);
     }
 
     pub fn respond(self: *Daemon, arena: std.mem.Allocator, request: hub_http.Request) !Reply {
@@ -981,6 +993,7 @@ fn serveWindows(daemon: *Daemon, listener: *compat.net.Server, poll_ms: i32) ?st
             connections.orderedRemove(index).destroy();
         }
         daemon.streams.store(streaming, .release);
+        daemon.stopOnceAnswered(connections.items, now);
         if (accepting) {
             const accepted = compat.net.accept(listener) catch |failure| switch (hub_http.classifyAccept(failure)) {
                 .serve_again => continue,
@@ -1049,6 +1062,7 @@ fn serveLoop(daemon: *Daemon, listener: *compat.net.Server, poll_ms: i32) ?std.I
             connection.feed();
             connection.writable();
             connection.settle(now);
+            connection.writable();
         }
         var index: usize = 0;
         var streaming: usize = 0;
@@ -1061,6 +1075,7 @@ fn serveLoop(daemon: *Daemon, listener: *compat.net.Server, poll_ms: i32) ?std.I
             connections.orderedRemove(index).destroy();
         }
         daemon.streams.store(streaming, .release);
+        daemon.stopOnceAnswered(connections.items, now);
         if (accepting and watched.items[0].revents & std.posix.POLL.IN != 0) {
             const accepted = compat.net.accept(listener) catch |failure| switch (hub_http.classifyAccept(failure)) {
                 .serve_again => continue,
@@ -1435,11 +1450,14 @@ test "a shutdown asks while a run is active, then graceful drains, refuses new w
     try testing.expectEqualStrings("503 Service Unavailable", refused.status);
     try testing.expectEqualStrings("shutting_down", try fixture.code(refused));
     try fixture.daemon.pump();
-    try testing.expect(fixture.daemon.going().yes());
+    try testing.expectEqual(@as(?u64, null), fixture.daemon.drained_at_ms);
 
     const forced = try fixture.answer("POST", "/shutdown", "{\"mode\":\"force\"}");
     try testing.expect(std.mem.indexOf(u8, forced.body, "\"stopping\"") != null);
     try fixture.daemon.pump();
+    try testing.expect(fixture.daemon.drained_at_ms != null);
+    try testing.expect(fixture.daemon.going().yes());
+    fixture.daemon.stopOnceAnswered(&.{}, nowMs());
     try testing.expect(!fixture.daemon.going().yes());
 }
 
