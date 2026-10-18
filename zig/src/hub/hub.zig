@@ -838,6 +838,7 @@ pub const Hub = struct {
             }
         }
         try contract.refuseUnadvertisedOpenElections(descriptor, &request.payload(), &refused.reason);
+        try registered.adapter.admit(arena, request.contractRequest("", false), &refused.reason);
         if (request.session_id.len > 0 and self.findSession(request.session_id) != null) return error.SessionExists;
         var native_session_id: []const u8 = "";
         var adopted_native = false;
@@ -2153,6 +2154,65 @@ test "an open electing what the adapter does not advertise is refused for that, 
     try testing.expectError(error.UnsupportedFeature, hub.openReporting(arena, "memory", .{ .session_id = "alpha", .reasoning_level = "high" }, &refusal));
     try testing.expectEqualStrings(contract.feature_session_reasoning, refusal.reason.feature);
     try testing.expectError(error.SessionExists, hub.open(arena, "memory", .{ .session_id = "alpha" }));
+    try testing.expectEqual(@as(usize, 1), hub.sessionCount());
+}
+
+const Admitting = struct {
+    inner: contract.Adapter,
+    refusing: bool = false,
+    admitted: usize = 0,
+    opened: usize = 0,
+
+    fn adapter(self: *Admitting) contract.Adapter {
+        return .{ .ptr = self, .vtable = &.{ .probe = admittingProbe, .open = admittingOpen, .admit = admittingAdmit } };
+    }
+};
+
+fn admittingProbe(ptr: *anyopaque, refusal: *contract.Refusal) contract.Failure!contract.Descriptor {
+    const self: *Admitting = @ptrCast(@alignCast(ptr));
+    return self.inner.probe(refusal);
+}
+
+fn admittingOpen(ptr: *anyopaque, arena: std.mem.Allocator, request: contract.OpenRequest, refusal: *contract.Refusal) contract.Failure!contract.Session {
+    const self: *Admitting = @ptrCast(@alignCast(ptr));
+    self.opened += 1;
+    return self.inner.open(arena, request, refusal);
+}
+
+fn admittingAdmit(ptr: *anyopaque, arena: std.mem.Allocator, request: contract.OpenRequest, refusal: *contract.Refusal) contract.Failure!void {
+    _ = arena;
+    _ = request;
+    const self: *Admitting = @ptrCast(@alignCast(ptr));
+    self.admitted += 1;
+    if (self.refusing) return refusal.unsupported(contract.feature_compaction_policy, contract.reason_unsatisfiable);
+}
+
+test "an adapter's admission refusal outranks a taken name, and nothing it refuses is opened" {
+    var inner = memory.Adapter.init(testing.allocator);
+    defer inner.deinit();
+    var admitting = Admitting{ .inner = inner.adapter() };
+    var hub = Hub.init(testing.allocator, testClock, .{});
+    defer hub.deinit();
+    try hub.register("admitting", admitting.adapter());
+    var scratch = std.heap.ArenaAllocator.init(testing.allocator);
+    defer scratch.deinit();
+    const arena = scratch.allocator();
+
+    _ = try hub.open(arena, "admitting", .{ .session_id = "alpha" });
+    try testing.expectEqual(@as(usize, 2), admitting.admitted);
+    try testing.expectEqual(@as(usize, 1), admitting.opened);
+
+    admitting.refusing = true;
+    var refusal: OpenRefusal = .{};
+    try testing.expectError(error.UnsupportedFeature, hub.openReporting(arena, "admitting", .{ .session_id = "alpha" }, &refusal));
+    try testing.expectEqualStrings(contract.feature_compaction_policy, refusal.reason.feature);
+    try testing.expectError(error.UnsupportedFeature, hub.open(arena, "admitting", .{ .session_id = "beta" }));
+    try testing.expectEqual(@as(usize, 4), admitting.admitted);
+    try testing.expectEqual(@as(usize, 1), admitting.opened);
+
+    admitting.refusing = false;
+    try testing.expectError(error.SessionExists, hub.open(arena, "admitting", .{ .session_id = "alpha" }));
+    try testing.expectEqual(@as(usize, 1), admitting.opened);
     try testing.expectEqual(@as(usize, 1), hub.sessionCount());
 }
 
