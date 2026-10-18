@@ -229,6 +229,9 @@ test "a run record line is the checksum of its JSON and the JSON, in fixed membe
     const line = try encode(testing.allocator, .{ .action = .admitted, .time_ms = 3, .session_id = "s", .run_id = "r2", .request = "{\"message\":\"next\"}" });
     defer testing.allocator.free(line);
     try testing.expectEqualStrings("34771ed2 {\"action\":\"admitted\",\"time_ms\":3,\"session_id\":\"s\",\"run_id\":\"r2\",\"request\":\"{\\\"message\\\":\\\"next\\\"}\"}\n", line);
+    const raw = try encode(testing.allocator, .{ .action = .admitted, .time_ms = 3, .session_id = "s", .run_id = "r2", .request = "{\"message\":\"<a & b>\"}" });
+    defer testing.allocator.free(raw);
+    try testing.expectEqualStrings("cb0983f9 {\"action\":\"admitted\",\"time_ms\":3,\"session_id\":\"s\",\"run_id\":\"r2\",\"request\":\"{\\\"message\\\":\\\"<a & b>\\\"}\"}\n", raw);
 }
 
 test "a settled record a log kept is read as the end of its run" {
