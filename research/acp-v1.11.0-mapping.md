@@ -170,3 +170,28 @@ does not list; and the `--model` launch flag maps an unknown name to some
 listed model without saying so. So the adapter checks the list before writing
 rather than passing an unlisted id through. No corpus case sends a switch; the
 behaviour is pinned by unit tests in both trees.
+
+## Cancellation answers open permission requests
+
+ACP's prompt turn says that when the client sends `session/cancel`, "The
+Client **MUST** respond to all pending `session/request_permission` requests
+with the `cancelled` outcome" (`docs/protocol/v1/prompt-turn.mdx`, unchanged
+since the v1.7.0 pin, whose ledger already lists the rule). v1.12.0's
+`cancellation.mdx` restates it: the client answers them without waiting for
+`$/cancel_request`.
+
+Both adapters answered a pending permission request `cancelled` only once the
+run settled, and the run settles only when the prompt returns. An agent that
+waits for its permission answer before ending the prompt therefore never
+ended it. Both now answer every open permission request of the run
+`cancelled` right after `session/cancel` is written, and settle each
+interaction `action.permission.resolved` with outcome `cancelled` and reason
+`run_cancelling`, before the prompt returns. Unfinished tool calls still
+settle with the run, as before. A unit test in each tree drives an agent that
+reads the cancel and the permission answer before returning `cancelled`.
+
+A permission request that reaches the adapter after the cancel, including one
+that crossed it on the wire, is answered `cancelled` at once and never
+surfaced, since the run it would gate is already cancelling. One already
+registered but not yet published when the cancel lands is settled right after
+its `action.permission.requested`, so its resolution never precedes it.

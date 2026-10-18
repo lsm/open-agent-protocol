@@ -134,7 +134,11 @@ func runOAPHost(scenario string) {
 			fakeEmit(response)
 		case "session.model.switch.request":
 			p := request.payload()
-			response := oapFakeReply(request, "session.model.switch.response", map[string]any{"session_id": p.str("session_id"), "model_id": p.str("model_id")})
+			switched := map[string]any{"session_id": p.str("session_id"), "model_id": p.str("model_id")}
+			if allowed, ok := p["allow_degraded_features"].([]any); ok && len(allowed) == 1 && allowed[0] == "session.model.switch" {
+				switched["previous_model_id"] = "allowed degraded"
+			}
+			response := oapFakeReply(request, "session.model.switch.response", switched)
 			response.SessionID = p.str("session_id")
 			fakeEmit(response)
 		case "models.request":
@@ -377,9 +381,13 @@ func TestOAPCombinedFakeHost(t *testing.T) {
 	if err != nil || sessionID != "session-1" {
 		t.Fatalf("open: %v, %q", err, sessionID)
 	}
-	_, err = client.Agent.SwitchModel(ctx, sessionID, models.Models[0].ModelRef)
-	if err != nil {
-		t.Fatal(err)
+	plain, err := client.Agent.SwitchModel(ctx, sessionID, models.Models[0].ModelRef)
+	if err != nil || plain.PreviousModelID != "" {
+		t.Fatalf("a plain switch carried a degrade allowance: %v, %+v", err, plain)
+	}
+	allowed, err := client.Agent.SwitchSessionModel(ctx, SessionModelSwitchRequest{SessionID: sessionID, ModelID: models.Models[0].ModelRef, AllowDegradedFeatures: []string{"session.model.switch"}})
+	if err != nil || allowed.PreviousModelID != "allowed degraded" {
+		t.Fatalf("degraded switch: %v, %+v", err, allowed)
 	}
 	available, _, err := client.Agent.ListSessionModels(ctx, sessionID)
 	if err != nil || len(available) != 1 {

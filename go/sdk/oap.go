@@ -442,12 +442,27 @@ func (s *AgentService) AttachProvider(ctx context.Context, sessionID string, pro
 	return envelopePayload(response).str("provider_id"), nil
 }
 
+type SessionModelSwitchRequest struct {
+	SessionID string
+	ModelID   string
+
+	AllowDegradedFeatures []string
+}
+
 func (s *AgentService) SwitchModel(ctx context.Context, sessionID, modelRef string) (*ModelSwitchResult, error) {
+	return s.SwitchSessionModel(ctx, SessionModelSwitchRequest{SessionID: sessionID, ModelID: modelRef})
+}
+
+func (s *AgentService) SwitchSessionModel(ctx context.Context, req SessionModelSwitchRequest) (*ModelSwitchResult, error) {
+	sessionID, modelRef := req.SessionID, req.ModelID
 	if sessionID == "" || modelRef == "" {
 		return nil, &ProtocolError{Code: CodeInvalidRequest, Message: "session_id and model_ref are required"}
 	}
-	request := oapFrame(oapAgent, "session.model.switch.request", map[string]any{
-		"session_id": sessionID, "model_id": modelRef})
+	payload := map[string]any{"session_id": sessionID, "model_id": modelRef}
+	if len(req.AllowDegradedFeatures) > 0 {
+		payload["allow_degraded_features"] = req.AllowDegradedFeatures
+	}
+	request := oapFrame(oapAgent, "session.model.switch.request", payload)
 	request.SessionID = protocol.SessionID(sessionID)
 	sub := s.transport.subscribeStream(string(request.ID))
 	defer sub.close()

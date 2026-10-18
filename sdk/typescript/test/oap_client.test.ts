@@ -71,6 +71,30 @@ test("agent tools and settings travel over OAP, and temperature and provider cal
   }
 });
 
+test("a quiet stream outlives the reply timeout, and only an idle timeout the caller set ends it", async () => {
+  const messages = [{ role: "user" as const, content: "hello" }];
+  const patient = await createOapClient({ command: process.execPath, args: [fixture], responseTimeoutMs: 150 });
+  try {
+    assert.equal((await patient.agent.run({ model_ref: "fixture/openai-responses@slow", messages })).message.content, "slow agent");
+    assert.equal((await patient.provider.complete({ model_ref: "fixture/openai-responses@slow", messages })).message.content, "slow provider");
+  } finally {
+    await patient.close();
+  }
+  const failing = await createOapClient({ command: process.execPath, args: [fixture] });
+  try {
+    await assert.rejects(() => failing.provider.complete({ model_ref: "fixture/openai-responses@accepted-then-malformed", messages, options: { signal: AbortSignal.timeout(2000) } }), /invalid OAP frame/);
+  } finally {
+    await failing.close();
+  }
+  const impatient = await createOapClient({ command: process.execPath, args: [fixture], idleTimeoutMs: 150 });
+  try {
+    await assert.rejects(() => impatient.agent.run({ model_ref: "fixture/openai-responses@slow", messages }), /timed out waiting for OAP event after 150ms/);
+    await assert.rejects(() => impatient.provider.complete({ model_ref: "fixture/openai-responses@slow", messages }), /timed out waiting for OAP event after 150ms/);
+  } finally {
+    await impatient.close();
+  }
+});
+
 test("an endpoint that would ignore tools or an output limit has them refused client-side", async () => {
   const client = await createOapClient({ command: process.execPath, args: [fixture], env: { ...process.env, OAP_FIXTURE_BARE: "1" } });
   try {
