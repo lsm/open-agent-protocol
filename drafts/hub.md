@@ -773,6 +773,13 @@ was settled by #656 either.
   1 MiB+4096, 4 MiB and 16 MiB over a real socket, writes until the daemon stops reading, and reads a
   complete `415` `unsupported_media_type` each time; the Zig twin is `a media refusal reaches the
   client though the body outruns the drain`. Raised in #656.
+- **Windows: a refusal whose body outruns the drain does not reach the client — open.** The same
+  Zig twin, run on the Windows CI runner, read no answer at all: the daemon closes with bytes unread,
+  the close resets the connection, and the answer the client had not read yet is lost with it. The
+  test skips on Windows, so this row is the only record. The `403` and `413` paths
+  close the same way, so they are presumed to lose their answers too; that is untested. Closing
+  this means a drain that never closes with bytes unread, such as a half-close followed by reading
+  until the peer closes or the budget runs out.
 
 **A body the daemon refused to read is drained before the socket closes.** A
 `403` or a `413` is answered without reading the body the head declared, and a

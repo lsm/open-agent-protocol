@@ -1717,6 +1717,7 @@ test "a refused chunked body leaves its connection draining what the client may 
 }
 
 test "a media refusal reaches the client though the body outruns the drain" {
+    if (comptime !hub_http.pollable) return error.SkipZigTest;
     var served: Served = undefined;
     try served.prepare();
     try served.serve();
