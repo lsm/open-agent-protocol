@@ -78,8 +78,12 @@ fn compact(arena: std.mem.Allocator, all: []const Record) ![]Record {
 
 fn collectOpen(arena: std.mem.Allocator, held: []const Record, session_id: []const u8) ![]Open {
     var open_runs: std.ArrayList(Open) = .empty;
+    var ended: std.StringHashMapUnmanaged(void) = .empty;
     for (held) |record| {
         if (!std.mem.eql(u8, record.session_id, session_id)) continue;
+        if (ended.contains(record.run_id)) continue;
+        if (record.action == .settled) try ended.put(arena, record.run_id, {});
+        if (record.action == .admitted) if (record.replaces) |replaced| try ended.put(arena, replaced, {});
         if (record.action == .admitted) if (record.replaces) |replaced| {
             const slot = for (open_runs.items, 0..) |run, index| {
                 if (std.mem.eql(u8, run.run_id, replaced)) break index;
@@ -481,4 +485,19 @@ test "a re-delivered run keeps its place ahead of a run still held behind it, ac
     try testing.expectEqual(@as(usize, 2), open_runs.len);
     try testing.expectEqualStrings("a2", open_runs[0].run_id);
     try testing.expectEqualStrings("b", open_runs[1].run_id);
+}
+
+test "a record after a run was replaced or settled does not reopen it" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const open_runs = try collectOpen(arena.allocator(), &.{
+        .{ .action = .admitted, .time_ms = 1, .session_id = "s", .run_id = "held" },
+        .{ .action = .admitted, .time_ms = 2, .session_id = "s", .run_id = "redelivered", .replaces = "held" },
+        .{ .action = .started, .time_ms = 3, .session_id = "s", .run_id = "held" },
+        .{ .action = .admitted, .time_ms = 4, .session_id = "s", .run_id = "done" },
+        .{ .action = .settled, .time_ms = 5, .session_id = "s", .run_id = "done" },
+        .{ .action = .started, .time_ms = 6, .session_id = "s", .run_id = "done" },
+    }, "s");
+    try testing.expectEqual(@as(usize, 1), open_runs.len);
+    try testing.expectEqualStrings("redelivered", open_runs[0].run_id);
 }
