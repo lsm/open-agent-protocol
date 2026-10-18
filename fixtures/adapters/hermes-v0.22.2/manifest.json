@@ -1,0 +1,213 @@
+{
+  "version": 1,
+  "adapter": "hermes-tui-gateway",
+  "tag": "v0.22.2",
+  "commit": "d923a5eb487a17c0a68801bba9ef0f56c81040a8",
+  "commit_tree": "5a064077e8d1de9fc7a4b27efc04f0caa2cb06c0",
+  "sources": {
+    "entry_py_blob": "6f7c2d23e990eb7c3593dec335e0c105840fcb06",
+    "transport_py_blob": "8e9a54946fe97f83baa2c5fcb6efb9feb00a3058",
+    "server_py_blob": "83b1ff52f4eab8b4ad3d938e0d2de71db09ddaea",
+    "event_replay_py_blob": "f0b6aa0f8cec280036d63245bf5d3f97a3fa01e8",
+    "stdin_recovery_py_blob": "add5e841df4bead308a96bd8b0f0e3c5475bd167",
+    "ws_py_blob": "42dbd6164b8acb2fc257ba90d076122e5325ef77",
+    "methods_prompt_py_blob": "f4b0b80c94361e07b0634e0b844b5d5303888d8a",
+    "methods_session_py_blob": "c83b0ef4e4d2fb6d5bad5c2913acfb8a32c60735",
+    "server_requests_py_blob": "dfd39d842485ca081548e38baa3d81518bfc6e23",
+    "contracts_tree": "782f88736632b3c17dfcdf0bf7027d37c7eedc87"
+  },
+  "cases": [
+    {
+      "id": "ready-handshake",
+      "path": "ready-handshake",
+      "ledger_fixtures": [
+        "ready-epoch",
+        "ready-before-input",
+        "stdin-eof-exit"
+      ]
+    },
+    {
+      "id": "pre-ready-observation",
+      "path": "pre-ready-observation",
+      "ledger_fixtures": [
+        "pre-ready-observation"
+      ]
+    },
+    {
+      "id": "malformed-frame",
+      "path": "malformed-frame",
+      "ledger_fixtures": [
+        "malformed-frame"
+      ]
+    },
+    {
+      "id": "admission-orders",
+      "path": "admission-orders",
+      "ledger_fixtures": [
+        "submit-streaming",
+        "turn-open"
+      ]
+    },
+    {
+      "id": "admission-busy",
+      "path": "admission-busy",
+      "ledger_fixtures": [
+        "busy-steered",
+        "busy-queued",
+        "submit-error-codes"
+      ]
+    },
+    {
+      "id": "settlement-statuses",
+      "path": "settlement-statuses",
+      "ledger_fixtures": [
+        "completed-turn",
+        "interrupted-turn",
+        "error-turn",
+        "error-surface",
+        "partial-error"
+      ]
+    },
+    {
+      "id": "streaming-provenance",
+      "path": "streaming-provenance",
+      "ledger_fixtures": [
+        "text-deltas",
+        "reasoning-deltas",
+        "interim",
+        "scrubbed-provenance"
+      ]
+    },
+    {
+      "id": "tool-lifecycle",
+      "path": "tool-lifecycle",
+      "ledger_fixtures": [
+        "tool-lifecycle",
+        "tool-failure-in-result"
+      ]
+    },
+    {
+      "id": "interaction-gates",
+      "path": "interaction-gates",
+      "ledger_fixtures": [
+        "approval-gate",
+        "approval-choices",
+        "clarify-gate",
+        "sudo-gate",
+        "secret-gate"
+      ]
+    },
+    {
+      "id": "interaction-expire",
+      "path": "interaction-expire",
+      "ledger_fixtures": [
+        "expire-sibling"
+      ]
+    },
+    {
+      "id": "approval-interrupt",
+      "path": "approval-interrupt",
+      "ledger_fixtures": [
+        "approval-interrupt"
+      ]
+    },
+    {
+      "id": "steering-unavailable",
+      "path": "steering-unavailable",
+      "ledger_fixtures": [
+        "steer-run",
+        "steer-rejected",
+        "subagent-steer",
+        "subagent-interrupt"
+      ]
+    },
+    {
+      "id": "side-channels",
+      "path": "side-channels",
+      "ledger_fixtures": [
+        "btw-delivery",
+        "background-prompt"
+      ]
+    },
+    {
+      "id": "subagent-frames",
+      "path": "subagent-frames",
+      "ledger_fixtures": [
+        "subagent-lifecycle",
+        "subagent-complete-failed",
+        "child-mirror-not-terminal"
+      ]
+    },
+    {
+      "id": "reconciliation",
+      "path": "reconciliation",
+      "ledger_fixtures": [
+        "settled-session-info",
+        "usage-ticker"
+      ]
+    },
+    {
+      "id": "replay-epoch",
+      "path": "replay-epoch",
+      "ledger_fixtures": [
+        "replay-in-window",
+        "replay-truncated",
+        "replay-unknown-session",
+        "epoch-restart"
+      ]
+    },
+    {
+      "id": "recovery-journal",
+      "path": "recovery-journal",
+      "ledger_fixtures": [
+        "resume-live",
+        "branch",
+        "undo"
+      ]
+    },
+    {
+      "id": "hygiene-globals",
+      "path": "hygiene-globals",
+      "ledger_fixtures": [
+        "global-events-unsequenced",
+        "session-reclaimed",
+        "no-turn-lifecycle-events"
+      ]
+    },
+    {
+      "id": "process-exit",
+      "path": "process-exit",
+      "ledger_fixtures": [
+        "process-exit"
+      ]
+    },
+    {
+      "id": "clarify-batch",
+      "path": "clarify-batch",
+      "ledger_fixtures": [
+        "clarify-batch"
+      ]
+    },
+    {
+      "id": "delegation-reentry",
+      "path": "delegation-reentry",
+      "ledger_fixtures": [
+        "background-reentry"
+      ]
+    },
+    {
+      "id": "session-reopen",
+      "path": "session-reopen",
+      "ledger_fixtures": [
+        "bound-session-reopen"
+      ]
+    },
+    {
+      "id": "session-reopen-auto-continue",
+      "path": "session-reopen-auto-continue",
+      "ledger_fixtures": [
+        "reopen-auto-continue-refused"
+      ]
+    }
+  ]
+}
