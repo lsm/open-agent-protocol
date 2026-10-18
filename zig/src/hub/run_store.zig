@@ -220,3 +220,9 @@ test "a second store on the same path is refused rather than waiting" {
     defer store.deinit();
     try testing.expectError(error.RunStoreInUse, Store.open(testing.allocator, path));
 }
+
+test "a run record line is the one the Go store writes" {
+    const line = try encode(testing.allocator, .{ .action = .admitted, .time_ms = 3, .session_id = "s", .run_id = "r2", .request = "{\"message\":\"next\"}" });
+    defer testing.allocator.free(line);
+    try testing.expectEqualStrings("34771ed2 {\"action\":\"admitted\",\"time_ms\":3,\"session_id\":\"s\",\"run_id\":\"r2\",\"request\":\"{\\\"message\\\":\\\"next\\\"}\"}\n", line);
+}
