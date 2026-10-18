@@ -50,16 +50,17 @@ append, `admitted {run_id: new, request, replaces: old}`, and `openRuns` drops
 the run an `admitted` replaces, so a crash at any point leaves exactly one of
 the two open. A replacing run takes the admission position of the run it
 replaces, so a crash part-way through re-delivering several prompts never
-changes their order. A replaced run is closed for good: a backend that
-compacts keeps only open runs' records, so the replaced run's records go
-when its replacement is admitted, and settling the replacement later can
-never bring the replaced run back. Withdrawal appends `settled` for the old
-id.
+changes their order. Withdrawal appends `settled` for the old id.
 
 | operation | does |
 | --- | --- |
 | `appendRun(session_id, record)` | appends `admitted` (with the prompt when queued, and `replaces` naming the held run a re-delivery takes over), `started` or `settled` |
 | `openRuns(session_id)` | runs with no `settled` record and no later `admitted` replacing them, in admission order; a re-delivered run takes the slot of the run it replaces |
+
+A run that is settled or replaced is over: a writer appends nothing more for
+its id, and a record for it that a log still holds after its end is ignored
+rather than reopening it. A store may forget an ended run once it compacts,
+so the writer's rule is the guarantee.
 
 ### Transcript (Decision 0051, #1205)
 
