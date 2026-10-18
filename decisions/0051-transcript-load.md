@@ -38,27 +38,28 @@ sessions). Six harnesses can be read today.
 Entries are oldest first. Without `cursor` the read starts at the oldest entry
 the store still holds. `complete: true` means nothing follows the last entry
 returned. A session is read whether it is open or only bound, without
-starting a harness, as `work.read` already does.
+resuming it, as `work.read` already does. Most readers start nothing; ACP's
+reads through a short-lived agent process that loads the session and exits.
 
 ### 2. An entry is OAP's, and the transcript is a list
 
-`{entry_id, kind, at_ms?, run_id?, message?, compaction?, interrupted?}`:
+`{entry_id, kind, at_ms?, run_id?, message?, compaction?, truncated?}`:
 
 | `kind` | carries |
 | --- | --- |
 | `message` | a `message` (role and parts, as the core already defines them), including tool calls and tool results as parts |
 | `compaction` | `{compaction_id?, summary}`: the point where the history the model sees was replaced |
-| `interrupted` | a run that a restart ended ([Decision 0050](0050-shutdown-is-graceful-forced-or-asked.md)), by `run_id` |
+
+`kind` is open to later decisions, and a host skips a kind it does not know.
 
 **One source per transcript.** A cursor orders entries from one store only,
 so its order is that store's order. Where the transcript is the harness's
 (Claude's project jsonl, Codex's `thread/turns/list`, Pi, OpenCode, ACP), every
 entry comes from the harness, and a harness rewrite such as a Claude
 compaction is that store changing: a cursor it invalidates answers the gap in
-rule 5. OAP's run store is never interleaved into it, so an `interrupted`
-entry appears only where the transcript is OAP's own (`oapx`). For a
-third-party harness, an interrupted run is reported through
-`recovery.interrupted_runs` on reopen (Decision 0050) and nowhere else.
+rule 5. OAP's own records are never interleaved into it. A later decision
+that adds an OAP-sourced kind adds it only where the transcript is OAP's own
+(`oapx`).
 
 A harness that stores a tree (Pi) is read in file order, as `work.read`
 already reads it. A branch the harness left reads along with the one it kept.
@@ -128,8 +129,8 @@ reads again from its last cursor.
 - Both hubs route it, and the hub's frame limit is the page bound's reason.
 - Each adapter's reader moves from `work.read` into its `transcript.load`,
   first `oapx` (the store is ours), then Claude, Codex, Pi, OpenCode and ACP.
-- With Decision 0050, the reader is also where an interrupted run's partial
-  output is seen.
+- A run cut off before it settled still shows the output it produced, since
+  that output is in the store.
 
 ## What this decision does not admit
 
