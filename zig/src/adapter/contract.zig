@@ -10,6 +10,7 @@ pub const Failure = error{
     RunNotFound,
     RunTerminal,
     ReplayCursorFuture,
+    InvalidCursor,
     InteractionNotFound,
     InvalidResolution,
     UnsupportedFeature,
@@ -26,6 +27,7 @@ pub const reason_unsatisfiable = "unsatisfiable";
 pub const feature_models_list = "models.list";
 pub const feature_model_switch = "session.model.switch";
 pub const feature_session_compact = "session.compact";
+pub const feature_transcript_load = "transcript.load";
 pub const feature_tools_list = "action.tools.list";
 pub const feature_tools_provide = "action.tools.provide";
 pub const feature_tool_sources_attach = "action.tool_sources.attach";
@@ -283,6 +285,28 @@ pub const NativeReadRequest = struct {
     max_turns: usize = std.math.maxInt(usize),
 };
 
+pub const TranscriptRequest = struct {
+    native_id: []const u8,
+    directory: []const u8 = "",
+    cursor: ?[]const u8 = null,
+    limit: usize = transcript_default_limit,
+};
+
+pub const transcript_default_limit: usize = 100;
+pub const transcript_page_bytes: usize = 512 * 1024;
+
+pub const TranscriptGap = struct {
+    reason: []const u8,
+    resumed_at: []const u8 = "",
+};
+
+pub const TranscriptPage = struct {
+    entries: []const std.json.Value,
+    next_cursor: []const u8 = "",
+    complete: bool,
+    gap: ?TranscriptGap = null,
+};
+
 pub const NativeListRequest = struct {
     directory: []const u8 = "",
     limit: usize = 50,
@@ -306,7 +330,13 @@ pub const Adapter = struct {
         native_link: ?*const fn (ptr: *anyopaque, arena: std.mem.Allocator, native_id: []const u8) std.mem.Allocator.Error![]const u8 = null,
         native_read: ?*const fn (ptr: *anyopaque, arena: std.mem.Allocator, request: NativeReadRequest, refusal: *Refusal) Failure![]const NativeTurn = null,
         native_search: ?*const fn (ptr: *anyopaque, arena: std.mem.Allocator, request: NativeSearchRequest, refusal: *Refusal) Failure![]const NativeSession = null,
+        transcript_load: ?*const fn (ptr: *anyopaque, arena: std.mem.Allocator, request: TranscriptRequest, refusal: *Refusal) Failure!TranscriptPage = null,
     };
+
+    pub fn transcriptLoad(self: Adapter, arena: std.mem.Allocator, request: TranscriptRequest, refusal: *Refusal) ?Failure!TranscriptPage {
+        const loads = self.vtable.transcript_load orelse return null;
+        return loads(self.ptr, arena, request, refusal);
+    }
 
     pub fn nativeSearch(self: Adapter, arena: std.mem.Allocator, request: NativeSearchRequest, refusal: *Refusal) ?Failure![]const NativeSession {
         const searched = self.vtable.native_search orelse return null;
