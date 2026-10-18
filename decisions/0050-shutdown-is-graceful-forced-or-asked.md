@@ -156,8 +156,9 @@ A TUI or GUI sends the request without a mode and shows the `choose` list.
 
 Decision 0040 requires a reopen to list no run under way. That changes:
 
-- the reopen response may list the held runs in `state.active_runs` with
-  `status: "queued"`, in their original order. Decision 0007's admission order
+- the reopen response may list the runs that now carry held prompts in
+  `state.active_runs` with `status: "queued"`, in their original order; the
+  held ids themselves are settled and never listed. Decision 0007's admission order
   takes them as recovered runs at those positions, and the first one starts
   only after the reopen response, as any queued run does;
 - it never lists a run as `running`, since no run survives a restart;
@@ -172,6 +173,10 @@ Decision 0040 requires a reopen to list no run under way. That changes:
   that names no such prompt refuses the
   whole reopen `invalid_request`, naming the id, before anything starts, so a
   typo never sends a prompt the host meant to withdraw.
+- A prompt keeps the id the host was first told, the root of its `replaces`
+  chain, however many restarts re-deliver it. `withdraw_held` names that root
+  id, the endpoint resolves it to the chain's open run and settles that, and
+  `previous_run_id` in `redelivered_runs` always reports the root.
 
 The validator accepts restored queued runs in a recovered open response
 (`recovery.recovered: true`) and nowhere else.
