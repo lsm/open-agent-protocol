@@ -3361,7 +3361,7 @@ fn oapUnservedRefusal(provider_id: []const u8) ?oap_provider_server.UnservedRefu
 
 fn oapCredentialResolves(allocator: std.mem.Allocator, provider_id: []const u8) bool {
     if (provider_catalog.credentialEnvIsSet(allocator, provider_id) catch false) return true;
-    var storage = oauth_storage.AuthStorage.loadDefaultStoredOnly(allocator) catch return false;
+    var storage = oauth_storage.AuthStorage.loadDefault(allocator) catch return false;
     defer storage.deinit();
     return storage.providers.get(provider_id) != null;
 }
@@ -3624,7 +3624,7 @@ fn failOapInference(
     server.releaseInference(inference_id);
 }
 
-fn resolveOapStoredCredential(
+fn resolveOapCredential(
     allocator: std.mem.Allocator,
     provider_id: []const u8,
     base_url: []const u8,
@@ -3633,7 +3633,7 @@ fn resolveOapStoredCredential(
     if (auth_resolver.storedCredentialWithheld(allocator, lookup, provider_id, base_url)) {
         return auth_resolver.resolveApiKeyOfKind(allocator, null, provider_id, null, .api_key_only) catch null;
     }
-    var storage = oauth_storage.AuthStorage.loadDefaultStoredOnly(allocator) catch return null;
+    var storage = oauth_storage.AuthStorage.loadDefault(allocator) catch return null;
     defer storage.deinit();
     const resolved = auth_resolver.resolveApiKey(allocator, &storage, provider_id, null) catch return null;
     if (resolved.api_key.len == 0) {
@@ -3696,7 +3696,7 @@ fn startOapInference(
         if (grantedValueFor(granted, reference)) |value| options.api_key = @TypeOf(options.api_key).initBorrowed(value);
     };
     if (options.getApiKey() == null or options.getApiKey().?.len == 0) {
-        resolved_credential = resolveOapStoredCredential(allocator, provider_id, model.base_url, lookup);
+        resolved_credential = resolveOapCredential(allocator, provider_id, model.base_url, lookup);
         if (resolved_credential) |key| options.api_key = @TypeOf(options.api_key).initBorrowed(key.api_key);
     }
     options.cancel_token = .{ .cancelled = cancelled };
