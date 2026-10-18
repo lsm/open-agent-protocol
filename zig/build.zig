@@ -1475,6 +1475,22 @@ pub fn build(b: *std.Build) void {
     });
     const hub_daemon_test = b.addTest(.{ .root_module = hub_daemon_mod });
 
+    const copilot_adapter_mod = b.createModule(.{
+        .root_source_file = b.path("src/adapter/copilot/adapter.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "contract", .module = adapter_contract_mod },
+            .{ .name = "oap_types", .module = protocol_oap_types_mod },
+            .{ .name = "process", .module = adapter_process_mod },
+            .{ .name = "compat", .module = compat_mod },
+            .{ .name = "json_encode", .module = json_encode_mod },
+            .{ .name = "native", .module = copilot_native_mod },
+            .{ .name = "copilot_session", .module = copilot_session_mod },
+        },
+    });
+    const copilot_adapter_test = b.addTest(.{ .root_module = copilot_adapter_mod });
+
     const deepseek_adapter_mod = b.createModule(.{
         .root_source_file = b.path("src/adapter/deepseek/adapter.zig"),
         .target = target,
@@ -3066,6 +3082,8 @@ pub fn build(b: *std.Build) void {
     test_unit_adapter_step.dependOn(&b.addRunArtifact(copilot_native_test).step);
     test_step.dependOn(&b.addRunArtifact(copilot_session_test).step);
     test_unit_adapter_step.dependOn(&b.addRunArtifact(copilot_session_test).step);
+    test_step.dependOn(&b.addRunArtifact(copilot_adapter_test).step);
+    test_unit_adapter_step.dependOn(&b.addRunArtifact(copilot_adapter_test).step);
     test_step.dependOn(&b.addRunArtifact(opencode_httpapi_test).step);
     test_unit_adapter_step.dependOn(&b.addRunArtifact(opencode_httpapi_test).step);
     test_step.dependOn(&b.addRunArtifact(opencode_session_test).step);
