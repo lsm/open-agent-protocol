@@ -747,10 +747,15 @@ envelope types to decode the answer with.
 
 ### `+transcript-load`
 
-`+transcript-load` is executable under
-[Decision 0051](../decisions/0051-transcript-load.md), owner-approved and
-`proposed` until its native readers land.
-An implementation conforms if it:
+The unit is staged, not executable.
+[Decision 0051](../decisions/0051-transcript-load.md) carries its wire shape,
+validator rules and fixtures and is owner-approved but still proposed until its
+native readers land; under
+[Decision 0003](../decisions/0003-staged-unit-graduation.md) no draft claims a
+unit executable until a native adapter proves one. What follows is therefore
+the shape an implementation will be held to, not a claim one may make today.
+
+An implementation will conform if it:
 
 - advertises `transcript.load` above `unavailable`, refuses a
   `transcript.load.request` against a descriptor that does not with

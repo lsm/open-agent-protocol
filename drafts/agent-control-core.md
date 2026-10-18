@@ -542,13 +542,6 @@ that session's catalog but does not change `current_model_id`; the control
 layer switches separately. A combined stdio host does not attach its provider
 implicitly.
 
-When persistence is advertised, `transcript.load.request` loads persisted
-messages for initial history, pagination, or reconnect recovery. A response
-should include `sync_cursor` when the endpoint can provide one.
-`transcript.delta` is the optional canonical update event for persisted
-transcript rows; it is distinct from `content.delta`, which is the live
-assistant stream and may arrive before persistence.
-
 Resume, reconciliation, and replay are separate capabilities. Resume restores
 an attachment to execution or conversation state. Reconciliation returns an
 authoritative state snapshot. Replay returns historical canonical OAP events
@@ -738,12 +731,12 @@ Common optional core features:
 - `endpoint.status`
 - `capabilities.updates`
 - `models.list` (executable; [Decision 0006](../decisions/0006-models-catalog.md))
-- `session.list` (staged; [Decision 0046](../decisions/0046-a-session-list-is-the-hosts-bindings.md), proposed)
+- `session.list` (executable; [Decision 0046](../decisions/0046-a-session-list-is-the-hosts-bindings.md))
 - `session.open.subscribe` (executable; [Decision 0009](../decisions/0009-compound-open.md))
 - `session.open.reopen` (executable; [Decision 0040](../decisions/0040-a-session-reopens-through-its-own-binding.md))
 - `session.reasoning` and `session.compaction.policy` (executable; [Decision 0045](../decisions/0045-reasoning-level-and-compaction-policy-are-session-settings.md))
-- `transcript.load`
-- `transcript.delta`
+- `transcript.load` (staged; [Decision 0051](../decisions/0051-transcript-load.md), proposed)
+- `transcript.delta` (not staged; Decision 0051 keeps it out for want of a complete feed)
 - `session.message.delivery.queue`
 - `session.message.delivery.steer`
 - `session.message.delivery.btw`
