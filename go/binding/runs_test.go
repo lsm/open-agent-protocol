@@ -160,8 +160,8 @@ func TestARedeliveredRunReplacesItsHeldRunInOneRecord(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if len(runs) != 2 || runs[0].RunID != "after" || runs[1].RunID != "redelivered" {
-			t.Fatalf("%s: open runs = %+v, want after then redelivered, held replaced", name, runs)
+		if len(runs) != 2 || runs[0].RunID != "redelivered" || runs[1].RunID != "after" {
+			t.Fatalf("%s: open runs = %+v, want redelivered in held's slot, then after", name, runs)
 		}
 	}
 	var log []byte
@@ -214,5 +214,31 @@ func TestSettlingTheReplacingRunOverAKeptLogDoesNotReviveTheReplacedOne(t *testi
 	}
 	if runs, err := store.OpenRuns(ctx, "s"); err != nil || len(runs) != 0 {
 		t.Fatalf("open runs = %+v, %v; want none: held was replaced and its replacement settled", runs, err)
+	}
+}
+
+func TestARedeliveredRunKeepsItsPlaceAheadOfARunStillHeldBehindIt(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "runs.jsonl")
+	store, err := RunsFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, record := range []RunRecord{
+		{Action: RunAdmitted, TimeMS: 1, SessionID: "s", RunID: "a"},
+		{Action: RunAdmitted, TimeMS: 2, SessionID: "s", RunID: "b"},
+		{Action: RunAdmitted, TimeMS: 3, SessionID: "s", RunID: "a2", Replaces: "a"},
+		{Action: RunStarted, TimeMS: 4, SessionID: "other", RunID: "x"},
+	} {
+		if err := store.AppendRun(ctx, record); err != nil {
+			t.Fatal(err)
+		}
+	}
+	reread, err := RunsFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if runs, err := reread.OpenRuns(ctx, "s"); err != nil || len(runs) != 2 || runs[0].RunID != "a2" || runs[1].RunID != "b" {
+		t.Fatalf("open runs after a reread = %+v, %v; want a2 in a's place, then b", runs, err)
 	}
 }

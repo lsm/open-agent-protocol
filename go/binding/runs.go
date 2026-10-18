@@ -44,21 +44,22 @@ type Runs interface {
 
 func keptAfter(records []RunRecord, record RunRecord) []RunRecord {
 	all := append(append([]RunRecord(nil), records...), record)
-	open := make(map[[2]string]bool)
+	var sessions []string
 	seen := make(map[string]bool)
 	for _, held := range all {
-		if seen[held.SessionID] {
-			continue
-		}
-		seen[held.SessionID] = true
-		for _, run := range openRuns(all, held.SessionID) {
-			open[[2]string{held.SessionID, run.RunID}] = true
+		if !seen[held.SessionID] {
+			seen[held.SessionID] = true
+			sessions = append(sessions, held.SessionID)
 		}
 	}
 	var kept []RunRecord
-	for _, held := range all {
-		if held.Action != RunSettled && open[[2]string{held.SessionID, held.RunID}] {
-			kept = append(kept, held)
+	for _, sessionID := range sessions {
+		for _, run := range openRuns(all, sessionID) {
+			for _, held := range all {
+				if held.Action != RunSettled && held.SessionID == sessionID && held.RunID == run.RunID {
+					kept = append(kept, held)
+				}
+			}
 		}
 	}
 	return kept
@@ -90,8 +91,11 @@ func openRuns(records []RunRecord, sessionID string) []OpenRun {
 			runs = removeRun(runs, at, record.RunID)
 			continue
 		}
-		if record.Action == RunAdmitted && record.Replaces != "" {
-			runs = removeRun(runs, at, record.Replaces)
+		if slot, held := at[record.Replaces]; record.Action == RunAdmitted && record.Replaces != "" && held {
+			delete(at, record.Replaces)
+			at[record.RunID] = slot
+			runs[slot] = OpenRun{RunID: record.RunID, AdmittedMS: record.TimeMS, Request: record.Request}
+			continue
 		}
 		index, seen := at[record.RunID]
 		if !seen {

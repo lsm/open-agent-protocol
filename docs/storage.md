@@ -47,7 +47,7 @@ do over a whole file into the backend, so SQLite can page with an index.
 | operation | does |
 | --- | --- |
 | `appendRun(session_id, record)` | appends `admitted` (with the prompt when queued, and `replaces` naming the held run a re-delivery takes over), `started` or `settled` |
-| `openRuns(session_id)` | runs with no `settled` record and no later `admitted` replacing them, in admission order; a re-delivered run takes its own admission slot |
+| `openRuns(session_id)` | runs with no `settled` record and no later `admitted` replacing them, in admission order; a re-delivered run takes the slot of the run it replaces |
 
 ### Transcript (Decision 0051, #1205)
 
