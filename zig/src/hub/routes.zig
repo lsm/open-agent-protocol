@@ -99,6 +99,23 @@ pub const table = [_]Entry{
     .{ .method = "GET", .pattern = "/work/capabilities", .verb = .work_capabilities },
 };
 
+pub fn readsBody(method: []const u8, path: []const u8) bool {
+    var buffer: [32 * 1024]u8 = undefined;
+    var fixed = std.heap.FixedBufferAllocator.init(&buffer);
+    const found_route = route(fixed.allocator(), method, path) catch return false;
+    return switch (found_route) {
+        .route => |found| bodyVerb(found.verb()),
+        else => false,
+    };
+}
+
+fn bodyVerb(verb: Verb) bool {
+    return switch (verb) {
+        .open, .submit, .resolve, .cancel, .settings, .work_start, .work_send => true,
+        else => false,
+    };
+}
+
 const ShapeFailure = error{
     BadEscape,
     NotAbsolute,
@@ -379,4 +396,26 @@ test "a request with a name to decode survives every allocation failing, and lea
             return;
         }
     }.drive, .{});
+}
+
+test "a route reads a body by its method and shape, whatever the length a request declares" {
+    for ([_][2][]const u8{
+        .{ "POST", "/adapters/memory/sessions" },
+        .{ "POST", "/sessions/s1/submit" },
+        .{ "POST", "/sessions/s1/resolve" },
+        .{ "POST", "/sessions/s1/cancel" },
+        .{ "POST", "/sessions/s1/settings" },
+        .{ "POST", "/adapters/memory/work" },
+        .{ "POST", "/work/sessions/w1/send" },
+    }) |case| try std.testing.expect(readsBody(case[0], case[1]));
+    for ([_][2][]const u8{
+        .{ "POST", "/sessions/s1/close" },
+        .{ "POST", "/work/sessions/w1/stop" },
+        .{ "GET", "/adapters" },
+        .{ "GET", "/adapters/memory/sessions" },
+        .{ "POST", "/adapters//sessions" },
+        .{ "POST", "/adapters/memory/sessions/extra" },
+        .{ "POST", "/a" },
+    }) |case| try std.testing.expect(!readsBody(case[0], case[1]));
+    try std.testing.expect(readsBody("POST", "/adapters/memory/session%73"));
 }

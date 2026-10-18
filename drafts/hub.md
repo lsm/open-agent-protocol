@@ -528,7 +528,17 @@ same loop waits on one AFD poll rather than `poll` (#1073, `DESIGN.md` §8.6),
 and the three tests run there too.
 
 Every route that reads a body requires `Content-Type: application/json`, and
-the body is read as UTF-8 whatever `charset` the header names. RFC 8259 §11
+the body is read as UTF-8 whatever `charset` the header names. The gate is a
+property of the route, not of the length (owner, 2026-10-17, #1133): `open`,
+`submit`, `resolve`, `cancel`, `settings`, `work.start` and `work.send` are
+gated even when the request declares no body, and a route that reads none, such
+as `close` or a listing, is not gated even when it carries one. The media type is
+refused before the length is measured, so a wrong type on a body over 16 MiB is
+`415`, not `413`. Pinned by `a body-reading route is gated on its media type even
+with no body, and close, which reads none, is not`, `a listing carrying a body
+with a wrong media type is not gated, because a listing reads no body` and `a
+wrong media type is refused before the length is measured, so 415 outranks
+413`. RFC 8259 §11
 records that no `charset` parameter is defined for `application/json` — the
 media type registers no parameters at all — so a sender that names one is
 describing something the grammar does not carry, and a receiver that refuses it
@@ -2156,7 +2166,12 @@ are "stamped with the revision the lister served it under", and both name
 | **How it is tested, and what is not** | A Zig unit test sends an open naming a pinned source and an unconfigured one, and asserts on what the adapter was handed: the operator's `endpoint`, the operator's `environment` values kept even where the wire named the same variables, the caller's bare names appended, and the unconfigured source verbatim. |
 | **The differential case** | **Pinned.** The scenario `a source the operator pinned reaches the adapter as the operator declared it` in `go/cmd/goap/hub_parity_test.go` runs both hubs with one `--config` declaring `pinned` as a `local` source, and checks three opens on each: one naming `pinned` by id opens with the operator's `display_name` and `endpoint`, one adding a wire `display_name` to it is refused `unsupported_feature`, and an unconfigured source passes through as the host wrote it. The harness gained a per-scenario config for it; it was the gap that kept this row the only record of the divergence. |
 
-### D23 — the media gate sits on the head, so 413 wins where Go answers 415
+### D23 — the media gate sat on the head, so 413 won where Go answers 415 — CLOSED
+
+**Now** (owner, 2026-10-17, #1133): Go's order is the draft's. The Zig gate refuses the media type
+before the length is measured, so both trees answer `415`; the head parser no longer refuses an
+oversize body ahead of the gate. The rows below record how it was.
+
 
 | | |
 | --- | --- |
@@ -2167,7 +2182,13 @@ are "stamped with the revision the lister served it under", and both name
 | **Why it is not decided here** | Choosing would be **settling a precedence the draft does not state**, and a wrong-media *body* has to be either refused or buffered to get there, which is a routing decision this ledger does not own. A draft row saying "a wrong media type is refused before the body is measured" or the reverse would close it; that is a spec change and unaccepted. |
 | **Anchor correction** | These citations were **wrong on arrival on `main`, not staled by later edits.** They landed on `main` in the squash `1ee4a53` (#685), and in **that commit's own tree** `answer()` already stood at `:378` and the media gate at `:381`, while `:364` was a struct field (`refusal: Refusal,`) and `:367` was blank — so `:364`/`:367` were off by 14 the moment they landed. `git diff 1ee4a53 d63e6d8 -- zig/src/hub/http.zig` is **empty**, where `d63e6d8` is the tip of `main` immediately before the #730 squash, so nothing had shifted them as of the point these rows were written. That comparison is **deliberately bounded to `d63e6d8`** and is **not** a claim that the file is unchanged since: #730 has since added 61 lines to `http.zig`, so the same diff against a later `main` is no longer empty. The narrower statement is the one carrying the point — the anchors were off by 14 on arrival, not stale afterwards. They appear to have been carried over from an unlanded pre-squash branch revision, where the numbers did match that tree; that revision is not reachable from `main`, so it is deliberately **not** cited here, and the checkable fact is the squash itself. The two anchors are now given separately on purpose, so a reader following either lands on what the claim names. |
 
-### D26 — the media gate's predicate differs between the trees in two corners the draft leaves open
+### D26 — the media gate's predicate differed between the trees in two corners the draft left open — CLOSED
+
+**Now** (owner, 2026-10-17, #1133): Go's predicate is the draft's. The Zig gate applies to the routes
+that read a body (`routes.readsBody`), whatever the length, so both corners below now answer as Go
+does: an empty `open` with a wrong type is `415`, and a listing carrying a wrong-typed body is served.
+The two corner tests were rewritten to those answers. The rows below record how it was.
+
 
 | | |
 | --- | --- |
