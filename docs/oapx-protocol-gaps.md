@@ -322,13 +322,43 @@ Levels are the adapter's own feature table. "Model switch" is
 | Harness | Adapter | Sessions and resume | Tools | Permissions | Model switch | Missing | HyperNeo priority |
 |---|---|---|---|---|---|---|---|
 | oapx's own loop | `zig/src/adapter/oapx/adapter.zig:169`, served at `zig/src/tools/makai.zig:322` | live only under `serve`; reopen needs the history loader `serve` does not wire (`:64`, `:180`) | native, plus `action.tools.provide` (`:51`, `:54`); no tool sources (`:186`) | native (`:44`) | native (`:56`) | transcript persistence and reopen under `serve` (rows 1 and 2); tool sources (row 12); `capabilities.updated` (row 6) | **P0** |
-| Codex app-server | `zig/src/adapter/codex/adapter.zig:129` | reopen native (`zig/src/adapter/codex/session.zig:1251`); native list and read | degraded, observed families (`:1233`) | native (`:1232`) | none | model switch; models list | P1 |
+| Codex app-server | `zig/src/adapter/codex/adapter.zig:129` | reopen native (`zig/src/adapter/codex/session.zig:1251`); native list and read | degraded, observed families (`:1233`) | native (`:1232`) | per run only, `run.model_selection` (`:1239`) | a session model switch; models list; `action.tools.provide` | P1 |
 | Copilot CLI (headless server) | none; the reducer is `zig/src/adapter/copilot/session.zig`, tools and permissions in review (#1166) | not wired | not wired | not wired | not wired; the native `session.model.switchTo` exists | the adapter, its catalog entry, corpus and `--backend` wiring | P1 |
 | OpenCode server | `zig/src/adapter/opencode/adapter.zig:146` | reopen native (`:38`); native list and read | native (`:21`) | native (`:20`) | none; models list degraded (`:24`) | model switch | P1 |
 | ACP (Devin) | `zig/src/adapter/acp/adapter.zig:160` | reopen native (`:103`); native list and read | degraded, observed only (`:116`) | native (`:119`) | in review (#1163); models list degraded (`:105`) | model switch (#1163); permissions answered at cancel (#1168) | P1 |
 | Pi | `zig/src/adapter/pi/adapter.zig:131` | reopen native (`:69`); native list and read | degraded (`:52`) | unavailable (`:51`) | none | permissions, model switch, models list | P2 |
 | DeepSeek's own harness | `zig/src/adapter/deepseek/adapter.zig:106` | no reopen (`:35`) | degraded (`:19`) | unavailable (`:18`) | none | reopen, cancel (`:23`), permissions, model switch | P3 (oapx's loop is the default for DeepSeek) |
 | Claude Code / Agent SDK | `zig/src/adapter/claude/adapter.zig:162` | reopen native (`:27`); native list and read | degraded (`:43`) | native (`:46`) | none | model switch | P3 (HyperNeo keeps Claude on the Agent SDK, outside OAP) |
+
+## HyperNeo's plan against this inventory
+
+From the dependency analysis of HyperNeo's `docs/architecture/oap-backend-plan.md`
+(written against alpha.21), checked against the rows above:
+
+- **Available today:** PR 6 (open, submit, `events` after a cursor,
+  run-scoped cancel, admission receipts, state), PR 8 (permissions and
+  questions on oapx's own loop), PR 9 (`action.tools.provide` on oapx's own
+  loop), PR 12's queue and steer.
+- **Blocked:** PR 10 and PR 12's restart recovery, on rows 1 and 2 for oapx's
+  own loop. A seeded reopen (a new session plus a summary) still works.
+- **Degraded by harness choice:** PR 9's provided tools reach only sessions
+  on oapx's own loop, because no Codex, OpenCode or Copilot adapter advertises
+  `action.tools.provide`. Copilot is not a served backend yet.
+
+What a control layer has to assume today, which the spec should state:
+
+1. A cursor is a per-run sequence held in memory. After a hub restart every
+   cursor is a gap, and catching up is `work.read`, not replay (row 3).
+2. After a hub restart, `open` with `reopen` on a session of oapx's own loop
+   is refused `unsupported_feature` (`zig/src/adapter/oapx/adapter.zig:189`),
+   while the harness adapters reopen it from the session history (row 2).
+3. No hub-wide "no run is active" answer exists; a supervisor that must not
+   restart mid-run derives it from `sessions` and each session's state.
+4. `environment` is per adapter entry, so one proxy token covers every
+   session of that entry (row 13).
+5. oapx's own loop queues at most 8 runs behind the running one
+   (`zig/src/adapter/oapx/adapter.zig:25`, `:73`), and the descriptor's
+   `max_queued_runs_per_session` says so.
 
 ## What to do first
 
