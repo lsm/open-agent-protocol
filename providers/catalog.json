@@ -265,6 +265,32 @@
       "docs": "https://opencode.ai/docs/go"
     },
     {
+      "id": "openai-codex",
+      "display_name": "OpenAI Codex",
+      "auth": [
+        "oauth"
+      ],
+      "offering": "subscription",
+      "status": "current",
+      "wires": [
+        "openai-codex-responses"
+      ],
+      "base_url_source": "static",
+      "endpoints": [
+        {
+          "wire": "openai-codex-responses",
+          "base_url": "https://chatgpt.com/backend-api/codex"
+        }
+      ],
+      "oauth_origin": {
+        "exact": [
+          "https://chatgpt.com/backend-api/codex"
+        ]
+      },
+      "max_context_window": 1000000,
+      "docs": "https://platform.openai.com/docs/codex"
+    },
+    {
       "id": "alibaba-coding-plan",
       "display_name": "Alibaba Coding Plan",
       "auth": [
@@ -367,32 +393,6 @@
       "models_endpoint": "/models",
       "models_dev": "volcengine-coding-plan",
       "docs": "https://www.volcengine.com/docs/82379/1928261"
-    },
-    {
-      "id": "openai-codex",
-      "display_name": "OpenAI Codex",
-      "auth": [
-        "oauth"
-      ],
-      "offering": "subscription",
-      "status": "supported",
-      "wires": [
-        "openai-codex-responses"
-      ],
-      "base_url_source": "static",
-      "endpoints": [
-        {
-          "wire": "openai-codex-responses",
-          "base_url": "https://chatgpt.com/backend-api/codex"
-        }
-      ],
-      "oauth_origin": {
-        "exact": [
-          "https://chatgpt.com/backend-api/codex"
-        ]
-      },
-      "max_context_window": 1000000,
-      "docs": "https://platform.openai.com/docs/codex"
     },
     {
       "id": "xiaomi-token-plan-cn",
