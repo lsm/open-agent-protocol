@@ -976,6 +976,8 @@ pub const Session = struct {
         } else false else false;
         if (!kept) return refusal.unsupportedField(contract.feature_model_switch, contract.reason_unsatisfiable, "model_id");
         const previous: ?[]const u8 = if (self.reported_model) |model| try arena.dupe(u8, model) else null;
+        self.reported_level = null;
+        try self.resumedSettings(confirmed);
         self.reported_model = try self.owned().dupe(u8, request.model_id);
         const model_id = try arena.dupe(u8, request.model_id);
         return .{
@@ -1425,7 +1427,7 @@ test "an open sets the agent's thought_level option and reports the level, refus
     try testing.expectEqualStrings(contract.feature_session_reasoning, refusal.feature);
 }
 
-test "a model switch sets the agent's model option to a listed value and confirms it, refusing an unlisted, rejected or unconfirmed one" {
+test "a model switch sets the agent's model option to a listed value, confirms it and reports the reasoning it leaves, refusing an unlisted, rejected or unconfirmed one" {
     var probe: Probe = undefined;
     try probe.init(
         \\#!/bin/sh
@@ -1433,7 +1435,7 @@ test "a model switch sets the agent's model option to a listed value and confirm
         \\take() { IFS= read -r line || exit 0; printf '%s\n' "$line" >&3; }
         \\take; printf '{"id":1,"jsonrpc":"2.0","result":{"agentCapabilities":{},"protocolVersion":1}}\n'
         \\take; printf '{"id":2,"jsonrpc":"2.0","result":{"sessionId":"native-session","configOptions":[{"id":"picker","category":"model","type":"select","currentValue":"sol-medium","options":[{"value":"sol-medium"},{"value":"luna-medium"},{"value":"adaptive"}]}]}}\n'
-        \\take; printf '{"id":3,"jsonrpc":"2.0","result":{"configOptions":[{"id":"picker","category":"model","type":"select","currentValue":"luna-medium","options":[{"value":"sol-medium"},{"value":"luna-medium"},{"value":"adaptive"}]}]}}\n'
+        \\take; printf '{"id":3,"jsonrpc":"2.0","result":{"configOptions":[{"id":"picker","category":"model","type":"select","currentValue":"luna-medium","options":[{"value":"sol-medium"},{"value":"luna-medium"},{"value":"adaptive"}]},{"id":"effort","category":"thought_level","type":"select","currentValue":"medium","options":[{"value":"high"},{"value":"medium"}]}]}}\n'
         \\take; printf '{"id":4,"jsonrpc":"2.0","error":{"code":-32602,"message":"Invalid params"}}\n'
         \\take; printf '{"id":5,"jsonrpc":"2.0","result":{"configOptions":[{"id":"picker","category":"model","type":"select","currentValue":"luna-medium","options":[{"value":"sol-medium"},{"value":"luna-medium"},{"value":"adaptive"}]}]}}\n'
         \\
@@ -1451,6 +1453,7 @@ test "a model switch sets the agent's model option to a listed value and confirm
     try testing.expectEqualStrings("luna-medium", switched.response.model_id);
     try testing.expectEqualStrings("sol-medium", switched.response.previous_model_id.?);
     try testing.expectEqualStrings("luna-medium", switched.state.current_model_id.?);
+    try testing.expectEqualStrings("medium", switched.state.reasoning_level.?);
     const written = try probe.fake.written(arena);
     try testing.expect(std.mem.endsWith(u8, written, "{\"id\":3,\"jsonrpc\":\"2.0\",\"method\":\"session/set_config_option\",\"params\":{\"sessionId\":\"native-session\",\"configId\":\"picker\",\"value\":\"luna-medium\"}}\n"));
     try testing.expectError(error.UnsupportedFeature, switcher(opened.ptr, arena, &.{ .session_id = "s1", .model_id = "adaptive", .allow_degraded_features = &degraded }, &refusal));

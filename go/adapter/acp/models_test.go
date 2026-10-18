@@ -6,6 +6,7 @@ import (
 	"errors"
 	"reflect"
 	"testing"
+	"time"
 
 	base "github.com/lsm/open-agent-protocol/go/adapter"
 	"github.com/lsm/open-agent-protocol/go/adapter/acp/internal/native"
@@ -121,5 +122,52 @@ func TestAnAgentWithNoModelOptionRefusesAModelSwitch(t *testing.T) {
 	_, _, err = s.(base.ModelSwitcher).SwitchModel(context.Background(), protocol.SessionModelSwitchRequest{SessionID: "s1", ModelID: "luna-medium", AllowDegradedFeatures: []string{protocol.FeatureSessionModelSwitch}})
 	if !errors.As(err, &unsupported) || unsupported.Feature != protocol.FeatureSessionModelSwitch || len(c.calls) != 0 {
 		t.Fatalf("err = %v, calls %+v", err, c.calls)
+	}
+}
+
+func TestASwitchReportsTheReasoningTheAgentsReturnedOptionsLeave(t *testing.T) {
+	c := configuredClient()
+	c.options[1] = native.ConfigOption{ID: "picker", Category: "model", CurrentValue: "sol-medium", Options: json.RawMessage(`[{"value":"sol-medium"},{"value":"luna-medium"}]`)}
+	s, err := configuredAdapter(t, c, nil).Open(context.Background(), base.OpenRequest{SessionID: "s1", Participant: protocol.Participant{ID: "reviewbot"}, ReasoningLevel: protocol.ReasoningHigh})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close(context.Background())
+	c.hook = func(c *configClient, p native.SetConfigOptionParams) error {
+		if p.ConfigID == "picker" {
+			c.options[2].CurrentValue = "medium"
+		}
+		return nil
+	}
+	_, state, err := s.(base.ModelSwitcher).SwitchModel(context.Background(), protocol.SessionModelSwitchRequest{SessionID: "s1", ModelID: "luna-medium", AllowDegradedFeatures: []string{protocol.FeatureSessionModelSwitch}})
+	if err != nil || state.ReasoningLevel != protocol.ReasoningMedium {
+		t.Fatalf("state = %+v, %v", state, err)
+	}
+}
+
+func TestASwitchWaitingOnTheAgentLeavesTheOperationLockFree(t *testing.T) {
+	c := configuredClient()
+	s, err := configuredAdapter(t, c, nil).Open(context.Background(), base.OpenRequest{SessionID: "s1", Participant: protocol.Participant{ID: "reviewbot"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close(context.Background())
+	opened := s.(*session)
+	c.hook = func(*configClient, native.SetConfigOptionParams) error {
+		taken := make(chan struct{})
+		go func() {
+			opened.opMu.Lock()
+			opened.opMu.Unlock()
+			close(taken)
+		}()
+		select {
+		case <-taken:
+			return nil
+		case <-time.After(5 * time.Second):
+			return errors.New("the operation lock was held across the agent call")
+		}
+	}
+	if _, _, err := s.(base.ModelSwitcher).SwitchModel(context.Background(), protocol.SessionModelSwitchRequest{SessionID: "s1", ModelID: "swe-2-high", AllowDegradedFeatures: []string{protocol.FeatureSessionModelSwitch}}); err != nil {
+		t.Fatal(err)
 	}
 }

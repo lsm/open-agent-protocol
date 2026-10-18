@@ -66,8 +66,6 @@ func (s *session) SwitchModel(ctx context.Context, request protocol.SessionModel
 	refuse := func(detail string) error {
 		return &base.UnsupportedControlError{Feature: protocol.FeatureSessionModelSwitch, Reason: base.ControlUnsatisfiable, Field: "model_id", Detail: detail}
 	}
-	s.opMu.Lock()
-	defer s.opMu.Unlock()
 	s.mu.Lock()
 	switch {
 	case s.closed:
@@ -99,6 +97,7 @@ func (s *session) SwitchModel(ctx context.Context, request protocol.SessionModel
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	previous := s.state.CurrentModelID
+	_, s.state.ReasoningLevel = resumedSettings(set.ConfigOptions)
 	s.state.CurrentModelID = request.ModelID
 	s.state.UpdatedAtMS = s.clock.Now().UnixMilli()
 	return protocol.SessionModelSwitchResponse{SessionID: s.state.SessionID, ModelID: request.ModelID, PreviousModelID: previous}, s.state, nil
