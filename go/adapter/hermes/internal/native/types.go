@@ -407,7 +407,7 @@ var observedEvents = map[string]bool{
 	"free_tier.challenge": true,
 	"layout.apply":        true, "message.reaction": true, "moa.aggregating": true, "moa.phase": true,
 	"moa.progress": true, "moa.reference": true, "notice": true, "notification.clear": true,
-	"notification.show": true, "pairing.changed": true, "pane.reveal": true, "pet.changed": true,
+	"notification.show": true, "onboarding.ended": true, "pairing.changed": true, "pane.reveal": true, "pet.changed": true,
 	"pet.generate.progress": true, "pet.hatch.progress": true, "platforms.changed": true,
 	"preview.close": true, "preview.open": true, "preview.restart.complete": true,
 	"preview.restart.progress": true, "projects.changed": true, "reaction": true, "reasoning.available": true,
