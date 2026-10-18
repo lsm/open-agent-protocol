@@ -224,14 +224,14 @@ from its session file, reading the file in order, so a branch Pi left reads
 along with the one it kept, OpenCode through `GET /api/session/<id>/message`,
 an ACP agent through the replay `session/load` sends when its `initialize`
 advertises `loadSession`, in a short-lived agent process, and an `oapx` entry
-under `--save-oapx-sessions` from the transcript it saved, under the session's
-own id),
+from the transcript `oapx serve` saved, under the session's own id),
 `work.read` answers from it: every user message
 and the reply that followed, the conversation before `serve` held the session
-included, and still there after `serve` restarts, so `serve` writes no message
-text of its own to disk. The one exception is an `oapx` entry under
-`--save-oapx-sessions`, whose loop saves its sessions under `~/.oapx/sessions`
-as the terminal UI does. A turn there carries no `run_id` or `outcome`; its
+included, and still there after `serve` restarts. For a third-party harness
+`serve` writes no message text of its own to disk. An `oapx` entry is the
+exception, since its loop is the harness: `oapx serve` saves its sessions under
+`~/.oapx/sessions` by default, as the terminal UI does, and never saves a
+credential. `--no-save-oapx-sessions` turns that off. A turn there carries no `run_id` or `outcome`; its
 index is its place in the transcript, and its text is cut at 64 KiB. A session
 `serve` no longer holds is read the same way from its binding's native id. A
 held session whose harness transcript is still empty, or cannot be read, is answered as below; a
