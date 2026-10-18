@@ -1271,7 +1271,7 @@ Fourteen ops both trees serve, and a fifteenth, [transcript](#transcript), that
 only Zig serves so far, plus `shutdown`, which [Shutdown and exit on
 stdio](#shutdown-and-exit-on-stdio) describes and which has no HTTP route yet.
 Each row gives the request line's parameters, the answer, and the errors. A
-refusal the row does not name is `internal` on both, with two
+refusal the row does not name is `internal` on both, with the
 exceptions stated once here rather than repeated per row:
 
 - **The stdio transport answers four codes no HTTP route can.** `unknown_op` for
@@ -1280,6 +1280,10 @@ exceptions stated once here rather than repeated per row:
   `response_too_large` for a result its frame limit cannot carry. All four
   exist because a pipe gives no back pressure and has one shape a socket does
   not; a port must not produce any of them over HTTP.
+- **`shutting_down` answers `submit`, `open`, `work.start` and `work.send`**
+  once a `shutdown` is accepted, on stdio only until the HTTP route lands, as
+  [Shutdown and exit on stdio](#shutdown-and-exit-on-stdio) says. No row below
+  repeats it.
 - **The four decode codes are `400` over HTTP** (owner, 2026-10-17, #1133).
   `malformed_json`, `schema_invalid`, `type_mismatch` and `invalid_payload`
   carry no status where an operation's error list names them, and wherever one
