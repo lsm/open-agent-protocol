@@ -15,11 +15,12 @@ const opShutdown = "shutdown"
 const drainPoll = 20 * time.Millisecond
 
 type shutdownState struct {
-	mu       sync.Mutex
-	mode     protocol.ShutdownMode
-	watching bool
-	finished bool
-	done     chan struct{}
+	admission sync.RWMutex
+	mu        sync.Mutex
+	mode      protocol.ShutdownMode
+	watching  bool
+	finished  bool
+	done      chan struct{}
 }
 
 func newShutdownState() *shutdownState {
@@ -95,8 +96,10 @@ func (s *Server) shutdownOp(ctx context.Context, request requestLine) (json.RawM
 	if !ok {
 		return nil, &wireError{Code: "invalid_request", Message: "request is an object whose only member is mode, graceful or force"}
 	}
-	runs := s.nonterminalRuns(ctx)
 	st := s.stopping
+	st.admission.Lock()
+	defer st.admission.Unlock()
+	runs := s.nonterminalRuns(ctx)
 	st.mu.Lock()
 	defer st.mu.Unlock()
 	mode := asked
