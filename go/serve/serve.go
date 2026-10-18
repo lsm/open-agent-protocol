@@ -43,7 +43,6 @@ type Hub struct {
 	bindings  binding.Store
 	home      string
 	bindingMu sync.Mutex
-	opening   map[protocol.SessionID]struct{}
 	stopping  atomic.Bool
 }
 
@@ -172,21 +171,11 @@ func (h *Hub) reserve(ctx context.Context, adapterName string, id protocol.Sessi
 	}
 	h.bindingMu.Lock()
 	defer h.bindingMu.Unlock()
-	_, live := h.sessions.get(id)
-	_, opening := h.opening[id]
-	if live || opening {
+	if !h.sessions.reserve(id) {
 		h.recordBinding(ctx, binding.FromOpen(string(id), adapterName, "", "", h.home, "", nil), binding.ActionRefused, h.now())
 		return nil, &SessionExistsError{ID: id}
 	}
-	if h.opening == nil {
-		h.opening = map[protocol.SessionID]struct{}{}
-	}
-	h.opening[id] = struct{}{}
-	return func() {
-		h.bindingMu.Lock()
-		defer h.bindingMu.Unlock()
-		delete(h.opening, id)
-	}, nil
+	return func() { h.sessions.unreserve(id) }, nil
 }
 
 func (h *Hub) SetWorkingDirectory(adapter, directory string) {
