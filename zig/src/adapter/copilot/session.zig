@@ -14,6 +14,8 @@ pub const ResolveError = error{ InteractionNotFound, InteractionResolved, Invali
 
 const choices = [_][2][]const u8{ .{ "approve-once", "Allow once" }, .{ "reject", "Deny" } };
 
+pub const default_max_queued = 8;
+
 pub const Status = enum { queued, running, cancelling, completed, failed, cancelled };
 
 pub const Options = struct {
@@ -21,7 +23,7 @@ pub const Options = struct {
     native_id: []const u8,
     revision: []const u8,
     participant: []const u8 = "user",
-    max_queued: usize = 8,
+    max_queued: usize = default_max_queued,
     counter: ?*u64 = null,
     now_ms: ?*const fn () i64 = null,
 };
@@ -159,6 +161,14 @@ pub const Reducer = struct {
     pub fn bind(self: *Reducer, run_id: []const u8, native_message_id: []const u8) Error!void {
         const run = self.find(run_id) orelse return error.RunNotFound;
         run.native_message_id = try self.allocator().dupe(u8, native_message_id);
+    }
+
+    pub fn forget(self: *Reducer, run_id: []const u8) void {
+        for (self.runs.items, 0..) |run, index| {
+            if (!std.mem.eql(u8, run.id, run_id) or run.started or run.next != 1) continue;
+            _ = self.runs.orderedRemove(index);
+            return;
+        }
     }
 
     pub fn refuse(self: *Reducer, run_id: []const u8, code: []const u8, message: []const u8) Error!void {

@@ -20,6 +20,7 @@ const features = [_]contract.Feature{
     .{ .key = "session.state", .level = .emulated, .reason = "adapter-owned projection of the runs it admitted" },
     .{ .key = contract.feature_submit, .level = .emulated, .reason = "session.send answers a message id at once; the run starts at its own user.message" },
     .{ .key = "session.message.delivery.auto", .level = .emulated, .reason = "start when no run is open, otherwise queue behind it, as session.send enqueues" },
+    .{ .key = "session.message.delivery.queue", .level = .degraded, .reason = "an auto submission that finds a run open is queued behind it, as session.send enqueues; an explicit queue is refused, since Copilot starts a prompt on an idle session at once" },
     .{ .key = "run.streaming", .level = .native },
     .{ .key = "run.status", .level = .emulated },
     .{ .key = "action.tools", .level = .native, .reason = "tool.execution_start and tool.execution_complete with progress between" },
@@ -30,6 +31,7 @@ pub const descriptor = contract.Descriptor{
     .endpoint = .{ .id = endpoint_id, .name = "GitHub Copilot CLI Adapter", .version = endpoint_version, .adapter = "copilot-headless-stdio" },
     .capability_revision = capability_revision,
     .features = &features,
+    .limits = .{ .max_active_runs_per_session = session.default_max_queued + 1, .max_queued_runs_per_session = session.default_max_queued },
 };
 
 pub const Config = struct {
@@ -310,9 +312,22 @@ pub const Session = struct {
         _ = refusal;
         const self = cast(ptr);
         if (self.ended) return error.SessionClosed;
-        const open_run = self.live();
-        const active_run_id: ?[]const u8 = if (open_run) |run| try arena.dupe(u8, run.id) else null;
-        return .{ .session_id = self.id, .status = if (open_run != null) .running else .idle, .active_run_id = active_run_id, .updated_at_ms = wallClock() };
+        var entries = std.ArrayList(oap_types.ActiveRun).empty;
+        var executing: ?[]const u8 = null;
+        var position: u64 = 0;
+        for (self.reducer.runs.items) |run| {
+            if (run.terminal) continue;
+            const run_id = try arena.dupe(u8, run.id);
+            if (run.status == .queued) {
+                position += 1;
+                try entries.append(arena, .{ .run_id = run_id, .status = .queued, .relationship = "primary", .queue_position = position });
+                continue;
+            }
+            executing = run_id;
+            try entries.append(arena, .{ .run_id = run_id, .status = .running, .relationship = "primary" });
+        }
+        const status: oap_types.SessionStatus = if (executing != null) .running else if (entries.items.len > 0) .queued else .idle;
+        return .{ .session_id = self.id, .status = status, .active_run_id = executing, .active_runs = entries.items, .updated_at_ms = wallClock() };
     }
 
     fn submit(ptr: *anyopaque, arena: std.mem.Allocator, request: *const oap_types.MessageSubmitRequest, envelope_id: []const u8, refusal: *contract.Refusal) contract.Failure!oap_types.MessageSubmitResponse {
@@ -343,12 +358,12 @@ pub const Session = struct {
         try params.put(self.owned(), "sessionId", .{ .string = self.native_id });
         try params.put(self.owned(), "prompt", .{ .string = try self.owned().dupe(u8, prompt.items) });
         const sent = self.call(arena, "session.send", .{ .object = params }, refusal) catch |err| {
-            self.reducer.refuse(admitted.run_id, "copilot_send_failed", "the copilot server did not take the prompt") catch |failure| return lift(failure);
+            self.reducer.forget(admitted.run_id);
             return err;
         };
         const message_id = if (sent == .object) native.text(sent.object, "messageId") else "";
         if (message_id.len == 0) {
-            self.reducer.refuse(admitted.run_id, "copilot_send_failed", "session.send answered no message id") catch |err| return lift(err);
+            self.reducer.forget(admitted.run_id);
             return refusal.fail(error.BackendFailed, "the copilot server answered session.send with no message id");
         }
         self.reducer.bind(admitted.run_id, message_id) catch |err| return lift(err);
@@ -612,6 +627,13 @@ test "a second prompt queues behind the open run, and a server that exits fails 
     try testing.expectEqual(oap_types.Admission.started, first.admission);
     try testing.expectEqual(oap_types.Admission.queued, second.admission);
     try testing.expectEqual(oap_types.EffectiveDelivery.queue, second.effective_delivery);
+    const held = try probe.handle.?.state(probe.arena.allocator(), &refusal);
+    try testing.expectEqual(oap_types.SessionStatus.running, held.status);
+    try testing.expectEqualStrings(first.run_id.?, held.active_run_id.?);
+    try testing.expectEqual(@as(usize, 2), held.active_runs.len);
+    try testing.expectEqualStrings(second.run_id.?, held.active_runs[1].run_id);
+    try testing.expectEqual(@as(?u64, 1), held.active_runs[1].queue_position);
+    try testing.expect(held.active_runs[0].queue_position == null);
     var seen = std.ArrayList(contract.Event).empty;
     _ = try probe.pumpUntil("run.failed", &seen);
     var failed: usize = 0;
@@ -620,4 +642,27 @@ test "a second prompt queues behind the open run, and a server that exits fails 
     }
     try testing.expectEqual(@as(usize, 2), failed);
     try testing.expectError(error.SessionClosed, probe.handle.?.state(probe.arena.allocator(), &refusal));
+}
+
+test "a prompt the server refuses or answers without a message id is not admitted, and leaves no run behind" {
+    var probe: Probe = undefined;
+    try probe.init(fake_connect ++
+        \\take; say '{"jsonrpc":"2.0","id":3,"error":{"code":-32000,"message":"busy"}}'
+        \\take; say '{"jsonrpc":"2.0","id":4,"result":{}}'
+        \\take; say '{"jsonrpc":"2.0","id":5,"result":{"messageId":"m-3"}}'
+        \\
+    ++ fake_idle);
+    defer probe.deinit();
+    var refusal = contract.Refusal{};
+    _ = try probe.open(&refusal);
+    try testing.expectError(error.BackendFailed, probe.submit("one", &refusal));
+    try testing.expectError(error.BackendFailed, probe.submit("two", &refusal));
+    var drained = std.ArrayList(contract.Event).empty;
+    try probe.handle.?.drain(probe.arena.allocator(), &drained);
+    try testing.expectEqual(@as(usize, 0), drained.items.len);
+    const idle = try probe.handle.?.state(probe.arena.allocator(), &refusal);
+    try testing.expectEqual(oap_types.SessionStatus.idle, idle.status);
+    try testing.expectEqual(@as(usize, 0), idle.active_runs.len);
+    const third = try probe.submit("three", &refusal);
+    try testing.expectEqual(oap_types.Admission.started, third.admission);
 }
