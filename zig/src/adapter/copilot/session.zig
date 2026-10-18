@@ -13,6 +13,7 @@ pub const Status = enum { queued, running, cancelling, completed, failed, cancel
 
 pub const Options = struct {
     session_id: []const u8,
+    native_id: []const u8,
     revision: []const u8,
     max_queued: usize = 8,
     counter: ?*u64 = null,
@@ -45,7 +46,9 @@ pub const Admission = struct {
     status: Status,
 };
 
-pub const Cancel = struct { status: Status, abort: bool };
+pub const Plan = enum { settled, abort, withdraw };
+
+pub const Cancel = struct { status: Status, plan: Plan };
 
 pub const Reducer = struct {
     arena: *std.heap.ArenaAllocator,
@@ -119,17 +122,29 @@ pub const Reducer = struct {
 
     pub fn cancel(self: *Reducer, run_id: []const u8) Error!Cancel {
         const run = self.find(run_id) orelse return error.RunNotFound;
-        if (run.terminal) return .{ .status = run.status, .abort = false };
+        if (run.terminal) return .{ .status = run.status, .plan = .settled };
         run.cancel_requested = true;
-        if (!run.started) {
+        if (!run.started and run.native_message_id.len == 0) {
             try self.settle(run, "run.cancelled", try self.scoped(run));
-            return .{ .status = .cancelled, .abort = false };
+            return .{ .status = .cancelled, .plan = .settled };
         }
         run.status = .cancelling;
-        return .{ .status = .cancelling, .abort = true };
+        return .{ .status = .cancelling, .plan = if (run.started) .abort else .withdraw };
+    }
+
+    pub fn withdrawn(self: *Reducer, run_id: []const u8) Error!void {
+        const run = self.find(run_id) orelse return error.RunNotFound;
+        if (run.started or run.terminal) return;
+        var payload = try self.scoped(run);
+        try payload.put(self.allocator(), "reason", .{ .string = "Copilot withdrew the queued prompt" });
+        try self.settle(run, "run.cancelled", payload);
     }
 
     pub fn observe(self: *Reducer, event: native.Event) Error!void {
+        if (!std.mem.eql(u8, event.session_id, self.options.native_id)) {
+            const run = self.current orelse return;
+            return self.fail(run, "copilot_foreign_session", "an event for another Copilot session reached this one");
+        }
         const kind = event.kind orelse return;
         switch (kind) {
             .user_message => try self.userMessage(event.data),
@@ -160,16 +175,15 @@ pub const Reducer = struct {
                 if (model.len > 0) run.routed_model = try self.allocator().dupe(u8, model);
             },
             .session_idle => {
-                const run = self.current orelse return;
                 const aborted = event.data.get("aborted");
                 if (aborted != null and aborted.? == .bool and aborted.?.bool) {
-                    if (run.cancel_requested) {
-                        var payload = try self.scoped(run);
-                        try payload.put(self.allocator(), "reason", .{ .string = "Copilot confirmed the abort" });
-                        return self.settle(run, "run.cancelled", payload);
+                    for (self.runs.items) |run| {
+                        if (run.started and run.cancel_requested and !run.terminal) try self.cancelled(run);
                     }
-                    return self.fail(run, "copilot_aborted", "Copilot ended the turn as aborted without a cancel from this session");
+                    const run = self.current orelse return;
+                    return self.fail(run, "copilot_aborted", "Copilot ended the busy period as aborted, without a cancel for this run");
                 }
+                const run = self.current orelse return;
                 try self.complete(run);
             },
             .session_error => {
@@ -187,7 +201,9 @@ pub const Reducer = struct {
         for (self.runs.items) |run| {
             if (run.started or run.terminal or !std.mem.eql(u8, run.native_message_id, message_id)) continue;
             if (self.current) |previous| {
-                if (!previous.terminal) try self.complete(previous);
+                if (!previous.terminal) {
+                    if (previous.cancel_requested) try self.cancelled(previous) else try self.complete(previous);
+                }
             }
             run.started = true;
             run.status = .running;
@@ -197,6 +213,12 @@ pub const Reducer = struct {
             try payload.put(self.allocator(), "status", .{ .string = "running" });
             return self.emit(run, "run.started", payload, false);
         }
+    }
+
+    fn cancelled(self: *Reducer, run: *Run) Error!void {
+        var payload = try self.scoped(run);
+        try payload.put(self.allocator(), "reason", .{ .string = "Copilot confirmed the abort" });
+        try self.settle(run, "run.cancelled", payload);
     }
 
     fn complete(self: *Reducer, run: *Run) Error!void {
@@ -273,15 +295,18 @@ pub const Reducer = struct {
 
     fn extensions(self: *Reducer, run: *Run) std.mem.Allocator.Error!?std.json.Value {
         if (!run.measured) return null;
-        var cost: std.json.ObjectMap = .empty;
-        try cost.put(self.allocator(), "premium_requests", .{ .float = run.cost });
         var carried: std.json.ObjectMap = .empty;
-        try carried.put(self.allocator(), cost_extension, .{ .object = cost });
+        if (std.math.isFinite(run.cost)) {
+            var cost: std.json.ObjectMap = .empty;
+            try cost.put(self.allocator(), "premium_requests", .{ .float = run.cost });
+            try carried.put(self.allocator(), cost_extension, .{ .object = cost });
+        }
         if (run.routed_model.len > 0) {
             var routed: std.json.ObjectMap = .empty;
             try routed.put(self.allocator(), "model", .{ .string = run.routed_model });
             try carried.put(self.allocator(), routed_model_extension, .{ .object = routed });
         }
+        if (carried.count() == 0) return null;
         return .{ .object = carried };
     }
 };
@@ -333,7 +358,7 @@ test "a prompt starts its run at its own user.message, streams, and completes at
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const scratch = arena.allocator();
-    var reducer = Reducer.init(&arena, .{ .session_id = "s1", .revision = "copilot-test-oap-v1" });
+    var reducer = Reducer.init(&arena, .{ .session_id = "s1", .native_id = "ses", .revision = "copilot-test-oap-v1" });
     const admission = try reducer.admit("s1");
     try testing.expectEqualStrings("started", admission.admission);
     try reducer.bind(admission.run_id, "m-ours");
@@ -362,7 +387,7 @@ test "a queued prompt starts at its own user.message, which settles the one befo
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const scratch = arena.allocator();
-    var reducer = Reducer.init(&arena, .{ .session_id = "s1", .revision = "r" });
+    var reducer = Reducer.init(&arena, .{ .session_id = "s1", .native_id = "ses", .revision = "r" });
     const first = try reducer.admit("s1");
     try reducer.bind(first.run_id, "m1");
     const second = try reducer.admit("s1");
@@ -383,12 +408,12 @@ test "an abort this session asked for cancels the run, and one it did not ask fo
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const scratch = arena.allocator();
-    var reducer = Reducer.init(&arena, .{ .session_id = "s1", .revision = "r" });
+    var reducer = Reducer.init(&arena, .{ .session_id = "s1", .native_id = "ses", .revision = "r" });
     const asked = try reducer.admit("s1");
     try reducer.bind(asked.run_id, "m1");
     try feed(&reducer, scratch, "user.message", "{\"messageId\":\"m1\"}");
     const cancel = try reducer.cancel(asked.run_id);
-    try testing.expect(cancel.abort);
+    try testing.expectEqual(Plan.abort, cancel.plan);
     try testing.expectEqual(Status.cancelling, cancel.status);
     try feed(&reducer, scratch, "session.idle", "{\"aborted\":true}");
     const unasked = try reducer.admit("s1");
@@ -403,12 +428,12 @@ test "a queued run cancels without an abort, and a session error fails the runni
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const scratch = arena.allocator();
-    var reducer = Reducer.init(&arena, .{ .session_id = "s1", .revision = "r" });
+    var reducer = Reducer.init(&arena, .{ .session_id = "s1", .native_id = "ses", .revision = "r" });
     const running = try reducer.admit("s1");
     try reducer.bind(running.run_id, "m1");
     const waiting = try reducer.admit("s1");
     const cancel = try reducer.cancel(waiting.run_id);
-    try testing.expect(!cancel.abort);
+    try testing.expectEqual(Plan.settled, cancel.plan);
     try testing.expectEqual(Status.cancelled, cancel.status);
     try feed(&reducer, scratch, "user.message", "{\"messageId\":\"m1\"}");
     try feed(&reducer, scratch, "session.error", "{\"errorType\":\"rate_limit\",\"message\":\"quota exceeded\"}");
@@ -421,8 +446,72 @@ test "a queued run cancels without an abort, and a session error fails the runni
 test "admission refuses once the queue is full" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
-    var reducer = Reducer.init(&arena, .{ .session_id = "s1", .revision = "r", .max_queued = 1 });
+    var reducer = Reducer.init(&arena, .{ .session_id = "s1", .native_id = "ses", .revision = "r", .max_queued = 1 });
     _ = try reducer.admit("s1");
     _ = try reducer.admit("s1");
     try testing.expectError(error.RunActive, reducer.admit("s1"));
+}
+
+test "a cancelled run whose next prompt arrives before the aborted idle settles cancelled, not completed" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const scratch = arena.allocator();
+    var reducer = Reducer.init(&arena, .{ .session_id = "s1", .native_id = "ses", .revision = "r" });
+    const first = try reducer.admit("s1");
+    try reducer.bind(first.run_id, "m1");
+    const second = try reducer.admit("s1");
+    try reducer.bind(second.run_id, "m2");
+    try feed(&reducer, scratch, "user.message", "{\"messageId\":\"m1\"}");
+    try testing.expectEqual(Plan.abort, (try reducer.cancel(first.run_id)).plan);
+    try feed(&reducer, scratch, "user.message", "{\"messageId\":\"m2\"}");
+    try feed(&reducer, scratch, "session.idle", "{\"aborted\":true}");
+    try testing.expectEqualStrings("run.started:run-1 run.cancelled:run-1 run.started:run-3 run.failed:run-3", try kinds(&reducer, scratch));
+}
+
+test "an event for another Copilot session fails the running run rather than folding into it" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const scratch = arena.allocator();
+    var reducer = Reducer.init(&arena, .{ .session_id = "s1", .native_id = "ses", .revision = "r" });
+    const admitted = try reducer.admit("s1");
+    try reducer.bind(admitted.run_id, "m1");
+    try feed(&reducer, scratch, "user.message", "{\"messageId\":\"m1\"}");
+    const foreign = "{\"jsonrpc\":\"2.0\",\"method\":\"session.event\",\"params\":{\"sessionId\":\"other\",\"event\":{\"type\":\"assistant.message_delta\",\"data\":{\"messageId\":\"x\",\"deltaContent\":\"theirs\"}}}}";
+    try reducer.observe((try native.decodeEvent(try native.parseMessage(scratch, foreign))).?);
+    try testing.expectEqualStrings("run.started:run-1 run.failed:run-1", try kinds(&reducer, scratch));
+    try testing.expectEqualStrings("copilot_foreign_session", payloadOf(&reducer, 1).get("error").?.object.get("code").?.string);
+}
+
+test "a prompt already sent but not yet started is withdrawn, and settles cancelled once Copilot withdraws it" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const scratch = arena.allocator();
+    var reducer = Reducer.init(&arena, .{ .session_id = "s1", .native_id = "ses", .revision = "r" });
+    const running = try reducer.admit("s1");
+    try reducer.bind(running.run_id, "m1");
+    const waiting = try reducer.admit("s1");
+    try reducer.bind(waiting.run_id, "m2");
+    const cancel = try reducer.cancel(waiting.run_id);
+    try testing.expectEqual(Plan.withdraw, cancel.plan);
+    try testing.expectEqual(Status.cancelling, cancel.status);
+    try testing.expectEqual(@as(usize, 0), reducer.envelopes.items.len);
+    try reducer.withdrawn(waiting.run_id);
+    try feed(&reducer, scratch, "user.message", "{\"messageId\":\"m2\"}");
+    try testing.expectEqualStrings("run.cancelled:run-3", try kinds(&reducer, scratch));
+}
+
+test "a cost that overflows is left out rather than written as a non-JSON number" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const scratch = arena.allocator();
+    var reducer = Reducer.init(&arena, .{ .session_id = "s1", .native_id = "ses", .revision = "r" });
+    const admitted = try reducer.admit("s1");
+    try reducer.bind(admitted.run_id, "m1");
+    try feed(&reducer, scratch, "user.message", "{\"messageId\":\"m1\"}");
+    try feed(&reducer, scratch, "assistant.usage", "{\"model\":\"m\",\"inputTokens\":1,\"outputTokens\":1,\"cost\":1e308}");
+    try feed(&reducer, scratch, "assistant.usage", "{\"model\":\"m\",\"inputTokens\":1,\"outputTokens\":1,\"cost\":1e308}");
+    try feed(&reducer, scratch, "session.idle", "{}");
+    const extensions = reducer.envelopes.items[1].object.get("extensions").?.object;
+    try testing.expect(extensions.get(cost_extension) == null);
+    try testing.expectEqualStrings("m", extensions.get(routed_model_extension).?.object.get("model").?.string);
 }
