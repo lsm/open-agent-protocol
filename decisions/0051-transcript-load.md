@@ -1,6 +1,7 @@
 # Decision 0051: Transcript Load
 
-Status: accepted 2026-10-18 (owner)
+Status: approved by the owner 2026-10-18; accepted once its surface, fixtures
+and native readers land, under Decision 0003's gate
 Date: 2026-10-18
 Protocol: `open-agent-protocol` version `0.1`
 Profile: `open-agent-protocol.agent-control-core`
@@ -91,7 +92,9 @@ answers from the oldest entry still held, with `gap: {reason, resumed_at}`,
 and the reason is decided by position alone:
 
 - `pruned` when the oldest entry still held is past the cursor's position, so
-  the store dropped the front of the transcript;
+  the store dropped the front of the transcript, and also when the store holds
+  no entries at all, in which case the response carries no entries and
+  `complete: true`;
 - `rewritten` otherwise: the position is still inside what the store holds but
   the entry is not, so the store changed under the cursor (a Claude
   compaction rewriting its jsonl is this case).
