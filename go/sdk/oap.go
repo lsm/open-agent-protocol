@@ -364,11 +364,26 @@ type SessionModel struct {
 	Default     bool
 }
 
+type SessionModelsRequest struct {
+	SessionID string
+
+	AllowDegradedFeatures []string
+}
+
 func (s *AgentService) ListSessionModels(ctx context.Context, sessionID string) ([]SessionModel, string, error) {
+	return s.SessionModels(ctx, SessionModelsRequest{SessionID: sessionID})
+}
+
+func (s *AgentService) SessionModels(ctx context.Context, req SessionModelsRequest) ([]SessionModel, string, error) {
+	sessionID := req.SessionID
 	if sessionID == "" {
 		return nil, "", &ProtocolError{Code: CodeInvalidRequest, Message: "session_id is required"}
 	}
-	request := oapFrame(oapAgent, "models.request", map[string]any{"session_id": sessionID})
+	payload := map[string]any{"session_id": sessionID}
+	if len(req.AllowDegradedFeatures) > 0 {
+		payload["allow_degraded_features"] = req.AllowDegradedFeatures
+	}
+	request := oapFrame(oapAgent, "models.request", payload)
 	request.SessionID = protocol.SessionID(sessionID)
 	sub := s.transport.subscribeStream(string(request.ID))
 	defer sub.close()

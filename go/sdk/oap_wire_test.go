@@ -138,8 +138,12 @@ func runOAPHost(scenario string) {
 			response.SessionID = p.str("session_id")
 			fakeEmit(response)
 		case "models.request":
+			entry := map[string]any{"id": "fixture/other:test@ok", "default": true}
+			if allowed, ok := request.payload()["allow_degraded_features"].([]any); ok && len(allowed) == 1 && allowed[0] == "models.list" {
+				entry["display_name"] = "allowed degraded"
+			}
 			fakeEmit(oapFakeReply(request, "models.response", map[string]any{
-				"session_id": request.payload().str("session_id"), "models": []map[string]any{{"id": "fixture/other:test@ok", "default": true}},
+				"session_id": request.payload().str("session_id"), "models": []map[string]any{entry},
 			}))
 		case "session.message.submit.request":
 			sessionID := request.payload().str("session_id")
@@ -380,6 +384,13 @@ func TestOAPCombinedFakeHost(t *testing.T) {
 	available, _, err := client.Agent.ListSessionModels(ctx, sessionID)
 	if err != nil || len(available) != 1 {
 		t.Fatalf("agent models: %v, %+v", err, available)
+	}
+	if available[0].DisplayName != "" {
+		t.Fatalf("a plain models request carried a degrade allowance: %+v", available)
+	}
+	degraded, _, err := client.Agent.SessionModels(ctx, SessionModelsRequest{SessionID: sessionID, AllowDegradedFeatures: []string{"models.list"}})
+	if err != nil || len(degraded) != 1 || degraded[0].DisplayName != "allowed degraded" {
+		t.Fatalf("degraded models: %v, %+v", err, degraded)
 	}
 	response, err = client.Agent.Run(ctx, AgentRequest{Messages: []Message{UserMessage("hi")}, Options: &RunOptions{SessionID: sessionID}})
 	if err != nil || response.Message.Text != "agent" {
