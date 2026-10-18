@@ -199,6 +199,7 @@ pub const Reducer = struct {
     prompted: bool = false,
     declined_for_cancel: bool = false,
     context: ?ContextUsage = null,
+    offered_options: ?std.json.Value = null,
 
     pub fn init(arena: *std.heap.ArenaAllocator, options: Options) Reducer {
         return .{ .arena = arena, .options = options };
@@ -294,6 +295,11 @@ pub const Reducer = struct {
         if (turn.output != 0) try self.put(&usage, "output_tokens", try self.count(turn.output));
         if (turn.total != 0) try self.put(&usage, "total_tokens", try self.count(turn.total));
         return .{ .object = usage };
+    }
+
+    pub fn takeOfferedOptions(self: *Reducer) ?std.json.Value {
+        defer self.offered_options = null;
+        return self.offered_options;
     }
 
     fn noteContext(self: *Reducer, update: std.json.ObjectMap) !void {
@@ -595,6 +601,15 @@ pub const Reducer = struct {
             if (gojson.foldedSet(update.object, &.{"sessionUpdate"})) |kind| {
                 if (kind == .string and std.mem.eql(u8, kind.string, "usage_update")) {
                     try self.noteContext(update.object);
+                    return;
+                }
+                if (kind == .string and std.mem.eql(u8, kind.string, "config_option_update")) {
+                    const offered = gojson.foldedLast(update.object, &.{"configOptions"}) orelse std.json.Value{ .null = {} };
+                    if (!configOptionsDecode(offered)) {
+                        try self.failActive("acp_invalid_update", "malformed config option update");
+                        return;
+                    }
+                    self.offered_options = offered;
                     return;
                 }
             }
@@ -1133,10 +1148,23 @@ fn permissionDecodes(params: std.json.Value, native_id: []const u8) bool {
 }
 
 const ignored_updates = [_][]const u8{
-    "user_message_chunk",  "agent_thought_chunk",  "plan",
-    "plan_update",         "plan_removed",         "available_commands_update",
-    "current_mode_update", "config_option_update", "session_info_update",
+    "user_message_chunk",  "agent_thought_chunk", "plan",
+    "plan_update",         "plan_removed",        "available_commands_update",
+    "current_mode_update", "session_info_update",
 };
+
+fn configOptionsDecode(offered: std.json.Value) bool {
+    if (offered == .null) return true;
+    if (offered != .array) return false;
+    for (offered.array.items) |option| {
+        if (option == .null) continue;
+        if (option != .object) return false;
+        for ([_][]const u8{ "id", "name", "category", "type", "currentValue" }) |key| {
+            if (gojson.foldedWrongType(option.object, &.{key}, .string)) return false;
+        }
+    }
+    return true;
+}
 
 fn ignoredUpdate(kind: []const u8) bool {
     for (ignored_updates) |known| {

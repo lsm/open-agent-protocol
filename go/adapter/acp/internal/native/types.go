@@ -97,6 +97,11 @@ type SetConfigOptionResult struct {
 	ConfigOptions []ConfigOption `json:"configOptions"`
 }
 
+type ConfigOptionUpdate struct {
+	SessionUpdate string         `json:"sessionUpdate"`
+	ConfigOptions []ConfigOption `json:"configOptions"`
+}
+
 type ContentBlock struct {
 	Type     string `json:"type"`
 	Text     string `json:"text,omitempty"`

@@ -171,6 +171,30 @@ listed model without saying so. So the adapter checks the list before writing
 rather than passing an unlisted id through. No corpus case sends a switch; the
 behaviour is pinned by unit tests in both trees.
 
+## The agent's own option changes (lsm/open-agent-protocol#1177)
+
+An agent that changes its own options, through a mode change or its UI, sends
+a `config_option_update` session update. Both adapters dropped it, so the
+recorded model option, the models list, `current_model_id` and the reasoning
+level stayed stale until the next open or switch. They now take it, whether or
+not a run is active:
+
+| ACP | OAP |
+|---|---|
+| `config_option_update` with its `configOptions` | the session's models list, model option, `current_model_id` and `reasoning_level`, re-derived from the full list as after a switch |
+| that list's `model` option | the models list and the option a later switch writes |
+| no `model` option in that list | no models list: `models.request` and a switch refuse `unsupported_feature` (`unsatisfiable`) |
+| its model `currentValue`, unless empty, `default` or `current` | `current_model_id`; otherwise the previous one stands |
+| its `thought_level` option | `reasoning_level`, unset when the list has none it can read |
+| a `configOptions` that is not a list of options with string members | `acp_invalid_update`, failing an active run as any malformed update does |
+
+The capability descriptor is unchanged, so the revision is too. The update
+moves the state a later `session.state.request`, `models.request` or switch
+reports; it does not emit `session.state.updated` itself. An adapter-initiated
+`session.state.updated` needs a layer to sequence it and a validator rule for a
+model change no switch requested, so it is left to a separate decision. No
+corpus case carries the update; unit tests in both trees pin it.
+
 ## Cancellation answers open permission requests
 
 ACP's prompt turn says that when the client sends `session/cancel`, "The

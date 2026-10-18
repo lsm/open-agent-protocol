@@ -521,6 +521,15 @@ pub const Session = struct {
         }
     }
 
+    fn applyOfferedOptions(self: *Session, offered: std.json.Value) contract.Failure!void {
+        self.model_values = &.{};
+        self.model_option = "";
+        self.offers_models = false;
+        try self.recordModels(offered);
+        self.reported_level = null;
+        try self.resumedSettings(offered);
+    }
+
     fn resumedSettings(self: *Session, offered: ?std.json.Value) contract.Failure!void {
         const options = offered orelse return;
         if (options != .array) return;
@@ -872,6 +881,7 @@ pub const Session = struct {
             if (!self.opened()) return;
             if (kind == .request) return self.handleRequest(name, id_value.?, parsed);
             self.reducer.observe(.{ .kind = .notification, .method = name, .raw = "" }, parsed) catch |err| return lift(err);
+            if (self.reducer.takeOfferedOptions()) |offered| try self.applyOfferedOptions(offered);
             return;
         }
         const id = if (id_value) |value| (if (value == .integer) value.integer else null) else null;
@@ -1496,6 +1506,61 @@ test "a model switch sets the agent's model option to a listed value, confirms i
     bare.handle = plain;
     try testing.expectError(error.UnsupportedFeature, plain.vtable.switch_model.?(plain.ptr, bare.arena.allocator(), &.{ .session_id = "s2", .model_id = "luna-medium", .allow_degraded_features = &degraded }, &refusal));
     try testing.expectEqualStrings(contract.feature_model_switch, refusal.feature);
+}
+
+test "a config option update outside a run replaces the recorded models, current model and reasoning, and one without a model option ends the list" {
+    var probe: Probe = undefined;
+    try probe.init(
+        \\#!/bin/sh
+        \\exec 3>>"$(dirname "$0")/stdin.log"
+        \\take() { IFS= read -r line || exit 0; printf '%s\n' "$line" >&3; }
+        \\take; printf '{"id":1,"jsonrpc":"2.0","result":{"agentCapabilities":{},"protocolVersion":1}}\n'
+        \\take; printf '{"id":2,"jsonrpc":"2.0","result":{"sessionId":"native-session","configOptions":[{"id":"model","category":"model","type":"select","currentValue":"sol-medium","options":[{"value":"sol-medium"},{"value":"luna-medium"}]}]}}\n'
+        \\printf '{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"native-session","update":{"sessionUpdate":"config_option_update","configOptions":[{"id":"model","category":"model","type":"select","currentValue":"luna-medium","options":[{"value":"luna-medium"},{"value":"adaptive","name":"Adaptive"}]},{"id":"effort","category":"thought_level","type":"select","currentValue":"high","options":[{"value":"medium"},{"value":"high"}]}]}}}\n'
+        \\take; printf '{"id":3,"jsonrpc":"2.0","result":{"configOptions":[{"id":"model","category":"model","type":"select","currentValue":"adaptive","options":[{"value":"luna-medium"},{"value":"adaptive"}]}]}}\n'
+        \\printf '{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"native-session","update":{"sessionUpdate":"config_option_update","configOptions":[{"id":"mode","category":"mode","type":"select","currentValue":"code"}]}}}\n'
+        \\
+    ++ fake_idle);
+    defer probe.deinit();
+    var refusal = contract.Refusal{};
+    const opened = try probe.adapter.adapter().open(probe.arena.allocator(), .{ .session_id = "s1", .participant = "user" }, &refusal);
+    probe.handle = opened;
+    const arena = probe.arena.allocator();
+    const before = try opened.state(arena, &refusal);
+    try testing.expectEqualStrings("sol-medium", before.current_model_id.?);
+    try testing.expect(before.reasoning_level == null);
+
+    var rounds: usize = 0;
+    while (rounds < 400) : (rounds += 1) {
+        const now = try opened.state(arena, &refusal);
+        if (now.reasoning_level != null) break;
+        _ = try opened.pump(5 * std.time.ns_per_ms);
+    }
+    const updated = try opened.state(arena, &refusal);
+    try testing.expectEqualStrings("luna-medium", updated.current_model_id.?);
+    try testing.expectEqualStrings("high", updated.reasoning_level.?);
+    try testing.expect(updated.active_run_id == null);
+
+    const catalog = try opened.vtable.models.?(opened.ptr, arena, &.{ .session_id = "s1", .allow_degraded_features = &.{"models.list"} }, &refusal);
+    try testing.expectEqual(@as(usize, 2), catalog.response.models.len);
+    try testing.expectEqualStrings("luna-medium", catalog.response.models[0].id);
+    try testing.expect(catalog.response.models[0].default);
+    try testing.expectEqualStrings("adaptive", catalog.response.models[1].id);
+    try testing.expectEqualStrings("Adaptive", catalog.response.models[1].display_name.?);
+
+    const degraded = [_][]const u8{contract.feature_model_switch};
+    const switched = try opened.vtable.switch_model.?(opened.ptr, arena, &.{ .session_id = "s1", .model_id = "adaptive", .allow_degraded_features = &degraded }, &refusal);
+    try testing.expectEqualStrings("luna-medium", switched.response.previous_model_id.?);
+
+    rounds = 0;
+    while (rounds < 400) : (rounds += 1) {
+        if (opened.vtable.models.?(opened.ptr, arena, &.{ .session_id = "s1", .allow_degraded_features = &.{"models.list"} }, &refusal)) |_| {} else |err| {
+            try testing.expectEqual(error.UnsupportedFeature, err);
+            return;
+        }
+        _ = try opened.pump(5 * std.time.ns_per_ms);
+    }
+    return error.TestExpectedModelsListToEnd;
 }
 
 test "the agent's model option is the models list, its current value the current model, and an agent with none refuses" {
