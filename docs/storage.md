@@ -49,6 +49,11 @@ do over a whole file into the backend, so SQLite can page with an index.
 | `appendRun(session_id, record)` | appends `admitted` (with the prompt when queued, and `replaces` naming the held run a re-delivery takes over), `started` or `settled` |
 | `openRuns(session_id)` | runs with no `settled` record and no later `admitted` replacing them, in admission order; a re-delivered run takes the slot of the run it replaces |
 
+A run that is settled or replaced is over: a writer appends nothing more for
+its id, and a record for it that a log still holds after its end is ignored
+rather than reopening it. A store may forget an ended run once it compacts,
+so the writer's rule is the guarantee.
+
 ### Transcript (Decision 0051, #1205)
 
 | operation | does |

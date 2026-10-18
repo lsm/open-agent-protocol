@@ -242,3 +242,30 @@ func TestARedeliveredRunKeepsItsPlaceAheadOfARunStillHeldBehindIt(t *testing.T) 
 		t.Fatalf("open runs after a reread = %+v, %v; want a2 in a's place, then b", runs, err)
 	}
 }
+
+func TestARecordAfterARunWasReplacedOrSettledDoesNotReopenIt(t *testing.T) {
+	ctx := context.Background()
+	store := MemoryRuns()
+	for _, record := range []RunRecord{
+		{Action: RunAdmitted, TimeMS: 1, SessionID: "s", RunID: "held"},
+		{Action: RunAdmitted, TimeMS: 2, SessionID: "s", RunID: "redelivered", Replaces: "held"},
+		{Action: RunStarted, TimeMS: 3, SessionID: "s", RunID: "held"},
+	} {
+		if err := store.AppendRun(ctx, record); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if runs, err := store.OpenRuns(ctx, "s"); err != nil || len(runs) != 1 || runs[0].RunID != "redelivered" {
+		t.Fatalf("open runs = %+v, %v; want redelivered alone", runs, err)
+	}
+	if runs := openRuns([]RunRecord{
+		{Action: RunAdmitted, TimeMS: 1, SessionID: "s", RunID: "held"},
+		{Action: RunAdmitted, TimeMS: 2, SessionID: "s", RunID: "redelivered", Replaces: "held"},
+		{Action: RunStarted, TimeMS: 3, SessionID: "s", RunID: "held"},
+		{Action: RunAdmitted, TimeMS: 4, SessionID: "s", RunID: "done"},
+		{Action: RunSettled, TimeMS: 5, SessionID: "s", RunID: "done"},
+		{Action: RunStarted, TimeMS: 6, SessionID: "s", RunID: "done"},
+	}, "s"); len(runs) != 1 || runs[0].RunID != "redelivered" {
+		t.Fatalf("over a kept log: %+v, want redelivered alone", runs)
+	}
+}

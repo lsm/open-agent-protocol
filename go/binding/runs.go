@@ -83,13 +83,18 @@ func removeRun(runs []OpenRun, at map[string]int, runID string) []OpenRun {
 func openRuns(records []RunRecord, sessionID string) []OpenRun {
 	var runs []OpenRun
 	at := make(map[string]int)
+	ended := make(map[string]bool)
 	for _, record := range records {
-		if record.SessionID != sessionID {
+		if record.SessionID != sessionID || ended[record.RunID] {
 			continue
 		}
 		if record.Action == RunSettled {
+			ended[record.RunID] = true
 			runs = removeRun(runs, at, record.RunID)
 			continue
+		}
+		if record.Action == RunAdmitted && record.Replaces != "" {
+			ended[record.Replaces] = true
 		}
 		if slot, held := at[record.Replaces]; record.Action == RunAdmitted && record.Replaces != "" && held {
 			delete(at, record.Replaces)
