@@ -3359,9 +3359,14 @@ fn oapUnservedRefusal(provider_id: []const u8) ?oap_provider_server.UnservedRefu
     return .{ .code = .provider_unavailable, .message = "this provider has a credential but its models are not loaded: retry after they reload" };
 }
 
+fn oapStorageFor(allocator: std.mem.Allocator, provider_id: []const u8) !oauth_storage.AuthStorage {
+    if (std.mem.eql(u8, provider_id, "openai-codex")) return oauth_storage.AuthStorage.loadDefault(allocator);
+    return oauth_storage.AuthStorage.loadDefaultStoredOnly(allocator);
+}
+
 fn oapCredentialResolves(allocator: std.mem.Allocator, provider_id: []const u8) bool {
     if (provider_catalog.credentialEnvIsSet(allocator, provider_id) catch false) return true;
-    var storage = oauth_storage.AuthStorage.loadDefault(allocator) catch return false;
+    var storage = oapStorageFor(allocator, provider_id) catch return false;
     defer storage.deinit();
     return storage.providers.get(provider_id) != null;
 }
@@ -3633,7 +3638,7 @@ fn resolveOapCredential(
     if (auth_resolver.storedCredentialWithheld(allocator, lookup, provider_id, base_url)) {
         return auth_resolver.resolveApiKeyOfKind(allocator, null, provider_id, null, .api_key_only) catch null;
     }
-    var storage = oauth_storage.AuthStorage.loadDefault(allocator) catch return null;
+    var storage = oapStorageFor(allocator, provider_id) catch return null;
     defer storage.deinit();
     const resolved = auth_resolver.resolveApiKey(allocator, &storage, provider_id, null) catch return null;
     if (resolved.api_key.len == 0) {
