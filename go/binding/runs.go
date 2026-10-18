@@ -28,6 +28,7 @@ type RunRecord struct {
 	RunID     string    `json:"run_id"`
 	Request   string    `json:"request,omitempty"`
 	Replaces  string    `json:"replaces,omitempty"`
+	Root      string    `json:"root,omitempty"`
 }
 
 type OpenRun struct {
@@ -35,6 +36,7 @@ type OpenRun struct {
 	AdmittedMS int64
 	Started    bool
 	Request    string
+	Root       string
 }
 
 type Runs interface {
@@ -42,8 +44,21 @@ type Runs interface {
 	OpenRuns(ctx context.Context, sessionID string) ([]OpenRun, error)
 }
 
+func stamped(records []RunRecord, record RunRecord) RunRecord {
+	if record.Action != RunAdmitted || record.Replaces == "" || record.Root != "" {
+		return record
+	}
+	for _, run := range openRuns(records, record.SessionID) {
+		if run.RunID == record.Replaces {
+			record.Root = run.Root
+			break
+		}
+	}
+	return record
+}
+
 func keptAfter(records []RunRecord, record RunRecord) []RunRecord {
-	all := append(append([]RunRecord(nil), records...), record)
+	all := append(append([]RunRecord(nil), records...), stamped(records, record))
 	var sessions []string
 	seen := make(map[string]bool)
 	for _, held := range all {
@@ -99,14 +114,22 @@ func openRuns(records []RunRecord, sessionID string) []OpenRun {
 		if slot, held := at[record.Replaces]; record.Action == RunAdmitted && record.Replaces != "" && held {
 			delete(at, record.Replaces)
 			at[record.RunID] = slot
-			runs[slot] = OpenRun{RunID: record.RunID, AdmittedMS: record.TimeMS, Request: record.Request}
+			root := record.Root
+			if root == "" {
+				root = runs[slot].Root
+			}
+			runs[slot] = OpenRun{RunID: record.RunID, AdmittedMS: record.TimeMS, Request: record.Request, Root: root}
 			continue
 		}
 		index, seen := at[record.RunID]
 		if !seen {
 			index = len(runs)
 			at[record.RunID] = index
-			runs = append(runs, OpenRun{RunID: record.RunID, AdmittedMS: record.TimeMS})
+			root := record.Root
+			if root == "" {
+				root = record.RunID
+			}
+			runs = append(runs, OpenRun{RunID: record.RunID, AdmittedMS: record.TimeMS, Root: root})
 		}
 		switch record.Action {
 		case RunAdmitted:

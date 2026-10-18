@@ -269,3 +269,30 @@ func TestARecordAfterARunWasReplacedOrSettledDoesNotReopenIt(t *testing.T) {
 		t.Fatalf("over a kept log: %+v, want redelivered alone", runs)
 	}
 }
+
+func TestAHeldPromptKeepsItsRootRunIDAcrossReDeliveries(t *testing.T) {
+	ctx := context.Background()
+	file, err := RunsFile(filepath.Join(t.TempDir(), "runs.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, store := range map[string]Runs{"memory": MemoryRuns(), "file": file} {
+		for _, record := range []RunRecord{
+			{Action: RunAdmitted, TimeMS: 1, SessionID: "s", RunID: "held"},
+			{Action: RunAdmitted, TimeMS: 2, SessionID: "s", RunID: "after"},
+			{Action: RunAdmitted, TimeMS: 3, SessionID: "s", RunID: "first", Replaces: "held"},
+			{Action: RunAdmitted, TimeMS: 4, SessionID: "s", RunID: "second", Replaces: "first"},
+		} {
+			if err := store.AppendRun(ctx, record); err != nil {
+				t.Fatal(err)
+			}
+		}
+		runs, err := store.OpenRuns(ctx, "s")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(runs) != 2 || runs[0].RunID != "second" || runs[0].Root != "held" || runs[1].Root != "after" {
+			t.Fatalf("%s: open runs = %+v, want second rooted at held, then after rooted at itself", name, runs)
+		}
+	}
+}
