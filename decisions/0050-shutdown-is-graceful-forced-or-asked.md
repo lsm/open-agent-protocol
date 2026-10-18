@@ -201,10 +201,11 @@ Credentials are never written to either store.
 
 - The store gains run records: admitted (with the prompt, for a queued run),
   started and settled. `docs/storage.md` names the operations. A queued run's
-  `settled` record is written when the next start re-delivers or withdraws
-  it, together with an `admitted` record for the run that now carries it,
-  not when the shutdown cancels it, so `openRuns` still finds it after the
-  restart and never finds it twice. A prompt is user content, so a binding still never holds a
+  `settled` record is not written when the shutdown cancels it, so `openRuns`
+  still finds it after the restart. Re-delivery writes one record, the new
+  run's `admitted` naming the old id in `replaces`, which `openRuns` reads as
+  closing the old one, so a crash mid-way never loses or duplicates the
+  prompt; withdrawal writes the old id's `settled`. A prompt is user content, so a binding still never holds a
   credential or an environment value.
 - Schema: the shutdown pair and event, `shutting_down`,
   `recovery.interrupted_runs`, `recovery.redelivered_runs`,

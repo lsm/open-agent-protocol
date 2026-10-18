@@ -50,9 +50,10 @@ do over a whole file into the backend, so SQLite can page with an index.
 | `openRuns(session_id)` | runs with no `settled` record, in admission order |
 
 A queued run that a shutdown holds, or a crash leaves, keeps no `settled`
-record until the next start re-delivers or withdraws it. Re-delivery appends
-`settled` for the old id and `admitted` for the new one, so a second restart
-finds the new run and not the old.
+record until the next start re-delivers or withdraws it. Re-delivery is one
+append, `admitted {run_id: new, request, replaces: old}`, and `openRuns` drops
+the run an `admitted` replaces, so a crash at any point leaves exactly one of
+the two open. Withdrawal appends `settled` for the old id.
 
 ### Transcript (Decision 0051, #1205)
 
