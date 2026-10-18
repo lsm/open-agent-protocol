@@ -393,6 +393,33 @@ and a subscribing `open` can reach.
 
 ### Shutdown and exit on stdio
 
+A host can also ask: the `shutdown` op, whose optional `request` is
+`{"mode":"graceful"|"force"}`, answers [Decision 0050](../decisions/0050-shutdown-is-graceful-forced-or-asked.md)'s
+`{outcome, active_runs, lost?}`. Before any mode is accepted, a request with
+no mode and a nonterminal run answers `choose`, listing the runs, and changes
+nothing; once one is accepted, a request with no mode reports that shutdown's
+progress (`draining` or `stopping`) instead of asking again. `graceful` cancels every queued
+run, lists it under `lost` because nothing holds it for the next start yet, and
+`draining` lets the running runs finish; `force` answers `stopping`, and a later
+graceful never undoes it. Go retries the cancel of a queued run that
+refused it on every drain poll until it settles. After a drain that finished
+runs, Go lets event streams deliver their terminals before teardown, up to the
+shutdown window, which a stream on an idle session holds in full; a shutdown
+with nothing to drain stops at once. Once accepted, `submit`, `open`, `work.start` and
+`work.send` are refused `shutting_down`, and serving ends once force was asked
+or no nonterminal run is left. Zig: `a shutdown with nothing running stops at
+once, and one with no mode while a run is active asks the host to choose`, `a
+graceful shutdown drains and refuses new work, and force stops it`, `a shutdown
+mode other than graceful or force is refused and changes nothing`; Go:
+`TestShutdownWithNothingRunningStopsAtOnce`,
+`TestShutdownWithoutAModeAsksTheHostToChooseAndChangesNothing`,
+`TestGracefulShutdownLosesQueuedRunsRefusesNewWorkAndForceStopsIt`,
+`TestShutdownRefusesAModeOtherThanGracefulOrForce`. The HTTP route follows. Neither tree yet sends subscribers
+`endpoint.shutdown.started`, which Decision 0050 requires on acceptance; that
+announcement lands with the HTTP route. The signals and stdin EOF still end
+serving as the next paragraph says; rule 4's mapping of them to modes is
+pending too.
+
 Shutdown is stdin EOF or SIGINT/SIGTERM. The daemon stops admitting, settles
 the work it already admitted inside its bounded window, closes every session so
 child agent processes are not orphaned, and exits zero. The session sweep runs
@@ -1241,8 +1268,10 @@ never connects overflows exactly as a slow consumer does, and the adopter reads
 
 ## The operations
 
-Fifteen ops. Each row gives the request line's parameters, the answer, and the
-errors. A refusal the row does not name is `internal` on both, with two
+Fifteen ops, plus `shutdown`, which [Shutdown and exit on
+stdio](#shutdown-and-exit-on-stdio) describes and which has no HTTP route yet.
+Each row gives the request line's parameters, the answer, and the errors. A
+refusal the row does not name is `internal` on both, with the
 exceptions stated once here rather than repeated per row:
 
 - **The stdio transport answers four codes no HTTP route can.** `unknown_op` for
@@ -1251,6 +1280,10 @@ exceptions stated once here rather than repeated per row:
   `response_too_large` for a result its frame limit cannot carry. All four
   exist because a pipe gives no back pressure and has one shape a socket does
   not; a port must not produce any of them over HTTP.
+- **`shutting_down` answers `submit`, `open`, `work.start` and `work.send`**
+  once a `shutdown` is accepted, on stdio only until the HTTP route lands, as
+  [Shutdown and exit on stdio](#shutdown-and-exit-on-stdio) says. No row below
+  repeats it.
 - **The four decode codes are `400` over HTTP** (owner, 2026-10-17, #1133).
   `malformed_json`, `schema_invalid`, `type_mismatch` and `invalid_payload`
   carry no status where an operation's error list names them, and wherever one

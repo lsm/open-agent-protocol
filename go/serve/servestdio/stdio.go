@@ -58,6 +58,7 @@ type Server struct {
 	logger      *log.Logger
 	nextIDValue atomic.Uint64
 	work        *workwire.Front
+	stopping    *shutdownState
 }
 
 const maxConcurrentOps = 16
@@ -165,6 +166,19 @@ func (r *runState) release(size int) {
 	r.work.Done()
 }
 
+func (r *runState) awaitPumps(window time.Duration) {
+	deadline := time.Now().Add(window)
+	for time.Now().Before(deadline) {
+		r.mu.Lock()
+		attached := r.attached
+		r.mu.Unlock()
+		if attached == 0 {
+			return
+		}
+		time.Sleep(drainPoll)
+	}
+}
+
 func (r *runState) closeAdmission() {
 	r.mu.Lock()
 	r.shuttingDown = true
@@ -203,7 +217,7 @@ func New(hub *serve.Hub, options Options) (*Server, error) {
 	if logger == nil {
 		logger = log.New(io.Discard, "", 0)
 	}
-	return &Server{hub: hub, schema: schema, frameLimit: frameLimit, writeQueue: writeQueue, maxOps: maxOps, maxAttach: options.MaxSubscriptions, shutdown: shutdown, logger: logger, work: workwire.New(hub)}, nil
+	return &Server{hub: hub, schema: schema, frameLimit: frameLimit, writeQueue: writeQueue, maxOps: maxOps, maxAttach: options.MaxSubscriptions, shutdown: shutdown, logger: logger, work: workwire.New(hub), stopping: newShutdownState()}, nil
 }
 
 func (s *Server) Hub() *serve.Hub { return s.hub }
@@ -226,6 +240,7 @@ var ErrShutdownStalled = errors.New("servestdio: shutdown outlived its bounded w
 func (s *Server) Run(ctx context.Context, in io.Reader, out io.Writer) error {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
+	s.stopping = newShutdownState()
 
 	lines := make(chan outLine, s.writeQueue)
 	stop := make(chan struct{})
@@ -274,6 +289,9 @@ func (s *Server) Run(ctx context.Context, in io.Reader, out io.Writer) error {
 		}
 	}
 
+	if s.stopping.drained() {
+		run.awaitPumps(s.shutdown)
+	}
 	run.closeAdmission()
 	workDone := make(chan struct{})
 	go func() { run.work.Wait(); close(workDone) }()
@@ -411,6 +429,8 @@ func (s *Server) serveLoop(ctx context.Context, run *runState, frames <-chan fra
 			return nil
 		case <-writerFailed:
 			return nil
+		case <-s.stopping.done:
+			return flushPending(ctx, lines, pending, writerFailed)
 		default:
 		}
 
@@ -424,6 +444,8 @@ func (s *Server) serveLoop(ctx context.Context, run *runState, frames <-chan fra
 			return nil
 		case <-writerFailed:
 			return nil
+		case <-s.stopping.done:
+			return flushPending(ctx, lines, pending, writerFailed)
 		case out <- head:
 			pending = pending[1:]
 		case result := <-frames:

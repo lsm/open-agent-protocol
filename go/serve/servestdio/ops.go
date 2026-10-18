@@ -129,6 +129,14 @@ type wireError struct {
 }
 
 func (s *Server) serveRequest(ctx context.Context, run *runState, request requestLine, lines chan<- outLine) {
+	if admitsWork(request.Op) {
+		s.stopping.admission.RLock()
+		defer s.stopping.admission.RUnlock()
+		if s.stopping.accepted() {
+			s.respond(ctx, lines, request, nil, &wireError{Code: "shutting_down", Message: "the endpoint is shutting down and admits no new work"})
+			return
+		}
+	}
 	switch request.Op {
 	case opEvents:
 		s.serveEvents(ctx, run, request, lines)
@@ -214,6 +222,11 @@ func (s *Server) respond(ctx context.Context, lines chan<- outLine, request requ
 
 func (s *Server) dispatch(ctx context.Context, request requestLine) (json.RawMessage, *wireError) {
 	switch request.Op {
+	case opShutdown:
+		if werr := request.only(paramRequest); werr != nil {
+			return nil, werr
+		}
+		return s.shutdownOp(ctx, request)
 	case opAdapters:
 		if werr := request.only(); werr != nil {
 			return nil, werr
