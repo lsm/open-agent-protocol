@@ -279,8 +279,8 @@ bounded as well: it runs through `compat.http.fetch`, which gives up after
 the peer.
 
 Bounding it took a detour worth recording, because the two obvious mechanisms
-do not work. `std.http.Client.ConnectTcpOptions` in Zig 0.16.0 declares a
-`timeout` field, but that is the only mention of it anywhere under `std/http/`
+do not work. `std.http.Client.ConnectTcpOptions` declares a `timeout` field (in
+Zig 0.16.0, and still in 0.17.0), but that is the only mention of it anywhere under `std/http/`
 and `connectTcpOptions` never reads it, so it is inert. Setting `SO_RCVTIMEO`
 on the connected socket is worse than useless: the timeout does fire, but
 `netReadPosix` in `std.Io.Threaded` treats the resulting `EAGAIN` as a
