@@ -2751,7 +2751,7 @@ pub fn serve(allocator: std.mem.Allocator, frontend: *Frontend, stream: Stream) 
         try frontend.pumpStreams();
         try frontend.answerJobs();
         if (try frontend.shutdownComplete(arena)) {
-            while (frontend.jobs.items.len > 0) {
+            while (frontend.shutdown == .graceful and frontend.jobs.items.len > 0) {
                 try frontend.answerJobs();
                 if (frontend.jobs.items.len > 0) std.Thread.yield() catch {};
             }
@@ -3343,6 +3343,14 @@ test "a graceful shutdown drains and refuses new work, and force stops it" {
     try testing.expect(!try harness.frontend.shutdownComplete(arena));
     try harness.send("{\"id\":2,\"op\":\"open\",\"adapter\":\"reference\"}");
     try testing.expectEqualStrings("shutting_down", try harness.code());
+    try harness.send("{\"id\":21,\"op\":\"submit\",\"session_id\":\"busy\",\"request\":{}}");
+    try testing.expectEqualStrings("shutting_down", try harness.code());
+    try harness.send("{\"id\":22,\"op\":\"work.start\",\"adapter\":\"reference\",\"request\":{}}");
+    try testing.expectEqualStrings("shutting_down", try harness.code());
+    try harness.send("{\"id\":23,\"op\":\"work.send\",\"session_id\":\"busy\",\"request\":{}}");
+    try testing.expectEqualStrings("shutting_down", try harness.code());
+    try harness.send("{\"id\":24,\"op\":\"shutdown\"}");
+    try testing.expectEqualStrings("draining", try textMember(harness.arena(), (try harness.lastValue()).object.get("result").?, "outcome"));
     try harness.send("{\"id\":3,\"op\":\"shutdown\",\"request\":{\"mode\":\"force\"}}");
     try testing.expectEqualStrings("stopping", try textMember(harness.arena(), (try harness.lastValue()).object.get("result").?, "outcome"));
     try testing.expect(try harness.frontend.shutdownComplete(arena));

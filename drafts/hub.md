@@ -399,9 +399,11 @@ A host can also ask: the `shutdown` op, whose optional `request` is
 no mode and a nonterminal run answers `choose`, listing the runs, and changes
 nothing; once one is accepted, a request with no mode reports that shutdown's
 progress (`draining` or `stopping`) instead of asking again. `graceful` cancels every queued
-run, lists it under `lost` because nothing holds it for the next start yet, and
+run, lists it under `lost` because nothing holds it for the next start yet
+(pinned by **none**, [G14](#known-gaps)), and
 `draining` lets the running runs finish; `force` answers `stopping`, and a later
-graceful never undoes it. Once accepted, `submit`, `open`, `work.start` and
+graceful never undoes it; graceful answers in-flight jobs before it stops and
+force does not. Once accepted, `submit`, `open`, `work.start` and
 `work.send` are refused `shutting_down`, and serving ends once force was asked
 or no nonterminal run is left. Zig: `a shutdown with nothing running stops at
 once, and one with no mode while a run is active asks the host to choose`, `a
@@ -1981,6 +1983,14 @@ here; each was a place a differential test would otherwise not see.
   bound is the number the draft's G13 row records`, and that it holds a stream
   without holding the daemon by `an open event stream does not hold the daemon:
   another connection is answered while it streams`.
+
+- **G14 — open.** Two `shutdown` rules have no test. The reference adapters
+  start every run, so nothing queues one, and graceful's cancel of a queued
+  run and its `lost` entry are unpinned in both trees. And force skips
+  answering in-flight jobs, but the frontend's teardown still joins a job's
+  thread, so a wedged native read holds a force exit as it already holds an
+  EOF exit. What closes it is a queueing reference adapter with a test of the
+  `lost` path, and a teardown that abandons a job thread after the window.
 
 One asymmetry is deliberate and is **not** a gap: a cross-origin refusal exists
 on the HTTP transport alone. A stdio peer is a separate process on the far side
