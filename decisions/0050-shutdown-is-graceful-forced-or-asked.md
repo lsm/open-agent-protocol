@@ -165,18 +165,21 @@ Decision 0040 requires a reopen to list no run under way. That changes:
 - `recovery.interrupted_runs` lists each run that settled under rule 1, as
   `{run_id, cause: "restart", settled_by: "inferred"}`;
 - `recovery.redelivered_runs` pairs each held prompt with the run that now
-  carries it, as `{previous_run_id, run_id}`, in the original order; each
+  carries it, as `{previous_run_id, run_id, root_run_id}`, in the original
+  order; each
   `run_id` is also in `state.active_runs` as `queued`. A prompt the reopen
-  withdrew is listed as `{previous_run_id, withdrawn: true}` and carries no
+  withdrew is listed as `{previous_run_id, root_run_id, withdrawn: true}` and carries no
   `run_id`. Every prompt the restart would re-deliver can be withdrawn, whether a
   graceful shutdown held it or a crash left it queued. A `withdraw_held` id
   that names no such prompt refuses the
   whole reopen `invalid_request`, naming the id, before anything starts, so a
   typo never sends a prompt the host meant to withdraw.
-- A prompt keeps the id the host was first told, the root of its `replaces`
-  chain, however many restarts re-deliver it. `withdraw_held` names that root
-  id, the endpoint resolves it to the chain's open run and settles that, and
-  `previous_run_id` in `redelivered_runs` always reports the root.
+- A prompt re-delivered more than once has a chain of ids. `previous_run_id`
+  is the id this restart replaced, the one a `held` list last reported, and
+  `root_run_id` is the first id that carried the prompt. `withdraw_held`
+  accepts either, so a host that attached late and knows only the current id
+  can withdraw too; the endpoint resolves it to the chain's open run and
+  settles that.
 
 The validator accepts restored queued runs in a recovered open response
 (`recovery.recovered: true`) and nowhere else.
