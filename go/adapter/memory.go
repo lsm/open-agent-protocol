@@ -203,6 +203,18 @@ func (m *Memory) Probe(context.Context) (Descriptor, error) {
 	}, nil
 }
 
+func (m *Memory) Admit(ctx context.Context, request OpenRequest) error {
+	attached, err := admitToolSources(request)
+	if err != nil {
+		return err
+	}
+	if _, err := admitProvidedTools(request, attached); err != nil {
+		return err
+	}
+	_, err = compactionThreshold(request.CompactionPolicy)
+	return err
+}
+
 func (m *Memory) Open(ctx context.Context, request OpenRequest) (Session, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err

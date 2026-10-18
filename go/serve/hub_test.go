@@ -419,7 +419,9 @@ func TestHubOpenRefusesASessionThatWasAlreadyClosedAndLeavesItsIDFree(t *testing
 	}
 }
 
-type manualClosedAdapter struct{}
+type manualClosedAdapter struct {
+	mint protocol.SessionID
+}
 
 func (manualClosedAdapter) Probe(context.Context) (base.Descriptor, error) {
 	return base.Descriptor{
@@ -428,7 +430,10 @@ func (manualClosedAdapter) Probe(context.Context) (base.Descriptor, error) {
 	}, nil
 }
 
-func (manualClosedAdapter) Open(_ context.Context, request base.OpenRequest) (base.Session, error) {
+func (a manualClosedAdapter) Open(_ context.Context, request base.OpenRequest) (base.Session, error) {
+	if request.SessionID == "" {
+		return &closedStateSession{id: a.mint}, nil
+	}
 	return &closedStateSession{id: request.SessionID}, nil
 }
 
@@ -1089,7 +1094,7 @@ func TestAnAlreadyClosedOpenLeavesTheLiveSessionOfThatIDAlone(t *testing.T) {
 	if err := registry.Register("memory", base.NewMemory(base.Config{})); err != nil {
 		t.Fatal(err)
 	}
-	if err := registry.Register("manual", manualClosedAdapter{}); err != nil {
+	if err := registry.Register("manual", manualClosedAdapter{mint: "shared"}); err != nil {
 		t.Fatal(err)
 	}
 	hub := serve.New(registry, serve.Options{})
@@ -1100,7 +1105,7 @@ func TestAnAlreadyClosedOpenLeavesTheLiveSessionOfThatIDAlone(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := hub.Open(ctx, "manual", base.OpenRequest{SessionID: "shared"}); !errors.Is(err, base.ErrSessionClosed) {
+	if _, _, err := hub.Open(ctx, "manual", base.OpenRequest{}); !errors.Is(err, base.ErrSessionClosed) {
 		t.Fatalf("the already-closed open error %v, want the session-closed refusal", err)
 	}
 	if live.IsClosed() {

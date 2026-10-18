@@ -73,21 +73,30 @@ func (h *Hub) Open(ctx context.Context, adapterName string, request base.OpenReq
 }
 
 func (h *Hub) OpenIn(ctx context.Context, adapterName, directory string, request base.OpenRequest) (*Session, protocol.SessionState, error) {
-	if _, ok := h.registry.Lookup(adapterName); !ok {
+	registered, ok := h.registry.Lookup(adapterName)
+	if !ok {
 		return nil, protocol.SessionState{}, &UnknownAdapterError{Name: adapterName}
 	}
 	if request.Participant.ID == "" {
 		request.Participant.ID = DefaultParticipant
 	}
-	if _, live := h.sessions.get(request.SessionID); request.Reopen && live {
-		return nil, protocol.SessionState{}, &SessionExistsError{ID: request.SessionID}
+	if admitter, ok := registered.(base.Admitter); ok {
+		if err := admitter.Admit(ctx, request); err != nil {
+			return nil, protocol.SessionState{}, err
+		}
 	}
+	release, err := h.reserve(ctx, adapterName, request.SessionID)
+	if err != nil {
+		return nil, protocol.SessionState{}, err
+	}
+	defer release()
 	adopting := request.Reopen && request.Adopted && request.NativeSessionID != ""
 	if request.Reopen && h.bindings != nil && !adopting {
-		bound, found, err := h.bindings.Latest(ctx, string(request.SessionID))
+		history, err := h.bindings.History(ctx, string(request.SessionID))
 		if err != nil {
 			return nil, protocol.SessionState{}, err
 		}
+		bound, found := binding.State(history)
 		if !found || bound.Record.Adapter != adapterName {
 			return nil, protocol.SessionState{}, &UnknownSessionError{ID: request.SessionID}
 		}
@@ -154,6 +163,19 @@ func (h *Hub) OpenIn(ctx context.Context, adapterName, directory string, request
 		return nil, protocol.SessionState{}, &SessionExistsError{ID: entry.id}
 	}
 	return entry, state, nil
+}
+
+func (h *Hub) reserve(ctx context.Context, adapterName string, id protocol.SessionID) (func(), error) {
+	if id == "" {
+		return func() {}, nil
+	}
+	h.bindingMu.Lock()
+	defer h.bindingMu.Unlock()
+	if !h.sessions.reserve(id) {
+		h.recordBinding(ctx, binding.FromOpen(string(id), adapterName, "", "", h.home, "", nil), binding.ActionRefused, h.now())
+		return nil, &SessionExistsError{ID: id}
+	}
+	return func() { h.sessions.unreserve(id) }, nil
 }
 
 func (h *Hub) SetWorkingDirectory(adapter, directory string) {

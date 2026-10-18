@@ -1269,7 +1269,7 @@ to**, written here because Go's behaviour is evidence and not authority (Decisio
 | 2 | the adapter exists | `unknown_adapter` | `TestOpenOpRefusals` |
 | 3 | the **attachment** cites a current revision and is elected | `stale_capabilities`, `unsupported_feature`, `capability_degraded` | `TestAttachingOpenPinsOnlyWhatItCites` (both halves, end to end on HTTP), `TestOpenOpRefusesAStaleRevisionOnTheSubscribePath` |
 | 4 | the **subscription**, same two checks, on `session.open.subscribe` | `stale_capabilities`, `unsupported_feature`, `capability_degraded` | `TestOpenOpRefusesAStaleRevisionOnTheSubscribePath`, `TestSharedGateRefusesADisclosureAnOpenCannotElect` |
-| 5 | the adapter's own refusals, for anything else the request elected | `unsupported_feature`, `capability_degraded`, `probe_failed` | `TestHubOpenRejections`, `TestOpenRefusalsAreBounded` |
+| 5 | the adapter's own refusals, for anything else the request elected, through its side-effect-free admission step | `unsupported_feature`, `capability_degraded`, `probe_failed` | `TestHubOpenRejections`, `TestOpenRefusalsAreBounded`, `TestAnAdmissionRefusalOutranksATakenNameAndATakenNameIsNeverOpened` |
 | 6 | the id is free | `session_exists` | `TestHubOpenRejections` |
 | 7 | anything else the adapter reports | `session_closed`, `open_failed` | `TestOpenSession`, `TestHubOpenClosesSessionWhenStateFails` |
 
@@ -1282,8 +1282,11 @@ diverged:**
 - **The adapter's own refusals come before `session_exists`** (D15). A host is told
   its id is taken when the real reason its request cannot be served is that the
   adapter will not attach what it asked for — and correcting the name does not
-  help, so the actual refusal is never reported. The duplicate is detected by
-  running the adapter and seeing what it made, not by looking the name up first.
+  help, so the actual refusal is never reported. Those refusals come from the
+  adapter's admission step, which starts nothing, and a host-named id is then
+  looked up before the adapter opens anything, so a duplicate is never started.
+  A refusal the adapter can only find by starting a session is outranked by
+  `session_exists`; an id the adapter mints is still checked after it opens.
 - **`malformed_json` means the nested envelope is not JSON or not exactly one
   object**, and nothing else. An object that breaks the schema anywhere, a
   wrongly typed envelope member such as `"id": 7` included, is `schema_invalid`:
@@ -2111,7 +2114,7 @@ are "stamped with the revision the lister served it under", and both name
 | | |
 | --- | --- |
 | **The draft says** | `session_exists` (409) is one of `open`'s errors, and `unsupported_feature` (400) is another. The draft does not say which wins when a request is both. |
-| **Go does** | The adapter runs **first**. `hub.Open` opens the session and only detects a duplicate at `serve.go:102`, so the adapter's own refusals — an unattachable tool source, a bound it will not take — are what answer. Measured: opening `s1`, then opening `s1` naming three local tool sources answers `unsupported_feature` in Go. |
+| **Go does** | Asks an adapter that implements `adapter.Admitter` to admit the request, then refuses a taken host-named id, and only then calls `Open`, so a duplicate is never started. The memory adapter admits with the same checks its `Open` runs (tool sources, provided tools, compaction policy), so opening `s1` and then `s1` naming three local tool sources still answers `unsupported_feature`. A refusal an adapter can only find inside `Open` now answers `session_exists`; until an adapter implements `Admit`, that covers all of its request-shape refusals. |
 | **Zig does** | `hub.open` checks the name before the adapter is asked anything, but after the D17 trust check and `refuseUnadvertisedOpenElections`, which read only the descriptor. So an open electing a unit the adapter does not advertise answers `unsupported_feature`, as Go does (pinned by `an open electing what the adapter does not advertise is refused for that, ahead of a taken name`), and the measured example above answers `unsupported_feature` in both trees. What still differs is a refusal the adapter can only make inside `open`, from the request's shape: a compaction policy or provided tools it will not take answer `session_exists` here and the adapter's own code in Go. #1128 moves those into a side-effect-free admission step ahead of the name check. |
 | **Why it matters** | The host is told its id is taken when the real reason its request cannot be served is that the adapter will not attach what it asked for. Fixing the name is then useless and the actual refusal is never reported. Reachable with both trees' own memory adapter, so it needs no exotic adapter to appear. |
 | **The fix, and why it is one change with three others** | Match Go: call `adapter.open`, then check for the duplicate, then close the session just opened. That is a **core** change, and it is the same one **D11** (admit a message, report `admitted_submit_requests`), **D12** (surface the `contract.Refusal` so `feature` and `reason` reach the wire) and **D14** (roll an unnamed session back) all want. Four rows, one change: `hub.open` should do what Go's `hub.Open` does — run the adapter, apply the checks in Go's order, and report *which* refusal and why. That belongs in its own PR before `submit`, and it is the reason `submit`'s PR is worth its size. |

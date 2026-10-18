@@ -16,11 +16,30 @@ import (
 type sessionRegistry struct {
 	mu       sync.RWMutex
 	sessions map[protocol.SessionID]*Session
+	opening  map[protocol.SessionID]struct{}
 	runs     *runIndex
 }
 
 func newSessionRegistry() *sessionRegistry {
-	return &sessionRegistry{sessions: make(map[protocol.SessionID]*Session), runs: &runIndex{}}
+	return &sessionRegistry{sessions: make(map[protocol.SessionID]*Session), opening: make(map[protocol.SessionID]struct{}), runs: &runIndex{}}
+}
+
+func (r *sessionRegistry) reserve(id protocol.SessionID) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	_, live := r.sessions[id]
+	_, opening := r.opening[id]
+	if live || opening {
+		return false
+	}
+	r.opening[id] = struct{}{}
+	return true
+}
+
+func (r *sessionRegistry) unreserve(id protocol.SessionID) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	delete(r.opening, id)
 }
 
 type runIndex struct {
