@@ -33,6 +33,12 @@ Go interface, a Zig vtable struct like `HistoryLoader`.
 | `bindingHistory(session_id)` | every entry for a session, oldest first |
 | `listSessions(cursor?, limit)` | the latest entry per session, newest first, one page with `next_cursor` |
 
+A backend's session listing may return raw rows: the interface reduces them to
+the latest non-refused entry per session, in first-seen order, so a backend
+need not. `lastFailure()` is the error of the most recent failed append,
+cleared by the next successful one; a reopen that finds no binding cites it, so
+a lost write does not read as `unknown_session`.
+
 `listSessions` moves the paging that `binding.list` and `go/binding/page.go`
 do over a whole file into the backend, so SQLite can page with an index.
 
