@@ -135,14 +135,23 @@ Decision 0040 requires a reopen to list no run under way. That changes:
 The validator accepts restored queued runs in a recovered open response
 (`recovery.recovered: true`) and nowhere else.
 
-### 6. The rules rely on stores that are on by default
+### 6. The rules rely on stores, on by default in `oapx`
 
-Freezing and the crash rule need the session to survive the process. That
-holds by default: both hubs keep the session history (`oapx` at
-`~/.oapx/sessions.jsonl`), and `oapx serve` saves the `oapx` loop's own
-sessions under `~/.oapx/sessions`, which the owner made the default on #1170.
-With either turned off (`--session-history=` or `--no-save-oapx-sessions`),
-nothing of a session survives, and that is reported, never silent:
+Freezing and the crash rule need the session to survive the process.
+
+- `oapx hub` keeps the session history at `~/.oapx/sessions.jsonl` unless
+  `--session-history=` turns it off.
+- `oapx serve` saving the `oapx` loop's own sessions under `~/.oapx/sessions`
+  is off today behind `--save-oapx-sessions`. The owner chose on #1170 to make
+  it the default, with `--no-save-oapx-sessions` to opt out; #1207 makes that
+  change, and these rules rely on it.
+- `goap hub` has no default history: without `--session-history` it keeps
+  nothing. `goap` is never released (Decision 0038), so this is recorded as
+  its gap rather than closed, and a default `goap hub` reports every queued
+  run as lost.
+
+Wherever a session's store is off, nothing of it survives the process, and
+that is reported, never silent:
 
 - a shutdown lists the queued runs under `lost` instead of `held`, and the
   stderr line says they are lost;
@@ -162,7 +171,11 @@ Credentials are never written to either store.
   `recovery.interrupted_runs`, and the error code `interrupted`, with the
   matching `go/protocol`, validator, fixtures and `clients/ts`.
 - hub.md's shutdown section is rewritten, and the 5 s window applies to force
-  only.
+  only. So is `drafts/endpoint-stdio.md`'s exit contract, which today makes
+  stdin EOF and the signals settle admitted work and exit 0: EOF becomes force
+  and the signals map as rule 4 says.
+- #1207 makes `oapx serve` save its `oapx` sessions by default, as rule 6
+  relies on.
 - The TUI's quit shows the `choose` list.
 
 ## What this decision does not admit
