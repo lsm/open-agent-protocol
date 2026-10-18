@@ -95,3 +95,46 @@ entry's `model_provider` load and exit 0, the same entry with `base_ulr` and no
 `name` is refused because the provider's name must not be empty, and
 `wire_api="chat"` is refused as no longer supported. `wire_api` still takes
 only `responses`.
+
+## Client-provided tools at this pin
+
+Whether `action.tools.provide` ([Decision 0011](../decisions/0011-control-layer-provided-tools.md))
+could be served natively, so that a host's own tools reach a Codex session.
+Read from the source at `rust-v0.163.0`; not exercised against the binary.
+
+**Possible, through an experimental surface.** `ThreadStartParams` carries
+`dynamic_tools: Option<Vec<DynamicToolSpec>>`, marked
+`#[experimental("thread/start.dynamicTools")]`
+(`codex-rs/app-server-protocol/src/protocol/v2/thread.rs:145`). A spec is a
+function (`name`, `description`, `inputSchema`, optional `deferLoading`) or a
+namespace of functions (`codex-rs/protocol/src/dynamic_tools.rs`). When the
+model calls one, the server sends the client the request `item/tool/call`
+(`common.rs:1828`, "Execute a dynamic tool call on the client") with
+`DynamicToolCallParams { threadId, turnId, callId, namespace?, tool, arguments }`.
+The client answers `DynamicToolCallResponse { contentItems, success }`, each
+item `inputText`, `inputImage` or `inputAudio` (`v2/item.rs:1663`). The turn
+records the call as `ThreadItem::DynamicToolCall`, with status `inProgress`,
+`completed` or `failed`. The specs are kept in the session's metadata, and a
+compatibility deserializer exists "so new builds can resume sessions written
+before explicit namespaces". That suggests a resumed thread keeps its tools,
+though it has not been checked.
+
+Experimental means the client must set `experimentalApi: true` in
+`initialize` (`v1.rs:53`). Neither adapter sets it today. Setting it opts the
+connection into every experimental member at once (this release's read-state
+methods among them), so a native mapping takes the whole experimental surface,
+and the risk that it changes between releases.
+
+What `action.tools.provide` would map to:
+
+| OAP | Codex |
+|---|---|
+| `tools` on `session.open.request` | `dynamicTools` on `thread/start`, one function spec per `ToolDefinition` (`name`, `description`, `input_schema` as `inputSchema`) |
+| a provided tool at reopen | the specs the thread recorded, restored by `thread/resume` (to be checked) |
+| `action.call.requested` | the server request `item/tool/call`; its `callId` is the `tool_call_id`, its `arguments` the input |
+| `action.call.resolve.request` | the JSON-RPC response to that request: a result as `contentItems` with `inputText`, `success: true`; a failure as `success: false` with the error text |
+| the five refusal reasons | the adapter's own, as for any provided tool; Codex sees only the one response it gets |
+| limits | the schema states no count, name pattern or schema dialect; whatever Codex enforces beyond its spec parser was not read |
+
+**Recommendation.** Feasible, and the call shape matches Decision 0011 one to
+one. Whether to take on `experimentalApi` for it is the decision.
