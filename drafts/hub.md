@@ -399,10 +399,14 @@ A host can also ask: the `shutdown` op, whose optional `request` is
 no mode and a nonterminal run answers `choose`, listing the runs, and changes
 nothing; once one is accepted, a request with no mode reports that shutdown's
 progress (`draining` or `stopping`) instead of asking again. `graceful` cancels every queued
-run, lists it under `lost` because nothing holds it for the next start yet, and
+run, lists it under `lost` because nothing holds it for the next start yet
+(pinned in Go by `TestGracefulShutdownLosesQueuedRunsRefusesNewWorkAndForceStopsIt`;
+in Zig by **none**, [G14](#known-gaps)), and
 `draining` lets the running runs finish; `force` answers `stopping`, and a later
-graceful never undoes it. Go retries the cancel of a queued run that
-refused it on every drain poll until it settles. After a drain that finished
+graceful never undoes it. A `mode` of `null` is no mode. Zig answers in-flight
+jobs before serving ends on graceful and not on force; Go settles admitted
+work inside the window on both. Both trees retry the cancel of a queued run
+that refused it on every drain check until it settles. After a drain that finished
 runs, Go lets event streams deliver their terminals before teardown, up to the
 shutdown window, which a stream on an idle session holds in full; a shutdown
 with nothing to drain stops at once. Once accepted, `submit`, `open`, `work.start` and
@@ -414,7 +418,8 @@ mode other than graceful or force is refused and changes nothing`; Go:
 `TestShutdownWithNothingRunningStopsAtOnce`,
 `TestShutdownWithoutAModeAsksTheHostToChooseAndChangesNothing`,
 `TestGracefulShutdownLosesQueuedRunsRefusesNewWorkAndForceStopsIt`,
-`TestShutdownRefusesAModeOtherThanGracefulOrForce`. The HTTP route follows. Neither tree yet sends subscribers
+`TestShutdownRefusesAModeOtherThanGracefulOrForce`. Neither tree has the HTTP
+route yet. Neither tree yet sends subscribers
 `endpoint.shutdown.started`, which Decision 0050 requires on acceptance; that
 announcement lands with the HTTP route. The signals and stdin EOF still end
 serving as the next paragraph says; rule 4's mapping of them to modes is
@@ -2026,6 +2031,18 @@ here; each was a place a differential test would otherwise not see.
   bound is the number the draft's G13 row records`, and that it holds a stream
   without holding the daemon by `an open event stream does not hold the daemon:
   another connection is answered while it streams`.
+
+- **G14 — open.** Two `shutdown` rules lack a Zig test. Zig's reference
+  adapter starts every run, so nothing queues one, and graceful's cancel of a
+  queued run and its `lost` entry are unpinned there; Go pins them with its
+  memory adapter. And force skips
+  answering in-flight jobs, but the frontend's teardown still joins a job's
+  thread, so a wedged native read holds a force exit as it already holds an
+  EOF exit. A graceful exit waits on that job to answer it; a signal breaks
+  that wait, but a force request sent meanwhile is not read. Zig's serve loop
+  wiring for the shutdown (answering jobs on graceful only, then ending
+  serving) is pinned by no test: the named tests drive the frontend directly. What closes it is a queueing reference adapter with a test of the
+  `lost` path, and a teardown that abandons a job thread after the window.
 
 One asymmetry is deliberate and is **not** a gap: a cross-origin refusal exists
 on the HTTP transport alone. A stdio peer is a separate process on the far side
