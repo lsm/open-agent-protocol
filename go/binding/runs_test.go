@@ -1,0 +1,103 @@
+package binding
+
+import (
+	"context"
+	"os"
+	"path/filepath"
+	"testing"
+)
+
+func TestRunStoresKeepOpenRunsInAdmissionOrderAndForgetSettledOnes(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state", "runs.jsonl")
+	backends := map[string]func(t *testing.T) Runs{
+		"memory": func(*testing.T) Runs { return MemoryRuns() },
+		"file": func(t *testing.T) Runs {
+			store, err := RunsFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			return store
+		},
+	}
+	for name, open := range backends {
+		t.Run(name, func(t *testing.T) {
+			ctx := context.Background()
+			store := open(t)
+			for _, record := range []RunRecord{
+				{Action: RunAdmitted, TimeMS: 1, SessionID: "s", RunID: "r1"},
+				{Action: RunStarted, TimeMS: 2, SessionID: "s", RunID: "r1"},
+				{Action: RunAdmitted, TimeMS: 3, SessionID: "s", RunID: "r2", Request: `{"message":"next"}`},
+				{Action: RunAdmitted, TimeMS: 4, SessionID: "other", RunID: "r3"},
+				{Action: RunSettled, TimeMS: 5, SessionID: "other", RunID: "r3"},
+			} {
+				if err := store.AppendRun(ctx, record); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if name == "file" {
+				store = open(t)
+			}
+			runs, err := store.OpenRuns(ctx, "s")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(runs) != 2 || runs[0].RunID != "r1" || !runs[0].Started || runs[1].RunID != "r2" || runs[1].Started || runs[1].Request != `{"message":"next"}` {
+				t.Fatalf("open runs of s = %+v, want r1 started then r2 queued with its request", runs)
+			}
+			if other, err := store.OpenRuns(ctx, "other"); err != nil || len(other) != 0 {
+				t.Fatalf("open runs of other = %+v, %v; want none, since r3 settled", other, err)
+			}
+		})
+	}
+}
+
+func TestARunRecordLineIsTheOneTheZigStoreWrites(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "runs.jsonl")
+	store, err := RunsFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.AppendRun(context.Background(), RunRecord{Action: RunAdmitted, TimeMS: 3, SessionID: "s", RunID: "r2", Request: `{"message":"next"}`}); err != nil {
+		t.Fatal(err)
+	}
+	bytes, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := `34771ed2 {"action":"admitted","time_ms":3,"session_id":"s","run_id":"r2","request":"{\"message\":\"next\"}"}` + "\n"
+	if string(bytes) != want {
+		t.Fatalf("file = %q, want %q", bytes, want)
+	}
+}
+
+func TestATornRunRecordIsNotReadAndTheNextAppendDropsIt(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "runs.jsonl")
+	store, err := RunsFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.AppendRun(ctx, RunRecord{Action: RunAdmitted, TimeMS: 1, SessionID: "s", RunID: "r1"}); err != nil {
+		t.Fatal(err)
+	}
+	whole, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, append(whole, whole[:len(whole)/2]...), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if runs, err := store.OpenRuns(ctx, "s"); err != nil || len(runs) != 1 {
+		t.Fatalf("open runs over a torn tail = %+v, %v; want r1 alone", runs, err)
+	}
+	if err := store.AppendRun(ctx, RunRecord{Action: RunAdmitted, TimeMS: 2, SessionID: "s", RunID: "r2"}); err != nil {
+		t.Fatal(err)
+	}
+	after, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if runs, _ := store.OpenRuns(ctx, "s"); len(runs) != 2 || runs[1].RunID != "r2" || len(after) >= 2*len(whole)+len(whole)/2 {
+		t.Fatalf("after the next append: %+v and %d bytes; want r1, r2 and the torn tail gone", runs, len(after))
+	}
+}
