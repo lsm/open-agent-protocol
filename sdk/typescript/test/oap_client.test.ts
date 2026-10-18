@@ -83,6 +83,11 @@ test("an agent-only endpoint connects, runs agents, and refuses the provider and
   }
 });
 
+test("a provider describe that fails for any reason but a refusal fails the connection", async () => {
+  await assert.rejects(() => createOapClient({ command: process.execPath, args: [fixture], env: { ...process.env, OAP_FIXTURE_DESCRIBE_FAILS: "1" } }).then(async (client) => { await client.close(); return client; }),
+    (error: unknown) => error instanceof Error && error.message === "provider registry unavailable");
+});
+
 test("a malformed provider describe fails the connection rather than reading as agent-only", async () => {
   await assert.rejects(() => createOapClient({ command: process.execPath, args: [fixture], env: { ...process.env, OAP_FIXTURE_DESCRIBE_GARBAGE: "1" } }).then(async (client) => { await client.close(); return client; }),
     (error: unknown) => error instanceof Error && (error as { code?: string }).code === "malformed_response");

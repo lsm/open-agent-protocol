@@ -113,7 +113,7 @@ export class OapStdioTransport {
         : []);
       this.agentSource = declaredToolSource(capabilities.payload.sources);
       const described = await this.request(OAP_PROVIDER_PROFILE, "provider.describe.request", {}, {}, this.options.handshakeTimeoutMs).catch((error: unknown) => {
-        const refused = error instanceof OapUnsupportedFeatureError || (error instanceof MakaiProtocolError && error.code !== "malformed_response");
+        const refused = error instanceof OapUnsupportedFeatureError || (error instanceof MakaiProtocolError && (error.code === "invalid_request" || error.code === "unsupported_request"));
         if (refused && !this.closed) return undefined;
         throw error;
       });

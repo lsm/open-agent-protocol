@@ -108,6 +108,10 @@ createInterface({ input: process.stdin }).on("line", (line) => {
         process.stdout.write("{\"broken\":\n");
         break;
       }
+      if (process.env.OAP_FIXTURE_DESCRIBE_FAILS) {
+        send(request, "error.response", { error: { code: "internal", message: "provider registry unavailable" } });
+        break;
+      }
       if (process.env.OAP_FIXTURE_AGENT_ONLY) {
         send(request, "error.response", { error: { code: "invalid_request", message: "envelope profile is not the agent-control core" } });
         break;
