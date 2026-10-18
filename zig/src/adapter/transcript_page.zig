@@ -133,6 +133,13 @@ fn entryValue(arena: std.mem.Allocator, id: []const u8, entry: Item, bound: ?usi
     return .{ .object = object };
 }
 
+fn cutField(key: []const u8) bool {
+    for ([_][]const u8{ "text", "reasoning", "result", "arguments_json" }) |name| {
+        if (std.mem.eql(u8, key, name)) return true;
+    }
+    return false;
+}
+
 fn cutValue(arena: std.mem.Allocator, value: std.json.Value, bound: usize) !std.json.Value {
     switch (value) {
         .string => |text| return .{ .string = cut(text, bound) },
@@ -152,10 +159,13 @@ fn cutValue(arena: std.mem.Allocator, value: std.json.Value, bound: usize) !std.
             var out: std.json.ObjectMap = .empty;
             var members = held.iterator();
             while (members.next()) |member| {
-                const kept = if (std.mem.eql(u8, kind, "tool_call") and std.mem.eql(u8, member.key_ptr.*, "arguments_json"))
-                    std.json.Value{ .string = cut(try std.json.Stringify.valueAlloc(arena, member.value_ptr.*, .{}), bound) }
+                const value_held = member.value_ptr.*;
+                const kept: std.json.Value = if (!cutField(member.key_ptr.*))
+                    (if (value_held == .string) value_held else try cutValue(arena, value_held, bound))
+                else if (value_held == .string)
+                    .{ .string = cut(value_held.string, bound) }
                 else
-                    try cutValue(arena, member.value_ptr.*, bound);
+                    .{ .string = cut(try std.json.Stringify.valueAlloc(arena, value_held, .{}), bound) };
                 try out.put(arena, member.key_ptr.*, kept);
             }
             return .{ .object = out };

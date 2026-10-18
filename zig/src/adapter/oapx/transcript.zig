@@ -217,3 +217,23 @@ test "an entry whose text escapes to several times its length is still cut until
     try testing.expect(cut_page.entries[0].object.get("truncated").?.bool);
     try testing.expect((try std.json.Stringify.valueAlloc(a, cut_page.entries[0], .{})).len <= contract.transcript_page_bytes);
 }
+
+test "an oversize entry cuts only its text-bearing fields, so a tool call keeps its type, id and name" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const parts = try a.alloc(ai_types.AssistantContent, 40001);
+    const long = try a.alloc(u8, contract.transcript_page_bytes);
+    @memset(long, 'z');
+    parts[0] = .{ .text = .{ .text = long } };
+    for (parts[1..]) |*part| part.* = .{ .tool_call = .{ .id = "call-identifier", .name = "a_tool_name", .arguments_json = "\"raw arguments\"" } };
+    const message = ai_types.Message{ .assistant = .{ .content = parts, .api = "", .provider = "", .model = "", .usage = .{}, .stop_reason = .stop, .timestamp = 0 } };
+    const cut_page = try page(a, .{ .native_id = "s1" }, &.{.{ .offset = 0, .message = message }});
+    try testing.expect(cut_page.entries[0].object.get("truncated").?.bool);
+    const listed = cut_page.entries[0].object.get("message").?.object.get("content").?.array.items;
+    const call = listed[listed.len - 1].object;
+    try testing.expectEqualStrings("tool_call", call.get("type").?.string);
+    try testing.expectEqualStrings("call-identifier", call.get("tool_call_id").?.string);
+    try testing.expectEqualStrings("a_tool_name", call.get("name").?.string);
+    try testing.expect(!std.mem.startsWith(u8, call.get("arguments_json").?.string, "\""));
+}
