@@ -198,6 +198,8 @@ harness. The client sees the same envelopes either way. Each adapter is pinned
 to the harness versions its catalog entry in `harnesses/` names. Its
 `research/` ledger records everything the harness cannot express in OAP, and
 the client is told about those gaps rather than having them hidden.
+[Choosing a backend](docs/choosing-a-backend.md) says what each one needs to
+start and how it authenticates.
 
 | Backend | Runs | Pinned |
 | --- | --- | --- |
