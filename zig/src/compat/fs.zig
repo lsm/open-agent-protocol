@@ -33,6 +33,14 @@ pub fn writeFile(dir: Dir, path: []const u8, data: []const u8) !void {
 }
 
 pub fn atomicReplace(dir: Dir, target_path: []const u8, tmp_path: []const u8, data: []const u8) !void {
+    return replaceAtomically(dir, target_path, tmp_path, data, false);
+}
+
+pub fn atomicReplaceDurable(dir: Dir, target_path: []const u8, tmp_path: []const u8, data: []const u8) !void {
+    return replaceAtomically(dir, target_path, tmp_path, data, true);
+}
+
+fn replaceAtomically(dir: Dir, target_path: []const u8, tmp_path: []const u8, data: []const u8, durable: bool) !void {
     if (std.mem.eql(u8, target_path, tmp_path)) return error.InvalidAtomicReplacePaths;
 
     dir.deleteFile(defaultIo(), tmp_path) catch |err| switch (err) {
@@ -48,6 +56,7 @@ pub fn atomicReplace(dir: Dir, target_path: []const u8, tmp_path: []const u8, da
         cleanup_tmp = true;
         defer file.close(defaultIo());
         try file.writeStreamingAll(defaultIo(), data);
+        if (durable) try file.sync(defaultIo());
     }
 
     try dir.rename(tmp_path, dir, target_path, defaultIo());

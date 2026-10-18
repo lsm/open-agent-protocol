@@ -1100,6 +1100,7 @@ fn codeFor(failure: contract.Failure) Mapped {
         error.ToolCatalogUnavailable => .{ .code = "tool_catalog_unavailable", .fallback = "adapter: no portable tool catalog is served" },
         error.Unavailable => .{ .code = "unavailable", .fallback = "this backend is unavailable" },
         error.ReplayCursorFuture => .{ .code = "replay_cursor_future", .fallback = "adapter: replay cursor is newer than the run" },
+        error.InvalidCursor => .{ .code = "invalid_cursor", .fallback = "adapter: a cursor this endpoint did not mint" },
         error.BackendFailed, error.OutOfMemory => .{ .code = "internal", .fallback = "the backend failed" },
     };
 }

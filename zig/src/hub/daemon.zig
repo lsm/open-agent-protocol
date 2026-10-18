@@ -1838,7 +1838,7 @@ test "the session history lists what the store recorded, newest first, and pages
     var store = try hubmod.binding.Store.open(testing.allocator, path);
     defer store.deinit();
     var fixture: Fixture = undefined;
-    try fixture.init(.{ .bindings = &store });
+    try fixture.init(.{ .bindings = store.bindings() });
     defer fixture.deinit();
     const arena = fixture.scratch.allocator();
 
@@ -1892,7 +1892,7 @@ test "the session history refuses a cursor, a limit and a missing store as Go do
     var store = try hubmod.binding.Store.open(testing.allocator, path);
     defer store.deinit();
     var fixture: Fixture = undefined;
-    try fixture.init(.{ .bindings = &store });
+    try fixture.init(.{ .bindings = store.bindings() });
     defer fixture.deinit();
     const cases = [_]struct { target: []const u8, code: []const u8 }{
         .{ .target = "/sessions/history?cursor=not-a-cursor", .code = "invalid_cursor" },

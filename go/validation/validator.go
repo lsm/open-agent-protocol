@@ -550,6 +550,12 @@ func payloadTarget(t protocol.EnvelopeType) any {
 		return &protocol.SessionStateRequest{}
 	case protocol.TypeSessionStateResponse, protocol.TypeSessionStateUpdated:
 		return &protocol.SessionState{}
+	case protocol.TypeEndpointShutdownRequest:
+		return &protocol.EndpointShutdownRequest{}
+	case protocol.TypeEndpointShutdownResponse:
+		return &protocol.EndpointShutdownResponse{}
+	case protocol.TypeEndpointShutdownStarted:
+		return &protocol.EndpointShutdownStarted{}
 	case protocol.TypeSessionListRequest:
 		return &protocol.SessionListRequest{}
 	case protocol.TypeSessionListResponse:

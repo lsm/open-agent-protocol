@@ -434,6 +434,22 @@ pub const Store = struct {
         }
     }
 
+    pub fn readEntries(self: Store, arena: std.mem.Allocator, session_id: []const u8) ![]const StoredEntry {
+        try validateSessionId(session_id);
+        const path = try sessionPath(arena, self.base_dir, session_id);
+        var ctx = EntryContext{ .arena = arena, .metadata = try defaultMetadata(arena, session_id) };
+        readJsonlRecords(arena, path, 0, &ctx, entryLine) catch |err| switch (err) {
+            error.FileNotFound => return &.{},
+            else => return err,
+        };
+        const entries = try arena.alloc(StoredEntry, ctx.entries.items.len);
+        for (ctx.entries.items, entries) |found, *slot| slot.* = .{ .offset = found.offset, .at_ms = found.at_ms, .item = switch (found.item) {
+            .message => |index| .{ .message = ctx.messages.items[index] },
+            .compaction => |summary| .{ .compaction = summary },
+        } };
+        return entries;
+    }
+
     pub fn list(self: Store) !std.ArrayList(SessionMetadata) {
         var result: std.ArrayList(SessionMetadata) = .empty;
         errdefer {
@@ -762,6 +778,58 @@ fn defaultMetadata(allocator: std.mem.Allocator, session_id: []const u8) !Sessio
     errdefer allocator.free(model);
     const provider = try allocator.dupe(u8, "");
     return .{ .session_id = id, .model = model, .provider = provider, .last_active = 0 };
+}
+
+pub const StoredEntry = struct {
+    offset: u64,
+    at_ms: i64 = 0,
+    item: union(enum) { message: ai_types.Message, compaction: []const u8 },
+};
+
+const EntryContext = struct {
+    arena: std.mem.Allocator,
+    metadata: SessionMetadata,
+    replay: ReplayState = .{},
+    messages: std.ArrayList(ai_types.Message) = .empty,
+    entries: std.ArrayList(Found) = .empty,
+
+    const Found = struct { offset: u64, at_ms: i64, item: union(enum) { message: usize, compaction: []const u8 } };
+
+    fn apply(self: *EntryContext, offset: u64, line: []const u8) !void {
+        const parsed = try std.json.parseFromSliceLeaky(std.json.Value, self.arena, line, .{});
+        const obj = switch (parsed) {
+            .object => |o| o,
+            else => return error.InvalidRecord,
+        };
+        if (obj.get("metadata")) |meta_value| switch (meta_value) {
+            .object => |meta_obj| try updateMetadata(self.arena, &self.metadata, meta_obj),
+            else => {},
+        };
+        if (obj.get("message")) |message_value| {
+            try self.messages.append(self.arena, try parseMessage(self.arena, message_value));
+            try self.entries.append(self.arena, .{ .offset = offset, .at_ms = 0, .item = .{ .message = self.messages.items.len - 1 } });
+        }
+        const event = try parseEvent(self.arena, obj.get("event") orelse return);
+        switch (event) {
+            .compaction_end => |payload| {
+                if (payload.outcome == .completed and payload.text.slice().len > 0) try self.entries.append(self.arena, .{ .offset = offset, .at_ms = 0, .item = .{ .compaction = agent_compaction.summaryOf(payload.text.slice()) } });
+                return;
+            },
+            else => {},
+        }
+        const before = self.messages.items.len;
+        try replayEvent(self.arena, &self.messages, &self.replay, self.metadata, event);
+        const at_ms: i64 = if (event == .message_end) event.message_end.at_ms else 0;
+        for (before..self.messages.items.len) |index| try self.entries.append(self.arena, .{ .offset = offset, .at_ms = at_ms, .item = .{ .message = index } });
+    }
+};
+
+fn entryLine(ctx: *EntryContext, offset: u64, line: []const u8) !void {
+    if (loadSkips(line)) return;
+    ctx.apply(offset, line) catch |err| switch (err) {
+        error.InvalidRecord, error.InvalidEvent, error.InvalidMessage, error.SyntaxError, error.UnexpectedToken, error.InvalidNumber, error.DuplicateField, error.UnknownField, error.MissingField, error.LengthMismatch => return,
+        else => return err,
+    };
 }
 
 const LoadLineContext = struct {
@@ -2549,6 +2617,57 @@ test "load replays a completed compaction as its summary turn and acknowledgemen
     try std.testing.expectEqual(session_events.SessionEvent.CompactionOutcome.completed, replayed.outcome);
     try std.testing.expectEqualStrings("/s/compacted/compaction-1.jsonl", replayed.transcript.slice());
     try std.testing.expectEqual(@as(u64, 2), replayed.messages_before);
+}
+
+test "readEntries returns every saved message and each completed compaction in file order, one tool result per call, and nothing before a compaction dropped" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const base = try tmpBase(std.testing.allocator, &tmp);
+    defer std.testing.allocator.free(base);
+    var store = try Store.init(std.testing.allocator, base);
+    defer store.deinit();
+    var meta = try testMeta("entries");
+    defer meta.deinit(std.testing.allocator);
+
+    try saveText(store, meta, .user, "old question");
+    var tool_end = session_events.SessionEvent{ .tool_execution_end = .{
+        .tool_call_id = try owned(std.testing.allocator, "call-1"),
+        .tool_name = try owned(std.testing.allocator, "demo"),
+        .result_json = try owned(std.testing.allocator, "fallback"),
+        .is_error = false,
+    } };
+    defer tool_end.deinit(std.testing.allocator);
+    try store.save(meta, tool_end);
+    var tool_message = session_events.SessionEvent{ .message_end = .{
+        .role = .tool_result,
+        .tool_call_id = try owned(std.testing.allocator, "call-1"),
+        .tool_name = try owned(std.testing.allocator, "demo"),
+        .content_json = try contentJson("[{\"type\":\"text\",\"text\":\"rich\"}]"),
+    } };
+    defer tool_message.deinit(std.testing.allocator);
+    try store.save(meta, tool_message);
+    var completed = session_events.SessionEvent{ .compaction_end = .{
+        .outcome = .completed,
+        .text = try owned(std.testing.allocator, agent_compaction.header ++ " Summary follows.\n\n<summary>\nkept state\n</summary>"),
+    } };
+    defer completed.deinit(std.testing.allocator);
+    try store.save(meta, completed);
+    var failed = session_events.SessionEvent{ .compaction_end = .{ .outcome = .failed, .message = try owned(std.testing.allocator, "overloaded") } };
+    defer failed.deinit(std.testing.allocator);
+    try store.save(meta, failed);
+    try saveText(store, meta, .user, "new question");
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const entries = try store.readEntries(arena.allocator(), "entries");
+    try std.testing.expectEqual(@as(usize, 4), entries.len);
+    try std.testing.expectEqual(@as(u64, 0), entries[0].offset);
+    try std.testing.expectEqualStrings("old question", entries[0].item.message.user.content.text);
+    try std.testing.expectEqualStrings("rich", entries[1].item.message.tool_result.content[0].text.text);
+    try std.testing.expectEqualStrings("kept state", entries[2].item.compaction);
+    try std.testing.expectEqualStrings("new question", entries[3].item.message.user.content.text);
+    for (entries[1..], entries[0 .. entries.len - 1]) |later, earlier| try std.testing.expect(later.offset > earlier.offset);
+    try std.testing.expectEqual(@as(usize, 0), (try store.readEntries(arena.allocator(), "never-saved")).len);
 }
 
 test "deleteSession removes the JSONL and sidecar directory" {

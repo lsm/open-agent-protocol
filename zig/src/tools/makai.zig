@@ -532,12 +532,14 @@ fn runHub(
     var config: ?[]const u8 = null;
     var addr: ?[]const u8 = null;
     var history_path: ?[]const u8 = null;
-    var save_sessions = false;
+    var save_sessions: ?bool = null;
     var index: usize = 0;
     while (index < args.len) : (index += 1) {
         const argument = args[index];
         if (std.mem.eql(u8, argument, "--save-oapx-sessions")) {
             save_sessions = true;
+        } else if (std.mem.eql(u8, argument, "--no-save-oapx-sessions")) {
+            save_sessions = false;
         } else if (std.mem.eql(u8, argument, "--session-history")) {
             index += 1;
             if (index >= args.len) return error.InvalidHubOption;
@@ -591,9 +593,13 @@ fn runHub(
     defer registry.deinit();
     var saved: ?ServedSessions = null;
     defer if (saved) |*held| held.deinit();
-    if (save_sessions) {
+    if (save_sessions orelse true) open: {
         const store = session_store.Store.initDefault(allocator) catch |err| {
-            try surface.refuse("cannot open the oapx session store for --save-oapx-sessions: {s}", .{@errorName(err)});
+            if (save_sessions == null and err == error.HomeNotFound) {
+                compat.stdio.writeAll(stderr, "oapx: HOME is not set, so served oapx sessions are not saved\n") catch {};
+                break :open;
+            }
+            try surface.refuse("cannot open the oapx session store: {s}", .{@errorName(err)});
             return error.BackendRefused;
         };
         saved = ServedSessions.init(allocator, store);
@@ -616,7 +622,7 @@ fn runHub(
             return error.BackendRefused;
         };
     }
-    var core = hub.Hub.init(allocator, wallClockNanoseconds, .{ .tool_sources = tool_sources, .bindings = if (bindings) |*store| store else null });
+    var core = hub.Hub.init(allocator, wallClockNanoseconds, .{ .tool_sources = tool_sources, .bindings = if (bindings) |*store| store.bindings() else null });
     defer core.deinit();
     if (config == null) {
         const memory = try arena.create(memory_adapter.Adapter);
@@ -1299,7 +1305,7 @@ fn printUsage(file: std.Io.File) !void {
         \\  oapx claude-permission-hook --endpoint <url>  A Claude Code PermissionRequest hook: asks <url>, and leaves the prompt to the session when no allow or deny comes back
         \\  oapx serve provider --http 127.0.0.1:<port>
         \\  oapx serve agent,provider --stdio [--model <model-ref>]
-        \\  oapx serve --stdio | --addr <host:port> [--config <path>] [--session-history <path>] [--save-oapx-sessions]
+        \\  oapx serve --stdio | --addr <host:port> [--config <path>] [--session-history <path>] [--no-save-oapx-sessions]
         \\                                                   Many sessions on one wire; oapx hub is its old name
         \\  oapx validate [--format human|json] [--mode strict|tolerant] [--pack DIR]... <trace.json>...
         \\  oapx conformance --command CMD [--session <id>] [--timeout-ms <n>]

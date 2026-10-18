@@ -12437,6 +12437,82 @@
       "provenance": [
         "decisions/0051-transcript-load.md"
       ]
+    },
+    {
+      "id": "endpoint-shutdown-asks-then-drains",
+      "path": "valid/endpoint-shutdown-asks-then-drains.json",
+      "kind": "positive",
+      "valid": true,
+      "phase": "",
+      "codes": [],
+      "units": [
+        "core"
+      ],
+      "provenance": [
+        "decisions/0050-shutdown-is-graceful-forced-or-asked.md"
+      ]
+    },
+    {
+      "id": "session-reopen-reports-an-interrupted-run",
+      "path": "valid/session-reopen-reports-an-interrupted-run.json",
+      "kind": "positive",
+      "valid": true,
+      "phase": "",
+      "codes": [],
+      "units": [
+        "session-reattach"
+      ],
+      "provenance": [
+        "decisions/0050-shutdown-is-graceful-forced-or-asked.md"
+      ]
+    },
+    {
+      "id": "endpoint-shutdown-choose-without-runs",
+      "path": "schema-invalid/endpoint-shutdown-choose-without-runs.json",
+      "kind": "schema-invalid",
+      "valid": false,
+      "phase": "schema",
+      "codes": [
+        "schema_invalid"
+      ],
+      "units": [
+        "core"
+      ],
+      "provenance": [
+        "decisions/0050-shutdown-is-graceful-forced-or-asked.md"
+      ]
+    },
+    {
+      "id": "endpoint-shutdown-unknown-mode",
+      "path": "schema-invalid/endpoint-shutdown-unknown-mode.json",
+      "kind": "schema-invalid",
+      "valid": false,
+      "phase": "schema",
+      "codes": [
+        "schema_invalid"
+      ],
+      "units": [
+        "core"
+      ],
+      "provenance": [
+        "decisions/0050-shutdown-is-graceful-forced-or-asked.md"
+      ]
+    },
+    {
+      "id": "interrupted-run-observed",
+      "path": "schema-invalid/interrupted-run-observed.json",
+      "kind": "schema-invalid",
+      "valid": false,
+      "phase": "schema",
+      "codes": [
+        "schema_invalid"
+      ],
+      "units": [
+        "session-reattach"
+      ],
+      "provenance": [
+        "decisions/0050-shutdown-is-graceful-forced-or-asked.md"
+      ]
     }
   ]
 }

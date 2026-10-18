@@ -1,0 +1,111 @@
+[
+  {
+    "protocol": "open-agent-protocol",
+    "version": "0.1",
+    "profile": "open-agent-protocol.agent-control-core",
+    "type": "capabilities.request",
+    "id": "capq",
+    "payload": {}
+  },
+  {
+    "protocol": "open-agent-protocol",
+    "version": "0.1",
+    "profile": "open-agent-protocol.agent-control-core",
+    "type": "capabilities.response",
+    "id": "capr",
+    "in_reply_to": "capq",
+    "capability_revision": "cap-v1",
+    "payload": {
+      "endpoint": {
+        "id": "fixture.endpoint",
+        "name": "Shutdown fixture endpoint"
+      },
+      "features": {
+        "session.message.delivery.auto": {
+          "level": "native"
+        }
+      }
+    }
+  },
+  {
+    "protocol": "open-agent-protocol",
+    "version": "0.1",
+    "profile": "open-agent-protocol.agent-control-core",
+    "type": "endpoint.shutdown.request",
+    "id": "sd1",
+    "payload": {}
+  },
+  {
+    "protocol": "open-agent-protocol",
+    "version": "0.1",
+    "profile": "open-agent-protocol.agent-control-core",
+    "type": "endpoint.shutdown.response",
+    "id": "sd1r",
+    "in_reply_to": "sd1",
+    "payload": {
+      "outcome": "choose",
+      "active_runs": [
+        {
+          "session_id": "s1",
+          "run_id": "r1",
+          "status": "running"
+        },
+        {
+          "session_id": "s1",
+          "run_id": "r2",
+          "status": "queued"
+        }
+      ]
+    }
+  },
+  {
+    "protocol": "open-agent-protocol",
+    "version": "0.1",
+    "profile": "open-agent-protocol.agent-control-core",
+    "type": "endpoint.shutdown.request",
+    "id": "sd2",
+    "payload": {
+      "mode": "graceful"
+    }
+  },
+  {
+    "protocol": "open-agent-protocol",
+    "version": "0.1",
+    "profile": "open-agent-protocol.agent-control-core",
+    "type": "endpoint.shutdown.response",
+    "id": "sd2r",
+    "in_reply_to": "sd2",
+    "payload": {
+      "outcome": "draining",
+      "active_runs": [
+        {
+          "session_id": "s1",
+          "run_id": "r1",
+          "status": "running"
+        }
+      ],
+      "held": [
+        {
+          "session_id": "s1",
+          "run_id": "r2"
+        }
+      ]
+    }
+  },
+  {
+    "protocol": "open-agent-protocol",
+    "version": "0.1",
+    "profile": "open-agent-protocol.agent-control-core",
+    "type": "endpoint.shutdown.started",
+    "id": "sd3",
+    "payload": {
+      "mode": "graceful",
+      "held": [
+        {
+          "session_id": "s1",
+          "run_id": "r2"
+        }
+      ]
+    }
+  }
+]

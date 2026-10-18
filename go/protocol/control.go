@@ -434,6 +434,50 @@ type SessionStateRequest struct {
 	SessionID SessionID `json:"session_id"`
 }
 
+type ShutdownMode string
+
+const (
+	ShutdownGraceful ShutdownMode = "graceful"
+	ShutdownForce    ShutdownMode = "force"
+)
+
+type ShutdownOutcome string
+
+const (
+	ShutdownChoose   ShutdownOutcome = "choose"
+	ShutdownDraining ShutdownOutcome = "draining"
+	ShutdownStopping ShutdownOutcome = "stopping"
+)
+
+type EndpointShutdownRequest struct {
+	Mode ShutdownMode `json:"mode,omitempty"`
+}
+
+type ShutdownRun struct {
+	SessionID           SessionID       `json:"session_id"`
+	RunID               RunID           `json:"run_id"`
+	Status              RunStatus       `json:"status"`
+	PendingInteractions []InteractionID `json:"pending_interactions,omitempty"`
+}
+
+type ShutdownQueuedRun struct {
+	SessionID SessionID `json:"session_id"`
+	RunID     RunID     `json:"run_id"`
+}
+
+type EndpointShutdownResponse struct {
+	Outcome    ShutdownOutcome     `json:"outcome"`
+	ActiveRuns []ShutdownRun       `json:"active_runs"`
+	Held       []ShutdownQueuedRun `json:"held,omitempty"`
+	Lost       []ShutdownQueuedRun `json:"lost,omitempty"`
+}
+
+type EndpointShutdownStarted struct {
+	Mode ShutdownMode        `json:"mode"`
+	Held []ShutdownQueuedRun `json:"held,omitempty"`
+	Lost []ShutdownQueuedRun `json:"lost,omitempty"`
+}
+
 type SessionListRequest struct {
 	Cursor                string   `json:"cursor,omitempty"`
 	Limit                 int      `json:"limit,omitempty"`
