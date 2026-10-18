@@ -476,7 +476,7 @@ error. That is stated because the four reasons are the whole set.
 | The verb is `hub`, not `serve` | `TestServeWithoutRoleNamesHub` |
 | The built binary drives a full session, and fails closed on a malformed line | `TestStdioBinaryDrivesAFullSession`, `TestStdioBinaryFailsClosedOnAMalformedLine` |
 | The full lifecycle runs against a real listener | `TestServeLifecycleOverRealListener` |
-| The hub's stdio wire is the fourteen ops, not the endpoint's raw envelopes | `TestCapabilitiesNameTheStdioBinding` |
+| The hub's stdio wire is the fourteen ops both trees serve, and Zig's fifteenth, `transcript`, not the endpoint's raw envelopes | `TestCapabilitiesNameTheStdioBinding` |
 
 ### The HTTP routes and SSE framing
 

@@ -4854,7 +4854,7 @@ fn fadingProbe(ptr: *anyopaque, refusal: *contract.Refusal) contract.Failure!con
     return fading_descriptor;
 }
 
-test "transcript reads a held or closed session's page through its adapter, with a gap, and refuses a foreign cursor, an unbound session, a bad limit and an adapter that keeps no transcript" {
+test "transcript reads a held or closed session's page through its adapter, with a gap, and refuses a foreign cursor, an unbound session, a bad limit, an adapter that keeps no transcript and a session with no native id" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     const cwd = try std.process.currentPathAlloc(testing.io, testing.allocator);
@@ -4865,8 +4865,10 @@ test "transcript reads a held or closed session's page through its adapter, with
     defer store.deinit();
     try store.append(.{ .action = .opened, .time_ms = 10, .record = .{ .session_id = "left", .adapter = "reference", .native_session_id = "thread-a" } });
     try store.append(.{ .action = .closed, .time_ms = 11, .record = .{ .session_id = "left", .adapter = "reference", .native_session_id = "thread-a" } });
+    try store.append(.{ .action = .opened, .time_ms = 12, .record = .{ .session_id = "unread", .adapter = "plain", .native_session_id = "thread-p" } });
     const harness = try Harness.init(testing.allocator, .{ .bindings = store.bindings() }, .{});
     defer harness.deinit();
+    try harness.hub.register("plain", .{ .ptr = @ptrCast(@constCast(&reference_holder)), .vtable = &.{ .probe = referenceProbe, .open = referenceOpen } });
 
     try harness.send("{\"id\":1,\"op\":\"transcript\",\"session_id\":\"left\",\"limit\":7}");
     const closed = (try harness.lastValue()).object.get("result").?.object;
@@ -4887,6 +4889,10 @@ test "transcript reads a held or closed session's page through its adapter, with
     try testing.expectEqualStrings("unknown_session", try harness.code());
     try harness.send("{\"id\":5,\"op\":\"transcript\",\"session_id\":\"left\",\"limit\":501}");
     try testing.expectEqualStrings("invalid_request", try harness.code());
+    try harness.send("{\"id\":8,\"op\":\"transcript\",\"session_id\":\"unread\"}");
+    try testing.expectEqualStrings("unsupported_feature", try harness.code());
+    const unread = (try harness.lastValue()).object.get("error").?.object.get("details").?.object;
+    try testing.expectEqualStrings("transcript.load", unread.get("feature").?.string);
 
     defer reference_holder.opens_native = "";
     reference_holder.opens_native = "thread-held";
