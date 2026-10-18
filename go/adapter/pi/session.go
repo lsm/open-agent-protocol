@@ -1400,6 +1400,7 @@ type wireToolCallContent struct {
 	Arguments        json.RawMessage `json:"arguments"`
 	ThoughtSignature string          `json:"thoughtSignature,omitempty"`
 	Namespace        string          `json:"namespace,omitempty"`
+	ArgumentsError   string          `json:"argumentsError,omitempty"`
 }
 
 func (s *Session) wireContent(raw json.RawMessage, run *runState) (protocol.MessageContent, error) {

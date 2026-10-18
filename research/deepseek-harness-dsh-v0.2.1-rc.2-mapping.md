@@ -84,8 +84,12 @@ after the run's `turn/end` and idle status.
 
 Both trees list the two events as observed-only. Without that, the
 `job/registered` inside the run is an unknown event, which fails the run
-(`deepseek_unknown_event`); the corpus test fails in both trees when either
-is removed from the list.
+(`deepseek_unknown_event`); the corpus test fails in both trees when it is
+removed from the list. The recorded `job/settled` arrives after the run, where
+both trees drop it as external activity (below) without consulting the list,
+so no test pins its entry. It is listed for a job that settles while a run is
+still open, such as one the model waits on with `job_output`: read from the
+source, not recorded.
 
 ### The runtime starts a turn of its own when a job settles
 
