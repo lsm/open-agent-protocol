@@ -1,7 +1,7 @@
 # Decision 0050: Shutdown Is Graceful, Forced, or Asked
 
-Status: approved by the owner 2026-10-18; accepted once its wire, hub
-behaviour and restart recovery land in both trees
+Status: proposed (the owner approved it on 2026-10-18; it becomes accepted
+once its wire, hub behaviour and restart recovery land in both trees)
 Date: 2026-10-18
 Protocol: `open-agent-protocol` version `0.1`
 Profile: `open-agent-protocol.agent-control-core`
