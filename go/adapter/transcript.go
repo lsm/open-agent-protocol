@@ -171,8 +171,10 @@ func cutTranscript(value any, bound int) any {
 		out := make(map[string]any, len(held))
 		for key, member := range held {
 			switch text, isText := member.(string); {
-			case !cutField[key]:
+			case !cutField[key] && isText:
 				out[key] = member
+			case !cutField[key]:
+				out[key] = cutTranscript(member, bound)
 			case isText:
 				out[key] = cutText(text, bound)
 			default:
