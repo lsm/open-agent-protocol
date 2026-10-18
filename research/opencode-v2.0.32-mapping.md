@@ -92,3 +92,57 @@ times. Among them, `TestOpenCodeServerRunsATurnToCompletionAgainstALocalProvider
 completes a real turn against an in-process OpenAI-compatible fake, and
 `TestOpenCodeServerReopensItsBoundSessionAfterARestart` reopens a session
 across a server restart.
+
+## Client-provided tools at this pin
+
+Whether `action.tools.provide` ([Decision 0011](../decisions/0011-control-layer-provided-tools.md))
+could be served natively, so that a host's own tools reach an OpenCode session.
+Read from the source at `v2.0.32`; not exercised against the binary.
+
+**No client-tool API; possible only by hosting an MCP server.** OpenCode's
+HTTP API has no route that registers a tool whose calls come back to the
+client. `packages/core/src/tool/AGENTS.md` says built-ins, plugins and MCP
+"install tools through `Tool.Service.transform`", and it forbids "a second
+executable entry type". Plugins run inside the OpenCode process, and
+`POST /api/rpc/:rpcID/:method` only calls into a registered plugin, so neither
+lets a client execute a call.
+
+MCP is the remaining route. `PUT /api/experimental/mcp/:server`
+(`packages/protocol/src/groups/mcp.ts:24`, "Add an MCP server at runtime or
+replace an existing one, connecting it immediately") takes `Mcp.ServerConfig`:
+`local` with `command` and `environment`, or `remote` with `url` and
+`headers`, each with an optional `timeout`
+(`packages/schema/src/mcp.ts:26,53`). The adapter could serve the provided
+tools as an MCP server, a loopback `remote` URL or a `local` command it
+controls, and answer each `tools/call` from the OAP resolution.
+`packages/core/src/tool/mcp.ts` registers each MCP tool as
+`<server>_<tool>`, with non-alphanumerics replaced by `_`. It asserts the
+permission `<server>_<tool>` before every call, which the adapters already
+project as `action.permission.requested`, and then calls the server.
+
+Two properties make the mapping degraded:
+
+- **Scope.** MCP servers and the tool service are scoped to a location (one
+  directory), not to a session (`AGENTS.md`: "`Tool.Service` is
+  Location-scoped"). A provided tool would be visible to every session in that
+  directory, including sessions another client opened. Decision 0011 provisions
+  tools for one session's lifetime.
+- **Stability.** The runtime route is under `/api/experimental/`. The other way
+  to add a server is the `mcp` key of the service config at start, which the
+  adapters do not write.
+
+What `action.tools.provide` would map to:
+
+| OAP | OpenCode |
+|---|---|
+| `tools` on `session.open.request` | an MCP server the adapter hosts, added with `PUT /api/experimental/mcp/oap-<session>` and listing exactly those tools |
+| `action.call.requested` | the MCP `tools/call` that server receives, after OpenCode's permission assertion |
+| `action.call.resolve.request` | the MCP `CallToolResult` the server answers: `content` text, `isError` for a failure |
+| the five refusal reasons | the adapter's own |
+| limits | MCP's tool-name rules, the server `timeout`, and the location scope above |
+| session close | `DELETE /api/experimental/mcp/oap-<session>` |
+
+**Recommendation.** Feasible only as `degraded`, because the tools are
+location-scoped. It also needs an MCP server inside the adapter, the most
+machinery of the three harnesses. Worth it only if OpenCode sessions need the
+daemon's tools before OpenCode grows a session-scoped tool API.
