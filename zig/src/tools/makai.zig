@@ -622,7 +622,7 @@ fn runHub(
             return error.BackendRefused;
         };
     }
-    var core = hub.Hub.init(allocator, wallClockNanoseconds, .{ .tool_sources = tool_sources, .bindings = if (bindings) |*store| store else null });
+    var core = hub.Hub.init(allocator, wallClockNanoseconds, .{ .tool_sources = tool_sources, .bindings = if (bindings) |*store| store.bindings() else null });
     defer core.deinit();
     if (config == null) {
         const memory = try arena.create(memory_adapter.Adapter);

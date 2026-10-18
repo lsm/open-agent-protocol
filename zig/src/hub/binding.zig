@@ -222,6 +222,65 @@ pub const Store = struct {
         }
         return latestEach(arena, entries.items);
     }
+
+    pub fn bindings(self: *Store) Bindings {
+        return .{ .ctx = self, .vtable = &store_vtable };
+    }
+
+    const store_vtable = Bindings.VTable{
+        .append = storeAppend,
+        .latest = storeLatest,
+        .sessions = storeSessions,
+        .lastFailure = storeLastFailure,
+    };
+
+    fn storeAppend(ctx: *anyopaque, entry: Entry) anyerror!void {
+        const self: *Store = @ptrCast(@alignCast(ctx));
+        return self.append(entry);
+    }
+
+    fn storeLatest(ctx: *anyopaque, arena: std.mem.Allocator, session_id: []const u8) anyerror!?Entry {
+        const self: *Store = @ptrCast(@alignCast(ctx));
+        return self.latest(arena, session_id);
+    }
+
+    fn storeSessions(ctx: *anyopaque, arena: std.mem.Allocator) anyerror![]Entry {
+        const self: *Store = @ptrCast(@alignCast(ctx));
+        return self.sessions(arena);
+    }
+
+    fn storeLastFailure(ctx: *anyopaque) ?anyerror {
+        const self: *Store = @ptrCast(@alignCast(ctx));
+        return self.last_failure;
+    }
+};
+
+pub const Bindings = struct {
+    ctx: *anyopaque,
+    vtable: *const VTable,
+
+    pub const VTable = struct {
+        append: *const fn (ctx: *anyopaque, entry: Entry) anyerror!void,
+        latest: *const fn (ctx: *anyopaque, arena: std.mem.Allocator, session_id: []const u8) anyerror!?Entry,
+        sessions: *const fn (ctx: *anyopaque, arena: std.mem.Allocator) anyerror![]Entry,
+        lastFailure: *const fn (ctx: *anyopaque) ?anyerror,
+    };
+
+    pub fn append(self: Bindings, entry: Entry) !void {
+        return self.vtable.append(self.ctx, entry);
+    }
+
+    pub fn latest(self: Bindings, arena: std.mem.Allocator, session_id: []const u8) !?Entry {
+        return self.vtable.latest(self.ctx, arena, session_id);
+    }
+
+    pub fn sessions(self: Bindings, arena: std.mem.Allocator) ![]Entry {
+        return latestEach(arena, try self.vtable.sessions(self.ctx, arena));
+    }
+
+    pub fn lastFailure(self: Bindings) ?anyerror {
+        return self.vtable.lastFailure(self.ctx);
+    }
 };
 
 pub const default_limit: usize = 50;
@@ -434,4 +493,44 @@ test "a session list defaults its limit, refuses one past the ceiling, and refus
     for ([_][]const u8{ "not base64!", "bm8tY29sb24", "eDpzZXNzaW9u", "MTI6" }) |cursor| {
         try testing.expectError(error.InvalidCursor, list(a, sessions, cursor, 0));
     }
+}
+
+const RawRows = struct {
+    rows: []const Entry,
+
+    fn bindings(self: *RawRows) Bindings {
+        return .{ .ctx = self, .vtable = &.{ .append = append, .latest = latest, .sessions = sessions, .lastFailure = lastFailure } };
+    }
+
+    fn append(_: *anyopaque, _: Entry) anyerror!void {}
+
+    fn latest(_: *anyopaque, _: std.mem.Allocator, _: []const u8) anyerror!?Entry {
+        return null;
+    }
+
+    fn sessions(ctx: *anyopaque, arena: std.mem.Allocator) anyerror![]Entry {
+        const self: *RawRows = @ptrCast(@alignCast(ctx));
+        return arena.dupe(Entry, self.rows);
+    }
+
+    fn lastFailure(_: *anyopaque) ?anyerror {
+        return null;
+    }
+};
+
+test "a backend that answers sessions with every row is read as one latest entry per session" {
+    var backend = RawRows{ .rows = &.{
+        .{ .action = .opened, .time_ms = 1, .record = .{ .session_id = "s", .adapter = "pi" } },
+        .{ .action = .opened, .time_ms = 2, .record = .{ .session_id = "t", .adapter = "pi" } },
+        .{ .action = .closed, .time_ms = 3, .record = .{ .session_id = "s", .adapter = "pi" } },
+        .{ .action = .refused, .time_ms = 4, .record = .{ .session_id = "t", .adapter = "pi" } },
+    } };
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const listed = try backend.bindings().sessions(arena.allocator());
+    try testing.expectEqual(@as(usize, 2), listed.len);
+    try testing.expectEqualStrings("s", listed[0].record.session_id);
+    try testing.expectEqual(Action.closed, listed[0].action);
+    try testing.expectEqualStrings("t", listed[1].record.session_id);
+    try testing.expectEqual(Action.opened, listed[1].action);
 }

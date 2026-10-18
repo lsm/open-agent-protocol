@@ -1113,7 +1113,7 @@ pub const Frontend = struct {
             error.OutOfMemory => return error.OutOfMemory,
             else => return .unreadable,
         };
-        return .{ .entries = try hubmod.binding.latestEach(arena, recorded) };
+        return .{ .entries = recorded };
     }
 
     const Unheld = union(enum) {
@@ -4791,7 +4791,7 @@ test "work.read of a session with a native id reads the harness's own transcript
     var store = try hubmod.binding.Store.open(testing.allocator, path);
     defer store.deinit();
     try store.append(.{ .action = .opened, .time_ms = 10, .record = .{ .session_id = "left", .adapter = "reference", .native_session_id = "thread-a", .directory = "/work/a" } });
-    const harness = try Harness.init(testing.allocator, .{ .bindings = &store }, .{});
+    const harness = try Harness.init(testing.allocator, .{ .bindings = store.bindings() }, .{});
     defer harness.deinit();
 
     try harness.send("{\"id\":1,\"op\":\"work.read\",\"session_id\":\"left\",\"after\":0,\"limit\":1}");
@@ -4853,7 +4853,7 @@ test "work.list shows a session serve no longer holds from its binding, live by 
     try store.append(.{ .action = .opened, .time_ms = 10, .record = .{ .session_id = "left", .adapter = "reference", .directory = "/work/a" } });
     try store.append(.{ .action = .opened, .time_ms = 20, .record = .{ .session_id = "ended", .adapter = "reference", .directory = "/work/a" } });
     try store.append(.{ .action = .closed, .time_ms = 30, .record = .{ .session_id = "ended", .adapter = "reference", .directory = "/work/a" } });
-    const harness = try Harness.init(testing.allocator, .{ .bindings = &store }, .{});
+    const harness = try Harness.init(testing.allocator, .{ .bindings = store.bindings() }, .{});
     defer harness.deinit();
 
     try harness.send("{\"id\":1,\"op\":\"work.list\"}");
@@ -4891,7 +4891,7 @@ test "an unreadable session history is history_failed for work.list and work.sta
     var store = try hubmod.binding.Store.open(testing.allocator, path);
     defer store.deinit();
     try tmp.dir.writeFile(testing.io, .{ .sub_path = "sessions.jsonl", .data = "not a record" });
-    const harness = try Harness.init(testing.allocator, .{ .bindings = &store }, .{});
+    const harness = try Harness.init(testing.allocator, .{ .bindings = store.bindings() }, .{});
     defer harness.deinit();
     try harness.send("{\"id\":1,\"op\":\"work.list\"}");
     try testing.expectEqualStrings("history_failed", try harness.code());
@@ -4908,7 +4908,7 @@ test "the history op answers the store's sessions and refuses as the route does"
     defer testing.allocator.free(path);
     var store = try hubmod.binding.Store.open(testing.allocator, path);
     defer store.deinit();
-    const harness = try Harness.init(testing.allocator, .{ .bindings = &store }, .{});
+    const harness = try Harness.init(testing.allocator, .{ .bindings = store.bindings() }, .{});
     defer harness.deinit();
     var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena_state.deinit();
@@ -5018,7 +5018,7 @@ test "work.list search asks the native lists that search, and answers each match
     try store.append(.{ .action = .opened, .time_ms = 75, .record = .{ .session_id = "u1", .adapter = "reference", .directory = "/work/a" } });
     try store.append(.{ .action = .opened, .time_ms = 40, .record = .{ .session_id = "u3", .adapter = "searching", .native_session_id = "n3", .directory = "/work/a" } });
     try store.append(.{ .action = .closed, .time_ms = 20, .record = .{ .session_id = "u4", .adapter = "searching", .native_session_id = "n5", .directory = "/work/a" } });
-    const harness = try Harness.init(testing.allocator, .{ .bindings = &store }, .{});
+    const harness = try Harness.init(testing.allocator, .{ .bindings = store.bindings() }, .{});
     defer harness.deinit();
     try harness.hub.register("searching", .{ .ptr = &reference_holder, .vtable = &.{ .probe = referenceProbe, .open = referenceOpen, .native_list = pagedNativeList, .native_search = titledNativeSearch } });
     defer reference_holder.opens_native = "";
