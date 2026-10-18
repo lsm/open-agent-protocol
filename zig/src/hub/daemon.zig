@@ -1724,10 +1724,11 @@ test "a media refusal reaches the client though the body outruns the drain" {
 
     var stream = try served.dial();
     defer stream.close();
-    const handle = compat.net.streamHandle(&stream);
-    if (comptime @hasDecl(std.posix.SO, "NOSIGPIPE")) {
-        const on: c_int = 1;
-        try std.posix.setsockopt(handle, std.posix.SOL.SOCKET, std.posix.SO.NOSIGPIPE, std.mem.asBytes(&on));
+    if (comptime hub_http.pollable) {
+        if (comptime @hasDecl(std.posix.SO, "NOSIGPIPE")) {
+            const on: c_int = 1;
+            try std.posix.setsockopt(compat.net.streamHandle(&stream), std.posix.SOL.SOCKET, std.posix.SO.NOSIGPIPE, std.mem.asBytes(&on));
+        }
     }
     const declared = 4 * hub_http.drain_total_cap_bytes;
     const head = try std.fmt.allocPrint(testing.allocator, "POST /adapters/memory/sessions HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: text/plain\r\nContent-Length: {d}\r\n\r\n", .{declared});
@@ -1736,7 +1737,8 @@ test "a media refusal reaches the client though the body outruns the drain" {
     const block: [32 * 1024]u8 = @splat('b');
     var written: usize = 0;
     while (written < declared) {
-        switch (writeSome(handle, &block)) {
+        const wrote: Wrote = if (comptime hub_http.pollable) writeSome(compat.net.streamHandle(&stream), &block) else .{ .bytes = stream.write(&block) catch break };
+        switch (wrote) {
             .bytes => |n| written += n,
             .waiting => {},
             .closed => break,
