@@ -2,6 +2,7 @@ package binding
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"testing"
@@ -51,7 +52,7 @@ func TestRunStoresKeepOpenRunsInAdmissionOrderAndForgetSettledOnes(t *testing.T)
 	}
 }
 
-func TestARunRecordLineIsTheOneTheZigStoreWrites(t *testing.T) {
+func TestARunRecordLineIsTheChecksumOfItsJSONAndTheJSONInFixedMemberOrder(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "runs.jsonl")
 	store, err := RunsFile(path)
 	if err != nil {
@@ -99,5 +100,37 @@ func TestATornRunRecordIsNotReadAndTheNextAppendDropsIt(t *testing.T) {
 	}
 	if runs, _ := store.OpenRuns(ctx, "s"); len(runs) != 2 || runs[1].RunID != "r2" || len(after) >= 2*len(whole)+len(whole)/2 {
 		t.Fatalf("after the next append: %+v and %d bytes; want r1, r2 and the torn tail gone", runs, len(after))
+	}
+}
+
+func TestASettledRecordALogKeptIsReadAsTheEndOfItsRun(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "runs.jsonl")
+	var log []byte
+	for _, record := range []RunRecord{
+		{Action: RunAdmitted, TimeMS: 1, SessionID: "s", RunID: "r1"},
+		{Action: RunAdmitted, TimeMS: 2, SessionID: "s", RunID: "r2"},
+		{Action: RunAdmitted, TimeMS: 3, SessionID: "s", RunID: "r3"},
+		{Action: RunSettled, TimeMS: 4, SessionID: "s", RunID: "r1"},
+		{Action: RunStarted, TimeMS: 5, SessionID: "s", RunID: "r3"},
+	} {
+		payload, err := json.Marshal(record)
+		if err != nil {
+			t.Fatal(err)
+		}
+		log = append(log, frame(payload)...)
+	}
+	if err := os.WriteFile(path, log, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	store, err := RunsFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runs, err := store.OpenRuns(context.Background(), "s")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(runs) != 2 || runs[0].RunID != "r2" || runs[0].Started || runs[1].RunID != "r3" || !runs[1].Started {
+		t.Fatalf("open runs = %+v, want r2 queued then r3 started, r1 gone", runs)
 	}
 }

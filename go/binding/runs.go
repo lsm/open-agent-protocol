@@ -60,6 +60,18 @@ func openRuns(records []RunRecord, sessionID string) []OpenRun {
 			continue
 		}
 		index, seen := at[record.RunID]
+		if record.Action == RunSettled {
+			if seen {
+				runs = append(runs[:index], runs[index+1:]...)
+				delete(at, record.RunID)
+				for runID, later := range at {
+					if later > index {
+						at[runID] = later - 1
+					}
+				}
+			}
+			continue
+		}
 		if !seen {
 			index = len(runs)
 			at[record.RunID] = index
