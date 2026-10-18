@@ -88,6 +88,10 @@ func (v *ProviderValidator) Validate(r io.Reader, fixture string) Result {
 		}
 		var e providerEnvelope
 		if err := json.Unmarshal(entry.raw, &e); err != nil {
+			if schemaErr := v.schema.Validate(document); schemaErr != nil {
+				result.Diagnostics = append(result.Diagnostics, Diagnostic{Fixture: fixture, Phase: PhaseSchema, Code: CodeSchemaInvalid, Index: i, Line: entry.line, Message: schemaErr.Error()})
+				continue
+			}
 			result.Diagnostics = append(result.Diagnostics, Diagnostic{Fixture: fixture, Phase: PhaseDecode, Code: CodePayloadDecode, Index: i, Line: entry.line, Message: err.Error()})
 			continue
 		}
