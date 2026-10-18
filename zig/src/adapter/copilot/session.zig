@@ -270,8 +270,12 @@ pub const Reducer = struct {
         const native_id = native.text(data, "toolCallId");
         const name = native.text(data, "toolName");
         if (native_id.len == 0 or name.len == 0 or self.findTool(run, native_id) != null) return self.fail(run, "copilot_invalid_tool_lifecycle", "a tool start that is unnamed or already started");
+        const kept_native_id = try self.allocator().dupe(u8, native_id);
+        const tool_call_id = try self.nextID("tool-call");
+        const kept_name = try self.allocator().dupe(u8, name);
+        const arguments = try clone(self.allocator(), data.get("arguments") orelse .null);
         const tool = try self.allocator().create(Tool);
-        tool.* = .{ .run = run, .native_id = try self.allocator().dupe(u8, native_id), .id = try self.nextID("tool-call"), .name = try self.allocator().dupe(u8, name), .arguments = try clone(self.allocator(), data.get("arguments") orelse .null) };
+        tool.* = .{ .run = run, .native_id = kept_native_id, .id = tool_call_id, .name = kept_name, .arguments = arguments };
         try self.tools.append(self.allocator(), tool);
         var requested = try self.toolPayload(tool);
         try requested.put(self.allocator(), "arguments_json", tool.arguments);
@@ -306,8 +310,10 @@ pub const Reducer = struct {
         const detail = asked.?.object;
         const tool = self.findTool(run, native.text(detail, "toolCallId")) orelse return self.fail(run, "copilot_permission_without_tool", "Copilot asked permission outside a tool call this run started");
         if (tool.terminal) return self.fail(run, "copilot_permission_without_tool", "Copilot asked permission for a tool call that already ended");
+        const interaction_id = try self.nextID("interaction");
+        const kept_request_id = try self.allocator().dupe(u8, request_id);
         const gate = try self.allocator().create(Gate);
-        gate.* = .{ .id = try self.nextID("interaction"), .native_id = try self.allocator().dupe(u8, request_id), .run = run, .tool = tool };
+        gate.* = .{ .id = interaction_id, .native_id = kept_request_id, .run = run, .tool = tool };
         try self.gates.append(self.allocator(), gate);
         const intention = native.text(detail, "intention");
         const kind = native.text(detail, "kind");
