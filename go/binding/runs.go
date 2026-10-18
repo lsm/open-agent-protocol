@@ -2,10 +2,12 @@ package binding
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sync"
@@ -139,8 +141,11 @@ func (s *fileRuns) records() ([]RunRecord, error) {
 	reader := bufio.NewReader(file)
 	for {
 		line, err := reader.ReadString('\n')
-		if err != nil {
+		if errors.Is(err, io.EOF) {
 			return records, nil
+		}
+		if err != nil {
+			return nil, err
 		}
 		payload, err := unframe(line)
 		if err != nil {
@@ -154,6 +159,16 @@ func (s *fileRuns) records() ([]RunRecord, error) {
 	}
 }
 
+func marshalRun(record RunRecord) ([]byte, error) {
+	var buffer bytes.Buffer
+	encoder := json.NewEncoder(&buffer)
+	encoder.SetEscapeHTML(false)
+	if err := encoder.Encode(record); err != nil {
+		return nil, err
+	}
+	return bytes.TrimSuffix(buffer.Bytes(), []byte("\n")), nil
+}
+
 func (s *fileRuns) AppendRun(_ context.Context, record RunRecord) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -163,7 +178,7 @@ func (s *fileRuns) AppendRun(_ context.Context, record RunRecord) error {
 	}
 	var next []byte
 	for _, held := range keptAfter(records, record) {
-		payload, err := json.Marshal(held)
+		payload, err := marshalRun(held)
 		if err != nil {
 			return err
 		}

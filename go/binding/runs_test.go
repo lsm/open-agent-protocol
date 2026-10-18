@@ -61,11 +61,15 @@ func TestARunRecordLineIsTheChecksumOfItsJSONAndTheJSONInFixedMemberOrder(t *tes
 	if err := store.AppendRun(context.Background(), RunRecord{Action: RunAdmitted, TimeMS: 3, SessionID: "s", RunID: "r2", Request: `{"message":"next"}`}); err != nil {
 		t.Fatal(err)
 	}
+	if err := store.AppendRun(context.Background(), RunRecord{Action: RunAdmitted, TimeMS: 3, SessionID: "s", RunID: "r2", Request: `{"message":"<a & b>"}`}); err != nil {
+		t.Fatal(err)
+	}
 	bytes, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := `34771ed2 {"action":"admitted","time_ms":3,"session_id":"s","run_id":"r2","request":"{\"message\":\"next\"}"}` + "\n"
+	want := `34771ed2 {"action":"admitted","time_ms":3,"session_id":"s","run_id":"r2","request":"{\"message\":\"next\"}"}` + "\n" +
+		`cb0983f9 {"action":"admitted","time_ms":3,"session_id":"s","run_id":"r2","request":"{\"message\":\"<a & b>\"}"}` + "\n"
 	if string(bytes) != want {
 		t.Fatalf("file = %q, want %q", bytes, want)
 	}
