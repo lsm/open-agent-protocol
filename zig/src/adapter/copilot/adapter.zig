@@ -355,15 +355,17 @@ pub const Session = struct {
         const started = std.mem.eql(u8, admitted.admission, "started");
         const message_ids = try arena.alloc([]const u8, 1);
         message_ids[0] = try arena.dupe(u8, admitted.message_id);
+        const submission_id = try arena.dupe(u8, message_id);
+        const run_id = try arena.dupe(u8, admitted.run_id);
         return .{
             .session_id = self.id,
             .accepted = true,
-            .submission_id = try arena.dupe(u8, message_id),
+            .submission_id = submission_id,
             .requested_delivery = .auto,
             .effective_delivery = if (started) .start else .queue,
             .delivery_resolution = if (started) "session_idle" else "session_busy",
             .admission = if (started) .started else .queued,
-            .run_id = try arena.dupe(u8, admitted.run_id),
+            .run_id = run_id,
             .status = if (started) .running else .queued,
             .message_ids = message_ids,
         };
