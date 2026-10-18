@@ -12165,6 +12165,280 @@
       ]
     },
     {
+      "id": "transcript-load-paged",
+      "path": "valid/transcript-load-paged.json",
+      "kind": "positive",
+      "valid": true,
+      "phase": "",
+      "codes": [],
+      "units": [
+        "transcript-load"
+      ],
+      "provenance": [
+        "decisions/0051-transcript-load.md"
+      ]
+    },
+    {
+      "id": "transcript-load-gap",
+      "path": "valid/transcript-load-gap.json",
+      "kind": "positive",
+      "valid": true,
+      "phase": "",
+      "codes": [],
+      "units": [
+        "transcript-load"
+      ],
+      "provenance": [
+        "decisions/0051-transcript-load.md"
+      ]
+    },
+    {
+      "id": "transcript-load-truncated-entry",
+      "path": "valid/transcript-load-truncated-entry.json",
+      "kind": "positive",
+      "valid": true,
+      "phase": "",
+      "codes": [],
+      "units": [
+        "transcript-load"
+      ],
+      "provenance": [
+        "decisions/0051-transcript-load.md"
+      ]
+    },
+    {
+      "id": "transcript-load-unadvertised-refused",
+      "path": "valid/transcript-load-unadvertised-refused.json",
+      "kind": "positive",
+      "valid": true,
+      "phase": "",
+      "codes": [],
+      "units": [
+        "transcript-load"
+      ],
+      "provenance": [
+        "decisions/0051-transcript-load.md"
+      ]
+    },
+    {
+      "id": "transcript-load-unadvertised",
+      "path": "semantic-invalid/transcript-load-unadvertised.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "unavailable_capability"
+      ],
+      "units": [
+        "transcript-load"
+      ],
+      "provenance": [
+        "decisions/0051-transcript-load.md"
+      ],
+      "covers": [
+        {
+          "capability": "transcript.load",
+          "aspect": "gate"
+        }
+      ]
+    },
+    {
+      "id": "transcript-load-degraded-admitted-without-optin",
+      "path": "semantic-invalid/transcript-load-degraded-admitted-without-optin.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "degraded_without_optin"
+      ],
+      "units": [
+        "transcript-load"
+      ],
+      "provenance": [
+        "decisions/0051-transcript-load.md"
+      ],
+      "covers": [
+        {
+          "capability": "transcript.load",
+          "aspect": "gate"
+        }
+      ]
+    },
+    {
+      "id": "transcript-load-over-limit",
+      "path": "semantic-invalid/transcript-load-over-limit.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "transcript_over_limit"
+      ],
+      "units": [
+        "transcript-load"
+      ],
+      "provenance": [
+        "decisions/0051-transcript-load.md"
+      ],
+      "covers": [
+        {
+          "capability": "transcript.load",
+          "aspect": "honour"
+        }
+      ]
+    },
+    {
+      "id": "transcript-load-duplicate-entry",
+      "path": "semantic-invalid/transcript-load-duplicate-entry.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "duplicate_transcript_entry"
+      ],
+      "units": [
+        "transcript-load"
+      ],
+      "provenance": [
+        "decisions/0051-transcript-load.md"
+      ],
+      "covers": [
+        {
+          "capability": "transcript.load",
+          "aspect": "honour"
+        }
+      ]
+    },
+    {
+      "id": "transcript-load-gap-elsewhere",
+      "path": "semantic-invalid/transcript-load-gap-elsewhere.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "transcript_gap_mismatch"
+      ],
+      "units": [
+        "transcript-load"
+      ],
+      "provenance": [
+        "decisions/0051-transcript-load.md"
+      ],
+      "covers": [
+        {
+          "capability": "transcript.load",
+          "aspect": "honour"
+        }
+      ]
+    },
+    {
+      "id": "transcript-load-gap-without-cursor",
+      "path": "semantic-invalid/transcript-load-gap-without-cursor.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "transcript_gap_mismatch"
+      ],
+      "units": [
+        "transcript-load"
+      ],
+      "provenance": [
+        "decisions/0051-transcript-load.md"
+      ],
+      "covers": [
+        {
+          "capability": "transcript.load",
+          "aspect": "honour"
+        }
+      ]
+    },
+    {
+      "id": "transcript-load-other-session",
+      "path": "semantic-invalid/transcript-load-other-session.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "scope_mismatch"
+      ],
+      "units": [
+        "transcript-load"
+      ],
+      "provenance": [
+        "decisions/0051-transcript-load.md"
+      ],
+      "covers": [
+        {
+          "capability": "transcript.load",
+          "aspect": "honour"
+        }
+      ]
+    },
+    {
+      "id": "transcript-load-incomplete-without-cursor",
+      "path": "schema-invalid/transcript-load-incomplete-without-cursor.json",
+      "kind": "schema-invalid",
+      "valid": false,
+      "phase": "schema",
+      "codes": [
+        "schema_invalid"
+      ],
+      "units": [
+        "transcript-load"
+      ],
+      "provenance": [
+        "decisions/0051-transcript-load.md"
+      ]
+    },
+    {
+      "id": "transcript-load-message-entry-without-message",
+      "path": "schema-invalid/transcript-load-message-entry-without-message.json",
+      "kind": "schema-invalid",
+      "valid": false,
+      "phase": "schema",
+      "codes": [
+        "schema_invalid"
+      ],
+      "units": [
+        "transcript-load"
+      ],
+      "provenance": [
+        "decisions/0051-transcript-load.md"
+      ]
+    },
+    {
+      "id": "transcript-load-limit-out-of-range",
+      "path": "schema-invalid/transcript-load-limit-out-of-range.json",
+      "kind": "schema-invalid",
+      "valid": false,
+      "phase": "schema",
+      "codes": [
+        "schema_invalid"
+      ],
+      "units": [
+        "transcript-load"
+      ],
+      "provenance": [
+        "decisions/0051-transcript-load.md"
+      ]
+    },
+    {
+      "id": "transcript-load-unknown-gap-reason",
+      "path": "schema-invalid/transcript-load-unknown-gap-reason.json",
+      "kind": "schema-invalid",
+      "valid": false,
+      "phase": "schema",
+      "codes": [
+        "schema_invalid"
+      ],
+      "units": [
+        "transcript-load"
+      ],
+      "provenance": [
+        "decisions/0051-transcript-load.md"
+      ]
+    },
+    {
       "id": "endpoint-shutdown-asks-then-drains",
       "path": "valid/endpoint-shutdown-asks-then-drains.json",
       "kind": "positive",

@@ -18,7 +18,7 @@ const local_loop = @import("local_loop.zig");
 pub const LocalLoop = local_loop.LocalLoop;
 
 pub const endpoint_id = "oapx.agent";
-pub const capability_revision = "oapx-agent-v14";
+pub const capability_revision = "oapx-agent-v15";
 const native_source = "oapx";
 const native_sources = [_]oap_types.ToolSourceDescriptor{.{ .id = native_source, .kind = "native", .display_name = "oapx" }};
 
@@ -74,6 +74,18 @@ pub const descriptor = contract.Descriptor{
     .limits = .{ .max_active_runs_per_session = queue_capacity + 1, .max_queued_runs_per_session = queue_capacity },
 };
 
+const transcript_features = features ++ [_]contract.Feature{
+    .{ .key = contract.feature_transcript_load, .level = .native, .reason = "reads the session saved under ~/.oapx/sessions, every message and completed compaction in file order, held or closed; transcript_cursor is a cursor after its newest entry" },
+};
+
+const transcript_descriptor = contract.Descriptor{
+    .endpoint = descriptor.endpoint,
+    .capability_revision = capability_revision,
+    .features = &transcript_features,
+    .sources = &native_sources,
+    .limits = descriptor.limits,
+};
+
 const unsaved_descriptor = contract.Descriptor{
     .endpoint = descriptor.endpoint,
     .capability_revision = capability_revision,
@@ -115,18 +127,22 @@ pub const Adapter = struct {
     now_ms: *const fn () i64 = wallClock,
     served: ?ServedDescriptors = null,
 
-    const ServedDescriptors = struct { saved: contract.Descriptor, unsaved: contract.Descriptor };
+    const ServedDescriptors = struct { saved: contract.Descriptor, unsaved: contract.Descriptor, transcript: contract.Descriptor };
 
     pub fn advertise(self: *Adapter, extra: []const contract.Feature) !void {
         const saved = try withFeatures(self.allocator, &features, extra);
         errdefer self.allocator.free(saved);
         const unsaved = try withFeatures(self.allocator, &unsaved_features, extra);
+        errdefer self.allocator.free(unsaved);
+        const read = try withFeatures(self.allocator, &transcript_features, extra);
         self.releaseServed();
         var served_saved = descriptor;
         served_saved.features = saved;
         var served_unsaved = unsaved_descriptor;
         served_unsaved.features = unsaved;
-        self.served = .{ .saved = served_saved, .unsaved = served_unsaved };
+        var served_transcript = transcript_descriptor;
+        served_transcript.features = read;
+        self.served = .{ .saved = served_saved, .unsaved = served_unsaved, .transcript = served_transcript };
     }
 
     fn withFeatures(allocator: std.mem.Allocator, own: []const contract.Feature, extra: []const contract.Feature) ![]contract.Feature {
@@ -145,6 +161,7 @@ pub const Adapter = struct {
         const held = self.served orelse return;
         self.allocator.free(held.saved.features);
         self.allocator.free(held.unsaved.features);
+        self.allocator.free(held.transcript.features);
         self.served = null;
     }
 
@@ -218,8 +235,8 @@ pub const Adapter = struct {
     }
 
     fn advertised(self: *const Adapter) contract.Descriptor {
-        if (self.served) |held| return if (self.history != null) held.saved else held.unsaved;
-        return if (self.history != null) descriptor else unsaved_descriptor;
+        if (self.served) |held| return if (self.readsEntries()) held.transcript else if (self.history != null) held.saved else held.unsaved;
+        return if (self.readsEntries()) transcript_descriptor else if (self.history != null) descriptor else unsaved_descriptor;
     }
 
     fn open(ptr: *anyopaque, arena: std.mem.Allocator, request: contract.OpenRequest, refusal: *contract.Refusal) contract.Failure!contract.Session {
@@ -704,7 +721,16 @@ pub const Session = struct {
 
     fn state(ptr: *anyopaque, arena: std.mem.Allocator, refusal: *contract.Refusal) contract.Failure!oap_types.SessionState {
         _ = refusal;
-        return cast(ptr).snapshot(arena);
+        const self = cast(ptr);
+        var result = try self.snapshot(arena);
+        const loader = self.owner.history orelse return result;
+        const reads = loader.entries orelse return result;
+        const saved: ?[]const transcript.SavedEntry = reads(loader.ctx, arena, self.id) catch |err| switch (err) {
+            error.OutOfMemory => return error.OutOfMemory,
+            else => null,
+        };
+        if (saved) |held| result.transcript_cursor = try transcript.tail(arena, self.id, held);
+        return result;
     }
 
     fn findRun(self: *Session, id: []const u8) ?*Run {
@@ -4059,6 +4085,34 @@ const SavedEntries = struct {
         return saved;
     }
 };
+
+const AnySessionEntries = struct {
+    fn entries(ctx: *anyopaque, arena: std.mem.Allocator, session_id: []const u8) anyerror![]const transcript.SavedEntry {
+        _ = session_id;
+        return SavedEntries.entries(ctx, arena, "saved");
+    }
+};
+
+test "transcript.load is advertised only with a saved-entries reader, and the state's transcript_cursor reads nothing until a newer entry is saved" {
+    var script = Script{};
+    var harness: Harness = undefined;
+    try harness.init(&script);
+    defer harness.deinit();
+    const a = harness.arena.allocator();
+    var refusal = contract.Refusal{};
+    var saved = SavedSessions{};
+    harness.owner.history = .{ .ctx = &saved, .load = SavedSessions.load, .read = ReadableSessions.read };
+    try testing.expectEqual(oap_types.SupportLevel.unavailable, (try harness.owner.adapter().probe(&refusal)).level(contract.feature_transcript_load));
+    try testing.expect((try harness.session.state(a, &refusal)).transcript_cursor == null);
+
+    harness.owner.history = .{ .ctx = &saved, .load = SavedSessions.load, .read = ReadableSessions.read, .entries = AnySessionEntries.entries };
+    try testing.expectEqual(oap_types.SupportLevel.native, (try harness.owner.adapter().probe(&refusal)).level(contract.feature_transcript_load));
+    const cursor = (try harness.session.state(a, &refusal)).transcript_cursor.?;
+    const caught_up = try harness.owner.adapter().transcriptLoad(a, .{ .native_id = harness.session.id(), .cursor = cursor }, &refusal).?;
+    try testing.expectEqual(@as(usize, 0), caught_up.entries.len);
+    try testing.expect(caught_up.complete);
+    try testing.expect(caught_up.gap == null);
+}
 
 test "a transcript load is offered only with a saved-entries reader, and carries reasoning, tool calls and tool results as message parts" {
     var script = Script{};

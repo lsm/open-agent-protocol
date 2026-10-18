@@ -53,11 +53,12 @@ one side of this line or the other. None is left unstated:
 | `+tool-sources` | yes | [Decision 0008](decisions/0008-tool-sources.md), accepted. |
 | `+compound-open` | yes | [Decision 0009](decisions/0009-compound-open.md), accepted. |
 | `+control-tools` | yes | [Decision 0011](decisions/0011-control-layer-provided-tools.md), accepted. It was assessed and held earlier the same day for want of a reference execution and a pinned corpus case; both now exist, and the record says so. |
-| `+persistence` | **no** | Its envelope types exist in no schema file and no Go type; the conformance draft described a unit that had never been built. [Decision 0012](decisions/0012-persistence-is-not-in-v0.1-core.md), accepted, retires it and stages the one capability with native evidence as `transcript-load`, so the retirement binds and `transcript-load` is uncovered until it graduates. [Decision 0039](decisions/0039-a-session-is-oaps-and-a-harness-is-where-it-runs.md), which is accepted, staged `session-reattach` and `session-list` beside it; both have since graduated (below). |
+| `+persistence` | **no** | Its envelope types exist in no schema file and no Go type; the conformance draft described a unit that had never been built. [Decision 0012](decisions/0012-persistence-is-not-in-v0.1-core.md), accepted, retires it and stages the one capability with native evidence as `transcript-load`, so the retirement binds and `transcript-load` is uncovered until it graduates. [Decision 0039](decisions/0039-a-session-is-oaps-and-a-harness-is-where-it-runs.md), which is accepted, staged `session-reattach` and `session-list` beside it; `session-reattach` and `session-list` have since graduated (below). |
 | `+steer` | yes | [Decision 0013](decisions/0013-steer.md), accepted. |
 | `+btw` | **no** | Staged, not graduated. No decision has taken it through the gate. |
 | `+session-reattach` | yes | [Decision 0040](decisions/0040-a-session-reopens-through-its-own-binding.md), accepted. |
 | `+session-list` | yes | [Decision 0046](decisions/0046-a-session-list-is-the-hosts-bindings.md), accepted. |
+| `+transcript-load` | **no** | [Decision 0051](decisions/0051-transcript-load.md) is owner-approved but `proposed`: its wire and fixtures exist, and it becomes accepted once the native readers land. |
 | `+session-settings`, `+session-settings-live` | yes | [Decision 0045](decisions/0045-reasoning-level-and-compaction-policy-are-session-settings.md), accepted. |
 | `+provider-attach` | **no** | [Decision 0028](decisions/0028-live-model-and-provider-control.md) is `proposed`: its wire and fixtures exist, but the record says live attachment is not yet implemented. |
 | `+compaction` | yes | [Decision 0044](decisions/0044-compaction.md), accepted. |
@@ -288,12 +289,11 @@ Stated plainly, so the covered surface stays meaningful:
   Decision 0012 did to `+persistence`. That covers the staged units in
   [the graduation plan](drafts/staged-units-graduation.md), and is the reason
   the table above states every unit rather than only the covered ones.
-- **Transcript loading.** v0.1 core has no vocabulary for it.
-  [Decision 0012](decisions/0012-persistence-is-not-in-v0.1-core.md) retired the
-  unit that described it and staged transcript load on its own, on Pi's native
-  evidence, and live transcript deltas are staged for nothing. An endpoint that
-  has these today names them in an extension pack. Session listing is not in
-  this list: Decision 0046 graduated `+session-list` into the covered set.
+- **Transcript loading.** `transcript.load` is on the wire under
+  [Decision 0051](decisions/0051-transcript-load.md), which stays `proposed`
+  until its native readers land, and live transcript deltas are staged for
+  nothing. Session listing is not in this list: Decision 0046 graduated
+  `+session-list` into the covered set.
 - **Anything outside the agent-control boundary.** Direct model inference is
   the separate `model-provider-core` profile, not an agent-control envelope.
   The profiles may share stdio under Decision 0027 while retaining distinct

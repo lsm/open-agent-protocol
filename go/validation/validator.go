@@ -560,6 +560,10 @@ func payloadTarget(t protocol.EnvelopeType) any {
 		return &protocol.SessionListRequest{}
 	case protocol.TypeSessionListResponse:
 		return &protocol.SessionListResponse{}
+	case protocol.TypeTranscriptLoadRequest:
+		return &protocol.TranscriptLoadRequest{}
+	case protocol.TypeTranscriptLoadResponse:
+		return &protocol.TranscriptLoadResponse{}
 	case protocol.TypeSessionModelSwitchRequest:
 		return &protocol.SessionModelSwitchRequest{}
 	case protocol.TypeSessionModelSwitchResponse:

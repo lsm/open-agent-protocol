@@ -60,6 +60,9 @@ pub const code_attachment_field_in_catalog = "attachment_field_in_catalog";
 pub const code_session_list_over_limit = "session_list_over_limit";
 pub const code_session_list_order = "session_list_order";
 pub const code_duplicate_session_entry = "duplicate_session_entry";
+pub const code_transcript_over_limit = "transcript_over_limit";
+pub const code_duplicate_transcript_entry = "duplicate_transcript_entry";
+pub const code_transcript_gap_mismatch = "transcript_gap_mismatch";
 
 const attachment_only_members = [_][]const u8{ "command", "args", "environment" };
 
@@ -82,6 +85,7 @@ pub const implemented = [_][]const u8{
     code_resolution_payload_mismatch, code_wrong_tool_owner,                code_undisclosed_provide_limit,
     code_attachment_field_in_catalog, code_session_list_over_limit,         code_session_list_order,
     code_duplicate_session_entry,     code_duplicate_message_completion,    code_content_after_completion,
+    code_transcript_over_limit,       code_duplicate_transcript_entry,      code_transcript_gap_mismatch,
 };
 
 pub fn isImplemented(code: []const u8) bool {
@@ -412,6 +416,7 @@ const Pending = struct {
     limit_refusal: ?Expectation = null,
     model_query: bool = false,
     list_limit: ?u64 = null,
+    list_cursor: bool = false,
     satisfies: bool = false,
     model_unjudged: bool = false,
     revision: []const u8 = "",
@@ -780,6 +785,14 @@ pub const Machine = struct {
         }
         if (std.mem.eql(u8, declared, "session.list.response")) {
             try self.sessionListResponse(index, envelope, payload);
+            return;
+        }
+        if (std.mem.eql(u8, declared, "transcript.load.request")) {
+            try self.transcriptLoadRequest(index, envelope, payload);
+            return;
+        }
+        if (std.mem.eql(u8, declared, "transcript.load.response")) {
+            try self.transcriptLoadResponse(index, envelope, payload);
             return;
         }
         if (std.mem.eql(u8, declared, "session.model.switch.request")) {
@@ -1705,6 +1718,46 @@ pub const Machine = struct {
                 try self.add(code_session_list_order, index);
             }
         }
+    }
+
+    fn transcriptLoadRequest(self: *Machine, index: usize, envelope: std.json.Value, payload: std.json.Value) !void {
+        try self.gatedRequest(index, envelope, payload, feature_transcript_load, "/payload");
+        if (self.submits.get(field(envelope, "id"))) |query| {
+            query.list_limit = unsigned(payload, "limit") orelse transcript_load_default_limit;
+            query.list_cursor = member(payload, "cursor") != null;
+        }
+    }
+
+    fn transcriptLoadResponse(self: *Machine, index: usize, envelope: std.json.Value, payload: std.json.Value) !void {
+        try self.featureKeys(index, envelope, &.{feature_transcript_load});
+        const query = self.submits.get(field(envelope, "in_reply_to"));
+        if (self.requests.get(field(envelope, "in_reply_to"))) |request| {
+            if (std.mem.eql(u8, request.declared, "transcript.load.request") and !std.mem.eql(u8, memberString(payload, "session_id"), memberString(request.payload, "session_id"))) try self.add(code_scope_mismatch, index);
+        }
+        if (query) |asked| {
+            if (asked.control) |expectation| {
+                if (expectation.rung == rung_degradation) try self.add(code_degraded_without_optin, index);
+            }
+        }
+        const listed = member(payload, "entries") orelse return;
+        if (listed != .array) return;
+        const entries = listed.array.items;
+        if (query) |asked| {
+            if (asked.list_limit) |bound| {
+                if (entries.len > bound) try self.add(code_transcript_over_limit, index);
+            }
+        }
+        var seen: std.StringArrayHashMapUnmanaged(void) = .empty;
+        for (entries) |entry| {
+            const id = memberString(entry, "entry_id");
+            if (seen.get(id) != null) try self.add(code_duplicate_transcript_entry, index);
+            try seen.put(self.arena.allocator(), id, {});
+        }
+        const gap = member(payload, "gap") orelse return;
+        const resumed = memberString(gap, "resumed_at");
+        const unasked = if (query) |asked| !asked.list_cursor else false;
+        const first = if (entries.len > 0) memberString(entries[0], "entry_id") else "";
+        if (unasked or !std.mem.eql(u8, resumed, first)) try self.add(code_transcript_gap_mismatch, index);
     }
 
     fn modelSwitchResponse(self: *Machine, index: usize, envelope: std.json.Value, payload: std.json.Value) !void {
@@ -3956,6 +4009,8 @@ const feature_model_selection = "run.model_selection";
 const feature_models_list = "models.list";
 const feature_session_list = "session.list";
 const session_list_default_limit: u64 = 50;
+const feature_transcript_load = "transcript.load";
+const transcript_load_default_limit: u64 = 100;
 const feature_model_switch = "session.model.switch";
 const feature_providers_attach = "action.providers.attach";
 const feature_tools_list = "action.tools.list";
@@ -4261,7 +4316,7 @@ fn sameParticipants(payload: std.json.Value, held: *const Interaction) bool {
 
 fn outranking(held: ?Reason, candidate: Reason) Reason {
     const current = held orelse return candidate;
-    return if (@intFromEnum(candidate) < @intFromEnum(current)) candidate else current;
+    return if (@backingInt(candidate) < @backingInt(current)) candidate else current;
 }
 
 fn resolveLadder(payload: std.json.Value, held: *const Interaction, arm: ?Arm) ?Reason {

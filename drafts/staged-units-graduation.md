@@ -4216,6 +4216,16 @@ piece of evidence beside pi's.
 is not a comprehensive feed of persisted writes. `session.list`, which Decision
 0012 did not stage either, is staged by Decision 0039 as T8.
 
+**Status: [Decision 0051](../decisions/0051-transcript-load.md) is
+owner-approved (2026-10-18) and stays proposed until its native readers
+land.** It answers the four questions: an opaque cursor naming the entry it
+follows and that entry's position, a file-order list for a tree, pages of 1 to
+500 entries under 512 KiB with an oversize entry cut and marked `truncated`,
+and `unsupported_feature` naming `transcript.load` from an endpoint with no
+readable store. The first slice puts `transcript.load.request` and
+`transcript.load.response` on the wire under the `transcript-load` unit, judged
+by both validators, with positive and negative fixtures.
+
 ## T7. Session reattach
 
 Unit name: `session-reattach`. Planned decision: its own. Staged by

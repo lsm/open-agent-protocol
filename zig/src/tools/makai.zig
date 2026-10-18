@@ -246,7 +246,7 @@ const ServedSessions = struct {
     }
 
     fn attach(self: *ServedSessions, adapter: *oapx_adapter.Adapter) void {
-        adapter.history = .{ .ctx = self, .load = load, .read = read };
+        adapter.history = .{ .ctx = self, .load = load, .read = read, .entries = entries };
         adapter.transcripts = .{ .ctx = self, .save = saveTranscript };
         adapter.recorder = .{ .ctx = self, .record = record };
     }
@@ -276,6 +276,17 @@ const ServedSessions = struct {
         var loaded = try self.store.load(session_id);
         defer loaded.deinit(self.store.allocator);
         return try cloneMessages(arena, loaded.messages.items);
+    }
+
+    fn entries(ctx: *anyopaque, arena: std.mem.Allocator, session_id: []const u8) anyerror![]const oapx_adapter.transcript.SavedEntry {
+        const self: *ServedSessions = @ptrCast(@alignCast(ctx));
+        const stored = try self.store.readEntries(arena, session_id);
+        const saved = try arena.alloc(oapx_adapter.transcript.SavedEntry, stored.len);
+        for (stored, saved) |entry, *slot| slot.* = switch (entry.item) {
+            .message => |message| .{ .offset = entry.offset, .at_ms = entry.at_ms, .message = message },
+            .compaction => |summary| .{ .offset = entry.offset, .at_ms = entry.at_ms, .compaction = summary },
+        };
+        return saved;
     }
 
     fn cloneMessages(arena: std.mem.Allocator, loaded: []const ai_types.Message) ![]const ai_types.Message {

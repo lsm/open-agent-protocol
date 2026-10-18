@@ -29,6 +29,8 @@ export const EnvelopeType = {
   SessionStateUpdated: 'session.state.updated',
   SessionListRequest: 'session.list.request',
   SessionListResponse: 'session.list.response',
+  TranscriptLoadRequest: 'transcript.load.request',
+  TranscriptLoadResponse: 'transcript.load.response',
   SessionModelSwitchRequest: 'session.model.switch.request',
   SessionModelSwitchResponse: 'session.model.switch.response',
   SessionSettingsUpdateRequest: 'session.settings.update.request',
@@ -455,6 +457,32 @@ export interface SessionListEntry {
 export interface SessionListResponse {
   sessions: SessionListEntry[];
   next_cursor?: string;
+}
+
+export interface TranscriptLoadRequest {
+  session_id: string;
+  cursor?: string;
+  limit?: number;
+  allow_degraded_features?: string[];
+}
+
+export interface TranscriptEntry {
+  entry_id: string;
+  kind: 'message' | 'compaction' | (string & {});
+  at_ms?: number;
+  run_id?: string;
+  message?: Message;
+  compaction?: { compaction_id?: string; summary: string };
+  truncated?: boolean;
+  extensions?: Record<string, unknown>;
+}
+
+export interface TranscriptLoadResponse {
+  session_id: string;
+  entries: TranscriptEntry[];
+  next_cursor?: string;
+  complete: boolean;
+  gap?: { reason: 'pruned' | 'rewritten'; resumed_at?: string };
 }
 
 export interface SessionStateRequest {

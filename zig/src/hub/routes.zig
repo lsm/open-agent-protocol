@@ -15,6 +15,7 @@ pub const Verb = enum {
     settings,
     close,
     events,
+    transcript,
     work_list,
     work_status,
     work_start,
@@ -39,6 +40,7 @@ pub const Route = union(Verb) {
     settings: []const u8,
     close: []const u8,
     events: []const u8,
+    transcript: []const u8,
     work_list: void,
     work_status: []const u8,
     work_start: []const u8,
@@ -90,6 +92,7 @@ pub const table = [_]Entry{
     .{ .method = "POST", .pattern = "/sessions/{id}/settings", .verb = .settings },
     .{ .method = "POST", .pattern = "/sessions/{id}/close", .verb = .close },
     .{ .method = "GET", .pattern = "/sessions/{id}/events", .verb = .events },
+    .{ .method = "GET", .pattern = "/sessions/{id}/transcript", .verb = .transcript },
     .{ .method = "GET", .pattern = "/work", .verb = .work_list },
     .{ .method = "GET", .pattern = "/work/sessions/{id}", .verb = .work_status },
     .{ .method = "POST", .pattern = "/adapters/{name}/work", .verb = .work_start },
@@ -199,6 +202,7 @@ fn build(verb: Verb, parameter: ?[]const u8) Route {
         .settings => .{ .settings = parameter.? },
         .close => .{ .close = parameter.? },
         .events => .{ .events = parameter.? },
+        .transcript => .{ .transcript = parameter.? },
         .work_list => .{ .work_list = {} },
         .work_status => .{ .work_status = parameter.? },
         .work_start => .{ .work_start = parameter.? },
@@ -233,8 +237,8 @@ fn matched(arena: std.mem.Allocator, method: []const u8, path: []const u8) !Matc
     return route(arena, method, path);
 }
 
-test "the table is the draft's twenty-one routes, one line each" {
-    try testing.expectEqual(@as(usize, 21), table.len);
+test "the table is the draft's twenty-two routes, one line each" {
+    try testing.expectEqual(@as(usize, 22), table.len);
     const paths = [_][]const u8{
         "/adapters",
         "/adapters/{name}/capabilities",
@@ -250,6 +254,7 @@ test "the table is the draft's twenty-one routes, one line each" {
         "/sessions/{id}/settings",
         "/sessions/{id}/close",
         "/sessions/{id}/events",
+        "/sessions/{id}/transcript",
         "/work",
         "/work/sessions/{id}",
         "/adapters/{name}/work",
@@ -285,8 +290,9 @@ test "every route in the table resolves to its own verb and carries the name the
         .{ .method = "POST", .path = "/sessions/s-1/settings", .want = .settings, .parameter = "s-1" },
         .{ .method = "POST", .path = "/sessions/s-1/close", .want = .close, .parameter = "s-1" },
         .{ .method = "GET", .path = "/sessions/s-1/events", .want = .events, .parameter = "s-1" },
+        .{ .method = "GET", .path = "/sessions/s-1/transcript", .want = .transcript, .parameter = "s-1" },
     };
-    try testing.expectEqual(@as(usize, 13), cases.len);
+    try testing.expectEqual(@as(usize, 14), cases.len);
     for (cases) |case| {
         var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
         defer arena_state.deinit();
