@@ -1,6 +1,6 @@
 # Storage Interface
 
-Status: proposed, for the owner's review. No protocol change.
+Status: accepted 2026-10-18 (owner). No protocol change.
 
 OAP's durable state is written by two hard-wired file stores today:
 
@@ -36,14 +36,14 @@ Go interface, a Zig vtable struct like `HistoryLoader`.
 `listSessions` moves the paging that `binding.list` and `go/binding/page.go`
 do over a whole file into the backend, so SQLite can page with an index.
 
-### Runs (proposed Decision 0050, #1204)
+### Runs (Decision 0050, #1204)
 
 | operation | does |
 | --- | --- |
 | `appendRun(session_id, record)` | appends `admitted` (with the prompt when queued), `started` or `settled` |
 | `openRuns(session_id)` | runs with no `settled` record, in admission order |
 
-### Transcript (proposed Decision 0051, #1205)
+### Transcript (Decision 0051, #1205)
 
 | operation | does |
 | --- | --- |
@@ -72,7 +72,7 @@ twin, so both hubs refuse a second writer the way they do today.
 - **Order.** Entries of one session are read in the order they were appended.
   Across sessions, only `listSessions`'s order is promised.
 - **Durability before the answer.** An append returns only once the entry
-  survives a crash. Proposed Decision 0050 depends on this: an accepted submit is
+  survives a crash. Decision 0050 depends on this: an accepted submit is
   answered only after its `admitted` record is durable. The Go file store
   meets this (`go/binding/file.go` syncs). Neither Zig store does today:
   `compat.fs.atomicReplace` writes and renames without a sync, and
@@ -94,11 +94,10 @@ planned `transcript.load` would too.
    the concrete types, with no behaviour change.
 2. Zig: make the JSONL backend durable: sync the staged file before the
    rename and the directory after it in `atomicReplace`, and sync after each
-   `session_store` append. This must land before proposed Decision 0050's run records
+   `session_store` append. This must land before Decision 0050's run records
    rely on it.
 3. Go: `go/binding.Store` grows the run and transcript groups, and the file
    implementation the paging.
-4. The run and transcript groups fill in if proposed Decisions 0050 and
-   0051 are accepted.
+4. The run and transcript groups fill in as Decisions 0050 and 0051 land.
 5. A conformance test per tree that any backend must pass: lock refusal, torn
    entry, order, cursor gap. The JSONL backend and the memory one both run it.
