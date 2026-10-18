@@ -103,24 +103,39 @@ func TestAnEntryWhoseTextEscapesToSeveralTimesItsLengthIsCutUntilItsEncodingFits
 	}
 }
 
-func TestAnOversizeEntryCutsOnlyItsTextBearingFieldsAndNeverANegativeTime(t *testing.T) {
+func TestAnOversizeEntryCutsOnlyItsTextFieldsLeavingOtherPartsByteExactAndNeverANegativeTime(t *testing.T) {
 	long := strings.Repeat("z", protocol.TranscriptPageBytes)
-	parts := []protocol.ContentPart{{Type: protocol.ContentText, Text: long}}
-	for range 40000 {
-		parts = append(parts, protocol.ContentPart{Type: protocol.ContentToolCall, ToolCallID: "call-identifier", Name: "a_tool_name", ArgumentsJSON: json.RawMessage(`"raw arguments"`)})
-	}
-	item := TranscriptItem{Offset: 0, AtMS: -5, Message: &protocol.Message{Role: protocol.RoleAssistant, Content: protocol.PartsContent(parts)}}
+	call := protocol.ContentPart{Type: protocol.ContentToolCall, ToolCallID: "call-identifier", Name: "a_tool_name", ArgumentsJSON: json.RawMessage(`{"n":12345678901234567890,"b":1}`)}
+	item := TranscriptItem{AtMS: -5, Message: &protocol.Message{Role: protocol.RoleAssistant, Content: protocol.PartsContent([]protocol.ContentPart{{Type: protocol.ContentText, Text: long}, call})}}
 	page, _ := TranscriptPage(TranscriptRequest{NativeID: "s1", Limit: 100}, []TranscriptItem{item})
 	entry := page.Entries[0]
-	if !entry.Truncated || entry.AtMS != 0 {
-		t.Fatalf("truncated %v at %d", entry.Truncated, entry.AtMS)
+	encoded, _ := json.Marshal(entry)
+	if !entry.Truncated || entry.AtMS != 0 || len(encoded) > protocol.TranscriptPageBytes {
+		t.Fatalf("truncated %v at %d encoding %d bytes", entry.Truncated, entry.AtMS, len(encoded))
 	}
-	cut, _ := entry.Message.Content.Parts()
-	call := cut[len(cut)-1]
-	if call.Type != protocol.ContentToolCall || call.ToolCallID != "call-identifier" || call.Name != "a_tool_name" {
-		t.Fatalf("a structural field was cut: %+v", call)
+	var parts []json.RawMessage
+	if err := json.Unmarshal(entry.Message.Content, &parts); err != nil || len(parts) != 2 {
+		t.Fatalf("cut content %s", entry.Message.Content)
 	}
-	if arguments := string(call.ArgumentsJSON); strings.HasPrefix(arguments, `"\"`) {
-		t.Fatalf("arguments were cut from their quoted encoding: %s", arguments)
+	want, _ := json.Marshal(call)
+	if string(parts[1]) != string(want) {
+		t.Fatalf("an uncut part changed: %s, want %s", parts[1], want)
+	}
+}
+
+func TestAnEntryTooLargeEvenWithEveryTextEmptiedReducesItsPartsToTheirKindThenKeepsWhatFits(t *testing.T) {
+	parts := []protocol.ContentPart{{Type: protocol.ContentText, Text: "the first words"}}
+	for range 40000 {
+		parts = append(parts, protocol.ContentPart{Type: protocol.ContentToolCall, ToolCallID: "call-identifier", Name: "a_tool_name", ArgumentsJSON: json.RawMessage(`{}`)})
+	}
+	item := TranscriptItem{Message: &protocol.Message{Role: protocol.RoleAssistant, Content: protocol.PartsContent(parts)}}
+	page, _ := TranscriptPage(TranscriptRequest{NativeID: "s1", Limit: 100}, []TranscriptItem{item})
+	encoded, _ := json.Marshal(page.Entries[0])
+	if !page.Entries[0].Truncated || len(encoded) > protocol.TranscriptPageBytes {
+		t.Fatalf("the entry encodes to %d bytes", len(encoded))
+	}
+	kept, _ := page.Entries[0].Message.Content.Parts()
+	if len(kept) < 2 || len(kept) > len(parts) || kept[0].Type != protocol.ContentText || kept[1].Type != protocol.ContentText || kept[1].Text != "tool_call" {
+		t.Fatalf("kept %d parts, the second %+v", len(kept), kept[1])
 	}
 }

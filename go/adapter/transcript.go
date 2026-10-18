@@ -45,15 +45,12 @@ func TranscriptPage(request TranscriptRequest, items []TranscriptItem) (protocol
 	entries := []protocol.TranscriptEntry{}
 	bytes, next := 0, start
 	for ; next < len(items) && len(entries) < limit; next++ {
-		entry, size := transcriptEntry(ids[next], items[next], -1)
+		entry, size := transcriptEntry(ids[next], items[next], transcriptCut{bound: -1})
 		if bytes+size > protocol.TranscriptPageBytes {
 			if len(entries) > 0 {
 				break
 			}
-			bound := protocol.TranscriptPageBytes / (transcriptParts(items[next]) * 2)
-			for entry, size = transcriptEntry(ids[next], items[next], bound); size > protocol.TranscriptPageBytes && bound > 0; entry, size = transcriptEntry(ids[next], items[next], bound) {
-				bound /= 2
-			}
+			entry, size = fitTranscriptEntry(ids[next], items[next])
 		}
 		bytes += size
 		entries = append(entries, entry)
@@ -123,6 +120,31 @@ func decodeTranscriptCursor(nativeID, cursor string) (protocol.TranscriptEntryID
 	return protocol.TranscriptEntryID(fields[2]), offset, nil
 }
 
+type transcriptCut struct {
+	bound  int
+	reduce bool
+	keep   int
+}
+
+func fitTranscriptEntry(id protocol.TranscriptEntryID, item TranscriptItem) (protocol.TranscriptEntry, int) {
+	parts := transcriptParts(item)
+	cut := transcriptCut{bound: protocol.TranscriptPageBytes / (parts * 2), keep: parts}
+	entry, size := transcriptEntry(id, item, cut)
+	for size > protocol.TranscriptPageBytes && cut.bound > 0 {
+		cut.bound /= 2
+		entry, size = transcriptEntry(id, item, cut)
+	}
+	if size > protocol.TranscriptPageBytes {
+		cut.reduce = true
+		entry, size = transcriptEntry(id, item, cut)
+	}
+	for size > protocol.TranscriptPageBytes && cut.keep > 1 {
+		cut.keep /= 2
+		entry, size = transcriptEntry(id, item, cut)
+	}
+	return entry, size
+}
+
 func transcriptParts(item TranscriptItem) int {
 	if item.Message == nil {
 		return 1
@@ -134,57 +156,69 @@ func transcriptParts(item TranscriptItem) int {
 	return max(len(parts), 1)
 }
 
-func transcriptEntry(id protocol.TranscriptEntryID, item TranscriptItem, bound int) (protocol.TranscriptEntry, int) {
-	entry := protocol.TranscriptEntry{EntryID: id, Kind: protocol.TranscriptMessage, AtMS: max(item.AtMS, 0), Truncated: bound >= 0}
+func transcriptEntry(id protocol.TranscriptEntryID, item TranscriptItem, cut transcriptCut) (protocol.TranscriptEntry, int) {
+	entry := protocol.TranscriptEntry{EntryID: id, Kind: protocol.TranscriptMessage, AtMS: max(item.AtMS, 0), Truncated: cut.bound >= 0}
 	if item.Message != nil {
 		message := *item.Message
-		if bound >= 0 {
-			var content any
-			if json.Unmarshal(message.Content, &content) == nil {
-				message.Content, _ = json.Marshal(cutTranscript(content, bound))
-			}
+		if cut.bound >= 0 {
+			message.Content = cutContent(message.Content, cut)
 		}
 		entry.Message = &message
 	} else {
 		entry.Kind = protocol.TranscriptCompaction
-		entry.Compaction = &protocol.TranscriptCompactionEntry{Summary: cutText(item.Compaction, bound)}
+		entry.Compaction = &protocol.TranscriptCompactionEntry{Summary: cutText(item.Compaction, cut.bound)}
 	}
 	encoded, _ := json.Marshal(entry)
 	return entry, len(encoded)
 }
 
-func cutTranscript(value any, bound int) any {
-	switch held := value.(type) {
-	case string:
-		return cutText(held, bound)
-	case []any:
-		out := make([]any, len(held))
-		for index, item := range held {
-			out[index] = cutTranscript(item, bound)
-		}
-		return out
-	case map[string]any:
-		kind, _ := held["type"].(string)
-		if kind == "image" {
-			return map[string]any{"type": "text", "text": "image"}
-		}
-		out := make(map[string]any, len(held))
-		for key, member := range held {
-			switch text, isText := member.(string); {
-			case !cutField[key] && isText:
-				out[key] = member
-			case !cutField[key]:
-				out[key] = cutTranscript(member, bound)
-			case isText:
-				out[key] = cutText(text, bound)
-			default:
-				encoded, _ := json.Marshal(member)
-				out[key] = cutText(string(encoded), bound)
-			}
-		}
-		return out
+func cutContent(content protocol.MessageContent, cut transcriptCut) protocol.MessageContent {
+	var text string
+	if json.Unmarshal(content, &text) == nil {
+		return protocol.TextContent(cutText(text, cut.bound))
 	}
-	return value
+	var parts []json.RawMessage
+	if json.Unmarshal(content, &parts) != nil {
+		return content
+	}
+	kept := make([]json.RawMessage, 0, min(len(parts), cut.keep))
+	for _, part := range parts[:min(len(parts), cut.keep)] {
+		kept = append(kept, cutPart(part, cut))
+	}
+	encoded, _ := json.Marshal(kept)
+	return encoded
+}
+
+func cutPart(part json.RawMessage, cut transcriptCut) json.RawMessage {
+	var members map[string]json.RawMessage
+	if json.Unmarshal(part, &members) != nil {
+		return part
+	}
+	var kind string
+	_ = json.Unmarshal(members["type"], &kind)
+	if kind == "image" || (cut.reduce && kind != "text" && kind != "reasoning") {
+		encoded, _ := json.Marshal(map[string]string{"type": "text", "text": kind})
+		return encoded
+	}
+	changed := false
+	for key, member := range members {
+		if !cutField[key] {
+			continue
+		}
+		var text string
+		if json.Unmarshal(member, &text) != nil {
+			text = string(member)
+		}
+		if cutted := cutText(text, cut.bound); cutted != text {
+			members[key], _ = json.Marshal(cutted)
+			changed = true
+		}
+	}
+	if !changed {
+		return part
+	}
+	encoded, _ := json.Marshal(members)
+	return encoded
 }
 
 var cutField = map[string]bool{"text": true, "reasoning": true, "result": true, "arguments_json": true}
