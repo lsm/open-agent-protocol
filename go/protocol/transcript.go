@@ -5,7 +5,7 @@ import (
 	"slices"
 )
 
-const FeatureTranscriptLoad = "session.transcript.load"
+const FeatureTranscriptLoad = "transcript.load"
 
 const (
 	TranscriptLoadDefaultLimit = 100

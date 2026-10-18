@@ -748,10 +748,11 @@ envelope types to decode the answer with.
 ### `+transcript-load`
 
 `+transcript-load` is executable under
-[Decision 0051](../decisions/0051-transcript-load.md), accepted.
+[Decision 0051](../decisions/0051-transcript-load.md), owner-approved and
+`proposed` until its native readers land.
 An implementation conforms if it:
 
-- advertises `session.transcript.load` above `unavailable`, refuses a
+- advertises `transcript.load` above `unavailable`, refuses a
   `transcript.load.request` against a descriptor that does not with
   `unsupported_feature` naming the key, and refuses one against a `degraded`
   disclosure with `capability_degraded` unless the request consents through

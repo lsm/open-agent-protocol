@@ -1731,6 +1731,9 @@ pub const Machine = struct {
     fn transcriptLoadResponse(self: *Machine, index: usize, envelope: std.json.Value, payload: std.json.Value) !void {
         try self.featureKeys(index, envelope, &.{feature_transcript_load});
         const query = self.submits.get(field(envelope, "in_reply_to"));
+        if (self.requests.get(field(envelope, "in_reply_to"))) |request| {
+            if (std.mem.eql(u8, request.declared, "transcript.load.request") and !std.mem.eql(u8, memberString(payload, "session_id"), memberString(request.payload, "session_id"))) try self.add(code_scope_mismatch, index);
+        }
         if (query) |asked| {
             if (asked.control) |expectation| {
                 if (expectation.rung == rung_degradation) try self.add(code_degraded_without_optin, index);
@@ -4006,7 +4009,7 @@ const feature_model_selection = "run.model_selection";
 const feature_models_list = "models.list";
 const feature_session_list = "session.list";
 const session_list_default_limit: u64 = 50;
-const feature_transcript_load = "session.transcript.load";
+const feature_transcript_load = "transcript.load";
 const transcript_load_default_limit: u64 = 100;
 const feature_model_switch = "session.model.switch";
 const feature_providers_attach = "action.providers.attach";

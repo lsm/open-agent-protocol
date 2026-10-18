@@ -29,14 +29,14 @@ func (s *state) transcriptLoadRequest(i, line int, e protocol.Envelope, p protoc
 			code: errorUnsupportedFeature, reason: reasonUnadvertised,
 			detailName: "feature", detailValue: protocol.FeatureTranscriptLoad,
 			diagnostic: CodeUnavailableCapability,
-			message:    "a transcript load asked of an endpoint that has not affirmatively advertised session.transcript.load",
+			message:    "a transcript load asked of an endpoint that has not affirmatively advertised transcript.load",
 		}
 	case level == protocol.SupportDegraded && !p.AllowsDegraded(protocol.FeatureTranscriptLoad):
 		pending.expectation = &controlExpectation{
 			rung: rungDegradation, key: protocol.FeatureTranscriptLoad, pointer: "/payload/allow_degraded_features",
 			code: errorCapabilityDegraded, detailName: "feature", detailValue: protocol.FeatureTranscriptLoad,
 			diagnostic: CodeDegradedWithoutOptin,
-			message:    "a transcript load omits the opt-in a degraded session.transcript.load requires",
+			message:    "a transcript load omits the opt-in a degraded transcript.load requires",
 		}
 	}
 }

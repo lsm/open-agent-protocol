@@ -12237,7 +12237,7 @@
       ],
       "covers": [
         {
-          "capability": "session.transcript.load",
+          "capability": "transcript.load",
           "aspect": "gate"
         }
       ]
@@ -12259,7 +12259,7 @@
       ],
       "covers": [
         {
-          "capability": "session.transcript.load",
+          "capability": "transcript.load",
           "aspect": "gate"
         }
       ]
@@ -12281,7 +12281,7 @@
       ],
       "covers": [
         {
-          "capability": "session.transcript.load",
+          "capability": "transcript.load",
           "aspect": "honour"
         }
       ]
@@ -12303,7 +12303,7 @@
       ],
       "covers": [
         {
-          "capability": "session.transcript.load",
+          "capability": "transcript.load",
           "aspect": "honour"
         }
       ]
@@ -12325,7 +12325,7 @@
       ],
       "covers": [
         {
-          "capability": "session.transcript.load",
+          "capability": "transcript.load",
           "aspect": "honour"
         }
       ]
@@ -12347,7 +12347,29 @@
       ],
       "covers": [
         {
-          "capability": "session.transcript.load",
+          "capability": "transcript.load",
+          "aspect": "honour"
+        }
+      ]
+    },
+    {
+      "id": "transcript-load-other-session",
+      "path": "semantic-invalid/transcript-load-other-session.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "scope_mismatch"
+      ],
+      "units": [
+        "transcript-load"
+      ],
+      "provenance": [
+        "decisions/0051-transcript-load.md"
+      ],
+      "covers": [
+        {
+          "capability": "transcript.load",
           "aspect": "honour"
         }
       ]

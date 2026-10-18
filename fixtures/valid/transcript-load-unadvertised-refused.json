@@ -50,7 +50,7 @@
         "code": "unsupported_feature",
         "message": "the endpoint keeps no transcript",
         "details": {
-          "feature": "session.transcript.load",
+          "feature": "transcript.load",
           "reason": "unadvertised"
         }
       }

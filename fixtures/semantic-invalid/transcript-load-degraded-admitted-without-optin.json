@@ -24,7 +24,7 @@
         "session.message.delivery.auto": {
           "level": "native"
         },
-        "session.transcript.load": {
+        "transcript.load": {
           "level": "degraded"
         }
       }
