@@ -476,7 +476,7 @@ error. That is stated because the four reasons are the whole set.
 | The verb is `hub`, not `serve` | `TestServeWithoutRoleNamesHub` |
 | The built binary drives a full session, and fails closed on a malformed line | `TestStdioBinaryDrivesAFullSession`, `TestStdioBinaryFailsClosedOnAMalformedLine` |
 | The full lifecycle runs against a real listener | `TestServeLifecycleOverRealListener` |
-| The hub's stdio wire is the fourteen ops both trees serve, and Zig's fifteenth, `transcript`, not the endpoint's raw envelopes | `TestCapabilitiesNameTheStdioBinding` |
+| The hub's stdio wire is the fifteen ops, not the endpoint's raw envelopes | `TestCapabilitiesNameTheStdioBinding` |
 
 ### The HTTP routes and SSE framing
 
@@ -718,7 +718,7 @@ needs a whole-body deadline, which is not what either tree has.
 the same for a path no pattern matches, and the draft's codes are
 `invalid_request`, `unknown_adapter` and `unknown_session` — none of which is
 "this URL does not exist". So the answer carries no `error.response` envelope.
-The fourteen core routes and the seven work routes are written in both trees (D30 closed), and a fifteenth core route, `GET /sessions/{id}/transcript`, is Zig's alone until Go serves [transcript](#transcript): Zig dispatches each to the same
+The fifteen core routes and the seven work routes are written in both trees (D30 closed): Zig dispatches each to the same
 `Frontend` operation the stdio op runs, so an answer's shape is shared rather
 than written twice. A path that is a route asked with another method answers
 `405 Method Not Allowed` with an `Allow` header naming the one it takes, which
@@ -741,7 +741,8 @@ and it is the one still open.
   body-reading handlers at `:194`, `:330`, `:403`, `:517` and `:565` — five of the fourteen operations
   registered on the mux across `:70`-`:83`, `:69` being the `http.NewServeMux()` construction rather
   than a registration. So a path matching no pattern is answered by the mux before any handler runs,
-  and the other nine registrations read no body at all. So the two trees disagree on one request, and the paragraph above is right about
+  and the other nine registrations read no body at all, nor does the fifteenth, `transcript`, which
+  `routeWork` registers beside the work routes. So the two trees disagree on one request, and the paragraph above is right about
   the rule and incomplete about the case. **Neither tree is wrong against the draft**: the draft
   states the media rule for routes that read a body, and states no rule for a path that does not
   exist. Which answer an unrouted path should give is **not decided here**. The `415`-on-unrouted
@@ -1240,9 +1241,8 @@ never connects overflows exactly as a slow consumer does, and the adopter reads
 
 ## The operations
 
-Fourteen ops both trees serve, and a fifteenth, [transcript](#transcript), that
-only Zig serves so far. Each row gives the request line's parameters, the
-answer, and the errors. A refusal the row does not name is `internal` on both, with two
+Fifteen ops. Each row gives the request line's parameters, the answer, and the
+errors. A refusal the row does not name is `internal` on both, with two
 exceptions stated once here rather than repeated per row:
 
 - **The stdio transport answers four codes no HTTP route can.** `unknown_op` for
@@ -1480,13 +1480,17 @@ hold is read through its latest binding, closed ones included. Over HTTP it is
   bound, `unsupported_feature` (400, `feature` `transcript.load`, `reason`
   `unadvertised`) when its adapter keeps no transcript it can read, and
   `history_failed` (500) when the session history cannot be read.
-- **Zig does:** serves it for `oapx` from its saved sessions. **Go does not
-  yet.**
-- **pinned by:** Zig: `transcript reads a held or closed session's page through
-  its adapter, with a gap, and refuses a foreign cursor, an unbound session, a
-  bad limit and an adapter that keeps no transcript`, `GET
-  /sessions/{id}/transcript answers the transcript op: an unknown session is 404
-  and a limit out of range 400`.
+- **Both trees serve it** through an adapter's own reader: Zig's
+  `transcript_load` slot, Go's `adapter.TranscriptLoader`. Today only Zig's
+  `oapx` has one, so every Go adapter answers `unsupported_feature` until its
+  reader moves into `transcript.load`.
+- **pinned by:** Go: `TestTranscriptReadsAHeldOrClosedSessionThroughItsAdapterAndRefusesAsZigDoes`,
+  `TestTheRouteTableIsComplete`, and the cross-tree scenario `the transcript op
+  refuses the same refusals`. Zig: `transcript reads a held or closed session's
+  page through its adapter, with a gap, and refuses a foreign cursor, an unbound
+  session, a bad limit, an adapter that keeps no transcript and a session with
+  no native id`, `GET /sessions/{id}/transcript answers the transcript op: an
+  unknown session is 404 and a limit out of range 400`.
 
 ### `state`
 

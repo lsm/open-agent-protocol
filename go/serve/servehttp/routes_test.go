@@ -23,6 +23,7 @@ func TestTheRouteTableIsComplete(t *testing.T) {
 		{http.MethodPost, "/sessions/absent/settings"},
 		{http.MethodPost, "/sessions/absent/close"},
 		{http.MethodGet, "/sessions/absent/events"},
+		{http.MethodGet, "/sessions/absent/transcript"},
 	}
 	send := func(t *testing.T, method, path string) *http.Response {
 		t.Helper()

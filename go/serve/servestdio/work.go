@@ -65,6 +65,16 @@ func (s *Server) workOp(ctx context.Context, request requestLine) (json.RawMessa
 			limit = &given
 		}
 		answer, refusal = s.work.Read(ctx, request.SessionID, after, limit)
+	case opTranscript:
+		if werr := request.only(paramSession, paramCursor, paramLimit); werr != nil {
+			return nil, werr
+		}
+		var limit *int64
+		if request.Limit != nil {
+			given := int64(*request.Limit)
+			limit = &given
+		}
+		answer, refusal = s.work.Transcript(ctx, request.SessionID, request.Cursor, limit)
 	}
 	if refusal != nil {
 		return nil, &wireError{Code: refusal.Code, Message: trimMessage(refusal.Message), Details: refusal.Details}

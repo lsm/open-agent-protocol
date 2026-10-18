@@ -603,6 +603,43 @@ func (f *Front) Read(ctx context.Context, id string, after *uint64, limit *int64
 	return out, nil
 }
 
+func (f *Front) Transcript(ctx context.Context, id, cursor string, limit *int64) (any, *Refusal) {
+	bound := protocol.TranscriptLoadDefaultLimit
+	if limit != nil {
+		if *limit < 1 || *limit > protocol.TranscriptLoadMaxLimit {
+			return nil, &Refusal{Code: "invalid_request", Message: fmt.Sprintf("transcript: limit must be from 1 to %d", protocol.TranscriptLoadMaxLimit)}
+		}
+		bound = int(*limit)
+	}
+	var native serve.NativeRef
+	if f.hub.Knows(protocol.SessionID(id)) {
+		native, _ = f.hub.HeldNative(protocol.SessionID(id))
+	} else {
+		entry, found, refusal := f.unheld(ctx, id)
+		if refusal != nil {
+			return nil, refusal
+		}
+		if !found {
+			return nil, &Refusal{Code: "unknown_session", Message: fmt.Sprintf("no session %q", id)}
+		}
+		native = serve.NativeRef{Adapter: entry.Record.Adapter, NativeID: entry.Record.NativeSessionID, Directory: entry.Record.Directory}
+	}
+	page, readable, err := f.hub.TranscriptPage(ctx, native, cursor, bound)
+	switch {
+	case !readable:
+		return nil, &Refusal{Code: "unsupported_feature", Message: "transcript: this session's adapter keeps no transcript it can read", Details: map[string]any{"feature": protocol.FeatureTranscriptLoad, "reason": base.ControlUnadvertised}}
+	case errors.Is(err, base.ErrInvalidCursor):
+		return nil, &Refusal{Code: "invalid_cursor", Message: err.Error()}
+	case err != nil:
+		return nil, &Refusal{Code: "internal", Message: err.Error()}
+	}
+	page.SessionID = protocol.SessionID(id)
+	if page.Entries == nil {
+		page.Entries = []protocol.TranscriptEntry{}
+	}
+	return page, nil
+}
+
 func nativeTurns(turns []base.NativeTurn, after *uint64, bound int) readJSON {
 	from := 0
 	if after != nil {
