@@ -12,15 +12,16 @@ import (
 const drainPoll = 20 * time.Millisecond
 
 type stopState struct {
-	mu       sync.Mutex
-	mode     protocol.ShutdownMode
-	watching bool
-	finished bool
-	done     chan struct{}
+	mu        sync.Mutex
+	mode      protocol.ShutdownMode
+	watching  bool
+	finished  bool
+	withdrawn map[protocol.RunID]bool
+	done      chan struct{}
 }
 
 func newStopState() *stopState {
-	return &stopState{done: make(chan struct{})}
+	return &stopState{done: make(chan struct{}), withdrawn: map[protocol.RunID]bool{}}
 }
 
 func (st *stopState) accepted() bool {
@@ -76,6 +77,7 @@ func (s *Server) shutdownRequest(ctx context.Context, e protocol.Envelope) (prot
 			kept := []protocol.ShutdownRun{}
 			for _, run := range runs {
 				if run.Status == protocol.RunQueued && s.hub.CancelQueued(ctx, run) {
+					st.withdrawn[run.RunID] = true
 					answer.Lost = append(answer.Lost, protocol.ShutdownQueuedRun{SessionID: run.SessionID, RunID: run.RunID})
 					continue
 				}
@@ -113,17 +115,24 @@ func (s *Server) awaitDrained(ctx context.Context, st *stopState) {
 			return
 		case <-ticker.C:
 		}
-		runs := s.hub.NonterminalRuns(ctx)
-		if len(runs) == 0 {
-			st.mu.Lock()
-			st.finishLocked()
-			st.mu.Unlock()
-			return
-		}
-		for _, run := range runs {
-			if run.Status == protocol.RunQueued {
-				s.hub.CancelQueued(ctx, run)
+		st.mu.Lock()
+		left := 0
+		for _, run := range s.hub.NonterminalRuns(ctx) {
+			if st.withdrawn[run.RunID] {
+				continue
 			}
+			if run.Status == protocol.RunQueued && s.hub.CancelQueued(ctx, run) {
+				st.withdrawn[run.RunID] = true
+				continue
+			}
+			left++
+		}
+		if left == 0 {
+			st.finishLocked()
+		}
+		st.mu.Unlock()
+		if left == 0 {
+			return
 		}
 	}
 }
