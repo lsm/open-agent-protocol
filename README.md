@@ -1186,9 +1186,10 @@ credential-free ready/session.create/EOF-teardown check or
 chat completions against an in-process mock, test-owned key only: a plain
 turn, and an approval answered through the gateway's server request). The gates
 never download anything and pass no ambient credentials; teardown evidence is
-stdin EOF, matching the pinned gateway, which has no shutdown RPC. Run them
-with a `PATH` that holds no `copilot` CLI: the gateway starts one it finds
-there, which outlives it and writes into the isolated `HOME`
+stdin EOF, matching the pinned gateway, which has no shutdown RPC. They drop
+from the child's `PATH` every directory holding a `copilot` CLI, because the
+gateway starts one it finds there, which outlives it and writes into the
+isolated `HOME`
 ([ledger](research/hermes-v0.22.2-mapping.md#the-live-gates-start-the-users-copilot-cli)). Set
 `OAP_HERMES_SHA256` to the expected 64-character interpreter digest when exact
 artifact provenance is required.
