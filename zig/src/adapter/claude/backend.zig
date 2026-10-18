@@ -27,6 +27,7 @@ pub const Config = struct {
     native_session_id: []const u8 = "",
     user_settings: bool = false,
     tools: ?ToolPosture = null,
+    provided: []const []const u8 = &.{},
     expand_prompts: bool = false,
     frame_limit: usize = process.default_frame_limit,
     exit_grace_ns: u64 = process.default_exit_grace_ns,
@@ -64,7 +65,7 @@ pub fn spawnFor(arena: std.mem.Allocator, config: Config) !process.Spawn {
         try argv.append(arena, config.model);
     }
     switch (posture) {
-        .unrestricted => {},
+        .unrestricted => if (config.provided.len > 0) try argv.append(arena, "--allowedTools"),
         .allowed => |rules| {
             if (rules.len == 0) return Error.ToolAllowlistEmpty;
             var surface = std.ArrayList([]const u8).empty;
@@ -79,6 +80,7 @@ pub fn spawnFor(arena: std.mem.Allocator, config: Config) !process.Spawn {
             try argv.appendSlice(arena, rules);
         },
     }
+    for (config.provided) |name| try argv.append(arena, try std.mem.concat(arena, u8, &.{ session.provided_prefix, name }));
     if (config.native_session_id.len > 0) try argv.appendSlice(arena, &.{ "--session-id", config.native_session_id });
     try argv.appendSlice(arena, config.args);
     if (config.resume_session_id.len > 0) try argv.appendSlice(arena, &.{ "--resume", config.resume_session_id });
@@ -154,9 +156,10 @@ pub fn userTurn(arena: std.mem.Allocator, uuid: []const u8, text: []const u8, co
     });
 }
 
-pub fn initializeRequest(arena: std.mem.Allocator, request_id: []const u8) ![]const u8 {
+pub fn initializeRequest(arena: std.mem.Allocator, request_id: []const u8, serves_provided: bool) ![]const u8 {
     const id = try goJSONString(arena, request_id);
-    return std.mem.concat(arena, u8, &.{ "{\"request\":{\"hooks\":{\"PreToolUse\":[{\"matcher\":null,\"hookCallbackIds\":[\"" ++ tool_selection_hook ++ "\"]}]},\"subtype\":\"initialize\"},\"request_id\":", id, ",\"type\":\"control_request\"}" });
+    const servers = if (serves_provided) ",\"sdkMcpServers\":[\"" ++ session.provided_server ++ "\"]" else "";
+    return std.mem.concat(arena, u8, &.{ "{\"request\":{\"hooks\":{\"PreToolUse\":[{\"matcher\":null,\"hookCallbackIds\":[\"" ++ tool_selection_hook ++ "\"]}]}", servers, ",\"subtype\":\"initialize\"},\"request_id\":", id, ",\"type\":\"control_request\"}" });
 }
 
 pub const tool_selection_hook = "oap_tool_selection";
@@ -165,6 +168,11 @@ pub const pre_tool_use = "PreToolUse";
 pub fn hookContinue(arena: std.mem.Allocator, request_id: []const u8) ![]const u8 {
     const id = try goJSONString(arena, request_id);
     return std.mem.concat(arena, u8, &.{ "{\"response\":{\"request_id\":", id, ",\"response\":{},\"subtype\":\"success\"},\"type\":\"control_response\"}" });
+}
+
+pub fn mcpResponse(arena: std.mem.Allocator, request_id: []const u8, reply_json: []const u8) ![]const u8 {
+    const id = try goJSONString(arena, request_id);
+    return std.mem.concat(arena, u8, &.{ "{\"response\":{\"request_id\":", id, ",\"response\":{\"mcp_response\":", reply_json, "},\"subtype\":\"success\"},\"type\":\"control_response\"}" });
 }
 
 pub fn hookDeny(arena: std.mem.Allocator, request_id: []const u8, reason: []const u8) ![]const u8 {
@@ -383,6 +391,28 @@ test "the argv is exactly the fixed set the pinned CLI needs, in the pinned orde
     };
     try std.testing.expectEqual(want.len, spawn.args.len);
     for (want, spawn.args) |expected, got| try std.testing.expectEqualStrings(expected, got);
+}
+
+test "provided tools are pre-allowed by their MCP names, after any allowlist and under an unrestricted posture" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allowed = try spawnFor(arena.allocator(), .{ .executable = "/bin/claude", .tools = .{ .allowed = &.{"Read"} }, .provided = &.{ "echo", "look" } });
+    const want_allowed = [_][]const u8{ "--tools", "Read", "--allowedTools", "Read", "mcp__oap__echo", "mcp__oap__look" };
+    try std.testing.expectEqual(want_allowed.len, allowed.args.len - fixed_argv.len);
+    for (want_allowed, allowed.args[fixed_argv.len..]) |expected, got| try std.testing.expectEqualStrings(expected, got);
+    const open = try spawnFor(arena.allocator(), .{ .executable = "/bin/claude", .tools = .unrestricted, .provided = &.{"echo"} });
+    const want_open = [_][]const u8{ "--allowedTools", "mcp__oap__echo" };
+    try std.testing.expectEqual(want_open.len, open.args.len - fixed_argv.len);
+    for (want_open, open.args[fixed_argv.len..]) |expected, got| try std.testing.expectEqualStrings(expected, got);
+    const none = try spawnFor(arena.allocator(), .{ .executable = "/bin/claude", .tools = .unrestricted });
+    try std.testing.expectEqual(fixed_argv.len, none.args.len);
+}
+
+test "the initialize request names the provided server only when tools are provided" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    try std.testing.expectEqualStrings("{\"request\":{\"hooks\":{\"PreToolUse\":[{\"matcher\":null,\"hookCallbackIds\":[\"oap_tool_selection\"]}]},\"sdkMcpServers\":[\"oap\"],\"subtype\":\"initialize\"},\"request_id\":\"req_1\",\"type\":\"control_request\"}", try initializeRequest(arena.allocator(), "req_1", true));
+    try std.testing.expect(std.mem.indexOf(u8, try initializeRequest(arena.allocator(), "req_1", false), "sdkMcpServers") == null);
 }
 
 test "a model and a tool allowlist follow the fixed argv, in that order" {
@@ -696,7 +726,7 @@ test "the control frames are the ones the pinned marshal produces, keys sorted" 
 
     try std.testing.expectEqualStrings(
         "{\"request\":{\"hooks\":{\"PreToolUse\":[{\"matcher\":null,\"hookCallbackIds\":[\"oap_tool_selection\"]}]},\"subtype\":\"initialize\"},\"request_id\":\"req_1\",\"type\":\"control_request\"}",
-        try initializeRequest(scratch, "req_1"),
+        try initializeRequest(scratch, "req_1", false),
     );
     try std.testing.expectEqualStrings(
         "{\"request\":{\"subtype\":\"interrupt\"},\"request_id\":\"req_2\",\"type\":\"control_request\"}",
@@ -774,7 +804,7 @@ test "a control frame reaches the child whole, and one written after the child i
     var backend = try shellBackend(&arena, "cat");
     defer backend.close();
 
-    const frame = try initializeRequest(arena.allocator(), "req_1");
+    const frame = try initializeRequest(arena.allocator(), "req_1", false);
     try backend.writeControl(frame);
     const echoed = (try backend.transport.next()).?;
     try std.testing.expectEqualStrings(frame, echoed);
