@@ -106,6 +106,18 @@ createInterface({ input: process.stdin }).on("line", (line) => {
       event(agent, "auth.login.completed", { flow_id: request.payload.flow_id, provider_id: "fixture", status: "cancelled" }, { sequence: 3 });
       break;
     case `${provider}:provider.describe.request`:
+      if (process.env.OAP_FIXTURE_DESCRIBE_GARBAGE) {
+        process.stdout.write("{\"broken\":\n");
+        break;
+      }
+      if (process.env.OAP_FIXTURE_DESCRIBE_FAILS) {
+        send(request, "error.response", { error: { code: "internal", message: "provider registry unavailable" } });
+        break;
+      }
+      if (process.env.OAP_FIXTURE_AGENT_ONLY) {
+        send(request, "error.response", { error: { code: "invalid_request", message: "envelope profile is not the agent-control core" } });
+        break;
+      }
       send(request, "provider.describe.response", { providers: [], protocol_versions: ["0.1"] });
       break;
     case `${provider}:provider.models.list.request`:
