@@ -89,7 +89,7 @@ behaviour this adapter depends on:
 
 | Change | Classification |
 | --- | --- |
-| **An omitted `permissionMode` now starts in `default` instead of `auto` on third-party providers, with telemetry off or on a fresh install** | **behaviour change for hosts; the adapter is unchanged.** Checked on both binaries with the adapter's own flags (`-p --input-format stream-json --output-format stream-json --verbose --permission-prompt-tool stdio`), a fresh `HOME` and `CLAUDE_CONFIG_DIR`, a loopback `ANTHROPIC_BASE_URL` and a placeholder key: 2.1.296's `system/init` reports `permissionMode: "auto"`, and 2.1.302's reports `"default"`. The adapter passes no `--permission-mode`. So under a custom base URL, a tool call that `auto` mode would have approved now reaches the host as a `can_use_tool` request, which the adapter projects as `action.permission.requested`. A host that does not answer permission requests will see such a run wait. |
+| **An omitted `permissionMode` now starts in `default` instead of `auto` on third-party providers, with telemetry off or on a fresh install** | **behaviour change for hosts; the adapter is unchanged.** Checked on both binaries with the adapter's own flags (`-p --input-format stream-json --output-format stream-json --verbose --permission-prompt-tool stdio`), a fresh `HOME` and `CLAUDE_CONFIG_DIR`, a loopback `ANTHROPIC_BASE_URL` and a placeholder key: 2.1.296's `system/init` reports `permissionMode: "auto"`, and 2.1.302's reports `"default"`. The adapter passes no `--permission-mode`. So under a custom base URL, a tool call that `auto` mode would have approved now reaches the host as a `can_use_tool` request, which the adapter projects as a `user.input.requested` the opener answers through `user.input.resolve.request`. A host that does not answer permission requests will see such a run wait. |
 | A structured-output result whose API response was refused is now an error with no `structured_output` | unchanged mapping: an error result settles `run.failed`, and the adapter relays `structured_output` only when present |
 | Fork subagents (`subagent_type: "fork"`) are on by default | ignored: subagent frames already carry `agent_id` and are passed over, as recorded at 2.1.296 |
 | `thinking: { type: 'disabled' }` and `maxThinkingTokens: 0` run as adaptive thinking on models that cannot turn thinking off | unused: the adapter sets neither |
@@ -155,3 +155,65 @@ cases, moved forward:
   expectation.
 - Expectations change only the capability revision. Provenance in
   `manifest.json` and every `case.json` names the 2.1.302 artifacts above.
+
+## Client-provided tools at this pin
+
+Whether `action.tools.provide` ([Decision 0011](../decisions/0011-control-layer-provided-tools.md))
+could be served natively, so that a host's own tools reach a Claude Code
+session. Read from the TypeScript Agent SDK 0.3.302's `sdk.d.ts` (sha256
+`26f9a0c9…`, above), which describes the CLI's stream-json control protocol at
+2.1.302, and then probed against the pinned darwin-arm64 binary with a
+throwaway `HOME`, a loopback Messages mock and no credentials: the CLI sends
+MCP `initialize` over `mcp_message` before it answers the `initialize` control
+request, then `notifications/initialized` and `tools/list`; a call arrives as
+`tools/call` with `_meta["claudecode/toolUseId"]` naming the `tool_use` it
+serves; and the CLI echoes the server's `CallToolResult` as that call's
+`tool_result`.
+
+**Possible, over the control channel this adapter already speaks.** The SDK's
+in-process MCP servers (`createSdkMcpServer`, `McpSdkServerConfig` with
+`type: 'sdk'`) are a stable, public SDK feature. On the wire they are three
+control messages:
+
+- the `initialize` control request names them, `sdkMcpServers: string[]`, with
+  optional `sdkMcpServerConfigs` per server: a per-call `timeout` in
+  milliseconds, and a per-tool permission policy (`always_ask` or
+  `always_deny`);
+- `mcp_message` (`SDKControlMcpMessageRequest`) "carries one MCP JSON-RPC
+  message for an SDK-hosted MCP server … the CLI sends it to the client to
+  reach the in-process server". The client answers with a success response
+  whose `mcp_response` is the server's JSON-RPC reply. That covers MCP
+  `initialize`, `tools/list` and `tools/call`;
+- `mcp_set_servers` replaces the dynamically managed servers mid-session, so
+  tools can also be added after the spawn.
+
+The adapter already sends `initialize` (its `PreToolUse` hook) and answers
+`can_use_tool` on the same channel. Hosting a server means answering MCP's
+`initialize` and `tools/list` from the provided definitions, and turning each
+`tools/call` into an OAP call. The scope is the CLI process, which is one
+session, as Decision 0011 requires. The tools reach the model as
+`mcp__<server>__<tool>`, and each call passes the CLI's permission check.
+`--tools` does not narrow MCP tools: the 2.1.280 ledger records that it drops
+names outside the built-in set, and a live probe at 2.1.302 confirms it for an
+SDK-hosted server, whose tool stayed listed and ran under `--tools Read`. What
+governs the check is `--allowedTools`. With `mcp__oap__echo` pre-allowed, the
+probe's call reached `tools/call` with no `can_use_tool`; without it, a
+`can_use_tool` naming the tool, with `mcp_server.source: "sdk"`, came first,
+which the adapter projects as a `user.input.requested` the opener answers through `user.input.resolve.request`.
+
+What `action.tools.provide` would map to:
+
+| OAP | Claude Code |
+|---|---|
+| `tools` on `session.open.request` | one SDK server named in `initialize.sdkMcpServers`, whose `tools/list` returns exactly the provided definitions (`input_schema` as `inputSchema`) |
+| a provided tool at reopen | the same server named again in the reopened process's `initialize` |
+| `action.call.requested` | an `mcp_message` carrying `tools/call`; the JSON-RPC id and the stream's `tool_use` id correlate it |
+| `action.call.resolve.request` | the `control_response` to that `mcp_message`, its `mcp_response` an MCP `CallToolResult` (`content` text, `isError` for a failure) |
+| the five refusal reasons | the adapter's own |
+| limits | the per-server `timeout` (the CLI's `MCP_TOOL_TIMEOUT` otherwise), MCP's tool-name rules, and whether `--allowedTools` pre-approves the names (otherwise each call is a permission request first) |
+
+**Recommendation.** The best fit of the three harnesses: session-scoped and
+stable, carried on the channel the adapter owns, and needing no MCP transport
+of its own, only MCP's JSON-RPC shapes. It matters for a host that runs other
+models on the Claude Code harness; HyperNeo keeps Claude itself on the Agent
+SDK.
