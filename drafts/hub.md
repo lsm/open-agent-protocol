@@ -408,7 +408,9 @@ mode other than graceful or force is refused and changes nothing`; Go:
 `TestShutdownWithNothingRunningStopsAtOnce`,
 `TestShutdownWithoutAModeAsksTheHostToChooseAndChangesNothing`,
 `TestGracefulShutdownLosesQueuedRunsRefusesNewWorkAndForceStopsIt`,
-`TestShutdownRefusesAModeOtherThanGracefulOrForce`. The HTTP route follows.
+`TestShutdownRefusesAModeOtherThanGracefulOrForce`. The HTTP route follows. Neither tree yet sends subscribers
+`endpoint.shutdown.started`, which Decision 0050 requires on acceptance; that
+announcement lands with the HTTP route.
 
 Shutdown is stdin EOF or SIGINT/SIGTERM. The daemon stops admitting, settles
 the work it already admitted inside its bounded window, closes every session so
