@@ -28,7 +28,7 @@ func providedArgvFor(t *testing.T, posture ToolPosture, tools ...protocol.ToolDe
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, _ = implementation.Open(context.Background(), base.OpenRequest{SessionID: "s", Participant: protocol.Participant{ID: "user"}, Tools: tools})
+	_, _ = implementation.open(context.Background(), base.OpenRequest{SessionID: "s", Participant: protocol.Participant{ID: "user"}, Tools: tools})
 	return captured
 }
 
@@ -74,7 +74,7 @@ func TestTheInitializeRequestNamesTheProvidedServerOnlyWhenToolsAreProvided(t *t
 		if err != nil {
 			t.Fatal(err)
 		}
-		_, _ = implementation.Open(context.Background(), base.OpenRequest{SessionID: "s", Participant: protocol.Participant{ID: "user"}, Tools: testCase.tools})
+		_, _ = implementation.open(context.Background(), base.OpenRequest{SessionID: "s", Participant: protocol.Participant{ID: "user"}, Tools: testCase.tools})
 		encoded, err := json.Marshal((<-recorder.request).(native.InitializeRequest))
 		if err != nil {
 			t.Fatal(err)
@@ -92,7 +92,7 @@ func openProvided(t *testing.T, tools ...protocol.ToolDefinition) (base.Session,
 	if err != nil {
 		t.Fatal(err)
 	}
-	session, err := implementation.Open(context.Background(), base.OpenRequest{SessionID: "session", Participant: protocol.Participant{ID: "user"}, Tools: tools})
+	session, err := implementation.open(context.Background(), base.OpenRequest{SessionID: "session", Participant: protocol.Participant{ID: "user"}, Tools: tools})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -138,6 +138,18 @@ func TestTheProvidedServerAnswersTheCLIsMCPInitializePingToolsListAndAnythingEls
 		if got := mcpAnswer(t, peer, testCase.id); got != testCase.want {
 			t.Fatalf("%s answered %s, want %s", testCase.id, got, testCase.want)
 		}
+	}
+}
+
+func TestAnOpenWithToolsIsRefusedWhileProvidingThemIsUnadvertised(t *testing.T) {
+	implementation, err := New(Config{Factory: ClientFactoryFunc(func(context.Context) (Client, error) { return newWirePeer(t).client, nil }), Model: "claude-test", Clock: &testClock{}, IDs: &testIDs{}, JournalCapacity: 64})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = implementation.Open(context.Background(), base.OpenRequest{SessionID: "session", Participant: protocol.Participant{ID: "user"}, Tools: []protocol.ToolDefinition{providedTool("echo")}})
+	var refused *base.UnsupportedControlError
+	if !errors.As(err, &refused) || refused.Feature != protocol.FeatureToolsProvide || refused.Reason != base.ControlUnadvertised {
+		t.Fatalf("err = %v", err)
 	}
 }
 

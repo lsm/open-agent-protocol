@@ -390,6 +390,13 @@ func (a *Adapter) Probe(ctx context.Context) (base.Descriptor, error) {
 }
 
 func (a *Adapter) Open(ctx context.Context, req base.OpenRequest) (base.Session, error) {
+	if err := base.RefuseUnadvertisedTools(req, advertisedFeatures()[protocol.FeatureToolsProvide]); err != nil {
+		return nil, err
+	}
+	return a.open(ctx, req)
+}
+
+func (a *Adapter) open(ctx context.Context, req base.OpenRequest) (base.Session, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
