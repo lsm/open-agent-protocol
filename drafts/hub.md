@@ -393,6 +393,20 @@ and a subscribing `open` can reach.
 
 ### Shutdown and exit on stdio
 
+A host can also ask: the `shutdown` op, whose optional `request` is
+`{"mode":"graceful"|"force"}`, answers [Decision 0050](../decisions/0050-shutdown-is-graceful-forced-or-asked.md)'s
+`{outcome, active_runs, lost?}`. With no mode and a nonterminal run it answers
+`choose`, listing the runs, and changes nothing. `graceful` cancels every queued
+run, lists it under `lost` because nothing holds it for the next start yet, and
+`draining` lets the running runs finish; `force` answers `stopping`, and a later
+graceful never undoes it. Once accepted, `submit`, `open`, `work.start` and
+`work.send` are refused `shutting_down`, and serving ends once force was asked
+or no nonterminal run is left. Zig only so far — `a shutdown with nothing
+running stops at once, and one with no mode while a run is active asks the
+host to choose`, `a graceful shutdown drains and refuses new work, and force
+stops it`, `a shutdown mode other than graceful or force is refused and changes
+nothing`; Go's op and the HTTP route follow.
+
 Shutdown is stdin EOF or SIGINT/SIGTERM. The daemon stops admitting, settles
 the work it already admitted inside its bounded window, closes every session so
 child agent processes are not orphaned, and exits zero. The session sweep runs

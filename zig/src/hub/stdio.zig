@@ -38,6 +38,7 @@ pub const op_work_send = "work.send";
 pub const op_work_stop = "work.stop";
 pub const op_work_read = "work.read";
 pub const op_work_capabilities = "work.capabilities";
+pub const op_shutdown = "shutdown";
 pub const work_read_default: usize = 100;
 pub const work_read_max: usize = 500;
 
@@ -529,6 +530,7 @@ pub const Frontend = struct {
     next_envelope: u64 = 0,
     streams: std.ArrayList(Watched) = .empty,
     stopped: bool = false,
+    shutdown: ?ShutdownMode = null,
     jobs: std.ArrayList(*Job) = .empty,
     next_ticket: u64 = 0,
 
@@ -888,6 +890,13 @@ pub const Frontend = struct {
     };
 
     fn dispatch(self: *Frontend, arena: std.mem.Allocator, request: Request) Error!Outcome {
+        if (self.shutdown != null and admitsWork(request.op)) {
+            return .{ .refused = .{ .code = "shutting_down", .message = "the endpoint is shutting down and admits no new work" } };
+        }
+        if (std.mem.eql(u8, request.op, op_shutdown)) {
+            if (try request.only(arena, request_parameter)) |refusal| return .{ .refused = refusal };
+            return self.shutdownOp(arena, request.payload);
+        }
         if (std.mem.eql(u8, request.op, op_adapters)) {
             if (try request.only(arena, no_parameters)) |refusal| return .{ .refused = refusal };
             return .{ .answer = try self.adapters(arena) };
@@ -985,6 +994,58 @@ pub const Frontend = struct {
             return self.tools(arena, request.session_id, request.allow_degraded_features);
         }
         return .{ .refused = .{ .code = "unknown_op", .message = try std.fmt.allocPrint(arena, "no op \"{s}\"", .{request.op}) } };
+    }
+
+    const Nonterminal = struct { session_id: []const u8, run: oap_types.ActiveRun };
+
+    fn nonterminalRuns(self: *Frontend, arena: std.mem.Allocator) ![]Nonterminal {
+        var runs: std.ArrayList(Nonterminal) = .empty;
+        for (try self.hub.sessions(arena)) |status| {
+            for (status.active_runs) |run| try runs.append(arena, .{ .session_id = status.session_id, .run = run });
+            if (status.active_runs.len > 0 or status.active_run_id.len == 0) continue;
+            try runs.append(arena, .{ .session_id = status.session_id, .run = .{
+                .run_id = status.active_run_id,
+                .status = switch (status.status) {
+                    .queued => .queued,
+                    .waiting_for_input => .waiting_for_input,
+                    else => .running,
+                },
+                .relationship = "primary",
+            } });
+        }
+        return runs.items;
+    }
+
+    fn shutdownOp(self: *Frontend, arena: std.mem.Allocator, payload: ?std.json.Value) Error!Outcome {
+        const asked = askedShutdown(payload) orelse return .{ .refused = .{ .code = "invalid_request", .message = "request is an object whose only member is mode, graceful or force" } };
+        var runs = try self.nonterminalRuns(arena);
+        const mode = asked orelse self.shutdown orelse if (runs.len > 0)
+            return .{ .answer = try shutdownAnswer(arena, "choose", runs, &.{}) }
+        else
+            ShutdownMode.graceful;
+        if (self.shutdown != .force) self.shutdown = mode;
+        var lost: std.ArrayList(Nonterminal) = .empty;
+        if (self.shutdown == .graceful) {
+            var kept: std.ArrayList(Nonterminal) = .empty;
+            for (runs) |entry| {
+                if (entry.run.status == .queued) {
+                    if (self.hub.cancel(arena, entry.session_id, entry.run.run_id)) |_| {
+                        try lost.append(arena, entry);
+                        continue;
+                    } else |err| if (err == error.OutOfMemory) return error.OutOfMemory;
+                }
+                try kept.append(arena, entry);
+            }
+            runs = kept.items;
+        }
+        const outcome = if (self.shutdown == .graceful and runs.len > 0) "draining" else "stopping";
+        return .{ .answer = try shutdownAnswer(arena, outcome, runs, lost.items) };
+    }
+
+    pub fn shutdownComplete(self: *Frontend, arena: std.mem.Allocator) !bool {
+        const mode = self.shutdown orelse return false;
+        if (mode == .force) return true;
+        return (try self.nonterminalRuns(arena)).len == 0;
     }
 
     pub fn adapters(self: *Frontend, arena: std.mem.Allocator) !std.json.Value {
@@ -2476,7 +2537,7 @@ fn timestamp(arena: std.mem.Allocator, milliseconds: i64) ![]const u8 {
     var buffer: [32]u8 = undefined;
     const written = try std.fmt.bufPrint(&buffer, "{d:0>4}-{d:0>2}-{d:0>2}T{d:0>2}:{d:0>2}:{d:0>2}Z", .{
         day.year,
-        @intFromEnum(month.month),
+        @backingInt(month.month),
         @as(u16, month.day_index) + 1,
         clock.getHoursIntoDay(),
         clock.getMinutesIntoHour(),
@@ -2598,6 +2659,58 @@ pub const Stream = struct {
 
 const ReadFailure = error{InputFailed};
 
+pub const ShutdownMode = enum { graceful, force };
+
+fn admitsWork(op: []const u8) bool {
+    for ([_][]const u8{ op_submit, op_open, op_work_start, op_work_send }) |admitting| {
+        if (std.mem.eql(u8, op, admitting)) return true;
+    }
+    return false;
+}
+
+fn askedShutdown(payload: ?std.json.Value) ??ShutdownMode {
+    const given = payload orelse return @as(?ShutdownMode, null);
+    if (given == .null) return @as(?ShutdownMode, null);
+    if (given != .object) return null;
+    var members = given.object.iterator();
+    while (members.next()) |entry| {
+        if (!std.mem.eql(u8, entry.key_ptr.*, "mode")) return null;
+    }
+    const mode = given.object.get("mode") orelse return @as(?ShutdownMode, null);
+    if (mode != .string) return null;
+    return std.meta.stringToEnum(ShutdownMode, mode.string) orelse return null;
+}
+
+fn shutdownAnswer(arena: std.mem.Allocator, outcome: []const u8, runs: anytype, lost: anytype) Error!std.json.Value {
+    var object = try emptyObject(arena);
+    try object.put(arena, "outcome", .{ .string = outcome });
+    const active = try arena.alloc(std.json.Value, runs.len);
+    for (runs, active) |entry, *slot| {
+        var run = try emptyObject(arena);
+        try run.put(arena, "session_id", .{ .string = entry.session_id });
+        try run.put(arena, "run_id", .{ .string = entry.run.run_id });
+        try run.put(arena, "status", .{ .string = @tagName(entry.run.status) });
+        if (entry.run.pending_interactions.len > 0) {
+            const pending = try arena.alloc(std.json.Value, entry.run.pending_interactions.len);
+            for (entry.run.pending_interactions, pending) |id, *item| item.* = .{ .string = id };
+            try run.put(arena, "pending_interactions", try jsonArray(arena, pending));
+        }
+        slot.* = .{ .object = run };
+    }
+    try object.put(arena, "active_runs", try jsonArray(arena, active));
+    if (lost.len > 0) {
+        const listed = try arena.alloc(std.json.Value, lost.len);
+        for (lost, listed) |entry, *slot| {
+            var run = try emptyObject(arena);
+            try run.put(arena, "session_id", .{ .string = entry.session_id });
+            try run.put(arena, "run_id", .{ .string = entry.run.run_id });
+            slot.* = .{ .object = run };
+        }
+        try object.put(arena, "lost", try jsonArray(arena, listed));
+    }
+    return .{ .object = object };
+}
+
 pub fn serve(allocator: std.mem.Allocator, frontend: *Frontend, stream: Stream) Error!void {
     var pending: std.ArrayList(u8) = .empty;
     defer pending.deinit(allocator);
@@ -2637,6 +2750,10 @@ pub fn serve(allocator: std.mem.Allocator, frontend: *Frontend, stream: Stream) 
         try frontend.hub.pump(allocator, 0);
         try frontend.pumpStreams();
         try frontend.answerJobs();
+        if (try frontend.shutdownComplete(arena)) {
+            frontend.stopped = true;
+            return;
+        }
         if (input_ready and !more) {
             while (frontend.jobs.items.len > 0) {
                 try frontend.answerJobs();
@@ -3181,6 +3298,62 @@ test "a close answers a bare null, and its refusals name the code the draft pins
     try testing.expectEqualStrings("unknown_session", try harness.code());
     try harness.send("{\"id\":4,\"op\":\"close\",\"session_id\":\"absent\"}");
     try testing.expectEqualStrings("unknown_session", try harness.code());
+}
+
+test "a shutdown with nothing running stops at once, and one with no mode while a run is active asks the host to choose" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    const idle = try Harness.init(testing.allocator, .{}, .{});
+    defer idle.deinit();
+    try idle.send("{\"id\":1,\"op\":\"shutdown\"}");
+    try testing.expectEqualStrings("stopping", try textMember(idle.arena(), (try idle.lastValue()).object.get("result").?, "outcome"));
+    try testing.expect(try idle.frontend.shutdownComplete(arena));
+
+    const harness = try Harness.init(testing.allocator, .{}, .{});
+    defer harness.deinit();
+    _ = try harness.hub.open(arena, "reference", .{ .session_id = "busy" });
+    const request = oap_types.MessageSubmitRequest{ .session_id = "busy", .messages = &.{}, .delivery = .auto };
+    _ = try harness.hub.submit(arena, "busy", &request, "");
+    try harness.send("{\"id\":1,\"op\":\"shutdown\"}");
+    const asked = (try harness.lastValue()).object.get("result").?;
+    try testing.expectEqualStrings("choose", try textMember(harness.arena(), asked, "outcome"));
+    const listed = asked.object.get("active_runs").?.array.items;
+    try testing.expectEqual(@as(usize, 1), listed.len);
+    try testing.expectEqualStrings("busy", try textMember(harness.arena(), listed[0], "session_id"));
+    try testing.expectEqual(@as(?ShutdownMode, null), harness.frontend.shutdown);
+    try testing.expect(!try harness.frontend.shutdownComplete(arena));
+}
+
+test "a graceful shutdown drains and refuses new work, and force stops it" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    const harness = try Harness.init(testing.allocator, .{}, .{});
+    defer harness.deinit();
+    _ = try harness.hub.open(arena, "reference", .{ .session_id = "busy" });
+    const request = oap_types.MessageSubmitRequest{ .session_id = "busy", .messages = &.{}, .delivery = .auto };
+    _ = try harness.hub.submit(arena, "busy", &request, "");
+    try harness.send("{\"id\":1,\"op\":\"shutdown\",\"request\":{\"mode\":\"graceful\"}}");
+    try testing.expectEqualStrings("draining", try textMember(harness.arena(), (try harness.lastValue()).object.get("result").?, "outcome"));
+    try testing.expect(!try harness.frontend.shutdownComplete(arena));
+    try harness.send("{\"id\":2,\"op\":\"open\",\"adapter\":\"reference\"}");
+    try testing.expectEqualStrings("shutting_down", try harness.code());
+    try harness.send("{\"id\":3,\"op\":\"shutdown\",\"request\":{\"mode\":\"force\"}}");
+    try testing.expectEqualStrings("stopping", try textMember(harness.arena(), (try harness.lastValue()).object.get("result").?, "outcome"));
+    try testing.expect(try harness.frontend.shutdownComplete(arena));
+    try harness.send("{\"id\":4,\"op\":\"shutdown\",\"request\":{\"mode\":\"graceful\"}}");
+    try testing.expectEqual(@as(?ShutdownMode, .force), harness.frontend.shutdown);
+}
+
+test "a shutdown mode other than graceful or force is refused and changes nothing" {
+    const harness = try Harness.init(testing.allocator, .{}, .{});
+    defer harness.deinit();
+    try harness.send("{\"id\":1,\"op\":\"shutdown\",\"request\":{\"mode\":\"later\"}}");
+    try testing.expectEqualStrings("invalid_request", try harness.code());
+    try harness.send("{\"id\":2,\"op\":\"shutdown\",\"request\":{\"mode\":\"force\",\"when\":1}}");
+    try testing.expectEqualStrings("invalid_request", try harness.code());
+    try testing.expectEqual(@as(?ShutdownMode, null), harness.frontend.shutdown);
 }
 
 test "a close of a session with a run in flight is run_active" {
