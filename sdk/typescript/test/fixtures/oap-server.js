@@ -122,6 +122,11 @@ createInterface({ input: process.stdin }).on("line", (line) => {
         break;
       }
       send(request, "inference.create.response", { accepted: true }, { inference_id: "inf-1" });
+      if (request.payload.model_ref.endsWith("@slow")) {
+        event(provider, "inference.started", { model_ref: request.payload.model_ref, started_at_ms: 0 }, { inference_id: "inf-1", sequence: 1 });
+        setTimeout(() => event(provider, "inference.completed", { message: { role: "assistant", content: "slow provider" }, stop_reason: "end_turn" }, { inference_id: "inf-1", sequence: 2 }), 400);
+        break;
+      }
       event(provider, "inference.started", { model_ref: request.payload.model_ref, started_at_ms: 0 }, { inference_id: "inf-1", sequence: 1 });
       event(provider, "inference.part.started", { part_index: 0, part_kind: "text" }, { inference_id: "inf-1", sequence: 2 });
       event(provider, "inference.part.delta", { part_index: 0, delta: "provider works" }, { inference_id: "inf-1", sequence: 3 });
@@ -166,6 +171,10 @@ createInterface({ input: process.stdin }).on("line", (line) => {
       if (request.payload.model_id?.endsWith("@settings")) {
         const said = `reasoning=${opened.reasoning_level} output=${opened.metadata?.oapx?.output} user_input=${opened.metadata?.oapx?.user_input} participant=${participant}`;
         event(agent, "run.completed", { session_id: request.payload.session_id, run_id: "run-1", final_response: { role: "assistant", content: said }, stop_reason: "end_turn" }, { session_id: request.payload.session_id, run_id: "run-1", sequence: 2 });
+        break;
+      }
+      if (submittedModel.endsWith("@slow")) {
+        setTimeout(() => event(agent, "run.completed", { session_id: request.payload.session_id, run_id: "run-1", final_response: { role: "assistant", content: "slow agent" }, stop_reason: "end_turn" }, { session_id: request.payload.session_id, run_id: "run-1", sequence: 2 }), 400);
         break;
       }
       event(agent, "content.delta", { session_id: request.payload.session_id, run_id: "run-1", part: { type: "text", text: "agent works" } }, { session_id: request.payload.session_id, run_id: "run-1", sequence: 2 });
