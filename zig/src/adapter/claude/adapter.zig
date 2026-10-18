@@ -1076,6 +1076,11 @@ fn failureValue(keep: std.mem.Allocator, failure: oap_types.ProtocolError) !std.
     try stated.put(keep, "code", .{ .string = try keep.dupe(u8, failure.code) });
     try stated.put(keep, "message", .{ .string = try keep.dupe(u8, failure.message) });
     if (failure.retriable) |retriable| try stated.put(keep, "retriable", .{ .bool = retriable });
+    if (failure.details.len > 0) {
+        var details = std.json.ObjectMap.empty;
+        for (failure.details) |entry| try details.put(keep, try keep.dupe(u8, entry.key), .{ .string = try keep.dupe(u8, entry.value) });
+        try stated.put(keep, "details", .{ .object = details });
+    }
     return .{ .object = stated };
 }
 
@@ -2243,6 +2248,23 @@ test "a provided tool's call reaches the opener as an interaction, and its resol
     const again = try resolveProvided(&probe, requested, request, &refusal);
     try testing.expect(!again.accepted);
     try testing.expectEqualStrings("already_resolved", again.reason.?);
+}
+
+test "an accepted error resolution settles the call with every detail it carried" {
+    var probe: Probe = undefined;
+    try probe.init(fake_prelude ++ fake_provided_turn ++ fake_idle);
+    defer probe.deinit();
+    var refusal = contract.Refusal{};
+    probe.handle = try probe.adapter.adapter().open(probe.arena.allocator(), .{ .session_id = "s1", .participant = "user", .tools_json = provided_tools_json }, &refusal);
+    _ = try probe.submit("use echo", &refusal);
+    var seen = std.ArrayList(contract.Event).empty;
+    const requested = try probe.pumpUntil("action.call.requested", &seen);
+    var request = try providedAnswer(&probe, requested);
+    const details = [_]oap_types.DetailEntry{.{ .key = "path", .value = "x" }};
+    request.err = .{ .code = "tool_failed", .message = "failed", .details = &details };
+    try testing.expect((try resolveProvided(&probe, requested, request, &refusal)).accepted);
+    const failed = try probe.pumpUntil("action.call.failed", &seen);
+    try testing.expect(std.mem.indexOf(u8, failed.line, "\"error\":{\"code\":\"tool_failed\",\"message\":\"failed\",\"details\":{\"path\":\"x\"}}") != null);
 }
 
 test "a resolution that comes before the CLI's tools/call answers it when it arrives" {
