@@ -210,6 +210,7 @@ What `action.tools.provide` would map to:
 | `action.call.requested` | an `mcp_message` carrying `tools/call`; the JSON-RPC id and the stream's `tool_use` id correlate it |
 | `action.call.resolve.request` | the `control_response` to that `mcp_message`, its `mcp_response` an MCP `CallToolResult` (`content` text, `isError` for a failure) |
 | the five refusal reasons | the adapter's own |
+| a call the run's `tool_choice` excludes | never requested: the PreToolUse hook denies it and the adapter emits no `action.call.*` for it, because Decision 0031 settles an excluded call only as `failed` with `refused_by_policy` while Decision 0011 admits a control-owned `failed` only from an accepted `error` resolution, so no settlement of a requested call satisfies both |
 | limits | the per-server `timeout` (the CLI's `MCP_TOOL_TIMEOUT` otherwise), MCP's tool-name rules, and whether `--allowedTools` pre-approves the names (otherwise each call is a permission request first) |
 
 **Recommendation.** The best fit of the three harnesses: session-scoped and

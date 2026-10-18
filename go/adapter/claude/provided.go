@@ -178,6 +178,8 @@ func (s *Session) answerMCP(control *rpc.IncomingControl, request *native.MCPMes
 		})
 	case "ping":
 		s.answerRPC(control, message.ID, struct{}{})
+	case "tools/call":
+		s.holdCall(control, message.ID, request.Message)
 	case "tools/list":
 		listed := make([]map[string]any, 0, len(s.provided))
 		for _, tool := range s.provided {
@@ -205,3 +207,145 @@ func (s *Session) replyRPC(control *rpc.IncomingControl, reply map[string]any) {
 	}
 	_ = control.Respond(context.Background(), native.MCPResponse{MCPResponse: encoded})
 }
+
+func (s *Session) requestProvided(run *runState, nativeID, name string, input json.RawMessage) {
+	if run.excludes(name) {
+		s.tools[nativeID] = &toolState{nativeID: nativeID, run: run, name: name, suppressed: true, terminal: true}
+		return
+	}
+	args, _ := json.Marshal(input)
+	tool := &toolState{
+		nativeID: nativeID, id: protocol.ToolCallID(s.ids.NewID("tool-call")), run: run,
+		name: name, source: nativeToolSource, args: args, order: s.nextOrder,
+		interaction: protocol.InteractionID(s.ids.NewID("interaction")),
+	}
+	s.nextOrder++
+	s.tools[nativeID] = tool
+	requested, _ := s.emitEnvelope(run, protocol.TypeActionCallRequested, s.toolPayload(tool), false, "")
+	tool.requested = requested.ID
+	_ = s.emit(run, protocol.TypeRunStatusUpdated, protocol.RunStatusUpdatedPayload{SessionID: s.state.SessionID, RunID: run.id, Status: protocol.RunWaitingForInput, PendingUserInputID: tool.interaction, UpdatedAtMS: s.clock.Now().UnixMilli()}, false)
+}
+
+func (s *Session) cancelProvided(tool *toolState) {
+	tool.terminal = true
+	payload := s.toolPayload(tool)
+	payload.ArgumentsJSON = nil
+	cancelled, _ := s.emitEnvelope(tool.run, protocol.TypeActionCallCancelled, payload, false, tool.started)
+	tool.settlement = cancelled.ID
+	if tool.held != nil {
+		s.replyRPC(tool.held, map[string]any{"jsonrpc": "2.0", "id": tool.heldID, "error": map[string]any{"code": -32603, "message": "the call was cancelled"}})
+		tool.held = nil
+	}
+}
+
+func (s *Session) emitRunning(run *runState) {
+	_ = s.emit(run, protocol.TypeRunStatusUpdated, protocol.RunStatusUpdatedPayload{SessionID: s.state.SessionID, RunID: run.id, Status: protocol.RunRunning, UpdatedAtMS: s.clock.Now().UnixMilli()}, false)
+}
+
+func (s *Session) holdCall(control *rpc.IncomingControl, id json.RawMessage, message json.RawMessage) {
+	var call struct {
+		Params struct {
+			Meta map[string]json.RawMessage `json:"_meta"`
+		} `json:"params"`
+	}
+	_ = json.Unmarshal(message, &call)
+	var toolUseID string
+	_ = json.Unmarshal(call.Params.Meta["claudecode/toolUseId"], &toolUseID)
+	tool := s.tools[toolUseID]
+	if tool == nil || tool.interaction == "" || tool.held != nil || tool.terminal && tool.reply == nil {
+		s.replyRPC(control, map[string]any{"jsonrpc": "2.0", "id": id, "error": map[string]any{"code": -32602, "message": "no provided call matches this tools/call"}})
+		return
+	}
+	if tool.reply != nil {
+		s.answerRPC(control, id, tool.reply)
+		tool.reply = nil
+		return
+	}
+	tool.held, tool.heldID = control, cloneRaw(id)
+}
+
+func (s *Session) answerCall(tool *toolState, result json.RawMessage) {
+	if tool.held == nil {
+		tool.reply = result
+		return
+	}
+	s.answerRPC(tool.held, tool.heldID, result)
+	tool.held = nil
+}
+
+func (s *Session) ResolveCall(ctx context.Context, resolution base.CallResolution) (protocol.ActionCallResolveResponse, error) {
+	if err := ctx.Err(); err != nil {
+		return protocol.ActionCallResolveResponse{}, err
+	}
+	request := resolution.Request
+	answer := protocol.ActionCallResolveResponse{InteractionID: request.InteractionID, SessionID: request.SessionID, RunID: request.RunID, ToolCallID: request.ToolCallID}
+	refuse := func(reason protocol.ResolveReason, settlement protocol.EnvelopeID) (protocol.ActionCallResolveResponse, error) {
+		answer.Reason = reason
+		if reason == protocol.ReasonAlreadyResolved {
+			answer.Details = &protocol.ActionCallResolveDetails{SettlementID: settlement}
+		}
+		return answer, nil
+	}
+	s.reduceMu.Lock()
+	defer s.reduceMu.Unlock()
+	var tool *toolState
+	for _, candidate := range s.tools {
+		if candidate.interaction != "" && candidate.interaction == request.InteractionID {
+			tool = candidate
+		}
+	}
+	if tool == nil || request.SessionID != s.state.SessionID || request.RunID != tool.run.id {
+		return refuse(protocol.ReasonUnknownInteraction, "")
+	}
+	if request.RespondedBy != s.participant || request.RequestedBy != endpointID || request.ToolCallID != tool.id {
+		return refuse(protocol.ReasonWrongResponder, "")
+	}
+	arm := request.Arm()
+	switch {
+	case arm == "":
+		return refuse(protocol.ReasonUnknownInteraction, "")
+	case tool.terminal:
+		return refuse(protocol.ReasonAlreadyResolved, tool.settlement)
+	case arm == protocol.ResolveArmAcknowledge && tool.acknowledged:
+		return refuse(protocol.ReasonRepeatedAcknowledgement, "")
+	case tool.run.terminal:
+		return refuse(protocol.ReasonUnknownInteraction, "")
+	}
+	run := tool.run
+	answer.Accepted = true
+	if arm == protocol.ResolveArmAcknowledge || !tool.acknowledged {
+		started := s.toolPayload(tool)
+		started.ArgumentsJSON, started.RequestID = nil, resolution.RequestID
+		emitted, _ := s.emitEnvelope(run, protocol.TypeActionCallStarted, started, false, tool.requested)
+		tool.started, tool.acknowledged = emitted.ID, true
+		if arm == protocol.ResolveArmAcknowledge {
+			return answer, nil
+		}
+	}
+	settled := s.toolPayload(tool)
+	settled.ArgumentsJSON, settled.RequestID = nil, resolution.RequestID
+	kind := protocol.TypeActionCallCompleted
+	if arm == protocol.ResolveArmError {
+		kind, settled.Error = protocol.TypeActionCallFailed, request.Error
+	} else {
+		settled.Result = cloneRaw(request.Result)
+	}
+	emitted, _ := s.emitEnvelope(run, kind, settled, false, tool.started)
+	tool.settlement, tool.terminal = emitted.ID, true
+	s.emitRunning(run)
+	s.answerCall(tool, toolResult(request))
+	return answer, nil
+}
+
+func toolResult(request protocol.ActionCallResolveRequest) json.RawMessage {
+	text := string(request.Result)
+	if request.Error != nil {
+		text = request.Error.Message
+	} else if json.Unmarshal(request.Result, &text) != nil {
+		text = string(request.Result)
+	}
+	encoded, _ := json.Marshal(map[string]any{"content": []map[string]string{{"type": "text", "text": text}}, "isError": request.Error != nil})
+	return encoded
+}
+
+var _ base.CallResolver = (*Session)(nil)

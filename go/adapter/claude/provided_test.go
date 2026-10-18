@@ -7,8 +7,10 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	base "github.com/lsm/open-agent-protocol/go/adapter"
+	"github.com/lsm/open-agent-protocol/go/adapter/adaptertest"
 	"github.com/lsm/open-agent-protocol/go/adapter/claude/internal/native"
 	"github.com/lsm/open-agent-protocol/go/adapter/claude/internal/rpc"
 	"github.com/lsm/open-agent-protocol/go/protocol"
@@ -282,4 +284,243 @@ func TestTheRunsToolChoiceNamesAProvidedToolBare(t *testing.T) {
 	if got := hook("toolu_b", "Bash"); got != "" {
 		t.Fatalf("an unexcluded tool's hook decided %q", got)
 	}
+}
+
+func providedToolUse(id string) string {
+	return `{"type":"assistant","message":{"id":"msg_1","model":"claude-test","content":[{"type":"tool_use","id":"` + id + `","name":"mcp__oap__echo","input":{"text":"hi"}}],"stop_reason":null,"usage":{"input_tokens":7}},"parent_tool_use_id":null,"session_id":"` + peerSession + `","uuid":"a-` + id + `"}`
+}
+
+func providedCall(peer *wirePeer, requestID, toolUseID string) {
+	peer.send(`{"type":"control_request","request_id":"` + requestID + `","request":{"subtype":"mcp_message","server_name":"oap","message":{"method":"tools/call","params":{"name":"echo","arguments":{"text":"hi"},"_meta":{"claudecode/toolUseId":"` + toolUseID + `","progressToken":2}},"jsonrpc":"2.0","id":7}}}`)
+}
+
+type providedRun struct {
+	session base.Session
+	peer    *wirePeer
+	uuid    string
+	outcome submitOutcome
+	seen    []protocol.Envelope
+}
+
+func startProvided(t *testing.T, toolChoice string) *providedRun {
+	t.Helper()
+	session, peer := openProvided(t, providedTool("echo"))
+	request := protocol.MessageSubmitRequest{SessionID: "session", Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("go")}}, Delivery: protocol.DeliveryAuto}
+	if toolChoice != "" {
+		request.ToolChoice = json.RawMessage(toolChoice)
+	}
+	uuid, outcome := admitWith(t, session, peer, request)
+	if outcome.err != nil {
+		t.Fatal(outcome.err)
+	}
+	run := &providedRun{session: session, peer: peer, uuid: uuid, outcome: outcome}
+	peer.send(providedToolUse("toolu_p"))
+	return run
+}
+
+func (r *providedRun) until(t *testing.T, kind protocol.EnvelopeType) protocol.Envelope {
+	t.Helper()
+	for {
+		event := adaptertest.Next(t, r.outcome.stream, 5*time.Second)
+		r.seen = append(r.seen, event)
+		if event.Type == kind {
+			return event
+		}
+	}
+}
+
+func (r *providedRun) finish(t *testing.T) []protocol.Envelope {
+	t.Helper()
+	r.peer.send(resultFrame(r.uuid, "success", false, "completed", "done", 0))
+	return append(r.seen, adaptertest.Drain(t, r.outcome.stream, 5*time.Second)...)
+}
+
+func (r *providedRun) answerFor(t *testing.T, requested protocol.Envelope) protocol.ActionCallResolveRequest {
+	t.Helper()
+	var payload protocol.ActionCallPayload
+	if err := requested.DecodePayload(&payload); err != nil {
+		t.Fatal(err)
+	}
+	return protocol.ActionCallResolveRequest{InteractionID: payload.InteractionID, SessionID: payload.SessionID, RunID: payload.RunID, ToolCallID: payload.ToolCallID, RequestedBy: payload.RequestedBy, RespondedBy: payload.RespondedBy}
+}
+
+func (r *providedRun) resolve(t *testing.T, request protocol.ActionCallResolveRequest) protocol.ActionCallResolveResponse {
+	t.Helper()
+	response, err := r.session.(base.CallResolver).ResolveCall(context.Background(), base.CallResolution{RequestID: "resolve-1", Request: request})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return response
+}
+
+func countType(events []protocol.Envelope, kind protocol.EnvelopeType) int {
+	count := 0
+	for _, event := range events {
+		if event.Type == kind {
+			count++
+		}
+	}
+	return count
+}
+
+const heldReply = `{"id":7,"jsonrpc":"2.0","result":{"content":[{"text":"hi back","type":"text"}],"isError":false}}`
+
+func TestAProvidedToolsCallReachesTheOpenerAsAnInteractionAndItsResolutionAnswersTheCLIsHeldToolsCall(t *testing.T) {
+	run := startProvided(t, "")
+	requested := run.until(t, protocol.TypeActionCallRequested)
+	var payload protocol.ActionCallPayload
+	if err := requested.DecodePayload(&payload); err != nil {
+		t.Fatal(err)
+	}
+	if payload.ExecutionOwner != "user" || payload.RespondedBy != "user" || payload.Name != "echo" || payload.InteractionID == "" {
+		t.Fatalf("requested = %+v", payload)
+	}
+	waiting := run.until(t, protocol.TypeRunStatusUpdated)
+	var status protocol.RunStatusUpdatedPayload
+	if err := waiting.DecodePayload(&status); err != nil || status.Status != protocol.RunWaitingForInput || status.PendingUserInputID != payload.InteractionID {
+		t.Fatalf("status = %+v, err = %v", status, err)
+	}
+	providedCall(run.peer, "call-1", "toolu_p")
+	answer := run.answerFor(t, requested)
+	answer.Result = json.RawMessage(`"hi back"`)
+	if response := run.resolve(t, answer); !response.Accepted {
+		t.Fatalf("response = %+v", response)
+	}
+	if got := mcpAnswer(t, run.peer, "call-1"); got != heldReply {
+		t.Fatalf("held tools/call answered %s", got)
+	}
+	completed := run.until(t, protocol.TypeActionCallCompleted)
+	again := run.resolve(t, answer)
+	if again.Accepted || again.Reason != protocol.ReasonAlreadyResolved || again.Details == nil || again.Details.SettlementID != completed.ID {
+		t.Fatalf("second resolution = %+v", again)
+	}
+	events := run.finish(t)
+	assertValidTrace(t, run.outcome.request, run.outcome.admission, events)
+	if countType(events, protocol.TypeActionCallStarted) != 1 || countType(events, protocol.TypeActionCallCompleted) != 1 {
+		t.Fatalf("events = %v", callSettlementsOf(events))
+	}
+}
+
+func TestAResolutionThatComesBeforeTheCLIsToolsCallAnswersItWhenItArrives(t *testing.T) {
+	run := startProvided(t, "")
+	requested := run.until(t, protocol.TypeActionCallRequested)
+	answer := run.answerFor(t, requested)
+	answer.Result = json.RawMessage(`"hi back"`)
+	if response := run.resolve(t, answer); !response.Accepted {
+		t.Fatalf("response = %+v", response)
+	}
+	providedCall(run.peer, "call-1", "toolu_p")
+	if got := mcpAnswer(t, run.peer, "call-1"); got != heldReply {
+		t.Fatalf("late tools/call answered %s", got)
+	}
+	assertValidTrace(t, run.outcome.request, run.outcome.admission, run.finish(t))
+}
+
+func TestAProvidedCallsResolutionsAreRefusedByRankAcknowledgedOnceAndAnErrorSettlesWithItsDetails(t *testing.T) {
+	run := startProvided(t, "")
+	requested := run.until(t, protocol.TypeActionCallRequested)
+	answer := run.answerFor(t, requested)
+	foreign := answer
+	foreign.RespondedBy, foreign.Started = "someone", &protocol.ResolveArmStarted{}
+	unknown := answer
+	unknown.InteractionID, unknown.Started = "interaction-x", &protocol.ResolveArmStarted{}
+	ack := answer
+	ack.Started = &protocol.ResolveArmStarted{}
+	for _, testCase := range []struct {
+		request protocol.ActionCallResolveRequest
+		reason  protocol.ResolveReason
+	}{
+		{unknown, protocol.ReasonUnknownInteraction},
+		{foreign, protocol.ReasonWrongResponder},
+		{answer, protocol.ReasonUnknownInteraction},
+	} {
+		if response := run.resolve(t, testCase.request); response.Accepted || response.Reason != testCase.reason {
+			t.Fatalf("%+v: response = %+v", testCase.request, response)
+		}
+	}
+	if response := run.resolve(t, ack); !response.Accepted {
+		t.Fatalf("acknowledgement = %+v", response)
+	}
+	if response := run.resolve(t, ack); response.Accepted || response.Reason != protocol.ReasonRepeatedAcknowledgement {
+		t.Fatalf("second acknowledgement = %+v", response)
+	}
+	failure := answer
+	failure.Error = &protocol.ProtocolError{Code: "tool_failed", Message: "failed", Details: map[string]any{"path": "x"}}
+	if response := run.resolve(t, failure); !response.Accepted {
+		t.Fatalf("error resolution = %+v", response)
+	}
+	failed := run.until(t, protocol.TypeActionCallFailed)
+	var settled protocol.ActionCallPayload
+	if err := failed.DecodePayload(&settled); err != nil || settled.Error == nil || settled.Error.Code != "tool_failed" || settled.Error.Details["path"] != "x" {
+		t.Fatalf("failed = %s, err = %v", failed.Payload, err)
+	}
+	events := run.finish(t)
+	assertValidTrace(t, run.outcome.request, run.outcome.admission, events)
+	if countType(events, protocol.TypeActionCallStarted) != 1 {
+		t.Fatalf("events = %v", callSettlementsOf(events))
+	}
+}
+
+func TestAProvidedCallTheCLISettlesFirstOrARunLeavesOpenIsCancelledAndStaysResolved(t *testing.T) {
+	settledFirst := startProvided(t, "")
+	requested := settledFirst.until(t, protocol.TypeActionCallRequested)
+	settledFirst.peer.send(`{"type":"user","message":{"role":"user","content":[{"tool_use_id":"toolu_p","type":"tool_result","content":"MCP tool call timed out","is_error":true}]},"parent_tool_use_id":null,"session_id":"` + peerSession + `","uuid":"u1"}`)
+	cancelled := settledFirst.until(t, protocol.TypeActionCallCancelled)
+	answer := settledFirst.answerFor(t, requested)
+	answer.Result = json.RawMessage(`"late"`)
+	if late := settledFirst.resolve(t, answer); late.Accepted || late.Reason != protocol.ReasonAlreadyResolved || late.Details.SettlementID != cancelled.ID {
+		t.Fatalf("late resolution = %+v", late)
+	}
+	settledEvents := settledFirst.finish(t)
+	assertValidTrace(t, settledFirst.outcome.request, settledFirst.outcome.admission, settledEvents)
+	if countType(settledEvents, protocol.TypeActionCallFailed) != 0 || countType(settledEvents, protocol.TypeActionCallCancelled) != 1 {
+		t.Fatalf("events = %v", callSettlementsOf(settledEvents))
+	}
+
+	leftOpen := startProvided(t, "")
+	requested = leftOpen.until(t, protocol.TypeActionCallRequested)
+	providedCall(leftOpen.peer, "call-1", "toolu_p")
+	events := leftOpen.finish(t)
+	assertValidTrace(t, leftOpen.outcome.request, leftOpen.outcome.admission, events)
+	if countType(events, protocol.TypeActionCallCancelled) != 1 {
+		t.Fatalf("events = %v", callSettlementsOf(events))
+	}
+	if got := mcpAnswer(t, leftOpen.peer, "call-1"); !strings.Contains(got, `"error"`) {
+		t.Fatalf("the held tools/call was answered %s", got)
+	}
+	answer = leftOpen.answerFor(t, requested)
+	answer.Result = json.RawMessage(`"late"`)
+	if late := leftOpen.resolve(t, answer); late.Accepted || late.Reason != protocol.ReasonAlreadyResolved {
+		t.Fatalf("late resolution = %+v", late)
+	}
+}
+
+func TestAProvidedCallTheRunsToolChoiceExcludesIsNeverRequestedOfTheOpener(t *testing.T) {
+	run := startProvided(t, `{"disallowed":["echo"]}`)
+	run.peer.send(`{"type":"control_request","request_id":"hook-p","request":{"subtype":"hook_callback","callback_id":"` + native.ToolSelectionHook + `","input":{"hook_event_name":"PreToolUse","tool_name":"mcp__oap__echo","tool_input":{},"tool_use_id":"toolu_p"},"tool_use_id":"toolu_p"}}`)
+	message, _ := run.peer.written()
+	var decision native.HookDeny
+	if json.Unmarshal(message.Response.Response, &decision) != nil || decision.HookSpecificOutput.PermissionDecision != "deny" {
+		t.Fatalf("hook answer = %+v", message)
+	}
+	run.peer.send(`{"type":"user","message":{"role":"user","content":[{"tool_use_id":"toolu_p","type":"tool_result","content":"echo is excluded","is_error":true}]},"parent_tool_use_id":null,"session_id":"` + peerSession + `","uuid":"u1"}`)
+	events := run.finish(t)
+	assertValidTrace(t, run.outcome.request, run.outcome.admission, events)
+	for _, event := range events {
+		var status protocol.RunStatusUpdatedPayload
+		if strings.HasPrefix(string(event.Type), "action.call.") || event.Type == protocol.TypeRunStatusUpdated && event.DecodePayload(&status) == nil && status.Status == protocol.RunWaitingForInput {
+			t.Fatalf("an excluded provided call reached the trace: %v", callSettlementsOf(events))
+		}
+	}
+	if events[len(events)-1].Type != protocol.TypeRunCompleted {
+		t.Fatalf("events = %v", callSettlementsOf(events))
+	}
+}
+
+func callSettlementsOf(events []protocol.Envelope) []protocol.EnvelopeType {
+	kinds := make([]protocol.EnvelopeType, 0, len(events))
+	for _, event := range events {
+		kinds = append(kinds, event.Type)
+	}
+	return kinds
 }

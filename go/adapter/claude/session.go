@@ -104,6 +104,14 @@ type toolState struct {
 	started   protocol.EnvelopeID
 	order     uint64
 	terminal  bool
+
+	interaction  protocol.InteractionID
+	suppressed   bool
+	acknowledged bool
+	settlement   protocol.EnvelopeID
+	held         *rpc.IncomingControl
+	heldID       json.RawMessage
+	reply        json.RawMessage
 }
 
 type gateState struct {
@@ -752,6 +760,10 @@ func (s *Session) startTool(run *runState, nativeID, name string, input json.Raw
 		s.failRun(run, "claude_tool_lifecycle", "duplicate tool call")
 		return
 	}
+	if bare, ok := s.providedName(name); ok {
+		s.requestProvided(run, nativeID, bare, input)
+		return
+	}
 	args, _ := json.Marshal(input)
 	tool := &toolState{
 		nativeID: nativeID, id: protocol.ToolCallID(s.ids.NewID("tool-call")), run: run,
@@ -770,6 +782,14 @@ func (s *Session) startTool(run *runState, nativeID, name string, input json.Raw
 func (s *Session) endTool(run *runState, nativeID string, content json.RawMessage, isError *bool) {
 	tool := s.tools[nativeID]
 	if tool != nil && tool.run != run {
+		return
+	}
+	if tool != nil && (tool.interaction != "" || tool.suppressed) {
+		delete(s.policyDenied, nativeID)
+		if !tool.terminal {
+			s.cancelProvided(tool)
+			s.emitRunning(run)
+		}
 		return
 	}
 	if tool == nil || tool.terminal {
@@ -822,7 +842,11 @@ func toolResultText(content json.RawMessage) string {
 }
 
 func (s *Session) toolPayload(tool *toolState) protocol.ActionCallPayload {
-	return protocol.ActionCallPayload{SessionID: s.state.SessionID, RunID: tool.run.id, ToolCallID: tool.id, RequestedBy: endpointID, ExecutionOwner: harnessOwner, Name: tool.name, Source: tool.source, ArgumentsJSON: cloneRaw(tool.args)}
+	payload := protocol.ActionCallPayload{SessionID: s.state.SessionID, RunID: tool.run.id, ToolCallID: tool.id, RequestedBy: endpointID, ExecutionOwner: harnessOwner, Name: tool.name, Source: tool.source, ArgumentsJSON: cloneRaw(tool.args)}
+	if tool.interaction != "" {
+		payload.InteractionID, payload.RespondedBy, payload.ExecutionOwner = tool.interaction, s.participant, s.participant
+	}
+	return payload
 }
 
 func (s *Session) attributionFor(name string) string {
@@ -1141,6 +1165,11 @@ func (s *Session) sweepRun(run *runState) {
 	}
 	sort.Slice(tools, func(i, j int) bool { return tools[i].order < tools[j].order })
 	for _, tool := range tools {
+		if tool.interaction != "" {
+			delete(s.policyDenied, tool.nativeID)
+			s.cancelProvided(tool)
+			continue
+		}
 		payload := s.toolPayload(tool)
 		payload.ArgumentsJSON = nil
 		if s.policyDenied[tool.nativeID] {
