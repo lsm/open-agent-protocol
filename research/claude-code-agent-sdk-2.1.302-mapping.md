@@ -162,7 +162,13 @@ Whether `action.tools.provide` ([Decision 0011](../decisions/0011-control-layer-
 could be served natively, so that a host's own tools reach a Claude Code
 session. Read from the TypeScript Agent SDK 0.3.302's `sdk.d.ts` (sha256
 `26f9a0c9…`, above), which describes the CLI's stream-json control protocol at
-2.1.302. Not exercised against the binary.
+2.1.302, and then probed against the pinned darwin-arm64 binary with a
+throwaway `HOME`, a loopback Messages mock and no credentials: the CLI sends
+MCP `initialize` over `mcp_message` before it answers the `initialize` control
+request, then `notifications/initialized` and `tools/list`; a call arrives as
+`tools/call` with `_meta["claudecode/toolUseId"]` naming the `tool_use` it
+serves; and the CLI echoes the server's `CallToolResult` as that call's
+`tool_result`.
 
 **Possible, over the control channel this adapter already speaks.** The SDK's
 in-process MCP servers (`createSdkMcpServer`, `McpSdkServerConfig` with
@@ -187,8 +193,13 @@ The adapter already sends `initialize` (its `PreToolUse` hook) and answers
 `tools/call` into an OAP call. The scope is the CLI process, which is one
 session, as Decision 0011 requires. The tools reach the model as
 `mcp__<server>__<tool>`, and each call passes the CLI's permission check.
-Under the adapter's tool posture that means `--tools` must admit the names, or
-the call surfaces as `can_use_tool`, which the adapter already projects.
+`--tools` does not narrow MCP tools: the 2.1.280 ledger records that it drops
+names outside the built-in set, and a live probe at 2.1.302 confirms it for an
+SDK-hosted server, whose tool stayed listed and ran under `--tools Read`. What
+governs the check is `--allowedTools`. With `mcp__oap__echo` pre-allowed, the
+probe's call reached `tools/call` with no `can_use_tool`; without it, a
+`can_use_tool` naming the tool, with `mcp_server.source: "sdk"`, came first,
+which the adapter projects as `action.permission.requested`.
 
 What `action.tools.provide` would map to:
 
@@ -199,7 +210,7 @@ What `action.tools.provide` would map to:
 | `action.call.requested` | an `mcp_message` carrying `tools/call`; the JSON-RPC id and the stream's `tool_use` id correlate it |
 | `action.call.resolve.request` | the `control_response` to that `mcp_message`, its `mcp_response` an MCP `CallToolResult` (`content` text, `isError` for a failure) |
 | the five refusal reasons | the adapter's own |
-| limits | the per-server `timeout` (the CLI's `MCP_TOOL_TIMEOUT` otherwise), MCP's tool-name rules, and the names `--tools` admits |
+| limits | the per-server `timeout` (the CLI's `MCP_TOOL_TIMEOUT` otherwise), MCP's tool-name rules, and whether `--allowedTools` pre-approves the names (otherwise each call is a permission request first) |
 
 **Recommendation.** The best fit of the three harnesses: session-scoped and
 stable, carried on the channel the adapter owns, and needing no MCP transport
