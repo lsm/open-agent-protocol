@@ -2818,6 +2818,7 @@ pub fn serve(allocator: std.mem.Allocator, frontend: *Frontend, stream: Stream) 
         try frontend.answerJobs();
         if (try frontend.shutdownComplete(arena)) {
             while (frontend.shutdown == .graceful and frontend.jobs.items.len > 0) {
+                if (stream.stop) |stop| if (stop()) break;
                 try frontend.answerJobs();
                 if (frontend.jobs.items.len > 0) std.Thread.yield() catch {};
             }

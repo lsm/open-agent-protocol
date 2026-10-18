@@ -2038,7 +2038,10 @@ here; each was a place a differential test would otherwise not see.
   memory adapter. And force skips
   answering in-flight jobs, but the frontend's teardown still joins a job's
   thread, so a wedged native read holds a force exit as it already holds an
-  EOF exit. What closes it is a queueing reference adapter with a test of the
+  EOF exit. A graceful exit waits on that job to answer it; a signal breaks
+  that wait, but a force request sent meanwhile is not read. Zig's serve loop
+  wiring for the shutdown (answering jobs on graceful only, then ending
+  serving) is pinned by no test: the named tests drive the frontend directly. What closes it is a queueing reference adapter with a test of the
   `lost` path, and a teardown that abandons a job thread after the window.
 
 One asymmetry is deliberate and is **not** a gap: a cross-origin refusal exists
