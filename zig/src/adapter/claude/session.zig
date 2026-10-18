@@ -14,6 +14,8 @@ pub const harness_owner = "claude-code";
 pub const native_source = "claude-code-native";
 pub const mcp_tool_prefix = "mcp__";
 pub const mcp_source_prefix = "mcp:";
+pub const provided_server = "oap";
+pub const provided_prefix = mcp_tool_prefix ++ provided_server ++ "__";
 
 pub const Options = struct {
     session_id: []const u8 = "session",
@@ -24,6 +26,7 @@ pub const Options = struct {
     counter: ?*usize = null,
     now_ms: ?*const fn () i64 = null,
     turn_tag: u64 = 0,
+    provided: []const []const u8 = &.{},
 };
 
 pub const Started = struct {
@@ -88,6 +91,7 @@ const Run = struct {
 pub const CatalogEntry = struct {
     name: []const u8,
     source: []const u8,
+    owner: []const u8 = harness_owner,
 };
 
 const Child = struct {
@@ -177,7 +181,7 @@ pub const Reducer = struct {
 
     pub fn excludes(self: *const Reducer, tool_name: []const u8) bool {
         const run = self.run orelse return false;
-        return run.started and self.policy.excludes(tool_name);
+        return run.started and self.policy.excludes(self.providedName(tool_name) orelse tool_name);
     }
 
     pub fn refusedByPolicy(self: *Reducer, tool_use_id: []const u8) !void {
@@ -228,7 +232,8 @@ pub const Reducer = struct {
         for (self.catalog.items) |entry| {
             const name = try kept_allocator.dupe(u8, entry.name);
             const source = try kept_allocator.dupe(u8, entry.source);
-            kept.catalog.appendAssumeCapacity(.{ .name = name, .source = source });
+            const owner = if (std.mem.eql(u8, entry.owner, harness_owner)) harness_owner else self.options.responder;
+            kept.catalog.appendAssumeCapacity(.{ .name = name, .source = source, .owner = owner });
         }
         try kept.servers.ensureTotalCapacity(kept_allocator, self.servers.items.len);
         for (self.servers.items) |server| {
@@ -978,6 +983,7 @@ pub const Reducer = struct {
                     if (entry != .object) continue;
                     const name = stringMember(entry.object, "name") orelse continue;
                     if (containsName(servers.items, name)) continue;
+                    if (self.options.provided.len > 0 and std.mem.eql(u8, name, provided_server)) continue;
                     try servers.append(self.allocator(), name);
                 }
             }
@@ -988,6 +994,15 @@ pub const Reducer = struct {
             if (listed == .array) {
                 for (listed.array.items) |entry| {
                     if (entry != .string or entry.string.len == 0) continue;
+                    if (self.providedName(entry.string)) |name| {
+                        const provided = CatalogEntry{ .name = name, .source = native_source, .owner = self.options.responder };
+                        if (self.catalogIndex(name)) |index| {
+                            self.catalog.items[index] = provided;
+                            continue;
+                        }
+                        try self.catalog.append(self.allocator(), provided);
+                        continue;
+                    }
                     if (self.catalogHolds(entry.string)) continue;
                     try self.catalog.append(self.allocator(), .{
                         .name = entry.string,
@@ -998,6 +1013,22 @@ pub const Reducer = struct {
         }
         self.catalog_known = true;
         try self.publishAttribution();
+    }
+
+    pub fn providedName(self: *const Reducer, native_name: []const u8) ?[]const u8 {
+        if (!std.mem.startsWith(u8, native_name, provided_prefix)) return null;
+        const name = native_name[provided_prefix.len..];
+        for (self.options.provided) |provided| {
+            if (std.mem.eql(u8, provided, name)) return provided;
+        }
+        return null;
+    }
+
+    fn catalogIndex(self: *Reducer, name: []const u8) ?usize {
+        for (self.catalog.items, 0..) |entry, index| {
+            if (std.mem.eql(u8, entry.name, name)) return index;
+        }
+        return null;
     }
 
     fn catalogHolds(self: *Reducer, name: []const u8) bool {
@@ -1018,6 +1049,7 @@ pub const Reducer = struct {
         }
         for (self.catalog.items) |entry| {
             if (!std.mem.eql(u8, entry.source, native_source)) continue;
+            if (!std.mem.eql(u8, entry.owner, harness_owner)) continue;
             try self.attribution.put(self.allocator(), entry.name, entry.source);
         }
     }
@@ -1413,6 +1445,73 @@ test "a call is attributed to the harness only when init advertised the tool" {
     try testing.expectEqualStrings(native_source, sources[0]);
     try testing.expectEqualStrings("", sources[1]);
     try testing.expectEqualStrings("", sources[2]);
+}
+
+test "a provided tool is listed under its own name, owned by the opener also after a compaction, and the server that carries it is not a source" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const scratch = arena.allocator();
+    var reducer = Reducer.init(&arena, .{ .responder = "host", .provided = &.{"echo"} });
+    reducer.open();
+    try observeText(&reducer, scratch,
+        \\{"type":"system","session_id":"s","subtype":"init","model":"model-a","tools":["Bash","mcp__oap__echo","mcp__oap__other","mcp__files__read"],"mcp_servers":[{"name":"oap","source":"sdk"},{"name":"files"}],"uuid":"i1"}
+    );
+    try testing.expectEqual(@as(usize, 1), reducer.servers.items.len);
+    try testing.expectEqualStrings("files", reducer.servers.items[0]);
+    const served = (try reducer.listTools()).?;
+    try testing.expectEqual(@as(usize, 4), served.len);
+    try testing.expectEqualStrings("echo", served[1].name);
+    try testing.expectEqualStrings(native_source, served[1].source);
+    try testing.expectEqualStrings("host", served[1].owner);
+    try testing.expectEqualStrings("mcp__oap__other", served[2].name);
+    try testing.expectEqualStrings(harness_owner, served[2].owner);
+    try testing.expectEqualStrings(harness_owner, served[0].owner);
+    var compact_arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer compact_arena.deinit();
+    const compacted = try reducer.compactInto(&compact_arena);
+    try testing.expectEqualStrings("echo", compacted.catalog.items[1].name);
+    try testing.expectEqualStrings("host", compacted.catalog.items[1].owner);
+    try testing.expectEqualStrings(harness_owner, compacted.catalog.items[0].owner);
+
+    var plain = Reducer.init(&arena, .{});
+    plain.open();
+    try observeText(&plain, scratch,
+        \\{"type":"system","session_id":"s","subtype":"init","model":"model-a","tools":["mcp__oap__echo"],"mcp_servers":[{"name":"oap"}],"uuid":"i2"}
+    );
+    try testing.expectEqual(@as(usize, 1), plain.servers.items.len);
+    const unprovided = (try plain.listTools()).?;
+    try testing.expectEqualStrings("mcp__oap__echo", unprovided[0].name);
+    try testing.expectEqualStrings(harness_owner, unprovided[0].owner);
+}
+
+test "a provided tool keeps its name over a same-named native tool whichever init lists first, and the run's tool choice names it bare" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const scratch = arena.allocator();
+    for ([_][]const u8{
+        \\{"type":"system","session_id":"s","subtype":"init","model":"m","tools":["Lookup","mcp__oap__Lookup"],"mcp_servers":[{"name":"oap"}],"uuid":"i1"}
+        ,
+        \\{"type":"system","session_id":"s","subtype":"init","model":"m","tools":["mcp__oap__Lookup","Lookup"],"mcp_servers":[{"name":"oap"}],"uuid":"i1"}
+        ,
+    }) |init| {
+        var reducer = Reducer.init(&arena, .{ .responder = "host", .provided = &.{"Lookup"} });
+        reducer.open();
+        try observeText(&reducer, scratch, init);
+        const served = (try reducer.listTools()).?;
+        try testing.expectEqual(@as(usize, 1), served.len);
+        try testing.expectEqualStrings("Lookup", served[0].name);
+        try testing.expectEqualStrings("host", served[0].owner);
+    }
+
+    var chosen = Reducer.init(&arena, .{ .responder = "host", .provided = &.{"echo"} });
+    chosen.open();
+    try chosen.submit("turn-1");
+    chosen.policy = .{ .allowed = &.{"echo"} };
+    try observeText(&chosen, scratch,
+        \\{"type":"stream_event","session_id":"s","event":{"type":"message_start"},"uuid":"e1","user_message_uuid":"turn-1"}
+    );
+    try testing.expect(!chosen.excludes("mcp__oap__echo"));
+    try testing.expect(chosen.excludes("Bash"));
 }
 
 fn emittedTypes(reducer: *Reducer, arena: std.mem.Allocator) ![]const []const u8 {

@@ -19,6 +19,12 @@ pub const pinned_version = harness_pins.claude_code_endpoint_version;
 pub const denied_message = "Denied by the operator";
 const harness_owner = session.harness_owner;
 const native_source = session.native_source;
+const mcp_protocol_version = "2025-11-25";
+const max_provided_tools = 64;
+const EmptyObject = struct {};
+const builtin_tool_names = [_][]const u8{ "Agent", "Artifact", "AskUserQuestion", "Bash", "ClaudeDesign", "CronCreate", "CronDelete", "CronList", "Edit", "EndConversation", "EnterPlanMode", "EnterWorktree", "ExitPlanMode", "ExitWorktree", "Glob", "Grep", "ListAgents", "ListMcpResourcesTool", "LSP", "Monitor", "NotebookEdit", "OfferChromeSetup", "PowerShell", "Projects", "propose_skills", "ProposeGoal", "PushNotification", "Read", "ReadMcpResourceDirTool", "ReadMcpResourceTool", "ReadNotifications", "RemoteTrigger", "ReportFindings", "ScheduleWakeup", "SendFeedback", "SendMessage", "SendUserFile", "SendUserMessage", "ShareOnboardingGuide", "ShowOnboardingRolePicker", "Skill", "SubagentHandback", "TaskCreate", "TaskGet", "TaskList", "TaskStop", "TaskUpdate", "TodoWrite", "ToolSearch", "WaitForMcpServers", "WebFetch", "WebSearch", "Workflow", "Write", "Task" };
+const provided_name_limit = 64 - session.provided_prefix.len;
+const provided_dialect = "https://json-schema.org/draft/2020-12/schema";
 
 const features = [_]contract.Feature{
     .{ .key = "protocol.initialize", .level = .emulated, .reason = "initialize control exchange at open; no capability negotiation" },
@@ -256,6 +262,7 @@ pub const Session = struct {
     reported_policy: ?[]const u8 = null,
     settings_arena: std.heap.ArenaAllocator,
     recovered: bool = false,
+    provided: []const oap_types.ToolDefinition = &.{},
 
     fn open(owner: *Adapter, arena: std.mem.Allocator, request: contract.OpenRequest, refusal: *contract.Refusal) contract.Failure!*Session {
         if (request.reopen) {
@@ -263,7 +270,8 @@ pub const Session = struct {
             if (hasSessionSelector(owner.config.backend.args)) return refusal.unsupported(contract.feature_open_reopen, contract.reason_unsatisfiable);
         }
         const flags = try claudeFlags(arena, request, refusal);
-        const self = try construct(owner, arena, request, refusal);
+        const provided = try admitProvided(arena, request.participant, request.tools_json, refusal);
+        const self = try construct(owner, arena, request, provided, refusal);
         errdefer self.destroy();
         self.control(arena, .initialize, owner.config.initialize_timeout_ns, refusal) catch |err| {
             if (request.reopen and err == error.BackendFailed) {
@@ -288,8 +296,16 @@ pub const Session = struct {
         return self;
     }
 
-    fn construct(owner: *Adapter, arena: std.mem.Allocator, request: contract.OpenRequest, refusal: *contract.Refusal) contract.Failure!*Session {
+    fn construct(owner: *Adapter, arena: std.mem.Allocator, request: contract.OpenRequest, provided: []const oap_types.ToolDefinition, refusal: *contract.Refusal) contract.Failure!*Session {
         const gpa = owner.allocator;
+        var settings = std.heap.ArenaAllocator.init(gpa);
+        errdefer settings.deinit();
+        const kept_tools = try settings.allocator().alloc(oap_types.ToolDefinition, provided.len);
+        const provided_names = try settings.allocator().alloc([]const u8, provided.len);
+        for (provided, kept_tools, provided_names) |definition, *slot, *name| {
+            slot.* = try copyDefinition(settings.allocator(), definition);
+            name.* = slot.name;
+        }
         const self = try gpa.create(Session);
         errdefer gpa.destroy(self);
         const id = if (request.session_id.len > 0) try gpa.dupe(u8, request.session_id) else try owner.mint(gpa, "session");
@@ -303,6 +319,7 @@ pub const Session = struct {
         var config = owner.config.backend;
         config.resume_session_id = if (request.reopen) request.native_session_id else "";
         config.user_settings = request.adopted;
+        config.provided = provided_names;
         config.native_session_id = "";
         if (!request.reopen and !hasSessionSelector(config.args)) {
             var bytes: [16]u8 = undefined;
@@ -322,6 +339,7 @@ pub const Session = struct {
             .counter = &owner.ids,
             .now_ms = wallClock,
             .turn_tag = turnTag(),
+            .provided = provided_names,
         }) catch |err| {
             if (err == error.OutOfMemory) return error.OutOfMemory;
             const message = try std.fmt.allocPrint(arena, "the claude child could not start: {s}", .{@errorName(err)});
@@ -335,7 +353,8 @@ pub const Session = struct {
             .participant = participant,
             .reducer_arena = reducer_arena,
             .engine = engine,
-            .settings_arena = std.heap.ArenaAllocator.init(gpa),
+            .settings_arena = settings,
+            .provided = kept_tools,
         };
         return self;
     }
@@ -444,6 +463,7 @@ pub const Session = struct {
             },
             .control_request => {
                 if (std.mem.eql(u8, message.subtype, "hook_callback")) return self.answerHook(message);
+                if (std.mem.eql(u8, message.subtype, "mcp_message")) return self.answerMcp(message);
                 if (!std.mem.eql(u8, message.subtype, "can_use_tool")) return self.engine.reducer.observe(message);
                 if (try self.refuseExcludedAsk(message)) return;
                 try self.recordAsk(message);
@@ -483,6 +503,56 @@ pub const Session = struct {
         if (!self.engine.reducer.excludes(tool_name)) return self.writeFrame(try backend.hookContinue(a, message.request_id));
         try self.writeFrame(try backend.hookDeny(a, message.request_id, try policyRefusal(a, tool_name)));
         try self.engine.reducer.refusedByPolicy(member(input, "tool_use_id"));
+    }
+
+    fn providedDefinition(self: *const Session, entry: session.CatalogEntry) ?oap_types.ToolDefinition {
+        if (std.mem.eql(u8, entry.owner, harness_owner)) return null;
+        for (self.provided) |definition| if (std.mem.eql(u8, definition.name, entry.name)) return definition;
+        return null;
+    }
+
+    fn answerMcp(self: *Session, message: rpc.Message) !void {
+        var scratch = std.heap.ArenaAllocator.init(self.gpa);
+        defer scratch.deinit();
+        const a = scratch.allocator();
+        const request = requestOf(message) orelse std.json.ObjectMap.empty;
+        if (self.provided.len == 0 or !std.mem.eql(u8, member(request, "server_name"), session.provided_server)) {
+            return self.writeFrame(try backend.controlError(a, message.request_id, "claude adapter: no such SDK MCP server"));
+        }
+        const carried = request.get("message") orelse std.json.Value.null;
+        const rpc_message = if (carried == .object) carried.object else std.json.ObjectMap.empty;
+        const id = rpc_message.get("id") orelse return self.writeFrame(try backend.hookContinue(a, message.request_id));
+        const method = member(rpc_message, "method");
+        if (std.mem.eql(u8, method, "initialize")) {
+            const params = rpc_message.get("params") orelse std.json.Value.null;
+            const version = if (params == .object) member(params.object, "protocolVersion") else "";
+            return self.answerRpc(a, message.request_id, id, .{
+                .protocolVersion = if (version.len > 0) version else mcp_protocol_version,
+                .capabilities = .{ .tools = EmptyObject{} },
+                .serverInfo = .{ .name = session.provided_server, .version = session.protocol_version },
+            });
+        }
+        if (std.mem.eql(u8, method, "ping")) return self.answerRpc(a, message.request_id, id, EmptyObject{});
+        if (std.mem.eql(u8, method, "tools/list")) {
+            var listed = std.json.Array.init(a);
+            for (self.provided) |definition| {
+                var tool = std.json.ObjectMap.empty;
+                try tool.put(a, "name", .{ .string = definition.name });
+                if (definition.description) |description| try tool.put(a, "description", .{ .string = description });
+                try tool.put(a, "inputSchema", try std.json.parseFromSliceLeaky(std.json.Value, a, definition.input_schema_json, .{}));
+                try listed.append(.{ .object = tool });
+            }
+            var result = std.json.ObjectMap.empty;
+            try result.put(a, "tools", .{ .array = listed });
+            return self.answerRpc(a, message.request_id, id, std.json.Value{ .object = result });
+        }
+        const failure = try std.json.Stringify.valueAlloc(a, .{ .jsonrpc = "2.0", .id = id, .@"error" = .{ .code = -32601, .message = "method not found" } }, .{});
+        try self.writeFrame(try backend.mcpResponse(a, message.request_id, failure));
+    }
+
+    fn answerRpc(self: *Session, a: std.mem.Allocator, request_id: []const u8, id: std.json.Value, result: anytype) !void {
+        const reply = try std.json.Stringify.valueAlloc(a, .{ .jsonrpc = "2.0", .id = id, .result = result }, .{});
+        try self.writeFrame(try backend.mcpResponse(a, request_id, reply));
     }
 
     fn refuseExcludedAsk(self: *Session, message: rpc.Message) !bool {
@@ -570,7 +640,7 @@ pub const Session = struct {
         self.call = .{ .request_id = request_id, .kind = kind };
         defer self.clearCall();
         const frame = switch (kind) {
-            .initialize => try backend.initializeRequest(arena, request_id),
+            .initialize => try backend.initializeRequest(arena, request_id, self.provided.len > 0),
             .apply_flag_settings => try backend.applyFlagsRequest(arena, request_id, self.flags_json),
             .get_settings => try std.json.Stringify.valueAlloc(arena, .{ .type = "control_request", .request_id = request_id, .request = .{ .subtype = "get_settings" } }, .{}),
             .interrupt => try backend.interruptRequest(arena, request_id),
@@ -821,6 +891,10 @@ pub const Session = struct {
         const unexecuted = try arena.dupe(oap_types.Feature, &.{.{ .key = "action.tools.execute", .level = .unavailable, .reason = "the CLI executes its own tools" }});
         const definitions = try arena.alloc(oap_types.ToolDefinition, served.len);
         for (served, definitions) |entry, *definition| {
+            if (self.providedDefinition(entry)) |provided| {
+                definition.* = try copyDefinition(arena, provided);
+                continue;
+            }
             const name = try arena.dupe(u8, entry.name);
             const source = try arena.dupe(u8, entry.source);
             definition.* = .{
@@ -838,6 +912,83 @@ pub const Session = struct {
         } };
     }
 };
+
+fn admitProvided(arena: std.mem.Allocator, participant: []const u8, carried: ?[]const u8, refusal: *contract.Refusal) contract.Failure![]const oap_types.ToolDefinition {
+    const text = carried orelse return &.{};
+    const document = std.json.parseFromSliceLeaky(std.json.Value, arena, text, .{ .parse_numbers = false }) catch |err| {
+        if (err == error.OutOfMemory) return error.OutOfMemory;
+        return refuseTool(arena, refusal, "", "the provided tools are not a list of tool definitions");
+    };
+    if (document != .array) return refuseTool(arena, refusal, "", "the provided tools are not a list of tool definitions");
+    const items = document.array.items;
+    if (items.len > max_provided_tools) return refuseTool(arena, refusal, textOf(items[max_provided_tools], "name"), std.fmt.comptimePrint("at most {d} tools may be provided", .{max_provided_tools}));
+    const provided = try arena.alloc(oap_types.ToolDefinition, items.len);
+    for (items, provided, 0..) |item, *slot, index| {
+        const name = textOf(item, "name");
+        if (name.len == 0) return refuseTool(arena, refusal, "", "a provided tool needs a name");
+        if (!std.mem.eql(u8, textOf(item, "execution_owner"), participant)) return refuseTool(arena, refusal, name, "execution_owner must be the opening participant");
+        const source = textOf(item, "source");
+        if (!std.mem.eql(u8, source, native_source)) {
+            refusal.* = .{ .feature = contract.feature_tools_provide, .reason = contract.reason_unsatisfiable, .tool = try arena.dupe(u8, name), .source = try arena.dupe(u8, source), .detail = "a provided tool names the source " ++ native_source ++ ", the one this adapter declares" };
+            return error.UnsupportedFeature;
+        }
+        for (provided[0..index]) |earlier| if (std.mem.eql(u8, earlier.name, name)) return refuseTool(arena, refusal, name, "the name is provided twice");
+        if (std.mem.startsWith(u8, name, session.mcp_tool_prefix)) return refuseTool(arena, refusal, name, "the name is in the CLI's MCP tool namespace");
+        for (builtin_tool_names) |builtin_name| if (std.mem.eql(u8, builtin_name, name)) return refuseTool(arena, refusal, name, "the name is one of the pinned CLI's built-in tools");
+        if (!providedNameFits(name)) return refuseTool(arena, refusal, name, std.fmt.comptimePrint("the name is outside the disclosed name_pattern ^[a-zA-Z0-9_-]{{1,{d}}}$", .{provided_name_limit}));
+        const schema = if (item == .object) item.object.get("input_schema") else null;
+        if (!admissibleDialect(schema)) return refuseTool(arena, refusal, name, "the input schema declares a dialect outside the disclosed " ++ provided_dialect);
+        const description = textOf(item, "description");
+        slot.* = .{
+            .name = name,
+            .description = if (description.len > 0) description else null,
+            .input_schema_json = if (schema) |value| (if (value == .null) "{\"type\":\"object\"}" else try std.json.Stringify.valueAlloc(arena, value, .{})) else "{\"type\":\"object\"}",
+            .execution_owner = participant,
+            .source = native_source,
+        };
+    }
+    return provided;
+}
+
+fn copyDefinition(keep: std.mem.Allocator, definition: oap_types.ToolDefinition) !oap_types.ToolDefinition {
+    const name = try keep.dupe(u8, definition.name);
+    errdefer keep.free(name);
+    const description: ?[]const u8 = if (definition.description) |text| try keep.dupe(u8, text) else null;
+    errdefer if (description) |text| keep.free(text);
+    const schema = try keep.dupe(u8, definition.input_schema_json);
+    errdefer keep.free(schema);
+    const owner = try keep.dupe(u8, definition.execution_owner);
+    return .{ .name = name, .description = description, .input_schema_json = schema, .execution_owner = owner, .source = native_source };
+}
+
+fn refuseTool(arena: std.mem.Allocator, refusal: *contract.Refusal, tool: []const u8, detail: []const u8) contract.Failure {
+    refusal.* = .{ .feature = contract.feature_tools_provide, .reason = contract.reason_unsatisfiable, .tool = try arena.dupe(u8, tool), .detail = try arena.dupe(u8, detail) };
+    return error.UnsupportedFeature;
+}
+
+fn textOf(value: std.json.Value, key: []const u8) []const u8 {
+    if (value != .object) return "";
+    const carried = value.object.get(key) orelse return "";
+    return if (carried == .string) carried.string else "";
+}
+
+fn providedNameFits(name: []const u8) bool {
+    if (name.len == 0 or name.len > provided_name_limit) return false;
+    for (name) |c| {
+        if (!(std.ascii.isAlphanumeric(c) or c == '_' or c == '-')) return false;
+    }
+    return true;
+}
+
+fn admissibleDialect(schema: ?std.json.Value) bool {
+    const value = schema orelse return true;
+    if (value == .null) return true;
+    if (value != .object) return false;
+    const declared = value.object.get("$schema") orelse return true;
+    if (declared == .null) return true;
+    if (declared != .string) return false;
+    return declared.string.len == 0 or std.mem.eql(u8, declared.string, provided_dialect);
+}
 
 fn appendEvents(allocator: std.mem.Allocator, emitted: []const std.json.Value, out: *std.ArrayList(contract.Event)) contract.Failure!void {
     try out.ensureUnusedCapacity(allocator, emitted.len);
@@ -1572,7 +1723,8 @@ fn constructProbe(allocator: std.mem.Allocator, config: Config) !void {
     var arena = std.heap.ArenaAllocator.init(allocator);
     defer arena.deinit();
     var refusal = contract.Refusal{};
-    const built = try Session.construct(&owner, arena.allocator(), .{ .session_id = "s1", .participant = "user" }, &refusal);
+    const provided = [_]oap_types.ToolDefinition{.{ .name = "echo", .description = "echo it", .input_schema_json = "{\"type\":\"object\"}", .execution_owner = "user", .source = native_source }};
+    const built = try Session.construct(&owner, arena.allocator(), .{ .session_id = "s1", .participant = "user" }, &provided, &refusal);
     built.destroy();
 }
 
@@ -1832,4 +1984,70 @@ test {
     _ = permission_hook;
     _ = native_list;
     _ = native_read;
+}
+
+const provided_tools_json =
+    \\[{"name":"echo","description":"echo it","input_schema":{"type":"object","properties":{"text":{"type":"string"}}},"execution_owner":"user","source":"claude-code-native"}]
+;
+
+test "provided tools name their server at initialize, are pre-allowed, and the server answers the CLI's MCP initialize, ping, tools/list and anything else" {
+    var probe: Probe = undefined;
+    try probe.init(
+        \\#!/bin/sh
+        \\exec 3>>"$(dirname "$0")/stdin.log"
+        \\printf '%s\n' "$*" > "$(dirname "$0")/argv.log"
+        \\take() { IFS= read -r line || exit 0; printf '%s\n' "$line" >&3; }
+        \\field() { printf '%s' "$line" | sed -n "s/.*\"$1\":\"\([^\"]*\)\".*/\1/p"; }
+        \\take; init=$(field request_id)
+        \\printf '{"type":"control_request","request_id":"m1","request":{"subtype":"mcp_message","server_name":"oap","message":{"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{}},"jsonrpc":"2.0","id":0}}}\n'
+        \\take
+        \\printf '{"type":"control_response","response":{"subtype":"success","request_id":"%s","response":{}}}\n' "$init"
+        \\printf '{"type":"control_request","request_id":"m2","request":{"subtype":"mcp_message","server_name":"oap","message":{"jsonrpc":"2.0","method":"notifications/initialized"}}}\n'
+        \\printf '{"type":"control_request","request_id":"m3","request":{"subtype":"mcp_message","server_name":"oap","message":{"method":"tools/list","jsonrpc":"2.0","id":1}}}\n'
+        \\printf '{"type":"control_request","request_id":"m4","request":{"subtype":"mcp_message","server_name":"oap","message":{"method":"resources/list","jsonrpc":"2.0","id":2}}}\n'
+        \\printf '{"type":"control_request","request_id":"m6","request":{"subtype":"mcp_message","server_name":"oap","message":{"method":"ping","jsonrpc":"2.0","id":4}}}\n'
+        \\printf '{"type":"control_request","request_id":"m5","request":{"subtype":"mcp_message","server_name":"other","message":{"method":"tools/list","jsonrpc":"2.0","id":3}}}\n'
+        \\
+    ++ fake_idle);
+    defer probe.deinit();
+    var refusal = contract.Refusal{};
+    const opened = try probe.adapter.adapter().open(probe.arena.allocator(), .{ .session_id = "s1", .participant = "user", .tools_json = provided_tools_json }, &refusal);
+    probe.handle = opened;
+    const written = try probe.waitWritten("\"request_id\":\"m5\"");
+    try testing.expect(std.mem.indexOf(u8, written, "\"sdkMcpServers\":[\"oap\"],\"subtype\":\"initialize\"") != null);
+    try testing.expect(std.mem.indexOf(u8, written, "{\"response\":{\"request_id\":\"m1\",\"response\":{\"mcp_response\":{\"jsonrpc\":\"2.0\",\"id\":0,\"result\":{\"protocolVersion\":\"2025-11-25\",\"capabilities\":{\"tools\":{}},\"serverInfo\":{\"name\":\"oap\",\"version\":\"0.1\"}}}},\"subtype\":\"success\"},\"type\":\"control_response\"}") != null);
+    try testing.expect(std.mem.indexOf(u8, written, "{\"response\":{\"request_id\":\"m2\",\"response\":{},\"subtype\":\"success\"},\"type\":\"control_response\"}") != null);
+    try testing.expect(std.mem.indexOf(u8, written, "{\"response\":{\"request_id\":\"m3\",\"response\":{\"mcp_response\":{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"tools\":[{\"name\":\"echo\",\"description\":\"echo it\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"text\":{\"type\":\"string\"}}}}]}}},\"subtype\":\"success\"},\"type\":\"control_response\"}") != null);
+    try testing.expect(std.mem.indexOf(u8, written, "{\"response\":{\"request_id\":\"m4\",\"response\":{\"mcp_response\":{\"jsonrpc\":\"2.0\",\"id\":2,\"error\":{\"code\":-32601,\"message\":\"method not found\"}}},\"subtype\":\"success\"},\"type\":\"control_response\"}") != null);
+    try testing.expect(std.mem.indexOf(u8, written, "\"request_id\":\"m5\",\"subtype\":\"error\"") != null);
+    try testing.expect(std.mem.indexOf(u8, written, "{\"response\":{\"request_id\":\"m6\",\"response\":{\"mcp_response\":{\"jsonrpc\":\"2.0\",\"id\":4,\"result\":{}}},\"subtype\":\"success\"},\"type\":\"control_response\"}") != null);
+    const argv = try probe.fake.tmp.dir.readFileAlloc(testing.io, "argv.log", probe.arena.allocator(), .limited(65536));
+    try testing.expect(std.mem.indexOf(u8, argv, "--allowedTools mcp__oap__echo") != null);
+}
+
+test "an open refuses a provided tool another participant owns, under another source, with an unfit name or schema, twice, or under a built-in or MCP name, naming it" {
+    var probe: Probe = undefined;
+    try probe.init(fake_prelude ++ fake_idle);
+    defer probe.deinit();
+    const cases = [_]struct { tools: []const u8, tool: []const u8 }{
+        .{ .tools = "[{\"name\":\"echo\",\"execution_owner\":\"someone\",\"source\":\"claude-code-native\"}]", .tool = "echo" },
+        .{ .tools = "[{\"name\":\"echo\",\"execution_owner\":\"user\",\"source\":\"elsewhere\"}]", .tool = "echo" },
+        .{ .tools = "[{\"name\":\"a.b\",\"execution_owner\":\"user\",\"source\":\"claude-code-native\"}]", .tool = "a.b" },
+        .{ .tools = "[{\"name\":\"" ++ repeat("x", 55) ++ "\",\"execution_owner\":\"user\",\"source\":\"claude-code-native\"}]", .tool = repeat("x", 55) },
+        .{ .tools = "[{\"name\":\"echo\",\"execution_owner\":\"user\",\"source\":\"claude-code-native\",\"input_schema\":{\"$schema\":\"http://json-schema.org/draft-07/schema#\"}}]", .tool = "echo" },
+        .{ .tools = "[{\"name\":\"echo\",\"execution_owner\":\"user\",\"source\":\"claude-code-native\"},{\"name\":\"echo\",\"execution_owner\":\"user\",\"source\":\"claude-code-native\"}]", .tool = "echo" },
+        .{ .tools = "[{\"name\":\"Bash\",\"execution_owner\":\"user\",\"source\":\"claude-code-native\"}]", .tool = "Bash" },
+        .{ .tools = "[{\"name\":\"Task\",\"execution_owner\":\"user\",\"source\":\"claude-code-native\"}]", .tool = "Task" },
+        .{ .tools = "[{\"name\":\"mcp__files__read\",\"execution_owner\":\"user\",\"source\":\"claude-code-native\"}]", .tool = "mcp__files__read" },
+    };
+    for (cases) |case| {
+        var refusal = contract.Refusal{};
+        try testing.expectError(error.UnsupportedFeature, probe.adapter.adapter().open(probe.arena.allocator(), .{ .session_id = "s1", .participant = "user", .tools_json = case.tools }, &refusal));
+        try testing.expectEqualStrings(contract.feature_tools_provide, refusal.feature);
+        try testing.expectEqualStrings(contract.reason_unsatisfiable, refusal.reason);
+        try testing.expectEqualStrings(case.tool, refusal.tool);
+    }
+    const fitting = "[{\"name\":\"" ++ repeat("x", 54) ++ "\",\"execution_owner\":\"user\",\"source\":\"claude-code-native\"}]";
+    var refusal = contract.Refusal{};
+    probe.handle = try probe.adapter.adapter().open(probe.arena.allocator(), .{ .session_id = "s1", .participant = "user", .tools_json = fitting }, &refusal);
 }
