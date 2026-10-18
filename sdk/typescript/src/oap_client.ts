@@ -86,6 +86,7 @@ export class OapStdioTransport {
   agentEndpoint = "";
   agentFeatures: ReadonlySet<string> = new Set();
   agentSource = "";
+  servesProvider = false;
 
   constructor(private readonly command: string, private readonly args: string[], private readonly options: { cwd?: string; env?: NodeJS.ProcessEnv; timeoutMs: number; handshakeTimeoutMs?: number }) {}
 
@@ -111,8 +112,12 @@ export class OapStdioTransport {
         ? Object.entries(capabilities.payload.features).filter(([, support]) => !(isRecord(support) && support.level === "unavailable")).map(([name]) => name)
         : []);
       this.agentSource = declaredToolSource(capabilities.payload.sources);
-      const described = await this.request(OAP_PROVIDER_PROFILE, "provider.describe.request", {}, {}, this.options.handshakeTimeoutMs);
-      if (described.type !== "provider.describe.response") throw new MakaiProtocolError("OAP provider did not return a descriptor", "protocol_mismatch");
+      const described = await this.request(OAP_PROVIDER_PROFILE, "provider.describe.request", {}, {}, this.options.handshakeTimeoutMs).catch((error: unknown) => {
+        if (error instanceof MakaiProtocolError || error instanceof OapUnsupportedFeatureError) return undefined;
+        throw error;
+      });
+      if (described && described.type !== "provider.describe.response") throw new MakaiProtocolError("OAP provider did not return a descriptor", "protocol_mismatch");
+      this.servesProvider = described !== undefined;
     } catch (error) {
       await this.close();
       throw error;
@@ -316,6 +321,7 @@ class OapProviderApi implements MakaiProviderApi {
   constructor(private readonly transport: OapStdioTransport, private readonly timeoutMs: number, private readonly authRetryPolicy?: string, private readonly auth?: MakaiAuthApi, private readonly authHandlers?: AuthFlowHandlers) {}
 
   async complete(request: ProviderCompleteRequest): Promise<CompletionResponse> {
+    if (!this.transport.servesProvider) unsupported("the model-provider-core profile");
     let final: CompletionResponse | undefined;
     let text = "";
     for await (const event of this.stream(request)) {
@@ -361,6 +367,7 @@ class OapProviderApi implements MakaiProviderApi {
   }
 
   private async *streamOnce(request: ProviderCompleteRequest): AsyncIterable<ProviderStreamEvent> {
+    if (!this.transport.servesProvider) unsupported("the model-provider-core profile");
     const signal = request.options?.signal;
     if (signal?.aborted) throw abortError();
     if (request.tools?.some((tool) => tool.execute)) unsupported("client-executed tools on direct provider inference");
@@ -470,6 +477,7 @@ function oapModelSource(value: unknown): { source?: ModelSource } {
 class OapModelsApi implements MakaiModelsApi {
   constructor(private readonly transport: OapStdioTransport) {}
   async list(request: ListModelsRequest = {}): Promise<ListModelsResponse> {
+    if (!this.transport.servesProvider) unsupported("the model-provider-core profile");
     const frame = await this.transport.request(OAP_PROVIDER_PROFILE, "provider.models.list.request", request.provider_id ? { provider_id: request.provider_id } : {});
     if (frame.type !== "provider.models.list.response" || !Array.isArray(frame.payload.models)) throw new MakaiProtocolError("invalid provider.models.list.response", "malformed_response");
     const models: ModelDescriptor[] = frame.payload.models.map((raw) => {

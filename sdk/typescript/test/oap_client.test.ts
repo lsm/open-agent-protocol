@@ -71,6 +71,18 @@ test("agent tools and settings travel over OAP, and temperature and provider cal
   }
 });
 
+test("an agent-only endpoint connects, runs agents, and refuses the provider and models APIs", async () => {
+  const client = await createOapClient({ command: process.execPath, args: [fixture], env: { ...process.env, OAP_FIXTURE_AGENT_ONLY: "1" } });
+  try {
+    const messages = [{ role: "user" as const, content: "hello" }];
+    assert.equal((await client.agent.run({ model_ref: "fixture/openai-responses@mock", messages })).message.content, "agent works");
+    await assert.rejects(() => client.models.list(), (error: unknown) => error instanceof OapUnsupportedFeatureError);
+    await assert.rejects(() => client.provider.complete({ model_ref: "fixture/openai-responses@mock", messages }), (error: unknown) => error instanceof OapUnsupportedFeatureError);
+  } finally {
+    await client.close();
+  }
+});
+
 test("an endpoint that would ignore tools or an output limit has them refused client-side", async () => {
   const client = await createOapClient({ command: process.execPath, args: [fixture], env: { ...process.env, OAP_FIXTURE_BARE: "1" } });
   try {
