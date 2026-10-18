@@ -1,13 +1,13 @@
 package servestdio
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"sync"
 	"time"
 
 	"github.com/lsm/open-agent-protocol/go/protocol"
+	"github.com/lsm/open-agent-protocol/go/serve"
 )
 
 const opShutdown = "shutdown"
@@ -55,58 +55,15 @@ func admitsWork(op string) bool {
 	return false
 }
 
-func askedShutdown(raw json.RawMessage) (protocol.ShutdownMode, bool) {
-	if len(bytes.TrimSpace(raw)) == 0 || bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
-		return "", true
-	}
-	var asked struct {
-		Mode *protocol.ShutdownMode `json:"mode"`
-	}
-	decoder := json.NewDecoder(bytes.NewReader(raw))
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(&asked); err != nil {
-		return "", false
-	}
-	if asked.Mode == nil {
-		return "", true
-	}
-	switch *asked.Mode {
-	case protocol.ShutdownGraceful, protocol.ShutdownForce:
-		return *asked.Mode, true
-	}
-	return "", false
-}
-
-func (s *Server) nonterminalRuns(ctx context.Context) []protocol.ShutdownRun {
-	runs := []protocol.ShutdownRun{}
-	for _, status := range s.hub.Sessions(ctx) {
-		for _, run := range status.ActiveRuns {
-			runs = append(runs, protocol.ShutdownRun{SessionID: status.SessionID, RunID: run.RunID, Status: run.Status, PendingInteractions: run.PendingInteractions})
-		}
-		if len(status.ActiveRuns) > 0 || status.ActiveRunID == "" {
-			continue
-		}
-		state := protocol.RunRunning
-		switch status.Status {
-		case protocol.SessionQueued:
-			state = protocol.RunQueued
-		case protocol.SessionWaitingForInput:
-			state = protocol.RunWaitingForInput
-		}
-		runs = append(runs, protocol.ShutdownRun{SessionID: status.SessionID, RunID: status.ActiveRunID, Status: state})
-	}
-	return runs
-}
-
 func (s *Server) shutdownOp(ctx context.Context, request requestLine) (json.RawMessage, *wireError) {
-	asked, ok := askedShutdown(request.Request)
+	asked, ok := serve.AskedShutdown(request.Request)
 	if !ok {
 		return nil, &wireError{Code: "invalid_request", Message: "request is an object whose only member is mode, graceful or force"}
 	}
 	st := s.stopping
 	st.admission.Lock()
 	defer st.admission.Unlock()
-	runs := s.nonterminalRuns(ctx)
+	runs := s.hub.NonterminalRuns(ctx)
 	st.mu.Lock()
 	defer st.mu.Unlock()
 	mode := asked
@@ -126,7 +83,7 @@ func (s *Server) shutdownOp(ctx context.Context, request requestLine) (json.RawM
 	if st.mode == protocol.ShutdownGraceful {
 		kept := []protocol.ShutdownRun{}
 		for _, run := range runs {
-			if run.Status == protocol.RunQueued && s.cancelQueued(ctx, run) {
+			if run.Status == protocol.RunQueued && s.hub.CancelQueued(ctx, run) {
 				lost = append(lost, protocol.ShutdownQueuedRun{SessionID: run.SessionID, RunID: run.RunID})
 				continue
 			}
@@ -150,15 +107,6 @@ func (s *Server) shutdownOp(ctx context.Context, request requestLine) (json.RawM
 	return marshalResult(protocol.EndpointShutdownResponse{Outcome: outcome, ActiveRuns: runs, Lost: lost})
 }
 
-func (s *Server) cancelQueued(ctx context.Context, run protocol.ShutdownRun) bool {
-	entry, err := s.hub.Session(run.SessionID)
-	if err != nil {
-		return false
-	}
-	_, err = entry.Cancel(ctx, run.RunID)
-	return err == nil
-}
-
 func (s *Server) awaitDrained(ctx context.Context, st *shutdownState) {
 	ticker := time.NewTicker(drainPoll)
 	defer ticker.Stop()
@@ -170,7 +118,7 @@ func (s *Server) awaitDrained(ctx context.Context, st *shutdownState) {
 			return
 		case <-ticker.C:
 		}
-		runs := s.nonterminalRuns(ctx)
+		runs := s.hub.NonterminalRuns(ctx)
 		if len(runs) == 0 {
 			st.mu.Lock()
 			st.flushed = true
@@ -180,7 +128,7 @@ func (s *Server) awaitDrained(ctx context.Context, st *shutdownState) {
 		}
 		for _, run := range runs {
 			if run.Status == protocol.RunQueued {
-				s.cancelQueued(ctx, run)
+				s.hub.CancelQueued(ctx, run)
 			}
 		}
 	}
