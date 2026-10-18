@@ -71,7 +71,7 @@ zig build --build-file zig/build.zig test-unit-<group>
 There is no per-test filter; the smallest runnable unit is a group step, and
 `zig build --build-file zig/build.zig --help` lists them.
 
-Rust (Decision 0052): `rust/` is one Cargo workspace; in it run
+Rust: `rust/` is one Cargo workspace; in it run
 `cargo fmt --check`, `cargo clippy --all-targets --all-features -- -D warnings`
 and `cargo test --all-features`. `rust/sdk` is the thin SDK over `oapx`, and
 the rest of Go is ported into it crate by crate.
