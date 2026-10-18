@@ -129,14 +129,7 @@ two answers above:
   delivers session events to a subscription whose run has not started; this
   case needs it for a subscription with no run at all.
 
-The alternative is to project the runtime's own turn as a run the host did
-not submit. OAP admits a run only through `submit` (Decision 0002), so that
-is a new admission path, a `run.started` with no request behind it and no
-`delivery`, and the validator, both hubs and every SDK would have to accept
-it. The proposal is the closure, since it is a state the core already has.
-
-Question for the owner:
-
-- Should an endpoint publish `status: "closed"` when its harness ends a
-  session between runs, through an adapter push, or should a harness's own
-  turns become runs?
+The turn itself is not a state change: it is a run nothing submitted, and
+[triggered-runs.md](triggered-runs.md) proposes carrying it as one. The closure
+above stays only as the fallback for an adapter that cannot tell where such a
+turn ends, and that fallback must be announced.

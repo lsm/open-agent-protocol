@@ -107,7 +107,7 @@ adapter has nothing to report it under. A command the model backgrounds
 therefore ends the session once it settles, at both pins. Surfacing that
 closure to the host, or projecting the runtime's own turns, is a protocol
 decision rather than a pin change, proposed in
-[harness-initiated-state.md](../drafts/harness-initiated-state.md#a-harness-that-ends-the-session).
+[triggered-runs.md](../drafts/triggered-runs.md).
 
 ### `session/resume` is a new request
 
