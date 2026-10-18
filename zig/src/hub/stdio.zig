@@ -31,6 +31,8 @@ pub const op_close = "close";
 pub const op_settings = "settings";
 pub const op_events = "events";
 pub const op_history = "history";
+pub const op_transcript = "transcript";
+pub const transcript_max: usize = 500;
 pub const op_work_status = "work.status";
 pub const op_work_list = "work.list";
 pub const op_work_start = "work.start";
@@ -84,6 +86,7 @@ const session_parameter: []const []const u8 = &.{"session_id"};
 const events_parameters: []const []const u8 = &.{ "session_id", "run_id", "after" };
 const session_request_parameters: []const []const u8 = &.{ "session_id", "request" };
 const history_parameters: []const []const u8 = &.{ "cursor", "limit" };
+const transcript_parameters: []const []const u8 = &.{ "session_id", "cursor", "limit" };
 const work_start_parameters: []const []const u8 = &.{ "adapter", "request" };
 const request_parameter: []const []const u8 = &.{"request"};
 const work_read_parameters: []const []const u8 = &.{ "session_id", "after", "limit" };
@@ -511,6 +514,7 @@ pub fn controlRefusal(arena: std.mem.Allocator, err: hubmod.Failure, reported: *
         },
         error.RunNotFound => .{ .code = "run_not_found", .message = messageOr(reported, "no such run") },
         error.RunTerminal => .{ .code = "run_terminal", .message = messageOr(reported, "the run has already settled") },
+        error.InvalidCursor => .{ .code = "invalid_cursor", .message = messageOr(reported, "a cursor this endpoint did not mint, or one naming another session") },
         error.InteractionNotFound, error.InvalidResolution => .{ .code = "resolution_rejected", .message = messageOr(reported, @errorName(err)) },
         error.OutOfMemory => error.OutOfMemory,
         else => .{ .code = "internal", .message = messageOr(reported, @errorName(err)) },
@@ -545,6 +549,7 @@ pub const Frontend = struct {
         pub const Kind = union(enum) {
             list: struct { options: ListOptions, targets: []const hubmod.NativeTarget, listed: []const hubmod.NativeListing = &.{} },
             read: struct { session_id: []const u8, held: bool, after: ?u64, bound: usize, target: Hub.ReadTarget, turns: []const contract.NativeTurn = &.{} },
+            transcript: struct { session_id: []const u8, target: Hub.TranscriptTarget, page: ?contract.TranscriptPage = null, failure: contract.Failure = error.BackendFailed, refusal: contract.Refusal = .{} },
         };
 
         fn run(job: *Job) void {
@@ -559,6 +564,13 @@ pub const Frontend = struct {
                     if (read.target.adapter.nativeRead(a, read.target.request, &refusal)) |answered| read.turns = answered catch |err| blk: {
                         if (err == error.OutOfMemory) job.out_of_memory = true;
                         break :blk &.{};
+                    };
+                },
+                .transcript => |*load| {
+                    if (load.target.adapter.transcriptLoad(a, load.target.request, &load.refusal)) |answered| load.page = answered catch |err| blk: {
+                        if (err == error.OutOfMemory) job.out_of_memory = true;
+                        load.failure = err;
+                        break :blk null;
                     };
                 },
             }
@@ -637,6 +649,7 @@ pub const Frontend = struct {
         return switch (job.kind) {
             .list => |list| self.composeList(arena, list.options, list.listed),
             .read => |read| self.composeRead(arena, read.session_id, read.held, read.after, read.bound, read.turns),
+            .transcript => |*load| composeTranscript(arena, load.session_id, load.page, load.failure, &load.refusal),
         };
     }
 
@@ -915,6 +928,10 @@ pub const Frontend = struct {
         if (std.mem.eql(u8, request.op, op_work_stop)) {
             if (try request.only(arena, session_parameter)) |refusal| return .{ .refused = refusal };
             return self.workStop(arena, request.session_id orelse "");
+        }
+        if (std.mem.eql(u8, request.op, op_transcript)) {
+            if (try request.only(arena, transcript_parameters)) |refusal| return .{ .refused = refusal };
+            return self.transcriptLoad(arena, request.session_id orelse "", request.cursor, request.limit);
         }
         if (std.mem.eql(u8, request.op, op_work_read)) {
             if (try request.only(arena, work_read_parameters)) |refusal| return .{ .refused = refusal };
@@ -1611,6 +1628,49 @@ pub const Frontend = struct {
             self.dropJob(job);
         }
         return self.composeRead(arena, session_id, held, after, bound, &.{});
+    }
+
+    pub fn transcriptLoad(self: *Frontend, arena: std.mem.Allocator, session_id: []const u8, cursor: ?[]const u8, limit: ?i64) Error!Outcome {
+        var bound: usize = contract.transcript_default_limit;
+        if (limit) |given| {
+            if (given < 1 or given > transcript_max) return .{ .refused = .{ .code = "invalid_request", .message = std.fmt.comptimePrint("transcript: limit must be from 1 to {d}", .{transcript_max}) } };
+            bound = @intCast(given);
+        }
+        var native: ?hubmod.NativeRef = null;
+        if (self.hub.knows(session_id)) {
+            native = self.hub.heldNative(session_id);
+        } else switch (try self.unheld(arena, session_id)) {
+            .entry => |entry| native = .{ .adapter = entry.record.adapter, .native_id = entry.record.native_session_id, .directory = entry.record.directory },
+            .unreadable => return .{ .refused = history_unreadable },
+            .absent => return .{ .refused = try self.refusalFor(arena, error.UnknownSession, session_id) },
+        }
+        const unreadable = Refusal{ .code = "unsupported_feature", .message = "transcript: this session's adapter keeps no transcript it can read", .details = &.{ .{ .key = "feature", .value = contract.feature_transcript_load }, .{ .key = "reason", .value = contract.reason_unadvertised } } };
+        const ref = native orelse return .{ .refused = unreadable };
+        const job = try self.newJob();
+        errdefer self.dropJob(job);
+        const job_arena = job.arena.allocator();
+        const target = try self.hub.transcriptTarget(job_arena, ref, cursor, bound) orelse {
+            self.dropJob(job);
+            return .{ .refused = unreadable };
+        };
+        job.kind = .{ .transcript = .{ .session_id = try job_arena.dupe(u8, session_id), .target = target } };
+        return self.deferJob(job);
+    }
+
+    fn composeTranscript(arena: std.mem.Allocator, session_id: []const u8, loaded: ?contract.TranscriptPage, failure: contract.Failure, reported: *const contract.Refusal) Error!Outcome {
+        const page = loaded orelse return .{ .refused = try controlRefusal(arena, failure, reported, session_id) };
+        var root = try emptyObject(arena);
+        try root.put(arena, "session_id", .{ .string = session_id });
+        try root.put(arena, "entries", try jsonArray(arena, page.entries));
+        if (page.next_cursor.len > 0) try root.put(arena, "next_cursor", .{ .string = page.next_cursor });
+        try root.put(arena, "complete", .{ .bool = page.complete });
+        if (page.gap) |gap| {
+            var object = try emptyObject(arena);
+            try object.put(arena, "reason", .{ .string = gap.reason });
+            if (gap.resumed_at.len > 0) try object.put(arena, "resumed_at", .{ .string = gap.resumed_at });
+            try root.put(arena, "gap", .{ .object = object });
+        }
+        return .{ .answer = .{ .object = root } };
     }
 
     fn composeRead(self: *Frontend, arena: std.mem.Allocator, session_id: []const u8, held: bool, after: ?u64, bound: usize, native_turns: []const contract.NativeTurn) Error!Outcome {
@@ -2476,7 +2536,7 @@ fn timestamp(arena: std.mem.Allocator, milliseconds: i64) ![]const u8 {
     var buffer: [32]u8 = undefined;
     const written = try std.fmt.bufPrint(&buffer, "{d:0>4}-{d:0>2}-{d:0>2}T{d:0>2}:{d:0>2}:{d:0>2}Z", .{
         day.year,
-        @intFromEnum(month.month),
+        @backingInt(month.month),
         @as(u16, month.day_index) + 1,
         clock.getHoursIntoDay(),
         clock.getMinutesIntoHour(),
@@ -2828,13 +2888,26 @@ fn referenceNativeRead(ptr: *anyopaque, arena: std.mem.Allocator, request: contr
     return &.{};
 }
 
+fn referenceTranscriptLoad(ptr: *anyopaque, arena: std.mem.Allocator, request: contract.TranscriptRequest, refusal: *contract.Refusal) contract.Failure!contract.TranscriptPage {
+    _ = ptr;
+    _ = refusal;
+    const cursor = request.cursor orelse "";
+    if (std.mem.eql(u8, cursor, "foreign")) return error.InvalidCursor;
+    var entry: std.json.ObjectMap = .empty;
+    try entry.put(arena, "entry_id", .{ .string = try std.fmt.allocPrint(arena, "{s}-{d}", .{ request.native_id, request.limit }) });
+    try entry.put(arena, "kind", .{ .string = "compaction" });
+    const entries = try arena.dupe(std.json.Value, &.{.{ .object = entry }});
+    const gap: ?contract.TranscriptGap = if (std.mem.eql(u8, cursor, "gone")) .{ .reason = "rewritten", .resumed_at = entries[0].object.get("entry_id").?.string } else null;
+    return .{ .entries = entries, .next_cursor = "after", .complete = true, .gap = gap };
+}
+
 fn referenceNativeId(ptr: *anyopaque) []const u8 {
     const state: *ReferenceState = @ptrCast(@alignCast(ptr));
     return state.native_id;
 }
 
 fn reference() contract.Adapter {
-    return .{ .ptr = @ptrCast(@constCast(&reference_holder)), .vtable = &.{ .probe = referenceProbe, .open = referenceOpen, .native_list = referenceNativeList, .native_read = referenceNativeRead } };
+    return .{ .ptr = @ptrCast(@constCast(&reference_holder)), .vtable = &.{ .probe = referenceProbe, .open = referenceOpen, .native_list = referenceNativeList, .native_read = referenceNativeRead, .transcript_load = referenceTranscriptLoad } };
 }
 
 fn referenceProbe(ptr: *anyopaque, refusal: *contract.Refusal) contract.Failure!contract.Descriptor {
@@ -4779,6 +4852,54 @@ fn fadingProbe(ptr: *anyopaque, refusal: *contract.Refusal) contract.Failure!con
     if (state.registered) return .{ .endpoint = fading_descriptor.endpoint, .capability_revision = "", .features = &.{} };
     state.registered = true;
     return fading_descriptor;
+}
+
+test "transcript reads a held or closed session's page through its adapter, with a gap, and refuses a foreign cursor, an unbound session, a bad limit and an adapter that keeps no transcript" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const cwd = try std.process.currentPathAlloc(testing.io, testing.allocator);
+    defer testing.allocator.free(cwd);
+    const path = try std.fs.path.join(testing.allocator, &.{ cwd, ".zig-cache", "tmp", tmp.sub_path[0..], "sessions.jsonl" });
+    defer testing.allocator.free(path);
+    var store = try hubmod.binding.Store.open(testing.allocator, path);
+    defer store.deinit();
+    try store.append(.{ .action = .opened, .time_ms = 10, .record = .{ .session_id = "left", .adapter = "reference", .native_session_id = "thread-a" } });
+    try store.append(.{ .action = .closed, .time_ms = 11, .record = .{ .session_id = "left", .adapter = "reference", .native_session_id = "thread-a" } });
+    const harness = try Harness.init(testing.allocator, .{ .bindings = store.bindings() }, .{});
+    defer harness.deinit();
+
+    try harness.send("{\"id\":1,\"op\":\"transcript\",\"session_id\":\"left\",\"limit\":7}");
+    const closed = (try harness.lastValue()).object.get("result").?.object;
+    try testing.expectEqualStrings("left", closed.get("session_id").?.string);
+    try testing.expectEqualStrings("thread-a-7", closed.get("entries").?.array.items[0].object.get("entry_id").?.string);
+    try testing.expectEqualStrings("after", closed.get("next_cursor").?.string);
+    try testing.expect(closed.get("complete").?.bool);
+    try testing.expect(closed.get("gap") == null);
+
+    try harness.send("{\"id\":2,\"op\":\"transcript\",\"session_id\":\"left\",\"cursor\":\"gone\"}");
+    const gap = (try harness.lastValue()).object.get("result").?.object.get("gap").?.object;
+    try testing.expectEqualStrings("rewritten", gap.get("reason").?.string);
+    try testing.expectEqualStrings("thread-a-100", gap.get("resumed_at").?.string);
+
+    try harness.send("{\"id\":3,\"op\":\"transcript\",\"session_id\":\"left\",\"cursor\":\"foreign\"}");
+    try testing.expectEqualStrings("invalid_cursor", try harness.code());
+    try harness.send("{\"id\":4,\"op\":\"transcript\",\"session_id\":\"absent\"}");
+    try testing.expectEqualStrings("unknown_session", try harness.code());
+    try harness.send("{\"id\":5,\"op\":\"transcript\",\"session_id\":\"left\",\"limit\":501}");
+    try testing.expectEqualStrings("invalid_request", try harness.code());
+
+    defer reference_holder.opens_native = "";
+    reference_holder.opens_native = "thread-held";
+    try harness.send(try openLine(harness.arena(), "reference", open_envelope));
+    try harness.send("{\"id\":6,\"op\":\"transcript\",\"session_id\":\"s1\"}");
+    try testing.expectEqualStrings("thread-held-100", (try harness.lastValue()).object.get("result").?.object.get("entries").?.array.items[0].object.get("entry_id").?.string);
+
+    const fresh = try Harness.init(testing.allocator, .{}, .{});
+    defer fresh.deinit();
+    reference_holder.opens_native = "";
+    try fresh.send(try openLine(fresh.arena(), "reference", open_envelope));
+    try fresh.send("{\"id\":7,\"op\":\"transcript\",\"session_id\":\"s1\"}");
+    try testing.expectEqualStrings("unsupported_feature", try fresh.code());
 }
 
 test "work.read of a session with a native id reads the harness's own transcript, held or not, paged by after and limit, and a held one whose transcript is empty or unreadable reads serve's turns" {

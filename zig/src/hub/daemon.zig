@@ -144,6 +144,7 @@ pub const Daemon = struct {
             .cancel => |id| self.cancel(arena, id, request.body),
             .settings => |id| self.settings(arena, id, request.body),
             .events => |id| self.events(arena, id, request),
+            .transcript => |id| self.transcript(arena, id, request.split.query),
         };
     }
 
@@ -267,6 +268,12 @@ pub const Daemon = struct {
     fn workSend(self: *Daemon, arena: std.mem.Allocator, id: []const u8, body: []const u8) !Reply {
         const value = parseBody(arena, body) orelse return self.refusal(arena, malformed, .{});
         return self.outcome(arena, try self.frontend.workSend(arena, id, value), .{ .session_id = id });
+    }
+
+    fn transcript(self: *Daemon, arena: std.mem.Allocator, id: []const u8, query: []const u8) !Reply {
+        var limit: ?i64 = null;
+        if (try queryValue(arena, query, "limit")) |text| limit = std.fmt.parseInt(i64, text, 10) catch 0;
+        return self.outcome(arena, try self.frontend.transcriptLoad(arena, id, try queryValue(arena, query, "cursor"), limit), .{ .session_id = id });
     }
 
     fn workRead(self: *Daemon, arena: std.mem.Allocator, id: []const u8, query: []const u8) !Reply {
@@ -1915,4 +1922,16 @@ test "the session history refuses a cursor, a limit and a missing store as Go do
     const details = (try bare.json(unadvertised)).get("payload").?.object.get("error").?.object.get("details").?.object;
     try testing.expectEqualStrings("session.list", details.get("feature").?.string);
     try testing.expectEqualStrings("unadvertised", details.get("reason").?.string);
+}
+
+test "GET /sessions/{id}/transcript answers the transcript op: an unknown session is 404 and a limit out of range 400" {
+    var fixture: Fixture = undefined;
+    try fixture.init(.{});
+    defer fixture.deinit();
+    const unknown = try fixture.answer("GET", "/sessions/absent/transcript", "");
+    try testing.expectEqualStrings("404 Not Found", unknown.status);
+    try testing.expectEqualStrings("unknown_session", try fixture.code(unknown));
+    const unbounded = try fixture.answer("GET", "/sessions/absent/transcript?limit=501", "");
+    try testing.expectEqualStrings("400 Bad Request", unbounded.status);
+    try testing.expectEqualStrings("invalid_request", try fixture.code(unbounded));
 }
