@@ -20,7 +20,7 @@ const features = [_]contract.Feature{
     .{ .key = "session.state", .level = .emulated, .reason = "adapter-owned projection of the runs it admitted" },
     .{ .key = contract.feature_submit, .level = .emulated, .reason = "session.send answers a message id at once; the run starts at its own user.message" },
     .{ .key = "session.message.delivery.auto", .level = .emulated, .reason = "start when no run is open, otherwise queue behind it, as session.send enqueues" },
-    .{ .key = "session.message.delivery.queue", .level = .degraded, .reason = "an auto submission that finds a run open is queued behind it, as session.send enqueues; an explicit queue is refused, since Copilot starts a prompt on an idle session at once" },
+    .{ .key = "session.message.delivery.queue", .level = .emulated, .reason = "session.send enqueues behind an open run; an explicit queue on an idle session is admitted as a reservation that Copilot promotes at once" },
     .{ .key = "run.streaming", .level = .native },
     .{ .key = "run.status", .level = .emulated },
     .{ .key = "action.tools", .level = .native, .reason = "tool.execution_start and tool.execution_complete with progress between" },
@@ -333,7 +333,14 @@ pub const Session = struct {
     fn submit(ptr: *anyopaque, arena: std.mem.Allocator, request: *const oap_types.MessageSubmitRequest, envelope_id: []const u8, refusal: *contract.Refusal) contract.Failure!oap_types.MessageSubmitResponse {
         _ = envelope_id;
         const self = cast(ptr);
-        if (request.messages.len == 0 or request.delivery != .auto) return error.InvalidSubmission;
+        switch (request.delivery) {
+            .auto, .queue => {},
+            .steer, .btw => {
+                refusal.* = .{ .feature = if (request.delivery == .steer) "session.message.delivery.steer" else "session.message.delivery.btw", .reason = contract.reason_unadvertised, .detail = "a Copilot prompt takes auto or queue delivery" };
+                return error.UnsupportedFeature;
+            },
+        }
+        if (request.messages.len == 0) return error.InvalidSubmission;
         var prompt: std.ArrayList(u8) = .empty;
         for (request.messages) |message| {
             if (message.role != .user) return error.InvalidSubmission;
@@ -347,7 +354,8 @@ pub const Session = struct {
         }
         if (prompt.items.len == 0) return error.InvalidSubmission;
         if (self.ended) return error.SessionClosed;
-        const admitted = self.reducer.admit(request.session_id) catch |err| return switch (err) {
+        const busy = self.reducer.live() > 0;
+        const admitted = (if (request.delivery == .queue) self.reducer.reserve(request.session_id) else self.reducer.admit(request.session_id)) catch |err| return switch (err) {
             error.InvalidSubmission => error.InvalidSubmission,
             error.RunNotFound => error.RunNotFound,
             error.RunActive => error.RunActive,
@@ -376,9 +384,9 @@ pub const Session = struct {
             .session_id = self.id,
             .accepted = true,
             .submission_id = submission_id,
-            .requested_delivery = .auto,
+            .requested_delivery = request.delivery,
             .effective_delivery = if (started) .start else .queue,
-            .delivery_resolution = if (started) "session_idle" else "session_busy",
+            .delivery_resolution = if (busy) "session_busy" else "session_idle",
             .admission = if (started) .started else .queued,
             .run_id = run_id,
             .status = if (started) .running else .queued,
@@ -543,8 +551,12 @@ const Probe = struct {
     }
 
     fn submit(self: *Probe, text: []const u8, refusal: *contract.Refusal) contract.Failure!oap_types.MessageSubmitResponse {
+        return self.deliver(text, .auto, refusal);
+    }
+
+    fn deliver(self: *Probe, text: []const u8, delivery: oap_types.RequestedDelivery, refusal: *contract.Refusal) contract.Failure!oap_types.MessageSubmitResponse {
         const messages = try self.arena.allocator().dupe(oap_types.Message, &.{.{ .role = .user, .content = .{ .text = text } }});
-        return self.handle.?.submit(self.arena.allocator(), &.{ .session_id = "s1", .messages = messages, .delivery = .auto }, "", refusal);
+        return self.handle.?.submit(self.arena.allocator(), &.{ .session_id = "s1", .messages = messages, .delivery = delivery }, "", refusal);
     }
 
     fn pumpUntil(self: *Probe, comptime kind: []const u8, seen: *std.ArrayList(contract.Event)) !contract.Event {
@@ -665,4 +677,28 @@ test "a prompt the server refuses or answers without a message id is not admitte
     try testing.expectEqual(@as(usize, 0), idle.active_runs.len);
     const third = try probe.submit("three", &refusal);
     try testing.expectEqual(oap_types.Admission.started, third.admission);
+}
+
+test "an explicit queue on an idle session is a reservation Copilot promotes at once, and steer is refused" {
+    var probe: Probe = undefined;
+    try probe.init(fake_connect ++
+        \\take; say '{"jsonrpc":"2.0","id":3,"result":{"messageId":"m-1"}}'
+        \\
+    ++ eventFrame("user.message", "{\"messageId\":\"m-1\"}") ++
+        eventFrame("assistant.message", "{\"messageId\":\"a-1\",\"content\":\"done\"}") ++
+        eventFrame("session.idle", "{}") ++ fake_idle);
+    defer probe.deinit();
+    var refusal = contract.Refusal{};
+    _ = try probe.open(&refusal);
+    const reserved = try probe.deliver("one", .queue, &refusal);
+    try testing.expectEqual(oap_types.Admission.queued, reserved.admission);
+    try testing.expectEqual(oap_types.EffectiveDelivery.queue, reserved.effective_delivery);
+    try testing.expectEqual(oap_types.RequestedDelivery.queue, reserved.requested_delivery);
+    try testing.expectEqualStrings("session_idle", reserved.delivery_resolution.?);
+    var seen = std.ArrayList(contract.Event).empty;
+    const started = try probe.pumpUntil("run.started", &seen);
+    try testing.expectEqualStrings(reserved.run_id.?, started.run_id);
+    _ = try probe.pumpUntil("run.completed", &seen);
+    try testing.expectError(error.UnsupportedFeature, probe.deliver("two", .steer, &refusal));
+    try testing.expectEqualStrings("session.message.delivery.steer", refusal.feature);
 }

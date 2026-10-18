@@ -128,7 +128,7 @@ pub const Reducer = struct {
         return std.fmt.allocPrint(self.allocator(), "{s}-{d}", .{ kind, counter.* });
     }
 
-    fn live(self: *Reducer) usize {
+    pub fn live(self: *Reducer) usize {
         var total: usize = 0;
         for (self.runs.items) |run| {
             if (!run.terminal) total += 1;
@@ -144,6 +144,14 @@ pub const Reducer = struct {
     }
 
     pub fn admit(self: *Reducer, session_id: []const u8) Error!Admission {
+        return self.admitWith(session_id, false);
+    }
+
+    pub fn reserve(self: *Reducer, session_id: []const u8) Error!Admission {
+        return self.admitWith(session_id, true);
+    }
+
+    fn admitWith(self: *Reducer, session_id: []const u8, reservation: bool) Error!Admission {
         if (self.closed) return error.SessionClosed;
         if (session_id.len == 0) return error.InvalidSubmission;
         if (!std.mem.eql(u8, session_id, self.options.session_id)) return error.RunNotFound;
@@ -152,9 +160,10 @@ pub const Reducer = struct {
         const run_id = try self.nextID("run");
         const message_id = try self.nextID("message");
         const run = try self.allocator().create(Run);
-        run.* = .{ .id = run_id, .message_id = message_id, .status = if (busy == 0) .running else .queued };
+        const starts = busy == 0 and !reservation;
+        run.* = .{ .id = run_id, .message_id = message_id, .status = if (starts) .running else .queued };
         try self.runs.append(self.allocator(), run);
-        if (busy == 0) return .{ .run_id = run.id, .message_id = run.message_id, .admission = "started", .effective_delivery = "start", .status = .running };
+        if (starts) return .{ .run_id = run.id, .message_id = run.message_id, .admission = "started", .effective_delivery = "start", .status = .running };
         return .{ .run_id = run.id, .message_id = run.message_id, .admission = "queued", .effective_delivery = "queue", .status = .queued };
     }
 
