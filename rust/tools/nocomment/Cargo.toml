@@ -1,0 +1,11 @@
+[package]
+name = "nocomment"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+ra-ap-rustc_lexer = "=0.178.0"
+
+[lints.rust]
+unsafe_code = "forbid"

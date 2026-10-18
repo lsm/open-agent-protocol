@@ -71,6 +71,11 @@ zig build --build-file zig/build.zig test-unit-<group>
 There is no per-test filter; the smallest runnable unit is a group step, and
 `zig build --build-file zig/build.zig --help` lists them.
 
+Rust (Decision 0052): `rust/` is one Cargo workspace; in it run
+`cargo fmt --check`, `cargo clippy --all-targets --all-features -- -D warnings`
+and `cargo test --all-features`. `rust/sdk` is the thin SDK over `oapx`, and
+the rest of Go is ported into it crate by crate.
+
 TypeScript: `npm ci && npm test` at the root (the SDK) and in `clients/ts` (the
 daemon client). The latter builds `./go/cmd/goap`; set `OAP_GO` if `go` is not on
 `PATH`, or `OAP_TS_SKIP_INTEGRATION=1` to skip it.
@@ -108,12 +113,15 @@ main's queued runs rather than none of them.
 
 ## Zero comments
 
-Every tracked `.go`, `.zig` and `.ts` file carries no comments — `build.zig`,
+Every tracked `.go`, `.zig`, `.ts` and `.rs` file carries no comments — `build.zig`,
 tests, fixtures and `zig/vendor` included. Rationale goes in commit messages, PR
 descriptions, `decisions/` and `drafts/`.
 
-Two enforcers, and both floors are zero. `scripts/check-no-comments.mjs` covers
-`.zig` and `.ts`; `go/tools/nocomment` covers `.go`. Neither carries an
+Three enforcers, and every floor is zero. `scripts/check-no-comments.mjs` covers
+`.zig` and `.ts`; `go/tools/nocomment` covers `.go`; `rust/tools/nocomment`
+covers `.rs` with rustc's own lexer, counting `///` and `//!` too (run it with
+`cargo run --manifest-path rust/Cargo.toml -p nocomment -- --check|--write`).
+None carries an
 allowlist any more: the Go one existed only for `sdk/go`, which arrived
 commented, and the fold into `go/sdk` took the last 31 entries with it. A
 comment in a Go file fails the check, with no exemption to add one to. When a
