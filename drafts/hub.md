@@ -406,7 +406,9 @@ once, and one with no mode while a run is active asks the host to choose`, `a
 graceful shutdown drains and refuses new work, and force stops it`, `a shutdown
 mode other than graceful or force is refused and changes nothing`. Go has no
 `shutdown` op yet, a divergence recorded here until #1219 lands it, and
-neither tree has the HTTP route.
+neither tree has the HTTP route. Neither tree yet sends subscribers
+`endpoint.shutdown.started`, which Decision 0050 requires on acceptance; that
+announcement lands with the HTTP route.
 
 Shutdown is stdin EOF or SIGINT/SIGTERM. The daemon stops admitting, settles
 the work it already admitted inside its bounded window, closes every session so
