@@ -1,0 +1,143 @@
+[
+  {
+    "protocol": "open-agent-protocol",
+    "version": "0.1",
+    "profile": "open-agent-protocol.agent-control-core",
+    "type": "run.started",
+    "id": "event-d",
+    "payload": {
+      "session_id": "session",
+      "run_id": "run-c",
+      "status": "running",
+      "model_id": "deepseek-chat",
+      "started_at_ms": 2
+    },
+    "sequence": 1,
+    "timestamp_ms": 3,
+    "session_id": "session",
+    "run_id": "run-c",
+    "capability_revision": "deepseek-harness-dsh-v0.2.1-rc.2-oap-v3"
+  },
+  {
+    "protocol": "open-agent-protocol",
+    "version": "0.1",
+    "profile": "open-agent-protocol.agent-control-core",
+    "type": "action.call.requested",
+    "id": "event-f",
+    "payload": {
+      "session_id": "session",
+      "run_id": "run-c",
+      "tool_call_id": "tool-call-e",
+      "requested_by": "deepseek.harness",
+      "execution_owner": "deepseek-harness",
+      "name": "working_directory",
+      "arguments_json": {
+        "cd": "sub"
+      }
+    },
+    "sequence": 2,
+    "timestamp_ms": 4,
+    "session_id": "session",
+    "run_id": "run-c",
+    "tool_call_id": "tool-call-e",
+    "capability_revision": "deepseek-harness-dsh-v0.2.1-rc.2-oap-v3"
+  },
+  {
+    "protocol": "open-agent-protocol",
+    "version": "0.1",
+    "profile": "open-agent-protocol.agent-control-core",
+    "type": "action.call.started",
+    "id": "event-g",
+    "payload": {
+      "session_id": "session",
+      "run_id": "run-c",
+      "tool_call_id": "tool-call-e",
+      "requested_by": "deepseek.harness",
+      "execution_owner": "deepseek-harness",
+      "name": "working_directory"
+    },
+    "sequence": 3,
+    "timestamp_ms": 5,
+    "in_reply_to": "event-f",
+    "session_id": "session",
+    "run_id": "run-c",
+    "tool_call_id": "tool-call-e",
+    "capability_revision": "deepseek-harness-dsh-v0.2.1-rc.2-oap-v3"
+  },
+  {
+    "protocol": "open-agent-protocol",
+    "version": "0.1",
+    "profile": "open-agent-protocol.agent-control-core",
+    "type": "action.call.completed",
+    "id": "event-h",
+    "payload": {
+      "session_id": "session",
+      "run_id": "run-c",
+      "tool_call_id": "tool-call-e",
+      "requested_by": "deepseek.harness",
+      "execution_owner": "deepseek-harness",
+      "name": "working_directory",
+      "result": [
+        {
+          "type": "text",
+          "text": "/private/tmp/dsh-cwd/workspace/sub"
+        }
+      ]
+    },
+    "sequence": 4,
+    "timestamp_ms": 6,
+    "in_reply_to": "event-g",
+    "session_id": "session",
+    "run_id": "run-c",
+    "tool_call_id": "tool-call-e",
+    "capability_revision": "deepseek-harness-dsh-v0.2.1-rc.2-oap-v3"
+  },
+  {
+    "protocol": "open-agent-protocol",
+    "version": "0.1",
+    "profile": "open-agent-protocol.agent-control-core",
+    "type": "content.delta",
+    "id": "event-i",
+    "payload": {
+      "session_id": "session",
+      "run_id": "run-c",
+      "message_id": "message-b",
+      "part": {
+        "type": "text",
+        "text": "moved"
+      }
+    },
+    "sequence": 5,
+    "timestamp_ms": 7,
+    "session_id": "session",
+    "run_id": "run-c",
+    "capability_revision": "deepseek-harness-dsh-v0.2.1-rc.2-oap-v3"
+  },
+  {
+    "protocol": "open-agent-protocol",
+    "version": "0.1",
+    "profile": "open-agent-protocol.agent-control-core",
+    "type": "run.completed",
+    "id": "event-j",
+    "payload": {
+      "session_id": "session",
+      "run_id": "run-c",
+      "final_response": {
+        "id": "message-b",
+        "role": "assistant",
+        "content": "moved"
+      },
+      "stop_reason": "completed",
+      "usage": {
+        "input_tokens": 1,
+        "output_tokens": 1,
+        "total_tokens": 2
+      }
+    },
+    "sequence": 6,
+    "timestamp_ms": 8,
+    "session_id": "session",
+    "run_id": "run-c",
+    "capability_revision": "deepseek-harness-dsh-v0.2.1-rc.2-oap-v3"
+  }
+]

@@ -46,6 +46,8 @@ var pinnedObservedOnlyEvents = map[string]bool{
 	"goal/change":                            true,
 	"hook/invoked":                           true,
 	"hook/result":                            true,
+	"job/registered":                         true,
+	"job/settled":                            true,
 	"llm/retry":                              true,
 	"llm/retry-started":                      true,
 	"model/selection":                        true,
