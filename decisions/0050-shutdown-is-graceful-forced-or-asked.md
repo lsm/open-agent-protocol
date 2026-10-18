@@ -27,7 +27,8 @@ next start can describe honestly.
 
 ### 1. Three ways to stop, one restart rule
 
-- **Graceful:** stop dispatching at once, let running runs finish, then exit.
+- **Graceful is a freeze:** stop dispatching at once, let running runs finish,
+  save the whole state, then exit. The next start unfreezes it and carries on.
 - **Force:** stop now. It behaves exactly like a crash.
 - **Crash:** the process dies. Nothing is settled at the time.
 
@@ -50,15 +51,16 @@ stream, because the process that held that stream's sequence is gone and a
 made-up sequence would be fake continuity. It is reported on reopen (rule 5),
 and also in the transcript where the transcript is OAP's own (Decision 0051).
 
-### 2. Graceful never dispatches a queued prompt
+### 2. Graceful freezes the queue, and the next start resumes it
 
-From the moment a graceful shutdown is accepted, no queued run starts. A
-follow-up queued after the request must not go out. Those prompts are
-**held**, not withdrawn: they are already durable for the crash rule, so they
-are delivered when the session next reopens. The shutdown response lists
-them, and a host that does not want one delivered cancels it before the
-process exits (`run.cancel` on a reservation settles it `cancelled` before
-start, under 0007). A submit that arrives after the request is refused
+From the moment a graceful shutdown is accepted, no queued run starts, so a
+follow-up queued after the request does not go out now. Those prompts are
+kept with the rest of the session's state, and the next start sends them when
+the session reopens. A kept prompt is always sent again: there is no state in
+which a prompt is kept but not sent. The shutdown response lists them under
+`held`, and a host that does not want one sent cancels it before the process
+exits (`run.cancel` on a reservation settles it `cancelled` before start,
+under 0007). A submit that arrives after the request is refused
 `shutting_down` and never accepted.
 
 Running runs finish, on `oapx`'s own loop and on every third-party harness,
@@ -78,7 +80,8 @@ or a second signal turns it into force.
 | --- | --- |
 | `outcome` | `choose`, `draining`, `stopping` |
 | `active_runs` | every nonterminal run, as `{session_id, run_id, status, trigger?, pending_interactions?}` |
-| `held` | the queued runs held for the next start, as `{session_id, run_id}` |
+| `held` | the queued runs kept for the next start, as `{session_id, run_id}` |
+| `lost` | queued runs that cannot be kept because the session's store is off (rule 6), as `{session_id, run_id}` |
 
 - **No mode, nothing running:** graceful at once, `outcome: "stopping"`.
 - **No mode, runs active:** nothing changes yet. `outcome: "choose"` lists the
@@ -88,7 +91,7 @@ or a second signal turns it into force.
   escalates.
 
 Every subscription on the endpoint then receives
-`endpoint.shutdown.started {mode, held}`, endpoint-scoped and unsequenced,
+`endpoint.shutdown.started {mode, held, lost}`, endpoint-scoped and unsequenced,
 so a second host watching a session learns why its runs stop arriving.
 
 ### 4. Signals map to modes
@@ -120,6 +123,23 @@ Decision 0040 requires a reopen to list no run under way. That changes:
 
 The validator accepts restored queued runs in a recovered open response
 (`recovery.recovered: true`) and nowhere else.
+
+### 6. The rules rely on stores that are on by default
+
+Freezing and the crash rule need the session to survive the process. That
+holds by default: both hubs keep the session history (`oapx` at
+`~/.oapx/sessions.jsonl`), and `oapx serve` saves the `oapx` loop's own
+sessions under `~/.oapx/sessions`, which the owner made the default on #1170.
+With either turned off (`--session-history=` or `--no-save-oapx-sessions`),
+nothing of a session survives, and that is reported, never silent:
+
+- a shutdown lists the queued runs under `lost` instead of `held`, and the
+  stderr line says they are lost;
+- after a crash, a reopen of such a session is refused as Decision 0040
+  refuses one with no binding or no loadable store, so the host learns the
+  session and its queue are gone.
+
+Credentials are never written to either store.
 
 ## Consequences
 
