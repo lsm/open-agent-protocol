@@ -95,6 +95,10 @@ const (
 	CodeSessionListOverLimit  = "session_list_over_limit"
 	CodeSessionListOrder      = "session_list_order"
 	CodeDuplicateSessionEntry = "duplicate_session_entry"
+
+	CodeTranscriptOverLimit      = "transcript_over_limit"
+	CodeDuplicateTranscriptEntry = "duplicate_transcript_entry"
+	CodeTranscriptGapMismatch    = "transcript_gap_mismatch"
 )
 
 type Diagnostic struct {

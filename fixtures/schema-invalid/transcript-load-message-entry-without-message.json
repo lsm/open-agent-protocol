@@ -1,0 +1,63 @@
+[
+  {
+    "protocol": "open-agent-protocol",
+    "version": "0.1",
+    "profile": "open-agent-protocol.agent-control-core",
+    "type": "capabilities.request",
+    "id": "capq",
+    "payload": {}
+  },
+  {
+    "protocol": "open-agent-protocol",
+    "version": "0.1",
+    "profile": "open-agent-protocol.agent-control-core",
+    "type": "capabilities.response",
+    "id": "capr",
+    "in_reply_to": "capq",
+    "capability_revision": "cap-v1",
+    "payload": {
+      "endpoint": {
+        "id": "fixture.endpoint",
+        "name": "Transcript load fixture endpoint"
+      },
+      "features": {
+        "session.message.delivery.auto": {
+          "level": "native"
+        },
+        "session.transcript.load": {
+          "level": "native"
+        }
+      }
+    }
+  },
+  {
+    "protocol": "open-agent-protocol",
+    "version": "0.1",
+    "profile": "open-agent-protocol.agent-control-core",
+    "type": "transcript.load.request",
+    "id": "q1",
+    "capability_revision": "cap-v1",
+    "payload": {
+      "session_id": "s1"
+    }
+  },
+  {
+    "protocol": "open-agent-protocol",
+    "version": "0.1",
+    "profile": "open-agent-protocol.agent-control-core",
+    "type": "transcript.load.response",
+    "id": "q1r",
+    "in_reply_to": "q1",
+    "capability_revision": "cap-v1",
+    "payload": {
+      "session_id": "s1",
+      "entries": [
+        {
+          "entry_id": "e1",
+          "kind": "message"
+        }
+      ],
+      "complete": true
+    }
+  }
+]

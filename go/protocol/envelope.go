@@ -50,6 +50,8 @@ const (
 	TypeSessionStateUpdated             EnvelopeType = "session.state.updated"
 	TypeSessionListRequest              EnvelopeType = "session.list.request"
 	TypeSessionListResponse             EnvelopeType = "session.list.response"
+	TypeTranscriptLoadRequest           EnvelopeType = "transcript.load.request"
+	TypeTranscriptLoadResponse          EnvelopeType = "transcript.load.response"
 	TypeSessionModelSwitchRequest       EnvelopeType = "session.model.switch.request"
 	TypeSessionModelSwitchResponse      EnvelopeType = "session.model.switch.response"
 	TypeSessionSettingsUpdateRequest    EnvelopeType = "session.settings.update.request"

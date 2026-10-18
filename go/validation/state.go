@@ -171,12 +171,13 @@ type state struct {
 	ledGroups  []*ledGroup
 	recoveries map[protocol.SessionID]*recoveryExpectation
 
-	pendingLists        map[protocol.EnvelopeID]*pendingList
-	pendingOpens        map[protocol.EnvelopeID]*pendingOpen
-	pendingSubscribes   map[protocol.EnvelopeID]*pendingSubscribe
-	pendingReopens      map[protocol.EnvelopeID]*pendingReopen
-	pendingSessionLists map[protocol.EnvelopeID]*pendingSessionList
-	pendingSettings     map[protocol.EnvelopeID]*pendingSettings
+	pendingLists           map[protocol.EnvelopeID]*pendingList
+	pendingOpens           map[protocol.EnvelopeID]*pendingOpen
+	pendingSubscribes      map[protocol.EnvelopeID]*pendingSubscribe
+	pendingReopens         map[protocol.EnvelopeID]*pendingReopen
+	pendingSessionLists    map[protocol.EnvelopeID]*pendingSessionList
+	pendingTranscriptLoads map[protocol.EnvelopeID]*pendingTranscriptLoad
+	pendingSettings        map[protocol.EnvelopeID]*pendingSettings
 
 	descriptorAttribution map[string]string
 
@@ -197,7 +198,7 @@ type state struct {
 }
 
 func newState(f string) *state {
-	return &state{fixture: f, lateCancels: map[protocol.EnvelopeID]bool{}, ids: map[protocol.EnvelopeID]int{}, requests: map[protocol.EnvelopeID]*requestState{}, participants: map[protocol.ParticipantID]bool{}, sessions: map[protocol.SessionID]*sessionTrack{}, runs: map[protocol.RunID]*runState{}, recoveries: map[protocol.SessionID]*recoveryExpectation{}, features: map[string]protocol.SupportLevel{}, featureSupports: map[string]protocol.FeatureSupport{}, pendingControls: map[protocol.EnvelopeID]*pendingSubmit{}, pendingLists: map[protocol.EnvelopeID]*pendingList{}, pendingOpens: map[protocol.EnvelopeID]*pendingOpen{}, pendingSubscribes: map[protocol.EnvelopeID]*pendingSubscribe{}, pendingReopens: map[protocol.EnvelopeID]*pendingReopen{}, pendingSessionLists: map[protocol.EnvelopeID]*pendingSessionList{}, pendingSettings: map[protocol.EnvelopeID]*pendingSettings{}, pendingResolves: map[protocol.EnvelopeID]*pendingResolve{}, declaredSources: map[string]protocol.ToolSourceDescriptor{}, pendingModels: map[protocol.EnvelopeID]*pendingModelsQuery{}, authFlows: map[protocol.AuthFlowID]*authFlow{}, openSubmits: map[protocol.SessionID][]*pendingSubmit{}}
+	return &state{fixture: f, lateCancels: map[protocol.EnvelopeID]bool{}, ids: map[protocol.EnvelopeID]int{}, requests: map[protocol.EnvelopeID]*requestState{}, participants: map[protocol.ParticipantID]bool{}, sessions: map[protocol.SessionID]*sessionTrack{}, runs: map[protocol.RunID]*runState{}, recoveries: map[protocol.SessionID]*recoveryExpectation{}, features: map[string]protocol.SupportLevel{}, featureSupports: map[string]protocol.FeatureSupport{}, pendingControls: map[protocol.EnvelopeID]*pendingSubmit{}, pendingLists: map[protocol.EnvelopeID]*pendingList{}, pendingOpens: map[protocol.EnvelopeID]*pendingOpen{}, pendingSubscribes: map[protocol.EnvelopeID]*pendingSubscribe{}, pendingReopens: map[protocol.EnvelopeID]*pendingReopen{}, pendingSessionLists: map[protocol.EnvelopeID]*pendingSessionList{}, pendingTranscriptLoads: map[protocol.EnvelopeID]*pendingTranscriptLoad{}, pendingSettings: map[protocol.EnvelopeID]*pendingSettings{}, pendingResolves: map[protocol.EnvelopeID]*pendingResolve{}, declaredSources: map[string]protocol.ToolSourceDescriptor{}, pendingModels: map[protocol.EnvelopeID]*pendingModelsQuery{}, authFlows: map[protocol.AuthFlowID]*authFlow{}, openSubmits: map[protocol.SessionID][]*pendingSubmit{}}
 }
 func (s *state) add(code string, i, line int, e protocol.Envelope, ptr, msg string) {
 	s.diagnostics = append(s.diagnostics, baseDiagnostic(s.fixture, PhaseSemantic, code, i, line, e, ptr, msg))
@@ -324,6 +325,14 @@ func (s *state) apply(i, line int, e protocol.Envelope) {
 		var p protocol.SessionListResponse
 		_ = e.DecodePayload(&p)
 		s.sessionListResponse(i, line, e, p)
+	case protocol.TypeTranscriptLoadRequest:
+		var p protocol.TranscriptLoadRequest
+		_ = e.DecodePayload(&p)
+		s.transcriptLoadRequest(i, line, e, p)
+	case protocol.TypeTranscriptLoadResponse:
+		var p protocol.TranscriptLoadResponse
+		_ = e.DecodePayload(&p)
+		s.transcriptLoadResponse(i, line, e, p)
 	case protocol.TypeModelsResponse:
 		var p protocol.ModelsResponse
 		_ = e.DecodePayload(&p)
@@ -516,6 +525,7 @@ func (s *state) apply(i, line int, e protocol.Envelope) {
 		s.settleSubscribeRefusal(i, line, e)
 		s.settleModelControlRefusal(i, line, e)
 		s.settleSessionListRefusal(i, line, e)
+		s.settleTranscriptLoadRefusal(i, line, e)
 		delete(s.pendingReopens, e.InReplyTo)
 		delete(s.pendingSettings, e.InReplyTo)
 	case protocol.TypeRunCancelResponse:

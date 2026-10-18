@@ -502,6 +502,18 @@ live or closed, newest first, and a `next_cursor` when more remain. The list is
 the host's records only; a harness's own sessions are not merged in
 ([Decision 0046](../decisions/0046-a-session-list-is-the-hosts-bindings.md)).
 
+An endpoint that can read a session's persisted history advertises
+`session.transcript.load` and answers `transcript.load.request` (`session_id`,
+an optional opaque `cursor` and a `limit` from 1 to 500, default 100) with
+`transcript.load.response`: entries oldest first, each an `entry_id`, a `kind`
+(`message` carrying a core message, `compaction` carrying its summary, and any
+later kind a host skips), and optionally `at_ms`, `run_id`, `truncated` and
+`extensions`. `complete: false` comes with a `next_cursor`. A cursor whose entry
+the store has dropped answers from the oldest entry held with
+`gap: {reason, resumed_at}`, `resumed_at` naming the first entry returned; one
+the endpoint did not mint is refused `invalid_cursor`
+([Decision 0051](../decisions/0051-transcript-load.md)).
+
 An endpoint advertising `session.reasoning` or `session.compaction.policy` in
 `session_live` mode may accept `session.settings.update.request`, which names
 the session and at least one of `reasoning_level` and `compaction_policy`. The
