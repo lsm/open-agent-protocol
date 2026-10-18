@@ -390,6 +390,13 @@ func (a *Adapter) Probe(ctx context.Context) (base.Descriptor, error) {
 }
 
 func (a *Adapter) Open(ctx context.Context, req base.OpenRequest) (base.Session, error) {
+	if err := base.RefuseUnadvertisedTools(req, advertisedFeatures()[protocol.FeatureToolsProvide]); err != nil {
+		return nil, err
+	}
+	return a.open(ctx, req)
+}
+
+func (a *Adapter) open(ctx context.Context, req base.OpenRequest) (base.Session, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -398,7 +405,8 @@ func (a *Adapter) Open(ctx context.Context, req base.OpenRequest) (base.Session,
 		return nil, err
 	}
 
-	if err := base.RefuseUnadvertisedTools(req); err != nil {
+	provided, err := admitProvided(req)
+	if err != nil {
 		return nil, err
 	}
 	if err := base.RefuseUnadvertisedSettings(req, protocol.CapabilityDescriptor{Features: advertisedFeatures()}); err != nil {
@@ -408,7 +416,7 @@ func (a *Adapter) Open(ctx context.Context, req base.OpenRequest) (base.Session,
 	if err != nil {
 		return nil, err
 	}
-	client, nativeSessionID, err := a.start(ctx, req)
+	client, nativeSessionID, err := a.start(ctx, req, provided)
 	if err != nil {
 		return nil, err
 	}
@@ -417,7 +425,7 @@ func (a *Adapter) Open(ctx context.Context, req base.OpenRequest) (base.Session,
 		id = protocol.SessionID(a.ids.NewID("session"))
 	}
 	now := a.clock.Now().UnixMilli()
-	s := &Session{client: client, clock: a.clock, ids: a.ids, journal: journal.New(a.config.JournalCapacity), expandPrompts: a.config.ExpandPrompts, participant: participant(req.Participant), state: protocol.SessionState{SessionID: id, Status: protocol.SessionIdle, CurrentModelID: a.config.Model, UpdatedAtMS: now, ReasoningLevel: req.ReasoningLevel, CompactionPolicy: req.CompactionPolicy}, runs: map[protocol.RunID]*runState{}, tools: map[string]*toolState{}, interactions: map[protocol.InteractionID]*gateState{}, policyDenied: map[string]bool{}, children: map[string]*childState{}, stop: make(chan struct{})}
+	s := &Session{client: client, clock: a.clock, ids: a.ids, journal: journal.New(a.config.JournalCapacity), expandPrompts: a.config.ExpandPrompts, participant: participant(req.Participant), provided: provided, state: protocol.SessionState{SessionID: id, Status: protocol.SessionIdle, CurrentModelID: a.config.Model, UpdatedAtMS: now, ReasoningLevel: req.ReasoningLevel, CompactionPolicy: req.CompactionPolicy}, runs: map[protocol.RunID]*runState{}, tools: map[string]*toolState{}, interactions: map[protocol.InteractionID]*gateState{}, policyDenied: map[string]bool{}, children: map[string]*childState{}, stop: make(chan struct{})}
 	if nativeSessionID != "" {
 		s.nativeSessionID = nativeSessionID
 		encoded, _ := json.Marshal(nativeSessionID)
@@ -431,7 +439,7 @@ func (a *Adapter) Open(ctx context.Context, req base.OpenRequest) (base.Session,
 
 		initCtx, cancel := context.WithTimeout(ctx, initializeTimeout)
 		defer cancel()
-		if err := client.Call(initCtx, native.InitializeRequest{Subtype: native.ControlInitialize, Hooks: native.ToolSelectionHooks()}, &struct{}{}); err != nil {
+		if err := client.Call(initCtx, native.InitializeRequest{Subtype: native.ControlInitialize, Hooks: native.ToolSelectionHooks(), SDKMCPServers: providedServers(provided)}, &struct{}{}); err != nil {
 			_ = s.Close(context.Background())
 			if req.Reopen && ctx.Err() == nil {
 				return nil, reopenRefusal("Claude Code could not load the bound conversation: " + err.Error())

@@ -54,7 +54,7 @@ func nativeSessionUUID() string {
 	return fmt.Sprintf("%x-%x-%x-%x-%x", bytes[:4], bytes[4:6], bytes[6:8], bytes[8:10], bytes[10:])
 }
 
-func (a *Adapter) start(ctx context.Context, req base.OpenRequest) (Client, string, error) {
+func (a *Adapter) start(ctx context.Context, req base.OpenRequest, provided []protocol.ToolDefinition) (Client, string, error) {
 	if req.Reopen && !validSessionUUID(req.NativeSessionID) {
 		return nil, "", reopenRefusal("the binding must name a Claude Code session UUID")
 	}
@@ -70,14 +70,21 @@ func (a *Adapter) start(ctx context.Context, req base.OpenRequest) (Client, stri
 		return nil, "", reopenRefusal("configured session selection conflicts with the binding")
 	}
 	pc := *a.processConfig
+	boundary := len(pc.Args) - len(a.config.Args)
+	names := make([]string, len(provided))
+	for index, tool := range provided {
+		names[index] = tool.Name
+	}
+	head := append(append([]string{}, pc.Args[:boundary]...), providedArgv(names, a.config.Tools.unrestricted)...)
 	id := ""
 	if req.Reopen {
 		id = req.NativeSessionID
-		pc.Args = append(append([]string{}, pc.Args...), "--resume", id)
+		pc.Args = append(append(head, a.config.Args...), "--resume", id)
 	} else if !selected {
 		id = nativeSessionUUID()
-		boundary := len(pc.Args) - len(a.config.Args)
-		pc.Args = append(append(append([]string{}, pc.Args[:boundary]...), "--session-id", id), a.config.Args...)
+		pc.Args = append(append(head, "--session-id", id), a.config.Args...)
+	} else {
+		pc.Args = append(head, a.config.Args...)
 	}
 	process, err := a.config.ProcessFactory.Start(ctx, pc)
 	if err != nil {

@@ -65,6 +65,7 @@ const (
 	ControlInterrupt    = "interrupt"
 	ControlCanUseTool   = "can_use_tool"
 	ControlHookCallback = "hook_callback"
+	ControlMCPMessage   = "mcp_message"
 
 	HookPreToolUse    = "PreToolUse"
 	ToolSelectionHook = "oap_tool_selection"
@@ -532,6 +533,14 @@ func DecodeControlRequest(subtype string, raw []byte) (any, error) {
 			return nil, fmt.Errorf("%w: hook_callback requires callback_id", ErrInvalidFrame)
 		}
 		return &request, nil
+	case ControlMCPMessage:
+		var envelope struct {
+			Request MCPMessageRequest `json:"request"`
+		}
+		if err := unmarshal(raw, &envelope); err != nil {
+			return nil, err
+		}
+		return &envelope.Request, nil
 	default:
 
 		return &UnknownFrame{Type: "control_request", Subtype: subtype}, nil
@@ -576,8 +585,18 @@ func DenyTool(reason string) HookDeny {
 }
 
 type InitializeRequest struct {
-	Subtype string `json:"subtype"`
-	Hooks   any    `json:"hooks"`
+	Subtype       string   `json:"subtype"`
+	Hooks         any      `json:"hooks"`
+	SDKMCPServers []string `json:"sdkMcpServers,omitempty"`
+}
+
+type MCPMessageRequest struct {
+	ServerName string          `json:"server_name"`
+	Message    json.RawMessage `json:"message"`
+}
+
+type MCPResponse struct {
+	MCPResponse json.RawMessage `json:"mcp_response"`
 }
 
 type ApplyFlagSettingsRequest struct {
