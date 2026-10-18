@@ -7,6 +7,45 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+## [0.1.0-alpha.24] - 2026-10-18
+
+### Behavior changes
+
+- **claude-code 2.1.302 starts a third-party-provider session in `default` permission mode** ([#1175](https://github.com/lsm/open-agent-protocol/pull/1175)): with a custom `ANTHROPIC_BASE_URL` and a fresh config, 2.1.296 started in `auto`. The adapter passes no `--permission-mode`, so a tool call auto mode used to approve now reaches the host as `action.permission.requested`, and a run on a host that never answers permission requests waits.
+
+### Merged pull requests
+
+- **serve: admit an open and refuse a taken name before the adapter opens** ([#1151](https://github.com/lsm/open-agent-protocol/pull/1151)): Part of #1128, step 2 (Go).
+- **copilot: project a Copilot session's runs and text onto OAP** ([#1155](https://github.com/lsm/open-agent-protocol/pull/1155)): Third Zig step toward a `copilot` backend (ledger: `research/copilot-cli-1.0.98-mapping.md`).
+- **zig: admit a memory-adapter open before the hub checks its name** ([#1156](https://github.com/lsm/open-agent-protocol/pull/1156)): Part of #1128, step 2.
+- **drafts/hub: pin the decode codes at 400 and let a hub refuse entries it does not build** ([#1147](https://github.com/lsm/open-agent-protocol/pull/1147)): Part of #1133.
+- **providers: end each responses part, and keep its tool calls in the result** ([#1157](https://github.com/lsm/open-agent-protocol/pull/1157)): Found recording openai-codex evidence (#356).
+- **oapx: resolve serve provider's credentials with the Codex CLI login** ([#1154](https://github.com/lsm/open-agent-protocol/pull/1154)): Found while recording evidence for openai-codex (#356).
+- **hub: gate a body's media type by route, before its length** ([#1158](https://github.com/lsm/open-agent-protocol/pull/1158)): Closes the rest of #1133 (hub divergences D23 and D26), as the owner decided on 2026-10-17.
+- **providers: promote openai-codex to current on a recorded reading** ([#1165](https://github.com/lsm/open-agent-protocol/pull/1165)): Promotes `openai-codex` to `status: current` (#356), with its evidence recorded in `research/provider-smoke-2026-10.md`.
+- **sdk: let a session model switch accept a degraded switch** ([#1164](https://github.com/lsm/open-agent-protocol/pull/1164)): Adds `AgentService.SwitchSessionModel(ctx, SessionModelSwitchRequest{SessionID, ModelID, AllowDegradedFeatures})`, which works like `SessionModels` from #1153.
+- **sdk: stop timing out a quiet agent run or inference by default** ([#1161](https://github.com/lsm/open-agent-protocol/pull/1161)): `responseTimeoutMs` (30 s by default) also bounded every gap between run or inference events.
+- **pi: pin v1.3.0, admitting the argumentsError a tool call now carries** ([#1167](https://github.com/lsm/open-agent-protocol/pull/1167)): Moves the pi pin from v1.1.0 to v1.3.0 and retires v1.1.0.
+- **copilot: project tool calls and permissions onto OAP** ([#1166](https://github.com/lsm/open-agent-protocol/pull/1166)): The Copilot reducer now maps tool and permission events, per the ledger's "Tools and permissions" table.
+- **docs: inventory the OAP surface oapx lacks as a model backend** ([#1169](https://github.com/lsm/open-agent-protocol/pull/1169)): Adds `docs/oapx-protocol-gaps.md`, which checks 13 OAP features against main for using oapx as a model backend (HyperNeo first).
+- **acp: answer a run's open permission requests cancelled when it is cancelled** ([#1168](https://github.com/lsm/open-agent-protocol/pull/1168)): ACP's prompt turn requires the client to answer every pending `session/request_permission` with `cancelled` once it sends `session/cancel`, and v1.12.0's `cancellation.mdx` restates it.
+- **hermes: pin v0.22.2** ([#1172](https://github.com/lsm/open-agent-protocol/pull/1172)): Moves Hermes to v0.22.2 (revision `hermes-v0.22.2-oap-v1`) and retires v0.21.6.
+- **sdk: open an agent session once and submit into it after that** ([#1160](https://github.com/lsm/open-agent-protocol/pull/1160)): Every agent run sent `session.open.request`, so a second run on the same `session_id`, and `runSelected`/`streamSelected` after any earlier run, answered `session_exists` against a real `oapx`.
+- **sdk: connect to an endpoint that serves the agent profile alone** ([#1162](https://github.com/lsm/open-agent-protocol/pull/1162)): `connect()` required `provider.describe`, which only `oapx`'s built-in loop answers.
+- **tui: move a session's event recording into the session store** ([#1176](https://github.com/lsm/open-agent-protocol/pull/1176)): Pure refactor, groundwork for #1170 (saving `oapx serve` sessions).
+- **claude: pin 2.1.302** ([#1175](https://github.com/lsm/open-agent-protocol/pull/1175)): Moves the Claude Code adapter from 2.1.296 to 2.1.302, with TypeScript SDK 0.3.302 and Python SDK 0.2.168, and retires 2.1.296.
+- **deepseek: pin dsh-v0.2.1-rc.2** ([#1174](https://github.com/lsm/open-agent-protocol/pull/1174)): Moves the DeepSeek Harness to `dsh-v0.2.1-rc.2` (revision `deepseek-harness-dsh-v0.2.1-rc.2-oap-v3`) and retires `dsh-v0.2.1-alpha.2`.
+- **acp: switch the session's model through the agent's model option** ([#1163](https://github.com/lsm/open-agent-protocol/pull/1163)): Both adapters now answer `session.model.switch.request` by writing the agent's `category: model` configOption via `session/set_config_option`, then confirming it in the returned option list.
+- **codex: pin rust-v0.163.0** ([#1171](https://github.com/lsm/open-agent-protocol/pull/1171)): Moves the Codex app-server pin from `rust-v0.162.1` to `rust-v0.163.0`, the latest stable release, and retires 0.162.1.
+- **oapx: save and reopen a served oapx session under --save-oapx-sessions** ([#1178](https://github.com/lsm/open-agent-protocol/pull/1178)): Part of #1170.
+- **opencode: pin v2.0.32** ([#1173](https://github.com/lsm/open-agent-protocol/pull/1173)): Moves OpenCode from v2.0.26 to v2.0.32 (revision `opencode-v2.0.32-oap-v5`), and retires v2.0.26.
+- **acp: pin v1.12.0 and schema-v1.26.0** ([#1181](https://github.com/lsm/open-agent-protocol/pull/1181)): Moves the ACP pin from v1.11.0 / schema-v1.25.0 to v1.12.0 / schema-v1.26.0 (one commit, `e2d83349`).
+- **drafts: propose publishing a session change the harness made itself** ([#1180](https://github.com/lsm/open-agent-protocol/pull/1180)): A drafts note for an owner decision, split out of #1177 (see #1179).
+- **acp: take an agent's config_option_update into the recorded model and reasoning** ([#1179](https://github.com/lsm/open-agent-protocol/pull/1179)): Part of #1177.
+- **copilot: project user input requests onto OAP** ([#1184](https://github.com/lsm/open-agent-protocol/pull/1184)): The Copilot reducer now maps `user_input.requested` and `user_input.completed`.
+- **oapx: say a served entry's catalog is fixed, and that only the terminal UI refreshes it** ([#1183](https://github.com/lsm/open-agent-protocol/pull/1183)): Corrects inventory row 6 (`docs/oapx-protocol-gaps.md`) and the oapx loop's `models.list` reason.
+- **oapx: read a saved session's turns for work.read under --save-oapx-sessions** ([#1182](https://github.com/lsm/open-agent-protocol/pull/1182)): `work.read` can now read an `oapx` session served under `--save-oapx-sessions` from its saved transcript, so the turns survive a hub restart.
+
 ## [0.1.0-alpha.23] - 2026-10-18
 
 ### Merged pull requests
