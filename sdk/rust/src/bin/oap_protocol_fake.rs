@@ -171,15 +171,45 @@ fn main() {
                     json!({ "sequence": 3 }),
                 );
             }
-            (PROVIDER, "provider.describe.request") => emit(
-                profile,
-                "provider.describe.response",
-                Some(id),
-                json!({
-                    "providers": [], "protocol_versions": ["0.1"]
-                }),
-                json!({}),
-            ),
+            (PROVIDER, "provider.describe.request") => match scenario.as_str() {
+                "agent_only" | "agent_only_unsupported" | "describe_fails" => {
+                    let (code, message) = match scenario.as_str() {
+                        "agent_only" => (
+                            "invalid_request",
+                            "envelope profile is not the agent-control core",
+                        ),
+                        "agent_only_unsupported" => {
+                            ("unsupported_request", "provider.describe.request")
+                        }
+                        _ => ("internal", "provider registry unavailable"),
+                    };
+                    let refused_on = if scenario == "describe_fails" {
+                        PROVIDER
+                    } else {
+                        AGENT
+                    };
+                    emit(
+                        refused_on,
+                        "error.response",
+                        Some(id),
+                        json!({ "error": { "code": code, "message": message } }),
+                        json!({}),
+                    );
+                }
+                "describe_garbage" => {
+                    println!("{{\"broken\":");
+                    let _ = io::stdout().flush();
+                }
+                _ => emit(
+                    profile,
+                    "provider.describe.response",
+                    Some(id),
+                    json!({
+                        "providers": [], "protocol_versions": ["0.1"]
+                    }),
+                    json!({}),
+                ),
+            },
             (PROVIDER, "provider.models.list.request") => {
                 let mut entry = json!({
                     "model_ref": "fixture/openai-responses@mock", "model_id": "mock", "provider_id": "fixture",

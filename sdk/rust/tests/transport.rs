@@ -369,3 +369,64 @@ async fn the_client_is_debuggable_without_leaking_internals() {
     assert!(rendered.contains("Client"), "{rendered}");
     client.close().await;
 }
+
+#[tokio::test]
+async fn an_endpoint_refusing_provider_describe_runs_agents_and_refuses_provider_calls() {
+    for scenario in ["agent_only", "agent_only_unsupported"] {
+        let client = common::fake_client(scenario).await;
+        let request = ExecutionRequest::prompt("fixture/openai-responses@mock", "hello");
+        let agent = client
+            .agent()
+            .run(request.clone())
+            .await
+            .expect("agent run");
+        assert_eq!(agent.text(), "agent works", "{scenario}");
+        let models = client
+            .models()
+            .list(ListModelsRequest::default())
+            .await
+            .unwrap_err();
+        assert_eq!(models.code(), Some("unsupported_feature"), "{scenario}");
+        let completed = client
+            .provider()
+            .complete(request.clone())
+            .await
+            .unwrap_err();
+        assert_eq!(completed.code(), Some("unsupported_feature"), "{scenario}");
+        let streamed = Box::pin(client.provider().stream(request))
+            .next()
+            .await
+            .expect("one item");
+        assert_eq!(
+            streamed.unwrap_err().code(),
+            Some("unsupported_feature"),
+            "{scenario}"
+        );
+        client.close().await;
+    }
+}
+
+#[tokio::test]
+async fn a_provider_describe_failing_for_any_reason_but_a_refusal_fails_the_connection() {
+    let error = common::fake_builder("describe_fails")
+        .connect()
+        .await
+        .unwrap_err();
+    assert_eq!(error.code(), Some("internal"));
+    assert_eq!(error.to_string(), "provider registry unavailable");
+}
+
+#[tokio::test]
+async fn a_malformed_provider_describe_fails_the_connection_rather_than_reading_as_agent_only() {
+    let error = common::fake_builder("describe_garbage")
+        .handshake_timeout(Duration::from_millis(300))
+        .connect()
+        .await
+        .unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("timed out waiting for provider.describe.request"),
+        "{error}"
+    );
+}

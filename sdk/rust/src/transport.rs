@@ -297,6 +297,9 @@ struct Inner {
     agent_endpoint: Mutex<String>,
     agent_features: Mutex<Vec<String>>,
     agent_source: Mutex<String>,
+    /// Set when the endpoint refused `provider.describe`: it serves the agent
+    /// profile alone, so provider-profile requests fail before they are sent.
+    agent_only: AtomicBool,
 }
 
 impl Drop for Inner {
@@ -443,6 +446,7 @@ impl Transport {
             agent_endpoint: Mutex::new(String::new()),
             agent_features: Mutex::new(Vec::new()),
             agent_source: Mutex::new(String::new()),
+            agent_only: AtomicBool::new(false),
         });
         let transport = Self { inner };
 
@@ -566,7 +570,7 @@ impl Transport {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner) =
             declared_tool_source(described.get("sources"));
-        let describe = self
+        let describe = match self
             .request_oap(
                 PROVIDER_PROFILE,
                 "provider.describe.request",
@@ -574,7 +578,21 @@ impl Transport {
                 None,
                 options.handshake_timeout,
             )
-            .await?;
+            .await
+        {
+            Ok(describe) => describe,
+            Err(Error::Protocol {
+                code: Some(code), ..
+            }) if matches!(
+                code.as_str(),
+                "invalid_request" | "unsupported_request" | "unsupported_feature"
+            ) =>
+            {
+                self.inner.agent_only.store(true, Ordering::Release);
+                return Ok(());
+            }
+            Err(error) => return Err(error),
+        };
         if describe.kind != "provider.describe.response" {
             return Err(Error::protocol(
                 "OAP provider description failed",
@@ -592,12 +610,14 @@ impl Transport {
         scope: Option<(&str, &str)>,
         timeout: Duration,
     ) -> Result<Frame> {
+        if profile == PROVIDER_PROFILE && self.inner.agent_only.load(Ordering::Acquire) {
+            return Err(crate::oap::unsupported("the model-provider-core profile"));
+        }
         let id = crate::ids::new_ulid();
         let mut subscription = self.subscribe_reply(&id);
         self.send_oap(profile, kind, &id, payload, scope)?;
         let response = subscription.next_within(timeout, kind).await?;
-        if response.profile.as_deref() != Some(profile)
-            || response.raw.get("protocol").and_then(Value::as_str) != Some(OAP_PROTOCOL)
+        if response.raw.get("protocol").and_then(Value::as_str) != Some(OAP_PROTOCOL)
             || response.raw.get("version").and_then(Value::as_str) != Some(OAP_VERSION)
         {
             return Err(Error::protocol(
@@ -605,7 +625,14 @@ impl Transport {
                 Some("protocol_mismatch"),
             ));
         }
-        if response.kind == "error.response" || response.kind == "protocol.error" {
+        let refusal = response.kind == "error.response" || response.kind == "protocol.error";
+        if !refusal && response.profile.as_deref() != Some(profile) {
+            return Err(Error::protocol(
+                "response is not on the requested OAP profile and version",
+                Some("protocol_mismatch"),
+            ));
+        }
+        if refusal {
             let err = response
                 .payload()
                 .get("error")
