@@ -323,8 +323,12 @@ pub const Session = struct {
     fn release(self: *Session, run_id: []const u8, message_id: ?[]const u8) contract.Failure!void {
         self.sending = null;
         defer self.held.clearRetainingCapacity();
-        const bound = message_id orelse return self.reducer.forget(run_id);
-        self.reducer.bind(run_id, bound) catch |err| return lift(err);
+        if (message_id) |bound| {
+            self.reducer.bind(run_id, bound) catch |err| return lift(err);
+        } else {
+            self.reducer.forget(run_id);
+            if (self.ended) return;
+        }
         for (self.held.items) |event| self.reducer.observe(event) catch |err| return lift(err);
     }
 
@@ -792,4 +796,27 @@ test "a server that exits before answering session.send fails the open run and a
         if (std.mem.indexOf(u8, event.line, "\"type\":\"run.failed\"") != null) failed += 1;
     }
     try testing.expectEqual(@as(usize, 1), failed);
+}
+
+test "a refused send still delivers the events held while it was outstanding to the open run" {
+    var probe: Probe = undefined;
+    try probe.init(fake_connect ++
+        \\take; say '{"jsonrpc":"2.0","id":4,"result":{"messageId":"m-1"}}'
+        \\
+    ++ eventFrame("user.message", "{\"messageId\":\"m-1\"}") ++ "take\n" ++
+        eventFrame("user.message", "{\"messageId\":\"m-9\"}") ++
+        eventFrame("assistant.message", "{\"messageId\":\"a-1\",\"content\":\"first\"}") ++
+        eventFrame("session.idle", "{}") ++
+        \\say '{"jsonrpc":"2.0","id":5,"error":{"code":-32000,"message":"busy"}}'
+        \\
+    ++ fake_idle);
+    defer probe.deinit();
+    var refusal = contract.Refusal{};
+    _ = try probe.open(&refusal);
+    const first = try probe.submit("one", &refusal);
+    try testing.expectError(error.BackendFailed, probe.submit("two", &refusal));
+    var seen = std.ArrayList(contract.Event).empty;
+    const completed = try probe.pumpUntil("run.completed", &seen);
+    try testing.expectEqualStrings(first.run_id.?, completed.run_id);
+    try testing.expect(std.mem.indexOf(u8, completed.line, "first") != null);
 }
