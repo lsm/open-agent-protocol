@@ -169,7 +169,8 @@ pub const Adapter = struct {
     }
 
     pub fn adapter(self: *Adapter) contract.Adapter {
-        if (self.readsEntries()) return .{ .ptr = self, .vtable = &.{ .probe = probe, .open = open, .native_read = nativeRead, .transcript_load = transcriptLoad } };
+        if (self.readsEntries() and self.readsHistory()) return .{ .ptr = self, .vtable = &.{ .probe = probe, .open = open, .native_read = nativeRead, .transcript_load = transcriptLoad } };
+        if (self.readsEntries()) return .{ .ptr = self, .vtable = &.{ .probe = probe, .open = open, .transcript_load = transcriptLoad } };
         if (self.readsHistory()) return .{ .ptr = self, .vtable = &.{ .probe = probe, .open = open, .native_read = nativeRead } };
         return .{ .ptr = self, .vtable = &.{ .probe = probe, .open = open } };
     }
@@ -4069,6 +4070,9 @@ test "a transcript load is offered only with a saved-entries reader, and carries
     var saved = SavedSessions{};
     harness.owner.history = .{ .ctx = &saved, .load = SavedSessions.load, .read = ReadableSessions.read };
     try testing.expect(harness.owner.adapter().vtable.transcript_load == null);
+    harness.owner.history = .{ .ctx = &saved, .load = SavedSessions.load, .entries = SavedEntries.entries };
+    try testing.expect(harness.owner.adapter().vtable.transcript_load != null);
+    try testing.expect(harness.owner.adapter().vtable.native_read == null);
 
     harness.owner.history = .{ .ctx = &saved, .load = SavedSessions.load, .read = ReadableSessions.read, .entries = SavedEntries.entries };
     const loaded = try harness.owner.adapter().transcriptLoad(a, .{ .native_id = "saved", .limit = 3 }, &refusal).?;

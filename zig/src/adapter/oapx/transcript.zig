@@ -22,7 +22,9 @@ pub fn page(arena: std.mem.Allocator, request: contract.TranscriptRequest, saved
     var gap: ?contract.TranscriptGap = null;
     if (request.cursor) |cursor| {
         const position = try decode(arena, request.native_id, cursor);
-        if (indexOf(ids, position.entry_id)) |found| {
+        if (position.entry_id.len == 0) {
+            start = 0;
+        } else if (indexOf(ids, position.entry_id)) |found| {
             start = found + 1;
         } else {
             const pruned = saved.len == 0 or saved[0].offset > position.offset;
@@ -38,14 +40,20 @@ pub fn page(arena: std.mem.Allocator, request: contract.TranscriptRequest, saved
         var size = try encodedLen(arena, value);
         if (bytes + size > contract.transcript_page_bytes) {
             if (entries.items.len > 0) break;
-            value = try entryValue(arena, ids[next], saved[next], contract.transcript_page_bytes / (partCount(saved[next]) * 2));
+            var bound = contract.transcript_page_bytes / (partCount(saved[next]) * 2);
+            value = try entryValue(arena, ids[next], saved[next], bound);
             size = try encodedLen(arena, value);
+            while (size > contract.transcript_page_bytes and bound > 0) {
+                bound /= 2;
+                value = try entryValue(arena, ids[next], saved[next], bound);
+                size = try encodedLen(arena, value);
+            }
         }
         bytes += size;
         try entries.append(arena, value);
     }
     const last: ?usize = if (next > start) next - 1 else if (start > 0) start - 1 else null;
-    const next_cursor = if (last) |index| try encode(arena, request.native_id, ids[index], saved[index].offset) else "";
+    const next_cursor = if (last) |index| try encode(arena, request.native_id, ids[index], saved[index].offset) else try encode(arena, request.native_id, "", 0);
     return .{ .entries = entries.items, .next_cursor = next_cursor, .complete = next >= saved.len, .gap = gap };
 }
 
@@ -68,7 +76,7 @@ fn decode(arena: std.mem.Allocator, native_id: []const u8, cursor: []const u8) E
     if (!std.mem.eql(u8, fields.next() orelse "", native_id)) return error.InvalidCursor;
     const entry_id = fields.next() orelse return error.InvalidCursor;
     const offset = std.fmt.parseInt(u64, fields.next() orelse "", 10) catch return error.InvalidCursor;
-    if (entry_id.len == 0 or fields.next() != null) return error.InvalidCursor;
+    if (fields.next() != null) return error.InvalidCursor;
     return .{ .entry_id = entry_id, .offset = offset };
 }
 
@@ -280,4 +288,32 @@ test "a page stops before its byte bound, and an entry larger than the bound com
     const text = third.entries[0].object.get("message").?.object.get("content").?.array.items[0].object.get("text").?.string;
     try testing.expect(text.len < contract.transcript_page_bytes);
     try testing.expect(std.unicode.utf8ValidateSlice(text));
+}
+
+test "an empty transcript still mints a cursor, which reads from the start once entries arrive and is never a gap" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const empty = try page(a, .{ .native_id = "s1" }, &.{});
+    try testing.expect(empty.complete);
+    try testing.expect(empty.next_cursor.len > 0);
+    const again = try page(a, .{ .native_id = "s1", .cursor = empty.next_cursor }, &.{});
+    try testing.expect(again.gap == null);
+    try testing.expectEqual(@as(usize, 0), again.entries.len);
+    const saved = [_]SavedEntry{userEntry(0, "one")};
+    const arrived = try page(a, .{ .native_id = "s1", .cursor = empty.next_cursor }, &saved);
+    try testing.expect(arrived.gap == null);
+    try testing.expectEqualStrings("e0", idOf(arrived.entries[0]));
+}
+
+test "an entry whose text escapes to several times its length is still cut until its encoding fits the page" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const controls = try a.alloc(u8, contract.transcript_page_bytes);
+    @memset(controls, 1);
+    const saved = [_]SavedEntry{userEntry(0, controls)};
+    const cut_page = try page(a, .{ .native_id = "s1" }, &saved);
+    try testing.expect(cut_page.entries[0].object.get("truncated").?.bool);
+    try testing.expect(try encodedLen(a, cut_page.entries[0]) <= contract.transcript_page_bytes);
 }
