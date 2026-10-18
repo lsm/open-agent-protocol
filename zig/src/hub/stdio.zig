@@ -318,6 +318,10 @@ pub const refusal_statuses = [_]struct { code: []const u8, status: []const u8 }{
     .{ .code = "internal", .status = "500 Internal Server Error" },
     .{ .code = "probe_failed", .status = "500 Internal Server Error" },
     .{ .code = "open_failed", .status = "502 Bad Gateway" },
+    .{ .code = "malformed_json", .status = "400 Bad Request" },
+    .{ .code = "schema_invalid", .status = "400 Bad Request" },
+    .{ .code = "type_mismatch", .status = "400 Bad Request" },
+    .{ .code = "invalid_payload", .status = "400 Bad Request" },
 };
 
 pub fn statusForRefusal(code: []const u8) ?[]const u8 {
@@ -4584,13 +4588,12 @@ test "every code the draft names has a status, or is one the draft leaves undefi
         "unknown_op",
         "response_too_large",
         "invalid_request",
-        "malformed_json",
-        "schema_invalid",
-        "type_mismatch",
-        "invalid_payload",
     };
     for (named_without_status) |code| {
         try testing.expect(statusForRefusal(code) == null);
+    }
+    for ([_][]const u8{ "malformed_json", "schema_invalid", "type_mismatch", "invalid_payload" }) |code| {
+        try testing.expectEqualStrings("400 Bad Request", statusForRefusal(code).?);
     }
     const named = [_][]const u8{
         "capability_degraded",    "internal",          "invalid_cursor",
@@ -4602,12 +4605,13 @@ test "every code the draft names has a status, or is one the draft leaves undefi
         "stale_capabilities",     "state_failed",      "tools_failed",
         "unknown_adapter",        "unknown_session",   "unsupported_feature",
         "unsupported_media_type", "request_read",      "unrecognized_host",
-        "cross_origin_request",   "history_failed",
+        "cross_origin_request",   "history_failed",    "malformed_json",
+        "schema_invalid",         "type_mismatch",     "invalid_payload",
     };
     for (named) |code| {
         try testing.expect(statusForRefusal(code) != null);
     }
-    try testing.expectEqual(@as(usize, 29), refusal_statuses.len);
+    try testing.expectEqual(@as(usize, 33), refusal_statuses.len);
 }
 
 test "an unnamed refusal code carries no status, so the wire rule can refuse it" {
@@ -4646,12 +4650,16 @@ test "every code the transport can answer carries the status the draft pins" {
         .{ .code = "unrecognized_host", .status = "403 Forbidden" },
         .{ .code = "cross_origin_request", .status = "403 Forbidden" },
         .{ .code = "history_failed", .status = "500 Internal Server Error" },
+        .{ .code = "malformed_json", .status = "400 Bad Request" },
+        .{ .code = "schema_invalid", .status = "400 Bad Request" },
+        .{ .code = "type_mismatch", .status = "400 Bad Request" },
+        .{ .code = "invalid_payload", .status = "400 Bad Request" },
     };
     for (named) |entry| {
         try testing.expectEqualStrings(entry.status, statusForRefusal(entry.code).?);
     }
-    try testing.expectEqual(@as(usize, 29), refusal_statuses.len);
-    try testing.expectEqual(@as(usize, 29), named.len);
+    try testing.expectEqual(@as(usize, 33), refusal_statuses.len);
+    try testing.expectEqual(@as(usize, 33), named.len);
 }
 
 const many_detail_keys = [_][]const u8{

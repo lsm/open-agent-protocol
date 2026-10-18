@@ -40,7 +40,7 @@ type Pending = { resolve: (frame: OapEnvelope) => void; reject: (error: Error) =
 
 class FrameQueue {
   private frames: OapEnvelope[] = [];
-  private waiting: Array<{ resolve: (frame: OapEnvelope) => void; reject: (error: Error) => void; timer: NodeJS.Timeout; signal?: AbortSignal; onAbort?: () => void }> = [];
+  private waiting: Array<{ resolve: (frame: OapEnvelope) => void; reject: (error: Error) => void; timer?: NodeJS.Timeout; signal?: AbortSignal; onAbort?: () => void }> = [];
   private closed?: Error;
 
   push(frame: OapEnvelope): void {
@@ -49,18 +49,20 @@ class FrameQueue {
     else this.frames.push(frame);
   }
 
-  next(timeoutMs: number, signal?: AbortSignal): Promise<OapEnvelope> {
+  next(timeoutMs: number | undefined, signal?: AbortSignal): Promise<OapEnvelope> {
     if (signal?.aborted) return Promise.reject(abortError());
     const frame = this.frames.shift();
     if (frame) return Promise.resolve(frame);
     if (this.closed) return Promise.reject(this.closed);
     return new Promise<OapEnvelope>((resolve, reject) => {
-      const waiter = { resolve, reject, timer: undefined as unknown as NodeJS.Timeout, signal, onAbort: undefined as (() => void) | undefined };
+      const waiter = { resolve, reject, timer: undefined as NodeJS.Timeout | undefined, signal, onAbort: undefined as (() => void) | undefined };
       const remove = (): void => { const index = this.waiting.indexOf(waiter); if (index >= 0) this.waiting.splice(index, 1); if (signal && waiter.onAbort) signal.removeEventListener("abort", waiter.onAbort); };
-      waiter.timer = setTimeout(() => {
-        remove();
-        reject(new Error(`timed out waiting for OAP event after ${timeoutMs}ms`));
-      }, timeoutMs);
+      if (timeoutMs !== undefined) {
+        waiter.timer = setTimeout(() => {
+          remove();
+          reject(new Error(`timed out waiting for OAP event after ${timeoutMs}ms`));
+        }, timeoutMs);
+      }
       if (signal) {
         waiter.onAbort = () => { clearTimeout(waiter.timer); remove(); reject(abortError()); };
         signal.addEventListener("abort", waiter.onAbort, { once: true });
@@ -159,6 +161,7 @@ export class OapStdioTransport {
     const key = `${profile}|${kind}|${id}`;
     if (this.subscriptions.has(key)) throw new Error(`OAP route already subscribed: ${key}`);
     const queue = new FrameQueue();
+    if (this.closed) { queue.close(this.closed); return queue; }
     this.subscriptions.set(key, queue);
     for (const frame of this.orphaned.get(key) ?? []) queue.push(frame);
     this.orphaned.delete(key);
@@ -319,7 +322,7 @@ function modelParts(modelRef: string): { provider_id: string; api: string; model
 }
 
 class OapProviderApi implements MakaiProviderApi {
-  constructor(private readonly transport: OapStdioTransport, private readonly timeoutMs: number, private readonly authRetryPolicy?: string, private readonly auth?: MakaiAuthApi, private readonly authHandlers?: AuthFlowHandlers) {}
+  constructor(private readonly transport: OapStdioTransport, private readonly idleTimeoutMs: number | undefined, private readonly authRetryPolicy?: string, private readonly auth?: MakaiAuthApi, private readonly authHandlers?: AuthFlowHandlers) {}
 
   async complete(request: ProviderCompleteRequest): Promise<CompletionResponse> {
     if (!this.transport.servesProvider) unsupported("the model-provider-core profile");
@@ -394,7 +397,7 @@ class OapProviderApi implements MakaiProviderApi {
     try {
       while (true) {
         if (signal?.aborted) throw abortError();
-        const frame = await queue.next(this.timeoutMs, signal);
+        const frame = await queue.next(this.idleTimeoutMs, signal);
         const data = payload(frame);
         if (frame.type === "inference.started") { yield { type: "message_start", ...ref }; continue; }
         if (frame.type === "inference.part.started") {
@@ -635,7 +638,7 @@ async function resolveProvidedCall(call: Record<string, unknown>, tools: ToolDef
 class OapAgentApi {
   readonly models: MakaiModelsApi;
   private readonly selectedModels = new Map<string, string>();
-  constructor(private readonly transport: OapStdioTransport, private readonly timeoutMs: number, models: MakaiModelsApi, private readonly authRetryPolicy?: string, private readonly auth?: MakaiAuthApi, private readonly authHandlers?: AuthFlowHandlers) { this.models = models; }
+  constructor(private readonly transport: OapStdioTransport, private readonly idleTimeoutMs: number | undefined, models: MakaiModelsApi, private readonly authRetryPolicy?: string, private readonly auth?: MakaiAuthApi, private readonly authHandlers?: AuthFlowHandlers) { this.models = models; }
 
   async run(request: AgentRunRequest): Promise<AgentRunResponse> {
     let text = "";
@@ -719,7 +722,7 @@ class OapAgentApi {
         if (request.options?.signal?.aborted) {
           throw abortError();
         }
-        const frame = await queue.next(this.timeoutMs, request.options?.signal);
+        const frame = await queue.next(this.idleTimeoutMs, request.options?.signal);
         if (runId && frame.run_id && frame.run_id !== runId) continue;
         const data = payload(frame);
         if (frame.type === "run.started") { yield { type: "agent_start", session_id: sessionId }; continue; }
@@ -786,8 +789,8 @@ export async function createOapClient(options: CreateMakaiClientOptions = {}): P
   const auth = new OapAuthApi(transport, options.frameTimeoutMs ?? 30_000, options.auth?.handlers);
   return {
     auth, models,
-    provider: new OapProviderApi(transport, options.responseTimeoutMs ?? 30_000, options.auth?.auth_retry_policy, auth, options.auth?.handlers),
-    agent: new OapAgentApi(transport, options.responseTimeoutMs ?? 30_000, models, options.auth?.auth_retry_policy, auth, options.auth?.handlers) as MakaiAgentModelsApi,
+    provider: new OapProviderApi(transport, options.idleTimeoutMs, options.auth?.auth_retry_policy, auth, options.auth?.handlers),
+    agent: new OapAgentApi(transport, options.idleTimeoutMs, models, options.auth?.auth_retry_policy, auth, options.auth?.handlers) as MakaiAgentModelsApi,
     close: () => transport.close(),
   };
 }

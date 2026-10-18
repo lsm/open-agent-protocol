@@ -32,6 +32,8 @@ const rows = [_]Row{
     .{ .id = "openrouter", .model = "openai/gpt-4o-mini" },
 };
 
+const read_through_serve_provider = [_][]const u8{"openai-codex"};
+
 fn envOwned(allocator: std.mem.Allocator, name: []const u8) ?[]u8 {
     return compat.getEnvVarOwned(allocator, name) catch null;
 }
@@ -47,6 +49,13 @@ fn rowFor(id: []const u8) ?Row {
         if (std.mem.eql(u8, row.id, id)) return row;
     }
     return null;
+}
+
+fn readThroughServeProvider(id: []const u8) bool {
+    for (read_through_serve_provider) |held| {
+        if (std.mem.eql(u8, held, id)) return true;
+    }
+    return false;
 }
 
 fn optedIn(allocator: std.mem.Allocator) ?Row {
@@ -376,15 +385,20 @@ test "provider smoke: an unknown model behaves as its row records" {
     try testing.expect(as_recorded);
 }
 
-test "the smoke gate lists every current row and no other" {
-    try testing.expectEqual(provider_catalog.current_ids.len, rows.len);
+test "the smoke gate lists every current row a key reaches, and the rest are read through serve provider" {
+    try testing.expectEqual(provider_catalog.current_ids.len, rows.len + read_through_serve_provider.len);
     for (rows) |row| {
         try testing.expect(provider_catalog.status(row.id) == .current);
         try testing.expect(rowFor(row.id) != null);
         try testing.expect(catalogTargetFor(row.id) != null);
     }
+    for (read_through_serve_provider) |id| {
+        try testing.expect(provider_catalog.status(id) == .current);
+        try testing.expect(rowFor(id) == null);
+        try testing.expectEqual(@as(usize, 0), provider_catalog.credentialEnv(id).len);
+    }
     for (provider_catalog.current_ids) |id| {
-        if (rowFor(id) == null) {
+        if (rowFor(id) == null and !readThroughServeProvider(id)) {
             std.debug.print("\n{s} is current and this gate does not list it\n", .{id});
             return error.TestCurrentRowNotGated;
         }

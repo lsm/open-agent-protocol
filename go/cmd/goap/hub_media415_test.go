@@ -22,15 +22,17 @@ func TestHubAddrRefusesABodyWhoseMediaTypeIsNotJSONAndNothingElseIsWrong(t *test
 
 	cases := []struct {
 		name   string
+		route  string
 		ctype  string
 		body   string
 		refuse bool
 	}{
-		{name: "text/plain with a body", ctype: "text/plain", body: "xx", refuse: true},
-		{name: "application/json with a body", ctype: "application/json", body: "{}", refuse: false},
-		{name: "application/json with a charset parameter", ctype: "application/json; charset=utf-8", body: "{}", refuse: false},
-		{name: "text/plain with no body declared", ctype: "text/plain", body: "", refuse: false},
-		{name: "application/json with a parameter that has no equals", ctype: "application/json; charset", body: "{}", refuse: true},
+		{name: "text/plain with a body", route: "POST /adapters/a/sessions", ctype: "text/plain", body: "xx", refuse: true},
+		{name: "application/json with a body", route: "POST /adapters/a/sessions", ctype: "application/json", body: "{}", refuse: false},
+		{name: "application/json with a charset parameter", route: "POST /adapters/a/sessions", ctype: "application/json; charset=utf-8", body: "{}", refuse: false},
+		{name: "text/plain with an empty body on a route that reads one", route: "POST /adapters/a/sessions", ctype: "text/plain", body: "", refuse: true},
+		{name: "text/plain on a route that reads no body", route: "GET /adapters", ctype: "text/plain", body: "", refuse: false},
+		{name: "application/json with a parameter that has no equals", route: "POST /adapters/a/sessions", ctype: "application/json; charset", body: "{}", refuse: true},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -41,7 +43,7 @@ func TestHubAddrRefusesABodyWhoseMediaTypeIsNotJSONAndNothingElseIsWrong(t *test
 			defer conn.Close()
 			_ = conn.SetDeadline(time.Now().Add(60 * time.Second))
 
-			head := "POST /adapters/a/sessions HTTP/1.1\r\nHost: 127.0.0.1:1\r\nContent-Type: " + c.ctype +
+			head := c.route + " HTTP/1.1\r\nHost: 127.0.0.1:1\r\nContent-Type: " + c.ctype +
 				"\r\nContent-Length: " + strconv.Itoa(len(c.body)) + "\r\n\r\n" + c.body
 			if _, err := io.WriteString(conn, head); err != nil {
 				t.Fatalf("write the head: %v", err)
@@ -57,7 +59,7 @@ func TestHubAddrRefusesABodyWhoseMediaTypeIsNotJSONAndNothingElseIsWrong(t *test
 			}
 			if !c.refuse {
 				if answer.StatusCode == http.StatusUnsupportedMediaType {
-					t.Fatalf("%s was refused 415, but the draft admits application/json and a body-less request is not gated: %s", c.name, body)
+					t.Fatalf("%s was refused 415, but the draft admits application/json and gates only a route that reads a body: %s", c.name, body)
 				}
 				t.Logf("%s: not media-refused, answered %d, %d-byte body", c.name, answer.StatusCode, len(body))
 				return
