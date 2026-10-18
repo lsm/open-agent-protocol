@@ -110,6 +110,7 @@ const Tool = struct {
     started_event: []const u8 = "",
     terminal: bool = false,
     interaction_id: []const u8 = "",
+    suppressed: bool = false,
     acknowledged: bool = false,
     settlement_id: []const u8 = "",
 };
@@ -499,6 +500,7 @@ pub const Reducer = struct {
     }
 
     fn requestProvided(self: *Reducer, run: *Run, native_id: []const u8, name: []const u8, input: ?std.json.Value) !void {
+        if (self.excludes(name)) return self.tools.append(self.allocator(), .{ .native_id = native_id, .id = "", .run_id = run.id, .name = name, .terminal = true, .suppressed = true });
         const tool = Tool{
             .native_id = native_id,
             .id = try self.nextID("tool-call"),
@@ -511,7 +513,6 @@ pub const Reducer = struct {
         try self.put(&requested, "arguments_json", input orelse .null);
         _ = try self.emitCorrelated(run, "action.call.requested", .{ .object = requested }, tool.id, "");
         try self.tools.append(self.allocator(), tool);
-        if (self.excludes(name)) return self.cancelProvided(run, &self.tools.items[self.tools.items.len - 1]);
         _ = try self.emit(run, "run.status.updated", try self.statusPayload(run, "waiting_for_input", tool.interaction_id));
     }
 
@@ -564,7 +565,7 @@ pub const Reducer = struct {
             return;
         };
         if (!std.mem.eql(u8, tool.run_id, run.id)) return;
-        if (tool.interaction_id.len > 0) {
+        if (tool.interaction_id.len > 0 or tool.suppressed) {
             _ = self.takeDenial(native_id);
             if (tool.terminal) return;
             try self.cancelProvided(run, tool);
@@ -2948,25 +2949,21 @@ fn settlementOf(reducer: *Reducer, kind: []const u8) []const u8 {
     return "";
 }
 
-test "a provided call the run's tool_choice excludes is cancelled at once, never waits on the opener, and refuses a later resolution" {
+test "a provided call the run's tool_choice excludes is never requested of the opener, and its tool_result settles nothing" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     var reducer = try providedRun(&arena, "toolu_x", .{ .disallowed = &.{"echo"} });
-    try testing.expectEqual(@as(usize, 1), countKind(&reducer, "action.call.cancelled"));
-    try testing.expectEqual(@as(usize, 0), countKind(&reducer, "action.call.started"));
-    try testing.expect(reducer.pendingInteraction() == null);
-    for (reducer.envelopes.items) |envelope| {
-        const payload = envelope.object.get("payload").?.object;
-        if (payload.get("status")) |status| try testing.expect(!std.mem.eql(u8, status.string, "waiting_for_input"));
-    }
-    const late = (try reducer.resolveCall(answerFor(&reducer, .result))).refused;
-    try testing.expectEqualStrings("already_resolved", late.reason);
-    try testing.expectEqualStrings(settlementOf(&reducer, "action.call.cancelled"), late.settlement_id);
     try observeText(&reducer, arena.allocator(),
         \\{"type":"user","message":{"role":"user","content":[{"tool_use_id":"toolu_x","type":"tool_result","content":"echo is excluded by this run's tool_choice","is_error":true}]},"parent_tool_use_id":null,"session_id":"s","uuid":"u1"}
     );
-    try testing.expectEqual(@as(usize, 1), countKind(&reducer, "action.call.cancelled"));
-    try testing.expectEqual(@as(usize, 0), countKind(&reducer, "action.call.failed"));
+    try testing.expect(reducer.pendingInteraction() == null);
+    try testing.expect(reducer.providedCall("toolu_x") == null);
+    for (reducer.envelopes.items) |envelope| {
+        const kind = envelope.object.get("type").?.string;
+        try testing.expect(!std.mem.startsWith(u8, kind, "action.call."));
+        try testing.expect(!std.mem.eql(u8, kind, "run.failed"));
+        if (envelope.object.get("payload").?.object.get("status")) |status| try testing.expect(!std.mem.eql(u8, status.string, "waiting_for_input"));
+    }
 }
 
 fn citedBy(reducer: *Reducer, kind: []const u8, member: []const u8) ?[]const u8 {
