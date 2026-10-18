@@ -34,6 +34,11 @@ across a close and a reopen.
 
 ### Recorded on 2026-10-18
 
+The method and the full probe table are in the
+[Claude 2.1.302 ledger](../research/claude-code-agent-sdk-2.1.302-mapping.md#triggered-turns-tasks-and-schedules-recorded-2026-10-18)
+and the
+[DeepSeek `rc.2` ledger](../research/deepseek-harness-dsh-v0.2.1-rc.2-mapping.md#the-runtimes-own-turn-from-its-session-log).
+
 **Claude Code 2.1.302** (binary digest `5262ce9d…6662d37`, the catalog's), driven
 over `stream-json` against the `providertest` loopback.
 
@@ -164,7 +169,8 @@ over `stream-json` against the `providertest` loopback.
 3. A `run.started` with `trigger` for a run a submit reserved is invalid. So is
    one without `trigger` for a run nothing reserved, which is the conviction
    Decision 0007 already makes.
-4. The endpoint mints the run id, unique within the session like any other.
+4. The adapter mints the run id, as it does for a submitted run when the
+   harness has no run identity of its own, unique within the session.
 
 ### The trigger
 
@@ -269,8 +275,10 @@ inside that rule as follows.
 7. **Interactions** in a triggered run wait for an answer like any run's, and
    `state.active_runs` lists them under `pending_interactions`. A hub session
    with no subscriber keeps the run waiting rather than refusing.
-8. **State and recovery.** `state.active_runs` lists a triggered run with its
-   `trigger`, so a host that reconnects can tell it from its own. A recovered
+8. **State and recovery.** `state.active_runs` always lists a nonterminal
+   triggered run with its `trigger`, even where Decision 0007 would let
+   `active_run_id` alone carry a single started run. Without the entry, a host
+   that reconnects cannot tell the run from its own. A recovered
    triggered run enters the admission order at the position it started at, as
    Decision 0007 does for any recovered run.
 9. **Settings and model switches** during a triggered run follow the same
@@ -305,6 +313,8 @@ call or turn that started it.
 | `status` | `pending`, `running`, `paused`, `completed`, `failed`, or `cancelled` |
 | `run_id`, `tool_call_id` | the run and call that created it, when one did |
 | `ambient` | true for housekeeping a host should leave out of activity indicators (Claude's `ambient`) |
+| `summary`, `cause` | once ended: the harness's summary, and why it ended (the causes under *Events*) |
+| `extensions` | the harness's own id and type, namespaced |
 | `cancellable` | whether `session.task.cancel` can reach it |
 | `schedule` | for a `schedule`: `expression` when the harness has one, `time_zone`, `next_fire_at_ms`, `recurring`, `durable`, `expires_at_ms` |
 
@@ -334,7 +344,11 @@ the run the fire triggers names it in `trigger.task_id`.
     `tasks_truncated: true` says so.
   - The state document is authoritative, as for runs.
 - **`session.task.cancel.request {session_id, task_id}`** answers
-  `{outcome: "requested" | "already_ended"}`. The ending arrives as
+  `{outcome: "requested" | "already_ended" | "not_cancellable"}`.
+  `not_cancellable` answers a task whose `cancellable` is false, and the
+  adapter then sends the harness nothing. That avoids, for example, Claude's
+  `stop_task` on a cron, which reports success and does nothing. Otherwise the
+  ending arrives as
   `session.task.ended`, because a cancel is intent and not settlement, as for
   runs. A host's cancel starts no triggered run, which matches the Claude
   recording.
@@ -352,7 +366,7 @@ the run the fire triggers names it in `trigger.task_id`.
 | `session.tasks` | `native`: task frames, `background_tasks_changed` | `emulated`: `job/registered`, `job/settled` | not established: `thread/backgroundTerminals/list` exists (experimental), its notifications were not read |
 | `session.task.cancel` | `native`: `stop_task` (commands, agents); not crons, where it answers `success` and does nothing | `unavailable`: `job.kill` is not on this surface | not established: `thread/backgroundTerminals/terminate` exists (experimental) |
 | `session.task.output` | `native`: `get_task_output` (commands, monitors) | `unavailable`: `job.follow` is not on this surface | not established |
-| schedules | `emulated`: from `CronCreate`/`CronDelete` results and the Stop hook's `session_crons`. Cancel is `emulated` for a durable cron, by removing its entry from `.claude/scheduled_tasks.json`, and `unavailable` for a session-only cron | not on this surface | none found |
+| `session.task.schedules` | `emulated`: from `CronCreate`/`CronDelete` results and the Stop hook's `session_crons`. Cancel is `emulated` for a durable cron, by removing its entry from `.claude/scheduled_tasks.json`, and `unavailable` for a session-only cron | not on this surface | none found |
 
 Hermes's task surface is not established beyond its `background.complete`
 event. OpenCode's tasks are `emulated` from its synthetic completion messages,
@@ -386,8 +400,9 @@ as tasks.
 2. **What the harness keeps comes back on reopen** (Decision 0040).
    - The reopen's `state.tasks` lists every task the harness restored.
    - Where the harness keeps its own id across the restart (Claude does), the
-     endpoint keeps the same OAP `task_id`, because it records the mapping
-     with the session's binding.
+     endpoint keeps the same OAP `task_id`, because it records the mapping in
+     the session's binding. That adds a member to the binding record
+     Decision 0040 enumerates, so it lands with an amendment to 0040.
    - Claude restores a session's crons on `--resume` (recorded) and its
      durable crons from `.claude/scheduled_tasks.json` (read from the binary).
    - Anything absent from `state.tasks` did not survive.
@@ -429,29 +444,48 @@ open question answered here:
 - **The endpoint publishes.** It writes them in order on stdio, and
   `session.state.updated` comes from the same channel.
 - **The hub** journals a triggered run like any run, so its replay and
-  resume are a run's. It delivers session events live to every subscription
-  on the session, between runs and within one, and does not replay them, as
-  [harness-initiated-state.md](harness-initiated-state.md) proposes. A host
-  that reconnects reads `session.state.tasks`.
+  resume are a run's.
+- **A new session subscription.** A hub subscription today ends at its run's
+  terminal envelope ([hub.md](hub.md)), so nothing in it can carry a run
+  nobody subscribed to, or an event between runs. The hub gains a session
+  subscription:
+  - It is `events` with `scope: "session"`, and it lasts until the session
+    closes, it overflows, or the client ends it.
+  - It carries every run's envelopes as `envelope` lines naming their
+    `run_id` and run `sequence`, as today. A triggered run's lines start at
+    its `run.started`.
+  - It carries session events as `session-envelope` lines, with a
+    `session_sequence` in place of `sequence`, so a session sequence is
+    never mistaken for a run cursor.
+  - Session events are delivered live and not replayed, as
+    [harness-initiated-state.md](harness-initiated-state.md) proposes. A host
+    that reconnects reads `session.state.tasks`, and resumes a run through
+    the run's own cursor.
 
 ## Where it lands
 
 Each step below is one or more pull requests.
 
 1. **Session-event channel:** the adapter push in both trees, the endpoint
-   publishing, and hub fan-out and journaling, with the memory adapters
-   driving it in tests.
+   publishing, and the hub's session subscription, with `drafts/hub.md`
+   updated in the same change and the memory adapters driving it in tests.
 2. **Wire and validator:**
    - schema members and events: `run.started.trigger`, `activeRun.trigger`,
      `session.task.*`, `state.tasks`, `session.task.cancel.*`,
-     `session.task.output.*`, and the `session.run.triggered`,
-     `session.tasks`, `session.task.cancel` and `session.task.output`
-     capabilities;
+     `session.task.output.*`, `tasks_truncated`, and the
+     `session.run.triggered`, `session.tasks`, `session.task.schedules`,
+     `session.task.cancel` and `session.task.output` capabilities;
    - `protocol/` and `clients/ts/src/protocol.ts`;
    - the validator's rules from the sections above, each with a positive and a
      semantic-invalid fixture;
-   - a decision amending Decision 0007's admission order for triggered runs,
-     since this draft cannot change a decision on its own.
+   - the decisions this draft cannot make on its own, recorded first:
+     - graduating triggered runs and background tasks, which Decisions 0001
+       and 0002 deferred and PF-4 kept deferred, with PF-4 updated to point
+       at it;
+     - amending Decision 0007: the second admission-order exception, a
+       triggered run always listed in `active_runs`, and a reservation that
+       may sit behind a later-admitted triggered run;
+     - amending Decision 0040, for the task-id mapping in the binding.
 3. **SDKs** (TS, Go, Rust, Python): a session-level stream of triggered runs
    and task events, plus `cancelTask` and `taskOutput`. This lands before any
    real adapter emits, since no host may drop a triggered run.
