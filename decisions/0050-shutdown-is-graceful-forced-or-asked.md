@@ -9,6 +9,8 @@ Unit: `core`
 Amends: [Decision 0007](0007-queue-delivery.md), so a reopen can restore
 queued reservations, and [Decision 0040](0040-a-session-reopens-through-its-own-binding.md),
 so a reopen can list them and report an interrupted run;
+[Decision 0002](0002-admission-before-start.md), so an accepted graceful
+shutdown is the evidence for a held run's `run.cancelled`;
 [Decision 0001](0001-agent-control-v0.1-executable-core.md), so a run a
 restart cut off settles through a recorded settlement rather than a terminal
 envelope in its stream; and Decision 0051 (#1205), by
@@ -51,8 +53,16 @@ After force or a crash, the next start applies one rule, from the store
   never reruns on its own,
   because its tool calls may already have had their effects.
 - **Queued prompts that were accepted are delivered again, in their order,
-  under their original run ids.** An accepted submit is a promise, and a
-  restart does not cancel it.
+  under new run ids.** An accepted submit is a promise, and a restart does
+  not cancel it. A new id, because each adapter keeps its own queue, so the
+  only way to keep a queued run from starting is to settle it, and a settled
+  run id never runs again. The reopen pairs each new id with the one it
+  replaces (rule 5). A crash re-delivers the same way, so one rule covers
+  both. After force or a crash, a queued run's previous id gets no
+  terminal envelope, since its stream died with the process; the store closes
+  it when the new run's record names it in `replaces`. It is reported only in
+  `recovery.redelivered_runs`, never in `recovery.interrupted_runs`, which is
+  for the run that was executing.
 - **A pending interaction settles with its run**, as `run_settled`, because a
   settled run takes no answer (a terminal is absorbing). Where the harness, once
   reopened, asks the question again (Claude resuming a turn that was waiting
@@ -76,9 +86,21 @@ follow-up queued after the request does not go out now. Those prompts are
 kept with the rest of the session's state, and the next start sends them when
 the session reopens. A kept prompt is always sent again: there is no state in
 which a prompt is kept but not sent. The shutdown response lists them under
-`held`, and a host that does not want one sent cancels it before the process
-exits (`run.cancel` on a reservation settles it `cancelled` before start,
-under 0007). A submit that arrives after the request is refused
+`held`. Holding one settles it `run.cancelled` before start with
+`settled_by: "inferred"`, because a session-scoped stop is inferred under
+Decision 0010 whoever asked for it, and a human-readable `reason` such as
+"held for the next start". A UI tells a held run from a cancelled one by the
+structured lists, never by parsing `reason`, which 0010 keeps as free text: the
+run id is in the shutdown answer's and `endpoint.shutdown.started`'s `held`,
+and after the restart in `recovery.redelivered_runs`. So it can show "will be
+sent after restart" rather than a cancellation nobody asked for. The accepted graceful shutdown
+is that terminal's evidence, as an accepted cancel exchange is for any other
+`run.cancelled`. Its run id is settled, so it takes no `run.cancel`. A host
+that does not want a held prompt sent names it when it reopens the session:
+`session.open.request {reopen: true, withdraw_held: [previous_run_id, ...]}`.
+A withdrawn prompt is deleted, not kept, and is never sent. Cancelling the
+carrying run after the reopen is not enough, because the first re-delivered
+run starts right after the reopen response. A submit that arrives after the request is refused
 `shutting_down` and never accepted.
 
 Running runs finish, on `oapx`'s own loop and on every third-party harness,
@@ -134,13 +156,30 @@ A TUI or GUI sends the request without a mode and shows the `choose` list.
 
 Decision 0040 requires a reopen to list no run under way. That changes:
 
-- the reopen response may list the held runs in `state.active_runs` with
-  `status: "queued"`, in their original order. Decision 0007's admission order
+- the reopen response may list the runs that now carry held prompts in
+  `state.active_runs` with `status: "queued"`, in their original order; the
+  held ids themselves are settled and never listed. Decision 0007's admission order
   takes them as recovered runs at those positions, and the first one starts
   only after the reopen response, as any queued run does;
 - it never lists a run as `running`, since no run survives a restart;
 - `recovery.interrupted_runs` lists each run that settled under rule 1, as
-  `{run_id, cause: "restart", settled_by: "inferred"}`.
+  `{run_id, cause: "restart", settled_by: "inferred"}`;
+- `recovery.redelivered_runs` pairs each held prompt with the run that now
+  carries it, as `{previous_run_id, run_id, root_run_id}`, in the original
+  order; each
+  `run_id` is also in `state.active_runs` as `queued`. A prompt the reopen
+  withdrew is listed as `{previous_run_id, root_run_id, withdrawn: true}` and carries no
+  `run_id`. Every prompt the restart would re-deliver can be withdrawn, whether a
+  graceful shutdown held it or a crash left it queued. A `withdraw_held` id
+  that names no such prompt refuses the
+  whole reopen `invalid_request`, naming the id, before anything starts, so a
+  typo never sends a prompt the host meant to withdraw.
+- A prompt re-delivered more than once has a chain of ids. `previous_run_id`
+  is the id this restart replaced, the one a `held` list last reported, and
+  `root_run_id` is the first id that carried the prompt. `withdraw_held`
+  accepts either, so a host that attached late and knows only the current id
+  can withdraw too; the endpoint resolves it to the chain's open run and
+  settles that.
 
 The validator accepts restored queued runs in a recovered open response
 (`recovery.recovered: true`) and nowhere else.
@@ -174,12 +213,17 @@ Credentials are never written to either store.
 ## Consequences
 
 - The store gains run records: admitted (with the prompt, for a queued run),
-  started and settled. `docs/storage.md` (#1206) names the
-  operations. A prompt is user content, so a binding still never holds a
+  started and settled. `docs/storage.md` names the operations. A queued run's
+  `settled` record is not written when the shutdown cancels it, so `openRuns`
+  still finds it after the restart. Re-delivery writes one record, the new
+  run's `admitted` naming the old id in `replaces`, which `openRuns` reads as
+  closing the old one, so a crash mid-way never loses or duplicates the
+  prompt; withdrawal writes the old id's `settled`. A prompt is user content, so a binding still never holds a
   credential or an environment value.
 - Schema: the shutdown pair and event, `shutting_down`,
-  `recovery.interrupted_runs`, and the error code `interrupted`, with the
-  matching `go/protocol`, validator, fixtures and `clients/ts`.
+  `recovery.interrupted_runs`, `recovery.redelivered_runs`,
+  `session.open.request.withdraw_held`, and the error
+  code `interrupted`, with the matching `go/protocol`, validator, fixtures and `clients/ts`.
 - hub.md's shutdown section is rewritten: the 5 s window bounds force's
   child teardown only. The process exits 0 once the requested mode completes,
   graceful or force; runs that force cut off are reported by the next start,
