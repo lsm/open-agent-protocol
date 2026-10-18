@@ -175,7 +175,7 @@ pub const Store = struct {
         if (line == null and keep == bytes.len and exists) return;
         const next = try std.mem.concat(self.allocator, u8, &.{ bytes[0..keep], line orelse "" });
         defer self.allocator.free(next);
-        try compat.fs.atomicReplace(compat.fs.getCwd(), self.path, self.staging, next);
+        try compat.fs.atomicReplaceDurable(compat.fs.getCwd(), self.path, self.staging, next);
     }
 
     pub fn append(self: *Store, entry: Entry) !void {
