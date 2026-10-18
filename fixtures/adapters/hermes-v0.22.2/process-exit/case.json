@@ -1,0 +1,41 @@
+{
+  "advertised_capabilities": {
+    "run.streaming": "native"
+  },
+  "expected_oap": "expected-oap.json",
+  "id": "process-exit",
+  "identity_map": {
+    "_block request_id (8 hex)": "interaction identity (expire siblings share it)",
+    "approval registry entry": "interaction identity (no wire request_id)",
+    "event seq (per-session, epoch-guarded)": "ordering evidence; never an OAP identity",
+    "message.start…message.complete span": "run_id adapter-allocated",
+    "prompt.submit receipt (status-only)": "submission_id adapter-minted by construction",
+    "replay epoch (uuid4 hex)": "process identity; guards all seq association",
+    "runtime session_id (uuid4 hex[:8])": "oap session association",
+    "stored_session_id (session_key)": "adapter-side evidence only",
+    "task_id (btw_*/bg_*)": "side-channel correlation, not projected in v1",
+    "tool_id": "tool_call_id correlation"
+  },
+  "mapping": "mapping.json",
+  "native": "native.jsonl",
+  "omissions": "omissions.json",
+  "provenance": {
+    "commit": "d923a5eb487a17c0a68801bba9ef0f56c81040a8",
+    "commit_tree": "5a064077e8d1de9fc7a4b27efc04f0caa2cb06c0",
+    "repository": "https://github.com/NousResearch/hermes-agent",
+    "sources": {
+      "contracts_tree": "782f88736632b3c17dfcdf0bf7027d37c7eedc87",
+      "entry_py_blob": "6f7c2d23e990eb7c3593dec335e0c105840fcb06",
+      "event_replay_py_blob": "f0b6aa0f8cec280036d63245bf5d3f97a3fa01e8",
+      "methods_prompt_py_blob": "f4b0b80c94361e07b0634e0b844b5d5303888d8a",
+      "methods_session_py_blob": "c83b0ef4e4d2fb6d5bad5c2913acfb8a32c60735",
+      "server_py_blob": "83b1ff52f4eab8b4ad3d938e0d2de71db09ddaea",
+      "server_requests_py_blob": "dfd39d842485ca081548e38baa3d81518bfc6e23",
+      "stdin_recovery_py_blob": "add5e841df4bead308a96bd8b0f0e3c5475bd167",
+      "transport_py_blob": "8e9a54946fe97f83baa2c5fcb6efb9feb00a3058",
+      "ws_py_blob": "42dbd6164b8acb2fc257ba90d076122e5325ef77"
+    },
+    "tag": "v0.22.2"
+  },
+  "version": 1
+}
