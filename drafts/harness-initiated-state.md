@@ -102,3 +102,41 @@ not been surveyed.
 
 Until these are settled, both ACP adapters record the change and publish
 nothing, which is what #1179 does.
+
+## A harness that ends the session
+
+The DeepSeek harness runtime starts a turn of its own when a background job
+settles after a run
+([ledger](../research/deepseek-harness-dsh-v0.2.1-rc.2-mapping.md#the-runtime-starts-a-turn-of-its-own-when-a-job-settles)).
+Both DeepSeek adapters treat any notification outside a reserved run as
+external activity and mark the session unusable. From then on `state` and
+`session.message.submit` answer `session_closed`, but nothing announces the
+change: a host learns the session ended only when it next asks. A model that
+backgrounds a long command therefore ends its session a few seconds after the
+run completes.
+
+This is the same gap with `status` as the member that moved, and it changes
+two answers above:
+
+- **The comparison needs a pump, and this change has none.** The activity
+  arrives between runs, when the endpoint is reading no stream, so comparing
+  after each pump never sees it. Publishing it needs the push channel the
+  first proposal leaves out: an adapter hook that tells the endpoint a
+  session's state changed, which the endpoint answers by reading `State` and
+  emitting `session.state.updated` with `status: "closed"` (or `"error"`) in
+  the session's state domain.
+- **The hub must fan it out between runs.** The third proposal already
+  delivers session events to a subscription whose run has not started; this
+  case needs it for a subscription with no run at all.
+
+The alternative is to project the runtime's own turn as a run the host did
+not submit. OAP admits a run only through `submit` (Decision 0002), so that
+is a new admission path, a `run.started` with no request behind it and no
+`delivery`, and the validator, both hubs and every SDK would have to accept
+it. The proposal is the closure, since it is a state the core already has.
+
+Question for the owner:
+
+- Should an endpoint publish `status: "closed"` when its harness ends a
+  session between runs, through an adapter push, or should a harness's own
+  turns become runs?
