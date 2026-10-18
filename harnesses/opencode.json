@@ -3,14 +3,31 @@
   "name": "OpenCode",
   "versions": [
     {
-      "label": "v2.0.26",
+      "label": "v2.0.32",
       "status": "current",
-      "admits": ["2.0.26"],
-      "endpoint_version": "v2.0.26",
-      "capability_revision": "opencode-v2.0.26-oap-v5",
-      "ledgers": ["research/opencode-v2.0.26-mapping.md"],
-      "corpus": "fixtures/adapters/opencode-v2.0.26",
+      "admits": ["2.0.32"],
+      "endpoint_version": "v2.0.32",
+      "capability_revision": "opencode-v2.0.32-oap-v5",
+      "ledgers": ["research/opencode-v2.0.32-mapping.md", "research/opencode-v2.0.26-mapping.md"],
+      "corpus": "fixtures/adapters/opencode-v2.0.32",
       "corpus_from": "v2.0.24",
+      "components": [
+        { "name": "opencode", "version": "v2.0.32", "repository": "https://github.com/anomalyco/opencode" }
+      ],
+      "artifacts": [
+        { "component": "opencode", "platform": "linux-x64", "kind": "archive", "name": "opencode-linux-x64.tar.gz", "sha256": "ba3f5d9dd983f12f06981b5b9eb966c03db63266afab28adc4000bbad6adc33c", "bytes": 98601332 },
+        { "component": "opencode", "platform": "linux-x64", "kind": "binary", "name": "opencode", "sha256": "489b51816a77809e841310e80c88e834c28c19ad1639e12ba8a19f08b47ab607", "bytes": 211842528 },
+        { "component": "opencode", "platform": "darwin-arm64", "kind": "archive", "name": "opencode-darwin-arm64.zip", "sha256": "e431e369025ba9554445d0ea8ad65457fbca59aa385ca790724ec6ab488d271b", "bytes": 85487805 },
+        { "component": "opencode", "platform": "darwin-arm64", "kind": "binary", "name": "opencode", "sha256": "e43ec2df6f36842fd17d1a71a866acb9a84884b489988376c19bf9a7250dabbf", "bytes": 186957968 }
+      ],
+      "sources": [
+        { "component": "opencode", "tag": "v2.0.32", "commit": "843a6c514e606b436a7fe713422ace0a93ad3d61", "tree": "57396484a8423c80eb4ecb0df9f3886d6fc810c1" }
+      ]
+    },
+    {
+      "label": "v2.0.26",
+      "status": "retired",
+      "ledgers": ["research/opencode-v2.0.26-mapping.md"],
       "components": [
         { "name": "opencode", "version": "v2.0.26", "repository": "https://github.com/anomalyco/opencode" }
       ],
