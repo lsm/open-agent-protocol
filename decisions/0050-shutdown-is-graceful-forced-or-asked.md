@@ -156,7 +156,9 @@ Decision 0040 requires a reopen to list no run under way. That changes:
   carries it, as `{previous_run_id, run_id}`, in the original order; each
   `run_id` is also in `state.active_runs` as `queued`. A prompt the reopen
   withdrew is listed as `{previous_run_id, withdrawn: true}` and carries no
-  `run_id`. A `withdraw_held` id that names no held prompt is ignored.
+  `run_id`. A `withdraw_held` id that names no held prompt refuses the
+  whole reopen `invalid_request`, naming the id, before anything starts, so a
+  typo never sends a prompt the host meant to withdraw.
 
 The validator accepts restored queued runs in a recovered open response
 (`recovery.recovered: true`) and nowhere else.
