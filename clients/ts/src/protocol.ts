@@ -9,6 +9,9 @@ export const EnvelopeType = {
   CapabilitiesRequest: 'capabilities.request',
   CapabilitiesResponse: 'capabilities.response',
   CapabilitiesUpdated: 'capabilities.updated',
+  EndpointShutdownRequest: 'endpoint.shutdown.request',
+  EndpointShutdownResponse: 'endpoint.shutdown.response',
+  EndpointShutdownStarted: 'endpoint.shutdown.started',
   ModelsRequest: 'models.request',
   ModelsResponse: 'models.response',
   AuthProvidersRequest: 'auth.providers.request',
@@ -205,6 +208,42 @@ export interface RecoveryMetadata {
   previous_run_id?: string;
   resume_cursor?: string;
   reason?: string;
+  interrupted_runs?: InterruptedRun[];
+}
+
+export interface InterruptedRun {
+  run_id: string;
+  cause: 'restart';
+  settled_by: 'inferred';
+}
+
+export type ShutdownMode = 'graceful' | 'force';
+
+export interface EndpointShutdownRequest {
+  mode?: ShutdownMode;
+}
+
+export interface ShutdownQueuedRun {
+  session_id: string;
+  run_id: string;
+}
+
+export interface ShutdownRun extends ShutdownQueuedRun {
+  status: RunStatus;
+  pending_interactions?: string[];
+}
+
+export interface EndpointShutdownResponse {
+  outcome: 'choose' | 'draining' | 'stopping';
+  active_runs: ShutdownRun[];
+  held?: ShutdownQueuedRun[];
+  lost?: ShutdownQueuedRun[];
+}
+
+export interface EndpointShutdownStarted {
+  mode: ShutdownMode;
+  held?: ShutdownQueuedRun[];
+  lost?: ShutdownQueuedRun[];
 }
 
 export interface EndpointDescriptor {

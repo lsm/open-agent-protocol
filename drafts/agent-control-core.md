@@ -541,6 +541,18 @@ report an explicit gap and return authoritative state rather than silently
 claim continuity. The reference implementation's bounded process-memory journal
 is degraded replay, not durable persistence.
 
+A host asks the endpoint to stop with `endpoint.shutdown.request`, whose
+optional `mode` is `graceful` or `force`. `endpoint.shutdown.response` answers
+`outcome` `choose` (no mode was given and runs are active, all listed in
+`active_runs`, which is then never empty), `draining` or `stopping`, with the
+queued runs kept for the next start under `held` and those that cannot be kept
+under `lost`. `endpoint.shutdown.started` tells every subscriber which mode
+began. A submit that arrives after a shutdown was accepted is refused
+`shutting_down`. After a restart, a reopen's `recovery.interrupted_runs` lists
+each run the restart cut off, as `{run_id, cause: "restart", settled_by:
+"inferred"}`; such a run settled `failed` with `error.code` `interrupted`. The
+decision is [Decision 0050](../decisions/0050-shutdown-is-graceful-forced-or-asked.md).
+
 The core does not define a generic live-query language. A binding or
 implementation can offer one, but control layers should not need it for the
 common chat/session surface.

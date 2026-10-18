@@ -89,7 +89,18 @@
         "previous_session_id": { "$ref": "#/$defs/opaqueID" },
         "previous_run_id": { "$ref": "#/$defs/opaqueID" },
         "resume_cursor": { "type": "string" },
-        "reason": { "type": "string" }
+        "reason": { "type": "string" },
+        "interrupted_runs": { "type": "array", "items": { "$ref": "#/$defs/interruptedRun" } }
+      },
+      "additionalProperties": false
+    },
+    "interruptedRun": {
+      "type": "object",
+      "required": ["run_id", "cause", "settled_by"],
+      "properties": {
+        "run_id": { "$ref": "#/$defs/opaqueID" },
+        "cause": { "enum": ["restart"] },
+        "settled_by": { "const": "inferred" }
       },
       "additionalProperties": false
     },
