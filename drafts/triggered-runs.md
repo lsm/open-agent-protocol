@@ -158,7 +158,9 @@ over `stream-json` against the `providertest` loopback.
    and it is the run's sequence 1.
 2. After that, every rule of Decisions 0001, 0002, 0007 and 0013 applies
    unchanged: contiguous sequence, tools, interactions, cancel evidence, steer
-   where advertised, and one absorbing terminal.
+   where advertised, and one absorbing terminal. The one exception is
+   Decision 0007's admission order, which rule 2 under *One run executes at a
+   time* amends.
 3. A `run.started` with `trigger` for a run a submit reserved is invalid. So is
    one without `trigger` for a run nothing reserved, which is the conviction
    Decision 0007 already makes.
@@ -202,7 +204,7 @@ A turn without its echo is triggered.
 
 - A host must expect a run it did not submit on any session, and an SDK must
   deliver one rather than drop it.
-- `capabilities.response` reports `session.triggered_runs` with the usual
+- `capabilities.response` reports `session.run.triggered` with the usual
   fidelity, so a host can tell whether the harness produces them. It is a
   report, not a switch: no request elects or refuses it. ACP and pi report
   `unavailable`.
@@ -226,8 +228,9 @@ inside that rule as follows.
    - A triggered run may start while reservations wait. It enters the
      admission order at its start, ahead of every reservation still queued.
      Those reservations keep their relative order and promote after it ends.
-   - This is the one exception to Decision 0007's "in admission order", and
-     the validator does not report it as `queue_order_violation`.
+   - This adds a second exception to Decision 0007's "in admission order",
+     beside its pre-start terminal, and the validator does not report it as
+     `queue_order_violation`.
    - A reservation's `queue_position` counts reservations only, so it does not
      change.
 3. **A trigger that fires during a run is never a second run.** The harness
@@ -386,6 +389,11 @@ as tasks.
      to ask the user first, so that run raises an input interaction.
    - That run arrives as a `schedule` triggered run on the idle, reopened
      session.
+   - The reopen's response comes first. A catch-up turn the harness starts
+     while the reopen is still in flight is held by the adapter, and its
+     `run.started` is published only after `session.open.response`. That
+     response does not list the run, so Decision 0040's check that a reopen
+     without a message lists no run under way still holds.
    - DeepSeek's reminders cannot reach an endpoint: they live only in its web
      host, and its adapter advertises reopen `unavailable` (Decision 0040).
 4. **No harness revives a closed OAP session.** A session is OAP's
@@ -428,12 +436,14 @@ Each step below is one or more pull requests.
 2. **Wire and validator:**
    - schema members and events: `run.started.trigger`, `activeRun.trigger`,
      `session.task.*`, `state.tasks`, `session.task.cancel.*`,
-     `session.task.output.*`, and the `session.triggered_runs`,
+     `session.task.output.*`, and the `session.run.triggered`,
      `session.tasks`, `session.task.cancel` and `session.task.output`
      capabilities;
    - `protocol/` and `clients/ts/src/protocol.ts`;
    - the validator's rules from the sections above, each with a positive and a
-     semantic-invalid fixture.
+     semantic-invalid fixture;
+   - a decision amending Decision 0007's admission order for triggered runs,
+     since this draft cannot change a decision on its own.
 3. **SDKs** (TS, Go, Rust, Python): a session-level stream of triggered runs
    and task events, plus `cancelTask` and `taskOutput`. This lands before any
    real adapter emits, since no host may drop a triggered run.
