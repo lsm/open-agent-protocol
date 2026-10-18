@@ -547,7 +547,10 @@ optional `mode` is `graceful` or `force`. `endpoint.shutdown.response` answers
 `active_runs`, which is then never empty), `draining` or `stopping`, with the
 queued runs kept for the next start under `held` and those that cannot be kept
 under `lost`. `endpoint.shutdown.started` tells every subscriber which mode
-began. A submit that arrives after a shutdown was accepted is refused
+began. It carries no `sequence`, unlike `capabilities.updated`: it is never
+replayed, because the process announcing it is ending and no later resume can
+ask for it, and a position in the endpoint's domain would be one a restart
+cannot continue. A submit that arrives after a shutdown was accepted is refused
 `shutting_down`. After a restart, a reopen's `recovery.interrupted_runs` lists
 each run the restart cut off, as `{run_id, cause: "restart", settled_by:
 "inferred"}`; such a run settled `failed` with `error.code` `interrupted`. The
