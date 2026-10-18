@@ -134,7 +134,7 @@ What `action.tools.provide` would map to:
 | `action.call.requested` | the server request `item/tool/call`; its `callId` is the `tool_call_id`, its `arguments` the input |
 | `action.call.resolve.request` | the JSON-RPC response to that request: a result as `contentItems` with `inputText`, `success: true`; a failure as `success: false` with the error text |
 | the five refusal reasons | the adapter's own, as for any provided tool; Codex sees only the one response it gets |
-| limits | none the schema states beyond a non-empty `name`; an unknown `inputSchema` dialect is the model's to read |
+| limits | the schema states no count, name pattern or schema dialect; whatever Codex enforces beyond its spec parser was not read |
 
 **Recommendation.** Feasible, and the call shape matches Decision 0011 one to
 one. Whether to take on `experimentalApi` for it is the decision.
