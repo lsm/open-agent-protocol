@@ -36,7 +36,7 @@ Paths are relative to the repository root, and every line number is at
 | 3 | Event replay with cursors | partial: implemented within one hub process, lost on restart | yes, for replay across a restart |
 | 4 | Run-scoped cancellation | implemented | no |
 | 5 | Admission receipts, stable run and submission identity | partial: stable within a process, not across a restart | no for the receipt; yes for identity across a restart |
-| 6 | Negotiated capabilities, `capabilities.updated` | partial: request and response implemented, `capabilities.updated` specified and never emitted | no |
+| 6 | Negotiated capabilities, `capabilities.updated` | implemented for what can change: request and response served; under `serve` the oapx catalog never moves, so there is nothing to announce | no |
 | 7 | queue, steer and btw delivery | partial: queue and steer implemented, btw specified and refused | no (btw needs its unit decided) |
 | 8 | Control-layer-provided tools (`action.tools.provide`) | implemented on oapx's own loop only | no |
 | 9 | `session.list` | implemented | no |
@@ -186,14 +186,19 @@ restart, which belongs with row 1's persistence decision.
 
 **Implementation.** Request and response are served by every adapter, with a
 capability revision checked on every optional feature. Nothing in
-`zig/src` emits `capabilities.updated`. The oapx loop says so outright: a
-catalog refresh "moves it at the session's next model switch under the same
-revision, with no capabilities.updated" (`zig/src/adapter/oapx/adapter.zig:55`).
+`zig/src` emits `capabilities.updated`, and under `serve` nothing needs to: the
+only caller of the oapx adapter's `setCatalog` is the terminal UI's own model
+refresh (`zig/src/tui/oap_execution.zig:1019`), so a served entry's catalog is
+fixed when the entry is built. The loop's `models.list` reason says so
+(`zig/src/adapter/oapx/adapter.zig:55`); its "no capabilities.updated" applies
+to the terminal UI's refresh, which only the terminal UI observes.
 
-**Status.** Partial.
+**Status.** Implemented for what can change. Announcing a change becomes work
+once `serve` can refresh a catalog, for instance after a provider login or a
+re-read of a models endpoint; that waits on a host asking for live model lists.
 
-**Spec revision.** No. The envelope is specified; emitting it when the
-catalog moves is implementation work.
+**Spec revision.** No. The envelope is specified
+([the core draft](../drafts/agent-control-core.md), gated on `capabilities.updates`).
 
 ### 7. queue, steer and btw delivery
 
