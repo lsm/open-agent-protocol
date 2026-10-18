@@ -51,8 +51,12 @@ After force or a crash, the next start applies one rule, from the store
   never reruns on its own,
   because its tool calls may already have had their effects.
 - **Queued prompts that were accepted are delivered again, in their order,
-  under their original run ids.** An accepted submit is a promise, and a
-  restart does not cancel it.
+  under new run ids.** An accepted submit is a promise, and a restart does
+  not cancel it. A new id, because each adapter keeps its own queue, so the
+  only way to keep a queued run from starting is to settle it, and a settled
+  run id never runs again. The reopen pairs each new id with the one it
+  replaces (rule 5). A crash re-delivers the same way, so one rule covers
+  both.
 - **A pending interaction settles with its run**, as `run_settled`, because a
   settled run takes no answer (a terminal is absorbing). Where the harness, once
   reopened, asks the question again (Claude resuming a turn that was waiting
@@ -76,9 +80,13 @@ follow-up queued after the request does not go out now. Those prompts are
 kept with the rest of the session's state, and the next start sends them when
 the session reopens. A kept prompt is always sent again: there is no state in
 which a prompt is kept but not sent. The shutdown response lists them under
-`held`, and a host that does not want one sent cancels it before the process
-exits (`run.cancel` on a reservation settles it `cancelled` before start,
-under 0007). A submit that arrives after the request is refused
+`held`. Holding one settles it `run.cancelled` before start with
+`reason: "held_for_restart"`, so a UI can show "will be sent after restart"
+rather than a cancellation nobody asked for. The accepted graceful shutdown
+is that terminal's evidence, as an accepted cancel exchange is for any other
+`run.cancelled`. Its run id is settled, so it takes no `run.cancel`; a host
+that does not want the prompt sent cancels the run that carries it after the
+reopen, while it is still queued. A submit that arrives after the request is refused
 `shutting_down` and never accepted.
 
 Running runs finish, on `oapx`'s own loop and on every third-party harness,
@@ -140,7 +148,10 @@ Decision 0040 requires a reopen to list no run under way. That changes:
   only after the reopen response, as any queued run does;
 - it never lists a run as `running`, since no run survives a restart;
 - `recovery.interrupted_runs` lists each run that settled under rule 1, as
-  `{run_id, cause: "restart", settled_by: "inferred"}`.
+  `{run_id, cause: "restart", settled_by: "inferred"}`;
+- `recovery.redelivered_runs` pairs each held prompt with the run that now
+  carries it, as `{previous_run_id, run_id}`, in the original order; each
+  `run_id` is also in `state.active_runs` as `queued`.
 
 The validator accepts restored queued runs in a recovered open response
 (`recovery.recovered: true`) and nowhere else.
@@ -178,8 +189,8 @@ Credentials are never written to either store.
   operations. A prompt is user content, so a binding still never holds a
   credential or an environment value.
 - Schema: the shutdown pair and event, `shutting_down`,
-  `recovery.interrupted_runs`, and the error code `interrupted`, with the
-  matching `go/protocol`, validator, fixtures and `clients/ts`.
+  `recovery.interrupted_runs`, `recovery.redelivered_runs`, and the error
+  code `interrupted`, with the matching `go/protocol`, validator, fixtures and `clients/ts`.
 - hub.md's shutdown section is rewritten: the 5 s window bounds force's
   child teardown only. The process exits 0 once the requested mode completes,
   graceful or force; runs that force cut off are reported by the next start,
