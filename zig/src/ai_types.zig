@@ -557,7 +557,7 @@ pub const Model = struct {
     base_url: []const u8,
     reasoning: bool,
     input: []const []const u8,
-    image_input_known: bool = true,
+    image_input_known: bool = false,
     cost: Cost,
     context_window: u32,
     max_tokens: u32,
