@@ -15,6 +15,8 @@ pub const schema_job =
 
 const jobs_dir = ".oapx/jobs";
 
+pub const job_tool_name = "ShellJob";
+
 pub const Jobs = struct {
     allocator: std.mem.Allocator,
     mutex: std.atomic.Mutex = .unlocked,
@@ -250,7 +252,7 @@ pub fn sessionTools(jobs: *Jobs) [2]agent.AgentTool {
     shell_tool.runtime_execute = executeIn;
     return .{ shell_tool, .{
         .label = "Shell job",
-        .name = "ShellJob",
+        .name = job_tool_name,
         .description = "Report a background job started with Shell run_in_background: running, or its exit code or signal, with the bytes written to its output file. kill: true ends the job and everything it started.",
         .short_description = "Check or stop a background shell job.",
         .parameters_schema_json = schema_job,

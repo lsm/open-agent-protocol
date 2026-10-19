@@ -77,8 +77,9 @@ because a job nothing could end would outlive everything.
 ## Consequences
 
 - The Zig shell tool gains `run_in_background`, the session's job table and the
-  `ShellJob` tool, and the `oapx` adapter's session ends its jobs when it is
-  destroyed.
+  `ShellJob` tool. The `oapx` adapter's session ends its jobs when it is
+  destroyed, and the endpoint destroys every session when it exits, so end of
+  input and both shutdowns end them too.
 - When `drafts/triggered-runs.md` graduates, these jobs are its background
   tasks. They appear through `session.task.*`, a job that settles while the
   session is idle can trigger a run, and a job ended by rule 3's close reports
