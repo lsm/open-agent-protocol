@@ -799,16 +799,24 @@ pub const Reducer = struct {
         var totals = self.object();
         var input: i64 = 0;
         var output: i64 = 0;
+        var cache_read: ?i64 = null;
+        var cache_write: ?i64 = null;
         if (rpc.lookup(frame, "usage")) |usage| {
             if (usage == .object) {
                 input = integerMember(usage.object, "input_tokens") orelse 0;
                 output = integerMember(usage.object, "output_tokens") orelse 0;
+                cache_read = integerMember(usage.object, "cache_read_input_tokens");
+                cache_write = integerMember(usage.object, "cache_creation_input_tokens");
             }
         }
-        const total = input +% output;
         if (input != 0) try self.put(&totals, "input_tokens", try self.tokens(input));
+        if (cache_read) |count| try self.put(&totals, "cache_read_input_tokens", try self.tokens(count));
+        if (cache_write) |count| try self.put(&totals, "cache_write_input_tokens", try self.tokens(count));
         if (output != 0) try self.put(&totals, "output_tokens", try self.tokens(output));
-        if (total != 0) try self.put(&totals, "total_tokens", try self.tokens(total));
+        if (cache_read != null and cache_write != null) {
+            const total = input +% output +% cache_read.? +% cache_write.?;
+            if (total != 0) try self.put(&totals, "total_tokens", try self.tokens(total));
+        }
         return .{ .object = totals };
     }
 
@@ -2609,7 +2617,7 @@ test "a token count is emitted unsigned the way the oracle emits it" {
 
     try startedRun(&reducer, scratch, "turn-1");
     try observeText(&reducer, scratch,
-        \\{"type":"result","session_id":"s","subtype":"success","terminal_reason":"completed","result":"one","user_message_uuid":"turn-1","uuid":"r1","usage":{"input_tokens":9223372036854775807,"output_tokens":1}}
+        \\{"type":"result","session_id":"s","subtype":"success","terminal_reason":"completed","result":"one","user_message_uuid":"turn-1","uuid":"r1","usage":{"input_tokens":9223372036854775807,"output_tokens":1,"cache_read_input_tokens":0,"cache_creation_input_tokens":0}}
     );
     const usage = firstPayload(&reducer, "run.completed").?.get("usage").?.object;
     try testing.expectEqual(@as(i64, std.math.maxInt(i64)), usage.get("input_tokens").?.integer);
@@ -2619,7 +2627,7 @@ test "a token count is emitted unsigned the way the oracle emits it" {
     negative.open();
     try startedRun(&negative, scratch, "turn-2");
     try observeText(&negative, scratch,
-        \\{"type":"result","session_id":"s","subtype":"success","terminal_reason":"completed","result":"one","user_message_uuid":"turn-2","uuid":"r2","usage":{"input_tokens":-1,"output_tokens":0}}
+        \\{"type":"result","session_id":"s","subtype":"success","terminal_reason":"completed","result":"one","user_message_uuid":"turn-2","uuid":"r2","usage":{"input_tokens":-1,"output_tokens":0,"cache_read_input_tokens":0,"cache_creation_input_tokens":0}}
     );
     const wrapped = firstPayload(&negative, "run.completed").?.get("usage").?.object;
     try testing.expectEqualStrings("18446744073709551615", wrapped.get("input_tokens").?.number_string);
