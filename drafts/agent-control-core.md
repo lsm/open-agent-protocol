@@ -661,7 +661,6 @@ needs to continue.
 `user.input.requested` carries:
 
 - `interaction_id`
-- `interaction_id`
 - `requested_by`
 - `responded_by`
 - `session_id`
