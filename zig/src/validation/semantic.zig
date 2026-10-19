@@ -17,6 +17,8 @@ pub const code_unmatched_response = "unmatched_response";
 pub const code_missing_response = "missing_response";
 pub const code_duplicate_response = "duplicate_response";
 pub const code_unhonoured_capability = "unhonoured_capability";
+pub const code_auth_flow_order = "auth_flow_order";
+pub const code_missing_auth_terminal = "missing_auth_terminal";
 pub const code_illegal_run_transition = "illegal_run_transition";
 pub const code_missing_run_started = "missing_run_started";
 pub const code_missing_run_terminal = "missing_run_terminal";
@@ -92,7 +94,8 @@ pub const implemented = [_][]const u8{
     code_session_list_order,              code_duplicate_session_entry,         code_duplicate_message_completion,
     code_content_after_completion,        code_transcript_over_limit,           code_duplicate_transcript_entry,
     code_transcript_gap_mismatch,         code_unmatched_response,              code_missing_response,
-    code_duplicate_response,              code_unhonoured_capability,
+    code_duplicate_response,              code_unhonoured_capability,           code_auth_flow_order,
+    code_missing_auth_terminal,
 };
 
 pub fn isImplemented(code: []const u8) bool {
@@ -471,6 +474,13 @@ const Snapshot = struct {
     limits: ?Limits,
 };
 
+const AuthFlow = struct {
+    provider: []const u8,
+    next: u64 = 1,
+    terminal: bool = false,
+    index: usize,
+};
+
 const Recovery = struct {
     run: []const u8 = "",
     gap: bool = false,
@@ -535,6 +545,7 @@ pub const Machine = struct {
     recoveries: std.StringArrayHashMapUnmanaged(*Recovery) = .empty,
     requests: std.StringArrayHashMapUnmanaged(Request) = .empty,
     late_cancels: std.StringArrayHashMapUnmanaged(void) = .empty,
+    auth_flows: std.StringArrayHashMapUnmanaged(*AuthFlow) = .empty,
     packs: Packs = .{},
     features: std.StringArrayHashMapUnmanaged([]const u8) = .empty,
     scopes: std.StringArrayHashMapUnmanaged([]const u8) = .empty,
@@ -566,6 +577,7 @@ pub const Machine = struct {
         self.late_cancels.deinit(self.allocator);
         self.runs.deinit(self.allocator);
         self.recoveries.deinit(self.allocator);
+        self.auth_flows.deinit(self.allocator);
         self.requests.deinit(self.allocator);
         self.features.deinit(self.allocator);
         self.scopes.deinit(self.allocator);
@@ -765,6 +777,10 @@ pub const Machine = struct {
     }
 
     fn dispatch(self: *Machine, index: usize, envelope: std.json.Value, declared: []const u8, payload: std.json.Value) !void {
+        if (std.mem.startsWith(u8, declared, "auth.login.")) {
+            try self.authEnvelope(index, envelope, declared, payload);
+            return;
+        }
         if (std.mem.eql(u8, declared, "protocol.initialize.request")) {
             if (member(payload, "participant")) |who| {
                 const named = memberString(who, "id");
@@ -2886,6 +2902,47 @@ pub const Machine = struct {
         }
     }
 
+    fn authEnvelope(self: *Machine, index: usize, envelope: std.json.Value, declared: []const u8, payload: std.json.Value) !void {
+        const flow_id = memberString(payload, "flow_id");
+        if (std.mem.eql(u8, declared, "auth.login.start.response")) {
+            const asked = self.requests.get(field(envelope, "in_reply_to")) orelse return;
+            if (!std.mem.eql(u8, asked.declared, "auth.login.start.request")) return;
+            if (self.auth_flows.contains(flow_id)) {
+                try self.add(code_auth_flow_order, index);
+                return;
+            }
+            const flow = try self.arena.allocator().create(AuthFlow);
+            flow.* = .{ .provider = memberString(asked.payload, "provider_id"), .index = index };
+            try self.auth_flows.put(self.allocator, flow_id, flow);
+            return;
+        }
+        if (std.mem.eql(u8, declared, "auth.login.cancel.response")) {
+            const asked = self.requests.get(field(envelope, "in_reply_to")) orelse return;
+            if (!std.mem.eql(u8, asked.declared, "auth.login.cancel.request")) return;
+            if (!std.mem.eql(u8, flow_id, memberString(asked.payload, "flow_id"))) try self.add(code_scope_mismatch, index);
+            return;
+        }
+        const event = std.mem.eql(u8, declared, "auth.login.event");
+        const completed = std.mem.eql(u8, declared, "auth.login.completed");
+        if (!event and !completed and !std.mem.eql(u8, declared, "auth.login.cancel.request")) return;
+        const flow = self.auth_flows.get(flow_id) orelse {
+            try self.add(code_auth_flow_order, index);
+            return;
+        };
+        if (flow.terminal) {
+            try self.add(code_event_after_terminal, index);
+            return;
+        }
+        if (!event and !completed) return;
+        if (unsigned(envelope, "sequence")) |sequence| {
+            if (sequence < flow.next) try self.add(code_sequence_regression, index);
+            if (sequence > flow.next) try self.add(code_sequence_gap, index);
+            flow.next = sequence + 1;
+        }
+        if (!std.mem.eql(u8, memberString(payload, "provider_id"), flow.provider)) try self.add(code_scope_mismatch, index);
+        if (completed) flow.terminal = true;
+    }
+
     fn steerTarget(self: *Machine, payload: std.json.Value) struct { run: ?*Run, reason: []const u8 } {
         const target = memberString(payload, "target_run_id");
         const session = memberString(payload, "session_id");
@@ -4070,6 +4127,9 @@ pub const Machine = struct {
 
     pub fn close(self: *Machine) !void {
         try self.closeSteerSnapshots();
+        for (self.auth_flows.values()) |flow| {
+            if (!flow.terminal) try self.add(code_missing_auth_terminal, flow.index);
+        }
         for (self.recoveries.values()) |recovery| {
             if (recovery.gap and !recovery.state_checked) try self.add(code_undeclared_replay_gap, recovery.open_index);
         }
@@ -6817,4 +6877,44 @@ test "a subscribe an endpoint advertises, refused inside an open, is unhonoured"
         \\{"type":"session.open.request","id":"o1","capability_revision":"v1","payload":{"session_id":"s","subscribe":true}},
         \\{"type":"error.response","id":"o2","in_reply_to":"o1","payload":{"error":{"code":"unsupported_feature","message":"x","details":{"feature":"session.open.subscribe"}}}}]
     , &.{code_unhonoured_capability});
+}
+
+const auth_started =
+    \\[{"type":"auth.login.start.request","id":"a1","payload":{"provider_id":"zai"}},
+    \\{"type":"auth.login.start.response","id":"a2","in_reply_to":"a1","payload":{"flow_id":"f"}},
+;
+
+test "an auth flow that starts, reports and completes in order is clean" {
+    try expectCodes(auth_started ++
+        \\{"type":"auth.login.event","id":"a3","sequence":1,"payload":{"flow_id":"f","provider_id":"zai"}},
+        \\{"type":"auth.login.completed","id":"a4","sequence":2,"payload":{"flow_id":"f","provider_id":"zai"}}]
+    , &.{});
+}
+
+test "an auth event before its flow starts is out of order" {
+    try expectCodes(
+        \\[{"type":"auth.login.event","id":"a3","sequence":1,"payload":{"flow_id":"f","provider_id":"zai"}}]
+    , &.{code_auth_flow_order});
+}
+
+test "a start that reuses an active flow id is out of order" {
+    try expectCodes(auth_started ++
+        \\{"type":"auth.login.start.request","id":"b1","payload":{"provider_id":"zai"}},
+        \\{"type":"auth.login.start.response","id":"b2","in_reply_to":"b1","payload":{"flow_id":"f"}},
+        \\{"type":"auth.login.completed","id":"a4","sequence":1,"payload":{"flow_id":"f","provider_id":"zai"}}]
+    , &.{code_auth_flow_order});
+}
+
+test "an accepted auth flow with no completion is missing its terminal" {
+    try expectCodes(auth_started ++
+        \\{"type":"auth.login.event","id":"a3","sequence":1,"payload":{"flow_id":"f","provider_id":"zai"}}]
+    , &.{code_missing_auth_terminal});
+}
+
+test "an auth flow judges its sequence, its provider and anything after its terminal" {
+    try expectCodes(auth_started ++
+        \\{"type":"auth.login.event","id":"a3","sequence":2,"payload":{"flow_id":"f","provider_id":"other"}},
+        \\{"type":"auth.login.completed","id":"a4","sequence":3,"payload":{"flow_id":"f","provider_id":"zai"}},
+        \\{"type":"auth.login.event","id":"a5","sequence":4,"payload":{"flow_id":"f","provider_id":"zai"}}]
+    , &.{ code_sequence_gap, code_scope_mismatch, code_event_after_terminal });
 }
