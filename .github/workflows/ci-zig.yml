@@ -18,12 +18,15 @@ on:
       - "*.md"
 
 concurrency:
-  # The same superseding rule as ci.yml, under a prefix that keeps the two
-  # workflows apart: both display as "CI", so a shared group would cancel this
-  # file's run whenever the other's was queued on the same pull request. A push
-  # carries no pull request number, so it falls back to its own run id and
-  # shares a group with nothing, which is what keeps a run per main commit.
-  group: ci-zig-${{ github.event_name }}-${{ github.event.pull_request.number || github.run_id }}
+  # The same superseding rule as ci.yml for a pull request, under a prefix that
+  # keeps the two workflows apart: both display as "CI", so a shared group would
+  # cancel this file's run whenever the other's was queued on the same pull
+  # request. Main pushes, unlike ci.yml's, share one group that does not cancel
+  # in progress: a main run already going finishes, and GitHub keeps only the
+  # newest pending one, so a burst of merges queues one run of this, the
+  # heaviest workflow, rather than one per commit. ci.yml still runs on every
+  # main commit.
+  group: ci-zig-${{ github.event_name }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
