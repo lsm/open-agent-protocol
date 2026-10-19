@@ -34,7 +34,7 @@ admission created (`state.go:apply`).
 - (b) Only a run that has started.
 
 Recommendation: (a), so a reservation can be withdrawn before it promotes.
-Settled by [Decision 0055](../decisions/0055-register-batch-2.md); every tree owes acceptance of a queued run's cancel.
+Settled by [Decision 0055](../decisions/0055-register-batch-2.md). All three trees already accept a queued run's cancel, pinned by `admission-queued-prestart-cancelled` and `queue-busy-cancelled-prestart`, so no port is owed.
 
 ### OPEN-0001-3: does a response stay in its request's scope?
 
