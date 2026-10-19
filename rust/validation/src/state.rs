@@ -1,4 +1,6 @@
-use std::collections::HashMap;
+mod runs;
+
+use std::collections::{HashMap, HashSet};
 
 use oap_protocol::*;
 use serde::de::DeserializeOwned;
@@ -24,6 +26,9 @@ pub(crate) struct State {
     requests: HashMap<String, Request>,
     current_capability: String,
     capabilities_stale: bool,
+    runs: HashMap<String, runs::Run>,
+    active: HashMap<String, String>,
+    late_cancels: HashSet<String>,
 }
 
 fn payload<T: DeserializeOwned + Default>(e: &Envelope) -> T {
@@ -251,6 +256,9 @@ impl State {
             requests: HashMap::new(),
             current_capability: String::new(),
             capabilities_stale: false,
+            runs: HashMap::new(),
+            active: HashMap::new(),
+            late_cancels: HashSet::new(),
         }
     }
 
@@ -350,6 +358,7 @@ impl State {
             return;
         }
         self.payload_scope(at, e);
+        self.run_dispatch(at, e);
         let t = &e.envelope_type;
         if *t == EnvelopeType::CAPABILITIES_RESPONSE {
             self.current_capability = revision;
@@ -611,6 +620,7 @@ impl State {
             }
         }
         self.diagnostics.extend(found);
+        self.close_runs();
     }
 }
 
