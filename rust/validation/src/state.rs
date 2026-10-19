@@ -393,6 +393,7 @@ impl State {
             return;
         }
         self.payload_scope(at, e);
+        self.list_scope(at, e);
         if e.envelope_type == EnvelopeType::CAPABILITIES_RESPONSE {
             self.snapshot_descriptor();
         }
@@ -642,6 +643,48 @@ impl State {
                 &envelope_call,
                 &call,
                 &[],
+            );
+        }
+    }
+
+    fn list_scope(&mut self, at: (usize, usize), e: &Envelope) {
+        if e.envelope_type != EnvelopeType::ACTION_TOOLS_LIST_RESPONSE {
+            return;
+        }
+        let reply = os(&e.in_reply_to);
+        let Some(asked) = self
+            .requests
+            .get(&reply)
+            .filter(|request| request.envelope_type == EnvelopeType::ACTION_TOOLS_LIST_REQUEST)
+            .map(|request| request.session.clone())
+        else {
+            return;
+        };
+        let named = os(&payload::<ToolsListResponse>(e).session_id);
+        let envelope = os(&e.session_id);
+        if !asked.is_empty() && named == asked && envelope != asked {
+            self.add_expected(
+                codes::SCOPE_MISMATCH,
+                at,
+                e,
+                "/session_id",
+                "a session-scoped catalog must name its session on the envelope",
+                &asked,
+                &envelope,
+                &[&reply],
+            );
+        }
+        let answered = if named.is_empty() { envelope } else { named };
+        if asked.is_empty() && !answered.is_empty() {
+            self.add_expected(
+                codes::SCOPE_MISMATCH,
+                at,
+                e,
+                "/payload/session_id",
+                "an unscoped catalog request was answered with one session's catalog",
+                "no session",
+                &answered,
+                &[&reply],
             );
         }
     }
