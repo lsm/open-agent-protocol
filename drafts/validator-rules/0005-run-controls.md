@@ -6,7 +6,9 @@ every diagnostic the validators raise for the four run controls (`model_id`,
 and their application. Go names the function in `go/validation/`, Zig in
 `zig/src/validation/`, Rust in `rust/validation/src/`. A row whose expectation
 is settled on the correlated response names the function that sets it. No open
-items: the divergences in this group are 0019's recorded ones, listed below.
+items. Zig's divergences here are 0019's recorded ones, listed below. Rust's
+missing checks (the `run.started` model and the per-run default) are port gaps
+recorded in `fixtures/known-gaps.json`.
 Format: [README](README.md).
 
 ### [0005] Controls are per submit and fail closed
@@ -17,7 +19,7 @@ Source: [`decisions/0005-run-controls.md`](../../decisions/0005-run-controls.md#
 | --- | --- | --- | --- | --- | --- | --- |
 | `0005#controls-are-per-submit-and-fail-closed/1` | A submission carrying a control the current descriptor does not affirmatively advertise MUST be refused `unsupported_feature`, naming the key, with `details.reason: "unadvertised"`. | L90–132 | `unavailable_capability` | `controls.go:submitControls` | `semantic.zig:submitControls` | `state/controls.rs:submit_controls` |
 | `0005#controls-are-per-submit-and-fail-closed/2` | A control advertised `degraded`, absent from the caller's `allow_degraded_features`, MUST be refused `capability_degraded`. | L90–132 | `degraded_without_optin` | `controls.go:submitControls` | `semantic.zig:submitControls` | `state/controls.rs:submit_controls` |
-| `0005#controls-are-per-submit-and-fail-closed/3` | Where several conditions hold, the refusal MUST be the highest on the ladder: capability, then degradation, then unsatisfiability, then state. Within a rung the lower key wins, and within one rule the lowest JSON Pointer. | L90–132 | the losing rung's code | `controls.go:submitControls`<br>`refusal.go:retainedExpectations` | `semantic.zig:submitControls` | `state/controls.rs:submit_controls` |
+| `0005#controls-are-per-submit-and-fail-closed/3` | Where several conditions hold, the refusal MUST be the highest on the ladder: capability, then degradation, then unsatisfiability, then state. Within a rung the lower key wins, and within one rule the lowest JSON Pointer. | L90–132 | the highest applicable rung's code | `controls.go:submitControls`<br>`refusal.go:retainedExpectations` | `semantic.zig:submitControls` | `state/controls.rs:submit_controls` |
 | `0005#controls-are-per-submit-and-fail-closed/4` | A `steer` submission carrying a control MUST be refused unsatisfiable. | (drafted here: 0005 makes controls per submit; 0013 forbids a steer to change admitted controls) | `unsatisfiable_control` | `controls.go:submitControls` | `semantic.zig:submitControls` | `state/controls.rs:submit_controls` |
 | `0005#controls-are-per-submit-and-fail-closed/5` | A control-carrying submission MUST be judged against a current capability descriptor. One sent with none, or after the descriptor was invalidated, is undecidable. | (drafted here: 0001's rule that an optional feature needs a current descriptor, applied to controls) | `unavailable_capability` | `controls.go:controlDescriptor` | `semantic.zig:controlDescriptor` | `state/controls.rs:control_descriptor` |
 | `0005#controls-are-per-submit-and-fail-closed/6` | A control-carrying submission MUST cite the active `capability_revision`. | agent-control-core L779–817 (the freshness rule, `agent-control-core#capability-snapshot-freshness/1`, applied to a control-carrying submission) | `stale_capability_revision` | `controls.go:controlDescriptor` | `semantic.zig:controlDescriptor` | `state/controls.rs:control_descriptor` |
@@ -149,6 +151,10 @@ Source: [`decisions/0031-a-policy-refusal-is-a-settlement.md`](../../decisions/0
   Go compares by value. Zig also raises `unsatisfiable_control` on
   `output_schema` keywords outside its interpreter that Go admits. Both are
   recorded divergences, not open questions.
+- Rust has no `run.started` model check and no per-run-default guard (the rows
+  with a Rust `—`). Those are port gaps, which `fixtures/known-gaps.json`
+  records against `controls-started-omits-model` and the `controls-per-run-*`
+  fixtures, not divergences.
 - The `model_id` catalog miss (`model_not_in_catalog` from
   `controls.go:unsatisfiable`) is 0006's rule. 0007 adds when a reservation's
   model applies, which moves when the `run.started` rows above are judged but
