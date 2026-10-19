@@ -241,6 +241,8 @@ const Run = struct {
     admitted_queued: bool = false,
     order: usize = 0,
     admitted_model: []const u8 = "",
+    admitted_at: usize = 0,
+    submit_request: []const u8 = "",
     controls: Controls = .{},
     deferred_controls: bool = false,
     status: []const u8 = "",
@@ -905,7 +907,7 @@ pub const Machine = struct {
             std.mem.eql(u8, declared, "session.state.updated"))
         {
             try self.steerState(index, envelope, payload);
-            try self.stateDocument(index, payload, std.mem.eql(u8, declared, "session.state.updated"));
+            try self.stateDocument(index, envelope, payload, std.mem.eql(u8, declared, "session.state.updated"));
             return;
         }
         if (std.mem.eql(u8, declared, "run.cancel.request")) {
@@ -2947,6 +2949,59 @@ pub const Machine = struct {
         }
     }
 
+    fn checkRequiredRuns(self: *Machine, index: usize, envelope: std.json.Value, payload: std.json.Value) !void {
+        const session_id = memberString(payload, "session_id");
+        const window = self.ids.get(field(envelope, "in_reply_to")) orelse index;
+        const as_of = member(payload, "as_of");
+        var excused: std.StringArrayHashMapUnmanaged(void) = .empty;
+        defer excused.deinit(self.allocator);
+        var anchored: std.StringArrayHashMapUnmanaged(void) = .empty;
+        defer anchored.deinit(self.allocator);
+        if (as_of) |capture| {
+            if (member(capture, "settled")) |settled| {
+                if (settled == .array) for (settled.array.items) |entry| try excused.put(self.allocator, memberString(entry, "run_id"), {});
+            }
+            if (member(capture, "admitted_submit_requests")) |anchors| {
+                if (anchors == .array) for (anchors.array.items) |anchor| {
+                    if (anchor == .string) try anchored.put(self.allocator, anchor.string, {});
+                };
+            }
+        }
+        var required: std.ArrayList(*Run) = .empty;
+        defer required.deinit(self.allocator);
+        for (self.runs.values()) |run| {
+            if (!std.mem.eql(u8, run.session, session_id) or run.terminal) continue;
+            if (excused.contains(run.id)) continue;
+            if (as_of != null and run.admitted_at > window and !anchored.contains(run.submit_request)) continue;
+            try required.append(self.allocator, run);
+        }
+        const listed = member(payload, "active_runs") orelse {
+            if (try self.omissionNeedsEntries(required.items)) try self.add(code_session_state_mismatch, index);
+            return;
+        };
+        if (listed != .array) return;
+        for (required.items) |run| {
+            const present = for (listed.array.items) |entry| {
+                if (std.mem.eql(u8, memberString(entry, "run_id"), run.id)) break true;
+            } else false;
+            if (!present) try self.add(code_session_state_mismatch, index);
+        }
+    }
+
+    fn omissionNeedsEntries(self: *const Machine, required: []const *Run) !bool {
+        if (required.len > 1) return true;
+        for (required) |run| {
+            if (run.admitted_queued and !run.started) return true;
+        }
+        if (!self.advertisedKey(feature_delivery_queue)) return false;
+        for (required) |run| {
+            for (run.interactions.values()) |interaction| {
+                if (!interaction.resolved) return true;
+            }
+        }
+        return false;
+    }
+
     fn steerState(self: *Machine, index: usize, envelope: std.json.Value, payload: std.json.Value) !void {
         try self.steer_snapshots.append(self.allocator, .{ .index = index, .envelope = envelope, .payload = payload });
     }
@@ -3047,6 +3102,8 @@ pub const Machine = struct {
             .session = session_id,
             .admitted = true,
             .last_index = index,
+            .admitted_at = index,
+            .submit_request = field(envelope, "in_reply_to"),
             .admitted_queued = queued,
             .order = holder.order.items.len,
             .admitted_model = memberString(payload, "model_id"),
@@ -3179,6 +3236,8 @@ pub const Machine = struct {
             .session = session_id,
             .admitted = true,
             .last_index = index,
+            .admitted_at = index,
+            .submit_request = field(envelope, "in_reply_to"),
             .admitted_queued = queued,
             .order = holder.order.items.len,
             .status = "queued",
@@ -3417,6 +3476,7 @@ pub const Machine = struct {
             .started = shape.started,
             .next = shape.next,
             .last_index = index,
+            .admitted_at = index,
             .recovered = true,
             .admitted_queued = shape.queued,
             .order = holder.order.items.len,
@@ -3441,11 +3501,12 @@ pub const Machine = struct {
         try self.refreshQueueWindows(session_id);
     }
 
-    fn stateDocument(self: *Machine, index: usize, payload: std.json.Value, updated: bool) !void {
+    fn stateDocument(self: *Machine, index: usize, envelope: std.json.Value, payload: std.json.Value, updated: bool) !void {
         const session_id = memberString(payload, "session_id");
         {
             const holder = try self.sessionFor(session_id);
             const reported = memberString(payload, "current_model_id");
+            try self.checkRequiredRuns(index, envelope, payload);
             if (holder.guard_default and !std.mem.eql(u8, reported, holder.expected_default)) {
                 try self.add(code_unapplied_control, index);
             }
