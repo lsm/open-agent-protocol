@@ -33,8 +33,9 @@ fn a_switch_moves_the_session_default_without_rewriting_an_admitted_run() {
         switch(&session, "missing").err(),
         Some(Error::ModelNotFound("missing".into()))
     );
-    let (admission, _stream) = started(&session);
+    let (admission, mut stream) = started(&session);
     assert_eq!(admission.model_id, MODEL_PRIMARY);
+    let initial = drain(&mut stream);
     let (second, state) = switch(&session, MODEL_SECONDARY).unwrap();
     assert_eq!(
         (
@@ -43,6 +44,16 @@ fn a_switch_moves_the_session_default_without_rewriting_an_admitted_run() {
         ),
         (MODEL_PRIMARY, MODEL_SECONDARY)
     );
+    let rest = resolve_gates(
+        &session,
+        admission.run_id.as_ref().unwrap(),
+        &mut stream,
+        &initial,
+    );
+    let completed: RunCompletedPayload = of_type(&rest, EnvelopeType::RUN_COMPLETED)
+        .decode_payload()
+        .unwrap();
+    assert_eq!(completed.model_id, MODEL_PRIMARY);
     let foreign = SessionModelSwitchRequest {
         session_id: "elsewhere".into(),
         model_id: MODEL_PRIMARY.into(),
