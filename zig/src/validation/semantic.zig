@@ -459,6 +459,13 @@ const Snapshot = struct {
     limits: ?Limits,
 };
 
+const SettledClaim = struct {
+    run: []const u8,
+    sequence: u64,
+    index: usize,
+    done: bool = false,
+};
+
 const Recovery = struct {
     run: []const u8 = "",
     gap: bool = false,
@@ -521,6 +528,7 @@ pub const Machine = struct {
     recoveries: std.StringArrayHashMapUnmanaged(*Recovery) = .empty,
     requests: std.StringArrayHashMapUnmanaged(Request) = .empty,
     late_cancels: std.StringArrayHashMapUnmanaged(void) = .empty,
+    settled_claims: std.ArrayList(SettledClaim) = .empty,
     packs: Packs = .{},
     features: std.StringArrayHashMapUnmanaged([]const u8) = .empty,
     scopes: std.StringArrayHashMapUnmanaged([]const u8) = .empty,
@@ -552,6 +560,7 @@ pub const Machine = struct {
         self.late_cancels.deinit(self.allocator);
         self.runs.deinit(self.allocator);
         self.recoveries.deinit(self.allocator);
+        self.settled_claims.deinit(self.allocator);
         self.requests.deinit(self.allocator);
         self.features.deinit(self.allocator);
         self.scopes.deinit(self.allocator);
@@ -2929,6 +2938,41 @@ pub const Machine = struct {
         }
     }
 
+    fn checkSettledClaims(self: *Machine, index: usize, payload: std.json.Value) !void {
+        const session_id = memberString(payload, "session_id");
+        const settled = member(member(payload, "as_of") orelse std.json.Value{ .null = {} }, "settled") orelse return;
+        if (settled != .array) return;
+        var claimed: std.StringArrayHashMapUnmanaged(void) = .empty;
+        defer claimed.deinit(self.allocator);
+        for (settled.array.items) |entry| {
+            const run_id = memberString(entry, "run_id");
+            const sequence = unsigned(entry, "sequence") orelse 0;
+            if (claimed.contains(run_id)) {
+                try self.add(code_session_state_mismatch, index);
+                continue;
+            }
+            try claimed.put(self.allocator, run_id, {});
+            const run = self.runs.get(run_id) orelse {
+                try self.add(code_session_state_mismatch, index);
+                continue;
+            };
+            if (!std.mem.eql(u8, run.session, session_id)) {
+                try self.add(code_session_state_mismatch, index);
+                continue;
+            }
+            if (run.terminal) {
+                if (run.next - 1 != sequence) try self.add(code_session_state_mismatch, index);
+                continue;
+            }
+            try self.settled_claims.append(self.allocator, .{ .run = run_id, .sequence = sequence, .index = index });
+        }
+        const listed = member(payload, "active_runs") orelse return;
+        if (listed != .array) return;
+        for (listed.array.items) |entry| {
+            if (claimed.contains(memberString(entry, "run_id"))) try self.add(code_session_state_mismatch, index);
+        }
+    }
+
     fn steerState(self: *Machine, index: usize, envelope: std.json.Value, payload: std.json.Value) !void {
         try self.steer_snapshots.append(self.allocator, .{ .index = index, .envelope = envelope, .payload = payload });
     }
@@ -3221,6 +3265,7 @@ pub const Machine = struct {
 
     fn openResponse(self: *Machine, index: usize, envelope: std.json.Value, payload: std.json.Value) !void {
         const session_id = memberString(payload, "session_id");
+        try self.checkSettledClaims(index, payload);
         try self.gatedResponse(index, envelope, .open);
         try self.checkPublishedSources(index, payload);
         const attachment_refused = if (self.submits.get(field(envelope, "in_reply_to"))) |opened|
@@ -3425,6 +3470,7 @@ pub const Machine = struct {
         {
             const holder = try self.sessionFor(session_id);
             const reported = memberString(payload, "current_model_id");
+            try self.checkSettledClaims(index, payload);
             if (holder.guard_default and !std.mem.eql(u8, reported, holder.expected_default)) {
                 try self.add(code_unapplied_control, index);
             }
@@ -3494,6 +3540,11 @@ pub const Machine = struct {
         state.last_index = index;
 
         const sequence = unsigned(envelope, "sequence");
+        for (self.settled_claims.items) |*claim| {
+            if (claim.done or !std.mem.eql(u8, claim.run, run_id)) continue;
+            claim.done = true;
+            if (!isTerminal(declared) or sequence == null or sequence.? != claim.sequence) try self.add(code_session_state_mismatch, claim.index);
+        }
         if (self.recoveries.get(state.session)) |recovery| {
             if (!recovery.gap and !recovery.first_replay_seen and std.mem.eql(u8, run_id, recovery.run)) {
                 recovery.first_replay_seen = true;
@@ -3963,6 +4014,9 @@ pub const Machine = struct {
 
     pub fn close(self: *Machine) !void {
         try self.closeSteerSnapshots();
+        for (self.settled_claims.items) |claim| {
+            if (!claim.done) try self.add(code_session_state_mismatch, claim.index);
+        }
         for (self.sessions.keys(), self.sessions.values()) |session_id, holder| {
             for (holder.model_anchors.items) |anchor| {
                 const request = self.requests.get(anchor.request) orelse continue;
