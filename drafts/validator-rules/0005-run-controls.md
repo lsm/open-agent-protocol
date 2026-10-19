@@ -151,10 +151,9 @@ Source: [`decisions/0031-a-policy-refusal-is-a-settlement.md`](../../decisions/0
   Go compares by value. Zig also raises `unsatisfiable_control` on
   `output_schema` keywords outside its interpreter that Go admits. Both are
   recorded divergences, not open questions.
-- Rust has no `run.started` model check and no per-run-default guard (the rows
-  with a Rust `—`). Those are port gaps, which `fixtures/known-gaps.json`
-  records against `controls-started-omits-model` and the `controls-per-run-*`
-  fixtures, not divergences.
+- Rust has no per-run-default guard (the row with a Rust `—`). That is a port
+  gap, which `fixtures/known-gaps.json` records against the `controls-per-run-*`
+  fixtures, not a divergence.
 - The `model_id` catalog miss (`model_not_in_catalog` from
   `controls.go:unsatisfiable`) is 0006's rule. 0007 adds when a reservation's
   model applies, which moves when the `run.started` rows above are judged but
