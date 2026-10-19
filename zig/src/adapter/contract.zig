@@ -1,6 +1,8 @@
 const std = @import("std");
 const oap_types = @import("oap_types");
 
+pub const transcript_page = @import("transcript_page.zig");
+
 pub const Failure = error{
     Unavailable,
     SessionClosed,

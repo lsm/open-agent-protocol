@@ -12,150 +12,45 @@ pub const SavedEntry = struct {
 const Error = contract.Failure;
 
 pub fn page(arena: std.mem.Allocator, request: contract.TranscriptRequest, saved: []const SavedEntry) Error!contract.TranscriptPage {
-    const ids = try entryIds(arena, saved);
-    var start: usize = 0;
-    var gap: ?contract.TranscriptGap = null;
-    if (request.cursor) |cursor| {
-        const position = try decode(arena, request.native_id, cursor);
-        if (position.entry_id.len == 0) {
-            start = 0;
-        } else if (indexOf(ids, position.entry_id)) |found| {
-            start = found + 1;
-        } else {
-            const pruned = saved.len == 0 or saved[0].offset > position.offset;
-            gap = .{ .reason = if (pruned) "pruned" else "rewritten", .resumed_at = if (saved.len > 0) ids[0] else "" };
-        }
-    }
-    const limit = @max(request.limit, 1);
-    var entries: std.ArrayList(std.json.Value) = .empty;
-    var bytes: usize = 0;
-    var next = start;
-    while (next < saved.len and entries.items.len < limit) : (next += 1) {
-        var value = try entryValue(arena, ids[next], saved[next], null);
-        var size = try encodedLen(arena, value);
-        if (bytes + size > contract.transcript_page_bytes) {
-            if (entries.items.len > 0) break;
-            var bound = contract.transcript_page_bytes / (partCount(saved[next]) * 2);
-            value = try entryValue(arena, ids[next], saved[next], bound);
-            size = try encodedLen(arena, value);
-            while (size > contract.transcript_page_bytes and bound > 0) {
-                bound /= 2;
-                value = try entryValue(arena, ids[next], saved[next], bound);
-                size = try encodedLen(arena, value);
-            }
-        }
-        bytes += size;
-        try entries.append(arena, value);
-    }
-    const last: ?usize = if (next > start) next - 1 else if (start > 0) start - 1 else null;
-    const next_cursor = if (last) |index| try encode(arena, request.native_id, ids[index], saved[index].offset) else try encode(arena, request.native_id, "", 0);
-    return .{ .entries = entries.items, .next_cursor = next_cursor, .complete = next >= saved.len, .gap = gap };
+    return contract.transcript_page.page(arena, request, try items(arena, saved));
 }
 
 pub fn tail(arena: std.mem.Allocator, native_id: []const u8, saved: []const SavedEntry) Error![]const u8 {
-    const ids = try entryIds(arena, saved);
-    if (saved.len == 0) return encode(arena, native_id, "", 0);
-    return encode(arena, native_id, ids[saved.len - 1], saved[saved.len - 1].offset);
+    return contract.transcript_page.tail(arena, native_id, try items(arena, saved));
 }
 
-fn entryIds(arena: std.mem.Allocator, saved: []const SavedEntry) ![]const []const u8 {
-    const ids = try arena.alloc([]const u8, saved.len);
-    for (saved, ids, 0..) |entry, *id, index| {
-        var repeat: usize = 0;
-        while (repeat < index and saved[index - repeat - 1].offset == entry.offset) repeat += 1;
-        id.* = if (repeat == 0) try std.fmt.allocPrint(arena, "e{d}", .{entry.offset}) else try std.fmt.allocPrint(arena, "e{d}.{d}", .{ entry.offset, repeat });
-    }
-    return ids;
+fn items(arena: std.mem.Allocator, saved: []const SavedEntry) ![]const contract.transcript_page.Item {
+    const listed = try arena.alloc(contract.transcript_page.Item, saved.len);
+    for (saved, listed) |*entry, *slot| slot.* = .{
+        .offset = entry.offset,
+        .at_ms = entry.at_ms,
+        .lazy = if (entry.message != null) .{ .ctx = entry, .build = encodeSaved } else null,
+        .compaction = entry.compaction,
+    };
+    return listed;
 }
 
-const Position = struct { entry_id: []const u8, offset: u64 };
-
-fn encode(arena: std.mem.Allocator, native_id: []const u8, entry_id: []const u8, offset: u64) ![]const u8 {
-    const raw = try std.fmt.allocPrint(arena, "1\n{s}\n{s}\n{d}", .{ native_id, entry_id, offset });
-    const coder = std.base64.url_safe_no_pad.Encoder;
-    const out = try arena.alloc(u8, coder.calcSize(raw.len));
-    return coder.encode(out, raw);
+fn encodeSaved(ctx: *const anyopaque, arena: std.mem.Allocator) std.mem.Allocator.Error!std.json.Value {
+    const entry: *const SavedEntry = @ptrCast(@alignCast(ctx));
+    return messageValue(arena, entry.message.?);
 }
 
-fn decode(arena: std.mem.Allocator, native_id: []const u8, cursor: []const u8) Error!Position {
-    const coder = std.base64.url_safe_no_pad.Decoder;
-    const size = coder.calcSizeForSlice(cursor) catch return error.InvalidCursor;
-    const raw = try arena.alloc(u8, size);
-    coder.decode(raw, cursor) catch return error.InvalidCursor;
-    var fields = std.mem.splitScalar(u8, raw, '\n');
-    if (!std.mem.eql(u8, fields.next() orelse "", "1")) return error.InvalidCursor;
-    if (!std.mem.eql(u8, fields.next() orelse "", native_id)) return error.InvalidCursor;
-    const entry_id = fields.next() orelse return error.InvalidCursor;
-    const offset = std.fmt.parseInt(u64, fields.next() orelse "", 10) catch return error.InvalidCursor;
-    if (fields.next() != null) return error.InvalidCursor;
-    return .{ .entry_id = entry_id, .offset = offset };
-}
-
-fn indexOf(ids: []const []const u8, wanted: []const u8) ?usize {
-    for (ids, 0..) |id, index| {
-        if (std.mem.eql(u8, id, wanted)) return index;
-    }
-    return null;
-}
-
-fn encodedLen(arena: std.mem.Allocator, value: std.json.Value) !usize {
-    const encoded = try std.json.Stringify.valueAlloc(arena, value, .{});
-    return encoded.len;
-}
-
-fn partCount(entry: SavedEntry) usize {
-    const message = entry.message orelse return 1;
-    return @max(1, switch (message) {
-        .user => |user| switch (user.content) {
-            .text => 1,
-            .parts => |parts| parts.len,
-        },
-        .assistant => |assistant| assistant.content.len,
-        .tool_result => |result| result.content.len,
-    });
-}
-
-fn cut(text: []const u8, bound: ?usize) []const u8 {
-    const max = bound orelse return text;
-    if (text.len <= max) return text;
-    var len = max;
-    while (len > 0 and (text[len] & 0xc0) == 0x80) len -= 1;
-    return text[0..len];
-}
-
-fn entryValue(arena: std.mem.Allocator, id: []const u8, entry: SavedEntry, bound: ?usize) !std.json.Value {
-    var object: std.json.ObjectMap = .empty;
-    try object.put(arena, "entry_id", .{ .string = id });
-    if (entry.at_ms > 0) try object.put(arena, "at_ms", .{ .integer = entry.at_ms });
-    if (entry.message) |message| {
-        try object.put(arena, "kind", .{ .string = "message" });
-        try object.put(arena, "message", try messageValue(arena, message, bound));
-    } else {
-        var compaction: std.json.ObjectMap = .empty;
-        try compaction.put(arena, "summary", .{ .string = cut(entry.compaction, bound) });
-        try object.put(arena, "kind", .{ .string = "compaction" });
-        try object.put(arena, "compaction", .{ .object = compaction });
-    }
-    if (bound != null) try object.put(arena, "truncated", .{ .bool = true });
-    return .{ .object = object };
-}
-
-fn messageValue(arena: std.mem.Allocator, message: ai_types.Message, bound: ?usize) !std.json.Value {
+pub fn messageValue(arena: std.mem.Allocator, message: ai_types.Message) !std.json.Value {
     var parts = std.json.Array.init(arena);
     const role: []const u8 = switch (message) {
         .user => |user| role: {
             switch (user.content) {
-                .text => |text| try parts.append(try textPart(arena, "text", cut(text, bound))),
-                .parts => |held| for (held) |part| try parts.append(try userPart(arena, part, bound)),
+                .text => |text| try parts.append(try textPart(arena, "text", text)),
+                .parts => |held| for (held) |part| try parts.append(try userPart(arena, part)),
             }
             break :role "user";
         },
         .assistant => |assistant| role: {
             for (assistant.content) |part| try parts.append(switch (part) {
-                .text => |text| try textPart(arena, "text", cut(text.text, bound)),
-                .thinking => |thinking| try textPart(arena, "reasoning", cut(thinking.thinking, bound)),
-                .image => |image| try imagePart(arena, image, bound),
-                .tool_call => |call| try toolCallPart(arena, call, bound),
+                .text => |text| try textPart(arena, "text", text.text),
+                .thinking => |thinking| try textPart(arena, "reasoning", thinking.thinking),
+                .image => |image| try imagePart(arena, image),
+                .tool_call => |call| try toolCallPart(arena, call),
             });
             break :role "assistant";
         },
@@ -168,7 +63,7 @@ fn messageValue(arena: std.mem.Allocator, message: ai_types.Message, bound: ?usi
             var object: std.json.ObjectMap = .empty;
             try object.put(arena, "type", .{ .string = "tool_result" });
             try object.put(arena, "tool_call_id", .{ .string = if (result.tool_call_id.len > 0) result.tool_call_id else "unknown" });
-            try object.put(arena, "result", .{ .string = cut(text.items, bound) });
+            try object.put(arena, "result", .{ .string = text.items });
             if (result.is_error) try object.put(arena, "is_error", .{ .bool = true });
             try parts.append(.{ .object = object });
             break :role "tool";
@@ -187,15 +82,14 @@ fn textPart(arena: std.mem.Allocator, kind: []const u8, text: []const u8) !std.j
     return .{ .object = object };
 }
 
-fn userPart(arena: std.mem.Allocator, part: ai_types.UserContentPart, bound: ?usize) !std.json.Value {
+fn userPart(arena: std.mem.Allocator, part: ai_types.UserContentPart) !std.json.Value {
     return switch (part) {
-        .text => |text| textPart(arena, "text", cut(text.text, bound)),
-        .image => |image| imagePart(arena, image, bound),
+        .text => |text| textPart(arena, "text", text.text),
+        .image => |image| imagePart(arena, image),
     };
 }
 
-fn imagePart(arena: std.mem.Allocator, image: ai_types.ImageContent, bound: ?usize) !std.json.Value {
-    if (bound != null) return textPart(arena, "text", "image");
+fn imagePart(arena: std.mem.Allocator, image: ai_types.ImageContent) !std.json.Value {
     var source: std.json.ObjectMap = .empty;
     try source.put(arena, "data", .{ .string = image.data });
     try source.put(arena, "media_type", .{ .string = image.mime_type });
@@ -205,13 +99,13 @@ fn imagePart(arena: std.mem.Allocator, image: ai_types.ImageContent, bound: ?usi
     return .{ .object = object };
 }
 
-fn toolCallPart(arena: std.mem.Allocator, call: ai_types.ToolCall, bound: ?usize) !std.json.Value {
-    const parsed: ?std.json.Value = if (bound == null) std.json.parseFromSliceLeaky(std.json.Value, arena, call.arguments_json, .{}) catch null else null;
+fn toolCallPart(arena: std.mem.Allocator, call: ai_types.ToolCall) !std.json.Value {
+    const parsed: ?std.json.Value = std.json.parseFromSliceLeaky(std.json.Value, arena, call.arguments_json, .{}) catch null;
     var object: std.json.ObjectMap = .empty;
     try object.put(arena, "type", .{ .string = "tool_call" });
     try object.put(arena, "tool_call_id", .{ .string = if (call.id.len > 0) call.id else "unknown" });
     try object.put(arena, "name", .{ .string = if (call.name.len > 0) call.name else "unknown" });
-    try object.put(arena, "arguments_json", parsed orelse .{ .string = cut(call.arguments_json, bound) });
+    try object.put(arena, "arguments_json", parsed orelse .{ .string = call.arguments_json });
     return .{ .object = object };
 }
 
@@ -326,5 +220,66 @@ test "an entry whose text escapes to several times its length is still cut until
     const saved = [_]SavedEntry{userEntry(0, controls)};
     const cut_page = try page(a, .{ .native_id = "s1" }, &saved);
     try testing.expect(cut_page.entries[0].object.get("truncated").?.bool);
-    try testing.expect(try encodedLen(a, cut_page.entries[0]) <= contract.transcript_page_bytes);
+    try testing.expect((try std.json.Stringify.valueAlloc(a, cut_page.entries[0], .{})).len <= contract.transcript_page_bytes);
+}
+
+test "an oversize entry cuts only its text-bearing fields, so a tool call keeps its type, id and name" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const long = try a.alloc(u8, contract.transcript_page_bytes);
+    @memset(long, 'z');
+    const parts = try a.dupe(ai_types.AssistantContent, &.{ .{ .text = .{ .text = long } }, .{ .tool_call = .{ .id = "call-identifier", .name = "a_tool_name", .arguments_json = "\"raw arguments\"" } } });
+    const message = ai_types.Message{ .assistant = .{ .content = parts, .api = "", .provider = "", .model = "", .usage = .{}, .stop_reason = .stop, .timestamp = 0 } };
+    const cut_page = try page(a, .{ .native_id = "s1" }, &.{.{ .offset = 0, .message = message }});
+    try testing.expect(cut_page.entries[0].object.get("truncated").?.bool);
+    try testing.expect((try std.json.Stringify.valueAlloc(a, cut_page.entries[0], .{})).len <= contract.transcript_page_bytes);
+    const listed = cut_page.entries[0].object.get("message").?.object.get("content").?.array.items;
+    const call = listed[1].object;
+    try testing.expectEqualStrings("tool_call", call.get("type").?.string);
+    try testing.expectEqualStrings("call-identifier", call.get("tool_call_id").?.string);
+    try testing.expectEqualStrings("a_tool_name", call.get("name").?.string);
+    try testing.expectEqualStrings("raw arguments", call.get("arguments_json").?.string);
+}
+
+test "an entry too large even with every text emptied reduces its parts to their kind, then keeps the leading parts that fit" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const parts = try a.alloc(ai_types.AssistantContent, 40001);
+    parts[0] = .{ .text = .{ .text = "the first words" } };
+    for (parts[1..]) |*part| part.* = .{ .tool_call = .{ .id = "call-identifier", .name = "a_tool_name", .arguments_json = "{}" } };
+    const message = ai_types.Message{ .assistant = .{ .content = parts, .api = "", .provider = "", .model = "", .usage = .{}, .stop_reason = .stop, .timestamp = 0 } };
+    const cut_page = try page(a, .{ .native_id = "s1" }, &.{.{ .offset = 0, .message = message }});
+    try testing.expect(cut_page.entries[0].object.get("truncated").?.bool);
+    try testing.expect((try std.json.Stringify.valueAlloc(a, cut_page.entries[0], .{})).len <= contract.transcript_page_bytes);
+    const listed = cut_page.entries[0].object.get("message").?.object.get("content").?.array.items;
+    try testing.expect(listed.len >= 2 and listed.len < parts.len);
+    try testing.expectEqualStrings("assistant", cut_page.entries[0].object.get("message").?.object.get("role").?.string);
+    try testing.expectEqualStrings("text", listed[1].object.get("type").?.string);
+    try testing.expectEqualStrings("tool_call", listed[1].object.get("text").?.string);
+}
+
+const Counted = struct {
+    var built: usize = 0;
+
+    fn build(ctx: *const anyopaque, arena: std.mem.Allocator) std.mem.Allocator.Error!std.json.Value {
+        _ = ctx;
+        built += 1;
+        return messageValue(arena, .{ .user = .{ .content = .{ .text = "said" }, .timestamp = 0 } });
+    }
+};
+
+test "the pager encodes a message only for an entry it returns, and the tail cursor encodes none" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const listed = try a.alloc(contract.transcript_page.Item, 50);
+    for (listed, 0..) |*item, index| item.* = .{ .offset = index, .lazy = .{ .ctx = item, .build = Counted.build } };
+    Counted.built = 0;
+    _ = try contract.transcript_page.tail(a, "s1", listed);
+    try testing.expectEqual(@as(usize, 0), Counted.built);
+    const two = try contract.transcript_page.page(a, .{ .native_id = "s1", .limit = 2 }, listed);
+    try testing.expectEqual(@as(usize, 2), two.entries.len);
+    try testing.expectEqual(@as(usize, 2), Counted.built);
 }
