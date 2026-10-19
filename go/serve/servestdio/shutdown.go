@@ -15,14 +15,15 @@ const opShutdown = "shutdown"
 const drainPoll = 20 * time.Millisecond
 
 type shutdownState struct {
-	admission sync.RWMutex
-	mu        sync.Mutex
-	mode      protocol.ShutdownMode
-	watching  bool
-	flushed   bool
-	finished  bool
-	served    bool
-	done      chan struct{}
+	admission   sync.RWMutex
+	mu          sync.Mutex
+	mode        protocol.ShutdownMode
+	watching    bool
+	flushed     bool
+	finished    bool
+	served      bool
+	done        chan struct{}
+	signalsSeen int
 }
 
 func newShutdownState() *shutdownState {
@@ -142,8 +143,15 @@ func (s *Server) Signal(ctx context.Context, count int) (protocol.EndpointShutdo
 	}
 	s.stopping.mu.Lock()
 	current := s.stopping.mode
+	fresh := count > s.stopping.signalsSeen
+	if fresh {
+		s.stopping.signalsSeen = count
+	}
 	s.stopping.mu.Unlock()
-	if count <= 0 || current == protocol.ShutdownForce || current == wanted {
+	if current == protocol.ShutdownForce {
+		wanted = protocol.ShutdownForce
+	}
+	if !fresh {
 		return protocol.EndpointShutdownResponse{}, false
 	}
 	result, werr := s.shutdownOp(ctx, requestLine{Op: opShutdown, Request: json.RawMessage(`{"mode":"` + string(wanted) + `"}`)})

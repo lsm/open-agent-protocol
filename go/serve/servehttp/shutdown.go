@@ -21,13 +21,14 @@ const drainPoll = 20 * time.Millisecond
 var admittingRoutes = []string{"/adapters/*/sessions", "/sessions/*/submit", "/adapters/*/work", "/work/sessions/*/send"}
 
 type stopState struct {
-	admission sync.RWMutex
-	mu        sync.Mutex
-	mode      protocol.ShutdownMode
-	watching  bool
-	finished  bool
-	withdrawn map[protocol.RunID]bool
-	done      chan struct{}
+	admission   sync.RWMutex
+	mu          sync.Mutex
+	mode        protocol.ShutdownMode
+	watching    bool
+	finished    bool
+	withdrawn   map[protocol.RunID]bool
+	done        chan struct{}
+	signalsSeen int
 }
 
 func newStopState() *stopState {
@@ -196,8 +197,15 @@ func (s *Server) Signal(ctx context.Context, count int) (protocol.EndpointShutdo
 	}
 	s.stopping.mu.Lock()
 	current := s.stopping.mode
+	fresh := count > s.stopping.signalsSeen
+	if fresh {
+		s.stopping.signalsSeen = count
+	}
 	s.stopping.mu.Unlock()
-	if count <= 0 || current == protocol.ShutdownForce || current == wanted {
+	if current == protocol.ShutdownForce {
+		wanted = protocol.ShutdownForce
+	}
+	if !fresh {
 		return protocol.EndpointShutdownResponse{}, false
 	}
 	answer := s.acceptShutdown(ctx, wanted)

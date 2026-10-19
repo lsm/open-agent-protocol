@@ -270,3 +270,26 @@ func TestASignalTakenBeforeRunStartsIsTheShutdownRunServes(t *testing.T) {
 		t.Fatal("Run kept serving: it replaced the shutdown the signal had already started")
 	}
 }
+
+func TestASignalDuringAGracefulShutdownTheHostAskedForStillReports(t *testing.T) {
+	hub := newTestHub(t, 64, 64)
+	openSession(t, hub, "busy")
+	server, err := New(hub, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	entry, err := hub.Session("busy")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := entry.Submit(context.Background(), base.SubmitRequest{Request: protocol.MessageSubmitRequest{SessionID: "busy", Delivery: protocol.DeliveryAuto, Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("run")}}}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, werr := server.shutdownOp(context.Background(), requestLine{Op: opShutdown, Request: json.RawMessage(`{"mode":"graceful"}`)}); werr != nil {
+		t.Fatal(werr)
+	}
+	answer, took := server.Signal(context.Background(), 1)
+	if !took || answer.Outcome != protocol.ShutdownDraining || len(answer.ActiveRuns) != 1 {
+		t.Fatalf("a signal during the host's graceful shutdown answered %+v (%v), want a draining report", answer, took)
+	}
+}
