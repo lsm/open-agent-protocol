@@ -19,6 +19,7 @@ pub const code_duplicate_response = "duplicate_response";
 pub const code_unhonoured_capability = "unhonoured_capability";
 pub const code_auth_flow_order = "auth_flow_order";
 pub const code_missing_auth_terminal = "missing_auth_terminal";
+pub const code_unknown_participant = "unknown_participant";
 pub const code_illegal_run_transition = "illegal_run_transition";
 pub const code_missing_run_started = "missing_run_started";
 pub const code_missing_run_terminal = "missing_run_terminal";
@@ -95,7 +96,7 @@ pub const implemented = [_][]const u8{
     code_content_after_completion,        code_transcript_over_limit,           code_duplicate_transcript_entry,
     code_transcript_gap_mismatch,         code_unmatched_response,              code_missing_response,
     code_duplicate_response,              code_unhonoured_capability,           code_auth_flow_order,
-    code_missing_auth_terminal,
+    code_missing_auth_terminal,           code_unknown_participant,
 };
 
 pub fn isImplemented(code: []const u8) bool {
@@ -545,6 +546,8 @@ pub const Machine = struct {
     recoveries: std.StringArrayHashMapUnmanaged(*Recovery) = .empty,
     requests: std.StringArrayHashMapUnmanaged(Request) = .empty,
     late_cancels: std.StringArrayHashMapUnmanaged(void) = .empty,
+    participants: std.StringArrayHashMapUnmanaged(void) = .empty,
+    initialized: bool = false,
     auth_flows: std.StringArrayHashMapUnmanaged(*AuthFlow) = .empty,
     packs: Packs = .{},
     features: std.StringArrayHashMapUnmanaged([]const u8) = .empty,
@@ -577,6 +580,7 @@ pub const Machine = struct {
         self.late_cancels.deinit(self.allocator);
         self.runs.deinit(self.allocator);
         self.recoveries.deinit(self.allocator);
+        self.participants.deinit(self.allocator);
         self.auth_flows.deinit(self.allocator);
         self.requests.deinit(self.allocator);
         self.features.deinit(self.allocator);
@@ -782,9 +786,19 @@ pub const Machine = struct {
             return;
         }
         if (std.mem.eql(u8, declared, "protocol.initialize.request")) {
+            self.initialized = true;
             if (member(payload, "participant")) |who| {
                 const named = memberString(who, "id");
                 if (named.len != 0) self.control_participant = named;
+                try self.participants.put(self.allocator, named, {});
+            }
+            return;
+        }
+        if (std.mem.eql(u8, declared, "protocol.initialize.response")) {
+            self.initialized = true;
+            if (member(payload, "endpoint")) |endpoint| try self.participants.put(self.allocator, memberString(endpoint, "id"), {});
+            if (self.requests.get(field(envelope, "in_reply_to"))) |asked| {
+                if (member(asked.payload, "participant")) |who| try self.participants.put(self.allocator, memberString(who, "id"), {});
             }
             return;
         }
@@ -3840,6 +3854,7 @@ pub const Machine = struct {
             try self.add(code_illegal_tool_transition, index);
             return;
         }
+        try self.participant(index, responder);
         if (run.interactions.get(id) != null) {
             try self.add(code_duplicate_interaction, index);
             return;
@@ -4005,7 +4020,13 @@ pub const Machine = struct {
         }
     }
 
+    fn participant(self: *Machine, index: usize, named: []const u8) !void {
+        if (self.initialized and !self.participants.contains(named)) try self.add(code_unknown_participant, index);
+    }
+
     fn interactionRequested(self: *Machine, index: usize, payload: std.json.Value, run: *Run, kind: InteractionKind) !void {
+        try self.participant(index, memberString(payload, "requested_by"));
+        try self.participant(index, memberString(payload, "responded_by"));
         const id = memberString(payload, "interaction_id");
         if (run.interactions.get(id) != null) try self.add(code_duplicate_interaction, index);
         const opened = try self.arena.allocator().create(Interaction);
@@ -6470,6 +6491,7 @@ test "a submitted resolution event is held to the same answers as a request" {
 
 const controlled =
     \\[{"type":"protocol.initialize.request","id":"i0","payload":{"participant":{"id":"control"}}},
+    \\{"type":"protocol.initialize.response","id":"i1","in_reply_to":"i0","payload":{"endpoint":{"id":"agent"}}},
     \\{"type":"capabilities.response","id":"k1","capability_revision":"v1","payload":{"features":
     \\{"tools":{"level":"native"},"permissions":{"level":"native"}}}},
 ++ admitted ++
@@ -6917,4 +6939,27 @@ test "an auth flow judges its sequence, its provider and anything after its term
         \\{"type":"auth.login.completed","id":"a4","sequence":3,"payload":{"flow_id":"f","provider_id":"zai"}},
         \\{"type":"auth.login.event","id":"a5","sequence":4,"payload":{"flow_id":"f","provider_id":"zai"}}]
     , &.{ code_sequence_gap, code_scope_mismatch, code_event_after_terminal });
+}
+
+test "an interaction naming a participant initialization never declared is unknown" {
+    try expectCodes(controlled ++
+        \\{"type":"action.permission.requested","id":"p1","run_id":"run","session_id":"s","sequence":2,"capability_revision":"v1","payload":
+        \\{"interaction_id":"x","requested_by":"stranger","responded_by":"control","title":"Allow?","choices":[{"id":"allow","label":"Allow"}]}},
+        \\{"type":"action.permission.resolved","id":"p2","run_id":"run","session_id":"s","sequence":3,"capability_revision":"v1","payload":
+        \\{"interaction_id":"x","requested_by":"stranger","responded_by":"control","outcome":"resolved","choice_id":"allow"}},
+        \\{"type":"run.completed","id":"e9","run_id":"run","session_id":"s","sequence":4,"payload":{}}]
+    , &.{code_unknown_participant});
+}
+
+test "participants are not judged before initialization declares any" {
+    try expectCodes(
+        \\[{"type":"capabilities.response","id":"k1","capability_revision":"v1","payload":{"features":{"permissions":{"level":"native"}}}},
+    ++ admitted ++
+        \\,{"type":"run.started","id":"e0","run_id":"run","session_id":"s","sequence":1,"payload":{}},
+        \\{"type":"action.permission.requested","id":"p1","run_id":"run","session_id":"s","sequence":2,"capability_revision":"v1","payload":
+        \\{"interaction_id":"x","requested_by":"stranger","responded_by":"user","title":"Allow?","choices":[{"id":"allow","label":"Allow"}]}},
+        \\{"type":"action.permission.resolved","id":"p2","run_id":"run","session_id":"s","sequence":3,"capability_revision":"v1","payload":
+        \\{"interaction_id":"x","requested_by":"stranger","responded_by":"user","outcome":"resolved","choice_id":"allow"}},
+        \\{"type":"run.completed","id":"e9","run_id":"run","session_id":"s","sequence":4,"payload":{}}]
+    , &.{});
 }

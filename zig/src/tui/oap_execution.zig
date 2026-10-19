@@ -330,6 +330,9 @@ pub const OapExecution = struct {
         var initialize = Map.init(a);
         try initialize.put("protocol_versions", try strings(a, &.{protocol_version}));
         try initialize.put("profiles", try strings(a, &.{profile}));
+        var who = Map.init(a);
+        try who.put("id", .{ .string = participant });
+        try initialize.put("participant", who.value());
         var empty = Map.init(a);
         const initialized = if (self.hub != null)
             try self.exchange(a, "capabilities.request", empty.value(), false)
