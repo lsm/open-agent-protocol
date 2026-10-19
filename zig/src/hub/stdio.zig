@@ -315,6 +315,7 @@ pub const refusal_statuses = [_]struct { code: []const u8, status: []const u8 }{
     .{ .code = "no_run_to_resume", .status = "409 Conflict" },
     .{ .code = "stale_capabilities", .status = "409 Conflict" },
     .{ .code = "run_active", .status = "409 Conflict" },
+    .{ .code = "shutting_down", .status = "503 Service Unavailable" },
     .{ .code = "model_not_found", .status = "400 Bad Request" },
     .{ .code = "state_failed", .status = "500 Internal Server Error" },
     .{ .code = "history_failed", .status = "500 Internal Server Error" },
@@ -1033,7 +1034,7 @@ pub const Frontend = struct {
         return runs.items;
     }
 
-    fn shutdownOp(self: *Frontend, arena: std.mem.Allocator, payload: ?std.json.Value) Error!Outcome {
+    pub fn shutdownOp(self: *Frontend, arena: std.mem.Allocator, payload: ?std.json.Value) Error!Outcome {
         const asked = askedShutdown(payload) orelse return .{ .refused = .{ .code = "invalid_request", .message = "request is an object whose only member is mode, graceful or force" } };
         var runs = try self.nonterminalRuns(arena);
         const mode = asked orelse self.shutdown orelse if (runs.len > 0)
@@ -4874,11 +4875,12 @@ test "every code the draft names has a status, or is one the draft leaves undefi
         "unsupported_media_type", "request_read",      "unrecognized_host",
         "cross_origin_request",   "history_failed",    "malformed_json",
         "schema_invalid",         "type_mismatch",     "invalid_payload",
+        "shutting_down",
     };
     for (named) |code| {
         try testing.expect(statusForRefusal(code) != null);
     }
-    try testing.expectEqual(@as(usize, 33), refusal_statuses.len);
+    try testing.expectEqual(@as(usize, 34), refusal_statuses.len);
 }
 
 test "an unnamed refusal code carries no status, so the wire rule can refuse it" {
@@ -4894,6 +4896,7 @@ test "every code the transport can answer carries the status the draft pins" {
         .{ .code = "session_exists", .status = "409 Conflict" },
         .{ .code = "stale_capabilities", .status = "409 Conflict" },
         .{ .code = "run_active", .status = "409 Conflict" },
+        .{ .code = "shutting_down", .status = "503 Service Unavailable" },
         .{ .code = "unsupported_feature", .status = "400 Bad Request" },
         .{ .code = "capability_degraded", .status = "400 Bad Request" },
         .{ .code = "scope_mismatch", .status = "400 Bad Request" },
@@ -4925,8 +4928,8 @@ test "every code the transport can answer carries the status the draft pins" {
     for (named) |entry| {
         try testing.expectEqualStrings(entry.status, statusForRefusal(entry.code).?);
     }
-    try testing.expectEqual(@as(usize, 33), refusal_statuses.len);
-    try testing.expectEqual(@as(usize, 33), named.len);
+    try testing.expectEqual(@as(usize, 34), refusal_statuses.len);
+    try testing.expectEqual(@as(usize, 34), named.len);
 }
 
 const many_detail_keys = [_][]const u8{

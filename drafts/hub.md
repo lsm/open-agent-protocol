@@ -418,10 +418,14 @@ mode other than graceful or force is refused and changes nothing`; Go:
 `TestShutdownWithNothingRunningStopsAtOnce`,
 `TestShutdownWithoutAModeAsksTheHostToChooseAndChangesNothing`,
 `TestGracefulShutdownLosesQueuedRunsRefusesNewWorkAndForceStopsIt`,
-`TestShutdownRefusesAModeOtherThanGracefulOrForce`. Neither tree has the HTTP
-route yet. Neither tree yet sends subscribers
-`endpoint.shutdown.started`, which Decision 0050 requires on acceptance; that
-announcement lands with the HTTP route. The signals and stdin EOF still end
+`TestShutdownRefusesAModeOtherThanGracefulOrForce`. Zig also serves it as
+`POST /shutdown`, whose body is the same `request` object or empty, answering
+`200` with the same object and refusing new work `503 shutting_down`; once
+the shutdown completes the daemon writes every answer it owes, and on graceful
+also settles requests still in flight, then stops, waiting at most 5 s — Zig: `a shutdown asks while a run is
+active, then graceful drains, refuses new work 503, and force stops the
+daemon`. Go has no HTTP route yet. Neither tree yet sends subscribers
+`endpoint.shutdown.started`, which Decision 0050 requires on acceptance. The signals and stdin EOF still end
 serving as the next paragraph says; rule 4's mapping of them to modes is
 pending too.
 
@@ -535,6 +539,7 @@ error. That is stated because the four reasons are the whole set.
 | `POST /work/sessions/{id}/send` | `work.send` | the session's `work.status` | `invalid_request` 400, and a submit's refusals |
 | `POST /work/sessions/{id}/stop` | `work.stop` | the session's `work.status` | `unknown_session` 404, `session_closed` 409, and a cancel's refusals |
 | `GET /work/sessions/{id}/read` | `work.read` | `{"turns":[...]}`, after `after` and up to `limit` (1 to 500, default 100) | `invalid_request` 400, `unknown_session` 404 |
+| `POST /shutdown` | `shutdown` | Decision 0050's `{outcome, active_runs, lost?}`; the body is `{"mode"?}` or empty, and the daemon stops once the shutdown completes. Zig only so far | `invalid_request` 400, `malformed_json` 400 |
 | `GET /work/capabilities` | `work.capabilities` | `{"adapters":[{"adapter","directory"?,"any_directory","verbs","native":{"list","read","search"}}],"unavailable"?}`, per [the work profile](work.md): every adapter's `work.*` verbs, leaving out one whose core feature the adapter declares `unavailable` | — |
 
 **The daemon serves a bounded number of connections at once, and a stream is
@@ -587,8 +592,8 @@ and the three tests run there too.
 Every route that reads a body requires `Content-Type: application/json`, and
 the body is read as UTF-8 whatever `charset` the header names. The gate is a
 property of the route, not of the length (owner, 2026-10-17, #1133): `open`,
-`submit`, `resolve`, `cancel`, `settings`, `work.start` and `work.send` are
-gated even when the request declares no body, and a route that reads none, such
+`submit`, `resolve`, `cancel`, `settings`, `work.start`, `work.send` and
+`shutdown` are gated even when the request declares no body, and a route that reads none, such
 as `close` or a listing, is not gated even when it carries one. The media type is
 refused before the length is measured, so a wrong type on a body over 16 MiB is
 `415`, not `413`. Pinned by `a body-reading route is gated on its media type even
@@ -1274,7 +1279,7 @@ never connects overflows exactly as a slow consumer does, and the adopter reads
 ## The operations
 
 Fifteen ops, plus `shutdown`, which [Shutdown and exit on
-stdio](#shutdown-and-exit-on-stdio) describes and which has no HTTP route yet.
+stdio](#shutdown-and-exit-on-stdio) describes, with `POST /shutdown` in Zig only.
 Each row gives the request line's parameters, the answer, and the errors. A
 refusal the row does not name is `internal` on both, with the
 exceptions stated once here rather than repeated per row:
@@ -1286,7 +1291,7 @@ exceptions stated once here rather than repeated per row:
   exist because a pipe gives no back pressure and has one shape a socket does
   not; a port must not produce any of them over HTTP.
 - **`shutting_down` answers `submit`, `open`, `work.start` and `work.send`**
-  once a `shutdown` is accepted, on stdio only until the HTTP route lands, as
+  once a `shutdown` is accepted, `503` over HTTP (Zig only so far), as
   [Shutdown and exit on stdio](#shutdown-and-exit-on-stdio) says. No row below
   repeats it.
 - **The four decode codes are `400` over HTTP** (owner, 2026-10-17, #1133).
@@ -2041,7 +2046,11 @@ here; each was a place a differential test would otherwise not see.
   EOF exit. A graceful exit waits on that job to answer it; a signal breaks
   that wait, but a force request sent meanwhile is not read. Zig's serve loop
   wiring for the shutdown (answering jobs on graceful only, then ending
-  serving) is pinned by no test: the named tests drive the frontend directly. What closes it is a queueing reference adapter with a test of the
+  serving) is pinned by no test: the named tests drive the frontend directly.
+  The same holds over HTTP: no test runs the serve loop through a
+  `POST /shutdown`, so its wait for owed answers and, on graceful, deferred
+  requests, and its 5 s bound, are unpinned; the named test calls the stop
+  check with no connections. What closes it is a queueing reference adapter with a test of the
   `lost` path, and a teardown that abandons a job thread after the window.
 
 One asymmetry is deliberate and is **not** a gap: a cross-origin refusal exists
