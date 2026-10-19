@@ -107,6 +107,43 @@ Recommendation: (a), exempting `protocol.initialize.request`,
 `capabilities.request`, `run.cancel.request` and the answers to pending
 interactions. Settled by [Decision 0055](../decisions/0055-register-batch-2.md); all three trees owe the port.
 
+## Queue, open and cancel (0007, 0009, 0041)
+
+Rules: [`0007-queue-open-cancel.md`](../drafts/validator-rules/0007-queue-open-cancel.md).
+
+### OPEN-0007-1: is a no-position entry's pending set judged without the queue?
+
+Decision 0007 reads an `active_runs` entry that states no position "as the
+trace stands". Go and Zig judge its `pending_interactions` against the trace
+only where `session.message.delivery.queue` is advertised
+(`queuestate.go:checkEntryPending`, `semantic.zig:checkEntryPending`); Rust
+does not judge it.
+
+- (a) Judge it whatever the descriptor advertises: an entry that exists makes
+  the claim whether or not the queue does.
+- (b) Judge it only where the queue is advertised, as Go and Zig do.
+
+Recommendation: (a). Settled by
+[Decision 0054](../decisions/0054-register-batch-1.md); Go and Zig owe the
+port, removing the gate, with a fixture on an endpoint without the queue.
+
+### OPEN-0007-2: which endpoint "puts entries there at all"?
+
+Decision 0007 requires `active_runs` for a run whose recovery needs an id only
+an entry holds "on an endpoint that puts entries there at all". Go and Zig read
+that as an endpoint advertising `session.message.delivery.queue`
+(`queuestate.go:checkActiveRunsOmitted`, `semantic.zig:checkRequiredRuns`);
+Rust does not judge it.
+
+- (a) An endpoint advertising the queue, as Go and Zig do.
+- (b) An endpoint that has sent an entry anywhere in the trace.
+
+Recommendation: (a). Under (b) the same snapshot is complete in one trace and
+incomplete in another, and an endpoint escapes the rule by never listing a
+run. Settled by
+[Decision 0057](../decisions/0057-an-endpoint-that-puts-entries-there-advertises-the-queue.md);
+Rust owes the port.
+
 ## Models and providers (0006, 0014, 0028)
 
 Rules: [`0006-models.md`](../drafts/validator-rules/0006-models.md).
@@ -190,3 +227,105 @@ only a port. None is a protocol question.
   as `capability_degraded`. Add it to both.
 - Rust judges only the session scope of these envelopes. Every other row in
   the file is owed there, as is the alias half of `optional-sessionproviderattach/2`.
+
+## Tool sources and provided tools (0008, 0011, 0048)
+
+Rules: [`0008-tool-sources.md`](../drafts/validator-rules/0008-tool-sources.md).
+
+### OPEN-0008-1: does a snapshot judge a declared source's description?
+
+**What differs.** After the open, Go holds every source a snapshot reports to
+one description: the open response's adopted description for an attached
+source, and the descriptor's for a declared one
+(`go/validation/toolsources.go:checkPublishedUnion`). Zig compares only attached
+sources and skips a declared source's members
+(`zig/src/validation/semantic.zig:checkPublishedUnion`, `stated orelse continue`).
+So a snapshot that redescribes a declared source fails in Go and passes in Zig.
+
+**Decision text.** 0008 § Attachment is for the session's lifetime: the
+snapshot's `sources` are "the union of the open's attachments and the
+descriptor's declared sources, compared by `id` and by each descriptor's
+published members."
+
+**Options.** (a) Zig judges declared sources too, as Go does. (b) Narrow the
+rule to attached sources.
+
+**Recommendation.** (a). The decision text names both halves of the union, so
+this is a Zig port gap rather than an open protocol question. It needs a
+negative fixture, since none isolates a redescribed declared source.
+
+**Status.** Settled by 0008's existing text. What remains is the Zig port fix
+and its fixture.
+
+### OPEN-0008-2: which scope checks does the tool catalog and resolve pair owe?
+
+**What differs.** Three scope checks exist only in Go:
+
+- A session-scoped `action.tools.list.response` must name its session on the
+  envelope (`toolsListResponse`). Zig's `checkScope` fires only when both
+  sides are present and differ.
+- `action.call.resolve.request` and `.response` must carry the same
+  `tool_call_id` on the envelope and in the payload (`controlResolveRequest`,
+  `controlResolveResponse`).
+- A resolution must name the tool call its interaction is bound to
+  (`controlResolveRequest`).
+
+Zig has none of the three.
+
+**Decision text.** 0008 § A list request is a request of its own requires the
+response to repeat the session "on its envelope and in its payload". 0011 gives
+the resolve pair its members but states no scope check for them.
+
+**Options.** (a) Port all three to Zig and Rust, citing 0008 for the first and
+0001's scope agreement for the other two. (b) Port the first and record the
+other two as drafted rules.
+
+**Recommendation.** (a). The first has decision text. The other two follow
+from the pair being session- and run-scoped, and are drafted in
+`drafts/validator-rules/0008-tool-sources.md` as such.
+
+**Status.** Settled by [Decision 0055](../decisions/0055-register-batch-2.md). What remains is the port work the decision names.
+
+### OPEN-0008-3: does a permission resolution keep its tool binding?
+
+**What differs.** A `permission.resolved` event that names a `tool_call_id`
+(on the envelope or in the payload) other than the one its request was bound
+to is `scope_mismatch` in Go (`state.go:interactionResolved`) and Rust
+(`state/interactions.rs:interaction_resolved`). Zig judges neither.
+
+**Decision text.** 0001 § Correlated reverse interactions correlates a
+resolution with its request, but no decision says the tool binding must carry
+over. Before Decision 0055, no decision said so.
+
+**Options.** (a) Extend 0055's binding rule to every resolution that carries
+`tool_call_id`, and port it to Zig. (b) Leave the binding unjudged, and drop
+the Go and Rust checks.
+
+**Recommendation.** (a). A resolution that moves its tool binding resolves a
+call it was never asked about, the defect 0055 already rules out for the
+resolve pair.
+
+**Status.** Settled by [Decision 0055](../decisions/0055-register-batch-2.md). What remains is the port work the decision names.
+
+### OPEN-0011-1: which pattern syntax is `name_pattern`, and is it anchored?
+
+**What differs.** Go refuses a `tools` array naming a tool outside a disclosed
+`name_pattern` as a limit violation (`controltools.go:provideLimitViolation`).
+Zig reads `max_tools` and `schema_dialect` but not `name_pattern`
+(`semantic.zig:provideLimitViolation`).
+
+**Decision text.** 0011 § The capability discloses its limits lists
+`name_pattern` among the limits a refusal may rely on. 0019 § A rule the port
+cannot reach is recorded, not approximated, already records this as a
+deliberate Zig omission. Zig has no regex engine, a hand-written subset would
+diverge from RE2, and no fixture discloses `name_pattern`.
+
+**Options.** (a) Vendor an RE2-compatible engine in Zig, which 0019 calls its
+own decision. (b) Pin the pattern dialect to a subset both trees can decide,
+and amend 0011.
+
+**Recommendation (before 0055).** Keep 0019's record and leave the item open
+until an engine is chosen. Decision 0055 then chose the dialect: the pattern
+is RE2 and must match the whole name.
+
+**Status.** Settled by [Decision 0055](../decisions/0055-register-batch-2.md). What remains is the port work the decision names.

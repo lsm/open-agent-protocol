@@ -593,8 +593,11 @@ operator-configured `model-provider-core` service. Its session-local alias
 must be unique, the request is atomic, and success must expand that session's
 next model catalog without changing its default model or an active run. An
 unknown service/provider or a conflicting alias is refused with a typed
-error; an unadvertised operation is refused with `unsupported_feature` and
-`details.feature: "action.providers.attach"`. No caller-provided vendor
+error; an unadvertised operation is refused with `unsupported_feature`,
+`details.feature: "action.providers.attach"` and
+`details.reason: "unadvertised"`, and a degraded one sent without the caller's
+opt-in with `capability_degraded` naming the feature
+([Decision 0054](../decisions/0054-register-batch-1.md)). No caller-provided vendor
 URL, wire, command, header, or credential is admitted. See
 [Decision 0028](../decisions/0028-live-model-and-provider-control.md).
 
@@ -628,7 +631,10 @@ implementation conforms if it:
   order, with `queue_position` on each reservation and `active_run_id` naming
   the started run — wherever `active_run_id` cannot carry the answer, and
   states the position each snapshot was captured at when it reports a run's
-  pending set, a removed run, or a session default that a promotion is moving;
+  pending set, a removed run, or a session default that a promotion is moving
+  — an entry stating no position claims its run is blocked on nothing, whatever
+  the descriptor advertises
+  ([Decision 0054](../decisions/0054-register-batch-1.md));
 - applies a reservation's `model_id` at promotion rather than at admission,
   under the mode retained from its admission.
 
