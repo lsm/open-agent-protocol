@@ -6,9 +6,10 @@ validators raise for tool sources, the session catalog, call attribution and
 control-layer-provided tools. Go and Zig name the function in `go/validation/`
 and `zig/src/validation/`, Rust in `rust/validation/src/`. Rust ports none of
 the tool-source or provided-tool rules yet, only the generic tool lifecycle.
-Where the trees disagree, the open items are OPEN-0008-1, OPEN-0008-2 and
+Where the trees disagree, the open items are OPEN-0008-2, OPEN-0008-3 and
 OPEN-0011-1 in
 [`research/validator-divergences.md`](../../research/validator-divergences.md).
+OPEN-0008-1 there is settled by 0008's text and waits only on a Zig fix.
 The 0001 rows continue that heading's numbering in the core file. Format:
 [README](README.md).
 
@@ -225,15 +226,18 @@ Source: [`decisions/0001-agent-control-v0.1-executable-core.md`](../../decisions
 
 ## Divergences
 
-- [OPEN-0008-1](../../research/validator-divergences.md#open-0008-1): Zig judges
-  a reported source's description only for attached sources; Go also judges
-  declared ones.
+- [OPEN-0008-1](../../research/validator-divergences.md#open-0008-1), settled:
+  Zig judges a reported source's description only for attached sources, where
+  0008 and Go also judge declared ones. A Zig port fix.
 - [OPEN-0008-2](../../research/validator-divergences.md#open-0008-2): only Go
   requires a session-scoped catalog to name its session on the envelope, and
   only Go checks `tool_call_id` on the resolve pair.
-- Zig has no owner-change check or permission-resolution tool binding check
-  (rows `0001#one-foreground-invocation-is-one-run/7` and
-  `0001#correlated-reverse-interactions/7`). Go and Rust carry both, and the
-  rows are rule-backed, so this is a port gap rather than an open item.
+- Zig has no owner-change check (row
+  `0001#one-foreground-invocation-is-one-run/7`). 0011 states the rule and Go
+  and Rust carry it, so this is a port gap rather than an open item.
+- [OPEN-0008-3](../../research/validator-divergences.md#open-0008-3): the
+  permission resolution's tool binding (row
+  `0001#correlated-reverse-interactions/7`) is drafted, not stated. Go and
+  Rust judge it and Zig does not.
 - [OPEN-0011-1](../../research/validator-divergences.md#open-0011-1): Zig does
   not read a disclosed `name_pattern`, as 0019 records.

@@ -57,6 +57,26 @@ other two as drafted rules.
 from the pair being session- and run-scoped, and are drafted in
 `drafts/validator-rules/0008-tool-sources.md` as such.
 
+## OPEN-0008-3
+
+**What differs.** A `permission.resolved` event that names a `tool_call_id`
+(on the envelope or in the payload) other than the one its request was bound
+to is `scope_mismatch` in Go (`state.go:interactionResolved`) and Rust
+(`state/interactions.rs:interaction_resolved`). Zig judges neither.
+
+**Decision text.** 0001 § Correlated reverse interactions correlates a
+resolution with its request, but no decision says the tool binding must carry
+over. Decision 0055's scope rule covers responses and the tool-call resolve
+pair, not permission resolution events.
+
+**Options.** (a) Extend 0055's binding rule to every resolution that carries
+`tool_call_id`, and port it to Zig. (b) Leave the binding unjudged, and drop
+the Go and Rust checks.
+
+**Recommendation.** (a). A resolution that moves its tool binding resolves a
+call it was never asked about, the defect 0055 already rules out for the
+resolve pair.
+
 ## OPEN-0011-1
 
 **What differs.** Go refuses a `tools` array naming a tool outside a disclosed
