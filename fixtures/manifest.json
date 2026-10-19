@@ -5345,6 +5345,27 @@
       ]
     },
     {
+      "id": "queue-state-unpositioned-entry-omits-pending-without-queue",
+      "path": "semantic-invalid/queue-state-unpositioned-entry-omits-pending-without-queue.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "session_state_mismatch"
+      ],
+      "units": [
+        "core",
+        "queue"
+      ],
+      "provenance": [
+        "decisions/0054-register-batch-1.md",
+        "decisions/0007-queue-delivery.md"
+      ],
+      "rules": [
+        "0007#a-snapshot-states-the-position-it-was-captured-at/23"
+      ]
+    },
+    {
       "id": "queue-explicit-admitted-start",
       "path": "semantic-invalid/queue-explicit-admitted-start.json",
       "kind": "semantic-invalid",
