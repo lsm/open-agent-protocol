@@ -812,7 +812,10 @@ the effective descriptor changes. The event sets the envelope's
 `capability_revision` to the new revision and carries `previous_revision` plus
 an optional `reason` in its payload. It is an invalidation notice, not a
 descriptor delta. The receiver obtains the new snapshot with
-`capabilities.request`. Dynamic updates and their event are not required for
+`capabilities.request`, and until that response arrives a request citing the
+pre-update revision or exercising an optional feature is stale, except
+initialization, discovery, `run.cancel.request` and the answers to interactions
+already pending ([Decision 0055](../decisions/0055-register-batch-2.md)). Dynamic updates and their event are not required for
 core conformance.
 
 ## Minimum Conformance

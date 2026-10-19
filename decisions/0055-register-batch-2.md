@@ -71,6 +71,21 @@ increases monotonically, no greater than 2^53 − 1 so every JSON reader holds i
 exactly. A cursor of any other form is `undeclared_replay_gap`, because a
 position nobody can read cannot bound the replay.
 
+### A request waits for the refresh `capabilities.updated` owes (OPEN-0001-8)
+
+After `capabilities.updated`, the descriptor a sender holds is no longer the
+endpoint's, and the refresh the notice obliges is a `capabilities.response`
+under the new revision. Until that response, a request that cites the
+pre-update revision, or that exercises an optional feature, is stale
+(`stale_capability_revision`): it was built against capabilities the endpoint
+has just said it no longer has. Exempt are the requests that discover the new
+descriptor — `protocol.initialize.request` and `capabilities.request` — and the
+ones that settle work already in flight: `run.cancel.request`, and the answers
+to interactions already pending (`action.permission.resolve.request`,
+`user.input.resolve.request`, `user.input.cancel.request` and
+`action.call.resolve.request`). Blocking either kind would strand a session in
+the one window where its sender is told to act.
+
 ### `name_pattern` is RE2 and matches the whole name (OPEN-0011-1)
 
 `action.tools.provide`'s `limits.name_pattern` is written in RE2 syntax and
@@ -89,6 +104,9 @@ recorded port gap rather than a divergence.
   (OPEN-0008-2) go to Zig and Rust; Zig gains an RE2-compatible `name_pattern`
   matcher and Rust its provided-tools limits; every tree accepts a cancel of a
   queued reservation and judges the cursor's bound.
+- Go and Rust flag only a submit made before the refresh, and Zig submits and
+  compactions; all three judge the scope above, with a fixture for a stale
+  request and one for each exemption.
 - Go matches `name_pattern` unanchored today, so a pattern `foo` admits
   `xfooy`. Go anchors its match, with a fixture whose tool name contains a
   match without equalling one, and so does any reference adapter that checks
