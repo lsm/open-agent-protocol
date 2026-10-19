@@ -3467,7 +3467,7 @@ pub const Machine = struct {
             for (run.interactions.keys(), run.interactions.values()) |id, held| {
                 if (!held.resolved) try unresolved.put(self.allocator, id, {});
             }
-            if (self.advertisedKey(feature_delivery_queue) and !try self.sameKnown(&unresolved, run, listed)) try self.add(code_session_state_mismatch, index);
+            if (!try self.sameKnown(&unresolved, run, listed)) try self.add(code_session_state_mismatch, index);
             try self.checkEntryAcknowledged(index, entry, run, &unresolved);
             return;
         }
@@ -4214,10 +4214,10 @@ pub const Machine = struct {
                 };
                 const cursor = memberString(recovery, "resume_cursor");
                 if (cursor.len != 0) {
-                    if (std.fmt.parseUnsigned(u64, cursor, 10)) |parsed| {
+                    if (resumeCursor(cursor)) |parsed| {
                         created.cursor = parsed;
                         created.cursor_set = true;
-                    } else |_| try self.add(code_undeclared_replay_gap, index);
+                    } else try self.add(code_undeclared_replay_gap, index);
                 }
                 try self.recoveries.put(self.allocator, session_id, created);
                 try self.bootstrapRecoveredRuns(index, session_id, payload);
@@ -5034,6 +5034,14 @@ const feature_tool_sources_attach = "action.tool_sources.attach";
 const mode_session_open = "session_open";
 const mode_session_live = "session_live";
 const feature_tools_provide = "action.tools.provide";
+
+const max_resume_cursor: u64 = (1 << 53) - 1;
+
+fn resumeCursor(text: []const u8) ?u64 {
+    for (text) |digit| if (!std.ascii.isDigit(digit)) return null;
+    const cursor = std.fmt.parseUnsigned(u64, text, 10) catch return null;
+    return if (cursor <= max_resume_cursor) cursor else null;
+}
 const feature_open_subscribe = "session.open.subscribe";
 
 fn refusesSubscribe(raised: std.json.Value) bool {

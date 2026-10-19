@@ -5381,6 +5381,27 @@
       ]
     },
     {
+      "id": "queue-state-unpositioned-entry-omits-pending-without-queue",
+      "path": "semantic-invalid/queue-state-unpositioned-entry-omits-pending-without-queue.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "session_state_mismatch"
+      ],
+      "units": [
+        "core",
+        "queue"
+      ],
+      "provenance": [
+        "decisions/0054-register-batch-1.md",
+        "decisions/0007-queue-delivery.md"
+      ],
+      "rules": [
+        "0007#a-snapshot-states-the-position-it-was-captured-at/23"
+      ]
+    },
+    {
       "id": "queue-explicit-admitted-start",
       "path": "semantic-invalid/queue-explicit-admitted-start.json",
       "kind": "semantic-invalid",
@@ -7446,6 +7467,64 @@
       "provenance": [
         "drafts/staged-units-graduation.md",
         "decisions/0007-queue-delivery.md"
+      ]
+    },
+    {
+      "id": "recovery-cursor-at-the-json-safe-bound",
+      "path": "valid/recovery-cursor-at-the-json-safe-bound.json",
+      "kind": "positive",
+      "valid": true,
+      "phase": "",
+      "codes": [],
+      "units": [
+        "core"
+      ],
+      "provenance": [
+        "decisions/0055-register-batch-2.md",
+        "decisions/0001-agent-control-v0.1-executable-core.md"
+      ],
+      "rules": [
+        "0055#the-recovery-cursor-is-a-json-safe-sequence-open-0001-7/1"
+      ]
+    },
+    {
+      "id": "recovery-cursor-past-the-json-safe-bound",
+      "path": "semantic-invalid/recovery-cursor-past-the-json-safe-bound.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "undeclared_replay_gap"
+      ],
+      "units": [
+        "core"
+      ],
+      "provenance": [
+        "decisions/0055-register-batch-2.md",
+        "decisions/0001-agent-control-v0.1-executable-core.md"
+      ],
+      "rules": [
+        "0055#the-recovery-cursor-is-a-json-safe-sequence-open-0001-7/1"
+      ]
+    },
+    {
+      "id": "recovery-cursor-with-digit-separators",
+      "path": "semantic-invalid/recovery-cursor-with-digit-separators.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "undeclared_replay_gap"
+      ],
+      "units": [
+        "core"
+      ],
+      "provenance": [
+        "decisions/0055-register-batch-2.md",
+        "decisions/0001-agent-control-v0.1-executable-core.md"
+      ],
+      "rules": [
+        "0055#the-recovery-cursor-is-a-json-safe-sequence-open-0001-7/1"
       ]
     },
     {

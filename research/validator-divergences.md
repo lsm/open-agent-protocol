@@ -34,7 +34,7 @@ admission created (`state.go:apply`).
 - (b) Only a run that has started.
 
 Recommendation: (a), so a reservation can be withdrawn before it promotes.
-Settled by [Decision 0055](../decisions/0055-register-batch-2.md); every tree owes acceptance of a queued run's cancel.
+Settled by [Decision 0055](../decisions/0055-register-batch-2.md). All three trees already accept a queued run's cancel, pinned by `admission-queued-prestart-cancelled` and `queue-busy-cancelled-prestart`, so no port is owed.
 
 ### OPEN-0001-3: does a response stay in its request's scope?
 
@@ -151,8 +151,10 @@ does not judge it.
 - (b) Judge it only where the queue is advertised, as Go and Zig do.
 
 Recommendation: (a). Settled by
-[Decision 0054](../decisions/0054-register-batch-1.md); Go and Zig owe the
-port, removing the gate, with a fixture on an endpoint without the queue.
+[Decision 0054](../decisions/0054-register-batch-1.md). Go and Zig judge it
+without the gate, pinned by
+`queue-state-unpositioned-entry-omits-pending-without-queue`; Rust owes the
+port.
 
 ### OPEN-0007-2: which endpoint "puts entries there at all"?
 
