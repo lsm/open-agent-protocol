@@ -1,5 +1,6 @@
 const std = @import("std");
 const jsonschema = @import("jsonschema");
+const re2 = @import("re2.zig");
 
 pub const code_unmatched_steer = "unmatched_steer";
 pub const code_duplicate_steer = "duplicate_steer";
@@ -492,6 +493,7 @@ const Pending = struct {
     provided: []const []const u8 = &.{},
     tools: ?std.json.Value = null,
     honour: []const u8 = "",
+    unjudged: bool = false,
     attachments: ?std.json.Value = null,
     model_listed: bool = false,
     limit_refusal: ?Expectation = null,
@@ -1211,6 +1213,7 @@ pub const Machine = struct {
         self.limits = readLimits(member(payload, "limits"));
         try self.checkQueueLimits(index);
         try self.checkAttachModes(index);
+        try self.checkProvideLimits(index);
         if (self.duplicate_source.len != 0) try self.add(code_duplicate_tool_source, index);
         try self.checkAttachedCollision(index);
         try self.checkAdvertisement(index, outgoing);
@@ -1661,7 +1664,7 @@ pub const Machine = struct {
         if (attaching) try self.attachExpectations(payload, sources.?, pending);
         if (providing) try self.provideExpectations(payload, tools.?, sources, pending);
         if (pending.attachment != null) pending.limit_refusal = null;
-        if (pending.attachment == null and pending.limit_refusal == null) {
+        if (pending.attachment == null and pending.limit_refusal == null and !pending.unjudged) {
             pending.honour = if (attaching) code_undisclosed_attach_limit else code_undisclosed_provide_limit;
         }
     }
@@ -1907,6 +1910,7 @@ pub const Machine = struct {
                 });
             }
         }
+        if (member(limits, "name_pattern")) |pattern| if (pattern == .string) try self.namePatternViolation(key, pattern.string, tools, pending);
         const dialect = memberString(limits, "schema_dialect");
         if (dialect.len == 0) return;
         for (tools.array.items, 0..) |tool, at| {
@@ -1923,6 +1927,51 @@ pub const Machine = struct {
                 .detail_value = memberString(tool, "name"),
                 .diagnostic = code_unavailable_capability,
             });
+        }
+    }
+
+    fn namePatternViolation(self: *Machine, key: []const u8, pattern: []const u8, tools: std.json.Value, pending: *Pending) !void {
+        var compiled = try re2.compile(self.allocator, pattern);
+        switch (compiled) {
+            .invalid => return,
+            .unsupported => {
+                pending.unjudged = true;
+                return;
+            },
+            .regex => |*regex| {
+                defer regex.deinit();
+                for (tools.array.items, 0..) |tool, at| {
+                    const name = memberString(tool, "name");
+                    const fits = try regex.fullMatch(self.allocator, name) orelse {
+                        pending.unjudged = true;
+                        continue;
+                    };
+                    if (fits) continue;
+                    self.propose(&pending.limit_refusal, .{
+                        .rung = rung_unsatisfiable,
+                        .key = key,
+                        .pointer = try self.pointerAt("/payload/tools", at, "/name"),
+                        .code = error_unsupported_feature,
+                        .reason = reason_unsatisfiable,
+                        .detail_name = "tool",
+                        .detail_value = name,
+                        .diagnostic = code_unavailable_capability,
+                    });
+                }
+            },
+        }
+    }
+
+    fn checkProvideLimits(self: *Machine, index: usize) !void {
+        const support = self.supports.get(feature_tools_provide) orelse return;
+        const limits = member(support, "limits") orelse return;
+        const pattern = member(limits, "name_pattern") orelse return;
+        if (pattern != .string) return;
+        var compiled = try re2.compile(self.allocator, pattern.string);
+        switch (compiled) {
+            .invalid => try self.add(code_undisclosed_provide_limit, index),
+            .regex => |*regex| regex.deinit(),
+            .unsupported => {},
         }
     }
 
@@ -7963,4 +8012,8 @@ test "an idle snapshot names no active run" {
         \\{"type":"session.state.response","id":"t2","in_reply_to":"t1","payload":{"session_id":"s","status":"idle","active_run_id":"run"}},
         \\{"type":"run.completed","id":"e3","run_id":"run","session_id":"s","sequence":2,"payload":{}}]
     , &.{"session_state_mismatch"});
+}
+
+test {
+    _ = re2;
 }

@@ -5,9 +5,7 @@
     "control-call-recovered-ack-omitted",
     "models-current-mismatch",
     "models-held-position-moved-no-model",
-    "open-provide-refused-name-partly-matching-pattern",
-    "payload-decode-usage-past-the-integer-range",
-    "provide-name-pattern-not-re2"
+    "payload-decode-usage-past-the-integer-range"
   ],
   "rust": [
     "attach-advertised-without-modes",

@@ -187,7 +187,7 @@ Source: [`decisions/0011-control-layer-provided-tools.md`](../../decisions/0011-
 | id | rule | lines | code | Go | Zig | Rust |
 | --- | --- | --- | --- | --- | --- | --- |
 | `0011#the-capability-discloses-its-limits-or-it-promises-nothing/1` | A `tools` array that violates no disclosed `max_tools`, `name_pattern` or `schema_dialect`, and no rule above, MUST NOT be refused. | L321–346 | `undisclosed_provide_limit` | `toolsources.go:sessionOpenRequest` | `semantic.zig:sessionOpenRequest` | — |
-| `0011#the-capability-discloses-its-limits-or-it-promises-nothing/2` | A refusal of a `tools` array that exceeds `max_tools`, names a tool outside `name_pattern`, or declares a `$schema` other than the disclosed dialect MUST be `unsupported_feature`, `details.reason: "unsatisfiable"`, `details.tool`. | L321–346; 0055 L74–82 | `unavailable_capability` | `controltools.go:provideLimitViolation` | `semantic.zig:provideLimitViolation` (no `name_pattern`; see OPEN-0011-1) | — |
+| `0011#the-capability-discloses-its-limits-or-it-promises-nothing/2` | A refusal of a `tools` array that exceeds `max_tools`, names a tool outside `name_pattern`, or declares a `$schema` other than the disclosed dialect MUST be `unsupported_feature`, `details.reason: "unsatisfiable"`, `details.tool`. | L321–346; 0055 L74–82 | `unavailable_capability` | `controltools.go:provideLimitViolation` | `semantic.zig:provideLimitViolation`<br>`semantic.zig:namePatternViolation` | — |
 
 ### [0062] An uncompilable `name_pattern` makes the descriptor defective (OPEN-0011-3)
 
@@ -195,7 +195,7 @@ Source: [`decisions/0062-a-name-pattern-that-is-not-re2-is-a-defective-limit.md`
 
 | id | rule | lines | code | Go | Zig | Rust |
 | --- | --- | --- | --- | --- | --- | --- |
-| `0062#an-uncompilable-name_pattern-makes-the-descriptor-defective-open-0011-3/1` | A `capabilities.response` that discloses an `action.tools.provide` `name_pattern` that is not valid RE2 is defective. | L28–33 | `undisclosed_provide_limit` | `controls.go:checkProvideLimits` | — | — |
+| `0062#an-uncompilable-name_pattern-makes-the-descriptor-defective-open-0011-3/1` | A `capabilities.response` that discloses an `action.tools.provide` `name_pattern` that is not valid RE2 is defective. | L28–33 | `undisclosed_provide_limit` | `controls.go:checkProvideLimits` | `semantic.zig:checkProvideLimits` | — |
 
 ### [0011] Recovery reads two lists, because one cannot answer the question
 
@@ -242,5 +242,4 @@ Source: [`decisions/0001-agent-control-v0.1-executable-core.md`](../../decisions
   (OPEN-0008-2, 0055) and the permission resolution's binding check
   (OPEN-0008-3, 0055).
 - Zig lacks the owner-change check, which 0011 states.
-- Go's `name_pattern` match must span the whole name, and Zig owes an
-  RE2-compatible matcher (OPEN-0011-1, 0055).
+- Rust owes the `name_pattern` check (OPEN-0011-1, 0055, 0062).

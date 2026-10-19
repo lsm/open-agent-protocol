@@ -172,8 +172,15 @@ would take to carry it. The list is expected to shrink.
   bounds `max_tools` and `schema_dialect` are ported.
   [Decision 0055](0055-register-batch-2.md) settles what the pattern means: RE2
   syntax, matching whole names, for which Zig owes an RE2-compatible matcher, so
-  this entry is a port gap now, not a divergence. How Zig carries that matcher,
-  by vendoring an engine or otherwise, is still its own decision.
+  this entry is a port gap now, not a divergence. Zig carries it with a
+  hand-written matcher (`zig/src/validation/re2.zig`), not a vendored engine. It
+  implements the RE2 syntax a name pattern uses: literals, `.`, classes,
+  `\d\w\s` and their negations, groups including `(?:` and `(?P<name>`,
+  alternation, anchors, and `* + ? {n,m}`. It rejects what RE2 rejects within
+  that syntax, as Decision 0062 requires, and it stands down on valid syntax
+  outside it (flags, Unicode classes, word boundaries, octal and hex escapes) and
+  on a name outside ASCII. Standing down judges nothing, so Zig can be silent
+  where Go speaks but never contradicts it.
 
 - **Exact decimal comparison of a `fixed_result`.** Go decodes with
   `UseNumber` and compares through `big.Rat`, so it holds the literal. Zig's
