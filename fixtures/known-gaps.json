@@ -332,8 +332,6 @@
     "transcript-load-over-limit",
     "transcript-load-over-the-default-limit",
     "transcript-load-returns-an-entry-twice-out-of-order",
-    "transcript-load-unadvertised",
-    "undeclared-replay-gap",
-    "undeclared-replay-gap-with-a-cursor-that-is-no-sequence"
+    "transcript-load-unadvertised"
   ]
 }
