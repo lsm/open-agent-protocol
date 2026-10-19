@@ -104,8 +104,8 @@ recorded port gap rather than a divergence.
   (OPEN-0008-2) go to Zig and Rust; Zig gains an RE2-compatible `name_pattern`
   matcher and Rust its provided-tools limits; every tree accepts a cancel of a
   queued reservation and judges the cursor's bound.
-- Go and Rust flag only a submit made before the refresh, and Zig submits and
-  compactions; all three judge the scope above, with a fixture for a stale
+- Go and Zig flag a submit or a compaction made before the refresh, and Rust
+  only a submit; all three judge the scope above, with a fixture for a stale
   request and one for each exemption.
 - Go matches `name_pattern` unanchored today, so a pattern `foo` admits
   `xfooy`. Go anchors its match, with a fixture whose tool name contains a
