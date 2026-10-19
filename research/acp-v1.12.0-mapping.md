@@ -93,6 +93,17 @@ So the adapter fills none of the new core members. `thoughtTokens`,
 first-turn core `usage` keeps `input_tokens`, `output_tokens` and
 `total_tokens` as reported. Splitting cache out of `inputTokens`, or reasoning
 into `outputTokens`, would pick one reading of an open upstream question.
-Classification: lossy, recorded. The pinned agent, cagent `v1.150.0`, sends no
+
+Keeping them as reported does not make them 0063's figures, and this record
+says so rather than imply it. Only `total_tokens` means the same thing under
+either reading. `input_tokens` and `output_tokens` carry ACP's own counts, and
+whether they match 0063's definitions is unverified. The one sample in hand,
+the #1090 counts the `usage-fold` case uses, suggests they do not:
+`inputTokens` 7224 plus `outputTokens` 77 is the reported `totalTokens` 7301,
+beside `cachedReadTokens` 6976. That is what an input count including cache
+looks like, the OpenAI convention, against 0063's cache-free `input_tokens`. A
+consumer pricing by 0063 should read these two members as ACP's, not as 0063's.
+Classification: lossy, recorded; the semantics of `input_tokens` and
+`output_tokens` are unverified. The pinned agent, cagent `v1.150.0`, sends no
 prompt-result `usage` at all, so no traced run is affected today. When ACP
 defines the convention, the adapter maps it and this section is superseded.

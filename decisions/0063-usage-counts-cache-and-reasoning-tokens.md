@@ -52,7 +52,11 @@ part moved out, so an OpenAI-style prompt count less its cached tokens becomes
 An adapter extension that reports cache tokens, such as
 `com.anthropic.claude-code.cost`'s `cache_read_input_tokens` and
 `cache_creation_input_tokens`, is deprecated. It stays until its consumers
-read the core members, and an adapter fills both meanwhile.
+read the core members, and an adapter fills both meanwhile, wherever its
+harness's convention says which core member each count belongs to. An
+extension whose harness leaves that open, such as
+`com.agentclientprotocol.turn_usage`, is not deprecated until the harness
+decides.
 
 ## Consequences
 
