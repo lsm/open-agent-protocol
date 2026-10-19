@@ -2475,6 +2475,42 @@ test "parseChunk keeps reading after a chunk it could not read" {
     try std.testing.expectEqualStrings("kept", text.items);
 }
 
+test "parseChunk counts reasoning within the completion, so the parts sum to the wire's own total" {
+    const allocator = std.testing.allocator;
+
+    var text = std.ArrayList(u8).empty;
+    defer text.deinit(allocator);
+    var thinking = std.ArrayList(u8).empty;
+    defer thinking.deinit(allocator);
+    var usage = ai_types.Usage{};
+    var stop_reason: ai_types.StopReason = .stop;
+    var current_block: BlockType = .none;
+    var reasoning_signature: ?[]const u8 = null;
+    defer if (reasoning_signature) |sig| allocator.free(sig);
+    var tool_call_events = std.ArrayList(ToolCallEvent).empty;
+    defer tool_call_events.deinit(allocator);
+    var reasoning_detail_events = std.ArrayList(ReasoningDetailEvent).empty;
+    defer reasoning_detail_events.deinit(allocator);
+
+    _ = try parseChunk(
+        "{\"usage\":{\"prompt_tokens\":100,\"prompt_tokens_details\":{\"cached_tokens\":40},\"completion_tokens\":12,\"completion_tokens_details\":{\"reasoning_tokens\":7},\"total_tokens\":112}}",
+        &text,
+        &thinking,
+        &usage,
+        &stop_reason,
+        &current_block,
+        &reasoning_signature,
+        &tool_call_events,
+        &reasoning_detail_events,
+        allocator,
+    );
+
+    try std.testing.expectEqual(@as(u64, 60), usage.input);
+    try std.testing.expectEqual(@as(u64, 40), usage.cache_read);
+    try std.testing.expectEqual(@as(u64, 12), usage.output);
+    try std.testing.expectEqual(usage.total_tokens, usage.input + usage.cache_read + usage.output);
+}
+
 test "a deepseek request sends past reasoning back as reasoning_content, never as the answer" {
     const allocator = std.testing.allocator;
     const model = ai_types.Model{
