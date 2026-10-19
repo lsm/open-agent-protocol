@@ -1094,6 +1094,8 @@ pub const App = struct {
     quarantine_buffer: std.ArrayList(session_runtime.SessionEvent) = .empty,
     pending_clipboard: ?[]u8 = null,
     interrupt_armed_tick: ?u64 = null,
+    shutdown_runs: usize = 0,
+    draining: bool = false,
     pending_clear_screen: bool = false,
     slash_index: usize = 0,
     slash_index_query: u64 = 0,
@@ -1870,7 +1872,7 @@ pub const App = struct {
                 }
             },
             .login => self.refreshLoginStatus(),
-            .settings => {},
+            .settings, .shutdown => {},
         }
         self.state.mode = .picker;
         self.ensureMenuSelectionVisible();
@@ -1881,7 +1883,7 @@ pub const App = struct {
             .model => if (self.runtime) |runtime| runtime.availableModels().len else 0,
             .login => loginProviderCount(),
             .permission => permission_modes.len,
-            .settings => 2,
+            .settings, .shutdown => 2,
         };
     }
 
@@ -1898,6 +1900,10 @@ pub const App = struct {
                 .badge = if (loginDiscoveryAvailable(row.id)) loginBadge(self.login_status[loginProviderCatalogIndex(row.id).?]) else "unavailable",
             } else .{ .label = "" },
             .permission => .{ .label = @tagName(permission_modes[index]), .detail = TuiModel.permissionModeDetail(permission_modes[index]) },
+            .shutdown => if (index == 0)
+                .{ .label = "Finish, then quit", .detail = "let the active runs end; new work is refused" }
+            else
+                .{ .label = "Quit now", .detail = "stop the active runs" },
             .settings => .{ .label = if (index == 0) "Compact output" else "Automatic worktrees", .detail = if (index == 0) "Reduce tool output in the transcript" else "Create an isolated Git worktree for each session", .badge = if ((if (index == 0) self.mode_settings.compact_output else self.mode_settings.auto_worktree)) "on" else "off" },
         };
     }
@@ -2176,6 +2182,35 @@ pub const App = struct {
     fn applySelectedLogin(self: *App) !void {
         const idx = self.pickerSourceIndex(self.state.menu_index) orelse return;
         try self.startLoginProviderIndex(idx);
+    }
+
+    fn askShutdown(self: *App, mode: ?session_runtime.ShutdownMode) bool {
+        const runtime = self.runtime orelse return true;
+        const answer = (runtime.shutdown(mode) catch |err| {
+            self.recordError(@errorName(err)) catch {};
+            return true;
+        }) orelse return true;
+        switch (answer) {
+            .stopping => return true,
+            .draining => |runs| {
+                self.draining = true;
+                const note = std.fmt.allocPrint(self.allocator, "Waiting for {d} active run(s) to finish before quitting; quit again to stop them now.", .{runs}) catch return false;
+                defer self.allocator.free(note);
+                self.state.appendNotice(note) catch {};
+                return false;
+            },
+            .choose => |runs| {
+                self.shutdown_runs = runs;
+                self.openPicker(.shutdown);
+                return false;
+            },
+        }
+    }
+
+    fn applyShutdownChoice(self: *App) bool {
+        const index = self.pickerSourceIndex(self.state.menu_index) orelse return false;
+        self.state.mode = .normal;
+        return self.askShutdown(if (index == 0) .graceful else .force);
     }
 
     fn applySelectedPermission(self: *App) !void {
@@ -4531,6 +4566,7 @@ pub const TuiModel = struct {
                             .login => app.applySelectedLogin() catch |err| app.recordError(@errorName(err)) catch {},
                             .permission => app.applySelectedPermission() catch |err| app.recordError(@errorName(err)) catch {},
                             .settings => if (app.pickerSourceIndex(app.state.menu_index)) |index| app.toggleSetting(index) catch |err| app.recordError(@errorName(err)) catch {},
+                            .shutdown => if (app.applyShutdownChoice()) return self.leave(app, ctx),
                         },
                         .escape => closeModal(app),
                         else => {},
@@ -4661,6 +4697,7 @@ pub const TuiModel = struct {
                 if (app.interrupt_armed_tick) |armed| {
                     if (app.state.anim_tick -% armed > interrupt_window_ticks) app.interrupt_armed_tick = null;
                 }
+                if (app.draining) if (app.runtime) |runtime| if (runtime.shutdownComplete()) return self.leave(app, ctx);
                 if (app.state.anim_tick % branch_refresh_ticks == 0) {
                     app.refreshBranchOnSlowTick() catch |err| app.recordError(@errorName(err)) catch {};
                 }
@@ -4679,6 +4716,11 @@ pub const TuiModel = struct {
     }
 
     fn quitCmd(self: *TuiModel, app: *App, ctx: *zz.Context) zz.Cmd(Msg) {
+        if (!app.askShutdown(if (app.draining) .force else null)) return .none;
+        return self.leave(app, ctx);
+    }
+
+    fn leave(self: *TuiModel, app: *App, ctx: *zz.Context) zz.Cmd(Msg) {
         self.flushInlineHistory(app, ctx, true) catch {};
         return .quit;
     }
@@ -4961,6 +5003,7 @@ pub const TuiModel = struct {
             .login => "Login provider",
             .permission => "Tool permissions",
             .settings => "TUI settings",
+            .shutdown => "Runs are still active",
         };
         const empty_message = if (filter.len > 0)
             try tui_text.truncateLineToWidth(allocator, try std.fmt.allocPrint(allocator, "  nothing matches \"{s}\"", .{filter}), width -| 4)
@@ -6353,6 +6396,70 @@ test "TuiModel Ctrl+C clears a draft first and quits on the second press" {
 
     const second = model.update(.{ .key = .{ .key = .{ .char = 'c' }, .modifiers = .{ .ctrl = true } } }, &tctx.ctx);
     try std.testing.expectEqual(zz.Cmd(TuiModel.Msg).quit, second);
+}
+
+fn leaves(cmd: zz.Cmd(TuiModel.Msg)) bool {
+    return switch (cmd) {
+        .quit => true,
+        .batch => |cmds| for (cmds) |held| {
+            if (std.meta.activeTag(held) == .quit) break true;
+        } else false,
+        else => false,
+    };
+}
+
+const QuitEnding = enum { now, quit_again, run_ends };
+
+fn quitWithRunActive(ending: QuitEnding) !void {
+    var provider = fixture_provider.MockProvider.init(.{ .steps = &.{.{ .wait_for_cancel = {} }} });
+    const models = [_]ai_types.Model{defaultModel()};
+    const execution = try tui_oap_execution.OapExecution.create(std.testing.allocator, .{ .protocol = provider.protocolClient(), .models = &models });
+    defer execution.destroy();
+    var model = TuiModel{ .app = try App.init(std.testing.allocator, .{ .models = &models, .remote = execution.remote() }) };
+    defer model.deinit();
+    var tctx: TestContext = undefined;
+    tctx.setup();
+    defer tctx.deinit();
+    const app = &model.app.?;
+    defer app.runtime.?.cancel();
+
+    try app.runtime.?.submitTurn("wait");
+
+    try std.testing.expect(!leaves(model.update(.quit, &tctx.ctx)));
+    try std.testing.expectEqual(tui_state.AppMode.picker, app.state.mode);
+    try std.testing.expectEqual(tui_state.PickerKind.shutdown, app.state.picker_kind);
+    try std.testing.expectEqual(@as(usize, 1), app.shutdown_runs);
+
+    app.state.menu_index = if (ending == .now) 1 else 0;
+    const chosen = model.update(.{ .key = .{ .key = .enter } }, &tctx.ctx);
+    if (ending == .now) {
+        try std.testing.expect(leaves(chosen));
+        return;
+    }
+    try std.testing.expect(!leaves(chosen));
+    try std.testing.expect(app.draining);
+    try std.testing.expectEqual(tui_state.AppMode.normal, app.state.mode);
+    try std.testing.expect(!leaves(model.update(.{ .tick = .{ .timestamp = 0, .delta = 0 } }, &tctx.ctx)));
+    if (ending == .quit_again) return std.testing.expect(leaves(model.update(.quit, &tctx.ctx)));
+    app.runtime.?.cancel();
+    var ticks: usize = 0;
+    while (ticks < 2000) : (ticks += 1) {
+        if (leaves(model.update(.{ .tick = .{ .timestamp = 0, .delta = 0 } }, &tctx.ctx))) return;
+        std.testing.io.sleep(.fromNanoseconds(std.time.ns_per_ms), .boot) catch {};
+    }
+    return error.TestDrainNeverLeft;
+}
+
+test "quitting with a run active asks how, and quitting now leaves at once" {
+    try quitWithRunActive(.now);
+}
+
+test "quitting with a run active and choosing to let it finish waits, and quitting again stops it" {
+    try quitWithRunActive(.quit_again);
+}
+
+test "quitting with a run active and choosing to let it finish leaves once the run ends" {
+    try quitWithRunActive(.run_ends);
 }
 
 test "TuiModel Ctrl+C quits immediately on an empty idle composer" {

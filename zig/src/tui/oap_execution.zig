@@ -83,6 +83,8 @@ pub const OapExecution = struct {
     closed_messages: usize = 0,
     awaiting_promotion: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
     cancelling: bool = false,
+    shutdown_answer: ?session_runtime.Shutdown = null,
+    shut_down: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
 
     const QueuedRun = struct {
         text: []u8,
@@ -286,6 +288,8 @@ pub const OapExecution = struct {
         .steers_settled = steersSettled,
         .tool_labels = toolLabels,
         .stop = stop,
+        .shutdown = shutdown,
+        .shutdown_complete = shutdownComplete,
     };
 
     fn cast(ctx: *anyopaque) *OapExecution {
@@ -1223,6 +1227,46 @@ pub const OapExecution = struct {
         cast(ctx).halt();
     }
 
+    fn shutdown(ctx: *anyopaque, mode: ?session_runtime.ShutdownMode) anyerror!?session_runtime.Shutdown {
+        const self = cast(ctx);
+        if (self.hub != null or self.endpoint == null or self.thread == null) return null;
+        var scratch = std.heap.ArenaAllocator.init(self.allocator);
+        defer scratch.deinit();
+        const a = scratch.allocator();
+        var payload = Map.init(a);
+        if (mode) |chosen| try payload.put("mode", .{ .string = @tagName(chosen) });
+        const id = try self.reserveId(a, "shutdown");
+        const line = try self.allocator.dupe(u8, try self.envelope(a, "endpoint.shutdown.request", id, payload.value(), false, null));
+        self.lockInbound();
+        self.shutdown_answer = null;
+        self.inbound.append(self.allocator, line) catch |err| {
+            self.inbound_mutex.unlock();
+            self.allocator.free(line);
+            return err;
+        };
+        self.inbound_mutex.unlock();
+        var attempts: usize = 0;
+        while (attempts < startup_attempts) : (attempts += 1) {
+            self.lockInbound();
+            const answer = self.shutdown_answer;
+            self.shutdown_answer = null;
+            self.inbound_mutex.unlock();
+            if (answer) |held| return held;
+            compat.time.sleepNs(std.time.ns_per_ms);
+        }
+        return error.OapRequestUnanswered;
+    }
+
+    fn shutdownComplete(ctx: *anyopaque) bool {
+        return cast(ctx).shut_down.load(.acquire);
+    }
+
+    fn answerShutdown(self: *OapExecution, answer: session_runtime.Shutdown) void {
+        self.lockInbound();
+        defer self.inbound_mutex.unlock();
+        self.shutdown_answer = answer;
+    }
+
     fn halt(self: *OapExecution) void {
         self.stopping.store(true, .release);
         if (self.thread) |thread| {
@@ -1301,6 +1345,9 @@ pub const OapExecution = struct {
             try self.translateLine(line);
             moved = true;
         }
+        if (self.hub == null) if (self.endpoint) |*endpoint| {
+            if (endpoint.shutdown != null and try endpoint.shutdownComplete()) self.shut_down.store(true, .release);
+        };
         return moved;
     }
 
@@ -1375,8 +1422,17 @@ pub const OapExecution = struct {
         }
         const kind = stringOf(root, "type") orelse return;
         const payload = if (root.get("payload")) |value| (if (value == .object) value.object else null) else null;
+        if (std.mem.eql(u8, kind, "endpoint.shutdown.response")) {
+            const body = payload orelse return self.answerShutdown(.stopping);
+            const runs = if (body.get("active_runs")) |listed| (if (listed == .array) listed.array.items.len else 0) else 0;
+            const outcome = stringOf(body, "outcome") orelse "";
+            if (std.mem.eql(u8, outcome, "choose")) return self.answerShutdown(.{ .choose = runs });
+            if (std.mem.eql(u8, outcome, "draining")) return self.answerShutdown(.{ .draining = runs });
+            return self.answerShutdown(.stopping);
+        }
         if (std.mem.eql(u8, kind, "error.response")) {
             const reply_to = stringOf(root, "in_reply_to") orelse "";
+            if (std.mem.startsWith(u8, reply_to, "shutdown-")) return self.answerShutdown(.stopping);
             const message = if (payload) |body| errorMessage(body) else "the endpoint refused the request";
             if (std.mem.startsWith(u8, reply_to, "settings-")) {
                 self.lockInbound();
@@ -2178,6 +2234,70 @@ test "cancelling a turn over OAP ends it cancelled and the next turn runs on the
     defer next.deinit();
     try drainTurn(&runtime, &next);
     try testing.expectEqual(@as(?session_events.SessionEndReason, .completed), next.end);
+}
+
+fn waitForShutdown(runtime: *session_runtime.SessionRuntime) bool {
+    var waits: usize = 0;
+    while (waits < 2000) : (waits += 1) {
+        if (runtime.shutdownComplete()) return true;
+        std.testing.io.sleep(.fromNanoseconds(std.time.ns_per_ms), .boot) catch {};
+    }
+    return false;
+}
+
+test "a shutdown over the in-process endpoint asks while a run is active, then drains it gracefully and completes once it ends" {
+    var script = Script{ .wait_for_cancel = true };
+    var execution: *OapExecution = undefined;
+    var runtime = try remoteRuntime(&script, &execution, .low);
+    defer execution.destroy();
+    defer runtime.deinit();
+
+    try runtime.submitTurn("wait");
+    waitForRun(execution);
+    try testing.expectEqual(@as(?session_runtime.Shutdown, .{ .choose = 1 }), try runtime.shutdown(null));
+    try testing.expect(!runtime.shutdownComplete());
+    try testing.expectEqual(@as(?session_runtime.Shutdown, .{ .draining = 1 }), try runtime.shutdown(.graceful));
+    try testing.expect(!runtime.shutdownComplete());
+    runtime.cancel();
+    var cancelled = Seen{};
+    defer cancelled.deinit();
+    try drainTurn(&runtime, &cancelled);
+    try testing.expect(waitForShutdown(&runtime));
+}
+
+test "a forced shutdown over the in-process endpoint stops at once with a run still active" {
+    var script = Script{ .wait_for_cancel = true };
+    var execution: *OapExecution = undefined;
+    var runtime = try remoteRuntime(&script, &execution, .low);
+    defer execution.destroy();
+    defer runtime.deinit();
+
+    try runtime.submitTurn("wait");
+    waitForRun(execution);
+    try testing.expectEqual(@as(?session_runtime.Shutdown, .stopping), try runtime.shutdown(.force));
+    try testing.expect(waitForShutdown(&runtime));
+    runtime.cancel();
+}
+
+test "a shutdown with nothing running over the in-process endpoint stops without asking" {
+    var script = Script{};
+    var execution: *OapExecution = undefined;
+    var runtime = try remoteRuntime(&script, &execution, .low);
+    defer execution.destroy();
+    defer runtime.deinit();
+
+    try runtime.submitTurn("hello");
+    var seen = Seen{};
+    defer seen.deinit();
+    try drainTurn(&runtime, &seen);
+    try testing.expectEqual(@as(?session_runtime.Shutdown, .stopping), try runtime.shutdown(null));
+    try testing.expect(waitForShutdown(&runtime));
+}
+
+test "a hub-attached session has no endpoint of its own to shut down, so quitting only detaches" {
+    const execution = try OapExecution.attach(testing.allocator, "http://127.0.0.1:1", "memory");
+    defer execution.destroy();
+    try testing.expectEqual(@as(?session_runtime.Shutdown, null), try execution.remote().vtable.shutdown(execution, null));
 }
 
 fn waitForRun(execution: *OapExecution) void {

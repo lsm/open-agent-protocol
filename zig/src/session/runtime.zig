@@ -44,6 +44,14 @@ pub const RemoteSettings = struct {
     resume_session_id: ?[]const u8 = null,
 };
 
+pub const ShutdownMode = enum { graceful, force };
+
+pub const Shutdown = union(enum) {
+    choose: usize,
+    draining: usize,
+    stopping,
+};
+
 pub const ToolLabel = struct {
     name: []const u8,
     label: []const u8,
@@ -77,6 +85,8 @@ pub const RemoteExecution = struct {
         steers_settled: *const fn (ctx: *anyopaque) u64,
         tool_labels: *const fn (ctx: *anyopaque) []const ToolLabel,
         stop: *const fn (ctx: *anyopaque) void,
+        shutdown: *const fn (ctx: *anyopaque, mode: ?ShutdownMode) anyerror!?Shutdown,
+        shutdown_complete: *const fn (ctx: *anyopaque) bool,
     };
 };
 
@@ -701,6 +711,16 @@ pub const SessionRuntime = struct {
         self.suspended_context_window = held;
         self.context_window = null;
         self.context_window_refused = held;
+    }
+
+    pub fn shutdown(self: *SessionRuntime, mode: ?ShutdownMode) !?Shutdown {
+        const remote = self.remote orelse return null;
+        return remote.vtable.shutdown(remote.ctx, mode);
+    }
+
+    pub fn shutdownComplete(self: *SessionRuntime) bool {
+        const remote = self.remote orelse return true;
+        return remote.vtable.shutdown_complete(remote.ctx);
     }
 
     pub fn toolLabels(self: *SessionRuntime) []const ToolLabel {
