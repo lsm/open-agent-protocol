@@ -80,11 +80,11 @@ impl Envelope {
     }
 }
 
-fn member<T: DeserializeOwned>(raw: &RawValue) -> serde_json::Result<T> {
+pub(crate) fn member<T: DeserializeOwned>(raw: &RawValue) -> serde_json::Result<T> {
     serde_json::from_str(raw.get())
 }
 
-fn counter<T: DeserializeOwned>(raw: &RawValue) -> serde_json::Result<Option<T>> {
+pub(crate) fn counter<T: DeserializeOwned>(raw: &RawValue) -> serde_json::Result<Option<T>> {
     member(raw).or_else(|err| match integral_spelling(raw.get()) {
         Some(spelled) => serde_json::from_str(&spelled).map_err(|_| err),
         None => Err(err),
