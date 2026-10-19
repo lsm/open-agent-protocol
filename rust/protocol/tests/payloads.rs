@@ -1,0 +1,162 @@
+use std::path::PathBuf;
+
+use oap_protocol::*;
+use serde::de::DeserializeOwned;
+use serde::Serialize;
+use serde_json::Value;
+
+fn fixtures() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../fixtures")
+}
+
+fn round_trip<T: DeserializeOwned + Serialize>(payload: &Value) -> Value {
+    let typed: T = serde_json::from_value(payload.clone()).unwrap();
+    serde_json::to_value(typed).unwrap()
+}
+
+fn reencoded(envelope_type: &str, payload: &Value) -> Option<Value> {
+    Some(match envelope_type {
+        "user.input.requested" => round_trip::<UserInputRequestedPayload>(payload),
+        "user.input.resolve.request" => round_trip::<UserInputResolveRequest>(payload),
+        "user.input.resolve.response" | "user.input.cancel.response" => {
+            round_trip::<UserInputResolveResponse>(payload)
+        }
+        "user.input.resolved" => round_trip::<UserInputResolvedPayload>(payload),
+        "user.input.cancel.request" => round_trip::<UserInputCancelRequest>(payload),
+        "error.response" => round_trip::<ErrorResponse>(payload),
+        _ => return None,
+    })
+}
+
+#[test]
+fn every_interaction_and_error_payload_in_the_positive_fixtures_round_trips() {
+    let manifest: Value =
+        serde_json::from_slice(&std::fs::read(fixtures().join("manifest.json")).unwrap()).unwrap();
+    let mut judged = 0;
+    let mut differing = Vec::new();
+    for entry in manifest["fixtures"].as_array().unwrap() {
+        if entry["kind"] != "positive"
+            || entry
+                .get("profile")
+                .is_some_and(|p| p != "agent-control-core")
+        {
+            continue;
+        }
+        let path = entry["path"].as_str().unwrap();
+        let trace: Value =
+            serde_json::from_slice(&std::fs::read(fixtures().join(path)).unwrap()).unwrap();
+        let Value::Array(envelopes) = trace else {
+            continue;
+        };
+        for envelope in envelopes {
+            let envelope_type = envelope["type"].as_str().unwrap_or_default();
+            let Some(back) = reencoded(envelope_type, &envelope["payload"]) else {
+                continue;
+            };
+            judged += 1;
+            if back != envelope["payload"] {
+                differing.push(format!(
+                    "{path} {envelope_type}\n  in  {}\n  out {back}",
+                    envelope["payload"]
+                ));
+            }
+        }
+    }
+    assert!(
+        differing.is_empty(),
+        "{} differ:\n{}",
+        differing.len(),
+        differing.join("\n")
+    );
+    assert!(judged >= 70, "judged only {judged} payloads");
+}
+
+#[test]
+fn a_part_spells_text_only_for_a_text_part_and_reasoning_only_for_a_reasoning_part() {
+    let text = ContentPart {
+        part_type: ContentPartType::TEXT,
+        ..ContentPart::default()
+    };
+    assert_eq!(
+        serde_json::to_value(&text).unwrap(),
+        serde_json::json!({"type": "text", "text": ""})
+    );
+    let reasoning = ContentPart {
+        part_type: ContentPartType::REASONING,
+        text: "stray".into(),
+        ..ContentPart::default()
+    };
+    assert_eq!(
+        serde_json::to_value(&reasoning).unwrap(),
+        serde_json::json!({"type": "reasoning", "reasoning": ""})
+    );
+}
+
+#[test]
+fn a_carry_survives_a_round_trip_and_a_part_without_one_spells_none() {
+    for raw in [
+        r#"{"type":"reasoning","reasoning":"thinking","carry":"sig-1"}"#,
+        r#"{"type":"tool_call","tool_call_id":"t1","name":"search","arguments_json":{"q":"zig"},"carry":"sig-2"}"#,
+    ] {
+        let part: ContentPart = serde_json::from_str(raw).unwrap();
+        assert!(!part.carry.is_empty());
+        assert_eq!(
+            serde_json::to_value(&part).unwrap(),
+            serde_json::from_str::<Value>(raw).unwrap()
+        );
+    }
+    let plain = ContentPart {
+        part_type: ContentPartType::TEXT,
+        text: "hello".into(),
+        ..ContentPart::default()
+    };
+    assert!(!serde_json::to_string(&plain).unwrap().contains("carry"));
+}
+
+#[test]
+fn zero_values_go_omits_are_omitted() {
+    let recovery = RecoveryMetadata {
+        recovered: false,
+        ..RecoveryMetadata::default()
+    };
+    assert_eq!(
+        serde_json::to_value(&recovery).unwrap(),
+        serde_json::json!({})
+    );
+    assert_eq!(
+        serde_json::to_value(Usage::default()).unwrap(),
+        serde_json::json!({})
+    );
+}
+
+#[test]
+fn message_content_reads_as_text_or_parts() {
+    assert_eq!(
+        MessageContent::from_text("hi").text().as_deref(),
+        Some("hi")
+    );
+    let parts = MessageContent::from_parts(&[ContentPart {
+        part_type: ContentPartType::TEXT,
+        text: "a".into(),
+        ..ContentPart::default()
+    }]);
+    assert!(parts.text().is_none());
+    assert_eq!(parts.parts().unwrap()[0].text, "a");
+    assert_eq!(MessageContent::default().raw().get(), "null");
+}
+
+#[test]
+fn an_unlisted_vocabulary_word_is_kept_rather_than_refused() {
+    let resolved: UserInputResolvedPayload =
+        serde_json::from_value(serde_json::json!({"status": "deferred"})).unwrap();
+    assert_eq!(resolved.status, "deferred");
+}
+
+#[test]
+fn a_present_null_raw_member_is_kept() {
+    let part = serde_json::json!({"type": "tool_result", "tool_call_id": "t", "result": null});
+    assert_eq!(
+        serde_json::to_value(serde_json::from_value::<ContentPart>(part.clone()).unwrap()).unwrap(),
+        part
+    );
+}
