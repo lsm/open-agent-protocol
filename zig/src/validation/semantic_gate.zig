@@ -26,6 +26,7 @@ fn joined(allocator: std.mem.Allocator, codes: [][]const u8) ![]u8 {
     std.mem.sort([]const u8, codes, {}, lessThan);
     var out = std.ArrayList(u8).empty;
     for (codes, 0..) |code, at| {
+        if (at != 0 and std.mem.eql(u8, codes[at - 1], code)) continue;
         if (at != 0) try out.append(allocator, ' ');
         try out.appendSlice(allocator, code);
     }
