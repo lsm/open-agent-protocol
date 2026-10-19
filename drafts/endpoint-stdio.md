@@ -176,7 +176,9 @@ is the session's lifetime:
 - **stdin EOF** is the close. The endpoint stops accepting requests, settles
   what it already admitted, flushes stdout, and exits **0** after every
   co-hosted profile has also completed clean shutdown.
-- **SIGINT / SIGTERM** behave as EOF.
+- **SIGINT / SIGTERM** start the shutdown above: the first is graceful and
+  also waits for co-hosted provider inferences and auth flows, the second
+  forces. `goap serve agent` still ends on the first, as at EOF.
 - A teardown that cannot deliver what the endpoint already admitted, within a
   bounded window, exits **non-zero**. This is the hung-up host: one that closed
   its stdin but stopped reading its stdout, so the pipe fills and the last

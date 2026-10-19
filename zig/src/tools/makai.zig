@@ -5076,8 +5076,9 @@ fn runOapxServe(
         if (try writeOapAuthOutbound(&output, allocator, &auth_adapter)) did_work = true;
         if (serve_provider and try drainOapProviderOutbound(&output, allocator, &provider_server)) did_work = true;
 
-        if (try endpoint.shutdownComplete()) break;
-        if (oapInputDrained(stdin_stream) and !did_work and running_inferences.items.len == 0 and oap_auth_server.activeFlowCount() == 0) break;
+        const co_hosted_idle = running_inferences.items.len == 0 and oap_auth_server.activeFlowCount() == 0;
+        if (try endpoint.shutdownComplete() and (endpoint.shutdown == .force or co_hosted_idle)) break;
+        if (oapInputDrained(stdin_stream) and !did_work and co_hosted_idle) break;
         if (!did_work) compat.time.sleepNs(STDIO_IDLE_SLEEP_NS);
     }
     try endpoint.finish(if (endpoint.shutdown == .force) 0 else adapter_endpoint.default_settle_window_ns, backendClock);
