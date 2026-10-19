@@ -370,6 +370,29 @@ const AdmissionClaim = struct {
     request: []const u8,
     accounted: []const []const u8 = &.{},
     index: usize,
+    lead: ?usize = null,
+    done: bool = false,
+};
+
+const LedEntry = struct {
+    entry: std.json.Value,
+    payload: std.json.Value,
+    index: usize,
+    queue_ahead: u64,
+    executing: []const u8 = "",
+    group: usize = 0,
+    classify: bool = false,
+    resolved: bool = false,
+    reservation: bool = false,
+    judged: bool = false,
+    run: []const u8 = "",
+    order: usize = 0,
+};
+
+const LedGroup = struct {
+    first: usize,
+    len: usize,
+    settled: bool = false,
 };
 
 const CaptureClaim = struct {
@@ -667,6 +690,8 @@ pub const Machine = struct {
     current_sequence: u64 = 0,
     capture_claims: std.ArrayList(CaptureClaim) = .empty,
     admission_claims: std.ArrayList(AdmissionClaim) = .empty,
+    led_entries: std.ArrayList(LedEntry) = .empty,
+    led_groups: std.ArrayList(LedGroup) = .empty,
     capabilities_stale: bool = false,
     limits: ?Limits = null,
     windows: std.StringArrayHashMapUnmanaged(*Window) = .empty,
@@ -692,6 +717,8 @@ pub const Machine = struct {
         self.queue_claims.deinit(self.allocator);
         self.capture_claims.deinit(self.allocator);
         self.admission_claims.deinit(self.allocator);
+        self.led_entries.deinit(self.allocator);
+        self.led_groups.deinit(self.allocator);
         self.participants.deinit(self.allocator);
         self.auth_flows.deinit(self.allocator);
         self.requests.deinit(self.allocator);
@@ -3524,7 +3551,9 @@ pub const Machine = struct {
         var started: []const u8 = "";
         var started_entry: std.json.Value = .{ .null = {} };
         var reservation_listed = false;
-        var anchored = false;
+        var unresolved = false;
+        var leads: usize = 0;
+        const led_first = self.led_entries.items.len;
         var last_order: ?usize = null;
         var queue_place: u64 = 0;
         for (entries) |entry| {
@@ -3537,12 +3566,30 @@ pub const Machine = struct {
             if (settled.contains(run_id)) continue;
             const known = self.runs.get(run_id);
             if (known == null or !std.mem.eql(u8, known.?.session, session_id)) {
-                const anchors = member(entry, "admitted_submit_requests");
-                if (anchors != null and anchors.? == .array and anchors.?.array.items.len != 0) {
-                    anchored = true;
+                if (!self.pendingAnchors(entry, session_id)) {
+                    try self.add(code_session_state_mismatch, index);
                     continue;
                 }
-                try self.add(code_session_state_mismatch, index);
+                const lead_at = self.led_entries.items.len;
+                var lead: LedEntry = .{ .entry = entry, .payload = payload, .index = index, .queue_ahead = queue_place };
+                var kept = true;
+                const lead_status = memberString(entry, "status");
+                if (terminalStatus(lead_status)) {
+                    try self.add(code_session_state_mismatch, index);
+                    kept = false;
+                } else if (std.mem.eql(u8, lead_status, "queued") or std.mem.eql(u8, lead_status, "cancelling")) {
+                    unresolved = true;
+                    lead.classify = true;
+                } else {
+                    try self.markExecuting(index, reservation_listed, &started, &started_entry, entry);
+                    lead.resolved = true;
+                    if (member(entry, "queue_position") != null) try self.add(code_session_state_mismatch, index);
+                }
+                for (member(entry, "admitted_submit_requests").?.array.items) |anchor| {
+                    try self.admission_claims.append(self.allocator, .{ .session = session_id, .run = run_id, .request = anchor.string, .index = index, .lead = if (kept) lead_at else null });
+                }
+                if (kept) try self.led_entries.append(self.allocator, lead);
+                leads += 1;
                 continue;
             }
             const run = known.?;
@@ -3552,7 +3599,7 @@ pub const Machine = struct {
                 continue;
             }
             if (run.terminal and position != null and position.? + 1 >= run.next) try self.add(code_session_state_mismatch, index);
-            if ((last_order != null and run.order <= last_order.?) or anchored) try self.add(code_session_state_mismatch, index);
+            if ((last_order != null and run.order <= last_order.?) or leads > 0) try self.add(code_session_state_mismatch, index);
             last_order = run.order;
             const status = memberString(entry, "status");
             const cancelling = std.mem.eql(u8, status, "cancelling");
@@ -3580,15 +3627,7 @@ pub const Machine = struct {
                 try self.add(code_session_state_mismatch, index);
             }
             if (reservation) reservation_listed = true;
-            if (!reservation and !ended) {
-                if (reservation_listed) try self.add(code_session_state_mismatch, index);
-                if (started.len != 0) {
-                    try self.add(code_session_state_mismatch, index);
-                } else {
-                    started = run_id;
-                    started_entry = entry;
-                }
-            }
+            if (!reservation and !ended) try self.markExecuting(index, reservation_listed, &started, &started_entry, entry);
             if (ended) {
                 try self.add(code_session_state_mismatch, index);
             } else if (std.mem.eql(u8, status, "queued") and run.started and (position == null or position.? >= run.start_sequence)) {
@@ -3597,10 +3636,143 @@ pub const Machine = struct {
             try self.checkEntryPending(index, entry, run, position);
             try self.checkEntryAnchor(index, session_id, entry, run);
         }
-        if (anchored) return;
+        if (self.led_entries.items.len > led_first) {
+            const group = self.led_groups.items.len;
+            for (self.led_entries.items[led_first..]) |*lead| {
+                lead.group = group;
+                lead.executing = started;
+            }
+            try self.led_groups.append(self.allocator, .{ .first = led_first, .len = self.led_entries.items.len - led_first });
+        }
         const active = memberString(payload, "active_run_id");
         if (started.len != 0 and !std.mem.eql(u8, active, started)) try self.add(code_session_state_mismatch, index);
-        if (started.len == 0 and entries.len != 0 and active.len != 0) try self.add(code_session_state_mismatch, index);
+        if (started.len == 0 and !unresolved and entries.len != 0 and active.len != 0) try self.add(code_session_state_mismatch, index);
+        try self.listedStatus(index, payload, started, started_entry, reservation_listed and !unresolved);
+    }
+
+    fn markExecuting(self: *Machine, index: usize, reservation_listed: bool, started: *[]const u8, started_entry: *std.json.Value, entry: std.json.Value) !void {
+        if (reservation_listed) try self.add(code_session_state_mismatch, index);
+        if (started.*.len != 0) {
+            try self.add(code_session_state_mismatch, index);
+            return;
+        }
+        started.* = memberString(entry, "run_id");
+        started_entry.* = entry;
+    }
+
+    fn pendingAnchors(self: *const Machine, entry: std.json.Value, session_id: []const u8) bool {
+        const anchors = member(entry, "admitted_submit_requests") orelse return false;
+        if (anchors != .array or anchors.array.items.len == 0) return false;
+        for (anchors.array.items) |anchor| {
+            if (anchor != .string or self.namesSubmitRequest(anchor.string, session_id, "") != .pending) return false;
+        }
+        return true;
+    }
+
+    fn admitLedEntries(self: *Machine, run: *Run) !void {
+        for (self.admission_claims.items) |*claim| {
+            if (claim.done or claim.lead == null or !std.mem.eql(u8, claim.request, run.submit_request)) continue;
+            claim.done = true;
+            if (!std.mem.eql(u8, claim.run, run.id) or !std.mem.eql(u8, run.session, claim.session)) {
+                try self.judgeAdmissionClaim(claim.*);
+                continue;
+            }
+            try self.judgeLedEntry(claim.lead.?, run);
+        }
+    }
+
+    fn judgeLedEntry(self: *Machine, at: usize, run: *Run) !void {
+        const lead = self.led_entries.items[at];
+        try self.checkEntryPending(lead.index, lead.entry, run, unsigned(lead.entry, "as_of_sequence"));
+        self.led_entries.items[at].run = run.id;
+        self.led_entries.items[at].order = run.order;
+        if (!lead.classify) {
+            if (run.admitted_queued and !run.started) try self.queue_claims.append(self.allocator, .{ .run = run.id, .queued = false, .index = lead.index });
+            return;
+        }
+        const status = memberString(lead.entry, "status");
+        var reservation = false;
+        if (!run.admitted_queued) {
+            if (std.mem.eql(u8, status, "queued")) try self.add(code_session_state_mismatch, lead.index);
+        } else if (std.mem.eql(u8, status, "queued")) {
+            reservation = true;
+        } else {
+            const position = unsigned(lead.entry, "as_of_sequence");
+            reservation = position == null or member(lead.entry, "queue_position") != null;
+            if (position != null) try self.queue_claims.append(self.allocator, .{ .run = run.id, .queued = false, .sequence = position.?, .stated = true, .held = reservation, .index = lead.index });
+        }
+        if (!reservation and member(lead.entry, "queue_position") != null) try self.add(code_session_state_mismatch, lead.index);
+        self.led_entries.items[at].resolved = true;
+        self.led_entries.items[at].reservation = reservation;
+        try self.settleLedGroup(lead.group, false);
+    }
+
+    fn settleLedGroup(self: *Machine, at: usize, final: bool) !void {
+        const group = self.led_groups.items[at];
+        const claims = self.led_entries.items[group.first .. group.first + group.len];
+        var reservations: u64 = 0;
+        for (claims, 0..) |*claim, place| {
+            if (!claim.resolved or claim.judged) {
+                if (claim.resolved and claim.reservation) reservations += 1;
+                continue;
+            }
+            var unknown: u64 = 0;
+            for (claims[0..place]) |ahead| {
+                if (!ahead.resolved) unknown += 1;
+            }
+            if (unknown > 0 and !final) continue;
+            claim.judged = true;
+            if (claim.reservation) {
+                const low = claim.queue_ahead + reservations + 1;
+                const stated = unsigned(claim.entry, "queue_position");
+                if (stated == null or stated.? < low or stated.? > low + unknown) try self.add(code_session_state_mismatch, claim.index);
+                reservations += 1;
+            }
+        }
+        if (group.settled) return;
+        if (!final) for (claims) |claim| {
+            if (!claim.resolved) return;
+        };
+        self.led_groups.items[at].settled = true;
+        try self.judgeLedListing(claims);
+    }
+
+    fn judgeLedListing(self: *Machine, claims: []const LedEntry) !void {
+        var previous: ?usize = null;
+        for (claims) |claim| {
+            if (!claim.resolved or claim.run.len == 0) continue;
+            if (previous != null and claim.order <= previous.?) {
+                try self.add(code_session_state_mismatch, claim.index);
+                continue;
+            }
+            previous = claim.order;
+        }
+        var executing = claims[0].executing;
+        const state = claims[0].payload;
+        var started: ?LedEntry = null;
+        for (claims) |claim| {
+            if (!claim.classify or !claim.resolved or claim.reservation) continue;
+            if (executing.len != 0) {
+                try self.add(code_session_state_mismatch, claim.index);
+                continue;
+            }
+            executing = claim.run;
+            started = claim;
+        }
+        if (started) |lead| {
+            if (!std.mem.eql(u8, executing, claims[0].executing)) {
+                if (!std.mem.eql(u8, memberString(state, "active_run_id"), lead.run)) try self.add(code_session_state_mismatch, lead.index);
+                try self.listedStatus(lead.index, state, lead.run, lead.entry, false);
+                return;
+            }
+        }
+        if (claims[0].executing.len != 0) return;
+        const first = claims[0];
+        if (memberString(state, "active_run_id").len != 0) try self.add(code_session_state_mismatch, first.index);
+        try self.listedStatus(first.index, state, "", first.entry, true);
+    }
+
+    fn listedStatus(self: *Machine, index: usize, payload: std.json.Value, started: []const u8, started_entry: std.json.Value, reservation_listed: bool) !void {
         const session_status = memberString(payload, "status");
         if (started.len != 0) {
             const pending = member(started_entry, "pending_interactions");
@@ -3785,6 +3957,7 @@ pub const Machine = struct {
                 holder.active = run_id;
             }
         }
+        try self.admitLedEntries(run);
     }
 
     fn compactRequest(self: *Machine, index: usize, envelope: std.json.Value, payload: std.json.Value) !void {
@@ -4754,7 +4927,10 @@ pub const Machine = struct {
         for (self.capture_claims.items) |claim| {
             if (!claim.done) try self.add(code_session_state_mismatch, claim.index);
         }
-        for (self.admission_claims.items) |claim| try self.judgeAdmissionClaim(claim);
+        for (self.admission_claims.items) |claim| {
+            if (!claim.done) try self.judgeAdmissionClaim(claim);
+        }
+        for (0..self.led_groups.items.len) |group| try self.settleLedGroup(group, true);
         for (self.run_positions.items) |position| {
             const run = self.runs.get(position.run) orelse continue;
             if (!std.mem.eql(u8, run.session, position.session)) try self.add(code_scope_mismatch, position.index);
