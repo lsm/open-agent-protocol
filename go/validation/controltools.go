@@ -488,7 +488,7 @@ func provideLimitViolation(support protocol.FeatureSupport, tools []protocol.Too
 		))
 	}
 	if pattern, ok := support.NamePattern(); ok {
-		if expression, err := regexp.Compile(pattern); err == nil {
+		if expression, err := regexp.Compile(`^(?:` + pattern + `)$`); err == nil {
 			for index, tool := range tools {
 				if !expression.MatchString(tool.Name) {
 					violations = append(violations, refusal(
