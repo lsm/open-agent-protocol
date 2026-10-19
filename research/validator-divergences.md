@@ -97,7 +97,9 @@ Recommendation: (a). Settled by [Decision 0055](../decisions/0055-register-batch
 Rust judges the bound. Go and Zig still parse the cursor as any `u64`
 (`strconv.ParseUint(…, 10, 64)` in `state.go`, `std.fmt.parseUnsigned(u64, …)`
 in `semantic.zig`), so a cursor from 2^53 to 2^64 − 1 passes there and is
-`undeclared_replay_gap` in Rust; each owes the bound.
+`undeclared_replay_gap` in Rust; each owes the bound. Go and Zig also judge the
+cursor's form only on a recovered open, where 0055 binds every `resume_cursor`
+and Rust judges it whether or not the open recovered.
 
 ### OPEN-0001-8: must a request wait for the refresh `capabilities.updated` owes?
 

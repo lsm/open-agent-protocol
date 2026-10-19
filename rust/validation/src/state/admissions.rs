@@ -96,8 +96,6 @@ impl State {
                     "replay gap lacks an explicit retained boundary cursor",
                 );
             }
-        }
-        if let Some(recovery) = p.recovery.as_ref().filter(|recovery| recovery.recovered) {
             let text = recovery.resume_cursor.as_str();
             let bounded = cursor(text);
             if !text.is_empty() && bounded.is_none() {
@@ -112,6 +110,9 @@ impl State {
                     &[],
                 );
             }
+        }
+        if let Some(recovery) = p.recovery.as_ref().filter(|recovery| recovery.recovered) {
+            let bounded = cursor(recovery.resume_cursor.as_str());
             let rec = Recovery {
                 session: session.clone(),
                 opened: at.0,

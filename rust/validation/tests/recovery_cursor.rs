@@ -9,7 +9,10 @@ fn envelope(mut value: Value) -> Value {
 }
 
 fn undeclared(cursor: &str) -> bool {
-    let recovery = json!({"recovered": true, "resume_cursor": cursor});
+    undeclared_in(json!({"recovered": true, "resume_cursor": cursor}))
+}
+
+fn undeclared_in(recovery: Value) -> bool {
     let events = [
         envelope(
             json!({"type": "session.open.request", "id": "o1", "session_id": "s",
@@ -50,4 +53,14 @@ fn a_recovery_cursor_is_an_unsigned_decimal_no_greater_than_two_to_the_fifty_thr
     ] {
         assert!(undeclared(invalid), "{invalid}");
     }
+}
+
+#[test]
+fn a_cursor_of_another_form_is_judged_whether_or_not_the_open_recovered() {
+    assert!(undeclared_in(
+        json!({"reason": "replay_gap", "resume_cursor": "abc"})
+    ));
+    assert!(!undeclared_in(
+        json!({"reason": "replay_gap", "resume_cursor": "7"})
+    ));
 }
