@@ -5,6 +5,7 @@ use std::rc::Rc;
 use oap_protocol::*;
 use serde_json::Value;
 
+use super::queue::Window;
 use super::{os, payload, s, State};
 use crate::{codes, OutputSchema};
 
@@ -33,6 +34,37 @@ pub(super) struct Expectation {
 }
 
 impl Expectation {
+    pub(super) fn delivery(key: &str, degraded: bool) -> Self {
+        let (rung, code, reason, diagnostic, message) = if degraded {
+            (
+                RUNG_DEGRADATION,
+                CAPABILITY_DEGRADED,
+                "",
+                codes::DEGRADED_WITHOUT_OPTIN,
+                "submission elects a degraded delivery without the caller's opt-in",
+            )
+        } else {
+            (
+                RUNG_CAPABILITY,
+                UNSUPPORTED_FEATURE,
+                CONTROL_UNADVERTISED,
+                codes::UNAVAILABLE_CAPABILITY,
+                "submission elects a delivery the endpoint has not affirmatively advertised",
+            )
+        };
+        Self {
+            rung,
+            key: key.to_owned(),
+            pointer: "/payload/delivery".to_owned(),
+            code,
+            reason,
+            detail_name: "feature",
+            detail_value: key.to_owned(),
+            diagnostic,
+            message: message.to_owned(),
+        }
+    }
+
     fn order(&self, other: &Self) -> Ordering {
         self.rung
             .cmp(&other.rung)
@@ -153,6 +185,8 @@ fn refuses_subscribe(err: &ProtocolError) -> bool {
 #[derive(Default)]
 pub(super) struct PendingSubmit {
     pub(super) expectation: Option<Expectation>,
+    pub(super) queue: Option<Window>,
+    pub(super) session: String,
     satisfiable: HashSet<String>,
     controls: Controls,
 }
@@ -246,6 +280,7 @@ impl State {
         let t = &e.envelope_type;
         if *t == EnvelopeType::CAPABILITIES_RESPONSE {
             self.record_catalog(at, e);
+            self.record_limits(at, e);
         } else if *t == EnvelopeType::SESSION_MESSAGE_SUBMIT_REQUEST {
             let p: MessageSubmitRequest = payload(e);
             self.submit_controls(at, e, &p, &[]);
@@ -263,6 +298,13 @@ impl State {
         } else if *t == EnvelopeType::ERROR_RESPONSE {
             self.settle_control_refusal(at, e);
             self.settle_subscribe_refusal(at, e);
+        }
+        if *t == EnvelopeType::SESSION_MESSAGE_SUBMIT_RESPONSE
+            || *t == EnvelopeType::SESSION_COMPACT_RESPONSE
+            || *t == EnvelopeType::ERROR_RESPONSE
+            || *t == EnvelopeType::SESSION_OPEN_RESPONSE
+        {
+            self.close_submit_window(e);
         }
     }
 
@@ -355,7 +397,7 @@ impl State {
         Some(catalog)
     }
 
-    fn control_descriptor(
+    pub(super) fn control_descriptor(
         &mut self,
         at: (usize, usize),
         e: &Envelope,
@@ -461,9 +503,14 @@ impl State {
                 }
             }
         }
+        let (window, delivery) = self.delivery_expectations(at, e, p);
+        expectations.extend(delivery);
+        pending.queue = Some(window);
+        pending.session = s(&p.session_id);
         expectations.sort_by(Expectation::order);
         pending.expectation = expectations.into_iter().next();
         self.pending_controls.insert(s(&e.id), pending);
+        self.open_submit_window(p.session_id.as_str(), &s(&e.id));
     }
 
     fn unsatisfiable(
@@ -707,7 +754,11 @@ impl State {
         let Some(pending) = self.pending_controls.get(&reply) else {
             return;
         };
-        let (expectation, satisfiable) = (pending.expectation.clone(), pending.satisfiable.clone());
+        let (expectation, satisfiable, window) = (
+            pending.expectation.clone(),
+            pending.satisfiable.clone(),
+            pending.queue.clone(),
+        );
         let err = payload::<ErrorResponse>(e).error;
         let (discharged, speaker) = self.attribute(&reply, &err);
         if discharged {
@@ -729,6 +780,10 @@ impl State {
                 &describe_refusal(&err),
                 &[&reply],
             );
+            return;
+        }
+        if let Some(window) = window {
+            self.settle_queue_refusal(at, e, &window, &err, &describe_refusal(&err));
         }
     }
 

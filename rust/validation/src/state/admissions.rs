@@ -35,7 +35,8 @@ impl State {
             last: at,
             ..run
         };
-        self.runs.insert(id, run);
+        self.runs.insert(id.clone(), run);
+        self.enter_order(&id);
     }
 
     pub(super) fn replay_cursor(&mut self, at: (usize, usize), e: &Envelope, run_id: &str) {
