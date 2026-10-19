@@ -84,9 +84,9 @@ only a port. None is a protocol question.
 - 0006 rows `current_model_id…/2` and `/3`: Zig does not judge a catalog's
   `current_model_id` against the query's window or a reached run position. It
   judges the switch-anchored position only (`semantic.zig:close`). Port to Zig.
-- 0028 rows `core-sessionmodelswitch/6` and `/7`: Zig does not judge a switch
+- 0028 rows `core-sessionmodelswitch/7` and `/8`: Zig does not judge a switch
   refusal's `model_not_found` against the bound catalog. Port to Zig.
-- 0028 row `core-sessionmodelswitch/8`: neither tree judges the refusal of a
+- 0028 row `core-sessionmodelswitch/4`: neither tree judges the refusal of a
   degraded switch sent without the opt-in, which 0028's "ordinary gate" fixes
   as `capability_degraded`. Add it to both.
 - Rust has no catalog, switch or attachment checks. Every row in the file is
