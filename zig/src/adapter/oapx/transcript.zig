@@ -21,13 +21,18 @@ pub fn tail(arena: std.mem.Allocator, native_id: []const u8, saved: []const Save
 
 fn items(arena: std.mem.Allocator, saved: []const SavedEntry) ![]const contract.transcript_page.Item {
     const listed = try arena.alloc(contract.transcript_page.Item, saved.len);
-    for (saved, listed) |entry, *slot| slot.* = .{
+    for (saved, listed) |*entry, *slot| slot.* = .{
         .offset = entry.offset,
         .at_ms = entry.at_ms,
-        .message = if (entry.message) |message| try messageValue(arena, message) else null,
+        .lazy = if (entry.message != null) .{ .ctx = entry, .build = encodeSaved } else null,
         .compaction = entry.compaction,
     };
     return listed;
+}
+
+fn encodeSaved(ctx: *const anyopaque, arena: std.mem.Allocator) std.mem.Allocator.Error!std.json.Value {
+    const entry: *const SavedEntry = @ptrCast(@alignCast(ctx));
+    return messageValue(arena, entry.message.?);
 }
 
 pub fn messageValue(arena: std.mem.Allocator, message: ai_types.Message) !std.json.Value {
@@ -253,4 +258,28 @@ test "an entry too large even with every text emptied reduces its parts to their
     try testing.expectEqualStrings("assistant", cut_page.entries[0].object.get("message").?.object.get("role").?.string);
     try testing.expectEqualStrings("text", listed[1].object.get("type").?.string);
     try testing.expectEqualStrings("tool_call", listed[1].object.get("text").?.string);
+}
+
+const Counted = struct {
+    var built: usize = 0;
+
+    fn build(ctx: *const anyopaque, arena: std.mem.Allocator) std.mem.Allocator.Error!std.json.Value {
+        _ = ctx;
+        built += 1;
+        return messageValue(arena, .{ .user = .{ .content = .{ .text = "said" }, .timestamp = 0 } });
+    }
+};
+
+test "the pager encodes a message only for an entry it returns, and the tail cursor encodes none" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const listed = try a.alloc(contract.transcript_page.Item, 50);
+    for (listed, 0..) |*item, index| item.* = .{ .offset = index, .lazy = .{ .ctx = item, .build = Counted.build } };
+    Counted.built = 0;
+    _ = try contract.transcript_page.tail(a, "s1", listed);
+    try testing.expectEqual(@as(usize, 0), Counted.built);
+    const two = try contract.transcript_page.page(a, .{ .native_id = "s1", .limit = 2 }, listed);
+    try testing.expectEqual(@as(usize, 2), two.entries.len);
+    try testing.expectEqual(@as(usize, 2), Counted.built);
 }

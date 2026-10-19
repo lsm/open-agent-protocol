@@ -5,7 +5,13 @@ pub const Item = struct {
     offset: u64,
     at_ms: i64 = 0,
     message: ?std.json.Value = null,
+    lazy: ?Lazy = null,
     compaction: []const u8 = "",
+};
+
+pub const Lazy = struct {
+    ctx: *const anyopaque,
+    build: *const fn (ctx: *const anyopaque, arena: std.mem.Allocator) std.mem.Allocator.Error!std.json.Value,
 };
 
 const Error = contract.Failure;
@@ -30,27 +36,29 @@ pub fn page(arena: std.mem.Allocator, request: contract.TranscriptRequest, items
     var bytes: usize = 0;
     var next = start;
     while (next < items.len and entries.items.len < limit) : (next += 1) {
-        var value = try entryValue(arena, ids[next], items[next], null);
+        var item = items[next];
+        if (item.lazy) |held| item.message = try held.build(held.ctx, arena);
+        var value = try entryValue(arena, ids[next], item, null);
         var size = try encodedLen(arena, value);
         if (bytes + size > contract.transcript_page_bytes) {
             if (entries.items.len > 0) break;
-            const parts = partCount(items[next]);
+            const parts = partCount(item);
             var plan = Cut{ .bound = contract.transcript_page_bytes / (parts * 2), .keep = parts };
-            value = try entryValue(arena, ids[next], items[next], plan);
+            value = try entryValue(arena, ids[next], item, plan);
             size = try encodedLen(arena, value);
             while (size > contract.transcript_page_bytes and plan.bound > 0) {
                 plan.bound /= 2;
-                value = try entryValue(arena, ids[next], items[next], plan);
+                value = try entryValue(arena, ids[next], item, plan);
                 size = try encodedLen(arena, value);
             }
             if (size > contract.transcript_page_bytes) {
                 plan.reduce = true;
-                value = try entryValue(arena, ids[next], items[next], plan);
+                value = try entryValue(arena, ids[next], item, plan);
                 size = try encodedLen(arena, value);
             }
             while (size > contract.transcript_page_bytes and plan.keep > 1) {
                 plan.keep /= 2;
-                value = try entryValue(arena, ids[next], items[next], plan);
+                value = try entryValue(arena, ids[next], item, plan);
                 size = try encodedLen(arena, value);
             }
         }
