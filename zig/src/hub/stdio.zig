@@ -1064,7 +1064,6 @@ pub const Frontend = struct {
 
     pub fn takeSignals(self: *Frontend, seen: u32) Error!void {
         if (seen <= self.signals_seen) return;
-        self.signals_seen = seen;
         const wanted: ShutdownMode = if (seen >= 2 or self.shutdown == .force) .force else .graceful;
         var scratch = std.heap.ArenaAllocator.init(self.allocator);
         defer scratch.deinit();
@@ -1072,6 +1071,7 @@ pub const Frontend = struct {
         var request = try emptyObject(arena);
         try request.put(arena, "mode", .{ .string = @tagName(wanted) });
         const answered = try self.shutdownOp(arena, .{ .object = request });
+        self.signals_seen = seen;
         const notices = self.notices orelse return;
         const value = switch (answered) {
             .answer => |value| value,
