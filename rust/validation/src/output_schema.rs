@@ -114,4 +114,18 @@ mod tests {
         assert!(schema.validate(r#"{"ok":false}"#).is_err());
         assert!(schema.validate("not json").is_err());
     }
+
+    #[test]
+    fn numbers_compare_exactly_past_double_precision() {
+        let schema = OutputSchema::compile(
+            r#"{"type":"object","properties":{"n":{"const":0.10000000000000000000001}}}"#,
+        )
+        .unwrap();
+        assert!(schema
+            .validate(r#"{"n":0.10000000000000000000001}"#)
+            .is_ok());
+        assert!(schema
+            .validate(r#"{"n":0.10000000000000000000002}"#)
+            .is_err());
+    }
 }
