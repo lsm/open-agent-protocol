@@ -240,7 +240,17 @@ var ErrShutdownStalled = errors.New("servestdio: shutdown outlived its bounded w
 func (s *Server) Run(ctx context.Context, in io.Reader, out io.Writer) error {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
-	s.stopping = newShutdownState()
+	s.stopping.mu.Lock()
+	served := s.stopping.served
+	s.stopping.mu.Unlock()
+	if served {
+		s.stopping = newShutdownState()
+	}
+	defer func(st *shutdownState) {
+		st.mu.Lock()
+		st.served = true
+		st.mu.Unlock()
+	}(s.stopping)
 
 	lines := make(chan outLine, s.writeQueue)
 	stop := make(chan struct{})

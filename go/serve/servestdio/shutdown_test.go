@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"testing"
 	"time"
 
@@ -245,5 +246,27 @@ func TestAFirstSignalStartsAGracefulShutdownAndASecondForcesIt(t *testing.T) {
 	case <-server.stopping.done:
 	default:
 		t.Fatal("a forced shutdown did not complete")
+	}
+}
+
+func TestASignalTakenBeforeRunStartsIsTheShutdownRunServes(t *testing.T) {
+	server, err := New(newTestHub(t, 64, 64), Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, took := server.Signal(context.Background(), 1); !took {
+		t.Fatal("the signal was not taken")
+	}
+	inReader, inWriter := io.Pipe()
+	defer inWriter.Close()
+	done := make(chan error, 1)
+	go func() { done <- server.Run(context.Background(), inReader, io.Discard) }()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("Run returned %v", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("Run kept serving: it replaced the shutdown the signal had already started")
 	}
 }

@@ -21,6 +21,7 @@ type shutdownState struct {
 	watching  bool
 	flushed   bool
 	finished  bool
+	served    bool
 	done      chan struct{}
 }
 
