@@ -2,6 +2,7 @@ use std::collections::HashSet;
 
 use oap_protocol::*;
 
+use super::interactions::Interaction;
 use super::runs::Run;
 use super::{os, payload, s, State};
 use crate::codes;
@@ -97,6 +98,11 @@ impl State {
                     started: !queued,
                     next,
                     status: entry.status.clone(),
+                    interactions: entry
+                        .pending_interactions
+                        .iter()
+                        .map(|id| (s(id), Interaction::opaque()))
+                        .collect(),
                     ..Run::default()
                 };
                 self.introduce_recovered_run(at, id, run);
@@ -109,6 +115,7 @@ impl State {
                     started: true,
                     next,
                     status: RunStatus::RUNNING,
+                    prior_unknown: true,
                     ..Run::default()
                 };
                 self.introduce_recovered_run(at, active, run);
@@ -175,6 +182,7 @@ impl State {
                 started: true,
                 next,
                 status: RunStatus::RUNNING,
+                prior_unknown: true,
                 ..Run::default()
             };
             self.introduce_recovered_run(at, active, run);

@@ -1,7 +1,8 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use oap_protocol::*;
 
+use super::interactions::{Interaction, ToolTrack};
 use super::{os, payload, s, State};
 use crate::codes;
 
@@ -18,6 +19,9 @@ pub(super) struct Run {
     pub(super) status: RunStatus,
     pub(super) last: (usize, usize),
     pub(super) completed_messages: HashSet<String>,
+    pub(super) prior_unknown: bool,
+    pub(super) tools: HashMap<String, ToolTrack>,
+    pub(super) interactions: HashMap<String, Interaction>,
 }
 
 pub(super) const RUN_EVENTS: [EnvelopeType; 21] = [
@@ -261,6 +265,7 @@ impl State {
             );
         }
         self.replay_cursor(at, e, &run_id);
+        let live = self.runs.get(&run_id).is_some_and(|run| !run.terminal);
         let (found, plain) = self.advance(at, e, &run_id);
         for (code, pointer, message, expected, actual) in found {
             let related: &[&str] = if code == codes::SCOPE_MISMATCH {
@@ -272,6 +277,12 @@ impl State {
         }
         for (code, pointer, message) in plain {
             self.add(code, at, e, pointer, message);
+        }
+        if live {
+            self.live_run_event(at, e, &run_id);
+            if is_terminal(&e.envelope_type) {
+                self.pending_at_terminal(at, e, &run_id);
+            }
         }
         let Some(run) = self.runs.get(&run_id) else {
             return;
