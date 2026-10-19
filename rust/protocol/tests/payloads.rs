@@ -14,6 +14,22 @@ fn round_trip<T: DeserializeOwned + Serialize>(payload: &Value) -> Value {
     serde_json::to_value(typed).unwrap()
 }
 
+fn as_go_reencodes(payload: &Value) -> Value {
+    let Value::Object(members) = payload else {
+        return payload.clone();
+    };
+    Value::Object(
+        members
+            .iter()
+            .filter(|(key, value)| {
+                !key.contains('.')
+                    && !(*key == "features" && value.as_object().is_some_and(|map| map.is_empty()))
+            })
+            .map(|(key, value)| (key.clone(), value.clone()))
+            .collect(),
+    )
+}
+
 fn reencoded(envelope_type: &str, payload: &Value) -> Option<Value> {
     Some(match envelope_type {
         "run.cancel.request" => round_trip::<RunCancelRequest>(payload),
@@ -58,6 +74,13 @@ fn reencoded(envelope_type: &str, payload: &Value) -> Option<Value> {
         "run.steer.dropped" => round_trip::<RunSteerDroppedPayload>(payload),
         "run.compaction.started" => round_trip::<RunCompactionStartedPayload>(payload),
         "run.compaction.ended" => round_trip::<RunCompactionEndedPayload>(payload),
+        "protocol.initialize.request" => round_trip::<InitializeRequest>(payload),
+        "protocol.initialize.response" => round_trip::<InitializeResponse>(payload),
+        "capabilities.request" => round_trip::<CapabilitiesRequest>(payload),
+        "capabilities.response" => round_trip::<CapabilitiesResponse>(payload),
+        "capabilities.updated" => round_trip::<CapabilitiesUpdated>(payload),
+        "models.request" => round_trip::<ModelsRequest>(payload),
+        "models.response" => round_trip::<ModelsResponse>(payload),
         "error.response" => round_trip::<ErrorResponse>(payload),
         _ => return None,
     })
@@ -89,7 +112,7 @@ fn every_run_interaction_auth_and_error_payload_in_the_positive_fixtures_round_t
                 continue;
             };
             judged += 1;
-            if back != envelope["payload"] {
+            if back != as_go_reencodes(&envelope["payload"]) {
                 differing.push(format!(
                     "{path} {envelope_type}\n  in  {}\n  out {back}",
                     envelope["payload"]
@@ -103,7 +126,7 @@ fn every_run_interaction_auth_and_error_payload_in_the_positive_fixtures_round_t
         differing.len(),
         differing.join("\n")
     );
-    assert!(judged >= 500, "judged only {judged} payloads");
+    assert!(judged >= 800, "judged only {judged} payloads");
 }
 
 #[test]
@@ -225,4 +248,61 @@ fn the_highest_resolve_reason_is_the_earliest_on_the_ladder() {
     );
     assert_eq!(ResolveReason::highest(&[ResolveReason::from("x")]), None);
     assert_eq!(ResolveReason::UNKNOWN_INTERACTION.rank(), Some(0));
+}
+
+#[test]
+fn a_limit_reads_only_when_it_has_the_type_and_range_it_means() {
+    let support: FeatureSupport = serde_json::from_value(serde_json::json!({
+        "level": "native",
+        "limits": {"max_tools": 0, "max_sources": 3, "name_pattern": "", "schema_dialect": "d", "transports": ["local", "carrier-pigeon"]}
+    }))
+    .unwrap();
+    assert_eq!(support.max_tools(), None);
+    assert_eq!(support.max_sources(), Some(3));
+    assert_eq!(support.name_pattern(), None);
+    assert_eq!(support.schema_dialect().as_deref(), Some("d"));
+    assert_eq!(support.transports(), Some(vec!["local".to_owned()]));
+    let unlisted: FeatureSupport = serde_json::from_value(
+        serde_json::json!({"level": "native", "limits": {"transports": ["x"], "max_tools": 2.5}}),
+    )
+    .unwrap();
+    assert_eq!(unlisted.transports(), None);
+    assert_eq!(unlisted.max_tools(), None);
+}
+
+#[test]
+fn effective_support_prefers_the_descriptor_then_layers_in_name_order() {
+    let descriptor: CapabilityDescriptor = serde_json::from_value(serde_json::json!({
+        "endpoint": {"id": "agent"},
+        "features": {"a": {"level": "native"}},
+        "layers": {
+            "zeta": {"features": {"a": {"level": "degraded"}, "b": {"level": "degraded"}}, "sources": [{"id": "z", "kind": "local"}]},
+            "alpha": {"features": {"b": {"level": "emulated"}}, "sources": [{"id": "a", "kind": "local"}]}
+        },
+        "sources": [{"id": "top", "kind": "remote"}]
+    }))
+    .unwrap();
+    assert_eq!(
+        descriptor.effective_support("a").unwrap().level,
+        SupportLevel::NATIVE
+    );
+    assert_eq!(
+        descriptor.effective_support("b").unwrap().level,
+        SupportLevel::EMULATED
+    );
+    assert!(descriptor.effective_support("c").is_none());
+    let ids: Vec<_> = descriptor
+        .effective_sources()
+        .into_iter()
+        .map(|source| source.id)
+        .collect();
+    assert_eq!(ids, ["top", "a", "z"]);
+}
+
+#[test]
+fn a_delivery_mode_names_its_feature_key() {
+    assert_eq!(
+        RequestedDeliveryMode::QUEUE.feature_key(),
+        FEATURE_DELIVERY_QUEUE
+    );
 }

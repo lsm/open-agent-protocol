@@ -1,4 +1,5 @@
 mod auth;
+mod capabilities;
 mod codec;
 mod content;
 mod envelope;
@@ -14,6 +15,7 @@ mod serde_util;
 mod vocabulary;
 
 pub use auth::*;
+pub use capabilities::*;
 pub use codec::{decode, decode_array, decode_jsonl, encode, Format};
 pub use content::*;
 pub use envelope::Envelope;
