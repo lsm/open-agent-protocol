@@ -365,7 +365,12 @@ is RE2 and must match the whole name.
 uses. It judges nothing for valid RE2 outside that subset: flags such as
 `(?i)`, Unicode classes, `\b`, `\Q…\E`, a character outside ASCII, and any
 name outside ASCII. Go judges those, so in that zone Zig is silent where Go speaks. That is
-a port gap, not parity. `open-provide-refused-within-a-case-folding-pattern`
+a port gap, not parity. The zone also holds two patterns Go rejects, so Go
+raises `undisclosed_provide_limit` under Decision 0062 where Zig says nothing.
+One is a Unicode class name Go does not know, such as `\p{Foo}` or `\p9`; Zig
+does not carry Go's table of category and script names. The other is nesting
+deep enough that Go reports "expression nests too deeply"; Go measures the
+height of its parse tree, which Zig's group count does not reproduce. `open-provide-refused-within-a-case-folding-pattern`
 pins it as a Zig known gap. Whether 0055's "RE2-compatible" asks for more than
 this subset is with the owner.
 

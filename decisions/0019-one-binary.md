@@ -178,7 +178,9 @@ would take to carry it. The list is expected to shrink.
   `\d\w\s` and their negations, ASCII octal and hex escapes, groups including
   `(?:` and named groups, alternation, anchors, and `* + ? {n,m}`, with Go's
   rules for when a brace is a repeat. It rejects what RE2 rejects within
-  that syntax, as Decision 0062 requires, and it stands down on valid syntax
+  that syntax, as Decision 0062 requires, with two exceptions where it stands
+  down instead: a Unicode class (`\p{Foo}` and `\p9` included, which Go
+  rejects) and groups nested more than 1000 deep. It also stands down on valid syntax
   outside it (flags, Unicode classes, word boundaries, `\Q…\E`, a character
   outside ASCII) and on a name outside ASCII. It stands down by setting a flag
   and reading on, so a syntax error later in the pattern is still invalid. Standing down judges nothing, so Zig can be silent
