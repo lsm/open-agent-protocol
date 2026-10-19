@@ -35,8 +35,8 @@ Source: [`decisions/0005-run-controls.md`](../../decisions/0005-run-controls.md#
 | `0005#the-gate-is-judged-on-the-correlated-response/2` | An owed refusal MUST carry the code, feature and reason, or the detail, that tells the caller what to change. | L135–147 | the owed code | `controls.go:settleControlRefusal` | `semantic.zig:settleControlRefusal` | `state/controls.rs:settle_control_refusal` |
 | `0005#the-gate-is-judged-on-the-correlated-response/3` | A control that is within every disclosed constraint MUST NOT be refused `unsupported_feature` naming it. | L135–147 | `unsatisfiable_control` | `controls.go:settleControlRefusal` | `semantic.zig:settleControlRefusal` | `state/controls.rs:settle_control_refusal` |
 | `0005#the-gate-is-judged-on-the-correlated-response/4` | An admission of a `model_id` MUST report that model. | L135–147 | `unapplied_control` | `controls.go:settleSubmitAdmission` | `semantic.zig:settleSubmitAdmission` | `state/controls.rs:settle_submit_admission` |
-| `0005#the-gate-is-judged-on-the-correlated-response/5` | A `run.started` of a run admitted under a `model_id` MUST name that model. | L246–263 | `unapplied_control` | `state.go:runEvent` | `semantic.zig:runEvent` | — |
-| `0005#the-gate-is-judged-on-the-correlated-response/6` | A `run.started` naming a model MUST name the admitted one. | L246–263 | `unapplied_control` | `state.go:runEvent` | `semantic.zig:runEvent` | — |
+| `0005#the-gate-is-judged-on-the-correlated-response/5` | A `run.started` of a run admitted under a `model_id` MUST name that model. | L246–263 | `unapplied_control` | `state.go:runEvent` | `semantic.zig:runEvent` | `state/runs.rs:advance` |
+| `0005#the-gate-is-judged-on-the-correlated-response/6` | A `run.started` naming a model MUST name the admitted one. | L246–263 | `unapplied_control` | `state.go:runEvent` | `semantic.zig:runEvent` | `state/runs.rs:advance` |
 
 ### [0005] Presence is what the gate judges
 

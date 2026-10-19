@@ -88,7 +88,6 @@
     "controls-per-run-overwrites-default",
     "controls-per-run-overwrites-default-after-refresh",
     "controls-per-run-overwrites-default-at-terminal",
-    "controls-started-omits-model",
     "controls-tool-choice-ambiguous-name",
     "descriptor-call-source-mismatch",
     "descriptor-duplicate-source-id",
