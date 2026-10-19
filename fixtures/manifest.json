@@ -13202,6 +13202,82 @@
         "core"
       ],
       "provenance": []
+    },
+    {
+      "id": "provider-attach-unadvertised-refusal-without-reason",
+      "path": "semantic-invalid/provider-attach-unadvertised-refusal-without-reason.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "unavailable_capability"
+      ],
+      "units": [
+        "core",
+        "models"
+      ],
+      "provenance": [
+        "decisions/0054-register-batch-1.md",
+        "decisions/0028-live-model-and-provider-control.md"
+      ]
+    },
+    {
+      "id": "provider-attach-degraded-refusal-wrong-code",
+      "path": "semantic-invalid/provider-attach-degraded-refusal-wrong-code.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "degraded_without_optin"
+      ],
+      "units": [
+        "core",
+        "models"
+      ],
+      "provenance": [
+        "decisions/0054-register-batch-1.md",
+        "decisions/0028-live-model-and-provider-control.md"
+      ]
+    },
+    {
+      "id": "provider-attach-accepted-without-session-live",
+      "path": "semantic-invalid/provider-attach-accepted-without-session-live.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "undisclosed_attach_modes",
+        "unavailable_capability"
+      ],
+      "units": [
+        "core",
+        "models"
+      ],
+      "provenance": [
+        "decisions/0054-register-batch-1.md",
+        "decisions/0028-live-model-and-provider-control.md"
+      ]
+    },
+    {
+      "id": "provider-attach-stale-catalog-omits-attached",
+      "path": "semantic-invalid/provider-attach-stale-catalog-omits-attached.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "stale_capability_revision",
+        "stale_capability_revision",
+        "stale_capability_revision",
+        "stale_capability_revision"
+      ],
+      "units": [
+        "core",
+        "models"
+      ],
+      "provenance": [
+        "decisions/0054-register-batch-1.md",
+        "decisions/0028-live-model-and-provider-control.md"
+      ]
     }
   ]
 }

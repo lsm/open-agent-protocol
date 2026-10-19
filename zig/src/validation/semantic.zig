@@ -2052,6 +2052,9 @@ pub const Machine = struct {
             try self.add(code_scope_mismatch, index);
             return;
         }
+        if (affirmative(self.features.get(feature_providers_attach) orelse "") and !self.disclosedMode(feature_providers_attach, mode_session_live)) {
+            try self.add(code_unavailable_capability, index);
+        }
         const holder = try self.sessionFor(session_id);
         const binding = ProviderBinding{
             .provider_id = memberString(attachment, "provider_id"),

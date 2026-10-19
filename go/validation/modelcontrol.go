@@ -166,10 +166,18 @@ func (s *state) settleModelControlRefusal(i, line int, e protocol.Envelope) {
 		}
 	case protocol.TypeSessionProviderAttachRequest:
 		level := s.features[protocol.FeatureProvidersAttach]
-		if !affirmative(level) {
-			feature, ok := refusal.Error.Details["feature"].(string)
-			if refusal.Error.Code != errorUnsupportedFeature || !ok || feature != protocol.FeatureProvidersAttach {
-				s.addExpected(CodeUnavailableCapability, i, line, e, "/payload/error", "unadvertised provider attachment needs a typed feature refusal", errorUnsupportedFeature+" "+protocol.FeatureProvidersAttach, describeRefusal(refusal.Error), string(e.InReplyTo))
+		feature, _ := refusal.Error.Details["feature"].(string)
+		reason, _ := refusal.Error.Details["reason"].(string)
+		switch {
+		case !affirmative(level):
+			if refusal.Error.Code != errorUnsupportedFeature || feature != protocol.FeatureProvidersAttach || reason != reasonUnadvertised {
+				s.addExpected(CodeUnavailableCapability, i, line, e, "/payload/error", "unadvertised provider attachment needs a typed feature refusal", errorUnsupportedFeature+" "+protocol.FeatureProvidersAttach+" reason="+reasonUnadvertised, describeRefusal(refusal.Error), string(e.InReplyTo))
+			}
+		case level == protocol.SupportDegraded:
+			var requested protocol.SessionProviderAttachRequest
+			_ = req.envelope.DecodePayload(&requested)
+			if !requested.AllowsDegraded(protocol.FeatureProvidersAttach) && (refusal.Error.Code != errorCapabilityDegraded || feature != protocol.FeatureProvidersAttach) {
+				s.addExpected(CodeDegradedWithoutOptin, i, line, e, "/payload/error", "degraded provider attachment without opt-in needs a capability_degraded refusal", errorCapabilityDegraded+" "+protocol.FeatureProvidersAttach, describeRefusal(refusal.Error), string(e.InReplyTo))
 			}
 		}
 	}
