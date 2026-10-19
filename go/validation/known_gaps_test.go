@@ -25,6 +25,7 @@ func TestKnownGapsNameManifestFixturesOncePerTreeInOrder(t *testing.T) {
 	}
 	var gaps struct {
 		Version int      `json:"version"`
+		Go      []string `json:"go"`
 		Zig     []string `json:"zig"`
 		Rust    []string `json:"rust"`
 	}
@@ -36,7 +37,7 @@ func TestKnownGapsNameManifestFixturesOncePerTreeInOrder(t *testing.T) {
 	if gaps.Version != 1 {
 		t.Fatalf("fixtures/known-gaps.json: version %d, want 1", gaps.Version)
 	}
-	for tree, listed := range map[string][]string{"zig": gaps.Zig, "rust": gaps.Rust} {
+	for tree, listed := range map[string][]string{"go": gaps.Go, "zig": gaps.Zig, "rust": gaps.Rust} {
 		if !slices.IsSorted(listed) {
 			t.Errorf("%s: known gaps are not sorted", tree)
 		}
