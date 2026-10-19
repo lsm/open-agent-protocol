@@ -428,10 +428,12 @@ a control.
 for all four controls and the execution of `model_id`, which is applied to the
 run it was requested for and reported on the admission and on `run.started`;
 under `run.model_selection`'s `run` scope it leaves `current_model_id`
-unchanged. `instructions`, `tool_choice`, and `output_schema` have frozen
-shapes and reference-adapter execution, with native evidence pending: each
-becomes executable by an amendment to that decision when an adapter advertises
-its key against a pinned ledger.
+unchanged. `output_schema` is executed natively by Codex
+([Decision 0053](../decisions/0053-codex-executes-output-schema.md)).
+`instructions` and `tool_choice` have frozen shapes and reference-adapter
+execution, with native evidence pending: each becomes executable by an
+amendment to that decision when an adapter advertises its key against a pinned
+ledger.
 
 `tool_choice` is a policy over the tools the session can already call: the ones
 the endpoint exposes, plus the ones the control layer provided at open under

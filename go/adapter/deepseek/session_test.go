@@ -1078,7 +1078,7 @@ func TestArgumentsTravelVerbatimSoATraceWithDuplicateKeysIsRefused(t *testing.T)
 	if requested < 0 {
 		t.Fatal("no action.call.requested was emitted")
 	}
-	adaptertest.AssertProtocolValidWithDescriptor(t, admitted, descriptor, events)
+	adaptertest.AssertProtocolValidWithDescriptor(t, admitted, descriptor, events, adaptertest.Opened(base.OpenRequest{Participant: protocol.Participant{ID: "user"}}))
 
 	events[requested].Payload = json.RawMessage(bytes.Replace(events[requested].Payload, []byte(carried), []byte(duplicateKeyArguments), 1))
 	adaptertest.AssertProtocolInvalidWithSubmit(t, request(), admitted, descriptor, events, "duplicate_key")
@@ -1108,7 +1108,7 @@ func turnEndingWithAnOpenTool(t *testing.T, endKind string) []protocol.Envelope 
 	client.ev(8, "turn/end", native.TurnEnd{Turn: 1, Reason: json.RawMessage(`{"kind":"` + endKind + `"}`)})
 	client.notify(&native.SessionStatusNotification{SessionID: "session", Status: "idle"})
 	events := drain(t, stream)
-	adaptertest.AssertProtocolValidWithDescriptor(t, admitted, descriptor, events)
+	adaptertest.AssertProtocolValidWithDescriptor(t, admitted, descriptor, events, adaptertest.Opened(base.OpenRequest{Participant: protocol.Participant{ID: "user"}}))
 	return events
 }
 
@@ -1171,7 +1171,7 @@ func TestAToolThatFinishedIsNotSettledAgainAtTheTerminal(t *testing.T) {
 			t.Fatal("a tool that reported its result was settled as unfinished")
 		}
 	}
-	adaptertest.AssertProtocolValidWithDescriptor(t, admitted, descriptor, events)
+	adaptertest.AssertProtocolValidWithDescriptor(t, admitted, descriptor, events, adaptertest.Opened(base.OpenRequest{Participant: protocol.Participant{ID: "user"}}))
 }
 
 func TestARunFailedOutsideSettlementStillSettlesItsOpenTool(t *testing.T) {
@@ -1184,7 +1184,7 @@ func TestARunFailedOutsideSettlementStillSettlesItsOpenTool(t *testing.T) {
 	events := drain(t, stream)
 	assertFailedWith(t, events, "deepseek_tool_lifecycle", "duplicate tool call")
 	assertToolSettledBeforeTerminal(t, events, protocol.TypeRunFailed)
-	adaptertest.AssertProtocolValidWithDescriptor(t, admitted, descriptor, events)
+	adaptertest.AssertProtocolValidWithDescriptor(t, admitted, descriptor, events, adaptertest.Opened(base.OpenRequest{Participant: protocol.Participant{ID: "user"}}))
 }
 
 func TestSettlingARunsToolsLeavesAnotherRunsAlone(t *testing.T) {
@@ -1443,7 +1443,7 @@ func TestASlowConsumerWithinTheJournalReceivesTheWholeRunWithoutOverflow(t *test
 		t.Fatalf("slow consumer saw %v after %d envelopes", got.err, len(got.events))
 	}
 	assertStreamedTexts(t, got.events, 1, texts)
-	adaptertest.AssertProtocolValidWithDescriptor(t, admitted, descriptorFromProbe(t), got.events)
+	adaptertest.AssertProtocolValidWithDescriptor(t, admitted, descriptorFromProbe(t), got.events, adaptertest.Opened(base.OpenRequest{Participant: protocol.Participant{ID: "user"}}))
 }
 
 func TestAResumeWithABacklogPastSixtyFourEventsCompletesWhileTheRunKeepsStreaming(t *testing.T) {
@@ -1497,7 +1497,7 @@ func TestResumeAfterTheProcessDiesStillDeliversTheRunsFailure(t *testing.T) {
 	if err := events[len(events)-1].DecodePayload(&failed); err != nil || failed.SettledBy != protocol.SettledByInferred {
 		t.Fatalf("failure = %+v, %v", failed, err)
 	}
-	adaptertest.AssertProtocolValidWithDescriptor(t, admitted, descriptorFromProbe(t), events)
+	adaptertest.AssertProtocolValidWithDescriptor(t, admitted, descriptorFromProbe(t), events, adaptertest.Opened(base.OpenRequest{Participant: protocol.Participant{ID: "user"}}))
 }
 
 func TestResumeAfterAStallLongerThanTheJournalReportsAGap(t *testing.T) {

@@ -69,6 +69,8 @@ func submitAdmission(t *testing.T, session adapter.Session) (protocol.MessageSub
 	return admission, stream
 }
 
+var userOpen = adapter.OpenRequest{Participant: protocol.Participant{ID: "user"}}
+
 func testDescriptor(t *testing.T) adapter.Descriptor {
 	t.Helper()
 	implementation := adapter.NewMemory(adapter.Config{Clock: &fixedClock{}, IDs: &fixedIDs{}, JournalCapacity: 64})
@@ -154,7 +156,7 @@ func TestGoldenScript(t *testing.T) {
 	wantFinal := []protocol.EnvelopeType{protocol.TypeUserInputResolved, protocol.TypeContentDelta, protocol.TypeRunCompleted}
 	assertTypesAndSequence(t, events, wantFinal, 10)
 	trace = append(trace, events...)
-	adaptertest.AssertProtocolValidWithSubmit(t, plainSubmit, admission, testDescriptor(t), trace)
+	adaptertest.AssertProtocolValidWithSubmit(t, plainSubmit, admission, testDescriptor(t), trace, adaptertest.Opened(userOpen))
 	terminals := 0
 	for _, event := range append(append([]protocol.Envelope{}, wantEnvelopes(wantInitial)...), append(wantEnvelopes(wantApproval), wantEnvelopes(wantFinal)...)...) {
 		if event.Type == protocol.TypeRunCompleted || event.Type == protocol.TypeRunFailed || event.Type == protocol.TypeRunCancelled {
@@ -244,7 +246,7 @@ func TestCancelAndDuplicateCancel(t *testing.T) {
 	}
 	events := drainAvailable(stream)
 	assertTypesAndSequence(t, events, []protocol.EnvelopeType{protocol.TypeRunStatusUpdated, protocol.TypeActionPermissionResolved, protocol.TypeActionCallCancelled, protocol.TypeRunCancelled}, 5)
-	adaptertest.AssertProtocolValidWithSubmitAndCancellation(t, plainSubmit, admission, testDescriptor(t), append(append([]protocol.Envelope(nil), initial...), events...))
+	adaptertest.AssertProtocolValidWithSubmitAndCancellation(t, plainSubmit, admission, testDescriptor(t), append(append([]protocol.Envelope(nil), initial...), events...), adaptertest.Opened(userOpen))
 	ack, err = session.Cancel(context.Background(), runID)
 	if err != nil || !ack.Accepted || ack.Status != protocol.RunCancelled {
 		t.Fatalf("duplicate cancel: %+v, %v", ack, err)
@@ -307,9 +309,9 @@ func TestTerminalGuardUnderRace(t *testing.T) {
 	combined := append(append([]protocol.Envelope(nil), initial...), middle...)
 
 	if ack := <-cancelAck; ack.Accepted {
-		adaptertest.AssertProtocolValidWithSubmitAndCancellation(t, plainSubmit, admission, testDescriptor(t), append(combined, events...))
+		adaptertest.AssertProtocolValidWithSubmitAndCancellation(t, plainSubmit, admission, testDescriptor(t), append(combined, events...), adaptertest.Opened(userOpen))
 	} else {
-		adaptertest.AssertProtocolValidWithSubmit(t, plainSubmit, admission, testDescriptor(t), append(combined, events...))
+		adaptertest.AssertProtocolValidWithSubmit(t, plainSubmit, admission, testDescriptor(t), append(combined, events...), adaptertest.Opened(userOpen))
 	}
 	terminals := 0
 	for _, event := range events {
@@ -750,7 +752,7 @@ func TestSubmitExecutesToolChoiceAndOutputSchema(t *testing.T) {
 	if string(payload.Result) != `{"ok":true}` {
 		t.Fatalf("structured result = %s, want the disclosed fixed result", payload.Result)
 	}
-	adaptertest.AssertProtocolValidWithSubmit(t, request, admission, testDescriptor(t), events)
+	adaptertest.AssertProtocolValidWithSubmit(t, request, admission, testDescriptor(t), events, adaptertest.Opened(userOpen))
 }
 
 func TestResolveRejectsInconsistentPermission(t *testing.T) {
@@ -972,7 +974,7 @@ func TestPublishedCatalogGovernsToolSelection(t *testing.T) {
 		if calls != 1 {
 			t.Fatalf("%s: %d scripted calls, want 1", name, calls)
 		}
-		adaptertest.AssertProtocolValidWithSubmit(t, request, admission, testDescriptor(t), trace)
+		adaptertest.AssertProtocolValidWithSubmit(t, request, admission, testDescriptor(t), trace, adaptertest.Opened(userOpen))
 	}
 
 	session := newTestSession(t, 64)
@@ -1134,7 +1136,10 @@ func TestStateDuringAGateValidates(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	adaptertest.AssertProtocolValidWithSubmit(t, plainSubmit, admission, testDescriptor(t), adaptertest.SpliceAfter(t, events, requested.ID, exchange))
+	traced := adaptertest.SpliceAfter(t, events, requested.ID, exchange)
+	adaptertest.AssertProtocolValidWithSubmit(t, plainSubmit, admission, testDescriptor(t), traced, adaptertest.Opened(userOpen))
+	stranger := adapter.OpenRequest{Participant: protocol.Participant{ID: "stranger"}}
+	adaptertest.AssertProtocolInvalidWithSubmit(t, plainSubmit, admission, testDescriptor(t), traced, "unknown_participant", adaptertest.Opened(stranger))
 }
 
 func TestHandedOutStateDoesNotAliasTheSession(t *testing.T) {
@@ -1313,7 +1318,7 @@ func TestStateAnchorsARunItSettledBeforeTheTerminalIsDelivered(t *testing.T) {
 	adaptertest.AssertProtocolValidQueued(t, []adaptertest.QueuedSubmission{
 		{Request: protocol.MessageSubmitRequest{SessionID: "session-1", Delivery: protocol.DeliveryAuto, Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("go")}}}, Admission: first},
 		{Request: queuedRequest, Admission: reservation, Cancelled: true},
-	}, testDescriptor(t), trace)
+	}, testDescriptor(t), trace, adaptertest.Opened(adapter.OpenRequest{Participant: protocol.Participant{ID: "user"}}))
 }
 
 func TestStateAnchorsASettledStartedRun(t *testing.T) {

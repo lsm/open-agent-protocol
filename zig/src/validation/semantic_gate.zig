@@ -7,116 +7,9 @@ const build_options = @import("build_options");
 const judged_floor = 477;
 const tolerant_fixtures = 3;
 
-const nothing_outstanding = [_][]const u8{};
-
-const partial_code_gaps = [_]struct { code: []const u8, fixtures: []const []const u8 }{
-    .{ .code = "scope_mismatch", .fixtures = &.{
-        "scope-mismatch",
-        "response-scope-mismatch",
-        "session-open-scope-mismatch",
-        "tools-list-response-unscoped",
-        "tools-list-envelope-scoped-answer-unscoped",
-        "tools-list-unscoped-answer-scoped",
-        "models-request-scope-mismatch",
-        "models-response-scope-mismatch",
-        "models-position-in-another-session",
-        "models-held-position-in-another-session",
-        "models-position-in-another-session-no-current",
-        "models-held-position-in-another-session-no-current",
-    } },
-    .{ .code = "session_state_mismatch", .fixtures = &.{
-        "queue-state-in-window-run-unnamed",
-        "queue-state-omission-excused-then-repeated",
-        "queue-state-omits-pending-interaction",
-        "queue-state-promoted-run-erased",
-        "compound-open-anchor-names-an-open-without-a-message",
-        "compound-open-queued-without-position",
-        "control-call-recovered-ack-omitted",
-        "control-call-recovered-state-keeps-resolved",
-        "control-state-acknowledges-unpending",
-        "control-state-omits-acknowledged",
-        "models-current-mismatch",
-        "models-held-position-moved-no-model",
-        "queue-open-adds-an-interaction-the-entry-denied",
-        "queue-open-claims-two-started-runs",
-        "queue-open-keeps-a-resolved-interaction-pending",
-        "queue-open-lists-a-settled-run",
-        "queue-open-lists-one-run-twice",
-        "queue-open-names-a-run-from-nowhere",
-        "queue-open-recovers-a-cancelling-run-beside-a-started-one",
-        "queue-open-reopens-and-claims-two-started-runs",
-        "queue-state-anchor-request-refused",
-        "queue-state-anchor-request-unaccounted",
-        "queue-state-anchor-request-unanswered",
-        "queue-state-as-of-never-reached",
-        "queue-state-cancelling-reservation-past-its-promotion",
-        "queue-state-cancelling-reservation-without-its-place",
-        "queue-state-cancelling-run-drops-a-place-it-never-left",
-        "queue-state-cancelling-run-left-the-queue-early",
-        "queue-state-earlier-anchor-answers-the-entry",
-        "queue-state-earlier-anchor-vindicates-the-entry",
-        "queue-state-entry-anchor-admitted-elsewhere",
-        "queue-state-entry-leads-a-different-run",
-        "queue-state-entry-leads-without-an-anchor",
-        "queue-state-executes-a-run-that-never-starts",
-        "queue-state-false-settled-claim",
-        "queue-state-lead-claims-a-second-started-run",
-        "queue-state-lead-counts-a-place-its-sibling-never-took",
-        "queue-state-lead-does-not-excuse-the-known-entries",
-        "queue-state-lead-executes-a-run-that-never-starts",
-        "queue-state-lead-gives-up-a-place-it-never-left",
-        "queue-state-lead-invents-a-queue-place",
-        "queue-state-lead-keeps-a-place-past-its-promotion",
-        "queue-state-lead-listed-before-a-known-run",
-        "queue-state-lead-lists-a-settled-run",
-        "queue-state-lead-misplaces-its-reservation",
-        "queue-state-lead-names-no-active-run",
-        "queue-state-lead-places-itself-beyond-the-queue",
-        "queue-state-lead-queued-by-a-started-admission",
-        "queue-state-leads-claim-one-place-twice",
-        "queue-state-leads-listed-out-of-admission-order",
-        "queue-state-listed-at-its-terminal-position",
-        "queue-state-lists-a-run-it-says-it-settled",
-        "queue-state-lists-settled-run",
-        "queue-state-pending-without-as-of",
-        "queue-state-queued-at-forthcoming-start",
-        "queue-state-queued-entry-without-position",
-        "queue-state-reservation-named-active",
-        "queue-state-reservations-called-idle",
-        "queue-state-running-beside-a-pending-interaction",
-        "queue-state-running-beside-a-waiting-run",
-        "queue-state-settled-claim-then-activity",
-        "queue-state-settled-wrong-sequence",
-        "queue-state-settles-one-run-twice",
-        "queue-state-started-behind-a-reservation",
-        "queue-state-started-listed-queued",
-        "queue-state-started-run-called-queued",
-        "queue-state-terminal-status",
-        "queue-state-two-started-entries",
-        "queue-state-waiting-without-a-waiting-run",
-    } },
-};
-
-fn emittedCode(codes: []const []const u8, wanted: []const u8) bool {
-    for (codes) |code| {
-        if (std.mem.eql(u8, code, wanted)) return true;
-    }
-    return false;
-}
-
-fn isPartialCode(code: []const u8) bool {
-    for (partial_code_gaps) |held| {
-        if (std.mem.eql(u8, held.code, code)) return true;
-    }
-    return false;
-}
-
-fn knownPartialGap(code: []const u8, id: []const u8) bool {
-    for (partial_code_gaps) |held| {
-        if (!std.mem.eql(u8, held.code, code)) continue;
-        for (held.fixtures) |name| {
-            if (std.mem.eql(u8, name, id)) return true;
-        }
+fn listed(gaps: []const std.json.Value, id: []const u8) bool {
+    for (gaps) |gap| {
+        if (std.mem.eql(u8, gap.string, id)) return true;
     }
     return false;
 }
@@ -139,7 +32,7 @@ fn joined(allocator: std.mem.Allocator, codes: [][]const u8) ![]u8 {
     return out.toOwnedSlice(allocator);
 }
 
-test "the Zig semantic phase emits exactly the lifecycle codes the manifest declares" {
+test "the Zig semantic phase emits exactly the codes the manifest declares unless the fixture is a known gap" {
     const allocator = std.testing.allocator;
     const root = build_options.repository_root;
 
@@ -151,11 +44,20 @@ test "the Zig semantic phase emits exactly the lifecycle codes the manifest decl
     var manifest = try std.json.parseFromSlice(std.json.Value, allocator, manifest_bytes, .{});
     defer manifest.deinit();
 
+    const gaps_path = try std.fs.path.join(allocator, &.{ root, "fixtures", "known-gaps.json" });
+    defer allocator.free(gaps_path);
+    const gaps_bytes = try readAll(allocator, gaps_path);
+    defer allocator.free(gaps_bytes);
+    var known = try std.json.parseFromSlice(std.json.Value, allocator, gaps_bytes, .{});
+    defer known.deinit();
+    const gaps = known.value.object.get("zig").?.array.items;
+
     var judged: usize = 0;
+    var listed_judged: usize = 0;
     var tolerant_judged: usize = 0;
     var provider_judged: usize = 0;
-    var no_longer_gapped = std.ArrayList([]const u8).empty;
-    defer no_longer_gapped.deinit(allocator);
+    var stale = std.ArrayList([]const u8).empty;
+    defer stale.deinit(allocator);
     var report = std.ArrayList(u8).empty;
     defer report.deinit(allocator);
     var disagreeing = std.ArrayList([]const u8).empty;
@@ -177,19 +79,8 @@ test "the Zig semantic phase emits exactly the lifecycle codes the manifest decl
 
         var expected = std.ArrayList([]const u8).empty;
         defer expected.deinit(allocator);
-        var gapped = std.ArrayList([]const u8).empty;
-        defer gapped.deinit(allocator);
         if (entry.get("codes")) |codes| {
-            for (codes.array.items) |code| {
-                const ported = if (provider_profile) provider.isImplemented(code.string) else semantic.isImplemented(code.string);
-                const partial = !provider_profile and isPartialCode(code.string);
-                if (!ported and !partial) continue;
-                if (knownPartialGap(code.string, id)) {
-                    try gapped.append(allocator, code.string);
-                    continue;
-                }
-                try expected.append(allocator, code.string);
-            }
+            for (codes.array.items) |code| try expected.append(allocator, code.string);
         }
 
         const full = try std.fs.path.join(allocator, &.{ root, "fixtures", entry.get("path").?.string });
@@ -261,35 +152,27 @@ test "the Zig semantic phase emits exactly the lifecycle codes the manifest decl
         defer allocator.free(want);
         const got = try joined(allocator, emitted.items);
         defer allocator.free(got);
-        for (gapped.items) |code| {
-            if (!emittedCode(emitted.items, code)) continue;
-            try no_longer_gapped.append(allocator, id);
-            try report.print(allocator, "  {s}: listed as a gap, and {s} is raised\n", .{ id, code });
-        }
-        if (!std.mem.eql(u8, want, got)) {
+        const agrees = std.mem.eql(u8, want, got);
+        if (listed(gaps, id)) {
+            listed_judged += 1;
+            if (agrees) {
+                try stale.append(allocator, id);
+                try report.print(allocator, "  {s}: listed in fixtures/known-gaps.json, and now agrees\n", .{id});
+            }
+        } else if (!agrees) {
             try disagreeing.append(allocator, id);
             try report.print(allocator, "  {s}\n    want [{s}]\n    got  [{s}]\n", .{ id, want, got });
         }
     }
 
-    std.debug.print("\nsemantic judged={d} disagreeing={d} tolerant={d} provider={d}\n", .{ judged, disagreeing.items.len, tolerant_judged, provider_judged });
+    std.debug.print("\nsemantic judged={d} known_gaps={d} disagreeing={d} stale={d} tolerant={d} provider={d}\n", .{ judged, listed_judged, disagreeing.items.len, stale.items.len, tolerant_judged, provider_judged });
 
-    if (no_longer_gapped.items.len != 0) {
-        std.debug.print("listed as gaps, and now judged:\n{s}", .{report.items});
-        return error.AGapListEntryNoLongerApplies;
+    if (disagreeing.items.len != 0 or stale.items.len != 0) {
+        std.debug.print("{s}", .{report.items});
+        if (disagreeing.items.len != 0) return error.SemanticPhaseDisagrees;
+        return error.AKnownGapNoLongerApplies;
     }
-    std.mem.sort([]const u8, disagreeing.items, {}, lessThan);
-    var declared = std.ArrayList([]const u8).empty;
-    defer declared.deinit(allocator);
-    for (nothing_outstanding) |name| try declared.append(allocator, name);
-    const outstanding = try joined(allocator, disagreeing.items);
-    defer allocator.free(outstanding);
-    const accounted = try joined(allocator, declared.items);
-    defer allocator.free(accounted);
-    if (!std.mem.eql(u8, outstanding, accounted)) {
-        std.debug.print("disagreements:\n{s}\ndeclared: [{s}]\n", .{ report.items, accounted });
-        return error.SemanticPhaseDisagrees;
-    }
+    try std.testing.expectEqual(gaps.len, listed_judged);
     try std.testing.expect(judged >= judged_floor + tolerant_fixtures);
     try std.testing.expectEqual(tolerant_fixtures, tolerant_judged);
 }
