@@ -13,7 +13,27 @@ pub const TransformConfig = struct {
     insert_synthetic_results: bool = true,
     tools: ?[]const ai_types.Tool = null,
     is_oauth: bool = false,
+    target_input: ?[]const []const u8 = null,
 };
+
+fn acceptsImages(config: TransformConfig) bool {
+    const input = config.target_input orelse return true;
+    for (input) |modality| {
+        if (std.mem.eql(u8, modality, "image")) return true;
+    }
+    return false;
+}
+
+fn withoutImages(allocator: std.mem.Allocator, parts: []const ai_types.UserContentPart, note: []const u8) !?[]const ai_types.UserContentPart {
+    for (parts) |part| {
+        if (part == .image) break;
+    } else return null;
+    const kept = try allocator.alloc(ai_types.UserContentPart, parts.len);
+    for (parts, kept) |part, *slot| {
+        slot.* = if (part == .image) .{ .text = .{ .text = note } } else part;
+    }
+    return kept;
+}
 
 fn isSameModel(msg: ai_types.AssistantMessage, config: TransformConfig) bool {
     if (config.target_api.len == 0 or config.target_provider.len == 0 or config.target_model_id.len == 0)
@@ -93,6 +113,8 @@ pub const TransformResult = struct {
     owned_content: std.ArrayList([]const ai_types.AssistantContent),
     owned_tool_ids: std.ArrayList([]const u8),
     owned_synthetic: std.ArrayList(SyntheticToolResult),
+    owned_parts: std.ArrayList([]const ai_types.UserContentPart) = .empty,
+    omission_note: []const u8 = "",
     allocator: std.mem.Allocator,
 
     const SyntheticToolResult = struct {
@@ -142,6 +164,10 @@ pub const TransformResult = struct {
         }
         self.owned_synthetic.deinit(self.allocator);
 
+        for (self.owned_parts.items) |parts| self.allocator.free(parts);
+        self.owned_parts.deinit(self.allocator);
+        self.allocator.free(self.omission_note);
+
         self.allocator.free(self.messages);
     }
 };
@@ -167,6 +193,14 @@ pub fn preTransform(
     defer {
         tool_id_map.deinit();
     }
+
+    var owned_parts = std.ArrayList([]const ai_types.UserContentPart).empty;
+    errdefer {
+        for (owned_parts.items) |parts| allocator.free(parts);
+        owned_parts.deinit(allocator);
+    }
+    const omission_note: []const u8 = if (acceptsImages(config)) "" else try std.fmt.allocPrint(allocator, "[image omitted: {s} does not accept images]", .{config.target_model_id});
+    errdefer allocator.free(omission_note);
 
     for (messages) |msg| {
         switch (msg) {
@@ -297,15 +331,21 @@ pub fn preTransform(
                 try result_messages.append(allocator, .{ .assistant = new_msg });
             },
             .tool_result => |tr| {
+                var new_tr = tr;
+                if (omission_note.len > 0) {
+                    if (try withoutImages(allocator, tr.content, omission_note)) |kept| {
+                        errdefer allocator.free(kept);
+                        try owned_parts.append(allocator, kept);
+                        new_tr.content = kept;
+                    }
+                }
                 if (tool_id_map.get(tr.tool_call_id)) |normalized_id| {
                     try pending_result_ids.put(normalized_id, {});
-                    var new_tr = tr;
                     new_tr.tool_call_id = normalized_id;
-                    try result_messages.append(allocator, .{ .tool_result = new_tr });
                 } else {
                     try pending_result_ids.put(tr.tool_call_id, {});
-                    try result_messages.append(allocator, msg);
                 }
+                try result_messages.append(allocator, .{ .tool_result = new_tr });
             },
             .user => {
                 if (config.insert_synthetic_results and pending_tool_calls.items.len > 0) {
@@ -323,7 +363,15 @@ pub fn preTransform(
                     pending_result_ids.clearRetainingCapacity();
                 }
 
-                try result_messages.append(allocator, msg);
+                var new_msg = msg;
+                if (omission_note.len > 0 and msg.user.content == .parts) {
+                    if (try withoutImages(allocator, msg.user.content.parts, omission_note)) |kept| {
+                        errdefer allocator.free(kept);
+                        try owned_parts.append(allocator, kept);
+                        new_msg.user.content = .{ .parts = kept };
+                    }
+                }
+                try result_messages.append(allocator, new_msg);
             },
         }
     }
@@ -346,6 +394,8 @@ pub fn preTransform(
         .owned_content = owned_content,
         .owned_tool_ids = owned_tool_ids,
         .owned_synthetic = owned_synthetic,
+        .owned_parts = owned_parts,
+        .omission_note = omission_note,
         .allocator = allocator,
     };
 }
@@ -736,4 +786,34 @@ test "preTransform strips thought_signature for cross-model tool calls" {
 
     const tc = result.messages[0].assistant.content[0].tool_call;
     try std.testing.expect(tc.thought_signature == null);
+}
+
+test "an image part reaches a model that takes images and becomes a note for one that does not" {
+    const allocator = std.testing.allocator;
+    const picture = ai_types.UserContentPart{ .image = .{ .data = "aGk=", .mime_type = "image/png" } };
+    const result_parts = [_]ai_types.UserContentPart{ .{ .text = .{ .text = "image a.png" } }, picture };
+    const user_parts = [_]ai_types.UserContentPart{ .{ .text = .{ .text = "look" } }, picture };
+    const messages = [_]ai_types.Message{
+        .{ .user = .{ .content = .{ .parts = &user_parts }, .timestamp = 0 } },
+        .{ .tool_result = .{ .tool_call_id = "call-1", .tool_name = "Read", .content = &result_parts, .is_error = false, .timestamp = 0 } },
+    };
+    const cases = [_]struct { input: ?[]const []const u8, kept: bool }{
+        .{ .input = &.{ "text", "image" }, .kept = true },
+        .{ .input = null, .kept = true },
+        .{ .input = &.{"text"}, .kept = false },
+    };
+    for (cases) |c| {
+        var transformed = try preTransform(allocator, &messages, .{ .target_model_id = "text-only", .insert_synthetic_results = false, .target_input = c.input });
+        defer transformed.deinit();
+        const seen = [_][]const ai_types.UserContentPart{ transformed.messages[0].user.content.parts, transformed.messages[1].tool_result.content };
+        for (seen) |parts| {
+            try std.testing.expectEqual(@as(usize, 2), parts.len);
+            if (c.kept) {
+                try std.testing.expect(parts[1] == .image);
+            } else {
+                try std.testing.expect(parts[1] == .text);
+                try std.testing.expectEqualStrings("[image omitted: text-only does not accept images]", parts[1].text.text);
+            }
+        }
+    }
 }

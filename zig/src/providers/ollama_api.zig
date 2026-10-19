@@ -189,6 +189,7 @@ fn buildBody(model: ai_types.Model, context: ai_types.Context, options: ai_types
         .target_api = model.api,
         .target_provider = model.provider,
         .target_model_id = model.id,
+        .target_input = model.input,
         .insert_synthetic_results = true,
         .tools = context.tools,
     });

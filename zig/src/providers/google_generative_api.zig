@@ -208,6 +208,7 @@ fn buildBody(context: ai_types.Context, options: ai_types.StreamOptions, model: 
         .target_api = model.api,
         .target_provider = model.provider,
         .target_model_id = model.id,
+        .target_input = model.input,
         .max_tool_id_len = 64,
         .insert_synthetic_results = true,
         .tools = context.tools,
