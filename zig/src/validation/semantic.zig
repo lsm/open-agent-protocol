@@ -12,6 +12,7 @@ pub const code_compaction_failed_without_error = "compaction_failed_without_erro
 pub const code_pending_steer_at_terminal = "pending_steer_at_terminal";
 
 pub const code_duplicate_envelope_id = "duplicate_envelope_id";
+pub const code_premature_session_mutation = "premature_session_mutation";
 pub const code_illegal_run_transition = "illegal_run_transition";
 pub const code_missing_run_started = "missing_run_started";
 pub const code_missing_run_terminal = "missing_run_terminal";
@@ -67,25 +68,26 @@ pub const code_transcript_gap_mismatch = "transcript_gap_mismatch";
 const attachment_only_members = [_][]const u8{ "command", "args", "environment" };
 
 pub const implemented = [_][]const u8{
-    code_unmatched_steer,             code_duplicate_steer,                 code_pending_steer_at_terminal,
-    code_compaction_unpaired,         code_compaction_ended_without_start,  code_compaction_open_at_terminal,
-    code_compaction_run_mismatch,     code_compaction_stop_reason_mismatch, code_compaction_failed_without_error,
-    code_duplicate_envelope_id,       code_illegal_run_transition,          code_missing_run_started,
-    code_missing_run_terminal,        code_duplicate_run_terminal,          code_event_after_terminal,
-    code_sequence_gap,                code_sequence_regression,             code_cancel_not_settled,
-    code_queue_order_violation,       code_queue_limit_exceeded,            code_undisclosed_queue_limit,
-    code_unavailable_capability,      code_stale_capability_revision,       code_degraded_without_optin,
-    code_unsatisfiable_control,       code_unapplied_control,               code_duplicate_tool_name,
-    code_model_not_in_catalog,        code_duplicate_model_id,              code_duplicate_provider,
-    code_ambiguous_default_model,     code_unannounced_catalog_change,      code_undisclosed_attach_modes,
-    code_duplicate_tool_source,       code_unmatched_tool_source,           code_unattributed_call,
-    code_catalog_mismatch,            code_undisclosed_attach_limit,        code_unmatched_tool,
-    code_illegal_tool_transition,     code_pending_tool_at_terminal,        code_duplicate_interaction,
-    code_unmatched_interaction,       code_wrong_interaction_responder,     code_pending_interaction_at_terminal,
-    code_resolution_payload_mismatch, code_wrong_tool_owner,                code_undisclosed_provide_limit,
-    code_attachment_field_in_catalog, code_session_list_over_limit,         code_session_list_order,
-    code_duplicate_session_entry,     code_duplicate_message_completion,    code_content_after_completion,
-    code_transcript_over_limit,       code_duplicate_transcript_entry,      code_transcript_gap_mismatch,
+    code_unmatched_steer,                 code_duplicate_steer,                 code_pending_steer_at_terminal,
+    code_compaction_unpaired,             code_compaction_ended_without_start,  code_compaction_open_at_terminal,
+    code_compaction_run_mismatch,         code_compaction_stop_reason_mismatch, code_compaction_failed_without_error,
+    code_duplicate_envelope_id,           code_premature_session_mutation,      code_illegal_run_transition,
+    code_missing_run_started,             code_missing_run_terminal,            code_duplicate_run_terminal,
+    code_event_after_terminal,            code_sequence_gap,                    code_sequence_regression,
+    code_cancel_not_settled,              code_queue_order_violation,           code_queue_limit_exceeded,
+    code_undisclosed_queue_limit,         code_unavailable_capability,          code_stale_capability_revision,
+    code_degraded_without_optin,          code_unsatisfiable_control,           code_unapplied_control,
+    code_duplicate_tool_name,             code_model_not_in_catalog,            code_duplicate_model_id,
+    code_duplicate_provider,              code_ambiguous_default_model,         code_unannounced_catalog_change,
+    code_undisclosed_attach_modes,        code_duplicate_tool_source,           code_unmatched_tool_source,
+    code_unattributed_call,               code_catalog_mismatch,                code_undisclosed_attach_limit,
+    code_unmatched_tool,                  code_illegal_tool_transition,         code_pending_tool_at_terminal,
+    code_duplicate_interaction,           code_unmatched_interaction,           code_wrong_interaction_responder,
+    code_pending_interaction_at_terminal, code_resolution_payload_mismatch,     code_wrong_tool_owner,
+    code_undisclosed_provide_limit,       code_attachment_field_in_catalog,     code_session_list_over_limit,
+    code_session_list_order,              code_duplicate_session_entry,         code_duplicate_message_completion,
+    code_content_after_completion,        code_transcript_over_limit,           code_duplicate_transcript_entry,
+    code_transcript_gap_mismatch,
 };
 
 pub fn isImplemented(code: []const u8) bool {
@@ -235,6 +237,8 @@ const Run = struct {
     admitted_queued: bool = false,
     order: usize = 0,
     admitted_model: []const u8 = "",
+    started_at: usize = 0,
+    start_sequence: u64 = 0,
     controls: Controls = .{},
     deferred_controls: bool = false,
     status: []const u8 = "",
@@ -343,6 +347,9 @@ const Session = struct {
     order: std.ArrayList([]const u8) = .empty,
     current_model: []const u8 = "",
     current_known: bool = false,
+    opening_model: []const u8 = "",
+    opening_known: bool = false,
+    mutated: bool = false,
     expected_default: []const u8 = "",
     guard_default: bool = false,
     provided_owners: std.StringArrayHashMapUnmanaged([]const u8) = .empty,
@@ -459,6 +466,15 @@ const Snapshot = struct {
     limits: ?Limits,
 };
 
+const ModelClaim = struct {
+    session: []const u8,
+    run: []const u8,
+    sequence: u64,
+    model: []const u8,
+    index: usize,
+    done: bool = false,
+};
+
 const Recovery = struct {
     run: []const u8 = "",
     gap: bool = false,
@@ -521,6 +537,7 @@ pub const Machine = struct {
     recoveries: std.StringArrayHashMapUnmanaged(*Recovery) = .empty,
     requests: std.StringArrayHashMapUnmanaged(Request) = .empty,
     late_cancels: std.StringArrayHashMapUnmanaged(void) = .empty,
+    model_claims: std.ArrayList(ModelClaim) = .empty,
     packs: Packs = .{},
     features: std.StringArrayHashMapUnmanaged([]const u8) = .empty,
     scopes: std.StringArrayHashMapUnmanaged([]const u8) = .empty,
@@ -552,6 +569,7 @@ pub const Machine = struct {
         self.late_cancels.deinit(self.allocator);
         self.runs.deinit(self.allocator);
         self.recoveries.deinit(self.allocator);
+        self.model_claims.deinit(self.allocator);
         self.requests.deinit(self.allocator);
         self.features.deinit(self.allocator);
         self.scopes.deinit(self.allocator);
@@ -896,7 +914,7 @@ pub const Machine = struct {
             std.mem.eql(u8, declared, "session.state.updated"))
         {
             try self.steerState(index, envelope, payload);
-            try self.stateDocument(index, payload, std.mem.eql(u8, declared, "session.state.updated"));
+            try self.stateDocument(index, envelope, payload, std.mem.eql(u8, declared, "session.state.updated"));
             return;
         }
         if (std.mem.eql(u8, declared, "run.cancel.request")) {
@@ -1794,6 +1812,7 @@ pub const Machine = struct {
         }
         holder.current_model = selected;
         holder.current_known = true;
+        holder.mutated = true;
         holder.guard_default = false;
     }
 
@@ -2600,6 +2619,7 @@ pub const Machine = struct {
         if (std.mem.eql(u8, controls.mode, "session")) {
             holder.current_model = controls.model;
             holder.current_known = true;
+            holder.mutated = true;
         }
     }
 
@@ -2839,6 +2859,84 @@ pub const Machine = struct {
                 try self.add(code_queue_order_violation, index);
                 return;
             }
+        }
+    }
+
+    fn captureWindowStart(self: *const Machine, index: usize, envelope: std.json.Value) usize {
+        return self.ids.get(field(envelope, "in_reply_to")) orelse index;
+    }
+
+    fn latestMutationBefore(self: *const Machine, session: []const u8, anchor: ?*Run, window: usize) ?*Run {
+        var latest: ?*Run = null;
+        for (self.runs.values()) |run| {
+            if (!std.mem.eql(u8, run.session, session)) continue;
+            if (anchor != null and run == anchor.?) continue;
+            if (!run.started or run.started_at > window) continue;
+            if (mutationModel(run) == null) continue;
+            if (anchor) |held| {
+                if (run.started_at <= held.started_at) continue;
+            }
+            if (latest == null or run.started_at > latest.?.started_at) latest = run;
+        }
+        return latest;
+    }
+
+    fn checkCaptureModel(self: *Machine, index: usize, envelope: std.json.Value, payload: std.json.Value, holder: *Session) !void {
+        const session_id = memberString(payload, "session_id");
+        const reported = memberString(payload, "current_model_id");
+        const window = self.captureWindowStart(index, envelope);
+        const position = member(member(payload, "as_of") orelse std.json.Value{ .null = {} }, "model_run_sequence") orelse {
+            if (self.latestMutationBefore(session_id, null, window)) |latest| {
+                if (!std.mem.eql(u8, mutationModel(latest).?, reported)) try self.add(code_premature_session_mutation, index);
+            }
+            return;
+        };
+        const run_id = memberString(position, "run_id");
+        const sequence = unsigned(position, "sequence") orelse 0;
+        if (run_id.len == 0 and sequence == 0) {
+            if (self.latestMutationBefore(session_id, null, window) != null) {
+                try self.add(code_session_state_mismatch, index);
+                return;
+            }
+            if (holder.opening_known and !std.mem.eql(u8, reported, holder.opening_model)) try self.add(code_premature_session_mutation, index);
+            return;
+        }
+        const run = self.runs.get(run_id) orelse {
+            try self.add(code_session_state_mismatch, index);
+            return;
+        };
+        if (!std.mem.eql(u8, run.session, session_id)) {
+            try self.add(code_session_state_mismatch, index);
+            return;
+        }
+        if (run.started and run.start_sequence != sequence) {
+            try self.add(code_session_state_mismatch, index);
+            return;
+        }
+        if (!run.started) {
+            try self.model_claims.append(self.allocator, .{ .session = session_id, .run = run_id, .sequence = sequence, .model = reported, .index = index });
+            return;
+        }
+        const model = mutationModel(run) orelse {
+            try self.add(code_session_state_mismatch, index);
+            return;
+        };
+        if (self.latestMutationBefore(session_id, run, window) != null) {
+            try self.add(code_session_state_mismatch, index);
+            return;
+        }
+        if (!std.mem.eql(u8, reported, model)) try self.add(code_premature_session_mutation, index);
+    }
+
+    fn reconcileModelClaims(self: *Machine, run: *Run) !void {
+        for (self.model_claims.items) |*claim| {
+            if (claim.done or !std.mem.eql(u8, claim.run, run.id) or run.start_sequence != claim.sequence) continue;
+            claim.done = true;
+            const model = mutationModel(run) orelse {
+                try self.add(code_session_state_mismatch, claim.index);
+                continue;
+            };
+            if (!std.mem.eql(u8, model, claim.model)) try self.add(code_premature_session_mutation, claim.index);
         }
     }
 
@@ -3268,9 +3366,11 @@ pub const Machine = struct {
                 }
             }
             const reported = memberString(payload, "current_model_id");
+            try self.checkCaptureModel(index, envelope, payload, holder);
             if (reported.len != 0) {
                 holder.current_model = reported;
                 holder.current_known = true;
+                noteOpening(holder, reported);
             }
         }
         if (member(payload, "recovery")) |recovery| {
@@ -3420,11 +3520,12 @@ pub const Machine = struct {
         try self.refreshQueueWindows(session_id);
     }
 
-    fn stateDocument(self: *Machine, index: usize, payload: std.json.Value, updated: bool) !void {
+    fn stateDocument(self: *Machine, index: usize, envelope: std.json.Value, payload: std.json.Value, updated: bool) !void {
         const session_id = memberString(payload, "session_id");
         {
             const holder = try self.sessionFor(session_id);
             const reported = memberString(payload, "current_model_id");
+            try self.checkCaptureModel(index, envelope, payload, holder);
             if (holder.guard_default and !std.mem.eql(u8, reported, holder.expected_default)) {
                 try self.add(code_unapplied_control, index);
             }
@@ -3442,6 +3543,7 @@ pub const Machine = struct {
             }
             holder.current_model = reported;
             holder.current_known = true;
+            noteOpening(holder, reported);
         }
         try self.checkPublishedUnion(index, session_id, member(payload, "sources"), false);
         try self.checkPublishedSources(index, payload);
@@ -3536,6 +3638,9 @@ pub const Machine = struct {
             } else {
                 state.started = true;
                 state.status = "running";
+                state.started_at = index;
+                state.start_sequence = unsigned(envelope, "sequence") orelse 0;
+                try self.reconcileModelClaims(state);
                 try self.settingsBeforeRun(index, state.session);
                 if (state.admitted_model.len != 0) {
                     const reported = memberString(member(envelope, "payload") orelse std.json.Value{ .null = {} }, "model_id");
@@ -3963,6 +4068,9 @@ pub const Machine = struct {
 
     pub fn close(self: *Machine) !void {
         try self.closeSteerSnapshots();
+        for (self.model_claims.items) |claim| {
+            if (!claim.done) try self.add(code_session_state_mismatch, claim.index);
+        }
         for (self.sessions.keys(), self.sessions.values()) |session_id, holder| {
             for (holder.model_anchors.items) |anchor| {
                 const request = self.requests.get(anchor.request) orelse continue;
@@ -4503,6 +4611,17 @@ fn declaresSource(sources: ?std.json.Value, id: []const u8) bool {
         if (std.mem.eql(u8, memberString(source, "id"), id)) return true;
     }
     return false;
+}
+
+fn mutationModel(run: *const Run) ?[]const u8 {
+    if (!run.controls.present or !run.controls.model_present or !std.mem.eql(u8, run.controls.mode, "session")) return null;
+    return run.controls.model;
+}
+
+fn noteOpening(holder: *Session, reported: []const u8) void {
+    if (holder.mutated or holder.opening_known) return;
+    holder.opening_model = reported;
+    holder.opening_known = true;
 }
 
 fn affirmative(level: []const u8) bool {
