@@ -186,8 +186,8 @@ The request is
 `{ interaction_id, session_id, run_id, tool_call_id, requested_by,
 responded_by, started? | result? | error? }` with exactly one of the three
 arms. Its `tool_call_id`, on the envelope and in the payload, names the tool
-call the interaction is bound to, and so does the response's
-([Decision 0055](0055-register-batch-2.md)). `started` is an empty object: an acknowledgement, not a resolution. It
+call the interaction is bound to. The response's `tool_call_id` names the same
+call ([Decision 0055](0055-register-batch-2.md)). `started` is an empty object: an acknowledgement, not a resolution. It
 may appear at most once and only before the resolution.
 
 The response is

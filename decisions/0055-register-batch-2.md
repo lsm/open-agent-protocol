@@ -35,7 +35,8 @@ the same rule for the binding it carries: the `tool_call_id` of an
 `action.call.resolve.request` or `.response` names the tool call the
 interaction is bound to, on the envelope and in the payload alike. Decision
 0008 already has a session's tool catalog name its session on the envelope;
-that is this rule's first instance, and every tree judges it.
+that is this rule's first instance, and every tree must judge it, including
+where the envelope omits the session rather than naming another.
 
 ### A run belongs to one session and is admitted once (OPEN-0001-4)
 
@@ -71,10 +72,10 @@ position nobody can read cannot bound the replay.
 
 `action.tools.provide`'s `limits.name_pattern` is written in RE2 syntax and
 matches a tool name only when it matches all of it, as if anchored at both
-ends. Go and Rust use their native RE2 engines; Zig owes an RE2-compatible
-implementation, judged by fixtures for anchoring and for the syntax the
-pattern uses, and until it has one the gate is a recorded port gap rather than
-a divergence.
+ends. Go uses `regexp` and Rust will use `regex`, both RE2; Zig owes an
+RE2-compatible implementation. Fixtures for anchoring and for the syntax the
+pattern uses judge all three, and until Zig has an engine its gate is a
+recorded port gap rather than a divergence.
 
 ## Consequences
 
@@ -83,5 +84,9 @@ a divergence.
   0019's `name_pattern` entry state these answers in their own text.
 - Ports follow, each citing its item: the three scope checks only Go has
   (OPEN-0008-2) go to Zig and Rust; Zig gains an RE2-compatible `name_pattern`
-  matcher; every tree accepts a cancel of a queued reservation and judges the
-  cursor's bound.
+  matcher and Rust its provided-tools limits; every tree accepts a cancel of a
+  queued reservation and judges the cursor's bound.
+- Go matches `name_pattern` unanchored today, so a pattern `foo` admits
+  `xfooy`. Go anchors its match, with a fixture whose tool name contains a
+  match without equalling one, and so does any reference adapter that checks
+  the pattern.
