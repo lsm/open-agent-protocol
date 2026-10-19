@@ -8,6 +8,105 @@ recommends one. An item closes when a decision or a rule row in
 fixing pull request names the item. Nothing here is resolved toward any one
 tree by default.
 
+## Executable core (0001, 0002)
+
+Rules: [`0001-core.md`](../drafts/validator-rules/0001-core.md). Every tree
+judged these and no text stated them. All eight are settled; what remains is
+the ports each decision names.
+
+### OPEN-0001-1: is an envelope id unique within a trace?
+
+All three trees raise `duplicate_envelope_id` for a repeated `id`
+(`state.go:apply`).
+
+- (a) Unique within the trace, as every tree judges.
+- (b) Unique only among requests, the envelopes correlation names.
+
+Recommendation: (a), since a repeat makes every reply to either ambiguous.
+Settled by [Decision 0055](../decisions/0055-register-batch-2.md).
+
+### OPEN-0001-2: may a cancel name a queued run?
+
+Go and Zig raise `illegal_run_transition` for a cancel naming a run no
+admission created (`state.go:apply`).
+
+- (a) Any admitted run, queued reservations included.
+- (b) Only a run that has started.
+
+Recommendation: (a), so a reservation can be withdrawn before it promotes.
+Settled by [Decision 0055](../decisions/0055-register-batch-2.md); every tree owes acceptance of a queued run's cancel.
+
+### OPEN-0001-3: does a response stay in its request's scope?
+
+Go and Zig raise `scope_mismatch` when a response, `error.response` included,
+names another session, run or interaction than its request
+(`state.go:response`).
+
+- (a) Yes, for every scope the response states.
+- (b) Only for the session.
+
+Recommendation: (a). Settled, together with the 0008 group's tool-call scope items, by [Decision 0055](../decisions/0055-register-batch-2.md); the
+scope checks only Go has go to Zig and Rust.
+
+### OPEN-0001-4: is a run admitted once, into one session?
+
+Go and Zig raise `scope_mismatch` for an admission or run event naming another
+session's run, and `illegal_run_transition` for a second admission
+(`state.go:admitSubmission`, `state.go:runEvent`).
+
+- (a) Once, into one session, with every event scoped there.
+- (b) Leave re-admission to the endpoint.
+
+Recommendation: (a). Settled by [Decision 0055](../decisions/0055-register-batch-2.md).
+
+### OPEN-0001-5: is an interaction id requested once per run?
+
+Go and Zig raise `duplicate_interaction` for a second request under one id
+(`state.go:interactionRequested`).
+
+- (a) Once per run, a replay from a retained journal not counting as a second
+  request.
+- (b) Once per run, counting replays.
+
+Recommendation: (a). Settled by [Decision 0055](../decisions/0055-register-batch-2.md).
+
+### OPEN-0001-6: are input answers judged against the prompt?
+
+Go and Zig raise `unmatched_interaction` for an answer naming a question the
+prompt did not ask, or leaving a required one empty
+(`state.go:interactionResolutionRequest`, `state.go:validateInputAnswers`).
+
+- (a) Judge each answer against the prompt's questions.
+- (b) Judge only that the interaction exists.
+
+Recommendation: (a), with non-empty text owed only for required questions,
+choice questions included. Settled by [Decision 0056](../decisions/0056-input-answers-are-judged-against-the-prompt.md).
+
+### OPEN-0001-7: what form does a resume cursor take?
+
+Go and Zig raise `undeclared_replay_gap` for a cursor that is not an increasing
+integer (`state.go:apply`); Rust does not judge it.
+
+- (a) A string holding a monotonically increasing unsigned decimal integer no
+  greater than 2^53 − 1.
+- (b) Any opaque string.
+
+Recommendation: (a). Settled by [Decision 0055](../decisions/0055-register-batch-2.md); Rust owes the port.
+
+### OPEN-0001-8: must a request wait for the refresh `capabilities.updated` owes?
+
+Go and Zig raise `stale_capability_revision` for a submit or compaction made
+between `capabilities.updated` and the next `capabilities.response`
+(`state.go:apply`, `compaction.go:compactRequest`); Rust judges submits only.
+
+- (a) Every request waits, except those that discover the new descriptor or
+  settle work in flight.
+- (b) Only submits and compactions, as the trees do.
+
+Recommendation: (a), exempting `protocol.initialize.request`,
+`capabilities.request`, `run.cancel.request` and the answers to pending
+interactions. Settled by [Decision 0055](../decisions/0055-register-batch-2.md); all three trees owe the port.
+
 ## Queue, open and cancel (0007, 0009, 0041)
 
 Rules: [`0007-queue-open-cancel.md`](../drafts/validator-rules/0007-queue-open-cancel.md).
