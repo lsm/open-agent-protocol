@@ -99,17 +99,21 @@ store (an `auth.json` under `.oapx` or `.makai`) inside the checkout; both stay
 in `.gitignore`, so nothing else would notice one. A workspace's own `.oapx`
 (tool artifacts, permissions) is expected state, not litter.
 
-Five workflows run on `pull_request`: `ci.yml`, `ci-zig.yml`,
-`benchmark-report.yml`, `compatibility.yml` (which also reruns on a description
-edit) and `release-smoke.yml` (only when a pull request changes it, against the
-latest release). Each takes one concurrency group per pull request, so a
-newer push to that pull request cancels the run the previous push started, and
-that is all the group ever cancels. Both CI files push on `main` only, so a branch
-push produces one run rather than a `push` twin of the `pull_request` one, and a
-push takes no group it shares: each push's run survives on its own — the key
-includes the event name and a run id, because GitHub drops the *pending* run of a
-shared group by default, so a group keyed on `github.ref` would have cancelled
-main's queued runs rather than none of them.
+Five workflows run on `pull_request`: `ci.yml`, `ci-zig.yml` (skipped when a
+pull request touches only `decisions/`, `drafts/`, `docs/`, `research/` or
+root-level Markdown; `ci.yml` is not, because the Go suite checks the rule
+register in `drafts/validator-rules`), `benchmark-report.yml` (its job runs
+only on a pull request labelled `benchmark`), `compatibility.yml` (which also
+reruns on a description edit) and `release-smoke.yml` (only when a pull request
+changes it, against the latest release). Each takes one concurrency group per
+pull request, so a newer push to that pull request cancels the run the previous
+push started. Both CI files push on `main` only, so a branch push produces one
+run rather than a `push` twin of the `pull_request` one. A `ci.yml` push takes
+no group it shares — the key includes the event name and a run id — so every
+main commit keeps its own run. A `ci-zig.yml` push shares one group per ref
+without cancel-in-progress: a main run already going finishes, and because
+GitHub keeps only the newest *pending* run of a shared group, a burst of merges
+queues one run of the heaviest workflow rather than one per commit.
 
 ## Zero comments
 
