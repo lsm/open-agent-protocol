@@ -47,10 +47,12 @@ impl State {
         if is_request(&e.envelope_type) {
             return;
         }
-        if self
-            .features
-            .get(FEATURE_CONTENT_IMAGE)
-            .is_some_and(|level| *level != SupportLevel::UNAVAILABLE)
+        if !self.current_capability.is_empty()
+            && !self.capabilities_stale
+            && self
+                .features
+                .get(FEATURE_CONTENT_IMAGE)
+                .is_some_and(|level| *level != SupportLevel::UNAVAILABLE)
         {
             return;
         }

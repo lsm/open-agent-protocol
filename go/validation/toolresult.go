@@ -10,7 +10,7 @@ func (s *state) checkResultImages(i, line int, e protocol.Envelope) {
 	if s.isRequestType(e.Type) {
 		return
 	}
-	if level, ok := s.features[protocol.FeatureContentImage]; ok && level != protocol.SupportUnavailable {
+	if s.advertised(protocol.FeatureContentImage) {
 		return
 	}
 	var payload any

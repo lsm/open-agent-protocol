@@ -13354,6 +13354,26 @@
       ]
     },
     {
+      "id": "tool-result-image-in-the-announce-window",
+      "path": "semantic-invalid/tool-result-image-in-the-announce-window.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "unavailable_capability"
+      ],
+      "units": [
+        "core",
+        "capabilities"
+      ],
+      "provenance": [
+        "decisions/0060-a-tool-result-may-carry-content-parts.md"
+      ],
+      "rules": [
+        "0060#an-image-part-needs-contentimage/1"
+      ]
+    },
+    {
       "id": "tool-result-text-parts",
       "path": "valid/tool-result-text-parts.json",
       "kind": "positive",

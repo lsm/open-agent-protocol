@@ -1923,9 +1923,7 @@ pub const Machine = struct {
 
     fn checkResultImages(self: *Machine, index: usize, declared: []const u8, payload: std.json.Value) !void {
         if (self.isRequestType(declared)) return;
-        if (self.features.get(feature_content_image)) |level| {
-            if (!std.mem.eql(u8, level, "unavailable")) return;
-        }
+        if (self.advertisedKey(feature_content_image)) return;
         const direct = std.mem.eql(u8, declared, "action.call.completed") and carriesImage(member(payload, "result"));
         if (direct or toolResultImage(payload)) try self.add(code_unavailable_capability, index);
     }
