@@ -81,6 +81,12 @@ fn reencoded(envelope_type: &str, payload: &Value) -> Option<Value> {
         "capabilities.updated" => round_trip::<CapabilitiesUpdated>(payload),
         "models.request" => round_trip::<ModelsRequest>(payload),
         "models.response" => round_trip::<ModelsResponse>(payload),
+        "session.message.submit.request" => round_trip::<MessageSubmitRequest>(payload),
+        "session.message.submit.response" => round_trip::<MessageSubmitResponse>(payload),
+        "session.compact.request" => round_trip::<SessionCompactRequest>(payload),
+        "session.compact.response" => round_trip::<SessionCompactResponse>(payload),
+        "transcript.load.request" => round_trip::<TranscriptLoadRequest>(payload),
+        "transcript.load.response" => round_trip::<TranscriptLoadResponse>(payload),
         "error.response" => round_trip::<ErrorResponse>(payload),
         _ => return None,
     })
@@ -126,7 +132,7 @@ fn every_run_interaction_auth_and_error_payload_in_the_positive_fixtures_round_t
         differing.len(),
         differing.join("\n")
     );
-    assert!(judged >= 800, "judged only {judged} payloads");
+    assert!(judged >= 1500, "judged only {judged} payloads");
 }
 
 #[test]

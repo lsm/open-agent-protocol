@@ -51,4 +51,5 @@ id!(
     CompactionId,
     InferenceId,
     AuthFlowId,
+    TranscriptEntryId,
 );
