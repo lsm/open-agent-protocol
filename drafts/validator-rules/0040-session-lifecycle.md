@@ -20,6 +20,7 @@ Source: [`decisions/0040-a-session-reopens-through-its-own-binding.md`](../../de
 | `0040#the-capability-key-is-sessionopenreopen-and-a-reopen-is-gated-like-subscribe/1` | An open with `reopen: true` to an endpoint that does not advertise `session.open.reopen` above `unavailable` MUST be refused `unsupported_feature` naming the key, `details.reason: "unadvertised"`. | L89–106 | `unavailable_capability` | `reopen.go:reopenGate` | `semantic.zig:reopenGate` | — |
 | `0040#the-capability-key-is-sessionopenreopen-and-a-reopen-is-gated-like-subscribe/2` | A reopen under a `degraded` disclosure without the caller's opt-in MUST be refused `capability_degraded`. | L89–106 | `degraded_without_optin` | `reopen.go:reopenGate` | `semantic.zig:reopenGate` | — |
 | `0040#the-capability-key-is-sessionopenreopen-and-a-reopen-is-gated-like-subscribe/3` | A successful reopen MUST list no run under way, unless the same open carried a message that admitted one. As amended by 0050 § 5, it may also list restored runs as `queued`. | L89–106 | `session_state_mismatch` | `reopen.go:reopenResponse` (unamended; see OPEN-0050-1) | `semantic.zig:reopenResponse` (unamended) | — |
+| `0040#the-capability-key-is-sessionopenreopen-and-a-reopen-is-gated-like-subscribe/4` | A `session.open.request` setting `reopen: true` MUST carry `session_id`. | L102–103 | `schema_invalid` | schema | schema | schema |
 
 ### [0040] The reply is the state document, and it declares what the session runs under
 
@@ -142,6 +143,14 @@ Source: [`decisions/0049-a-message-reports-its-own-usage.md`](../../decisions/00
 | --- | --- | --- | --- | --- | --- | --- |
 | `0049#2/1` | A second `content.completed` for one `message_id` in a run MUST NOT occur. | L38–41 | `duplicate_message_completion` | `state.go:runEvent` | `semantic.zig:runEvent` | `state/runs.rs:advance` |
 | `0049#2/2` | A `content.delta` MUST NOT name a `message_id` a `content.completed` already closed. | L38–41 | `content_after_completion` | `state.go:runEvent` | `semantic.zig:runEvent` | `state/runs.rs:advance` |
+
+### [0049] 3. `message_id` is required on it
+
+Source: [`decisions/0049-a-message-reports-its-own-usage.md`](../../decisions/0049-a-message-reports-its-own-usage.md#decisions).
+
+| id | rule | lines | code | Go | Zig | Rust |
+| --- | --- | --- | --- | --- | --- | --- |
+| `0049#3/1` | A `content.completed` MUST carry `message_id`. | L42–43 | `schema_invalid` | schema | schema | schema |
 
 ### [0051] 8. It is declinable
 
