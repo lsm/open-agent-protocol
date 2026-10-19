@@ -9,11 +9,11 @@ Amends: [Decision 0007](0007-queue-delivery.md) and
 
 ## Context
 
-The validator rule register (`drafts/validator-rules/`) holds every behaviour
-a validator judges to the decision text that states it. Where the text was
-silent, or the trees disagreed, the behaviour was recorded as an open item in
-`research/validator-divergences.md` instead of being copied from whichever tree
-had it. This decision settles the first batch of those items, and states each
+The validator rule register being assembled under `drafts/validator-rules/`
+holds every behaviour a validator judges to the decision text that states it.
+Where the text was silent, or the trees disagreed, the behaviour was recorded
+as an open item, numbered as in the headings below, instead of being copied
+from whichever tree had it. This decision settles the first batch of those items, and states each
 answer in the decision it belongs to, because a rule that lives only in a
 register row is one reader's interpretation rather than the protocol's.
 
@@ -27,9 +27,10 @@ only where the descriptor advertised `session.message.delivery.queue`. The
 condition belongs to a different rule: whether `active_runs` must be present at
 all where a run's recovery needs an id only an entry holds, which 0007 ties to
 "an endpoint that puts entries there at all". An entry that exists has already
-answered that question. So an entry stating no position lists exactly the
-interactions its run has unresolved as the trace stands, whatever the
-descriptor advertises; the omission rule keeps its condition.
+answered that question. An entry naming pending interactions must state the
+position it caught them at, so an entry stating no position names none, and is
+judged as the trace stands: whatever the descriptor advertises, it is wrong if
+its run has an unresolved interaction. The omission rule keeps its condition.
 
 ### A refused attachment is refused like every other gated control (OPEN-0028-1, OPEN-0028-3)
 
@@ -66,7 +67,11 @@ to every rule about the listing alone.
 - 0007's capture rules and 0028's attachment rules state these answers in
   their own text, each marked as amended by this decision.
 - Go stops conditioning the no-position pending check on the queue, judges a
-  degraded attachment's refusal, and requires the unadvertised reason; Zig
-  stops conditioning the pending check on the queue, judges an attachment
-  accepted without the mode, and keeps judging only binding catalogs. Each port
-  cites its open item.
+  degraded attachment's refusal, requires the unadvertised reason, and moves
+  its attached-provider check behind the catalog's binding check, where Zig
+  already has it; Zig stops conditioning the pending check on the queue and
+  judges an attachment accepted without the mode. Each port cites its open
+  item.
+- `drafts/conformance.md` states the attachment refusal with its reason, and
+  the queue unit's capture-position bullet says what an entry without a
+  position claims.
