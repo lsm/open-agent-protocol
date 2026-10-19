@@ -199,6 +199,34 @@ func runOAPHost(scenario string) {
 				}
 				continue
 			}
+			if selectedModel == "fixture/other:test@every-run-event" {
+				for _, item := range []struct {
+					kind    string
+					payload any
+				}{
+					{"run.started", map[string]any{"session_id": sessionID, "run_id": "run-1"}},
+					{"run.compaction.started", map[string]any{"session_id": sessionID, "run_id": "run-1", "compaction_id": "compaction-1", "reason": "threshold"}},
+					{"run.compaction.ended", map[string]any{"session_id": sessionID, "run_id": "run-1", "compaction_id": "compaction-1", "outcome": "completed"}},
+					{"content.delta", map[string]any{"session_id": sessionID, "run_id": "run-1", "message_id": "message-1", "part": map[string]any{"type": "text", "text": "agent"}}},
+					{"content.completed", map[string]any{"session_id": sessionID, "run_id": "run-1", "message_id": "message-1"}},
+					{"action.call.requested", map[string]any{"session_id": sessionID, "run_id": "run-1", "tool_call_id": "call-1", "name": "Shell", "execution_owner": "fake", "arguments_json": map[string]any{"command": "ls"}}},
+					{"action.call.started", map[string]any{"session_id": sessionID, "run_id": "run-1", "tool_call_id": "call-1", "name": "Shell", "execution_owner": "fake"}},
+					{"action.call.progress", map[string]any{"session_id": sessionID, "run_id": "run-1", "tool_call_id": "call-1", "execution_owner": "fake"}},
+					{"action.call.completed", map[string]any{"session_id": sessionID, "run_id": "run-1", "tool_call_id": "call-1", "execution_owner": "fake", "result": "ok"}},
+					{"run.steer.applied", map[string]any{"session_id": sessionID, "run_id": "run-1", "request_id": "steer-0"}},
+					{"run.steer.dropped", map[string]any{"session_id": sessionID, "run_id": "run-1", "request_id": "steer-1", "reason": "run_settled"}},
+					{"run.status.updated", map[string]any{"session_id": sessionID, "run_id": "run-1", "status": "running"}},
+					{"session.state.updated", map[string]any{"session_id": sessionID, "status": "running"}},
+					{"user.input.requested", map[string]any{"session_id": sessionID, "run_id": "run-1", "interaction_id": "input-1", "requested_by": "fake", "responded_by": "someone-else", "questions": []any{}}},
+					{"user.input.resolved", map[string]any{"session_id": sessionID, "run_id": "run-1", "interaction_id": "input-1", "status": "cancelled"}},
+					{"run.completed", map[string]any{"session_id": sessionID, "run_id": "run-1", "final_response": map[string]any{"role": "assistant", "content": "agent"}, "stop_reason": "stop"}},
+				} {
+					event := oapHostFrame(oapAgent, item.kind, item.payload)
+					event.SessionID, event.RunID = sessionID, "run-1"
+					fakeEmit(event)
+				}
+				continue
+			}
 			if selectedModel == "fixture/other:test@auth-once" {
 				started := oapHostFrame(oapAgent, "run.started", map[string]any{"session_id": sessionID, "run_id": "run-1", "model_id": selectedModel})
 				started.SessionID, started.RunID = sessionID, "run-1"
@@ -351,6 +379,14 @@ func TestOAPAgentAnswersAPermissionWithTheHandlersDecisionAndDeniesWithoutOne(t 
 		Permit: func(context.Context, PermissionRequest) bool { return false }})
 	if err != nil || response.Message.Text != "reasoning=<nil> output=<nil> user_input=false permission_mode=ask" {
 		t.Fatalf("a handler did not open the loop in ask mode: %v, %+v", err, response)
+	}
+}
+
+func TestOAPAgentStreamPassesTheRunEventsItDoesNotSurface(t *testing.T) {
+	client := newTestClient(t, scenarioOAP)
+	response, err := client.Agent.Run(context.Background(), AgentRequest{ModelRef: "fixture/other:test@every-run-event", Messages: []Message{UserMessage("hi")}})
+	if err != nil || response.Message.Text != "agent" {
+		t.Fatalf("a run carrying every event the stream skips failed: %v, %+v", err, response)
 	}
 }
 
