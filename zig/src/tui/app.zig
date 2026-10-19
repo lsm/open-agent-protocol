@@ -1161,7 +1161,7 @@ pub const App = struct {
         if (app.runtime.?.currentModel()) |model| {
             try app.state.status.setModelWithContext(allocator, model.id, model.provider, model.context_window);
             app.state.telemetry.context_window = model.context_window;
-        } else if (options.remote == null) try app.state.appendNotice(login_first_notice);
+        } else if (options.remote == null or app.runtime.?.recordsFromEndpoint()) try app.state.appendNotice(login_first_notice);
         app.store = session_store.Store.initDefault(allocator) catch null;
         try app.ensureSessionId();
         app.working_dir = currentPathOwned(allocator) catch try allocator.dupe(u8, "");
@@ -5869,7 +5869,11 @@ test "App started with no provider logged in has no model, says how to log in, a
     defer production.deinit();
     production.initBridge();
     try std.testing.expectEqual(@as(usize, 0), production.models.len);
-    var app = try App.init(std.testing.allocator, production.options());
+    var options = production.options();
+    const execution = try tui_oap_execution.OapExecution.create(std.testing.allocator, options);
+    defer execution.destroy();
+    options.remote = execution.remote();
+    var app = try App.init(std.testing.allocator, options);
     defer app.deinit();
 
     try std.testing.expectEqualStrings("", app.state.status.model);
