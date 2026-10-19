@@ -18,8 +18,8 @@ The question for every rule is three answers:
   `zig/src/validation/semantic_gate.zig` expects every code a fixture declares
   and accepts a disagreement only for a fixture listed under `zig` in
   `fixtures/known-gaps.json`; it fails when a listed fixture agrees or is never
-  judged. `fixture_gate.zig` still skips the `load` and `decode` phases
-  outright. The "Zig" column below is read from the source
+  judged. `fixture_gate.zig` judges the `decode` and `schema` phases and
+  still skips `load-invalid` fixtures outright. The "Zig" column below is read from the source
   (`semantic.implemented`, `provider_semantic.implemented`, `packs.zig`),
   never from the gate's result.
 - **`partial`** means Zig emits the code for some traces and the fixtures it
