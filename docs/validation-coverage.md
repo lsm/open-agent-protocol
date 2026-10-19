@@ -173,7 +173,7 @@ is checked. Fixture counts are positive / negative traces citing the decision.
 | 0004 unprefixed namespace, prefix-free set, a pack declares what it defines, a pack adds and does not amend, a pack is someone else's document | 19 `pack_*` load codes and `ext_claim_without_pack` | Go all 20; Zig 15, all but `pack_schema_path_escape`, `pack_external_ref`, `pack_dependency_missing`, `pack_fixture_claims_core_unit` and `ext_claim_without_pack` (#1261); per-code status in [`drafts/validator-rules/0004-packs.md`](../drafts/validator-rules/0004-packs.md) | 6 / 23 load-invalid | the Zig fixture gate judges `load-invalid` since #1261 |
 | 0004 a load refusal is not a diagnostic | (by construction) | both | — | |
 | 0004 a pack's conformance claim is its own | `pack_fixture_claims_core_unit` | Go only | 1 | |
-| 0004 pack members gated on their capability | `unavailable_capability`, `unhonoured_capability` | Zig lacks `unhonoured_capability` | 4 / 1 | |
+| 0004 pack members gated on their capability | `unavailable_capability`, `unhonoured_capability` | both (Zig's `packEnvelope` raises `unhonoured_capability` for a refusal outside a typed gate's `refusals`) | 4 / 1 | |
 
 ### Decisions 0005, 0019, 0021–0024, 0031, 0034: run controls
 
