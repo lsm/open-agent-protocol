@@ -65,8 +65,13 @@ async function startHub(t: TestContext): Promise<string> {
   const daemon = spawn(binary, ['serve', '--addr', '127.0.0.1:0', '--session-history='], {
     stdio: ['ignore', 'pipe', 'pipe'],
   });
-  t.after(() => {
-    if (!daemon.killed) daemon.kill('SIGTERM');
+  t.after(async () => {
+    if (daemon.exitCode !== null || daemon.signalCode !== null) return;
+    const exited = new Promise<void>((resolve) => daemon.once('exit', () => resolve()));
+    daemon.kill('SIGTERM');
+    const forced = setTimeout(() => daemon.kill('SIGTERM'), 2000);
+    await exited;
+    clearTimeout(forced);
   });
   return waitForListening(daemon);
 }
