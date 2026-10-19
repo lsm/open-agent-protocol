@@ -1,5 +1,6 @@
 {
   "version": 1,
+  "go": [],
   "zig": [
     "control-call-recovered-ack-omitted",
     "models-current-mismatch",
@@ -130,8 +131,6 @@
     "models-select-in-gap-unlisted",
     "models-select-removed-after-refresh",
     "models-select-unlisted",
-    "models-stale-catalog-does-not-displace",
-    "models-stale-catalog-raises-no-change",
     "models-two-defaults",
     "models-two-defaults-around-the-current-model",
     "models-unadvertised",
