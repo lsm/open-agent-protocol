@@ -26,9 +26,7 @@ func providedTool() protocol.ToolDefinition {
 func openProviding(t *testing.T, tools ...protocol.ToolDefinition) adapter.Session {
 	t.Helper()
 	implementation := adapter.NewMemory(adapter.Config{Clock: &fixedClock{}, IDs: &fixedIDs{}})
-	session, err := implementation.Open(context.Background(), adapter.OpenRequest{
-		SessionID: "control-tools", Participant: protocol.Participant{ID: "user"}, Tools: tools,
-	})
+	session, err := implementation.Open(context.Background(), providingOpen(tools...))
 	if err != nil {
 		t.Fatalf("open providing tools: %v", err)
 	}
@@ -43,6 +41,17 @@ func referenceDescriptor(t *testing.T) adapter.Descriptor {
 		t.Fatal(err)
 	}
 	return descriptor
+}
+
+func providingOpen(tools ...protocol.ToolDefinition) adapter.OpenRequest {
+	return adapter.OpenRequest{SessionID: "control-tools", Participant: protocol.Participant{ID: "user"}, Tools: tools}
+}
+
+func resolveRecorded(t *testing.T, session adapter.Session, id protocol.EnvelopeID, request protocol.ActionCallResolveRequest, events *[]protocol.Envelope) protocol.ActionCallResolveResponse {
+	t.Helper()
+	answer := resolve(t, session, id, request)
+	*events = append(*events, adaptertest.CallResolveExchange(t, id, referenceDescriptor(t).CapabilityRevision, request, answer)...)
+	return answer
 }
 
 var providedCallSubmit = protocol.MessageSubmitRequest{
@@ -125,10 +134,10 @@ func TestProvidedCallRoundTripValidates(t *testing.T) {
 	acknowledge := resultArm(call)
 	acknowledge.Result = nil
 	acknowledge.Started = &protocol.ResolveArmStarted{}
-	if answer := resolve(t, session, "resolve-ack", acknowledge); !answer.Accepted {
+	if answer := resolveRecorded(t, session, "resolve-ack", acknowledge, &events); !answer.Accepted {
 		t.Fatalf("a first acknowledgement must be accepted, got %q", answer.Reason)
 	}
-	if answer := resolve(t, session, "resolve-result", resultArm(call)); !answer.Accepted {
+	if answer := resolveRecorded(t, session, "resolve-result", resultArm(call), &events); !answer.Accepted {
 		t.Fatalf("a valid resolution must be accepted, got %q", answer.Reason)
 	}
 
@@ -146,7 +155,14 @@ func TestProvidedCallRoundTripValidates(t *testing.T) {
 			break
 		}
 	}
-	adaptertest.AssertProtocolValidWithSubmit(t, providedCallSubmit, admission, referenceDescriptor(t), events)
+	adaptertest.AssertProtocolValidWithSubmit(t, providedCallSubmit, admission, referenceDescriptor(t), events, adaptertest.Opened(providingOpen(providedTool())))
+	var unresolved []protocol.Envelope
+	for _, event := range events {
+		if event.Type != protocol.TypeActionCallResolveRequest && event.Type != protocol.TypeActionCallResolveResponse {
+			unresolved = append(unresolved, event)
+		}
+	}
+	adaptertest.AssertProtocolInvalidWithSubmit(t, providedCallSubmit, admission, referenceDescriptor(t), unresolved, "illegal_tool_transition", adaptertest.Opened(providingOpen(providedTool())))
 
 	var completed protocol.ActionCallPayload
 	for _, event := range events {
@@ -263,7 +279,7 @@ func TestCancelClosesAPendingProvidedCall(t *testing.T) {
 	if !cancelledCall {
 		t.Fatal("a cancelled run must close its pending control-owned call")
 	}
-	adaptertest.AssertProtocolValidWithSubmitAndCancellation(t, providedCallSubmit, admission, referenceDescriptor(t), events)
+	adaptertest.AssertProtocolValidWithSubmitAndCancellation(t, providedCallSubmit, admission, referenceDescriptor(t), events, adaptertest.Opened(providingOpen(providedTool())))
 }
 
 func TestProvidedCatalogAndAcknowledgedSubset(t *testing.T) {
