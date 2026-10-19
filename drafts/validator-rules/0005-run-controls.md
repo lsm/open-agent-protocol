@@ -58,6 +58,8 @@ The four controls are `model_id` (`run.model_selection`), `instructions`
 | id | rule | source | code | Go | Zig | Rust | fixtures |
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | 0005#a-per-run-selection-does-not-move-the-session-default | After a `model_id` admitted under `scope: "run"`, `current_model_id` MUST stay the retained default, after the run's terminal and across a capability refresh. | 0005 § A per-run selection does not move the session default; 0022 § `mode` becomes `scope` | `unapplied_control` | state.go:apply | stateDocument | — | controls-per-run-overwrites-default, controls-per-run-changes-default, controls-per-run-overwrites-default-at-terminal, controls-per-run-overwrites-default-after-refresh |
+| 0005#the-gate-is-judged-on-the-correlated-response/5 | A `run.started` of a run admitted under a `model_id` MUST name that model. | 0005 § Consequences (`run.started`'s model disagreement is `unapplied_control`) | `unapplied_control` | state.go:runEvent | runEvent | — | controls-started-omits-model |
+| 0005#the-gate-is-judged-on-the-correlated-response/6 | A `run.started` naming a model MUST name the admitted one. | 0005 § Consequences | `unapplied_control` | state.go:runEvent | runEvent | — | — |
 | 0005#runcompleted-gains-model_id | A `run.completed` naming a `model_id` MUST name the admitted model. | 0005 § `run.completed` gains `model_id` | `unapplied_control` | controls.go:checkCompletedControls | checkCompletedControls | state/controls.rs:check_completed_controls | controls-model-mismatch |
 | 0005#output_schema-is-compiled-never-resolved/2 | A `run.completed` under an admitted `output_schema` MUST carry `result`. | 0005 § `output_schema` is compiled, never resolved | `unapplied_control` | controls.go:checkCompletedControls | checkCompletedControls | state/controls.rs:check_completed_controls | controls-structured-missing-result |
 | 0005#output_schema-is-compiled-never-resolved/3 | That `result` MUST conform to the admitted schema. | 0005 § `output_schema` is compiled, never resolved | `unapplied_control` | controls.go:checkCompletedControls | checkCompletedControls | state/controls.rs:check_completed_controls | controls-structured-nonconforming-result |
@@ -79,5 +81,6 @@ The four controls are `model_id` (`run.model_selection`), `instructions`
   `output_schema` keywords outside its interpreter that Go admits. Both are
   recorded divergences, not open questions.
 - The `model_id` catalog miss (`model_not_in_catalog` from
-  `controls.go:unsatisfiable`) and `run.started`'s model agreement
-  (`state.go:runEvent`) are 0006's and 0007's rules.
+  `controls.go:unsatisfiable`) is 0006's rule. 0007 adds when a reservation's
+  model applies, which moves when the `run.started` rows above are judged but
+  not what they require.
