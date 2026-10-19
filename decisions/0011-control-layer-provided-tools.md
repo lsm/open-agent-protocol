@@ -1,7 +1,9 @@
 # Decision 0011: Control-Layer-Provided Tools
 
 Status: accepted 2026-09-17 (the resolution pair's tool binding and
-`name_pattern` amended by [Decision 0055](0055-register-batch-2.md); the optional `source` amended by
+`name_pattern` amended by [Decision 0055](0055-register-batch-2.md), and an
+uncompilable `name_pattern` by
+[Decision 0062](0062-a-name-pattern-that-is-not-re2-is-a-defective-limit.md); the optional `source` amended by
 [Decision 0048](0048-a-provided-tool-names-a-source-when-tools-are-listed.md)
 for an endpoint that lists tools). Assessed against Decision 0003 earlier the same
 day and **held**, correctly: steps 2 and 4 had landed — 58 `control-tools`
@@ -329,7 +331,10 @@ So a constraint must be *advertised to be exercised*. The feature's
 `max_tools`, a `name_pattern`, the accepted `schema_dialect` — and refusing a
 protocol-valid array is conforming only where it violates a declared limit.
 A `name_pattern` is RE2 syntax and matches a name only when it matches all of
-it ([Decision 0055](0055-register-batch-2.md)).
+it ([Decision 0055](0055-register-batch-2.md)). A descriptor whose
+`name_pattern` is not valid RE2 is defective, judged on its
+`capabilities.response` as `undisclosed_provide_limit` at the pattern
+([Decision 0062](0062-a-name-pattern-that-is-not-re2-is-a-defective-limit.md)).
 Refusing one that satisfies every advertised limit is
 `undisclosed_provide_limit`, the shape T2 uses for an undisclosed queue bound
 and Decision 0008 for an undisclosed attachment limit, and for the same reason:
