@@ -123,6 +123,7 @@ const Parser = struct {
     at: usize = 0,
     depth: u32 = 0,
     soft: bool = false,
+    names: std.ArrayList([]const u8) = .empty,
 
     fn peek(self: *Parser) ?u8 {
         return if (self.at < self.source.len) self.source[self.at] else null;
@@ -255,6 +256,8 @@ const Parser = struct {
                         self.soft = true;
                     } else if (!std.ascii.isAlphanumeric(name) and name != '_') return error.Invalid;
                 }
+                for (self.names.items) |earlier| if (std.mem.eql(u8, earlier, self.source[open..close])) return error.Invalid;
+                try self.names.append(self.arena, self.source[open..close]);
                 self.at = close + 1;
             } else {
                 self.at += 1;
@@ -528,7 +531,7 @@ test "a pattern matches only the whole name, as Go's anchored RE2 does" {
 }
 
 test "a pattern Go's RE2 rejects is invalid, and valid syntax this matcher does not implement stands down" {
-    for ([_][]const u8{ "[a-z", "(ab", "ab)", "*a", "a**", "[z-a]", "\\q", "(?P<>x)", "a{2,1}", "x{1001}", "x{12345}", "(?i)[a-", "(?=a)", "(?<!a)b", "[[:foo:]]", "\\1", "\\8", "\\C", "[\\b]", "(?i-)a", "(?)a" }) |pattern| {
+    for ([_][]const u8{ "[a-z", "(ab", "ab)", "*a", "a**", "[z-a]", "\\q", "(?P<>x)", "a{2,1}", "x{1001}", "x{12345}", "(?i)[a-", "(?=a)", "(?<!a)b", "[[:foo:]]", "\\1", "\\8", "\\C", "[\\b]", "(?i-)a", "(?)a", "(?P<a>x)(?P<a>y)" }) |pattern| {
         try std.testing.expectEqual(Compiled.invalid, std.meta.activeTag(try compile(std.testing.allocator, pattern)));
     }
     for ([_][]const u8{ "(?P<\xc3\xa9>a)", "(?i)abc", "(?i:ab)c", "\\pL+", "\\p{Greek}", "[[:alpha:]]", "\\bword", "^*a", "caf\xc3\xa9", "\\x{100}", "\\Qa.b\\E" }) |pattern| {

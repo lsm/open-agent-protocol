@@ -1931,7 +1931,9 @@ pub const Machine = struct {
     }
 
     fn namePatternViolation(self: *Machine, key: []const u8, pattern: []const u8, tools: std.json.Value, pending: *Pending) !void {
-        var compiled = try re2.compile(self.allocator, pattern);
+        const anchored = try std.fmt.allocPrint(self.allocator, "^(?:{s})$", .{pattern});
+        defer self.allocator.free(anchored);
+        var compiled = try re2.compile(self.allocator, anchored);
         switch (compiled) {
             .invalid => return,
             .unsupported => {
