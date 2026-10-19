@@ -4,7 +4,8 @@ Status: accepted 2026-10-19
 Date: 2026-10-19
 Protocol: `open-agent-protocol` version `0.1`
 Profile: `open-agent-protocol.agent-control-core`
-Unit: `user-input` (claim term `+user-input`)
+Units: `user-input` (claim term `+user-input`) and `permissions` (claim term
+`+permissions`)
 Amends: [Decision 0001](0001-agent-control-v0.1-executable-core.md)'s
 correlated reverse interactions
 
@@ -30,12 +31,16 @@ interaction carries:
   and a choice answer selects at least one option;
 - an answer to an optional question may be empty;
 - a choice answer selects only options its question offered, and a
-  single-choice answer selects at most one;
-- a permission resolution's `choice_id` names a choice the prompt offered.
+  single-choice answer selects at most one.
 
-A resolution that breaks any of these is `unmatched_interaction`, whether it is
-the request a control layer sends or the resolution event the endpoint
-publishes.
+### A permission choice is one the prompt offered
+
+An `action.permission.resolve.request`, and the `action.permission.resolved`
+event, name in `choice_id` a choice the permission prompt offered.
+
+A resolution that breaks any rule in either section is `unmatched_interaction`,
+whether it is the request a control layer sends or the resolution event the
+endpoint publishes.
 
 ## Consequences
 
