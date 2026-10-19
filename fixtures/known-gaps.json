@@ -13,8 +13,6 @@
     "models-held-position-moved-no-model",
     "models-position-in-another-session",
     "models-position-in-another-session-no-current",
-    "models-request-scope-mismatch",
-    "models-response-scope-mismatch",
     "payload-decode-usage-past-the-integer-range",
     "queue-open-adds-an-interaction-the-entry-denied",
     "queue-open-claims-two-started-runs",
@@ -72,11 +70,7 @@
     "queue-state-terminal-status",
     "queue-state-two-started-entries",
     "queue-state-waiting-without-a-waiting-run",
-    "response-scope-mismatch",
     "scope-mismatch",
-    "session-open-scope-mismatch",
-    "tools-list-envelope-scoped-answer-unscoped",
-    "tools-list-response-unscoped",
     "tools-list-unscoped-answer-scoped"
   ],
   "rust": []

@@ -516,7 +516,45 @@ const Recovery = struct {
     open_index: usize = 0,
 };
 
+const Scope = struct {
+    session: []const u8 = "",
+    run: []const u8 = "",
+};
+
+const session_scoped_requests = [_][]const u8{
+    "session.message.submit.request",  "session.compact.request",      "session.state.request",
+    "transcript.load.request",         "session.model.switch.request", "session.settings.update.request",
+    "session.provider.attach.request", "models.request",               "session.open.request",
+};
+
+const run_scoped_requests = [_][]const u8{
+    "run.cancel.request",         "action.permission.resolve.request", "action.call.resolve.request",
+    "user.input.resolve.request", "user.input.cancel.request",
+};
+
+const session_scoped_responses = [_][]const u8{
+    "session.state.response",   "session.state.updated",            "session.model.switch.response",
+    "transcript.load.response", "session.settings.update.response", "session.provider.attach.response",
+    "models.response",          "session.open.response",            "action.tools.list.response",
+};
+
+const run_scoped_responses = [_][]const u8{
+    "session.message.submit.response",    "session.compact.response",     "run.cancel.response",
+    "action.permission.resolve.response", "action.call.resolve.response", "user.input.resolve.response",
+    "user.input.cancel.response",
+};
+
+const interaction_scoped = [_][]const u8{
+    "action.permission.resolve.request", "action.permission.resolve.response",
+    "action.call.resolve.request",       "action.call.resolve.response",
+    "user.input.resolve.request",        "user.input.resolve.response",
+    "user.input.cancel.request",         "user.input.cancel.response",
+};
+
 const Request = struct {
+    session: []const u8 = "",
+    run: []const u8 = "",
+    interaction: []const u8 = "",
     message: ?std.json.Value = null,
     payload: std.json.Value = .{ .null = {} },
     declared: []const u8,
@@ -663,7 +701,12 @@ pub const Machine = struct {
         const payload = member(envelope, "payload") orelse std.json.Value{ .null = {} };
 
         if (self.isRequestType(declared)) {
+            const scope = self.requestScope(envelope, declared, payload);
+            if (!self.tolerantRunEvent(envelope, declared)) try self.checkScope(index, envelope, scope);
             try self.requests.put(self.allocator, id, .{
+                .session = scope.session,
+                .run = scope.run,
+                .interaction = if (listedIn(&interaction_scoped, declared)) memberString(payload, "interaction_id") else "",
                 .index = index,
                 .declared = declared,
                 .payload = payload,
@@ -1020,7 +1063,45 @@ pub const Machine = struct {
         {
             try self.add(code_stale_capability_revision, index);
         }
+        if (failure) {
+            const session = field(envelope, "session_id");
+            const run = field(envelope, "run_id");
+            if (request.session.len != 0 and session.len != 0 and !std.mem.eql(u8, session, request.session)) try self.add(code_scope_mismatch, index);
+            if (request.run.len != 0 and run.len != 0 and !std.mem.eql(u8, run, request.run)) try self.add(code_scope_mismatch, index);
+            return false;
+        }
+        const payload = member(envelope, "payload") orelse std.json.Value{ .null = {} };
+        const scope = if (self.packs.declaredType(declared) != null)
+            unknownScope(envelope, payload)
+        else
+            knownScope(declared, payload, &session_scoped_responses, &run_scoped_responses);
+        if (request.session.len != 0 and !std.mem.eql(u8, scope.session, request.session)) try self.add(code_scope_mismatch, index);
+        if (request.run.len != 0 and !std.mem.eql(u8, scope.run, request.run)) try self.add(code_scope_mismatch, index);
+        if (request.interaction.len != 0 and listedIn(&interaction_scoped, declared)) {
+            const named = memberString(payload, "interaction_id");
+            if (named.len != 0 and !std.mem.eql(u8, named, request.interaction)) try self.add(code_scope_mismatch, index);
+        }
         return false;
+    }
+
+    fn requestScope(self: *const Machine, envelope: std.json.Value, declared: []const u8, payload: std.json.Value) Scope {
+        if (self.packs.declaredType(declared) != null) return unknownScope(envelope, payload);
+        if (std.mem.eql(u8, declared, "action.tools.list.request")) {
+            const session = memberString(payload, "session_id");
+            return .{ .session = if (session.len == 0) field(envelope, "session_id") else session };
+        }
+        return knownScope(declared, payload, &session_scoped_requests, &run_scoped_requests);
+    }
+
+    fn tolerantRunEvent(self: *const Machine, envelope: std.json.Value, declared: []const u8) bool {
+        return self.packs.declaredType(declared) != null and field(envelope, "run_id").len != 0 and member(envelope, "sequence") != null;
+    }
+
+    fn checkScope(self: *Machine, index: usize, envelope: std.json.Value, scope: Scope) !void {
+        const session = field(envelope, "session_id");
+        const run = field(envelope, "run_id");
+        if (session.len != 0 and scope.session.len != 0 and !std.mem.eql(u8, session, scope.session)) try self.add(code_scope_mismatch, index);
+        if (run.len != 0 and scope.run.len != 0 and !std.mem.eql(u8, run, scope.run)) try self.add(code_scope_mismatch, index);
     }
 
     fn capabilitiesResponse(self: *Machine, index: usize, envelope: std.json.Value, payload: std.json.Value) !void {
@@ -1835,9 +1916,6 @@ pub const Machine = struct {
     fn transcriptLoadResponse(self: *Machine, index: usize, envelope: std.json.Value, payload: std.json.Value) !void {
         try self.featureKeys(index, envelope, &.{feature_transcript_load});
         const query = self.submits.get(field(envelope, "in_reply_to"));
-        if (self.requests.get(field(envelope, "in_reply_to"))) |request| {
-            if (std.mem.eql(u8, request.declared, "transcript.load.request") and !std.mem.eql(u8, memberString(payload, "session_id"), memberString(request.payload, "session_id"))) try self.add(code_scope_mismatch, index);
-        }
         if (query) |asked| {
             if (asked.control) |expectation| {
                 if (expectation.rung == rung_degradation) try self.add(code_degraded_without_optin, index);
@@ -4535,6 +4613,21 @@ fn valueEql(a: std.json.Value, b: std.json.Value) bool {
     };
 }
 
+fn knownScope(declared: []const u8, payload: std.json.Value, sessions: []const []const u8, runs: []const []const u8) Scope {
+    if (listedIn(sessions, declared)) return .{ .session = memberString(payload, "session_id") };
+    if (listedIn(runs, declared)) return .{ .session = memberString(payload, "session_id"), .run = memberString(payload, "run_id") };
+    return .{};
+}
+
+fn unknownScope(envelope: std.json.Value, payload: std.json.Value) Scope {
+    const session = memberString(payload, "session_id");
+    const run = memberString(payload, "run_id");
+    return .{
+        .session = if (session.len == 0) field(envelope, "session_id") else session,
+        .run = if (run.len == 0) field(envelope, "run_id") else run,
+    };
+}
+
 fn listedIn(names: []const []const u8, wanted: []const u8) bool {
     for (names) |name| {
         if (std.mem.eql(u8, name, wanted)) return true;
@@ -5046,7 +5139,7 @@ test "a response of another request's type is unmatched" {
     try expectPairedCodes(paired_head ++
         \\{"type":"session.state.request","id":"q1","payload":{"session_id":"s"}},
         \\{"type":"session.close.response","id":"a1","in_reply_to":"q1","payload":{}},
-        \\{"type":"session.state.response","id":"a2","in_reply_to":"q1","payload":{}}]
+        \\{"type":"session.state.response","id":"a2","in_reply_to":"q1","payload":{"session_id":"s"}}]
     , &.{code_unmatched_response});
 }
 
@@ -6384,7 +6477,7 @@ test "accepted model switches require matching canonical updates but unchanged s
     try expectCodes(advertised ++ switch_request ++
         \\{"type":"session.model.switch.response","id":"r1","in_reply_to":"q1","capability_revision":"v1","session_id":"other","payload":
         \\{"session_id":"other","model_id":"m2"}}]
-    , &.{"scope_mismatch"});
+    , &.{ "scope_mismatch", "scope_mismatch" });
     try expectCodes(advertised ++
         \\{"type":"session.model.switch.request","id":"q1","capability_revision":"v1","session_id":"s","payload":
         \\{"session_id":"s","model_id":"m1"}},
@@ -7183,4 +7276,18 @@ test "participants are not judged before initialization declares any" {
         \\{"interaction_id":"x","requested_by":"stranger","responded_by":"user","outcome":"resolved","choice_id":"allow"}},
         \\{"type":"run.completed","id":"e9","run_id":"run","session_id":"s","sequence":4,"payload":{}}]
     , &.{});
+}
+
+test "an error answer naming another session than its request is out of scope" {
+    try expectCodes(
+        \\[{"type":"session.state.request","id":"q1","session_id":"s","payload":{"session_id":"s"}},
+        \\{"type":"error.response","id":"a1","in_reply_to":"q1","session_id":"other","payload":{"error":{"code":"unknown_session","message":"x"}}}]
+    , &.{code_scope_mismatch});
+}
+
+test "a request whose envelope and payload name different sessions is out of scope" {
+    try expectCodes(
+        \\[{"type":"session.state.request","id":"q1","session_id":"other","payload":{"session_id":"s"}},
+        \\{"type":"session.state.response","id":"a1","in_reply_to":"q1","session_id":"s","payload":{"session_id":"s","status":"idle"}}]
+    , &.{code_scope_mismatch});
 }
