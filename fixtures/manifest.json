@@ -1990,6 +1990,7 @@
       "valid": false,
       "phase": "semantic",
       "codes": [
+        "stale_capability_revision",
         "unapplied_control"
       ],
       "units": [
@@ -1997,8 +1998,13 @@
         "run-controls"
       ],
       "provenance": [
+        "decisions/0064-every-request-waits-for-the-refresh.md",
         "drafts/staged-units-graduation.md",
         "decisions/0005-run-controls.md"
+      ],
+      "rules": [
+        "0064#every-non-exempt-request-in-the-window-is-stale-open-0001-8/1",
+        "0005#a-per-run-selection-does-not-move-the-session-default/1"
       ]
     },
     {
@@ -4751,6 +4757,7 @@
       "valid": false,
       "phase": "semantic",
       "codes": [
+        "stale_capability_revision",
         "unavailable_capability",
         "unavailable_capability",
         "model_not_in_catalog"
@@ -4760,8 +4767,14 @@
         "models"
       ],
       "provenance": [
+        "decisions/0064-every-request-waits-for-the-refresh.md",
         "drafts/staged-units-graduation.md",
         "decisions/0006-models-catalog.md"
+      ],
+      "rules": [
+        "0064#every-non-exempt-request-in-the-window-is-stale-open-0001-8/1",
+        "0001#capabilities-disclose-effective-fidelity/1",
+        "0006#the-catalog-is-a-session-scoped-query-and-it-binds-in-both-directions/2"
       ]
     },
     {
@@ -13572,6 +13585,7 @@
       "valid": false,
       "phase": "semantic",
       "codes": [
+        "stale_capability_revision",
         "unavailable_capability"
       ],
       "units": [
@@ -13579,10 +13593,12 @@
         "models"
       ],
       "provenance": [
+        "decisions/0064-every-request-waits-for-the-refresh.md",
         "decisions/0054-register-batch-1.md",
         "decisions/0028-live-model-and-provider-control.md"
       ],
       "rules": [
+        "0064#every-non-exempt-request-in-the-window-is-stale-open-0001-8/1",
         "0028#optional-sessionproviderattach/10"
       ]
     },

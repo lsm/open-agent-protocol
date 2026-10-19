@@ -17,9 +17,6 @@ func (s *state) compactRequest(i, line int, e protocol.Envelope) {
 	var p protocol.SessionCompactRequest
 	_ = e.DecodePayload(&p)
 	s.checkScope(i, line, e, p.SessionID, "")
-	if s.capabilitiesStale {
-		s.add(CodeStaleCapabilityRevision, i, line, e, "/capability_revision", "compaction request occurred before refreshed capabilities")
-	}
 	s.featureKeys(i, line, e, []string{protocol.FeatureSessionCompact})
 	pending := &pendingSubmit{satisfiable: map[string]bool{}, index: i, line: line, session: p.SessionID, revision: s.currentCapability}
 	pending.queue = s.openQueueWindow(e, p.SessionID, p.Delivery, false)

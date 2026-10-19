@@ -604,6 +604,13 @@ const run_scoped_responses = [_][]const u8{
     "user.input.cancel.response",
 };
 
+const refresh_exempt = [_][]const u8{
+    "protocol.initialize.request", "capabilities.request",
+    "run.cancel.request",          "action.permission.resolve.request",
+    "user.input.resolve.request",  "user.input.cancel.request",
+    "action.call.resolve.request",
+};
+
 const interaction_scoped = [_][]const u8{
     "action.permission.resolve.request", "action.permission.resolve.response",
     "action.call.resolve.request",       "action.call.resolve.response",
@@ -800,6 +807,9 @@ pub const Machine = struct {
         {
             try self.add(code_stale_capability_revision, index);
         }
+        if (self.capabilities_stale and self.isRequestType(declared) and !listedIn(&refresh_exempt, declared)) {
+            try self.add(code_stale_capability_revision, index);
+        }
         if (duplicate) return;
 
         try self.dispatch(index, envelope, declared, payload);
@@ -969,7 +979,6 @@ pub const Machine = struct {
             return;
         }
         if (std.mem.eql(u8, declared, "session.message.submit.request")) {
-            if (self.capabilities_stale) try self.add(code_stale_capability_revision, index);
             try self.openSubmitWindow(index, envelope, payload, "", true);
             return;
         }
@@ -3977,7 +3986,6 @@ pub const Machine = struct {
     }
 
     fn compactRequest(self: *Machine, index: usize, envelope: std.json.Value, payload: std.json.Value) !void {
-        if (self.capabilities_stale) try self.add(code_stale_capability_revision, index);
         try self.featureKeys(index, envelope, &.{"session.compact"});
         const session_id = memberString(payload, "session_id");
         if (field(envelope, "session_id").len != 0 and !std.mem.eql(u8, field(envelope, "session_id"), session_id)) {
