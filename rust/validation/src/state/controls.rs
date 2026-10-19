@@ -223,50 +223,6 @@ fn publishes_catalog(e: &Envelope) -> bool {
         .is_some_and(|layers| layers.values().any(|layer| layer.get("tools").is_some()))
 }
 
-fn same_json(a: &str, b: &str) -> bool {
-    match (
-        serde_json::from_str::<Value>(a),
-        serde_json::from_str::<Value>(b),
-    ) {
-        (Ok(left), Ok(right)) => canonical(&left) == canonical(&right),
-        _ => false,
-    }
-}
-
-fn canonical(value: &Value) -> Value {
-    match value {
-        Value::Number(number) => Value::String(exact(&number.to_string())),
-        Value::Array(items) => Value::Array(items.iter().map(canonical).collect()),
-        Value::Object(members) => Value::Object(
-            members
-                .iter()
-                .map(|(k, v)| (k.clone(), canonical(v)))
-                .collect(),
-        ),
-        other => other.clone(),
-    }
-}
-
-fn exact(number: &str) -> String {
-    let (mantissa, exponent) = match number.find(['e', 'E']) {
-        Some(at) => (&number[..at], number[at + 1..].parse::<i64>().unwrap_or(0)),
-        None => (number, 0),
-    };
-    let negative = mantissa.starts_with('-');
-    let unsigned = mantissa.trim_start_matches('-');
-    let (whole, fraction) = unsigned.split_once('.').unwrap_or((unsigned, ""));
-    let digits = format!("{whole}{fraction}");
-    let scale = exponent - fraction.len() as i64;
-    let trimmed = digits.trim_start_matches('0');
-    if trimmed.is_empty() {
-        return "0".to_owned();
-    }
-    let zeros = trimmed.len() - trimmed.trim_end_matches('0').len();
-    let significant = &trimmed[..trimmed.len() - zeros];
-    let sign = if negative { "-" } else { "" };
-    format!("{sign}{significant}e{}", scale + zeros as i64)
-}
-
 const OPEN_LEVEL_REFUSALS: [&str; 5] = [
     "session_exists",
     "unknown_adapter",
@@ -1013,7 +969,7 @@ impl State {
         } else if let Some(fixed) = controls
             .fixed_result
             .as_ref()
-            .filter(|fixed| !same_json(fixed, &result))
+            .filter(|fixed| !crate::json::same_json(fixed, &result))
         {
             self.add_expected(
                 codes::UNAPPLIED_CONTROL,
@@ -1031,7 +987,8 @@ impl State {
 
 #[cfg(test)]
 mod tests {
-    use super::{exact, pointer_order, same_json};
+    use super::pointer_order;
+    use crate::json::{exact, same_json};
     use std::cmp::Ordering;
 
     #[test]

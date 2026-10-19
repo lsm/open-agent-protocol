@@ -1,5 +1,6 @@
 pub mod codes;
 mod diagnostic;
+mod json;
 mod output_schema;
 mod provider;
 mod schema;
