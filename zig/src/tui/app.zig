@@ -1677,7 +1677,7 @@ pub const App = struct {
             try self.state.status.setModelWithContext(self.allocator, model.id, model.provider, model.context_window);
             self.state.telemetry.context_window = model.context_window;
         } else {
-            try self.state.status.setModelWithContext(self.allocator, loaded.metadata.model, loaded.metadata.provider, 0);
+            try self.state.status.setModelWithContext(self.allocator, "", "", 0);
         }
         defer if (loaded.model_unavailable) self.noteUnavailableResumeModel(loaded.metadata.provider, loaded.metadata.model, runtime.currentModel());
         self.replaying_history = true;
@@ -1713,7 +1713,7 @@ pub const App = struct {
         const msg = if (current) |model|
             std.fmt.allocPrint(self.allocator, "{s}/{s} is not available, so this session continues on {s}/{s}; pick another with /model", .{ provider, model_id, model.provider, model.id }) catch return
         else
-            std.fmt.allocPrint(self.allocator, "{s}/{s} is not available; pick a model with /model", .{ provider, model_id }) catch return;
+            std.fmt.allocPrint(self.allocator, "{s}/{s} is not available. {s}", .{ provider, model_id, login_first_notice }) catch return;
         defer self.allocator.free(msg);
         self.state.appendTranscript(.system, msg) catch {};
     }
@@ -3523,7 +3523,7 @@ pub const App = struct {
             session.submitTurn(sent) catch |err| {
                 if (err == error.QueueFull) return err;
                 try self.state.status.setError(self.allocator, @errorName(err));
-                try self.state.appendTranscript(.@"error", if (err == error.NoModelConfigured) login_first_notice else @errorName(err));
+                try self.state.appendTranscript(.@"error", failureText(err));
                 return false;
             };
             if (noted != null) self.state.zen.note = .none;
@@ -3712,7 +3712,7 @@ pub const App = struct {
             .session = if (self.session) |*session| session else null,
         }, command) catch |err| {
             try self.state.status.setError(self.allocator, @errorName(err));
-            try self.state.appendTranscript(.@"error", @errorName(err));
+            try self.state.appendTranscript(.@"error", failureText(err));
             return;
         };
         defer result.deinit(self.allocator);
@@ -5686,6 +5686,10 @@ fn preferredContextWindow(stored: ?u32, flag: ?u32) ?u32 {
     return flag orelse stored;
 }
 
+fn failureText(err: anyerror) []const u8 {
+    return if (err == error.NoModelConfigured) login_first_notice else @errorName(err);
+}
+
 pub const login_first_notice = "No model: log in to a provider first. Run /login <provider> here, for example /login anthropic, or oapx auth login --provider <id> in a shell; its models appear once you have.";
 pub const over_oap_notice = "this session runs on another endpoint: the hub's with --attach, or the backend's with --backend. Resume and automatic worktrees are not carried over to it, the context window, output limit, permission mode and workspace are fixed when the session opens, and an \"always\" answer to a tool approval applies to that call only unless the endpoint offers it; run oapx without --attach or --backend for them.";
 pub const over_oap_setting_refusal = tui_commands.over_oap_setting_refusal;
@@ -5882,6 +5886,8 @@ test "App started with no provider logged in has no model, says how to log in, a
     const last = app.state.transcript.items[app.state.transcript.items.len - 1];
     try std.testing.expectEqual(tui_state.TranscriptKind.@"error", last.kind);
     try std.testing.expectEqualStrings(login_first_notice, last.text.items);
+    try app.submit("/context 100000");
+    try std.testing.expectEqualStrings(login_first_notice, app.state.transcript.items[app.state.transcript.items.len - 1].text.items);
 }
 
 fn copilotOnlyCatalog(allocator: std.mem.Allocator) anyerror![]ai_types.Model {
@@ -8639,6 +8645,46 @@ test "a session whose model is gone resumes on the current model and says so" {
     try std.testing.expectEqualStrings(before.id, app.state.status.model);
     const said = app.state.transcript.items[app.state.transcript.items.len - 1];
     try std.testing.expect(std.mem.startsWith(u8, said.text.items, "retired-provider/retired-model is not available, so this session continues on "));
+}
+
+test "a session resumed with no provider logged in shows no model and says to log in, not to pick one" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const base = try sessionStoreBaseForAppTest(std.testing.allocator, &tmp);
+    defer std.testing.allocator.free(base);
+
+    var production = try ProductionRuntime.init(std.testing.allocator, .{});
+    defer production.deinit();
+    production.initBridge();
+
+    var store = try session_store.Store.init(std.testing.allocator, base);
+    defer store.deinit();
+    var meta = session_store.SessionMetadata{
+        .session_id = try std.testing.allocator.dupe(u8, "logged-out"),
+        .model = try std.testing.allocator.dupe(u8, "saved-model"),
+        .provider = try std.testing.allocator.dupe(u8, "saved-provider"),
+        .last_active = 1,
+    };
+    defer meta.deinit(std.testing.allocator);
+    try store.save(meta, .{ .turn_start = .{} });
+    try store.save(meta, .{ .turn_end = .{ .stop_reason = .stop } });
+
+    var mock = MockAppSession{};
+    defer mock.deinit();
+    var app = try App.init(std.testing.allocator, production.options());
+    defer app.deinit();
+    try useStoreAt(&app, base);
+    app.session = mock.session();
+    try app.loadSessions();
+    app.state.session_index = 0;
+
+    try app.resumeSelectedSession();
+
+    try std.testing.expect(app.runtime.?.currentModel() == null);
+    try std.testing.expectEqualStrings("", app.state.status.model);
+    const said = app.state.transcript.items[app.state.transcript.items.len - 1];
+    try std.testing.expect(std.mem.startsWith(u8, said.text.items, "saved-provider/saved-model is not available. "));
+    try std.testing.expect(std.mem.endsWith(u8, said.text.items, login_first_notice));
 }
 
 test "a model switch resets the rate average, including between two models that cost the same" {
