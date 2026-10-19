@@ -62,7 +62,7 @@ func (s *Server) shutdownOp(ctx context.Context, request requestLine) (json.RawM
 	if !ok {
 		return nil, &wireError{Code: "invalid_request", Message: "request is an object whose only member is mode, graceful or force"}
 	}
-	st := s.stopping
+	st := s.stopState()
 	st.admission.Lock()
 	defer st.admission.Unlock()
 	runs := s.hub.NonterminalRuns(ctx)
@@ -141,13 +141,15 @@ func (s *Server) Signal(ctx context.Context, count int) (protocol.EndpointShutdo
 	if count >= 2 {
 		wanted = protocol.ShutdownForce
 	}
-	s.stopping.mu.Lock()
-	current := s.stopping.mode
-	fresh := count > s.stopping.signalsSeen
+	ctx = context.WithoutCancel(ctx)
+	st := s.stopState()
+	st.mu.Lock()
+	current := st.mode
+	fresh := count > st.signalsSeen
 	if fresh {
-		s.stopping.signalsSeen = count
+		st.signalsSeen = count
 	}
-	s.stopping.mu.Unlock()
+	st.mu.Unlock()
 	if current == protocol.ShutdownForce {
 		wanted = protocol.ShutdownForce
 	}
@@ -162,8 +164,14 @@ func (s *Server) Signal(ctx context.Context, count int) (protocol.EndpointShutdo
 	if err := json.Unmarshal(result, &answer); err != nil {
 		return protocol.EndpointShutdownResponse{}, false
 	}
-	s.stopping.mu.Lock()
-	overtaken := s.stopping.mode != wanted
-	s.stopping.mu.Unlock()
+	st.mu.Lock()
+	overtaken := st.mode != wanted
+	st.mu.Unlock()
 	return answer, !overtaken
+}
+
+func (s *Server) stopState() *shutdownState {
+	s.stoppingMu.Lock()
+	defer s.stoppingMu.Unlock()
+	return s.stopping
 }

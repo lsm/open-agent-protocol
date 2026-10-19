@@ -191,6 +191,7 @@ func (s *Server) awaitDrained(ctx context.Context, st *stopState) {
 }
 
 func (s *Server) Signal(ctx context.Context, count int) (protocol.EndpointShutdownResponse, bool) {
+	ctx = context.WithoutCancel(ctx)
 	wanted := protocol.ShutdownGraceful
 	if count >= 2 {
 		wanted = protocol.ShutdownForce

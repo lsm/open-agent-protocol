@@ -130,9 +130,10 @@ type wireError struct {
 
 func (s *Server) serveRequest(ctx context.Context, run *runState, request requestLine, lines chan<- outLine) {
 	if admitsWork(request.Op) {
-		s.stopping.admission.RLock()
-		defer s.stopping.admission.RUnlock()
-		if s.stopping.accepted() {
+		st := s.stopState()
+		st.admission.RLock()
+		defer st.admission.RUnlock()
+		if st.accepted() {
 			s.respond(ctx, lines, request, nil, &wireError{Code: "shutting_down", Message: "the endpoint is shutting down and admits no new work"})
 			return
 		}
