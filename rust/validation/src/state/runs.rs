@@ -2,6 +2,7 @@ use std::collections::{HashMap, HashSet};
 
 use oap_protocol::*;
 
+use super::controls::Controls;
 use super::interactions::{Interaction, ToolTrack};
 use super::{os, payload, s, State};
 use crate::codes;
@@ -22,6 +23,7 @@ pub(super) struct Run {
     pub(super) prior_unknown: bool,
     pub(super) tools: HashMap<String, ToolTrack>,
     pub(super) interactions: HashMap<String, Interaction>,
+    pub(super) controls: Controls,
 }
 
 pub(super) const RUN_EVENTS: [EnvelopeType; 21] = [
@@ -196,6 +198,7 @@ impl State {
         } else if requested.as_ref() == Some(&RequestedDeliveryMode::STEER)
             && p.admission != Admission::STEERED
         {
+            self.settle_submit_admission(at, e, &p);
             Some((
                 "/payload/admission",
                 "explicit steer cannot admit a new run",
@@ -218,6 +221,7 @@ impl State {
             self.add(codes::ILLEGAL_RUN_TRANSITION, at, e, pointer, message);
             return;
         }
+        let controls = self.settle_submit_admission(at, e, &p);
         let session = s(&p.session_id);
         let run = Run {
             session: session.clone(),
@@ -225,6 +229,7 @@ impl State {
             admitted: true,
             status: RunStatus::QUEUED,
             last: at,
+            controls,
             ..Run::default()
         };
         self.runs.insert(run_id.clone(), run);
@@ -281,6 +286,7 @@ impl State {
         if live {
             self.live_run_event(at, e, &run_id);
             if is_terminal(&e.envelope_type) {
+                self.settle_run_controls(at, e, &run_id);
                 self.pending_at_terminal(at, e, &run_id);
             }
         }
