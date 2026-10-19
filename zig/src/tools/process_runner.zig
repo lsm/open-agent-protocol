@@ -140,7 +140,7 @@ fn lookupCurrentUser() ?CurrentUser {
 
 fn groupSurvives(group: std.posix.pid_t) bool {
     if (comptime builtin.os.tag == .windows) return false;
-    std.posix.kill(group, @as(std.posix.SIG, @enumFromInt(0))) catch return false;
+    std.posix.kill(group, @as(std.posix.SIG, @fromBackingInt(@intCast(0)))) catch return false;
     return true;
 }
 
@@ -222,6 +222,42 @@ fn statusToTerm(status: u32) std.process.Child.Term {
         .{ .unknown = status };
 }
 
+pub fn spawnGroup(allocator: std.mem.Allocator, argv: []const []const u8, cwd: std.process.Child.Cwd) !std.posix.pid_t {
+    if (comptime builtin.os.tag == .windows) return error.Unsupported;
+    var threaded = std.Io.Threaded.init(allocator, .{});
+    defer threaded.deinit();
+    var environ_map = try saneChildEnv(allocator);
+    defer environ_map.deinit();
+    const child = try std.process.spawn(threaded.io(), .{
+        .argv = argv,
+        .cwd = cwd,
+        .environ_map = &environ_map,
+        .stdin = .ignore,
+        .stdout = .ignore,
+        .stderr = .ignore,
+        .create_no_window = true,
+        .pgid = 0,
+    });
+    return @intCast(child.id.?);
+}
+
+pub fn reapLeader(leader: std.posix.pid_t) !?std.process.Child.Term {
+    var status: c_int = undefined;
+    while (true) {
+        const result = std.posix.system.waitpid(leader, &status, std.posix.W.NOHANG);
+        switch (std.posix.errno(result)) {
+            .SUCCESS => return if (result == 0) null else statusToTerm(@bitCast(status)),
+            .INTR => continue,
+            .CHILD => return null,
+            else => |err| return std.posix.unexpectedErrno(err),
+        }
+    }
+}
+
+pub fn endGroup(leader: std.posix.pid_t) void {
+    signalGroup(leader);
+}
+
 fn pollTermWindows(child: *std.process.Child, io: std.Io) !?std.process.Child.Term {
     if (child.id == null) return null;
     const windows = std.os.windows;
@@ -237,7 +273,7 @@ fn pollTermWindows(child: *std.process.Child, io: std.Io) !?std.process.Child.Te
                 @sizeOf(windows.PROCESS.BASIC_INFORMATION),
                 null,
             )) {
-                .SUCCESS => .{ .exited = @as(u8, @truncate(@intFromEnum(info.ExitStatus))) },
+                .SUCCESS => .{ .exited = @as(u8, @truncate(@backingInt(info.ExitStatus))) },
                 else => .{ .unknown = 0 },
             };
             windows.CloseHandle(handle);
@@ -275,7 +311,7 @@ fn probeRecordedChild(dir: std.Io.Dir) ChildProbe {
     };
     defer std.testing.allocator.free(text);
     const pid = std.fmt.parseInt(std.posix.pid_t, std.mem.trim(u8, text, " \n\t"), 10) catch return .unreadable;
-    std.posix.kill(pid, @as(std.posix.SIG, @enumFromInt(0))) catch return .dead;
+    std.posix.kill(pid, @as(std.posix.SIG, @fromBackingInt(@intCast(0)))) catch return .dead;
     return .{ .alive = pid };
 }
 
