@@ -394,7 +394,11 @@ raises `undisclosed_provide_limit` under Decision 0062 where Zig says nothing.
 One is a Unicode class name Go does not know, such as `\p{Foo}` or `\p9`; Zig
 does not carry Go's table of category and script names. The other is nesting
 deep enough that Go reports "expression nests too deeply"; Go measures the
-height of its parse tree, which Zig's group count does not reproduce. `open-provide-refused-within-a-case-folding-pattern`
+height of its parse tree, which Zig's group count does not reproduce. Zig
+also stands down on a valid pattern whose compiled program would exceed 10,000
+instructions, such as a dozen `[a-z]{1000}` in a row, which Go accepts and
+judges. Nested repeats whose counts multiply past 1000 are not in that zone:
+Go rejects them ("invalid repeat count"), and so does Zig. `open-provide-refused-within-a-case-folding-pattern`
 pins it as a Zig known gap. Whether 0055's "RE2-compatible" asks for more than
 this subset is with the owner.
 

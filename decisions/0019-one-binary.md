@@ -182,7 +182,8 @@ would take to carry it. The list is expected to shrink.
   down instead: a Unicode class (`\p{Foo}` and `\p9` included, which Go
   rejects) and groups nested more than 1000 deep. It also stands down on valid syntax
   outside it (flags, Unicode classes, word boundaries, `\Q…\E`, a character
-  outside ASCII) and on a name outside ASCII. It stands down by setting a flag
+  outside ASCII), on a pattern that compiles past 10,000 instructions, and on a
+  name outside ASCII. It stands down by setting a flag
   and reading on, so a syntax error later in the pattern is still invalid. Standing down judges nothing, so Zig can be silent
   where Go speaks but never contradicts it.
 

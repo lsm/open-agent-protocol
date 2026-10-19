@@ -14,8 +14,28 @@ const Node = union(enum) {
     alt: []const Node,
     repeat: Repeat,
 
-    const Repeat = struct { node: *const Node, min: u32, max: ?u32 };
+    const Repeat = struct { node: *const Node, min: u32, max: ?u32, counted: bool = false };
 };
+
+fn repeatFits(node: Node, limit: u32) bool {
+    switch (node) {
+        .repeat => |repeat| {
+            var left = limit;
+            if (repeat.counted) {
+                if (repeat.max == @as(?u32, 0)) return true;
+                const most = repeat.max orelse repeat.min;
+                if (most > left) return false;
+                if (most > 0) left /= most;
+            }
+            return repeatFits(repeat.node.*, left);
+        },
+        .concat, .alt => |items| {
+            for (items) |item| if (!repeatFits(item, limit)) return false;
+            return true;
+        },
+        else => return true,
+    }
+}
 
 const Inst = union(enum) {
     set: Set,
@@ -168,6 +188,7 @@ const Parser = struct {
         const c = self.peek() orelse return piece;
         var min: u32 = 0;
         var max: ?u32 = null;
+        var counted = false;
         switch (c) {
             '*' => self.at += 1,
             '+' => {
@@ -182,6 +203,7 @@ const Parser = struct {
                 const bounds = try self.braces() orelse return piece;
                 min = bounds.min;
                 max = bounds.max;
+                counted = true;
             },
             else => return piece,
         }
@@ -191,7 +213,9 @@ const Parser = struct {
         if (piece == .begin or piece == .end) return self.standDown();
         const held = try self.arena.create(Node);
         held.* = piece;
-        return .{ .repeat = .{ .node = held, .min = min, .max = max } };
+        const node: Node = .{ .repeat = .{ .node = held, .min = min, .max = max, .counted = counted } };
+        if (counted and (min >= 2 or (max orelse 0) >= 2) and !repeatFits(node, max_repeat)) return error.Invalid;
+        return node;
     }
 
     fn braces(self: *Parser) Failure!?struct { min: u32, max: ?u32 } {
@@ -397,9 +421,11 @@ const Parser = struct {
                 if (self.peek() == '{') {
                     const close = std.mem.indexOfScalarPos(u8, self.source, self.at, '}') orelse return error.Invalid;
                     const digits_text = self.source[self.at + 1 .. close];
-                    if (digits_text.len == 0 or digits_text.len > 8) return error.Invalid;
-                    value = std.fmt.parseUnsigned(u32, digits_text, 16) catch return error.Invalid;
-                    if (value > 0x10FFFF) return error.Invalid;
+                    if (digits_text.len == 0) return error.Invalid;
+                    for (digits_text) |digit| {
+                        value = value * 16 + (std.fmt.charToDigit(digit, 16) catch return error.Invalid);
+                        if (value > 0x10FFFF) return error.Invalid;
+                    }
                     self.at = close + 1;
                 } else {
                     if (self.at + 2 > self.source.len) return error.Invalid;
@@ -536,7 +562,7 @@ test "a pattern matches only the whole name, as Go's anchored RE2 does" {
 }
 
 test "a pattern Go's RE2 rejects is invalid, and valid syntax this matcher does not implement stands down" {
-    for ([_][]const u8{ "[a-z", "(ab", "ab)", "*a", "a**", "[z-a]", "\\q", "(?P<>x)", "a{2,1}", "x{1001}", "x{12345}", "(?i)[a-", "(?=a)", "(?<!a)b", "[[:foo:]]", "\\1", "\\8", "\\C", "[\\b]", "(?i-)a", "(?)a", "(?P<a>x)(?P<a>y)", "(?P<\xc3\xa9>a)", "{2}", "a|{2}", "({2})", "a*{2}", "a{2}{3}", "a{2}*" }) |pattern| {
+    for ([_][]const u8{ "[a-z", "(ab", "ab)", "*a", "a**", "[z-a]", "\\q", "(?P<>x)", "a{2,1}", "x{1001}", "x{12345}", "(?i)[a-", "(?=a)", "(?<!a)b", "[[:foo:]]", "\\1", "\\8", "\\C", "[\\b]", "(?i-)a", "(?)a", "(?P<a>x)(?P<a>y)", "(?P<\xc3\xa9>a)", "{2}", "a|{2}", "({2})", "a*{2}", "a{2}{3}", "a{2}*", "(?:[a-z]{1000}){1000}", "(?:a{200}){50}", "(?:a{2,}){600}", "((?:a{2}){501})", "\\x{110000}", "\\x{00000110000}" }) |pattern| {
         try std.testing.expectEqual(Compiled.invalid, std.meta.activeTag(try compile(std.testing.allocator, pattern)));
     }
     for ([_][]const u8{ "(?i)abc", "(?i:ab)c", "\\pL+", "\\p{Greek}", "[[:alpha:]]", "\\bword", "^*a", "caf\xc3\xa9", "\\x{100}", "\\Qa.b\\E" }) |pattern| {
@@ -551,6 +577,10 @@ test "a brace that is not a repeat in Go's syntax is a literal" {
     try expectMatch("{,2}", "{,2}", true);
     try expectMatch("a{2,}", "aaa", true);
     try expectMatch("\\101\\x42", "AB", true);
+    try expectMatch("\\x{000000041}", "A", true);
+    try expectMatch("(?:[a-z]{30}){30}x", "x", false);
+    try expectMatch("(?:a{0}){1000}b", "b", true);
+    try expectMatch("(?:a{2}){500}", "aa", false);
 }
 
 test "a name outside ASCII is not judged" {
