@@ -146,9 +146,6 @@ func (s *Server) Signal(ctx context.Context, count int) (protocol.EndpointShutdo
 	st.mu.Lock()
 	current := st.mode
 	fresh := count > st.signalsSeen
-	if fresh {
-		st.signalsSeen = count
-	}
 	st.mu.Unlock()
 	if current == protocol.ShutdownForce {
 		wanted = protocol.ShutdownForce
@@ -165,6 +162,9 @@ func (s *Server) Signal(ctx context.Context, count int) (protocol.EndpointShutdo
 		return protocol.EndpointShutdownResponse{}, false
 	}
 	st.mu.Lock()
+	if count > st.signalsSeen {
+		st.signalsSeen = count
+	}
 	overtaken := st.mode != wanted
 	st.mu.Unlock()
 	return answer, !overtaken
