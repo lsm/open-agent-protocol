@@ -2349,6 +2349,38 @@ func TestTheCostExtensionCarriesTheTurnsAndCacheCountsTheHarnessReported(t *test
 	}
 }
 
+func TestCoreUsageCarriesTheCacheCountsAndTotalsOnlyWhenBothAreReported(t *testing.T) {
+	usageOf := func(frame string) protocol.Usage {
+		admission, events := settledWithFrame(t, frame)
+		assertValidTrace(t, helloSubmit, admission, events)
+		var payload struct {
+			Usage protocol.Usage `json:"usage"`
+		}
+		if err := json.Unmarshal(terminalOf(events).Payload, &payload); err != nil {
+			t.Fatal(err)
+		}
+		return payload.Usage
+	}
+	cached := usageOf(strings.Replace(resultFrame("REPLACE_UUID", "success", false, "completed", "done", 0), `"usage":{"input_tokens":7,"output_tokens":5}`, `"usage":{"input_tokens":7,"output_tokens":5,"cache_read_input_tokens":715,"cache_creation_input_tokens":0}`, 1))
+	if cached.CacheReadInputTokens == nil || *cached.CacheReadInputTokens != 715 {
+		t.Fatalf("cache read = %v, want 715", cached.CacheReadInputTokens)
+	}
+	if cached.CacheWriteInputTokens == nil || *cached.CacheWriteInputTokens != 0 {
+		t.Fatalf("cache write = %v, want a measured 0", cached.CacheWriteInputTokens)
+	}
+	if cached.TotalTokens != 727 {
+		t.Fatalf("total = %d, want 7+5+715+0", cached.TotalTokens)
+	}
+
+	bare := usageOf(resultFrame("REPLACE_UUID", "success", false, "completed", "done", 0))
+	if bare.CacheReadInputTokens != nil || bare.CacheWriteInputTokens != nil {
+		t.Fatalf("cache counts = %v, %v, want none when the frame reports none", bare.CacheReadInputTokens, bare.CacheWriteInputTokens)
+	}
+	if bare.TotalTokens != 0 || bare.InputTokens != 7 || bare.OutputTokens != 5 {
+		t.Fatalf("usage = %+v, want input and output with no total it cannot check", bare)
+	}
+}
+
 func TestATerminalWithoutACostStillCarriesItsTurnCount(t *testing.T) {
 	frame := strings.Replace(resultFrame("REPLACE_UUID", "error_max_turns", true, "max_turns", "", 0), `"total_cost_usd":0.0001,`, "", 1)
 	admission, events := settledWithFrame(t, frame)
