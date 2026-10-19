@@ -369,6 +369,25 @@ leave a control layer unable to supply what the endpoint is allowed to report.
 Settled by
 [Decision 0060](../decisions/0060-a-tool-result-may-carry-content-parts.md).
 
+### OPEN-0011-3: what does a `name_pattern` that is not RE2 mean?
+
+A descriptor can publish a `name_pattern` that does not compile. Go skips the
+whole limit, so it is neither enforced nor diagnosed, and a refusal that
+honours it draws `undisclosed_provide_limit` (`controltools.go`). Zig does not
+read the pattern yet, and Rust has no provided-tool limits.
+
+- (a) The descriptor is defective: diagnose it on its `capabilities.response`,
+  as `undisclosed_provide_limit` at the pattern.
+- (b) The pattern discloses no limit, so a refusal relying on it is
+  `undisclosed_provide_limit`.
+- (c) The schema refuses it, which JSON Schema cannot express.
+
+Recommendation: (a). A limit nobody can evaluate discloses nothing, and (a)
+surfaces the defect when the descriptor arrives rather than when something is
+refused.
+
+**Status.** Settled by [Decision 0062](../decisions/0062-a-name-pattern-that-is-not-re2-is-a-defective-limit.md). Go, Zig and Rust follow it in their `name_pattern` ports.
+
 ## Session lifecycle (0040, 0044–0046, 0049–0051)
 
 Rules: [`0040-session-lifecycle.md`](../drafts/validator-rules/0040-session-lifecycle.md).
