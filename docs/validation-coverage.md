@@ -1,6 +1,6 @@
 # Validation Coverage
 
-Status: audit of `main` at `fd04e53d4a`, 2026-10-18. A ledger, not a plan: it
+Status: audit of `main` at `fd04e53d4a`, 2026-10-18, with Zig cells updated since as ports landed. A ledger, not a plan: it
 records what the shared validators enforce and what they do not, and fixes
 nothing.
 
@@ -67,7 +67,7 @@ Every code either tree declares, or a fixture expects. "defined, not in implemen
 | `duplicate_message_completion` | semantic | yes | yes | 1 | 0 | 0049 |
 | `duplicate_model_id` | semantic | yes | yes | 1 | 0 | 0006, staged-units-graduation |
 | `duplicate_provider` | semantic | yes | yes | 2 | 0 | 0014, 0028 |
-| `duplicate_response` | semantic | yes | no | 1 | 0 | — |
+| `duplicate_response` | semantic | yes | yes | 1 | 0 | — |
 | `duplicate_run_terminal` | semantic | yes | yes | 4 | 0 | 0002, endpoint-stdio |
 | `duplicate_session_entry` | semantic | yes | yes | 1 | 0 | 0046 |
 | `duplicate_steer` | semantic | yes | yes | 2 | 0 | 0013 |
@@ -80,7 +80,7 @@ Every code either tree declares, or a fixture expects. "defined, not in implemen
 | `illegal_tool_transition` | semantic | yes | yes | 6 | 0 | 0007, 0011, conformance, staged-units-graduation |
 | `malformed_json` | decode | yes | no | 0 | 1 | — |
 | `missing_auth_terminal` | semantic | yes | no | 1 | 0 | 0029, 0043 |
-| `missing_response` | semantic | yes | no | 4 | 0 | 0007, staged-units-graduation |
+| `missing_response` | semantic | yes | yes | 4 | 0 | 0007, staged-units-graduation |
 | `missing_run_started` | semantic | yes | yes | 5 | 0 | 0002, 0044 |
 | `missing_run_terminal` | semantic | yes | yes | 2 | 0 | 0002 |
 | `model_not_in_catalog` | semantic | yes | yes | 11 | 0 | 0006, 0009, 0028, staged-units-graduation |
@@ -133,10 +133,10 @@ Every code either tree declares, or a fixture expects. "defined, not in implemen
 | `undisclosed_queue_limit` | semantic | yes | yes | 2 | 0 | 0007, staged-units-graduation |
 | `undisclosed_selection_scope` | semantic | yes | no | 3 | 0 | 0005, 0021, staged-units-graduation |
 | `unhonoured_capability` | semantic | yes | no | 4 | 0 | 0004, 0006, 0008, 0009, staged-units-graduation |
-| `unknown_participant` | semantic | yes | no | 1 | 0 | — |
+| `unknown_participant` | semantic | yes | yes | 1 | 0 | — |
 | `unmatched_interaction` | semantic | yes | yes | 5 | 0 | 0007, 0011, staged-units-graduation |
 | `unmatched_provider` | semantic | yes | defined, not in implemented list | 1 | 0 | 0014 |
-| `unmatched_response` | semantic | yes | no | 1 | 0 | — |
+| `unmatched_response` | semantic | yes | yes | 1 | 0 | — |
 | `unmatched_steer` | semantic | yes | yes | 3 | 0 | 0013 |
 | `unmatched_tool` | semantic | yes | yes | 1 | 0 | — |
 | `unmatched_tool_source` | semantic | yes | yes | 11 | 0 | 0008, 0011, 0048, conformance, staged-units-graduation |
