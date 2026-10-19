@@ -115,6 +115,25 @@ Recommendation: (a), exempting `protocol.initialize.request`,
 `capabilities.request`, `run.cancel.request` and the answers to pending
 interactions. Settled by [Decision 0055](../decisions/0055-register-batch-2.md); all three trees owe the port.
 
+### OPEN-0001-9: what does `usage` count?
+
+`usage` carried `input_tokens`, `output_tokens` and `total_tokens`, and no text
+said what they count. Harnesses disagree on whether output includes reasoning
+and whether input includes cache, and the Go opencode adapter dropped
+opencode's reasoning and cache counts entirely.
+
+- (a) Add optional `cache_read_input_tokens`, `cache_write_input_tokens` and
+  `reasoning_tokens`, with `input_tokens` excluding cache and `output_tokens`
+  including reasoning.
+- (b) Keep the three members and only define that `output_tokens` includes
+  reasoning, leaving cache to each adapter's extensions.
+- (c) Leave usage unspecified.
+
+Recommendation: (b), as the smaller change; the owner chose (a), since a
+consumer pricing runs across harnesses needs cache in one place.
+
+**Status.** Settled by [Decision 0063](../decisions/0063-usage-counts-cache-and-reasoning-tokens.md). The schema, `protocol/`, the validators, `clients/ts` and the adapters follow.
+
 ## Queue, open and cancel (0007, 0009, 0041)
 
 Rules: [`0007-queue-open-cancel.md`](../drafts/validator-rules/0007-queue-open-cancel.md).

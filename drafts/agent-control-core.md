@@ -692,6 +692,14 @@ core conformance.
 This makes non-streaming consumers and history views useful without replaying the
 whole stream.
 
+`usage` counts each kind of token once
+([Decision 0063](../decisions/0063-usage-counts-cache-and-reasoning-tokens.md)):
+`input_tokens` is input neither read from nor written to a cache,
+`cache_read_input_tokens` and `cache_write_input_tokens` count the cached
+input, `output_tokens` counts every generated token with the
+`reasoning_tokens` among them, and `total_tokens` is the sum of input, both
+cache counts and output. An absent member is unknown, not zero.
+
 ### A message's own usage
 
 A run's `usage` covers every model call the run made. A run that calls a tool
