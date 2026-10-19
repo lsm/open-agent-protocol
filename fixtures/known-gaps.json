@@ -140,6 +140,7 @@
     "open-sources-state-omits-attachment",
     "open-unadvertised-wrong-reason",
     "payload-decode-usage-past-the-integer-range",
+    "permission-resolved-in-the-refresh-window",
     "provide-name-pattern-not-re2",
     "provider-attach-accepted-without-session-live",
     "provider-attach-conflicting-alias",
@@ -315,6 +316,7 @@
     "transcript-load-over-limit",
     "transcript-load-over-the-default-limit",
     "transcript-load-returns-an-entry-twice-out-of-order",
-    "transcript-load-unadvertised"
+    "transcript-load-unadvertised",
+    "user-input-resolved-in-the-refresh-window"
   ]
 }
