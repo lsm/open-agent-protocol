@@ -11,7 +11,8 @@ is not settlement" paragraph amended by
 which judges acceptance when the cancel is checked and puts a cancel response
 outside the run's ordering; the identity, scope, run, cancel, interaction and
 cursor and capabilities clauses amended by
-[Decision 0055](0055-register-batch-2.md) and the
+[Decision 0055](0055-register-batch-2.md), the capabilities clause again by
+[Decision 0064](0064-every-request-waits-for-the-refresh.md), and the
 interaction clause by
 [Decision 0056](0056-input-answers-are-judged-against-the-prompt.md))
 Date: 2026-09-06
@@ -149,9 +150,9 @@ event handling. A selected adapter surface and capability revision remain fixed
 for a run. Unsupported required behavior fails before side effects.
 
 After `capabilities.updated`, a request waits for the `capabilities.response`
-that carries the new revision: until it arrives, a request citing the
-pre-update revision or exercising an optional feature is
-`stale_capability_revision`. `protocol.initialize.request` and
+that carries the new revision: until it arrives, every request is
+`stale_capability_revision`, whether or not it cites a revision
+([Decision 0064](0064-every-request-waits-for-the-refresh.md)). `protocol.initialize.request` and
 `capabilities.request` are exempt because they fetch the new descriptor, and
 `run.cancel.request`, `action.permission.resolve.request`,
 `user.input.resolve.request`, `user.input.cancel.request` and

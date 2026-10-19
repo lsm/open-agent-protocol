@@ -819,12 +819,13 @@ the effective descriptor changes. The event sets the envelope's
 `capability_revision` to the new revision and carries `previous_revision` plus
 an optional `reason` in its payload. It is an invalidation notice, not a
 descriptor delta. The receiver obtains the new snapshot with
-`capabilities.request`, and until that response arrives a request citing the
-pre-update revision or exercising an optional feature is stale, except
-initialization, discovery, and the requests that settle work in flight:
-`run.cancel.request`, `action.permission.resolve.request`,
-`user.input.resolve.request`, `user.input.cancel.request` and
-`action.call.resolve.request` ([Decision 0055](../decisions/0055-register-batch-2.md)). Dynamic updates and their event are not required for
+`capabilities.request`, and until that response arrives every request is
+stale, whether or not it cites a revision, except initialization, discovery,
+and the requests that settle work in flight: `run.cancel.request`,
+`action.permission.resolve.request`, `user.input.resolve.request`,
+`user.input.cancel.request` and `action.call.resolve.request`
+([Decision 0055](../decisions/0055-register-batch-2.md),
+[Decision 0064](../decisions/0064-every-request-waits-for-the-refresh.md)). Dynamic updates and their event are not required for
 core conformance.
 
 ## Minimum Conformance
