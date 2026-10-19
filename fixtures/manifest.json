@@ -12720,6 +12720,488 @@
       "provenance": [
         "decisions/0001-agent-control-v0.1-executable-core.md"
       ]
+    },
+    {
+      "id": "duplicate-envelope-id-on-a-second-request",
+      "path": "semantic-invalid/duplicate-envelope-id-on-a-second-request.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "duplicate_envelope_id"
+      ],
+      "units": [
+        "core"
+      ],
+      "provenance": []
+    },
+    {
+      "id": "duplicate-response-to-a-capabilities-request",
+      "path": "semantic-invalid/duplicate-response-to-a-capabilities-request.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "duplicate_response"
+      ],
+      "units": [
+        "core"
+      ],
+      "provenance": []
+    },
+    {
+      "id": "unmatched-response-to-an-event",
+      "path": "semantic-invalid/unmatched-response-to-an-event.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "unmatched_response"
+      ],
+      "units": [
+        "core"
+      ],
+      "provenance": []
+    },
+    {
+      "id": "unmatched-tool-started-from-nowhere",
+      "path": "semantic-invalid/unmatched-tool-started-from-nowhere.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "unmatched_tool"
+      ],
+      "units": [
+        "core",
+        "tools"
+      ],
+      "provenance": []
+    },
+    {
+      "id": "unknown-participant-as-requester",
+      "path": "semantic-invalid/unknown-participant-as-requester.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "unknown_participant"
+      ],
+      "units": [
+        "core",
+        "user-input"
+      ],
+      "provenance": []
+    },
+    {
+      "id": "cancel-not-settled-after-a-status",
+      "path": "semantic-invalid/cancel-not-settled-after-a-status.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "cancel_not_settled"
+      ],
+      "units": [
+        "core"
+      ],
+      "provenance": []
+    },
+    {
+      "id": "content-after-completion-across-an-interleaved-message",
+      "path": "semantic-invalid/content-after-completion-across-an-interleaved-message.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "content_after_completion"
+      ],
+      "units": [
+        "core"
+      ],
+      "provenance": [
+        "decisions/0049-a-message-reports-its-own-usage.md"
+      ]
+    },
+    {
+      "id": "content-completed-twice-after-another-message",
+      "path": "semantic-invalid/content-completed-twice-after-another-message.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "duplicate_message_completion"
+      ],
+      "units": [
+        "core"
+      ],
+      "provenance": [
+        "decisions/0049-a-message-reports-its-own-usage.md"
+      ]
+    },
+    {
+      "id": "undeclared-replay-gap-with-a-cursor-that-is-no-sequence",
+      "path": "semantic-invalid/undeclared-replay-gap-with-a-cursor-that-is-no-sequence.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "undeclared_replay_gap",
+        "undeclared_replay_gap"
+      ],
+      "units": [
+        "core",
+        "recovery"
+      ],
+      "provenance": []
+    },
+    {
+      "id": "compaction-ended-names-a-compaction-that-never-started",
+      "path": "semantic-invalid/compaction-ended-names-a-compaction-that-never-started.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "compaction_ended_without_start"
+      ],
+      "units": [
+        "compaction"
+      ],
+      "provenance": [
+        "decisions/0044-compaction.md"
+      ]
+    },
+    {
+      "id": "compaction-failed-without-error-in-a-requested-run",
+      "path": "semantic-invalid/compaction-failed-without-error-in-a-requested-run.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "compaction_failed_without_error"
+      ],
+      "units": [
+        "compaction"
+      ],
+      "provenance": [
+        "decisions/0044-compaction.md"
+      ]
+    },
+    {
+      "id": "compaction-open-when-the-run-fails",
+      "path": "semantic-invalid/compaction-open-when-the-run-fails.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "compaction_open_at_terminal"
+      ],
+      "units": [
+        "compaction"
+      ],
+      "provenance": [
+        "decisions/0044-compaction.md"
+      ]
+    },
+    {
+      "id": "compaction-requested-in-a-submitted-run",
+      "path": "semantic-invalid/compaction-requested-in-a-submitted-run.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "compaction_run_mismatch"
+      ],
+      "units": [
+        "compaction"
+      ],
+      "provenance": [
+        "decisions/0044-compaction.md"
+      ]
+    },
+    {
+      "id": "compaction-run-stops-for-another-reason",
+      "path": "semantic-invalid/compaction-run-stops-for-another-reason.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "compaction_stop_reason_mismatch"
+      ],
+      "units": [
+        "compaction"
+      ],
+      "provenance": [
+        "decisions/0044-compaction.md"
+      ]
+    },
+    {
+      "id": "compaction-started-again-before-the-first-ended",
+      "path": "semantic-invalid/compaction-started-again-before-the-first-ended.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "compaction_unpaired"
+      ],
+      "units": [
+        "compaction"
+      ],
+      "provenance": [
+        "decisions/0044-compaction.md"
+      ]
+    },
+    {
+      "id": "models-two-defaults-around-the-current-model",
+      "path": "semantic-invalid/models-two-defaults-around-the-current-model.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "ambiguous_default_model"
+      ],
+      "units": [
+        "core",
+        "models"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0006-models-catalog.md"
+      ]
+    },
+    {
+      "id": "models-duplicate-id-apart",
+      "path": "semantic-invalid/models-duplicate-id-apart.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "duplicate_model_id"
+      ],
+      "units": [
+        "core",
+        "models"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0006-models-catalog.md"
+      ]
+    },
+    {
+      "id": "models-provider-id-differs-in-case",
+      "path": "semantic-invalid/models-provider-id-differs-in-case.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "unmatched_provider"
+      ],
+      "units": [
+        "core",
+        "models"
+      ],
+      "provenance": [
+        "decisions/0014-provider-descriptors.md"
+      ]
+    },
+    {
+      "id": "tool-source-attach-refused-at-its-limit",
+      "path": "semantic-invalid/tool-source-attach-refused-at-its-limit.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "undisclosed_attach_limit"
+      ],
+      "units": [
+        "tool-sources"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0008-tool-sources.md"
+      ]
+    },
+    {
+      "id": "open-provide-refused-at-its-limit",
+      "path": "semantic-invalid/open-provide-refused-at-its-limit.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "undisclosed_provide_limit"
+      ],
+      "units": [
+        "control-tools"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0011-control-layer-provided-tools.md"
+      ]
+    },
+    {
+      "id": "auth-completed-before-start",
+      "path": "semantic-invalid/auth-completed-before-start.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "auth_flow_order"
+      ],
+      "units": [
+        "core",
+        "auth"
+      ],
+      "provenance": [
+        "decisions/0029-authentication-over-agent-control.md",
+        "decisions/0043-auth-providers-carry-how-they-accept-a-credential.md"
+      ]
+    },
+    {
+      "id": "auth-progress-without-a-terminal",
+      "path": "semantic-invalid/auth-progress-without-a-terminal.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "missing_auth_terminal"
+      ],
+      "units": [
+        "core",
+        "auth"
+      ],
+      "provenance": [
+        "decisions/0029-authentication-over-agent-control.md",
+        "decisions/0043-auth-providers-carry-how-they-accept-a-credential.md"
+      ]
+    },
+    {
+      "id": "session-list-over-the-default-limit",
+      "path": "semantic-invalid/session-list-over-the-default-limit.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "session_list_over_limit"
+      ],
+      "units": [
+        "session-list"
+      ],
+      "provenance": [
+        "decisions/0046-a-session-list-is-the-hosts-bindings.md"
+      ]
+    },
+    {
+      "id": "session-list-lists-one-session-twice-apart",
+      "path": "semantic-invalid/session-list-lists-one-session-twice-apart.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "duplicate_session_entry"
+      ],
+      "units": [
+        "session-list"
+      ],
+      "provenance": [
+        "decisions/0046-a-session-list-is-the-hosts-bindings.md"
+      ]
+    },
+    {
+      "id": "transcript-load-over-the-default-limit",
+      "path": "semantic-invalid/transcript-load-over-the-default-limit.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "transcript_over_limit"
+      ],
+      "units": [
+        "transcript-load"
+      ],
+      "provenance": [
+        "decisions/0051-transcript-load.md"
+      ]
+    },
+    {
+      "id": "transcript-load-returns-an-entry-twice-out-of-order",
+      "path": "semantic-invalid/transcript-load-returns-an-entry-twice-out-of-order.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "duplicate_transcript_entry"
+      ],
+      "units": [
+        "transcript-load"
+      ],
+      "provenance": [
+        "decisions/0051-transcript-load.md"
+      ]
+    },
+    {
+      "id": "call-omits-a-process-source",
+      "path": "semantic-invalid/call-omits-a-process-source.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "unattributed_call"
+      ],
+      "units": [
+        "tool-sources"
+      ],
+      "provenance": [
+        "drafts/conformance.md",
+        "decisions/0008-tool-sources.md"
+      ]
+    },
+    {
+      "id": "payload-decode-usage-past-the-integer-range",
+      "path": "semantic-invalid/payload-decode-usage-past-the-integer-range.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "payload_decode"
+      ],
+      "units": [
+        "core"
+      ],
+      "provenance": [
+        "decisions/0049-a-message-reports-its-own-usage.md"
+      ]
+    },
+    {
+      "id": "provider-grant-carrying-an-empty-credential-value",
+      "path": "provider/semantic-invalid/grant-carrying-an-empty-credential-value.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "credential_in_trace"
+      ],
+      "units": [
+        "credentials"
+      ],
+      "provenance": [
+        "drafts/provider-stdio.md"
+      ],
+      "profile": "model-provider-core",
+      "scope": "frame"
+    },
+    {
+      "id": "malformed-json",
+      "path": "schema-invalid/malformed-json.json",
+      "kind": "schema-invalid",
+      "valid": false,
+      "phase": "decode",
+      "codes": [
+        "malformed_json"
+      ],
+      "units": [
+        "core"
+      ],
+      "provenance": []
     }
   ]
 }
