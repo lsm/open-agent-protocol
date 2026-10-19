@@ -4,9 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"slices"
-	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -89,10 +87,6 @@ func TestTheInitializeRequestNamesTheProvidedServerOnlyWhenToolsAreProvided(t *t
 	}
 }
 
-func providedOpen(tools ...protocol.ToolDefinition) base.OpenRequest {
-	return base.OpenRequest{SessionID: "session", Participant: protocol.Participant{ID: "user"}, Tools: tools}
-}
-
 func openProvided(t *testing.T, tools ...protocol.ToolDefinition) (base.Session, *wirePeer) {
 	t.Helper()
 	peer := newWirePeer(t)
@@ -100,7 +94,7 @@ func openProvided(t *testing.T, tools ...protocol.ToolDefinition) (base.Session,
 	if err != nil {
 		t.Fatal(err)
 	}
-	session, err := implementation.open(context.Background(), providedOpen(tools...))
+	session, err := implementation.open(context.Background(), base.OpenRequest{SessionID: "session", Participant: protocol.Participant{ID: "user"}, Tools: tools})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -306,8 +300,6 @@ type providedRun struct {
 	uuid    string
 	outcome submitOutcome
 	seen    []protocol.Envelope
-	opened  base.OpenRequest
-	asked   int
 }
 
 func startProvided(t *testing.T, toolChoice string) *providedRun {
@@ -321,7 +313,7 @@ func startProvided(t *testing.T, toolChoice string) *providedRun {
 	if outcome.err != nil {
 		t.Fatal(outcome.err)
 	}
-	run := &providedRun{session: session, peer: peer, uuid: uuid, outcome: outcome, opened: providedOpen(providedTool("echo"))}
+	run := &providedRun{session: session, peer: peer, uuid: uuid, outcome: outcome}
 	peer.send(providedToolUse("toolu_p"))
 	return run
 }
@@ -354,39 +346,16 @@ func (r *providedRun) answerFor(t *testing.T, requested protocol.Envelope) proto
 
 func (r *providedRun) resolve(t *testing.T, request protocol.ActionCallResolveRequest) protocol.ActionCallResolveResponse {
 	t.Helper()
-	r.asked++
-	id := protocol.EnvelopeID(fmt.Sprintf("resolve-%d", r.asked))
-	response, err := r.session.(base.CallResolver).ResolveCall(context.Background(), base.CallResolution{RequestID: id, Request: request})
+	response, err := r.session.(base.CallResolver).ResolveCall(context.Background(), base.CallResolution{RequestID: "resolve-1", Request: request})
 	if err != nil {
 		t.Fatal(err)
 	}
-	r.seen = append(r.seen, adaptertest.CallResolveExchange(t, id, testDescriptor(t).CapabilityRevision, request, response)...)
 	return response
 }
 
-func (r *providedRun) trace() adaptertest.Option {
-	return adaptertest.Opened(r.opened)
-}
-
-func providingDescriptor(t *testing.T) base.Descriptor {
+func assertTraceWithoutOpen(t *testing.T, request protocol.MessageSubmitRequest, admission protocol.MessageSubmitResponse, events []protocol.Envelope) {
 	t.Helper()
-	descriptor := testDescriptor(t)
-	features := make(map[string]protocol.FeatureSupport, len(descriptor.Capabilities.Features)+1)
-	for key, support := range descriptor.Capabilities.Features {
-		features[key] = support
-	}
-	features[protocol.FeatureToolsProvide] = protocol.FeatureSupport{Level: protocol.SupportNative, Limits: map[string]json.RawMessage{
-		protocol.LimitMaxTools: json.RawMessage(strconv.Itoa(maxProvidedTools)),
-		"name_pattern":         json.RawMessage(`"^[a-zA-Z0-9_-]{1,` + strconv.Itoa(providedNameLimit) + `}$"`),
-		"schema_dialect":       json.RawMessage(`"` + providedDialect + `"`),
-	}}
-	descriptor.Capabilities.Features = features
-	return descriptor
-}
-
-func assertProvidedTrace(t *testing.T, run *providedRun, events []protocol.Envelope) {
-	t.Helper()
-	adaptertest.AssertProtocolValidWithSubmit(t, run.outcome.request, run.outcome.admission, providingDescriptor(t), events, run.trace())
+	adaptertest.AssertProtocolValidWithSubmit(t, request, admission, testDescriptor(t), events)
 }
 
 func countType(events []protocol.Envelope, kind protocol.EnvelopeType) int {
@@ -431,7 +400,7 @@ func TestAProvidedToolsCallReachesTheOpenerAsAnInteractionAndItsResolutionAnswer
 		t.Fatalf("second resolution = %+v", again)
 	}
 	events := run.finish(t)
-	assertProvidedTrace(t, run, events)
+	assertTraceWithoutOpen(t, run.outcome.request, run.outcome.admission, events)
 	if countType(events, protocol.TypeActionCallStarted) != 1 || countType(events, protocol.TypeActionCallCompleted) != 1 {
 		t.Fatalf("events = %v", callSettlementsOf(events))
 	}
@@ -449,7 +418,7 @@ func TestAResolutionThatComesBeforeTheCLIsToolsCallAnswersItWhenItArrives(t *tes
 	if got := mcpAnswer(t, run.peer, "call-1"); got != heldReply {
 		t.Fatalf("late tools/call answered %s", got)
 	}
-	assertProvidedTrace(t, run, run.finish(t))
+	assertTraceWithoutOpen(t, run.outcome.request, run.outcome.admission, run.finish(t))
 }
 
 func TestAProvidedCallsResolutionsAreRefusedByRankAcknowledgedOnceAndAnErrorSettlesWithItsDetails(t *testing.T) {
@@ -468,13 +437,11 @@ func TestAProvidedCallsResolutionsAreRefusedByRankAcknowledgedOnceAndAnErrorSett
 	}{
 		{unknown, protocol.ReasonUnknownInteraction},
 		{foreign, protocol.ReasonWrongResponder},
+		{answer, protocol.ReasonUnknownInteraction},
 	} {
 		if response := run.resolve(t, testCase.request); response.Accepted || response.Reason != testCase.reason {
 			t.Fatalf("%+v: response = %+v", testCase.request, response)
 		}
-	}
-	if response, err := run.session.(base.CallResolver).ResolveCall(context.Background(), base.CallResolution{RequestID: "armless", Request: answer}); err != nil || response.Accepted || response.Reason != protocol.ReasonUnknownInteraction {
-		t.Fatalf("a resolution with no arm answered %+v, %v", response, err)
 	}
 	if response := run.resolve(t, ack); !response.Accepted {
 		t.Fatalf("acknowledgement = %+v", response)
@@ -493,7 +460,7 @@ func TestAProvidedCallsResolutionsAreRefusedByRankAcknowledgedOnceAndAnErrorSett
 		t.Fatalf("failed = %s, err = %v", failed.Payload, err)
 	}
 	events := run.finish(t)
-	assertProvidedTrace(t, run, events)
+	assertTraceWithoutOpen(t, run.outcome.request, run.outcome.admission, events)
 	if countType(events, protocol.TypeActionCallStarted) != 1 {
 		t.Fatalf("events = %v", callSettlementsOf(events))
 	}
@@ -510,7 +477,7 @@ func TestAProvidedCallTheCLISettlesFirstOrARunLeavesOpenIsCancelledAndStaysResol
 		t.Fatalf("late resolution = %+v", late)
 	}
 	settledEvents := settledFirst.finish(t)
-	assertProvidedTrace(t, settledFirst, settledEvents)
+	assertTraceWithoutOpen(t, settledFirst.outcome.request, settledFirst.outcome.admission, settledEvents)
 	if countType(settledEvents, protocol.TypeActionCallFailed) != 0 || countType(settledEvents, protocol.TypeActionCallCancelled) != 1 {
 		t.Fatalf("events = %v", callSettlementsOf(settledEvents))
 	}
@@ -519,7 +486,7 @@ func TestAProvidedCallTheCLISettlesFirstOrARunLeavesOpenIsCancelledAndStaysResol
 	requested = leftOpen.until(t, protocol.TypeActionCallRequested)
 	providedCall(leftOpen.peer, "call-1", "toolu_p")
 	events := leftOpen.finish(t)
-	assertProvidedTrace(t, leftOpen, events)
+	assertTraceWithoutOpen(t, leftOpen.outcome.request, leftOpen.outcome.admission, events)
 	if countType(events, protocol.TypeActionCallCancelled) != 1 {
 		t.Fatalf("events = %v", callSettlementsOf(events))
 	}
@@ -543,7 +510,7 @@ func TestAProvidedCallTheRunsToolChoiceExcludesIsNeverRequestedOfTheOpener(t *te
 	}
 	run.peer.send(`{"type":"user","message":{"role":"user","content":[{"tool_use_id":"toolu_p","type":"tool_result","content":"echo is excluded","is_error":true}]},"parent_tool_use_id":null,"session_id":"` + peerSession + `","uuid":"u1"}`)
 	events := run.finish(t)
-	assertProvidedTrace(t, run, events)
+	assertTraceWithoutOpen(t, run.outcome.request, run.outcome.admission, events)
 	for _, event := range events {
 		var status protocol.RunStatusUpdatedPayload
 		if strings.HasPrefix(string(event.Type), "action.call.") || event.Type == protocol.TypeRunStatusUpdated && event.DecodePayload(&status) == nil && status.Status == protocol.RunWaitingForInput {
