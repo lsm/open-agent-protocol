@@ -291,6 +291,8 @@ pub struct Usage {
     pub cache_read: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cache_write: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning: Option<u64>,
 }
 
 impl Usage {
@@ -305,8 +307,9 @@ impl Usage {
         Some(Self {
             input,
             output,
-            cache_read: object.get("cache_read").and_then(Value::as_u64),
-            cache_write: object.get("cache_write").and_then(Value::as_u64),
+            cache_read: number(["cache_read_input_tokens", "cache_read"]),
+            cache_write: number(["cache_write_input_tokens", "cache_write"]),
+            reasoning: number(["reasoning_tokens", "reasoning"]),
         })
     }
 
@@ -320,6 +323,7 @@ impl Usage {
             output: self.output.saturating_add(other.output),
             cache_read: add_option(self.cache_read, other.cache_read),
             cache_write: add_option(self.cache_write, other.cache_write),
+            reasoning: add_option(self.reasoning, other.reasoning),
         }
     }
 }
@@ -452,6 +456,26 @@ mod tests {
         assert_eq!(usage.cache_read, None);
 
         assert!(Usage::parse(&json!({"input": 3})).is_none());
+
+        let decision_0063 = Usage::parse(&json!({
+            "input_tokens": 10,
+            "output_tokens": 4,
+            "cache_read_input_tokens": 6,
+            "cache_write_input_tokens": 2,
+            "reasoning_tokens": 3
+        }))
+        .expect("usage");
+        assert_eq!(
+            (
+                decision_0063.cache_read,
+                decision_0063.cache_write,
+                decision_0063.reasoning
+            ),
+            (Some(6), Some(2), Some(3))
+        );
+        let vendor =
+            Usage::parse(&json!({"input": 1, "output": 1, "cache_read": 7})).expect("usage");
+        assert_eq!((vendor.cache_read, vendor.reasoning), (Some(7), None));
         assert!(Usage::parse(&json!("nope")).is_none());
     }
 
@@ -462,18 +486,21 @@ mod tests {
             output: 2,
             cache_read: None,
             cache_write: None,
+            reasoning: Some(2),
         };
         let right = Usage {
             input: 3,
             output: 4,
             cache_read: Some(5),
             cache_write: None,
+            reasoning: None,
         };
         let total = left.saturating_add(right);
         assert_eq!(total.input, 4);
         assert_eq!(total.output, 6);
         assert_eq!(total.cache_read, Some(5));
         assert_eq!(total.cache_write, None);
+        assert_eq!(total.reasoning, Some(2));
     }
 
     #[test]
