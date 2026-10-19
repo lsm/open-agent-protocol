@@ -14,16 +14,16 @@ The question for every rule is three answers:
 
 ## How to read it, and what it cannot see
 
-- **A green Zig gate is not coverage.** `zig/src/validation/semantic_gate.zig`
-  drops every expected code Zig has not ported before it compares, and
-  `fixture_gate.zig` skips the `load` and `decode` phases outright. A fixture
-  whose only code is unported passes the Zig gate while Zig checks nothing. The
-  "Zig" column below is read from the source (`semantic.implemented`,
-  `provider_semantic.implemented`, `packs.zig`), never from the gate's result.
-- **`partial`** means Zig emits the code for some traces and the gate lists the
-  fixtures it misses in `partial_code_gaps`: 12 of the 15 `scope_mismatch`
-  fixtures and 82 of the 105 `session_state_mismatch` ones, so Zig is held to
-  the code on the other 3 and 23.
+- **A green Zig gate is coverage only outside the known gaps.**
+  `zig/src/validation/semantic_gate.zig` expects every code a fixture declares
+  and accepts a disagreement only for a fixture listed under `zig` in
+  `fixtures/known-gaps.json`; it fails when a listed fixture agrees or is never
+  judged. `fixture_gate.zig` still skips the `load` and `decode` phases
+  outright. The "Zig" column below is read from the source
+  (`semantic.implemented`, `provider_semantic.implemented`, `packs.zig`),
+  never from the gate's result.
+- **`partial`** means Zig emits the code for some traces and the fixtures it
+  misses are listed in `fixtures/known-gaps.json`.
 - **Rules are read at the granularity their source numbers them.** A decision's
   `###` rule is one row; a rule whose text holds several obligations is split
   only where the validators split it.
