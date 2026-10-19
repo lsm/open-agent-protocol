@@ -1,6 +1,6 @@
 # Model provider profile
 
-Decisions 0016 and 0030: the `model-provider-core` profile, judged by
+Decisions 0016, 0030 and 0061: the `model-provider-core` profile, judged by
 `go/validation/provider.go` and `zig/src/validation/provider_semantic.zig`
 against the provider corpus in `fixtures/provider/`. Rust has no provider
 validator. Format: [README](README.md).
