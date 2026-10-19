@@ -125,6 +125,28 @@
       ]
     },
     {
+      "id": "user-input-resolved-in-the-refresh-window",
+      "path": "valid/user-input-resolved-in-the-refresh-window.json",
+      "kind": "positive",
+      "valid": true,
+      "phase": "",
+      "codes": [],
+      "units": [
+        "core",
+        "user-input"
+      ],
+      "provenance": [
+        "decisions/0055-register-batch-2.md",
+        "decisions/0064-every-request-waits-for-the-refresh.md",
+        "drafts/conformance.md"
+      ],
+      "rules": [
+        "0064#every-non-exempt-request-in-the-window-is-stale-open-0001-8/1",
+        "agent-control-core#capability-snapshot-freshness/1",
+        "agent-control-core#capability-snapshot-freshness/5"
+      ]
+    },
+    {
       "id": "capability-stale-refresh",
       "path": "valid/capability-stale-refresh.json",
       "kind": "positive",
@@ -12855,6 +12877,29 @@
       ],
       "provenance": [
         "decisions/0001-agent-control-v0.1-executable-core.md"
+      ]
+    },
+    {
+      "id": "permission-resolved-in-the-refresh-window",
+      "path": "valid/permission-resolved-in-the-refresh-window.json",
+      "kind": "positive",
+      "valid": true,
+      "phase": "",
+      "codes": [],
+      "units": [
+        "core",
+        "tools",
+        "permissions"
+      ],
+      "provenance": [
+        "decisions/0055-register-batch-2.md",
+        "decisions/0064-every-request-waits-for-the-refresh.md",
+        "drafts/conformance.md"
+      ],
+      "rules": [
+        "0064#every-non-exempt-request-in-the-window-is-stale-open-0001-8/1",
+        "agent-control-core#capability-snapshot-freshness/1",
+        "agent-control-core#capability-snapshot-freshness/5"
       ]
     },
     {
