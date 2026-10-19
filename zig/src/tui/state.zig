@@ -51,6 +51,7 @@ pub const PickerKind = enum {
     login,
     permission,
     settings,
+    shutdown,
 };
 
 pub const TranscriptKind = enum {

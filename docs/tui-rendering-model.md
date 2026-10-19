@@ -442,7 +442,10 @@ abort turn → close modal (aborting holds the steers and follow-ups not yet con
 sends them, joined, as a new turn once the aborted run ends; a second `Esc` before then
 drops them), `Ctrl+C` abort/clear first and quit on a second press
 within ~1.5 s (immediate quit when idle with an empty composer), `Ctrl+D` quit on an
-empty idle composer, `Tab` complete the slash command the palette selects,
+empty idle composer (any quit over the TUI's own endpoint, in-process or `--backend`,
+first sends `endpoint.shutdown.request` with no mode: with runs still active it opens a
+picker to let them finish or stop them now, and while they drain a second quit stops
+them; `--attach` only detaches, leaving the hub's runs alone), `Tab` complete the slash command the palette selects,
 `Ctrl+Y` copy the last reply, `Ctrl+O` cycle verbosity, `Shift+Tab` cycle thinking, `Up/Down` move the slash
 palette's selection while it is open; otherwise they move the cursor one visual row
 inside the draft (keeping the goal column across consecutive presses, snapping to the
