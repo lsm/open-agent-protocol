@@ -557,6 +557,7 @@ pub const Model = struct {
     base_url: []const u8,
     reasoning: bool,
     input: []const []const u8,
+    image_input_known: bool = true,
     cost: Cost,
     context_window: u32,
     max_tokens: u32,
@@ -1332,6 +1333,7 @@ pub fn cloneModel(allocator: std.mem.Allocator, model: Model) !Model {
         .release_date = release_date,
         .family = family,
         .deprecated = model.deprecated,
+        .image_input_known = model.image_input_known,
         .is_owned = true,
     };
 }
