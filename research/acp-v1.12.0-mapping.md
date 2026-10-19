@@ -74,3 +74,25 @@ adapter settles a failed prompt `run.failed` whatever its code, so nothing it
 decodes changes. The corpus's `session-reopen` case still reports
 `agentInfo.version` `v1.145.0`, because it was captured from that release; it
 is carried unchanged.
+
+## Usage under Decision 0063
+
+[Decision 0063](../decisions/0063-usage-counts-cache-and-reasoning-tokens.md)
+gives core `usage` a member for each kind of token: `input_tokens` excludes
+cache, `output_tokens` includes reasoning, and the cache and reasoning counts
+have their own members. The prompt-result `usage` the v1.11.0 ledger maps does
+not say which convention its counts follow. Its fields say
+"Total input tokens across all turns", not whether that total includes
+`cachedReadTokens` and `cachedWriteTokens`, and nothing says whether
+`outputTokens` includes `thoughtTokens`. The End-Turn Token Usage RFD is still
+Draft "while token accounting semantics are still being refined".
+
+So the adapter fills none of the new core members. `thoughtTokens`,
+`cachedReadTokens` and `cachedWriteTokens` stay in
+`extensions["com.agentclientprotocol.turn_usage"]`, renamed only, and the
+first-turn core `usage` keeps `input_tokens`, `output_tokens` and
+`total_tokens` as reported. Splitting cache out of `inputTokens`, or reasoning
+into `outputTokens`, would pick one reading of an open upstream question.
+Classification: lossy, recorded. The pinned agent, cagent `v1.150.0`, sends no
+prompt-result `usage` at all, so no traced run is affected today. When ACP
+defines the convention, the adapter maps it and this section is superseded.
