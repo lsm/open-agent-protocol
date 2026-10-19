@@ -879,6 +879,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "oap-adapter"
+version = "0.1.0"
+dependencies = [
+ "oap-protocol",
+ "serde_json",
+ "thiserror",
+]
+
+[[package]]
 name = "oap-harness"
 version = "0.1.0"
 dependencies = [
