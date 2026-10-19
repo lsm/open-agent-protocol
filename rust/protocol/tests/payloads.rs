@@ -116,7 +116,7 @@ fn reencoded(envelope_type: &str, payload: &Value) -> Option<Value> {
 }
 
 #[test]
-fn every_core_payload_in_the_positive_fixtures_round_trips() {
+fn every_session_run_interaction_and_error_payload_in_the_positive_fixtures_round_trips() {
     let manifest: Value =
         serde_json::from_slice(&std::fs::read(fixtures().join("manifest.json")).unwrap()).unwrap();
     let mut judged = 0;
