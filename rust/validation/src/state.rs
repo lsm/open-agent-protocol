@@ -432,6 +432,7 @@ impl State {
             }
             self.current_capability = revision;
             self.capabilities_stale = true;
+            self.limits = None;
         } else if *t == EnvelopeType::SESSION_MESSAGE_SUBMIT_REQUEST && self.capabilities_stale {
             self.add(
                 codes::STALE_CAPABILITY_REVISION,

@@ -63,7 +63,7 @@ fn codes_after(withdrawn: bool) -> Vec<String> {
 }
 
 #[test]
-fn a_withdrawn_descriptor_s_bounds_no_longer_judge_an_admission() {
+fn a_second_admission_after_a_capabilities_update_is_an_overlap_while_the_queue_is_unoffered() {
     assert!(codes_after(false).contains(&codes::QUEUE_LIMIT_EXCEEDED.to_owned()));
     let withdrawn = codes_after(true);
     assert!(!withdrawn.contains(&codes::QUEUE_LIMIT_EXCEEDED.to_owned()));
