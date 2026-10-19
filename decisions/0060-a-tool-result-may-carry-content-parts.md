@@ -1,8 +1,8 @@
 # Decision 0060: A Tool Result May Carry Content Parts
 
-Status: proposed (the owner approved it on 2026-10-19; it becomes accepted
-once the three trees judge it, with fixtures, and `oapx` reports image
-results, under Decision 0003's gate)
+Status: accepted 2026-10-19 (the owner approved it that day; Go, Zig and Rust
+judge it with fixtures (#1319), and `oapx` reports image results (#1320), as
+Decision 0003's gate asks)
 Date: 2026-10-19
 Protocol: `open-agent-protocol` version `0.1`
 Profile: `open-agent-protocol.agent-control-core`

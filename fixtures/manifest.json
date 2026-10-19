@@ -13470,6 +13470,101 @@
       "rules": [
         "0028#optional-sessionproviderattach/10"
       ]
+    },
+    {
+      "id": "tool-result-image-advertised",
+      "path": "valid/tool-result-image-advertised.json",
+      "kind": "positive",
+      "valid": true,
+      "phase": "",
+      "codes": [],
+      "units": [
+        "core",
+        "tools"
+      ],
+      "provenance": [
+        "decisions/0060-a-tool-result-may-carry-content-parts.md"
+      ],
+      "rules": [
+        "0060#an-image-part-needs-contentimage/1",
+        "0060#a-result-is-json-or-a-content-part-list-open-0011-2/1"
+      ]
+    },
+    {
+      "id": "tool-result-image-unadvertised",
+      "path": "semantic-invalid/tool-result-image-unadvertised.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "unavailable_capability"
+      ],
+      "units": [
+        "core",
+        "tools"
+      ],
+      "provenance": [
+        "decisions/0060-a-tool-result-may-carry-content-parts.md"
+      ],
+      "rules": [
+        "0060#an-image-part-needs-contentimage/1"
+      ]
+    },
+    {
+      "id": "tool-result-image-in-the-announce-window",
+      "path": "semantic-invalid/tool-result-image-in-the-announce-window.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "unavailable_capability"
+      ],
+      "units": [
+        "core",
+        "capabilities"
+      ],
+      "provenance": [
+        "decisions/0060-a-tool-result-may-carry-content-parts.md"
+      ],
+      "rules": [
+        "0060#an-image-part-needs-contentimage/1"
+      ]
+    },
+    {
+      "id": "tool-result-text-parts",
+      "path": "valid/tool-result-text-parts.json",
+      "kind": "positive",
+      "valid": true,
+      "phase": "",
+      "codes": [],
+      "units": [
+        "core",
+        "tools"
+      ],
+      "provenance": [
+        "decisions/0060-a-tool-result-may-carry-content-parts.md"
+      ],
+      "rules": [
+        "0060#a-result-is-json-or-a-content-part-list-open-0011-2/1"
+      ]
+    },
+    {
+      "id": "tool-result-json-shaped-like-parts",
+      "path": "valid/tool-result-json-shaped-like-parts.json",
+      "kind": "positive",
+      "valid": true,
+      "phase": "",
+      "codes": [],
+      "units": [
+        "core",
+        "tools"
+      ],
+      "provenance": [
+        "decisions/0060-a-tool-result-may-carry-content-parts.md"
+      ],
+      "rules": [
+        "0060#a-result-is-json-or-a-content-part-list-open-0011-2/1"
+      ]
     }
   ]
 }

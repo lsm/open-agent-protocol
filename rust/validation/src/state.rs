@@ -2,6 +2,7 @@ mod admissions;
 mod controls;
 mod interactions;
 mod queue;
+mod results;
 mod runs;
 
 use std::collections::{HashMap, HashSet};
@@ -393,6 +394,7 @@ impl State {
             return;
         }
         self.payload_scope(at, e);
+        self.check_result_images(at, e);
         self.list_scope(at, e);
         if e.envelope_type == EnvelopeType::CAPABILITIES_RESPONSE {
             self.snapshot_descriptor();

@@ -242,6 +242,7 @@ func (s *state) apply(i, line int, e protocol.Envelope) {
 
 		return
 	}
+	s.checkResultImages(i, line, e)
 	switch e.Type {
 	case protocol.TypeProtocolInitializeRequest:
 		var p protocol.InitializeRequest
