@@ -66,10 +66,12 @@ second one.
 
 ### The recovery cursor is a JSON-safe sequence (OPEN-0001-7)
 
-`resume_cursor` names a position in a run's sequence: a JSON integer that
-increases monotonically, no greater than 2^53 − 1 so every JSON reader holds it
-exactly. A cursor of any other form is `undeclared_replay_gap`, because a
-position nobody can read cannot bound the replay.
+`resume_cursor` names a position in a run's sequence. The schema carries it as
+a string, and that string holds an unsigned decimal integer that increases
+monotonically and is no greater than 2^53 − 1, the largest integer every JSON
+reader holds exactly. A cursor of any other form is `undeclared_replay_gap`,
+because a position nobody can read cannot bound the replay; a cursor that is
+not a string at all fails the schema first.
 
 ### A request waits for the refresh `capabilities.updated` owes (OPEN-0001-8)
 
@@ -97,8 +99,8 @@ recorded port gap rather than a divergence.
 
 ## Consequences
 
-- Decision 0001's identity, run, cancellation, interaction and recovery
-  clauses, Decision 0011's resolution pair and limits clauses, and Decision
+- Decision 0001's identity, run, cancellation, interaction, recovery and
+  capabilities clauses, Decision 0011's resolution pair and limits clauses, and Decision
   0019's `name_pattern` entry state these answers in their own text.
 - Ports follow, each citing its item: the three scope checks only Go has
   (OPEN-0008-2) go to Zig and Rust; Zig gains an RE2-compatible `name_pattern`

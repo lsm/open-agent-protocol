@@ -10,7 +10,8 @@ is not settlement" paragraph amended by
 [Decision 0041](0041-cancel-acceptance-is-judged-when-the-cancel-is-checked.md),
 which judges acceptance when the cancel is checked and puts a cancel response
 outside the run's ordering; the identity, scope, run, cancel, interaction and
-cursor clauses amended by [Decision 0055](0055-register-batch-2.md) and the
+cursor and capabilities clauses amended by
+[Decision 0055](0055-register-batch-2.md) and the
 interaction clause by
 [Decision 0056](0056-input-answers-are-judged-against-the-prompt.md))
 Date: 2026-09-06
@@ -125,8 +126,9 @@ the run's stream. A timeout alone does not prove cancellation.
 - **Replay** returns historical canonical OAP events from a cursor.
 
 The reference adapter offers a bounded process-memory journal. A retained cursor
-returns a contiguous suffix. A cursor is a monotonically increasing JSON
-integer no greater than 2^53 − 1 ([Decision 0055](0055-register-batch-2.md)). An expired cursor returns an explicit replay gap
+returns a contiguous suffix. A cursor is a string holding a monotonically
+increasing unsigned decimal integer no greater than 2^53 − 1
+([Decision 0055](0055-register-batch-2.md)). An expired cursor returns an explicit replay gap
 and authoritative state; it never pretends continuity. No cross-process
 persistence, exact native-event replay, or durable admission is claimed.
 
@@ -145,6 +147,16 @@ submission receipts, streaming level, cancellation scope, resume/reconciliation/
 replay level, approval scopes, maximum active runs per session, and unknown
 event handling. A selected adapter surface and capability revision remain fixed
 for a run. Unsupported required behavior fails before side effects.
+
+After `capabilities.updated`, a request waits for the `capabilities.response`
+that carries the new revision: until it arrives, a request citing the
+pre-update revision or exercising an optional feature is
+`stale_capability_revision`. `protocol.initialize.request` and
+`capabilities.request` are exempt because they fetch the new descriptor, and
+`run.cancel.request`, `action.permission.resolve.request`,
+`user.input.resolve.request`, `user.input.cancel.request` and
+`action.call.resolve.request` because they settle work already in flight
+([Decision 0055](0055-register-batch-2.md)).
 
 ## Canonical v0.1 vocabulary
 
