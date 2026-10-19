@@ -13234,6 +13234,24 @@
       ]
     },
     {
+      "id": "open-provide-refused-a-name-outside-ascii",
+      "path": "valid/open-provide-refused-a-name-outside-ascii.json",
+      "kind": "positive",
+      "valid": true,
+      "phase": "",
+      "codes": [],
+      "units": [
+        "control-tools"
+      ],
+      "provenance": [
+        "decisions/0011-control-layer-provided-tools.md",
+        "decisions/0055-register-batch-2.md"
+      ],
+      "rules": [
+        "0011#the-capability-discloses-its-limits-or-it-promises-nothing/2"
+      ]
+    },
+    {
       "id": "auth-completed-before-start",
       "path": "semantic-invalid/auth-completed-before-start.json",
       "kind": "semantic-invalid",

@@ -1940,13 +1940,15 @@ pub const Machine = struct {
             },
             .regex => |*regex| {
                 defer regex.deinit();
+                for (tools.array.items) |tool| {
+                    if (try regex.fullMatch(self.allocator, memberString(tool, "name")) == null) {
+                        pending.unjudged = true;
+                        return;
+                    }
+                }
                 for (tools.array.items, 0..) |tool, at| {
                     const name = memberString(tool, "name");
-                    const fits = try regex.fullMatch(self.allocator, name) orelse {
-                        pending.unjudged = true;
-                        continue;
-                    };
-                    if (fits) continue;
+                    if ((try regex.fullMatch(self.allocator, name)).?) continue;
                     self.propose(&pending.limit_refusal, .{
                         .rung = rung_unsatisfiable,
                         .key = key,

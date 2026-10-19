@@ -250,7 +250,11 @@ const Parser = struct {
                 if (rest[1] == '<' and rest.len > 2 and (rest[2] == '=' or rest[2] == '!')) return error.Invalid;
                 const close = std.mem.indexOfScalarPos(u8, self.source, open, '>') orelse return error.Invalid;
                 if (close == open) return error.Invalid;
-                for (self.source[open..close]) |name| if (!std.ascii.isAlphanumeric(name) and name != '_') return error.Invalid;
+                for (self.source[open..close]) |name| {
+                    if (name >= 0x80) {
+                        self.soft = true;
+                    } else if (!std.ascii.isAlphanumeric(name) and name != '_') return error.Invalid;
+                }
                 self.at = close + 1;
             } else {
                 self.at += 1;
@@ -527,7 +531,7 @@ test "a pattern Go's RE2 rejects is invalid, and valid syntax this matcher does 
     for ([_][]const u8{ "[a-z", "(ab", "ab)", "*a", "a**", "[z-a]", "\\q", "(?P<>x)", "a{2,1}", "x{1001}", "x{12345}", "(?i)[a-", "(?=a)", "(?<!a)b", "[[:foo:]]", "\\1", "\\8", "\\C", "[\\b]", "(?i-)a", "(?)a" }) |pattern| {
         try std.testing.expectEqual(Compiled.invalid, std.meta.activeTag(try compile(std.testing.allocator, pattern)));
     }
-    for ([_][]const u8{ "(?i)abc", "(?i:ab)c", "\\pL+", "\\p{Greek}", "[[:alpha:]]", "\\bword", "^*a", "caf\xc3\xa9", "\\x{100}", "\\Qa.b\\E" }) |pattern| {
+    for ([_][]const u8{ "(?P<\xc3\xa9>a)", "(?i)abc", "(?i:ab)c", "\\pL+", "\\p{Greek}", "[[:alpha:]]", "\\bword", "^*a", "caf\xc3\xa9", "\\x{100}", "\\Qa.b\\E" }) |pattern| {
         try std.testing.expectEqual(Compiled.unsupported, std.meta.activeTag(try compile(std.testing.allocator, pattern)));
     }
 }
