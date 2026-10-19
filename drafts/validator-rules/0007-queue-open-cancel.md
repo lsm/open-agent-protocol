@@ -75,7 +75,7 @@ Source: [`decisions/0007-queue-delivery.md`](../../decisions/0007-queue-delivery
 | `0007#a-snapshot-states-the-position-it-was-captured-at/20` | A `cancelling` entry the trace has not yet seen start answers with its `queue_position`, and the run's start MUST bear that answer out at the stated position. | L302–319, L464–466 | `session_state_mismatch` | `queue.go:reconcileDeferred`<br>`queue.go:reconcileDeferred` | `reconcileQueueClaims` | — |
 | `0007#a-snapshot-states-the-position-it-was-captured-at/21` | An entry describing a not-yet-started reservation as executing MUST be followed by that run's `run.started`. | L330–336, L477–481 | `session_state_mismatch` | `queue.go:closeQueue` | `reconcileQueueClaims` | — |
 | `0007#a-snapshot-states-the-position-it-was-captured-at/22` | An entry carrying `pending_interactions` MUST state the position it was captured at. | L285–287 | `session_state_mismatch` | `queuestate.go:checkEntryPending` | `checkEntryPending` | — |
-| `0007#a-snapshot-states-the-position-it-was-captured-at/23` | An entry stating no position MUST report the unresolved interactions its run is blocked on, as the trace stands. | L318–319; see OPEN-0007-1 | `session_state_mismatch` | `queuestate.go:checkEntryPending` | `checkEntryPending` | — |
+| `0007#a-snapshot-states-the-position-it-was-captured-at/23` | An entry stating no position MUST report the unresolved interactions its run is blocked on, as the trace stands, whatever the descriptor advertises. | L316–322, as amended by Decision 0054 (#1309, open) | `session_state_mismatch` | `queuestate.go:checkEntryPending` | `checkEntryPending` | — |
 | `0007#a-snapshot-states-the-position-it-was-captured-at/24` | An entry's `pending_interactions` MUST equal the interactions its run had open at the position it states, judged when the trace reaches that position. | L272–273, L286, L354–355 | `session_state_mismatch` | `queuestate.go:checkEntryPending`<br>`queue.go:judgePendingInteractions` | `checkEntryPending`, `reconcileCaptureClaims` | — |
 | `0007#a-snapshot-states-the-position-it-was-captured-at/25` | An entry MUST NOT state a position its run never reaches. | L518–520 | `session_state_mismatch` | `queue.go:closeQueue` | `checkEntryPending` close | — |
 | `0007#a-snapshot-states-the-position-it-was-captured-at/26` | `as_of.settled` MUST name a run at most once. | L513–516 | `session_state_mismatch` | `queuestate.go:checkSessionCapture` | `checkSettledClaims` | — |
@@ -124,7 +124,7 @@ Source: [`decisions/0009-compound-open.md`](../../decisions/0009-compound-open.m
 
 | id | rule | lines | code | Go | Zig | Rust |
 | --- | --- | --- | --- | --- | --- | --- |
-| `0009#the-response-carries-two-facts-and-already-had-the-shape-for-both/1` | A successful compound open's response MUST list exactly one run its message admitted, anchored to the open request. | L87–91 | `session_state_mismatch` | `compoundopen.go:compoundOpenResponse` | `compoundOpen` | — |
+| `0009#the-response-carries-two-facts-and-already-had-the-shape-for-both/1` | A successful compound open's response MUST list exactly one run its message admitted, anchored to the open request. | L87–91 | `session_state_mismatch` | `compoundopen.go:compoundOpenResponse` | — | — |
 
 ### [0009] One refusal answers one election
 
@@ -132,7 +132,7 @@ Source: [`decisions/0009-compound-open.md`](../../decisions/0009-compound-open.m
 
 | id | rule | lines | code | Go | Zig | Rust |
 | --- | --- | --- | --- | --- | --- | --- |
-| `0009#one-refusal-answers-one-election/1` | A refusal of an open MUST NOT refuse `subscribe` for a key the endpoint advertises and the request satisfied, when no retained expectation was answered. | L155–159 | `unhonoured_capability` | `compoundopen.go:settleSubscribeRefusal` | `compoundOpen` | yes |
+| `0009#one-refusal-answers-one-election/1` | A refusal of an open MUST NOT refuse `subscribe` for a key the endpoint advertises and the request satisfied, when no retained expectation was answered. | L155–159 | `unhonoured_capability` | `compoundopen.go:settleSubscribeRefusal` | `settleControlRefusal` | yes |
 
 ### [0009] An endpoint that cannot subscribe at open says so
 

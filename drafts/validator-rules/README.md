@@ -5,7 +5,7 @@ diagnostic any implementation (Go, Zig, Rust) raises must trace to a row here,
 and every row traces to the decision text that makes it a rule. No
 implementation is the answer key (Decision 0032): where the decisions are
 silent, or the implementations disagree, the behaviour is not a rule yet. It is
-an open item in [`research/validator-divergences.md`](../../research/validator-divergences.md)
+an open item in `research/validator-divergences.md`
 until a decision settles it, and no port copies it in the meantime.
 
 ## Files
