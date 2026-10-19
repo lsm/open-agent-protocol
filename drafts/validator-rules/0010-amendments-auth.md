@@ -2,8 +2,10 @@
 
 Decisions 0010, 0012, 0013, 0026, 0029 and 0043: the rows behind every
 diagnostic the validators raise for terminal provenance, steering and the
-standalone login flow. Go and Zig name the function in `go/validation/` and
-`zig/src/validation/`. Rust has no steer or auth checks yet. Format:
+standalone login flow. Go, Zig and Rust name the function in `go/validation/`,
+`zig/src/validation/` and `rust/validation/src/state/`. Rust judges terminals,
+a steer admitted as a new run and a steer carrying run controls, and has no
+other steer or auth check yet. Format:
 [README](README.md).
 
 Decision 0013 adopts section T4 of
@@ -30,7 +32,7 @@ Source: [`decisions/0010-terminal-provenance.md`](../../decisions/0010-terminal-
 
 | id | rule | lines | code | Go | Zig | Rust |
 | --- | --- | --- | --- | --- | --- | --- |
-| `0010#an-inferred-terminal-is-a-terminal/1` | A terminal carrying `settled_by: "inferred"` ends the run exactly as an observed one does: a second terminal is a duplicate, and any later run-scoped event follows a terminal. | L80–84 | `duplicate_run_terminal`, `event_after_terminal` | `state.go:runEvent` | `semantic.zig:runEvent` | — |
+| `0010#an-inferred-terminal-is-a-terminal/1` | A terminal carrying `settled_by: "inferred"` ends the run exactly as an observed one does: a second terminal is a duplicate, and any later run-scoped event follows a terminal. | L80–84 | `duplicate_run_terminal`, `event_after_terminal` | `state.go:runEvent` | `semantic.zig:runEvent` | `runs.rs:run_event` |
 
 0010's "No cross-check against the capability descriptor" (L136–140) is a rule
 about what the validators must not do: neither judges `settled_by` beyond its
@@ -43,13 +45,13 @@ Source: [`decisions/0013-steer.md`](../../decisions/0013-steer.md#the-shape-is-t
 | id | rule | lines | code | Go | Zig | Rust |
 | --- | --- | --- | --- | --- | --- | --- |
 | `0013#the-shape-is-the-one-the-plan-pre-designed/1` | A `steered` admission MUST answer a request with `delivery: "steer"` and carry `effective_delivery: "steer"`; `auto` never resolves to `steer`. | L57–59, L70; T4 L4554–4560 | `illegal_run_transition` | `steer.go:steerAdmission` | `semantic.zig:steerAdmission` | — |
-| `0013#the-shape-is-the-one-the-plan-pre-designed/2` | A request with `delivery: "steer"` MUST NOT be admitted as a new run. | L57–60; T4 L4554–4555 | `illegal_run_transition` | `state.go:admitSubmission` | `semantic.zig:admit` | — |
+| `0013#the-shape-is-the-one-the-plan-pre-designed/2` | A request with `delivery: "steer"` MUST NOT be admitted as a new run. | L57–60; T4 L4554–4555 | `illegal_run_transition` | `state.go:admitSubmission` | `semantic.zig:admit` | `runs.rs:admit_submission` |
 | `0013#the-shape-is-the-one-the-plan-pre-designed/3` | A steer MUST NOT be admitted unless `session.message.delivery.steer` is advertised, with the degraded opt-in where it is `degraded`. | T4 L4556–4557 | `unavailable_capability`, `degraded_without_optin` | `queue.go:deliveryExpectations` | `semantic.zig:deliveryExpectation` | — |
 | `0013#the-shape-is-the-one-the-plan-pre-designed/4` | A `steered` admission MUST target a started, nonterminal run of the request's session that is not `cancelling`. | L57–61; T4 L4554–4556 | `illegal_run_transition` | `steer.go:steerAdmission` | `semantic.zig:steerAdmission` | — |
 | `0013#the-shape-is-the-one-the-plan-pre-designed/5` | A `steered` admission's `run_id` MUST equal the request's `target_run_id` when one was supplied. | L58–59; T4 L4560–4561 | `scope_mismatch` | `steer.go:steerAdmission` | `semantic.zig:steerAdmission` | — |
 | `0013#the-shape-is-the-one-the-plan-pre-designed/6` | A `steered` admission's `target_sequence` MUST equal the target run's last emitted sequence at the response. | L59–60; T4 L4562–4566 | `illegal_run_transition` | `steer.go:steerAdmission` | `semantic.zig:steerAdmission` | — |
 | `0013#the-shape-is-the-one-the-plan-pre-designed/7` | A `steered` admission's `status` MUST equal the status the target held after that sequence. | T4 L4563–4567 | `illegal_run_transition` | `steer.go:steerAdmission` | `semantic.zig:steerAdmission` | — |
-| `0013#the-shape-is-the-one-the-plan-pre-designed/8` | A steer carrying run controls (`model_id`, `instructions`, `tool_choice`, `output_schema`) MUST be refused with `unsupported_feature`, `details.reason: "unsatisfiable"`, naming the control, and MUST NOT be admitted. | L60–63; T4 L4394–4416 | `unsatisfiable_control` | `controls.go:submitControls` | `semantic.zig:submitControls` | — |
+| `0013#the-shape-is-the-one-the-plan-pre-designed/8` | A steer carrying run controls (`model_id`, `instructions`, `tool_choice`, `output_schema`) MUST be refused with `unsupported_feature`, `details.reason: "unsatisfiable"`, naming the control, and MUST NOT be admitted. | L60–63; T4 L4394–4416 | `unsatisfiable_control` | `controls.go:submitControls` | `semantic.zig:submitControls` | `controls.rs:submit_controls` |
 | `0013#the-shape-is-the-one-the-plan-pre-designed/9` | A `steered` admission MUST NOT reuse a `submission_id` already pending on its target run. | T4 L4585–4589 | `duplicate_steer` | `steer.go:steerAdmission` | `semantic.zig:steerAdmission` | — |
 | `0013#the-shape-is-the-one-the-plan-pre-designed/10` | Every admitted steer MUST settle before its run's terminal. | L67–69; T4 L4596–4597 | `pending_steer_at_terminal` | `steer.go:steerTerminal` | `semantic.zig:runEvent` | — |
 | `0013#the-shape-is-the-one-the-plan-pre-designed/11` | A steer whose target cannot take guidance MUST be refused with `invalid_steer_target`, judged against the target's state at the response. | T4 L4600–4613, L4679–4685 | `illegal_run_transition` | `steer.go:steerRefusal` | `semantic.zig:steerRefusal` | — |
