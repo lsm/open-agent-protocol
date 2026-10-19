@@ -1286,8 +1286,9 @@ fn printUsage(file: std.Io.File) !void {
         \\                   Options may appear before or after the prompt.
         \\                   Use --agent to run through the full agent loop.
         \\                   Use --storage to resolve credentials like the TUI.
-        \\                   Use --model <id> to pick the model
-        \\                   (default kimi-k2.7-code).
+        \\                   It talks to Kimi only: --model <id> picks a Kimi
+        \\                   model (default kimi-k2.7-code), and any other id
+        \\                   is refused.
         \\  serve agent      Serve agent-control-core over stdio, one envelope per line
         \\                   Remote provider: set OAPX_PROVIDER_SERVICE_URL and
         \\                   OAPX_PROVIDER_SERVICE_SECURITY=loopback|tls|mesh_proxy
@@ -1524,6 +1525,10 @@ fn parsePrintModeArgs(
     } };
 }
 
+fn servesPrintModel(model_id: []const u8) bool {
+    return provider_catalog.declaredModel(kimi_provider_id, model_id) != null;
+}
+
 fn reportPrintModeArgError(err: PrintModeArgError) void {
     switch (err) {
         .missing_prompt => perr("error: -p requires a prompt argument\n"),
@@ -1548,6 +1553,11 @@ fn runPrintMode(allocator: std.mem.Allocator, args: []const []const u8) !void {
     const model_id = options.model_id;
     const use_agent_loop = options.use_agent_loop;
     const use_storage_auth = options.use_storage_auth;
+
+    if (!servesPrintModel(model_id)) {
+        perrf("error: oapx run talks to Kimi only, and {s} is not a Kimi model; use the terminal UI or oapx serve agent --model <provider>/<api>@<model> for another provider's model\n", .{model_id});
+        return error.InvalidArgument;
+    }
 
     perr("[print] building kimi model from env...\n");
 
@@ -1916,6 +1926,12 @@ fn handleAuthWithOptions(
     }
 
     return error.InvalidArgument;
+}
+
+test "print mode serves the Kimi models the catalog declares and refuses another provider's model" {
+    try std.testing.expect(servesPrintModel(DEFAULT_PRINT_MODEL_ID));
+    try std.testing.expect(!servesPrintModel("claude-haiku-4.5"));
+    try std.testing.expect(!servesPrintModel("github-copilot/openai-completions@claude-haiku-4.5"));
 }
 
 test "the print path resolves a Kimi region exactly as the catalog does" {
