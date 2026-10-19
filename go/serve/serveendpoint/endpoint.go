@@ -57,6 +57,8 @@ type Server struct {
 	lines chan []byte
 
 	pumps sync.WaitGroup
+
+	stopping *stopState
 }
 
 func New(hub *serve.Hub, options Options) (*Server, error) {
@@ -85,7 +87,7 @@ func New(hub *serve.Hub, options Options) (*Server, error) {
 	if stall <= 0 {
 		stall = DefaultWriteStall
 	}
-	return &Server{hub: hub, adapter: options.Adapter, frameLimit: limit, shutdown: shutdown, writeStall: stall, logger: logger, stateSequence: make(map[protocol.SessionID]uint64)}, nil
+	return &Server{hub: hub, adapter: options.Adapter, frameLimit: limit, shutdown: shutdown, writeStall: stall, logger: logger, stateSequence: make(map[protocol.SessionID]uint64), stopping: newStopState()}, nil
 }
 
 func (s *Server) nextStateSequence(id protocol.SessionID) uint64 {
@@ -115,6 +117,8 @@ reading:
 		select {
 		case <-ctx.Done():
 			break reading
+		case <-s.stopping.done:
+			break reading
 		case result, open := <-frames:
 			if !open {
 				break reading
@@ -135,7 +139,7 @@ reading:
 		}
 	}
 
-	if s.settle(stopStreams, runErr != nil) {
+	if s.settle(stopStreams, runErr != nil || s.stopping.forced()) {
 		if runErr == nil {
 			runErr = ErrShutdownStalled
 		}
