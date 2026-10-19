@@ -300,6 +300,7 @@ fn copilotModel(allocator: std.mem.Allocator, id_text: []const u8, base_url_text
         .base_url = base_url,
         .reasoning = false,
         .input = input,
+        .image_input_known = if (listed) |found| found.image_input != null else false,
         .cost = .{ .input = 0, .output = 0, .cache_read = 0, .cache_write = 0 },
         .context_window = if (listed) |found| found.context_window orelse 128_000 else 128_000,
         .max_tokens = if (listed) |found| found.max_tokens orelse 16_384 else 16_384,
@@ -580,10 +581,9 @@ fn customModel(
     const base_url = try allocator.dupe(u8, provider.base_url);
     errdefer allocator.free(base_url);
 
-    const input = try allocator.alloc([]const u8, 1);
-    errdefer allocator.free(input);
-    input[0] = try allocator.dupe(u8, "text");
-    errdefer allocator.free(input[0]);
+    const listed_image: ?bool = if (listed) |found| found.image_input else null;
+    const input = try modelInputModalities(allocator, listed_image orelse false);
+    errdefer freeInput(allocator, input);
 
     var header_list = std.ArrayList(ai_types.HeaderPair).empty;
     errdefer {
@@ -613,6 +613,7 @@ fn customModel(
         .base_url = base_url,
         .reasoning = provider.reasoning,
         .input = input,
+        .image_input_known = listed_image != null,
         .cost = .{ .input = 0, .output = 0, .cache_read = 0, .cache_write = 0 },
         .context_window = customLimit(if (spec) |found| found.context_window else null, if (listed) |found| found.context_window else null, provider.context_window) orelse catalog_context_window,
         .max_tokens = customLimit(if (spec) |found| found.max_tokens else null, if (listed) |found| found.max_tokens else null, provider.max_tokens) orelse catalog_max_output_tokens,
@@ -1251,6 +1252,7 @@ fn catalogModel(allocator: std.mem.Allocator, target: CatalogEndpoint, model: Di
         .base_url = base_url,
         .reasoning = model.reasoning orelse false,
         .input = input,
+        .image_input_known = model.image_input != null,
         .cost = .{ .input = 0, .output = 0, .cache_read = 0, .cache_write = 0 },
         .context_window = contextWindowFor(target.id, model),
         .max_tokens = maxTokensFor(target.id, model),
@@ -2111,6 +2113,7 @@ fn anthropicModel(allocator: std.mem.Allocator, id_text: []const u8, name_text: 
         .base_url = base_url,
         .reasoning = true,
         .input = input,
+        .image_input_known = true,
         .cost = if (spec) |known| known.cost else .{ .input = 0, .output = 0, .cache_read = 0, .cache_write = 0 },
         .context_window = limits.context_window orelse 200_000,
         .max_tokens = limits.max_tokens orelse if (spec) |known| known.max_tokens else 32_000,
@@ -2684,6 +2687,7 @@ fn codexModelFromObject(
         .base_url = base_url,
         .reasoning = modelSupportsReasoning(obj),
         .input = input,
+        .image_input_known = obj.get("input_modalities") != null,
         .cost = .{ .input = 0, .output = 0, .cache_read = 0, .cache_write = 0 },
         .context_window = context_window,
         .max_tokens = max_tokens,
@@ -6245,4 +6249,31 @@ test "an override's header never duplicates one the listing request already carr
     try std.testing.expectEqual(@as(usize, 2), headers.items.len);
     try std.testing.expectEqualStrings("Bearer from-the-credential", headers.items[0].value);
     try std.testing.expectEqualStrings("X-Tenant", headers.items[1].name);
+}
+
+test "a custom provider's model list says whether each model sees images, and silence leaves it unknown" {
+    test_custom_providers_config =
+        \\{"providers":[{"id":"gw","base_url":"https://gw.test","models":["seeing","blind","silent"]}]}
+    ;
+    test_custom_discovery_body =
+        \\{"data":[
+        \\ {"id":"seeing","supports_image_in":true},
+        \\ {"id":"blind","supports_image_in":false},
+        \\ {"id":"silent"}
+        \\]}
+    ;
+    defer {
+        test_custom_providers_config = null;
+        test_custom_discovery_body = null;
+    }
+
+    const models = try loadCustomModels(std.testing.allocator, null, .force_fetch, null);
+    defer deinitModels(std.testing.allocator, models);
+
+    try std.testing.expectEqual(@as(usize, 3), models.len);
+    try std.testing.expect(models[0].image_input_known);
+    try std.testing.expectEqual(@as(usize, 2), models[0].input.len);
+    try std.testing.expect(models[1].image_input_known);
+    try std.testing.expectEqual(@as(usize, 1), models[1].input.len);
+    try std.testing.expect(!models[2].image_input_known);
 }

@@ -3,15 +3,30 @@ name: CI
 on:
   push:
     branches: [main]
+  # A pull request touching only prose skips this workflow, the heaviest one:
+  # nothing here reads decisions/, drafts/, docs/, research/ or a root-level
+  # Markdown file. A nested README is not covered, because the README samples
+  # are type-checked here. ci.yml still runs on such a pull request, because the
+  # Go suite checks the rule register under drafts/validator-rules against the
+  # decisions it cites.
   pull_request:
+    paths-ignore:
+      - "decisions/**"
+      - "drafts/**"
+      - "docs/**"
+      - "research/**"
+      - "*.md"
 
 concurrency:
-  # The same superseding rule as ci.yml, under a prefix that keeps the two
-  # workflows apart: both display as "CI", so a shared group would cancel this
-  # file's run whenever the other's was queued on the same pull request. A push
-  # carries no pull request number, so it falls back to its own run id and
-  # shares a group with nothing, which is what keeps a run per main commit.
-  group: ci-zig-${{ github.event_name }}-${{ github.event.pull_request.number || github.run_id }}
+  # The same superseding rule as ci.yml for a pull request, under a prefix that
+  # keeps the two workflows apart: both display as "CI", so a shared group would
+  # cancel this file's run whenever the other's was queued on the same pull
+  # request. Main pushes, unlike ci.yml's, share one group that does not cancel
+  # in progress: a main run already going finishes, and GitHub keeps only the
+  # newest pending one, so a burst of merges queues one run of this, the
+  # heaviest workflow, rather than one per commit. ci.yml still runs on every
+  # main commit.
+  group: ci-zig-${{ github.event_name }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:

@@ -1,6 +1,7 @@
 # Decision 0011: Control-Layer-Provided Tools
 
-Status: accepted 2026-09-17 (the optional `source` amended by
+Status: accepted 2026-09-17 (the resolution pair's tool binding and
+`name_pattern` amended by [Decision 0055](0055-register-batch-2.md); the optional `source` amended by
 [Decision 0048](0048-a-provided-tool-names-a-source-when-tools-are-listed.md)
 for an endpoint that lists tools). Assessed against Decision 0003 earlier the same
 day and **held**, correctly: steps 2 and 4 had landed — 58 `control-tools`
@@ -184,7 +185,9 @@ session- and run-scoped envelope types, mirroring the permission resolve pair.
 The request is
 `{ interaction_id, session_id, run_id, tool_call_id, requested_by,
 responded_by, started? | result? | error? }` with exactly one of the three
-arms. `started` is an empty object: an acknowledgement, not a resolution. It
+arms. Its `tool_call_id`, on the envelope and in the payload, names the tool
+call the interaction is bound to. The response's `tool_call_id` names the same
+call ([Decision 0055](0055-register-batch-2.md)). `started` is an empty object: an acknowledgement, not a resolution. It
 may appear at most once and only before the resolution.
 
 The response is
@@ -325,6 +328,8 @@ So a constraint must be *advertised to be exercised*. The feature's
 `FeatureSupport.limits` declares the ones the adapter actually has —
 `max_tools`, a `name_pattern`, the accepted `schema_dialect` — and refusing a
 protocol-valid array is conforming only where it violates a declared limit.
+A `name_pattern` is RE2 syntax and matches a name only when it matches all of
+it ([Decision 0055](0055-register-batch-2.md)).
 Refusing one that satisfies every advertised limit is
 `undisclosed_provide_limit`, the shape T2 uses for an undisclosed queue bound
 and Decision 0008 for an undisclosed attachment limit, and for the same reason:

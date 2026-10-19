@@ -148,7 +148,12 @@ Rust owes the port.
 
 Rules: [`0006-models.md`](../drafts/validator-rules/0006-models.md).
 
-### OPEN-0028-1: does an unadvertised attachment's refusal owe `details.reason`?
+### Closed: OPEN-0028-1: does an unadvertised attachment's refusal owe `details.reason`?
+
+Closed by [Decision 0054](../decisions/0054-register-batch-1.md), option (a),
+and 0028's amended text; rule row `0028#optional-sessionproviderattach/5`. Go
+now requires the reason, pinned by fixture
+`provider-attach-unadvertised-refusal-without-reason`.
 
 An attachment sent to an endpoint that does not advertise
 `action.providers.attach` must be refused. Go accepts any `unsupported_feature`
@@ -165,7 +170,12 @@ while Decision 0005's unadvertised refusal carries the reason.
 Recommendation: (a). It makes a refused attachment look like every other
 refused control, and 0028 already defers to 0005 for the degraded half.
 
-### OPEN-0028-2: is accepting an attachment without `session_live` a diagnostic of its own?
+### Closed: OPEN-0028-2: is accepting an attachment without `session_live` a diagnostic of its own?
+
+Closed by [Decision 0054](../decisions/0054-register-batch-1.md), option (a),
+and 0028's amended text; rule row `0028#optional-sessionproviderattach/3`. Zig
+now fails the acceptance, pinned by fixture
+`provider-attach-accepted-without-session-live`.
 
 An endpoint that advertises `action.providers.attach` affirmatively without the
 `session_live` mode fails `undisclosed_attach_modes` on the descriptor in both
@@ -182,7 +192,12 @@ Recommendation: (a). 0028 says an endpoint "advertises
 `action.providers.attach` with the `session_live` mode to accept", which makes
 the mode a precondition of each acceptance, not only of the descriptor.
 
-### OPEN-0028-3: is a degraded attachment's refusal judged?
+### Closed: OPEN-0028-3: is a degraded attachment's refusal judged?
+
+Closed by [Decision 0054](../decisions/0054-register-batch-1.md), option (a),
+and 0028's amended text; rule row `0028#optional-sessionproviderattach/9`. Go
+now judges the refusal, pinned by fixture
+`provider-attach-degraded-refusal-wrong-code`.
 
 When `action.providers.attach` is `degraded` and the request omits the opt-in,
 Zig requires the refusal to be `capability_degraded` naming the feature
@@ -195,7 +210,12 @@ Zig requires the refusal to be `capability_degraded` naming the feature
 Recommendation: (a). 0028 applies "the normal degraded opt-in rule", and 0005's
 rule fixes the refusal's code. Go needs the port.
 
-### OPEN-0028-4: must a stale-revision catalog list attached providers?
+### Closed: OPEN-0028-4: must a stale-revision catalog list attached providers?
+
+Closed by [Decision 0054](../decisions/0054-register-batch-1.md), option (b),
+and 0028's amended text; rule row `0028#optional-sessionproviderattach/8`. Go
+now checks only a catalog that binds, pinned by fixture
+`provider-attach-stale-catalog-omits-attached`.
 
 After an accepted attachment, a catalog that omits the alias fails
 `unmatched_provider`. Go checks every catalog for the session, whatever revision
@@ -348,3 +368,26 @@ Recommendation: (a). The endpoint reports a provided tool's outcome on
 leave a control layer unable to supply what the endpoint is allowed to report.
 Settled by
 [Decision 0060](../decisions/0060-a-tool-result-may-carry-content-parts.md).
+
+## Session lifecycle (0040, 0044–0046, 0049–0051)
+
+Rules: [`0040-session-lifecycle.md`](../drafts/validator-rules/0040-session-lifecycle.md).
+
+### OPEN-0050-1: may a recovered reopen list restored queued runs?
+
+0040 has a successful reopen list no run under way. 0050 § 5 amends that: a
+recovered reopen (`recovery.recovered: true`) may list restored runs as
+`queued`, in their original order, and "the validator accepts restored queued
+runs in a recovered open response and nowhere else". Go
+(`reopen.go:reopenResponse`) and Zig (`semantic.zig:reopenResponse`) still
+diagnose any listed run on a reopen that carried no message.
+
+- (a) Both trees accept `queued` restored runs on a recovered reopen, and
+  nowhere else, as 0050 says.
+- (b) Keep 0040's rule unamended.
+
+Recommendation: (a). 0050's text decides it, so this is a port fix in both
+trees. It lands with restart recovery, with a positive fixture and a negative
+one that lists a restored run on an unrecovered reopen.
+
+**Status.** Settled by 0050 § 5. What remains is the port fix.
