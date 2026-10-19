@@ -971,15 +971,7 @@ fn parseChunk(
             if (u.object.get("completion_tokens")) |v| {
                 if (v == .integer) completion_tokens = @intCast(v.integer);
             }
-            var reasoning_tokens: u64 = 0;
-            if (u.object.get("completion_tokens_details")) |details| {
-                if (details == .object) {
-                    if (details.object.get("reasoning_tokens")) |rt| {
-                        if (rt == .integer) reasoning_tokens = @intCast(rt.integer);
-                    }
-                }
-            }
-            usage.output = completion_tokens + reasoning_tokens;
+            usage.output = completion_tokens;
             if (u.object.get("total_tokens")) |v| {
                 if (v == .integer) usage.total_tokens = @intCast(v.integer);
             }

@@ -605,6 +605,17 @@ happened to be in the environment. It now reads them only when
 and a custom provider that resolves no key of its own fails with `MissingApiKey`
 instead of borrowing one.
 
+## Usage
+
+An OpenAI Chat Completions endpoint is read in OpenAI's convention:
+`completion_tokens` already includes the `reasoning_tokens` in
+`completion_tokens_details`, and `prompt_tokens` includes the `cached_tokens` in
+`prompt_tokens_details`. So output is `completion_tokens` as reported, input is
+`prompt_tokens` less `cached_tokens`, and the cached part is reported as cache
+reads (Decision 0063). An endpoint that reports reasoning beside the completion
+rather than within it is under-counted by its reasoning. A sign of this is a
+`total_tokens` that exceeds `prompt_tokens` plus `completion_tokens`.
+
 ## Limits
 
 - Custom providers reach the TUI and the CLI. The TypeScript SDK's `models.list`
