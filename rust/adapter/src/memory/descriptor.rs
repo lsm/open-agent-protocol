@@ -8,7 +8,7 @@ use super::{
 };
 use crate::{Descriptor, JournalDescriptor};
 
-fn features() -> BTreeMap<String, FeatureSupport> {
+pub(super) fn features() -> BTreeMap<String, FeatureSupport> {
     let native = |reason: &str| support(SupportLevel::NATIVE, reason);
     let emulated = |reason: &str| support(SupportLevel::EMULATED, reason);
     let degraded = |reason: &str| support(SupportLevel::DEGRADED, reason);
