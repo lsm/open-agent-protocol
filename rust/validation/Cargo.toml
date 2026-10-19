@@ -1,0 +1,18 @@
+[package]
+name = "oap-validation"
+version = "0.1.0"
+edition = "2021"
+description = "Open Agent Protocol trace validator"
+repository = "https://github.com/lsm/open-agent-protocol"
+license = "CC0-1.0"
+publish = false
+
+[dependencies]
+jsonschema = { version = "=0.59.0", default-features = false }
+oap-protocol = { path = "../protocol" }
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["raw_value"] }
+thiserror = "2"
+
+[lints.rust]
+unsafe_code = "forbid"
