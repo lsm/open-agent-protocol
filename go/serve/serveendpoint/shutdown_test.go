@@ -67,6 +67,7 @@ func (l *liveEndpoint) ask(line string, inReplyTo protocol.EnvelopeID) protocol.
 
 func (l *liveEndpoint) stops() {
 	l.t.Helper()
+	go func() { _, _ = io.Copy(io.Discard, l.answer) }()
 	select {
 	case err := <-l.done:
 		if err != nil {
