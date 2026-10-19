@@ -39,6 +39,7 @@ var codexReducerFixtures = map[string]bool{
 	"duplicate-terminal":    true,
 	"process-exit":          true,
 	"model-per-turn":        true,
+	"token-usage":           true,
 }
 
 type corpusManifest struct {
