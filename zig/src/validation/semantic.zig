@@ -12,6 +12,7 @@ pub const code_compaction_failed_without_error = "compaction_failed_without_erro
 pub const code_pending_steer_at_terminal = "pending_steer_at_terminal";
 
 pub const code_duplicate_envelope_id = "duplicate_envelope_id";
+pub const code_undeclared_replay_gap = "undeclared_replay_gap";
 pub const code_illegal_run_transition = "illegal_run_transition";
 pub const code_missing_run_started = "missing_run_started";
 pub const code_missing_run_terminal = "missing_run_terminal";
@@ -67,25 +68,26 @@ pub const code_transcript_gap_mismatch = "transcript_gap_mismatch";
 const attachment_only_members = [_][]const u8{ "command", "args", "environment" };
 
 pub const implemented = [_][]const u8{
-    code_unmatched_steer,             code_duplicate_steer,                 code_pending_steer_at_terminal,
-    code_compaction_unpaired,         code_compaction_ended_without_start,  code_compaction_open_at_terminal,
-    code_compaction_run_mismatch,     code_compaction_stop_reason_mismatch, code_compaction_failed_without_error,
-    code_duplicate_envelope_id,       code_illegal_run_transition,          code_missing_run_started,
-    code_missing_run_terminal,        code_duplicate_run_terminal,          code_event_after_terminal,
-    code_sequence_gap,                code_sequence_regression,             code_cancel_not_settled,
-    code_queue_order_violation,       code_queue_limit_exceeded,            code_undisclosed_queue_limit,
-    code_unavailable_capability,      code_stale_capability_revision,       code_degraded_without_optin,
-    code_unsatisfiable_control,       code_unapplied_control,               code_duplicate_tool_name,
-    code_model_not_in_catalog,        code_duplicate_model_id,              code_duplicate_provider,
-    code_ambiguous_default_model,     code_unannounced_catalog_change,      code_undisclosed_attach_modes,
-    code_duplicate_tool_source,       code_unmatched_tool_source,           code_unattributed_call,
-    code_catalog_mismatch,            code_undisclosed_attach_limit,        code_unmatched_tool,
-    code_illegal_tool_transition,     code_pending_tool_at_terminal,        code_duplicate_interaction,
-    code_unmatched_interaction,       code_wrong_interaction_responder,     code_pending_interaction_at_terminal,
-    code_resolution_payload_mismatch, code_wrong_tool_owner,                code_undisclosed_provide_limit,
-    code_attachment_field_in_catalog, code_session_list_over_limit,         code_session_list_order,
-    code_duplicate_session_entry,     code_duplicate_message_completion,    code_content_after_completion,
-    code_transcript_over_limit,       code_duplicate_transcript_entry,      code_transcript_gap_mismatch,
+    code_unmatched_steer,                 code_duplicate_steer,                 code_pending_steer_at_terminal,
+    code_compaction_unpaired,             code_compaction_ended_without_start,  code_compaction_open_at_terminal,
+    code_compaction_run_mismatch,         code_compaction_stop_reason_mismatch, code_compaction_failed_without_error,
+    code_duplicate_envelope_id,           code_undeclared_replay_gap,           code_illegal_run_transition,
+    code_missing_run_started,             code_missing_run_terminal,            code_duplicate_run_terminal,
+    code_event_after_terminal,            code_sequence_gap,                    code_sequence_regression,
+    code_cancel_not_settled,              code_queue_order_violation,           code_queue_limit_exceeded,
+    code_undisclosed_queue_limit,         code_unavailable_capability,          code_stale_capability_revision,
+    code_degraded_without_optin,          code_unsatisfiable_control,           code_unapplied_control,
+    code_duplicate_tool_name,             code_model_not_in_catalog,            code_duplicate_model_id,
+    code_duplicate_provider,              code_ambiguous_default_model,         code_unannounced_catalog_change,
+    code_undisclosed_attach_modes,        code_duplicate_tool_source,           code_unmatched_tool_source,
+    code_unattributed_call,               code_catalog_mismatch,                code_undisclosed_attach_limit,
+    code_unmatched_tool,                  code_illegal_tool_transition,         code_pending_tool_at_terminal,
+    code_duplicate_interaction,           code_unmatched_interaction,           code_wrong_interaction_responder,
+    code_pending_interaction_at_terminal, code_resolution_payload_mismatch,     code_wrong_tool_owner,
+    code_undisclosed_provide_limit,       code_attachment_field_in_catalog,     code_session_list_over_limit,
+    code_session_list_order,              code_duplicate_session_entry,         code_duplicate_message_completion,
+    code_content_after_completion,        code_transcript_over_limit,           code_duplicate_transcript_entry,
+    code_transcript_gap_mismatch,
 };
 
 pub fn isImplemented(code: []const u8) bool {
@@ -466,6 +468,7 @@ const Recovery = struct {
     cursor_set: bool = false,
     state_checked: bool = false,
     first_replay_seen: bool = false,
+    open_index: usize = 0,
 };
 
 const Request = struct {
@@ -2847,11 +2850,11 @@ pub const Machine = struct {
         const session = memberString(payload, "session_id");
         if (target.len != 0) {
             const run = self.runs.get(target) orelse return .{ .run = null, .reason = "unknown_target" };
-            const reason: []const u8 = if (!std.mem.eql(u8, run.session, session)) "cross_session" else if (run.terminal) "terminal" else if (std.mem.eql(u8, run.status, "cancelling")) "not_steerable" else if (!run.started) "queued" else "";
+            const reason: []const u8 = if (!std.mem.eql(u8, run.session, session)) "cross_session" else if (run.terminal) "terminal" else if (std.mem.eql(u8, run.status, "cancelling")) "not_steerable" else if (run.compaction_run and !run.compaction_continue) "no_model_turn" else if (!run.started) "queued" else "";
             return .{ .run = run, .reason = reason };
         }
         for (self.runs.values()) |run| {
-            if (std.mem.eql(u8, run.session, session) and run.started and !run.terminal) return .{ .run = run, .reason = if (std.mem.eql(u8, run.status, "cancelling")) "not_steerable" else "" };
+            if (std.mem.eql(u8, run.session, session) and run.started and !run.terminal) return .{ .run = run, .reason = if (std.mem.eql(u8, run.status, "cancelling")) "not_steerable" else if (run.compaction_run and !run.compaction_continue) "no_model_turn" else "" };
         }
         return .{ .run = null, .reason = "no_active_run" };
     }
@@ -3274,18 +3277,21 @@ pub const Machine = struct {
             }
         }
         if (member(payload, "recovery")) |recovery| {
+            const gap = std.mem.eql(u8, memberString(recovery, "reason"), "replay_gap");
+            if (gap and memberString(recovery, "resume_cursor").len == 0) try self.add(code_undeclared_replay_gap, index);
             if (memberBool(recovery, "recovered")) {
                 const created = try self.arena.allocator().create(Recovery);
                 created.* = .{
                     .run = memberString(recovery, "previous_run_id"),
-                    .gap = std.mem.eql(u8, memberString(recovery, "reason"), "replay_gap"),
+                    .gap = gap,
+                    .open_index = index,
                 };
                 const cursor = memberString(recovery, "resume_cursor");
                 if (cursor.len != 0) {
                     if (std.fmt.parseUnsigned(u64, cursor, 10)) |parsed| {
                         created.cursor = parsed;
                         created.cursor_set = true;
-                    } else |_| {}
+                    } else |_| try self.add(code_undeclared_replay_gap, index);
                 }
                 try self.recoveries.put(self.allocator, session_id, created);
                 try self.bootstrapRecoveredRuns(index, session_id, payload);
@@ -3448,6 +3454,7 @@ pub const Machine = struct {
         const recovery = self.recoveries.get(session_id) orelse return;
         if (recovery.state_checked) return;
         recovery.state_checked = true;
+        if (recovery.gap and member(payload, "recovery") == null) try self.add(code_undeclared_replay_gap, index);
         if (recovery.gap) return;
         const active = memberString(payload, "active_run_id");
         if (active.len == 0 or self.runs.get(active) != null) return;
@@ -3963,6 +3970,9 @@ pub const Machine = struct {
 
     pub fn close(self: *Machine) !void {
         try self.closeSteerSnapshots();
+        for (self.recoveries.values()) |recovery| {
+            if (recovery.gap and !recovery.state_checked) try self.add(code_undeclared_replay_gap, recovery.open_index);
+        }
         for (self.sessions.keys(), self.sessions.values()) |session_id, holder| {
             for (holder.model_anchors.items) |anchor| {
                 const request = self.requests.get(anchor.request) orelse continue;
@@ -6576,4 +6586,42 @@ fn steerMessagesEqual(a: std.json.Value, b: std.json.Value) bool {
         if (left != .string or right != .string or !std.mem.eql(u8, left.string, right.string)) return false;
     }
     return true;
+}
+
+fn gapOpened(comptime cursor: []const u8) []const u8 {
+    return
+    \\[{"type":"session.open.request","id":"o1","payload":{"session_id":"s"}},
+    \\{"type":"session.open.response","id":"o2","in_reply_to":"o1","payload":{"session_id":"s","status":"idle",
+    \\"recovery":{"recovered":true,"reason":"replay_gap"
+    ++ cursor ++
+        \\}}}
+    ;
+}
+
+const gap_state =
+    \\,{"type":"session.state.request","id":"t1","payload":{"session_id":"s"}},
+    \\{"type":"session.state.response","id":"t2","in_reply_to":"t1","payload":{"session_id":"s","status":"idle","recovery":{"recovered":true,"reason":"replay_gap","resume_cursor":"7"}}}]
+;
+
+test "a replay gap that names its retained boundary and is followed by recovered state is declared" {
+    try expectCodes(comptime gapOpened(",\"resume_cursor\":\"7\"") ++ gap_state, &.{});
+}
+
+test "a replay gap without a resume cursor is undeclared" {
+    try expectCodes(comptime gapOpened("") ++ gap_state, &.{code_undeclared_replay_gap});
+}
+
+test "a replay gap whose cursor is not an unsigned sequence is undeclared" {
+    try expectCodes(comptime gapOpened(",\"resume_cursor\":\"later\"") ++ gap_state, &.{code_undeclared_replay_gap});
+}
+
+test "authoritative state after a replay gap that drops the recovery is undeclared" {
+    try expectCodes(comptime gapOpened(",\"resume_cursor\":\"7\"") ++
+        \\,{"type":"session.state.request","id":"t1","payload":{"session_id":"s"}},
+        \\{"type":"session.state.response","id":"t2","in_reply_to":"t1","payload":{"session_id":"s","status":"idle"}}]
+    , &.{code_undeclared_replay_gap});
+}
+
+test "a replay gap the trace never follows with authoritative state is undeclared" {
+    try expectCodes(comptime gapOpened(",\"resume_cursor\":\"7\"") ++ "]", &.{code_undeclared_replay_gap});
 }

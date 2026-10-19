@@ -1,0 +1,146 @@
+[
+  {
+    "protocol": "open-agent-protocol",
+    "version": "0.1",
+    "profile": "open-agent-protocol.agent-control-core",
+    "type": "capabilities.request",
+    "id": "capq",
+    "payload": {}
+  },
+  {
+    "protocol": "open-agent-protocol",
+    "version": "0.1",
+    "profile": "open-agent-protocol.agent-control-core",
+    "type": "capabilities.response",
+    "id": "capr",
+    "in_reply_to": "capq",
+    "capability_revision": "v1",
+    "payload": {
+      "endpoint": {
+        "id": "agent"
+      },
+      "features": {
+        "user_input": {
+          "level": "native"
+        }
+      }
+    }
+  },
+  {
+    "protocol": "open-agent-protocol",
+    "version": "0.1",
+    "profile": "open-agent-protocol.agent-control-core",
+    "type": "session.message.submit.request",
+    "id": "req1",
+    "session_id": "s1",
+    "payload": {
+      "delivery": "auto",
+      "messages": [
+        {
+          "content": "go",
+          "role": "user"
+        }
+      ],
+      "session_id": "s1"
+    }
+  },
+  {
+    "protocol": "open-agent-protocol",
+    "version": "0.1",
+    "profile": "open-agent-protocol.agent-control-core",
+    "type": "session.message.submit.response",
+    "id": "resp1",
+    "in_reply_to": "req1",
+    "session_id": "s1",
+    "payload": {
+      "accepted": true,
+      "admission": "started",
+      "effective_delivery": "start",
+      "requested_delivery": "auto",
+      "run_id": "r1",
+      "session_id": "s1",
+      "status": "running",
+      "submission_id": "sub1"
+    }
+  },
+  {
+    "protocol": "open-agent-protocol",
+    "version": "0.1",
+    "profile": "open-agent-protocol.agent-control-core",
+    "type": "run.started",
+    "id": "e1",
+    "run_id": "r1",
+    "session_id": "s1",
+    "sequence": 1,
+    "payload": {
+      "run_id": "r1",
+      "session_id": "s1",
+      "status": "running"
+    }
+  },
+  {
+    "protocol": "open-agent-protocol",
+    "version": "0.1",
+    "profile": "open-agent-protocol.agent-control-core",
+    "type": "user.input.requested",
+    "id": "e2",
+    "run_id": "r1",
+    "session_id": "s1",
+    "sequence": 2,
+    "payload": {
+      "run_id": "r1",
+      "session_id": "s1",
+      "interaction_id": "i1",
+      "questions": [
+        {
+          "id": "q1",
+          "kind": "text",
+          "prompt": "Continue?"
+        }
+      ],
+      "requested_by": "agent",
+      "responded_by": "user",
+      "title": "Question",
+      "allow_cancel": true
+    },
+    "capability_revision": "v1"
+  },
+  {
+    "protocol": "open-agent-protocol",
+    "version": "0.1",
+    "profile": "open-agent-protocol.agent-control-core",
+    "type": "user.input.resolved",
+    "id": "e3",
+    "run_id": "r1",
+    "session_id": "s1",
+    "sequence": 3,
+    "payload": {
+      "run_id": "r1",
+      "session_id": "s1",
+      "interaction_id": "i1",
+      "requested_by": "agent",
+      "responded_by": "user",
+      "status": "cancelled"
+    },
+    "capability_revision": "v1"
+  },
+  {
+    "protocol": "open-agent-protocol",
+    "version": "0.1",
+    "profile": "open-agent-protocol.agent-control-core",
+    "type": "run.completed",
+    "id": "e4",
+    "run_id": "r1",
+    "session_id": "s1",
+    "sequence": 4,
+    "payload": {
+      "run_id": "r1",
+      "session_id": "s1",
+      "final_response": {
+        "content": "ok",
+        "role": "assistant"
+      },
+      "stop_reason": "end_turn"
+    }
+  }
+]
