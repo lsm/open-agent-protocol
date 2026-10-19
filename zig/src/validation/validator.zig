@@ -267,7 +267,7 @@ test "a schema path that leaves the pack root is refused, by .. or by symlink, a
     try tmp.dir.writeFile(std.testing.io, .{
         .sub_path = "staying/pack.json",
         .data =
-            \\{"id": "com.example.ok", "version": "1.0.0", "schemas": ["note.schema.json"], "envelope_types": [{"type": "com.example.ok.thing", "role": "event", "schema": "note.schema.json#/$defs/thing"}]}
+            \\{"id": "com.example.ok", "version": "1.0.0", "schemas": ["note.schema.json"], "envelope_types": [{"type": "com.example.ok.thing", "role": "event", "schema": "note.schema.json#/$defs/thing"}], "gates": [{"type": "com.example.ok.thing", "ungated": true}]}
         ,
     });
 
@@ -367,7 +367,7 @@ test "one pack named twice is one pack, and contributes one branch" {
     });
     try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "a/pack.json",
         .data =
-        \\{"id":"com.example.note","version":"1.0.0","schemas":["note.schema.json"],"envelope_types":[{"type":"com.example.note.ping","role":"event","schema":"note.schema.json#/$defs/ping"}]}
+        \\{"id":"com.example.note","version":"1.0.0","schemas":["note.schema.json"],"envelope_types":[{"type":"com.example.note.ping","role":"event","schema":"note.schema.json#/$defs/ping"}],"gates":[{"type":"com.example.note.ping","ungated":true}]}
         ,
     });
     const first = try tmp.dir.realPathFileAlloc(std.testing.io, "a", allocator);
@@ -402,7 +402,11 @@ test "a descriptor declaring one type twice is refused, not loaded once" {
     const dirs = [_][]const u8{dir};
     var judge = try Validator.init(allocator, .{ .io = std.testing.io });
     defer judge.deinit();
-    try std.testing.expectError(error.InvalidPackDescriptor, packs_mod.load(std.testing.io, allocator, &judge.registry, &dirs));
+    var refused = try packs_mod.load(std.testing.io, allocator, &judge.registry, &dirs);
+    defer refused.deinit();
+    try std.testing.expectEqual(@as(usize, 1), refused.refusals.len);
+    try std.testing.expectEqualStrings(packs_mod.pack_type_duplicate, refused.refusals[0].code);
+    try std.testing.expectEqual(@as(usize, 0), refused.types.len);
 }
 
 test "a pack's branches belong to the core envelope, and to no other document" {
@@ -469,7 +473,7 @@ test "a validator frees itself exactly once when a pack cannot be loaded" {
                 defer loaded.deinit();
                 return error.TestExpectedError;
             } else |err| switch (err) {
-                error.InvalidPackDescriptor => {},
+                error.PackLoadRefused => {},
                 else => return err,
             }
         }
