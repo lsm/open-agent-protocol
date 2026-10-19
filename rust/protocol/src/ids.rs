@@ -49,4 +49,5 @@ id!(
     ToolCallId,
     InteractionId,
     CompactionId,
+    TranscriptEntryId,
 );
