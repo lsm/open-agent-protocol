@@ -21,6 +21,9 @@ fn unsatisfiable(feature: &str, detail: String) -> UnsupportedControl {
     }
 }
 
+const POLICY_DETAIL: &str =
+    "the reference adapter takes auto, off, a share from 1 to 100 or a positive token count";
+
 pub(super) fn compaction_threshold(policy: Option<&CompactionPolicy>) -> Result<u64, Error> {
     let window = REFERENCE_WINDOW as i64;
     let threshold = match policy {
@@ -36,8 +39,11 @@ pub(super) fn compaction_threshold(policy: Option<&CompactionPolicy>) -> Result<
         },
     };
     threshold.map(|value| value as u64).ok_or_else(|| {
-        let detail = "the reference adapter takes auto, off, a share from 1 to 100 or a positive token count".to_owned();
-        let control = UnsupportedControl { field: "compaction_policy".into(), ..unsatisfiable(FEATURE_COMPACTION_POLICY, detail) };
+        let detail = POLICY_DETAIL.to_owned();
+        let control = UnsupportedControl {
+            field: "compaction_policy".into(),
+            ..unsatisfiable(FEATURE_COMPACTION_POLICY, detail)
+        };
         Error::UnsupportedControl(Box::new(control))
     })
 }
@@ -154,7 +160,7 @@ fn admissible_dialect(schema: Option<&RawValue>) -> bool {
     let Some(schema) = schema else { return true };
     match serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(schema.get()) {
         Ok(object) => match object.get("$schema") {
-            None => true,
+            None | Some(serde_json::Value::Null) => true,
             Some(serde_json::Value::String(dialect)) => {
                 dialect.is_empty() || dialect == PROVIDED_DIALECT
             }

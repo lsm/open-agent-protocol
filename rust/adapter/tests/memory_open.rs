@@ -209,6 +209,16 @@ fn a_provided_tool_is_refused_for_each_disclosed_limit_and_admitted_within_them(
             None,
         ),
         ("no dialect", with_schema(r#"{"type":"object"}"#), None),
+        (
+            "a null dialect, which Go reads as none",
+            with_schema(r#"{"$schema":null}"#),
+            None,
+        ),
+        (
+            "a dialect that is not a string",
+            with_schema(r#"{"$schema":7}"#),
+            Some("schemed"),
+        ),
     ];
     for (name, provided, refused) in cases {
         let result = memory
