@@ -12,6 +12,11 @@ pub const code_compaction_failed_without_error = "compaction_failed_without_erro
 pub const code_pending_steer_at_terminal = "pending_steer_at_terminal";
 
 pub const code_duplicate_envelope_id = "duplicate_envelope_id";
+pub const code_undeclared_replay_gap = "undeclared_replay_gap";
+pub const code_unmatched_response = "unmatched_response";
+pub const code_missing_response = "missing_response";
+pub const code_duplicate_response = "duplicate_response";
+pub const code_unhonoured_capability = "unhonoured_capability";
 pub const code_illegal_run_transition = "illegal_run_transition";
 pub const code_missing_run_started = "missing_run_started";
 pub const code_missing_run_terminal = "missing_run_terminal";
@@ -67,25 +72,27 @@ pub const code_transcript_gap_mismatch = "transcript_gap_mismatch";
 const attachment_only_members = [_][]const u8{ "command", "args", "environment" };
 
 pub const implemented = [_][]const u8{
-    code_unmatched_steer,             code_duplicate_steer,                 code_pending_steer_at_terminal,
-    code_compaction_unpaired,         code_compaction_ended_without_start,  code_compaction_open_at_terminal,
-    code_compaction_run_mismatch,     code_compaction_stop_reason_mismatch, code_compaction_failed_without_error,
-    code_duplicate_envelope_id,       code_illegal_run_transition,          code_missing_run_started,
-    code_missing_run_terminal,        code_duplicate_run_terminal,          code_event_after_terminal,
-    code_sequence_gap,                code_sequence_regression,             code_cancel_not_settled,
-    code_queue_order_violation,       code_queue_limit_exceeded,            code_undisclosed_queue_limit,
-    code_unavailable_capability,      code_stale_capability_revision,       code_degraded_without_optin,
-    code_unsatisfiable_control,       code_unapplied_control,               code_duplicate_tool_name,
-    code_model_not_in_catalog,        code_duplicate_model_id,              code_duplicate_provider,
-    code_ambiguous_default_model,     code_unannounced_catalog_change,      code_undisclosed_attach_modes,
-    code_duplicate_tool_source,       code_unmatched_tool_source,           code_unattributed_call,
-    code_catalog_mismatch,            code_undisclosed_attach_limit,        code_unmatched_tool,
-    code_illegal_tool_transition,     code_pending_tool_at_terminal,        code_duplicate_interaction,
-    code_unmatched_interaction,       code_wrong_interaction_responder,     code_pending_interaction_at_terminal,
-    code_resolution_payload_mismatch, code_wrong_tool_owner,                code_undisclosed_provide_limit,
-    code_attachment_field_in_catalog, code_session_list_over_limit,         code_session_list_order,
-    code_duplicate_session_entry,     code_duplicate_message_completion,    code_content_after_completion,
-    code_transcript_over_limit,       code_duplicate_transcript_entry,      code_transcript_gap_mismatch,
+    code_unmatched_steer,                 code_duplicate_steer,                 code_pending_steer_at_terminal,
+    code_compaction_unpaired,             code_compaction_ended_without_start,  code_compaction_open_at_terminal,
+    code_compaction_run_mismatch,         code_compaction_stop_reason_mismatch, code_compaction_failed_without_error,
+    code_duplicate_envelope_id,           code_undeclared_replay_gap,           code_illegal_run_transition,
+    code_missing_run_started,             code_missing_run_terminal,            code_duplicate_run_terminal,
+    code_event_after_terminal,            code_sequence_gap,                    code_sequence_regression,
+    code_cancel_not_settled,              code_queue_order_violation,           code_queue_limit_exceeded,
+    code_undisclosed_queue_limit,         code_unavailable_capability,          code_stale_capability_revision,
+    code_degraded_without_optin,          code_unsatisfiable_control,           code_unapplied_control,
+    code_duplicate_tool_name,             code_model_not_in_catalog,            code_duplicate_model_id,
+    code_duplicate_provider,              code_ambiguous_default_model,         code_unannounced_catalog_change,
+    code_undisclosed_attach_modes,        code_duplicate_tool_source,           code_unmatched_tool_source,
+    code_unattributed_call,               code_catalog_mismatch,                code_undisclosed_attach_limit,
+    code_unmatched_tool,                  code_illegal_tool_transition,         code_pending_tool_at_terminal,
+    code_duplicate_interaction,           code_unmatched_interaction,           code_wrong_interaction_responder,
+    code_pending_interaction_at_terminal, code_resolution_payload_mismatch,     code_wrong_tool_owner,
+    code_undisclosed_provide_limit,       code_attachment_field_in_catalog,     code_session_list_over_limit,
+    code_session_list_order,              code_duplicate_session_entry,         code_duplicate_message_completion,
+    code_content_after_completion,        code_transcript_over_limit,           code_duplicate_transcript_entry,
+    code_transcript_gap_mismatch,         code_unmatched_response,              code_missing_response,
+    code_duplicate_response,              code_unhonoured_capability,
 };
 
 pub fn isImplemented(code: []const u8) bool {
@@ -235,6 +242,8 @@ const Run = struct {
     admitted_queued: bool = false,
     order: usize = 0,
     admitted_model: []const u8 = "",
+    admitted_at: usize = 0,
+    submit_request: []const u8 = "",
     controls: Controls = .{},
     deferred_controls: bool = false,
     status: []const u8 = "",
@@ -415,6 +424,9 @@ const Pending = struct {
     model_listed: bool = false,
     limit_refusal: ?Expectation = null,
     model_query: bool = false,
+    served: bool = false,
+    tools_query: bool = false,
+    subscribe_served: bool = false,
     list_limit: ?u64 = null,
     list_cursor: bool = false,
     satisfies: bool = false,
@@ -466,6 +478,7 @@ const Recovery = struct {
     cursor_set: bool = false,
     state_checked: bool = false,
     first_replay_seen: bool = false,
+    open_index: usize = 0,
 };
 
 const Request = struct {
@@ -476,6 +489,7 @@ const Request = struct {
     carries_message: bool = false,
     responded: bool = false,
     gates: []const Gate = &.{},
+    index: usize = 0,
 };
 
 pub const PackedType = struct {
@@ -606,6 +620,7 @@ pub const Machine = struct {
 
         if (self.isRequestType(declared)) {
             try self.requests.put(self.allocator, id, .{
+                .index = index,
                 .declared = declared,
                 .payload = payload,
                 .revision = field(envelope, "capability_revision"),
@@ -731,7 +746,18 @@ pub const Machine = struct {
             unadvertised = true;
             if (std.mem.eql(u8, gate.key, named)) named_by_refusal = true;
         }
-        if (!unadvertised) return;
+        if (!unadvertised) {
+            const refused_with = memberString(raised, "code");
+            for (gates) |gate| {
+                if (!gate.typed) continue;
+                for (gate.refusals) |declared_code| {
+                    if (std.mem.eql(u8, declared_code, refused_with)) return;
+                }
+                try self.add(code_unhonoured_capability, index);
+                return;
+            }
+            return;
+        }
         if (std.mem.eql(u8, memberString(raised, "code"), error_unsupported_feature) and
             std.mem.eql(u8, memberString(details, "reason"), reason_unadvertised) and
             named_by_refusal) return;
@@ -833,6 +859,7 @@ pub const Machine = struct {
         }
         if (std.mem.eql(u8, declared, "action.tools.list.request")) {
             try self.gatedRequest(index, envelope, payload, feature_tools_list, "/payload");
+            if (self.submits.get(field(envelope, "id"))) |query| query.tools_query = true;
             return;
         }
         if (std.mem.eql(u8, declared, "action.tools.list.response")) {
@@ -896,7 +923,7 @@ pub const Machine = struct {
             std.mem.eql(u8, declared, "session.state.updated"))
         {
             try self.steerState(index, envelope, payload);
-            try self.stateDocument(index, payload, std.mem.eql(u8, declared, "session.state.updated"));
+            try self.stateDocument(index, envelope, payload, std.mem.eql(u8, declared, "session.state.updated"));
             return;
         }
         if (std.mem.eql(u8, declared, "run.cancel.request")) {
@@ -913,10 +940,19 @@ pub const Machine = struct {
     }
 
     fn correlate(self: *Machine, index: usize, envelope: std.json.Value, declared: []const u8) !bool {
-        const request = self.requests.getPtr(field(envelope, "in_reply_to")) orelse return false;
+        const request = self.requests.getPtr(field(envelope, "in_reply_to")) orelse {
+            try self.add(code_unmatched_response, index);
+            return false;
+        };
         const failure = std.mem.eql(u8, declared, "error.response");
-        if (!failure and !self.answers(request.declared, declared)) return false;
-        if (request.responded) return true;
+        if (!failure and !self.answers(request.declared, declared)) {
+            try self.add(code_unmatched_response, index);
+            return false;
+        }
+        if (request.responded) {
+            try self.add(code_duplicate_response, index);
+            return true;
+        }
         request.responded = true;
         if (!failure and
             !std.mem.eql(u8, request.declared, "protocol.initialize.request") and
@@ -1179,6 +1215,7 @@ pub const Machine = struct {
             };
             return;
         }
+        pending.served = true;
     }
 
     fn reopenGate(self: *Machine, index: usize, envelope: std.json.Value, payload: std.json.Value, pending: *Pending) !void {
@@ -1358,7 +1395,9 @@ pub const Machine = struct {
                 .detail_value = key,
                 .diagnostic = code_degraded_without_optin,
             });
+            return;
         }
+        pending.subscribe_served = true;
     }
 
     fn sessionOpenRequest(self: *Machine, index: usize, envelope: std.json.Value, payload: std.json.Value) !void {
@@ -2659,6 +2698,8 @@ pub const Machine = struct {
         const request = field(envelope, "in_reply_to");
         const pending = self.submits.get(request) orelse return false;
         const raised = member(payload, "error") orelse std.json.Value{ .null = {} };
+        if (pending.subscribe_served and refusesSubscribe(raised)) try self.add(code_unhonoured_capability, index);
+        if (pending.tools_query and pending.served) try self.add(code_unhonoured_capability, index);
         if (self.requests.get(request)) |asked| {
             if (std.mem.eql(u8, asked.declared, "session.open.request") and
                 openLevelRefusal(memberString(raised, "code"))) return true;
@@ -2675,7 +2716,10 @@ pub const Machine = struct {
         }
         if (pending.honour.len != 0) try self.add(pending.honour, index);
         if (pending.control != null or pending.compact_focus != null) return true;
-        if (pending.model_query) return true;
+        if (pending.model_query) {
+            if (pending.served) try self.add(code_unhonoured_capability, index);
+            return true;
+        }
         if (pending.model_listed and
             std.mem.eql(u8, memberString(raised, "code"), error_model_not_found))
         {
@@ -2847,11 +2891,11 @@ pub const Machine = struct {
         const session = memberString(payload, "session_id");
         if (target.len != 0) {
             const run = self.runs.get(target) orelse return .{ .run = null, .reason = "unknown_target" };
-            const reason: []const u8 = if (!std.mem.eql(u8, run.session, session)) "cross_session" else if (run.terminal) "terminal" else if (std.mem.eql(u8, run.status, "cancelling")) "not_steerable" else if (!run.started) "queued" else "";
+            const reason: []const u8 = if (!std.mem.eql(u8, run.session, session)) "cross_session" else if (run.terminal) "terminal" else if (std.mem.eql(u8, run.status, "cancelling")) "not_steerable" else if (run.compaction_run and !run.compaction_continue) "no_model_turn" else if (!run.started) "queued" else "";
             return .{ .run = run, .reason = reason };
         }
         for (self.runs.values()) |run| {
-            if (std.mem.eql(u8, run.session, session) and run.started and !run.terminal) return .{ .run = run, .reason = if (std.mem.eql(u8, run.status, "cancelling")) "not_steerable" else "" };
+            if (std.mem.eql(u8, run.session, session) and run.started and !run.terminal) return .{ .run = run, .reason = if (std.mem.eql(u8, run.status, "cancelling")) "not_steerable" else if (run.compaction_run and !run.compaction_continue) "no_model_turn" else "" };
         }
         return .{ .run = null, .reason = "no_active_run" };
     }
@@ -2927,6 +2971,59 @@ pub const Machine = struct {
                 if (value >= 0) track.settled_sequence = @intCast(value);
             }
         }
+    }
+
+    fn checkRequiredRuns(self: *Machine, index: usize, envelope: std.json.Value, payload: std.json.Value) !void {
+        const session_id = memberString(payload, "session_id");
+        const window = self.ids.get(field(envelope, "in_reply_to")) orelse index;
+        const as_of = member(payload, "as_of");
+        var excused: std.StringArrayHashMapUnmanaged(void) = .empty;
+        defer excused.deinit(self.allocator);
+        var anchored: std.StringArrayHashMapUnmanaged(void) = .empty;
+        defer anchored.deinit(self.allocator);
+        if (as_of) |capture| {
+            if (member(capture, "settled")) |settled| {
+                if (settled == .array) for (settled.array.items) |entry| try excused.put(self.allocator, memberString(entry, "run_id"), {});
+            }
+            if (member(capture, "admitted_submit_requests")) |anchors| {
+                if (anchors == .array) for (anchors.array.items) |anchor| {
+                    if (anchor == .string) try anchored.put(self.allocator, anchor.string, {});
+                };
+            }
+        }
+        var required: std.ArrayList(*Run) = .empty;
+        defer required.deinit(self.allocator);
+        for (self.runs.values()) |run| {
+            if (!std.mem.eql(u8, run.session, session_id) or run.terminal) continue;
+            if (excused.contains(run.id)) continue;
+            if (as_of != null and run.admitted_at > window and !anchored.contains(run.submit_request)) continue;
+            try required.append(self.allocator, run);
+        }
+        const listed = member(payload, "active_runs") orelse {
+            if (try self.omissionNeedsEntries(required.items)) try self.add(code_session_state_mismatch, index);
+            return;
+        };
+        if (listed != .array) return;
+        for (required.items) |run| {
+            const present = for (listed.array.items) |entry| {
+                if (std.mem.eql(u8, memberString(entry, "run_id"), run.id)) break true;
+            } else false;
+            if (!present) try self.add(code_session_state_mismatch, index);
+        }
+    }
+
+    fn omissionNeedsEntries(self: *const Machine, required: []const *Run) !bool {
+        if (required.len > 1) return true;
+        for (required) |run| {
+            if (run.admitted_queued and !run.started) return true;
+        }
+        if (!self.advertisedKey(feature_delivery_queue)) return false;
+        for (required) |run| {
+            for (run.interactions.values()) |interaction| {
+                if (!interaction.resolved) return true;
+            }
+        }
+        return false;
     }
 
     fn steerState(self: *Machine, index: usize, envelope: std.json.Value, payload: std.json.Value) !void {
@@ -3029,6 +3126,8 @@ pub const Machine = struct {
             .session = session_id,
             .admitted = true,
             .last_index = index,
+            .admitted_at = index,
+            .submit_request = field(envelope, "in_reply_to"),
             .admitted_queued = queued,
             .order = holder.order.items.len,
             .admitted_model = memberString(payload, "model_id"),
@@ -3161,6 +3260,8 @@ pub const Machine = struct {
             .session = session_id,
             .admitted = true,
             .last_index = index,
+            .admitted_at = index,
+            .submit_request = field(envelope, "in_reply_to"),
             .admitted_queued = queued,
             .order = holder.order.items.len,
             .status = "queued",
@@ -3274,18 +3375,21 @@ pub const Machine = struct {
             }
         }
         if (member(payload, "recovery")) |recovery| {
+            const gap = std.mem.eql(u8, memberString(recovery, "reason"), "replay_gap");
+            if (gap and memberString(recovery, "resume_cursor").len == 0) try self.add(code_undeclared_replay_gap, index);
             if (memberBool(recovery, "recovered")) {
                 const created = try self.arena.allocator().create(Recovery);
                 created.* = .{
                     .run = memberString(recovery, "previous_run_id"),
-                    .gap = std.mem.eql(u8, memberString(recovery, "reason"), "replay_gap"),
+                    .gap = gap,
+                    .open_index = index,
                 };
                 const cursor = memberString(recovery, "resume_cursor");
                 if (cursor.len != 0) {
                     if (std.fmt.parseUnsigned(u64, cursor, 10)) |parsed| {
                         created.cursor = parsed;
                         created.cursor_set = true;
-                    } else |_| {}
+                    } else |_| try self.add(code_undeclared_replay_gap, index);
                 }
                 try self.recoveries.put(self.allocator, session_id, created);
                 try self.bootstrapRecoveredRuns(index, session_id, payload);
@@ -3396,6 +3500,7 @@ pub const Machine = struct {
             .started = shape.started,
             .next = shape.next,
             .last_index = index,
+            .admitted_at = index,
             .recovered = true,
             .admitted_queued = shape.queued,
             .order = holder.order.items.len,
@@ -3420,11 +3525,12 @@ pub const Machine = struct {
         try self.refreshQueueWindows(session_id);
     }
 
-    fn stateDocument(self: *Machine, index: usize, payload: std.json.Value, updated: bool) !void {
+    fn stateDocument(self: *Machine, index: usize, envelope: std.json.Value, payload: std.json.Value, updated: bool) !void {
         const session_id = memberString(payload, "session_id");
         {
             const holder = try self.sessionFor(session_id);
             const reported = memberString(payload, "current_model_id");
+            try self.checkRequiredRuns(index, envelope, payload);
             if (holder.guard_default and !std.mem.eql(u8, reported, holder.expected_default)) {
                 try self.add(code_unapplied_control, index);
             }
@@ -3448,6 +3554,7 @@ pub const Machine = struct {
         const recovery = self.recoveries.get(session_id) orelse return;
         if (recovery.state_checked) return;
         recovery.state_checked = true;
+        if (recovery.gap and member(payload, "recovery") == null) try self.add(code_undeclared_replay_gap, index);
         if (recovery.gap) return;
         const active = memberString(payload, "active_run_id");
         if (active.len == 0 or self.runs.get(active) != null) return;
@@ -3963,6 +4070,9 @@ pub const Machine = struct {
 
     pub fn close(self: *Machine) !void {
         try self.closeSteerSnapshots();
+        for (self.recoveries.values()) |recovery| {
+            if (recovery.gap and !recovery.state_checked) try self.add(code_undeclared_replay_gap, recovery.open_index);
+        }
         for (self.sessions.keys(), self.sessions.values()) |session_id, holder| {
             for (holder.model_anchors.items) |anchor| {
                 const request = self.requests.get(anchor.request) orelse continue;
@@ -4000,6 +4110,9 @@ pub const Machine = struct {
                 );
             }
         }
+        for (self.requests.values()) |request| {
+            if (!request.responded) try self.add(code_missing_response, request.index);
+        }
     }
 };
 
@@ -4019,6 +4132,15 @@ const mode_session_open = "session_open";
 const mode_session_live = "session_live";
 const feature_tools_provide = "action.tools.provide";
 const feature_open_subscribe = "session.open.subscribe";
+
+fn refusesSubscribe(raised: std.json.Value) bool {
+    const code = memberString(raised, "code");
+    if (!std.mem.eql(u8, code, error_unsupported_feature) and !std.mem.eql(u8, code, error_capability_degraded)) return false;
+    const details = member(raised, "details") orelse return true;
+    const named = member(details, "feature") orelse return true;
+    if (named != .string) return true;
+    return std.mem.eql(u8, named.string, feature_open_subscribe);
+}
 const feature_open_reopen = "session.open.reopen";
 const feature_session_reasoning = "session.reasoning";
 const feature_compaction_policy = "session.compaction.policy";
@@ -4601,6 +4723,20 @@ fn effectiveFor(status: []const u8) []const u8 {
 }
 
 fn codesOf(allocator: std.mem.Allocator, trace: []const u8) ![]const []const u8 {
+    return collectCodes(allocator, trace, true);
+}
+
+fn pairedCodesOf(allocator: std.mem.Allocator, trace: []const u8) ![]const []const u8 {
+    return collectCodes(allocator, trace, false);
+}
+
+fn pairing(code: []const u8) bool {
+    return std.mem.eql(u8, code, code_unmatched_response) or
+        std.mem.eql(u8, code, code_missing_response) or
+        std.mem.eql(u8, code, code_duplicate_response);
+}
+
+fn collectCodes(allocator: std.mem.Allocator, trace: []const u8, fragment: bool) ![]const []const u8 {
     var parsed = try std.json.parseFromSlice(std.json.Value, allocator, trace, .{});
     defer parsed.deinit();
 
@@ -4610,8 +4746,51 @@ fn codesOf(allocator: std.mem.Allocator, trace: []const u8) ![]const []const u8 
     try machine.close();
 
     var out = std.ArrayList([]const u8).empty;
-    for (machine.diagnostics.items) |diagnostic| try out.append(allocator, diagnostic.code);
+    for (machine.diagnostics.items) |diagnostic| {
+        if (fragment and pairing(diagnostic.code)) continue;
+        try out.append(allocator, diagnostic.code);
+    }
     return out.toOwnedSlice(allocator);
+}
+
+fn expectPairedCodes(trace: []const u8, want: []const []const u8) !void {
+    const got = try pairedCodesOf(std.testing.allocator, trace);
+    defer std.testing.allocator.free(got);
+    try std.testing.expectEqual(want.len, got.len);
+    for (want, got) |expected, actual| try std.testing.expectEqualStrings(expected, actual);
+}
+
+const paired_head =
+    \\[{"type":"capabilities.request","id":"q0","payload":{}},
+    \\{"type":"capabilities.response","id":"a0","in_reply_to":"q0","capability_revision":"r1","payload":{"capability_revision":"r1"}},
+;
+
+test "a response to no earlier request is unmatched" {
+    try expectPairedCodes(paired_head ++
+        \\{"type":"session.state.response","id":"a1","in_reply_to":"nobody","payload":{}}]
+    , &.{code_unmatched_response});
+}
+
+test "a response of another request's type is unmatched" {
+    try expectPairedCodes(paired_head ++
+        \\{"type":"session.state.request","id":"q1","payload":{"session_id":"s"}},
+        \\{"type":"session.close.response","id":"a1","in_reply_to":"q1","payload":{}},
+        \\{"type":"session.state.response","id":"a2","in_reply_to":"q1","payload":{}}]
+    , &.{code_unmatched_response});
+}
+
+test "a second response to one request is a duplicate, and an error answer counts as the first" {
+    try expectPairedCodes(paired_head ++
+        \\{"type":"session.state.request","id":"q1","payload":{"session_id":"s"}},
+        \\{"type":"error.response","id":"a1","in_reply_to":"q1","payload":{"error":{"code":"unknown_session","message":"x"}}},
+        \\{"type":"session.state.response","id":"a2","in_reply_to":"q1","payload":{}}]
+    , &.{code_duplicate_response});
+}
+
+test "a request the trace never answers is missing its response" {
+    try expectPairedCodes(paired_head ++
+        \\{"type":"session.state.request","id":"q1","payload":{"session_id":"s"}}]
+    , &.{code_missing_response});
 }
 
 fn expectCodes(trace: []const u8, want: []const []const u8) !void {
@@ -4948,14 +5127,14 @@ test "a rejected submission is one refusal, not a verdict on the controls it car
     , &.{"unavailable_capability"});
 }
 
-test "a catalog query is not a control this machine judges the refusal of" {
+test "a tool catalog an advertising endpoint refuses is unhonoured, and one it never advertised is unavailable" {
     try expectCodes(
         \\[{"type":"capabilities.response","id":"k1","capability_revision":"v1","payload":{"features":
         \\{"action.tools.list":{"level":"native"}}}},
         \\{"type":"action.tools.list.request","id":"t1","capability_revision":"v1","payload":{"session_id":"s"}},
         \\{"type":"error.response","id":"t2","in_reply_to":"t1","payload":{"error":{"code":"unsupported_feature",
         \\"details":{"feature":"action.tools.list"}}}}]
-    , &.{});
+    , &.{code_unhonoured_capability});
 
     try expectCodes(
         \\[{"type":"capabilities.response","id":"k1","capability_revision":"v1","payload":{"features":{}}},
@@ -6576,4 +6755,66 @@ fn steerMessagesEqual(a: std.json.Value, b: std.json.Value) bool {
         if (left != .string or right != .string or !std.mem.eql(u8, left.string, right.string)) return false;
     }
     return true;
+}
+
+fn gapOpened(comptime cursor: []const u8) []const u8 {
+    return
+    \\[{"type":"session.open.request","id":"o1","payload":{"session_id":"s"}},
+    \\{"type":"session.open.response","id":"o2","in_reply_to":"o1","payload":{"session_id":"s","status":"idle",
+    \\"recovery":{"recovered":true,"reason":"replay_gap"
+    ++ cursor ++
+        \\}}}
+    ;
+}
+
+const gap_state =
+    \\,{"type":"session.state.request","id":"t1","payload":{"session_id":"s"}},
+    \\{"type":"session.state.response","id":"t2","in_reply_to":"t1","payload":{"session_id":"s","status":"idle","recovery":{"recovered":true,"reason":"replay_gap","resume_cursor":"7"}}}]
+;
+
+test "a replay gap that names its retained boundary and is followed by recovered state is declared" {
+    try expectCodes(comptime gapOpened(",\"resume_cursor\":\"7\"") ++ gap_state, &.{});
+}
+
+test "a replay gap without a resume cursor is undeclared" {
+    try expectCodes(comptime gapOpened("") ++ gap_state, &.{code_undeclared_replay_gap});
+}
+
+test "a replay gap whose cursor is not an unsigned sequence is undeclared" {
+    try expectCodes(comptime gapOpened(",\"resume_cursor\":\"later\"") ++ gap_state, &.{code_undeclared_replay_gap});
+}
+
+test "authoritative state after a replay gap that drops the recovery is undeclared" {
+    try expectCodes(comptime gapOpened(",\"resume_cursor\":\"7\"") ++
+        \\,{"type":"session.state.request","id":"t1","payload":{"session_id":"s"}},
+        \\{"type":"session.state.response","id":"t2","in_reply_to":"t1","payload":{"session_id":"s","status":"idle"}}]
+    , &.{code_undeclared_replay_gap});
+}
+
+test "a replay gap the trace never follows with authoritative state is undeclared" {
+    try expectCodes(comptime gapOpened(",\"resume_cursor\":\"7\"") ++ "]", &.{code_undeclared_replay_gap});
+}
+
+test "a catalog query refused by an endpoint advertising models.list is unhonoured" {
+    try expectCodes(
+        \\[{"type":"capabilities.response","id":"c1","capability_revision":"v1","payload":{"features":{"models.list":{"level":"native"}}}},
+        \\{"type":"models.request","id":"m1","capability_revision":"v1","payload":{}},
+        \\{"type":"error.response","id":"m2","in_reply_to":"m1","payload":{"error":{"code":"internal_error","message":"x"}}}]
+    , &.{code_unhonoured_capability});
+}
+
+test "a catalog query refused by an endpoint not advertising models.list is not unhonoured" {
+    try expectCodes(
+        \\[{"type":"capabilities.response","id":"c1","capability_revision":"v1","payload":{"features":{}}},
+        \\{"type":"models.request","id":"m1","capability_revision":"v1","payload":{}},
+        \\{"type":"error.response","id":"m2","in_reply_to":"m1","payload":{"error":{"code":"unsupported_feature","message":"x","details":{"feature":"models.list","reason":"unadvertised"}}}}]
+    , &.{});
+}
+
+test "a subscribe an endpoint advertises, refused inside an open, is unhonoured" {
+    try expectCodes(
+        \\[{"type":"capabilities.response","id":"k1","capability_revision":"v1","payload":{"features":{"session.open.subscribe":{"level":"native"}}}},
+        \\{"type":"session.open.request","id":"o1","capability_revision":"v1","payload":{"session_id":"s","subscribe":true}},
+        \\{"type":"error.response","id":"o2","in_reply_to":"o1","payload":{"error":{"code":"unsupported_feature","message":"x","details":{"feature":"session.open.subscribe"}}}}]
+    , &.{code_unhonoured_capability});
 }

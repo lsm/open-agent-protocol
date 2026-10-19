@@ -1,0 +1,361 @@
+[
+  {
+    "protocol": "open-agent-protocol",
+    "version": "0.1",
+    "profile": "open-agent-protocol.agent-control-core",
+    "type": "capabilities.request",
+    "id": "capq",
+    "payload": {}
+  },
+  {
+    "protocol": "open-agent-protocol",
+    "version": "0.1",
+    "profile": "open-agent-protocol.agent-control-core",
+    "type": "capabilities.response",
+    "id": "capr",
+    "in_reply_to": "capq",
+    "capability_revision": "cap-v1",
+    "payload": {
+      "endpoint": {
+        "id": "fixture.endpoint",
+        "name": "Session list fixture endpoint"
+      },
+      "features": {
+        "session.message.delivery.auto": {
+          "level": "native"
+        },
+        "session.list": {
+          "level": "native"
+        }
+      }
+    }
+  },
+  {
+    "protocol": "open-agent-protocol",
+    "version": "0.1",
+    "profile": "open-agent-protocol.agent-control-core",
+    "type": "session.list.request",
+    "id": "l1",
+    "capability_revision": "cap-v1",
+    "payload": {}
+  },
+  {
+    "protocol": "open-agent-protocol",
+    "version": "0.1",
+    "profile": "open-agent-protocol.agent-control-core",
+    "type": "session.list.response",
+    "id": "l1r",
+    "in_reply_to": "l1",
+    "capability_revision": "cap-v1",
+    "payload": {
+      "sessions": [
+        {
+          "session_id": "s00",
+          "adapter": "memory",
+          "state": "closed",
+          "updated_at_ms": 10000
+        },
+        {
+          "session_id": "s01",
+          "adapter": "memory",
+          "state": "closed",
+          "updated_at_ms": 9999
+        },
+        {
+          "session_id": "s02",
+          "adapter": "memory",
+          "state": "closed",
+          "updated_at_ms": 9998
+        },
+        {
+          "session_id": "s03",
+          "adapter": "memory",
+          "state": "closed",
+          "updated_at_ms": 9997
+        },
+        {
+          "session_id": "s04",
+          "adapter": "memory",
+          "state": "closed",
+          "updated_at_ms": 9996
+        },
+        {
+          "session_id": "s05",
+          "adapter": "memory",
+          "state": "closed",
+          "updated_at_ms": 9995
+        },
+        {
+          "session_id": "s06",
+          "adapter": "memory",
+          "state": "closed",
+          "updated_at_ms": 9994
+        },
+        {
+          "session_id": "s07",
+          "adapter": "memory",
+          "state": "closed",
+          "updated_at_ms": 9993
+        },
+        {
+          "session_id": "s08",
+          "adapter": "memory",
+          "state": "closed",
+          "updated_at_ms": 9992
+        },
+        {
+          "session_id": "s09",
+          "adapter": "memory",
+          "state": "closed",
+          "updated_at_ms": 9991
+        },
+        {
+          "session_id": "s10",
+          "adapter": "memory",
+          "state": "closed",
+          "updated_at_ms": 9990
+        },
+        {
+          "session_id": "s11",
+          "adapter": "memory",
+          "state": "closed",
+          "updated_at_ms": 9989
+        },
+        {
+          "session_id": "s12",
+          "adapter": "memory",
+          "state": "closed",
+          "updated_at_ms": 9988
+        },
+        {
+          "session_id": "s13",
+          "adapter": "memory",
+          "state": "closed",
+          "updated_at_ms": 9987
+        },
+        {
+          "session_id": "s14",
+          "adapter": "memory",
+          "state": "closed",
+          "updated_at_ms": 9986
+        },
+        {
+          "session_id": "s15",
+          "adapter": "memory",
+          "state": "closed",
+          "updated_at_ms": 9985
+        },
+        {
+          "session_id": "s16",
+          "adapter": "memory",
+          "state": "closed",
+          "updated_at_ms": 9984
+        },
+        {
+          "session_id": "s17",
+          "adapter": "memory",
+          "state": "closed",
+          "updated_at_ms": 9983
+        },
+        {
+          "session_id": "s18",
+          "adapter": "memory",
+          "state": "closed",
+          "updated_at_ms": 9982
+        },
+        {
+          "session_id": "s19",
+          "adapter": "memory",
+          "state": "closed",
+          "updated_at_ms": 9981
+        },
+        {
+          "session_id": "s20",
+          "adapter": "memory",
+          "state": "closed",
+          "updated_at_ms": 9980
+        },
+        {
+          "session_id": "s21",
+          "adapter": "memory",
+          "state": "closed",
+          "updated_at_ms": 9979
+        },
+        {
+          "session_id": "s22",
+          "adapter": "memory",
+          "state": "closed",
+          "updated_at_ms": 9978
+        },
+        {
+          "session_id": "s23",
+          "adapter": "memory",
+          "state": "closed",
+          "updated_at_ms": 9977
+        },
+        {
+          "session_id": "s24",
+          "adapter": "memory",
+          "state": "closed",
+          "updated_at_ms": 9976
+        },
+        {
+          "session_id": "s25",
+          "adapter": "memory",
+          "state": "closed",
+          "updated_at_ms": 9975
+        },
+        {
+          "session_id": "s26",
+          "adapter": "memory",
+          "state": "closed",
+          "updated_at_ms": 9974
+        },
+        {
+          "session_id": "s27",
+          "adapter": "memory",
+          "state": "closed",
+          "updated_at_ms": 9973
+        },
+        {
+          "session_id": "s28",
+          "adapter": "memory",
+          "state": "closed",
+          "updated_at_ms": 9972
+        },
+        {
+          "session_id": "s29",
+          "adapter": "memory",
+          "state": "closed",
+          "updated_at_ms": 9971
+        },
+        {
+          "session_id": "s30",
+          "adapter": "memory",
+          "state": "closed",
+          "updated_at_ms": 9970
+        },
+        {
+          "session_id": "s31",
+          "adapter": "memory",
+          "state": "closed",
+          "updated_at_ms": 9969
+        },
+        {
+          "session_id": "s32",
+          "adapter": "memory",
+          "state": "closed",
+          "updated_at_ms": 9968
+        },
+        {
+          "session_id": "s33",
+          "adapter": "memory",
+          "state": "closed",
+          "updated_at_ms": 9967
+        },
+        {
+          "session_id": "s34",
+          "adapter": "memory",
+          "state": "closed",
+          "updated_at_ms": 9966
+        },
+        {
+          "session_id": "s35",
+          "adapter": "memory",
+          "state": "closed",
+          "updated_at_ms": 9965
+        },
+        {
+          "session_id": "s36",
+          "adapter": "memory",
+          "state": "closed",
+          "updated_at_ms": 9964
+        },
+        {
+          "session_id": "s37",
+          "adapter": "memory",
+          "state": "closed",
+          "updated_at_ms": 9963
+        },
+        {
+          "session_id": "s38",
+          "adapter": "memory",
+          "state": "closed",
+          "updated_at_ms": 9962
+        },
+        {
+          "session_id": "s39",
+          "adapter": "memory",
+          "state": "closed",
+          "updated_at_ms": 9961
+        },
+        {
+          "session_id": "s40",
+          "adapter": "memory",
+          "state": "closed",
+          "updated_at_ms": 9960
+        },
+        {
+          "session_id": "s41",
+          "adapter": "memory",
+          "state": "closed",
+          "updated_at_ms": 9959
+        },
+        {
+          "session_id": "s42",
+          "adapter": "memory",
+          "state": "closed",
+          "updated_at_ms": 9958
+        },
+        {
+          "session_id": "s43",
+          "adapter": "memory",
+          "state": "closed",
+          "updated_at_ms": 9957
+        },
+        {
+          "session_id": "s44",
+          "adapter": "memory",
+          "state": "closed",
+          "updated_at_ms": 9956
+        },
+        {
+          "session_id": "s45",
+          "adapter": "memory",
+          "state": "closed",
+          "updated_at_ms": 9955
+        },
+        {
+          "session_id": "s46",
+          "adapter": "memory",
+          "state": "closed",
+          "updated_at_ms": 9954
+        },
+        {
+          "session_id": "s47",
+          "adapter": "memory",
+          "state": "closed",
+          "updated_at_ms": 9953
+        },
+        {
+          "session_id": "s48",
+          "adapter": "memory",
+          "state": "closed",
+          "updated_at_ms": 9952
+        },
+        {
+          "session_id": "s49",
+          "adapter": "memory",
+          "state": "closed",
+          "updated_at_ms": 9951
+        },
+        {
+          "session_id": "s50",
+          "adapter": "memory",
+          "state": "closed",
+          "updated_at_ms": 9950
+        }
+      ]
+    }
+  }
+]
