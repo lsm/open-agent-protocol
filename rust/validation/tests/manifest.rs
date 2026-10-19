@@ -13,6 +13,7 @@ fn fixtures() -> PathBuf {
 #[serde(deny_unknown_fields)]
 struct KnownGaps {
     version: u32,
+    go: Vec<String>,
     zig: Vec<String>,
     rust: Vec<String>,
 }
@@ -25,7 +26,7 @@ fn every_fixture_draws_exactly_its_declared_codes_unless_rust_lists_it_as_a_know
         serde_json::from_slice(&std::fs::read(fixtures().join("known-gaps.json")).unwrap())
             .unwrap();
     assert_eq!(gaps.version, 1);
-    let _ = gaps.zig;
+    let _ = (gaps.go, gaps.zig);
     let listed: BTreeSet<&str> = gaps.rust.iter().map(String::as_str).collect();
     let validator = Validator::new().unwrap();
     let mut judged = BTreeSet::new();
@@ -44,7 +45,9 @@ fn every_fixture_draws_exactly_its_declared_codes_unless_rust_lists_it_as_a_know
             .unwrap_or_default();
         let mut got: Vec<&str> = result.diagnostics.iter().map(|d| d.code.as_str()).collect();
         want.sort_unstable();
+        want.dedup();
         got.sort_unstable();
+        got.dedup();
         let declared_phase = entry["phase"].as_str().unwrap_or_default();
         let got_phase = result
             .primary_phase()
