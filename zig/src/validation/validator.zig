@@ -278,7 +278,10 @@ test "a schema path that leaves the pack root is refused, by .. or by symlink, a
         const dir = try tmp.dir.realPathFileAlloc(std.testing.io, name, allocator);
         defer allocator.free(dir);
         const one = [_][]const u8{dir};
-        try std.testing.expectError(error.InvalidPackDescriptor, packs_mod.load(std.testing.io, allocator, &judge.registry, &one));
+        var refused = try packs_mod.load(std.testing.io, allocator, &judge.registry, &one);
+        defer refused.deinit();
+        try std.testing.expectEqual(@as(usize, 1), refused.refusals.len);
+        try std.testing.expectEqualStrings(packs_mod.pack_schema_path_escape, refused.refusals[0].code);
     }
 
     const staying = try tmp.dir.realPathFileAlloc(std.testing.io, "staying", allocator);
