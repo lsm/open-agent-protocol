@@ -37,6 +37,8 @@ type FixtureEntry struct {
 	Scope string `json:"scope,omitempty"`
 
 	Packs []string `json:"packs,omitempty"`
+
+	Rules []string `json:"rules,omitempty"`
 }
 
 type Coverage struct {
