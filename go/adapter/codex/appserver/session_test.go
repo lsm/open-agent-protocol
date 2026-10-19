@@ -1363,3 +1363,14 @@ func TestSubmitRefusesAnOutputSchemaNoStructuredResultCanSatisfy(t *testing.T) {
 		}
 	}
 }
+
+func TestAnEmptyModelOutranksAnUnsatisfiableOutputSchema(t *testing.T) {
+	_, session, _ := openFake(t)
+	request := protocol.MessageSubmitRequest{SessionID: "session-1", Delivery: protocol.DeliveryAuto, ModelID: protocol.ControlValue(""), OutputSchema: json.RawMessage(`{"type":"array"}`),
+		Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("hello")}}}
+	_, _, err := session.Submit(context.Background(), adapter.SubmitRequest{Request: request})
+	var missing *adapter.ModelNotFoundError
+	if !errors.As(err, &missing) {
+		t.Fatalf("got %v, want model_not_found ahead of the schema refusal", err)
+	}
+}

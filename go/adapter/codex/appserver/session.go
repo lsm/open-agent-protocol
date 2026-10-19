@@ -109,14 +109,6 @@ func (session *session) Submit(ctx context.Context, submit adapter.SubmitRequest
 	if err := adapter.RefuseUnadvertisedControls(request, protocol.FeatureModelSelection, protocol.FeatureStructuredOutput); err != nil {
 		return protocol.MessageSubmitResponse{}, nil, err
 	}
-	var schema *validation.OutputSchema
-	if len(request.OutputSchema) != 0 {
-		compiled, err := validation.CompileOutputSchema(request.OutputSchema)
-		if err != nil {
-			return protocol.MessageSubmitResponse{}, nil, &adapter.UnsupportedControlError{Feature: protocol.FeatureStructuredOutput, Reason: adapter.ControlUnsatisfiable, Field: "output_schema", Detail: err.Error()}
-		}
-		schema = compiled
-	}
 
 	model := session.model
 	if request.ModelID != nil {
@@ -124,6 +116,14 @@ func (session *session) Submit(ctx context.Context, submit adapter.SubmitRequest
 			return protocol.MessageSubmitResponse{}, nil, &adapter.ModelNotFoundError{}
 		}
 		model = *request.ModelID
+	}
+	var schema *validation.OutputSchema
+	if len(request.OutputSchema) != 0 {
+		compiled, err := validation.CompileOutputSchema(request.OutputSchema)
+		if err != nil {
+			return protocol.MessageSubmitResponse{}, nil, &adapter.UnsupportedControlError{Feature: protocol.FeatureStructuredOutput, Reason: adapter.ControlUnsatisfiable, Field: "output_schema", Detail: err.Error()}
+		}
+		schema = compiled
 	}
 	if request.SessionID != session.state.SessionID || len(request.Messages) == 0 {
 		return protocol.MessageSubmitResponse{}, nil, adapter.ErrInvalidSubmission
@@ -919,7 +919,7 @@ func (session *session) onCompleted(value native.TurnCompletedNotification) {
 		if schema != nil {
 			result, defect := structuredResult(schema, final)
 			if defect != "" {
-				_ = session.emit(run, protocol.TypeRunFailed, protocol.RunFailedPayload{SessionID: session.state.SessionID, RunID: run.id, Error: protocol.ProtocolError{Code: "invalid_structured_output", Message: defect}}, true)
+				_ = session.emit(run, protocol.TypeRunFailed, protocol.RunFailedPayload{SessionID: session.state.SessionID, RunID: run.id, Error: protocol.ProtocolError{Code: "structured_output_failed", Message: defect}}, true)
 				return
 			}
 			payload.Result = result
@@ -948,7 +948,7 @@ func structuredResult(schema *validation.OutputSchema, final *string) (json.RawM
 		return nil, "the final assistant message is not JSON"
 	}
 	if err := schema.Validate(compact.Bytes()); err != nil {
-		return nil, "the final assistant message does not conform to the output_schema: " + err.Error()
+		return nil, "the final assistant message does not conform to the output_schema"
 	}
 	return compact.Bytes(), ""
 }

@@ -89,7 +89,7 @@ exposes no per-turn output schema". No ledger recorded that, and it is wrong:
 | --- | --- | --- |
 | `output_schema` on a submit | `turn/start.outputSchema`, verbatim, after compiling it as Decision 0005 requires; a schema no object can satisfy is refused `unsatisfiable` and never sent | native |
 | `run.completed.result` | the `text` of the turn's last completed `agentMessage` item, parsed as JSON and checked against the schema | normalized: the streamed deltas span every message of the turn, and only the final one is constrained |
-| a final message that is not JSON or does not conform | `run.failed` with `invalid_structured_output`, never a completion without its result | normalized |
+| a final message that is not JSON or does not conform | `run.failed` with `structured_output_failed`, never a completion without its result | normalized |
 
 `run.structured_output` is now `native` in both trees, so the revision moves
 to `codex-appserver-0.163.0-oap-v2`. Corpus cases `structured-output` and

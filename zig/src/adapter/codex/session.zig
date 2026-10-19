@@ -931,7 +931,7 @@ pub const Reducer = struct {
                     .result => |value| result = value,
                     .defect => |detail| {
                         var failure = std.json.ObjectMap.empty;
-                        try self.put(&failure, "code", str("invalid_structured_output"));
+                        try self.put(&failure, "code", str("structured_output_failed"));
                         try self.put(&failure, "message", str(detail));
                         try self.put(&payload, "error", .{ .object = failure });
                         return self.emit(index, "run.failed", payload, "", true);

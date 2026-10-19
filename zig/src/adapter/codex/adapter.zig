@@ -654,6 +654,15 @@ pub const Session = struct {
     fn submit(ptr: *anyopaque, arena: std.mem.Allocator, request: *const oap_types.MessageSubmitRequest, envelope_id: []const u8, refusal: *contract.Refusal) contract.Failure!oap_types.MessageSubmitResponse {
         _ = envelope_id;
         const self = cast(ptr);
+        if (request.model_id) |model| {
+            if (model.len == 0) return refusal.missingModel("");
+        }
+        if (request.output_schema_json) |schema| {
+            if (try session.outputSchemaDefect(arena, schema)) |detail| {
+                refusal.* = .{ .feature = "run.structured_output", .reason = contract.reason_unsatisfiable, .field = "output_schema", .detail = detail };
+                return error.UnsupportedFeature;
+            }
+        }
         if (!std.mem.eql(u8, request.session_id, self.id) or request.messages.len == 0) return error.InvalidSubmission;
         if (request.delivery != .auto or request.allow_degraded_features.len != 0) return error.InvalidSubmission;
         const inputs = try arena.alloc(session.InputMessage, request.messages.len);
@@ -666,12 +675,6 @@ pub const Session = struct {
             input.* = .{ .id = id, .role = @tagName(message.role), .text = text };
         }
         const model_id: ?[]const u8 = if (request.model_id) |model| try self.owned().dupe(u8, model) else null;
-        if (request.output_schema_json) |schema| {
-            if (try session.outputSchemaDefect(arena, schema)) |detail| {
-                refusal.* = .{ .feature = "run.structured_output", .reason = contract.reason_unsatisfiable, .field = "output_schema", .detail = detail };
-                return error.UnsupportedFeature;
-            }
-        }
         self.reducer.submit(.{ .messages = inputs, .model_id = model_id, .effort = self.pending_effort, .output_schema = request.output_schema_json }) catch |err| return switch (err) {
             error.ModelNotFound => refusal.missingModel(request.model_id orelse ""),
             error.InvalidSubmission, error.UnsupportedInput => error.InvalidSubmission,

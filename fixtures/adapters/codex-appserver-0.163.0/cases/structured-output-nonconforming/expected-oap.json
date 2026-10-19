@@ -49,7 +49,7 @@
       "session_id": "session-1",
       "run_id": "run-02",
       "error": {
-        "code": "invalid_structured_output",
+        "code": "structured_output_failed",
         "message": "the final assistant message is not JSON"
       }
     },
