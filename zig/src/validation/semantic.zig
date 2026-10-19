@@ -4910,13 +4910,29 @@ fn carriesImage(result: ?std.json.Value) bool {
     if (held != .array or held.array.items.len == 0) return false;
     var image = false;
     for (held.array.items) |part| {
-        if (part != .object) return false;
+        if (part != .object or part.object.count() != 2) return false;
         const kind = memberString(part, "type");
         if (std.mem.eql(u8, kind, "image")) {
+            if (!imageSource(part.object.get("image"))) return false;
             image = true;
-        } else if (!std.mem.eql(u8, kind, "text")) return false;
+        } else if (!std.mem.eql(u8, kind, "text") or (part.object.get("text") orelse return false) != .string) return false;
     }
     return image;
+}
+
+fn imageSource(value: ?std.json.Value) bool {
+    const source = value orelse return false;
+    if (source != .object) return false;
+    return switch (source.object.count()) {
+        1 => filledString(source, "url"),
+        2 => filledString(source, "data") and filledString(source, "media_type"),
+        else => false,
+    };
+}
+
+fn filledString(object: std.json.Value, key: []const u8) bool {
+    const held = object.object.get(key) orelse return false;
+    return held == .string and held.string.len > 0;
 }
 
 fn toolResultImage(node: std.json.Value) bool {

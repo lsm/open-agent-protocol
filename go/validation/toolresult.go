@@ -60,16 +60,40 @@ func carriesImage(result any) bool {
 	image := false
 	for _, part := range parts {
 		object, ok := part.(map[string]any)
-		if !ok {
+		if !ok || len(object) != 2 {
 			return false
 		}
 		switch object["type"] {
 		case "text":
+			if _, ok := object["text"].(string); !ok {
+				return false
+			}
 		case "image":
+			if !imageSource(object["image"]) {
+				return false
+			}
 			image = true
 		default:
 			return false
 		}
 	}
 	return image
+}
+
+func imageSource(value any) bool {
+	source, ok := value.(map[string]any)
+	if !ok {
+		return false
+	}
+	filled := func(key string) bool {
+		text, ok := source[key].(string)
+		return ok && text != ""
+	}
+	switch len(source) {
+	case 1:
+		return filled("url")
+	case 2:
+		return filled("data") && filled("media_type")
+	}
+	return false
 }

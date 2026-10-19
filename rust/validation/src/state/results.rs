@@ -13,13 +13,33 @@ fn carries_image(result: Option<&Value>) -> bool {
     }
     let mut image = false;
     for part in parts {
-        match part.get("type").and_then(Value::as_str) {
-            Some("text") => {}
-            Some("image") => image = true,
+        let Some(object) = part.as_object().filter(|object| object.len() == 2) else {
+            return false;
+        };
+        match object.get("type").and_then(Value::as_str) {
+            Some("text") if object.get("text").is_some_and(Value::is_string) => {}
+            Some("image") if image_source(object.get("image")) => image = true,
             _ => return false,
         }
     }
     image
+}
+
+fn image_source(value: Option<&Value>) -> bool {
+    let Some(source) = value.and_then(Value::as_object) else {
+        return false;
+    };
+    let filled = |key: &str| {
+        source
+            .get(key)
+            .and_then(Value::as_str)
+            .is_some_and(|text| !text.is_empty())
+    };
+    match source.len() {
+        1 => filled("url"),
+        2 => filled("data") && filled("media_type"),
+        _ => false,
+    }
 }
 
 fn tool_result_image(node: &Value, pointer: &str) -> Option<String> {

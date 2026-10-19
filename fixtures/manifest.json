@@ -13390,6 +13390,24 @@
       "rules": [
         "0060#a-result-is-json-or-a-content-part-list-open-0011-2/1"
       ]
+    },
+    {
+      "id": "tool-result-json-shaped-like-parts",
+      "path": "valid/tool-result-json-shaped-like-parts.json",
+      "kind": "positive",
+      "valid": true,
+      "phase": "",
+      "codes": [],
+      "units": [
+        "core",
+        "tools"
+      ],
+      "provenance": [
+        "decisions/0060-a-tool-result-may-carry-content-parts.md"
+      ],
+      "rules": [
+        "0060#a-result-is-json-or-a-content-part-list-open-0011-2/1"
+      ]
     }
   ]
 }
