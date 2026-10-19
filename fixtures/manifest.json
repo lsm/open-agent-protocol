@@ -11915,6 +11915,38 @@
       ]
     },
     {
+      "id": "compaction-steer-no-model-turn",
+      "path": "valid/compaction-steer-no-model-turn.json",
+      "kind": "positive",
+      "valid": true,
+      "phase": "",
+      "codes": [],
+      "units": [
+        "compaction",
+        "steer"
+      ],
+      "provenance": [
+        "decisions/0044-compaction.md"
+      ]
+    },
+    {
+      "id": "compaction-steer-no-model-turn-wrong-reason",
+      "path": "semantic-invalid/compaction-steer-no-model-turn-wrong-reason.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "illegal_run_transition"
+      ],
+      "units": [
+        "compaction",
+        "steer"
+      ],
+      "provenance": [
+        "decisions/0044-compaction.md"
+      ]
+    },
+    {
       "id": "compaction-status-before-start",
       "path": "semantic-invalid/compaction-status-before-start.json",
       "kind": "semantic-invalid",
