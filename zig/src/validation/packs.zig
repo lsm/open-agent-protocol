@@ -558,12 +558,17 @@ fn gather(
 
     for (descriptors.items) |*pack| {
         pack.base = try std.fmt.allocPrint(allocator, "{s}{s}/{s}/", .{ pack_base_uri, pack.id, pack.version });
-        const declared_schemas = field(pack.value, "schemas") orelse continue;
-        if (declared_schemas != .array) return error.InvalidPackDescriptor;
         const pack_root = std.Io.Dir.cwd().realPathFileAlloc(io, pack.dir, allocator) catch |err| switch (err) {
             error.OutOfMemory => return error.OutOfMemory,
             else => return error.InvalidPackDescriptor,
         };
+        if (stringField(pack.value, "fixtures")) |manifest| {
+            if (try containedPath(io, allocator, pack_root, pack.dir, manifest) == null) {
+                try load_refusals.append(allocator, .{ .code = pack_schema_path_escape, .pack = pack.id, .detail = manifest });
+            }
+        }
+        const declared_schemas = field(pack.value, "schemas") orelse continue;
+        if (declared_schemas != .array) return error.InvalidPackDescriptor;
         var documents: std.ArrayList(Document) = .empty;
         for (declared_schemas.array.items) |schema_name| {
             if (schema_name != .string) return error.InvalidPackDescriptor;
@@ -578,11 +583,6 @@ fn gather(
             try documents.append(allocator, .{ .name = normalized, .uri = uri, .bytes = schema_bytes, .value = value });
         }
         pack.documents = documents.items;
-        if (stringField(pack.value, "fixtures")) |manifest| {
-            if (try containedPath(io, allocator, pack_root, pack.dir, manifest) == null) {
-                try load_refusals.append(allocator, .{ .code = pack_schema_path_escape, .pack = pack.id, .detail = manifest });
-            }
-        }
     }
     if (load_refusals.items.len != 0) return refusedWith(&arena, &load_refusals);
 
@@ -1496,4 +1496,35 @@ test "a pack may refer to a declared dependency's schemas, and a dependency not 
     var missing = try describe(std.testing.io, allocator, &alone);
     defer missing.deinit();
     try std.testing.expect(carriesCode(missing.refusals, pack_dependency_missing));
+}
+
+test "a fixture manifest outside the pack root is refused whether or not the pack contributes schemas" {
+    const allocator = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const cases = [_]struct { dir: []const u8, descriptor: []const u8, escapes: bool }{
+        .{ .dir = "schemaless-escaping", .descriptor =
+        \\{"id": "com.example.noschema", "version": "1.0.0", "envelope_types": [], "fixtures": "../outside/manifest.json"}
+        , .escapes = true },
+        .{ .dir = "schemaless-inside", .descriptor =
+        \\{"id": "com.example.noschema", "version": "1.0.0", "envelope_types": [], "fixtures": "manifest.json"}
+        , .escapes = false },
+    };
+    try tmp.dir.createDir(std.testing.io, "outside", .default_dir);
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "outside/manifest.json", .data = "{}" });
+    for (cases) |c| {
+        try tmp.dir.createDir(std.testing.io, c.dir, .default_dir);
+        const pack = try std.fmt.allocPrint(allocator, "{s}/pack.json", .{c.dir});
+        defer allocator.free(pack);
+        try tmp.dir.writeFile(std.testing.io, .{ .sub_path = pack, .data = c.descriptor });
+        const manifest = try std.fmt.allocPrint(allocator, "{s}/manifest.json", .{c.dir});
+        defer allocator.free(manifest);
+        try tmp.dir.writeFile(std.testing.io, .{ .sub_path = manifest, .data = "{}" });
+        const root = try tmp.dir.realPathFileAlloc(std.testing.io, c.dir, allocator);
+        defer allocator.free(root);
+        const one = [_][]const u8{root};
+        var loaded = try describe(std.testing.io, allocator, &one);
+        defer loaded.deinit();
+        try std.testing.expectEqual(c.escapes, carriesCode(loaded.refusals, pack_schema_path_escape));
+    }
 }
