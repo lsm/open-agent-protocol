@@ -861,6 +861,7 @@ fn checkDeclarations(refuse: Refuser, core: *?Core, descriptor: std.json.Value) 
                 try answered.put(replies, {});
             }
         }
+        if (!std.mem.eql(u8, role, "request") and items(entry, "refusals").len != 0) try refuse.add(pack_refusal_undeclared, name);
         for (items(entry, "refusals")) |code| {
             if (!codes.contains(asString(code) orelse "")) try refuse.add(pack_refusal_undeclared, name);
         }
