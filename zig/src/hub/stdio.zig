@@ -536,6 +536,8 @@ pub const Frontend = struct {
     streams: std.ArrayList(Watched) = .empty,
     stopped: bool = false,
     shutdown: ?ShutdownMode = null,
+    notices: ?Sink = null,
+    signals_seen: u32 = 0,
     jobs: std.ArrayList(*Job) = .empty,
     next_ticket: u64 = 0,
 
@@ -1058,6 +1060,35 @@ pub const Frontend = struct {
         }
         const outcome = if (self.shutdown == .graceful and runs.len > 0) "draining" else "stopping";
         return .{ .answer = try shutdownAnswer(arena, outcome, runs, lost.items) };
+    }
+
+    pub fn takeSignals(self: *Frontend, seen: u32) Error!void {
+        if (seen <= self.signals_seen) return;
+        const wanted: ShutdownMode = if (seen >= 2 or self.shutdown == .force) .force else .graceful;
+        var scratch = std.heap.ArenaAllocator.init(self.allocator);
+        defer scratch.deinit();
+        const arena = scratch.allocator();
+        var request = try emptyObject(arena);
+        try request.put(arena, "mode", .{ .string = @tagName(wanted) });
+        const answered = try self.shutdownOp(arena, .{ .object = request });
+        self.signals_seen = seen;
+        const notices = self.notices orelse return;
+        const value = switch (answered) {
+            .answer => |value| value,
+            else => return,
+        };
+        const lost = if (value.object.get("lost")) |listed| listed.array.items.len else 0;
+        var active: std.ArrayList(u8) = .empty;
+        for (value.object.get("active_runs").?.array.items, 0..) |run, index| {
+            if (index > 0) try active.appendSlice(arena, ", ");
+            try active.print(arena, "{s}/{s}", .{ run.object.get("session_id").?.string, run.object.get("run_id").?.string });
+        }
+        const listed = if (active.items.len > 0) active.items else "none";
+        const line = if (wanted == .force)
+            try std.fmt.allocPrint(arena, "oapx: forced shutdown; cut off: {s}", .{listed})
+        else
+            try std.fmt.allocPrint(arena, "oapx: shutting down gracefully; still active: {s}; {d} queued run(s) lost; signal again to force", .{ listed, lost });
+        notices.write(notices.context, line) catch {};
     }
 
     pub fn shutdownComplete(self: *Frontend, arena: std.mem.Allocator) !bool {
@@ -2721,6 +2752,7 @@ pub const Stream = struct {
     context: *anyopaque,
     readable: ?std.Io.File.Handle = null,
     stop: ?*const fn () bool = null,
+    signals: ?*const fn () u32 = null,
 };
 
 const ReadFailure = error{InputFailed};
@@ -2785,6 +2817,7 @@ pub fn serve(allocator: std.mem.Allocator, frontend: *Frontend, stream: Stream) 
     defer scratch.deinit();
 
     while (!frontend.stopped) {
+        if (stream.signals) |count| try frontend.takeSignals(count());
         if (stream.stop) |stop| {
             if (stop()) {
                 frontend.stopped = true;
@@ -2820,6 +2853,7 @@ pub fn serve(allocator: std.mem.Allocator, frontend: *Frontend, stream: Stream) 
         if (try frontend.shutdownComplete(arena)) {
             while (frontend.shutdown == .graceful and frontend.jobs.items.len > 0) {
                 if (stream.stop) |stop| if (stop()) break;
+                if (stream.signals) |count| try frontend.takeSignals(count());
                 try frontend.answerJobs();
                 if (frontend.jobs.items.len > 0) std.Thread.yield() catch {};
             }
@@ -3437,6 +3471,52 @@ test "a graceful shutdown drains and refuses new work, and force stops it" {
     try testing.expect(try harness.frontend.shutdownComplete(arena));
     try harness.send("{\"id\":4,\"op\":\"shutdown\",\"request\":{\"mode\":\"graceful\"}}");
     try testing.expectEqual(@as(?ShutdownMode, .force), harness.frontend.shutdown);
+}
+
+test "a signal during a graceful shutdown a host already asked for still says what is running" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    const harness = try Harness.init(testing.allocator, .{}, .{});
+    defer harness.deinit();
+    var notices = Recorder{ .allocator = testing.allocator };
+    defer notices.deinit();
+    harness.frontend.notices = notices.sink();
+    _ = try harness.hub.open(arena, "reference", .{ .session_id = "busy" });
+    const request = oap_types.MessageSubmitRequest{ .session_id = "busy", .messages = &.{}, .delivery = .auto };
+    _ = try harness.hub.submit(arena, "busy", &request, "");
+    try harness.send("{\"id\":1,\"op\":\"shutdown\",\"request\":{\"mode\":\"graceful\"}}");
+    try harness.frontend.takeSignals(1);
+    try testing.expectEqual(@as(usize, 1), notices.lines.items.len);
+    try testing.expect(std.mem.indexOf(u8, notices.last(), "still active: busy/") != null);
+}
+
+test "a first signal starts a graceful shutdown and says what is still running, and a second forces it" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    const harness = try Harness.init(testing.allocator, .{}, .{});
+    defer harness.deinit();
+    var notices = Recorder{ .allocator = testing.allocator };
+    defer notices.deinit();
+    harness.frontend.notices = notices.sink();
+    _ = try harness.hub.open(arena, "reference", .{ .session_id = "busy" });
+    const request = oap_types.MessageSubmitRequest{ .session_id = "busy", .messages = &.{}, .delivery = .auto };
+    _ = try harness.hub.submit(arena, "busy", &request, "");
+
+    try harness.frontend.takeSignals(0);
+    try testing.expectEqual(@as(?ShutdownMode, null), harness.frontend.shutdown);
+    try harness.frontend.takeSignals(1);
+    try testing.expectEqual(@as(?ShutdownMode, .graceful), harness.frontend.shutdown);
+    try testing.expect(std.mem.indexOf(u8, notices.last(), "gracefully; still active: busy/") != null);
+    try testing.expect(!try harness.frontend.shutdownComplete(arena));
+    const before = notices.lines.items.len;
+    try harness.frontend.takeSignals(1);
+    try testing.expectEqual(before, notices.lines.items.len);
+    try harness.frontend.takeSignals(2);
+    try testing.expectEqual(@as(?ShutdownMode, .force), harness.frontend.shutdown);
+    try testing.expect(std.mem.indexOf(u8, notices.last(), "forced shutdown; cut off: busy/") != null);
+    try testing.expect(try harness.frontend.shutdownComplete(arena));
 }
 
 test "a shutdown mode other than graceful or force is refused and changes nothing" {
