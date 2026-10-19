@@ -49,12 +49,7 @@
     "queue-state-omits-pending-interaction",
     "queue-state-pending-without-as-of",
     "queue-state-promoted-run-erased",
-    "queue-state-queued-at-forthcoming-start",
-    "queue-state-reservations-called-idle",
-    "queue-state-running-beside-a-pending-interaction",
-    "queue-state-running-beside-a-waiting-run",
-    "queue-state-started-run-called-queued",
-    "queue-state-waiting-without-a-waiting-run"
+    "queue-state-queued-at-forthcoming-start"
   ],
   "rust": [
     "attach-advertised-without-modes",
