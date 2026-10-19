@@ -7446,6 +7446,9 @@
       "provenance": [
         "decisions/0055-register-batch-2.md",
         "decisions/0001-agent-control-v0.1-executable-core.md"
+      ],
+      "rules": [
+        "0055#the-recovery-cursor-is-a-json-safe-sequence-open-0001-7/1"
       ]
     },
     {
@@ -7463,6 +7466,9 @@
       "provenance": [
         "decisions/0055-register-batch-2.md",
         "decisions/0001-agent-control-v0.1-executable-core.md"
+      ],
+      "rules": [
+        "0055#the-recovery-cursor-is-a-json-safe-sequence-open-0001-7/1"
       ]
     },
     {
@@ -7480,6 +7486,9 @@
       "provenance": [
         "decisions/0055-register-batch-2.md",
         "decisions/0001-agent-control-v0.1-executable-core.md"
+      ],
+      "rules": [
+        "0055#the-recovery-cursor-is-a-json-safe-sequence-open-0001-7/1"
       ]
     },
     {
