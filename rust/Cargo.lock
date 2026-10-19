@@ -927,6 +927,7 @@ dependencies = [
  "futures",
  "futures-core",
  "oap-protocol",
+ "oap-validation",
  "serde",
  "serde_json",
  "thiserror",
