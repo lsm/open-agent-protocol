@@ -5,8 +5,8 @@ descriptor can get, codes included, and names every shape that is still skipped
 rather than refused. Written to be read next to the code it describes, and to
 be corrected when the code changes — not to justify it.
 
-Governing text: `decisions/0004-extension-packs.md` §121-146 (core validity, two
-passes, branch pinning) and §165-182 (load refusals). The peer/spec rule that
+Governing text: `decisions/0004-extension-packs.md` §130-155 (core validity, two
+passes, branch pinning) and §174-190 (load refusals). The peer/spec rule that
 applies throughout: **Decision 0032** — a Zig/Go divergence is either aligned or
 recorded here. Nothing below is asserted to match `goap`; where the two differ,
 the difference is written down.
