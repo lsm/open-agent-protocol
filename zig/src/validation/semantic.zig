@@ -12,6 +12,7 @@ pub const code_compaction_failed_without_error = "compaction_failed_without_erro
 pub const code_pending_steer_at_terminal = "pending_steer_at_terminal";
 
 pub const code_duplicate_envelope_id = "duplicate_envelope_id";
+pub const code_unknown_participant = "unknown_participant";
 pub const code_illegal_run_transition = "illegal_run_transition";
 pub const code_missing_run_started = "missing_run_started";
 pub const code_missing_run_terminal = "missing_run_terminal";
@@ -67,25 +68,26 @@ pub const code_transcript_gap_mismatch = "transcript_gap_mismatch";
 const attachment_only_members = [_][]const u8{ "command", "args", "environment" };
 
 pub const implemented = [_][]const u8{
-    code_unmatched_steer,             code_duplicate_steer,                 code_pending_steer_at_terminal,
-    code_compaction_unpaired,         code_compaction_ended_without_start,  code_compaction_open_at_terminal,
-    code_compaction_run_mismatch,     code_compaction_stop_reason_mismatch, code_compaction_failed_without_error,
-    code_duplicate_envelope_id,       code_illegal_run_transition,          code_missing_run_started,
-    code_missing_run_terminal,        code_duplicate_run_terminal,          code_event_after_terminal,
-    code_sequence_gap,                code_sequence_regression,             code_cancel_not_settled,
-    code_queue_order_violation,       code_queue_limit_exceeded,            code_undisclosed_queue_limit,
-    code_unavailable_capability,      code_stale_capability_revision,       code_degraded_without_optin,
-    code_unsatisfiable_control,       code_unapplied_control,               code_duplicate_tool_name,
-    code_model_not_in_catalog,        code_duplicate_model_id,              code_duplicate_provider,
-    code_ambiguous_default_model,     code_unannounced_catalog_change,      code_undisclosed_attach_modes,
-    code_duplicate_tool_source,       code_unmatched_tool_source,           code_unattributed_call,
-    code_catalog_mismatch,            code_undisclosed_attach_limit,        code_unmatched_tool,
-    code_illegal_tool_transition,     code_pending_tool_at_terminal,        code_duplicate_interaction,
-    code_unmatched_interaction,       code_wrong_interaction_responder,     code_pending_interaction_at_terminal,
-    code_resolution_payload_mismatch, code_wrong_tool_owner,                code_undisclosed_provide_limit,
-    code_attachment_field_in_catalog, code_session_list_over_limit,         code_session_list_order,
-    code_duplicate_session_entry,     code_duplicate_message_completion,    code_content_after_completion,
-    code_transcript_over_limit,       code_duplicate_transcript_entry,      code_transcript_gap_mismatch,
+    code_unmatched_steer,                 code_duplicate_steer,                 code_pending_steer_at_terminal,
+    code_compaction_unpaired,             code_compaction_ended_without_start,  code_compaction_open_at_terminal,
+    code_compaction_run_mismatch,         code_compaction_stop_reason_mismatch, code_compaction_failed_without_error,
+    code_duplicate_envelope_id,           code_unknown_participant,             code_illegal_run_transition,
+    code_missing_run_started,             code_missing_run_terminal,            code_duplicate_run_terminal,
+    code_event_after_terminal,            code_sequence_gap,                    code_sequence_regression,
+    code_cancel_not_settled,              code_queue_order_violation,           code_queue_limit_exceeded,
+    code_undisclosed_queue_limit,         code_unavailable_capability,          code_stale_capability_revision,
+    code_degraded_without_optin,          code_unsatisfiable_control,           code_unapplied_control,
+    code_duplicate_tool_name,             code_model_not_in_catalog,            code_duplicate_model_id,
+    code_duplicate_provider,              code_ambiguous_default_model,         code_unannounced_catalog_change,
+    code_undisclosed_attach_modes,        code_duplicate_tool_source,           code_unmatched_tool_source,
+    code_unattributed_call,               code_catalog_mismatch,                code_undisclosed_attach_limit,
+    code_unmatched_tool,                  code_illegal_tool_transition,         code_pending_tool_at_terminal,
+    code_duplicate_interaction,           code_unmatched_interaction,           code_wrong_interaction_responder,
+    code_pending_interaction_at_terminal, code_resolution_payload_mismatch,     code_wrong_tool_owner,
+    code_undisclosed_provide_limit,       code_attachment_field_in_catalog,     code_session_list_over_limit,
+    code_session_list_order,              code_duplicate_session_entry,         code_duplicate_message_completion,
+    code_content_after_completion,        code_transcript_over_limit,           code_duplicate_transcript_entry,
+    code_transcript_gap_mismatch,
 };
 
 pub fn isImplemented(code: []const u8) bool {
@@ -521,6 +523,8 @@ pub const Machine = struct {
     recoveries: std.StringArrayHashMapUnmanaged(*Recovery) = .empty,
     requests: std.StringArrayHashMapUnmanaged(Request) = .empty,
     late_cancels: std.StringArrayHashMapUnmanaged(void) = .empty,
+    participants: std.StringArrayHashMapUnmanaged(void) = .empty,
+    initialized: bool = false,
     packs: Packs = .{},
     features: std.StringArrayHashMapUnmanaged([]const u8) = .empty,
     scopes: std.StringArrayHashMapUnmanaged([]const u8) = .empty,
@@ -552,6 +556,7 @@ pub const Machine = struct {
         self.late_cancels.deinit(self.allocator);
         self.runs.deinit(self.allocator);
         self.recoveries.deinit(self.allocator);
+        self.participants.deinit(self.allocator);
         self.requests.deinit(self.allocator);
         self.features.deinit(self.allocator);
         self.scopes.deinit(self.allocator);
@@ -740,9 +745,19 @@ pub const Machine = struct {
 
     fn dispatch(self: *Machine, index: usize, envelope: std.json.Value, declared: []const u8, payload: std.json.Value) !void {
         if (std.mem.eql(u8, declared, "protocol.initialize.request")) {
+            self.initialized = true;
             if (member(payload, "participant")) |who| {
                 const named = memberString(who, "id");
                 if (named.len != 0) self.control_participant = named;
+                try self.participants.put(self.allocator, named, {});
+            }
+            return;
+        }
+        if (std.mem.eql(u8, declared, "protocol.initialize.response")) {
+            self.initialized = true;
+            if (member(payload, "endpoint")) |endpoint| try self.participants.put(self.allocator, memberString(endpoint, "id"), {});
+            if (self.requests.get(field(envelope, "in_reply_to"))) |asked| {
+                if (member(asked.payload, "participant")) |who| try self.participants.put(self.allocator, memberString(who, "id"), {});
             }
             return;
         }
@@ -3676,6 +3691,7 @@ pub const Machine = struct {
             try self.add(code_illegal_tool_transition, index);
             return;
         }
+        try self.participant(index, responder);
         if (run.interactions.get(id) != null) {
             try self.add(code_duplicate_interaction, index);
             return;
@@ -3841,7 +3857,13 @@ pub const Machine = struct {
         }
     }
 
+    fn participant(self: *Machine, index: usize, named: []const u8) !void {
+        if (self.initialized and !self.participants.contains(named)) try self.add(code_unknown_participant, index);
+    }
+
     fn interactionRequested(self: *Machine, index: usize, payload: std.json.Value, run: *Run, kind: InteractionKind) !void {
+        try self.participant(index, memberString(payload, "requested_by"));
+        try self.participant(index, memberString(payload, "responded_by"));
         const id = memberString(payload, "interaction_id");
         if (run.interactions.get(id) != null) try self.add(code_duplicate_interaction, index);
         const opened = try self.arena.allocator().create(Interaction);
@@ -6231,6 +6253,7 @@ test "a submitted resolution event is held to the same answers as a request" {
 
 const controlled =
     \\[{"type":"protocol.initialize.request","id":"i0","payload":{"participant":{"id":"control"}}},
+    \\{"type":"protocol.initialize.response","id":"i1","in_reply_to":"i0","payload":{"endpoint":{"id":"agent"}}},
     \\{"type":"capabilities.response","id":"k1","capability_revision":"v1","payload":{"features":
     \\{"tools":{"level":"native"},"permissions":{"level":"native"}}}},
 ++ admitted ++
@@ -6576,4 +6599,27 @@ fn steerMessagesEqual(a: std.json.Value, b: std.json.Value) bool {
         if (left != .string or right != .string or !std.mem.eql(u8, left.string, right.string)) return false;
     }
     return true;
+}
+
+test "an interaction naming a participant initialization never declared is unknown" {
+    try expectCodes(controlled ++
+        \\{"type":"action.permission.requested","id":"p1","run_id":"run","session_id":"s","sequence":2,"capability_revision":"v1","payload":
+        \\{"interaction_id":"x","requested_by":"stranger","responded_by":"control","title":"Allow?","choices":[{"id":"allow","label":"Allow"}]}},
+        \\{"type":"action.permission.resolved","id":"p2","run_id":"run","session_id":"s","sequence":3,"capability_revision":"v1","payload":
+        \\{"interaction_id":"x","requested_by":"stranger","responded_by":"control","outcome":"resolved","choice_id":"allow"}},
+        \\{"type":"run.completed","id":"e9","run_id":"run","session_id":"s","sequence":4,"payload":{}}]
+    , &.{code_unknown_participant});
+}
+
+test "participants are not judged before initialization declares any" {
+    try expectCodes(
+        \\[{"type":"capabilities.response","id":"k1","capability_revision":"v1","payload":{"features":{"permissions":{"level":"native"}}}},
+    ++ admitted ++
+        \\,{"type":"run.started","id":"e0","run_id":"run","session_id":"s","sequence":1,"payload":{}},
+        \\{"type":"action.permission.requested","id":"p1","run_id":"run","session_id":"s","sequence":2,"capability_revision":"v1","payload":
+        \\{"interaction_id":"x","requested_by":"stranger","responded_by":"user","title":"Allow?","choices":[{"id":"allow","label":"Allow"}]}},
+        \\{"type":"action.permission.resolved","id":"p2","run_id":"run","session_id":"s","sequence":3,"capability_revision":"v1","payload":
+        \\{"interaction_id":"x","requested_by":"stranger","responded_by":"user","outcome":"resolved","choice_id":"allow"}},
+        \\{"type":"run.completed","id":"e9","run_id":"run","session_id":"s","sequence":4,"payload":{}}]
+    , &.{});
 }
