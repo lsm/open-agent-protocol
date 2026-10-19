@@ -12,6 +12,7 @@ pub const code_compaction_failed_without_error = "compaction_failed_without_erro
 pub const code_pending_steer_at_terminal = "pending_steer_at_terminal";
 
 pub const code_duplicate_envelope_id = "duplicate_envelope_id";
+pub const code_undisclosed_selection_scope = "undisclosed_selection_scope";
 pub const code_illegal_run_transition = "illegal_run_transition";
 pub const code_missing_run_started = "missing_run_started";
 pub const code_missing_run_terminal = "missing_run_terminal";
@@ -67,25 +68,26 @@ pub const code_transcript_gap_mismatch = "transcript_gap_mismatch";
 const attachment_only_members = [_][]const u8{ "command", "args", "environment" };
 
 pub const implemented = [_][]const u8{
-    code_unmatched_steer,             code_duplicate_steer,                 code_pending_steer_at_terminal,
-    code_compaction_unpaired,         code_compaction_ended_without_start,  code_compaction_open_at_terminal,
-    code_compaction_run_mismatch,     code_compaction_stop_reason_mismatch, code_compaction_failed_without_error,
-    code_duplicate_envelope_id,       code_illegal_run_transition,          code_missing_run_started,
-    code_missing_run_terminal,        code_duplicate_run_terminal,          code_event_after_terminal,
-    code_sequence_gap,                code_sequence_regression,             code_cancel_not_settled,
-    code_queue_order_violation,       code_queue_limit_exceeded,            code_undisclosed_queue_limit,
-    code_unavailable_capability,      code_stale_capability_revision,       code_degraded_without_optin,
-    code_unsatisfiable_control,       code_unapplied_control,               code_duplicate_tool_name,
-    code_model_not_in_catalog,        code_duplicate_model_id,              code_duplicate_provider,
-    code_ambiguous_default_model,     code_unannounced_catalog_change,      code_undisclosed_attach_modes,
-    code_duplicate_tool_source,       code_unmatched_tool_source,           code_unattributed_call,
-    code_catalog_mismatch,            code_undisclosed_attach_limit,        code_unmatched_tool,
-    code_illegal_tool_transition,     code_pending_tool_at_terminal,        code_duplicate_interaction,
-    code_unmatched_interaction,       code_wrong_interaction_responder,     code_pending_interaction_at_terminal,
-    code_resolution_payload_mismatch, code_wrong_tool_owner,                code_undisclosed_provide_limit,
-    code_attachment_field_in_catalog, code_session_list_over_limit,         code_session_list_order,
-    code_duplicate_session_entry,     code_duplicate_message_completion,    code_content_after_completion,
-    code_transcript_over_limit,       code_duplicate_transcript_entry,      code_transcript_gap_mismatch,
+    code_unmatched_steer,              code_duplicate_steer,                 code_pending_steer_at_terminal,
+    code_compaction_unpaired,          code_compaction_ended_without_start,  code_compaction_open_at_terminal,
+    code_compaction_run_mismatch,      code_compaction_stop_reason_mismatch, code_compaction_failed_without_error,
+    code_duplicate_envelope_id,        code_undisclosed_selection_scope,     code_unmatched_provider,
+    code_illegal_run_transition,       code_missing_run_started,             code_missing_run_terminal,
+    code_duplicate_run_terminal,       code_event_after_terminal,            code_sequence_gap,
+    code_sequence_regression,          code_cancel_not_settled,              code_queue_order_violation,
+    code_queue_limit_exceeded,         code_undisclosed_queue_limit,         code_unavailable_capability,
+    code_stale_capability_revision,    code_degraded_without_optin,          code_unsatisfiable_control,
+    code_unapplied_control,            code_duplicate_tool_name,             code_model_not_in_catalog,
+    code_duplicate_model_id,           code_duplicate_provider,              code_ambiguous_default_model,
+    code_unannounced_catalog_change,   code_undisclosed_attach_modes,        code_duplicate_tool_source,
+    code_unmatched_tool_source,        code_unattributed_call,               code_catalog_mismatch,
+    code_undisclosed_attach_limit,     code_unmatched_tool,                  code_illegal_tool_transition,
+    code_pending_tool_at_terminal,     code_duplicate_interaction,           code_unmatched_interaction,
+    code_wrong_interaction_responder,  code_pending_interaction_at_terminal, code_resolution_payload_mismatch,
+    code_wrong_tool_owner,             code_undisclosed_provide_limit,       code_attachment_field_in_catalog,
+    code_session_list_over_limit,      code_session_list_order,              code_duplicate_session_entry,
+    code_duplicate_message_completion, code_content_after_completion,        code_transcript_over_limit,
+    code_duplicate_transcript_entry,   code_transcript_gap_mismatch,
 };
 
 pub fn isImplemented(code: []const u8) bool {
@@ -1116,6 +1118,13 @@ pub const Machine = struct {
                 try self.add(code_undisclosed_attach_modes, index);
             }
         }
+        if (affirmative(self.features.get("run.tool_selection") orelse "")) {
+            const scope = self.scopes.get("run.tool_selection") orelse "";
+            if (scope.len != 0 and !lifetimeScope(scope)) try self.add(code_undisclosed_selection_scope, index);
+        }
+        if (affirmative(self.features.get("run.model_selection") orelse "")) {
+            if (!lifetimeScope(self.scopes.get("run.model_selection") orelse "")) try self.add(code_undisclosed_selection_scope, index);
+        }
     }
 
     fn collectFeatures(self: *Machine, payload: std.json.Value) !void {
@@ -1870,6 +1879,7 @@ pub const Machine = struct {
             for (listed.array.items) |model| {
                 const provider_id = memberString(model, "provider_id");
                 if (provider_id.len != 0 and providers.get(provider_id) == null) {
+                    if (provider_list == .array and provider_list.array.items.len > 0) try self.add(code_unmatched_provider, index);
                     try providers.put(self.arena.allocator(), provider_id, {});
                 }
             }
@@ -4505,6 +4515,10 @@ fn declaresSource(sources: ?std.json.Value, id: []const u8) bool {
     return false;
 }
 
+fn lifetimeScope(scope: []const u8) bool {
+    return std.mem.eql(u8, scope, "run") or std.mem.eql(u8, scope, "session");
+}
+
 fn affirmative(level: []const u8) bool {
     return std.mem.eql(u8, level, "native") or
         std.mem.eql(u8, level, "emulated") or
@@ -5047,7 +5061,7 @@ test "the layer that wins a feature wins its mode too, including the mode it omi
         \\{"type":"session.message.submit.request","id":"q2","capability_revision":"v1",
         \\"payload":{"session_id":"s","delivery":"auto","model_id":"m"}},
         \\{"type":"error.response","id":"x1","in_reply_to":"q2","payload":{"error":{"code":"run_active"}}}]
-    , &.{ "queue_limit_exceeded", "missing_run_terminal" });
+    , &.{ code_undisclosed_selection_scope, "queue_limit_exceeded", "missing_run_terminal" });
 }
 
 test "an open surface's refusal does not answer for the queue" {
@@ -6576,4 +6590,23 @@ fn steerMessagesEqual(a: std.json.Value, b: std.json.Value) bool {
         if (left != .string or right != .string or !std.mem.eql(u8, left.string, right.string)) return false;
     }
     return true;
+}
+
+test "a model selection advertised without a lifetime, or a tool selection with an unknown one, is undisclosed" {
+    try expectCodes(
+        \\[{"type":"capabilities.response","id":"k1","capability_revision":"v1","payload":{"features":{"run.model_selection":{"level":"native"}}}}]
+    , &.{code_undisclosed_selection_scope});
+    try expectCodes(
+        \\[{"type":"capabilities.response","id":"k1","capability_revision":"v1","payload":{"features":{"run.tool_selection":{"level":"native","scope":"forever"}}}}]
+    , &.{code_undisclosed_selection_scope});
+    try expectCodes(
+        \\[{"type":"capabilities.response","id":"k1","capability_revision":"v1","payload":{"features":{"run.tool_selection":{"level":"native"},"run.model_selection":{"level":"emulated","scope":"run"}}}}]
+    , &.{});
+}
+
+test "a model naming a provider a non-empty provider list does not declare is unmatched" {
+    try expectCodes(
+        \\[{"type":"capabilities.response","id":"k1","capability_revision":"v1","payload":{"features":{"models.list":{"level":"native"}}}},
+        \\{"type":"models.response","id":"m1","capability_revision":"v1","payload":{"providers":[{"id":"zai"}],"models":[{"id":"a","provider_id":"zai"},{"id":"b","provider_id":"kimi"},{"id":"c","provider_id":"kimi"}]}}]
+    , &.{code_unmatched_provider});
 }
