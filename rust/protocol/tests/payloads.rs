@@ -390,3 +390,27 @@ fn a_run_position_spells_genesis_as_a_null_run() {
     };
     assert_eq!(serde_json::to_value(&empty).unwrap()["run_id"], Value::Null);
 }
+
+#[test]
+fn a_measured_zero_token_count_survives_and_an_absent_one_stays_unknown() {
+    let measured: Usage =
+        serde_json::from_str(r#"{"input_tokens":0,"output_tokens":0,"total_tokens":0}"#).unwrap();
+    assert_eq!(
+        (
+            measured.input_tokens,
+            measured.output_tokens,
+            measured.total_tokens
+        ),
+        (Some(0), Some(0), Some(0))
+    );
+    assert_eq!(
+        serde_json::to_value(&measured).unwrap(),
+        serde_json::json!({"input_tokens": 0, "output_tokens": 0, "total_tokens": 0})
+    );
+    let unknown: Usage = serde_json::from_str("{}").unwrap();
+    assert_eq!(unknown, Usage::default());
+    assert_eq!(
+        serde_json::to_value(&unknown).unwrap(),
+        serde_json::json!({})
+    );
+}
