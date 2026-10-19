@@ -163,12 +163,13 @@ with `outcome: "choose"` and changes nothing; `graceful` stops admitting,
 cancels queued runs (`lost` until restart recovery lands) and lets running
 runs finish, then the endpoint exits as at EOF; `force` exits at once without
 the settle window. Once one is accepted, an open, a submit or a compaction is
-refused `shutting_down`. Both `oapx serve agent` and `goap serve agent` serve it,
-and both map signals: the first SIGINT or SIGTERM is a graceful shutdown and
-the second a forced one, each announced on stderr with the runs still active.
-Each stops reading stdin once forced, and while draining keeps reading, so a
-host may still answer an interaction; a third signal ends `goap serve agent`
-outright. The EOF mapping of rule 4 is pending in both.
+refused `shutting_down`. Both `oapx serve agent` and `goap serve agent` serve it.
+`goap serve agent` also maps signals: the first SIGINT or SIGTERM is a
+graceful shutdown and the second a forced one, each announced on stderr with
+the runs still active, and a third ends it outright. It stops reading stdin
+once forced, and while draining keeps reading, so a host may still answer an
+interaction. The signal mapping in `oapx serve agent`, and the EOF mapping of
+rule 4 in both, are pending.
 
 There is no `session.close.request` envelope in v0.1. On this binding the pipe
 is the session's lifetime:
@@ -176,7 +177,9 @@ is the session's lifetime:
 - **stdin EOF** is the close. The endpoint stops accepting requests, settles
   what it already admitted, flushes stdout, and exits **0** after every
   co-hosted profile has also completed clean shutdown.
-- **SIGINT / SIGTERM** behave as EOF.
+- **SIGINT / SIGTERM** start the shutdown above in `goap serve agent`: the
+  first is graceful, the second forces. `oapx serve agent` still ends on the
+  first, as at EOF.
 - A teardown that cannot deliver what the endpoint already admitted, within a
   bounded window, exits **non-zero**. This is the hung-up host: one that closed
   its stdin but stopped reading its stdout, so the pipe fills and the last
