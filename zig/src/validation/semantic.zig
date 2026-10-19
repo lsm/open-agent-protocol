@@ -241,6 +241,7 @@ const Run = struct {
     admitted: bool = false,
     started: bool = false,
     terminal: bool = false,
+    terminal_at: usize = 0,
     terminal_type: []const u8 = "",
     next: u64 = 1,
     last_index: usize = 0,
@@ -3299,6 +3300,79 @@ pub const Machine = struct {
             } else false;
             if (!present) try self.add(code_session_state_mismatch, index);
         }
+        try self.checkListing(index, payload, listed.array.items, &excused, window);
+    }
+
+    fn checkListing(self: *Machine, index: usize, payload: std.json.Value, entries: []const std.json.Value, settled: *const std.StringArrayHashMapUnmanaged(void), window: usize) !void {
+        const session_id = memberString(payload, "session_id");
+        var seen: std.StringArrayHashMapUnmanaged(void) = .empty;
+        defer seen.deinit(self.allocator);
+        var started: []const u8 = "";
+        var reservation_listed = false;
+        var anchored = false;
+        var last_order: ?usize = null;
+        var queue_place: u64 = 0;
+        for (entries) |entry| {
+            const run_id = memberString(entry, "run_id");
+            if (seen.contains(run_id)) {
+                try self.add(code_session_state_mismatch, index);
+                continue;
+            }
+            try seen.put(self.allocator, run_id, {});
+            if (settled.contains(run_id)) continue;
+            const known = self.runs.get(run_id);
+            if (known == null or !std.mem.eql(u8, known.?.session, session_id)) {
+                const anchors = member(entry, "admitted_submit_requests");
+                if (anchors != null and anchors.? == .array and anchors.?.array.items.len != 0) {
+                    anchored = true;
+                    continue;
+                }
+                try self.add(code_session_state_mismatch, index);
+                continue;
+            }
+            const run = known.?;
+            const position = unsigned(entry, "as_of_sequence");
+            if (run.terminal and run.terminal_at < window) {
+                try self.add(code_session_state_mismatch, index);
+                continue;
+            }
+            if (run.terminal and position != null and position.? + 1 >= run.next) try self.add(code_session_state_mismatch, index);
+            if ((last_order != null and run.order <= last_order.?) or anchored) try self.add(code_session_state_mismatch, index);
+            last_order = run.order;
+            const status = memberString(entry, "status");
+            const cancelling = std.mem.eql(u8, status, "cancelling");
+            const holds_place = cancelling and if (run.started)
+                position != null and position.? < run.start_sequence
+            else
+                position == null or member(entry, "queue_position") != null;
+            const reservation = run.admitted_queued and (std.mem.eql(u8, status, "queued") or holds_place);
+            const ended = terminalStatus(status);
+            if (!ended and reservation) {
+                queue_place += 1;
+                const stated = unsigned(entry, "queue_position");
+                if (stated == null or stated.? != queue_place) try self.add(code_session_state_mismatch, index);
+            } else if (!ended and member(entry, "queue_position") != null) {
+                try self.add(code_session_state_mismatch, index);
+            }
+            if (reservation) reservation_listed = true;
+            if (!reservation and !ended) {
+                if (reservation_listed) try self.add(code_session_state_mismatch, index);
+                if (started.len != 0) {
+                    try self.add(code_session_state_mismatch, index);
+                } else {
+                    started = run_id;
+                }
+            }
+            if (ended) {
+                try self.add(code_session_state_mismatch, index);
+            } else if (std.mem.eql(u8, status, "queued") and run.started and (position == null or position.? >= run.start_sequence)) {
+                try self.add(code_session_state_mismatch, index);
+            }
+        }
+        if (anchored) return;
+        const active = memberString(payload, "active_run_id");
+        if (started.len != 0 and !std.mem.eql(u8, active, started)) try self.add(code_session_state_mismatch, index);
+        if (started.len == 0 and entries.len != 0 and active.len != 0) try self.add(code_session_state_mismatch, index);
     }
 
     fn omissionNeedsEntries(self: *const Machine, required: []const *Run) !bool {
@@ -4085,6 +4159,7 @@ pub const Machine = struct {
             }
             try self.checkPendingAtTerminal(index, state);
             state.terminal = true;
+            state.terminal_at = index;
             state.terminal_type = declared;
             if (std.mem.eql(u8, declared, "run.completed")) state.status = "completed";
             if (std.mem.eql(u8, declared, "run.failed")) state.status = "failed";
@@ -4656,6 +4731,10 @@ fn unknownScope(envelope: std.json.Value, payload: std.json.Value) Scope {
         .session = if (session.len == 0) field(envelope, "session_id") else session,
         .run = if (run.len == 0) field(envelope, "run_id") else run,
     };
+}
+
+fn terminalStatus(status: []const u8) bool {
+    return std.mem.eql(u8, status, "completed") or std.mem.eql(u8, status, "failed") or std.mem.eql(u8, status, "cancelled");
 }
 
 fn listedIn(names: []const []const u8, wanted: []const u8) bool {
