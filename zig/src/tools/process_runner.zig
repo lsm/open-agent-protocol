@@ -242,6 +242,7 @@ pub fn spawnGroup(allocator: std.mem.Allocator, argv: []const []const u8, cwd: s
 }
 
 pub fn reapLeader(leader: std.posix.pid_t) !?std.process.Child.Term {
+    if (comptime builtin.os.tag == .windows) return null;
     var status: c_int = undefined;
     while (true) {
         const result = std.posix.system.waitpid(leader, &status, std.posix.W.NOHANG);

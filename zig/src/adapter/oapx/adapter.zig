@@ -18,7 +18,7 @@ const local_loop = @import("local_loop.zig");
 pub const LocalLoop = local_loop.LocalLoop;
 
 pub const endpoint_id = "oapx.agent";
-pub const capability_revision = "oapx-agent-v15";
+pub const capability_revision = "oapx-agent-v16";
 const native_source = "oapx";
 const native_sources = [_]oap_types.ToolSourceDescriptor{.{ .id = native_source, .kind = "native", .display_name = "oapx" }};
 
@@ -676,8 +676,6 @@ pub const Session = struct {
 
     fn destroy(self: *Session) void {
         const gpa = self.gpa;
-        self.jobs.deinit();
-        gpa.destroy(self.jobs);
         for (self.runs.items) |run| releaseRun(gpa, run);
         self.runs.deinit(gpa);
         for (self.outbox.items) |entry| gpa.free(entry.line);
@@ -688,6 +686,8 @@ pub const Session = struct {
         gpa.destroy(self.runtime);
         self.loop.deinit();
         gpa.destroy(self.loop);
+        self.jobs.deinit();
+        gpa.destroy(self.jobs);
         self.call_gate.deinit(gpa);
         if (self.engine) |engine| {
             engine.deinit();

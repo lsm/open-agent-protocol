@@ -69,8 +69,11 @@ pub const Jobs = struct {
         self.lock();
         defer self.mutex.unlock();
         try self.list.ensureUnusedCapacity(self.allocator, 1);
+        self.reapSettled();
         self.next += 1;
-        const id = try std.fmt.allocPrint(self.allocator, "job-{d}-{d}", .{ common.nowMs(), self.next });
+        var entropy: [6]u8 = undefined;
+        compat.random.fillSecureBytes(&entropy);
+        const id = try std.fmt.allocPrint(self.allocator, "job-{d}-{x}", .{ self.next, entropy });
         errdefer self.allocator.free(id);
         const output = try std.fmt.allocPrint(self.allocator, jobs_dir ++ "/{s}.log", .{id});
         errdefer self.allocator.free(output);
@@ -118,6 +121,16 @@ pub const Jobs = struct {
         self.lock();
         defer self.mutex.unlock();
         for (self.list.items) |*job| end(job);
+    }
+
+    fn reapSettled(self: *Jobs) void {
+        for (self.list.items) |*job| {
+            if (job.term != null) continue;
+            if (process_runner.reapLeader(job.leader) catch null) |term| {
+                job.term = term;
+                process_runner.endGroup(job.leader);
+            }
+        }
     }
 
     fn find(self: *Jobs, task_id: []const u8) ?*Job {
@@ -259,7 +272,7 @@ pub fn sessionTools(jobs: *Jobs) [2]agent.AgentTool {
         .execute = unavailableJob,
         .runtime_ctx = jobs,
         .runtime_execute = executeJob,
-        .operation = .shell,
+        .operation = .read,
     } };
 }
 
