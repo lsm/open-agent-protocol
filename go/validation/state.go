@@ -290,6 +290,7 @@ func (s *state) apply(i, line int, e protocol.Envelope) {
 		s.catalog, s.catalogKnown = collectCatalog(p), publishesCatalog(e.Payload)
 		s.limits = p.Limits
 		s.checkSelectionModes(i, line, e, p)
+		s.checkProvideLimits(i, line, e, p)
 		s.checkQueueLimits(i, line, e, p)
 		s.checkAttachModes(i, line, e, p)
 		s.checkProviderAttachModes(i, line, e, p)

@@ -13054,6 +13054,25 @@
       ]
     },
     {
+      "id": "provide-name-pattern-not-re2",
+      "path": "semantic-invalid/provide-name-pattern-not-re2.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "undisclosed_provide_limit"
+      ],
+      "units": [
+        "control-tools"
+      ],
+      "provenance": [
+        "decisions/0062-a-name-pattern-that-is-not-re2-is-a-defective-limit.md"
+      ],
+      "rules": [
+        "0062#an-uncompilable-name_pattern-makes-the-descriptor-defective-open-0011-3/1"
+      ]
+    },
+    {
       "id": "auth-completed-before-start",
       "path": "semantic-invalid/auth-completed-before-start.json",
       "kind": "semantic-invalid",

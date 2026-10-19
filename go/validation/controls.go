@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"math/big"
 	"reflect"
+	"regexp"
 	"slices"
 	"sort"
 	"strings"
@@ -658,6 +659,20 @@ func canonical(value any) any {
 		return items
 	}
 	return value
+}
+
+func (s *state) checkProvideLimits(i, line int, e protocol.Envelope, p protocol.CapabilitiesResponse) {
+	support, ok := p.EffectiveSupport(protocol.FeatureToolsProvide)
+	if !ok {
+		return
+	}
+	pattern, ok := support.NamePattern()
+	if !ok {
+		return
+	}
+	if _, err := regexp.Compile(pattern); err != nil {
+		s.addExpected(CodeUndisclosedProvideLimit, i, line, e, "/payload/features/action.tools.provide/limits/name_pattern", "action.tools.provide discloses a name_pattern that is not RE2, a limit nobody can evaluate", "an RE2 pattern", pattern)
+	}
 }
 
 func (s *state) checkSelectionModes(i, line int, e protocol.Envelope, p protocol.CapabilitiesResponse) {
