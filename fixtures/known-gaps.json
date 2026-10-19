@@ -319,7 +319,6 @@
     "tools-list-ungated-wrong-feature",
     "tools-list-ungated-wrong-reason",
     "tools-list-ungated-wrong-refusal",
-    "tools-list-unscoped-answer-scoped",
     "tools-refresh-collides-with-attachment",
     "tools-refresh-collides-with-provided",
     "tools-refresh-removes-provided-source",

@@ -38,8 +38,8 @@ Source: [`decisions/0008-tool-sources.md`](../../decisions/0008-tool-sources.md#
 
 | id | rule | lines | code | Go | Zig | Rust |
 | --- | --- | --- | --- | --- | --- | --- |
-| `0008#a-list-request-is-a-request-of-its-own/1` | A session-scoped catalog MUST name its session on the envelope as well as in the payload. | L127–150; 0055 L30–42 | `scope_mismatch` | `toolsources.go:toolsListResponse` | — | — |
-| `0008#a-list-request-is-a-request-of-its-own/2` | An unscoped list request MUST be answered with the endpoint's own catalog, naming no session. | L127–150, L406–459 | `scope_mismatch` | `toolsources.go:toolsListResponse` | `semantic.zig:dispatch` | — |
+| `0008#a-list-request-is-a-request-of-its-own/1` | A session-scoped catalog MUST name its session on the envelope as well as in the payload. | L127–150; 0055 L30–42 | `scope_mismatch` | `toolsources.go:toolsListResponse` | — | `state.rs:list_scope` |
+| `0008#a-list-request-is-a-request-of-its-own/2` | An unscoped list request MUST be answered with the endpoint's own catalog, naming no session. | L127–150, L406–459 | `scope_mismatch` | `toolsources.go:toolsListResponse` | `semantic.zig:dispatch` | `state.rs:list_scope` |
 
 ### [0008] A catalog resolves, or it is not a catalog
 
@@ -150,7 +150,7 @@ Source: [`decisions/0011-control-layer-provided-tools.md`](../../decisions/0011-
 
 | id | rule | lines | code | Go | Zig | Rust |
 | --- | --- | --- | --- | --- | --- | --- |
-| `0011#the-resolution-is-a-requestresponse-pair-with-three-arms/1` | `action.call.resolve.request` and `.response` MUST carry the same `tool_call_id` on the envelope and in the payload. | L185–191; 0055 L30–42 | `scope_mismatch` | `controltools.go:controlResolveRequest`<br>`controltools.go:controlResolveResponse` | — | — |
+| `0011#the-resolution-is-a-requestresponse-pair-with-three-arms/1` | `action.call.resolve.request` and `.response` MUST carry the same `tool_call_id` on the envelope and in the payload. | L185–191; 0055 L30–42 | `scope_mismatch` | `controltools.go:controlResolveRequest`<br>`controltools.go:controlResolveResponse` | — | `state.rs:payload_scope` |
 | `0011#the-resolution-is-a-requestresponse-pair-with-three-arms/2` | A call resolution MUST answer a tool-call interaction. | L181–207 | `unmatched_interaction` | `controltools.go:controlResolveRequest` | `semantic.zig:judgeResolve` | — |
 | `0011#the-resolution-is-a-requestresponse-pair-with-three-arms/3` | A call resolution MUST name the tool call its interaction is bound to. | L185–191; 0055 L30–42 | `scope_mismatch` | `controltools.go:controlResolveRequest` | — | — |
 | `0011#the-resolution-is-a-requestresponse-pair-with-three-arms/4` | An `already_resolved` refusal's `details.settlement_id` MUST name an envelope that settled the interaction in this trace. | L181–207, L210–288 | `unmatched_interaction` | `controltools.go:controlResolveResponse` | `semantic.zig:resolveResponse` | — |
