@@ -896,7 +896,7 @@ pub const SessionRuntime = struct {
     pub fn submitTurn(self: *SessionRuntime, text: []const u8) !void {
         if (!self.started) try self.start();
         if (self.remote) |remote| {
-            if (self.currentModel() == null) return error.NoModelConfigured;
+            if (self.currentModel() == null and remote.vtable.records_session(remote.ctx)) return error.NoModelConfigured;
             if (self.stream_active) return remote.vtable.follow_up(remote.ctx, text);
             self.resetEventStreamForTurn();
             self.cancelled.store(false, .release);
@@ -981,7 +981,7 @@ pub const SessionRuntime = struct {
             if (!remote.vtable.compacts(remote.ctx)) return error.UnavailableOverOap;
             if (self.stream_active) return error.AgentAlreadyStreaming;
             if (!remote.vtable.compactable(remote.ctx)) return error.NothingToCompact;
-            if (self.currentModel() == null) return error.NoModelConfigured;
+            if (self.currentModel() == null and remote.vtable.records_session(remote.ctx)) return error.NoModelConfigured;
             self.resetEventStreamForTurn();
             self.cancelled.store(false, .release);
             self.completed = false;
