@@ -349,6 +349,12 @@ const ModelAnchor = struct {
     index: usize,
 };
 
+const RunPosition = struct {
+    session: []const u8,
+    run: []const u8,
+    index: usize,
+};
+
 const Session = struct {
     active: []const u8 = "",
     provided: std.ArrayList([]const u8) = .empty,
@@ -610,6 +616,7 @@ pub const Machine = struct {
     late_cancels: std.StringArrayHashMapUnmanaged(void) = .empty,
     settled_claims: std.ArrayList(SettledClaim) = .empty,
     model_claims: std.ArrayList(ModelClaim) = .empty,
+    run_positions: std.ArrayList(RunPosition) = .empty,
     participants: std.StringArrayHashMapUnmanaged(void) = .empty,
     initialized: bool = false,
     auth_flows: std.StringArrayHashMapUnmanaged(*AuthFlow) = .empty,
@@ -646,6 +653,7 @@ pub const Machine = struct {
         self.recoveries.deinit(self.allocator);
         self.settled_claims.deinit(self.allocator);
         self.model_claims.deinit(self.allocator);
+        self.run_positions.deinit(self.allocator);
         self.participants.deinit(self.allocator);
         self.auth_flows.deinit(self.allocator);
         self.requests.deinit(self.allocator);
@@ -2065,6 +2073,14 @@ pub const Machine = struct {
         }
         if (member(payload, "as_of_model_event")) |position| {
             const switch_id = memberString(position, "switch_request_id");
+            const position_run = memberString(position, "run_id");
+            if (switch_id.len == 0 and position_run.len != 0) {
+                try self.run_positions.append(self.allocator, .{
+                    .session = memberString(payload, "session_id"),
+                    .run = position_run,
+                    .index = index,
+                });
+            }
             if (switch_id.len != 0) {
                 const holder = try self.sessionFor(memberString(payload, "session_id"));
                 try holder.model_anchors.append(self.allocator, .{
@@ -4400,6 +4416,10 @@ pub const Machine = struct {
         }
         for (self.model_claims.items) |claim| {
             if (!claim.done) try self.add(code_session_state_mismatch, claim.index);
+        }
+        for (self.run_positions.items) |position| {
+            const run = self.runs.get(position.run) orelse continue;
+            if (!std.mem.eql(u8, run.session, position.session)) try self.add(code_scope_mismatch, position.index);
         }
         for (self.auth_flows.values()) |flow| {
             if (!flow.terminal) try self.add(code_missing_auth_terminal, flow.index);
