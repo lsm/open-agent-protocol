@@ -378,15 +378,12 @@ test "tolerated overrides resolve through the registry that holds the pack" {
 }
 
 const unported_load_codes = [_][]const u8{
-    "pack_schema_path_escape",
-    "pack_external_ref",
-    "pack_dependency_missing",
     "pack_fixture_claims_core_unit",
     "ext_claim_without_pack",
 };
 
-const unported_load_fixtures = 6;
-const load_judged_floor = 17;
+const unported_load_fixtures = 2;
+const load_judged_floor = 21;
 
 fn unportedLoadCode(code: []const u8) bool {
     for (unported_load_codes) |name| {

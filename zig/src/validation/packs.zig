@@ -21,6 +21,9 @@ pub const pack_ungated_type = "pack_ungated_type";
 pub const pack_member_duplicate = "pack_member_duplicate";
 pub const pack_member_target_unknown = "pack_member_target_unknown";
 pub const pack_restates_core_member = "pack_restates_core_member";
+pub const pack_schema_path_escape = "pack_schema_path_escape";
+pub const pack_dependency_missing = "pack_dependency_missing";
+pub const pack_external_ref = "pack_external_ref";
 
 pub const Refusal = struct {
     code: []const u8,
@@ -30,6 +33,8 @@ pub const Refusal = struct {
 
 const Document = struct {
     name: []const u8,
+    uri: []const u8,
+    bytes: []const u8,
     value: std.json.Value,
 };
 
@@ -109,9 +114,21 @@ fn cleanRelative(allocator: std.mem.Allocator, entry: []const u8) !?[]const u8 {
     return try out.toOwnedSlice(allocator);
 }
 
-fn lexicalRelative(allocator: std.mem.Allocator, entry: []const u8) ![]const u8 {
-    if (entry.len == 0 or std.Io.Dir.path.isAbsolute(entry)) return error.InvalidPackDescriptor;
-    return (try cleanRelative(allocator, entry)) orelse error.InvalidPackDescriptor;
+const Contained = struct {
+    relative: []const u8,
+    resolved: []const u8,
+};
+
+fn containedPath(io: std.Io, allocator: std.mem.Allocator, root: []const u8, dir: []const u8, entry: []const u8) !?Contained {
+    if (entry.len == 0 or std.Io.Dir.path.isAbsolute(entry)) return null;
+    const relative = (try cleanRelative(allocator, entry)) orelse return null;
+    const joined = try std.fs.path.join(allocator, &.{ dir, relative });
+    const resolved = std.Io.Dir.cwd().realPathFileAlloc(io, joined, allocator) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        else => return null,
+    };
+    if (!beneath(root, resolved)) return null;
+    return .{ .relative = relative, .resolved = resolved };
 }
 
 fn toSlash(allocator: std.mem.Allocator, name: []const u8) ![]const u8 {
@@ -316,7 +333,175 @@ const Descriptor = struct {
     value: std.json.Value,
     id: []const u8,
     version: []const u8,
+    base: []const u8 = "",
+    documents: []const Document = &.{},
 };
+
+fn dependencyOf(descriptors: []const Descriptor, dependency: std.json.Value) ?Descriptor {
+    const id = stringField(dependency, "id") orelse return null;
+    const version = stringField(dependency, "version") orelse return null;
+    for (descriptors) |pack| {
+        if (std.mem.eql(u8, pack.id, id) and std.mem.eql(u8, pack.version, version)) return pack;
+    }
+    return null;
+}
+
+const Ref = struct {
+    absolute: []const u8 = "",
+    identifier: bool,
+    valid: bool = true,
+};
+
+fn admit(allocator: std.mem.Allocator, owner: Descriptor, allowed: *std.StringHashMap(void)) !void {
+    for (owner.documents) |document| {
+        try allowed.put(document.uri, {});
+        try admitIdentifiers(allocator, owner, document.uri, document.value, allowed);
+    }
+    for (items(owner.value, "payload_members"), 0..) |member, index| {
+        const uri = try memberUri(allocator, owner, index);
+        try allowed.put(uri, {});
+        if (field(member, "schema")) |schema| try admitIdentifiers(allocator, owner, uri, schema, allowed);
+    }
+}
+
+fn admitIdentifiers(allocator: std.mem.Allocator, owner: Descriptor, base: []const u8, document: std.json.Value, allowed: *std.StringHashMap(void)) !void {
+    var refs: std.ArrayList(Ref) = .empty;
+    try collectRefs(allocator, document, base, &refs);
+    for (refs.items) |ref| {
+        if (ref.identifier and ref.valid and std.mem.startsWith(u8, ref.absolute, owner.base)) try allowed.put(ref.absolute, {});
+    }
+}
+
+fn memberUri(allocator: std.mem.Allocator, owner: Descriptor, index: usize) ![]const u8 {
+    return std.fmt.allocPrint(allocator, "{s}member-{d}.json", .{ owner.base, index });
+}
+
+fn checkReferences(allocator: std.mem.Allocator, descriptors: []const Descriptor, pack: Descriptor, out: *std.ArrayList(Refusal)) !void {
+    var allowed = std.StringHashMap(void).init(allocator);
+    try admit(allocator, pack, &allowed);
+    for (items(pack.value, "depends_on")) |dependency| {
+        if (dependencyOf(descriptors, dependency)) |other| try admit(allocator, other, &allowed);
+    }
+    for (pack.documents) |document| try checkDocumentReferences(allocator, pack, document.uri, document.value, allowed, out);
+    for (items(pack.value, "payload_members"), 0..) |member, index| {
+        const schema = field(member, "schema") orelse continue;
+        try checkDocumentReferences(allocator, pack, try memberUri(allocator, pack, index), schema, allowed, out);
+    }
+}
+
+fn checkDocumentReferences(allocator: std.mem.Allocator, pack: Descriptor, base: []const u8, document: std.json.Value, allowed: std.StringHashMap(void), out: *std.ArrayList(Refusal)) !void {
+    var refs: std.ArrayList(Ref) = .empty;
+    try collectRefs(allocator, document, base, &refs);
+    for (refs.items) |ref| {
+        const outside = if (!ref.valid)
+            true
+        else if (ref.identifier)
+            !std.mem.startsWith(u8, ref.absolute, pack.base)
+        else
+            !allowed.contains(ref.absolute) and !isCoreResource(ref.absolute);
+        if (outside) try out.append(allocator, .{ .code = pack_external_ref, .pack = pack.id, .detail = ref.absolute });
+    }
+}
+
+fn isCoreResource(absolute: []const u8) bool {
+    if (!std.mem.startsWith(u8, absolute, jsonschema.schema_base)) return false;
+    const name = absolute[jsonschema.schema_base.len..];
+    return name.len > 0 and std.mem.indexOfScalar(u8, name, '/') == null;
+}
+
+fn collectRefs(allocator: std.mem.Allocator, node: std.json.Value, base: []const u8, out: *std.ArrayList(Ref)) !void {
+    switch (node) {
+        .object => |object| {
+            var current = base;
+            if (object.get("$id")) |id| if (id == .string) {
+                const ref = try resolveRef(allocator, current, id.string, true);
+                try out.append(allocator, ref);
+                if (ref.valid) current = ref.absolute;
+            };
+            var entries = object.iterator();
+            while (entries.next()) |entry| {
+                const key = entry.key_ptr.*;
+                if (std.mem.eql(u8, key, "$id")) continue;
+                if ((std.mem.eql(u8, key, "$ref") or std.mem.eql(u8, key, "$dynamicRef")) and entry.value_ptr.* == .string) {
+                    try out.append(allocator, try resolveRef(allocator, current, entry.value_ptr.string, false));
+                    continue;
+                }
+                try collectRefs(allocator, entry.value_ptr.*, current, out);
+            }
+        },
+        .array => |array| for (array.items) |item| try collectRefs(allocator, item, base, out),
+        else => {},
+    }
+}
+
+fn parsesAsReference(raw: []const u8) bool {
+    var index: usize = 0;
+    while (index < raw.len) : (index += 1) {
+        const c = raw[index];
+        if (c < 0x20 or c == 0x7f) return false;
+        if (c != '%') continue;
+        if (index + 2 >= raw.len or !std.ascii.isHex(raw[index + 1]) or !std.ascii.isHex(raw[index + 2])) return false;
+    }
+    return true;
+}
+
+fn schemeEnd(text: []const u8) ?usize {
+    for (text, 0..) |c, index| {
+        if (c == ':') return if (index > 0 and std.ascii.isAlphabetic(text[0])) index else null;
+        if (!(std.ascii.isAlphanumeric(c) or c == '+' or c == '-' or c == '.')) return null;
+    }
+    return null;
+}
+
+fn resolveRef(allocator: std.mem.Allocator, base: []const u8, raw: []const u8, identifier: bool) !Ref {
+    if (!parsesAsReference(raw)) return .{ .identifier = identifier, .valid = false };
+    const reference = raw[0 .. std.mem.indexOfScalar(u8, raw, '#') orelse raw.len];
+    return .{ .absolute = try resolveAgainst(allocator, base, reference), .identifier = identifier };
+}
+
+fn resolveAgainst(allocator: std.mem.Allocator, base: []const u8, reference: []const u8) ![]const u8 {
+    if (schemeEnd(reference)) |colon| return withPath(allocator, reference[0 .. colon + 1], reference[colon + 1 ..]);
+    const colon = schemeEnd(base) orelse return reference;
+    const scheme = base[0 .. colon + 1];
+    const after = base[colon + 1 ..];
+    if (std.mem.startsWith(u8, reference, "//")) return withPath(allocator, scheme, reference);
+    const authority_end = if (std.mem.startsWith(u8, after, "//")) (std.mem.indexOfScalarPos(u8, after, 2, '/') orelse after.len) else 0;
+    const origin = base[0 .. colon + 1 + authority_end];
+    const base_rest = after[authority_end..];
+    const base_path = base_rest[0 .. std.mem.indexOfScalar(u8, base_rest, '?') orelse base_rest.len];
+    if (reference.len == 0) return allocator.dupe(u8, base);
+    if (reference[0] == '?') return std.mem.concat(allocator, u8, &.{ origin, base_path, reference });
+    if (reference[0] == '/') return withPath(allocator, origin, reference);
+    const directory = base_path[0 .. if (std.mem.lastIndexOfScalar(u8, base_path, '/')) |slash| slash + 1 else 0];
+    const merged = if (directory.len == 0 and authority_end > 0) try std.mem.concat(allocator, u8, &.{ "/", reference }) else try std.mem.concat(allocator, u8, &.{ directory, reference });
+    return withPath(allocator, origin, merged);
+}
+
+fn withPath(allocator: std.mem.Allocator, prefix: []const u8, rest: []const u8) ![]const u8 {
+    var path_start: usize = 0;
+    if (std.mem.startsWith(u8, rest, "//")) path_start = std.mem.indexOfScalarPos(u8, rest, 2, '/') orelse rest.len;
+    const query = std.mem.indexOfScalarPos(u8, rest, path_start, '?') orelse rest.len;
+    const path = try removeDots(allocator, rest[path_start..query]);
+    return std.mem.concat(allocator, u8, &.{ prefix, rest[0..path_start], path, rest[query..] });
+}
+
+fn removeDots(allocator: std.mem.Allocator, path: []const u8) ![]const u8 {
+    if (std.mem.indexOf(u8, path, "./") == null and !std.mem.endsWith(u8, path, "/.") and !std.mem.endsWith(u8, path, "/..")) return path;
+    var kept: std.ArrayList([]const u8) = .empty;
+    var segments = std.mem.splitScalar(u8, path, '/');
+    var last: []const u8 = "";
+    while (segments.next()) |segment| {
+        last = segment;
+        if (std.mem.eql(u8, segment, ".")) continue;
+        if (std.mem.eql(u8, segment, "..")) {
+            if (kept.items.len > 1 or (kept.items.len == 1 and kept.items[0].len > 0)) _ = kept.pop();
+            continue;
+        }
+        try kept.append(allocator, segment);
+    }
+    if (std.mem.eql(u8, last, ".") or std.mem.eql(u8, last, "..")) try kept.append(allocator, "");
+    return std.mem.join(allocator, "/", kept.items);
+}
 
 fn refusedWith(arena: *std.heap.ArenaAllocator, refusals: *std.ArrayList(Refusal)) !Loaded {
     const owned = try refusals.toOwnedSlice(arena.allocator());
@@ -371,56 +556,59 @@ fn gather(
     }
     if (load_refusals.items.len != 0) return refusedWith(&arena, &load_refusals);
 
+    for (descriptors.items) |*pack| {
+        pack.base = try std.fmt.allocPrint(allocator, "{s}{s}/{s}/", .{ pack_base_uri, pack.id, pack.version });
+        const declared_schemas = field(pack.value, "schemas") orelse continue;
+        if (declared_schemas != .array) return error.InvalidPackDescriptor;
+        const pack_root = std.Io.Dir.cwd().realPathFileAlloc(io, pack.dir, allocator) catch |err| switch (err) {
+            error.OutOfMemory => return error.OutOfMemory,
+            else => return error.InvalidPackDescriptor,
+        };
+        var documents: std.ArrayList(Document) = .empty;
+        for (declared_schemas.array.items) |schema_name| {
+            if (schema_name != .string) return error.InvalidPackDescriptor;
+            const contained = (try containedPath(io, allocator, pack_root, pack.dir, schema_name.string)) orelse {
+                try load_refusals.append(allocator, .{ .code = pack_schema_path_escape, .pack = pack.id, .detail = schema_name.string });
+                continue;
+            };
+            const schema_bytes = try readAll(io, allocator, contained.resolved);
+            const normalized = try toSlash(allocator, contained.relative);
+            const uri = try std.mem.concat(allocator, u8, &.{ pack.base, normalized });
+            const value = try std.json.parseFromSliceLeaky(std.json.Value, allocator, schema_bytes, .{});
+            try documents.append(allocator, .{ .name = normalized, .uri = uri, .bytes = schema_bytes, .value = value });
+        }
+        pack.documents = documents.items;
+        if (stringField(pack.value, "fixtures")) |manifest| {
+            if (try containedPath(io, allocator, pack_root, pack.dir, manifest) == null) {
+                try load_refusals.append(allocator, .{ .code = pack_schema_path_escape, .pack = pack.id, .detail = manifest });
+            }
+        }
+    }
+    if (load_refusals.items.len != 0) return refusedWith(&arena, &load_refusals);
+
+    for (descriptors.items) |pack| {
+        for (items(pack.value, "depends_on")) |dependency| {
+            if (dependencyOf(descriptors.items, dependency) == null) {
+                try load_refusals.append(allocator, .{ .code = pack_dependency_missing, .pack = pack.id, .detail = stringField(dependency, "id") orelse "" });
+            }
+        }
+    }
+    if (load_refusals.items.len != 0) return refusedWith(&arena, &load_refusals);
+
+    for (descriptors.items) |pack| try checkReferences(allocator, descriptors.items, pack, &load_refusals);
+    if (load_refusals.items.len != 0) return refusedWith(&arena, &load_refusals);
+
     var branches = std.ArrayList(Branch).empty;
     var members = std.ArrayList(Member).empty;
     var types = std.ArrayList(Declared).empty;
 
     for (descriptors.items) |pack| {
-        const dir = pack.dir;
         const descriptor = pack.value;
         const pack_id = pack.id;
         const version = pack.version;
-
-        const declared_schemas = field(descriptor, "schemas");
-        if (declared_schemas) |held| {
-            if (held != .array) return error.InvalidPackDescriptor;
-        }
-        var pack_documents: std.ArrayList(Document) = .empty;
-        if (declared_schemas) |held| {
-            const schemas = held.array;
-            const pack_root = std.Io.Dir.cwd().realPathFileAlloc(io, dir, allocator) catch |err| switch (err) {
-                error.OutOfMemory => return error.OutOfMemory,
-                else => return error.InvalidPackDescriptor,
-            };
-            const entries = schemas.items;
-            const names = try allocator.alloc([]const u8, entries.len);
-            const paths = try allocator.alloc([]const u8, entries.len);
-            for (entries, 0..) |schema_name, index| {
-                if (schema_name != .string) return error.InvalidPackDescriptor;
-                const file = schema_name.string;
-                if (file.len == 0 or std.Io.Dir.path.isAbsolute(file)) return error.InvalidPackDescriptor;
-                const relative = try lexicalRelative(allocator, file);
-                const schema_path = try std.fs.path.join(allocator, &.{ dir, relative });
-                const resolved = std.Io.Dir.cwd().realPathFileAlloc(io, schema_path, allocator) catch |err| switch (err) {
-                    error.OutOfMemory => return error.OutOfMemory,
-                    else => return error.InvalidPackDescriptor,
-                };
-                if (!beneath(pack_root, resolved)) return error.InvalidPackDescriptor;
-                names[index] = relative;
-                paths[index] = resolved;
-            }
-            for (0..entries.len) |index| {
-                const schema_bytes = try readAll(io, allocator, paths[index]);
-                const normalized = try toSlash(allocator, names[index]);
-                const key = try std.fmt.allocPrint(allocator, "{s}{s}/{s}/{s}", .{ pack_base_uri, pack_id, version, normalized });
-                try pack_documents.append(allocator, .{
-                    .name = normalized,
-                    .value = try std.json.parseFromSliceLeaky(std.json.Value, allocator, schema_bytes, .{}),
-                });
-                if (registry) |target| {
-                    try target.addDocument(key, schema_bytes);
-                }
-            }
+        const pack_documents = pack.documents;
+        if (registry) |target| {
+            for (pack_documents) |document| try target.addDocument(document.uri, document.bytes);
         }
 
         const gates = field(descriptor, "gates");
@@ -463,7 +651,7 @@ fn gather(
             const cited = try toSlash(allocator, cleaned);
             const pointer: []const u8 = if (hash) |at| schema_ref[at..] else "";
             var resolved: ?std.json.Value = null;
-            for (pack_documents.items) |document| {
+            for (pack_documents) |document| {
                 if (!std.mem.eql(u8, document.name, cited)) continue;
                 resolved = try pointerAt(allocator, document.value, pointer);
                 break;
@@ -890,7 +1078,10 @@ test "a descriptor schema path is read only when it lands beneath the pack root"
         const dir = try tmp.dir.realPathFileAlloc(std.testing.io, name, allocator);
         defer allocator.free(dir);
         const escaping = [_][]const u8{dir};
-        try std.testing.expectError(error.InvalidPackDescriptor, load(std.testing.io, allocator, &registry, &escaping));
+        var refused = try load(std.testing.io, allocator, &registry, &escaping);
+        defer refused.deinit();
+        try std.testing.expect(carriesCode(refused.refusals, pack_schema_path_escape));
+        try std.testing.expectEqual(@as(usize, 0), refused.branches.len);
     }
 
     try std.testing.expect(registry.root("https://open-agent-protocol.local/ext/com.example.pre/1.0.0/note.schema.json") == null);
@@ -1191,7 +1382,7 @@ test "a schema path cleans without an arena, and a failed allocation does not le
             const cleaned = (try cleanRelative(allocator, "sub/../note.schema.json")).?;
             defer allocator.free(cleaned);
             try std.testing.expectEqualStrings("note.schema.json", cleaned);
-            try std.testing.expectError(error.InvalidPackDescriptor, lexicalRelative(allocator, "../outside/away.schema.json"));
+            try std.testing.expectEqual(@as(?[]const u8, null), try cleanRelative(allocator, "../outside/away.schema.json"));
         }
     };
     try std.testing.checkAllAllocationFailures(std.heap.smp_allocator, Runner.run, .{});
@@ -1255,4 +1446,54 @@ test "a pack may only declare names inside its own namespace, and the set is pre
     ;
     try std.testing.expect(try judgesAsAccepted(allocator, &registry, well_formed.branches, complete));
     try std.testing.expect(!try judgesAsAccepted(allocator, &registry, well_formed.branches, short));
+}
+
+test "a reference resolves against its base as RFC 3986 section 5.4 resolves it, fragment dropped" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const base = "http://a/b/c/d;p?q";
+    const cases = [_][2][]const u8{
+        .{ "g:h", "g:h" },
+        .{ "g", "http://a/b/c/g" },
+        .{ "./g", "http://a/b/c/g" },
+        .{ "g/", "http://a/b/c/g/" },
+        .{ "/g", "http://a/g" },
+        .{ "//g", "http://g" },
+        .{ "?y", "http://a/b/c/d;p?y" },
+        .{ "g?y", "http://a/b/c/g?y" },
+        .{ "#s", "http://a/b/c/d;p?q" },
+        .{ "g#s", "http://a/b/c/g" },
+        .{ "", "http://a/b/c/d;p?q" },
+        .{ ".", "http://a/b/c/" },
+        .{ "./", "http://a/b/c/" },
+        .{ "..", "http://a/b/" },
+        .{ "../", "http://a/b/" },
+        .{ "../g", "http://a/b/g" },
+        .{ "../..", "http://a/" },
+        .{ "../../g", "http://a/g" },
+        .{ "../../../g", "http://a/g" },
+        .{ "/./g", "http://a/g" },
+        .{ "/../g", "http://a/g" },
+        .{ "g/./h", "http://a/b/c/g/h" },
+        .{ "g/../h", "http://a/b/c/h" },
+    };
+    for (cases) |case| {
+        const ref = try resolveRef(arena.allocator(), base, case[0], false);
+        try std.testing.expect(ref.valid);
+        try std.testing.expectEqualStrings(case[1], ref.absolute);
+    }
+    try std.testing.expect(!(try resolveRef(arena.allocator(), base, "%zz", false)).valid);
+}
+
+test "a pack may refer to a declared dependency's schemas, and a dependency not loaded is refused" {
+    const allocator = std.testing.allocator;
+    const accepted = [_][]const u8{ "fixtures/packs/client", "fixtures/packs/index" };
+    var with_dependency = try describe(std.testing.io, allocator, &accepted);
+    defer with_dependency.deinit();
+    try std.testing.expectEqual(@as(usize, 0), with_dependency.refusals.len);
+
+    const alone = [_][]const u8{ "fixtures/packs/client", "fixtures/packs/storage" };
+    var missing = try describe(std.testing.io, allocator, &alone);
+    defer missing.deinit();
+    try std.testing.expect(carriesCode(missing.refusals, pack_dependency_missing));
 }
