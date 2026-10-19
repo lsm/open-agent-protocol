@@ -150,16 +150,20 @@ func relaySignals(ctx context.Context, stop context.CancelFunc, caught <-chan os
 			stop()
 			return
 		}
-		answer, ok := taker.Signal(ctx, count)
-		if !ok {
-			continue
-		}
-		if count == 1 {
-			fmt.Fprintf(stderr, "goap: shutting down gracefully, %d run(s) still active, %d queued run(s) lost; signal again to force\n", len(answer.ActiveRuns), len(answer.Lost))
-			continue
-		}
-		fmt.Fprintf(stderr, "goap: forced shutdown, %d run(s) cut off\n", len(answer.ActiveRuns))
+		go applySignal(ctx, taker, count, stderr)
 	}
+}
+
+func applySignal(ctx context.Context, taker signalTaker, count int, stderr io.Writer) {
+	answer, ok := taker.Signal(ctx, count)
+	if !ok {
+		return
+	}
+	if count == 1 {
+		fmt.Fprintf(stderr, "goap: shutting down gracefully, %d run(s) still active, %d queued run(s) lost; signal again to force\n", len(answer.ActiveRuns), len(answer.Lost))
+		return
+	}
+	fmt.Fprintf(stderr, "goap: forced shutdown, %d run(s) cut off\n", len(answer.ActiveRuns))
 }
 
 func serveStdio(ctx context.Context, stop context.CancelFunc, caught <-chan os.Signal, hub *serve.Hub, registry *serve.Registry, stdin io.Reader, stdout, stderr io.Writer) error {
