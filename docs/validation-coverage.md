@@ -126,7 +126,7 @@ Every code either tree declares, or a fixture expects. "defined, not in implemen
 | `unapplied_control` | semantic | yes | yes | 21 | 0 | 0005, 0006, 0031, 0034, 0045, staged-units-graduation |
 | `unattributed_call` | semantic | yes | yes | 1 | 0 | 0008, conformance |
 | `unavailable_capability` | semantic | yes | yes | 44 | 0 | 0004, 0005, 0006, 0007, 0008, 0009, 0011, 0013, 0040, 0044, 0045, 0046, 0051, staged-units-graduation |
-| `undeclared_replay_gap` | semantic | yes | no | 1 | 0 | — |
+| `undeclared_replay_gap` | semantic | yes | yes | 1 | 0 | — |
 | `undisclosed_attach_limit` | semantic | yes | yes | 1 | 0 | 0008, staged-units-graduation |
 | `undisclosed_attach_modes` | semantic | yes | yes | 3 | 0 | 0008, conformance, staged-units-graduation |
 | `undisclosed_provide_limit` | semantic | yes | yes | 1 | 0 | 0011, staged-units-graduation |
