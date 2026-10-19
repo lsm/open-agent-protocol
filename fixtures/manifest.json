@@ -3649,6 +3649,25 @@
       ]
     },
     {
+      "id": "state-redescribes-declared-source",
+      "path": "semantic-invalid/state-redescribes-declared-source.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "session_state_mismatch"
+      ],
+      "units": [
+        "tool-sources"
+      ],
+      "provenance": [
+        "decisions/0008-tool-sources.md"
+      ],
+      "rules": [
+        "0008#attachment-is-for-the-sessions-lifetime/8"
+      ]
+    },
+    {
       "id": "open-sources-state-disagrees-with-catalog",
       "path": "semantic-invalid/open-sources-state-disagrees-with-catalog.json",
       "kind": "semantic-invalid",
