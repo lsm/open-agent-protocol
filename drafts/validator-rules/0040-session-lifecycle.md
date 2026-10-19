@@ -56,7 +56,7 @@ Source: [`decisions/0044-compaction.md`](../../decisions/0044-compaction.md#the-
 | `0044#the-barrier/2` | A `requested` compaction MUST belong to the run a `session.compact.request` admitted, and no other run asks for one. | L110–145, L165–173 | `compaction_run_mismatch` | `compaction.go:compactionEvent` | `semantic.zig:compactionEvent` | — |
 | `0044#the-barrier/3` | A run admitted by `session.compact.request` MUST carry exactly one compaction. | L165–173 | `compaction_run_mismatch` | `compaction.go:compactionTerminal` | `semantic.zig:runEvent` | — |
 | `0044#the-barrier/4` | A `run.compaction.started` MUST NOT follow another until that one has ended. | L165–173 | `compaction_unpaired` | `compaction.go:compactionEvent` | `semantic.zig:compactionEvent` | — |
-| `0044#the-barrier/5` | A `compaction_id` MUST be unique within the session. | L110–145 | `compaction_unpaired` | `compaction.go:compactionEvent` | `semantic.zig:compactionEvent` | — |
+| `0044#the-barrier/5` | A `compaction_id` MUST be unique within the session. | L110–145 | `compaction_unpaired` | `compaction.go:compactionEvent` (per run only) | `semantic.zig:compactionEvent` (per run only) | — |
 | `0044#the-barrier/6` | A `run.compaction.ended` MUST follow its `started`. | L165–173 | `compaction_ended_without_start` | `compaction.go:compactionEvent` | `semantic.zig:compactionEvent` | — |
 | `0044#the-barrier/7` | A run terminal MUST NOT be published while a compaction is open. | L165–173 | `compaction_open_at_terminal` | `compaction.go:compactionTerminal` | `semantic.zig:runEvent` | — |
 
@@ -104,7 +104,7 @@ Source: [`decisions/0045-reasoning-level-and-compaction-policy-are-session-setti
 | `0045#validator/2` | An admitted update MUST repeat the effective reasoning level it was asked for, or refuse it. | L247–260 | `unapplied_control` | `settings.go:settingsUpdateResponse` | `semantic.zig:settingsUpdateResponse` | — |
 | `0045#validator/3` | An admitted update MUST repeat the effective compaction policy it was asked for, or refuse it. | L247–260 | `unapplied_control` | `settings.go:settingsUpdateResponse` | `semantic.zig:settingsUpdateResponse` | — |
 | `0045#validator/4` | `session.state.updated` reflecting an accepted update MUST precede the start of any run admitted after the update's response. | L247–260 | `session_state_mismatch` | `settings.go:settingsBeforeRun` | `semantic.zig:settingsBeforeRun` | — |
-| `0045#validator/5` | An accepted update MUST be reflected by a `session.state.updated` before the trace ends. | L247–260 | `session_state_mismatch` | `settings.go:closeSettingsUpdates` | — | — |
+| `0045#validator/5` | An accepted update MUST be reflected by a `session.state.updated` before the trace ends. | L247–260 | `session_state_mismatch` | `settings.go:closeSettingsUpdates` | `semantic.zig:close` | — |
 
 ### [0046] The capability key is `session.list`, advertised by the host
 
@@ -237,7 +237,8 @@ Source: [`decisions/0050-shutdown-is-graceful-forced-or-asked.md`](../../decisio
   restart recovery lands, together with the 0050 rows above. This goes into
   `research/validator-divergences.md` once that file is on main.
 
-- Zig has no end-of-trace check that an accepted settings update was reflected
-  (`closeSettingsUpdates`, row 0045#validator/5). The decision text supports
-  Go, so this is a port gap and not an OPEN item.
+- 0044 makes `compaction_id` unique within the session, but Go and Zig both
+  check uniqueness only within a run (row `0044#the-barrier/5`), so a later run
+  reusing an id passes both. The decision text decides it, so this is a port
+  fix in both trees and needs a fixture.
 - Rust ports only the compaction response and the per-message rules here.
