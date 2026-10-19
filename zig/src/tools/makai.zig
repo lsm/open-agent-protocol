@@ -199,6 +199,20 @@ fn modelFromProductionCatalog(
     return null;
 }
 
+const StderrNotice = struct {
+    file: std.Io.File,
+
+    fn write(context: *anyopaque, line: []const u8) void {
+        const self: *StderrNotice = @ptrCast(@alignCast(context));
+        compat.stdio.writeAll(self.file, line) catch {};
+        compat.stdio.writeAll(self.file, "\n") catch {};
+    }
+
+    fn notice(self: *StderrNotice) adapter_endpoint.Endpoint.Notice {
+        return .{ .context = self, .write = write };
+    }
+};
+
 const StdoutSink = struct {
     file: std.Io.File,
     io: std.Io,
@@ -4941,6 +4955,8 @@ fn runOapxServe(
     try oapx.advertise(&served_features);
     var endpoint = adapter_endpoint.Endpoint.init(allocator, oapx.adapter(), .{});
     defer endpoint.deinit();
+    var notices = StderrNotice{ .file = stderr };
+    endpoint.notices = notices.notice();
 
     var oap_auth_server = AuthProtocolServer.init(allocator, .{ .answers_prompts = false });
     defer oap_auth_server.deinit();
@@ -4989,7 +5005,8 @@ fn runOapxServe(
 
     while (true) {
         var did_work = false;
-        while (if (endpoint_signals.received()) null else stdin_stream.poll()) |chunk| {
+        try endpoint.takeSignals(endpoint_signals.count());
+        while (if (endpoint.shutdown == .force) null else stdin_stream.poll()) |chunk| {
             var owned = chunk;
             defer owned.deinit(allocator);
             const line = std.mem.trim(u8, owned.data, " \t\r\n");
@@ -5060,7 +5077,7 @@ fn runOapxServe(
         if (serve_provider and try drainOapProviderOutbound(&output, allocator, &provider_server)) did_work = true;
 
         if (try endpoint.shutdownComplete()) break;
-        if (oapInputEnded(stdin_stream) and !did_work and running_inferences.items.len == 0 and oap_auth_server.activeFlowCount() == 0) break;
+        if (oapInputDrained(stdin_stream) and !did_work and running_inferences.items.len == 0 and oap_auth_server.activeFlowCount() == 0) break;
         if (!did_work) compat.time.sleepNs(STDIO_IDLE_SLEEP_NS);
     }
     try endpoint.finish(if (endpoint.shutdown == .force) 0 else adapter_endpoint.default_settle_window_ns, backendClock);
@@ -5695,15 +5712,18 @@ fn runBackendMode(
     output.stall_notice = .{ .file = stderr, .message = BACKEND_OUTPUT_STALLED_MESSAGE };
     var endpoint = adapter_endpoint.Endpoint.init(allocator, served, .{ .tool_sources = tool_sources });
     defer endpoint.deinit();
+    var notices = StderrNotice{ .file = stderr };
+    endpoint.notices = notices.notice();
 
     var async_receiver = stdio.AsyncStdioReceiver.initWithFileAndLimit(stdin, adapter_endpoint.default_frame_limit);
     var stdin_handle = try async_receiver.receiveStreamWithHandle(allocator);
     defer _ = stdin_handle.deinit(if (endpoint_signals.received()) 0 else STDIO_THREAD_JOIN_TIMEOUT_MS);
     const stdin_stream = stdin_handle.getStream();
 
-    while (!endpoint_signals.received()) {
+    while (true) {
         var did_work = false;
-        while (stdin_stream.poll()) |chunk| {
+        try endpoint.takeSignals(endpoint_signals.count());
+        while (if (endpoint.shutdown == .force) null else stdin_stream.poll()) |chunk| {
             var owned = chunk;
             defer owned.deinit(allocator);
             const line = std.mem.trim(u8, owned.data, " \t\r\n");
@@ -7305,7 +7325,7 @@ test "a JSON report names the phase of each finding and never claims completenes
     try std.testing.expectEqual(@as(i64, 2), diagnostic.get("index").?.integer);
 }
 
-test "a SIGTERM ends the served backend as end of input does, exiting clean" {
+test "a SIGTERM shuts the idle served backend down gracefully, saying so on stderr, and exits clean" {
     if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
     const allocator = std.testing.allocator;
     const stdin_pipe = try compat.stdio.pipe();
@@ -7335,10 +7355,10 @@ test "a SIGTERM ends the served backend as end of input does, exiting clean" {
     compat.stdio.close(stdin_pipe[1]);
 
     try std.testing.expect(runner.err == null);
-    try std.testing.expectEqual(@as(usize, 0), complained.len);
+    try std.testing.expectEqualStrings(IDLE_GRACEFUL_NOTICE, complained);
 }
 
-test "a SIGTERM ends the built-in agent loop as end of input does, after its answer is out" {
+test "a SIGTERM shuts the idle built-in agent loop down gracefully after its answer is out, saying so on stderr" {
     if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
     const allocator = std.testing.allocator;
     const stdin_pipe = try compat.stdio.pipe();
@@ -7363,8 +7383,10 @@ test "a SIGTERM ends the built-in agent loop as end of input does, after its ans
 
     try std.testing.expect(runner.err == null);
     try std.testing.expect(std.mem.indexOf(u8, rest, "\"capabilities.response\"") != null);
-    try std.testing.expectEqual(@as(usize, 0), complained.len);
+    try std.testing.expectEqualStrings(IDLE_GRACEFUL_NOTICE, complained);
 }
+
+const IDLE_GRACEFUL_NOTICE = "oapx: shutting down gracefully; still active: none; 0 queued run(s) lost; signal again to force\n";
 
 test "the built-in agent loop stops once its unread stdout passes the stall bound, saying why" {
     if (@import("builtin").os.tag == .windows) return error.SkipZigTest;

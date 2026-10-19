@@ -163,8 +163,12 @@ with `outcome: "choose"` and changes nothing; `graceful` stops admitting,
 cancels queued runs (`lost` until restart recovery lands) and lets running
 runs finish, then the endpoint exits as at EOF; `force` exits at once without
 the settle window. Once one is accepted, an open, a submit or a compaction is
-refused `shutting_down`. Both `oapx serve agent` and `goap serve agent` serve it;
-the signal and EOF mapping of rule 4 is pending in both.
+refused `shutting_down`. Both `oapx serve agent` and `goap serve agent` serve it.
+`oapx serve agent` also maps signals: the first SIGINT or SIGTERM is a
+graceful shutdown and the second a forced one, each announced on stderr with
+the runs still active. It stops reading stdin once forced, and while draining it
+keeps reading, so a host may still answer an interaction. The EOF mapping of
+rule 4, and the signal mapping in `goap serve agent`, are pending.
 
 There is no `session.close.request` envelope in v0.1. On this binding the pipe
 is the session's lifetime:
