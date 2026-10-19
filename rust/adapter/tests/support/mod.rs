@@ -243,6 +243,17 @@ pub fn idle(session: &MemorySession) -> bool {
     state.status == SessionStatus::IDLE && state.active_run_id.is_none()
 }
 
+pub fn resume(
+    session: &MemorySession,
+    run: &RunId,
+    after: u64,
+) -> Result<(Recovery, EventStream), Error> {
+    session.resume(ResumeRequest {
+        run_id: run.clone(),
+        after_sequence: after,
+    })
+}
+
 pub struct Submission {
     pub request: MessageSubmitRequest,
     pub admission: MessageSubmitResponse,
