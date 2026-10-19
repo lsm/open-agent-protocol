@@ -21,13 +21,14 @@ const drainPoll = 20 * time.Millisecond
 var admittingRoutes = []string{"/adapters/*/sessions", "/sessions/*/submit", "/adapters/*/work", "/work/sessions/*/send"}
 
 type stopState struct {
-	admission sync.RWMutex
-	mu        sync.Mutex
-	mode      protocol.ShutdownMode
-	watching  bool
-	finished  bool
-	withdrawn map[protocol.RunID]bool
-	done      chan struct{}
+	admission   sync.RWMutex
+	mu          sync.Mutex
+	mode        protocol.ShutdownMode
+	watching    bool
+	finished    bool
+	withdrawn   map[protocol.RunID]bool
+	done        chan struct{}
+	signalsSeen int
 }
 
 func newStopState() *stopState {
@@ -187,4 +188,30 @@ func (s *Server) awaitDrained(ctx context.Context, st *stopState) {
 			return
 		}
 	}
+}
+
+func (s *Server) Signal(ctx context.Context, count int) (protocol.EndpointShutdownResponse, bool) {
+	ctx = context.WithoutCancel(ctx)
+	wanted := protocol.ShutdownGraceful
+	if count >= 2 {
+		wanted = protocol.ShutdownForce
+	}
+	s.stopping.mu.Lock()
+	current := s.stopping.mode
+	fresh := count > s.stopping.signalsSeen
+	if fresh {
+		s.stopping.signalsSeen = count
+	}
+	s.stopping.mu.Unlock()
+	if current == protocol.ShutdownForce {
+		wanted = protocol.ShutdownForce
+	}
+	if !fresh {
+		return protocol.EndpointShutdownResponse{}, false
+	}
+	answer := s.acceptShutdown(ctx, wanted)
+	s.stopping.mu.Lock()
+	overtaken := s.stopping.mode != wanted
+	s.stopping.mu.Unlock()
+	return answer, !overtaken
 }

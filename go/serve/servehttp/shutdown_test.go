@@ -98,3 +98,18 @@ func TestAShutdownPostedWithAnUnknownModeIsRefusedAndChangesNothing(t *testing.T
 	default:
 	}
 }
+
+func TestAFirstSignalOnAnIdleDaemonStopsItGracefullyAndASecondForcesIt(t *testing.T) {
+	daemon, _ := newShutdownServer(t)
+	answer, took := daemon.Signal(t.Context(), 1)
+	if !took || answer.Outcome != protocol.ShutdownStopping {
+		t.Fatalf("the first signal answered %+v (%v), want stopping", answer, took)
+	}
+	requireDone(t, daemon)
+	if daemon.Forced() {
+		t.Fatal("a first signal forced the shutdown")
+	}
+	if _, took := daemon.Signal(t.Context(), 2); !took || !daemon.Forced() {
+		t.Fatal("a second signal did not force the shutdown")
+	}
+}

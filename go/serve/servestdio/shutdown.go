@@ -15,13 +15,15 @@ const opShutdown = "shutdown"
 const drainPoll = 20 * time.Millisecond
 
 type shutdownState struct {
-	admission sync.RWMutex
-	mu        sync.Mutex
-	mode      protocol.ShutdownMode
-	watching  bool
-	flushed   bool
-	finished  bool
-	done      chan struct{}
+	admission   sync.RWMutex
+	mu          sync.Mutex
+	mode        protocol.ShutdownMode
+	watching    bool
+	flushed     bool
+	finished    bool
+	served      bool
+	done        chan struct{}
+	signalsSeen int
 }
 
 func newShutdownState() *shutdownState {
@@ -60,7 +62,7 @@ func (s *Server) shutdownOp(ctx context.Context, request requestLine) (json.RawM
 	if !ok {
 		return nil, &wireError{Code: "invalid_request", Message: "request is an object whose only member is mode, graceful or force"}
 	}
-	st := s.stopping
+	st := s.stopState()
 	st.admission.Lock()
 	defer st.admission.Unlock()
 	runs := s.hub.NonterminalRuns(ctx)
@@ -132,4 +134,44 @@ func (s *Server) awaitDrained(ctx context.Context, st *shutdownState) {
 			}
 		}
 	}
+}
+
+func (s *Server) Signal(ctx context.Context, count int) (protocol.EndpointShutdownResponse, bool) {
+	wanted := protocol.ShutdownGraceful
+	if count >= 2 {
+		wanted = protocol.ShutdownForce
+	}
+	ctx = context.WithoutCancel(ctx)
+	st := s.stopState()
+	st.mu.Lock()
+	current := st.mode
+	fresh := count > st.signalsSeen
+	st.mu.Unlock()
+	if current == protocol.ShutdownForce {
+		wanted = protocol.ShutdownForce
+	}
+	if !fresh {
+		return protocol.EndpointShutdownResponse{}, false
+	}
+	result, werr := s.shutdownOp(ctx, requestLine{Op: opShutdown, Request: json.RawMessage(`{"mode":"` + string(wanted) + `"}`)})
+	if werr != nil {
+		return protocol.EndpointShutdownResponse{}, false
+	}
+	var answer protocol.EndpointShutdownResponse
+	if err := json.Unmarshal(result, &answer); err != nil {
+		return protocol.EndpointShutdownResponse{}, false
+	}
+	st.mu.Lock()
+	if count > st.signalsSeen {
+		st.signalsSeen = count
+	}
+	overtaken := st.mode != wanted
+	st.mu.Unlock()
+	return answer, !overtaken
+}
+
+func (s *Server) stopState() *shutdownState {
+	s.stoppingMu.Lock()
+	defer s.stoppingMu.Unlock()
+	return s.stopping
 }

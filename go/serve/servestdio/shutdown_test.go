@@ -4,9 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"testing"
 	"time"
 
+	base "github.com/lsm/open-agent-protocol/go/adapter"
 	"github.com/lsm/open-agent-protocol/go/protocol"
 )
 
@@ -209,5 +211,85 @@ func TestAProgressProbeThatSeesTheDrainEndStillWaitsOnPumps(t *testing.T) {
 	}
 	if !server.stopping.drained() {
 		t.Fatal("a probe that finished a watched drain did not count as drained, so teardown would drop the pumps' terminals")
+	}
+}
+
+func TestAFirstSignalStartsAGracefulShutdownAndASecondForcesIt(t *testing.T) {
+	hub := newTestHub(t, 64, 64)
+	openSession(t, hub, "busy")
+	server, err := New(hub, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	entry, err := hub.Session("busy")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := entry.Submit(context.Background(), base.SubmitRequest{Request: protocol.MessageSubmitRequest{SessionID: "busy", Delivery: protocol.DeliveryAuto, Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("run")}}}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, took := server.Signal(context.Background(), 0); took {
+		t.Fatal("no signal started a shutdown")
+	}
+	first, took := server.Signal(context.Background(), 1)
+	if !took || first.Outcome != protocol.ShutdownDraining || len(first.ActiveRuns) != 1 {
+		t.Fatalf("the first signal answered %+v (%v), want draining with the run", first, took)
+	}
+	if _, took := server.Signal(context.Background(), 1); took {
+		t.Fatal("the same signal count started a second shutdown")
+	}
+	second, took := server.Signal(context.Background(), 2)
+	if !took || second.Outcome != protocol.ShutdownStopping {
+		t.Fatalf("the second signal answered %+v (%v), want stopping", second, took)
+	}
+	select {
+	case <-server.stopping.done:
+	default:
+		t.Fatal("a forced shutdown did not complete")
+	}
+}
+
+func TestASignalTakenBeforeRunStartsIsTheShutdownRunServes(t *testing.T) {
+	server, err := New(newTestHub(t, 64, 64), Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, took := server.Signal(context.Background(), 1); !took {
+		t.Fatal("the signal was not taken")
+	}
+	inReader, inWriter := io.Pipe()
+	defer inWriter.Close()
+	done := make(chan error, 1)
+	go func() { done <- server.Run(context.Background(), inReader, io.Discard) }()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("Run returned %v", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("Run kept serving: it replaced the shutdown the signal had already started")
+	}
+}
+
+func TestASignalDuringAGracefulShutdownTheHostAskedForStillReports(t *testing.T) {
+	hub := newTestHub(t, 64, 64)
+	openSession(t, hub, "busy")
+	server, err := New(hub, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	entry, err := hub.Session("busy")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := entry.Submit(context.Background(), base.SubmitRequest{Request: protocol.MessageSubmitRequest{SessionID: "busy", Delivery: protocol.DeliveryAuto, Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("run")}}}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, werr := server.shutdownOp(context.Background(), requestLine{Op: opShutdown, Request: json.RawMessage(`{"mode":"graceful"}`)}); werr != nil {
+		t.Fatal(werr)
+	}
+	answer, took := server.Signal(context.Background(), 1)
+	if !took || answer.Outcome != protocol.ShutdownDraining || len(answer.ActiveRuns) != 1 {
+		t.Fatalf("a signal during the host's graceful shutdown answered %+v (%v), want a draining report", answer, took)
 	}
 }
