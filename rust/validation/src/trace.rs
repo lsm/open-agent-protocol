@@ -16,7 +16,8 @@ fn malformed(fixture: &str, message: impl Into<String>) -> Diagnostic {
 }
 
 pub(crate) fn parse_trace(data: &[u8], fixture: &str) -> Result<Vec<RawEnvelope>, Box<Diagnostic>> {
-    let data = data.trim_ascii();
+    let text = String::from_utf8_lossy(data);
+    let data = text.as_bytes().trim_ascii();
     if data.is_empty() {
         return Ok(Vec::new());
     }
