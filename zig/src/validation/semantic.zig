@@ -3308,6 +3308,7 @@ pub const Machine = struct {
         var seen: std.StringArrayHashMapUnmanaged(void) = .empty;
         defer seen.deinit(self.allocator);
         var started: []const u8 = "";
+        var started_entry: std.json.Value = .{ .null = {} };
         var reservation_listed = false;
         var anchored = false;
         var last_order: ?usize = null;
@@ -3361,6 +3362,7 @@ pub const Machine = struct {
                     try self.add(code_session_state_mismatch, index);
                 } else {
                     started = run_id;
+                    started_entry = entry;
                 }
             }
             if (ended) {
@@ -3373,6 +3375,17 @@ pub const Machine = struct {
         const active = memberString(payload, "active_run_id");
         if (started.len != 0 and !std.mem.eql(u8, active, started)) try self.add(code_session_state_mismatch, index);
         if (started.len == 0 and entries.len != 0 and active.len != 0) try self.add(code_session_state_mismatch, index);
+        const session_status = memberString(payload, "status");
+        if (started.len != 0) {
+            const pending = member(started_entry, "pending_interactions");
+            const waiting = std.mem.eql(u8, memberString(started_entry, "status"), "waiting_for_input") or
+                (pending != null and pending.? == .array and pending.?.array.items.len != 0);
+            const running = std.mem.eql(u8, session_status, "running");
+            const asking = std.mem.eql(u8, session_status, "waiting_for_input");
+            if ((asking and !waiting) or (running and waiting) or (!running and !asking)) try self.add(code_session_state_mismatch, index);
+        } else if (reservation_listed and !std.mem.eql(u8, session_status, "queued")) {
+            try self.add(code_session_state_mismatch, index);
+        }
     }
 
     fn omissionNeedsEntries(self: *const Machine, required: []const *Run) !bool {
