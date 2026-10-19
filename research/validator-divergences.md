@@ -91,3 +91,22 @@ only a port. None is a protocol question.
   as `capability_degraded`. Add it to both.
 - Rust judges only the session scope of these envelopes. Every other row in
   the file is owed there, as is the alias half of `optional-sessionproviderattach/2`.
+
+## Control-layer-provided tools (0011)
+
+### OPEN-0011-2: may a provided tool's resolution carry content parts?
+
+[Decision 0060](../decisions/0060-a-tool-result-may-carry-content-parts.md)
+lets a `tool_result` part and `action.call.completed` carry a content-part
+list, images gated on `content.image`. `action.call.resolve.request`, by which
+a control layer answers a call to a tool it provides, also carries a free JSON
+`result`, and 0060 does not say whether it takes the same form. No tree judges
+the shape today.
+
+- (a) The same reading as 0060: a content-part list is allowed, its images
+  gated on the endpoint's `content.image`.
+- (b) JSON only, so a provided tool cannot return an image.
+
+Recommendation: (a). The endpoint reports a provided tool's outcome on
+`action.call.completed`, which 0060 already lets carry an image, so (b) would
+leave a control layer unable to supply what the endpoint is allowed to report.
