@@ -12880,6 +12880,29 @@
       ]
     },
     {
+      "id": "permission-resolved-moves-its-tool-binding",
+      "path": "semantic-invalid/permission-resolved-moves-its-tool-binding.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "scope_mismatch",
+        "scope_mismatch"
+      ],
+      "units": [
+        "core",
+        "tools",
+        "permissions"
+      ],
+      "provenance": [
+        "decisions/0001-agent-control-v0.1-executable-core.md",
+        "decisions/0055-register-batch-2.md"
+      ],
+      "rules": [
+        "0001#correlated-reverse-interactions/7"
+      ]
+    },
+    {
       "id": "permission-resolved-in-the-refresh-window",
       "path": "valid/permission-resolved-in-the-refresh-window.json",
       "kind": "positive",
