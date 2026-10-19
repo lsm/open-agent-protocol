@@ -86,9 +86,22 @@ the generic tool lifecycle checks in `state/interactions.rs`.
 | 0011#recovery-reads-two-lists-because-one-cannot-answer-the-question/2 | Every id in `acknowledged_interactions` MUST have an accepted `started` acknowledgement the trace carries. | 0011 § Recovery reads two lists | `session_state_mismatch` | controltools.go:checkEntryAcknowledged | semantic.zig:checkEntryAcknowledged | — | — |
 | 0011#a-recovered-call-is-judged-on-what-the-trace-can-still-see | An entry MUST list a pending interaction whose `started` acknowledgement this trace saw accepted, including one accepted after a reattach. | 0011 § Recovery reads two lists; § A recovered call is judged on what the trace can still see | `session_state_mismatch` | controltools.go:checkEntryAcknowledged | semantic.zig:checkEntryAcknowledged | — | control-state-omits-acknowledged, control-call-recovered-ack-omitted |
 
-The run-terminal rule for a pending control-owned call (`pending_tool_at_terminal`)
-and the generic tool lifecycle table (`illegal_tool_transition`, `unmatched_tool`,
-the owner-change `scope_mismatch`) are 0001's and belong to the core rules.
+## The tool call lifecycle
+
+The core table leaves these sites to this group. The decision text is 0001's,
+and 0011 restates it for control-owned calls.
+
+| id | rule | source | code | Go | Zig | Rust | fixtures |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| 0001#one-foreground-invocation-is-one-run/tools | A tool call MUST follow `requested`, then `started`, then `progress` any number of times, then one of `completed` or `failed`. `cancelled` is allowed from any state that is not terminal. | 0001 § One foreground invocation is one run (tool lifecycle vocabulary); drafted here as the transition table | `illegal_tool_transition` | state.go:tool | toolTransition | state/interactions.rs:tool | tool-completed-without-start, queue-open-recovers-a-tool-call-that-ends-twice |
+| 0001#one-foreground-invocation-is-one-run/tools/2 | A tool event other than `requested` MUST name a call the run requested, unless the run was recovered. | 0001 § One foreground invocation is one run; § Resume, reconciliation, and replay are separate (recovered runs) | `unmatched_tool` | state.go:tool | toolTransition | state/interactions.rs:tool | unmatched-tool, unmatched-tool-started-from-nowhere |
+| 0001#one-foreground-invocation-is-one-run/tools/3 | A call's `execution_owner` MUST NOT change during its lifecycle. | 0011 § Ownership is checked where it is stated ("the pre-existing check that an owner does not change mid-lifecycle") | `scope_mismatch` | state.go:tool | — | state/interactions.rs:tool | — |
+| 0001#correlated-reverse-interactions/tools | A run MUST NOT reach its terminal with a tool call that has no terminal. | 0001 § Correlated reverse interactions; 0011 § A call to a provided tool is an interaction ("a run cannot terminate with it pending") | `pending_tool_at_terminal` | state.go:runEvent | checkPendingAtTerminal | state/interactions.rs:pending_at_terminal | pending-tool, control-tool-pending-at-terminal, controls-tool-choice-excluded-unsettled |
+| 0001#correlated-reverse-interactions/pending | A run MUST NOT reach its terminal with an interaction pending. | 0001 § Correlated reverse interactions | `pending_interaction_at_terminal` | state.go:runEvent | checkPendingAtTerminal | state/interactions.rs:pending_at_terminal | pending-interaction, control-tool-pending-at-terminal |
+| 0001#correlated-reverse-interactions/binding | A permission resolution MUST NOT name, on the envelope or in the payload, a `tool_call_id` other than the one its request was bound to. | 0001 § Correlated reverse interactions; drafted here (a resolution answers the request it correlates with) | `scope_mismatch` | state.go:interactionResolved | — | state/interactions.rs:interaction_resolved | — |
+
+The source-change site (`state.go:tool`, `unmatched_tool_source`) is row
+0008#a-catalog-resolves-or-it-is-not-a-catalog/11 above.
 
 ## Divergences
 
@@ -97,6 +110,8 @@ the owner-change `scope_mismatch`) are 0001's and belong to the core rules.
   declared ones.
 - [OPEN-0008-2](../../research/validator-divergences.md#open-0008-2): only Go
   requires a session-scoped catalog to name its session on the envelope, and
-  only Go checks `tool_call_id` on the resolve pair.
+  only Go checks `tool_call_id` on the resolve pair. Zig also lacks the
+  owner-change check and the permission resolution's tool binding check,
+  which Go and Rust both carry.
 - [OPEN-0011-1](../../research/validator-divergences.md#open-0011-1): Zig does
   not read a disclosed `name_pattern`, as 0019 records.
