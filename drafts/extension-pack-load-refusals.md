@@ -5,6 +5,16 @@ descriptor can get, codes included, and names every shape that is still skipped
 rather than refused. Written to be read next to the code it describes, and to
 be corrected when the code changes — not to justify it.
 
+**Status, 2026-10-19:** this record predates #1261, after which the Zig loader
+also refuses `pack_type_duplicate`, `pack_ungated_type`, `pack_response_gated`,
+`pack_role_undeclared`, `pack_reply_target_unknown`,
+`pack_reply_target_ambiguous`, `pack_refusal_undeclared`,
+`pack_member_target_unknown`, `pack_member_duplicate` and
+`pack_restates_core_member`. Shapes described below as skipped that those codes
+now refuse are refused. The per-code status is kept in
+[`validator-rules/0004-packs.md`](validator-rules/0004-packs.md); this record is
+rewritten with the loader's next port.
+
 Governing text: `decisions/0004-extension-packs.md` §121-146 (core validity, two
 passes, branch pinning) and §165-182 (load refusals). The peer/spec rule that
 applies throughout: **Decision 0032** — a Zig/Go divergence is either aligned or
