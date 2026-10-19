@@ -63,8 +63,8 @@ Source: [`decisions/0004-extension-packs.md`](../../decisions/0004-extension-pac
 
 | id | rule | lines | code | Go | Zig | Rust |
 | --- | --- | --- | --- | --- | --- | --- |
-| `0004#a-packs-conformance-claim-is-its-own/1` | A pack's fixture MUST NOT claim a core unit. | L201–204 | `pack_fixture_claims_core_unit` | `pack.go:LoadPacks` | — | — |
-| `0004#a-packs-conformance-claim-is-its-own/2` | An `ext:` claim MUST name a pack of that exact id and version that is loaded. | L201–203 | `ext_claim_without_pack` | `pack.go:LoadPacks` | — | — |
+| `0004#a-packs-conformance-claim-is-its-own/1` | A pack's fixture MUST NOT claim a core unit. | L201–204 | `pack_fixture_claims_core_unit` | `pack.go:LoadPacks` | `packs.zig:checkCorpus` | — |
+| `0004#a-packs-conformance-claim-is-its-own/2` | An `ext:` claim MUST name a pack of that exact id and version that is loaded. | L201–203 | `ext_claim_without_pack` | `pack.go:LoadPacks` | `packs.zig:checkCorpus` | — |
 
 ## Gate diagnostics
 

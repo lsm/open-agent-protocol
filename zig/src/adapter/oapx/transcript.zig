@@ -55,15 +55,10 @@ pub fn messageValue(arena: std.mem.Allocator, message: ai_types.Message) !std.js
             break :role "assistant";
         },
         .tool_result => |result| role: {
-            var text: std.ArrayList(u8) = .empty;
-            for (result.content) |part| switch (part) {
-                .text => |held| try text.appendSlice(arena, held.text),
-                .image => {},
-            };
             var object: std.json.ObjectMap = .empty;
             try object.put(arena, "type", .{ .string = "tool_result" });
             try object.put(arena, "tool_call_id", .{ .string = if (result.tool_call_id.len > 0) result.tool_call_id else "unknown" });
-            try object.put(arena, "result", .{ .string = text.items });
+            try object.put(arena, "result", try toolResultValue(arena, result.content));
             if (result.is_error) try object.put(arena, "is_error", .{ .bool = true });
             try parts.append(.{ .object = object });
             break :role "tool";
@@ -73,6 +68,20 @@ pub fn messageValue(arena: std.mem.Allocator, message: ai_types.Message) !std.js
     try object.put(arena, "role", .{ .string = role });
     try object.put(arena, "content", if (parts.items.len > 0) .{ .array = parts } else .{ .string = "" });
     return .{ .object = object };
+}
+
+fn toolResultValue(arena: std.mem.Allocator, content: []const ai_types.UserContentPart) !std.json.Value {
+    const images = for (content) |part| {
+        if (part == .image) break true;
+    } else false;
+    if (images) {
+        var parts = std.json.Array.init(arena);
+        for (content) |part| try parts.append(try userPart(arena, part));
+        return .{ .array = parts };
+    }
+    var text: std.ArrayList(u8) = .empty;
+    for (content) |part| try text.appendSlice(arena, part.text.text);
+    return .{ .string = text.items };
 }
 
 fn textPart(arena: std.mem.Allocator, kind: []const u8, text: []const u8) !std.json.Value {
@@ -258,6 +267,32 @@ test "an entry too large even with every text emptied reduces its parts to their
     try testing.expectEqualStrings("assistant", cut_page.entries[0].object.get("message").?.object.get("role").?.string);
     try testing.expectEqualStrings("text", listed[1].object.get("type").?.string);
     try testing.expectEqualStrings("tool_call", listed[1].object.get("text").?.string);
+}
+
+fn imageResult(a: std.mem.Allocator, data: []const u8) !ai_types.Message {
+    const parts = try a.dupe(ai_types.UserContentPart, &.{ .{ .text = .{ .text = "a picture" } }, .{ .image = .{ .data = data, .mime_type = "image/png" } } });
+    return .{ .tool_result = .{ .tool_call_id = "call-1", .tool_name = "Read", .content = parts, .is_error = false, .timestamp = 0 } };
+}
+
+test "a tool result holding an image keeps it as an image part, and a cut entry names the image rather than cutting its data" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const kept_page = try page(a, .{ .native_id = "s1" }, &.{.{ .offset = 0, .message = try imageResult(a, "iVBORw0KGgo=") }});
+    const kept = kept_page.entries[0].object.get("message").?.object.get("content").?.array.items[0].object.get("result").?.array.items;
+    try testing.expectEqualStrings("a picture", kept[0].object.get("text").?.string);
+    try testing.expectEqualStrings("iVBORw0KGgo=", kept[1].object.get("image").?.object.get("data").?.string);
+    try testing.expectEqualStrings("image/png", kept[1].object.get("image").?.object.get("media_type").?.string);
+
+    const large = try a.alloc(u8, contract.transcript_page_bytes);
+    @memset(large, 'A');
+    const cut_page = try page(a, .{ .native_id = "s1" }, &.{.{ .offset = 0, .message = try imageResult(a, large) }});
+    try testing.expect(cut_page.entries[0].object.get("truncated").?.bool);
+    try testing.expect((try std.json.Stringify.valueAlloc(a, cut_page.entries[0], .{})).len <= contract.transcript_page_bytes);
+    const named = cut_page.entries[0].object.get("message").?.object.get("content").?.array.items[0].object.get("result").?.array.items;
+    try testing.expectEqualStrings("a picture", named[0].object.get("text").?.string);
+    try testing.expectEqualStrings("text", named[1].object.get("type").?.string);
+    try testing.expectEqualStrings("image", named[1].object.get("text").?.string);
 }
 
 const Counted = struct {

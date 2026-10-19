@@ -1,6 +1,7 @@
 mod admissions;
 mod controls;
 mod interactions;
+mod queue;
 mod results;
 mod runs;
 
@@ -44,6 +45,10 @@ pub(crate) struct State {
     provided: HashMap<String, Vec<String>>,
     pending_controls: HashMap<String, controls::PendingSubmit>,
     pending_subscribes: HashMap<String, controls::PendingSubscribe>,
+    order: HashMap<String, Vec<String>>,
+    open_submits: HashMap<String, Vec<String>>,
+    limits: Option<CapabilityLimits>,
+    outgoing: queue::Snapshot,
 }
 
 fn payload<T: DeserializeOwned + Default>(e: &Envelope) -> T {
@@ -286,6 +291,10 @@ impl State {
             provided: HashMap::new(),
             pending_controls: HashMap::new(),
             pending_subscribes: HashMap::new(),
+            order: HashMap::new(),
+            open_submits: HashMap::new(),
+            limits: None,
+            outgoing: queue::Snapshot::default(),
         }
     }
 
@@ -386,6 +395,9 @@ impl State {
         }
         self.payload_scope(at, e);
         self.check_result_images(at, e);
+        if e.envelope_type == EnvelopeType::CAPABILITIES_RESPONSE {
+            self.snapshot_descriptor();
+        }
         self.record_features(e);
         self.feature_for(at, e);
         self.run_dispatch(at, e);
@@ -422,6 +434,7 @@ impl State {
             }
             self.current_capability = revision;
             self.capabilities_stale = true;
+            self.limits = None;
         } else if *t == EnvelopeType::SESSION_MESSAGE_SUBMIT_REQUEST && self.capabilities_stale {
             self.add(
                 codes::STALE_CAPABILITY_REVISION,
