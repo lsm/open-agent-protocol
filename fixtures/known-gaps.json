@@ -268,6 +268,7 @@
     "session-settings-unadvertised-admitted",
     "session-settings-unadvertised-wrong-refusal",
     "state-omits-active-runs-with-pending-permission",
+    "state-redescribes-declared-source",
     "steer-applied-message-ids-mismatch",
     "steer-auto-resolved-to-steer",
     "steer-duplicate-settlement",

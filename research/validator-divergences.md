@@ -274,8 +274,8 @@ rule to attached sources.
 this is a Zig port gap rather than an open protocol question. It needs a
 negative fixture, since none isolates a redescribed declared source.
 
-**Status.** Settled by 0008's existing text. What remains is the Zig port fix
-and its fixture.
+**Status.** Settled by 0008's existing text, and closed: Zig judges declared
+sources too, pinned by `state-redescribes-declared-source`.
 
 ### OPEN-0008-2: which scope checks does the tool catalog and resolve pair owe?
 

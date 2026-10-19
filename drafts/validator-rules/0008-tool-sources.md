@@ -100,7 +100,7 @@ Source: [`decisions/0008-tool-sources.md`](../../decisions/0008-tool-sources.md#
 | `0008#attachment-is-for-the-sessions-lifetime/5` | An open response or snapshot MUST declare each source id once. | L406–459 | `duplicate_tool_source` | `toolsources.go:checkPublishedUnion` | `semantic.zig:checkPublishedUnion` | — |
 | `0008#attachment-is-for-the-sessions-lifetime/6` | An open response or later snapshot of a session with attachments MUST report every attached source and every source the descriptor declares. | L406–459 | `session_state_mismatch` | `toolsources.go:checkPublishedUnion` | `semantic.zig:checkPublishedUnion` | — |
 | `0008#attachment-is-for-the-sessions-lifetime/7` | The open response MUST agree with every member an attachment stated; it may fill members the attachment left blank. | L406–459 | `session_state_mismatch` | `toolsources.go:checkPublishedUnion` | `semantic.zig:checkPublishedUnion` | — |
-| `0008#attachment-is-for-the-sessions-lifetime/8` | A later snapshot MUST describe each reported source exactly as the open response adopted it (attached) or the descriptor declares it (declared). | L406–459 | `session_state_mismatch` | `toolsources.go:checkPublishedUnion` | `semantic.zig:checkPublishedUnion` (attached sources only; see OPEN-0008-1) | — |
+| `0008#attachment-is-for-the-sessions-lifetime/8` | A later snapshot MUST describe each reported source exactly as the open response adopted it (attached) or the descriptor declares it (declared). | L406–459 | `session_state_mismatch` | `toolsources.go:checkPublishedUnion` | `semantic.zig:checkPublishedUnion` | — |
 | `0008#attachment-is-for-the-sessions-lifetime/9` | A snapshot MUST NOT report a source that was neither attached nor declared. | L406–459 | `session_state_mismatch` | `toolsources.go:checkPublishedUnion` | `semantic.zig:checkPublishedUnion` | — |
 
 ### [0011] Tools are provided at session open, and the open is provisioned whole
@@ -227,8 +227,6 @@ Source: [`decisions/0001-agent-control-v0.1-executable-core.md`](../../decisions
 
 ## Port work
 
-- Zig judges a reported source's description only for attached sources,
-  where 0008 and Go also judge declared ones (OPEN-0008-1).
 - Zig lacks the list response's envelope session check, and Rust lacks every
   tool-source check (OPEN-0008-2, 0055).
 - Zig lacks the resolve pair's `tool_call_id` agreement and binding checks
