@@ -661,7 +661,6 @@ needs to continue.
 `user.input.requested` carries:
 
 - `interaction_id`
-- `interaction_id`
 - `requested_by`
 - `responded_by`
 - `session_id`
@@ -675,7 +674,9 @@ needs to continue.
 
 Each question may be plain text, single choice, or multi choice. A control layer
 submits answers through `user.input.resolve.request` or cancels through
-`user.input.cancel.request`. Implementations that persist drafts may expose that
+`user.input.cancel.request`. The answers are judged against the prompt they
+resolve, as [Decision 0056](../decisions/0056-input-answers-are-judged-against-the-prompt.md)
+states. Implementations that persist drafts may expose that
 through extensions or a richer profile; draft persistence is not required for
 core conformance.
 
@@ -810,7 +811,12 @@ the effective descriptor changes. The event sets the envelope's
 `capability_revision` to the new revision and carries `previous_revision` plus
 an optional `reason` in its payload. It is an invalidation notice, not a
 descriptor delta. The receiver obtains the new snapshot with
-`capabilities.request`. Dynamic updates and their event are not required for
+`capabilities.request`, and until that response arrives a request citing the
+pre-update revision or exercising an optional feature is stale, except
+initialization, discovery, and the requests that settle work in flight:
+`run.cancel.request`, `action.permission.resolve.request`,
+`user.input.resolve.request`, `user.input.cancel.request` and
+`action.call.resolve.request` ([Decision 0055](../decisions/0055-register-batch-2.md)). Dynamic updates and their event are not required for
 core conformance.
 
 ## Minimum Conformance

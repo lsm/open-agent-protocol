@@ -35,8 +35,8 @@ Source: [`decisions/0005-run-controls.md`](../../decisions/0005-run-controls.md#
 | `0005#the-gate-is-judged-on-the-correlated-response/2` | An owed refusal MUST carry the code, feature and reason, or the detail, that tells the caller what to change. | L135–147 | the owed code | `controls.go:settleControlRefusal` | `semantic.zig:settleControlRefusal` | `state/controls.rs:settle_control_refusal` |
 | `0005#the-gate-is-judged-on-the-correlated-response/3` | A control that is within every disclosed constraint MUST NOT be refused `unsupported_feature` naming it. | L135–147 | `unsatisfiable_control` | `controls.go:settleControlRefusal` | `semantic.zig:settleControlRefusal` | `state/controls.rs:settle_control_refusal` |
 | `0005#the-gate-is-judged-on-the-correlated-response/4` | An admission of a `model_id` MUST report that model. | L135–147 | `unapplied_control` | `controls.go:settleSubmitAdmission` | `semantic.zig:settleSubmitAdmission` | `state/controls.rs:settle_submit_admission` |
-| `0005#the-gate-is-judged-on-the-correlated-response/5` | A `run.started` of a run admitted under a `model_id` MUST name that model. | L246–263 | `unapplied_control` | `state.go:runEvent` | `semantic.zig:runEvent` | — |
-| `0005#the-gate-is-judged-on-the-correlated-response/6` | A `run.started` naming a model MUST name the admitted one. | L246–263 | `unapplied_control` | `state.go:runEvent` | `semantic.zig:runEvent` | — |
+| `0005#the-gate-is-judged-on-the-correlated-response/5` | A `run.started` of a run admitted under a `model_id` MUST name that model. | L246–263 | `unapplied_control` | `state.go:runEvent` | `semantic.zig:runEvent` | `state/runs.rs:advance` |
+| `0005#the-gate-is-judged-on-the-correlated-response/6` | A `run.started` naming a model MUST name the admitted one. | L246–263 | `unapplied_control` | `state.go:runEvent` | `semantic.zig:runEvent` | `state/runs.rs:advance` |
 
 ### [0005] Presence is what the gate judges
 
@@ -151,10 +151,9 @@ Source: [`decisions/0031-a-policy-refusal-is-a-settlement.md`](../../decisions/0
   Go compares by value. Zig also raises `unsatisfiable_control` on
   `output_schema` keywords outside its interpreter that Go admits. Both are
   recorded divergences, not open questions.
-- Rust has no `run.started` model check and no per-run-default guard (the rows
-  with a Rust `—`). Those are port gaps, which `fixtures/known-gaps.json`
-  records against `controls-started-omits-model` and the `controls-per-run-*`
-  fixtures, not divergences.
+- Rust has no per-run-default guard (the row with a Rust `—`). That is a port
+  gap, which `fixtures/known-gaps.json` records against the `controls-per-run-*`
+  fixtures, not a divergence.
 - The `model_id` catalog miss (`model_not_in_catalog` from
   `controls.go:unsatisfiable`) is 0006's rule. 0007 adds when a reservation's
   model applies, which moves when the `run.started` rows above are judged but

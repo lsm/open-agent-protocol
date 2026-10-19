@@ -24,6 +24,7 @@ pub(super) struct Run {
     pub(super) tools: HashMap<String, ToolTrack>,
     pub(super) interactions: HashMap<String, Interaction>,
     pub(super) controls: Controls,
+    pub(super) admitted_model: String,
 }
 
 pub(super) const RUN_EVENTS: [EnvelopeType; 21] = [
@@ -230,6 +231,7 @@ impl State {
             status: RunStatus::QUEUED,
             last: at,
             controls,
+            admitted_model: p.model_id.clone(),
             ..Run::default()
         };
         self.runs.insert(run_id.clone(), run);
@@ -383,6 +385,26 @@ impl State {
             }
             run.started = true;
             run.status = RunStatus::RUNNING;
+            if !run.admitted_model.is_empty() {
+                let model = payload::<RunStartedPayload>(e).model_id;
+                if model.is_empty() && run.controls.selects_model() {
+                    found.push((
+                        codes::UNAPPLIED_CONTROL,
+                        "/payload/model_id",
+                        "run.started omits the model the run was admitted under",
+                        run.admitted_model.clone(),
+                        "absent".to_owned(),
+                    ));
+                } else if !model.is_empty() && model != run.admitted_model {
+                    found.push((
+                        codes::UNAPPLIED_CONTROL,
+                        "/payload/model_id",
+                        "run.started model disagrees with the admitted model",
+                        run.admitted_model.clone(),
+                        model,
+                    ));
+                }
+            }
             return (found, plain);
         }
         if !run.started && *t != EnvelopeType::RUN_FAILED && *t != EnvelopeType::RUN_CANCELLED {
