@@ -110,6 +110,7 @@ func runHub(ctx context.Context, args []string, stdin io.Reader, stdout, stderr 
 		hub.CloseSessions(settle)
 		return err
 	case <-signals.Done():
+	case <-daemon.Done():
 	}
 
 	fmt.Fprintln(stderr, "goap: shutting down")
