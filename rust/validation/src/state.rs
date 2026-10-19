@@ -1,3 +1,4 @@
+mod admissions;
 mod runs;
 
 use std::collections::{HashMap, HashSet};
@@ -29,6 +30,7 @@ pub(crate) struct State {
     runs: HashMap<String, runs::Run>,
     active: HashMap<String, String>,
     late_cancels: HashSet<String>,
+    recoveries: HashMap<String, admissions::Recovery>,
 }
 
 fn payload<T: DeserializeOwned + Default>(e: &Envelope) -> T {
@@ -259,6 +261,7 @@ impl State {
             runs: HashMap::new(),
             active: HashMap::new(),
             late_cancels: HashSet::new(),
+            recoveries: HashMap::new(),
         }
     }
 

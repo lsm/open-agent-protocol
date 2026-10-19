@@ -7,16 +7,17 @@ use crate::codes;
 
 #[derive(Default)]
 pub(super) struct Run {
-    session: String,
-    next: u64,
-    admitted: bool,
-    started: bool,
-    terminal: bool,
-    terminal_type: EnvelopeType,
-    cancel_accepted: bool,
-    status: RunStatus,
-    last: (usize, usize),
-    completed_messages: HashSet<String>,
+    pub(super) session: String,
+    pub(super) next: u64,
+    pub(super) admitted: bool,
+    pub(super) started: bool,
+    pub(super) terminal: bool,
+    pub(super) terminal_type: EnvelopeType,
+    pub(super) cancel_accepted: bool,
+    pub(super) recovered: bool,
+    pub(super) status: RunStatus,
+    pub(super) last: (usize, usize),
+    pub(super) completed_messages: HashSet<String>,
 }
 
 pub(super) const RUN_EVENTS: [EnvelopeType; 21] = [
@@ -104,6 +105,14 @@ impl State {
         let t = &e.envelope_type;
         if *t == EnvelopeType::SESSION_MESSAGE_SUBMIT_RESPONSE {
             self.admit_submission(at, e, payload(e));
+        } else if *t == EnvelopeType::SESSION_OPEN_RESPONSE {
+            self.open_response(at, e);
+        } else if *t == EnvelopeType::SESSION_STATE_RESPONSE
+            || *t == EnvelopeType::SESSION_STATE_UPDATED
+        {
+            self.state_document(at, e);
+        } else if *t == EnvelopeType::SESSION_COMPACT_RESPONSE {
+            self.compact_response(at, e);
         } else if *t == EnvelopeType::RUN_CANCEL_REQUEST {
             let p: RunCancelRequest = payload(e);
             match self.runs.get(p.run_id.as_str()) {
@@ -139,15 +148,29 @@ impl State {
         }
     }
 
-    fn admit_submission(&mut self, at: (usize, usize), e: &Envelope, p: MessageSubmitResponse) {
+    pub(super) fn admit_submission(
+        &mut self,
+        at: (usize, usize),
+        e: &Envelope,
+        p: MessageSubmitResponse,
+    ) {
         let run_id = os(&p.run_id);
         self.check_scope(at, e, p.session_id.as_str(), &run_id);
         let reply = os(&e.in_reply_to);
-        let requested = self
-            .requests
-            .get(&reply)
-            .filter(|request| request.envelope_type == EnvelopeType::SESSION_MESSAGE_SUBMIT_REQUEST)
-            .map(|request| payload::<MessageSubmitRequest>(&request.envelope).delivery);
+        let requested = self.requests.get(&reply).and_then(|request| {
+            if request.envelope_type == EnvelopeType::SESSION_MESSAGE_SUBMIT_REQUEST {
+                Some(payload::<MessageSubmitRequest>(&request.envelope).delivery)
+            } else if request.envelope_type == EnvelopeType::SESSION_OPEN_REQUEST {
+                Some(
+                    payload::<SessionOpenRequest>(&request.envelope)
+                        .message
+                        .map(|m| m.delivery)
+                        .unwrap_or_default(),
+                )
+            } else {
+                None
+            }
+        });
         if let Some(delivery) = requested
             .as_ref()
             .filter(|delivery| p.requested_delivery != **delivery)
@@ -237,6 +260,7 @@ impl State {
                 },
             );
         }
+        self.replay_cursor(at, e, &run_id);
         let (found, plain) = self.advance(at, e, &run_id);
         for (code, pointer, message, expected, actual) in found {
             let related: &[&str] = if code == codes::SCOPE_MISMATCH {
@@ -307,7 +331,8 @@ impl State {
             }
             run.next = run.next.max(sequence + 1);
         }
-        let unaccepted_cancel = *t == EnvelopeType::RUN_CANCELLED && !run.cancel_accepted;
+        let unaccepted_cancel =
+            *t == EnvelopeType::RUN_CANCELLED && !run.cancel_accepted && !run.recovered;
         if run.terminal {
             if unaccepted_cancel {
                 plain.push((
