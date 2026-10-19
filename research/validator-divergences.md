@@ -27,6 +27,9 @@ rule to attached sources.
 this is a Zig port gap rather than an open protocol question. It needs a
 negative fixture, since none isolates a redescribed declared source.
 
+**Status.** Settled by 0008's existing text. What remains is the Zig port fix
+and its fixture.
+
 ## OPEN-0008-2
 
 **What differs.** Three scope checks exist only in Go:
