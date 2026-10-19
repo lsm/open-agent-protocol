@@ -77,7 +77,10 @@ fn every_positive_and_semantic_fixture_passes_decode_and_schema() {
     let mut judged = 0;
     let mut refused = Vec::new();
     for entry in core_entries() {
-        let phase = entry["phase"].as_str().unwrap_or("semantic");
+        let phase = entry["phase"]
+            .as_str()
+            .filter(|phase| !phase.is_empty())
+            .unwrap_or("semantic");
         if phase != "semantic" {
             continue;
         }
@@ -98,7 +101,7 @@ fn every_positive_and_semantic_fixture_passes_decode_and_schema() {
         refused.len(),
         refused.join("\n")
     );
-    assert!(judged >= 450, "judged only {judged}");
+    assert!(judged >= 640, "judged only {judged}");
 }
 
 const GAPS: [(&str, &str); 4] = [
@@ -127,7 +130,10 @@ fn every_semantic_fixture_draws_exactly_its_declared_codes_among_those_implement
     let mut wrong = Vec::new();
     let mut closed = Vec::new();
     for entry in core_entries() {
-        let phase = entry["phase"].as_str().unwrap_or("semantic");
+        let phase = entry["phase"]
+            .as_str()
+            .filter(|phase| !phase.is_empty())
+            .unwrap_or("semantic");
         if phase != "semantic" {
             continue;
         }
@@ -182,5 +188,5 @@ fn every_semantic_fixture_draws_exactly_its_declared_codes_among_those_implement
         wrong.len(),
         wrong.join("\n")
     );
-    assert!(judged >= 450, "judged only {judged}");
+    assert!(judged >= 640, "judged only {judged}");
 }
