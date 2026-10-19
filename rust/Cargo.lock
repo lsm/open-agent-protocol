@@ -879,6 +879,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "oap-harness"
+version = "0.1.0"
+dependencies = [
+ "jsonschema",
+ "serde",
+ "serde_json",
+ "thiserror",
+]
+
+[[package]]
 name = "oap-protocol"
 version = "0.1.0"
 dependencies = [
