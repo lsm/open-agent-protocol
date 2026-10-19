@@ -6,8 +6,9 @@ publishes, the core model switch and live provider attachment. Go and Zig name
 the function in `go/validation/`, `zig/src/validation/` and
 `rust/validation/src/`. Rust judges only the session scope of these envelopes,
 through its generic response and payload scope checks, and has no catalog,
-switch or attachment rule beyond that. Where Go and Zig disagree, the open
-items are OPEN-0028-1 to -4 in
+switch or attachment rule beyond that. The attachment rows follow 0028 as
+[Decision 0054](../../decisions/0054-register-batch-1.md) amends it, which
+closed OPEN-0028-1 to -4 in
 [`research/validator-divergences.md`](../../research/validator-divergences.md).
 Format: [README](README.md).
 
@@ -114,13 +115,14 @@ Source: [`decisions/0028-live-model-and-provider-control.md`](../../decisions/00
 | id | rule | lines | code | Go | Zig | Rust |
 | --- | --- | --- | --- | --- | --- | --- |
 | `0028#optional-sessionproviderattach/1` | An advertised `action.providers.attach` MUST disclose the `session_live` mode. | L69–70 | `undisclosed_attach_modes` | `modelcontrol.go:checkProviderAttachModes` | `semantic.zig:checkAttachModes` | — |
-| `0028#optional-sessionproviderattach/2` | A `session.provider.attach.response` MUST name the requested session and, as `provider_id`, the requested alias. | L71, L97–98 | `scope_mismatch` | `modelcontrol.go:providerAttachResponse` | `semantic.zig:providerAttachResponse` | `state.rs:response` (session only) |
-| `0028#optional-sessionproviderattach/3` | An attachment MUST NOT be accepted unless `action.providers.attach` is advertised; acceptance under a descriptor lacking `session_live` is OPEN-0028-2. | L69–70 | `unavailable_capability` | `modelcontrol.go:providerAttachResponse` | `semantic.zig:gatedResponse` | — |
-| `0028#optional-sessionproviderattach/4` | An attachment accepted while the key is `degraded` MUST carry it in `allow_degraded_features`; whether the refusal is judged is OPEN-0028-3. | L94–97 | `degraded_without_optin` | `modelcontrol.go:providerAttachResponse` | `semantic.zig:gatedResponse` | — |
-| `0028#optional-sessionproviderattach/5` | An attachment to an endpoint not advertising the key MUST be refused with `unsupported_feature` naming `action.providers.attach` in `details.feature`; whether `details.reason` is owed is OPEN-0028-1. | L94–96 | `unavailable_capability` | `modelcontrol.go:settleModelControlRefusal` | `semantic.zig:settleControlRefusal` | — |
+| `0028#optional-sessionproviderattach/2` | A `session.provider.attach.response` MUST name the requested session and, as `provider_id`, the requested alias. | L71, L100–101 | `scope_mismatch` | `modelcontrol.go:providerAttachResponse` | `semantic.zig:providerAttachResponse` | `state.rs:response` (session only) |
+| `0028#optional-sessionproviderattach/3` | An attachment MUST NOT be accepted unless `action.providers.attach` is advertised with the `session_live` mode. | L69–70, L102–104; 0054 L46–53 | `unavailable_capability` | `modelcontrol.go:providerAttachResponse` | `semantic.zig:gatedResponse`, `semantic.zig:providerAttachResponse` | — |
+| `0028#optional-sessionproviderattach/4` | An attachment accepted while the key is `degraded` MUST carry it in `allow_degraded_features`. | L98–100 | `degraded_without_optin` | `modelcontrol.go:providerAttachResponse` | `semantic.zig:gatedResponse` | — |
+| `0028#optional-sessionproviderattach/5` | An attachment to an endpoint not advertising the key MUST be refused with `unsupported_feature`, naming `action.providers.attach` in `details.feature` and `unadvertised` in `details.reason`. | L95–98; 0054 L36–44 | `unavailable_capability` | `modelcontrol.go:settleModelControlRefusal` | `semantic.zig:settleControlRefusal` | — |
 | `0028#optional-sessionproviderattach/6` | Reusing an attached alias for a different binding MUST NOT be accepted. | L92–94 | `duplicate_provider` | `modelcontrol.go:providerAttachResponse` | `semantic.zig:providerAttachResponse` | — |
 | `0028#optional-sessionproviderattach/7` | An attachment MUST NOT be accepted under an alias the session's bound catalog already serves. | L91–92 | `duplicate_provider` | `modelcontrol.go:providerAttachResponse` | `semantic.zig:providerAttachResponse` | — |
-| `0028#optional-sessionproviderattach/8` | An accepted attachment invalidates that session's catalog, and the next catalog served under the active revision MUST list the attached alias in `providers[]`; whether a stale-revision catalog must too is OPEN-0028-4. | L100–106 | `unmatched_provider` | `models.go:modelsResponse` | `semantic.zig:modelsResponse` | — |
+| `0028#optional-sessionproviderattach/8` | An accepted attachment invalidates that session's catalog, and the next catalog that binds (citing the active revision with its descriptor in hand) MUST list the attached alias in `providers[]`; a catalog that does not bind owes nothing about the attachment. | L106–115; 0054 L55–64 | `unmatched_provider` | `models.go:modelsResponse` | `semantic.zig:modelsResponse` | — |
+| `0028#optional-sessionproviderattach/9` | An attachment sent while the key is `degraded` without it in `allow_degraded_features` MUST be refused with `capability_degraded` naming the feature. | L98–100; 0054 L36–44 | `degraded_without_optin` | `modelcontrol.go:settleModelControlRefusal` | `semantic.zig:settleControlRefusal` | — |
 
 ### [0035] The entry gains facts, and the listing publishes its completeness
 

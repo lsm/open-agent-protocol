@@ -13219,6 +13219,9 @@
       "provenance": [
         "decisions/0054-register-batch-1.md",
         "decisions/0028-live-model-and-provider-control.md"
+      ],
+      "rules": [
+        "0028#optional-sessionproviderattach/5"
       ]
     },
     {
@@ -13237,6 +13240,9 @@
       "provenance": [
         "decisions/0054-register-batch-1.md",
         "decisions/0028-live-model-and-provider-control.md"
+      ],
+      "rules": [
+        "0028#optional-sessionproviderattach/9"
       ]
     },
     {
@@ -13256,6 +13262,10 @@
       "provenance": [
         "decisions/0054-register-batch-1.md",
         "decisions/0028-live-model-and-provider-control.md"
+      ],
+      "rules": [
+        "0028#optional-sessionproviderattach/1",
+        "0028#optional-sessionproviderattach/3"
       ]
     },
     {
@@ -13277,6 +13287,10 @@
       "provenance": [
         "decisions/0054-register-batch-1.md",
         "decisions/0028-live-model-and-provider-control.md"
+      ],
+      "rules": [
+        "0006#a-catalog-belongs-to-the-revision-it-was-served-under/3",
+        "0028#optional-sessionproviderattach/8"
       ]
     }
   ]
