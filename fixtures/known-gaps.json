@@ -268,6 +268,7 @@
     "queue-state-started-run-called-queued",
     "queue-state-terminal-status",
     "queue-state-two-started-entries",
+    "queue-state-unpositioned-entry-omits-pending-without-queue",
     "queue-state-waiting-without-a-waiting-run",
     "session-list-degraded-admitted-without-optin",
     "session-list-duplicate-entry",
