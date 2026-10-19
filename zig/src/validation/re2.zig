@@ -187,6 +187,7 @@ const Parser = struct {
         }
         if (self.peek() == '?') self.at += 1;
         if (self.peek()) |after| if (after == '*' or after == '+' or after == '?') return error.Invalid;
+        if (self.peek() == '{' and try self.braces() != null) return error.Invalid;
         if (piece == .begin or piece == .end) return self.standDown();
         const held = try self.arena.create(Node);
         held.* = piece;
@@ -227,6 +228,12 @@ const Parser = struct {
         self.at += 1;
         switch (c) {
             '*', '+', '?' => return error.Invalid,
+            '{' => {
+                self.at -= 1;
+                if (try self.braces() != null) return error.Invalid;
+                self.at += 1;
+                return .{ .set = single(c) };
+            },
             '(' => return self.group(),
             '[' => return if (try self.class()) |set| .{ .set = set } else self.standDown(),
             '.' => {
@@ -252,9 +259,7 @@ const Parser = struct {
                 const close = std.mem.indexOfScalarPos(u8, self.source, open, '>') orelse return error.Invalid;
                 if (close == open) return error.Invalid;
                 for (self.source[open..close]) |name| {
-                    if (name >= 0x80) {
-                        self.soft = true;
-                    } else if (!std.ascii.isAlphanumeric(name) and name != '_') return error.Invalid;
+                    if (!std.ascii.isAlphanumeric(name) and name != '_') return error.Invalid;
                 }
                 for (self.names.items) |earlier| if (std.mem.eql(u8, earlier, self.source[open..close])) return error.Invalid;
                 try self.names.append(self.arena, self.source[open..close]);
@@ -531,10 +536,10 @@ test "a pattern matches only the whole name, as Go's anchored RE2 does" {
 }
 
 test "a pattern Go's RE2 rejects is invalid, and valid syntax this matcher does not implement stands down" {
-    for ([_][]const u8{ "[a-z", "(ab", "ab)", "*a", "a**", "[z-a]", "\\q", "(?P<>x)", "a{2,1}", "x{1001}", "x{12345}", "(?i)[a-", "(?=a)", "(?<!a)b", "[[:foo:]]", "\\1", "\\8", "\\C", "[\\b]", "(?i-)a", "(?)a", "(?P<a>x)(?P<a>y)" }) |pattern| {
+    for ([_][]const u8{ "[a-z", "(ab", "ab)", "*a", "a**", "[z-a]", "\\q", "(?P<>x)", "a{2,1}", "x{1001}", "x{12345}", "(?i)[a-", "(?=a)", "(?<!a)b", "[[:foo:]]", "\\1", "\\8", "\\C", "[\\b]", "(?i-)a", "(?)a", "(?P<a>x)(?P<a>y)", "(?P<\xc3\xa9>a)", "{2}", "a|{2}", "({2})", "a*{2}", "a{2}{3}", "a{2}*" }) |pattern| {
         try std.testing.expectEqual(Compiled.invalid, std.meta.activeTag(try compile(std.testing.allocator, pattern)));
     }
-    for ([_][]const u8{ "(?P<\xc3\xa9>a)", "(?i)abc", "(?i:ab)c", "\\pL+", "\\p{Greek}", "[[:alpha:]]", "\\bword", "^*a", "caf\xc3\xa9", "\\x{100}", "\\Qa.b\\E" }) |pattern| {
+    for ([_][]const u8{ "(?i)abc", "(?i:ab)c", "\\pL+", "\\p{Greek}", "[[:alpha:]]", "\\bword", "^*a", "caf\xc3\xa9", "\\x{100}", "\\Qa.b\\E" }) |pattern| {
         try std.testing.expectEqual(Compiled.unsupported, std.meta.activeTag(try compile(std.testing.allocator, pattern)));
     }
 }
@@ -542,6 +547,8 @@ test "a pattern Go's RE2 rejects is invalid, and valid syntax this matcher does 
 test "a brace that is not a repeat in Go's syntax is a literal" {
     try expectMatch("a{01}", "a{01}", true);
     try expectMatch("a{,3}", "a{,3}", true);
+    try expectMatch("{", "{", true);
+    try expectMatch("{,2}", "{,2}", true);
     try expectMatch("a{2,}", "aaa", true);
     try expectMatch("\\101\\x42", "AB", true);
 }
