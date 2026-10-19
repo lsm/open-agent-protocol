@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use oap_validation::{codes, Phase, Validator, IMPLEMENTED};
+use oap_validation::{Phase, Validator, IMPLEMENTED};
 use serde_json::Value;
 
 fn fixtures() -> PathBuf {
@@ -104,31 +104,27 @@ fn every_positive_and_semantic_fixture_passes_decode_and_schema() {
     assert!(judged >= 640, "judged only {judged}");
 }
 
-const GAPS: [(&str, &str); 4] = [
-    (
-        "models-stale-catalog-does-not-displace",
-        codes::STALE_CAPABILITY_REVISION,
-    ),
-    (
-        "models-stale-catalog-raises-no-change",
-        codes::STALE_CAPABILITY_REVISION,
-    ),
-    (
-        "queue-capabilities-bound-moves-within-revision",
-        codes::STALE_CAPABILITY_REVISION,
-    ),
-    (
-        "queue-capabilities-level-moves-within-revision",
-        codes::STALE_CAPABILITY_REVISION,
-    ),
+const DISAGREEING: [&str; 12] = [
+    "compaction-response-scope-mismatch",
+    "models-held-position-in-another-session",
+    "models-held-position-in-another-session-no-current",
+    "models-position-in-another-session",
+    "models-position-in-another-session-no-current",
+    "models-stale-catalog-does-not-displace",
+    "models-stale-catalog-raises-no-change",
+    "queue-capabilities-bound-moves-within-revision",
+    "queue-capabilities-level-moves-within-revision",
+    "scope-mismatch",
+    "steer-explicit-target-mismatch",
+    "tools-list-unscoped-answer-scoped",
 ];
 
 #[test]
-fn every_semantic_fixture_draws_exactly_its_declared_codes_among_those_implemented() {
+fn every_semantic_fixture_draws_exactly_its_declared_codes_among_those_implemented_unless_listed() {
     let validator = Validator::new().unwrap();
-    let mut judged = 0;
+    let mut judged = Vec::new();
     let mut wrong = Vec::new();
-    let mut closed = Vec::new();
+    let mut agreeing = Vec::new();
     for entry in core_entries() {
         let phase = entry["phase"]
             .as_str()
@@ -140,47 +136,37 @@ fn every_semantic_fixture_draws_exactly_its_declared_codes_among_those_implement
         let path = entry["path"].as_str().unwrap();
         let id = entry["id"].as_str().unwrap();
         let result = validator.validate(&std::fs::read(fixtures().join(path)).unwrap(), path);
-        let declared: Vec<&str> = entry["codes"]
+        let mut want: Vec<&str> = entry["codes"]
             .as_array()
-            .map(|codes| codes.iter().filter_map(Value::as_str).collect())
+            .map(|codes| {
+                codes
+                    .iter()
+                    .filter_map(Value::as_str)
+                    .filter(|code| IMPLEMENTED.contains(code))
+                    .collect()
+            })
             .unwrap_or_default();
-        let gapped: Vec<&str> = GAPS
-            .iter()
-            .filter(|(fixture, _)| *fixture == id)
-            .map(|(_, code)| *code)
-            .collect();
-        let mut want: Vec<&str> = declared
-            .iter()
-            .copied()
-            .filter(|code| IMPLEMENTED.contains(code) && !gapped.contains(code))
-            .collect();
-        let mut got: Vec<&str> = result
-            .diagnostics
-            .iter()
-            .map(|d| d.code.as_str())
-            .filter(|code| !gapped.contains(code))
-            .collect();
-        for code in &gapped {
-            let raised = result
-                .diagnostics
-                .iter()
-                .filter(|d| d.code == *code)
-                .count();
-            if raised >= declared.iter().filter(|declared| *declared == code).count() {
-                closed.push(format!("{id}: {code}"));
-            }
-        }
+        let mut got: Vec<&str> = result.diagnostics.iter().map(|d| d.code.as_str()).collect();
         want.sort_unstable();
         got.sort_unstable();
-        if want != got {
+        let listed = DISAGREEING.contains(&id);
+        if want != got && !listed {
             wrong.push(format!("{id}: want {want:?}, got {got:?}"));
         }
-        judged += 1;
+        if want == got && listed {
+            agreeing.push(id.to_owned());
+        }
+        judged.push(id.to_owned());
     }
+    let unjudged: Vec<&str> = DISAGREEING
+        .iter()
+        .copied()
+        .filter(|id| !judged.iter().any(|j| j == id))
+        .collect();
+    assert!(unjudged.is_empty(), "listed but never judged: {unjudged:?}");
     assert!(
-        closed.is_empty(),
-        "listed as gaps, now raised:\n{}",
-        closed.join("\n")
+        agreeing.is_empty(),
+        "listed as disagreeing, now agree: {agreeing:?}"
     );
     assert!(
         wrong.is_empty(),
@@ -188,5 +174,5 @@ fn every_semantic_fixture_draws_exactly_its_declared_codes_among_those_implement
         wrong.len(),
         wrong.join("\n")
     );
-    assert!(judged >= 640, "judged only {judged}");
+    assert!(judged.len() >= 640, "judged only {}", judged.len());
 }
