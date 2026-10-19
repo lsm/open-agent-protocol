@@ -2578,7 +2578,7 @@ pub const App = struct {
         defer if (owned_path) |path| self.allocator.free(path);
         const path = owned_path orelse custom_providers.config_file_name;
         if (config.providers.len == 0 and config.overrides.len == 0) {
-            const msg = try std.fmt.allocPrint(self.allocator, "no providers are declared in {s}; /provider add <id> <base_url> declares one", .{path});
+            const msg = try std.fmt.allocPrint(self.allocator, "no custom providers are declared in {s}. That file holds only endpoints you add with /provider add <id> <base_url>; built-in providers such as github-copilot sign in with /login and do not appear here.", .{path});
             defer self.allocator.free(msg);
             try self.state.appendTranscript(.system, msg);
             return;
@@ -6341,8 +6341,8 @@ test "App /provider list names what is declared and says so when nothing is" {
     try app.submit("/provider list");
     const empty = app.state.transcript.items[app.state.transcript.items.len - 1];
     try std.testing.expectEqual(tui_state.TranscriptKind.system, empty.kind);
-    try std.testing.expect(std.mem.startsWith(u8, empty.text.items, "no providers are declared in "));
-    try std.testing.expect(std.mem.endsWith(u8, empty.text.items, "/provider add <id> <base_url> declares one"));
+    try std.testing.expect(std.mem.startsWith(u8, empty.text.items, "no custom providers are declared in "));
+    try std.testing.expect(std.mem.endsWith(u8, empty.text.items, "built-in providers such as github-copilot sign in with /login and do not appear here."));
 
     try app.submit("/provider add gateway https://gw.test/v1 --no-auth");
     try app.submit("/provider add other https://other.test --env OTHER_KEY");

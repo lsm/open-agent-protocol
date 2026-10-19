@@ -1469,7 +1469,7 @@ def scenario_session_commands(args):
         run.command("/rename session commands", 'Session renamed to "session commands"')
         run.command("/perm ask", "permission mode set to ask")
         run.command("/logout nobody", "no saved credential for nobody")
-        run.command("/provider list", "no providers are declared")
+        run.command("/provider list", "no custom providers are declared")
         redraw_from = len(run.session.plain)
         run.session.type_text("/redraw")
         run.session.send(KEY_ENTER, "Enter (/redraw)")

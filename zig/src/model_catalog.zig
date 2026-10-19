@@ -356,6 +356,7 @@ fn loadGitHubCopilotModels(allocator: std.mem.Allocator, storage: ?*oauth_storag
         return models.toOwnedSlice(allocator);
     }
 
+    note(notes, github_copilot_provider_id, "GitHub has not listed your models yet, so github-copilot shows oapx's built-in list, which your plan may not offer", .{});
     const ids: []const []const u8 = discovered orelse &github_copilot.KNOWN_COPILOT_MODELS;
     for (ids) |id| {
         var model = try copilotModel(allocator, id, base_url, null);
@@ -374,7 +375,7 @@ fn listCopilotModels(
 ) !?[]DiscoveredModel {
     if (builtin.is_test) {
         const body = test_copilot_listing orelse return null;
-        return try parseCopilotModels(allocator, body);
+        return try listedCopilotModels(allocator, body, notes);
     }
     if (mode == .allow_cache) {
         if (try loadCachedCopilotModels(allocator, anthropic_catalog_max_age_ms)) |models| return models;
@@ -384,13 +385,9 @@ fn listCopilotModels(
         if (compat.time.nowMillis() < creds.expires) {
             if (fetchCopilotModelsCatalog(allocator, creds.access, base_url)) |body| {
                 defer allocator.free(body);
-                if (parseCopilotModels(allocator, body)) |models| {
-                    if (models.len > 0) {
-                        saveMakaiCatalog(allocator, makai_copilot_catalog_name, body) catch {};
-                        return models;
-                    }
-                    freeDiscoveredModels(allocator, models);
-                    note(notes, github_copilot_provider_id, "the model list offered no chat model", .{});
+                if (listedCopilotModels(allocator, body, notes)) |models| {
+                    saveMakaiCatalog(allocator, makai_copilot_catalog_name, body) catch {};
+                    return models;
                 } else |err| note(notes, github_copilot_provider_id, "the model list did not parse ({t})", .{err});
             } else |err| note(notes, github_copilot_provider_id, "GET {s}/models failed ({t})", .{ base_url, err });
         } else note(notes, github_copilot_provider_id, "the stored token has expired; /login github-copilot lists its models again", .{});
@@ -407,10 +404,13 @@ fn loadCachedCopilotModels(allocator: std.mem.Allocator, max_age_ms: ?i64) !?[]D
     }
     const data = compat.fs.readFileAlloc(allocator, compat.fs.getCwd(), path, max_catalog_bytes) catch return null;
     defer allocator.free(data);
-    const models = parseCopilotModels(allocator, data) catch return null;
-    if (models.len > 0) return models;
-    freeDiscoveredModels(allocator, models);
-    return null;
+    return parseCopilotModels(allocator, data) catch null;
+}
+
+fn listedCopilotModels(allocator: std.mem.Allocator, body: []const u8, notes: ?*RefreshNotes) ![]DiscoveredModel {
+    const models = try parseCopilotModels(allocator, body);
+    if (models.len == 0) note(notes, github_copilot_provider_id, "GitHub Copilot answered, but your plan offers no model oapx can pick (Copilot Free chooses models automatically), so github-copilot lists no models", .{});
+    return models;
 }
 
 fn fetchCopilotModelsCatalog(allocator: std.mem.Allocator, token: []const u8, base_url: []const u8) ![]u8 {
@@ -3136,6 +3136,63 @@ test "github copilot falls back to the known list and the default base url" {
 
     try std.testing.expectEqual(github_copilot.KNOWN_COPILOT_MODELS.len, models.len);
     try std.testing.expectEqualStrings(github_copilot.DEFAULT_BASE_URL, models[0].base_url);
+}
+
+fn copilotTestStorage() !oauth_storage.AuthStorage {
+    var storage = oauth_storage.AuthStorage{
+        .providers = std.StringHashMap(oauth_storage.ProviderAuth).init(std.testing.allocator),
+        .allocator = std.testing.allocator,
+    };
+    errdefer storage.deinit();
+    const id = try std.testing.allocator.dupe(u8, github_copilot_provider_id);
+    errdefer std.testing.allocator.free(id);
+    const refresh = try std.testing.allocator.dupe(u8, "gho");
+    errdefer std.testing.allocator.free(refresh);
+    const access = try std.testing.allocator.dupe(u8, "tok");
+    errdefer std.testing.allocator.free(access);
+    try storage.providers.put(id, .{ .oauth = .{ .refresh = refresh, .access = access, .expires = compat.time.nowMillis() + 3_600_000 } });
+    return storage;
+}
+
+test "a Copilot listing that offers no pickable chat model lists none and says why, instead of the built-in list" {
+    test_force_copilot_models = true;
+    test_copilot_listing =
+        \\{"data":[
+        \\ {"id":"claude-haiku-4.5","model_picker_enabled":false,"policy":{"state":"enabled"},"supported_endpoints":["/chat/completions"],"capabilities":{"type":"chat","limits":{"max_context_window_tokens":200000,"max_prompt_tokens":128000}}},
+        \\ {"id":"claude-opus-5.5","model_picker_enabled":false,"policy":{"state":"disabled"},"capabilities":{"type":"chat"}}
+        \\]}
+    ;
+    defer {
+        test_force_copilot_models = false;
+        test_copilot_listing = null;
+    }
+    var storage = try copilotTestStorage();
+    defer storage.deinit();
+    var notes = RefreshNotes.init(std.testing.allocator);
+    defer notes.deinit();
+
+    const models = try loadGitHubCopilotModels(std.testing.allocator, &storage, .force_fetch, &notes);
+    defer deinitModels(std.testing.allocator, models);
+
+    try std.testing.expectEqual(@as(usize, 0), models.len);
+    try std.testing.expectEqual(@as(usize, 1), notes.items.items.len);
+    try std.testing.expect(std.mem.startsWith(u8, notes.items.items[0].reason, "GitHub Copilot answered, but your plan offers no model oapx can pick"));
+}
+
+test "Copilot models from the built-in list come with a note that GitHub has not confirmed them" {
+    test_force_copilot_models = true;
+    defer test_force_copilot_models = false;
+    var storage = try copilotTestStorage();
+    defer storage.deinit();
+    var notes = RefreshNotes.init(std.testing.allocator);
+    defer notes.deinit();
+
+    const models = try loadGitHubCopilotModels(std.testing.allocator, &storage, .force_fetch, &notes);
+    defer deinitModels(std.testing.allocator, models);
+
+    try std.testing.expectEqual(github_copilot.KNOWN_COPILOT_MODELS.len, models.len);
+    try std.testing.expectEqual(@as(usize, 1), notes.items.items.len);
+    try std.testing.expect(std.mem.startsWith(u8, notes.items.items[0].reason, "GitHub has not listed your models yet"));
 }
 
 test "an enterprise login with no stored base url contributes nothing" {
