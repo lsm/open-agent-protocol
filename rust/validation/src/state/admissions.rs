@@ -159,6 +159,10 @@ impl State {
             },
             run_id: Some(entry.run_id.clone()),
             status: entry.status.clone(),
+            model_id: message
+                .model_id
+                .clone()
+                .unwrap_or_else(|| p.current_model_id.clone()),
             ..MessageSubmitResponse::default()
         };
         self.admit_submission(at, e, admitted);

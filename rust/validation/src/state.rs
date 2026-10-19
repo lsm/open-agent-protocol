@@ -1,4 +1,5 @@
 mod admissions;
+mod controls;
 mod interactions;
 mod runs;
 
@@ -35,6 +36,12 @@ pub(crate) struct State {
     initialized: bool,
     participants: HashSet<String>,
     features: HashMap<String, SupportLevel>,
+    feature_supports: HashMap<String, FeatureSupport>,
+    catalog: Vec<String>,
+    catalog_known: bool,
+    catalog_ambiguous: bool,
+    provided: HashMap<String, Vec<String>>,
+    pending_controls: HashMap<String, controls::PendingSubmit>,
 }
 
 fn payload<T: DeserializeOwned + Default>(e: &Envelope) -> T {
@@ -270,6 +277,12 @@ impl State {
             initialized: false,
             participants: HashSet::new(),
             features: HashMap::new(),
+            feature_supports: HashMap::new(),
+            catalog: Vec::new(),
+            catalog_known: false,
+            catalog_ambiguous: false,
+            provided: HashMap::new(),
+            pending_controls: HashMap::new(),
         }
     }
 
@@ -373,6 +386,7 @@ impl State {
         self.feature_for(at, e);
         self.run_dispatch(at, e);
         self.participants_from(at, e);
+        self.controls_dispatch(at, e);
         let t = &e.envelope_type;
         if *t == EnvelopeType::CAPABILITIES_RESPONSE {
             self.current_capability = revision;

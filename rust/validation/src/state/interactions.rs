@@ -304,6 +304,11 @@ impl State {
         }
         if let Some(step) = tool_step(t) {
             self.tool(at, e, run_id, step);
+            match step {
+                "requested" => self.record_call_choice(e, run_id),
+                "completed" | "failed" | "cancelled" => self.check_call_settlement(at, e, run_id),
+                _ => {}
+            }
         } else if *t == EnvelopeType::ACTION_PERMISSION_REQUESTED {
             self.interaction_requested(at, e, run_id, "permission");
         } else if *t == EnvelopeType::USER_INPUT_REQUESTED {
