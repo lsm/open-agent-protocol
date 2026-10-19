@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/signal"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -89,7 +90,8 @@ func runHub(ctx context.Context, args []string, stdin io.Reader, stdout, stderr 
 	if err != nil {
 		return err
 	}
-	go relaySignals(signals, stop, caught, daemon, stderr)
+	lines := &signalLines{}
+	go relaySignals(signals, stop, caught, daemon, stderr, lines)
 	httpServer := &http.Server{
 		Handler:           daemon.Handler(),
 		BaseContext:       func(net.Listener) context.Context { return signals },
@@ -118,6 +120,7 @@ func runHub(ctx context.Context, args []string, stdin io.Reader, stdout, stderr 
 	case <-daemon.Done():
 	}
 
+	lines.flush(time.Second)
 	fmt.Fprintln(stderr, "goap: shutting down")
 	httpShutdown, cancelHTTP := context.WithTimeout(context.Background(), serve.DefaultShutdownTimeout)
 	defer cancelHTTP()
@@ -137,7 +140,16 @@ type signalTaker interface {
 	Signal(ctx context.Context, count int) (protocol.EndpointShutdownResponse, bool)
 }
 
-func relaySignals(ctx context.Context, stop context.CancelFunc, caught <-chan os.Signal, taker signalTaker, stderr io.Writer) {
+type signalLines struct{ pending atomic.Int32 }
+
+func (l *signalLines) flush(window time.Duration) {
+	deadline := time.Now().Add(window)
+	for l.pending.Load() > 0 && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+func relaySignals(ctx context.Context, stop context.CancelFunc, caught <-chan os.Signal, taker signalTaker, stderr io.Writer, lines *signalLines) {
 	count := 0
 	for {
 		select {
@@ -150,7 +162,11 @@ func relaySignals(ctx context.Context, stop context.CancelFunc, caught <-chan os
 			stop()
 			return
 		}
-		go applySignal(ctx, taker, count, stderr)
+		lines.pending.Add(1)
+		go func(count int) {
+			defer lines.pending.Add(-1)
+			applySignal(ctx, taker, count, stderr)
+		}(count)
 	}
 }
 
@@ -184,12 +200,14 @@ func serveStdio(ctx context.Context, stop context.CancelFunc, caught <-chan os.S
 	if err != nil {
 		return err
 	}
-	go relaySignals(ctx, stop, caught, frontend, stderr)
+	lines := &signalLines{}
+	go relaySignals(ctx, stop, caught, frontend, stderr, lines)
 	if stdin == nil {
 		return errors.New("hub --stdio needs stdin")
 	}
 	fmt.Fprintf(stderr, "goap: serving adapters over stdio: %s (exit kills all sessions)\n", strings.Join(registry.Names(), ", "))
 	runErr := frontend.Run(ctx, stdin, stdout)
+	lines.flush(time.Second)
 
 	sessionShutdown, cancelSessions := context.WithTimeout(context.Background(), serve.DefaultShutdownTimeout)
 	defer cancelSessions()

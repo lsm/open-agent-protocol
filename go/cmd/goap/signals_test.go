@@ -5,6 +5,7 @@ import (
 	"io"
 	"os"
 	"strings"
+	"sync"
 	"syscall"
 	"testing"
 	"time"
@@ -25,7 +26,7 @@ func TestAThirdSignalEndsServingEvenWhileAnEarlierOneIsParked(t *testing.T) {
 	caught := make(chan os.Signal, 4)
 	ctx, stop := context.WithCancel(context.Background())
 	defer stop()
-	go relaySignals(ctx, stop, caught, taker, io.Discard)
+	go relaySignals(ctx, stop, caught, taker, io.Discard, &signalLines{})
 	for range 3 {
 		caught <- syscall.SIGTERM
 	}
@@ -50,5 +51,46 @@ func TestTheSignalLineListsEachActiveRunAndSaysWhatTheNextSignalDoes(t *testing.
 	}
 	if idle := signalLine(1, protocol.EndpointShutdownResponse{}); !strings.Contains(idle, "still active: none") {
 		t.Fatalf("the idle line is %q", idle)
+	}
+}
+
+type answeringTaker struct{}
+
+func (answeringTaker) Signal(context.Context, int) (protocol.EndpointShutdownResponse, bool) {
+	return protocol.EndpointShutdownResponse{Outcome: protocol.ShutdownStopping}, true
+}
+
+type slowWriter struct {
+	mu      sync.Mutex
+	written strings.Builder
+}
+
+func (w *slowWriter) Write(p []byte) (int, error) {
+	time.Sleep(50 * time.Millisecond)
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.written.Write(p)
+}
+
+func (w *slowWriter) text() string {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.written.String()
+}
+
+func TestTheSignalLineIsWrittenBeforeTheExitPathMovesOn(t *testing.T) {
+	caught := make(chan os.Signal, 1)
+	ctx, stop := context.WithCancel(context.Background())
+	defer stop()
+	lines := &signalLines{}
+	out := &slowWriter{}
+	go relaySignals(ctx, stop, caught, answeringTaker{}, out, lines)
+	caught <- syscall.SIGTERM
+	for lines.pending.Load() == 0 && out.text() == "" {
+		time.Sleep(time.Millisecond)
+	}
+	lines.flush(5 * time.Second)
+	if !strings.Contains(out.text(), "shutting down gracefully") {
+		t.Fatalf("flush returned before the signal's line was written: %q", out.text())
 	}
 }
