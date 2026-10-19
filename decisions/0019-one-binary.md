@@ -170,7 +170,9 @@ would take to carry it. The list is expected to shrink.
   diverge from RE2 on inputs no fixture enumerates. No fixture in the corpus
   discloses `name_pattern`, so the gate is silent either way. Carrying it means
   vendoring an engine, which is its own decision. The sibling bounds
-  `max_tools` and `schema_dialect` are ported.
+  `max_tools` and `schema_dialect` are ported. That decision is
+  [Decision 0055](0055-register-batch-2.md): the pattern is RE2 and matches whole names, and Zig owes an
+  RE2-compatible matcher, so this entry is a port gap now, not a divergence.
 
 - **Exact decimal comparison of a `fixed_result`.** Go decodes with
   `UseNumber` and compares through `big.Rat`, so it holds the literal. Zig's

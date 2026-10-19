@@ -675,7 +675,9 @@ needs to continue.
 
 Each question may be plain text, single choice, or multi choice. A control layer
 submits answers through `user.input.resolve.request` or cancels through
-`user.input.cancel.request`. Implementations that persist drafts may expose that
+`user.input.cancel.request`. The answers are judged against the prompt they
+resolve, as [Decision 0056](../decisions/0056-input-answers-are-judged-against-the-prompt.md)
+states. Implementations that persist drafts may expose that
 through extensions or a richer profile; draft persistence is not required for
 core conformance.
 

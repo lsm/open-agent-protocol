@@ -9,7 +9,10 @@ lets a closed session be reopened through its harness; the "Cancellation intent
 is not settlement" paragraph amended by
 [Decision 0041](0041-cancel-acceptance-is-judged-when-the-cancel-is-checked.md),
 which judges acceptance when the cancel is checked and puts a cancel response
-outside the run's ordering)
+outside the run's ordering; the identity, scope, run, cancel, interaction and
+cursor clauses amended by [Decision 0055](0055-register-batch-2.md) and the
+interaction clause by
+[Decision 0056](0056-input-answers-are-judged-against-the-prompt.md))
 Date: 2026-09-06
 Protocol: `open-agent-protocol` version `0.1`
 Profile: `open-agent-protocol.agent-control-core`
@@ -36,7 +39,9 @@ and `in_reply_to`, `participant_id`, `endpoint_id`, `session_id`,
 are not interchangeable, even when their string values happen to match.
 
 `in_reply_to` references an envelope request ID only. Envelope and payload
-copies of a scoped ID must agree. Native identifiers may be retained in a
+copies of a scoped ID must agree. An envelope `id` is unique within a trace,
+and a response, `error.response` included, answers in the session, run and
+interaction its request named ([Decision 0055](0055-register-batch-2.md)). Native identifiers may be retained in a
 namespaced `extensions` value, but they do not become portable OAP identities.
 
 The executable reference adapter uses process-local identifiers. Durable
@@ -44,7 +49,9 @@ native-to-OAP mappings and caller idempotency keys are deferred.
 
 ### One foreground invocation is one run
 
-A successful `session.message.submit.response` admits one foreground run. The
+A successful `session.message.submit.response` admits one foreground run. A
+`run_id` is admitted once, into one session, and every event of that run is
+scoped to that session ([Decision 0055](0055-register-batch-2.md)). The
 executable v0.1 subset allows at most one nonterminal run per session and
 supports only `auto` delivery resolving to `start`. `queue`, `steer`, and `btw`
 remain optional and unavailable in this subset.
@@ -85,7 +92,10 @@ stable interaction contract:
 - `run_id`
 
 Only the declared responder may resolve an interaction, and every interaction
-has at most one resolution. Tool execution ownership is explicit. Secure
+has at most one resolution. An `interaction_id` is requested at most once
+within its run; a request replayed from a retained journal during recovery is
+the same request, not a second one ([Decision 0055](0055-register-batch-2.md)). Answers are judged against the
+prompt they resolve ([Decision 0056](0056-input-answers-are-judged-against-the-prompt.md)). Tool execution ownership is explicit. Secure
 participant reassociation, deadlines, and retained cross-process interactions
 are deferred.
 
@@ -96,7 +106,8 @@ processing; it is not a run terminal. The adapter waits for authoritative
 settlement. Natural completion or failure may win a race with cancellation, and
 only confirmed interruption emits `run.cancelled`.
 
-Duplicate cancellation of a cancelling or cancelled run is idempotent. A stale
+A cancel names a run the trace admitted on that session, a queued reservation
+included ([Decision 0055](0055-register-batch-2.md)). Duplicate cancellation of a cancelling or cancelled run is idempotent. A stale
 cancellation must not affect a later run. Cancellation of a completed or failed
 run returns a typed `run_already_terminal` error — judged when the cancel is
 checked, so a cancel asked for while the run was live may still be accepted
@@ -112,7 +123,8 @@ the run's stream. A timeout alone does not prove cancellation.
 - **Replay** returns historical canonical OAP events from a cursor.
 
 The reference adapter offers a bounded process-memory journal. A retained cursor
-returns a contiguous suffix. An expired cursor returns an explicit replay gap
+returns a contiguous suffix. A cursor is a monotonically increasing JSON
+integer no greater than 2^53 − 1 ([Decision 0055](0055-register-batch-2.md)). An expired cursor returns an explicit replay gap
 and authoritative state; it never pretends continuity. No cross-process
 persistence, exact native-event replay, or durable admission is claimed.
 
