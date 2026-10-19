@@ -13,6 +13,9 @@ pub const code_pending_steer_at_terminal = "pending_steer_at_terminal";
 
 pub const code_duplicate_envelope_id = "duplicate_envelope_id";
 pub const code_undeclared_replay_gap = "undeclared_replay_gap";
+pub const code_unmatched_response = "unmatched_response";
+pub const code_missing_response = "missing_response";
+pub const code_duplicate_response = "duplicate_response";
 pub const code_illegal_run_transition = "illegal_run_transition";
 pub const code_missing_run_started = "missing_run_started";
 pub const code_missing_run_terminal = "missing_run_terminal";
@@ -87,7 +90,8 @@ pub const implemented = [_][]const u8{
     code_undisclosed_provide_limit,       code_attachment_field_in_catalog,     code_session_list_over_limit,
     code_session_list_order,              code_duplicate_session_entry,         code_duplicate_message_completion,
     code_content_after_completion,        code_transcript_over_limit,           code_duplicate_transcript_entry,
-    code_transcript_gap_mismatch,
+    code_transcript_gap_mismatch,         code_unmatched_response,              code_missing_response,
+    code_duplicate_response,
 };
 
 pub fn isImplemented(code: []const u8) bool {
@@ -479,6 +483,7 @@ const Request = struct {
     carries_message: bool = false,
     responded: bool = false,
     gates: []const Gate = &.{},
+    index: usize = 0,
 };
 
 pub const PackedType = struct {
@@ -609,6 +614,7 @@ pub const Machine = struct {
 
         if (self.isRequestType(declared)) {
             try self.requests.put(self.allocator, id, .{
+                .index = index,
                 .declared = declared,
                 .payload = payload,
                 .revision = field(envelope, "capability_revision"),
@@ -916,10 +922,19 @@ pub const Machine = struct {
     }
 
     fn correlate(self: *Machine, index: usize, envelope: std.json.Value, declared: []const u8) !bool {
-        const request = self.requests.getPtr(field(envelope, "in_reply_to")) orelse return false;
+        const request = self.requests.getPtr(field(envelope, "in_reply_to")) orelse {
+            try self.add(code_unmatched_response, index);
+            return false;
+        };
         const failure = std.mem.eql(u8, declared, "error.response");
-        if (!failure and !self.answers(request.declared, declared)) return false;
-        if (request.responded) return true;
+        if (!failure and !self.answers(request.declared, declared)) {
+            try self.add(code_unmatched_response, index);
+            return false;
+        }
+        if (request.responded) {
+            try self.add(code_duplicate_response, index);
+            return true;
+        }
         request.responded = true;
         if (!failure and
             !std.mem.eql(u8, request.declared, "protocol.initialize.request") and
@@ -4010,6 +4025,9 @@ pub const Machine = struct {
                 );
             }
         }
+        for (self.requests.values()) |request| {
+            if (!request.responded) try self.add(code_missing_response, request.index);
+        }
     }
 };
 
@@ -4611,6 +4629,20 @@ fn effectiveFor(status: []const u8) []const u8 {
 }
 
 fn codesOf(allocator: std.mem.Allocator, trace: []const u8) ![]const []const u8 {
+    return collectCodes(allocator, trace, true);
+}
+
+fn pairedCodesOf(allocator: std.mem.Allocator, trace: []const u8) ![]const []const u8 {
+    return collectCodes(allocator, trace, false);
+}
+
+fn pairing(code: []const u8) bool {
+    return std.mem.eql(u8, code, code_unmatched_response) or
+        std.mem.eql(u8, code, code_missing_response) or
+        std.mem.eql(u8, code, code_duplicate_response);
+}
+
+fn collectCodes(allocator: std.mem.Allocator, trace: []const u8, fragment: bool) ![]const []const u8 {
     var parsed = try std.json.parseFromSlice(std.json.Value, allocator, trace, .{});
     defer parsed.deinit();
 
@@ -4620,8 +4652,51 @@ fn codesOf(allocator: std.mem.Allocator, trace: []const u8) ![]const []const u8 
     try machine.close();
 
     var out = std.ArrayList([]const u8).empty;
-    for (machine.diagnostics.items) |diagnostic| try out.append(allocator, diagnostic.code);
+    for (machine.diagnostics.items) |diagnostic| {
+        if (fragment and pairing(diagnostic.code)) continue;
+        try out.append(allocator, diagnostic.code);
+    }
     return out.toOwnedSlice(allocator);
+}
+
+fn expectPairedCodes(trace: []const u8, want: []const []const u8) !void {
+    const got = try pairedCodesOf(std.testing.allocator, trace);
+    defer std.testing.allocator.free(got);
+    try std.testing.expectEqual(want.len, got.len);
+    for (want, got) |expected, actual| try std.testing.expectEqualStrings(expected, actual);
+}
+
+const paired_head =
+    \\[{"type":"capabilities.request","id":"q0","payload":{}},
+    \\{"type":"capabilities.response","id":"a0","in_reply_to":"q0","capability_revision":"r1","payload":{"capability_revision":"r1"}},
+;
+
+test "a response to no earlier request is unmatched" {
+    try expectPairedCodes(paired_head ++
+        \\{"type":"session.state.response","id":"a1","in_reply_to":"nobody","payload":{}}]
+    , &.{code_unmatched_response});
+}
+
+test "a response of another request's type is unmatched" {
+    try expectPairedCodes(paired_head ++
+        \\{"type":"session.state.request","id":"q1","payload":{"session_id":"s"}},
+        \\{"type":"session.close.response","id":"a1","in_reply_to":"q1","payload":{}},
+        \\{"type":"session.state.response","id":"a2","in_reply_to":"q1","payload":{}}]
+    , &.{code_unmatched_response});
+}
+
+test "a second response to one request is a duplicate, and an error answer counts as the first" {
+    try expectPairedCodes(paired_head ++
+        \\{"type":"session.state.request","id":"q1","payload":{"session_id":"s"}},
+        \\{"type":"error.response","id":"a1","in_reply_to":"q1","payload":{"error":{"code":"unknown_session","message":"x"}}},
+        \\{"type":"session.state.response","id":"a2","in_reply_to":"q1","payload":{}}]
+    , &.{code_duplicate_response});
+}
+
+test "a request the trace never answers is missing its response" {
+    try expectPairedCodes(paired_head ++
+        \\{"type":"session.state.request","id":"q1","payload":{"session_id":"s"}}]
+    , &.{code_missing_response});
 }
 
 fn expectCodes(trace: []const u8, want: []const []const u8) !void {

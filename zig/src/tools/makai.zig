@@ -7130,7 +7130,8 @@ test "validate accepts a trace the validator judges clean" {
     const allocator = std.testing.allocator;
     const trace =
         \\[
-        \\  {"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"capabilities.request","id":"capq","payload":{}}
+        \\  {"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"capabilities.request","id":"capq","payload":{}},
+        \\  {"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"capabilities.response","id":"capr","in_reply_to":"capq","capability_revision":"v1","payload":{"endpoint":{"id":"agent"},"features":{"session.open":{"level":"native"}}}}
         \\]
     ;
     var codes = std.ArrayList([]const u8).empty;
