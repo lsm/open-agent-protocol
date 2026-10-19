@@ -230,8 +230,10 @@ Source: [`decisions/0001-agent-control-v0.1-executable-core.md`](../../decisions
   declared ones.
 - [OPEN-0008-2](../../research/validator-divergences.md#open-0008-2): only Go
   requires a session-scoped catalog to name its session on the envelope, and
-  only Go checks `tool_call_id` on the resolve pair. Zig also lacks the
-  owner-change check and the permission resolution's tool binding check,
-  which Go and Rust both carry.
+  only Go checks `tool_call_id` on the resolve pair.
+- Zig has no owner-change check or permission-resolution tool binding check
+  (rows `0001#one-foreground-invocation-is-one-run/7` and
+  `0001#correlated-reverse-interactions/7`). Go and Rust carry both, and the
+  rows are rule-backed, so this is a port gap rather than an open item.
 - [OPEN-0011-1](../../research/validator-divergences.md#open-0011-1): Zig does
   not read a disclosed `name_pattern`, as 0019 records.
