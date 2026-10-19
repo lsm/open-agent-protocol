@@ -293,3 +293,24 @@ fn a_repeated_environment_name_is_named_whatever_its_values() {
         Some("A")
     );
 }
+
+#[test]
+fn an_identifier_in_an_error_message_is_quoted_bare_as_go_quotes_it() {
+    let steer = Error::InvalidSteerTarget {
+        run_id: RunId::from("r"),
+        reason: STEER_TERMINAL,
+        target_sequence: None,
+    };
+    assert_eq!(
+        steer.to_string(),
+        "adapter: steer target cannot take guidance: run \"r\" is terminal"
+    );
+    assert_eq!(
+        Error::UnknownSession(SessionId::from("s")).to_string(),
+        "no session \"s\""
+    );
+    assert_eq!(
+        Error::ModelNotFound("m".into()).to_string(),
+        "adapter: model is not in the effective catalog: \"m\""
+    );
+}

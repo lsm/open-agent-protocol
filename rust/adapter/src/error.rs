@@ -72,7 +72,7 @@ pub enum Error {
     InvalidResolution,
     #[error("adapter: event stream consumer fell behind; resume from the last sequence")]
     EventStreamOverflow,
-    #[error("adapter: steer target cannot take guidance: run {run_id:?} is {reason}")]
+    #[error("adapter: steer target cannot take guidance: run {:?} is {reason}", .run_id.as_str())]
     InvalidSteerTarget {
         run_id: RunId,
         reason: &'static str,
@@ -82,7 +82,7 @@ pub enum Error {
     InvalidCursor,
     #[error("adapter: model is not in the effective catalog: {0:?}")]
     ModelNotFound(String),
-    #[error("no session {0:?}")]
+    #[error("no session {:?}", .0.as_str())]
     UnknownSession(SessionId),
     #[error("adapter: requested replay cursor is no longer retained")]
     ReplayGap(ReplayGap),
