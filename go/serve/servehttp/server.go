@@ -46,6 +46,7 @@ type Server struct {
 	mu          sync.Mutex
 	held        map[protocol.SessionID]*heldSubscription
 	work        *workwire.Front
+	stopping    *stopState
 }
 
 func New(hub *serve.Hub, options Options) (*Server, error) {
@@ -62,7 +63,7 @@ func New(hub *serve.Hub, options Options) (*Server, error) {
 		holdFor = DefaultSubscriptionHold
 	}
 	return &Server{hub: hub, schema: schema, allowHosts: allowHosts, holdFor: holdFor,
-		held: map[protocol.SessionID]*heldSubscription{}, work: workwire.New(hub)}, nil
+		held: map[protocol.SessionID]*heldSubscription{}, work: workwire.New(hub), stopping: newStopState()}, nil
 }
 
 func (s *Server) Hub() *serve.Hub { return s.hub }
@@ -83,8 +84,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /sessions/{id}/cancel", s.handleCancel)
 	mux.HandleFunc("POST /sessions/{id}/settings", s.handleSettings)
 	mux.HandleFunc("POST /sessions/{id}/close", s.handleClose)
+	mux.HandleFunc("POST /shutdown", s.handleShutdown)
 	s.routeWork(mux)
-	var handler http.Handler = mux
+	var handler http.Handler = s.refuseWhileStopping(mux)
 	if len(s.allowHosts) > 0 {
 		routed := handler
 		handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
