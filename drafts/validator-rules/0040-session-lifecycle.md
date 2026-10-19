@@ -6,7 +6,9 @@ session list, per-message usage and transcript load, and the decided rules no
 validator judges yet (code and implementations `—`). Go names the function in
 `go/validation/`, Zig in `zig/src/validation/`, Rust in `rust/validation/src/`.
 A row whose expectation is settled on the correlated response names the
-function that sets it. Open item: OPEN-0050-1 below. Format:
+function that sets it. OPEN-0050-1 in
+[`research/validator-divergences.md`](../../research/validator-divergences.md)
+is settled by 0050 § 5 and waits on a port fix. Format:
 [README](README.md).
 
 ### [0040] The capability key is `session.open.reopen`, and a reopen is gated like `subscribe`
@@ -230,13 +232,9 @@ Source: [`decisions/0050-shutdown-is-graceful-forced-or-asked.md`](../../decisio
 
 ## Divergences
 
-- OPEN-0050-1: 0050 § 5 amends 0040 so that a recovered reopen may list
-  restored runs as `queued`, and says the validator accepts them there and
-  nowhere else. Both Go and Zig still diagnose any listed run on a reopen that
-  carried no message. The decision decides it, so the trees follow it when
-  restart recovery lands, together with the 0050 rows above. This goes into
-  `research/validator-divergences.md` once that file is on main.
-
+- OPEN-0050-1 (in the ledger): both trees still reject the restored queued
+  runs 0050 § 5 admits on a recovered reopen. A port fix that lands with
+  restart recovery.
 - 0044 makes `compaction_id` unique within the session, but Go and Zig both
   check uniqueness only within a run (row `0044#the-barrier/5`), so a later run
   reusing an id passes both. The decision text decides it, so this is a port

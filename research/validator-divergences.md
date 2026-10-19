@@ -91,3 +91,27 @@ only a port. None is a protocol question.
   as `capability_degraded`. Add it to both.
 - Rust judges only the session scope of these envelopes. Every other row in
   the file is owed there, as is the alias half of `optional-sessionproviderattach/2`.
+
+## Session lifecycle (0040, 0044–0046, 0049–0051)
+
+Rules: [`0040-session-lifecycle.md`](../drafts/validator-rules/0040-session-lifecycle.md).
+
+### OPEN-0050-1: may a recovered reopen list restored queued runs?
+
+0040 has a successful reopen list no run under way. 0050 § 5 amends that: a
+recovered reopen (`recovery.recovered: true`) may list restored runs as
+`queued`, in their original order, and "the validator accepts restored queued
+runs in a recovered open response and nowhere else". Go
+(`reopen.go:reopenResponse`) and Zig (`semantic.zig:reopenResponse`) still
+diagnose any listed run on a reopen that carried no message.
+
+- (a) Both trees accept `queued` restored runs on a recovered reopen, and
+  nowhere else, as 0050 says.
+- (b) Keep 0040's rule unamended.
+
+Recommendation: (a). 0050's text decides it, so this is a port fix in both
+trees. It lands with restart recovery, with a positive fixture and a negative
+one that lists a restored run on an unrecovered reopen.
+
+**Status.** Settled by 0050 § 5. What remains is the port fix.
+
