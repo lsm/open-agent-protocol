@@ -1,6 +1,7 @@
 # Decision 0055: Register Batch 2 — Identity, Scope, Cancel, Recovery Cursor and Name Patterns
 
-Status: accepted 2026-10-19
+Status: accepted 2026-10-19 (the refresh window amended by
+[Decision 0064](0064-every-request-waits-for-the-refresh.md))
 Date: 2026-10-19
 Protocol: `open-agent-protocol` version `0.1`
 Profile: `open-agent-protocol.agent-control-core`
@@ -90,10 +91,11 @@ Which requests may a sender make between `capabilities.updated` and the
 refreshed descriptor? Go and Zig flagged a submit or a compaction, Rust only a
 submit, and no text said which. After `capabilities.updated`, the descriptor a
 sender holds is no longer the endpoint's, and the refresh the notice obliges is
-a `capabilities.response` under the new revision. Until that response, a
-request that cites the pre-update revision, or that exercises an optional
-feature, is stale (`stale_capability_revision`): it was built against
-capabilities the endpoint has just said it no longer has. Exempt are the
+a `capabilities.response` under the new revision. Until that response, every
+request is stale (`stale_capability_revision`), whether or not it cites a
+revision or exercises an optional feature ([Decision 0064](0064-every-request-waits-for-the-refresh.md), which replaced the narrower
+rule first written here): it was built against capabilities the endpoint has
+just said it no longer has. Exempt are the
 requests that discover the new descriptor — `protocol.initialize.request` and
 `capabilities.request` — and the ones that settle work already in flight:
 `run.cancel.request`, and the answers to interactions already pending

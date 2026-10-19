@@ -113,7 +113,12 @@ between `capabilities.updated` and the next `capabilities.response`
 
 Recommendation: (a), exempting `protocol.initialize.request`,
 `capabilities.request`, `run.cancel.request` and the answers to pending
-interactions. Settled by [Decision 0055](../decisions/0055-register-batch-2.md); all three trees owe the port.
+interactions. The owner first approved a narrower rule, written into
+[Decision 0055](../decisions/0055-register-batch-2.md): only a request citing
+the pre-update revision or exercising an optional feature was stale. Porting it
+showed that a plain request passed, and the owner then chose the stricter rule,
+[Decision 0064](../decisions/0064-every-request-waits-for-the-refresh.md):
+every non-exempt request in the window is stale. All three trees owe the port.
 
 ### OPEN-0001-9: what does `usage` count?
 
