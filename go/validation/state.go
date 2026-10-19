@@ -97,6 +97,7 @@ type requestState struct {
 	run                protocol.RunID
 	interaction        protocol.InteractionID
 	carriesMessage     bool
+	settledUnder       string
 
 	gates []packGate
 }
@@ -140,19 +141,21 @@ type toolTrack struct {
 	interaction protocol.InteractionID
 }
 type state struct {
-	steerSnapshots    []steerSnapshot
-	fixture           string
-	diagnostics       []Diagnostic
-	ids               map[protocol.EnvelopeID]int
-	requests          map[protocol.EnvelopeID]*requestState
-	participants      map[protocol.ParticipantID]bool
-	sessions          map[protocol.SessionID]*sessionTrack
-	runs              map[protocol.RunID]*runState
-	lateCancels       map[protocol.EnvelopeID]bool
-	currentCapability string
-	capabilitiesStale bool
-	initialized       bool
-	features          map[string]protocol.SupportLevel
+	steerSnapshots     []steerSnapshot
+	fixture            string
+	diagnostics        []Diagnostic
+	ids                map[protocol.EnvelopeID]int
+	requests           map[protocol.EnvelopeID]*requestState
+	participants       map[protocol.ParticipantID]bool
+	sessions           map[protocol.SessionID]*sessionTrack
+	runs               map[protocol.RunID]*runState
+	lateCancels        map[protocol.EnvelopeID]bool
+	currentCapability  string
+	capabilitiesStale  bool
+	previousCapability string
+	settling           bool
+	initialized        bool
+	features           map[string]protocol.SupportLevel
 
 	featureSupports map[string]protocol.FeatureSupport
 	catalog         []string
@@ -235,7 +238,8 @@ func (s *state) apply(i, line int, e protocol.Envelope) {
 		duplicateResponse = !s.response(i, line, e)
 	}
 
-	if e.CapabilityRevision != "" && s.currentCapability != "" && string(e.CapabilityRevision) != s.currentCapability && e.Type != protocol.TypeProtocolInitializeRequest && e.Type != protocol.TypeCapabilitiesRequest && e.Type != protocol.TypeCapabilitiesUpdated && e.Type != protocol.TypeErrorResponse {
+	s.settling = s.settlesUnderPrevious(e)
+	if !s.settling && e.CapabilityRevision != "" && s.currentCapability != "" && string(e.CapabilityRevision) != s.currentCapability && e.Type != protocol.TypeProtocolInitializeRequest && e.Type != protocol.TypeCapabilitiesRequest && e.Type != protocol.TypeCapabilitiesUpdated && e.Type != protocol.TypeErrorResponse {
 		s.addExpected(CodeStaleCapabilityRevision, i, line, e, "/capability_revision", "operation uses a stale capability revision", s.currentCapability, e.CapabilityRevision)
 	}
 	if duplicateResponse {
@@ -307,6 +311,7 @@ func (s *state) apply(i, line int, e protocol.Envelope) {
 		if string(e.CapabilityRevision) == p.PreviousRevision {
 			s.add(CodeStaleCapabilityRevision, i, line, e, "/capability_revision", "capability update must introduce a new revision")
 		}
+		s.previousCapability = s.currentCapability
 		s.currentCapability = e.CapabilityRevision
 		s.capabilitiesStale = true
 
@@ -1550,12 +1555,40 @@ func (s *state) lookupInteraction(run protocol.RunID, id protocol.InteractionID)
 	}
 	return nil
 }
+func (s *state) settlesUnderPrevious(e protocol.Envelope) bool {
+	revision := string(e.CapabilityRevision)
+	if revision == "" {
+		return false
+	}
+	if req := s.requests[e.InReplyTo]; req != nil && s.isResponseType(e.Type) {
+		return req.settledUnder == revision
+	}
+	if !s.capabilitiesStale || revision != s.previousCapability {
+		return false
+	}
+	switch e.Type {
+	case protocol.TypeActionPermissionResolved, protocol.TypeUserInputResolved:
+		return true
+	case protocol.TypeRunCancelRequest, protocol.TypeActionPermissionResolveRequest, protocol.TypeUserInputResolveRequest,
+		protocol.TypeUserInputCancelRequest, protocol.TypeActionCallResolveRequest:
+		if req := s.requests[e.ID]; req != nil {
+			req.settledUnder = revision
+		}
+		return true
+	}
+	return false
+}
+
 func (s *state) feature(i, line int, e protocol.Envelope, name string) {
 
 	s.featureKeys(i, line, e, []string{name, "session.message." + name, "agent_control." + name, "action." + name})
 }
 
 func (s *state) featureKeys(i, line int, e protocol.Envelope, keys []string) {
+	if s.settling {
+		s.featureLevel(i, line, e, keys)
+		return
+	}
 	if s.currentCapability == "" || s.capabilitiesStale {
 		s.add(CodeUnavailableCapability, i, line, e, "/type", "optional feature requires a current capability descriptor")
 		return
@@ -1564,6 +1597,10 @@ func (s *state) featureKeys(i, line int, e protocol.Envelope, keys []string) {
 		s.addExpected(CodeStaleCapabilityRevision, i, line, e, "/capability_revision", "optional feature must cite the active capability descriptor", s.currentCapability, string(e.CapabilityRevision))
 		return
 	}
+	s.featureLevel(i, line, e, keys)
+}
+
+func (s *state) featureLevel(i, line int, e protocol.Envelope, keys []string) {
 	for _, key := range keys {
 		if level, ok := s.features[key]; ok {
 			switch level {
