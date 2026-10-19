@@ -33,7 +33,7 @@ Source: [`decisions/0044-compaction.md`](../../decisions/0044-compaction.md#a-re
 
 | id | rule | lines | code | Go | Zig | Rust |
 | --- | --- | --- | --- | --- | --- | --- |
-| `0044#a-requested-compaction-is-a-run/1` | A `session.compact.request` sent before a refreshed descriptor arrives is judged stale. | agent-control-core L777–812 (the freshness rule, `agent-control-core#capability-snapshot-freshness/1`, applied to the request) | `stale_capability_revision` | `compaction.go:compactRequest` | `semantic.zig:compactRequest` | — |
+| `0044#a-requested-compaction-is-a-run/1` | A `session.compact.request` sent before a refreshed descriptor arrives is judged stale. | agent-control-core L779–817 (the freshness rule, `agent-control-core#capability-snapshot-freshness/1`, applied to the request) | `stale_capability_revision` | `compaction.go:compactRequest` | `semantic.zig:compactRequest` | — |
 | `0044#a-requested-compaction-is-a-run/2` | A compaction electing a delivery the endpoint has not affirmatively advertised (`session.compact` itself, or `queue` without `session.message.delivery.queue`) MUST be refused `unsupported_feature`. | L62–72, L75–107 | `unavailable_capability` | `compaction.go:compactRequest` | `semantic.zig:compactRequest` | — |
 | `0044#a-requested-compaction-is-a-run/3` | A compaction with `delivery` `steer` or `btw` MUST be refused `unsupported_feature` naming the delivery. | L75–107 | `illegal_run_transition` | `compaction.go:compactRequest` | `semantic.zig:compactRequest` | — |
 | `0044#a-requested-compaction-is-a-run/4` | A compaction carrying `focus` to an endpoint advertising `session.compact` as `degraded`, without the caller's opt-in, MUST be refused `capability_degraded`. | L75–107 | `degraded_without_optin` | `compaction.go:compactRequest` | `semantic.zig:compactRequest` | — |
@@ -44,7 +44,7 @@ Source: [`decisions/0044-compaction.md`](../../decisions/0044-compaction.md#a-re
 | `0044#a-requested-compaction-is-a-run/9` | An accepted compaction MUST reserve a run identity. | L75–107 | `illegal_run_transition` | `compaction.go:compactResponse` | `semantic.zig:compactResponse` | `state/admissions.rs:compact_response` |
 | `0044#a-requested-compaction-is-a-run/10` | A started compaction MUST resolve to effective `start` with a `running` run, and a queued one to effective `queue` with a `queued` run. | L75–107 | `illegal_run_transition` | `compaction.go:compactResponse` | `semantic.zig:compactResponse` | `state/admissions.rs:compact_response` |
 | `0044#a-requested-compaction-is-a-run/11` | A compaction MUST admit a started or queued run, never a steered or side one. | L75–107 | `illegal_run_transition` | `compaction.go:compactResponse` | `semantic.zig:compactResponse` | `state/admissions.rs:compact_response` |
-| `0044#a-requested-compaction-is-a-run/12` | A compaction MUST NOT admit a run id already admitted. | 0001 L46–61 (one admission, one run; applied to compaction) | `illegal_run_transition` | `compaction.go:compactResponse` | `semantic.zig:compactResponse` | `state/admissions.rs:compact_response` |
+| `0044#a-requested-compaction-is-a-run/12` | A compaction MUST NOT admit a run id already admitted. | 0001 L51–68 (one admission, one run; applied to compaction) | `illegal_run_transition` | `compaction.go:compactResponse` | `semantic.zig:compactResponse` | `state/admissions.rs:compact_response` |
 
 ### [0044] The barrier
 
