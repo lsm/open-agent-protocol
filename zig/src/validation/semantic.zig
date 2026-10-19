@@ -12,6 +12,7 @@ pub const code_compaction_failed_without_error = "compaction_failed_without_erro
 pub const code_pending_steer_at_terminal = "pending_steer_at_terminal";
 
 pub const code_duplicate_envelope_id = "duplicate_envelope_id";
+pub const code_unhonoured_capability = "unhonoured_capability";
 pub const code_illegal_run_transition = "illegal_run_transition";
 pub const code_missing_run_started = "missing_run_started";
 pub const code_missing_run_terminal = "missing_run_terminal";
@@ -67,25 +68,26 @@ pub const code_transcript_gap_mismatch = "transcript_gap_mismatch";
 const attachment_only_members = [_][]const u8{ "command", "args", "environment" };
 
 pub const implemented = [_][]const u8{
-    code_unmatched_steer,             code_duplicate_steer,                 code_pending_steer_at_terminal,
-    code_compaction_unpaired,         code_compaction_ended_without_start,  code_compaction_open_at_terminal,
-    code_compaction_run_mismatch,     code_compaction_stop_reason_mismatch, code_compaction_failed_without_error,
-    code_duplicate_envelope_id,       code_illegal_run_transition,          code_missing_run_started,
-    code_missing_run_terminal,        code_duplicate_run_terminal,          code_event_after_terminal,
-    code_sequence_gap,                code_sequence_regression,             code_cancel_not_settled,
-    code_queue_order_violation,       code_queue_limit_exceeded,            code_undisclosed_queue_limit,
-    code_unavailable_capability,      code_stale_capability_revision,       code_degraded_without_optin,
-    code_unsatisfiable_control,       code_unapplied_control,               code_duplicate_tool_name,
-    code_model_not_in_catalog,        code_duplicate_model_id,              code_duplicate_provider,
-    code_ambiguous_default_model,     code_unannounced_catalog_change,      code_undisclosed_attach_modes,
-    code_duplicate_tool_source,       code_unmatched_tool_source,           code_unattributed_call,
-    code_catalog_mismatch,            code_undisclosed_attach_limit,        code_unmatched_tool,
-    code_illegal_tool_transition,     code_pending_tool_at_terminal,        code_duplicate_interaction,
-    code_unmatched_interaction,       code_wrong_interaction_responder,     code_pending_interaction_at_terminal,
-    code_resolution_payload_mismatch, code_wrong_tool_owner,                code_undisclosed_provide_limit,
-    code_attachment_field_in_catalog, code_session_list_over_limit,         code_session_list_order,
-    code_duplicate_session_entry,     code_duplicate_message_completion,    code_content_after_completion,
-    code_transcript_over_limit,       code_duplicate_transcript_entry,      code_transcript_gap_mismatch,
+    code_unmatched_steer,                 code_duplicate_steer,                 code_pending_steer_at_terminal,
+    code_compaction_unpaired,             code_compaction_ended_without_start,  code_compaction_open_at_terminal,
+    code_compaction_run_mismatch,         code_compaction_stop_reason_mismatch, code_compaction_failed_without_error,
+    code_duplicate_envelope_id,           code_unhonoured_capability,           code_illegal_run_transition,
+    code_missing_run_started,             code_missing_run_terminal,            code_duplicate_run_terminal,
+    code_event_after_terminal,            code_sequence_gap,                    code_sequence_regression,
+    code_cancel_not_settled,              code_queue_order_violation,           code_queue_limit_exceeded,
+    code_undisclosed_queue_limit,         code_unavailable_capability,          code_stale_capability_revision,
+    code_degraded_without_optin,          code_unsatisfiable_control,           code_unapplied_control,
+    code_duplicate_tool_name,             code_model_not_in_catalog,            code_duplicate_model_id,
+    code_duplicate_provider,              code_ambiguous_default_model,         code_unannounced_catalog_change,
+    code_undisclosed_attach_modes,        code_duplicate_tool_source,           code_unmatched_tool_source,
+    code_unattributed_call,               code_catalog_mismatch,                code_undisclosed_attach_limit,
+    code_unmatched_tool,                  code_illegal_tool_transition,         code_pending_tool_at_terminal,
+    code_duplicate_interaction,           code_unmatched_interaction,           code_wrong_interaction_responder,
+    code_pending_interaction_at_terminal, code_resolution_payload_mismatch,     code_wrong_tool_owner,
+    code_undisclosed_provide_limit,       code_attachment_field_in_catalog,     code_session_list_over_limit,
+    code_session_list_order,              code_duplicate_session_entry,         code_duplicate_message_completion,
+    code_content_after_completion,        code_transcript_over_limit,           code_duplicate_transcript_entry,
+    code_transcript_gap_mismatch,
 };
 
 pub fn isImplemented(code: []const u8) bool {
@@ -415,6 +417,9 @@ const Pending = struct {
     model_listed: bool = false,
     limit_refusal: ?Expectation = null,
     model_query: bool = false,
+    served: bool = false,
+    tools_query: bool = false,
+    subscribe_served: bool = false,
     list_limit: ?u64 = null,
     list_cursor: bool = false,
     satisfies: bool = false,
@@ -731,7 +736,18 @@ pub const Machine = struct {
             unadvertised = true;
             if (std.mem.eql(u8, gate.key, named)) named_by_refusal = true;
         }
-        if (!unadvertised) return;
+        if (!unadvertised) {
+            const refused_with = memberString(raised, "code");
+            for (gates) |gate| {
+                if (!gate.typed) continue;
+                for (gate.refusals) |declared_code| {
+                    if (std.mem.eql(u8, declared_code, refused_with)) return;
+                }
+                try self.add(code_unhonoured_capability, index);
+                return;
+            }
+            return;
+        }
         if (std.mem.eql(u8, memberString(raised, "code"), error_unsupported_feature) and
             std.mem.eql(u8, memberString(details, "reason"), reason_unadvertised) and
             named_by_refusal) return;
@@ -833,6 +849,7 @@ pub const Machine = struct {
         }
         if (std.mem.eql(u8, declared, "action.tools.list.request")) {
             try self.gatedRequest(index, envelope, payload, feature_tools_list, "/payload");
+            if (self.submits.get(field(envelope, "id"))) |query| query.tools_query = true;
             return;
         }
         if (std.mem.eql(u8, declared, "action.tools.list.response")) {
@@ -1179,6 +1196,7 @@ pub const Machine = struct {
             };
             return;
         }
+        pending.served = true;
     }
 
     fn reopenGate(self: *Machine, index: usize, envelope: std.json.Value, payload: std.json.Value, pending: *Pending) !void {
@@ -1358,7 +1376,9 @@ pub const Machine = struct {
                 .detail_value = key,
                 .diagnostic = code_degraded_without_optin,
             });
+            return;
         }
+        pending.subscribe_served = true;
     }
 
     fn sessionOpenRequest(self: *Machine, index: usize, envelope: std.json.Value, payload: std.json.Value) !void {
@@ -2659,6 +2679,8 @@ pub const Machine = struct {
         const request = field(envelope, "in_reply_to");
         const pending = self.submits.get(request) orelse return false;
         const raised = member(payload, "error") orelse std.json.Value{ .null = {} };
+        if (pending.subscribe_served and refusesSubscribe(raised)) try self.add(code_unhonoured_capability, index);
+        if (pending.tools_query and pending.served) try self.add(code_unhonoured_capability, index);
         if (self.requests.get(request)) |asked| {
             if (std.mem.eql(u8, asked.declared, "session.open.request") and
                 openLevelRefusal(memberString(raised, "code"))) return true;
@@ -2675,7 +2697,10 @@ pub const Machine = struct {
         }
         if (pending.honour.len != 0) try self.add(pending.honour, index);
         if (pending.control != null or pending.compact_focus != null) return true;
-        if (pending.model_query) return true;
+        if (pending.model_query) {
+            if (pending.served) try self.add(code_unhonoured_capability, index);
+            return true;
+        }
         if (pending.model_listed and
             std.mem.eql(u8, memberString(raised, "code"), error_model_not_found))
         {
@@ -4019,6 +4044,15 @@ const mode_session_open = "session_open";
 const mode_session_live = "session_live";
 const feature_tools_provide = "action.tools.provide";
 const feature_open_subscribe = "session.open.subscribe";
+
+fn refusesSubscribe(raised: std.json.Value) bool {
+    const code = memberString(raised, "code");
+    if (!std.mem.eql(u8, code, error_unsupported_feature) and !std.mem.eql(u8, code, error_capability_degraded)) return false;
+    const details = member(raised, "details") orelse return true;
+    const named = member(details, "feature") orelse return true;
+    if (named != .string) return true;
+    return std.mem.eql(u8, named.string, feature_open_subscribe);
+}
 const feature_open_reopen = "session.open.reopen";
 const feature_session_reasoning = "session.reasoning";
 const feature_compaction_policy = "session.compaction.policy";
@@ -4948,14 +4982,14 @@ test "a rejected submission is one refusal, not a verdict on the controls it car
     , &.{"unavailable_capability"});
 }
 
-test "a catalog query is not a control this machine judges the refusal of" {
+test "a tool catalog an advertising endpoint refuses is unhonoured, and one it never advertised is unavailable" {
     try expectCodes(
         \\[{"type":"capabilities.response","id":"k1","capability_revision":"v1","payload":{"features":
         \\{"action.tools.list":{"level":"native"}}}},
         \\{"type":"action.tools.list.request","id":"t1","capability_revision":"v1","payload":{"session_id":"s"}},
         \\{"type":"error.response","id":"t2","in_reply_to":"t1","payload":{"error":{"code":"unsupported_feature",
         \\"details":{"feature":"action.tools.list"}}}}]
-    , &.{});
+    , &.{code_unhonoured_capability});
 
     try expectCodes(
         \\[{"type":"capabilities.response","id":"k1","capability_revision":"v1","payload":{"features":{}}},
@@ -6576,4 +6610,28 @@ fn steerMessagesEqual(a: std.json.Value, b: std.json.Value) bool {
         if (left != .string or right != .string or !std.mem.eql(u8, left.string, right.string)) return false;
     }
     return true;
+}
+
+test "a catalog query refused by an endpoint advertising models.list is unhonoured" {
+    try expectCodes(
+        \\[{"type":"capabilities.response","id":"c1","capability_revision":"v1","payload":{"features":{"models.list":{"level":"native"}}}},
+        \\{"type":"models.request","id":"m1","capability_revision":"v1","payload":{}},
+        \\{"type":"error.response","id":"m2","in_reply_to":"m1","payload":{"error":{"code":"internal_error","message":"x"}}}]
+    , &.{code_unhonoured_capability});
+}
+
+test "a catalog query refused by an endpoint not advertising models.list is not unhonoured" {
+    try expectCodes(
+        \\[{"type":"capabilities.response","id":"c1","capability_revision":"v1","payload":{"features":{}}},
+        \\{"type":"models.request","id":"m1","capability_revision":"v1","payload":{}},
+        \\{"type":"error.response","id":"m2","in_reply_to":"m1","payload":{"error":{"code":"unsupported_feature","message":"x","details":{"feature":"models.list","reason":"unadvertised"}}}}]
+    , &.{});
+}
+
+test "a subscribe an endpoint advertises, refused inside an open, is unhonoured" {
+    try expectCodes(
+        \\[{"type":"capabilities.response","id":"k1","capability_revision":"v1","payload":{"features":{"session.open.subscribe":{"level":"native"}}}},
+        \\{"type":"session.open.request","id":"o1","capability_revision":"v1","payload":{"session_id":"s","subscribe":true}},
+        \\{"type":"error.response","id":"o2","in_reply_to":"o1","payload":{"error":{"code":"unsupported_feature","message":"x","details":{"feature":"session.open.subscribe"}}}}]
+    , &.{code_unhonoured_capability});
 }
