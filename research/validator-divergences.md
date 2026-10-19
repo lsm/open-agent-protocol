@@ -89,5 +89,5 @@ only a port. None is a protocol question.
 - 0028 row `core-sessionmodelswitch/4`: neither tree judges the refusal of a
   degraded switch sent without the opt-in, which 0028's "ordinary gate" fixes
   as `capability_degraded`. Add it to both.
-- Rust has no catalog, switch or attachment checks. Every row in the file is
-  owed there.
+- Rust judges only the session scope of these envelopes. Every other row in
+  the file is owed there, as is the alias half of `optional-sessionproviderattach/2`.

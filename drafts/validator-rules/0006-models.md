@@ -3,8 +3,10 @@
 Decisions 0006, 0014, 0028 and 0035: the rows behind every diagnostic the
 validators raise for the session model catalog, the provider descriptors it
 publishes, the core model switch and live provider attachment. Go and Zig name
-the function in `go/validation/` and `zig/src/validation/`. Rust has no
-catalog, switch or attachment checks yet. Where Go and Zig disagree, the open
+the function in `go/validation/`, `zig/src/validation/` and
+`rust/validation/src/`. Rust judges only the session scope of these envelopes,
+through its generic response and payload scope checks, and has no catalog,
+switch or attachment rule beyond that. Where Go and Zig disagree, the open
 items are OPEN-0028-1 to -4 in
 [`research/validator-divergences.md`](../../research/validator-divergences.md).
 Format: [README](README.md).
@@ -18,7 +20,7 @@ Source: [`decisions/0006-models-catalog.md`](../../decisions/0006-models-catalog
 | `0006#the-catalog-is-a-session-scoped-query-and-it-binds-in-both-directions/1` | A submission whose `model_id` the catalog bound under the active revision does not list MUST be refused with `model_not_found` naming that id in `details.model_id`. | L56–62 | `model_not_in_catalog` | `controls.go:unsatisfiable`, `controls.go:settleControlRefusal` | `semantic.zig:unsatisfiable`, `semantic.zig:settleControlRefusal` | — |
 | `0006#the-catalog-is-a-session-scoped-query-and-it-binds-in-both-directions/2` | An admission MUST NOT accept a `model_id` the catalog bound under the active revision does not list. | L56–57 | `model_not_in_catalog` | `controls.go:unsatisfiable` | `semantic.zig:unsatisfiable` | — |
 | `0006#the-catalog-is-a-session-scoped-query-and-it-binds-in-both-directions/3` | A refusal of a submission whose `model_id` the bound catalog lists MUST NOT use `model_not_found`; any other refusal is left alone. | L52–55, L65–76 | `model_not_in_catalog` | `controls.go:settleControlRefusal`, `models.go:diagnoseFalseMiss` | `semantic.zig:settleControlRefusal` | — |
-| `0006#the-catalog-is-a-session-scoped-query-and-it-binds-in-both-directions/4` | `models.request` and `models.response` are session-scoped: the envelope and payload session MUST agree, and a response MUST name the session its request named. | L45–46 | `scope_mismatch` | `state.go:checkScope` | `semantic.zig:checkScope` | — |
+| `0006#the-catalog-is-a-session-scoped-query-and-it-binds-in-both-directions/4` | `models.request` and `models.response` are session-scoped: the envelope and payload session MUST agree, and a response MUST name the session its request named. | L45–46 | `scope_mismatch` | `state.go:checkScope` | `semantic.zig:checkScope` | `state.rs:response`, `state.rs:payload_scope` |
 
 ### [0006] The rule stands down where selection is not advertised
 
@@ -96,7 +98,7 @@ Source: [`decisions/0028-live-model-and-provider-control.md`](../../decisions/00
 
 | id | rule | lines | code | Go | Zig | Rust |
 | --- | --- | --- | --- | --- | --- | --- |
-| `0028#core-sessionmodelswitch/1` | A `session.model.switch.response` MUST name the session its request named. | L25–28 | `scope_mismatch` | `modelcontrol.go:modelSwitchResponse` | `semantic.zig:modelSwitchResponse` | — |
+| `0028#core-sessionmodelswitch/1` | A `session.model.switch.response` MUST name the session its request named. | L25–28 | `scope_mismatch` | `modelcontrol.go:modelSwitchResponse` | `semantic.zig:modelSwitchResponse` | `state.rs:response` |
 | `0028#core-sessionmodelswitch/2` | An accepted switch MUST report the requested `model_id` as the new default. | L28–29, L37–38 | `unapplied_control` | `modelcontrol.go:modelSwitchResponse` | `semantic.zig:modelSwitchResponse` | — |
 | `0028#core-sessionmodelswitch/3` | A switch accepted while `session.model.switch` is advertised `degraded` MUST carry the key in `allow_degraded_features`. | L39–40 | `degraded_without_optin` | `modelcontrol.go:modelSwitchResponse` | `semantic.zig:modelSwitchResponse` | — |
 | `0028#core-sessionmodelswitch/4` | A switch sent while `session.model.switch` is advertised `degraded` without the key in `allow_degraded_features` MUST be refused with `capability_degraded` naming the feature. | L39–40 | `degraded_without_optin` | — | — | — |
@@ -112,7 +114,7 @@ Source: [`decisions/0028-live-model-and-provider-control.md`](../../decisions/00
 | id | rule | lines | code | Go | Zig | Rust |
 | --- | --- | --- | --- | --- | --- | --- |
 | `0028#optional-sessionproviderattach/1` | An advertised `action.providers.attach` MUST disclose the `session_live` mode. | L69–70 | `undisclosed_attach_modes` | `modelcontrol.go:checkProviderAttachModes` | `semantic.zig:checkAttachModes` | — |
-| `0028#optional-sessionproviderattach/2` | A `session.provider.attach.response` MUST name the requested session and, as `provider_id`, the requested alias. | L71, L97–98 | `scope_mismatch` | `modelcontrol.go:providerAttachResponse` | `semantic.zig:providerAttachResponse` | — |
+| `0028#optional-sessionproviderattach/2` | A `session.provider.attach.response` MUST name the requested session and, as `provider_id`, the requested alias. | L71, L97–98 | `scope_mismatch` | `modelcontrol.go:providerAttachResponse` | `semantic.zig:providerAttachResponse` | `state.rs:response` (session only) |
 | `0028#optional-sessionproviderattach/3` | An attachment MUST NOT be accepted unless `action.providers.attach` is advertised; acceptance under a descriptor lacking `session_live` is OPEN-0028-2. | L69–70 | `unavailable_capability` | `modelcontrol.go:providerAttachResponse` | `semantic.zig:gatedResponse` | — |
 | `0028#optional-sessionproviderattach/4` | An attachment accepted while the key is `degraded` MUST carry it in `allow_degraded_features`; whether the refusal is judged is OPEN-0028-3. | L94–97 | `degraded_without_optin` | `modelcontrol.go:providerAttachResponse` | `semantic.zig:gatedResponse` | — |
 | `0028#optional-sessionproviderattach/5` | An attachment to an endpoint not advertising the key MUST be refused with `unsupported_feature` naming `action.providers.attach` in `details.feature`; whether `details.reason` is owed is OPEN-0028-1. | L94–96 | `unavailable_capability` | `modelcontrol.go:settleModelControlRefusal` | `semantic.zig:settleControlRefusal` | — |
