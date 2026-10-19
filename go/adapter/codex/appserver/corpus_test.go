@@ -231,10 +231,10 @@ func runCorpusCase(t *testing.T, root string, entry corpusManifestCase) {
 	}
 	events := append(prefix, adaptertest.Drain(t, stream, time.Second)...)
 	if entry.ID == "interrupted-turn" {
-		adaptertest.AssertProtocolValidWithSubmitAndCancellation(t, request, admission, descriptor, events)
+		adaptertest.AssertProtocolValidWithSubmitAndCancellation(t, request, admission, descriptor, events, adaptertest.Opened(adapter.OpenRequest{Participant: protocol.Participant{ID: "user"}}))
 	} else {
 
-		adaptertest.AssertProtocolValidWithSubmit(t, request, admission, descriptor, events)
+		adaptertest.AssertProtocolValidWithSubmit(t, request, admission, descriptor, events, adaptertest.Opened(adapter.OpenRequest{Participant: protocol.Participant{ID: "user"}}))
 	}
 	expected := loadJSON[[]protocol.Envelope](t, paths.expectedOAP)
 	if len(expected) == 0 {

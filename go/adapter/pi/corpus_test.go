@@ -637,9 +637,9 @@ func validatePiTrace(t *testing.T, admission protocol.MessageSubmitResponse, des
 	t.Helper()
 	if len(resolutionTrace) == 0 {
 		if cancelled {
-			adaptertest.AssertProtocolValidWithCancellation(t, admission, descriptor, events)
+			adaptertest.AssertProtocolValidWithCancellation(t, admission, descriptor, events, adaptertest.Opened(base.OpenRequest{Participant: protocol.Participant{ID: "user"}}))
 		} else {
-			adaptertest.AssertProtocolValidWithDescriptor(t, admission, descriptor, events)
+			adaptertest.AssertProtocolValidWithDescriptor(t, admission, descriptor, events, adaptertest.Opened(base.OpenRequest{Participant: protocol.Participant{ID: "user"}}))
 		}
 		return
 	}

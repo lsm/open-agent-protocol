@@ -581,7 +581,7 @@ func TestAToolOpenCodeFailsBeforeCallingItIsStartedThenFailedAndTheRunGoesOn(t *
 	client.emit(t, 9, native.TypeStepEnded, native.StepEndedData{SessionID: client.session, AssistantMessage: "msg_a2", Finish: "stop"})
 	client.succeed(t, 10)
 	events := adaptertest.Drain(t, stream, time.Second)
-	adaptertest.AssertProtocolValidWithDescriptor(t, response, testAdapterDescriptor(t), events)
+	adaptertest.AssertProtocolValidWithDescriptor(t, response, testAdapterDescriptor(t), events, adaptertest.Opened(base.OpenRequest{Participant: protocol.Participant{ID: "user"}}))
 	want := []protocol.EnvelopeType{protocol.TypeRunStarted, protocol.TypeActionCallRequested, protocol.TypeActionCallStarted, protocol.TypeActionCallFailed, protocol.TypeContentDelta, protocol.TypeRunCompleted}
 	if fmt.Sprint(types(events)) != fmt.Sprint(want) {
 		t.Fatalf("events=%v", types(events))
@@ -1054,7 +1054,7 @@ func TestExplicitQueueReservesAndPromotesAfterSettlement(t *testing.T) {
 	adaptertest.AssertProtocolValidQueued(t, []adaptertest.QueuedSubmission{
 		{Request: autoRequest("hello"), Admission: first},
 		{Request: queueRequest("later"), Admission: queued},
-	}, descriptor, append(append([]protocol.Envelope(nil), firstEvents...), queuedEvents...))
+	}, descriptor, append(append([]protocol.Envelope(nil), firstEvents...), queuedEvents...), adaptertest.Opened(base.OpenRequest{Participant: protocol.Participant{ID: "user"}}))
 }
 
 func TestBusyAutoReservesAndCancelsBeforePromotion(t *testing.T) {
@@ -1116,7 +1116,7 @@ func TestBusyAutoReservesAndCancelsBeforePromotion(t *testing.T) {
 	adaptertest.AssertProtocolValidQueued(t, []adaptertest.QueuedSubmission{
 		{Request: autoRequest("hello"), Admission: first},
 		{Request: autoRequest("later"), Admission: queued, Cancelled: true},
-	}, descriptor, append(append([]protocol.Envelope(nil), queuedEvents...), firstEvents...))
+	}, descriptor, append(append([]protocol.Envelope(nil), queuedEvents...), firstEvents...), adaptertest.Opened(base.OpenRequest{Participant: protocol.Participant{ID: "user"}}))
 }
 
 func TestTheQueuedInputsDeliveryEndsThePreviousRunAndStartsItsOwn(t *testing.T) {
@@ -1198,7 +1198,7 @@ func TestExplicitQueueOnIdleSessionStaysQueued(t *testing.T) {
 	}
 	adaptertest.AssertProtocolValidQueued(t, []adaptertest.QueuedSubmission{
 		{Request: queueRequest("go"), Admission: admission},
-	}, descriptor, collected)
+	}, descriptor, collected, adaptertest.Opened(base.OpenRequest{Participant: protocol.Participant{ID: "user"}}))
 }
 
 func deltaText(t *testing.T, envelope protocol.Envelope) string {
@@ -1336,7 +1336,7 @@ func TestStateDuringARunValidates(t *testing.T) {
 	adaptertest.AssertProtocolValidQueued(t, []adaptertest.QueuedSubmission{
 		{Request: autoRequest("hello"), Admission: first},
 		{Request: queueRequest("later"), Admission: queued},
-	}, descriptor, adaptertest.SpliceAfter(t, events, started.ID, exchange))
+	}, descriptor, adaptertest.SpliceAfter(t, events, started.ID, exchange), adaptertest.Opened(base.OpenRequest{Participant: protocol.Participant{ID: "user"}}))
 }
 
 func TestHandedOutStateDoesNotAliasTheSession(t *testing.T) {
@@ -1454,7 +1454,7 @@ func TestIdleExplicitQueueIsProjectedAsAReservation(t *testing.T) {
 	rest := adaptertest.Drain(t, stream, 2*time.Second)
 	adaptertest.AssertProtocolValidQueued(t, []adaptertest.QueuedSubmission{
 		{Request: queueRequest("later"), Admission: queued},
-	}, descriptor, append([]protocol.Envelope{started}, rest...))
+	}, descriptor, append([]protocol.Envelope{started}, rest...), adaptertest.Opened(base.OpenRequest{Participant: protocol.Participant{ID: "user"}}))
 }
 
 func TestUnusableSessionSettlesTheReservationToo(t *testing.T) {
@@ -1500,7 +1500,7 @@ func TestUnusableSessionSettlesTheReservationToo(t *testing.T) {
 	adaptertest.AssertProtocolValidQueued(t, []adaptertest.QueuedSubmission{
 		{Request: autoRequest("hello"), Admission: first},
 		{Request: queueRequest("later"), Admission: queued},
-	}, descriptor, append(append([]protocol.Envelope(nil), firstEvents...), queuedEvents...))
+	}, descriptor, append(append([]protocol.Envelope(nil), firstEvents...), queuedEvents...), adaptertest.Opened(base.OpenRequest{Participant: protocol.Participant{ID: "user"}}))
 }
 
 func TestActiveRunsFollowThePublishedStart(t *testing.T) {
@@ -1543,7 +1543,7 @@ func TestActiveRunsFollowThePublishedStart(t *testing.T) {
 	rest := adaptertest.Drain(t, firstStream, 2*time.Second)
 	adaptertest.AssertProtocolValidQueued(t, []adaptertest.QueuedSubmission{
 		{Request: autoRequest("hello"), Admission: first},
-	}, descriptor, append([]protocol.Envelope{started}, rest...))
+	}, descriptor, append([]protocol.Envelope{started}, rest...), adaptertest.Opened(base.OpenRequest{Participant: protocol.Participant{ID: "user"}}))
 }
 
 func TestStateAnchorsASettledRunItHasNotDelivered(t *testing.T) {
@@ -1584,7 +1584,7 @@ func TestStateAnchorsASettledRunItHasNotDelivered(t *testing.T) {
 	}
 	adaptertest.AssertProtocolValidQueued(t, []adaptertest.QueuedSubmission{
 		{Request: autoRequest("hello"), Admission: first},
-	}, descriptor, adaptertest.SpliceAfter(t, events, started.ID, exchange))
+	}, descriptor, adaptertest.SpliceAfter(t, events, started.ID, exchange), adaptertest.Opened(base.OpenRequest{Participant: protocol.Participant{ID: "user"}}))
 }
 
 func waitIdle(t *testing.T, session base.Session) protocol.SessionState {
@@ -1650,7 +1650,7 @@ func TestACancelledReservationsLateDeliveryEndsTheRunAndItsTurnIsQuarantined(t *
 	adaptertest.AssertProtocolValidQueued(t, []adaptertest.QueuedSubmission{
 		{Request: autoRequest("hello"), Admission: first},
 		{Request: queueRequest("later"), Admission: queued, Cancelled: true},
-	}, descriptor, append(append([]protocol.Envelope(nil), cancelled...), firstEvents...))
+	}, descriptor, append(append([]protocol.Envelope(nil), cancelled...), firstEvents...), adaptertest.Opened(base.OpenRequest{Participant: protocol.Participant{ID: "user"}}))
 }
 
 func TestCancelSettlesAnOpenToolAsCancelled(t *testing.T) {
@@ -1693,7 +1693,7 @@ func TestCancelSettlesAnOpenToolAsCancelled(t *testing.T) {
 	if settled < 0 || terminal < 0 || settled > terminal {
 		t.Fatalf("settled=%d terminal=%d events=%v", settled, terminal, types(events))
 	}
-	adaptertest.AssertProtocolValidWithCancellation(t, response, testAdapterDescriptor(t), events)
+	adaptertest.AssertProtocolValidWithCancellation(t, response, testAdapterDescriptor(t), events, adaptertest.Opened(base.OpenRequest{Participant: protocol.Participant{ID: "user"}}))
 }
 
 func TestATerminalCarriesTheCostTheStepsReported(t *testing.T) {
