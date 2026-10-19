@@ -31,7 +31,7 @@ Source: [`decisions/0004-extension-packs.md`](../../decisions/0004-extension-pac
 | `0004#a-pack-declares-what-it-defines/2` | Every declared request, event and core-payload member MUST appear in `gates` or be declared ungated. | L94–97 | `pack_ungated_type` | `pack.go:LoadPacks` | `packs.zig` | — |
 | `0004#a-pack-declares-what-it-defines/3` | A declared `response` MUST NOT have a gate of its own. | L97–100 | `pack_response_gated` | `pack.go:LoadPacks` | `packs.zig` | — |
 | `0004#a-pack-declares-what-it-defines/4` | Every declared envelope type MUST declare its `role`: `request`, `response` or `event`. | L101–104 | `pack_role_undeclared` | `pack.go:LoadPacks` | `packs.zig` | — |
-| `0004#a-pack-declares-what-it-defines/5` | A declared `response` MUST name in `replies_to` a request the loaded set declares. | L107–108 | `pack_reply_target_unknown` | `pack.go:LoadPacks` | `packs.zig` | — |
+| `0004#a-pack-declares-what-it-defines/5` | A declared `response` MUST name in `replies_to` a request the same pack declares. | L97–100, L107–108 (drafted here: a response takes its gate from its request's, which only a request the pack declares carries in its `gates`) | `pack_reply_target_unknown` | `pack.go:LoadPacks` | `packs.zig` | — |
 | `0004#a-pack-declares-what-it-defines/6` | A declared request MUST be named by at most one declared `response`. | L107–108 (drafted here: correlation names one answer type) | `pack_reply_target_ambiguous` | `pack.go:LoadPacks` | `packs.zig` | — |
 | `0004#a-pack-declares-what-it-defines/7` | `refusals` MUST be keyed by requests the pack declares and list error codes it declares. | L109–115 (drafted here for the keying) | `pack_refusal_undeclared` | `pack.go:LoadPacks` | `packs.zig` | — |
 
