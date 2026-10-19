@@ -45,7 +45,7 @@ names another session, run or interaction than its request
 - (a) Yes, for every scope the response states.
 - (b) Only for the session.
 
-Recommendation: (a). Settled with OPEN-0008-2 and OPEN-0008-3 by [Decision 0055](../decisions/0055-register-batch-2.md); the
+Recommendation: (a). Settled, together with the 0008 group's tool-call scope items, by [Decision 0055](../decisions/0055-register-batch-2.md); the
 scope checks only Go has go to Zig and Rust.
 
 ### OPEN-0001-4: is a run admitted once, into one session?
