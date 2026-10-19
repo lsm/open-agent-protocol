@@ -62,11 +62,17 @@ read the core members, and an adapter fills both meanwhile.
 - `go/internal/provider`'s Anthropic stream backfills an unreported total from
   input and output alone, which this decision's sum overrules; it owes the
   cache terms.
+- The three new members are optional in every tree's type, so a measured zero
+  is sent as 0 and an unknown count is left out. Go's and Rust's
+  `input_tokens`, `output_tokens` and `total_tokens` still drop a zero, which
+  the absent-is-unknown rule makes wrong; those types owe the same change.
 - Owed: the Go opencode adapter and the Zig opencode reducer, which sum only
   opencode's input and output, report cache and reasoning in core `usage`;
   `go/internal/inferenceserve`, which drops the cache counts
   `go/internal/provider` already holds and totals input and output alone,
-  carries them onto the provider wire; the claude adapter, which
+  carries them onto the provider wire; the acp adapter, which decodes thought
+  and cached tokens but reports them only in `com.agentclientprotocol.turn_usage`,
+  fills the core members; the claude adapter, which
   carries cache only in its extension, fills the cache members too; and the
   SDKs' usage types (Go, Rust, Python and TypeScript), which read the old
   three members or vendor names such as `cache_read`, read the new ones.
