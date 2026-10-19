@@ -18,8 +18,9 @@ The question for every rule is three answers:
   `zig/src/validation/semantic_gate.zig` expects every code a fixture declares
   and accepts a disagreement only for a fixture listed under `zig` in
   `fixtures/known-gaps.json`; it fails when a listed fixture agrees or is never
-  judged. `fixture_gate.zig` judges the `decode` and `schema` phases and
-  still skips `load-invalid` fixtures outright. The "Zig" column below is read from the source
+  judged. `fixture_gate.zig` judges the `decode` and `schema` phases, and since
+  #1261 the `load-invalid` fixtures too, exempting only the codes the Zig
+  loader does not yet refuse. The "Zig" column below is read from the source
   (`semantic.implemented`, `provider_semantic.implemented`, `packs.zig`),
   never from the gate's result.
 - **`partial`** means Zig emits the code for some traces and the fixtures it
@@ -352,9 +353,10 @@ Listed for completeness and left to the port already under way:
 `duplicate_key`, `payload_decode`), the auth and provider codes
 (`auth_flow_order`, `missing_auth_terminal`, `unmatched_provider`,
 `undisclosed_selection_scope`), and the partial `scope_mismatch` and
-`session_state_mismatch`. Not in that list and also Go-only: 15 of the 20 load
-codes, 14 `pack_*` codes and `ext_claim_without_pack` (Zig loads packs but
-refuses only five ways).
+`session_state_mismatch`. Not in that list and also Go-only: 5 of the 20 load
+codes, `pack_schema_path_escape`, `pack_external_ref`,
+`pack_dependency_missing`, `pack_fixture_claims_core_unit` and
+`ext_claim_without_pack` (Zig refuses the other fifteen since #1261).
 
 ## Gaps ranked by risk
 
@@ -413,8 +415,10 @@ smallest fix.
     reopen answered with the wrong refusal code when the binding is missing or
     the harness cannot load the session is caught by hub tests and the Go
     conformance runner, not by a diagnostic.
-11. **Zig pack loading refuses five ways of twenty, and no Zig gate runs a
-    load-invalid fixture.** A malformed pack Go refuses can load in `oapx`.
+11. **Zig pack loading refuses fifteen ways of twenty.** Its fixture gate runs
+    the `load-invalid` fixtures since #1261, exempting the five codes it does
+    not yet refuse, so a pack Go refuses for one of those can still load in
+    `oapx`.
 12. **Hub answers with protocol payloads are not schema-checked.** `history`
     answers `session.list.response`'s payload and `transcript` answers
     `transcript.load.response`'s; the hub tests assert fields, so a member the
