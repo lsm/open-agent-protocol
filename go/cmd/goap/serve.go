@@ -159,11 +159,22 @@ func applySignal(ctx context.Context, taker signalTaker, count int, stderr io.Wr
 	if !ok {
 		return
 	}
-	if count == 1 {
-		fmt.Fprintf(stderr, "goap: shutting down gracefully, %d run(s) still active, %d queued run(s) lost; signal again to force\n", len(answer.ActiveRuns), len(answer.Lost))
-		return
+	fmt.Fprintln(stderr, signalLine(count, answer))
+}
+
+func signalLine(count int, answer protocol.EndpointShutdownResponse) string {
+	active := make([]string, 0, len(answer.ActiveRuns))
+	for _, run := range answer.ActiveRuns {
+		active = append(active, string(run.SessionID)+"/"+string(run.RunID))
 	}
-	fmt.Fprintf(stderr, "goap: forced shutdown, %d run(s) cut off\n", len(answer.ActiveRuns))
+	listed := "none"
+	if len(active) > 0 {
+		listed = strings.Join(active, ", ")
+	}
+	if count == 1 {
+		return fmt.Sprintf("goap: shutting down gracefully; still active: %s; %d queued run(s) lost; signal again to force", listed, len(answer.Lost))
+	}
+	return "goap: forced shutdown; cut off: " + listed
 }
 
 func serveStdio(ctx context.Context, stop context.CancelFunc, caught <-chan os.Signal, hub *serve.Hub, registry *serve.Registry, stdin io.Reader, stdout, stderr io.Writer) error {

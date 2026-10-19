@@ -430,10 +430,13 @@ daemon`; Go: `TestAShutdownPostedWithNothingRunningStopsAtOnce`,
 then shuts its HTTP server down as on a signal. Neither tree yet sends subscribers
 `endpoint.shutdown.started`, which Decision 0050 requires on acceptance. In
 Go, SIGINT and SIGTERM now map as rule 4 says: the first starts a graceful
-shutdown and writes one stderr line naming how many runs are still active and
-how many queued runs were lost, the second forces it, and a third ends serving
-outright — Go: `TestAFirstSignalStartsAGracefulShutdownAndASecondForcesIt`,
-`TestAFirstSignalOnAnIdleDaemonStopsItGracefullyAndASecondForcesIt`. Zig's
+shutdown and writes one stderr line listing each run still active as
+`session/run` and how many queued runs were lost, the second forces it, and a
+third ends serving outright even while an earlier signal is still being
+applied — Go: `TestAFirstSignalStartsAGracefulShutdownAndASecondForcesIt`,
+`TestAFirstSignalOnAnIdleDaemonStopsItGracefullyAndASecondForcesIt`,
+`TestTheSignalLineListsEachActiveRunAndSaysWhatTheNextSignalDoes`,
+`TestAThirdSignalEndsServingEvenWhileAnEarlierOneIsParked`. Zig's
 mapping is pending, and stdin EOF still ends serving in both.
 
 Shutdown is stdin EOF or SIGINT/SIGTERM. The daemon stops admitting, settles

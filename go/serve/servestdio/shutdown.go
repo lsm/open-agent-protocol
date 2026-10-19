@@ -154,5 +154,8 @@ func (s *Server) Signal(ctx context.Context, count int) (protocol.EndpointShutdo
 	if err := json.Unmarshal(result, &answer); err != nil {
 		return protocol.EndpointShutdownResponse{}, false
 	}
-	return answer, true
+	s.stopping.mu.Lock()
+	overtaken := s.stopping.mode != wanted
+	s.stopping.mu.Unlock()
+	return answer, !overtaken
 }

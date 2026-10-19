@@ -200,5 +200,9 @@ func (s *Server) Signal(ctx context.Context, count int) (protocol.EndpointShutdo
 	if count <= 0 || current == protocol.ShutdownForce || current == wanted {
 		return protocol.EndpointShutdownResponse{}, false
 	}
-	return s.acceptShutdown(ctx, wanted), true
+	answer := s.acceptShutdown(ctx, wanted)
+	s.stopping.mu.Lock()
+	overtaken := s.stopping.mode != wanted
+	s.stopping.mu.Unlock()
+	return answer, !overtaken
 }
