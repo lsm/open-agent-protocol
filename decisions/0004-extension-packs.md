@@ -3,7 +3,9 @@
 Status: accepted 2026-09-16 (38 `extensions` fixtures; step 3 of the gate is
 satisfied vacuously and deliberately — this unit specifies the protocol's own
 extension seam rather than harness behaviour, so there is no native frame to
-pin, and every adapter exercises it passively)
+pin, and every adapter exercises it passively) (the declaration, reply-target
+and refusal clauses amended by
+[Decision 0058](0058-pack-declarations-are-definitions.md))
 Date: 2026-09-15
 Protocol: `open-agent-protocol` version `0.1`
 Profile: `open-agent-protocol.agent-control-core`
@@ -87,7 +89,10 @@ A pack is a `pack.json` descriptor plus its schema files and, optionally, its
 own fixture manifest in the existing format. The descriptor declares
 `capability_keys`, `envelope_types`, `error_codes`, and the `payload_members`
 the pack adds to core payloads, rather than leaving them to be inferred from the
-schemas, so containment is checked before anything is compiled.
+schemas, so containment is checked before anything is compiled. A
+declaration is a definition, and one name has one: an envelope type appears
+once in `envelope_types`, and a payload member once per core payload in
+`payload_members`; a repeat is a load refusal ([Decision 0058](0058-pack-declarations-are-definitions.md)).
 
 Three declarations make the gate runnable generically rather than per pack:
 
@@ -105,14 +110,18 @@ Three declarations make the gate runnable generically rather than per pack:
   until its correlated response says whether the endpoint refused it, while an
   event or a success response is already the endpoint acting on a capability it
   does not have. A `response` names its request in `replies_to`, which is what
-  correlation is.
+  correlation is. That request is one the same pack declares, since the
+  response takes its gate from the request's entry in this pack's `gates`, and
+  a request has one response type, so no two responses name it ([Decision 0058](0058-pack-declarations-are-definitions.md)).
 - **`refusals`** enumerates, per request, the error codes the endpoint may
   answer it with for domain reasons. The honour rule is bounded by that list: a
   refusal under a declared code is a domain refusal the validator cannot
   evaluate and is conforming, and a refusal of a schema-valid packed request on
   an advertising endpoint under any other code is `unhonoured_capability`. The
   vendor is thereby made to enumerate its refusal reasons in advance, which is
-  the disclosure move every other honour rule makes.
+  the disclosure move every other honour rule makes. The list belongs to a
+  request the pack declares, and every code in it is one the pack declares in
+  `error_codes` ([Decision 0058](0058-pack-declarations-are-definitions.md)).
 
 The stateful validator consumes all three at the dispatch point the core keys
 use, so an extension capability is fail-closed in the same machinery as a core
