@@ -2052,6 +2052,11 @@ pub const Machine = struct {
             try self.add(code_scope_mismatch, index);
             return;
         }
+        const asked = self.submits.get(field(envelope, "in_reply_to"));
+        const judged = if (asked) |pending| pending.served or pending.control != null else false;
+        if (judged and affirmative(self.features.get(feature_providers_attach) orelse "") and !self.disclosedMode(feature_providers_attach, mode_session_live)) {
+            try self.add(code_unavailable_capability, index);
+        }
         const holder = try self.sessionFor(session_id);
         const binding = ProviderBinding{
             .provider_id = memberString(attachment, "provider_id"),
@@ -4036,6 +4041,7 @@ pub const Machine = struct {
         }
         if (!attachment_refused) try self.checkPublishedUnion(index, session_id, member(payload, "sources"), true);
         try self.compoundOpen(index, envelope, payload, session_id);
+        try self.applyStateDocument(index, envelope, payload);
         try self.checkSettledClaims(index, payload);
         try self.checkRequiredRuns(index, envelope, payload);
     }
@@ -4167,6 +4173,22 @@ pub const Machine = struct {
         try self.refreshQueueWindows(session_id);
     }
 
+    fn applyStateDocument(self: *Machine, index: usize, envelope: std.json.Value, payload: std.json.Value) !void {
+        const active = memberString(payload, "active_run_id");
+        if (active.len != 0 and std.mem.eql(u8, memberString(payload, "status"), "idle")) try self.add(code_session_state_mismatch, index);
+        const holder = try self.sessionFor(memberString(payload, "session_id"));
+        const previous = holder.active;
+        if (previous.len != 0 and !claimsSettled(payload, previous)) {
+            if (self.runs.get(previous)) |run| {
+                if (!run.terminal and !std.mem.eql(u8, active, previous)) {
+                    if (run.started_at <= (self.ids.get(field(envelope, "in_reply_to")) orelse index)) try self.add(code_session_state_mismatch, index);
+                    return;
+                }
+            }
+        }
+        holder.active = active;
+    }
+
     fn stateDocument(self: *Machine, index: usize, envelope: std.json.Value, payload: std.json.Value, updated: bool) !void {
         const session_id = memberString(payload, "session_id");
         {
@@ -4195,6 +4217,7 @@ pub const Machine = struct {
         try self.checkPublishedUnion(index, session_id, member(payload, "sources"), false);
         try self.checkPublishedSources(index, payload);
         try self.recoverFromState(index, session_id, payload);
+        try self.applyStateDocument(index, envelope, payload);
         try self.checkSettledClaims(index, payload);
         try self.checkRequiredRuns(index, envelope, payload);
     }
@@ -4987,6 +5010,15 @@ fn unknownScope(envelope: std.json.Value, payload: std.json.Value) Scope {
 }
 
 const InteractionSet = std.StringArrayHashMapUnmanaged(void);
+
+fn claimsSettled(payload: std.json.Value, run_id: []const u8) bool {
+    const settled = member(member(payload, "as_of") orelse std.json.Value{ .null = {} }, "settled") orelse return false;
+    if (settled != .array) return false;
+    for (settled.array.items) |entry| {
+        if (std.mem.eql(u8, memberString(entry, "run_id"), run_id)) return true;
+    }
+    return false;
+}
 
 fn admitsMessages(request: Request) bool {
     if (std.mem.eql(u8, request.declared, "session.message.submit.request")) return true;
@@ -7684,5 +7716,17 @@ test "an entry captured between a control call's request and its settlement stil
         \\{"type":"session.state.updated","id":"u1","session_id":"s","payload":{"session_id":"s","status":"running",
         \\"active_run_id":"run","active_runs":[{"run_id":"run","status":"running","as_of_sequence":2}]}},
         \\{"type":"run.completed","id":"e9","run_id":"run","session_id":"s","sequence":4,"payload":{}}]
+    , &.{"session_state_mismatch"});
+}
+
+test "an idle snapshot names no active run" {
+    try expectCodes(
+        \\[
+    ++ admitted ++
+        \\,
+        \\{"type":"run.started","id":"e1","run_id":"run","session_id":"s","sequence":1,"payload":{}},
+        \\{"type":"session.state.request","id":"t1","payload":{"session_id":"s"}},
+        \\{"type":"session.state.response","id":"t2","in_reply_to":"t1","payload":{"session_id":"s","status":"idle","active_run_id":"run"}},
+        \\{"type":"run.completed","id":"e3","run_id":"run","session_id":"s","sequence":2,"payload":{}}]
     , &.{"session_state_mismatch"});
 }
