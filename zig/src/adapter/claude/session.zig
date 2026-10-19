@@ -2635,6 +2635,34 @@ test "a token count is emitted unsigned the way the oracle emits it" {
     try testing.expectEqual(@as(?std.json.Value, null), wrapped.get("output_tokens"));
 }
 
+test "core usage carries the cache counts and totals only when both are reported" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const scratch = arena.allocator();
+
+    var both = Reducer.init(&arena, .{});
+    both.open();
+    try startedRun(&both, scratch, "turn-1");
+    try observeText(&both, scratch,
+        \\{"type":"result","session_id":"s","subtype":"success","terminal_reason":"completed","result":"one","user_message_uuid":"turn-1","uuid":"r1","usage":{"input_tokens":7,"output_tokens":5,"cache_read_input_tokens":715,"cache_creation_input_tokens":0}}
+    );
+    const reported = firstPayload(&both, "run.completed").?.get("usage").?.object;
+    try testing.expectEqual(@as(i64, 715), reported.get("cache_read_input_tokens").?.integer);
+    try testing.expectEqual(@as(i64, 0), reported.get("cache_write_input_tokens").?.integer);
+    try testing.expectEqual(@as(i64, 727), reported.get("total_tokens").?.integer);
+
+    var half = Reducer.init(&arena, .{});
+    half.open();
+    try startedRun(&half, scratch, "turn-2");
+    try observeText(&half, scratch,
+        \\{"type":"result","session_id":"s","subtype":"success","terminal_reason":"completed","result":"one","user_message_uuid":"turn-2","uuid":"r2","usage":{"input_tokens":7,"output_tokens":5,"cache_read_input_tokens":715}}
+    );
+    const partial = firstPayload(&half, "run.completed").?.get("usage").?.object;
+    try testing.expectEqual(@as(i64, 715), partial.get("cache_read_input_tokens").?.integer);
+    try testing.expectEqual(@as(?std.json.Value, null), partial.get("cache_write_input_tokens"));
+    try testing.expectEqual(@as(?std.json.Value, null), partial.get("total_tokens"));
+}
+
 test "a delta member is folded and a null one is empty rather than dropped" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();

@@ -2372,6 +2372,14 @@ func TestCoreUsageCarriesTheCacheCountsAndTotalsOnlyWhenBothAreReported(t *testi
 		t.Fatalf("total = %d, want 7+5+715+0", cached.TotalTokens)
 	}
 
+	half := usageOf(strings.Replace(resultFrame("REPLACE_UUID", "success", false, "completed", "done", 0), `"usage":{"input_tokens":7,"output_tokens":5}`, `"usage":{"input_tokens":7,"output_tokens":5,"cache_read_input_tokens":715}`, 1))
+	if half.CacheReadInputTokens == nil || *half.CacheReadInputTokens != 715 || half.CacheWriteInputTokens != nil {
+		t.Fatalf("cache counts = %v, %v, want only the read count the frame reported", half.CacheReadInputTokens, half.CacheWriteInputTokens)
+	}
+	if half.TotalTokens != 0 {
+		t.Fatalf("total = %d, want none when only one cache count is reported", half.TotalTokens)
+	}
+
 	bare := usageOf(resultFrame("REPLACE_UUID", "success", false, "completed", "done", 0))
 	if bare.CacheReadInputTokens != nil || bare.CacheWriteInputTokens != nil {
 		t.Fatalf("cache counts = %v, %v, want none when the frame reports none", bare.CacheReadInputTokens, bare.CacheWriteInputTokens)
