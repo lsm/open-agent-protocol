@@ -11160,6 +11160,74 @@
       ]
     },
     {
+      "id": "session-reopen-lists-restored-queued-runs",
+      "path": "valid/session-reopen-lists-restored-queued-runs.json",
+      "kind": "positive",
+      "valid": true,
+      "phase": "",
+      "codes": [],
+      "units": [
+        "session-reattach",
+        "queue"
+      ],
+      "provenance": [
+        "decisions/0040-a-session-reopens-through-its-own-binding.md",
+        "decisions/0050-shutdown-is-graceful-forced-or-asked.md"
+      ],
+      "rules": [
+        "0040#the-capability-key-is-sessionopenreopen-and-a-reopen-is-gated-like-subscribe/3",
+        "0050#5/1"
+      ]
+    },
+    {
+      "id": "session-reopen-unrecovered-lists-queued-runs",
+      "path": "semantic-invalid/session-reopen-unrecovered-lists-queued-runs.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "session_state_mismatch",
+        "session_state_mismatch",
+        "session_state_mismatch",
+        "session_state_mismatch"
+      ],
+      "units": [
+        "session-reattach",
+        "queue"
+      ],
+      "provenance": [
+        "decisions/0040-a-session-reopens-through-its-own-binding.md",
+        "decisions/0050-shutdown-is-graceful-forced-or-asked.md"
+      ],
+      "rules": [
+        "0040#the-capability-key-is-sessionopenreopen-and-a-reopen-is-gated-like-subscribe/3",
+        "0040#the-reply-is-the-state-document-and-it-declares-what-the-session-runs-under/1",
+        "0050#5/1"
+      ]
+    },
+    {
+      "id": "session-reopen-recovered-lists-a-running-run",
+      "path": "semantic-invalid/session-reopen-recovered-lists-a-running-run.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "session_state_mismatch"
+      ],
+      "units": [
+        "session-reattach",
+        "queue"
+      ],
+      "provenance": [
+        "decisions/0040-a-session-reopens-through-its-own-binding.md",
+        "decisions/0050-shutdown-is-graceful-forced-or-asked.md"
+      ],
+      "rules": [
+        "0040#the-capability-key-is-sessionopenreopen-and-a-reopen-is-gated-like-subscribe/3",
+        "0050#5/1"
+      ]
+    },
+    {
       "id": "session-reopen-without-session-id",
       "path": "schema-invalid/session-reopen-without-session-id.json",
       "kind": "schema-invalid",
