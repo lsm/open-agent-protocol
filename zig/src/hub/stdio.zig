@@ -1076,12 +1076,17 @@ pub const Frontend = struct {
             .answer => |value| value,
             else => return,
         };
-        const runs = value.object.get("active_runs").?.array.items.len;
         const lost = if (value.object.get("lost")) |listed| listed.array.items.len else 0;
+        var active: std.ArrayList(u8) = .empty;
+        for (value.object.get("active_runs").?.array.items, 0..) |run, index| {
+            if (index > 0) try active.appendSlice(arena, ", ");
+            try active.print(arena, "{s}/{s}", .{ run.object.get("session_id").?.string, run.object.get("run_id").?.string });
+        }
+        const listed = if (active.items.len > 0) active.items else "none";
         const line = if (wanted == .force)
-            try std.fmt.allocPrint(arena, "oapx: forced shutdown, {d} run(s) cut off", .{runs})
+            try std.fmt.allocPrint(arena, "oapx: forced shutdown; cut off: {s}", .{listed})
         else
-            try std.fmt.allocPrint(arena, "oapx: shutting down gracefully, {d} run(s) still active, {d} queued run(s) lost; signal again to force", .{ runs, lost });
+            try std.fmt.allocPrint(arena, "oapx: shutting down gracefully; still active: {s}; {d} queued run(s) lost; signal again to force", .{ listed, lost });
         notices.write(notices.context, line) catch {};
     }
 
@@ -3484,11 +3489,11 @@ test "a first signal starts a graceful shutdown and says what is still running, 
     try testing.expectEqual(@as(?ShutdownMode, null), harness.frontend.shutdown);
     try harness.frontend.takeSignals(1);
     try testing.expectEqual(@as(?ShutdownMode, .graceful), harness.frontend.shutdown);
-    try testing.expect(std.mem.indexOf(u8, notices.last(), "gracefully, 1 run(s) still active") != null);
+    try testing.expect(std.mem.indexOf(u8, notices.last(), "gracefully; still active: busy/") != null);
     try testing.expect(!try harness.frontend.shutdownComplete(arena));
     try harness.frontend.takeSignals(2);
     try testing.expectEqual(@as(?ShutdownMode, .force), harness.frontend.shutdown);
-    try testing.expect(std.mem.indexOf(u8, notices.last(), "forced shutdown") != null);
+    try testing.expect(std.mem.indexOf(u8, notices.last(), "forced shutdown; cut off: busy/") != null);
     try testing.expect(try harness.frontend.shutdownComplete(arena));
 }
 

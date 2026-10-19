@@ -430,8 +430,8 @@ daemon`; Go: `TestAShutdownPostedWithNothingRunningStopsAtOnce`,
 then shuts its HTTP server down as on a signal. Neither tree yet sends subscribers
 `endpoint.shutdown.started`, which Decision 0050 requires on acceptance. In Zig, on stdio and HTTP alike,
 SIGINT and SIGTERM now map as rule 4 says: the first starts a graceful
-shutdown and writes one stderr line naming how many runs are still active and
-how many queued runs were lost, and the next forces it — Zig: `a first signal
+shutdown and writes one stderr line listing each run still active as
+`session/run` and how many queued runs were lost, and the next forces it — Zig: `a first signal
 starts a graceful shutdown and says what is still running, and a second forces
 it`. Go's hubs still end on the first signal as the next paragraph says, and
 stdin EOF still ends serving in both.
