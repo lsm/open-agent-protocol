@@ -288,6 +288,8 @@ type CapabilitiesUpdated struct {
 
 const FeatureModelsList = "models.list"
 
+const FeatureContentImage = "content.image"
+
 const (
 	FeatureSessionModelSwitch = "session.model.switch"
 	FeatureProvidersAttach    = "action.providers.attach"

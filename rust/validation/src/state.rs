@@ -1,6 +1,7 @@
 mod admissions;
 mod controls;
 mod interactions;
+mod results;
 mod runs;
 
 use std::collections::{HashMap, HashSet};
@@ -384,6 +385,7 @@ impl State {
             return;
         }
         self.payload_scope(at, e);
+        self.check_result_images(at, e);
         self.record_features(e);
         self.feature_for(at, e);
         self.run_dispatch(at, e);

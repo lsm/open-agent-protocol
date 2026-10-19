@@ -899,6 +899,7 @@ pub const Machine = struct {
     }
 
     fn dispatch(self: *Machine, index: usize, envelope: std.json.Value, declared: []const u8, payload: std.json.Value) !void {
+        try self.checkResultImages(index, declared, payload);
         if (std.mem.startsWith(u8, declared, "auth.login.")) {
             try self.authEnvelope(index, envelope, declared, payload);
             return;
@@ -1918,6 +1919,15 @@ pub const Machine = struct {
                 if (pending.compaction) |expectation| try self.raise(expectation, index);
             },
         }
+    }
+
+    fn checkResultImages(self: *Machine, index: usize, declared: []const u8, payload: std.json.Value) !void {
+        if (self.isRequestType(declared)) return;
+        if (self.features.get(feature_content_image)) |level| {
+            if (!std.mem.eql(u8, level, "unavailable")) return;
+        }
+        const direct = std.mem.eql(u8, declared, "action.call.completed") and carriesImage(member(payload, "result"));
+        if (direct or toolResultImage(payload)) try self.add(code_unavailable_capability, index);
     }
 
     fn modelsRequest(self: *Machine, index: usize, envelope: std.json.Value, payload: std.json.Value) !void {
@@ -4840,6 +4850,7 @@ const session_list_default_limit: u64 = 50;
 const feature_transcript_load = "transcript.load";
 const transcript_load_default_limit: u64 = 100;
 const feature_model_switch = "session.model.switch";
+const feature_content_image = "content.image";
 const feature_providers_attach = "action.providers.attach";
 const feature_tools_list = "action.tools.list";
 const feature_tool_sources_attach = "action.tool_sources.attach";
@@ -4894,6 +4905,36 @@ fn distinctIds(listed: std.json.Value) usize {
         if (firstOccurrence(listed, at, memberString(model, "id"))) count += 1;
     }
     return count;
+}
+
+fn carriesImage(result: ?std.json.Value) bool {
+    const held = result orelse return false;
+    if (held != .array or held.array.items.len == 0) return false;
+    var image = false;
+    for (held.array.items) |part| {
+        if (part != .object) return false;
+        const kind = memberString(part, "type");
+        if (std.mem.eql(u8, kind, "image")) {
+            image = true;
+        } else if (!std.mem.eql(u8, kind, "text")) return false;
+    }
+    return image;
+}
+
+fn toolResultImage(node: std.json.Value) bool {
+    switch (node) {
+        .object => |object| {
+            if (std.mem.eql(u8, memberString(node, "type"), "tool_result") and carriesImage(object.get("result"))) return true;
+            for (object.values()) |child| {
+                if (toolResultImage(child)) return true;
+            }
+        },
+        .array => |array| for (array.items) |child| {
+            if (toolResultImage(child)) return true;
+        },
+        else => {},
+    }
+    return false;
 }
 
 fn sameCatalog(a: ?std.json.Value, b: ?std.json.Value) bool {

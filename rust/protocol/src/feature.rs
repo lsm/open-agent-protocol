@@ -53,6 +53,7 @@ pub const FEATURE_SESSION_REASONING: &str = "session.reasoning";
 pub const FEATURE_COMPACTION_POLICY: &str = "session.compaction.policy";
 pub const FEATURE_TOOLS_PROVIDE: &str = "action.tools.provide";
 pub const FEATURE_MODELS_LIST: &str = "models.list";
+pub const FEATURE_CONTENT_IMAGE: &str = "content.image";
 pub const FEATURE_SESSION_MODEL_SWITCH: &str = "session.model.switch";
 pub const FEATURE_PROVIDERS_ATTACH: &str = "action.providers.attach";
 
