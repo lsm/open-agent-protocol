@@ -10,6 +10,7 @@ publish = false
 [dependencies]
 futures-core = "0.3"
 oap-protocol = { path = "../protocol" }
+serde = "1"
 serde_json = "1"
 thiserror = "2"
 

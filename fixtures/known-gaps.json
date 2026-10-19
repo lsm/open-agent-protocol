@@ -65,9 +65,7 @@
     "queue-state-started-run-called-queued",
     "queue-state-terminal-status",
     "queue-state-two-started-entries",
-    "queue-state-waiting-without-a-waiting-run",
-    "scope-mismatch",
-    "tools-list-unscoped-answer-scoped"
+    "queue-state-waiting-without-a-waiting-run"
   ],
   "rust": [
     "attach-advertised-without-modes",

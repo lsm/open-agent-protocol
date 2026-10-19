@@ -974,6 +974,14 @@ pub const Machine = struct {
         }
         if (std.mem.eql(u8, declared, "action.tools.list.response")) {
             try self.gatedResponse(index, envelope, .control);
+            try self.checkScope(index, envelope, .{ .session = memberString(payload, "session_id") });
+            if (self.requests.get(field(envelope, "in_reply_to"))) |asked| {
+                const listed_session = memberString(payload, "session_id");
+                const scope = if (listed_session.len == 0) field(envelope, "session_id") else listed_session;
+                if (std.mem.eql(u8, asked.declared, "action.tools.list.request") and asked.session.len == 0 and scope.len != 0) {
+                    try self.add(code_scope_mismatch, index);
+                }
+            }
             if (duplicateSourceId(member(payload, "sources")).len != 0) {
                 try self.add(code_duplicate_tool_source, index);
             }
@@ -3988,6 +3996,8 @@ pub const Machine = struct {
     }
 
     fn runEvent(self: *Machine, index: usize, envelope: std.json.Value, declared: []const u8) !void {
+        const scoped = member(envelope, "payload") orelse std.json.Value{ .null = {} };
+        try self.checkScope(index, envelope, .{ .session = memberString(scoped, "session_id"), .run = memberString(scoped, "run_id") });
         const run_id = field(envelope, "run_id");
         var run = self.runs.get(run_id);
         if (run == null) {
