@@ -306,7 +306,7 @@ validator, and how much of it.
 | surface | validated by | what it misses |
 | --- | --- | --- |
 | Go adapters (`go/adapter/*`) | `adaptertest.AssertProtocolValid*` in 21 test files, and the corpus tests | the trace it builds is `capabilities` + optional `action.tools.list` + the submit + the run's events. It carries no `protocol.initialize` and no `session.open.request`, so every rule keyed on the control participant (0011 ownership and interactions, 0031 settlement) and every participant rule is skipped. A test that wants them builds its own trace, as `go/adapter/claude/provided_test.go` does |
-| Zig adapters (`zig/src/adapter/*`) | the corpus harness compares emitted envelopes with each case's expectation; only `codex` and `opencode` corpora also run `semantic` and `jsonschema` | `acp`, `claude`, `deepseek`, `hermes` and `pi` are checked by equality with an expectation, so their validity rests on the expectation having been validated on the Go side, and on the paths `equalExcept` ignores being harmless |
+| Zig adapters (`zig/src/adapter/*`) | `codex` and `opencode` corpora run `semantic` and `jsonschema` on what they emit; `acp`, `claude`, `deepseek`, `hermes` and `pi` go through the shared harness, which requires each case's emitted envelopes to equal its expectation exactly (`equalValues`) | validity for those five is transitive: the Go corpus validates every run of the same cases and holds Go's output to the same expectation, so a Zig-only defect shows as a mismatch. What no validator sees is a Zig path no corpus case reaches |
 | `oapx` (in-process loop) | `zig/src/adapter/oapx` tests validate selected traces with `semantic` | no corpus; coverage is what the tests chose |
 | hubs (`serve`, `oapx hub`) | not validated, by design (`serve` adds no semantics) | hub op answers carrying protocol payloads are not schema-checked |
 | `serve agent` (both trees) | the Go conformance runner over raw envelopes | runs on demand and in CI for Go; the Zig `serve agent` is exercised by the parity job |
@@ -375,11 +375,13 @@ smallest fix.
    interrupted run settles `failed` with `settled_by: "inferred"`, that
    `recovery.interrupted_runs` names those runs, or that held prompts return in
    their admission order. The fixtures are 2 positive and 3 schema-invalid.
-3. **Five Zig adapter corpora never run the validator on what they emit.**
-   `acp`, `claude`, `deepseek`, `hermes` and `pi` compare with expectations
-   only; a Zig-only defect on a path `equalExcept` skips, or in an envelope the
-   expectation leaves blank, is invisible. Fix: run `semantic` and `jsonschema`
-   over each case's emitted trace, as the `codex` and `opencode` corpora do.
+3. **Five Zig adapter corpora validate only through Go (demoted on review).**
+   `acp`, `claude`, `deepseek`, `hermes` and `pi` hold their output to each
+   case's expectation by exact equality, and the Go corpus validates every run
+   of those cases, so the corpus output is validated transitively; the first
+   draft of this ledger said otherwise. The residual risk is a Zig code path no
+   corpus case reaches, and a Zig validity claim that rests on Go, which
+   Decision 0032 says neither tree should. Low risk.
 4. **No adapter output reaches a validator from a real harness in CI.** Every
    live check is behind an opt-in gate, so upstream drift between pins is
    caught only when someone re-records a corpus. This is by design (Decision
