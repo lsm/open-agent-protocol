@@ -1,6 +1,6 @@
 # Decision 0019: One Binary, And The Rewrite That Gets There
 
-Status: accepted 2026-10-06 (its surface is on main); its oracle and retirement clauses and the Go binary's name are superseded by [Decision 0032](0032-go-and-zig-are-peers.md), and [Decision 0038](0038-one-released-binary-and-a-library-for-every-language.md) makes `conformance/` product work and answers its open question on `serve/`: the hub stays in Go and ports to Zig
+Status: accepted 2026-10-06 (its surface is on main); its oracle and retirement clauses and the Go binary's name are superseded by [Decision 0032](0032-go-and-zig-are-peers.md), and [Decision 0038](0038-one-released-binary-and-a-library-for-every-language.md) makes `conformance/` product work and answers its open question on `serve/`: the hub stays in Go and ports to Zig; its `name_pattern` entry is amended by [Decision 0055](0055-register-batch-2.md)
 Date: 2026-09-18
 Protocol: `open-agent-protocol` version `0.1`
 Profiles: `open-agent-protocol.agent-control-core` and
@@ -168,9 +168,12 @@ would take to carry it. The list is expected to shrink.
   (`go/validation/controltools.go`, `provideLimitViolation`). Zig has no regular
   expression engine in its standard library, and a hand-written subset would
   diverge from RE2 on inputs no fixture enumerates. No fixture in the corpus
-  discloses `name_pattern`, so the gate is silent either way. Carrying it means
-  vendoring an engine, which is its own decision. The sibling bounds
-  `max_tools` and `schema_dialect` are ported.
+  discloses `name_pattern`, so the gate is silent either way. The sibling
+  bounds `max_tools` and `schema_dialect` are ported.
+  [Decision 0055](0055-register-batch-2.md) settles what the pattern means: RE2
+  syntax, matching whole names, for which Zig owes an RE2-compatible matcher, so
+  this entry is a port gap now, not a divergence. How Zig carries that matcher,
+  by vendoring an engine or otherwise, is still its own decision.
 
 - **Exact decimal comparison of a `fixed_result`.** Go decodes with
   `UseNumber` and compares through `big.Rat`, so it holds the literal. Zig's

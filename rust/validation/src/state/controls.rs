@@ -241,6 +241,12 @@ const OPEN_LEVEL_REFUSALS: [&str; 5] = [
     "unknown_session",
 ];
 
+impl Controls {
+    pub(super) fn selects_model(&self) -> bool {
+        self.model_present
+    }
+}
+
 impl State {
     pub(super) fn controls_dispatch(&mut self, at: (usize, usize), e: &Envelope) {
         let t = &e.envelope_type;
