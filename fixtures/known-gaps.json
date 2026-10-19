@@ -22,15 +22,10 @@
     "queue-state-anchor-request-unaccounted",
     "queue-state-anchor-request-unanswered",
     "queue-state-as-of-never-reached",
-    "queue-state-cancelling-reservation-past-its-promotion",
-    "queue-state-cancelling-reservation-without-its-place",
-    "queue-state-cancelling-run-drops-a-place-it-never-left",
-    "queue-state-cancelling-run-left-the-queue-early",
     "queue-state-earlier-anchor-answers-the-entry",
     "queue-state-earlier-anchor-vindicates-the-entry",
     "queue-state-entry-anchor-admitted-elsewhere",
     "queue-state-entry-leads-a-different-run",
-    "queue-state-executes-a-run-that-never-starts",
     "queue-state-lead-claims-a-second-started-run",
     "queue-state-lead-counts-a-place-its-sibling-never-took",
     "queue-state-lead-does-not-excuse-the-known-entries",
@@ -48,8 +43,7 @@
     "queue-state-omission-excused-then-repeated",
     "queue-state-omits-pending-interaction",
     "queue-state-pending-without-as-of",
-    "queue-state-promoted-run-erased",
-    "queue-state-queued-at-forthcoming-start"
+    "queue-state-promoted-run-erased"
   ],
   "rust": [
     "attach-advertised-without-modes",
