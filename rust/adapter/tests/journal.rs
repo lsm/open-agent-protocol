@@ -169,3 +169,18 @@ fn a_waiting_follower_wakes_when_another_thread_appends() {
     assert_eq!(error, None);
     assert_contiguous(&envelopes, 3);
 }
+
+#[test]
+fn a_reservation_bound_after_close_delivers_nothing() {
+    let journal = Journal::new(64);
+    let mut reservation = journal.reserve();
+    append_run(&journal, "run", 3, true);
+    journal.close();
+    reservation.bind("run");
+    let (delivered, error) = collect(reservation.stream());
+    assert!(
+        delivered.is_empty() && error.is_none(),
+        "{}",
+        delivered.len()
+    );
+}

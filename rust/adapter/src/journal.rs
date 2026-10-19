@@ -221,6 +221,13 @@ impl Journal {
     pub fn close(&self) {
         let mut inner = self.lock();
         inner.stopped = true;
+        for follower in inner
+            .followers
+            .values_mut()
+            .filter(|follower| follower.run.is_none())
+        {
+            follower.closed = true;
+        }
         inner.wake_all();
     }
 }
