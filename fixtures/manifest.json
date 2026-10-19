@@ -12544,6 +12544,150 @@
       "provenance": [
         "decisions/0050-shutdown-is-graceful-forced-or-asked.md"
       ]
+    },
+    {
+      "id": "permission-denied-cancels-the-call",
+      "path": "valid/permission-denied-cancels-the-call.json",
+      "kind": "positive",
+      "valid": true,
+      "phase": "",
+      "codes": [],
+      "units": [
+        "core",
+        "tools",
+        "permissions"
+      ],
+      "provenance": [
+        "decisions/0001-agent-control-v0.1-executable-core.md"
+      ]
+    },
+    {
+      "id": "permission-two-gates-in-one-run",
+      "path": "valid/permission-two-gates-in-one-run.json",
+      "kind": "positive",
+      "valid": true,
+      "phase": "",
+      "codes": [],
+      "units": [
+        "core",
+        "tools",
+        "permissions"
+      ],
+      "provenance": [
+        "decisions/0001-agent-control-v0.1-executable-core.md"
+      ]
+    },
+    {
+      "id": "permission-resolved-by-another-participant",
+      "path": "semantic-invalid/permission-resolved-by-another-participant.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "wrong_interaction_responder"
+      ],
+      "units": [
+        "core",
+        "permissions"
+      ],
+      "provenance": [
+        "decisions/0001-agent-control-v0.1-executable-core.md"
+      ]
+    },
+    {
+      "id": "permission-resolved-twice",
+      "path": "semantic-invalid/permission-resolved-twice.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "duplicate_interaction"
+      ],
+      "units": [
+        "core",
+        "permissions"
+      ],
+      "provenance": [
+        "decisions/0001-agent-control-v0.1-executable-core.md"
+      ]
+    },
+    {
+      "id": "user-input-cancelled",
+      "path": "valid/user-input-cancelled.json",
+      "kind": "positive",
+      "valid": true,
+      "phase": "",
+      "codes": [],
+      "units": [
+        "core",
+        "user-input"
+      ],
+      "provenance": [
+        "decisions/0001-agent-control-v0.1-executable-core.md"
+      ]
+    },
+    {
+      "id": "tool-failed",
+      "path": "valid/tool-failed.json",
+      "kind": "positive",
+      "valid": true,
+      "phase": "",
+      "codes": [],
+      "units": [
+        "core",
+        "tools"
+      ],
+      "provenance": [
+        "decisions/0001-agent-control-v0.1-executable-core.md"
+      ]
+    },
+    {
+      "id": "capability-updated-then-cited",
+      "path": "valid/capability-updated-then-cited.json",
+      "kind": "positive",
+      "valid": true,
+      "phase": "",
+      "codes": [],
+      "units": [
+        "capabilities"
+      ],
+      "provenance": [
+        "decisions/0001-agent-control-v0.1-executable-core.md"
+      ]
+    },
+    {
+      "id": "capability-stale-after-update",
+      "path": "semantic-invalid/capability-stale-after-update.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "stale_capability_revision",
+        "stale_capability_revision"
+      ],
+      "units": [
+        "capabilities"
+      ],
+      "provenance": [
+        "decisions/0001-agent-control-v0.1-executable-core.md"
+      ]
+    },
+    {
+      "id": "capability-unadvertised-input-used",
+      "path": "semantic-invalid/capability-unadvertised-input-used.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "unavailable_capability",
+        "unavailable_capability"
+      ],
+      "units": [
+        "capabilities"
+      ],
+      "provenance": [
+        "decisions/0001-agent-control-v0.1-executable-core.md"
+      ]
     }
   ]
 }
