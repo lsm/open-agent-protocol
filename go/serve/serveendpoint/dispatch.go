@@ -92,8 +92,12 @@ func (s *Server) serve(ctx context.Context, streams context.Context, e protocol.
 	if err := s.refuseStaleRevision(ctx, e); err != nil {
 		return protocol.Envelope{}, nil, err
 	}
-	if admitsWork(e.Type) && s.stopping.accepted() {
-		return protocol.Envelope{}, nil, &refusal{code: "shutting_down", message: "the endpoint is shutting down and admits no new work"}
+	if admitsWork(e.Type) {
+		s.stopping.admission.RLock()
+		defer s.stopping.admission.RUnlock()
+		if s.stopping.accepted() {
+			return protocol.Envelope{}, nil, &refusal{code: "shutting_down", message: "the endpoint is shutting down and admits no new work"}
+		}
 	}
 	switch e.Type {
 	case protocol.TypeEndpointShutdownRequest:
