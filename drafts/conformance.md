@@ -906,7 +906,11 @@ Stateful checks include:
 `fixtures/manifest.json` is the normative inventory. It declares whether each
 fixture is valid or invalid, the expected validation phase and diagnostic codes,
 and the conformance units it exercises. Validity must not be inferred from a
-filename. Bindings are tested by normalizing native wire messages into these
+filename. The expected codes are a set: a validator conforms when the codes it
+raises, duplicates removed, equal the set declared, so how many diagnostics one
+fault yields is not pinned. No implementation is the answer key:
+`fixtures/known-gaps.json` lists, per implementation (Go included), the fixtures
+on which it is known to disagree with the manifest. Bindings are tested by normalizing native wire messages into these
 logical envelopes before validation.
 
 ## Error Expectations
