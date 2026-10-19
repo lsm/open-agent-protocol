@@ -62,8 +62,11 @@ read the core members, and an adapter fills both meanwhile.
 - `go/internal/provider`'s Anthropic stream backfills an unreported total from
   input and output alone, which this decision's sum overrules; it owes the
   cache terms.
-- Owed: the Go opencode adapter, which sums only opencode's input and output,
-  reports cache and reasoning in core `usage`; the claude adapter, which
+- Owed: the Go opencode adapter and the Zig opencode reducer, which sum only
+  opencode's input and output, report cache and reasoning in core `usage`;
+  `go/internal/inferenceserve`, which drops the cache counts
+  `go/internal/provider` already holds and totals input and output alone,
+  carries them onto the provider wire; the claude adapter, which
   carries cache only in its extension, fills the cache members too; and the
   SDKs' usage types (Go, Rust, Python and TypeScript), which read the old
   three members or vendor names such as `cache_read`, read the new ones.
