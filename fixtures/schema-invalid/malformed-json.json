@@ -1,0 +1,1 @@
+[{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"session.message.submit.request","id":"req1","payload":{"session_id":"s1","delivery":"auto","messages":[{"role":"user","content":"go"}]}},{"protocol":
