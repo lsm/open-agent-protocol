@@ -611,6 +611,14 @@ const interaction_scoped = [_][]const u8{
     "user.input.cancel.request",         "user.input.cancel.response",
 };
 
+const settling_requests = [_][]const u8{
+    "run.cancel.request",          "action.permission.resolve.request",
+    "user.input.resolve.request",  "user.input.cancel.request",
+    "action.call.resolve.request",
+};
+
+const settling_events = [_][]const u8{ "action.permission.resolved", "user.input.resolved" };
+
 const Request = struct {
     session: []const u8 = "",
     run: []const u8 = "",
@@ -623,6 +631,7 @@ const Request = struct {
     responded: bool = false,
     gates: []const Gate = &.{},
     index: usize = 0,
+    settled_under: []const u8 = "",
 };
 
 pub const PackedType = struct {
@@ -693,6 +702,8 @@ pub const Machine = struct {
     led_entries: std.ArrayList(LedEntry) = .empty,
     led_groups: std.ArrayList(LedGroup) = .empty,
     capabilities_stale: bool = false,
+    previous_capability: []const u8 = "",
+    settling: bool = false,
     limits: ?Limits = null,
     windows: std.StringArrayHashMapUnmanaged(*Window) = .empty,
     submits: std.StringArrayHashMapUnmanaged(*Pending) = .empty,
@@ -794,7 +805,8 @@ pub const Machine = struct {
             duplicate = try self.correlate(index, envelope, declared);
         }
         const revision = field(envelope, "capability_revision");
-        if (revision.len != 0 and self.current_capability.len != 0 and
+        self.settling = self.settlesUnderPrevious(envelope, declared, revision);
+        if (!self.settling and revision.len != 0 and self.current_capability.len != 0 and
             !std.mem.eql(u8, revision, self.current_capability) and
             !exemptFromRevision(declared))
         {
@@ -960,6 +972,7 @@ pub const Machine = struct {
             if (std.mem.eql(u8, field(envelope, "capability_revision"), previous)) {
                 try self.add(code_stale_capability_revision, index);
             }
+            self.previous_capability = self.current_capability;
             self.current_capability = field(envelope, "capability_revision");
             self.capabilities_stale = true;
             self.limits = null;
@@ -2557,7 +2570,20 @@ pub const Machine = struct {
         try self.featureKeys(index, envelope, &keys);
     }
 
+    fn settlesUnderPrevious(self: *Machine, envelope: std.json.Value, declared: []const u8, revision: []const u8) bool {
+        if (revision.len == 0) return false;
+        if (self.isResponseType(declared)) {
+            if (self.requests.get(field(envelope, "in_reply_to"))) |asked| return std.mem.eql(u8, asked.settled_under, revision);
+        }
+        if (!self.capabilities_stale or !std.mem.eql(u8, revision, self.previous_capability)) return false;
+        if (listedIn(&settling_events, declared)) return true;
+        if (!listedIn(&settling_requests, declared)) return false;
+        if (self.requests.getPtr(field(envelope, "id"))) |request| request.settled_under = revision;
+        return true;
+    }
+
     fn featureKeys(self: *Machine, index: usize, envelope: std.json.Value, keys: []const []const u8) !void {
+        if (self.settling) return self.featureLevel(index, keys);
         if (self.current_capability.len == 0 or self.capabilities_stale) {
             try self.add(code_unavailable_capability, index);
             return;
@@ -2566,6 +2592,10 @@ pub const Machine = struct {
             try self.add(code_stale_capability_revision, index);
             return;
         }
+        try self.featureLevel(index, keys);
+    }
+
+    fn featureLevel(self: *Machine, index: usize, keys: []const []const u8) !void {
         for (keys) |key| {
             const level = self.features.get(key) orelse continue;
             if (!affirmative(level)) try self.add(code_unavailable_capability, index);
