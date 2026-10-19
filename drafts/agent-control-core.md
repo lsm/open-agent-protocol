@@ -813,8 +813,10 @@ an optional `reason` in its payload. It is an invalidation notice, not a
 descriptor delta. The receiver obtains the new snapshot with
 `capabilities.request`, and until that response arrives a request citing the
 pre-update revision or exercising an optional feature is stale, except
-initialization, discovery, `run.cancel.request` and the answers to interactions
-already pending ([Decision 0055](../decisions/0055-register-batch-2.md)). Dynamic updates and their event are not required for
+initialization, discovery, and the requests that settle work in flight:
+`run.cancel.request`, `action.permission.resolve.request`,
+`user.input.resolve.request`, `user.input.cancel.request` and
+`action.call.resolve.request` ([Decision 0055](../decisions/0055-register-batch-2.md)). Dynamic updates and their event are not required for
 core conformance.
 
 ## Minimum Conformance
