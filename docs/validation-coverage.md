@@ -133,7 +133,7 @@ Every code either tree declares, or a fixture expects. "defined, not in implemen
 | `undisclosed_provide_limit` | semantic | yes | yes | 1 | 0 | 0011, staged-units-graduation |
 | `undisclosed_queue_limit` | semantic | yes | yes | 2 | 0 | 0007, staged-units-graduation |
 | `undisclosed_selection_scope` | semantic | yes | no | 3 | 0 | 0005, 0021, staged-units-graduation |
-| `unhonoured_capability` | semantic | yes | no | 4 | 0 | 0004, 0006, 0008, 0009, staged-units-graduation |
+| `unhonoured_capability` | semantic | yes | yes | 4 | 0 | 0004, 0006, 0008, 0009, staged-units-graduation |
 | `unknown_participant` | semantic | yes | no | 1 | 0 | — |
 | `unmatched_interaction` | semantic | yes | yes | 5 | 0 | 0007, 0011, staged-units-graduation |
 | `unmatched_provider` | semantic | yes | defined, not in implemented list | 1 | 0 | 0014 |
@@ -161,7 +161,7 @@ is checked. Fixture counts are positive / negative traces citing the decision.
 | 0001 correlated reverse interactions | `unmatched_interaction`, `duplicate_interaction`, `wrong_interaction_responder`, `pending_interaction_at_terminal` | both | core | the responder rule checks the declared responder; `unknown_participant` (declared at initialize) is Go-only |
 | 0001 cancellation intent is not settlement | `cancel_not_settled`, `illegal_run_transition` | both | 1 negative | one negative fixture only |
 | 0001 resume, reconciliation and replay are separate | `undeclared_replay_gap` | Go only | 1 negative | ported separately |
-| 0001 capabilities disclose effective fidelity | `unavailable_capability`, `unhonoured_capability`, `stale_capability_revision` | `unhonoured_capability` Go only | 44 / 4 / 8 negatives | |
+| 0001 capabilities disclose effective fidelity | `unavailable_capability`, `unhonoured_capability`, `stale_capability_revision` | both | 44 / 4 / 8 negatives | |
 | request/response pairing (0001 vocabulary) | `missing_response`, `duplicate_response`, `unmatched_response` | Go only | 4 / 1 / 1 | ported separately |
 | 0002 two canonical admission shapes, promotion, pre-start settlement | `illegal_run_transition`, `missing_run_started` | both | 4 / 7 | |
 
@@ -228,7 +228,7 @@ is checked. Fixture counts are positive / negative traces citing the decision.
 
 | rule | code | Go / Zig | fixtures | note |
 | --- | --- | --- | --- | --- |
-| 0008 an adapter that does not attach says so; catalog gated on its own key | `unavailable_capability`, `unhonoured_capability` | Zig lacks `unhonoured_capability` | 19 / 12 | |
+| 0008 an adapter that does not attach says so; catalog gated on its own key | `unavailable_capability`, `unhonoured_capability` | both | 19 / 12 | |
 | 0008 a source is described; attachment shape is not the catalog shape | `attachment_field_in_catalog`, S | both | 3 | |
 | 0008 a catalog resolves | `unmatched_tool_source`, `catalog_mismatch`, `duplicate_tool_source`, `duplicate_tool_name` | both | 6 / 4 / 7 / 2 | |
 | 0008 attachment bounded by disclosure; modes disclosed as a set | `undisclosed_attach_limit`, `undisclosed_attach_modes` | both | 1 / 3 | |
@@ -348,7 +348,7 @@ validator, and how much of it.
 
 Listed for completeness and left to the port already under way:
 `missing_response`, `duplicate_response`, `unmatched_response`,
-`undeclared_replay_gap`, `premature_session_mutation`, `unhonoured_capability`,
+`undeclared_replay_gap`, `premature_session_mutation`,
 `unknown_participant`, the decode-phase codes (`malformed_json`,
 `duplicate_key`, `payload_decode`), the auth and provider codes
 (`auth_flow_order`, `missing_auth_terminal`, `unmatched_provider`,
