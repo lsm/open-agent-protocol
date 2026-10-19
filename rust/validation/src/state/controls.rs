@@ -139,6 +139,17 @@ pub(super) struct Controls {
     calls: BTreeMap<String, (String, bool)>,
 }
 
+pub(super) struct PendingSubscribe {
+    expectation: Option<Expectation>,
+}
+
+fn refuses_subscribe(err: &ProtocolError) -> bool {
+    if err.code != UNSUPPORTED_FEATURE && err.code != CAPABILITY_DEGRADED {
+        return false;
+    }
+    detail(err, "feature").is_none_or(|named| named == FEATURE_OPEN_SUBSCRIBE)
+}
+
 #[derive(Default)]
 pub(super) struct PendingSubmit {
     pub(super) expectation: Option<Expectation>,
@@ -240,15 +251,18 @@ impl State {
             self.submit_controls(at, e, &p, &[]);
         } else if *t == EnvelopeType::SESSION_OPEN_REQUEST {
             let p: SessionOpenRequest = payload(e);
+            self.subscribe_gate(at, e, &p);
             if let Some(message) = &p.message {
                 let submission = message.submit(p.session_id.clone().unwrap_or_default());
                 let provided: Vec<String> = p.tools.iter().map(|tool| tool.name.clone()).collect();
                 self.submit_controls(at, e, &submission, &provided);
             }
         } else if *t == EnvelopeType::SESSION_OPEN_RESPONSE {
+            self.settle_subscribe_admission(at, e);
             self.record_provided_tools(e);
         } else if *t == EnvelopeType::ERROR_RESPONSE {
             self.settle_control_refusal(at, e);
+            self.settle_subscribe_refusal(at, e);
         }
     }
 
@@ -635,37 +649,76 @@ impl State {
         controls
     }
 
+    fn attribute(&self, reply: &str, err: &ProtocolError) -> (bool, Option<Expectation>) {
+        let opening = self
+            .requests
+            .get(reply)
+            .is_some_and(|request| request.envelope_type == EnvelopeType::SESSION_OPEN_REQUEST);
+        if opening && OPEN_LEVEL_REFUSALS.contains(&err.code.as_str()) {
+            return (true, None);
+        }
+        let retained = [
+            self.pending_controls
+                .get(reply)
+                .and_then(|pending| pending.expectation.as_ref()),
+            self.pending_subscribes
+                .get(reply)
+                .and_then(|pending| pending.expectation.as_ref()),
+        ];
+        let retained: Vec<&Expectation> = retained.into_iter().flatten().collect();
+        if retained
+            .iter()
+            .any(|expectation| expectation.conformed_by(err))
+        {
+            return (true, None);
+        }
+        let speaker = retained.into_iter().min_by(|a, b| a.order(b)).cloned();
+        (false, speaker)
+    }
+
+    fn refusal_misses(
+        &mut self,
+        at: (usize, usize),
+        e: &Envelope,
+        expectation: &Expectation,
+        speaker: &Option<Expectation>,
+        err: &ProtocolError,
+    ) {
+        let owns = speaker
+            .as_ref()
+            .is_none_or(|speaker| speaker.order(expectation) == Ordering::Equal);
+        if owns {
+            let reply = os(&e.in_reply_to);
+            self.add_expected(
+                expectation.diagnostic,
+                at,
+                e,
+                "/payload/error",
+                "refusal does not tell the caller what to change",
+                &expectation.describe(),
+                &describe_refusal(err),
+                &[&reply],
+            );
+        }
+    }
+
     pub(super) fn settle_control_refusal(&mut self, at: (usize, usize), e: &Envelope) {
         let reply = os(&e.in_reply_to);
         let Some(pending) = self.pending_controls.get(&reply) else {
             return;
         };
+        let (expectation, satisfiable) = (pending.expectation.clone(), pending.satisfiable.clone());
         let err = payload::<ErrorResponse>(e).error;
-        let opening = self
-            .requests
-            .get(&reply)
-            .is_some_and(|request| request.envelope_type == EnvelopeType::SESSION_OPEN_REQUEST);
-        if opening && OPEN_LEVEL_REFUSALS.contains(&err.code.as_str()) {
+        let (discharged, speaker) = self.attribute(&reply, &err);
+        if discharged {
             return;
         }
-        if let Some(expectation) = &pending.expectation {
-            if !expectation.conformed_by(&err) {
-                let (code, expected) = (expectation.diagnostic, expectation.describe());
-                self.add_expected(
-                    code,
-                    at,
-                    e,
-                    "/payload/error",
-                    "refusal does not tell the caller what to change",
-                    &expected,
-                    &describe_refusal(&err),
-                    &[&reply],
-                );
-            }
+        if let Some(expectation) = expectation {
+            self.refusal_misses(at, e, &expectation, &speaker, &err);
             return;
         }
         let feature = detail(&err, "feature").unwrap_or_default();
-        if err.code == UNSUPPORTED_FEATURE && pending.satisfiable.contains(feature) {
+        if err.code == UNSUPPORTED_FEATURE && satisfiable.contains(feature) {
             self.add_expected(
                 codes::UNSATISFIABLE_CONTROL,
                 at,
@@ -674,6 +727,94 @@ impl State {
                 "refusal names a control the endpoint advertises and this request satisfies",
                 "admission or a defect the refusal names",
                 &describe_refusal(&err),
+                &[&reply],
+            );
+        }
+    }
+
+    fn subscribe_gate(&mut self, at: (usize, usize), e: &Envelope, p: &SessionOpenRequest) {
+        if !p.subscribe {
+            return;
+        }
+        let Some(level) = self.control_descriptor(at, e, FEATURE_OPEN_SUBSCRIBE) else {
+            return;
+        };
+        let expect = |rung, code, reason, diagnostic, message: &str| Expectation {
+            rung,
+            key: FEATURE_OPEN_SUBSCRIBE.to_owned(),
+            pointer: "/payload/subscribe".to_owned(),
+            code,
+            reason,
+            detail_name: "feature",
+            detail_value: FEATURE_OPEN_SUBSCRIBE.to_owned(),
+            diagnostic,
+            message: message.to_owned(),
+        };
+        let expectation = if !affirmative(&level) {
+            Some(expect(RUNG_CAPABILITY, UNSUPPORTED_FEATURE, CONTROL_UNADVERTISED, codes::UNAVAILABLE_CAPABILITY, "an open elects subscribe against an endpoint that has not affirmatively advertised it"))
+        } else if level == SupportLevel::DEGRADED && !p.allows_degraded(FEATURE_OPEN_SUBSCRIBE) {
+            Some(expect(
+                RUNG_DEGRADATION,
+                CAPABILITY_DEGRADED,
+                "",
+                codes::DEGRADED_WITHOUT_OPTIN,
+                "open elects a degraded subscribe without the caller's opt-in",
+            ))
+        } else {
+            None
+        };
+        self.pending_subscribes
+            .insert(s(&e.id), PendingSubscribe { expectation });
+    }
+
+    fn settle_subscribe_refusal(&mut self, at: (usize, usize), e: &Envelope) {
+        let reply = os(&e.in_reply_to);
+        let Some(expectation) = self
+            .pending_subscribes
+            .get(&reply)
+            .map(|pending| pending.expectation.clone())
+        else {
+            return;
+        };
+        let err = payload::<ErrorResponse>(e).error;
+        let (discharged, speaker) = self.attribute(&reply, &err);
+        self.pending_subscribes.remove(&reply);
+        if discharged {
+            return;
+        }
+        match expectation {
+            Some(expectation) => self.refusal_misses(at, e, &expectation, &speaker, &err),
+            None if refuses_subscribe(&err) => {
+                self.add_expected(
+                    codes::UNHONOURED_CAPABILITY,
+                    at,
+                    e,
+                    "/payload/error",
+                    "an open electing subscribe was refused for a key the endpoint advertises",
+                    "a session opened with its subscription",
+                    &describe_refusal(&err),
+                    &[&reply],
+                );
+            }
+            None => {}
+        }
+    }
+
+    fn settle_subscribe_admission(&mut self, at: (usize, usize), e: &Envelope) {
+        let reply = os(&e.in_reply_to);
+        let Some(pending) = self.pending_subscribes.remove(&reply) else {
+            return;
+        };
+        if let Some(expectation) = pending.expectation {
+            let expected = format!("a typed refusal naming {}", expectation.key);
+            self.add_expected(
+                expectation.diagnostic,
+                at,
+                e,
+                "/payload",
+                &expectation.message,
+                &expected,
+                "an admitted open",
                 &[&reply],
             );
         }

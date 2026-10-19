@@ -42,6 +42,7 @@ pub(crate) struct State {
     catalog_ambiguous: bool,
     provided: HashMap<String, Vec<String>>,
     pending_controls: HashMap<String, controls::PendingSubmit>,
+    pending_subscribes: HashMap<String, controls::PendingSubscribe>,
 }
 
 fn payload<T: DeserializeOwned + Default>(e: &Envelope) -> T {
@@ -283,6 +284,7 @@ impl State {
             catalog_ambiguous: false,
             provided: HashMap::new(),
             pending_controls: HashMap::new(),
+            pending_subscribes: HashMap::new(),
         }
     }
 
