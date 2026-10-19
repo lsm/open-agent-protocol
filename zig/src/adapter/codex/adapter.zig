@@ -666,7 +666,13 @@ pub const Session = struct {
             input.* = .{ .id = id, .role = @tagName(message.role), .text = text };
         }
         const model_id: ?[]const u8 = if (request.model_id) |model| try self.owned().dupe(u8, model) else null;
-        self.reducer.submit(.{ .messages = inputs, .model_id = model_id, .effort = self.pending_effort }) catch |err| return switch (err) {
+        if (request.output_schema_json) |schema| {
+            if (try session.outputSchemaDefect(arena, schema)) |detail| {
+                refusal.* = .{ .feature = "run.structured_output", .reason = contract.reason_unsatisfiable, .field = "output_schema", .detail = detail };
+                return error.UnsupportedFeature;
+            }
+        }
+        self.reducer.submit(.{ .messages = inputs, .model_id = model_id, .effort = self.pending_effort, .output_schema = request.output_schema_json }) catch |err| return switch (err) {
             error.ModelNotFound => refusal.missingModel(request.model_id orelse ""),
             error.InvalidSubmission, error.UnsupportedInput => error.InvalidSubmission,
             error.SessionClosed, error.NotOpen => error.SessionClosed,

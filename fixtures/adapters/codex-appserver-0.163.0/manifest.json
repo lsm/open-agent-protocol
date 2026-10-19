@@ -16,6 +16,8 @@
     {"id":"permissions-approval-unsupported","path":"cases/permissions-approval-unsupported","ledger_fixtures":["permissions-approval"]},
     {"id":"duplicate-terminal","path":"cases/duplicate-terminal","ledger_fixtures":["duplicate-terminal"]},
     {"id":"process-exit","path":"cases/process-exit","ledger_fixtures":["process-exit"]},
-    {"id":"model-per-turn","path":"cases/model-per-turn","ledger_fixtures":["model-per-turn"]}
+    {"id":"model-per-turn","path":"cases/model-per-turn","ledger_fixtures":["model-per-turn"]},
+    {"id":"structured-output","path":"cases/structured-output","ledger_fixtures":["structured-output"]},
+    {"id":"structured-output-nonconforming","path":"cases/structured-output-nonconforming","ledger_fixtures":["structured-output-nonconforming"]}
   ]
 }

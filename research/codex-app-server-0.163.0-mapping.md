@@ -57,7 +57,8 @@ and the generated schema:
 None of it reaches either adapter, and unknown members and methods are ignored
 as before. The adapters do not change. The capability descriptor changes only
 in the endpoint version it reports, which the revision names, so the revision
-moves to `codex-appserver-0.163.0-oap-v1`, served by both trees.
+moves to `codex-appserver-0.163.0-oap-v1`, served by both trees (and later to
+`-oap-v2`, below).
 
 ## Corpus
 
@@ -70,6 +71,29 @@ and the expectations' revision changed.
 re-recorded with `OAP_UPDATE_CODEX_CONVERSATION=1`: every frame is
 byte-identical to the 0.162.1 recording, and only `codex_commit`,
 `capability_revision` and the descriptor's endpoint version changed.
+
+## Structured output at this pin
+
+The descriptor said `run.structured_output` was `unavailable` because "this pin
+exposes no per-turn output schema". No ledger recorded that, and it is wrong:
+
+- `src/protocol/v2/turn.rs:276` gives `TurnStartParams` an optional
+  `output_schema` ("Optional JSON Schema used to constrain the final assistant
+  message for this turn"), serialized `outputSchema` and not marked
+  experimental. The tag's generated `schema/json/v2/TurnStartParams.json`
+  agrees.
+- `src/protocol/v2/item.rs:252` makes an `agentMessage` item carry its whole
+  `text`, which `item/completed` delivers.
+
+| OAP | Native | Classification |
+| --- | --- | --- |
+| `output_schema` on a submit | `turn/start.outputSchema`, verbatim, after compiling it as Decision 0005 requires; a schema no object can satisfy is refused `unsatisfiable` and never sent | native |
+| `run.completed.result` | the `text` of the turn's last completed `agentMessage` item, parsed as JSON and checked against the schema | normalized: the streamed deltas span every message of the turn, and only the final one is constrained |
+| a final message that is not JSON or does not conform | `run.failed` with `invalid_structured_output`, never a completion without its result | normalized |
+
+`run.structured_output` is now `native` in both trees, so the revision moves
+to `codex-appserver-0.163.0-oap-v2`. Corpus cases `structured-output` and
+`structured-output-nonconforming` pin both outcomes.
 
 ## Real-process evidence
 

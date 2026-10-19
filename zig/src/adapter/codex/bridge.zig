@@ -43,7 +43,7 @@ pub fn acceptsUpgrade(head: []const u8) bool {
 pub fn encodeFrame(arena: std.mem.Allocator, opcode: Opcode, payload: []const u8, mask: [4]u8) ![]u8 {
     const extended: usize = if (payload.len < 126) 0 else if (payload.len <= std.math.maxInt(u16)) 2 else 8;
     const out = try arena.alloc(u8, 2 + extended + 4 + payload.len);
-    out[0] = 0x80 | @as(u8, @intFromEnum(opcode));
+    out[0] = 0x80 | @as(u8, @backingInt(opcode));
     switch (extended) {
         0 => out[1] = 0x80 | @as(u8, @intCast(payload.len)),
         2 => {
@@ -91,7 +91,7 @@ pub const Decoder = struct {
             const rest = self.pending.items[self.taken..];
             if (rest.len < 2) return null;
             const fin = rest[0] & 0x80 != 0;
-            const opcode: Opcode = @enumFromInt(@as(u4, @truncate(rest[0])));
+            const opcode: Opcode = @fromBackingInt(@intCast(@as(u4, @truncate(rest[0]))));
             const masked = rest[1] & 0x80 != 0;
             var length: u64 = rest[1] & 0x7f;
             var at: usize = 2;
