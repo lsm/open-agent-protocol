@@ -97,6 +97,10 @@ pub fn compile(allocator: std.mem.Allocator, pattern: []const u8) !Compiled {
         arena.deinit();
         return .invalid;
     }
+    if (parser.soft) {
+        arena.deinit();
+        return .unsupported;
+    }
     var emitter = Emitter{ .arena = arena.allocator() };
     emitter.emit(tree) catch |err| switch (err) {
         error.Unsupported => {
@@ -111,14 +115,28 @@ pub fn compile(allocator: std.mem.Allocator, pattern: []const u8) !Compiled {
 
 const Failure = error{ Invalid, Unsupported, OutOfMemory };
 
+const posix_classes = [_][]const u8{ "alnum", "alpha", "ascii", "blank", "cntrl", "digit", "graph", "lower", "print", "punct", "space", "upper", "word", "xdigit" };
+
 const Parser = struct {
     arena: std.mem.Allocator,
     source: []const u8,
     at: usize = 0,
     depth: u32 = 0,
+    soft: bool = false,
 
     fn peek(self: *Parser) ?u8 {
         return if (self.at < self.source.len) self.source[self.at] else null;
+    }
+
+    fn standDown(self: *Parser) Node {
+        self.soft = true;
+        return .empty;
+    }
+
+    fn skipRune(self: *Parser) Failure!void {
+        const length = std.unicode.utf8ByteSequenceLength(self.source[self.at]) catch return error.Invalid;
+        if (self.at + length > self.source.len) return error.Invalid;
+        self.at += length;
     }
 
     fn alternation(self: *Parser) Failure!Node {
@@ -166,9 +184,9 @@ const Parser = struct {
             },
             else => return piece,
         }
-        if (piece == .begin or piece == .end) return error.Unsupported;
         if (self.peek() == '?') self.at += 1;
         if (self.peek()) |after| if (after == '*' or after == '+' or after == '?') return error.Invalid;
+        if (piece == .begin or piece == .end) return self.standDown();
         const held = try self.arena.create(Node);
         held.* = piece;
         return .{ .repeat = .{ .node = held, .min = min, .max = max } };
@@ -180,7 +198,7 @@ const Parser = struct {
         var max: ?u32 = min;
         if (at < self.source.len and self.source[at] == ',') {
             at += 1;
-            max = number(self.source, &at);
+            max = if (at < self.source.len and self.source[at] == '}') null else number(self.source, &at) orelse return null;
         }
         if (at >= self.source.len or self.source[at] != '}') return null;
         if (min > max_repeat or (max != null and (max.? > max_repeat or max.? < min))) return error.Invalid;
@@ -190,19 +208,26 @@ const Parser = struct {
 
     fn number(source: []const u8, at: *usize) ?u32 {
         const start = at.*;
-        while (at.* < source.len and std.ascii.isDigit(source[at.*])) at.* += 1;
-        if (at.* == start or at.* - start > 4) return null;
-        return std.fmt.parseInt(u32, source[start..at.*], 10) catch null;
+        var value: u32 = 0;
+        while (at.* < source.len and std.ascii.isDigit(source[at.*])) : (at.* += 1) {
+            value = @min(value * 10 + (source[at.*] - '0'), max_repeat + 1);
+        }
+        if (at.* == start) return null;
+        if (at.* - start >= 2 and source[start] == '0') return null;
+        return value;
     }
 
     fn atom(self: *Parser) Failure!Node {
         const c = self.source[self.at];
-        if (c >= 0x80) return error.Unsupported;
+        if (c >= 0x80) {
+            try self.skipRune();
+            return self.standDown();
+        }
         self.at += 1;
         switch (c) {
             '*', '+', '?' => return error.Invalid,
             '(' => return self.group(),
-            '[' => return .{ .set = try self.class() },
+            '[' => return if (try self.class()) |set| .{ .set = set } else self.standDown(),
             '.' => {
                 var set = Set.full;
                 set.unset('\n');
@@ -210,21 +235,41 @@ const Parser = struct {
             },
             '^' => return .begin,
             '$' => return .end,
-            '\\' => return .{ .set = try self.escape(false) },
+            '\\' => return if (try self.escape(false)) |set| .{ .set = set } else self.standDown(),
             else => return .{ .set = single(c) },
         }
     }
 
     fn group(self: *Parser) Failure!Node {
         if (self.peek() == '?') {
-            if (std.mem.startsWith(u8, self.source[self.at..], "?:")) {
+            const rest = self.source[self.at..];
+            if (std.mem.startsWith(u8, rest, "?:")) {
                 self.at += 2;
-            } else if (std.mem.startsWith(u8, self.source[self.at..], "?P<")) {
-                const close = std.mem.indexOfScalarPos(u8, self.source, self.at, '>') orelse return error.Invalid;
-                for (self.source[self.at + 3 .. close]) |name| if (!std.ascii.isAlphanumeric(name) and name != '_') return error.Invalid;
-                if (close == self.at + 3) return error.Invalid;
+            } else if (std.mem.startsWith(u8, rest, "?P<") or std.mem.startsWith(u8, rest, "?<")) {
+                const open = self.at + @as(usize, if (rest[1] == 'P') 3 else 2);
+                if (rest[1] == '<' and rest.len > 2 and (rest[2] == '=' or rest[2] == '!')) return error.Invalid;
+                const close = std.mem.indexOfScalarPos(u8, self.source, open, '>') orelse return error.Invalid;
+                if (close == open) return error.Invalid;
+                for (self.source[open..close]) |name| if (!std.ascii.isAlphanumeric(name) and name != '_') return error.Invalid;
                 self.at = close + 1;
-            } else return error.Unsupported;
+            } else {
+                self.at += 1;
+                var letters: usize = 0;
+                var negated = false;
+                while (self.peek()) |flag| : (self.at += 1) switch (flag) {
+                    'i', 'm', 's', 'U' => letters += 1,
+                    '-' => {
+                        if (negated) return error.Invalid;
+                        negated = true;
+                    },
+                    else => break,
+                };
+                const end = self.peek() orelse return error.Invalid;
+                if (letters == 0 or self.source[self.at - 1] == '-' or (end != ')' and end != ':')) return error.Invalid;
+                self.at += 1;
+                self.soft = true;
+                if (end == ')') return .empty;
+            }
         }
         self.depth += 1;
         if (self.depth > 1000) return error.Unsupported;
@@ -235,8 +280,9 @@ const Parser = struct {
         return inner;
     }
 
-    fn class(self: *Parser) Failure!Set {
+    fn class(self: *Parser) Failure!?Set {
         var set = Set.empty;
+        var known = true;
         const negated = self.peek() == '^';
         if (negated) self.at += 1;
         var first = true;
@@ -244,12 +290,30 @@ const Parser = struct {
             const c = self.peek() orelse return error.Invalid;
             if (c == ']' and !first) break;
             first = false;
-            if (c >= 0x80) return error.Unsupported;
-            if (c == '[' and std.mem.startsWith(u8, self.source[self.at..], "[:")) return error.Unsupported;
+            if (c >= 0x80) {
+                try self.skipRune();
+                known = false;
+                continue;
+            }
+            if (c == '[' and std.mem.startsWith(u8, self.source[self.at..], "[:")) {
+                if (std.mem.indexOfPos(u8, self.source, self.at + 2, ":]")) |close| {
+                    var name = self.source[self.at + 2 .. close];
+                    if (name.len > 0 and name[0] == '^') name = name[1..];
+                    var named = false;
+                    for (posix_classes) |posix| named = named or std.mem.eql(u8, posix, name);
+                    if (!named) return error.Invalid;
+                    self.at = close + 2;
+                    known = false;
+                    continue;
+                }
+            }
             self.at += 1;
             var low: u8 = c;
             if (c == '\\') {
-                const escaped = try self.escape(true);
+                const escaped = try self.escape(true) orelse {
+                    known = false;
+                    continue;
+                };
                 if (escaped.count() != 1) {
                     set.setUnion(escaped);
                     continue;
@@ -259,10 +323,17 @@ const Parser = struct {
             if (self.peek() == '-' and self.at + 1 < self.source.len and self.source[self.at + 1] != ']') {
                 self.at += 1;
                 var high = self.source[self.at];
-                if (high >= 0x80) return error.Unsupported;
+                if (high >= 0x80) {
+                    try self.skipRune();
+                    known = false;
+                    continue;
+                }
                 self.at += 1;
                 if (high == '\\') {
-                    const escaped = try self.escape(true);
+                    const escaped = try self.escape(true) orelse {
+                        known = false;
+                        continue;
+                    };
                     if (escaped.count() != 1) return error.Invalid;
                     high = @intCast(escaped.findFirstSet().?);
                 }
@@ -271,11 +342,12 @@ const Parser = struct {
             } else set.set(low);
         }
         self.at += 1;
+        if (!known) return null;
         if (negated) set.toggleAll();
         return set;
     }
 
-    fn escape(self: *Parser, in_class: bool) Failure!Set {
+    fn escape(self: *Parser, in_class: bool) Failure!?Set {
         const c = self.peek() orelse return error.Invalid;
         self.at += 1;
         return switch (c) {
@@ -285,12 +357,57 @@ const Parser = struct {
             'W' => inverse(word()),
             's' => space(),
             'S' => inverse(space()),
+            'a' => single(0x07),
             'n' => single('\n'),
             't' => single('\t'),
             'r' => single('\r'),
             'f' => single(0x0c),
             'v' => single(0x0b),
-            'b', 'B', 'A', 'z', 'p', 'P', 'x', 'Q', 'E', 'C', '0'...'9' => if (in_class and c == 'b') error.Invalid else error.Unsupported,
+            'b', 'B', 'A', 'z' => if (in_class) error.Invalid else null,
+            'p', 'P' => {
+                if (self.peek() == '{') {
+                    const close = std.mem.indexOfScalarPos(u8, self.source, self.at, '}') orelse return error.Invalid;
+                    if (close == self.at + 1) return error.Invalid;
+                    self.at = close + 1;
+                } else {
+                    if (self.peek() == null) return error.Invalid;
+                    try self.skipRune();
+                }
+                return null;
+            },
+            'Q' => {
+                if (in_class) return error.Invalid;
+                self.at = if (std.mem.indexOfPos(u8, self.source, self.at, "\\E")) |close| close + 2 else self.source.len;
+                return null;
+            },
+            'x' => {
+                var value: u32 = 0;
+                if (self.peek() == '{') {
+                    const close = std.mem.indexOfScalarPos(u8, self.source, self.at, '}') orelse return error.Invalid;
+                    const digits_text = self.source[self.at + 1 .. close];
+                    if (digits_text.len == 0 or digits_text.len > 8) return error.Invalid;
+                    value = std.fmt.parseUnsigned(u32, digits_text, 16) catch return error.Invalid;
+                    if (value > 0x10FFFF) return error.Invalid;
+                    self.at = close + 1;
+                } else {
+                    if (self.at + 2 > self.source.len) return error.Invalid;
+                    value = std.fmt.parseUnsigned(u32, self.source[self.at .. self.at + 2], 16) catch return error.Invalid;
+                    self.at += 2;
+                }
+                return if (value < 0x80) single(@intCast(value)) else null;
+            },
+            '0'...'7' => {
+                if (c != '0' and !(self.peek() != null and self.peek().? >= '0' and self.peek().? <= '7')) return error.Invalid;
+                var value: u32 = c - '0';
+                var taken: usize = 1;
+                while (taken < 3) : (taken += 1) {
+                    const next = self.peek() orelse break;
+                    if (next < '0' or next > '7') break;
+                    value = value * 8 + (next - '0');
+                    self.at += 1;
+                }
+                return if (value < 0x80) single(@intCast(value)) else null;
+            },
             else => if (std.ascii.isAlphanumeric(c) or c >= 0x80) error.Invalid else single(c),
         };
     }
@@ -406,13 +523,20 @@ test "a pattern matches only the whole name, as Go's anchored RE2 does" {
     try expectMatch("a.c", "a\nc", false);
 }
 
-test "a pattern RE2 rejects is invalid, and syntax this matcher does not implement stands down" {
-    for ([_][]const u8{ "[a-z", "(ab", "ab)", "*a", "a**", "[z-a]", "\\q", "(?P<>x)", "a{2,1}", "x{1001}" }) |pattern| {
+test "a pattern Go's RE2 rejects is invalid, and valid syntax this matcher does not implement stands down" {
+    for ([_][]const u8{ "[a-z", "(ab", "ab)", "*a", "a**", "[z-a]", "\\q", "(?P<>x)", "a{2,1}", "x{1001}", "x{12345}", "(?i)[a-", "(?=a)", "(?<!a)b", "[[:foo:]]", "\\1", "\\8", "\\C", "[\\b]", "(?i-)a", "(?)a" }) |pattern| {
         try std.testing.expectEqual(Compiled.invalid, std.meta.activeTag(try compile(std.testing.allocator, pattern)));
     }
-    for ([_][]const u8{ "(?i)abc", "\\pL+", "[[:alpha:]]", "\\bword", "caf\xc3\xa9" }) |pattern| {
+    for ([_][]const u8{ "(?i)abc", "(?i:ab)c", "\\pL+", "\\p{Greek}", "[[:alpha:]]", "\\bword", "^*a", "caf\xc3\xa9", "\\x{100}", "\\Qa.b\\E" }) |pattern| {
         try std.testing.expectEqual(Compiled.unsupported, std.meta.activeTag(try compile(std.testing.allocator, pattern)));
     }
+}
+
+test "a brace that is not a repeat in Go's syntax is a literal" {
+    try expectMatch("a{01}", "a{01}", true);
+    try expectMatch("a{,3}", "a{,3}", true);
+    try expectMatch("a{2,}", "aaa", true);
+    try expectMatch("\\101\\x42", "AB", true);
 }
 
 test "a name outside ASCII is not judged" {
