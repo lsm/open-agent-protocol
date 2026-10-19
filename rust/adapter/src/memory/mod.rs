@@ -1,9 +1,12 @@
 mod admit;
+mod controls;
 mod descriptor;
+mod pipe;
+mod session;
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use oap_protocol::*;
@@ -15,7 +18,9 @@ use admit::{
     session_sources,
 };
 
-use crate::{Admitter, BoxFuture, Error, OpenRequest};
+use session::Inner;
+
+use crate::{Admitter, BoxFuture, Error, EventStream, OpenRequest, SubmitRequest};
 
 pub const DEFAULT_JOURNAL_CAPACITY: usize = 64;
 pub const MODEL_PRIMARY: &str = "reference-model-a";
@@ -167,36 +172,47 @@ pub struct Memory {
     clock: Arc<dyn Clock>,
     ids: Arc<dyn IdGenerator>,
     capacity: usize,
-    closed: Mutex<HashMap<String, KeptSession>>,
+    closed: Arc<Mutex<HashMap<String, KeptSession>>>,
 }
 
-pub struct MemorySession {
-    pub(crate) participant: ParticipantId,
-    pub(crate) threshold: u64,
-    pub(crate) state: SessionState,
-    pub(crate) attached: Vec<ToolSourceAttachment>,
-    pub(crate) provided: Vec<ToolDefinition>,
-}
+pub struct MemorySession(Arc<Mutex<Inner>>);
 
 impl MemorySession {
-    pub fn snapshot(&self) -> SessionState {
-        self.state.clone()
+    fn lock(&self) -> MutexGuard<'_, Inner> {
+        self.0
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
-    pub fn participant(&self) -> &ParticipantId {
-        &self.participant
+    pub fn snapshot(&self) -> SessionState {
+        self.lock().state.clone()
+    }
+
+    pub fn participant(&self) -> ParticipantId {
+        self.lock().participant.clone()
     }
 
     pub fn compaction_threshold(&self) -> u64 {
-        self.threshold
+        self.lock().threshold
     }
 
-    pub fn attached_sources(&self) -> &[ToolSourceAttachment] {
-        &self.attached
+    pub fn attached_sources(&self) -> Vec<ToolSourceAttachment> {
+        self.lock().attached.clone()
     }
 
-    pub fn provided_tools(&self) -> &[ToolDefinition] {
-        &self.provided
+    pub fn provided_tools(&self) -> Vec<ToolDefinition> {
+        self.lock().provided.clone()
+    }
+
+    pub fn submit(
+        &self,
+        request: SubmitRequest,
+    ) -> Result<(MessageSubmitResponse, EventStream), Error> {
+        self.lock().submit(request)
+    }
+
+    pub fn close(&self) -> Result<(), Error> {
+        self.lock().close()
     }
 }
 
@@ -213,7 +229,7 @@ impl Memory {
                 .ids
                 .unwrap_or_else(|| Arc::new(SequenceIds::default())),
             capacity,
-            closed: Mutex::new(HashMap::new()),
+            closed: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -288,13 +304,24 @@ impl Memory {
             compaction_policy: Some(effective_policy(policy.as_ref())),
             ..SessionState::default()
         };
-        Ok(MemorySession {
+        Ok(MemorySession(Arc::new(Mutex::new(Inner {
+            clock: self.clock.clone(),
+            ids: self.ids.clone(),
+            kept: self.closed.clone(),
+            capacity: self.capacity,
             participant: request.participant.id.clone(),
-            threshold,
             state,
             attached,
             provided,
-        })
+            closed: false,
+            active: None,
+            reserved: None,
+            runs: HashMap::new(),
+            journal: VecDeque::new(),
+            settled: Vec::new(),
+            threshold,
+            history: 0,
+        }))))
     }
 }
 
