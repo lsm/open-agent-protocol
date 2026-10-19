@@ -9,6 +9,7 @@ mod ids;
 mod interaction;
 mod number;
 mod provider;
+mod run;
 mod serde_util;
 mod vocabulary;
 
@@ -25,6 +26,7 @@ pub use ids::{
 };
 pub use interaction::*;
 pub use provider::{ProviderEnvelope, PROVIDER_PROFILE};
+pub use run::*;
 
 pub const PROTOCOL: &str = "open-agent-protocol";
 pub const VERSION: &str = "0.1";

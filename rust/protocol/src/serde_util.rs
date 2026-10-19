@@ -9,6 +9,10 @@ pub(crate) fn is_zero_u64(value: &u64) -> bool {
     *value == 0
 }
 
+pub(crate) fn is_zero_i64(value: &i64) -> bool {
+    *value == 0
+}
+
 pub(crate) fn raw<'de, D: Deserializer<'de>>(
     deserializer: D,
 ) -> Result<Option<Box<RawValue>>, D::Error> {
