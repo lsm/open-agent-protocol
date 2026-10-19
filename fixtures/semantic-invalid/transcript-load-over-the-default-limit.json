@@ -1,0 +1,868 @@
+[
+  {
+    "protocol": "open-agent-protocol",
+    "version": "0.1",
+    "profile": "open-agent-protocol.agent-control-core",
+    "type": "capabilities.request",
+    "id": "capq",
+    "payload": {}
+  },
+  {
+    "protocol": "open-agent-protocol",
+    "version": "0.1",
+    "profile": "open-agent-protocol.agent-control-core",
+    "type": "capabilities.response",
+    "id": "capr",
+    "in_reply_to": "capq",
+    "capability_revision": "cap-v1",
+    "payload": {
+      "endpoint": {
+        "id": "fixture.endpoint",
+        "name": "Transcript load fixture endpoint"
+      },
+      "features": {
+        "session.message.delivery.auto": {
+          "level": "native"
+        },
+        "transcript.load": {
+          "level": "native"
+        }
+      }
+    }
+  },
+  {
+    "protocol": "open-agent-protocol",
+    "version": "0.1",
+    "profile": "open-agent-protocol.agent-control-core",
+    "type": "transcript.load.request",
+    "id": "q1",
+    "capability_revision": "cap-v1",
+    "payload": {
+      "session_id": "s1"
+    }
+  },
+  {
+    "protocol": "open-agent-protocol",
+    "version": "0.1",
+    "profile": "open-agent-protocol.agent-control-core",
+    "type": "transcript.load.response",
+    "id": "q1r",
+    "in_reply_to": "q1",
+    "capability_revision": "cap-v1",
+    "payload": {
+      "session_id": "s1",
+      "entries": [
+        {
+          "entry_id": "e0",
+          "kind": "message",
+          "message": {
+            "role": "user",
+            "content": "line 0"
+          }
+        },
+        {
+          "entry_id": "e1",
+          "kind": "message",
+          "message": {
+            "role": "user",
+            "content": "line 1"
+          }
+        },
+        {
+          "entry_id": "e2",
+          "kind": "message",
+          "message": {
+            "role": "user",
+            "content": "line 2"
+          }
+        },
+        {
+          "entry_id": "e3",
+          "kind": "message",
+          "message": {
+            "role": "user",
+            "content": "line 3"
+          }
+        },
+        {
+          "entry_id": "e4",
+          "kind": "message",
+          "message": {
+            "role": "user",
+            "content": "line 4"
+          }
+        },
+        {
+          "entry_id": "e5",
+          "kind": "message",
+          "message": {
+            "role": "user",
+            "content": "line 5"
+          }
+        },
+        {
+          "entry_id": "e6",
+          "kind": "message",
+          "message": {
+            "role": "user",
+            "content": "line 6"
+          }
+        },
+        {
+          "entry_id": "e7",
+          "kind": "message",
+          "message": {
+            "role": "user",
+            "content": "line 7"
+          }
+        },
+        {
+          "entry_id": "e8",
+          "kind": "message",
+          "message": {
+            "role": "user",
+            "content": "line 8"
+          }
+        },
+        {
+          "entry_id": "e9",
+          "kind": "message",
+          "message": {
+            "role": "user",
+            "content": "line 9"
+          }
+        },
+        {
+          "entry_id": "e10",
+          "kind": "message",
+          "message": {
+            "role": "user",
+            "content": "line 10"
+          }
+        },
+        {
+          "entry_id": "e11",
+          "kind": "message",
+          "message": {
+            "role": "user",
+            "content": "line 11"
+          }
+        },
+        {
+          "entry_id": "e12",
+          "kind": "message",
+          "message": {
+            "role": "user",
+            "content": "line 12"
+          }
+        },
+        {
+          "entry_id": "e13",
+          "kind": "message",
+          "message": {
+            "role": "user",
+            "content": "line 13"
+          }
+        },
+        {
+          "entry_id": "e14",
+          "kind": "message",
+          "message": {
+            "role": "user",
+            "content": "line 14"
+          }
+        },
+        {
+          "entry_id": "e15",
+          "kind": "message",
+          "message": {
+            "role": "user",
+            "content": "line 15"
+          }
+        },
+        {
+          "entry_id": "e16",
+          "kind": "message",
+          "message": {
+            "role": "user",
+            "content": "line 16"
+          }
+        },
+        {
+          "entry_id": "e17",
+          "kind": "message",
+          "message": {
+            "role": "user",
+            "content": "line 17"
+          }
+        },
+        {
+          "entry_id": "e18",
+          "kind": "message",
+          "message": {
+            "role": "user",
+            "content": "line 18"
+          }
+        },
+        {
+          "entry_id": "e19",
+          "kind": "message",
+          "message": {
+            "role": "user",
+            "content": "line 19"
+          }
+        },
+        {
+          "entry_id": "e20",
+          "kind": "message",
+          "message": {
+            "role": "user",
+            "content": "line 20"
+          }
+        },
+        {
+          "entry_id": "e21",
+          "kind": "message",
+          "message": {
+            "role": "user",
+            "content": "line 21"
+          }
+        },
+        {
+          "entry_id": "e22",
+          "kind": "message",
+          "message": {
+            "role": "user",
+            "content": "line 22"
+          }
+        },
+        {
+          "entry_id": "e23",
+          "kind": "message",
+          "message": {
+            "role": "user",
+            "content": "line 23"
+          }
+        },
+        {
+          "entry_id": "e24",
+          "kind": "message",
+          "message": {
+            "role": "user",
+            "content": "line 24"
+          }
+        },
+        {
+          "entry_id": "e25",
+          "kind": "message",
+          "message": {
+            "role": "user",
+            "content": "line 25"
+          }
+        },
+        {
+          "entry_id": "e26",
+          "kind": "message",
+          "message": {
+            "role": "user",
+            "content": "line 26"
+          }
+        },
+        {
+          "entry_id": "e27",
+          "kind": "message",
+          "message": {
+            "role": "user",
+            "content": "line 27"
+          }
+        },
+        {
+          "entry_id": "e28",
+          "kind": "message",
+          "message": {
+            "role": "user",
+            "content": "line 28"
+          }
+        },
+        {
+          "entry_id": "e29",
+          "kind": "message",
+          "message": {
+            "role": "user",
+            "content": "line 29"
+          }
+        },
+        {
+          "entry_id": "e30",
+          "kind": "message",
+          "message": {
+            "role": "user",
+            "content": "line 30"
+          }
+        },
+        {
+          "entry_id": "e31",
+          "kind": "message",
+          "message": {
+            "role": "user",
+            "content": "line 31"
+          }
+        },
+        {
+          "entry_id": "e32",
+          "kind": "message",
+          "message": {
+            "role": "user",
+            "content": "line 32"
+          }
+        },
+        {
+          "entry_id": "e33",
+          "kind": "message",
+          "message": {
+            "role": "user",
+            "content": "line 33"
+          }
+        },
+        {
+          "entry_id": "e34",
+          "kind": "message",
+          "message": {
+            "role": "user",
+            "content": "line 34"
+          }
+        },
+        {
+          "entry_id": "e35",
+          "kind": "message",
+          "message": {
+            "role": "user",
+            "content": "line 35"
+          }
+        },
+        {
+          "entry_id": "e36",
+          "kind": "message",
+          "message": {
+            "role": "user",
+            "content": "line 36"
+          }
+        },
+        {
+          "entry_id": "e37",
+          "kind": "message",
+          "message": {
+            "role": "user",
+            "content": "line 37"
+          }
+        },
+        {
+          "entry_id": "e38",
+          "kind": "message",
+          "message": {
+            "role": "user",
+            "content": "line 38"
+          }
+        },
+        {
+          "entry_id": "e39",
+          "kind": "message",
+          "message": {
+            "role": "user",
+            "content": "line 39"
+          }
+        },
+        {
+          "entry_id": "e40",
+          "kind": "message",
+          "message": {
+            "role": "user",
+            "content": "line 40"
+          }
+        },
+        {
+          "entry_id": "e41",
+          "kind": "message",
+          "message": {
+            "role": "user",
+            "content": "line 41"
+          }
+        },
+        {
+          "entry_id": "e42",
+          "kind": "message",
+          "message": {
+            "role": "user",
+            "content": "line 42"
+          }
+        },
+        {
+          "entry_id": "e43",
+          "kind": "message",
+          "message": {
+            "role": "user",
+            "content": "line 43"
+          }
+        },
+        {
+          "entry_id": "e44",
+          "kind": "message",
+          "message": {
+            "role": "user",
+            "content": "line 44"
+          }
+        },
+        {
+          "entry_id": "e45",
+          "kind": "message",
+          "message": {
+            "role": "user",
+            "content": "line 45"
+          }
+        },
+        {
+          "entry_id": "e46",
+          "kind": "message",
+          "message": {
+            "role": "user",
+            "content": "line 46"
+          }
+        },
+        {
+          "entry_id": "e47",
+          "kind": "message",
+          "message": {
+            "role": "user",
+            "content": "line 47"
+          }
+        },
+        {
+          "entry_id": "e48",
+          "kind": "message",
+          "message": {
+            "role": "user",
+            "content": "line 48"
+          }
+        },
+        {
+          "entry_id": "e49",
+          "kind": "message",
+          "message": {
+            "role": "user",
+            "content": "line 49"
+          }
+        },
+        {
+          "entry_id": "e50",
+          "kind": "message",
+          "message": {
+            "role": "user",
+            "content": "line 50"
+          }
+        },
+        {
+          "entry_id": "e51",
+          "kind": "message",
+          "message": {
+            "role": "user",
+            "content": "line 51"
+          }
+        },
+        {
+          "entry_id": "e52",
+          "kind": "message",
+          "message": {
+            "role": "user",
+            "content": "line 52"
+          }
+        },
+        {
+          "entry_id": "e53",
+          "kind": "message",
+          "message": {
+            "role": "user",
+            "content": "line 53"
+          }
+        },
+        {
+          "entry_id": "e54",
+          "kind": "message",
+          "message": {
+            "role": "user",
+            "content": "line 54"
+          }
+        },
+        {
+          "entry_id": "e55",
+          "kind": "message",
+          "message": {
+            "role": "user",
+            "content": "line 55"
+          }
+        },
+        {
+          "entry_id": "e56",
+          "kind": "message",
+          "message": {
+            "role": "user",
+            "content": "line 56"
+          }
+        },
+        {
+          "entry_id": "e57",
+          "kind": "message",
+          "message": {
+            "role": "user",
+            "content": "line 57"
+          }
+        },
+        {
+          "entry_id": "e58",
+          "kind": "message",
+          "message": {
+            "role": "user",
+            "content": "line 58"
+          }
+        },
+        {
+          "entry_id": "e59",
+          "kind": "message",
+          "message": {
+            "role": "user",
+            "content": "line 59"
+          }
+        },
+        {
+          "entry_id": "e60",
+          "kind": "message",
+          "message": {
+            "role": "user",
+            "content": "line 60"
+          }
+        },
+        {
+          "entry_id": "e61",
+          "kind": "message",
+          "message": {
+            "role": "user",
+            "content": "line 61"
+          }
+        },
+        {
+          "entry_id": "e62",
+          "kind": "message",
+          "message": {
+            "role": "user",
+            "content": "line 62"
+          }
+        },
+        {
+          "entry_id": "e63",
+          "kind": "message",
+          "message": {
+            "role": "user",
+            "content": "line 63"
+          }
+        },
+        {
+          "entry_id": "e64",
+          "kind": "message",
+          "message": {
+            "role": "user",
+            "content": "line 64"
+          }
+        },
+        {
+          "entry_id": "e65",
+          "kind": "message",
+          "message": {
+            "role": "user",
+            "content": "line 65"
+          }
+        },
+        {
+          "entry_id": "e66",
+          "kind": "message",
+          "message": {
+            "role": "user",
+            "content": "line 66"
+          }
+        },
+        {
+          "entry_id": "e67",
+          "kind": "message",
+          "message": {
+            "role": "user",
+            "content": "line 67"
+          }
+        },
+        {
+          "entry_id": "e68",
+          "kind": "message",
+          "message": {
+            "role": "user",
+            "content": "line 68"
+          }
+        },
+        {
+          "entry_id": "e69",
+          "kind": "message",
+          "message": {
+            "role": "user",
+            "content": "line 69"
+          }
+        },
+        {
+          "entry_id": "e70",
+          "kind": "message",
+          "message": {
+            "role": "user",
+            "content": "line 70"
+          }
+        },
+        {
+          "entry_id": "e71",
+          "kind": "message",
+          "message": {
+            "role": "user",
+            "content": "line 71"
+          }
+        },
+        {
+          "entry_id": "e72",
+          "kind": "message",
+          "message": {
+            "role": "user",
+            "content": "line 72"
+          }
+        },
+        {
+          "entry_id": "e73",
+          "kind": "message",
+          "message": {
+            "role": "user",
+            "content": "line 73"
+          }
+        },
+        {
+          "entry_id": "e74",
+          "kind": "message",
+          "message": {
+            "role": "user",
+            "content": "line 74"
+          }
+        },
+        {
+          "entry_id": "e75",
+          "kind": "message",
+          "message": {
+            "role": "user",
+            "content": "line 75"
+          }
+        },
+        {
+          "entry_id": "e76",
+          "kind": "message",
+          "message": {
+            "role": "user",
+            "content": "line 76"
+          }
+        },
+        {
+          "entry_id": "e77",
+          "kind": "message",
+          "message": {
+            "role": "user",
+            "content": "line 77"
+          }
+        },
+        {
+          "entry_id": "e78",
+          "kind": "message",
+          "message": {
+            "role": "user",
+            "content": "line 78"
+          }
+        },
+        {
+          "entry_id": "e79",
+          "kind": "message",
+          "message": {
+            "role": "user",
+            "content": "line 79"
+          }
+        },
+        {
+          "entry_id": "e80",
+          "kind": "message",
+          "message": {
+            "role": "user",
+            "content": "line 80"
+          }
+        },
+        {
+          "entry_id": "e81",
+          "kind": "message",
+          "message": {
+            "role": "user",
+            "content": "line 81"
+          }
+        },
+        {
+          "entry_id": "e82",
+          "kind": "message",
+          "message": {
+            "role": "user",
+            "content": "line 82"
+          }
+        },
+        {
+          "entry_id": "e83",
+          "kind": "message",
+          "message": {
+            "role": "user",
+            "content": "line 83"
+          }
+        },
+        {
+          "entry_id": "e84",
+          "kind": "message",
+          "message": {
+            "role": "user",
+            "content": "line 84"
+          }
+        },
+        {
+          "entry_id": "e85",
+          "kind": "message",
+          "message": {
+            "role": "user",
+            "content": "line 85"
+          }
+        },
+        {
+          "entry_id": "e86",
+          "kind": "message",
+          "message": {
+            "role": "user",
+            "content": "line 86"
+          }
+        },
+        {
+          "entry_id": "e87",
+          "kind": "message",
+          "message": {
+            "role": "user",
+            "content": "line 87"
+          }
+        },
+        {
+          "entry_id": "e88",
+          "kind": "message",
+          "message": {
+            "role": "user",
+            "content": "line 88"
+          }
+        },
+        {
+          "entry_id": "e89",
+          "kind": "message",
+          "message": {
+            "role": "user",
+            "content": "line 89"
+          }
+        },
+        {
+          "entry_id": "e90",
+          "kind": "message",
+          "message": {
+            "role": "user",
+            "content": "line 90"
+          }
+        },
+        {
+          "entry_id": "e91",
+          "kind": "message",
+          "message": {
+            "role": "user",
+            "content": "line 91"
+          }
+        },
+        {
+          "entry_id": "e92",
+          "kind": "message",
+          "message": {
+            "role": "user",
+            "content": "line 92"
+          }
+        },
+        {
+          "entry_id": "e93",
+          "kind": "message",
+          "message": {
+            "role": "user",
+            "content": "line 93"
+          }
+        },
+        {
+          "entry_id": "e94",
+          "kind": "message",
+          "message": {
+            "role": "user",
+            "content": "line 94"
+          }
+        },
+        {
+          "entry_id": "e95",
+          "kind": "message",
+          "message": {
+            "role": "user",
+            "content": "line 95"
+          }
+        },
+        {
+          "entry_id": "e96",
+          "kind": "message",
+          "message": {
+            "role": "user",
+            "content": "line 96"
+          }
+        },
+        {
+          "entry_id": "e97",
+          "kind": "message",
+          "message": {
+            "role": "user",
+            "content": "line 97"
+          }
+        },
+        {
+          "entry_id": "e98",
+          "kind": "message",
+          "message": {
+            "role": "user",
+            "content": "line 98"
+          }
+        },
+        {
+          "entry_id": "e99",
+          "kind": "message",
+          "message": {
+            "role": "user",
+            "content": "line 99"
+          }
+        },
+        {
+          "entry_id": "e100",
+          "kind": "message",
+          "message": {
+            "role": "user",
+            "content": "line 100"
+          }
+        }
+      ],
+      "complete": false,
+      "next_cursor": "after-e100"
+    }
+  }
+]

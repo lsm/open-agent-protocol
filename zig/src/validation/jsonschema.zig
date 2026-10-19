@@ -801,6 +801,7 @@ fn typeMatches(name: []const u8, instance: std.json.Value) bool {
     if (std.mem.eql(u8, name, "integer")) return switch (instance) {
         .integer => true,
         .float => |f| @floor(f) == f,
+        .number_string => if (numberValue(instance)) |f| std.math.isFinite(f) and @floor(f) == f else false,
         else => false,
     };
     if (std.mem.eql(u8, name, "number")) return switch (instance) {
@@ -994,4 +995,10 @@ test "a registry frees a duplicated name exactly once, on every allocation failu
             try registry.addDocument("https://example.test/two.json", "{\"type\":\"string\"}");
         }
     }.run, .{});
+}
+
+test "an integer literal past the i64 range is still an integer, and an infinite one is not" {
+    try std.testing.expect(typeMatches("integer", .{ .number_string = "18446744073709551616" }));
+    try std.testing.expect(!typeMatches("integer", .{ .number_string = "1e400" }));
+    try std.testing.expect(typeMatches("number", .{ .number_string = "1e400" }));
 }

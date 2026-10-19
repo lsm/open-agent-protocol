@@ -28,6 +28,7 @@ type session struct {
 	threadID     string
 	model        string
 	effort       string
+	threadUsage  native.TokenUsageBreakdown
 	state        protocol.SessionState
 	closed       bool
 	active       *runState
@@ -52,6 +53,8 @@ type runState struct {
 	messageID      protocol.MessageID
 	model          string
 	text           string
+	usage          *protocol.Usage
+	usageBase      native.TokenUsageBreakdown
 	subscribers    []*subscriber
 }
 
@@ -137,10 +140,13 @@ func (session *session) Submit(ctx context.Context, submit adapter.SubmitRequest
 	session.mu.Unlock()
 
 	params := native.TurnStartParams{ThreadID: session.threadID, Input: input, Model: model, Effort: session.effort}
+	session.mu.Lock()
+	base := session.threadUsage
+	session.mu.Unlock()
 	run := &runState{
 		id: protocol.RunID(session.ids.NewID("run")), status: protocol.RunQueued,
 		nextSequence: 1, messageID: protocol.MessageID(session.ids.NewID("message")),
-		model: model,
+		model: model, usageBase: base,
 	}
 	stream := make(chan adapter.Result, liveStreamCapacity+1)
 	run.subscribers = append(run.subscribers, &subscriber{stream: stream})
@@ -727,6 +733,13 @@ func (session *session) handleNotification(notification rpc.NotificationMessage)
 			return
 		}
 		session.onItem(notification.Method, value)
+	case native.MethodTokenUsage:
+		var value native.ThreadTokenUsageUpdatedNotification
+		if json.Unmarshal(notification.Params, &value) != nil {
+			session.failActive("invalid_native_event", "invalid thread/tokenUsage/updated payload")
+			return
+		}
+		session.onTokenUsage(value)
 	case native.MethodTurnCompleted:
 		var value native.TurnCompletedNotification
 		if json.Unmarshal(notification.Params, &value) != nil {
@@ -735,6 +748,32 @@ func (session *session) handleNotification(notification rpc.NotificationMessage)
 		}
 		session.onCompleted(value)
 	}
+}
+
+func (session *session) onTokenUsage(value native.ThreadTokenUsageUpdatedNotification) {
+	if value.ThreadID != session.threadID {
+		return
+	}
+	total := value.TokenUsage.Total
+	session.mu.Lock()
+	defer session.mu.Unlock()
+	session.threadUsage = total
+	run := session.runs[session.turns[value.TurnID]]
+	if run == nil || run.terminal {
+		return
+	}
+	run.usage = &protocol.Usage{
+		InputTokens:  growth(total.InputTokens, run.usageBase.InputTokens),
+		OutputTokens: growth(total.OutputTokens, run.usageBase.OutputTokens),
+		TotalTokens:  growth(total.TotalTokens, run.usageBase.TotalTokens),
+	}
+}
+
+func growth(now, before int64) uint64 {
+	if now <= before {
+		return 0
+	}
+	return uint64(now - before)
 }
 
 func (session *session) runFor(threadID, turnID string) *runState {
@@ -893,22 +932,28 @@ func (session *session) onCompleted(value native.TurnCompletedNotification) {
 	switch value.Turn.Status {
 	case native.TurnCompleted:
 		session.mu.Lock()
-		text := run.text
+		text, usage := run.text, run.usage
 		session.mu.Unlock()
-		payload := protocol.RunCompletedPayload{SessionID: session.state.SessionID, RunID: run.id, FinalResponse: protocol.Message{ID: run.messageID, Role: protocol.RoleAssistant, Content: protocol.TextContent(text)}, StopReason: "end_turn"}
+		payload := protocol.RunCompletedPayload{SessionID: session.state.SessionID, RunID: run.id, FinalResponse: protocol.Message{ID: run.messageID, Role: protocol.RoleAssistant, Content: protocol.TextContent(text)}, StopReason: "end_turn", Usage: usage}
 		_ = session.emit(run, protocol.TypeRunCompleted, payload, true)
 	case native.TurnInterrupted:
-		_ = session.emit(run, protocol.TypeRunCancelled, protocol.RunCancelledPayload{SessionID: session.state.SessionID, RunID: run.id, Reason: "native turn interrupted"}, true)
+		_ = session.emit(run, protocol.TypeRunCancelled, protocol.RunCancelledPayload{SessionID: session.state.SessionID, RunID: run.id, Reason: "native turn interrupted", Usage: session.usageOf(run)}, true)
 	case native.TurnFailed:
 		message := "native turn failed"
 		code := "native_turn_failed"
 		if value.Turn.Error != nil && value.Turn.Error.Message != "" {
 			message = value.Turn.Error.Message
 		}
-		_ = session.emit(run, protocol.TypeRunFailed, protocol.RunFailedPayload{SessionID: session.state.SessionID, RunID: run.id, Error: protocol.ProtocolError{Code: code, Message: message}}, true)
+		_ = session.emit(run, protocol.TypeRunFailed, protocol.RunFailedPayload{SessionID: session.state.SessionID, RunID: run.id, Error: protocol.ProtocolError{Code: code, Message: message}, Usage: session.usageOf(run)}, true)
 	default:
 		session.failRun(run, "invalid_native_terminal", "turn/completed did not contain a terminal status")
 	}
+}
+
+func (session *session) usageOf(run *runState) *protocol.Usage {
+	session.mu.Lock()
+	defer session.mu.Unlock()
+	return run.usage
 }
 
 func (session *session) closePendingInteractions(run *runState, status native.TurnStatus) {
