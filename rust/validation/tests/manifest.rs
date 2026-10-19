@@ -1,7 +1,7 @@
 use std::collections::BTreeSet;
 use std::path::PathBuf;
 
-use oap_validation::Validator;
+use oap_validation::{Phase, Validator};
 use serde::Deserialize;
 use serde_json::Value;
 
@@ -45,8 +45,16 @@ fn every_fixture_draws_exactly_its_declared_codes_unless_rust_lists_it_as_a_know
         let mut got: Vec<&str> = result.diagnostics.iter().map(|d| d.code.as_str()).collect();
         want.sort_unstable();
         got.sort_unstable();
-        match (want == got, listed.contains(id)) {
-            (false, false) => wrong.push(format!("{id}: want {want:?}, got {got:?}")),
+        let declared_phase = entry["phase"].as_str().unwrap_or_default();
+        let got_phase = result
+            .primary_phase()
+            .map(Phase::as_str)
+            .unwrap_or_default();
+        let agrees = want == got && (declared_phase.is_empty() || declared_phase == got_phase);
+        match (agrees, listed.contains(id)) {
+            (false, false) => wrong.push(format!(
+                "{id}: want {declared_phase} {want:?}, got {got_phase} {got:?}"
+            )),
             (true, true) => agreeing.push(id),
             _ => {}
         }
