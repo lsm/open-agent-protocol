@@ -428,9 +428,13 @@ daemon`; Go: `TestAShutdownPostedWithNothingRunningStopsAtOnce`,
 `TestAShutdownPostedAsksWhileARunIsActiveThenGracefulRefusesNewWork503AndForceStops`,
 `TestAShutdownPostedWithAnUnknownModeIsRefusedAndChangesNothing`; `goap serve`
 then shuts its HTTP server down as on a signal. Neither tree yet sends subscribers
-`endpoint.shutdown.started`, which Decision 0050 requires on acceptance. The signals and stdin EOF still end
-serving as the next paragraph says; rule 4's mapping of them to modes is
-pending too.
+`endpoint.shutdown.started`, which Decision 0050 requires on acceptance. In Zig, on stdio and HTTP alike,
+SIGINT and SIGTERM now map as rule 4 says: the first starts a graceful
+shutdown and writes one stderr line naming how many runs are still active and
+how many queued runs were lost, and the next forces it — Zig: `a first signal
+starts a graceful shutdown and says what is still running, and a second forces
+it`. Go's hubs still end on the first signal as the next paragraph says, and
+stdin EOF still ends serving in both.
 
 Shutdown is stdin EOF or SIGINT/SIGTERM. The daemon stops admitting, settles
 the work it already admitted inside its bounded window, closes every session so

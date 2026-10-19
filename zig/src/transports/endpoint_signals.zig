@@ -3,7 +3,7 @@ const builtin = @import("builtin");
 
 const is_windows = builtin.os.tag == .windows;
 
-var signalled = std.atomic.Value(bool).init(false);
+var signalled = std.atomic.Value(u32).init(0);
 var close_grace_ms: u32 = 4500;
 
 const win = if (is_windows) struct {
@@ -28,16 +28,20 @@ pub fn install() error{Unexpected}!void {
 }
 
 pub fn received() bool {
+    return signalled.load(.acquire) > 0;
+}
+
+pub fn count() u32 {
     return signalled.load(.acquire);
 }
 
 pub fn reset() void {
-    signalled.store(false, .release);
+    signalled.store(0, .release);
 }
 
 fn onSignal(signal: std.posix.SIG) callconv(.c) void {
     _ = signal;
-    signalled.store(true, .release);
+    _ = signalled.fetchAdd(1, .acq_rel);
 }
 
 const onConsole = if (is_windows) struct {
@@ -45,13 +49,13 @@ const onConsole = if (is_windows) struct {
         switch (kind) {
             win.ctrl_c, win.ctrl_break => {},
             win.ctrl_close => {
-                signalled.store(true, .release);
+                _ = signalled.fetchAdd(1, .acq_rel);
                 win.Sleep(close_grace_ms);
                 return .TRUE;
             },
             else => return .FALSE,
         }
-        signalled.store(true, .release);
+        _ = signalled.fetchAdd(1, .acq_rel);
         return .TRUE;
     }
 }.handle else {};
@@ -67,6 +71,9 @@ test "a SIGTERM marks the endpoint signalled until reset" {
     try std.testing.expect(!received());
     try std.posix.raise(std.posix.SIG.TERM);
     try std.testing.expect(received());
+    try std.testing.expectEqual(@as(u32, 1), count());
+    try std.posix.raise(std.posix.SIG.INT);
+    try std.testing.expectEqual(@as(u32, 2), count());
     reset();
     try std.testing.expect(!received());
 }
