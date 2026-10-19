@@ -188,8 +188,8 @@ diverge from RE2, and no fixture discloses `name_pattern`.
 own decision. (b) Pin the pattern dialect to a subset both trees can decide,
 and amend 0011.
 
-**Recommendation.** Keep 0019's record and leave the item open until an engine
-is chosen. The rule row cites 0011, and the Zig column says it does not judge
-the pattern.
+**Recommendation (before 0055).** Keep 0019's record and leave the item open
+until an engine is chosen. Decision 0055 then chose the dialect: the pattern
+is RE2 and must match the whole name.
 
 **Status.** Settled by [Decision 0055](../decisions/0055-register-batch-2.md). What remains is the port work the decision names.

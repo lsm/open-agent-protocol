@@ -212,7 +212,7 @@ Source: [`decisions/0001-agent-control-v0.1-executable-core.md`](../../decisions
 | id | rule | lines | code | Go | Zig | Rust |
 | --- | --- | --- | --- | --- | --- | --- |
 | `0001#one-foreground-invocation-is-one-run/5` | A tool call MUST follow `requested`, then `started`, then `progress` any number of times, then one of `completed` or `failed`. `cancelled` is allowed from any state that is not terminal. | L51–68 (drafted here as the transition table) | `illegal_tool_transition` | `state.go:tool` | `semantic.zig:toolTransition` | `state/interactions.rs:tool` |
-| `0001#one-foreground-invocation-is-one-run/6` | A tool event other than `requested` MUST name a call the run requested, unless the run was recovered. | L51–68, L121–131 | `unmatched_tool` | `state.go:tool` | `semantic.zig:toolTransition` | `state/interactions.rs:tool` |
+| `0001#one-foreground-invocation-is-one-run/6` | A tool event other than `requested` MUST name a call the run requested, unless the run was recovered. | L51–68, L121–131 (drafted here: a call's events follow the call the run requested, except where recovery left the request behind the cursor) | `unmatched_tool` | `state.go:tool` | `semantic.zig:toolTransition` | `state/interactions.rs:tool` |
 | `0001#one-foreground-invocation-is-one-run/7` | A call's `execution_owner` MUST NOT change during its lifecycle. | 0011 L107–138 | `scope_mismatch` | `state.go:tool` | — | `state/interactions.rs:tool` |
 
 ### [0001] Correlated reverse interactions
