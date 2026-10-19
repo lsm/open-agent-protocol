@@ -368,3 +368,99 @@ Recommendation: (a). The endpoint reports a provided tool's outcome on
 leave a control layer unable to supply what the endpoint is allowed to report.
 Settled by
 [Decision 0060](../decisions/0060-a-tool-result-may-carry-content-parts.md).
+
+## Model provider profile (0016, 0030)
+
+Rules: [`0016-provider.md`](../drafts/validator-rules/0016-provider.md). Go
+and Zig judge all six items alike over the provider corpus, the sixth through
+the schema, and Rust has no provider validator. No item is a disagreement
+between trees. Each is a rule that only [`drafts/model-provider-core.md`](../drafts/model-provider-core.md)
+states, because Decision 0016 leaves the profile's validator rules to a later
+decision (0016 L187–195). The recommendation throughout is to adopt the draft's
+text as written, so the trees keep what they judge and Rust ports it.
+
+### OPEN-0016-1: is a streamed terminal the assembly of its ended parts?
+
+The draft makes `inference.part.ended` authoritative over its deltas, and
+`inference.completed.message` the assembly of the ended parts in `part_index`
+order where parts were streamed. A trace with no parts is outside the rule
+(L624–651). Both trees raise `terminal_not_assembly` (`provider.go:assemblyDefect`,
+`provider_semantic.zig:Machine.close`).
+
+- (a) Adopt the two rules and the code as the draft states them.
+- (b) Leave the terminal's relation to its parts unstated, so a consumer
+  holding the parts cannot tell a lost frame from a changed answer.
+
+Recommendation: (a).
+
+### OPEN-0016-2: is a credential-shaped header refused?
+
+The draft makes a credential in `inference.create.request.headers`
+non-conformant. The validator rejects a header named `Authorization`,
+`Proxy-Authorization`, `X-Api-Key` or `Api-Key` (case-insensitive), or one
+whose value starts with `Bearer ` after leading spaces and tabs (also
+case-insensitive), on a call or in a descriptor's published `headers`
+(L1588–1597). Both trees raise `credential_in_headers`
+(`provider.go:credentialHeaders`, `provider_semantic.zig:Machine.credentialHeaders`).
+
+- (a) Adopt the predicate as stated, recorded as a floor that does not catch a
+  bare key in an unnamed header.
+- (b) Leave headers unjudged.
+
+Recommendation: (a).
+
+### OPEN-0016-3: is a grant request carrying a `value` invalid in a trace?
+
+The draft's tier-2 grant carries the credential on
+`provider.credential.grant.request`, never journalled or traced, so a trace
+holding one that carries `value` is invalid (L1391–1395). Both trees raise
+`credential_in_trace` on the presence of `value` and judge that envelope no
+further (`provider.go:Validate`, `provider_semantic.zig:Machine.apply`).
+
+- (a) Adopt it as stated.
+- (b) Leave it to the binding, so a trace that recorded a secret validates.
+
+Recommendation: (a).
+
+### OPEN-0016-4: is an inference's `sequence` contiguous from 1?
+
+Every event scoped to one inference carries a positive, contiguous `sequence`
+in that inference's own domain (L260–263), opening at 1 and never repeating or
+going back (L1864–1865). Both trees raise `sequence_gap` for a first event other
+than 1 or a skip, and `sequence_regression` for a repeat or a step back
+(`provider.go:Validate`, `provider_semantic.zig:Machine.apply`).
+
+- (a) Adopt it, with agent control's two codes split as the trees split them.
+- (b) Adopt it with one code, since the draft's error taxonomy folds both into
+  `protocol_violation` (L1737–1741). That passage is about error codes an
+  implementation sends, not validator diagnostics.
+
+Recommendation: (a).
+
+### OPEN-0016-5: is a scoped event after a terminal invalid?
+
+The draft allows exactly one terminal per accepted inference (L667–668, L1861).
+Both trees raise `event_after_terminal` for any scoped event, a second
+terminal included, after `inference.completed` or `inference.failed`
+(`provider.go:Validate`, `provider_semantic.zig:Machine.apply`).
+
+- (a) Adopt it as stated.
+- (b) Adopt it and give a second terminal a code of its own.
+
+Recommendation: (a). The trees already agree on one code, and a fault is not
+identified by how many diagnostics it yields.
+
+### OPEN-0016-6: may a refused inference carry an id?
+
+The draft says a refused `inference.create.response` carries the typed error
+and no `inference_id`, since an inference exists only if it was accepted
+(L653–656, L1861–1862). Both trees judge it through the schema, whose
+`inference.create.response` envelope forbids `inference_id` unless `accepted`
+is true (`provider-envelope.schema.json`, fixture
+`refusal-allocating-an-inference`), so it draws `schema_invalid`.
+
+- (a) Adopt it as the schema constraint it already is.
+- (b) Move it to a semantic diagnostic of its own.
+
+Recommendation: (a). The rule is decidable from one frame, and the provider
+corpus judges frame-scoped defects through the schema.

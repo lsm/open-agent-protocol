@@ -22,6 +22,7 @@ One file per decision group, named for its first decision, as
 | [`0007-queue-open-cancel.md`](0007-queue-open-cancel.md) | 0007, 0009, 0041 |
 | [`0008-tool-sources.md`](0008-tool-sources.md) | 0008, 0011, 0048 |
 | [`0010-amendments-auth.md`](0010-amendments-auth.md) | 0010, 0012, 0013, 0026, 0029, 0043 |
+| [`0016-provider.md`](0016-provider.md) | 0016, 0030 (the `model-provider-core` profile) |
 
 ## Rows
 
