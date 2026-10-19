@@ -10,6 +10,7 @@ import (
 	"os/signal"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/lsm/open-agent-protocol/go/binding"
 	"github.com/lsm/open-agent-protocol/go/serve"
@@ -59,7 +60,10 @@ func runEndpoint(ctx context.Context, verb, backendFlag string, args []string, s
 		return err
 	}
 
-	signals, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
+	caught := make(chan os.Signal, 4)
+	signal.Notify(caught, os.Interrupt, syscall.SIGTERM)
+	defer signal.Stop(caught)
+	signals, stop := context.WithCancel(ctx)
 	defer stop()
 
 	options := serve.Options{Logger: log.New(stderr, "goap: ", 0)}
@@ -85,7 +89,10 @@ func runEndpoint(ctx context.Context, verb, backendFlag string, args []string, s
 	}
 	fmt.Fprintf(stderr, "goap: endpoint over adapter %q (exit closes the session)\n", *adapterName)
 
+	lines := &signalLines{}
+	go relaySignals(signals, stop, caught, endpoint, stderr, lines)
 	runErr := endpoint.Run(signals, stdin, stdout)
+	lines.flush(time.Second)
 
 	sweep, cancelSweep := context.WithTimeout(context.Background(), serve.DefaultShutdownTimeout)
 	defer cancelSweep()

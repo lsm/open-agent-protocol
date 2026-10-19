@@ -14,6 +14,7 @@ import (
 
 type liveEndpoint struct {
 	t      *testing.T
+	server *Server
 	stdin  *io.PipeWriter
 	answer *bufio.Reader
 	done   chan error
@@ -34,7 +35,7 @@ func startLiveEndpoint(t *testing.T) *liveEndpoint {
 	done := make(chan error, 1)
 	go func() { done <- server.Run(context.Background(), inReader, outWriter) }()
 	t.Cleanup(func() { _ = inWriter.Close(); _ = outReader.Close() })
-	return &liveEndpoint{t: t, stdin: inWriter, answer: bufio.NewReader(outReader), done: done}
+	return &liveEndpoint{t: t, server: server, stdin: inWriter, answer: bufio.NewReader(outReader), done: done}
 }
 
 func (l *liveEndpoint) ask(line string, inReplyTo protocol.EnvelopeID) protocol.Envelope {
@@ -160,4 +161,30 @@ func TestAnEndpointShutdownRefusesAModeOtherThanGracefulOrForce(t *testing.T) {
 	if live.ask(requestLine(t, protocol.TypeCapabilitiesRequest, "cap-1", map[string]any{}, ""), "cap-1").Type != protocol.TypeCapabilitiesResponse {
 		t.Fatal("the endpoint stopped serving after a refused shutdown")
 	}
+}
+
+func TestAFirstSignalDrainsWhileStillReadingTheHostAndASecondForcesTheEndpointToStop(t *testing.T) {
+	live := startLiveEndpoint(t)
+	live.ask(requestLine(t, protocol.TypeSessionOpenRequest, "open-1", protocol.SessionOpenRequest{SessionID: "busy"}, "busy"), "open-1")
+	live.ask(requestLine(t, protocol.TypeSessionMessageSubmitRequest, "submit-1", protocol.MessageSubmitRequest{
+		SessionID: "busy", Delivery: protocol.DeliveryAuto,
+		Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("go")}},
+	}, "busy"), "submit-1")
+
+	first, took := live.server.Signal(context.Background(), 1)
+	if !took || first.Outcome != protocol.ShutdownDraining || len(first.ActiveRuns) != 1 {
+		t.Fatalf("the first signal answered %+v (%v), want draining with the run", first, took)
+	}
+	refused := live.ask(requestLine(t, protocol.TypeSessionOpenRequest, "open-2", protocol.SessionOpenRequest{SessionID: "late"}, "late"), "open-2")
+	if code := refusedCode(t, refused); code != "shutting_down" {
+		t.Fatalf("an open while draining was answered %s, want shutting_down", code)
+	}
+	if _, took := live.server.Signal(context.Background(), 1); took {
+		t.Fatal("the same signal count started a second shutdown")
+	}
+	second, took := live.server.Signal(context.Background(), 2)
+	if !took || second.Outcome != protocol.ShutdownStopping {
+		t.Fatalf("the second signal answered %+v (%v), want stopping", second, took)
+	}
+	live.stops()
 }
