@@ -426,7 +426,7 @@ func StreamAnthropic(sink *EventSink, model Model, ctx Context, options Anthropi
 	}
 
 	if state.usage.TotalTokens == 0 {
-		state.usage.TotalTokens = state.usage.InputTokens + state.usage.OutputTokens
+		state.usage.TotalTokens = state.usage.InputTokens + state.usage.CacheReadTokens + state.usage.CacheWriteTokens + state.usage.OutputTokens
 	}
 	state.usage.Cost = calculateCost(state.usage, state.model.Cost)
 

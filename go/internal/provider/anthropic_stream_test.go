@@ -235,14 +235,14 @@ func TestMessageStartCarriesUsageWithoutTakingTheCacheOutOfTheInput(t *testing.T
 	}
 }
 
-func TestTheTotalTokensBackfillAddsOnlyInputAndOutput(t *testing.T) {
+func TestTheTotalTokensBackfillCountsTheCacheTerms(t *testing.T) {
 	events := runAnthropic(t, anthropicStreamModel(),
-		sseFrame(`{"type":"message_start","message":{"usage":{"input_tokens":10,"output_tokens":5,"cache_read_input_tokens":99,"cache_creation_input_tokens":99}}}`),
+		sseFrame(`{"type":"message_start","message":{"usage":{"input_tokens":10,"output_tokens":5,"cache_read_input_tokens":90,"cache_creation_input_tokens":9}}}`),
 		textBlockFrame(0, "x"),
 	)
 	usage := findEvent(t, events, EventDone).Message.Usage
-	if usage.TotalTokens != 15 {
-		t.Errorf("the total = %d, want 10+5: the cache terms are not added here", usage.TotalTokens)
+	if usage.TotalTokens != 114 {
+		t.Errorf("the total = %d, want 10+90+9+5", usage.TotalTokens)
 	}
 }
 

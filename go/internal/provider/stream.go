@@ -55,14 +55,7 @@ func parseUsageInto(container map[string]any, usage *Usage) {
 			}
 		}
 	}
-	completion, _ := asInt(container["completion_tokens"])
-	reasoning := 0
-	if details, ok := asObject(container["completion_tokens_details"]); ok {
-		if value, ok := asInt(details["reasoning_tokens"]); ok {
-			reasoning = value
-		}
-	}
-	usage.OutputTokens = completion + reasoning
+	usage.OutputTokens, _ = asInt(container["completion_tokens"])
 	if value, ok := asInt(container["total_tokens"]); ok {
 		usage.TotalTokens = value
 	}

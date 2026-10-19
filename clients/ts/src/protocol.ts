@@ -189,7 +189,10 @@ export interface Message {
 
 export interface Usage {
   input_tokens?: number;
+  cache_read_input_tokens?: number;
+  cache_write_input_tokens?: number;
   output_tokens?: number;
+  reasoning_tokens?: number;
   total_tokens?: number;
 }
 

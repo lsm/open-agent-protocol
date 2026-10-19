@@ -60,8 +60,11 @@
       "stop_reason": "stop",
       "usage": {
         "input_tokens": 4,
+        "cache_read_input_tokens": 4647,
+        "cache_write_input_tokens": 0,
         "output_tokens": 13,
-        "total_tokens": 17
+        "reasoning_tokens": 0,
+        "total_tokens": 4664
       }
     },
     "sequence": 3,

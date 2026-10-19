@@ -373,8 +373,8 @@ func (s *state) apply(i, line int, e protocol.Envelope) {
 		if p.Recovery != nil && p.Recovery.Recovered {
 			recovery := &recoveryExpectation{session: p.SessionID, run: p.Recovery.PreviousRunID, gap: p.Recovery.Reason == "replay_gap", openIndex: i}
 			if p.Recovery.ResumeCursor != "" {
-				cursor, err := strconv.ParseUint(p.Recovery.ResumeCursor, 10, 64)
-				if err != nil {
+				cursor, ok := resumeCursor(p.Recovery.ResumeCursor)
+				if !ok {
 					s.add(CodeUndeclaredReplayGap, i, line, e, "/payload/recovery/resume_cursor", "recovery cursor must be an unsigned sequence")
 				} else {
 					recovery.cursor = cursor
@@ -1631,6 +1631,19 @@ func isTerminal(t protocol.EnvelopeType) bool {
 func preStartSettlement(t protocol.EnvelopeType) bool {
 	return t == protocol.TypeRunFailed || t == protocol.TypeRunCancelled
 }
+
+const maxResumeCursor = 1<<53 - 1
+
+func resumeCursor(text string) (uint64, bool) {
+	for _, digit := range text {
+		if digit < '0' || digit > '9' {
+			return 0, false
+		}
+	}
+	cursor, err := strconv.ParseUint(text, 10, 64)
+	return cursor, err == nil && cursor <= maxResumeCursor
+}
+
 func isRunEvent(t protocol.EnvelopeType) bool {
 	switch t {
 	case protocol.TypeRunCompactionStarted, protocol.TypeRunCompactionEnded, protocol.TypeRunSteerApplied, protocol.TypeRunSteerDropped, protocol.TypeRunStarted, protocol.TypeRunStatusUpdated, protocol.TypeContentDelta, protocol.TypeContentCompleted, protocol.TypeRunCompleted, protocol.TypeRunFailed, protocol.TypeRunCancelled, protocol.TypeActionCallRequested, protocol.TypeActionCallStarted, protocol.TypeActionCallProgress, protocol.TypeActionCallCompleted, protocol.TypeActionCallFailed, protocol.TypeActionCallCancelled, protocol.TypeActionPermissionRequested, protocol.TypeActionPermissionResolved, protocol.TypeUserInputRequested, protocol.TypeUserInputResolved:

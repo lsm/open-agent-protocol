@@ -692,6 +692,14 @@ core conformance.
 This makes non-streaming consumers and history views useful without replaying the
 whole stream.
 
+`usage` counts each kind of token once
+([Decision 0063](../decisions/0063-usage-counts-cache-and-reasoning-tokens.md)):
+`input_tokens` is input neither read from nor written to a cache,
+`cache_read_input_tokens` and `cache_write_input_tokens` count the cached
+input, `output_tokens` counts every generated token with the
+`reasoning_tokens` among them, and `total_tokens` is the sum of input, both
+cache counts and output. An absent member is unknown, not zero.
+
 ### A message's own usage
 
 A run's `usage` covers every model call the run made. A run that calls a tool
@@ -811,12 +819,13 @@ the effective descriptor changes. The event sets the envelope's
 `capability_revision` to the new revision and carries `previous_revision` plus
 an optional `reason` in its payload. It is an invalidation notice, not a
 descriptor delta. The receiver obtains the new snapshot with
-`capabilities.request`, and until that response arrives a request citing the
-pre-update revision or exercising an optional feature is stale, except
-initialization, discovery, and the requests that settle work in flight:
-`run.cancel.request`, `action.permission.resolve.request`,
-`user.input.resolve.request`, `user.input.cancel.request` and
-`action.call.resolve.request` ([Decision 0055](../decisions/0055-register-batch-2.md)). Dynamic updates and their event are not required for
+`capabilities.request`, and until that response arrives every request is
+stale, whether or not it cites a revision, except initialization, discovery,
+and the requests that settle work in flight: `run.cancel.request`,
+`action.permission.resolve.request`, `user.input.resolve.request`,
+`user.input.cancel.request` and `action.call.resolve.request`
+([Decision 0055](../decisions/0055-register-batch-2.md),
+[Decision 0064](../decisions/0064-every-request-waits-for-the-refresh.md)). Dynamic updates and their event are not required for
 core conformance.
 
 ## Minimum Conformance

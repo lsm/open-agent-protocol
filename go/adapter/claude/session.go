@@ -1099,7 +1099,7 @@ func (s *Session) publishTerminal(run *runState, frame *native.ResultFrame) {
 	s.mu.Unlock()
 
 	s.sweepRun(run)
-	usage := &protocol.Usage{InputTokens: uint64(frame.Usage.InputTokens), OutputTokens: uint64(frame.Usage.OutputTokens), TotalTokens: uint64(frame.Usage.InputTokens + frame.Usage.OutputTokens)}
+	usage := reportedUsage(frame)
 	reported := reportedExtensions(frame)
 	switch {
 	case frame.Cancelled():
@@ -1124,6 +1124,23 @@ const (
 	costExtension             = "com.anthropic.claude-code.cost"
 	structuredOutputExtension = "com.anthropic.claude-code.structured_output"
 )
+
+func reportedUsage(frame *native.ResultFrame) *protocol.Usage {
+	usage := &protocol.Usage{InputTokens: uint64(frame.Usage.InputTokens), OutputTokens: uint64(frame.Usage.OutputTokens)}
+	read, write := frame.Usage.CacheReadInputTokens, frame.Usage.CacheCreationInputTokens
+	if read != nil {
+		count := uint64(*read)
+		usage.CacheReadInputTokens = &count
+	}
+	if write != nil {
+		count := uint64(*write)
+		usage.CacheWriteInputTokens = &count
+	}
+	if read != nil && write != nil {
+		usage.TotalTokens = uint64(frame.Usage.InputTokens + frame.Usage.OutputTokens + *read + *write)
+	}
+	return usage
+}
 
 func reportedExtensions(frame *native.ResultFrame) map[string]json.RawMessage {
 	reported := map[string]json.RawMessage{}

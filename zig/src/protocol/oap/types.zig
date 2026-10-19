@@ -227,11 +227,14 @@ pub const Message = struct {
 
 pub const Usage = struct {
     input_tokens: ?u64 = null,
+    cache_read_input_tokens: ?u64 = null,
+    cache_write_input_tokens: ?u64 = null,
     output_tokens: ?u64 = null,
+    reasoning_tokens: ?u64 = null,
     total_tokens: ?u64 = null,
 
     pub fn isEmpty(self: Usage) bool {
-        return self.input_tokens == null and self.output_tokens == null and self.total_tokens == null;
+        return self.input_tokens == null and self.cache_read_input_tokens == null and self.cache_write_input_tokens == null and self.output_tokens == null and self.reasoning_tokens == null and self.total_tokens == null;
     }
 };
 
