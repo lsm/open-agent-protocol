@@ -261,6 +261,16 @@ fn envelope_interaction(e: &Envelope) -> String {
     }
 }
 
+const REFRESH_EXEMPT: [EnvelopeType; 7] = [
+    EnvelopeType::PROTOCOL_INITIALIZE_REQUEST,
+    EnvelopeType::CAPABILITIES_REQUEST,
+    EnvelopeType::RUN_CANCEL_REQUEST,
+    EnvelopeType::ACTION_PERMISSION_RESOLVE_REQUEST,
+    EnvelopeType::USER_INPUT_RESOLVE_REQUEST,
+    EnvelopeType::USER_INPUT_CANCEL_REQUEST,
+    EnvelopeType::ACTION_CALL_RESOLVE_REQUEST,
+];
+
 const REVISION_EXEMPT: [EnvelopeType; 4] = [
     EnvelopeType::PROTOCOL_INITIALIZE_REQUEST,
     EnvelopeType::CAPABILITIES_REQUEST,
@@ -436,13 +446,13 @@ impl State {
             self.current_capability = revision;
             self.capabilities_stale = true;
             self.limits = None;
-        } else if *t == EnvelopeType::SESSION_MESSAGE_SUBMIT_REQUEST && self.capabilities_stale {
+        } else if is_request(t) && self.capabilities_stale && !REFRESH_EXEMPT.contains(t) {
             self.add(
                 codes::STALE_CAPABILITY_REVISION,
                 at,
                 e,
                 "/capability_revision",
-                "submission occurred before refreshed capabilities",
+                "request occurred before the refreshed capabilities capabilities.updated owes",
             );
         }
     }
