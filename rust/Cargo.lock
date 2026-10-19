@@ -885,6 +885,7 @@ dependencies = [
  "futures",
  "futures-core",
  "oap-protocol",
+ "serde",
  "serde_json",
  "thiserror",
 ]

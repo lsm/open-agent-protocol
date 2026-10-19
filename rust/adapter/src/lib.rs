@@ -2,6 +2,7 @@ mod answer;
 mod contract;
 mod error;
 pub mod journal;
+pub mod memory;
 mod refuse;
 
 use oap_protocol::{
