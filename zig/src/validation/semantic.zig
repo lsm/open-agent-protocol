@@ -20,6 +20,7 @@ pub const code_unhonoured_capability = "unhonoured_capability";
 pub const code_auth_flow_order = "auth_flow_order";
 pub const code_missing_auth_terminal = "missing_auth_terminal";
 pub const code_unknown_participant = "unknown_participant";
+pub const code_undisclosed_selection_scope = "undisclosed_selection_scope";
 pub const code_illegal_run_transition = "illegal_run_transition";
 pub const code_missing_run_started = "missing_run_started";
 pub const code_missing_run_terminal = "missing_run_terminal";
@@ -96,7 +97,8 @@ pub const implemented = [_][]const u8{
     code_content_after_completion,        code_transcript_over_limit,           code_duplicate_transcript_entry,
     code_transcript_gap_mismatch,         code_unmatched_response,              code_missing_response,
     code_duplicate_response,              code_unhonoured_capability,           code_auth_flow_order,
-    code_missing_auth_terminal,           code_unknown_participant,
+    code_missing_auth_terminal,           code_unknown_participant,             code_undisclosed_selection_scope,
+    code_unmatched_provider,
 };
 
 pub fn isImplemented(code: []const u8) bool {
@@ -1182,6 +1184,13 @@ pub const Machine = struct {
                 try self.add(code_undisclosed_attach_modes, index);
             }
         }
+        if (affirmative(self.features.get("run.tool_selection") orelse "")) {
+            const scope = self.scopes.get("run.tool_selection") orelse "";
+            if (scope.len != 0 and !lifetimeScope(scope)) try self.add(code_undisclosed_selection_scope, index);
+        }
+        if (affirmative(self.features.get("run.model_selection") orelse "")) {
+            if (!lifetimeScope(self.scopes.get("run.model_selection") orelse "")) try self.add(code_undisclosed_selection_scope, index);
+        }
     }
 
     fn collectFeatures(self: *Machine, payload: std.json.Value) !void {
@@ -1939,6 +1948,7 @@ pub const Machine = struct {
             for (listed.array.items) |model| {
                 const provider_id = memberString(model, "provider_id");
                 if (provider_id.len != 0 and providers.get(provider_id) == null) {
+                    if (provider_list == .array and provider_list.array.items.len > 0) try self.add(code_unmatched_provider, index);
                     try providers.put(self.arena.allocator(), provider_id, {});
                 }
             }
@@ -4708,6 +4718,10 @@ fn declaresSource(sources: ?std.json.Value, id: []const u8) bool {
     return false;
 }
 
+fn lifetimeScope(scope: []const u8) bool {
+    return std.mem.eql(u8, scope, "run") or std.mem.eql(u8, scope, "session");
+}
+
 fn affirmative(level: []const u8) bool {
     return std.mem.eql(u8, level, "native") or
         std.mem.eql(u8, level, "emulated") or
@@ -5307,7 +5321,7 @@ test "the layer that wins a feature wins its mode too, including the mode it omi
         \\{"type":"session.message.submit.request","id":"q2","capability_revision":"v1",
         \\"payload":{"session_id":"s","delivery":"auto","model_id":"m"}},
         \\{"type":"error.response","id":"x1","in_reply_to":"q2","payload":{"error":{"code":"run_active"}}}]
-    , &.{ "queue_limit_exceeded", "missing_run_terminal" });
+    , &.{ code_undisclosed_selection_scope, "queue_limit_exceeded", "missing_run_terminal" });
 }
 
 test "an open surface's refusal does not answer for the queue" {
@@ -6899,6 +6913,25 @@ test "a subscribe an endpoint advertises, refused inside an open, is unhonoured"
         \\{"type":"session.open.request","id":"o1","capability_revision":"v1","payload":{"session_id":"s","subscribe":true}},
         \\{"type":"error.response","id":"o2","in_reply_to":"o1","payload":{"error":{"code":"unsupported_feature","message":"x","details":{"feature":"session.open.subscribe"}}}}]
     , &.{code_unhonoured_capability});
+}
+
+test "a model selection advertised without a lifetime, or a tool selection with an unknown one, is undisclosed" {
+    try expectCodes(
+        \\[{"type":"capabilities.response","id":"k1","capability_revision":"v1","payload":{"features":{"run.model_selection":{"level":"native"}}}}]
+    , &.{code_undisclosed_selection_scope});
+    try expectCodes(
+        \\[{"type":"capabilities.response","id":"k1","capability_revision":"v1","payload":{"features":{"run.tool_selection":{"level":"native","scope":"forever"}}}}]
+    , &.{code_undisclosed_selection_scope});
+    try expectCodes(
+        \\[{"type":"capabilities.response","id":"k1","capability_revision":"v1","payload":{"features":{"run.tool_selection":{"level":"native"},"run.model_selection":{"level":"emulated","scope":"run"}}}}]
+    , &.{});
+}
+
+test "a model naming a provider a non-empty provider list does not declare is unmatched" {
+    try expectCodes(
+        \\[{"type":"capabilities.response","id":"k1","capability_revision":"v1","payload":{"features":{"models.list":{"level":"native"}}}},
+        \\{"type":"models.response","id":"m1","capability_revision":"v1","payload":{"providers":[{"id":"zai"}],"models":[{"id":"a","provider_id":"zai"},{"id":"b","provider_id":"kimi"},{"id":"c","provider_id":"kimi"}]}}]
+    , &.{code_unmatched_provider});
 }
 
 const auth_started =
