@@ -207,6 +207,8 @@ fn cutValue(arena: std.mem.Allocator, value: std.json.Value, plan: Cut) !std.jso
                     (if (value_held == .string) value_held else try cutValue(arena, value_held, plan))
                 else if (value_held == .string)
                     .{ .string = cut(value_held.string, bound) }
+                else if (value_held == .array)
+                    try cutValue(arena, value_held, plan)
                 else
                     .{ .string = cut(try std.json.Stringify.valueAlloc(arena, value_held, .{}), bound) };
                 try out.put(arena, member.key_ptr.*, kept);

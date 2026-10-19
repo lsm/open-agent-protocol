@@ -18,7 +18,7 @@ const local_loop = @import("local_loop.zig");
 pub const LocalLoop = local_loop.LocalLoop;
 
 pub const endpoint_id = "oapx.agent";
-pub const capability_revision = "oapx-agent-v16";
+pub const capability_revision = "oapx-agent-v17";
 const native_source = "oapx";
 const native_sources = [_]oap_types.ToolSourceDescriptor{.{ .id = native_source, .kind = "native", .display_name = "oapx" }};
 
@@ -49,6 +49,7 @@ const unsaved_features = [_]contract.Feature{
     .{ .key = "run.cancel", .level = .native, .reason = "cancelling a run leaves its session open" },
     .{ .key = "run.replay", .level = .degraded, .reason = "up to 65536 events across the session's runs are retained in process memory" },
     .{ .key = "content.reasoning", .level = .native },
+    .{ .key = "content.image", .level = .degraded, .reason = "an image reaches the loop only as a tool's result, such as Read on an image file, and is reported as an image part; the model sees it only if it accepts images, and image parts in a submitted message are dropped" },
     .{ .key = "action.tools", .level = .native, .reason = "the agent loop runs its own workspace tools" },
     .{ .key = "action.tools.execute", .level = .native, .reason = "the agent loop runs its own workspace tools" },
     .{ .key = contract.feature_tools_list, .level = .native },
@@ -1464,7 +1465,8 @@ pub const Session = struct {
                     try ended.put("error", failure.value());
                     try self.emitCallEnd(run, "action.call.failed", ended.value(), CallEnd.of(payload, ""));
                 } else {
-                    try ended.put("result", try jsonOrString(a, payload.result_json.slice()));
+                    const parts = payload.result_parts.slice();
+                    try ended.put("result", try jsonOrString(a, if (parts.len > 0) parts else payload.result_json.slice()));
                     try self.emitCallEnd(run, "action.call.completed", ended.value(), CallEnd.of(payload, payload.result_text.slice()));
                 }
             },
@@ -2330,6 +2332,7 @@ const Script = struct {
 };
 
 var held_tool = std.atomic.Value(bool).init(false);
+var echo_image = std.atomic.Value(bool).init(false);
 var scripted_usage: ai_types.Usage = .{ .input = 11, .output = 7 };
 
 fn scriptedMessage(allocator: std.mem.Allocator, model: ai_types.Model, content: []const ai_types.AssistantContent, reason: ai_types.StopReason) !ai_types.AssistantMessage {
@@ -2409,8 +2412,16 @@ fn echoTool(tool_call_id: []const u8, args_json: []const u8, cancel_token: ?ai_t
     while (held_tool.load(.acquire) and waits < 5000) : (waits += 1) {
         std.testing.io.sleep(.fromNanoseconds(std.time.ns_per_ms), .boot) catch {};
     }
-    const content = try allocator.alloc(ai_types.UserContentPart, 1);
+    const image = echo_image.load(.acquire);
+    const content = try allocator.alloc(ai_types.UserContentPart, if (image) 2 else 1);
+    errdefer allocator.free(content);
     content[0] = .{ .text = .{ .text = try allocator.dupe(u8, "echoed") } };
+    if (image) {
+        errdefer allocator.free(content[0].text.text);
+        const data = try allocator.dupe(u8, "iVBORw0KGgo=");
+        errdefer allocator.free(data);
+        content[1] = .{ .image = .{ .data = data, .mime_type = try allocator.dupe(u8, "image/png") } };
+    }
     return .{ .content = @FieldType(agent.AgentToolResult, "content").initOwned(content) };
 }
 
@@ -2569,6 +2580,45 @@ test "a tool the loop runs is published as an endpoint-owned call, requested, st
         try testing.expectEqualStrings("echo_tool", payload.get("name").?.string);
     }
     try testing.expectEqualStrings("run.completed", harness.terminal().?.object.get("type").?.string);
+}
+
+test "a tool result holding an image completes its call with a part list, and a text-only result keeps its result_json" {
+    for ([_]bool{ true, false }) |image| {
+        echo_image.store(image, .release);
+        defer echo_image.store(false, .release);
+        var script = Script{ .tool_first = true, .reply = "done" };
+        var harness: Harness = undefined;
+        try harness.init(&script);
+        defer harness.deinit();
+
+        _ = try harness.submit("use the tool");
+        try harness.untilTerminal();
+
+        var completed: ?std.json.Value = null;
+        for (harness.seen.items) |parsed| {
+            if (std.mem.eql(u8, parsed.value.object.get("type").?.string, "action.call.completed")) completed = parsed.value.object.get("payload").?.object.get("result").?;
+        }
+        const result = completed.?;
+        if (!image) {
+            try testing.expect(result != .array);
+            continue;
+        }
+        const parts = result.array.items;
+        try testing.expectEqual(@as(usize, 2), parts.len);
+        try testing.expectEqualStrings("text", parts[0].object.get("type").?.string);
+        try testing.expectEqualStrings("echoed", parts[0].object.get("text").?.string);
+        try testing.expectEqualStrings("image", parts[1].object.get("type").?.string);
+        const held = parts[1].object.get("image").?.object;
+        try testing.expectEqualStrings("iVBORw0KGgo=", held.get("data").?.string);
+        try testing.expectEqualStrings("image/png", held.get("media_type").?.string);
+    }
+}
+
+test "content.image is advertised degraded" {
+    const level = for (descriptor.features) |feature| {
+        if (std.mem.eql(u8, feature.key, "content.image")) break feature.level;
+    } else return error.TestUnexpectedResult;
+    try testing.expectEqual(oap_types.SupportLevel.degraded, level);
 }
 
 test "each assistant message is closed by one content.completed carrying that call's usage, and no delta streams into a closed message" {

@@ -89,6 +89,7 @@ pub const SessionEvent = union(enum) {
         artifact_count: u32 = 0,
         artifact_refs: OwnedSlice(u8) = OwnedSlice(u8).initBorrowed(""),
         result_text: OwnedSlice(u8) = OwnedSlice(u8).initBorrowed(""),
+        result_parts: OwnedSlice(u8) = OwnedSlice(u8).initBorrowed(""),
     },
     context_usage: struct {
         generation: u32 = 0,
@@ -291,12 +292,15 @@ pub const SessionEvent = union(enum) {
                 const artifact_refs = try allocator.dupe(u8, p.artifact_refs.slice());
                 errdefer allocator.free(artifact_refs);
                 const result_text = try allocator.dupe(u8, p.result_text.slice());
+                errdefer allocator.free(result_text);
+                const result_parts = try allocator.dupe(u8, p.result_parts.slice());
 
                 p.tool_call_id = OwnedSlice(u8).initOwned(tool_call_id);
                 p.tool_name = OwnedSlice(u8).initOwned(tool_name);
                 p.result_json = OwnedSlice(u8).initOwned(result_json);
                 p.artifact_refs = OwnedSlice(u8).initOwned(artifact_refs);
                 p.result_text = OwnedSlice(u8).initOwned(result_text);
+                p.result_parts = OwnedSlice(u8).initOwned(result_parts);
             },
             .system_warning => |*p| p.message = OwnedSlice(u8).initOwned(try allocator.dupe(u8, p.message.slice())),
             .compaction_end => |*p| {
@@ -354,6 +358,7 @@ pub const SessionEvent = union(enum) {
                 p.result_json.deinit(allocator);
                 p.artifact_refs.deinit(allocator);
                 p.result_text.deinit(allocator);
+                p.result_parts.deinit(allocator);
             },
             .system_warning => |*p| p.message.deinit(allocator),
             .compaction_end => |*p| {
