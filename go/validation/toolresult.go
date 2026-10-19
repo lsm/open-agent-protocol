@@ -2,6 +2,8 @@ package validation
 
 import (
 	"encoding/json"
+	"maps"
+	"slices"
 
 	"github.com/lsm/open-agent-protocol/go/protocol"
 )
@@ -37,8 +39,8 @@ func toolResultImage(node any, pointer string) (string, bool) {
 		if value["type"] == "tool_result" && carriesImage(value["result"]) {
 			return pointer + "/result", true
 		}
-		for key, child := range value {
-			if found, ok := toolResultImage(child, pointer+"/"+key); ok {
+		for _, key := range slices.Sorted(maps.Keys(value)) {
+			if found, ok := toolResultImage(value[key], pointer+"/"+key); ok {
 				return found, true
 			}
 		}
