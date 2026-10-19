@@ -317,9 +317,10 @@ reservation outright is a false verdict at one edge of the window, since it
 lets a snapshot keep a queue place past a promotion that has not drained, and
 refusing to is a false verdict at the other, since it rejects the accurate
 entry of a run cancelled after one. An entry stating no position at all claims
-no knowledge the trace lacks and is read as the trace stands — its
-`pending_interactions` too, which list exactly the interactions its run has
-unresolved, whatever the descriptor advertises
+no knowledge the trace lacks and is read as the trace stands, whatever the
+descriptor advertises: an entry naming pending interactions has to state the
+position it caught them at, so one stating none claims its run is blocked on
+nothing, and a run with an unresolved interaction makes it wrong
 ([Decision 0054](0054-register-batch-1.md)). Its queue position
 is judged there too, and so is `active_run_id`: an entry's status, its position
 and the field that names the started run are one description of one moment, and
