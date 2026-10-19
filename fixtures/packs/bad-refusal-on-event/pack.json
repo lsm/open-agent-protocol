@@ -1,0 +1,26 @@
+{
+  "id": "com.example.eventrefusal",
+  "version": "1.0.0",
+  "schemas": [
+    "types.schema.json"
+  ],
+  "envelope_types": [
+    {
+      "type": "com.example.eventrefusal.changed",
+      "role": "event",
+      "schema": "types.schema.json#/$defs/changed",
+      "refusals": [
+        "com.example.eventrefusal.declined"
+      ]
+    }
+  ],
+  "gates": [
+    {
+      "type": "com.example.eventrefusal.changed",
+      "ungated": true
+    }
+  ],
+  "error_codes": [
+    "com.example.eventrefusal.declined"
+  ]
+}

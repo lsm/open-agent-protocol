@@ -10,11 +10,11 @@ Source: [`decisions/0007-queue-delivery.md`](../../decisions/0007-queue-delivery
 
 | id | rule | lines | code | Go | Zig | Rust |
 | --- | --- | --- | --- | --- | --- | --- |
-| `0007#one-started-run-and-reservations-behind-it/1` | A second admission on a session that holds a nonterminal run MUST be a reservation: `admission` `queued`, `effective_delivery` `queue`, `status` `queued`. | L42–46 | `illegal_run_transition` | `queue.go:queueOverlap` | yes | — |
-| `0007#one-started-run-and-reservations-behind-it/2` | A reservation MUST NOT be admitted unless the active descriptor advertises `session.message.delivery.queue`. | L44–45 | `unavailable_capability` | `queue.go:queueAdmission` | yes | — |
-| `0007#one-started-run-and-reservations-behind-it/3` | A reservation admitted under a `degraded` queue disclosure MUST have been requested with that key in `allow_degraded_features`. | L44–45, L87–89 | `degraded_without_optin` | `queue.go:queueAdmission` | yes | — |
-| `0007#one-started-run-and-reservations-behind-it/4` | An explicit `queue` delivery MUST be admitted as a reservation, whatever the session holds, and never resolves to `start`. | L48–51 | `illegal_run_transition` | `queue.go:queueAdmission` | yes | — |
-| `0007#one-started-run-and-reservations-behind-it/5` | An `auto` submission a busy session turns into a reservation MUST report `delivery_resolution: "session_busy"`. | L51–55 | `illegal_run_transition` | `queue.go:queueAdmission` | yes | — |
+| `0007#one-started-run-and-reservations-behind-it/1` | A second admission on a session that holds a nonterminal run MUST be a reservation: `admission` `queued`, `effective_delivery` `queue`, `status` `queued`. | L42–46 | `illegal_run_transition` | `queue.go:queueOverlap` | yes | `queue.rs:queue_overlap` |
+| `0007#one-started-run-and-reservations-behind-it/2` | A reservation MUST NOT be admitted unless the active descriptor advertises `session.message.delivery.queue`. | L44–45 | `unavailable_capability` | `queue.go:queueAdmission` | yes | `queue.rs:queue_admission` |
+| `0007#one-started-run-and-reservations-behind-it/3` | A reservation admitted under a `degraded` queue disclosure MUST have been requested with that key in `allow_degraded_features`. | L44–45, L87–89 | `degraded_without_optin` | `queue.go:queueAdmission` | yes | `queue.rs:queue_admission` |
+| `0007#one-started-run-and-reservations-behind-it/4` | An explicit `queue` delivery MUST be admitted as a reservation, whatever the session holds, and never resolves to `start`. | L48–51 | `illegal_run_transition` | `queue.go:queueAdmission` | yes | `queue.rs:queue_admission` |
+| `0007#one-started-run-and-reservations-behind-it/5` | An `auto` submission a busy session turns into a reservation MUST report `delivery_resolution: "session_busy"`. | L51–55 | `illegal_run_transition` | `queue.go:queueAdmission` | yes | `queue.rs:queue_admission` |
 
 ### [0007] One run executes at a time, in admission order
 
@@ -22,7 +22,7 @@ Source: [`decisions/0007-queue-delivery.md`](../../decisions/0007-queue-delivery
 
 | id | rule | lines | code | Go | Zig | Rust |
 | --- | --- | --- | --- | --- | --- | --- |
-| `0007#one-run-executes-at-a-time-in-admission-order/1` | A later-admitted run MUST NOT publish a sequenced event while an earlier-admitted run of its session is nonterminal, except the pre-start terminal of a run that never started and run-scoped requests and responses. | L59–76 | `queue_order_violation` | `queue.go:checkQueueOrder` | yes | — |
+| `0007#one-run-executes-at-a-time-in-admission-order/1` | A later-admitted run MUST NOT publish a sequenced event while an earlier-admitted run of its session is nonterminal, except the pre-start terminal of a run that never started and run-scoped requests and responses. | L59–76 | `queue_order_violation` | `queue.go:checkQueueOrder` | yes | `queue.rs:check_queue_order` |
 
 ### [0007] A queue is a promise, and the bound is what makes it checkable
 
@@ -30,12 +30,12 @@ Source: [`decisions/0007-queue-delivery.md`](../../decisions/0007-queue-delivery
 
 | id | rule | lines | code | Go | Zig | Rust |
 | --- | --- | --- | --- | --- | --- | --- |
-| `0007#a-queue-is-a-promise-and-the-bound-is-what-makes-it-checkable/1` | A descriptor advertising the queue above `unavailable` MUST disclose a positive `max_queued_runs_per_session`. | L84–90 | `undisclosed_queue_limit` | `queue.go:checkQueueLimits` | yes | — |
-| `0007#a-queue-is-a-promise-and-the-bound-is-what-makes-it-checkable/2` | Where the queue is available or `degraded`, a stated `max_active_runs_per_session` MUST be at least `max_queued_runs_per_session + 1`. | L92–100 | `undisclosed_queue_limit` | `queue.go:checkQueueLimits` | yes | — |
-| `0007#a-queue-is-a-promise-and-the-bound-is-what-makes-it-checkable/3` | An admission MUST NOT put the session's nonterminal set above the disclosed active bound; a set admitted before a lowering refresh is grandfathered. | L80–82, L102–105 | `queue_limit_exceeded` | `queue.go:queueAdmission` | yes | — |
-| `0007#a-queue-is-a-promise-and-the-bound-is-what-makes-it-checkable/4` | An admission MUST NOT put the session's queued subset above the disclosed queued bound; a set admitted before a lowering refresh is grandfathered. | L80–82, L102–105 | `queue_limit_exceeded` | `queue.go:queueAdmission` | yes | — |
-| `0007#a-queue-is-a-promise-and-the-bound-is-what-makes-it-checkable/5` | A capabilities response repeating the active revision MUST repeat the queue bounds already disclosed under it. | L107–122 | `stale_capability_revision` | `queue.go:checkQueueAdvertisement` | yes | — |
-| `0007#a-queue-is-a-promise-and-the-bound-is-what-makes-it-checkable/6` | A capabilities response repeating the active revision MUST repeat the queue's advertised level. | L107–122 | `stale_capability_revision` | `queue.go:checkQueueAdvertisement` | yes | — |
+| `0007#a-queue-is-a-promise-and-the-bound-is-what-makes-it-checkable/1` | A descriptor advertising the queue above `unavailable` MUST disclose a positive `max_queued_runs_per_session`. | L84–90 | `undisclosed_queue_limit` | `queue.go:checkQueueLimits` | yes | `queue.rs:check_queue_limits` |
+| `0007#a-queue-is-a-promise-and-the-bound-is-what-makes-it-checkable/2` | Where the queue is available or `degraded`, a stated `max_active_runs_per_session` MUST be at least `max_queued_runs_per_session + 1`. | L92–100 | `undisclosed_queue_limit` | `queue.go:checkQueueLimits` | yes | `queue.rs:check_queue_limits` |
+| `0007#a-queue-is-a-promise-and-the-bound-is-what-makes-it-checkable/3` | An admission MUST NOT put the session's nonterminal set above the disclosed active bound; a set admitted before a lowering refresh is grandfathered. | L80–82, L102–105 | `queue_limit_exceeded` | `queue.go:queueAdmission` | yes | `queue.rs:queue_admission` |
+| `0007#a-queue-is-a-promise-and-the-bound-is-what-makes-it-checkable/4` | An admission MUST NOT put the session's queued subset above the disclosed queued bound; a set admitted before a lowering refresh is grandfathered. | L80–82, L102–105 | `queue_limit_exceeded` | `queue.go:queueAdmission` | yes | `queue.rs:queue_admission` |
+| `0007#a-queue-is-a-promise-and-the-bound-is-what-makes-it-checkable/5` | A capabilities response repeating the active revision MUST repeat the queue bounds already disclosed under it. | L107–122 | `stale_capability_revision` | `queue.go:checkQueueAdvertisement` | yes | `queue.rs:record_limits` |
+| `0007#a-queue-is-a-promise-and-the-bound-is-what-makes-it-checkable/6` | A capabilities response repeating the active revision MUST repeat the queue's advertised level. | L107–122 | `stale_capability_revision` | `queue.go:checkQueueAdvertisement` | yes | `queue.rs:record_limits` |
 
 ### [0007] The refusal is validated as well as the admission
 
@@ -43,9 +43,9 @@ Source: [`decisions/0007-queue-delivery.md`](../../decisions/0007-queue-delivery
 
 | id | rule | lines | code | Go | Zig | Rust |
 | --- | --- | --- | --- | --- | --- | --- |
-| `0007#the-refusal-is-validated-as-well-as-the-admission/1` | A refusal owed because the session is busy MUST carry the wire code `run_active`. | L131–135 | `illegal_run_transition` | `queue.go:settleQueueRefusal` | yes | — |
-| `0007#the-refusal-is-validated-as-well-as-the-admission/2` | A refusal owed because a queue bound was reached MUST carry the wire code `run_active`. | L131–135 | `queue_limit_exceeded` | `queue.go:settleQueueRefusal` | yes | — |
-| `0007#the-refusal-is-validated-as-well-as-the-admission/3` | A `run_active` refusal MUST NOT report a bound that was unreached throughout its request/response window, counting every other unanswered submit on the session. | L137–175 | `queue_limit_exceeded` | `queue.go:settleQueueRefusal` | yes | — |
+| `0007#the-refusal-is-validated-as-well-as-the-admission/1` | A refusal owed because the session is busy MUST carry the wire code `run_active`. | L131–135 | `illegal_run_transition` | `queue.go:settleQueueRefusal` | yes | `queue.rs:settle_queue_refusal` |
+| `0007#the-refusal-is-validated-as-well-as-the-admission/2` | A refusal owed because a queue bound was reached MUST carry the wire code `run_active`. | L131–135 | `queue_limit_exceeded` | `queue.go:settleQueueRefusal` | yes | `queue.rs:settle_queue_refusal` |
+| `0007#the-refusal-is-validated-as-well-as-the-admission/3` | A `run_active` refusal MUST NOT report a bound that was unreached throughout its request/response window, counting every other unanswered submit on the session. | L137–175 | `queue_limit_exceeded` | `queue.go:settleQueueRefusal` | yes | `queue.rs:settle_queue_refusal` |
 
 ### [0007] A snapshot states the position it was captured at
 

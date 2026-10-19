@@ -382,6 +382,9 @@ func (p *Pack) checkDeclarations() []PackRefusal {
 				answered[declared.RepliesTo] = declared.Type
 			}
 		}
+		if declared.Role != PackRoleRequest && len(declared.Refusals) > 0 {
+			refuse(LoadPackRefusalUndeclared, "type %q is a %s, and only a request declares the codes it may be refused with", declared.Type, declared.Role)
+		}
 		for _, refusal := range declared.Refusals {
 			if !declaredCodes[refusal] {
 				refuse(LoadPackRefusalUndeclared, "type %q may be refused with %q, which the pack never declared as an error code", declared.Type, refusal)
