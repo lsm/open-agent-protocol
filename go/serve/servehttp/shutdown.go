@@ -72,7 +72,9 @@ func (s *Server) refuseWhileStopping(next http.Handler) http.Handler {
 		s.stopping.mu.Lock()
 		accepted := s.stopping.mode != ""
 		s.stopping.mu.Unlock()
-		if accepted {
+		mediaType, _, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
+		gated := err != nil || mediaType != "application/json" || r.ContentLength > maxRequestBytes
+		if accepted && !gated {
 			s.writeError(w, http.StatusServiceUnavailable, "shutting_down", "the endpoint is shutting down and admits no new work", protocol.Envelope{})
 			return
 		}
@@ -96,7 +98,7 @@ func (s *Server) handleShutdown(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
-	if len(bytes.TrimSpace(body)) > 0 && !json.Valid(body) {
+	if trimmed := bytes.TrimSpace(body); len(trimmed) > 0 && (!json.Valid(trimmed) || trimmed[0] != '{') {
 		s.writeError(w, http.StatusBadRequest, "malformed_json", "the request body is not JSON", protocol.Envelope{})
 		return
 	}

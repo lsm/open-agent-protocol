@@ -72,6 +72,9 @@ func TestAShutdownPostedAsksWhileARunIsActiveThenGracefulRefusesNewWork503AndFor
 	if status != http.StatusServiceUnavailable || refusal.Error.Code != "shutting_down" {
 		t.Fatalf("a submit after the shutdown answered %d %s, want 503 shutting_down", status, refusal.Error.Code)
 	}
+	if response, _ := post(t, server, "/sessions/busy/submit", "text/plain", []byte("x")); response.StatusCode != http.StatusUnsupportedMediaType {
+		t.Fatalf("a wrong media type after the shutdown answered %d, want 415 ahead of 503", response.StatusCode)
+	}
 	if _, forced := postShutdown(t, server, `{"mode":"force"}`); forced.Outcome != protocol.ShutdownStopping {
 		t.Fatalf("force answered %+v, want stopping", forced)
 	}
@@ -85,6 +88,9 @@ func TestAShutdownPostedWithAnUnknownModeIsRefusedAndChangesNothing(t *testing.T
 	daemon, server := newShutdownServer(t)
 	if status, _ := postShutdown(t, server, `{"mode":"later"}`); status != http.StatusBadRequest {
 		t.Fatalf("an unknown mode answered %d, want 400", status)
+	}
+	if status, _ := postShutdown(t, server, `null`); status != http.StatusBadRequest {
+		t.Fatalf("a null body answered %d, want 400 as the Zig daemon does", status)
 	}
 	select {
 	case <-daemon.Done():
