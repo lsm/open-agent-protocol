@@ -85,13 +85,21 @@ choice questions included. Settled by [Decision 0056](../decisions/0056-input-an
 ### OPEN-0001-7: what form does a resume cursor take?
 
 Go and Zig raise `undeclared_replay_gap` for a cursor that is not an increasing
-integer (`state.go:apply`); Rust does not judge it.
+integer (`state.go:apply`, `semantic.zig`), and Rust for one that is not an
+unsigned decimal integer no greater than 2^53 − 1
+(`state/admissions.rs:open_response`).
 
 - (a) A string holding a monotonically increasing unsigned decimal integer no
   greater than 2^53 − 1.
 - (b) Any opaque string.
 
-Recommendation: (a). Settled by [Decision 0055](../decisions/0055-register-batch-2.md); Rust owes the port.
+Recommendation: (a). Settled by [Decision 0055](../decisions/0055-register-batch-2.md).
+Rust judges the bound. Go and Zig still parse the cursor as any `u64`
+(`strconv.ParseUint(…, 10, 64)` in `state.go`, `std.fmt.parseUnsigned(u64, …)`
+in `semantic.zig`), so a cursor from 2^53 to 2^64 − 1 passes there and is
+`undeclared_replay_gap` in Rust; each owes the bound. Go and Zig also judge the
+cursor's form only on a recovered open, where 0055 binds every `resume_cursor`
+and Rust judges it whether or not the open recovered.
 
 ### OPEN-0001-8: must a request wait for the refresh `capabilities.updated` owes?
 

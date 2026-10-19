@@ -7,7 +7,18 @@ use super::runs::Run;
 use super::{os, payload, s, State};
 use crate::codes;
 
+const JSON_SAFE: u64 = (1 << 53) - 1;
+
+fn cursor(text: &str) -> Option<u64> {
+    if text.is_empty() || !text.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    text.parse().ok().filter(|cursor| *cursor <= JSON_SAFE)
+}
+
 pub(super) struct Recovery {
+    session: String,
+    opened: usize,
     run: String,
     gap: bool,
     cursor: Option<u64>,
@@ -74,11 +85,40 @@ impl State {
     pub(super) fn open_response(&mut self, at: (usize, usize), e: &Envelope) {
         let p: SessionState = payload(e);
         let session = s(&p.session_id);
+        let pointer = "/payload/recovery/resume_cursor";
+        if let Some(recovery) = p.recovery.as_ref() {
+            if recovery.reason == "replay_gap" && recovery.resume_cursor.is_empty() {
+                self.add(
+                    codes::UNDECLARED_REPLAY_GAP,
+                    at,
+                    e,
+                    pointer,
+                    "replay gap lacks an explicit retained boundary cursor",
+                );
+            }
+            let text = recovery.resume_cursor.as_str();
+            let bounded = cursor(text);
+            if !text.is_empty() && bounded.is_none() {
+                self.add_expected(
+                    codes::UNDECLARED_REPLAY_GAP,
+                    at,
+                    e,
+                    pointer,
+                    "recovery cursor must be an unsigned decimal sequence no greater than 2^53 - 1",
+                    "an unsigned decimal integer no greater than 9007199254740991",
+                    text,
+                    &[],
+                );
+            }
+        }
         if let Some(recovery) = p.recovery.as_ref().filter(|recovery| recovery.recovered) {
+            let bounded = cursor(recovery.resume_cursor.as_str());
             let rec = Recovery {
+                session: session.clone(),
+                opened: at.0,
                 run: os(&recovery.previous_run_id),
                 gap: recovery.reason == "replay_gap",
-                cursor: recovery.resume_cursor.parse().ok(),
+                cursor: bounded,
                 first_replay_seen: false,
                 state_checked: false,
             };
@@ -174,13 +214,25 @@ impl State {
         let p: SessionState = payload(e);
         let session = s(&p.session_id);
         let active = os(&p.active_run_id);
-        let introduce = match self.recoveries.get_mut(&session) {
+        let (introduce, undeclared) = match self.recoveries.get_mut(&session) {
             Some(rec) if !rec.state_checked => {
                 rec.state_checked = true;
-                !rec.gap && !active.is_empty()
+                (
+                    !rec.gap && !active.is_empty(),
+                    rec.gap && p.recovery.is_none(),
+                )
             }
-            _ => false,
+            _ => (false, false),
         };
+        if undeclared {
+            self.add(
+                codes::UNDECLARED_REPLAY_GAP,
+                at,
+                e,
+                "/payload/recovery",
+                "authoritative state after a replay gap must retain recovery metadata",
+            );
+        }
         if introduce && !self.runs.contains_key(&active) {
             let next = self.resume_sequence(&session, &active, None);
             let run = Run {
@@ -208,6 +260,29 @@ impl State {
         } else {
             self.active.insert(session.to_owned(), active);
         }
+    }
+
+    pub(super) fn close_recoveries(&mut self) {
+        let mut found = Vec::new();
+        for rec in self
+            .recoveries
+            .values()
+            .filter(|rec| rec.gap && !rec.state_checked)
+        {
+            let stub = Envelope {
+                envelope_type: EnvelopeType::SESSION_STATE_RESPONSE,
+                session_id: Some(SessionId::from(rec.session.as_str())),
+                ..Envelope::default()
+            };
+            found.push(self.diagnostic(
+                codes::UNDECLARED_REPLAY_GAP,
+                (rec.opened, 0),
+                &stub,
+                "",
+                "replay gap lacks authoritative session state",
+            ));
+        }
+        self.diagnostics.extend(found);
     }
 
     pub(super) fn compact_response(&mut self, at: (usize, usize), e: &Envelope) {

@@ -690,6 +690,7 @@ impl State {
     }
 
     pub fn close(&mut self) {
+        self.close_recoveries();
         let mut found = Vec::new();
         for (id, request) in &self.requests {
             if !request.responded {
