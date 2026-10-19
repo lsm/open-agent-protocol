@@ -126,7 +126,10 @@ pub fn serializeUsage(w: *json_writer.JsonWriter, usage: oap_types.Usage) !void 
     try w.writeKey("usage");
     try w.beginObject();
     if (usage.input_tokens) |value| try w.writeIntField("input_tokens", value);
+    if (usage.cache_read_input_tokens) |value| try w.writeIntField("cache_read_input_tokens", value);
+    if (usage.cache_write_input_tokens) |value| try w.writeIntField("cache_write_input_tokens", value);
     if (usage.output_tokens) |value| try w.writeIntField("output_tokens", value);
+    if (usage.reasoning_tokens) |value| try w.writeIntField("reasoning_tokens", value);
     if (usage.total_tokens) |value| try w.writeIntField("total_tokens", value);
     try w.endObject();
 }
@@ -1006,7 +1009,10 @@ pub fn deserializeUsage(obj: std.json.ObjectMap) !oap_types.Usage {
     if (value != .object) return DecodeError.InvalidField;
     return .{
         .input_tokens = try optionalUnsigned(value.object, "input_tokens"),
+        .cache_read_input_tokens = try optionalUnsigned(value.object, "cache_read_input_tokens"),
+        .cache_write_input_tokens = try optionalUnsigned(value.object, "cache_write_input_tokens"),
         .output_tokens = try optionalUnsigned(value.object, "output_tokens"),
+        .reasoning_tokens = try optionalUnsigned(value.object, "reasoning_tokens"),
         .total_tokens = try optionalUnsigned(value.object, "total_tokens"),
     };
 }

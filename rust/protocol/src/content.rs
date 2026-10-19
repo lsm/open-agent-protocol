@@ -153,7 +153,13 @@ pub struct Usage {
     #[serde(skip_serializing_if = "is_zero_u64")]
     pub input_tokens: u64,
     #[serde(skip_serializing_if = "is_zero_u64")]
+    pub cache_read_input_tokens: u64,
+    #[serde(skip_serializing_if = "is_zero_u64")]
+    pub cache_write_input_tokens: u64,
+    #[serde(skip_serializing_if = "is_zero_u64")]
     pub output_tokens: u64,
+    #[serde(skip_serializing_if = "is_zero_u64")]
+    pub reasoning_tokens: u64,
     #[serde(skip_serializing_if = "is_zero_u64")]
     pub total_tokens: u64,
 }
