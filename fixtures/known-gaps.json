@@ -5,9 +5,8 @@
     "control-call-recovered-ack-omitted",
     "models-current-mismatch",
     "models-held-position-moved-no-model",
-    "open-provide-refused-name-partly-matching-pattern",
-    "payload-decode-usage-past-the-integer-range",
-    "provide-name-pattern-not-re2"
+    "open-provide-refused-within-a-case-folding-pattern",
+    "payload-decode-usage-past-the-integer-range"
   ],
   "rust": [
     "attach-advertised-without-modes",
@@ -131,6 +130,7 @@
     "open-provide-no-source-listed-admitted",
     "open-provide-no-source-listed-wrong-refusal",
     "open-provide-refused-at-its-limit",
+    "open-provide-refused-within-a-case-folding-pattern",
     "open-provide-refused-within-limits",
     "open-provide-unadvertised",
     "open-provide-wrong-owner-admitted",

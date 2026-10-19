@@ -384,6 +384,24 @@ is RE2 and must match the whole name.
 
 **Status.** Settled by [Decision 0055](../decisions/0055-register-batch-2.md). What remains is the port work the decision names.
 
+**Zig implements a subset; outside it Zig stands down.** Zig's matcher
+(`zig/src/validation/re2.zig`, #1336) covers the RE2 syntax a name pattern
+uses. It judges nothing for valid RE2 outside that subset: flags such as
+`(?i)`, Unicode classes, `\b`, `\Q…\E`, a character outside ASCII, and any
+name outside ASCII. Go judges those, so in that zone Zig is silent where Go speaks. That is
+a port gap, not parity. The zone also holds two patterns Go rejects, so Go
+raises `undisclosed_provide_limit` under Decision 0062 where Zig says nothing.
+One is a Unicode class name Go does not know, such as `\p{Foo}` or `\p9`; Zig
+does not carry Go's table of category and script names. The other is nesting
+deep enough that Go reports "expression nests too deeply"; Go measures the
+height of its parse tree, which Zig's group count does not reproduce. Zig
+also stands down on a valid pattern whose compiled program would exceed 10,000
+instructions, such as a dozen `[a-z]{1000}` in a row, which Go accepts and
+judges. Nested repeats whose counts multiply past 1000 are not in that zone:
+Go rejects them ("invalid repeat count"), and so does Zig. `open-provide-refused-within-a-case-folding-pattern`
+pins it as a Zig known gap. Whether 0055's "RE2-compatible" asks for more than
+this subset is with the owner.
+
 ### OPEN-0011-2: may a provided tool's resolution carry content parts?
 
 [Decision 0060](../decisions/0060-a-tool-result-may-carry-content-parts.md)
