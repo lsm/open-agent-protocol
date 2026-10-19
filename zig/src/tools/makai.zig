@@ -5067,7 +5067,7 @@ fn runOapxServe(
             if (try pumpOapInferences(allocator, &provider_server, &running_inferences, provider_idle_ttl_ms)) did_work = true;
         }
 
-        if (oapInputEnded(stdin_stream) and !auth_input_closed) {
+        if ((oapInputDrained(stdin_stream) or endpoint.shutdown == .force) and !auth_input_closed) {
             try auth_adapter.cancelAllOnDisconnect();
             auth_input_closed = true;
         }
