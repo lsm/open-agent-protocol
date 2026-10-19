@@ -62,6 +62,14 @@ fn reencoded(envelope_type: &str, payload: &Value) -> Option<Value> {
         }
         "user.input.resolved" => round_trip::<UserInputResolvedPayload>(payload),
         "user.input.cancel.request" => round_trip::<UserInputCancelRequest>(payload),
+        "auth.providers.request" => round_trip::<AuthProvidersRequest>(payload),
+        "auth.providers.response" => round_trip::<AuthProvidersResponse>(payload),
+        "auth.login.start.request" => round_trip::<AuthLoginStartRequest>(payload),
+        "auth.login.start.response" => round_trip::<AuthLoginStartResponse>(payload),
+        "auth.login.event" => round_trip::<AuthLoginEvent>(payload),
+        "auth.login.cancel.request" => round_trip::<AuthLoginCancelRequest>(payload),
+        "auth.login.cancel.response" => round_trip::<AuthLoginCancelResponse>(payload),
+        "auth.login.completed" => round_trip::<AuthLoginCompleted>(payload),
         "run.steer.applied" => round_trip::<RunSteerAppliedPayload>(payload),
         "run.steer.dropped" => round_trip::<RunSteerDroppedPayload>(payload),
         "run.compaction.started" => round_trip::<RunCompactionStartedPayload>(payload),
@@ -73,13 +81,19 @@ fn reencoded(envelope_type: &str, payload: &Value) -> Option<Value> {
         "capabilities.updated" => round_trip::<CapabilitiesUpdated>(payload),
         "models.request" => round_trip::<ModelsRequest>(payload),
         "models.response" => round_trip::<ModelsResponse>(payload),
+        "session.message.submit.request" => round_trip::<MessageSubmitRequest>(payload),
+        "session.message.submit.response" => round_trip::<MessageSubmitResponse>(payload),
+        "session.compact.request" => round_trip::<SessionCompactRequest>(payload),
+        "session.compact.response" => round_trip::<SessionCompactResponse>(payload),
+        "transcript.load.request" => round_trip::<TranscriptLoadRequest>(payload),
+        "transcript.load.response" => round_trip::<TranscriptLoadResponse>(payload),
         "error.response" => round_trip::<ErrorResponse>(payload),
         _ => return None,
     })
 }
 
 #[test]
-fn every_run_interaction_and_error_payload_in_the_positive_fixtures_round_trips() {
+fn every_run_interaction_auth_and_error_payload_in_the_positive_fixtures_round_trips() {
     let manifest: Value =
         serde_json::from_slice(&std::fs::read(fixtures().join("manifest.json")).unwrap()).unwrap();
     let mut judged = 0;
@@ -118,7 +132,7 @@ fn every_run_interaction_and_error_payload_in_the_positive_fixtures_round_trips(
         differing.len(),
         differing.join("\n")
     );
-    assert!(judged >= 800, "judged only {judged} payloads");
+    assert!(judged >= 1500, "judged only {judged} payloads");
 }
 
 #[test]

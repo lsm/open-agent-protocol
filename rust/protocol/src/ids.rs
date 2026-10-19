@@ -49,4 +49,7 @@ id!(
     ToolCallId,
     InteractionId,
     CompactionId,
+    InferenceId,
+    AuthFlowId,
+    TranscriptEntryId,
 );
