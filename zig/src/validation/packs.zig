@@ -11,6 +11,16 @@ pub const pack_foreign_prefix = "pack_foreign_prefix";
 pub const pack_id_collision = "pack_id_collision";
 pub const pack_branch_unpinned = "pack_branch_unpinned";
 pub const pack_branch_undeclared_type = "pack_branch_undeclared_type";
+pub const pack_type_duplicate = "pack_type_duplicate";
+pub const pack_role_undeclared = "pack_role_undeclared";
+pub const pack_reply_target_unknown = "pack_reply_target_unknown";
+pub const pack_reply_target_ambiguous = "pack_reply_target_ambiguous";
+pub const pack_refusal_undeclared = "pack_refusal_undeclared";
+pub const pack_response_gated = "pack_response_gated";
+pub const pack_ungated_type = "pack_ungated_type";
+pub const pack_member_duplicate = "pack_member_duplicate";
+pub const pack_member_target_unknown = "pack_member_target_unknown";
+pub const pack_restates_core_member = "pack_restates_core_member";
 
 pub const Refusal = struct {
     code: []const u8,
@@ -144,28 +154,69 @@ fn rootOf(name: []const u8) ?[]const u8 {
     return name[0 .. first + 1 + second];
 }
 
-fn coreRoots(allocator: std.mem.Allocator) !std.StringHashMap(void) {
-    var roots: std.StringHashMap(void) = .init(allocator);
+const Core = struct {
+    roots: std.StringHashMap(void),
+    members: std.StringHashMap(std.StringHashMap(void)),
+};
+
+fn coreVocabulary(allocator: std.mem.Allocator) !Core {
+    var documents = std.StringHashMap(std.json.Value).init(allocator);
     for (schema_bundle.all) |entry| {
-        if (!std.mem.eql(u8, entry.name, "envelope.schema.json")) continue;
         const parsed = std.json.parseFromSliceLeaky(std.json.Value, allocator, entry.bytes, .{}) catch continue;
-        if (parsed != .object) continue;
-        const defs = parsed.object.get("$defs") orelse continue;
-        if (defs != .object) continue;
-        var branches = defs.object.iterator();
-        while (branches.next()) |branch| {
-            if (branch.value_ptr.* != .object) continue;
-            const properties = branch.value_ptr.object.get("properties") orelse continue;
-            if (properties != .object) continue;
-            const type_schema = properties.object.get("type") orelse continue;
-            if (type_schema != .object) continue;
-            const held = type_schema.object.get("const") orelse continue;
-            if (held != .string) continue;
-            const root = rootOf(held.string) orelse continue;
-            try roots.put(root, {});
+        try documents.put(entry.name, parsed);
+    }
+    var core: Core = .{ .roots = .init(allocator), .members = .init(allocator) };
+    const envelope = documents.get("envelope.schema.json") orelse return core;
+    const defs = field(envelope, "$defs") orelse return core;
+    if (defs != .object) return core;
+    var branches = defs.object.iterator();
+    while (branches.next()) |branch| {
+        const name = pinnedTypeOf(branch.value_ptr.*) orelse continue;
+        var members = std.StringHashMap(void).init(allocator);
+        const properties = field(branch.value_ptr.*, "properties") orelse continue;
+        if (field(properties, "payload")) |payload| {
+            try collectMembers(allocator, documents, "envelope.schema.json", payload, &members, 0);
+        }
+        try core.members.put(name, members);
+        if (rootOf(name)) |root| try core.roots.put(root, {});
+    }
+    return core;
+}
+
+fn collectMembers(
+    allocator: std.mem.Allocator,
+    documents: std.StringHashMap(std.json.Value),
+    file: []const u8,
+    node: std.json.Value,
+    out: *std.StringHashMap(void),
+    depth: usize,
+) !void {
+    if (depth > 8 or node != .object) return;
+    if (stringField(node, "$ref")) |ref| {
+        const hash = std.mem.indexOfScalar(u8, ref, '#');
+        const target = if (hash) |at| (if (at > 0) ref[0..at] else file) else file;
+        const pointer = if (hash) |at| ref[at..] else ref;
+        if (documents.get(target)) |document| {
+            if (std.mem.startsWith(u8, pointer, "#/")) {
+                if (try pointerAt(allocator, document, pointer)) |resolved| {
+                    try collectMembers(allocator, documents, target, resolved, out, depth + 1);
+                }
+            }
         }
     }
-    return roots;
+    if (field(node, "properties")) |properties| {
+        if (properties == .object) {
+            for (properties.object.keys()) |name| try out.put(name, {});
+        }
+    }
+    for (items(node, "allOf")) |member| {
+        try collectMembers(allocator, documents, file, member, out, depth + 1);
+    }
+}
+
+fn coreOf(core: *?Core, allocator: std.mem.Allocator) !*Core {
+    if (core.* == null) core.* = try coreVocabulary(allocator);
+    return &core.*.?;
 }
 
 fn labelCount(name: []const u8) usize {
@@ -182,12 +233,16 @@ fn specNamespace(roots: std.StringHashMap(void), name: []const u8) bool {
     return roots.contains(root);
 }
 
-fn namespaceRefusal(roots: *?std.StringHashMap(void), allocator: std.mem.Allocator, id: []const u8, name: []const u8) !?[]const u8 {
+fn namespaceRefusal(core: *?Core, allocator: std.mem.Allocator, id: []const u8, name: []const u8) !?[]const u8 {
     if (name.len == 0) return pack_unprefixed_name;
     if (underPrefix(name, id)) return null;
-    if (roots.* == null) roots.* = try coreRoots(allocator);
-    if (specNamespace(roots.*.?, name)) return pack_unprefixed_name;
+    if (specNamespace((try coreOf(core, allocator)).roots, name)) return pack_unprefixed_name;
     return pack_foreign_prefix;
+}
+
+fn items(value: std.json.Value, key: []const u8) []const std.json.Value {
+    const held = arrayField(value, key) orelse return &.{};
+    return held.items;
 }
 
 fn unescapeToken(allocator: std.mem.Allocator, token: []const u8) ![]const u8 {
@@ -256,6 +311,18 @@ pub fn describe(io: std.Io, parent: std.mem.Allocator, pack_dirs: []const []cons
     return gather(io, parent, null, pack_dirs);
 }
 
+const Descriptor = struct {
+    dir: []const u8,
+    value: std.json.Value,
+    id: []const u8,
+    version: []const u8,
+};
+
+fn refusedWith(arena: *std.heap.ArenaAllocator, refusals: *std.ArrayList(Refusal)) !Loaded {
+    const owned = try refusals.toOwnedSlice(arena.allocator());
+    return .{ .arena = arena.*, .branches = &.{}, .members = &.{}, .types = &.{}, .refusals = owned };
+}
+
 fn gather(
     io: std.Io,
     parent: std.mem.Allocator,
@@ -266,13 +333,10 @@ fn gather(
     errdefer arena.deinit();
     const allocator = arena.allocator();
 
-    var branches = std.ArrayList(Branch).empty;
-    var members = std.ArrayList(Member).empty;
-    var types = std.ArrayList(Declared).empty;
+    var descriptors = std.ArrayList(Descriptor).empty;
     var named = std.StringHashMap(void).init(allocator);
     var load_refusals = std.ArrayList(Refusal).empty;
-    var ids = std.ArrayList([]const u8).empty;
-    var roots: ?std.StringHashMap(void) = null;
+    var core: ?Core = null;
 
     for (pack_dirs) |dir| {
         const descriptor_path = try std.fs.path.join(allocator, &.{ dir, "pack.json" });
@@ -287,118 +351,111 @@ fn gather(
         };
         if (named.contains(canonical)) continue;
         try named.put(canonical, {});
-        try ids.append(allocator, pack_id);
+        try descriptors.append(allocator, .{ .dir = dir, .value = descriptor, .id = pack_id, .version = version });
+    }
 
-        if (field(descriptor, "capability_keys")) |keys| {
-            if (keys == .array) {
-                for (keys.array.items) |key| {
-                    if (key != .string) return error.InvalidPackDescriptor;
-                    if (try namespaceRefusal(&roots, allocator, pack_id, key.string)) |code| {
-                        try load_refusals.append(allocator, .{ .code = code, .pack = pack_id, .detail = key.string });
-                    }
-                }
+    for (descriptors.items, 0..) |first, index| {
+        for (descriptors.items[index + 1 ..]) |second| {
+            if (std.mem.eql(u8, first.id, second.id) or
+                underPrefix(first.id, second.id) or
+                underPrefix(second.id, first.id))
+            {
+                try load_refusals.append(allocator, .{ .code = pack_id_collision, .pack = first.id, .detail = second.id });
             }
         }
+    }
+    if (load_refusals.items.len != 0) return refusedWith(&arena, &load_refusals);
 
-        if (field(descriptor, "error_codes")) |codes| {
-            if (codes == .array) {
-                for (codes.array.items) |code| {
-                    if (code != .string) return error.InvalidPackDescriptor;
-                    if (try namespaceRefusal(&roots, allocator, pack_id, code.string)) |refused| {
-                        try load_refusals.append(allocator, .{ .code = refused, .pack = pack_id, .detail = code.string });
-                    }
-                }
-            }
+    for (descriptors.items) |descriptor| {
+        try checkDeclarations(.{ .allocator = allocator, .out = &load_refusals, .pack = descriptor.id }, &core, descriptor.value);
+    }
+    if (load_refusals.items.len != 0) return refusedWith(&arena, &load_refusals);
+
+    var branches = std.ArrayList(Branch).empty;
+    var members = std.ArrayList(Member).empty;
+    var types = std.ArrayList(Declared).empty;
+
+    for (descriptors.items) |pack| {
+        const dir = pack.dir;
+        const descriptor = pack.value;
+        const pack_id = pack.id;
+        const version = pack.version;
+
+        const declared_schemas = field(descriptor, "schemas");
+        if (declared_schemas) |held| {
+            if (held != .array) return error.InvalidPackDescriptor;
         }
-
-            const declared_schemas = field(descriptor, "schemas");
-            if (declared_schemas) |held| {
-                if (held != .array) return error.InvalidPackDescriptor;
-            }
-            var pack_documents: std.ArrayList(Document) = .empty;
-            if (declared_schemas) |held| {
-                const schemas = held.array;
-                const pack_root = std.Io.Dir.cwd().realPathFileAlloc(io, dir, allocator) catch |err| switch (err) {
+        var pack_documents: std.ArrayList(Document) = .empty;
+        if (declared_schemas) |held| {
+            const schemas = held.array;
+            const pack_root = std.Io.Dir.cwd().realPathFileAlloc(io, dir, allocator) catch |err| switch (err) {
+                error.OutOfMemory => return error.OutOfMemory,
+                else => return error.InvalidPackDescriptor,
+            };
+            const entries = schemas.items;
+            const names = try allocator.alloc([]const u8, entries.len);
+            const paths = try allocator.alloc([]const u8, entries.len);
+            for (entries, 0..) |schema_name, index| {
+                if (schema_name != .string) return error.InvalidPackDescriptor;
+                const file = schema_name.string;
+                if (file.len == 0 or std.Io.Dir.path.isAbsolute(file)) return error.InvalidPackDescriptor;
+                const relative = try lexicalRelative(allocator, file);
+                const schema_path = try std.fs.path.join(allocator, &.{ dir, relative });
+                const resolved = std.Io.Dir.cwd().realPathFileAlloc(io, schema_path, allocator) catch |err| switch (err) {
                     error.OutOfMemory => return error.OutOfMemory,
                     else => return error.InvalidPackDescriptor,
                 };
-                const entries = schemas.items;
-                const names = try allocator.alloc([]const u8, entries.len);
-                const paths = try allocator.alloc([]const u8, entries.len);
-                for (entries, 0..) |schema_name, index| {
-                    if (schema_name != .string) return error.InvalidPackDescriptor;
-                    const file = schema_name.string;
-                    if (file.len == 0 or std.Io.Dir.path.isAbsolute(file)) return error.InvalidPackDescriptor;
-                    const relative = try lexicalRelative(allocator, file);
-                    const schema_path = try std.fs.path.join(allocator, &.{ dir, relative });
-                    const resolved = std.Io.Dir.cwd().realPathFileAlloc(io, schema_path, allocator) catch |err| switch (err) {
-                        error.OutOfMemory => return error.OutOfMemory,
-                        else => return error.InvalidPackDescriptor,
-                    };
-                    if (!beneath(pack_root, resolved)) return error.InvalidPackDescriptor;
-                    names[index] = relative;
-                    paths[index] = resolved;
-                }
-                for (0..entries.len) |index| {
-                    const schema_bytes = try readAll(io, allocator, paths[index]);
-                    const normalized = try toSlash(allocator, names[index]);
-                    const key = try std.fmt.allocPrint(allocator, "{s}{s}/{s}/{s}", .{ pack_base_uri, pack_id, version, normalized });
-                    try pack_documents.append(allocator, .{
-                        .name = normalized,
-                        .value = try std.json.parseFromSliceLeaky(std.json.Value, allocator, schema_bytes, .{}),
-                    });
-                    if (registry) |target| {
-                        try target.addDocument(key, schema_bytes);
-                    }
-                }
+                if (!beneath(pack_root, resolved)) return error.InvalidPackDescriptor;
+                names[index] = relative;
+                paths[index] = resolved;
             }
-
-        const gates = field(descriptor, "gates");
-
-        if (arrayField(descriptor, "payload_members")) |declared_members| {
-            for (declared_members.items) |entry| {
-                const payload_type = stringField(entry, "payload_type") orelse continue;
-                const name = stringField(entry, "member") orelse continue;
-                const member_schema = field(entry, "schema") orelse continue;
-                if (member_schema != .object) continue;
-                try members.append(allocator, .{
-                    .payload_type = payload_type,
-                    .name = name,
-                    .schema = member_schema,
-                    .capability = memberCapability(gates, payload_type, name),
+            for (0..entries.len) |index| {
+                const schema_bytes = try readAll(io, allocator, paths[index]);
+                const normalized = try toSlash(allocator, names[index]);
+                const key = try std.fmt.allocPrint(allocator, "{s}{s}/{s}/{s}", .{ pack_base_uri, pack_id, version, normalized });
+                try pack_documents.append(allocator, .{
+                    .name = normalized,
+                    .value = try std.json.parseFromSliceLeaky(std.json.Value, allocator, schema_bytes, .{}),
                 });
+                if (registry) |target| {
+                    try target.addDocument(key, schema_bytes);
+                }
             }
         }
 
-        if (arrayField(descriptor, "envelope_types")) |declared_types| {
-            var seen_types = std.StringHashMap(void).init(allocator);
-            for (declared_types.items) |entry| {
-                const name = stringField(entry, "type") orelse continue;
-                if (seen_types.contains(name)) return error.InvalidPackDescriptor;
-                try seen_types.put(name, {});
-                var refusals = std.ArrayList([]const u8).empty;
-                if (arrayField(entry, "refusals")) |listed| {
-                    for (listed.items) |code| {
-                        if (asString(code)) |held| try refusals.append(allocator, held);
-                    }
-                }
-                try types.append(allocator, .{
-                    .name = name,
-                    .role = stringField(entry, "role") orelse "",
-                    .capability = typeCapability(gates, name),
-                    .response = responseFor(.{ .array = declared_types }, name),
-                    .refusals = try refusals.toOwnedSlice(allocator),
-                });
-            }
+        const gates = field(descriptor, "gates");
+
+        for (items(descriptor, "payload_members")) |entry| {
+            const payload_type = stringField(entry, "payload_type") orelse continue;
+            const name = stringField(entry, "member") orelse continue;
+            const member_schema = field(entry, "schema") orelse continue;
+            if (member_schema != .object) continue;
+            try members.append(allocator, .{
+                .payload_type = payload_type,
+                .name = name,
+                .schema = member_schema,
+                .capability = memberCapability(gates, payload_type, name),
+            });
         }
 
         const declared = arrayField(descriptor, "envelope_types") orelse continue;
         for (declared.items) |entry| {
-            const declared_type = stringField(entry, "type") orelse continue;
-            if (try namespaceRefusal(&roots, allocator, pack_id, declared_type)) |code| {
-                try load_refusals.append(allocator, .{ .code = code, .pack = pack_id, .detail = declared_type });
-                continue;
+            const name = stringField(entry, "type") orelse continue;
+            var refusals = std.ArrayList([]const u8).empty;
+            for (items(entry, "refusals")) |code| {
+                if (asString(code)) |held| try refusals.append(allocator, held);
             }
+            try types.append(allocator, .{
+                .name = name,
+                .role = stringField(entry, "role") orelse "",
+                .capability = typeCapability(gates, name),
+                .response = responseFor(.{ .array = declared }, name),
+                .refusals = try refusals.toOwnedSlice(allocator),
+            });
+        }
+
+        for (declared.items) |entry| {
+            const declared_type = stringField(entry, "type") orelse continue;
             const schema_ref = stringField(entry, "schema") orelse continue;
             const hash = std.mem.indexOfScalar(u8, schema_ref, '#');
             const spelled = if (hash) |at| schema_ref[0..at] else schema_ref;
@@ -429,8 +486,9 @@ fn gather(
                 .declared_type = try allocator.dupe(u8, declared_type),
                 .ref = ref,
             });
+        }
     }
-    }
+    if (load_refusals.items.len != 0) return refusedWith(&arena, &load_refusals);
 
     std.mem.sort(Branch, branches.items, {}, struct {
         fn lessThan(_: void, a: Branch, b: Branch) bool {
@@ -438,34 +496,169 @@ fn gather(
         }
     }.lessThan);
 
-    for (ids.items, 0..) |first, index| {
-        for (ids.items[index + 1 ..]) |second| {
-            if (std.mem.eql(u8, first, second) or
-                underPrefix(first, second) or
-                underPrefix(second, first))
-            {
-                try load_refusals.append(allocator, .{ .code = pack_id_collision, .pack = first, .detail = second });
+    const owned_branches = try branches.toOwnedSlice(allocator);
+    const owned_members = try members.toOwnedSlice(allocator);
+    const owned_types = try types.toOwnedSlice(allocator);
+    return .{
+        .arena = arena,
+        .branches = owned_branches,
+        .members = owned_members,
+        .types = owned_types,
+        .refusals = &.{},
+    };
+}
+
+const Refuser = struct {
+    allocator: std.mem.Allocator,
+    out: *std.ArrayList(Refusal),
+    pack: []const u8,
+
+    fn add(self: Refuser, code: []const u8, detail: []const u8) !void {
+        try self.out.append(self.allocator, .{ .code = code, .pack = self.pack, .detail = detail });
+    }
+
+    fn contains(self: Refuser, core: *?Core, name: []const u8) !bool {
+        const code = (try namespaceRefusal(core, self.allocator, self.pack, name)) orelse return true;
+        try self.add(code, name);
+        return false;
+    }
+};
+
+fn roleOf(entry: std.json.Value) []const u8 {
+    return stringField(entry, "role") orelse "";
+}
+
+fn memberKey(allocator: std.mem.Allocator, payload_type: []const u8, member: []const u8) ![]const u8 {
+    return std.fmt.allocPrint(allocator, "{s}#{s}", .{ payload_type, member });
+}
+
+fn checkDeclarations(refuse: Refuser, core: *?Core, descriptor: std.json.Value) !void {
+    const allocator = refuse.allocator;
+    const before = refuse.out.items.len;
+    var keys = std.StringHashMap(void).init(allocator);
+    for (items(descriptor, "capability_keys")) |key| {
+        if (key != .string) return error.InvalidPackDescriptor;
+        if (try refuse.contains(core, key.string)) try keys.put(key.string, {});
+    }
+    var codes = std.StringHashMap(void).init(allocator);
+    for (items(descriptor, "error_codes")) |code| {
+        if (code != .string) return error.InvalidPackDescriptor;
+        if (try refuse.contains(core, code.string)) try codes.put(code.string, {});
+    }
+    const types = items(descriptor, "envelope_types");
+    var declared = std.StringHashMap(std.json.Value).init(allocator);
+    for (types) |entry| {
+        const name = stringField(entry, "type") orelse "";
+        if (!try refuse.contains(core, name)) continue;
+        if (declared.contains(name)) {
+            try refuse.add(pack_type_duplicate, name);
+            continue;
+        }
+        try declared.put(name, entry);
+    }
+    if (refuse.out.items.len != before) return;
+
+    var answered = std.StringHashMap(void).init(allocator);
+    for (types) |entry| {
+        const name = stringField(entry, "type") orelse "";
+        const role = roleOf(entry);
+        if (!std.mem.eql(u8, role, "request") and !std.mem.eql(u8, role, "response") and !std.mem.eql(u8, role, "event")) {
+            try refuse.add(pack_role_undeclared, name);
+            continue;
+        }
+        const schema_ref: []const u8 = stringField(entry, "schema") orelse "";
+        if (schema_ref.len == 0) try refuse.add("", name);
+        if (std.mem.eql(u8, role, "response")) {
+            const replies = stringField(entry, "replies_to") orelse "";
+            const target = declared.get(replies);
+            if (target == null or !std.mem.eql(u8, roleOf(target.?), "request")) {
+                try refuse.add(pack_reply_target_unknown, name);
+            } else if (answered.contains(replies)) {
+                try refuse.add(pack_reply_target_ambiguous, name);
+            } else {
+                try answered.put(replies, {});
             }
+        }
+        for (items(entry, "refusals")) |code| {
+            if (!codes.contains(asString(code) orelse "")) try refuse.add(pack_refusal_undeclared, name);
         }
     }
 
-    if (load_refusals.items.len != 0) {
-        return .{
-            .arena = arena,
-            .branches = &.{},
-            .members = &.{},
-            .types = &.{},
-            .refusals = try load_refusals.toOwnedSlice(allocator),
-        };
+    const gates = field(descriptor, "gates");
+    var gated = std.StringHashMap(void).init(allocator);
+    for (items(descriptor, "gates")) |gate| {
+        const gate_type = gateString(gate, "type");
+        var name = gate_type;
+        if (gate_type.len == 0) {
+            const payload_type = gateString(gate, "payload_type");
+            const member = gateString(gate, "member");
+            if (payload_type.len == 0 or member.len == 0) {
+                try refuse.add("", "");
+                continue;
+            }
+            name = try memberKey(allocator, payload_type, member);
+        }
+        const capability = gateString(gate, "capability");
+        const ungated = if (field(gate, "ungated")) |held| held == .bool and held.bool else false;
+        if (ungated == (capability.len != 0)) {
+            try refuse.add("", name);
+            continue;
+        }
+        if (capability.len != 0 and !keys.contains(capability)) {
+            try refuse.add((try namespaceRefusal(core, allocator, refuse.pack, capability)) orelse "", capability);
+            continue;
+        }
+        if (gate_type.len != 0) {
+            const target = declared.get(gate_type) orelse {
+                try refuse.add("", gate_type);
+                continue;
+            };
+            if (std.mem.eql(u8, roleOf(target), "response")) {
+                try refuse.add(pack_response_gated, gate_type);
+                continue;
+            }
+        }
+        if (gated.contains(name)) {
+            try refuse.add("", name);
+            continue;
+        }
+        try gated.put(name, {});
+    }
+    for (types) |entry| {
+        if (std.mem.eql(u8, roleOf(entry), "response")) continue;
+        const name = stringField(entry, "type") orelse "";
+        if (!gated.contains(name)) try refuse.add(pack_ungated_type, name);
     }
 
-    return .{
-        .arena = arena,
-        .branches = try branches.toOwnedSlice(allocator),
-        .members = try members.toOwnedSlice(allocator),
-        .types = try types.toOwnedSlice(allocator),
-        .refusals = &.{},
-    };
+    var listed = std.StringHashMap(void).init(allocator);
+    for (items(descriptor, "payload_members")) |entry| {
+        const payload_type = stringField(entry, "payload_type") orelse "";
+        const member = stringField(entry, "member") orelse "";
+        const key = try memberKey(allocator, payload_type, member);
+        if (listed.contains(key)) {
+            try refuse.add(pack_member_duplicate, key);
+            continue;
+        }
+        try listed.put(key, {});
+        const core_members = (try coreOf(core, allocator)).members.get(payload_type) orelse {
+            try refuse.add(pack_member_target_unknown, key);
+            continue;
+        };
+        if (std.mem.eql(u8, payload_type, "capabilities.updated") and memberCapability(gates, payload_type, member).len != 0) {
+            try refuse.add(pack_member_target_unknown, key);
+            continue;
+        }
+        if (core_members.contains(member)) {
+            try refuse.add(pack_restates_core_member, key);
+            continue;
+        }
+        if (!try refuse.contains(core, member)) continue;
+        if (field(entry, "schema") == null) {
+            try refuse.add("", key);
+            continue;
+        }
+        if (!gated.contains(key)) try refuse.add(pack_ungated_type, key);
+    }
 }
 
 fn gateString(gate: std.json.Value, key: []const u8) []const u8 {
@@ -557,7 +750,7 @@ test "a loaded pack's schemas are registered under keys its own refs resolve" {
         ,
     });
     try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "staying/pack.json", .data =
-            \\{"id": "com.example.ok", "version": "1.0.0", "schemas": ["note.schema.json"], "envelope_types": [{"type": "com.example.ok.thing", "role": "event", "schema": "note.schema.json#/$defs/thing"}]}
+            \\{"id": "com.example.ok", "version": "1.0.0", "schemas": ["note.schema.json"], "envelope_types": [{"type": "com.example.ok.thing", "role": "event", "schema": "note.schema.json#/$defs/thing"}], "gates": [{"type": "com.example.ok.thing", "ungated": true}]}
         ,
     });
     try tmp.dir.symLink(std.testing.io, "note.schema.json", "aliased/alias.schema.json", .{ .is_directory = false });
@@ -566,7 +759,7 @@ test "a loaded pack's schemas are registered under keys its own refs resolve" {
         ,
     });
     try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "aliased/pack.json", .data =
-            \\{"id": "com.example.alias", "version": "1.0.0", "schemas": ["alias.schema.json"], "envelope_types": [{"type": "com.example.alias.thing", "role": "event", "schema": "alias.schema.json#/$defs/thing"}]}
+            \\{"id": "com.example.alias", "version": "1.0.0", "schemas": ["alias.schema.json"], "envelope_types": [{"type": "com.example.alias.thing", "role": "event", "schema": "alias.schema.json#/$defs/thing"}], "gates": [{"type": "com.example.alias.thing", "ungated": true}]}
         ,
     });
     try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "cleaned/note.schema.json", .data =
@@ -574,7 +767,7 @@ test "a loaded pack's schemas are registered under keys its own refs resolve" {
         ,
     });
     try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "cleaned/pack.json", .data =
-            \\{"id": "com.example.clean", "version": "1.0.0", "schemas": ["sub/../note.schema.json"], "envelope_types": [{"type": "com.example.clean.thing", "role": "event", "schema": "sub/../note.schema.json#/$defs/thing"}]}
+            \\{"id": "com.example.clean", "version": "1.0.0", "schemas": ["sub/../note.schema.json"], "envelope_types": [{"type": "com.example.clean.thing", "role": "event", "schema": "sub/../note.schema.json#/$defs/thing"}], "gates": [{"type": "com.example.clean.thing", "ungated": true}]}
         ,
     });
 
@@ -584,7 +777,7 @@ test "a loaded pack's schemas are registered under keys its own refs resolve" {
         ,
     });
     try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "nested/pack.json", .data =
-            \\{"id": "com.example.nested", "version": "1.0.0", "schemas": ["sub/note.schema.json"], "envelope_types": [{"type": "com.example.nested.thing", "role": "event", "schema": "sub/note.schema.json#/$defs/thing"}]}
+            \\{"id": "com.example.nested", "version": "1.0.0", "schemas": ["sub/note.schema.json"], "envelope_types": [{"type": "com.example.nested.thing", "role": "event", "schema": "sub/note.schema.json#/$defs/thing"}], "gates": [{"type": "com.example.nested.thing", "ungated": true}]}
         ,
     });
 
@@ -594,7 +787,7 @@ test "a loaded pack's schemas are registered under keys its own refs resolve" {
             ,
         });
         try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "literal/pack.json", .data =
-                \\{"id": "com.example.literal", "version": "1.0.0", "schemas": ["back\\slash.schema.json"], "envelope_types": [{"type": "com.example.literal.thing", "role": "event", "schema": "back\\slash.schema.json#/$defs/thing"}]}
+                \\{"id": "com.example.literal", "version": "1.0.0", "schemas": ["back\\slash.schema.json"], "envelope_types": [{"type": "com.example.literal.thing", "role": "event", "schema": "back\\slash.schema.json#/$defs/thing"}], "gates": [{"type": "com.example.literal.thing", "ungated": true}]}
             ,
         });
     }
@@ -732,7 +925,7 @@ test "a schema ref that resolves to nothing is refused, and the same ref made to
             ,
         });
         const descriptor = try std.fmt.allocPrint(allocator,
-            \\{{"id": "com.example.ref", "version": "1.0.0", "schemas": ["note.schema.json"], "envelope_types": [{{"type": "com.example.ref.thing", "role": "event", "schema": "{s}"}}]}}
+            \\{{"id": "com.example.ref", "version": "1.0.0", "schemas": ["note.schema.json"], "envelope_types": [{{"type": "com.example.ref.thing", "role": "event", "schema": "{s}"}}], "gates": [{{"type": "com.example.ref.thing", "ungated": true}}]}}
         , .{c.ref});
         defer allocator.free(descriptor);
         const pack = try std.fmt.allocPrint(allocator, "{s}/pack.json", .{c.dir});
@@ -793,7 +986,7 @@ test "a branch pointer resolves through objects only, as goap's loader resolves 
         defer allocator.free(document_path);
         try tmp.dir.writeFile(std.testing.io, .{ .sub_path = document_path, .data = document });
         const descriptor = try std.fmt.allocPrint(allocator,
-            \\{{"id": "com.example.ptr", "version": "1.0.0", "schemas": ["types.schema.json"], "envelope_types": [{{"type": "com.example.ptr.thing", "role": "event", "schema": "{s}"}}]}}
+            \\{{"id": "com.example.ptr", "version": "1.0.0", "schemas": ["types.schema.json"], "envelope_types": [{{"type": "com.example.ptr.thing", "role": "event", "schema": "{s}"}}], "gates": [{{"type": "com.example.ptr.thing", "ungated": true}}]}}
         , .{c.ref});
         defer allocator.free(descriptor);
         const pack = try std.fmt.allocPrint(allocator, "{s}/pack.json", .{c.dir});
@@ -836,7 +1029,7 @@ test "a cited name is cleaned and its pointer unescaped, so the ref matches the 
         ,
     });
     const descriptor = try std.fmt.allocPrint(allocator,
-        \\{{"id": "com.example.escape", "version": "1.0.0", "schemas": ["./note.schema.json"], "envelope_types": [{{"type": "com.example.escape.thing", "role": "event", "schema": "./note.schema.json#/$defs/odd~1name~0here"}}]}}
+        \\{{"id": "com.example.escape", "version": "1.0.0", "schemas": ["./note.schema.json"], "envelope_types": [{{"type": "com.example.escape.thing", "role": "event", "schema": "./note.schema.json#/$defs/odd~1name~0here"}}], "gates": [{{"type": "com.example.escape.thing", "ungated": true}}]}}
     , .{});
     defer allocator.free(descriptor);
     try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "sub/pack.json", .data = descriptor });
@@ -864,22 +1057,22 @@ test "one unpinned branch in a pack takes the pack's pinned branch with it" {
     const allocator = std.testing.allocator;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
-    const cases = [_]struct { dir: []const u8, types: []const u8, refused: bool }{
+    const cases = [_]struct { dir: []const u8, types: []const u8, gates: []const u8, refused: bool }{
         .{ .dir = "mixed", .types =
         \\[
         \\  {"type": "com.example.mixed.good", "role": "event", "schema": "types.schema.json#/$defs/good"},
         \\  {"type": "com.example.mixed.bad", "role": "event", "schema": "types.schema.json#/$defs/plain"}
         \\]
-        , .refused = true },
+        , .gates = "{\"type\": \"com.example.mixed.bad\", \"ungated\": true}", .refused = true },
         .{ .dir = "both-pinned", .types =
         \\[
         \\  {"type": "com.example.mixed.good", "role": "event", "schema": "types.schema.json#/$defs/good"},
         \\  {"type": "com.example.mixed.other", "role": "event", "schema": "types.schema.json#/$defs/other"}
         \\]
-        , .refused = false },
+        , .gates = "{\"type\": \"com.example.mixed.other\", \"ungated\": true}", .refused = false },
     };
     const members =
-        \\[{"payload_type": "com.example.mixed.good", "member": "note", "schema": {"type": "string"}}]
+        \\[{"payload_type": "run.completed", "member": "com.example.mixed.note", "schema": {"type": "string"}}]
     ;
     const document =
         \\{"$schema": "https://json-schema.org/draft/2020-12/schema", "$defs": {"good": {"type": "object", "required": ["type", "id", "session_id"], "properties": {"type": {"const": "com.example.mixed.good"}, "id": {"type": "string"}, "session_id": {"type": "string"}}}, "other": {"type": "object", "required": ["type", "id", "session_id"], "properties": {"type": {"const": "com.example.mixed.other"}, "id": {"type": "string"}, "session_id": {"type": "string"}}}, "plain": {"type": "object", "required": ["type"], "properties": {"type": {"type": "string"}}}}}
@@ -890,8 +1083,8 @@ test "one unpinned branch in a pack takes the pack's pinned branch with it" {
         defer allocator.free(document_path);
         try tmp.dir.writeFile(std.testing.io, .{ .sub_path = document_path, .data = document });
         const descriptor = try std.fmt.allocPrint(allocator,
-            \\{{"id": "com.example.mixed", "version": "1.0.0", "schemas": ["types.schema.json"], "envelope_types": {s}, "payload_members": {s}}}
-        , .{ c.types, members });
+            \\{{"id": "com.example.mixed", "version": "1.0.0", "schemas": ["types.schema.json"], "envelope_types": {s}, "payload_members": {s}, "gates": [{{"type": "com.example.mixed.good", "ungated": true}}, {{"payload_type": "run.completed", "member": "com.example.mixed.note", "ungated": true}}, {s}]}}
+        , .{ c.types, members, c.gates });
         defer allocator.free(descriptor);
         const pack = try std.fmt.allocPrint(allocator, "{s}/pack.json", .{c.dir});
         defer allocator.free(pack);
@@ -915,8 +1108,8 @@ test "one unpinned branch in a pack takes the pack's pinned branch with it" {
             try std.testing.expectEqual(@as(usize, 2), read.branches.len);
             try std.testing.expectEqual(@as(usize, 2), read.types.len);
             try std.testing.expectEqual(@as(usize, 1), read.members.len);
-            try std.testing.expectEqualStrings("note", read.members[0].name);
-            try std.testing.expectEqualStrings("com.example.mixed.good", read.members[0].payload_type);
+            try std.testing.expectEqualStrings("com.example.mixed.note", read.members[0].name);
+            try std.testing.expectEqualStrings("run.completed", read.members[0].payload_type);
         }
     }
 }
@@ -958,23 +1151,25 @@ test "a declared name outside the pack's namespace is refused before its schema 
         .{ .dir = "core-numbered", .name = "capabilities.request.thing", .schema = ", \"schema\": 7", .code = pack_unprefixed_name, .accepted = false },
         .{ .dir = "foreign-missing", .name = "com.other.billing.thing", .schema = "", .code = pack_foreign_prefix, .accepted = false },
         .{ .dir = "foreign-numbered", .name = "com.other.billing.thing", .schema = ", \"schema\": 7", .code = pack_foreign_prefix, .accepted = false },
-        .{ .dir = "own-missing", .name = "com.example.nsgap.thing", .schema = "", .code = "", .accepted = true },
+        .{ .dir = "own-missing", .name = "com.example.nsgap.thing", .schema = "", .code = "", .accepted = false },
+        .{ .dir = "own-pinned", .name = "com.example.nsgap.thing", .schema = ", \"schema\": \"note.schema.json#/$defs/thing\"", .code = "", .accepted = true },
     };
     for (cases) |c| {
         try tmp.dir.createDir(std.testing.io, c.dir, .default_dir);
         const descriptor = try std.fmt.allocPrint(allocator,
-            \\{{"id": "com.example.nsgap", "version": "1.0.0", "schemas": ["note.schema.json"], "envelope_types": [{{"type": "{s}", "role": "event"{s}}}]}}
-        , .{ c.name, c.schema });
+            \\{{"id": "com.example.nsgap", "version": "1.0.0", "schemas": ["note.schema.json"], "envelope_types": [{{"type": "{s}", "role": "event"{s}}}], "gates": [{{"type": "{s}", "ungated": true}}]}}
+        , .{ c.name, c.schema, c.name });
         defer allocator.free(descriptor);
         const pack = try std.fmt.allocPrint(allocator, "{s}/pack.json", .{c.dir});
         defer allocator.free(pack);
         try tmp.dir.writeFile(std.testing.io, .{ .sub_path = pack, .data = descriptor });
         const schema_path = try std.fmt.allocPrint(allocator, "{s}/note.schema.json", .{c.dir});
         defer allocator.free(schema_path);
-        try tmp.dir.writeFile(std.testing.io, .{ .sub_path = schema_path, .data =
-                \\{"$schema": "https://json-schema.org/draft/2020-12/schema", "$defs": {"thing": {"type": "object", "required": ["type", "id", "session_id"], "properties": {"type": {"type": "string"}, "id": {"type": "string"}, "session_id": {"type": "string"}}}}}
-            ,
-        });
+        const schema = try std.fmt.allocPrint(allocator,
+            \\{{"$schema": "https://json-schema.org/draft/2020-12/schema", "$defs": {{"thing": {{"type": "object", "required": ["type", "id", "session_id"], "properties": {{"type": {{"const": "{s}"}}, "id": {{"type": "string"}}, "session_id": {{"type": "string"}}}}}}}}}}
+        , .{c.name});
+        defer allocator.free(schema);
+        try tmp.dir.writeFile(std.testing.io, .{ .sub_path = schema_path, .data = schema });
     }
     for (cases) |c| {
         const root = try tmp.dir.realPathFileAlloc(std.testing.io, c.dir, allocator);

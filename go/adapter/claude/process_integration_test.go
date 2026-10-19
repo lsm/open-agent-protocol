@@ -467,7 +467,7 @@ func TestClaudeProcessExcludedToolIsRefusedByPolicy(t *testing.T) {
 			if trailing := adaptertest.Drain(t, stream, 10*time.Second); len(trailing) != 0 {
 				t.Fatalf("events after the terminal: %v", trailing)
 			}
-			adaptertest.AssertProtocolValidWithSubmit(t, request, admission, descriptor, events)
+			adaptertest.AssertProtocolValidWithSubmit(t, request, admission, descriptor, events, adaptertest.Opened(base.OpenRequest{Participant: protocol.Participant{ID: "integration-user"}}))
 
 			var refused *protocol.ActionCallPayload
 			for _, event := range events {

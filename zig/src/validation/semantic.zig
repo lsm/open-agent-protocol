@@ -17,6 +17,11 @@ pub const code_unmatched_response = "unmatched_response";
 pub const code_missing_response = "missing_response";
 pub const code_duplicate_response = "duplicate_response";
 pub const code_unhonoured_capability = "unhonoured_capability";
+pub const code_auth_flow_order = "auth_flow_order";
+pub const code_missing_auth_terminal = "missing_auth_terminal";
+pub const code_unknown_participant = "unknown_participant";
+pub const code_undisclosed_selection_scope = "undisclosed_selection_scope";
+pub const code_premature_session_mutation = "premature_session_mutation";
 pub const code_illegal_run_transition = "illegal_run_transition";
 pub const code_missing_run_started = "missing_run_started";
 pub const code_missing_run_terminal = "missing_run_terminal";
@@ -92,7 +97,9 @@ pub const implemented = [_][]const u8{
     code_session_list_order,              code_duplicate_session_entry,         code_duplicate_message_completion,
     code_content_after_completion,        code_transcript_over_limit,           code_duplicate_transcript_entry,
     code_transcript_gap_mismatch,         code_unmatched_response,              code_missing_response,
-    code_duplicate_response,              code_unhonoured_capability,
+    code_duplicate_response,              code_unhonoured_capability,           code_auth_flow_order,
+    code_missing_auth_terminal,           code_unknown_participant,             code_undisclosed_selection_scope,
+    code_unmatched_provider,              code_premature_session_mutation,
 };
 
 pub fn isImplemented(code: []const u8) bool {
@@ -244,6 +251,8 @@ const Run = struct {
     admitted_model: []const u8 = "",
     admitted_at: usize = 0,
     submit_request: []const u8 = "",
+    started_at: usize = 0,
+    start_sequence: u64 = 0,
     controls: Controls = .{},
     deferred_controls: bool = false,
     status: []const u8 = "",
@@ -352,6 +361,9 @@ const Session = struct {
     order: std.ArrayList([]const u8) = .empty,
     current_model: []const u8 = "",
     current_known: bool = false,
+    opening_model: []const u8 = "",
+    opening_known: bool = false,
+    mutated: bool = false,
     expected_default: []const u8 = "",
     guard_default: bool = false,
     provided_owners: std.StringArrayHashMapUnmanaged([]const u8) = .empty,
@@ -478,6 +490,22 @@ const SettledClaim = struct {
     done: bool = false,
 };
 
+const ModelClaim = struct {
+    session: []const u8,
+    run: []const u8,
+    sequence: u64,
+    model: []const u8,
+    index: usize,
+    done: bool = false,
+};
+
+const AuthFlow = struct {
+    provider: []const u8,
+    next: u64 = 1,
+    terminal: bool = false,
+    index: usize,
+};
+
 const Recovery = struct {
     run: []const u8 = "",
     gap: bool = false,
@@ -543,6 +571,10 @@ pub const Machine = struct {
     requests: std.StringArrayHashMapUnmanaged(Request) = .empty,
     late_cancels: std.StringArrayHashMapUnmanaged(void) = .empty,
     settled_claims: std.ArrayList(SettledClaim) = .empty,
+    model_claims: std.ArrayList(ModelClaim) = .empty,
+    participants: std.StringArrayHashMapUnmanaged(void) = .empty,
+    initialized: bool = false,
+    auth_flows: std.StringArrayHashMapUnmanaged(*AuthFlow) = .empty,
     packs: Packs = .{},
     features: std.StringArrayHashMapUnmanaged([]const u8) = .empty,
     scopes: std.StringArrayHashMapUnmanaged([]const u8) = .empty,
@@ -575,6 +607,9 @@ pub const Machine = struct {
         self.runs.deinit(self.allocator);
         self.recoveries.deinit(self.allocator);
         self.settled_claims.deinit(self.allocator);
+        self.model_claims.deinit(self.allocator);
+        self.participants.deinit(self.allocator);
+        self.auth_flows.deinit(self.allocator);
         self.requests.deinit(self.allocator);
         self.features.deinit(self.allocator);
         self.scopes.deinit(self.allocator);
@@ -774,10 +809,24 @@ pub const Machine = struct {
     }
 
     fn dispatch(self: *Machine, index: usize, envelope: std.json.Value, declared: []const u8, payload: std.json.Value) !void {
+        if (std.mem.startsWith(u8, declared, "auth.login.")) {
+            try self.authEnvelope(index, envelope, declared, payload);
+            return;
+        }
         if (std.mem.eql(u8, declared, "protocol.initialize.request")) {
+            self.initialized = true;
             if (member(payload, "participant")) |who| {
                 const named = memberString(who, "id");
                 if (named.len != 0) self.control_participant = named;
+                try self.participants.put(self.allocator, named, {});
+            }
+            return;
+        }
+        if (std.mem.eql(u8, declared, "protocol.initialize.response")) {
+            self.initialized = true;
+            if (member(payload, "endpoint")) |endpoint| try self.participants.put(self.allocator, memberString(endpoint, "id"), {});
+            if (self.requests.get(field(envelope, "in_reply_to"))) |asked| {
+                if (member(asked.payload, "participant")) |who| try self.participants.put(self.allocator, memberString(who, "id"), {});
             }
             return;
         }
@@ -1160,6 +1209,13 @@ pub const Machine = struct {
             if (affirmative(level) and !self.disclosedMode(feature_providers_attach, mode_session_live)) {
                 try self.add(code_undisclosed_attach_modes, index);
             }
+        }
+        if (affirmative(self.features.get("run.tool_selection") orelse "")) {
+            const scope = self.scopes.get("run.tool_selection") orelse "";
+            if (scope.len != 0 and !lifetimeScope(scope)) try self.add(code_undisclosed_selection_scope, index);
+        }
+        if (affirmative(self.features.get("run.model_selection") orelse "")) {
+            if (!lifetimeScope(self.scopes.get("run.model_selection") orelse "")) try self.add(code_undisclosed_selection_scope, index);
         }
     }
 
@@ -1842,6 +1898,7 @@ pub const Machine = struct {
         }
         holder.current_model = selected;
         holder.current_known = true;
+        holder.mutated = true;
         holder.guard_default = false;
     }
 
@@ -1918,6 +1975,7 @@ pub const Machine = struct {
             for (listed.array.items) |model| {
                 const provider_id = memberString(model, "provider_id");
                 if (provider_id.len != 0 and providers.get(provider_id) == null) {
+                    if (provider_list == .array and provider_list.array.items.len > 0) try self.add(code_unmatched_provider, index);
                     try providers.put(self.arena.allocator(), provider_id, {});
                 }
             }
@@ -2648,6 +2706,7 @@ pub const Machine = struct {
         if (std.mem.eql(u8, controls.mode, "session")) {
             holder.current_model = controls.model;
             holder.current_known = true;
+            holder.mutated = true;
         }
     }
 
@@ -2893,6 +2952,125 @@ pub const Machine = struct {
                 return;
             }
         }
+    }
+
+    fn captureWindowStart(self: *const Machine, index: usize, envelope: std.json.Value) usize {
+        return self.ids.get(field(envelope, "in_reply_to")) orelse index;
+    }
+
+    fn latestMutationBefore(self: *const Machine, session: []const u8, anchor: ?*Run, window: usize) ?*Run {
+        var latest: ?*Run = null;
+        for (self.runs.values()) |run| {
+            if (!std.mem.eql(u8, run.session, session)) continue;
+            if (anchor != null and run == anchor.?) continue;
+            if (!run.started or run.started_at > window) continue;
+            if (mutationModel(run) == null) continue;
+            if (anchor) |held| {
+                if (run.started_at <= held.started_at) continue;
+            }
+            if (latest == null or run.started_at > latest.?.started_at) latest = run;
+        }
+        return latest;
+    }
+
+    fn checkCaptureModel(self: *Machine, index: usize, envelope: std.json.Value, payload: std.json.Value, holder: *Session) !void {
+        const session_id = memberString(payload, "session_id");
+        const reported = memberString(payload, "current_model_id");
+        const window = self.captureWindowStart(index, envelope);
+        const position = member(member(payload, "as_of") orelse std.json.Value{ .null = {} }, "model_run_sequence") orelse {
+            if (self.latestMutationBefore(session_id, null, window)) |latest| {
+                if (!std.mem.eql(u8, mutationModel(latest).?, reported)) try self.add(code_premature_session_mutation, index);
+            }
+            return;
+        };
+        const run_id = memberString(position, "run_id");
+        const sequence = unsigned(position, "sequence") orelse 0;
+        if (run_id.len == 0 and sequence == 0) {
+            if (self.latestMutationBefore(session_id, null, window) != null) {
+                try self.add(code_session_state_mismatch, index);
+                return;
+            }
+            if (holder.opening_known and !std.mem.eql(u8, reported, holder.opening_model)) try self.add(code_premature_session_mutation, index);
+            return;
+        }
+        const run = self.runs.get(run_id) orelse {
+            try self.add(code_session_state_mismatch, index);
+            return;
+        };
+        if (!std.mem.eql(u8, run.session, session_id)) {
+            try self.add(code_session_state_mismatch, index);
+            return;
+        }
+        if (run.started and run.start_sequence != sequence) {
+            try self.add(code_session_state_mismatch, index);
+            return;
+        }
+        if (!run.started) {
+            try self.model_claims.append(self.allocator, .{ .session = session_id, .run = run_id, .sequence = sequence, .model = reported, .index = index });
+            return;
+        }
+        const model = mutationModel(run) orelse {
+            try self.add(code_session_state_mismatch, index);
+            return;
+        };
+        if (self.latestMutationBefore(session_id, run, window) != null) {
+            try self.add(code_session_state_mismatch, index);
+            return;
+        }
+        if (!std.mem.eql(u8, reported, model)) try self.add(code_premature_session_mutation, index);
+    }
+
+    fn reconcileModelClaims(self: *Machine, run: *Run) !void {
+        for (self.model_claims.items) |*claim| {
+            if (claim.done or !std.mem.eql(u8, claim.run, run.id) or run.start_sequence != claim.sequence) continue;
+            claim.done = true;
+            const model = mutationModel(run) orelse {
+                try self.add(code_session_state_mismatch, claim.index);
+                continue;
+            };
+            if (!std.mem.eql(u8, model, claim.model)) try self.add(code_premature_session_mutation, claim.index);
+        }
+    }
+
+    fn authEnvelope(self: *Machine, index: usize, envelope: std.json.Value, declared: []const u8, payload: std.json.Value) !void {
+        const flow_id = memberString(payload, "flow_id");
+        if (std.mem.eql(u8, declared, "auth.login.start.response")) {
+            const asked = self.requests.get(field(envelope, "in_reply_to")) orelse return;
+            if (!std.mem.eql(u8, asked.declared, "auth.login.start.request")) return;
+            if (self.auth_flows.contains(flow_id)) {
+                try self.add(code_auth_flow_order, index);
+                return;
+            }
+            const flow = try self.arena.allocator().create(AuthFlow);
+            flow.* = .{ .provider = memberString(asked.payload, "provider_id"), .index = index };
+            try self.auth_flows.put(self.allocator, flow_id, flow);
+            return;
+        }
+        if (std.mem.eql(u8, declared, "auth.login.cancel.response")) {
+            const asked = self.requests.get(field(envelope, "in_reply_to")) orelse return;
+            if (!std.mem.eql(u8, asked.declared, "auth.login.cancel.request")) return;
+            if (!std.mem.eql(u8, flow_id, memberString(asked.payload, "flow_id"))) try self.add(code_scope_mismatch, index);
+            return;
+        }
+        const event = std.mem.eql(u8, declared, "auth.login.event");
+        const completed = std.mem.eql(u8, declared, "auth.login.completed");
+        if (!event and !completed and !std.mem.eql(u8, declared, "auth.login.cancel.request")) return;
+        const flow = self.auth_flows.get(flow_id) orelse {
+            try self.add(code_auth_flow_order, index);
+            return;
+        };
+        if (flow.terminal) {
+            try self.add(code_event_after_terminal, index);
+            return;
+        }
+        if (!event and !completed) return;
+        if (unsigned(envelope, "sequence")) |sequence| {
+            if (sequence < flow.next) try self.add(code_sequence_regression, index);
+            if (sequence > flow.next) try self.add(code_sequence_gap, index);
+            flow.next = sequence + 1;
+        }
+        if (!std.mem.eql(u8, memberString(payload, "provider_id"), flow.provider)) try self.add(code_scope_mismatch, index);
+        if (completed) flow.terminal = true;
     }
 
     fn steerTarget(self: *Machine, payload: std.json.Value) struct { run: ?*Run, reason: []const u8 } {
@@ -3413,9 +3591,11 @@ pub const Machine = struct {
                 }
             }
             const reported = memberString(payload, "current_model_id");
+            try self.checkCaptureModel(index, envelope, payload, holder);
             if (reported.len != 0) {
                 holder.current_model = reported;
                 holder.current_known = true;
+                noteOpening(holder, reported);
             }
         }
         if (member(payload, "recovery")) |recovery| {
@@ -3575,6 +3755,7 @@ pub const Machine = struct {
         {
             const holder = try self.sessionFor(session_id);
             const reported = memberString(payload, "current_model_id");
+            try self.checkCaptureModel(index, envelope, payload, holder);
             if (holder.guard_default and !std.mem.eql(u8, reported, holder.expected_default)) {
                 try self.add(code_unapplied_control, index);
             }
@@ -3592,6 +3773,7 @@ pub const Machine = struct {
             }
             holder.current_model = reported;
             holder.current_known = true;
+            noteOpening(holder, reported);
         }
         try self.checkPublishedUnion(index, session_id, member(payload, "sources"), false);
         try self.checkPublishedSources(index, payload);
@@ -3698,6 +3880,9 @@ pub const Machine = struct {
             } else {
                 state.started = true;
                 state.status = "running";
+                state.started_at = index;
+                state.start_sequence = unsigned(envelope, "sequence") orelse 0;
+                try self.reconcileModelClaims(state);
                 try self.settingsBeforeRun(index, state.session);
                 if (state.admitted_model.len != 0) {
                     const reported = memberString(member(envelope, "payload") orelse std.json.Value{ .null = {} }, "model_id");
@@ -3838,6 +4023,7 @@ pub const Machine = struct {
             try self.add(code_illegal_tool_transition, index);
             return;
         }
+        try self.participant(index, responder);
         if (run.interactions.get(id) != null) {
             try self.add(code_duplicate_interaction, index);
             return;
@@ -4003,7 +4189,13 @@ pub const Machine = struct {
         }
     }
 
+    fn participant(self: *Machine, index: usize, named: []const u8) !void {
+        if (self.initialized and !self.participants.contains(named)) try self.add(code_unknown_participant, index);
+    }
+
     fn interactionRequested(self: *Machine, index: usize, payload: std.json.Value, run: *Run, kind: InteractionKind) !void {
+        try self.participant(index, memberString(payload, "requested_by"));
+        try self.participant(index, memberString(payload, "responded_by"));
         const id = memberString(payload, "interaction_id");
         if (run.interactions.get(id) != null) try self.add(code_duplicate_interaction, index);
         const opened = try self.arena.allocator().create(Interaction);
@@ -4127,6 +4319,12 @@ pub const Machine = struct {
         try self.closeSteerSnapshots();
         for (self.settled_claims.items) |claim| {
             if (!claim.done) try self.add(code_session_state_mismatch, claim.index);
+        }
+        for (self.model_claims.items) |claim| {
+            if (!claim.done) try self.add(code_session_state_mismatch, claim.index);
+        }
+        for (self.auth_flows.values()) |flow| {
+            if (!flow.terminal) try self.add(code_missing_auth_terminal, flow.index);
         }
         for (self.recoveries.values()) |recovery| {
             if (recovery.gap and !recovery.state_checked) try self.add(code_undeclared_replay_gap, recovery.open_index);
@@ -4683,6 +4881,21 @@ fn declaresSource(sources: ?std.json.Value, id: []const u8) bool {
         if (std.mem.eql(u8, memberString(source, "id"), id)) return true;
     }
     return false;
+}
+
+fn mutationModel(run: *const Run) ?[]const u8 {
+    if (!run.controls.present or !run.controls.model_present or !std.mem.eql(u8, run.controls.mode, "session")) return null;
+    return run.controls.model;
+}
+
+fn noteOpening(holder: *Session, reported: []const u8) void {
+    if (holder.mutated or holder.opening_known) return;
+    holder.opening_model = reported;
+    holder.opening_known = true;
+}
+
+fn lifetimeScope(scope: []const u8) bool {
+    return std.mem.eql(u8, scope, "run") or std.mem.eql(u8, scope, "session");
 }
 
 fn affirmative(level: []const u8) bool {
@@ -5284,7 +5497,7 @@ test "the layer that wins a feature wins its mode too, including the mode it omi
         \\{"type":"session.message.submit.request","id":"q2","capability_revision":"v1",
         \\"payload":{"session_id":"s","delivery":"auto","model_id":"m"}},
         \\{"type":"error.response","id":"x1","in_reply_to":"q2","payload":{"error":{"code":"run_active"}}}]
-    , &.{ "queue_limit_exceeded", "missing_run_terminal" });
+    , &.{ code_undisclosed_selection_scope, "queue_limit_exceeded", "missing_run_terminal" });
 }
 
 test "an open surface's refusal does not answer for the queue" {
@@ -6468,6 +6681,7 @@ test "a submitted resolution event is held to the same answers as a request" {
 
 const controlled =
     \\[{"type":"protocol.initialize.request","id":"i0","payload":{"participant":{"id":"control"}}},
+    \\{"type":"protocol.initialize.response","id":"i1","in_reply_to":"i0","payload":{"endpoint":{"id":"agent"}}},
     \\{"type":"capabilities.response","id":"k1","capability_revision":"v1","payload":{"features":
     \\{"tools":{"level":"native"},"permissions":{"level":"native"}}}},
 ++ admitted ++
@@ -6886,5 +7100,87 @@ test "a snapshot may claim settled a run it introduces, and the run's terminal b
         \\{"type":"session.state.response","id":"t2","in_reply_to":"t1","payload":{"session_id":"s","status":"running","active_run_id":"r",
         \\"as_of":{"settled":[{"run_id":"r","sequence":2}]}}},
         \\{"type":"run.completed","id":"e9","run_id":"r","session_id":"s","sequence":2,"payload":{}}]
+    , &.{});
+}
+
+test "a model selection advertised without a lifetime, or a tool selection with an unknown one, is undisclosed" {
+    try expectCodes(
+        \\[{"type":"capabilities.response","id":"k1","capability_revision":"v1","payload":{"features":{"run.model_selection":{"level":"native"}}}}]
+    , &.{code_undisclosed_selection_scope});
+    try expectCodes(
+        \\[{"type":"capabilities.response","id":"k1","capability_revision":"v1","payload":{"features":{"run.tool_selection":{"level":"native","scope":"forever"}}}}]
+    , &.{code_undisclosed_selection_scope});
+    try expectCodes(
+        \\[{"type":"capabilities.response","id":"k1","capability_revision":"v1","payload":{"features":{"run.tool_selection":{"level":"native"},"run.model_selection":{"level":"emulated","scope":"run"}}}}]
+    , &.{});
+}
+
+test "a model naming a provider a non-empty provider list does not declare is unmatched" {
+    try expectCodes(
+        \\[{"type":"capabilities.response","id":"k1","capability_revision":"v1","payload":{"features":{"models.list":{"level":"native"}}}},
+        \\{"type":"models.response","id":"m1","capability_revision":"v1","payload":{"providers":[{"id":"zai"}],"models":[{"id":"a","provider_id":"zai"},{"id":"b","provider_id":"kimi"},{"id":"c","provider_id":"kimi"}]}}]
+    , &.{code_unmatched_provider});
+}
+
+const auth_started =
+    \\[{"type":"auth.login.start.request","id":"a1","payload":{"provider_id":"zai"}},
+    \\{"type":"auth.login.start.response","id":"a2","in_reply_to":"a1","payload":{"flow_id":"f"}},
+;
+
+test "an auth flow that starts, reports and completes in order is clean" {
+    try expectCodes(auth_started ++
+        \\{"type":"auth.login.event","id":"a3","sequence":1,"payload":{"flow_id":"f","provider_id":"zai"}},
+        \\{"type":"auth.login.completed","id":"a4","sequence":2,"payload":{"flow_id":"f","provider_id":"zai"}}]
+    , &.{});
+}
+
+test "an auth event before its flow starts is out of order" {
+    try expectCodes(
+        \\[{"type":"auth.login.event","id":"a3","sequence":1,"payload":{"flow_id":"f","provider_id":"zai"}}]
+    , &.{code_auth_flow_order});
+}
+
+test "a start that reuses an active flow id is out of order" {
+    try expectCodes(auth_started ++
+        \\{"type":"auth.login.start.request","id":"b1","payload":{"provider_id":"zai"}},
+        \\{"type":"auth.login.start.response","id":"b2","in_reply_to":"b1","payload":{"flow_id":"f"}},
+        \\{"type":"auth.login.completed","id":"a4","sequence":1,"payload":{"flow_id":"f","provider_id":"zai"}}]
+    , &.{code_auth_flow_order});
+}
+
+test "an accepted auth flow with no completion is missing its terminal" {
+    try expectCodes(auth_started ++
+        \\{"type":"auth.login.event","id":"a3","sequence":1,"payload":{"flow_id":"f","provider_id":"zai"}}]
+    , &.{code_missing_auth_terminal});
+}
+
+test "an auth flow judges its sequence, its provider and anything after its terminal" {
+    try expectCodes(auth_started ++
+        \\{"type":"auth.login.event","id":"a3","sequence":2,"payload":{"flow_id":"f","provider_id":"other"}},
+        \\{"type":"auth.login.completed","id":"a4","sequence":3,"payload":{"flow_id":"f","provider_id":"zai"}},
+        \\{"type":"auth.login.event","id":"a5","sequence":4,"payload":{"flow_id":"f","provider_id":"zai"}}]
+    , &.{ code_sequence_gap, code_scope_mismatch, code_event_after_terminal });
+}
+
+test "an interaction naming a participant initialization never declared is unknown" {
+    try expectCodes(controlled ++
+        \\{"type":"action.permission.requested","id":"p1","run_id":"run","session_id":"s","sequence":2,"capability_revision":"v1","payload":
+        \\{"interaction_id":"x","requested_by":"stranger","responded_by":"control","title":"Allow?","choices":[{"id":"allow","label":"Allow"}]}},
+        \\{"type":"action.permission.resolved","id":"p2","run_id":"run","session_id":"s","sequence":3,"capability_revision":"v1","payload":
+        \\{"interaction_id":"x","requested_by":"stranger","responded_by":"control","outcome":"resolved","choice_id":"allow"}},
+        \\{"type":"run.completed","id":"e9","run_id":"run","session_id":"s","sequence":4,"payload":{}}]
+    , &.{code_unknown_participant});
+}
+
+test "participants are not judged before initialization declares any" {
+    try expectCodes(
+        \\[{"type":"capabilities.response","id":"k1","capability_revision":"v1","payload":{"features":{"permissions":{"level":"native"}}}},
+    ++ admitted ++
+        \\,{"type":"run.started","id":"e0","run_id":"run","session_id":"s","sequence":1,"payload":{}},
+        \\{"type":"action.permission.requested","id":"p1","run_id":"run","session_id":"s","sequence":2,"capability_revision":"v1","payload":
+        \\{"interaction_id":"x","requested_by":"stranger","responded_by":"user","title":"Allow?","choices":[{"id":"allow","label":"Allow"}]}},
+        \\{"type":"action.permission.resolved","id":"p2","run_id":"run","session_id":"s","sequence":3,"capability_revision":"v1","payload":
+        \\{"interaction_id":"x","requested_by":"stranger","responded_by":"user","outcome":"resolved","choice_id":"allow"}},
+        \\{"type":"run.completed","id":"e9","run_id":"run","session_id":"s","sequence":4,"payload":{}}]
     , &.{});
 }

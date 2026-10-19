@@ -66,7 +66,7 @@ func (g *gatedRun) answer(choice, reason string) error {
 func (g *gatedRun) finish(t *testing.T) []protocol.Envelope {
 	t.Helper()
 	events := append(g.seen, adaptertest.Drain(t, g.stream, time.Second)...)
-	adaptertest.AssertProtocolValidWithDescriptor(t, g.response, g.descriptor, events)
+	adaptertest.AssertProtocolValidWithDescriptor(t, g.response, g.descriptor, events, adaptertest.Opened(base.OpenRequest{Participant: protocol.Participant{ID: "user"}}))
 	return events
 }
 
@@ -250,7 +250,7 @@ func TestStateWaitsOnAnOpenPermissionAndListsItAsPendingUntilItIsAnswered(t *tes
 	events := g.finish(t)
 	events = spliceAtSequence(t, events, *asked.ActiveRuns[0].AsOfSequence, askedExchange)
 	events = spliceAtSequence(t, events, *answered.ActiveRuns[0].AsOfSequence, answeredExchange)
-	adaptertest.AssertProtocolValidWithDescriptor(t, g.response, g.descriptor, events)
+	adaptertest.AssertProtocolValidWithDescriptor(t, g.response, g.descriptor, events, adaptertest.Opened(base.OpenRequest{Participant: protocol.Participant{ID: "user"}}))
 }
 
 func TestStateListsOpenPermissionsOnTheStartedRunInTheOrderTheServerAskedThem(t *testing.T) {

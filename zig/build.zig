@@ -560,6 +560,7 @@ pub fn build(b: *std.Build) void {
     codex_session_mod.addImport("harness_pins", harness_pins_mod);
     codex_session_mod.addImport("rpc", codex_rpc_mod);
     codex_session_mod.addImport("native", codex_native_mod);
+    codex_session_mod.addImport("jsonschema", jsonschema_mod);
     const codex_session_test = b.addTest(.{ .root_module = codex_session_mod });
 
     const codex_corpus_mod = b.createModule(.{

@@ -729,7 +729,7 @@ func validateWithCapabilities(t *testing.T, admission protocol.MessageSubmitResp
 	if err != nil {
 		t.Fatal(err)
 	}
-	adaptertest.AssertProtocolValidWithDescriptor(t, admission, descriptor, events)
+	adaptertest.AssertProtocolValidWithDescriptor(t, admission, descriptor, events, adaptertest.Opened(base.OpenRequest{Participant: protocol.Participant{ID: "user"}}))
 }
 
 func TestEventsBeforeConvergenceBufferAndReplay(t *testing.T) {

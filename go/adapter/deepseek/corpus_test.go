@@ -581,7 +581,7 @@ func (e *dshExecution) record(t *testing.T, admission protocol.MessageSubmitResp
 
 func (e *dshExecution) validate(t *testing.T, admission protocol.MessageSubmitResponse, events []protocol.Envelope) {
 	t.Helper()
-	adaptertest.AssertProtocolValidWithDescriptor(t, admission, e.descriptor, events)
+	adaptertest.AssertProtocolValidWithDescriptor(t, admission, e.descriptor, events, adaptertest.Opened(base.OpenRequest{Participant: protocol.Participant{ID: "user"}}))
 }
 
 type corpusClient struct {

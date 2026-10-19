@@ -690,7 +690,7 @@ func checkUnlisted(root, filename string, listed map[string]bool) error {
 		if d.IsDir() && (p == filepath.Join(root, "adapters") || p == filepath.Join(root, "packs")) {
 			return fs.SkipDir
 		}
-		if d.IsDir() || filepath.Ext(p) != ".json" || p == filename {
+		if d.IsDir() || filepath.Ext(p) != ".json" || p == filename || p == filepath.Join(root, "known-gaps.json") {
 			return nil
 		}
 		if base := filepath.Base(p); base == "pack.json" || strings.HasSuffix(base, ".schema.json") {

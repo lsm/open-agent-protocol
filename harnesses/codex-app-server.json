@@ -6,7 +6,7 @@
       "label": "rust-v0.163.0",
       "status": "current",
       "endpoint_version": "83086188ae0614bd882818ff1aa23f3194962012",
-      "capability_revision": "codex-appserver-0.163.0-oap-v1",
+      "capability_revision": "codex-appserver-0.163.0-oap-v2",
       "ledgers": ["research/codex-app-server-0.163.0-mapping.md", "research/codex-app-server-0.162.1-mapping.md"],
       "corpus": "fixtures/adapters/codex-appserver-0.163.0",
       "components": [
