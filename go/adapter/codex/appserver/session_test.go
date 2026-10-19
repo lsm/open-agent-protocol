@@ -993,9 +993,8 @@ func TestSubmitRefusesUnadvertisedControls(t *testing.T) {
 		request protocol.MessageSubmitRequest
 		feature string
 	}{
-		"instructions":  {request: protocol.MessageSubmitRequest{Instructions: protocol.ControlValue("be terse")}, feature: protocol.FeatureInstructions},
-		"tool choice":   {request: protocol.MessageSubmitRequest{ToolChoice: json.RawMessage(`{"allowed":[]}`)}, feature: protocol.FeatureToolSelection},
-		"output schema": {request: protocol.MessageSubmitRequest{OutputSchema: json.RawMessage(`{"type":"object"}`)}, feature: protocol.FeatureStructuredOutput},
+		"instructions": {request: protocol.MessageSubmitRequest{Instructions: protocol.ControlValue("be terse")}, feature: protocol.FeatureInstructions},
+		"tool choice":  {request: protocol.MessageSubmitRequest{ToolChoice: json.RawMessage(`{"allowed":[]}`)}, feature: protocol.FeatureToolSelection},
 	} {
 		client, session, _ := openFake(t)
 		request := testCase.request
@@ -1338,4 +1337,40 @@ func TestALiveUpdateIsRefusedWhatCodexCannotTakeBetweenRuns(t *testing.T) {
 		t.Fatalf("a refused update still reached turn/start as effort %q", effort)
 	}
 	completeFakeTurn(t, client, stream)
+}
+
+func TestSubmitRefusesAnOutputSchemaNoStructuredResultCanSatisfy(t *testing.T) {
+	for name, schema := range map[string]string{
+		"not an object": `{"type":"array"}`,
+		"not JSON":      `{"type":`,
+		"external ref":  `{"type":"object","$ref":"https://example.invalid/s.json"}`,
+	} {
+		client, session, _ := openFake(t)
+		request := protocol.MessageSubmitRequest{SessionID: "session-1", Delivery: protocol.DeliveryAuto, OutputSchema: json.RawMessage(schema),
+			Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("hello")}}}
+		_, _, err := session.Submit(context.Background(), adapter.SubmitRequest{Request: request})
+		var refusal *adapter.UnsupportedControlError
+		if !errors.As(err, &refusal) || refusal.Feature != protocol.FeatureStructuredOutput || refusal.Reason != adapter.ControlUnsatisfiable || refusal.Field != "output_schema" {
+			t.Fatalf("%s: got %v, want an unsatisfiable refusal naming output_schema", name, err)
+		}
+		client.mu.Lock()
+		calls := append([]string(nil), client.calls...)
+		client.mu.Unlock()
+		for _, method := range calls {
+			if method == native.MethodTurnStart {
+				t.Fatalf("%s: an unsatisfiable schema reached the native codec", name)
+			}
+		}
+	}
+}
+
+func TestAnEmptyModelOutranksAnUnsatisfiableOutputSchema(t *testing.T) {
+	_, session, _ := openFake(t)
+	request := protocol.MessageSubmitRequest{SessionID: "session-1", Delivery: protocol.DeliveryAuto, ModelID: protocol.ControlValue(""), OutputSchema: json.RawMessage(`{"type":"array"}`),
+		Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("hello")}}}
+	_, _, err := session.Submit(context.Background(), adapter.SubmitRequest{Request: request})
+	var missing *adapter.ModelNotFoundError
+	if !errors.As(err, &missing) {
+		t.Fatalf("got %v, want model_not_found ahead of the schema refusal", err)
+	}
 }

@@ -154,7 +154,7 @@ func advertisedFeatures() map[string]protocol.FeatureSupport {
 		protocol.FeatureModelSelection:   {Level: protocol.SupportNative, Scope: protocol.ScopeRun, Reason: "turn/start carries the model for one turn"},
 		protocol.FeatureInstructions:     {Level: protocol.SupportUnavailable, Reason: "this pin exposes no per-turn instruction override"},
 		protocol.FeatureToolSelection:    {Level: protocol.SupportUnavailable, Reason: "this pin exposes no per-turn tool policy"},
-		protocol.FeatureStructuredOutput: {Level: protocol.SupportUnavailable, Reason: "this pin exposes no per-turn output schema"},
+		protocol.FeatureStructuredOutput: {Level: protocol.SupportNative, Reason: "turn/start.outputSchema constrains the turn's final assistant message"},
 		"run.streaming":                  {Level: protocol.SupportNative},
 		"run.status":                     {Level: protocol.SupportNative},
 		"run.cancel":                     {Level: protocol.SupportNative, Reason: "turn/interrupt targets an exact native thread and turn; settlement is asynchronous"},

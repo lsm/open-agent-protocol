@@ -119,12 +119,13 @@ type ByteRange struct {
 }
 
 type TurnStartParams struct {
-	ThreadID              string      `json:"threadId"`
-	Input                 []UserInput `json:"input"`
-	Model                 string      `json:"model,omitempty"`
-	ApprovalPolicy        string      `json:"approvalPolicy,omitempty"`
-	DeveloperInstructions string      `json:"developerInstructions,omitempty"`
-	Effort                string      `json:"effort,omitempty"`
+	ThreadID              string          `json:"threadId"`
+	Input                 []UserInput     `json:"input"`
+	Model                 string          `json:"model,omitempty"`
+	ApprovalPolicy        string          `json:"approvalPolicy,omitempty"`
+	DeveloperInstructions string          `json:"developerInstructions,omitempty"`
+	Effort                string          `json:"effort,omitempty"`
+	OutputSchema          json.RawMessage `json:"outputSchema,omitempty"`
 }
 
 type TurnStartResponse struct {
