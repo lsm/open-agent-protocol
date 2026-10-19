@@ -57,6 +57,8 @@ other two as drafted rules.
 from the pair being session- and run-scoped, and are drafted in
 `drafts/validator-rules/0008-tool-sources.md` as such.
 
+**Status.** Settled by [Decision 0055](../decisions/0055-register-batch-2.md). What remains is the port work the decision names.
+
 ## OPEN-0008-3
 
 **What differs.** A `permission.resolved` event that names a `tool_call_id`
@@ -66,8 +68,7 @@ to is `scope_mismatch` in Go (`state.go:interactionResolved`) and Rust
 
 **Decision text.** 0001 § Correlated reverse interactions correlates a
 resolution with its request, but no decision says the tool binding must carry
-over. Decision 0055's scope rule covers responses and the tool-call resolve
-pair, not permission resolution events.
+over. Before Decision 0055, no decision said so.
 
 **Options.** (a) Extend 0055's binding rule to every resolution that carries
 `tool_call_id`, and port it to Zig. (b) Leave the binding unjudged, and drop
@@ -76,6 +77,8 @@ the Go and Rust checks.
 **Recommendation.** (a). A resolution that moves its tool binding resolves a
 call it was never asked about, the defect 0055 already rules out for the
 resolve pair.
+
+**Status.** Settled by [Decision 0055](../decisions/0055-register-batch-2.md). What remains is the port work the decision names.
 
 ## OPEN-0011-1
 
@@ -97,3 +100,5 @@ and amend 0011.
 **Recommendation.** Keep 0019's record and leave the item open until an engine
 is chosen. The rule row cites 0011, and the Zig column says it does not judge
 the pattern.
+
+**Status.** Settled by [Decision 0055](../decisions/0055-register-batch-2.md). What remains is the port work the decision names.
