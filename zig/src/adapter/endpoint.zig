@@ -78,6 +78,8 @@ pub const Endpoint = struct {
     denial: Denial = .{ .code = "internal", .message = "" },
     shutdown: ?ShutdownMode = null,
     withdrawn: std.ArrayList([]u8) = .empty,
+    notices: ?Notice = null,
+    signals_seen: u32 = 0,
 
     pub fn init(allocator: std.mem.Allocator, adapter: contract.Adapter, options: Options) Endpoint {
         return .{ .allocator = allocator, .adapter = adapter, .frame_limit = options.frame_limit, .journal_capacity = options.journal_capacity, .tool_sources = options.tool_sources };
@@ -338,6 +340,29 @@ pub const Endpoint = struct {
             if (member.value_ptr.* != .string) return self.deny("invalid_payload", "mode is graceful or force", &.{});
             asked = std.meta.stringToEnum(ShutdownMode, member.value_ptr.string) orelse return self.deny("invalid_payload", "mode is graceful or force", &.{});
         }
+        const applied = try self.applyShutdown(arena, asked);
+        var answer = try std.json.ObjectMap.init(arena, &.{}, &.{});
+        try answer.put(arena, "outcome", .{ .string = applied.outcome });
+        try answer.put(arena, "active_runs", try shutdownRuns(arena, applied.runs, true));
+        if (applied.lost.len > 0) try answer.put(arena, "lost", try shutdownRuns(arena, applied.lost, false));
+        var envelope = try std.json.ObjectMap.init(arena, &.{}, &.{});
+        try envelope.put(arena, "protocol", .{ .string = oap_types.PROTOCOL });
+        try envelope.put(arena, "version", .{ .string = oap_types.VERSION });
+        try envelope.put(arena, "profile", .{ .string = oap_types.PROFILE });
+        try envelope.put(arena, "type", .{ .string = "endpoint.shutdown.response" });
+        try envelope.put(arena, "id", .{ .string = try self.nextId(arena, "response") });
+        try envelope.put(arena, "in_reply_to", root.get("id").?);
+        if (root.get("capability_revision")) |revision| try envelope.put(arena, "capability_revision", revision);
+        try envelope.put(arena, "payload", .{ .object = answer });
+        const line = try json_encode.valueAlloc(self.allocator, .{ .object = envelope });
+        errdefer self.allocator.free(line);
+        if (line.len + 1 > self.frame_limit) return error.FrameTooLarge;
+        try self.outbound.append(self.allocator, line);
+    }
+
+    const Applied = struct { outcome: []const u8, runs: []const Nonterminal, lost: []const Nonterminal };
+
+    fn applyShutdown(self: *Endpoint, arena: std.mem.Allocator, asked: ?ShutdownMode) Served!Applied {
         var runs = try self.nonterminalRuns(arena);
         var outcome: []const u8 = "stopping";
         var lost: std.ArrayList(Nonterminal) = .empty;
@@ -363,23 +388,34 @@ pub const Endpoint = struct {
                 if (runs.len > 0) outcome = "draining";
             }
         } else outcome = "choose";
-        var answer = try std.json.ObjectMap.init(arena, &.{}, &.{});
-        try answer.put(arena, "outcome", .{ .string = outcome });
-        try answer.put(arena, "active_runs", try shutdownRuns(arena, runs, true));
-        if (lost.items.len > 0) try answer.put(arena, "lost", try shutdownRuns(arena, lost.items, false));
-        var envelope = try std.json.ObjectMap.init(arena, &.{}, &.{});
-        try envelope.put(arena, "protocol", .{ .string = oap_types.PROTOCOL });
-        try envelope.put(arena, "version", .{ .string = oap_types.VERSION });
-        try envelope.put(arena, "profile", .{ .string = oap_types.PROFILE });
-        try envelope.put(arena, "type", .{ .string = "endpoint.shutdown.response" });
-        try envelope.put(arena, "id", .{ .string = try self.nextId(arena, "response") });
-        try envelope.put(arena, "in_reply_to", root.get("id").?);
-        if (root.get("capability_revision")) |revision| try envelope.put(arena, "capability_revision", revision);
-        try envelope.put(arena, "payload", .{ .object = answer });
-        const line = try json_encode.valueAlloc(self.allocator, .{ .object = envelope });
-        errdefer self.allocator.free(line);
-        if (line.len + 1 > self.frame_limit) return error.FrameTooLarge;
-        try self.outbound.append(self.allocator, line);
+        return .{ .outcome = outcome, .runs = runs, .lost = lost.items };
+    }
+
+    pub const Notice = struct {
+        context: *anyopaque,
+        write: *const fn (context: *anyopaque, line: []const u8) void,
+    };
+
+    pub fn takeSignals(self: *Endpoint, seen: u32) Served!void {
+        if (seen <= self.signals_seen) return;
+        const wanted: ShutdownMode = if (seen >= 2 or self.shutdown == .force) .force else .graceful;
+        var scratch = std.heap.ArenaAllocator.init(self.allocator);
+        defer scratch.deinit();
+        const arena = scratch.allocator();
+        const applied = try self.applyShutdown(arena, wanted);
+        self.signals_seen = seen;
+        const notice = self.notices orelse return;
+        var active: std.ArrayList(u8) = .empty;
+        for (applied.runs, 0..) |entry, index| {
+            if (index > 0) try active.appendSlice(arena, ", ");
+            try active.print(arena, "{s}/{s}", .{ entry.session_id, entry.run.run_id });
+        }
+        const named = if (active.items.len > 0) active.items else "none";
+        const line = if (wanted == .force)
+            try std.fmt.allocPrint(arena, "oapx: forced shutdown; cut off: {s}", .{named})
+        else
+            try std.fmt.allocPrint(arena, "oapx: shutting down gracefully; still active: {s}; {d} queued run(s) lost; signal again to force", .{ named, applied.lost.len });
+        notice.write(notice.context, line);
     }
 
     fn shutdownRuns(arena: std.mem.Allocator, runs: []const Nonterminal, detailed: bool) !std.json.Value {
@@ -1637,6 +1673,48 @@ test "an endpoint shutdown mode other than graceful or force is refused and chan
     const refused = try harness.send(framed("endpoint.shutdown.request", "sd-9", "", "{\"mode\":\"later\"}"));
     try testing.expectEqualStrings("invalid_payload", field(refused[0], &.{ "payload", "error", "code" }));
     try testing.expectEqual(@as(?ShutdownMode, null), harness.endpoint.shutdown);
+}
+
+const Noticed = struct {
+    lines: std.ArrayList([]u8) = .empty,
+
+    fn write(context: *anyopaque, line: []const u8) void {
+        const self: *Noticed = @ptrCast(@alignCast(context));
+        const copy = testing.allocator.dupe(u8, line) catch return;
+        self.lines.append(testing.allocator, copy) catch testing.allocator.free(copy);
+    }
+
+    fn deinit(self: *Noticed) void {
+        for (self.lines.items) |line| testing.allocator.free(line);
+        self.lines.deinit(testing.allocator);
+    }
+};
+
+test "a first signal drains gracefully naming the active run, a repeated count changes nothing, and a second forces" {
+    var harness: Harness = undefined;
+    harness.init(testing.allocator, .{});
+    defer harness.deinit();
+    var noticed = Noticed{};
+    defer noticed.deinit();
+    harness.endpoint.notices = .{ .context = &noticed, .write = Noticed.write };
+    _ = try harness.send(open_line);
+    _ = try harness.send(submit_line);
+
+    try harness.endpoint.takeSignals(1);
+    try testing.expectEqual(@as(?ShutdownMode, .graceful), harness.endpoint.shutdown);
+    try testing.expect(!try harness.endpoint.shutdownComplete());
+    try testing.expectEqual(@as(usize, 1), noticed.lines.items.len);
+    try testing.expect(std.mem.startsWith(u8, noticed.lines.items[0], "oapx: shutting down gracefully; still active: s1/"));
+    try testing.expect(std.mem.endsWith(u8, noticed.lines.items[0], "; 0 queued run(s) lost; signal again to force"));
+
+    try harness.endpoint.takeSignals(1);
+    try testing.expectEqual(@as(usize, 1), noticed.lines.items.len);
+
+    try harness.endpoint.takeSignals(2);
+    try testing.expectEqual(@as(?ShutdownMode, .force), harness.endpoint.shutdown);
+    try testing.expect(try harness.endpoint.shutdownComplete());
+    try testing.expectEqual(@as(usize, 2), noticed.lines.items.len);
+    try testing.expect(std.mem.startsWith(u8, noticed.lines.items[1], "oapx: forced shutdown; cut off: s1/"));
 }
 
 test "a line that is not one JSON object is a framing defect" {

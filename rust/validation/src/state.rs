@@ -1,3 +1,5 @@
+mod admissions;
+mod interactions;
 mod runs;
 
 use std::collections::{HashMap, HashSet};
@@ -29,6 +31,10 @@ pub(crate) struct State {
     runs: HashMap<String, runs::Run>,
     active: HashMap<String, String>,
     late_cancels: HashSet<String>,
+    recoveries: HashMap<String, admissions::Recovery>,
+    initialized: bool,
+    participants: HashSet<String>,
+    features: HashMap<String, SupportLevel>,
 }
 
 fn payload<T: DeserializeOwned + Default>(e: &Envelope) -> T {
@@ -55,7 +61,8 @@ id!(
     EnvelopeId,
     InteractionId,
     MessageId,
-    ToolCallId
+    ToolCallId,
+    ParticipantId
 );
 
 fn s<T: Id>(id: &T) -> String {
@@ -259,6 +266,10 @@ impl State {
             runs: HashMap::new(),
             active: HashMap::new(),
             late_cancels: HashSet::new(),
+            recoveries: HashMap::new(),
+            initialized: false,
+            participants: HashSet::new(),
+            features: HashMap::new(),
         }
     }
 
@@ -358,7 +369,10 @@ impl State {
             return;
         }
         self.payload_scope(at, e);
+        self.record_features(e);
+        self.feature_for(at, e);
         self.run_dispatch(at, e);
+        self.participants_from(at, e);
         let t = &e.envelope_type;
         if *t == EnvelopeType::CAPABILITIES_RESPONSE {
             self.current_capability = revision;
@@ -651,6 +665,7 @@ mod tests {
             let raised: Vec<&str> = state
                 .diagnostics
                 .iter()
+                .filter(|d| d.code == codes::SCOPE_MISMATCH)
                 .map(|d| d.pointer.as_str())
                 .collect();
             assert_eq!(

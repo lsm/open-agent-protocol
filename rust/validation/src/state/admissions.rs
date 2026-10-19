@@ -1,0 +1,342 @@
+use std::collections::HashSet;
+
+use oap_protocol::*;
+
+use super::interactions::Interaction;
+use super::runs::Run;
+use super::{os, payload, s, State};
+use crate::codes;
+
+pub(super) struct Recovery {
+    run: String,
+    gap: bool,
+    cursor: Option<u64>,
+    first_replay_seen: bool,
+    state_checked: bool,
+}
+
+impl State {
+    fn resume_sequence(&self, session: &str, run: &str, as_of: Option<u64>) -> u64 {
+        if let Some(as_of) = as_of {
+            return as_of + 1;
+        }
+        match self.recoveries.get(session) {
+            Some(rec) if !rec.gap && (rec.run.is_empty() || rec.run == run) => {
+                rec.cursor.map_or(1, |cursor| cursor + 1)
+            }
+            _ => 1,
+        }
+    }
+
+    fn introduce_recovered_run(&mut self, at: (usize, usize), id: String, run: Run) {
+        let run = Run {
+            admitted: true,
+            recovered: true,
+            last: at,
+            ..run
+        };
+        self.runs.insert(id, run);
+    }
+
+    pub(super) fn replay_cursor(&mut self, at: (usize, usize), e: &Envelope, run_id: &str) {
+        let session = self
+            .runs
+            .get(run_id)
+            .map(|run| run.session.clone())
+            .unwrap_or_default();
+        let Some(rec) = self.recoveries.get_mut(&session) else {
+            return;
+        };
+        if rec.gap || rec.first_replay_seen || rec.run != run_id {
+            return;
+        }
+        rec.first_replay_seen = true;
+        let Some(cursor) = rec.cursor.filter(|cursor| e.sequence != Some(cursor + 1)) else {
+            return;
+        };
+        let actual = e
+            .sequence
+            .map_or_else(|| "missing".to_owned(), |n| n.to_string());
+        let expected = (cursor + 1).to_string();
+        self.add_expected(
+            codes::SEQUENCE_GAP,
+            at,
+            e,
+            "/sequence",
+            "retained replay must begin immediately after the declared cursor",
+            &expected,
+            &actual,
+            &[],
+        );
+    }
+
+    pub(super) fn open_response(&mut self, at: (usize, usize), e: &Envelope) {
+        let p: SessionState = payload(e);
+        let session = s(&p.session_id);
+        if let Some(recovery) = p.recovery.as_ref().filter(|recovery| recovery.recovered) {
+            let rec = Recovery {
+                run: os(&recovery.previous_run_id),
+                gap: recovery.reason == "replay_gap",
+                cursor: recovery.resume_cursor.parse().ok(),
+                first_replay_seen: false,
+                state_checked: false,
+            };
+            self.recoveries.insert(session.clone(), rec);
+            let mut listed = HashSet::new();
+            for entry in &p.active_runs {
+                let id = s(&entry.run_id);
+                listed.insert(id.clone());
+                if self.runs.contains_key(&id) {
+                    continue;
+                }
+                let holds_place = entry.as_of_sequence.is_none() || entry.queue_position.is_some();
+                let queued = entry.status == RunStatus::QUEUED
+                    || (entry.status == RunStatus::CANCELLING && holds_place);
+                let next = self.resume_sequence(&session, &id, entry.as_of_sequence);
+                let run = Run {
+                    session: session.clone(),
+                    started: !queued,
+                    next,
+                    status: entry.status.clone(),
+                    interactions: entry
+                        .pending_interactions
+                        .iter()
+                        .map(|id| (s(id), Interaction::opaque()))
+                        .collect(),
+                    ..Run::default()
+                };
+                self.introduce_recovered_run(at, id, run);
+            }
+            let active = os(&p.active_run_id);
+            if !active.is_empty() && !listed.contains(&active) && !self.runs.contains_key(&active) {
+                let next = self.resume_sequence(&session, &active, None);
+                let run = Run {
+                    session: session.clone(),
+                    started: true,
+                    next,
+                    status: RunStatus::RUNNING,
+                    prior_unknown: true,
+                    ..Run::default()
+                };
+                self.introduce_recovered_run(at, active, run);
+            }
+        }
+        self.compound_open(at, e, &p);
+        self.apply_state_document(&session, &p);
+    }
+
+    fn compound_open(&mut self, at: (usize, usize), e: &Envelope, p: &SessionState) {
+        let reply = os(&e.in_reply_to);
+        let Some(message) = self
+            .requests
+            .get(&reply)
+            .filter(|request| request.envelope_type == EnvelopeType::SESSION_OPEN_REQUEST)
+            .and_then(|request| payload::<SessionOpenRequest>(&request.envelope).message)
+        else {
+            return;
+        };
+        let fresh: Vec<&ActiveRun> = p
+            .active_runs
+            .iter()
+            .filter(|entry| !self.runs.contains_key(entry.run_id.as_str()))
+            .collect();
+        let [entry] = fresh.as_slice() else { return };
+        let queued = entry.status == RunStatus::QUEUED;
+        let admitted = MessageSubmitResponse {
+            session_id: p.session_id.clone(),
+            accepted: true,
+            submission_id: SubmissionId::from(reply.as_str()),
+            requested_delivery: message.delivery,
+            effective_delivery: if queued {
+                EffectiveDeliveryMode::QUEUE
+            } else {
+                EffectiveDeliveryMode::START
+            },
+            admission: if queued {
+                Admission::QUEUED
+            } else {
+                Admission::STARTED
+            },
+            run_id: Some(entry.run_id.clone()),
+            status: entry.status.clone(),
+            ..MessageSubmitResponse::default()
+        };
+        self.admit_submission(at, e, admitted);
+    }
+
+    pub(super) fn state_document(&mut self, at: (usize, usize), e: &Envelope) {
+        let p: SessionState = payload(e);
+        let session = s(&p.session_id);
+        let active = os(&p.active_run_id);
+        let introduce = match self.recoveries.get_mut(&session) {
+            Some(rec) if !rec.state_checked => {
+                rec.state_checked = true;
+                !rec.gap && !active.is_empty()
+            }
+            _ => false,
+        };
+        if introduce && !self.runs.contains_key(&active) {
+            let next = self.resume_sequence(&session, &active, None);
+            let run = Run {
+                session: session.clone(),
+                started: true,
+                next,
+                status: RunStatus::RUNNING,
+                prior_unknown: true,
+                ..Run::default()
+            };
+            self.introduce_recovered_run(at, active, run);
+        }
+        self.apply_state_document(&session, &p);
+    }
+
+    fn apply_state_document(&mut self, session: &str, p: &SessionState) {
+        let active = os(&p.active_run_id);
+        if let Some(previous) = self.active.get(session) {
+            if *previous != active && self.runs.get(previous).is_some_and(|run| !run.terminal) {
+                return;
+            }
+        }
+        if active.is_empty() {
+            self.active.remove(session);
+        } else {
+            self.active.insert(session.to_owned(), active);
+        }
+    }
+
+    pub(super) fn compact_response(&mut self, at: (usize, usize), e: &Envelope) {
+        let p: SessionCompactResponse = payload(e);
+        let reply = os(&e.in_reply_to);
+        let Some(request) = self
+            .requests
+            .get(&reply)
+            .filter(|r| r.envelope_type == EnvelopeType::SESSION_COMPACT_REQUEST)
+        else {
+            return;
+        };
+        let request: SessionCompactRequest = payload(&request.envelope);
+        let run_id = os(&p.run_id);
+        self.check_scope(at, e, p.session_id.as_str(), &run_id);
+        if p.session_id != request.session_id {
+            self.add_expected(
+                codes::SCOPE_MISMATCH,
+                at,
+                e,
+                "/payload/session_id",
+                "compaction response must answer its request's session",
+                request.session_id.as_str(),
+                p.session_id.as_str(),
+                &[&reply],
+            );
+        }
+        let requested = if request.delivery.is_empty() {
+            RequestedDeliveryMode::AUTO
+        } else {
+            request.delivery
+        };
+        if p.requested_delivery != requested {
+            self.add_expected(
+                codes::SCOPE_MISMATCH,
+                at,
+                e,
+                "/payload/requested_delivery",
+                "compaction response must repeat the requested delivery",
+                requested.as_str(),
+                p.requested_delivery.as_str(),
+                &[&reply],
+            );
+        }
+        let refused = |message: &str| {
+            (
+                EnvelopeType::ERROR_RESPONSE.as_str().to_owned(),
+                message.to_owned(),
+            )
+        };
+        let refusal = if requested != RequestedDeliveryMode::AUTO
+            && requested != RequestedDeliveryMode::QUEUE
+        {
+            Some(refused("a compaction takes auto or queue delivery, so a steer or btw compaction is refused"))
+        } else if !p.accepted {
+            Some(refused(
+                "a refused compaction is a correlated error.response, not a compaction response",
+            ))
+        } else {
+            None
+        };
+        if let Some((expected, message)) = refusal {
+            self.add_expected(
+                codes::ILLEGAL_RUN_TRANSITION,
+                at,
+                e,
+                "/payload/accepted",
+                &message,
+                &expected,
+                e.envelope_type.as_str(),
+                &[&reply],
+            );
+            return;
+        }
+        let queued = p.admission == Admission::QUEUED;
+        let shape = if run_id.is_empty() {
+            Some((
+                "/payload/run_id",
+                "an accepted compaction must reserve a run identity",
+                true,
+            ))
+        } else if p.admission == Admission::STARTED {
+            (p.effective_delivery != EffectiveDeliveryMode::START || p.status != RunStatus::RUNNING)
+                .then_some((
+                    "/payload/admission",
+                    "a started compaction resolves to effective start with a running run",
+                    false,
+                ))
+        } else if queued {
+            (p.effective_delivery != EffectiveDeliveryMode::QUEUE || p.status != RunStatus::QUEUED)
+                .then_some((
+                    "/payload/admission",
+                    "a queued compaction resolves to effective queue with a queued run",
+                    false,
+                ))
+        } else {
+            Some((
+                "/payload/admission",
+                "a compaction admits a started or queued run, never a steered or side one",
+                true,
+            ))
+        };
+        if let Some((pointer, message, stop)) = shape {
+            self.add(codes::ILLEGAL_RUN_TRANSITION, at, e, pointer, message);
+            if stop {
+                return;
+            }
+        }
+        if self.runs.contains_key(&run_id) {
+            self.add(
+                codes::ILLEGAL_RUN_TRANSITION,
+                at,
+                e,
+                "/payload/run_id",
+                "run was admitted more than once",
+            );
+            return;
+        }
+        let session = s(&p.session_id);
+        let run = Run {
+            session: session.clone(),
+            next: 1,
+            admitted: true,
+            status: RunStatus::QUEUED,
+            last: at,
+            ..Run::default()
+        };
+        self.runs.insert(run_id.clone(), run);
+        if !queued
+            && self
+                .active
+                .get(&session)
+                .is_none_or(|active| self.runs.get(active).is_none_or(|run| run.terminal))
+        {
+            self.active.insert(session, run_id);
+        }
+    }
+}
