@@ -100,8 +100,8 @@ only a port. None is a protocol question.
 lets a `tool_result` part and `action.call.completed` carry a content-part
 list, images gated on `content.image`. `action.call.resolve.request`, by which
 a control layer answers a call to a tool it provides, also carries a free JSON
-`result`, and 0060 does not say whether it takes the same form. No tree judges
-the shape today.
+`result`, and nothing said whether it takes the same form. No tree judges the
+shape today.
 
 - (a) The same reading as 0060: a content-part list is allowed, its images
   gated on the endpoint's `content.image`.
@@ -110,3 +110,5 @@ the shape today.
 Recommendation: (a). The endpoint reports a provided tool's outcome on
 `action.call.completed`, which 0060 already lets carry an image, so (b) would
 leave a control layer unable to supply what the endpoint is allowed to report.
+Settled by
+[Decision 0060](../decisions/0060-a-tool-result-may-carry-content-parts.md).
