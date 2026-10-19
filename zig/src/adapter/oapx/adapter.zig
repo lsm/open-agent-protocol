@@ -18,7 +18,7 @@ const local_loop = @import("local_loop.zig");
 pub const LocalLoop = local_loop.LocalLoop;
 
 pub const endpoint_id = "oapx.agent";
-pub const capability_revision = "oapx-agent-v15";
+pub const capability_revision = "oapx-agent-v16";
 const native_source = "oapx";
 const native_sources = [_]oap_types.ToolSourceDescriptor{.{ .id = native_source, .kind = "native", .display_name = "oapx" }};
 
@@ -367,6 +367,7 @@ pub const Session = struct {
     participant: []const u8,
     runtime: *session_runtime.SessionRuntime,
     loop: *local_loop.LocalLoop,
+    jobs: *local_tools.shell.Jobs,
     engine: ?*permission.PermissionEngine = null,
     updated_at_ms: i64,
     recovered: bool = false,
@@ -390,15 +391,21 @@ pub const Session = struct {
         errdefer gpa.destroy(runtime);
         const loop = try gpa.create(local_loop.LocalLoop);
         errdefer gpa.destroy(loop);
+        const jobs = try gpa.create(local_tools.shell.Jobs);
+        errdefer gpa.destroy(jobs);
+        jobs.* = local_tools.shell.Jobs.init(gpa);
+        errdefer jobs.deinit();
         self.keep = std.heap.ArenaAllocator.init(gpa);
         errdefer self.keep.deinit();
         const offers_input = offersUserInput(request.metadata);
         const provided = try admitProvidedTools(self.keep.allocator(), arena, request.participant, owner.options.tools, offers_input, request.tools_json, refusal);
-        const native_count = owner.options.tools.len + @intFromBool(offers_input);
+        const job_tools = local_tools.shell.sessionTools(jobs);
+        const native_count = job_tools.len + owner.options.tools.len + @intFromBool(offers_input);
         const session_tools = try gpa.alloc(agent.AgentTool, native_count + provided.len);
         defer gpa.free(session_tools);
-        @memcpy(session_tools[0..owner.options.tools.len], owner.options.tools);
-        if (offers_input) session_tools[owner.options.tools.len] = inputTool(self);
+        @memcpy(session_tools[0..job_tools.len], &job_tools);
+        @memcpy(session_tools[job_tools.len..][0..owner.options.tools.len], owner.options.tools);
+        if (offers_input) session_tools[job_tools.len + owner.options.tools.len] = inputTool(self);
         for (provided, session_tools[native_count..]) |definition, *slot| slot.* = providedTool(self, definition);
         var options = sessionOptions(owner.options, request.metadata);
         options.models = owner.catalog orelse owner.options.models;
@@ -427,7 +434,7 @@ pub const Session = struct {
         };
         errdefer runtime.deinit();
         const kept = self.keep;
-        self.* = .{ .owner = owner, .gpa = gpa, .keep = kept, .id = "", .participant = "", .runtime = runtime, .loop = loop, .engine = engine, .updated_at_ms = owner.now_ms(), .catalog_seen = owner.catalog_generation, .provided = provided };
+        self.* = .{ .owner = owner, .gpa = gpa, .keep = kept, .id = "", .participant = "", .runtime = runtime, .loop = loop, .jobs = jobs, .engine = engine, .updated_at_ms = owner.now_ms(), .catalog_seen = owner.catalog_generation, .provided = provided };
         const keep = self.keep.allocator();
         self.participant = try keep.dupe(u8, request.participant);
         self.id = if (request.session_id.len > 0) try keep.dupe(u8, request.session_id) else try owner.nextID(keep, "session");
@@ -679,6 +686,8 @@ pub const Session = struct {
         gpa.destroy(self.runtime);
         self.loop.deinit();
         gpa.destroy(self.loop);
+        self.jobs.deinit();
+        gpa.destroy(self.jobs);
         self.call_gate.deinit(gpa);
         if (self.engine) |engine| {
             engine.deinit();
@@ -2154,6 +2163,7 @@ fn admissibleDialect(schema: ?std.json.Value) bool {
 
 fn namedIn(tools: []const agent.AgentTool, offers_input: bool, provided: []const oap_types.ToolDefinition, name: []const u8) bool {
     for (local_tools.defaultTools()) |tool| if (std.mem.eql(u8, tool.name, name)) return true;
+    if (std.mem.eql(u8, name, local_tools.shell.job_tool_name)) return true;
     for (tools) |tool| if (std.mem.eql(u8, tool.name, name)) return true;
     if (offers_input and std.mem.eql(u8, name, "request_user_input")) return true;
     for (provided) |definition| if (std.mem.eql(u8, definition.name, name)) return true;
@@ -2813,6 +2823,47 @@ test "the tool catalog is the loop's own tools, each owned by the endpoint" {
         if (std.mem.eql(u8, tool.name, "echo_tool")) saw_echo = true;
     }
     try testing.expect(saw_echo);
+}
+
+test "a background shell job the session started keeps running after its call and ends when the session closes" {
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const root = try tmp.dir.realPathFileAlloc(testing.io, ".", testing.allocator);
+    defer testing.allocator.free(root);
+    var script = Script{};
+    var harness: Harness = undefined;
+    try harness.init(&script);
+    var open = true;
+    defer if (open) harness.deinit();
+    const session = Session.cast(harness.session.ptr);
+    var shell_tool: ?agent.AgentTool = null;
+    for (session.runtime.availableTools()) |tool| if (std.mem.eql(u8, tool.name, "Shell")) {
+        shell_tool = tool;
+    };
+    const tool = shell_tool orelse return error.TestUnexpectedResult;
+    const args = try std.fmt.allocPrint(testing.allocator, "{{\"workspace_root\":\"{s}\",\"command\":\"while true; do echo tick; sleep 0.05; done\",\"run_in_background\":true}}", .{root});
+    defer testing.allocator.free(args);
+    var result = try tool.runtime_execute.?(tool.runtime_ctx, "call-bg", args, null, null, null, testing.allocator);
+    defer result.deinit(testing.allocator);
+    const output = try testing.allocator.dupe(u8, session.jobs.list.items[0].output);
+    defer testing.allocator.free(output);
+
+    var grew = false;
+    const by = compat.time.nowMillis() + 5_000;
+    var first: usize = 0;
+    while (!grew and compat.time.nowMillis() < by) {
+        compat.time.sleepMs(50);
+        const now = (tmp.dir.statFile(testing.io, output, .{}) catch continue).size;
+        if (first == 0) first = now else grew = now > first;
+    }
+    try testing.expect(grew);
+
+    harness.deinit();
+    open = false;
+    const closed_at = (try tmp.dir.statFile(testing.io, output, .{})).size;
+    compat.time.sleepMs(300);
+    try testing.expectEqual(closed_at, (try tmp.dir.statFile(testing.io, output, .{})).size);
 }
 
 test "an open that attaches sources is refused, since attaching is not advertised" {

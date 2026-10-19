@@ -1,7 +1,7 @@
 const std = @import("std");
 const agent = @import("agent");
 const permission = @import("permission");
-const shell = @import("tools/shell");
+pub const shell = @import("tools/shell");
 const file = @import("tools/file");
 const edit = @import("tools/edit");
 pub const mcp_bridge = @import("tools/mcp_bridge");
@@ -45,7 +45,6 @@ pub const ToolRegistry = struct {
     pub fn list(self: *const ToolRegistry) []const agent.AgentTool {
         return self.tools.items;
     }
-
 };
 
 pub fn defaultTools() []const agent.AgentTool {

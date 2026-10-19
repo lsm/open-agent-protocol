@@ -189,6 +189,7 @@ fn buildBody(model: ai_types.Model, context: ai_types.Context, options: ai_types
         .target_api = model.api,
         .target_provider = model.provider,
         .target_model_id = model.id,
+        .target_input = if (model.image_input_known) model.input else null,
         .insert_synthetic_results = true,
         .tools = context.tools,
     });
@@ -311,6 +312,7 @@ fn buildBody(model: ai_types.Model, context: ai_types.Context, options: ai_types
                         try w.writeStringField("name", tc.name);
                         try w.writeStringField("arguments", try ai_types.replayableToolArguments(allocator, tc.arguments_json));
                         try w.endObject();
+                        try w.endObject();
                     }
                 }
                 try w.endArray();
@@ -334,6 +336,7 @@ fn buildBody(model: ai_types.Model, context: ai_types.Context, options: ai_types
             try w.writeStringField("description", tool.description);
             try w.writeKey("parameters");
             try w.writeRawJson(tool.parameters_schema_json);
+            try w.endObject();
             try w.endObject();
         }
         try w.endArray();
@@ -1517,4 +1520,34 @@ test "ollamaErrorDetail surfaces the API message, and nothing else" {
     try std.testing.expect((try ollamaErrorDetail(std.testing.allocator, "<html>oops</html>")) == null);
     try std.testing.expect((try ollamaErrorDetail(std.testing.allocator, "{\"error\":\"\"}")) == null);
     try std.testing.expect((try ollamaErrorDetail(std.testing.allocator, "{\"error\":{\"message\":\"nested\"}}")) == null);
+}
+
+test "images in a user message and a tool result reach a vision model in a well-formed ollama body" {
+    const allocator = std.testing.allocator;
+    const model: ai_types.Model = .{
+        .id = "vision-test",
+        .name = "Vision Test",
+        .api = "ollama",
+        .provider = "vision",
+        .base_url = "https://example.invalid",
+        .reasoning = false,
+        .input = &.{ "text", "image" },
+        .cost = .{ .input = 0, .output = 0, .cache_read = 0, .cache_write = 0 },
+        .context_window = 128000,
+        .max_tokens = 8192,
+    };
+    const asked = [_]ai_types.UserContentPart{ .{ .text = .{ .text = "what is this" } }, .{ .image = .{ .data = "aGk=", .mime_type = "image/png" } } };
+    const call = [_]ai_types.AssistantContent{.{ .tool_call = .{ .id = "call-1", .name = "Read", .arguments_json = "{}" } }};
+    const result = [_]ai_types.UserContentPart{ .{ .text = .{ .text = "image a.png" } }, .{ .image = .{ .data = "aGk=", .mime_type = "image/png" } } };
+    const messages = [_]ai_types.Message{
+        .{ .user = .{ .content = .{ .parts = &asked }, .timestamp = 0 } },
+        .{ .assistant = .{ .content = &call, .api = model.api, .provider = model.provider, .model = model.id, .usage = .{}, .stop_reason = .tool_use, .timestamp = 0 } },
+        .{ .tool_result = .{ .tool_call_id = "call-1", .tool_name = "Read", .content = &result, .is_error = false, .timestamp = 0 } },
+    };
+    const tools = [_]ai_types.Tool{.{ .name = "Read", .description = "read", .parameters_schema_json = "{\"type\":\"object\"}" }};
+    const body = try buildBody(model, .{ .messages = &messages, .tools = &tools }, .{}, allocator);
+    defer allocator.free(body);
+    var parsed = try std.json.parseFromSlice(std.json.Value, allocator, body, .{});
+    defer parsed.deinit();
+    try std.testing.expectEqual(@as(usize, 2), std.mem.count(u8, body, "aGk="));
 }

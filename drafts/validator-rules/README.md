@@ -15,8 +15,12 @@ One file per decision group, named for its first decision, as
 
 | File | Decisions |
 | --- | --- |
+| [`0001-core.md`](0001-core.md) | 0001, 0002 |
+| [`0004-packs.md`](0004-packs.md) | 0004 |
+| [`0005-run-controls.md`](0005-run-controls.md) | 0005, 0019, 0021, 0022, 0023, 0024, 0031, 0034 |
 | [`0006-models.md`](0006-models.md) | 0006, 0014, 0028, 0035 |
 | [`0007-queue-open-cancel.md`](0007-queue-open-cancel.md) | 0007, 0009, 0041 |
+| [`0008-tool-sources.md`](0008-tool-sources.md) | 0008, 0011, 0048 |
 | [`0010-amendments-auth.md`](0010-amendments-auth.md) | 0010, 0012, 0013, 0026, 0029, 0043 |
 
 ## Rows
