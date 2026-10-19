@@ -32,6 +32,9 @@ const claimed_cases = [_]Case{
     .{ .id = "duplicate-terminal", .path = "cases/duplicate-terminal", .ledger_fixture = "duplicate-terminal" },
     .{ .id = "process-exit", .path = "cases/process-exit", .ledger_fixture = "process-exit" },
     .{ .id = "model-per-turn", .path = "cases/model-per-turn", .ledger_fixture = "model-per-turn" },
+    .{ .id = "structured-output", .path = "cases/structured-output", .ledger_fixture = "structured-output" },
+    .{ .id = "structured-output-nonconforming", .path = "cases/structured-output-nonconforming", .ledger_fixture = "structured-output-nonconforming" },
+    .{ .id = "token-usage", .path = "cases/token-usage", .ledger_fixture = "token-usage" },
 };
 
 const thread_result = "{\"thread\":{\"id\":\"native-thread\"}}";
@@ -513,8 +516,13 @@ fn runCase(allocator: std.mem.Allocator, registry: *const jsonschema.Registry, r
     try reducer.open();
     try answerLastCall(&reducer, thread_result);
     const model_id = textMember(definition, "model_id");
-    try reducer.submit(.{ .messages = &.{.{ .text = "hello" }}, .model_id = if (model_id.len != 0) model_id else null });
+    const output_schema: ?[]const u8 = if (member(definition, "output_schema")) |schema| try std.json.Stringify.valueAlloc(arena, schema, .{}) else null;
+    try reducer.submit(.{ .messages = &.{.{ .text = "hello" }}, .model_id = if (model_id.len != 0) model_id else null, .output_schema = output_schema });
     const turn_start = try parseDocument(arena, reducer.writes.items[reducer.writes.items.len - 1]);
+    if (output_schema) |schema| {
+        const sent = member(member(turn_start, "params").?, "outputSchema") orelse return error.TurnStartOutputSchemaMissing;
+        if (!std.mem.eql(u8, try std.json.Stringify.valueAlloc(arena, sent, .{}), schema)) return error.TurnStartOutputSchemaDiffers;
+    }
     try answerLastCall(&reducer, turn_result);
     const admission = try lastAdmission(&reducer);
     if (model_id.len != 0) {

@@ -13,6 +13,12 @@ pub const code_pending_steer_at_terminal = "pending_steer_at_terminal";
 
 pub const code_duplicate_envelope_id = "duplicate_envelope_id";
 pub const code_undeclared_replay_gap = "undeclared_replay_gap";
+pub const code_unmatched_response = "unmatched_response";
+pub const code_missing_response = "missing_response";
+pub const code_duplicate_response = "duplicate_response";
+pub const code_unhonoured_capability = "unhonoured_capability";
+pub const code_auth_flow_order = "auth_flow_order";
+pub const code_missing_auth_terminal = "missing_auth_terminal";
 pub const code_illegal_run_transition = "illegal_run_transition";
 pub const code_missing_run_started = "missing_run_started";
 pub const code_missing_run_terminal = "missing_run_terminal";
@@ -87,7 +93,9 @@ pub const implemented = [_][]const u8{
     code_undisclosed_provide_limit,       code_attachment_field_in_catalog,     code_session_list_over_limit,
     code_session_list_order,              code_duplicate_session_entry,         code_duplicate_message_completion,
     code_content_after_completion,        code_transcript_over_limit,           code_duplicate_transcript_entry,
-    code_transcript_gap_mismatch,
+    code_transcript_gap_mismatch,         code_unmatched_response,              code_missing_response,
+    code_duplicate_response,              code_unhonoured_capability,           code_auth_flow_order,
+    code_missing_auth_terminal,
 };
 
 pub fn isImplemented(code: []const u8) bool {
@@ -237,6 +245,8 @@ const Run = struct {
     admitted_queued: bool = false,
     order: usize = 0,
     admitted_model: []const u8 = "",
+    admitted_at: usize = 0,
+    submit_request: []const u8 = "",
     controls: Controls = .{},
     deferred_controls: bool = false,
     status: []const u8 = "",
@@ -417,6 +427,9 @@ const Pending = struct {
     model_listed: bool = false,
     limit_refusal: ?Expectation = null,
     model_query: bool = false,
+    served: bool = false,
+    tools_query: bool = false,
+    subscribe_served: bool = false,
     list_limit: ?u64 = null,
     list_cursor: bool = false,
     satisfies: bool = false,
@@ -461,6 +474,13 @@ const Snapshot = struct {
     limits: ?Limits,
 };
 
+const AuthFlow = struct {
+    provider: []const u8,
+    next: u64 = 1,
+    terminal: bool = false,
+    index: usize,
+};
+
 const Recovery = struct {
     run: []const u8 = "",
     gap: bool = false,
@@ -479,6 +499,7 @@ const Request = struct {
     carries_message: bool = false,
     responded: bool = false,
     gates: []const Gate = &.{},
+    index: usize = 0,
 };
 
 pub const PackedType = struct {
@@ -524,6 +545,7 @@ pub const Machine = struct {
     recoveries: std.StringArrayHashMapUnmanaged(*Recovery) = .empty,
     requests: std.StringArrayHashMapUnmanaged(Request) = .empty,
     late_cancels: std.StringArrayHashMapUnmanaged(void) = .empty,
+    auth_flows: std.StringArrayHashMapUnmanaged(*AuthFlow) = .empty,
     packs: Packs = .{},
     features: std.StringArrayHashMapUnmanaged([]const u8) = .empty,
     scopes: std.StringArrayHashMapUnmanaged([]const u8) = .empty,
@@ -555,6 +577,7 @@ pub const Machine = struct {
         self.late_cancels.deinit(self.allocator);
         self.runs.deinit(self.allocator);
         self.recoveries.deinit(self.allocator);
+        self.auth_flows.deinit(self.allocator);
         self.requests.deinit(self.allocator);
         self.features.deinit(self.allocator);
         self.scopes.deinit(self.allocator);
@@ -609,6 +632,7 @@ pub const Machine = struct {
 
         if (self.isRequestType(declared)) {
             try self.requests.put(self.allocator, id, .{
+                .index = index,
                 .declared = declared,
                 .payload = payload,
                 .revision = field(envelope, "capability_revision"),
@@ -734,7 +758,18 @@ pub const Machine = struct {
             unadvertised = true;
             if (std.mem.eql(u8, gate.key, named)) named_by_refusal = true;
         }
-        if (!unadvertised) return;
+        if (!unadvertised) {
+            const refused_with = memberString(raised, "code");
+            for (gates) |gate| {
+                if (!gate.typed) continue;
+                for (gate.refusals) |declared_code| {
+                    if (std.mem.eql(u8, declared_code, refused_with)) return;
+                }
+                try self.add(code_unhonoured_capability, index);
+                return;
+            }
+            return;
+        }
         if (std.mem.eql(u8, memberString(raised, "code"), error_unsupported_feature) and
             std.mem.eql(u8, memberString(details, "reason"), reason_unadvertised) and
             named_by_refusal) return;
@@ -742,6 +777,10 @@ pub const Machine = struct {
     }
 
     fn dispatch(self: *Machine, index: usize, envelope: std.json.Value, declared: []const u8, payload: std.json.Value) !void {
+        if (std.mem.startsWith(u8, declared, "auth.login.")) {
+            try self.authEnvelope(index, envelope, declared, payload);
+            return;
+        }
         if (std.mem.eql(u8, declared, "protocol.initialize.request")) {
             if (member(payload, "participant")) |who| {
                 const named = memberString(who, "id");
@@ -836,6 +875,7 @@ pub const Machine = struct {
         }
         if (std.mem.eql(u8, declared, "action.tools.list.request")) {
             try self.gatedRequest(index, envelope, payload, feature_tools_list, "/payload");
+            if (self.submits.get(field(envelope, "id"))) |query| query.tools_query = true;
             return;
         }
         if (std.mem.eql(u8, declared, "action.tools.list.response")) {
@@ -899,7 +939,7 @@ pub const Machine = struct {
             std.mem.eql(u8, declared, "session.state.updated"))
         {
             try self.steerState(index, envelope, payload);
-            try self.stateDocument(index, payload, std.mem.eql(u8, declared, "session.state.updated"));
+            try self.stateDocument(index, envelope, payload, std.mem.eql(u8, declared, "session.state.updated"));
             return;
         }
         if (std.mem.eql(u8, declared, "run.cancel.request")) {
@@ -916,10 +956,19 @@ pub const Machine = struct {
     }
 
     fn correlate(self: *Machine, index: usize, envelope: std.json.Value, declared: []const u8) !bool {
-        const request = self.requests.getPtr(field(envelope, "in_reply_to")) orelse return false;
+        const request = self.requests.getPtr(field(envelope, "in_reply_to")) orelse {
+            try self.add(code_unmatched_response, index);
+            return false;
+        };
         const failure = std.mem.eql(u8, declared, "error.response");
-        if (!failure and !self.answers(request.declared, declared)) return false;
-        if (request.responded) return true;
+        if (!failure and !self.answers(request.declared, declared)) {
+            try self.add(code_unmatched_response, index);
+            return false;
+        }
+        if (request.responded) {
+            try self.add(code_duplicate_response, index);
+            return true;
+        }
         request.responded = true;
         if (!failure and
             !std.mem.eql(u8, request.declared, "protocol.initialize.request") and
@@ -1182,6 +1231,7 @@ pub const Machine = struct {
             };
             return;
         }
+        pending.served = true;
     }
 
     fn reopenGate(self: *Machine, index: usize, envelope: std.json.Value, payload: std.json.Value, pending: *Pending) !void {
@@ -1361,7 +1411,9 @@ pub const Machine = struct {
                 .detail_value = key,
                 .diagnostic = code_degraded_without_optin,
             });
+            return;
         }
+        pending.subscribe_served = true;
     }
 
     fn sessionOpenRequest(self: *Machine, index: usize, envelope: std.json.Value, payload: std.json.Value) !void {
@@ -2662,6 +2714,8 @@ pub const Machine = struct {
         const request = field(envelope, "in_reply_to");
         const pending = self.submits.get(request) orelse return false;
         const raised = member(payload, "error") orelse std.json.Value{ .null = {} };
+        if (pending.subscribe_served and refusesSubscribe(raised)) try self.add(code_unhonoured_capability, index);
+        if (pending.tools_query and pending.served) try self.add(code_unhonoured_capability, index);
         if (self.requests.get(request)) |asked| {
             if (std.mem.eql(u8, asked.declared, "session.open.request") and
                 openLevelRefusal(memberString(raised, "code"))) return true;
@@ -2678,7 +2732,10 @@ pub const Machine = struct {
         }
         if (pending.honour.len != 0) try self.add(pending.honour, index);
         if (pending.control != null or pending.compact_focus != null) return true;
-        if (pending.model_query) return true;
+        if (pending.model_query) {
+            if (pending.served) try self.add(code_unhonoured_capability, index);
+            return true;
+        }
         if (pending.model_listed and
             std.mem.eql(u8, memberString(raised, "code"), error_model_not_found))
         {
@@ -2845,16 +2902,57 @@ pub const Machine = struct {
         }
     }
 
+    fn authEnvelope(self: *Machine, index: usize, envelope: std.json.Value, declared: []const u8, payload: std.json.Value) !void {
+        const flow_id = memberString(payload, "flow_id");
+        if (std.mem.eql(u8, declared, "auth.login.start.response")) {
+            const asked = self.requests.get(field(envelope, "in_reply_to")) orelse return;
+            if (!std.mem.eql(u8, asked.declared, "auth.login.start.request")) return;
+            if (self.auth_flows.contains(flow_id)) {
+                try self.add(code_auth_flow_order, index);
+                return;
+            }
+            const flow = try self.arena.allocator().create(AuthFlow);
+            flow.* = .{ .provider = memberString(asked.payload, "provider_id"), .index = index };
+            try self.auth_flows.put(self.allocator, flow_id, flow);
+            return;
+        }
+        if (std.mem.eql(u8, declared, "auth.login.cancel.response")) {
+            const asked = self.requests.get(field(envelope, "in_reply_to")) orelse return;
+            if (!std.mem.eql(u8, asked.declared, "auth.login.cancel.request")) return;
+            if (!std.mem.eql(u8, flow_id, memberString(asked.payload, "flow_id"))) try self.add(code_scope_mismatch, index);
+            return;
+        }
+        const event = std.mem.eql(u8, declared, "auth.login.event");
+        const completed = std.mem.eql(u8, declared, "auth.login.completed");
+        if (!event and !completed and !std.mem.eql(u8, declared, "auth.login.cancel.request")) return;
+        const flow = self.auth_flows.get(flow_id) orelse {
+            try self.add(code_auth_flow_order, index);
+            return;
+        };
+        if (flow.terminal) {
+            try self.add(code_event_after_terminal, index);
+            return;
+        }
+        if (!event and !completed) return;
+        if (unsigned(envelope, "sequence")) |sequence| {
+            if (sequence < flow.next) try self.add(code_sequence_regression, index);
+            if (sequence > flow.next) try self.add(code_sequence_gap, index);
+            flow.next = sequence + 1;
+        }
+        if (!std.mem.eql(u8, memberString(payload, "provider_id"), flow.provider)) try self.add(code_scope_mismatch, index);
+        if (completed) flow.terminal = true;
+    }
+
     fn steerTarget(self: *Machine, payload: std.json.Value) struct { run: ?*Run, reason: []const u8 } {
         const target = memberString(payload, "target_run_id");
         const session = memberString(payload, "session_id");
         if (target.len != 0) {
             const run = self.runs.get(target) orelse return .{ .run = null, .reason = "unknown_target" };
-            const reason: []const u8 = if (!std.mem.eql(u8, run.session, session)) "cross_session" else if (run.terminal) "terminal" else if (std.mem.eql(u8, run.status, "cancelling")) "not_steerable" else if (!run.started) "queued" else "";
+            const reason: []const u8 = if (!std.mem.eql(u8, run.session, session)) "cross_session" else if (run.terminal) "terminal" else if (std.mem.eql(u8, run.status, "cancelling")) "not_steerable" else if (run.compaction_run and !run.compaction_continue) "no_model_turn" else if (!run.started) "queued" else "";
             return .{ .run = run, .reason = reason };
         }
         for (self.runs.values()) |run| {
-            if (std.mem.eql(u8, run.session, session) and run.started and !run.terminal) return .{ .run = run, .reason = if (std.mem.eql(u8, run.status, "cancelling")) "not_steerable" else "" };
+            if (std.mem.eql(u8, run.session, session) and run.started and !run.terminal) return .{ .run = run, .reason = if (std.mem.eql(u8, run.status, "cancelling")) "not_steerable" else if (run.compaction_run and !run.compaction_continue) "no_model_turn" else "" };
         }
         return .{ .run = null, .reason = "no_active_run" };
     }
@@ -2930,6 +3028,59 @@ pub const Machine = struct {
                 if (value >= 0) track.settled_sequence = @intCast(value);
             }
         }
+    }
+
+    fn checkRequiredRuns(self: *Machine, index: usize, envelope: std.json.Value, payload: std.json.Value) !void {
+        const session_id = memberString(payload, "session_id");
+        const window = self.ids.get(field(envelope, "in_reply_to")) orelse index;
+        const as_of = member(payload, "as_of");
+        var excused: std.StringArrayHashMapUnmanaged(void) = .empty;
+        defer excused.deinit(self.allocator);
+        var anchored: std.StringArrayHashMapUnmanaged(void) = .empty;
+        defer anchored.deinit(self.allocator);
+        if (as_of) |capture| {
+            if (member(capture, "settled")) |settled| {
+                if (settled == .array) for (settled.array.items) |entry| try excused.put(self.allocator, memberString(entry, "run_id"), {});
+            }
+            if (member(capture, "admitted_submit_requests")) |anchors| {
+                if (anchors == .array) for (anchors.array.items) |anchor| {
+                    if (anchor == .string) try anchored.put(self.allocator, anchor.string, {});
+                };
+            }
+        }
+        var required: std.ArrayList(*Run) = .empty;
+        defer required.deinit(self.allocator);
+        for (self.runs.values()) |run| {
+            if (!std.mem.eql(u8, run.session, session_id) or run.terminal) continue;
+            if (excused.contains(run.id)) continue;
+            if (as_of != null and run.admitted_at > window and !anchored.contains(run.submit_request)) continue;
+            try required.append(self.allocator, run);
+        }
+        const listed = member(payload, "active_runs") orelse {
+            if (try self.omissionNeedsEntries(required.items)) try self.add(code_session_state_mismatch, index);
+            return;
+        };
+        if (listed != .array) return;
+        for (required.items) |run| {
+            const present = for (listed.array.items) |entry| {
+                if (std.mem.eql(u8, memberString(entry, "run_id"), run.id)) break true;
+            } else false;
+            if (!present) try self.add(code_session_state_mismatch, index);
+        }
+    }
+
+    fn omissionNeedsEntries(self: *const Machine, required: []const *Run) !bool {
+        if (required.len > 1) return true;
+        for (required) |run| {
+            if (run.admitted_queued and !run.started) return true;
+        }
+        if (!self.advertisedKey(feature_delivery_queue)) return false;
+        for (required) |run| {
+            for (run.interactions.values()) |interaction| {
+                if (!interaction.resolved) return true;
+            }
+        }
+        return false;
     }
 
     fn steerState(self: *Machine, index: usize, envelope: std.json.Value, payload: std.json.Value) !void {
@@ -3032,6 +3183,8 @@ pub const Machine = struct {
             .session = session_id,
             .admitted = true,
             .last_index = index,
+            .admitted_at = index,
+            .submit_request = field(envelope, "in_reply_to"),
             .admitted_queued = queued,
             .order = holder.order.items.len,
             .admitted_model = memberString(payload, "model_id"),
@@ -3164,6 +3317,8 @@ pub const Machine = struct {
             .session = session_id,
             .admitted = true,
             .last_index = index,
+            .admitted_at = index,
+            .submit_request = field(envelope, "in_reply_to"),
             .admitted_queued = queued,
             .order = holder.order.items.len,
             .status = "queued",
@@ -3402,6 +3557,7 @@ pub const Machine = struct {
             .started = shape.started,
             .next = shape.next,
             .last_index = index,
+            .admitted_at = index,
             .recovered = true,
             .admitted_queued = shape.queued,
             .order = holder.order.items.len,
@@ -3426,11 +3582,12 @@ pub const Machine = struct {
         try self.refreshQueueWindows(session_id);
     }
 
-    fn stateDocument(self: *Machine, index: usize, payload: std.json.Value, updated: bool) !void {
+    fn stateDocument(self: *Machine, index: usize, envelope: std.json.Value, payload: std.json.Value, updated: bool) !void {
         const session_id = memberString(payload, "session_id");
         {
             const holder = try self.sessionFor(session_id);
             const reported = memberString(payload, "current_model_id");
+            try self.checkRequiredRuns(index, envelope, payload);
             if (holder.guard_default and !std.mem.eql(u8, reported, holder.expected_default)) {
                 try self.add(code_unapplied_control, index);
             }
@@ -3970,6 +4127,9 @@ pub const Machine = struct {
 
     pub fn close(self: *Machine) !void {
         try self.closeSteerSnapshots();
+        for (self.auth_flows.values()) |flow| {
+            if (!flow.terminal) try self.add(code_missing_auth_terminal, flow.index);
+        }
         for (self.recoveries.values()) |recovery| {
             if (recovery.gap and !recovery.state_checked) try self.add(code_undeclared_replay_gap, recovery.open_index);
         }
@@ -4010,6 +4170,9 @@ pub const Machine = struct {
                 );
             }
         }
+        for (self.requests.values()) |request| {
+            if (!request.responded) try self.add(code_missing_response, request.index);
+        }
     }
 };
 
@@ -4029,6 +4192,15 @@ const mode_session_open = "session_open";
 const mode_session_live = "session_live";
 const feature_tools_provide = "action.tools.provide";
 const feature_open_subscribe = "session.open.subscribe";
+
+fn refusesSubscribe(raised: std.json.Value) bool {
+    const code = memberString(raised, "code");
+    if (!std.mem.eql(u8, code, error_unsupported_feature) and !std.mem.eql(u8, code, error_capability_degraded)) return false;
+    const details = member(raised, "details") orelse return true;
+    const named = member(details, "feature") orelse return true;
+    if (named != .string) return true;
+    return std.mem.eql(u8, named.string, feature_open_subscribe);
+}
 const feature_open_reopen = "session.open.reopen";
 const feature_session_reasoning = "session.reasoning";
 const feature_compaction_policy = "session.compaction.policy";
@@ -4611,6 +4783,20 @@ fn effectiveFor(status: []const u8) []const u8 {
 }
 
 fn codesOf(allocator: std.mem.Allocator, trace: []const u8) ![]const []const u8 {
+    return collectCodes(allocator, trace, true);
+}
+
+fn pairedCodesOf(allocator: std.mem.Allocator, trace: []const u8) ![]const []const u8 {
+    return collectCodes(allocator, trace, false);
+}
+
+fn pairing(code: []const u8) bool {
+    return std.mem.eql(u8, code, code_unmatched_response) or
+        std.mem.eql(u8, code, code_missing_response) or
+        std.mem.eql(u8, code, code_duplicate_response);
+}
+
+fn collectCodes(allocator: std.mem.Allocator, trace: []const u8, fragment: bool) ![]const []const u8 {
     var parsed = try std.json.parseFromSlice(std.json.Value, allocator, trace, .{});
     defer parsed.deinit();
 
@@ -4620,8 +4806,51 @@ fn codesOf(allocator: std.mem.Allocator, trace: []const u8) ![]const []const u8 
     try machine.close();
 
     var out = std.ArrayList([]const u8).empty;
-    for (machine.diagnostics.items) |diagnostic| try out.append(allocator, diagnostic.code);
+    for (machine.diagnostics.items) |diagnostic| {
+        if (fragment and pairing(diagnostic.code)) continue;
+        try out.append(allocator, diagnostic.code);
+    }
     return out.toOwnedSlice(allocator);
+}
+
+fn expectPairedCodes(trace: []const u8, want: []const []const u8) !void {
+    const got = try pairedCodesOf(std.testing.allocator, trace);
+    defer std.testing.allocator.free(got);
+    try std.testing.expectEqual(want.len, got.len);
+    for (want, got) |expected, actual| try std.testing.expectEqualStrings(expected, actual);
+}
+
+const paired_head =
+    \\[{"type":"capabilities.request","id":"q0","payload":{}},
+    \\{"type":"capabilities.response","id":"a0","in_reply_to":"q0","capability_revision":"r1","payload":{"capability_revision":"r1"}},
+;
+
+test "a response to no earlier request is unmatched" {
+    try expectPairedCodes(paired_head ++
+        \\{"type":"session.state.response","id":"a1","in_reply_to":"nobody","payload":{}}]
+    , &.{code_unmatched_response});
+}
+
+test "a response of another request's type is unmatched" {
+    try expectPairedCodes(paired_head ++
+        \\{"type":"session.state.request","id":"q1","payload":{"session_id":"s"}},
+        \\{"type":"session.close.response","id":"a1","in_reply_to":"q1","payload":{}},
+        \\{"type":"session.state.response","id":"a2","in_reply_to":"q1","payload":{}}]
+    , &.{code_unmatched_response});
+}
+
+test "a second response to one request is a duplicate, and an error answer counts as the first" {
+    try expectPairedCodes(paired_head ++
+        \\{"type":"session.state.request","id":"q1","payload":{"session_id":"s"}},
+        \\{"type":"error.response","id":"a1","in_reply_to":"q1","payload":{"error":{"code":"unknown_session","message":"x"}}},
+        \\{"type":"session.state.response","id":"a2","in_reply_to":"q1","payload":{}}]
+    , &.{code_duplicate_response});
+}
+
+test "a request the trace never answers is missing its response" {
+    try expectPairedCodes(paired_head ++
+        \\{"type":"session.state.request","id":"q1","payload":{"session_id":"s"}}]
+    , &.{code_missing_response});
 }
 
 fn expectCodes(trace: []const u8, want: []const []const u8) !void {
@@ -4958,14 +5187,14 @@ test "a rejected submission is one refusal, not a verdict on the controls it car
     , &.{"unavailable_capability"});
 }
 
-test "a catalog query is not a control this machine judges the refusal of" {
+test "a tool catalog an advertising endpoint refuses is unhonoured, and one it never advertised is unavailable" {
     try expectCodes(
         \\[{"type":"capabilities.response","id":"k1","capability_revision":"v1","payload":{"features":
         \\{"action.tools.list":{"level":"native"}}}},
         \\{"type":"action.tools.list.request","id":"t1","capability_revision":"v1","payload":{"session_id":"s"}},
         \\{"type":"error.response","id":"t2","in_reply_to":"t1","payload":{"error":{"code":"unsupported_feature",
         \\"details":{"feature":"action.tools.list"}}}}]
-    , &.{});
+    , &.{code_unhonoured_capability});
 
     try expectCodes(
         \\[{"type":"capabilities.response","id":"k1","capability_revision":"v1","payload":{"features":{}}},
@@ -6624,4 +6853,68 @@ test "authoritative state after a replay gap that drops the recovery is undeclar
 
 test "a replay gap the trace never follows with authoritative state is undeclared" {
     try expectCodes(comptime gapOpened(",\"resume_cursor\":\"7\"") ++ "]", &.{code_undeclared_replay_gap});
+}
+
+test "a catalog query refused by an endpoint advertising models.list is unhonoured" {
+    try expectCodes(
+        \\[{"type":"capabilities.response","id":"c1","capability_revision":"v1","payload":{"features":{"models.list":{"level":"native"}}}},
+        \\{"type":"models.request","id":"m1","capability_revision":"v1","payload":{}},
+        \\{"type":"error.response","id":"m2","in_reply_to":"m1","payload":{"error":{"code":"internal_error","message":"x"}}}]
+    , &.{code_unhonoured_capability});
+}
+
+test "a catalog query refused by an endpoint not advertising models.list is not unhonoured" {
+    try expectCodes(
+        \\[{"type":"capabilities.response","id":"c1","capability_revision":"v1","payload":{"features":{}}},
+        \\{"type":"models.request","id":"m1","capability_revision":"v1","payload":{}},
+        \\{"type":"error.response","id":"m2","in_reply_to":"m1","payload":{"error":{"code":"unsupported_feature","message":"x","details":{"feature":"models.list","reason":"unadvertised"}}}}]
+    , &.{});
+}
+
+test "a subscribe an endpoint advertises, refused inside an open, is unhonoured" {
+    try expectCodes(
+        \\[{"type":"capabilities.response","id":"k1","capability_revision":"v1","payload":{"features":{"session.open.subscribe":{"level":"native"}}}},
+        \\{"type":"session.open.request","id":"o1","capability_revision":"v1","payload":{"session_id":"s","subscribe":true}},
+        \\{"type":"error.response","id":"o2","in_reply_to":"o1","payload":{"error":{"code":"unsupported_feature","message":"x","details":{"feature":"session.open.subscribe"}}}}]
+    , &.{code_unhonoured_capability});
+}
+
+const auth_started =
+    \\[{"type":"auth.login.start.request","id":"a1","payload":{"provider_id":"zai"}},
+    \\{"type":"auth.login.start.response","id":"a2","in_reply_to":"a1","payload":{"flow_id":"f"}},
+;
+
+test "an auth flow that starts, reports and completes in order is clean" {
+    try expectCodes(auth_started ++
+        \\{"type":"auth.login.event","id":"a3","sequence":1,"payload":{"flow_id":"f","provider_id":"zai"}},
+        \\{"type":"auth.login.completed","id":"a4","sequence":2,"payload":{"flow_id":"f","provider_id":"zai"}}]
+    , &.{});
+}
+
+test "an auth event before its flow starts is out of order" {
+    try expectCodes(
+        \\[{"type":"auth.login.event","id":"a3","sequence":1,"payload":{"flow_id":"f","provider_id":"zai"}}]
+    , &.{code_auth_flow_order});
+}
+
+test "a start that reuses an active flow id is out of order" {
+    try expectCodes(auth_started ++
+        \\{"type":"auth.login.start.request","id":"b1","payload":{"provider_id":"zai"}},
+        \\{"type":"auth.login.start.response","id":"b2","in_reply_to":"b1","payload":{"flow_id":"f"}},
+        \\{"type":"auth.login.completed","id":"a4","sequence":1,"payload":{"flow_id":"f","provider_id":"zai"}}]
+    , &.{code_auth_flow_order});
+}
+
+test "an accepted auth flow with no completion is missing its terminal" {
+    try expectCodes(auth_started ++
+        \\{"type":"auth.login.event","id":"a3","sequence":1,"payload":{"flow_id":"f","provider_id":"zai"}}]
+    , &.{code_missing_auth_terminal});
+}
+
+test "an auth flow judges its sequence, its provider and anything after its terminal" {
+    try expectCodes(auth_started ++
+        \\{"type":"auth.login.event","id":"a3","sequence":2,"payload":{"flow_id":"f","provider_id":"other"}},
+        \\{"type":"auth.login.completed","id":"a4","sequence":3,"payload":{"flow_id":"f","provider_id":"zai"}},
+        \\{"type":"auth.login.event","id":"a5","sequence":4,"payload":{"flow_id":"f","provider_id":"zai"}}]
+    , &.{ code_sequence_gap, code_scope_mismatch, code_event_after_terminal });
 }

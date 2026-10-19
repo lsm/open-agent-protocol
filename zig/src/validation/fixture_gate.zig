@@ -3,12 +3,28 @@ const jsonschema = @import("jsonschema");
 const packs_mod = @import("packs");
 const tolerate = @import("tolerate");
 const build_options = @import("build_options");
+const decode = @import("decode");
 
 const judged_floor = 514;
 const tolerant_fixtures = 3;
+const decode_floor = 3;
 
-const unhandled_pack_composition = [_][]const u8{
-};
+fn sameCodes(allocator: std.mem.Allocator, expected: []const std.json.Value, found: []const []const u8) !bool {
+    if (expected.len != found.len) return false;
+    var remaining = std.ArrayList([]const u8).empty;
+    defer remaining.deinit(allocator);
+    try remaining.appendSlice(allocator, found);
+    for (expected) |code| {
+        for (remaining.items, 0..) |held, index| {
+            if (!std.mem.eql(u8, held, code.string)) continue;
+            _ = remaining.swapRemove(index);
+            break;
+        } else return false;
+    }
+    return true;
+}
+
+const unhandled_pack_composition = [_][]const u8{};
 
 fn isUnhandled(id: []const u8) bool {
     for (unhandled_pack_composition) |name| {
@@ -65,6 +81,7 @@ test "the Zig schema phase agrees with the manifest on every fixture it can judg
     var undecodable: usize = 0;
     var unhandled: usize = 0;
     var scoped: usize = 0;
+    var decode_judged: usize = 0;
     var disagreements = std.ArrayList(u8).empty;
     defer disagreements.deinit(allocator);
 
@@ -88,7 +105,20 @@ test "the Zig schema phase agrees with the manifest on every fixture it can judg
         }
         const tolerant = if (entry.get("mode")) |mode| std.mem.eql(u8, mode.string, "tolerant") else false;
         if (std.mem.eql(u8, kind, "load-invalid")) continue;
-        if (std.mem.eql(u8, phase, "decode")) continue;
+        if (std.mem.eql(u8, phase, "decode")) {
+            const traced = try std.fs.path.join(allocator, &.{ root, "fixtures", entry.get("path").?.string });
+            defer allocator.free(traced);
+            const source = try readAll(allocator, traced);
+            defer allocator.free(source);
+            var scratch = std.heap.ArenaAllocator.init(allocator);
+            defer scratch.deinit();
+            const found = try decode.codes(scratch.allocator(), source);
+            if (!try sameCodes(allocator, entry.get("codes").?.array.items, found)) {
+                try disagreements.print(allocator, "  {s}: the decode phase disagrees with the manifest's codes\n", .{entry.get("id").?.string});
+            }
+            decode_judged += 1;
+            continue;
+        }
 
         const expect_schema_failure = std.mem.eql(u8, phase, "schema");
         const profile = if (entry.get("profile")) |p| p.string else "agent-control-core";
@@ -181,7 +211,7 @@ test "the Zig schema phase agrees with the manifest on every fixture it can judg
     for (registry.documents.keys()) |name| {
         try std.testing.expect(!std.mem.startsWith(u8, name, packs_mod.pack_base_uri));
     }
-    std.debug.print("\njudged={d} tolerant={d} skipped_packs={d} unsupported={d} undecodable={d} unhandled={d}\n", .{ judged, tolerant_judged, skipped_packs, unsupported, undecodable, unhandled });
+    std.debug.print("\njudged={d} tolerant={d} skipped_packs={d} unsupported={d} undecodable={d} unhandled={d} decode={d}\n", .{ judged, tolerant_judged, skipped_packs, unsupported, undecodable, unhandled, decode_judged });
     if (disagreements.items.len > 0) {
         std.debug.print("disagreements:\n{s}", .{disagreements.items});
         return error.SchemaPhaseDisagrees;
@@ -190,6 +220,7 @@ test "the Zig schema phase agrees with the manifest on every fixture it can judg
     if (undecodable != 0) return error.FixtureStoppedDecoding;
     if (skipped_packs != 0) return error.PackFailedToLoad;
     try std.testing.expect(judged >= judged_floor);
+    try std.testing.expect(decode_judged >= decode_floor);
     try std.testing.expectEqual(unhandled_pack_composition.len, unhandled);
     try std.testing.expectEqual(tolerant_fixtures, tolerant_judged);
 }
@@ -295,11 +326,11 @@ test "a pack claims its type back from the tolerant fallback" {
     }};
 
     const lines = [_]struct { line: []const u8, accepted: bool }{
-        .{ .line = 
+        .{ .line =
         \\{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core",
         \\"type":"com.example.storage.objects.read","id":"e1","session_id":"s","payload":{}}
         , .accepted = true },
-        .{ .line = 
+        .{ .line =
         \\{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core",
         \\"type":"com.example.storage.objects.read","id":"e1","payload":{}}
         , .accepted = false },

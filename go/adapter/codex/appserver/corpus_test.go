@@ -26,19 +26,22 @@ import (
 var codexSchemaTreeSHA256 = pin.Artifact("codex", "any", "source-tree").SHA256
 
 var codexReducerFixtures = map[string]bool{
-	"completed-text":        true,
-	"command-completed":     true,
-	"file-change-completed": true,
-	"mcp-completed":         true,
-	"failed-turn":           true,
-	"interrupted-turn":      true,
-	"command-approval":      true,
-	"file-approval":         true,
-	"permissions-approval":  true,
-	"user-input":            true,
-	"duplicate-terminal":    true,
-	"process-exit":          true,
-	"model-per-turn":        true,
+	"completed-text":                  true,
+	"command-completed":               true,
+	"file-change-completed":           true,
+	"mcp-completed":                   true,
+	"failed-turn":                     true,
+	"interrupted-turn":                true,
+	"command-approval":                true,
+	"file-approval":                   true,
+	"permissions-approval":            true,
+	"user-input":                      true,
+	"duplicate-terminal":              true,
+	"process-exit":                    true,
+	"model-per-turn":                  true,
+	"structured-output":               true,
+	"structured-output-nonconforming": true,
+	"token-usage":                     true,
 }
 
 type corpusManifest struct {
@@ -63,7 +66,8 @@ type corpusCase struct {
 	Mapping     string `json:"mapping"`
 	Omissions   string `json:"omissions"`
 
-	ModelID string `json:"model_id,omitempty"`
+	ModelID      string          `json:"model_id,omitempty"`
+	OutputSchema json.RawMessage `json:"output_schema,omitempty"`
 }
 
 type corpusFrame struct {
@@ -168,9 +172,19 @@ func runCorpusCase(t *testing.T, root string, entry corpusManifestCase) {
 	if definition.ModelID != "" {
 		request.ModelID = protocol.ControlValue(definition.ModelID)
 	}
+	request.OutputSchema = definition.OutputSchema
 	admission, stream, err := session.Submit(context.Background(), adapter.SubmitRequest{Request: request})
 	if err != nil {
 		t.Fatal(err)
+	}
+	if len(definition.OutputSchema) != 0 {
+		client.mu.Lock()
+		sent := client.turnStart
+		client.mu.Unlock()
+		var want, got bytes.Buffer
+		if json.Compact(&want, definition.OutputSchema) != nil || json.Compact(&got, sent.OutputSchema) != nil || want.String() != got.String() {
+			t.Fatalf("turn/start outputSchema %s, want %s", sent.OutputSchema, definition.OutputSchema)
+		}
 	}
 	if definition.ModelID != "" {
 
@@ -217,10 +231,10 @@ func runCorpusCase(t *testing.T, root string, entry corpusManifestCase) {
 	}
 	events := append(prefix, adaptertest.Drain(t, stream, time.Second)...)
 	if entry.ID == "interrupted-turn" {
-		adaptertest.AssertProtocolValidWithSubmitAndCancellation(t, request, admission, descriptor, events)
+		adaptertest.AssertProtocolValidWithSubmitAndCancellation(t, request, admission, descriptor, events, adaptertest.Opened(adapter.OpenRequest{Participant: protocol.Participant{ID: "user"}}))
 	} else {
 
-		adaptertest.AssertProtocolValidWithSubmit(t, request, admission, descriptor, events)
+		adaptertest.AssertProtocolValidWithSubmit(t, request, admission, descriptor, events, adaptertest.Opened(adapter.OpenRequest{Participant: protocol.Participant{ID: "user"}}))
 	}
 	expected := loadJSON[[]protocol.Envelope](t, paths.expectedOAP)
 	if len(expected) == 0 {

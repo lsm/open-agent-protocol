@@ -588,9 +588,9 @@ func validateACPTrace(t *testing.T, admission protocol.MessageSubmitResponse, de
 	t.Helper()
 	if !permission {
 		if cancelled {
-			adaptertest.AssertProtocolValidWithCancellation(t, admission, descriptor, events)
+			adaptertest.AssertProtocolValidWithCancellation(t, admission, descriptor, events, adaptertest.Opened(base.OpenRequest{Participant: protocol.Participant{ID: "user"}}))
 		} else {
-			adaptertest.AssertProtocolValidWithDescriptor(t, admission, descriptor, events)
+			adaptertest.AssertProtocolValidWithDescriptor(t, admission, descriptor, events, adaptertest.Opened(base.OpenRequest{Participant: protocol.Participant{ID: "user"}}))
 		}
 		return
 	}
@@ -626,8 +626,8 @@ func validateACPTrace(t *testing.T, admission protocol.MessageSubmitResponse, de
 	spliced = append(spliced, resolveRequest, resolveResponse)
 	spliced = append(spliced, events[cut:]...)
 	if cancelled {
-		adaptertest.AssertProtocolValidWithCancellation(t, admission, descriptor, spliced)
+		adaptertest.AssertProtocolValidWithCancellation(t, admission, descriptor, spliced, adaptertest.Opened(base.OpenRequest{Participant: protocol.Participant{ID: "user"}}))
 	} else {
-		adaptertest.AssertProtocolValidWithDescriptor(t, admission, descriptor, spliced)
+		adaptertest.AssertProtocolValidWithDescriptor(t, admission, descriptor, spliced, adaptertest.Opened(base.OpenRequest{Participant: protocol.Participant{ID: "user"}}))
 	}
 }

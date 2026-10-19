@@ -98,6 +98,13 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
     fixture_gate_mod.addImport("tolerate", tolerate_mod);
+    const decode_mod = b.createModule(.{
+        .root_source_file = b.path("src/validation/decode.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    fixture_gate_mod.addImport("decode", decode_mod);
+    const decode_test = b.addTest(.{ .root_module = decode_mod });
     const semantic_mod = b.createModule(.{
         .root_source_file = b.path("src/validation/semantic.zig"),
         .target = target,
@@ -184,6 +191,7 @@ pub fn build(b: *std.Build) void {
     test_unit_validation_step.dependOn(&b.addRunArtifact(semantic_test).step);
     test_unit_validation_step.dependOn(&b.addRunArtifact(provider_semantic_test).step);
     test_unit_validation_step.dependOn(&b.addRunArtifact(semantic_gate_test).step);
+    test_unit_validation_step.dependOn(&b.addRunArtifact(decode_test).step);
 
     const deepseek_rpc_mod = b.createModule(.{
         .root_source_file = b.path("src/adapter/deepseek/rpc.zig"),
@@ -552,6 +560,7 @@ pub fn build(b: *std.Build) void {
     codex_session_mod.addImport("harness_pins", harness_pins_mod);
     codex_session_mod.addImport("rpc", codex_rpc_mod);
     codex_session_mod.addImport("native", codex_native_mod);
+    codex_session_mod.addImport("jsonschema", jsonschema_mod);
     const codex_session_test = b.addTest(.{ .root_module = codex_session_mod });
 
     const codex_corpus_mod = b.createModule(.{
@@ -2771,6 +2780,7 @@ pub fn build(b: *std.Build) void {
             .{ .name = "provider_semantic", .module = provider_semantic_mod },
             .{ .name = "packs", .module = packs_mod },
             .{ .name = "validator", .module = validator_mod },
+            .{ .name = "decode", .module = decode_mod },
             .{ .name = "version_options", .module = version_module },
             .{ .name = "adapter_endpoint", .module = adapter_endpoint_mod },
             .{ .name = "adapter_contract", .module = adapter_contract_mod },
@@ -2931,6 +2941,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&b.addRunArtifact(semantic_test).step);
     test_step.dependOn(&b.addRunArtifact(provider_semantic_test).step);
     test_step.dependOn(&b.addRunArtifact(semantic_gate_test).step);
+    test_step.dependOn(&b.addRunArtifact(decode_test).step);
     test_step.dependOn(&b.addRunArtifact(counting_allocator_test).step);
     test_step.dependOn(&b.addRunArtifact(bench_compare_test).step);
     test_step.dependOn(&b.addRunArtifact(owned_slice_test).step);

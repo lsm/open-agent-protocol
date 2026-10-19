@@ -27,6 +27,8 @@ func (s *state) steerTarget(p protocol.MessageSubmitRequest) (*runState, string)
 			return r, "terminal"
 		case r.status == protocol.RunCancelling:
 			return r, "not_steerable"
+		case r.compactionRun && !r.compactionContinue:
+			return r, "no_model_turn"
 		case !r.started:
 			return r, "queued"
 		default:
@@ -38,6 +40,9 @@ func (s *state) steerTarget(p protocol.MessageSubmitRequest) (*runState, string)
 			if r := s.runs[id]; r != nil && r.started && !r.terminal {
 				if r.status == protocol.RunCancelling {
 					return r, "not_steerable"
+				}
+				if r.compactionRun && !r.compactionContinue {
+					return r, "no_model_turn"
 				}
 				return r, ""
 			}

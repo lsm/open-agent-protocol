@@ -57,7 +57,8 @@ and the generated schema:
 None of it reaches either adapter, and unknown members and methods are ignored
 as before. The adapters do not change. The capability descriptor changes only
 in the endpoint version it reports, which the revision names, so the revision
-moves to `codex-appserver-0.163.0-oap-v1`, served by both trees.
+moves to `codex-appserver-0.163.0-oap-v1`, served by both trees (and later to
+`-oap-v2`, below).
 
 ## Corpus
 
@@ -70,6 +71,60 @@ and the expectations' revision changed.
 re-recorded with `OAP_UPDATE_CODEX_CONVERSATION=1`: every frame is
 byte-identical to the 0.162.1 recording, and only `codex_commit`,
 `capability_revision` and the descriptor's endpoint version changed.
+
+## Token usage at this pin
+
+No earlier ledger mapped the server's usage notification, so no Codex run
+reported usage. This records it at 0.163.0; earlier pins were not checked.
+
+- `src/protocol/common.rs:1979` registers
+  `ThreadTokenUsageUpdated => "thread/tokenUsage/updated"`.
+- `src/protocol/v2/thread.rs:1934` gives it `threadId`, `turnId` and
+  `tokenUsage`; `:1974` makes `tokenUsage` a `ThreadTokenUsage` of `total`
+  (the thread's running sum), `last` (the most recent model call) and
+  `modelContextWindow`; `:1995` makes each a `TokenUsageBreakdown` of
+  `totalTokens`, `inputTokens`, `cachedInputTokens`, `cacheWriteInputTokens`,
+  `outputTokens` and `reasoningOutputTokens`. The tag's generated
+  `schema/json/v2/ThreadTokenUsageUpdatedNotification.json` agrees.
+
+- `codex-rs/app-server/src/bespoke_event_handling.rs:1595` sends it from
+  core's `TokenCountEvent` whenever that event carries usage, and
+  `src/request_processors/token_usage_replay.rs` replays the latest persisted
+  one to a client that attaches to an existing thread, naming a turn of that
+  thread's history.
+
+| Native | OAP | Classification |
+| --- | --- | --- |
+| `thread/tokenUsage/updated`, `tokenUsage.total` | the run terminal's `usage`: the thread's `total` at the turn's latest notification less its `total` before the turn started, `inputTokens` to `input_tokens`, `outputTokens` to `output_tokens`, `totalTokens` to `total_tokens` | normalized: `total` is a running sum, so the difference is exact however many notifications a turn sends and whether one repeats; summing `last` would count a repeat twice |
+| a notification naming a turn no run carries (the attach replay, or a turn before this session) | none, but its `total` becomes the baseline for the next run | normalized |
+| `last`, `cachedInputTokens`, `cacheWriteInputTokens`, `reasoningOutputTokens`, `modelContextWindow` | none | omitted: OAP's `usage` has no member for them, and `input_tokens` already includes cached input |
+
+A run whose turn sends no usage notification reports no `usage`, which OAP
+reads as unknown. Corpus case `token-usage` carries two calls and a repeated
+notification, and pins the result in both trees.
+
+## Structured output at this pin
+
+The descriptor said `run.structured_output` was `unavailable` because "this pin
+exposes no per-turn output schema". No ledger recorded that, and it is wrong:
+
+- `src/protocol/v2/turn.rs:276` gives `TurnStartParams` an optional
+  `output_schema` ("Optional JSON Schema used to constrain the final assistant
+  message for this turn"), serialized `outputSchema` and not marked
+  experimental. The tag's generated `schema/json/v2/TurnStartParams.json`
+  agrees.
+- `src/protocol/v2/item.rs:252` makes an `agentMessage` item carry its whole
+  `text`, which `item/completed` delivers.
+
+| OAP | Native | Classification |
+| --- | --- | --- |
+| `output_schema` on a submit | `turn/start.outputSchema`, verbatim, after compiling it as Decision 0005 requires; a schema no object can satisfy is refused `unsatisfiable` and never sent | native |
+| `run.completed.result` | the `text` of the turn's last completed `agentMessage` item, parsed as JSON and checked against the schema | normalized: the streamed deltas span every message of the turn, and only the final one is constrained |
+| a final message that is not JSON or does not conform | `run.failed` with `structured_output_failed`, never a completion without its result | normalized |
+
+`run.structured_output` is now `native` in both trees, so the revision moves
+to `codex-appserver-0.163.0-oap-v2`. Corpus cases `structured-output` and
+`structured-output-nonconforming` pin both outcomes.
 
 ## Real-process evidence
 

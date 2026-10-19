@@ -15,6 +15,7 @@ pub const method_agent_delta = "item/agentMessage/delta";
 pub const method_command_approval = "item/commandExecution/requestApproval";
 pub const method_file_approval = "item/fileChange/requestApproval";
 pub const method_user_input = "item/tool/requestUserInput";
+pub const method_token_usage = "thread/tokenUsage/updated";
 
 pub const turn_completed = "completed";
 pub const turn_interrupted = "interrupted";
@@ -103,6 +104,35 @@ const agent_delta_fields = [_]Field{
     .{ .name = "delta", .shape = .string },
 };
 pub const agent_delta_notification: Shape = .{ .object = &agent_delta_fields };
+
+const token_breakdown_fields = [_]Field{
+    .{ .name = "totalTokens", .shape = .integer },
+    .{ .name = "inputTokens", .shape = .integer },
+    .{ .name = "cachedInputTokens", .shape = .integer },
+    .{ .name = "outputTokens", .shape = .integer },
+};
+
+const token_usage_fields = [_]Field{
+    .{ .name = "total", .shape = .{ .object = &token_breakdown_fields } },
+    .{ .name = "last", .shape = .{ .object = &token_breakdown_fields } },
+};
+
+const token_usage_notification_fields = [_]Field{
+    .{ .name = "threadId", .shape = .string },
+    .{ .name = "turnId", .shape = .string },
+    .{ .name = "tokenUsage", .shape = .{ .object = &token_usage_fields } },
+};
+
+pub const token_usage_notification: Shape = .{ .object = &token_usage_notification_fields };
+
+pub fn count(value: std.json.Value, path: []const []const u8) u64 {
+    const found = pointer(value, path) orelse return 0;
+    return switch (found) {
+        .integer => |number| if (number < 0) 0 else @intCast(number),
+        .number_string => |literal| std.fmt.parseInt(u64, literal, 10) catch 0,
+        else => 0,
+    };
+}
 
 const item_notification_fields = [_]Field{
     .{ .name = "threadId", .shape = .string },
@@ -358,7 +388,7 @@ pub fn unconfirmedHostPermission(host: ThreadStart, resumed: std.json.Value) ?[]
     return null;
 }
 
-pub fn turnStartParams(arena: std.mem.Allocator, thread_id: []const u8, texts: []const []const u8, model: []const u8, effort: []const u8) !std.json.Value {
+pub fn turnStartParams(arena: std.mem.Allocator, thread_id: []const u8, texts: []const []const u8, model: []const u8, effort: []const u8, output_schema: ?std.json.Value) !std.json.Value {
     var input = std.json.Array.init(arena);
     for (texts) |entry| {
         var element = object();
@@ -371,6 +401,7 @@ pub fn turnStartParams(arena: std.mem.Allocator, thread_id: []const u8, texts: [
     try params.put(arena, "input", .{ .array = input });
     try putNonEmpty(arena, &params, "model", model);
     try putNonEmpty(arena, &params, "effort", effort);
+    if (output_schema) |schema| try params.put(arena, "outputSchema", schema);
     return .{ .object = params };
 }
 
@@ -492,7 +523,7 @@ test "parameters are written in Go's struct order and omit what Go omits" {
     );
     try testing.expectEqualStrings(
         "{\"threadId\":\"t\",\"input\":[{\"type\":\"text\",\"text\":\"hi\"},{\"type\":\"text\"}]}",
-        try encode(a, try turnStartParams(a, "t", &.{ "hi", "" }, "", "")),
+        try encode(a, try turnStartParams(a, "t", &.{ "hi", "" }, "", "", null)),
     );
     var answers = [_]NativeAnswer{ .{ .question_id = "note", .answer = "n" }, .{ .question_id = "mode", .answer = "Safe" } };
     try testing.expectEqualStrings(

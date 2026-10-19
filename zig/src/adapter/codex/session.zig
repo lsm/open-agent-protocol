@@ -1,4 +1,5 @@
 const std = @import("std");
+const jsonschema = @import("jsonschema");
 const harness_pins = @import("harness_pins");
 const rpc = @import("rpc");
 const native = @import("native");
@@ -60,6 +61,7 @@ pub const Submission = struct {
     messages: []const InputMessage,
     model_id: ?[]const u8 = null,
     effort: []const u8 = "",
+    output_schema: ?[]const u8 = null,
 };
 
 pub const Admission = struct {
@@ -144,6 +146,19 @@ const Run = struct {
     cancel_pending: bool = false,
     cancel_in_flight: bool = false,
     text: std.ArrayList(u8) = .empty,
+    output_schema: ?[]const u8 = null,
+    final_text: ?[]const u8 = null,
+    usage_seen: bool = false,
+    input_tokens: u64 = 0,
+    output_tokens: u64 = 0,
+    total_tokens: u64 = 0,
+    usage_base: TokenTotals = .{},
+};
+
+const TokenTotals = struct {
+    input: u64 = 0,
+    output: u64 = 0,
+    total: u64 = 0,
 };
 
 const Item = struct {
@@ -232,6 +247,56 @@ fn int(value: i64) std.json.Value {
     return .{ .integer = value };
 }
 
+pub fn outputSchemaDefect(arena: std.mem.Allocator, text: []const u8) error{OutOfMemory}!?[]const u8 {
+    const document = std.json.parseFromSliceLeaky(std.json.Value, arena, text, .{}) catch |err| {
+        if (err == error.OutOfMemory) return error.OutOfMemory;
+        return "output_schema is not valid JSON";
+    };
+    if (document != .object) return "output_schema must be a JSON Schema object";
+    if (document.object.get("type")) |declared| {
+        switch (declared) {
+            .string => |named| if (!std.mem.eql(u8, named, "object")) return "output_schema root type is not object; a structured result is an object",
+            .array => |named| {
+                if (named.items.len == 0) return "output_schema root type list is empty";
+                for (named.items) |entry| {
+                    if (entry != .string or !std.mem.eql(u8, entry.string, "object")) return "output_schema root type list names a type other than object";
+                }
+            },
+            else => return "output_schema root type is not a string or a list of strings",
+        }
+    }
+    const defect = jsonschema.schemaDefect(arena, document, document) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+    };
+    if (defect != null) return "output_schema uses a construct oapx's schema engine does not evaluate";
+    return null;
+}
+
+const Structured = union(enum) {
+    result: std.json.Value,
+    defect: []const u8,
+};
+
+fn structuredResult(allocator: std.mem.Allocator, schema: []const u8, final_text: ?[]const u8) !Structured {
+    const text = final_text orelse return .{ .defect = "the turn completed without a final assistant message to read the structured result from" };
+    const document = std.json.parseFromSliceLeaky(std.json.Value, allocator, std.mem.trim(u8, text, " \t\r\n"), .{}) catch |err| {
+        if (err == error.OutOfMemory) return error.OutOfMemory;
+        return .{ .defect = "the final assistant message is not JSON" };
+    };
+    var registry = jsonschema.Registry{ .allocator = allocator };
+    registry.addDocument("output_schema", schema) catch |err| {
+        if (err == error.OutOfMemory) return error.OutOfMemory;
+        return .{ .defect = "the output_schema could not be loaded" };
+    };
+    var validator = jsonschema.Validator.init(allocator, &registry);
+    const failure = validator.validate("output_schema", document) catch |err| {
+        if (err == error.OutOfMemory) return error.OutOfMemory;
+        return .{ .defect = "the output_schema uses a construct oapx's schema engine does not evaluate" };
+    };
+    if (failure != null) return .{ .defect = "the final assistant message does not conform to the output_schema" };
+    return .{ .result = document };
+}
+
 pub const Reducer = struct {
     arena: *std.heap.ArenaAllocator,
     options: Options,
@@ -240,6 +305,7 @@ pub const Reducer = struct {
     next_request: i64,
     thread_id: []const u8 = "",
     session_id: []const u8 = "",
+    thread_usage: TokenTotals = .{},
     opening: bool = false,
     opened: bool = false,
     closed: bool = false,
@@ -356,13 +422,15 @@ pub const Reducer = struct {
 
         const run_id = try self.nextID("run");
         const message_id = try self.nextID("message");
-        try self.runs.append(self.allocator(), .{ .id = run_id, .message_id = message_id, .model = model, .message_ids = message_ids });
+        const output_schema: ?[]const u8 = if (submission.output_schema) |schema| try self.allocator().dupe(u8, schema) else null;
+        const schema_value: ?std.json.Value = if (output_schema) |schema| std.json.parseFromSliceLeaky(std.json.Value, self.allocator(), schema, .{}) catch return Error.InvalidSubmission else null;
+        try self.runs.append(self.allocator(), .{ .id = run_id, .message_id = message_id, .model = model, .message_ids = message_ids, .output_schema = output_schema, .usage_base = self.thread_usage });
         const index = self.runs.items.len - 1;
         self.active = index;
         self.state.status = "queued";
         self.state.active_run_id = run_id;
         self.state.updated_at_ms = self.now();
-        const params = try native.turnStartParams(self.allocator(), self.thread_id, texts, model, submission.effort);
+        const params = try native.turnStartParams(self.allocator(), self.thread_id, texts, model, submission.effort, schema_value);
         try self.call(.{ .turn_start = index }, native.method_turn_start, params);
     }
 
@@ -380,6 +448,7 @@ pub const Reducer = struct {
         kept.opened = self.opened;
         kept.closed = self.closed;
         kept.transport_closed = self.transport_closed;
+        kept.thread_usage = self.thread_usage;
         kept.thread_id = try keep.dupe(u8, self.thread_id);
         kept.session_id = try keep.dupe(u8, self.session_id);
         const status = try keep.dupe(u8, self.state.status);
@@ -722,10 +791,40 @@ pub const Reducer = struct {
             if (!native.decodesPresent(message.params, native.item_notification)) return self.failActive("invalid_native_event", "invalid item lifecycle payload");
             return self.onItem(std.mem.eql(u8, method, native.method_item_started), message.params.?);
         }
+        if (std.mem.eql(u8, method, native.method_token_usage)) {
+            if (!native.decodesPresent(message.params, native.token_usage_notification)) return self.failActive("invalid_native_event", "invalid thread/tokenUsage/updated payload");
+            return self.onTokenUsage(message.params.?);
+        }
         if (std.mem.eql(u8, method, native.method_turn_completed)) {
             if (!native.decodesPresent(message.params, native.turn_completed_notification)) return self.failActive("invalid_native_event", "invalid turn/completed payload");
             return self.onCompleted(message.params.?);
         }
+    }
+
+    fn onTokenUsage(self: *Reducer, params: std.json.Value) !void {
+        if (!std.mem.eql(u8, native.text(params, &.{"threadId"}), self.thread_id)) return;
+        self.thread_usage = .{
+            .input = native.count(params, &.{ "tokenUsage", "total", "inputTokens" }),
+            .output = native.count(params, &.{ "tokenUsage", "total", "outputTokens" }),
+            .total = native.count(params, &.{ "tokenUsage", "total", "totalTokens" }),
+        };
+        const index = self.runFor(self.thread_id, native.text(params, &.{"turnId"})) orelse return;
+        const run = &self.runs.items[index];
+        if (run.terminal) return;
+        run.usage_seen = true;
+        run.input_tokens = self.thread_usage.input -| run.usage_base.input;
+        run.output_tokens = self.thread_usage.output -| run.usage_base.output;
+        run.total_tokens = self.thread_usage.total -| run.usage_base.total;
+    }
+
+    fn putUsage(self: *Reducer, payload: *std.json.ObjectMap, index: usize) !void {
+        const run = self.runs.items[index];
+        if (!run.usage_seen) return;
+        var usage = std.json.ObjectMap.empty;
+        if (run.input_tokens != 0) try self.put(&usage, "input_tokens", .{ .integer = @intCast(run.input_tokens) });
+        if (run.output_tokens != 0) try self.put(&usage, "output_tokens", .{ .integer = @intCast(run.output_tokens) });
+        if (run.total_tokens != 0) try self.put(&usage, "total_tokens", .{ .integer = @intCast(run.total_tokens) });
+        try self.put(payload, "usage", .{ .object = usage });
     }
 
     fn onStarted(self: *Reducer, params: std.json.Value) !void {
@@ -813,6 +912,10 @@ pub const Reducer = struct {
         const index = self.runFor(native.text(params, &.{"threadId"}), native.text(params, &.{"turnId"})) orelse return;
         const run = self.runs.items[index];
         if (!run.started or run.terminal) return;
+        if (!started and std.mem.eql(u8, native.text(params, &.{ "item", "type" }), "agentMessage")) {
+            self.runs.items[index].final_text = try self.allocator().dupe(u8, native.text(params, &.{ "item", "text" }));
+            return;
+        }
         const name = try self.itemName(params);
         const native_id = native.text(params, &.{ "item", "id" });
         if (name.len == 0 or native_id.len == 0) return;
@@ -865,16 +968,33 @@ pub const Reducer = struct {
         var payload = try self.runPayload(index);
         if (std.mem.eql(u8, status, native.turn_completed)) {
             const run = self.runs.items[index];
+            var result: ?std.json.Value = null;
+            if (run.output_schema) |schema| {
+                switch (try structuredResult(self.allocator(), schema, run.final_text)) {
+                    .result => |value| result = value,
+                    .defect => |detail| {
+                        var failure = std.json.ObjectMap.empty;
+                        try self.put(&failure, "code", str("structured_output_failed"));
+                        try self.put(&failure, "message", str(detail));
+                        try self.put(&payload, "error", .{ .object = failure });
+                        try self.putUsage(&payload, index);
+                        return self.emit(index, "run.failed", payload, "", true);
+                    },
+                }
+            }
             var response = std.json.ObjectMap.empty;
             try self.putNonEmpty(&response, "id", run.message_id);
             try self.put(&response, "role", str("assistant"));
             try self.put(&response, "content", str(run.text.items));
             try self.put(&payload, "final_response", .{ .object = response });
             try self.put(&payload, "stop_reason", str("end_turn"));
+            if (result) |value| try self.put(&payload, "result", value);
+            try self.putUsage(&payload, index);
             return self.emit(index, "run.completed", payload, "", true);
         }
         if (std.mem.eql(u8, status, native.turn_interrupted)) {
             try self.put(&payload, "reason", str("native turn interrupted"));
+            try self.putUsage(&payload, index);
             return self.emit(index, "run.cancelled", payload, "", true);
         }
         if (std.mem.eql(u8, status, native.turn_failed)) {
@@ -887,6 +1007,7 @@ pub const Reducer = struct {
             try self.put(&failure, "code", str("native_turn_failed"));
             try self.put(&failure, "message", str(message));
             try self.put(&payload, "error", .{ .object = failure });
+            try self.putUsage(&payload, index);
             return self.emit(index, "run.failed", payload, "", true);
         }
         try self.failRun(index, "invalid_native_terminal", "turn/completed did not contain a terminal status", "");
@@ -1242,7 +1363,7 @@ pub const features = [_]Feature{
     .{ .name = "run.resume", .level = "degraded", .reason = "thread/resume restores native attachment; canonical replay is bounded process memory" },
     .{ .name = "run.status", .level = "native" },
     .{ .name = "run.streaming", .level = "native" },
-    .{ .name = "run.structured_output", .level = "unavailable", .reason = "this pin exposes no per-turn output schema" },
+    .{ .name = "run.structured_output", .level = "native", .reason = "turn/start.outputSchema constrains the turn's final assistant message" },
     .{ .name = "run.tool_selection", .level = "unavailable", .reason = "this pin exposes no per-turn tool policy" },
     .{ .name = "session.compaction.policy", .level = "native", .reason = "thread/start's config sets model_auto_compact_token_limit for tokens; Codex has no off, and its share applies only at a turn's end, so both are refused", .modes = &.{"session_open"} },
     .{ .name = "session.message.delivery.auto", .level = "native" },
@@ -1975,4 +2096,11 @@ test "compaction is refused while a run is active or events are undrained" {
     try feed(&reducer, "{\"method\":\"turn/completed\",\"params\":{\"threadId\":\"native-thread\",\"turn\":{\"id\":\"native-turn\",\"status\":\"completed\"}}}");
     try testing.expect(reducer.envelopes.items.len > 0);
     try testing.expectError(Error.RunActive, reducer.compactInto(&target));
+}
+
+test "an output schema whose subschema the engine cannot evaluate is refused before the turn" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    try testing.expect(try outputSchemaDefect(arena.allocator(), "{\"type\":\"object\",\"properties\":{\"v\":{\"$ref\":\"https://example.invalid/s.json\"}}}") != null);
+    try testing.expect(try outputSchemaDefect(arena.allocator(), "{\"type\":\"object\",\"properties\":{\"verdict\":{\"type\":\"string\",\"enum\":[\"pass\",\"concerns\"]}},\"required\":[\"verdict\"]}") == null);
 }
