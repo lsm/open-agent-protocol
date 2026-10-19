@@ -1,28 +1,24 @@
 # Model provider profile
 
-Decisions 0016 and 0030: the `model-provider-core` profile, judged by
+Decisions 0016, 0030 and 0061: the `model-provider-core` profile, judged by
 `go/validation/provider.go` and `zig/src/validation/provider_semantic.zig`
 against the provider corpus in `fixtures/provider/`. Rust has no provider
 validator. Format: [README](README.md).
 
-This group has no rows. Decision 0016 is proposed, and it leaves the profile's
-schemas and validator rules to "the next decision" (0016 L187–195). Decision
-0030, also proposed, binds the HTTP transport and states no trace rule. Every
-provider rule the trees judge is therefore written only in
-[`drafts/model-provider-core.md`](../model-provider-core.md) and in the
-provider schemas, and is an open item in
-[`research/validator-divergences.md`](../../research/validator-divergences.md#model-provider-profile-0016-0030)
-until a decision adopts it. Items 1–5 are the six semantic codes. Item 6 is one
-schema constraint the draft states as a rule of its own. Item 7 is every other
-constraint of the provider schemas, which the 16 fixtures under
-`fixtures/provider/schema-invalid/` exercise:
+Decision 0016 deferred the profile's schemas and validator rules, and
+[Decision 0061](../../decisions/0061-the-provider-profiles-validator-rules-and-schemas.md)
+settles them: it adopts the draft's six semantic rules with the codes both
+trees raise, and makes the provider schemas on `main` normative. Each row was
+an open item, OPEN-0016-1 to 0016-7 in
+[`research/validator-divergences.md`](../../research/validator-divergences.md#model-provider-profile-0016-0030),
+and its lines are 0061's. Rust has no provider validator yet and owes every row.
 
-| item | draft | code | Go | Zig |
-| --- | --- | --- | --- | --- |
-| OPEN-0016-1 | the terminal is the assembly of its ended parts (L624–651, L1861–1863) | `terminal_not_assembly` | `assemblyDefect`, `partMismatch` | `Machine.close`, `assemblyDefect` |
-| OPEN-0016-2 | a credential header on a call or a descriptor (L1588–1597) | `credential_in_headers` | `credentialHeaders` | `Machine.credentialHeaders` |
-| OPEN-0016-3 | a grant request carrying a `value` (L1391–1395) | `credential_in_trace` | `Validate` | `Machine.apply` |
-| OPEN-0016-4 | per-inference `sequence` opens at 1 and is contiguous (L260–263, L1864–1865) | `sequence_gap`, `sequence_regression` | `Validate` | `Machine.apply` |
-| OPEN-0016-5 | no scoped event after a terminal (L667–668, L1861) | `event_after_terminal` | `Validate` | `Machine.apply` |
-| OPEN-0016-6 | a refused `inference.create.response` carries no `inference_id` (L653–656, L1861–1862) | `schema_invalid` | schema | schema |
-| OPEN-0016-7 | `provider.schema.json`, `provider-envelope.schema.json` and the inference schema bind the profile's frames (draft § Envelope Types, L1866–1869 among them) | `schema_invalid` | schema | schema |
+| id | rule | lines | code | Go | Zig | Rust |
+| --- | --- | --- | --- | --- | --- | --- |
+| `0061#a-streamed-terminal-is-the-assembly-of-its-ended-parts-open-0016-1/1` | A streamed `inference.completed.message` MUST be the assembly of its ended parts in `part_index` order, `part.ended` overriding its deltas; a trace with no parts is outside the rule. | L27–31 | `terminal_not_assembly` | `assemblyDefect`, `partMismatch` | `Machine.close`, `assemblyDefect` | — |
+| `0061#a-credential-in-headers-is-refused-by-name-and-by-value-open-0016-2/1` | A call's or a descriptor's `headers` MUST NOT carry `Authorization`, `Proxy-Authorization`, `X-Api-Key` or `Api-Key` in any case, nor a value beginning `Bearer ` in any case after leading spaces and tabs. | L35–41 | `credential_in_headers` | `credentialHeaders` | `Machine.credentialHeaders` | — |
+| `0061#a-trace-never-carries-a-granted-credential-open-0016-3/1` | A trace MUST NOT carry a `provider.credential.grant.request` with a `value`; that envelope is judged no further. | L45–49 | `credential_in_trace` | `Validate` | `Machine.apply` | — |
+| `0061#each-inference-has-its-own-contiguous-sequence-open-0016-4/1` | Every event scoped to one inference MUST carry a `sequence` in that inference's domain, opening at 1, contiguous, never repeating or going back. | L53–57 | `sequence_gap`, `sequence_regression` | `Validate` | `Machine.apply` | — |
+| `0061#nothing-follows-an-inferences-terminal-open-0016-5/1` | No event scoped to an inference MAY follow its `inference.completed` or `inference.failed`, a second terminal included. | L61–63 | `event_after_terminal` | `Validate` | `Machine.apply` | — |
+| `0061#a-refusal-allocates-no-inference-open-0016-6/1` | A refused `inference.create.response` MUST NOT carry an `inference_id`. | L67–70 | `schema_invalid` | schema | schema | — |
+| `0061#the-provider-schemas-on-main-are-normative-open-0016-7/1` | Every provider frame MUST satisfy `provider-envelope.schema.json` and the schemas it references. | L74–79 | `schema_invalid` | schema | schema | — |

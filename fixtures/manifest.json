@@ -9208,7 +9208,10 @@
       ],
       "provenance": [],
       "profile": "model-provider-core",
-      "scope": "frame"
+      "scope": "frame",
+      "rules": [
+        "0061#the-provider-schemas-on-main-are-normative-open-0016-7/1"
+      ]
     },
     {
       "id": "provider-sequence-not-an-integer",
@@ -9224,7 +9227,10 @@
       ],
       "provenance": [],
       "profile": "model-provider-core",
-      "scope": "frame"
+      "scope": "frame",
+      "rules": [
+        "0061#the-provider-schemas-on-main-are-normative-open-0016-7/1"
+      ]
     },
     {
       "id": "provider-caller-supplied-destination",
@@ -9242,7 +9248,10 @@
         "drafts/model-provider-core.md"
       ],
       "profile": "model-provider-core",
-      "scope": "frame"
+      "scope": "frame",
+      "rules": [
+        "0061#the-provider-schemas-on-main-are-normative-open-0016-7/1"
+      ]
     },
     {
       "id": "provider-carry-on-a-text-content-part",
@@ -9258,7 +9267,10 @@
       ],
       "provenance": [],
       "profile": "model-provider-core",
-      "scope": "frame"
+      "scope": "frame",
+      "rules": [
+        "0061#the-provider-schemas-on-main-are-normative-open-0016-7/1"
+      ]
     },
     {
       "id": "provider-error-code-outside-the-set",
@@ -9274,7 +9286,10 @@
       ],
       "provenance": [],
       "profile": "model-provider-core",
-      "scope": "frame"
+      "scope": "frame",
+      "rules": [
+        "0061#the-provider-schemas-on-main-are-normative-open-0016-7/1"
+      ]
     },
     {
       "id": "provider-event-without-a-sequence",
@@ -9290,7 +9305,10 @@
       ],
       "provenance": [],
       "profile": "model-provider-core",
-      "scope": "frame"
+      "scope": "frame",
+      "rules": [
+        "0061#the-provider-schemas-on-main-are-normative-open-0016-7/1"
+      ]
     },
     {
       "id": "provider-grant-granting-and-refusing-at-once",
@@ -9306,7 +9324,10 @@
       ],
       "provenance": [],
       "profile": "model-provider-core",
-      "scope": "frame"
+      "scope": "frame",
+      "rules": [
+        "0061#the-provider-schemas-on-main-are-normative-open-0016-7/1"
+      ]
     },
     {
       "id": "provider-partial-arguments-in-a-terminal",
@@ -9322,7 +9343,10 @@
       ],
       "provenance": [],
       "profile": "model-provider-core",
-      "scope": "frame"
+      "scope": "frame",
+      "rules": [
+        "0061#the-provider-schemas-on-main-are-normative-open-0016-7/1"
+      ]
     },
     {
       "id": "provider-payload-repeating-the-envelope-scope",
@@ -9338,7 +9362,10 @@
       ],
       "provenance": [],
       "profile": "model-provider-core",
-      "scope": "frame"
+      "scope": "frame",
+      "rules": [
+        "0061#the-provider-schemas-on-main-are-normative-open-0016-7/1"
+      ]
     },
     {
       "id": "provider-refusal-allocating-an-inference",
@@ -9354,7 +9381,10 @@
       ],
       "provenance": [],
       "profile": "model-provider-core",
-      "scope": "frame"
+      "scope": "frame",
+      "rules": [
+        "0061#a-refusal-allocates-no-inference-open-0016-6/1"
+      ]
     },
     {
       "id": "provider-text-start-carrying-identity",
@@ -9370,7 +9400,10 @@
       ],
       "provenance": [],
       "profile": "model-provider-core",
-      "scope": "frame"
+      "scope": "frame",
+      "rules": [
+        "0061#the-provider-schemas-on-main-are-normative-open-0016-7/1"
+      ]
     },
     {
       "id": "provider-tool-call-start-without-identity",
@@ -9386,7 +9419,10 @@
       ],
       "provenance": [],
       "profile": "model-provider-core",
-      "scope": "frame"
+      "scope": "frame",
+      "rules": [
+        "0061#the-provider-schemas-on-main-are-normative-open-0016-7/1"
+      ]
     },
     {
       "id": "provider-wire-id-on-a-named-wire",
@@ -9402,7 +9438,10 @@
       ],
       "provenance": [],
       "profile": "model-provider-core",
-      "scope": "frame"
+      "scope": "frame",
+      "rules": [
+        "0061#the-provider-schemas-on-main-are-normative-open-0016-7/1"
+      ]
     },
     {
       "id": "provider-bearer-shaped-header-under-another-name",
@@ -9418,7 +9457,10 @@
       ],
       "provenance": [],
       "profile": "model-provider-core",
-      "scope": "frame"
+      "scope": "frame",
+      "rules": [
+        "0061#a-credential-in-headers-is-refused-by-name-and-by-value-open-0016-2/1"
+      ]
     },
     {
       "id": "provider-credential-header-on-a-call",
@@ -9436,7 +9478,10 @@
         "drafts/model-provider-core.md"
       ],
       "profile": "model-provider-core",
-      "scope": "frame"
+      "scope": "frame",
+      "rules": [
+        "0061#a-credential-in-headers-is-refused-by-name-and-by-value-open-0016-2/1"
+      ]
     },
     {
       "id": "provider-credential-header-on-a-descriptor",
@@ -9454,7 +9499,10 @@
         "drafts/model-provider-core.md"
       ],
       "profile": "model-provider-core",
-      "scope": "frame"
+      "scope": "frame",
+      "rules": [
+        "0061#a-credential-in-headers-is-refused-by-name-and-by-value-open-0016-2/1"
+      ]
     },
     {
       "id": "provider-event-after-the-terminal",
@@ -9470,7 +9518,10 @@
       ],
       "provenance": [],
       "profile": "model-provider-core",
-      "scope": "trace"
+      "scope": "trace",
+      "rules": [
+        "0061#nothing-follows-an-inferences-terminal-open-0016-5/1"
+      ]
     },
     {
       "id": "provider-grant-carrying-a-credential-value",
@@ -9488,7 +9539,10 @@
         "drafts/provider-stdio.md"
       ],
       "profile": "model-provider-core",
-      "scope": "frame"
+      "scope": "frame",
+      "rules": [
+        "0061#a-trace-never-carries-a-granted-credential-open-0016-3/1"
+      ]
     },
     {
       "id": "provider-terminal-dropping-a-carry",
@@ -9506,7 +9560,10 @@
         "drafts/model-provider-core.md"
       ],
       "profile": "model-provider-core",
-      "scope": "trace"
+      "scope": "trace",
+      "rules": [
+        "0061#a-streamed-terminal-is-the-assembly-of-its-ended-parts-open-0016-1/1"
+      ]
     },
     {
       "id": "provider-terminal-dropping-a-part",
@@ -9522,7 +9579,10 @@
       ],
       "provenance": [],
       "profile": "model-provider-core",
-      "scope": "trace"
+      "scope": "trace",
+      "rules": [
+        "0061#a-streamed-terminal-is-the-assembly-of-its-ended-parts-open-0016-1/1"
+      ]
     },
     {
       "id": "provider-terminal-in-arrival-order",
@@ -9538,7 +9598,10 @@
       ],
       "provenance": [],
       "profile": "model-provider-core",
-      "scope": "trace"
+      "scope": "trace",
+      "rules": [
+        "0061#a-streamed-terminal-is-the-assembly-of-its-ended-parts-open-0016-1/1"
+      ]
     },
     {
       "id": "provider-terminal-of-a-different-kind",
@@ -9554,7 +9617,10 @@
       ],
       "provenance": [],
       "profile": "model-provider-core",
-      "scope": "trace"
+      "scope": "trace",
+      "rules": [
+        "0061#a-streamed-terminal-is-the-assembly-of-its-ended-parts-open-0016-1/1"
+      ]
     },
     {
       "id": "provider-grant-naming-a-nonce",
@@ -9632,7 +9698,10 @@
         "decisions/0035-a-model-entry-publishes-its-facts-and-absence-means-unknown.md"
       ],
       "profile": "model-provider-core",
-      "scope": "frame"
+      "scope": "frame",
+      "rules": [
+        "0061#the-provider-schemas-on-main-are-normative-open-0016-7/1"
+      ]
     },
     {
       "id": "provider-model-facts-published-as-empty-strings",
@@ -9650,7 +9719,10 @@
         "decisions/0035-a-model-entry-publishes-its-facts-and-absence-means-unknown.md"
       ],
       "profile": "model-provider-core",
-      "scope": "frame"
+      "scope": "frame",
+      "rules": [
+        "0061#the-provider-schemas-on-main-are-normative-open-0016-7/1"
+      ]
     },
     {
       "id": "provider-model-facts-published-as-empty-lists",
@@ -9668,7 +9740,10 @@
         "decisions/0035-a-model-entry-publishes-its-facts-and-absence-means-unknown.md"
       ],
       "profile": "model-provider-core",
-      "scope": "frame"
+      "scope": "frame",
+      "rules": [
+        "0061#the-provider-schemas-on-main-are-normative-open-0016-7/1"
+      ]
     },
     {
       "id": "provider-signed-reasoning-and-tool-call",
@@ -9765,7 +9840,10 @@
         "drafts/model-provider-core.md"
       ],
       "profile": "model-provider-core",
-      "scope": "trace"
+      "scope": "trace",
+      "rules": [
+        "0061#each-inference-has-its-own-contiguous-sequence-open-0016-4/1"
+      ]
     },
     {
       "id": "provider-sequence-repeated",
@@ -9783,7 +9861,10 @@
         "drafts/model-provider-core.md"
       ],
       "profile": "model-provider-core",
-      "scope": "trace"
+      "scope": "trace",
+      "rules": [
+        "0061#each-inference-has-its-own-contiguous-sequence-open-0016-4/1"
+      ]
     },
     {
       "id": "auth-login-interactive",
@@ -13226,7 +13307,10 @@
         "drafts/provider-stdio.md"
       ],
       "profile": "model-provider-core",
-      "scope": "frame"
+      "scope": "frame",
+      "rules": [
+        "0061#a-trace-never-carries-a-granted-credential-open-0016-3/1"
+      ]
     },
     {
       "id": "malformed-json",
