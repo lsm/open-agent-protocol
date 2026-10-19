@@ -3363,6 +3363,7 @@ pub const Machine = struct {
 
     fn pendingAt(self: *Machine, run: *const Run, sequence: u64) !InteractionSet {
         var out = InteractionSet.empty;
+        errdefer out.deinit(self.allocator);
         for (run.interactions.keys(), run.interactions.values()) |id, held| {
             if (held.opened_at > sequence) continue;
             if (held.resolved and (held.resolved_at == 0 or held.resolved_at <= sequence)) continue;
@@ -4412,6 +4413,7 @@ pub const Machine = struct {
     fn settleControlCall(self: *Machine, held: *Interaction, id: []const u8) !void {
         held.settled = true;
         held.resolved = true;
+        if (held.resolved_at == 0) held.resolved_at = self.current_sequence;
         try held.settlements.put(self.arena.allocator(), id, {});
     }
 
@@ -7577,4 +7579,21 @@ test "a request whose envelope and payload name different sessions is out of sco
         \\[{"type":"session.state.request","id":"q1","session_id":"other","payload":{"session_id":"s"}},
         \\{"type":"session.state.response","id":"a1","in_reply_to":"q1","session_id":"s","payload":{"session_id":"s","status":"idle"}}]
     , &.{code_scope_mismatch});
+}
+
+test "an entry captured between a control call's request and its settlement still lists the call" {
+    const settled_after =
+        \\{"type":"action.call.cancelled","id":"c3","run_id":"run","session_id":"s","sequence":3,"capability_revision":"v1","payload":
+        \\{"tool_call_id":"t1","execution_owner":"control","interaction_id":"x"}},
+    ;
+    try expectCodes(controlled ++ control_call ++ settled_after ++
+        \\{"type":"session.state.updated","id":"u1","session_id":"s","payload":{"session_id":"s","status":"waiting_for_input",
+        \\"active_run_id":"run","active_runs":[{"run_id":"run","status":"running","as_of_sequence":2,"pending_interactions":["x"]}]}},
+        \\{"type":"run.completed","id":"e9","run_id":"run","session_id":"s","sequence":4,"payload":{}}]
+    , &.{});
+    try expectCodes(controlled ++ control_call ++ settled_after ++
+        \\{"type":"session.state.updated","id":"u1","session_id":"s","payload":{"session_id":"s","status":"running",
+        \\"active_run_id":"run","active_runs":[{"run_id":"run","status":"running","as_of_sequence":2}]}},
+        \\{"type":"run.completed","id":"e9","run_id":"run","session_id":"s","sequence":4,"payload":{}}]
+    , &.{"session_state_mismatch"});
 }
