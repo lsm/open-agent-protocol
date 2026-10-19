@@ -385,11 +385,13 @@ fn checkCorpus(io: std.Io, allocator: std.mem.Allocator, descriptors: []const De
 fn shapedManifest(manifest: std.json.Value) bool {
     if (manifest != .object) return false;
     const fixtures = field(manifest, "fixtures") orelse return true;
+    if (fixtures == .null) return true;
     if (fixtures != .array) return false;
     for (fixtures.array.items) |entry| {
         if (entry != .object) return false;
         if (!stringsOnly(field(entry, "units"))) return false;
         const covers = field(entry, "covers") orelse continue;
+        if (covers == .null) continue;
         if (covers != .array) return false;
         for (covers.array.items) |cover| {
             if (cover != .object or stringField(cover, "capability") == null or stringField(cover, "aspect") == null) return false;
@@ -400,6 +402,7 @@ fn shapedManifest(manifest: std.json.Value) bool {
 
 fn stringsOnly(listed: ?std.json.Value) bool {
     const held = listed orelse return true;
+    if (held == .null) return true;
     if (held != .array) return false;
     for (held.array.items) |item| {
         if (item != .string) return false;
@@ -1651,6 +1654,15 @@ test "a pack's corpus proves its own capability keys under its own unit, and not
         .{ .dir = "units-not-strings", .descriptor = unkeyed, .manifest = "{\"version\": 1, \"fixtures\": [{\"id\": \"x\", \"units\": [5]}]}" },
         .{ .dir = "root-not-object", .descriptor = unkeyed, .manifest = "[]" },
     };
+    try tmp.dir.createDir(std.testing.io, "null-fields", .default_dir);
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "null-fields/pack.json", .data = unkeyed });
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "null-fields/manifest.json", .data = "{\"version\": 1, \"fixtures\": null}" });
+    const null_root = try tmp.dir.realPathFileAlloc(std.testing.io, "null-fields", allocator);
+    defer allocator.free(null_root);
+    const null_one = [_][]const u8{null_root};
+    var null_loaded = try describe(std.testing.io, allocator, &null_one);
+    defer null_loaded.deinit();
+    try std.testing.expectEqual(@as(usize, 0), null_loaded.refusals.len);
     for (cases) |c| {
         try tmp.dir.createDir(std.testing.io, c.dir, .default_dir);
         const pack = try std.fmt.allocPrint(allocator, "{s}/pack.json", .{c.dir});
