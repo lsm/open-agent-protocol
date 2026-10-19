@@ -1,5 +1,6 @@
 mod admit;
 mod cancel;
+mod catalogs;
 mod controls;
 mod descriptor;
 mod pipe;
@@ -20,12 +21,14 @@ use admit::{
     admit_provided_tools, admit_tool_sources, compaction_threshold, effective_policy,
     session_sources,
 };
+pub use catalogs::{model_catalog, provider_catalog};
 
 use session::Inner;
 
 use crate::{
-    Adapter, Admitter, BoxFuture, Descriptor, Error, EventStream, InteractionResolution,
-    OpenRequest, Recovery, ResumeRequest, Session, SubmitRequest,
+    Adapter, Admitter, BoxFuture, Catalog, Descriptor, Error, EventStream, InteractionResolution,
+    ModelLister, ModelSwitcher, OpenRequest, Recovery, ResumeRequest, Session, SettingsUpdater,
+    SubmitRequest, ToolCatalog, ToolLister,
 };
 
 pub const DEFAULT_JOURNAL_CAPACITY: usize = 64;
@@ -232,6 +235,62 @@ impl MemorySession {
     pub fn close(&self) -> Result<(), Error> {
         self.lock().close()
     }
+
+    pub fn models(&self, request: &ModelsRequest) -> Result<Catalog, Error> {
+        self.lock().models(request)
+    }
+
+    pub fn switch_model(
+        &self,
+        request: &SessionModelSwitchRequest,
+    ) -> Result<(SessionModelSwitchResponse, SessionState), Error> {
+        self.lock().switch_model(request)
+    }
+
+    pub fn update_settings(
+        &self,
+        request: &SessionSettingsUpdateRequest,
+    ) -> Result<(SessionSettingsUpdateResponse, SessionState), Error> {
+        self.lock().update_settings(request)
+    }
+
+    pub fn tools(&self, request: &ToolsListRequest) -> Result<ToolCatalog, Error> {
+        self.lock().tools(request)
+    }
+}
+
+impl ModelLister for MemorySession {
+    fn models(&self, request: ModelsRequest) -> BoxFuture<'_, Catalog> {
+        let result = MemorySession::models(self, &request);
+        Box::pin(async move { result })
+    }
+}
+
+impl ModelSwitcher for MemorySession {
+    fn switch_model(
+        &self,
+        request: SessionModelSwitchRequest,
+    ) -> BoxFuture<'_, (SessionModelSwitchResponse, SessionState)> {
+        let result = MemorySession::switch_model(self, &request);
+        Box::pin(async move { result })
+    }
+}
+
+impl SettingsUpdater for MemorySession {
+    fn update_settings(
+        &self,
+        request: SessionSettingsUpdateRequest,
+    ) -> BoxFuture<'_, (SessionSettingsUpdateResponse, SessionState)> {
+        let result = MemorySession::update_settings(self, &request);
+        Box::pin(async move { result })
+    }
+}
+
+impl ToolLister for MemorySession {
+    fn tools(&self, request: ToolsListRequest) -> BoxFuture<'_, ToolCatalog> {
+        let result = MemorySession::tools(self, &request);
+        Box::pin(async move { result })
+    }
 }
 
 impl Session for MemorySession {
@@ -266,6 +325,22 @@ impl Session for MemorySession {
     fn close(&self) -> BoxFuture<'_, ()> {
         let result = MemorySession::close(self);
         Box::pin(async move { result })
+    }
+
+    fn model_lister(&self) -> Option<&dyn ModelLister> {
+        Some(self)
+    }
+
+    fn model_switcher(&self) -> Option<&dyn ModelSwitcher> {
+        Some(self)
+    }
+
+    fn settings_updater(&self) -> Option<&dyn SettingsUpdater> {
+        Some(self)
+    }
+
+    fn tool_lister(&self) -> Option<&dyn ToolLister> {
+        Some(self)
     }
 }
 
