@@ -4,6 +4,7 @@ mod controls;
 mod descriptor;
 mod pipe;
 mod resolve;
+mod resume;
 mod session;
 
 use std::collections::{BTreeMap, HashMap, VecDeque};
@@ -23,7 +24,8 @@ use admit::{
 use session::Inner;
 
 use crate::{
-    Admitter, BoxFuture, Error, EventStream, InteractionResolution, OpenRequest, SubmitRequest,
+    Adapter, Admitter, BoxFuture, Descriptor, Error, EventStream, InteractionResolution,
+    OpenRequest, Recovery, ResumeRequest, Session, SubmitRequest,
 };
 
 pub const DEFAULT_JOURNAL_CAPACITY: usize = 64;
@@ -223,8 +225,47 @@ impl MemorySession {
         self.lock().cancel(run_id)
     }
 
+    pub fn resume(&self, request: ResumeRequest) -> Result<(Recovery, EventStream), Error> {
+        self.lock().resume(request)
+    }
+
     pub fn close(&self) -> Result<(), Error> {
         self.lock().close()
+    }
+}
+
+impl Session for MemorySession {
+    fn submit(
+        &self,
+        request: SubmitRequest,
+    ) -> BoxFuture<'_, (MessageSubmitResponse, EventStream)> {
+        let result = MemorySession::submit(self, request);
+        Box::pin(async move { result })
+    }
+
+    fn state(&self) -> BoxFuture<'_, SessionState> {
+        let state = self.snapshot();
+        Box::pin(async move { Ok(state) })
+    }
+
+    fn resolve(&self, resolution: InteractionResolution) -> BoxFuture<'_, ()> {
+        let result = MemorySession::resolve(self, resolution);
+        Box::pin(async move { result })
+    }
+
+    fn cancel(&self, run_id: RunId) -> BoxFuture<'_, RunCancelResponse> {
+        let result = MemorySession::cancel(self, &run_id);
+        Box::pin(async move { result })
+    }
+
+    fn resume(&self, request: ResumeRequest) -> BoxFuture<'_, (Recovery, EventStream)> {
+        let result = MemorySession::resume(self, request);
+        Box::pin(async move { result })
+    }
+
+    fn close(&self) -> BoxFuture<'_, ()> {
+        let result = MemorySession::close(self);
+        Box::pin(async move { result })
     }
 }
 
@@ -341,5 +382,23 @@ impl Admitter for Memory {
     fn admit(&self, request: &OpenRequest) -> BoxFuture<'_, ()> {
         let result = self.check_admission(request);
         Box::pin(async move { result })
+    }
+}
+
+impl Adapter for Memory {
+    fn probe(&self) -> BoxFuture<'_, Descriptor> {
+        let descriptor = self.describe();
+        Box::pin(async move { Ok(descriptor) })
+    }
+
+    fn open(&self, request: OpenRequest) -> BoxFuture<'_, Box<dyn Session>> {
+        let result = self
+            .open_session(&request)
+            .map(|session| Box::new(session) as Box<dyn Session>);
+        Box::pin(async move { result })
+    }
+
+    fn admitter(&self) -> Option<&dyn Admitter> {
+        Some(self)
     }
 }
