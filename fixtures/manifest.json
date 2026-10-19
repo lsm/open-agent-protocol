@@ -1343,6 +1343,26 @@
       ]
     },
     {
+      "id": "ext-pack-refusal-on-event",
+      "path": "packs/bad-refusal-on-event",
+      "kind": "load-invalid",
+      "valid": false,
+      "phase": "load",
+      "codes": [
+        "pack_refusal_undeclared"
+      ],
+      "units": [
+        "extensions"
+      ],
+      "provenance": [
+        "decisions/0058-pack-declarations-are-definitions.md",
+        "decisions/0004-extension-packs.md"
+      ],
+      "rules": [
+        "0004#a-pack-declares-what-it-defines/7"
+      ]
+    },
+    {
       "id": "ext-pack-restates-core-member",
       "path": "packs/bad-restates-core-member",
       "kind": "load-invalid",
