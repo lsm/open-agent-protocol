@@ -747,7 +747,7 @@ Common optional core features:
 - `run.tool_selection`
 - `run.structured_output`
 - `content.reasoning`
-- `content.image` (also gates an image in a tool result; [Decision 0060](../decisions/0060-a-tool-result-may-carry-content-parts.md))
+- `content.image` (also gates an image in a tool result: staged; [Decision 0060](../decisions/0060-a-tool-result-may-carry-content-parts.md), proposed)
 - `action.tools.list`
 - `action.tool_sources.attach`
 - `action.providers.attach`
