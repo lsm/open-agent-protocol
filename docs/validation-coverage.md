@@ -48,7 +48,7 @@ Every code either tree declares, or a fixture expects. "defined, not in implemen
 | --- | --- | --- | --- | --- | --- | --- |
 | `ambiguous_default_model` | semantic | yes | yes | 1 | 0 | 0006, staged-units-graduation |
 | `attachment_field_in_catalog` | semantic | yes | yes | 3 | 0 | 0008, staged-units-graduation |
-| `auth_flow_order` | semantic | yes | no | 1 | 0 | 0029, 0043 |
+| `auth_flow_order` | semantic | yes | yes | 1 | 0 | 0029, 0043 |
 | `cancel_not_settled` | semantic | yes | yes | 1 | 0 | — |
 | `catalog_mismatch` | semantic | yes | yes | 7 | 0 | 0008, 0011, staged-units-graduation |
 | `compaction_ended_without_start` | semantic | yes | yes | 1 | 0 | 0044 |
@@ -79,7 +79,7 @@ Every code either tree declares, or a fixture expects. "defined, not in implemen
 | `illegal_run_transition` | semantic | yes | yes | 30 | 0 | 0002, 0007, 0013, 0041, 0044, conformance, staged-units-graduation |
 | `illegal_tool_transition` | semantic | yes | yes | 6 | 0 | 0007, 0011, conformance, staged-units-graduation |
 | `malformed_json` | decode | yes | no | 0 | 1 | — |
-| `missing_auth_terminal` | semantic | yes | no | 1 | 0 | 0029, 0043 |
+| `missing_auth_terminal` | semantic | yes | yes | 1 | 0 | 0029, 0043 |
 | `missing_response` | semantic | yes | yes | 4 | 0 | 0007, staged-units-graduation |
 | `missing_run_started` | semantic | yes | yes | 5 | 0 | 0002, 0044 |
 | `missing_run_terminal` | semantic | yes | yes | 2 | 0 | 0002 |
@@ -107,7 +107,7 @@ Every code either tree declares, or a fixture expects. "defined, not in implemen
 | `pending_interaction_at_terminal` | semantic | yes | yes | 2 | 0 | 0011, staged-units-graduation |
 | `pending_steer_at_terminal` | semantic | yes | yes | 2 | 0 | 0013 |
 | `pending_tool_at_terminal` | semantic | yes | yes | 4 | 0 | 0005, 0011, 0031, staged-units-graduation |
-| `premature_session_mutation` | semantic | yes | no | 3 | 0 | 0007, staged-units-graduation |
+| `premature_session_mutation` | semantic | yes | yes | 3 | 0 | 0007, staged-units-graduation |
 | `queue_limit_exceeded` | semantic | yes | yes | 9 | 0 | 0007, 0009, staged-units-graduation |
 | `queue_order_violation` | semantic | yes | yes | 4 | 0 | 0007, staged-units-graduation |
 | `resolution_payload_mismatch` | semantic | yes | yes | 2 | 0 | 0011, staged-units-graduation |
@@ -131,11 +131,11 @@ Every code either tree declares, or a fixture expects. "defined, not in implemen
 | `undisclosed_attach_modes` | semantic | yes | yes | 3 | 0 | 0008, conformance, staged-units-graduation |
 | `undisclosed_provide_limit` | semantic | yes | yes | 1 | 0 | 0011, staged-units-graduation |
 | `undisclosed_queue_limit` | semantic | yes | yes | 2 | 0 | 0007, staged-units-graduation |
-| `undisclosed_selection_scope` | semantic | yes | no | 3 | 0 | 0005, 0021, staged-units-graduation |
-| `unhonoured_capability` | semantic | yes | no | 4 | 0 | 0004, 0006, 0008, 0009, staged-units-graduation |
+| `undisclosed_selection_scope` | semantic | yes | yes | 3 | 0 | 0005, 0021, staged-units-graduation |
+| `unhonoured_capability` | semantic | yes | yes | 4 | 0 | 0004, 0006, 0008, 0009, staged-units-graduation |
 | `unknown_participant` | semantic | yes | yes | 1 | 0 | — |
 | `unmatched_interaction` | semantic | yes | yes | 5 | 0 | 0007, 0011, staged-units-graduation |
-| `unmatched_provider` | semantic | yes | defined, not in implemented list | 1 | 0 | 0014 |
+| `unmatched_provider` | semantic | yes | yes | 1 | 0 | 0014 |
 | `unmatched_response` | semantic | yes | yes | 1 | 0 | — |
 | `unmatched_steer` | semantic | yes | yes | 3 | 0 | 0013 |
 | `unmatched_tool` | semantic | yes | yes | 1 | 0 | — |
@@ -157,11 +157,11 @@ is checked. Fixture counts are positive / negative traces citing the decision.
 | 0001 typed identity domains | S | both | core | |
 | 0001 one foreground invocation is one run | `illegal_run_transition`, `missing_run_started`, `missing_run_terminal`, `duplicate_run_terminal` | both | core, many | |
 | 0001 deterministic run event order | `sequence_gap`, `sequence_regression`, `event_after_terminal` | both | core | |
-| 0001 correlated reverse interactions | `unmatched_interaction`, `duplicate_interaction`, `wrong_interaction_responder`, `pending_interaction_at_terminal` | both | core | the responder rule checks the declared responder; `unknown_participant` (declared at initialize) is Go-only |
+| 0001 correlated reverse interactions | `unmatched_interaction`, `duplicate_interaction`, `wrong_interaction_responder`, `pending_interaction_at_terminal` | both | core | the responder rule checks the declared responder; `unknown_participant` (declared at initialize) is judged by both |
 | 0001 cancellation intent is not settlement | `cancel_not_settled`, `illegal_run_transition` | both | 1 negative | one negative fixture only |
-| 0001 resume, reconciliation and replay are separate | `undeclared_replay_gap` | Go only | 1 negative | ported separately |
-| 0001 capabilities disclose effective fidelity | `unavailable_capability`, `unhonoured_capability`, `stale_capability_revision` | `unhonoured_capability` Go only | 44 / 4 / 8 negatives | |
-| request/response pairing (0001 vocabulary) | `missing_response`, `duplicate_response`, `unmatched_response` | Go only | 4 / 1 / 1 | ported separately |
+| 0001 resume, reconciliation and replay are separate | `undeclared_replay_gap` | both | 1 negative | |
+| 0001 capabilities disclose effective fidelity | `unavailable_capability`, `unhonoured_capability`, `stale_capability_revision` | both | 44 / 4 / 8 negatives | |
+| request/response pairing (0001 vocabulary) | `missing_response`, `duplicate_response`, `unmatched_response` | both | 4 / 1 / 1 | |
 | 0002 two canonical admission shapes, promotion, pre-start settlement | `illegal_run_transition`, `missing_run_started` | both | 4 / 7 | |
 
 ### Decisions 0003, 0004: process and extension packs
@@ -172,7 +172,7 @@ is checked. Fixture counts are positive / negative traces citing the decision.
 | 0004 unprefixed namespace, prefix-free set, a pack declares what it defines, a pack adds and does not amend, a pack is someone else's document | 19 `pack_*` load codes and `ext_claim_without_pack` | Go all 20; Zig 5 (`pack_unprefixed_name`, `pack_foreign_prefix`, `pack_id_collision`, `pack_branch_unpinned`, `pack_branch_undeclared_type`) | 6 / 23 load-invalid | both Zig gates skip `load-invalid` |
 | 0004 a load refusal is not a diagnostic | (by construction) | both | — | |
 | 0004 a pack's conformance claim is its own | `pack_fixture_claims_core_unit` | Go only | 1 | |
-| 0004 pack members gated on their capability | `unavailable_capability`, `unhonoured_capability` | Zig lacks `unhonoured_capability` | 4 / 1 | |
+| 0004 pack members gated on their capability | `unavailable_capability`, `unhonoured_capability` | both (Zig's `packEnvelope` raises `unhonoured_capability` for a refusal outside a typed gate's `refusals`) | 4 / 1 | |
 
 ### Decisions 0005, 0019, 0021–0024, 0031, 0034: run controls
 
@@ -180,12 +180,12 @@ is checked. Fixture counts are positive / negative traces citing the decision.
 | --- | --- | --- | --- | --- |
 | 0005 presence is what the gate judges; controls fail closed | `unavailable_capability`, `degraded_without_optin`, `unsatisfiable_control` | both | 17 / 31 | |
 | 0005 the gate is judged on the correlated response | `unapplied_control` | both | 18 | |
-| 0005 disclosure is machine-readable | `undisclosed_selection_scope` | Go only | 3 | ported separately |
+| 0005 disclosure is machine-readable | `undisclosed_selection_scope` | both | 3 | |
 | 0005 a per-run selection does not move the session default | `session_state_mismatch` | Zig partial | in queue/models sets | |
 | 0005 `output_schema` is compiled, never resolved | `unsatisfiable_control` | both | | `outputschema.go` emits no code of its own |
 | 0005 `run.completed` gains `model_id` | `unapplied_control` (model mismatch) | both | | |
 | 0019 `unsatisfiable_control` reaches unported rules | `unsatisfiable_control` | both | 1 | 0019's other rules are process (one binary, port order) |
-| 0021 a tool policy discloses whether it outlives its run (proposed) | `undisclosed_selection_scope` | Go only | 1 | |
+| 0021 a tool policy discloses whether it outlives its run (proposed) | `undisclosed_selection_scope` | both | 1 | |
 | 0022 `tool_choice` is a filter; `none` is an empty allowlist; `mode` is `scope` | `unapplied_control`, `unsatisfiable_control`, S | both | 1 / — | positive only |
 | 0023 only `allowed` is checked against the catalog | `unsatisfiable_control` | both | 1 / — | positive only |
 | 0024 the filter judges the session catalog | `unsatisfiable_control` | both | 2 / — | positive only |
@@ -204,7 +204,7 @@ is checked. Fixture counts are positive / negative traces citing the decision.
 | 0006 open response sent whole; empty catalog is a list; descriptor `id` non-empty | S, `session_state_mismatch` | both (S) | 2 schema | |
 | 0006 one default, unique ids | `ambiguous_default_model`, `duplicate_model_id` | both | 1 / 1 | |
 | 0006 `adapter.ModelLister` is optional | — | — | — | Go API shape; pinned by adapter tests |
-| 0014 a published `provider_id` resolves; providers unique | `unmatched_provider`, `duplicate_provider` | `unmatched_provider` Go only (Zig declares it, does not implement it) | 1 / 2 | ported separately |
+| 0014 a published `provider_id` resolves; providers unique | `unmatched_provider`, `duplicate_provider` | both | 1 / 2 | |
 | 0028 `session.model.switch` (core) | `model_not_in_catalog`, `session_state_mismatch`, `degraded_without_optin`, `scope_mismatch` | Zig partial on two | 4 / 3 | proposed |
 | 0028 `session.provider.attach` (optional) | `duplicate_provider`, `undisclosed_attach_modes`, `unavailable_capability` | both | | proposed; no adapter attaches live |
 | 0035 a model entry publishes facts; absence means unknown | S | both | 2 / 3 schema | not a semantic rule |
@@ -215,8 +215,8 @@ is checked. Fixture counts are positive / negative traces citing the decision.
 | --- | --- | --- | --- | --- |
 | 0007 one started run, reservations behind it; admission order | `queue_order_violation`, `illegal_run_transition` | both | 70 / 10 | |
 | 0007 the bound is disclosed and kept | `undisclosed_queue_limit`, `queue_limit_exceeded` | both | 2 / 9 | |
-| 0007 the refusal is validated as well as the admission | `unavailable_capability`, `degraded_without_optin`, `missing_response` | `missing_response` Go only | 4 / 2 | |
-| 0007 a snapshot states its position; a settled run is named | `session_state_mismatch`, `premature_session_mutation` | Zig partial; `premature_session_mutation` Go only | 82 / 3 | the largest partial gap |
+| 0007 the refusal is validated as well as the admission | `unavailable_capability`, `degraded_without_optin`, `missing_response` | both | 4 / 2 | |
+| 0007 a snapshot states its position; a settled run is named | `session_state_mismatch`, `premature_session_mutation` | Zig partial on `session_state_mismatch`; `premature_session_mutation` both | 82 / 3 | the largest partial gap |
 | 0007 a reservation's model control applies at promotion | `unapplied_control` | both | | |
 | 0009 open carries subscription and message; ack unconditional; one refusal per election; cites active revision | `session_state_mismatch`, `unavailable_capability`, `degraded_without_optin`, `stale_capability_revision` | Zig partial | 11 / 7 | |
 | 0009 failure is atomic | `session_state_mismatch` | Zig partial | | |
@@ -227,7 +227,7 @@ is checked. Fixture counts are positive / negative traces citing the decision.
 
 | rule | code | Go / Zig | fixtures | note |
 | --- | --- | --- | --- | --- |
-| 0008 an adapter that does not attach says so; catalog gated on its own key | `unavailable_capability`, `unhonoured_capability` | Zig lacks `unhonoured_capability` | 19 / 12 | |
+| 0008 an adapter that does not attach says so; catalog gated on its own key | `unavailable_capability`, `unhonoured_capability` | both | 19 / 12 | |
 | 0008 a source is described; attachment shape is not the catalog shape | `attachment_field_in_catalog`, S | both | 3 | |
 | 0008 a catalog resolves | `unmatched_tool_source`, `catalog_mismatch`, `duplicate_tool_source`, `duplicate_tool_name` | both | 6 / 4 / 7 / 2 | |
 | 0008 attachment bounded by disclosure; modes disclosed as a set | `undisclosed_attach_limit`, `undisclosed_attach_modes` | both | 1 / 3 | |
@@ -252,7 +252,7 @@ is checked. Fixture counts are positive / negative traces citing the decision.
 | 0013 steer shape; settled not merely admitted; attributable by `request_id` | `unmatched_steer`, `duplicate_steer`, `pending_steer_at_terminal`, `illegal_run_transition`, `scope_mismatch` | both (scope partial) | 18 / 25 | |
 | 0013 `invalid_steer_target` reason ranking | — | — | — | `not_steerable` is read; `no_model_turn` (0044) is in neither validator |
 | 0026 a resume cursor may name its run | — | — | — | hub wire; pinned by hub tests |
-| 0029 auth flow order and terminal | `auth_flow_order`, `missing_auth_terminal`, `stale_capability_revision` | first two Go only | 2 / 3 | ported separately |
+| 0029 auth flow order and terminal | `auth_flow_order`, `missing_auth_terminal`, `stale_capability_revision` | both | 2 / 3 | |
 | 0029 credential boundary | `credential_in_trace` (provider profile) | both | | the agent profile has no credential diagnostic |
 | 0043 provider rows carry `auth_kinds` | S | both | 2 / 3 schema | |
 
@@ -345,14 +345,9 @@ validator, and how much of it.
 
 ## Go-only codes being ported
 
-Listed for completeness and left to the port already under way:
-`missing_response`, `duplicate_response`, `unmatched_response`,
-`undeclared_replay_gap`, `premature_session_mutation`, `unhonoured_capability`,
-`unknown_participant`, the decode-phase codes (`malformed_json`,
-`duplicate_key`, `payload_decode`), the auth and provider codes
-(`auth_flow_order`, `missing_auth_terminal`, `unmatched_provider`,
-`undisclosed_selection_scope`), and the partial `scope_mismatch` and
-`session_state_mismatch`. Not in that list and also Go-only: 15 of the 20 load
+Listed for completeness and left to the port already under way: the
+decode-phase codes (`malformed_json`, `duplicate_key`, `payload_decode`), and
+the partial `scope_mismatch` and `session_state_mismatch`. Not in that list and also Go-only: 15 of the 20 load
 codes, 14 `pack_*` codes and `ext_claim_without_pack` (Zig loads packs but
 refuses only five ways).
 
@@ -392,7 +387,7 @@ smallest fix.
 5. **`requested_by` is checked as declared, not as the endpoint.** CLAUDE.md's
    invariant says the agent participant an adapter names as `requested_by`
    must be the endpoint id its initialize response declares; `unknown_participant`
-   (Go-only) checks only that the id was declared at all, so naming the
+   checks only that the id was declared at all, so naming the
    control layer as the requester passes.
 6. **Fixture-thin units.** `permissions` has 1 positive and no semantic-invalid
    fixture, `capabilities` 1 and none, `user-input` 1 and 3, `tools` 1 and 4.
