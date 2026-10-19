@@ -406,7 +406,7 @@ func (s *state) checkEntryPending(i, line int, e protocol.Envelope, pointer stri
 	}
 	if entry.AsOfSequence == nil {
 
-		if s.queueOffered() && !sameIDSet(unresolved, knownTo(r, listed)) {
+		if !sameIDSet(unresolved, knownTo(r, listed)) {
 			s.addExpected(CodeSessionStateMismatch, i, line, e, pointer+"/pending_interactions", "entry does not report the unresolved interactions its run is blocked on", describeIDs(unresolved), describeIDs(listed), string(r.id))
 		}
 		s.checkEntryAcknowledged(i, line, e, pointer, entry, r, unresolved)

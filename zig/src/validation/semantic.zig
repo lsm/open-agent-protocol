@@ -3516,7 +3516,7 @@ pub const Machine = struct {
             for (run.interactions.keys(), run.interactions.values()) |id, held| {
                 if (!held.resolved) try unresolved.put(self.allocator, id, {});
             }
-            if (self.advertisedKey(feature_delivery_queue) and !try self.sameKnown(&unresolved, run, listed)) try self.add(code_session_state_mismatch, index);
+            if (!try self.sameKnown(&unresolved, run, listed)) try self.add(code_session_state_mismatch, index);
             try self.checkEntryAcknowledged(index, entry, run, &unresolved);
             return;
         }
