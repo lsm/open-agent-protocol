@@ -8,6 +8,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 
@@ -503,6 +504,23 @@ func (v *Validator) validateManifest(filename string, opts ManifestOptions, corp
 		return nil, err
 	}
 	root := filepath.Dir(filename)
+	gaps := map[string]bool{}
+	if opts.Owner == nil {
+		if gaps, err = loadKnownGaps(root); err != nil {
+			return nil, err
+		}
+	}
+	judgedGaps := map[string]bool{}
+	settle := func(entry FixtureEntry, err error) error {
+		if !gaps[entry.ID] {
+			return err
+		}
+		judgedGaps[entry.ID] = true
+		if err == nil {
+			return fmt.Errorf("fixture %s is listed under go in known-gaps.json and now agrees", entry.ID)
+		}
+		return nil
+	}
 	listed := map[string]bool{}
 	out := make([]FixtureOutcome, 0, len(m.Fixtures))
 	validators := map[string]*Validator{}
@@ -513,7 +531,7 @@ func (v *Validator) validateManifest(filename string, opts ManifestOptions, corp
 		if entry.Kind == KindLoadInvalid {
 			outcome, err := runLoadFixture(root, entry)
 			out = append(out, outcome)
-			if err != nil {
+			if err := settle(entry, err); err != nil {
 				return out, err
 			}
 			continue
@@ -527,7 +545,7 @@ func (v *Validator) validateManifest(filename string, opts ManifestOptions, corp
 			}
 			outcome, err := runTraceFixture(providerValidator, root, ownerRoot(opts.Owner), entry)
 			out = append(out, outcome)
-			if err != nil {
+			if err := settle(entry, err); err != nil {
 				return out, err
 			}
 			continue
@@ -554,8 +572,13 @@ func (v *Validator) validateManifest(filename string, opts ManifestOptions, corp
 		}
 		outcome, err := runTraceFixture(validator, root, ownerRoot(opts.Owner), entry)
 		out = append(out, outcome)
-		if err != nil {
+		if err := settle(entry, err); err != nil {
 			return out, err
+		}
+	}
+	for id := range gaps {
+		if !judgedGaps[id] {
+			return out, fmt.Errorf("fixture %s is listed under go in known-gaps.json and was never judged", id)
 		}
 	}
 	if err := checkUnlisted(root, filename, listed); err != nil {
@@ -613,12 +636,38 @@ func runLoadFixture(root string, entry FixtureEntry) (FixtureOutcome, error) {
 	for _, code := range got {
 		outcome.Result.Diagnostics = append(outcome.Result.Diagnostics, Diagnostic{Fixture: entry.Path, Phase: PhaseLoad, Code: code, Message: refusal.Error()})
 	}
-	want := append([]string(nil), entry.Codes...)
-	sort.Strings(want)
-	if strings.Join(got, "\x00") != strings.Join(want, "\x00") {
+	want := codeSet(entry.Codes)
+	if strings.Join(codeSet(got), "\x00") != strings.Join(want, "\x00") {
 		return outcome, fmt.Errorf("fixture %s load errors: got %v want %v (%s)", entry.ID, got, want, refusal.Error())
 	}
 	return outcome, nil
+}
+
+func codeSet(codes []string) []string {
+	set := append([]string(nil), codes...)
+	sort.Strings(set)
+	return slices.Compact(set)
+}
+
+func loadKnownGaps(root string) (map[string]bool, error) {
+	raw, err := os.ReadFile(filepath.Join(root, "known-gaps.json"))
+	if errors.Is(err, fs.ErrNotExist) {
+		return map[string]bool{}, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	var file struct {
+		Go []string `json:"go"`
+	}
+	if err := json.Unmarshal(raw, &file); err != nil {
+		return nil, fmt.Errorf("known-gaps.json: %w", err)
+	}
+	gaps := make(map[string]bool, len(file.Go))
+	for _, id := range file.Go {
+		gaps[id] = true
+	}
+	return gaps, nil
 }
 
 func ownerRoot(owner *Pack) string {
@@ -667,13 +716,12 @@ func runTraceFixture(v traceValidator, root, packRoot string, entry FixtureEntry
 		if result.PrimaryPhase() != entry.Phase {
 			return outcome, fmt.Errorf("fixture %s phase: got %s want %s", entry.ID, result.PrimaryPhase(), entry.Phase)
 		}
-		want := append([]string(nil), entry.Codes...)
+		want := codeSet(entry.Codes)
 		got := make([]string, 0, len(result.Diagnostics))
 		for _, diagnostic := range result.Diagnostics {
 			got = append(got, diagnostic.Code)
 		}
-		sort.Strings(want)
-		sort.Strings(got)
+		got = codeSet(got)
 		if strings.Join(got, "\x00") != strings.Join(want, "\x00") {
 			return outcome, fmt.Errorf("fixture %s diagnostic codes: got %v want %v", entry.ID, got, want)
 		}
