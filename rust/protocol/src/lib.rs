@@ -10,6 +10,8 @@ mod interaction;
 mod number;
 mod run;
 mod serde_util;
+mod submit;
+mod transcript;
 mod vocabulary;
 
 pub use capabilities::*;
@@ -21,10 +23,12 @@ pub use error::Error;
 pub use feature::*;
 pub use ids::{
     CompactionId, EndpointId, EnvelopeId, InteractionId, MessageId, ParticipantId, RunId,
-    SessionId, SubmissionId, ToolCallId,
+    SessionId, SubmissionId, ToolCallId, TranscriptEntryId,
 };
 pub use interaction::*;
 pub use run::*;
+pub use submit::*;
+pub use transcript::*;
 
 pub const PROTOCOL: &str = "open-agent-protocol";
 pub const VERSION: &str = "0.1";
