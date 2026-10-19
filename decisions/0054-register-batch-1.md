@@ -53,9 +53,11 @@ descriptor that advertises the feature without the mode is
 ### Only a catalog that binds owes the attached providers (OPEN-0028-4)
 
 After an accepted attachment, the next catalog of that session lists the
-attached provider and its models. Decision 0006 makes a catalog citing a
-revision other than the active one bind nothing, so it is not held to the
-attachment: whether it lists one depends on session state that a listing
+attached provider and its models. Decision 0006 makes a catalog bind only when
+it cites the active revision with its descriptor in hand — not one citing
+another revision, and not one served in the window where a revision is
+announced but its descriptor not yet obtained — so any other catalog is not
+held to the attachment: whether it lists one depends on session state that a listing
 captured under an earlier descriptor may predate. Such a catalog is still held
 to every rule about the listing alone.
 
