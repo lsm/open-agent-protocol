@@ -142,7 +142,14 @@ func (s *AgentStream) Next() bool {
 				return false
 			}
 			continue
-		case "session.state.updated", "run.status.updated":
+		case "session.state.updated", "run.status.updated", "content.completed", "run.compaction.started", "run.compaction.ended",
+			"run.steer.applied", "run.steer.dropped", "action.call.progress", "user.input.resolved":
+			continue
+		case "user.input.requested":
+			if p.str("responded_by") == sdkParticipant {
+				s.fail(&StreamError{Kind: KindTransportError, Message: "the endpoint asked this client for user input, which the Go SDK does not answer"})
+				return false
+			}
 			continue
 		default:
 			s.fail(&StreamError{Kind: KindTransportError, Message: fmt.Sprintf("unexpected OAP agent event %q", in.kind())})
