@@ -152,8 +152,14 @@ pub struct ImageContent {
 pub struct Usage {
     #[serde(skip_serializing_if = "is_zero_u64")]
     pub input_tokens: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cache_read_input_tokens: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cache_write_input_tokens: Option<u64>,
     #[serde(skip_serializing_if = "is_zero_u64")]
     pub output_tokens: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reasoning_tokens: Option<u64>,
     #[serde(skip_serializing_if = "is_zero_u64")]
     pub total_tokens: u64,
 }

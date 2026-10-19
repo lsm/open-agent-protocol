@@ -11,8 +11,8 @@ tree by default.
 ## Executable core (0001, 0002)
 
 Rules: [`0001-core.md`](../drafts/validator-rules/0001-core.md). Every tree
-judged these and no text stated them. All eight are settled; what remains is
-the ports each decision names.
+judged these and no text stated them, except OPEN-0001-9, which no tree
+judged. All nine are settled; what remains is the ports each decision names.
 
 ### OPEN-0001-1: is an envelope id unique within a trace?
 
@@ -114,6 +114,25 @@ between `capabilities.updated` and the next `capabilities.response`
 Recommendation: (a), exempting `protocol.initialize.request`,
 `capabilities.request`, `run.cancel.request` and the answers to pending
 interactions. Settled by [Decision 0055](../decisions/0055-register-batch-2.md); all three trees owe the port.
+
+### OPEN-0001-9: what does `usage` count?
+
+`usage` carried `input_tokens`, `output_tokens` and `total_tokens`, and no text
+said what they count. Harnesses disagree on whether output includes reasoning
+and whether input includes cache, and the Go opencode adapter dropped
+opencode's reasoning and cache counts entirely.
+
+- (a) Add optional `cache_read_input_tokens`, `cache_write_input_tokens` and
+  `reasoning_tokens`, with `input_tokens` excluding cache and `output_tokens`
+  including reasoning.
+- (b) Keep the three members and only define that `output_tokens` includes
+  reasoning, leaving cache to each adapter's extensions.
+- (c) Leave usage unspecified.
+
+Recommendation: (b), as the smaller change; the owner chose (a), since a
+consumer pricing runs across harnesses needs cache in one place.
+
+**Status.** Settled by [Decision 0063](../decisions/0063-usage-counts-cache-and-reasoning-tokens.md). The schema and every tree's `Usage` type carry the members already; the opencode and claude adapters, and `go/internal/provider`'s Anthropic backfill, follow.
 
 ## Queue, open and cancel (0007, 0009, 0041)
 

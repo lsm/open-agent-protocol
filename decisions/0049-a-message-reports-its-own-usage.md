@@ -1,7 +1,9 @@
 # Decision 0049: A Message Reports Its Own Usage
 
 Status: accepted 2026-10-10 (the owner chose a new run event over a `usage`
-member on `content.delta` and over a per-message list on the run's terminal)
+member on `content.delta` and over a per-message list on the run's terminal;
+what `usage` counts defined by
+[Decision 0063](0063-usage-counts-cache-and-reasoning-tokens.md))
 Date: 2026-10-10
 Protocol: `open-agent-protocol` version `0.1`
 Profile: `open-agent-protocol.agent-control-core`
