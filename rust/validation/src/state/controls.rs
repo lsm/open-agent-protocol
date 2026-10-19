@@ -298,6 +298,16 @@ impl State {
                 let provided: Vec<String> = p.tools.iter().map(|tool| tool.name.clone()).collect();
                 self.submit_controls(at, e, &submission, &provided);
             }
+        } else if *t == EnvelopeType::SESSION_COMPACT_REQUEST {
+            let p: SessionCompactRequest = payload(e);
+            let session = s(&p.session_id);
+            let pending = PendingSubmit {
+                queue: Some(self.open_queue_window(&session, &p.delivery, false)),
+                session: session.clone(),
+                ..PendingSubmit::default()
+            };
+            self.pending_controls.insert(s(&e.id), pending);
+            self.open_submit_window(&session, &s(&e.id));
         } else if *t == EnvelopeType::SESSION_OPEN_RESPONSE {
             self.settle_subscribe_admission(at, e);
             self.record_provided_tools(e);

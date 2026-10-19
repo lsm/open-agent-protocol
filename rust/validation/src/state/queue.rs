@@ -177,21 +177,22 @@ impl State {
         self.refresh_queue_windows(&session);
     }
 
-    fn open_queue_window(&self, session: &str, p: &MessageSubmitRequest) -> Window {
+    pub(super) fn open_queue_window(
+        &self,
+        session: &str,
+        delivery: &RequestedDeliveryMode,
+        mutation: bool,
+    ) -> Window {
         let (active, queued, started) = self.queue_counts(session);
-        let session_scoped = self
-            .feature_supports
-            .get(FEATURE_MODEL_SELECTION)
-            .is_some_and(|support| support.scope == SCOPE_SESSION);
         let limits = self.limits.unwrap_or_default();
         let mut window = Window {
-            delivery: p.delivery.clone(),
+            delivery: delivery.clone(),
             max_active: limits.max_active_runs_per_session,
             max_queued: limits.max_queued_runs_per_session,
             busy_at_request: active > 0,
             busy_ever: active > 0,
             started_ever: started > 0,
-            mutation: p.model_id.is_some() && session_scoped,
+            mutation,
             offered: self.queue_offered(),
             ..Window::default()
         };
@@ -207,7 +208,15 @@ impl State {
         e: &Envelope,
         p: &MessageSubmitRequest,
     ) -> (Window, Vec<Expectation>) {
-        let window = self.open_queue_window(p.session_id.as_str(), p);
+        let session_scoped = self
+            .feature_supports
+            .get(FEATURE_MODEL_SELECTION)
+            .is_some_and(|support| support.scope == SCOPE_SESSION);
+        let window = self.open_queue_window(
+            p.session_id.as_str(),
+            &p.delivery,
+            p.model_id.is_some() && session_scoped,
+        );
         let mut expectations = Vec::new();
         if p.delivery.is_empty() || p.delivery == RequestedDeliveryMode::AUTO {
             return (window, expectations);
