@@ -2850,11 +2850,11 @@ pub const Machine = struct {
         const session = memberString(payload, "session_id");
         if (target.len != 0) {
             const run = self.runs.get(target) orelse return .{ .run = null, .reason = "unknown_target" };
-            const reason: []const u8 = if (!std.mem.eql(u8, run.session, session)) "cross_session" else if (run.terminal) "terminal" else if (std.mem.eql(u8, run.status, "cancelling")) "not_steerable" else if (!run.started) "queued" else "";
+            const reason: []const u8 = if (!std.mem.eql(u8, run.session, session)) "cross_session" else if (run.terminal) "terminal" else if (std.mem.eql(u8, run.status, "cancelling")) "not_steerable" else if (run.compaction_run and !run.compaction_continue) "no_model_turn" else if (!run.started) "queued" else "";
             return .{ .run = run, .reason = reason };
         }
         for (self.runs.values()) |run| {
-            if (std.mem.eql(u8, run.session, session) and run.started and !run.terminal) return .{ .run = run, .reason = if (std.mem.eql(u8, run.status, "cancelling")) "not_steerable" else "" };
+            if (std.mem.eql(u8, run.session, session) and run.started and !run.terminal) return .{ .run = run, .reason = if (std.mem.eql(u8, run.status, "cancelling")) "not_steerable" else if (run.compaction_run and !run.compaction_continue) "no_model_turn" else "" };
         }
         return .{ .run = null, .reason = "no_active_run" };
     }
