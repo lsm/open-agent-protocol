@@ -188,3 +188,17 @@ func (s *Server) awaitDrained(ctx context.Context, st *stopState) {
 		}
 	}
 }
+
+func (s *Server) Signal(ctx context.Context, count int) (protocol.EndpointShutdownResponse, bool) {
+	wanted := protocol.ShutdownGraceful
+	if count >= 2 {
+		wanted = protocol.ShutdownForce
+	}
+	s.stopping.mu.Lock()
+	current := s.stopping.mode
+	s.stopping.mu.Unlock()
+	if count <= 0 || current == protocol.ShutdownForce || current == wanted {
+		return protocol.EndpointShutdownResponse{}, false
+	}
+	return s.acceptShutdown(ctx, wanted), true
+}

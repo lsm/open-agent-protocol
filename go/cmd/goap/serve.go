@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/lsm/open-agent-protocol/go/binding"
+	"github.com/lsm/open-agent-protocol/go/protocol"
 	"github.com/lsm/open-agent-protocol/go/serve"
 	"github.com/lsm/open-agent-protocol/go/serve/servehttp"
 	"github.com/lsm/open-agent-protocol/go/serve/servestdio"
@@ -56,7 +57,10 @@ func runHub(ctx context.Context, args []string, stdin io.Reader, stdout, stderr 
 		return err
 	}
 
-	signals, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
+	caught := make(chan os.Signal, 4)
+	signal.Notify(caught, os.Interrupt, syscall.SIGTERM)
+	defer signal.Stop(caught)
+	signals, stop := context.WithCancel(ctx)
 	defer stop()
 
 	options := serve.Options{
@@ -77,7 +81,7 @@ func runHub(ctx context.Context, args []string, stdin io.Reader, stdout, stderr 
 	}
 	hub := serve.New(registry, options)
 	if *overStdio {
-		return serveStdio(signals, hub, registry, stdin, stdout, stderr)
+		return serveStdio(signals, stop, caught, hub, registry, stdin, stdout, stderr)
 	}
 	daemon, err := servehttp.New(hub, servehttp.Options{
 		HostAllowlist: loopbackHosts(*addr),
@@ -85,6 +89,7 @@ func runHub(ctx context.Context, args []string, stdin io.Reader, stdout, stderr 
 	if err != nil {
 		return err
 	}
+	go relaySignals(signals, stop, caught, daemon, stderr)
 	httpServer := &http.Server{
 		Handler:           daemon.Handler(),
 		BaseContext:       func(net.Listener) context.Context { return signals },
@@ -128,13 +133,43 @@ func runHub(ctx context.Context, args []string, stdin io.Reader, stdout, stderr 
 	return nil
 }
 
-func serveStdio(ctx context.Context, hub *serve.Hub, registry *serve.Registry, stdin io.Reader, stdout, stderr io.Writer) error {
+type signalTaker interface {
+	Signal(ctx context.Context, count int) (protocol.EndpointShutdownResponse, bool)
+}
+
+func relaySignals(ctx context.Context, stop context.CancelFunc, caught <-chan os.Signal, taker signalTaker, stderr io.Writer) {
+	count := 0
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-caught:
+		}
+		count++
+		if count > 2 {
+			stop()
+			return
+		}
+		answer, ok := taker.Signal(ctx, count)
+		if !ok {
+			continue
+		}
+		if count == 1 {
+			fmt.Fprintf(stderr, "goap: shutting down gracefully, %d run(s) still active, %d queued run(s) lost; signal again to force\n", len(answer.ActiveRuns), len(answer.Lost))
+			continue
+		}
+		fmt.Fprintf(stderr, "goap: forced shutdown, %d run(s) cut off\n", len(answer.ActiveRuns))
+	}
+}
+
+func serveStdio(ctx context.Context, stop context.CancelFunc, caught <-chan os.Signal, hub *serve.Hub, registry *serve.Registry, stdin io.Reader, stdout, stderr io.Writer) error {
 	frontend, err := servestdio.New(hub, servestdio.Options{
 		Logger: log.New(stderr, "goap: ", 0),
 	})
 	if err != nil {
 		return err
 	}
+	go relaySignals(ctx, stop, caught, frontend, stderr)
 	if stdin == nil {
 		return errors.New("hub --stdio needs stdin")
 	}

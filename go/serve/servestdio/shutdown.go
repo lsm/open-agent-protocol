@@ -133,3 +133,25 @@ func (s *Server) awaitDrained(ctx context.Context, st *shutdownState) {
 		}
 	}
 }
+
+func (s *Server) Signal(ctx context.Context, count int) (protocol.EndpointShutdownResponse, bool) {
+	wanted := protocol.ShutdownGraceful
+	if count >= 2 {
+		wanted = protocol.ShutdownForce
+	}
+	s.stopping.mu.Lock()
+	current := s.stopping.mode
+	s.stopping.mu.Unlock()
+	if count <= 0 || current == protocol.ShutdownForce || current == wanted {
+		return protocol.EndpointShutdownResponse{}, false
+	}
+	result, werr := s.shutdownOp(ctx, requestLine{Op: opShutdown, Request: json.RawMessage(`{"mode":"` + string(wanted) + `"}`)})
+	if werr != nil {
+		return protocol.EndpointShutdownResponse{}, false
+	}
+	var answer protocol.EndpointShutdownResponse
+	if err := json.Unmarshal(result, &answer); err != nil {
+		return protocol.EndpointShutdownResponse{}, false
+	}
+	return answer, true
+}
