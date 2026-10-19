@@ -21,8 +21,9 @@ The question for every rule is three answers:
   "Zig" column below is read from the source (`semantic.implemented`,
   `provider_semantic.implemented`, `packs.zig`), never from the gate's result.
 - **`partial`** means Zig emits the code for some traces and the gate lists the
-  fixtures it misses in `partial_code_gaps` (12 for `scope_mismatch`, 105 for
-  `session_state_mismatch`).
+  fixtures it misses in `partial_code_gaps`: 12 of the 15 `scope_mismatch`
+  fixtures and 82 of the 105 `session_state_mismatch` ones, so Zig is held to
+  the code on the other 3 and 23.
 - **Rules are read at the granularity their source numbers them.** A decision's
   `###` rule is one row; a rule whose text holds several obligations is split
   only where the validators split it.
@@ -293,7 +294,7 @@ error codes, no diagnostic yet), 0025 (superseded), 0027 (proposed), 0030
 | `drafts/hub.md` | the hub's own wire (ops, routes, HTTP statuses); out of the trace validator's scope by design, and every rule names its pinning Go and Zig test. Hub answers that carry a protocol payload (`history`, `transcript`) are pinned by field assertions; no test validates them against the schema |
 | `drafts/work.md` | work verbs; no validator; pinned by `go/internal/workwire` tests, Zig hub tests and `hub_parity_test` |
 | `drafts/endpoint-stdio.md` | framing and the serve-agent loop; pinned by the Go conformance runner (`goap conformance`), not by diagnostics |
-| `drafts/model-provider-core.md`, `provider-stdio.md`, `provider-http.md` | provider validator: `credential_in_trace`, `credential_in_headers`, `terminal_not_assembly`, `sequence_gap`, `sequence_regression`, `event_after_terminal` in both trees; 8 positive and 6 semantic-invalid provider fixtures |
+| `drafts/model-provider-core.md`, `provider-stdio.md`, `provider-http.md` | provider validator: `credential_in_trace`, `credential_in_headers`, `terminal_not_assembly`, `sequence_gap`, `sequence_regression`, `event_after_terminal` in both trees; the provider corpus holds 9 positive, 11 semantic-invalid, 16 schema-invalid and 2 decode fixtures |
 | `drafts/triggered-runs.md`, `harness-initiated-state.md`, `presentation-control-profile.md`, `composition.md`, `cli.md` | proposals or unbuilt; no wire on main to check |
 | `schema/v0.1` | both trees run the same schemas; 60 `schema-invalid` fixtures (44 agent, 16 provider) |
 | `research/protocol-feedback-2026-09.md` | PF-1 → 0002 rows; PF-6 → capability rows; PF-7 → 0001 rows; PF-10 → `unattributed_call`; PF-2, 3, 4, 5, 8, 9, 11, 12 are deferrals or non-changes with no rule to check |
@@ -364,11 +365,12 @@ smallest fix.
 1. **Control-owned call rules are skipped in every Go adapter unit test.**
    0011's ownership, interaction and settlement rules and 0031's
    `refused_by_policy` settlement are keyed on the control participant, which
-   only `session.open.request` sets, and `adaptertest`'s trace has no open
-   (above). A provided-tool adapter that settles a call wrongly passes its own
-   tests; #1202 found exactly this only because its test built a full trace by
-   hand. Fix: give `adaptertest` an open (with the participant and the provided
-   tools) whenever the request it is handed carries them.
+   only `protocol.initialize.request`'s participant sets, and on the provided
+   tools, which only `session.open.request` declares; `adaptertest`'s trace has
+   neither (above). A provided-tool adapter that settles a call wrongly passes
+   its own tests; #1202 found exactly this only because its test built a full
+   trace by hand. Fix: give `adaptertest` an initialize carrying the
+   participant and an open carrying the provided tools.
 2. **Decision 0050 has no semantic rule while both trees are building it.**
    Only the schema judges shutdown: nothing checks that a submit, open or
    `work.start` after an accepted shutdown is refused `shutting_down`, that an
