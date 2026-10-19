@@ -63,6 +63,8 @@ pub const Options = struct {
 
 const Served = (contract.Failure || error{ Denied, FrameTooLarge });
 
+pub const ShutdownMode = enum { graceful, force };
+
 pub const Endpoint = struct {
     allocator: std.mem.Allocator,
     adapter: contract.Adapter,
@@ -74,6 +76,8 @@ pub const Endpoint = struct {
     entries: std.ArrayList(Entry) = .empty,
     outbound: std.ArrayList([]u8) = .empty,
     denial: Denial = .{ .code = "internal", .message = "" },
+    shutdown: ?ShutdownMode = null,
+    withdrawn: std.ArrayList([]u8) = .empty,
 
     pub fn init(allocator: std.mem.Allocator, adapter: contract.Adapter, options: Options) Endpoint {
         return .{ .allocator = allocator, .adapter = adapter, .frame_limit = options.frame_limit, .journal_capacity = options.journal_capacity, .tool_sources = options.tool_sources };
@@ -85,6 +89,8 @@ pub const Endpoint = struct {
         for (self.outbound.items) |line| self.allocator.free(line);
         self.outbound.deinit(self.allocator);
         if (self.participant) |owned| self.allocator.free(owned);
+        for (self.withdrawn.items) |run_id| self.allocator.free(run_id);
+        self.withdrawn.deinit(self.allocator);
         self.* = undefined;
     }
 
@@ -252,6 +258,7 @@ pub const Endpoint = struct {
         const request = oap_envelope.deserializeEnvelope(line, arena) catch |err| switch (err) {
             error.OutOfMemory => return error.OutOfMemory,
             oap_envelope.DecodeError.UnknownEnvelopeType => {
+                if (std.mem.eql(u8, declared_type, "endpoint.shutdown.request")) return self.shutdownRequest(arena, root);
                 if (std.mem.eql(u8, declared_type, "session.list.request")) {
                     const details = try arena.dupe(oap_types.DetailEntry, &.{
                         .{ .key = "feature", .value = "session.list" },
@@ -268,6 +275,10 @@ pub const Endpoint = struct {
             else => return self.deny("invalid_payload", "the payload does not decode as this request type", &.{}),
         };
 
+        if (self.shutdown != null) switch (request.payload) {
+            .session_open_request, .message_submit_request, .session_compact_request => return self.deny("shutting_down", "the endpoint is shutting down and admits no new work", &.{}),
+            else => {},
+        };
         switch (request.payload) {
             .initialize_request => |*payload| try self.initialize(arena, &request, payload, descriptor),
             .capabilities_request => try self.capabilities(arena, &request, descriptor),
@@ -288,6 +299,141 @@ pub const Endpoint = struct {
                 return self.deny("unsupported_request", message, &.{});
             },
         }
+    }
+
+    const Nonterminal = struct { session_id: []const u8, run: oap_types.ActiveRun };
+
+    fn nonterminalRuns(self: *Endpoint, arena: std.mem.Allocator) Served![]Nonterminal {
+        var runs: std.ArrayList(Nonterminal) = .empty;
+        for (self.entries.items) |*entry| {
+            var refusal = contract.Refusal{};
+            const current = entry.session.state(arena, &refusal) catch |err| {
+                if (err == error.OutOfMemory) return error.OutOfMemory;
+                continue;
+            };
+            for (current.active_runs) |run| try runs.append(arena, .{ .session_id = entry.session.id(), .run = run });
+            const pointer = current.active_run_id orelse continue;
+            if (current.active_runs.len > 0) continue;
+            try runs.append(arena, .{ .session_id = entry.session.id(), .run = .{
+                .run_id = pointer,
+                .status = switch (current.status) {
+                    .queued => .queued,
+                    .waiting_for_input => .waiting_for_input,
+                    else => .running,
+                },
+                .relationship = "primary",
+            } });
+        }
+        return runs.items;
+    }
+
+    fn shutdownRequest(self: *Endpoint, arena: std.mem.Allocator, root: std.json.ObjectMap) Served!void {
+        const payload = root.get("payload").?;
+        var asked: ?ShutdownMode = null;
+        if (payload != .object) return self.deny("invalid_payload", "the payload does not decode as endpoint.shutdown.request", &.{});
+        var members = payload.object.iterator();
+        while (members.next()) |member| {
+            if (!std.mem.eql(u8, member.key_ptr.*, "mode")) return self.deny("invalid_payload", "endpoint.shutdown.request carries only mode", &.{});
+            if (member.value_ptr.* == .null) continue;
+            if (member.value_ptr.* != .string) return self.deny("invalid_payload", "mode is graceful or force", &.{});
+            asked = std.meta.stringToEnum(ShutdownMode, member.value_ptr.string) orelse return self.deny("invalid_payload", "mode is graceful or force", &.{});
+        }
+        var runs = try self.nonterminalRuns(arena);
+        var outcome: []const u8 = "stopping";
+        var lost: std.ArrayList(Nonterminal) = .empty;
+        const mode = asked orelse self.shutdown orelse if (runs.len > 0) null else ShutdownMode.graceful;
+        if (mode) |chosen| {
+            if (self.shutdown != .force) self.shutdown = chosen;
+            if (self.shutdown == .graceful) {
+                var kept: std.ArrayList(Nonterminal) = .empty;
+                for (runs) |entry| {
+                    if (entry.run.status == .queued) {
+                        if (self.find(entry.session_id)) |held| {
+                            var refusal = contract.Refusal{};
+                            if (held.session.cancel(arena, entry.run.run_id, &refusal)) |_| {
+                                try self.withdraw(entry.run.run_id);
+                                try lost.append(arena, entry);
+                                continue;
+                            } else |err| if (err == error.OutOfMemory) return error.OutOfMemory;
+                        }
+                    }
+                    try kept.append(arena, entry);
+                }
+                runs = kept.items;
+                if (runs.len > 0) outcome = "draining";
+            }
+        } else outcome = "choose";
+        var answer = try std.json.ObjectMap.init(arena, &.{}, &.{});
+        try answer.put(arena, "outcome", .{ .string = outcome });
+        try answer.put(arena, "active_runs", try shutdownRuns(arena, runs, true));
+        if (lost.items.len > 0) try answer.put(arena, "lost", try shutdownRuns(arena, lost.items, false));
+        var envelope = try std.json.ObjectMap.init(arena, &.{}, &.{});
+        try envelope.put(arena, "protocol", .{ .string = oap_types.PROTOCOL });
+        try envelope.put(arena, "version", .{ .string = oap_types.VERSION });
+        try envelope.put(arena, "profile", .{ .string = oap_types.PROFILE });
+        try envelope.put(arena, "type", .{ .string = "endpoint.shutdown.response" });
+        try envelope.put(arena, "id", .{ .string = try self.nextId(arena, "response") });
+        try envelope.put(arena, "in_reply_to", root.get("id").?);
+        if (root.get("capability_revision")) |revision| try envelope.put(arena, "capability_revision", revision);
+        try envelope.put(arena, "payload", .{ .object = answer });
+        const line = try json_encode.valueAlloc(self.allocator, .{ .object = envelope });
+        errdefer self.allocator.free(line);
+        if (line.len + 1 > self.frame_limit) return error.FrameTooLarge;
+        try self.outbound.append(self.allocator, line);
+    }
+
+    fn shutdownRuns(arena: std.mem.Allocator, runs: []const Nonterminal, detailed: bool) !std.json.Value {
+        var list = std.json.Array.init(arena);
+        for (runs) |entry| {
+            var run = try std.json.ObjectMap.init(arena, &.{}, &.{});
+            try run.put(arena, "session_id", .{ .string = entry.session_id });
+            try run.put(arena, "run_id", .{ .string = entry.run.run_id });
+            if (detailed) {
+                try run.put(arena, "status", .{ .string = @tagName(entry.run.status) });
+                if (entry.run.pending_interactions.len > 0) {
+                    var pending = std.json.Array.init(arena);
+                    for (entry.run.pending_interactions) |id| try pending.append(.{ .string = id });
+                    try run.put(arena, "pending_interactions", .{ .array = pending });
+                }
+            }
+            try list.append(.{ .object = run });
+        }
+        return .{ .array = list };
+    }
+
+    pub fn shutdownComplete(self: *Endpoint) !bool {
+        const mode = self.shutdown orelse return false;
+        if (mode == .force) return true;
+        var scratch = std.heap.ArenaAllocator.init(self.allocator);
+        defer scratch.deinit();
+        const arena = scratch.allocator();
+        var left: usize = 0;
+        for (try self.nonterminalRuns(arena)) |entry| {
+            if (self.withdrew(entry.run.run_id)) continue;
+            left += 1;
+            if (entry.run.status != .queued) continue;
+            const held = self.find(entry.session_id) orelse continue;
+            var refusal = contract.Refusal{};
+            if (held.session.cancel(arena, entry.run.run_id, &refusal)) |_| {
+                try self.withdraw(entry.run.run_id);
+                left -= 1;
+            } else |err| if (err == error.OutOfMemory) return error.OutOfMemory;
+        }
+        return left == 0;
+    }
+
+    fn withdraw(self: *Endpoint, run_id: []const u8) !void {
+        if (self.withdrew(run_id)) return;
+        const owned = try self.allocator.dupe(u8, run_id);
+        errdefer self.allocator.free(owned);
+        try self.withdrawn.append(self.allocator, owned);
+    }
+
+    fn withdrew(self: *const Endpoint, run_id: []const u8) bool {
+        for (self.withdrawn.items) |known| {
+            if (std.mem.eql(u8, known, run_id)) return true;
+        }
+        return false;
     }
 
     fn respond(self: *Endpoint, arena: std.mem.Allocator, request: *const oap_types.Envelope, answer: oap_types.Envelope) Served!void {
@@ -1232,10 +1378,10 @@ const FakeSession = struct {
     }
 
     fn stateOf(ptr: *anyopaque, arena: std.mem.Allocator, refusal: *contract.Refusal) contract.Failure!oap_types.SessionState {
-        _ = arena;
         _ = refusal;
         const self = cast(ptr);
-        return .{ .session_id = self.id_text, .status = if (self.active) .running else .idle };
+        const run_id: ?[]const u8 = if (self.active) try std.fmt.allocPrint(arena, "run-{d}", .{self.runs}) else null;
+        return .{ .session_id = self.id_text, .status = if (self.active) .running else .idle, .active_run_id = run_id };
     }
 
     fn submit(ptr: *anyopaque, arena: std.mem.Allocator, request: *const oap_types.MessageSubmitRequest, envelope_id: []const u8, refusal: *contract.Refusal) contract.Failure!oap_types.MessageSubmitResponse {
@@ -1437,6 +1583,61 @@ fn field(value: std.json.Value, comptime path: []const []const u8) []const u8 {
 
 const open_line = framed("session.open.request", "open-1", "", "{\"session_id\":\"s1\"}");
 const submit_line = framed("session.message.submit.request", "submit-1", ",\"session_id\":\"s1\"", "{\"session_id\":\"s1\",\"delivery\":\"auto\",\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}]}");
+
+const shutdown_asked = framed("endpoint.shutdown.request", "sd-1", "", "{}");
+const shutdown_graceful = framed("endpoint.shutdown.request", "sd-2", "", "{\"mode\":\"graceful\"}");
+const shutdown_force = framed("endpoint.shutdown.request", "sd-3", "", "{\"mode\":\"force\"}");
+
+test "an endpoint shutdown with nothing running stops at once" {
+    var harness: Harness = undefined;
+    harness.init(testing.allocator, .{});
+    defer harness.deinit();
+    const answered = try harness.send(shutdown_asked);
+    try testing.expectEqualStrings("endpoint.shutdown.response", field(answered[0], &.{"type"}));
+    try testing.expectEqualStrings("sd-1", field(answered[0], &.{"in_reply_to"}));
+    try testing.expectEqualStrings("stopping", field(answered[0], &.{ "payload", "outcome" }));
+    try testing.expect(try harness.endpoint.shutdownComplete());
+}
+
+test "an endpoint shutdown asks while a run is active, then graceful drains and refuses new work, and force stops it" {
+    var harness: Harness = undefined;
+    harness.init(testing.allocator, .{});
+    defer harness.deinit();
+    _ = try harness.send(open_line);
+    _ = try harness.send(submit_line);
+    const asked = try harness.send(shutdown_asked);
+    try testing.expectEqualStrings("choose", field(asked[0], &.{ "payload", "outcome" }));
+    try testing.expectEqual(@as(usize, 1), asked[0].object.get("payload").?.object.get("active_runs").?.array.items.len);
+    try testing.expectEqual(@as(?ShutdownMode, null), harness.endpoint.shutdown);
+
+    const graceful = try harness.send(shutdown_graceful);
+    try testing.expectEqualStrings("draining", field(graceful[0], &.{ "payload", "outcome" }));
+    try testing.expect(!try harness.endpoint.shutdownComplete());
+    const refused = try harness.send(framed("session.open.request", "open-2", "", "{\"session_id\":\"s2\"}"));
+    try testing.expectEqualStrings("shutting_down", field(refused[0], &.{ "payload", "error", "code" }));
+
+    const forced = try harness.send(shutdown_force);
+    try testing.expectEqualStrings("stopping", field(forced[0], &.{ "payload", "outcome" }));
+    try testing.expect(try harness.endpoint.shutdownComplete());
+}
+
+test "an endpoint shutdown answer repeats the request's capability revision" {
+    var harness: Harness = undefined;
+    harness.init(testing.allocator, .{});
+    defer harness.deinit();
+    const answered = try harness.send(framed("endpoint.shutdown.request", "sd-4", ",\"capability_revision\":\"fake-v1\"", "{}"));
+    try testing.expectEqualStrings("endpoint.shutdown.response", field(answered[0], &.{"type"}));
+    try testing.expectEqualStrings("fake-v1", field(answered[0], &.{"capability_revision"}));
+}
+
+test "an endpoint shutdown mode other than graceful or force is refused and changes nothing" {
+    var harness: Harness = undefined;
+    harness.init(testing.allocator, .{});
+    defer harness.deinit();
+    const refused = try harness.send(framed("endpoint.shutdown.request", "sd-9", "", "{\"mode\":\"later\"}"));
+    try testing.expectEqualStrings("invalid_payload", field(refused[0], &.{ "payload", "error", "code" }));
+    try testing.expectEqual(@as(?ShutdownMode, null), harness.endpoint.shutdown);
+}
 
 test "a line that is not one JSON object is a framing defect" {
     var harness: Harness = undefined;
