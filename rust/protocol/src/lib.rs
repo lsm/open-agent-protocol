@@ -12,6 +12,7 @@ mod number;
 mod provider;
 mod run;
 mod serde_util;
+mod session;
 mod submit;
 mod transcript;
 mod vocabulary;
@@ -31,6 +32,7 @@ pub use ids::{
 pub use interaction::*;
 pub use provider::{ProviderEnvelope, PROVIDER_PROFILE};
 pub use run::*;
+pub use session::*;
 pub use submit::*;
 pub use transcript::*;
 
