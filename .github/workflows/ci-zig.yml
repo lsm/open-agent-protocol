@@ -3,7 +3,19 @@ name: CI
 on:
   push:
     branches: [main]
+  # A pull request touching only prose skips this workflow, the heaviest one:
+  # nothing here reads decisions/, drafts/, docs/, research/ or a root-level
+  # Markdown file. A nested README is not covered, because the README samples
+  # are type-checked here. ci.yml still runs on such a pull request, because the
+  # Go suite checks the rule register under drafts/validator-rules against the
+  # decisions it cites.
   pull_request:
+    paths-ignore:
+      - "decisions/**"
+      - "drafts/**"
+      - "docs/**"
+      - "research/**"
+      - "*.md"
 
 concurrency:
   # The same superseding rule as ci.yml, under a prefix that keeps the two

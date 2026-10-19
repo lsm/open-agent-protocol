@@ -1,7 +1,11 @@
 name: Benchmark Report
 
 on:
+  # The report is informational and costs a Zig build and two benchmark captures,
+  # so it runs only on a pull request carrying the `benchmark` label: adding the
+  # label starts it, and each later push re-runs it while the label stays.
   pull_request:
+    types: [opened, synchronize, reopened, labeled]
 
 permissions:
   actions: read
@@ -19,6 +23,7 @@ concurrency:
 jobs:
   report:
     name: Informational benchmark report
+    if: contains(github.event.pull_request.labels.*.name, 'benchmark')
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     continue-on-error: true
