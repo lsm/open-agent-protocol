@@ -1,10 +1,6 @@
 {
   "version": 1,
   "zig": [
-    "auth-completed-before-start",
-    "auth-event-before-start",
-    "auth-missing-terminal",
-    "auth-progress-without-a-terminal",
     "compound-open-anchor-names-an-open-without-a-message",
     "compound-open-queued-without-position",
     "control-call-recovered-ack-omitted",
