@@ -350,6 +350,16 @@ const ModelAnchor = struct {
     index: usize,
 };
 
+const QueueClaim = struct {
+    run: []const u8,
+    queued: bool,
+    sequence: u64 = 0,
+    stated: bool = false,
+    held: bool = false,
+    index: usize,
+    done: bool = false,
+};
+
 const RunPosition = struct {
     session: []const u8,
     run: []const u8,
@@ -618,6 +628,7 @@ pub const Machine = struct {
     settled_claims: std.ArrayList(SettledClaim) = .empty,
     model_claims: std.ArrayList(ModelClaim) = .empty,
     run_positions: std.ArrayList(RunPosition) = .empty,
+    queue_claims: std.ArrayList(QueueClaim) = .empty,
     participants: std.StringArrayHashMapUnmanaged(void) = .empty,
     initialized: bool = false,
     auth_flows: std.StringArrayHashMapUnmanaged(*AuthFlow) = .empty,
@@ -655,6 +666,7 @@ pub const Machine = struct {
         self.settled_claims.deinit(self.allocator);
         self.model_claims.deinit(self.allocator);
         self.run_positions.deinit(self.allocator);
+        self.queue_claims.deinit(self.allocator);
         self.participants.deinit(self.allocator);
         self.auth_flows.deinit(self.allocator);
         self.requests.deinit(self.allocator);
@@ -3303,6 +3315,19 @@ pub const Machine = struct {
         try self.checkListing(index, payload, listed.array.items, &excused, window);
     }
 
+    fn reconcileQueueClaims(self: *Machine, run: *Run) !void {
+        for (self.queue_claims.items) |*claim| {
+            if (claim.done or !std.mem.eql(u8, claim.run, run.id)) continue;
+            claim.done = true;
+            if (claim.queued) {
+                if (claim.sequence >= run.start_sequence) try self.add(code_session_state_mismatch, claim.index);
+                continue;
+            }
+            if (!claim.stated or claim.held == (claim.sequence < run.start_sequence)) continue;
+            try self.add(code_session_state_mismatch, claim.index);
+        }
+    }
+
     fn checkListing(self: *Machine, index: usize, payload: std.json.Value, entries: []const std.json.Value, settled: *const std.StringArrayHashMapUnmanaged(void), window: usize) !void {
         const session_id = memberString(payload, "session_id");
         var seen: std.StringArrayHashMapUnmanaged(void) = .empty;
@@ -3348,6 +3373,16 @@ pub const Machine = struct {
                 position == null or member(entry, "queue_position") != null;
             const reservation = run.admitted_queued and (std.mem.eql(u8, status, "queued") or holds_place);
             const ended = terminalStatus(status);
+            const pending = cancelling and !run.started and position != null;
+            if (pending and run.admitted_queued) {
+                try self.queue_claims.append(self.allocator, .{ .run = run.id, .queued = false, .sequence = position.?, .stated = true, .held = holds_place, .index = index });
+            }
+            if (run.admitted_queued and !run.started and !reservation and !ended and !pending) {
+                try self.queue_claims.append(self.allocator, .{ .run = run.id, .queued = false, .index = index });
+            }
+            if (!ended and std.mem.eql(u8, status, "queued") and !run.started and position != null) {
+                try self.queue_claims.append(self.allocator, .{ .run = run.id, .queued = true, .sequence = position.?, .index = index });
+            }
             if (!ended and reservation) {
                 queue_place += 1;
                 const stated = unsigned(entry, "queue_position");
@@ -4074,6 +4109,7 @@ pub const Machine = struct {
                 state.started_at = index;
                 state.start_sequence = unsigned(envelope, "sequence") orelse 0;
                 try self.reconcileModelClaims(state);
+                try self.reconcileQueueClaims(state);
                 try self.settingsBeforeRun(index, state.session);
                 if (state.admitted_model.len != 0) {
                     const reported = memberString(member(envelope, "payload") orelse std.json.Value{ .null = {} }, "model_id");
@@ -4514,6 +4550,9 @@ pub const Machine = struct {
         }
         for (self.model_claims.items) |claim| {
             if (!claim.done) try self.add(code_session_state_mismatch, claim.index);
+        }
+        for (self.queue_claims.items) |claim| {
+            if (!claim.done and !claim.queued and !claim.held) try self.add(code_session_state_mismatch, claim.index);
         }
         for (self.run_positions.items) |position| {
             const run = self.runs.get(position.run) orelse continue;
