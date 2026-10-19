@@ -5,15 +5,6 @@ use serde::de::DeserializeOwned;
 
 use crate::{codes, Diagnostic, Phase};
 
-pub const IMPLEMENTED: [&str; 6] = [
-    codes::SCOPE_MISMATCH,
-    codes::DUPLICATE_ENVELOPE_ID,
-    codes::UNMATCHED_RESPONSE,
-    codes::DUPLICATE_RESPONSE,
-    codes::MISSING_RESPONSE,
-    codes::STALE_CAPABILITY_REVISION,
-];
-
 struct Request {
     envelope_type: EnvelopeType,
     index: usize,

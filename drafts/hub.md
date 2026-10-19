@@ -429,15 +429,17 @@ daemon`; Go: `TestAShutdownPostedWithNothingRunningStopsAtOnce`,
 `TestAShutdownPostedWithAnUnknownModeIsRefusedAndChangesNothing`; `goap serve`
 then shuts its HTTP server down as on a signal. Neither tree yet sends subscribers
 `endpoint.shutdown.started`, which Decision 0050 requires on acceptance. In
-Go, SIGINT and SIGTERM now map as rule 4 says: the first starts a graceful
-shutdown and writes one stderr line listing each run still active as
-`session/run` and how many queued runs were lost, the second forces it, and a
-third ends serving outright even while an earlier signal is still being
-applied — Go: `TestAFirstSignalStartsAGracefulShutdownAndASecondForcesIt`,
+both trees, on stdio and HTTP alike, SIGINT and SIGTERM now map as rule 4
+says: the first starts a graceful shutdown and writes one stderr line listing
+each run still active as `session/run` and how many queued runs were lost, the
+second forces it, and in Go a third ends serving outright even while an
+earlier signal is still being applied — Zig: `a first signal starts a graceful
+shutdown and says what is still running, and a second forces it`; Go:
+`TestAFirstSignalStartsAGracefulShutdownAndASecondForcesIt`,
 `TestAFirstSignalOnAnIdleDaemonStopsItGracefullyAndASecondForcesIt`,
 `TestTheSignalLineListsEachActiveRunAndSaysWhatTheNextSignalDoes`,
-`TestAThirdSignalEndsServingEvenWhileAnEarlierOneIsParked`. Zig's
-mapping is pending, and stdin EOF still ends serving in both.
+`TestAThirdSignalEndsServingEvenWhileAnEarlierOneIsParked`. Stdin EOF still
+ends serving in both.
 
 Stdin EOF, and where a tree has not yet mapped them, SIGINT/SIGTERM, end
 serving at once: the daemon stops admitting, settles the work it already
@@ -1890,7 +1892,7 @@ for the next exit. Go's context cancels the same call, which is why Go's
 | Every run a snapshot lists is cancelled | `TestCloseCancelsEveryRunTheSnapshotLists` |
 | A run named only as the active run is still cancelled | `TestCloseFallsBackToTheNamedActiveRun` |
 | The window is 10 s for the hub, 5 s per stdio stage | every shutdown test drives a short custom window (`TestShutdownBoundedWhileWorkerStuck`, `TestTeardownStopsWhenAWriteParksForever`); **gap G8** — only the defaults are unpinned |
-| SIGINT and SIGTERM end serving as Decision 0050 rule 4 maps them, and the exit is zero | Go: the first starts a graceful shutdown, the second forces it, a third ends serving outright, and `runHub` returns nil. Zig: `oapx serve` installs both handlers before it serves, and the serve loop ends on either, so the sweep runs on the signal path exactly as it runs on a hangup |
+| SIGINT and SIGTERM end serving as Decision 0050 rule 4 maps them, and the exit is zero | Go: the first starts a graceful shutdown, the second forces it, a third ends serving outright, and `runHub` returns nil. Zig: `oapx serve` installs both handlers before it serves; the first signal starts a graceful shutdown and the second forces it, and once serving ends the sweep runs on the signal path exactly as it runs on a hangup |
 | **Where a signal can be taken, it is; where the loop cannot observe one, the default disposition stands** | Zig: `hubTakesSignals` gates the handler and the pollable handle on the same answer, because installing a handler the loop never polls for is worse than not installing one. On Windows the stdio read is not pollable, so the hub installs no console handler, says so on stderr, and Ctrl+C terminates the process as it did before — a bounded sweep on a signal is [#460](https://github.com/lsm/open-agent-protocol/issues/460)'s work, not this rule's |
 
 ## Known gaps
@@ -2056,8 +2058,9 @@ here; each was a place a differential test would otherwise not see.
   memory adapter. And force skips
   answering in-flight jobs, but the frontend's teardown still joins a job's
   thread, so a wedged native read holds a force exit as it already holds an
-  EOF exit. A graceful exit waits on that job to answer it; a signal breaks
-  that wait, but a force request sent meanwhile is not read. Zig's serve loop
+  EOF exit. A graceful exit waits on that job to answer it; a second signal
+  forces the shutdown and ends that wait, but a force request sent meanwhile
+  over the wire is not read. Zig's serve loop
   wiring for the shutdown (answering jobs on graceful only, then ending
   serving) is pinned by no test: the named tests drive the frontend directly.
   The same holds over HTTP: no test runs the serve loop through a

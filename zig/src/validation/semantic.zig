@@ -483,6 +483,13 @@ const Snapshot = struct {
     limits: ?Limits,
 };
 
+const SettledClaim = struct {
+    run: []const u8,
+    sequence: u64,
+    index: usize,
+    done: bool = false,
+};
+
 const ModelClaim = struct {
     session: []const u8,
     run: []const u8,
@@ -563,6 +570,7 @@ pub const Machine = struct {
     recoveries: std.StringArrayHashMapUnmanaged(*Recovery) = .empty,
     requests: std.StringArrayHashMapUnmanaged(Request) = .empty,
     late_cancels: std.StringArrayHashMapUnmanaged(void) = .empty,
+    settled_claims: std.ArrayList(SettledClaim) = .empty,
     model_claims: std.ArrayList(ModelClaim) = .empty,
     participants: std.StringArrayHashMapUnmanaged(void) = .empty,
     initialized: bool = false,
@@ -598,6 +606,7 @@ pub const Machine = struct {
         self.late_cancels.deinit(self.allocator);
         self.runs.deinit(self.allocator);
         self.recoveries.deinit(self.allocator);
+        self.settled_claims.deinit(self.allocator);
         self.model_claims.deinit(self.allocator);
         self.participants.deinit(self.allocator);
         self.auth_flows.deinit(self.allocator);
@@ -3204,6 +3213,41 @@ pub const Machine = struct {
         return false;
     }
 
+    fn checkSettledClaims(self: *Machine, index: usize, payload: std.json.Value) !void {
+        const session_id = memberString(payload, "session_id");
+        const settled = member(member(payload, "as_of") orelse std.json.Value{ .null = {} }, "settled") orelse return;
+        if (settled != .array) return;
+        var claimed: std.StringArrayHashMapUnmanaged(void) = .empty;
+        defer claimed.deinit(self.allocator);
+        for (settled.array.items) |entry| {
+            const run_id = memberString(entry, "run_id");
+            const sequence = unsigned(entry, "sequence") orelse 0;
+            if (claimed.contains(run_id)) {
+                try self.add(code_session_state_mismatch, index);
+                continue;
+            }
+            try claimed.put(self.allocator, run_id, {});
+            const run = self.runs.get(run_id) orelse {
+                try self.add(code_session_state_mismatch, index);
+                continue;
+            };
+            if (!std.mem.eql(u8, run.session, session_id)) {
+                try self.add(code_session_state_mismatch, index);
+                continue;
+            }
+            if (run.terminal) {
+                if (run.next - 1 != sequence) try self.add(code_session_state_mismatch, index);
+                continue;
+            }
+            try self.settled_claims.append(self.allocator, .{ .run = run_id, .sequence = sequence, .index = index });
+        }
+        const listed = member(payload, "active_runs") orelse return;
+        if (listed != .array) return;
+        for (listed.array.items) |entry| {
+            if (claimed.contains(memberString(entry, "run_id"))) try self.add(code_session_state_mismatch, index);
+        }
+    }
+
     fn steerState(self: *Machine, index: usize, envelope: std.json.Value, payload: std.json.Value) !void {
         try self.steer_snapshots.append(self.allocator, .{ .index = index, .envelope = envelope, .payload = payload });
     }
@@ -3577,6 +3621,7 @@ pub const Machine = struct {
         }
         if (!attachment_refused) try self.checkPublishedUnion(index, session_id, member(payload, "sources"), true);
         try self.compoundOpen(index, envelope, payload, session_id);
+        try self.checkSettledClaims(index, payload);
     }
 
     fn compoundOpen(self: *Machine, index: usize, envelope: std.json.Value, payload: std.json.Value, session_id: []const u8) !void {
@@ -3711,7 +3756,6 @@ pub const Machine = struct {
             const holder = try self.sessionFor(session_id);
             const reported = memberString(payload, "current_model_id");
             try self.checkCaptureModel(index, envelope, payload, holder);
-            try self.checkRequiredRuns(index, envelope, payload);
             if (holder.guard_default and !std.mem.eql(u8, reported, holder.expected_default)) {
                 try self.add(code_unapplied_control, index);
             }
@@ -3733,6 +3777,12 @@ pub const Machine = struct {
         }
         try self.checkPublishedUnion(index, session_id, member(payload, "sources"), false);
         try self.checkPublishedSources(index, payload);
+        try self.recoverFromState(index, session_id, payload);
+        try self.checkSettledClaims(index, payload);
+        try self.checkRequiredRuns(index, envelope, payload);
+    }
+
+    fn recoverFromState(self: *Machine, index: usize, session_id: []const u8, payload: std.json.Value) !void {
         const recovery = self.recoveries.get(session_id) orelse return;
         if (recovery.state_checked) return;
         recovery.state_checked = true;
@@ -3783,6 +3833,11 @@ pub const Machine = struct {
         state.last_index = index;
 
         const sequence = unsigned(envelope, "sequence");
+        for (self.settled_claims.items) |*claim| {
+            if (claim.done or !std.mem.eql(u8, claim.run, run_id)) continue;
+            claim.done = true;
+            if (!isTerminal(declared) or sequence == null or sequence.? != claim.sequence) try self.add(code_session_state_mismatch, claim.index);
+        }
         if (self.recoveries.get(state.session)) |recovery| {
             if (!recovery.gap and !recovery.first_replay_seen and std.mem.eql(u8, run_id, recovery.run)) {
                 recovery.first_replay_seen = true;
@@ -4262,6 +4317,9 @@ pub const Machine = struct {
 
     pub fn close(self: *Machine) !void {
         try self.closeSteerSnapshots();
+        for (self.settled_claims.items) |claim| {
+            if (!claim.done) try self.add(code_session_state_mismatch, claim.index);
+        }
         for (self.model_claims.items) |claim| {
             if (!claim.done) try self.add(code_session_state_mismatch, claim.index);
         }
@@ -7031,6 +7089,18 @@ test "a subscribe an endpoint advertises, refused inside an open, is unhonoured"
         \\{"type":"session.open.request","id":"o1","capability_revision":"v1","payload":{"session_id":"s","subscribe":true}},
         \\{"type":"error.response","id":"o2","in_reply_to":"o1","payload":{"error":{"code":"unsupported_feature","message":"x","details":{"feature":"session.open.subscribe"}}}}]
     , &.{code_unhonoured_capability});
+}
+
+test "a snapshot may claim settled a run it introduces, and the run's terminal bears the claim out" {
+    try expectCodes(
+        \\[{"type":"session.open.request","id":"o1","payload":{"session_id":"s"}},
+        \\{"type":"session.open.response","id":"o2","in_reply_to":"o1","payload":{"session_id":"s","status":"running",
+        \\"recovery":{"recovered":true,"previous_run_id":"r","resume_cursor":"1"}}},
+        \\{"type":"session.state.request","id":"t1","payload":{"session_id":"s"}},
+        \\{"type":"session.state.response","id":"t2","in_reply_to":"t1","payload":{"session_id":"s","status":"running","active_run_id":"r",
+        \\"as_of":{"settled":[{"run_id":"r","sequence":2}]}}},
+        \\{"type":"run.completed","id":"e9","run_id":"r","session_id":"s","sequence":2,"payload":{}}]
+    , &.{});
 }
 
 test "a model selection advertised without a lifetime, or a tool selection with an unknown one, is undisclosed" {

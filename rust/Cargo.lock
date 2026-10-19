@@ -882,6 +882,8 @@ dependencies = [
 name = "oap-adapter"
 version = "0.1.0"
 dependencies = [
+ "futures",
+ "futures-core",
  "oap-protocol",
  "serde_json",
  "thiserror",

@@ -1,4 +1,5 @@
 mod answer;
+mod contract;
 mod error;
 mod refuse;
 
@@ -8,6 +9,7 @@ use oap_protocol::{
 use serde_json::Value;
 
 pub use answer::{index_input_answers, validate_input_answer};
+pub use contract::*;
 pub use error::*;
 pub use refuse::*;
 

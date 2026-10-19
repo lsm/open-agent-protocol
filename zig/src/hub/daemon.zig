@@ -73,6 +73,7 @@ pub const Daemon = struct {
     outer: hub_http.KeepGoing,
     stopping: std.atomic.Value(bool) = .init(false),
     drained_at_ms: ?u64 = null,
+    signals: ?*const fn () u32 = null,
     streams: std.atomic.Value(usize) = .init(0),
 
     pub fn init(allocator: std.mem.Allocator, core: *hubmod.Hub, allow: []const []const u8, outer: hub_http.KeepGoing) !Daemon {
@@ -111,6 +112,7 @@ pub const Daemon = struct {
     pub fn pump(self: *Daemon) !void {
         try self.frontend.hub.pump(self.allocator, 0);
         self.frontend.sweepAbandoned();
+        if (self.signals) |count| try self.frontend.takeSignals(count());
         if (self.frontend.shutdown == null) return;
         var scratch = std.heap.ArenaAllocator.init(self.allocator);
         defer scratch.deinit();

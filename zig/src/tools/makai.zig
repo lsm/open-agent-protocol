@@ -463,12 +463,6 @@ fn hubBindRefusal(stderr: std.Io.File, message: []const u8) error{InvalidHubOpti
 }
 const hub_accept_poll_ms: i32 = 10;
 
-const keepGoing = hub_http.KeepGoing{ .context = undefined, .check = hubSignalled };
-
-fn hubSignalled(_: *const anyopaque) bool {
-    return !endpoint_signals.received();
-}
-
 fn runHubHttp(
     allocator: std.mem.Allocator,
     arena: std.mem.Allocator,
@@ -502,8 +496,11 @@ fn runHubHttp(
         try compat.stdio.writeAll(stderr, "oapx: on this platform a signal ends the process rather than the hub; the Windows path is #460\n");
     }
 
-    var daemon = try hub_daemon.Daemon.init(allocator, core, allow orelse &.{}, keepGoing);
+    var daemon = try hub_daemon.Daemon.init(allocator, core, allow orelse &.{}, hub_http.always_going);
     defer daemon.deinit();
+    var notices = StdoutSink{ .file = stderr, .io = hubIo() };
+    daemon.signals = endpoint_signals.count;
+    daemon.frontend.notices = .{ .context = &notices, .write = StdoutSink.write };
     const failed = hub_daemon.serveListener(&daemon, &listener, hub_accept_poll_ms);
     if (failed) |failure| {
         sweepHubSessions(core, stderr);
@@ -665,6 +662,8 @@ fn runHub(
     var sink = StdoutSink{ .file = stdout, .io = hubIo() };
     var frontend = try hub_stdio.Frontend.init(allocator, &core, .{ .context = &sink, .write = StdoutSink.write }, .{});
     defer frontend.deinit();
+    var notices = StdoutSink{ .file = stderr, .io = hubIo() };
+    frontend.notices = .{ .context = &notices, .write = StdoutSink.write };
     try compat.stdio.writeAll(stderr, "oapx: serving adapters over stdio: ");
     try compat.stdio.writeAll(stderr, served);
     try compat.stdio.writeAll(stderr, " (exit kills all sessions)\n");
@@ -673,7 +672,7 @@ fn runHub(
         .read = readStdin,
         .context = &input,
         .readable = input.handle,
-        .stop = endpoint_signals.received,
+        .signals = endpoint_signals.count,
     }) catch |err| switch (err) {
         error.OutOfMemory => return error.OutOfMemory,
         error.StdinFailed, error.FrameLimitTooSmall => {
