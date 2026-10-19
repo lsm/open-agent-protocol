@@ -274,8 +274,8 @@ rule to attached sources.
 this is a Zig port gap rather than an open protocol question. It needs a
 negative fixture, since none isolates a redescribed declared source.
 
-**Status.** Settled by 0008's existing text. What remains is the Zig port fix
-and its fixture.
+**Status.** Settled by 0008's existing text, and closed: Zig judges declared
+sources too, pinned by `state-redescribes-declared-source`.
 
 ### OPEN-0008-2: which scope checks does the tool catalog and resolve pair owe?
 
@@ -369,6 +369,25 @@ leave a control layer unable to supply what the endpoint is allowed to report.
 Settled by
 [Decision 0060](../decisions/0060-a-tool-result-may-carry-content-parts.md).
 
+### OPEN-0011-3: what does a `name_pattern` that is not RE2 mean?
+
+A descriptor can publish a `name_pattern` that does not compile. Go skips the
+whole limit, so it is neither enforced nor diagnosed, and a refusal that
+honours it draws `undisclosed_provide_limit` (`controltools.go`). Zig does not
+read the pattern yet, and Rust has no provided-tool limits.
+
+- (a) The descriptor is defective: diagnose it on its `capabilities.response`,
+  as `undisclosed_provide_limit` at the pattern.
+- (b) The pattern discloses no limit, so a refusal relying on it is
+  `undisclosed_provide_limit`.
+- (c) The schema refuses it, which JSON Schema cannot express.
+
+Recommendation: (a). A limit nobody can evaluate discloses nothing, and (a)
+surfaces the defect when the descriptor arrives rather than when something is
+refused.
+
+**Status.** Settled by [Decision 0062](../decisions/0062-a-name-pattern-that-is-not-re2-is-a-defective-limit.md). Go, Zig and Rust follow it in their `name_pattern` ports.
+
 ## Session lifecycle (0040, 0044–0046, 0049–0051)
 
 Rules: [`0040-session-lifecycle.md`](../drafts/validator-rules/0040-session-lifecycle.md).
@@ -416,6 +435,8 @@ order where parts were streamed. A trace with no parts is outside the rule
 
 Recommendation: (a).
 
+**Status.** Settled by [Decision 0061](../decisions/0061-the-provider-profiles-validator-rules-and-schemas.md). Go and Zig judge it; Rust owes the port.
+
 ### OPEN-0016-2: is a credential-shaped header refused?
 
 The draft makes a credential in `inference.create.request.headers`
@@ -432,6 +453,8 @@ case-insensitive), on a call or in a descriptor's published `headers`
 
 Recommendation: (a).
 
+**Status.** Settled by [Decision 0061](../decisions/0061-the-provider-profiles-validator-rules-and-schemas.md). Go and Zig judge it; Rust owes the port.
+
 ### OPEN-0016-3: is a grant request carrying a `value` invalid in a trace?
 
 The draft's tier-2 grant carries the credential on
@@ -444,6 +467,8 @@ further (`provider.go:Validate`, `provider_semantic.zig:Machine.apply`).
 - (b) Leave it to the binding, so a trace that recorded a secret validates.
 
 Recommendation: (a).
+
+**Status.** Settled by [Decision 0061](../decisions/0061-the-provider-profiles-validator-rules-and-schemas.md). Go and Zig judge it; Rust owes the port.
 
 ### OPEN-0016-4: is an inference's `sequence` contiguous from 1?
 
@@ -460,6 +485,8 @@ than 1 or a skip, and `sequence_regression` for a repeat or a step back
 
 Recommendation: (a).
 
+**Status.** Settled by [Decision 0061](../decisions/0061-the-provider-profiles-validator-rules-and-schemas.md). Go and Zig judge it; Rust owes the port.
+
 ### OPEN-0016-5: is a scoped event after a terminal invalid?
 
 The draft allows exactly one terminal per accepted inference (L667–668, L1861).
@@ -472,6 +499,8 @@ terminal included, after `inference.completed` or `inference.failed`
 
 Recommendation: (a). The trees already agree on one code, and a fault is not
 identified by how many diagnostics it yields.
+
+**Status.** Settled by [Decision 0061](../decisions/0061-the-provider-profiles-validator-rules-and-schemas.md). Go and Zig judge it; Rust owes the port.
 
 ### OPEN-0016-6: may a refused inference carry an id?
 
@@ -487,6 +516,8 @@ is true (`provider-envelope.schema.json`, fixture
 
 Recommendation: (a). The rule is decidable from one frame, and the provider
 corpus judges frame-scoped defects through the schema.
+
+**Status.** Settled by [Decision 0061](../decisions/0061-the-provider-profiles-validator-rules-and-schemas.md). Go and Zig judge it; Rust owes the port.
 
 ### OPEN-0016-7: do the provider schemas bind?
 
@@ -507,3 +538,6 @@ as a rule of its own.
 Recommendation: (a). The schemas and the draft were written together, and
 both trees already apply them whole. Any constraint a later reading finds the
 draft does not support becomes an item of its own then.
+
+**Status.** Settled by [Decision 0061](../decisions/0061-the-provider-profiles-validator-rules-and-schemas.md). Go and Zig judge it; Rust owes the port.
+

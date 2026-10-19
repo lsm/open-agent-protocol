@@ -4,8 +4,9 @@ Decisions 0008, 0011 and 0048, and the tool call lifecycle sites of 0001 that
 [the core file](0001-core.md) leaves here: the rows behind every diagnostic the
 validators raise for tool sources, the session catalog, call attribution and
 control-layer-provided tools. Go and Zig name the function in `go/validation/`
-and `zig/src/validation/`, Rust in `rust/validation/src/`. Rust ports none of
-the tool-source or provided-tool rules yet, only the generic tool lifecycle.
+and `zig/src/validation/`, Rust in `rust/validation/src/`. Rust ports the
+generic tool lifecycle and the list response's session scope, and none of the
+other tool-source or provided-tool rules yet.
 The items in
 [`research/validator-divergences.md`](../../research/validator-divergences.md)
 for this group are all settled: OPEN-0008-1 by 0008's text, and OPEN-0008-2,
@@ -38,8 +39,8 @@ Source: [`decisions/0008-tool-sources.md`](../../decisions/0008-tool-sources.md#
 
 | id | rule | lines | code | Go | Zig | Rust |
 | --- | --- | --- | --- | --- | --- | --- |
-| `0008#a-list-request-is-a-request-of-its-own/1` | A session-scoped catalog MUST name its session on the envelope as well as in the payload. | L127–150; 0055 L30–42 | `scope_mismatch` | `toolsources.go:toolsListResponse` | — | — |
-| `0008#a-list-request-is-a-request-of-its-own/2` | An unscoped list request MUST be answered with the endpoint's own catalog, naming no session. | L127–150, L406–459 | `scope_mismatch` | `toolsources.go:toolsListResponse` | `semantic.zig:dispatch` | — |
+| `0008#a-list-request-is-a-request-of-its-own/1` | A session-scoped catalog MUST name its session on the envelope as well as in the payload. | L127–150; 0055 L30–42 | `scope_mismatch` | `toolsources.go:toolsListResponse` | — | `state.rs:list_scope` |
+| `0008#a-list-request-is-a-request-of-its-own/2` | An unscoped list request MUST be answered with the endpoint's own catalog, naming no session. | L127–150, L406–459 | `scope_mismatch` | `toolsources.go:toolsListResponse` | `semantic.zig:dispatch` | `state.rs:list_scope` |
 
 ### [0008] A catalog resolves, or it is not a catalog
 
@@ -100,7 +101,7 @@ Source: [`decisions/0008-tool-sources.md`](../../decisions/0008-tool-sources.md#
 | `0008#attachment-is-for-the-sessions-lifetime/5` | An open response or snapshot MUST declare each source id once. | L406–459 | `duplicate_tool_source` | `toolsources.go:checkPublishedUnion` | `semantic.zig:checkPublishedUnion` | — |
 | `0008#attachment-is-for-the-sessions-lifetime/6` | An open response or later snapshot of a session with attachments MUST report every attached source and every source the descriptor declares. | L406–459 | `session_state_mismatch` | `toolsources.go:checkPublishedUnion` | `semantic.zig:checkPublishedUnion` | — |
 | `0008#attachment-is-for-the-sessions-lifetime/7` | The open response MUST agree with every member an attachment stated; it may fill members the attachment left blank. | L406–459 | `session_state_mismatch` | `toolsources.go:checkPublishedUnion` | `semantic.zig:checkPublishedUnion` | — |
-| `0008#attachment-is-for-the-sessions-lifetime/8` | A later snapshot MUST describe each reported source exactly as the open response adopted it (attached) or the descriptor declares it (declared). | L406–459 | `session_state_mismatch` | `toolsources.go:checkPublishedUnion` | `semantic.zig:checkPublishedUnion` (attached sources only; see OPEN-0008-1) | — |
+| `0008#attachment-is-for-the-sessions-lifetime/8` | A later snapshot MUST describe each reported source exactly as the open response adopted it (attached) or the descriptor declares it (declared). | L406–459 | `session_state_mismatch` | `toolsources.go:checkPublishedUnion` | `semantic.zig:checkPublishedUnion` | — |
 | `0008#attachment-is-for-the-sessions-lifetime/9` | A snapshot MUST NOT report a source that was neither attached nor declared. | L406–459 | `session_state_mismatch` | `toolsources.go:checkPublishedUnion` | `semantic.zig:checkPublishedUnion` | — |
 
 ### [0011] Tools are provided at session open, and the open is provisioned whole
@@ -150,7 +151,7 @@ Source: [`decisions/0011-control-layer-provided-tools.md`](../../decisions/0011-
 
 | id | rule | lines | code | Go | Zig | Rust |
 | --- | --- | --- | --- | --- | --- | --- |
-| `0011#the-resolution-is-a-requestresponse-pair-with-three-arms/1` | `action.call.resolve.request` and `.response` MUST carry the same `tool_call_id` on the envelope and in the payload. | L185–191; 0055 L30–42 | `scope_mismatch` | `controltools.go:controlResolveRequest`<br>`controltools.go:controlResolveResponse` | — | — |
+| `0011#the-resolution-is-a-requestresponse-pair-with-three-arms/1` | `action.call.resolve.request` and `.response` MUST carry the same `tool_call_id` on the envelope and in the payload. | L185–191; 0055 L30–42 | `scope_mismatch` | `controltools.go:controlResolveRequest`<br>`controltools.go:controlResolveResponse` | — | `state.rs:payload_scope` |
 | `0011#the-resolution-is-a-requestresponse-pair-with-three-arms/2` | A call resolution MUST answer a tool-call interaction. | L181–207 | `unmatched_interaction` | `controltools.go:controlResolveRequest` | `semantic.zig:judgeResolve` | — |
 | `0011#the-resolution-is-a-requestresponse-pair-with-three-arms/3` | A call resolution MUST name the tool call its interaction is bound to. | L185–191; 0055 L30–42 | `scope_mismatch` | `controltools.go:controlResolveRequest` | — | — |
 | `0011#the-resolution-is-a-requestresponse-pair-with-three-arms/4` | An `already_resolved` refusal's `details.settlement_id` MUST name an envelope that settled the interaction in this trace. | L181–207, L210–288 | `unmatched_interaction` | `controltools.go:controlResolveResponse` | `semantic.zig:resolveResponse` | — |
@@ -227,8 +228,6 @@ Source: [`decisions/0001-agent-control-v0.1-executable-core.md`](../../decisions
 
 ## Port work
 
-- Zig judges a reported source's description only for attached sources,
-  where 0008 and Go also judge declared ones (OPEN-0008-1).
 - Zig lacks the list response's envelope session check, and Rust lacks every
   tool-source check (OPEN-0008-2, 0055).
 - Zig lacks the resolve pair's `tool_call_id` agreement and binding checks

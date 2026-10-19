@@ -18,7 +18,7 @@ const Listed = struct {
         providerID: []const u8,
         name: []const u8 = "",
         enabled: bool = true,
-        limit: struct { context: u64 = 0, output: u64 = 0 } = .{},
+        limit: struct { context: u64 = 0, input: u64 = 0, output: u64 = 0 } = .{},
         capabilities: struct { input: []const []const u8 = &.{} } = .{},
     } = &.{},
 };
@@ -152,7 +152,7 @@ fn modelsOf(allocator: std.mem.Allocator, listed: Listed) ![]ai_types.Model {
             .reasoning = false,
             .input = if (row.capabilities.input.len > 0) row.capabilities.input else &.{"text"},
             .cost = .{ .input = 0, .output = 0, .cache_read = 0, .cache_write = 0 },
-            .context_window = @intCast(@min(row.limit.context, std.math.maxInt(u32))),
+            .context_window = @intCast(@min(if (row.limit.input > 0 and row.limit.input < row.limit.context) row.limit.input else row.limit.context, std.math.maxInt(u32))),
             .max_tokens = @intCast(@min(row.limit.output, std.math.maxInt(u32))),
         };
         try out.ensureUnusedCapacity(allocator, 1);
@@ -189,6 +189,25 @@ fn bareRoute() !*Route {
     const route = try testing.allocator.create(Route);
     route.* = .{ .allocator = testing.allocator, .held = .init(testing.allocator), .launch = undefined, .adapter = opencode_adapter.Adapter.init(testing.allocator, .{ .endpoint = "" }) };
     return route;
+}
+
+test "a model whose input limit is below its context window takes the input limit as its window" {
+    const body =
+        \\{"data":[
+        \\{"id":"claude-opus-4.8","providerID":"github-copilot","limit":{"context":200000,"input":168000,"output":64000}},
+        \\{"id":"wide-input","providerID":"other","limit":{"context":100000,"input":400000,"output":8000}}]}
+    ;
+    var scratch = std.heap.ArenaAllocator.init(testing.allocator);
+    defer scratch.deinit();
+    const listed = try std.json.parseFromSliceLeaky(Listed, scratch.allocator(), body, .{ .ignore_unknown_fields = true });
+    const models = try modelsOf(testing.allocator, listed);
+    defer {
+        for (models) |*model| model.deinit(testing.allocator);
+        testing.allocator.free(models);
+    }
+    try testing.expectEqual(@as(u32, 168_000), models[0].context_window);
+    try testing.expectEqual(@as(u32, 64_000), models[0].max_tokens);
+    try testing.expectEqual(@as(u32, 100_000), models[1].context_window);
 }
 
 test "a chosen model is the one OpenCode's sessions are created on, by its provider and its own id" {

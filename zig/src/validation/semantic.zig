@@ -680,7 +680,7 @@ pub const Machine = struct {
     scopes: std.StringArrayHashMapUnmanaged([]const u8) = .empty,
     supports: std.StringArrayHashMapUnmanaged(std.json.Value) = .empty,
     catalog: std.ArrayList([]const u8) = .empty,
-    declared_sources: std.StringArrayHashMapUnmanaged(void) = .empty,
+    declared_sources: std.StringArrayHashMapUnmanaged(std.json.Value) = .empty,
     duplicate_source: []const u8 = "",
     control_participant: []const u8 = "",
     catalog_known: bool = false,
@@ -2315,7 +2315,7 @@ pub const Machine = struct {
                 if (self.duplicate_source.len == 0) self.duplicate_source = id;
                 continue;
             }
-            try self.declared_sources.put(self.allocator, id, {});
+            try self.declared_sources.put(self.allocator, id, source);
         }
     }
 
@@ -2413,7 +2413,7 @@ pub const Machine = struct {
                 try self.add(code_session_state_mismatch, index);
                 continue;
             };
-            const held = stated orelse continue;
+            const held = stated orelse self.declared_sources.get(id) orelse continue;
             const agrees = if (adopt) describesSource(held, listed) else sameSourceDescription(held, listed);
             if (agrees) continue;
             try self.add(code_session_state_mismatch, index);

@@ -1,6 +1,7 @@
 # Decision 0016: The Model Provider Profile
 
-Status: proposed
+Status: proposed (its schemas and validator rules settled by
+[Decision 0061](0061-the-provider-profiles-validator-rules-and-schemas.md))
 Date: 2026-09-17
 Protocol: `open-agent-protocol` version `0.1`
 Profile: introduces `open-agent-protocol.model-provider-core`
@@ -190,9 +191,10 @@ scope and the vocabulary-sharing rule.
 the envelopes — twelve, in three groups — and it is a draft rather than a
 decision for exactly the reason stated here: it is written from one
 implementation read and this repository's own prober, not from two wires
-implemented. Its schemas and validator rules remain the next decision, and its
-own Open Questions section names what the second implementation is expected to
-settle.
+implemented. Its schemas and validator rules are settled by
+[Decision 0061](0061-the-provider-profiles-validator-rules-and-schemas.md), and
+its own Open Questions section names what the second implementation is expected
+to settle.
 
 That every provider feature is in scope. Batching, embeddings, fine-tuning,
 files, and vendor-specific server-side tools are not an agent loop's lower
