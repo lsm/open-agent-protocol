@@ -3342,7 +3342,6 @@ pub const Machine = struct {
 
     fn openResponse(self: *Machine, index: usize, envelope: std.json.Value, payload: std.json.Value) !void {
         const session_id = memberString(payload, "session_id");
-        try self.checkSettledClaims(index, payload);
         try self.gatedResponse(index, envelope, .open);
         try self.checkPublishedSources(index, payload);
         const attachment_refused = if (self.submits.get(field(envelope, "in_reply_to"))) |opened|
@@ -3418,6 +3417,7 @@ pub const Machine = struct {
         }
         if (!attachment_refused) try self.checkPublishedUnion(index, session_id, member(payload, "sources"), true);
         try self.compoundOpen(index, envelope, payload, session_id);
+        try self.checkSettledClaims(index, payload);
     }
 
     fn compoundOpen(self: *Machine, index: usize, envelope: std.json.Value, payload: std.json.Value, session_id: []const u8) !void {
@@ -3551,8 +3551,6 @@ pub const Machine = struct {
         {
             const holder = try self.sessionFor(session_id);
             const reported = memberString(payload, "current_model_id");
-            try self.checkSettledClaims(index, payload);
-            try self.checkRequiredRuns(index, envelope, payload);
             if (holder.guard_default and !std.mem.eql(u8, reported, holder.expected_default)) {
                 try self.add(code_unapplied_control, index);
             }
@@ -3573,6 +3571,12 @@ pub const Machine = struct {
         }
         try self.checkPublishedUnion(index, session_id, member(payload, "sources"), false);
         try self.checkPublishedSources(index, payload);
+        try self.recoverFromState(index, session_id, payload);
+        try self.checkSettledClaims(index, payload);
+        try self.checkRequiredRuns(index, envelope, payload);
+    }
+
+    fn recoverFromState(self: *Machine, index: usize, session_id: []const u8, payload: std.json.Value) !void {
         const recovery = self.recoveries.get(session_id) orelse return;
         if (recovery.state_checked) return;
         recovery.state_checked = true;
@@ -6814,4 +6818,16 @@ test "authoritative state after a replay gap that drops the recovery is undeclar
 
 test "a replay gap the trace never follows with authoritative state is undeclared" {
     try expectCodes(comptime gapOpened(",\"resume_cursor\":\"7\"") ++ "]", &.{code_undeclared_replay_gap});
+}
+
+test "a snapshot may claim settled a run it introduces, and the run's terminal bears the claim out" {
+    try expectCodes(
+        \\[{"type":"session.open.request","id":"o1","payload":{"session_id":"s"}},
+        \\{"type":"session.open.response","id":"o2","in_reply_to":"o1","payload":{"session_id":"s","status":"running",
+        \\"recovery":{"recovered":true,"previous_run_id":"r","resume_cursor":"1"}}},
+        \\{"type":"session.state.request","id":"t1","payload":{"session_id":"s"}},
+        \\{"type":"session.state.response","id":"t2","in_reply_to":"t1","payload":{"session_id":"s","status":"running","active_run_id":"r",
+        \\"as_of":{"settled":[{"run_id":"r","sequence":2}]}}},
+        \\{"type":"run.completed","id":"e9","run_id":"r","session_id":"s","sequence":2,"payload":{}}]
+    , &.{});
 }
