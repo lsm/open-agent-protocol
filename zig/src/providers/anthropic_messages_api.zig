@@ -265,6 +265,7 @@ fn buildRequestBody(model: ai_types.Model, context: ai_types.Context, options: a
         .target_api = model.api,
         .target_provider = model.provider,
         .target_model_id = model.id,
+        .target_input = if (model.image_input_known) model.input else null,
         .max_tool_id_len = 64,
         .insert_synthetic_results = true,
         .tools = context.tools,
@@ -3330,4 +3331,33 @@ test "draining after endThinkingBlock returns still reads the signature" {
         },
         else => return error.NotThinkingEnd,
     }
+}
+
+test "images in a user message and a tool result reach a vision model in a well-formed anthropic-messages body" {
+    const allocator = std.testing.allocator;
+    const model: ai_types.Model = .{
+        .id = "vision-test",
+        .name = "Vision Test",
+        .api = "anthropic-messages",
+        .provider = "vision",
+        .base_url = "https://example.invalid",
+        .reasoning = false,
+        .input = &.{ "text", "image" },
+        .cost = .{ .input = 0, .output = 0, .cache_read = 0, .cache_write = 0 },
+        .context_window = 128000,
+        .max_tokens = 8192,
+    };
+    const asked = [_]ai_types.UserContentPart{ .{ .text = .{ .text = "what is this" } }, .{ .image = .{ .data = "aGk=", .mime_type = "image/png" } } };
+    const call = [_]ai_types.AssistantContent{.{ .tool_call = .{ .id = "call-1", .name = "Read", .arguments_json = "{}" } }};
+    const result = [_]ai_types.UserContentPart{ .{ .text = .{ .text = "image a.png" } }, .{ .image = .{ .data = "aGk=", .mime_type = "image/png" } } };
+    const messages = [_]ai_types.Message{
+        .{ .user = .{ .content = .{ .parts = &asked }, .timestamp = 0 } },
+        .{ .assistant = .{ .content = &call, .api = model.api, .provider = model.provider, .model = model.id, .usage = .{}, .stop_reason = .tool_use, .timestamp = 0 } },
+        .{ .tool_result = .{ .tool_call_id = "call-1", .tool_name = "Read", .content = &result, .is_error = false, .timestamp = 0 } },
+    };
+    const body = try buildRequestBody(model, .{ .messages = &messages }, .{}, allocator, false);
+    defer allocator.free(body);
+    var parsed = try std.json.parseFromSlice(std.json.Value, allocator, body, .{});
+    defer parsed.deinit();
+    try std.testing.expectEqual(@as(usize, 2), std.mem.count(u8, body, "aGk="));
 }

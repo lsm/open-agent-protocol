@@ -1043,7 +1043,14 @@ pub const Agent = struct {
             self._allocator.free(content);
         }
         for (msg.content, 0..) |c, i| {
-            content[i] = .{ .text = .{ .text = try self._allocator.dupe(u8, c.text.text) } };
+            content[i] = switch (c) {
+                .text => |t| .{ .text = .{ .text = try self._allocator.dupe(u8, t.text) } },
+                .image => |img| image: {
+                    const data = try self._allocator.dupe(u8, img.data);
+                    errdefer self._allocator.free(data);
+                    break :image .{ .image = .{ .data = data, .mime_type = try self._allocator.dupe(u8, img.mime_type) } };
+                },
+            };
             initialized += 1;
         }
 
@@ -2590,4 +2597,17 @@ test "Agent refuses to compact without a model or without history" {
     try std.testing.expectError(error.NothingToCompact, agent.compactAsync(.{}, &capture, CompactionCapture.record));
     try std.testing.expect(capture.outcome == null);
     try std.testing.expect(!agent.isStreaming());
+}
+
+test "Agent clones a tool result that carries an image" {
+    var agent = Agent.init(std.testing.allocator, .{ .protocol = createMockProtocol() });
+    defer agent.deinit();
+    const parts = [_]ai_types.UserContentPart{ .{ .text = .{ .text = "image a.png" } }, .{ .image = .{ .data = "aGk=", .mime_type = "image/png" } } };
+    var cloned = try agent.cloneMessage(.{ .tool_result = .{ .tool_call_id = "call-1", .tool_name = "Read", .content = &parts, .is_error = false, .timestamp = 0 } });
+    defer cloned.deinit(std.testing.allocator);
+    const copied = cloned.tool_result.content;
+    try std.testing.expectEqualStrings("image a.png", copied[0].text.text);
+    try std.testing.expectEqualStrings("image/png", copied[1].image.mime_type);
+    try std.testing.expectEqualStrings("aGk=", copied[1].image.data);
+    try std.testing.expect(copied[1].image.data.ptr != parts[1].image.data.ptr);
 }
