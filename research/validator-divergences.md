@@ -11,8 +11,8 @@ tree by default.
 ## Executable core (0001, 0002)
 
 Rules: [`0001-core.md`](../drafts/validator-rules/0001-core.md). Every tree
-judged these and no text stated them. All eight are settled; what remains is
-the ports each decision names.
+judged these and no text stated them, except OPEN-0001-9, which no tree
+judged. All nine are settled; what remains is the ports each decision names.
 
 ### OPEN-0001-1: is an envelope id unique within a trace?
 
@@ -132,7 +132,7 @@ opencode's reasoning and cache counts entirely.
 Recommendation: (b), as the smaller change; the owner chose (a), since a
 consumer pricing runs across harnesses needs cache in one place.
 
-**Status.** Settled by [Decision 0063](../decisions/0063-usage-counts-cache-and-reasoning-tokens.md). The schema, `protocol/`, the validators, `clients/ts` and the adapters follow.
+**Status.** Settled by [Decision 0063](../decisions/0063-usage-counts-cache-and-reasoning-tokens.md). The schema and every tree's `Usage` type carry the members already; the opencode and claude adapters, and `go/internal/provider`'s Anthropic backfill, follow.
 
 ## Queue, open and cancel (0007, 0009, 0041)
 
