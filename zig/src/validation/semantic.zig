@@ -291,6 +291,8 @@ const Interaction = struct {
     choices: ?std.json.Value = null,
     questions: ?std.json.Value = null,
     resolved: bool = false,
+    opened_at: u64 = 0,
+    resolved_at: u64 = 0,
     unwitnessed: bool = false,
     acked: bool = false,
     settled: bool = false,
@@ -356,6 +358,14 @@ const QueueClaim = struct {
     sequence: u64 = 0,
     stated: bool = false,
     held: bool = false,
+    index: usize,
+    done: bool = false,
+};
+
+const CaptureClaim = struct {
+    run: []const u8,
+    sequence: u64,
+    listed: ?std.json.Value,
     index: usize,
     done: bool = false,
 };
@@ -644,6 +654,8 @@ pub const Machine = struct {
     catalog_ambiguous: bool = false,
     catalogs: std.StringArrayHashMapUnmanaged(*ModelCatalog) = .empty,
     current_capability: []const u8 = "",
+    current_sequence: u64 = 0,
+    capture_claims: std.ArrayList(CaptureClaim) = .empty,
     capabilities_stale: bool = false,
     limits: ?Limits = null,
     windows: std.StringArrayHashMapUnmanaged(*Window) = .empty,
@@ -667,6 +679,7 @@ pub const Machine = struct {
         self.model_claims.deinit(self.allocator);
         self.run_positions.deinit(self.allocator);
         self.queue_claims.deinit(self.allocator);
+        self.capture_claims.deinit(self.allocator);
         self.participants.deinit(self.allocator);
         self.auth_flows.deinit(self.allocator);
         self.requests.deinit(self.allocator);
@@ -709,6 +722,7 @@ pub const Machine = struct {
     }
 
     pub fn apply(self: *Machine, index: usize, envelope: std.json.Value) !void {
+        self.current_sequence = unsigned(envelope, "sequence") orelse 0;
         const id = field(envelope, "id");
         if (id.len != 0) {
             if (self.ids.get(id) != null) {
@@ -1066,6 +1080,9 @@ pub const Machine = struct {
         }
         if (isRunEvent(declared)) {
             try self.runEvent(index, envelope, declared);
+            if (self.current_sequence != 0) {
+                if (self.runs.get(field(envelope, "run_id"))) |run| try self.reconcileCaptureClaims(run);
+            }
         }
     }
 
@@ -3315,6 +3332,97 @@ pub const Machine = struct {
         try self.checkListing(index, payload, listed.array.items, &excused, window);
     }
 
+    fn checkEntryPending(self: *Machine, index: usize, entry: std.json.Value, run: *Run, position: ?u64) !void {
+        const listed = member(entry, "pending_interactions");
+        const lists_any = listed != null and listed.? == .array and listed.?.array.items.len != 0;
+        if (position == null) {
+            if (lists_any) {
+                try self.add(code_session_state_mismatch, index);
+                try self.checkEntryAcknowledged(index, entry, run, null);
+                return;
+            }
+            var unresolved = InteractionSet.empty;
+            defer unresolved.deinit(self.allocator);
+            for (run.interactions.keys(), run.interactions.values()) |id, held| {
+                if (!held.resolved) try unresolved.put(self.allocator, id, {});
+            }
+            if (self.advertisedKey(feature_delivery_queue) and !try self.sameKnown(&unresolved, run, listed)) try self.add(code_session_state_mismatch, index);
+            try self.checkEntryAcknowledged(index, entry, run, &unresolved);
+            return;
+        }
+        if (position.? + 1 > run.next) {
+            try self.capture_claims.append(self.allocator, .{ .run = run.id, .sequence = position.?, .listed = listed, .index = index });
+            try self.checkEntryAcknowledged(index, entry, run, null);
+            return;
+        }
+        var want = try self.pendingAt(run, position.?);
+        defer want.deinit(self.allocator);
+        if (!try self.sameKnown(&want, run, listed)) try self.add(code_session_state_mismatch, index);
+        try self.checkEntryAcknowledged(index, entry, run, &want);
+    }
+
+    fn pendingAt(self: *Machine, run: *const Run, sequence: u64) !InteractionSet {
+        var out = InteractionSet.empty;
+        errdefer out.deinit(self.allocator);
+        for (run.interactions.keys(), run.interactions.values()) |id, held| {
+            if (held.opened_at > sequence) continue;
+            if (held.resolved and (held.resolved_at == 0 or held.resolved_at <= sequence)) continue;
+            try out.put(self.allocator, id, {});
+        }
+        return out;
+    }
+
+    fn sameKnown(self: *Machine, want: *const InteractionSet, run: *const Run, listed: ?std.json.Value) !bool {
+        var named = InteractionSet.empty;
+        defer named.deinit(self.allocator);
+        if (listed) |ids| {
+            if (ids == .array) for (ids.array.items) |id| {
+                if (id != .string) continue;
+                if (run.prior_unknown and run.interactions.get(id.string) == null) continue;
+                try named.put(self.allocator, id.string, {});
+            };
+        }
+        if (named.count() != want.count()) return false;
+        for (want.keys()) |id| {
+            if (!named.contains(id)) return false;
+        }
+        return true;
+    }
+
+    fn checkEntryAcknowledged(self: *Machine, index: usize, entry: std.json.Value, run: *const Run, want: ?*const InteractionSet) !void {
+        const listed = member(entry, "pending_interactions");
+        var acknowledged = InteractionSet.empty;
+        defer acknowledged.deinit(self.allocator);
+        if (member(entry, "acknowledged_interactions")) |ids| {
+            if (ids == .array) for (ids.array.items) |id| {
+                if (id != .string) continue;
+                try acknowledged.put(self.allocator, id.string, {});
+                if (!jsonListHas(listed, id.string)) {
+                    try self.add(code_session_state_mismatch, index);
+                    continue;
+                }
+                const held = run.interactions.get(id.string);
+                if (held == null or (!held.?.unwitnessed and !held.?.acked)) try self.add(code_session_state_mismatch, index);
+            };
+        }
+        const wanted = want orelse return;
+        for (wanted.keys()) |id| {
+            const held = run.interactions.get(id) orelse continue;
+            if (!held.acked or acknowledged.contains(id)) continue;
+            try self.add(code_session_state_mismatch, index);
+        }
+    }
+
+    fn reconcileCaptureClaims(self: *Machine, run: *Run) !void {
+        for (self.capture_claims.items) |*claim| {
+            if (claim.done or !std.mem.eql(u8, claim.run, run.id) or self.current_sequence < claim.sequence) continue;
+            claim.done = true;
+            var want = try self.pendingAt(run, claim.sequence);
+            defer want.deinit(self.allocator);
+            if (!try self.sameKnown(&want, run, claim.listed)) try self.add(code_session_state_mismatch, claim.index);
+        }
+    }
+
     fn reconcileQueueClaims(self: *Machine, run: *Run) !void {
         for (self.queue_claims.items) |*claim| {
             if (claim.done or !std.mem.eql(u8, claim.run, run.id)) continue;
@@ -3405,6 +3513,7 @@ pub const Machine = struct {
             } else if (std.mem.eql(u8, status, "queued") and run.started and (position == null or position.? >= run.start_sequence)) {
                 try self.add(code_session_state_mismatch, index);
             }
+            try self.checkEntryPending(index, entry, run, position);
         }
         if (anchored) return;
         const active = memberString(payload, "active_run_id");
@@ -3492,7 +3601,7 @@ pub const Machine = struct {
                     if (exactInteger(seq)) |value| {
                         if (value >= 0) cursor = @intCast(value);
                     }
-                    if (cursor >= run.next) mismatch = true;
+                    if (cursor >= run.next) continue;
                 } else mismatch = true;
                 var listed: std.StringArrayHashMapUnmanaged([]const u8) = .empty;
                 defer listed.deinit(self.allocator);
@@ -4262,6 +4371,7 @@ pub const Machine = struct {
             .kind = .tool_call,
             .requested_by = memberString(payload, "requested_by"),
             .responded_by = responder,
+            .opened_at = self.current_sequence,
         };
         try run.interactions.put(self.arena.allocator(), id, opened);
         if (run.tools.getPtr(memberString(payload, "tool_call_id"))) |track| track.interaction = id;
@@ -4303,6 +4413,7 @@ pub const Machine = struct {
     fn settleControlCall(self: *Machine, held: *Interaction, id: []const u8) !void {
         held.settled = true;
         held.resolved = true;
+        if (held.resolved_at == 0) held.resolved_at = self.current_sequence;
         try held.settlements.put(self.arena.allocator(), id, {});
     }
 
@@ -4435,6 +4546,7 @@ pub const Machine = struct {
             .allow_cancel = kind == .input and memberBool(payload, "allow_cancel"),
             .choices = if (kind == .permission) member(payload, "choices") else null,
             .questions = if (kind == .input) member(payload, "questions") else null,
+            .opened_at = self.current_sequence,
         };
         try run.interactions.put(self.arena.allocator(), id, opened);
     }
@@ -4449,6 +4561,7 @@ pub const Machine = struct {
             break :blk try self.unwitnessedInteraction(run, id);
         };
         if (held.resolved) try self.add(code_duplicate_interaction, index);
+        if (held.resolved_at == 0) held.resolved_at = self.current_sequence;
         if (held.unwitnessed) {
             held.resolved = true;
             return;
@@ -4554,6 +4667,9 @@ pub const Machine = struct {
         }
         for (self.queue_claims.items) |claim| {
             if (!claim.done and !claim.queued and !claim.held) try self.add(code_session_state_mismatch, claim.index);
+        }
+        for (self.capture_claims.items) |claim| {
+            if (!claim.done) try self.add(code_session_state_mismatch, claim.index);
         }
         for (self.run_positions.items) |position| {
             const run = self.runs.get(position.run) orelse continue;
@@ -4784,6 +4900,17 @@ fn unknownScope(envelope: std.json.Value, payload: std.json.Value) Scope {
         .session = if (session.len == 0) field(envelope, "session_id") else session,
         .run = if (run.len == 0) field(envelope, "run_id") else run,
     };
+}
+
+const InteractionSet = std.StringArrayHashMapUnmanaged(void);
+
+fn jsonListHas(list: ?std.json.Value, wanted: []const u8) bool {
+    const items = list orelse return false;
+    if (items != .array) return false;
+    for (items.array.items) |item| {
+        if (item == .string and std.mem.eql(u8, item.string, wanted)) return true;
+    }
+    return false;
 }
 
 fn terminalStatus(status: []const u8) bool {
@@ -7452,4 +7579,21 @@ test "a request whose envelope and payload name different sessions is out of sco
         \\[{"type":"session.state.request","id":"q1","session_id":"other","payload":{"session_id":"s"}},
         \\{"type":"session.state.response","id":"a1","in_reply_to":"q1","session_id":"s","payload":{"session_id":"s","status":"idle"}}]
     , &.{code_scope_mismatch});
+}
+
+test "an entry captured between a control call's request and its settlement still lists the call" {
+    const settled_after =
+        \\{"type":"action.call.cancelled","id":"c3","run_id":"run","session_id":"s","sequence":3,"capability_revision":"v1","payload":
+        \\{"tool_call_id":"t1","execution_owner":"control","interaction_id":"x"}},
+    ;
+    try expectCodes(controlled ++ control_call ++ settled_after ++
+        \\{"type":"session.state.updated","id":"u1","session_id":"s","payload":{"session_id":"s","status":"waiting_for_input",
+        \\"active_run_id":"run","active_runs":[{"run_id":"run","status":"running","as_of_sequence":2,"pending_interactions":["x"]}]}},
+        \\{"type":"run.completed","id":"e9","run_id":"run","session_id":"s","sequence":4,"payload":{}}]
+    , &.{});
+    try expectCodes(controlled ++ control_call ++ settled_after ++
+        \\{"type":"session.state.updated","id":"u1","session_id":"s","payload":{"session_id":"s","status":"running",
+        \\"active_run_id":"run","active_runs":[{"run_id":"run","status":"running","as_of_sequence":2}]}},
+        \\{"type":"run.completed","id":"e9","run_id":"run","session_id":"s","sequence":4,"payload":{}}]
+    , &.{"session_state_mismatch"});
 }
