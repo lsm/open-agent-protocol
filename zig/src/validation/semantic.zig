@@ -3696,6 +3696,9 @@ pub const Machine = struct {
             if (std.mem.eql(u8, status, "queued")) try self.add(code_session_state_mismatch, lead.index);
         } else if (std.mem.eql(u8, status, "queued")) {
             reservation = true;
+        } else if (run.started) {
+            const position = unsigned(lead.entry, "as_of_sequence");
+            reservation = position != null and position.? < run.start_sequence;
         } else {
             const position = unsigned(lead.entry, "as_of_sequence");
             reservation = position == null or member(lead.entry, "queue_position") != null;
