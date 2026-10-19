@@ -764,9 +764,6 @@ pub const Machine = struct {
         if (duplicate) return;
 
         try self.dispatch(index, envelope, declared, payload);
-        if (self.current_sequence != 0) {
-            if (self.runs.get(field(envelope, "run_id"))) |run| try self.reconcileCaptureClaims(run);
-        }
         try self.packEnvelope(index, envelope, declared, payload);
     }
 
@@ -1083,6 +1080,9 @@ pub const Machine = struct {
         }
         if (isRunEvent(declared)) {
             try self.runEvent(index, envelope, declared);
+            if (self.current_sequence != 0) {
+                if (self.runs.get(field(envelope, "run_id"))) |run| try self.reconcileCaptureClaims(run);
+            }
         }
     }
 
