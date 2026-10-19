@@ -1,6 +1,7 @@
 use oap_protocol::*;
 use serde_json::Value;
 
+use super::controls::affirmative;
 use super::{is_request, State};
 use crate::codes;
 
@@ -67,12 +68,9 @@ impl State {
         if is_request(&e.envelope_type) {
             return;
         }
-        if !self.current_capability.is_empty()
-            && !self.capabilities_stale
-            && self
-                .features
-                .get(FEATURE_CONTENT_IMAGE)
-                .is_some_and(|level| *level != SupportLevel::UNAVAILABLE)
+        if self
+            .advertised_level(FEATURE_CONTENT_IMAGE)
+            .is_some_and(|level| affirmative(&level))
         {
             return;
         }
