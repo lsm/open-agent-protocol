@@ -96,9 +96,7 @@
     "session-open-scope-mismatch",
     "tools-list-envelope-scoped-answer-unscoped",
     "tools-list-response-unscoped",
-    "tools-list-unscoped-answer-scoped",
-    "unknown-participant",
-    "unknown-participant-as-requester"
+    "tools-list-unscoped-answer-scoped"
   ],
   "rust": []
 }
