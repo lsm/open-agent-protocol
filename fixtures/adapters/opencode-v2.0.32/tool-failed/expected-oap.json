@@ -106,7 +106,10 @@
       "stop_reason": "stop",
       "usage": {
         "input_tokens": 2,
+        "cache_read_input_tokens": 0,
+        "cache_write_input_tokens": 0,
         "output_tokens": 5,
+        "reasoning_tokens": 0,
         "total_tokens": 7
       }
     },

@@ -6,7 +6,8 @@ over [`opencode-v2.0.24-mapping.md`](opencode-v2.0.24-mapping.md), which
 remains the mapping. This one records only what moved between v2.0.26 and
 v2.0.32 and the evidence for it. Everything not named here, including the
 v2.0.26 ledger's sections on unprompted inbox items, usage limits and tools
-that fail before they are called, is unchanged.
+that fail before they are called, is unchanged. Spend outside a step is
+recorded here for the first time; earlier pins were not checked for it.
 
 ## Provenance
 
@@ -70,6 +71,36 @@ annotation. Neither changes what is on the wire. What does change:
 The adapter code does not change in either tree. The capability descriptor is
 unchanged, so only the revision's version prefix moves:
 `opencode-v2.0.32-oap-v5`.
+
+## Spend outside a step
+
+Run usage is the sum of the run's `session.step.ended` tokens, and opencode
+spends tokens outside any step: its session-title call
+(`packages/core/src/session/title.ts:59`) and compaction
+(`packages/core/src/session/compaction.ts:626`) each publish
+`session.usage.recorded` with `source` `title` or `compaction`
+(`packages/schema/src/session-event.ts:155-163`, at `843a6c51`). That event
+never reaches clients (the comment at `session-event.ts:615`). What a client
+sees instead:
+
+- Compaction spend is repeated on `session.compaction.ended` as `cost` and
+  `tokens`. Neither tree reads them.
+- Title spend shows only inside the session totals of `session.usage.updated`.
+  In `completed-text`, the step and the first `session.usage.updated` report
+  input 4 and output 13. After `session.execution.succeeded`, and before
+  `session.renamed`, a second `session.usage.updated` reports input 563 and
+  output 18: the title call's 559 input and 5 output tokens, landing after the
+  run has settled.
+
+| Spend | Where a client sees it | Classification |
+| --- | --- | --- |
+| a run's steps | `session.step.ended` `tokens` | normalized into run `usage` (Decision 0063) |
+| compaction | `session.compaction.ended` `cost` and `tokens` | lossy: not added to run `usage` |
+| the session title | `session.usage.updated` session totals only, after the run settles | lossy: no run to attribute it to |
+
+So a run's `usage` can be below what the session is billed. In
+`completed-text` it misses the title call's 559 input and 5 output tokens
+beside the run's own 4 and 13.
 
 ## Corpus
 

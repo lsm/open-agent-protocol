@@ -103,6 +103,9 @@ pub const Run = struct {
     input_tokens: u64 = 0,
     output_tokens: u64 = 0,
     total_tokens: u64 = 0,
+    cache_read_tokens: u64 = 0,
+    cache_write_tokens: u64 = 0,
+    reasoning_tokens: u64 = 0,
     measured: bool = false,
     cost: f64 = 0,
     last_finish: []const u8 = "",
@@ -530,10 +533,16 @@ pub const Reducer = struct {
                 target.cost += data.cost;
                 target.measured = true;
                 const input = tokenCount(data.input_tokens);
-                const output = tokenCount(data.output_tokens);
+                const read = tokenCount(data.cache_read_tokens);
+                const write = tokenCount(data.cache_write_tokens);
+                const reasoning = tokenCount(data.reasoning_tokens);
+                const output = tokenCount(data.output_tokens) +% reasoning;
                 target.input_tokens +%= input;
                 target.output_tokens +%= output;
-                target.total_tokens +%= input +% output;
+                target.total_tokens +%= input +% read +% write +% output;
+                target.cache_read_tokens +%= read;
+                target.cache_write_tokens +%= write;
+                target.reasoning_tokens +%= reasoning;
             },
             .step_failed => {
                 const data = (try self.decodeFor(native.StepFailedData, native.decodeStepFailed, event, run, "opencode_invalid_step_event")) orelse return;
@@ -1018,7 +1027,10 @@ pub const Reducer = struct {
         if (run.measured) {
             var usage: std.json.ObjectMap = .empty;
             if (run.input_tokens != 0) try self.put(&usage, "input_tokens", try unsigned(self.allocator(), run.input_tokens));
+            try self.put(&usage, "cache_read_input_tokens", try unsigned(self.allocator(), run.cache_read_tokens));
+            try self.put(&usage, "cache_write_input_tokens", try unsigned(self.allocator(), run.cache_write_tokens));
             if (run.output_tokens != 0) try self.put(&usage, "output_tokens", try unsigned(self.allocator(), run.output_tokens));
+            try self.put(&usage, "reasoning_tokens", try unsigned(self.allocator(), run.reasoning_tokens));
             if (run.total_tokens != 0) try self.put(&usage, "total_tokens", try unsigned(self.allocator(), run.total_tokens));
             try self.put(&payload, "usage", .{ .object = usage });
         }
