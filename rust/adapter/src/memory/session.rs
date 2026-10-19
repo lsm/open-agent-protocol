@@ -16,6 +16,7 @@ pub(super) enum Stage {
     Permission,
     Call,
     Input,
+    Terminal,
 }
 
 pub(super) struct Run {

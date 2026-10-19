@@ -362,6 +362,16 @@ const QueueClaim = struct {
     done: bool = false,
 };
 
+const Admission = enum { good, wrong, pending };
+
+const AdmissionClaim = struct {
+    session: []const u8,
+    run: []const u8,
+    request: []const u8,
+    accounted: []const []const u8 = &.{},
+    index: usize,
+};
+
 const CaptureClaim = struct {
     run: []const u8,
     sequence: u64,
@@ -656,6 +666,7 @@ pub const Machine = struct {
     current_capability: []const u8 = "",
     current_sequence: u64 = 0,
     capture_claims: std.ArrayList(CaptureClaim) = .empty,
+    admission_claims: std.ArrayList(AdmissionClaim) = .empty,
     capabilities_stale: bool = false,
     limits: ?Limits = null,
     windows: std.StringArrayHashMapUnmanaged(*Window) = .empty,
@@ -680,6 +691,7 @@ pub const Machine = struct {
         self.run_positions.deinit(self.allocator);
         self.queue_claims.deinit(self.allocator);
         self.capture_claims.deinit(self.allocator);
+        self.admission_claims.deinit(self.allocator);
         self.participants.deinit(self.allocator);
         self.auth_flows.deinit(self.allocator);
         self.requests.deinit(self.allocator);
@@ -3304,10 +3316,34 @@ pub const Machine = struct {
             if (member(capture, "settled")) |settled| {
                 if (settled == .array) for (settled.array.items) |entry| try excused.put(self.allocator, memberString(entry, "run_id"), {});
             }
+            var claimed: std.ArrayList([]const u8) = .empty;
+            defer claimed.deinit(self.allocator);
             if (member(capture, "admitted_submit_requests")) |anchors| {
                 if (anchors == .array) for (anchors.array.items) |anchor| {
-                    if (anchor == .string) try anchored.put(self.allocator, anchor.string, {});
+                    if (anchor != .string) continue;
+                    switch (self.namesSubmitRequest(anchor.string, session_id, "")) {
+                        .wrong => {
+                            try self.add(code_session_state_mismatch, index);
+                            continue;
+                        },
+                        .pending => try claimed.append(self.allocator, anchor.string),
+                        .good => {},
+                    }
+                    try anchored.put(self.allocator, anchor.string, {});
                 };
+            }
+            if (claimed.items.len != 0) {
+                var accounted: std.ArrayList([]const u8) = .empty;
+                const arena = self.arena.allocator();
+                if (member(payload, "active_runs")) |entries| {
+                    if (entries == .array) for (entries.array.items) |entry| try accounted.append(arena, memberString(entry, "run_id"));
+                }
+                for (excused.keys()) |run_id| try accounted.append(arena, run_id);
+                const active = memberString(payload, "active_run_id");
+                if (active.len != 0) try accounted.append(arena, active);
+                for (claimed.items) |request| {
+                    try self.admission_claims.append(self.allocator, .{ .session = session_id, .run = "", .request = request, .accounted = accounted.items, .index = index });
+                }
             }
         }
         var required: std.ArrayList(*Run) = .empty;
@@ -3330,6 +3366,51 @@ pub const Machine = struct {
             if (!present) try self.add(code_session_state_mismatch, index);
         }
         try self.checkListing(index, payload, listed.array.items, &excused, window);
+    }
+
+    fn checkEntryAnchor(self: *Machine, index: usize, session_id: []const u8, entry: std.json.Value, run: *const Run) !void {
+        const anchors = member(entry, "admitted_submit_requests") orelse return;
+        if (anchors != .array) return;
+        for (anchors.array.items) |anchor| {
+            if (anchor != .string) continue;
+            switch (self.namesSubmitRequest(anchor.string, session_id, run.id)) {
+                .wrong => try self.add(code_session_state_mismatch, index),
+                .pending => try self.admission_claims.append(self.allocator, .{ .session = session_id, .run = run.id, .request = anchor.string, .index = index }),
+                .good => {},
+            }
+        }
+    }
+
+    fn namesSubmitRequest(self: *const Machine, id: []const u8, session_id: []const u8, run_id: []const u8) Admission {
+        const request = self.requests.get(id) orelse return .wrong;
+        if (!std.mem.eql(u8, request.session, session_id) or !admitsMessages(request)) return .wrong;
+        if (self.admittedBy(id)) |run| {
+            return if (run_id.len == 0 or std.mem.eql(u8, run.id, run_id)) .good else .wrong;
+        }
+        return if (request.responded) .wrong else .pending;
+    }
+
+    fn admittedBy(self: *const Machine, request: []const u8) ?*Run {
+        for (self.runs.values()) |run| {
+            for (run.steers.values()) |steer| {
+                if (std.mem.eql(u8, steer.request, request)) return run;
+            }
+            if (std.mem.eql(u8, run.submit_request, request)) return run;
+        }
+        return null;
+    }
+
+    fn judgeAdmissionClaim(self: *Machine, claim: AdmissionClaim) !void {
+        const run = self.admittedBy(claim.request) orelse {
+            try self.add(code_session_state_mismatch, claim.index);
+            return;
+        };
+        if (!std.mem.eql(u8, run.session, claim.session)) return self.add(code_session_state_mismatch, claim.index);
+        if (claim.run.len == 0) {
+            if (!listedIn(claim.accounted, run.id)) try self.add(code_session_state_mismatch, claim.index);
+            return;
+        }
+        if (!std.mem.eql(u8, run.id, claim.run)) try self.add(code_session_state_mismatch, claim.index);
     }
 
     fn checkEntryPending(self: *Machine, index: usize, entry: std.json.Value, run: *Run, position: ?u64) !void {
@@ -3514,6 +3595,7 @@ pub const Machine = struct {
                 try self.add(code_session_state_mismatch, index);
             }
             try self.checkEntryPending(index, entry, run, position);
+            try self.checkEntryAnchor(index, session_id, entry, run);
         }
         if (anchored) return;
         const active = memberString(payload, "active_run_id");
@@ -3960,8 +4042,9 @@ pub const Machine = struct {
     }
 
     fn compoundOpen(self: *Machine, index: usize, envelope: std.json.Value, payload: std.json.Value, session_id: []const u8) !void {
-        const request = self.requests.get(field(envelope, "in_reply_to")) orelse return;
+        const request = self.requests.getPtr(field(envelope, "in_reply_to")) orelse return;
         if (!request.carries_message) return;
+        if (request.session.len == 0) request.session = session_id;
         if (self.submits.get(field(envelope, "in_reply_to"))) |held| {
             if (!std.mem.eql(u8, held.session, session_id)) {
                 held.session = session_id;
@@ -4689,6 +4772,7 @@ pub const Machine = struct {
         for (self.capture_claims.items) |claim| {
             if (!claim.done) try self.add(code_session_state_mismatch, claim.index);
         }
+        for (self.admission_claims.items) |claim| try self.judgeAdmissionClaim(claim);
         for (self.run_positions.items) |position| {
             const run = self.runs.get(position.run) orelse continue;
             if (!std.mem.eql(u8, run.session, position.session)) try self.add(code_scope_mismatch, position.index);
@@ -4929,6 +5013,11 @@ fn claimsSettled(payload: std.json.Value, run_id: []const u8) bool {
         if (std.mem.eql(u8, memberString(entry, "run_id"), run_id)) return true;
     }
     return false;
+}
+
+fn admitsMessages(request: Request) bool {
+    if (std.mem.eql(u8, request.declared, "session.message.submit.request")) return true;
+    return std.mem.eql(u8, request.declared, "session.open.request") and request.carries_message;
 }
 
 fn jsonListHas(list: ?std.json.Value, wanted: []const u8) bool {

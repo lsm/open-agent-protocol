@@ -1,17 +1,12 @@
 {
   "version": 1,
   "zig": [
-    "compound-open-anchor-names-an-open-without-a-message",
     "control-call-recovered-ack-omitted",
     "models-current-mismatch",
     "models-held-position-moved-no-model",
     "payload-decode-usage-past-the-integer-range",
-    "queue-state-anchor-request-refused",
-    "queue-state-anchor-request-unaccounted",
-    "queue-state-anchor-request-unanswered",
     "queue-state-earlier-anchor-answers-the-entry",
     "queue-state-earlier-anchor-vindicates-the-entry",
-    "queue-state-entry-anchor-admitted-elsewhere",
     "queue-state-entry-leads-a-different-run",
     "queue-state-lead-claims-a-second-started-run",
     "queue-state-lead-counts-a-place-its-sibling-never-took",
