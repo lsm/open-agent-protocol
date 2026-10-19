@@ -13292,6 +13292,27 @@
         "0006#a-catalog-belongs-to-the-revision-it-was-served-under/3",
         "0028#optional-sessionproviderattach/8"
       ]
+    },
+    {
+      "id": "provider-attach-in-the-announce-window",
+      "path": "semantic-invalid/provider-attach-in-the-announce-window.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "unavailable_capability"
+      ],
+      "units": [
+        "core",
+        "models"
+      ],
+      "provenance": [
+        "decisions/0054-register-batch-1.md",
+        "decisions/0028-live-model-and-provider-control.md"
+      ],
+      "rules": [
+        "0028#optional-sessionproviderattach/10"
+      ]
     }
   ]
 }

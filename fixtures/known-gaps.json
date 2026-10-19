@@ -165,6 +165,7 @@
     "provider-attach-accepted-without-session-live",
     "provider-attach-conflicting-alias",
     "provider-attach-degraded-refusal-wrong-code",
+    "provider-attach-in-the-announce-window",
     "provider-attach-unadvertised-refusal-without-reason",
     "provider-bearer-shaped-header-under-another-name",
     "provider-credential-header-on-a-call",

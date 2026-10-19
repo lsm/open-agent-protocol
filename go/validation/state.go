@@ -189,8 +189,9 @@ type state struct {
 
 	pendingResolves map[protocol.EnvelopeID]*pendingResolve
 
-	pendingModels map[protocol.EnvelopeID]*pendingModelsQuery
-	authFlows     map[protocol.AuthFlowID]*authFlow
+	pendingModels  map[protocol.EnvelopeID]*pendingModelsQuery
+	judgedAttaches map[protocol.EnvelopeID]bool
+	authFlows      map[protocol.AuthFlowID]*authFlow
 
 	tolerant bool
 
@@ -198,7 +199,7 @@ type state struct {
 }
 
 func newState(f string) *state {
-	return &state{fixture: f, lateCancels: map[protocol.EnvelopeID]bool{}, ids: map[protocol.EnvelopeID]int{}, requests: map[protocol.EnvelopeID]*requestState{}, participants: map[protocol.ParticipantID]bool{}, sessions: map[protocol.SessionID]*sessionTrack{}, runs: map[protocol.RunID]*runState{}, recoveries: map[protocol.SessionID]*recoveryExpectation{}, features: map[string]protocol.SupportLevel{}, featureSupports: map[string]protocol.FeatureSupport{}, pendingControls: map[protocol.EnvelopeID]*pendingSubmit{}, pendingLists: map[protocol.EnvelopeID]*pendingList{}, pendingOpens: map[protocol.EnvelopeID]*pendingOpen{}, pendingSubscribes: map[protocol.EnvelopeID]*pendingSubscribe{}, pendingReopens: map[protocol.EnvelopeID]*pendingReopen{}, pendingSessionLists: map[protocol.EnvelopeID]*pendingSessionList{}, pendingTranscriptLoads: map[protocol.EnvelopeID]*pendingTranscriptLoad{}, pendingSettings: map[protocol.EnvelopeID]*pendingSettings{}, pendingResolves: map[protocol.EnvelopeID]*pendingResolve{}, declaredSources: map[string]protocol.ToolSourceDescriptor{}, pendingModels: map[protocol.EnvelopeID]*pendingModelsQuery{}, authFlows: map[protocol.AuthFlowID]*authFlow{}, openSubmits: map[protocol.SessionID][]*pendingSubmit{}}
+	return &state{fixture: f, lateCancels: map[protocol.EnvelopeID]bool{}, ids: map[protocol.EnvelopeID]int{}, requests: map[protocol.EnvelopeID]*requestState{}, participants: map[protocol.ParticipantID]bool{}, sessions: map[protocol.SessionID]*sessionTrack{}, runs: map[protocol.RunID]*runState{}, recoveries: map[protocol.SessionID]*recoveryExpectation{}, features: map[string]protocol.SupportLevel{}, featureSupports: map[string]protocol.FeatureSupport{}, pendingControls: map[protocol.EnvelopeID]*pendingSubmit{}, pendingLists: map[protocol.EnvelopeID]*pendingList{}, pendingOpens: map[protocol.EnvelopeID]*pendingOpen{}, pendingSubscribes: map[protocol.EnvelopeID]*pendingSubscribe{}, pendingReopens: map[protocol.EnvelopeID]*pendingReopen{}, pendingSessionLists: map[protocol.EnvelopeID]*pendingSessionList{}, pendingTranscriptLoads: map[protocol.EnvelopeID]*pendingTranscriptLoad{}, pendingSettings: map[protocol.EnvelopeID]*pendingSettings{}, pendingResolves: map[protocol.EnvelopeID]*pendingResolve{}, declaredSources: map[string]protocol.ToolSourceDescriptor{}, pendingModels: map[protocol.EnvelopeID]*pendingModelsQuery{}, judgedAttaches: map[protocol.EnvelopeID]bool{}, authFlows: map[protocol.AuthFlowID]*authFlow{}, openSubmits: map[protocol.SessionID][]*pendingSubmit{}}
 }
 func (s *state) add(code string, i, line int, e protocol.Envelope, ptr, msg string) {
 	s.diagnostics = append(s.diagnostics, baseDiagnostic(s.fixture, PhaseSemantic, code, i, line, e, ptr, msg))

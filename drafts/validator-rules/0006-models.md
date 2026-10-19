@@ -123,6 +123,7 @@ Source: [`decisions/0028-live-model-and-provider-control.md`](../../decisions/00
 | `0028#optional-sessionproviderattach/7` | An attachment MUST NOT be accepted under an alias the session's bound catalog already serves. | L91–92 | `duplicate_provider` | `modelcontrol.go:providerAttachResponse` | `semantic.zig:providerAttachResponse` | — |
 | `0028#optional-sessionproviderattach/8` | An accepted attachment invalidates that session's catalog, and the next catalog that binds (citing the active revision with its descriptor in hand) MUST list the attached alias in `providers[]`; a catalog that does not bind owes nothing about the attachment. | L106–115; 0054 L55–64 | `unmatched_provider` | `models.go:modelsResponse` | `semantic.zig:modelsResponse` | — |
 | `0028#optional-sessionproviderattach/9` | An attachment sent while the key is `degraded` without it in `allow_degraded_features` MUST be refused with `capability_degraded` naming the feature. | L98–100; 0054 L36–44 | `degraded_without_optin` | `modelcontrol.go:settleModelControlRefusal` | `semantic.zig:settleControlRefusal` | — |
+| `0028#optional-sessionproviderattach/10` | An attachment request MUST cite a current capability descriptor: one sent before the descriptor of an announced revision is in hand is `unavailable_capability`, and its answer is judged against no descriptor. | L95–100; 0054 L36–44 | `unavailable_capability` | `modelcontrol.go:providerAttachRequest` | `semantic.zig:gatedRequest` | — |
 
 ### [0035] The entry gains facts, and the listing publishes its completeness
 
