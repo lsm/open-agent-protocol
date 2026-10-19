@@ -3,18 +3,12 @@
   "zig": [
     "compound-open-anchor-names-an-open-without-a-message",
     "control-call-recovered-ack-omitted",
-    "control-call-recovered-state-keeps-resolved",
-    "control-state-acknowledges-unpending",
-    "control-state-omits-acknowledged",
     "models-current-mismatch",
     "models-held-position-moved-no-model",
     "payload-decode-usage-past-the-integer-range",
-    "queue-open-adds-an-interaction-the-entry-denied",
-    "queue-open-keeps-a-resolved-interaction-pending",
     "queue-state-anchor-request-refused",
     "queue-state-anchor-request-unaccounted",
     "queue-state-anchor-request-unanswered",
-    "queue-state-as-of-never-reached",
     "queue-state-earlier-anchor-answers-the-entry",
     "queue-state-earlier-anchor-vindicates-the-entry",
     "queue-state-entry-anchor-admitted-elsewhere",
@@ -34,8 +28,6 @@
     "queue-state-leads-claim-one-place-twice",
     "queue-state-leads-listed-out-of-admission-order",
     "queue-state-omission-excused-then-repeated",
-    "queue-state-omits-pending-interaction",
-    "queue-state-pending-without-as-of",
     "queue-state-promoted-run-erased"
   ],
   "rust": [
