@@ -376,20 +376,7 @@ test "tolerated overrides resolve through the registry that holds the pack" {
     try std.testing.expect(validator.overrides.get("pack/storage.schema.json") != null);
 }
 
-const unported_load_codes = [_][]const u8{
-    "pack_fixture_claims_core_unit",
-    "ext_claim_without_pack",
-};
-
-const unported_load_fixtures = 2;
-const load_judged_floor = 21;
-
-fn unportedLoadCode(code: []const u8) bool {
-    for (unported_load_codes) |name| {
-        if (std.mem.eql(u8, name, code)) return true;
-    }
-    return false;
-}
+const load_judged_floor = 23;
 
 fn codeSet(allocator: std.mem.Allocator, codes: []const []const u8) ![]const []const u8 {
     var set = std.ArrayList([]const u8).empty;
@@ -427,7 +414,6 @@ test "the Zig pack loader refuses every load-invalid fixture with the manifest's
     const manifest = try std.json.parseFromSliceLeaky(std.json.Value, arena, try readAll(arena, manifest_path), .{});
 
     var judged: usize = 0;
-    var unported: usize = 0;
     var disagreements = std.ArrayList(u8).empty;
     defer disagreements.deinit(allocator);
 
@@ -443,11 +429,7 @@ test "the Zig pack loader refuses every load-invalid fixture with the manifest's
             }
         }
         var expected = std.ArrayList([]const u8).empty;
-        var awaits_port = false;
-        for (entry.get("codes").?.array.items) |code| {
-            try expected.append(arena, code.string);
-            if (unportedLoadCode(code.string)) awaits_port = true;
-        }
+        for (entry.get("codes").?.array.items) |code| try expected.append(arena, code.string);
         const want = try codeSet(arena, expected.items);
 
         var got: []const []const u8 = &.{};
@@ -462,22 +444,16 @@ test "the Zig pack loader refuses every load-invalid fixture with the manifest's
             else => {},
         }
 
-        if (awaits_port) {
-            unported += 1;
-            if (sameSet(got, want)) try disagreements.print(allocator, "  {s}: refused as the manifest says; drop its codes from unported_load_codes\n", .{id});
-            continue;
-        }
         judged += 1;
         if (!sameSet(got, want)) {
             try disagreements.print(allocator, "  {s}: got [{s}] want [{s}]\n", .{ id, try std.mem.join(arena, " ", got), try std.mem.join(arena, " ", want) });
         }
     }
 
-    std.debug.print("\nload judged={d} unported={d}\n", .{ judged, unported });
+    std.debug.print("\nload judged={d}\n", .{judged});
     if (disagreements.items.len > 0) {
         std.debug.print("load disagreements:\n{s}", .{disagreements.items});
         return error.LoadPhaseDisagrees;
     }
-    try std.testing.expectEqual(unported_load_fixtures, unported);
     try std.testing.expect(judged >= load_judged_floor);
 }

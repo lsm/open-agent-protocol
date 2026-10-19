@@ -75,7 +75,7 @@ Every code either tree declares, or a fixture expects. "defined, not in implemen
 | `duplicate_tool_source` | semantic | yes | yes | 7 | 0 | 0008, staged-units-graduation |
 | `duplicate_transcript_entry` | semantic | yes | yes | 1 | 0 | 0051 |
 | `event_after_terminal` | semantic | yes | yes | 2 | 1 | — |
-| `ext_claim_without_pack` | load | yes (load) | no | 1 | 0 | 0004, staged-units-graduation |
+| `ext_claim_without_pack` | load | yes (load) | yes (load) | 1 | 0 | 0004, staged-units-graduation |
 | `illegal_run_transition` | semantic | yes | yes | 30 | 0 | 0002, 0007, 0013, 0041, 0044, conformance, staged-units-graduation |
 | `illegal_tool_transition` | semantic | yes | yes | 6 | 0 | 0007, 0011, conformance, staged-units-graduation |
 | `malformed_json` | decode | yes | no | 0 | 1 | — |
@@ -86,22 +86,22 @@ Every code either tree declares, or a fixture expects. "defined, not in implemen
 | `model_not_in_catalog` | semantic | yes | yes | 11 | 0 | 0006, 0009, 0028, staged-units-graduation |
 | `pack_branch_undeclared_type` | load | yes (load) | yes (load) | 1 | 0 | 0004, staged-units-graduation |
 | `pack_branch_unpinned` | load | yes (load) | yes (load) | 1 | 0 | 0004, staged-units-graduation |
-| `pack_dependency_missing` | load | yes (load) | no | 1 | 0 | 0004, staged-units-graduation |
-| `pack_external_ref` | load | yes (load) | no | 2 | 0 | 0004, staged-units-graduation |
-| `pack_fixture_claims_core_unit` | load | yes (load) | no | 1 | 0 | 0004, staged-units-graduation |
+| `pack_dependency_missing` | load | yes (load) | yes (load) | 1 | 0 | 0004, staged-units-graduation |
+| `pack_external_ref` | load | yes (load) | yes (load) | 2 | 0 | 0004, staged-units-graduation |
+| `pack_fixture_claims_core_unit` | load | yes (load) | yes (load) | 1 | 0 | 0004, staged-units-graduation |
 | `pack_foreign_prefix` | load | yes (load) | yes (load) | 1 | 0 | 0004, staged-units-graduation |
 | `pack_id_collision` | load | yes (load) | yes (load) | 2 | 0 | 0004, staged-units-graduation |
-| `pack_member_duplicate` | load | yes (load) | no | 1 | 0 | 0004, staged-units-graduation |
-| `pack_member_target_unknown` | load | yes (load) | no | 2 | 0 | 0004, staged-units-graduation |
-| `pack_refusal_undeclared` | load | yes (load) | no | 1 | 0 | 0004, staged-units-graduation |
-| `pack_reply_target_ambiguous` | load | yes (load) | no | 1 | 0 | 0004, staged-units-graduation |
-| `pack_reply_target_unknown` | load | yes (load) | no | 1 | 0 | 0004, staged-units-graduation |
-| `pack_response_gated` | load | yes (load) | no | 1 | 0 | 0004, staged-units-graduation |
-| `pack_restates_core_member` | load | yes (load) | no | 1 | 0 | 0004, staged-units-graduation |
-| `pack_role_undeclared` | load | yes (load) | no | 1 | 0 | 0004, staged-units-graduation |
-| `pack_schema_path_escape` | load | yes (load) | no | 1 | 0 | 0004, staged-units-graduation |
-| `pack_type_duplicate` | load | yes (load) | no | 1 | 0 | 0004, staged-units-graduation |
-| `pack_ungated_type` | load | yes (load) | no | 1 | 0 | 0004, staged-units-graduation |
+| `pack_member_duplicate` | load | yes (load) | yes (load) | 1 | 0 | 0004, staged-units-graduation |
+| `pack_member_target_unknown` | load | yes (load) | yes (load) | 2 | 0 | 0004, staged-units-graduation |
+| `pack_refusal_undeclared` | load | yes (load) | yes (load) | 1 | 0 | 0004, staged-units-graduation |
+| `pack_reply_target_ambiguous` | load | yes (load) | yes (load) | 1 | 0 | 0004, staged-units-graduation |
+| `pack_reply_target_unknown` | load | yes (load) | yes (load) | 1 | 0 | 0004, staged-units-graduation |
+| `pack_response_gated` | load | yes (load) | yes (load) | 1 | 0 | 0004, staged-units-graduation |
+| `pack_restates_core_member` | load | yes (load) | yes (load) | 1 | 0 | 0004, staged-units-graduation |
+| `pack_role_undeclared` | load | yes (load) | yes (load) | 1 | 0 | 0004, staged-units-graduation |
+| `pack_schema_path_escape` | load | yes (load) | yes (load) | 1 | 0 | 0004, staged-units-graduation |
+| `pack_type_duplicate` | load | yes (load) | yes (load) | 1 | 0 | 0004, staged-units-graduation |
+| `pack_ungated_type` | load | yes (load) | yes (load) | 1 | 0 | 0004, staged-units-graduation |
 | `pack_unprefixed_name` | load | yes (load) | yes (load) | 1 | 0 | 0004, staged-units-graduation |
 | `payload_decode` | decode | yes | no | 0 | 0 | — |
 | `pending_interaction_at_terminal` | semantic | yes | yes | 2 | 0 | 0011, staged-units-graduation |
@@ -169,9 +169,9 @@ is checked. Fixture counts are positive / negative traces citing the decision.
 | rule | code | Go / Zig | fixtures | note |
 | --- | --- | --- | --- | --- |
 | 0003 the graduation gate (all rules) | — | — | — | process; pinned by review and by `goap check`'s unit inventory |
-| 0004 unprefixed namespace, prefix-free set, a pack declares what it defines, a pack adds and does not amend, a pack is someone else's document | 19 `pack_*` load codes and `ext_claim_without_pack` | Go all 20; Zig 5 (`pack_unprefixed_name`, `pack_foreign_prefix`, `pack_id_collision`, `pack_branch_unpinned`, `pack_branch_undeclared_type`) | 6 / 23 load-invalid | both Zig gates skip `load-invalid` |
+| 0004 unprefixed namespace, prefix-free set, a pack declares what it defines, a pack adds and does not amend, a pack is someone else's document | 19 `pack_*` load codes and `ext_claim_without_pack` | both, all 20; per-code status in [`drafts/validator-rules/0004-packs.md`](../drafts/validator-rules/0004-packs.md) | 6 / 23 load-invalid | the Zig fixture gate judges all 23 `load-invalid` fixtures; oapx does not yet apply `pack.schema.json` ([record](../drafts/extension-pack-load-refusals.md#the-descriptor-schema-is-not-applied)) |
 | 0004 a load refusal is not a diagnostic | (by construction) | both | — | |
-| 0004 a pack's conformance claim is its own | `pack_fixture_claims_core_unit` | Go only | 1 | |
+| 0004 a pack's conformance claim is its own | `pack_fixture_claims_core_unit` | both | 1 | |
 | 0004 pack members gated on their capability | `unavailable_capability`, `unhonoured_capability` | Zig lacks `unhonoured_capability` | 4 / 1 | |
 
 ### Decisions 0005, 0019, 0021–0024, 0031, 0034: run controls
@@ -352,9 +352,7 @@ Listed for completeness and left to the port already under way:
 `duplicate_key`, `payload_decode`), the auth and provider codes
 (`auth_flow_order`, `missing_auth_terminal`, `unmatched_provider`,
 `undisclosed_selection_scope`), and the partial `scope_mismatch` and
-`session_state_mismatch`. Not in that list and also Go-only: 15 of the 20 load
-codes, 14 `pack_*` codes and `ext_claim_without_pack` (Zig loads packs but
-refuses only five ways).
+`session_state_mismatch`. Every load code is now judged by both trees.
 
 ## Gaps ranked by risk
 

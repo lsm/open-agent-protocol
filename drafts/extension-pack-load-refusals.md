@@ -15,31 +15,86 @@ the difference is written down.
 
 A recorded refusal fails the whole load. Branches, members and types are all
 emptied, so a pack that is refused also stops the semantic machine from seeing
-its declared vocabulary — a partial refusal that kept the good contributions
-would leave a pack contributing what it has just refused. The mixed case is
-tested.
+its declared vocabulary. The loader runs goap's phases in goap's order and stops
+at the first phase that refuses: prefix-freedom, declarations, schema paths,
+dependencies, references, branches, the pack's own corpus. The per-code status, with the decision text
+behind each code, is in
+[`validator-rules/0004-packs.md`](validator-rules/0004-packs.md).
 
 | code | what is refused |
 |---|---|
-| `pack_unprefixed_name` | a `capability_keys` entry, `error_codes` entry or declared `envelope_types` type that does not begin with the pack's own `id` + `.` |
-| `pack_foreign_prefix` | as above, for a name in a foreign namespace |
-| `pack_id_collision` | two loaded packs with **distinct roots** and equal ids, or ids that prefix one another; the same directory supplied twice is skipped before the collision check (`packs.zig:285`), so it is not a collision |
+| `pack_id_collision` | two loaded packs with **distinct roots** and equal ids, or ids that prefix one another; the same directory supplied twice is skipped before the check, so it is not a collision |
+| `pack_unprefixed_name` | a capability key, error code, declared envelope type, payload member name or gate capability that does not begin with the pack's own `id` + `.`, and is in a core namespace or too short to be in any |
+| `pack_foreign_prefix` | as above, for a name in another pack's namespace |
+| `pack_type_duplicate` | one envelope type declared twice in one pack |
+| `pack_role_undeclared` | an envelope type whose `role` is not `request`, `response` or `event` |
+| `pack_reply_target_unknown` | a response whose `replies_to` names no declared request of the pack |
+| `pack_reply_target_ambiguous` | two responses answering one request |
+| `pack_refusal_undeclared` | a type's `refusals` entry the pack never declared in `error_codes` |
+| `pack_response_gated` | a response carrying a gate of its own |
+| `pack_ungated_type` | a request, event or payload member with no gate and no `ungated: true` |
+| `pack_member_duplicate` | two payload members with the same `payload_type` and `member` |
+| `pack_member_target_unknown` | a payload member targeting a type that is not a core envelope type, or targeting `capabilities.updated` under a gate |
+| `pack_restates_core_member` | a payload member restating a member the core payload already defines |
+| `pack_schema_path_escape` | a `schemas` entry or `fixtures` manifest that is empty, absolute, climbs out, does not exist, or resolves outside the pack root once symlinks are followed |
+| `pack_dependency_missing` | a `depends_on` entry naming a pack not loaded at that exact version |
+| `pack_external_ref` | a `$ref` or `$dynamicRef` resolving outside the pack's own documents and payload members, the core bundle and its declared dependencies; a `$id` outside the pack's own base; a reference that is not a URI |
 | `pack_branch_unpinned` | a contributed branch whose resolved schema is an object with no `properties.type.const` |
 | `pack_branch_undeclared_type` | a branch whose `const` names a type other than its own declared one |
-| *(no code)* | a `schema` ref naming a file the descriptor does not contribute; a pointer that resolves to nothing; a pointer that lands on a non-object; a cited name that climbs out. A cited name with a **leading separator** is *not* refused — it normalises and is accepted; see below |
-| *(no code, `InvalidPackDescriptor`)* | a wrong shape for `id`, `version` or `schemas`; a duplicate type within one pack; a `schemas` path that is absolute, climbs out, or does not land beneath the pack root once symlinks are resolved |
+| *(no code)* | an envelope type with no string `schema`; a gate naming neither a type nor a payload member, both or neither of `capability` and `ungated`, a capability inside the namespace but absent from `capability_keys`, a type the pack does not declare, or a key already gated; a payload member with no `schema`; a `schema` ref naming a file the descriptor does not contribute, a pointer that resolves to nothing or lands on a non-object, or a cited name that climbs out |
+| *(no code, `InvalidPackDescriptor`)* | a descriptor that is not an object; a non-string `id` or `version`; a non-array `schemas`; a non-string item in `schemas`, `capability_keys` or `error_codes` |
 
-The uncoded refusals carry no code **on purpose**. `goap` records no code for
-the same two shapes, so inventing `pack_unresolvable_ref` would make oapx louder
-than its peer and put a word in the vocabulary `fixtures/manifest.json` does
-not have. When oapx prints an uncoded refusal on stderr it renders the label
-`unresolved-schema-reference`; `goap` emits no such label, but it still writes a
-failure diagnostic — `PackLoadError.Error` formats the pack, code and message
-(`go/validation/pack.go:79-80`), `goap` returns it, and `main` writes it to stderr.
-So the difference is in the **label**, not in whether output appears: a `goap`
-refusal with no code prints no `unresolved-schema-reference`, but it is not silent.
-The *code* is identical, the label is not, and the label is the CLI's doing rather
-than the loader's.
+The last phase reads a pack's fixture manifest, as goap's corpus check does:
+
+| code | what is refused |
+|---|---|
+| `pack_fixture_claims_core_unit` | a fixture in a pack's own manifest claiming a core unit, such as `core` |
+| `ext_claim_without_pack` | a fixture claiming an `ext:<id>/<version>` unit no loaded pack carries |
+| *(no code)* | a pack that declares capability keys and ships no manifest; a manifest that cannot be read or decoded; a fixture with no units; a fixture claiming another loaded pack's unit; a capability key with no `semantic-invalid` fixture covering its `gate` and its `honour` aspects under the pack's own unit |
+
+Of goap's manifest checks, the loader ports only these. The rest of
+`LoadManifestWith` (fixture kinds, phases, codes, coverage aspects, modes, named
+packs, the fixture files themselves), and the validation of the pack's corpus
+traces against the loaded packs, are not run, and that is a Zig port gap of the
+same kind as the descriptor schema below.
+
+The uncoded refusals carry no code **on purpose**. goap records no code for the
+same shapes, so inventing one would make oapx louder than its peer and put a word
+in the vocabulary `fixtures/manifest.json` does not have. When oapx prints an
+uncoded refusal on stderr it renders the label `unresolved-schema-reference`;
+goap prints its refusal message instead. The *code* is identical, the label is
+not, and the label is the CLI's doing rather than the loader's.
+
+## The descriptor schema is not applied
+
+goap validates every `pack.json` against `schema/v0.1/pack.schema.json` before
+any coded check, and refuses a descriptor the schema rejects, uncoded. oapx does
+not apply that schema. The schema is part of the normative bundle and Decision
+0004 makes the descriptor the declaration the loader checks (L84–90), so this is
+a **Zig port gap**, not a difference of rule. Until it is closed, a descriptor the
+schema rejects reaches oapx's own checks and meets one of three fates:
+
+- **Skipped.** The shape reads as absent and the load can succeed: a non-array
+  `payload_members`, `envelope_types`, `gates`, `depends_on`, `capability_keys`
+  or `error_codes`; a non-array `refusals` on a type; a payload member whose
+  `schema` is present but not an object, which contributes no member; an unknown
+  property anywhere, such as a misspelled `envelop_types`, whose declarations are
+  silently dropped; a gate whose `capability` is not a string, read as absent, so
+  a gate that also says `ungated: true` loads as ungated; repeated values where the
+  schema demands `uniqueItems`; a string `id` that is not reverse-DNS, an empty
+  `version`, and an absent or empty `schemas`.
+- **Refused uncoded.** The shape reaches a check that records no code, as goap's
+  schema failure records none: a non-string `schema` on a type, or a gate with no
+  `capability` whose `ungated` is a string, which leaves it naming neither mode.
+- **Refused with a code goap does not give.** The shape reaches a coded check
+  before anything refuses it uncoded: a type with no string `type` and a payload
+  member with no string `member` are `pack_unprefixed_name`; a payload member with
+  no string `payload_type` is `pack_member_target_unknown`; a non-string or
+  unrecognised `role` is `pack_role_undeclared`; a non-string `replies_to` is
+  `pack_reply_target_unknown`; a non-string `refusals` item is
+  `pack_refusal_undeclared`. No `load-invalid` fixture exercises any of these, so
+  the two trees disagree on no fixture today; closing the port gap removes the
+  disagreement before one does.
 
 ## Pointer contract
 
@@ -104,10 +159,9 @@ is consulted only for where a peer-parity claim is made and is recorded as such.
 ## The registry key and the cited name
 
 The key at registration is the normalised schema name
-`toSlash(lexicalRelative(schemas[index]))` — `names[index]` holds the lexically
-cleaned path (`packs.zig:330`) and the normalised key is built at `packs.zig:335-336`
-— and at citation time the branch normalises the cited name the same way
-(`packs.zig:396-401`) before comparing it to `document.name` (`packs.zig:401`). The
+`toSlash` of the path `containedPath` cleaned with `cleanRelative`, and at
+citation time the branch normalises the cited name the same way before comparing
+it to `document.name`. The
 two sides are therefore **equal
 canonical names after normalisation**, not one value carried from the descriptor —
 they are independently derived from different source strings and agree only once
@@ -122,13 +176,13 @@ These shapes load and **contribute**, so they are not on the skipped list:
 
 - a cited name **spelled with a leading separator** — `/types.schema.json#/$defs/thing`
   and `//types.schema.json#/$defs/thing` are both **accepted, with no refusal**:
-  `cleanRelative` splits on `std.Io.Dir.path.isSep` (`packs.zig:80`), which matches
+  `cleanRelative` splits on `std.Io.Dir.path.isSep`, which matches
   both `/` and `\` on Windows and `/` elsewhere, so the empty part before the
   separator is dropped on every platform and a pack whose citation is spelled that
   way contributes its branch.
-  `cleanRelative` drops the empty separator (`packs.zig:83`), the registration
-  loop keys the document by the *normalised* name (`packs.zig:335-336`), and the
-  branch site normalises the cited name the same way (`packs.zig:396-401`), so the cited
+  `cleanRelative` drops the empty separator, the registration
+  loop keys the document by the *normalised* name, and the
+  branch site normalises the cited name the same way, so the cited
   spelling and the registered key are the same string after normalisation and the
   lookup succeeds; the branch is appended and the pack contributes it.
 
@@ -157,185 +211,6 @@ These shapes load and **contribute**, so they are not on the skipped list:
   (A *climbing* name is different: `..` is refused uncoded on both loaders, as
   measured above.)
 
-## Skipped, not refused
-
-Named so the disclosure shrinks with the code rather than lagging it. "Skipped"
-means the load **succeeds** and the shape is neither refused nor used for the
-**branch** it would otherwise contribute; what each shape contributes beyond that
-is stated per shape, because it is not uniformly nothing:
-
-- an `envelope_types` entry with **no `schema` field at all** — the branch-schema
-  check is skipped, so the entry contributes **no branch**, but its declared
-  `type` is appended to the pack's types before that check runs and so **does**
-  reach the semantic machine. `goap` refuses it. Whether absence should be refused
-  is a **contract question about Decision 0004 §140** and is with the owner; it is
-  deliberately not answered here, because `fixtures/packs/*/pack.json` treats
-  `type` as the only required field.
-- an `envelope_types` entry whose `schema` is **present but not a string** (for
-  example `"schema": 7`) takes the same `stringField(...) orelse continue` path
-  (`packs.zig:393`) as an absent one, so it likewise contributes **its declared
-  type** but **no branch**. It is a separate matter from absence and has its own
-  repair, but its contribution is the same shape and is recorded here so the
-  per-shape definition above holds for every input the loader currently accepts.
-- a **`payload_members` entry** missing `payload_type` or `member` (or carrying
-  them as non-strings), or whose `schema` is absent or not an object, is skipped
-  the same way (`packs.zig:351-354`): the load succeeds and the entry contributes
-  **no member**. `goap` rejects the same entry, because the descriptor schema
-  requires `payload_type`, `member` and `schema` on every entry
-  (`schema/v0.1/pack.schema.json:86`).
-- an `envelope_types` entry whose **`type` is absent or not a string** (for
-  example `{"schema":"types.schema.json#/$defs/thing"}`) is skipped by both
-  passes — the types pass (`packs.zig:367`) and the branch pass (`packs.zig:388`)
-  — so the load succeeds and the entry contributes **neither a type nor a
-  branch**. `goap` rejects it, because the descriptor schema requires `type`
-  (`schema/v0.1/pack.schema.json:41-43`).
-- a **whole field that is present but not an array** is skipped as a unit:
-  `payload_members`, `envelope_types` and `gates` are read through `arrayField`
-  or guarded on being an array (`packs.zig:349`, `:364`, `:386`, `:347`), so an
-  object or string in their place reads as absent and that field contributes
-  nothing at all — no members, no types, no branches, no gates. The same holds
-  for a non-array `capability_keys` or `error_codes` (`packs.zig:289-306`),
-  though those two *do* refuse `InvalidPackDescriptor` when they are an array
-  containing a non-string item, so their container shape is skipped while their
-  item shape is checked. `depends_on` is not read by this loader at all. `goap`
-  rejects every one of these shapes through the descriptor schema. The CLI note
-  discloses the same class; this paragraph is the record's statement of it.
-  Alongside `depends_on`, the **`fixtures` field is also wholly unread**: `gather`
-  never looks it up, so a nonexistent or escaping fixture path is accepted and the
-  pack-corpus completeness checks `goap` derives from a fixture manifest never
-  run — even a valid manifest contributes no checks. `goap` reads `fixtures` and
-  can refuse the pack on it; this loader cannot.
-  An **unknown property**, top-level or nested — for example a misspelled
-  `envelop_types` in place of `envelope_types` — is likewise ignored: `gather`
-  retrieves only the keys it knows and never rejects extras, so the intended
-  declarations are silently dropped and the pack loads. The descriptor schema
-  sets `additionalProperties: false` at every level
-  (`schema/v0.1/pack.schema.json:32,63,78,92,100`), so `goap` refuses such a
-  descriptor.
-- a **`gates` entry whose `capability` (or `payload_type`/`member`/`type`) is not
-  a string** is not refused: `gateString` converts the wrong shape to an empty
-  string (`packs.zig:462-466`), the entry then matches nothing or matches with an
-  empty capability, and an empty capability is ignored, so **capability
-  enforcement is silently skipped for that gate** while the load succeeds. `goap`
-  rejects the descriptor through its schema.
-- a declared request or event with **no matching `gates` entry at all** (or no
-  `gates` field) is accepted: `typeCapability` returns `""` (`packs.zig:468`),
-  `gather` succeeds, and `packEnvelope` skips capability enforcement because it
-  only checks non-empty capabilities. `goap` refuses this case with
-  `pack_ungated_type` (`go/validation/pack.go:431-437`).
-- two `payload_members` entries naming the **same `payload_type` and `member`**
-  are both appended and the pack loads: `gather` dedups types
-  (`packs.zig:366-368`) but not members (`packs.zig:349-360`). `goap` refuses the
-  descriptor with `pack_member_duplicate` (`go/validation/pack.go:441-447`).
-- an `envelope_types` **refusal code that is not declared in the pack's
-  `error_codes`** is copied into the type metadata with no membership check and
-  the pack loads. `goap` refuses the same descriptor with
-  `pack_refusal_undeclared` (`go/validation/pack.go:385-389`).
-- a well-shaped **`payload_members` entry with no matching gate** is appended
-  with an empty capability by `memberCapability` and the load succeeds with no
-  gate enforced. `goap` refuses it with `pack_ungated_type`
-  (`go/validation/pack.go:472-474`).
-- a **payload member that restates a core payload member** is appended without a
-  check against the core payload, and `memberGates` can then impose a pack
-  capability on that existing core field, changing core validation. `goap` refuses
-  it with `pack_restates_core_member` (`go/validation/pack.go:462`).
-- a schema containing an **external `$ref`, `$dynamicRef` or foreign `$id`** is
-  registered without walking its references or trial-compiling the bundle, so the
-  pack loads and a later trace can be left unjudged when resolution is reached.
-  `goap` refuses it with `pack_external_ref` (`go/validation/pack.go:863-881`).
-- an `envelope_types` entry with **no `role` field at all** is accepted
-  (`fixtures/packs/bad-role-undeclared` loads), like the malformed-role case
-  above. `goap` refuses it with `pack_role_undeclared`
-  (`go/validation/pack.go:368`).
-- a **payload member whose `member` name is unprefixed or in a foreign
-  namespace** is appended, because `gather` checks the namespace of declared
-  types and keys but not of member names. `goap` refuses it with
-  `pack_unprefixed_name` when the name lacks the pack's own prefix and
-  `pack_foreign_prefix` when it is in another namespace, through the same
-  containment check it applies to every name
-  (`go/validation/pack.go:322-331`, `containmentRefusal` at `:540-551`).
-- a well-shaped **`capability` on a gate that is absent from `capability_keys`**
-  is attached and the load succeeds, because `typeCapability` reads the matching
-  gate entry without checking membership. `goap` refuses a name outside the pack
-  namespace with `pack_unprefixed_name` or `pack_foreign_prefix`, and records an
-  **uncoded** refusal only for a name inside the namespace that is absent from
-  `capability_keys` (`go/validation/pack.go:407-413`, `:540-551`).
-- a gate that names **both a `capability` and `ungated`**, or **neither**, is
-  accepted: `typeCapability` returns whichever the entry holds and the load
-  proceeds. `goap` refuses it — the modes are exclusive and exactly one must be
-  present (`go/validation/pack.go:402-406`).
-- a gate that names an **`envelope_types` type no entry declares** (a `type` field
-  the descriptor does not list) is accepted here; `goap` refuses it, but only
-  because its undeclared-type check runs when the gate carries a `type`
-  (`go/validation/pack.go:414-418`). A member gate whose `payload_type` is
-  undeclared is **not** refused by `goap` either, so the two sides agree there.
-- **duplicate gate declarations** — two `gates` entries naming the same type (or
-  the same `payload_type`/`member`) are both kept and the load succeeds, where
-  `goap` records a duplicate.
-- a gate that supplies **both a `type` and the `payload_type`/`member` pair** is
-  accepted; `typeCapability` and `memberCapability` each read the entry
-  independently, so no conflict is raised. `goap` does not refuse the combination
-  either — it keys such a gate under its `type` and ignores the member keys
-  (`go/validation/pack.go:394-401`, `index` at `:485-490`) — so the two sides agree
-  here, and only a separately declared matching payload member is later refused
-  `pack_ungated_type`.
-- a gate whose **`ungated` value is not a boolean** (for example `"false"`) is
-  accepted; `typeCapability` reads only the `capability` member and ignores the
-  wrong-shaped `ungated`. `goap` rejects it through the descriptor schema.
-- **array uniqueness is not enforced**: repeated values in `schemas`,
-  `capability_keys`, `error_codes` or an `envelope_types` refusal list are
-  accepted with duplicates kept, where the descriptor schema's `uniqueItems`
-  makes them invalid and `goap` refuses them.
-- a well-shaped **payload member targeting `capabilities.updated` under a gate**
-  is appended (`fixtures/packs/bad-member-on-capabilities-updated` loads);
-  `capabilities.updated` is a core type, but it introduces a revision and has no
-  descriptor of its own, so a gate on it has nothing to judge against. `goap`
-  refuses it with `pack_member_target_unknown`
-  (`go/validation/pack.go:455-458`).
-- a **declared response that carries a gate of its own** loads:
-  `typeCapability` merely reads the matching entry and succeeds
-  (`fixtures/packs/bad-response-gated`). `goap` refuses it with
-  `pack_response_gated` (`go/validation/pack.go:414-423`), because a response
-  derives its gate from the request it answers.
-- a **well-shaped `depends_on` naming a pack that is not loaded** is accepted,
-  because the field is never read at all (`fixtures/packs/bad-dependency-missing`
-  loads). `goap` refuses it with `pack_dependency_missing`
-  (`go/validation/pack.go:774-791`).
-- an `envelope_types` entry whose **`role` is not a string** becomes `""` at
-  `packs.zig:377`, and a string the semantic machine does not recognise is
-  retained as written; in both cases the role matches neither `request`,
-  `response` nor `event`, so the type bypasses request correlation and its
-  declared capability enforcement while the pack loads. `goap` rejects both
-  shapes through its schema.
-- an `envelope_types` entry whose **`refusals` is not an array**, or is an array
-  with non-string items, is accepted: a non-array reads as absent through
-  `arrayField` (`packs.zig:371`) and a non-string item is discarded by `asString`
-  (`packs.zig:373`), so the pack loads with an empty or partial refusal list.
-  `goap` rejects both through its schema.
-- a response entry whose **`replies_to` is absent, non-string, or names no
-  request** is accepted: `responseFor` (`packs.zig:487-500`) silently skips
-  every non-match and selects the first match, so an unknown target leaves the
-  response uncorrelated while the pack loads, and a second response naming the
-  same request is not refused as ambiguous. `goap` refuses unknown and ambiguous
-  reply targets.
-- a **string-valued but invalid `id` or `version`** is accepted: the loader only
-  checks that each is a string (`packs.zig:282-283`) and enforces neither the
-  descriptor schema's reverse-DNS `id` pattern nor its non-empty `version`
-  (`schema/v0.1/pack.schema.json:9-16`), so a pack with `"id":"x"` or
-  `"version":""` loads. `goap` rejects those values.
-
-A descriptor that **omits `schemas` entirely**, or sets `"schemas": []`, is also
-accepted, and the empty field contributes **no schema documents and so no
-branches** — though `envelope_types` entries still contribute their declared
-types through the skip paths above, so such a pack is not necessarily empty of
-vocabulary. The loader only type-checks the field (`packs.zig:311-313`: a
-non-array is `InvalidPackDescriptor`) and never enforces the descriptor schema's
-`required: ["id","version","schemas"]` and `minItems: 1`
-(`schema/v0.1/pack.schema.json:7,15-20`), so a pack that the spec calls invalid —
-one with no contributed schemas — loads clean. This is a peer and spec divergence
-and belongs with the shape-refusal work, not with this record's per-shape
-contribution list; it is named here so the list does not read as exhaustive.
-
 ## Limits of this record
 
 - The lexical climb check is not independently observable on POSIX; the
@@ -345,6 +220,3 @@ contribution list; it is named here so the list does not read as exhaustive.
   platform.
 - `checkAllAllocationFailures` is deliberately not applied to `gather`; the
   freeing test in `validator.zig` covers `Validator.init`, not the loader.
-- "Skipped" above means the load succeeds and the shape contributes no **branch**;
-  an absent schema still leaves the declared type visible to the loader. It does
-  not mean the trace is judged correctly.

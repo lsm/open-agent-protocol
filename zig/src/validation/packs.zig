@@ -24,6 +24,8 @@ pub const pack_restates_core_member = "pack_restates_core_member";
 pub const pack_schema_path_escape = "pack_schema_path_escape";
 pub const pack_dependency_missing = "pack_dependency_missing";
 pub const pack_external_ref = "pack_external_ref";
+pub const pack_fixture_claims_core_unit = "pack_fixture_claims_core_unit";
+pub const ext_claim_without_pack = "ext_claim_without_pack";
 
 pub const Refusal = struct {
     code: []const u8,
@@ -335,7 +337,65 @@ const Descriptor = struct {
     version: []const u8,
     base: []const u8 = "",
     documents: []const Document = &.{},
+    manifest: ?[]const u8 = null,
 };
+
+fn unitOf(allocator: std.mem.Allocator, pack: Descriptor) ![]const u8 {
+    return std.fmt.allocPrint(allocator, "ext:{s}/{s}", .{ pack.id, pack.version });
+}
+
+fn checkCorpus(io: std.Io, allocator: std.mem.Allocator, descriptors: []const Descriptor, pack: Descriptor, out: *std.ArrayList(Refusal)) !void {
+    const keys = items(pack.value, "capability_keys");
+    const path = pack.manifest orelse {
+        if (keys.len != 0) try out.append(allocator, .{ .code = "", .pack = pack.id, .detail = "capability keys and no fixture manifest" });
+        return;
+    };
+    const bytes = readAll(io, allocator, path) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        else => return out.append(allocator, .{ .code = "", .pack = pack.id, .detail = path }),
+    };
+    const manifest = std.json.parseFromSliceLeaky(std.json.Value, allocator, bytes, .{}) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        else => return out.append(allocator, .{ .code = "", .pack = pack.id, .detail = path }),
+    };
+    const own = try unitOf(allocator, pack);
+    for (items(manifest, "fixtures")) |entry| {
+        const units = items(entry, "units");
+        if (units.len == 0) return out.append(allocator, .{ .code = "", .pack = pack.id, .detail = stringField(entry, "id") orelse "" });
+        for (units) |listed| {
+            const unit = asString(listed) orelse "";
+            if (!std.mem.startsWith(u8, unit, "ext:")) return out.append(allocator, .{ .code = pack_fixture_claims_core_unit, .pack = pack.id, .detail = unit });
+            var loaded = false;
+            for (descriptors) |other| {
+                if (std.mem.eql(u8, try unitOf(allocator, other), unit)) loaded = true;
+            }
+            if (!loaded) return out.append(allocator, .{ .code = ext_claim_without_pack, .pack = pack.id, .detail = unit });
+            if (!std.mem.eql(u8, unit, own)) return out.append(allocator, .{ .code = "", .pack = pack.id, .detail = unit });
+        }
+    }
+    for (keys) |key| {
+        const name = asString(key) orelse continue;
+        for ([_][]const u8{ "gate", "honour" }) |aspect| {
+            if (!coveredUnder(manifest, name, aspect, own)) return out.append(allocator, .{ .code = "", .pack = pack.id, .detail = name });
+        }
+    }
+}
+
+fn coveredUnder(manifest: std.json.Value, capability: []const u8, aspect: []const u8, unit: []const u8) bool {
+    for (items(manifest, "fixtures")) |entry| {
+        if (!std.mem.eql(u8, stringField(entry, "kind") orelse "", "semantic-invalid")) continue;
+        var claims = false;
+        for (items(entry, "units")) |listed| {
+            if (std.mem.eql(u8, asString(listed) orelse "", unit)) claims = true;
+        }
+        if (!claims) continue;
+        for (items(entry, "covers")) |cover| {
+            if (std.mem.eql(u8, stringField(cover, "capability") orelse "", capability) and
+                std.mem.eql(u8, stringField(cover, "aspect") orelse "", aspect)) return true;
+        }
+    }
+    return false;
+}
 
 fn dependencyOf(descriptors: []const Descriptor, dependency: std.json.Value) ?Descriptor {
     const id = stringField(dependency, "id") orelse return null;
@@ -563,7 +623,9 @@ fn gather(
             else => return error.InvalidPackDescriptor,
         };
         if (stringField(pack.value, "fixtures")) |manifest| {
-            if (try containedPath(io, allocator, pack_root, pack.dir, manifest) == null) {
+            if (try containedPath(io, allocator, pack_root, pack.dir, manifest)) |contained| {
+                pack.manifest = contained.resolved;
+            } else {
                 try load_refusals.append(allocator, .{ .code = pack_schema_path_escape, .pack = pack.id, .detail = manifest });
             }
         }
@@ -676,6 +738,9 @@ fn gather(
             });
         }
     }
+    if (load_refusals.items.len != 0) return refusedWith(&arena, &load_refusals);
+
+    for (descriptors.items) |pack| try checkCorpus(io, allocator, descriptors.items, pack, &load_refusals);
     if (load_refusals.items.len != 0) return refusedWith(&arena, &load_refusals);
 
     std.mem.sort(Branch, branches.items, {}, struct {
@@ -1526,5 +1591,51 @@ test "a fixture manifest outside the pack root is refused whether or not the pac
         var loaded = try describe(std.testing.io, allocator, &one);
         defer loaded.deinit();
         try std.testing.expectEqual(c.escapes, carriesCode(loaded.refusals, pack_schema_path_escape));
+    }
+}
+
+test "a pack's corpus proves its own capability keys under its own unit, and nothing else" {
+    const allocator = std.testing.allocator;
+    const alone = [_][]const u8{"fixtures/packs/storage"};
+    var proven = try describe(std.testing.io, allocator, &alone);
+    defer proven.deinit();
+    try std.testing.expectEqual(@as(usize, 0), proven.refusals.len);
+
+    const sibling = [_][]const u8{ "fixtures/packs/bad-fixture-claims-sibling", "fixtures/packs/storage" };
+    var claimed = try describe(std.testing.io, allocator, &sibling);
+    defer claimed.deinit();
+    try std.testing.expectEqual(@as(usize, 1), claimed.refusals.len);
+    try std.testing.expectEqualStrings("", claimed.refusals[0].code);
+    try std.testing.expectEqualStrings("ext:com.example.storage/1.0.0", claimed.refusals[0].detail);
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const keyed =
+        \\{"id": "com.example.keyed", "version": "1.0.0", "capability_keys": ["com.example.keyed.thing"], "envelope_types": []
+    ;
+    const gate_only =
+        \\{"version": 1, "fixtures": [{"id": "keyed-gate", "path": "t.json", "kind": "semantic-invalid", "valid": false, "phase": "semantic", "codes": ["unavailable_capability"], "units": ["ext:com.example.keyed/1.0.0"], "covers": [{"capability": "com.example.keyed.thing", "aspect": "gate"}], "provenance": []}]}
+    ;
+    const cases = [_]struct { dir: []const u8, descriptor: []const u8, manifest: ?[]const u8 }{
+        .{ .dir = "keys-no-manifest", .descriptor = keyed ++ "}", .manifest = null },
+        .{ .dir = "keys-gate-only", .descriptor = keyed ++ ", \"fixtures\": \"manifest.json\"}", .manifest = gate_only },
+    };
+    for (cases) |c| {
+        try tmp.dir.createDir(std.testing.io, c.dir, .default_dir);
+        const pack = try std.fmt.allocPrint(allocator, "{s}/pack.json", .{c.dir});
+        defer allocator.free(pack);
+        try tmp.dir.writeFile(std.testing.io, .{ .sub_path = pack, .data = c.descriptor });
+        if (c.manifest) |manifest| {
+            const path = try std.fmt.allocPrint(allocator, "{s}/manifest.json", .{c.dir});
+            defer allocator.free(path);
+            try tmp.dir.writeFile(std.testing.io, .{ .sub_path = path, .data = manifest });
+        }
+        const root = try tmp.dir.realPathFileAlloc(std.testing.io, c.dir, allocator);
+        defer allocator.free(root);
+        const one = [_][]const u8{root};
+        var loaded = try describe(std.testing.io, allocator, &one);
+        defer loaded.deinit();
+        try std.testing.expectEqual(@as(usize, 1), loaded.refusals.len);
+        try std.testing.expectEqualStrings("", loaded.refusals[0].code);
     }
 }
