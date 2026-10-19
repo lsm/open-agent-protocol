@@ -2131,6 +2131,30 @@ test "a turn submitted to a runtime over OAP streams back as the events the term
     try testing.expect(runtime.isIdle());
 }
 
+test "a runtime with no model of its own refuses a turn it would run in process, and sends one to an endpoint that runs it on its own model" {
+    var script = Script{};
+    const models = [_]ai_types.Model{scripted_model};
+    const execution = try OapExecution.create(testing.allocator, .{
+        .protocol = .{ .stream_fn = scriptedStream, .ctx = &script },
+        .models = &models,
+        .initial_model_id = scripted_model.id,
+    });
+    defer execution.destroy();
+    var runtime = try session_runtime.SessionRuntime.init(testing.allocator, .{ .models = &.{}, .remote = execution.remote() });
+    defer runtime.deinit();
+
+    try testing.expectError(error.NoModelConfigured, runtime.submitTurn("hello"));
+    const adapter = execution.adapter.?;
+    execution.adapter = null;
+    defer execution.adapter = adapter;
+    try runtime.submitTurn("hello");
+    var seen = Seen{};
+    defer seen.deinit();
+    try drainTurn(&runtime, &seen);
+    try testing.expectEqual(@as(?session_events.SessionEndReason, .completed), seen.end);
+    try testing.expectEqualStrings("over the wire", seen.text.items);
+}
+
 test "a session over OAP labels its tools with the title the endpoint lists for each" {
     var script = Script{};
     const models = [_]ai_types.Model{scripted_model};

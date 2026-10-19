@@ -186,6 +186,10 @@ fn loadRuntimeModelsWithCatalog(
 }
 
 fn withDefaultModel(allocator: std.mem.Allocator, catalog_models: []ai_types.Model) ![]ai_types.Model {
+    const anthropic = for (catalog_models) |model| {
+        if (std.mem.eql(u8, model.provider, defaultModel().provider)) break true;
+    } else false;
+    if (!anthropic) return catalog_models;
     var consumed: usize = 0;
     errdefer {
         for (catalog_models[consumed..]) |*model| model.deinit(allocator);
@@ -1157,7 +1161,7 @@ pub const App = struct {
         if (app.runtime.?.currentModel()) |model| {
             try app.state.status.setModelWithContext(allocator, model.id, model.provider, model.context_window);
             app.state.telemetry.context_window = model.context_window;
-        }
+        } else if (options.remote == null or app.runtime.?.recordsFromEndpoint()) try app.state.appendNotice(login_first_notice);
         app.store = session_store.Store.initDefault(allocator) catch null;
         try app.ensureSessionId();
         app.working_dir = currentPathOwned(allocator) catch try allocator.dupe(u8, "");
@@ -1673,7 +1677,7 @@ pub const App = struct {
             try self.state.status.setModelWithContext(self.allocator, model.id, model.provider, model.context_window);
             self.state.telemetry.context_window = model.context_window;
         } else {
-            try self.state.status.setModelWithContext(self.allocator, loaded.metadata.model, loaded.metadata.provider, 0);
+            try self.state.status.setModelWithContext(self.allocator, "", "", 0);
         }
         defer if (loaded.model_unavailable) self.noteUnavailableResumeModel(loaded.metadata.provider, loaded.metadata.model, runtime.currentModel());
         self.replaying_history = true;
@@ -1709,7 +1713,7 @@ pub const App = struct {
         const msg = if (current) |model|
             std.fmt.allocPrint(self.allocator, "{s}/{s} is not available, so this session continues on {s}/{s}; pick another with /model", .{ provider, model_id, model.provider, model.id }) catch return
         else
-            std.fmt.allocPrint(self.allocator, "{s}/{s} is not available; pick a model with /model", .{ provider, model_id }) catch return;
+            std.fmt.allocPrint(self.allocator, "{s}/{s} is not available. {s}", .{ provider, model_id, login_first_notice }) catch return;
         defer self.allocator.free(msg);
         self.state.appendTranscript(.system, msg) catch {};
     }
@@ -2479,7 +2483,10 @@ pub const App = struct {
                 try self.state.appendTranscript(.@"error", msg);
             }
         }
-        const model = runtime.currentModel() orelse return false;
+        const model = runtime.currentModel() orelse {
+            try self.state.status.setModel(self.allocator, "", "");
+            return false;
+        };
         const switched = !std.mem.eql(u8, model.id, self.state.status.model) or
             !std.mem.eql(u8, model.provider, self.state.status.provider);
         if (switched) try self.state.status.setModel(self.allocator, model.id, model.provider);
@@ -2895,7 +2902,6 @@ pub const App = struct {
         if (self.first_user_text.len > 0) self.allocator.free(self.first_user_text);
         self.first_user_text = &.{};
     }
-
 
     fn currentSessionMetadata(self: *App) session_store.SessionMetadata {
         return .{
@@ -3517,7 +3523,7 @@ pub const App = struct {
             session.submitTurn(sent) catch |err| {
                 if (err == error.QueueFull) return err;
                 try self.state.status.setError(self.allocator, @errorName(err));
-                try self.state.appendTranscript(.@"error", @errorName(err));
+                try self.state.appendTranscript(.@"error", failureText(err));
                 return false;
             };
             if (noted != null) self.state.zen.note = .none;
@@ -3706,7 +3712,7 @@ pub const App = struct {
             .session = if (self.session) |*session| session else null,
         }, command) catch |err| {
             try self.state.status.setError(self.allocator, @errorName(err));
-            try self.state.appendTranscript(.@"error", @errorName(err));
+            try self.state.appendTranscript(.@"error", failureText(err));
             return;
         };
         defer result.deinit(self.allocator);
@@ -5680,6 +5686,11 @@ fn preferredContextWindow(stored: ?u32, flag: ?u32) ?u32 {
     return flag orelse stored;
 }
 
+fn failureText(err: anyerror) []const u8 {
+    return if (err == error.NoModelConfigured) login_first_notice else @errorName(err);
+}
+
+pub const login_first_notice = "No model: log in to a provider first. Run /login <provider> here, for example /login anthropic, or oapx auth login --provider <id> in a shell; its models appear once you have.";
 pub const over_oap_notice = "this session runs on another endpoint: the hub's with --attach, or the backend's with --backend. Resume and automatic worktrees are not carried over to it, the context window, output limit, permission mode and workspace are fixed when the session opens, and an \"always\" answer to a tool approval applies to that call only unless the endpoint offers it; run oapx without --attach or --backend for them.";
 pub const over_oap_setting_refusal = tui_commands.over_oap_setting_refusal;
 pub const over_oap_compaction_refusal = "this session's endpoint does not take a compaction over OAP; run oapx without --attach or --backend to compact.";
@@ -5856,6 +5867,50 @@ const TestContext = struct {
         self.arena.deinit();
     }
 };
+
+test "App started with no provider logged in has no model, says how to log in, and answers a message with the same" {
+    var production = try ProductionRuntime.init(std.testing.allocator, .{});
+    defer production.deinit();
+    production.initBridge();
+    try std.testing.expectEqual(@as(usize, 0), production.models.len);
+    var options = production.options();
+    const execution = try tui_oap_execution.OapExecution.create(std.testing.allocator, options);
+    defer execution.destroy();
+    options.remote = execution.remote();
+    var app = try App.init(std.testing.allocator, options);
+    defer app.deinit();
+
+    try std.testing.expectEqualStrings("", app.state.status.model);
+    try std.testing.expectEqualStrings(login_first_notice, app.state.transcript.items[app.state.transcript.items.len - 1].text.items);
+    try app.submit("hello");
+    const last = app.state.transcript.items[app.state.transcript.items.len - 1];
+    try std.testing.expectEqual(tui_state.TranscriptKind.@"error", last.kind);
+    try std.testing.expectEqualStrings(login_first_notice, last.text.items);
+    try app.submit("/context 100000");
+    try std.testing.expectEqualStrings(login_first_notice, app.state.transcript.items[app.state.transcript.items.len - 1].text.items);
+}
+
+fn copilotOnlyCatalog(allocator: std.mem.Allocator) anyerror![]ai_types.Model {
+    const models = try allocator.alloc(ai_types.Model, 1);
+    errdefer allocator.free(models);
+    var model = defaultModel();
+    model.id = "gpt-5.5";
+    model.provider = "github-copilot";
+    models[0] = try ai_types.cloneModel(allocator, model);
+    return models;
+}
+
+test "App started with one provider logged in opens on that provider's model, not the Anthropic default" {
+    const models = try loadRuntimeModelsWithCatalog(std.testing.allocator, copilotOnlyCatalog, false);
+    defer model_catalog.deinitModels(std.testing.allocator, models);
+    try std.testing.expectEqual(@as(usize, 1), models.len);
+    var app = try App.init(std.testing.allocator, .{ .models = models });
+    defer app.deinit();
+
+    try std.testing.expectEqualStrings("gpt-5.5", app.state.status.model);
+    try std.testing.expectEqualStrings("github-copilot", app.state.status.provider);
+    for (app.state.transcript.items) |entry| try std.testing.expect(!std.mem.eql(u8, entry.text.items, login_first_notice));
+}
 
 test "App takes its tool labels from the endpoint's tool list once the session starts" {
     var production = try ProductionRuntime.init(std.testing.allocator, .{});
@@ -6080,7 +6135,7 @@ test "status reports the session, model, usage, run, settings and auth in one pl
     }
 }
 
-test "App refreshes runtime models after login" {
+test "App refreshing the catalog with no provider logged in leaves no model, and the status names none" {
     const extra_model = ai_types.Model{
         .id = "temporary-extra-model",
         .name = "Temporary Extra",
@@ -6100,14 +6155,12 @@ test "App refreshes runtime models after login" {
     defer app.deinit();
     app.runtime = runtime;
 
+    try app.state.status.setModel(std.testing.allocator, extra_model.id, extra_model.provider);
     try std.testing.expectEqual(@as(usize, 2), runtime.availableModels().len);
-    try std.testing.expect(try app.refreshModels());
-    try std.testing.expectEqual(@as(usize, 1), runtime.availableModels().len);
-    try std.testing.expectEqualStrings(defaultModel().id, runtime.currentModel().?.id);
-    try std.testing.expectEqualStrings(defaultModel().id, app.state.status.model);
-    app.state.status.context_limit = 1;
     try std.testing.expect(!try app.refreshModels());
-    try std.testing.expectEqual(@as(u64, runtime.contextWindow()), @as(u64, app.state.status.context_limit));
+    try std.testing.expectEqual(@as(usize, 0), runtime.availableModels().len);
+    try std.testing.expect(runtime.currentModel() == null);
+    try std.testing.expectEqualStrings("", app.state.status.model);
 }
 
 const TempHome = struct {
@@ -8342,7 +8395,7 @@ test "a persisted window the model in effect cannot take is dropped without rewr
     const before = try configFileBytes(std.testing.allocator, home);
     defer std.testing.allocator.free(before);
 
-    var production = try ProductionRuntime.init(std.testing.allocator, .{});
+    var production = try ProductionRuntime.init(std.testing.allocator, .{ .fixture = true });
     defer production.deinit();
     production.initBridge();
     try std.testing.expectEqual(@as(?u32, 4_000_000_000), production.options().context_window);
@@ -8506,7 +8559,7 @@ test "a resumed session's replayed events leave the rate showing nothing" {
     const base = try sessionStoreBaseForAppTest(std.testing.allocator, &tmp);
     defer std.testing.allocator.free(base);
 
-    var production = try ProductionRuntime.init(std.testing.allocator, .{});
+    var production = try ProductionRuntime.init(std.testing.allocator, .{ .fixture = true });
     defer production.deinit();
     production.initBridge();
     if (production.models.len == 0) return error.TestExpectedTarget;
@@ -8558,7 +8611,7 @@ test "a session whose model is gone resumes on the current model and says so" {
     const base = try sessionStoreBaseForAppTest(std.testing.allocator, &tmp);
     defer std.testing.allocator.free(base);
 
-    var production = try ProductionRuntime.init(std.testing.allocator, .{});
+    var production = try ProductionRuntime.init(std.testing.allocator, .{ .fixture = true });
     defer production.deinit();
     production.initBridge();
     if (production.models.len == 0) return error.TestExpectedTarget;
@@ -8592,6 +8645,46 @@ test "a session whose model is gone resumes on the current model and says so" {
     try std.testing.expectEqualStrings(before.id, app.state.status.model);
     const said = app.state.transcript.items[app.state.transcript.items.len - 1];
     try std.testing.expect(std.mem.startsWith(u8, said.text.items, "retired-provider/retired-model is not available, so this session continues on "));
+}
+
+test "a session resumed with no provider logged in shows no model and says to log in, not to pick one" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const base = try sessionStoreBaseForAppTest(std.testing.allocator, &tmp);
+    defer std.testing.allocator.free(base);
+
+    var production = try ProductionRuntime.init(std.testing.allocator, .{});
+    defer production.deinit();
+    production.initBridge();
+
+    var store = try session_store.Store.init(std.testing.allocator, base);
+    defer store.deinit();
+    var meta = session_store.SessionMetadata{
+        .session_id = try std.testing.allocator.dupe(u8, "logged-out"),
+        .model = try std.testing.allocator.dupe(u8, "saved-model"),
+        .provider = try std.testing.allocator.dupe(u8, "saved-provider"),
+        .last_active = 1,
+    };
+    defer meta.deinit(std.testing.allocator);
+    try store.save(meta, .{ .turn_start = .{} });
+    try store.save(meta, .{ .turn_end = .{ .stop_reason = .stop } });
+
+    var mock = MockAppSession{};
+    defer mock.deinit();
+    var app = try App.init(std.testing.allocator, production.options());
+    defer app.deinit();
+    try useStoreAt(&app, base);
+    app.session = mock.session();
+    try app.loadSessions();
+    app.state.session_index = 0;
+
+    try app.resumeSelectedSession();
+
+    try std.testing.expect(app.runtime.?.currentModel() == null);
+    try std.testing.expectEqualStrings("", app.state.status.model);
+    const said = app.state.transcript.items[app.state.transcript.items.len - 1];
+    try std.testing.expect(std.mem.startsWith(u8, said.text.items, "saved-provider/saved-model is not available. "));
+    try std.testing.expect(std.mem.endsWith(u8, said.text.items, login_first_notice));
 }
 
 test "a model switch resets the rate average, including between two models that cost the same" {
@@ -10183,7 +10276,7 @@ test "resume selected session clears delete reset flags on success" {
     const base = try sessionStoreBaseForAppTest(std.testing.allocator, &tmp);
     defer std.testing.allocator.free(base);
 
-    var production = try ProductionRuntime.init(std.testing.allocator, .{});
+    var production = try ProductionRuntime.init(std.testing.allocator, .{ .fixture = true });
     defer production.deinit();
     production.initBridge();
 
@@ -10220,7 +10313,7 @@ test "resume of a session without a worktree resets the workspace to the launch 
     const base = try sessionStoreBaseForAppTest(std.testing.allocator, &tmp);
     defer std.testing.allocator.free(base);
 
-    var production = try ProductionRuntime.init(std.testing.allocator, .{});
+    var production = try ProductionRuntime.init(std.testing.allocator, .{ .fixture = true });
     defer production.deinit();
     production.initBridge();
 
@@ -10976,7 +11069,7 @@ test "resuming a session whose last run ended in an error does not nudge" {
     const base = try sessionStoreBaseForAppTest(std.testing.allocator, &tmp);
     defer std.testing.allocator.free(base);
 
-    var production = try ProductionRuntime.init(std.testing.allocator, .{});
+    var production = try ProductionRuntime.init(std.testing.allocator, .{ .fixture = true });
     defer production.deinit();
     production.initBridge();
 
