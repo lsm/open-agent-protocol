@@ -72,3 +72,6 @@ pub const DUPLICATE_SESSION_ENTRY: &str = "duplicate_session_entry";
 pub const TRANSCRIPT_OVER_LIMIT: &str = "transcript_over_limit";
 pub const DUPLICATE_TRANSCRIPT_ENTRY: &str = "duplicate_transcript_entry";
 pub const TRANSCRIPT_GAP_MISMATCH: &str = "transcript_gap_mismatch";
+pub const CREDENTIAL_IN_TRACE: &str = "credential_in_trace";
+pub const CREDENTIAL_IN_HEADERS: &str = "credential_in_headers";
+pub const TERMINAL_NOT_ASSEMBLY: &str = "terminal_not_assembly";

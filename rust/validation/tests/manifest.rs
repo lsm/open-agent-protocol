@@ -1,7 +1,7 @@
 use std::collections::BTreeSet;
 use std::path::PathBuf;
 
-use oap_validation::{Phase, Validator};
+use oap_validation::{Phase, ProviderValidator, Validator};
 use serde::Deserialize;
 use serde_json::Value;
 
@@ -29,6 +29,7 @@ fn every_fixture_draws_exactly_its_declared_codes_unless_rust_lists_it_as_a_know
     let _ = (gaps.go, gaps.zig);
     let listed: BTreeSet<&str> = gaps.rust.iter().map(String::as_str).collect();
     let validator = Validator::new().unwrap();
+    let provider = ProviderValidator::new().unwrap();
     let mut judged = BTreeSet::new();
     let mut wrong = Vec::new();
     let mut agreeing = Vec::new();
@@ -38,7 +39,12 @@ fn every_fixture_draws_exactly_its_declared_codes_unless_rust_lists_it_as_a_know
         }
         let id = entry["id"].as_str().unwrap();
         let path = entry["path"].as_str().unwrap();
-        let result = validator.validate(&std::fs::read(fixtures().join(path)).unwrap(), path);
+        let data = std::fs::read(fixtures().join(path)).unwrap();
+        let result = if entry["profile"] == "model-provider-core" {
+            provider.validate(&data, path)
+        } else {
+            validator.validate(&data, path)
+        };
         let mut want: Vec<&str> = entry["codes"]
             .as_array()
             .map(|codes| codes.iter().filter_map(Value::as_str).collect())
