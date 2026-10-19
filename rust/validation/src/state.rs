@@ -655,6 +655,7 @@ impl State {
         let Some(asked) = self
             .requests
             .get(&reply)
+            .filter(|request| request.envelope_type == EnvelopeType::ACTION_TOOLS_LIST_REQUEST)
             .map(|request| request.session.clone())
         else {
             return;

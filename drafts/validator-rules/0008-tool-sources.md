@@ -4,8 +4,9 @@ Decisions 0008, 0011 and 0048, and the tool call lifecycle sites of 0001 that
 [the core file](0001-core.md) leaves here: the rows behind every diagnostic the
 validators raise for tool sources, the session catalog, call attribution and
 control-layer-provided tools. Go and Zig name the function in `go/validation/`
-and `zig/src/validation/`, Rust in `rust/validation/src/`. Rust ports none of
-the tool-source or provided-tool rules yet, only the generic tool lifecycle.
+and `zig/src/validation/`, Rust in `rust/validation/src/`. Rust ports the
+generic tool lifecycle and the list response's session scope, and none of the
+other tool-source or provided-tool rules yet.
 The items in
 [`research/validator-divergences.md`](../../research/validator-divergences.md)
 for this group are all settled: OPEN-0008-1 by 0008's text, and OPEN-0008-2,

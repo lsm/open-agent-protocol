@@ -61,3 +61,29 @@ fn an_unscoped_list_request_is_answered_with_no_session_in_the_payload_or_on_the
     assert_eq!(scope_mismatches(None, None, Some("s")), 1);
     assert_eq!(scope_mismatches(None, Some("s"), Some("s")), 1);
 }
+
+#[test]
+fn a_catalog_answering_another_kind_of_request_is_not_judged_as_a_list_response() {
+    let events = [
+        envelope(
+            json!({"type": "session.message.submit.request", "id": "m1", "session_id": "s",
+            "payload": {"session_id": "s", "messages": [{"role": "user", "content": "go"}], "delivery": "auto"}}),
+        ),
+        envelope(
+            json!({"type": "action.tools.list.response", "id": "l2", "in_reply_to": "m1",
+            "capability_revision": "v1", "payload": {"session_id": "s", "tools": [], "sources": []}}),
+        ),
+    ];
+    let trace = events
+        .iter()
+        .map(Value::to_string)
+        .collect::<Vec<_>>()
+        .join("\n");
+    let result = Validator::new()
+        .unwrap()
+        .validate(trace.as_bytes(), "list-scope");
+    assert!(result
+        .diagnostics
+        .iter()
+        .all(|d| !d.message.contains("catalog must name its session")));
+}
