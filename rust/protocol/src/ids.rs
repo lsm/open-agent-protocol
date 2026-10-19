@@ -48,4 +48,5 @@ id!(
     MessageId,
     ToolCallId,
     InteractionId,
+    CompactionId,
 );
