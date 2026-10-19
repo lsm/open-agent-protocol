@@ -2,7 +2,8 @@
 
 Status: accepted 2026-09-16 (174 `queue` fixtures; OpenCode executes
 `delivery:"queue"` with promotion natively. Nothing in the record is left
-pending)
+pending) (the no-position pending set amended by
+[Decision 0054](0054-register-batch-1.md))
 Date: 2026-09-16
 Protocol: `open-agent-protocol` version `0.1`
 Profile: `open-agent-protocol.agent-control-core`
@@ -316,7 +317,11 @@ reservation outright is a false verdict at one edge of the window, since it
 lets a snapshot keep a queue place past a promotion that has not drained, and
 refusing to is a false verdict at the other, since it rejects the accurate
 entry of a run cancelled after one. An entry stating no position at all claims
-no knowledge the trace lacks and is read as the trace stands. Its queue position
+no knowledge the trace lacks and is read as the trace stands, whatever the
+descriptor advertises: an entry naming pending interactions has to state the
+position it caught them at, so one stating none claims its run is blocked on
+nothing, and a run with an unresolved interaction makes it wrong
+([Decision 0054](0054-register-batch-1.md)). Its queue position
 is judged there too, and so is `active_run_id`: an entry's status, its position
 and the field that names the started run are one description of one moment, and
 reading the position off the trace's current idea of which run has started
