@@ -363,8 +363,8 @@ is RE2 and must match the whole name.
 **Zig implements a subset; outside it Zig stands down.** Zig's matcher
 (`zig/src/validation/re2.zig`, #1336) covers the RE2 syntax a name pattern
 uses. It judges nothing for valid RE2 outside that subset: flags such as
-`(?i)`, Unicode classes, `\b`, octal and hex escapes, and any name outside
-ASCII. Go judges those, so in that zone Zig is silent where Go speaks. That is
+`(?i)`, Unicode classes, `\b`, `\Q…\E`, a character outside ASCII, and any
+name outside ASCII. Go judges those, so in that zone Zig is silent where Go speaks. That is
 a port gap, not parity. `open-provide-refused-within-a-case-folding-pattern`
 pins it as a Zig known gap. Whether 0055's "RE2-compatible" asks for more than
 this subset is with the owner.

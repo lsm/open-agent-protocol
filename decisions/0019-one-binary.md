@@ -175,11 +175,13 @@ would take to carry it. The list is expected to shrink.
   this entry is a port gap now, not a divergence. Zig carries it with a
   hand-written matcher (`zig/src/validation/re2.zig`), not a vendored engine. It
   implements the RE2 syntax a name pattern uses: literals, `.`, classes,
-  `\d\w\s` and their negations, groups including `(?:` and `(?P<name>`,
-  alternation, anchors, and `* + ? {n,m}`. It rejects what RE2 rejects within
+  `\d\w\s` and their negations, ASCII octal and hex escapes, groups including
+  `(?:` and named groups, alternation, anchors, and `* + ? {n,m}`, with Go's
+  rules for when a brace is a repeat. It rejects what RE2 rejects within
   that syntax, as Decision 0062 requires, and it stands down on valid syntax
-  outside it (flags, Unicode classes, word boundaries, octal and hex escapes) and
-  on a name outside ASCII. Standing down judges nothing, so Zig can be silent
+  outside it (flags, Unicode classes, word boundaries, `\Q…\E`, a character
+  outside ASCII) and on a name outside ASCII. It stands down by setting a flag
+  and reading on, so a syntax error later in the pattern is still invalid. Standing down judges nothing, so Zig can be silent
   where Go speaks but never contradicts it.
 
 - **Exact decimal comparison of a `fixed_result`.** Go decodes with
