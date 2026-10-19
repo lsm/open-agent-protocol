@@ -26,10 +26,12 @@ interaction carries:
 
 - each answer names a question the prompt offered;
 - each question is answered at most once;
-- every question the prompt marks `required` is answered;
-- an answer to a required question is not empty: a text answer carries text,
-  and a choice answer selects at least one option;
-- an answer to an optional question may be empty;
+- every question the prompt marks `required` is answered, and an optional one
+  may go unanswered;
+- an answer to a required text question carries text, and an answer to an
+  optional one may carry empty text;
+- a choice answer selects at least one option, which the schema already
+  requires, so an optional choice question left blank is one not answered;
 - a choice answer selects only options its question offered, and a
   single-choice answer selects at most one.
 
@@ -44,6 +46,5 @@ endpoint publishes.
 
 ## Consequences
 
-The trees stop requiring text on an optional question's answer, and stop
-requiring a selection on an optional choice question's answer. Everything else
-they already judged.
+The trees stop requiring text on an optional text question's answer.
+Everything else they already judged, and the answer schema is unchanged.
