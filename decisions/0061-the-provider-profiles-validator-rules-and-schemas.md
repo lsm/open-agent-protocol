@@ -1,6 +1,7 @@
 # Decision 0061: The Provider Profile's Validator Rules and Schemas
 
-Status: accepted 2026-10-19
+Status: accepted 2026-10-19 (the shared `usage` schema extended by
+[Decision 0063](0063-usage-counts-cache-and-reasoning-tokens.md))
 Date: 2026-10-19
 Protocol: `open-agent-protocol` version `0.1`
 Profile: `open-agent-protocol.model-provider-core`

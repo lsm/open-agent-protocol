@@ -37,11 +37,14 @@ counts one thing:
 - `total_tokens` is `input_tokens` + `cache_read_input_tokens` +
   `cache_write_input_tokens` + `output_tokens`.
 
-An absent member is unknown, not zero, as an absent `usage` already is. An
-adapter maps its harness's own convention into these meanings; a harness
-whose input figure includes cached tokens is reported with the cached part
-moved out, so an OpenAI-style prompt count becomes `input_tokens` minus the
-cached tokens it already counted. The same `usage` serves both profiles, so `inference.completed` and
+An absent member is unknown, not zero, as an absent `usage` already is. A
+harness that reports a total but not every term of it still has its total
+reported as `total_tokens`, provided it counts the same four kinds; an endpoint
+that cannot tell omits `total_tokens` rather than summing only the terms it
+has. An adapter maps its harness's own convention into these meanings: a
+harness whose input figure includes cached tokens is reported with the cached
+part moved out, so an OpenAI-style prompt count less its cached tokens becomes
+`input_tokens`. The same `usage` serves both profiles, so `inference.completed` and
 `inference.failed` gain the members too.
 
 ### The adapter cost extensions are deprecated
@@ -53,8 +56,11 @@ read the core members, and an adapter fills both meanwhile.
 
 ## Consequences
 
-- The `usage` schema in `common.schema.json` gains the three members, with
-  matching edits to `protocol/`, the three validators, a fixture and
-  `clients/ts/src/protocol.ts`.
+- The `usage` schema in `common.schema.json` gains the three members in this
+  change, with matching types in Go, Zig, Rust and `clients/ts`, a fixture
+  reporting all six and one a negative count breaks.
+- `go/internal/provider`'s Anthropic stream backfills an unreported total from
+  input and output alone, which this decision's sum overrules; it owes the
+  cache terms.
 - The Go opencode adapter reports cache and reasoning in core `usage`, and the
   claude adapter fills the cache members beside its extension.
