@@ -34,6 +34,7 @@ const claimed_cases = [_]Case{
     .{ .id = "model-per-turn", .path = "cases/model-per-turn", .ledger_fixture = "model-per-turn" },
     .{ .id = "structured-output", .path = "cases/structured-output", .ledger_fixture = "structured-output" },
     .{ .id = "structured-output-nonconforming", .path = "cases/structured-output-nonconforming", .ledger_fixture = "structured-output-nonconforming" },
+    .{ .id = "token-usage", .path = "cases/token-usage", .ledger_fixture = "token-usage" },
 };
 
 const thread_result = "{\"thread\":{\"id\":\"native-thread\"}}";

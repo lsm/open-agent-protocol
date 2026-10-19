@@ -41,6 +41,7 @@ var codexReducerFixtures = map[string]bool{
 	"model-per-turn":                  true,
 	"structured-output":               true,
 	"structured-output-nonconforming": true,
+	"token-usage":                     true,
 }
 
 type corpusManifest struct {

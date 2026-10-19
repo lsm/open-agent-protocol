@@ -25,9 +25,23 @@ fn as_go_reencodes(payload: &Value) -> Value {
                 !key.contains('.')
                     && !(*key == "features" && value.as_object().is_some_and(|map| map.is_empty()))
             })
-            .map(|(key, value)| (key.clone(), value.clone()))
+            .map(|(key, value)| (key.clone(), without_empty_lists(value)))
             .collect(),
     )
+}
+
+fn without_empty_lists(value: &Value) -> Value {
+    match value {
+        Value::Object(members) => Value::Object(
+            members
+                .iter()
+                .filter(|(_, member)| member.as_array().is_none_or(|list| !list.is_empty()))
+                .map(|(key, member)| (key.clone(), without_empty_lists(member)))
+                .collect(),
+        ),
+        Value::Array(items) => Value::Array(items.iter().map(without_empty_lists).collect()),
+        other => other.clone(),
+    }
 }
 
 fn reencoded(envelope_type: &str, payload: &Value) -> Option<Value> {
@@ -87,13 +101,30 @@ fn reencoded(envelope_type: &str, payload: &Value) -> Option<Value> {
         "session.compact.response" => round_trip::<SessionCompactResponse>(payload),
         "transcript.load.request" => round_trip::<TranscriptLoadRequest>(payload),
         "transcript.load.response" => round_trip::<TranscriptLoadResponse>(payload),
+        "session.open.request" => round_trip::<SessionOpenRequest>(payload),
+        "session.open.response" => round_trip::<SessionOpenResponse>(payload),
+        "session.state.request" => round_trip::<SessionStateRequest>(payload),
+        "session.state.response" | "session.state.updated" => {
+            round_trip::<SessionStateResponse>(payload)
+        }
+        "session.list.request" => round_trip::<SessionListRequest>(payload),
+        "session.list.response" => round_trip::<SessionListResponse>(payload),
+        "session.model.switch.request" => round_trip::<SessionModelSwitchRequest>(payload),
+        "session.model.switch.response" => round_trip::<SessionModelSwitchResponse>(payload),
+        "session.settings.update.request" => round_trip::<SessionSettingsUpdateRequest>(payload),
+        "session.settings.update.response" => round_trip::<SessionSettingsUpdateResponse>(payload),
+        "session.provider.attach.request" => round_trip::<SessionProviderAttachRequest>(payload),
+        "session.provider.attach.response" => round_trip::<SessionProviderAttachResponse>(payload),
+        "endpoint.shutdown.request" => round_trip::<EndpointShutdownRequest>(payload),
+        "endpoint.shutdown.response" => round_trip::<EndpointShutdownResponse>(payload),
+        "endpoint.shutdown.started" => round_trip::<EndpointShutdownStarted>(payload),
         "error.response" => round_trip::<ErrorResponse>(payload),
         _ => return None,
     })
 }
 
 #[test]
-fn every_run_interaction_auth_and_error_payload_in_the_positive_fixtures_round_trips() {
+fn every_core_payload_in_the_positive_fixtures_round_trips() {
     let manifest: Value =
         serde_json::from_slice(&std::fs::read(fixtures().join("manifest.json")).unwrap()).unwrap();
     let mut judged = 0;
@@ -118,7 +149,9 @@ fn every_run_interaction_auth_and_error_payload_in_the_positive_fixtures_round_t
                 continue;
             };
             judged += 1;
-            if back != as_go_reencodes(&envelope["payload"]) {
+            if without_empty_lists(&back)
+                != without_empty_lists(&as_go_reencodes(&envelope["payload"]))
+            {
                 differing.push(format!(
                     "{path} {envelope_type}\n  in  {}\n  out {back}",
                     envelope["payload"]
@@ -132,7 +165,7 @@ fn every_run_interaction_auth_and_error_payload_in_the_positive_fixtures_round_t
         differing.len(),
         differing.join("\n")
     );
-    assert!(judged >= 1500, "judged only {judged} payloads");
+    assert!(judged >= 1900, "judged only {judged} payloads");
 }
 
 #[test]
@@ -311,4 +344,49 @@ fn a_delivery_mode_names_its_feature_key() {
         RequestedDeliveryMode::QUEUE.feature_key(),
         FEATURE_DELIVERY_QUEUE
     );
+}
+
+#[test]
+fn an_open_message_submits_every_member_it_carries() {
+    let message: OpenMessage = serde_json::from_value(serde_json::json!({
+        "target_run_id": "r1",
+        "messages": [{"role": "user", "content": "go"}],
+        "delivery": "queue",
+        "model_id": "m",
+        "instructions": "be brief",
+        "tool_choice": {"allowed": ["read"]},
+        "output_schema": {"type": "object"},
+        "allow_degraded_features": ["run.instructions"],
+        "metadata": {"k": 1}
+    }))
+    .unwrap();
+    let mut submitted = serde_json::to_value(message.submit(SessionId::from("s1"))).unwrap();
+    assert_eq!(submitted["session_id"], "s1");
+    submitted.as_object_mut().unwrap().remove("session_id");
+    assert_eq!(submitted, serde_json::to_value(&message).unwrap());
+}
+
+#[test]
+fn a_run_position_spells_genesis_as_a_null_run() {
+    let genesis: RunPosition =
+        serde_json::from_value(serde_json::json!({"run_id": null, "sequence": 0})).unwrap();
+    assert!(genesis.genesis());
+    assert_eq!(
+        serde_json::to_value(&genesis).unwrap(),
+        serde_json::json!({"run_id": null, "sequence": 0})
+    );
+    let placed = RunPosition {
+        run_id: Some("r1".into()),
+        sequence: 4,
+    };
+    assert!(!placed.genesis());
+    assert_eq!(
+        serde_json::to_value(&placed).unwrap(),
+        serde_json::json!({"run_id": "r1", "sequence": 4})
+    );
+    let empty = RunPosition {
+        run_id: Some("".into()),
+        sequence: 0,
+    };
+    assert_eq!(serde_json::to_value(&empty).unwrap()["run_id"], Value::Null);
 }
