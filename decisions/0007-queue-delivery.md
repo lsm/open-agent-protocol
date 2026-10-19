@@ -2,7 +2,8 @@
 
 Status: accepted 2026-09-16 (174 `queue` fixtures; OpenCode executes
 `delivery:"queue"` with promotion natively. Nothing in the record is left
-pending)
+pending) (the `active_runs` requirement amended by
+[Decision 0057](0057-an-endpoint-that-puts-entries-there-advertises-the-queue.md))
 Date: 2026-09-16
 Protocol: `open-agent-protocol` version `0.1`
 Profile: `open-agent-protocol.agent-control-core`
@@ -272,10 +273,11 @@ each with its status, its 1-based `queue_position` when it is a reservation,
 the position it was captured at, and the unresolved interactions it is blocked
 on. `active_run_id` keeps naming the started run, or is absent when only
 reservations remain. The field is required wherever `active_run_id` cannot
-carry the answer — a reservation, an overlap, or, on an endpoint that puts
-entries there at all, a run whose recovery path needs an id only an entry
-holds — because an absent field reads to a reconnecting client as an empty
-queue.
+carry the answer — a reservation, an overlap, or, on an endpoint that
+advertises `session.message.delivery.queue`, a run whose recovery path needs an
+id only an entry holds, such as an unresolved interaction's
+([Decision 0057](0057-an-endpoint-that-puts-entries-there-advertises-the-queue.md))
+— because an absent field reads to a reconnecting client as an empty queue.
 
 State reads are not serialized with lifecycle publication and should not be. An
 interaction can resolve inside an endpoint before capture while the event

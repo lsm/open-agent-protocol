@@ -40,7 +40,7 @@ becomes a row.
 Behaviour no text states, or that the trees judge differently, is an open item
 rather than a row. Its id is `OPEN-<decision>-<n>`, numbered within the
 decision whose text it falls under, and it is described in
-`research/validator-divergences.md` (created with the first group that records
-one) with the options and a recommendation. A row that depends on one names it
+[`research/validator-divergences.md`](../../research/validator-divergences.md)
+with the options and a recommendation. A row that depends on one names it
 in its lines or implementation cells; the decision that settles it names it in
 its heading.
