@@ -25,7 +25,7 @@ One file per decision group, named for its first decision, as
 | rule | the obligation, as one normative sentence |
 | lines | the lines of the decision that state it, so a reader can check the sentence against its source |
 | code | the diagnostic a trace breaking it draws; a validator conforms when the set of codes it raises equals the set a fixture declares, so how many diagnostics one fault yields is not part of any rule |
-| Go, Zig, Rust | where each implementation judges it: a function, `yes` where one is known to and the function is not named, a pull request still open, or `—` |
+| Go, Zig, Rust | where each implementation judges it: a function on `main`, `yes` where one is known to and the function is not named, `` `fn` in #N (open) `` for a pull request not yet merged, or `—` |
 
 One row may name several implementation sites when they judge one obligation at
 different moments, such as an entry judged at the snapshot and a lead judged
