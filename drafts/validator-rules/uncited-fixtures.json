@@ -349,6 +349,7 @@
     "open-provide-no-source-listed-wrong-refusal",
     "open-provide-no-source-unlisted",
     "open-provide-refused-at-its-limit",
+    "open-provide-refused-name-partly-matching-pattern",
     "open-provide-refused-over-limit",
     "open-provide-refused-within-limits",
     "open-provide-two-tools",

@@ -5,7 +5,9 @@
     "control-call-recovered-ack-omitted",
     "models-current-mismatch",
     "models-held-position-moved-no-model",
-    "payload-decode-usage-past-the-integer-range"
+    "open-provide-refused-name-partly-matching-pattern",
+    "payload-decode-usage-past-the-integer-range",
+    "provide-name-pattern-not-re2"
   ],
   "rust": [
     "attach-advertised-without-modes",
@@ -138,6 +140,7 @@
     "open-sources-state-omits-attachment",
     "open-unadvertised-wrong-reason",
     "payload-decode-usage-past-the-integer-range",
+    "provide-name-pattern-not-re2",
     "provider-attach-accepted-without-session-live",
     "provider-attach-conflicting-alias",
     "provider-attach-degraded-refusal-wrong-code",
