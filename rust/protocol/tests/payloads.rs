@@ -16,6 +16,29 @@ fn round_trip<T: DeserializeOwned + Serialize>(payload: &Value) -> Value {
 
 fn reencoded(envelope_type: &str, payload: &Value) -> Option<Value> {
     Some(match envelope_type {
+        "run.cancel.request" => round_trip::<RunCancelRequest>(payload),
+        "run.cancel.response" => round_trip::<RunCancelResponse>(payload),
+        "run.started" => round_trip::<RunStartedPayload>(payload),
+        "run.status.updated" => round_trip::<RunStatusUpdatedPayload>(payload),
+        "content.delta" => round_trip::<ContentDeltaPayload>(payload),
+        "content.completed" => round_trip::<ContentCompletedPayload>(payload),
+        "run.completed" => round_trip::<RunCompletedPayload>(payload),
+        "run.failed" => round_trip::<RunFailedPayload>(payload),
+        "run.cancelled" => round_trip::<RunCancelledPayload>(payload),
+        "action.tools.list.request" => round_trip::<ToolsListRequest>(payload),
+        "action.tools.list.response" => round_trip::<ToolsListResponse>(payload),
+        "action.call.requested"
+        | "action.call.started"
+        | "action.call.progress"
+        | "action.call.completed"
+        | "action.call.failed"
+        | "action.call.cancelled" => round_trip::<ActionCallPayload>(payload),
+        "action.call.resolve.request" => round_trip::<ActionCallResolveRequest>(payload),
+        "action.call.resolve.response" => round_trip::<ActionCallResolveResponse>(payload),
+        "action.permission.requested" => round_trip::<PermissionRequestedPayload>(payload),
+        "action.permission.resolve.request" => round_trip::<PermissionResolveRequest>(payload),
+        "action.permission.resolve.response" => round_trip::<PermissionResolveResponse>(payload),
+        "action.permission.resolved" => round_trip::<PermissionResolvedPayload>(payload),
         "user.input.requested" => round_trip::<UserInputRequestedPayload>(payload),
         "user.input.resolve.request" => round_trip::<UserInputResolveRequest>(payload),
         "user.input.resolve.response" | "user.input.cancel.response" => {
@@ -23,13 +46,17 @@ fn reencoded(envelope_type: &str, payload: &Value) -> Option<Value> {
         }
         "user.input.resolved" => round_trip::<UserInputResolvedPayload>(payload),
         "user.input.cancel.request" => round_trip::<UserInputCancelRequest>(payload),
+        "run.steer.applied" => round_trip::<RunSteerAppliedPayload>(payload),
+        "run.steer.dropped" => round_trip::<RunSteerDroppedPayload>(payload),
+        "run.compaction.started" => round_trip::<RunCompactionStartedPayload>(payload),
+        "run.compaction.ended" => round_trip::<RunCompactionEndedPayload>(payload),
         "error.response" => round_trip::<ErrorResponse>(payload),
         _ => return None,
     })
 }
 
 #[test]
-fn every_interaction_and_error_payload_in_the_positive_fixtures_round_trips() {
+fn every_run_interaction_and_error_payload_in_the_positive_fixtures_round_trips() {
     let manifest: Value =
         serde_json::from_slice(&std::fs::read(fixtures().join("manifest.json")).unwrap()).unwrap();
     let mut judged = 0;
@@ -68,7 +95,7 @@ fn every_interaction_and_error_payload_in_the_positive_fixtures_round_trips() {
         differing.len(),
         differing.join("\n")
     );
-    assert!(judged >= 70, "judged only {judged} payloads");
+    assert!(judged >= 500, "judged only {judged} payloads");
 }
 
 #[test]
@@ -159,4 +186,35 @@ fn a_present_null_raw_member_is_kept() {
         serde_json::to_value(serde_json::from_value::<ContentPart>(part.clone()).unwrap()).unwrap(),
         part
     );
+}
+
+#[test]
+fn a_present_null_result_is_kept_and_counts_as_the_result_arm() {
+    let with_null = serde_json::json!({"session_id": "s", "run_id": "r", "tool_call_id": "t", "execution_owner": "agent", "result": null});
+    assert_eq!(round_trip::<ActionCallPayload>(&with_null), with_null);
+    let call: ActionCallResolveRequest =
+        serde_json::from_value(serde_json::json!({"result": null})).unwrap();
+    assert_eq!(call.arm(), Some(RESOLVE_ARM_RESULT));
+    let none: ActionCallResolveRequest = serde_json::from_value(serde_json::json!({})).unwrap();
+    assert_eq!(none.arm(), None);
+    let both: ActionCallResolveRequest = serde_json::from_value(
+        serde_json::json!({"started": {}, "error": {"code": "x", "message": "y"}}),
+    )
+    .unwrap();
+    assert_eq!(both.arm(), None);
+}
+
+#[test]
+fn the_highest_resolve_reason_is_the_earliest_on_the_ladder() {
+    let reasons = [
+        ResolveReason::LATE_ACKNOWLEDGEMENT,
+        ResolveReason::from("not_on_the_ladder"),
+        ResolveReason::WRONG_RESPONDER,
+    ];
+    assert_eq!(
+        ResolveReason::highest(&reasons),
+        Some(ResolveReason::WRONG_RESPONDER)
+    );
+    assert_eq!(ResolveReason::highest(&[ResolveReason::from("x")]), None);
+    assert_eq!(ResolveReason::UNKNOWN_INTERACTION.rank(), Some(0));
 }
