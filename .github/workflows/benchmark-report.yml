@@ -3,7 +3,8 @@ name: Benchmark Report
 on:
   # The report is informational and costs a Zig build and two benchmark captures,
   # so it runs only on a pull request carrying the `benchmark` label: adding the
-  # label starts it, and each later push re-runs it while the label stays.
+  # label starts it, and each later push re-runs it while the label stays. Adding
+  # any other label starts a run whose job is skipped.
   pull_request:
     types: [opened, synchronize, reopened, labeled]
 
@@ -11,19 +12,19 @@ permissions:
   actions: read
   contents: read
 
-concurrency:
-  # This workflow only runs for a pull request, so the number is the whole key: a
-  # newer push to that pull request cancels the report the previous push was
-  # still taking, which is minutes of runner time for output that is stale by
-  # the time it lands. The run-id fallback keeps a run that is not a pull
-  # request's in a group of its own rather than one it could be dropped from.
-  group: benchmark-report-${{ github.event_name }}-${{ github.event.pull_request.number || github.run_id }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
-
 jobs:
   report:
     name: Informational benchmark report
-    if: contains(github.event.pull_request.labels.*.name, 'benchmark')
+    if: >-
+      contains(github.event.pull_request.labels.*.name, 'benchmark') &&
+      (github.event.action != 'labeled' || github.event.label.name == 'benchmark')
+    concurrency:
+      # On the job, not the workflow, so a run whose job is skipped never takes
+      # the group: another label added to a pull request would otherwise cancel
+      # the report still capturing. One group per pull request, so a newer push
+      # cancels the report the previous push was still taking.
+      group: benchmark-report-${{ github.event.pull_request.number }}
+      cancel-in-progress: true
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     continue-on-error: true
