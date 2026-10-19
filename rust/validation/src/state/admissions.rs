@@ -35,7 +35,8 @@ impl State {
             last: at,
             ..run
         };
-        self.runs.insert(id, run);
+        self.runs.insert(id.clone(), run);
+        self.enter_order(&id);
     }
 
     pub(super) fn replay_cursor(&mut self, at: (usize, usize), e: &Envelope, run_id: &str) {
@@ -96,6 +97,7 @@ impl State {
                 let run = Run {
                     session: session.clone(),
                     started: !queued,
+                    admitted_queued: queued,
                     next,
                     status: entry.status.clone(),
                     interactions: entry
@@ -324,6 +326,19 @@ impl State {
             );
             return;
         }
+        let submitted = MessageSubmitResponse {
+            session_id: p.session_id.clone(),
+            run_id: p.run_id.clone(),
+            requested_delivery: p.requested_delivery.clone(),
+            effective_delivery: p.effective_delivery.clone(),
+            delivery_resolution: p.delivery_resolution.clone(),
+            admission: p.admission.clone(),
+            status: p.status.clone(),
+            ..MessageSubmitResponse::default()
+        };
+        if !self.queue_overlap(at, e, &submitted) {
+            self.queue_admission(at, e, &submitted);
+        }
         let session = s(&p.session_id);
         let run = Run {
             session: session.clone(),
@@ -331,9 +346,11 @@ impl State {
             admitted: true,
             status: RunStatus::QUEUED,
             last: at,
+            admitted_queued: queued,
             ..Run::default()
         };
         self.runs.insert(run_id.clone(), run);
+        self.enter_order(&run_id);
         if !queued
             && self
                 .active
