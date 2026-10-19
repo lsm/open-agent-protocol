@@ -46,8 +46,9 @@ The job outlives the call, the turn and the run that started it.
 
 A job ends at the first of these:
 
-- its command exits, and anything still in its process group is ended with it;
-- `ShellJob {task_id, kill: true}` ends it;
+- its command exits, and anything still in its process group is ended with it
+  at that moment, not when someone next looks;
+- `ShellJob {path, kill: true}` ends it;
 - its session closes, whether by a close request, by end of input, or by the
   endpoint's shutdown. A graceful shutdown does not wait for jobs; they end
   when the session closes, the same as a forced one.
@@ -62,11 +63,13 @@ it. Its output file stays in the workspace.
 
 ### 4. `ShellJob` reports and stops a job
 
-`ShellJob {task_id, kill?}` answers with the job's `status`. The status is
+`ShellJob {path, kill?}` names the job by the `output_path` its start returned,
+so the permission rules see a workspace path and a status check is the read it
+is. It answers with the job's `status` and `task_id`. The status is
 `running`, `exited` (with `exit_code`), `signalled` (with `signal`) or `killed`.
 The answer also carries the bytes written to the output file so far and the
 `output_path`. `kill: true` ends the job first, as rule 3 describes. A
-`task_id` the session never started is an error.
+path that names no job the session started is an error.
 
 ### 5. Background jobs are session state
 

@@ -241,15 +241,14 @@ pub fn spawnGroup(allocator: std.mem.Allocator, argv: []const []const u8, cwd: s
     return @intCast(child.id.?);
 }
 
-pub fn reapLeader(leader: std.posix.pid_t) !?std.process.Child.Term {
-    if (comptime builtin.os.tag == .windows) return null;
+pub fn waitLeader(leader: std.posix.pid_t) !std.process.Child.Term {
+    if (comptime builtin.os.tag == .windows) return error.Unsupported;
     var status: c_int = undefined;
     while (true) {
-        const result = std.posix.system.waitpid(leader, &status, std.posix.W.NOHANG);
+        const result = std.posix.system.waitpid(leader, &status, 0);
         switch (std.posix.errno(result)) {
-            .SUCCESS => return if (result == 0) null else statusToTerm(@bitCast(status)),
+            .SUCCESS => return statusToTerm(@bitCast(status)),
             .INTR => continue,
-            .CHILD => return null,
             else => |err| return std.posix.unexpectedErrno(err),
         }
     }

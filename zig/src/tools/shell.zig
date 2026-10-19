@@ -10,7 +10,7 @@ pub const schema_execute =
 ;
 
 pub const schema_job =
-    \\{"type":"object","properties":{"description":{"type":"string","description":"Why this tool call is needed and what information or change it is intended to produce."},"workspace_root":{"type":"string"},"task_id":{"type":"string"},"kill":{"type":"boolean"}},"required":["description","workspace_root","task_id"],"additionalProperties":false}
+    \\{"type":"object","properties":{"description":{"type":"string","description":"Why this tool call is needed and what information or change it is intended to produce."},"workspace_root":{"type":"string"},"path":{"type":"string","description":"The output_path the background Shell call returned."},"kill":{"type":"boolean"}},"required":["description","workspace_root","path"],"additionalProperties":false}
 ;
 
 const jobs_dir = ".oapx/jobs";
@@ -21,7 +21,7 @@ pub const Jobs = struct {
     allocator: std.mem.Allocator,
     mutex: std.atomic.Mutex = .unlocked,
     next: u64 = 0,
-    list: std.ArrayList(Job) = .empty,
+    list: std.ArrayList(*Job) = .empty,
 
     const Job = struct {
         id: []u8,
@@ -30,6 +30,7 @@ pub const Jobs = struct {
         leader: std.posix.pid_t,
         term: ?std.process.Child.Term = null,
         killed: bool = false,
+        watcher: ?std.Thread = null,
     };
 
     pub const Started = struct { task_id: []const u8, output_path: []const u8 };
@@ -53,6 +54,7 @@ pub const Jobs = struct {
             self.allocator.free(job.id);
             self.allocator.free(job.output);
             self.allocator.free(job.workspace_root);
+            self.allocator.destroy(job);
         }
         self.list.deinit(self.allocator);
         self.* = undefined;
@@ -69,7 +71,6 @@ pub const Jobs = struct {
         self.lock();
         defer self.mutex.unlock();
         try self.list.ensureUnusedCapacity(self.allocator, 1);
-        self.reapSettled();
         self.next += 1;
         var entropy: [6]u8 = undefined;
         compat.random.fillSecureBytes(&entropy);
@@ -79,25 +80,39 @@ pub const Jobs = struct {
         errdefer self.allocator.free(output);
         const root = try self.allocator.dupe(u8, workspace_root);
         errdefer self.allocator.free(root);
+        const job = try self.allocator.create(Job);
+        errdefer self.allocator.destroy(job);
         const argv = [_][]const u8{ "/bin/sh", "-c", "exec >\"$0\" 2>&1 </dev/null; exec /bin/sh -c \"$1\"", output, command };
         const leader = try process_runner.spawnGroup(scratch, &argv, .{ .dir = dir });
-        self.list.appendAssumeCapacity(.{ .id = id, .output = output, .workspace_root = root, .leader = leader });
+        job.* = .{ .id = id, .output = output, .workspace_root = root, .leader = leader };
+        job.watcher = std.Thread.spawn(.{}, watch, .{ self, job }) catch |err| {
+            process_runner.endGroup(leader);
+            _ = process_runner.waitLeader(leader) catch {};
+            return err;
+        };
+        self.list.appendAssumeCapacity(job);
         return .{ .task_id = id, .output_path = output };
     }
 
-    pub fn report(self: *Jobs, task_id: []const u8, kill: bool) !Report {
+    fn watch(self: *Jobs, job: *Job) void {
+        const term = process_runner.waitLeader(job.leader) catch std.process.Child.Term{ .unknown = 0 };
+        self.lock();
+        job.term = term;
+        self.mutex.unlock();
+        process_runner.endGroup(job.leader);
+    }
+
+    pub fn report(self: *Jobs, output_path: []const u8, kill: bool) !Report {
+        self.lock();
+        const job = self.find(output_path) orelse {
+            self.mutex.unlock();
+            return error.UnknownJob;
+        };
+        if (kill and job.term == null) job.killed = true;
+        self.mutex.unlock();
+        if (kill) self.end(job);
         self.lock();
         defer self.mutex.unlock();
-        const job = self.find(task_id) orelse return error.UnknownJob;
-        if (kill) {
-            job.killed = job.term == null;
-            end(job);
-        } else if (job.term == null) {
-            if (try process_runner.reapLeader(job.leader)) |term| {
-                job.term = term;
-                process_runner.endGroup(job.leader);
-            }
-        }
         return .{
             .task_id = job.id,
             .status = if (job.term == null) "running" else if (job.killed) "killed" else switch (job.term.?) {
@@ -119,36 +134,24 @@ pub const Jobs = struct {
 
     pub fn endAll(self: *Jobs) void {
         self.lock();
-        defer self.mutex.unlock();
-        for (self.list.items) |*job| end(job);
+        const jobs = self.list.items;
+        self.mutex.unlock();
+        for (jobs) |job| self.end(job);
     }
 
-    fn reapSettled(self: *Jobs) void {
-        for (self.list.items) |*job| {
-            if (job.term != null) continue;
-            if (process_runner.reapLeader(job.leader) catch null) |term| {
-                job.term = term;
-                process_runner.endGroup(job.leader);
-            }
-        }
-    }
-
-    fn find(self: *Jobs, task_id: []const u8) ?*Job {
-        for (self.list.items) |*job| if (std.mem.eql(u8, job.id, task_id)) return job;
+    fn find(self: *Jobs, output_path: []const u8) ?*Job {
+        for (self.list.items) |job| if (std.mem.eql(u8, job.output, output_path)) return job;
         return null;
     }
 
-    fn end(job: *Job) void {
-        if (job.term != null) return;
-        process_runner.endGroup(job.leader);
-        var waited: u64 = 0;
-        while (waited < 2_000) : (waited += 10) {
-            if (process_runner.reapLeader(job.leader) catch null) |term| {
-                job.term = term;
-                return;
-            }
-            compat.time.sleepMs(10);
-        }
+    fn end(self: *Jobs, job: *Job) void {
+        self.lock();
+        const settled = job.term != null;
+        const watcher = job.watcher;
+        job.watcher = null;
+        self.mutex.unlock();
+        if (!settled) process_runner.endGroup(job.leader);
+        if (watcher) |thread| thread.join();
     }
 
     fn outputBytes(job: Job) u64 {
@@ -266,7 +269,7 @@ pub fn sessionTools(jobs: *Jobs) [2]agent.AgentTool {
     return .{ shell_tool, .{
         .label = "Shell job",
         .name = job_tool_name,
-        .description = "Report a background job started with Shell run_in_background: running, or its exit code or signal, with the bytes written to its output file. kill: true ends the job and everything it started.",
+        .description = "Report a background job started with Shell run_in_background, named by the output_path that call returned: running, or its exit code or signal, with the bytes written to its output file. kill: true ends the job and everything it started.",
         .short_description = "Check or stop a background shell job.",
         .parameters_schema_json = schema_job,
         .execute = unavailableJob,
@@ -289,7 +292,7 @@ fn executeJob(ctx: ?*anyopaque, tool_call_id: []const u8, args_json: []const u8,
     var parsed = try common.parseArgs(allocator, args_json);
     defer parsed.deinit();
     const obj = parsed.value.object;
-    const reported = try jobs.report(try common.requiredString(obj, "task_id"), common.optionalBool(obj, "kill", false));
+    const reported = try jobs.report(try common.requiredString(obj, "path"), common.optionalBool(obj, "kill", false));
     const details = try common.jsonString(allocator, reported);
     errdefer allocator.free(details);
     const text = try allocator.dupe(u8, details);
@@ -307,7 +310,7 @@ fn executeIn(ctx: ?*anyopaque, tool_call_id: []const u8, args_json: []const u8, 
     const started = try jobs.start(allocator, try common.requiredString(obj, "workspace_root"), try common.requiredString(obj, "command"));
     const details = try common.jsonString(allocator, .{ .ok = true, .task_id = started.task_id, .output_path = started.output_path });
     errdefer allocator.free(details);
-    const text = try std.fmt.allocPrint(allocator, "started background job {s}; its stdout and stderr go to {s}. Read that file for output, and use ShellJob to check or stop the job. It ends when the session closes.", .{ started.task_id, started.output_path });
+    const text = try std.fmt.allocPrint(allocator, "started background job {s}; its stdout and stderr go to {s}. Read that file for output, and pass its path to ShellJob to check or stop the job. It ends when the session closes.", .{ started.task_id, started.output_path });
     errdefer allocator.free(text);
     return common.makeTextResultOwned(allocator, text, details);
 }
@@ -784,7 +787,7 @@ test "a background job outlives its call, its output is readable while it runs, 
     try std.testing.expect(std.mem.indexOf(u8, result.getDetailsJson().?, output_path) != null);
 
     try waitForOutput(&case, output_path, "tick 3");
-    const running = try jobs.report(jobs.list.items[0].id, false);
+    const running = try jobs.report(output_path, false);
     try std.testing.expectEqualStrings("running", running.status);
     try std.testing.expect(running.bytes > 0);
 
@@ -815,18 +818,42 @@ test "ShellJob reports a finished job's exit code and ends a running one on kill
     var second = try tools[0].runtime_execute.?(tools[0].runtime_ctx, "call-slow", slow, null, null, null, std.testing.allocator);
     defer second.deinit(std.testing.allocator);
 
-    const quick_id = jobs.list.items[0].id;
+    const quick_path = jobs.list.items[0].output;
     const by = common.nowMs() + 5_000;
-    var reported = try jobs.report(quick_id, false);
-    while (std.mem.eql(u8, reported.status, "running") and common.nowMs() < by) : (reported = try jobs.report(quick_id, false)) compat.time.sleepMs(20);
+    var reported = try jobs.report(quick_path, false);
+    while (std.mem.eql(u8, reported.status, "running") and common.nowMs() < by) : (reported = try jobs.report(quick_path, false)) compat.time.sleepMs(20);
     try std.testing.expectEqualStrings("exited", reported.status);
     try std.testing.expectEqual(@as(?u8, 3), reported.exit_code);
 
-    const kill_args = try std.fmt.allocPrint(std.testing.allocator, "{{\"workspace_root\":\"{s}\",\"task_id\":\"{s}\",\"kill\":true}}", .{ case.root, jobs.list.items[1].id });
+    const kill_args = try std.fmt.allocPrint(std.testing.allocator, "{{\"workspace_root\":\"{s}\",\"path\":\"{s}\",\"kill\":true}}", .{ case.root, jobs.list.items[1].output });
     defer std.testing.allocator.free(kill_args);
     var killed = try tools[1].runtime_execute.?(tools[1].runtime_ctx, "call-kill", kill_args, null, null, null, std.testing.allocator);
     defer killed.deinit(std.testing.allocator);
     try std.testing.expect(std.mem.indexOf(u8, killed.getDetailsJson().?, "\"status\":\"killed\"") != null);
+}
+
+test "a job whose command exits ends what it left running at once, without being polled" {
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
+    var case = try Case.init();
+    defer case.deinit();
+    var jobs = Jobs.init(std.testing.allocator);
+    defer jobs.deinit();
+    const tools = sessionTools(&jobs);
+    const args = try backgroundArgs(&case, "(while true; do echo tick; sleep 0.05; done) & sleep 0.3; exit 0");
+    defer std.testing.allocator.free(args);
+    var result = try tools[0].runtime_execute.?(tools[0].runtime_ctx, "call-leaves", args, null, null, null, std.testing.allocator);
+    defer result.deinit(std.testing.allocator);
+    const output_path = try std.testing.allocator.dupe(u8, jobs.list.items[0].output);
+    defer std.testing.allocator.free(output_path);
+
+    try waitForOutput(&case, output_path, "tick");
+    compat.time.sleepMs(800);
+    const settled = try case.tmp.dir.readFileAlloc(common.defaultIo(), output_path, std.testing.allocator, .limited(1 << 20));
+    defer std.testing.allocator.free(settled);
+    compat.time.sleepMs(300);
+    const later = try case.tmp.dir.readFileAlloc(common.defaultIo(), output_path, std.testing.allocator, .limited(1 << 20));
+    defer std.testing.allocator.free(later);
+    try std.testing.expectEqual(settled.len, later.len);
 }
 
 test "the shell tool outside a session refuses a background job rather than running it in the foreground" {
