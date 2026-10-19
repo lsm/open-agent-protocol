@@ -1,6 +1,7 @@
 mod answer;
 mod contract;
 mod error;
+pub mod journal;
 mod refuse;
 
 use oap_protocol::{
