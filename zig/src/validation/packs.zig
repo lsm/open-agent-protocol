@@ -358,6 +358,7 @@ fn checkCorpus(io: std.Io, allocator: std.mem.Allocator, descriptors: []const De
         error.OutOfMemory => return error.OutOfMemory,
         else => return out.append(allocator, .{ .code = "", .pack = pack.id, .detail = path }),
     };
+    if (!shapedManifest(manifest)) return out.append(allocator, .{ .code = "", .pack = pack.id, .detail = path });
     const own = try unitOf(allocator, pack);
     for (items(manifest, "fixtures")) |entry| {
         const units = items(entry, "units");
@@ -379,6 +380,31 @@ fn checkCorpus(io: std.Io, allocator: std.mem.Allocator, descriptors: []const De
             if (!coveredUnder(manifest, name, aspect, own)) return out.append(allocator, .{ .code = "", .pack = pack.id, .detail = name });
         }
     }
+}
+
+fn shapedManifest(manifest: std.json.Value) bool {
+    if (manifest != .object) return false;
+    const fixtures = field(manifest, "fixtures") orelse return true;
+    if (fixtures != .array) return false;
+    for (fixtures.array.items) |entry| {
+        if (entry != .object) return false;
+        if (!stringsOnly(field(entry, "units"))) return false;
+        const covers = field(entry, "covers") orelse continue;
+        if (covers != .array) return false;
+        for (covers.array.items) |cover| {
+            if (cover != .object or stringField(cover, "capability") == null or stringField(cover, "aspect") == null) return false;
+        }
+    }
+    return true;
+}
+
+fn stringsOnly(listed: ?std.json.Value) bool {
+    const held = listed orelse return true;
+    if (held != .array) return false;
+    for (held.array.items) |item| {
+        if (item != .string) return false;
+    }
+    return true;
 }
 
 fn coveredUnder(manifest: std.json.Value, capability: []const u8, aspect: []const u8, unit: []const u8) bool {
@@ -1613,12 +1639,17 @@ test "a pack's corpus proves its own capability keys under its own unit, and not
     const keyed =
         \\{"id": "com.example.keyed", "version": "1.0.0", "capability_keys": ["com.example.keyed.thing"], "envelope_types": []
     ;
+    const unkeyed =
+        \\{"id": "com.example.unkeyed", "version": "1.0.0", "envelope_types": [], "fixtures": "manifest.json"}
+    ;
     const gate_only =
         \\{"version": 1, "fixtures": [{"id": "keyed-gate", "path": "t.json", "kind": "semantic-invalid", "valid": false, "phase": "semantic", "codes": ["unavailable_capability"], "units": ["ext:com.example.keyed/1.0.0"], "covers": [{"capability": "com.example.keyed.thing", "aspect": "gate"}], "provenance": []}]}
     ;
     const cases = [_]struct { dir: []const u8, descriptor: []const u8, manifest: ?[]const u8 }{
         .{ .dir = "keys-no-manifest", .descriptor = keyed ++ "}", .manifest = null },
         .{ .dir = "keys-gate-only", .descriptor = keyed ++ ", \"fixtures\": \"manifest.json\"}", .manifest = gate_only },
+        .{ .dir = "units-not-strings", .descriptor = unkeyed, .manifest = "{\"version\": 1, \"fixtures\": [{\"id\": \"x\", \"units\": [5]}]}" },
+        .{ .dir = "root-not-object", .descriptor = unkeyed, .manifest = "[]" },
     };
     for (cases) |c| {
         try tmp.dir.createDir(std.testing.io, c.dir, .default_dir);
