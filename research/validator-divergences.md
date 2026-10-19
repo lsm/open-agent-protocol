@@ -59,17 +59,18 @@ from the pair being session- and run-scoped, and are drafted in
 **What differs.** Go refuses a `tools` array naming a tool outside a disclosed
 `name_pattern` as a limit violation (`controltools.go:provideLimitViolation`).
 Zig reads `max_tools` and `schema_dialect` but not `name_pattern`
-(`semantic.zig:provideLimitViolation`). So an endpoint that correctly refuses
-an out-of-pattern name is `undisclosed_provide_limit` in Zig and conforming in
-Go.
+(`semantic.zig:provideLimitViolation`).
 
 **Decision text.** 0011 § The capability discloses its limits lists
-`name_pattern` among the limits a refusal may rely on.
+`name_pattern` among the limits a refusal may rely on. 0019 § A rule the port
+cannot reach is recorded, not approximated, already records this as a
+deliberate Zig omission. Zig has no regex engine, a hand-written subset would
+diverge from RE2, and no fixture discloses `name_pattern`.
 
-**Options.** (a) Zig compiles the pattern and judges it as Go does. (b) Zig
-stands the rule down when a `name_pattern` is disclosed, neither convicting the
-refusal nor requiring it.
+**Options.** (a) Vendor an RE2-compatible engine in Zig, which 0019 calls its
+own decision. (b) Pin the pattern dialect to a subset both trees can decide,
+and amend 0011.
 
-**Recommendation.** (a) if Zig has a regex engine to use. Otherwise (b), with
-the pattern dialect pinned first. Go uses RE2 and the decision names no
-dialect, which is itself an open question.
+**Recommendation.** Keep 0019's record and leave the item open until an engine
+is chosen. The rule row cites 0011, and the Zig column says it does not judge
+the pattern.

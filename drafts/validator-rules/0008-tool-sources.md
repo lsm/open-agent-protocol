@@ -99,4 +99,4 @@ the owner-change `scope_mismatch`) are 0001's and belong to the core rules.
   requires a session-scoped catalog to name its session on the envelope, and
   only Go checks `tool_call_id` on the resolve pair.
 - [OPEN-0011-1](../../research/validator-divergences.md#open-0011-1): Zig does
-  not read a disclosed `name_pattern`.
+  not read a disclosed `name_pattern`, as 0019 records.
