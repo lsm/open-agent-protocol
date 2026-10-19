@@ -395,8 +395,8 @@ one that lists a restored run on an unrecovered reopen.
 ## Model provider profile (0016, 0030)
 
 Rules: [`0016-provider.md`](../drafts/validator-rules/0016-provider.md). Go
-and Zig judge all six items alike over the provider corpus, the sixth through
-the schema, and Rust has no provider validator. No item is a disagreement
+and Zig judge all seven items alike over the provider corpus, the sixth and
+seventh through the schema, and Rust has no provider validator. No item is a disagreement
 between trees. Each is a rule that only [`drafts/model-provider-core.md`](../drafts/model-provider-core.md)
 states, because Decision 0016 leaves the profile's validator rules to a later
 decision (0016 L187–195). The recommendation throughout is to adopt the draft's
@@ -487,3 +487,23 @@ is true (`provider-envelope.schema.json`, fixture
 
 Recommendation: (a). The rule is decidable from one frame, and the provider
 corpus judges frame-scoped defects through the schema.
+
+### OPEN-0016-7: do the provider schemas bind?
+
+Decision 0016 leaves the profile's schemas, and not only its validator rules,
+to a later decision (L187–195). Both trees still judge every provider frame
+against `schema/v0.1/provider-envelope.schema.json` and the schemas it
+references, and 16 fixtures under `fixtures/provider/schema-invalid/` pin what
+that rejects. Among them, `tool-call-start-without-identity` and
+`text-start-carrying-identity` pin the draft's conformance item 5
+(L1866–1869), and `error-code-outside-the-set` pins its closed error-code set.
+Item 6 is one of these constraints, listed apart because the draft states it
+as a rule of its own.
+
+- (a) Adopt the provider schemas as they stand on main as normative for the
+  profile.
+- (b) Adopt them constraint by constraint, one item per fixture.
+
+Recommendation: (a). The schemas and the draft were written together, and
+both trees already apply them whole. Any constraint a later reading finds the
+draft does not support becomes an item of its own then.

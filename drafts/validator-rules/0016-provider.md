@@ -9,10 +9,13 @@ This group has no rows. Decision 0016 is proposed, and it leaves the profile's
 schemas and validator rules to "the next decision" (0016 L187–195). Decision
 0030, also proposed, binds the HTTP transport and states no trace rule. Every
 provider rule the trees judge is therefore written only in
-[`drafts/model-provider-core.md`](../model-provider-core.md), and each is an
-open item in
+[`drafts/model-provider-core.md`](../model-provider-core.md) and in the
+provider schemas, and is an open item in
 [`research/validator-divergences.md`](../../research/validator-divergences.md#model-provider-profile-0016-0030)
-until a decision adopts it:
+until a decision adopts it. Items 1–5 are the six semantic codes. Item 6 is one
+schema constraint the draft states as a rule of its own. Item 7 is every other
+constraint of the provider schemas, which the 16 fixtures under
+`fixtures/provider/schema-invalid/` exercise:
 
 | item | draft | code | Go | Zig |
 | --- | --- | --- | --- | --- |
@@ -22,3 +25,4 @@ until a decision adopts it:
 | OPEN-0016-4 | per-inference `sequence` opens at 1 and is contiguous (L260–263, L1864–1865) | `sequence_gap`, `sequence_regression` | `Validate` | `Machine.apply` |
 | OPEN-0016-5 | no scoped event after a terminal (L667–668, L1861) | `event_after_terminal` | `Validate` | `Machine.apply` |
 | OPEN-0016-6 | a refused `inference.create.response` carries no `inference_id` (L653–656, L1861–1862) | `schema_invalid` | schema | schema |
+| OPEN-0016-7 | `provider.schema.json`, `provider-envelope.schema.json` and the inference schema bind the profile's frames (draft § Envelope Types, L1866–1869 among them) | `schema_invalid` | schema | schema |
