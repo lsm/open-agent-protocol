@@ -53,7 +53,14 @@ macro_rules! id {
     )+};
 }
 
-id!(SessionId, RunId, EnvelopeId, InteractionId, MessageId);
+id!(
+    SessionId,
+    RunId,
+    EnvelopeId,
+    InteractionId,
+    MessageId,
+    ToolCallId
+);
 
 fn s<T: Id>(id: &T) -> String {
     id.text().to_owned()
@@ -551,6 +558,7 @@ impl State {
             (request_scope(e).0, String::new())
         } else if [
             EnvelopeType::RUN_CANCEL_RESPONSE,
+            EnvelopeType::ACTION_CALL_RESOLVE_RESPONSE,
             EnvelopeType::ACTION_PERMISSION_RESOLVE_RESPONSE,
             EnvelopeType::USER_INPUT_RESOLVE_RESPONSE,
             EnvelopeType::USER_INPUT_CANCEL_RESPONSE,
@@ -560,6 +568,7 @@ impl State {
             response_scope(e)
         } else if [
             EnvelopeType::RUN_CANCEL_REQUEST,
+            EnvelopeType::ACTION_CALL_RESOLVE_REQUEST,
             EnvelopeType::ACTION_PERMISSION_RESOLVE_REQUEST,
             EnvelopeType::USER_INPUT_RESOLVE_REQUEST,
             EnvelopeType::USER_INPUT_CANCEL_REQUEST,
@@ -571,6 +580,27 @@ impl State {
             return;
         };
         self.check_scope(at, e, &session, &run);
+        let call = if *t == EnvelopeType::ACTION_CALL_RESOLVE_REQUEST {
+            Some(s(&payload::<ActionCallResolveRequest>(e).tool_call_id))
+        } else if *t == EnvelopeType::ACTION_CALL_RESOLVE_RESPONSE {
+            Some(s(&payload::<ActionCallResolveResponse>(e).tool_call_id))
+        } else {
+            None
+        };
+        let envelope_call = os(&e.tool_call_id);
+        if let Some(call) = call.filter(|call| !envelope_call.is_empty() && *call != envelope_call)
+        {
+            self.add_expected(
+                codes::SCOPE_MISMATCH,
+                at,
+                e,
+                "/payload/tool_call_id",
+                "envelope and payload tool_call_id differ",
+                &envelope_call,
+                &call,
+                &[],
+            );
+        }
     }
 
     pub fn close(&mut self) {
@@ -628,5 +658,55 @@ mod tests {
                 "{interaction}: {raised:?}"
             );
         }
+    }
+
+    #[test]
+    fn a_call_resolution_whose_envelope_names_another_session_run_or_call_is_a_scope_mismatch_both_ways(
+    ) {
+        let payload = serde_json::json!({
+            "interaction_id": "i", "session_id": "s", "run_id": "r", "tool_call_id": "t",
+            "requested_by": "agent", "responded_by": "control", "started": {}
+        });
+        let request = |session: &str, run: &str, call: &str| {
+            envelope(serde_json::json!({
+                "type": "action.call.resolve.request", "id": "c1", "session_id": session, "run_id": run,
+                "tool_call_id": call, "payload": payload
+            }))
+        };
+        let response = |call: &str| {
+            envelope(serde_json::json!({
+                "type": "action.call.resolve.response", "id": "c2", "in_reply_to": "c1", "tool_call_id": call,
+                "payload": {"interaction_id": "i", "session_id": "s", "run_id": "r", "tool_call_id": "t", "accepted": true}
+            }))
+        };
+        let pointers = |request: Envelope, response: Envelope| {
+            let mut state = State::new("t");
+            state.apply(0, 0, &request);
+            state.apply(1, 0, &response);
+            let mut found: Vec<String> = state
+                .diagnostics
+                .iter()
+                .map(|d| d.pointer.clone())
+                .collect();
+            found.sort();
+            found
+        };
+        assert!(pointers(request("s", "r", "t"), response("t")).is_empty());
+        assert_eq!(
+            pointers(request("x", "r", "t"), response("t")),
+            ["/payload/session_id", "/payload/session_id"]
+        );
+        assert_eq!(
+            pointers(request("s", "x", "t"), response("t")),
+            ["/payload/run_id", "/payload/run_id"]
+        );
+        assert_eq!(
+            pointers(request("s", "r", "x"), response("t")),
+            ["/payload/tool_call_id"]
+        );
+        assert_eq!(
+            pointers(request("s", "r", "t"), response("x")),
+            ["/payload/tool_call_id"]
+        );
     }
 }
