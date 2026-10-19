@@ -10,9 +10,11 @@ Amends: [Decision 0001](0001-agent-control-v0.1-executable-core.md),
 
 ## Context
 
-The validator rule register found behaviour every tree judged and no text
-stated: the rules an implementation of the executable core was expected to know
-without being told. [Decision 0054](0054-register-batch-1.md) settled the first
+The validator rule register being assembled under `drafts/validator-rules/`
+found behaviour every tree judged and no text stated: the rules an
+implementation of the executable core was expected to know without being told.
+Each was recorded as an open item, numbered as in the headings below, rather
+than copied from whichever tree had it. [Decision 0054](0054-register-batch-1.md) settled the first
 batch. This one settles the second, except input answers, which
 [Decision 0056](0056-input-answers-are-judged-against-the-prompt.md) takes on
 its own. Each answer is written into the decision it belongs to.
