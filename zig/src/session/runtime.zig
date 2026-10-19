@@ -46,10 +46,13 @@ pub const RemoteSettings = struct {
 
 pub const ShutdownMode = enum { graceful, force };
 
-pub const Shutdown = union(enum) {
-    choose: usize,
-    draining: usize,
-    stopping,
+pub const Shutdown = struct {
+    outcome: Outcome,
+    active_runs: usize = 0,
+    awaiting_input: usize = 0,
+    lost: usize = 0,
+
+    pub const Outcome = enum { choose, draining, stopping };
 };
 
 pub const ToolLabel = struct {

@@ -83,8 +83,13 @@ pub const OapExecution = struct {
     closed_messages: usize = 0,
     awaiting_promotion: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
     cancelling: bool = false,
-    shutdown_answer: ?session_runtime.Shutdown = null,
+    shutdown_answer: ?ShutdownAnswer = null,
     shut_down: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
+
+    const ShutdownAnswer = union(enum) {
+        answered: session_runtime.Shutdown,
+        refused,
+    };
 
     const QueuedRun = struct {
         text: []u8,
@@ -1251,7 +1256,10 @@ pub const OapExecution = struct {
             const answer = self.shutdown_answer;
             self.shutdown_answer = null;
             self.inbound_mutex.unlock();
-            if (answer) |held| return held;
+            if (answer) |held| return switch (held) {
+                .answered => |shutdown_state| shutdown_state,
+                .refused => error.OapRequestRefused,
+            };
             compat.time.sleepNs(std.time.ns_per_ms);
         }
         return error.OapRequestUnanswered;
@@ -1261,7 +1269,7 @@ pub const OapExecution = struct {
         return cast(ctx).shut_down.load(.acquire);
     }
 
-    fn answerShutdown(self: *OapExecution, answer: session_runtime.Shutdown) void {
+    fn answerShutdown(self: *OapExecution, answer: ShutdownAnswer) void {
         self.lockInbound();
         defer self.inbound_mutex.unlock();
         self.shutdown_answer = answer;
@@ -1423,16 +1431,23 @@ pub const OapExecution = struct {
         const kind = stringOf(root, "type") orelse return;
         const payload = if (root.get("payload")) |value| (if (value == .object) value.object else null) else null;
         if (std.mem.eql(u8, kind, "endpoint.shutdown.response")) {
-            const body = payload orelse return self.answerShutdown(.stopping);
-            const runs = if (body.get("active_runs")) |listed| (if (listed == .array) listed.array.items.len else 0) else 0;
-            const outcome = stringOf(body, "outcome") orelse "";
-            if (std.mem.eql(u8, outcome, "choose")) return self.answerShutdown(.{ .choose = runs });
-            if (std.mem.eql(u8, outcome, "draining")) return self.answerShutdown(.{ .draining = runs });
-            return self.answerShutdown(.stopping);
+            const body = payload orelse return self.answerShutdown(.refused);
+            const outcome = std.meta.stringToEnum(session_runtime.Shutdown.Outcome, stringOf(body, "outcome") orelse "") orelse return self.answerShutdown(.refused);
+            var answer = session_runtime.Shutdown{ .outcome = outcome, .lost = listedCount(body, "lost") };
+            if (body.get("active_runs")) |listed| if (listed == .array) {
+                answer.active_runs = listed.array.items.len;
+                for (listed.array.items) |active| {
+                    if (active != .object) continue;
+                    if (active.object.get("pending_interactions")) |pending| if (pending == .array and pending.array.items.len > 0) {
+                        answer.awaiting_input += 1;
+                    };
+                }
+            };
+            return self.answerShutdown(.{ .answered = answer });
         }
         if (std.mem.eql(u8, kind, "error.response")) {
             const reply_to = stringOf(root, "in_reply_to") orelse "";
-            if (std.mem.startsWith(u8, reply_to, "shutdown-")) return self.answerShutdown(.stopping);
+            if (std.mem.startsWith(u8, reply_to, "shutdown-")) return self.answerShutdown(.refused);
             const message = if (payload) |body| errorMessage(body) else "the endpoint refused the request";
             if (std.mem.startsWith(u8, reply_to, "settings-")) {
                 self.lockInbound();
@@ -1824,6 +1839,11 @@ fn advertisesLive(described: std.json.Value, key: []const u8) bool {
         if (mode == .string and std.mem.eql(u8, mode.string, "session_live")) return true;
     }
     return false;
+}
+
+fn listedCount(object: std.json.ObjectMap, key: []const u8) usize {
+    const value = object.get(key) orelse return 0;
+    return if (value == .array) value.array.items.len else 0;
 }
 
 fn stringOf(object: std.json.ObjectMap, key: []const u8) ?[]const u8 {
@@ -2254,9 +2274,9 @@ test "a shutdown over the in-process endpoint asks while a run is active, then d
 
     try runtime.submitTurn("wait");
     waitForRun(execution);
-    try testing.expectEqual(@as(?session_runtime.Shutdown, .{ .choose = 1 }), try runtime.shutdown(null));
+    try testing.expectEqual(@as(?session_runtime.Shutdown, .{ .outcome = .choose, .active_runs = 1 }), try runtime.shutdown(null));
     try testing.expect(!runtime.shutdownComplete());
-    try testing.expectEqual(@as(?session_runtime.Shutdown, .{ .draining = 1 }), try runtime.shutdown(.graceful));
+    try testing.expectEqual(@as(?session_runtime.Shutdown, .{ .outcome = .draining, .active_runs = 1 }), try runtime.shutdown(.graceful));
     try testing.expect(!runtime.shutdownComplete());
     runtime.cancel();
     var cancelled = Seen{};
@@ -2274,7 +2294,7 @@ test "a forced shutdown over the in-process endpoint stops at once with a run st
 
     try runtime.submitTurn("wait");
     waitForRun(execution);
-    try testing.expectEqual(@as(?session_runtime.Shutdown, .stopping), try runtime.shutdown(.force));
+    try testing.expectEqual(@as(?session_runtime.Shutdown, .{ .outcome = .stopping, .active_runs = 1 }), try runtime.shutdown(.force));
     try testing.expect(waitForShutdown(&runtime));
     runtime.cancel();
 }
@@ -2290,8 +2310,25 @@ test "a shutdown with nothing running over the in-process endpoint stops without
     var seen = Seen{};
     defer seen.deinit();
     try drainTurn(&runtime, &seen);
-    try testing.expectEqual(@as(?session_runtime.Shutdown, .stopping), try runtime.shutdown(null));
+    try testing.expectEqual(@as(?session_runtime.Shutdown, .{ .outcome = .stopping }), try runtime.shutdown(null));
     try testing.expect(waitForShutdown(&runtime));
+}
+
+test "a shutdown answer counts the runs waiting on the user and the prompts it lost, and a refusal is never taken for consent" {
+    var script = Script{};
+    var execution: *OapExecution = undefined;
+    var runtime = try remoteRuntime(&script, &execution, .low);
+    defer execution.destroy();
+    defer runtime.deinit();
+
+    try execution.translateLine(
+        \\{"type":"endpoint.shutdown.response","in_reply_to":"shutdown-1","payload":{"outcome":"draining","active_runs":[{"session_id":"s","run_id":"r1","status":"running","pending_interactions":["i1"]},{"session_id":"s","run_id":"r2","status":"running"}],"lost":[{"session_id":"s","run_id":"r3"}]}}
+    );
+    try testing.expectEqual(@as(?OapExecution.ShutdownAnswer, .{ .answered = .{ .outcome = .draining, .active_runs = 2, .awaiting_input = 1, .lost = 1 } }), execution.shutdown_answer);
+    try execution.translateLine(
+        \\{"type":"error.response","in_reply_to":"shutdown-2","payload":{"error":{"code":"invalid_payload","message":"mode is graceful or force"}}}
+    );
+    try testing.expectEqual(@as(?OapExecution.ShutdownAnswer, .refused), execution.shutdown_answer);
 }
 
 test "a hub-attached session has no endpoint of its own to shut down, so quitting only detaches" {

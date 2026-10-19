@@ -1094,7 +1094,7 @@ pub const App = struct {
     quarantine_buffer: std.ArrayList(session_runtime.SessionEvent) = .empty,
     pending_clipboard: ?[]u8 = null,
     interrupt_armed_tick: ?u64 = null,
-    shutdown_runs: usize = 0,
+    shutdown_state: session_runtime.Shutdown = .{ .outcome = .stopping },
     draining: bool = false,
     pending_clear_screen: bool = false,
     slash_index: usize = 0,
@@ -2187,20 +2187,27 @@ pub const App = struct {
     fn askShutdown(self: *App, mode: ?session_runtime.ShutdownMode) bool {
         const runtime = self.runtime orelse return true;
         const answer = (runtime.shutdown(mode) catch |err| {
-            self.recordError(@errorName(err)) catch {};
+            const note = std.fmt.allocPrint(self.allocator, "the endpoint did not shut down cleanly ({s}); quitting without it", .{@errorName(err)}) catch return true;
+            defer self.allocator.free(note);
+            self.state.appendTranscript(.@"error", note) catch {};
             return true;
         }) orelse return true;
-        switch (answer) {
+        self.shutdown_state = answer;
+        if (answer.lost > 0) {
+            const note = std.fmt.allocPrint(self.allocator, "{d} queued message(s) will not be sent.", .{answer.lost}) catch "";
+            defer if (note.len > 0) self.allocator.free(note);
+            if (note.len > 0) self.state.appendNotice(note) catch {};
+        }
+        switch (answer.outcome) {
             .stopping => return true,
-            .draining => |runs| {
+            .draining => {
                 self.draining = true;
-                const note = std.fmt.allocPrint(self.allocator, "Waiting for {d} active run(s) to finish before quitting; quit again to stop them now.", .{runs}) catch return false;
+                const note = std.fmt.allocPrint(self.allocator, "Waiting for {d} active run(s) to finish before quitting; quit again to stop them now.", .{answer.active_runs}) catch return false;
                 defer self.allocator.free(note);
                 self.state.appendNotice(note) catch {};
                 return false;
             },
-            .choose => |runs| {
-                self.shutdown_runs = runs;
+            .choose => {
                 self.openPicker(.shutdown);
                 return false;
             },
@@ -5003,7 +5010,10 @@ pub const TuiModel = struct {
             .login => "Login provider",
             .permission => "Tool permissions",
             .settings => "TUI settings",
-            .shutdown => "Runs are still active",
+            .shutdown => if (app.shutdown_state.awaiting_input > 0)
+                try std.fmt.allocPrint(allocator, "{d} run(s) still active, {d} waiting on you", .{ app.shutdown_state.active_runs, app.shutdown_state.awaiting_input })
+            else
+                try std.fmt.allocPrint(allocator, "{d} run(s) still active", .{app.shutdown_state.active_runs}),
         };
         const empty_message = if (filter.len > 0)
             try tui_text.truncateLineToWidth(allocator, try std.fmt.allocPrint(allocator, "  nothing matches \"{s}\"", .{filter}), width -| 4)
@@ -6428,7 +6438,7 @@ fn quitWithRunActive(ending: QuitEnding) !void {
     try std.testing.expect(!leaves(model.update(.quit, &tctx.ctx)));
     try std.testing.expectEqual(tui_state.AppMode.picker, app.state.mode);
     try std.testing.expectEqual(tui_state.PickerKind.shutdown, app.state.picker_kind);
-    try std.testing.expectEqual(@as(usize, 1), app.shutdown_runs);
+    try std.testing.expectEqual(@as(usize, 1), app.shutdown_state.active_runs);
 
     app.state.menu_index = if (ending == .now) 1 else 0;
     const chosen = model.update(.{ .key = .{ .key = .enter } }, &tctx.ctx);
