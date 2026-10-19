@@ -140,6 +140,9 @@ satisfies all of the following:
     `run.cancel.request`, `action.permission.resolve.request`,
     `user.input.resolve.request`, `user.input.cancel.request` and
     `action.call.resolve.request` ([Decision 0055](../decisions/0055-register-batch-2.md)).
+    Every other request in that window is rejected the same way, whether or
+    not it carries a revision
+    ([Decision 0064](../decisions/0064-every-request-waits-for-the-refresh.md)).
 15. Repeats the admitted `capability_revision` on every successful response to
     a request that supplied one.
 

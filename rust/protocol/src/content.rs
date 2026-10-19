@@ -5,7 +5,7 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::value::RawValue;
 use serde_json::Value;
 
-use crate::serde_util::{is_false, is_zero_u64, raw};
+use crate::serde_util::{is_false, raw};
 use crate::vocabulary::vocabulary;
 use crate::{MessageId, RunId, SessionId, ToolCallId};
 
@@ -150,18 +150,18 @@ pub struct ImageContent {
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Usage {
-    #[serde(skip_serializing_if = "is_zero_u64")]
-    pub input_tokens: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub input_tokens: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cache_read_input_tokens: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cache_write_input_tokens: Option<u64>,
-    #[serde(skip_serializing_if = "is_zero_u64")]
-    pub output_tokens: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub output_tokens: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reasoning_tokens: Option<u64>,
-    #[serde(skip_serializing_if = "is_zero_u64")]
-    pub total_tokens: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub total_tokens: Option<u64>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
