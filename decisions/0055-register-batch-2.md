@@ -1,0 +1,130 @@
+# Decision 0055: Register Batch 2 — Identity, Scope, Cancel, Recovery Cursor and Name Patterns
+
+Status: accepted 2026-10-19
+Date: 2026-10-19
+Protocol: `open-agent-protocol` version `0.1`
+Profile: `open-agent-protocol.agent-control-core`
+Amends: [Decision 0001](0001-agent-control-v0.1-executable-core.md),
+[Decision 0011](0011-control-layer-provided-tools.md) and
+[Decision 0019](0019-one-binary.md)
+
+## Context
+
+Holding every behaviour a validator judges to the decision text that states it
+found behaviour every tree judged and no text stated: the rules an
+implementation of the executable core was expected to know without being told.
+Each was kept as an open question, numbered as in the headings below, rather
+than copied from whichever tree had it, and each section below opens with its
+question and what the trees did, so this decision is read without any other
+record. [Decision 0054](0054-register-batch-1.md) settled the first
+batch. This one settles the second, except input answers, which
+[Decision 0056](0056-input-answers-are-judged-against-the-prompt.md) takes on
+its own. Each answer is written into the decision it belongs to.
+
+## Decisions
+
+### An envelope id is unique within a trace (OPEN-0001-1)
+
+Is an envelope `id` unique within a trace? Every tree already raised
+`duplicate_envelope_id` for a repeat. Correlation names a request by its `id`,
+so two envelopes sharing one make every reply to either ambiguous. An envelope
+`id` is unique within a trace; a repeat is `duplicate_envelope_id`.
+
+### A response stays in its request's scope (OPEN-0001-3, OPEN-0008-2, OPEN-0008-3)
+
+Must a response answer in the scope its request named, and must a resolution
+name the tool call its interaction was bound to? Go judged every scope; Zig and
+Rust judged some, and none had text to cite. A response, `error.response`
+included, answers in the scope its request named: the session, run and
+interaction a response states are the request's, and an `error.response` that
+states a session or run states the request's. An answer in another scope is
+`scope_mismatch`. An interaction bound to a tool call keeps that binding to its
+end: every resolution that carries a `tool_call_id` — an
+`action.call.resolve.request` or `.response`, and an
+`action.permission.resolved` or other resolution event — names the tool call
+its interaction was requested for, on the envelope and in the payload alike.
+Decision 0008 already has a session's tool catalog name its session on the
+envelope; that is this rule's first instance, and every tree must judge it,
+including where the envelope omits the session rather than naming another.
+
+### A run belongs to one session and is admitted once (OPEN-0001-4)
+
+Can one run be admitted twice, or into a second session? Go and Zig said no
+without text saying so. A `run_id` is admitted once, by one admission, into one
+session, and every event of that run is scoped to that session. An admission
+naming a run another session owns is `scope_mismatch`; a second admission of
+one run is `illegal_run_transition`; a run event scoped to another session is
+`scope_mismatch`.
+
+### A cancel names a run the trace admitted (OPEN-0001-2)
+
+Which runs may a cancel name, and does a queued reservation count? Go and Zig
+refused a cancel naming a run no admission created. `run.cancel.request`, and
+an accepting `run.cancel.response`, name a run the trace admitted on that
+session. Admitted means accepted by an admission, queued reservations included,
+so cancelling a reservation before it promotes is valid. A cancel naming a run
+no admission created is `illegal_run_transition`.
+
+### An interaction id is requested once per run (OPEN-0001-5)
+
+May one `interaction_id` be requested twice, and is a recovery replay a second
+request? Go and Zig raised `duplicate_interaction` for any repeat. An
+`interaction_id` is requested at most once within its run; a second request
+under the same id is `duplicate_interaction`. A request replayed from a
+retained journal during recovery is the same request delivered again, not a
+second one.
+
+### The recovery cursor is a JSON-safe sequence (OPEN-0001-7)
+
+What may a `resume_cursor` hold? Go and Zig read it as an increasing integer
+and Rust did not judge it. `resume_cursor` names a position in a run's
+sequence. The schema carries it as a string, and that string holds an unsigned
+decimal integer that increases monotonically and is no greater than 2^53 − 1,
+the largest integer every JSON reader holds exactly. A cursor of any other form
+is `undeclared_replay_gap`, because a position nobody can read cannot bound the
+replay; a cursor that is not a string at all fails the schema first.
+
+### A request waits for the refresh `capabilities.updated` owes (OPEN-0001-8)
+
+Which requests may a sender make between `capabilities.updated` and the
+refreshed descriptor? Go and Zig flagged a submit or a compaction, Rust only a
+submit, and no text said which. After `capabilities.updated`, the descriptor a
+sender holds is no longer the endpoint's, and the refresh the notice obliges is
+a `capabilities.response` under the new revision. Until that response, a
+request that cites the pre-update revision, or that exercises an optional
+feature, is stale (`stale_capability_revision`): it was built against
+capabilities the endpoint has just said it no longer has. Exempt are the
+requests that discover the new descriptor — `protocol.initialize.request` and
+`capabilities.request` — and the ones that settle work already in flight:
+`run.cancel.request`, and the answers to interactions already pending
+(`action.permission.resolve.request`, `user.input.resolve.request`,
+`user.input.cancel.request` and `action.call.resolve.request`). Blocking either
+kind would strand a session in the one window where its sender is told to act.
+
+### `name_pattern` is RE2 and matches the whole name (OPEN-0011-1)
+
+What syntax is `name_pattern`, and must it match the whole name? Go matched it
+as an unanchored RE2 search, Zig had no engine and Rust no limits.
+`action.tools.provide`'s `limits.name_pattern` is written in RE2 syntax and
+matches a tool name only when it matches all of it, as if anchored at both
+ends. Go uses `regexp` and Rust will use `regex`, both RE2; Zig owes an
+RE2-compatible implementation. Fixtures for anchoring and for the syntax the
+pattern uses judge all three, and until Zig has an engine its gate is a
+recorded port gap rather than a divergence.
+
+## Consequences
+
+- Decision 0001's identity, run, cancellation, interaction, recovery and
+  capabilities clauses, Decision 0011's resolution pair and limits clauses, and Decision
+  0019's `name_pattern` entry state these answers in their own text.
+- Ports follow, each citing its item: the three scope checks only Go has
+  (OPEN-0008-2) go to Zig and Rust; Zig gains an RE2-compatible `name_pattern`
+  matcher and Rust its provided-tools limits; every tree accepts a cancel of a
+  queued reservation and judges the cursor's bound.
+- Go and Zig flag a submit or a compaction made before the refresh, and Rust
+  only a submit; all three judge the scope above, with a fixture for a stale
+  request and one for each exemption.
+- Go matches `name_pattern` unanchored today, so a pattern `foo` admits
+  `xfooy`. Go anchors its match, with a fixture whose tool name contains a
+  match without equalling one, and so does any reference adapter that checks
+  the pattern.

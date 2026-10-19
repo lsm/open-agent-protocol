@@ -22,9 +22,7 @@
     "queue-state-lead-places-itself-beyond-the-queue",
     "queue-state-lead-queued-by-a-started-admission",
     "queue-state-leads-claim-one-place-twice",
-    "queue-state-leads-listed-out-of-admission-order",
-    "queue-state-omission-excused-then-repeated",
-    "queue-state-promoted-run-erased"
+    "queue-state-leads-listed-out-of-admission-order"
   ],
   "rust": [
     "attach-advertised-without-modes",
@@ -88,7 +86,6 @@
     "controls-per-run-overwrites-default",
     "controls-per-run-overwrites-default-after-refresh",
     "controls-per-run-overwrites-default-at-terminal",
-    "controls-started-omits-model",
     "controls-tool-choice-ambiguous-name",
     "descriptor-call-source-mismatch",
     "descriptor-duplicate-source-id",
@@ -162,7 +159,11 @@
     "open-sources-state-omits-attachment",
     "open-unadvertised-wrong-reason",
     "payload-decode-usage-past-the-integer-range",
+    "provider-attach-accepted-without-session-live",
     "provider-attach-conflicting-alias",
+    "provider-attach-degraded-refusal-wrong-code",
+    "provider-attach-in-the-announce-window",
+    "provider-attach-unadvertised-refusal-without-reason",
     "provider-bearer-shaped-header-under-another-name",
     "provider-credential-header-on-a-call",
     "provider-credential-header-on-a-descriptor",

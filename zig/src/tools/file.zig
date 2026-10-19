@@ -10,10 +10,54 @@ pub const schema_write =
     \\{"type":"object","properties":{"description":{"type":"string","description":"Why this tool call is needed and what information or change it is intended to produce."},"workspace_root":{"type":"string"},"path":{"type":"string"},"content":{"type":"string"},"compact_output":{"type":"boolean"}},"required":["description","workspace_root","path","content"],"additionalProperties":false}
 ;
 
-pub const read_tool = agent.AgentTool{ .label = "Read", .name = "Read", .description = "Read a text file from the workspace, optionally by byte range. Output includes per-line content hashes as line_no:hash|content for hash-anchored edits.", .short_description = "Read file with line hashes.", .parameters_schema_json = schema_read, .execute = readExecute, .operation = .read };
+pub const read_tool = agent.AgentTool{ .label = "Read", .name = "Read", .description = "Read a text file from the workspace, optionally by byte range. Output includes per-line content hashes as line_no:hash|content for hash-anchored edits. A PNG, JPEG, GIF or WebP image up to 5 MB is returned as the image itself.", .short_description = "Read file with line hashes.", .parameters_schema_json = schema_read, .execute = readExecute, .operation = .read };
 pub const write_tool = agent.AgentTool{ .label = "Write", .name = "Write", .description = "Create or overwrite a file in the workspace.", .short_description = "Write file content.", .parameters_schema_json = schema_write, .execute = writeExecute, .operation = .write };
 
 const max_hashed_output_bytes: usize = common.max_file_bytes;
+const max_image_bytes: usize = 5 * 1024 * 1024;
+
+fn imageMediaType(header: []const u8) ?[]const u8 {
+    if (std.mem.startsWith(u8, header, "\x89PNG\r\n\x1a\n")) return "image/png";
+    if (std.mem.startsWith(u8, header, "\xff\xd8\xff")) return "image/jpeg";
+    if (std.mem.startsWith(u8, header, "GIF87a") or std.mem.startsWith(u8, header, "GIF89a")) return "image/gif";
+    if (header.len >= 12 and std.mem.eql(u8, header[0..4], "RIFF") and std.mem.eql(u8, header[8..12], "WEBP")) return "image/webp";
+    return null;
+}
+
+fn readImage(allocator: std.mem.Allocator, file: std.Io.File, file_size: usize, media_type: []const u8, path: []const u8, start_ms: i64) !agent.AgentToolResult {
+    if (file_size > max_image_bytes) return error.ImageTooLarge;
+    const raw = try allocator.alloc(u8, file_size);
+    defer allocator.free(raw);
+    const got = try file.readPositionalAll(common.defaultIo(), raw, 0);
+    const encoder = std.base64.standard.Encoder;
+    const data = try allocator.alloc(u8, encoder.calcSize(got));
+    errdefer allocator.free(data);
+    _ = encoder.encode(data, raw[0..got]);
+    const mime = try allocator.dupe(u8, media_type);
+    errdefer allocator.free(mime);
+    const caption = try std.fmt.allocPrint(allocator, "image {s}: {s}, {d} bytes", .{ path, media_type, got });
+    errdefer allocator.free(caption);
+    const details = try common.jsonString(allocator, .{ .ok = true, .path = path, .duration_ms = common.durationMs(start_ms), .raw_bytes = got, .media_type = media_type });
+    errdefer allocator.free(details);
+    const parts = try allocator.alloc(ai_types.UserContentPart, 2);
+    parts[0] = .{ .text = .{ .text = caption } };
+    parts[1] = .{ .image = .{ .data = data, .mime_type = mime } };
+    return .{
+        .content = ai_types.OwnedSlice(ai_types.UserContentPart).initOwned(parts),
+        .details_json = ai_types.OwnedSlice(u8).initOwned(details),
+    };
+}
+
+fn utf16Text(allocator: std.mem.Allocator, bytes: []const u8) !?[]u8 {
+    if (bytes.len < 2) return null;
+    const endian: std.builtin.Endian = if (bytes[0] == 0xFF and bytes[1] == 0xFE) .little else if (bytes[0] == 0xFE and bytes[1] == 0xFF) .big else return null;
+    const units = try allocator.alloc(u16, (bytes.len - 2) / 2);
+    defer allocator.free(units);
+    for (units, 0..) |*unit, index| {
+        unit.* = std.mem.nativeToLittle(u16, std.mem.readInt(u16, bytes[2 + index * 2 ..][0..2], endian));
+    }
+    return try std.unicode.utf16LeToUtf8Alloc(allocator, units);
+}
 
 pub fn readExecute(tool_call_id: []const u8, args_json: []const u8, cancel_token: ?ai_types.CancelToken, on_update_ctx: ?*anyopaque, on_update: ?agent.ToolUpdateCallback, allocator: std.mem.Allocator) anyerror!agent.AgentToolResult {
     _ = on_update_ctx;
@@ -33,12 +77,18 @@ pub fn readExecute(tool_call_id: []const u8, args_json: []const u8, cancel_token
     const st = try file.stat(common.defaultIo());
     if (offset > st.size) return error.RangeOutOfBounds;
     const file_size: usize = @intCast(st.size);
+    var header: [12]u8 = undefined;
+    const header_len = try file.readPositionalAll(common.defaultIo(), &header, 0);
+    if (imageMediaType(header[0..header_len])) |media_type| return readImage(allocator, file, file_size, media_type, path, start_ms);
     const range = try lineAlignedRange(allocator, file, file_size, offset, limit);
     const text = try allocator.alloc(u8, range.len);
     defer allocator.free(text);
     const bytes_read = try file.readPositionalAll(common.defaultIo(), text, range.offset);
-    if (common.isBinary(text[0..bytes_read])) return error.BinaryFileRejected;
-    const hashed = try formatWithLineHashesFrom(allocator, text[0..bytes_read], range.first_line_no);
+    const decoded = if (range.offset == 0 and bytes_read == file_size) try utf16Text(allocator, text[0..bytes_read]) else null;
+    defer if (decoded) |held| allocator.free(held);
+    const body = decoded orelse text[0..bytes_read];
+    if (common.isBinary(body)) return error.BinaryFileRejected;
+    const hashed = try formatWithLineHashesFrom(allocator, body, range.first_line_no);
     errdefer allocator.free(hashed);
     const details = try common.jsonString(allocator, .{ .ok = true, .path = path, .duration_ms = common.durationMs(start_ms), .raw_bytes = st.size, .returned_bytes = hashed.len, .saved_bytes = if (st.size > hashed.len) st.size - hashed.len else 0, .compressed = false, .offset = offset, .limit = limit });
     defer allocator.free(details);
@@ -335,4 +385,35 @@ test "file compact output mode" {
     var result = try writeExecute("call", args, null, null, null, std.testing.allocator);
     defer result.deinit(std.testing.allocator);
     try std.testing.expectEqualStrings("ok 5 a.txt", result.content.slice()[0].text.text);
+}
+
+test "file read returns an image as an image part and decodes UTF-16 text that carries a byte-order mark" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const cwd = try std.process.currentPathAlloc(common.defaultIo(), std.testing.allocator);
+    defer std.testing.allocator.free(cwd);
+    const root = try std.Io.Dir.path.join(std.testing.allocator, &.{ cwd, ".zig-cache", "tmp", tmp.sub_path[0..] });
+    defer std.testing.allocator.free(root);
+    const png = "\x89PNG\r\n\x1a\n\x00\x00\x00\x0dIHDR";
+    try tmp.dir.writeFile(common.defaultIo(), .{ .sub_path = "pic.png", .data = png });
+    try tmp.dir.writeFile(common.defaultIo(), .{ .sub_path = "little.txt", .data = "\xff\xfeh\x00i\x00\n\x00" });
+    try tmp.dir.writeFile(common.defaultIo(), .{ .sub_path = "big.txt", .data = "\xfe\xff\x00h\x00i\x00\n" });
+
+    const image_args = try std.fmt.allocPrint(std.testing.allocator, "{{\"workspace_root\":\"{s}\",\"path\":\"pic.png\"}}", .{root});
+    defer std.testing.allocator.free(image_args);
+    var image = try readExecute("call", image_args, null, null, null, std.testing.allocator);
+    defer image.deinit(std.testing.allocator);
+    const parts = image.content.slice();
+    try std.testing.expectEqual(@as(usize, 2), parts.len);
+    try std.testing.expectEqualStrings("image/png", parts[1].image.mime_type);
+    var expected: [std.base64.standard.Encoder.calcSize(png.len)]u8 = undefined;
+    try std.testing.expectEqualStrings(std.base64.standard.Encoder.encode(&expected, png), parts[1].image.data);
+
+    for ([_][]const u8{ "little.txt", "big.txt" }) |name| {
+        const args = try std.fmt.allocPrint(std.testing.allocator, "{{\"workspace_root\":\"{s}\",\"path\":\"{s}\"}}", .{ root, name });
+        defer std.testing.allocator.free(args);
+        var text = try readExecute("call", args, null, null, null, std.testing.allocator);
+        defer text.deinit(std.testing.allocator);
+        try std.testing.expect(std.mem.indexOf(u8, text.content.slice()[0].text.text, "|hi") != null);
+    }
 }

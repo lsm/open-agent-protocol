@@ -158,6 +158,7 @@ fn buildRequestBody(model: ai_types.Model, context: ai_types.Context, options: a
         .target_api = model.api,
         .target_provider = model.provider,
         .target_model_id = model.id,
+        .target_input = if (model.image_input_known) model.input else null,
         .max_tool_id_len = if (provider_caps.isOpenAIHost(model.base_url) or isTransparentOpenAIProxy(model)) 40 else 0,
         .insert_synthetic_results = true,
         .tools = context.tools,
@@ -332,12 +333,7 @@ fn buildRequestBody(model: ai_types.Model, context: ai_types.Context, options: a
                                     try w.writeStringField("text", t.text);
                                     try w.endObject();
                                 },
-                                .image => |img| {
-                                    try w.beginObject();
-                                    try w.writeStringField("type", "input_image");
-                                    try w.writeStringField("image_url", img.data);
-                                    try w.endObject();
-                                },
+                                .image => |img| try writeInputImage(&w, img, allocator),
                             }
                         }
                         try w.endArray();
@@ -387,6 +383,19 @@ fn buildRequestBody(model: ai_types.Model, context: ai_types.Context, options: a
                 try w.writeStringField("call_id", tr.tool_call_id);
                 try w.writeStringField("output", result_text.items);
                 try w.endObject();
+                for (tr.content) |c| switch (c) {
+                    .image => |img| {
+                        try w.beginObject();
+                        try w.writeStringField("type", "message");
+                        try w.writeStringField("role", "user");
+                        try w.writeKey("content");
+                        try w.beginArray();
+                        try writeInputImage(&w, img, allocator);
+                        try w.endArray();
+                        try w.endObject();
+                    },
+                    .text => {},
+                };
             },
         }
     }
@@ -394,6 +403,15 @@ fn buildRequestBody(model: ai_types.Model, context: ai_types.Context, options: a
     try w.endArray();
     try w.endObject();
     return buf.toOwnedSlice(allocator);
+}
+
+fn writeInputImage(w: *json_writer.JsonWriter, img: ai_types.ImageContent, allocator: std.mem.Allocator) !void {
+    const url = try std.fmt.allocPrint(allocator, "data:{s};base64,{s}", .{ img.mime_type, img.data });
+    defer allocator.free(url);
+    try w.beginObject();
+    try w.writeStringField("type", "input_image");
+    try w.writeStringField("image_url", url);
+    try w.endObject();
 }
 
 fn normalizedOpenAIReasoningEffort(options: ai_types.StreamOptions) ?[]const u8 {
@@ -2736,4 +2754,33 @@ test "a settled responses message keeps its parts in the order they streamed, a 
     try std.testing.expectEqualStrings("record_quirk", result.content[0].tool_call.name);
     try std.testing.expectEqualStrings("after", result.content[1].text.text);
     try std.testing.expectEqual(ai_types.StopReason.tool_use, result.stop_reason);
+}
+
+test "images in a user message and a tool result reach a vision model in a well-formed openai-responses body" {
+    const allocator = std.testing.allocator;
+    const model: ai_types.Model = .{
+        .id = "vision-test",
+        .name = "Vision Test",
+        .api = "openai-responses",
+        .provider = "openai",
+        .base_url = "https://example.invalid",
+        .reasoning = false,
+        .input = &.{ "text", "image" },
+        .cost = .{ .input = 0, .output = 0, .cache_read = 0, .cache_write = 0 },
+        .context_window = 128000,
+        .max_tokens = 8192,
+    };
+    const asked = [_]ai_types.UserContentPart{ .{ .text = .{ .text = "what is this" } }, .{ .image = .{ .data = "aGk=", .mime_type = "image/png" } } };
+    const call = [_]ai_types.AssistantContent{.{ .tool_call = .{ .id = "call-1", .name = "Read", .arguments_json = "{}" } }};
+    const result = [_]ai_types.UserContentPart{ .{ .text = .{ .text = "image a.png" } }, .{ .image = .{ .data = "aGk=", .mime_type = "image/png" } } };
+    const messages = [_]ai_types.Message{
+        .{ .user = .{ .content = .{ .parts = &asked }, .timestamp = 0 } },
+        .{ .assistant = .{ .content = &call, .api = model.api, .provider = model.provider, .model = model.id, .usage = .{}, .stop_reason = .tool_use, .timestamp = 0 } },
+        .{ .tool_result = .{ .tool_call_id = "call-1", .tool_name = "Read", .content = &result, .is_error = false, .timestamp = 0 } },
+    };
+    const body = try buildRequestBody(model, .{ .messages = &messages }, .{}, allocator);
+    defer allocator.free(body);
+    var parsed = try std.json.parseFromSlice(std.json.Value, allocator, body, .{});
+    defer parsed.deinit();
+    try std.testing.expectEqual(@as(usize, 2), std.mem.count(u8, body, "data:image/png;base64,aGk="));
 }

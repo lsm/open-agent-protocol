@@ -134,7 +134,12 @@ satisfies all of the following:
 14. Rejects any request carrying a non-current `capability_revision` with a
     correlated `error.response` whose code is `stale_capabilities`, except that
     `protocol.initialize.request` and `capabilities.request` ignore the field so
-    discovery cannot be blocked by a stale revision.
+    discovery cannot be blocked by a stale revision, and that between
+    `capabilities.updated` and the refreshed `capabilities.response` a request
+    settling work in flight is accepted under the revision it cites:
+    `run.cancel.request`, `action.permission.resolve.request`,
+    `user.input.resolve.request`, `user.input.cancel.request` and
+    `action.call.resolve.request` ([Decision 0055](../decisions/0055-register-batch-2.md)).
 15. Repeats the admitted `capability_revision` on every successful response to
     a request that supplied one.
 

@@ -208,6 +208,7 @@ fn buildBody(context: ai_types.Context, options: ai_types.StreamOptions, model: 
         .target_api = model.api,
         .target_provider = model.provider,
         .target_model_id = model.id,
+        .target_input = if (model.image_input_known) model.input else null,
         .max_tool_id_len = 64,
         .insert_synthetic_results = true,
         .tools = context.tools,
@@ -272,6 +273,7 @@ fn buildBody(context: ai_types.Context, options: ai_types.StreamOptions, model: 
                             try w.beginObject();
                             try w.writeStringField("mimeType", img.mime_type);
                             try w.writeStringField("data", img.data);
+                            try w.endObject();
                             try w.endObject();
                         },
                     };
@@ -347,6 +349,20 @@ fn buildBody(context: ai_types.Context, options: ai_types.StreamOptions, model: 
                     try w.writeBoolField("error", true);
                 }
                 try w.endObject();
+                try w.endObject();
+                try w.endObject();
+                for (tr.content) |c| switch (c) {
+                    .image => |img| {
+                        try w.beginObject();
+                        try w.writeKey("inlineData");
+                        try w.beginObject();
+                        try w.writeStringField("mimeType", img.mime_type);
+                        try w.writeStringField("data", img.data);
+                        try w.endObject();
+                        try w.endObject();
+                    },
+                    .text => {},
+                };
             },
         }
 
@@ -1795,4 +1811,39 @@ test "google_generative_api producer does not publish done while its own cleanup
     google_generative_api_releaseCleanupGate();
     try std.testing.expect(stream.waitForThread(5_000));
     try std.testing.expectEqualStrings("request cancelled", stream.getError().?);
+}
+
+test "a tool result's image reaches a Gemini vision model as inline data beside its function response" {
+    const allocator = std.testing.allocator;
+    const model: ai_types.Model = .{
+        .id = "gemini-test",
+        .name = "Gemini Test",
+        .api = "google-generative-ai",
+        .provider = "google",
+        .base_url = "https://example.invalid",
+        .reasoning = false,
+        .input = &.{ "text", "image" },
+        .cost = .{ .input = 0, .output = 0, .cache_read = 0, .cache_write = 0 },
+        .context_window = 128000,
+        .max_tokens = 8192,
+    };
+    const call = [_]ai_types.AssistantContent{.{ .tool_call = .{ .id = "call-1", .name = "Read", .arguments_json = "{}" } }};
+    const result = [_]ai_types.UserContentPart{ .{ .text = .{ .text = "image a.png" } }, .{ .image = .{ .data = "aGk=", .mime_type = "image/png" } } };
+    const asked = [_]ai_types.UserContentPart{ .{ .text = .{ .text = "what is this" } }, .{ .image = .{ .data = "aGk=", .mime_type = "image/png" } } };
+    const messages = [_]ai_types.Message{
+        .{ .user = .{ .content = .{ .parts = &asked }, .timestamp = 0 } },
+        .{ .assistant = .{ .content = &call, .api = model.api, .provider = model.provider, .model = model.id, .usage = .{}, .stop_reason = .tool_use, .timestamp = 0 } },
+        .{ .tool_result = .{ .tool_call_id = "call-1", .tool_name = "Read", .content = &result, .is_error = false, .timestamp = 0 } },
+    };
+    const body = try buildBody(.{ .messages = &messages }, .{}, model, allocator);
+    defer allocator.free(body);
+    var parsed = try std.json.parseFromSlice(std.json.Value, allocator, body, .{});
+    defer parsed.deinit();
+    const contents = parsed.value.object.get("contents").?.array.items;
+    const parts = contents[contents.len - 1].object.get("parts").?.array.items;
+    try std.testing.expect(parts[0].object.get("functionResponse") != null);
+    const inline_data = parts[1].object.get("inlineData").?.object;
+    try std.testing.expectEqualStrings("image/png", inline_data.get("mimeType").?.string);
+    try std.testing.expectEqualStrings("aGk=", inline_data.get("data").?.string);
+    try std.testing.expect(contents[0].object.get("parts").?.array.items[1].object.get("inlineData") != null);
 }

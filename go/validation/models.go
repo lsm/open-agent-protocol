@@ -179,18 +179,6 @@ func (s *state) modelsResponse(i, line int, e protocol.Envelope, p protocol.Mode
 	}
 	st := s.track(p.SessionID)
 	s.checkCatalogCurrentModel(i, line, e, p, st)
-	for alias := range st.attachedProviders {
-		present := false
-		for _, provider := range p.Providers {
-			if provider.ID == alias {
-				present = true
-				break
-			}
-		}
-		if !present {
-			s.addExpected(CodeUnmatchedProvider, i, line, e, "/payload/providers", "catalog omitted an attached provider", alias, "absent")
-		}
-	}
 
 	level := s.features[protocol.FeatureModelsList]
 	binding := level == protocol.SupportNative || level == protocol.SupportEmulated
@@ -208,6 +196,11 @@ func (s *state) modelsResponse(i, line int, e protocol.Envelope, p protocol.Mode
 
 	if served.revision == "" || served.revision != s.currentCapability || s.capabilitiesStale {
 		return
+	}
+	for alias := range st.attachedProviders {
+		if _, present := served.providers[alias]; !present {
+			s.addExpected(CodeUnmatchedProvider, i, line, e, "/payload/providers", "catalog omitted an attached provider", alias, "absent")
+		}
 	}
 	if binding && st.catalog != nil && st.catalog.known && st.catalog.binding && st.catalog.revision == served.revision {
 		modelsChanged := !sameCatalog(st.catalog.models, served.models)
