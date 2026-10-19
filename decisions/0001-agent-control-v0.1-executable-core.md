@@ -94,7 +94,9 @@ stable interaction contract:
 Only the declared responder may resolve an interaction, and every interaction
 has at most one resolution. An `interaction_id` is requested at most once
 within its run; a request replayed from a retained journal during recovery is
-the same request, not a second one ([Decision 0055](0055-register-batch-2.md)). Answers are judged against the
+the same request, not a second one. An interaction requested for a tool call
+keeps that binding: every resolution carrying a `tool_call_id` names the same
+call ([Decision 0055](0055-register-batch-2.md)). Answers are judged against the
 prompt they resolve ([Decision 0056](0056-input-answers-are-judged-against-the-prompt.md)). Tool execution ownership is explicit. Secure
 participant reassociation, deadlines, and retained cross-process interactions
 are deferred.

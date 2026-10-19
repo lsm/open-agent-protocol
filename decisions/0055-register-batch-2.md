@@ -27,15 +27,16 @@ Correlation names a request by its `id`, so two envelopes sharing one make
 every reply to either ambiguous. An envelope `id` is unique within a trace; a
 repeat is `duplicate_envelope_id`.
 
-### A response stays in its request's scope (OPEN-0001-3, OPEN-0008-2)
+### A response stays in its request's scope (OPEN-0001-3, OPEN-0008-2, OPEN-0008-3)
 
 A response, `error.response` included, answers in the scope its request named:
 the session, run and interaction a response states are the request's, and an
 `error.response` that states a session or run states the request's. An answer
-in another scope is `scope_mismatch`. The tool-call resolution pair is held to
-the same rule for the binding it carries: the `tool_call_id` of an
-`action.call.resolve.request` or `.response` names the tool call the
-interaction is bound to, on the envelope and in the payload alike. Decision
+in another scope is `scope_mismatch`. An interaction bound to a tool call keeps
+that binding to its end: every resolution that carries a `tool_call_id` —
+an `action.call.resolve.request` or `.response`, and an
+`action.permission.resolved` or other resolution event — names the tool call
+its interaction was requested for, on the envelope and in the payload alike. Decision
 0008 already has a session's tool catalog name its session on the envelope;
 that is this rule's first instance, and every tree must judge it, including
 where the envelope omits the session rather than naming another.
