@@ -9,11 +9,12 @@ Amends: [Decision 0007](0007-queue-delivery.md) and
 
 ## Context
 
-The validator rule register being assembled under `drafts/validator-rules/`
-holds every behaviour a validator judges to the decision text that states it.
-Where the text was silent, or the trees disagreed, the behaviour was recorded
-as an open item, numbered as in the headings below, instead of being copied
-from whichever tree had it. This decision settles the first batch of those items, and states each
+Holding every behaviour a validator judges to the decision text that states
+it turned up places where the text was silent or the trees disagreed. Each was
+kept as an open question, numbered as in the headings below, instead of being
+copied from whichever tree had it, and each section below states its question,
+what each tree did, and the answer, so this decision is read without any other
+record. This decision settles the first batch of those items, and states each
 answer in the decision it belongs to, because a rule that lives only in a
 register row is one reader's interpretation rather than the protocol's.
 
