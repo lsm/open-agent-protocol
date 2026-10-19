@@ -638,6 +638,50 @@ pub const LocalLoop = struct {
         return OwnedSlice(u8).initBorrowed("");
     }
 
+    fn resultParts(self: *LocalLoop, content_json: []const u8) !OwnedSlice(u8) {
+        if (content_json.len == 0) return OwnedSlice(u8).initBorrowed("");
+        const parsed = std.json.parseFromSlice(std.json.Value, self.allocator, content_json, .{}) catch |err| switch (err) {
+            error.OutOfMemory => return error.OutOfMemory,
+            else => return OwnedSlice(u8).initBorrowed(""),
+        };
+        defer parsed.deinit();
+        if (parsed.value != .array) return OwnedSlice(u8).initBorrowed("");
+        var images: usize = 0;
+        for (parsed.value.array.items) |part| {
+            if (part != .object) return OwnedSlice(u8).initBorrowed("");
+            const kind = stringMember(part.object, "type") orelse return OwnedSlice(u8).initBorrowed("");
+            if (std.mem.eql(u8, kind, "image")) {
+                if (stringMember(part.object, "data") == null or stringMember(part.object, "mime_type") == null) return OwnedSlice(u8).initBorrowed("");
+                images += 1;
+            } else if (!std.mem.eql(u8, kind, "text") or stringMember(part.object, "text") == null) return OwnedSlice(u8).initBorrowed("");
+        }
+        if (images == 0) return OwnedSlice(u8).initBorrowed("");
+        var buf = std.ArrayList(u8).empty;
+        defer buf.deinit(self.allocator);
+        var w = json_writer.JsonWriter.init(&buf, self.allocator);
+        try w.beginArray();
+        for (parsed.value.array.items) |part| {
+            const kind = stringMember(part.object, "type").?;
+            try w.beginObject();
+            try w.writeStringField("type", kind);
+            if (std.mem.eql(u8, kind, "image")) {
+                try w.writeKey("image");
+                try w.beginObject();
+                try w.writeStringField("data", stringMember(part.object, "data").?);
+                try w.writeStringField("media_type", stringMember(part.object, "mime_type").?);
+                try w.endObject();
+            } else try w.writeStringField("text", stringMember(part.object, "text").?);
+            try w.endObject();
+        }
+        try w.endArray();
+        return self.dupeOwned(buf.items);
+    }
+
+    fn stringMember(object: std.json.ObjectMap, key: []const u8) ?[]const u8 {
+        const value = object.get(key) orelse return null;
+        return if (value == .string) value.string else null;
+    }
+
     fn handleAgentEndEvent(self: *LocalLoop) anyerror!void {
         const runtime = self.rt();
         const cancelled = runtime.cancelled.load(.acquire);
@@ -741,6 +785,7 @@ pub const LocalLoop = struct {
                 .artifact_count = payload.artifact_count,
                 .artifact_refs = try self.formatArtifactRefs(payload.artifacts),
                 .result_text = try self.firstContentText(payload.content_json.slice()),
+                .result_parts = try self.resultParts(payload.content_json.slice()),
             } }),
             .turn_end => |payload| {
                 runtime.last_turn_stop_reason = payload.message.stop_reason;
