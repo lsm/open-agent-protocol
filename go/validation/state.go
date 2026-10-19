@@ -242,6 +242,9 @@ func (s *state) apply(i, line int, e protocol.Envelope) {
 	if !s.settling && e.CapabilityRevision != "" && s.currentCapability != "" && string(e.CapabilityRevision) != s.currentCapability && e.Type != protocol.TypeProtocolInitializeRequest && e.Type != protocol.TypeCapabilitiesRequest && e.Type != protocol.TypeCapabilitiesUpdated && e.Type != protocol.TypeErrorResponse {
 		s.addExpected(CodeStaleCapabilityRevision, i, line, e, "/capability_revision", "operation uses a stale capability revision", s.currentCapability, e.CapabilityRevision)
 	}
+	if s.capabilitiesStale && s.isRequestType(e.Type) && !refreshExempt(e.Type) {
+		s.add(CodeStaleCapabilityRevision, i, line, e, "/type", "request made before the refreshed capabilities.response")
+	}
 	if duplicateResponse {
 
 		return
@@ -462,9 +465,6 @@ func (s *state) apply(i, line int, e protocol.Envelope) {
 		var p protocol.MessageSubmitRequest
 		_ = e.DecodePayload(&p)
 		s.checkScope(i, line, e, p.SessionID, "")
-		if s.capabilitiesStale {
-			s.add(CodeStaleCapabilityRevision, i, line, e, "/capability_revision", "submission occurred before refreshed capabilities")
-		}
 		s.submitControls(i, line, e, p)
 		if p.Delivery != protocol.DeliveryAuto && p.Delivery != protocol.DeliveryQueue && p.Delivery != protocol.DeliverySteer && !(s.tolerant && foreignRequestedDelivery(p.Delivery)) {
 
@@ -1555,6 +1555,16 @@ func (s *state) lookupInteraction(run protocol.RunID, id protocol.InteractionID)
 	}
 	return nil
 }
+func refreshExempt(t protocol.EnvelopeType) bool {
+	switch t {
+	case protocol.TypeProtocolInitializeRequest, protocol.TypeCapabilitiesRequest, protocol.TypeRunCancelRequest,
+		protocol.TypeActionPermissionResolveRequest, protocol.TypeUserInputResolveRequest,
+		protocol.TypeUserInputCancelRequest, protocol.TypeActionCallResolveRequest:
+		return true
+	}
+	return false
+}
+
 func (s *state) settlesUnderPrevious(e protocol.Envelope) bool {
 	revision := string(e.CapabilityRevision)
 	if revision == "" {

@@ -118,7 +118,8 @@ interactions. The owner first approved a narrower rule, written into
 the pre-update revision or exercising an optional feature was stale. Porting it
 showed that a plain request passed, and the owner then chose the stricter rule,
 [Decision 0064](../decisions/0064-every-request-waits-for-the-refresh.md):
-every non-exempt request in the window is stale. All three trees owe the port.
+every non-exempt request in the window is stale. Go, Zig and Rust judge it
+in `apply`.
 
 ### OPEN-0001-9: what does `usage` count?
 
