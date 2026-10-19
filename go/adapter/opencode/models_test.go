@@ -90,7 +90,7 @@ func TestCatalogGrowsWithDurableStepEvidence(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	adaptertest.AssertProtocolValidWithDescriptor(t, response, descriptor, events)
+	adaptertest.AssertProtocolValidWithDescriptor(t, response, descriptor, events, adaptertest.Opened(base.OpenRequest{Participant: protocol.Participant{ID: "user"}}))
 
 	catalog, err := lister.Models(context.Background(), consent())
 	if err != nil {

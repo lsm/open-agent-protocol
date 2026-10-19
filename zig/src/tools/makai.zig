@@ -6246,7 +6246,7 @@ test "naming one pack twice, however it is spelled, loads one pack" {
     try tmp.dir.createDir(std.testing.io, "pack", .default_dir);
     try tmp.dir.writeFile(std.testing.io, .{
         .sub_path = "pack/pack.json",
-        .data = "{\"id\":\"com.example.note\",\"version\":\"1.0.0\",\"schemas\":[\"note.schema.json\"],\"envelope_types\":[{\"type\":\"com.example.note.thing\",\"role\":\"event\",\"schema\":\"note.schema.json#/$defs/thing\"}]}",
+        .data = "{\"id\":\"com.example.note\",\"version\":\"1.0.0\",\"schemas\":[\"note.schema.json\"],\"envelope_types\":[{\"type\":\"com.example.note.thing\",\"role\":\"event\",\"schema\":\"note.schema.json#/$defs/thing\"}],\"gates\":[{\"type\":\"com.example.note.thing\",\"ungated\":true}]}",
     });
     try tmp.dir.writeFile(std.testing.io, .{
         .sub_path = "pack/note.schema.json",
@@ -7440,7 +7440,7 @@ fn cliCases(allocator: std.mem.Allocator, tmp: *std.testing.TmpDir) !CliCase {
     try tmp.dir.createDir(std.testing.io, "good", .default_dir);
     try tmp.dir.writeFile(std.testing.io, .{
         .sub_path = "good/pack.json",
-        .data = "{\"id\":\"com.example.note\",\"version\":\"1.0.0\",\"schemas\":[\"note.schema.json\"],\"envelope_types\":[{\"type\":\"com.example.note.ping\",\"role\":\"event\",\"schema\":\"note.schema.json#/$defs/ping\"}]}",
+        .data = "{\"id\":\"com.example.note\",\"version\":\"1.0.0\",\"schemas\":[\"note.schema.json\"],\"envelope_types\":[{\"type\":\"com.example.note.ping\",\"role\":\"event\",\"schema\":\"note.schema.json#/$defs/ping\"}],\"gates\":[{\"type\":\"com.example.note.ping\",\"ungated\":true}]}",
     });
     try tmp.dir.writeFile(std.testing.io, .{
         .sub_path = "good/note.schema.json",

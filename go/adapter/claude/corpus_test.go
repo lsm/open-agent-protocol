@@ -587,7 +587,7 @@ func (e *ccExecution) record(t *testing.T, admission protocol.MessageSubmitRespo
 		case e.cancelAccepted:
 			assertCancelledTrace(t, helloSubmit, admission, events)
 		case e.served != nil:
-			adaptertest.AssertProtocolValidWithSubmitAndCatalog(t, helloSubmit, admission, testDescriptor(t), e.servedRequest, *e.served, events)
+			adaptertest.AssertProtocolValidWithSubmitAndCatalog(t, helloSubmit, admission, testDescriptor(t), e.servedRequest, *e.served, events, adaptertest.Opened(base.OpenRequest{Participant: protocol.Participant{ID: "user"}}))
 		default:
 			assertValidTrace(t, helloSubmit, admission, events)
 		}

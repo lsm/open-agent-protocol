@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use oap_validation::{Phase, Validator};
+use oap_validation::{Phase, Validator, IMPLEMENTED};
 use serde_json::Value;
 
 fn fixtures() -> PathBuf {
@@ -77,14 +77,21 @@ fn every_positive_and_semantic_fixture_passes_decode_and_schema() {
     let mut judged = 0;
     let mut refused = Vec::new();
     for entry in core_entries() {
-        let phase = entry["phase"].as_str().unwrap_or("semantic");
+        let phase = entry["phase"]
+            .as_str()
+            .filter(|phase| !phase.is_empty())
+            .unwrap_or("semantic");
         if phase != "semantic" {
             continue;
         }
         let path = entry["path"].as_str().unwrap();
         let result = validator.validate(&std::fs::read(fixtures().join(path)).unwrap(), path);
-        if !result.valid() {
-            refused.push(format!("{path}: {}", result.diagnostics[0]));
+        if let Some(diagnostic) = result
+            .diagnostics
+            .iter()
+            .find(|d| d.phase != Phase::Semantic)
+        {
+            refused.push(format!("{path}: {diagnostic}"));
         }
         judged += 1;
     }
@@ -94,5 +101,78 @@ fn every_positive_and_semantic_fixture_passes_decode_and_schema() {
         refused.len(),
         refused.join("\n")
     );
-    assert!(judged >= 450, "judged only {judged}");
+    assert!(judged >= 640, "judged only {judged}");
+}
+
+const DISAGREEING: [&str; 12] = [
+    "compaction-response-scope-mismatch",
+    "models-held-position-in-another-session",
+    "models-held-position-in-another-session-no-current",
+    "models-position-in-another-session",
+    "models-position-in-another-session-no-current",
+    "models-stale-catalog-does-not-displace",
+    "models-stale-catalog-raises-no-change",
+    "queue-capabilities-bound-moves-within-revision",
+    "queue-capabilities-level-moves-within-revision",
+    "scope-mismatch",
+    "steer-explicit-target-mismatch",
+    "tools-list-unscoped-answer-scoped",
+];
+
+#[test]
+fn every_semantic_fixture_draws_exactly_its_declared_codes_among_those_implemented_unless_listed() {
+    let validator = Validator::new().unwrap();
+    let mut judged = Vec::new();
+    let mut wrong = Vec::new();
+    let mut agreeing = Vec::new();
+    for entry in core_entries() {
+        let phase = entry["phase"]
+            .as_str()
+            .filter(|phase| !phase.is_empty())
+            .unwrap_or("semantic");
+        if phase != "semantic" {
+            continue;
+        }
+        let path = entry["path"].as_str().unwrap();
+        let id = entry["id"].as_str().unwrap();
+        let result = validator.validate(&std::fs::read(fixtures().join(path)).unwrap(), path);
+        let mut want: Vec<&str> = entry["codes"]
+            .as_array()
+            .map(|codes| {
+                codes
+                    .iter()
+                    .filter_map(Value::as_str)
+                    .filter(|code| IMPLEMENTED.contains(code))
+                    .collect()
+            })
+            .unwrap_or_default();
+        let mut got: Vec<&str> = result.diagnostics.iter().map(|d| d.code.as_str()).collect();
+        want.sort_unstable();
+        got.sort_unstable();
+        let listed = DISAGREEING.contains(&id);
+        if want != got && !listed {
+            wrong.push(format!("{id}: want {want:?}, got {got:?}"));
+        }
+        if want == got && listed {
+            agreeing.push(id.to_owned());
+        }
+        judged.push(id.to_owned());
+    }
+    let unjudged: Vec<&str> = DISAGREEING
+        .iter()
+        .copied()
+        .filter(|id| !judged.iter().any(|j| j == id))
+        .collect();
+    assert!(unjudged.is_empty(), "listed but never judged: {unjudged:?}");
+    assert!(
+        agreeing.is_empty(),
+        "listed as disagreeing, now agree: {agreeing:?}"
+    );
+    assert!(
+        wrong.is_empty(),
+        "{} wrong:\n{}",
+        wrong.len(),
+        wrong.join("\n")
+    );
+    assert!(judged.len() >= 640, "judged only {}", judged.len());
 }
