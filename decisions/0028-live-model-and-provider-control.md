@@ -1,6 +1,7 @@
 # Decision 0028: Live Session Model and Provider Control
 
-Status: proposed
+Status: proposed (the attachment refusal, acceptance and catalog clauses
+amended by [Decision 0054](0054-register-batch-1.md))
 Date: 2026-09-22
 Protocol: `open-agent-protocol` version `0.1`
 Profile: `open-agent-protocol.agent-control-core`
@@ -92,10 +93,15 @@ changing its catalog. Unknown services/providers, alias collisions, and
 cross-session registry merges are refusals, never silent fallbacks. Repeating
 the same alias and binding is idempotent; reusing an alias for a different
 binding is `provider_conflict` with `details.provider_id`. An unsupported
-operation is refused with `unsupported_feature` and
-`details.feature: "action.providers.attach"`, with the normal degraded
-opt-in rule when applicable. On acceptance the response carries the
-session-local `provider_id` (`provider.id` in the request).
+operation is refused with `unsupported_feature`,
+`details.feature: "action.providers.attach"` and
+`details.reason: "unadvertised"`, and one sent to a `degraded` disclosure
+without the caller's opt-in is refused `capability_degraded` naming the
+feature — Decision 0005's gate, both halves. On acceptance the response
+carries the session-local `provider_id` (`provider.id` in the request).
+Conversely, an attachment accepted where the descriptor does not advertise
+the `session_live` mode is `unavailable_capability`
+([Decision 0054](0054-register-batch-1.md)).
 
 An accepted attachment invalidates only that session's previously served
 model catalog, even if the endpoint-wide `capability_revision` is unchanged.
@@ -103,8 +109,12 @@ This is a narrow exception to Decision 0006's within-revision catalog
 stability rule: it is announced by a correlated mutation whose effects the
 caller requested. The next `models.request` returns the complete effective
 session catalog, including attached providers and models; model ids must be
-unique within it. A capability change independent of this operation still
-uses `capabilities.updated` and a new capability revision. Attach does not
+unique within it. Only a catalog that binds — one citing the active revision
+with its descriptor in hand — owes the attached providers: any other binds
+nothing (Decision 0006) and is held only to the rules about its listing
+([Decision 0054](0054-register-batch-1.md)). A capability change
+independent of this operation still uses `capabilities.updated` and a new
+capability revision. Attach does not
 switch the session default and does not alter running inferences or runs.
 The caller makes a separate `session.model.switch` request to choose a model
 from the newly available provider.

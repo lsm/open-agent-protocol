@@ -18,8 +18,9 @@ The question for every rule is three answers:
   `zig/src/validation/semantic_gate.zig` expects every code a fixture declares
   and accepts a disagreement only for a fixture listed under `zig` in
   `fixtures/known-gaps.json`; it fails when a listed fixture agrees or is never
-  judged. `fixture_gate.zig` judges the `decode` and `schema` phases and
-  still skips `load-invalid` fixtures outright. The "Zig" column below is read from the source
+  judged. `fixture_gate.zig` judges the `decode` and `schema` phases, and since
+  #1261 the `load-invalid` fixtures too, exempting only the codes the Zig
+  loader does not yet refuse. The "Zig" column below is read from the source
   (`semantic.implemented`, `provider_semantic.implemented`, `packs.zig`),
   never from the gate's result.
 - **`partial`** means Zig emits the code for some traces and the fixtures it
@@ -86,22 +87,22 @@ Every code either tree declares, or a fixture expects. "defined, not in implemen
 | `model_not_in_catalog` | semantic | yes | yes | 11 | 0 | 0006, 0009, 0028, staged-units-graduation |
 | `pack_branch_undeclared_type` | load | yes (load) | yes (load) | 1 | 0 | 0004, staged-units-graduation |
 | `pack_branch_unpinned` | load | yes (load) | yes (load) | 1 | 0 | 0004, staged-units-graduation |
-| `pack_dependency_missing` | load | yes (load) | no | 1 | 0 | 0004, staged-units-graduation |
-| `pack_external_ref` | load | yes (load) | no | 2 | 0 | 0004, staged-units-graduation |
+| `pack_dependency_missing` | load | yes (load) | yes (load) | 1 | 0 | 0004, staged-units-graduation |
+| `pack_external_ref` | load | yes (load) | yes (load) | 2 | 0 | 0004, staged-units-graduation |
 | `pack_fixture_claims_core_unit` | load | yes (load) | no | 1 | 0 | 0004, staged-units-graduation |
 | `pack_foreign_prefix` | load | yes (load) | yes (load) | 1 | 0 | 0004, staged-units-graduation |
 | `pack_id_collision` | load | yes (load) | yes (load) | 2 | 0 | 0004, staged-units-graduation |
-| `pack_member_duplicate` | load | yes (load) | no | 1 | 0 | 0004, staged-units-graduation |
-| `pack_member_target_unknown` | load | yes (load) | no | 2 | 0 | 0004, staged-units-graduation |
-| `pack_refusal_undeclared` | load | yes (load) | no | 1 | 0 | 0004, staged-units-graduation |
-| `pack_reply_target_ambiguous` | load | yes (load) | no | 1 | 0 | 0004, staged-units-graduation |
-| `pack_reply_target_unknown` | load | yes (load) | no | 1 | 0 | 0004, staged-units-graduation |
-| `pack_response_gated` | load | yes (load) | no | 1 | 0 | 0004, staged-units-graduation |
-| `pack_restates_core_member` | load | yes (load) | no | 1 | 0 | 0004, staged-units-graduation |
-| `pack_role_undeclared` | load | yes (load) | no | 1 | 0 | 0004, staged-units-graduation |
-| `pack_schema_path_escape` | load | yes (load) | no | 1 | 0 | 0004, staged-units-graduation |
-| `pack_type_duplicate` | load | yes (load) | no | 1 | 0 | 0004, staged-units-graduation |
-| `pack_ungated_type` | load | yes (load) | no | 1 | 0 | 0004, staged-units-graduation |
+| `pack_member_duplicate` | load | yes (load) | yes (load) | 1 | 0 | 0004, staged-units-graduation |
+| `pack_member_target_unknown` | load | yes (load) | yes (load) | 2 | 0 | 0004, staged-units-graduation |
+| `pack_refusal_undeclared` | load | yes (load) | yes (load) | 1 | 0 | 0004, staged-units-graduation |
+| `pack_reply_target_ambiguous` | load | yes (load) | yes (load) | 1 | 0 | 0004, staged-units-graduation |
+| `pack_reply_target_unknown` | load | yes (load) | yes (load) | 1 | 0 | 0004, staged-units-graduation |
+| `pack_response_gated` | load | yes (load) | yes (load) | 1 | 0 | 0004, staged-units-graduation |
+| `pack_restates_core_member` | load | yes (load) | yes (load) | 1 | 0 | 0004, staged-units-graduation |
+| `pack_role_undeclared` | load | yes (load) | yes (load) | 1 | 0 | 0004, staged-units-graduation |
+| `pack_schema_path_escape` | load | yes (load) | yes (load) | 1 | 0 | 0004, staged-units-graduation |
+| `pack_type_duplicate` | load | yes (load) | yes (load) | 1 | 0 | 0004, staged-units-graduation |
+| `pack_ungated_type` | load | yes (load) | yes (load) | 1 | 0 | 0004, staged-units-graduation |
 | `pack_unprefixed_name` | load | yes (load) | yes (load) | 1 | 0 | 0004, staged-units-graduation |
 | `payload_decode` | decode | yes | no | 0 | 0 | — |
 | `pending_interaction_at_terminal` | semantic | yes | yes | 2 | 0 | 0011, staged-units-graduation |
@@ -132,7 +133,7 @@ Every code either tree declares, or a fixture expects. "defined, not in implemen
 | `undisclosed_provide_limit` | semantic | yes | yes | 1 | 0 | 0011, staged-units-graduation |
 | `undisclosed_queue_limit` | semantic | yes | yes | 2 | 0 | 0007, staged-units-graduation |
 | `undisclosed_selection_scope` | semantic | yes | no | 3 | 0 | 0005, 0021, staged-units-graduation |
-| `unhonoured_capability` | semantic | yes | no | 4 | 0 | 0004, 0006, 0008, 0009, staged-units-graduation |
+| `unhonoured_capability` | semantic | yes | yes | 4 | 0 | 0004, 0006, 0008, 0009, staged-units-graduation |
 | `unknown_participant` | semantic | yes | no | 1 | 0 | — |
 | `unmatched_interaction` | semantic | yes | yes | 5 | 0 | 0007, 0011, staged-units-graduation |
 | `unmatched_provider` | semantic | yes | defined, not in implemented list | 1 | 0 | 0014 |
@@ -160,7 +161,7 @@ is checked. Fixture counts are positive / negative traces citing the decision.
 | 0001 correlated reverse interactions | `unmatched_interaction`, `duplicate_interaction`, `wrong_interaction_responder`, `pending_interaction_at_terminal` | both | core | the responder rule checks the declared responder; `unknown_participant` (declared at initialize) is Go-only |
 | 0001 cancellation intent is not settlement | `cancel_not_settled`, `illegal_run_transition` | both | 1 negative | one negative fixture only |
 | 0001 resume, reconciliation and replay are separate | `undeclared_replay_gap` | Go only | 1 negative | ported separately |
-| 0001 capabilities disclose effective fidelity | `unavailable_capability`, `unhonoured_capability`, `stale_capability_revision` | `unhonoured_capability` Go only | 44 / 4 / 8 negatives | |
+| 0001 capabilities disclose effective fidelity | `unavailable_capability`, `unhonoured_capability`, `stale_capability_revision` | both | 44 / 4 / 8 negatives | |
 | request/response pairing (0001 vocabulary) | `missing_response`, `duplicate_response`, `unmatched_response` | Go only | 4 / 1 / 1 | ported separately |
 | 0002 two canonical admission shapes, promotion, pre-start settlement | `illegal_run_transition`, `missing_run_started` | both | 4 / 7 | |
 
@@ -169,10 +170,10 @@ is checked. Fixture counts are positive / negative traces citing the decision.
 | rule | code | Go / Zig | fixtures | note |
 | --- | --- | --- | --- | --- |
 | 0003 the graduation gate (all rules) | — | — | — | process; pinned by review and by `goap check`'s unit inventory |
-| 0004 unprefixed namespace, prefix-free set, a pack declares what it defines, a pack adds and does not amend, a pack is someone else's document | 19 `pack_*` load codes and `ext_claim_without_pack` | Go all 20; Zig 5 (`pack_unprefixed_name`, `pack_foreign_prefix`, `pack_id_collision`, `pack_branch_unpinned`, `pack_branch_undeclared_type`) | 6 / 23 load-invalid | both Zig gates skip `load-invalid` |
+| 0004 unprefixed namespace, prefix-free set, a pack declares what it defines, a pack adds and does not amend, a pack is someone else's document | 19 `pack_*` load codes and `ext_claim_without_pack` | Go all 20; Zig 18, all but `pack_fixture_claims_core_unit` and `ext_claim_without_pack` (#1261, #1307); per-code status in [`drafts/validator-rules/0004-packs.md`](../drafts/validator-rules/0004-packs.md) | 6 / 23 load-invalid | the Zig fixture gate judges `load-invalid` since #1261 |
 | 0004 a load refusal is not a diagnostic | (by construction) | both | — | |
 | 0004 a pack's conformance claim is its own | `pack_fixture_claims_core_unit` | Go only | 1 | |
-| 0004 pack members gated on their capability | `unavailable_capability`, `unhonoured_capability` | Zig lacks `unhonoured_capability` | 4 / 1 | |
+| 0004 pack members gated on their capability | `unavailable_capability`, `unhonoured_capability` | both (Zig's `packEnvelope` raises `unhonoured_capability` for a refusal outside a typed gate's `refusals`) | 4 / 1 | |
 
 ### Decisions 0005, 0019, 0021–0024, 0031, 0034: run controls
 
@@ -227,7 +228,7 @@ is checked. Fixture counts are positive / negative traces citing the decision.
 
 | rule | code | Go / Zig | fixtures | note |
 | --- | --- | --- | --- | --- |
-| 0008 an adapter that does not attach says so; catalog gated on its own key | `unavailable_capability`, `unhonoured_capability` | Zig lacks `unhonoured_capability` | 19 / 12 | |
+| 0008 an adapter that does not attach says so; catalog gated on its own key | `unavailable_capability`, `unhonoured_capability` | both | 19 / 12 | |
 | 0008 a source is described; attachment shape is not the catalog shape | `attachment_field_in_catalog`, S | both | 3 | |
 | 0008 a catalog resolves | `unmatched_tool_source`, `catalog_mismatch`, `duplicate_tool_source`, `duplicate_tool_name` | both | 6 / 4 / 7 / 2 | |
 | 0008 attachment bounded by disclosure; modes disclosed as a set | `undisclosed_attach_limit`, `undisclosed_attach_modes` | both | 1 / 3 | |
@@ -347,14 +348,14 @@ validator, and how much of it.
 
 Listed for completeness and left to the port already under way:
 `missing_response`, `duplicate_response`, `unmatched_response`,
-`undeclared_replay_gap`, `premature_session_mutation`, `unhonoured_capability`,
+`undeclared_replay_gap`, `premature_session_mutation`,
 `unknown_participant`, the decode-phase codes (`malformed_json`,
 `duplicate_key`, `payload_decode`), the auth and provider codes
 (`auth_flow_order`, `missing_auth_terminal`, `unmatched_provider`,
 `undisclosed_selection_scope`), and the partial `scope_mismatch` and
-`session_state_mismatch`. Not in that list and also Go-only: 15 of the 20 load
-codes, 14 `pack_*` codes and `ext_claim_without_pack` (Zig loads packs but
-refuses only five ways).
+`session_state_mismatch`. Not in that list and also Go-only: 2 of the 20 load
+codes, `pack_fixture_claims_core_unit` and `ext_claim_without_pack` (Zig
+refuses the other eighteen since #1261 and #1307).
 
 ## Gaps ranked by risk
 
@@ -413,8 +414,10 @@ smallest fix.
     reopen answered with the wrong refusal code when the binding is missing or
     the harness cannot load the session is caught by hub tests and the Go
     conformance runner, not by a diagnostic.
-11. **Zig pack loading refuses five ways of twenty, and no Zig gate runs a
-    load-invalid fixture.** A malformed pack Go refuses can load in `oapx`.
+11. **Zig pack loading refuses eighteen ways of twenty.** Its fixture gate runs
+    the `load-invalid` fixtures since #1261, exempting the two codes it does
+    not yet refuse, so a pack Go refuses for one of those can still load in
+    `oapx`.
 12. **Hub answers with protocol payloads are not schema-checked.** `history`
     answers `session.list.response`'s payload and `transcript` answers
     `transcript.load.response`'s; the hub tests assert fields, so a member the

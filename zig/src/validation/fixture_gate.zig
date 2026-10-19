@@ -10,16 +10,15 @@ const tolerant_fixtures = 3;
 const decode_floor = 3;
 
 fn sameCodes(allocator: std.mem.Allocator, expected: []const std.json.Value, found: []const []const u8) !bool {
-    if (expected.len != found.len) return false;
-    var remaining = std.ArrayList([]const u8).empty;
-    defer remaining.deinit(allocator);
-    try remaining.appendSlice(allocator, found);
-    for (expected) |code| {
-        for (remaining.items, 0..) |held, index| {
-            if (!std.mem.eql(u8, held, code.string)) continue;
-            _ = remaining.swapRemove(index);
-            break;
-        } else return false;
+    var want = std.StringArrayHashMapUnmanaged(void).empty;
+    defer want.deinit(allocator);
+    for (expected) |code| try want.put(allocator, code.string, {});
+    var got = std.StringArrayHashMapUnmanaged(void).empty;
+    defer got.deinit(allocator);
+    for (found) |code| try got.put(allocator, code, {});
+    if (want.count() != got.count()) return false;
+    for (want.keys()) |code| {
+        if (!got.contains(code)) return false;
     }
     return true;
 }
@@ -378,15 +377,12 @@ test "tolerated overrides resolve through the registry that holds the pack" {
 }
 
 const unported_load_codes = [_][]const u8{
-    "pack_schema_path_escape",
-    "pack_external_ref",
-    "pack_dependency_missing",
     "pack_fixture_claims_core_unit",
     "ext_claim_without_pack",
 };
 
-const unported_load_fixtures = 6;
-const load_judged_floor = 17;
+const unported_load_fixtures = 2;
+const load_judged_floor = 21;
 
 fn unportedLoadCode(code: []const u8) bool {
     for (unported_load_codes) |name| {
