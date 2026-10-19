@@ -110,6 +110,9 @@ type runState struct {
 	steps           [2]map[native.MessageID]bool
 	toolSeen        [2]map[toolSight]bool
 	usage           protocol.Usage
+	cacheRead       uint64
+	cacheWrite      uint64
+	reasoning       uint64
 	measured        bool
 	cost            float64
 	lastFinish      string
@@ -660,9 +663,15 @@ func (s *session) handleEventLocked(event native.Event) {
 			run.lastFinish = data.Finish
 			run.cost += data.Cost
 			run.measured = true
-			run.usage.InputTokens += tokenCount(data.Tokens.Input)
-			run.usage.OutputTokens += tokenCount(data.Tokens.Output)
-			run.usage.TotalTokens += tokenCount(data.Tokens.Input) + tokenCount(data.Tokens.Output)
+			input, read, write := tokenCount(data.Tokens.Input), tokenCount(data.Tokens.Cache.Read), tokenCount(data.Tokens.Cache.Write)
+			reasoning := tokenCount(data.Tokens.Reasoning)
+			output := tokenCount(data.Tokens.Output) + reasoning
+			run.usage.InputTokens += input
+			run.usage.OutputTokens += output
+			run.usage.TotalTokens += input + read + write + output
+			run.cacheRead += read
+			run.cacheWrite += write
+			run.reasoning += reasoning
 		}
 		s.mu.Unlock()
 	case native.TypeStepFailed:
@@ -942,6 +951,8 @@ func (s *session) settleRunLocked(run *runState) {
 	var usage *protocol.Usage
 	if run.measured {
 		measured := run.usage
+		read, write, reasoning := run.cacheRead, run.cacheWrite, run.reasoning
+		measured.CacheReadInputTokens, measured.CacheWriteInputTokens, measured.ReasoningTokens = &read, &write, &reasoning
 		usage = &measured
 	}
 	reported := reportedCost(run.cost)

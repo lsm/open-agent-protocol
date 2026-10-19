@@ -383,16 +383,19 @@ func TestUsageComesFromTheChunkAndTheTotalIsBackfilled(t *testing.T) {
 	}
 }
 
-func TestCachedTokensComeOutOfTheInputAndReasoningIntoTheOutput(t *testing.T) {
+func TestCachedTokensComeOutOfTheInputAndReasoningIsCountedWithinTheOutput(t *testing.T) {
 	events := runStream(t, streamModel(),
-		sseFrame(`{"usage":{"prompt_tokens":100,"prompt_tokens_details":{"cached_tokens":40},"completion_tokens":5,"completion_tokens_details":{"reasoning_tokens":7}}}`),
+		sseFrame(`{"usage":{"prompt_tokens":100,"prompt_tokens_details":{"cached_tokens":40},"completion_tokens":12,"completion_tokens_details":{"reasoning_tokens":7},"total_tokens":112}}`),
 	)
-	done := findEvent(t, events, EventDone)
-	if done.Message.Usage.InputTokens != 60 {
-		t.Errorf("the input = %d, want 100 less the 40 cached", done.Message.Usage.InputTokens)
+	usage := findEvent(t, events, EventDone).Message.Usage
+	if usage.InputTokens != 60 || usage.CacheReadTokens != 40 {
+		t.Errorf("the input = %d and cached %d, want 100 split into 60 and 40", usage.InputTokens, usage.CacheReadTokens)
 	}
-	if done.Message.Usage.OutputTokens != 12 {
-		t.Errorf("the output = %d, want 5 plus the 7 reasoning", done.Message.Usage.OutputTokens)
+	if usage.OutputTokens != 12 {
+		t.Errorf("the output = %d, want the 12 completion tokens, the 7 reasoning among them", usage.OutputTokens)
+	}
+	if sum := usage.InputTokens + usage.CacheReadTokens + usage.OutputTokens; sum != usage.TotalTokens {
+		t.Errorf("input, cache and output sum to %d, want the wire's own total %d", sum, usage.TotalTokens)
 	}
 }
 

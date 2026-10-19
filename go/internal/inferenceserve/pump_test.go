@@ -105,6 +105,22 @@ func payloadOf(t *testing.T, envelope Envelope) map[string]any {
 	return held
 }
 
+func TestACompletedInferenceReportsTheCachedInputApartFromTheRest(t *testing.T) {
+	envelopes, refused := pumpAll(t, completionsEvents(
+		dataFrame(`{"choices":[{"index":0,"delta":{"content":"hi"}}]}`),
+		dataFrame(`{"choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":100,"prompt_tokens_details":{"cached_tokens":40},"completion_tokens":5}}`),
+		"data: [DONE]\n\n",
+	))
+	if len(refused) != 0 {
+		t.Fatalf("refused = %v", refused)
+	}
+	usage, _ := payloadOf(t, envelopes[len(envelopes)-1])["usage"].(map[string]any)
+	if usage["input_tokens"] != 60.0 || usage["cache_read_input_tokens"] != 40.0 || usage["output_tokens"] != 5.0 || usage["total_tokens"] != 105.0 {
+		t.Fatalf("usage = %v, want 60 uncached, 40 cached, 5 out, 105 in all", usage)
+	}
+	assertValid(t, envelopes)
+}
+
 func TestATextThenToolCallTurnPumpsAValidTraceWithItsUsage(t *testing.T) {
 	envelopes, refused := pumpAll(t, completionsEvents(
 		dataFrame(`{"choices":[{"index":0,"delta":{"content":"look"}}]}`),

@@ -293,7 +293,11 @@
               ]
             },
             "stop_reason": "stop",
-            "usage": {}
+            "usage": {
+              "cache_read_input_tokens": 0,
+              "cache_write_input_tokens": 0,
+              "reasoning_tokens": 0
+            }
           },
           "sequence": 3,
           "timestamp_ms": 7,
@@ -367,7 +371,11 @@
               ]
             },
             "stop_reason": "stop",
-            "usage": {}
+            "usage": {
+              "cache_read_input_tokens": 0,
+              "cache_write_input_tokens": 0,
+              "reasoning_tokens": 0
+            }
           },
           "sequence": 3,
           "timestamp_ms": 11,
@@ -2216,7 +2224,11 @@
               ]
             },
             "stop_reason": "stop",
-            "usage": {}
+            "usage": {
+              "cache_read_input_tokens": 0,
+              "cache_write_input_tokens": 0,
+              "reasoning_tokens": 0
+            }
           },
           "sequence": 2,
           "timestamp_ms": 5,
@@ -2539,7 +2551,10 @@
             "stop_reason": "stop",
             "usage": {
               "input_tokens": 3,
+              "cache_read_input_tokens": 0,
+              "cache_write_input_tokens": 0,
               "output_tokens": 2,
+              "reasoning_tokens": 0,
               "total_tokens": 5
             }
           },
@@ -2828,7 +2843,11 @@
               ]
             },
             "stop_reason": "stop",
-            "usage": {}
+            "usage": {
+              "cache_read_input_tokens": 0,
+              "cache_write_input_tokens": 0,
+              "reasoning_tokens": 0
+            }
           },
           "sequence": 3,
           "timestamp_ms": 6,

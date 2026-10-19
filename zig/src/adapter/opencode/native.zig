@@ -192,6 +192,9 @@ pub const StepEndedData = struct {
     cost: f64 = 0,
     input_tokens: f64 = 0,
     output_tokens: f64 = 0,
+    reasoning_tokens: f64 = 0,
+    cache_read_tokens: f64 = 0,
+    cache_write_tokens: f64 = 0,
 };
 
 pub const StepFailedData = struct { message: []const u8 = "", failure: ErrorBlock = .{}, cost: f64 = 0 };
@@ -923,6 +926,9 @@ pub fn decodeStepEnded(arena: std.mem.Allocator, event: Event, diag: *Diagnostic
         .cost = floatAt(document, &.{"cost"}),
         .input_tokens = floatAt(document, &.{ "tokens", "input" }),
         .output_tokens = floatAt(document, &.{ "tokens", "output" }),
+        .reasoning_tokens = floatAt(document, &.{ "tokens", "reasoning" }),
+        .cache_read_tokens = floatAt(document, &.{ "tokens", "cache", "read" }),
+        .cache_write_tokens = floatAt(document, &.{ "tokens", "cache", "write" }),
     };
 }
 

@@ -30,9 +30,11 @@ var (
 )
 
 type Usage struct {
-	InputTokens  int `json:"input_tokens"`
-	OutputTokens int `json:"output_tokens"`
-	TotalTokens  int `json:"total_tokens"`
+	InputTokens           int `json:"input_tokens"`
+	CacheReadInputTokens  int `json:"cache_read_input_tokens,omitempty"`
+	CacheWriteInputTokens int `json:"cache_write_input_tokens,omitempty"`
+	OutputTokens          int `json:"output_tokens"`
+	TotalTokens           int `json:"total_tokens"`
 }
 
 type partDelta struct {
@@ -242,9 +244,9 @@ func FailureCode(message string) string {
 func usageOf(usage provider.Usage) Usage {
 	total := usage.TotalTokens
 	if total <= 0 {
-		total = usage.InputTokens + usage.OutputTokens
+		total = usage.InputTokens + usage.CacheReadTokens + usage.CacheWriteTokens + usage.OutputTokens
 	}
-	return Usage{InputTokens: usage.InputTokens, OutputTokens: usage.OutputTokens, TotalTokens: total}
+	return Usage{InputTokens: usage.InputTokens, CacheReadInputTokens: usage.CacheReadTokens, CacheWriteInputTokens: usage.CacheWriteTokens, OutputTokens: usage.OutputTokens, TotalTokens: total}
 }
 
 func thinkingSignature(partial provider.PartialMessage, index int) string {

@@ -51,8 +51,7 @@
       "reason": "interrupt confirmed by terminal_reason aborted_streaming",
       "usage": {
         "input_tokens": 7,
-        "output_tokens": 5,
-        "total_tokens": 12
+        "output_tokens": 5
       },
       "duration_ms": 66
     },
