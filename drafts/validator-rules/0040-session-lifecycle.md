@@ -86,7 +86,7 @@ Source: [`decisions/0045-reasoning-level-and-compaction-policy-are-session-setti
 | id | rule | lines | code | Go | Zig | Rust |
 | --- | --- | --- | --- | --- | --- | --- |
 | `0045#where-the-settings-go/1` | An open or update supplying `reasoning_level` or `compaction_policy` through a mode the feature does not affirmatively disclose MUST be refused `unsupported_feature` naming the key. | L247–260, L162–194 | `unavailable_capability` | `settings.go:gateSettings` | `semantic.zig:settingsGate` | — |
-| `0045#where-the-settings-go/2` | A setting under a `degraded` feature without the caller's opt-in MUST be refused `capability_degraded`. | L225–244 | `degraded_without_optin` | `settings.go:gateSettings` | `semantic.zig:settingsGate` | — |
+| `0045#where-the-settings-go/2` | A setting under a `degraded` feature without the caller's opt-in MUST be refused `capability_degraded`. | L162–166 | `degraded_without_optin` | `settings.go:gateSettings` | `semantic.zig:settingsGate` | — |
 
 ### [0045] What the state reports
 
@@ -108,6 +108,7 @@ Source: [`decisions/0045-reasoning-level-and-compaction-policy-are-session-setti
 | `0045#validator/3` | An admitted update MUST repeat the effective compaction policy it was asked for, or refuse it. | L247–260 | `unapplied_control` | `settings.go:settingsUpdateResponse` | `semantic.zig:settingsUpdateResponse` | — |
 | `0045#validator/4` | `session.state.updated` reflecting an accepted update MUST precede the start of any run admitted after the update's response. | L247–260 | `session_state_mismatch` | `settings.go:settingsBeforeRun` | `semantic.zig:settingsBeforeRun` | — |
 | `0045#validator/5` | An accepted update MUST be reflected by a `session.state.updated` before the trace ends. | L247–260 | `session_state_mismatch` | `settings.go:closeSettingsUpdates` | `semantic.zig:close` | — |
+| `0045#validator/6` | A `share` compaction policy's `share_percent` MUST lie in 1 to 100, and a `tokens` policy's `tokens` MUST be positive. | L258; L109–112 | `schema_invalid` | schema | schema | schema |
 
 ### [0046] The capability key is `session.list`, advertised by the host
 
@@ -116,7 +117,7 @@ Source: [`decisions/0046-a-session-list-is-the-hosts-bindings.md`](../../decisio
 | id | rule | lines | code | Go | Zig | Rust |
 | --- | --- | --- | --- | --- | --- | --- |
 | `0046#the-capability-key-is-sessionlist-advertised-by-the-host/1` | A `session.list.request` to an endpoint that does not affirmatively advertise `session.list` MUST be refused `unsupported_feature` naming it. | L91–96 | `unavailable_capability` | `sessionlist.go:sessionListRequest` | `semantic.zig:sessionListRequest` | — |
-| `0046#the-capability-key-is-sessionlist-advertised-by-the-host/2` | A list under a `degraded` `session.list` without the caller's opt-in MUST be refused `capability_degraded`. | L91–96 | `degraded_without_optin` | `sessionlist.go:sessionListRequest` | `semantic.zig:sessionListResponse` | — |
+| `0046#the-capability-key-is-sessionlist-advertised-by-the-host/2` | A list under a `degraded` `session.list` without the caller's opt-in MUST be refused `capability_degraded`. | 0005 L90–132 (the degraded opt-in gate, applied to `session.list`) | `degraded_without_optin` | `sessionlist.go:sessionListRequest` | `semantic.zig:sessionListResponse` | — |
 
 ### [0046] A list is paged on an opaque cursor, newest first
 
@@ -126,6 +127,7 @@ Source: [`decisions/0046-a-session-list-is-the-hosts-bindings.md`](../../decisio
 | --- | --- | --- | --- | --- | --- | --- |
 | `0046#a-list-is-paged-on-an-opaque-cursor-newest-first/1` | A page MUST hold no more entries than the request's `limit`, or 50 when none was given. | L77–88 | `session_list_over_limit` | `sessionlist.go:sessionListResponse` | `semantic.zig:sessionListResponse` | — |
 | `0046#a-list-is-paged-on-an-opaque-cursor-newest-first/2` | Entries MUST be ordered by `updated_at_ms` descending, ties by `session_id` ascending. | L77–88 | `session_list_order` | `sessionlist.go:sessionListResponse` | `semantic.zig:sessionListResponse` | — |
+| `0046#a-list-is-paged-on-an-opaque-cursor-newest-first/3` | A `session.list.request` `limit` MUST lie in 1 to 100. | L78–79 | `schema_invalid` | schema | schema | schema |
 
 ### [0046] The list is the host's bindings, and only those
 
@@ -159,7 +161,7 @@ Source: [`decisions/0051-transcript-load.md`](../../decisions/0051-transcript-lo
 | id | rule | lines | code | Go | Zig | Rust |
 | --- | --- | --- | --- | --- | --- | --- |
 | `0051#8/1` | A `transcript.load.request` to an endpoint that does not affirmatively advertise `transcript.load` MUST be refused `unsupported_feature` naming it. | L136–143 | `unavailable_capability` | `transcript.go:transcriptLoadRequest` | `semantic.zig:transcriptLoadRequest` (gatedRequest) | — |
-| `0051#8/2` | A load under a `degraded` `transcript.load` without the caller's opt-in MUST be refused `capability_degraded`. | L136–143 | `degraded_without_optin` | `transcript.go:transcriptLoadRequest` | `semantic.zig:transcriptLoadResponse` | — |
+| `0051#8/2` | A load under a `degraded` `transcript.load` without the caller's opt-in MUST be refused `capability_degraded`. | 0005 L90–132 (the degraded opt-in gate, applied to `transcript.load`) | `degraded_without_optin` | `transcript.go:transcriptLoadRequest` | `semantic.zig:transcriptLoadResponse` | — |
 
 ### [0051] 4. Each page is bounded and says so
 
@@ -169,6 +171,7 @@ Source: [`decisions/0051-transcript-load.md`](../../decisions/0051-transcript-lo
 | --- | --- | --- | --- | --- | --- | --- |
 | `0051#4/1` | A page MUST hold no more entries than the request's `limit`, or 100 when none was given. | L89–96 | `transcript_over_limit` | `transcript.go:transcriptLoadResponse` | `semantic.zig:transcriptLoadResponse` | — |
 | `0051#4/2` | An entry with `truncated: true` MUST be the only entry on its page. | L89–96 | — | — | — | — |
+| `0051#4/3` | A `transcript.load.request` `limit` MUST lie in 1 to 500. | L90 | `schema_invalid` | schema | schema | schema |
 
 ### [0051] 2. An entry is OAP's, and the transcript is a list
 
@@ -212,6 +215,15 @@ Source: [`decisions/0044-compaction.md`](../../decisions/0044-compaction.md#two-
 | id | rule | lines | code | Go | Zig | Rust |
 | --- | --- | --- | --- | --- | --- | --- |
 | `0044#two-features-one-unit/1` | An endpoint advertising `session.compact` MUST advertise `run.compaction` at `native` or `emulated`. | L62–72 | — | — | — | — |
+
+### [0050] 3. The request is answered, and asks when it must
+
+Source: [`decisions/0050-shutdown-is-graceful-forced-or-asked.md`](../../decisions/0050-shutdown-is-graceful-forced-or-asked.md#3-the-request-is-answered-and-asks-when-it-must).
+
+| id | rule | lines | code | Go | Zig | Rust |
+| --- | --- | --- | --- | --- | --- | --- |
+| `0050#3/1` | An `endpoint.shutdown.request` `mode`, when present, MUST be `graceful` or `force`. | L113 | `schema_invalid` | schema | schema | schema |
+| `0050#3/2` | An `endpoint.shutdown.response` with `outcome: "choose"` MUST list at least one run. | L130–131 | `schema_invalid` | schema | schema | schema |
 
 ### [0050] 2. Graceful freezes the queue, and the next start resumes it
 
