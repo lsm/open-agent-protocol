@@ -254,16 +254,10 @@ pub fn outputSchemaDefect(arena: std.mem.Allocator, text: []const u8) error{OutO
             else => return "output_schema root type is not a string or a list of strings",
         }
     }
-    var registry = jsonschema.Registry{ .allocator = arena };
-    registry.addDocument("output_schema", text) catch |err| switch (err) {
+    const defect = jsonschema.schemaDefect(arena, document, document) catch |err| switch (err) {
         error.OutOfMemory => return error.OutOfMemory,
-        else => return "output_schema is not valid JSON",
     };
-    var validator = jsonschema.Validator.init(arena, &registry);
-    _ = validator.validate("output_schema", .{ .object = .empty }) catch |err| switch (err) {
-        error.OutOfMemory => return error.OutOfMemory,
-        else => return "output_schema uses a construct oapx's schema engine does not evaluate",
-    };
+    if (defect != null) return "output_schema uses a construct oapx's schema engine does not evaluate";
     return null;
 }
 
@@ -2055,4 +2049,11 @@ test "compaction is refused while a run is active or events are undrained" {
     try feed(&reducer, "{\"method\":\"turn/completed\",\"params\":{\"threadId\":\"native-thread\",\"turn\":{\"id\":\"native-turn\",\"status\":\"completed\"}}}");
     try testing.expect(reducer.envelopes.items.len > 0);
     try testing.expectError(Error.RunActive, reducer.compactInto(&target));
+}
+
+test "an output schema whose subschema the engine cannot evaluate is refused before the turn" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    try testing.expect(try outputSchemaDefect(arena.allocator(), "{\"type\":\"object\",\"properties\":{\"v\":{\"$ref\":\"https://example.invalid/s.json\"}}}") != null);
+    try testing.expect(try outputSchemaDefect(arena.allocator(), "{\"type\":\"object\",\"properties\":{\"verdict\":{\"type\":\"string\",\"enum\":[\"pass\",\"concerns\"]}},\"required\":[\"verdict\"]}") == null);
 }
