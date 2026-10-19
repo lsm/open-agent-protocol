@@ -299,7 +299,7 @@ func TestCompletedLifecycle(t *testing.T) {
 	client.send(t, native.MethodTurnCompleted, native.TurnCompletedNotification{ThreadID: client.threadID, Turn: native.Turn{ID: client.turnID, Status: native.TurnCompleted}})
 	events := drainClosed(t, stream)
 	adaptertest.AssertTypes(t, events, protocol.TypeRunStarted, protocol.TypeContentDelta, protocol.TypeRunCompleted)
-	adaptertest.AssertProtocolValidWithSubmit(t, fakeSubmit, admission, descriptor, events)
+	adaptertest.AssertProtocolValidWithSubmit(t, fakeSubmit, admission, descriptor, events, adaptertest.Opened(adapter.OpenRequest{Participant: protocol.Participant{ID: "user"}}))
 	for index, event := range events {
 		if event.RunID != admission.RunID || event.Sequence == nil || *event.Sequence != uint64(index+1) || event.CapabilityRevision != descriptor.CapabilityRevision {
 			t.Fatalf("event %d: %+v", index, event)
@@ -808,7 +808,7 @@ func TestDispatchReducesRequestAfterPrecedingNotification(t *testing.T) {
 	}
 	client.send(t, native.MethodTurnCompleted, native.TurnCompletedNotification{ThreadID: client.threadID, Turn: native.Turn{ID: client.turnID, Status: native.TurnCompleted}})
 	events = append(events, drainClosed(t, stream)...)
-	adaptertest.AssertProtocolValidWithSubmit(t, fakeSubmit, admission, descriptor, events)
+	adaptertest.AssertProtocolValidWithSubmit(t, fakeSubmit, admission, descriptor, events, adaptertest.Opened(adapter.OpenRequest{Participant: protocol.Participant{ID: "user"}}))
 }
 
 func TestUserInputEmptyOptionsSurfacesAsText(t *testing.T) {
@@ -982,7 +982,7 @@ func TestSubmitAppliesModelPerTurn(t *testing.T) {
 	if started.ModelID != "glm-per-turn" {
 		t.Fatalf("run.started model = %q, want the admitted model", started.ModelID)
 	}
-	adaptertest.AssertProtocolValidWithSubmit(t, request, admission, descriptor, events)
+	adaptertest.AssertProtocolValidWithSubmit(t, request, admission, descriptor, events, adaptertest.Opened(adapter.OpenRequest{Participant: protocol.Participant{ID: "user"}}))
 	if state, err := session.State(context.Background()); err != nil || state.CurrentModelID != "glm-test" {
 		t.Fatalf("the session default moved at the terminal: %+v err=%v", state, err)
 	}
@@ -1095,7 +1095,7 @@ func TestCancellationSettlesAnOpenActionAsCancelled(t *testing.T) {
 	if settled < 0 || terminal < 0 || settled > terminal {
 		t.Fatalf("settled=%d terminal=%d events=%v", settled, terminal, envelopeTypes(events))
 	}
-	adaptertest.AssertProtocolValidWithSubmitAndCancellation(t, fakeSubmit, admission, descriptor, events)
+	adaptertest.AssertProtocolValidWithSubmitAndCancellation(t, fakeSubmit, admission, descriptor, events, adaptertest.Opened(adapter.OpenRequest{Participant: protocol.Participant{ID: "user"}}))
 }
 
 func envelopeTypes(events []protocol.Envelope) []protocol.EnvelopeType {

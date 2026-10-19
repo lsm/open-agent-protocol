@@ -120,6 +120,6 @@ func answerLivePermission(t *testing.T, choice string) ([]protocol.Envelope, pro
 		t.Fatalf("answer: %v", err)
 	}
 	events := append(seen, adaptertest.Drain(t, stream, 60*time.Second)...)
-	adaptertest.AssertProtocolValidWithDescriptor(t, response, descriptor, events)
+	adaptertest.AssertProtocolValidWithDescriptor(t, response, descriptor, events, adaptertest.Opened(base.OpenRequest{Participant: protocol.Participant{ID: "integration"}}))
 	return events, asked
 }
