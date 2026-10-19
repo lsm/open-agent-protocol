@@ -439,9 +439,12 @@ applied — Go: `TestAFirstSignalStartsAGracefulShutdownAndASecondForcesIt`,
 `TestAThirdSignalEndsServingEvenWhileAnEarlierOneIsParked`. Zig's
 mapping is pending, and stdin EOF still ends serving in both.
 
-Shutdown is stdin EOF or SIGINT/SIGTERM. The daemon stops admitting, settles
-the work it already admitted inside its bounded window, closes every session so
-child agent processes are not orphaned, and exits zero. The session sweep runs
+Stdin EOF, and where a tree has not yet mapped them, SIGINT/SIGTERM, end
+serving at once: the daemon stops admitting, settles the work it already
+admitted inside its bounded window, closes every session so child agent
+processes are not orphaned, and exits zero. Where signals are mapped, the first
+is a graceful shutdown with no timeout of its own and only a later one bounds
+the exit. The session sweep runs
 on every exit, including the failures below, so a child is never orphaned by
 one.
 
@@ -1887,7 +1890,7 @@ for the next exit. Go's context cancels the same call, which is why Go's
 | Every run a snapshot lists is cancelled | `TestCloseCancelsEveryRunTheSnapshotLists` |
 | A run named only as the active run is still cancelled | `TestCloseFallsBackToTheNamedActiveRun` |
 | The window is 10 s for the hub, 5 s per stdio stage | every shutdown test drives a short custom window (`TestShutdownBoundedWhileWorkerStuck`, `TestTeardownStopsWhenAWriteParksForever`); **gap G8** — only the defaults are unpinned |
-| SIGINT and SIGTERM end every session inside that window and exit zero | Go: the first starts a graceful shutdown, the second forces it, a third ends serving outright, and `runHub` returns nil. Zig: `oapx serve` installs both handlers before it serves, and the serve loop ends on either, so the sweep runs on the signal path exactly as it runs on a hangup |
+| SIGINT and SIGTERM end serving as Decision 0050 rule 4 maps them, and the exit is zero | Go: the first starts a graceful shutdown, the second forces it, a third ends serving outright, and `runHub` returns nil. Zig: `oapx serve` installs both handlers before it serves, and the serve loop ends on either, so the sweep runs on the signal path exactly as it runs on a hangup |
 | **Where a signal can be taken, it is; where the loop cannot observe one, the default disposition stands** | Zig: `hubTakesSignals` gates the handler and the pollable handle on the same answer, because installing a handler the loop never polls for is worse than not installing one. On Windows the stdio read is not pollable, so the hub installs no console handler, says so on stderr, and Ctrl+C terminates the process as it did before — a bounded sweep on a signal is [#460](https://github.com/lsm/open-agent-protocol/issues/460)'s work, not this rule's |
 
 ## Known gaps
