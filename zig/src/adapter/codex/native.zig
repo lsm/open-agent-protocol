@@ -388,7 +388,7 @@ pub fn unconfirmedHostPermission(host: ThreadStart, resumed: std.json.Value) ?[]
     return null;
 }
 
-pub fn turnStartParams(arena: std.mem.Allocator, thread_id: []const u8, texts: []const []const u8, model: []const u8, effort: []const u8) !std.json.Value {
+pub fn turnStartParams(arena: std.mem.Allocator, thread_id: []const u8, texts: []const []const u8, model: []const u8, effort: []const u8, output_schema: ?std.json.Value) !std.json.Value {
     var input = std.json.Array.init(arena);
     for (texts) |entry| {
         var element = object();
@@ -401,6 +401,7 @@ pub fn turnStartParams(arena: std.mem.Allocator, thread_id: []const u8, texts: [
     try params.put(arena, "input", .{ .array = input });
     try putNonEmpty(arena, &params, "model", model);
     try putNonEmpty(arena, &params, "effort", effort);
+    if (output_schema) |schema| try params.put(arena, "outputSchema", schema);
     return .{ .object = params };
 }
 
@@ -522,7 +523,7 @@ test "parameters are written in Go's struct order and omit what Go omits" {
     );
     try testing.expectEqualStrings(
         "{\"threadId\":\"t\",\"input\":[{\"type\":\"text\",\"text\":\"hi\"},{\"type\":\"text\"}]}",
-        try encode(a, try turnStartParams(a, "t", &.{ "hi", "" }, "", "")),
+        try encode(a, try turnStartParams(a, "t", &.{ "hi", "" }, "", "", null)),
     );
     var answers = [_]NativeAnswer{ .{ .question_id = "note", .answer = "n" }, .{ .question_id = "mode", .answer = "Safe" } };
     try testing.expectEqualStrings(

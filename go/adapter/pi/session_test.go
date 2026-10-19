@@ -195,12 +195,12 @@ func testDescriptor(t *testing.T) base.Descriptor {
 
 func assertValidTrace(t *testing.T, admission protocol.MessageSubmitResponse, events []protocol.Envelope) {
 	t.Helper()
-	adaptertest.AssertProtocolValidWithDescriptor(t, admission, testDescriptor(t), events)
+	adaptertest.AssertProtocolValidWithDescriptor(t, admission, testDescriptor(t), events, adaptertest.Opened(base.OpenRequest{Participant: protocol.Participant{ID: "user"}}))
 }
 
 func assertCancelledTrace(t *testing.T, admission protocol.MessageSubmitResponse, events []protocol.Envelope) {
 	t.Helper()
-	adaptertest.AssertProtocolValidWithCancellation(t, admission, testDescriptor(t), events)
+	adaptertest.AssertProtocolValidWithCancellation(t, admission, testDescriptor(t), events, adaptertest.Opened(base.OpenRequest{Participant: protocol.Participant{ID: "user"}}))
 }
 
 func TestSubmitRefusesEveryUnadvertisedControl(t *testing.T) {
@@ -1306,7 +1306,7 @@ func TestFinalMessageRenamingItsToolIsRefused(t *testing.T) {
 			client.emit(t, map[string]any{"type": "agent_settled"})
 			events := adaptertest.Drain(t, stream, time.Second)
 			assertRunFailedWith(t, events, "pi_invalid_final_message", `final message calls tool "native" "`+final.named+`", which was started as "read"`)
-			adaptertest.AssertProtocolValidWithDescriptor(t, admitted, testDescriptor(t), events)
+			adaptertest.AssertProtocolValidWithDescriptor(t, admitted, testDescriptor(t), events, adaptertest.Opened(base.OpenRequest{Participant: protocol.Participant{ID: "user"}}))
 		})
 	}
 }

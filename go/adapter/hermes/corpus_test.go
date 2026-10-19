@@ -722,7 +722,7 @@ func (e *hmExecution) assertResume(t *testing.T, resume hmResume, delivered []pr
 
 func (e *hmExecution) validate(t *testing.T, admission protocol.MessageSubmitResponse, events []protocol.Envelope) {
 	t.Helper()
-	adaptertest.AssertProtocolValidWithDescriptor(t, admission, e.descriptor, events)
+	adaptertest.AssertProtocolValidWithDescriptor(t, admission, e.descriptor, events, adaptertest.Opened(base.OpenRequest{Participant: protocol.Participant{ID: "user"}}))
 }
 
 type hmCorpusClient struct {

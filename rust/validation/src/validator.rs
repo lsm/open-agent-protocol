@@ -6,6 +6,7 @@ use serde_json::Value;
 
 use crate::diagnostic::sort_diagnostics;
 use crate::schema::{compile, SchemaError, SCHEMAS};
+use crate::state::State;
 use crate::trace::{duplicate_key, parse_trace};
 use crate::{codes, Diagnostic, Phase, ValidationResult};
 
@@ -97,6 +98,14 @@ impl Validator {
                     );
                 }
             }
+        }
+        if diagnostics.is_empty() {
+            let mut state = State::new(fixture);
+            for (index, envelope) in envelopes.iter().enumerate() {
+                state.apply(index, items[index].line, envelope);
+            }
+            state.close();
+            diagnostics = state.diagnostics;
         }
         sort_diagnostics(&mut diagnostics);
         ValidationResult { diagnostics }

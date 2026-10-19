@@ -108,23 +108,23 @@ func TestSynthesizedSubmitIsRefusedWhenTheDescriptorOffersAControl(t *testing.T)
 	admission := protocol.MessageSubmitResponse{SessionID: "session", RequestedDelivery: protocol.DeliveryAuto, RunID: "run"}
 	for _, key := range []string{protocol.FeatureInstructions, protocol.FeatureModelSelection, protocol.FeatureStructuredOutput} {
 		descriptor := adapter.Descriptor{CapabilityRevision: "test-revision", Capabilities: protocol.CapabilityDescriptor{Features: map[string]protocol.FeatureSupport{key: {Level: protocol.SupportEmulated}}}}
-		if _, err := protocolTraceWith(nil, admission, descriptor, nil, nil, false); err == nil || !strings.Contains(err.Error(), key) {
+		if _, err := protocolTraceWith(nil, admission, descriptor, nil, nil, false, nil); err == nil || !strings.Contains(err.Error(), key) {
 			t.Fatalf("an offered %s was synthesized away: %v", key, err)
 		}
 	}
 	for _, level := range []protocol.SupportLevel{protocol.SupportNative, protocol.SupportEmulated, protocol.SupportDegraded} {
 		descriptor := adapter.Descriptor{CapabilityRevision: "test-revision", Capabilities: protocol.CapabilityDescriptor{Features: map[string]protocol.FeatureSupport{protocol.FeatureToolSelection: {Level: level}}}}
-		if _, err := protocolTraceWith(nil, admission, descriptor, nil, nil, false); err == nil || !strings.Contains(err.Error(), protocol.FeatureToolSelection) {
+		if _, err := protocolTraceWith(nil, admission, descriptor, nil, nil, false, nil); err == nil || !strings.Contains(err.Error(), protocol.FeatureToolSelection) {
 			t.Fatalf("a %s control was synthesized away: %v", level, err)
 		}
 		request := protocol.MessageSubmitRequest{SessionID: "session", Delivery: protocol.DeliveryAuto, ToolChoice: []byte(`{"disallowed":["x"]}`), Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("go")}}}
-		trace, err := protocolTraceWith(&request, admission, descriptor, nil, nil, false)
+		trace, err := protocolTraceWith(&request, admission, descriptor, nil, nil, false, nil)
 		if err != nil || !strings.Contains(string(trace), `"tool_choice":{"disallowed":["x"]}`) {
 			t.Fatalf("the caller's submit did not reach the trace: %v %s", err, trace)
 		}
 	}
 	unavailable := adapter.Descriptor{CapabilityRevision: "test-revision", Capabilities: protocol.CapabilityDescriptor{Features: map[string]protocol.FeatureSupport{protocol.FeatureToolSelection: {Level: protocol.SupportUnavailable}}}}
-	if _, err := protocolTraceWith(nil, admission, unavailable, nil, nil, false); err != nil {
+	if _, err := protocolTraceWith(nil, admission, unavailable, nil, nil, false, nil); err != nil {
 		t.Fatalf("an unavailable control refused the synthesized submit: %v", err)
 	}
 }
