@@ -208,9 +208,13 @@ func oapUsage(value jsonObject) *Usage {
 	if value == nil {
 		return nil
 	}
-	input := value.intOr(0, "input_tokens")
-	output := value.intOr(0, "output_tokens")
-	return &Usage{Input: int64(input), Output: int64(output)}
+	return &Usage{
+		Input:      int64(value.intOr(0, "input_tokens")),
+		Output:     int64(value.intOr(0, "output_tokens")),
+		CacheRead:  int64(value.intOr(0, "cache_read_input_tokens")),
+		CacheWrite: int64(value.intOr(0, "cache_write_input_tokens")),
+		Reasoning:  int64(value.intOr(0, "reasoning_tokens")),
+	}
 }
 
 func oapResponse(payload jsonObject, modelRef, messageKey string) (*CompletionResponse, error) {

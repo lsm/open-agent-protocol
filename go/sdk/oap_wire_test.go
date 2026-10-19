@@ -665,3 +665,11 @@ func TestOAPOpenRefusesWhatTheEndpointWouldIgnore(t *testing.T) {
 		t.Fatalf("an endpoint other than oapx.agent was sent oapx settings: %v, %+v", err, payload)
 	}
 }
+
+func TestOAPUsageReadsTheCacheAndReasoningCounts(t *testing.T) {
+	got := oapUsage(jsonObject{"input_tokens": float64(100), "cache_read_input_tokens": float64(400), "cache_write_input_tokens": float64(50), "output_tokens": float64(30), "reasoning_tokens": float64(20), "total_tokens": float64(580)})
+	want := Usage{Input: 100, Output: 30, CacheRead: 400, CacheWrite: 50, Reasoning: 20}
+	if got == nil || *got != want {
+		t.Fatalf("usage = %+v, want %+v", got, want)
+	}
+}

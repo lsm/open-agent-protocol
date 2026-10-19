@@ -120,6 +120,7 @@ type Usage struct {
 	Output     int64 `json:"output"`
 	CacheRead  int64 `json:"cache_read,omitempty"`
 	CacheWrite int64 `json:"cache_write,omitempty"`
+	Reasoning  int64 `json:"reasoning,omitempty"`
 }
 
 type ResponseMessage struct {
