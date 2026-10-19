@@ -1,6 +1,6 @@
 # Extension packs
 
-Decision 0004, which makes good 0003's extension seam: the load refusals a pack set can draw, and the gate diagnostics packed content draws on the wire. A load refusal is not a diagnostic (0004 L165–173): it comes from the loader before any trace is read, and `load-invalid` fixtures judge it. Format: [README](README.md).
+Decision 0004, which makes good 0003's extension seam: the load refusals a pack set can draw, and the gate diagnostics packed content draws on the wire. A load refusal is not a diagnostic (0004 L174–182): it comes from the loader before any trace is read, and `load-invalid` fixtures judge it. Format: [README](README.md).
 
 ## Load refusals
 
@@ -53,9 +53,9 @@ Source: [`decisions/0004-extension-packs.md`](../../decisions/0004-extension-pac
 
 | id | rule | lines | code | Go | Zig | Rust |
 | --- | --- | --- | --- | --- | --- | --- |
-| `0004#a-pack-is-a-document-someone-else-wrote/1` | A pack's schemas MUST resolve references only to the core bundle, its own documents and the packs it names in `depends_on`. | L159–161 | `pack_external_ref` | `pack.go:LoadPacks` | — | — |
-| `0004#a-pack-is-a-document-someone-else-wrote/2` | Each `depends_on` entry MUST be satisfied by a loaded pack of that exact id and version. | L161–164 | `pack_dependency_missing` | `pack.go:LoadPacks` | — | — |
-| `0004#a-pack-is-a-document-someone-else-wrote/3` | Every `schemas` entry, and the pack's fixture manifest, MUST resolve beneath the pack root after symlinks are followed. | L166–172 | `pack_schema_path_escape` | `pack.go:LoadPacks` | — | — |
+| `0004#a-pack-is-a-document-someone-else-wrote/1` | A pack's schemas MUST resolve references only to the core bundle, its own documents and the packs it names in `depends_on`. | L159–161 | `pack_external_ref` | `pack.go:LoadPacks` | `packs.zig` | — |
+| `0004#a-pack-is-a-document-someone-else-wrote/2` | Each `depends_on` entry MUST be satisfied by a loaded pack of that exact id and version. | L161–164 | `pack_dependency_missing` | `pack.go:LoadPacks` | `packs.zig` | — |
+| `0004#a-pack-is-a-document-someone-else-wrote/3` | Every `schemas` entry, and the pack's fixture manifest, MUST resolve beneath the pack root after symlinks are followed. | L166–172 | `pack_schema_path_escape` | `pack.go:LoadPacks` | `packs.zig` | — |
 
 ### [0004] A pack's conformance claim is its own
 

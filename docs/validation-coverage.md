@@ -87,8 +87,8 @@ Every code either tree declares, or a fixture expects. "defined, not in implemen
 | `model_not_in_catalog` | semantic | yes | yes | 11 | 0 | 0006, 0009, 0028, staged-units-graduation |
 | `pack_branch_undeclared_type` | load | yes (load) | yes (load) | 1 | 0 | 0004, staged-units-graduation |
 | `pack_branch_unpinned` | load | yes (load) | yes (load) | 1 | 0 | 0004, staged-units-graduation |
-| `pack_dependency_missing` | load | yes (load) | no | 1 | 0 | 0004, staged-units-graduation |
-| `pack_external_ref` | load | yes (load) | no | 2 | 0 | 0004, staged-units-graduation |
+| `pack_dependency_missing` | load | yes (load) | yes (load) | 1 | 0 | 0004, staged-units-graduation |
+| `pack_external_ref` | load | yes (load) | yes (load) | 2 | 0 | 0004, staged-units-graduation |
 | `pack_fixture_claims_core_unit` | load | yes (load) | no | 1 | 0 | 0004, staged-units-graduation |
 | `pack_foreign_prefix` | load | yes (load) | yes (load) | 1 | 0 | 0004, staged-units-graduation |
 | `pack_id_collision` | load | yes (load) | yes (load) | 2 | 0 | 0004, staged-units-graduation |
@@ -100,7 +100,7 @@ Every code either tree declares, or a fixture expects. "defined, not in implemen
 | `pack_response_gated` | load | yes (load) | yes (load) | 1 | 0 | 0004, staged-units-graduation |
 | `pack_restates_core_member` | load | yes (load) | yes (load) | 1 | 0 | 0004, staged-units-graduation |
 | `pack_role_undeclared` | load | yes (load) | yes (load) | 1 | 0 | 0004, staged-units-graduation |
-| `pack_schema_path_escape` | load | yes (load) | no | 1 | 0 | 0004, staged-units-graduation |
+| `pack_schema_path_escape` | load | yes (load) | yes (load) | 1 | 0 | 0004, staged-units-graduation |
 | `pack_type_duplicate` | load | yes (load) | yes (load) | 1 | 0 | 0004, staged-units-graduation |
 | `pack_ungated_type` | load | yes (load) | yes (load) | 1 | 0 | 0004, staged-units-graduation |
 | `pack_unprefixed_name` | load | yes (load) | yes (load) | 1 | 0 | 0004, staged-units-graduation |
@@ -170,7 +170,7 @@ is checked. Fixture counts are positive / negative traces citing the decision.
 | rule | code | Go / Zig | fixtures | note |
 | --- | --- | --- | --- | --- |
 | 0003 the graduation gate (all rules) | — | — | — | process; pinned by review and by `goap check`'s unit inventory |
-| 0004 unprefixed namespace, prefix-free set, a pack declares what it defines, a pack adds and does not amend, a pack is someone else's document | 19 `pack_*` load codes and `ext_claim_without_pack` | Go all 20; Zig 15, all but `pack_schema_path_escape`, `pack_external_ref`, `pack_dependency_missing`, `pack_fixture_claims_core_unit` and `ext_claim_without_pack` (#1261); per-code status in [`drafts/validator-rules/0004-packs.md`](../drafts/validator-rules/0004-packs.md) | 6 / 23 load-invalid | the Zig fixture gate judges `load-invalid` since #1261 |
+| 0004 unprefixed namespace, prefix-free set, a pack declares what it defines, a pack adds and does not amend, a pack is someone else's document | 19 `pack_*` load codes and `ext_claim_without_pack` | Go all 20; Zig 18, all but `pack_fixture_claims_core_unit` and `ext_claim_without_pack` (#1261, #1307); per-code status in [`drafts/validator-rules/0004-packs.md`](../drafts/validator-rules/0004-packs.md) | 6 / 23 load-invalid | the Zig fixture gate judges `load-invalid` since #1261 |
 | 0004 a load refusal is not a diagnostic | (by construction) | both | — | |
 | 0004 a pack's conformance claim is its own | `pack_fixture_claims_core_unit` | Go only | 1 | |
 | 0004 pack members gated on their capability | `unavailable_capability`, `unhonoured_capability` | both (Zig's `packEnvelope` raises `unhonoured_capability` for a refusal outside a typed gate's `refusals`) | 4 / 1 | |
@@ -353,10 +353,9 @@ Listed for completeness and left to the port already under way:
 `duplicate_key`, `payload_decode`), the auth and provider codes
 (`auth_flow_order`, `missing_auth_terminal`, `unmatched_provider`,
 `undisclosed_selection_scope`), and the partial `scope_mismatch` and
-`session_state_mismatch`. Not in that list and also Go-only: 5 of the 20 load
-codes, `pack_schema_path_escape`, `pack_external_ref`,
-`pack_dependency_missing`, `pack_fixture_claims_core_unit` and
-`ext_claim_without_pack` (Zig refuses the other fifteen since #1261).
+`session_state_mismatch`. Not in that list and also Go-only: 2 of the 20 load
+codes, `pack_fixture_claims_core_unit` and `ext_claim_without_pack` (Zig
+refuses the other eighteen since #1261 and #1307).
 
 ## Gaps ranked by risk
 
@@ -415,8 +414,8 @@ smallest fix.
     reopen answered with the wrong refusal code when the binding is missing or
     the harness cannot load the session is caught by hub tests and the Go
     conformance runner, not by a diagnostic.
-11. **Zig pack loading refuses fifteen ways of twenty.** Its fixture gate runs
-    the `load-invalid` fixtures since #1261, exempting the five codes it does
+11. **Zig pack loading refuses eighteen ways of twenty.** Its fixture gate runs
+    the `load-invalid` fixtures since #1261, exempting the two codes it does
     not yet refuse, so a pack Go refuses for one of those can still load in
     `oapx`.
 12. **Hub answers with protocol payloads are not schema-checked.** `history`

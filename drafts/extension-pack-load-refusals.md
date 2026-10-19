@@ -15,8 +15,8 @@ now refuse are refused. The per-code status is kept in
 [`validator-rules/0004-packs.md`](validator-rules/0004-packs.md); this record is
 rewritten with the loader's next port.
 
-Governing text: `decisions/0004-extension-packs.md` §121-146 (core validity, two
-passes, branch pinning) and §165-182 (load refusals). The peer/spec rule that
+Governing text: `decisions/0004-extension-packs.md` §130-155 (core validity, two
+passes, branch pinning) and §174-190 (load refusals). The peer/spec rule that
 applies throughout: **Decision 0032** — a Zig/Go divergence is either aligned or
 recorded here. Nothing below is asserted to match `goap`; where the two differ,
 the difference is written down.
