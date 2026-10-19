@@ -133,7 +133,7 @@ Source: [`decisions/0031-a-policy-refusal-is-a-settlement.md`](../../decisions/0
 
 | id | rule | lines | code | Go | Zig | Rust |
 | --- | --- | --- | --- | --- | --- | --- |
-| `0031#the-rule-is-judged-at-settlement/1` | A call to a tool the admitted `tool_choice` excludes MUST settle `action.call.failed` with `error.code: "refused_by_policy"`. Any other settlement is diagnosed at the settling envelope. | L70–90, 0022 L74–81 | `unapplied_control` | `controls.go:checkCallSettlement` | `semantic.zig:checkCallSettlement` | `state/controls.rs:check_call_settlement` |
+| `0031#the-rule-is-judged-at-settlement/1` | A call to a tool the admitted `tool_choice` excludes MUST settle `action.call.failed` with `error.code: "refused_by_policy"`. Any other settlement is diagnosed at the settling envelope. | L70–90, 0022 L55–71, L74–81 | `unapplied_control` | `controls.go:checkCallSettlement` | `semantic.zig:checkCallSettlement` | `state/controls.rs:check_call_settlement` |
 | `0031#the-rule-is-judged-at-settlement/2` | A call to a permitted tool MUST NOT settle with `refused_by_policy`. | L70–90 | `unapplied_control` | `controls.go:checkCallSettlement` | `semantic.zig:checkCallSettlement` | `state/controls.rs:check_call_settlement` |
 | `0031#the-rule-is-judged-at-settlement/3` | A call to an excluded tool still unsettled at its run's terminal is diagnosed at the terminal. | L70–90 | `unapplied_control` | `controls.go:sweepExcludedCalls` | `semantic.zig:sweepExcludedCalls` | `state/controls.rs:settle_run_controls` |
 
