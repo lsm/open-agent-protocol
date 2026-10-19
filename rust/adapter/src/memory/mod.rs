@@ -1,7 +1,9 @@
 mod admit;
+mod cancel;
 mod controls;
 mod descriptor;
 mod pipe;
+mod resolve;
 mod session;
 
 use std::collections::{BTreeMap, HashMap, VecDeque};
@@ -20,7 +22,9 @@ use admit::{
 
 use session::Inner;
 
-use crate::{Admitter, BoxFuture, Error, EventStream, OpenRequest, SubmitRequest};
+use crate::{
+    Admitter, BoxFuture, Error, EventStream, InteractionResolution, OpenRequest, SubmitRequest,
+};
 
 pub const DEFAULT_JOURNAL_CAPACITY: usize = 64;
 pub const MODEL_PRIMARY: &str = "reference-model-a";
@@ -209,6 +213,14 @@ impl MemorySession {
         request: SubmitRequest,
     ) -> Result<(MessageSubmitResponse, EventStream), Error> {
         self.lock().submit(request)
+    }
+
+    pub fn resolve(&self, resolution: InteractionResolution) -> Result<(), Error> {
+        self.lock().resolve(resolution)
+    }
+
+    pub fn cancel(&self, run_id: &RunId) -> Result<RunCancelResponse, Error> {
+        self.lock().cancel(run_id)
     }
 
     pub fn close(&self) -> Result<(), Error> {
