@@ -32,6 +32,7 @@ const claimed_cases = [_]Case{
     .{ .id = "duplicate-terminal", .path = "cases/duplicate-terminal", .ledger_fixture = "duplicate-terminal" },
     .{ .id = "process-exit", .path = "cases/process-exit", .ledger_fixture = "process-exit" },
     .{ .id = "model-per-turn", .path = "cases/model-per-turn", .ledger_fixture = "model-per-turn" },
+    .{ .id = "token-usage", .path = "cases/token-usage", .ledger_fixture = "token-usage" },
 };
 
 const thread_result = "{\"thread\":{\"id\":\"native-thread\"}}";

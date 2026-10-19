@@ -144,6 +144,17 @@ const Run = struct {
     cancel_pending: bool = false,
     cancel_in_flight: bool = false,
     text: std.ArrayList(u8) = .empty,
+    usage_seen: bool = false,
+    input_tokens: u64 = 0,
+    output_tokens: u64 = 0,
+    total_tokens: u64 = 0,
+    usage_base: TokenTotals = .{},
+};
+
+const TokenTotals = struct {
+    input: u64 = 0,
+    output: u64 = 0,
+    total: u64 = 0,
 };
 
 const Item = struct {
@@ -240,6 +251,7 @@ pub const Reducer = struct {
     next_request: i64,
     thread_id: []const u8 = "",
     session_id: []const u8 = "",
+    thread_usage: TokenTotals = .{},
     opening: bool = false,
     opened: bool = false,
     closed: bool = false,
@@ -356,7 +368,7 @@ pub const Reducer = struct {
 
         const run_id = try self.nextID("run");
         const message_id = try self.nextID("message");
-        try self.runs.append(self.allocator(), .{ .id = run_id, .message_id = message_id, .model = model, .message_ids = message_ids });
+        try self.runs.append(self.allocator(), .{ .id = run_id, .message_id = message_id, .model = model, .message_ids = message_ids, .usage_base = self.thread_usage });
         const index = self.runs.items.len - 1;
         self.active = index;
         self.state.status = "queued";
@@ -380,6 +392,7 @@ pub const Reducer = struct {
         kept.opened = self.opened;
         kept.closed = self.closed;
         kept.transport_closed = self.transport_closed;
+        kept.thread_usage = self.thread_usage;
         kept.thread_id = try keep.dupe(u8, self.thread_id);
         kept.session_id = try keep.dupe(u8, self.session_id);
         const status = try keep.dupe(u8, self.state.status);
@@ -722,10 +735,40 @@ pub const Reducer = struct {
             if (!native.decodesPresent(message.params, native.item_notification)) return self.failActive("invalid_native_event", "invalid item lifecycle payload");
             return self.onItem(std.mem.eql(u8, method, native.method_item_started), message.params.?);
         }
+        if (std.mem.eql(u8, method, native.method_token_usage)) {
+            if (!native.decodesPresent(message.params, native.token_usage_notification)) return self.failActive("invalid_native_event", "invalid thread/tokenUsage/updated payload");
+            return self.onTokenUsage(message.params.?);
+        }
         if (std.mem.eql(u8, method, native.method_turn_completed)) {
             if (!native.decodesPresent(message.params, native.turn_completed_notification)) return self.failActive("invalid_native_event", "invalid turn/completed payload");
             return self.onCompleted(message.params.?);
         }
+    }
+
+    fn onTokenUsage(self: *Reducer, params: std.json.Value) !void {
+        if (!std.mem.eql(u8, native.text(params, &.{"threadId"}), self.thread_id)) return;
+        self.thread_usage = .{
+            .input = native.count(params, &.{ "tokenUsage", "total", "inputTokens" }),
+            .output = native.count(params, &.{ "tokenUsage", "total", "outputTokens" }),
+            .total = native.count(params, &.{ "tokenUsage", "total", "totalTokens" }),
+        };
+        const index = self.runFor(self.thread_id, native.text(params, &.{"turnId"})) orelse return;
+        const run = &self.runs.items[index];
+        if (run.terminal) return;
+        run.usage_seen = true;
+        run.input_tokens = self.thread_usage.input -| run.usage_base.input;
+        run.output_tokens = self.thread_usage.output -| run.usage_base.output;
+        run.total_tokens = self.thread_usage.total -| run.usage_base.total;
+    }
+
+    fn putUsage(self: *Reducer, payload: *std.json.ObjectMap, index: usize) !void {
+        const run = self.runs.items[index];
+        if (!run.usage_seen) return;
+        var usage = std.json.ObjectMap.empty;
+        if (run.input_tokens != 0) try self.put(&usage, "input_tokens", .{ .integer = @intCast(run.input_tokens) });
+        if (run.output_tokens != 0) try self.put(&usage, "output_tokens", .{ .integer = @intCast(run.output_tokens) });
+        if (run.total_tokens != 0) try self.put(&usage, "total_tokens", .{ .integer = @intCast(run.total_tokens) });
+        try self.put(payload, "usage", .{ .object = usage });
     }
 
     fn onStarted(self: *Reducer, params: std.json.Value) !void {
@@ -871,10 +914,12 @@ pub const Reducer = struct {
             try self.put(&response, "content", str(run.text.items));
             try self.put(&payload, "final_response", .{ .object = response });
             try self.put(&payload, "stop_reason", str("end_turn"));
+            try self.putUsage(&payload, index);
             return self.emit(index, "run.completed", payload, "", true);
         }
         if (std.mem.eql(u8, status, native.turn_interrupted)) {
             try self.put(&payload, "reason", str("native turn interrupted"));
+            try self.putUsage(&payload, index);
             return self.emit(index, "run.cancelled", payload, "", true);
         }
         if (std.mem.eql(u8, status, native.turn_failed)) {
@@ -887,6 +932,7 @@ pub const Reducer = struct {
             try self.put(&failure, "code", str("native_turn_failed"));
             try self.put(&failure, "message", str(message));
             try self.put(&payload, "error", .{ .object = failure });
+            try self.putUsage(&payload, index);
             return self.emit(index, "run.failed", payload, "", true);
         }
         try self.failRun(index, "invalid_native_terminal", "turn/completed did not contain a terminal status", "");
