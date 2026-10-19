@@ -8,6 +8,43 @@ recommends one. An item closes when a decision or a rule row in
 fixing pull request names the item. Nothing here is resolved toward any one
 tree by default.
 
+## Queue, open and cancel (0007, 0009, 0041)
+
+Rules: [`0007-queue-open-cancel.md`](../drafts/validator-rules/0007-queue-open-cancel.md).
+
+### OPEN-0007-1: is a no-position entry's pending set judged without the queue?
+
+Decision 0007 reads an `active_runs` entry that states no position "as the
+trace stands". Go and Zig judge its `pending_interactions` against the trace
+only where `session.message.delivery.queue` is advertised
+(`queuestate.go:checkEntryPending`, `semantic.zig:checkEntryPending`); Rust
+does not judge it.
+
+- (a) Judge it whatever the descriptor advertises: an entry that exists makes
+  the claim whether or not the queue does.
+- (b) Judge it only where the queue is advertised, as Go and Zig do.
+
+Recommendation: (a). Settled by
+[Decision 0054](../decisions/0054-register-batch-1.md); Go and Zig owe the
+port, removing the gate, with a fixture on an endpoint without the queue.
+
+### OPEN-0007-2: which endpoint "puts entries there at all"?
+
+Decision 0007 requires `active_runs` for a run whose recovery needs an id only
+an entry holds "on an endpoint that puts entries there at all". Go and Zig read
+that as an endpoint advertising `session.message.delivery.queue`
+(`queuestate.go:checkActiveRunsOmitted`, `semantic.zig:checkRequiredRuns`);
+Rust does not judge it.
+
+- (a) An endpoint advertising the queue, as Go and Zig do.
+- (b) An endpoint that has sent an entry anywhere in the trace.
+
+Recommendation: (a). Under (b) the same snapshot is complete in one trace and
+incomplete in another, and an endpoint escapes the rule by never listing a
+run. Settled by
+[Decision 0057](../decisions/0057-an-endpoint-that-puts-entries-there-advertises-the-queue.md);
+Rust owes the port.
+
 ## Models and providers (0006, 0014, 0028)
 
 Rules: [`0006-models.md`](../drafts/validator-rules/0006-models.md).
@@ -193,6 +230,25 @@ until an engine is chosen. Decision 0055 then chose the dialect: the pattern
 is RE2 and must match the whole name.
 
 **Status.** Settled by [Decision 0055](../decisions/0055-register-batch-2.md). What remains is the port work the decision names.
+
+### OPEN-0011-2: may a provided tool's resolution carry content parts?
+
+[Decision 0060](../decisions/0060-a-tool-result-may-carry-content-parts.md)
+lets a `tool_result` part and `action.call.completed` carry a content-part
+list, images gated on `content.image`. `action.call.resolve.request`, by which
+a control layer answers a call to a tool it provides, also carries a free JSON
+`result`, and nothing said whether it takes the same form. No tree judges the
+shape today.
+
+- (a) The same reading as 0060: a content-part list is allowed, its images
+  gated on the endpoint's `content.image`.
+- (b) JSON only, so a provided tool cannot return an image.
+
+Recommendation: (a). The endpoint reports a provided tool's outcome on
+`action.call.completed`, which 0060 already lets carry an image, so (b) would
+leave a control layer unable to supply what the endpoint is allowed to report.
+Settled by
+[Decision 0060](../decisions/0060-a-tool-result-may-carry-content-parts.md).
 
 ## Session lifecycle (0040, 0044–0046, 0049–0051)
 
