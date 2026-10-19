@@ -11,7 +11,8 @@ This is the second profile, and a peer of
 [Agent Control Core](agent-control-core.md) rather than a unit inside it.
 [Decision 0016](../decisions/0016-model-provider-profile.md) establishes the
 boundary, argues why it is a profile, and defers the envelopes to a draft. This
-is that draft. [The composition draft](composition.md) places both profiles in
+is that draft. Its validator rules and the provider schemas on `main` are
+normative by [Decision 0061](../decisions/0061-the-provider-profiles-validator-rules-and-schemas.md). [The composition draft](composition.md) places both profiles in
 the layering.
 
 Nothing here has a session, a run, a run sequence or an interaction. Admission,
