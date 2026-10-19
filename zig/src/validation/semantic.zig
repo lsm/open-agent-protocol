@@ -13,6 +13,9 @@ pub const code_pending_steer_at_terminal = "pending_steer_at_terminal";
 
 pub const code_duplicate_envelope_id = "duplicate_envelope_id";
 pub const code_undeclared_replay_gap = "undeclared_replay_gap";
+pub const code_unmatched_response = "unmatched_response";
+pub const code_missing_response = "missing_response";
+pub const code_duplicate_response = "duplicate_response";
 pub const code_unhonoured_capability = "unhonoured_capability";
 pub const code_illegal_run_transition = "illegal_run_transition";
 pub const code_missing_run_started = "missing_run_started";
@@ -69,26 +72,27 @@ pub const code_transcript_gap_mismatch = "transcript_gap_mismatch";
 const attachment_only_members = [_][]const u8{ "command", "args", "environment" };
 
 pub const implemented = [_][]const u8{
-    code_unmatched_steer,              code_duplicate_steer,                 code_pending_steer_at_terminal,
-    code_compaction_unpaired,          code_compaction_ended_without_start,  code_compaction_open_at_terminal,
-    code_compaction_run_mismatch,      code_compaction_stop_reason_mismatch, code_compaction_failed_without_error,
-    code_duplicate_envelope_id,        code_undeclared_replay_gap,           code_illegal_run_transition,
-    code_unhonoured_capability,        code_missing_run_started,             code_missing_run_terminal,
-    code_duplicate_run_terminal,       code_event_after_terminal,            code_sequence_gap,
-    code_sequence_regression,          code_cancel_not_settled,              code_queue_order_violation,
-    code_queue_limit_exceeded,         code_undisclosed_queue_limit,         code_unavailable_capability,
-    code_stale_capability_revision,    code_degraded_without_optin,          code_unsatisfiable_control,
-    code_unapplied_control,            code_duplicate_tool_name,             code_model_not_in_catalog,
-    code_duplicate_model_id,           code_duplicate_provider,              code_ambiguous_default_model,
-    code_unannounced_catalog_change,   code_undisclosed_attach_modes,        code_duplicate_tool_source,
-    code_unmatched_tool_source,        code_unattributed_call,               code_catalog_mismatch,
-    code_undisclosed_attach_limit,     code_unmatched_tool,                  code_illegal_tool_transition,
-    code_pending_tool_at_terminal,     code_duplicate_interaction,           code_unmatched_interaction,
-    code_wrong_interaction_responder,  code_pending_interaction_at_terminal, code_resolution_payload_mismatch,
-    code_wrong_tool_owner,             code_undisclosed_provide_limit,       code_attachment_field_in_catalog,
-    code_session_list_over_limit,      code_session_list_order,              code_duplicate_session_entry,
-    code_duplicate_message_completion, code_content_after_completion,        code_transcript_over_limit,
-    code_duplicate_transcript_entry,   code_transcript_gap_mismatch,
+    code_unmatched_steer,                 code_duplicate_steer,                 code_pending_steer_at_terminal,
+    code_compaction_unpaired,             code_compaction_ended_without_start,  code_compaction_open_at_terminal,
+    code_compaction_run_mismatch,         code_compaction_stop_reason_mismatch, code_compaction_failed_without_error,
+    code_duplicate_envelope_id,           code_undeclared_replay_gap,           code_illegal_run_transition,
+    code_missing_run_started,             code_missing_run_terminal,            code_duplicate_run_terminal,
+    code_event_after_terminal,            code_sequence_gap,                    code_sequence_regression,
+    code_cancel_not_settled,              code_queue_order_violation,           code_queue_limit_exceeded,
+    code_undisclosed_queue_limit,         code_unavailable_capability,          code_stale_capability_revision,
+    code_degraded_without_optin,          code_unsatisfiable_control,           code_unapplied_control,
+    code_duplicate_tool_name,             code_model_not_in_catalog,            code_duplicate_model_id,
+    code_duplicate_provider,              code_ambiguous_default_model,         code_unannounced_catalog_change,
+    code_undisclosed_attach_modes,        code_duplicate_tool_source,           code_unmatched_tool_source,
+    code_unattributed_call,               code_catalog_mismatch,                code_undisclosed_attach_limit,
+    code_unmatched_tool,                  code_illegal_tool_transition,         code_pending_tool_at_terminal,
+    code_duplicate_interaction,           code_unmatched_interaction,           code_wrong_interaction_responder,
+    code_pending_interaction_at_terminal, code_resolution_payload_mismatch,     code_wrong_tool_owner,
+    code_undisclosed_provide_limit,       code_attachment_field_in_catalog,     code_session_list_over_limit,
+    code_session_list_order,              code_duplicate_session_entry,         code_duplicate_message_completion,
+    code_content_after_completion,        code_transcript_over_limit,           code_duplicate_transcript_entry,
+    code_transcript_gap_mismatch,         code_unmatched_response,              code_missing_response,
+    code_duplicate_response,              code_unhonoured_capability,
 };
 
 pub fn isImplemented(code: []const u8) bool {
@@ -238,6 +242,8 @@ const Run = struct {
     admitted_queued: bool = false,
     order: usize = 0,
     admitted_model: []const u8 = "",
+    admitted_at: usize = 0,
+    submit_request: []const u8 = "",
     controls: Controls = .{},
     deferred_controls: bool = false,
     status: []const u8 = "",
@@ -483,6 +489,7 @@ const Request = struct {
     carries_message: bool = false,
     responded: bool = false,
     gates: []const Gate = &.{},
+    index: usize = 0,
 };
 
 pub const PackedType = struct {
@@ -613,6 +620,7 @@ pub const Machine = struct {
 
         if (self.isRequestType(declared)) {
             try self.requests.put(self.allocator, id, .{
+                .index = index,
                 .declared = declared,
                 .payload = payload,
                 .revision = field(envelope, "capability_revision"),
@@ -915,7 +923,7 @@ pub const Machine = struct {
             std.mem.eql(u8, declared, "session.state.updated"))
         {
             try self.steerState(index, envelope, payload);
-            try self.stateDocument(index, payload, std.mem.eql(u8, declared, "session.state.updated"));
+            try self.stateDocument(index, envelope, payload, std.mem.eql(u8, declared, "session.state.updated"));
             return;
         }
         if (std.mem.eql(u8, declared, "run.cancel.request")) {
@@ -932,10 +940,19 @@ pub const Machine = struct {
     }
 
     fn correlate(self: *Machine, index: usize, envelope: std.json.Value, declared: []const u8) !bool {
-        const request = self.requests.getPtr(field(envelope, "in_reply_to")) orelse return false;
+        const request = self.requests.getPtr(field(envelope, "in_reply_to")) orelse {
+            try self.add(code_unmatched_response, index);
+            return false;
+        };
         const failure = std.mem.eql(u8, declared, "error.response");
-        if (!failure and !self.answers(request.declared, declared)) return false;
-        if (request.responded) return true;
+        if (!failure and !self.answers(request.declared, declared)) {
+            try self.add(code_unmatched_response, index);
+            return false;
+        }
+        if (request.responded) {
+            try self.add(code_duplicate_response, index);
+            return true;
+        }
         request.responded = true;
         if (!failure and
             !std.mem.eql(u8, request.declared, "protocol.initialize.request") and
@@ -2874,11 +2891,11 @@ pub const Machine = struct {
         const session = memberString(payload, "session_id");
         if (target.len != 0) {
             const run = self.runs.get(target) orelse return .{ .run = null, .reason = "unknown_target" };
-            const reason: []const u8 = if (!std.mem.eql(u8, run.session, session)) "cross_session" else if (run.terminal) "terminal" else if (std.mem.eql(u8, run.status, "cancelling")) "not_steerable" else if (!run.started) "queued" else "";
+            const reason: []const u8 = if (!std.mem.eql(u8, run.session, session)) "cross_session" else if (run.terminal) "terminal" else if (std.mem.eql(u8, run.status, "cancelling")) "not_steerable" else if (run.compaction_run and !run.compaction_continue) "no_model_turn" else if (!run.started) "queued" else "";
             return .{ .run = run, .reason = reason };
         }
         for (self.runs.values()) |run| {
-            if (std.mem.eql(u8, run.session, session) and run.started and !run.terminal) return .{ .run = run, .reason = if (std.mem.eql(u8, run.status, "cancelling")) "not_steerable" else "" };
+            if (std.mem.eql(u8, run.session, session) and run.started and !run.terminal) return .{ .run = run, .reason = if (std.mem.eql(u8, run.status, "cancelling")) "not_steerable" else if (run.compaction_run and !run.compaction_continue) "no_model_turn" else "" };
         }
         return .{ .run = null, .reason = "no_active_run" };
     }
@@ -2954,6 +2971,59 @@ pub const Machine = struct {
                 if (value >= 0) track.settled_sequence = @intCast(value);
             }
         }
+    }
+
+    fn checkRequiredRuns(self: *Machine, index: usize, envelope: std.json.Value, payload: std.json.Value) !void {
+        const session_id = memberString(payload, "session_id");
+        const window = self.ids.get(field(envelope, "in_reply_to")) orelse index;
+        const as_of = member(payload, "as_of");
+        var excused: std.StringArrayHashMapUnmanaged(void) = .empty;
+        defer excused.deinit(self.allocator);
+        var anchored: std.StringArrayHashMapUnmanaged(void) = .empty;
+        defer anchored.deinit(self.allocator);
+        if (as_of) |capture| {
+            if (member(capture, "settled")) |settled| {
+                if (settled == .array) for (settled.array.items) |entry| try excused.put(self.allocator, memberString(entry, "run_id"), {});
+            }
+            if (member(capture, "admitted_submit_requests")) |anchors| {
+                if (anchors == .array) for (anchors.array.items) |anchor| {
+                    if (anchor == .string) try anchored.put(self.allocator, anchor.string, {});
+                };
+            }
+        }
+        var required: std.ArrayList(*Run) = .empty;
+        defer required.deinit(self.allocator);
+        for (self.runs.values()) |run| {
+            if (!std.mem.eql(u8, run.session, session_id) or run.terminal) continue;
+            if (excused.contains(run.id)) continue;
+            if (as_of != null and run.admitted_at > window and !anchored.contains(run.submit_request)) continue;
+            try required.append(self.allocator, run);
+        }
+        const listed = member(payload, "active_runs") orelse {
+            if (try self.omissionNeedsEntries(required.items)) try self.add(code_session_state_mismatch, index);
+            return;
+        };
+        if (listed != .array) return;
+        for (required.items) |run| {
+            const present = for (listed.array.items) |entry| {
+                if (std.mem.eql(u8, memberString(entry, "run_id"), run.id)) break true;
+            } else false;
+            if (!present) try self.add(code_session_state_mismatch, index);
+        }
+    }
+
+    fn omissionNeedsEntries(self: *const Machine, required: []const *Run) !bool {
+        if (required.len > 1) return true;
+        for (required) |run| {
+            if (run.admitted_queued and !run.started) return true;
+        }
+        if (!self.advertisedKey(feature_delivery_queue)) return false;
+        for (required) |run| {
+            for (run.interactions.values()) |interaction| {
+                if (!interaction.resolved) return true;
+            }
+        }
+        return false;
     }
 
     fn steerState(self: *Machine, index: usize, envelope: std.json.Value, payload: std.json.Value) !void {
@@ -3056,6 +3126,8 @@ pub const Machine = struct {
             .session = session_id,
             .admitted = true,
             .last_index = index,
+            .admitted_at = index,
+            .submit_request = field(envelope, "in_reply_to"),
             .admitted_queued = queued,
             .order = holder.order.items.len,
             .admitted_model = memberString(payload, "model_id"),
@@ -3188,6 +3260,8 @@ pub const Machine = struct {
             .session = session_id,
             .admitted = true,
             .last_index = index,
+            .admitted_at = index,
+            .submit_request = field(envelope, "in_reply_to"),
             .admitted_queued = queued,
             .order = holder.order.items.len,
             .status = "queued",
@@ -3426,6 +3500,7 @@ pub const Machine = struct {
             .started = shape.started,
             .next = shape.next,
             .last_index = index,
+            .admitted_at = index,
             .recovered = true,
             .admitted_queued = shape.queued,
             .order = holder.order.items.len,
@@ -3450,11 +3525,12 @@ pub const Machine = struct {
         try self.refreshQueueWindows(session_id);
     }
 
-    fn stateDocument(self: *Machine, index: usize, payload: std.json.Value, updated: bool) !void {
+    fn stateDocument(self: *Machine, index: usize, envelope: std.json.Value, payload: std.json.Value, updated: bool) !void {
         const session_id = memberString(payload, "session_id");
         {
             const holder = try self.sessionFor(session_id);
             const reported = memberString(payload, "current_model_id");
+            try self.checkRequiredRuns(index, envelope, payload);
             if (holder.guard_default and !std.mem.eql(u8, reported, holder.expected_default)) {
                 try self.add(code_unapplied_control, index);
             }
@@ -4033,6 +4109,9 @@ pub const Machine = struct {
                     run.last_index,
                 );
             }
+        }
+        for (self.requests.values()) |request| {
+            if (!request.responded) try self.add(code_missing_response, request.index);
         }
     }
 };
@@ -4644,6 +4723,20 @@ fn effectiveFor(status: []const u8) []const u8 {
 }
 
 fn codesOf(allocator: std.mem.Allocator, trace: []const u8) ![]const []const u8 {
+    return collectCodes(allocator, trace, true);
+}
+
+fn pairedCodesOf(allocator: std.mem.Allocator, trace: []const u8) ![]const []const u8 {
+    return collectCodes(allocator, trace, false);
+}
+
+fn pairing(code: []const u8) bool {
+    return std.mem.eql(u8, code, code_unmatched_response) or
+        std.mem.eql(u8, code, code_missing_response) or
+        std.mem.eql(u8, code, code_duplicate_response);
+}
+
+fn collectCodes(allocator: std.mem.Allocator, trace: []const u8, fragment: bool) ![]const []const u8 {
     var parsed = try std.json.parseFromSlice(std.json.Value, allocator, trace, .{});
     defer parsed.deinit();
 
@@ -4653,8 +4746,51 @@ fn codesOf(allocator: std.mem.Allocator, trace: []const u8) ![]const []const u8 
     try machine.close();
 
     var out = std.ArrayList([]const u8).empty;
-    for (machine.diagnostics.items) |diagnostic| try out.append(allocator, diagnostic.code);
+    for (machine.diagnostics.items) |diagnostic| {
+        if (fragment and pairing(diagnostic.code)) continue;
+        try out.append(allocator, diagnostic.code);
+    }
     return out.toOwnedSlice(allocator);
+}
+
+fn expectPairedCodes(trace: []const u8, want: []const []const u8) !void {
+    const got = try pairedCodesOf(std.testing.allocator, trace);
+    defer std.testing.allocator.free(got);
+    try std.testing.expectEqual(want.len, got.len);
+    for (want, got) |expected, actual| try std.testing.expectEqualStrings(expected, actual);
+}
+
+const paired_head =
+    \\[{"type":"capabilities.request","id":"q0","payload":{}},
+    \\{"type":"capabilities.response","id":"a0","in_reply_to":"q0","capability_revision":"r1","payload":{"capability_revision":"r1"}},
+;
+
+test "a response to no earlier request is unmatched" {
+    try expectPairedCodes(paired_head ++
+        \\{"type":"session.state.response","id":"a1","in_reply_to":"nobody","payload":{}}]
+    , &.{code_unmatched_response});
+}
+
+test "a response of another request's type is unmatched" {
+    try expectPairedCodes(paired_head ++
+        \\{"type":"session.state.request","id":"q1","payload":{"session_id":"s"}},
+        \\{"type":"session.close.response","id":"a1","in_reply_to":"q1","payload":{}},
+        \\{"type":"session.state.response","id":"a2","in_reply_to":"q1","payload":{}}]
+    , &.{code_unmatched_response});
+}
+
+test "a second response to one request is a duplicate, and an error answer counts as the first" {
+    try expectPairedCodes(paired_head ++
+        \\{"type":"session.state.request","id":"q1","payload":{"session_id":"s"}},
+        \\{"type":"error.response","id":"a1","in_reply_to":"q1","payload":{"error":{"code":"unknown_session","message":"x"}}},
+        \\{"type":"session.state.response","id":"a2","in_reply_to":"q1","payload":{}}]
+    , &.{code_duplicate_response});
+}
+
+test "a request the trace never answers is missing its response" {
+    try expectPairedCodes(paired_head ++
+        \\{"type":"session.state.request","id":"q1","payload":{"session_id":"s"}}]
+    , &.{code_missing_response});
 }
 
 fn expectCodes(trace: []const u8, want: []const []const u8) !void {
