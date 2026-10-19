@@ -24,6 +24,8 @@ pub(super) struct Run {
     pub(super) tools: HashMap<String, ToolTrack>,
     pub(super) interactions: HashMap<String, Interaction>,
     pub(super) controls: Controls,
+    pub(super) order: usize,
+    pub(super) admitted_queued: bool,
     pub(super) admitted_model: String,
 }
 
@@ -222,6 +224,9 @@ impl State {
             self.add(codes::ILLEGAL_RUN_TRANSITION, at, e, pointer, message);
             return;
         }
+        if !self.queue_overlap(at, e, &p) {
+            self.queue_admission(at, e, &p);
+        }
         let controls = self.settle_submit_admission(at, e, &p);
         let session = s(&p.session_id);
         let run = Run {
@@ -231,10 +236,12 @@ impl State {
             status: RunStatus::QUEUED,
             last: at,
             controls,
+            admitted_queued: p.admission == Admission::QUEUED,
             admitted_model: p.model_id.clone(),
             ..Run::default()
         };
         self.runs.insert(run_id.clone(), run);
+        self.enter_order(&run_id);
         if p.admission != Admission::QUEUED
             && self
                 .active
@@ -273,6 +280,7 @@ impl State {
         }
         self.replay_cursor(at, e, &run_id);
         let live = self.runs.get(&run_id).is_some_and(|run| !run.terminal);
+        let was_started = self.runs.get(&run_id).is_some_and(|run| run.started);
         let (found, plain) = self.advance(at, e, &run_id);
         for (code, pointer, message, expected, actual) in found {
             let related: &[&str] = if code == codes::SCOPE_MISMATCH {
@@ -286,10 +294,17 @@ impl State {
             self.add(code, at, e, pointer, message);
         }
         if live {
+            self.check_queue_order(at, e, &run_id, was_started);
             self.live_run_event(at, e, &run_id);
             if is_terminal(&e.envelope_type) {
                 self.settle_run_controls(at, e, &run_id);
                 self.pending_at_terminal(at, e, &run_id);
+                let session = self
+                    .runs
+                    .get(&run_id)
+                    .map(|run| run.session.clone())
+                    .unwrap_or_default();
+                self.refresh_queue_windows(&session);
             }
         }
         let Some(run) = self.runs.get(&run_id) else {
