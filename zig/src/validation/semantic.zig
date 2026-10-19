@@ -3846,6 +3846,7 @@ pub const Machine = struct {
         if (!attachment_refused) try self.checkPublishedUnion(index, session_id, member(payload, "sources"), true);
         try self.compoundOpen(index, envelope, payload, session_id);
         try self.checkSettledClaims(index, payload);
+        try self.checkRequiredRuns(index, envelope, payload);
     }
 
     fn compoundOpen(self: *Machine, index: usize, envelope: std.json.Value, payload: std.json.Value, session_id: []const u8) !void {
@@ -5773,7 +5774,7 @@ test "a compound open attributes the model the message asked for, judged or not"
         \\{"type":"session.open.request","id":"o1","capability_revision":"v1","payload":{"session_id":"s",
         \\"message":{"model_id":"mx"}}},
         \\{"type":"session.open.response","id":"o2","in_reply_to":"o1","capability_revision":"v1","payload":{"session_id":"s",
-        \\"current_model_id":"m0","active_runs":[{"run_id":"r1","status":"running"}]}},
+        \\"status":"running","active_run_id":"r1","current_model_id":"m0","active_runs":[{"run_id":"r1","status":"running"}]}},
         \\{"type":"run.started","id":"e1","run_id":"r1","session_id":"s","sequence":1,"capability_revision":"v1",
         \\"payload":{"model_id":"mx"}},
         \\{"type":"run.completed","id":"e2","run_id":"r1","session_id":"s","sequence":2,"capability_revision":"v1","payload":{}}]
