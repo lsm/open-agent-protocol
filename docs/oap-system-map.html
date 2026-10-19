@@ -641,12 +641,12 @@ goap: validation failed           <span class="cmt">(on stderr; exit status 1)</
     <div class="sec-head">
       <p class="eyebrow">Where the port stands</p>
       <h2>Go and Zig are peers; the specification decides</h2>
-      <p>Both implementations run side by side against the same corpus &mdash; over 570 fixtures at the time of writing. Neither tree is the answer key: a disagreement is settled by the decisions, drafts, schema, fixtures and corpora (Decision 0032). Counts move with every merge, so for the live figures run <code>zig build test</code>: the gate prints what it judged and what still disagrees, and <code>zig/src/validation/semantic_gate.zig</code> names each declared exception.</p>
+      <p>Both implementations run side by side against the same corpus &mdash; over 570 fixtures at the time of writing. Neither tree is the answer key: a disagreement is settled by the decisions, drafts, schema, fixtures and corpora (Decision 0032). Counts move with every merge, so for the live figures run <code>zig build test</code>: the gate prints what it judged and what still disagrees, and <code>fixtures/known-gaps.json</code> names each fixture a tree still disagrees on.</p>
     </div>
     <div class="status">
       <div class="stage done"><span class="st">complete</span><b>1 · Types</b><span>Wire model and strict decode.</span></div>
       <div class="stage done"><span class="st">complete</span><b>2 · Schema</b><span>Interpreted, not generated. Every fixture judged or explicitly accounted for.</span></div>
-      <div class="stage done"><span class="st">complete</span><b>3 · Semantic</b><span>Every unit has landed: the gate’s list of fixtures still disagreeing, <code>nothing_outstanding</code> in <code>zig/src/validation/semantic_gate.zig</code>, is empty, so the remainder is always in the tree.</span></div>
+      <div class="stage done"><span class="st">complete</span><b>3 · Semantic</b><span>Every unit has landed; the fixtures Zig still disagrees on are listed under <code>zig</code> in <code>fixtures/known-gaps.json</code>, and the gate fails when one starts agreeing.</span></div>
       <div class="stage done"><span class="st">complete</span><b>4 · Adapters</b><span>Seven harnesses, one corpus each, all seven reachable behind <code>oapx serve agent --backend</code>.</span></div>
       <div class="stage now"><span class="st">in progress</span><b>5 · Hub</b><span><code>oapx serve --stdio</code> serves five ops; the rest answer <code>unknown_op</code>. A hub-driven parity job runs on every change.</span></div>
       <div class="stage next"><span class="st">always</span><b>6 · Differential</b><span>Runs both ways, and #496 runs the two stdio hubs against each other on every change. Nothing retires.</span></div>

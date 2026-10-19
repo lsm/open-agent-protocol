@@ -353,6 +353,11 @@ func (r *providedRun) resolve(t *testing.T, request protocol.ActionCallResolveRe
 	return response
 }
 
+func assertTraceWithoutOpen(t *testing.T, request protocol.MessageSubmitRequest, admission protocol.MessageSubmitResponse, events []protocol.Envelope) {
+	t.Helper()
+	adaptertest.AssertProtocolValidWithSubmit(t, request, admission, testDescriptor(t), events)
+}
+
 func countType(events []protocol.Envelope, kind protocol.EnvelopeType) int {
 	count := 0
 	for _, event := range events {
@@ -395,7 +400,7 @@ func TestAProvidedToolsCallReachesTheOpenerAsAnInteractionAndItsResolutionAnswer
 		t.Fatalf("second resolution = %+v", again)
 	}
 	events := run.finish(t)
-	assertValidTrace(t, run.outcome.request, run.outcome.admission, events)
+	assertTraceWithoutOpen(t, run.outcome.request, run.outcome.admission, events)
 	if countType(events, protocol.TypeActionCallStarted) != 1 || countType(events, protocol.TypeActionCallCompleted) != 1 {
 		t.Fatalf("events = %v", callSettlementsOf(events))
 	}
@@ -413,7 +418,7 @@ func TestAResolutionThatComesBeforeTheCLIsToolsCallAnswersItWhenItArrives(t *tes
 	if got := mcpAnswer(t, run.peer, "call-1"); got != heldReply {
 		t.Fatalf("late tools/call answered %s", got)
 	}
-	assertValidTrace(t, run.outcome.request, run.outcome.admission, run.finish(t))
+	assertTraceWithoutOpen(t, run.outcome.request, run.outcome.admission, run.finish(t))
 }
 
 func TestAProvidedCallsResolutionsAreRefusedByRankAcknowledgedOnceAndAnErrorSettlesWithItsDetails(t *testing.T) {
@@ -455,7 +460,7 @@ func TestAProvidedCallsResolutionsAreRefusedByRankAcknowledgedOnceAndAnErrorSett
 		t.Fatalf("failed = %s, err = %v", failed.Payload, err)
 	}
 	events := run.finish(t)
-	assertValidTrace(t, run.outcome.request, run.outcome.admission, events)
+	assertTraceWithoutOpen(t, run.outcome.request, run.outcome.admission, events)
 	if countType(events, protocol.TypeActionCallStarted) != 1 {
 		t.Fatalf("events = %v", callSettlementsOf(events))
 	}
@@ -472,7 +477,7 @@ func TestAProvidedCallTheCLISettlesFirstOrARunLeavesOpenIsCancelledAndStaysResol
 		t.Fatalf("late resolution = %+v", late)
 	}
 	settledEvents := settledFirst.finish(t)
-	assertValidTrace(t, settledFirst.outcome.request, settledFirst.outcome.admission, settledEvents)
+	assertTraceWithoutOpen(t, settledFirst.outcome.request, settledFirst.outcome.admission, settledEvents)
 	if countType(settledEvents, protocol.TypeActionCallFailed) != 0 || countType(settledEvents, protocol.TypeActionCallCancelled) != 1 {
 		t.Fatalf("events = %v", callSettlementsOf(settledEvents))
 	}
@@ -481,7 +486,7 @@ func TestAProvidedCallTheCLISettlesFirstOrARunLeavesOpenIsCancelledAndStaysResol
 	requested = leftOpen.until(t, protocol.TypeActionCallRequested)
 	providedCall(leftOpen.peer, "call-1", "toolu_p")
 	events := leftOpen.finish(t)
-	assertValidTrace(t, leftOpen.outcome.request, leftOpen.outcome.admission, events)
+	assertTraceWithoutOpen(t, leftOpen.outcome.request, leftOpen.outcome.admission, events)
 	if countType(events, protocol.TypeActionCallCancelled) != 1 {
 		t.Fatalf("events = %v", callSettlementsOf(events))
 	}
@@ -505,7 +510,7 @@ func TestAProvidedCallTheRunsToolChoiceExcludesIsNeverRequestedOfTheOpener(t *te
 	}
 	run.peer.send(`{"type":"user","message":{"role":"user","content":[{"tool_use_id":"toolu_p","type":"tool_result","content":"echo is excluded","is_error":true}]},"parent_tool_use_id":null,"session_id":"` + peerSession + `","uuid":"u1"}`)
 	events := run.finish(t)
-	assertValidTrace(t, run.outcome.request, run.outcome.admission, events)
+	assertTraceWithoutOpen(t, run.outcome.request, run.outcome.admission, events)
 	for _, event := range events {
 		var status protocol.RunStatusUpdatedPayload
 		if strings.HasPrefix(string(event.Type), "action.call.") || event.Type == protocol.TypeRunStatusUpdated && event.DecodePayload(&status) == nil && status.Status == protocol.RunWaitingForInput {

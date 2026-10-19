@@ -163,7 +163,7 @@ func openWire(t *testing.T) (base.Adapter, base.Session, *wirePeer) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	session := adaptertest.AssertInitialState(t, implementation, base.OpenRequest{SessionID: "session", Participant: protocol.Participant{ID: "user"}})
+	session := adaptertest.AssertInitialState(t, implementation, wireOpen)
 	return implementation, session, peer
 }
 
@@ -328,14 +328,16 @@ func eventTypes(events []protocol.Envelope) []string {
 	return out
 }
 
+var wireOpen = base.OpenRequest{SessionID: "session", Participant: protocol.Participant{ID: "user"}}
+
 func assertValidTrace(t *testing.T, request protocol.MessageSubmitRequest, admission protocol.MessageSubmitResponse, events []protocol.Envelope) {
 	t.Helper()
-	adaptertest.AssertProtocolValidWithSubmit(t, request, admission, testDescriptor(t), events)
+	adaptertest.AssertProtocolValidWithSubmit(t, request, admission, testDescriptor(t), events, adaptertest.Opened(wireOpen))
 }
 
 func assertCancelledTrace(t *testing.T, request protocol.MessageSubmitRequest, admission protocol.MessageSubmitResponse, events []protocol.Envelope) {
 	t.Helper()
-	adaptertest.AssertProtocolValidWithSubmitAndCancellation(t, request, admission, testDescriptor(t), events)
+	adaptertest.AssertProtocolValidWithSubmitAndCancellation(t, request, admission, testDescriptor(t), events, adaptertest.Opened(wireOpen))
 }
 
 func testDescriptor(t *testing.T) base.Descriptor {

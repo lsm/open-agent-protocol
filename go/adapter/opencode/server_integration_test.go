@@ -292,7 +292,7 @@ func liveTurn(t *testing.T, provider string, timeout time.Duration) []protocol.E
 		t.Fatal(err)
 	}
 	events := adaptertest.Drain(t, stream, timeout)
-	adaptertest.AssertProtocolValidWithDescriptor(t, response, testAdapterDescriptor(t), events)
+	adaptertest.AssertProtocolValidWithDescriptor(t, response, testAdapterDescriptor(t), events, adaptertest.Opened(base.OpenRequest{Participant: protocol.Participant{ID: "integration"}}))
 	return events
 }
 

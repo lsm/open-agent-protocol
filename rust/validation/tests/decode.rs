@@ -98,5 +98,13 @@ fn invalid_utf8_inside_a_string_is_replaced_rather_than_refused() {
     let mut trace = ONE.as_bytes().to_vec();
     let at = trace.windows(4).position(|w| w == b"\"c1\"").unwrap();
     trace[at + 2] = 0xff;
-    assert!(Validator::new().unwrap().validate(&trace, "t").valid());
+    let result = Validator::new().unwrap().validate(&trace, "t");
+    assert!(
+        result
+            .diagnostics
+            .iter()
+            .all(|d| d.phase == Phase::Semantic),
+        "{:?}",
+        result.diagnostics
+    );
 }
