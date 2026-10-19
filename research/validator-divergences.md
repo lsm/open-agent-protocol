@@ -451,8 +451,8 @@ Rules: [`0040-session-lifecycle.md`](../drafts/validator-rules/0040-session-life
 recovered reopen (`recovery.recovered: true`) may list restored runs as
 `queued`, in their original order, and "the validator accepts restored queued
 runs in a recovered open response and nowhere else". Go
-(`reopen.go:reopenResponse`) and Zig (`semantic.zig:reopenResponse`) still
-diagnose any listed run on a reopen that carried no message.
+(`reopen.go:reopenResponse`) and Zig (`semantic.zig:reopenResponse`)
+diagnosed any listed run on a reopen that carried no message.
 
 - (a) Both trees accept `queued` restored runs on a recovered reopen, and
   nowhere else, as 0050 says.
@@ -462,7 +462,10 @@ Recommendation: (a). 0050's text decides it, so this is a port fix in both
 trees. It lands with restart recovery, with a positive fixture and a negative
 one that lists a restored run on an unrecovered reopen.
 
-**Status.** Settled by 0050 § 5. What remains is the port fix.
+**Status.** Settled by 0050 § 5 and ported: Go and Zig accept a recovered
+reopen listing only `queued` restored runs and no `active_run_id`, and still
+diagnose a listed run on an unrecovered reopen or one listed as `running`. Rust
+does not judge reopens yet.
 
 ## Model provider profile (0016, 0030)
 

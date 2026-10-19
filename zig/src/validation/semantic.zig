@@ -1515,7 +1515,9 @@ pub const Machine = struct {
         if (carried) return;
         const listed = member(payload, "active_runs");
         const listing = listed != null and listed.? == .array and listed.?.array.items.len > 0;
-        if (memberString(payload, "active_run_id").len != 0 or listing) try self.add(code_session_state_mismatch, index);
+        if (memberString(payload, "active_run_id").len != 0 or listing) {
+            if (!recovered or memberString(payload, "active_run_id").len != 0 or !allQueued(listed.?)) try self.add(code_session_state_mismatch, index);
+        }
     }
 
     fn settingsGate(self: *Machine, index: usize, envelope: std.json.Value, payload: std.json.Value, pending: *Pending, mode: []const u8) !void {
@@ -5253,6 +5255,14 @@ fn sameOptionalCatalog(a: ?std.json.Value, b: ?std.json.Value) bool {
 fn sameBound(a: ?i64, b: ?i64) bool {
     if (a == null or b == null) return a == null and b == null;
     return a.? == b.?;
+}
+
+fn allQueued(runs: std.json.Value) bool {
+    if (runs != .array) return false;
+    for (runs.array.items) |entry| {
+        if (!std.mem.eql(u8, memberString(entry, "status"), "queued")) return false;
+    }
+    return true;
 }
 
 fn exemptFromRevision(declared: []const u8) bool {
