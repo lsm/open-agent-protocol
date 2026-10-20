@@ -360,7 +360,13 @@ the Go and Rust checks.
 call it was never asked about, the defect 0055 already rules out for the
 resolve pair.
 
-**Status.** Settled by [Decision 0055](../decisions/0055-register-batch-2.md). What remains is the port work the decision names.
+**Status.** Settled by [Decision 0055](../decisions/0055-register-batch-2.md) and ported: Zig judges the binding in `semantic.zig:interactionResolved`, as Go and Rust do.
+
+0055's text reaches further than the three trees: it binds any interaction
+requested for a tool call, and `user.input.requested` may carry a
+`tool_call_id`. A `user.input.resolved` whose envelope names another call breaks
+the rule, and no tree judges it, since all three check the binding for
+permissions only. That is a port gap in every tree, with no fixture yet.
 
 ### OPEN-0011-1: which pattern syntax is `name_pattern`, and is it anchored?
 
@@ -451,8 +457,8 @@ Rules: [`0040-session-lifecycle.md`](../drafts/validator-rules/0040-session-life
 recovered reopen (`recovery.recovered: true`) may list restored runs as
 `queued`, in their original order, and "the validator accepts restored queued
 runs in a recovered open response and nowhere else". Go
-(`reopen.go:reopenResponse`) and Zig (`semantic.zig:reopenResponse`) still
-diagnose any listed run on a reopen that carried no message.
+(`reopen.go:reopenResponse`) and Zig (`semantic.zig:reopenResponse`)
+diagnosed any listed run on a reopen that carried no message.
 
 - (a) Both trees accept `queued` restored runs on a recovered reopen, and
   nowhere else, as 0050 says.
@@ -462,7 +468,10 @@ Recommendation: (a). 0050's text decides it, so this is a port fix in both
 trees. It lands with restart recovery, with a positive fixture and a negative
 one that lists a restored run on an unrecovered reopen.
 
-**Status.** Settled by 0050 § 5. What remains is the port fix.
+**Status.** Settled by 0050 § 5 and ported: Go and Zig accept a recovered
+reopen listing only `queued` restored runs and no `active_run_id`, and still
+diagnose a listed run on an unrecovered reopen or one listed as `running`. Rust
+does not judge reopens yet.
 
 ## Model provider profile (0016, 0030)
 

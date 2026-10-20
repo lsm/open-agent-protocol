@@ -50,6 +50,15 @@ func (o jsonObject) num(keys ...string) (float64, bool) {
 	return 0, false
 }
 
+func (o jsonObject) reported(key string) *int64 {
+	value, ok := o.num(key)
+	if !ok {
+		return nil
+	}
+	count := int64(value)
+	return &count
+}
+
 func (o jsonObject) intOr(fallback int, keys ...string) int {
 	if value, ok := o.num(keys...); ok {
 		return int(value)

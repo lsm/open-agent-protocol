@@ -5,8 +5,10 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 	"testing"
+	"time"
 )
 
 func oapFakeReply(request *frame, kind string, payload any) *frame {
@@ -193,6 +195,24 @@ func runOAPHost(scenario string) {
 						"requested_by": "fake", "responded_by": "sdk", "title": "Run ls", "arguments_json": map[string]any{"command": "ls"},
 						"choices": offered}},
 				} {
+					event := oapHostFrame(oapAgent, item.kind, item.payload)
+					event.SessionID, event.RunID = sessionID, "run-1"
+					fakeEmit(event)
+				}
+				continue
+			}
+			if selectedModel == "fixture/other:test@quiet" {
+				for i, item := range []struct {
+					kind    string
+					payload any
+				}{
+					{"run.started", map[string]any{"session_id": sessionID, "run_id": "run-1"}},
+					{"content.delta", map[string]any{"session_id": sessionID, "run_id": "run-1", "message_id": "message-1", "part": map[string]any{"type": "text", "text": "agent"}}},
+					{"run.completed", map[string]any{"session_id": sessionID, "run_id": "run-1", "final_response": map[string]any{"role": "assistant", "content": "agent"}, "stop_reason": "stop"}},
+				} {
+					if i == 1 {
+						time.Sleep(600 * time.Millisecond)
+					}
 					event := oapHostFrame(oapAgent, item.kind, item.payload)
 					event.SessionID, event.RunID = sessionID, "run-1"
 					fakeEmit(event)
@@ -387,6 +407,17 @@ func TestOAPAgentStreamPassesTheRunEventsItDoesNotSurface(t *testing.T) {
 	response, err := client.Agent.Run(context.Background(), AgentRequest{ModelRef: "fixture/other:test@every-run-event", Messages: []Message{UserMessage("hi")}})
 	if err != nil || response.Message.Text != "agent" {
 		t.Fatalf("a run carrying every event the stream skips failed: %v, %+v", err, response)
+	}
+}
+
+func TestOAPAgentRunOutlastsTheRequestTimeoutBetweenEvents(t *testing.T) {
+	client, err := newTestClientWithOptions(t, &Options{BinaryPath: os.Args[0], Env: fakeHostEnv(scenarioOAP), RequestTimeout: 200 * time.Millisecond})
+	if err != nil {
+		t.Fatal(err)
+	}
+	response, err := client.Agent.Run(context.Background(), AgentRequest{ModelRef: "fixture/other:test@quiet", Messages: []Message{UserMessage("hi")}})
+	if err != nil || response.Message.Text != "agent" {
+		t.Fatalf("a run quiet for longer than RequestTimeout failed: %v, %+v", err, response)
 	}
 }
 
@@ -663,5 +694,21 @@ func TestOAPOpenRefusesWhatTheEndpointWouldIgnore(t *testing.T) {
 	payload, err := oapOpenPayload(bare, "session-1", AgentRequest{})
 	if err != nil || payload["metadata"] != nil {
 		t.Fatalf("an endpoint other than oapx.agent was sent oapx settings: %v, %+v", err, payload)
+	}
+}
+
+func TestOAPUsageReadsTheCacheAndReasoningCountsAndKeepsAnAbsentOneUnknown(t *testing.T) {
+	count := func(value *int64) string {
+		if value == nil {
+			return "unknown"
+		}
+		return strconv.FormatInt(*value, 10)
+	}
+	got := oapUsage(jsonObject{"input_tokens": float64(100), "cache_read_input_tokens": float64(400), "cache_write_input_tokens": float64(0), "output_tokens": float64(30), "total_tokens": float64(530)})
+	if got.Input != 100 || got.Output != 30 {
+		t.Fatalf("input, output = %d, %d, want 100, 30", got.Input, got.Output)
+	}
+	if count(got.CacheRead) != "400" || count(got.CacheWrite) != "0" || count(got.Reasoning) != "unknown" {
+		t.Fatalf("cache read, cache write, reasoning = %s, %s, %s, want 400, a measured 0, and unknown", count(got.CacheRead), count(got.CacheWrite), count(got.Reasoning))
 	}
 }

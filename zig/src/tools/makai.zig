@@ -3928,11 +3928,13 @@ fn settleOapInference(
 
     const usage = oap_types.Usage{
         .input_tokens = result.usage.input,
+        .cache_read_input_tokens = if (result.usage.cache_read > 0) result.usage.cache_read else null,
+        .cache_write_input_tokens = if (result.usage.cache_write > 0) result.usage.cache_write else null,
         .output_tokens = result.usage.output,
         .total_tokens = if (result.usage.total_tokens > 0)
             result.usage.total_tokens
         else
-            result.usage.input + result.usage.output,
+            result.usage.input +| result.usage.output +| result.usage.cache_read +| result.usage.cache_write,
     };
 
     if (result.stop_reason == .@"error") {

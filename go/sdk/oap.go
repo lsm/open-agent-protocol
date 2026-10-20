@@ -208,9 +208,13 @@ func oapUsage(value jsonObject) *Usage {
 	if value == nil {
 		return nil
 	}
-	input := value.intOr(0, "input_tokens")
-	output := value.intOr(0, "output_tokens")
-	return &Usage{Input: int64(input), Output: int64(output)}
+	return &Usage{
+		Input:      int64(value.intOr(0, "input_tokens")),
+		Output:     int64(value.intOr(0, "output_tokens")),
+		CacheRead:  value.reported("cache_read_input_tokens"),
+		CacheWrite: value.reported("cache_write_input_tokens"),
+		Reasoning:  value.reported("reasoning_tokens"),
+	}
 }
 
 func oapResponse(payload jsonObject, modelRef, messageKey string) (*CompletionResponse, error) {
@@ -321,7 +325,6 @@ type oapAgentState struct {
 	ctx       context.Context
 	transport *transport
 	sub       *subscription
-	timeout   time.Duration
 	sessionID string
 	runID     string
 	modelRef  string
@@ -541,7 +544,7 @@ func (s *AgentService) oapBegin(ctx context.Context, req AgentRequest) (*oapAgen
 	if selectedModelRef == "" {
 		selectedModelRef = envelopePayload(admission).str("model_id")
 	}
-	return &oapAgentState{ctx: ctx, transport: s.transport, sub: sub, timeout: s.timeout,
+	return &oapAgentState{ctx: ctx, transport: s.transport, sub: sub,
 		sessionID: sessionID, runID: runID, modelRef: selectedModelRef, tools: req.Tools, permit: req.Permit, callNames: map[string]string{}}, nil
 }
 
