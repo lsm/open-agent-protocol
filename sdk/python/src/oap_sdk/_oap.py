@@ -300,9 +300,11 @@ class ModelsApi:
 
 class ProviderApi:
     def __init__(self, transport: StdioTransport, *, response_timeout: float = 30.0,
+                 idle_timeout: Optional[float] = None,
                  auth_retry_policy: Optional[str] = None, auth: Any = None) -> None:
         self._transport = transport
         self._timeout = response_timeout
+        self._idle_timeout = idle_timeout
         self._auth_retry_policy = auth_retry_policy
         self._auth = auth
 
@@ -333,18 +335,20 @@ class ProviderApi:
         request = envelope(PROVIDER, "inference.create.request",
                            self._create_payload(model_ref, messages, tools, options))
         inference_id: Optional[str] = None
+        accepted = False
         terminal = False
         async with self._transport.route(request_id=request["id"]) as route:
             try:
                 await self._transport.send(request)
                 while True:
-                    frame = await route.next_frame(self._timeout)
+                    frame = await route.next_frame(self._idle_timeout if accepted else self._timeout)
                     kind = frame.get("type")
                     if kind == "inference.create.response":
                         response = _payload(frame)
                         if not response.get("accepted"):
                             raise _error(frame, provider_id=_model_parts(model_ref)[0])
                         inference_id = frame.get("inference_id")
+                        accepted = True
                         continue
                     if kind == "error":
                         raise _error(frame, provider_id=_model_parts(model_ref)[0])
@@ -514,10 +518,12 @@ async def _resolve_call(call: Mapping[str, Any], session_id: str, run_id: str,
 
 class AgentApi:
     def __init__(self, transport: StdioTransport, *, response_timeout: float = 30.0,
+                 idle_timeout: Optional[float] = None,
                  auth_retry_policy: Optional[str] = None, auth: Any = None,
                  models: ModelsApi) -> None:
         self._transport = transport
         self._timeout = response_timeout
+        self._idle_timeout = idle_timeout
         self._auth_retry_policy = auth_retry_policy
         self._auth = auth
         self.models = models
@@ -564,13 +570,15 @@ class AgentApi:
             if submitted.get("type") != "session.message.submit.response":
                 raise MakaiProtocolError("expected session.message.submit.response", "malformed_response")
             admission = _payload(submitted)
+            if admission.get("accepted") is not True:
+                raise _error(submitted, provider_id=_model_parts(model_ref)[0] if model_ref else "")
             run_id = admission.get("run_id")
             selected_ref = str(admission.get("model_id") or model_ref or "")
             terminal = False
             emitted_content = False
             try:
                 while True:
-                    frame = await events.next_frame(self._timeout)
+                    frame = await events.next_frame(self._idle_timeout)
                     if run_id and frame.get("run_id") not in (None, run_id):
                         continue
                     kind = frame.get("type")

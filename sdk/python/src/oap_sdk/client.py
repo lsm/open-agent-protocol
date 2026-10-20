@@ -55,6 +55,7 @@ class MakaiClient:
         auth: Optional[AuthOptions] = None,
         response_timeout: Optional[float] = None,
         frame_timeout: Optional[float] = None,
+        idle_timeout: Optional[float] = None,
     ) -> None:
         self._transport = transport
         auth_options = auth or AuthOptions()
@@ -68,10 +69,10 @@ class MakaiClient:
 
         self.models = ModelsApi(transport, response_timeout=models_timeout)
         self.provider = ProviderApi(
-            transport, response_timeout=execution_timeout,
+            transport, response_timeout=execution_timeout, idle_timeout=idle_timeout,
             auth_retry_policy=auth_options.auth_retry_policy, auth=self.auth)
         self.agent = AgentApi(
-            transport, response_timeout=execution_timeout,
+            transport, response_timeout=execution_timeout, idle_timeout=idle_timeout,
             auth_retry_policy=auth_options.auth_retry_policy, auth=self.auth,
             models=ModelsApi(transport, response_timeout=models_timeout))
 
@@ -111,6 +112,7 @@ class _ClientConnector:
         response_timeout: Optional[float],
         frame_timeout: Optional[float],
         handshake_timeout: float,
+        idle_timeout: Optional[float] = None,
     ) -> None:
         self._command = command
         self._args = args
@@ -121,6 +123,7 @@ class _ClientConnector:
         self._response_timeout = response_timeout
         self._frame_timeout = frame_timeout
         self._handshake_timeout = handshake_timeout
+        self._idle_timeout = idle_timeout
         self._client: Optional[MakaiClient] = None
 
     async def _open(self) -> MakaiClient:
@@ -139,6 +142,7 @@ class _ClientConnector:
                 auth=self._auth,
                 response_timeout=self._response_timeout,
                 frame_timeout=self._frame_timeout,
+                idle_timeout=self._idle_timeout,
             )
         except BaseException:
             await transport.close()
@@ -173,6 +177,7 @@ def connect(
     response_timeout: Optional[float] = None,
     frame_timeout: Optional[float] = None,
     handshake_timeout: float = DEFAULT_HANDSHAKE_TIMEOUT_S,
+    idle_timeout: Optional[float] = None,
 ) -> _ClientConnector:
     """Start a combined OAP agent/provider stdio runtime and return a client.
 
@@ -191,8 +196,12 @@ def connect(
         env: Environment for the child process. Defaults to the parent's.
         resolver: Binary resolution options.
         auth: Client-level auth defaults.
-        response_timeout: Seconds to wait for a provider/agent frame
-            (default 30) and a models frame (default 5).
+        response_timeout: Seconds to wait for each request's reply, the
+            acceptance of a run or inference included (default 30, and 5
+            for models). It does not bound a running run.
+        idle_timeout: Seconds a running run or inference may go without an
+            event before it is cancelled. None, the default, sets no limit,
+            so a model may think as long as it needs.
         frame_timeout: Seconds to wait for an auth frame (default 30).
         handshake_timeout: Seconds to wait for OAP initialize.
     """
@@ -206,4 +215,5 @@ def connect(
         response_timeout=response_timeout,
         frame_timeout=frame_timeout,
         handshake_timeout=handshake_timeout,
+        idle_timeout=idle_timeout,
     )

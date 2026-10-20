@@ -297,6 +297,7 @@ def connect_sync(
     response_timeout: Optional[float] = None,
     frame_timeout: Optional[float] = None,
     handshake_timeout: float = DEFAULT_HANDSHAKE_TIMEOUT_S,
+    idle_timeout: Optional[float] = None,
 ) -> SyncMakaiClient:
     """Start a runtime and return a blocking client.
 
@@ -325,6 +326,7 @@ def connect_sync(
                 response_timeout=response_timeout,
                 frame_timeout=frame_timeout,
                 handshake_timeout=handshake_timeout,
+                idle_timeout=idle_timeout,
             )._open()
         )
     except BaseException:
