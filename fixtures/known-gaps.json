@@ -49,6 +49,7 @@
     "control-call-refusal-below-the-ladder",
     "control-call-refusal-invents-settlement",
     "control-call-requested-without-interaction",
+    "control-call-resolve-names-a-call-it-is-not-bound-to",
     "control-call-retry-accepted-before-terminal",
     "control-call-unknown-interaction-accepted",
     "control-call-valid-resolution-rejected",

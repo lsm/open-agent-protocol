@@ -8221,6 +8221,28 @@
       ]
     },
     {
+      "id": "tools-list-scoped-response-omits-envelope-session",
+      "path": "semantic-invalid/tools-list-scoped-response-omits-envelope-session.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "scope_mismatch"
+      ],
+      "units": [
+        "core",
+        "run-controls",
+        "control-tools"
+      ],
+      "provenance": [
+        "decisions/0008-tool-sources.md",
+        "decisions/0055-register-batch-2.md"
+      ],
+      "rules": [
+        "0008#a-list-request-is-a-request-of-its-own/1"
+      ]
+    },
+    {
       "id": "compound-open-reveals-its-own-provided-tool",
       "path": "valid/compound-open-reveals-its-own-provided-tool.json",
       "kind": "positive",
@@ -8357,6 +8379,49 @@
       "provenance": [
         "drafts/staged-units-graduation.md",
         "decisions/0011-control-layer-provided-tools.md"
+      ]
+    },
+    {
+      "id": "control-call-resolve-envelope-names-another-call",
+      "path": "semantic-invalid/control-call-resolve-envelope-names-another-call.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "scope_mismatch",
+        "scope_mismatch"
+      ],
+      "units": [
+        "core",
+        "control-tools"
+      ],
+      "provenance": [
+        "decisions/0011-control-layer-provided-tools.md",
+        "decisions/0055-register-batch-2.md"
+      ],
+      "rules": [
+        "0011#the-resolution-is-a-requestresponse-pair-with-three-arms/1"
+      ]
+    },
+    {
+      "id": "control-call-resolve-names-a-call-it-is-not-bound-to",
+      "path": "semantic-invalid/control-call-resolve-names-a-call-it-is-not-bound-to.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "scope_mismatch"
+      ],
+      "units": [
+        "core",
+        "control-tools"
+      ],
+      "provenance": [
+        "decisions/0011-control-layer-provided-tools.md",
+        "decisions/0055-register-batch-2.md"
+      ],
+      "rules": [
+        "0011#the-resolution-is-a-requestresponse-pair-with-three-arms/3"
       ]
     },
     {
