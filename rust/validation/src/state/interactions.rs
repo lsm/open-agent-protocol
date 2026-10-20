@@ -711,8 +711,6 @@ impl State {
                         .map(|support| (key.clone(), support.level.clone()))
                 })
                 .collect();
-        } else if *t == EnvelopeType::CAPABILITIES_UPDATED {
-            self.features.clear();
         }
     }
 
@@ -723,7 +721,7 @@ impl State {
             format!("agent_control.{name}"),
             format!("action.{name}"),
         ];
-        if self.current_capability.is_empty() || self.capabilities_stale {
+        if !self.settling && (self.current_capability.is_empty() || self.capabilities_stale) {
             self.add(
                 codes::UNAVAILABLE_CAPABILITY,
                 at,
@@ -734,7 +732,7 @@ impl State {
             return;
         }
         let revision = e.capability_revision.clone().unwrap_or_default();
-        if revision != self.current_capability {
+        if !self.settling && revision != self.current_capability {
             let current = self.current_capability.clone();
             self.add_expected(
                 codes::STALE_CAPABILITY_REVISION,

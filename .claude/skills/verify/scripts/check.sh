@@ -32,6 +32,9 @@ run node scripts/check-no-comments.mjs --check
 run ./scripts/check-zig-patterns.sh
 run ./scripts/check-no-test-litter.sh
 run ./zig/zig-out/bin/oapx validate fixtures/valid/core-completed.json
+run ./zig/zig-out/bin/oapx validate fixtures/valid/permission-resolved-in-the-refresh-window.json
+run ./zig/zig-out/bin/oapx validate fixtures/valid/user-input-resolved-in-the-refresh-window.json
+run python3 .claude/skills/verify/scripts/rust-refresh-window.py --output-dir "$artifacts/rust-refresh"
 printf '\nRUN: oapx validate fixtures/schema-invalid/missing-envelope-id.json (expect exit 1, schema_invalid)\n'
 set +e
 ./zig/zig-out/bin/oapx validate fixtures/schema-invalid/missing-envelope-id.json > "$artifacts/invalid.txt" 2>&1

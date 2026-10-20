@@ -18,6 +18,7 @@ struct Request {
     line: usize,
     envelope: Envelope,
     capability_revision: String,
+    settled_under: String,
     session: String,
     run: String,
     interaction: String,
@@ -30,6 +31,8 @@ pub(crate) struct State {
     ids: HashMap<String, usize>,
     requests: HashMap<String, Request>,
     current_capability: String,
+    previous_capability: String,
+    settling: bool,
     capabilities_stale: bool,
     runs: HashMap<String, runs::Run>,
     active: HashMap<String, String>,
@@ -286,6 +289,8 @@ impl State {
             ids: HashMap::new(),
             requests: HashMap::new(),
             current_capability: String::new(),
+            previous_capability: String::new(),
+            settling: false,
             capabilities_stale: false,
             runs: HashMap::new(),
             active: HashMap::new(),
@@ -375,6 +380,7 @@ impl State {
                 line,
                 envelope: e.clone(),
                 capability_revision: revision.clone(),
+                settled_under: String::new(),
                 session,
                 run,
                 interaction: envelope_interaction(e),
@@ -383,7 +389,9 @@ impl State {
             self.requests.insert(id, request);
         }
         let duplicate_response = is_response(&e.envelope_type) && !self.response(at, e);
-        if !revision.is_empty()
+        self.settling = self.settles_under_previous(e);
+        if !self.settling
+            && !revision.is_empty()
             && !self.current_capability.is_empty()
             && revision != self.current_capability
             && !REVISION_EXEMPT.contains(&e.envelope_type)
@@ -443,6 +451,7 @@ impl State {
                     "capability update must introduce a new revision",
                 );
             }
+            self.previous_capability = self.current_capability.clone();
             self.current_capability = revision;
             self.capabilities_stale = true;
             self.limits = None;
@@ -455,6 +464,40 @@ impl State {
                 "request occurred before the refreshed capabilities capabilities.updated owes",
             );
         }
+    }
+
+    fn settles_under_previous(&mut self, e: &Envelope) -> bool {
+        let Some(revision) = e.capability_revision.as_deref().filter(|r| !r.is_empty()) else {
+            return false;
+        };
+        if is_response(&e.envelope_type) {
+            return self
+                .requests
+                .get(&os(&e.in_reply_to))
+                .is_some_and(|request| request.settled_under == revision);
+        }
+        if !self.capabilities_stale || revision != self.previous_capability {
+            return false;
+        }
+        let t = &e.envelope_type;
+        if *t == EnvelopeType::ACTION_PERMISSION_RESOLVED || *t == EnvelopeType::USER_INPUT_RESOLVED
+        {
+            return true;
+        }
+        if matches!(
+            t.as_str(),
+            "run.cancel.request"
+                | "action.permission.resolve.request"
+                | "user.input.resolve.request"
+                | "user.input.cancel.request"
+                | "action.call.resolve.request"
+        ) {
+            if let Some(request) = self.requests.get_mut(e.id.as_str()) {
+                request.settled_under = revision.to_owned();
+            }
+            return true;
+        }
+        false
     }
 
     fn response(&mut self, at: (usize, usize), e: &Envelope) -> bool {
