@@ -362,6 +362,12 @@ resolve pair.
 
 **Status.** Settled by [Decision 0055](../decisions/0055-register-batch-2.md) and ported: Zig judges the binding in `semantic.zig:interactionResolved`, as Go and Rust do.
 
+0055's text reaches further than the three trees: it binds any interaction
+requested for a tool call, and `user.input.requested` may carry a
+`tool_call_id`. A `user.input.resolved` whose envelope names another call breaks
+the rule, and no tree judges it, since all three check the binding for
+permissions only. That is a port gap in every tree, with no fixture yet.
+
 ### OPEN-0011-1: which pattern syntax is `name_pattern`, and is it anchored?
 
 **What differs.** Go refuses a `tools` array naming a tool outside a disclosed
