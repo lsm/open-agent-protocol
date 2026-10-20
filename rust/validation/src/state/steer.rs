@@ -1,3 +1,5 @@
+use std::collections::{HashMap, HashSet};
+
 use oap_protocol::*;
 use serde::Deserialize;
 
@@ -8,13 +10,18 @@ use crate::codes;
 pub(super) struct SteerTrack {
     request: String,
     messages: Option<Vec<String>>,
-    settled: bool,
+    admitted_at: usize,
+    settled_at: Option<usize>,
+    settled_sequence: u64,
+    opaque: bool,
 }
 
 impl SteerTrack {
-    pub(super) fn recovered(pending: &PendingSteer) -> Self {
+    pub(super) fn recovered(pending: &PendingSteer, at: (usize, usize)) -> Self {
         Self {
             request: s(&pending.request_id),
+            admitted_at: at.0,
+            opaque: true,
             ..Self::default()
         }
     }
@@ -200,7 +207,8 @@ impl State {
         let track = SteerTrack {
             request: reply,
             messages: payload::<Admitted>(e).message_ids,
-            settled: false,
+            admitted_at: at.0,
+            ..SteerTrack::default()
         };
         if let Some(run) = self.runs.get_mut(&target) {
             run.steers
@@ -227,7 +235,7 @@ impl State {
             );
             return;
         };
-        if track.settled {
+        if track.settled_at.is_some() {
             let message = "steer settled more than once";
             self.add(
                 codes::DUPLICATE_STEER,
@@ -238,7 +246,8 @@ impl State {
             );
             return;
         }
-        track.settled = true;
+        track.settled_at = Some(at.0);
+        track.settled_sequence = e.sequence.unwrap_or(track.settled_sequence);
         let other_request = track.request != settlement.request_id;
         let other_messages = applied
             && track
@@ -266,4 +275,137 @@ impl State {
             );
         }
     }
+
+    pub(super) fn steer_refusal(&mut self, at: (usize, usize), e: &Envelope) {
+        let reply = os(&e.in_reply_to);
+        let Some(request) = self.requested_submission(&reply) else {
+            return;
+        };
+        if request.delivery != RequestedDeliveryMode::STEER
+            || self
+                .pending_controls
+                .get(&reply)
+                .is_some_and(|pending| pending.expectation.is_some())
+        {
+            return;
+        }
+        let (_, reason) = self.steer_target(&request);
+        if reason.is_empty() {
+            return;
+        }
+        let error = payload::<ErrorResponse>(e).error;
+        if error.code != "invalid_steer_target" {
+            let message = "refusal must describe the invalid steer target";
+            let pointer = "/payload/error/code";
+            let expected = "invalid_steer_target";
+            self.add_expected(
+                codes::ILLEGAL_RUN_TRANSITION,
+                at,
+                e,
+                pointer,
+                message,
+                expected,
+                &error.code,
+                &[],
+            );
+            return;
+        }
+        let actual = match error.details.get("reason") {
+            Some(serde_json::Value::String(given)) => given.clone(),
+            Some(other) => other.to_string(),
+            None => "<nil>".to_owned(),
+        };
+        if actual != reason {
+            let message = "refusal must describe the highest-ranked target condition";
+            let pointer = "/payload/error/details/reason";
+            self.add_expected(
+                codes::ILLEGAL_RUN_TRANSITION,
+                at,
+                e,
+                pointer,
+                message,
+                reason,
+                &actual,
+                &[],
+            );
+        }
+    }
+
+    pub(super) fn steer_terminal(&mut self, at: (usize, usize), e: &Envelope, run_id: &str) {
+        let pending = self
+            .runs
+            .get(run_id)
+            .is_some_and(|run| run.steers.values().any(|track| track.settled_at.is_none()));
+        if pending {
+            let message = "run terminated with unsettled guidance";
+            self.add(codes::PENDING_STEER_AT_TERMINAL, at, e, "/type", message);
+        }
+    }
+
+    pub(super) fn close_steer_snapshots(&mut self) {
+        for (at, e) in std::mem::take(&mut self.steer_snapshots) {
+            let p: SessionState = payload(&e);
+            let position = self
+                .requests
+                .get(&os(&e.in_reply_to))
+                .map_or(at.0, |request| request.index);
+            let contradicted = p.active_runs.iter().any(|entry| {
+                self.runs
+                    .get(entry.run_id.as_str())
+                    .is_some_and(|run| steers_contradict(entry, &run.steers, run.next, position))
+            });
+            if contradicted {
+                let message =
+                    "pending steers contradict the admission markers and run capture position";
+                self.add(
+                    codes::SESSION_STATE_MISMATCH,
+                    at,
+                    &e,
+                    "/payload/active_runs",
+                    message,
+                );
+            }
+        }
+    }
+}
+
+fn steers_contradict(
+    entry: &ActiveRun,
+    steers: &HashMap<String, SteerTrack>,
+    next: u64,
+    position: usize,
+) -> bool {
+    if steers.is_empty() && entry.pending_steers.is_empty() {
+        return false;
+    }
+    let Some(cursor) = entry.as_of_sequence else {
+        return true;
+    };
+    if cursor >= next {
+        return false;
+    }
+    let anchors: HashSet<&str> = entry
+        .admitted_submit_requests
+        .iter()
+        .map(EnvelopeId::as_str)
+        .collect();
+    let mut mismatch = false;
+    let mut listed: HashMap<&str, &str> = HashMap::new();
+    for pending in &entry.pending_steers {
+        let submission = pending.submission_id.as_str();
+        let request = pending.request_id.as_str();
+        let tracked = steers
+            .get(submission)
+            .is_some_and(|track| track.request == request);
+        mismatch |= !tracked;
+        listed.insert(submission, request);
+    }
+    for (id, track) in steers {
+        let known = anchors.contains(track.request.as_str()) || track.opaque;
+        let unsettled_at = track.settled_at.is_none_or(|settled| settled >= position);
+        mismatch |= track.admitted_at < position && !known && unsettled_at;
+        let pending = known && (track.settled_at.is_none() || track.settled_sequence > cursor);
+        mismatch |= pending != (listed.get(id.as_str()) == Some(&track.request.as_str()));
+    }
+    mismatch
 }
