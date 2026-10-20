@@ -293,6 +293,7 @@ impl State {
         } else if *t == EnvelopeType::ERROR_RESPONSE {
             self.settle_control_refusal(at, e);
             self.settle_provide_refusal(at, e);
+            self.steer_refusal(at, e);
             self.settle_subscribe_refusal(at, e);
         }
         if *t == EnvelopeType::SESSION_MESSAGE_SUBMIT_RESPONSE

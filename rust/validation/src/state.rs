@@ -6,6 +6,7 @@ mod name_pattern;
 mod queue;
 mod results;
 mod runs;
+mod steer;
 
 use std::collections::{HashMap, HashSet};
 
@@ -51,6 +52,7 @@ pub(crate) struct State {
     catalog_ambiguous: bool,
     provided: HashMap<String, Vec<ToolDefinition>>,
     pending_controls: HashMap<String, controls::PendingSubmit>,
+    steer_snapshots: Vec<((usize, usize), Envelope)>,
     pending_subscribes: HashMap<String, controls::PendingSubscribe>,
     pending_provides: HashMap<String, controls::PendingProvide>,
     descriptor_owners: HashMap<String, String>,
@@ -315,6 +317,7 @@ impl State {
             catalog_ambiguous: false,
             provided: HashMap::new(),
             pending_controls: HashMap::new(),
+            steer_snapshots: Vec::new(),
             pending_subscribes: HashMap::new(),
             pending_provides: HashMap::new(),
             descriptor_owners: HashMap::new(),
@@ -759,6 +762,7 @@ impl State {
     }
 
     pub fn close(&mut self) {
+        self.close_steer_snapshots();
         self.close_recoveries();
         let mut found = Vec::new();
         for (id, request) in &self.requests {

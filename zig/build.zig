@@ -1167,6 +1167,7 @@ pub fn build(b: *std.Build) void {
             .{ .name = "auth_resolver", .module = auth_resolver_mod },
             .{ .name = "oauth/storage", .module = oauth_storage_mod },
             .{ .name = "oauth/refresh_lock", .module = refresh_lock_mod },
+            .{ .name = "oauth/github_copilot", .module = github_copilot_mod },
             .{ .name = "oom", .module = oom_mod },
             .{ .name = "compat", .module = compat_mod },
             .{ .name = "provider_base_url", .module = provider_base_url_mod },

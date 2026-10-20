@@ -8,17 +8,26 @@ use super::admit::history_tokens;
 use super::controls::{self, Controls};
 use super::pipe::Pipe;
 use super::{raw, CAPABILITY_REVISION, SCRIPTED_SOURCE, SCRIPTED_TOOL, SCRIPTED_TOOL_OWNER};
-use super::{Clock, IdGenerator, KeptSession, ENDPOINT_ID};
+use super::{Clock, IdGenerator, KeptSession, ENDPOINT_ID, REFERENCE_WINDOW};
 use crate::{Error, EventStream, SubmitRequest, UnsupportedControl, CONTROL_UNADVERTISED};
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
 pub(super) enum Stage {
+    #[default]
     Permission,
     Call,
     Input,
     Terminal,
 }
 
+#[derive(Clone)]
+pub(super) struct Steer {
+    pub(super) submission_id: SubmissionId,
+    pub(super) request_id: EnvelopeId,
+    pub(super) messages: Vec<MessageId>,
+}
+
+#[derive(Default)]
 pub(super) struct Run {
     pub(super) id: String,
     pub(super) status: RunStatus,
@@ -40,6 +49,16 @@ pub(super) struct Run {
     pub(super) responded_by: String,
     pub(super) subscribers: Vec<Pipe>,
     pub(super) input: u64,
+    pub(super) steers: Vec<Steer>,
+    pub(super) admitted_steers: Vec<EnvelopeId>,
+    pub(super) compaction: bool,
+    pub(super) compact_continue: bool,
+    pub(super) compact_focus: String,
+    pub(super) settled_arm: Option<&'static str>,
+    pub(super) settled_request_id: EnvelopeId,
+    pub(super) settled_result: Option<Box<serde_json::value::RawValue>>,
+    pub(super) settled_error: Option<ProtocolError>,
+    pub(super) settlement_id: Option<EnvelopeId>,
 }
 
 pub(super) enum Emit {
@@ -178,12 +197,13 @@ impl Inner {
         self.state.active_run_id = active;
     }
 
-    fn publish(
+    pub(super) fn publish(
         &mut self,
         run_id: &str,
         envelope_type: EnvelopeType,
         payload: impl Serialize,
         terminal: bool,
+        settles: Option<&SubmissionId>,
     ) -> Result<Option<String>, Emit> {
         if self.run(run_id).terminal {
             return Err(Emit::TerminalWon);
@@ -214,7 +234,8 @@ impl Inner {
             "action.call.completed" | "action.call.failed" | "action.call.cancelled"
                 if !run.call_id.is_empty() && run.pending_interaction == run.call_id =>
             {
-                run.pending_interaction.clear()
+                run.pending_interaction.clear();
+                run.settlement_id = Some(envelope.id.clone());
             }
             _ => {}
         }
@@ -227,6 +248,9 @@ impl Inner {
                 "run.failed" => RunStatus::FAILED,
                 _ => RunStatus::CANCELLED,
             };
+        }
+        if let Some(settled) = settles {
+            run.steers.retain(|steer| &steer.submission_id != settled);
         }
         let subscribers = if terminal {
             std::mem::take(&mut run.subscribers)
@@ -272,13 +296,16 @@ impl Inner {
         payload: impl Serialize,
         terminal: bool,
     ) -> Result<(), Emit> {
-        if let Some(promoted) = self.publish(run_id, envelope_type, payload, terminal)? {
+        if terminal {
+            self.drop_steers(run_id)?;
+        }
+        if let Some(promoted) = self.publish(run_id, envelope_type, payload, terminal, None)? {
             self.emit_initial(&promoted)?;
         }
         Ok(())
     }
 
-    fn emit_initial(&mut self, run_id: &str) -> Result<(), Emit> {
+    pub(super) fn emit_initial(&mut self, run_id: &str) -> Result<(), Emit> {
         let current = self.state.current_model_id.clone();
         let session = self.session_id();
         let run = self.run_mut(run_id);
@@ -292,7 +319,7 @@ impl Inner {
             run.controls.calls_tool,
             run.controls.instructions.clone(),
         );
-        let input = run.input;
+        let (input, compaction) = (run.input, run.compaction);
         let started = RunStartedPayload {
             session_id: session.clone(),
             run_id: RunId::from(run_id),
@@ -301,7 +328,18 @@ impl Inner {
             started_at_ms: self.clock.now_ms(),
         };
         self.emit(run_id, EnvelopeType::RUN_STARTED, started, false)?;
-        self.history += input;
+        if compaction {
+            if self.emit_compaction(run_id, CompactionReason::REQUESTED)? {
+                return Ok(());
+            }
+        } else {
+            self.history += input;
+            if self.history >= REFERENCE_WINDOW {
+                self.emit_compaction(run_id, CompactionReason::OVERFLOW)?;
+            } else if self.history >= self.threshold {
+                self.emit_compaction(run_id, CompactionReason::THRESHOLD)?;
+            }
+        }
         let mut text = if calls_tool {
             "I will use the scripted tool."
         } else {
@@ -385,6 +423,7 @@ impl Inner {
     }
 
     pub(super) fn request_input(&mut self, run_id: &str) -> Result<(), Emit> {
+        self.settle_steers(run_id, SteerBoundary::TURN)?;
         let run = self.run(run_id);
         let input = UserInputRequestedPayload {
             interaction_id: InteractionId::from(run.input_id.as_str()),
@@ -422,15 +461,10 @@ impl Inner {
         &mut self,
         submit: SubmitRequest,
     ) -> Result<(MessageSubmitResponse, EventStream), Error> {
-        let request = submit.request;
-        if request.delivery == RequestedDeliveryMode::STEER {
-            let control = UnsupportedControl {
-                feature: FEATURE_DELIVERY_STEER.to_owned(),
-                reason: CONTROL_UNADVERTISED,
-                ..UnsupportedControl::default()
-            };
-            return Err(Error::UnsupportedControl(Box::new(control)));
+        if submit.request.delivery == RequestedDeliveryMode::STEER {
+            return self.steer(submit);
         }
+        let request = submit.request;
         let mut controls = controls::admit(&self.provided, &request)?;
         if request.session_id.as_str().is_empty() || request.messages.is_empty() {
             return Err(Error::InvalidSubmission);
@@ -487,6 +521,7 @@ impl Inner {
             responded_by: self.participant.as_str().to_owned(),
             subscribers: Vec::new(),
             input: history_tokens(&request.messages),
+            ..Run::default()
         };
         if !run.controls.calls_tool {
             run.stage = Stage::Input;
@@ -613,6 +648,14 @@ fn entry(run: &Run, position: usize) -> ActiveRun {
         as_of_sequence: Some(run.next_sequence - 1),
         pending_interactions: pending,
         acknowledged_interactions: acknowledged,
-        ..ActiveRun::default()
+        admitted_submit_requests: run.admitted_steers.clone(),
+        pending_steers: run
+            .steers
+            .iter()
+            .map(|steer| PendingSteer {
+                submission_id: steer.submission_id.clone(),
+                request_id: steer.request_id.clone(),
+            })
+            .collect(),
     }
 }

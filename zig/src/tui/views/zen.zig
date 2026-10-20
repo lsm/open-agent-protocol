@@ -364,6 +364,18 @@ fn trail(allocator: std.mem.Allocator, counts: Counts) ![]const u8 {
     return out.toOwnedSlice();
 }
 
+pub fn cursorPosition(rendered: []const u8) ?tui_text.CursorPos {
+    var lines = std.mem.splitScalar(u8, rendered, '\n');
+    var row: usize = 0;
+    var caret: ?tui_text.CursorPos = null;
+    while (lines.next()) |line| : (row += 1) {
+        if (std.mem.indexOf(u8, line, "\x1b[7m")) |at| {
+            caret = .{ .row = row, .col = tui_text.visibleWidth(line[0..at]) };
+        }
+    }
+    return caret;
+}
+
 fn secretBar(allocator: std.mem.Allocator, input: []const u8, hint: []const u8, column: usize) ![]const u8 {
     if (input.len == 0) return std.fmt.allocPrint(allocator, "{s}\x1b[7m \x1b[0m\x1b[2m{s}\x1b[0m", .{ prompt, hint });
     const stars = try allocator.alloc(u8, @min(input.len, column -| (tui_text.visibleWidth(prompt) + 1)));

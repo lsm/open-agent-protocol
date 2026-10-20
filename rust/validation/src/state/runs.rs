@@ -4,6 +4,7 @@ use oap_protocol::*;
 
 use super::controls::Controls;
 use super::interactions::{Interaction, ToolTrack};
+use super::steer::SteerTrack;
 use super::{os, payload, s, State};
 use crate::codes;
 
@@ -27,6 +28,9 @@ pub(super) struct Run {
     pub(super) order: usize,
     pub(super) admitted_queued: bool,
     pub(super) admitted_model: String,
+    pub(super) steers: HashMap<String, SteerTrack>,
+    pub(super) compaction_run: bool,
+    pub(super) compaction_continue: bool,
 }
 
 pub(super) const RUN_EVENTS: [EnvelopeType; 21] = [
@@ -119,6 +123,7 @@ impl State {
         } else if *t == EnvelopeType::SESSION_STATE_RESPONSE
             || *t == EnvelopeType::SESSION_STATE_UPDATED
         {
+            self.steer_snapshots.push((at, e.clone()));
             self.state_document(at, e);
         } else if *t == EnvelopeType::SESSION_COMPACT_RESPONSE {
             self.compact_response(at, e);
@@ -207,6 +212,7 @@ impl State {
                 "explicit steer cannot admit a new run",
             ))
         } else if p.admission == Admission::STEERED {
+            self.steer_admission(at, e, &p);
             return;
         } else if run_id.is_empty() {
             Some((
@@ -294,11 +300,17 @@ impl State {
             self.add(code, at, e, pointer, message);
         }
         if live {
+            if e.envelope_type == EnvelopeType::RUN_STEER_APPLIED
+                || e.envelope_type == EnvelopeType::RUN_STEER_DROPPED
+            {
+                self.steer_settlement(at, e, &run_id);
+            }
             self.check_queue_order(at, e, &run_id, was_started);
             self.live_run_event(at, e, &run_id);
             if is_terminal(&e.envelope_type) {
                 self.settle_run_controls(at, e, &run_id);
                 self.pending_at_terminal(at, e, &run_id);
+                self.steer_terminal(at, e, &run_id);
                 let session = self
                     .runs
                     .get(&run_id)

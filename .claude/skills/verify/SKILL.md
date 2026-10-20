@@ -92,9 +92,41 @@ The script retains each input and result.
 The baseline script runs this journey too, and validates the positive traces
 with the rebuilt `oapx` binary.
 
+Replay every steer fixture through both CLIs, the Rust `validate` example and
+`goap validate --format json`:
+
+```sh
+python3 .claude/skills/verify/scripts/rust-steer-parity.py --output-dir /tmp/oap-rust-steer-<unique-name>
+```
+
+Every steer fixture not listed as a Rust known gap must draw the same code set
+from both CLIs as the manifest declares, and exit 0 exactly when it draws none.
+The script prints how many agreed and how many it skipped as listed gaps.
+
+## Rust memory adapter consumer journey
+
+The Rust adapter is a library too. Its `memory_trace` example opens a memory
+session through the public `Adapter` and `Session` traits and prints the whole
+exchange as an OAP trace. With `steer` it submits a run, steers it and resolves
+both gates; with `compact` it asks an idle session for a focused compaction;
+with `call` it opens the session providing a tool, then acknowledges and
+resolves the call the script makes to it:
+
+```sh
+python3 .claude/skills/verify/scripts/rust-memory-trace.py --output-dir /tmp/oap-rust-memory-<unique-name>
+```
+
+Each trace must end in `run.completed` and pass the Rust, Go and Zig validators
+(build `oapx` first). The steer trace must apply the steer right before the
+input gate, and the compaction run must start and end its compaction in order.
+With the steer exchange removed, all three must reject the trace with
+`unmatched_steer`; with the compact exchange removed, all three must reject it
+with `illegal_run_transition`. With the call's resolve exchanges removed, all three must reject it with
+`illegal_tool_transition`.
+
 ## Rust control-tool journey
 
-After changing control-tool validation, run the public-library consumer against
+After building the ReleaseSafe `oapx` binary, run the public-library consumer against
 all ported control-call/provisioning fixtures and nine consumer variations:
 
 ```sh
@@ -112,7 +144,8 @@ Go validator to compare every result with Rust. It requires zero Go/Rust
 code-set or phase disagreements and explicitly lists remaining snapshot gaps
 for the next port. The documented Unicode 17 enforcement gap is also listed;
 a valid Unicode 17 descriptor itself must pass without a false invalid-pattern
-diagnostic. The baseline runs this journey too. `name_pattern` matches
+diagnostic. The script separately observes the declared Unicode 17 enforcement
+gap in Rust and Zig against Go's rejection. The baseline runs this journey too. `name_pattern` matches
 the entire name; invalid RE2 is diagnosed on the descriptor at the pattern's pointer.
 
 ## Local oapx/TUI journey (PTY, no real credentials)
@@ -130,7 +163,26 @@ reads under the real HOME. It reuses the existing PTY driver's terminal decoder
 and bounded waits. It checks `oapx --help`, then observes welcome -> typed prompt
 -> fixture-provider reply -> `/quit` with exit 0, saves help/transcript/screen
 artifacts, kills/reaps the child on failure, and deletes temporary state.
-Inspect `screen.txt` and the transcript for the actual rendered reply.
+Inspect `screen.txt` and the transcript for the actual rendered reply. The journey
+also asserts real cursor coordinates and caret-column escapes for ASCII, CJK
+wide characters and wrapped CJK input, then moves left over CJK, widens the PTY,
+checks the new caret, types CJK in Zen mode, and checks cursor restoration on exit. `caret-*.txt` and
+`resized.txt` retain the visible rows and real cursor coordinates. Run vendored
+renderer escape/redraw/reflow tests with:
+
+```sh
+zig build --build-file zig/vendor/zigzag/build.zig test
+```
+
+A PTY cannot generate a terminal emulator's IME preedit. Real IME behaviour is
+**unverified** until a human checks it in their own terminal:
+
+1. Start the rebuilt `oapx`, enable a Chinese IME, and type a syllable without
+   committing it; preedit should appear at the composer caret without scrolling.
+2. Commit characters, fill/wrap an input row, move the caret left, and compose
+   again; the frame should stay still and preedit should follow the caret.
+3. Resize while a draft is present, compose and commit again, then `/quit`;
+   check that the prompt and terminal cursor are restored correctly.
 
 Do not remove the sandbox if it fails. HOME alone does not isolate macOS
 Keychain; a unique Keychain service alone still permits file fallback and

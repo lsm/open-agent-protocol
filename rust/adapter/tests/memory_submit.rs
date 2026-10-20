@@ -316,21 +316,15 @@ fn a_session_with_a_live_run_refuses_to_close_and_keeps_the_stream() {
 
 #[test]
 fn a_delivery_the_adapter_does_not_serve_is_refused_under_its_own_key() {
-    let session = session(64);
-    for (delivery, key) in [
-        (RequestedDeliveryMode::BTW, FEATURE_DELIVERY_BTW),
-        (RequestedDeliveryMode::STEER, FEATURE_DELIVERY_STEER),
-    ] {
-        let request = MessageSubmitRequest {
-            delivery,
-            ..plain()
-        };
-        let control = refusal(try_submit(&session, request).err().unwrap());
-        assert_eq!(
-            (control.feature.as_str(), control.reason),
-            (key, CONTROL_UNADVERTISED)
-        );
-    }
+    let request = MessageSubmitRequest {
+        delivery: RequestedDeliveryMode::BTW,
+        ..plain()
+    };
+    let control = refusal(try_submit(&session(64), request).err().unwrap());
+    assert_eq!(
+        (control.feature.as_str(), control.reason),
+        (FEATURE_DELIVERY_BTW, CONTROL_UNADVERTISED)
+    );
 }
 
 #[test]
