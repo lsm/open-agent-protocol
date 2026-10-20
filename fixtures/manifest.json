@@ -12923,6 +12923,29 @@
       ]
     },
     {
+      "id": "permission-resolution-of-a-bound-input-interaction",
+      "path": "semantic-invalid/permission-resolution-of-a-bound-input-interaction.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "unmatched_interaction"
+      ],
+      "units": [
+        "core",
+        "user-input",
+        "permissions"
+      ],
+      "provenance": [
+        "decisions/0001-agent-control-v0.1-executable-core.md",
+        "decisions/0055-register-batch-2.md"
+      ],
+      "rules": [
+        "agent-control-core#permissions/1",
+        "0001#correlated-reverse-interactions/7"
+      ]
+    },
+    {
       "id": "permission-resolved-in-the-refresh-window",
       "path": "valid/permission-resolved-in-the-refresh-window.json",
       "kind": "positive",
