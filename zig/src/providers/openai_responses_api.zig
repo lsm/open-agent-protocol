@@ -425,6 +425,12 @@ fn normalizedOpenAIReasoningEffort(options: ai_types.StreamOptions) ?[]const u8 
     return effort;
 }
 
+const client_user_agent = "oapx/" ++ @import("version_options").version;
+
+fn sessionHeaderFor(model: ai_types.Model) ?[]const u8 {
+    return provider_catalog.sessionHeader(model.provider, responses_wire.id);
+}
+
 fn responsesWireForModel(model: ai_types.Model) provider_catalog.Wire {
     if (isOpenAICodexResponsesModel(model)) return codex_responses_wire;
     return responses_wire;
@@ -893,8 +899,10 @@ const ThreadCtx = struct {
     on_payload_ctx: ?*anyopaque = null,
     retry_config: ?ai_types.RetryConfig = null,
     ping_interval_ms: ?u64 = null,
+    conversation_id: ?[]u8 = null,
 
     fn deinit(self: *ThreadCtx) void {
+        if (self.conversation_id) |id| self.allocator.free(id);
         self.allocator.free(self.api_key);
         self.allocator.free(self.body);
         var mut_context = self.context;
@@ -975,6 +983,15 @@ fn runThread(ctx: *ThreadCtx) void {
         stream.completeWithError("oom headers");
         return;
     };
+    if (ctx.conversation_id) |id| if (sessionHeaderFor(model)) |header_name| {
+        headers.append(allocator, .{ .name = header_name, .value = id }) catch {
+            allocator.free(auth);
+            allocator.free(url);
+            ctx.deinit();
+            stream.completeWithError("oom headers");
+            return;
+        };
+    };
     if (model.headers) |model_headers| {
         for (model_headers) |header| {
             if (compat.http.headerPresent(headers.items, header.name)) continue;
@@ -1015,7 +1032,7 @@ fn runThread(ctx: *ThreadCtx) void {
             req_initialized = false;
         }
 
-        req = client.openRequest(.POST, uri, .{ .extra_headers = headers.items }) catch {
+        req = client.openRequest(.POST, uri, .{ .extra_headers = headers.items, .user_agent = if (sessionHeaderFor(model) != null) client_user_agent else null }) catch {
             if (retry_attempt < MAX_RETRIES) {
                 const delay = retry_util.calculateDelay(retry_attempt, BASE_DELAY_MS, max_delay_ms);
                 if (retry_util.sleepMs(delay, if (cancel_token) |ct| ct.cancelled else null)) {
@@ -1256,11 +1273,11 @@ fn runThread(ctx: *ThreadCtx) void {
                     if (open_text == null) {
                         closeOpen(stream, partialFor(model, usage, stop_reason), assembled.items, &open_thinking);
                         assembled.append(allocator, .{ .text = .empty }) catch {
-                        allocator.free(auth);
-                        allocator.free(url);
-                        ctx.deinit();
-                        stream.completeWithError("oom part");
-                        return;
+                            allocator.free(auth);
+                            allocator.free(url);
+                            ctx.deinit();
+                            stream.completeWithError("oom part");
+                            return;
                         };
                         open_text = next_content_index;
                         next_content_index += 1;
@@ -1275,11 +1292,11 @@ fn runThread(ctx: *ThreadCtx) void {
                         closeOpen(stream, partialFor(model, usage, stop_reason), assembled.items, &open_thinking);
                         closeOpen(stream, partialFor(model, usage, stop_reason), assembled.items, &open_text);
                         assembled.append(allocator, .{ .call = null }) catch {
-                        allocator.free(auth);
-                        allocator.free(url);
-                        ctx.deinit();
-                        stream.completeWithError("oom part");
-                        return;
+                            allocator.free(auth);
+                            allocator.free(url);
+                            ctx.deinit();
+                            stream.completeWithError("oom part");
+                            return;
                         };
                         const call_id = item.call_id orelse "";
                         const item_id = item.id orelse "";
@@ -1384,11 +1401,11 @@ fn runThread(ctx: *ThreadCtx) void {
                     if (open_thinking == null) {
                         closeOpen(stream, partialFor(model, usage, stop_reason), assembled.items, &open_text);
                         assembled.append(allocator, .{ .thinking = .empty }) catch {
-                        allocator.free(auth);
-                        allocator.free(url);
-                        ctx.deinit();
-                        stream.completeWithError("oom part");
-                        return;
+                            allocator.free(auth);
+                            allocator.free(url);
+                            ctx.deinit();
+                            stream.completeWithError("oom part");
+                            return;
                         };
                         open_thinking = next_content_index;
                         next_content_index += 1;
@@ -1551,6 +1568,9 @@ pub fn streamOpenAIResponses(model: ai_types.Model, context: ai_types.Context, o
     const body = try buildRequestBody(owned_model, owned_context, o, allocator);
     errdefer allocator.free(body);
 
+    const conversation_id: ?[]u8 = if (sessionHeaderFor(owned_model) != null) try provider_catalog.conversationId(allocator, o.getSessionId(), owned_context) else null;
+    errdefer if (conversation_id) |id| allocator.free(id);
+
     const s = try allocator.create(event_stream.AssistantMessageEventStream);
     errdefer allocator.destroy(s);
     s.* = event_stream.AssistantMessageEventStream.init(allocator);
@@ -1572,6 +1592,7 @@ pub fn streamOpenAIResponses(model: ai_types.Model, context: ai_types.Context, o
         .on_payload_ctx = o.on_payload_ctx,
         .retry_config = o.retry,
         .ping_interval_ms = o.ping_interval_ms,
+        .conversation_id = conversation_id,
     };
 
     const th = try std.Thread.spawn(.{}, runThread, .{ctx});
@@ -2577,6 +2598,10 @@ const MockResponsesServer = struct {
     body: []const u8,
     thread: ?std.Thread = null,
     served: std.atomic.Value(bool) = .init(false),
+    session_header: [64]u8 = undefined,
+    session_header_len: usize = 0,
+    user_agent: [64]u8 = undefined,
+    user_agent_len: usize = 0,
 
     fn stop(self: *MockResponsesServer) void {
         if (self.thread) |thread| {
@@ -2619,6 +2644,8 @@ const MockResponsesServer = struct {
                     var lines = std.mem.splitSequence(u8, request[0..at], "\r\n");
                     while (lines.next()) |line| {
                         if (std.ascii.startsWithIgnoreCase(line, "content-length:")) declared = std.fmt.parseInt(usize, std.mem.trim(u8, line["content-length:".len..], " \t"), 10) catch 0;
+                        if (std.ascii.startsWithIgnoreCase(line, "x-opencode-session:")) self.session_header_len = keep(&self.session_header, line["x-opencode-session:".len..]);
+                        if (std.ascii.startsWithIgnoreCase(line, "user-agent:")) self.user_agent_len = keep(&self.user_agent, line["user-agent:".len..]);
                     }
                 }
             }
@@ -2640,6 +2667,59 @@ const StreamedParts = struct {
         if (self.result) |*held| held.deinit(allocator);
     }
 };
+
+fn keep(into: *[64]u8, raw: []const u8) usize {
+    const value = std.mem.trim(u8, raw, " \t");
+    const len = @min(value.len, into.len);
+    @memcpy(into[0..len], value[0..len]);
+    return len;
+}
+
+const SentHeaders = struct { session: [64]u8, session_len: usize, agent: [64]u8, agent_len: usize };
+
+fn headersSentFor(provider: []const u8, session_id: []const u8) !SentHeaders {
+    const allocator = std.testing.allocator;
+    var mock = try MockResponsesServer.listen("data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"output\":[]}}\n\n");
+    defer mock.stop();
+    const base_url = try mock.baseUrl(allocator);
+    defer allocator.free(base_url);
+    mock.thread = try std.Thread.spawn(.{}, MockResponsesServer.serve, .{&mock});
+    const messages = [_]ai_types.Message{.{ .user = .{ .content = .{ .text = "hello" }, .timestamp = 0 } }};
+    const stream = try streamOpenAIResponses(.{
+        .id = "gpt-test",
+        .name = "gpt-test",
+        .api = "openai-responses",
+        .provider = provider,
+        .base_url = base_url,
+        .reasoning = false,
+        .input = &.{"text"},
+        .cost = .{ .input = 0, .output = 0, .cache_read = 0, .cache_write = 0 },
+        .context_window = 1024,
+        .max_tokens = 16,
+    }, .{ .messages = &messages }, .{
+        .api_key = ai_types.OwnedSlice(u8).initBorrowed("test-key"),
+        .session_id = ai_types.OwnedSlice(u8).initBorrowed(session_id),
+    }, allocator);
+    defer {
+        stream.deinit();
+        allocator.destroy(stream);
+    }
+    while (stream.wait()) |event| {
+        var polled = event;
+        ai_types.deinitAssistantMessageEvent(allocator, &polled);
+    }
+    try std.testing.expect(stream.waitForThread(5_000));
+    return .{ .session = mock.session_header, .session_len = mock.session_header_len, .agent = mock.user_agent, .agent_len = mock.user_agent_len };
+}
+
+test "an OpenCode Go request over responses names its session and identifies oapx, and a Zen one does neither" {
+    const go = try headersSentFor("opencode-go", "ses-go-1");
+    try std.testing.expectEqualStrings("ses-go-1", go.session[0..go.session_len]);
+    try std.testing.expectEqualStrings(client_user_agent, go.agent[0..go.agent_len]);
+    const zen = try headersSentFor("opencode-zen", "ses-zen-1");
+    try std.testing.expectEqual(@as(usize, 0), zen.session_len);
+    try std.testing.expect(!std.mem.eql(u8, client_user_agent, zen.agent[0..zen.agent_len]));
+}
 
 fn streamResponsesBody(body: []const u8) !StreamedParts {
     const allocator = std.testing.allocator;

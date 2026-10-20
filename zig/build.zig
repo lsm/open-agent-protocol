@@ -892,6 +892,7 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
         .imports = &.{
+            .{ .name = "version_options", .module = version_module },
             .{ .name = "provider_catalog", .module = provider_catalog_mod },
             .{ .name = "ai_types", .module = ai_types_mod },
             .{ .name = "event_stream", .module = event_stream_mod },
@@ -3665,7 +3666,8 @@ fn providerCatalogDataModule(b: *std.Build, target: std.Build.ResolvedTarget, op
         for (catalog.providers) |row| {
             if (!std.mem.eql(u8, row.id, endpoint.id)) continue;
             for (row.endpoints) |served| {
-                if (!std.mem.eql(u8, served.base_url, endpoint.base_url)) continue;
+                if (!std.mem.eql(u8, served.base_url, endpoint.base_url) or !std.mem.eql(u8, served.wire, endpoint.wire)) continue;
+                if (!std.mem.eql(u8, served.region orelse "", endpoint.region orelse "")) continue;
                 if (served.carries_version) out.appendSlice(gpa, ", .carries_version = true") catch @panic("out of memory");
             }
         }

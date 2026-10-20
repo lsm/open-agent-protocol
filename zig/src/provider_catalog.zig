@@ -382,6 +382,35 @@ pub fn wireForModel(provider_id: []const u8, model_id: []const u8) ?Wire {
     return firstImplementedWire(row);
 }
 
+fn hashField(hasher: *std.hash.Wyhash, tag: u8, bytes: []const u8) void {
+    var length: [8]u8 = undefined;
+    std.mem.writeInt(u64, &length, bytes.len, .little);
+    hasher.update(&.{tag});
+    hasher.update(&length);
+    hasher.update(bytes);
+}
+
+pub fn conversationId(allocator: std.mem.Allocator, session_id: ?[]const u8, context: ai_types.Context) ![]u8 {
+    if (session_id) |id| return allocator.dupe(u8, id);
+    var hasher = std.hash.Wyhash.init(0);
+    hashField(&hasher, 's', context.system_prompt.slice());
+    for (context.messages) |message| {
+        if (message != .user) continue;
+        switch (message.user.content) {
+            .text => |text| hashField(&hasher, 't', text),
+            .parts => |parts| for (parts) |part| switch (part) {
+                .text => |text| hashField(&hasher, 't', text.text),
+                .image => |image| {
+                    hashField(&hasher, 'm', image.mime_type);
+                    hashField(&hasher, 'i', image.data);
+                },
+            },
+        }
+        break;
+    }
+    return std.fmt.allocPrint(allocator, "oapx-{x:0>16}", .{hasher.final()});
+}
+
 pub fn declaresWire(provider_id: []const u8, wire: []const u8) bool {
     const row = provider(provider_id) orelse return false;
     for (row.wires) |declared| {
@@ -402,7 +431,8 @@ pub fn sessionHeader(provider_id: []const u8, wire: []const u8) ?[]const u8 {
 test "an endpoint names the session header it needs on each wire, and one that needs none names none" {
     try std.testing.expectEqualStrings("x-opencode-session", sessionHeader("opencode-go", "openai-completions").?);
     try std.testing.expectEqualStrings("x-opencode-session", sessionHeader("opencode-go", "anthropic-messages").?);
-    try std.testing.expect(sessionHeader("opencode-go", "openai-responses") == null);
+    try std.testing.expectEqualStrings("x-opencode-session", sessionHeader("opencode-go", "openai-responses").?);
+    try std.testing.expect(sessionHeader("opencode-zen", "openai-responses") == null);
     try std.testing.expect(sessionHeader("opencode-zen", "openai-completions") == null);
     try std.testing.expect(sessionHeader("openai", "openai-completions") == null);
     try std.testing.expect(sessionHeader("no-such-provider", "openai-completions") == null);
