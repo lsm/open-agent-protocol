@@ -3665,8 +3665,7 @@ fn providerCatalogDataModule(b: *std.Build, target: std.Build.ResolvedTarget, op
         for (catalog.providers) |row| {
             if (!std.mem.eql(u8, row.id, endpoint.id)) continue;
             for (row.endpoints) |served| {
-                if (!std.mem.eql(u8, served.base_url, endpoint.base_url) or !std.mem.eql(u8, served.wire, endpoint.wire)) continue;
-                if (!std.mem.eql(u8, served.region orelse "", endpoint.region orelse "")) continue;
+                if (!std.mem.eql(u8, served.base_url, endpoint.base_url)) continue;
                 if (served.carries_version) out.appendSlice(gpa, ", .carries_version = true") catch @panic("out of memory");
             }
         }

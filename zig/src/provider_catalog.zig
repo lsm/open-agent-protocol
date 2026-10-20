@@ -402,8 +402,7 @@ pub fn sessionHeader(provider_id: []const u8, wire: []const u8) ?[]const u8 {
 test "an endpoint names the session header it needs on each wire, and one that needs none names none" {
     try std.testing.expectEqualStrings("x-opencode-session", sessionHeader("opencode-go", "openai-completions").?);
     try std.testing.expectEqualStrings("x-opencode-session", sessionHeader("opencode-go", "anthropic-messages").?);
-    try std.testing.expectEqualStrings("x-opencode-session", sessionHeader("opencode-go", "openai-responses").?);
-    try std.testing.expect(sessionHeader("opencode-zen", "openai-responses") == null);
+    try std.testing.expect(sessionHeader("opencode-go", "openai-responses") == null);
     try std.testing.expect(sessionHeader("opencode-zen", "openai-completions") == null);
     try std.testing.expect(sessionHeader("openai", "openai-completions") == null);
     try std.testing.expect(sessionHeader("no-such-provider", "openai-completions") == null);

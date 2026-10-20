@@ -36,13 +36,6 @@
       "request_url": "https://opencode.ai/inference/v1/messages"
     },
     {
-      "id": "opencode-zen",
-      "wire": "openai-responses",
-      "base_url": "https://opencode.ai/inference/v1",
-      "models_url": "https://opencode.ai/inference/v1/models",
-      "request_url": "https://opencode.ai/inference/v1/responses"
-    },
-    {
       "id": "openrouter",
       "wire": "openai-completions",
       "base_url": "https://openrouter.ai/api/v1",
@@ -106,13 +99,6 @@
       "base_url": "https://opencode.ai/inference/go",
       "models_url": "https://opencode.ai/inference/go/models",
       "request_url": "https://opencode.ai/inference/go/v1/messages"
-    },
-    {
-      "id": "opencode-go",
-      "wire": "openai-responses",
-      "base_url": "https://opencode.ai/inference/go/v1",
-      "models_url": "https://opencode.ai/inference/go/v1/models",
-      "request_url": "https://opencode.ai/inference/go/v1/responses"
     },
     {
       "id": "openai-codex",
