@@ -409,6 +409,18 @@ Go rejects them ("invalid repeat count"), and so does Zig. `open-provide-refused
 pins it as a Zig known gap. Whether 0055's "RE2-compatible" asks for more than
 this subset is with the owner.
 
+The Rust control-tools port checks the public Go and Rust validators on the
+same generated traces as well as the shared fixtures. That live comparison
+also exposed two existing Zig false positives: `(?)a` and
+`(?P<a>x)(?P<a>y)` are accepted by Go's RE2 parser, but Zig's matcher marks
+both invalid and diagnoses their descriptors `undisclosed_provide_limit`.
+Rust normalizes an empty flag statement away and gives captures internal
+unique names; capture labels do not affect whole-name matching. These are
+recorded Zig parser gaps, not new rules or regressions introduced by the Rust
+port. The Rust verifier retains the traces and the Go JSON comparison. A
+Unicode property alias rejected by the first Rust whitelist was corrected
+against Go 1.27.2's category aliases; it is not a Zig regression.
+
 ### OPEN-0011-2: may a provided tool's resolution carry content parts?
 
 [Decision 0060](../decisions/0060-a-tool-result-may-carry-content-parts.md)

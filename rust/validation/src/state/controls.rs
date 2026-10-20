@@ -23,6 +23,7 @@ const CONTROL_UNSATISFIABLE: &str = "unsatisfiable";
 #[derive(Clone, Debug)]
 pub(super) struct Expectation {
     rung: u8,
+    limit: bool,
     pub(super) key: String,
     pointer: String,
     code: &'static str,
@@ -54,6 +55,7 @@ impl Expectation {
         };
         Self {
             rung,
+            limit: false,
             key: key.to_owned(),
             pointer: "/payload/delivery".to_owned(),
             code,
@@ -66,8 +68,9 @@ impl Expectation {
     }
 
     fn order(&self, other: &Self) -> Ordering {
-        self.rung
-            .cmp(&other.rung)
+        self.limit
+            .cmp(&other.limit)
+            .then_with(|| self.rung.cmp(&other.rung))
             .then_with(|| self.key.cmp(&other.key))
             .then_with(|| pointer_order(&self.pointer, &other.pointer))
     }
@@ -243,12 +246,31 @@ impl State {
         if *t == EnvelopeType::CAPABILITIES_RESPONSE {
             self.record_catalog(at, e);
             self.record_limits(at, e);
+            self.check_provide_pattern(at, e);
+        } else if *t == EnvelopeType::CAPABILITIES_UPDATED {
+            self.declared_sources.clear();
+            self.descriptor_owners.clear();
+        } else if *t == EnvelopeType::ACTION_TOOLS_LIST_RESPONSE {
+            let p: ToolsListResponse = payload(e);
+            if let Some(session) = p.session_id {
+                self.catalog_owners.insert(
+                    s(&session),
+                    (
+                        e.capability_revision.clone().unwrap_or_default(),
+                        p.tools
+                            .iter()
+                            .map(|tool| (tool.name.clone(), s(&tool.execution_owner)))
+                            .collect(),
+                    ),
+                );
+            }
         } else if *t == EnvelopeType::SESSION_MESSAGE_SUBMIT_REQUEST {
             let p: MessageSubmitRequest = payload(e);
             self.submit_controls(at, e, &p, &[]);
         } else if *t == EnvelopeType::SESSION_OPEN_REQUEST {
             let p: SessionOpenRequest = payload(e);
             self.subscribe_gate(at, e, &p);
+            self.provide_gate(at, e, &p);
             if let Some(message) = &p.message {
                 let submission = message.submit(p.session_id.clone().unwrap_or_default());
                 let provided: Vec<String> = p.tools.iter().map(|tool| tool.name.clone()).collect();
@@ -266,9 +288,11 @@ impl State {
             self.open_submit_window(&session, &s(&e.id));
         } else if *t == EnvelopeType::SESSION_OPEN_RESPONSE {
             self.settle_subscribe_admission(at, e);
+            self.settle_provide_admission(at, e);
             self.record_provided_tools(e);
         } else if *t == EnvelopeType::ERROR_RESPONSE {
             self.settle_control_refusal(at, e);
+            self.settle_provide_refusal(at, e);
             self.settle_subscribe_refusal(at, e);
         }
         if *t == EnvelopeType::SESSION_MESSAGE_SUBMIT_RESPONSE
@@ -290,6 +314,18 @@ impl State {
                 self.feature_supports.insert(key.clone(), support.clone());
             }
         }
+        self.declared_sources = p
+            .sources
+            .iter()
+            .chain(p.layers.values().flat_map(|layer| &layer.sources))
+            .map(|source| source.id.clone())
+            .collect();
+        self.descriptor_owners = p
+            .tools
+            .iter()
+            .chain(p.layers.values().flat_map(|layer| &layer.tools))
+            .map(|tool| (tool.name.clone(), tool.execution_owner.as_str().to_owned()))
+            .collect();
         self.catalog = collect_catalog(&p);
         self.catalog_known = publishes_catalog(e);
         self.catalog_ambiguous = duplicate_tool_name(&self.catalog).is_some();
@@ -349,8 +385,8 @@ impl State {
         let session = s(&payload::<SessionState>(e).session_id);
         let order = self.provided.entry(session).or_default();
         for tool in tools {
-            if !order.contains(&tool.name) {
-                order.push(tool.name);
+            if !order.iter().any(|existing| existing.name == tool.name) {
+                order.push(tool);
             }
         }
     }
@@ -360,7 +396,13 @@ impl State {
             return None;
         }
         let mut catalog = self.catalog.clone();
-        catalog.extend(self.provided.get(session).into_iter().flatten().cloned());
+        catalog.extend(
+            self.provided
+                .get(session)
+                .into_iter()
+                .flatten()
+                .map(|tool| tool.name.clone()),
+        );
         for name in provided {
             if !catalog.contains(name) {
                 catalog.push(name.clone());
@@ -434,6 +476,7 @@ impl State {
                 };
                 let expect = |rung, code, reason, diagnostic, message: &str| Expectation {
                     rung,
+                    limit: false,
                     key: key.to_owned(),
                     pointer: control_pointer(key).to_owned(),
                     code,
@@ -495,6 +538,7 @@ impl State {
         let defect = |pointer: &str, name: &'static str, value: String, message: String| {
             Box::new(Expectation {
                 rung: RUNG_UNSATISFIABLE,
+                limit: false,
                 key: key.to_owned(),
                 pointer: pointer.to_owned(),
                 code: UNSUPPORTED_FEATURE,
@@ -513,6 +557,7 @@ impl State {
                 if controls.model.is_empty() {
                     return Err(Box::new(Expectation {
                         rung: RUNG_UNSATISFIABLE,
+                        limit: false,
                         key: key.to_owned(),
                         pointer: "/payload/model_id".to_owned(),
                         code: MODEL_NOT_FOUND,
@@ -683,6 +728,9 @@ impl State {
             self.pending_subscribes
                 .get(reply)
                 .and_then(|pending| pending.expectation.as_ref()),
+            self.pending_provides
+                .get(reply)
+                .and_then(|pending| pending.expectation.as_ref()),
         ];
         let retained: Vec<&Expectation> = retained.into_iter().flatten().collect();
         if retained
@@ -768,6 +816,7 @@ impl State {
         };
         let expect = |rung, code, reason, diagnostic, message: &str| Expectation {
             rung,
+            limit: false,
             key: FEATURE_OPEN_SUBSCRIBE.to_owned(),
             pointer: "/payload/subscribe".to_owned(),
             code,
@@ -980,6 +1029,256 @@ impl State {
                 fixed,
                 &result,
                 &[run_id],
+            );
+        }
+    }
+}
+
+pub(super) struct PendingProvide {
+    expectation: Option<Expectation>,
+    honour: bool,
+}
+
+impl State {
+    fn check_provide_pattern(&mut self, at: (usize, usize), e: &Envelope) {
+        let p: CapabilitiesResponse = payload(e);
+        if let Some(pattern) = p
+            .effective_support(FEATURE_TOOLS_PROVIDE)
+            .and_then(FeatureSupport::name_pattern)
+        {
+            if super::name_pattern::compile(&pattern).is_err() {
+                self.add_expected(
+                    codes::UNDISCLOSED_PROVIDE_LIMIT,
+                    at,
+                    e,
+                    "/payload/features/action.tools.provide/limits/name_pattern",
+                    "action.tools.provide discloses a name_pattern that is not RE2",
+                    "an RE2 pattern",
+                    &pattern,
+                    &[],
+                );
+            }
+        }
+    }
+
+    fn provide_gate(&mut self, at: (usize, usize), e: &Envelope, p: &SessionOpenRequest) {
+        if p.tools.is_empty() {
+            return;
+        }
+        let Some(level) = self.control_descriptor(at, e, FEATURE_TOOLS_PROVIDE) else {
+            return;
+        };
+        let defect =
+            |rung, code, reason, pointer: String, detail_name, detail_value: String, diagnostic| {
+                Expectation {
+                    rung,
+                    limit: false,
+                    key: FEATURE_TOOLS_PROVIDE.to_owned(),
+                    pointer,
+                    code,
+                    reason,
+                    detail_name,
+                    detail_value,
+                    diagnostic,
+                    message: "an open supplies tools that require a typed refusal".to_owned(),
+                }
+            };
+        let unsatisfiable = |pointer, name, value, diagnostic| {
+            defect(
+                RUNG_UNSATISFIABLE,
+                UNSUPPORTED_FEATURE,
+                CONTROL_UNSATISFIABLE,
+                pointer,
+                name,
+                value,
+                diagnostic,
+            )
+        };
+        let mut defects = Vec::new();
+        if !affirmative(&level) {
+            defects.push(defect(
+                RUNG_CAPABILITY,
+                UNSUPPORTED_FEATURE,
+                CONTROL_UNADVERTISED,
+                "/payload/tools".to_owned(),
+                "feature",
+                FEATURE_TOOLS_PROVIDE.to_owned(),
+                codes::UNAVAILABLE_CAPABILITY,
+            ));
+        } else if level == SupportLevel::DEGRADED && !p.allows_degraded(FEATURE_TOOLS_PROVIDE) {
+            defects.push(defect(
+                RUNG_DEGRADATION,
+                CAPABILITY_DEGRADED,
+                "",
+                "/payload/tools".to_owned(),
+                "feature",
+                FEATURE_TOOLS_PROVIDE.to_owned(),
+                codes::DEGRADED_WITHOUT_OPTIN,
+            ));
+        } else {
+            let attached: HashSet<&str> = p
+                .tool_sources
+                .iter()
+                .map(|source| source.id.as_str())
+                .collect();
+            let lists = self
+                .features
+                .get(FEATURE_TOOLS_LIST)
+                .is_some_and(affirmative);
+            let mut seen = HashSet::new();
+            for (index, tool) in p.tools.iter().enumerate() {
+                let pointer = format!("/payload/tools/{index}");
+                if !self.control_participant.is_empty()
+                    && tool.execution_owner.as_str() != self.control_participant
+                {
+                    defects.push(unsatisfiable(
+                        format!("{pointer}/execution_owner"),
+                        "tool",
+                        tool.name.clone(),
+                        codes::WRONG_TOOL_OWNER,
+                    ));
+                }
+                if !seen.insert(&tool.name)
+                    || (self.catalog_known && self.catalog.contains(&tool.name))
+                {
+                    defects.push(unsatisfiable(
+                        format!("{pointer}/name"),
+                        "tool",
+                        tool.name.clone(),
+                        codes::DUPLICATE_TOOL_NAME,
+                    ));
+                }
+                if tool.source.is_empty() {
+                    if lists {
+                        defects.push(unsatisfiable(
+                            format!("{pointer}/source"),
+                            "tool",
+                            tool.name.clone(),
+                            codes::UNMATCHED_TOOL_SOURCE,
+                        ));
+                    }
+                } else if !self.declared_sources.contains(&tool.source)
+                    && !attached.contains(tool.source.as_str())
+                {
+                    defects.push(unsatisfiable(
+                        format!("{pointer}/source"),
+                        "source",
+                        tool.source.clone(),
+                        codes::UNMATCHED_TOOL_SOURCE,
+                    ));
+                }
+            }
+        }
+        defects.sort_by(Expectation::order);
+        let mut expectation = defects.into_iter().next();
+        if expectation.is_none() {
+            let mut violations = Vec::new();
+            if let Some(support) = self.feature_supports.get(FEATURE_TOOLS_PROVIDE) {
+                if let Some(max) = support
+                    .max_tools()
+                    .and_then(|max| usize::try_from(max).ok())
+                {
+                    if let Some(tool) = p.tools.get(max) {
+                        violations.push(unsatisfiable(
+                            format!("/payload/tools/{max}"),
+                            "tool",
+                            tool.name.clone(),
+                            codes::UNAVAILABLE_CAPABILITY,
+                        ));
+                    }
+                }
+                if let Some(pattern) = support
+                    .name_pattern()
+                    .and_then(|p| super::name_pattern::compile(&p).ok())
+                {
+                    for (index, tool) in p.tools.iter().enumerate() {
+                        if !pattern.is_match(&tool.name) {
+                            violations.push(unsatisfiable(
+                                format!("/payload/tools/{index}/name"),
+                                "tool",
+                                tool.name.clone(),
+                                codes::UNAVAILABLE_CAPABILITY,
+                            ));
+                        }
+                    }
+                }
+                if let Some(dialect) = support.schema_dialect() {
+                    for (index, tool) in p.tools.iter().enumerate() {
+                        let schema = tool
+                            .input_schema
+                            .as_ref()
+                            .and_then(|v| serde_json::from_str::<Value>(v.get()).ok());
+                        if schema
+                            .as_ref()
+                            .and_then(|v| v.get("$schema"))
+                            .and_then(Value::as_str)
+                            .is_some_and(|declared| !declared.is_empty() && declared != dialect)
+                        {
+                            violations.push(unsatisfiable(
+                                format!("/payload/tools/{index}/input_schema"),
+                                "tool",
+                                tool.name.clone(),
+                                codes::UNAVAILABLE_CAPABILITY,
+                            ));
+                        }
+                    }
+                }
+            }
+            violations.sort_by(Expectation::order);
+            expectation = violations.into_iter().next().map(|mut e| {
+                e.limit = true;
+                e
+            });
+        }
+        let honour = expectation.is_none();
+        self.pending_provides.insert(
+            s(&e.id),
+            PendingProvide {
+                expectation,
+                honour,
+            },
+        );
+    }
+
+    fn settle_provide_admission(&mut self, at: (usize, usize), e: &Envelope) {
+        let Some(pending) = self.pending_provides.get(&os(&e.in_reply_to)) else {
+            return;
+        };
+        if let Some(expectation) = pending.expectation.clone().filter(|e| !e.limit) {
+            self.add(
+                expectation.diagnostic,
+                at,
+                e,
+                "/payload",
+                &expectation.message,
+            );
+        }
+    }
+
+    fn settle_provide_refusal(&mut self, at: (usize, usize), e: &Envelope) {
+        let reply = os(&e.in_reply_to);
+        let Some(pending) = self.pending_provides.get(&reply) else {
+            return;
+        };
+        let expectation = pending.expectation.clone();
+        let honour = pending.honour;
+        let err = payload::<ErrorResponse>(e).error;
+        let (discharged, speaker) = self.attribute(&reply, &err);
+        if discharged {
+            return;
+        }
+        if let Some(expectation) = expectation {
+            self.refusal_misses(at, e, &expectation, &speaker, &err);
+        } else if honour
+            && (err.code == UNSUPPORTED_FEATURE || err.code == CAPABILITY_DEGRADED)
+            && detail(&err, "feature") == Some(FEATURE_TOOLS_PROVIDE)
+        {
+            self.add(
+                codes::UNDISCLOSED_PROVIDE_LIMIT,
+                at,
+                e,
+                "/payload/error",
+                "a conforming tools array was refused without a disclosed limit",
             );
         }
     }

@@ -110,9 +110,9 @@ Source: [`decisions/0011-control-layer-provided-tools.md`](../../decisions/0011-
 
 | id | rule | lines | code | Go | Zig | Rust |
 | --- | --- | --- | --- | --- | --- | --- |
-| `0011#tools-are-provided-at-session-open-and-the-open-is-provisioned-whole/1` | An open carrying `tools` to an endpoint that does not affirmatively advertise `action.tools.provide` MUST be refused `unsupported_feature`, `details.reason: "unadvertised"`. | L83–104 | `unavailable_capability` | `controltools.go:provideExpectations` | `semantic.zig:provideExpectations` | — |
-| `0011#tools-are-provided-at-session-open-and-the-open-is-provisioned-whole/2` | An open carrying `tools` under a `degraded` provide capability without the caller's opt-in MUST be refused `capability_degraded`. | (drafted here: 0005's opt-in rule applied to 0011's key) | `degraded_without_optin` | `controltools.go:provideExpectations` | `semantic.zig:provideExpectations` | — |
-| `0011#tools-are-provided-at-session-open-and-the-open-is-provisioned-whole/3` | An open MUST NOT supply a tool under a name the session's catalog already resolves. It is refused unsatisfiable with `details.tool`; an admission or another refusal is the defect. | L83–104, 0008 L153–223 | `duplicate_tool_name` | `controltools.go:provideExpectations` | `semantic.zig:provideExpectations` | — |
+| `0011#tools-are-provided-at-session-open-and-the-open-is-provisioned-whole/1` | An open carrying `tools` to an endpoint that does not affirmatively advertise `action.tools.provide` MUST be refused `unsupported_feature`, `details.reason: "unadvertised"`. | L83–104 | `unavailable_capability` | `controltools.go:provideExpectations` | `semantic.zig:provideExpectations` | `state/controls.rs:provide_gate` |
+| `0011#tools-are-provided-at-session-open-and-the-open-is-provisioned-whole/2` | An open carrying `tools` under a `degraded` provide capability without the caller's opt-in MUST be refused `capability_degraded`. | (drafted here: 0005's opt-in rule applied to 0011's key) | `degraded_without_optin` | `controltools.go:provideExpectations` | `semantic.zig:provideExpectations` | `state/controls.rs:provide_gate` |
+| `0011#tools-are-provided-at-session-open-and-the-open-is-provisioned-whole/3` | An open MUST NOT supply a tool under a name the session's catalog already resolves. It is refused unsatisfiable with `details.tool`; an admission or another refusal is the defect. | L83–104, 0008 L153–223 | `duplicate_tool_name` | `controltools.go:provideExpectations` | `semantic.zig:provideExpectations` | `state/controls.rs:provide_gate` |
 | `0011#tools-are-provided-at-session-open-and-the-open-is-provisioned-whole/4` | A session-scoped catalog MUST list every tool the open provided. | L83–104 | `catalog_mismatch` | `controltools.go:checkCatalogProvided` | `semantic.zig:checkSessionCatalog` | — |
 | `0011#tools-are-provided-at-session-open-and-the-open-is-provisioned-whole/5` | A session-scoped catalog MUST describe a provided tool exactly as it was supplied. | L83–104 | `catalog_mismatch` | `controltools.go:checkCatalogProvided` | `semantic.zig:checkSessionCatalog` | — |
 | `0011#tools-are-provided-at-session-open-and-the-open-is-provisioned-whole/6` | A refreshed descriptor MUST NOT declare a native tool under a name an open session provided. | L83–104 | `duplicate_tool_name` | `controltools.go:checkRefreshAgainstProvided` | `semantic.zig:checkRefreshAgainstProvided` | — |
@@ -124,9 +124,9 @@ Source: [`decisions/0011-control-layer-provided-tools.md`](../../decisions/0011-
 
 | id | rule | lines | code | Go | Zig | Rust |
 | --- | --- | --- | --- | --- | --- | --- |
-| `0011#ownership-is-checked-where-it-is-stated-not-where-it-fails/1` | Where the trace declared a control participant, a supplied tool's `execution_owner` MUST be that participant. Otherwise the open is refused unsatisfiable with `details.tool`; an admission or another refusal is the defect. | L107–138 | `wrong_tool_owner` | `controltools.go:provideExpectations` | `semantic.zig:provideExpectations` | — |
-| `0011#ownership-is-checked-where-it-is-stated-not-where-it-fails/2` | A supplied tool's `source` MUST name a source the descriptor declares or the same open attaches. Otherwise the open is refused unsatisfiable with `details.source`. | L107–138 | `unmatched_tool_source` | `controltools.go:provideExpectations` | `semantic.zig:provideExpectations` | — |
-| `0011#ownership-is-checked-where-it-is-stated-not-where-it-fails/3` | An `action.call.requested` MUST name the `execution_owner` the catalog in force records for the tool. | L107–138 | `wrong_tool_owner` | `controltools.go:checkCallOwner` | `semantic.zig:checkCallOwner` | — |
+| `0011#ownership-is-checked-where-it-is-stated-not-where-it-fails/1` | Where the trace declared a control participant, a supplied tool's `execution_owner` MUST be that participant. Otherwise the open is refused unsatisfiable with `details.tool`; an admission or another refusal is the defect. | L107–138 | `wrong_tool_owner` | `controltools.go:provideExpectations` | `semantic.zig:provideExpectations` | `state/controls.rs:provide_gate` |
+| `0011#ownership-is-checked-where-it-is-stated-not-where-it-fails/2` | A supplied tool's `source` MUST name a source the descriptor declares or the same open attaches. Otherwise the open is refused unsatisfiable with `details.source`. | L107–138 | `unmatched_tool_source` | `controltools.go:provideExpectations` | `semantic.zig:provideExpectations` | `state/controls.rs:provide_gate` |
+| `0011#ownership-is-checked-where-it-is-stated-not-where-it-fails/3` | An `action.call.requested` MUST name the `execution_owner` the catalog in force records for the tool. | L107–138 | `wrong_tool_owner` | `controltools.go:checkCallOwner` | `semantic.zig:checkCallOwner` | `state/control_tools.rs:control_call_owner` |
 
 ### [0048] 1. An endpoint that advertises `action.tools.list` requires every provided tool to name a source
 
@@ -142,8 +142,8 @@ Source: [`decisions/0011-control-layer-provided-tools.md`](../../decisions/0011-
 
 | id | rule | lines | code | Go | Zig | Rust |
 | --- | --- | --- | --- | --- | --- | --- |
-| `0011#a-call-to-a-provided-tool-is-an-interaction/1` | An `action.call.requested` for a control-owned tool MUST carry `interaction_id` and `responded_by`. | L141–178 | `illegal_tool_transition` | `controltools.go:controlCallRequested` | `semantic.zig:controlCallRequested` | — |
-| `0011#a-call-to-a-provided-tool-is-an-interaction/2` | A control-owned call's `interaction_id` MUST NOT reuse one already requested. | L141–178 | `duplicate_interaction` | `controltools.go:controlCallRequested` | `semantic.zig:controlCallRequested` | — |
+| `0011#a-call-to-a-provided-tool-is-an-interaction/1` | An `action.call.requested` for a control-owned tool MUST carry `interaction_id` and `responded_by`. | L141–178 | `illegal_tool_transition` | `controltools.go:controlCallRequested` | `semantic.zig:controlCallRequested` | `state/control_tools.rs:control_call_requested` |
+| `0011#a-call-to-a-provided-tool-is-an-interaction/2` | A control-owned call's `interaction_id` MUST NOT reuse one already requested. | L141–178 | `duplicate_interaction` | `controltools.go:controlCallRequested` | `semantic.zig:controlCallRequested` | `state/control_tools.rs:control_call_requested` |
 
 ### [0011] The resolution is a request/response pair with three arms
 
@@ -152,9 +152,9 @@ Source: [`decisions/0011-control-layer-provided-tools.md`](../../decisions/0011-
 | id | rule | lines | code | Go | Zig | Rust |
 | --- | --- | --- | --- | --- | --- | --- |
 | `0011#the-resolution-is-a-requestresponse-pair-with-three-arms/1` | `action.call.resolve.request` and `.response` MUST carry the same `tool_call_id` on the envelope and in the payload. | L185–191; 0055 L30–42 | `scope_mismatch` | `controltools.go:controlResolveRequest`<br>`controltools.go:controlResolveResponse` | `semantic.zig:callAgreement` | `state.rs:payload_scope` |
-| `0011#the-resolution-is-a-requestresponse-pair-with-three-arms/2` | A call resolution MUST answer a tool-call interaction. | L181–207 | `unmatched_interaction` | `controltools.go:controlResolveRequest` | `semantic.zig:judgeResolve` | — |
-| `0011#the-resolution-is-a-requestresponse-pair-with-three-arms/3` | A call resolution MUST name the tool call its interaction is bound to. | L185–191; 0055 L30–42 | `scope_mismatch` | `controltools.go:controlResolveRequest` | `semantic.zig:judgeResolve` | — |
-| `0011#the-resolution-is-a-requestresponse-pair-with-three-arms/4` | An `already_resolved` refusal's `details.settlement_id` MUST name an envelope that settled the interaction in this trace. | L181–207, L210–288 | `unmatched_interaction` | `controltools.go:controlResolveResponse` | `semantic.zig:resolveResponse` | — |
+| `0011#the-resolution-is-a-requestresponse-pair-with-three-arms/2` | A call resolution MUST answer a tool-call interaction. | L181–207 | `unmatched_interaction` | `controltools.go:controlResolveRequest` | `semantic.zig:judgeResolve` | `state/control_tools.rs:control_resolve_request` |
+| `0011#the-resolution-is-a-requestresponse-pair-with-three-arms/3` | A call resolution MUST name the tool call its interaction is bound to. | L185–191; 0055 L30–42 | `scope_mismatch` | `controltools.go:controlResolveRequest` | `semantic.zig:judgeResolve` | `state/control_tools.rs:control_resolve_request` |
+| `0011#the-resolution-is-a-requestresponse-pair-with-three-arms/4` | An `already_resolved` refusal's `details.settlement_id` MUST name an envelope that settled the interaction in this trace. | L181–207, L210–288 | `unmatched_interaction` | `controltools.go:controlResolveResponse` | `semantic.zig:resolveResponse` | `state/control_tools.rs:control_resolve_response` |
 
 ### [0011] The refusal reasons are ranked, and the endpoint reports the highest
 
@@ -162,10 +162,10 @@ Source: [`decisions/0011-control-layer-provided-tools.md`](../../decisions/0011-
 
 | id | rule | lines | code | Go | Zig | Rust |
 | --- | --- | --- | --- | --- | --- | --- |
-| `0011#the-refusal-reasons-are-ranked-and-the-endpoint-reports-the-highest/1` | A resolution of no pending interaction MUST be refused `unknown_interaction`. | L210–288 | `unmatched_interaction` | `controltools.go:controlResolveResponse` | `semantic.zig:resolveResponse` | — |
-| `0011#the-refusal-reasons-are-ranked-and-the-endpoint-reports-the-highest/2` | A resolution that satisfies one of the five conditions MUST NOT be accepted. The diagnostic is the condition present. | L210–288 | `wrong_interaction_responder` / `duplicate_interaction` / `unmatched_interaction` | `controltools.go:controlResolveResponse` (resolveReasonDiagnostic) | `semantic.zig:resolveResponse` (reasonDiagnostic) | — |
-| `0011#the-refusal-reasons-are-ranked-and-the-endpoint-reports-the-highest/3` | A resolution satisfying none of the five conditions MUST be accepted. | L210–288 | `unmatched_interaction` | `controltools.go:controlResolveResponse` | `semantic.zig:resolveResponse` | — |
-| `0011#the-refusal-reasons-are-ranked-and-the-endpoint-reports-the-highest/4` | A refusal MUST report the highest-ranked condition the request satisfies. The diagnostic is the condition present. | L210–288 | `wrong_interaction_responder` / `duplicate_interaction` / `unmatched_interaction` | `controltools.go:controlResolveResponse` (resolveReasonDiagnostic) | `semantic.zig:resolveResponse` (reasonDiagnostic) | — |
+| `0011#the-refusal-reasons-are-ranked-and-the-endpoint-reports-the-highest/1` | A resolution of no pending interaction MUST be refused `unknown_interaction`. | L210–288 | `unmatched_interaction` | `controltools.go:controlResolveResponse` | `semantic.zig:resolveResponse` | `state/control_tools.rs:control_resolve_response` |
+| `0011#the-refusal-reasons-are-ranked-and-the-endpoint-reports-the-highest/2` | A resolution that satisfies one of the five conditions MUST NOT be accepted. The diagnostic is the condition present. | L210–288 | `wrong_interaction_responder` / `duplicate_interaction` / `unmatched_interaction` | `controltools.go:controlResolveResponse` (resolveReasonDiagnostic) | `semantic.zig:resolveResponse` (reasonDiagnostic) | `state/control_tools.rs:control_resolve_response` |
+| `0011#the-refusal-reasons-are-ranked-and-the-endpoint-reports-the-highest/3` | A resolution satisfying none of the five conditions MUST be accepted. | L210–288 | `unmatched_interaction` | `controltools.go:controlResolveResponse` | `semantic.zig:resolveResponse` | `state/control_tools.rs:control_resolve_response` |
+| `0011#the-refusal-reasons-are-ranked-and-the-endpoint-reports-the-highest/4` | A refusal MUST report the highest-ranked condition the request satisfies. The diagnostic is the condition present. | L210–288 | `wrong_interaction_responder` / `duplicate_interaction` / `unmatched_interaction` | `controltools.go:controlResolveResponse` (resolveReasonDiagnostic) | `semantic.zig:resolveResponse` (reasonDiagnostic) | `state/control_tools.rs:control_resolve_response` |
 
 ### [0011] A terminal must derive from an accepted resolution, and carry what it said
 
@@ -173,12 +173,12 @@ Source: [`decisions/0011-control-layer-provided-tools.md`](../../decisions/0011-
 
 | id | rule | lines | code | Go | Zig | Rust |
 | --- | --- | --- | --- | --- | --- | --- |
-| `0011#a-terminal-must-derive-from-an-accepted-resolution-and-carry-what-it-said/1` | `action.call.started` for a control-owned call MUST follow an accepted resolution of its interaction. | L291–318 | `illegal_tool_transition` | `controltools.go:controlCallEvent` | `semantic.zig:controlCallEvent` | — |
-| `0011#a-terminal-must-derive-from-an-accepted-resolution-and-carry-what-it-said/2` | `action.call.completed` MUST derive from an accepted `result` and `action.call.failed` from an accepted `error`. | L291–318 | `illegal_tool_transition` | `controltools.go:controlCallEvent` | `semantic.zig:controlCallEvent` | — |
-| `0011#a-terminal-must-derive-from-an-accepted-resolution-and-carry-what-it-said/3` | A completion's `result` MUST equal the accepted `result`, as canonical JSON. | L291–318 | `resolution_payload_mismatch` | `controltools.go:checkResolutionPayload` | `semantic.zig:checkResolutionPayload` | — |
-| `0011#a-terminal-must-derive-from-an-accepted-resolution-and-carry-what-it-said/4` | A failure's `error` MUST equal the accepted `error`, as canonical JSON. | L291–318 | `resolution_payload_mismatch` | `controltools.go:checkResolutionPayload` | `semantic.zig:checkResolutionPayload` | — |
-| `0011#a-terminal-must-derive-from-an-accepted-resolution-and-carry-what-it-said/5` | A resolve-derived `action.call.started` or terminal MUST carry `request_id`. | L291–318 | `unmatched_interaction` | `controltools.go:checkDerivedRequestID` | `semantic.zig:checkDerivedRequest` | — |
-| `0011#a-terminal-must-derive-from-an-accepted-resolution-and-carry-what-it-said/6` | That `request_id` MUST name a resolve request the trace carries for the interaction. | L291–318 | `unmatched_interaction` | `controltools.go:checkDerivedRequestID` | `semantic.zig:checkDerivedRequest` | — |
+| `0011#a-terminal-must-derive-from-an-accepted-resolution-and-carry-what-it-said/1` | `action.call.started` for a control-owned call MUST follow an accepted resolution of its interaction. | L291–318 | `illegal_tool_transition` | `controltools.go:controlCallEvent` | `semantic.zig:controlCallEvent` | `state/control_tools.rs:control_call_event` |
+| `0011#a-terminal-must-derive-from-an-accepted-resolution-and-carry-what-it-said/2` | `action.call.completed` MUST derive from an accepted `result` and `action.call.failed` from an accepted `error`. | L291–318 | `illegal_tool_transition` | `controltools.go:controlCallEvent` | `semantic.zig:controlCallEvent` | `state/control_tools.rs:control_call_event` |
+| `0011#a-terminal-must-derive-from-an-accepted-resolution-and-carry-what-it-said/3` | A completion's `result` MUST equal the accepted `result`, as canonical JSON. | L291–318 | `resolution_payload_mismatch` | `controltools.go:checkResolutionPayload` | `semantic.zig:checkResolutionPayload` | `state/control_tools.rs:control_call_event` |
+| `0011#a-terminal-must-derive-from-an-accepted-resolution-and-carry-what-it-said/4` | A failure's `error` MUST equal the accepted `error`, as canonical JSON. | L291–318 | `resolution_payload_mismatch` | `controltools.go:checkResolutionPayload` | `semantic.zig:checkResolutionPayload` | `state/control_tools.rs:control_call_event` |
+| `0011#a-terminal-must-derive-from-an-accepted-resolution-and-carry-what-it-said/5` | A resolve-derived `action.call.started` or terminal MUST carry `request_id`. | L291–318 | `unmatched_interaction` | `controltools.go:checkDerivedRequestID` | `semantic.zig:checkDerivedRequest` | `state/control_tools.rs:control_call_event` |
+| `0011#a-terminal-must-derive-from-an-accepted-resolution-and-carry-what-it-said/6` | That `request_id` MUST name a resolve request the trace carries for the interaction. | L291–318 | `unmatched_interaction` | `controltools.go:checkDerivedRequestID` | `semantic.zig:checkDerivedRequest` | `state/control_tools.rs:control_call_event` |
 
 ### [0011] The capability discloses its limits, or it promises nothing
 
@@ -186,8 +186,8 @@ Source: [`decisions/0011-control-layer-provided-tools.md`](../../decisions/0011-
 
 | id | rule | lines | code | Go | Zig | Rust |
 | --- | --- | --- | --- | --- | --- | --- |
-| `0011#the-capability-discloses-its-limits-or-it-promises-nothing/1` | A `tools` array that violates no disclosed `max_tools`, `name_pattern` or `schema_dialect`, and no rule above, MUST NOT be refused. | L321–346 | `undisclosed_provide_limit` | `toolsources.go:sessionOpenRequest` | `semantic.zig:sessionOpenRequest` | — |
-| `0011#the-capability-discloses-its-limits-or-it-promises-nothing/2` | A refusal of a `tools` array that exceeds `max_tools`, names a tool outside `name_pattern`, or declares a `$schema` other than the disclosed dialect MUST be `unsupported_feature`, `details.reason: "unsatisfiable"`, `details.tool`. | L321–346; 0055 L74–82 | `unavailable_capability` | `controltools.go:provideLimitViolation` | `semantic.zig:provideLimitViolation`<br>`semantic.zig:namePatternViolation` | — |
+| `0011#the-capability-discloses-its-limits-or-it-promises-nothing/1` | A `tools` array that violates no disclosed `max_tools`, `name_pattern` or `schema_dialect`, and no rule above, MUST NOT be refused. | L321–346 | `undisclosed_provide_limit` | `toolsources.go:sessionOpenRequest` | `semantic.zig:sessionOpenRequest` | `state/controls.rs:settle_provide_refusal` |
+| `0011#the-capability-discloses-its-limits-or-it-promises-nothing/2` | A refusal of a `tools` array that exceeds `max_tools`, names a tool outside `name_pattern`, or declares a `$schema` other than the disclosed dialect MUST be `unsupported_feature`, `details.reason: "unsatisfiable"`, `details.tool`. | L321–346; 0055 L74–82 | `unavailable_capability` | `controltools.go:provideLimitViolation` | `semantic.zig:provideLimitViolation`<br>`semantic.zig:namePatternViolation` | `state/controls.rs:provide_gate` |
 
 ### [0062] An uncompilable `name_pattern` makes the descriptor defective (OPEN-0011-3)
 
@@ -195,7 +195,7 @@ Source: [`decisions/0062-a-name-pattern-that-is-not-re2-is-a-defective-limit.md`
 
 | id | rule | lines | code | Go | Zig | Rust |
 | --- | --- | --- | --- | --- | --- | --- |
-| `0062#an-uncompilable-name_pattern-makes-the-descriptor-defective-open-0011-3/1` | A `capabilities.response` that discloses an `action.tools.provide` `name_pattern` that is not valid RE2 is defective. | L28–33 | `undisclosed_provide_limit` | `controls.go:checkProvideLimits` | `semantic.zig:checkProvideLimits` | — |
+| `0062#an-uncompilable-name_pattern-makes-the-descriptor-defective-open-0011-3/1` | A `capabilities.response` that discloses an `action.tools.provide` `name_pattern` that is not valid RE2 is defective. | L28–33 | `undisclosed_provide_limit` | `controls.go:checkProvideLimits` | `semantic.zig:checkProvideLimits` | `state/controls.rs:check_provide_pattern` |
 
 ### [0011] Recovery reads two lists, because one cannot answer the question
 
@@ -236,6 +236,29 @@ Source: [`decisions/0001-agent-control-v0.1-executable-core.md`](../../decisions
 
 ## Port work
 
-- Rust lacks every tool-source check and the call resolution's binding check
-  (OPEN-0008-2, 0055).
-- Rust owes the `name_pattern` check (OPEN-0011-1, 0055, 0062).
+- Rust still owes the general tool-source attachment/catalog checks and the
+  snapshot acknowledgement/deferred-claim rows. The call-resolution binding
+  (OPEN-0008-2, 0055) and `name_pattern` limits (OPEN-0011-1, 0055, 0062) are
+  now judged at the implementation sites above.
+
+Rust's `validation/tests/control_tools.rs` and the maintained public-consumer
+journey in `.claude/skills/verify/scripts/rust-control-tools.py` pin the ported
+rows. An acknowledgement does not settle an interaction; accepted result/error
+arms authorize the corresponding terminal, and the terminal closes it. The
+five ranked refusal conditions are retained at the request, so overlapping
+requests and late replies are judged against the state each request saw.
+The matcher uses `regex` with RE2 syntax normalization, whole-name anchors,
+ASCII Perl classes/boundaries, quoting and the counted-repeat ceiling; invalid
+patterns are judged when the descriptor arrives, not first used at open.
+The same change removes the 37 Rust known-gap ids that now agree.
+
+The bridge uses the pinned `regex`/`regex-syntax` dependencies already present
+in the workspace lockfile. Unicode category/script names and aliases mirror
+Go 1.27.2's `unicode.Categories`, `unicode.Scripts`, and
+`unicode.CategoryAliases`; matching uses the pinned Rust engine's Unicode data.
+The public-consumer verifier compares syntax and matching traces with the
+actual Go validator, including Unicode aliases, repeated capture labels,
+ASCII word boundaries, character-class unions, flags, quoting and repeats.
+The pre-existing Zig matcher limitations remain recorded in
+`research/validator-divergences.md`; this port does not silently reinterpret
+them as rules.
