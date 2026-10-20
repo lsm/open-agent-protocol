@@ -222,6 +222,24 @@ func runOAPHost(scenario string) {
 				}
 				continue
 			}
+			if selectedModel == "fixture/other:test@quiet" {
+				for i, item := range []struct {
+					kind    string
+					payload any
+				}{
+					{"run.started", map[string]any{"session_id": sessionID, "run_id": "run-1"}},
+					{"content.delta", map[string]any{"session_id": sessionID, "run_id": "run-1", "message_id": "message-1", "part": map[string]any{"type": "text", "text": "agent"}}},
+					{"run.completed", map[string]any{"session_id": sessionID, "run_id": "run-1", "final_response": map[string]any{"role": "assistant", "content": "agent"}, "stop_reason": "stop"}},
+				} {
+					if i == 1 {
+						time.Sleep(600 * time.Millisecond)
+					}
+					event := oapHostFrame(oapAgent, item.kind, item.payload)
+					event.SessionID, event.RunID = sessionID, "run-1"
+					fakeEmit(event)
+				}
+				continue
+			}
 			if selectedModel == "fixture/other:test@every-run-event" {
 				for _, item := range []struct {
 					kind    string
@@ -410,6 +428,17 @@ func TestOAPAgentStreamPassesTheRunEventsItDoesNotSurface(t *testing.T) {
 	response, err := client.Agent.Run(context.Background(), AgentRequest{ModelRef: "fixture/other:test@every-run-event", Messages: []Message{UserMessage("hi")}})
 	if err != nil || response.Message.Text != "agent" {
 		t.Fatalf("a run carrying every event the stream skips failed: %v, %+v", err, response)
+	}
+}
+
+func TestOAPAgentRunOutlastsTheRequestTimeoutBetweenEvents(t *testing.T) {
+	client, err := newTestClientWithOptions(t, &Options{BinaryPath: os.Args[0], Env: fakeHostEnv(scenarioOAP), RequestTimeout: 200 * time.Millisecond})
+	if err != nil {
+		t.Fatal(err)
+	}
+	response, err := client.Agent.Run(context.Background(), AgentRequest{ModelRef: "fixture/other:test@quiet", Messages: []Message{UserMessage("hi")}})
+	if err != nil || response.Message.Text != "agent" {
+		t.Fatalf("a run quiet for longer than RequestTimeout failed: %v, %+v", err, response)
 	}
 }
 
@@ -690,17 +719,6 @@ func TestOAPOpenRefusesWhatTheEndpointWouldIgnore(t *testing.T) {
 }
 
 const fakeThinkingPause = 600 * time.Millisecond
-
-func TestOAPAgentRunOutlastsTheRequestTimeoutWhileTheModelThinks(t *testing.T) {
-	client, err := newTestClientWithOptions(t, &Options{BinaryPath: os.Args[0], Env: fakeHostEnv(scenarioOAP), RequestTimeout: 200 * time.Millisecond})
-	if err != nil {
-		t.Fatalf("New: %v", err)
-	}
-	response, err := client.Agent.Run(context.Background(), AgentRequest{ModelRef: "fixture/other:test@thinks", Messages: []Message{UserMessage("hi")}})
-	if err != nil || response.Message.Text != "thought" {
-		t.Fatalf("a run silent for %s under a %s request timeout = %v, %+v; want it to finish", fakeThinkingPause, 200*time.Millisecond, err, response)
-	}
-}
 
 func TestOAPInferenceOutlastsTheRequestTimeoutOnceAccepted(t *testing.T) {
 	client, err := newTestClientWithOptions(t, &Options{BinaryPath: os.Args[0], Env: fakeHostEnv(scenarioOAP), RequestTimeout: 200 * time.Millisecond})

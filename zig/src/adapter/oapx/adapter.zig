@@ -286,8 +286,7 @@ const Run = struct {
     text: std.ArrayList(u8) = .empty,
     stop_reason: []const u8 = "end_turn",
     error_text: std.ArrayList(u8) = .empty,
-    output_tokens: u64 = 0,
-    input_tokens: u64 = 0,
+    tokens: Tokens = .{},
     context_tokens: u64 = 0,
     compaction: bool = false,
     compact_focus: []const u8 = "",
@@ -1473,9 +1472,9 @@ pub const Session = struct {
             .turn_end => |payload| run.stop_reason = stopReasonText(payload.stop_reason),
             .message_end => |payload| {
                 if (payload.role == .assistant) {
-                    run.output_tokens +|= payload.output_tokens;
-                    run.input_tokens +|= payload.input_tokens;
-                    try self.completeMessage(a, run, payload.input_tokens, payload.output_tokens);
+                    const message: Tokens = .{ .input = payload.input_tokens, .output = payload.output_tokens, .cache_read = payload.cache_read_tokens, .cache_write = payload.cache_write_tokens };
+                    run.tokens.add(message);
+                    try self.completeMessage(a, run, message);
                 }
                 if (payload.role == .user and payload.steering) try self.applySteer(a, run);
             },
@@ -1493,18 +1492,12 @@ pub const Session = struct {
         }
     }
 
-    fn completeMessage(self: *Session, a: std.mem.Allocator, run: *Run, input_tokens: u64, output_tokens: u64) contract.Failure!void {
+    fn completeMessage(self: *Session, a: std.mem.Allocator, run: *Run, tokens: Tokens) contract.Failure!void {
         if (run.message_id.len == 0) run.message_id = try self.owner.nextID(self.keep.allocator(), "message");
         var completed = Payload.init(a);
         try completed.run(self, run);
         try completed.put("message_id", .{ .string = run.message_id });
-        if (input_tokens > 0 or output_tokens > 0) {
-            var usage = Payload.init(a);
-            try usage.put("input_tokens", tokenCount(input_tokens));
-            try usage.put("output_tokens", tokenCount(output_tokens));
-            try usage.put("total_tokens", tokenCount(input_tokens +| output_tokens));
-            try completed.put("usage", usage.value());
-        }
+        if (try tokens.usage(a)) |usage| try completed.put("usage", usage);
         try self.emit(run, "content.completed", completed.value(), false);
         run.message_id = "";
     }
@@ -1547,13 +1540,7 @@ pub const Session = struct {
         try self.dropSteers(a, run);
         var payload = Payload.init(a);
         try payload.run(self, run);
-        if (run.output_tokens > 0 or run.input_tokens > 0) {
-            var usage = Payload.init(a);
-            try usage.put("input_tokens", tokenCount(run.input_tokens));
-            try usage.put("output_tokens", tokenCount(run.output_tokens));
-            try usage.put("total_tokens", tokenCount(run.input_tokens +| run.output_tokens));
-            try payload.put("usage", usage.value());
-        }
+        if (try run.tokens.usage(a)) |usage| try payload.put("usage", usage);
         const cancelled = reason == .cancelled or run.status == .cancelling;
         if (cancelled) {
             try payload.put("reason", .{ .string = "cancel confirmed" });
@@ -2014,6 +2001,31 @@ fn findModelOnWire(available: []const ai_types.Model, wanted: []const u8) ?ai_ty
     }
     return null;
 }
+
+const Tokens = struct {
+    input: u64 = 0,
+    output: u64 = 0,
+    cache_read: u64 = 0,
+    cache_write: u64 = 0,
+
+    fn add(self: *Tokens, other: Tokens) void {
+        self.input +|= other.input;
+        self.output +|= other.output;
+        self.cache_read +|= other.cache_read;
+        self.cache_write +|= other.cache_write;
+    }
+
+    fn usage(self: Tokens, a: std.mem.Allocator) contract.Failure!?std.json.Value {
+        if (self.input == 0 and self.output == 0 and self.cache_read == 0 and self.cache_write == 0) return null;
+        var usage_payload = Payload.init(a);
+        try usage_payload.put("input_tokens", tokenCount(self.input));
+        if (self.cache_read > 0) try usage_payload.put("cache_read_input_tokens", tokenCount(self.cache_read));
+        if (self.cache_write > 0) try usage_payload.put("cache_write_input_tokens", tokenCount(self.cache_write));
+        try usage_payload.put("output_tokens", tokenCount(self.output));
+        try usage_payload.put("total_tokens", tokenCount(self.input +| self.output +| self.cache_read +| self.cache_write));
+        return usage_payload.value();
+    }
+};
 
 fn tokenCount(count: u64) std.json.Value {
     return .{ .integer = @intCast(@min(count, std.math.maxInt(i64))) };
@@ -2787,6 +2799,31 @@ test "a run's token counts past what JSON integers hold saturate at the largest 
     try testing.expectEqual(@as(i64, std.math.maxInt(i64)), usage.get("input_tokens").?.integer);
     try testing.expectEqual(@as(i64, 14), usage.get("output_tokens").?.integer);
     try testing.expectEqual(@as(i64, std.math.maxInt(i64)), usage.get("total_tokens").?.integer);
+}
+
+test "a message's and a run's usage carry the cache counts the provider reported, inside the total" {
+    scripted_usage = .{ .input = 11, .output = 7, .cache_read = 40, .cache_write = 5 };
+    defer scripted_usage = .{ .input = 11, .output = 7 };
+    var script = Script{ .reply = "cached" };
+    var harness: Harness = undefined;
+    try harness.init(&script);
+    defer harness.deinit();
+    _ = try harness.submit("count");
+    try harness.untilTerminal();
+    try testing.expectEqual(@as(usize, 1), harness.count("content.completed"));
+    for (harness.seen.items) |parsed| {
+        if (!std.mem.eql(u8, parsed.value.object.get("type").?.string, "content.completed")) continue;
+        const message_usage = parsed.value.object.get("payload").?.object.get("usage").?.object;
+        try testing.expectEqual(@as(i64, 40), message_usage.get("cache_read_input_tokens").?.integer);
+        try testing.expectEqual(@as(i64, 5), message_usage.get("cache_write_input_tokens").?.integer);
+        try testing.expectEqual(@as(i64, 63), message_usage.get("total_tokens").?.integer);
+    }
+    const run_usage = harness.terminal().?.object.get("payload").?.object.get("usage").?.object;
+    try testing.expectEqual(@as(i64, 11), run_usage.get("input_tokens").?.integer);
+    try testing.expectEqual(@as(i64, 40), run_usage.get("cache_read_input_tokens").?.integer);
+    try testing.expectEqual(@as(i64, 5), run_usage.get("cache_write_input_tokens").?.integer);
+    try testing.expectEqual(@as(i64, 7), run_usage.get("output_tokens").?.integer);
+    try testing.expectEqual(@as(i64, 63), run_usage.get("total_tokens").?.integer);
 }
 
 test "a switch also takes the provider endpoint's ref for a model, which names the wire rather than the loop's api" {

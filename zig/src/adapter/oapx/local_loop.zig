@@ -713,6 +713,7 @@ pub const LocalLoop = struct {
                 payload.output_tokens = m.usage.output;
                 payload.input_tokens = m.usage.input;
                 payload.cache_read_tokens = m.usage.cache_read;
+                payload.cache_write_tokens = m.usage.cache_write;
                 payload.text = try self.dupeOwned(assistantText(m.content));
                 const content_json = try serializeAssistantContent(self.allocator, m.content);
                 defer self.allocator.free(content_json);
