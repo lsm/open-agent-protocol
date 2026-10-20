@@ -259,7 +259,8 @@ pub fn login(callbacks: Callbacks, allocator: std.mem.Allocator) !Credentials {
         defer if (poll_result.error_msg) |msg| allocator.free(msg);
 
         if (poll_result.access_token) |github_token| {
-            const copilot_token = try getCopilotToken(callbacks.fetch, github_domain, github_token, allocator);
+            const issued = try getCopilotToken(callbacks.fetch, github_domain, github_token, allocator);
+            const copilot_token = issued.token;
 
             const base_url = getBaseUrlFromToken(copilot_token, allocator);
 
@@ -283,7 +284,7 @@ pub fn login(callbacks: Callbacks, allocator: std.mem.Allocator) !Credentials {
             return .{
                 .refresh = try allocator.dupe(u8, github_token),
                 .access = copilot_token,
-                .expires = compat.time.nowMillis() + (3600 * 1000),
+                .expires = issued.expires,
                 .provider_data = provider_data,
                 .enabled_models = enabled_models,
                 .base_url = result_base_url,
@@ -307,7 +308,7 @@ pub fn login(callbacks: Callbacks, allocator: std.mem.Allocator) !Credentials {
     return error.OAuthTimeout;
 }
 
-pub fn refreshToken(credentials: Credentials, allocator: std.mem.Allocator) !Credentials {
+pub fn refreshToken(fetch: Fetch, credentials: Credentials, allocator: std.mem.Allocator) !Credentials {
     const github_domain = if (credentials.provider_data) |data| blk: {
         if (std.mem.find(u8, data, "enterpriseUrl")) |_| {
             if (std.mem.find(u8, data, "https://")) |idx| {
@@ -319,33 +320,12 @@ pub fn refreshToken(credentials: Credentials, allocator: std.mem.Allocator) !Cre
         break :blk "github.com";
     } else "github.com";
 
-    const copilot_token = try getCopilotToken(http.fetch, github_domain, credentials.refresh, allocator);
-
-    const base_url = getBaseUrlFromToken(copilot_token, allocator);
-
-    const resolved_base_url = base_url orelse DEFAULT_BASE_URL;
-    const enabled_models = try enableAllModels(http.fetch, allocator, copilot_token, resolved_base_url, null);
-
-    const enterprise_url = if (std.mem.eql(u8, github_domain, "github.com"))
-        null
-    else
-        try std.fmt.allocPrint(allocator, "https://{s}", .{github_domain});
-    defer if (enterprise_url) |url| allocator.free(url);
-
-    const provider_data = try buildProviderData(allocator, enterprise_url, resolved_base_url, enabled_models);
-
-    const result_base_url = if (base_url) |bu| try allocator.dupe(u8, bu) else null;
-
-    if (base_url) |bu| allocator.free(bu);
-
-    return .{
-        .refresh = try allocator.dupe(u8, credentials.refresh),
-        .access = copilot_token,
-        .expires = compat.time.nowMillis() + (3600 * 1000),
-        .provider_data = provider_data,
-        .enabled_models = enabled_models,
-        .base_url = result_base_url,
-    };
+    const issued = try getCopilotToken(fetch, github_domain, credentials.refresh, allocator);
+    errdefer allocator.free(issued.token);
+    const refresh = try allocator.dupe(u8, credentials.refresh);
+    errdefer allocator.free(refresh);
+    const provider_data = if (credentials.provider_data) |data| try allocator.dupe(u8, data) else null;
+    return .{ .refresh = refresh, .access = issued.token, .expires = issued.expires, .provider_data = provider_data };
 }
 
 pub fn getApiKey(credentials: Credentials, allocator: std.mem.Allocator) ![]const u8 {
@@ -540,7 +520,26 @@ fn pollForToken(fetch: Fetch, domain: []const u8, device_code: []const u8, alloc
     }
 }
 
-fn getCopilotToken(fetch: Fetch, domain: []const u8, github_token: []const u8, allocator: std.mem.Allocator) ![]const u8 {
+const CopilotToken = struct { token: []const u8, expires: i64 };
+
+fn tokenExpiry(token: []const u8) ?i64 {
+    var fields = std.mem.splitScalar(u8, token, ';');
+    while (fields.next()) |field| {
+        if (std.mem.startsWith(u8, field, "exp=")) return std.fmt.parseInt(i64, field["exp=".len..], 10) catch null;
+    }
+    return null;
+}
+
+const refresh_margin_ms = 5 * std.time.ms_per_min;
+
+fn issuedToken(allocator: std.mem.Allocator, token: []const u8, expires_at: ?i64, refresh_in: ?i64) !CopilotToken {
+    const seconds = expires_at orelse tokenExpiry(token) orelse return error.CopilotTokenFailed;
+    var expires = seconds * std.time.ms_per_s - refresh_margin_ms;
+    if (refresh_in) |after| expires = @min(expires, compat.time.nowMillis() + after * std.time.ms_per_s);
+    return .{ .token = try allocator.dupe(u8, token), .expires = expires };
+}
+
+fn getCopilotToken(fetch: Fetch, domain: []const u8, github_token: []const u8, allocator: std.mem.Allocator) !CopilotToken {
     const url = if (std.mem.eql(u8, domain, "github.com"))
         copilot_token_url
     else
@@ -574,6 +573,8 @@ fn getCopilotToken(fetch: Fetch, domain: []const u8, github_token: []const u8, a
     const parsed = std.json.parseFromSlice(
         struct {
             token: []const u8,
+            expires_at: ?i64 = null,
+            refresh_in: ?i64 = null,
         },
         allocator,
         response_body,
@@ -583,13 +584,13 @@ fn getCopilotToken(fetch: Fetch, domain: []const u8, github_token: []const u8, a
         if (std.mem.find(u8, trimmed, "tid=") != null or
             std.mem.find(u8, trimmed, "proxy-ep=") != null)
         {
-            return try allocator.dupe(u8, trimmed);
+            return issuedToken(allocator, trimmed, null, null);
         }
         return error.CopilotTokenFailed;
     };
     defer parsed.deinit();
 
-    return try allocator.dupe(u8, parsed.value.token);
+    return issuedToken(allocator, parsed.value.token, parsed.value.expires_at, parsed.value.refresh_in);
 }
 
 test "getBaseUrlFromToken - extracts and converts proxy-ep" {

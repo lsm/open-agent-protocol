@@ -5,6 +5,7 @@ const anthropic_messages_base_url = provider_catalog.baseUrlOrCompileError("anth
 const openai_responses_base_url = provider_catalog.baseUrlOrCompileError("openai", "openai-responses", null);
 const openai_completions_base_url = provider_catalog.baseUrlOrCompileError("openai", "openai-completions", null);
 const compat = @import("compat");
+const github_copilot = @import("oauth/github_copilot");
 const protocol_types = @import("protocol_types");
 const envelope = @import("protocol_envelope");
 const partial_serializer = @import("partial_serializer.zig");
@@ -282,6 +283,7 @@ pub const ProtocolServer = struct {
         dynamic_catalog_fetcher: ?DynamicCatalogFetchFn = null,
         dynamic_catalog_ctx: ?*anyopaque = null,
         load_auth_storage_fn: LoadAuthStorageFn = defaultLoadAuthStorage,
+        refresh_lock: ?*refresh_lock_mod.RefreshLock = null,
         load_auth_storage_ctx: ?*anyopaque = null,
         auth_storage: ?*AuthStorage = null,
     };
@@ -549,8 +551,33 @@ fn injectCompleteOptions(
     return resolved;
 }
 
-fn authProvider(provider: api_registry.ApiProvider) ?oauth_storage.OAuthProvider {
-    const provider_id = provider.auth_provider_id orelse return null;
+var test_copilot_fetch: ?github_copilot.Fetch = null;
+
+fn refreshCopilotCredentials(credentials: oauth_storage.Credentials, allocator: std.mem.Allocator) !oauth_storage.Credentials {
+    const fetch = if (@import("builtin").is_test) test_copilot_fetch orelse compat.http.fetch else compat.http.fetch;
+    const renewed = try github_copilot.refreshToken(fetch, .{
+        .refresh = credentials.refresh,
+        .access = credentials.access,
+        .expires = credentials.expires,
+        .provider_data = credentials.provider_data,
+    }, allocator);
+    return .{ .refresh = renewed.refresh, .access = renewed.access, .expires = renewed.expires, .provider_data = renewed.provider_data };
+}
+
+fn copilotApiKey(credentials: oauth_storage.Credentials, allocator: std.mem.Allocator) ![]const u8 {
+    return allocator.dupe(u8, credentials.access);
+}
+
+const copilot_oauth_provider = oauth_storage.OAuthProvider{
+    .id = "github-copilot",
+    .name = "GitHub Copilot",
+    .refresh_fn = refreshCopilotCredentials,
+    .get_api_key_fn = copilotApiKey,
+};
+
+fn authProvider(provider: api_registry.ApiProvider, model_provider: []const u8) ?oauth_storage.OAuthProvider {
+    const provider_id = provider.auth_provider_id orelse
+        return if (std.mem.eql(u8, model_provider, copilot_oauth_provider.id)) copilot_oauth_provider else null;
     return .{
         .id = provider_id,
         .refresh_fn = provider.auth_refresh_fn orelse return null,
@@ -630,13 +657,32 @@ fn streamWithResolvedKey(
     return provider.stream(model, context, resolved_options, server.allocator);
 }
 
+pub var process_refresh_lock = refresh_lock_mod.RefreshLock.init(std.heap.smp_allocator);
+
+fn reloadStoredCredential(server: *ProtocolServer, storage: *oauth_storage.AuthStorage, provider_id: []const u8) !void {
+    if (server.options.auth_storage != null) return;
+    var fresh = try server.options.load_auth_storage_fn(server.options.load_auth_storage_ctx, server.allocator);
+    defer fresh.deinit();
+    const moved = fresh.providers.fetchRemove(provider_id) orelse return;
+    if (storage.providers.fetchRemove(provider_id)) |stale| {
+        storage.allocator.free(stale.key);
+        stale.value.deinit(storage.allocator);
+    }
+    storage.providers.put(moved.key, moved.value) catch |err| {
+        server.allocator.free(moved.key);
+        moved.value.deinit(server.allocator);
+        return err;
+    };
+}
+
 fn refreshWithLock(
     server: *ProtocolServer,
     provider_id: []const u8,
     storage: *oauth_storage.AuthStorage,
     oauth_provider: oauth_storage.OAuthProvider,
 ) !void {
-    const lock_result = server.refresh_lock.acquire(provider_id, null) catch |err| switch (err) {
+    const lock = server.options.refresh_lock orelse &server.refresh_lock;
+    const lock_result = lock.acquire(provider_id, null) catch |err| switch (err) {
         error.OutOfMemory => return error.OutOfMemory,
         else => return error.AuthRefreshFailed,
     };
@@ -644,15 +690,18 @@ fn refreshWithLock(
     switch (lock_result) {
         .acquired => |generation| {
             storage.refreshCredentials(provider_id, oauth_provider) catch |err| {
-                server.refresh_lock.complete(provider_id, null, generation, err);
+                lock.complete(provider_id, null, generation, err);
                 return switch (err) {
                     error.OutOfMemory => error.OutOfMemory,
                     else => error.AuthRefreshFailed,
                 };
             };
-            server.refresh_lock.complete(provider_id, null, generation, null);
+            lock.complete(provider_id, null, generation, null);
         },
-        .completed_ok => {},
+        .completed_ok => reloadStoredCredential(server, storage, provider_id) catch |err| return switch (err) {
+            error.OutOfMemory => error.OutOfMemory,
+            else => error.AuthRefreshFailed,
+        },
         .completed_err => |err| {
             return switch (err) {
                 error.OutOfMemory => error.OutOfMemory,
@@ -722,7 +771,7 @@ fn streamWithOverride(
     const provider_id = provider.auth_provider_id orelse model.provider;
     const claims_vendor_without_vendor_api = provider.auth_provider_id == null and
         isVendorOAuthProviderId(model.provider);
-    const oauth_provider = authProvider(provider) orelse
+    const oauth_provider = authProvider(provider, model.provider) orelse
         return streamWithResolvedKey(
             server,
             provider,
@@ -1588,6 +1637,117 @@ const AuthTestState = struct {
 
 var auth_test_state: ?*AuthTestState = null;
 
+var copilot_test_token_requests = std.atomic.Value(usize).init(0);
+var copilot_test_hold_ms: u64 = 0;
+
+fn copilotTokenEndpoint(allocator: std.mem.Allocator, url: []const u8, options: compat.http.FetchOptions) compat.http.FetchError!compat.http.Fetched {
+    if (!std.mem.endsWith(u8, url, "/copilot_internal/v2/token")) return .{ .status = 404, .body = try allocator.dupe(u8, "") };
+    const issued = copilot_test_token_requests.fetchAdd(1, .seq_cst) + 1;
+    if (copilot_test_hold_ms > 0) compat.time.sleepMs(copilot_test_hold_ms);
+    for (options.extra_headers) |header| {
+        if (!std.ascii.eqlIgnoreCase(header.name, "authorization") or !std.mem.eql(u8, header.value, "Bearer gho-stored")) continue;
+        const expires_at = @divTrunc(compat.time.nowMillis(), std.time.ms_per_s) + 1800;
+        const body = std.fmt.allocPrint(allocator, "{{\"token\":\"tid=fresh-{d}\",\"expires_at\":{d},\"refresh_in\":1500}}", .{ issued, expires_at }) catch return error.OutOfMemory;
+        return .{ .status = 200, .body = body };
+    }
+    return .{ .status = 401, .body = try allocator.dupe(u8, "{\"message\":\"Bad credentials\"}") };
+}
+
+fn putCopilotCredential(storage: *oauth_storage.AuthStorage, refresh: []const u8, access: []const u8, expires: i64) !void {
+    if (storage.providers.fetchRemove("github-copilot")) |held| {
+        storage.allocator.free(held.key);
+        held.value.deinit(storage.allocator);
+    }
+    const key = try storage.allocator.dupe(u8, "github-copilot");
+    errdefer storage.allocator.free(key);
+    const refresh_owned = try storage.allocator.dupe(u8, refresh);
+    errdefer storage.allocator.free(refresh_owned);
+    const access_owned = try storage.allocator.dupe(u8, access);
+    errdefer storage.allocator.free(access_owned);
+    try storage.providers.put(key, .{ .oauth = .{ .refresh = refresh_owned, .access = access_owned, .expires = expires } });
+}
+
+fn copilotTestModel() ai_types.Model {
+    var model = testModel();
+    model.api = "keyless-api";
+    model.provider = "github-copilot";
+    model.base_url = "https://api.individual.githubcopilot.com";
+    return model;
+}
+
+const CopilotBacking = struct {
+    mutex: std.Io.Mutex = .init,
+    storage: oauth_storage.AuthStorage,
+};
+
+var copilot_backing: ?*CopilotBacking = null;
+
+fn copilotBackingSave(saved: *const oauth_storage.AuthStorage) anyerror!void {
+    const backing = copilot_backing.?;
+    backing.mutex.lockUncancelable(std.testing.io);
+    defer backing.mutex.unlock(std.testing.io);
+    const creds = saved.providers.get("github-copilot").?.oauth;
+    try putCopilotCredential(&backing.storage, creds.refresh, creds.access, creds.expires);
+}
+
+fn copilotBackingLoad(ctx: ?*anyopaque, allocator: std.mem.Allocator) anyerror!oauth_storage.AuthStorage {
+    _ = ctx;
+    const backing = copilot_backing.?;
+    backing.mutex.lockUncancelable(std.testing.io);
+    defer backing.mutex.unlock(std.testing.io);
+    var loaded = oauth_storage.AuthStorage{ .providers = std.StringHashMap(oauth_storage.ProviderAuth).init(allocator), .allocator = allocator, .save_fn = copilotBackingSave };
+    errdefer loaded.deinit();
+    const creds = backing.storage.providers.get("github-copilot").?.oauth;
+    try putCopilotCredential(&loaded, creds.refresh, creds.access, creds.expires);
+    return loaded;
+}
+
+const CopilotSent = struct {
+    mutex: std.Io.Mutex = .init,
+    keys: [2][32]u8 = undefined,
+    lens: [2]usize = .{ 0, 0 },
+    count: usize = 0,
+};
+
+var copilot_sent = CopilotSent{};
+
+fn copilotRecordingStream(
+    model: ai_types.Model,
+    context: ai_types.Context,
+    options: ?ai_types.StreamOptions,
+    allocator: std.mem.Allocator,
+) !*event_stream.AssistantMessageEventStream {
+    _ = model;
+    _ = context;
+    const key = options.?.getApiKey().?;
+    copilot_sent.mutex.lockUncancelable(std.testing.io);
+    const slot = copilot_sent.count;
+    copilot_sent.count += 1;
+    const len = @min(key.len, copilot_sent.keys[slot].len);
+    @memcpy(copilot_sent.keys[slot][0..len], key[0..len]);
+    copilot_sent.lens[slot] = len;
+    copilot_sent.mutex.unlock(std.testing.io);
+    const s = try allocator.create(event_stream.AssistantMessageEventStream);
+    s.* = event_stream.AssistantMessageEventStream.init(allocator);
+    s.ownership = .{ .owned = ai_types.cloneAssistantMessageEvent };
+    s.complete(.{ .content = &.{}, .api = "test-api", .provider = "test-provider", .model = "test-model", .usage = .{}, .stop_reason = .stop, .timestamp = compat.time.nowMillis() });
+    s.markThreadDone();
+    return s;
+}
+
+fn copilotConcurrentRequest(registry: *api_registry.ApiRegistry, lock: *refresh_lock_mod.RefreshLock, failed: *?anyerror) void {
+    var server = ProtocolServer.init(std.testing.allocator, registry, .{ .load_auth_storage_fn = copilotBackingLoad, .refresh_lock = lock });
+    defer server.deinit();
+    var model = copilotTestModel();
+    model.api = "recording-api";
+    const stream = streamWithRefresh(&server, registry.getApiProvider("recording-api").?, model, testContext(), null) catch |err| {
+        failed.* = err;
+        return;
+    };
+    stream.deinit();
+    std.testing.allocator.destroy(stream);
+}
+
 fn testModel() ai_types.Model {
     return .{
         .id = "test-model",
@@ -2196,6 +2356,98 @@ test "a stored vendor API key reaches only an origin the vendor serves or the us
             try std.testing.expectEqual(@as(usize, 0), state.last_api_key_len);
         }
     }
+}
+
+test "a Copilot token is renewed from the stored GitHub token a little before it expires, after a day away and after a 401, and only a rejected GitHub token asks for a login" {
+    try provider_catalog.blankEnvironment(std.testing.allocator);
+    defer compat.clearTestEnv();
+    const login_ms: i64 = 1_800_000_000_000;
+    compat.time.test_clock_ms = login_ms;
+    defer compat.time.test_clock_ms = null;
+    var state = AuthTestState{ .expires = 0 };
+    auth_test_state = &state;
+    defer auth_test_state = null;
+    test_copilot_fetch = copilotTokenEndpoint;
+    defer test_copilot_fetch = null;
+    copilot_test_token_requests.store(0, .seq_cst);
+
+    var registry = api_registry.ApiRegistry.init(std.testing.allocator);
+    defer registry.deinit();
+    try registry.registerApiProvider(.{ .api = "keyless-api", .stream = authTestStream, .stream_simple = mockStreamSimple }, null);
+    var storage = oauth_storage.AuthStorage{
+        .providers = std.StringHashMap(oauth_storage.ProviderAuth).init(std.testing.allocator),
+        .allocator = std.testing.allocator,
+        .save_fn = authTestSaveStorage,
+    };
+    defer storage.deinit();
+    try putCopilotCredential(&storage, "gho-stored", "tid=login", login_ms - 1);
+    var server = ProtocolServer.init(std.testing.allocator, &registry, .{ .auth_storage = &storage });
+    defer server.deinit();
+    const model = copilotTestModel();
+
+    const steps = [_]struct { at_ms: i64, key: []const u8, requests: usize }{
+        .{ .at_ms = login_ms, .key = "tid=fresh-1", .requests = 1 },
+        .{ .at_ms = login_ms + 10 * std.time.ms_per_min, .key = "tid=fresh-1", .requests = 1 },
+        .{ .at_ms = login_ms + 26 * std.time.ms_per_min, .key = "tid=fresh-2", .requests = 2 },
+        .{ .at_ms = login_ms + 26 * std.time.ms_per_min + 25 * std.time.ms_per_hour, .key = "tid=fresh-3", .requests = 3 },
+    };
+    for (steps) |step| {
+        compat.time.test_clock_ms = step.at_ms;
+        const stream = try streamWithRefresh(&server, registry.getApiProvider("keyless-api").?, model, testContext(), null);
+        stream.deinit();
+        std.testing.allocator.destroy(stream);
+        try std.testing.expectEqualStrings(step.key, state.last_api_key[0..state.last_api_key_len]);
+        try std.testing.expectEqual(step.requests, copilot_test_token_requests.load(.seq_cst));
+    }
+    try std.testing.expectEqualStrings("gho-stored", storage.providers.get("github-copilot").?.oauth.refresh);
+
+    compat.time.test_clock_ms = steps[steps.len - 1].at_ms + 5 * std.time.ms_per_min;
+    state.stream_calls = 0;
+    state.auth_fail_first_call = true;
+    const retried = try streamWithRefresh(&server, registry.getApiProvider("keyless-api").?, model, testContext(), null);
+    retried.deinit();
+    std.testing.allocator.destroy(retried);
+    state.auth_fail_first_call = false;
+    try std.testing.expectEqual(@as(usize, 2), state.stream_calls);
+    try std.testing.expectEqualStrings("tid=fresh-4", state.last_api_key[0..state.last_api_key_len]);
+
+    try putCopilotCredential(&storage, "gho-revoked", "tid=stale", compat.time.nowMillis() - 1);
+    try std.testing.expectError(error.AuthRefreshFailed, streamWithRefresh(&server, registry.getApiProvider("keyless-api").?, model, testContext(), null));
+}
+
+test "concurrent Copilot requests holding an expired token share one renewal" {
+    try provider_catalog.blankEnvironment(std.testing.allocator);
+    defer compat.clearTestEnv();
+    compat.time.test_clock_ms = 1_800_000_000_000;
+    defer compat.time.test_clock_ms = null;
+    test_copilot_fetch = copilotTokenEndpoint;
+    defer test_copilot_fetch = null;
+    copilot_test_token_requests.store(0, .seq_cst);
+    copilot_test_hold_ms = 200;
+    defer copilot_test_hold_ms = 0;
+    copilot_sent = .{};
+
+    var backing = CopilotBacking{ .storage = .{ .providers = std.StringHashMap(oauth_storage.ProviderAuth).init(std.testing.allocator), .allocator = std.testing.allocator } };
+    defer backing.storage.deinit();
+    try putCopilotCredential(&backing.storage, "gho-stored", "tid=stale", compat.time.nowMillis() - 1);
+    copilot_backing = &backing;
+    defer copilot_backing = null;
+
+    var registry = api_registry.ApiRegistry.init(std.testing.allocator);
+    defer registry.deinit();
+    try registry.registerApiProvider(.{ .api = "recording-api", .stream = copilotRecordingStream, .stream_simple = mockStreamSimple }, null);
+    var lock = refresh_lock_mod.RefreshLock.init(std.testing.allocator);
+    defer lock.deinit();
+
+    var failures = [_]?anyerror{ null, null };
+    var threads: [2]std.Thread = undefined;
+    for (&threads, &failures) |*thread, *failed| thread.* = try std.Thread.spawn(.{}, copilotConcurrentRequest, .{ &registry, &lock, failed });
+    for (threads) |thread| thread.join();
+
+    for (failures) |failed| try std.testing.expect(failed == null);
+    try std.testing.expectEqual(@as(usize, 1), copilot_test_token_requests.load(.seq_cst));
+    try std.testing.expectEqual(@as(usize, 2), copilot_sent.count);
+    for (0..2) |slot| try std.testing.expectEqualStrings("tid=fresh-1", copilot_sent.keys[slot][0..copilot_sent.lens[slot]]);
 }
 
 test "a stored vendor API key on a foreign wire reaches only an origin the vendor serves" {
