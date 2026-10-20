@@ -12945,6 +12945,26 @@
       ]
     },
     {
+      "id": "tools-execution-owner-changes-mid-call",
+      "path": "semantic-invalid/tools-execution-owner-changes-mid-call.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "scope_mismatch"
+      ],
+      "units": [
+        "core",
+        "tools"
+      ],
+      "provenance": [
+        "decisions/0011-control-layer-provided-tools.md"
+      ],
+      "rules": [
+        "0001#one-foreground-invocation-is-one-run/7"
+      ]
+    },
+    {
       "id": "permission-resolved-in-the-refresh-window",
       "path": "valid/permission-resolved-in-the-refresh-window.json",
       "kind": "positive",

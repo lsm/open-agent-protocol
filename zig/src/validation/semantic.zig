@@ -270,6 +270,7 @@ const ToolTrack = struct {
     status: CallStatus,
     interaction: []const u8 = "",
     source: []const u8 = "",
+    owner: []const u8 = "",
 };
 
 const InteractionKind = enum { permission, input, tool_call };
@@ -4730,11 +4731,12 @@ pub const Machine = struct {
                 .cancelled => !callTerminal(track.status),
             };
             if (!legal) try self.add(code_illegal_tool_transition, index);
+            if (track.owner.len != 0 and !std.mem.eql(u8, memberString(payload, "execution_owner"), track.owner)) try self.add(code_scope_mismatch, index);
             track.status = next;
             return;
         }
         if (next != .requested and !run.recovered) try self.add(code_unmatched_tool, index);
-        try run.tools.put(self.arena.allocator(), call, .{ .status = next, .source = memberString(payload, "source") });
+        try run.tools.put(self.arena.allocator(), call, .{ .status = next, .source = memberString(payload, "source"), .owner = memberString(payload, "execution_owner") });
     }
 
     fn controlOwned(self: *const Machine, owner: []const u8) bool {
