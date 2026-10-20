@@ -1,11 +1,13 @@
 """A run may go quiet for longer than a request's reply timeout; only an opt-in idle timeout ends it."""
 
+import asyncio
 import os
 import sys
 import tempfile
 import unittest
+from typing import Dict
 
-from oap_sdk import connect
+from oap_sdk import MakaiStreamError, connect
 
 
 SLOW_HOST = r'''
@@ -53,7 +55,7 @@ for line in sys.stdin:
 
 
 class QuietRunTests(unittest.IsolatedAsyncioTestCase):
-    def host(self, pause: float) -> dict:
+    def host(self, pause: float) -> Dict[str, str]:
         log = tempfile.NamedTemporaryFile(delete=False)
         log.close()
         self.addCleanup(os.unlink, log.name)
@@ -73,3 +75,27 @@ class QuietRunTests(unittest.IsolatedAsyncioTestCase):
             response = await client.provider.complete(model_ref="fixture/other:test@ok",
                                                       messages=[{"role": "user", "content": "think"}])
             self.assertEqual(response.text, "thought long")
+
+    async def cancelled_after(self, kind: str) -> bool:
+        for _ in range(40):
+            with open(self.log) as log:
+                if kind in log.read().split():
+                    return True
+            await asyncio.sleep(0.05)
+        return False
+
+    async def test_an_idle_timeout_cancels_an_agent_run_that_goes_quiet_too_long(self) -> None:
+        async with connect(command=sys.executable, args=["-u", "-c", SLOW_HOST], env=self.host(0.8),
+                           response_timeout=5, idle_timeout=0.2) as client:
+            with self.assertRaises(MakaiStreamError):
+                await client.agent.run(model_ref="fixture/other:test@ok",
+                                       messages=[{"role": "user", "content": "think"}])
+            self.assertTrue(await self.cancelled_after("run.cancel.request"))
+
+    async def test_an_idle_timeout_cancels_an_inference_that_goes_quiet_too_long(self) -> None:
+        async with connect(command=sys.executable, args=["-u", "-c", SLOW_HOST], env=self.host(0.8),
+                           response_timeout=5, idle_timeout=0.2) as client:
+            with self.assertRaises(MakaiStreamError):
+                await client.provider.complete(model_ref="fixture/other:test@ok",
+                                               messages=[{"role": "user", "content": "think"}])
+            self.assertTrue(await self.cancelled_after("inference.cancel.request"))

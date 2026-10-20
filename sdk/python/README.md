@@ -68,7 +68,7 @@ await client.auth.login("anthropic", handlers)
 
 ## Configuration and errors
 
-`connect()` accepts `command`, `args`, `cwd`, `env`, a `BinaryResolverOptions`, `auth`, and timeouts in seconds. The default args are `("serve", "agent,provider", "--stdio")`. Binary resolution honors `OAP_SDK_BINARY_PATH`, an explicit path or checksum-verified URL, local `zig-out/bin/oapx` or `zig/zig-out/bin/oapx`, then `PATH`.
+`connect()` accepts `command`, `args`, `cwd`, `env`, a `BinaryResolverOptions`, `auth`, and timeouts in seconds. `response_timeout` bounds each request's reply, the acceptance of a run or inference included, and never a running run; `idle_timeout`, off by default, cancels a run or inference that sends no event for that long. The default args are `("serve", "agent,provider", "--stdio")`. Binary resolution honors `OAP_SDK_BINARY_PATH`, an explicit path or checksum-verified URL, local `zig-out/bin/oapx` or `zig/zig-out/bin/oapx`, then `PATH`.
 
 `oap_sdk.connect_sync()` supplies the same API through a blocking wrapper for scripts; do not call it inside a running event loop. The async and sync clients own their child process and should be closed.
 

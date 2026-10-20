@@ -85,7 +85,7 @@ class FrameRoute:
         self._closed = True
         self._queue.put_nowait(error)
 
-    async def next_frame(self, timeout: float) -> Frame:
+    async def next_frame(self, timeout: Optional[float]) -> Frame:
         """Return the next frame for this route.
 
         Raises:
@@ -95,7 +95,7 @@ class FrameRoute:
             item = await asyncio.wait_for(self._queue.get(), timeout)
         except asyncio.TimeoutError as exc:
             raise MakaiStreamError(
-                f"timed out waiting for frame for {self.key} after {int(timeout * 1000)}ms",
+                f"timed out waiting for frame for {self.key} after {int((timeout or 0) * 1000)}ms",
                 kind="transport_error",
                 code=TIMEOUT_CODE,
             ) from exc
