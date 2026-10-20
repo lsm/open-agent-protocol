@@ -74,8 +74,15 @@ def _model_parts(model_ref: str) -> tuple[str, str, str]:
 def _usage(value: Any) -> Optional[Usage]:
     if not isinstance(value, dict):
         return None
+    def counted(name: str) -> Optional[int]:
+        count = value.get(name)
+        return count if isinstance(count, int) and not isinstance(count, bool) else None
     return Usage(input=int(value.get("input_tokens") or 0),
-                 output=int(value.get("output_tokens") or 0))
+                 output=int(value.get("output_tokens") or 0),
+                 cache_read=counted("cache_read_input_tokens"),
+                 cache_write=counted("cache_write_input_tokens"),
+                 reasoning=counted("reasoning_tokens"),
+                 total=counted("total_tokens"))
 
 
 def _assistant(value: Any) -> AssistantMessage:

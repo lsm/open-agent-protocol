@@ -15,11 +15,11 @@ test("combined OAP stdio exposes provider models, inference, and agent runs", as
     const request = { model_ref: "fixture/openai-responses@mock", messages: [{ role: "user" as const, content: "hello" }] };
     const inference = await client.provider.complete(request);
     assert.equal(inference.message.content, "provider works");
-    assert.equal(inference.usage?.output, 2);
+    assert.deepEqual(inference.usage, { input: 1, output: 2, cache_read: 40, cache_write: 0, reasoning: 1, total: 43 });
 
     const run = await client.agent.run(request);
     assert.equal(run.message.content, "agent works");
-    assert.equal(run.usage?.output, 3);
+    assert.deepEqual(run.usage, { input: 2, output: 3 });
     await client.agent.run({ ...request, options: { session_id: "existing-session" } });
     await client.agent.run({ ...request, options: { session_id: "existing-session" } });
     await client.agent.switchModel("existing-session", "fixture/openai-responses@switched");

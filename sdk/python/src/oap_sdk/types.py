@@ -229,6 +229,8 @@ class Usage:
     output: int
     cache_read: Optional[int] = None
     cache_write: Optional[int] = None
+    reasoning: Optional[int] = None
+    total: Optional[int] = None
 
 
 @dataclass(frozen=True)

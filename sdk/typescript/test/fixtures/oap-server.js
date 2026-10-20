@@ -164,7 +164,7 @@ createInterface({ input: process.stdin }).on("line", (line) => {
             { type: "image", image: { data: "aGVsbG8=", media_type: "image/png" } },
             { type: "text", text: "answer" },
           ]
-          : "provider works" }, stop_reason: "end_turn", usage: { input_tokens: 1, output_tokens: 2 } }, { inference_id: "inf-1", sequence: request.payload.model_ref.endsWith("@structured") ? 8 : 5 });
+          : "provider works" }, stop_reason: "end_turn", usage: { input_tokens: 1, cache_read_input_tokens: 40, cache_write_input_tokens: 0, output_tokens: 2, reasoning_tokens: 1, total_tokens: 43 } }, { inference_id: "inf-1", sequence: request.payload.model_ref.endsWith("@structured") ? 8 : 5 });
       break;
     case `${agent}:session.open.request`:
       if (openSessions.has(request.payload.session_id)) {

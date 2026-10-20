@@ -303,7 +303,14 @@ function parseInputSchema(raw: string): unknown {
 
 function usage(value: unknown): UsageSummary | undefined {
   if (!isRecord(value)) return undefined;
-  return { input: typeof value.input_tokens === "number" ? value.input_tokens : 0, output: typeof value.output_tokens === "number" ? value.output_tokens : 0 };
+  return {
+    input: typeof value.input_tokens === "number" ? value.input_tokens : 0,
+    output: typeof value.output_tokens === "number" ? value.output_tokens : 0,
+    ...(typeof value.cache_read_input_tokens === "number" ? { cache_read: value.cache_read_input_tokens } : {}),
+    ...(typeof value.cache_write_input_tokens === "number" ? { cache_write: value.cache_write_input_tokens } : {}),
+    ...(typeof value.reasoning_tokens === "number" ? { reasoning: value.reasoning_tokens } : {}),
+    ...(typeof value.total_tokens === "number" ? { total: value.total_tokens } : {}),
+  };
 }
 
 function modelCost(raw: Record<string, unknown>): ModelCost {

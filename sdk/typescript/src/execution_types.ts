@@ -84,6 +84,8 @@ export interface UsageSummary {
   output: number;
   cache_read?: number;
   cache_write?: number;
+  reasoning?: number;
+  total?: number;
 }
 
 export interface AgentRunRequest {
