@@ -522,3 +522,129 @@ pub const INITIAL: [EnvelopeType; 4] = [
     EnvelopeType::ACTION_CALL_REQUESTED,
     EnvelopeType::ACTION_PERMISSION_REQUESTED,
 ];
+
+pub fn opening(open: &OpenRequest) -> Vec<Envelope> {
+    let descriptor = descriptor();
+    let revision = Some(descriptor.capability_revision.clone());
+    let session = open.session_id.clone();
+    let initialize = envelope(
+        EnvelopeType::PROTOCOL_INITIALIZE_REQUEST,
+        "initialize-request",
+        &InitializeRequest {
+            protocol_versions: vec![VERSION.into()],
+            profiles: vec![PROFILE.into()],
+            participant: Some(open.participant.clone()),
+        },
+    );
+    let mut initialized = envelope(
+        EnvelopeType::PROTOCOL_INITIALIZE_RESPONSE,
+        "initialize-response",
+        &InitializeResponse {
+            protocol_version: VERSION.into(),
+            profile: PROFILE.into(),
+            endpoint: descriptor.capabilities.endpoint.clone(),
+        },
+    );
+    initialized.in_reply_to = Some(initialize.id.clone());
+    let asked = envelope(
+        EnvelopeType::CAPABILITIES_REQUEST,
+        "capabilities-request",
+        &CapabilitiesRequest {},
+    );
+    let mut described = envelope(
+        EnvelopeType::CAPABILITIES_RESPONSE,
+        "capabilities-response",
+        &descriptor.capabilities,
+    );
+    described.in_reply_to = Some(asked.id.clone());
+    described.capability_revision = revision.clone();
+    let mut opening = envelope(
+        EnvelopeType::SESSION_OPEN_REQUEST,
+        "open-request",
+        &SessionOpenRequest {
+            session_id: Some(session.clone()),
+            tools: open.tools.clone(),
+            compaction_policy: open.compaction_policy.clone(),
+            ..SessionOpenRequest::default()
+        },
+    );
+    opening.capability_revision = revision.clone();
+    let mut opened = envelope(
+        EnvelopeType::SESSION_OPEN_RESPONSE,
+        "open-response",
+        &SessionState {
+            session_id: session.clone(),
+            status: SessionStatus::IDLE,
+            ..SessionState::default()
+        },
+    );
+    opened.session_id = Some(session);
+    opened.in_reply_to = Some(opening.id.clone());
+    opened.capability_revision = revision;
+    vec![initialize, initialized, asked, described, opening, opened]
+}
+
+pub fn exchange(
+    kinds: [EnvelopeType; 2],
+    id: &str,
+    run: Option<&RunId>,
+    request: &impl serde::Serialize,
+    response: &impl serde::Serialize,
+) -> [Envelope; 2] {
+    let [asked, answered] = kinds;
+    let mut request = envelope(asked, id, request);
+    let mut response = envelope(answered, &format!("{id}-response"), response);
+    for half in [&mut request, &mut response] {
+        half.session_id = Some("session-1".into());
+        half.run_id = run.cloned();
+        half.capability_revision = Some(CAPABILITY_REVISION.to_owned());
+    }
+    response.in_reply_to = Some(request.id.clone());
+    [request, response]
+}
+
+pub const SUBMIT: [EnvelopeType; 2] = [
+    EnvelopeType::SESSION_MESSAGE_SUBMIT_REQUEST,
+    EnvelopeType::SESSION_MESSAGE_SUBMIT_RESPONSE,
+];
+
+pub fn flow(open: &OpenRequest, parts: &[&[Envelope]]) -> oap_validation::ValidationResult {
+    let mut trace = opening(open);
+    for part in parts {
+        trace.extend_from_slice(part);
+    }
+    oap_validation::Validator::new()
+        .unwrap()
+        .validate(&serde_json::to_vec(&trace).unwrap(), "memory-flow")
+}
+
+pub fn assert_flow(open: &OpenRequest, parts: &[&[Envelope]]) {
+    let result = flow(open, parts);
+    assert!(result.valid(), "{:#?}", result.diagnostics);
+}
+
+pub fn session_open() -> OpenRequest {
+    OpenRequest {
+        session_id: "session-1".into(),
+        ..user_open()
+    }
+}
+
+pub fn submit_as(
+    session: &MemorySession,
+    id: &str,
+    request: MessageSubmitRequest,
+) -> (MessageSubmitResponse, EventStream, [Envelope; 2]) {
+    let (admission, stream) = session
+        .submit(SubmitRequest {
+            request: request.clone(),
+            envelope_id: id.into(),
+        })
+        .unwrap();
+    let asked = exchange(SUBMIT, id, None, &request, &admission);
+    (admission, stream, asked)
+}
+
+pub fn ended(stream: &mut EventStream) -> bool {
+    matches!(stream.next().now_or_never(), Some(None))
+}

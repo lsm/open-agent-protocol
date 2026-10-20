@@ -92,6 +92,23 @@ The script retains each input and result.
 The baseline script runs this journey too, and validates the positive traces
 with the rebuilt `oapx` binary.
 
+## Rust memory adapter consumer journey
+
+The Rust adapter is a library too. Its `memory_trace` example opens a memory
+session through the public `Adapter` and `Session` traits, submits a run, steers
+it, resolves both gates and prints the whole exchange as an OAP trace:
+
+```sh
+python3 .claude/skills/verify/scripts/rust-memory-trace.py --output-dir /tmp/oap-rust-memory-<unique-name>
+```
+
+The trace must end in `run.completed` with `run.steer.applied` right before the
+input gate, and must pass the Rust, Go and Zig validators (build `oapx` first).
+With the steer exchange removed, Go and Zig must reject it with `unmatched_steer`.
+The Rust validator has not ported that rule yet (see the `0013#steer-is-settled`
+rows in `drafts/validator-rules/0010-amendments-auth.md`), so the script does not
+check Rust's verdict on that trace.
+
 ## Local oapx/TUI journey (PTY, no real credentials)
 
 Run the bundled script, supplying a new artifact directory outside the worktree:
