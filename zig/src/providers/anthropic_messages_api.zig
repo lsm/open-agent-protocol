@@ -67,6 +67,12 @@ pub const wires: []const []const u8 = &.{"anthropic-messages"};
 
 const request_wire = provider_catalog.wirePath("anthropic-messages") orelse unreachable;
 
+const client_user_agent = "oapx/" ++ @import("version_options").version;
+
+fn sessionHeaderFor(model: ai_types.Model) ?[]const u8 {
+    return provider_catalog.sessionHeader(model.provider, request_wire.id);
+}
+
 fn buildBearerAuthValue(allocator: std.mem.Allocator, token: []const u8) ![]u8 {
     var sb = StringBuilder{};
     sb.count("Bearer ");
@@ -1032,8 +1038,10 @@ const ThreadCtx = struct {
     on_payload_ctx: ?*anyopaque = null,
     retry: ?ai_types.RetryConfig = null,
     ping_interval_ms: ?u64 = null,
+    conversation_id: ?[]u8 = null,
 
     fn deinit(self: *ThreadCtx) void {
+        if (self.conversation_id) |id| self.allocator.free(id);
         self.allocator.free(self.api_key);
         self.allocator.free(self.request_body);
         var mut_context = self.context;
@@ -1186,6 +1194,13 @@ fn runThread(ctx: *ThreadCtx) void {
         return;
     };
     defer header_set.deinit(allocator);
+    if (ctx.conversation_id) |id| if (sessionHeaderFor(model)) |header_name| {
+        header_set.headers.append(allocator, .{ .name = header_name, .value = id }) catch {
+            ctx.deinit();
+            stream.completeWithError("oom headers");
+            return;
+        };
+    };
     const headers = header_set.headers.items;
 
     const MAX_RETRIES: u8 = 3;
@@ -1224,6 +1239,7 @@ fn runThread(ctx: *ThreadCtx) void {
         req = http_client.openRequest(.POST, uri, .{
             .extra_headers = headers,
             .accept_encoding = "identity",
+            .user_agent = if (sessionHeaderFor(model) != null) client_user_agent else null,
         }) catch {
             if (retry_attempt < MAX_RETRIES) {
                 const delay = retry_util.calculateDelay(retry_attempt, BASE_DELAY_MS, max_delay_ms);
@@ -1752,6 +1768,9 @@ pub fn streamAnthropicMessages(
     const body = try buildRequestBody(owned_model, owned_context, o, allocator, is_oauth);
     errdefer allocator.free(body);
 
+    const conversation_id: ?[]u8 = if (sessionHeaderFor(owned_model) != null) try provider_catalog.conversationId(allocator, o.getSessionId(), owned_context) else null;
+    errdefer if (conversation_id) |id| allocator.free(id);
+
     const s = try allocator.create(event_stream.AssistantMessageEventStream);
     errdefer allocator.destroy(s);
     s.* = event_stream.AssistantMessageEventStream.init(allocator);
@@ -1772,6 +1791,7 @@ pub fn streamAnthropicMessages(
         .on_payload_ctx = o.on_payload_ctx,
         .retry = o.retry,
         .ping_interval_ms = o.ping_interval_ms,
+        .conversation_id = conversation_id,
     };
 
     const th = try std.Thread.spawn(.{}, runThread, .{ctx});
@@ -2463,6 +2483,10 @@ const MockAnthropicServer = struct {
     thread: ?std.Thread = null,
     served: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
     saw_messages_path: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
+    session_header: [64]u8 = undefined,
+    session_header_len: usize = 0,
+    user_agent: [64]u8 = undefined,
+    user_agent_len: usize = 0,
 
     const sse_events =
         \\event: message_start
@@ -2570,6 +2594,11 @@ const MockAnthropicServer = struct {
 
         if (std.mem.indexOf(u8, head, "POST /v1/messages ") != null) {
             self.saw_messages_path.store(true, .release);
+        }
+        var lines = std.mem.splitSequence(u8, head, "\r\n");
+        while (lines.next()) |line| {
+            if (std.ascii.startsWithIgnoreCase(line, "x-opencode-session:")) self.session_header_len = keep(&self.session_header, line["x-opencode-session:".len..]);
+            if (std.ascii.startsWithIgnoreCase(line, "user-agent:")) self.user_agent_len = keep(&self.user_agent, line["user-agent:".len..]);
         }
 
         var head_buffer: [128]u8 = undefined;
@@ -2887,6 +2916,47 @@ test "every row this wire serves finds its key from the row, not a list of vendo
         try std.testing.expectEqualStrings(row.credential_env[0], recorded.asked.items[0]);
     }
     try std.testing.expect(served >= 2);
+}
+
+fn keep(into: *[64]u8, raw: []const u8) usize {
+    const value = std.mem.trim(u8, raw, " \t");
+    const len = @min(value.len, into.len);
+    @memcpy(into[0..len], value[0..len]);
+    return len;
+}
+
+const SentHeaders = struct { session: [64]u8, session_len: usize, agent: [64]u8, agent_len: usize };
+
+fn headersSentFor(provider: []const u8, session_id: []const u8) !SentHeaders {
+    const allocator = std.testing.allocator;
+    var mock = try MockAnthropicServer.listen(MockAnthropicServer.complete_stream);
+    defer mock.stop();
+    const base_url = try mock.baseUrl(allocator);
+    defer allocator.free(base_url);
+    try mock.start();
+    const stream = try streamAnthropicMessages(regressionModel("anthropic-messages", provider, base_url), regressionContext(), .{
+        .api_key = ai_types.OwnedSlice(u8).initBorrowed("test-key"),
+        .session_id = ai_types.OwnedSlice(u8).initBorrowed(session_id),
+    }, allocator);
+    defer {
+        stream.deinit();
+        allocator.destroy(stream);
+    }
+    while (stream.wait()) |event| {
+        var polled = event;
+        ai_types.deinitAssistantMessageEvent(allocator, &polled);
+    }
+    try std.testing.expect(stream.waitForThread(5_000));
+    return .{ .session = mock.session_header, .session_len = mock.session_header_len, .agent = mock.user_agent, .agent_len = mock.user_agent_len };
+}
+
+test "an OpenCode Go request over messages names its session and identifies oapx, and a Zen one does neither" {
+    const go = try headersSentFor("opencode-go", "ses-go-1");
+    try std.testing.expectEqualStrings("ses-go-1", go.session[0..go.session_len]);
+    try std.testing.expectEqualStrings(client_user_agent, go.agent[0..go.agent_len]);
+    const zen = try headersSentFor("opencode-zen", "ses-zen-1");
+    try std.testing.expectEqual(@as(usize, 0), zen.session_len);
+    try std.testing.expect(!std.mem.eql(u8, client_user_agent, zen.agent[0..zen.agent_len]));
 }
 
 test "a consumer that drains after the producing thread exits reads intact events" {

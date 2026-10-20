@@ -1025,11 +1025,16 @@ fn appendCatalogTargetModels(
                     for (models) |*model| {
                         model.deprecated = deprecatedIn(listed, model.id);
                         if (lacking) fillFromModelsDev(target.id, model, listed);
+                        if (target.owned_base_url == null and isOpenCode(target.id)) switch (modelsDevWire(target.id, listed, model.id)) {
+                            .default => {},
+                            .wire => |wire| model.wire = wire,
+                            .unservable => model.unservable = true,
+                        };
                     }
                 }
             }
             for (models) |model| {
-                if (servedOnlyInsideOpenCode(target, model.id)) continue;
+                if (model.unservable or servedOnlyInsideOpenCode(target, model.id)) continue;
                 var shaped = model;
                 if (target.allowlist.len > 0) {
                     const spec = allowlistSpec(target.allowlist, model.id) orelse continue;
@@ -1217,16 +1222,17 @@ fn shapeBySpec(model: *DiscoveredModel, spec: custom_providers.ModelSpec) void {
 }
 
 fn catalogModel(allocator: std.mem.Allocator, target: CatalogEndpoint, model: DiscoveredModel) !ai_types.Model {
-    const wire = catalogModelWire(target, model.id) orelse return error.UnsupportedCatalogWire;
+    const own_base: ?[]const u8 = if (model.wire) |wire| if (!std.mem.eql(u8, wire, target.wire)) provider_catalog.baseUrl(target.id, wire, target.region) else null else null;
+    const wire_id = if (own_base != null) model.wire.? else (catalogModelWire(target, model.id) orelse return error.UnsupportedCatalogWire).id;
     const id = try allocator.dupe(u8, model.id);
     errdefer allocator.free(id);
     const name = try allocator.dupe(u8, displayNameFor(target.id, model));
     errdefer allocator.free(name);
-    const api = try allocator.dupe(u8, wire.id);
+    const api = try allocator.dupe(u8, wire_id);
     errdefer allocator.free(api);
     const provider_id = try allocator.dupe(u8, target.id);
     errdefer allocator.free(provider_id);
-    const base_url = try allocator.dupe(u8, target.base_url);
+    const base_url = try allocator.dupe(u8, own_base orelse target.base_url);
     errdefer allocator.free(base_url);
     const image = model.image_input orelse false;
     const input = try allocator.alloc([]const u8, if (image) 2 else 1);
@@ -1257,7 +1263,7 @@ fn catalogModel(allocator: std.mem.Allocator, target: CatalogEndpoint, model: Di
         .context_window = contextWindowFor(target.id, model),
         .max_tokens = maxTokensFor(target.id, model),
         .headers = headers,
-        .carries_version = target.carries_version,
+        .carries_version = if (own_base != null) null else target.carries_version,
         .published_cost = model.published_cost,
         .release_date = release_date,
         .family = family,
@@ -1431,8 +1437,12 @@ fn forgetRefusal(allocator: std.mem.Allocator, name: []const u8) void {
     compat.fs.removeFile(path);
 }
 
+fn isOpenCode(id: []const u8) bool {
+    return std.mem.eql(u8, id, "opencode-zen") or std.mem.eql(u8, id, "opencode-go");
+}
+
 fn servedOnlyInsideOpenCode(target: CatalogEndpoint, model: []const u8) bool {
-    if (!std.mem.eql(u8, target.id, "opencode-zen") and !std.mem.eql(u8, target.id, "opencode-go")) return false;
+    if (!isOpenCode(target.id)) return false;
     if (!std.mem.endsWith(u8, model, "-free")) return false;
     const own = catalogTarget(target.id) orelse return false;
     return std.mem.eql(u8, target.base_url, own.base_url);
@@ -1718,6 +1728,8 @@ const DiscoveredModel = struct {
     release_date: ?[]const u8 = null,
     family: ?[]const u8 = null,
     deprecated: bool = false,
+    wire: ?[]const u8 = null,
+    unservable: bool = false,
 
     fn deinit(self: DiscoveredModel, allocator: std.mem.Allocator) void {
         allocator.free(self.id);
@@ -1749,6 +1761,26 @@ const ModelsDev = struct {
         return &models.object;
     }
 };
+
+const DevWire = union(enum) { default, wire: []const u8, unservable };
+
+const npm_wires = [_][2][]const u8{
+    .{ "@ai-sdk/openai-compatible", "openai-completions" },
+    .{ "@ai-sdk/openai", "openai-responses" },
+    .{ "@ai-sdk/anthropic", "anthropic-messages" },
+};
+
+fn modelsDevWire(provider_id: []const u8, listed: *const std.json.ObjectMap, model_id: []const u8) DevWire {
+    const entry = listed.getPtr(model_id) orelse return .default;
+    if (entry.* != .object) return .default;
+    const override = entry.object.getPtr("provider") orelse return .default;
+    if (override.* != .object) return .default;
+    const npm = objectString(&override.object, "npm") orelse return .default;
+    const wire = for (npm_wires) |pair| {
+        if (std.mem.eql(u8, pair[0], npm)) break pair[1];
+    } else return .unservable;
+    return if (provider_catalog.declaresWire(provider_id, wire)) .{ .wire = wire } else .default;
+}
 
 fn lacksFigures(models: []const DiscoveredModel) bool {
     for (models) |model| {
@@ -6140,6 +6172,46 @@ test "models.dev's deprecated status marks only the model it names exactly, whet
         try std.testing.expect(!models[1].deprecated);
         try std.testing.expect(!models[2].deprecated);
         try std.testing.expect(!models[3].deprecated);
+    }
+}
+
+test "an OpenCode model runs on the wire models.dev names for it, one on a wire oapx lacks is not offered, and another row's models keep its wire" {
+    test_models_dev =
+        \\{"opencode":{"models":{"gpt-6":{"provider":{"npm":"@ai-sdk/openai"}},"claude-opus-5-5":{"provider":{"npm":"@ai-sdk/anthropic"}},
+        \\ "glm-5.3":{},"qwen3.8-max":{"provider":{"npm":"@ai-sdk/openai-compatible"}},"gemini-3.5-flash":{"provider":{"npm":"@ai-sdk/google"}}}},
+        \\ "zenmux":{"models":{"claude-x":{"provider":{"npm":"@ai-sdk/anthropic"}},"gemini-x":{"provider":{"npm":"@ai-sdk/google"}}}}}
+    ;
+    defer test_models_dev = null;
+    const zen = catalogTarget("opencode-zen") orelse return error.TestExpectedTarget;
+    const zenmux = catalogTarget("zenmux") orelse return error.TestExpectedTarget;
+    test_catalog_environment = &[_]provider_credential.EnvironmentValue{
+        .{ .name = "OPENCODE_API_KEY", .value = "row-key" },
+        .{ .name = "ZENMUX_API_KEY", .value = "row-key" },
+    };
+    test_catalog_discovery = &[_]CatalogDiscovery{
+        .{ .id = "opencode-zen", .models_url = zen.models_url, .model_ids = &.{ "gpt-6", "claude-opus-5-5", "glm-5.3", "qwen3.8-max", "gemini-3.5-flash" }, .complete = false },
+        .{ .id = "zenmux", .models_url = zenmux.models_url, .model_ids = &.{ "claude-x", "gemini-x" }, .complete = false },
+    };
+    defer {
+        test_catalog_discovery = null;
+        test_catalog_environment = null;
+    }
+    const models = try loadCatalogModelsWithRows(std.testing.allocator, &.{ "opencode-zen", "zenmux" }, null, .allow_cache);
+    defer deinitModels(std.testing.allocator, models);
+
+    try std.testing.expectEqual(@as(usize, 6), models.len);
+    const want = [_][3][]const u8{
+        .{ "gpt-6", "openai-responses", "https://opencode.ai/inference/v1" },
+        .{ "claude-opus-5-5", "anthropic-messages", "https://opencode.ai/inference" },
+        .{ "glm-5.3", "openai-completions", "https://opencode.ai/inference/v1" },
+        .{ "qwen3.8-max", "openai-completions", "https://opencode.ai/inference/v1" },
+        .{ "claude-x", "openai-completions", zenmux.base_url },
+        .{ "gemini-x", "openai-completions", zenmux.base_url },
+    };
+    for (want, models) |expected, model| {
+        try std.testing.expectEqualStrings(expected[0], model.id);
+        try std.testing.expectEqualStrings(expected[1], model.api);
+        try std.testing.expectEqualStrings(expected[2], model.base_url);
     }
 }
 
