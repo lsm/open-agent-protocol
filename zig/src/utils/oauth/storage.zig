@@ -1646,6 +1646,66 @@ test "a renewed credential is saved again when its save fails, and kept rather t
     try std.testing.expect(std.mem.indexOf(u8, ephemeral_test_last_payload[0..ephemeral_test_last_len], "refresh-2") != null);
 }
 
+fn putTestOAuth(storage: *AuthStorage, id: []const u8, refresh: []const u8, access: []const u8, expires: i64) !void {
+    if (storage.providers.fetchRemove(id)) |held| {
+        storage.allocator.free(held.key);
+        held.value.deinit(storage.allocator);
+    }
+    const key = try storage.allocator.dupe(u8, id);
+    errdefer storage.allocator.free(key);
+    const refresh_owned = try storage.allocator.dupe(u8, refresh);
+    errdefer storage.allocator.free(refresh_owned);
+    const access_owned = try storage.allocator.dupe(u8, access);
+    errdefer storage.allocator.free(access_owned);
+    try storage.providers.put(key, .{ .oauth = .{ .refresh = refresh_owned, .access = access_owned, .expires = expires } });
+}
+
+var shared_test_store: ?*AuthStorage = null;
+
+fn saveWholeSnapshot(saved: *const AuthStorage) anyerror!void {
+    const store = shared_test_store.?;
+    var entries = saved.providers.iterator();
+    while (entries.next()) |entry| {
+        const creds = entry.value_ptr.oauth;
+        try putTestOAuth(store, entry.key_ptr.*, creds.refresh, creds.access, creds.expires);
+    }
+}
+
+fn snapshotOfSharedStore(allocator: std.mem.Allocator) !AuthStorage {
+    var snapshot = emptyTestStorage(allocator);
+    snapshot.save_fn = saveWholeSnapshot;
+    errdefer snapshot.deinit();
+    var entries = shared_test_store.?.providers.iterator();
+    while (entries.next()) |entry| {
+        const creds = entry.value_ptr.oauth;
+        try putTestOAuth(&snapshot, entry.key_ptr.*, creds.refresh, creds.access, creds.expires);
+    }
+    return snapshot;
+}
+
+test "renewing one provider from a stale copy of the store never writes back another provider's revoked refresh token" {
+    const allocator = std.testing.allocator;
+    compat.time.test_clock_ms = 1_800_000_000_000;
+    defer compat.time.test_clock_ms = null;
+
+    var store = emptyTestStorage(allocator);
+    defer store.deinit();
+    try putTestOAuth(&store, "first", "refresh-1", "access-1", compat.time.nowMillis() - 1);
+    try putTestOAuth(&store, "second", "refresh-1", "access-1", compat.time.nowMillis() - 1);
+    shared_test_store = &store;
+    defer shared_test_store = null;
+
+    var first_copy = try snapshotOfSharedStore(allocator);
+    defer first_copy.deinit();
+    var second_copy = try snapshotOfSharedStore(allocator);
+    defer second_copy.deinit();
+    try first_copy.refreshCredentials("first", rotating_provider);
+    try second_copy.refreshCredentials("second", rotating_provider);
+
+    try std.testing.expectEqualStrings("refresh-2", store.providers.get("first").?.oauth.refresh);
+    try std.testing.expectEqualStrings("refresh-2", store.providers.get("second").?.oauth.refresh);
+}
+
 test "a granted credential never reaches the serialized form a writer would emit" {
     const allocator = std.testing.allocator;
     var storage = emptyTestStorage(allocator);
