@@ -4,6 +4,7 @@ use oap_protocol::*;
 
 use super::controls::Controls;
 use super::interactions::{Interaction, ToolTrack};
+use super::steer::SteerTrack;
 use super::{os, payload, s, State};
 use crate::codes;
 
@@ -27,6 +28,9 @@ pub(super) struct Run {
     pub(super) order: usize,
     pub(super) admitted_queued: bool,
     pub(super) admitted_model: String,
+    pub(super) steers: HashMap<String, SteerTrack>,
+    pub(super) compaction_run: bool,
+    pub(super) compaction_continue: bool,
 }
 
 pub(super) const RUN_EVENTS: [EnvelopeType; 21] = [
@@ -207,6 +211,7 @@ impl State {
                 "explicit steer cannot admit a new run",
             ))
         } else if p.admission == Admission::STEERED {
+            self.steer_admission(at, e, &p);
             return;
         } else if run_id.is_empty() {
             Some((
@@ -294,6 +299,11 @@ impl State {
             self.add(code, at, e, pointer, message);
         }
         if live {
+            if e.envelope_type == EnvelopeType::RUN_STEER_APPLIED
+                || e.envelope_type == EnvelopeType::RUN_STEER_DROPPED
+            {
+                self.steer_settlement(at, e, &run_id);
+            }
             self.check_queue_order(at, e, &run_id, was_started);
             self.live_run_event(at, e, &run_id);
             if is_terminal(&e.envelope_type) {

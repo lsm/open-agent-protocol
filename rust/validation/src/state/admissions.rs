@@ -4,6 +4,7 @@ use oap_protocol::*;
 
 use super::interactions::Interaction;
 use super::runs::Run;
+use super::steer::SteerTrack;
 use super::{os, payload, s, State};
 use crate::codes;
 
@@ -144,6 +145,16 @@ impl State {
                         .pending_interactions
                         .iter()
                         .map(|id| (s(id), Interaction::opaque()))
+                        .collect(),
+                    steers: entry
+                        .pending_steers
+                        .iter()
+                        .map(|pending| {
+                            (
+                                pending.submission_id.as_str().to_owned(),
+                                SteerTrack::recovered(pending),
+                            )
+                        })
                         .collect(),
                     ..Run::default()
                 };
@@ -422,6 +433,8 @@ impl State {
             status: RunStatus::QUEUED,
             last: at,
             admitted_queued: queued,
+            compaction_run: true,
+            compaction_continue: request.continue_after,
             ..Run::default()
         };
         self.runs.insert(run_id.clone(), run);

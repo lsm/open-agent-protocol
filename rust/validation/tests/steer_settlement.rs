@@ -141,3 +141,152 @@ fn a_recovered_run_settles_only_the_steers_its_snapshot_listed() {
         [(codes::UNMATCHED_STEER, "applied", "/payload/submission_id")]
     );
 }
+
+fn event(kind: &str, id: &str, mut fields: Value) -> Value {
+    fields["protocol"] = json!("open-agent-protocol");
+    fields["version"] = json!("0.1");
+    fields["profile"] = json!("open-agent-protocol.agent-control-core");
+    fields["type"] = json!(kind);
+    fields["id"] = json!(id);
+    fields
+}
+
+fn targeting(trace: &mut [Value], run: &str) {
+    find(trace, "sub2")["payload"]["target_run_id"] = json!(run);
+}
+
+fn position(trace: &[Value], id: &str) -> usize {
+    trace.iter().position(|e| e["id"] == id).unwrap()
+}
+
+fn untargeted(trace: &mut [Value]) -> &mut [Value] {
+    find(trace, "sub2")["payload"]
+        .as_object_mut()
+        .unwrap()
+        .remove("target_run_id");
+    trace
+}
+
+fn refused_for(trace: &[Value]) -> Vec<String> {
+    validate(trace)
+        .into_iter()
+        .filter(|d| {
+            d.code == codes::ILLEGAL_RUN_TRANSITION
+                && d.envelope_id == "err1"
+                && d.pointer == "/payload/run_id"
+        })
+        .map(|d| d.actual)
+        .collect()
+}
+
+#[test]
+fn a_steered_admission_names_why_its_target_cannot_take_guidance() {
+    let mut terminal = fixture("steer-at-boundary.json");
+    targeting(&mut terminal, "r1");
+    terminal.remove(position(&terminal, "applied"));
+    let mut completed = terminal.remove(position(&terminal, "ev2"));
+    completed["sequence"] = json!(2);
+    terminal.insert(position(&terminal, "sub2"), completed);
+    assert_eq!(refused_for(&terminal), ["terminal"]);
+    assert_eq!(refused_for(untargeted(&mut terminal)), ["no_active_run"]);
+
+    let mut cancelling = fixture("steer-at-boundary.json");
+    targeting(&mut cancelling, "r1");
+    cancelling.remove(position(&cancelling, "applied"));
+    let scope = json!({"session_id": "s1", "run_id": "r1"});
+    let request = event(
+        "run.cancel.request",
+        "cq",
+        json!({"session_id": "s1", "run_id": "r1", "payload": scope}),
+    );
+    let accepted = event(
+        "run.cancel.response",
+        "cr",
+        json!({"in_reply_to": "cq", "session_id": "s1", "run_id": "r1",
+            "payload": {"session_id": "s1", "run_id": "r1", "accepted": true, "status": "cancelling"}}),
+    );
+    let at = position(&cancelling, "sub2");
+    cancelling.splice(at..at, [request, accepted]);
+    let settled = find(&mut cancelling, "ev2");
+    settled["type"] = json!("run.cancelled");
+    settled["sequence"] = json!(2);
+    settled["payload"] = json!({"session_id": "s1", "run_id": "r1", "reason": "cancel confirmed"});
+    assert_eq!(refused_for(&cancelling), ["not_steerable"]);
+    assert_eq!(refused_for(untargeted(&mut cancelling)), ["not_steerable"]);
+
+    let mut cross = fixture("steer-at-boundary.json");
+    targeting(&mut cross, "r1");
+    let request = find(&mut cross, "sub2");
+    request["session_id"] = json!("s2");
+    request["payload"]["session_id"] = json!("s2");
+    assert_eq!(refused_for(&cross), ["cross_session"]);
+
+    let mut compaction = fixture("steer-at-boundary.json");
+    targeting(&mut compaction, "r1");
+    find(&mut compaction, "capr")["payload"]["features"]["session.compact"] =
+        json!({"level": "native"});
+    *find(&mut compaction, "sub1") = event(
+        "session.compact.request",
+        "sub1",
+        json!({"session_id": "s1", "capability_revision": "cap-v1", "payload": {"session_id": "s1"}}),
+    );
+    *find(&mut compaction, "adm1") = event(
+        "session.compact.response",
+        "adm1",
+        json!({"in_reply_to": "sub1", "session_id": "s1", "capability_revision": "cap-v1",
+            "payload": {"session_id": "s1", "accepted": true, "submission_id": "sub-adm1",
+                "requested_delivery": "auto", "effective_delivery": "start",
+                "delivery_resolution": "session_idle", "admission": "started",
+                "run_id": "r1", "status": "running"}}),
+    );
+    compaction.remove(position(&compaction, "applied"));
+    compaction.remove(position(&compaction, "ev2"));
+    assert_eq!(refused_for(&compaction), ["no_model_turn"]);
+    assert_eq!(refused_for(untargeted(&mut compaction)), ["no_model_turn"]);
+
+    let mut unstarted = fixture("steer-at-boundary.json");
+    unstarted.remove(position(&unstarted, "applied"));
+    let started = unstarted.remove(position(&unstarted, "ev1"));
+    unstarted.insert(position(&unstarted, "ev2"), started);
+    find(&mut unstarted, "ev2")["sequence"] = json!(2);
+    assert_eq!(refused_for(&unstarted), ["no_active_run"]);
+
+    let mut queued = fixture("steer-at-boundary.json");
+    targeting(&mut queued, "r2");
+    find(&mut queued, "capr")["payload"]["features"]["session.message.delivery.queue"] =
+        json!({"level": "native"});
+    let request = event(
+        "session.message.submit.request",
+        "sub3",
+        json!({"session_id": "s1", "capability_revision": "cap-v1",
+            "payload": {"session_id": "s1", "messages": [{"role": "user", "content": "later"}], "delivery": "queue"}}),
+    );
+    let reserved = event(
+        "session.message.submit.response",
+        "adm3",
+        json!({"in_reply_to": "sub3", "session_id": "s1", "capability_revision": "cap-v1",
+            "payload": {"session_id": "s1", "accepted": true, "submission_id": "sub-adm3",
+                "requested_delivery": "queue", "effective_delivery": "queue",
+                "delivery_resolution": "session_busy", "admission": "queued",
+                "run_id": "r2", "status": "queued"}}),
+    );
+    let at = position(&queued, "sub2");
+    queued.splice(at..at, [request, reserved]);
+    assert_eq!(refused_for(&queued), ["queued"]);
+}
+
+#[test]
+fn a_steer_whose_controls_were_refused_is_never_admitted() {
+    let mut trace = fixture("steer-at-boundary.json");
+    find(&mut trace, "sub2")["payload"]["instructions"] = json!("be brief");
+    let diagnostics = validate(&trace);
+    let found = found(&diagnostics);
+    assert!(
+        found.contains(&(codes::UNAVAILABLE_CAPABILITY, "err1", "/payload/admission")),
+        "{diagnostics:#?}"
+    );
+    assert!(
+        found.contains(&(codes::UNMATCHED_STEER, "applied", "/payload/submission_id")),
+        "{diagnostics:#?}"
+    );
+}
