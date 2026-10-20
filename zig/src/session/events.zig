@@ -57,6 +57,7 @@ pub const SessionEvent = union(enum) {
         output_tokens: u64 = 0,
         input_tokens: u64 = 0,
         cache_read_tokens: u64 = 0,
+        cache_write_tokens: u64 = 0,
     },
     tool_approval_requested: struct {
         generation: u32 = 0,
