@@ -180,11 +180,16 @@ pub const SaveFn = *const fn (storage: *const AuthStorage) anyerror!void;
 pub const LoadFn = *const fn (allocator: std.mem.Allocator) anyerror!AuthStorage;
 
 fn reloadStoredOnly(allocator: std.mem.Allocator) anyerror!AuthStorage {
-    return AuthStorage.loadDefaultStoredOnly(allocator);
+    if (shouldUseKeychain()) switch (try loadFromKeychainWithCodexImport(allocator, false)) {
+        .found => |storage| return storage,
+        .not_found => return AuthStorage.loadFromFileOpening(allocator, keychain_save_fn, .only_missing_is_empty),
+        .unavailable, .needs_interaction, .busy => return error.KeychainUnavailable,
+    };
+    return reloadFile(allocator);
 }
 
 fn reloadFile(allocator: std.mem.Allocator) anyerror!AuthStorage {
-    return AuthStorage.loadFromFile(allocator);
+    return AuthStorage.loadFromFileOpening(allocator, null, .only_missing_is_empty);
 }
 
 fn loadFnFor(save_fn: ?SaveFn) ?LoadFn {
@@ -1775,7 +1780,7 @@ test "two providers renewed at once from their own copies both keep their rotate
     try std.testing.expectEqualStrings("refresh-2", store.providers.get("second").?.oauth.refresh);
 }
 
-fn saveRenewedEntry(allocator: std.mem.Allocator) !void {
+fn saveRenewedEntry(allocator: std.mem.Allocator, renewed_id: []const u8) !void {
     var store = emptyTestStorage(allocator);
     defer store.deinit();
     try putTestOAuth(&store, "first", "refresh-1", "access-1", 0);
@@ -1784,13 +1789,62 @@ fn saveRenewedEntry(allocator: std.mem.Allocator) !void {
     defer shared_test_store = null;
     var copy = try snapshotOfSharedStore(allocator);
     defer copy.deinit();
-    try putTestOAuth(&copy, "first", "refresh-2", "access-2", 1);
-    try copy.persistRenewed("first");
-    try std.testing.expectEqualStrings("refresh-2", store.providers.get("first").?.oauth.refresh);
+    try putTestOAuth(&copy, renewed_id, "refresh-2", "access-2", 1);
+    try copy.persistRenewed(renewed_id);
+    try std.testing.expectEqualStrings("refresh-2", store.providers.get(renewed_id).?.oauth.refresh);
 }
 
-test "saving a renewed entry frees everything it built when an allocation fails" {
-    try std.testing.checkAllAllocationFailures(std.heap.smp_allocator, saveRenewedEntry, .{});
+fn saveRenewedEntryMissingFromStore(allocator: std.mem.Allocator) !void {
+    var store = emptyTestStorage(allocator);
+    defer store.deinit();
+    try putTestOAuth(&store, "first", "refresh-1", "access-1", 0);
+    shared_test_store = &store;
+    defer shared_test_store = null;
+    var copy = emptyTestStorage(allocator);
+    defer copy.deinit();
+    copy.save_fn = saveWholeSnapshot;
+    copy.load_fn = snapshotOfSharedStore;
+    try putTestOAuth(&copy, "second", "refresh-2", "access-2", 1);
+    try copy.persistRenewed("second");
+    try std.testing.expectEqualStrings("refresh-2", store.providers.get("second").?.oauth.refresh);
+    try std.testing.expectEqualStrings("refresh-1", store.providers.get("first").?.oauth.refresh);
+}
+
+test "saving a renewed entry frees everything it built when an allocation fails, whether the store already holds it or not" {
+    try std.testing.checkAllAllocationFailures(std.heap.smp_allocator, saveRenewedEntry, .{"first"});
+    try std.testing.checkAllAllocationFailures(std.heap.smp_allocator, saveRenewedEntryMissingFromStore, .{});
+}
+
+test "saving a renewed entry refuses an auth file it cannot read rather than writing over the credentials in it" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const previous_home = try setHomeForTest(std.testing.allocator, &tmp);
+    defer restoreHomeForTest(std.testing.allocator, previous_home);
+
+    var stored = try AuthStorage.loadFromFile(std.testing.allocator);
+    try putTestOAuth(&stored, "first", "refresh-1", "access-1", 0);
+    try putTestOAuth(&stored, "second", "refresh-1", "access-1", 0);
+    try stored.saveToFile();
+    stored.deinit();
+
+    const path = try std.fs.path.join(std.testing.allocator, &.{ previous_home.home, ".oapx", auth_file_name });
+    defer std.testing.allocator.free(path);
+    try compat.fs.getCwd().setFilePermissions(defaultIo(), path, @enumFromInt(0o000), .{});
+    defer compat.fs.getCwd().setFilePermissions(defaultIo(), path, @enumFromInt(0o600), .{}) catch {};
+    if (compat.fs.openFile(compat.fs.getCwd(), path, .{})) |opened| {
+        opened.close(defaultIo());
+        return error.SkipZigTest;
+    } else |_| {}
+
+    var renewing = AuthStorage{ .providers = std.StringHashMap(ProviderAuth).init(std.testing.allocator), .allocator = std.testing.allocator, .load_fn = reloadFile };
+    defer renewing.deinit();
+    try putTestOAuth(&renewing, "first", "refresh-2", "access-2", 1);
+    try std.testing.expectError(error.AccessDenied, renewing.persistRenewed("first"));
+
+    try compat.fs.getCwd().setFilePermissions(defaultIo(), path, @enumFromInt(0o600), .{});
+    var kept = try AuthStorage.loadFromFile(std.testing.allocator);
+    defer kept.deinit();
+    try std.testing.expectEqualStrings("refresh-1", kept.providers.get("second").?.oauth.refresh);
 }
 
 test "renewing one provider from a stale copy of the store never writes back another provider's revoked refresh token" {
