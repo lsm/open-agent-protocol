@@ -12,7 +12,14 @@ VALIDATORS = {
     "go": ["go", "run", "./go/cmd/goap", "validate"],
     "zig": ["./zig/zig-out/bin/oapx", "validate"],
 }
-REJECTING = ["go", "zig"]
+JOURNEYS = [
+    ("steer", ["run.steer.applied", "user.input.requested"], list(VALIDATORS),
+     "unmatched_steer"),
+    ("compact", ["run.compaction.started", "run.compaction.ended"], list(VALIDATORS),
+     "illegal_run_transition"),
+    ("call", ["action.call.completed", "user.input.requested"], ["go", "zig"],
+     "illegal_tool_transition"),
+]
 
 
 def run(command, output, label):
@@ -28,24 +35,26 @@ def main():
     parser.add_argument("--output-dir", required=True)
     output = Path(parser.parse_args().output_dir).resolve()
     output.mkdir(parents=True, exist_ok=False)
-    produced = run(CARGO + ["-p", "oap-adapter", "--example", "memory_trace"], output, "steer")
-    assert produced.returncode == 0, produced.stderr
-    trace = json.loads(produced.stdout)
-    kinds = [envelope["type"] for envelope in trace]
-    assert "run.steer.applied" in kinds and kinds[-1] == "run.completed", kinds
-    applied = kinds.index("run.steer.applied")
-    assert kinds[applied + 1] == "user.input.requested", kinds
-    steered = output / "steer.trace.json"
-    steered.write_text(json.dumps(trace))
-    unsteered = output / "unsteered.trace.json"
-    unsteered.write_text(json.dumps([e for e in trace if not e["id"].startswith("steer")]))
-    for name, command in VALIDATORS.items():
-        result = run(command + [str(steered)], output, f"steer-{name}")
-        assert result.returncode == 0, result.stderr
-    for name in REJECTING:
-        result = run(VALIDATORS[name] + [str(unsteered)], output, f"unsteered-{name}")
-        assert result.returncode == 1, result.stderr
-        assert "unmatched_steer" in result.stdout + result.stderr
+    for mode, adjacent, rejecting, code in JOURNEYS:
+        produced = run(CARGO + ["-p", "oap-adapter", "--example", "memory_trace", mode],
+                       output, mode)
+        assert produced.returncode == 0, produced.stderr
+        trace = json.loads(produced.stdout)
+        kinds = [envelope["type"] for envelope in trace]
+        assert kinds[-1] == "run.completed", kinds
+        first = kinds.index(adjacent[0])
+        assert kinds[first + 1] == adjacent[1], kinds
+        whole = output / f"{mode}.trace.json"
+        whole.write_text(json.dumps(trace))
+        cut = output / f"{mode}-unadmitted.trace.json"
+        cut.write_text(json.dumps([e for e in trace if not e["id"].startswith(mode)]))
+        for name, command in VALIDATORS.items():
+            result = run(command + [str(whole)], output, f"{mode}-{name}")
+            assert result.returncode == 0, result.stderr
+        for name in rejecting:
+            result = run(VALIDATORS[name] + [str(cut)], output, f"{mode}-unadmitted-{name}")
+            assert result.returncode == 1, result.stderr
+            assert code in result.stdout + result.stderr
 
 
 if __name__ == "__main__":

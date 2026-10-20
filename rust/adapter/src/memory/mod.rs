@@ -1,6 +1,8 @@
 mod admit;
+mod call;
 mod cancel;
 mod catalogs;
+mod compact;
 mod controls;
 mod descriptor;
 mod pipe;
@@ -27,9 +29,9 @@ pub use catalogs::{model_catalog, provider_catalog};
 use session::Inner;
 
 use crate::{
-    Adapter, Admitter, BoxFuture, Catalog, Descriptor, Error, EventStream, InteractionResolution,
-    ModelLister, ModelSwitcher, OpenRequest, Recovery, ResumeRequest, Session, SettingsUpdater,
-    SubmitRequest, ToolCatalog, ToolLister,
+    Adapter, Admitter, BoxFuture, CallResolution, CallResolver, Catalog, CompactRequest, Compactor,
+    Descriptor, Error, EventStream, InteractionResolution, ModelLister, ModelSwitcher, OpenRequest,
+    Recovery, ResumeRequest, Session, SettingsUpdater, SubmitRequest, ToolCatalog, ToolLister,
 };
 
 pub const DEFAULT_JOURNAL_CAPACITY: usize = 64;
@@ -225,6 +227,20 @@ impl MemorySession {
         self.lock().resolve(resolution)
     }
 
+    pub fn compact(
+        &self,
+        request: CompactRequest,
+    ) -> Result<(SessionCompactResponse, EventStream), Error> {
+        self.lock().compact(request)
+    }
+
+    pub fn resolve_call(
+        &self,
+        resolution: CallResolution,
+    ) -> Result<ActionCallResolveResponse, Error> {
+        self.lock().resolve_call(resolution)
+    }
+
     pub fn cancel(&self, run_id: &RunId) -> Result<RunCancelResponse, Error> {
         self.lock().cancel(run_id)
     }
@@ -294,6 +310,23 @@ impl ToolLister for MemorySession {
     }
 }
 
+impl Compactor for MemorySession {
+    fn compact(
+        &self,
+        request: CompactRequest,
+    ) -> BoxFuture<'_, (SessionCompactResponse, EventStream)> {
+        let result = MemorySession::compact(self, request);
+        Box::pin(async move { result })
+    }
+}
+
+impl CallResolver for MemorySession {
+    fn resolve_call(&self, resolution: CallResolution) -> BoxFuture<'_, ActionCallResolveResponse> {
+        let result = MemorySession::resolve_call(self, resolution);
+        Box::pin(async move { result })
+    }
+}
+
 impl Session for MemorySession {
     fn submit(
         &self,
@@ -341,6 +374,14 @@ impl Session for MemorySession {
     }
 
     fn tool_lister(&self) -> Option<&dyn ToolLister> {
+        Some(self)
+    }
+
+    fn compactor(&self) -> Option<&dyn Compactor> {
+        Some(self)
+    }
+
+    fn call_resolver(&self) -> Option<&dyn CallResolver> {
         Some(self)
     }
 }

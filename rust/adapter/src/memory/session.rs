@@ -8,7 +8,7 @@ use super::admit::history_tokens;
 use super::controls::{self, Controls};
 use super::pipe::Pipe;
 use super::{raw, CAPABILITY_REVISION, SCRIPTED_SOURCE, SCRIPTED_TOOL, SCRIPTED_TOOL_OWNER};
-use super::{Clock, IdGenerator, KeptSession, ENDPOINT_ID};
+use super::{Clock, IdGenerator, KeptSession, ENDPOINT_ID, REFERENCE_WINDOW};
 use crate::{Error, EventStream, SubmitRequest, UnsupportedControl, CONTROL_UNADVERTISED};
 
 #[derive(Clone, Copy, Default, PartialEq, Eq)]
@@ -51,6 +51,14 @@ pub(super) struct Run {
     pub(super) input: u64,
     pub(super) steers: Vec<Steer>,
     pub(super) admitted_steers: Vec<EnvelopeId>,
+    pub(super) compaction: bool,
+    pub(super) compact_continue: bool,
+    pub(super) compact_focus: String,
+    pub(super) settled_arm: Option<&'static str>,
+    pub(super) settled_request_id: EnvelopeId,
+    pub(super) settled_result: Option<Box<serde_json::value::RawValue>>,
+    pub(super) settled_error: Option<ProtocolError>,
+    pub(super) settlement_id: Option<EnvelopeId>,
 }
 
 pub(super) enum Emit {
@@ -226,7 +234,8 @@ impl Inner {
             "action.call.completed" | "action.call.failed" | "action.call.cancelled"
                 if !run.call_id.is_empty() && run.pending_interaction == run.call_id =>
             {
-                run.pending_interaction.clear()
+                run.pending_interaction.clear();
+                run.settlement_id = Some(envelope.id.clone());
             }
             _ => {}
         }
@@ -296,7 +305,7 @@ impl Inner {
         Ok(())
     }
 
-    fn emit_initial(&mut self, run_id: &str) -> Result<(), Emit> {
+    pub(super) fn emit_initial(&mut self, run_id: &str) -> Result<(), Emit> {
         let current = self.state.current_model_id.clone();
         let session = self.session_id();
         let run = self.run_mut(run_id);
@@ -310,7 +319,7 @@ impl Inner {
             run.controls.calls_tool,
             run.controls.instructions.clone(),
         );
-        let input = run.input;
+        let (input, compaction) = (run.input, run.compaction);
         let started = RunStartedPayload {
             session_id: session.clone(),
             run_id: RunId::from(run_id),
@@ -319,7 +328,18 @@ impl Inner {
             started_at_ms: self.clock.now_ms(),
         };
         self.emit(run_id, EnvelopeType::RUN_STARTED, started, false)?;
-        self.history += input;
+        if compaction {
+            if self.emit_compaction(run_id, CompactionReason::REQUESTED)? {
+                return Ok(());
+            }
+        } else {
+            self.history += input;
+            if self.history >= REFERENCE_WINDOW {
+                self.emit_compaction(run_id, CompactionReason::OVERFLOW)?;
+            } else if self.history >= self.threshold {
+                self.emit_compaction(run_id, CompactionReason::THRESHOLD)?;
+            }
+        }
         let mut text = if calls_tool {
             "I will use the scripted tool."
         } else {
