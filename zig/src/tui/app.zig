@@ -2698,6 +2698,18 @@ pub const App = struct {
         return row.id;
     }
 
+    fn removeSharedCredential(allocator: std.mem.Allocator, provider_id: []const u8) !bool {
+        const group = provider_catalog.credentialKey(provider_id);
+        var removed = false;
+        if (!std.mem.eql(u8, group, provider_id)) removed = try oauth_storage.AuthStorage.removeStored(allocator, group);
+        removed = try oauth_storage.AuthStorage.removeStored(allocator, provider_id) or removed;
+        for (provider_catalog.all) |row| {
+            if (std.mem.eql(u8, row.id, provider_id) or !provider_catalog.sharesCredential(row.id, provider_id)) continue;
+            removed = try oauth_storage.AuthStorage.removeStored(allocator, row.id) or removed;
+        }
+        return removed;
+    }
+
     fn logoutProvider(self: *App, requested: []const u8) !void {
         self.discardModelFetch();
         const provider_id = logoutProviderId(requested);
@@ -2709,25 +2721,12 @@ pub const App = struct {
                 return;
             }
         }
-        const group = provider_catalog.credentialKey(provider_id);
-        const removed_group = if (std.mem.eql(u8, group, provider_id)) false else oauth_storage.AuthStorage.removeStored(self.allocator, group) catch |err| {
+        const removed = removeSharedCredential(self.allocator, provider_id) catch |err| {
             const msg = try std.fmt.allocPrint(self.allocator, "logout failed: {s}", .{@errorName(err)});
             defer self.allocator.free(msg);
             try self.state.appendTranscript(.@"error", msg);
             return;
         };
-        const removed_own = oauth_storage.AuthStorage.removeStored(self.allocator, provider_id) catch |err| {
-            const msg = try std.fmt.allocPrint(self.allocator, "logout failed: {s}", .{@errorName(err)});
-            defer self.allocator.free(msg);
-            try self.state.appendTranscript(.@"error", msg);
-            return;
-        };
-        var removed_sibling = false;
-        for (provider_catalog.all) |row| {
-            if (std.mem.eql(u8, row.id, provider_id) or !provider_catalog.sharesCredential(row.id, provider_id)) continue;
-            removed_sibling = (oauth_storage.AuthStorage.removeStored(self.allocator, row.id) catch false) or removed_sibling;
-        }
-        const removed = removed_group or removed_own or removed_sibling;
         const outcome = try std.fmt.allocPrint(self.allocator, "{s} {s}", .{ if (removed) "logged out of" else "no saved credential for", provider_id });
         defer self.allocator.free(outcome);
         try self.state.appendTranscript(.system, outcome);
