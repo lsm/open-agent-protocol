@@ -292,6 +292,7 @@ const Interaction = struct {
     allow_cancel: bool = false,
     choices: ?std.json.Value = null,
     questions: ?std.json.Value = null,
+    tool_call: []const u8 = "",
     resolved: bool = false,
     opened_at: u64 = 0,
     resolved_at: u64 = 0,
@@ -4761,6 +4762,7 @@ pub const Machine = struct {
             .kind = .tool_call,
             .requested_by = memberString(payload, "requested_by"),
             .responded_by = responder,
+            .tool_call = memberString(payload, "tool_call_id"),
             .opened_at = self.current_sequence,
         };
         try run.interactions.put(self.arena.allocator(), id, opened);
@@ -4865,7 +4867,7 @@ pub const Machine = struct {
             return pending;
         }
         try held.resolve_requests.put(self.arena.allocator(), field(envelope, "id"), {});
-        if (!std.mem.eql(u8, memberString(payload, "tool_call_id"), boundCall(run.?, pending.interaction))) try self.add(code_scope_mismatch, index);
+        if (!std.mem.eql(u8, memberString(payload, "tool_call_id"), held.tool_call)) try self.add(code_scope_mismatch, index);
         pending.reason = resolveLadder(payload, held, pending.arm);
         return pending;
     }
@@ -5268,14 +5270,6 @@ fn sameOptionalCatalog(a: ?std.json.Value, b: ?std.json.Value) bool {
 fn sameBound(a: ?i64, b: ?i64) bool {
     if (a == null or b == null) return a == null and b == null;
     return a.? == b.?;
-}
-
-fn boundCall(run: *const Run, interaction: []const u8) []const u8 {
-    var calls = run.tools.iterator();
-    while (calls.next()) |call| {
-        if (std.mem.eql(u8, call.value_ptr.interaction, interaction)) return call.key_ptr.*;
-    }
-    return "";
 }
 
 fn exemptFromRevision(declared: []const u8) bool {
