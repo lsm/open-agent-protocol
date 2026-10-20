@@ -72,9 +72,21 @@ func (s *state) reopenResponse(i, line int, e protocol.Envelope, p protocol.Sess
 	}
 	req := s.requests[e.InReplyTo]
 	carried := req != nil && req.carriesMessage
-	if !carried && (p.ActiveRunID != "" || len(p.ActiveRuns) > 0) {
+	if !carried && (p.ActiveRunID != "" || len(p.ActiveRuns) > 0) && !restoredQueue(p) {
 		s.addExpected(CodeSessionStateMismatch, i, line, e, "/payload/active_runs",
 			"a reopen loads a session with no run under way, since close was refused while one was",
 			"none", s.activeRunCount(p), string(p.SessionID))
 	}
+}
+
+func restoredQueue(p protocol.SessionOpenResponse) bool {
+	if p.Recovery == nil || !p.Recovery.Recovered || p.ActiveRunID != "" {
+		return false
+	}
+	for _, entry := range p.ActiveRuns {
+		if entry.Status != protocol.RunQueued {
+			return false
+		}
+	}
+	return true
 }
