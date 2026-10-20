@@ -90,3 +90,25 @@ fn discovery_and_the_answers_to_work_in_flight_are_exempt() {
         assert!(!stale_in_window(request), "{kind}");
     }
 }
+
+#[test]
+fn pending_interactions_settle_under_the_previous_descriptor_in_the_refresh_window() {
+    let validator = Validator::new().unwrap();
+    for (name, trace) in [
+        (
+            "permission",
+            include_str!("../../../fixtures/valid/permission-resolved-in-the-refresh-window.json"),
+        ),
+        (
+            "user-input",
+            include_str!("../../../fixtures/valid/user-input-resolved-in-the-refresh-window.json"),
+        ),
+    ] {
+        let result = validator.validate(trace.as_bytes(), name);
+        assert!(
+            result.valid(),
+            "{name}: {}",
+            serde_json::to_string_pretty(&result).unwrap()
+        );
+    }
+}
