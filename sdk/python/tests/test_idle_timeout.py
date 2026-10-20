@@ -43,6 +43,10 @@ for line in sys.stdin:
     elif kind == "session.open.request":
         sid = request["payload"].get("session_id") or "session-1"
         emit(A, "session.open.response", rid, {"session_id":sid}, {"session_id":sid, "status":"idle"})
+    elif kind == "session.message.submit.request" and request["payload"].get("model_id", "").endswith("@reject"):
+        sid = request["payload"]["session_id"]
+        emit(A, "session.message.submit.response", rid, {"session_id":sid}, {"accepted":False, "admission":"rejected",
+             "error":{"code":"session_busy", "message":"the session is busy"}})
     elif kind == "session.message.submit.request":
         sid = request["payload"]["session_id"]
         scope = {"session_id":sid, "run_id":"run-1"}
@@ -75,6 +79,14 @@ class QuietRunTests(unittest.IsolatedAsyncioTestCase):
             response = await client.provider.complete(model_ref="fixture/other:test@ok",
                                                       messages=[{"role": "user", "content": "think"}])
             self.assertEqual(response.text, "thought long")
+
+    async def test_a_refused_submit_fails_at_once_instead_of_waiting_for_a_run_with_no_idle_limit(self) -> None:
+        async with connect(command=sys.executable, args=["-u", "-c", SLOW_HOST], env=self.host(0.8),
+                           response_timeout=5) as client:
+            with self.assertRaises(MakaiStreamError) as refused:
+                await asyncio.wait_for(client.agent.run(model_ref="fixture/other:test@reject",
+                                                        messages=[{"role": "user", "content": "think"}]), 3)
+            self.assertEqual(refused.exception.code, "session_busy")
 
     async def cancelled_after(self, kind: str) -> bool:
         for _ in range(40):

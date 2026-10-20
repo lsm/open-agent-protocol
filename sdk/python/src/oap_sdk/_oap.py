@@ -563,6 +563,8 @@ class AgentApi:
             if submitted.get("type") != "session.message.submit.response":
                 raise MakaiProtocolError("expected session.message.submit.response", "malformed_response")
             admission = _payload(submitted)
+            if admission.get("accepted") is not True:
+                raise _error(submitted, provider_id=_model_parts(model_ref)[0] if model_ref else "")
             run_id = admission.get("run_id")
             selected_ref = str(admission.get("model_id") or model_ref or "")
             terminal = False
