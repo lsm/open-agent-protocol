@@ -13,7 +13,8 @@ VALIDATORS = {
     "zig": ["./zig/zig-out/bin/oapx", "validate"],
 }
 JOURNEYS = [
-    ("steer", ["run.steer.applied", "user.input.requested"], ["go", "zig"], "unmatched_steer"),
+    ("steer", ["run.steer.applied", "user.input.requested"], list(VALIDATORS),
+     "unmatched_steer"),
     ("compact", ["run.compaction.started", "run.compaction.ended"], list(VALIDATORS),
      "illegal_run_transition"),
     ("call", ["action.call.completed", "user.input.requested"], ["go", "zig"],

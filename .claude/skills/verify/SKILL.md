@@ -108,14 +108,12 @@ python3 .claude/skills/verify/scripts/rust-memory-trace.py --output-dir /tmp/oap
 Each trace must end in `run.completed` and pass the Rust, Go and Zig validators
 (build `oapx` first). The steer trace must apply the steer right before the
 input gate, and the compaction run must start and end its compaction in order.
-With the steer exchange removed, Go and Zig must reject the trace with
-`unmatched_steer`. The Rust validator has not ported that rule yet (see the
-`0013#steer-is-settled` rows in `drafts/validator-rules/0010-amendments-auth.md`),
-so the script does not check Rust's verdict on that trace. With the compact
-exchange removed, all three must reject the trace with `illegal_run_transition`.
-With the call's resolve exchanges removed, Go and Zig must reject it with
-`illegal_tool_transition`; the Rust validator has not ported the control-owned
-call rules yet, so the script does not check its verdict there either.
+With the steer exchange removed, all three must reject the trace with
+`unmatched_steer`; with the compact exchange removed, all three must reject it
+with `illegal_run_transition`. With the call's resolve exchanges removed, Go and
+Zig must reject it with `illegal_tool_transition`; the Rust validator has not
+ported the control-owned call rules yet, so the script does not check its
+verdict there.
 
 ## Local oapx/TUI journey (PTY, no real credentials)
 

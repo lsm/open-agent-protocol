@@ -4,6 +4,7 @@ mod interactions;
 mod queue;
 mod results;
 mod runs;
+mod steer;
 
 use std::collections::{HashMap, HashSet};
 
