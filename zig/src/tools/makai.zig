@@ -5,6 +5,7 @@ const ai_types = @import("ai_types");
 const api_registry = @import("api_registry");
 const register_builtins = @import("register_builtins");
 const auth_protocol_server = @import("auth_server");
+const protocol_server = @import("protocol_server");
 const auth_cli = @import("auth_cli");
 const oauth_storage = @import("oauth/storage");
 const event_stream = @import("event_stream");
@@ -2826,6 +2827,41 @@ fn countingServedLoad(allocator: std.mem.Allocator, refusals: *model_catalog.Key
 fn oapUnservedCode(provider_id: []const u8) ?oap_provider_types.ErrorCode {
     const refusal = oapUnservedRefusal(provider_id) orelse return null;
     return refusal.code;
+}
+
+fn servedCopilotTokenEndpoint(allocator: std.mem.Allocator, url: []const u8, options: compat.http.FetchOptions) compat.http.FetchError!compat.http.Fetched {
+    if (!std.mem.endsWith(u8, url, "/copilot_internal/v2/token")) return .{ .status = 404, .body = try allocator.dupe(u8, "") };
+    for (options.extra_headers) |header| {
+        if (!std.ascii.eqlIgnoreCase(header.name, "authorization") or !std.mem.eql(u8, header.value, "Bearer gho-stored")) continue;
+        const expires_at = @divTrunc(compat.time.nowMillis(), std.time.ms_per_s) + 1800;
+        const body = std.fmt.allocPrint(allocator, "{{\"token\":\"tid=served-fresh\",\"expires_at\":{d},\"refresh_in\":1500}}", .{expires_at}) catch return error.OutOfMemory;
+        return .{ .status = 200, .body = body };
+    }
+    return .{ .status = 401, .body = try allocator.dupe(u8, "{}") };
+}
+
+test "serve provider renews a Copilot token a day past its expiry from the stored GitHub token" {
+    const allocator = std.testing.allocator;
+    try provider_catalog.blankEnvironment(allocator);
+    defer compat.clearTestEnv();
+    compat.time.test_clock_ms = 1_800_000_000_000;
+    defer compat.time.test_clock_ms = null;
+    protocol_server.test_copilot_fetch = servedCopilotTokenEndpoint;
+    defer protocol_server.test_copilot_fetch = null;
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.createDirPath(std.testing.io, ".oapx");
+    const stored = try std.fmt.allocPrint(allocator, "{{\"github-copilot\":{{\"refresh\":\"gho-stored\",\"access\":\"tid=stale\",\"expires\":{d}}}}}", .{compat.time.nowMillis() - 25 * std.time.ms_per_hour});
+    defer allocator.free(stored);
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = ".oapx/auth.json", .data = stored });
+    const home = try tmp.dir.realPathFileAlloc(std.testing.io, ".", allocator);
+    defer allocator.free(home);
+    try compat.setTestEnv(allocator, "HOME", home);
+
+    var resolved = resolveOapCredential(allocator, "github-copilot", "https://api.individual.githubcopilot.com", .none) orelse return error.TestExpectedCredential;
+    defer resolved.deinit(allocator);
+    try std.testing.expectEqualStrings("tid=served-fresh", resolved.api_key);
 }
 
 test "an unserved catalog provider that needs a credential is refused as credential_missing until one resolves, then as provider_unavailable after asking for a reload" {

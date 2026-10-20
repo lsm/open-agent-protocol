@@ -551,7 +551,7 @@ fn injectCompleteOptions(
     return resolved;
 }
 
-var test_copilot_fetch: ?github_copilot.Fetch = null;
+pub var test_copilot_fetch: ?github_copilot.Fetch = null;
 
 fn refreshCopilotCredentials(credentials: oauth_storage.Credentials, allocator: std.mem.Allocator) !oauth_storage.Credentials {
     const fetch = if (@import("builtin").is_test) test_copilot_fetch orelse compat.http.fetch else compat.http.fetch;
