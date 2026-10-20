@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -663,5 +664,21 @@ func TestOAPOpenRefusesWhatTheEndpointWouldIgnore(t *testing.T) {
 	payload, err := oapOpenPayload(bare, "session-1", AgentRequest{})
 	if err != nil || payload["metadata"] != nil {
 		t.Fatalf("an endpoint other than oapx.agent was sent oapx settings: %v, %+v", err, payload)
+	}
+}
+
+func TestOAPUsageReadsTheCacheAndReasoningCountsAndKeepsAnAbsentOneUnknown(t *testing.T) {
+	count := func(value *int64) string {
+		if value == nil {
+			return "unknown"
+		}
+		return strconv.FormatInt(*value, 10)
+	}
+	got := oapUsage(jsonObject{"input_tokens": float64(100), "cache_read_input_tokens": float64(400), "cache_write_input_tokens": float64(0), "output_tokens": float64(30), "total_tokens": float64(530)})
+	if got.Input != 100 || got.Output != 30 {
+		t.Fatalf("input, output = %d, %d, want 100, 30", got.Input, got.Output)
+	}
+	if count(got.CacheRead) != "400" || count(got.CacheWrite) != "0" || count(got.Reasoning) != "unknown" {
+		t.Fatalf("cache read, cache write, reasoning = %s, %s, %s, want 400, a measured 0, and unknown", count(got.CacheRead), count(got.CacheWrite), count(got.Reasoning))
 	}
 }
