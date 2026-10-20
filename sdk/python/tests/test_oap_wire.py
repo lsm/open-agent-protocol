@@ -4,7 +4,7 @@ import sys
 import unittest
 from typing import Any, Dict
 
-from oap_sdk import AuthFlowHandlers, MakaiAuthRequiredError, AuthOptions, MakaiAuthError, MakaiProtocolError, MakaiStreamError, RunOptions, ToolContext, ToolDefinition, connect
+from oap_sdk import Usage, AuthFlowHandlers, MakaiAuthRequiredError, AuthOptions, MakaiAuthError, MakaiProtocolError, MakaiStreamError, RunOptions, ToolContext, ToolDefinition, connect
 from oap_sdk._oap import _messages
 
 
@@ -69,7 +69,8 @@ for line in sys.stdin:
         emit(P, "inference.part.started", scope=scope, payload={"part_index":0,"part_kind":"text"})
         emit(P, "inference.part.delta", scope=scope, payload={"part_index":0,"delta":"hello"})
         emit(P, "inference.completed", scope=scope, payload={"message":{"role":"assistant","content":"hello"},
-             "stop_reason":"stop","usage":{"input_tokens":1,"output_tokens":2}})
+             "stop_reason":"stop","usage":{"input_tokens":1,"cache_read_input_tokens":40,"cache_write_input_tokens":0,
+             "output_tokens":2,"reasoning_tokens":1,"total_tokens":43}})
     elif kind == "session.open.request":
         sid=request["payload"].get("session_id") or "session-1"
         tools=request["payload"].get("tools") or []
@@ -176,6 +177,7 @@ class OAPWireTests(unittest.IsolatedAsyncioTestCase):
             response = await client.provider.complete(
                 model_ref="fixture/other:test@ok", messages=[{"role": "user", "content": "hi"}])
             self.assertEqual(response.text, "hello")
+            self.assertEqual(response.usage, Usage(input=1, output=2, cache_read=40, cache_write=0, reasoning=1, total=43))
             structured = await client.provider.complete(
                 model_ref="fixture/other:test@parts", messages=[{"role": "user", "content": "hi"}])
             self.assertEqual(structured.text, "before ")
