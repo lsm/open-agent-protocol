@@ -97,7 +97,9 @@ with the rebuilt `oapx` binary.
 The Rust adapter is a library too. Its `memory_trace` example opens a memory
 session through the public `Adapter` and `Session` traits and prints the whole
 exchange as an OAP trace. With `steer` it submits a run, steers it and resolves
-both gates; with `compact` it asks an idle session for a focused compaction:
+both gates; with `compact` it asks an idle session for a focused compaction;
+with `call` it opens the session providing a tool, then acknowledges and
+resolves the call the script makes to it:
 
 ```sh
 python3 .claude/skills/verify/scripts/rust-memory-trace.py --output-dir /tmp/oap-rust-memory-<unique-name>
@@ -111,6 +113,9 @@ With the steer exchange removed, Go and Zig must reject the trace with
 `0013#steer-is-settled` rows in `drafts/validator-rules/0010-amendments-auth.md`),
 so the script does not check Rust's verdict on that trace. With the compact
 exchange removed, all three must reject the trace with `illegal_run_transition`.
+With the call's resolve exchanges removed, Go and Zig must reject it with
+`illegal_tool_transition`; the Rust validator has not ported the control-owned
+call rules yet, so the script does not check its verdict there either.
 
 ## Local oapx/TUI journey (PTY, no real credentials)
 
