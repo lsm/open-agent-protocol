@@ -6,6 +6,7 @@ mod results;
 mod runs;
 
 use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 
 use oap_protocol::*;
 use serde::de::DeserializeOwned;
@@ -18,6 +19,7 @@ struct Request {
     line: usize,
     envelope: Envelope,
     capability_revision: String,
+    settled_under: Option<Arc<HashMap<String, SupportLevel>>>,
     session: String,
     run: String,
     interaction: String,
@@ -30,6 +32,9 @@ pub(crate) struct State {
     ids: HashMap<String, usize>,
     requests: HashMap<String, Request>,
     current_capability: String,
+    previous_capability: String,
+    previous_features: Arc<HashMap<String, SupportLevel>>,
+    settling: Option<Arc<HashMap<String, SupportLevel>>>,
     capabilities_stale: bool,
     runs: HashMap<String, runs::Run>,
     active: HashMap<String, String>,
@@ -286,6 +291,9 @@ impl State {
             ids: HashMap::new(),
             requests: HashMap::new(),
             current_capability: String::new(),
+            previous_capability: String::new(),
+            previous_features: Arc::default(),
+            settling: None,
             capabilities_stale: false,
             runs: HashMap::new(),
             active: HashMap::new(),
@@ -375,6 +383,7 @@ impl State {
                 line,
                 envelope: e.clone(),
                 capability_revision: revision.clone(),
+                settled_under: None,
                 session,
                 run,
                 interaction: envelope_interaction(e),
@@ -383,7 +392,9 @@ impl State {
             self.requests.insert(id, request);
         }
         let duplicate_response = is_response(&e.envelope_type) && !self.response(at, e);
-        if !revision.is_empty()
+        self.settling = self.settles_under_previous(e);
+        if self.settling.is_none()
+            && !revision.is_empty()
             && !self.current_capability.is_empty()
             && revision != self.current_capability
             && !REVISION_EXEMPT.contains(&e.envelope_type)
@@ -443,6 +454,7 @@ impl State {
                     "capability update must introduce a new revision",
                 );
             }
+            self.previous_capability = self.current_capability.clone();
             self.current_capability = revision;
             self.capabilities_stale = true;
             self.limits = None;
@@ -455,6 +467,40 @@ impl State {
                 "request occurred before the refreshed capabilities capabilities.updated owes",
             );
         }
+    }
+
+    fn settles_under_previous(
+        &mut self,
+        e: &Envelope,
+    ) -> Option<Arc<HashMap<String, SupportLevel>>> {
+        let revision = e.capability_revision.as_deref().filter(|r| !r.is_empty())?;
+        if is_response(&e.envelope_type) {
+            let request = self.requests.get(&os(&e.in_reply_to))?;
+            return (request.capability_revision == revision)
+                .then(|| request.settled_under.clone())
+                .flatten();
+        }
+        if !self.capabilities_stale || revision != self.previous_capability {
+            return None;
+        }
+        let t = &e.envelope_type;
+        if *t == EnvelopeType::ACTION_PERMISSION_RESOLVED || *t == EnvelopeType::USER_INPUT_RESOLVED
+        {
+            return Some(self.previous_features.clone());
+        }
+        if matches!(
+            t.as_str(),
+            "run.cancel.request"
+                | "action.permission.resolve.request"
+                | "user.input.resolve.request"
+                | "user.input.cancel.request"
+                | "action.call.resolve.request"
+        ) {
+            let features = self.previous_features.clone();
+            self.requests.get_mut(e.id.as_str())?.settled_under = Some(features.clone());
+            return Some(features);
+        }
+        None
     }
 
     fn response(&mut self, at: (usize, usize), e: &Envelope) -> bool {

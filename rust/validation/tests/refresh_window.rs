@@ -1,4 +1,4 @@
-use oap_validation::{codes, Validator};
+use oap_validation::{codes, Phase, ValidationResult, Validator};
 use serde_json::{json, Value};
 
 fn envelope(mut value: Value) -> Value {
@@ -29,6 +29,13 @@ fn stale_in_window(request: Value) -> bool {
     let result = Validator::new()
         .unwrap()
         .validate(trace.as_bytes(), "refresh-window");
+    assert!(
+        result
+            .diagnostics
+            .iter()
+            .all(|d| d.phase == Phase::Semantic),
+        "{result:?}"
+    );
     result
         .diagnostics
         .iter()
@@ -109,6 +116,191 @@ fn pending_interactions_settle_under_the_previous_descriptor_in_the_refresh_wind
             result.valid(),
             "{name}: {}",
             serde_json::to_string_pretty(&result).unwrap()
+        );
+    }
+}
+
+fn fixture(name: &str) -> Vec<Value> {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../fixtures/valid")
+        .join(format!("{name}.json"));
+    serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap()
+}
+
+fn check(validator: &Validator, trace: &[Value]) -> ValidationResult {
+    let result = validator.validate(&serde_json::to_vec(trace).unwrap(), "refresh-window");
+    assert!(
+        result
+            .diagnostics
+            .iter()
+            .all(|d| d.phase == Phase::Semantic),
+        "{result:?}"
+    );
+    result
+}
+
+fn settlement_cases() -> Vec<Vec<Value>> {
+    let permission = fixture("permission-resolved-in-the-refresh-window");
+    let input = fixture("user-input-resolved-in-the-refresh-window");
+    let mut cancel_input = input.clone();
+    for e in &mut cancel_input {
+        match e["type"].as_str().unwrap() {
+            "user.input.requested" => e["payload"]["allow_cancel"] = json!(true),
+            "user.input.resolve.request" => {
+                e["type"] = json!("user.input.cancel.request");
+                e["payload"].as_object_mut().unwrap().remove("answers");
+            }
+            "user.input.resolve.response" => e["type"] = json!("user.input.cancel.response"),
+            "user.input.resolved" => {
+                e["payload"]["status"] = json!("cancelled");
+                e["payload"].as_object_mut().unwrap().remove("answers");
+            }
+            _ => {}
+        }
+    }
+    let mut cancel_run = fixture("core-cancelled");
+    cancel_run.splice(0..0, permission[..2].iter().cloned());
+    let update = permission.iter().find(|e| e["id"] == "capu").unwrap();
+    cancel_run.insert(5, update.clone());
+    for e in &mut cancel_run {
+        if e["type"] == "run.cancel.request" || e["type"] == "run.cancel.response" {
+            e["capability_revision"] = json!("v1");
+        }
+    }
+    let mut call = fixture("control-call-late-acknowledgement");
+    let mut update = update.clone();
+    update["payload"]["previous_revision"] = json!("control-tools-v1");
+    call.insert(10, update);
+    let mut refresh = call[2..4].to_vec();
+    refresh[0]["id"] = json!("refresh-req");
+    refresh[1]["id"] = json!("refresh-resp");
+    refresh[1]["in_reply_to"] = json!("refresh-req");
+    refresh[1]["capability_revision"] = json!("v2");
+    call.splice(15..15, refresh);
+    for e in &mut call[17..] {
+        e["capability_revision"] = json!("v2");
+    }
+    vec![permission, input, cancel_input, cancel_run, call]
+}
+
+#[test]
+fn all_five_exempt_exchanges_accept_the_previous_revision_but_reject_an_unrelated_one() {
+    let validator = Validator::new().unwrap();
+    for trace in settlement_cases() {
+        let result = check(&validator, &trace);
+        assert!(result.valid(), "{result:?}");
+        let mut wrong = trace;
+        let update = wrong
+            .iter()
+            .position(|e| e["type"] == "capabilities.updated")
+            .unwrap();
+        let mut ids = Vec::new();
+        for e in &mut wrong[update + 1..] {
+            let kind = e["type"].as_str().unwrap();
+            if kind.contains(".resolve.")
+                || kind.starts_with("run.cancel.")
+                || kind.starts_with("user.input.cancel.")
+            {
+                e["capability_revision"] = json!("unrelated");
+                ids.push(e["id"].as_str().unwrap().to_owned());
+            }
+        }
+        assert!(!ids.is_empty());
+        let result = check(&validator, &wrong);
+        for id in ids {
+            assert!(
+                result
+                    .diagnostics
+                    .iter()
+                    .any(|d| d.envelope_id == id && d.code == codes::STALE_CAPABILITY_REVISION),
+                "{id}: {result:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn settlement_does_not_bypass_the_previous_features_or_the_request_revision_echo() {
+    let validator = Validator::new().unwrap();
+    for (name, feature, request, response, event) in [
+        ("permission", "permissions", "pq", "pr", "e4"),
+        ("user-input", "user_input", "iq", "ir", "e3"),
+    ] {
+        let trace = fixture(&format!("{name}-resolved-in-the-refresh-window"));
+        for revision in [None, Some("v2")] {
+            let mut changed = trace.clone();
+            for e in &mut changed {
+                if e["id"] == request || e["id"] == response || e["id"] == event {
+                    if let Some(revision) = revision {
+                        e["capability_revision"] = json!(revision);
+                    } else {
+                        e.as_object_mut().unwrap().remove("capability_revision");
+                    }
+                }
+            }
+            let result = check(&validator, &changed);
+            for id in [request, response, event] {
+                assert!(
+                    result
+                        .diagnostics
+                        .iter()
+                        .any(|d| d.envelope_id == id && d.code == codes::UNAVAILABLE_CAPABILITY),
+                    "{id}: {result:?}"
+                );
+            }
+        }
+        let mut unavailable = trace.clone();
+        unavailable[1]["payload"]["features"][feature]["level"] = json!("unavailable");
+        let result = check(&validator, &unavailable);
+        for id in [request, response, event] {
+            assert!(
+                result
+                    .diagnostics
+                    .iter()
+                    .any(|d| d.envelope_id == id && d.code == codes::UNAVAILABLE_CAPABILITY),
+                "{id}: {result:?}"
+            );
+        }
+        let mut wrong_echo = trace;
+        let e = wrong_echo.iter_mut().find(|e| e["id"] == response).unwrap();
+        e["capability_revision"] = json!("v2");
+        let result = check(&validator, &wrong_echo);
+        assert!(
+            result.diagnostics.iter().any(|d| d.envelope_id == response
+                && d.code == codes::STALE_CAPABILITY_REVISION
+                && d.expected == "v1"
+                && d.actual == "v2"),
+            "{result:?}"
+        );
+    }
+}
+
+#[test]
+fn an_admitted_response_keeps_its_descriptor_after_refresh_but_a_new_request_does_not() {
+    let validator = Validator::new().unwrap();
+    for (name, feature, request, response) in [
+        ("permission", "permissions", "pq", "pr"),
+        ("user-input", "user_input", "iq", "ir"),
+    ] {
+        let mut trace = fixture(&format!("{name}-resolved-in-the-refresh-window"));
+        let response_at = trace.iter().position(|e| e["id"] == response).unwrap();
+        let pending_response = trace.remove(response_at);
+        let refreshed = trace.iter().position(|e| e["id"] == "capr2").unwrap();
+        trace[refreshed]["payload"]["features"][feature]["level"] = json!("unavailable");
+        trace.insert(refreshed + 1, pending_response);
+        let result = check(&validator, &trace);
+        assert!(result.valid(), "{result:?}");
+        let request_at = trace.iter().position(|e| e["id"] == request).unwrap();
+        let late_request = trace.remove(request_at);
+        let response_at = trace.iter().position(|e| e["id"] == response).unwrap();
+        trace.insert(response_at, late_request);
+        let result = check(&validator, &trace);
+        assert!(
+            result
+                .diagnostics
+                .iter()
+                .any(|d| d.envelope_id == request && d.code == codes::STALE_CAPABILITY_REVISION),
+            "{result:?}"
         );
     }
 }

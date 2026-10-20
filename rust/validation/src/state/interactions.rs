@@ -712,7 +712,7 @@ impl State {
                 })
                 .collect();
         } else if *t == EnvelopeType::CAPABILITIES_UPDATED {
-            self.features.clear();
+            self.previous_features = std::sync::Arc::new(std::mem::take(&mut self.features));
         }
     }
 
@@ -723,7 +723,9 @@ impl State {
             format!("agent_control.{name}"),
             format!("action.{name}"),
         ];
-        if self.current_capability.is_empty() || self.capabilities_stale {
+        if self.settling.is_none()
+            && (self.current_capability.is_empty() || self.capabilities_stale)
+        {
             self.add(
                 codes::UNAVAILABLE_CAPABILITY,
                 at,
@@ -734,7 +736,7 @@ impl State {
             return;
         }
         let revision = e.capability_revision.clone().unwrap_or_default();
-        if revision != self.current_capability {
+        if self.settling.is_none() && revision != self.current_capability {
             let current = self.current_capability.clone();
             self.add_expected(
                 codes::STALE_CAPABILITY_REVISION,
@@ -748,7 +750,8 @@ impl State {
             );
             return;
         }
-        let Some(level) = keys.iter().find_map(|key| self.features.get(key)).cloned() else {
+        let features = self.settling.as_deref().unwrap_or(&self.features);
+        let Some(level) = keys.iter().find_map(|key| features.get(key)).cloned() else {
             self.add(
                 codes::UNAVAILABLE_CAPABILITY,
                 at,
