@@ -58,6 +58,8 @@ pub fn Program(comptime Model: type) type {
         last_every_tick: u64,
         last_view_hash: u64,
         last_line_count: usize,
+        cursor_row: ?usize = null,
+        cursor_col: usize = 0,
         needs_repaint: bool,
         resize_deadline: ?u64,
         bottom_anchor: bool,
@@ -912,6 +914,7 @@ pub fn Program(comptime Model: type) type {
                 try writer.writeAll(ansi.CSI ++ "3J");
                 try writer.writeAll(ansi.cursor_home);
                 self.last_line_count = 0;
+                self.cursor_row = null;
                 self.last_line_widths.clearRetainingCapacity();
             }
 
@@ -1006,6 +1009,22 @@ pub fn Program(comptime Model: type) type {
                 if (used < width) try writer.writeAll(ansi.line_clear_right);
                 try writer.writeAll("\r\n");
             }
+            self.cursor_row = null;
+            if (@hasDecl(Model, "cursorPosition")) {
+                if (self.model.cursorPosition()) |caret| {
+                    const clipped = countLines(view_output) -| height;
+                    if (caret.row >= clipped and caret.row - clipped < frame_lines.items.len) {
+                        const row = caret.row - clipped;
+                        try writer.writeAll("\r");
+                        const up = frame_lines.items.len - 1 - row;
+                        if (up > 0) try ansi.cursorUp(writer, @intCast(up));
+                        const col = @min(caret.col, width - 1);
+                        try ansi.cursorToCol0(writer, @intCast(col));
+                        self.cursor_row = row;
+                        self.cursor_col = col;
+                    }
+                }
+            }
             self.last_line_count = frame_lines.items.len;
             self.last_frame.clearRetainingCapacity();
             try self.last_frame.appendSlice(self.allocator, next_frame.items);
@@ -1021,12 +1040,14 @@ pub fn Program(comptime Model: type) type {
             while (n < height) : (n += 1) try writer.writeAll("\r\n");
             self.bottom_anchor = true;
             self.last_line_count = 0;
+            self.cursor_row = null;
             self.last_line_widths.clearRetainingCapacity();
         }
 
         fn moveToLiveRegionTop(self: *Self, writer: *std.Io.Writer) !void {
-            if (self.last_line_count > 1) {
-                const up: u16 = @intCast(@min(self.last_line_count - 1, std.math.maxInt(u16)));
+            const row = self.cursor_row orelse (self.last_line_count -| 1);
+            if (row > 0) {
+                const up: u16 = @intCast(@min(row, std.math.maxInt(u16)));
                 try ansi.cursorUp(writer, up);
             }
             try writer.writeAll("\r");
@@ -1034,7 +1055,10 @@ pub fn Program(comptime Model: type) type {
 
         fn moveToReflowedLiveRegionTop(self: *Self, writer: *std.Io.Writer) !void {
             const width: usize = @max(@as(usize, self.context.width), 1);
-            const occupied = reflowedRowCount(self.last_line_widths.items, width);
+            const occupied = if (self.cursor_row) |row|
+                reflowedRowCount(self.last_line_widths.items[0..@min(row, self.last_line_widths.items.len)], width) + self.cursor_col / width + 1
+            else
+                reflowedRowCount(self.last_line_widths.items, width);
             if (occupied > 1) {
                 const up: u16 = @intCast(@min(occupied - 1, std.math.maxInt(u16)));
                 try ansi.cursorUp(writer, up);
@@ -1067,6 +1091,7 @@ pub fn Program(comptime Model: type) type {
                 writeAboveLines(writer, self.context.above_buffer.items, @max(@as(usize, self.context.width), 1)) catch return;
                 self.context.above_buffer.clearRetainingCapacity();
                 self.last_line_count = 0;
+                self.cursor_row = null;
                 self.last_line_widths.clearRetainingCapacity();
                 writer.writeAll(ansi.sync_end) catch return;
                 term.flush() catch return;
@@ -1076,6 +1101,7 @@ pub fn Program(comptime Model: type) type {
         fn reanchorInline(self: *Self) void {
             self.bottom_anchor = true;
             self.last_line_count = 0;
+            self.cursor_row = null;
             self.last_frame.clearRetainingCapacity();
             self.last_line_widths.clearRetainingCapacity();
             self.needs_repaint = true;
@@ -1494,4 +1520,48 @@ test "reanchorInline drops the stale frame and re-anchors at the bottom" {
     try std.testing.expectEqual(@as(usize, 0), program.last_frame.items.len);
     try std.testing.expectEqual(@as(usize, 0), program.last_line_widths.items.len);
     try std.testing.expectEqual(true, program.needs_repaint);
+}
+
+const CaretTestModel = struct {
+    pub const Msg = union(enum) { noop };
+    pub fn init(_: *@This(), _: *Context) Cmd(CaretTestModel.Msg) {
+        return .none;
+    }
+    pub fn update(_: *@This(), _: CaretTestModel.Msg, _: *Context) Cmd(CaretTestModel.Msg) {
+        return .none;
+    }
+    pub fn view(_: *@This(), _: *const Context) []const u8 {
+        return "";
+    }
+    pub fn cursorPosition(_: *const @This()) ?struct { row: usize, col: usize } {
+        return .{ .row = 1, .col = 8 };
+    }
+};
+
+test "inline frames return the real cursor to the input and redraw from that row" {
+    var env_map: std.process.Environ.Map = .init(std.testing.allocator);
+    defer env_map.deinit();
+    var program = Program(CaretTestModel).init(std.testing.allocator, std.testing.io, &env_map);
+    defer program.deinit();
+    program.model = .{};
+    program.context.width = 20;
+    program.context.height = 4;
+    var out: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer out.deinit();
+    try program.renderInlineFrame(&out.writer, "header\n> 中文\nborder\nfooter", "");
+    try std.testing.expect(std.mem.endsWith(u8, out.written(), "\r\x1b[2A\x1b[9G"));
+    var next: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer next.deinit();
+    try program.renderInlineFrame(&next.writer, "header\n> 中文\nborder\nfooter", "");
+    try std.testing.expect(std.mem.startsWith(u8, next.written(), "\x1b[1A\r"));
+    program.context.width = 4;
+    var resized: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer resized.deinit();
+    try program.moveToReflowedLiveRegionTop(&resized.writer);
+    try std.testing.expectEqualStrings("\x1b[4A\r", resized.written());
+    program.context.width = 20;
+    var cleanup: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer cleanup.deinit();
+    try program.moveToReflowedLiveRegionTop(&cleanup.writer);
+    try std.testing.expectEqualStrings("\x1b[1A\r", cleanup.written());
 }

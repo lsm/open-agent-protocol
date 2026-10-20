@@ -59,6 +59,18 @@ pub fn render(allocator: std.mem.Allocator, state: *const tui_state.AppState, op
     return out.toOwnedSlice();
 }
 
+pub fn cursorPosition(allocator: std.mem.Allocator, state: *const tui_state.AppState, options: Options) !tui_text.CursorPos {
+    const width = contentWidth(options.width);
+    if (state.mode == .login_input and state.login_input_secret) {
+        return .{ .row = 1, .col = 4 + @min(state.composer.text().len, width -| 1) };
+    }
+    const rows = try tui_text.layoutRows(allocator, state.composer.text(), width);
+    defer allocator.free(rows);
+    const pos = tui_text.cursorPos(rows, state.composer.text(), state.composer.cursor, width);
+    const scroll = @min(state.composer.scroll_row, rows.len -| @max(options.max_rows, 1));
+    return .{ .row = 1 + pos.row -| scroll, .col = 4 + pos.col };
+}
+
 pub fn borderColor(state: *const tui_state.AppState) zz.Color {
     if (state.mode == .approval) return tui_theme.palette.warning;
     if (state.mode == .login_input) return tui_theme.palette.thinking;
@@ -575,4 +587,22 @@ test "rowCap follows the terminal height with a floor of one" {
     try std.testing.expectEqual(@as(usize, 1), rowCap(5));
     try std.testing.expectEqual(@as(usize, 8), rowCap(24));
     try std.testing.expectEqual(@as(usize, 12), rowCap(60));
+}
+
+test "terminal caret matches rendered CJK wrapping and the scrolled input window" {
+    var state = tui_state.AppState.init(std.testing.allocator);
+    defer state.deinit();
+    try state.replaceComposerBuffer("中文中文中文中文");
+    state.composer.cursor = state.composer.text().len;
+    const options = Options{ .width = 20, .max_rows = 1 };
+    try adjustScroll(std.testing.allocator, &state, 20, 3);
+    const pos = try cursorPosition(std.testing.allocator, &state, options);
+    try std.testing.expectEqual(tui_text.CursorPos{ .row = 1, .col = 6 }, pos);
+    const rendered = try render(std.testing.allocator, &state, options);
+    defer std.testing.allocator.free(rendered);
+    var lines = std.mem.splitScalar(u8, rendered, '\n');
+    _ = lines.next();
+    const input = lines.next().?;
+    const marker = std.mem.indexOf(u8, input, "\x1b[7m").?;
+    try std.testing.expectEqual(pos.col, tui_text.visibleWidth(input[0..marker]));
 }

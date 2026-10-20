@@ -1,11 +1,15 @@
 #!/usr/bin/env python3
 """Credential-free macOS PTY smoke; reuse the maintained terminal decoder."""
 import argparse
+import fcntl
+import struct
+import termios
 import importlib.util
 import json
 import os
 from pathlib import Path
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
@@ -62,16 +66,69 @@ def main():
                                         argv=command[1:])
             session.wait_for(driver.WELCOME_MARKER, 15, "welcome banner", since=0)
             session.quiesce(0.4)
+            for text in ("abc", "中文", "中" * 50):
+                session.send(b"\x15", "clear draft")
+                start_frame = len(session.chunks)
+                session.type_text(text)
+                session.quiesce(0.4)
+                rows = session.screen.visible_rows()
+                (output / ("caret-" + str(len(text)) + ".txt")).write_text(
+                    "\n".join(rows) + f"\nreal cursor: {session.screen.row},{session.screen.col}\n")
+                border = next(r for r, line in enumerate(rows) if line.startswith("╰"))
+                cells = sum(driver.cell_width(c) for c in text)
+                expected = (border - 1, 4 + cells % (session.width - 6))
+                actual = (session.screen.row, session.screen.col)
+                rendered = b"".join(chunk for _, chunk in session.chunks[start_frame:])
+                position = f"\x1b[{expected[1] + 1}G".encode()
+                if actual != expected:
+                    raise AssertionError(f"caret for {text!r}: expected {expected}, got {actual}")
+                if position not in rendered:
+                    raise AssertionError(f"no caret column escape {position!r} for {text!r}")
+            session.send(b"\x1b[D", "move caret left over CJK")
+            session.quiesce(0.4)
+            if session.screen.col != 8:
+                raise AssertionError(f"CJK left caret column: {session.screen.col}")
+            session.width = 120
+            session.screen.cols = 120
+            for line in session.screen.lines:
+                line.extend([" "] * 20)
+            fcntl.ioctl(session.master, termios.TIOCSWINSZ, struct.pack("HHHH", session.height, session.width, 0, 0))
+            os.kill(session.proc.pid, signal.SIGWINCH)
+            session.quiesce(1.0)
+            rows = session.screen.visible_rows()
+            (output / "resized.txt").write_text("\n".join(rows) + f"\nreal cursor: {session.screen.row},{session.screen.col}\n")
+            border = next(r for r, line in enumerate(rows) if line.startswith("╰"))
+            if (session.screen.row, session.screen.col) != (border - 1, 102):
+                raise AssertionError(f"resized CJK caret: {session.screen.row},{session.screen.col}")
+            session.send(b"\x15", "clear draft")
             session.type_text("verify local reply")
             start = len(session.plain)
             session.send(b"\r", "submit")
             session.wait_for(options.fixture_text.encode(), 15, "fixture reply", since=start)
             session.quiesce(0.4)
+            session.type_text("/zen")
+            session.send(b"\r", "enter zen mode")
+            session.quiesce(0.4)
+            session.type_text("中文")
+            session.quiesce(0.4)
+            rows = session.screen.visible_rows()
+            row, line = next((r, line) for r, line in enumerate(rows) if "中文" in line)
+            col = sum(driver.cell_width(c) for c in line[:line.index("中文")]) + 4
+            if (session.screen.row, session.screen.col) != (row, col):
+                raise AssertionError(f"zen caret: expected {(row, col)}, got {(session.screen.row, session.screen.col)}")
+            (output / "zen.txt").write_text("\n".join(rows) + f"\nreal cursor: {session.screen.row},{session.screen.col}\n")
+            session.send(b"\x15", "clear zen draft")
             session.type_text("/quit")
             session.send(b"\r", "quit")
             code = session.wait_exit(5)
             if code != 0:
                 raise RuntimeError(f"TUI exit {code}")
+            transcript = b"".join(chunk for _, chunk in session.chunks)
+            if b"\x1b[?25h" not in transcript:
+                raise AssertionError("terminal cursor not restored on exit")
+            if session.screen.col != 0:
+                raise AssertionError(f"exit left cursor in composer column {session.screen.col}")
+            print("PASS: caret escapes, ASCII/CJK/wrap/edit/resize, exit cursor restoration;")
             print("PASS: sandboxed oapx --help; PTY welcome -> prompt -> fixture reply -> /quit (exit 0)")
         finally:
             if session is not None:

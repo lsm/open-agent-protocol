@@ -4306,6 +4306,7 @@ pub const TuiModel = struct {
     tab_title: [tab_title_bytes]u8 = undefined,
     tab_title_len: usize = 0,
     view_stale: bool = true,
+    caret: ?tui_text.CursorPos = null,
     viewed_entries: usize = 0,
 
     pub const Msg = union(enum) {
@@ -4845,8 +4846,13 @@ pub const TuiModel = struct {
         };
     }
 
+    pub fn cursorPosition(self: *const TuiModel) ?tui_text.CursorPos {
+        return self.caret;
+    }
+
     pub fn view(self: *TuiModel, ctx: *const zz.Context) []const u8 {
         self.view_stale = false;
+        self.caret = null;
         const app = &(self.app orelse return "Makai TUI failed to initialize");
         self.viewed_entries = app.state.transcript.items.len;
         const width: usize = @max(ctx.width, 20);
@@ -4875,7 +4881,11 @@ pub const TuiModel = struct {
             parts[len] = chrome.status;
             len += 1;
             const frame = tui_render.joinVertical(ctx.allocator, parts[0..len]) catch return chrome.composer;
-            return padFrameToHeight(ctx.allocator, frame, height) catch frame;
+            const padded = padFrameToHeight(ctx.allocator, frame, height) catch frame;
+            if (composer_view.cursorPosition(ctx.allocator, &app.state, .{ .width = width, .max_rows = composer_view.rowCap(height) })) |pos| {
+                self.caret = .{ .row = countLines(padded) -| countLines(chrome.status) -| countLines(chrome.composer) + pos.row, .col = pos.col };
+            } else |_| {}
+            return padded;
         }
 
         const fixed = countLines(chrome.status) + countLines(chrome.composer) + @max(countLines(chrome.extra), 1);
@@ -4969,7 +4979,9 @@ pub const TuiModel = struct {
         };
         if (zen_view.showsReply(frame)) app.state.transcript_scroll = @min(app.state.transcript_scroll, try zen_view.maxScroll(allocator, frame));
         frame.scroll = app.state.transcript_scroll;
-        return zen_view.render(allocator, frame);
+        const rendered = try zen_view.render(allocator, frame);
+        self.caret = zen_view.cursorPosition(rendered);
+        return rendered;
     }
 
     const Chrome = struct {
