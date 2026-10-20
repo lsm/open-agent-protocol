@@ -3934,7 +3934,7 @@ fn settleOapInference(
         .total_tokens = if (result.usage.total_tokens > 0)
             result.usage.total_tokens
         else
-            result.usage.input + result.usage.output + result.usage.cache_read + result.usage.cache_write,
+            result.usage.input +| result.usage.output +| result.usage.cache_read +| result.usage.cache_write,
     };
 
     if (result.stop_reason == .@"error") {

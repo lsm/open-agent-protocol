@@ -327,6 +327,8 @@ fn assistantMessage(allocator: std.mem.Allocator, model: ai_types.Model, source:
         .usage = if (usage) |value| .{
             .input = value.input_tokens orelse 0,
             .output = value.output_tokens orelse 0,
+            .cache_read = value.cache_read_input_tokens orelse 0,
+            .cache_write = value.cache_write_input_tokens orelse 0,
             .total_tokens = value.total_tokens orelse 0,
         } else .{},
         .stop_reason = reason,
@@ -812,6 +814,30 @@ test "bridge retains terminal tool calls and typed credential failures" {
     };
     try state.process(failed);
     try std.testing.expectEqualStrings("credential_missing: login needed", stream.getError().?);
+}
+
+test "terminal message conversion keeps the cache counts the provider reported" {
+    const allocator = std.testing.allocator;
+    const model: ai_types.Model = .{
+        .id = "test-model",
+        .name = "test",
+        .api = "openai-responses",
+        .provider = "openai",
+        .base_url = "",
+        .reasoning = false,
+        .input = &.{"text"},
+        .cost = .{ .input = 0, .output = 0, .cache_read = 0, .cache_write = 0 },
+        .context_window = 1024,
+        .max_tokens = 128,
+    };
+    const parts = [_]oap_types.ContentPart{.{ .text = .{ .text = "cached" } }};
+    const message: oap_types.Message = .{ .role = .assistant, .content = .{ .parts = @constCast(&parts) } };
+    var terminal = try assistantMessage(allocator, model, message, .stop, .{ .input_tokens = 4, .cache_read_input_tokens = 9, .cache_write_input_tokens = 3, .output_tokens = 2, .total_tokens = 18 });
+    defer terminal.deinit(allocator);
+    try std.testing.expectEqual(@as(u64, 4), terminal.usage.input);
+    try std.testing.expectEqual(@as(u64, 9), terminal.usage.cache_read);
+    try std.testing.expectEqual(@as(u64, 3), terminal.usage.cache_write);
+    try std.testing.expectEqual(@as(u64, 18), terminal.usage.total_tokens);
 }
 
 test "bridge preserves typed inference admission refusal" {
