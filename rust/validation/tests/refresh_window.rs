@@ -276,7 +276,7 @@ fn settlement_does_not_bypass_the_previous_features_or_the_request_revision_echo
 }
 
 #[test]
-fn an_admitted_response_keeps_its_descriptor_after_refresh_but_a_new_request_does_not() {
+fn a_settling_response_uses_refreshed_features_but_echoes_the_admitted_revision() {
     let validator = Validator::new().unwrap();
     for (name, feature, request, response) in [
         ("permission", "permissions", "pq", "pr"),
@@ -289,7 +289,20 @@ fn an_admitted_response_keeps_its_descriptor_after_refresh_but_a_new_request_doe
         trace[refreshed]["payload"]["features"][feature]["level"] = json!("unavailable");
         trace.insert(refreshed + 1, pending_response);
         let result = check(&validator, &trace);
-        assert!(result.valid(), "{result:?}");
+        assert!(
+            result
+                .diagnostics
+                .iter()
+                .any(|d| d.envelope_id == response && d.code == codes::UNAVAILABLE_CAPABILITY),
+            "{result:?}"
+        );
+        assert!(
+            !result
+                .diagnostics
+                .iter()
+                .any(|d| d.envelope_id == response && d.code == codes::STALE_CAPABILITY_REVISION),
+            "{result:?}"
+        );
         let request_at = trace.iter().position(|e| e["id"] == request).unwrap();
         let late_request = trace.remove(request_at);
         let response_at = trace.iter().position(|e| e["id"] == response).unwrap();
