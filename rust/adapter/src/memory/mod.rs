@@ -7,6 +7,7 @@ mod pipe;
 mod resolve;
 mod resume;
 mod session;
+mod steer;
 
 use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::sync::atomic::{AtomicU64, Ordering};
