@@ -62,6 +62,25 @@ def main():
                                         argv=command[1:])
             session.wait_for(driver.WELCOME_MARKER, 15, "welcome banner", since=0)
             session.quiesce(0.4)
+            for text in ("abc", "中文", "中" * 50):
+                session.send(b"\x15", "clear draft")
+                start_frame = len(session.chunks)
+                session.type_text(text)
+                session.quiesce(0.4)
+                rows = session.screen.visible_rows()
+                (output / ("caret-" + str(len(text)) + ".txt")).write_text(
+                    "\n".join(rows) + f"\nreal cursor: {session.screen.row},{session.screen.col}\n")
+                border = next(r for r, line in enumerate(rows) if line.startswith("╰"))
+                cells = sum(2 if ord(c) > 127 else 1 for c in text)
+                expected = (border - 1, 4 + cells % (session.width - 6))
+                actual = (session.screen.row, session.screen.col)
+                rendered = b"".join(chunk for _, chunk in session.chunks[start_frame:])
+                position = f"\x1b[{expected[1] + 1}G".encode()
+                if actual != expected:
+                    raise AssertionError(f"caret for {text!r}: expected {expected}, got {actual}")
+                if position not in rendered:
+                    raise AssertionError(f"no caret column escape {position!r} for {text!r}")
+            session.send(b"\x15", "clear draft")
             session.type_text("verify local reply")
             start = len(session.plain)
             session.send(b"\r", "submit")
