@@ -24,16 +24,16 @@
     {
       "id": "opencode-zen",
       "wire": "openai-completions",
-      "base_url": "https://opencode.ai/zen/v1",
-      "models_url": "https://opencode.ai/zen/v1/models",
-      "request_url": "https://opencode.ai/zen/v1/chat/completions"
+      "base_url": "https://opencode.ai/inference/v1",
+      "models_url": "https://opencode.ai/inference/v1/models",
+      "request_url": "https://opencode.ai/inference/v1/chat/completions"
     },
     {
       "id": "opencode-zen",
       "wire": "anthropic-messages",
-      "base_url": "https://opencode.ai/zen",
-      "models_url": "https://opencode.ai/zen/models",
-      "request_url": "https://opencode.ai/zen/v1/messages"
+      "base_url": "https://opencode.ai/inference",
+      "models_url": "https://opencode.ai/inference/models",
+      "request_url": "https://opencode.ai/inference/v1/messages"
     },
     {
       "id": "openrouter",
@@ -89,16 +89,16 @@
     {
       "id": "opencode-go",
       "wire": "openai-completions",
-      "base_url": "https://opencode.ai/zen/go/v1",
-      "models_url": "https://opencode.ai/zen/go/v1/models",
-      "request_url": "https://opencode.ai/zen/go/v1/chat/completions"
+      "base_url": "https://opencode.ai/inference/go/v1",
+      "models_url": "https://opencode.ai/inference/go/v1/models",
+      "request_url": "https://opencode.ai/inference/go/v1/chat/completions"
     },
     {
       "id": "opencode-go",
       "wire": "anthropic-messages",
-      "base_url": "https://opencode.ai/zen/go",
-      "models_url": "https://opencode.ai/zen/go/models",
-      "request_url": "https://opencode.ai/zen/go/v1/messages"
+      "base_url": "https://opencode.ai/inference/go",
+      "models_url": "https://opencode.ai/inference/go/models",
+      "request_url": "https://opencode.ai/inference/go/v1/messages"
     },
     {
       "id": "openai-codex",

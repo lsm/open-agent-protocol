@@ -8,7 +8,7 @@ row logs in on its own.
 |---|---|---|
 | What it is | Pay as you go against a prepaid balance (OpenCode's docs now call it the OpenCode Console) | A monthly subscription with rolling caps: 5 hours, a week, a month |
 | OpenCode's model ids | `opencode/<id>` | `opencode-go/<id>` |
-| Base URL | `https://opencode.ai/zen/v1` | `https://opencode.ai/zen/go/v1`, which also requires `x-opencode-session` |
+| Base URL | `https://opencode.ai/inference/v1`, serving chat completions, messages and responses alike | `https://opencode.ai/inference/go/v1`, the same, and it also requires `x-opencode-session` |
 | A usage limit | Spends the balance | `GoUsageLimitError` until the cap resets |
 
 ## Free models
