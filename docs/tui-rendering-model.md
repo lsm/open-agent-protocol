@@ -778,3 +778,28 @@ every update.
   takes `since=` when two markers arrive in the same paint. Every recorded frame also
   stores the visible rows. The fixture provider accepts `<think>…</think>` at the start
   of a `text:` step to emit reasoning deltas.
+
+## Terminal cursor and IME preedit
+
+The inline renderer keeps the real cursor at the input caret after painting,
+even though the composer draws its own block cursor and hides the native one.
+`TuiModel.cursorPosition` reports a frame-relative cell position, including CJK
+width, composer wrapping/scrolling and the footer offset. Vendored zigzag accepts
+this optional model method, tracks the actual cursor row for subsequent redraws,
+and counts reflowed rows only up to that caret for resize and exit cleanup.
+This vendored zigzag change should also go upstream; this PR does not modify the
+separate zigzag checkout.
+
+Previously the final footer paint left the real cursor at the bottom-right.
+The terminal emulator uses that real position for IME preedit; wrapping there
+can scroll the main screen, independently of the TUI's hidden cursor setting.
+
+Comparison code read: [Codex app.rs](https://github.com/openai/codex/blob/main/codex-rs/tui/src/app.rs#L1212-L1220)
+sets the frame cursor from the input widget, and
+[custom_terminal.rs](https://github.com/openai/codex/blob/main/codex-rs/tui/src/custom_terminal.rs)
+positions and shows it after drawing. [Ink log-update.ts](https://github.com/vadimdemedes/ink/blob/master/src/log-update.ts#L55-L100)
+adds a cursor suffix after output and returns to the previous frame bottom
+before repainting. Claude Code's public repository contains plugins and issue
+tracking rather than its renderer implementation; its exact cursor behaviour
+was not verified from source. Ink is the public comparison, not proof of which
+version or fork Claude Code uses.
