@@ -4755,6 +4755,7 @@ pub const Machine = struct {
             .kind = .tool_call,
             .requested_by = memberString(payload, "requested_by"),
             .responded_by = responder,
+            .tool_call = memberString(payload, "tool_call_id"),
             .opened_at = self.current_sequence,
         };
         try run.interactions.put(self.arena.allocator(), id, opened);
@@ -4930,7 +4931,7 @@ pub const Machine = struct {
             .allow_cancel = kind == .input and memberBool(payload, "allow_cancel"),
             .choices = if (kind == .permission) member(payload, "choices") else null,
             .questions = if (kind == .input) member(payload, "questions") else null,
-            .tool_call = if (kind == .permission) memberString(payload, "tool_call_id") else "",
+            .tool_call = memberString(payload, "tool_call_id"),
             .opened_at = self.current_sequence,
         };
         try run.interactions.put(self.arena.allocator(), id, opened);
