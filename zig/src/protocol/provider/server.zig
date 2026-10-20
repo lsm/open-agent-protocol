@@ -575,7 +575,7 @@ const copilot_oauth_provider = oauth_storage.OAuthProvider{
     .get_api_key_fn = copilotApiKey,
 };
 
-fn authProvider(provider: api_registry.ApiProvider, model_provider: []const u8) ?oauth_storage.OAuthProvider {
+pub fn authProvider(provider: api_registry.ApiProvider, model_provider: []const u8) ?oauth_storage.OAuthProvider {
     const provider_id = provider.auth_provider_id orelse
         return if (std.mem.eql(u8, model_provider, copilot_oauth_provider.id)) copilot_oauth_provider else null;
     return .{

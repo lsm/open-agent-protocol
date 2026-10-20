@@ -2840,6 +2840,31 @@ fn servedCopilotTokenEndpoint(allocator: std.mem.Allocator, url: []const u8, opt
     return .{ .status = 401, .body = try allocator.dupe(u8, "{}") };
 }
 
+fn unusedTestStream(model: ai_types.Model, context: ai_types.Context, options: ?ai_types.StreamOptions, allocator: std.mem.Allocator) anyerror!*event_stream.AssistantMessageEventStream {
+    _ = .{ model, context, options, allocator };
+    return error.TestUnexpectedStream;
+}
+
+fn unusedTestStreamSimple(model: ai_types.Model, context: ai_types.Context, options: ?ai_types.SimpleStreamOptions, allocator: std.mem.Allocator) anyerror!*event_stream.AssistantMessageEventStream {
+    _ = .{ model, context, options, allocator };
+    return error.TestUnexpectedStream;
+}
+
+var vendor_refreshes: usize = 0;
+
+fn renewVendorCredentials(credentials: oauth_storage.Credentials, allocator: std.mem.Allocator) anyerror!oauth_storage.Credentials {
+    vendor_refreshes += 1;
+    if (!std.mem.eql(u8, credentials.refresh, "vendor-refresh")) return error.TestUnexpectedRefresh;
+    const refresh = try allocator.dupe(u8, credentials.refresh);
+    errdefer allocator.free(refresh);
+    const access = try allocator.dupe(u8, "sk-ant-oat-renewed");
+    return .{ .refresh = refresh, .access = access, .expires = compat.time.nowMillis() + std.time.ms_per_hour };
+}
+
+fn vendorApiKey(credentials: oauth_storage.Credentials, allocator: std.mem.Allocator) anyerror![]const u8 {
+    return allocator.dupe(u8, credentials.access);
+}
+
 test "serve provider renews a Copilot token a day past its expiry from the stored GitHub token" {
     const allocator = std.testing.allocator;
     try provider_catalog.blankEnvironment(allocator);
@@ -2859,9 +2884,49 @@ test "serve provider renews a Copilot token a day past its expiry from the store
     defer allocator.free(home);
     try compat.setTestEnv(allocator, "HOME", home);
 
-    var resolved = resolveOapCredential(allocator, "github-copilot", "https://api.individual.githubcopilot.com", .none) orelse return error.TestExpectedCredential;
+    const completions = api_registry.ApiProvider{ .api = "openai-completions", .stream = unusedTestStream, .stream_simple = unusedTestStreamSimple };
+    var resolved = resolveOapCredential(allocator, completions, "github-copilot", "https://api.individual.githubcopilot.com", .none) orelse return error.TestExpectedCredential;
     defer resolved.deinit(allocator);
     try std.testing.expectEqualStrings("tid=served-fresh", resolved.api_key);
+}
+
+test "serve provider renews an expired OAuth token once through the refresh its wire registers, keeps the renewed token, and never sends another provider's token to that refresh" {
+    const allocator = std.testing.allocator;
+    try provider_catalog.blankEnvironment(allocator);
+    defer compat.clearTestEnv();
+    compat.time.test_clock_ms = 1_800_000_000_000;
+    defer compat.time.test_clock_ms = null;
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.createDirPath(std.testing.io, ".oapx");
+    const stored = try std.fmt.allocPrint(allocator, "{{\"anthropic\":{{\"refresh\":\"vendor-refresh\",\"access\":\"sk-ant-oat-stale\",\"expires\":{d}}},\"kimi\":{{\"refresh\":\"kimi-refresh\",\"access\":\"sk-kimi\",\"expires\":{d}}}}}", .{ compat.time.nowMillis() - std.time.ms_per_hour, compat.time.nowMillis() - std.time.ms_per_hour });
+    defer allocator.free(stored);
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = ".oapx/auth.json", .data = stored });
+    const home = try tmp.dir.realPathFileAlloc(std.testing.io, ".", allocator);
+    defer allocator.free(home);
+    try compat.setTestEnv(allocator, "HOME", home);
+
+    const messages = api_registry.ApiProvider{
+        .api = "anthropic-messages",
+        .stream = unusedTestStream,
+        .stream_simple = unusedTestStreamSimple,
+        .auth_provider_id = "anthropic",
+        .auth_refresh_fn = renewVendorCredentials,
+        .auth_get_api_key_fn = vendorApiKey,
+    };
+    vendor_refreshes = 0;
+    if (resolveOapCredential(allocator, messages, "kimi", "https://api.kimi.example", .none)) |held| {
+        var kimi = held;
+        kimi.deinit(allocator);
+    }
+    try std.testing.expectEqual(@as(usize, 0), vendor_refreshes);
+    for (0..2) |_| {
+        var resolved = resolveOapCredential(allocator, messages, "anthropic", "https://api.anthropic.com", .none) orelse return error.TestExpectedCredential;
+        defer resolved.deinit(allocator);
+        try std.testing.expectEqualStrings("sk-ant-oat-renewed", resolved.api_key);
+    }
+    try std.testing.expectEqual(@as(usize, 1), vendor_refreshes);
 }
 
 test "an unserved catalog provider that needs a credential is refused as credential_missing until one resolves, then as provider_unavailable after asking for a reload" {
@@ -3745,6 +3810,7 @@ fn failOapInference(
 
 fn resolveOapCredential(
     allocator: std.mem.Allocator,
+    provider: api_registry.ApiProvider,
     provider_id: []const u8,
     base_url: []const u8,
     lookup: auth_resolver.OverrideLookup,
@@ -3754,6 +3820,9 @@ fn resolveOapCredential(
     }
     var storage = oapStorageFor(allocator, provider_id) catch return null;
     defer storage.deinit();
+    if (protocol_server.authProvider(provider, provider_id)) |oauth| {
+        if (std.mem.eql(u8, oauth.id, provider_id) and storage.credentialsExpired(provider_id)) storage.refreshCredentials(provider_id, oauth) catch return null;
+    }
     const resolved = auth_resolver.resolveApiKey(allocator, &storage, provider_id, null) catch return null;
     if (resolved.api_key.len == 0) {
         var owned = resolved;
@@ -3815,7 +3884,7 @@ fn startOapInference(
         if (grantedValueFor(granted, reference)) |value| options.api_key = @TypeOf(options.api_key).initBorrowed(value);
     };
     if (options.getApiKey() == null or options.getApiKey().?.len == 0) {
-        resolved_credential = resolveOapCredential(allocator, provider_id, model.base_url, lookup);
+        resolved_credential = resolveOapCredential(allocator, provider, provider_id, model.base_url, lookup);
         if (resolved_credential) |key| options.api_key = @TypeOf(options.api_key).initBorrowed(key.api_key);
     }
     options.cancel_token = .{ .cancelled = cancelled };
