@@ -441,6 +441,17 @@ same projection, since it is applied after the listing is read, from the
 models.dev copy that load used: a cached listing carries no status of its own,
 so a refresh cannot revive one.
 
+OpenCode Zen and OpenCode Go serve each model on the wire its models.dev entry
+names through the entry's own `provider.npm`, and `oapx` reads that for those two
+rows only. `@ai-sdk/openai` publishes the model on `openai-responses`,
+`@ai-sdk/anthropic` on `anthropic-messages` and `@ai-sdk/openai-compatible` on
+`openai-completions`, each with the base URL the catalog gives that row for the
+wire; a model whose entry names no package, or a wire the row does not declare,
+keeps the row's default. A model whose entry names any other package is not
+offered, because `oapx` has no wire that speaks it and the provider refuses it
+on the ones it has; this is the one place models.dev, rather than the
+provider's listing, decides that a listed model is omitted.
+
 **What is judged, and what is only an obligation.** The shape of each member is
 judged, and it is decidable from one response: a list is non-empty, a published
 string is non-empty, a modality is one of the five, a `cost` is a subset of four

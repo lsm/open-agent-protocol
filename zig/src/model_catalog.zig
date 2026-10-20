@@ -1025,7 +1025,7 @@ fn appendCatalogTargetModels(
                     for (models) |*model| {
                         model.deprecated = deprecatedIn(listed, model.id);
                         if (lacking) fillFromModelsDev(target.id, model, listed);
-                        if (target.owned_base_url == null) switch (modelsDevWire(target.id, listed, model.id)) {
+                        if (target.owned_base_url == null and isOpenCode(target.id)) switch (modelsDevWire(target.id, listed, model.id)) {
                             .default => {},
                             .wire => |wire| model.wire = wire,
                             .unservable => model.unservable = true,
@@ -1437,8 +1437,12 @@ fn forgetRefusal(allocator: std.mem.Allocator, name: []const u8) void {
     compat.fs.removeFile(path);
 }
 
+fn isOpenCode(id: []const u8) bool {
+    return std.mem.eql(u8, id, "opencode-zen") or std.mem.eql(u8, id, "opencode-go");
+}
+
 fn servedOnlyInsideOpenCode(target: CatalogEndpoint, model: []const u8) bool {
-    if (!std.mem.eql(u8, target.id, "opencode-zen") and !std.mem.eql(u8, target.id, "opencode-go")) return false;
+    if (!isOpenCode(target.id)) return false;
     if (!std.mem.endsWith(u8, model, "-free")) return false;
     const own = catalogTarget(target.id) orelse return false;
     return std.mem.eql(u8, target.base_url, own.base_url);
@@ -6171,11 +6175,11 @@ test "models.dev's deprecated status marks only the model it names exactly, whet
     }
 }
 
-test "an OpenCode model runs on the wire models.dev names for it, and one on a wire oapx lacks is not offered" {
+test "an OpenCode model runs on the wire models.dev names for it, one on a wire oapx lacks is not offered, and another row's models keep its wire" {
     test_models_dev =
         \\{"opencode":{"models":{"gpt-6":{"provider":{"npm":"@ai-sdk/openai"}},"claude-opus-5-5":{"provider":{"npm":"@ai-sdk/anthropic"}},
         \\ "glm-5.3":{},"qwen3.8-max":{"provider":{"npm":"@ai-sdk/openai-compatible"}},"gemini-3.5-flash":{"provider":{"npm":"@ai-sdk/google"}}}},
-        \\ "zenmux":{"models":{"claude-x":{"provider":{"npm":"@ai-sdk/anthropic"}}}}}
+        \\ "zenmux":{"models":{"claude-x":{"provider":{"npm":"@ai-sdk/anthropic"}},"gemini-x":{"provider":{"npm":"@ai-sdk/google"}}}}}
     ;
     defer test_models_dev = null;
     const zen = catalogTarget("opencode-zen") orelse return error.TestExpectedTarget;
@@ -6186,7 +6190,7 @@ test "an OpenCode model runs on the wire models.dev names for it, and one on a w
     };
     test_catalog_discovery = &[_]CatalogDiscovery{
         .{ .id = "opencode-zen", .models_url = zen.models_url, .model_ids = &.{ "gpt-6", "claude-opus-5-5", "glm-5.3", "qwen3.8-max", "gemini-3.5-flash" }, .complete = false },
-        .{ .id = "zenmux", .models_url = zenmux.models_url, .model_ids = &.{"claude-x"}, .complete = false },
+        .{ .id = "zenmux", .models_url = zenmux.models_url, .model_ids = &.{ "claude-x", "gemini-x" }, .complete = false },
     };
     defer {
         test_catalog_discovery = null;
@@ -6195,13 +6199,14 @@ test "an OpenCode model runs on the wire models.dev names for it, and one on a w
     const models = try loadCatalogModelsWithRows(std.testing.allocator, &.{ "opencode-zen", "zenmux" }, null, .allow_cache);
     defer deinitModels(std.testing.allocator, models);
 
-    try std.testing.expectEqual(@as(usize, 5), models.len);
+    try std.testing.expectEqual(@as(usize, 6), models.len);
     const want = [_][3][]const u8{
         .{ "gpt-6", "openai-responses", "https://opencode.ai/inference/v1" },
         .{ "claude-opus-5-5", "anthropic-messages", "https://opencode.ai/inference" },
         .{ "glm-5.3", "openai-completions", "https://opencode.ai/inference/v1" },
         .{ "qwen3.8-max", "openai-completions", "https://opencode.ai/inference/v1" },
         .{ "claude-x", "openai-completions", zenmux.base_url },
+        .{ "gemini-x", "openai-completions", zenmux.base_url },
     };
     for (want, models) |expected, model| {
         try std.testing.expectEqualStrings(expected[0], model.id);
