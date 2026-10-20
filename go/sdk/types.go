@@ -116,11 +116,11 @@ func Temperature(t float64) *float64 { return &t }
 func MaxTokens(n int) *int { return &n }
 
 type Usage struct {
-	Input      int64 `json:"input"`
-	Output     int64 `json:"output"`
-	CacheRead  int64 `json:"cache_read,omitempty"`
-	CacheWrite int64 `json:"cache_write,omitempty"`
-	Reasoning  int64 `json:"reasoning,omitempty"`
+	Input      int64  `json:"input"`
+	Output     int64  `json:"output"`
+	CacheRead  *int64 `json:"cache_read,omitempty"`
+	CacheWrite *int64 `json:"cache_write,omitempty"`
+	Reasoning  *int64 `json:"reasoning,omitempty"`
 }
 
 type ResponseMessage struct {

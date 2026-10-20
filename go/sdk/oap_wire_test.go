@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -666,10 +667,18 @@ func TestOAPOpenRefusesWhatTheEndpointWouldIgnore(t *testing.T) {
 	}
 }
 
-func TestOAPUsageReadsTheCacheAndReasoningCounts(t *testing.T) {
-	got := oapUsage(jsonObject{"input_tokens": float64(100), "cache_read_input_tokens": float64(400), "cache_write_input_tokens": float64(50), "output_tokens": float64(30), "reasoning_tokens": float64(20), "total_tokens": float64(580)})
-	want := Usage{Input: 100, Output: 30, CacheRead: 400, CacheWrite: 50, Reasoning: 20}
-	if got == nil || *got != want {
-		t.Fatalf("usage = %+v, want %+v", got, want)
+func TestOAPUsageReadsTheCacheAndReasoningCountsAndKeepsAnAbsentOneUnknown(t *testing.T) {
+	count := func(value *int64) string {
+		if value == nil {
+			return "unknown"
+		}
+		return strconv.FormatInt(*value, 10)
+	}
+	got := oapUsage(jsonObject{"input_tokens": float64(100), "cache_read_input_tokens": float64(400), "cache_write_input_tokens": float64(0), "output_tokens": float64(30), "total_tokens": float64(530)})
+	if got.Input != 100 || got.Output != 30 {
+		t.Fatalf("input, output = %d, %d, want 100, 30", got.Input, got.Output)
+	}
+	if count(got.CacheRead) != "400" || count(got.CacheWrite) != "0" || count(got.Reasoning) != "unknown" {
+		t.Fatalf("cache read, cache write, reasoning = %s, %s, %s, want 400, a measured 0, and unknown", count(got.CacheRead), count(got.CacheWrite), count(got.Reasoning))
 	}
 }
