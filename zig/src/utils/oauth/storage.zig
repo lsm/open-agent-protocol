@@ -1602,6 +1602,69 @@ fn emptyTestStorage(allocator: std.mem.Allocator) AuthStorage {
     };
 }
 
+var rotating_failed_saves: usize = 0;
+
+fn failingThenCountingSave(storage: *const AuthStorage) anyerror!void {
+    if (rotating_failed_saves > 0) {
+        rotating_failed_saves -= 1;
+        return error.KeychainUnavailable;
+    }
+    return countingSaveFn(storage);
+}
+
+fn rotateRefreshToken(credentials: Credentials, allocator: std.mem.Allocator) anyerror!Credentials {
+    if (!std.mem.eql(u8, credentials.refresh, "refresh-1")) return error.RefreshTokenRevoked;
+    const refresh = try allocator.dupe(u8, "refresh-2");
+    errdefer allocator.free(refresh);
+    const access = try allocator.dupe(u8, "access-2");
+    return .{ .refresh = refresh, .access = access, .expires = compat.time.nowMillis() + std.time.ms_per_hour };
+}
+
+fn accessOf(credentials: Credentials, allocator: std.mem.Allocator) anyerror![]const u8 {
+    return allocator.dupe(u8, credentials.access);
+}
+
+const rotating_provider = OAuthProvider{ .id = "rotating", .refresh_fn = rotateRefreshToken, .get_api_key_fn = accessOf };
+
+fn rotatingStorage(allocator: std.mem.Allocator) !AuthStorage {
+    var storage = emptyTestStorage(allocator);
+    storage.save_fn = failingThenCountingSave;
+    errdefer storage.deinit();
+    const key = try allocator.dupe(u8, "rotating");
+    errdefer allocator.free(key);
+    const refresh = try allocator.dupe(u8, "refresh-1");
+    errdefer allocator.free(refresh);
+    const access = try allocator.dupe(u8, "access-1");
+    errdefer allocator.free(access);
+    try storage.providers.put(key, .{ .oauth = .{ .refresh = refresh, .access = access, .expires = compat.time.nowMillis() - 1 } });
+    return storage;
+}
+
+test "a renewed credential whose save fails is kept rather than rolled back to the refresh token the provider just revoked" {
+    const allocator = std.testing.allocator;
+    compat.time.test_clock_ms = 1_800_000_000_000;
+    defer compat.time.test_clock_ms = null;
+
+    var storage = try rotatingStorage(allocator);
+    defer storage.deinit();
+    rotating_failed_saves = 2;
+    defer rotating_failed_saves = 0;
+    const unsaved = storage.refreshCredentials("rotating", rotating_provider);
+    try std.testing.expectEqualStrings("refresh-2", storage.providers.get("rotating").?.oauth.refresh);
+    try std.testing.expectError(error.RenewedCredentialNotSaved, unsaved);
+    const key = (try storage.getApiKey("rotating", rotating_provider)).?;
+    defer allocator.free(key);
+    try std.testing.expectEqualStrings("access-2", key);
+
+    var retried = try rotatingStorage(allocator);
+    defer retried.deinit();
+    rotating_failed_saves = 1;
+    ephemeral_test_saves = 0;
+    try retried.refreshCredentials("rotating", rotating_provider);
+    try std.testing.expectEqual(@as(usize, 1), ephemeral_test_saves);
+    try std.testing.expect(std.mem.indexOf(u8, ephemeral_test_last_payload[0..ephemeral_test_last_len], "refresh-2") != null);
+}
+
 test "a granted credential never reaches the serialized form a writer would emit" {
     const allocator = std.testing.allocator;
     var storage = emptyTestStorage(allocator);
