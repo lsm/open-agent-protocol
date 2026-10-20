@@ -2829,8 +2829,13 @@ fn oapUnservedCode(provider_id: []const u8) ?oap_provider_types.ErrorCode {
     return refusal.code;
 }
 
+var served_token_hold_ms: u64 = 0;
+var served_token_answered = std.atomic.Value(bool).init(false);
+
 fn servedCopilotTokenEndpoint(allocator: std.mem.Allocator, url: []const u8, options: compat.http.FetchOptions) compat.http.FetchError!compat.http.Fetched {
     if (!std.mem.endsWith(u8, url, "/copilot_internal/v2/token")) return .{ .status = 404, .body = try allocator.dupe(u8, "") };
+    if (served_token_hold_ms > 0) compat.time.sleepMs(served_token_hold_ms);
+    defer served_token_answered.store(true, .seq_cst);
     for (options.extra_headers) |header| {
         if (!std.ascii.eqlIgnoreCase(header.name, "authorization") or !std.mem.eql(u8, header.value, "Bearer gho-stored")) continue;
         const expires_at = @divTrunc(compat.time.nowMillis(), std.time.ms_per_s) + 1800;
@@ -2925,6 +2930,74 @@ test "serve provider waits for a renewal another request holds the lock for, and
     try std.testing.expect(waiter.found);
     try std.testing.expectEqualStrings("sk-ant-oat-elsewhere", waiter.key[0..waiter.len]);
     try std.testing.expectEqual(@as(usize, 0), vendor_refreshes);
+}
+
+var served_sent_key: [32]u8 = undefined;
+var served_sent_len: usize = 0;
+
+fn keyRecordingStream(model: ai_types.Model, context: ai_types.Context, options: ?ai_types.StreamOptions, allocator: std.mem.Allocator) anyerror!*event_stream.AssistantMessageEventStream {
+    _ = .{ model, context };
+    const key = options.?.getApiKey() orelse return error.MissingApiKey;
+    served_sent_len = @min(key.len, served_sent_key.len);
+    @memcpy(served_sent_key[0..served_sent_len], key[0..served_sent_len]);
+    const s = try allocator.create(event_stream.AssistantMessageEventStream);
+    s.* = event_stream.AssistantMessageEventStream.init(allocator);
+    s.ownership = .{ .owned = ai_types.cloneAssistantMessageEvent };
+    s.complete(.{ .content = &.{}, .api = "openai-completions", .provider = "github-copilot", .model = "gpt-test", .usage = .{}, .stop_reason = .stop, .timestamp = compat.time.nowMillis() });
+    s.markThreadDone();
+    return s;
+}
+
+fn writeExpiredCopilotStore(allocator: std.mem.Allocator, tmp: *std.testing.TmpDir) ![:0]u8 {
+    try tmp.dir.createDirPath(std.testing.io, ".oapx");
+    const stored = try std.fmt.allocPrint(allocator, "{{\"github-copilot\":{{\"refresh\":\"gho-stored\",\"access\":\"tid=stale\",\"expires\":{d}}}}}", .{compat.time.nowMillis() - 25 * std.time.ms_per_hour});
+    defer allocator.free(stored);
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = ".oapx/auth.json", .data = stored });
+    return tmp.dir.realPathFileAlloc(std.testing.io, ".", allocator);
+}
+
+test "serve provider hands back an inference's stream while its token is still being renewed, then sends the renewed token" {
+    const allocator = std.testing.allocator;
+    try provider_catalog.blankEnvironment(allocator);
+    defer compat.clearTestEnv();
+    compat.time.test_clock_ms = 1_800_000_000_000;
+    defer compat.time.test_clock_ms = null;
+    protocol_server.test_copilot_fetch = servedCopilotTokenEndpoint;
+    defer protocol_server.test_copilot_fetch = null;
+    served_token_hold_ms = 500;
+    defer served_token_hold_ms = 0;
+    served_token_answered.store(false, .seq_cst);
+    served_sent_len = 0;
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const home = try writeExpiredCopilotStore(allocator, &tmp);
+    defer allocator.free(home);
+    try compat.setTestEnv(allocator, "HOME", home);
+
+    const completions = api_registry.ApiProvider{ .api = "openai-completions", .stream = keyRecordingStream, .stream_simple = unusedTestStreamSimple };
+    const model = ai_types.Model{
+        .id = "gpt-test",
+        .name = "gpt-test",
+        .api = "openai-completions",
+        .provider = "github-copilot",
+        .base_url = "https://api.individual.githubcopilot.com",
+        .reasoning = false,
+        .input = &.{"text"},
+        .cost = .{ .input = 0, .output = 0, .cache_read = 0, .cache_write = 0 },
+        .context_window = 1024,
+        .max_tokens = 16,
+    };
+    try std.testing.expect(oapRenewalDue(allocator, completions, "github-copilot", model.base_url, .none));
+    const messages = [_]ai_types.Message{.{ .user = .{ .content = .{ .text = "hi" }, .timestamp = 0 } }};
+
+    const stream = try startDeferredOapStream(allocator, completions, "github-copilot", model, .{ .messages = &messages }, .{});
+    defer _ = stream.deinitAndDestroy();
+    try std.testing.expect(!served_token_answered.load(.seq_cst));
+    while (stream.wait()) |event| stream.releaseEvent(event);
+    try std.testing.expect(stream.getError() == null);
+    try std.testing.expectEqualStrings("tid=served-fresh", served_sent_key[0..served_sent_len]);
+    try std.testing.expect(!oapRenewalDue(allocator, completions, "github-copilot", model.base_url, .none));
 }
 
 test "serve provider renews a Copilot token a day past its expiry from the stored GitHub token" {
@@ -3910,6 +3983,104 @@ fn resolveOapCredential(
     return resolved;
 }
 
+const missing_credential_message = "this provider needs a credential and none resolved";
+const unrefreshed_credential_message = "the stored credential could not be refreshed";
+
+const OapStartFailure = struct { code: oap_provider_types.ErrorCode, message: []const u8 };
+
+fn oapStartFailure(err: anyerror) OapStartFailure {
+    return switch (err) {
+        error.MissingApiKey, error.AuthRequired => .{ .code = .credential_missing, .message = missing_credential_message },
+        error.AuthRefreshFailed => .{ .code = .credential_expired, .message = unrefreshed_credential_message },
+        else => .{ .code = .provider_unavailable, .message = "the provider refused the request" },
+    };
+}
+
+fn oapRenewalDue(allocator: std.mem.Allocator, provider: api_registry.ApiProvider, provider_id: []const u8, base_url: []const u8, lookup: auth_resolver.OverrideLookup) bool {
+    if (auth_resolver.storedCredentialWithheld(allocator, lookup, provider_id, base_url)) return false;
+    if (provider_catalog.credentialEnvIsSet(allocator, provider_id) catch false) return false;
+    const oauth = protocol_server.authProvider(provider, provider_id) orelse return false;
+    if (!std.mem.eql(u8, oauth.id, provider_id)) return false;
+    var storage = oapStorageFor(allocator, provider_id) catch return false;
+    defer storage.deinit();
+    return storage.credentialsExpired(provider_id);
+}
+
+const DeferredOapStream = struct {
+    allocator: std.mem.Allocator,
+    provider: api_registry.ApiProvider,
+    provider_id: []u8,
+    model: ai_types.Model,
+    context: ai_types.Context,
+    options: ai_types.StreamOptions,
+    outer: *event_stream.AssistantMessageStream,
+
+    fn run(self: *DeferredOapStream) void {
+        const allocator = self.allocator;
+        const outer = self.outer;
+        defer {
+            allocator.free(self.provider_id);
+            self.model.deinit(allocator);
+            self.context.deinit(allocator);
+            allocator.destroy(self);
+            outer.markThreadDone();
+        }
+        var resolved = resolveOapCredential(allocator, self.provider, self.provider_id, self.model.base_url, .none);
+        defer if (resolved) |*key| key.deinit(allocator);
+        var options = self.options;
+        if (resolved) |key| options.api_key = @TypeOf(options.api_key).initBorrowed(key.api_key);
+        const inner = self.provider.stream(self.model, self.context, options, allocator) catch |err| {
+            outer.completeWithError(oapStartFailure(err).message);
+            return;
+        };
+        defer _ = inner.deinitAndDestroy();
+        while (inner.wait()) |event| {
+            outer.push(event) catch {};
+            inner.releaseEvent(event);
+        }
+        if (inner.getError()) |message| return outer.completeWithError(message);
+        const result = inner.getResult() orelse return outer.completeWithError("the provider stream ended with no result");
+        const cloned = ai_types.cloneAssistantMessage(allocator, result) catch return outer.completeWithError("out of memory");
+        outer.complete(cloned);
+    }
+};
+
+fn startDeferredOapStream(
+    allocator: std.mem.Allocator,
+    provider: api_registry.ApiProvider,
+    provider_id: []const u8,
+    model: ai_types.Model,
+    context: ai_types.Context,
+    options: ai_types.StreamOptions,
+) !*event_stream.AssistantMessageStream {
+    const outer = try allocator.create(event_stream.AssistantMessageStream);
+    errdefer allocator.destroy(outer);
+    outer.* = event_stream.AssistantMessageStream.init(allocator);
+    errdefer outer.deinit();
+    outer.ownership = .{ .owned = ai_types.cloneAssistantMessageEvent };
+    const deferred = try allocator.create(DeferredOapStream);
+    errdefer allocator.destroy(deferred);
+    const provider_id_owned = try allocator.dupe(u8, provider_id);
+    errdefer allocator.free(provider_id_owned);
+    var model_owned = try ai_types.cloneModel(allocator, model);
+    errdefer model_owned.deinit(allocator);
+    var context_owned = try ai_types.cloneContext(allocator, context);
+    errdefer context_owned.deinit(allocator);
+    deferred.* = .{
+        .allocator = allocator,
+        .provider = provider,
+        .provider_id = provider_id_owned,
+        .model = model_owned,
+        .context = context_owned,
+        .options = options,
+        .outer = outer,
+    };
+    const thread = try std.Thread.spawn(.{}, DeferredOapStream.run, .{deferred});
+    outer.wait_for_thread_on_deinit = true;
+    thread.detach();
+    return outer;
+}
+
 fn startOapInference(
     allocator: std.mem.Allocator,
     registry: *api_registry.ApiRegistry,
@@ -3961,7 +4132,8 @@ fn startOapInference(
     if (options.getApiKey() == null) if (inference.credential_ref) |reference| {
         if (grantedValueFor(granted, reference)) |value| options.api_key = @TypeOf(options.api_key).initBorrowed(value);
     };
-    if (options.getApiKey() == null or options.getApiKey().?.len == 0) {
+    const renewal_due = options.getApiKey() == null and oapRenewalDue(allocator, provider, provider_id, model.base_url, lookup);
+    if (!renewal_due and (options.getApiKey() == null or options.getApiKey().?.len == 0)) {
         resolved_credential = resolveOapCredential(allocator, provider, provider_id, model.base_url, lookup);
         if (resolved_credential) |key| options.api_key = @TypeOf(options.api_key).initBorrowed(key.api_key);
     }
@@ -3976,21 +4148,13 @@ fn startOapInference(
     };
     applyOapReasoning(&options, inference.reasoning);
 
-    const stream = provider.stream(model, context, options, allocator) catch |err| {
-        const code: oap_provider_types.ErrorCode = switch (err) {
-            error.MissingApiKey, error.AuthRequired => .credential_missing,
-            error.AuthRefreshFailed => .credential_expired,
-            else => .provider_unavailable,
-        };
-        const message = switch (err) {
-            error.MissingApiKey, error.AuthRequired => "this provider needs a credential and none resolved",
-            error.AuthRefreshFailed => "the stored credential could not be refreshed",
-            else => "the provider refused the request",
-        };
+    const started = if (renewal_due) startDeferredOapStream(allocator, provider, provider_id, model, context, options) else provider.stream(model, context, options, allocator);
+    const stream = started catch |err| {
+        const failure = oapStartFailure(err);
         model.deinit(allocator);
         context.deinit(allocator);
         allocator.destroy(cancelled);
-        try failOapInference(server, inference_id, code, message);
+        try failOapInference(server, inference_id, failure.code, failure.message);
         return;
     };
     errdefer {
@@ -4094,7 +4258,13 @@ fn settleOapInference(
                 null,
             );
         } else {
-            try server.settleFailed(entry.inference_id, oap_provider_runtime.failureCode(message), message, null);
+            const code: oap_provider_types.ErrorCode = if (std.mem.eql(u8, message, missing_credential_message))
+                .credential_missing
+            else if (std.mem.eql(u8, message, unrefreshed_credential_message))
+                .credential_expired
+            else
+                oap_provider_runtime.failureCode(message);
+            try server.settleFailed(entry.inference_id, code, message, null);
         }
         return;
     }
