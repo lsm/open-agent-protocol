@@ -84,6 +84,9 @@ func runOAPHost(scenario string) {
 			if request.payload().str("model_ref") == "fixture/other:test@silent" {
 				continue
 			}
+			if request.payload().str("model_ref") == "fixture/other:test@thinks" {
+				time.Sleep(fakeThinkingPause)
+			}
 			if request.payload().str("model_ref") == "fixture/other:test@parts" {
 				completed := oapHostFrame(oapProvider, "inference.completed", map[string]any{
 					"message": map[string]any{"role": "assistant", "content": []map[string]any{
@@ -695,5 +698,32 @@ func TestOAPAgentRunOutlastsTheRequestTimeoutWhileTheModelThinks(t *testing.T) {
 	response, err := client.Agent.Run(context.Background(), AgentRequest{ModelRef: "fixture/other:test@thinks", Messages: []Message{UserMessage("hi")}})
 	if err != nil || response.Message.Text != "thought" {
 		t.Fatalf("a run silent for %s under a %s request timeout = %v, %+v; want it to finish", fakeThinkingPause, 200*time.Millisecond, err, response)
+	}
+}
+
+func TestOAPInferenceOutlastsTheRequestTimeoutOnceAccepted(t *testing.T) {
+	client, err := newTestClientWithOptions(t, &Options{BinaryPath: os.Args[0], Env: fakeHostEnv(scenarioOAP), RequestTimeout: 200 * time.Millisecond})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	stream, err := client.Provider.Stream(context.Background(), CompletionRequest{ModelRef: "fixture/other:test@thinks", Messages: []Message{UserMessage("hi")}})
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+	for stream.Next() {
+	}
+	if err := stream.Err(); err != nil {
+		t.Fatalf("an accepted inference silent for %s under a %s request timeout failed: %v", fakeThinkingPause, 200*time.Millisecond, err)
+	}
+}
+
+func TestOAPAgentRunEndsWhenSilentLongerThanTheIdleTimeout(t *testing.T) {
+	client, err := newTestClientWithOptions(t, &Options{BinaryPath: os.Args[0], Env: fakeHostEnv(scenarioOAP), IdleTimeout: 200 * time.Millisecond})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	_, err = client.Agent.Run(context.Background(), AgentRequest{ModelRef: "fixture/other:test@thinks", Messages: []Message{UserMessage("hi")}})
+	if err == nil || !strings.Contains(err.Error(), "timed out waiting for OAP agent run after 200ms") {
+		t.Fatalf("a run silent for %s under a %s idle limit = %v; want the idle limit to end it", fakeThinkingPause, 200*time.Millisecond, err)
 	}
 }

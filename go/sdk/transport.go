@@ -514,8 +514,12 @@ func (s *subscription) signal() {
 }
 
 func (s *subscription) next(ctx context.Context, timeout time.Duration, operation string) (*inbound, error) {
-	timer := time.NewTimer(timeout)
-	defer timer.Stop()
+	var expired <-chan time.Time
+	if timeout > 0 {
+		timer := time.NewTimer(timeout)
+		defer timer.Stop()
+		expired = timer.C
+	}
 
 	for {
 		select {
@@ -539,7 +543,7 @@ func (s *subscription) next(ctx context.Context, timeout time.Duration, operatio
 			continue
 		case <-ctx.Done():
 			return nil, abortError(ctx.Err(), operation)
-		case <-timer.C:
+		case <-expired:
 			return nil, &StreamError{
 				Kind:      KindTransportError,
 				Message:   fmt.Sprintf("timed out waiting for %s after %s", operation, timeout),

@@ -322,6 +322,7 @@ type oapAgentState struct {
 	transport *transport
 	sub       *subscription
 	timeout   time.Duration
+	idle      time.Duration
 	sessionID string
 	runID     string
 	modelRef  string
@@ -541,7 +542,7 @@ func (s *AgentService) oapBegin(ctx context.Context, req AgentRequest) (*oapAgen
 	if selectedModelRef == "" {
 		selectedModelRef = envelopePayload(admission).str("model_id")
 	}
-	return &oapAgentState{ctx: ctx, transport: s.transport, sub: sub, timeout: s.timeout,
+	return &oapAgentState{ctx: ctx, transport: s.transport, sub: sub, timeout: s.timeout, idle: s.idle,
 		sessionID: sessionID, runID: runID, modelRef: selectedModelRef, tools: req.Tools, permit: req.Permit, callNames: map[string]string{}}, nil
 }
 
