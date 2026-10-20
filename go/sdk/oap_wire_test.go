@@ -7,6 +7,7 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 )
 
 func oapFakeReply(request *frame, kind string, payload any) *frame {
@@ -171,6 +172,24 @@ func runOAPHost(scenario string) {
 				}
 				event.SessionID, event.RunID = sessionID, "run-1"
 				fakeEmit(event)
+				continue
+			}
+			if selectedModel == "fixture/other:test@thinks" {
+				for index, item := range []struct {
+					kind    string
+					payload any
+				}{
+					{"run.started", map[string]any{"session_id": sessionID, "run_id": "run-1"}},
+					{"content.delta", map[string]any{"session_id": sessionID, "run_id": "run-1", "part": map[string]any{"type": "text", "text": "thought"}}},
+					{"run.completed", map[string]any{"session_id": sessionID, "run_id": "run-1", "final_response": map[string]any{"role": "assistant", "content": "thought"}, "stop_reason": "stop"}},
+				} {
+					if index == 1 {
+						time.Sleep(fakeThinkingPause)
+					}
+					event := oapHostFrame(oapAgent, item.kind, item.payload)
+					event.SessionID, event.RunID = sessionID, "run-1"
+					fakeEmit(event)
+				}
 				continue
 			}
 			if strings.HasPrefix(selectedModel, "fixture/other:test@permission") {
@@ -663,5 +682,18 @@ func TestOAPOpenRefusesWhatTheEndpointWouldIgnore(t *testing.T) {
 	payload, err := oapOpenPayload(bare, "session-1", AgentRequest{})
 	if err != nil || payload["metadata"] != nil {
 		t.Fatalf("an endpoint other than oapx.agent was sent oapx settings: %v, %+v", err, payload)
+	}
+}
+
+const fakeThinkingPause = 600 * time.Millisecond
+
+func TestOAPAgentRunOutlastsTheRequestTimeoutWhileTheModelThinks(t *testing.T) {
+	client, err := newTestClientWithOptions(t, &Options{BinaryPath: os.Args[0], Env: fakeHostEnv(scenarioOAP), RequestTimeout: 200 * time.Millisecond})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	response, err := client.Agent.Run(context.Background(), AgentRequest{ModelRef: "fixture/other:test@thinks", Messages: []Message{UserMessage("hi")}})
+	if err != nil || response.Message.Text != "thought" {
+		t.Fatalf("a run silent for %s under a %s request timeout = %v, %+v; want it to finish", fakeThinkingPause, 200*time.Millisecond, err, response)
 	}
 }
