@@ -1771,7 +1771,7 @@ pub const App = struct {
             if (stored.providers.get(held)) |auth| {
                 return switch (auth) {
                     .api_key => .api_key,
-                    .oauth => if (stored.configuredCredentialsExpired(held)) .expired else .oauth,
+                    .oauth => |credentials| if (!stored.configuredCredentialsExpired(held)) .oauth else if (credentials.refresh.len > 0 and !oauth_storage.renewalFailed(held, credentials.refresh)) .oauth else .expired,
                 };
             }
         }

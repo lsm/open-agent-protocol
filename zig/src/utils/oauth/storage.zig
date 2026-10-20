@@ -199,6 +199,31 @@ fn loadFnFor(save_fn: ?SaveFn) ?LoadFn {
 
 var renewed_save_mutex: std.Io.Mutex = .init;
 
+var failed_renewals_mutex: std.Io.Mutex = .init;
+var failed_renewals: std.StringHashMapUnmanaged(u64) = .empty;
+
+fn noteRenewal(provider_id: []const u8, refresh: []const u8, failed: bool) void {
+    failed_renewals_mutex.lockUncancelable(defaultIo());
+    defer failed_renewals_mutex.unlock(defaultIo());
+    if (!failed) {
+        if (failed_renewals.fetchRemove(provider_id)) |held| std.heap.smp_allocator.free(held.key);
+        return;
+    }
+    const entry = failed_renewals.getOrPut(std.heap.smp_allocator, provider_id) catch return;
+    if (!entry.found_existing) entry.key_ptr.* = std.heap.smp_allocator.dupe(u8, provider_id) catch {
+        failed_renewals.removeByPtr(entry.key_ptr);
+        return;
+    };
+    entry.value_ptr.* = std.hash.Wyhash.hash(0, refresh);
+}
+
+pub fn renewalFailed(provider_id: []const u8, refresh: []const u8) bool {
+    failed_renewals_mutex.lockUncancelable(defaultIo());
+    defer failed_renewals_mutex.unlock(defaultIo());
+    const failed = failed_renewals.get(provider_id) orelse return false;
+    return failed == std.hash.Wyhash.hash(0, refresh);
+}
+
 fn cloneCredentials(allocator: std.mem.Allocator, credentials: Credentials) !Credentials {
     const refresh = try allocator.dupe(u8, credentials.refresh);
     errdefer allocator.free(refresh);
@@ -1055,7 +1080,11 @@ pub const AuthStorage = struct {
             .oauth => |credentials| credentials,
         };
 
-        const new_credentials = try oauth_provider.refresh_fn(credentials, self.allocator);
+        const new_credentials = oauth_provider.refresh_fn(credentials, self.allocator) catch |err| {
+            noteRenewal(provider_id, credentials.refresh, true);
+            return err;
+        };
+        noteRenewal(provider_id, credentials.refresh, false);
         const held = self.providers.getPtr(provider_id).?;
         const replaced = held.*;
         held.* = .{ .oauth = new_credentials };
