@@ -360,7 +360,7 @@ the Go and Rust checks.
 call it was never asked about, the defect 0055 already rules out for the
 resolve pair.
 
-**Status.** Settled by [Decision 0055](../decisions/0055-register-batch-2.md). What remains is the port work the decision names.
+**Status.** Settled by [Decision 0055](../decisions/0055-register-batch-2.md) and ported: Zig judges the binding in `semantic.zig:interactionResolved`, as Go and Rust do.
 
 ### OPEN-0011-1: which pattern syntax is `name_pattern`, and is it anchored?
 
