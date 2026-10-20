@@ -3000,6 +3000,70 @@ test "serve provider hands back an inference's stream while its token is still b
     try std.testing.expect(!oapRenewalDue(allocator, completions, "github-copilot", model.base_url, .none));
 }
 
+const flood_events: usize = 3000;
+
+fn floodEvents(stream: *event_stream.AssistantMessageEventStream) void {
+    for (0..flood_events) |_| {
+        if (!stream.pushBlocking(.keepalive)) break;
+    }
+    stream.complete(.{ .content = &.{}, .api = "openai-completions", .provider = "github-copilot", .model = "gpt-test", .usage = .{}, .stop_reason = .stop, .timestamp = compat.time.nowMillis() });
+    stream.markThreadDone();
+}
+
+fn floodStream(model: ai_types.Model, context: ai_types.Context, options: ?ai_types.StreamOptions, allocator: std.mem.Allocator) anyerror!*event_stream.AssistantMessageEventStream {
+    _ = .{ model, context, options };
+    const s = try allocator.create(event_stream.AssistantMessageEventStream);
+    errdefer allocator.destroy(s);
+    s.* = event_stream.AssistantMessageEventStream.init(allocator);
+    s.ownership = .{ .owned = ai_types.cloneAssistantMessageEvent };
+    const thread = try std.Thread.spawn(.{}, floodEvents, .{s});
+    s.wait_for_thread_on_deinit = true;
+    thread.detach();
+    return s;
+}
+
+test "serve provider forwards every event of a renewed inference while nothing reads its stream" {
+    const allocator = std.testing.allocator;
+    try provider_catalog.blankEnvironment(allocator);
+    defer compat.clearTestEnv();
+    compat.time.test_clock_ms = 1_800_000_000_000;
+    defer compat.time.test_clock_ms = null;
+    protocol_server.test_copilot_fetch = servedCopilotTokenEndpoint;
+    defer protocol_server.test_copilot_fetch = null;
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const home = try writeExpiredCopilotStore(allocator, &tmp);
+    defer allocator.free(home);
+    try compat.setTestEnv(allocator, "HOME", home);
+
+    const flood = api_registry.ApiProvider{ .api = "openai-completions", .stream = floodStream, .stream_simple = unusedTestStreamSimple };
+    const model = ai_types.Model{
+        .id = "gpt-test",
+        .name = "gpt-test",
+        .api = "openai-completions",
+        .provider = "github-copilot",
+        .base_url = "https://api.individual.githubcopilot.com",
+        .reasoning = false,
+        .input = &.{"text"},
+        .cost = .{ .input = 0, .output = 0, .cache_read = 0, .cache_write = 0 },
+        .context_window = 1024,
+        .max_tokens = 16,
+    };
+    const messages = [_]ai_types.Message{.{ .user = .{ .content = .{ .text = "hi" }, .timestamp = 0 } }};
+    const stream = try startDeferredOapStream(allocator, flood, "github-copilot", model, .{ .messages = &messages }, .{});
+    defer _ = stream.deinitAndDestroy();
+    compat.time.sleepMs(300);
+
+    var forwarded: usize = 0;
+    while (stream.wait()) |event| {
+        if (event == .keepalive) forwarded += 1;
+        stream.releaseEvent(event);
+    }
+    try std.testing.expect(stream.getError() == null);
+    try std.testing.expectEqual(flood_events, forwarded);
+}
+
 test "serve provider renews a Copilot token a day past its expiry from the stored GitHub token" {
     const allocator = std.testing.allocator;
     try provider_catalog.blankEnvironment(allocator);
@@ -3933,11 +3997,11 @@ const RunningOapInference = struct {
 
     fn deinit(self: *RunningOapInference, allocator: std.mem.Allocator) void {
         self.cancelled.store(true, .release);
-        _ = self.stream.deinitAndDestroy();
+        const joined = self.stream.deinitAndDestroy();
         if (self.inference_id.len > 0) allocator.free(self.inference_id);
         self.context.deinit(allocator);
         self.model.deinit(allocator);
-        allocator.destroy(self.cancelled);
+        if (joined) allocator.destroy(self.cancelled);
     }
 };
 
@@ -4035,8 +4099,9 @@ const DeferredOapStream = struct {
         };
         defer _ = inner.deinitAndDestroy();
         while (inner.wait()) |event| {
-            outer.push(event) catch {};
+            const forwarded = outer.pushBlocking(event);
             inner.releaseEvent(event);
+            if (!forwarded) return outer.completeWithError("the endpoint could not forward the provider's events");
         }
         if (inner.getError()) |message| return outer.completeWithError(message);
         const result = inner.getResult() orelse return outer.completeWithError("the provider stream ended with no result");
