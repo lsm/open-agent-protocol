@@ -83,7 +83,7 @@ fn storedCredential(
 ) std.mem.Allocator.Error!?Credential {
     const id = row.id;
     const held = auth_storage orelse return null;
-    const stored = held.resolvedCredential(id) orelse return null;
+    const stored = held.resolvedCredential(provider_catalog.credentialKey(id)) orelse held.resolvedCredential(id) orelse return null;
     switch (stored) {
         .api_key => |key| {
             if (!accepts(row, .api_key)) return null;

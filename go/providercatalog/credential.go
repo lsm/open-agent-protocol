@@ -86,6 +86,13 @@ func storedCredential(catalog Catalog, stored *StoredCredential, id string) (Cre
 	return Credential{}, false
 }
 
+func CredentialKey(catalog Catalog, id string) string {
+	if provider, known := findProvider(catalog, id); known && provider.CredentialGroup != "" {
+		return provider.CredentialGroup
+	}
+	return id
+}
+
 func LookupCredential(catalog Catalog, env []EnvironmentValue, stored *StoredCredential, id string) (Credential, bool) {
 	if _, known := findProvider(catalog, id); !known {
 		return Credential{}, false

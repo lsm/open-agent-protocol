@@ -211,6 +211,11 @@
           "minLength": 1,
           "pattern": "^/"
         },
+        "credential_group": {
+          "description": "Names a credential this row shares with every other row naming the same group. One stored credential is kept under the group's name: a login through any row of the group stores it, a logout through any row removes it, and every row reads it. Rows of a group bill the same account through different offerings; an offering the credential is not entitled to fails at use. Absent means the row keeps a credential of its own.",
+          "type": "string",
+          "minLength": 1
+        },
         "models_dev": {
           "description": "The key this provider is listed under at models.dev, for a row whose own listing names its models but not their limits. A discovered model the listing gave no context window, output limit, reasoning or image input takes the figure models.dev publishes for the model of the same id under this key; a figure the listing or a `models` entry gives is never replaced. Absent means models.dev is never consulted for this row.",
           "type": "string",

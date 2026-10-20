@@ -1,8 +1,28 @@
 # OpenCode Zen and OpenCode Go
 
 OpenCode sells model access two ways, and oapx keeps them as two provider rows.
-Both read `OPENCODE_API_KEY`, but a key's balance and plan are separate, so each
-row logs in on its own.
+One OpenCode key works for both: the balance and the plan bill the same account
+through different offerings.
+
+## One credential, two offerings
+
+Both rows name the catalog's `credential_group` `opencode`, so they share one
+credential:
+
+- `/login opencode-go` or `/login opencode-zen` stores a single OpenCode key,
+  under the group's name, and both rows read it. `OPENCODE_API_KEY` already
+  signed in both.
+- `/logout` through either row removes it, and both rows sign out.
+- `auth.providers` reports the two rows with their own ids and auth kinds, as
+  before; only their status now moves together.
+- The model catalog lists Go and Zen models together under that one login, each
+  model on its own row and wire.
+- A key that is not entitled to one offering, such as Go without a subscription,
+  leaves that offering's models listed: they fail at use with OpenCode's own
+  error, and the other offering is unaffected.
+
+A key saved for one row before this change is still read for that row; the next
+login through either row moves it to the shared credential.
 
 | | `opencode-zen` | `opencode-go` |
 |---|---|---|

@@ -421,7 +421,7 @@ pub const AuthProtocolServer = struct {
         for (served, 0..) |definition, index| {
             var status: auth_types.AuthStatus = .login_required;
             if (storage) |*auth_storage| {
-                if (auth_storage.providers.get(definition.id)) |provider_auth| {
+                if (auth_storage.providers.get(provider_catalog.credentialKey(definition.id)) orelse auth_storage.providers.get(definition.id)) |provider_auth| {
                     switch (provider_auth) {
                         .api_key => status = .authenticated,
                         .oauth => |credentials| {
@@ -961,12 +961,21 @@ fn saveOAuthCredentials(provider_id: []const u8, credentials: oauth_storage.Cred
     var storage = try oauth_storage.AuthStorage.loadDefault(allocator);
     defer storage.deinit();
 
-    if (storage.providers.fetchRemove(provider_id)) |existing| {
-        allocator.free(existing.key);
-        existing.value.deinit(allocator);
+    for ([_][]const u8{ provider_catalog.credentialKey(provider_id), provider_id }) |held| {
+        if (storage.providers.fetchRemove(held)) |existing| {
+            allocator.free(existing.key);
+            existing.value.deinit(allocator);
+        }
+    }
+    for (provider_catalog.all) |row| {
+        if (!provider_catalog.sharesCredential(row.id, provider_id)) continue;
+        if (storage.providers.fetchRemove(row.id)) |existing| {
+            allocator.free(existing.key);
+            existing.value.deinit(allocator);
+        }
     }
 
-    const key = try allocator.dupe(u8, provider_id);
+    const key = try allocator.dupe(u8, provider_catalog.credentialKey(provider_id));
     try storage.providers.put(key, .{
         .oauth = .{
             .refresh = credentials.refresh,
@@ -1067,6 +1076,39 @@ test "the providers response counts a key in the provider's environment variable
     defer after.providers.deinit(allocator);
     try std.testing.expectEqual(auth_types.AuthStatus.authenticated, statusOf(after, "anthropic") orelse return error.TestExpectedProvider);
     try std.testing.expectEqual(auth_types.AuthStatus.login_required, statusOf(after, "openai") orelse return error.TestExpectedProvider);
+}
+
+test "one stored OpenCode credential signs in both offerings, and removing it signs out both" {
+    const allocator = std.testing.allocator;
+    try provider_catalog.blankEnvironment(allocator);
+    defer compat.clearTestEnv();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const home = try std.fs.path.join(allocator, &.{ ".zig-cache", "tmp", &tmp.sub_path });
+    defer allocator.free(home);
+    try compat.setTestEnv(allocator, "HOME", home);
+    var server = AuthProtocolServer.init(allocator, .{
+        .persist_credentials = false,
+        .enable_real_oauth = false,
+    });
+    defer server.deinit();
+
+    var storage = try oauth_storage.AuthStorage.loadFromFile(allocator);
+    const key = try allocator.dupe(u8, provider_catalog.credentialKey("opencode-go"));
+    try storage.providers.put(key, .{ .api_key = try allocator.dupe(u8, "opencode-secret") });
+    try storage.saveToFile();
+    storage.deinit();
+
+    var signed_in = try server.buildProvidersResponse();
+    defer signed_in.providers.deinit(allocator);
+    try std.testing.expectEqual(auth_types.AuthStatus.authenticated, statusOf(signed_in, "opencode-go") orelse return error.TestExpectedProvider);
+    try std.testing.expectEqual(auth_types.AuthStatus.authenticated, statusOf(signed_in, "opencode-zen") orelse return error.TestExpectedProvider);
+
+    try std.testing.expect(try oauth_storage.AuthStorage.removeStored(allocator, provider_catalog.credentialKey("opencode-zen")));
+    var signed_out = try server.buildProvidersResponse();
+    defer signed_out.providers.deinit(allocator);
+    try std.testing.expectEqual(auth_types.AuthStatus.login_required, statusOf(signed_out, "opencode-go") orelse return error.TestExpectedProvider);
+    try std.testing.expectEqual(auth_types.AuthStatus.login_required, statusOf(signed_out, "opencode-zen") orelse return error.TestExpectedProvider);
 }
 
 fn statusOf(response: auth_types.AuthProvidersResponse, id: []const u8) ?auth_types.AuthStatus {

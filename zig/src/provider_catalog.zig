@@ -281,6 +281,15 @@ pub fn credentialEnvIsSet(allocator: std.mem.Allocator, id: []const u8) !bool {
     return false;
 }
 
+pub fn credentialKey(id: []const u8) []const u8 {
+    const row = provider(id) orelse return id;
+    return row.credential_group orelse id;
+}
+
+pub fn sharesCredential(id: []const u8, other: []const u8) bool {
+    return std.mem.eql(u8, credentialKey(id), credentialKey(other));
+}
+
 pub fn modelsEndpoint(id: []const u8) ?[]const u8 {
     const row = provider(id) orelse return null;
     return row.models_endpoint;

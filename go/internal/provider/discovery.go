@@ -107,7 +107,9 @@ func (d Discoverer) discoverRow(ctx context.Context, id string, mode DiscoveryMo
 	}
 	var stored *providercatalog.StoredCredential
 	if d.Stored != nil {
-		stored = d.Stored(id)
+		if stored = d.Stored(providercatalog.CredentialKey(d.Catalog, id)); stored == nil {
+			stored = d.Stored(id)
+		}
 	}
 	credential, held := providercatalog.LookupCredential(d.Catalog, d.Environment, stored, id)
 	if !held {
