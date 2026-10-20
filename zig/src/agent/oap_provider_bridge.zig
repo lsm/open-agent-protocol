@@ -830,7 +830,7 @@ test "terminal message conversion keeps the cache counts the provider reported" 
         .context_window = 1024,
         .max_tokens = 128,
     };
-    const parts = [_]oap_types.ContentPart{.{ .text = .{ .text = "cached" } }};
+    const parts = [_]oap_types.ContentPart{.{ .text = "cached" }};
     const message: oap_types.Message = .{ .role = .assistant, .content = .{ .parts = @constCast(&parts) } };
     var terminal = try assistantMessage(allocator, model, message, .stop, .{ .input_tokens = 4, .cache_read_input_tokens = 9, .cache_write_input_tokens = 3, .output_tokens = 2, .total_tokens = 18 });
     defer terminal.deinit(allocator);
