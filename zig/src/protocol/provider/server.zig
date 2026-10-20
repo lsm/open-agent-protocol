@@ -1588,6 +1588,21 @@ const AuthTestState = struct {
 
 var auth_test_state: ?*AuthTestState = null;
 
+var test_copilot_fetch: ?*const fn (std.mem.Allocator, []const u8, compat.http.FetchOptions) compat.http.FetchError!compat.http.Fetched = null;
+var copilot_test_expires_at: i64 = 0;
+var copilot_test_token_requests: usize = 0;
+
+fn copilotTokenEndpoint(allocator: std.mem.Allocator, url: []const u8, options: compat.http.FetchOptions) compat.http.FetchError!compat.http.Fetched {
+    if (!std.mem.endsWith(u8, url, "/copilot_internal/v2/token")) return .{ .status = 404, .body = try allocator.dupe(u8, "") };
+    copilot_test_token_requests += 1;
+    for (options.extra_headers) |header| {
+        if (!std.ascii.eqlIgnoreCase(header.name, "authorization") or !std.mem.eql(u8, header.value, "Bearer gho-stored")) continue;
+        const body = std.fmt.allocPrint(allocator, "{{\"token\":\"tid=fresh;exp={d}\",\"expires_at\":{d},\"refresh_in\":1500}}", .{ copilot_test_expires_at, copilot_test_expires_at }) catch return error.OutOfMemory;
+        return .{ .status = 200, .body = body };
+    }
+    return .{ .status = 401, .body = try allocator.dupe(u8, "{\"message\":\"Bad credentials\"}") };
+}
+
 fn testModel() ai_types.Model {
     return .{
         .id = "test-model",
@@ -2196,6 +2211,63 @@ test "a stored vendor API key reaches only an origin the vendor serves or the us
             try std.testing.expectEqual(@as(usize, 0), state.last_api_key_len);
         }
     }
+}
+
+test "a GitHub Copilot token a day past its expiry is renewed from the stored GitHub token, and only a rejected GitHub token asks for a login" {
+    try provider_catalog.blankEnvironment(std.testing.allocator);
+    defer compat.clearTestEnv();
+    var state = AuthTestState{ .expires = 0 };
+    auth_test_state = &state;
+    defer auth_test_state = null;
+    test_copilot_fetch = copilotTokenEndpoint;
+    defer test_copilot_fetch = null;
+    copilot_test_token_requests = 0;
+    copilot_test_expires_at = @divTrunc(compat.time.nowMillis(), 1000) + 1800;
+
+    var registry = api_registry.ApiRegistry.init(std.testing.allocator);
+    defer registry.deinit();
+    try registry.registerApiProvider(.{ .api = "keyless-api", .stream = authTestStream, .stream_simple = mockStreamSimple }, null);
+    var storage = oauth_storage.AuthStorage{
+        .providers = std.StringHashMap(oauth_storage.ProviderAuth).init(std.testing.allocator),
+        .allocator = std.testing.allocator,
+        .save_fn = authTestSaveStorage,
+    };
+    defer storage.deinit();
+    try storage.providers.put(try std.testing.allocator.dupe(u8, "github-copilot"), .{ .oauth = .{
+        .refresh = try std.testing.allocator.dupe(u8, "gho-stored"),
+        .access = try std.testing.allocator.dupe(u8, "tid=stale"),
+        .expires = compat.time.nowMillis() - 25 * std.time.ms_per_hour,
+    } });
+    var server = ProtocolServer.init(std.testing.allocator, &registry, .{ .auth_storage = &storage });
+    defer server.deinit();
+
+    var model = testModel();
+    model.api = "keyless-api";
+    model.provider = "github-copilot";
+    model.base_url = "https://api.individual.githubcopilot.com";
+    const expected = try std.fmt.allocPrint(std.testing.allocator, "tid=fresh;exp={d}", .{copilot_test_expires_at});
+    defer std.testing.allocator.free(expected);
+    for (0..2) |_| {
+        const stream = try streamWithRefresh(&server, registry.getApiProvider("keyless-api").?, model, testContext(), null);
+        stream.deinit();
+        std.testing.allocator.destroy(stream);
+        try std.testing.expectEqualStrings(expected, state.last_api_key[0..state.last_api_key_len]);
+    }
+    try std.testing.expectEqual(@as(usize, 1), copilot_test_token_requests);
+    const renewed = storage.providers.get("github-copilot").?.oauth;
+    try std.testing.expectEqualStrings("gho-stored", renewed.refresh);
+    try std.testing.expect(renewed.expires <= copilot_test_expires_at * 1000);
+
+    if (storage.providers.fetchRemove("github-copilot")) |held| {
+        std.testing.allocator.free(held.key);
+        held.value.deinit(std.testing.allocator);
+    }
+    try storage.providers.put(try std.testing.allocator.dupe(u8, "github-copilot"), .{ .oauth = .{
+        .refresh = try std.testing.allocator.dupe(u8, "gho-revoked"),
+        .access = try std.testing.allocator.dupe(u8, "tid=stale"),
+        .expires = compat.time.nowMillis() - 25 * std.time.ms_per_hour,
+    } });
+    try std.testing.expectError(error.AuthRefreshFailed, streamWithRefresh(&server, registry.getApiProvider("keyless-api").?, model, testContext(), null));
 }
 
 test "a stored vendor API key on a foreign wire reaches only an origin the vendor serves" {
