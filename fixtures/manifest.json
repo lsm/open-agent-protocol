@@ -8425,6 +8425,33 @@
       ]
     },
     {
+      "id": "control-call-reused-call-id-keeps-the-first-binding",
+      "path": "semantic-invalid/control-call-reused-call-id-keeps-the-first-binding.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "illegal_tool_transition",
+        "illegal_tool_transition",
+        "illegal_tool_transition",
+        "pending_interaction_at_terminal"
+      ],
+      "units": [
+        "core",
+        "control-tools"
+      ],
+      "provenance": [
+        "decisions/0011-control-layer-provided-tools.md",
+        "decisions/0055-register-batch-2.md"
+      ],
+      "rules": [
+        "0001#one-foreground-invocation-is-one-run/5",
+        "0011#a-terminal-must-derive-from-an-accepted-resolution-and-carry-what-it-said/1",
+        "0001#correlated-reverse-interactions/6",
+        "0011#the-resolution-is-a-requestresponse-pair-with-three-arms/3"
+      ]
+    },
+    {
       "id": "control-call-unknown-interaction-refused",
       "path": "valid/control-call-unknown-interaction-refused.json",
       "kind": "positive",
