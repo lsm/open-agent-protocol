@@ -1071,6 +1071,11 @@ pub const Machine = struct {
                 if (std.mem.eql(u8, asked.declared, "action.tools.list.request") and asked.session.len == 0 and scope.len != 0) {
                     try self.add(code_scope_mismatch, index);
                 }
+                if (std.mem.eql(u8, asked.declared, "action.tools.list.request") and asked.session.len != 0 and
+                    std.mem.eql(u8, listed_session, asked.session) and !std.mem.eql(u8, field(envelope, "session_id"), asked.session))
+                {
+                    try self.add(code_scope_mismatch, index);
+                }
             }
             if (duplicateSourceId(member(payload, "sources")).len != 0) {
                 try self.add(code_duplicate_tool_source, index);
@@ -1084,11 +1089,13 @@ pub const Machine = struct {
             return;
         }
         if (std.mem.eql(u8, declared, "action.call.resolve.request")) {
+            try self.callAgreement(index, envelope, payload);
             try self.feature(index, envelope, "tools");
             try self.resolveRequest(index, envelope, payload);
             return;
         }
         if (std.mem.eql(u8, declared, "action.call.resolve.response")) {
+            try self.callAgreement(index, envelope, payload);
             try self.feature(index, envelope, "tools");
             try self.resolveResponse(index, envelope, payload);
             return;
@@ -4817,6 +4824,11 @@ pub const Machine = struct {
         return opened;
     }
 
+    fn callAgreement(self: *Machine, index: usize, envelope: std.json.Value, payload: std.json.Value) !void {
+        const named = field(envelope, "tool_call_id");
+        if (named.len != 0 and !std.mem.eql(u8, named, memberString(payload, "tool_call_id"))) try self.add(code_scope_mismatch, index);
+    }
+
     fn resolveRequest(self: *Machine, index: usize, envelope: std.json.Value, payload: std.json.Value) !void {
         const pending = try self.judgeResolve(index, envelope, payload);
         try self.resolves.put(self.allocator, field(envelope, "id"), pending);
@@ -4851,6 +4863,7 @@ pub const Machine = struct {
             return pending;
         }
         try held.resolve_requests.put(self.arena.allocator(), field(envelope, "id"), {});
+        if (!std.mem.eql(u8, memberString(payload, "tool_call_id"), boundCall(run.?, pending.interaction))) try self.add(code_scope_mismatch, index);
         pending.reason = resolveLadder(payload, held, pending.arm);
         return pending;
     }
@@ -5253,6 +5266,14 @@ fn sameOptionalCatalog(a: ?std.json.Value, b: ?std.json.Value) bool {
 fn sameBound(a: ?i64, b: ?i64) bool {
     if (a == null or b == null) return a == null and b == null;
     return a.? == b.?;
+}
+
+fn boundCall(run: *const Run, interaction: []const u8) []const u8 {
+    var calls = run.tools.iterator();
+    while (calls.next()) |call| {
+        if (std.mem.eql(u8, call.value_ptr.interaction, interaction)) return call.key_ptr.*;
+    }
+    return "";
 }
 
 fn exemptFromRevision(declared: []const u8) bool {
