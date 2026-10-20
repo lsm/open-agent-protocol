@@ -1495,3 +1495,33 @@ test "reanchorInline drops the stale frame and re-anchors at the bottom" {
     try std.testing.expectEqual(@as(usize, 0), program.last_line_widths.items.len);
     try std.testing.expectEqual(true, program.needs_repaint);
 }
+
+const CaretTestModel = struct {
+    pub const Msg = union(enum) { noop };
+    pub fn init(_: *@This(), _: *Context) Cmd(CaretTestModel.Msg) { return .none; }
+    pub fn update(_: *@This(), _: CaretTestModel.Msg, _: *Context) Cmd(CaretTestModel.Msg) { return .none; }
+    pub fn view(_: *@This(), _: *const Context) []const u8 {
+        return "";
+    }
+    pub fn cursorPosition(_: *const @This()) ?struct { row: usize, col: usize } {
+        return .{ .row = 1, .col = 8 };
+    }
+};
+
+test "inline frames return the real cursor to the input and redraw from that row" {
+    var env_map: std.process.Environ.Map = .init(std.testing.allocator);
+    defer env_map.deinit();
+    var program = Program(CaretTestModel).init(std.testing.allocator, std.testing.io, &env_map);
+    defer program.deinit();
+    program.model = .{};
+    program.context.width = 20;
+    program.context.height = 4;
+    var out: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer out.deinit();
+    try program.renderInlineFrame(&out.writer, "header\n> 中文\nborder\nfooter", "");
+    try std.testing.expect(std.mem.endsWith(u8, out.written(), "\r\x1b[2A\x1b[9G"));
+    var next: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer next.deinit();
+    try program.renderInlineFrame(&next.writer, "header\n> 中文\nborder\nfooter", "");
+    try std.testing.expect(std.mem.startsWith(u8, next.written(), "\x1b[1A\r"));
+}
