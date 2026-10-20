@@ -3,7 +3,9 @@ use std::error::Error;
 use futures::executor::block_on;
 use futures::{FutureExt, StreamExt};
 use oap_adapter::memory::{Config, Memory};
-use oap_adapter::{Adapter, EventStream, InteractionResolution, OpenRequest, SubmitRequest};
+use oap_adapter::{
+    Adapter, CompactRequest, EventStream, InteractionResolution, OpenRequest, SubmitRequest,
+};
 use oap_protocol::*;
 
 type Failure = Box<dyn Error>;
@@ -106,6 +108,27 @@ fn main() -> Result<(), Failure> {
         },
         &block_on(session.state())?,
     )?);
+
+    if std::env::args().nth(1).as_deref() == Some("compact") {
+        let compactor = session.compactor().ok_or("the session does not compact")?;
+        let request = SessionCompactRequest {
+            session_id: "session-1".into(),
+            focus: Some("the parser".into()),
+            ..SessionCompactRequest::default()
+        };
+        let (admission, mut stream) = block_on(compactor.compact(CompactRequest {
+            request: request.clone(),
+            envelope_id: "compact".into(),
+        }))?;
+        let kinds = [
+            EnvelopeType::SESSION_COMPACT_REQUEST,
+            EnvelopeType::SESSION_COMPACT_RESPONSE,
+        ];
+        trace.extend(reply(kinds, "compact", stamp, &request, &admission)?);
+        trace.extend(drain(&mut stream)?);
+        println!("{}", serde_json::to_string_pretty(&trace)?);
+        return Ok(());
+    }
 
     let submitted = MessageSubmitRequest {
         session_id: "session-1".into(),

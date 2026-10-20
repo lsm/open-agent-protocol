@@ -95,19 +95,22 @@ with the rebuilt `oapx` binary.
 ## Rust memory adapter consumer journey
 
 The Rust adapter is a library too. Its `memory_trace` example opens a memory
-session through the public `Adapter` and `Session` traits, submits a run, steers
-it, resolves both gates and prints the whole exchange as an OAP trace:
+session through the public `Adapter` and `Session` traits and prints the whole
+exchange as an OAP trace. With `steer` it submits a run, steers it and resolves
+both gates; with `compact` it asks an idle session for a focused compaction:
 
 ```sh
 python3 .claude/skills/verify/scripts/rust-memory-trace.py --output-dir /tmp/oap-rust-memory-<unique-name>
 ```
 
-The trace must end in `run.completed` with `run.steer.applied` right before the
-input gate, and must pass the Rust, Go and Zig validators (build `oapx` first).
-With the steer exchange removed, Go and Zig must reject it with `unmatched_steer`.
-The Rust validator has not ported that rule yet (see the `0013#steer-is-settled`
-rows in `drafts/validator-rules/0010-amendments-auth.md`), so the script does not
-check Rust's verdict on that trace.
+Each trace must end in `run.completed` and pass the Rust, Go and Zig validators
+(build `oapx` first). The steer trace must apply the steer right before the
+input gate, and the compaction run must start and end its compaction in order.
+With the steer exchange removed, Go and Zig must reject the trace with
+`unmatched_steer`. The Rust validator has not ported that rule yet (see the
+`0013#steer-is-settled` rows in `drafts/validator-rules/0010-amendments-auth.md`),
+so the script does not check Rust's verdict on that trace. With the compact
+exchange removed, all three must reject the trace with `illegal_run_transition`.
 
 ## Local oapx/TUI journey (PTY, no real credentials)
 
