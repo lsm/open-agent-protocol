@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -725,5 +726,21 @@ func TestOAPAgentRunEndsWhenSilentLongerThanTheIdleTimeout(t *testing.T) {
 	_, err = client.Agent.Run(context.Background(), AgentRequest{ModelRef: "fixture/other:test@thinks", Messages: []Message{UserMessage("hi")}})
 	if err == nil || !strings.Contains(err.Error(), "timed out waiting for OAP agent run after 200ms") {
 		t.Fatalf("a run silent for %s under a %s idle limit = %v; want the idle limit to end it", fakeThinkingPause, 200*time.Millisecond, err)
+	}
+}
+
+func TestOAPUsageReadsTheCacheAndReasoningCountsAndKeepsAnAbsentOneUnknown(t *testing.T) {
+	count := func(value *int64) string {
+		if value == nil {
+			return "unknown"
+		}
+		return strconv.FormatInt(*value, 10)
+	}
+	got := oapUsage(jsonObject{"input_tokens": float64(100), "cache_read_input_tokens": float64(400), "cache_write_input_tokens": float64(0), "output_tokens": float64(30), "total_tokens": float64(530)})
+	if got.Input != 100 || got.Output != 30 {
+		t.Fatalf("input, output = %d, %d, want 100, 30", got.Input, got.Output)
+	}
+	if count(got.CacheRead) != "400" || count(got.CacheWrite) != "0" || count(got.Reasoning) != "unknown" {
+		t.Fatalf("cache read, cache write, reasoning = %s, %s, %s, want 400, a measured 0, and unknown", count(got.CacheRead), count(got.CacheWrite), count(got.Reasoning))
 	}
 }

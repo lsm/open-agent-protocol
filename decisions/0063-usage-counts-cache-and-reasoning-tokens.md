@@ -78,7 +78,10 @@ decides.
   opencode's input and output, report cache and reasoning in core `usage`;
   `go/internal/inferenceserve`, which drops the cache counts
   `go/internal/provider` already holds and totals input and output alone,
-  carries them onto the provider wire; the claude adapter, which
+  carries them onto the provider wire; `oapx`'s own producers, whose
+  inference server drops the cache counts `ai_types.Usage` holds and whose
+  agent loop reports a message's and a run's usage from input and output
+  alone, carry them too; the claude adapter, which
   carries cache only in its extension, fills the cache members too; and the
   SDKs' usage types (Go, Rust, Python and TypeScript), which read the old
   three members or vendor names such as `cache_read`, read the new ones.
