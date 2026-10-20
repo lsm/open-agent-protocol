@@ -177,12 +177,38 @@ pub const ProviderAuth = union(enum) {
 };
 
 pub const SaveFn = *const fn (storage: *const AuthStorage) anyerror!void;
+pub const LoadFn = *const fn (allocator: std.mem.Allocator) anyerror!AuthStorage;
+
+fn reloadStoredOnly(allocator: std.mem.Allocator) anyerror!AuthStorage {
+    return AuthStorage.loadDefaultStoredOnly(allocator);
+}
+
+fn reloadFile(allocator: std.mem.Allocator) anyerror!AuthStorage {
+    return AuthStorage.loadFromFile(allocator);
+}
+
+fn loadFnFor(save_fn: ?SaveFn) ?LoadFn {
+    const save = save_fn orelse return reloadFile;
+    return if (save == keychain_save_fn) reloadStoredOnly else null;
+}
+
+var renewed_save_mutex: std.Io.Mutex = .init;
+
+fn cloneCredentials(allocator: std.mem.Allocator, credentials: Credentials) !Credentials {
+    const refresh = try allocator.dupe(u8, credentials.refresh);
+    errdefer allocator.free(refresh);
+    const access = try allocator.dupe(u8, credentials.access);
+    errdefer allocator.free(access);
+    const provider_data = if (credentials.provider_data) |data| try allocator.dupe(u8, data) else null;
+    return .{ .refresh = refresh, .access = access, .expires = credentials.expires, .provider_data = provider_data };
+}
 
 fn emptyStorage(allocator: std.mem.Allocator, save_fn: ?SaveFn) AuthStorage {
     return .{
         .providers = std.StringHashMap(ProviderAuth).init(allocator),
         .allocator = allocator,
         .save_fn = save_fn,
+        .load_fn = loadFnFor(save_fn),
     };
 }
 
@@ -262,6 +288,7 @@ fn parseAuthJson(allocator: std.mem.Allocator, content: []const u8, save_fn: ?Sa
         .providers = providers,
         .allocator = allocator,
         .save_fn = save_fn,
+        .load_fn = loadFnFor(save_fn),
     };
 }
 
@@ -782,6 +809,7 @@ pub const AuthStorage = struct {
     providers: std.StringHashMap(ProviderAuth),
     allocator: std.mem.Allocator,
     save_fn: ?SaveFn = null,
+    load_fn: ?LoadFn = null,
     ephemeral: ?std.StringHashMap(ProviderAuth) = null,
 
     pub fn putEphemeral(self: *AuthStorage, provider_id: []const u8, auth: ProviderAuth) !void {
@@ -1027,7 +1055,27 @@ pub const AuthStorage = struct {
         const replaced = held.*;
         held.* = .{ .oauth = new_credentials };
         replaced.deinit(self.allocator);
-        self.persist() catch self.persist() catch return error.RenewedCredentialNotSaved;
+        self.persistRenewed(provider_id) catch self.persistRenewed(provider_id) catch return error.RenewedCredentialNotSaved;
+    }
+
+    fn persistRenewed(self: *AuthStorage, provider_id: []const u8) !void {
+        const reload = self.load_fn orelse return self.persist();
+        renewed_save_mutex.lockUncancelable(defaultIo());
+        defer renewed_save_mutex.unlock(defaultIo());
+        var current = try reload(self.allocator);
+        defer current.deinit();
+        const renewed = try cloneCredentials(self.allocator, self.providers.get(provider_id).?.oauth);
+        if (current.providers.getPtr(provider_id)) |held| {
+            const replaced = held.*;
+            held.* = .{ .oauth = renewed };
+            replaced.deinit(self.allocator);
+        } else {
+            errdefer renewed.deinit(self.allocator);
+            const key = try self.allocator.dupe(u8, provider_id);
+            errdefer self.allocator.free(key);
+            try current.providers.put(key, .{ .oauth = renewed });
+        }
+        try current.persist();
     }
 
     pub fn getApiKey(self: *AuthStorage, provider_id: []const u8, oauth_provider: ?OAuthProvider) !?[]const u8 {
@@ -1661,8 +1709,13 @@ fn putTestOAuth(storage: *AuthStorage, id: []const u8, refresh: []const u8, acce
 }
 
 var shared_test_store: ?*AuthStorage = null;
+var shared_test_store_mutex: std.Io.Mutex = .init;
+var shared_test_save_delay_ms: u64 = 0;
 
 fn saveWholeSnapshot(saved: *const AuthStorage) anyerror!void {
+    if (shared_test_save_delay_ms > 0) compat.time.sleepMs(shared_test_save_delay_ms);
+    shared_test_store_mutex.lockUncancelable(defaultIo());
+    defer shared_test_store_mutex.unlock(defaultIo());
     const store = shared_test_store.?;
     var entries = saved.providers.iterator();
     while (entries.next()) |entry| {
@@ -1671,16 +1724,73 @@ fn saveWholeSnapshot(saved: *const AuthStorage) anyerror!void {
     }
 }
 
-fn snapshotOfSharedStore(allocator: std.mem.Allocator) !AuthStorage {
+fn snapshotOfSharedStore(allocator: std.mem.Allocator) anyerror!AuthStorage {
     var snapshot = emptyTestStorage(allocator);
     snapshot.save_fn = saveWholeSnapshot;
+    snapshot.load_fn = snapshotOfSharedStore;
     errdefer snapshot.deinit();
+    shared_test_store_mutex.lockUncancelable(defaultIo());
+    defer shared_test_store_mutex.unlock(defaultIo());
     var entries = shared_test_store.?.providers.iterator();
     while (entries.next()) |entry| {
         const creds = entry.value_ptr.oauth;
         try putTestOAuth(&snapshot, entry.key_ptr.*, creds.refresh, creds.access, creds.expires);
     }
     return snapshot;
+}
+
+fn renewOnThread(id: []const u8, failed: *?anyerror) void {
+    var copy = snapshotOfSharedStore(std.testing.allocator) catch |err| {
+        failed.* = err;
+        return;
+    };
+    defer copy.deinit();
+    copy.refreshCredentials(id, rotating_provider) catch |err| {
+        failed.* = err;
+    };
+}
+
+test "two providers renewed at once from their own copies both keep their rotated refresh tokens" {
+    const allocator = std.testing.allocator;
+    compat.time.test_clock_ms = 1_800_000_000_000;
+    defer compat.time.test_clock_ms = null;
+
+    var store = emptyTestStorage(allocator);
+    defer store.deinit();
+    try putTestOAuth(&store, "first", "refresh-1", "access-1", compat.time.nowMillis() - 1);
+    try putTestOAuth(&store, "second", "refresh-1", "access-1", compat.time.nowMillis() - 1);
+    shared_test_store = &store;
+    defer shared_test_store = null;
+    shared_test_save_delay_ms = 100;
+    defer shared_test_save_delay_ms = 0;
+
+    var failures = [_]?anyerror{ null, null };
+    const ids = [_][]const u8{ "first", "second" };
+    var threads: [2]std.Thread = undefined;
+    for (&threads, ids, &failures) |*thread, id, *failed| thread.* = try std.Thread.spawn(.{}, renewOnThread, .{ id, failed });
+    for (threads) |thread| thread.join();
+
+    for (failures) |failed| try std.testing.expect(failed == null);
+    try std.testing.expectEqualStrings("refresh-2", store.providers.get("first").?.oauth.refresh);
+    try std.testing.expectEqualStrings("refresh-2", store.providers.get("second").?.oauth.refresh);
+}
+
+fn saveRenewedEntry(allocator: std.mem.Allocator) !void {
+    var store = emptyTestStorage(allocator);
+    defer store.deinit();
+    try putTestOAuth(&store, "first", "refresh-1", "access-1", 0);
+    try putTestOAuth(&store, "second", "refresh-1", "access-1", 0);
+    shared_test_store = &store;
+    defer shared_test_store = null;
+    var copy = try snapshotOfSharedStore(allocator);
+    defer copy.deinit();
+    try putTestOAuth(&copy, "first", "refresh-2", "access-2", 1);
+    try copy.persistRenewed("first");
+    try std.testing.expectEqualStrings("refresh-2", store.providers.get("first").?.oauth.refresh);
+}
+
+test "saving a renewed entry frees everything it built when an allocation fails" {
+    try std.testing.checkAllAllocationFailures(std.heap.smp_allocator, saveRenewedEntry, .{});
 }
 
 test "renewing one provider from a stale copy of the store never writes back another provider's revoked refresh token" {
