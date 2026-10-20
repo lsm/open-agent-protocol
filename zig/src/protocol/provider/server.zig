@@ -5,6 +5,7 @@ const anthropic_messages_base_url = provider_catalog.baseUrlOrCompileError("anth
 const openai_responses_base_url = provider_catalog.baseUrlOrCompileError("openai", "openai-responses", null);
 const openai_completions_base_url = provider_catalog.baseUrlOrCompileError("openai", "openai-completions", null);
 const compat = @import("compat");
+const github_copilot = @import("oauth/github_copilot");
 const protocol_types = @import("protocol_types");
 const envelope = @import("protocol_envelope");
 const partial_serializer = @import("partial_serializer.zig");
@@ -549,8 +550,33 @@ fn injectCompleteOptions(
     return resolved;
 }
 
-fn authProvider(provider: api_registry.ApiProvider) ?oauth_storage.OAuthProvider {
-    const provider_id = provider.auth_provider_id orelse return null;
+var test_copilot_fetch: ?github_copilot.Fetch = null;
+
+fn refreshCopilotCredentials(credentials: oauth_storage.Credentials, allocator: std.mem.Allocator) !oauth_storage.Credentials {
+    const fetch = if (@import("builtin").is_test) test_copilot_fetch orelse compat.http.fetch else compat.http.fetch;
+    const renewed = try github_copilot.refreshToken(fetch, .{
+        .refresh = credentials.refresh,
+        .access = credentials.access,
+        .expires = credentials.expires,
+        .provider_data = credentials.provider_data,
+    }, allocator);
+    return .{ .refresh = renewed.refresh, .access = renewed.access, .expires = renewed.expires, .provider_data = renewed.provider_data };
+}
+
+fn copilotApiKey(credentials: oauth_storage.Credentials, allocator: std.mem.Allocator) ![]const u8 {
+    return allocator.dupe(u8, credentials.access);
+}
+
+const copilot_oauth_provider = oauth_storage.OAuthProvider{
+    .id = "github-copilot",
+    .name = "GitHub Copilot",
+    .refresh_fn = refreshCopilotCredentials,
+    .get_api_key_fn = copilotApiKey,
+};
+
+fn authProvider(provider: api_registry.ApiProvider, model_provider: []const u8) ?oauth_storage.OAuthProvider {
+    const provider_id = provider.auth_provider_id orelse
+        return if (std.mem.eql(u8, model_provider, copilot_oauth_provider.id)) copilot_oauth_provider else null;
     return .{
         .id = provider_id,
         .refresh_fn = provider.auth_refresh_fn orelse return null,
@@ -722,7 +748,7 @@ fn streamWithOverride(
     const provider_id = provider.auth_provider_id orelse model.provider;
     const claims_vendor_without_vendor_api = provider.auth_provider_id == null and
         isVendorOAuthProviderId(model.provider);
-    const oauth_provider = authProvider(provider) orelse
+    const oauth_provider = authProvider(provider, model.provider) orelse
         return streamWithResolvedKey(
             server,
             provider,
@@ -1588,7 +1614,6 @@ const AuthTestState = struct {
 
 var auth_test_state: ?*AuthTestState = null;
 
-var test_copilot_fetch: ?*const fn (std.mem.Allocator, []const u8, compat.http.FetchOptions) compat.http.FetchError!compat.http.Fetched = null;
 var copilot_test_expires_at: i64 = 0;
 var copilot_test_token_requests: usize = 0;
 

@@ -930,7 +930,7 @@ const FakeCopilotAuth = struct {
             break :blk if (granted) "{\"access_token\":\"github-secret-3\"}" else "{\"error\":\"authorization_pending\"}";
         } else if (std.mem.endsWith(u8, url, "/copilot_internal/v2/token")) blk: {
             _ = copilot_token_calls.fetchAdd(1, .seq_cst);
-            break :blk "{\"token\":\"tid=copilot-secret-3;proxy-ep=proxy.individual.githubcopilot.com\"}";
+            break :blk "{\"token\":\"tid=copilot-secret-3;proxy-ep=proxy.individual.githubcopilot.com\",\"expires_at\":4102444800}";
         } else if (std.mem.endsWith(u8, url, "/policy")) blk: {
             _ = model_policy_calls.fetchAdd(1, .seq_cst);
             break :blk "{}";
