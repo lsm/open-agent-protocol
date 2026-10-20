@@ -334,7 +334,7 @@ pub const RefreshLock = struct {
         return count;
     }
 
-    fn refCountForTesting(self: *RefreshLock, provider_id: []const u8, user_id: ?[]const u8) usize {
+    pub fn refCountForTesting(self: *RefreshLock, provider_id: []const u8, user_id: ?[]const u8) usize {
         self.mutex.lockUncancelable(defaultIo());
         defer self.mutex.unlock(defaultIo());
 
