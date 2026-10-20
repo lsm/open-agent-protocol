@@ -6,7 +6,6 @@ mod results;
 mod runs;
 
 use std::collections::{HashMap, HashSet};
-use std::sync::Arc;
 
 use oap_protocol::*;
 use serde::de::DeserializeOwned;
@@ -19,7 +18,7 @@ struct Request {
     line: usize,
     envelope: Envelope,
     capability_revision: String,
-    settled_under: Option<Arc<HashMap<String, SupportLevel>>>,
+    settled_under: String,
     session: String,
     run: String,
     interaction: String,
@@ -33,8 +32,7 @@ pub(crate) struct State {
     requests: HashMap<String, Request>,
     current_capability: String,
     previous_capability: String,
-    previous_features: Arc<HashMap<String, SupportLevel>>,
-    settling: Option<Arc<HashMap<String, SupportLevel>>>,
+    settling: bool,
     capabilities_stale: bool,
     runs: HashMap<String, runs::Run>,
     active: HashMap<String, String>,
@@ -292,8 +290,7 @@ impl State {
             requests: HashMap::new(),
             current_capability: String::new(),
             previous_capability: String::new(),
-            previous_features: Arc::default(),
-            settling: None,
+            settling: false,
             capabilities_stale: false,
             runs: HashMap::new(),
             active: HashMap::new(),
@@ -383,7 +380,7 @@ impl State {
                 line,
                 envelope: e.clone(),
                 capability_revision: revision.clone(),
-                settled_under: None,
+                settled_under: String::new(),
                 session,
                 run,
                 interaction: envelope_interaction(e),
@@ -393,7 +390,7 @@ impl State {
         }
         let duplicate_response = is_response(&e.envelope_type) && !self.response(at, e);
         self.settling = self.settles_under_previous(e);
-        if self.settling.is_none()
+        if !self.settling
             && !revision.is_empty()
             && !self.current_capability.is_empty()
             && revision != self.current_capability
@@ -469,24 +466,23 @@ impl State {
         }
     }
 
-    fn settles_under_previous(
-        &mut self,
-        e: &Envelope,
-    ) -> Option<Arc<HashMap<String, SupportLevel>>> {
-        let revision = e.capability_revision.as_deref().filter(|r| !r.is_empty())?;
+    fn settles_under_previous(&mut self, e: &Envelope) -> bool {
+        let Some(revision) = e.capability_revision.as_deref().filter(|r| !r.is_empty()) else {
+            return false;
+        };
         if is_response(&e.envelope_type) {
-            let request = self.requests.get(&os(&e.in_reply_to))?;
-            return (request.capability_revision == revision)
-                .then(|| request.settled_under.clone())
-                .flatten();
+            return self
+                .requests
+                .get(&os(&e.in_reply_to))
+                .is_some_and(|request| request.settled_under == revision);
         }
         if !self.capabilities_stale || revision != self.previous_capability {
-            return None;
+            return false;
         }
         let t = &e.envelope_type;
         if *t == EnvelopeType::ACTION_PERMISSION_RESOLVED || *t == EnvelopeType::USER_INPUT_RESOLVED
         {
-            return Some(self.previous_features.clone());
+            return true;
         }
         if matches!(
             t.as_str(),
@@ -496,11 +492,12 @@ impl State {
                 | "user.input.cancel.request"
                 | "action.call.resolve.request"
         ) {
-            let features = self.previous_features.clone();
-            self.requests.get_mut(e.id.as_str())?.settled_under = Some(features.clone());
-            return Some(features);
+            if let Some(request) = self.requests.get_mut(e.id.as_str()) {
+                request.settled_under = revision.to_owned();
+            }
+            return true;
         }
-        None
+        false
     }
 
     fn response(&mut self, at: (usize, usize), e: &Envelope) -> bool {
