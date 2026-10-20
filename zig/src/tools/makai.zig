@@ -2872,7 +2872,7 @@ const ResolvedOnThread = struct {
     found: bool = false,
 
     fn run(self: *ResolvedOnThread) void {
-        var resolved = resolveOapCredential(std.testing.allocator, self.provider, "anthropic", "https://api.anthropic.com", .none) orelse return;
+        var resolved = resolveOapCredential(std.testing.allocator, self.provider, "anthropic", provider_catalog.baseUrl("anthropic", "anthropic-messages", null).?, .none) orelse return;
         defer resolved.deinit(std.testing.allocator);
         self.len = @min(resolved.api_key.len, self.key.len);
         @memcpy(self.key[0..self.len], resolved.api_key[0..self.len]);
@@ -2980,7 +2980,7 @@ test "serve provider renews an expired OAuth token once through the refresh its 
     }
     try std.testing.expectEqual(@as(usize, 0), vendor_refreshes);
     for (0..2) |_| {
-        var resolved = resolveOapCredential(allocator, messages, "anthropic", "https://api.anthropic.com", .none) orelse return error.TestExpectedCredential;
+        var resolved = resolveOapCredential(allocator, messages, "anthropic", provider_catalog.baseUrl("anthropic", "anthropic-messages", null).?, .none) orelse return error.TestExpectedCredential;
         defer resolved.deinit(allocator);
         try std.testing.expectEqualStrings("sk-ant-oat-renewed", resolved.api_key);
     }
