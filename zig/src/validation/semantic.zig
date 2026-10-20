@@ -292,6 +292,7 @@ const Interaction = struct {
     allow_cancel: bool = false,
     choices: ?std.json.Value = null,
     questions: ?std.json.Value = null,
+    tool_call: []const u8 = "",
     resolved: bool = false,
     opened_at: u64 = 0,
     resolved_at: u64 = 0,
@@ -4668,7 +4669,7 @@ pub const Machine = struct {
             }
         }
         if (interactionOpening(declared)) |kind| try self.interactionRequested(index, body, state, kind);
-        if (interactionClosing(declared)) |kind| try self.interactionResolved(index, body, state, kind);
+        if (interactionClosing(declared)) |kind| try self.interactionResolved(index, envelope, body, state, kind);
 
         if (isTerminal(declared)) {
             if (std.mem.eql(u8, declared, "run.cancelled") and !state.cancel_accepted and !state.recovered) {
@@ -4756,6 +4757,7 @@ pub const Machine = struct {
             .kind = .tool_call,
             .requested_by = memberString(payload, "requested_by"),
             .responded_by = responder,
+            .tool_call = memberString(payload, "tool_call_id"),
             .opened_at = self.current_sequence,
         };
         try run.interactions.put(self.arena.allocator(), id, opened);
@@ -4931,12 +4933,13 @@ pub const Machine = struct {
             .allow_cancel = kind == .input and memberBool(payload, "allow_cancel"),
             .choices = if (kind == .permission) member(payload, "choices") else null,
             .questions = if (kind == .input) member(payload, "questions") else null,
+            .tool_call = memberString(payload, "tool_call_id"),
             .opened_at = self.current_sequence,
         };
         try run.interactions.put(self.arena.allocator(), id, opened);
     }
 
-    fn interactionResolved(self: *Machine, index: usize, payload: std.json.Value, run: *Run, kind: InteractionKind) !void {
+    fn interactionResolved(self: *Machine, index: usize, envelope: std.json.Value, payload: std.json.Value, run: *Run, kind: InteractionKind) !void {
         const id = memberString(payload, "interaction_id");
         const held = run.interactions.get(id) orelse blk: {
             if (!run.prior_unknown) {
@@ -4959,6 +4962,11 @@ pub const Machine = struct {
         if (kind == .permission and std.mem.eql(u8, memberString(payload, "outcome"), "resolved")) {
             const choice = memberString(payload, "choice_id");
             if (choice.len != 0 and !offersChoice(held.choices, choice)) try self.add(code_unmatched_interaction, index);
+        }
+        if (kind == .permission) {
+            for ([_][]const u8{ field(envelope, "tool_call_id"), memberString(payload, "tool_call_id") }) |named| {
+                if (named.len != 0 and !std.mem.eql(u8, named, held.tool_call)) try self.add(code_scope_mismatch, index);
+            }
         }
         held.resolved = true;
     }
