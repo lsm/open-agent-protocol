@@ -298,7 +298,7 @@ test "App loginStatusFor reports stored, environment and expired credentials" {
     try std.testing.expectEqual(App.LoginStatus.oauth, App.loginStatusFor(&storage, "anthropic", false));
     try std.testing.expectEqual(App.LoginStatus.env_key, App.loginStatusFor(null, "anthropic", true));
     try std.testing.expectEqual(App.LoginStatus.none, App.loginStatusFor(null, "kimi", false));
-    try std.testing.expectEqual(App.LoginStatus.expired, App.loginStatusFor(&storage, "openai-codex", false));
+    try std.testing.expectEqual(App.LoginStatus.oauth, App.loginStatusFor(&storage, "openai-codex", false));
     try std.testing.expectEqual(App.LoginStatus.env_key, App.loginStatusFor(&storage, "github-copilot", true));
     try std.testing.expectEqual(App.LoginStatus.none, App.loginStatusFor(&storage, "github-copilot", false));
     try std.testing.expect(std.mem.indexOf(u8, App.loginBadge(.oauth).?, "logged in") != null);
@@ -1771,7 +1771,7 @@ pub const App = struct {
             if (stored.providers.get(held)) |auth| {
                 return switch (auth) {
                     .api_key => .api_key,
-                    .oauth => if (stored.configuredCredentialsExpired(held)) .expired else .oauth,
+                    .oauth => |credentials| if (!stored.configuredCredentialsExpired(held)) .oauth else if (credentials.refresh.len > 0 and !oauth_storage.renewalFailed(held, credentials.refresh)) .oauth else .expired,
                 };
             }
         }
@@ -10639,6 +10639,47 @@ test "ProductionRuntime outlives stream threads from dropped SessionRuntime" {
     try drainStreamAndVerify(allocator, stream);
 }
 
+fn rejectRenewal(credentials: oauth_storage.Credentials, allocator: std.mem.Allocator) anyerror!oauth_storage.Credentials {
+    _ = .{ credentials, allocator };
+    return error.RefreshTokenRevoked;
+}
+
+fn accessOfCredentials(credentials: oauth_storage.Credentials, allocator: std.mem.Allocator) anyerror![]const u8 {
+    return allocator.dupe(u8, credentials.access);
+}
+
+fn putExpiredOAuth(storage: *oauth_storage.AuthStorage, id: []const u8, refresh: []const u8) !void {
+    if (storage.providers.fetchRemove(id)) |held| {
+        storage.allocator.free(held.key);
+        held.value.deinit(storage.allocator);
+    }
+    const key = try storage.allocator.dupe(u8, id);
+    errdefer storage.allocator.free(key);
+    const refresh_owned = try storage.allocator.dupe(u8, refresh);
+    errdefer storage.allocator.free(refresh_owned);
+    const access = try storage.allocator.dupe(u8, "expired-access");
+    errdefer storage.allocator.free(access);
+    try storage.providers.put(key, .{ .oauth = .{ .refresh = refresh_owned, .access = access, .expires = 1 } });
+}
+
+test "App login badge asks for a login only once renewing the stored token has failed, or there is nothing to renew it with" {
+    var storage = oauth_storage.AuthStorage{ .providers = std.StringHashMap(oauth_storage.ProviderAuth).init(std.testing.allocator), .allocator = std.testing.allocator };
+    defer storage.deinit();
+    try putExpiredOAuth(&storage, "openai-codex", "codex-refresh");
+    try putExpiredOAuth(&storage, "github-copilot", "");
+
+    try std.testing.expectEqual(App.LoginStatus.oauth, App.loginStatusFor(&storage, "openai-codex", false));
+    try std.testing.expectEqual(App.LoginStatus.expired, App.loginStatusFor(&storage, "github-copilot", false));
+
+    const rejecting = oauth_storage.OAuthProvider{ .id = "openai-codex", .refresh_fn = rejectRenewal, .get_api_key_fn = accessOfCredentials };
+    try std.testing.expectError(error.RefreshTokenRevoked, storage.refreshCredentials("openai-codex", rejecting));
+    try std.testing.expectEqual(App.LoginStatus.expired, App.loginStatusFor(&storage, "openai-codex", false));
+    try std.testing.expectEqualStrings("expired · login again", App.loginBadge(App.loginStatusFor(&storage, "openai-codex", false)).?);
+
+    try putExpiredOAuth(&storage, "openai-codex", "codex-refresh-after-login");
+    try std.testing.expectEqual(App.LoginStatus.oauth, App.loginStatusFor(&storage, "openai-codex", false));
+}
+
 test "a granted credential does not change what the login badge reports" {
     const allocator = std.testing.allocator;
 
@@ -10654,11 +10695,11 @@ test "a granted credential does not change what the login badge reports" {
         .expires = 0,
     } });
 
-    try std.testing.expectEqual(App.LoginStatus.expired, App.loginStatusFor(&storage, "anthropic", false));
+    try std.testing.expectEqual(App.LoginStatus.oauth, App.loginStatusFor(&storage, "anthropic", false));
 
     try storage.putEphemeral("anthropic", .{ .api_key = try allocator.dupe(u8, "sk-granted") });
 
-    try std.testing.expectEqual(App.LoginStatus.expired, App.loginStatusFor(&storage, "anthropic", false));
+    try std.testing.expectEqual(App.LoginStatus.oauth, App.loginStatusFor(&storage, "anthropic", false));
     try std.testing.expectEqual(App.LoginStatus.none, App.loginStatusFor(&storage, "kimi", false));
 }
 
