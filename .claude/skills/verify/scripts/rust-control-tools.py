@@ -49,7 +49,7 @@ def main():
         if not entry["id"].startswith(("control-call-", "control-tool-", "open-provide-", "provide-name-pattern-")):
             continue
         if entry["id"] in gaps:
-            print(f"Known gap left for snapshot port: {entry['id']}", flush=True)
+            print(f"Known unported fixture: {entry['id']}", flush=True)
             continue
         replay(entry["id"], fixtures / entry["path"], entry.get("codes", []), entry.get("phase", "semantic"))
         count += 1
@@ -98,6 +98,10 @@ def main():
     path = output / "compound-unrelated-refusal.trace.json"
     path.write_text(json.dumps(trace))
     replay("compound-unrelated-refusal", path, ["unavailable_capability"])
+    unicode17 = json.loads((fixtures / "semantic-invalid/open-provide-refused-within-a-unicode17-pattern.json").read_text())
+    path = output / "unicode17-descriptor.trace.json"
+    path.write_text(json.dumps(unicode17[:4]))
+    replay("unicode17-descriptor", path, [])
     valid_patterns = [r"\pL+", r"\p{Greek}", r"\p{^Greek}", "[[:alpha:]]", r"\bword",
                       "^*a", "café", r"\x{100}", r"\Qa.b\E", "a{01}", "a{,3}",
                       "(?)a", "(?P<a>x)(?P<a>y)", r"\p{Letter}", "(?P<1>a)", "(?ii)a", r"\000", r"\123", r"\12", "[^^]", r"[\d-a]", "[--a]"]
@@ -144,7 +148,21 @@ def main():
         go = {d["code"] for d in diagnostics}
         assert go == rust == expected, (path, go, rust, expected, diagnostics)
         assert all(d["phase"] == "semantic" for d in diagnostics), (path, diagnostics)
-    print(f"PASS: {count} shared traces, nine consumer variations, and {len(valid_patterns) + len(invalid_patterns) + len(matching)} RE2 probes; {len(compared)} Go/Rust comparisons, zero disagreements", flush=True)
+    gap = fixtures / "semantic-invalid/open-provide-refused-within-a-unicode17-pattern.json"
+    rust_gap = command([str(binary), str(gap)])
+    go_gap = command([str(go_binary), "validate", "--format=json", str(gap)])
+    zig_gap = command([str(ROOT / "zig/zig-out/bin/oapx"), "validate", str(gap)])
+    for name, result in [("rust", rust_gap), ("go", go_gap), ("zig", zig_gap)]:
+        (output / f"known-unicode17-{name}.stdout").write_text(result.stdout)
+        (output / f"known-unicode17-{name}.stderr").write_text(result.stderr)
+    assert rust_gap.returncode == 0 and json.loads(rust_gap.stdout)["diagnostics"] == []
+    assert zig_gap.returncode == 0 and "PASS" in zig_gap.stdout
+    assert go_gap.returncode == 1, go_gap.stderr
+    diagnostics = json.loads(go_gap.stdout)[0]["diagnostics"]
+    assert {d["code"] for d in diagnostics} == {"undisclosed_provide_limit"}, diagnostics
+    assert all(d["phase"] == "semantic" and d["pointer"] == "/payload/error" for d in diagnostics)
+    print("KNOWN GAP observed: Go rejects the Unicode 17 refusal; Rust and Zig omit that judgment", flush=True)
+    print(f"PASS: {count} shared traces, nine consumer variations, a valid Unicode 17 descriptor, and {len(valid_patterns) + len(invalid_patterns) + len(matching)} RE2 probes; {len(compared)} Go/Rust comparisons, zero disagreements", flush=True)
 
 
 if __name__ == "__main__":

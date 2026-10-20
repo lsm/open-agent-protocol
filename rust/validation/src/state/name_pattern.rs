@@ -34,7 +34,50 @@ const UNICODE_ALIASES: &str = concat!(
     "punct=P ",
 );
 
-pub(super) fn compile(pattern: &str) -> Result<Regex, ()> {
+pub(super) struct Pattern(Regex);
+
+fn assigned(c: char) -> bool {
+    static ASSIGNED: std::sync::OnceLock<Regex> = std::sync::OnceLock::new();
+    ASSIGNED
+        .get_or_init(|| Regex::new(r"\A\p{Assigned}\z").expect("fixed Unicode property"))
+        .is_match(c.encode_utf8(&mut [0; 4]))
+}
+
+impl Pattern {
+    pub(super) fn matches(&self, name: &str) -> Option<bool> {
+        name.chars().all(assigned).then(|| self.0.is_match(name))
+    }
+}
+
+fn assigned_literals(ast: &Ast) -> bool {
+    use regex_syntax::ast::{ClassSet, ClassSetItem};
+    fn set(value: &ClassSet) -> bool {
+        match value {
+            ClassSet::BinaryOp(op) => set(&op.lhs) && set(&op.rhs),
+            ClassSet::Item(value) => item(value),
+        }
+    }
+    fn item(value: &ClassSetItem) -> bool {
+        match value {
+            ClassSetItem::Literal(literal) => assigned(literal.c),
+            ClassSetItem::Range(range) => assigned(range.start.c) && assigned(range.end.c),
+            ClassSetItem::Bracketed(class) => set(&class.kind),
+            ClassSetItem::Union(union) => union.items.iter().all(item),
+            _ => true,
+        }
+    }
+    match ast {
+        Ast::Literal(literal) => assigned(literal.c),
+        Ast::ClassBracketed(class) => set(&class.kind),
+        Ast::Group(group) => assigned_literals(&group.ast),
+        Ast::Repetition(repetition) => assigned_literals(&repetition.ast),
+        Ast::Concat(concat) => concat.asts.iter().all(assigned_literals),
+        Ast::Alternation(alt) => alt.asts.iter().all(assigned_literals),
+        _ => true,
+    }
+}
+
+pub(super) fn compile(pattern: &str) -> Result<Option<Pattern>, ()> {
     let mut normalized = normalize(pattern)?;
     let ast = regex_syntax::ast::parse::ParserBuilder::new()
         .nest_limit(1000)
@@ -42,12 +85,24 @@ pub(super) fn compile(pattern: &str) -> Result<Regex, ()> {
         .parse(&normalized)
         .map_err(|_| ())?;
     validate(&ast, 1000)?;
+    if !assigned_literals(&ast) || normalized.chars().any(|c| !assigned(c)) {
+        return Ok(None);
+    }
     boundaries(&ast, &mut normalized);
-    RegexBuilder::new(&format!(r"\A(?:{normalized})\z"))
+    match RegexBuilder::new(&format!(r"\A(?:{normalized})\z"))
         .nest_limit(1004)
         .size_limit(128 * 1024 * 1024)
         .build()
-        .map_err(|_| ())
+    {
+        Ok(regex) => Ok(Some(Pattern(regex))),
+        Err(regex::Error::CompiledTooBig(_)) => Ok(None),
+        Err(regex::Error::Syntax(message))
+            if message.contains("Unicode property") && message.contains("not found") =>
+        {
+            Ok(None)
+        }
+        Err(_) => Err(()),
+    }
 }
 
 fn validate(ast: &Ast, limit: u32) -> Result<(), ()> {
@@ -517,8 +572,8 @@ mod tests {
             ("[[:alpha:]]+", "echo", true),
         ] {
             assert_eq!(
-                compile(pattern).unwrap().is_match(name),
-                expected,
+                compile(pattern).unwrap().unwrap().matches(name),
+                Some(expected),
                 "{pattern} {name}"
             );
         }
@@ -601,9 +656,13 @@ mod tests {
         }
     }
     #[test]
-    fn every_disclosed_unicode_category_and_script_is_supported() {
+    fn known_unicode_categories_and_scripts_are_never_misdiagnosed_as_invalid() {
         for name in super::UNICODE_CLASSES.split_whitespace() {
             assert!(compile(&format!(r"\p{{{name}}}")).is_ok(), "{name}");
         }
+    }
+    #[test]
+    fn valid_unicode17_data_is_unsupported_instead_of_invalid() {
+        assert!(matches!(compile(r"\p{Beria_Erfe}+"), Ok(None)));
     }
 }

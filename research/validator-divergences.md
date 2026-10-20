@@ -421,6 +421,19 @@ port. The Rust verifier retains the traces and the Go JSON comparison. A
 Unicode property alias rejected by the first Rust whitelist was corrected
 against Go 1.27.2's category aliases; it is not a Zig regression.
 
+**Rust's Unicode data boundary.** The pinned latest available `regex` 1.13.1 /
+`regex-syntax` 0.8.11 contain Unicode 16 data; Go 1.27.2 contains Unicode 17.
+Known RE2 property names that the Rust engine cannot implement are unsupported,
+not invalid descriptors under 0062. Rust also stands down on pattern/name
+characters unassigned in its engine's data, rather than deriving a refusal
+from different Unicode property or folding tables. It declines the whole
+provisioning-limit refusal judgment in that zone, retaining capability,
+ownership and duplicate-name judgments. `open-provide-refused-within-a-unicode17-pattern`
+uses a Beria Erfe name to pin the missing enforcement as a known Rust and Zig
+gap. The public-consumer verifier makes the boundary explicit. A full Unicode
+data upgrade is a separate port; this is not permission to diagnose a valid
+Unicode 17 descriptor as invalid RE2.
+
 ### OPEN-0011-2: may a provided tool's resolution carry content parts?
 
 [Decision 0060](../decisions/0060-a-tool-result-may-carry-content-parts.md)

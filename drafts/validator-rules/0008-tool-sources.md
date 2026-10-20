@@ -250,7 +250,9 @@ requests and late replies are judged against the state each request saw.
 The matcher uses `regex` with RE2 syntax normalization, whole-name anchors,
 ASCII Perl classes/boundaries, quoting and the counted-repeat ceiling; invalid
 patterns are judged when the descriptor arrives, not first used at open.
-The same change removes the 37 Rust known-gap ids that now agree.
+The same change removes the 37 Rust known-gap ids that now agree. The newly
+exercised Unicode 17 enforcement case remains an explicit Rust/Zig known gap;
+the version boundary is documented in `research/validator-divergences.md`.
 
 The bridge uses the pinned `regex`/`regex-syntax` dependencies already present
 in the workspace lockfile. Unicode category/script names and aliases mirror

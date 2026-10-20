@@ -1187,12 +1187,36 @@ impl State {
                         ));
                     }
                 }
-                if let Some(pattern) = support
+                let pattern = match support
                     .name_pattern()
-                    .and_then(|p| super::name_pattern::compile(&p).ok())
+                    .map(|p| super::name_pattern::compile(&p))
                 {
+                    Some(Ok(Some(regex))) => Some(regex),
+                    Some(Ok(None)) => {
+                        self.pending_provides.insert(
+                            s(&e.id),
+                            PendingProvide {
+                                expectation: None,
+                                honour: false,
+                            },
+                        );
+                        return;
+                    }
+                    _ => None,
+                };
+                if let Some(pattern) = pattern {
                     for (index, tool) in p.tools.iter().enumerate() {
-                        if !pattern.is_match(&tool.name) {
+                        let Some(matches) = pattern.matches(&tool.name) else {
+                            self.pending_provides.insert(
+                                s(&e.id),
+                                PendingProvide {
+                                    expectation: None,
+                                    honour: false,
+                                },
+                            );
+                            return;
+                        };
+                        if !matches {
                             violations.push(unsatisfiable(
                                 format!("/payload/tools/{index}/name"),
                                 "tool",

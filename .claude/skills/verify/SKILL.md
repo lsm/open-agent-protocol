@@ -110,7 +110,9 @@ must reach the semantic phase; a schema rejection is not a pass. The script reta
 and mutated inputs, checks RE2 syntax/matching probes, and builds the internal
 Go validator to compare every result with Rust. It requires zero Go/Rust
 code-set or phase disagreements and explicitly lists remaining snapshot gaps
-for the next port. The baseline runs this journey too. `name_pattern` matches
+for the next port. The documented Unicode 17 enforcement gap is also listed;
+a valid Unicode 17 descriptor itself must pass without a false invalid-pattern
+diagnostic. The baseline runs this journey too. `name_pattern` matches
 the entire name; invalid RE2 is diagnosed on the descriptor at the pattern's pointer.
 
 ## Local oapx/TUI journey (PTY, no real credentials)

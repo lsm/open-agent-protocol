@@ -6,6 +6,7 @@
     "models-current-mismatch",
     "models-held-position-moved-no-model",
     "open-provide-refused-within-a-case-folding-pattern",
+    "open-provide-refused-within-a-unicode17-pattern",
     "payload-decode-usage-past-the-integer-range"
   ],
   "rust": [
@@ -101,6 +102,7 @@
     "open-attach-without-session-open-mode",
     "open-attach-without-session-open-mode-refused",
     "open-degraded-attach-without-optin",
+    "open-provide-refused-within-a-unicode17-pattern",
     "open-sources-duplicate-attachment",
     "open-sources-state-disagrees-with-catalog",
     "open-sources-state-omits-attachment",
