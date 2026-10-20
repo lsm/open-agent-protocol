@@ -3446,7 +3446,7 @@ fn oapCredentialResolves(allocator: std.mem.Allocator, provider_id: []const u8) 
     if (provider_catalog.credentialEnvIsSet(allocator, provider_id) catch false) return true;
     var storage = oapStorageFor(allocator, provider_id) catch return false;
     defer storage.deinit();
-    return storage.providers.get(provider_id) != null;
+    return storage.providers.contains(provider_catalog.credentialKey(provider_id)) or storage.providers.contains(provider_id);
 }
 
 fn rowAwaitsCredential(row: provider_catalog.Provider) bool {

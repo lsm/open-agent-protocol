@@ -737,6 +737,7 @@ fn validateId(id: []const u8) ConfigError!void {
     for (provider_catalog.ids) |reserved| {
         if (std.mem.eql(u8, id, reserved)) return ConfigError.ReservedProviderId;
     }
+    if (provider_catalog.isCredentialGroup(id)) return ConfigError.ReservedProviderId;
 }
 
 fn isSupportedApi(api: []const u8) bool {
@@ -895,6 +896,9 @@ test "custom providers reject malformed entries" {
         , .want = ConfigError.MissingProviderId },
         .{ .data =
         \\{"providers":[{"id":"anthropic","base_url":"https://x.test"}]}
+        , .want = ConfigError.ReservedProviderId },
+        .{ .data =
+        \\{"providers":[{"id":"opencode","base_url":"https://x.test"}]}
         , .want = ConfigError.ReservedProviderId },
         .{ .data =
         \\{"providers":[{"id":"has space","base_url":"https://x.test"}]}

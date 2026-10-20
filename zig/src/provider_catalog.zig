@@ -286,6 +286,15 @@ pub fn credentialKey(id: []const u8) []const u8 {
     return row.credential_group orelse id;
 }
 
+pub fn isCredentialGroup(name: []const u8) bool {
+    for (all) |row| {
+        if (row.credential_group) |group| {
+            if (std.mem.eql(u8, group, name)) return true;
+        }
+    }
+    return false;
+}
+
 pub fn sharesCredential(id: []const u8, other: []const u8) bool {
     return std.mem.eql(u8, credentialKey(id), credentialKey(other));
 }

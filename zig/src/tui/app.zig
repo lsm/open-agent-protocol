@@ -1766,10 +1766,12 @@ pub const App = struct {
     pub fn loginStatusFor(storage: ?*const oauth_storage.AuthStorage, provider_id: []const u8, env_key_present: bool) LoginStatus {
         if (env_key_present) return .env_key;
         if (storage) |stored| {
-            if (stored.providers.get(provider_id)) |auth| {
+            const group = provider_catalog.credentialKey(provider_id);
+            const held = if (stored.providers.contains(group)) group else provider_id;
+            if (stored.providers.get(held)) |auth| {
                 return switch (auth) {
                     .api_key => .api_key,
-                    .oauth => if (stored.configuredCredentialsExpired(provider_id)) .expired else .oauth,
+                    .oauth => if (stored.configuredCredentialsExpired(held)) .expired else .oauth,
                 };
             }
         }
@@ -6314,6 +6316,7 @@ test "App one OpenCode login signs in both offerings, and logging out of either 
     };
     defer creds.deinit(std.testing.allocator);
     try app.saveLoginCredentials("opencode-go", creds, true);
+    inline for (.{ "opencode-go", "opencode-zen" }) |id| try std.testing.expectEqualStrings("saved API key", try app.signInText(id));
 
     {
         var storage = try oauth_storage.AuthStorage.loadFromFile(std.testing.allocator);
