@@ -85,6 +85,9 @@ func runOAPHost(scenario string) {
 			if request.payload().str("model_ref") == "fixture/other:test@silent" {
 				continue
 			}
+			if request.payload().str("model_ref") == "fixture/other:test@thinks" {
+				time.Sleep(fakeThinkingPause)
+			}
 			if request.payload().str("model_ref") == "fixture/other:test@parts" {
 				completed := oapHostFrame(oapProvider, "inference.completed", map[string]any{
 					"message": map[string]any{"role": "assistant", "content": []map[string]any{
@@ -173,6 +176,24 @@ func runOAPHost(scenario string) {
 				}
 				event.SessionID, event.RunID = sessionID, "run-1"
 				fakeEmit(event)
+				continue
+			}
+			if selectedModel == "fixture/other:test@thinks" {
+				for index, item := range []struct {
+					kind    string
+					payload any
+				}{
+					{"run.started", map[string]any{"session_id": sessionID, "run_id": "run-1"}},
+					{"content.delta", map[string]any{"session_id": sessionID, "run_id": "run-1", "part": map[string]any{"type": "text", "text": "thought"}}},
+					{"run.completed", map[string]any{"session_id": sessionID, "run_id": "run-1", "final_response": map[string]any{"role": "assistant", "content": "thought"}, "stop_reason": "stop"}},
+				} {
+					if index == 1 {
+						time.Sleep(fakeThinkingPause)
+					}
+					event := oapHostFrame(oapAgent, item.kind, item.payload)
+					event.SessionID, event.RunID = sessionID, "run-1"
+					fakeEmit(event)
+				}
 				continue
 			}
 			if strings.HasPrefix(selectedModel, "fixture/other:test@permission") {
@@ -694,6 +715,35 @@ func TestOAPOpenRefusesWhatTheEndpointWouldIgnore(t *testing.T) {
 	payload, err := oapOpenPayload(bare, "session-1", AgentRequest{})
 	if err != nil || payload["metadata"] != nil {
 		t.Fatalf("an endpoint other than oapx.agent was sent oapx settings: %v, %+v", err, payload)
+	}
+}
+
+const fakeThinkingPause = 600 * time.Millisecond
+
+func TestOAPInferenceOutlastsTheRequestTimeoutOnceAccepted(t *testing.T) {
+	client, err := newTestClientWithOptions(t, &Options{BinaryPath: os.Args[0], Env: fakeHostEnv(scenarioOAP), RequestTimeout: 200 * time.Millisecond})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	stream, err := client.Provider.Stream(context.Background(), CompletionRequest{ModelRef: "fixture/other:test@thinks", Messages: []Message{UserMessage("hi")}})
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+	for stream.Next() {
+	}
+	if err := stream.Err(); err != nil {
+		t.Fatalf("an accepted inference silent for %s under a %s request timeout failed: %v", fakeThinkingPause, 200*time.Millisecond, err)
+	}
+}
+
+func TestOAPAgentRunEndsWhenSilentLongerThanTheIdleTimeout(t *testing.T) {
+	client, err := newTestClientWithOptions(t, &Options{BinaryPath: os.Args[0], Env: fakeHostEnv(scenarioOAP), IdleTimeout: 200 * time.Millisecond})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	_, err = client.Agent.Run(context.Background(), AgentRequest{ModelRef: "fixture/other:test@thinks", Messages: []Message{UserMessage("hi")}})
+	if err == nil || !strings.Contains(err.Error(), "timed out waiting for OAP agent run after 200ms") {
+		t.Fatalf("a run silent for %s under a %s idle limit = %v; want the idle limit to end it", fakeThinkingPause, 200*time.Millisecond, err)
 	}
 }
 

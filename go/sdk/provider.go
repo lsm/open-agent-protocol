@@ -12,6 +12,7 @@ import (
 type ProviderService struct {
 	transport *transport
 	timeout   time.Duration
+	idle      time.Duration
 }
 
 func (s *ProviderService) Complete(ctx context.Context, req CompletionRequest) (*CompletionResponse, error) {
@@ -67,7 +68,7 @@ func (s *ProviderService) Stream(ctx context.Context, req CompletionRequest) (*P
 		return nil, err
 	}
 	return &ProviderStream{ctx: ctx, transport: s.transport, sub: sub, streamID: string(request.ID),
-		timeout: s.timeout, fallbackProvider: providerIDFromRef(req.ModelRef),
+		timeout: s.timeout, idle: s.idle, fallbackProvider: providerIDFromRef(req.ModelRef),
 		oapModelRef: req.ModelRef, oapPartKinds: make(map[int]string)}, nil
 }
 
@@ -81,6 +82,7 @@ type ProviderStream struct {
 	sub              *subscription
 	streamID         string
 	timeout          time.Duration
+	idle             time.Duration
 	fallbackProvider string
 
 	current  ProviderEvent
@@ -94,7 +96,11 @@ func (s *ProviderStream) Next() bool {
 		return false
 	}
 	for {
-		in, err := s.sub.next(s.ctx, s.timeout, "OAP inference")
+		wait := s.idle
+		if s.oapInferenceID == "" {
+			wait = s.timeout
+		}
+		in, err := s.sub.next(s.ctx, wait, "OAP inference")
 		if err != nil {
 			s.fail(err)
 			return false

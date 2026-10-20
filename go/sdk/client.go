@@ -29,15 +29,15 @@ func New(ctx context.Context, opts *Options) (*Client, error) {
 	if err != nil {
 		return nil, err
 	}
-	return newClient(transport, opts.requestTimeout()), nil
+	return newClient(transport, opts.requestTimeout(), opts.idleTimeout()), nil
 }
 
-func newClient(transport *transport, timeout time.Duration) *Client {
+func newClient(transport *transport, timeout, idle time.Duration) *Client {
 	client := &Client{transport: transport}
 	client.Auth = &AuthService{transport: transport, timeout: timeout}
 	client.Models = &ModelsService{transport: transport, timeout: timeout}
-	client.Provider = &ProviderService{transport: transport, timeout: timeout}
-	client.Agent = &AgentService{transport: transport, timeout: timeout}
+	client.Provider = &ProviderService{transport: transport, timeout: timeout, idle: idle}
+	client.Agent = &AgentService{transport: transport, timeout: timeout, idle: idle}
 	return client
 }
 

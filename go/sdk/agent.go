@@ -11,6 +11,7 @@ import (
 type AgentService struct {
 	transport *transport
 	timeout   time.Duration
+	idle      time.Duration
 }
 
 func (s *AgentService) Run(ctx context.Context, req AgentRequest) (*CompletionResponse, error) {
@@ -51,7 +52,7 @@ func (s *AgentStream) Next() bool {
 	}
 	state := s.state
 	for {
-		in, err := state.sub.next(state.ctx, 0, "OAP agent run")
+		in, err := state.sub.next(state.ctx, state.idle, "OAP agent run")
 		if err != nil {
 			s.fail(err)
 			return false

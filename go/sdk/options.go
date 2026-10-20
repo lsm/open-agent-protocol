@@ -35,6 +35,8 @@ type Options struct {
 
 	RequestTimeout time.Duration
 
+	IdleTimeout time.Duration
+
 	ShutdownGrace time.Duration
 
 	Logger *slog.Logger
@@ -66,6 +68,13 @@ func (o *Options) requestTimeout() time.Duration {
 		return defaultRequestTimeout
 	}
 	return o.RequestTimeout
+}
+
+func (o *Options) idleTimeout() time.Duration {
+	if o == nil || o.IdleTimeout <= 0 {
+		return 0
+	}
+	return o.IdleTimeout
 }
 
 func (o *Options) shutdownGraceOrDefault() time.Duration {

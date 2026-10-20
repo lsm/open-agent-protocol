@@ -88,6 +88,8 @@ Go uses manual retry: a typed `*AuthRequiredError` from provider or agent calls 
 
 `Options` can set `Args`, `Dir`, `Env`, timeouts, logger, and binary resolver settings. The default args are `[]string{"serve", "agent,provider", "--stdio"}`.
 
+`RequestTimeout` (30 s by default) bounds the reply to each request, including the response that accepts a run or an inference. It does not bound the events of a running agent run or provider inference: a tool or a reasoning model can be silent for minutes, so a run has no idle limit by default. Set `IdleTimeout` to give up after that long without an event; `Run` then cancels the run, as closing a stream does. Cancel the context to stop a run yourself. This matches the TypeScript SDK's `responseTimeoutMs` and `idleTimeoutMs`.
+
 Typed failures include `*StreamError`, `*AuthRequiredError`, `*ProtocolError`, and `*AuthError`. Unsupported OAP features carry code `unsupported_feature`.
 
 Run `go test ./go/sdk/...` and `go vet ./...` from the repository root. Fake-host tests need no API keys; a built `zig/zig-out/bin/oapx` enables the live OAP smoke test.
