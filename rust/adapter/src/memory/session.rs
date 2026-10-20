@@ -54,6 +54,11 @@ pub(super) struct Run {
     pub(super) compaction: bool,
     pub(super) compact_continue: bool,
     pub(super) compact_focus: String,
+    pub(super) settled_arm: Option<&'static str>,
+    pub(super) settled_request_id: EnvelopeId,
+    pub(super) settled_result: Option<Box<serde_json::value::RawValue>>,
+    pub(super) settled_error: Option<ProtocolError>,
+    pub(super) settlement_id: Option<EnvelopeId>,
 }
 
 pub(super) enum Emit {
@@ -229,7 +234,8 @@ impl Inner {
             "action.call.completed" | "action.call.failed" | "action.call.cancelled"
                 if !run.call_id.is_empty() && run.pending_interaction == run.call_id =>
             {
-                run.pending_interaction.clear()
+                run.pending_interaction.clear();
+                run.settlement_id = Some(envelope.id.clone());
             }
             _ => {}
         }

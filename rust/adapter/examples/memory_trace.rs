@@ -4,7 +4,8 @@ use futures::executor::block_on;
 use futures::{FutureExt, StreamExt};
 use oap_adapter::memory::{Config, Memory};
 use oap_adapter::{
-    Adapter, CompactRequest, EventStream, InteractionResolution, OpenRequest, SubmitRequest,
+    Adapter, CallResolution, CompactRequest, EventStream, InteractionResolution, OpenRequest,
+    SubmitRequest,
 };
 use oap_protocol::*;
 
@@ -57,9 +58,25 @@ fn main() -> Result<(), Failure> {
         id: "user".into(),
         ..Participant::default()
     };
+    let mode = std::env::args().nth(1).unwrap_or_default();
+    let tools = if mode == "call" {
+        vec![ToolDefinition {
+            name: "lookup".into(),
+            description: "A tool the control layer executes.".into(),
+            input_schema: Some(serde_json::value::RawValue::from_string(
+                r#"{"type":"object","properties":{"operation":{"type":"string"}}}"#.into(),
+            )?),
+            execution_owner: "user".into(),
+            source: "reference-native".into(),
+            ..ToolDefinition::default()
+        }]
+    } else {
+        Vec::new()
+    };
     let open = OpenRequest {
         session_id: "session-1".into(),
         participant: participant.clone(),
+        tools: tools.clone(),
         ..OpenRequest::default()
     };
     let session = block_on(memory.open(open))?;
@@ -104,12 +121,13 @@ fn main() -> Result<(), Failure> {
         stamp,
         &SessionOpenRequest {
             session_id: Some("session-1".into()),
+            tools,
             ..SessionOpenRequest::default()
         },
         &block_on(session.state())?,
     )?);
 
-    if std::env::args().nth(1).as_deref() == Some("compact") {
+    if mode == "compact" {
         let compactor = session.compactor().ok_or("the session does not compact")?;
         let request = SessionCompactRequest {
             session_id: "session-1".into(),
@@ -162,40 +180,79 @@ fn main() -> Result<(), Failure> {
     let initial = drain(&mut stream)?;
     trace.extend(initial.iter().cloned());
 
-    let guidance = MessageSubmitRequest {
-        delivery: RequestedDeliveryMode::STEER,
-        target_run_id: Some(run.clone()),
-        messages: vec![Message {
-            id: Some("guidance".into()),
-            role: MessageRole::USER,
-            content: MessageContent::from_text("wait"),
-            ..Message::default()
-        }],
-        ..submitted.clone()
-    };
-    let (steered, _) = submit(&guidance, "steer")?;
-    trace.extend(reply(kinds, "steer", stamp, &guidance, &steered)?);
-
-    let permission: PermissionRequestedPayload =
-        find(&initial, EnvelopeType::ACTION_PERMISSION_REQUESTED)?;
-    block_on(session.resolve(InteractionResolution {
-        run_id: run.clone(),
-        responded_by: permission.responded_by.clone(),
-        permission: Some(PermissionResolveRequest {
-            interaction_id: permission.interaction_id,
+    if mode == "call" {
+        let resolver = session
+            .call_resolver()
+            .ok_or("the session resolves no calls")?;
+        let call: ActionCallPayload = find(&initial, EnvelopeType::ACTION_CALL_REQUESTED)?;
+        let started = ActionCallResolveRequest {
+            interaction_id: call.interaction_id.ok_or("the call opens no interaction")?,
             session_id: "session-1".into(),
             run_id: run.clone(),
-            requested_by: permission.requested_by,
-            responded_by: permission.responded_by,
-            choice_id: "approve".into(),
-            granted: true,
-            ..PermissionResolveRequest::default()
-        }),
-        input: None,
-    }))?;
-    let gated = drain(&mut stream)?;
-    trace.extend(gated.iter().cloned());
-    let input: UserInputRequestedPayload = find(&gated, EnvelopeType::USER_INPUT_REQUESTED)?;
+            tool_call_id: call.tool_call_id,
+            requested_by: call.requested_by.ok_or("the call names no requester")?,
+            responded_by: call.responded_by.ok_or("the call names no responder")?,
+            started: Some(ResolveArmStarted {}),
+            ..ActionCallResolveRequest::default()
+        };
+        let finished = ActionCallResolveRequest {
+            started: None,
+            result: Some(serde_json::value::RawValue::from_string(
+                r#"{"found":true}"#.into(),
+            )?),
+            ..started.clone()
+        };
+        let kinds = [
+            EnvelopeType::ACTION_CALL_RESOLVE_REQUEST,
+            EnvelopeType::ACTION_CALL_RESOLVE_RESPONSE,
+        ];
+        for (id, request) in [("call-started", started), ("call-result", finished)] {
+            let answer = block_on(resolver.resolve_call(CallResolution {
+                request_id: id.into(),
+                request: request.clone(),
+            }))?;
+            let mut exchange = reply(kinds.clone(), id, stamp, &request, &answer)?;
+            for half in &mut exchange {
+                half.run_id = Some(run.clone());
+            }
+            trace.extend(exchange);
+            trace.extend(drain(&mut stream)?);
+        }
+    } else {
+        let guidance = MessageSubmitRequest {
+            delivery: RequestedDeliveryMode::STEER,
+            target_run_id: Some(run.clone()),
+            messages: vec![Message {
+                id: Some("guidance".into()),
+                role: MessageRole::USER,
+                content: MessageContent::from_text("wait"),
+                ..Message::default()
+            }],
+            ..submitted.clone()
+        };
+        let (steered, _) = submit(&guidance, "steer")?;
+        trace.extend(reply(kinds, "steer", stamp, &guidance, &steered)?);
+
+        let permission: PermissionRequestedPayload =
+            find(&initial, EnvelopeType::ACTION_PERMISSION_REQUESTED)?;
+        block_on(session.resolve(InteractionResolution {
+            run_id: run.clone(),
+            responded_by: permission.responded_by.clone(),
+            permission: Some(PermissionResolveRequest {
+                interaction_id: permission.interaction_id,
+                session_id: "session-1".into(),
+                run_id: run.clone(),
+                requested_by: permission.requested_by,
+                responded_by: permission.responded_by,
+                choice_id: "approve".into(),
+                granted: true,
+                ..PermissionResolveRequest::default()
+            }),
+            input: None,
+        }))?;
+        trace.extend(drain(&mut stream)?);
+    }
+    let input: UserInputRequestedPayload = find(&trace, EnvelopeType::USER_INPUT_REQUESTED)?;
     block_on(session.resolve(InteractionResolution {
         run_id: run.clone(),
         responded_by: input.responded_by.clone(),

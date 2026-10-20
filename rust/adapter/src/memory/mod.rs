@@ -1,4 +1,5 @@
 mod admit;
+mod call;
 mod cancel;
 mod catalogs;
 mod compact;
@@ -28,9 +29,9 @@ pub use catalogs::{model_catalog, provider_catalog};
 use session::Inner;
 
 use crate::{
-    Adapter, Admitter, BoxFuture, Catalog, CompactRequest, Compactor, Descriptor, Error,
-    EventStream, InteractionResolution, ModelLister, ModelSwitcher, OpenRequest, Recovery,
-    ResumeRequest, Session, SettingsUpdater, SubmitRequest, ToolCatalog, ToolLister,
+    Adapter, Admitter, BoxFuture, CallResolution, CallResolver, Catalog, CompactRequest, Compactor,
+    Descriptor, Error, EventStream, InteractionResolution, ModelLister, ModelSwitcher, OpenRequest,
+    Recovery, ResumeRequest, Session, SettingsUpdater, SubmitRequest, ToolCatalog, ToolLister,
 };
 
 pub const DEFAULT_JOURNAL_CAPACITY: usize = 64;
@@ -233,6 +234,13 @@ impl MemorySession {
         self.lock().compact(request)
     }
 
+    pub fn resolve_call(
+        &self,
+        resolution: CallResolution,
+    ) -> Result<ActionCallResolveResponse, Error> {
+        self.lock().resolve_call(resolution)
+    }
+
     pub fn cancel(&self, run_id: &RunId) -> Result<RunCancelResponse, Error> {
         self.lock().cancel(run_id)
     }
@@ -312,6 +320,13 @@ impl Compactor for MemorySession {
     }
 }
 
+impl CallResolver for MemorySession {
+    fn resolve_call(&self, resolution: CallResolution) -> BoxFuture<'_, ActionCallResolveResponse> {
+        let result = MemorySession::resolve_call(self, resolution);
+        Box::pin(async move { result })
+    }
+}
+
 impl Session for MemorySession {
     fn submit(
         &self,
@@ -363,6 +378,10 @@ impl Session for MemorySession {
     }
 
     fn compactor(&self) -> Option<&dyn Compactor> {
+        Some(self)
+    }
+
+    fn call_resolver(&self) -> Option<&dyn CallResolver> {
         Some(self)
     }
 }
