@@ -1022,31 +1022,12 @@ pub const AuthStorage = struct {
             .oauth => |credentials| credentials,
         };
 
-        var ownership_transferred = false;
         const new_credentials = try oauth_provider.refresh_fn(credentials, self.allocator);
-        errdefer if (!ownership_transferred) new_credentials.deinit(self.allocator);
-
-        const provider_id_copy = try self.allocator.dupe(u8, provider_id);
-        errdefer if (!ownership_transferred) self.allocator.free(provider_id_copy);
-
-        const removed = self.providers.fetchRemove(provider_id) orelse return error.AuthRequired;
-        errdefer {
-            if (self.providers.fetchRemove(provider_id_copy)) |new_removed| {
-                self.allocator.free(new_removed.key);
-                new_removed.value.deinit(self.allocator);
-            }
-            self.providers.put(removed.key, removed.value) catch {
-                self.allocator.free(removed.key);
-                removed.value.deinit(self.allocator);
-            };
-        }
-
-        try self.providers.put(provider_id_copy, .{ .oauth = new_credentials });
-        ownership_transferred = true;
-        try self.persist();
-
-        self.allocator.free(removed.key);
-        removed.value.deinit(self.allocator);
+        const held = self.providers.getPtr(provider_id).?;
+        const replaced = held.*;
+        held.* = .{ .oauth = new_credentials };
+        replaced.deinit(self.allocator);
+        self.persist() catch self.persist() catch return error.RenewedCredentialNotSaved;
     }
 
     pub fn getApiKey(self: *AuthStorage, provider_id: []const u8, oauth_provider: ?OAuthProvider) !?[]const u8 {
@@ -1640,7 +1621,7 @@ fn rotatingStorage(allocator: std.mem.Allocator) !AuthStorage {
     return storage;
 }
 
-test "a renewed credential whose save fails is kept rather than rolled back to the refresh token the provider just revoked" {
+test "a renewed credential is saved again when its save fails, and kept rather than rolled back to the revoked refresh token when that fails too" {
     const allocator = std.testing.allocator;
     compat.time.test_clock_ms = 1_800_000_000_000;
     defer compat.time.test_clock_ms = null;
