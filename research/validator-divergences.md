@@ -339,7 +339,7 @@ other two as drafted rules.
 from the pair being session- and run-scoped, and are drafted in
 `drafts/validator-rules/0008-tool-sources.md` as such.
 
-**Status.** Settled by [Decision 0055](../decisions/0055-register-batch-2.md). What remains is the port work the decision names.
+**Status.** Settled by [Decision 0055](../decisions/0055-register-batch-2.md) and ported to Zig: all three checks now hold in Go and Zig. Rust still lacks the call resolution's binding check.
 
 ### OPEN-0008-3: does a permission resolution keep its tool binding?
 
