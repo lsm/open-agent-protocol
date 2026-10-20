@@ -2911,7 +2911,11 @@ test "serve provider waits for a renewal another request holds the lock for, and
         .auth_get_api_key_fn = vendorApiKey,
     } };
     const thread = try std.Thread.spawn(.{}, ResolvedOnThread.run, .{&waiter});
-    compat.time.sleepMs(200);
+    var polls: usize = 0;
+    while (protocol_server.process_refresh_lock.refCountForTesting("anthropic", null) < 2) : (polls += 1) {
+        if (polls >= 10_000) return error.TestWaiterNeverQueued;
+        compat.time.sleepMs(1);
+    }
     const renewed = try std.fmt.allocPrint(allocator, "{{\"anthropic\":{{\"refresh\":\"vendor-refresh\",\"access\":\"sk-ant-oat-elsewhere\",\"expires\":{d}}}}}", .{compat.time.nowMillis() + std.time.ms_per_hour});
     defer allocator.free(renewed);
     try tmp.dir.writeFile(std.testing.io, .{ .sub_path = ".oapx/auth.json", .data = renewed });
