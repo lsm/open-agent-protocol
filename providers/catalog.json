@@ -82,7 +82,8 @@
       ],
       "wires": [
         "openai-completions",
-        "anthropic-messages"
+        "anthropic-messages",
+        "openai-responses"
       ],
       "base_url_source": "static",
       "endpoints": [
@@ -94,6 +95,11 @@
         {
           "wire": "anthropic-messages",
           "base_url": "https://opencode.ai/inference"
+        },
+        {
+          "wire": "openai-responses",
+          "base_url": "https://opencode.ai/inference/v1",
+          "carries_version": true
         }
       ],
       "models_endpoint": "/models",
@@ -244,7 +250,8 @@
       ],
       "wires": [
         "openai-completions",
-        "anthropic-messages"
+        "anthropic-messages",
+        "openai-responses"
       ],
       "base_url_source": "static",
       "endpoints": [
@@ -257,6 +264,12 @@
         {
           "wire": "anthropic-messages",
           "base_url": "https://opencode.ai/inference/go",
+          "session_header": "x-opencode-session"
+        },
+        {
+          "wire": "openai-responses",
+          "base_url": "https://opencode.ai/inference/go/v1",
+          "carries_version": true,
           "session_header": "x-opencode-session"
         }
       ],

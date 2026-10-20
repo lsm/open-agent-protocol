@@ -1313,35 +1313,6 @@ fn wantsConversationId(model: ai_types.Model) bool {
     return sessionHeaderFor(model) != null;
 }
 
-fn hashField(hasher: *std.hash.Wyhash, tag: u8, bytes: []const u8) void {
-    var length: [8]u8 = undefined;
-    std.mem.writeInt(u64, &length, bytes.len, .little);
-    hasher.update(&.{tag});
-    hasher.update(&length);
-    hasher.update(bytes);
-}
-
-fn conversationId(allocator: std.mem.Allocator, session_id: ?[]const u8, context: ai_types.Context) ![]u8 {
-    if (session_id) |id| return allocator.dupe(u8, id);
-    var hasher = std.hash.Wyhash.init(0);
-    hashField(&hasher, 's', context.system_prompt.slice());
-    for (context.messages) |message| {
-        if (message != .user) continue;
-        switch (message.user.content) {
-            .text => |text| hashField(&hasher, 't', text),
-            .parts => |parts| for (parts) |part| switch (part) {
-                .text => |text| hashField(&hasher, 't', text.text),
-                .image => |image| {
-                    hashField(&hasher, 'm', image.mime_type);
-                    hashField(&hasher, 'i', image.data);
-                },
-            },
-        }
-        break;
-    }
-    return std.fmt.allocPrint(allocator, "oapx-{x:0>16}", .{hasher.final()});
-}
-
 fn isKimiModel(model: ai_types.Model) bool {
     return std.mem.eql(u8, model.provider, "kimi");
 }
@@ -2017,7 +1988,7 @@ pub fn streamOpenAICompletions(
     const req_body = try buildRequestBody(owned_model, owned_context, resolved, allocator);
     errdefer allocator.free(req_body);
 
-    const conversation_id: ?[]u8 = if (wantsConversationId(owned_model)) try conversationId(allocator, resolved.getSessionId(), owned_context) else null;
+    const conversation_id: ?[]u8 = if (wantsConversationId(owned_model)) try provider_catalog.conversationId(allocator, resolved.getSessionId(), owned_context) else null;
     errdefer if (conversation_id) |id| allocator.free(id);
 
     const s = try allocator.create(event_stream.AssistantMessageEventStream);
@@ -2072,15 +2043,15 @@ test "OpenCode Go gets a conversation id, the session's when there is one, else 
     };
     const other = [_]ai_types.Message{.{ .user = .{ .content = .{ .text = "something else" }, .timestamp = 0 } }};
 
-    const given = try conversationId(allocator, "ses-tui-1", .{ .messages = &first });
+    const given = try provider_catalog.conversationId(allocator, "ses-tui-1", .{ .messages = &first });
     defer allocator.free(given);
     try std.testing.expectEqualStrings("ses-tui-1", given);
 
-    const a = try conversationId(allocator, null, .{ .messages = &first });
+    const a = try provider_catalog.conversationId(allocator, null, .{ .messages = &first });
     defer allocator.free(a);
-    const b = try conversationId(allocator, null, .{ .messages = &later });
+    const b = try provider_catalog.conversationId(allocator, null, .{ .messages = &later });
     defer allocator.free(b);
-    const c = try conversationId(allocator, null, .{ .messages = &other });
+    const c = try provider_catalog.conversationId(allocator, null, .{ .messages = &other });
     defer allocator.free(c);
     try std.testing.expectEqualStrings(a, b);
     try std.testing.expect(!std.mem.eql(u8, a, c));
@@ -2092,11 +2063,11 @@ test "OpenCode Go gets a conversation id, the session's when there is one, else 
     const pictured_a = [_]ai_types.Message{.{ .user = .{ .content = .{ .parts = &image_a }, .timestamp = 0 } }};
     const pictured_b = [_]ai_types.Message{.{ .user = .{ .content = .{ .parts = &image_b }, .timestamp = 0 } }};
     const split_message = [_]ai_types.Message{.{ .user = .{ .content = .{ .parts = &split }, .timestamp = 0 } }};
-    const pa = try conversationId(allocator, null, .{ .messages = &pictured_a });
+    const pa = try provider_catalog.conversationId(allocator, null, .{ .messages = &pictured_a });
     defer allocator.free(pa);
-    const pb = try conversationId(allocator, null, .{ .messages = &pictured_b });
+    const pb = try provider_catalog.conversationId(allocator, null, .{ .messages = &pictured_b });
     defer allocator.free(pb);
-    const sp = try conversationId(allocator, null, .{ .messages = &split_message });
+    const sp = try provider_catalog.conversationId(allocator, null, .{ .messages = &split_message });
     defer allocator.free(sp);
     try std.testing.expect(!std.mem.eql(u8, pa, pb));
     try std.testing.expect(!std.mem.eql(u8, sp, a));
