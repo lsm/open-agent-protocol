@@ -51,7 +51,7 @@ func (s *AgentStream) Next() bool {
 	}
 	state := s.state
 	for {
-		in, err := state.sub.next(state.ctx, state.timeout, "OAP agent run")
+		in, err := state.sub.next(state.ctx, 0, "OAP agent run")
 		if err != nil {
 			s.fail(err)
 			return false
