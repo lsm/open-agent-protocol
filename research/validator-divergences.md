@@ -365,8 +365,10 @@ resolve pair.
 0055's text reaches further than the three trees: it binds any interaction
 requested for a tool call, and `user.input.requested` may carry a
 `tool_call_id`. A `user.input.resolved` whose envelope names another call breaks
-the rule, and no tree judges it, since all three check the binding for
-permissions only. That is a port gap in every tree, with no fixture yet.
+the rule. All three now judge the envelope binding for user-input resolutions
+as well as permission resolutions;
+`user-input-resolved-moves-its-tool-binding` pins the defect under registered
+rule `0001#correlated-reverse-interactions/7`.
 
 ### OPEN-0011-1: which pattern syntax is `name_pattern`, and is it anchored?
 

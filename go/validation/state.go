@@ -1497,6 +1497,10 @@ func (s *state) interactionResolved(i, line int, e protocol.Envelope, kind strin
 		s.addExpected(CodeUnmatchedInteraction, i, line, e, "/payload", "resolution event has the wrong interaction kind", x.kind, kind, string(id))
 	}
 
+	if e.ToolCallID != "" && e.ToolCallID != x.toolCallID {
+		s.addExpected(CodeScopeMismatch, i, line, e, "/tool_call_id", "resolution envelope reassigns the request's tool binding", string(x.toolCallID), string(e.ToolCallID))
+	}
+
 	if kind == "input" {
 		var p protocol.UserInputResolvedPayload
 		_ = e.DecodePayload(&p)
@@ -1512,9 +1516,6 @@ func (s *state) interactionResolved(i, line int, e protocol.Envelope, kind strin
 			s.addExpected(CodeUnmatchedInteraction, i, line, e, "/payload/choice_id", "resolution event selects a choice the permission did not offer", "offered choice", p.ChoiceID, string(id))
 		}
 
-		if e.ToolCallID != "" && e.ToolCallID != x.toolCallID {
-			s.addExpected(CodeScopeMismatch, i, line, e, "/tool_call_id", "resolution envelope reassigns the request's tool binding", string(x.toolCallID), string(e.ToolCallID))
-		}
 		if p.ToolCallID != "" && p.ToolCallID != x.toolCallID {
 			s.addExpected(CodeScopeMismatch, i, line, e, "/payload/tool_call_id", "resolution payload reassigns the request's tool binding", string(x.toolCallID), string(p.ToolCallID))
 		}
