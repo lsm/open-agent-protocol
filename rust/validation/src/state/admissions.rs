@@ -152,7 +152,7 @@ impl State {
                         .map(|pending| {
                             (
                                 pending.submission_id.as_str().to_owned(),
-                                SteerTrack::recovered(pending),
+                                SteerTrack::recovered(pending, at),
                             )
                         })
                         .collect(),

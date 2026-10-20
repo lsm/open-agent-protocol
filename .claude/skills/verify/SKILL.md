@@ -92,6 +92,17 @@ The script retains each input and result.
 The baseline script runs this journey too, and validates the positive traces
 with the rebuilt `oapx` binary.
 
+Replay every steer fixture through both CLIs, the Rust `validate` example and
+`goap validate --format json`:
+
+```sh
+python3 .claude/skills/verify/scripts/rust-steer-parity.py --output-dir /tmp/oap-rust-steer-<unique-name>
+```
+
+Every steer fixture not listed as a Rust known gap must draw the same code set
+from both CLIs as the manifest declares, and exit 0 exactly when it draws none.
+The script prints how many agreed and how many it skipped as listed gaps.
+
 ## Rust memory adapter consumer journey
 
 The Rust adapter is a library too. Its `memory_trace` example opens a memory

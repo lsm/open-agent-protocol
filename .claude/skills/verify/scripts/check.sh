@@ -36,6 +36,7 @@ run ./zig/zig-out/bin/oapx validate fixtures/valid/permission-resolved-in-the-re
 run ./zig/zig-out/bin/oapx validate fixtures/valid/user-input-resolved-in-the-refresh-window.json
 run python3 .claude/skills/verify/scripts/rust-refresh-window.py --output-dir "$artifacts/rust-refresh"
 run python3 .claude/skills/verify/scripts/rust-memory-trace.py --output-dir "$artifacts/rust-memory"
+run python3 .claude/skills/verify/scripts/rust-steer-parity.py --output-dir "$artifacts/rust-steer"
 printf '\nRUN: oapx validate fixtures/schema-invalid/missing-envelope-id.json (expect exit 1, schema_invalid)\n'
 set +e
 ./zig/zig-out/bin/oapx validate fixtures/schema-invalid/missing-envelope-id.json > "$artifacts/invalid.txt" 2>&1

@@ -123,6 +123,7 @@ impl State {
         } else if *t == EnvelopeType::SESSION_STATE_RESPONSE
             || *t == EnvelopeType::SESSION_STATE_UPDATED
         {
+            self.steer_snapshots.push((at, e.clone()));
             self.state_document(at, e);
         } else if *t == EnvelopeType::SESSION_COMPACT_RESPONSE {
             self.compact_response(at, e);
@@ -309,6 +310,7 @@ impl State {
             if is_terminal(&e.envelope_type) {
                 self.settle_run_controls(at, e, &run_id);
                 self.pending_at_terminal(at, e, &run_id);
+                self.steer_terminal(at, e, &run_id);
                 let session = self
                     .runs
                     .get(&run_id)
