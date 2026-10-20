@@ -36,7 +36,10 @@ fn defaultIo() std.Io {
         std.Io.Threaded.global_single_threaded.io();
 }
 
+pub var test_clock_ms: ?i64 = null;
+
 pub fn nowMillis() i64 {
+    if (@import("builtin").is_test) if (test_clock_ms) |now| return now;
     return std.Io.Timestamp.now(defaultIo(), .real).toMilliseconds();
 }
 

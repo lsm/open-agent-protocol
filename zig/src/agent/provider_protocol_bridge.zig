@@ -210,7 +210,7 @@ fn runStreamThread(ctx: *StreamThreadContext) void {
     var pipe = in_process.createSerializedPipe(ctx.allocator);
     defer pipe.deinit();
 
-    var server = ProtocolServer.init(ctx.allocator, ctx.registry, .{});
+    var server = ProtocolServer.init(ctx.allocator, ctx.registry, .{ .refresh_lock = &protocol_server.process_refresh_lock });
     defer server.deinit();
 
     var client = ProtocolClient.init(ctx.allocator, .{

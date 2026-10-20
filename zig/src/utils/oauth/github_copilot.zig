@@ -530,9 +530,13 @@ fn tokenExpiry(token: []const u8) ?i64 {
     return null;
 }
 
-fn issuedToken(allocator: std.mem.Allocator, token: []const u8, expires_at: ?i64) !CopilotToken {
+const refresh_margin_ms = 5 * std.time.ms_per_min;
+
+fn issuedToken(allocator: std.mem.Allocator, token: []const u8, expires_at: ?i64, refresh_in: ?i64) !CopilotToken {
     const seconds = expires_at orelse tokenExpiry(token) orelse return error.CopilotTokenFailed;
-    return .{ .token = try allocator.dupe(u8, token), .expires = seconds * std.time.ms_per_s };
+    var expires = seconds * std.time.ms_per_s - refresh_margin_ms;
+    if (refresh_in) |after| expires = @min(expires, compat.time.nowMillis() + after * std.time.ms_per_s);
+    return .{ .token = try allocator.dupe(u8, token), .expires = expires };
 }
 
 fn getCopilotToken(fetch: Fetch, domain: []const u8, github_token: []const u8, allocator: std.mem.Allocator) !CopilotToken {
@@ -570,6 +574,7 @@ fn getCopilotToken(fetch: Fetch, domain: []const u8, github_token: []const u8, a
         struct {
             token: []const u8,
             expires_at: ?i64 = null,
+            refresh_in: ?i64 = null,
         },
         allocator,
         response_body,
@@ -579,13 +584,13 @@ fn getCopilotToken(fetch: Fetch, domain: []const u8, github_token: []const u8, a
         if (std.mem.find(u8, trimmed, "tid=") != null or
             std.mem.find(u8, trimmed, "proxy-ep=") != null)
         {
-            return issuedToken(allocator, trimmed, null);
+            return issuedToken(allocator, trimmed, null, null);
         }
         return error.CopilotTokenFailed;
     };
     defer parsed.deinit();
 
-    return issuedToken(allocator, parsed.value.token, parsed.value.expires_at);
+    return issuedToken(allocator, parsed.value.token, parsed.value.expires_at, parsed.value.refresh_in);
 }
 
 test "getBaseUrlFromToken - extracts and converts proxy-ep" {
