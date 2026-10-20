@@ -2952,7 +2952,7 @@ test "serve provider renews a Copilot token a day past its expiry from the store
     try std.testing.expectEqualStrings("tid=served-fresh", resolved.api_key);
 }
 
-test "serve provider renews an expired OAuth token once through the refresh its wire registers, keeps the renewed token, and never sends another provider's token to that refresh" {
+test "serve provider renews an expired OAuth token once through the refresh its wire registers, keeps the renewed token, leaves an environment key in charge, and never sends another provider's token to that refresh" {
     const allocator = std.testing.allocator;
     try provider_catalog.blankEnvironment(allocator);
     defer compat.clearTestEnv();
@@ -2983,6 +2983,14 @@ test "serve provider renews an expired OAuth token once through the refresh its 
         kimi.deinit(allocator);
     }
     try std.testing.expectEqual(@as(usize, 0), vendor_refreshes);
+    try compat.setTestEnv(allocator, provider_catalog.credentialEnv("anthropic")[1], "sk-ant-env");
+    {
+        var from_env = resolveOapCredential(allocator, messages, "anthropic", provider_catalog.baseUrl("anthropic", "anthropic-messages", null).?, .none) orelse return error.TestExpectedCredential;
+        defer from_env.deinit(allocator);
+        try std.testing.expectEqualStrings("sk-ant-env", from_env.api_key);
+    }
+    try std.testing.expectEqual(@as(usize, 0), vendor_refreshes);
+    try compat.setTestEnv(allocator, provider_catalog.credentialEnv("anthropic")[1], "");
     for (0..2) |_| {
         var resolved = resolveOapCredential(allocator, messages, "anthropic", provider_catalog.baseUrl("anthropic", "anthropic-messages", null).?, .none) orelse return error.TestExpectedCredential;
         defer resolved.deinit(allocator);
@@ -3882,8 +3890,9 @@ fn resolveOapCredential(
     }
     var storage = oapStorageFor(allocator, provider_id) catch return null;
     defer storage.deinit();
+    const env_credential = provider_catalog.credentialEnvIsSet(allocator, provider_id) catch false;
     if (protocol_server.authProvider(provider, provider_id)) |oauth| {
-        if (std.mem.eql(u8, oauth.id, provider_id) and storage.credentialsExpired(provider_id)) {
+        if (!env_credential and std.mem.eql(u8, oauth.id, provider_id) and storage.credentialsExpired(provider_id)) {
             const outcome = protocol_server.refreshUnderLock(&protocol_server.process_refresh_lock, &storage, provider_id, oauth) catch return null;
             if (outcome == .renewed_elsewhere) {
                 const reloaded = oapStorageFor(allocator, provider_id) catch return null;
