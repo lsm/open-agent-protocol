@@ -2865,6 +2865,64 @@ fn vendorApiKey(credentials: oauth_storage.Credentials, allocator: std.mem.Alloc
     return allocator.dupe(u8, credentials.access);
 }
 
+const ResolvedOnThread = struct {
+    provider: api_registry.ApiProvider,
+    key: [32]u8 = undefined,
+    len: usize = 0,
+    found: bool = false,
+
+    fn run(self: *ResolvedOnThread) void {
+        var resolved = resolveOapCredential(std.testing.allocator, self.provider, "anthropic", "https://api.anthropic.com", .none) orelse return;
+        defer resolved.deinit(std.testing.allocator);
+        self.len = @min(resolved.api_key.len, self.key.len);
+        @memcpy(self.key[0..self.len], resolved.api_key[0..self.len]);
+        self.found = true;
+    }
+};
+
+test "serve provider waits for a renewal another request holds the lock for, and takes its token instead of renewing again" {
+    const allocator = std.testing.allocator;
+    try provider_catalog.blankEnvironment(allocator);
+    defer compat.clearTestEnv();
+    compat.time.test_clock_ms = 1_800_000_000_000;
+    defer compat.time.test_clock_ms = null;
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.createDirPath(std.testing.io, ".oapx");
+    const stale = try std.fmt.allocPrint(allocator, "{{\"anthropic\":{{\"refresh\":\"vendor-refresh\",\"access\":\"sk-ant-oat-stale\",\"expires\":{d}}}}}", .{compat.time.nowMillis() - std.time.ms_per_hour});
+    defer allocator.free(stale);
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = ".oapx/auth.json", .data = stale });
+    const home = try tmp.dir.realPathFileAlloc(std.testing.io, ".", allocator);
+    defer allocator.free(home);
+    try compat.setTestEnv(allocator, "HOME", home);
+
+    const held = switch (try protocol_server.process_refresh_lock.acquire("anthropic", null)) {
+        .acquired => |generation| generation,
+        else => return error.TestExpectedLock,
+    };
+    vendor_refreshes = 0;
+    var waiter = ResolvedOnThread{ .provider = .{
+        .api = "anthropic-messages",
+        .stream = unusedTestStream,
+        .stream_simple = unusedTestStreamSimple,
+        .auth_provider_id = "anthropic",
+        .auth_refresh_fn = renewVendorCredentials,
+        .auth_get_api_key_fn = vendorApiKey,
+    } };
+    const thread = try std.Thread.spawn(.{}, ResolvedOnThread.run, .{&waiter});
+    compat.time.sleepMs(200);
+    const renewed = try std.fmt.allocPrint(allocator, "{{\"anthropic\":{{\"refresh\":\"vendor-refresh\",\"access\":\"sk-ant-oat-elsewhere\",\"expires\":{d}}}}}", .{compat.time.nowMillis() + std.time.ms_per_hour});
+    defer allocator.free(renewed);
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = ".oapx/auth.json", .data = renewed });
+    protocol_server.process_refresh_lock.complete("anthropic", null, held, null);
+    thread.join();
+
+    try std.testing.expect(waiter.found);
+    try std.testing.expectEqualStrings("sk-ant-oat-elsewhere", waiter.key[0..waiter.len]);
+    try std.testing.expectEqual(@as(usize, 0), vendor_refreshes);
+}
+
 test "serve provider renews a Copilot token a day past its expiry from the stored GitHub token" {
     const allocator = std.testing.allocator;
     try provider_catalog.blankEnvironment(allocator);
@@ -3821,7 +3879,14 @@ fn resolveOapCredential(
     var storage = oapStorageFor(allocator, provider_id) catch return null;
     defer storage.deinit();
     if (protocol_server.authProvider(provider, provider_id)) |oauth| {
-        if (std.mem.eql(u8, oauth.id, provider_id) and storage.credentialsExpired(provider_id)) storage.refreshCredentials(provider_id, oauth) catch return null;
+        if (std.mem.eql(u8, oauth.id, provider_id) and storage.credentialsExpired(provider_id)) {
+            const outcome = protocol_server.refreshUnderLock(&protocol_server.process_refresh_lock, &storage, provider_id, oauth) catch return null;
+            if (outcome == .renewed_elsewhere) {
+                const reloaded = oapStorageFor(allocator, provider_id) catch return null;
+                storage.deinit();
+                storage = reloaded;
+            }
+        }
     }
     const resolved = auth_resolver.resolveApiKey(allocator, &storage, provider_id, null) catch return null;
     if (resolved.api_key.len == 0) {

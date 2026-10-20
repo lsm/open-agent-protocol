@@ -675,13 +675,14 @@ fn reloadStoredCredential(server: *ProtocolServer, storage: *oauth_storage.AuthS
     };
 }
 
-fn refreshWithLock(
-    server: *ProtocolServer,
-    provider_id: []const u8,
+pub const LockedRefresh = enum { renewed, renewed_elsewhere };
+
+pub fn refreshUnderLock(
+    lock: *refresh_lock_mod.RefreshLock,
     storage: *oauth_storage.AuthStorage,
+    provider_id: []const u8,
     oauth_provider: oauth_storage.OAuthProvider,
-) !void {
-    const lock = server.options.refresh_lock orelse &server.refresh_lock;
+) !LockedRefresh {
     const lock_result = lock.acquire(provider_id, null) catch |err| switch (err) {
         error.OutOfMemory => return error.OutOfMemory,
         else => return error.AuthRefreshFailed,
@@ -697,11 +698,9 @@ fn refreshWithLock(
                 };
             };
             lock.complete(provider_id, null, generation, null);
+            return .renewed;
         },
-        .completed_ok => reloadStoredCredential(server, storage, provider_id) catch |err| return switch (err) {
-            error.OutOfMemory => error.OutOfMemory,
-            else => error.AuthRefreshFailed,
-        },
+        .completed_ok => return .renewed_elsewhere,
         .completed_err => |err| {
             return switch (err) {
                 error.OutOfMemory => error.OutOfMemory,
@@ -710,6 +709,20 @@ fn refreshWithLock(
         },
         .timed_out => return error.AuthRefreshFailed,
     }
+}
+
+fn refreshWithLock(
+    server: *ProtocolServer,
+    provider_id: []const u8,
+    storage: *oauth_storage.AuthStorage,
+    oauth_provider: oauth_storage.OAuthProvider,
+) !void {
+    const lock = server.options.refresh_lock orelse &server.refresh_lock;
+    if (try refreshUnderLock(lock, storage, provider_id, oauth_provider) == .renewed) return;
+    reloadStoredCredential(server, storage, provider_id) catch |err| return switch (err) {
+        error.OutOfMemory => error.OutOfMemory,
+        else => error.AuthRefreshFailed,
+    };
 }
 
 fn streamWithEnvironmentKey(
