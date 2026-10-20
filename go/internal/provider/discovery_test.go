@@ -269,6 +269,29 @@ func TestAFreshListingIsServedWithoutAFetchUntilAForcedRefresh(t *testing.T) {
 	}
 }
 
+func TestOneStoredOpenCodeCredentialListsBothOfferingsAndRemovingItListsNeither(t *testing.T) {
+	server := newListingServer(t, map[string]listingAnswer{
+		"opencode-go":  listingOf("glm-5.3"),
+		"opencode-zen": listingOf("deepseek-v4.1-flash"),
+	})
+	key := "sk-oap-opencode"
+	stored := map[string]*providercatalog.StoredCredential{"opencode": {APIKey: &key}}
+	discoverer := Discoverer{
+		Catalog: server.catalog(t, "opencode-go", "opencode-zen"),
+		Stored:  func(id string) *providercatalog.StoredCredential { return stored[id] },
+		Cache:   ListingCache{Dir: t.TempDir()},
+	}
+	listed := modelKeys(discoverer.Discover(context.Background(), DiscoverForceFetch))
+	slices.Sort(listed)
+	if !slices.Equal(listed, []string{"opencode-go/glm-5.3", "opencode-zen/deepseek-v4.1-flash"}) {
+		t.Fatalf("listed = %v, want both offerings from the one credential", listed)
+	}
+	delete(stored, "opencode")
+	if left := modelKeys(discoverer.Discover(context.Background(), DiscoverForceFetch)); len(left) != 0 {
+		t.Fatalf("left = %v, want neither offering once the shared credential is gone", left)
+	}
+}
+
 func TestAStoredKeyRefusalIsRememberedUntilAForcedRefreshSucceeds(t *testing.T) {
 	server := newListingServer(t, map[string]listingAnswer{"minimax-coding-plan": {status: http.StatusUnauthorized}})
 	cache := ListingCache{Dir: t.TempDir()}

@@ -196,7 +196,7 @@ pub fn resolveApiKeyOfKind(
     if (rowEnvironmentKey(allocator, provider_id)) |key| return .{ .api_key = key };
 
     if (auth_storage) |storage| {
-        if (storage.resolvedCredential(provider_id)) |auth| {
+        if (storage.resolvedCredential(provider_catalog.credentialKey(provider_id)) orelse storage.resolvedCredential(provider_id)) |auth| {
             switch (auth) {
                 .api_key => |key| {
                     const dup = try allocator.dupe(u8, key);

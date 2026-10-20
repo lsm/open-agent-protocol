@@ -37,6 +37,7 @@ type Provider struct {
 	Endpoints        []Endpoint   `json:"endpoints,omitempty"`
 	ModelsPath       string       `json:"models_endpoint,omitempty"`
 	ModelsDev        string       `json:"models_dev,omitempty"`
+	CredentialGroup  string       `json:"credential_group,omitempty"`
 	ContextWindow    int          `json:"context_window,omitempty"`
 	MaxContextWindow int          `json:"max_context_window,omitempty"`
 	MaxTokens        int          `json:"max_tokens,omitempty"`

@@ -3461,6 +3461,7 @@ fn providerCatalogDataModule(b: *std.Build, target: std.Build.ResolvedTarget, op
         endpoints: []const Endpoint = &.{},
         models_endpoint: ?[]const u8 = null,
         models_dev: ?[]const u8 = null,
+        credential_group: ?[]const u8 = null,
         context_window: ?u32 = null,
         max_context_window: ?u32 = null,
         max_tokens: ?u32 = null,
@@ -3535,7 +3536,7 @@ fn providerCatalogDataModule(b: *std.Build, target: std.Build.ResolvedTarget, op
     out.appendSlice(gpa, "pub const Endpoint = struct {\n    wire: []const u8,\n    base_url: []const u8,\n    region: ?[]const u8 = null,\n    carries_version: bool = false,\n    session_header: ?[]const u8 = null,\n};\n\n") catch @panic("out of memory");
     out.appendSlice(gpa, "pub const Model = struct {\n    id: []const u8,\n    name: ?[]const u8 = null,\n    context_window: ?u32 = null,\n    max_context_window: ?u32 = null,\n    max_tokens: ?u32 = null,\n};\n\n") catch @panic("out of memory");
     out.appendSlice(gpa, "pub const OAuthOrigin = struct {\n    exact: []const []const u8 = &.{},\n    domain: ?[]const u8 = null,\n    credential_declares_origin: bool = false,\n};\n\n") catch @panic("out of memory");
-    out.appendSlice(gpa, "pub const Provider = struct {\n    id: []const u8,\n    display_name: ?[]const u8 = null,\n    auth: []const AuthKind = &.{},\n    offering: ?Offering = null,\n    status: ?Status = null,\n    credential_env: []const []const u8 = &.{},\n    base_url_env: []const []const u8 = &.{},\n    region_env: ?[]const u8 = null,\n    default_region: ?[]const u8 = null,\n    wires: []const []const u8 = &.{},\n    base_url_source: ?[]const u8 = null,\n    endpoints: []const Endpoint = &.{},\n    models_endpoint: ?[]const u8 = null,\n    models_dev: ?[]const u8 = null,\n    context_window: ?u32 = null,\n    max_context_window: ?u32 = null,\n    max_tokens: ?u32 = null,\n    models: []const Model = &.{},\n    oauth_origin: ?OAuthOrigin = null,\n    docs: ?[]const u8 = null,\n};\n\n") catch @panic("out of memory");
+    out.appendSlice(gpa, "pub const Provider = struct {\n    id: []const u8,\n    display_name: ?[]const u8 = null,\n    auth: []const AuthKind = &.{},\n    offering: ?Offering = null,\n    status: ?Status = null,\n    credential_env: []const []const u8 = &.{},\n    base_url_env: []const []const u8 = &.{},\n    region_env: ?[]const u8 = null,\n    default_region: ?[]const u8 = null,\n    wires: []const []const u8 = &.{},\n    base_url_source: ?[]const u8 = null,\n    endpoints: []const Endpoint = &.{},\n    models_endpoint: ?[]const u8 = null,\n    models_dev: ?[]const u8 = null,\n    credential_group: ?[]const u8 = null,\n    context_window: ?u32 = null,\n    max_context_window: ?u32 = null,\n    max_tokens: ?u32 = null,\n    models: []const Model = &.{},\n    oauth_origin: ?OAuthOrigin = null,\n    docs: ?[]const u8 = null,\n};\n\n") catch @panic("out of memory");
     out.appendSlice(gpa, "pub const providers: []const Provider = &.{\n") catch @panic("out of memory");
     for (catalog.providers) |row| {
         out.print(gpa, "    .{{\n        .id = \"{f}\",\n", .{std.zig.fmtString(row.id)}) catch @panic("out of memory");
@@ -3590,6 +3591,9 @@ fn providerCatalogDataModule(b: *std.Build, target: std.Build.ResolvedTarget, op
         }
         if (row.models_endpoint) |path_text| {
             out.print(gpa, "        .models_endpoint = \"{f}\",\n", .{std.zig.fmtString(path_text)}) catch @panic("out of memory");
+        }
+        if (row.credential_group) |group| {
+            out.print(gpa, "        .credential_group = \"{f}\",\n", .{std.zig.fmtString(group)}) catch @panic("out of memory");
         }
         if (row.models_dev) |key| {
             out.print(gpa, "        .models_dev = \"{f}\",\n", .{std.zig.fmtString(key)}) catch @panic("out of memory");

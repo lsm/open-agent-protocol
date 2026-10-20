@@ -104,6 +104,7 @@
       ],
       "models_endpoint": "/models",
       "models_dev": "opencode",
+      "credential_group": "opencode",
       "docs": "https://opencode.ai/docs/zen"
     },
     {
@@ -275,6 +276,7 @@
       ],
       "models_endpoint": "/models",
       "models_dev": "opencode-go",
+      "credential_group": "opencode",
       "docs": "https://opencode.ai/docs/go"
     },
     {

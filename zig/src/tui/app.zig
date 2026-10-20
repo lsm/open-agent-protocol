@@ -1766,10 +1766,12 @@ pub const App = struct {
     pub fn loginStatusFor(storage: ?*const oauth_storage.AuthStorage, provider_id: []const u8, env_key_present: bool) LoginStatus {
         if (env_key_present) return .env_key;
         if (storage) |stored| {
-            if (stored.providers.get(provider_id)) |auth| {
+            const group = provider_catalog.credentialKey(provider_id);
+            const held = if (stored.providers.contains(group)) group else provider_id;
+            if (stored.providers.get(held)) |auth| {
                 return switch (auth) {
                     .api_key => .api_key,
-                    .oauth => if (stored.configuredCredentialsExpired(provider_id)) .expired else .oauth,
+                    .oauth => if (stored.configuredCredentialsExpired(held)) .expired else .oauth,
                 };
             }
         }
@@ -2302,7 +2304,7 @@ pub const App = struct {
         var storage = try oauth_storage.AuthStorage.loadDefault(self.allocator);
         defer storage.deinit();
 
-        const key = try self.allocator.dupe(u8, provider_id);
+        const key = try self.allocator.dupe(u8, provider_catalog.credentialKey(provider_id));
         var owned = false;
         errdefer if (!owned) self.allocator.free(key);
         if (stores_api_key) {
@@ -2317,9 +2319,18 @@ pub const App = struct {
                 if (provider_data) |pd| self.allocator.free(pd);
             };
 
-            if (storage.providers.fetchRemove(provider_id)) |removed| {
-                self.allocator.free(removed.key);
-                removed.value.deinit(self.allocator);
+            for ([_][]const u8{ provider_catalog.credentialKey(provider_id), provider_id }) |held| {
+                if (storage.providers.fetchRemove(held)) |removed| {
+                    self.allocator.free(removed.key);
+                    removed.value.deinit(self.allocator);
+                }
+            }
+            for (provider_catalog.all) |row| {
+                if (!provider_catalog.sharesCredential(row.id, provider_id)) continue;
+                if (storage.providers.fetchRemove(row.id)) |removed| {
+                    self.allocator.free(removed.key);
+                    removed.value.deinit(self.allocator);
+                }
             }
 
             if (provider_data) |pd| {
@@ -2346,9 +2357,18 @@ pub const App = struct {
             if (pd) |d| self.allocator.free(d);
         };
 
-        if (storage.providers.fetchRemove(provider_id)) |removed| {
-            self.allocator.free(removed.key);
-            removed.value.deinit(self.allocator);
+        for ([_][]const u8{ provider_catalog.credentialKey(provider_id), provider_id }) |held| {
+            if (storage.providers.fetchRemove(held)) |removed| {
+                self.allocator.free(removed.key);
+                removed.value.deinit(self.allocator);
+            }
+        }
+        for (provider_catalog.all) |row| {
+            if (!provider_catalog.sharesCredential(row.id, provider_id)) continue;
+            if (storage.providers.fetchRemove(row.id)) |removed| {
+                self.allocator.free(removed.key);
+                removed.value.deinit(self.allocator);
+            }
         }
 
         try storage.providers.put(key, .{ .oauth = .{
@@ -2678,6 +2698,18 @@ pub const App = struct {
         return row.id;
     }
 
+    fn removeSharedCredential(allocator: std.mem.Allocator, provider_id: []const u8) !bool {
+        const group = provider_catalog.credentialKey(provider_id);
+        var removed = false;
+        if (!std.mem.eql(u8, group, provider_id)) removed = try oauth_storage.AuthStorage.removeStored(allocator, group);
+        removed = try oauth_storage.AuthStorage.removeStored(allocator, provider_id) or removed;
+        for (provider_catalog.all) |row| {
+            if (std.mem.eql(u8, row.id, provider_id) or !provider_catalog.sharesCredential(row.id, provider_id)) continue;
+            removed = try oauth_storage.AuthStorage.removeStored(allocator, row.id) or removed;
+        }
+        return removed;
+    }
+
     fn logoutProvider(self: *App, requested: []const u8) !void {
         self.discardModelFetch();
         const provider_id = logoutProviderId(requested);
@@ -2689,7 +2721,7 @@ pub const App = struct {
                 return;
             }
         }
-        const removed = oauth_storage.AuthStorage.removeStored(self.allocator, provider_id) catch |err| {
+        const removed = removeSharedCredential(self.allocator, provider_id) catch |err| {
             const msg = try std.fmt.allocPrint(self.allocator, "logout failed: {s}", .{@errorName(err)});
             defer self.allocator.free(msg);
             try self.state.appendTranscript(.@"error", msg);
@@ -6266,6 +6298,57 @@ test "App logout removes only that provider's saved credential" {
     defer storage.deinit();
     try std.testing.expect(!storage.providers.contains("gateway"));
     try std.testing.expect(storage.providers.contains("other-gateway"));
+}
+
+test "App one OpenCode login signs in both offerings, and logging out of either signs out both" {
+    var env = try TempHome.init("home-opencode-shared");
+    defer env.deinit();
+    try provider_catalog.blankEnvironment(std.testing.allocator);
+    defer compat.clearTestEnv();
+
+    var app = App.initWithoutRuntime(std.testing.allocator);
+    defer app.deinit();
+    const creds = oauth_storage.Credentials{
+        .refresh = try std.testing.allocator.dupe(u8, ""),
+        .access = try std.testing.allocator.dupe(u8, "opencode-secret"),
+        .expires = std.math.maxInt(i64),
+    };
+    defer creds.deinit(std.testing.allocator);
+    try app.saveLoginCredentials("opencode-go", creds, true);
+    inline for (.{ "opencode-go", "opencode-zen" }) |id| try std.testing.expectEqualStrings("saved API key", try app.signInText(id));
+
+    {
+        var storage = try oauth_storage.AuthStorage.loadFromFile(std.testing.allocator);
+        defer storage.deinit();
+        inline for (.{ "opencode-go", "opencode-zen" }) |id| {
+            var resolved = try auth_resolver.resolveApiKey(std.testing.allocator, &storage, id, null);
+            defer resolved.deinit(std.testing.allocator);
+            try std.testing.expectEqualStrings("opencode-secret", resolved.api_key);
+        }
+    }
+
+    try app.submit("/logout opencode-zen");
+    try std.testing.expectEqualStrings("logged out of opencode-zen", app.state.transcript.items[0].text.items);
+    {
+        var storage = try oauth_storage.AuthStorage.loadFromFile(std.testing.allocator);
+        defer storage.deinit();
+        inline for (.{ "opencode-go", "opencode-zen" }) |id| {
+            try std.testing.expectError(error.AuthRequired, auth_resolver.resolveApiKey(std.testing.allocator, &storage, id, null));
+        }
+    }
+
+    {
+        var earlier = try oauth_storage.AuthStorage.loadFromFile(std.testing.allocator);
+        defer earlier.deinit();
+        try earlier.providers.put(try std.testing.allocator.dupe(u8, "opencode-go"), .{ .api_key = try std.testing.allocator.dupe(u8, "saved-before") });
+        try earlier.saveToFile();
+    }
+    try app.submit("/logout opencode-zen");
+    var storage = try oauth_storage.AuthStorage.loadFromFile(std.testing.allocator);
+    defer storage.deinit();
+    inline for (.{ "opencode-go", "opencode-zen" }) |id| {
+        try std.testing.expectError(error.AuthRequired, auth_resolver.resolveApiKey(std.testing.allocator, &storage, id, null));
+    }
 }
 
 test "App /provider add declares a provider that /login then accepts" {

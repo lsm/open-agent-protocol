@@ -220,6 +220,9 @@ func (r *Runner) stored(providerID string) *providercatalog.StoredCredential {
 	if r.Stored == nil {
 		return nil
 	}
+	if stored := r.Stored(providercatalog.CredentialKey(r.Catalog, providerID)); stored != nil {
+		return stored
+	}
 	return r.Stored(providerID)
 }
 
