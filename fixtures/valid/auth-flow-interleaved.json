@@ -1,0 +1,10 @@
+[
+  {"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"auth.login.start.request","id":"start-req","payload":{"provider_id":"example"}},
+  {"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"auth.login.start.response","id":"start-resp","in_reply_to":"start-req","payload":{"flow_id":"flow-1"}},
+  {"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"auth.login.start.request","id":"start-2","payload":{"provider_id":"example"}},
+  {"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"auth.login.start.response","id":"started-2","in_reply_to":"start-2","payload":{"flow_id":"flow-2"}},
+  {"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"auth.login.event","id":"event-1","sequence":1,"payload":{"flow_id":"flow-1","provider_id":"example","kind":"progress","message":"Complete login in the host"}},
+  {"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"auth.login.event","id":"event-b","sequence":1,"payload":{"flow_id":"flow-2","provider_id":"example","kind":"progress","message":"Complete login in the host"}},
+  {"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"auth.login.completed","id":"completed","sequence":2,"payload":{"flow_id":"flow-1","provider_id":"example","status":"success"}},
+  {"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"auth.login.completed","id":"terminal-b","sequence":2,"payload":{"flow_id":"flow-2","provider_id":"example","status":"success"}}
+]
