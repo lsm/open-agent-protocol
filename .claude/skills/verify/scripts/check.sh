@@ -34,6 +34,7 @@ run node scripts/check-no-comments.mjs --check
 run ./scripts/check-zig-patterns.sh
 run ./scripts/check-no-test-litter.sh
 run python3 .claude/skills/verify/scripts/codex-command-result.py --output-dir "$artifacts/codex-command"
+run python3 .claude/skills/verify/scripts/rust-sdk-usage.py --output-dir "$artifacts/rust-sdk-usage"
 run ./zig/zig-out/bin/oapx validate fixtures/valid/core-completed.json
 run ./zig/zig-out/bin/oapx validate fixtures/valid/permission-resolved-in-the-refresh-window.json
 run ./zig/zig-out/bin/oapx validate fixtures/valid/user-input-resolved-in-the-refresh-window.json
