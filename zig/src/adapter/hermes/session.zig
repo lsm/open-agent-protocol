@@ -500,15 +500,22 @@ pub const Reducer = struct {
             var totals = self.object();
             if (payload.object.get("usage")) |usage| {
                 if (usage == .object) {
-                    const input = integerMember(usage.object, "input");
-                    const output = integerMember(usage.object, "output");
-                    const total = integerMember(usage.object, "total");
-                    if (input != 0) try self.put(&totals, "input_tokens", int(input));
-                    if (output != 0) try self.put(&totals, "output_tokens", int(output));
-                    if (total != 0) try self.put(&totals, "total_tokens", int(total));
+                    for ([_][2][]const u8{ .{ "input", "input_tokens" }, .{ "output", "output_tokens" }, .{ "total", "total_tokens" } }) |keys| {
+                        if (usage.object.get(keys[0])) |count| {
+                            if (count == .null) continue;
+                            if (count != .integer or count.integer < 0) {
+                                try self.failRun("hermes_invalid_event", "invalid settlement");
+                                return;
+                            }
+                            try self.put(&totals, keys[1], count);
+                        }
+                    }
+                    try self.put(&body, "usage", .{ .object = totals });
+                } else if (usage != .null) {
+                    try self.failRun("hermes_invalid_event", "invalid settlement");
+                    return;
                 }
             }
-            try self.put(&body, "usage", .{ .object = totals });
             _ = try self.emit(run, "run.completed", .{ .object = body });
             run.terminal = true;
             return;
@@ -1830,7 +1837,7 @@ test "a delta carrying no text projects nothing, on either channel that projects
     try testing.expectEqualStrings("content.delta", typeAt(&reducer, 1));
 }
 
-test "a completed run always reports usage, and reports only the totals it has" {
+test "a completed run distinguishes absent usage from measured zero counts" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const scratch = arena.allocator();
@@ -1839,8 +1846,14 @@ test "a completed run always reports usage, and reports only the totals it has" 
     try feedEvent(&none, scratch, "message.complete",
         \\{"status":"complete","text":"done"}
     );
-    const empty = payloadAt(&none, 1).get("usage").?.object;
-    try testing.expectEqual(@as(usize, 0), empty.count());
+    try testing.expect(payloadAt(&none, 1).get("usage") == null);
+
+    var unknown = try openRun(&arena);
+    try feedEvent(&unknown, scratch, "message.complete",
+        \\{"status":"complete","text":"done","usage":null}
+    );
+    try testing.expectEqualStrings("run.completed", typeAt(&unknown, 1));
+    try testing.expect(payloadAt(&unknown, 1).get("usage") == null);
 
     var partial = try openRun(&arena);
     try feedEvent(&partial, scratch, "message.complete",
@@ -1848,8 +1861,16 @@ test "a completed run always reports usage, and reports only the totals it has" 
     );
     const totals = payloadAt(&partial, 1).get("usage").?.object;
     try testing.expectEqual(@as(i64, 3), totals.get("input_tokens").?.integer);
-    try testing.expect(totals.get("output_tokens") == null);
+    try testing.expectEqual(@as(i64, 0), totals.get("output_tokens").?.integer);
     try testing.expectEqual(@as(i64, 3), totals.get("total_tokens").?.integer);
+
+    var only_input = try openRun(&arena);
+    try feedEvent(&only_input, scratch, "message.complete",
+        \\{"status":"complete","text":"done","usage":{"input":0}}
+    );
+    const reported = payloadAt(&only_input, 1).get("usage").?.object;
+    try testing.expectEqual(@as(usize, 1), reported.count());
+    try testing.expectEqual(@as(i64, 0), reported.get("input_tokens").?.integer);
 }
 
 test "a run-scoped event after the run settled belongs to no run, and says so" {
@@ -2155,4 +2176,48 @@ test "a refused submission drops what it buffered, it does not hand it to the ne
     try testing.expectEqualStrings("content.delta", typeAt(&reducer, 1));
     try testing.expectEqualStrings("fresh", payloadAt(&reducer, 1).get("part").?.object.get("text").?.string);
     try testing.expectEqual(@as(usize, 2), reducer.envelopes.items.len);
+}
+
+test "negative native usage fails instead of becoming a token measurement" {
+    const cases = [_][]const u8{
+        \\{"status":"complete","text":"done","usage":{"input":-5}}
+        ,
+        \\{"status":"complete","text":"done","usage":{"output":-5}}
+        ,
+        \\{"status":"complete","text":"done","usage":{"total":-5}}
+        ,
+    };
+    for (cases) |frame| {
+        var arena = std.heap.ArenaAllocator.init(testing.allocator);
+        defer arena.deinit();
+        var reducer = try openRun(&arena);
+        try feedEvent(&reducer, arena.allocator(), "message.complete", frame);
+        try testing.expectEqualStrings("run.failed", typeAt(&reducer, 1));
+        const payload = payloadAt(&reducer, 1);
+        try testing.expectEqualStrings("hermes_invalid_event", payload.get("error").?.object.get("code").?.string);
+        try testing.expect(payload.get("usage") == null);
+    }
+}
+
+test "non-object native usage refuses completion" {
+    const cases = [_][]const u8{
+        \\{"status":"complete","text":"done","usage":"x"}
+        ,
+        \\{"status":"complete","text":"done","usage":[]}
+        ,
+        \\{"status":"complete","text":"done","usage":0}
+        ,
+        \\{"status":"complete","text":"done","usage":true}
+        ,
+    };
+    for (cases) |frame| {
+        var arena = std.heap.ArenaAllocator.init(testing.allocator);
+        defer arena.deinit();
+        var reducer = try openRun(&arena);
+        try feedEvent(&reducer, arena.allocator(), "message.complete", frame);
+        try testing.expectEqualStrings("run.failed", typeAt(&reducer, 1));
+        const payload = payloadAt(&reducer, 1);
+        try testing.expectEqualStrings("hermes_invalid_event", payload.get("error").?.object.get("code").?.string);
+        try testing.expect(payload.get("usage") == null);
+    }
 }

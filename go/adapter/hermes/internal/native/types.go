@@ -59,7 +59,7 @@ type InterimPayload struct {
 
 type MessageCompletePayload struct {
 	Text                string          `json:"text"`
-	Usage               Usage           `json:"usage"`
+	Usage               *Usage          `json:"usage"`
 	Status              string          `json:"status"`
 	Reasoning           string          `json:"reasoning,omitempty"`
 	Warning             string          `json:"warning,omitempty"`
@@ -98,12 +98,12 @@ func (e *ErrorSurface) UnmarshalJSON(data []byte) error {
 
 type Usage struct {
 	Model          string `json:"model"`
-	Input          int64  `json:"input"`
-	Output         int64  `json:"output"`
+	Input          *int64 `json:"input"`
+	Output         *int64 `json:"output"`
 	Reasoning      int64  `json:"reasoning"`
 	Prompt         int64  `json:"prompt"`
 	Completion     int64  `json:"completion"`
-	Total          int64  `json:"total"`
+	Total          *int64 `json:"total"`
 	Calls          int64  `json:"calls"`
 	ContextUsed    *int64 `json:"context_used,omitempty"`
 	ContextMax     *int64 `json:"context_max,omitempty"`

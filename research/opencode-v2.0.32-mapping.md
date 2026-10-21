@@ -102,6 +102,13 @@ So a run's `usage` can be below what the session is billed. In
 `completed-text` it misses the title call's 559 input and 5 output tokens
 beside the run's own 4 and 13.
 
+## Reported zero and invalid token counts
+
+Decision 0063 preserves a measured zero in each core usage member. Both
+reducers reject a negative token term in `session.step.ended` with
+`opencode_invalid_step_event` before summing it; an invalid count is not
+clamped into a measured zero. No ended step means usage remains unknown.
+
 ## Corpus
 
 `fixtures/adapters/opencode-v2.0.32` is the v2.0.26 corpus moved forward

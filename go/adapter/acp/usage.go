@@ -116,7 +116,7 @@ func optionalUint(raw json.RawMessage) *uint64 {
 }
 
 func (u *turnUsage) core() *protocol.Usage {
-	return &protocol.Usage{InputTokens: u.input, OutputTokens: u.output, TotalTokens: u.total}
+	return &protocol.Usage{InputTokens: &u.input, OutputTokens: &u.output, TotalTokens: &u.total}
 }
 
 func (u *turnUsage) extension() json.RawMessage {

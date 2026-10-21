@@ -775,11 +775,10 @@ func (session *session) onTokenUsage(value native.ThreadTokenUsageUpdatedNotific
 	if run == nil || run.terminal {
 		return
 	}
-	run.usage = &protocol.Usage{
-		InputTokens:  growth(total.InputTokens, run.usageBase.InputTokens),
-		OutputTokens: growth(total.OutputTokens, run.usageBase.OutputTokens),
-		TotalTokens:  growth(total.TotalTokens, run.usageBase.TotalTokens),
-	}
+	input := growth(total.InputTokens, run.usageBase.InputTokens)
+	output := growth(total.OutputTokens, run.usageBase.OutputTokens)
+	count := growth(total.TotalTokens, run.usageBase.TotalTokens)
+	run.usage = &protocol.Usage{InputTokens: &input, OutputTokens: &output, TotalTokens: &count}
 }
 
 func growth(now, before int64) uint64 {

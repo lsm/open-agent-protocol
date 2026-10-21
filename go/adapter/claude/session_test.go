@@ -392,7 +392,7 @@ func TestSubmitAdmissionViaStreamEventEcho(t *testing.T) {
 	if text, _ := payload.FinalResponse.Content.Text(); text != "fixture response" || payload.StopReason != "completed" {
 		t.Fatalf("payload = %+v", payload)
 	}
-	if payload.Usage == nil || payload.Usage.InputTokens != 7 || payload.Usage.OutputTokens != 5 {
+	if payload.Usage == nil || (payload.Usage.InputTokens == nil || *payload.Usage.InputTokens != 7) || (payload.Usage.OutputTokens == nil || *payload.Usage.OutputTokens != 5) {
 		t.Fatalf("usage = %+v", payload.Usage)
 	}
 	deltas := 0
@@ -2368,7 +2368,7 @@ func TestCoreUsageCarriesTheCacheCountsAndTotalsOnlyWhenBothAreReported(t *testi
 	if cached.CacheWriteInputTokens == nil || *cached.CacheWriteInputTokens != 0 {
 		t.Fatalf("cache write = %v, want a measured 0", cached.CacheWriteInputTokens)
 	}
-	if cached.TotalTokens != 727 {
+	if cached.TotalTokens == nil || *cached.TotalTokens != 727 {
 		t.Fatalf("total = %d, want 7+5+715+0", cached.TotalTokens)
 	}
 
@@ -2376,7 +2376,7 @@ func TestCoreUsageCarriesTheCacheCountsAndTotalsOnlyWhenBothAreReported(t *testi
 	if half.CacheReadInputTokens == nil || *half.CacheReadInputTokens != 715 || half.CacheWriteInputTokens != nil {
 		t.Fatalf("cache counts = %v, %v, want only the read count the frame reported", half.CacheReadInputTokens, half.CacheWriteInputTokens)
 	}
-	if half.TotalTokens != 0 {
+	if half.TotalTokens != nil {
 		t.Fatalf("total = %d, want none when only one cache count is reported", half.TotalTokens)
 	}
 
@@ -2384,9 +2384,14 @@ func TestCoreUsageCarriesTheCacheCountsAndTotalsOnlyWhenBothAreReported(t *testi
 	if bare.CacheReadInputTokens != nil || bare.CacheWriteInputTokens != nil {
 		t.Fatalf("cache counts = %v, %v, want none when the frame reports none", bare.CacheReadInputTokens, bare.CacheWriteInputTokens)
 	}
-	if bare.TotalTokens != 0 || bare.InputTokens != 7 || bare.OutputTokens != 5 {
+	if bare.TotalTokens != nil || (bare.InputTokens == nil || *bare.InputTokens != 7) || (bare.OutputTokens == nil || *bare.OutputTokens != 5) {
 		t.Fatalf("usage = %+v, want input and output with no total it cannot check", bare)
 	}
+	zero := usageOf(strings.Replace(resultFrame("REPLACE_UUID", "success", false, "completed", "done", 0), `"usage":{"input_tokens":7,"output_tokens":5}`, `"usage":{"input_tokens":0,"output_tokens":0,"cache_read_input_tokens":0,"cache_creation_input_tokens":0}`, 1))
+	if zero.InputTokens == nil || *zero.InputTokens != 0 || zero.OutputTokens == nil || *zero.OutputTokens != 0 || zero.TotalTokens == nil || *zero.TotalTokens != 0 {
+		t.Fatalf("usage = %+v, want measured zero input, output and total", zero)
+	}
+
 }
 
 func TestATerminalWithoutACostStillCarriesItsTurnCount(t *testing.T) {
