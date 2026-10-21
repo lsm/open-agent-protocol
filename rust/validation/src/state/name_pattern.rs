@@ -596,6 +596,8 @@ mod tests {
             r"\u0061",
             r"[\x{+41}]",
             r"[\x+4]",
+            r"\é",
+            r"[\é]",
         ] {
             assert!(compile(pattern).is_err(), "{pattern}");
         }
