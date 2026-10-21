@@ -8,7 +8,7 @@ cargo test --manifest-path rust/Cargo.toml -p oap-validation --test admission_an
 ```
 
 The helper rebuilds and invokes the Go, Rust and Zig public validator CLIs on
-34 shared and mutated traces. Session and entry anchors must name submit
+38 shared and mutated traces. Session and entry anchors must name submit
 requests or message-carrying opens on the snapshot's session. Their admissions
 must match the session and entry run. A pending session-level claim must account
 for the run through active_runs, as_of.settled or the scalar active pointer.
@@ -29,11 +29,15 @@ With no concurrent Go, Rust or Zig edits or builds in the worktree, run:
 python3 .claude/skills/verify/scripts/rust-admission-anchors.py --mutation-check --output-dir /tmp/oap-admission-mutations-<unique>
 ```
 
-Fourteen source mutations must compile and change a public CLI judgment. They
+Seventeen source mutations must compile and change a public CLI judgment. They
 weaken request kind/session checks, admitted session/run checks, accounting,
 refusal and closure checks, steer lookup, message-open recognition and allocated
 session binding. The Go and Zig mutations remove only the immediate session
 check: the snapshot diagnostic disappears while scope_mismatch remains.
+Foreign-session run IDs also take the pending-anchor path: refusal or admission
+to a different run fails, and removing the foreign entry repairs the trace.
+The answered-but-unbound open diagnostic describes missing admission evidence
+without calling a successful response a refusal.
 Sources are restored in finally, all validators are rebuilt and every case is
 replayed on all three CLIs. Compiler errors do not count as caught mutations.
 The helper retains traces, raw outputs and exit statuses in its output folder.

@@ -188,11 +188,16 @@ def main():
             ('Some("the anchor was admitted on another session")', 'None', "anchor-foreign-admission"),
             ('Some("the anchor was admitted to a different run")', 'None', "queue-state-entry-anchor-admitted-elsewhere"),
             ('Some("the snapshot accounts for the anchor\'s admitted run nowhere")', 'None', "queue-state-anchor-request-unaccounted"),
-            ('Some("the claimed admission was refused")', 'None', "queue-state-anchor-request-refused"),
+            ('Some("the answered request did not establish the claimed admission")', 'None', "queue-state-anchor-request-refused"),
             ('Some("the claimed admission received no response")', 'None', "queue-state-anchor-request-unanswered"),
             ('run.steers.values().any(|steer| steer.request == request)', 'false', "multiple-steer-anchors-delayed-True-reversed-True"),
             ('request.envelope_type == EnvelopeType::SESSION_OPEN_REQUEST', 'false', "message-open-response-after-snapshot"),
         ]
+        mutations.extend([
+            ('let run = self\n                .runs\n                .get(id)\n                .filter(|run| run.session == p.session_id.as_str());', 'if self.runs.get(id).is_some_and(|run| run.session != p.session_id.as_str()) { continue; } let run = self.runs.get(id);', "anchor-foreign-entry-refused"),
+            ('let run = self\n                .runs\n                .get(id)\n                .filter(|run| run.session == p.session_id.as_str());', 'if self.runs.get(id).is_some_and(|run| run.session != p.session_id.as_str()) { continue; } let run = self.runs.get(id);', "anchor-foreign-entry-wrong-run"),
+            ('the answered request did not establish the claimed admission', 'the claimed admission was refused', "reopen-message-without-a-new-admission"),
+        ])
         mutations = [("rust", source, old, new, target) for old, new, target in mutations]
         mutations.extend([
             ("rust", ROOT / "rust/validation/src/state/admissions.rs", 'request.session = s(&p.session_id);', 'request.session = String::new();', "anchor-message-open-assigns-session"),
@@ -219,7 +224,10 @@ def main():
                     diagnostics = [d for report in reports for d in report.get("diagnostics") or []]
                     codes = sorted({d["code"] for d in diagnostics})
                     baseline = next(r for r in observations if r["case"] == target and r["language"] == language)
-                    assert (result.returncode, codes) != (baseline["exit"], baseline["codes"]), (target, reports)
+                    changed = (result.returncode, codes) != (baseline["exit"], baseline["codes"])
+                    if target == "reopen-message-without-a-new-admission":
+                        changed = changed or any(d["code"] == "session_state_mismatch" and d["message"] != "the answered request did not establish the claimed admission" for d in diagnostics)
+                    assert changed, (target, reports)
                     assert result.returncode in (0, 1) and all(d["phase"] == "semantic" for d in diagnostics), reports
                     if language in ("go", "zig"):
                         assert codes == ["scope_mismatch"], reports

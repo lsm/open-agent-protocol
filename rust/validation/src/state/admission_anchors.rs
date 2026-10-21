@@ -38,7 +38,9 @@ impl State {
                 Some("the snapshot accounts for the anchor's admitted run nowhere")
             }
             Some(_) => None,
-            None if request.responded => Some("the claimed admission was refused"),
+            None if request.responded => {
+                Some("the answered request did not establish the claimed admission")
+            }
             None if deferred => Some("the claimed admission received no response"),
             None => None,
         }
@@ -115,11 +117,11 @@ impl State {
             if !seen.insert(id) || settled.contains(id) {
                 continue;
             }
-            let run = self.runs.get(id);
-            if run.is_some_and(|run| {
-                run.session != p.session_id.as_str()
-                    || run.terminal_at.is_some_and(|terminal| terminal < window)
-            }) {
+            let run = self
+                .runs
+                .get(id)
+                .filter(|run| run.session == p.session_id.as_str());
+            if run.is_some_and(|run| run.terminal_at.is_some_and(|terminal| terminal < window)) {
                 continue;
             }
             let leading = run.is_none();
