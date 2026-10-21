@@ -1023,6 +1023,8 @@ fn validateTrace(allocator: std.mem.Allocator, judge: *validator.Validator, sour
         }
         if (try compiled.validateWithBranches(schema_document, item.value, judge.branchesFor(schema_document)) != null) {
             try appendFinding(allocator, out, .schema, "schema_invalid", index, item.line);
+        } else if (decode.noncanonicalUsage(item.value)) {
+            try appendFinding(allocator, out, .decode, "payload_decode", index, item.line);
         }
     }
     if (out.items.len != 0) return;

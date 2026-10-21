@@ -1,6 +1,7 @@
 package validation
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -78,7 +79,9 @@ func (v *ProviderValidator) Validate(r io.Reader, fixture string) Result {
 	var terminals []providerTerminal
 	for i, entry := range raw {
 		var document any
-		if err := json.Unmarshal(entry.raw, &document); err != nil {
+		decoder := json.NewDecoder(bytes.NewReader(entry.raw))
+		decoder.UseNumber()
+		if err := decoder.Decode(&document); err != nil {
 			result.Diagnostics = append(result.Diagnostics, Diagnostic{Fixture: fixture, Phase: PhaseDecode, Code: CodeMalformedJSON, Index: i, Line: entry.line, Message: err.Error()})
 			continue
 		}
@@ -114,6 +117,10 @@ func (v *ProviderValidator) Validate(r io.Reader, fixture string) Result {
 		}
 		if err := v.schema.Validate(document); err != nil {
 			result.Diagnostics = append(result.Diagnostics, Diagnostic{Fixture: fixture, Phase: PhaseSchema, Code: CodeSchemaInvalid, Index: i, Line: entry.line, EnvelopeID: e.ID, Type: e.Type, Message: err.Error()})
+			continue
+		}
+		if field := noncanonicalUsage(document); field != "" {
+			result.Diagnostics = append(result.Diagnostics, Diagnostic{Fixture: fixture, Phase: PhaseDecode, Code: CodePayloadDecode, Index: i, Line: entry.line, EnvelopeID: e.ID, Type: e.Type, Pointer: "/payload/usage/" + field, Message: "usage count must use canonical unsigned decimal spelling"})
 			continue
 		}
 		if e.InferenceID != "" && scopedEvent(e.Type) {

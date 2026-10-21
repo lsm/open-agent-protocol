@@ -1,4 +1,7 @@
 const std = @import("std");
+const usage = @import("usage");
+
+pub const noncanonicalUsage = usage.noncanonical;
 
 pub const code_malformed_json = "malformed_json";
 pub const code_duplicate_key = "duplicate_key";
@@ -26,12 +29,14 @@ pub fn traceItems(arena: std.mem.Allocator, source: []const u8) !Trace {
         const document = try parseValue(arena, text) orelse return .{ .malformed = .{ .index = 0, .line = 0 } };
         const elements = try traceElements(arena, text);
         const items = try arena.alloc(Item, elements.len);
-        for (items, elements, document.array.items) |*item, raw, value| item.* = .{ .raw = raw, .value = value, .line = 0 };
+        for (items, elements, document.array.items) |*item, raw, value| {
+            item.* = .{ .raw = raw, .value = try withUsageTokens(arena, raw, value), .line = 0 };
+        }
         return .{ .items = items };
     }
     if (try parseValue(arena, text)) |value| {
         const items = try arena.alloc(Item, 1);
-        items[0] = .{ .raw = text, .value = value, .line = 1 };
+        items[0] = .{ .raw = text, .value = try withUsageTokens(arena, text, value), .line = 1 };
         return .{ .items = items };
     }
     var items = std.ArrayList(Item).empty;
@@ -42,7 +47,7 @@ pub fn traceItems(arena: std.mem.Allocator, source: []const u8) !Trace {
         const line = std.mem.trim(u8, untrimmed, " \t\r\n");
         if (line.len == 0) continue;
         const value = try parseValue(arena, line) orelse return .{ .malformed = .{ .index = items.items.len, .line = number } };
-        try items.append(arena, .{ .raw = line, .value = value, .line = number });
+        try items.append(arena, .{ .raw = line, .value = try withUsageTokens(arena, line, value), .line = number });
     }
     return .{ .items = items.items };
 }
@@ -62,10 +67,23 @@ pub fn codes(arena: std.mem.Allocator, source: []const u8) ![]const []const u8 {
     switch (try traceItems(arena, source)) {
         .malformed => try found.append(arena, code_malformed_json),
         .items => |items| for (items) |item| {
-            if (try repeatsAKey(arena, item.raw)) try found.append(arena, code_duplicate_key);
+            if (try repeatsAKey(arena, item.raw)) {
+                try found.append(arena, code_duplicate_key);
+            } else if (noncanonicalUsage(item.value)) {
+                try found.append(arena, "payload_decode");
+            }
         },
     }
     return found.items;
+}
+
+fn withUsageTokens(arena: std.mem.Allocator, raw: []const u8, value: std.json.Value) !std.json.Value {
+    if (usage.counts(value) == null) return value;
+    const exact = try std.json.parseFromSliceLeaky(std.json.Value, arena, raw, .{ .parse_numbers = false, .duplicate_field_behavior = .use_last });
+    var result = value;
+    const payload = result.object.getPtr("payload").?;
+    payload.object.getPtr("usage").?.* = exact.object.get("payload").?.object.get("usage").?;
+    return result;
 }
 
 fn traceElements(allocator: std.mem.Allocator, source: []const u8) ![]const []const u8 {

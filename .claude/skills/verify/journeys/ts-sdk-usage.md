@@ -14,8 +14,9 @@ number; `2^53` and `uint64` maximum complete normally with that counter absent
 and an exact decimal `unrepresentable_count` signal on the usage object.
 Malformed/null, negative, fractional and out-of-uint64 counts return typed
 `malformed_response`. Integral decimal/exponent spellings remain refused
-pending #1398; the validator comparison excludes those known divergences and
-uint64 overflow while requiring zero disagreements on the agreed boundaries.
+under Decision 0065. This consumer script compares a focused validator subset;
+`usage-count-validation.md` covers exact overflow and noncanonical spellings
+across all six shared-usage sites with zero disagreements.
 
 Inspect retained input/output JSON, including safe, unsafe and mixed counts.
 Run the complete baseline too. No provider call, credentials or GUI is used.

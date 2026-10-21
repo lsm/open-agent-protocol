@@ -65,12 +65,42 @@
     "usage": {
       "type": "object",
       "properties": {
-        "input_tokens": { "type": "integer", "minimum": 0 },
-        "cache_read_input_tokens": { "type": "integer", "minimum": 0 },
-        "cache_write_input_tokens": { "type": "integer", "minimum": 0 },
-        "output_tokens": { "type": "integer", "minimum": 0 },
-        "reasoning_tokens": { "type": "integer", "minimum": 0 },
-        "total_tokens": { "type": "integer", "minimum": 0 }
+        "input_tokens": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615,
+          "description": "Decision 0065: a supplied count is a JSON number token spelled 0 or [1-9][0-9]*, at most uint64 max. Missing is unknown; 0 is measured zero."
+        },
+        "cache_read_input_tokens": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615,
+          "description": "Decision 0065: a supplied count is a JSON number token spelled 0 or [1-9][0-9]*, at most uint64 max. Missing is unknown; 0 is measured zero."
+        },
+        "cache_write_input_tokens": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615,
+          "description": "Decision 0065: a supplied count is a JSON number token spelled 0 or [1-9][0-9]*, at most uint64 max. Missing is unknown; 0 is measured zero."
+        },
+        "output_tokens": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615,
+          "description": "Decision 0065: a supplied count is a JSON number token spelled 0 or [1-9][0-9]*, at most uint64 max. Missing is unknown; 0 is measured zero."
+        },
+        "reasoning_tokens": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615,
+          "description": "Decision 0065: a supplied count is a JSON number token spelled 0 or [1-9][0-9]*, at most uint64 max. Missing is unknown; 0 is measured zero."
+        },
+        "total_tokens": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615,
+          "description": "Decision 0065: a supplied count is a JSON number token spelled 0 or [1-9][0-9]*, at most uint64 max. Missing is unknown; 0 is measured zero."
+        }
       },
       "additionalProperties": false
     },

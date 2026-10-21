@@ -126,3 +126,10 @@ implementation changes after this decision merges owe:
   decimal/exponent cases for hub D31 and arbitrary tool-result numbers to prove
   that this usage-only exception has not spread. Exercise all four SDKs and
   TypeScript's non-fatal exact precision signals through their public APIs.
+
+The validator implementation supplies the shared schema maximum and canonical
+usage-token checks in Go, Rust and Zig. The raw-preserving shared corpus pins
+all six sites and counts, diagnostic precedence and unchanged hub D31/tool
+numbers; the independent `usage-count-validation` verify journey runs each
+fixture through the three public validator commands. Python SDK raw `-0`
+refusal remains a separate implementation change under #1398.

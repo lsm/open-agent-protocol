@@ -97,7 +97,7 @@ def validators(output):
             outcomes[name] = {"exit": int(not valid), "codes": sorted(codes)}
         results.append({"usage": usage, "outcomes": outcomes})
     (output / "validators.json").write_text(json.dumps(results))
-    print("agreed usage-boundary validator disagreements: 0; #1398 integral-spelling/uint64-overflow divergences excluded", flush=True)
+    print("agreed usage-boundary validator disagreements: 0; focused subset; full Decision 0065 raw-token matrix runs in usage-count-validation.py", flush=True)
 
 
 def main():

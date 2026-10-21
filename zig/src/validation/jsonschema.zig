@@ -1,4 +1,5 @@
 const std = @import("std");
+const usage = @import("usage");
 const schema_bytes = @import("schema_bytes");
 
 pub const Unsupported = error{
@@ -605,9 +606,13 @@ pub const Validator = struct {
             if (actual < bound) try self.record(pointer, "minimum");
         }
         if (object.get("maximum")) |limit| {
-            const bound = try numberOf(limit);
-            const actual = try numberOf(instance);
-            if (actual > bound) try self.record(pointer, "maximum");
+            if (limit == .number_string and std.mem.eql(u8, limit.number_string, usage.maximum) and instance == .number_string) {
+                if (!usage.inRange(instance.number_string)) try self.record(pointer, "maximum");
+            } else {
+                const bound = try numberOf(limit);
+                const actual = try numberOf(instance);
+                if (actual > bound) try self.record(pointer, "maximum");
+            }
         }
     }
 

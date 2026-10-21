@@ -329,6 +329,10 @@ impl ProviderValidator {
                 diagnostics.push(diagnostic);
                 continue;
             }
+            if let Some(diagnostic) = crate::usage::diagnostic(raw, &value, fixture) {
+                diagnostics.push(diagnostic.at(at.0, at.1));
+                continue;
+            }
             let inference = frame.inference_id.clone().unwrap_or_default();
             if inference.is_empty() || !SCOPED.contains(&kind.as_str()) {
                 continue;
