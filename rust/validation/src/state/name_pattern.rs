@@ -312,7 +312,7 @@ fn class_atom(
             }
             char::from_u32(u32::from_str_radix(&digits, 16).map_err(|_| ())?).ok_or(())?
         }
-        c if !c.is_ascii_alphanumeric() => c,
+        c if c.is_ascii() && !c.is_ascii_alphanumeric() => c,
         _ => return Err(()),
     };
     Ok(ClassAtom::Rune(rune))
@@ -389,6 +389,9 @@ fn normalize(pattern: &str) -> Result<String, ()> {
     while let Some(c) = chars.next() {
         if c == '\\' {
             let escaped = chars.next().ok_or(())?;
+            if !escaped.is_ascii() {
+                return Err(());
+            }
             let replacement = perl_class(escaped);
             if escaped.is_ascii_digit() {
                 if escaped > '7' {
