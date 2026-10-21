@@ -14026,6 +14026,32 @@
       "rules": [
         "0011#the-capability-discloses-its-limits-or-it-promises-nothing/1"
       ]
+    },
+    {
+      "id": "open-provide-within-limits-refused-by-policy",
+      "path": "semantic-invalid/open-provide-within-limits-refused-by-policy.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "undisclosed_provide_limit"
+      ],
+      "units": [
+        "control-tools"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0011-control-layer-provided-tools.md"
+      ],
+      "covers": [
+        {
+          "capability": "action.tools.provide",
+          "aspect": "honour"
+        }
+      ],
+      "rules": [
+        "0011#the-capability-discloses-its-limits-or-it-promises-nothing/1"
+      ]
     }
   ]
 }
