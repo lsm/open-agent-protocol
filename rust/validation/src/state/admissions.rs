@@ -83,8 +83,52 @@ impl State {
         );
     }
 
+    fn reopen_response(&mut self, at: (usize, usize), e: &Envelope, p: &SessionState) {
+        let Some(request) = self
+            .requests
+            .get(&os(&e.in_reply_to))
+            .filter(|request| request.envelope_type == EnvelopeType::SESSION_OPEN_REQUEST)
+            .map(|request| payload::<SessionOpenRequest>(&request.envelope))
+            .filter(|request| request.reopen)
+        else {
+            return;
+        };
+        let recovered = p
+            .recovery
+            .as_ref()
+            .is_some_and(|recovery| recovery.recovered);
+        if !recovered {
+            self.add(
+                codes::SESSION_STATE_MISMATCH,
+                at,
+                e,
+                "/payload/recovery/recovered",
+                "a reopened session's state document declares that it was recovered",
+            );
+        }
+        let active = os(&p.active_run_id);
+        let restored_queue = recovered
+            && active.is_empty()
+            && p.active_runs
+                .iter()
+                .all(|entry| entry.status == RunStatus::QUEUED);
+        if request.message.is_none()
+            && (!active.is_empty() || !p.active_runs.is_empty())
+            && !restored_queue
+        {
+            self.add(
+                codes::SESSION_STATE_MISMATCH,
+                at,
+                e,
+                "/payload/active_runs",
+                "a reopen loads a session with no run under way unless it restores queued runs",
+            );
+        }
+    }
+
     pub(super) fn open_response(&mut self, at: (usize, usize), e: &Envelope) {
         let p: SessionState = payload(e);
+        self.reopen_response(at, e, &p);
         let session = s(&p.session_id);
         let pointer = "/payload/recovery/resume_cursor";
         if let Some(recovery) = p.recovery.as_ref() {
