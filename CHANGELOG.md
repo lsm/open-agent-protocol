@@ -21,6 +21,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **client: verify prepared TypeScript builds before file installs** ([#1384](https://github.com/lsm/open-agent-protocol/pull/1384)): Installing `oap-client` from a prepared checkout could silently reuse stale JavaScript or succeed with missing modules/declarations because `prepare` checked only whether `dist/src/index.js` existed.
 - **validation: judge recovered reopen state in Rust** ([#1380](https://github.com/lsm/open-agent-protocol/pull/1380)): Rust accepted reopened sessions that claimed queued work without recovery, or claimed a running run survived recovery.
 - **validation: preserve user-input tool bindings in all three validators** ([#1379](https://github.com/lsm/open-agent-protocol/pull/1379)): A user-input interaction requested for tool call `t1` could resolve with envelope `tool_call_id: "t9"` and all three validators accepted it.
 - **fix(tui): anchor IME preedit to the composer caret** ([#1377](https://github.com/lsm/open-agent-protocol/pull/1377)): Chinese IME preedit follows the real terminal cursor.
