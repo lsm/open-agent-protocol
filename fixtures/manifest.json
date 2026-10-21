@@ -14654,6 +14654,24 @@
       "rules": [
         "0050#5/3"
       ]
+    },
+    {
+      "id": "redelivery-state-live-open-before-restart",
+      "path": "valid/redelivery-state-live-open-before-restart.json",
+      "kind": "positive",
+      "valid": true,
+      "phase": "",
+      "codes": [],
+      "units": [
+        "session-reattach",
+        "queue"
+      ],
+      "provenance": [
+        "decisions/0050-shutdown-is-graceful-forced-or-asked.md"
+      ],
+      "rules": [
+        "0050#5/3"
+      ]
     }
   ]
 }
