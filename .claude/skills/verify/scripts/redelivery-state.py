@@ -44,7 +44,12 @@ def replay(language, fixture, output, label):
     diagnostics = [d for report in reports for d in report.get("diagnostics") or []]
     codes = sorted({d["code"] for d in diagnostics})
     phases = {d["phase"] for d in diagnostics}
-    first_decision = fixture["id"] != "redelivery-state-unpaired-root-change" or all(d.get("index") == 3 for d in diagnostics)
+    decision_index = {
+        "redelivery-state-unpaired-root-change": 3,
+        "redelivery-state-snapshot-replaced-carrier": 9,
+        "redelivery-state-snapshot-withdrawn-carrier": 9,
+    }.get(fixture["id"])
+    first_decision = decision_index is None or all(d.get("index") == decision_index for d in diagnostics)
     observed = (result.returncode, codes, phases, first_decision)
     expected = (int(not fixture["valid"]), sorted(fixture.get("codes", [])), {fixture.get("phase", "")} if not fixture["valid"] else set(), True)
     return observed, expected
@@ -95,6 +100,8 @@ def mutations(language):
             ("old-carrier", "self-replacement", "active.run_id.as_str() == prev || active.run_id.as_str() == root", "false"),
             ("old-order", "queue-order-conflicts-with-held", "run.order <= order", "order != order"),
             ("close-carriers", "chain", "run.terminal = true;", "run.terminal = false;"),
+            ("close-position", "snapshot-replaced-carrier", "run.terminal_at = Some(at.0);", "run.terminal_at = None;"),
+            ("withdraw-position", "snapshot-withdrawn-carrier", "run.terminal_at = Some(at.0);", "run.terminal_at = None;"),
             ("cursor-resume", "cursor-resumes-known-queue", "if !restarting {", "if restarting && false {"),
         ]
     return [

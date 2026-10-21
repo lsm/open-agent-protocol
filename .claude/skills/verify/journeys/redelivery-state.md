@@ -33,6 +33,12 @@ fixtures with a running run and reservation, or an already observed queue, remai
 a restart. Carrier IDs seen only as old predecessors or withdrawn roots cannot
 be reused as fresh carriers. The restored-queue reopen fixture now carries its required pairs.
 
+A later state read must refuse both replaced and withdrawn old carriers in
+`active_runs`, while a listing containing only the current carrier remains
+accepted. The helper checks that those refusals occur at the state response
+(index 9). Recovery closure records its trace position so snapshot read-window
+checks observe the same closure in all three validators.
+
 For repeatable source mutation checks, run with no other builds or edits in this
 worktree:
 

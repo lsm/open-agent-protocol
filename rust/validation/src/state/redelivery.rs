@@ -194,6 +194,7 @@ impl State {
         for id in held {
             if let Some(run) = self.runs.get_mut(&id).filter(|run| !run.started) {
                 run.terminal = true;
+                run.terminal_at = Some(at.0);
             }
         }
         for entry in records {

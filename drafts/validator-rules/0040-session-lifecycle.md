@@ -255,7 +255,8 @@ Source: [`decisions/0050-shutdown-is-graceful-forced-or-asked.md`](../../decisio
 All three validators judge `0050#5/3` against observed shutdown held lists and
 queued admissions, retaining carrier roots and closed chains across reopens.
 The recovered response closes the replaced queued carriers without requiring
-fabricated terminal events. A trace starting at recovery can establish a chain
+fabricated terminal events, retaining the closure position so later snapshots
+cannot list replaced or withdrawn carriers. A trace starting at recovery can establish a chain
 without its earlier history; it still checks unique pairing, fresh queued
 membership and order, then binds subsequent records to the observed chain.
 An ordinary live-session open without recovery retains its existing reservations.
