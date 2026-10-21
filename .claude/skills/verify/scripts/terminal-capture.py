@@ -69,11 +69,14 @@ def main():
                 reports = [reports]
             diagnostics = [d for report in reports for d in report.get("diagnostics") or []]
             codes = sorted({d["code"] for d in diagnostics})
-            observation = {"case": label, "validator": name, "exit": result.returncode, "codes": codes}
+            counts = {code: sum(d["code"] == code for d in diagnostics) for code in codes}
+            observation = {"case": label, "validator": name, "exit": result.returncode, "codes": codes, "counts": counts}
             observations.append(observation)
             print(json.dumps(observation), flush=True)
             if result.returncode != int(bool(expected)) or codes != sorted(expected):
                 failures.append(observation)
+            if codes == sorted(expected):
+                assert counts == {code: (2 if code == event_after and label == "two-late-events" else 1) for code in expected}, observation
             if mismatch in expected and name != "zig" and mismatch in codes:
                 assert all(d["pointer"] == "/payload/active_runs/0/as_of_sequence" for d in diagnostics if d["code"] == mismatch), diagnostics
             assert all(d["phase"] == "semantic" for d in diagnostics), diagnostics

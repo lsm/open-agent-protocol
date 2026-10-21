@@ -15,7 +15,8 @@ event must still draw `event_after_terminal`.
 The shared negative fixture is
 `fixtures/semantic-invalid/queue-state-terminal-capture-after-late-event.json`.
 Mutations move its capture before, at and past the terminal, add another late
-event, move the late event past the snapshot and remove it. Repairing both the
+event, move the late event past the snapshot and remove it. A duplicate
+terminal must not replace the first terminal's sequence. Repairing both the
 event stream and capture restores a valid trace. All three validators must
 agree on exact code sets and exit statuses; Go and Rust also identify the
 capture pointer. Inputs and raw stdout/stderr, exit codes and comparisons are

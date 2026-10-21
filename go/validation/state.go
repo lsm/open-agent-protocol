@@ -38,8 +38,9 @@ type runState struct {
 
 	startedAt int
 
-	startSequence uint64
-	terminalAt    int
+	startSequence    uint64
+	terminalAt       int
+	terminalSequence *uint64
 
 	admittedAt    int
 	submitRequest protocol.EnvelopeID
@@ -1159,6 +1160,7 @@ func (s *state) runEvent(i, line int, e protocol.Envelope) {
 		r.terminal = true
 		r.terminalType = e.Type
 		r.terminalAt = i
+		r.terminalSequence = e.Sequence
 		switch e.Type {
 		case protocol.TypeRunCompleted:
 			r.status = protocol.RunCompleted
