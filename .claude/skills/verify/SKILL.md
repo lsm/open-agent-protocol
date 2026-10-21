@@ -160,7 +160,9 @@ through the public Go, Rust and TypeScript SDK streams against both real CLIs.
 All six consumer runs must retain the original result JSON and distinguish 0,
 nonzero and null exit evidence. Only numeric zero may project a `codex.command`
 as non-error; unknown must remain null in the result and project as error.
-Explicit native failures still take priority over zero. The real `clients/ts`
+Explicit native failures still take priority over zero. A non-Codex `Bash`
+completed-action fixture without `exitCode` must retain its existing non-error
+outcome in all three public SDK streams. The real `clients/ts`
 parser must preserve both traces unchanged. All three validators must accept
 both wire traces with exit 0. The baseline and backend parity CI lane run this
 journey; logs retain every SDK outcome and validator result. This proves the

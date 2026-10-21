@@ -13,12 +13,19 @@ import (
 func main() {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	client, err := sdk.New(ctx, &sdk.Options{BinaryPath: os.Args[1], Args: []string{"serve", "agent", "--backend", "codex", "--config", os.Args[2]}})
+	args := []string{"serve", "agent", "--backend", "codex", "--config", os.Args[2]}
+	model := "fixture/openai-responses@glm-test"
+	other := os.Args[2] == "--non-codex"
+	if other {
+		args = []string{"sdk/typescript/test/fixtures/oap-server.js"}
+		model = "fixture/openai-responses@bash-no-exit"
+	}
+	client, err := sdk.New(ctx, &sdk.Options{BinaryPath: os.Args[1], Args: args})
 	if err != nil {
 		panic(err)
 	}
 	defer client.Close()
-	stream, err := client.Agent.Stream(ctx, sdk.AgentRequest{ModelRef: "fixture/openai-responses@glm-test", Messages: []sdk.Message{sdk.UserMessage("read the code")}})
+	stream, err := client.Agent.Stream(ctx, sdk.AgentRequest{ModelRef: model, Messages: []sdk.Message{sdk.UserMessage("read the code")}})
 	if err != nil {
 		panic(err)
 	}
@@ -34,6 +41,12 @@ func main() {
 	}
 	raw, _ := json.Marshal(ends)
 	fmt.Println(string(raw))
+	if other {
+		if len(ends) != 1 || ends[0].IsError {
+			panic("non-Codex Bash without exitCode changed outcome")
+		}
+		return
+	}
 	if len(ends) != 8 {
 		panic("expected eight command outcomes")
 	}

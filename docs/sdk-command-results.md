@@ -17,7 +17,10 @@ A completed action alone is not successful-command evidence. SDKs project a
 and its result has numeric `exitCode: 0`. Nonzero and unknown both project as
 error; their original result distinguishes a known failure from unknown exit
 status. An explicit native failure remains error even if a zero is present.
-Other tools retain their existing action-lifecycle error projection.
+The exit-evidence rule applies only to the exact action name `codex.command`.
+Other tools, including `Bash` without `exitCode`, retain their existing
+action-lifecycle error projection. Their non-error flag reports action completion;
+it is not a claim of numeric process-exit evidence.
 
 These are SDK event projections over the existing free-JSON OAP result; the
 wire schema and validator rules are unchanged. Rust has no native Codex

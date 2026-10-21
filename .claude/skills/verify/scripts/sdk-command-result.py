@@ -69,6 +69,13 @@ console.log('clients/ts preserved every payload, including numeric and null exit
             "rust": [str(ROOT / "rust/target/debug/examples/command_result")],
             "ts": [shutil.which("node"), "sdk/typescript/test/fixtures/command-result-consumer.cjs"],
         }
+        for sdk, command in consumers.items():
+            raw = run(f"non-codex-{sdk}", command + [shutil.which("node"), "--non-codex"], environment)
+            event, = json.loads(raw)
+            assert event.get("is_error", event.get("IsError")) is False, (sdk, event)
+            result = event.get("result", event.get("Result"))
+            assert result == {"command": "git diff HEAD~1", "cwd": "/workspace/repo", "output": "read completed"}, (sdk, event)
+            print(f"{sdk}: non-Codex Bash without exitCode retains its completed outcome", flush=True)
         for source, binary in (("go", output / "wire/goap"), ("zig", args.oapx.resolve())):
             observed = []
             for sdk, command in consumers.items():

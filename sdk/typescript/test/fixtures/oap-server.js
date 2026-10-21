@@ -187,6 +187,14 @@ createInterface({ input: process.stdin }).on("line", (line) => {
       send(request, "session.message.submit.response", { session_id: request.payload.session_id, accepted: true, run_id: "run-1", submission_id: "sub-1", requested_delivery: "auto", effective_delivery: "start", admission: "started" }, { session_id: request.payload.session_id });
       event(agent, "run.started", { session_id: request.payload.session_id, run_id: "run-1", model_id: request.payload.model_id || selectedModel }, { session_id: request.payload.session_id, run_id: "run-1", sequence: 1 });
       submittedModel = request.payload.model_id ?? "";
+      if (submittedModel.endsWith("@bash-no-exit")) {
+        const scope = { session_id: request.payload.session_id, run_id: "run-1", tool_call_id: "call-1" };
+        const call = { ...scope, name: "Bash", execution_owner: "claude-code" };
+        event(agent, "action.call.started", call, { ...scope, sequence: 2 });
+        event(agent, "action.call.completed", { ...call, result: { command: "git diff HEAD~1", cwd: "/workspace/repo", output: "read completed" } }, { ...scope, sequence: 3 });
+        event(agent, "run.completed", { session_id: scope.session_id, run_id: scope.run_id, final_response: { role: "assistant", content: "read completed" }, stop_reason: "end_turn" }, { session_id: scope.session_id, run_id: scope.run_id, sequence: 4 });
+        break;
+      }
       if (submittedModel.endsWith("@tool") || submittedModel.endsWith("@tool-then-login")) {
         event(agent, "action.call.requested", { session_id: request.payload.session_id, run_id: "run-1", tool_call_id: "call-1", name: "lookup", execution_owner: participant, interaction_id: "interaction-1", requested_by: "fixture", responded_by: participant, arguments_json: { word: "oap" } }, { session_id: request.payload.session_id, run_id: "run-1", tool_call_id: "call-1", sequence: 2 });
         break;
