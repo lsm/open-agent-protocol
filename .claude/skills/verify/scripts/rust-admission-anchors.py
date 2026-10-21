@@ -17,6 +17,8 @@ NEGATIVE = [
     "anchor-foreign-request",
     "anchor-foreign-admission",
     "anchor-foreign-admission-before-snapshot",
+    "anchor-foreign-entry-refused",
+    "anchor-foreign-entry-wrong-run",
 ]
 POSITIVE = [
     "queue-state-entry-leads-its-admission",
@@ -145,6 +147,11 @@ def main():
     trace[3]["payload"]["recovery"] = {"recovered": True}
     cases.append(("reopen-message-without-a-new-admission", trace, ["missing_run_terminal", "session_state_mismatch"]))
 
+    for name in ["anchor-foreign-entry-refused", "anchor-foreign-entry-wrong-run"]:
+        trace = fixture(name)
+        state(trace)["active_runs"] = [entry for entry in state(trace)["active_runs"] if entry["run_id"] != "r5"]
+        cases.append((name + "-remove-foreign-entry", trace, []))
+
     observations = []
     failures = []
     for label, trace, expected in cases:
@@ -160,6 +167,8 @@ def main():
             record = {"case": label, "language": language, "exit": result.returncode, "codes": codes}
             observations.append(record)
             okay = codes == expected and result.returncode == int(bool(expected)) and all(d["phase"] == "semantic" for d in diagnostics)
+            if language == "rust" and label == "reopen-message-without-a-new-admission":
+                okay = okay and all(d["message"] == "the answered request did not establish the claimed admission" for d in diagnostics if d["code"] == "session_state_mismatch")
             if not okay:
                 failures.append(record)
             if language == "rust":
