@@ -14164,6 +14164,380 @@
       "rules": [
         "0050#5/4"
       ]
+    },
+    {
+      "id": "redelivery-state-duplicate-previous",
+      "path": "semantic-invalid/redelivery-state-duplicate-previous.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "session_state_mismatch"
+      ],
+      "units": [
+        "session-reattach",
+        "queue"
+      ],
+      "provenance": [
+        "decisions/0050-shutdown-is-graceful-forced-or-asked.md"
+      ],
+      "rules": [
+        "0050#5/3"
+      ]
+    },
+    {
+      "id": "redelivery-state-duplicate-root",
+      "path": "semantic-invalid/redelivery-state-duplicate-root.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "session_state_mismatch"
+      ],
+      "units": [
+        "session-reattach",
+        "queue"
+      ],
+      "provenance": [
+        "decisions/0050-shutdown-is-graceful-forced-or-asked.md"
+      ],
+      "rules": [
+        "0050#5/3"
+      ]
+    },
+    {
+      "id": "redelivery-state-duplicate-new",
+      "path": "semantic-invalid/redelivery-state-duplicate-new.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "session_state_mismatch"
+      ],
+      "units": [
+        "session-reattach",
+        "queue"
+      ],
+      "provenance": [
+        "decisions/0050-shutdown-is-graceful-forced-or-asked.md"
+      ],
+      "rules": [
+        "0050#5/3"
+      ]
+    },
+    {
+      "id": "redelivery-state-self-replacement",
+      "path": "semantic-invalid/redelivery-state-self-replacement.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "session_state_mismatch"
+      ],
+      "units": [
+        "session-reattach",
+        "queue"
+      ],
+      "provenance": [
+        "decisions/0050-shutdown-is-graceful-forced-or-asked.md"
+      ],
+      "rules": [
+        "0050#5/3"
+      ]
+    },
+    {
+      "id": "redelivery-state-old-still-active",
+      "path": "semantic-invalid/redelivery-state-old-still-active.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "session_state_mismatch"
+      ],
+      "units": [
+        "session-reattach",
+        "queue"
+      ],
+      "provenance": [
+        "decisions/0050-shutdown-is-graceful-forced-or-asked.md"
+      ],
+      "rules": [
+        "0050#5/3"
+      ]
+    },
+    {
+      "id": "redelivery-state-root-is-new",
+      "path": "semantic-invalid/redelivery-state-root-is-new.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "session_state_mismatch"
+      ],
+      "units": [
+        "session-reattach",
+        "queue"
+      ],
+      "provenance": [
+        "decisions/0050-shutdown-is-graceful-forced-or-asked.md"
+      ],
+      "rules": [
+        "0050#5/3"
+      ]
+    },
+    {
+      "id": "redelivery-state-missing-queued-member",
+      "path": "semantic-invalid/redelivery-state-missing-queued-member.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "session_state_mismatch"
+      ],
+      "units": [
+        "session-reattach",
+        "queue"
+      ],
+      "provenance": [
+        "decisions/0050-shutdown-is-graceful-forced-or-asked.md"
+      ],
+      "rules": [
+        "0050#5/3"
+      ]
+    },
+    {
+      "id": "redelivery-state-reversed-new-order",
+      "path": "semantic-invalid/redelivery-state-reversed-new-order.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "session_state_mismatch"
+      ],
+      "units": [
+        "session-reattach",
+        "queue"
+      ],
+      "provenance": [
+        "decisions/0050-shutdown-is-graceful-forced-or-asked.md"
+      ],
+      "rules": [
+        "0050#5/3"
+      ]
+    },
+    {
+      "id": "redelivery-state-withdrawn-still-active",
+      "path": "semantic-invalid/redelivery-state-withdrawn-still-active.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "session_state_mismatch"
+      ],
+      "units": [
+        "session-reattach",
+        "queue"
+      ],
+      "provenance": [
+        "decisions/0050-shutdown-is-graceful-forced-or-asked.md"
+      ],
+      "rules": [
+        "0050#5/3"
+      ]
+    },
+    {
+      "id": "redelivery-state-chain",
+      "path": "valid/redelivery-state-chain.json",
+      "kind": "positive",
+      "valid": true,
+      "phase": "",
+      "codes": [],
+      "units": [
+        "session-reattach",
+        "queue"
+      ],
+      "provenance": [
+        "decisions/0050-shutdown-is-graceful-forced-or-asked.md"
+      ],
+      "rules": [
+        "0050#5/3"
+      ]
+    },
+    {
+      "id": "redelivery-state-started-held",
+      "path": "valid/redelivery-state-started-held.json",
+      "kind": "positive",
+      "valid": true,
+      "phase": "",
+      "codes": [],
+      "units": [
+        "session-reattach",
+        "queue"
+      ],
+      "provenance": [
+        "decisions/0050-shutdown-is-graceful-forced-or-asked.md"
+      ],
+      "rules": [
+        "0050#5/3"
+      ]
+    },
+    {
+      "id": "redelivery-state-root-changed",
+      "path": "semantic-invalid/redelivery-state-root-changed.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "session_state_mismatch"
+      ],
+      "units": [
+        "session-reattach",
+        "queue"
+      ],
+      "provenance": [
+        "decisions/0050-shutdown-is-graceful-forced-or-asked.md"
+      ],
+      "rules": [
+        "0050#5/3"
+      ]
+    },
+    {
+      "id": "redelivery-state-stale-previous",
+      "path": "semantic-invalid/redelivery-state-stale-previous.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "session_state_mismatch"
+      ],
+      "units": [
+        "session-reattach",
+        "queue"
+      ],
+      "provenance": [
+        "decisions/0050-shutdown-is-graceful-forced-or-asked.md"
+      ],
+      "rules": [
+        "0050#5/3"
+      ]
+    },
+    {
+      "id": "redelivery-state-held-missing",
+      "path": "semantic-invalid/redelivery-state-held-missing.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "session_state_mismatch"
+      ],
+      "units": [
+        "session-reattach",
+        "queue"
+      ],
+      "provenance": [
+        "decisions/0050-shutdown-is-graceful-forced-or-asked.md"
+      ],
+      "rules": [
+        "0050#5/3"
+      ]
+    },
+    {
+      "id": "redelivery-state-held-extra",
+      "path": "semantic-invalid/redelivery-state-held-extra.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "session_state_mismatch"
+      ],
+      "units": [
+        "session-reattach",
+        "queue"
+      ],
+      "provenance": [
+        "decisions/0050-shutdown-is-graceful-forced-or-asked.md"
+      ],
+      "rules": [
+        "0050#5/3"
+      ]
+    },
+    {
+      "id": "redelivery-state-held-order",
+      "path": "semantic-invalid/redelivery-state-held-order.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "session_state_mismatch"
+      ],
+      "units": [
+        "session-reattach",
+        "queue"
+      ],
+      "provenance": [
+        "decisions/0050-shutdown-is-graceful-forced-or-asked.md"
+      ],
+      "rules": [
+        "0050#5/3"
+      ]
+    },
+    {
+      "id": "redelivery-state-held-omitted",
+      "path": "semantic-invalid/redelivery-state-held-omitted.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "session_state_mismatch"
+      ],
+      "units": [
+        "session-reattach",
+        "queue"
+      ],
+      "provenance": [
+        "decisions/0050-shutdown-is-graceful-forced-or-asked.md"
+      ],
+      "rules": [
+        "0050#5/3"
+      ]
+    },
+    {
+      "id": "redelivery-state-first-root",
+      "path": "valid/redelivery-state-first-root.json",
+      "kind": "positive",
+      "valid": true,
+      "phase": "",
+      "codes": [],
+      "units": [
+        "session-reattach",
+        "queue"
+      ],
+      "provenance": [
+        "decisions/0050-shutdown-is-graceful-forced-or-asked.md"
+      ],
+      "rules": [
+        "0050#5/3"
+      ]
+    },
+    {
+      "id": "redelivery-state-wrong-first-root",
+      "path": "semantic-invalid/redelivery-state-wrong-first-root.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "session_state_mismatch"
+      ],
+      "units": [
+        "session-reattach",
+        "queue"
+      ],
+      "provenance": [
+        "decisions/0050-shutdown-is-graceful-forced-or-asked.md"
+      ],
+      "rules": [
+        "0050#5/3"
+      ]
     }
   ]
 }
