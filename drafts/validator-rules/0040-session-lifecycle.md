@@ -169,7 +169,7 @@ Source: [`decisions/0051-transcript-load.md`](../../decisions/0051-transcript-lo
 
 | id | rule | lines | code | Go | Zig | Rust |
 | --- | --- | --- | --- | --- | --- | --- |
-| `0051#4/1` | A page MUST hold no more entries than the request's `limit`, or 100 when none was given. | L89–96 | `transcript_over_limit` | `transcript.go:transcriptLoadResponse` | `semantic.zig:transcriptLoadResponse` | — |
+| `0051#4/1` | A page MUST hold no more entries than the request's `limit`, or 100 when none was given. | L89–96 | `transcript_over_limit` | `transcript.go:transcriptLoadResponse` | `semantic.zig:transcriptLoadResponse` | `state/transcript.rs:transcript_load_response` |
 | `0051#4/2` | An entry with `truncated: true` MUST be the only entry on its page. | L89–96 | — | — | — | — |
 | `0051#4/3` | A `transcript.load.request` `limit` MUST lie in 1 to 500. | L90 | `schema_invalid` | schema | schema | schema |
 
@@ -179,7 +179,7 @@ Source: [`decisions/0051-transcript-load.md`](../../decisions/0051-transcript-lo
 
 | id | rule | lines | code | Go | Zig | Rust |
 | --- | --- | --- | --- | --- | --- | --- |
-| `0051#2/1` | A page MUST return each `entry_id` once. | L51–73 | `duplicate_transcript_entry` | `transcript.go:transcriptLoadResponse` | `semantic.zig:transcriptLoadResponse` | — |
+| `0051#2/1` | A page MUST return each `entry_id` once. | L51–73 | `duplicate_transcript_entry` | `transcript.go:transcriptLoadResponse` | `semantic.zig:transcriptLoadResponse` | `state/transcript.rs:transcript_load_response` |
 
 ### [0051] 5. A cursor that is gone is an explicit gap
 
@@ -187,9 +187,9 @@ Source: [`decisions/0051-transcript-load.md`](../../decisions/0051-transcript-lo
 
 | id | rule | lines | code | Go | Zig | Rust |
 | --- | --- | --- | --- | --- | --- | --- |
-| `0051#5/1` | A read with no cursor MUST NOT carry a `gap`. | L41–48, L99–116 | `transcript_gap_mismatch` | `transcript.go:transcriptLoadResponse` | `semantic.zig:transcriptLoadResponse` | — |
-| `0051#5/2` | A gap on a page with no entries MUST omit `resumed_at`. | L99–116 | `transcript_gap_mismatch` | `transcript.go:transcriptLoadResponse` | `semantic.zig:transcriptLoadResponse` | — |
-| `0051#5/3` | A gap's `resumed_at` MUST be the first entry the page returns. | L99–116 | `transcript_gap_mismatch` | `transcript.go:transcriptLoadResponse` | `semantic.zig:transcriptLoadResponse` | — |
+| `0051#5/1` | A read with no cursor MUST NOT carry a `gap`. | L41–48, L99–116 | `transcript_gap_mismatch` | `transcript.go:transcriptLoadResponse` | `semantic.zig:transcriptLoadResponse` | `state/transcript.rs:transcript_load_response` |
+| `0051#5/2` | A gap on a page with no entries MUST omit `resumed_at`. | L99–116 | `transcript_gap_mismatch` | `transcript.go:transcriptLoadResponse` | `semantic.zig:transcriptLoadResponse` | `state/transcript.rs:transcript_load_response` |
+| `0051#5/3` | A gap's `resumed_at` MUST be the first entry the page returns. | L99–116 | `transcript_gap_mismatch` | `transcript.go:transcriptLoadResponse` | `semantic.zig:transcriptLoadResponse` | `state/transcript.rs:transcript_load_response` |
 | `0051#5/4` | A `pruned` gap from a store holding no entries MUST carry no entries and `complete: true`. | L99–116 | — | — | — | — |
 
 ### [0040] The three refusals, and each fails closed

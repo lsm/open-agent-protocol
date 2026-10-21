@@ -13100,6 +13100,141 @@
       ]
     },
     {
+      "id": "transcript-page-empty-gap-names-entry",
+      "path": "semantic-invalid/transcript-page-empty-gap-names-entry.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "transcript_gap_mismatch"
+      ],
+      "units": [
+        "transcript-load"
+      ],
+      "provenance": [
+        "decisions/0051-transcript-load.md"
+      ],
+      "rules": [
+        "0051#5/2"
+      ]
+    },
+    {
+      "id": "transcript-page-gap-omits-first-entry",
+      "path": "semantic-invalid/transcript-page-gap-omits-first-entry.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "transcript_gap_mismatch"
+      ],
+      "units": [
+        "transcript-load"
+      ],
+      "provenance": [
+        "decisions/0051-transcript-load.md"
+      ],
+      "rules": [
+        "0051#5/3"
+      ]
+    },
+    {
+      "id": "transcript-page-combined-faults",
+      "path": "semantic-invalid/transcript-page-combined-faults.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "transcript_over_limit",
+        "duplicate_transcript_entry",
+        "transcript_gap_mismatch"
+      ],
+      "units": [
+        "transcript-load"
+      ],
+      "provenance": [
+        "decisions/0051-transcript-load.md"
+      ],
+      "rules": [
+        "0051#4/1",
+        "0051#2/1",
+        "0051#5/3"
+      ]
+    },
+    {
+      "id": "transcript-page-correlated-reversed-replies",
+      "path": "valid/transcript-page-correlated-reversed-replies.json",
+      "kind": "positive",
+      "valid": true,
+      "phase": "",
+      "codes": [],
+      "units": [
+        "transcript-load"
+      ],
+      "provenance": [
+        "decisions/0051-transcript-load.md"
+      ],
+      "rules": [
+        "0051#4/1",
+        "0051#5/1",
+        "0051#5/3"
+      ]
+    },
+    {
+      "id": "transcript-page-correlated-limit",
+      "path": "semantic-invalid/transcript-page-correlated-limit.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "transcript_over_limit"
+      ],
+      "units": [
+        "transcript-load"
+      ],
+      "provenance": [
+        "decisions/0051-transcript-load.md"
+      ],
+      "rules": [
+        "0051#4/1"
+      ]
+    },
+    {
+      "id": "transcript-page-correlated-cursor",
+      "path": "semantic-invalid/transcript-page-correlated-cursor.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "transcript_gap_mismatch"
+      ],
+      "units": [
+        "transcript-load"
+      ],
+      "provenance": [
+        "decisions/0051-transcript-load.md"
+      ],
+      "rules": [
+        "0051#5/1"
+      ]
+    },
+    {
+      "id": "transcript-page-empty-gap",
+      "path": "valid/transcript-page-empty-gap.json",
+      "kind": "positive",
+      "valid": true,
+      "phase": "",
+      "codes": [],
+      "units": [
+        "transcript-load"
+      ],
+      "provenance": [
+        "decisions/0051-transcript-load.md"
+      ],
+      "rules": [
+        "0051#5/2"
+      ]
+    },
+    {
       "id": "transcript-load-over-limit",
       "path": "semantic-invalid/transcript-load-over-limit.json",
       "kind": "semantic-invalid",
@@ -13119,6 +13254,9 @@
           "capability": "transcript.load",
           "aspect": "honour"
         }
+      ],
+      "rules": [
+        "0051#4/1"
       ]
     },
     {
@@ -13141,6 +13279,9 @@
           "capability": "transcript.load",
           "aspect": "honour"
         }
+      ],
+      "rules": [
+        "0051#2/1"
       ]
     },
     {
@@ -13163,6 +13304,9 @@
           "capability": "transcript.load",
           "aspect": "honour"
         }
+      ],
+      "rules": [
+        "0051#5/3"
       ]
     },
     {
@@ -13185,6 +13329,9 @@
           "capability": "transcript.load",
           "aspect": "honour"
         }
+      ],
+      "rules": [
+        "0051#5/1"
       ]
     },
     {
@@ -14071,6 +14218,9 @@
       ],
       "provenance": [
         "decisions/0051-transcript-load.md"
+      ],
+      "rules": [
+        "0051#4/1"
       ]
     },
     {
@@ -14087,6 +14237,9 @@
       ],
       "provenance": [
         "decisions/0051-transcript-load.md"
+      ],
+      "rules": [
+        "0051#2/1"
       ]
     },
     {

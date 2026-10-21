@@ -176,12 +176,6 @@
     "tools-unattributed-tool",
     "tools-unmatched-source",
     "transcript-load-degraded-admitted-without-optin",
-    "transcript-load-duplicate-entry",
-    "transcript-load-gap-elsewhere",
-    "transcript-load-gap-without-cursor",
-    "transcript-load-over-limit",
-    "transcript-load-over-the-default-limit",
-    "transcript-load-returns-an-entry-twice-out-of-order",
     "transcript-load-unadvertised"
   ]
 }
