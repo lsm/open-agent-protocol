@@ -413,6 +413,10 @@ const RunPosition = struct {
 };
 
 const Session = struct {
+    redelivery_roots: std.StringArrayHashMapUnmanaged([]const u8) = .empty,
+    redelivery_heads: std.StringArrayHashMapUnmanaged([]const u8) = .empty,
+    redelivery_closed: std.StringArrayHashMapUnmanaged(void) = .empty,
+    redelivery_held: ?std.ArrayList([]const u8) = null,
     active: []const u8 = "",
     provided: std.ArrayList([]const u8) = .empty,
     attached: std.StringArrayHashMapUnmanaged(void) = .empty,
@@ -1131,6 +1135,12 @@ pub const Machine = struct {
         if (std.mem.eql(u8, declared, "session.compact.response")) {
             try self.compactResponse(index, envelope, payload);
             try self.closeSubmitWindow(field(envelope, "in_reply_to"));
+            return;
+        }
+        if (std.mem.eql(u8, declared, "endpoint.shutdown.started") or
+            (std.mem.eql(u8, declared, "endpoint.shutdown.response") and !std.mem.eql(u8, memberString(payload, "outcome"), "choose")))
+        {
+            try self.redeliveryHeld(payload);
             return;
         }
         if (std.mem.eql(u8, declared, "session.open.response")) {
@@ -4252,8 +4262,134 @@ pub const Machine = struct {
         run.open_compaction = "";
     }
 
+    fn redeliveryHeld(self: *Machine, payload: std.json.Value) !void {
+        const held = member(payload, "held") orelse return;
+        if (held != .array) return;
+        const a = self.arena.allocator();
+        var seen: std.StringArrayHashMapUnmanaged(void) = .empty;
+        for (held.array.items) |entry| {
+            const session = memberString(entry, "session_id");
+            const holder = try self.sessionFor(session);
+            if (!seen.contains(session)) {
+                holder.redelivery_held = .empty;
+                try seen.put(a, session, {});
+            }
+            try holder.redelivery_held.?.append(a, memberString(entry, "run_id"));
+        }
+    }
+
+    fn redeliveryResponse(self: *Machine, index: usize, envelope: std.json.Value, payload: std.json.Value) !void {
+        const session = memberString(payload, "session_id");
+        const holder = try self.sessionFor(session);
+        const recovery = member(payload, "recovery") orelse std.json.Value{ .null = {} };
+        const stated = member(recovery, "redelivered_runs");
+        const records: []const std.json.Value = if (stated != null and stated.? == .array) stated.?.array.items else &.{};
+        if (!memberBool(recovery, "recovered")) {
+            if (records.len > 0) try self.add(code_session_state_mismatch, index);
+            return;
+        }
+        const request = self.requests.get(field(envelope, "in_reply_to"));
+        const restarting = records.len > 0 or (if (request) |asked| memberBool(asked.payload, "reopen") else false);
+        const carried = if (request) |asked| asked.carries_message else false;
+        if (!restarting) return;
+        const a = self.arena.allocator();
+        var held: std.ArrayList([]const u8) = holder.redelivery_held orelse .empty;
+        if (holder.redelivery_held == null) {
+            for (holder.order.items) |id| {
+                const run = self.runs.get(id) orelse continue;
+                if (!run.terminal and !run.started) try held.append(a, id);
+            }
+        }
+        var bad = false;
+        if (holder.redelivery_held != null or held.items.len > 0) {
+            if (held.items.len != records.len) bad = true;
+            for (held.items, 0..) |id, n| {
+                if (n >= records.len or !std.mem.eql(u8, memberString(records[n], "previous_run_id"), id)) bad = true;
+            }
+        }
+        var previous: std.StringArrayHashMapUnmanaged(void) = .empty;
+        var roots: std.StringArrayHashMapUnmanaged(void) = .empty;
+        const listed = member(payload, "active_runs");
+        const active: []const std.json.Value = if (listed != null and listed.? == .array) listed.?.array.items else &.{};
+        var paired: std.StringArrayHashMapUnmanaged(void) = .empty;
+        for (records) |entry| {
+            if (!memberBool(entry, "withdrawn")) try paired.put(a, memberString(entry, "run_id"), {});
+        }
+        var message_runs: usize = 0;
+        for (active) |entry| {
+            const id = memberString(entry, "run_id");
+            if (restarting and !paired.contains(id)) {
+                if (carried and !self.runs.contains(id)) {
+                    if (holder.redelivery_closed.contains(id) or holder.redelivery_heads.contains(id)) bad = true;
+                    message_runs += 1;
+                    if (message_runs > 1) bad = true;
+                    try holder.redelivery_roots.put(a, id, id);
+                    try holder.redelivery_heads.put(a, id, id);
+                } else if (std.mem.eql(u8, memberString(entry, "status"), "queued")) {
+                    bad = true;
+                }
+            }
+        }
+        var last: usize = 0;
+        var prior_order: ?usize = null;
+        for (records) |entry| {
+            const prev = memberString(entry, "previous_run_id");
+            const root = memberString(entry, "root_run_id");
+            const next = memberString(entry, "run_id");
+            if (previous.contains(prev) or roots.contains(root) or holder.redelivery_closed.contains(prev)) bad = true;
+            try previous.put(a, prev, {});
+            try roots.put(a, root, {});
+            var expected = holder.redelivery_roots.get(prev);
+            if (holder.redelivery_heads.get(root)) |head| {
+                if (!std.mem.eql(u8, head, prev)) bad = true;
+            }
+            if (self.runs.get(prev)) |run| {
+                if (prior_order) |order| {
+                    if (run.order <= order) bad = true;
+                }
+                prior_order = run.order;
+                if (!std.mem.eql(u8, run.session, session) or run.started) bad = true;
+                if (expected == null and !run.recovered) expected = prev;
+            }
+            if (expected) |known| {
+                if (!std.mem.eql(u8, root, known)) bad = true;
+            }
+            var position: usize = 0;
+            for (active, 0..) |run, n| {
+                const id = memberString(run, "run_id");
+                if (std.mem.eql(u8, id, prev) or std.mem.eql(u8, id, root)) bad = true;
+                if (std.mem.eql(u8, id, next) and std.mem.eql(u8, memberString(run, "status"), "queued")) position = n + 1;
+            }
+            if (!memberBool(entry, "withdrawn")) {
+                if (self.runs.contains(next) or holder.redelivery_closed.contains(next) or holder.redelivery_heads.contains(next) or position == 0 or position <= last) bad = true;
+                last = position;
+            }
+        }
+        for (records) |entry| {
+            if (previous.contains(memberString(entry, "root_run_id")) and !std.mem.eql(u8, memberString(entry, "root_run_id"), memberString(entry, "previous_run_id"))) bad = true;
+        }
+        if (bad) try self.add(code_session_state_mismatch, index);
+        for (held.items) |id| {
+            if (self.runs.get(id)) |run| {
+                if (!run.started) {
+                    run.terminal = true;
+                    run.terminal_at = index;
+                }
+            }
+        }
+        for (records) |entry| {
+            try holder.redelivery_closed.put(a, memberString(entry, "previous_run_id"), {});
+            try holder.redelivery_heads.put(a, memberString(entry, "root_run_id"), memberString(entry, "run_id"));
+            if (!memberBool(entry, "withdrawn")) {
+                try holder.redelivery_roots.put(a, memberString(entry, "run_id"), memberString(entry, "root_run_id"));
+            }
+        }
+        holder.redelivery_held = null;
+    }
+
     fn openResponse(self: *Machine, index: usize, envelope: std.json.Value, payload: std.json.Value) !void {
         const session_id = memberString(payload, "session_id");
+        try self.redeliveryResponse(index, envelope, payload);
         try self.gatedResponse(index, envelope, .open);
         try self.checkPublishedSources(index, payload);
         const attachment_refused = if (self.submits.get(field(envelope, "in_reply_to"))) |opened|

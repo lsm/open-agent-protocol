@@ -102,8 +102,13 @@ type requestState struct {
 	gates []packGate
 }
 type sessionTrack struct {
-	status protocol.SessionStatus
-	active protocol.RunID
+	redeliveryRoots  map[protocol.RunID]protocol.RunID
+	redeliveryHeads  map[protocol.RunID]protocol.RunID
+	redeliveryClosed map[protocol.RunID]bool
+	held             []protocol.RunID
+	heldKnown        bool
+	status           protocol.SessionStatus
+	active           protocol.RunID
 
 	currentModel    string
 	currentKnown    bool
@@ -377,6 +382,7 @@ func (s *state) apply(i, line int, e protocol.Envelope) {
 		var p protocol.SessionOpenResponse
 		_ = e.DecodePayload(&p)
 		s.checkScope(i, line, e, p.SessionID, "")
+		s.redeliveryResponse(i, line, e, p)
 		if p.Recovery != nil && p.Recovery.Reason == "replay_gap" && p.Recovery.ResumeCursor == "" {
 			s.add(CodeUndeclaredReplayGap, i, line, e, "/payload/recovery/resume_cursor", "replay gap lacks an explicit retained boundary cursor")
 		}
@@ -420,6 +426,16 @@ func (s *state) apply(i, line int, e protocol.Envelope) {
 		s.compoundOpenRequest(i, line, e, p)
 		s.reopenGate(i, line, e, p)
 		s.settingsGate(i, line, e, p)
+	case protocol.TypeEndpointShutdownResponse:
+		var p protocol.EndpointShutdownResponse
+		_ = e.DecodePayload(&p)
+		if p.Outcome != "choose" {
+			s.redeliveryHeld(p.Held)
+		}
+	case protocol.TypeEndpointShutdownStarted:
+		var p protocol.EndpointShutdownStarted
+		_ = e.DecodePayload(&p)
+		s.redeliveryHeld(p.Held)
 	case protocol.TypeSessionStateResponse, protocol.TypeSessionStateUpdated:
 		var p protocol.SessionState
 		_ = e.DecodePayload(&p)
