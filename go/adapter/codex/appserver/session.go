@@ -884,7 +884,20 @@ func (session *session) onItem(method string, value native.ItemNotification) {
 		return
 	}
 	payload.Result = value.Item.Result
-	if len(payload.Result) == 0 {
+	if value.Item.Type == "commandExecution" {
+		output := ""
+		if value.Item.Output != nil {
+			output = *value.Item.Output
+		}
+		result := map[string]any{
+			"output": output, "exitCode": value.Item.ExitCode,
+			"command": value.Item.Command, "cwd": value.Item.Cwd,
+		}
+		if len(value.Item.Result) != 0 {
+			result["nativeResult"] = value.Item.Result
+		}
+		payload.Result, _ = json.Marshal(result)
+	} else if len(payload.Result) == 0 {
 		output := ""
 		if value.Item.Output != nil {
 			output = *value.Item.Output

@@ -274,6 +274,12 @@ jobs:
           OAP_OAPX_BIN: /tmp/oapx-parity/bin/oapx
         run: go test ./go/cmd/goap/ -run TestBackendsMatchOapx -v
 
+      - name: Setup Rust for trace validation
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Require native command exit evidence on both real CLIs
+        run: python3 .claude/skills/verify/scripts/codex-command-result.py --oapx /tmp/oapx-parity/bin/oapx --output-dir /tmp/oap-codex-command
+
       - name: Require the Go inference layer to serve the trace oapx serve provider serves
         env:
           OAP_OAPX_BIN: /tmp/oapx-parity/bin/oapx
