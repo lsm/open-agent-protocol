@@ -52,6 +52,8 @@ type session struct {
 	reopened     bool
 	prompted     bool
 	context      *contextUsage
+
+	afterPermissionEmit func()
 }
 type runState struct {
 	id              protocol.RunID
@@ -440,9 +442,14 @@ func (s *session) handleRequest(r *rpc.IncomingRequest) {
 	s.interactions[id] = ps
 	s.mu.Unlock()
 
-	_, _ = s.emitRecorded(run, protocol.TypeActionPermissionRequested, protocol.PermissionRequestedPayload{InteractionID: id, RequestedBy: endpointID, RespondedBy: s.participant, SessionID: s.state.SessionID, RunID: run.id, ToolCallID: tool.id, Title: p.ToolCall.Title, Choices: choices, ArgumentsJSON: tool.rawInput}, false, "", func(event *protocol.Envelope) { ps.requestEventID = event.ID })
+	_, _ = s.emitRecorded(run, protocol.TypeActionPermissionRequested, protocol.PermissionRequestedPayload{InteractionID: id, RequestedBy: endpointID, RespondedBy: s.participant, SessionID: s.state.SessionID, RunID: run.id, ToolCallID: tool.id, Title: p.ToolCall.Title, Choices: choices, ArgumentsJSON: tool.rawInput}, false, "", func(event *protocol.Envelope) {
+		ps.requestEventID = event.ID
+		ps.published = true
+	})
+	if s.afterPermissionEmit != nil {
+		s.afterPermissionEmit()
+	}
 	s.mu.Lock()
-	ps.published = true
 	settled := run.terminal && !ps.resolved
 	if settled {
 		ps.resolved = true
