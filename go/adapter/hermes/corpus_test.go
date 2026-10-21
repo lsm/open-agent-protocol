@@ -1546,7 +1546,7 @@ func assertHermesLedgerEvidence(t *testing.T, labels []string, frames []hmFrame,
 					continue
 				}
 				var payload protocol.RunCompletedPayload
-				if last.DecodePayload(&payload) == nil && payload.Usage != nil && payload.Usage.InputTokens == 3 {
+				if last.DecodePayload(&payload) == nil && payload.Usage != nil && (payload.Usage.InputTokens != nil && *payload.Usage.InputTokens == 3) {
 					ok = true
 				}
 			}

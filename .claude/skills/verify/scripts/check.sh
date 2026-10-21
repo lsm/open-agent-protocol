@@ -17,6 +17,7 @@ run go version
 run zig version
 run rustc --version
 run cargo --version
+run python3 .claude/skills/verify/scripts/go-usage.py --output-dir "$artifacts/go-usage"
 run go test ./go/validation
 (
     cd rust

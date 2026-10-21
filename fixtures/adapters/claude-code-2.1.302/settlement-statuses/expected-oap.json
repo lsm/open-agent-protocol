@@ -155,7 +155,10 @@
         "code": "claude_api_429",
         "message": "API Error: Request rejected (429) · fixture rate limit"
       },
-      "usage": {},
+      "usage": {
+        "input_tokens": 0,
+        "output_tokens": 0
+      },
       "duration_ms": 80
     },
     "sequence": 2,

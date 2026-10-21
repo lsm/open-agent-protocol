@@ -1126,18 +1126,24 @@ const (
 )
 
 func reportedUsage(frame *native.ResultFrame) *protocol.Usage {
-	usage := &protocol.Usage{InputTokens: uint64(frame.Usage.InputTokens), OutputTokens: uint64(frame.Usage.OutputTokens)}
-	read, write := frame.Usage.CacheReadInputTokens, frame.Usage.CacheCreationInputTokens
-	if read != nil {
-		count := uint64(*read)
-		usage.CacheReadInputTokens = &count
+	usage := &protocol.Usage{}
+	for _, count := range []struct {
+		native *int64
+		core   **uint64
+	}{
+		{frame.Usage.InputTokens, &usage.InputTokens},
+		{frame.Usage.OutputTokens, &usage.OutputTokens},
+		{frame.Usage.CacheReadInputTokens, &usage.CacheReadInputTokens},
+		{frame.Usage.CacheCreationInputTokens, &usage.CacheWriteInputTokens},
+	} {
+		if count.native != nil {
+			value := uint64(*count.native)
+			*count.core = &value
+		}
 	}
-	if write != nil {
-		count := uint64(*write)
-		usage.CacheWriteInputTokens = &count
-	}
-	if read != nil && write != nil {
-		usage.TotalTokens = uint64(frame.Usage.InputTokens + frame.Usage.OutputTokens + *read + *write)
+	if usage.InputTokens != nil && usage.OutputTokens != nil && usage.CacheReadInputTokens != nil && usage.CacheWriteInputTokens != nil {
+		total := *usage.InputTokens + *usage.OutputTokens + *usage.CacheReadInputTokens + *usage.CacheWriteInputTokens
+		usage.TotalTokens = &total
 	}
 	return usage
 }
