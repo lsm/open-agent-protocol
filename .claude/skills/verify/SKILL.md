@@ -16,8 +16,10 @@ Use a fresh branch/worktree under `~/focus/worktrees/<name>`. Never run a bare
 `git stash` in a shared checkout. After merging, stop everything you started and
 remove your worktree with `git worktree remove <path>` from another checkout.
 
-Use Go >=1.26, Zig 0.17.0, Rust/Cargo with rustfmt and clippy, Node, and Python 3.
-Run `npm ci --ignore-scripts` at the root for the comment checker.
+Use Go >=1.26, Zig 0.17.0, Rust/Cargo with rustfmt and clippy, Node, and Python >=3.11.
+Run `npm ci --ignore-scripts` at the root and
+`npm --prefix clients/ts ci --ignore-scripts` for SDK/client consumer journeys
+and the comment checker.
 Check `go version`, `zig version`, `rustc --version` and `cargo --version`.
 Use non-login shells: never source or read `~/.zshrc`, auth files, credential
 stores, or keys. Do not print the environment. macOS has no stock `timeout`;
@@ -156,6 +158,32 @@ accept both retained traces with exit 0. The script saves trace JSON, stderr
 and each validator's output. This proves the normalization boundary; the native
 fixture reports outcomes rather than executing a real Codex command or reading
 credentials. The baseline and backend parity CI lane include this journey.
+
+## SDK command result parity journey
+
+The script uses `python3.11` if available for the Python SDK; otherwise it uses
+its own interpreter. Pass `--python-sdk /path/to/python3.11-or-newer` to override.
+
+After changing tool-event SDK projection, install the root and client dependencies
+with `npm ci --ignore-scripts` and `npm --prefix clients/ts ci --ignore-scripts`,
+rebuild `oapx`, then run:
+
+```sh
+python3 .claude/skills/verify/scripts/sdk-command-result.py --output-dir /tmp/oap-sdk-command-<unique-name>
+```
+
+It includes the native Codex command journey above and feeds that same fixture
+through the public Go, Rust, Python and TypeScript SDK streams against both real CLIs.
+All eight consumer runs must retain the original result JSON and distinguish 0,
+nonzero and null exit evidence. Only numeric zero may project a `codex.command`
+as non-error; unknown must remain null in the result and project as error.
+Explicit native failures still take priority over zero. A non-Codex `Bash`
+completed-action fixture without `exitCode` must retain its existing non-error
+outcome in all four public SDK streams. Top-level `result: null` must remain null.
+The real `clients/ts` parser must preserve both traces unchanged. All three validators must accept
+both wire traces with exit 0. The baseline and backend parity CI lane run this
+journey; logs retain every SDK outcome and validator result. This proves the
+fixture boundary, not a live Codex process or provider call.
 
 ## Rust validator consumer journey
 
