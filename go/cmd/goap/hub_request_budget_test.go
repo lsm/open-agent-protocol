@@ -41,26 +41,34 @@ func TestHubStdioBudgetsTheRawRequestMember(t *testing.T) {
 				if err != nil || len(raw) != size || (encoding != "compact" && len(compact) >= cap) {
 					t.Fatalf("bad boundary input: raw=%d compact=%d err=%v", len(raw), len(compact), err)
 				}
-				line := `{"id":1,"op":"open","adapter":"memory", "reque\u0073t" : ` + raw + ` }`
-				for _, binary := range []string{oapBinary(t), oapx} {
-					c := spawnBinary(t, binary, "--session-history=")
-					c.send("%s", line)
-					received, ok := c.next()
-					if !ok {
-						t.Fatal("stdio ended before the open response")
+				ops := []string{"open"}
+				if encoding == "whitespace" && size > cap {
+					ops = append(ops, "submit", "resolve", "cancel", "settings")
+				}
+				for _, op := range ops {
+					line := fmt.Sprintf(`{"id":1,"op":%q, "reque\u0073t" : `, op) + raw + ` }`
+					if op == "open" {
+						line = strings.Replace(line, `"op":"open"`, `"op":"open","adapter":"memory"`, 1)
 					}
-					answer := c.decode(received)
-					if answer.ID != 1 {
-						t.Fatalf("unexpected response: %s", received)
-					}
-					if size > cap {
-						if answer.OK || answer.Error.Code != "request_too_large" {
-							t.Errorf("%s raw=%d compact=%d: want request_too_large, got %s", binary, size, len(compact), received)
+					for _, binary := range []string{oapBinary(t), oapx} {
+						c := spawnBinary(t, binary, "--session-history=")
+						c.send("%s", line)
+						received, ok := c.next()
+						if !ok {
+							t.Fatal("stdio ended before the response")
 						}
-					} else if !answer.OK {
-						t.Errorf("%s raw=%d: want successful open, got %s", binary, size, received)
+						answer := c.decode(received)
+						if answer.ID != 1 {
+							t.Fatalf("unexpected response: %s", received)
+						}
+						if size > cap {
+							if answer.OK || answer.Error.Code != "request_too_large" {
+								t.Errorf("%s %s raw=%d compact=%d: want request_too_large, got %s", binary, op, size, len(compact), received)
+							}
+						} else if !answer.OK {
+							t.Errorf("%s raw=%d: want successful open, got %s", binary, size, received)
+						}
 					}
-
 				}
 			})
 		}
