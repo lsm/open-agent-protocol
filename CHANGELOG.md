@@ -7,6 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+## [0.1.0-alpha.26] - 2026-10-20
+
+### Added
+
+- **validation: port steer refusals, terminals and snapshots to the Rust validator** ([#1375](https://github.com/lsm/open-agent-protocol/pull/1375)): Ports the last three decision 0013 rules from `steer.go` to the Rust validator: `steerRefusal` (rows /11–/13), `steerTerminal` (/10) and `closeSteerSnapshots` (/14).
+- **validation: port steer admission and settlement to the Rust validator** ([#1373](https://github.com/lsm/open-agent-protocol/pull/1373)): The Rust validator now judges steered admissions and `run.steer.applied`/`dropped` settlements the way `steer.go` and `semantic.zig` do.
+- **rust: resolve provided-tool calls in the memory adapter** ([#1372](https://github.com/lsm/open-agent-protocol/pull/1372)): A Rust memory session opened with provided tools now resolves the calls it makes to them, as Go's does.
+- **rust: run compactions in the memory adapter** ([#1370](https://github.com/lsm/open-agent-protocol/pull/1370)): The Rust memory session now compacts, as Go's does; its descriptor already advertised it.
+- **rust: steer memory runs at their input gate** ([#1368](https://github.com/lsm/open-agent-protocol/pull/1368)): The Rust memory adapter now admits steer delivery, which its descriptor already advertised.
+- **verify: add and run the macOS OAP verification skill** ([#1366](https://github.com/lsm/open-agent-protocol/pull/1366)): Add the missing `.claude/skills/verify/SKILL.md` so OAP coding work has a repeatable Mac verification baseline before the validator ports.
+
+### Fixed
+
+- **validation: judge recovered reopen state in Rust** ([#1380](https://github.com/lsm/open-agent-protocol/pull/1380)): Rust accepted reopened sessions that claimed queued work without recovery, or claimed a running run survived recovery.
+- **validation: preserve user-input tool bindings in all three validators** ([#1379](https://github.com/lsm/open-agent-protocol/pull/1379)): A user-input interaction requested for tool call `t1` could resolve with envelope `tool_call_id: "t9"` and all three validators accepted it.
+- **fix(tui): anchor IME preedit to the composer caret** ([#1377](https://github.com/lsm/open-agent-protocol/pull/1377)): Chinese IME preedit follows the real terminal cursor.
+- **tui: say login again only after renewing the stored token has failed** ([#1376](https://github.com/lsm/open-agent-protocol/pull/1376)): Show “login again” only after an attempt to renew the stored token has failed.
+- **storage: keep a renewed credential, and save only its own entry** ([#1374](https://github.com/lsm/open-agent-protocol/pull/1374)): Keep successfully renewed credentials in memory and persist only the renewed entry.
+- **oapx: renew an expired OAuth token before serve provider sends it** ([#1371](https://github.com/lsm/open-agent-protocol/pull/1371)): Renew expired OAuth credentials before serving provider requests.
+- **provider: renew an expired Copilot token from the stored GitHub token** ([#1369](https://github.com/lsm/open-agent-protocol/pull/1369)): Renew an expired Copilot token from the stored GitHub token instead of requiring a fresh login.
+- **validation: port Rust refresh-window settlement under the cited revision** ([#1367](https://github.com/lsm/open-agent-protocol/pull/1367)): Rust rejected exempt requests citing the pre-update revision between `capabilities.updated` and the refreshed descriptor.
+
+### Changed
+
+- **release: prepare 0.1.0-alpha.25** ([#1365](https://github.com/lsm/open-agent-protocol/pull/1365)): Writes the 0.1.0-alpha.25 changelog section (178 merged PRs since alpha.24, through #1364) and bumps package.json, package-lock.json and zig/build.zig.zon.
+
 ## [0.1.0-alpha.25] - 2026-10-20
 
 ### Highlights
