@@ -7,6 +7,7 @@ mod queue;
 mod redelivery;
 mod results;
 mod runs;
+mod session_list;
 mod snapshot_listing;
 mod steer;
 
@@ -437,6 +438,9 @@ impl State {
         self.payload_scope(at, e);
         self.check_result_images(at, e);
         self.list_scope(at, e);
+        if e.envelope_type == EnvelopeType::SESSION_LIST_RESPONSE {
+            self.session_list_response(at, e);
+        }
         if e.envelope_type == EnvelopeType::CAPABILITIES_RESPONSE {
             self.snapshot_descriptor();
         }

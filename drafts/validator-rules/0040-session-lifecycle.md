@@ -125,8 +125,8 @@ Source: [`decisions/0046-a-session-list-is-the-hosts-bindings.md`](../../decisio
 
 | id | rule | lines | code | Go | Zig | Rust |
 | --- | --- | --- | --- | --- | --- | --- |
-| `0046#a-list-is-paged-on-an-opaque-cursor-newest-first/1` | A page MUST hold no more entries than the request's `limit`, or 50 when none was given. | L77–88 | `session_list_over_limit` | `sessionlist.go:sessionListResponse` | `semantic.zig:sessionListResponse` | — |
-| `0046#a-list-is-paged-on-an-opaque-cursor-newest-first/2` | Entries MUST be ordered by `updated_at_ms` descending, ties by `session_id` ascending. | L77–88 | `session_list_order` | `sessionlist.go:sessionListResponse` | `semantic.zig:sessionListResponse` | — |
+| `0046#a-list-is-paged-on-an-opaque-cursor-newest-first/1` | A page MUST hold no more entries than the request's `limit`, or 50 when none was given. | L77–88 | `session_list_over_limit` | `sessionlist.go:sessionListResponse` | `semantic.zig:sessionListResponse` | `state/session_list.rs:session_list_response` |
+| `0046#a-list-is-paged-on-an-opaque-cursor-newest-first/2` | Entries MUST be ordered by `updated_at_ms` descending, ties by `session_id` ascending. | L77–88 | `session_list_order` | `sessionlist.go:sessionListResponse` | `semantic.zig:sessionListResponse` | `state/session_list.rs:session_list_response` |
 | `0046#a-list-is-paged-on-an-opaque-cursor-newest-first/3` | A `session.list.request` `limit` MUST lie in 1 to 100. | L78–79 | `schema_invalid` | schema | schema | schema |
 
 ### [0046] The list is the host's bindings, and only those
@@ -135,7 +135,7 @@ Source: [`decisions/0046-a-session-list-is-the-hosts-bindings.md`](../../decisio
 
 | id | rule | lines | code | Go | Zig | Rust |
 | --- | --- | --- | --- | --- | --- | --- |
-| `0046#the-list-is-the-hosts-bindings-and-only-those/1` | A page MUST list each session once. | L51–74 | `duplicate_session_entry` | `sessionlist.go:sessionListResponse` | `semantic.zig:sessionListResponse` | — |
+| `0046#the-list-is-the-hosts-bindings-and-only-those/1` | A page MUST list each session once. | L51–74 | `duplicate_session_entry` | `sessionlist.go:sessionListResponse` | `semantic.zig:sessionListResponse` | `state/session_list.rs:session_list_response` |
 
 ### [0049] 2. It closes the message it names, once
 
