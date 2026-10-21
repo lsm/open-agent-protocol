@@ -40,6 +40,7 @@ run python3 .claude/skills/verify/scripts/sdk-command-result.py --output-dir "$a
 run python3 .claude/skills/verify/scripts/python-sdk-usage.py --output-dir "$artifacts/python-sdk-usage"
 run python3 .claude/skills/verify/scripts/rust-sdk-usage.py --output-dir "$artifacts/rust-sdk-usage"
 run python3 .claude/skills/verify/scripts/go-sdk-usage.py --output-dir "$artifacts/go-sdk-usage"
+run python3 .claude/skills/verify/scripts/ts-sdk-usage.py --output-dir "$artifacts/ts-sdk-usage"
 run ./zig/zig-out/bin/oapx validate fixtures/valid/core-completed.json
 run ./zig/zig-out/bin/oapx validate fixtures/valid/permission-resolved-in-the-refresh-window.json
 run ./zig/zig-out/bin/oapx validate fixtures/valid/user-input-resolved-in-the-refresh-window.json

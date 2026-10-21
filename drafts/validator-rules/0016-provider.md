@@ -11,7 +11,10 @@ settles them: it adopts the draft's six semantic rules with the codes both
 trees raise, and makes the provider schemas on `main` normative. Each row was
 an open item, OPEN-0016-1 to 0016-7 in
 [`research/validator-divergences.md`](../../research/validator-divergences.md#model-provider-profile-0016-0030),
-and its lines are 0061's. All three trees judge every row alike.
+and its lines are 0061's. All three trees judge every row below alike. The later shared usage range and
+spelling rules from Decision 0065 are registered once for both profiles in
+[the core register](0001-core.md#0065-exact-usage-count-values-and-spellings);
+their incomplete implementation is recorded there.
 
 | id | rule | lines | code | Go | Zig | Rust |
 | --- | --- | --- | --- | --- | --- | --- |

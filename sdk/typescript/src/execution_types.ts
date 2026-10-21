@@ -79,13 +79,23 @@ export interface RunOptions {
   signal?: AbortSignal;
 }
 
+export type UsageCountField = "input_tokens" | "output_tokens" | "total_tokens"
+  | "cache_read_input_tokens" | "cache_write_input_tokens" | "reasoning_tokens";
+
+export interface UnrepresentableUsageCount {
+  code: "unrepresentable_count";
+  field: UsageCountField;
+  value: string;
+}
+
 export interface UsageSummary {
-  input: number;
-  output: number;
+  input?: number;
+  output?: number;
   cache_read?: number;
   cache_write?: number;
   reasoning?: number;
   total?: number;
+  unrepresentable_counts?: UnrepresentableUsageCount[];
 }
 
 export interface AgentRunRequest {
