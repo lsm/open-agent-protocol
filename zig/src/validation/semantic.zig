@@ -3947,7 +3947,9 @@ pub const Machine = struct {
                 continue;
             }
             if (run.terminal) {
-                if (run.next - 1 != sequence) try self.add(code_session_state_mismatch, index);
+                if (run.terminal_sequence) |terminal_sequence| {
+                    if (terminal_sequence != sequence) try self.add(code_session_state_mismatch, index);
+                }
                 continue;
             }
             try self.settled_claims.append(self.allocator, .{ .run = run_id, .sequence = sequence, .index = index });

@@ -443,8 +443,8 @@ func (s *state) recordSettledClaims(i, line int, e protocol.Envelope, p protocol
 			continue
 		}
 		if r.terminal {
-			if r.next-1 != entry.Sequence {
-				s.addExpected(CodeSessionStateMismatch, i, line, e, "/payload/as_of/settled", "snapshot claims a terminal sequence the run did not settle at", fmt.Sprintf("%d", r.next-1), fmt.Sprintf("%d", entry.Sequence), string(entry.RunID))
+			if r.terminalSequence != nil && *r.terminalSequence != entry.Sequence {
+				s.addExpected(CodeSessionStateMismatch, i, line, e, "/payload/as_of/settled", "snapshot claims a terminal sequence the run did not settle at", fmt.Sprintf("%d", *r.terminalSequence), fmt.Sprintf("%d", entry.Sequence), string(entry.RunID))
 			}
 			continue
 		}

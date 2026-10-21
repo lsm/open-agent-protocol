@@ -114,7 +114,7 @@ Source: [`decisions/0007-queue-delivery.md`](../../decisions/0007-queue-delivery
 | id | rule | lines | code | Go | Zig | Rust |
 | --- | --- | --- | --- | --- | --- | --- |
 | `0007#a-settled-run-is-named-not-merely-dropped/1` | `as_of.settled` MUST name runs the trace carries for that session. | L579–583 | `session_state_mismatch` | `queuestate.go:recordSettledClaims` | `checkSettledClaims` | — |
-| `0007#a-settled-run-is-named-not-merely-dropped/2` | Where the run has settled, the sequence `as_of.settled` states MUST be its terminal's. | L581–583 | `session_state_mismatch` | `queuestate.go:recordSettledClaims` | `checkSettledClaims` | — |
+| `0007#a-settled-run-is-named-not-merely-dropped/2` | Where the run has settled, the sequence `as_of.settled` states MUST be its terminal's. | L581–583 | `session_state_mismatch` | `queuestate.go:recordSettledClaims` | `checkSettledClaims` | `snapshot_listing.rs:check_snapshot_listing` |
 | `0007#a-settled-run-is-named-not-merely-dropped/3` | Where the run has not settled, the next envelope its domain publishes MUST be a terminal at the stated sequence. | L527–530, L581–583 | `session_state_mismatch` | `queue.go:reconcileDeferred` | `checkSettledClaims` | — |
 | `0007#a-settled-run-is-named-not-merely-dropped/4` | A claimed terminal MUST arrive before the trace ends. | L527–530, L582–583 | `session_state_mismatch` | `queue.go:closeQueue` | `checkSettledClaims` close | — |
 
