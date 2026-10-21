@@ -8,7 +8,7 @@ python3 .claude/skills/verify/scripts/usage-count-validation.py --output-dir /tm
 
 This builds and invokes the real Go validator CLI, Rust public validator example
 and Zig `oapx validate` on the shared raw-preserving fixtures. Every count at
-every shared-usage location has zero, uint64 max, max+1, negative-zero, decimal
+every shared-usage location has zero, `2^53-1`, `2^53`, uint64 max, max+1, negative-zero, decimal
 and exponent cases. Additional cases pin exact schema-before-spelling diagnostic
 precedence, including decimal max/max+1 and a tiny nonzero fractional part.
 Each validator must return the manifest's exact code set, phase and exit status;

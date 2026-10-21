@@ -130,7 +130,7 @@ test "the Zig schema phase agrees with the manifest on every fixture it can judg
             return error.FixtureUnreadable;
         };
         defer allocator.free(bytes);
-        var trace = std.json.parseFromSlice(std.json.Value, allocator, bytes, .{}) catch {
+        var trace = std.json.parseFromSlice(std.json.Value, allocator, bytes, .{ .parse_numbers = false }) catch {
             undecodable += 1;
             continue;
         };

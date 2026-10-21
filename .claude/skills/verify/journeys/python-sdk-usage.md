@@ -23,8 +23,8 @@ booleans, strings, objects, arrays and overflow counts must raise
 The same script feeds boundary traces to the real Go, Rust and Zig validators.
 Their exit statuses and diagnostic codes must agree: valid measurements pass,
 malformed usage fails with `schema_invalid`, and `validators.json` records zero
-disagreements on these already-agreed cases. UInt64 overflow is tested through
-the SDK but excluded from this validator comparison: Go rejects it while Rust
-and Zig accept it under the schema, which has no maximum. That pre-existing
-divergence is tracked in [#1398](https://github.com/lsm/open-agent-protocol/issues/1398).
+disagreements on its focused subset. `usage-count-validation.md` covers the full
+Decision 0065 raw-token matrix, including uint64 overflow and noncanonical
+spellings, across all six shared-usage sites. Python SDK raw `-0` refusal is a
+separate follow-up; this existing consumer journey does not yet prove that case.
 This proves the SDK wire boundary, not a live provider's accounting.

@@ -85,6 +85,10 @@ impl Validator {
                 diagnostics.push(diagnostic);
                 continue;
             }
+            if let Some(diagnostic) = crate::usage::diagnostic(raw, &value, fixture) {
+                diagnostics.push(diagnostic.at(index, item.line));
+                continue;
+            }
             match Envelope::parse(raw.as_bytes()) {
                 Ok(envelope) => envelopes.push(envelope),
                 Err(err) => {

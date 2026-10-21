@@ -1,6 +1,7 @@
 package validation
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io/fs"
@@ -99,7 +100,9 @@ func compileBundle(opts CompileOptions) (*compiledBundle, error) {
 			return nil, fmt.Errorf("read embedded schema %s: %w", entry.Name(), err)
 		}
 		var document any
-		if err := json.Unmarshal(data, &document); err != nil {
+		decoder := json.NewDecoder(bytes.NewReader(data))
+		decoder.UseNumber()
+		if err := decoder.Decode(&document); err != nil {
 			return nil, fmt.Errorf("decode embedded schema %s: %w", entry.Name(), err)
 		}
 		if mode == ModeTolerant && !metaSchemas[entry.Name()] {

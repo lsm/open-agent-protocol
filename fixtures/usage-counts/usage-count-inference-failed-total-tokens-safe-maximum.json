@@ -1,0 +1,5 @@
+[
+  {"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.model-provider-core","type":"inference.create.response","id":"c1","in_reply_to":"c0","inference_id":"i1","payload":{"accepted":true,"honoured":{"include_snapshot":"never"}}},
+  {"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.model-provider-core","type":"inference.started","id":"e1","inference_id":"i1","sequence":1,"payload":{"model_ref":"anthropic/anthropic-messages@claude","started_at_ms":1}},
+  {"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.model-provider-core","type":"inference.failed","id":"t1","inference_id":"i1","sequence":2,"payload":{"error":{"code":"endpoint_error","message":"fixture failure"},"usage":{"total_tokens":9007199254740991}}}
+]

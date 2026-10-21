@@ -9,7 +9,8 @@ import re
 ROOT = Path(__file__).resolve().parents[1]
 FIELDS = ["input_tokens", "output_tokens", "total_tokens", "cache_read_input_tokens", "cache_write_input_tokens", "reasoning_tokens"]
 SITES = ["content.completed", "run.completed", "run.failed", "run.cancelled", "inference.completed", "inference.failed"]
-TOKENS = [("zero", "0", ""), ("maximum", "18446744073709551615", ""),
+TOKENS = [("zero", "0", ""), ("safe-maximum", "9007199254740991", ""),
+          ("first-unsafe", "9007199254740992", ""), ("maximum", "18446744073709551615", ""),
           ("overflow", "18446744073709551616", "schema_invalid"),
           ("negative-zero", "-0", "payload_decode"), ("decimal", "1.0", "payload_decode"),
           ("exponent", "1e3", "payload_decode")]

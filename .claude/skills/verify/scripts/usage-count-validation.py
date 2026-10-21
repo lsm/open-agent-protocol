@@ -50,6 +50,7 @@ def main():
                     "rust": [str(ROOT / "rust/target/debug/examples/validate")],
                     "zig": [str(ROOT / "zig/zig-out/bin/oapx"), "validate", "--format", "json"]}
         if entry.get("profile") == "model-provider-core":
+            commands["go"].append("--provider")
             commands["rust"].append("--provider")
         observed = {}
         for name, command in commands.items():

@@ -6,6 +6,7 @@ mod provider;
 mod schema;
 mod state;
 mod trace;
+mod usage;
 mod validator;
 
 pub use diagnostic::{Diagnostic, Phase, ValidationResult};

@@ -83,7 +83,7 @@ def validators(output):
             disagreements.append({"usage": raw, "outcomes": outcomes})
     (output / "validators.json").write_text(json.dumps({"cases": len(cases), "disagreements": disagreements}))
     assert not disagreements, disagreements
-    print(f"Go/Rust/Zig: {len(cases)} agreed usage boundaries, 0 validation disagreements; uint64 overflow excluded", flush=True)
+    print(f"Go/Rust/Zig: {len(cases)} agreed usage boundaries, 0 validation disagreements; full Decision 0065 matrix runs in usage-count-validation.py", flush=True)
 
 
 def main():
