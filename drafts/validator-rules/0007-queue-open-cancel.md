@@ -58,7 +58,7 @@ Source: [`decisions/0007-queue-delivery.md`](../../decisions/0007-queue-delivery
 | `0007#a-snapshot-states-the-position-it-was-captured-at/3` | An entry MUST NOT list a run that had settled before the read was requested. | L294–297 | `session_state_mismatch` | `queuestate.go:checkActiveRunsListing` | `checkListing` | `snapshot_listing.rs:check_snapshot_listing` |
 | `0007#a-snapshot-states-the-position-it-was-captured-at/4` | An entry MUST NOT state a position at or past the sequence its run settled at. | L297–301 | `session_state_mismatch` | `queuestate.go:checkActiveRunsListing` | `checkListing` | `snapshot_listing.rs:check_snapshot_listing` † |
 | `0007#a-snapshot-states-the-position-it-was-captured-at/5` | An entry MUST NOT carry a terminal status; a settled run is dropped and named in `as_of.settled`. | L302–304, L438–439 | `session_state_mismatch` | `queuestate.go:checkActiveRunsListing`<br>`queuestate.go:checkEntryStatus` | `checkListing` | `snapshot_listing.rs:check_snapshot_listing` |
-| `0007#a-snapshot-states-the-position-it-was-captured-at/6` | An entry MUST NOT call a run `queued` at or after the position it started at; a capture stated before that position is judged there, when the start arrives. | L304–306 | `session_state_mismatch` | `queuestate.go:checkEntryStatus`<br>`queue.go:reconcileDeferred` | `checkListing`, `reconcileQueueClaims` | `snapshot_listing.rs:check_snapshot_listing` † |
+| `0007#a-snapshot-states-the-position-it-was-captured-at/6` | An entry MUST NOT call a run `queued` at or after the position it started at; a capture stated before that position is judged there, when the start arrives. | L304–306 | `session_state_mismatch` | `queuestate.go:checkEntryStatus`<br>`queue.go:reconcileDeferred` | `checkListing`, `reconcileQueueClaims` | `snapshot_listing.rs:check_snapshot_listing`, `snapshot_claims.rs:reconcile_snapshot_claims` † |
 | `0007#a-snapshot-states-the-position-it-was-captured-at/7` | A run that is not a reservation at the entry's moment MUST NOT carry a `queue_position`. | L272–273, L334–335, L467–469 | `session_state_mismatch` | `queuestate.go:checkActiveRunsListing`<br>`queuestate.go:checkActiveRunsListing`<br>`queue.go:judgeLedEntry` | `checkListing`; leads in #1295 (open) | `snapshot_listing.rs:check_snapshot_listing` † |
 | `0007#a-snapshot-states-the-position-it-was-captured-at/8` | A reservation's `queue_position` MUST be its 1-based place among the listing's reservations; leads are judged as one arrangement once their admissions land. | L272–273, L490–504 | `session_state_mismatch` | `queuestate.go:checkActiveRunsListing`<br>`queue.go:settleLedGroup` | `checkListing`; leads in #1295 (open) | `snapshot_listing.rs:check_snapshot_listing` † |
 | `0007#a-snapshot-states-the-position-it-was-captured-at/9` | `active_runs` MUST be in admission order; a lead is last in admission order, and leads are compared in the order their responses give. | L272, L345–348, L456–461, L492–495 | `session_state_mismatch` | `queuestate.go:checkActiveRunsListing`<br>`queue.go:judgeLedListing` | `checkListing`; leads in #1295 (open) | `snapshot_listing.rs:check_snapshot_listing` † |
@@ -72,12 +72,12 @@ Source: [`decisions/0007-queue-delivery.md`](../../decisions/0007-queue-delivery
 | `0007#a-snapshot-states-the-position-it-was-captured-at/17` | A snapshot whose listing holds only reservations MUST report `queued`; an empty listing keeps whatever status it reports. | L365–372 | `session_state_mismatch` | `queuestate.go:checkListedStatus` | `checkListing` | `snapshot_listing.rs:check_snapshot_listing` † |
 | `0007#a-snapshot-states-the-position-it-was-captured-at/18` | A snapshot MUST carry `active_runs` wherever `active_run_id` cannot carry the answer: a reservation, an overlap, or an unresolved interaction whose id only an entry holds. | L208–210, L276–281, as amended by Decision 0057 (OPEN-0007-2): the interaction arm binds only where the queue is advertised. | `session_state_mismatch` | `queuestate.go:checkActiveRunsOmitted`, its third arm only where the queue is advertised | `checkRequiredRuns`, its third arm only where the queue is advertised | `snapshot_listing.rs:check_snapshot_listing` † |
 | `0007#a-snapshot-states-the-position-it-was-captured-at/19` | `active_runs` MUST list every nonterminal run of the session the capture had to reflect. | L272–273, L374–381 | `session_state_mismatch` | `queuestate.go:checkActiveRunsListing` | `checkRequiredRuns` | `snapshot_listing.rs:check_snapshot_listing` † |
-| `0007#a-snapshot-states-the-position-it-was-captured-at/20` | A `cancelling` entry the trace has not yet seen start answers with its `queue_position`, and the run's start MUST bear that answer out at the stated position. | L305–326, L471–473 | `session_state_mismatch` | `queue.go:reconcileDeferred`<br>`queue.go:reconcileDeferred` | `reconcileQueueClaims` | — |
-| `0007#a-snapshot-states-the-position-it-was-captured-at/21` | An entry describing a not-yet-started reservation as executing MUST be followed by that run's `run.started`. | L337–343, L484–488 | `session_state_mismatch` | `queue.go:closeQueue` | `reconcileQueueClaims` | — |
-| `0007#a-snapshot-states-the-position-it-was-captured-at/22` | An entry carrying `pending_interactions` MUST state the position it was captured at. | L288–290 | `session_state_mismatch` | `queuestate.go:checkEntryPending` | `checkEntryPending` | — |
-| `0007#a-snapshot-states-the-position-it-was-captured-at/23` | An entry stating no position MUST report the unresolved interactions its run is blocked on, as the trace stands, whatever the descriptor advertises. | L319–329, as amended by Decision 0054 (OPEN-0007-1) | `session_state_mismatch` | `queuestate.go:checkEntryPending` | `checkEntryPending` | — |
-| `0007#a-snapshot-states-the-position-it-was-captured-at/24` | An entry's `pending_interactions` MUST equal the interactions its run had open at the position it states, judged when the trace reaches that position. | L274–275, L289, L361–362 | `session_state_mismatch` | `queuestate.go:checkEntryPending`<br>`queue.go:judgePendingInteractions` | `checkEntryPending`, `reconcileCaptureClaims` | — |
-| `0007#a-snapshot-states-the-position-it-was-captured-at/25` | An entry MUST NOT state a position its run never reaches. | L525–527 | `session_state_mismatch` | `queue.go:closeQueue` | `checkEntryPending` close | — |
+| `0007#a-snapshot-states-the-position-it-was-captured-at/20` | A `cancelling` entry the trace has not yet seen start answers with its `queue_position`, and the run's start MUST bear that answer out at the stated position. | L305–326, L471–473 | `session_state_mismatch` | `queue.go:reconcileDeferred`<br>`queue.go:reconcileDeferred` | `reconcileQueueClaims` | `snapshot_claims.rs:check_snapshot_claims`, `reconcile_snapshot_claims`, `close_snapshot_claims` † |
+| `0007#a-snapshot-states-the-position-it-was-captured-at/21` | An entry describing a not-yet-started reservation as executing MUST be followed by that run's `run.started`. | L337–343, L484–488 | `session_state_mismatch` | `queue.go:closeQueue` | `reconcileQueueClaims` | `snapshot_claims.rs:check_snapshot_claims`, `reconcile_snapshot_claims`, `close_snapshot_claims` † |
+| `0007#a-snapshot-states-the-position-it-was-captured-at/22` | An entry carrying `pending_interactions` MUST state the position it was captured at. | L288–290 | `session_state_mismatch` | `queuestate.go:checkEntryPending` | `checkEntryPending` | `snapshot_claims.rs:check_snapshot_claims`, `reconcile_snapshot_claims`, `close_snapshot_claims` † |
+| `0007#a-snapshot-states-the-position-it-was-captured-at/23` | An entry stating no position MUST report the unresolved interactions its run is blocked on, as the trace stands, whatever the descriptor advertises. | L319–329, as amended by Decision 0054 (OPEN-0007-1) | `session_state_mismatch` | `queuestate.go:checkEntryPending` | `checkEntryPending` | `snapshot_claims.rs:check_snapshot_claims`, `reconcile_snapshot_claims`, `close_snapshot_claims` † |
+| `0007#a-snapshot-states-the-position-it-was-captured-at/24` | An entry's `pending_interactions` MUST equal the interactions its run had open at the position it states, judged when the trace reaches that position. | L274–275, L289, L361–362 | `session_state_mismatch` | `queuestate.go:checkEntryPending`<br>`queue.go:judgePendingInteractions` | `checkEntryPending`, `reconcileCaptureClaims` | `snapshot_claims.rs:check_snapshot_claims`, `reconcile_snapshot_claims`, `close_snapshot_claims` † |
+| `0007#a-snapshot-states-the-position-it-was-captured-at/25` | An entry MUST NOT state a position its run never reaches. | L525–527 | `session_state_mismatch` | `queue.go:closeQueue` | `checkEntryPending` close | `snapshot_claims.rs:check_snapshot_claims`, `reconcile_snapshot_claims`, `close_snapshot_claims` † |
 | `0007#a-snapshot-states-the-position-it-was-captured-at/26` | `as_of.settled` MUST name a run at most once. | L520–523 | `session_state_mismatch` | `queuestate.go:checkSessionCapture` | `checkSettledClaims` | `snapshot_listing.rs:check_snapshot_listing` |
 | `0007#a-snapshot-states-the-position-it-was-captured-at/27` | A run MUST NOT be both listed in `active_runs` and named in `as_of.settled` by one snapshot. | L510–519 | `session_state_mismatch` | `queuestate.go:checkActiveRunsListing` | `checkSettledClaims` | `snapshot_listing.rs:check_snapshot_listing` |
 | `0007#a-snapshot-states-the-position-it-was-captured-at/28` | Each `as_of.admitted_submit_requests` anchor MUST name a submit request, or an open carrying a message, on the snapshot's session. | L289–291, L409–417 | `session_state_mismatch` | `queuestate.go:checkSessionCapture` | `checkRequiredRuns` | — |
@@ -113,10 +113,10 @@ Source: [`decisions/0007-queue-delivery.md`](../../decisions/0007-queue-delivery
 
 | id | rule | lines | code | Go | Zig | Rust |
 | --- | --- | --- | --- | --- | --- | --- |
-| `0007#a-settled-run-is-named-not-merely-dropped/1` | `as_of.settled` MUST name runs the trace carries for that session. | L579–583 | `session_state_mismatch` | `queuestate.go:recordSettledClaims` | `checkSettledClaims` | — |
+| `0007#a-settled-run-is-named-not-merely-dropped/1` | `as_of.settled` MUST name runs the trace carries for that session. | L579–583 | `session_state_mismatch` | `queuestate.go:recordSettledClaims` | `checkSettledClaims` | `snapshot_claims.rs:check_snapshot_claims`, `reconcile_snapshot_claims`, `close_snapshot_claims` |
 | `0007#a-settled-run-is-named-not-merely-dropped/2` | Where the run has settled, the sequence `as_of.settled` states MUST be its terminal's. | L581–583 | `session_state_mismatch` | `queuestate.go:recordSettledClaims` | `checkSettledClaims` | `snapshot_listing.rs:check_snapshot_listing` |
-| `0007#a-settled-run-is-named-not-merely-dropped/3` | Where the run has not settled, the next envelope its domain publishes MUST be a terminal at the stated sequence. | L527–530, L581–583 | `session_state_mismatch` | `queue.go:reconcileDeferred` | `checkSettledClaims` | — |
-| `0007#a-settled-run-is-named-not-merely-dropped/4` | A claimed terminal MUST arrive before the trace ends. | L527–530, L582–583 | `session_state_mismatch` | `queue.go:closeQueue` | `checkSettledClaims` close | — |
+| `0007#a-settled-run-is-named-not-merely-dropped/3` | Where the run has not settled, the next envelope its domain publishes MUST be a terminal at the stated sequence. | L527–530, L581–583 | `session_state_mismatch` | `queue.go:reconcileDeferred` | `checkSettledClaims` | `snapshot_claims.rs:check_snapshot_claims`, `reconcile_snapshot_claims`, `close_snapshot_claims` |
+| `0007#a-settled-run-is-named-not-merely-dropped/4` | A claimed terminal MUST arrive before the trace ends. | L527–530, L582–583 | `session_state_mismatch` | `queue.go:closeQueue` | `checkSettledClaims` close | `snapshot_claims.rs:check_snapshot_claims`, `reconcile_snapshot_claims`, `close_snapshot_claims` |
 
 ### [0009] The response carries two facts, and already had the shape for both
 
@@ -158,18 +158,26 @@ so a run settled before the read differs from one settling inside its window.
 Only an observed first terminal fixes that boundary; later invalid events do
 not move it. The same change removes 37 now-agreeing Rust known-gap ids.
 
-† These rows have their immediate listing checks. An observed terminal is
-checked now; capture positions whose terminal has not drained still need
-reconciliation. Entries anchored to pending admissions are allowed to lead
-the trace. Their eventual admission order,
-classification and queue positions, and the future-start part of row 6, still
-need the deferred-claim reconciliation port. Required runs are judged against
-observed admissions and capture anchors; future admissions still need their
-claim checked. Rows 20–25 and 28 onward remain for that port. An entry carrying
-pending interactions is read for its stated wait here; proving the pending set
-at its captured sequence is separate. The omitted-list check uses registered
-unresolved interactions and the Decision 0057 queue advertisement condition;
-control-call registration/settlement is the independent port in #1378.
+† These rows have their immediate listing checks. Capture positions whose
+terminal has not drained still need the remaining active-state reconciliation.
+Entries anchored to pending admissions may lead the trace; their eventual
+admission order, classification, queue positions and required-run accounting
+remain for the admission-leading slice.
+
+## Rust deferred per-run port
+
+For already admitted runs, `snapshot_claims.rs` reconciles rows 20–25 and the
+future-start part of row 6. Pending sets use recorded interaction opening and
+resolution positions. Unreached positions and executing claims without a start
+fail at trace closure. Future settled claims must be answered by the next event
+in that run, with the claimed terminal sequence. Settled rows 1–4 are now ported.
+Sixteen now-agreeing Rust known-gap ids are removed by this slice.
+
+Admission-leading entries still need these per-run checks attached after their
+admissions arrive; the listing's arrangement and anchors (rows 28–35), model
+captures and active-state reconciliation (rows 36–37) remain separate. The
+omitted-list check retains both Decision 0057 advertisement arms. The maintained
+per-run journey is `.claude/skills/verify/scripts/rust-deferred-captures.py`.
 
 The maintained public-consumer journey is
 `.claude/skills/verify/scripts/rust-snapshot-listing.py`. It compares all ported

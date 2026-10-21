@@ -303,6 +303,7 @@ impl State {
                 }
             }
         }
+        self.check_snapshot_claims(at, e, p);
         for (pointer, message) in found {
             self.add(codes::SESSION_STATE_MISMATCH, at, e, &pointer, message);
         }

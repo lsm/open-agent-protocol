@@ -10,6 +10,7 @@ mod redelivery;
 mod results;
 mod runs;
 mod session_list;
+mod snapshot_claims;
 mod snapshot_listing;
 mod steer;
 
@@ -61,6 +62,7 @@ pub(crate) struct State {
     provided: HashMap<String, Vec<ToolDefinition>>,
     pending_controls: HashMap<String, controls::PendingSubmit>,
     steer_snapshots: Vec<((usize, usize), Envelope)>,
+    snapshot_claims: Vec<snapshot_claims::Claim>,
     pending_subscribes: HashMap<String, controls::PendingSubscribe>,
     pending_provides: HashMap<String, controls::PendingProvide>,
     descriptor_owners: HashMap<String, String>,
@@ -329,6 +331,7 @@ impl State {
             provided: HashMap::new(),
             pending_controls: HashMap::new(),
             steer_snapshots: Vec::new(),
+            snapshot_claims: Vec::new(),
             pending_subscribes: HashMap::new(),
             pending_provides: HashMap::new(),
             descriptor_owners: HashMap::new(),
@@ -781,6 +784,7 @@ impl State {
 
     pub fn close(&mut self) {
         self.close_auth_flows();
+        self.close_snapshot_claims();
         self.close_steer_snapshots();
         self.close_recoveries();
         let mut found = Vec::new();
