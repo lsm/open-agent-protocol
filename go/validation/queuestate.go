@@ -468,14 +468,14 @@ func (s *state) namesSubmitRequest(id protocol.EnvelopeID, session protocol.Sess
 	for _, candidate := range s.runs {
 		for _, steer := range candidate.steers {
 			if steer.request == id {
-				if run == "" || candidate.id == run {
+				if candidate.session == session && (run == "" || candidate.id == run) {
 					return admissionGood
 				}
 				return admissionWrong
 			}
 		}
 		if candidate.submitRequest == id {
-			if run == "" || candidate.id == run {
+			if candidate.session == session && (run == "" || candidate.id == run) {
 				return admissionGood
 			}
 			return admissionWrong

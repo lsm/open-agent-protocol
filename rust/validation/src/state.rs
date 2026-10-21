@@ -1,3 +1,4 @@
+mod admission_anchors;
 mod admissions;
 mod control_tools;
 mod controls;
@@ -61,6 +62,7 @@ pub(crate) struct State {
     pending_controls: HashMap<String, controls::PendingSubmit>,
     steer_snapshots: Vec<((usize, usize), Envelope)>,
     snapshot_claims: Vec<snapshot_claims::Claim>,
+    admission_anchors: Vec<admission_anchors::Claim>,
     pending_subscribes: HashMap<String, controls::PendingSubscribe>,
     pending_provides: HashMap<String, controls::PendingProvide>,
     descriptor_owners: HashMap<String, String>,
@@ -329,6 +331,7 @@ impl State {
             pending_controls: HashMap::new(),
             steer_snapshots: Vec::new(),
             snapshot_claims: Vec::new(),
+            admission_anchors: Vec::new(),
             pending_subscribes: HashMap::new(),
             pending_provides: HashMap::new(),
             descriptor_owners: HashMap::new(),
@@ -779,6 +782,7 @@ impl State {
     }
 
     pub fn close(&mut self) {
+        self.close_admission_anchors();
         self.close_snapshot_claims();
         self.close_steer_snapshots();
         self.close_recoveries();

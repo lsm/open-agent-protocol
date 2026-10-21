@@ -41,6 +41,7 @@ def main():
         result = subprocess.run(command, cwd=ROOT, capture_output=True, text=True, timeout=600)
         (output / f"{label}.stdout").write_text(result.stdout)
         (output / f"{label}.stderr").write_text(result.stderr)
+        (output / f"{label}.exit").write_text(str(result.returncode) + "\n")
         return result
 
     for name, command in [
@@ -177,33 +178,52 @@ def main():
             ('run.steers.values().any(|steer| steer.request == request)', 'false', "multiple-steer-anchors-delayed-True-reversed-True"),
             ('request.envelope_type == EnvelopeType::SESSION_OPEN_REQUEST', 'false', "message-open-response-after-snapshot"),
         ]
+        mutations = [("rust", source, old, new, target) for old, new, target in mutations]
+        mutations.extend([
+            ("rust", ROOT / "rust/validation/src/state/admissions.rs", 'request.session = s(&p.session_id);', 'request.session = String::new();', "anchor-message-open-assigns-session"),
+            ("go", ROOT / "go/validation/queuestate.go", 'candidate.session == session && (run == "" || candidate.id == run)', '(run == "" || candidate.id == run)', "anchor-foreign-admission-before-snapshot"),
+            ("zig", ROOT / "zig/src/validation/semantic.zig", 'std.mem.eql(u8, run.session, session_id) and (run_id.len == 0 or std.mem.eql(u8, run.id, run_id))', '(run_id.len == 0 or std.mem.eql(u8, run.id, run_id))', "anchor-foreign-admission-before-snapshot"),
+        ])
+        builds = {
+            "rust": ["cargo", "build", "--manifest-path", "rust/Cargo.toml", "-p", "oap-validation", "--example", "validate"],
+            "go": ["go", "build", "-o", str(output / "goap"), "./go/cmd/goap"],
+            "zig": ["zig", "build", "--build-file", "zig/build.zig", "-Doptimize=ReleaseSafe"],
+        }
         try:
-            for index, (old, new, target) in enumerate(mutations):
+            for index, (language, source, old, new, target) in enumerate(mutations):
                 original = source.read_text()
-                assert original.count(old) == 1, old
+                assert original.count(old) == (2 if language == "go" else 1), old
                 try:
                     source.write_text(original.replace(old, new))
-                    build = run(["cargo", "build", "--manifest-path", "rust/Cargo.toml", "-p", "oap-validation", "--example", "validate"], f"mutation-{index}-build")
+                    build = run(builds[language], f"mutation-{index}-build")
                     assert build.returncode == 0, build.stderr
-                    result = run([*commands["rust"], str(output / f"{target}.json")], f"mutation-{index}-result")
-                    report = json.loads(result.stdout)
-                    diagnostics = report.get("diagnostics") or []
+                    result = run([*commands[language], str(output / f"{target}.json")], f"mutation-{index}-result")
+                    reports = json.loads(result.stdout)
+                    if isinstance(reports, dict):
+                        reports = [reports]
+                    diagnostics = [d for report in reports for d in report.get("diagnostics") or []]
                     codes = sorted({d["code"] for d in diagnostics})
-                    baseline = next(r for r in observations if r["case"] == target and r["language"] == "rust")
-                    assert (result.returncode, codes) != (baseline["exit"], baseline["codes"]), (target, report)
-                    assert result.returncode in (0, 1) and all(d["phase"] == "semantic" for d in diagnostics), report
-                    print(f"PASS: mutation {index} caught by {target}", flush=True)
+                    baseline = next(r for r in observations if r["case"] == target and r["language"] == language)
+                    assert (result.returncode, codes) != (baseline["exit"], baseline["codes"]), (target, reports)
+                    assert result.returncode in (0, 1) and all(d["phase"] == "semantic" for d in diagnostics), reports
+                    if language in ("go", "zig"):
+                        assert codes == ["scope_mismatch"], reports
+                    print(f"PASS: {language} mutation {index} caught by {target}", flush=True)
                 finally:
                     source.write_text(original)
         finally:
-            build = run(["cargo", "build", "--manifest-path", "rust/Cargo.toml", "-p", "oap-validation", "--example", "validate"], "restored-build")
-            assert build.returncode == 0, build.stderr
+            for language, command in builds.items():
+                build = run(command, f"restored-{language}-build")
+                assert build.returncode == 0, build.stderr
         for label, _, expected in cases:
-            result = run([*commands["rust"], str(output / f"{label}.json")], f"restored-{label}")
-            report = json.loads(result.stdout)
-            codes = sorted({d["code"] for d in report.get("diagnostics") or []})
-            assert result.returncode == int(bool(expected)) and codes == expected, (label, report)
-        print(f"PASS: {len(mutations)} source mutations caught; sources restored and all Rust cases replayed", flush=True)
+            for language, command in commands.items():
+                result = run([*command, str(output / f"{label}.json")], f"restored-{label}-{language}")
+                reports = json.loads(result.stdout)
+                if isinstance(reports, dict):
+                    reports = [reports]
+                codes = sorted({d["code"] for report in reports for d in report.get("diagnostics") or []})
+                assert result.returncode == int(bool(expected)) and codes == expected, (label, reports)
+        print(f"PASS: {len(mutations)} source mutations caught; sources restored and all three CLIs replayed", flush=True)
 
 
 if __name__ == "__main__":

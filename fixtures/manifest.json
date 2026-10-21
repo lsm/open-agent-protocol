@@ -6177,6 +6177,9 @@
       "provenance": [
         "drafts/staged-units-graduation.md",
         "decisions/0007-queue-delivery.md"
+      ],
+      "rules": [
+        "0007#a-snapshot-states-the-position-it-was-captured-at/33"
       ]
     },
     {
@@ -6196,6 +6199,9 @@
       "provenance": [
         "drafts/staged-units-graduation.md",
         "decisions/0007-queue-delivery.md"
+      ],
+      "rules": [
+        "0007#a-snapshot-states-the-position-it-was-captured-at/34"
       ]
     },
     {
@@ -6214,6 +6220,10 @@
       "provenance": [
         "drafts/staged-units-graduation.md",
         "decisions/0007-queue-delivery.md"
+      ],
+      "rules": [
+        "0007#a-snapshot-states-the-position-it-was-captured-at/29",
+        "0007#a-snapshot-states-the-position-it-was-captured-at/32"
       ]
     },
     {
@@ -6439,6 +6449,9 @@
       "provenance": [
         "drafts/staged-units-graduation.md",
         "decisions/0007-queue-delivery.md"
+      ],
+      "rules": [
+        "0007#a-snapshot-states-the-position-it-was-captured-at/31"
       ]
     },
     {
@@ -6681,6 +6694,9 @@
       "provenance": [
         "drafts/staged-units-graduation.md",
         "decisions/0007-queue-delivery.md"
+      ],
+      "rules": [
+        "0007#a-snapshot-states-the-position-it-was-captured-at/32"
       ]
     },
     {
@@ -8164,6 +8180,10 @@
       ],
       "provenance": [
         "decisions/0009-compound-open.md"
+      ],
+      "rules": [
+        "0007#a-snapshot-states-the-position-it-was-captured-at/28",
+        "0007#a-snapshot-states-the-position-it-was-captured-at/29"
       ]
     },
     {
@@ -15371,6 +15391,6 @@
     {"id":"anchor-foreign-request","path":"semantic-invalid/anchor-foreign-request.json","kind":"semantic-invalid","valid":false,"phase":"semantic","codes":["session_state_mismatch"],"units":["core","queue"],"rules":["0007#a-snapshot-states-the-position-it-was-captured-at/28"],"provenance":["decisions/0007-queue-delivery.md"]},
     {"id":"anchor-foreign-admission","path":"semantic-invalid/anchor-foreign-admission.json","kind":"semantic-invalid","valid":false,"phase":"semantic","codes":["session_state_mismatch","scope_mismatch"],"units":["core","queue"],"rules":["0007#a-snapshot-states-the-position-it-was-captured-at/30","0001#typed-identity-domains/1"],"provenance":["decisions/0007-queue-delivery.md"]},
     {"id":"anchor-foreign-admission-before-snapshot","path":"semantic-invalid/anchor-foreign-admission-before-snapshot.json","kind":"semantic-invalid","valid":false,"phase":"semantic","codes":["scope_mismatch","session_state_mismatch"],"units":["core","queue"],"rules":["0007#a-snapshot-states-the-position-it-was-captured-at/30","0001#typed-identity-domains/1"],"provenance":["decisions/0007-queue-delivery.md"]},
-    {"id":"anchor-message-open-assigns-session","path":"valid/anchor-message-open-assigns-session.json","kind":"positive","valid":true,"codes":[],"units":["core","queue"],"provenance":["decisions/0007-queue-delivery.md"]}
+    {"id":"anchor-message-open-assigns-session","path":"valid/anchor-message-open-assigns-session.json","kind":"positive","valid":true,"codes":[],"units":["core","queue"],"provenance":["decisions/0007-queue-delivery.md"],"rules":["0007#a-snapshot-states-the-position-it-was-captured-at/28","0007#a-snapshot-states-the-position-it-was-captured-at/29"]}
   ]
 }

@@ -35,7 +35,7 @@ fn started_entry<'a>(
 }
 
 impl State {
-    fn entry_leads_admission(&self, session: &str, entry: &ActiveRun) -> bool {
+    pub(super) fn entry_leads_admission(&self, session: &str, entry: &ActiveRun) -> bool {
         !entry.admitted_submit_requests.is_empty()
             && entry.admitted_submit_requests.iter().all(|id| {
                 self.requests.get(id.as_str()).is_some_and(|request| {
@@ -303,6 +303,7 @@ impl State {
                 }
             }
         }
+        self.check_admission_anchors(at, e, p);
         self.check_snapshot_claims(at, e, p);
         for (pointer, message) in found {
             self.add(codes::SESSION_STATE_MISMATCH, at, e, &pointer, message);
