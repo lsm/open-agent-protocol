@@ -2104,3 +2104,24 @@ test "an output schema whose subschema the engine cannot evaluate is refused bef
     try testing.expect(try outputSchemaDefect(arena.allocator(), "{\"type\":\"object\",\"properties\":{\"v\":{\"$ref\":\"https://example.invalid/s.json\"}}}") != null);
     try testing.expect(try outputSchemaDefect(arena.allocator(), "{\"type\":\"object\",\"properties\":{\"verdict\":{\"type\":\"string\",\"enum\":[\"pass\",\"concerns\"]}},\"required\":[\"verdict\"]}") == null);
 }
+
+test "reported zero turn usage survives while unknown usage stays absent" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var reducer = try running(&arena);
+    try feed(&reducer,
+        \\{"method":"thread/tokenUsage/updated","params":{"threadId":"native-thread","turnId":"native-turn","tokenUsage":{"total":{"totalTokens":0,"inputTokens":0,"cachedInputTokens":0,"outputTokens":0,"reasoningOutputTokens":0},"last":{"totalTokens":0,"inputTokens":0,"cachedInputTokens":0,"outputTokens":0,"reasoningOutputTokens":0},"modelContextWindow":272000}}}
+    );
+    const terminal =
+        \\{"method":"turn/completed","params":{"threadId":"native-thread","turn":{"id":"native-turn","status":"completed"}}}
+    ;
+    try feed(&reducer, terminal);
+    const usage = lastPayload(&reducer).get("usage").?.object;
+    try testing.expectEqual(@as(usize, 3), usage.count());
+    for ([_][]const u8{ "input_tokens", "output_tokens", "total_tokens" }) |key| {
+        try testing.expectEqual(@as(i64, 0), usage.get(key).?.integer);
+    }
+    var unknown = try running(&arena);
+    try feed(&unknown, terminal);
+    try testing.expect(lastPayload(&unknown).get("usage") == null);
+}

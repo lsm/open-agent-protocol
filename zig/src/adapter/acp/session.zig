@@ -2899,3 +2899,17 @@ test "a prompt answered after its run already settled still counts as the sessio
     try testing.expectEqualStrings("run.completed", lastEnvelope(&reducer).get("type").?.string);
     try testing.expect(lastEnvelope(&reducer).get("payload").?.object.get("usage") == null);
 }
+
+test "a measured zero turn reports three zero counts" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var reducer = try openRun(&arena);
+    try reducer.settlePrompt("end_turn", try usageValue(arena.allocator(),
+        \\{"inputTokens":0,"outputTokens":0,"totalTokens":0}
+    ));
+    const usage = lastEnvelope(&reducer).get("payload").?.object.get("usage").?.object;
+    try testing.expectEqual(@as(usize, 3), usage.count());
+    for ([_][]const u8{ "input_tokens", "output_tokens", "total_tokens" }) |key| {
+        try testing.expectEqual(@as(i64, 0), usage.get(key).?.integer);
+    }
+}

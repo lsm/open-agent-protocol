@@ -1900,3 +1900,51 @@ func TestALiveUpdateIsRefusedWhatHermesCannotTakeBetweenRuns(t *testing.T) {
 		t.Fatalf("config.set reached Hermes %d times, want only the refused level", len(sent))
 	}
 }
+
+func TestCompletedRunPreservesUsagePresence(t *testing.T) {
+	cases := []struct{ name, usage, want string }{
+		{"absent", "", ""},
+		{"null", `,"usage":null`, ""},
+		{"empty", `,"usage":{}`, `{}`},
+		{"partial zero", `,"usage":{"input":0}`, `{"input_tokens":0}`},
+		{"partial positive", `,"usage":{"output":5}`, `{"output_tokens":5}`},
+		{"measured zero", `,"usage":{"input":0,"output":0,"total":0}`, `{"input_tokens":0,"output_tokens":0,"total_tokens":0}`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			session, client := openTest(t)
+			ch := admit(t, session, client, true)
+			client.event(native.EventMessageComplete, 2, `{"text":"done","status":"complete"`+tc.usage+`}`)
+			result := <-ch
+			if result.err != nil {
+				t.Fatal(result.err)
+			}
+			events := drain(t, result.stream)
+			validateWithCapabilities(t, result.response, events)
+			var payload struct {
+				Usage json.RawMessage `json:"usage"`
+			}
+			if err := events[len(events)-1].DecodePayload(&payload); err != nil {
+				t.Fatal(err)
+			}
+			if tc.want == "" {
+				if len(payload.Usage) != 0 {
+					t.Fatalf("usage = %s, want absent", payload.Usage)
+				}
+				return
+			}
+			var got, want map[string]uint64
+			if err := json.Unmarshal(payload.Usage, &got); err != nil {
+				t.Fatal(err)
+			}
+			if err := json.Unmarshal([]byte(tc.want), &want); err != nil {
+				t.Fatal(err)
+			}
+			actual, _ := json.Marshal(got)
+			expected, _ := json.Marshal(want)
+			if !bytes.Equal(actual, expected) {
+				t.Fatalf("usage = %s, want %s", actual, expected)
+			}
+		})
+	}
+}

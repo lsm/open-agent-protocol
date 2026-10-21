@@ -1830,7 +1830,7 @@ test "a delta carrying no text projects nothing, on either channel that projects
     try testing.expectEqualStrings("content.delta", typeAt(&reducer, 1));
 }
 
-test "a completed run always reports usage, and reports only the totals it has" {
+test "a completed run distinguishes absent usage from measured zero counts" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const scratch = arena.allocator();
@@ -1839,8 +1839,7 @@ test "a completed run always reports usage, and reports only the totals it has" 
     try feedEvent(&none, scratch, "message.complete",
         \\{"status":"complete","text":"done"}
     );
-    const empty = payloadAt(&none, 1).get("usage").?.object;
-    try testing.expectEqual(@as(usize, 0), empty.count());
+    try testing.expect(payloadAt(&none, 1).get("usage") == null);
 
     var partial = try openRun(&arena);
     try feedEvent(&partial, scratch, "message.complete",
@@ -1848,8 +1847,16 @@ test "a completed run always reports usage, and reports only the totals it has" 
     );
     const totals = payloadAt(&partial, 1).get("usage").?.object;
     try testing.expectEqual(@as(i64, 3), totals.get("input_tokens").?.integer);
-    try testing.expect(totals.get("output_tokens") == null);
+    try testing.expectEqual(@as(i64, 0), totals.get("output_tokens").?.integer);
     try testing.expectEqual(@as(i64, 3), totals.get("total_tokens").?.integer);
+
+    var only_input = try openRun(&arena);
+    try feedEvent(&only_input, scratch, "message.complete",
+        \\{"status":"complete","text":"done","usage":{"input":0}}
+    );
+    const reported = payloadAt(&only_input, 1).get("usage").?.object;
+    try testing.expectEqual(@as(usize, 1), reported.count());
+    try testing.expectEqual(@as(i64, 0), reported.get("input_tokens").?.integer);
 }
 
 test "a run-scoped event after the run settled belongs to no run, and says so" {
