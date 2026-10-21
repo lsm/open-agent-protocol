@@ -19,7 +19,7 @@ Source: [`decisions/0040-a-session-reopens-through-its-own-binding.md`](../../de
 | --- | --- | --- | --- | --- | --- | --- |
 | `0040#the-capability-key-is-sessionopenreopen-and-a-reopen-is-gated-like-subscribe/1` | An open with `reopen: true` to an endpoint that does not advertise `session.open.reopen` above `unavailable` MUST be refused `unsupported_feature` naming the key, `details.reason: "unadvertised"`. | L89–106 | `unavailable_capability` | `reopen.go:reopenGate` | `semantic.zig:reopenGate` | — |
 | `0040#the-capability-key-is-sessionopenreopen-and-a-reopen-is-gated-like-subscribe/2` | A reopen under a `degraded` disclosure without the caller's opt-in MUST be refused `capability_degraded`. | L89–106 | `degraded_without_optin` | `reopen.go:reopenGate` | `semantic.zig:reopenGate` | — |
-| `0040#the-capability-key-is-sessionopenreopen-and-a-reopen-is-gated-like-subscribe/3` | A successful reopen MUST list no run under way, unless the same open carried a message that admitted one. As amended by 0050 § 5, it may also list restored runs as `queued`. | L89–106 | `session_state_mismatch` | `reopen.go:reopenResponse` | `semantic.zig:reopenResponse` | — |
+| `0040#the-capability-key-is-sessionopenreopen-and-a-reopen-is-gated-like-subscribe/3` | A successful reopen MUST list no run under way, unless the same open carried a message that admitted one. As amended by 0050 § 5, it may also list restored runs as `queued`. | L89–106 | `session_state_mismatch` | `reopen.go:reopenResponse` | `semantic.zig:reopenResponse` | `state/admissions.rs:reopen_response` |
 | `0040#the-capability-key-is-sessionopenreopen-and-a-reopen-is-gated-like-subscribe/4` | A `session.open.request` setting `reopen: true` MUST carry `session_id`. | L102–103 | `schema_invalid` | schema | schema | schema |
 
 ### [0040] The reply is the state document, and it declares what the session runs under
@@ -28,7 +28,7 @@ Source: [`decisions/0040-a-session-reopens-through-its-own-binding.md`](../../de
 
 | id | rule | lines | code | Go | Zig | Rust |
 | --- | --- | --- | --- | --- | --- | --- |
-| `0040#the-reply-is-the-state-document-and-it-declares-what-the-session-runs-under/1` | A successful reopen MUST declare `recovery.recovered: true`. | L89–106, L109–130 | `session_state_mismatch` | `reopen.go:reopenResponse` | `semantic.zig:reopenResponse` | — |
+| `0040#the-reply-is-the-state-document-and-it-declares-what-the-session-runs-under/1` | A successful reopen MUST declare `recovery.recovered: true`. | L89–106, L109–130 | `session_state_mismatch` | `reopen.go:reopenResponse` | `semantic.zig:reopenResponse` | `state/admissions.rs:reopen_response` |
 
 ### [0044] A requested compaction is a run
 
@@ -247,7 +247,7 @@ Source: [`decisions/0050-shutdown-is-graceful-forced-or-asked.md`](../../decisio
 
 | id | rule | lines | code | Go | Zig | Rust |
 | --- | --- | --- | --- | --- | --- | --- |
-| `0050#5/1` | A recovered reopen MUST list no run as `running`. It MAY list restored runs as `queued` in their original order, and only when `recovery.recovered: true`. | L156–185 | `session_state_mismatch` | `reopen.go:reopenResponse` | `semantic.zig:reopenResponse` | — |
+| `0050#5/1` | A recovered reopen MUST list no run as `running`. It MAY list restored runs as `queued` in their original order, and only when `recovery.recovered: true`. | L156–185 | `session_state_mismatch` | `reopen.go:reopenResponse` | `semantic.zig:reopenResponse` | `state/admissions.rs:reopen_response` |
 | `0050#5/2` | `recovery.interrupted_runs` MUST list each run settled under § 1 as `{run_id, cause: "restart", settled_by: "inferred"}`. | L156–185 | — | — | — | — |
 | `0050#5/3` | `recovery.redelivered_runs` MUST pair each held prompt with its new run in the original order, and each `run_id` MUST appear in `state.active_runs` as `queued`. A withdrawn prompt carries `withdrawn: true` and no `run_id`. | L156–185 | — | — | — | — |
 
