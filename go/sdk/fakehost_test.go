@@ -28,6 +28,20 @@ func fakeHostEnv(scenario string, knobs ...string) []string {
 var fakeStdoutMu sync.Mutex
 
 func fakeEmit(value any) {
+	if event, ok := value.(*frame); ok && (event.Type == "run.completed" || event.Type == "inference.completed") {
+		if raw, reported := os.LookupEnv("OAP_SDK_GO_FAKE_USAGE"); reported {
+			var payload map[string]json.RawMessage
+			if err := json.Unmarshal(event.Payload, &payload); err != nil {
+				return
+			}
+			if raw == "absent" {
+				delete(payload, "usage")
+			} else {
+				payload["usage"] = json.RawMessage(raw)
+			}
+			event.Payload = mustMarshal(payload)
+		}
+	}
 	encoded, err := json.Marshal(value)
 	if err != nil {
 		return
