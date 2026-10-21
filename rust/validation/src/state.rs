@@ -1,5 +1,6 @@
 mod admissions;
 mod auth;
+mod compaction;
 mod control_tools;
 mod controls;
 mod interactions;
