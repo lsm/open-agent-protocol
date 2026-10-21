@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+## [0.1.0-alpha.27] - 2026-10-21
+
+### Breaking changes
+
+- **sdk: Preserve native command exit evidence across public streams** ([#1391](https://github.com/lsm/open-agent-protocol/pull/1391))
+
+`go/sdk` adds `Result` to the public `ToolExecutionEnd` struct; downstream unkeyed struct literals must switch to keyed fields or include the new field. Rust exhaustive construction or destructuring of `AgentEvent::ToolExecutionEnd` must include `result` or use `..`. Python and TypeScript add optional result fields. This API expansion is intentional so SDK consumers can inspect command exit evidence. For the exact action name `codex.command`, unknown and nonzero exit codes now project as error; other action names retain their previous lifecycle outcome.
+
+- **protocol: preserve measured zero usage counts in Go** ([#1385](https://github.com/lsm/open-agent-protocol/pull/1385))
+
+- `protocol` (`go/protocol`): `Usage.InputTokens`, `OutputTokens` and `TotalTokens` change from `uint64` to `*uint64`. Use nil for unknown, a pointer for measured counts, and check nil before dereferencing; `docs/go-library.md` has the migration example.
+
+### Added
+
+- **verify: Keep journeys in independent files** ([#1392](https://github.com/lsm/open-agent-protocol/pull/1392)): Keep verification journeys in separate files discovered by directory listing, so adding one no longer edits a shared index.
+
+### Fixed
+
+- **codex: Preserve command exit status in normalized tool results** ([#1390](https://github.com/lsm/open-agent-protocol/pull/1390)): Preserve numeric native command exit codes and explicit null for unknown status in Go and Zig normalized results.
+- **sdk: Preserve native command exit evidence across public streams** ([#1391](https://github.com/lsm/open-agent-protocol/pull/1391)): Retain native command result JSON in Go, Rust, Python and TypeScript SDK events; treat nonzero or unknown Codex exit status as error while preserving the evidence.
+- **zig: Enforce the stdio envelope cap on the raw request span** ([#1388](https://github.com/lsm/open-agent-protocol/pull/1388)): Enforce the 16 MiB stdio envelope cap on raw JSON spans, including whitespace padding and Unicode escapes.
+- **protocol: preserve measured zero usage counts in Go** ([#1385](https://github.com/lsm/open-agent-protocol/pull/1385)): Preserve measured zero usage counts and omit unknown counts in Go, with matching Zig adapter reducers. OpenCode and Hermes reject negative native counts, and Hermes rejects malformed usage.
+
 ## [0.1.0-alpha.26] - 2026-10-20
 
 ### Added

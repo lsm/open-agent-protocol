@@ -138,7 +138,7 @@ pub(crate) fn response(
         }
     }
     result.content = content(final_message.get("content"))?;
-    result.usage = terminal.get("usage").and_then(Usage::parse);
+    result.usage = Usage::from_payload(terminal)?;
     Ok(result)
 }
 
