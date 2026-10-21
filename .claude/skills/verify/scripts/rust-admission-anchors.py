@@ -16,11 +16,13 @@ NEGATIVE = [
     "anchor-entry-names-state-request",
     "anchor-foreign-request",
     "anchor-foreign-admission",
+    "anchor-foreign-admission-before-snapshot",
 ]
 POSITIVE = [
     "queue-state-entry-leads-its-admission",
     "queue-state-anchor-request-reflected",
     "compound-open-admits-its-message",
+    "anchor-message-open-assigns-session",
     "compound-open-queued-message",
     "steer-state-pending",
     "steer-state-capture-straddles-admission",
@@ -30,6 +32,7 @@ POSITIVE = [
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--output-dir", type=Path, required=True)
+    parser.add_argument("--mutation-check", action="store_true")
     args = parser.parse_args()
     output = args.output_dir.resolve()
     output.mkdir(parents=True, exist_ok=False)
@@ -87,7 +90,7 @@ def main():
             trace = fixture("steer-state-pending")
             request = copy.deepcopy(next(e for e in trace if e["id"] == "sub2"))
             request["id"] = "sub3"
-            response = copy.deepcopy(next(e for e in trace if e["in_reply_to"] == "sub2"))
+            response = copy.deepcopy(next(e for e in trace if e.get("in_reply_to") == "sub2"))
             response.update(id="steer3-response", in_reply_to="sub3")
             response["payload"].update(submission_id="steer3", message_ids=["guidance3"])
             trace.insert(next(i for i, e in enumerate(trace) if e.get("in_reply_to") == "sub2"), request)
@@ -108,6 +111,32 @@ def main():
             trace.insert(-1, applied)
             trace[-1]["sequence"] = 4
             cases.append((f"multiple-steer-anchors-delayed-{delayed}-reversed-{reverse}", trace, []))
+
+    trace = fixture("steer-state-pending")
+    p = state(trace)
+    p.pop("active_runs")
+    p["as_of"] = {"admitted_submit_requests": ["sub2"]}
+    response = next(e for e in trace if e.get("in_reply_to") == "sub2")
+    trace.remove(response)
+    trace.insert(next(i for i, e in enumerate(trace) if e["type"] == "session.state.response") + 1, response)
+    cases.append(("scalar-active-run-accounts-for-steer", trace, []))
+    trace = fixture("compound-open-admits-its-message")
+    template = fixture("anchor-session-names-state-request")
+    query = copy.deepcopy(next(e for e in template if e["id"] == "read"))
+    response = copy.deepcopy(next(e for e in template if e["id"] == "snapshot"))
+    p = response["payload"]
+    p["active_runs"][0].update(as_of_sequence=0, admitted_submit_requests=["oc"])
+    p["as_of"] = {"admitted_submit_requests": ["oc"]}
+    trace[3:3] = [query, response]
+    cases.append(("message-open-response-after-snapshot", trace, []))
+
+    for name in ["anchor-foreign-admission", "anchor-foreign-admission-before-snapshot"]:
+        trace = fixture(name)
+        request = next(e for e in trace if e["id"] == "foreign-submit")
+        request["session_id"] = request["payload"]["session_id"] = "s2"
+        next(e for e in trace if e["id"] == "foreign-response")["session_id"] = "s2"
+        state(trace)["as_of"]["admitted_submit_requests"] = ["req1"]
+        cases.append((name + "-repair-request-and-anchor", trace, []))
 
     observations = []
     failures = []
@@ -133,6 +162,48 @@ def main():
     (output / "observations.json").write_text(json.dumps(observations, indent=2) + "\n")
     assert not failures, failures
     print(f"PASS: {len(cases)} admission-anchor traces agree across Go, Rust and Zig; 0 disagreements", flush=True)
+    if args.mutation_check:
+        source = ROOT / "rust/validation/src/state/admission_anchors.rs"
+        mutations = [
+            ('Some("an anchor must name a submit or message-carrying open request on this session")', 'return;', "anchor-session-names-state-request"),
+            ('Some("an anchor must name a submit or message-carrying open request on this session")', 'return;', "anchor-entry-names-state-request"),
+            ('Some("an anchor must name a submit or message-carrying open request on this session")', 'return;', "compound-open-anchor-names-an-open-without-a-message"),
+            ('Some("an anchor must name a submit or message-carrying open request on this session")', 'return;', "anchor-foreign-request"),
+            ('Some("the anchor was admitted on another session")', 'None', "anchor-foreign-admission"),
+            ('Some("the anchor was admitted to a different run")', 'None', "queue-state-entry-anchor-admitted-elsewhere"),
+            ('Some("the snapshot accounts for the anchor\'s admitted run nowhere")', 'None', "queue-state-anchor-request-unaccounted"),
+            ('Some("the claimed admission was refused")', 'None', "queue-state-anchor-request-refused"),
+            ('Some("the claimed admission received no response")', 'None', "queue-state-anchor-request-unanswered"),
+            ('run.steers.values().any(|steer| steer.request == request)', 'false', "multiple-steer-anchors-delayed-True-reversed-True"),
+            ('request.envelope_type == EnvelopeType::SESSION_OPEN_REQUEST', 'false', "message-open-response-after-snapshot"),
+        ]
+        try:
+            for index, (old, new, target) in enumerate(mutations):
+                original = source.read_text()
+                assert original.count(old) == 1, old
+                try:
+                    source.write_text(original.replace(old, new))
+                    build = run(["cargo", "build", "--manifest-path", "rust/Cargo.toml", "-p", "oap-validation", "--example", "validate"], f"mutation-{index}-build")
+                    assert build.returncode == 0, build.stderr
+                    result = run([*commands["rust"], str(output / f"{target}.json")], f"mutation-{index}-result")
+                    report = json.loads(result.stdout)
+                    diagnostics = report.get("diagnostics") or []
+                    codes = sorted({d["code"] for d in diagnostics})
+                    baseline = next(r for r in observations if r["case"] == target and r["language"] == "rust")
+                    assert (result.returncode, codes) != (baseline["exit"], baseline["codes"]), (target, report)
+                    assert result.returncode in (0, 1) and all(d["phase"] == "semantic" for d in diagnostics), report
+                    print(f"PASS: mutation {index} caught by {target}", flush=True)
+                finally:
+                    source.write_text(original)
+        finally:
+            build = run(["cargo", "build", "--manifest-path", "rust/Cargo.toml", "-p", "oap-validation", "--example", "validate"], "restored-build")
+            assert build.returncode == 0, build.stderr
+        for label, _, expected in cases:
+            result = run([*commands["rust"], str(output / f"{label}.json")], f"restored-{label}")
+            report = json.loads(result.stdout)
+            codes = sorted({d["code"] for d in report.get("diagnostics") or []})
+            assert result.returncode == int(bool(expected)) and codes == expected, (label, report)
+        print(f"PASS: {len(mutations)} source mutations caught; sources restored and all Rust cases replayed", flush=True)
 
 
 if __name__ == "__main__":

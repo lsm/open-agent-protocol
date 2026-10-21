@@ -34,3 +34,13 @@ fn admission_anchors_must_be_answered_by_the_claimed_admission() {
         );
     }
 }
+
+#[test]
+fn a_message_carrying_open_can_anchor_the_session_its_response_allocates() {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../fixtures/valid/anchor-message-open-assigns-session.json");
+    let result = Validator::new()
+        .unwrap()
+        .validate(&std::fs::read(path).unwrap(), "allocated-session");
+    assert!(result.valid(), "{result:?}");
+}
