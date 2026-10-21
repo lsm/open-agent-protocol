@@ -14314,6 +14314,24 @@
       ]
     },
     {
+      "id": "redelivery-state-cursor-resumes-known-queue",
+      "path": "valid/redelivery-state-cursor-resumes-known-queue.json",
+      "kind": "positive",
+      "valid": true,
+      "phase": "",
+      "codes": [],
+      "units": [
+        "session-reattach",
+        "queue"
+      ],
+      "provenance": [
+        "decisions/0050-shutdown-is-graceful-forced-or-asked.md"
+      ],
+      "rules": [
+        "0050#5/3"
+      ]
+    },
+    {
       "id": "redelivery-state-started-held",
       "path": "valid/redelivery-state-started-held.json",
       "kind": "positive",
