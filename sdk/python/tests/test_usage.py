@@ -59,3 +59,13 @@ class UsageTests(unittest.TestCase):
                     self.assertNotIn("usage", value)
                     self.assertEqual(value.get("error"), "malformed_response", value)
                     self.assertEqual(value.get("error_type"), "MakaiProtocolError", value)
+
+    def test_negative_zero_tokens_are_typed_protocol_errors(self) -> None:
+        cases = ['{"' + field + '":-0}' for field in FIELDS]
+        cases.append('{"input_tokens":7,"output_tokens":-0}')
+        for raw in cases:
+            with self.subTest(usage=raw):
+                for value in observe(raw):
+                    self.assertNotIn("usage", value)
+                    self.assertEqual(value.get("error"), "malformed_response", value)
+                    self.assertEqual(value.get("error_type"), "MakaiProtocolError", value)
