@@ -11843,6 +11843,247 @@
       ]
     },
     {
+      "id": "open-settings-reasoning-missing-mode",
+      "path": "semantic-invalid/open-settings-reasoning-missing-mode.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "unavailable_capability"
+      ],
+      "units": [
+        "session-settings"
+      ],
+      "provenance": [
+        "decisions/0045-reasoning-level-and-compaction-policy-are-session-settings.md"
+      ],
+      "rules": [
+        "0045#where-the-settings-go/1"
+      ]
+    },
+    {
+      "id": "open-settings-policy-degraded-wrong-optin",
+      "path": "semantic-invalid/open-settings-policy-degraded-wrong-optin.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "degraded_without_optin"
+      ],
+      "units": [
+        "session-settings"
+      ],
+      "provenance": [
+        "decisions/0045-reasoning-level-and-compaction-policy-are-session-settings.md"
+      ],
+      "rules": [
+        "0045#where-the-settings-go/2"
+      ]
+    },
+    {
+      "id": "open-settings-share-rounded",
+      "path": "semantic-invalid/open-settings-share-rounded.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "session_state_mismatch"
+      ],
+      "units": [
+        "session-settings"
+      ],
+      "provenance": [
+        "decisions/0045-reasoning-level-and-compaction-policy-are-session-settings.md"
+      ],
+      "rules": [
+        "0045#what-the-state-reports/2"
+      ]
+    },
+    {
+      "id": "open-settings-tokens-rounded",
+      "path": "semantic-invalid/open-settings-tokens-rounded.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "session_state_mismatch"
+      ],
+      "units": [
+        "session-settings"
+      ],
+      "provenance": [
+        "decisions/0045-reasoning-level-and-compaction-policy-are-session-settings.md"
+      ],
+      "rules": [
+        "0045#what-the-state-reports/2"
+      ]
+    },
+    {
+      "id": "open-settings-refusal-missing-feature",
+      "path": "semantic-invalid/open-settings-refusal-missing-feature.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "unavailable_capability"
+      ],
+      "units": [
+        "session-settings"
+      ],
+      "provenance": [
+        "decisions/0045-reasoning-level-and-compaction-policy-are-session-settings.md"
+      ],
+      "rules": [
+        "0045#where-the-settings-go/1"
+      ]
+    },
+    {
+      "id": "open-settings-refusal-wrong-reason",
+      "path": "semantic-invalid/open-settings-refusal-wrong-reason.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "unavailable_capability"
+      ],
+      "units": [
+        "session-settings"
+      ],
+      "provenance": [
+        "decisions/0045-reasoning-level-and-compaction-policy-are-session-settings.md"
+      ],
+      "rules": [
+        "0045#where-the-settings-go/1"
+      ]
+    },
+    {
+      "id": "open-settings-mixed-defects-wrong-refusal",
+      "path": "semantic-invalid/open-settings-mixed-defects-wrong-refusal.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "unavailable_capability"
+      ],
+      "units": [
+        "session-settings"
+      ],
+      "provenance": [
+        "decisions/0045-reasoning-level-and-compaction-policy-are-session-settings.md"
+      ],
+      "rules": [
+        "0045#where-the-settings-go/1",
+        "0045#where-the-settings-go/2"
+      ]
+    },
+    {
+      "id": "open-settings-nonfirst-defect-refused",
+      "path": "valid/open-settings-nonfirst-defect-refused.json",
+      "kind": "positive",
+      "valid": true,
+      "phase": "",
+      "codes": [],
+      "units": [
+        "session-settings"
+      ],
+      "provenance": [
+        "decisions/0045-reasoning-level-and-compaction-policy-are-session-settings.md"
+      ],
+      "rules": [
+        "0045#where-the-settings-go/1",
+        "0045#where-the-settings-go/2"
+      ]
+    },
+    {
+      "id": "open-settings-gates-before-fidelity",
+      "path": "semantic-invalid/open-settings-gates-before-fidelity.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "unavailable_capability"
+      ],
+      "units": [
+        "session-settings"
+      ],
+      "provenance": [
+        "decisions/0045-reasoning-level-and-compaction-policy-are-session-settings.md"
+      ],
+      "rules": [
+        "0045#where-the-settings-go/1"
+      ]
+    },
+    {
+      "id": "open-settings-reversed-replies-rounded",
+      "path": "semantic-invalid/open-settings-reversed-replies-rounded.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "session_state_mismatch"
+      ],
+      "units": [
+        "session-settings"
+      ],
+      "provenance": [
+        "decisions/0045-reasoning-level-and-compaction-policy-are-session-settings.md"
+      ],
+      "rules": [
+        "0045#what-the-state-reports/1"
+      ]
+    },
+    {
+      "id": "open-settings-open-level-refusal",
+      "path": "valid/open-settings-open-level-refusal.json",
+      "kind": "positive",
+      "valid": true,
+      "phase": "",
+      "codes": [],
+      "units": [
+        "session-settings"
+      ],
+      "provenance": [
+        "decisions/0045-reasoning-level-and-compaction-policy-are-session-settings.md"
+      ],
+      "rules": [
+        "0045#where-the-settings-go/1"
+      ]
+    },
+    {
+      "id": "open-settings-setting-refusal-discharges-provide",
+      "path": "valid/open-settings-setting-refusal-discharges-provide.json",
+      "kind": "positive",
+      "valid": true,
+      "phase": "",
+      "codes": [],
+      "units": [
+        "session-settings"
+      ],
+      "provenance": [
+        "decisions/0045-reasoning-level-and-compaction-policy-are-session-settings.md"
+      ],
+      "rules": [
+        "0045#where-the-settings-go/1"
+      ]
+    },
+    {
+      "id": "open-settings-setting-refusal-with-subscribe",
+      "path": "valid/open-settings-setting-refusal-with-subscribe.json",
+      "kind": "positive",
+      "valid": true,
+      "phase": "",
+      "codes": [],
+      "units": [
+        "session-settings"
+      ],
+      "provenance": [
+        "decisions/0045-reasoning-level-and-compaction-policy-are-session-settings.md"
+      ],
+      "rules": [
+        "0045#where-the-settings-go/1"
+      ]
+    },
+    {
       "id": "session-settings-unadvertised-admitted",
       "path": "semantic-invalid/session-settings-unadvertised-admitted.json",
       "kind": "semantic-invalid",
@@ -11862,6 +12103,9 @@
           "capability": "session.reasoning",
           "aspect": "gate"
         }
+      ],
+      "rules": [
+        "0045#where-the-settings-go/1"
       ]
     },
     {
@@ -11878,6 +12122,9 @@
       ],
       "provenance": [
         "decisions/0045-reasoning-level-and-compaction-policy-are-session-settings.md"
+      ],
+      "rules": [
+        "0045#where-the-settings-go/1"
       ]
     },
     {
@@ -11900,6 +12147,9 @@
           "capability": "session.compaction.policy",
           "aspect": "gate"
         }
+      ],
+      "rules": [
+        "0045#where-the-settings-go/1"
       ]
     },
     {
@@ -11916,6 +12166,9 @@
       ],
       "provenance": [
         "decisions/0045-reasoning-level-and-compaction-policy-are-session-settings.md"
+      ],
+      "rules": [
+        "0045#where-the-settings-go/2"
       ]
     },
     {
@@ -11938,6 +12191,9 @@
           "capability": "session.reasoning",
           "aspect": "honour"
         }
+      ],
+      "rules": [
+        "0045#what-the-state-reports/1"
       ]
     },
     {
@@ -11960,6 +12216,9 @@
           "capability": "session.compaction.policy",
           "aspect": "honour"
         }
+      ],
+      "rules": [
+        "0045#what-the-state-reports/2"
       ]
     },
     {
