@@ -297,7 +297,7 @@ error codes, no diagnostic yet), 0025 (superseded), 0027 (proposed), 0030
 | `drafts/endpoint-stdio.md` | framing and the serve-agent loop; pinned by the Go conformance runner (`goap conformance`), not by diagnostics |
 | `drafts/model-provider-core.md`, `provider-stdio.md`, `provider-http.md` | provider validator: `credential_in_trace`, `credential_in_headers`, `terminal_not_assembly`, `sequence_gap`, `sequence_regression`, `event_after_terminal` in both trees; the provider corpus holds 9 positive, 11 semantic-invalid, 16 schema-invalid and 2 decode fixtures |
 | `drafts/triggered-runs.md`, `harness-initiated-state.md`, `presentation-control-profile.md`, `composition.md`, `cli.md` | proposals or unbuilt; no wire on main to check |
-| `schema/v0.1` | both trees run the same schemas; 60 `schema-invalid` fixtures (44 agent, 16 provider) |
+| `schema/v0.1` | both trees run the same schemas; [the manifest](../fixtures/manifest.json) lists the current agent and provider `schema-invalid` fixtures, including Decision 0050 redelivery record shapes |
 | `research/protocol-feedback-2026-09.md` | PF-1 → 0002 rows; PF-6 → capability rows; PF-7 → 0001 rows; PF-10 → `unattributed_call`; PF-2, 3, 4, 5, 8, 9, 11, 12 are deferrals or non-changes with no rule to check |
 
 ## Emitting surfaces

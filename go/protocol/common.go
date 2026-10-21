@@ -152,6 +152,7 @@ type RecoveryMetadata struct {
 	ResumeCursor      string           `json:"resume_cursor,omitempty"`
 	Reason            string           `json:"reason,omitempty"`
 	InterruptedRuns   []InterruptedRun `json:"interrupted_runs,omitempty"`
+	RedeliveredRuns   []RedeliveredRun `json:"redelivered_runs,omitempty"`
 }
 
 const InterruptedByRestart = "restart"
@@ -160,4 +161,11 @@ type InterruptedRun struct {
 	RunID     RunID  `json:"run_id"`
 	Cause     string `json:"cause"`
 	SettledBy string `json:"settled_by"`
+}
+
+type RedeliveredRun struct {
+	PreviousRunID RunID `json:"previous_run_id"`
+	RunID         RunID `json:"run_id,omitempty"`
+	RootRunID     RunID `json:"root_run_id"`
+	Withdrawn     bool  `json:"withdrawn,omitempty"`
 }

@@ -19,9 +19,11 @@ run rustc --version
 run cargo --version
 run python3 .claude/skills/verify/scripts/go-usage.py --output-dir "$artifacts/go-usage"
 run go test ./go/validation
+run go test ./go/protocol
 (
     cd rust
     run cargo test -p oap-validation --test manifest
+    run cargo test -p oap-protocol --test payloads
     run cargo fmt --check
     run cargo clippy --all-targets --all-features -- -D warnings
     run cargo run -p nocomment -- --check
@@ -41,6 +43,7 @@ run python3 .claude/skills/verify/scripts/go-sdk-usage.py --output-dir "$artifac
 run ./zig/zig-out/bin/oapx validate fixtures/valid/core-completed.json
 run ./zig/zig-out/bin/oapx validate fixtures/valid/permission-resolved-in-the-refresh-window.json
 run ./zig/zig-out/bin/oapx validate fixtures/valid/user-input-resolved-in-the-refresh-window.json
+run python3 .claude/skills/verify/scripts/redelivery-wire.py --output-dir "$artifacts/redelivery-wire"
 run python3 .claude/skills/verify/scripts/interaction-binding.py --output-dir "$artifacts/interaction-binding"
 run python3 .claude/skills/verify/scripts/rust-reopen.py --output-dir "$artifacts/rust-reopen"
 run python3 .claude/skills/verify/scripts/rust-refresh-window.py --output-dir "$artifacts/rust-refresh"
