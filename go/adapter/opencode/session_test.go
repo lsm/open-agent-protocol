@@ -1996,3 +1996,32 @@ func TestARunReportsUsageOnlyWhenAStepEnded(t *testing.T) {
 		})
 	}
 }
+
+func TestNegativeStepTokensFailBeforeUsageIsReported(t *testing.T) {
+	for index, name := range []string{"input", "output", "reasoning", "cache read", "cache write"} {
+		t.Run(name, func(t *testing.T) {
+			client := newFakeClient()
+			session, _ := openTest(t, client, 32)
+			response, stream := submitTest(t, session)
+			client.deliver(t, 1, native.MessageID(response.MessageIDs[0]))
+			tokens := native.TokenAccounting{}
+			counts := []*float64{&tokens.Input, &tokens.Output, &tokens.Reasoning, &tokens.Cache.Read, &tokens.Cache.Write}
+			*counts[index] = -1
+			client.emit(t, 2, native.TypeStepEnded, native.StepEndedData{SessionID: client.session, AssistantMessage: "msg_a1", Finish: "stop", Tokens: tokens})
+			client.succeed(t, 3)
+			events := adaptertest.Drain(t, stream, time.Second)
+			adaptertest.AssertRunTrace(t, response, CapabilityRevision, events)
+			terminal := events[len(events)-1]
+			if terminal.Type != protocol.TypeRunFailed {
+				t.Fatalf("terminal = %s, want run.failed", terminal.Type)
+			}
+			var failed protocol.RunFailedPayload
+			if err := terminal.DecodePayload(&failed); err != nil {
+				t.Fatal(err)
+			}
+			if failed.Error.Code != "opencode_invalid_step_event" || failed.Usage != nil {
+				t.Fatalf("failure = %+v, want invalid step without measured usage", failed)
+			}
+		})
+	}
+}

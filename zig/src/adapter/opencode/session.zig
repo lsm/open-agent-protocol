@@ -2122,3 +2122,35 @@ test "a permission outside a tool call the run started fails the run" {
     try reducer.observe(try permissionEvent(scratch, "asked", "{\"id\":\"per_1\",\"action\":\"external_directory\",\"resources\":[\"/etc\"]}"));
     try testing.expectEqualStrings("opencode_permission_without_tool", errorCode(reducer.envelopes.items[reducer.envelopes.items.len - 1]));
 }
+
+test "a negative step token count fails before usage is reported" {
+    const cases = [_][]const u8{
+        \\{"input":-1,"output":0,"reasoning":0,"cache":{"read":0,"write":0}}
+        ,
+        \\{"input":0,"output":-1,"reasoning":0,"cache":{"read":0,"write":0}}
+        ,
+        \\{"input":0,"output":0,"reasoning":-1,"cache":{"read":0,"write":0}}
+        ,
+        \\{"input":0,"output":0,"reasoning":0,"cache":{"read":-1,"write":0}}
+        ,
+        \\{"input":0,"output":0,"reasoning":0,"cache":{"read":0,"write":-1}}
+        ,
+    };
+    for (cases) |tokens| {
+        var arena = std.heap.ArenaAllocator.init(testing.allocator);
+        defer arena.deinit();
+        const scratch = arena.allocator();
+        var fake = Fake{};
+        var reducer = Reducer.init(&arena, .{ .native_id = native_session }, fake.client());
+        try reducer.open();
+        const admission = try reducer.submit("session", "hi", "auto");
+        try reducer.observe(try deliveredEvent(scratch, 1, admission.message_ids[0]));
+        const data = try std.fmt.allocPrint(scratch, "{{\"assistantMessageID\":\"msg_a\",\"finish\":\"stop\",\"cost\":0,\"tokens\":{s}}}", .{tokens});
+        try reducer.observe(try nativeEvent(scratch, 2, "step.ended", data));
+        try reducer.observe(try succeeded(scratch, 3));
+        try testing.expectEqualStrings("run.failed", reducer.envelopes.items[reducer.envelopes.items.len - 1].object.get("type").?.string);
+        const payload = lastPayload(&reducer);
+        try testing.expectEqualStrings("opencode_invalid_step_event", payload.get("error").?.object.get("code").?.string);
+        try testing.expect(payload.get("usage") == null);
+    }
+}
