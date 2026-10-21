@@ -55,6 +55,19 @@ def main():
     extra = after_capture.pop(-2)
     after_capture.append(extra)
     cases.append(("late-event-after-snapshot", after_capture, [event_after, mismatch]))
+    for sequence, name in [(2, "queue-state-settled-terminal-after-late-event"), (3, "queue-state-settled-late-event-is-not-terminal")]:
+        trace = json.loads((ROOT / f"fixtures/semantic-invalid/{name}.json").read_text())
+        expected = [mismatch] if sequence != 2 else []
+        cases.append((f"settled-{sequence}-with-late-event", copy.deepcopy(trace), [event_after, *expected]))
+        no_late = copy.deepcopy(trace)
+        no_late.pop(-2)
+        cases.append((f"settled-{sequence}-without-late-event", no_late, expected))
+        extra = copy.deepcopy(trace[-2])
+        extra.update(id="another-late-event", sequence=4)
+        trace.insert(-1, extra)
+        if sequence != 2:
+            trace[-1]["payload"]["as_of"]["settled"][0]["sequence"] = 4
+        cases.append((f"settled-{sequence}-two-late-events", trace, [event_after, *expected]))
     failures = []
     observations = []
     for label, trace, expected in cases:
@@ -76,9 +89,10 @@ def main():
             if result.returncode != int(bool(expected)) or codes != sorted(expected):
                 failures.append(observation)
             if codes == sorted(expected):
-                assert counts == {code: (2 if code == event_after and label == "two-late-events" else 1) for code in expected}, observation
+                assert counts == {code: (2 if code == event_after and (label == "two-late-events" or label.endswith("-two-late-events")) else 1) for code in expected}, observation
             if mismatch in expected and name != "zig" and mismatch in codes:
-                assert all(d["pointer"] == "/payload/active_runs/0/as_of_sequence" for d in diagnostics if d["code"] == mismatch), diagnostics
+                pointer = ("/payload/as_of/settled/0/sequence" if name == "rust" else "/payload/as_of/settled") if label.startswith("settled-") else "/payload/active_runs/0/as_of_sequence"
+                assert all(d["pointer"] == pointer for d in diagnostics if d["code"] == mismatch), diagnostics
             assert all(d["phase"] == "semantic" for d in diagnostics), diagnostics
     (output / "observations.json").write_text(json.dumps(observations, indent=2) + "\n")
     assert not failures, failures

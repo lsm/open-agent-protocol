@@ -22,3 +22,11 @@ agree on exact code sets and exit statuses; Go and Rust also identify the
 capture pointer. Inputs and raw stdout/stderr, exit codes and comparisons are
 retained in the output directory. Run the Go validation suite, Rust manifest
 test and Zig `test-unit-validation` too, with no unexpected disagreements.
+
+A settled claim must name the observed terminal's sequence, rather than a late
+stream cursor. The two shared settled-claim fixtures pin correct sequence 2 and
+incorrect late-event sequence 3. The consumer removes and duplicates the late
+event and changes the incorrect claim to the latest cursor again. A correct
+claim must not gain a capture mismatch; an incorrect claim must keep one.
+Rust checks only terminals already observed at the snapshot; future/deferred
+claims remain outside this slice.
