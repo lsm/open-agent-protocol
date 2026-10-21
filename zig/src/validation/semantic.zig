@@ -703,6 +703,7 @@ pub const Machine = struct {
     declared_sources: std.StringArrayHashMapUnmanaged(std.json.Value) = .empty,
     duplicate_source: []const u8 = "",
     control_participant: []const u8 = "",
+    agent_participant: []const u8 = "",
     catalog_known: bool = false,
     catalog_ambiguous: bool = false,
     catalogs: std.StringArrayHashMapUnmanaged(*ModelCatalog) = .empty,
@@ -968,7 +969,10 @@ pub const Machine = struct {
         }
         if (std.mem.eql(u8, declared, "protocol.initialize.response")) {
             self.initialized = true;
-            if (member(payload, "endpoint")) |endpoint| try self.participants.put(self.allocator, memberString(endpoint, "id"), {});
+            if (member(payload, "endpoint")) |endpoint| {
+                self.agent_participant = memberString(endpoint, "id");
+                try self.participants.put(self.allocator, self.agent_participant, {});
+            }
             if (self.requests.get(field(envelope, "in_reply_to"))) |asked| {
                 if (member(asked.payload, "participant")) |who| try self.participants.put(self.allocator, memberString(who, "id"), {});
             }
@@ -4755,6 +4759,9 @@ pub const Machine = struct {
             return;
         }
         try self.participant(index, responder);
+        if (self.agent_participant.len != 0 and !std.mem.eql(u8, memberString(payload, "requested_by"), self.agent_participant)) {
+            try self.add(code_scope_mismatch, index);
+        }
         if (run.interactions.get(id) != null) {
             try self.add(code_duplicate_interaction, index);
             return;
