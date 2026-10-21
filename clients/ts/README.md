@@ -39,7 +39,8 @@ without the dev toolchain; stale or partial output is rebuilt when the compiler
 is available, otherwise installation fails with instructions to prepare the
 checkout. In a bare checkout, `npm install` prepares it, or run `npm run build`
 directly. Builds clean `dist/` first, so removed source modules leave no stale
-output behind.
+output behind. A checkout missing source or configuration files cannot prove its
+build is current; restore the complete checkout before preparing it.
 
 ## Canonical lifecycle
 

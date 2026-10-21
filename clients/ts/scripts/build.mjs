@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const record = join(root, 'dist/.build-hash');
+const preparationError = 'oap-client build is missing, stale or incomplete; restore a complete checkout and run npm install in clients/ts before installing it as a file dependency.';
 
 function sources(directory) {
   return readdirSync(join(root, directory), { withFileTypes: true }).flatMap((entry) => {
@@ -20,12 +21,23 @@ function digest(paths) {
   return hash.digest('hex');
 }
 
-const inputs = [...sources('src'), ...sources('test')];
-const outputs = inputs.filter((path) => !path.endsWith('.d.ts')).flatMap((path) => [
-  `dist/${path.slice(0, -3)}.js`,
-  `dist/${path.slice(0, -3)}.d.ts`,
-]);
-const inputHash = digest([...inputs, 'tsconfig.json', 'package.json', 'package-lock.json', 'scripts/build.mjs']);
+function inputState() {
+  try {
+    const inputs = [...sources('src'), ...sources('test')];
+    return {
+      outputs: inputs.filter((path) => !path.endsWith('.d.ts')).flatMap((path) => [
+        `dist/${path.slice(0, -3)}.js`,
+        `dist/${path.slice(0, -3)}.d.ts`,
+      ]),
+      inputHash: digest([...inputs, 'tsconfig.json', 'package.json', 'package-lock.json', 'scripts/build.mjs']),
+    };
+  } catch (error) {
+    if (error.code === 'ENOENT') throw new Error(preparationError);
+    throw error;
+  }
+}
+
+const { outputs, inputHash } = inputState();
 
 function fresh() {
   try {
@@ -39,7 +51,7 @@ function fresh() {
 if (process.argv[2] !== '--prepare' || !fresh()) {
   const compiler = join(root, 'node_modules/typescript/bin/tsc');
   if (!existsSync(compiler)) {
-    throw new Error('oap-client build is missing, stale or incomplete; run npm install in clients/ts before installing it as a file dependency.');
+    throw new Error(preparationError);
   }
   rmSync(join(root, 'dist'), { recursive: true, force: true });
   const compiled = spawnSync(process.execPath, [compiler, '-p', 'tsconfig.json'], { cwd: root, stdio: 'inherit' });
