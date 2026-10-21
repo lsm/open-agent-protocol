@@ -34,6 +34,25 @@ _TERMINATE_GRACE_S = 1.0
 _MAX_LINE_BYTES = 64 * 1024 * 1024
 
 
+def _decode_frame(text: str) -> Any:
+    frame = json.loads(text)
+    if not isinstance(frame, dict) or frame.get("type") not in (
+        "content.completed", "run.completed", "run.failed", "run.cancelled",
+        "inference.completed", "inference.failed",
+    ):
+        return frame
+    payload = frame.get("payload")
+    usage = payload.get("usage") if isinstance(payload, dict) else None
+    if not isinstance(usage, dict):
+        return frame
+    raw_usage = json.loads(text, parse_int=str)["payload"]["usage"]
+    for field in ("input_tokens", "output_tokens", "total_tokens",
+                  "cache_read_input_tokens", "cache_write_input_tokens", "reasoning_tokens"):
+        if raw_usage.get(field) == "-0":
+            usage[field] = "-0"
+    return frame
+
+
 async def _reap_child(process: "asyncio.subprocess.Process") -> None:
     """Close stdin, then escalate wait -> terminate -> kill until the child exits."""
     if process.stdin is not None:
@@ -472,7 +491,7 @@ class StdioTransport:
                 if not text:
                     continue
                 try:
-                    frame = json.loads(text)
+                    frame = _decode_frame(text)
                 except json.JSONDecodeError:
                     self._on_invalid_line(len(line), "invalid_json")
                     continue

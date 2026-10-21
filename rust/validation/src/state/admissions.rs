@@ -129,6 +129,7 @@ impl State {
 
     pub(super) fn open_response(&mut self, at: (usize, usize), e: &Envelope) {
         let p: SessionState = payload(e);
+        self.redelivery_response(at, e, &p);
         self.reopen_response(at, e, &p);
         let session = s(&p.session_id);
         let pointer = "/payload/recovery/resume_cursor";

@@ -11,9 +11,9 @@ The shared positive trace carries two redeliveries and one withdrawn prompt;
 all three validators must accept it. Six malformed record shapes must fail
 with only `schema_invalid`. The baseline includes this replay plus Go and Rust
 protocol round-trip checks. The TypeScript suite checks that `state()` exposes
-both record forms. These are wire/schema checks: held-prompt pairing, original
-order, root-chain consistency and queued membership remain unimplemented and
-are not proven by passing wire validation (register row `0050#5/3`).
+both record forms. For the stateful pairing, original order, root-chain and
+queued membership judgments in register row `0050#5/3`, also run the
+[redelivery state journey](redelivery-state.md), including its source mutations.
 
 Mutation-check six schema constraints, both typed serializers and the TypeScript
 schema mirror with no

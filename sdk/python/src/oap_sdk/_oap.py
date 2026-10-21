@@ -350,6 +350,8 @@ class ProviderApi:
                 while True:
                     frame = await route.next_frame(self._idle_timeout if accepted else self._timeout)
                     kind = frame.get("type")
+                    if kind in ("inference.completed", "inference.failed"):
+                        _usage(_payload(frame))
                     if kind == "inference.create.response":
                         response = _payload(frame)
                         if not response.get("accepted"):
@@ -589,6 +591,8 @@ class AgentApi:
                     if run_id and frame.get("run_id") not in (None, run_id):
                         continue
                     kind = frame.get("type")
+                    if kind in ("content.completed", "run.completed", "run.failed", "run.cancelled"):
+                        _usage(_payload(frame))
                     if kind == "action.call.requested" and _payload(frame).get("execution_owner") == SDK_PARTICIPANT:
                         if progress is not None:
                             progress["tools_executed"] = True
