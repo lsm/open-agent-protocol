@@ -14012,6 +14012,52 @@
       ]
     },
     {
+      "id": "open-provide-refused-within-a-unicode17-pattern",
+      "path": "semantic-invalid/open-provide-refused-within-a-unicode17-pattern.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "undisclosed_provide_limit"
+      ],
+      "units": [
+        "control-tools"
+      ],
+      "provenance": [
+        "decisions/0011-control-layer-provided-tools.md",
+        "decisions/0055-register-batch-2.md"
+      ],
+      "rules": [
+        "0011#the-capability-discloses-its-limits-or-it-promises-nothing/1"
+      ]
+    },
+    {
+      "id": "open-provide-within-limits-refused-by-policy",
+      "path": "semantic-invalid/open-provide-within-limits-refused-by-policy.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "undisclosed_provide_limit"
+      ],
+      "units": [
+        "control-tools"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0011-control-layer-provided-tools.md"
+      ],
+      "covers": [
+        {
+          "capability": "action.tools.provide",
+          "aspect": "honour"
+        }
+      ],
+      "rules": [
+        "0011#the-capability-discloses-its-limits-or-it-promises-nothing/1"
+      ]
+    },
+    {
       "id": "user-input-resolved-moves-its-tool-binding",
       "path": "semantic-invalid/user-input-resolved-moves-its-tool-binding.json",
       "kind": "semantic-invalid",
