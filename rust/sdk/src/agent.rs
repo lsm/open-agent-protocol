@@ -341,7 +341,7 @@ impl AgentApi {
                             if let Some(start) = start.take() { yield start; }
                             let identity = request.model_ref.split_once('/').and_then(|(provider, rest)| rest.split_once('@').map(|(api, _)| (provider, api)));
                             yield AgentEvent::AgentEnd {
-                                usage: data.get("usage").and_then(Usage::parse),
+                                usage: Usage::from_payload(data)?,
                                 stop_reason: data.get("stop_reason").and_then(serde_json::Value::as_str).map(str::to_owned),
                                 error_message: None,
                                 provider_id: identity.map(|parts| parts.0.to_owned()),

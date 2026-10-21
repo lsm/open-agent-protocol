@@ -49,7 +49,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
             AgentEvent::AgentEnd { usage, .. } => {
                 if let Some(usage) = usage {
-                    eprintln!("-- {} in, {} out", usage.input, usage.output);
+                    eprintln!(
+                        "-- {} in, {} out",
+                        usage
+                            .input
+                            .map_or_else(|| "unknown".to_owned(), |n| n.to_string()),
+                        usage
+                            .output
+                            .map_or_else(|| "unknown".to_owned(), |n| n.to_string())
+                    );
                 }
             }
             other => {

@@ -285,32 +285,66 @@ impl Tool {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct Usage {
-    pub input: u64,
-    pub output: u64,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        alias = "input_tokens"
+    )]
+    pub input: Option<u64>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        alias = "output_tokens"
+    )]
+    pub output: Option<u64>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        alias = "cache_read_input_tokens"
+    )]
     pub cache_read: Option<u64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        alias = "cache_write_input_tokens"
+    )]
     pub cache_write: Option<u64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        alias = "reasoning_tokens"
+    )]
     pub reasoning: Option<u64>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        alias = "total_tokens"
+    )]
+    pub total: Option<u64>,
 }
 
 impl Usage {
-    pub(crate) fn parse(raw: &Value) -> Option<Self> {
-        let object = raw.as_object()?;
-        let number = |keys: [&str; 2]| -> Option<u64> {
-            keys.iter()
-                .find_map(|key| object.get(*key).and_then(Value::as_u64))
-        };
-        let input = number(["input", "input_tokens"])?;
-        let output = number(["output", "output_tokens"])?;
-        Some(Self {
-            input,
-            output,
-            cache_read: number(["cache_read_input_tokens", "cache_read"]),
-            cache_write: number(["cache_write_input_tokens", "cache_write"]),
-            reasoning: number(["reasoning_tokens", "reasoning"]),
+    pub(crate) fn parse(raw: &Value) -> Result<Self> {
+        if !raw.is_object() {
+            return Err(Error::protocol(
+                "OAP usage must be an object",
+                Some("malformed_response"),
+            ));
+        }
+        serde_json::from_value(raw.clone()).map_err(|error| {
+            Error::protocol(
+                format!("invalid OAP usage: {error}"),
+                Some("malformed_response"),
+            )
         })
+    }
+
+    pub(crate) fn from_payload(payload: &Value) -> Result<Option<Self>> {
+        payload
+            .get("usage")
+            .filter(|value| !value.is_null())
+            .map(Self::parse)
+            .transpose()
     }
 
     pub fn saturating_add(self, other: Self) -> Self {
@@ -319,11 +353,12 @@ impl Usage {
             _ => Some(left.unwrap_or(0).saturating_add(right.unwrap_or(0))),
         };
         Self {
-            input: self.input.saturating_add(other.input),
-            output: self.output.saturating_add(other.output),
+            input: add_option(self.input, other.input),
+            output: add_option(self.output, other.output),
             cache_read: add_option(self.cache_read, other.cache_read),
             cache_write: add_option(self.cache_write, other.cache_write),
             reasoning: add_option(self.reasoning, other.reasoning),
+            total: add_option(self.total, other.total),
         }
     }
 }
@@ -355,16 +390,9 @@ impl CompletionResponse {
     }
 
     pub(crate) fn from_message_and_terminal(message: &Value, terminal: &Value) -> Self {
-        let usage = message
-            .get("usage")
-            .and_then(Usage::parse)
-            .or_else(|| terminal.get("usage").and_then(Usage::parse))
-            .or_else(|| Usage::parse(message))
-            .or_else(|| Usage::parse(terminal));
-
         Self {
             content: parse_content(message.get("content")),
-            usage,
+            usage: None,
             provider_id: opt_string_any(message, &["provider_id", "provider"])
                 .or_else(|| opt_string_any(terminal, &["provider_id", "provider"]))
                 .unwrap_or_default(),
@@ -449,13 +477,15 @@ mod tests {
     }
 
     #[test]
-    fn usage_accepts_both_wire_spellings_and_needs_both_halves() {
+    fn usage_accepts_both_wire_spellings_and_preserves_partial_counts() {
         let usage = Usage::parse(&json!({"input_tokens": 3, "output_tokens": 5})).expect("usage");
-        assert_eq!(usage.input, 3);
-        assert_eq!(usage.output, 5);
+        assert_eq!(usage.input, Some(3));
+        assert_eq!(usage.output, Some(5));
         assert_eq!(usage.cache_read, None);
 
-        assert!(Usage::parse(&json!({"input": 3})).is_none());
+        let partial = Usage::parse(&json!({"input": 3})).expect("partial usage");
+        assert_eq!(partial.input, Some(3));
+        assert_eq!(partial.output, None);
 
         let decision_0063 = Usage::parse(&json!({
             "input_tokens": 10,
@@ -476,28 +506,30 @@ mod tests {
         let vendor =
             Usage::parse(&json!({"input": 1, "output": 1, "cache_read": 7})).expect("usage");
         assert_eq!((vendor.cache_read, vendor.reasoning), (Some(7), None));
-        assert!(Usage::parse(&json!("nope")).is_none());
+        assert!(Usage::parse(&json!("nope")).is_err());
     }
 
     #[test]
     fn usage_sums_preserve_absent_cache_fields() {
         let left = Usage {
-            input: 1,
-            output: 2,
+            input: Some(1),
+            output: Some(2),
             cache_read: None,
             cache_write: None,
             reasoning: Some(2),
+            total: None,
         };
         let right = Usage {
-            input: 3,
-            output: 4,
+            input: Some(3),
+            output: Some(4),
             cache_read: Some(5),
             cache_write: None,
             reasoning: None,
+            total: None,
         };
         let total = left.saturating_add(right);
-        assert_eq!(total.input, 4);
-        assert_eq!(total.output, 6);
+        assert_eq!(total.input, Some(4));
+        assert_eq!(total.output, Some(6));
         assert_eq!(total.cache_read, Some(5));
         assert_eq!(total.cache_write, None);
         assert_eq!(total.reasoning, Some(2));
