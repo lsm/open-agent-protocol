@@ -47,6 +47,7 @@ run ./zig/zig-out/bin/oapx validate fixtures/valid/permission-resolved-in-the-re
 run ./zig/zig-out/bin/oapx validate fixtures/valid/user-input-resolved-in-the-refresh-window.json
 run python3 .claude/skills/verify/scripts/redelivery-wire.py --output-dir "$artifacts/redelivery-wire"
 run python3 .claude/skills/verify/scripts/interaction-binding.py --output-dir "$artifacts/interaction-binding"
+run python3 .claude/skills/verify/scripts/rust-snapshot-listing.py --output-dir "$artifacts/rust-snapshot-listing"
 run python3 .claude/skills/verify/scripts/rust-reopen.py --output-dir "$artifacts/rust-reopen"
 run python3 .claude/skills/verify/scripts/rust-refresh-window.py --output-dir "$artifacts/rust-refresh"
 run python3 .claude/skills/verify/scripts/rust-control-tools.py --output-dir "$artifacts/rust-control"

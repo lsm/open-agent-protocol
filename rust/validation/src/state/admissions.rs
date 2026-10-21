@@ -43,6 +43,7 @@ impl State {
     fn introduce_recovered_run(&mut self, at: (usize, usize), id: String, run: Run) {
         let run = Run {
             admitted: true,
+            admitted_at: at.0,
             recovered: true,
             last: at,
             ..run
@@ -220,6 +221,7 @@ impl State {
             }
         }
         self.compound_open(at, e, &p);
+        self.check_snapshot_listing(at, e, &p);
         self.apply_state_document(&session, &p);
     }
 
@@ -301,6 +303,7 @@ impl State {
             };
             self.introduce_recovered_run(at, active, run);
         }
+        self.check_snapshot_listing(at, e, &p);
         self.apply_state_document(&session, &p);
     }
 
@@ -475,6 +478,7 @@ impl State {
             session: session.clone(),
             next: 1,
             admitted: true,
+            admitted_at: at.0,
             status: RunStatus::QUEUED,
             last: at,
             admitted_queued: queued,

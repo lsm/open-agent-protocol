@@ -13,6 +13,11 @@ pub(super) struct Run {
     pub(super) session: String,
     pub(super) next: u64,
     pub(super) admitted: bool,
+    pub(super) admitted_at: usize,
+    pub(super) submit_request: String,
+    pub(super) start_sequence: Option<u64>,
+    pub(super) terminal_at: Option<usize>,
+    pub(super) terminal_sequence: Option<u64>,
     pub(super) started: bool,
     pub(super) terminal: bool,
     pub(super) terminal_type: EnvelopeType,
@@ -239,6 +244,8 @@ impl State {
             session: session.clone(),
             next: 1,
             admitted: true,
+            admitted_at: at.0,
+            submit_request: reply,
             status: RunStatus::QUEUED,
             last: at,
             controls,
@@ -410,6 +417,9 @@ impl State {
                     "run.started occurred more than once",
                 ));
             }
+            if !run.started {
+                run.start_sequence = e.sequence;
+            }
             run.started = true;
             run.status = RunStatus::RUNNING;
             if !run.admitted_model.is_empty() {
@@ -483,6 +493,8 @@ impl State {
                 ));
             }
             run.terminal = true;
+            run.terminal_at = Some(at.0);
+            run.terminal_sequence = e.sequence;
             run.terminal_type = t.clone();
         }
         (found, plain)

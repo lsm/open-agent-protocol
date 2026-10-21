@@ -7,6 +7,7 @@ mod queue;
 mod redelivery;
 mod results;
 mod runs;
+mod snapshot_listing;
 mod steer;
 
 use std::collections::{HashMap, HashSet};
