@@ -29,10 +29,10 @@ async fn combined_oap_connection_runs_both_profiles() {
         .await
         .expect("inference");
     assert_eq!(provider.text(), "provider works");
-    assert_eq!(provider.usage.expect("usage").output, 2);
+    assert_eq!(provider.usage.expect("usage").output, Some(2));
     let agent = client.agent().run(request).await.expect("agent run");
     assert_eq!(agent.text(), "agent works");
-    assert_eq!(agent.usage.expect("usage").output, 3);
+    assert_eq!(agent.usage.expect("usage").output, Some(3));
     client
         .agent()
         .switch_model("existing-session", "fixture/openai-responses@switched")

@@ -201,7 +201,7 @@ impl ProviderApi {
                             guard.settle();
                             if let Some(start) = start.take() { yield start; }
                             yield ProviderEvent::MessageEnd {
-                                usage: data.get("usage").and_then(crate::types::Usage::parse),
+                                usage: crate::types::Usage::from_payload(data)?,
                                 stop_reason: data.get("stop_reason").and_then(serde_json::Value::as_str).map(str::to_owned),
                                 error_message: None,
                             };
