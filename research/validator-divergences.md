@@ -280,8 +280,10 @@ only a port. None is a protocol question.
 - 0028 row `core-sessionmodelswitch/4`: neither tree judges the refusal of a
   degraded switch sent without the opt-in, which 0028's "ordinary gate" fixes
   as `capability_degraded`. Add it to both.
-- Rust judges only the session scope of these envelopes. Every other row in
-  the file is owed there, as is the alias half of `optional-sessionproviderattach/2`.
+- Rust judges session scope and response-local catalog shape: unique model IDs,
+  at most one default, and a current model listed in the response itself.
+  Catalog history, model-event positions, switches and provider attachment
+  remain owed, including the alias half of `optional-sessionproviderattach/2`.
 
 ## Tool sources and provided tools (0008, 0011, 0048)
 

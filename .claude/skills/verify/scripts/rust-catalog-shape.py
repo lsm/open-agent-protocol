@@ -105,23 +105,26 @@ def replay(language, output, label, case):
 
 def mutation_check(output, corpus):
     changes = [
-        ("duplicate-ids", "if let Some(duplicate) = duplicate {", "if let Some(duplicate) = None::<&str> {", "models-duplicate-id"),
-        ("separated-duplicate-ids", "if let Some(duplicate) = duplicate {", "if let Some(duplicate) = None::<&str> {", "models-duplicate-id-apart"),
-        ("multiple-defaults", "if defaults > 1 {", "if defaults > usize::MAX {", "models-two-defaults"),
-        ("defaults-around-current", "if defaults > 1 {", "if defaults > usize::MAX {", "models-two-defaults-around-the-current-model"),
-        ("single-default-boundary", "if defaults > 1 {", "if defaults > 0 {", "another-model-is-default"),
-        ("current-membership", "!ids.contains(p.current_model_id.as_str())", "false", "models-current-not-listed"),
+        ("duplicate-ids", "if let Some(duplicate) = duplicate {", "if let Some(duplicate) = None::<&str> {", "models-duplicate-id", []),
+        ("separated-duplicate-ids", "if let Some(duplicate) = duplicate {", "if let Some(duplicate) = None::<&str> {", "models-duplicate-id-apart", []),
+        ("multiple-defaults", "if defaults > 1 {", "if defaults > usize::MAX {", "models-two-defaults", []),
+        ("defaults-around-current", "if defaults > 1 {", "if defaults > usize::MAX {", "models-two-defaults-around-the-current-model", []),
+        ("single-default-boundary", "if defaults > 1 {", "if defaults > 0 {", "another-model-is-default", ["ambiguous_default_model"]),
+        ("current-membership", "!ids.contains(p.current_model_id.as_str())", "false", "models-current-not-listed", []),
+        ("stale-shape-gate", "let p: ModelsResponse = payload(e);", 'if e.capability_revision.as_deref() == Some("stale") { return; }\n        let p: ModelsResponse = payload(e);', "stale-all-shape-faults", ["stale_capability_revision"]),
     ]
     original = SOURCE.read_bytes()
     try:
-        for label, before, after, target in changes:
+        for label, before, after, target, changed_codes in changes:
             text = original.decode()
             if text.count(before) != 1:
                 raise RuntimeError(f"{label}: mutation target is not unique")
             SOURCE.write_text(text.replace(before, after, 1))
             build("rust", output, label + "-build")
             got, want = replay("rust", output, label, corpus[target])
-            if got == want or got["exit"] != 1 - want["exit"] or any(phase != "semantic" for phase in got["phases"]):
+            changed = {"exit": int(bool(changed_codes)), "codes": sorted(changed_codes),
+                       "phases": ["semantic"] if changed_codes else []}
+            if got == want or got != changed:
                 raise RuntimeError(f"{label}: mutation survived or failed inconclusively: {got}")
             print(f"KILLED {label}: {got}", flush=True)
     finally:

@@ -4,9 +4,10 @@ Decisions 0006, 0014, 0028 and 0035: the rows behind every diagnostic the
 validators raise for the session model catalog, the provider descriptors it
 publishes, the core model switch and live provider attachment. Go and Zig name
 the function in `go/validation/`, `zig/src/validation/` and
-`rust/validation/src/`. Rust judges only the session scope of these envelopes,
-through its generic response and payload scope checks, and has no catalog,
-switch or attachment rule beyond that. The attachment rows follow 0028 as
+`rust/validation/src/`. Rust judges session scope through generic response and
+payload checks, plus response-local catalog model IDs, defaults and current-model
+membership. Catalog history, model-event positions, switches and attachment
+rules beyond session scope remain owed. The attachment rows follow 0028 as
 [Decision 0054](../../decisions/0054-register-batch-1.md) amends it, which
 closed OPEN-0028-1 to -4 in
 [`research/validator-divergences.md`](../../research/validator-divergences.md).
@@ -41,8 +42,8 @@ Source: [`decisions/0006-models-catalog.md`](../../decisions/0006-models-catalog
 | `0006#a-catalog-belongs-to-the-revision-it-was-served-under/2` | A `capabilities.response` repeating the active revision MUST advertise `models.list` at the level that revision already advertised, unless a `capabilities.updated` has invalidated it. | L139–146, L170–176 | `unannounced_catalog_change` | `models.go:checkCatalogAdvertisement` | `semantic.zig:checkAdvertisement` | — |
 | `0006#a-catalog-belongs-to-the-revision-it-was-served-under/3` | A catalog citing a revision other than the active one, or arriving before the descriptor of an announced revision is in hand, binds nothing and displaces nothing; its gate reports the stale or missing descriptor. | L106–117, L148–157 | `stale_capability_revision`, `unavailable_capability` | `state.go:featureKeys`, `models.go:modelsResponse` | `semantic.zig:featureKeys`, `semantic.zig:modelsResponse` | — |
 | `0006#a-catalog-belongs-to-the-revision-it-was-served-under/4` | A selection made under a revision whose catalog has not been served is held, and the first `native` or `emulated` catalog under that revision judges it as rows /1 to /3 of the binding rule would have. | L195–203 | `model_not_in_catalog` | `models.go:reconcileUnjudgedModels` | `semantic.zig:reconcileUnjudged` | — |
-| `0006#a-catalog-belongs-to-the-revision-it-was-served-under/5` | A catalog MUST NOT list two descriptors under one id. | L119–122 | `duplicate_model_id` | `models.go:modelsResponse` | `semantic.zig:modelsResponse` | — |
-| `0006#a-catalog-belongs-to-the-revision-it-was-served-under/6` | A catalog MUST mark at most one model as the default. | L119–122 | `ambiguous_default_model` | `models.go:modelsResponse` | `semantic.zig:modelsResponse` | — |
+| `0006#a-catalog-belongs-to-the-revision-it-was-served-under/5` | A catalog MUST NOT list two descriptors under one id. | L119–122 | `duplicate_model_id` | `models.go:modelsResponse` | `semantic.zig:modelsResponse` | `state/models.rs:models_response_shape` |
+| `0006#a-catalog-belongs-to-the-revision-it-was-served-under/6` | A catalog MUST mark at most one model as the default. | L119–122 | `ambiguous_default_model` | `models.go:modelsResponse` | `semantic.zig:modelsResponse` | `state/models.rs:models_response_shape` |
 
 ### [0006] `current_model_id` is judged across the query's window, not at an instant
 
@@ -50,7 +51,7 @@ Source: [`decisions/0006-models-catalog.md`](../../decisions/0006-models-catalog
 
 | id | rule | lines | code | Go | Zig | Rust |
 | --- | --- | --- | --- | --- | --- | --- |
-| `0006#current_model_id-is-judged-across-the-querys-window-not-at-an-instant/1` | A nonempty `current_model_id` MUST name one of the response's own model ids. | L263–266 | `model_not_in_catalog` | `models.go:modelsResponse` | `semantic.zig:modelsResponse` | — |
+| `0006#current_model_id-is-judged-across-the-querys-window-not-at-an-instant/1` | A nonempty `current_model_id` MUST name one of the response's own model ids. | L263–266 | `model_not_in_catalog` | `models.go:modelsResponse` | `semantic.zig:modelsResponse` | `state/models.rs:models_response_shape` |
 | `0006#current_model_id-is-judged-across-the-querys-window-not-at-an-instant/2` | A catalog without `as_of_model_event` MUST report a `current_model_id` the session held at some point between the query and its response. | L211–219 | `session_state_mismatch` | `models.go:checkCatalogCurrentModel` | — | — |
 | `0006#current_model_id-is-judged-across-the-querys-window-not-at-an-instant/3` | A catalog whose `as_of_model_event` the trace has reached MUST report the model the session held at that event; one the trace has not reached is held and judged when the event arrives. | L221–229, L256–261 | `session_state_mismatch` | `models.go:checkCatalogCurrentModel`, `models.go:reconcileHeldCatalogs` | `semantic.zig:close` (switch positions only) | — |
 | `0006#current_model_id-is-judged-across-the-querys-window-not-at-an-instant/4` | An `as_of_model_event` MUST name a run of the catalog's own session, whether or not the catalog reports a current model. | L231–254 | `scope_mismatch` | `models.go:foreignPosition` | `semantic.zig:close` | — |
