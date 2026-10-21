@@ -144,6 +144,7 @@ Source: [`decisions/0011-control-layer-provided-tools.md`](../../decisions/0011-
 | --- | --- | --- | --- | --- | --- | --- |
 | `0011#a-call-to-a-provided-tool-is-an-interaction/1` | An `action.call.requested` for a control-owned tool MUST carry `interaction_id` and `responded_by`. | L141–178 | `illegal_tool_transition` | `controltools.go:controlCallRequested` | `semantic.zig:controlCallRequested` | `state/control_tools.rs:control_call_requested` |
 | `0011#a-call-to-a-provided-tool-is-an-interaction/2` | A control-owned call's `interaction_id` MUST NOT reuse one already requested. | L141–178 | `duplicate_interaction` | `controltools.go:controlCallRequested` | `semantic.zig:controlCallRequested` | `state/control_tools.rs:control_call_requested` |
+| `0011#a-call-to-a-provided-tool-is-an-interaction/3` | A control-owned call's `requested_by` MUST name the endpoint declared by the observed `protocol.initialize.response`. | L141–150 | `scope_mismatch` | `controltools.go:controlCallRequested` | `semantic.zig:controlCallRequested` | `state/control_tools.rs:control_call_requested` |
 
 ### [0011] The resolution is a request/response pair with three arms
 

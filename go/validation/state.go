@@ -194,6 +194,7 @@ type state struct {
 	descriptorOwners map[string]protocol.ParticipantID
 
 	controlParticipant protocol.ParticipantID
+	agentParticipant   protocol.ParticipantID
 
 	pendingResolves map[protocol.EnvelopeID]*pendingResolve
 
@@ -270,6 +271,7 @@ func (s *state) apply(i, line int, e protocol.Envelope) {
 		_ = e.DecodePayload(&p)
 		s.initialized = true
 		s.participants[protocol.ParticipantID(p.Endpoint.ID)] = true
+		s.agentParticipant = protocol.ParticipantID(p.Endpoint.ID)
 		if req := s.requests[e.InReplyTo]; req != nil {
 			var request protocol.InitializeRequest
 			_ = req.envelope.DecodePayload(&request)

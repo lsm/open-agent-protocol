@@ -192,6 +192,18 @@ impl State {
                 "participant was not declared during initialization",
             );
         }
+        if !self.agent_participant.is_empty()
+            && p.requested_by.as_ref().map(|id| id.as_str())
+                != Some(self.agent_participant.as_str())
+        {
+            self.add(
+                codes::SCOPE_MISMATCH,
+                at,
+                e,
+                "/payload/requested_by",
+                "a control-owned call must name the initialized endpoint as its requester",
+            );
+        }
         let Some(run) = self.runs.get_mut(run_id) else {
             return;
         };
