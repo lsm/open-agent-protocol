@@ -11269,7 +11269,8 @@
       ],
       "rules": [
         "0040#the-capability-key-is-sessionopenreopen-and-a-reopen-is-gated-like-subscribe/3",
-        "0050#5/1"
+        "0050#5/1",
+        "0050#5/3"
       ]
     },
     {
@@ -14762,6 +14763,46 @@
     {
       "id": "redelivery-state-unpaired-root-change",
       "path": "semantic-invalid/redelivery-state-unpaired-root-change.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "session_state_mismatch"
+      ],
+      "units": [
+        "session-reattach",
+        "queue"
+      ],
+      "provenance": [
+        "decisions/0050-shutdown-is-graceful-forced-or-asked.md"
+      ],
+      "rules": [
+        "0050#5/3"
+      ]
+    },
+    {
+      "id": "redelivery-state-reuse-opaque-previous",
+      "path": "semantic-invalid/redelivery-state-reuse-opaque-previous.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "session_state_mismatch"
+      ],
+      "units": [
+        "session-reattach",
+        "queue"
+      ],
+      "provenance": [
+        "decisions/0050-shutdown-is-graceful-forced-or-asked.md"
+      ],
+      "rules": [
+        "0050#5/3"
+      ]
+    },
+    {
+      "id": "redelivery-state-reuse-withdrawn-root",
+      "path": "semantic-invalid/redelivery-state-reuse-withdrawn-root.json",
       "kind": "semantic-invalid",
       "valid": false,
       "phase": "semantic",
