@@ -77,13 +77,16 @@ def main():
             tree = result.stdout.splitlines()[0]
             expected = original | additions
             actual = set(git('ls-tree', '-r', '--name-only', tree).stdout.splitlines())
-            assert actual == {str(path) for path in expected}, actual
+            if actual != {str(path) for path in expected}:
+                raise RuntimeError(f'Merged journey paths changed: {actual}')
             for path, content in expected.items():
-                assert git('show', f'{tree}:{path}').stdout == content, path
+                if git('show', f'{tree}:{path}').stdout != content:
+                    raise RuntimeError(f'Merged journey content changed: {path}')
             trees.append(tree)
         if failures:
             raise RuntimeError(f'Journey additions conflict: {", ".join(failures)}; see {output}')
-        assert len(set(trees)) == 1, trees
+        if len(set(trees)) != 1:
+            raise RuntimeError(f'Merge orders produced different trees: {trees}')
     print('PASS: both merge orders retain every journey and leave SKILL.md unchanged')
     print(f'Artifacts: {output}; temporary repository removed; children stopped')
 
