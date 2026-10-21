@@ -326,6 +326,7 @@ impl State {
                 self.refresh_queue_windows(&session);
             }
         }
+        self.reconcile_snapshot_claims(e, &run_id);
         let Some(run) = self.runs.get(&run_id) else {
             return;
         };

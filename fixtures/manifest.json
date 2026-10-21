@@ -5419,6 +5419,9 @@
         "core",
         "queue"
       ],
+      "rules": [
+        "0007#a-snapshot-states-the-position-it-was-captured-at/24"
+      ],
       "provenance": [
         "drafts/staged-units-graduation.md",
         "decisions/0007-queue-delivery.md"
@@ -5584,6 +5587,9 @@
         "core",
         "queue"
       ],
+      "rules": [
+        "0007#a-settled-run-is-named-not-merely-dropped/3"
+      ],
       "provenance": [
         "drafts/staged-units-graduation.md",
         "decisions/0007-queue-delivery.md"
@@ -5601,6 +5607,9 @@
       "units": [
         "core",
         "queue"
+      ],
+      "rules": [
+        "0007#a-settled-run-is-named-not-merely-dropped/3"
       ],
       "provenance": [
         "drafts/staged-units-graduation.md",
@@ -5620,6 +5629,9 @@
         "core",
         "queue"
       ],
+      "rules": [
+        "0007#a-settled-run-is-named-not-merely-dropped/3"
+      ],
       "provenance": [
         "drafts/staged-units-graduation.md",
         "decisions/0007-queue-delivery.md"
@@ -5638,6 +5650,9 @@
         "core",
         "queue"
       ],
+      "rules": [
+        "0007#a-snapshot-states-the-position-it-was-captured-at/22"
+      ],
       "provenance": [
         "drafts/staged-units-graduation.md",
         "decisions/0007-queue-delivery.md"
@@ -5655,6 +5670,9 @@
       "units": [
         "core",
         "queue"
+      ],
+      "rules": [
+        "0007#a-snapshot-states-the-position-it-was-captured-at/25"
       ],
       "provenance": [
         "drafts/staged-units-graduation.md",
@@ -6074,6 +6092,9 @@
       "units": [
         "core",
         "queue"
+      ],
+      "rules": [
+        "0007#a-snapshot-states-the-position-it-was-captured-at/6"
       ],
       "provenance": [
         "drafts/staged-units-graduation.md",
@@ -6777,6 +6798,9 @@
         "core",
         "queue"
       ],
+      "rules": [
+        "0007#a-snapshot-states-the-position-it-was-captured-at/20"
+      ],
       "provenance": [
         "drafts/staged-units-graduation.md",
         "decisions/0007-queue-delivery.md"
@@ -6809,6 +6833,9 @@
         "core",
         "queue"
       ],
+      "rules": [
+        "0007#a-snapshot-states-the-position-it-was-captured-at/20"
+      ],
       "provenance": [
         "drafts/staged-units-graduation.md",
         "decisions/0007-queue-delivery.md"
@@ -6826,6 +6853,9 @@
       "units": [
         "core",
         "queue"
+      ],
+      "rules": [
+        "0007#a-snapshot-states-the-position-it-was-captured-at/20"
       ],
       "provenance": [
         "drafts/staged-units-graduation.md",
@@ -7449,6 +7479,9 @@
         "core",
         "queue"
       ],
+      "rules": [
+        "0007#a-snapshot-states-the-position-it-was-captured-at/24"
+      ],
       "provenance": [
         "drafts/staged-units-graduation.md",
         "decisions/0007-queue-delivery.md"
@@ -7480,6 +7513,9 @@
       "units": [
         "core",
         "queue"
+      ],
+      "rules": [
+        "0007#a-snapshot-states-the-position-it-was-captured-at/24"
       ],
       "provenance": [
         "drafts/staged-units-graduation.md",
@@ -7698,6 +7734,9 @@
       "units": [
         "core",
         "queue"
+      ],
+      "rules": [
+        "0007#a-snapshot-states-the-position-it-was-captured-at/21"
       ],
       "provenance": [
         "drafts/staged-units-graduation.md",
@@ -9329,6 +9368,9 @@
         "core",
         "recovery",
         "control-tools"
+      ],
+      "rules": [
+        "0007#a-snapshot-states-the-position-it-was-captured-at/24"
       ],
       "provenance": [
         "drafts/staged-units-graduation.md",
@@ -11129,6 +11171,9 @@
       ],
       "units": [
         "steer"
+      ],
+      "rules": [
+        "0007#a-snapshot-states-the-position-it-was-captured-at/25"
       ],
       "provenance": [
         "decisions/0013-steer.md"
@@ -15318,6 +15363,8 @@
     {"id":"control-call-requester-is-undeclared","path":"semantic-invalid/control-call-requester-is-undeclared.json","kind":"semantic-invalid","valid":false,"phase":"semantic","codes":["scope_mismatch"],"units":["core","control-tools"],"provenance":["decisions/0011-control-layer-provided-tools.md"],"rules":["0011#a-call-to-a-provided-tool-is-an-interaction/3"]},
     {"id":"queue-state-terminal-capture-after-late-event","path":"semantic-invalid/queue-state-terminal-capture-after-late-event.json","kind":"semantic-invalid","valid":false,"phase":"semantic","codes":["event_after_terminal","session_state_mismatch"],"units":["core","queue"],"provenance":["decisions/0007-queue-delivery.md"],"rules":["0007#a-snapshot-states-the-position-it-was-captured-at/4","0001#deterministic-run-event-order/2"]},
     {"id":"queue-state-settled-terminal-after-late-event","path":"semantic-invalid/queue-state-settled-terminal-after-late-event.json","kind":"semantic-invalid","valid":false,"phase":"semantic","codes":["event_after_terminal"],"units":["core","queue"],"provenance":["decisions/0007-queue-delivery.md"],"rules":["0007#a-settled-run-is-named-not-merely-dropped/2","0001#deterministic-run-event-order/2"]},
-    {"id":"queue-state-settled-late-event-is-not-terminal","path":"semantic-invalid/queue-state-settled-late-event-is-not-terminal.json","kind":"semantic-invalid","valid":false,"phase":"semantic","codes":["event_after_terminal","session_state_mismatch"],"units":["core","queue"],"provenance":["decisions/0007-queue-delivery.md"],"rules":["0007#a-settled-run-is-named-not-merely-dropped/2","0001#deterministic-run-event-order/2"]}
+    {"id":"queue-state-settled-late-event-is-not-terminal","path":"semantic-invalid/queue-state-settled-late-event-is-not-terminal.json","kind":"semantic-invalid","valid":false,"phase":"semantic","codes":["event_after_terminal","session_state_mismatch"],"units":["core","queue"],"provenance":["decisions/0007-queue-delivery.md"],"rules":["0007#a-settled-run-is-named-not-merely-dropped/2","0001#deterministic-run-event-order/2"]},
+    {"id":"queue-state-started-admission-queued-before-start","path":"semantic-invalid/queue-state-started-admission-queued-before-start.json","kind":"semantic-invalid","valid":false,"phase":"semantic","codes":["session_state_mismatch"],"units":["core","queue"],"rules":["0007#a-snapshot-states-the-position-it-was-captured-at/6"],"provenance":["decisions/0007-queue-delivery.md"]},
+    {"id":"queue-state-settled-terminal-never-arrives","path":"semantic-invalid/queue-state-settled-terminal-never-arrives.json","kind":"semantic-invalid","valid":false,"phase":"semantic","codes":["missing_run_terminal","session_state_mismatch"],"units":["core","queue"],"rules":["0007#a-settled-run-is-named-not-merely-dropped/4","0001#one-foreground-invocation-is-one-run/4"],"provenance":["decisions/0007-queue-delivery.md"]}
   ]
 }

@@ -23,6 +23,8 @@ pub(super) struct Interaction {
     questions: Vec<InputQuestion>,
     pub(super) tool_call_id: String,
     pub(super) resolved: bool,
+    pub(super) opened_at: u64,
+    pub(super) resolved_at: Option<u64>,
     pub(super) opaque: bool,
     pub(super) call: super::control_tools::Call,
 }
@@ -469,6 +471,7 @@ impl State {
     ) {
         let mut x = Interaction {
             kind,
+            opened_at: e.sequence.unwrap_or_default(),
             ..Interaction::default()
         };
         let (id, session, run) = if kind == "permission" {
@@ -627,6 +630,7 @@ impl State {
         };
         let duplicate = x.resolved;
         x.resolved = true;
+        x.resolved_at = x.resolved_at.or(e.sequence);
         let mut list = Found::new();
         if !x.opaque {
             if responded != x.responded_by || requested != x.requested_by {
