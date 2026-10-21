@@ -1,6 +1,7 @@
 # Decision 0063: Usage Counts Cache and Reasoning Tokens
 
-Status: accepted 2026-10-19
+Status: accepted 2026-10-19; usage wire spelling and range amended by
+[Decision 0065](0065-usage-counts-have-an-exact-wire-spelling.md)
 Date: 2026-10-19
 Protocol: `open-agent-protocol` version `0.1`
 Profile: `open-agent-protocol.agent-control-core` and
@@ -46,6 +47,11 @@ harness whose input figure includes cached tokens is reported with the cached
 part moved out, so an OpenAI-style prompt count less its cached tokens becomes
 `input_tokens`. The same `usage` serves both profiles, so `inference.completed` and
 `inference.failed` gain the members too.
+
+The six members' exact wire spelling, unsigned 64-bit bound and diagnostics
+are specified by [Decision 0065](0065-usage-counts-have-an-exact-wire-spelling.md),
+which applies wherever the shared usage schema is referenced in either profile.
+Their measurement meanings and absent-is-unknown rule above are unchanged.
 
 ### The adapter cost extensions are deprecated
 
