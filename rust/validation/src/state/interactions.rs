@@ -231,6 +231,7 @@ impl State {
             let p: InitializeResponse = payload(e);
             self.initialized = true;
             self.participants.insert(p.endpoint.id.as_str().to_owned());
+            self.agent_participant = p.endpoint.id.as_str().to_owned();
             let reply = os(&e.in_reply_to);
             let Some(request) = self
                 .requests

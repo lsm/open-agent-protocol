@@ -44,6 +44,9 @@ func (s *state) controlCallRequested(i, line int, e protocol.Envelope, r *runSta
 		return
 	}
 	s.participant(i, line, e, p.RespondedBy, "/payload/responded_by")
+	if s.agentParticipant != "" && p.RequestedBy != s.agentParticipant {
+		s.addExpected(CodeScopeMismatch, i, line, e, "/payload/requested_by", "a control-owned call must name the initialized endpoint as its requester", string(s.agentParticipant), string(p.RequestedBy))
+	}
 	if _, ok := r.interactions[p.InteractionID]; ok {
 		s.add(CodeDuplicateInteraction, i, line, e, "/payload/interaction_id", "interaction id was requested more than once")
 		return
