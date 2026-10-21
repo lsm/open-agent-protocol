@@ -69,3 +69,9 @@ class UsageTests(unittest.TestCase):
                     self.assertNotIn("usage", value)
                     self.assertEqual(value.get("error"), "malformed_response", value)
                     self.assertEqual(value.get("error_type"), "MakaiProtocolError", value)
+
+    def test_negative_zero_in_tool_results_keeps_ordinary_json_decoding(self) -> None:
+        values = observe("ordinary-negative-zero")
+        self.assertTrue(all(value.get("usage", "missing") is None for value in values), values)
+        self.assertEqual(values[-1]["tool_results"], [{"input_tokens": 0,
+                         "nested": {"usage": {"input_tokens": 0}}, "string": "-0"}])

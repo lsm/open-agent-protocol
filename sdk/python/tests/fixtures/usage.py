@@ -7,7 +7,7 @@ from typing import Any
 AGENT = "open-agent-protocol.agent-control-core"
 PROVIDER = "open-agent-protocol.model-provider-core"
 raw = sys.argv[1]
-usage = {} if raw == "absent" else {"usage": "RAW_USAGE_COUNT_OBJECT"}
+usage = {} if raw in ("absent", "ordinary-negative-zero") else {"usage": "RAW_USAGE_COUNT_OBJECT"}
 serial = 0
 
 
@@ -18,7 +18,8 @@ def emit(profile: str, kind: str, reply: str | None = None, **fields: Any) -> No
              "type": kind, "id": f"fixture-{serial}", **fields}
     if reply is not None:
         frame["in_reply_to"] = reply
-    print(json.dumps(frame).replace('"RAW_USAGE_COUNT_OBJECT"', raw), flush=True)
+    print(json.dumps(frame).replace('"RAW_USAGE_COUNT_OBJECT"', raw)
+          .replace('"RAW_ORDINARY_NUMBERS"', '{"input_tokens":-0,"nested":{"usage":{"input_tokens":-0}},"string":"-0"}'), flush=True)
 
 
 for line in sys.stdin:
@@ -45,6 +46,9 @@ for line in sys.stdin:
         emit(AGENT, "session.message.submit.response", rid, session_id=scope["session_id"],
              payload={"accepted": True, "run_id": scope["run_id"]})
         emit(AGENT, "run.started", **scope, payload={**scope, "model_id": "fixture/other@usage"})
+        if raw == "ordinary-negative-zero":
+            emit(AGENT, "action.call.completed", **scope, payload={**scope,
+                "tool_call_id": "fixture-call", "result": "RAW_ORDINARY_NUMBERS"})
         emit(AGENT, "run.completed", **scope, payload={**scope,
             "final_response": {"role": "assistant", "content": "usage"}, "stop_reason": "stop", **usage})
     elif kind not in ("inference.cancel.request", "run.cancel.request"):

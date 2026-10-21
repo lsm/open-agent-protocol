@@ -47,6 +47,14 @@ counts. An absent usage object remains `None`; `{}` becomes `Usage()` with all
 counters unknown. Present null usage or counters, negative, non-integer and
 out-of-range counts raise `MakaiProtocolError` with code `malformed_response`.
 
+Usage counters follow Decision 0065: absence is unknown, `0` is measured zero,
+and accepted counts are exact integers through `18446744073709551615`.
+A raw `-0` count is refused with `MakaiProtocolError(code="malformed_response")`
+on provider and agent unary and streaming APIs. The transport retains that
+noncanonical integer token for the strict usage decoder instead of accepting
+JSON's integer-zero normalization; numbers in tool results and other application
+objects retain their ordinary JSON decoding.
+
 ## Agent sessions
 
 `client.agent` uses the agent-control profile. A session has a default model, which can be changed between runs. A per-call `model_ref` overrides that default for one submit. `available_models` reads the session's effective catalog, distinct from direct provider discovery.

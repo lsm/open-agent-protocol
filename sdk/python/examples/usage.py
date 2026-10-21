@@ -24,8 +24,15 @@ async def main():
                     request = {"model_ref": "fixture/other@usage",
                                "messages": [{"role": "user", "content": "usage"}]}
                     if stream:
-                        terminal = [event async for event in api.stream(**request)
-                                    if event.type == ("agent_end" if agent else "message_end")]
+                        terminal = []
+                        tool_results = []
+                        async for event in api.stream(**request):
+                            if event.type == ("agent_end" if agent else "message_end"):
+                                terminal.append(event)
+                            if event.type == "tool_execution_end":
+                                tool_results.append(event.result)
+                        if tool_results:
+                            result["tool_results"] = tool_results
                         assert len(terminal) == 1, terminal
                         usage = terminal[0].usage
                     else:
