@@ -243,6 +243,7 @@ const Run = struct {
     started: bool = false,
     terminal: bool = false,
     terminal_at: usize = 0,
+    terminal_sequence: ?u64 = null,
     terminal_type: []const u8 = "",
     next: u64 = 1,
     last_index: usize = 0,
@@ -3728,7 +3729,7 @@ pub const Machine = struct {
                 try self.add(code_session_state_mismatch, index);
                 continue;
             }
-            if (run.terminal and position != null and position.? + 1 >= run.next) try self.add(code_session_state_mismatch, index);
+            if (position != null and run.terminal_sequence != null and position.? >= run.terminal_sequence.?) try self.add(code_session_state_mismatch, index);
             if ((last_order != null and run.order <= last_order.?) or leads > 0) try self.add(code_session_state_mismatch, index);
             last_order = run.order;
             const status = memberString(entry, "status");
@@ -3956,7 +3957,9 @@ pub const Machine = struct {
                 continue;
             }
             if (run.terminal) {
-                if (run.next - 1 != sequence) try self.add(code_session_state_mismatch, index);
+                if (run.terminal_sequence) |terminal_sequence| {
+                    if (terminal_sequence != sequence) try self.add(code_session_state_mismatch, index);
+                }
                 continue;
             }
             try self.settled_claims.append(self.allocator, .{ .run = run_id, .sequence = sequence, .index = index });
@@ -4851,6 +4854,7 @@ pub const Machine = struct {
             try self.checkPendingAtTerminal(index, state);
             state.terminal = true;
             state.terminal_at = index;
+            state.terminal_sequence = sequence;
             state.terminal_type = declared;
             if (std.mem.eql(u8, declared, "run.completed")) state.status = "completed";
             if (std.mem.eql(u8, declared, "run.failed")) state.status = "failed";
