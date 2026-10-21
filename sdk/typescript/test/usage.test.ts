@@ -50,6 +50,12 @@ test("public APIs retain the safe boundary and signal larger counts without fail
   await consumer('{"input_tokens":18446744073709551615,"output_tokens":0}', {
     output: 0, unrepresentable_counts: [{ code: "unrepresentable_count", field: "input_tokens", value: "18446744073709551615" }],
   });
+  await consumer('{"input_tokens":9007199254740992,"output_tokens":18446744073709551615,"cache_read_input_tokens":0}', {
+    cache_read: 0, unrepresentable_counts: [
+      { code: "unrepresentable_count", field: "input_tokens", value: "9007199254740992" },
+      { code: "unrepresentable_count", field: "output_tokens", value: "18446744073709551615" },
+    ],
+  });
 });
 
 test("public APIs refuse null, invalid and non-integer-spelling counts with typed errors", async () => {
@@ -58,12 +64,12 @@ test("public APIs refuse null, invalid and non-integer-spelling counts with type
     cases.push(`{"${field}":${value}}`);
   }
   for (const raw of cases) {
-    const client = await createOapClient({ command: process.execPath, args: [fixture], env: { OAP_FIXTURE_USAGE: raw } });
-    try {
-      for (const agent of [false, true]) for (const stream of [false, true]) {
+    for (const agent of [false, true]) for (const stream of [false, true]) {
+      const client = await createOapClient({ command: process.execPath, args: [fixture], env: { OAP_FIXTURE_USAGE: raw } });
+      try {
         await assert.rejects(() => observe(client, agent, stream), (error: unknown) =>
-          error instanceof MakaiProtocolError && error.code === "malformed_response", `usage=${raw}`);
-      }
-    } finally { await client.close(); }
+          error instanceof MakaiProtocolError && error.code === "malformed_response", `agent=${agent} stream=${stream} usage=${raw}`);
+      } finally { await client.close(); }
+    }
   }
 });
