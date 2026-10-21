@@ -12562,6 +12562,9 @@
           "capability": "session.list",
           "aspect": "honour"
         }
+      ],
+      "rules": [
+        "0046#a-list-is-paged-on-an-opaque-cursor-newest-first/1"
       ]
     },
     {
@@ -12584,6 +12587,9 @@
           "capability": "session.list",
           "aspect": "honour"
         }
+      ],
+      "rules": [
+        "0046#a-list-is-paged-on-an-opaque-cursor-newest-first/2"
       ]
     },
     {
@@ -12606,6 +12612,9 @@
           "capability": "session.list",
           "aspect": "honour"
         }
+      ],
+      "rules": [
+        "0046#a-list-is-paged-on-an-opaque-cursor-newest-first/2"
       ]
     },
     {
@@ -12628,6 +12637,9 @@
           "capability": "session.list",
           "aspect": "honour"
         }
+      ],
+      "rules": [
+        "0046#the-list-is-the-hosts-bindings-and-only-those/1"
       ]
     },
     {
@@ -13700,6 +13712,9 @@
       ],
       "provenance": [
         "decisions/0046-a-session-list-is-the-hosts-bindings.md"
+      ],
+      "rules": [
+        "0046#a-list-is-paged-on-an-opaque-cursor-newest-first/1"
       ]
     },
     {
@@ -13716,6 +13731,9 @@
       ],
       "provenance": [
         "decisions/0046-a-session-list-is-the-hosts-bindings.md"
+      ],
+      "rules": [
+        "0046#the-list-is-the-hosts-bindings-and-only-those/1"
       ]
     },
     {
