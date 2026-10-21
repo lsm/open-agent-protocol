@@ -294,9 +294,12 @@
             },
             "stop_reason": "stop",
             "usage": {
+              "input_tokens": 0,
               "cache_read_input_tokens": 0,
               "cache_write_input_tokens": 0,
-              "reasoning_tokens": 0
+              "output_tokens": 0,
+              "reasoning_tokens": 0,
+              "total_tokens": 0
             }
           },
           "sequence": 3,
@@ -372,9 +375,12 @@
             },
             "stop_reason": "stop",
             "usage": {
+              "input_tokens": 0,
               "cache_read_input_tokens": 0,
               "cache_write_input_tokens": 0,
-              "reasoning_tokens": 0
+              "output_tokens": 0,
+              "reasoning_tokens": 0,
+              "total_tokens": 0
             }
           },
           "sequence": 3,
@@ -2225,9 +2231,12 @@
             },
             "stop_reason": "stop",
             "usage": {
+              "input_tokens": 0,
               "cache_read_input_tokens": 0,
               "cache_write_input_tokens": 0,
-              "reasoning_tokens": 0
+              "output_tokens": 0,
+              "reasoning_tokens": 0,
+              "total_tokens": 0
             }
           },
           "sequence": 2,
@@ -2844,9 +2853,12 @@
             },
             "stop_reason": "stop",
             "usage": {
+              "input_tokens": 0,
               "cache_read_input_tokens": 0,
               "cache_write_input_tokens": 0,
-              "reasoning_tokens": 0
+              "output_tokens": 0,
+              "reasoning_tokens": 0,
+              "total_tokens": 0
             }
           },
           "sequence": 3,

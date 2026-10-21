@@ -414,3 +414,31 @@ fn a_measured_zero_token_count_survives_and_an_absent_one_stays_unknown() {
         serde_json::json!({})
     );
 }
+
+#[test]
+fn each_usage_counter_keeps_its_full_unsigned_range_and_refuses_malformed_counts() {
+    for field in [
+        "input_tokens",
+        "output_tokens",
+        "total_tokens",
+        "cache_read_input_tokens",
+        "cache_write_input_tokens",
+        "reasoning_tokens",
+    ] {
+        let source = format!(r#"{{"{field}":18446744073709551615}}"#);
+        let measured: Usage = serde_json::from_str(&source).unwrap();
+        assert_eq!(serde_json::to_string(&measured).unwrap(), source);
+        for count in [
+            "-1",
+            "1.5",
+            "true",
+            r#""3""#,
+            "[]",
+            "{}",
+            "18446744073709551616",
+        ] {
+            let source = format!(r#"{{"{field}":{count}}}"#);
+            assert!(serde_json::from_str::<Usage>(&source).is_err(), "{source}");
+        }
+    }
+}

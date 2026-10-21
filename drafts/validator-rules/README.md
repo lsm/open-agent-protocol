@@ -15,7 +15,7 @@ One file per decision group, named for its first decision, as
 
 | File | Decisions |
 | --- | --- |
-| [`0001-core.md`](0001-core.md) | 0001, 0002, 0055, 0063 |
+| [`0001-core.md`](0001-core.md) | 0001, 0002, 0055, 0063, 0065 (shared usage in both profiles) |
 | [`0004-packs.md`](0004-packs.md) | 0004 |
 | [`0005-run-controls.md`](0005-run-controls.md) | 0005, 0019, 0021, 0022, 0023, 0024, 0031, 0034 |
 | [`0006-models.md`](0006-models.md) | 0006, 0014, 0028, 0035 |

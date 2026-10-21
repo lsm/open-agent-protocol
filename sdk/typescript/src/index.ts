@@ -63,6 +63,8 @@ export {
   type ToolDefinition,
   type ToolResultContentPart,
   type UsageSummary,
+  type UsageCountField,
+  type UnrepresentableUsageCount,
 } from "./execution_types";
 
 export {

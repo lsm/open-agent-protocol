@@ -62,6 +62,7 @@ pub enum AgentEvent {
     ToolExecutionEnd {
         tool_call_id: String,
         is_error: Option<bool>,
+        result: Option<serde_json::Value>,
     },
     AgentEnd {
         usage: Option<Usage>,

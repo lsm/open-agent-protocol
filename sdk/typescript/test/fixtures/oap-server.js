@@ -11,11 +11,18 @@ const switchedSessions = new Set();
 const agent = "open-agent-protocol.agent-control-core";
 const provider = "open-agent-protocol.model-provider-core";
 function send(request, type, payload, scope = {}) {
-  process.stdout.write(JSON.stringify({
+  let encodedPayload = JSON.stringify(payload);
+  const usage = process.env.OAP_FIXTURE_USAGE;
+  if (usage !== undefined && (type === "run.completed" || type === "inference.completed")) {
+    encodedPayload = JSON.stringify({ ...payload, usage: undefined });
+    if (usage !== "absent") encodedPayload = encodedPayload.slice(0, -1) + ',"usage":' + usage + '}';
+  }
+  const encoded = JSON.stringify({
     protocol: "open-agent-protocol", version: "0.1", profile: request.profile,
-    type, id: `server-${++id}`, payload,
+    type, id: `server-${++id}`,
     ...(request.id ? { in_reply_to: request.id } : {}), ...scope,
-  }) + "\n");
+  });
+  process.stdout.write(encoded.slice(0, -1) + ',"payload":' + encodedPayload + '}\n');
 }
 function event(profile, type, payload, scope = {}) {
   send({ profile }, type, payload, scope);
@@ -187,6 +194,17 @@ createInterface({ input: process.stdin }).on("line", (line) => {
       send(request, "session.message.submit.response", { session_id: request.payload.session_id, accepted: true, run_id: "run-1", submission_id: "sub-1", requested_delivery: "auto", effective_delivery: "start", admission: "started" }, { session_id: request.payload.session_id });
       event(agent, "run.started", { session_id: request.payload.session_id, run_id: "run-1", model_id: request.payload.model_id || selectedModel }, { session_id: request.payload.session_id, run_id: "run-1", sequence: 1 });
       submittedModel = request.payload.model_id ?? "";
+      if (submittedModel.endsWith("@bash-no-exit")) {
+        const scope = { session_id: request.payload.session_id, run_id: "run-1" };
+        const results = [{ command: "git diff HEAD~1", cwd: "/workspace/repo", output: "read completed" }, null];
+        for (const [index, result] of results.entries()) {
+          const call = { ...scope, tool_call_id: `call-${index}`, name: "Bash", execution_owner: "claude-code" };
+          event(agent, "action.call.started", call, { ...scope, sequence: 2 + index * 2 });
+          event(agent, "action.call.completed", { ...call, result }, { ...scope, sequence: 3 + index * 2 });
+        }
+        event(agent, "run.completed", { ...scope, final_response: { role: "assistant", content: "read completed" }, stop_reason: "end_turn" }, { ...scope, sequence: 6 });
+        break;
+      }
       if (submittedModel.endsWith("@tool") || submittedModel.endsWith("@tool-then-login")) {
         event(agent, "action.call.requested", { session_id: request.payload.session_id, run_id: "run-1", tool_call_id: "call-1", name: "lookup", execution_owner: participant, interaction_id: "interaction-1", requested_by: "fixture", responded_by: participant, arguments_json: { word: "oap" } }, { session_id: request.payload.session_id, run_id: "run-1", tool_call_id: "call-1", sequence: 2 });
         break;

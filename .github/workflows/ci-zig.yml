@@ -274,6 +274,27 @@ jobs:
           OAP_OAPX_BIN: /tmp/oapx-parity/bin/oapx
         run: go test ./go/cmd/goap/ -run TestBackendsMatchOapx -v
 
+      - name: Setup Rust for trace validation
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Setup Node for SDK command parity
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      - name: Install SDK and daemon client dependencies
+        run: |
+          npm ci --ignore-scripts
+          npm --prefix clients/ts ci --ignore-scripts
+
+      - name: Setup Python for SDK command parity
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Require command exit evidence through every public SDK
+        run: python3 .claude/skills/verify/scripts/sdk-command-result.py --oapx /tmp/oapx-parity/bin/oapx --output-dir /tmp/oap-sdk-command
+
       - name: Require the Go inference layer to serve the trace oapx serve provider serves
         env:
           OAP_OAPX_BIN: /tmp/oapx-parity/bin/oapx
@@ -359,7 +380,7 @@ jobs:
           cache: false
 
       - name: Build oapx
-        run: zig build --build-file zig/build.zig install --prefix /tmp/oapx-hub
+        run: zig build --build-file zig/build.zig install --prefix /tmp/oapx-hub -Doptimize=ReleaseSafe
 
       - name: Require oapx serve --stdio to answer exactly as goap serve --stdio
         env:

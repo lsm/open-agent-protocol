@@ -223,10 +223,10 @@ class RunOptions:
 
 @dataclass(frozen=True)
 class Usage:
-    """Token accounting for one provider turn or one aggregate agent run."""
+    """Token accounting; None is unmeasured, distinct from a measured zero."""
 
-    input: int
-    output: int
+    input: Optional[int] = None
+    output: Optional[int] = None
     cache_read: Optional[int] = None
     cache_write: Optional[int] = None
     reasoning: Optional[int] = None
@@ -355,6 +355,7 @@ class ToolExecutionEnd:
     tool_call_id: str
     is_error: Optional[bool] = None
     type: Literal["tool_execution_end"] = "tool_execution_end"
+    result: Any = None
 
 
 AgentStreamEvent = Union[

@@ -198,6 +198,8 @@ pub struct RecoveryMetadata {
     pub reason: String,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub interrupted_runs: Vec<InterruptedRun>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub redelivered_runs: Vec<RedeliveredRun>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -206,4 +208,15 @@ pub struct InterruptedRun {
     pub run_id: RunId,
     pub cause: String,
     pub settled_by: String,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct RedeliveredRun {
+    pub previous_run_id: RunId,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub run_id: Option<RunId>,
+    pub root_run_id: RunId,
+    #[serde(skip_serializing_if = "is_false")]
+    pub withdrawn: bool,
 }

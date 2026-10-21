@@ -16,8 +16,10 @@ Use a fresh branch/worktree under `~/focus/worktrees/<name>`. Never run a bare
 `git stash` in a shared checkout. After merging, stop everything you started and
 remove your worktree with `git worktree remove <path>` from another checkout.
 
-Use Go >=1.26, Zig 0.17.0, Rust/Cargo with rustfmt and clippy, Node, and Python 3.
-Run `npm ci --ignore-scripts` at the root for the comment checker.
+Use Go >=1.26, Zig 0.17.0, Rust/Cargo with rustfmt and clippy, Node, and Python >=3.11.
+Run `npm ci --ignore-scripts` at the root and
+`npm --prefix clients/ts ci --ignore-scripts` for SDK/client consumer journeys
+and the comment checker.
 Check `go version`, `zig version`, `rustc --version` and `cargo --version`.
 Use non-login shells: never source or read `~/.zshrc`, auth files, credential
 stores, or keys. Do not print the environment. macOS has no stock `timeout`;
@@ -71,167 +73,20 @@ invalid trace when verifying the baseline. Zig CI can print `failed command`
 while exiting 0: trust the actual command exit code, not that text. Conversely,
 an unexpected code or inconclusive output is not a pass.
 
-## Interaction tool-binding consumer journey
+## Journeys
 
-After changing interaction binding (Decision 0055), run:
-
-```sh
-python3 .claude/skills/verify/scripts/interaction-binding.py --output-dir /tmp/oap-interaction-binding-<unique-name>
-```
-
-It replays the shared user-input fixture through `goap validate`, Rust's public
-`validate` example and the rebuilt `oapx validate`. All three must reject the
-resolution that moves `t1` to `t9` with only semantic `scope_mismatch` and exit 1.
-Matching `t1`, omitting the optional resolution binding, and an unbound
-interaction must pass with exit 0. Inputs and diagnostic JSON are retained.
-The baseline runner includes this journey.
-
-## Rust validator consumer journey
-
-The Rust validator is a library. Its `validate` example calls the public
-`Validator` API on trace files and prints the actual diagnostics as JSON;
-exit 0 means valid, exit 1 means invalid. Replay the two shared refresh-window
-fixtures, mutate each response's revision, and delay each response until after
-a refresh that withdraws the feature to prove rejection is semantic:
+Discover journey files by listing the directory from the repository root:
 
 ```sh
-python3 .claude/skills/verify/scripts/rust-refresh-window.py --output-dir /tmp/oap-rust-refresh-<unique-name>
+rg --files .claude/skills/verify/journeys -g '*.md' | sort
 ```
 
-The positive traces must report empty diagnostics and exit 0. Their mutated
-responses must report `stale_capability_revision`, expected `v1`, actual `v2`,
-and exit 1, with no decode or schema failures. A response delayed until after
-refresh must instead report `unavailable_capability` under the refreshed
-features while retaining the admitted revision echo, matching Go and Zig.
-The script retains each input and result.
-The baseline script runs this journey too, and validates the positive traces
-with the rebuilt `oapx` binary.
+Read the listed files relevant to the area changed and follow their commands.
+All journey commands run from the repository root. The baseline runner above
+still runs its existing checks and consumer journeys.
 
-Replay every steer fixture through both CLIs, the Rust `validate` example and
-`goap validate --format json`:
-
-```sh
-python3 .claude/skills/verify/scripts/rust-steer-parity.py --output-dir /tmp/oap-rust-steer-<unique-name>
-```
-
-Every steer fixture not listed as a Rust known gap must draw the same code set
-from both CLIs as the manifest declares, and exit 0 exactly when it draws none.
-The script prints how many agreed and how many it skipped as listed gaps.
-
-## Rust snapshot-listing consumer journey
-
-After building ReleaseSafe `oapx`, run the snapshot journey through the public
-Rust validator example, internal Go CLI and rebuilt Zig product:
-
-```sh
-python3 .claude/skills/verify/scripts/rust-snapshot-listing.py --output-dir /tmp/oap-rust-snapshot-<unique-name>
-```
-
-Every ported shared listing fixture must draw its manifest code set and phase
-from all three. Each listing mutation must fail semantically at the affected
-Rust pointer, while its repaired fixture passes: duplicate/foreign run,
-terminal status, order, queue position, active run, missing/empty listing and
-session status contradictions. The Decision 0057 pair must reject an omitted
-interaction listing when queue delivery is advertised and accept the same
-trace after withdrawing that advertisement. The script retains every input
-and result and explicitly lists deferred claims still recorded as Rust gaps.
-Read-window promotions and settlements in the shared positive fixtures must
-remain valid. Advancing an entry to its observed start or terminal position,
-or moving the read request past an already-published terminal, must reject
-at the corresponding status, capture-position or run-id pointer. The baseline runner includes this journey.
-
-## Rust reopen consumer journey
-
-After changing reopen state judgment, replay the shared idle, restored-queue,
-unrecovered and running-run fixtures through the Rust public validator example,
-Go CLI and rebuilt oapx:
-
-```sh
-python3 .claude/skills/verify/scripts/rust-reopen.py --output-dir /tmp/oap-rust-reopen-<unique-name>
-```
-
-Idle recovered sessions and recovered queued runs must pass. Missing recovery
-and a running run must produce semantic `session_state_mismatch`, exit 1, in
-all three. The baseline runner includes this journey and retains the JSON.
-The focused Rust tests also cover the legacy active-run field, ordinary opens
-and the carried-message exception. Mutation-check those tests in this worktree
-with no concurrent Rust builds:
-
-```sh
-python3 .claude/skills/verify/scripts/rust-reopen.py --mutation-check --output-dir /tmp/oap-rust-reopen-mutations-<unique-name>
-(cd rust && cargo test -p oap-validation --test reopen)
-```
-
-The optional mutation mode temporarily weakens six conditions in
-`state/admissions.rs`, requires a test assertion failure for each (a compile
-failure is not a kill), and restores the original source in `finally`.
-
-## Rust memory adapter consumer journey
-
-The Rust adapter is a library too. Its `memory_trace` example opens a memory
-session through the public `Adapter` and `Session` traits and prints the whole
-exchange as an OAP trace. With `steer` it submits a run, steers it and resolves
-both gates; with `compact` it asks an idle session for a focused compaction;
-with `call` it opens the session providing a tool, then acknowledges and
-resolves the call the script makes to it:
-
-```sh
-python3 .claude/skills/verify/scripts/rust-memory-trace.py --output-dir /tmp/oap-rust-memory-<unique-name>
-```
-
-Each trace must end in `run.completed` and pass the Rust, Go and Zig validators
-(build `oapx` first). The steer trace must apply the steer right before the
-input gate, and the compaction run must start and end its compaction in order.
-With the steer exchange removed, all three must reject the trace with
-`unmatched_steer`; with the compact exchange removed, all three must reject it
-with `illegal_run_transition`. With the call's resolve exchanges removed, Go and
-Zig must reject it with `illegal_tool_transition`; the Rust validator has not
-ported the control-owned call rules yet, so the script does not check its
-verdict there.
-
-## Local oapx/TUI journey (PTY, no real credentials)
-
-Run the bundled script, supplying a new artifact directory outside the worktree:
-
-```sh
-python3 .claude/skills/verify/scripts/mac-smoke.py --output-dir /tmp/oap-verify-smoke-<unique-name>
-```
-
-It copies the built binary into a temporary directory, clears the child
-environment, supplies a fresh HOME and unique `OAPX_KEYCHAIN_SERVICE`, and
-uses macOS `sandbox-exec` to deny network access, Security Mach services, and
-reads under the real HOME. It reuses the existing PTY driver's terminal decoder
-and bounded waits. It checks `oapx --help`, then observes welcome -> typed prompt
--> fixture-provider reply -> `/quit` with exit 0, saves help/transcript/screen
-artifacts, kills/reaps the child on failure, and deletes temporary state.
-Inspect `screen.txt` and the transcript for the actual rendered reply. The journey
-also asserts real cursor coordinates and caret-column escapes for ASCII, CJK
-wide characters and wrapped CJK input, then moves left over CJK, widens the PTY,
-checks the new caret, types CJK in Zen mode, and checks cursor restoration on exit. `caret-*.txt` and
-`resized.txt` retain the visible rows and real cursor coordinates. Run vendored
-renderer escape/redraw/reflow tests with:
-
-```sh
-zig build --build-file zig/vendor/zigzag/build.zig test
-```
-
-A PTY cannot generate a terminal emulator's IME preedit. Real IME behaviour is
-**unverified** until a human checks it in their own terminal:
-
-1. Start the rebuilt `oapx`, enable a Chinese IME, and type a syllable without
-   committing it; preedit should appear at the composer caret without scrolling.
-2. Commit characters, fill/wrap an input row, move the caret left, and compose
-   again; the frame should stay still and preedit should follow the caret.
-3. Resize while a draft is present, compose and commit again, then `/quit`;
-   check that the prompt and terminal cursor are restored correctly.
-
-Do not remove the sandbox if it fails. HOME alone does not isolate macOS
-Keychain; a unique Keychain service alone still permits file fallback and
-`loadDefault` can import the fixed `Codex Auth` service. The general
-`scripts/tui-pty-driver.py` rejects macOS for this reason; keep its guard intact.
-Do not use login/logout, `/login`, `/model`, provider discovery or real SDK auth
-smokes as substitutes. Live providers and real-binary SDK credential persistence
-remain unverified on this Mac; the latter belongs on Linux CI.
+Add a new journey as a new file in `journeys/`; never edit an index.
+Use a distinct descriptive filename; no shared numbering or list needs updating.
 
 ## Evidence and merge
 

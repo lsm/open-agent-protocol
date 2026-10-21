@@ -180,7 +180,10 @@
         "code": "claude_api_400",
         "message": "Prompt is too long · automatic compaction failed: API Error: 400 fixture refusal"
       },
-      "usage": {},
+      "usage": {
+        "input_tokens": 0,
+        "output_tokens": 0
+      },
       "duration_ms": 34
     },
     "sequence": 4,

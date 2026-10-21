@@ -19,7 +19,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     println!("{}", response.text());
     if let Some(usage) = response.usage {
-        eprintln!("tokens: {} in, {} out", usage.input, usage.output);
+        eprintln!(
+            "tokens: {} in, {} out",
+            usage
+                .input
+                .map_or_else(|| "unknown".to_owned(), |n| n.to_string()),
+            usage
+                .output
+                .map_or_else(|| "unknown".to_owned(), |n| n.to_string())
+        );
     }
 
     client.close().await;

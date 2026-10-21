@@ -109,7 +109,9 @@ type runState struct {
 	endedParts      [2]map[partKey]bool
 	steps           [2]map[native.MessageID]bool
 	toolSeen        [2]map[toolSight]bool
-	usage           protocol.Usage
+	inputTokens     uint64
+	outputTokens    uint64
+	totalTokens     uint64
 	cacheRead       uint64
 	cacheWrite      uint64
 	reasoning       uint64
@@ -654,6 +656,12 @@ func (s *session) handleEventLocked(event native.Event) {
 			return
 		}
 		<-run.admitted
+		for _, count := range []float64{data.Tokens.Input, data.Tokens.Output, data.Tokens.Reasoning, data.Tokens.Cache.Read, data.Tokens.Cache.Write} {
+			if count < 0 {
+				s.failActive(run, "opencode_invalid_step_event", "OpenCode reported a negative token count")
+				return
+			}
+		}
 		s.mu.Lock()
 		if !sighted(&run.steps, data.AssistantMessage, s.replaying) {
 			s.mu.Unlock()
@@ -666,9 +674,9 @@ func (s *session) handleEventLocked(event native.Event) {
 			input, read, write := tokenCount(data.Tokens.Input), tokenCount(data.Tokens.Cache.Read), tokenCount(data.Tokens.Cache.Write)
 			reasoning := tokenCount(data.Tokens.Reasoning)
 			output := tokenCount(data.Tokens.Output) + reasoning
-			run.usage.InputTokens += input
-			run.usage.OutputTokens += output
-			run.usage.TotalTokens += input + read + write + output
+			run.inputTokens += input
+			run.outputTokens += output
+			run.totalTokens += input + read + write + output
 			run.cacheRead += read
 			run.cacheWrite += write
 			run.reasoning += reasoning
@@ -950,7 +958,8 @@ func (s *session) settleRunLocked(run *runState) {
 	parts := append([]protocol.ContentPart(nil), run.parts...)
 	var usage *protocol.Usage
 	if run.measured {
-		measured := run.usage
+		input, output, total := run.inputTokens, run.outputTokens, run.totalTokens
+		measured := protocol.Usage{InputTokens: &input, OutputTokens: &output, TotalTokens: &total}
 		read, write, reasoning := run.cacheRead, run.cacheWrite, run.reasoning
 		measured.CacheReadInputTokens, measured.CacheWriteInputTokens, measured.ReasoningTokens = &read, &write, &reasoning
 		usage = &measured
