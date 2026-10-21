@@ -656,6 +656,12 @@ func (s *session) handleEventLocked(event native.Event) {
 			return
 		}
 		<-run.admitted
+		for _, count := range []float64{data.Tokens.Input, data.Tokens.Output, data.Tokens.Reasoning, data.Tokens.Cache.Read, data.Tokens.Cache.Write} {
+			if count < 0 {
+				s.failActive(run, "opencode_invalid_step_event", "OpenCode reported a negative token count")
+				return
+			}
+		}
 		s.mu.Lock()
 		if !sighted(&run.steps, data.AssistantMessage, s.replaying) {
 			s.mu.Unlock()

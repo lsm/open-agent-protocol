@@ -527,6 +527,9 @@ pub const Reducer = struct {
             .step_ended => {
                 const data = (try self.decodeFor(native.StepEndedData, native.decodeStepEnded, event, run, "opencode_invalid_step_event")) orelse return;
                 const target = run orelse return;
+                for ([_]f64{ data.input_tokens, data.output_tokens, data.reasoning_tokens, data.cache_read_tokens, data.cache_write_tokens }) |count| {
+                    if (count < 0) return self.failRun(target, "opencode_invalid_step_event", "OpenCode reported a negative token count");
+                }
                 if (!try self.sighted(&target.steps, data.message)) return;
                 if (target.terminal) return;
                 target.last_finish = data.finish;
