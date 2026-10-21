@@ -144,6 +144,18 @@ The optional mutation mode temporarily weakens six conditions in
 `state/admissions.rs`, requires a test assertion failure for each (a compile
 failure is not a kill), and restores the original source in `finally`.
 
+The same example judges a `model-provider-core` trace with `--provider` first,
+as `goap validate --provider` does; `oapx validate` routes a provider trace by
+the profile it declares. Replay every provider fixture through all three:
+
+```sh
+python3 .claude/skills/verify/scripts/rust-provider-parity.py --output-dir /tmp/oap-rust-provider-<unique-name>
+```
+
+Rust and Go must report the same phase, code, envelope and pointer for every
+diagnostic, and both they and Zig must draw exactly the codes the manifest
+declares, exiting 0 only when it declares none. Build `oapx` first.
+
 ## Rust memory adapter consumer journey
 
 The Rust adapter is a library too. Its `memory_trace` example opens a memory
