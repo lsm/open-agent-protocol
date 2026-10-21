@@ -14,8 +14,10 @@ const { createOapClient } = require(require('node:path').join(process.cwd(), 'di
   }
   console.log(JSON.stringify(events));
   if (other) {
-    assert.equal(events.length, 1);
+    assert.equal(events.length, 2);
     assert.equal(events[0].is_error, false, 'non-Codex Bash without exitCode changed outcome');
+    assert.equal(events[1].is_error, false);
+    assert.equal(events[1].result, null);
     return;
   }
   assert.equal(events.length, 8);

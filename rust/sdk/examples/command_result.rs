@@ -43,11 +43,13 @@ async fn main() {
     client.close().await;
     println!("{}", json!(ends));
     if other {
-        assert_eq!(ends.len(), 1);
+        assert_eq!(ends.len(), 2);
         assert_eq!(
             ends[0]["is_error"], false,
             "non-Codex Bash without exitCode changed outcome"
         );
+        assert_eq!(ends[1]["is_error"], false);
+        assert!(ends[1]["result"].is_null());
         return;
     }
     assert_eq!(ends.len(), 8);

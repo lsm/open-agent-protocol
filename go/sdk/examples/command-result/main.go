@@ -42,8 +42,11 @@ func main() {
 	raw, _ := json.Marshal(ends)
 	fmt.Println(string(raw))
 	if other {
-		if len(ends) != 1 || ends[0].IsError {
+		if len(ends) != 2 || ends[0].IsError || ends[1].IsError {
 			panic("non-Codex Bash without exitCode changed outcome")
+		}
+		if string(ends[1].Result) != "null" {
+			panic("null action result was changed")
 		}
 		return
 	}

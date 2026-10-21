@@ -16,6 +16,7 @@ ROOT = Path(__file__).resolve().parents[4]
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output-dir", required=True)
+    parser.add_argument("--python-sdk", default=shutil.which("python3.11") or sys.executable)
     parser.add_argument("--oapx", type=Path, default=ROOT / "zig/zig-out/bin/oapx")
     args = parser.parse_args()
     output = Path(args.output_dir).resolve()
@@ -65,13 +66,16 @@ console.log('clients/ts preserved every payload, including numeric and null exit
             "sandbox": "read-only", "environment": []}}}))
         environment = {"HOME": temporary, "CODEX_HOME": temporary, "PATH": os.defpath}
         consumers = {
+            "python": [args.python_sdk, "sdk/python/examples/command_result.py"],
             "go": [str(go)],
             "rust": [str(ROOT / "rust/target/debug/examples/command_result")],
             "ts": [shutil.which("node"), "sdk/typescript/test/fixtures/command-result-consumer.cjs"],
         }
         for sdk, command in consumers.items():
             raw = run(f"non-codex-{sdk}", command + [shutil.which("node"), "--non-codex"], environment)
-            event, = json.loads(raw)
+            event, null_event = json.loads(raw)
+            assert null_event.get("is_error", null_event.get("IsError")) is False, (sdk, null_event)
+            assert null_event.get("result", null_event.get("Result")) is None, (sdk, null_event)
             assert event.get("is_error", event.get("IsError")) is False, (sdk, event)
             result = event.get("result", event.get("Result"))
             assert result == {"command": "git diff HEAD~1", "cwd": "/workspace/repo", "output": "read completed"}, (sdk, event)
@@ -95,7 +99,7 @@ console.log('clients/ts preserved every payload, including numeric and null exit
                         assert event["result"] == expected, (source, sdk, i, event)
                 observed.append(normalized)
                 print(f"{source}/{sdk}: eight command outcomes retain exit evidence; unknown is not success", flush=True)
-            assert observed[0] == observed[1] == observed[2], f"SDK disagreement for {source}"
+            assert all(events == observed[0] for events in observed), f"SDK disagreement for {source}"
     print(f"PASS: SDK parity, clients/ts preservation, six validator passes; artifacts: {output}")
 
 
