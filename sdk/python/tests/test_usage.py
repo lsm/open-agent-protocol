@@ -1,0 +1,52 @@
+"""Public Python consumers must retain measurements and refuse malformed usage."""
+
+import json
+from pathlib import Path
+import subprocess
+import sys
+import unittest
+from typing import Any
+
+SDK = Path(__file__).resolve().parents[1]
+FIELDS = {"input_tokens": "input", "output_tokens": "output", "total_tokens": "total",
+          "cache_read_input_tokens": "cache_read", "cache_write_input_tokens": "cache_write",
+          "reasoning_tokens": "reasoning"}
+MAX = 2**64 - 1
+
+
+def observe(raw: str) -> list[dict[str, Any]]:
+    result = subprocess.run(
+        [sys.executable, str(SDK / "examples/usage.py"), sys.executable, "-u",
+         str(SDK / "tests/fixtures/usage.py"), raw],
+        capture_output=True, text=True, timeout=20)
+    assert result.returncode == 0, result.stderr
+    values: list[dict[str, Any]] = json.loads(result.stdout)
+    assert [(value["agent"], value["stream"]) for value in values] == [
+        (False, False), (False, True), (True, False), (True, True)]
+    return values
+
+
+class UsageTests(unittest.TestCase):
+    def test_absent_zero_partial_total_and_uint64_maximum(self) -> None:
+        cases: list[tuple[str, Any]] = [("absent", None), ("{}", {})]
+        cases += [(json.dumps({wire: count}), {name: count})
+                  for wire, name in FIELDS.items() for count in (0, MAX)]
+        cases.append((json.dumps({"input_tokens": MAX, "output_tokens": 0, "total_tokens": 17}),
+                      {"input": MAX, "output": 0, "total": 17}))
+        for raw, expected in cases:
+            with self.subTest(usage=raw):
+                if expected is not None:
+                    expected = {name: expected.get(name) for name in FIELDS.values()}
+                for value in observe(raw):
+                    self.assertEqual(value.get("usage", "missing"), expected, value)
+
+    def test_malformed_usage_is_a_typed_protocol_error(self) -> None:
+        cases = [json.dumps({field: count}) for field in FIELDS
+                 for count in (None, -1, 1.5, True, "3", {}, [], MAX + 1)]
+        cases += ["null", "true", "[]", "3", '"usage"']
+        for raw in cases:
+            with self.subTest(usage=raw):
+                for value in observe(raw):
+                    self.assertNotIn("usage", value)
+                    self.assertEqual(value.get("error"), "malformed_response", value)
+                    self.assertEqual(value.get("error_type"), "MakaiProtocolError", value)
