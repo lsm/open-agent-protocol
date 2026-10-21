@@ -44,8 +44,9 @@ def replay(language, fixture, output, label):
     diagnostics = [d for report in reports for d in report.get("diagnostics") or []]
     codes = sorted({d["code"] for d in diagnostics})
     phases = {d["phase"] for d in diagnostics}
-    observed = (result.returncode, codes, phases)
-    expected = (int(not fixture["valid"]), sorted(fixture["codes"]), {fixture["phase"]} if not fixture["valid"] else set())
+    first_decision = fixture["id"] != "redelivery-state-unpaired-root-change" or all(d.get("index") == 3 for d in diagnostics)
+    observed = (result.returncode, codes, phases, first_decision)
+    expected = (int(not fixture["valid"]), sorted(fixture.get("codes", [])), {fixture.get("phase", "")} if not fixture["valid"] else set(), True)
     return observed, expected
 
 
@@ -53,7 +54,13 @@ def mutations(language):
     if language == "go":
         return [
             ("pairing", "duplicate-previous", "previous[prev] ||", "false ||"),
+            ("complete-pairing", "unpaired-queued-carrier", "restarting && !paired[entry.RunID]", "restarting && !paired[entry.RunID] && false"),
+            ("all-pairing", "missing-all-pairs", "restarting && !paired[entry.RunID]", "restarting && !paired[entry.RunID] && false"),
+            ("unpaired-root", "unpaired-root-change", "restarting && !paired[entry.RunID]", "restarting && !paired[entry.RunID] && false"),
+
             ("roots", "duplicate-root", "roots[root] ||", "false ||"),
+            ("fresh-previous", "reuse-opaque-previous", "st.redeliveryClosed[next] ||", "false ||"),
+            ("fresh-root", "reuse-withdrawn-root", "|| knownRoot ||", "|| (knownRoot && false) ||"),
             ("root-alias", "root-belongs-to-another-pair", "entry.RootRunID != entry.PreviousRunID", "entry.RootRunID != entry.RootRunID"),
             ("new-pairing", "duplicate-new", "position == 0 || position <= last", "position < 0 || last < 0"),
             ("queued-membership", "missing-queued-member", "position == 0 || position <= last", "position < 0 || last < 0"),
@@ -70,7 +77,13 @@ def mutations(language):
     if language == "rust":
         return [
             ("pairing", "duplicate-previous", "!previous.insert(prev) ||", "{ previous.insert(prev); false } ||"),
+            ("complete-pairing", "unpaired-queued-carrier", "restarting && !paired.contains(entry.run_id.as_str())", "restarting && !paired.contains(entry.run_id.as_str()) && false"),
+            ("all-pairing", "missing-all-pairs", "restarting && !paired.contains(entry.run_id.as_str())", "restarting && !paired.contains(entry.run_id.as_str()) && false"),
+            ("unpaired-root", "unpaired-root-change", "restarting && !paired.contains(entry.run_id.as_str())", "restarting && !paired.contains(entry.run_id.as_str()) && false"),
+
             ("roots", "duplicate-root", "!roots.insert(root) ||", "{ roots.insert(root); false } ||"),
+            ("fresh-previous", "reuse-opaque-previous", "history.closed.contains(&next)", "false"),
+            ("fresh-root", "reuse-withdrawn-root", "history.heads.contains_key(&next)", "false"),
             ("root-alias", "root-belongs-to-another-pair", "entry.root_run_id != entry.previous_run_id", "entry.root_run_id != entry.root_run_id"),
             ("new-pairing", "duplicate-new", "position == 0 || position <= last", "position < last && false"),
             ("queued-membership", "missing-queued-member", "position == 0 || position <= last", "position < last && false"),
@@ -87,7 +100,13 @@ def mutations(language):
     return [
         ("live-open", "live-open-before-restart", 'if (!memberBool(recovery, "recovered")) {', "if (false) {"),
         ("pairing", "duplicate-previous", "previous.contains(prev) or", "false or"),
+        ("complete-pairing", "unpaired-queued-carrier", "restarting and !paired.contains(id)", "restarting and !paired.contains(id) and false"),
+        ("all-pairing", "missing-all-pairs", "restarting and !paired.contains(id)", "restarting and !paired.contains(id) and false"),
+        ("unpaired-root", "unpaired-root-change", "restarting and !paired.contains(id)", "restarting and !paired.contains(id) and false"),
+
         ("roots", "duplicate-root", "roots.contains(root) or", "false or"),
+        ("fresh-previous", "reuse-opaque-previous", "holder.redelivery_closed.contains(next) or", "false or"),
+        ("fresh-root", "reuse-withdrawn-root", "holder.redelivery_heads.contains(next) or", "false or"),
         ("root-alias", "root-belongs-to-another-pair", '!std.mem.eql(u8, memberString(entry, "root_run_id"), memberString(entry, "previous_run_id"))', "false"),
         ("new-pairing", "duplicate-new", "position == 0 or position <= last", "position < last and false"),
         ("queued-membership", "missing-queued-member", "position == 0 or position <= last", "position < last and false"),
@@ -111,7 +130,7 @@ def main():
     output = Path(args.output_dir).resolve()
     output.mkdir(parents=True, exist_ok=False)
     manifest = json.loads((ROOT / "fixtures/manifest.json").read_text())["fixtures"]
-    fixtures = [f for f in manifest if f["id"].startswith("redelivery-state-") or f["id"] == "session-reopen-reports-redelivered-runs"]
+    fixtures = [f for f in manifest if f["id"].startswith("redelivery-state-") or f["id"] in {"session-reopen-reports-redelivered-runs", "session-reopen-lists-restored-queued-runs", "queue-open-recovers-a-started-run-and-a-reservation", "queue-open-resumes-a-reservation-beside-the-cursor"}]
     languages = [args.language] if args.language else list(SOURCES)
     for language in languages:
         build(language, output, language + "-baseline")
@@ -128,9 +147,12 @@ def main():
         try:
             for label, suffix, before, after in mutations(language):
                 text = original.decode()
-                if text.count(before) != 1:
+                pattern = r"\s+".join(re.escape(part) for part in before.split())
+                matches = list(re.finditer(pattern, text))
+                if len(matches) != 1:
                     raise RuntimeError(f"{language}.{label}: mutation target is not unique")
-                path.write_text(text.replace(before, after, 1))
+                match = matches[0]
+                path.write_text(text[:match.start()] + after + text[match.end():])
                 label = language + "." + label
                 fixture = next(f for f in fixtures if f["id"] == "redelivery-state-" + suffix)
                 if language == "zig":

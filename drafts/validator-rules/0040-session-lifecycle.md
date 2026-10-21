@@ -259,6 +259,11 @@ fabricated terminal events. A trace starting at recovery can establish a chain
 without its earlier history; it still checks unique pairing, fresh queued
 membership and order, then binds subsequent records to the observed chain.
 An ordinary live-session open without recovery retains its existing reservations.
+At a recovered restart, every restored queued entry must have a redelivery pair,
+including when the trace begins at that response. A compound open may additionally
+admit the one new message it carries; that fresh carrier establishes its own root.
+Cursor-resume recovery without restart or redelivery records does not invent
+roots for the already existing reservations it reports.
 
 ## Divergences
 

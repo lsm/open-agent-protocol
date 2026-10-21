@@ -25,6 +25,11 @@ func (s *state) redeliveryResponse(i, line int, e protocol.Envelope, p protocol.
 		}
 		return
 	}
+	var requested protocol.SessionOpenRequest
+	if req := s.requests[e.InReplyTo]; req != nil && req.typ == protocol.TypeSessionOpenRequest {
+		_ = req.envelope.DecodePayload(&requested)
+	}
+	restarting := requested.Reopen || len(records) > 0
 	held := st.held
 	if !st.heldKnown {
 		for _, id := range st.order {
@@ -33,7 +38,7 @@ func (s *state) redeliveryResponse(i, line int, e protocol.Envelope, p protocol.
 			}
 		}
 	}
-	if len(records) == 0 && !st.heldKnown && len(held) == 0 {
+	if len(records) == 0 && !st.heldKnown && len(held) == 0 && !restarting {
 		return
 	}
 	bad := false
@@ -54,9 +59,32 @@ func (s *state) redeliveryResponse(i, line int, e protocol.Envelope, p protocol.
 	}
 	previous, roots := map[protocol.RunID]bool{}, map[protocol.RunID]bool{}
 	positions := map[protocol.RunID]int{}
+	paired := map[protocol.RunID]bool{}
+	for _, entry := range records {
+		if !entry.Withdrawn {
+			paired[entry.RunID] = true
+		}
+	}
+	messageRuns := 0
 	for n, entry := range p.ActiveRuns {
 		if entry.Status == protocol.RunQueued {
 			positions[entry.RunID] = n + 1
+		}
+		if restarting && !paired[entry.RunID] {
+			if requested.Message != nil && s.runs[entry.RunID] == nil {
+				_, knownRoot := st.redeliveryHeads[entry.RunID]
+				if st.redeliveryClosed[entry.RunID] || knownRoot {
+					bad = true
+				}
+				messageRuns++
+				if messageRuns > 1 {
+					bad = true
+				}
+				st.redeliveryRoots[entry.RunID] = entry.RunID
+				st.redeliveryHeads[entry.RunID] = entry.RunID
+			} else if entry.Status == protocol.RunQueued {
+				bad = true
+			}
 		}
 	}
 	last := 0
@@ -93,7 +121,8 @@ func (s *state) redeliveryResponse(i, line int, e protocol.Envelope, p protocol.
 		}
 		if !entry.Withdrawn {
 			position := positions[next]
-			if s.runs[next] != nil || position == 0 || position <= last {
+			_, knownRoot := st.redeliveryHeads[next]
+			if s.runs[next] != nil || st.redeliveryClosed[next] || knownRoot || position == 0 || position <= last {
 				bad = true
 			}
 			last = position

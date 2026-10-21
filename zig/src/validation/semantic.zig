@@ -4274,7 +4274,7 @@ pub const Machine = struct {
         }
     }
 
-    fn redeliveryResponse(self: *Machine, index: usize, payload: std.json.Value) !void {
+    fn redeliveryResponse(self: *Machine, index: usize, envelope: std.json.Value, payload: std.json.Value) !void {
         const session = memberString(payload, "session_id");
         const holder = try self.sessionFor(session);
         const recovery = member(payload, "recovery") orelse std.json.Value{ .null = {} };
@@ -4284,13 +4284,16 @@ pub const Machine = struct {
             if (records.len > 0) try self.add(code_session_state_mismatch, index);
             return;
         }
+        const request = self.requests.get(field(envelope, "in_reply_to"));
+        const restarting = records.len > 0 or (if (request) |asked| memberBool(asked.payload, "reopen") else false);
+        const carried = if (request) |asked| asked.carries_message else false;
         var queued = false;
         for (holder.order.items) |id| {
             if (self.runs.get(id)) |run| {
                 if (!run.terminal and !run.started) queued = true;
             }
         }
-        if (records.len == 0 and holder.redelivery_held == null and !queued) return;
+        if (records.len == 0 and holder.redelivery_held == null and !queued and !restarting) return;
         const a = self.arena.allocator();
         var held: std.ArrayList([]const u8) = holder.redelivery_held orelse .empty;
         if (holder.redelivery_held == null) {
@@ -4310,6 +4313,25 @@ pub const Machine = struct {
         var roots: std.StringArrayHashMapUnmanaged(void) = .empty;
         const listed = member(payload, "active_runs");
         const active: []const std.json.Value = if (listed != null and listed.? == .array) listed.?.array.items else &.{};
+        var paired: std.StringArrayHashMapUnmanaged(void) = .empty;
+        for (records) |entry| {
+            if (!memberBool(entry, "withdrawn")) try paired.put(a, memberString(entry, "run_id"), {});
+        }
+        var message_runs: usize = 0;
+        for (active) |entry| {
+            const id = memberString(entry, "run_id");
+            if (restarting and !paired.contains(id)) {
+                if (carried and !self.runs.contains(id)) {
+                    if (holder.redelivery_closed.contains(id) or holder.redelivery_heads.contains(id)) bad = true;
+                    message_runs += 1;
+                    if (message_runs > 1) bad = true;
+                    try holder.redelivery_roots.put(a, id, id);
+                    try holder.redelivery_heads.put(a, id, id);
+                } else if (std.mem.eql(u8, memberString(entry, "status"), "queued")) {
+                    bad = true;
+                }
+            }
+        }
         var last: usize = 0;
         var prior_order: ?usize = null;
         for (records) |entry| {
@@ -4341,7 +4363,7 @@ pub const Machine = struct {
                 if (std.mem.eql(u8, id, next) and std.mem.eql(u8, memberString(run, "status"), "queued")) position = n + 1;
             }
             if (!memberBool(entry, "withdrawn")) {
-                if (self.runs.contains(next) or position == 0 or position <= last) bad = true;
+                if (self.runs.contains(next) or holder.redelivery_closed.contains(next) or holder.redelivery_heads.contains(next) or position == 0 or position <= last) bad = true;
                 last = position;
             }
         }
@@ -4369,7 +4391,7 @@ pub const Machine = struct {
 
     fn openResponse(self: *Machine, index: usize, envelope: std.json.Value, payload: std.json.Value) !void {
         const session_id = memberString(payload, "session_id");
-        try self.redeliveryResponse(index, payload);
+        try self.redeliveryResponse(index, envelope, payload);
         try self.gatedResponse(index, envelope, .open);
         try self.checkPublishedSources(index, payload);
         const attachment_refused = if (self.submits.get(field(envelope, "in_reply_to"))) |opened|

@@ -64,13 +64,20 @@ impl State {
             self.redeliveries.insert(session, history);
             return;
         }
+        let requested = self
+            .requests
+            .get(&os(&e.in_reply_to))
+            .filter(|r| r.envelope_type == EnvelopeType::SESSION_OPEN_REQUEST)
+            .map(|r| payload::<SessionOpenRequest>(&r.envelope))
+            .unwrap_or_default();
+        let restarting = requested.reopen || !records.is_empty();
         let queued = self
             .order
             .get(&session)
             .into_iter()
             .flatten()
             .any(|id| self.runs.get(id).is_some_and(|r| !r.terminal && !r.started));
-        if records.is_empty() && history.held.is_none() && !queued {
+        if records.is_empty() && history.held.is_none() && !queued && !restarting {
             self.redeliveries.insert(session, history);
             return;
         }
@@ -103,6 +110,30 @@ impl State {
         }
         let mut previous = HashSet::new();
         let mut roots = HashSet::new();
+        let paired: HashSet<&str> = records
+            .iter()
+            .filter_map(|r| r.run_id.as_ref().map(|id| id.as_str()))
+            .collect();
+        let mut message_runs = 0;
+        for entry in &p.active_runs {
+            if restarting && !paired.contains(entry.run_id.as_str()) {
+                if requested.message.is_some() && !self.runs.contains_key(entry.run_id.as_str()) {
+                    if history.closed.contains(entry.run_id.as_str())
+                        || history.heads.contains_key(entry.run_id.as_str())
+                    {
+                        bad = true;
+                    }
+                    message_runs += 1;
+                    if message_runs > 1 {
+                        bad = true;
+                    }
+                    history.roots.insert(s(&entry.run_id), s(&entry.run_id));
+                    history.heads.insert(s(&entry.run_id), s(&entry.run_id));
+                } else if entry.status == RunStatus::QUEUED {
+                    bad = true;
+                }
+            }
+        }
         let positions: HashMap<&str, usize> = p
             .active_runs
             .iter()
@@ -145,7 +176,12 @@ impl State {
             }
             if !entry.withdrawn {
                 let position = positions.get(next.as_str()).copied().unwrap_or_default();
-                if self.runs.contains_key(&next) || position == 0 || position <= last {
+                if self.runs.contains_key(&next)
+                    || history.closed.contains(&next)
+                    || history.heads.contains_key(&next)
+                    || position == 0
+                    || position <= last
+                {
                     bad = true;
                 }
                 last = position;

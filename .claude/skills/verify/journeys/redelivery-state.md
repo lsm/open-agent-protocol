@@ -26,6 +26,12 @@ new order differing from the active queue; missing, extra, reordered or omitted
 held pairs; a held order contradicting observed admissions; changed first or
 subsequent roots; stale predecessors; forks of existing roots; and reuse of a
 withdrawn root; and roots belonging to another pair. Every new fixture cites register row `0050#5/3`.
+Also observe refusal of an unpaired restored queued carrier, a restart omitting
+all pairs, and a later changed root after an unpaired first response. For that last trace,
+the helper requires the diagnostic at the first bad response (index 3). Cursor-resume
+fixtures with a running run and reservation remain accepted; these do not declare
+a restart. Carrier IDs seen only as old predecessors or withdrawn roots cannot
+be reused as fresh carriers. The restored-queue reopen fixture now carries its required pairs.
 
 For repeatable source mutation checks, run with no other builds or edits in this
 worktree:
