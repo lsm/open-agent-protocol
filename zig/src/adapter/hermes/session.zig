@@ -502,7 +502,12 @@ pub const Reducer = struct {
                 if (usage == .object) {
                     for ([_][2][]const u8{ .{ "input", "input_tokens" }, .{ "output", "output_tokens" }, .{ "total", "total_tokens" } }) |keys| {
                         if (usage.object.get(keys[0])) |count| {
-                            if (count == .integer) try self.put(&totals, keys[1], count);
+                            if (count == .null) continue;
+                            if (count != .integer or count.integer < 0) {
+                                try self.failRun("hermes_invalid_event", "invalid settlement");
+                                return;
+                            }
+                            try self.put(&totals, keys[1], count);
                         }
                     }
                     try self.put(&body, "usage", .{ .object = totals });

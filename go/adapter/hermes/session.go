@@ -858,6 +858,10 @@ func (s *Session) settleRun(run *runState, payload *native.MessageCompletePayloa
 				{reported.Total, &usage.TotalTokens},
 			} {
 				if count.native != nil {
+					if *count.native < 0 {
+						s.failRun(run, "hermes_invalid_event", "invalid settlement")
+						return
+					}
 					value := uint64(*count.native)
 					*count.core = &value
 				}
