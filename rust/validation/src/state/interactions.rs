@@ -26,6 +26,10 @@ pub(super) struct Interaction {
 }
 
 impl Interaction {
+    pub(super) fn unresolved(&self) -> bool {
+        !self.resolved
+    }
+
     pub(super) fn opaque() -> Self {
         Self {
             opaque: true,
