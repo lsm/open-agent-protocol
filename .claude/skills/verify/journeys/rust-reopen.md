@@ -23,6 +23,9 @@ python3 .claude/skills/verify/scripts/rust-reopen.py --mutation-check --output-d
 The optional mutation mode temporarily weakens six conditions in
 `state/admissions.rs`, requires a test assertion failure for each (a compile
 failure is not a kill), and restores the original source in `finally`.
+The focused assertions distinguish the reopen-loading reason from other
+`session_state_mismatch` diagnostics, so listing or anchor errors cannot mask
+a weakened reopen rule. A message exemption does not exempt its anchors.
 
 The same example judges a `model-provider-core` trace with `--provider` first,
 as `goap validate --provider` does; `oapx validate` routes a provider trace by

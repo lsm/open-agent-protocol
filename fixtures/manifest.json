@@ -6177,6 +6177,9 @@
       "provenance": [
         "drafts/staged-units-graduation.md",
         "decisions/0007-queue-delivery.md"
+      ],
+      "rules": [
+        "0007#a-snapshot-states-the-position-it-was-captured-at/33"
       ]
     },
     {
@@ -6196,6 +6199,10 @@
       "provenance": [
         "drafts/staged-units-graduation.md",
         "decisions/0007-queue-delivery.md"
+      ],
+      "rules": [
+        "0007#a-snapshot-states-the-position-it-was-captured-at/34",
+        "agent-control-core#request-and-stream-semantics/4"
       ]
     },
     {
@@ -6214,6 +6221,10 @@
       "provenance": [
         "drafts/staged-units-graduation.md",
         "decisions/0007-queue-delivery.md"
+      ],
+      "rules": [
+        "0007#a-snapshot-states-the-position-it-was-captured-at/29",
+        "0007#a-snapshot-states-the-position-it-was-captured-at/32"
       ]
     },
     {
@@ -6439,6 +6450,9 @@
       "provenance": [
         "drafts/staged-units-graduation.md",
         "decisions/0007-queue-delivery.md"
+      ],
+      "rules": [
+        "0007#a-snapshot-states-the-position-it-was-captured-at/31"
       ]
     },
     {
@@ -6681,6 +6695,9 @@
       "provenance": [
         "drafts/staged-units-graduation.md",
         "decisions/0007-queue-delivery.md"
+      ],
+      "rules": [
+        "0007#a-snapshot-states-the-position-it-was-captured-at/32"
       ]
     },
     {
@@ -8164,6 +8181,10 @@
       ],
       "provenance": [
         "decisions/0009-compound-open.md"
+      ],
+      "rules": [
+        "0007#a-snapshot-states-the-position-it-was-captured-at/28",
+        "0007#a-snapshot-states-the-position-it-was-captured-at/29"
       ]
     },
     {
@@ -15779,6 +15800,14 @@
     {"id":"queue-state-settled-terminal-after-late-event","path":"semantic-invalid/queue-state-settled-terminal-after-late-event.json","kind":"semantic-invalid","valid":false,"phase":"semantic","codes":["event_after_terminal"],"units":["core","queue"],"provenance":["decisions/0007-queue-delivery.md"],"rules":["0007#a-settled-run-is-named-not-merely-dropped/2","0001#deterministic-run-event-order/2"]},
     {"id":"queue-state-settled-late-event-is-not-terminal","path":"semantic-invalid/queue-state-settled-late-event-is-not-terminal.json","kind":"semantic-invalid","valid":false,"phase":"semantic","codes":["event_after_terminal","session_state_mismatch"],"units":["core","queue"],"provenance":["decisions/0007-queue-delivery.md"],"rules":["0007#a-settled-run-is-named-not-merely-dropped/2","0001#deterministic-run-event-order/2"]},
     {"id":"queue-state-started-admission-queued-before-start","path":"semantic-invalid/queue-state-started-admission-queued-before-start.json","kind":"semantic-invalid","valid":false,"phase":"semantic","codes":["session_state_mismatch"],"units":["core","queue"],"rules":["0007#a-snapshot-states-the-position-it-was-captured-at/6"],"provenance":["decisions/0007-queue-delivery.md"]},
-    {"id":"queue-state-settled-terminal-never-arrives","path":"semantic-invalid/queue-state-settled-terminal-never-arrives.json","kind":"semantic-invalid","valid":false,"phase":"semantic","codes":["missing_run_terminal","session_state_mismatch"],"units":["core","queue"],"rules":["0007#a-settled-run-is-named-not-merely-dropped/4","0001#one-foreground-invocation-is-one-run/4"],"provenance":["decisions/0007-queue-delivery.md"]}
+    {"id":"queue-state-settled-terminal-never-arrives","path":"semantic-invalid/queue-state-settled-terminal-never-arrives.json","kind":"semantic-invalid","valid":false,"phase":"semantic","codes":["missing_run_terminal","session_state_mismatch"],"units":["core","queue"],"rules":["0007#a-settled-run-is-named-not-merely-dropped/4","0001#one-foreground-invocation-is-one-run/4"],"provenance":["decisions/0007-queue-delivery.md"]},
+    {"id":"anchor-session-names-state-request","path":"semantic-invalid/anchor-session-names-state-request.json","kind":"semantic-invalid","valid":false,"phase":"semantic","codes":["session_state_mismatch"],"units":["core","queue"],"rules":["0007#a-snapshot-states-the-position-it-was-captured-at/28"],"provenance":["decisions/0007-queue-delivery.md"]},
+    {"id":"anchor-entry-names-state-request","path":"semantic-invalid/anchor-entry-names-state-request.json","kind":"semantic-invalid","valid":false,"phase":"semantic","codes":["session_state_mismatch"],"units":["core","queue"],"rules":["0007#a-snapshot-states-the-position-it-was-captured-at/29"],"provenance":["decisions/0007-queue-delivery.md"]},
+    {"id":"anchor-foreign-request","path":"semantic-invalid/anchor-foreign-request.json","kind":"semantic-invalid","valid":false,"phase":"semantic","codes":["session_state_mismatch"],"units":["core","queue"],"rules":["0007#a-snapshot-states-the-position-it-was-captured-at/28"],"provenance":["decisions/0007-queue-delivery.md"]},
+    {"id":"anchor-foreign-admission","path":"semantic-invalid/anchor-foreign-admission.json","kind":"semantic-invalid","valid":false,"phase":"semantic","codes":["session_state_mismatch","scope_mismatch"],"units":["core","queue"],"rules":["0007#a-snapshot-states-the-position-it-was-captured-at/30","0001#typed-identity-domains/1"],"provenance":["decisions/0007-queue-delivery.md"]},
+    {"id":"anchor-foreign-admission-before-snapshot","path":"semantic-invalid/anchor-foreign-admission-before-snapshot.json","kind":"semantic-invalid","valid":false,"phase":"semantic","codes":["scope_mismatch","session_state_mismatch"],"units":["core","queue"],"rules":["0007#a-snapshot-states-the-position-it-was-captured-at/30","0001#typed-identity-domains/1"],"provenance":["decisions/0007-queue-delivery.md"]},
+    {"id":"anchor-message-open-assigns-session","path":"valid/anchor-message-open-assigns-session.json","kind":"positive","valid":true,"codes":[],"units":["core","queue"],"provenance":["decisions/0007-queue-delivery.md"],"rules":["0007#a-snapshot-states-the-position-it-was-captured-at/28","0007#a-snapshot-states-the-position-it-was-captured-at/29"]},
+    {"id":"anchor-foreign-entry-refused","path":"semantic-invalid/anchor-foreign-entry-refused.json","kind":"semantic-invalid","valid":false,"phase":"semantic","codes":["session_state_mismatch"],"units":["core","queue"],"rules":["0007#a-snapshot-states-the-position-it-was-captured-at/29","0007#a-snapshot-states-the-position-it-was-captured-at/33"],"provenance":["decisions/0007-queue-delivery.md"]},
+    {"id":"anchor-foreign-entry-wrong-run","path":"semantic-invalid/anchor-foreign-entry-wrong-run.json","kind":"semantic-invalid","valid":false,"phase":"semantic","codes":["session_state_mismatch"],"units":["core","queue"],"rules":["0007#a-snapshot-states-the-position-it-was-captured-at/29","0007#a-snapshot-states-the-position-it-was-captured-at/32"],"provenance":["decisions/0007-queue-delivery.md"]}
   ]
 }
