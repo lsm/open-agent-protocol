@@ -1294,10 +1294,7 @@ impl State {
         }
         if let Some(expectation) = expectation {
             self.refusal_misses(at, e, &expectation, &speaker, &err);
-        } else if honour
-            && (err.code == UNSUPPORTED_FEATURE || err.code == CAPABILITY_DEGRADED)
-            && detail(&err, "feature") == Some(FEATURE_TOOLS_PROVIDE)
-        {
+        } else if honour {
             self.add(
                 codes::UNDISCLOSED_PROVIDE_LIMIT,
                 at,

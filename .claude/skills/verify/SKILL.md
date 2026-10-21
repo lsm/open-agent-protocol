@@ -134,8 +134,10 @@ python3 .claude/skills/verify/scripts/rust-control-tools.py --output-dir /tmp/oa
 ```
 
 Valid round trips, cancellations, all three resolution arms and conforming
-refusals must exit 0. Invalid traces must exit 1 with their exact declared code
-set. Mutations exercise the interaction's tool binding, event request id,
+refusals must exit 0. A defect-free, limit-conforming tools open refused by
+policy must fail with `undisclosed_provide_limit`, even without a feature in
+the error details; a discharged open-level or compound refusal remains valid.
+Invalid traces must exit 1 with their exact declared code set. Mutations exercise the interaction's tool binding, event request id,
 accepted result, responder, invalid-pattern repair, and canonical JSON equality
 versus a changed numeric result, plus compound-open refusal ownership. Each
 must reach the semantic phase; a schema rejection is not a pass. The script retains results

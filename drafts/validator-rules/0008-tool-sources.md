@@ -250,6 +250,10 @@ requests and late replies are judged against the state each request saw.
 The matcher uses `regex` with RE2 syntax normalization, whole-name anchors,
 ASCII Perl classes/boundaries, quoting and the counted-repeat ceiling; invalid
 patterns are judged when the descriptor arrives, not first used at open.
+A defect-free, limit-conforming open is owed admission regardless of the
+refusal code or feature details, unless a retained defect or open-level
+refusal discharges it. `open-provide-within-limits-refused-by-policy` pins that
+honour judgment through the public validators.
 The same change removes the 37 Rust known-gap ids that now agree. The newly
 exercised Unicode 17 enforcement case remains an explicit Rust/Zig known gap;
 the version boundary is documented in `research/validator-divergences.md`.
