@@ -12258,6 +12258,175 @@
       ]
     },
     {
+      "id": "compaction-pair-second-start-preserves-first",
+      "path": "semantic-invalid/compaction-pair-second-start-preserves-first.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "compaction_unpaired"
+      ],
+      "units": [
+        "compaction"
+      ],
+      "provenance": [
+        "decisions/0044-compaction.md"
+      ],
+      "rules": [
+        "0044#the-barrier/4"
+      ]
+    },
+    {
+      "id": "compaction-pair-wrong-failed-end-preserves-first",
+      "path": "semantic-invalid/compaction-pair-wrong-failed-end-preserves-first.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "compaction_ended_without_start",
+        "compaction_failed_without_error"
+      ],
+      "units": [
+        "compaction"
+      ],
+      "provenance": [
+        "decisions/0044-compaction.md"
+      ],
+      "rules": [
+        "0044#the-barrier/6",
+        "0044#what-a-compaction-looks-like-on-the-wire/1"
+      ]
+    },
+    {
+      "id": "compaction-pair-second-end",
+      "path": "semantic-invalid/compaction-pair-second-end.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "compaction_ended_without_start"
+      ],
+      "units": [
+        "compaction"
+      ],
+      "provenance": [
+        "decisions/0044-compaction.md"
+      ],
+      "rules": [
+        "0044#the-barrier/6"
+      ]
+    },
+    {
+      "id": "compaction-pair-open-at-cancelled",
+      "path": "semantic-invalid/compaction-pair-open-at-cancelled.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "compaction_open_at_terminal"
+      ],
+      "units": [
+        "compaction"
+      ],
+      "provenance": [
+        "decisions/0044-compaction.md"
+      ],
+      "rules": [
+        "0044#the-barrier/7"
+      ]
+    },
+    {
+      "id": "compaction-pair-two-sequential",
+      "path": "valid/compaction-pair-two-sequential.json",
+      "kind": "positive",
+      "valid": true,
+      "phase": "",
+      "codes": [],
+      "units": [
+        "compaction"
+      ],
+      "provenance": [
+        "decisions/0044-compaction.md"
+      ],
+      "rules": [
+        "0044#the-barrier/4",
+        "0044#the-barrier/6",
+        "0044#the-barrier/7"
+      ]
+    },
+    {
+      "id": "compaction-pair-failed-end-with-error",
+      "path": "valid/compaction-pair-failed-end-with-error.json",
+      "kind": "positive",
+      "valid": true,
+      "phase": "",
+      "codes": [],
+      "units": [
+        "compaction"
+      ],
+      "provenance": [
+        "decisions/0044-compaction.md"
+      ],
+      "rules": [
+        "0044#what-a-compaction-looks-like-on-the-wire/1"
+      ]
+    },
+    {
+      "id": "compaction-pair-cancelled-end",
+      "path": "valid/compaction-pair-cancelled-end.json",
+      "kind": "positive",
+      "valid": true,
+      "phase": "",
+      "codes": [],
+      "units": [
+        "compaction"
+      ],
+      "provenance": [
+        "decisions/0044-compaction.md"
+      ],
+      "rules": [
+        "0044#the-barrier/6"
+      ]
+    },
+    {
+      "id": "compaction-pair-interleaved-runs",
+      "path": "valid/compaction-pair-interleaved-runs.json",
+      "kind": "positive",
+      "valid": true,
+      "phase": "",
+      "codes": [],
+      "units": [
+        "compaction"
+      ],
+      "provenance": [
+        "decisions/0044-compaction.md"
+      ],
+      "rules": [
+        "0044#the-barrier/4",
+        "0044#the-barrier/6",
+        "0044#the-barrier/7"
+      ]
+    },
+    {
+      "id": "compaction-pair-end-in-another-run",
+      "path": "semantic-invalid/compaction-pair-end-in-another-run.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "compaction_ended_without_start"
+      ],
+      "units": [
+        "compaction"
+      ],
+      "provenance": [
+        "decisions/0044-compaction.md"
+      ],
+      "rules": [
+        "0044#the-barrier/6"
+      ]
+    },
+    {
       "id": "compaction-ended-without-start",
       "path": "semantic-invalid/compaction-ended-without-start.json",
       "kind": "semantic-invalid",
@@ -12277,6 +12446,9 @@
           "capability": "run.compaction",
           "aspect": "honour"
         }
+      ],
+      "rules": [
+        "0044#the-barrier/6"
       ]
     },
     {
@@ -12299,6 +12471,9 @@
           "capability": "run.compaction",
           "aspect": "honour"
         }
+      ],
+      "rules": [
+        "0044#the-barrier/7"
       ]
     },
     {
@@ -12388,6 +12563,9 @@
           "capability": "run.compaction",
           "aspect": "honour"
         }
+      ],
+      "rules": [
+        "0044#the-barrier/4"
       ]
     },
     {
@@ -12454,6 +12632,9 @@
           "capability": "run.compaction",
           "aspect": "honour"
         }
+      ],
+      "rules": [
+        "0044#what-a-compaction-looks-like-on-the-wire/1"
       ]
     },
     {
@@ -13877,6 +14058,9 @@
       ],
       "provenance": [
         "decisions/0044-compaction.md"
+      ],
+      "rules": [
+        "0044#the-barrier/6"
       ]
     },
     {
@@ -13893,6 +14077,9 @@
       ],
       "provenance": [
         "decisions/0044-compaction.md"
+      ],
+      "rules": [
+        "0044#what-a-compaction-looks-like-on-the-wire/1"
       ]
     },
     {
@@ -13909,6 +14096,9 @@
       ],
       "provenance": [
         "decisions/0044-compaction.md"
+      ],
+      "rules": [
+        "0044#the-barrier/7"
       ]
     },
     {
@@ -13957,6 +14147,9 @@
       ],
       "provenance": [
         "decisions/0044-compaction.md"
+      ],
+      "rules": [
+        "0044#the-barrier/4"
       ]
     },
     {
