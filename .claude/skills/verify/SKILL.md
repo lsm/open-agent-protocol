@@ -137,7 +137,8 @@ both record forms. These are wire/schema checks: held-prompt pairing, original
 order, root-chain consistency and queued membership remain unimplemented and
 are not proven by passing wire validation (register row `0050#5/3`).
 
-Mutation-check six schema constraints and both typed serializers with no
+Mutation-check six schema constraints, both typed serializers and the TypeScript
+schema mirror with no
 concurrent Go/Rust/Zig builds:
 
 ```sh

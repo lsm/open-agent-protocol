@@ -23,6 +23,9 @@ def mutations(output):
     go_command = ["go", "test", "./go/validation", "-run", "^TestManifest$", "-count=1"]
     go_types = ["go", "test", "./go/protocol", "-run", "^TestRecoveryRedeliveriesSurviveTypedRoundTrip$", "-count=1"]
     rust_types = ["cargo", "test", "--manifest-path", "rust/Cargo.toml", "-p", "oap-protocol", "--test", "payloads"]
+    assert run(["npm", "--prefix", "clients/ts", "run", "build"], output, "baseline-ts-build").returncode == 0
+    ts_mirror = ["node", "--test", "clients/ts/dist/test/schema.test.js"]
+    assert run(ts_mirror, output, "baseline-ts-mirror").returncode == 0
     for label, command in [("baseline-schema", go_command), ("baseline-go-types", go_types), ("baseline-rust-types", rust_types)]:
         assert run(command, output, label).returncode == 0, label
     edits = [
@@ -54,6 +57,13 @@ def mutations(output):
         result = run(rust_types, output, "drop-rust-field")
         assert result.returncode != 0 and "test result: FAILED" in result.stdout
         print("KILLED drop-rust-field", flush=True)
+        rust.write_text(originals[rust])
+        document = json.loads(originals[schema])
+        document["$defs"]["recovery"]["properties"].pop("redelivered_runs")
+        schema.write_text(json.dumps(document))
+        result = run(ts_mirror, output, "drop-ts-mirror-field")
+        assert result.returncode != 0 and "RecoveryMetadata: interface field redelivered_runs absent" in result.stdout
+        print("KILLED drop-ts-mirror-field", flush=True)
     finally:
         for path, original in originals.items():
             path.write_text(original)
