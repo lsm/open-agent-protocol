@@ -98,7 +98,7 @@ def main():
             assert result.returncode == int(not fixture["valid"]), result.stderr
             assert found == sorted(set(fixture["codes"])), diagnostics
             assert all(d["phase"] == fixture["phase"] for d in diagnostics), diagnostics
-    print("PASS: redelivery wire fixtures agree; stateful redelivery semantics remain unverified")
+    print("PASS: redelivery wire fixtures agree")
 
 
 if __name__ == "__main__":
