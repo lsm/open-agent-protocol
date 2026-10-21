@@ -2,6 +2,7 @@ mod admissions;
 mod controls;
 mod interactions;
 mod queue;
+mod redelivery;
 mod results;
 mod runs;
 mod steer;
@@ -39,6 +40,7 @@ pub(crate) struct State {
     active: HashMap<String, String>,
     late_cancels: HashSet<String>,
     recoveries: HashMap<String, admissions::Recovery>,
+    redeliveries: HashMap<String, redelivery::Redelivery>,
     initialized: bool,
     participants: HashSet<String>,
     features: HashMap<String, SupportLevel>,
@@ -298,6 +300,7 @@ impl State {
             active: HashMap::new(),
             late_cancels: HashSet::new(),
             recoveries: HashMap::new(),
+            redeliveries: HashMap::new(),
             initialized: false,
             participants: HashSet::new(),
             features: HashMap::new(),
@@ -422,6 +425,7 @@ impl State {
         }
         self.record_features(e);
         self.feature_for(at, e);
+        self.redelivery_held(e);
         self.run_dispatch(at, e);
         self.participants_from(at, e);
         self.controls_dispatch(at, e);
