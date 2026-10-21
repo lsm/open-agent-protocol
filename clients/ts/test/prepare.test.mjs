@@ -69,6 +69,17 @@ test('a prepared file dependency installs and imports without a compiler', (t) =
   assert.equal(existsSync(join(f.source, 'node_modules')), false);
 });
 
+for (const input of ['package-lock.json', 'tsconfig.json', 'src', 'test']) {
+  test(`a file dependency missing ${input} gives preparation instructions`, (t) => {
+    const f = fixture(t, false);
+    rmSync(join(f.source, input), { recursive: true });
+    const installed = f.install();
+    assert.notEqual(installed.status, 0);
+    assert.match(installed.stdout + installed.stderr, /oap-client build is missing, stale or incomplete/);
+    assert.match(installed.stdout + installed.stderr, /restore a complete checkout/);
+  });
+}
+
 test('a stale file dependency cannot install without a compiler', (t) => {
   const f = fixture(t, false);
   const source = join(f.source, 'src/index.ts');
