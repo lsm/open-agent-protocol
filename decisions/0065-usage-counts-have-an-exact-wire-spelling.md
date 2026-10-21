@@ -1,6 +1,6 @@
 # Decision 0065: Usage Counts Have an Exact Wire Spelling
 
-Status: accepted 2026-10-21 (implementation follows in separate changes)
+Status: accepted 2026-10-21 (implemented)
 Date: 2026-10-21
 Protocol: `open-agent-protocol` version `0.1`
 Profile: `open-agent-protocol.agent-control-core` and
@@ -131,5 +131,6 @@ The validator implementation supplies the shared schema maximum and canonical
 usage-token checks in Go, Rust and Zig. The raw-preserving shared corpus pins
 all six sites and counts, diagnostic precedence and unchanged hub D31/tool
 numbers; the independent `usage-count-validation` verify journey runs each
-fixture through the three public validator commands. Python SDK raw `-0`
-refusal remains a separate implementation change under #1398.
+fixture through the three public validator commands. The Python SDK also retains raw `-0` usage tokens until its existing typed
+usage decoder refuses them at all six declared usage sites before provider and
+agent unary/streaming APIs project content or map terminal failures.

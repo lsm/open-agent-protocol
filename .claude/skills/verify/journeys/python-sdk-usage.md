@@ -25,6 +25,6 @@ Their exit statuses and diagnostic codes must agree: valid measurements pass,
 malformed usage fails with `schema_invalid`, and `validators.json` records zero
 disagreements on its focused subset. `usage-count-validation.md` covers the full
 Decision 0065 raw-token matrix, including uint64 overflow and noncanonical
-spellings, across all six shared-usage sites. Python SDK raw `-0` refusal is a
-separate follow-up; this existing consumer journey does not yet prove that case.
+spellings, across all six shared-usage sites. `python-sdk-negative-zero.md` proves the SDK raw `-0` refusal on all four
+public paths.
 This proves the SDK wire boundary, not a live provider's accounting.
