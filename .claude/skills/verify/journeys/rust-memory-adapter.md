@@ -16,7 +16,5 @@ Each trace must end in `run.completed` and pass the Rust, Go and Zig validators
 input gate, and the compaction run must start and end its compaction in order.
 With the steer exchange removed, all three must reject the trace with
 `unmatched_steer`; with the compact exchange removed, all three must reject it
-with `illegal_run_transition`. With the call's resolve exchanges removed, Go and
-Zig must reject it with `illegal_tool_transition`; the Rust validator has not
-ported the control-owned call rules yet, so the script does not check its
-verdict there.
+with `illegal_run_transition`. With the call's resolve exchanges removed, all three must reject it with
+`illegal_tool_transition`.

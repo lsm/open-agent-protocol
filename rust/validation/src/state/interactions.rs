@@ -10,19 +10,21 @@ pub(super) struct ToolTrack {
     status: String,
     owner: String,
     source: String,
+    pub(super) interaction: String,
 }
 
 #[derive(Default)]
 pub(super) struct Interaction {
-    kind: &'static str,
-    requested_by: String,
-    responded_by: String,
+    pub(super) kind: &'static str,
+    pub(super) requested_by: String,
+    pub(super) responded_by: String,
     allow_cancel: bool,
     choices: HashSet<String>,
     questions: Vec<InputQuestion>,
-    tool_call_id: String,
-    resolved: bool,
-    opaque: bool,
+    pub(super) tool_call_id: String,
+    pub(super) resolved: bool,
+    pub(super) opaque: bool,
+    pub(super) call: super::control_tools::Call,
 }
 
 impl Interaction {
@@ -218,6 +220,7 @@ impl State {
             let p: InitializeRequest = payload(e);
             self.initialized = true;
             if let Some(participant) = p.participant {
+                self.control_participant = s(&participant.id);
                 self.participants.insert(s(&participant.id));
             }
         } else if *t == EnvelopeType::PROTOCOL_INITIALIZE_RESPONSE {
@@ -267,6 +270,10 @@ impl State {
             || *t == EnvelopeType::USER_INPUT_CANCEL_REQUEST
         {
             self.resolution_request(at, e, "input");
+        } else if *t == EnvelopeType::ACTION_CALL_RESOLVE_REQUEST {
+            self.control_resolve_request(at, e);
+        } else if *t == EnvelopeType::ACTION_CALL_RESOLVE_RESPONSE {
+            self.control_resolve_response(at, e);
         }
     }
 
@@ -304,6 +311,7 @@ impl State {
         }
         if let Some(step) = tool_step(t) {
             self.tool(at, e, run_id, step);
+            self.control_call_event(at, e, run_id, step);
             match step {
                 "requested" => self.record_call_choice(e, run_id),
                 "completed" | "failed" | "cancelled" => self.check_call_settlement(at, e, run_id),
@@ -403,6 +411,7 @@ impl State {
             status: String::new(),
             owner: owner.clone(),
             source: p.source.clone(),
+            interaction: String::new(),
         });
         if known {
             if !track.owner.is_empty() && owner != track.owner {

@@ -1,6 +1,8 @@
 mod admissions;
+mod control_tools;
 mod controls;
 mod interactions;
+mod name_pattern;
 mod queue;
 mod results;
 mod runs;
@@ -41,15 +43,21 @@ pub(crate) struct State {
     recoveries: HashMap<String, admissions::Recovery>,
     initialized: bool,
     participants: HashSet<String>,
+    control_participant: String,
+    pending_resolves: HashMap<String, control_tools::PendingResolve>,
     features: HashMap<String, SupportLevel>,
     feature_supports: HashMap<String, FeatureSupport>,
     catalog: Vec<String>,
     catalog_known: bool,
     catalog_ambiguous: bool,
-    provided: HashMap<String, Vec<String>>,
+    provided: HashMap<String, Vec<ToolDefinition>>,
     pending_controls: HashMap<String, controls::PendingSubmit>,
     steer_snapshots: Vec<((usize, usize), Envelope)>,
     pending_subscribes: HashMap<String, controls::PendingSubscribe>,
+    pending_provides: HashMap<String, controls::PendingProvide>,
+    descriptor_owners: HashMap<String, String>,
+    declared_sources: HashSet<String>,
+    catalog_owners: HashMap<String, (String, HashMap<String, String>)>,
     order: HashMap<String, Vec<String>>,
     open_submits: HashMap<String, Vec<String>>,
     limits: Option<CapabilityLimits>,
@@ -300,6 +308,8 @@ impl State {
             recoveries: HashMap::new(),
             initialized: false,
             participants: HashSet::new(),
+            control_participant: String::new(),
+            pending_resolves: HashMap::new(),
             features: HashMap::new(),
             feature_supports: HashMap::new(),
             catalog: Vec::new(),
@@ -309,6 +319,10 @@ impl State {
             pending_controls: HashMap::new(),
             steer_snapshots: Vec::new(),
             pending_subscribes: HashMap::new(),
+            pending_provides: HashMap::new(),
+            descriptor_owners: HashMap::new(),
+            declared_sources: HashSet::new(),
+            catalog_owners: HashMap::new(),
             order: HashMap::new(),
             open_submits: HashMap::new(),
             limits: None,
@@ -834,6 +848,7 @@ mod tests {
             let mut found: Vec<String> = state
                 .diagnostics
                 .iter()
+                .filter(|d| d.code == codes::SCOPE_MISMATCH)
                 .map(|d| d.pointer.clone())
                 .collect();
             found.sort();

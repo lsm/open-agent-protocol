@@ -17,7 +17,7 @@ JOURNEYS = [
      "unmatched_steer"),
     ("compact", ["run.compaction.started", "run.compaction.ended"], list(VALIDATORS),
      "illegal_run_transition"),
-    ("call", ["action.call.completed", "user.input.requested"], ["go", "zig"],
+    ("call", ["action.call.completed", "user.input.requested"], list(VALIDATORS),
      "illegal_tool_transition"),
 ]
 
