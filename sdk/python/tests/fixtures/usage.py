@@ -7,6 +7,7 @@ from typing import Any
 AGENT = "open-agent-protocol.agent-control-core"
 PROVIDER = "open-agent-protocol.model-provider-core"
 raw = sys.argv[1]
+site = sys.argv[2] if len(sys.argv) > 2 else "completed"
 usage = {} if raw in ("absent", "ordinary-negative-zero") else {"usage": "RAW_USAGE_COUNT_OBJECT"}
 serial = 0
 
@@ -35,8 +36,13 @@ for line in sys.stdin:
         scope = {"inference_id": f"inference-{serial}"}
         emit(PROVIDER, "inference.create.response", rid, **scope, payload={"accepted": True})
         emit(PROVIDER, "inference.started", **scope, payload={"model_ref": request["payload"]["model_ref"]})
-        emit(PROVIDER, "inference.completed", **scope, payload={
-            "message": {"role": "assistant", "content": "usage"}, "stop_reason": "stop", **usage})
+        if site == "inference.failed":
+            emit(PROVIDER, site, **scope, payload={
+                "error": {"code": "fixture_error", "message": "fixture failure"}, **usage})
+        else:
+            emit(PROVIDER, "inference.completed", **scope, payload={
+                "message": {"role": "assistant", "content": "usage"}, "stop_reason": "stop",
+                **(usage if site == "completed" else {})})
     elif kind == "session.open.request":
         sid = request["payload"]["session_id"]
         emit(AGENT, "session.open.response", rid, session_id=sid,
@@ -49,7 +55,14 @@ for line in sys.stdin:
         if raw == "ordinary-negative-zero":
             emit(AGENT, "action.call.completed", **scope, payload={**scope,
                 "tool_call_id": "fixture-call", "result": "RAW_ORDINARY_NUMBERS"})
-        emit(AGENT, "run.completed", **scope, payload={**scope,
-            "final_response": {"role": "assistant", "content": "usage"}, "stop_reason": "stop", **usage})
+        if site == "content.completed":
+            emit(AGENT, site, **scope, payload={**scope, "message_id": "fixture-message", **usage})
+        if site in ("run.failed", "run.cancelled"):
+            emit(AGENT, site, **scope, payload={**scope,
+                "error": {"code": "fixture_error", "message": "fixture failure"}, **usage})
+        else:
+            emit(AGENT, "run.completed", **scope, payload={**scope,
+                "final_response": {"role": "assistant", "content": "usage"}, "stop_reason": "stop",
+                **(usage if site == "completed" else {})})
     elif kind not in ("inference.cancel.request", "run.cancel.request"):
         raise AssertionError(f"unexpected request: {kind}")
