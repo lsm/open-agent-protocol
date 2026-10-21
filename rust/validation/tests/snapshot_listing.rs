@@ -29,3 +29,13 @@ fn a_snapshot_listing_cannot_contradict_its_runs_or_session() {
         );
     }
 }
+
+#[test]
+fn a_capture_can_omit_a_compaction_admitted_after_its_read_request() {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../fixtures/valid/queue-state-compaction-admitted-during-read.json");
+    let result = Validator::new()
+        .unwrap()
+        .validate(&std::fs::read(path).unwrap(), "compaction-read-window");
+    assert!(result.valid(), "{result:?}");
+}

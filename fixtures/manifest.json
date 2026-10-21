@@ -5999,6 +5999,22 @@
       ]
     },
     {
+      "id": "queue-state-compaction-admitted-during-read",
+      "path": "valid/queue-state-compaction-admitted-during-read.json",
+      "kind": "positive",
+      "valid": true,
+      "phase": "",
+      "codes": [],
+      "units": [
+        "core",
+        "queue"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0007-queue-delivery.md"
+      ]
+    },
+    {
       "id": "queue-state-in-window-run-unnamed",
       "path": "semantic-invalid/queue-state-in-window-run-unnamed.json",
       "kind": "semantic-invalid",
