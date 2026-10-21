@@ -1,7 +1,8 @@
 # Decision 0061: The Provider Profile's Validator Rules and Schemas
 
 Status: accepted 2026-10-19 (the shared `usage` schema extended by
-[Decision 0063](0063-usage-counts-cache-and-reasoning-tokens.md))
+[Decision 0063](0063-usage-counts-cache-and-reasoning-tokens.md), with usage wire
+spelling and range constrained by [Decision 0065](0065-usage-counts-have-an-exact-wire-spelling.md))
 Date: 2026-10-19
 Protocol: `open-agent-protocol` version `0.1`
 Profile: `open-agent-protocol.model-provider-core`
@@ -78,6 +79,12 @@ Are the provider profile's schemas part of the protocol? Yes:
 violation is `schema_invalid`. A constraint in them that the draft turns out
 not to support is not grandfathered by this; it becomes an open item of its own
 and is settled by a later decision.
+
+[Decision 0065](0065-usage-counts-have-an-exact-wire-spelling.md) adds a maximum
+of `18446744073709551615` and a canonical numeric-token spelling requirement
+for the six shared usage counts. Type or range faults remain `schema_invalid`;
+otherwise schema-valid noncanonical spellings are `payload_decode`. This
+usage-only payload constraint does not redefine JSON Schema's `integer` type.
 
 ## Consequences
 
