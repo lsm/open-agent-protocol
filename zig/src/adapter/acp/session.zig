@@ -291,9 +291,9 @@ pub const Reducer = struct {
 
     fn runUsage(self: *Reducer, turn: TurnUsage) !std.json.Value {
         var usage = self.object();
-        if (turn.input != 0) try self.put(&usage, "input_tokens", try self.count(turn.input));
-        if (turn.output != 0) try self.put(&usage, "output_tokens", try self.count(turn.output));
-        if (turn.total != 0) try self.put(&usage, "total_tokens", try self.count(turn.total));
+        try self.put(&usage, "input_tokens", try self.count(turn.input));
+        try self.put(&usage, "output_tokens", try self.count(turn.output));
+        try self.put(&usage, "total_tokens", try self.count(turn.total));
         return .{ .object = usage };
     }
 

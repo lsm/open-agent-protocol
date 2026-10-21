@@ -500,15 +500,14 @@ pub const Reducer = struct {
             var totals = self.object();
             if (payload.object.get("usage")) |usage| {
                 if (usage == .object) {
-                    const input = integerMember(usage.object, "input");
-                    const output = integerMember(usage.object, "output");
-                    const total = integerMember(usage.object, "total");
-                    if (input != 0) try self.put(&totals, "input_tokens", int(input));
-                    if (output != 0) try self.put(&totals, "output_tokens", int(output));
-                    if (total != 0) try self.put(&totals, "total_tokens", int(total));
+                    for ([_][2][]const u8{ .{ "input", "input_tokens" }, .{ "output", "output_tokens" }, .{ "total", "total_tokens" } }) |keys| {
+                        if (usage.object.get(keys[0])) |count| {
+                            if (count == .integer) try self.put(&totals, keys[1], count);
+                        }
+                    }
+                    try self.put(&body, "usage", .{ .object = totals });
                 }
             }
-            try self.put(&body, "usage", .{ .object = totals });
             _ = try self.emit(run, "run.completed", .{ .object = body });
             run.terminal = true;
             return;

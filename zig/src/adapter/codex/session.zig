@@ -821,9 +821,9 @@ pub const Reducer = struct {
         const run = self.runs.items[index];
         if (!run.usage_seen) return;
         var usage = std.json.ObjectMap.empty;
-        if (run.input_tokens != 0) try self.put(&usage, "input_tokens", .{ .integer = @intCast(run.input_tokens) });
-        if (run.output_tokens != 0) try self.put(&usage, "output_tokens", .{ .integer = @intCast(run.output_tokens) });
-        if (run.total_tokens != 0) try self.put(&usage, "total_tokens", .{ .integer = @intCast(run.total_tokens) });
+        try self.put(&usage, "input_tokens", .{ .integer = @intCast(run.input_tokens) });
+        try self.put(&usage, "output_tokens", .{ .integer = @intCast(run.output_tokens) });
+        try self.put(&usage, "total_tokens", .{ .integer = @intCast(run.total_tokens) });
         try self.put(payload, "usage", .{ .object = usage });
     }
 
