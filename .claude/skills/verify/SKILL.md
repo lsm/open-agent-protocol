@@ -164,6 +164,8 @@ a valid Unicode 17 descriptor itself must pass without a false invalid-pattern
 diagnostic. The script separately observes the declared Unicode 17 enforcement
 gap in Rust and Zig against Go's rejection. The baseline runs this journey too. `name_pattern` matches
 the entire name; invalid RE2 is diagnosed on the descriptor at the pattern's pointer.
+The syntax probes include signed hex escapes in character classes, which must
+be rejected rather than accepted by an integer parser.
 
 ## Local oapx/TUI journey (PTY, no real credentials)
 

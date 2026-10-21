@@ -307,6 +307,9 @@ fn class_atom(
                 digits.push(chars.next().ok_or(())?);
                 digits.push(chars.next().ok_or(())?);
             }
+            if !digits.bytes().all(|digit| digit.is_ascii_hexdigit()) {
+                return Err(());
+            }
             char::from_u32(u32::from_str_radix(&digits, 16).map_err(|_| ())?).ok_or(())?
         }
         c if !c.is_ascii_alphanumeric() => c,
