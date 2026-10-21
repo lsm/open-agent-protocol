@@ -8,7 +8,7 @@ cargo test --manifest-path rust/Cargo.toml -p oap-validation --test admission_an
 ```
 
 The helper rebuilds and invokes the Go, Rust and Zig public validator CLIs on
-33 shared and mutated traces. Session and entry anchors must name submit
+34 shared and mutated traces. Session and entry anchors must name submit
 requests or message-carrying opens on the snapshot's session. Their admissions
 must match the session and entry run. A pending session-level claim must account
 for the run through active_runs, as_of.settled or the scalar active pointer.
@@ -18,7 +18,8 @@ in its response. Accepted steer requests also serve as admission anchors.
 
 The controls include admissions before and after the snapshot, allocated and
 preassigned sessions, multiple anchors, reversed steer responses and valid
-repairs. An admission on another session preserves scope_mismatch and adds
+repairs. A reopen that restores its listed run cannot claim that same run as
+a new admission from its message. An admission on another session preserves scope_mismatch and adds
 session_state_mismatch on the snapshot in both response orders. The shared
 fixtures cite existing captured-at rows 28–34; this does not change the wire.
 

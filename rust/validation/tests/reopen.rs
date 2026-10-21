@@ -76,7 +76,7 @@ fn restored_queue_entries_are_allowed_but_a_running_entry_or_legacy_active_run_i
 }
 
 #[test]
-fn a_reopen_may_admit_the_message_it_carried() {
+fn a_reopen_message_exemption_preserves_other_snapshot_checks() {
     let mut trace = fixture("valid/compound-open-admits-its-message.json");
     trace.as_array_mut().unwrap().truncate(4);
     trace[1]["payload"]["features"]["session.open.reopen"] = serde_json::json!({"level": "native"});
@@ -84,6 +84,9 @@ fn a_reopen_may_admit_the_message_it_carried() {
     trace[3]["payload"]["recovery"] = serde_json::json!({"recovered": true});
     assert_eq!(
         judge(&trace),
-        BTreeSet::from([codes::MISSING_RUN_TERMINAL.to_owned()])
+        BTreeSet::from([
+            codes::MISSING_RUN_TERMINAL.to_owned(),
+            codes::SESSION_STATE_MISMATCH.to_owned(),
+        ])
     );
 }

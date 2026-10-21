@@ -6201,7 +6201,8 @@
         "decisions/0007-queue-delivery.md"
       ],
       "rules": [
-        "0007#a-snapshot-states-the-position-it-was-captured-at/34"
+        "0007#a-snapshot-states-the-position-it-was-captured-at/34",
+        "agent-control-core#request-and-stream-semantics/4"
       ]
     },
     {

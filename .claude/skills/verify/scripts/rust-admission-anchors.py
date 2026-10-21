@@ -139,6 +139,12 @@ def main():
         state(trace)["as_of"]["admitted_submit_requests"] = ["req1"]
         cases.append((name + "-repair-request-and-anchor", trace, []))
 
+    trace = fixture("compound-open-admits-its-message")[:4]
+    trace[1]["payload"]["features"]["session.open.reopen"] = {"level": "native"}
+    trace[2]["payload"]["reopen"] = True
+    trace[3]["payload"]["recovery"] = {"recovered": True}
+    cases.append(("reopen-message-without-a-new-admission", trace, ["missing_run_terminal", "session_state_mismatch"]))
+
     observations = []
     failures = []
     for label, trace, expected in cases:
