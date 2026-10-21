@@ -365,7 +365,7 @@ jobs:
           cache: false
 
       - name: Build oapx
-        run: zig build --build-file zig/build.zig install --prefix /tmp/oapx-hub
+        run: zig build --build-file zig/build.zig install --prefix /tmp/oapx-hub -Doptimize=ReleaseSafe
 
       - name: Require oapx serve --stdio to answer exactly as goap serve --stdio
         env:
