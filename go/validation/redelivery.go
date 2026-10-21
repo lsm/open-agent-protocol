@@ -30,6 +30,9 @@ func (s *state) redeliveryResponse(i, line int, e protocol.Envelope, p protocol.
 		_ = req.envelope.DecodePayload(&requested)
 	}
 	restarting := requested.Reopen || len(records) > 0
+	if !restarting {
+		return
+	}
 	held := st.held
 	if !st.heldKnown {
 		for _, id := range st.order {
@@ -37,9 +40,6 @@ func (s *state) redeliveryResponse(i, line int, e protocol.Envelope, p protocol.
 				held = append(held, id)
 			}
 		}
-	}
-	if len(records) == 0 && !st.heldKnown && len(held) == 0 && !restarting {
-		return
 	}
 	bad := false
 	if st.redeliveryRoots == nil {

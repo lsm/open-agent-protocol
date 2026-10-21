@@ -4287,13 +4287,7 @@ pub const Machine = struct {
         const request = self.requests.get(field(envelope, "in_reply_to"));
         const restarting = records.len > 0 or (if (request) |asked| memberBool(asked.payload, "reopen") else false);
         const carried = if (request) |asked| asked.carries_message else false;
-        var queued = false;
-        for (holder.order.items) |id| {
-            if (self.runs.get(id)) |run| {
-                if (!run.terminal and !run.started) queued = true;
-            }
-        }
-        if (records.len == 0 and holder.redelivery_held == null and !queued and !restarting) return;
+        if (!restarting) return;
         const a = self.arena.allocator();
         var held: std.ArrayList([]const u8) = holder.redelivery_held orelse .empty;
         if (holder.redelivery_held == null) {

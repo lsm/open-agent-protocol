@@ -71,13 +71,7 @@ impl State {
             .map(|r| payload::<SessionOpenRequest>(&r.envelope))
             .unwrap_or_default();
         let restarting = requested.reopen || !records.is_empty();
-        let queued = self
-            .order
-            .get(&session)
-            .into_iter()
-            .flatten()
-            .any(|id| self.runs.get(id).is_some_and(|r| !r.terminal && !r.started));
-        if records.is_empty() && history.held.is_none() && !queued && !restarting {
+        if !restarting {
             self.redeliveries.insert(session, history);
             return;
         }

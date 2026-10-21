@@ -29,7 +29,7 @@ withdrawn root; and roots belonging to another pair. Every new fixture cites reg
 Also observe refusal of an unpaired restored queued carrier, a restart omitting
 all pairs, and a later changed root after an unpaired first response. For that last trace,
 the helper requires the diagnostic at the first bad response (index 3). Cursor-resume
-fixtures with a running run and reservation remain accepted; these do not declare
+fixtures with a running run and reservation, or an already observed queue, remain accepted; these do not declare
 a restart. Carrier IDs seen only as old predecessors or withdrawn roots cannot
 be reused as fresh carriers. The restored-queue reopen fixture now carries its required pairs.
 

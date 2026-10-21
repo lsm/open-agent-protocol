@@ -72,7 +72,7 @@ def mutations(language):
             ("old-carrier", "self-replacement", "active.RunID == prev || active.RunID == root", "active.RunID == active.RunID && false"),
             ("old-order", "queue-order-conflicts-with-held", "r.order <= priorOrder", "r.order < priorOrder && false"),
             ("close-carriers", "chain", "r.terminal, r.terminalAt = true, i", "r.terminal, r.terminalAt = false, i"),
-            ("live-open", "live-open-before-restart", "if p.Recovery == nil || !p.Recovery.Recovered {", "if false {"),
+            ("cursor-resume", "cursor-resumes-known-queue", "if !restarting {", "if restarting && false {"),
         ]
     if language == "rust":
         return [
@@ -95,10 +95,10 @@ def mutations(language):
             ("old-carrier", "self-replacement", "active.run_id.as_str() == prev || active.run_id.as_str() == root", "false"),
             ("old-order", "queue-order-conflicts-with-held", "run.order <= order", "order != order"),
             ("close-carriers", "chain", "run.terminal = true;", "run.terminal = false;"),
-            ("live-open", "live-open-before-restart", "if !p.recovery.as_ref().is_some_and(|r| r.recovered) {", "if false {"),
+            ("cursor-resume", "cursor-resumes-known-queue", "if !restarting {", "if restarting && false {"),
         ]
     return [
-        ("live-open", "live-open-before-restart", 'if (!memberBool(recovery, "recovered")) {', "if (false) {"),
+        ("cursor-resume", "cursor-resumes-known-queue", "if (!restarting) return;", "if (restarting and false) return;"),
         ("pairing", "duplicate-previous", "previous.contains(prev) or", "false or"),
         ("complete-pairing", "unpaired-queued-carrier", "restarting and !paired.contains(id)", "restarting and !paired.contains(id) and false"),
         ("all-pairing", "missing-all-pairs", "restarting and !paired.contains(id)", "restarting and !paired.contains(id) and false"),
