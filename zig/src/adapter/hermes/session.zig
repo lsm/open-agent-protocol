@@ -1845,6 +1845,13 @@ test "a completed run distinguishes absent usage from measured zero counts" {
     );
     try testing.expect(payloadAt(&none, 1).get("usage") == null);
 
+    var unknown = try openRun(&arena);
+    try feedEvent(&unknown, scratch, "message.complete",
+        \\{"status":"complete","text":"done","usage":null}
+    );
+    try testing.expectEqualStrings("run.completed", typeAt(&unknown, 1));
+    try testing.expect(payloadAt(&unknown, 1).get("usage") == null);
+
     var partial = try openRun(&arena);
     try feedEvent(&partial, scratch, "message.complete",
         \\{"status":"complete","text":"done","usage":{"input":3,"output":0,"total":3}}
@@ -2175,6 +2182,29 @@ test "negative native usage fails instead of becoming a token measurement" {
         \\{"status":"complete","text":"done","usage":{"output":-5}}
         ,
         \\{"status":"complete","text":"done","usage":{"total":-5}}
+        ,
+    };
+    for (cases) |frame| {
+        var arena = std.heap.ArenaAllocator.init(testing.allocator);
+        defer arena.deinit();
+        var reducer = try openRun(&arena);
+        try feedEvent(&reducer, arena.allocator(), "message.complete", frame);
+        try testing.expectEqualStrings("run.failed", typeAt(&reducer, 1));
+        const payload = payloadAt(&reducer, 1);
+        try testing.expectEqualStrings("hermes_invalid_event", payload.get("error").?.object.get("code").?.string);
+        try testing.expect(payload.get("usage") == null);
+    }
+}
+
+test "non-object native usage refuses completion" {
+    const cases = [_][]const u8{
+        \\{"status":"complete","text":"done","usage":"x"}
+        ,
+        \\{"status":"complete","text":"done","usage":[]}
+        ,
+        \\{"status":"complete","text":"done","usage":0}
+        ,
+        \\{"status":"complete","text":"done","usage":true}
         ,
     };
     for (cases) |frame| {
