@@ -779,7 +779,11 @@ class OapAgentApi {
         }
         if (frame.type === "action.call.started") { yield { type: "tool_execution_start", tool_call_id: str(data.tool_call_id), tool_name: str(data.name) }; continue; }
         if (frame.type === "action.call.completed" || frame.type === "action.call.failed" || frame.type === "action.call.cancelled") {
-          yield { type: "tool_execution_end", tool_call_id: str(data.tool_call_id), is_error: frame.type !== "action.call.completed" };
+          yield {
+            type: "tool_execution_end", tool_call_id: str(data.tool_call_id),
+            is_error: frame.type !== "action.call.completed" || (data.name === "codex.command" && (!isRecord(data.result) || data.result.exitCode !== 0)),
+            ...("result" in data ? { result: data.result } : {}),
+          };
           continue;
         }
         if (frame.type === "content.delta" && isRecord(data.part)) {
