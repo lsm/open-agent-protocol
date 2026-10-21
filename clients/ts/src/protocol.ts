@@ -214,7 +214,13 @@ export interface RecoveryMetadata {
   resume_cursor?: string;
   reason?: string;
   interrupted_runs?: InterruptedRun[];
+  redelivered_runs?: RedeliveredRun[];
 }
+
+export type RedeliveredRun = {
+  previous_run_id: string;
+  root_run_id: string;
+} & ({ run_id: string; withdrawn?: false } | { run_id?: never; withdrawn: true });
 
 export interface InterruptedRun {
   run_id: string;

@@ -126,12 +126,12 @@ type ImageContent struct {
 }
 
 type Usage struct {
-	InputTokens           uint64  `json:"input_tokens,omitempty"`
+	InputTokens           *uint64 `json:"input_tokens,omitempty"`
 	CacheReadInputTokens  *uint64 `json:"cache_read_input_tokens,omitempty"`
 	CacheWriteInputTokens *uint64 `json:"cache_write_input_tokens,omitempty"`
-	OutputTokens          uint64  `json:"output_tokens,omitempty"`
+	OutputTokens          *uint64 `json:"output_tokens,omitempty"`
 	ReasoningTokens       *uint64 `json:"reasoning_tokens,omitempty"`
-	TotalTokens           uint64  `json:"total_tokens,omitempty"`
+	TotalTokens           *uint64 `json:"total_tokens,omitempty"`
 }
 
 type ProtocolError struct {
@@ -152,6 +152,7 @@ type RecoveryMetadata struct {
 	ResumeCursor      string           `json:"resume_cursor,omitempty"`
 	Reason            string           `json:"reason,omitempty"`
 	InterruptedRuns   []InterruptedRun `json:"interrupted_runs,omitempty"`
+	RedeliveredRuns   []RedeliveredRun `json:"redelivered_runs,omitempty"`
 }
 
 const InterruptedByRestart = "restart"
@@ -160,4 +161,11 @@ type InterruptedRun struct {
 	RunID     RunID  `json:"run_id"`
 	Cause     string `json:"cause"`
 	SettledBy string `json:"settled_by"`
+}
+
+type RedeliveredRun struct {
+	PreviousRunID RunID `json:"previous_run_id"`
+	RunID         RunID `json:"run_id,omitempty"`
+	RootRunID     RunID `json:"root_run_id"`
+	Withdrawn     bool  `json:"withdrawn,omitempty"`
 }

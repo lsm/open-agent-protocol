@@ -565,7 +565,13 @@ ask for it, and a position in the endpoint's domain would be one a restart
 cannot continue. A submit that arrives after a shutdown was accepted is refused
 `shutting_down`. After a restart, a reopen's `recovery.interrupted_runs` lists
 each run the restart cut off, as `{run_id, cause: "restart", settled_by:
-"inferred"}`; such a run settled `failed` with `error.code` `interrupted`. The
+"inferred"}`; such a run settled `failed` with `error.code` `interrupted`.
+`recovery.redelivered_runs` records held prompts in their original order. A
+redelivered prompt names `{previous_run_id, run_id, root_run_id}`; its new
+`run_id` appears in `active_runs` as `queued`. A withdrawn prompt names
+`{previous_run_id, root_run_id, withdrawn: true}` and omits `run_id`. The
+previous id is the run replaced by this restart; the root id is the first run
+that carried the prompt, retained across repeated redelivery. The
 decision is [Decision 0050](../decisions/0050-shutdown-is-graceful-forced-or-asked.md).
 
 The core does not define a generic live-query language. A binding or

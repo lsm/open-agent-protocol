@@ -33,6 +33,20 @@ asyncio.run(main())
 
 `client.models` reads the direct provider profile's catalog. Treat returned `model_ref` values as opaque. `client.provider.stream(...)` yields `MessageStart`, content deltas, tool-call events, and `MessageEnd` or `StreamError`. If leaving a stream early, close its async generator so the SDK sends a best-effort cancellation. Direct provider tool definitions map to OAP `input_schema`; tool calls are returned to the caller, not executed in the SDK.
 
+## Breaking changes
+
+`Usage.input` and `Usage.output` are now `Optional[int]`, defaulting to `None`,
+like the other four counters. Under Decision 0063, `None` means unmeasured;
+an explicit `0` is a measurement. Check `is not None` before arithmetic, and
+choose explicitly whether unknown counts are acceptable for your calculation.
+
+Provider and agent unary responses and terminal stream events preserve partial
+usage and any supplied `total`, including the full uint64 maximum
+(`18446744073709551615`). The SDK does not infer a missing total from partial
+counts. An absent usage object remains `None`; `{}` becomes `Usage()` with all
+counters unknown. Present null usage or counters, negative, non-integer and
+out-of-range counts raise `MakaiProtocolError` with code `malformed_response`.
+
 ## Agent sessions
 
 `client.agent` uses the agent-control profile. A session has a default model, which can be changed between runs. A per-call `model_ref` overrides that default for one submit. `available_models` reads the session's effective catalog, distinct from direct provider discovery.

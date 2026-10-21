@@ -22,6 +22,21 @@ fn emit(profile: &str, kind: &str, reply: Option<&str>, payload: Value, scope: V
     let _ = io::stdout().flush();
 }
 
+fn with_usage(mut payload: Value) -> Value {
+    if let Some(raw) =
+        std::env::args().find_map(|arg| arg.strip_prefix("--usage=").map(str::to_owned))
+    {
+        if raw == "absent" {
+            if let Some(object) = payload.as_object_mut() {
+                object.remove("usage");
+            }
+        } else {
+            payload["usage"] = serde_json::from_str(&raw).expect("fixture usage JSON");
+        }
+    }
+    payload
+}
+
 fn main() {
     let shape = std::env::args()
         .nth(1)
@@ -351,7 +366,9 @@ fn main() {
                     profile,
                     "inference.completed",
                     None,
-                    json!({ "message": { "role": "assistant", "content": content }, "stop_reason": "stop", "usage": { "input_tokens": 1, "output_tokens": 2 } }),
+                    with_usage(
+                        json!({ "message": { "role": "assistant", "content": content }, "stop_reason": "stop", "usage": { "input_tokens": 1, "output_tokens": 2 } }),
+                    ),
                     json!({ "inference_id": "inf-1", "sequence": if structured { 7 } else { 4 } }),
                 );
             }
@@ -505,7 +522,9 @@ fn main() {
                     profile,
                     "run.completed",
                     None,
-                    json!({ "session_id": data["session_id"], "run_id": "run-1", "final_response": { "role": "assistant", "content": "agent works" }, "model_id": effective_model, "stop_reason": "end_turn", "usage": { "input_tokens": 2, "output_tokens": 3 } }),
+                    with_usage(
+                        json!({ "session_id": data["session_id"], "run_id": "run-1", "final_response": { "role": "assistant", "content": "agent works" }, "model_id": effective_model, "stop_reason": "end_turn", "usage": { "input_tokens": 2, "output_tokens": 3 } }),
+                    ),
                     scope,
                 );
             }

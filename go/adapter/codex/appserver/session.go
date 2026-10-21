@@ -775,11 +775,10 @@ func (session *session) onTokenUsage(value native.ThreadTokenUsageUpdatedNotific
 	if run == nil || run.terminal {
 		return
 	}
-	run.usage = &protocol.Usage{
-		InputTokens:  growth(total.InputTokens, run.usageBase.InputTokens),
-		OutputTokens: growth(total.OutputTokens, run.usageBase.OutputTokens),
-		TotalTokens:  growth(total.TotalTokens, run.usageBase.TotalTokens),
-	}
+	input := growth(total.InputTokens, run.usageBase.InputTokens)
+	output := growth(total.OutputTokens, run.usageBase.OutputTokens)
+	count := growth(total.TotalTokens, run.usageBase.TotalTokens)
+	run.usage = &protocol.Usage{InputTokens: &input, OutputTokens: &output, TotalTokens: &count}
 }
 
 func growth(now, before int64) uint64 {
@@ -884,7 +883,20 @@ func (session *session) onItem(method string, value native.ItemNotification) {
 		return
 	}
 	payload.Result = value.Item.Result
-	if len(payload.Result) == 0 {
+	if value.Item.Type == "commandExecution" {
+		output := ""
+		if value.Item.Output != nil {
+			output = *value.Item.Output
+		}
+		result := map[string]any{
+			"output": output, "exitCode": value.Item.ExitCode,
+			"command": value.Item.Command, "cwd": value.Item.Cwd,
+		}
+		if len(value.Item.Result) != 0 {
+			result["nativeResult"] = value.Item.Result
+		}
+		payload.Result, _ = json.Marshal(result)
+	} else if len(payload.Result) == 0 {
 		output := ""
 		if value.Item.Output != nil {
 			output = *value.Item.Output

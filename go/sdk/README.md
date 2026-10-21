@@ -93,3 +93,18 @@ Go uses manual retry: a typed `*AuthRequiredError` from provider or agent calls 
 Typed failures include `*StreamError`, `*AuthRequiredError`, `*ProtocolError`, and `*AuthError`. Unsupported OAP features carry code `unsupported_feature`.
 
 Run `go test ./go/sdk/...` and `go vet ./...` from the repository root. Fake-host tests need no API keys; a built `zig/zig-out/bin/oapx` enables the live OAP smoke test.
+
+
+## Usage counts
+
+Decision 0063 keeps all measurements optional. `Usage.Input`, `Output`,
+`CacheRead`, `CacheWrite`, `Reasoning` and `Total` are `*uint64`: nil means
+unknown, a pointer to zero means measured zero, and `uint64` maximum remains
+exact. The SDK retains a reported total and never derives one from partial
+counts. Serialized unknown fields are omitted.
+
+This changes `Input` and `Output` from `int64` to `*uint64`, and the other
+count pointers from `*int64` to `*uint64`. Check nil before dereferencing, and
+use unsigned values when constructing a measurement. Provider and agent
+unary and streaming APIs reject present null, negative, malformed and
+out-of-range usage with `*ProtocolError` and code `malformed_response`.

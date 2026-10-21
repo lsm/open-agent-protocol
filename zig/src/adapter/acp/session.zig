@@ -291,9 +291,9 @@ pub const Reducer = struct {
 
     fn runUsage(self: *Reducer, turn: TurnUsage) !std.json.Value {
         var usage = self.object();
-        if (turn.input != 0) try self.put(&usage, "input_tokens", try self.count(turn.input));
-        if (turn.output != 0) try self.put(&usage, "output_tokens", try self.count(turn.output));
-        if (turn.total != 0) try self.put(&usage, "total_tokens", try self.count(turn.total));
+        try self.put(&usage, "input_tokens", try self.count(turn.input));
+        try self.put(&usage, "output_tokens", try self.count(turn.output));
+        try self.put(&usage, "total_tokens", try self.count(turn.total));
         return .{ .object = usage };
     }
 
@@ -2898,4 +2898,18 @@ test "a prompt answered after its run already settled still counts as the sessio
     try reducer.settlePrompt("end_turn", try usageValue(scratch, devin_turn_usage));
     try testing.expectEqualStrings("run.completed", lastEnvelope(&reducer).get("type").?.string);
     try testing.expect(lastEnvelope(&reducer).get("payload").?.object.get("usage") == null);
+}
+
+test "a measured zero turn reports three zero counts" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var reducer = try openRun(&arena);
+    try reducer.settlePrompt("end_turn", try usageValue(arena.allocator(),
+        \\{"inputTokens":0,"outputTokens":0,"totalTokens":0}
+    ));
+    const usage = lastEnvelope(&reducer).get("payload").?.object.get("usage").?.object;
+    try testing.expectEqual(@as(usize, 3), usage.count());
+    for ([_][]const u8{ "input_tokens", "output_tokens", "total_tokens" }) |key| {
+        try testing.expectEqual(@as(i64, 0), usage.get(key).?.integer);
+    }
 }

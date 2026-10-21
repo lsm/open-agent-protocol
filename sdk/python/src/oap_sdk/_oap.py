@@ -71,14 +71,21 @@ def _model_parts(model_ref: str) -> tuple[str, str, str]:
     return provider, wire, model
 
 
-def _usage(value: Any) -> Optional[Usage]:
-    if not isinstance(value, dict):
+def _usage(payload: Mapping[str, Any]) -> Optional[Usage]:
+    if "usage" not in payload:
         return None
+    value = payload["usage"]
+    if not isinstance(value, dict):
+        raise MakaiProtocolError("OAP usage must be an object", "malformed_response")
     def counted(name: str) -> Optional[int]:
-        count = value.get(name)
-        return count if isinstance(count, int) and not isinstance(count, bool) else None
-    return Usage(input=int(value.get("input_tokens") or 0),
-                 output=int(value.get("output_tokens") or 0),
+        if name not in value:
+            return None
+        count = value[name]
+        if type(count) is not int or not 0 <= count <= 2**64 - 1:
+            raise MakaiProtocolError(f"OAP usage {name} must be a uint64", "malformed_response")
+        return count
+    return Usage(input=counted("input_tokens"),
+                 output=counted("output_tokens"),
                  cache_read=counted("cache_read_input_tokens"),
                  cache_write=counted("cache_write_input_tokens"),
                  reasoning=counted("reasoning_tokens"),
@@ -396,7 +403,7 @@ class ProviderApi:
                     provider, wire, model = _model_parts(model_ref)
                     return CompletionResponse(message=_assistant(payload.get("message")),
                                               provider_id=provider, api=wire, model_id=model,
-                                              usage=_usage(payload.get("usage")),
+                                              usage=_usage(payload),
                                               stop_reason=payload.get("stop_reason"))
         raise MakaiStreamError("inference ended without a terminal event", kind="transport_error")
 
@@ -447,7 +454,7 @@ class ProviderApi:
                                        name=str(call.get("name", "")),
                                        arguments_json=arguments if isinstance(arguments, str) else json.dumps(arguments))
                 elif kind == "inference.completed":
-                    yield MessageEnd(usage=_usage(payload.get("usage")),
+                    yield MessageEnd(usage=_usage(payload),
                                      stop_reason=payload.get("stop_reason"))
                 elif kind == "inference.failed":
                     err = _error(frame, provider_id=provider)
@@ -641,7 +648,7 @@ class AgentApi:
                     provider, wire, model = _model_parts(actual_ref)
                     return CompletionResponse(message=_assistant(value.get("final_response")),
                                               provider_id=provider, api=wire, model_id=model,
-                                              usage=_usage(value.get("usage")),
+                                              usage=_usage(value),
                                               stop_reason=value.get("stop_reason"))
         raise MakaiStreamError("agent run ended without completion", kind="transport_error")
 
@@ -665,12 +672,17 @@ class AgentApi:
                     yield ToolExecutionStart(tool_call_id=str(value.get("tool_call_id", "")),
                                              tool_name=str(value.get("name", "")))
                 elif kind in ("action.call.completed", "action.call.failed", "action.call.cancelled"):
+                    result = value.get("result")
+                    exit_code = result.get("exitCode") if isinstance(result, dict) else None
+                    is_error = kind != "action.call.completed"
+                    if value.get("name") == "codex.command":
+                        is_error = is_error or type(exit_code) not in (int, float) or exit_code != 0
                     yield ToolExecutionEnd(tool_call_id=str(value.get("tool_call_id", "")),
-                                           is_error=kind != "action.call.completed")
+                                           is_error=is_error, result=result)
                 elif kind == "run.completed":
                     actual_ref = value.get("model_id") or model_ref or ""
                     provider, wire, _ = _model_parts(actual_ref)
-                    yield AgentEnd(usage=_usage(value.get("usage")),
+                    yield AgentEnd(usage=_usage(value),
                                    stop_reason=value.get("stop_reason"),
                                    provider_id=provider, api=wire)
 

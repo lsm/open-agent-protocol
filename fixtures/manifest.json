@@ -14072,6 +14072,144 @@
       "rules": [
         "0001#correlated-reverse-interactions/7"
       ]
+    },
+    {
+      "id": "session-reopen-reports-redelivered-runs",
+      "path": "valid/session-reopen-reports-redelivered-runs.json",
+      "kind": "positive",
+      "valid": true,
+      "phase": "",
+      "codes": [],
+      "units": [
+        "session-reattach",
+        "queue"
+      ],
+      "provenance": [
+        "decisions/0050-shutdown-is-graceful-forced-or-asked.md"
+      ],
+      "rules": [
+        "0050#5/3"
+      ]
+    },
+    {
+      "id": "redelivery-missing-previous-run",
+      "path": "schema-invalid/redelivery-missing-previous-run.json",
+      "kind": "schema-invalid",
+      "valid": false,
+      "phase": "schema",
+      "codes": [
+        "schema_invalid"
+      ],
+      "units": [
+        "session-reattach",
+        "queue"
+      ],
+      "provenance": [
+        "decisions/0050-shutdown-is-graceful-forced-or-asked.md"
+      ],
+      "rules": [
+        "0050#5/4"
+      ]
+    },
+    {
+      "id": "redelivery-missing-root-run",
+      "path": "schema-invalid/redelivery-missing-root-run.json",
+      "kind": "schema-invalid",
+      "valid": false,
+      "phase": "schema",
+      "codes": [
+        "schema_invalid"
+      ],
+      "units": [
+        "session-reattach",
+        "queue"
+      ],
+      "provenance": [
+        "decisions/0050-shutdown-is-graceful-forced-or-asked.md"
+      ],
+      "rules": [
+        "0050#5/4"
+      ]
+    },
+    {
+      "id": "redelivery-missing-new-run",
+      "path": "schema-invalid/redelivery-missing-new-run.json",
+      "kind": "schema-invalid",
+      "valid": false,
+      "phase": "schema",
+      "codes": [
+        "schema_invalid"
+      ],
+      "units": [
+        "session-reattach",
+        "queue"
+      ],
+      "provenance": [
+        "decisions/0050-shutdown-is-graceful-forced-or-asked.md"
+      ],
+      "rules": [
+        "0050#5/4"
+      ]
+    },
+    {
+      "id": "redelivery-withdrawn-carries-new-run",
+      "path": "schema-invalid/redelivery-withdrawn-carries-new-run.json",
+      "kind": "schema-invalid",
+      "valid": false,
+      "phase": "schema",
+      "codes": [
+        "schema_invalid"
+      ],
+      "units": [
+        "session-reattach",
+        "queue"
+      ],
+      "provenance": [
+        "decisions/0050-shutdown-is-graceful-forced-or-asked.md"
+      ],
+      "rules": [
+        "0050#5/4"
+      ]
+    },
+    {
+      "id": "redelivery-not-withdrawn-missing-new-run",
+      "path": "schema-invalid/redelivery-not-withdrawn-missing-new-run.json",
+      "kind": "schema-invalid",
+      "valid": false,
+      "phase": "schema",
+      "codes": [
+        "schema_invalid"
+      ],
+      "units": [
+        "session-reattach",
+        "queue"
+      ],
+      "provenance": [
+        "decisions/0050-shutdown-is-graceful-forced-or-asked.md"
+      ],
+      "rules": [
+        "0050#5/4"
+      ]
+    },
+    {
+      "id": "redelivery-empty-new-run",
+      "path": "schema-invalid/redelivery-empty-new-run.json",
+      "kind": "schema-invalid",
+      "valid": false,
+      "phase": "schema",
+      "codes": [
+        "schema_invalid"
+      ],
+      "units": [
+        "session-reattach",
+        "queue"
+      ],
+      "provenance": [
+        "decisions/0050-shutdown-is-graceful-forced-or-asked.md"
+      ],
+      "rules": [
+        "0050#5/4"
+      ]
     }
   ]
 }

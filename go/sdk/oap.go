@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
+	"strconv"
 	"strings"
 	"time"
 
@@ -204,17 +205,39 @@ func oapTools(tools []Tool) ([]map[string]any, error) {
 	return out, nil
 }
 
-func oapUsage(value jsonObject) *Usage {
-	if value == nil {
-		return nil
+func oapUsage(payload jsonObject) (*Usage, error) {
+	raw, reported := payload["usage"]
+	if !reported {
+		return nil, nil
 	}
-	return &Usage{
-		Input:      int64(value.intOr(0, "input_tokens")),
-		Output:     int64(value.intOr(0, "output_tokens")),
-		CacheRead:  value.reported("cache_read_input_tokens"),
-		CacheWrite: value.reported("cache_write_input_tokens"),
-		Reasoning:  value.reported("reasoning_tokens"),
+	value, ok := raw.(map[string]any)
+	if !ok {
+		return nil, &ProtocolError{Code: CodeMalformedResponse, Message: "OAP usage must be an object"}
 	}
+	usage := &Usage{}
+	for _, field := range []struct {
+		name  string
+		count **uint64
+	}{
+		{"input_tokens", &usage.Input},
+		{"output_tokens", &usage.Output},
+		{"cache_read_input_tokens", &usage.CacheRead},
+		{"cache_write_input_tokens", &usage.CacheWrite},
+		{"reasoning_tokens", &usage.Reasoning},
+		{"total_tokens", &usage.Total},
+	} {
+		raw, reported := value[field.name]
+		if !reported {
+			continue
+		}
+		number, numeric := raw.(json.Number)
+		count, err := strconv.ParseUint(string(number), 10, 64)
+		if !numeric || err != nil {
+			return nil, &ProtocolError{Code: CodeMalformedResponse, Message: "OAP usage " + field.name + " must be an unsigned 64-bit count"}
+		}
+		*field.count = &count
+	}
+	return usage, nil
 }
 
 func oapResponse(payload jsonObject, modelRef, messageKey string) (*CompletionResponse, error) {
@@ -227,8 +250,12 @@ func oapResponse(payload jsonObject, modelRef, messageKey string) (*CompletionRe
 	if err != nil {
 		return nil, err
 	}
+	usage, err := oapUsage(payload)
+	if err != nil {
+		return nil, err
+	}
 	result := &CompletionResponse{ProviderID: provider, API: wire, ModelID: model,
-		StopReason: payload.str("stop_reason"), Usage: oapUsage(payload.obj("usage")),
+		StopReason: payload.str("stop_reason"), Usage: usage,
 		Message: parsed}
 	return result, nil
 }
