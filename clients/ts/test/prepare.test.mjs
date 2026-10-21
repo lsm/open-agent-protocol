@@ -33,6 +33,10 @@ function fixture(t, compiler) {
     npm_config_fund: 'false',
   };
   function run(command, args, cwd = source) {
+    if (command === 'npm' && process.env.npm_execpath) {
+      args = [process.env.npm_execpath, ...args];
+      command = process.execPath;
+    }
     const result = spawnSync(command, args, { cwd, env, encoding: 'utf8', timeout: 60000 });
     assert.ifError(result.error);
     return result;
@@ -44,11 +48,14 @@ function fixture(t, compiler) {
   return {
     source,
     install() {
-      return run('npm', ['install', '--offline', '--foreground-scripts', '--package-lock=false', source], consumer);
+      const result = run('npm', ['install', '--offline', '--foreground-scripts', '--package-lock=false', source], consumer);
+      t.diagnostic(`npm install file dependency: exit ${result.status}`);
+      return result;
     },
     observe() {
       const result = run(process.execPath, ['--input-type=module', '-e', "import { prepareProbe } from 'oap-client'; process.stdout.write(prepareProbe);"], consumer);
       assert.equal(result.status, 0, result.stdout + result.stderr);
+      t.diagnostic(`consumer import: ${result.stdout}`);
       return result.stdout;
     },
   };
@@ -68,6 +75,7 @@ test('a stale file dependency cannot install without a compiler', (t) => {
   writeFileSync(source, readFileSync(source, 'utf8').replace("'before'", "'after'"));
   const installed = f.install();
   if (installed.status === 0) assert.fail('stale install succeeded and exposed ' + f.observe());
+  assert.match(installed.stdout + installed.stderr, /oap-client build is missing, stale or incomplete/);
 });
 
 for (const output of ['session.js', 'session.d.ts']) {
@@ -76,8 +84,18 @@ for (const output of ['session.js', 'session.d.ts']) {
     rmSync(join(f.source, 'dist/src', output));
     const installed = f.install();
     assert.notEqual(installed.status, 0, 'partial install succeeded: ' + output);
+    assert.match(installed.stdout + installed.stderr, /oap-client build is missing, stale or incomplete/);
   });
 }
+
+test('a file dependency with modified compiled output cannot install without a compiler', (t) => {
+  const f = fixture(t, false);
+  const output = join(f.source, 'dist/src/index.js');
+  writeFileSync(output, readFileSync(output, 'utf8').replace("'before'", "'tampered'"));
+  const installed = f.install();
+  assert.notEqual(installed.status, 0, 'modified output installed successfully');
+  assert.match(installed.stdout + installed.stderr, /oap-client build is missing, stale or incomplete/);
+});
 
 test('a stale file dependency rebuilds and exposes the current source with a compiler', (t) => {
   const f = fixture(t, true);
