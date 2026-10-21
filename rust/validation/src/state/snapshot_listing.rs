@@ -76,6 +76,18 @@ impl State {
                         format!("/payload/as_of/settled/{index}/run_id"),
                         "a snapshot cannot claim one run settled twice",
                     ));
+                } else if let Some(terminal) = self
+                    .runs
+                    .get(entry.run_id.as_str())
+                    .filter(|run| run.session == p.session_id.as_str())
+                    .and_then(|run| run.terminal_sequence)
+                {
+                    if entry.sequence != terminal {
+                        found.push((
+                            format!("/payload/as_of/settled/{index}/sequence"),
+                            "a settled claim must name the observed terminal sequence",
+                        ));
+                    }
                 }
             }
         }

@@ -210,9 +210,9 @@ func (s *state) checkActiveRunsListing(i, line int, e protocol.Envelope, p proto
 			s.addExpected(CodeSessionStateMismatch, i, line, e, pointer+"/run_id", "active_runs lists a run that had already settled before the read was requested", "a nonterminal run", string(entry.RunID), string(entry.RunID))
 			continue
 		}
-		if r.terminal && entry.AsOfSequence != nil && *entry.AsOfSequence >= r.next-1 {
+		if r.terminal && r.terminalSequence != nil && entry.AsOfSequence != nil && *entry.AsOfSequence >= *r.terminalSequence {
 
-			s.addExpected(CodeSessionStateMismatch, i, line, e, pointer+"/as_of_sequence", "active_runs lists a run at a position it had already settled at", fmt.Sprintf("a position before %d", r.next-1), fmt.Sprintf("%d", *entry.AsOfSequence), string(entry.RunID))
+			s.addExpected(CodeSessionStateMismatch, i, line, e, pointer+"/as_of_sequence", "active_runs lists a run at a position it had already settled at", fmt.Sprintf("a position before %d", *r.terminalSequence), fmt.Sprintf("%d", *entry.AsOfSequence), string(entry.RunID))
 		}
 		if r.order <= lastOrder || leads > 0 {
 
@@ -443,8 +443,8 @@ func (s *state) recordSettledClaims(i, line int, e protocol.Envelope, p protocol
 			continue
 		}
 		if r.terminal {
-			if r.next-1 != entry.Sequence {
-				s.addExpected(CodeSessionStateMismatch, i, line, e, "/payload/as_of/settled", "snapshot claims a terminal sequence the run did not settle at", fmt.Sprintf("%d", r.next-1), fmt.Sprintf("%d", entry.Sequence), string(entry.RunID))
+			if r.terminalSequence != nil && *r.terminalSequence != entry.Sequence {
+				s.addExpected(CodeSessionStateMismatch, i, line, e, "/payload/as_of/settled", "snapshot claims a terminal sequence the run did not settle at", fmt.Sprintf("%d", *r.terminalSequence), fmt.Sprintf("%d", entry.Sequence), string(entry.RunID))
 			}
 			continue
 		}
