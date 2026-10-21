@@ -7,7 +7,7 @@ python3 .claude/skills/verify/scripts/rust-deferred-captures.py --output-dir /tm
 cargo test --manifest-path rust/Cargo.toml -p oap-validation --test snapshot_claims
 ```
 
-The helper rebuilds and invokes Go, Rust and Zig's public validator CLIs on 41
+The helper rebuilds and invokes Go, Rust and Zig's public validator CLIs on 45
 shared and mutated traces. Pending interactions must match the stated position,
 including requests and resolutions observed after a snapshot, historical reads
 after a resolution, and opaque interactions recovered behind a cursor. Naming
@@ -15,6 +15,8 @@ pending interactions without a position fails; a position the run never reaches
 fails at trace closure. The same rule applies to open responses and to snapshots
 on an endpoint that does not advertise the queue.
 
+A queued claim on a started admission is also held until its start arrives;
+admission status cannot exempt a capture from the observed start.
 A queued or cancelling reservation's claimed position must agree with its
 eventual start. Reporting a reservation as executing obliges a later start.
 A future settled claim must be answered by the next event in that run, with the
@@ -28,8 +30,8 @@ With no other builds or Rust edits in the worktree, run:
 python3 .claude/skills/verify/scripts/rust-deferred-captures.py --mutation-check --output-dir /tmp/oap-deferred-mutations-<unique>
 ```
 
-Seven source mutations weaken pending-set equality, trace-closure checks,
-queued/cancelling promotion checks, next-event settlement, and interaction opening
+Nine source mutations weaken pending-set equality, trace-closure checks,
+queued/cancelling promotion checks, the started-admission gate, next-event settlement, and interaction opening
 and resolution positions. Each must compile and change a public CLI judgment;
 compiler errors do not count. Sources are restored in `finally`, the validator
 is rebuilt, and all Rust cases are replayed after restoration. The script saves

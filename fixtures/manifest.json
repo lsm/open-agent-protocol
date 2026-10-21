@@ -5579,7 +5579,7 @@
         "queue"
       ],
       "rules": [
-        "0007#a-settled-run-is-named-not-merely-dropped/4"
+        "0007#a-settled-run-is-named-not-merely-dropped/3"
       ],
       "provenance": [
         "drafts/staged-units-graduation.md",

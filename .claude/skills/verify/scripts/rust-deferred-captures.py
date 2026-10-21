@@ -129,6 +129,8 @@ def main():
         mutations = [
             (module, "expected == listed", "true", "queue-state-omits-pending-interaction"),
             (ROOT / "rust/validation/src/state.rs", "        self.close_snapshot_claims();", "", "queue-state-as-of-never-reached"),
+            (ROOT / "rust/validation/src/state.rs", "        self.close_snapshot_claims();", "", "queue-state-settled-terminal-never-arrives"),
+            (module, "            if run.started {", "            if !run.admitted_queued || run.started {", "queue-state-started-admission-queued-before-start"),
             (module, "capture >= start", "false", "queue-state-queued-at-forthcoming-start"),
             (module, "*held != (capture < start)", "false", "queue-state-cancelling-reservation-past-its-promotion"),
             (module, "!terminal || e.sequence != claim.sequence", "false", "queue-state-settled-claim-then-activity"),

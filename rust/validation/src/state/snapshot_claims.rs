@@ -117,13 +117,15 @@ impl State {
                     "the pending interactions must match the run at the stated capture position",
                 ));
             }
-            if !run.admitted_queued || run.started {
+            if run.started {
                 continue;
             }
             if entry.status == RunStatus::QUEUED {
                 if entry.as_of_sequence.is_some() {
                     claims.push((Kind::Queued, id.to_owned(), entry.as_of_sequence));
                 }
+            } else if !run.admitted_queued {
+                continue;
             } else if entry.status == RunStatus::CANCELLING && entry.as_of_sequence.is_some() {
                 claims.push((
                     Kind::Reservation(entry.queue_position.is_some()),
