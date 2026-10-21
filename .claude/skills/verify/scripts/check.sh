@@ -38,6 +38,7 @@ run python3 .claude/skills/verify/scripts/interaction-binding.py --output-dir "$
 run python3 .claude/skills/verify/scripts/rust-reopen.py --output-dir "$artifacts/rust-reopen"
 run python3 .claude/skills/verify/scripts/rust-refresh-window.py --output-dir "$artifacts/rust-refresh"
 run python3 .claude/skills/verify/scripts/rust-memory-trace.py --output-dir "$artifacts/rust-memory"
+run python3 .claude/skills/verify/scripts/rust-provider-parity.py --output-dir "$artifacts/rust-provider"
 run python3 .claude/skills/verify/scripts/rust-steer-parity.py --output-dir "$artifacts/rust-steer"
 printf '\nRUN: oapx validate fixtures/schema-invalid/missing-envelope-id.json (expect exit 1, schema_invalid)\n'
 set +e
