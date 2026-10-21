@@ -1,8 +1,10 @@
 """Public Python consumers must retain measurements and refuse malformed usage."""
 
 import json
+import os
 from pathlib import Path
 import subprocess
+import signal
 import sys
 import unittest
 from typing import Any
@@ -15,12 +17,18 @@ MAX = 2**64 - 1
 
 
 def observe(raw: str) -> list[dict[str, Any]]:
-    result = subprocess.run(
+    child = subprocess.Popen(
         [sys.executable, str(SDK / "examples/usage.py"), sys.executable, "-u",
          str(SDK / "tests/fixtures/usage.py"), raw],
-        capture_output=True, text=True, timeout=20)
-    assert result.returncode == 0, result.stderr
-    values: list[dict[str, Any]] = json.loads(result.stdout)
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, start_new_session=True)
+    try:
+        stdout, stderr = child.communicate(timeout=20)
+    except subprocess.TimeoutExpired:
+        os.killpg(child.pid, signal.SIGKILL)
+        child.communicate()
+        raise
+    assert child.returncode == 0, stderr
+    values: list[dict[str, Any]] = json.loads(stdout)
     assert [(value["agent"], value["stream"]) for value in values] == [
         (False, False), (False, True), (True, False), (True, True)]
     return values
