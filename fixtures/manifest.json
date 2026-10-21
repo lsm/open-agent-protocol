@@ -10264,6 +10264,255 @@
       ]
     },
     {
+      "id": "auth-flow-reuses-active-id",
+      "path": "semantic-invalid/auth-flow-reuses-active-id.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "auth_flow_order"
+      ],
+      "units": [
+        "auth"
+      ],
+      "provenance": [
+        "decisions/0029-authentication-over-agent-control.md"
+      ],
+      "rules": [
+        "0029#decision/1"
+      ]
+    },
+    {
+      "id": "auth-flow-reuses-completed-id",
+      "path": "semantic-invalid/auth-flow-reuses-completed-id.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "auth_flow_order"
+      ],
+      "units": [
+        "auth"
+      ],
+      "provenance": [
+        "decisions/0029-authentication-over-agent-control.md"
+      ],
+      "rules": [
+        "0029#decision/1"
+      ]
+    },
+    {
+      "id": "auth-flow-first-sequence-gap",
+      "path": "semantic-invalid/auth-flow-first-sequence-gap.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "sequence_gap"
+      ],
+      "units": [
+        "auth"
+      ],
+      "provenance": [
+        "decisions/0029-authentication-over-agent-control.md"
+      ],
+      "rules": [
+        "0029#decision/3"
+      ]
+    },
+    {
+      "id": "auth-flow-sequence-regression",
+      "path": "semantic-invalid/auth-flow-sequence-regression.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "sequence_regression"
+      ],
+      "units": [
+        "auth"
+      ],
+      "provenance": [
+        "decisions/0029-authentication-over-agent-control.md"
+      ],
+      "rules": [
+        "0029#decision/3"
+      ]
+    },
+    {
+      "id": "auth-flow-terminal-sequence-gap",
+      "path": "semantic-invalid/auth-flow-terminal-sequence-gap.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "sequence_gap"
+      ],
+      "units": [
+        "auth"
+      ],
+      "provenance": [
+        "decisions/0029-authentication-over-agent-control.md"
+      ],
+      "rules": [
+        "0029#decision/3"
+      ]
+    },
+    {
+      "id": "auth-flow-event-after-terminal",
+      "path": "semantic-invalid/auth-flow-event-after-terminal.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "event_after_terminal"
+      ],
+      "units": [
+        "auth"
+      ],
+      "provenance": [
+        "decisions/0029-authentication-over-agent-control.md"
+      ],
+      "rules": [
+        "0029#decision/4"
+      ]
+    },
+    {
+      "id": "auth-flow-duplicate-terminal",
+      "path": "semantic-invalid/auth-flow-duplicate-terminal.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "event_after_terminal"
+      ],
+      "units": [
+        "auth"
+      ],
+      "provenance": [
+        "decisions/0029-authentication-over-agent-control.md"
+      ],
+      "rules": [
+        "0029#decision/4"
+      ]
+    },
+    {
+      "id": "auth-flow-cancel-before-start",
+      "path": "semantic-invalid/auth-flow-cancel-before-start.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "auth_flow_order"
+      ],
+      "units": [
+        "auth"
+      ],
+      "provenance": [
+        "decisions/0029-authentication-over-agent-control.md"
+      ],
+      "rules": [
+        "0029#decision/2"
+      ]
+    },
+    {
+      "id": "auth-flow-cancel-after-terminal",
+      "path": "semantic-invalid/auth-flow-cancel-after-terminal.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "event_after_terminal"
+      ],
+      "units": [
+        "auth"
+      ],
+      "provenance": [
+        "decisions/0029-authentication-over-agent-control.md"
+      ],
+      "rules": [
+        "0029#decision/4"
+      ]
+    },
+    {
+      "id": "auth-flow-cancel-without-completion",
+      "path": "semantic-invalid/auth-flow-cancel-without-completion.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "missing_auth_terminal"
+      ],
+      "units": [
+        "auth"
+      ],
+      "provenance": [
+        "decisions/0029-authentication-over-agent-control.md"
+      ],
+      "rules": [
+        "0029#decision/5"
+      ]
+    },
+    {
+      "id": "auth-flow-immediate-completion",
+      "path": "valid/auth-flow-immediate-completion.json",
+      "kind": "positive",
+      "valid": true,
+      "phase": "",
+      "codes": [],
+      "units": [
+        "auth"
+      ],
+      "provenance": [
+        "decisions/0029-authentication-over-agent-control.md"
+      ],
+      "rules": [
+        "0029#decision/1",
+        "0029#decision/2",
+        "0029#decision/3",
+        "0029#decision/4",
+        "0029#decision/5"
+      ]
+    },
+    {
+      "id": "auth-flow-interleaved",
+      "path": "valid/auth-flow-interleaved.json",
+      "kind": "positive",
+      "valid": true,
+      "phase": "",
+      "codes": [],
+      "units": [
+        "auth"
+      ],
+      "provenance": [
+        "decisions/0029-authentication-over-agent-control.md"
+      ],
+      "rules": [
+        "0029#decision/1",
+        "0029#decision/2",
+        "0029#decision/3",
+        "0029#decision/4",
+        "0029#decision/5"
+      ]
+    },
+    {
+      "id": "auth-flow-refused-start",
+      "path": "valid/auth-flow-refused-start.json",
+      "kind": "positive",
+      "valid": true,
+      "phase": "",
+      "codes": [],
+      "units": [
+        "auth"
+      ],
+      "provenance": [
+        "decisions/0029-authentication-over-agent-control.md"
+      ],
+      "rules": [
+        "0029#decision/5"
+      ]
+    },
+    {
       "id": "auth-event-before-start",
       "path": "semantic-invalid/auth-event-before-start.json",
       "kind": "semantic-invalid",
@@ -10279,6 +10528,9 @@
       "provenance": [
         "decisions/0029-authentication-over-agent-control.md",
         "decisions/0043-auth-providers-carry-how-they-accept-a-credential.md"
+      ],
+      "rules": [
+        "0029#decision/2"
       ]
     },
     {
@@ -10297,6 +10549,9 @@
       "provenance": [
         "decisions/0029-authentication-over-agent-control.md",
         "decisions/0043-auth-providers-carry-how-they-accept-a-credential.md"
+      ],
+      "rules": [
+        "0029#decision/5"
       ]
     },
     {
@@ -13738,6 +13993,9 @@
       "provenance": [
         "decisions/0029-authentication-over-agent-control.md",
         "decisions/0043-auth-providers-carry-how-they-accept-a-credential.md"
+      ],
+      "rules": [
+        "0029#decision/2"
       ]
     },
     {
@@ -13756,6 +14014,9 @@
       "provenance": [
         "decisions/0029-authentication-over-agent-control.md",
         "decisions/0043-auth-providers-carry-how-they-accept-a-credential.md"
+      ],
+      "rules": [
+        "0029#decision/5"
       ]
     },
     {

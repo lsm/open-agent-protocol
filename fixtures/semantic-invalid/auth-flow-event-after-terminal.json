@@ -1,0 +1,6 @@
+[
+  {"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"auth.login.start.request","id":"start-req","payload":{"provider_id":"example"}},
+  {"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"auth.login.start.response","id":"start-resp","in_reply_to":"start-req","payload":{"flow_id":"flow-1"}},
+  {"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"auth.login.completed","id":"completed","sequence":1,"payload":{"flow_id":"flow-1","provider_id":"example","status":"success"}},
+  {"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"auth.login.event","id":"late-event","sequence":2,"payload":{"flow_id":"flow-1","provider_id":"example","kind":"progress","message":"Complete login in the host"}}
+]

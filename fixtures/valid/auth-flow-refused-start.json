@@ -1,0 +1,4 @@
+[
+  {"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"auth.login.start.request","id":"start-req","payload":{"provider_id":"example"}},
+  {"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"error.response","id":"start-resp","in_reply_to":"start-req","payload":{"error":{"code":"unsupported_feature","message":"Synthetic refusal"}}}
+]

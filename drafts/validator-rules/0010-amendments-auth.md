@@ -3,9 +3,9 @@
 Decisions 0010, 0012, 0013, 0026, 0029 and 0043: the rows behind every
 diagnostic the validators raise for terminal provenance, steering and the
 standalone login flow. Go, Zig and Rust name the function in `go/validation/`,
-`zig/src/validation/` and `rust/validation/src/state/`. Rust judges terminals,
-a steer admitted as a new run and a steer carrying run controls, and has no
-other steer or auth check yet. Format:
+`zig/src/validation/` and `rust/validation/src/state/`. Rust implementation sites
+are listed per row. Its standalone auth lifecycle covers `0029#decision/1–5`;
+provider binding, cancel-response binding and auth capability gates remain owed. Format:
 [README](README.md).
 
 Decision 0013 adopts section T4 of
@@ -89,11 +89,11 @@ Source: [`decisions/0029-authentication-over-agent-control.md`](../../decisions/
 
 | id | rule | lines | code | Go | Zig | Rust |
 | --- | --- | --- | --- | --- | --- | --- |
-| `0029#decision/1` | `auth.login.start.response` MUST carry a `flow_id` no earlier flow in the trace used. | L37 | `auth_flow_order` | `authstate.go:authStartResponse` | `semantic.zig:authEnvelope` | — |
-| `0029#decision/2` | The start response MUST precede every event, cancel and terminal of its flow. | L48 | `auth_flow_order` | `authstate.go:authFlowFor` | `semantic.zig:authEnvelope` | — |
-| `0029#decision/3` | A flow's events and terminal MUST carry a positive, contiguous `sequence` for that flow. | L48–50 | `sequence_gap`, `sequence_regression` | `authstate.go:authSequence` | `semantic.zig:authEnvelope` | — |
-| `0029#decision/4` | Nothing for a flow follows its terminal. | L50–51 | `event_after_terminal` | `authstate.go:authFlowFor` | `semantic.zig:authEnvelope` | — |
-| `0029#decision/5` | An accepted flow MUST end with exactly one `auth.login.completed`. | L40 | `missing_auth_terminal` | `authstate.go:closeAuthFlows` | `semantic.zig:close` | — |
+| `0029#decision/1` | `auth.login.start.response` MUST carry a `flow_id` no earlier flow in the trace used. | L37 | `auth_flow_order` | `authstate.go:authStartResponse` | `semantic.zig:authEnvelope` | `state/auth.rs:auth_start_response` |
+| `0029#decision/2` | The start response MUST precede every event, cancel and terminal of its flow. | L48 | `auth_flow_order` | `authstate.go:authFlowFor` | `semantic.zig:authEnvelope` | `state/auth.rs:auth_dispatch` |
+| `0029#decision/3` | A flow's events and terminal MUST carry a positive, contiguous `sequence` for that flow. | L48–50 | `sequence_gap`, `sequence_regression` | `authstate.go:authSequence` | `semantic.zig:authEnvelope` | `state/auth.rs:auth_dispatch` |
+| `0029#decision/4` | Nothing for a flow follows its terminal. | L50–51 | `event_after_terminal` | `authstate.go:authFlowFor` | `semantic.zig:authEnvelope` | `state/auth.rs:auth_dispatch` |
+| `0029#decision/5` | An accepted flow MUST end with exactly one `auth.login.completed`. | L40 | `missing_auth_terminal` | `authstate.go:closeAuthFlows` | `semantic.zig:close` | `state/auth.rs:close_auth_flows` |
 | `0029#decision/6` | A flow's events and terminal MUST name the provider its start request named. | drafted here, from L35–41 (a flow is started for one `provider_id`); proposed | `scope_mismatch` | `authstate.go:authEvent`, `authstate.go:authCompleted` | `semantic.zig:authEnvelope` | — |
 | `0029#decision/7` | `auth.login.cancel.response` MUST name the flow its request named. | drafted here, from L39 (the response acknowledges that cancellation); proposed | `scope_mismatch` | `authstate.go:authCancelResponse` | `semantic.zig:authEnvelope` | — |
 | `0029#decision/8` | A request for `auth.providers` or `auth.login` on an endpoint that does not advertise the key MUST be refused with `unsupported_feature`. | L42–44 | `unavailable_capability` | — | — | — |
