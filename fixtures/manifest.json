@@ -14026,6 +14026,24 @@
       "rules": [
         "0001#correlated-reverse-interactions/7"
       ]
+    },
+    {
+      "id": "session-reopen-reports-redelivered-runs",
+      "path": "valid/session-reopen-reports-redelivered-runs.json",
+      "kind": "positive",
+      "valid": true,
+      "phase": "",
+      "codes": [],
+      "units": [
+        "session-reattach",
+        "queue"
+      ],
+      "provenance": [
+        "decisions/0050-shutdown-is-graceful-forced-or-asked.md"
+      ],
+      "rules": [
+        "0050#5/3"
+      ]
     }
   ]
 }
