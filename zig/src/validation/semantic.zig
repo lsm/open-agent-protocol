@@ -3543,7 +3543,7 @@ pub const Machine = struct {
         const request = self.requests.get(id) orelse return .wrong;
         if (!std.mem.eql(u8, request.session, session_id) or !admitsMessages(request)) return .wrong;
         if (self.admittedBy(id)) |run| {
-            return if (run_id.len == 0 or std.mem.eql(u8, run.id, run_id)) .good else .wrong;
+            return if (std.mem.eql(u8, run.session, session_id) and (run_id.len == 0 or std.mem.eql(u8, run.id, run_id))) .good else .wrong;
         }
         return if (request.responded) .wrong else .pending;
     }

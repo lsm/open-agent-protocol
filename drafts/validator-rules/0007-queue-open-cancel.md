@@ -80,13 +80,13 @@ Source: [`decisions/0007-queue-delivery.md`](../../decisions/0007-queue-delivery
 | `0007#a-snapshot-states-the-position-it-was-captured-at/25` | An entry MUST NOT state a position its run never reaches. | L525–527 | `session_state_mismatch` | `queue.go:closeQueue` | `checkEntryPending` close | `snapshot_claims.rs:check_snapshot_claims`, `reconcile_snapshot_claims`, `close_snapshot_claims` † |
 | `0007#a-snapshot-states-the-position-it-was-captured-at/26` | `as_of.settled` MUST name a run at most once. | L520–523 | `session_state_mismatch` | `queuestate.go:checkSessionCapture` | `checkSettledClaims` | `snapshot_listing.rs:check_snapshot_listing` |
 | `0007#a-snapshot-states-the-position-it-was-captured-at/27` | A run MUST NOT be both listed in `active_runs` and named in `as_of.settled` by one snapshot. | L510–519 | `session_state_mismatch` | `queuestate.go:checkActiveRunsListing` | `checkSettledClaims` | `snapshot_listing.rs:check_snapshot_listing` |
-| `0007#a-snapshot-states-the-position-it-was-captured-at/28` | Each `as_of.admitted_submit_requests` anchor MUST name a submit request, or an open carrying a message, on the snapshot's session. | L289–291, L409–417 | `session_state_mismatch` | `queuestate.go:checkSessionCapture` | `checkRequiredRuns` | — |
-| `0007#a-snapshot-states-the-position-it-was-captured-at/29` | Each anchor an entry names MUST be a submit request, or an open carrying a message, on that session and, once admitted, admitted to that entry's run. | L419–426 | `session_state_mismatch` | `queuestate.go:checkEntryAnchor` | `checkEntryAnchor` | — |
-| `0007#a-snapshot-states-the-position-it-was-captured-at/30` | A submit request a snapshot claims as admitted MUST have been admitted on that snapshot's session. | L409–413 | `session_state_mismatch` | `queue.go:judgeAdmissionClaim` | `judgeAdmissionClaim` | — |
-| `0007#a-snapshot-states-the-position-it-was-captured-at/31` | A snapshot claiming an admission MUST account for the run it created, in its listing or among the runs it settled. | L414–417 | `session_state_mismatch` | `queue.go:judgeAdmissionClaim` | `judgeAdmissionClaim` | — |
-| `0007#a-snapshot-states-the-position-it-was-captured-at/32` | A submit request an entry claims as admitting its run MUST have been admitted to that run. | L411–413, L423–425 | `session_state_mismatch` | `queue.go:judgeAdmissionClaim` | `judgeAdmissionClaim` | — |
-| `0007#a-snapshot-states-the-position-it-was-captured-at/33` | A submit request a snapshot claims as admitted MUST NOT have been refused. | L411 | `session_state_mismatch` | `queue.go:judgeAdmissionClaim` | `judgeAdmissionClaim` | — |
-| `0007#a-snapshot-states-the-position-it-was-captured-at/34` | A submit request a snapshot claims as admitted MUST receive a response before the trace ends. | L413–414, L506–508 | `session_state_mismatch` | `queue.go:judgeAdmissionClaim` | `judgeAdmissionClaim` | — |
+| `0007#a-snapshot-states-the-position-it-was-captured-at/28` | Each `as_of.admitted_submit_requests` anchor MUST name a submit request, or an open carrying a message, on the snapshot's session. | L289–291, L409–417 | `session_state_mismatch` | `queuestate.go:checkSessionCapture` | `checkRequiredRuns` | `admission_anchors.rs:record_admission_anchor` |
+| `0007#a-snapshot-states-the-position-it-was-captured-at/29` | Each anchor an entry names MUST be a submit request, or an open carrying a message, on that session and, once admitted, admitted to that entry's run. | L419–426 | `session_state_mismatch` | `queuestate.go:checkEntryAnchor` | `checkEntryAnchor` | `admission_anchors.rs:record_admission_anchor` |
+| `0007#a-snapshot-states-the-position-it-was-captured-at/30` | A submit request a snapshot claims as admitted MUST have been admitted on that snapshot's session. | L409–413 | `session_state_mismatch` | `queuestate.go:namesSubmitRequest`<br>`queue.go:judgeAdmissionClaim` | `namesSubmitRequest`<br>`judgeAdmissionClaim` | `admission_anchors.rs:anchor_failure` |
+| `0007#a-snapshot-states-the-position-it-was-captured-at/31` | A snapshot claiming an admission MUST account for the run it created, in its listing or among the runs it settled. | L414–417 | `session_state_mismatch` | `queue.go:judgeAdmissionClaim` | `judgeAdmissionClaim` | `admission_anchors.rs:anchor_failure` |
+| `0007#a-snapshot-states-the-position-it-was-captured-at/32` | A submit request an entry claims as admitting its run MUST have been admitted to that run. | L411–413, L423–425 | `session_state_mismatch` | `queue.go:judgeAdmissionClaim` | `judgeAdmissionClaim` | `admission_anchors.rs:anchor_failure` |
+| `0007#a-snapshot-states-the-position-it-was-captured-at/33` | A submit request a snapshot claims as admitted MUST NOT have been refused. | L411 | `session_state_mismatch` | `queue.go:judgeAdmissionClaim` | `judgeAdmissionClaim` | `admission_anchors.rs:anchor_failure` |
+| `0007#a-snapshot-states-the-position-it-was-captured-at/34` | A submit request a snapshot claims as admitted MUST receive a response before the trace ends. | L413–414, L506–508 | `session_state_mismatch` | `queue.go:judgeAdmissionClaim` | `judgeAdmissionClaim` | `admission_anchors.rs:anchor_failure` |
 | `0007#a-snapshot-states-the-position-it-was-captured-at/35` | A lead entry reported `queued` MUST NOT turn out to be a run its admission started. | L467–469 | `session_state_mismatch` | `queue.go:judgeLedEntry` | `judgeLedEntry` in #1295 (open) | — |
 | `0007#a-snapshot-states-the-position-it-was-captured-at/36` | A snapshot captured after the session's nonterminal active run started MUST NOT drop or replace it unless `as_of.settled` claims it settled; a snapshot excused by the race does not excuse the ones after it. | L374–393, L620–624 | `session_state_mismatch` | `state.go:applyStateDocument` | `applyStateDocument` in #1294 (open) | — |
 | `0007#a-snapshot-states-the-position-it-was-captured-at/37` | An `idle` snapshot MUST NOT name an `active_run_id`. | L398–400, L433–434, L440–443 | `session_state_mismatch` | `state.go:applyStateDocument` | `applyStateDocument` in #1294 (open) | — |
@@ -174,7 +174,7 @@ in that run, with the claimed terminal sequence. Settled rows 1–4 are now port
 Sixteen now-agreeing Rust known-gap ids are removed by this slice.
 
 Admission-leading entries still need these per-run checks attached after their
-admissions arrive; the listing's arrangement and anchors (rows 28–35), model
+admissions arrive; the listing's arrangement and lead classification (row 35), model
 captures and active-state reconciliation (rows 36–37) remain separate. The
 omitted-list check retains both Decision 0057 advertisement arms. The maintained
 per-run journey is `.claude/skills/verify/scripts/rust-deferred-captures.py`.
@@ -184,3 +184,21 @@ The maintained public-consumer journey is
 listing fixtures with Go and Zig, mutates and repairs listing fields, and pins
 both arms of Decision 0057. It requires semantic diagnostics at the affected
 pointer rather than accepting a schema failure as proof.
+
+## Rust admission-anchor port
+
+`admission_anchors.rs` checks rows 28–34 when the snapshot arrives and retains
+unanswered claims until admissions, refusals or trace closure answer them.
+Diagnostics stay attached to the original snapshot. Message-carrying opens bind
+the session allocated by their response; submit and accepted steer admissions
+must match the snapshot session and entry run. A pending session-level claim
+must account for its admitted run in the listing, settled set or scalar active
+pointer. Go and Zig now also check the admitted session in the immediate path,
+matching their deferred checks and row 30.
+
+Nine Rust known-gap ids now agree. Some admission-leading arrangement fixtures
+now draw the expected code through their invalid anchors; that does not port
+their separate arrangement checks. Pending-admission classification, ordering,
+queue placement, per-run claim attachment and row 35 remain separate, along
+with active-state reconciliation, future-terminal listings and model captures.
+The maintained journey is `.claude/skills/verify/scripts/rust-admission-anchors.py`.

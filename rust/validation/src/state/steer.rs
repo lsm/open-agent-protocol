@@ -8,7 +8,7 @@ use crate::codes;
 
 #[derive(Clone, Default)]
 pub(super) struct SteerTrack {
-    request: String,
+    pub(super) request: String,
     messages: Option<Vec<String>>,
     admitted_at: usize,
     settled_at: Option<usize>,

@@ -22,6 +22,18 @@ fn judge(trace: &Value) -> BTreeSet<String> {
     result.diagnostics.into_iter().map(|d| d.code).collect()
 }
 
+fn reopen_load_is_rejected(trace: &Value) -> bool {
+    Validator::new()
+        .unwrap()
+        .validate(&serde_json::to_vec(trace).unwrap(), "reopen")
+        .diagnostics
+        .iter()
+        .any(|d| {
+            d.message
+                .starts_with("a reopen loads a session with no run under way")
+        })
+}
+
 #[test]
 fn a_reopen_cannot_restore_queued_runs_without_recovery_or_restore_a_running_run() {
     for name in [
@@ -64,6 +76,7 @@ fn restored_queue_entries_are_allowed_but_a_running_entry_or_legacy_active_run_i
         judge(&trace),
         BTreeSet::from([codes::SESSION_STATE_MISMATCH.to_owned()])
     );
+    assert!(reopen_load_is_rejected(&trace));
     trace[3]["payload"]["active_run_id"] = Value::String("r1".to_owned());
     trace[3]["payload"]
         .as_object_mut()
@@ -73,17 +86,22 @@ fn restored_queue_entries_are_allowed_but_a_running_entry_or_legacy_active_run_i
         judge(&trace),
         BTreeSet::from([codes::SESSION_STATE_MISMATCH.to_owned()])
     );
+    assert!(reopen_load_is_rejected(&trace));
 }
 
 #[test]
-fn a_reopen_may_admit_the_message_it_carried() {
+fn a_reopen_message_exemption_preserves_other_snapshot_checks() {
     let mut trace = fixture("valid/compound-open-admits-its-message.json");
     trace.as_array_mut().unwrap().truncate(4);
     trace[1]["payload"]["features"]["session.open.reopen"] = serde_json::json!({"level": "native"});
     trace[2]["payload"]["reopen"] = Value::Bool(true);
     trace[3]["payload"]["recovery"] = serde_json::json!({"recovered": true});
+    assert!(!reopen_load_is_rejected(&trace));
     assert_eq!(
         judge(&trace),
-        BTreeSet::from([codes::MISSING_RUN_TERMINAL.to_owned()])
+        BTreeSet::from([
+            codes::MISSING_RUN_TERMINAL.to_owned(),
+            codes::SESSION_STATE_MISMATCH.to_owned(),
+        ])
     );
 }

@@ -235,6 +235,11 @@ impl State {
         else {
             return;
         };
+        if let Some(request) = self.requests.get_mut(&reply) {
+            if request.session.is_empty() {
+                request.session = s(&p.session_id);
+            }
+        }
         let fresh: Vec<&ActiveRun> = p
             .active_runs
             .iter()
