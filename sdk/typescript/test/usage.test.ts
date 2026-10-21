@@ -38,6 +38,9 @@ test("public APIs preserve absent usage, partial counts and independent measured
 });
 
 test("public APIs retain the safe boundary and signal larger counts without failing the response", async () => {
+  await consumer('{"total_tokens":18446744073709551615}', {
+    unrepresentable_counts: [{ code: "unrepresentable_count", field: "total_tokens", value: "18446744073709551615" }],
+  });
   for (const [wire, field] of Object.entries(fields)) {
     await consumer(`{"${wire}":9007199254740991}`, { [field]: Number.MAX_SAFE_INTEGER });
     for (const value of ["9007199254740992", "18446744073709551615"]) {
