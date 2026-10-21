@@ -597,6 +597,7 @@ run asking for `high`; the trace validates.
 Decision 0063 distinguishes an absent count from a measured zero. Both
 adapters keep absent `message.complete` usage absent, retain only reported
 `input`, `output` and `total` members, and preserve measured zeros. A negative
-count is refused with `hermes_invalid_event`; neither unsigned wrapping nor
-clamping is used to manufacture a measurement. These boundary cases are
+count or non-null, non-object `usage` member is refused with
+`hermes_invalid_event`; neither unsigned wrapping nor clamping is used to
+manufacture a measurement. These boundary cases are
 verified with injected native frames in both reducers, not a live gateway run.

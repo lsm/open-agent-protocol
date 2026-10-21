@@ -511,6 +511,9 @@ pub const Reducer = struct {
                         }
                     }
                     try self.put(&body, "usage", .{ .object = totals });
+                } else if (usage != .null) {
+                    try self.failRun("hermes_invalid_event", "invalid settlement");
+                    return;
                 }
             }
             _ = try self.emit(run, "run.completed", .{ .object = body });
