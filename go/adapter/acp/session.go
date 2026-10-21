@@ -25,33 +25,34 @@ type session struct {
 	shutdownTimeout    time.Duration
 	closeMu            sync.Mutex
 
-	mu           sync.Mutex
-	emitMu       sync.Mutex
-	opMu         sync.Mutex
-	switchMu     sync.Mutex
-	client       Client
-	inbound      <-chan rpc.InboundMessage
-	clock        base.Clock
-	ids          base.IDGenerator
-	capacity     int
-	nativeID     string
-	participant  protocol.ParticipantID
-	state        protocol.SessionState
-	models       []native.ConfigValue
-	modelOption  string
-	offersModels bool
-	closed       bool
-	active       *runState
-	runs         map[protocol.RunID]*runState
-	tools        map[string]*toolState
-	interactions map[protocol.InteractionID]*permissionState
-	nextOrder    uint64
-	journal      []protocol.Envelope
-	stop         chan struct{}
-	stopOnce     sync.Once
-	reopened     bool
-	prompted     bool
-	context      *contextUsage
+	mu                  sync.Mutex
+	emitMu              sync.Mutex
+	opMu                sync.Mutex
+	switchMu            sync.Mutex
+	client              Client
+	inbound             <-chan rpc.InboundMessage
+	clock               base.Clock
+	ids                 base.IDGenerator
+	capacity            int
+	nativeID            string
+	participant         protocol.ParticipantID
+	state               protocol.SessionState
+	models              []native.ConfigValue
+	modelOption         string
+	offersModels        bool
+	closed              bool
+	active              *runState
+	runs                map[protocol.RunID]*runState
+	tools               map[string]*toolState
+	interactions        map[protocol.InteractionID]*permissionState
+	nextOrder           uint64
+	journal             []protocol.Envelope
+	stop                chan struct{}
+	stopOnce            sync.Once
+	reopened            bool
+	prompted            bool
+	context             *contextUsage
+	afterPermissionEmit func()
 }
 type runState struct {
 	id              protocol.RunID
@@ -441,6 +442,9 @@ func (s *session) handleRequest(r *rpc.IncomingRequest) {
 	s.mu.Unlock()
 
 	_, _ = s.emitRecorded(run, protocol.TypeActionPermissionRequested, protocol.PermissionRequestedPayload{InteractionID: id, RequestedBy: endpointID, RespondedBy: s.participant, SessionID: s.state.SessionID, RunID: run.id, ToolCallID: tool.id, Title: p.ToolCall.Title, Choices: choices, ArgumentsJSON: tool.rawInput}, false, "", func(event *protocol.Envelope) { ps.requestEventID = event.ID })
+	if s.afterPermissionEmit != nil {
+		s.afterPermissionEmit()
+	}
 	s.mu.Lock()
 	ps.published = true
 	settled := run.terminal && !ps.resolved
