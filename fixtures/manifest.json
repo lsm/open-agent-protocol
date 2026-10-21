@@ -14006,6 +14006,26 @@
       "rules": [
         "0060#a-result-is-json-or-a-content-part-list-open-0011-2/1"
       ]
+    },
+    {
+      "id": "user-input-resolved-moves-its-tool-binding",
+      "path": "semantic-invalid/user-input-resolved-moves-its-tool-binding.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "scope_mismatch"
+      ],
+      "units": [
+        "core",
+        "user-input"
+      ],
+      "provenance": [
+        "decisions/0055-register-batch-2.md"
+      ],
+      "rules": [
+        "0001#correlated-reverse-interactions/7"
+      ]
     }
   ]
 }

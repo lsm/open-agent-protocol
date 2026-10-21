@@ -34,6 +34,7 @@ run ./scripts/check-no-test-litter.sh
 run ./zig/zig-out/bin/oapx validate fixtures/valid/core-completed.json
 run ./zig/zig-out/bin/oapx validate fixtures/valid/permission-resolved-in-the-refresh-window.json
 run ./zig/zig-out/bin/oapx validate fixtures/valid/user-input-resolved-in-the-refresh-window.json
+run python3 .claude/skills/verify/scripts/interaction-binding.py --output-dir "$artifacts/interaction-binding"
 run python3 .claude/skills/verify/scripts/rust-refresh-window.py --output-dir "$artifacts/rust-refresh"
 run python3 .claude/skills/verify/scripts/rust-memory-trace.py --output-dir "$artifacts/rust-memory"
 run python3 .claude/skills/verify/scripts/rust-steer-parity.py --output-dir "$artifacts/rust-steer"
