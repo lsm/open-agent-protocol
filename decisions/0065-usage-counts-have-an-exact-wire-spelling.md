@@ -132,4 +132,5 @@ usage-token checks in Go, Rust and Zig. The raw-preserving shared corpus pins
 all six sites and counts, diagnostic precedence and unchanged hub D31/tool
 numbers; the independent `usage-count-validation` verify journey runs each
 fixture through the three public validator commands. The Python SDK also retains raw `-0` usage tokens until its existing typed
-usage decoder refuses them on provider and agent unary/streaming APIs.
+usage decoder refuses them at all six declared usage sites before provider and
+agent unary/streaming APIs project content or map terminal failures.

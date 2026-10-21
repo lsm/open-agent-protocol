@@ -38,7 +38,7 @@ for line in sys.stdin:
         emit(PROVIDER, "inference.started", **scope, payload={"model_ref": request["payload"]["model_ref"]})
         if site == "inference.failed":
             emit(PROVIDER, site, **scope, payload={
-                "error": {"code": "fixture_error", "message": "fixture failure"}, **usage})
+                "error": {"code": "endpoint_error", "message": "fixture failure"}, **usage})
         else:
             emit(PROVIDER, "inference.completed", **scope, payload={
                 "message": {"role": "assistant", "content": "usage"}, "stop_reason": "stop",
@@ -57,9 +57,11 @@ for line in sys.stdin:
                 "tool_call_id": "fixture-call", "result": "RAW_ORDINARY_NUMBERS"})
         if site == "content.completed":
             emit(AGENT, site, **scope, payload={**scope, "message_id": "fixture-message", **usage})
-        if site in ("run.failed", "run.cancelled"):
+        if site == "run.cancelled":
+            emit(AGENT, site, **scope, payload={**scope, "reason": "fixture cancelled", **usage})
+        elif site == "run.failed":
             emit(AGENT, site, **scope, payload={**scope,
-                "error": {"code": "fixture_error", "message": "fixture failure"}, **usage})
+                "error": {"code": "endpoint_error", "message": "fixture failure"}, **usage})
         else:
             emit(AGENT, "run.completed", **scope, payload={**scope,
                 "final_response": {"role": "assistant", "content": "usage"}, "stop_reason": "stop",

@@ -52,7 +52,9 @@ and accepted counts are exact integers through `18446744073709551615`.
 A raw `-0` count is refused with `MakaiProtocolError(code="malformed_response")`
 on provider and agent unary and streaming APIs. The transport retains that
 noncanonical integer token for the strict usage decoder instead of accepting
-JSON's integer-zero normalization; numbers in tool results and other application
+JSON's integer-zero normalization. Usage is checked before content/failure
+frames can be ignored or converted to ordinary provider errors; valid counts
+retain those frames' behavior. Numbers in tool results and other application
 objects retain their ordinary JSON decoding.
 
 ## Agent sessions

@@ -86,3 +86,16 @@ class UsageTests(unittest.TestCase):
                         self.assertNotIn("usage", value)
                         self.assertEqual(value.get("error"), "malformed_response", value)
                         self.assertEqual(value.get("error_type"), "MakaiProtocolError", value)
+
+    def test_valid_usage_keeps_content_and_failure_behavior(self) -> None:
+        for site in ("content.completed", "run.failed", "run.cancelled", "inference.failed"):
+            for count in (0, MAX):
+                with self.subTest(site=site, count=count):
+                    values = observe(json.dumps({"input_tokens": count}), site)
+                    selected = [value for value in values if value["agent"] == (site != "inference.failed")]
+                    for value in selected:
+                        if site == "content.completed":
+                            self.assertIsNone(value.get("usage", "missing"), value)
+                        else:
+                            self.assertEqual(value.get("error"), None if site == "run.cancelled" else "endpoint_error", value)
+                            self.assertIn(value.get("error_type"), ("MakaiStreamError", "StreamError"), value)

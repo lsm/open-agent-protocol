@@ -36,6 +36,17 @@ def main():
             assert all(value.get("error") == "malformed_response" and
                        value.get("error_type") == "MakaiProtocolError" and "usage" not in value
                        for value in selected), (site, raw, selected)
+    for site in ("content.completed", "run.failed", "run.cancelled", "inference.failed"):
+        for count in (0, 2**64 - 1):
+            raw = json.dumps({"input_tokens": count})
+            observed = helpers["consumer"](args.python_sdk, raw, output, f"valid-{site}-{count}", site)
+            selected = [value for value in observed if value["agent"] == (site != "inference.failed")]
+            results.append({"site": site, "input": raw, "observed": observed})
+            if site == "content.completed":
+                assert all(value.get("usage", "missing") is None for value in selected), selected
+            else:
+                assert all(value.get("error") == (None if site == "run.cancelled" else "endpoint_error") and value.get("error_type") in
+                           ("MakaiStreamError", "StreamError") for value in selected), selected
     control = helpers["consumer"](args.python_sdk, "ordinary-negative-zero", output, "ordinary-negative-zero")
     assert all(value.get("usage", "missing") is None for value in control), control
     assert control[-1]["tool_results"] == [{"input_tokens": 0,
