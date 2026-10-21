@@ -10,10 +10,6 @@
   ],
   "rust": [
     "attach-advertised-without-modes",
-    "auth-completed-before-start",
-    "auth-event-before-start",
-    "auth-missing-terminal",
-    "auth-progress-without-a-terminal",
     "call-omits-a-process-source",
     "call-omits-published-source",
     "compaction-ended-names-a-compaction-that-never-started",

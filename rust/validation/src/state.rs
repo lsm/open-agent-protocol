@@ -1,5 +1,6 @@
 mod admission_anchors;
 mod admissions;
+mod auth;
 mod control_tools;
 mod controls;
 mod interactions;
@@ -48,6 +49,7 @@ pub(crate) struct State {
     late_cancels: HashSet<String>,
     recoveries: HashMap<String, admissions::Recovery>,
     redeliveries: HashMap<String, redelivery::Redelivery>,
+    auth_flows: HashMap<String, auth::Flow>,
     initialized: bool,
     participants: HashSet<String>,
     control_participant: String,
@@ -317,6 +319,7 @@ impl State {
             late_cancels: HashSet::new(),
             recoveries: HashMap::new(),
             redeliveries: HashMap::new(),
+            auth_flows: HashMap::new(),
             initialized: false,
             participants: HashSet::new(),
             control_participant: String::new(),
@@ -455,6 +458,7 @@ impl State {
         }
         self.record_features(e);
         self.feature_for(at, e);
+        self.auth_dispatch(at, e);
         self.redelivery_held(e);
         self.run_dispatch(at, e);
         self.participants_from(at, e);
@@ -782,6 +786,7 @@ impl State {
     }
 
     pub fn close(&mut self) {
+        self.close_auth_flows();
         self.close_admission_anchors();
         self.close_snapshot_claims();
         self.close_steer_snapshots();
