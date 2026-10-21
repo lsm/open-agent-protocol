@@ -4309,6 +4309,9 @@
       "provenance": [
         "drafts/staged-units-graduation.md",
         "decisions/0006-models-catalog.md"
+      ],
+      "rules": [
+        "0006#a-catalog-belongs-to-the-revision-it-was-served-under/6"
       ]
     },
     {
@@ -4327,6 +4330,9 @@
       "provenance": [
         "drafts/staged-units-graduation.md",
         "decisions/0006-models-catalog.md"
+      ],
+      "rules": [
+        "0006#a-catalog-belongs-to-the-revision-it-was-served-under/5"
       ]
     },
     {
@@ -4397,6 +4403,9 @@
       "provenance": [
         "drafts/staged-units-graduation.md",
         "decisions/0006-models-catalog.md"
+      ],
+      "rules": [
+        "0006#current_model_id-is-judged-across-the-querys-window-not-at-an-instant/1"
       ]
     },
     {
@@ -13564,6 +13573,9 @@
       "provenance": [
         "drafts/staged-units-graduation.md",
         "decisions/0006-models-catalog.md"
+      ],
+      "rules": [
+        "0006#a-catalog-belongs-to-the-revision-it-was-served-under/6"
       ]
     },
     {
@@ -13582,6 +13594,9 @@
       "provenance": [
         "drafts/staged-units-graduation.md",
         "decisions/0006-models-catalog.md"
+      ],
+      "rules": [
+        "0006#a-catalog-belongs-to-the-revision-it-was-served-under/5"
       ]
     },
     {

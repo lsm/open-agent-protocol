@@ -2,6 +2,7 @@ mod admissions;
 mod control_tools;
 mod controls;
 mod interactions;
+mod models;
 mod name_pattern;
 mod queue;
 mod redelivery;
@@ -443,6 +444,8 @@ impl State {
         self.list_scope(at, e);
         if e.envelope_type == EnvelopeType::SESSION_LIST_RESPONSE {
             self.session_list_response(at, e);
+        } else if e.envelope_type == EnvelopeType::MODELS_RESPONSE {
+            self.models_response_shape(at, e);
         }
         if e.envelope_type == EnvelopeType::CAPABILITIES_RESPONSE {
             self.snapshot_descriptor();
