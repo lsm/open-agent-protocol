@@ -6012,6 +6012,9 @@
       "provenance": [
         "drafts/staged-units-graduation.md",
         "decisions/0007-queue-delivery.md"
+      ],
+      "rules": [
+        "0007#a-snapshot-states-the-position-it-was-captured-at/19"
       ]
     },
     {
