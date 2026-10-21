@@ -33,6 +33,7 @@ run go run ./go/tools/nocomment --check
 run node scripts/check-no-comments.mjs --check
 run ./scripts/check-zig-patterns.sh
 run ./scripts/check-no-test-litter.sh
+run python3 .claude/skills/verify/scripts/stdio-overflow.py --output-dir "$artifacts/stdio-overflow"
 run python3 .claude/skills/verify/scripts/sdk-command-result.py --output-dir "$artifacts/sdk-command"
 run ./zig/zig-out/bin/oapx validate fixtures/valid/core-completed.json
 run ./zig/zig-out/bin/oapx validate fixtures/valid/permission-resolved-in-the-refresh-window.json
