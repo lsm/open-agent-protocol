@@ -232,7 +232,7 @@ Source: [`decisions/0001-agent-control-v0.1-executable-core.md`](../../decisions
 | --- | --- | --- | --- | --- | --- | --- |
 | `0001#correlated-reverse-interactions/5` | A run MUST NOT reach its terminal with a tool call that has no terminal. | L83–102, 0011 L141–178 | `pending_tool_at_terminal` | `state.go:runEvent` | `semantic.zig:checkPendingAtTerminal` | `state/interactions.rs:pending_at_terminal` |
 | `0001#correlated-reverse-interactions/6` | A run MUST NOT reach its terminal with an interaction pending. | L83–102 | `pending_interaction_at_terminal` | `state.go:runEvent` | `semantic.zig:checkPendingAtTerminal` | `state/interactions.rs:pending_at_terminal` |
-| `0001#correlated-reverse-interactions/7` | A permission resolution MUST NOT name, on the envelope or in the payload, a `tool_call_id` other than the one its request was bound to. | L83–102; 0055 L30–42 | `scope_mismatch` | `state.go:interactionResolved` | `semantic.zig:interactionResolved` | `state/interactions.rs:interaction_resolved` |
+| `0001#correlated-reverse-interactions/7` | A permission or user-input resolution MUST NOT name, on the envelope or, where carried, in the payload, a `tool_call_id` other than the one its request was bound to. | L83–102; 0055 L30–42 | `scope_mismatch` | `state.go:interactionResolved` | `semantic.zig:interactionResolved` | `state/interactions.rs:interaction_resolved` |
 
 ## Port work
 

@@ -646,6 +646,18 @@ impl State {
                     &id,
                 );
             }
+            let envelope_call = os(&e.tool_call_id);
+            if !envelope_call.is_empty() && envelope_call != x.tool_call_id {
+                found(
+                    &mut list,
+                    codes::SCOPE_MISMATCH,
+                    "/tool_call_id",
+                    "resolution envelope reassigns the request's tool binding",
+                    &x.tool_call_id,
+                    &envelope_call,
+                    "",
+                );
+            }
             if kind == "input" {
                 let p: UserInputResolvedPayload = payload(e);
                 if p.status == UserInputResolutionStatus::SUBMITTED {
@@ -665,18 +677,6 @@ impl State {
                         "offered choice",
                         &p.choice_id,
                         &id,
-                    );
-                }
-                let envelope_call = os(&e.tool_call_id);
-                if !envelope_call.is_empty() && envelope_call != x.tool_call_id {
-                    found(
-                        &mut list,
-                        codes::SCOPE_MISMATCH,
-                        "/tool_call_id",
-                        "resolution envelope reassigns the request's tool binding",
-                        &x.tool_call_id,
-                        &envelope_call,
-                        "",
                     );
                 }
                 let payload_call = os(&p.tool_call_id);

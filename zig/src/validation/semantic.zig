@@ -4976,10 +4976,8 @@ pub const Machine = struct {
             const choice = memberString(payload, "choice_id");
             if (choice.len != 0 and !offersChoice(held.choices, choice)) try self.add(code_unmatched_interaction, index);
         }
-        if (kind == .permission) {
-            for ([_][]const u8{ field(envelope, "tool_call_id"), memberString(payload, "tool_call_id") }) |named| {
-                if (named.len != 0 and !std.mem.eql(u8, named, held.tool_call)) try self.add(code_scope_mismatch, index);
-            }
+        for ([_][]const u8{ field(envelope, "tool_call_id"), memberString(payload, "tool_call_id") }) |named| {
+            if (named.len != 0 and !std.mem.eql(u8, named, held.tool_call)) try self.add(code_scope_mismatch, index);
         }
         held.resolved = true;
     }
