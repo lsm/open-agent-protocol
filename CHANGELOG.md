@@ -7,6 +7,57 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+## [0.1.0-alpha.27] - 2026-10-21
+
+### Breaking changes
+
+- **sdk: Preserve native command exit evidence across public streams** ([#1391](https://github.com/lsm/open-agent-protocol/pull/1391))
+
+`go/sdk` adds `Result` to the public `ToolExecutionEnd` struct; downstream unkeyed struct literals must switch to keyed fields or include the new field. Rust exhaustive construction or destructuring of `AgentEvent::ToolExecutionEnd` must include `result` or use `..`. Python and TypeScript add optional result fields. This API expansion is intentional so SDK consumers can inspect command exit evidence. For the exact action name `codex.command`, unknown and nonzero exit codes now project as error; other action names retain their previous lifecycle outcome.
+
+- **protocol: preserve measured zero usage counts in Go** ([#1385](https://github.com/lsm/open-agent-protocol/pull/1385))
+
+- `protocol` (`go/protocol`): `Usage.InputTokens`, `OutputTokens` and `TotalTokens` change from `uint64` to `*uint64`. Use nil for unknown, a pointer for measured counts, and check nil before dereferencing; `docs/go-library.md` has the migration example.
+
+### Added
+
+- **verify: Keep journeys in independent files** ([#1392](https://github.com/lsm/open-agent-protocol/pull/1392)): Keep verification journeys in separate files discovered by directory listing, so adding one no longer edits a shared index.
+
+### Fixed
+
+- **codex: Preserve command exit status in normalized tool results** ([#1390](https://github.com/lsm/open-agent-protocol/pull/1390)): Preserve numeric native command exit codes and explicit null for unknown status in Go and Zig normalized results.
+- **sdk: Preserve native command exit evidence across public streams** ([#1391](https://github.com/lsm/open-agent-protocol/pull/1391)): Retain native command result JSON in Go, Rust, Python and TypeScript SDK events; treat nonzero or unknown Codex exit status as error while preserving the evidence.
+- **zig: Enforce the stdio envelope cap on the raw request span** ([#1388](https://github.com/lsm/open-agent-protocol/pull/1388)): Enforce the 16 MiB stdio envelope cap on raw JSON spans, including whitespace padding and Unicode escapes.
+- **protocol: preserve measured zero usage counts in Go** ([#1385](https://github.com/lsm/open-agent-protocol/pull/1385)): Preserve measured zero usage counts and omit unknown counts in Go, with matching Zig adapter reducers. OpenCode and Hermes reject negative native counts, and Hermes rejects malformed usage.
+
+## [0.1.0-alpha.26] - 2026-10-20
+
+### Added
+
+- **validation: record the Rust provider validator in the register** ([#1387](https://github.com/lsm/open-agent-protocol/pull/1387)): The provider rules were already ported to Rust by #1323 and #1333: all 39 provider fixtures pass the manifest, and Rust lists no known gaps for them.
+- **validation: port steer refusals, terminals and snapshots to the Rust validator** ([#1375](https://github.com/lsm/open-agent-protocol/pull/1375)): Ports the last three decision 0013 rules from `steer.go` to the Rust validator: `steerRefusal` (rows /11–/13), `steerTerminal` (/10) and `closeSteerSnapshots` (/14).
+- **validation: port steer admission and settlement to the Rust validator** ([#1373](https://github.com/lsm/open-agent-protocol/pull/1373)): The Rust validator now judges steered admissions and `run.steer.applied`/`dropped` settlements the way `steer.go` and `semantic.zig` do.
+- **rust: resolve provided-tool calls in the memory adapter** ([#1372](https://github.com/lsm/open-agent-protocol/pull/1372)): A Rust memory session opened with provided tools now resolves the calls it makes to them, as Go's does.
+- **rust: run compactions in the memory adapter** ([#1370](https://github.com/lsm/open-agent-protocol/pull/1370)): The Rust memory session now compacts, as Go's does; its descriptor already advertised it.
+- **rust: steer memory runs at their input gate** ([#1368](https://github.com/lsm/open-agent-protocol/pull/1368)): The Rust memory adapter now admits steer delivery, which its descriptor already advertised.
+- **verify: add and run the macOS OAP verification skill** ([#1366](https://github.com/lsm/open-agent-protocol/pull/1366)): Add the missing `.claude/skills/verify/SKILL.md` so OAP coding work has a repeatable Mac verification baseline before the validator ports.
+
+### Fixed
+
+- **client: verify prepared TypeScript builds before file installs** ([#1384](https://github.com/lsm/open-agent-protocol/pull/1384)): Installing `oap-client` from a prepared checkout could silently reuse stale JavaScript or succeed with missing modules/declarations because `prepare` checked only whether `dist/src/index.js` existed.
+- **validation: judge recovered reopen state in Rust** ([#1380](https://github.com/lsm/open-agent-protocol/pull/1380)): Rust accepted reopened sessions that claimed queued work without recovery, or claimed a running run survived recovery.
+- **validation: preserve user-input tool bindings in all three validators** ([#1379](https://github.com/lsm/open-agent-protocol/pull/1379)): A user-input interaction requested for tool call `t1` could resolve with envelope `tool_call_id: "t9"` and all three validators accepted it.
+- **fix(tui): anchor IME preedit to the composer caret** ([#1377](https://github.com/lsm/open-agent-protocol/pull/1377)): Chinese IME preedit follows the real terminal cursor.
+- **tui: say login again only after renewing the stored token has failed** ([#1376](https://github.com/lsm/open-agent-protocol/pull/1376)): Show “login again” only after an attempt to renew the stored token has failed.
+- **storage: keep a renewed credential, and save only its own entry** ([#1374](https://github.com/lsm/open-agent-protocol/pull/1374)): Keep successfully renewed credentials in memory and persist only the renewed entry.
+- **oapx: renew an expired OAuth token before serve provider sends it** ([#1371](https://github.com/lsm/open-agent-protocol/pull/1371)): Renew expired OAuth credentials before serving provider requests.
+- **provider: renew an expired Copilot token from the stored GitHub token** ([#1369](https://github.com/lsm/open-agent-protocol/pull/1369)): Renew an expired Copilot token from the stored GitHub token instead of requiring a fresh login.
+- **validation: port Rust refresh-window settlement under the cited revision** ([#1367](https://github.com/lsm/open-agent-protocol/pull/1367)): Rust rejected exempt requests citing the pre-update revision between `capabilities.updated` and the refreshed descriptor.
+
+### Changed
+
+- **release: prepare 0.1.0-alpha.25** ([#1365](https://github.com/lsm/open-agent-protocol/pull/1365)): Writes the 0.1.0-alpha.25 changelog section (178 merged PRs since alpha.24, through #1364) and bumps package.json, package-lock.json and zig/build.zig.zon.
+
 ## [0.1.0-alpha.25] - 2026-10-20
 
 ### Highlights

@@ -49,6 +49,17 @@ other programs. Two directions, one set of types:
 one, and `Decision 0032` is why the two trees are peers rather than one being
 a reference implementation of the other.
 
+## Usage counts
+
+`protocol.Usage` uses `*uint64` for all six token counts (Decision 0063).
+A nil pointer means the harness did not report the count and omits the JSON
+member. A pointer to zero means a measured zero and serializes as `0`.
+Callers migrating the three original counters must take addresses when
+constructing usage and check for nil before dereferencing counts they read.
+For example, `zero := uint64(0)` and
+`protocol.Usage{InputTokens: &zero}` encode as `{"input_tokens":0}`;
+`protocol.Usage{}` encodes as `{}`.
+
 ## The public packages
 
 This list is enforced, not documentation: `go/internal/publicset` names every

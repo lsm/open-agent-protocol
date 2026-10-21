@@ -355,6 +355,7 @@ class ToolExecutionEnd:
     tool_call_id: str
     is_error: Optional[bool] = None
     type: Literal["tool_execution_end"] = "tool_execution_end"
+    result: Any = None
 
 
 AgentStreamEvent = Union[

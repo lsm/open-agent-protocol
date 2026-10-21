@@ -126,12 +126,12 @@ type ImageContent struct {
 }
 
 type Usage struct {
-	InputTokens           uint64  `json:"input_tokens,omitempty"`
+	InputTokens           *uint64 `json:"input_tokens,omitempty"`
 	CacheReadInputTokens  *uint64 `json:"cache_read_input_tokens,omitempty"`
 	CacheWriteInputTokens *uint64 `json:"cache_write_input_tokens,omitempty"`
-	OutputTokens          uint64  `json:"output_tokens,omitempty"`
+	OutputTokens          *uint64 `json:"output_tokens,omitempty"`
 	ReasoningTokens       *uint64 `json:"reasoning_tokens,omitempty"`
-	TotalTokens           uint64  `json:"total_tokens,omitempty"`
+	TotalTokens           *uint64 `json:"total_tokens,omitempty"`
 }
 
 type ProtocolError struct {

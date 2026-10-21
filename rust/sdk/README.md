@@ -242,6 +242,24 @@ oap-sdk = { version = "0.1", features = ["download"] }
 
 Without it, an already-cached file is still checksum-verified and used, and a cache miss is a clear error rather than a silent fallback to a different binary than you pinned.
 
+## Usage counts
+
+Decision 0063 keeps every token count optional: `Usage.input`, `output`,
+`cache_read`, `cache_write`, `reasoning` and `total` are `Option<u64>`.
+`None` means unknown, `Some(0)` means measured zero, and `Some(u64::MAX)`
+remains exact. `total` is reported only when the endpoint supplies it;
+the SDK does not infer it from partial counts. Existing callers of `input`
+and `output` must handle `None` instead of assuming a measurement exists.
+
+Absent usage produces `None`; an empty usage object produces
+`Some(Usage::default())`. Provider and agent unary and streaming APIs reject
+present null values, negative, malformed and out-of-range usage with `Error::Protocol` and code
+`malformed_response`, rather than silently discarding a measurement.
+
+`saturating_add` sums the reported observations for each field and saturates
+at `u64::MAX`; as with its existing cache fields, a field remains absent when
+both observations omit it. It does not reconstruct unknown counts.
+
 ## Error handling
 
 All failures are one `Error` enum, mirroring the TypeScript error classes:

@@ -665,8 +665,13 @@ class AgentApi:
                     yield ToolExecutionStart(tool_call_id=str(value.get("tool_call_id", "")),
                                              tool_name=str(value.get("name", "")))
                 elif kind in ("action.call.completed", "action.call.failed", "action.call.cancelled"):
+                    result = value.get("result")
+                    exit_code = result.get("exitCode") if isinstance(result, dict) else None
+                    is_error = kind != "action.call.completed"
+                    if value.get("name") == "codex.command":
+                        is_error = is_error or type(exit_code) not in (int, float) or exit_code != 0
                     yield ToolExecutionEnd(tool_call_id=str(value.get("tool_call_id", "")),
-                                           is_error=kind != "action.call.completed")
+                                           is_error=is_error, result=result)
                 elif kind == "run.completed":
                     actual_ref = value.get("model_id") or model_ref or ""
                     provider, wire, _ = _model_parts(actual_ref)

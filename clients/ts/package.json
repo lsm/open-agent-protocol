@@ -14,9 +14,9 @@
     "node": ">=18"
   },
   "scripts": {
-    "build": "tsc -p tsconfig.json",
-    "prepare": "node -e \"process.exit(require('fs').existsSync('dist/src/index.js')?0:1)\" || npm run build",
-    "test": "npm run build && node --test dist/test/*.test.js"
+    "build": "node scripts/build.mjs",
+    "prepare": "node scripts/build.mjs --prepare",
+    "test": "npm run build && node --test dist/test/client.test.js dist/test/events.test.js dist/test/integration.test.js dist/test/schema.test.js dist/test/sse.test.js test/prepare.test.mjs"
   },
   "devDependencies": {
     "@types/node": "^18.19.130",

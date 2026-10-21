@@ -288,7 +288,7 @@ func TestClaudeProcessReadOnlyReviewCompletesWithoutAGate(t *testing.T) {
 	if text, ok := completed.FinalResponse.Content.Text(); !ok || !strings.Contains(text, providertest.FixtureText) {
 		t.Fatalf("final response=%s", completed.FinalResponse.Content)
 	}
-	if completed.Usage == nil || completed.Usage.InputTokens == 0 || completed.Usage.OutputTokens == 0 {
+	if completed.Usage == nil || (completed.Usage.InputTokens == nil || *completed.Usage.InputTokens == 0) || (completed.Usage.OutputTokens == nil || *completed.Usage.OutputTokens == 0) {
 		t.Fatalf("run.completed carries no usage: %+v", completed.Usage)
 	}
 
