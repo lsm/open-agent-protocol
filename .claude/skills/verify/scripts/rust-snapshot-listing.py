@@ -139,6 +139,21 @@ def main():
             e["payload"]["features"].pop("session.message.delivery.queue", None)
     add("unadvertised-queue-does-not-require-interaction-list", withdrawn, [])
 
+    compaction = "queue-state-compaction-admitted-during-read"
+    before_read = fixture(compaction)
+    read = next(e for e in before_read if e["id"] == "state-read")
+    before_read.remove(read)
+    admission = next(i for i, e in enumerate(before_read) if e["id"] == "compadm")
+    before_read.insert(admission + 1, read)
+    add("compaction-admitted-before-the-read", before_read, [MISMATCH], "/payload/active_runs")
+    add("compaction-admitted-during-the-read", fixture(compaction), [])
+    included = copy.deepcopy(before_read)
+    snapshot = state(included)
+    snapshot["active_runs"].append({"run_id": "r2", "status": "queued",
+                                    "relationship": "primary", "queue_position": 1,
+                                    "as_of_sequence": 0})
+    add("compaction-included-after-admission", included, [])
+
     paths = [str(path) for _, path, _, _, _ in cases]
     commands = {
         "rust": [str(rust)],

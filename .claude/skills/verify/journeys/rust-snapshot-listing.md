@@ -19,3 +19,9 @@ Read-window promotions and settlements in the shared positive fixtures must
 remain valid. Advancing an entry to its observed start or terminal position,
 or moving the read request past an already-published terminal, must reject
 at the corresponding status, capture-position or run-id pointer. The baseline runner includes this journey.
+
+A snapshot captured before an in-flight compaction admission may omit that new
+reservation while retaining the already running run. Moving the read past the
+compaction admission must instead require the reservation. Including that
+reservation repairs the snapshot. These cases exercise the recorded admission
+time through all three public validators.

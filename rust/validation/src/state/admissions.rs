@@ -477,6 +477,7 @@ impl State {
             session: session.clone(),
             next: 1,
             admitted: true,
+            admitted_at: at.0,
             status: RunStatus::QUEUED,
             last: at,
             admitted_queued: queued,
