@@ -14,6 +14,7 @@ mod session_list;
 mod snapshot_claims;
 mod snapshot_listing;
 mod steer;
+mod transcript;
 
 use std::collections::{HashMap, HashSet};
 
@@ -450,6 +451,8 @@ impl State {
         self.list_scope(at, e);
         if e.envelope_type == EnvelopeType::SESSION_LIST_RESPONSE {
             self.session_list_response(at, e);
+        } else if e.envelope_type == EnvelopeType::TRANSCRIPT_LOAD_RESPONSE {
+            self.transcript_load_response(at, e);
         } else if e.envelope_type == EnvelopeType::MODELS_RESPONSE {
             self.models_response_shape(at, e);
         }
