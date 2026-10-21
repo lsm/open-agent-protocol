@@ -5410,6 +5410,9 @@
         "core",
         "queue"
       ],
+      "rules": [
+        "0007#a-snapshot-states-the-position-it-was-captured-at/24"
+      ],
       "provenance": [
         "drafts/staged-units-graduation.md",
         "decisions/0007-queue-delivery.md"
@@ -5575,6 +5578,9 @@
         "core",
         "queue"
       ],
+      "rules": [
+        "0007#a-settled-run-is-named-not-merely-dropped/4"
+      ],
       "provenance": [
         "drafts/staged-units-graduation.md",
         "decisions/0007-queue-delivery.md"
@@ -5592,6 +5598,9 @@
       "units": [
         "core",
         "queue"
+      ],
+      "rules": [
+        "0007#a-settled-run-is-named-not-merely-dropped/3"
       ],
       "provenance": [
         "drafts/staged-units-graduation.md",
@@ -5611,6 +5620,9 @@
         "core",
         "queue"
       ],
+      "rules": [
+        "0007#a-settled-run-is-named-not-merely-dropped/3"
+      ],
       "provenance": [
         "drafts/staged-units-graduation.md",
         "decisions/0007-queue-delivery.md"
@@ -5629,6 +5641,9 @@
         "core",
         "queue"
       ],
+      "rules": [
+        "0007#a-snapshot-states-the-position-it-was-captured-at/22"
+      ],
       "provenance": [
         "drafts/staged-units-graduation.md",
         "decisions/0007-queue-delivery.md"
@@ -5646,6 +5661,9 @@
       "units": [
         "core",
         "queue"
+      ],
+      "rules": [
+        "0007#a-snapshot-states-the-position-it-was-captured-at/25"
       ],
       "provenance": [
         "drafts/staged-units-graduation.md",
@@ -6065,6 +6083,9 @@
       "units": [
         "core",
         "queue"
+      ],
+      "rules": [
+        "0007#a-snapshot-states-the-position-it-was-captured-at/6"
       ],
       "provenance": [
         "drafts/staged-units-graduation.md",
@@ -6768,6 +6789,9 @@
         "core",
         "queue"
       ],
+      "rules": [
+        "0007#a-snapshot-states-the-position-it-was-captured-at/20"
+      ],
       "provenance": [
         "drafts/staged-units-graduation.md",
         "decisions/0007-queue-delivery.md"
@@ -6800,6 +6824,9 @@
         "core",
         "queue"
       ],
+      "rules": [
+        "0007#a-snapshot-states-the-position-it-was-captured-at/20"
+      ],
       "provenance": [
         "drafts/staged-units-graduation.md",
         "decisions/0007-queue-delivery.md"
@@ -6817,6 +6844,9 @@
       "units": [
         "core",
         "queue"
+      ],
+      "rules": [
+        "0007#a-snapshot-states-the-position-it-was-captured-at/20"
       ],
       "provenance": [
         "drafts/staged-units-graduation.md",
@@ -7440,6 +7470,9 @@
         "core",
         "queue"
       ],
+      "rules": [
+        "0007#a-snapshot-states-the-position-it-was-captured-at/24"
+      ],
       "provenance": [
         "drafts/staged-units-graduation.md",
         "decisions/0007-queue-delivery.md"
@@ -7471,6 +7504,9 @@
       "units": [
         "core",
         "queue"
+      ],
+      "rules": [
+        "0007#a-snapshot-states-the-position-it-was-captured-at/24"
       ],
       "provenance": [
         "drafts/staged-units-graduation.md",
@@ -7689,6 +7725,9 @@
       "units": [
         "core",
         "queue"
+      ],
+      "rules": [
+        "0007#a-snapshot-states-the-position-it-was-captured-at/21"
       ],
       "provenance": [
         "drafts/staged-units-graduation.md",
@@ -9320,6 +9359,9 @@
         "core",
         "recovery",
         "control-tools"
+      ],
+      "rules": [
+        "0007#a-snapshot-states-the-position-it-was-captured-at/24"
       ],
       "provenance": [
         "drafts/staged-units-graduation.md",
@@ -11120,6 +11162,9 @@
       ],
       "units": [
         "steer"
+      ],
+      "rules": [
+        "0007#a-snapshot-states-the-position-it-was-captured-at/25"
       ],
       "provenance": [
         "decisions/0013-steer.md"

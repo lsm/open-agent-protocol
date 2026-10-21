@@ -98,6 +98,7 @@ impl State {
         if x.opaque {
             if controlled && terminal {
                 x.resolved = true;
+                x.resolved_at = x.resolved_at.or(e.sequence);
                 x.call.settlements.insert(s(&e.id));
             }
             return;
@@ -113,6 +114,7 @@ impl State {
         };
         if terminal {
             x.resolved = true;
+            x.resolved_at = x.resolved_at.or(e.sequence);
             x.call.settlements.insert(s(&e.id));
         }
         if !accepted {
@@ -219,6 +221,7 @@ impl State {
         }
         let mut x = Interaction::default();
         x.kind = "tool_call";
+        x.opened_at = e.sequence.unwrap_or_default();
         x.requested_by = os(&p.requested_by);
         x.responded_by = responder;
         x.tool_call_id = s(&p.tool_call_id);

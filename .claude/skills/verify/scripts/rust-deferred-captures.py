@@ -21,6 +21,8 @@ NEGATIVE = [
     "queue-open-keeps-a-resolved-interaction-pending",
     "queue-open-adds-an-interaction-the-entry-denied",
     "state-omits-active-runs-with-pending-permission",
+    "control-call-recovered-state-keeps-resolved",
+    "steer-state-position-never-reached",
 ]
 POSITIVE = [
     "queue-state-interaction-resolved-in-flight",
@@ -40,6 +42,7 @@ POSITIVE = [
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--output-dir", type=Path, required=True)
+    parser.add_argument("--mutation-check", action="store_true")
     args = parser.parse_args()
     output = args.output_dir.resolve()
     output.mkdir(parents=True, exist_ok=False)
@@ -104,12 +107,50 @@ def main():
             record = {"case": label, "language": language, "exit": result.returncode, "codes": codes}
             observations.append(record)
             okay = codes == expected and result.returncode == int(bool(expected)) and all(d["phase"] == "semantic" for d in diagnostics)
+            if language == "rust":
+                snapshots = {e["id"] for e in trace if e["type"] in ("session.open.response", "session.state.response", "session.state.updated")}
+                assert all(d.get("envelope_id") in snapshots and d.get("pointer", "").startswith("/payload/") for d in diagnostics if d["code"] == "session_state_mismatch"), diagnostics
             if not okay:
                 failures.append(record)
             print(("PASS" if okay else "FAIL") + ": " + json.dumps(record), flush=True)
     (output / "observations.json").write_text(json.dumps(observations, indent=2) + "\n")
     assert not failures, failures
-    print(f"PASS: {len(cases)} deferred capture/repair traces agree across Go, Rust and Zig; 0 disagreements")
+    print(f"PASS: {len(cases)} deferred capture/repair traces agree across Go, Rust and Zig; 0 disagreements", flush=True)
+    if args.mutation_check:
+        module = ROOT / "rust/validation/src/state/snapshot_claims.rs"
+        mutations = [
+            (module, "expected == listed", "true", "queue-state-omits-pending-interaction"),
+            (ROOT / "rust/validation/src/state.rs", "        self.close_snapshot_claims();", "", "queue-state-as-of-never-reached"),
+            (module, "capture >= start", "false", "queue-state-queued-at-forthcoming-start"),
+            (module, "*held != (capture < start)", "false", "queue-state-cancelling-reservation-past-its-promotion"),
+            (module, "!terminal || e.sequence != claim.sequence", "false", "queue-state-settled-claim-then-activity"),
+            (ROOT / "rust/validation/src/state/interactions.rs", "opened_at: e.sequence.unwrap_or_default()", "opened_at: 0", "historical-position-1-listed-1"),
+            (ROOT / "rust/validation/src/state/interactions.rs", "x.resolved_at = x.resolved_at.or(e.sequence);", "x.resolved_at = None;", "historical-position-2-listed-1"),
+        ]
+        for index, (source, old, new, target) in enumerate(mutations):
+            original = source.read_text()
+            assert original.count(old) == 1, (source, old)
+            try:
+                source.write_text(original.replace(old, new))
+                build = run(["cargo", "build", "--manifest-path", "rust/Cargo.toml", "-p", "oap-validation", "--example", "validate"], f"mutation-{index}-build")
+                assert build.returncode == 0, build.stderr
+                result = run([*commands["rust"], str(output / f"{target}.json")], f"mutation-{index}-result")
+                report = json.loads(result.stdout)
+                codes = sorted({d["code"] for d in report.get("diagnostics") or []})
+                baseline = next(r for r in observations if r["case"] == target and r["language"] == "rust")
+                assert (result.returncode, codes) != (baseline["exit"], baseline["codes"]), (target, report)
+                assert result.returncode in (0, 1) and all(d["phase"] == "semantic" for d in report.get("diagnostics") or []), report
+                print(f"PASS: mutation {index} caught by {target}", flush=True)
+            finally:
+                source.write_text(original)
+        build = run(["cargo", "build", "--manifest-path", "rust/Cargo.toml", "-p", "oap-validation", "--example", "validate"], "restored-build")
+        assert build.returncode == 0, build.stderr
+        for label, _, expected in cases:
+            result = run([*commands["rust"], str(output / f"{label}.json")], f"restored-{label}")
+            report = json.loads(result.stdout)
+            codes = sorted({d["code"] for d in report.get("diagnostics") or []})
+            assert result.returncode == int(bool(expected)) and codes == expected, (label, report)
+        print(f"PASS: {len(mutations)} source mutations caught; sources restored and all Rust cases replayed", flush=True)
 
 
 if __name__ == "__main__":

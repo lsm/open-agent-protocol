@@ -51,6 +51,7 @@ run python3 .claude/skills/verify/scripts/redelivery-wire.py --output-dir "$arti
 run python3 .claude/skills/verify/scripts/interaction-binding.py --output-dir "$artifacts/interaction-binding"
 run python3 .claude/skills/verify/scripts/requester-identity.py --output-dir "$artifacts/requester-identity"
 run python3 .claude/skills/verify/scripts/terminal-capture.py --output-dir "$artifacts/terminal-capture"
+run python3 .claude/skills/verify/scripts/rust-deferred-captures.py --output-dir "$artifacts/rust-deferred-captures"
 run python3 .claude/skills/verify/scripts/rust-snapshot-listing.py --output-dir "$artifacts/rust-snapshot-listing"
 run python3 .claude/skills/verify/scripts/rust-reopen.py --output-dir "$artifacts/rust-reopen"
 run python3 .claude/skills/verify/scripts/rust-refresh-window.py --output-dir "$artifacts/rust-refresh"
