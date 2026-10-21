@@ -797,25 +797,25 @@ pub const Reducer = struct {
 
     fn usageOf(self: *Reducer, frame: std.json.ObjectMap) !std.json.Value {
         var totals = self.object();
-        var input: i64 = 0;
-        var output: i64 = 0;
+        var input: ?i64 = null;
+        var output: ?i64 = null;
         var cache_read: ?i64 = null;
         var cache_write: ?i64 = null;
         if (rpc.lookup(frame, "usage")) |usage| {
             if (usage == .object) {
-                input = integerMember(usage.object, "input_tokens") orelse 0;
-                output = integerMember(usage.object, "output_tokens") orelse 0;
+                input = integerMember(usage.object, "input_tokens");
+                output = integerMember(usage.object, "output_tokens");
                 cache_read = integerMember(usage.object, "cache_read_input_tokens");
                 cache_write = integerMember(usage.object, "cache_creation_input_tokens");
             }
         }
-        if (input != 0) try self.put(&totals, "input_tokens", try self.tokens(input));
+        if (input) |count| try self.put(&totals, "input_tokens", try self.tokens(count));
         if (cache_read) |count| try self.put(&totals, "cache_read_input_tokens", try self.tokens(count));
         if (cache_write) |count| try self.put(&totals, "cache_write_input_tokens", try self.tokens(count));
-        if (output != 0) try self.put(&totals, "output_tokens", try self.tokens(output));
-        if (cache_read != null and cache_write != null) {
-            const total = input +% output +% cache_read.? +% cache_write.?;
-            if (total != 0) try self.put(&totals, "total_tokens", try self.tokens(total));
+        if (output) |count| try self.put(&totals, "output_tokens", try self.tokens(count));
+        if (input != null and output != null and cache_read != null and cache_write != null) {
+            const total = input.? +% output.? +% cache_read.? +% cache_write.?;
+            try self.put(&totals, "total_tokens", try self.tokens(total));
         }
         return .{ .object = totals };
     }
@@ -2632,7 +2632,7 @@ test "a token count is emitted unsigned the way the oracle emits it" {
     const wrapped = firstPayload(&negative, "run.completed").?.get("usage").?.object;
     try testing.expectEqualStrings("18446744073709551615", wrapped.get("input_tokens").?.number_string);
     try testing.expectEqualStrings("18446744073709551615", wrapped.get("total_tokens").?.number_string);
-    try testing.expectEqual(@as(?std.json.Value, null), wrapped.get("output_tokens"));
+    try testing.expectEqual(@as(i64, 0), wrapped.get("output_tokens").?.integer);
 }
 
 test "core usage carries the cache counts and totals only when both are reported" {

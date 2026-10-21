@@ -1026,12 +1026,12 @@ pub const Reducer = struct {
         try self.put(&payload, "stop_reason", str(if (run.last_finish.len > 0) run.last_finish else "unknown"));
         if (run.measured) {
             var usage: std.json.ObjectMap = .empty;
-            if (run.input_tokens != 0) try self.put(&usage, "input_tokens", try unsigned(self.allocator(), run.input_tokens));
+            try self.put(&usage, "input_tokens", try unsigned(self.allocator(), run.input_tokens));
             try self.put(&usage, "cache_read_input_tokens", try unsigned(self.allocator(), run.cache_read_tokens));
             try self.put(&usage, "cache_write_input_tokens", try unsigned(self.allocator(), run.cache_write_tokens));
-            if (run.output_tokens != 0) try self.put(&usage, "output_tokens", try unsigned(self.allocator(), run.output_tokens));
+            try self.put(&usage, "output_tokens", try unsigned(self.allocator(), run.output_tokens));
             try self.put(&usage, "reasoning_tokens", try unsigned(self.allocator(), run.reasoning_tokens));
-            if (run.total_tokens != 0) try self.put(&usage, "total_tokens", try unsigned(self.allocator(), run.total_tokens));
+            try self.put(&usage, "total_tokens", try unsigned(self.allocator(), run.total_tokens));
             try self.put(&payload, "usage", .{ .object = usage });
         }
         _ = try self.emitWith(run, "run.completed", payload, true, reported);

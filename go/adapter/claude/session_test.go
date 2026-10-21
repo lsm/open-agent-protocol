@@ -2387,6 +2387,11 @@ func TestCoreUsageCarriesTheCacheCountsAndTotalsOnlyWhenBothAreReported(t *testi
 	if bare.TotalTokens != nil || (bare.InputTokens == nil || *bare.InputTokens != 7) || (bare.OutputTokens == nil || *bare.OutputTokens != 5) {
 		t.Fatalf("usage = %+v, want input and output with no total it cannot check", bare)
 	}
+	zero := usageOf(strings.Replace(resultFrame("REPLACE_UUID", "success", false, "completed", "done", 0), `"usage":{"input_tokens":7,"output_tokens":5}`, `"usage":{"input_tokens":0,"output_tokens":0,"cache_read_input_tokens":0,"cache_creation_input_tokens":0}`, 1))
+	if zero.InputTokens == nil || *zero.InputTokens != 0 || zero.OutputTokens == nil || *zero.OutputTokens != 0 || zero.TotalTokens == nil || *zero.TotalTokens != 0 {
+		t.Fatalf("usage = %+v, want measured zero input, output and total", zero)
+	}
+
 }
 
 func TestATerminalWithoutACostStillCarriesItsTurnCount(t *testing.T) {
