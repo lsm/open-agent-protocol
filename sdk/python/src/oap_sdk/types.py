@@ -223,10 +223,10 @@ class RunOptions:
 
 @dataclass(frozen=True)
 class Usage:
-    """Token accounting for one provider turn or one aggregate agent run."""
+    """Token accounting; None is unmeasured, distinct from a measured zero."""
 
-    input: int
-    output: int
+    input: Optional[int] = None
+    output: Optional[int] = None
     cache_read: Optional[int] = None
     cache_write: Optional[int] = None
     reasoning: Optional[int] = None

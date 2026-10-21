@@ -41,8 +41,9 @@ class UsageTests(unittest.TestCase):
                     self.assertEqual(value.get("usage", "missing"), expected, value)
 
     def test_malformed_usage_is_a_typed_protocol_error(self) -> None:
+        counts: list[Any] = [None, -1, 1.5, 1.0, True, "3", {}, [], MAX + 1]
         cases = [json.dumps({field: count}) for field in FIELDS
-                 for count in (None, -1, 1.5, True, "3", {}, [], MAX + 1)]
+                 for count in counts]
         cases += ["null", "true", "[]", "3", '"usage"']
         for raw in cases:
             with self.subTest(usage=raw):

@@ -2,6 +2,7 @@
 
 import json
 import sys
+from typing import Any
 
 AGENT = "open-agent-protocol.agent-control-core"
 PROVIDER = "open-agent-protocol.model-provider-core"
@@ -10,7 +11,7 @@ usage = {} if raw == "absent" else {"usage": json.loads(raw)}
 serial = 0
 
 
-def emit(profile, kind, reply=None, **fields):
+def emit(profile: str, kind: str, reply: str | None = None, **fields: Any) -> None:
     global serial
     serial += 1
     frame = {"protocol": "open-agent-protocol", "version": "0.1", "profile": profile,
