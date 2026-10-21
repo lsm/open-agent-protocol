@@ -11,6 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **validation: record the Rust provider validator in the register** ([#1387](https://github.com/lsm/open-agent-protocol/pull/1387)): The provider rules were already ported to Rust by #1323 and #1333: all 39 provider fixtures pass the manifest, and Rust lists no known gaps for them.
 - **validation: port steer refusals, terminals and snapshots to the Rust validator** ([#1375](https://github.com/lsm/open-agent-protocol/pull/1375)): Ports the last three decision 0013 rules from `steer.go` to the Rust validator: `steerRefusal` (rows /11–/13), `steerTerminal` (/10) and `closeSteerSnapshots` (/14).
 - **validation: port steer admission and settlement to the Rust validator** ([#1373](https://github.com/lsm/open-agent-protocol/pull/1373)): The Rust validator now judges steered admissions and `run.steer.applied`/`dropped` settlements the way `steer.go` and `semantic.zig` do.
 - **rust: resolve provided-tool calls in the memory adapter** ([#1372](https://github.com/lsm/open-agent-protocol/pull/1372)): A Rust memory session opened with provided tools now resolves the calls it makes to them, as Go's does.
