@@ -75,7 +75,7 @@ def validators(output):
     }
     cases = [({}, True), ({"input_tokens":0}, True),
              ({"total_tokens":18446744073709551615}, True),
-             ({"input_tokens":-1}, False), ({"total_tokens":"3"}, False), ([], False)]
+             ({"input_tokens":-1}, False), ({"total_tokens":"3"}, False), ({"input_tokens":None}, False), (None, False), ([], False)]
     for index, (usage, valid) in enumerate(cases):
         trace = json.loads(json.dumps(template))
         for frame in trace:
@@ -123,7 +123,7 @@ def main():
     fields = {"input_tokens":"input", "output_tokens":"output", "total_tokens":"total",
               "cache_read_input_tokens":"cache_read", "cache_write_input_tokens":"cache_write",
               "reasoning_tokens":"reasoning"}
-    cases = [("absent", None), ("null", None), ("{}", {})]
+    cases = [("absent", None), ("{}", {})]
     cases += [(json.dumps({wire:0}), {name:0}) for wire, name in fields.items()]
     cases += [(json.dumps({wire:18446744073709551615 for wire in fields}),
                {name:18446744073709551615 for name in fields.values()})]
@@ -134,7 +134,7 @@ def main():
                                 output, str(index)))
         assert len(values) == 4 and all(value.get("usage", "missing") == expected for value in values), values
         print(f"public Rust consumer {raw}: {values}", flush=True)
-    for index, raw in enumerate(['{"input_tokens":-1}', '{"total_tokens":"3"}',
+    for index, raw in enumerate(["null", '{"input_tokens":null}', '{"input_tokens":-1}', '{"total_tokens":"3"}',
                                  '{"output_tokens":18446744073709551616}', "[]"]):
         values = json.loads(run([str(ROOT / "rust/target/debug/usage-consumer"),
                                  str(ROOT / "rust/target/debug/oap-protocol-fake"), raw],

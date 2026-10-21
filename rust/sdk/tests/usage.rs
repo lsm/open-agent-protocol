@@ -44,7 +44,6 @@ async fn fixture(raw: &str) -> Client {
 async fn usage_preserves_absence_measured_zero_partial_and_maximum_counts() {
     let cases = [
         ("absent", Value::Null),
-        ("null", Value::Null),
         ("{}", json!({})),
         (r#"{"input_tokens":0}"#, json!({"input":0})),
         (r#"{"output_tokens":0}"#, json!({"output":0})),
@@ -78,12 +77,7 @@ async fn usage_preserves_absence_measured_zero_partial_and_maximum_counts() {
 
 #[tokio::test]
 async fn usage_refuses_negative_malformed_and_out_of_range_counts() {
-    let mut cases = vec![
-        "true".to_owned(),
-        "[]".to_owned(),
-        "3".to_owned(),
-        r#""usage""#.to_owned(),
-    ];
+    let mut cases = Vec::new();
     for field in [
         "input_tokens",
         "output_tokens",
@@ -93,6 +87,7 @@ async fn usage_refuses_negative_malformed_and_out_of_range_counts() {
         "reasoning_tokens",
     ] {
         for count in [
+            "null",
             "-1",
             "1.5",
             "true",
@@ -104,6 +99,13 @@ async fn usage_refuses_negative_malformed_and_out_of_range_counts() {
             cases.push(format!(r#"{{"{field}":{count}}}"#));
         }
     }
+    cases.extend([
+        "null".to_owned(),
+        "true".to_owned(),
+        "[]".to_owned(),
+        "3".to_owned(),
+        r#""usage""#.to_owned(),
+    ]);
     for raw in cases {
         let client = fixture(&raw).await;
         for agent in [false, true] {
