@@ -2,6 +2,7 @@ package sdk
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"time"
 
@@ -117,7 +118,16 @@ func (s *AgentStream) Next() bool {
 			s.current = &ToolExecutionStart{ToolCallID: p.str("tool_call_id"), ToolName: p.str("name")}
 			return true
 		case "action.call.completed", "action.call.failed", "action.call.cancelled":
-			s.current = &ToolExecutionEnd{ToolCallID: p.str("tool_call_id"), IsError: in.kind() != "action.call.completed"}
+			isError := in.kind() != "action.call.completed"
+			if p.str("name") == "codex.command" {
+				code, known := p.obj("result").num("exitCode")
+				isError = isError || !known || code != 0
+			}
+			var payload struct {
+				Result json.RawMessage `json:"result"`
+			}
+			_ = json.Unmarshal(in.agent.Payload, &payload)
+			s.current = &ToolExecutionEnd{ToolCallID: p.str("tool_call_id"), IsError: isError, Result: payload.Result}
 			return true
 		case "action.permission.requested":
 			if p.str("responded_by") != sdkParticipant {

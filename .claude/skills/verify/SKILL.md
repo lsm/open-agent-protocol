@@ -16,8 +16,10 @@ Use a fresh branch/worktree under `~/focus/worktrees/<name>`. Never run a bare
 `git stash` in a shared checkout. After merging, stop everything you started and
 remove your worktree with `git worktree remove <path>` from another checkout.
 
-Use Go >=1.26, Zig 0.17.0, Rust/Cargo with rustfmt and clippy, Node, and Python 3.
-Run `npm ci --ignore-scripts` at the root for the comment checker.
+Use Go >=1.26, Zig 0.17.0, Rust/Cargo with rustfmt and clippy, Node, and Python >=3.11.
+Run `npm ci --ignore-scripts` at the root and
+`npm --prefix clients/ts ci --ignore-scripts` for SDK/client consumer journeys
+and the comment checker.
 Check `go version`, `zig version`, `rustc --version` and `cargo --version`.
 Use non-login shells: never source or read `~/.zshrc`, auth files, credential
 stores, or keys. Do not print the environment. macOS has no stock `timeout`;
