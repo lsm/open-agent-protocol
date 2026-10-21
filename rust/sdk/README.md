@@ -251,9 +251,9 @@ remains exact. `total` is reported only when the endpoint supplies it;
 the SDK does not infer it from partial counts. Existing callers of `input`
 and `output` must handle `None` instead of assuming a measurement exists.
 
-Absent or null usage produces `None`; an empty usage object produces
+Absent usage produces `None`; an empty usage object produces
 `Some(Usage::default())`. Provider and agent unary and streaming APIs reject
-negative, malformed and out-of-range usage with `Error::Protocol` and code
+present null values, negative, malformed and out-of-range usage with `Error::Protocol` and code
 `malformed_response`, rather than silently discarding a measurement.
 
 `saturating_add` sums the reported observations for each field and saturates

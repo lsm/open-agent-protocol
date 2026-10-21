@@ -287,40 +287,52 @@ impl Tool {
 pub struct Usage {
     #[serde(
         default,
+        deserialize_with = "reported_count",
         skip_serializing_if = "Option::is_none",
         alias = "input_tokens"
     )]
     pub input: Option<u64>,
     #[serde(
         default,
+        deserialize_with = "reported_count",
         skip_serializing_if = "Option::is_none",
         alias = "output_tokens"
     )]
     pub output: Option<u64>,
     #[serde(
         default,
+        deserialize_with = "reported_count",
         skip_serializing_if = "Option::is_none",
         alias = "cache_read_input_tokens"
     )]
     pub cache_read: Option<u64>,
     #[serde(
         default,
+        deserialize_with = "reported_count",
         skip_serializing_if = "Option::is_none",
         alias = "cache_write_input_tokens"
     )]
     pub cache_write: Option<u64>,
     #[serde(
         default,
+        deserialize_with = "reported_count",
         skip_serializing_if = "Option::is_none",
         alias = "reasoning_tokens"
     )]
     pub reasoning: Option<u64>,
     #[serde(
         default,
+        deserialize_with = "reported_count",
         skip_serializing_if = "Option::is_none",
         alias = "total_tokens"
     )]
     pub total: Option<u64>,
+}
+
+fn reported_count<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> std::result::Result<Option<u64>, D::Error> {
+    u64::deserialize(deserializer).map(Some)
 }
 
 impl Usage {
@@ -340,11 +352,7 @@ impl Usage {
     }
 
     pub(crate) fn from_payload(payload: &Value) -> Result<Option<Self>> {
-        payload
-            .get("usage")
-            .filter(|value| !value.is_null())
-            .map(Self::parse)
-            .transpose()
+        payload.get("usage").map(Self::parse).transpose()
     }
 
     pub fn saturating_add(self, other: Self) -> Self {
