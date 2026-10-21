@@ -72,7 +72,11 @@ def cases():
             trace[2]["payload"]["limit"] = limit
         trace[3]["payload"]["entries"] = [dict(copy.deepcopy(entry), entry_id=f"entry-{i}") for i in range(count)]
         result[f"boundary-{count}-limit-{limit}"] = (trace, [])
+    repeated = copy.deepcopy(result["transcript-page-correlated-reversed-replies"][0])
+    repeated[5]["payload"]["entries"] = [copy.deepcopy(repeated[4]["payload"]["entries"][0])]
+    result["entry-repeated-on-another-page"] = (repeated, [])
     return result
+
 
 def replay(language, output, label, case):
     trace, codes = case
@@ -93,15 +97,55 @@ def replay(language, output, label, case):
     return got, want
 
 
+def mutation_check(output, corpus):
+    changes = [
+        ("explicit-limit", "if p.entries.len() as i64 > limit {", "if false {", "transcript-load-over-limit", []),
+        ("default-limit", "TRANSCRIPT_LOAD_DEFAULT_LIMIT", "500", "transcript-load-over-the-default-limit", []),
+        ("limit-boundary", "if p.entries.len() as i64 > limit {", "if p.entries.len() as i64 >= limit {", "boundary-100-limit-None", ["transcript_over_limit"]),
+        ("correlated-limit", ".get(&os(&e.in_reply_to))", '.get("q2")', "transcript-page-correlated-limit", []),
+        ("correlated-cursor", ".get(&os(&e.in_reply_to))", '.get("q2")', "transcript-page-correlated-cursor", []),
+        ("duplicates", "if !seen.insert(entry.entry_id.as_str()) {", "if !seen.insert(entry.entry_id.as_str()) && false {", "transcript-load-duplicate-entry", []),
+        ("separated-duplicates", "if !seen.insert(entry.entry_id.as_str()) {", "if !seen.insert(entry.entry_id.as_str()) && false {", "transcript-load-returns-an-entry-twice-out-of-order", []),
+        ("no-cursor", "requested.is_some_and(|request| request.cursor.is_empty())", "requested.is_some_and(|request| request.cursor.is_empty()) && false", "transcript-load-gap-without-cursor", []),
+        ("empty-gap", "p.entries.is_empty() && !resumed.is_empty()", "p.entries.is_empty() && !resumed.is_empty() && false", "transcript-page-empty-gap-names-entry", []),
+        ("resumed-entry", "if resumed != first.entry_id.as_str() {", "if false {", "transcript-load-gap-elsewhere", []),
+        ("missing-resumed-entry", "if resumed != first.entry_id.as_str() {", "if false {", "transcript-page-gap-omits-first-entry", []),
+        ("first-not-last", "p.entries.first()", "p.entries.last()", "transcript-page-correlated-reversed-replies", ["transcript_gap_mismatch"]),
+        ("independent-checks", "let mut seen = HashSet::new();", "if p.entries.len() as i64 > requested.as_ref().map_or(100, |r| r.limit) { return; }\n        let mut seen = HashSet::new();", "transcript-page-combined-faults", ["transcript_over_limit"]),
+    ]
+    original = SOURCE.read_bytes()
+    results = []
+    try:
+        for label, before, after, target, changed_codes in changes:
+            text = original.decode()
+            if text.count(before) != 1:
+                raise RuntimeError(f"{label}: mutation target is not unique")
+            SOURCE.write_text(text.replace(before, after, 1))
+            build("rust", output, label + "-build")
+            got, want = replay("rust", output, label, corpus[target])
+            changed = {"exit": int(bool(changed_codes)), "codes": sorted(changed_codes), "phases": ["semantic"] if changed_codes else []}
+            if got == want or got != changed:
+                raise RuntimeError(f"{label}: mutation survived or failed inconclusively: {got}, expected change {changed}")
+            results.append({"mutation": label, "case": target, "got": got, "original": want})
+            print(f"KILLED {label}: {got}", flush=True)
+    finally:
+        SOURCE.write_bytes(original)
+        build("rust", output, "restored-build")
+        (output / "mutations.json").write_text(json.dumps(results, indent=2) + "\n")
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output-dir", required=True)
+    parser.add_argument("--mutation-check", action="store_true")
     args = parser.parse_args()
     output = Path(args.output_dir).resolve()
     output.mkdir(parents=True, exist_ok=False)
     corpus = cases()
     for language in ("go", "rust", "zig"):
         build(language, output, language + "-build")
+    if args.mutation_check:
+        mutation_check(output, corpus)
     results, wrong = [], []
     for name, case in corpus.items():
         for language in ("go", "rust", "zig"):
