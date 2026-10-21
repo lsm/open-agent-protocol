@@ -539,3 +539,30 @@ type MakaiClient = {
   close(): Promise<void>;
 };
 ```
+
+
+## Usage counts and precision
+
+Decision 0063 makes all six `UsageSummary` counters optional `number` values.
+An absent counter is unknown; a measured zero stays `0`. Reported totals are
+retained, never inferred from partial counts. Check for `undefined` before
+using `input` or `output`, which were previously required.
+
+The wire decoder retains each numeric literal before conversion. Counts up to
+`Number.MAX_SAFE_INTEGER` (`2^53-1`) stay exact numbers. A valid larger count
+through `uint64` maximum leaves that numeric field absent and adds a typed
+`UnrepresentableUsageCount` to `usage.unrepresentable_counts`, for example:
+
+```json
+{"output":0,"unrepresentable_counts":[{"code":"unrepresentable_count","field":"input_tokens","value":"18446744073709551615"}]}
+```
+
+This signal is SDK metadata, not an additional OAP wire field. The response
+and stream complete normally, and the exact decimal string remains available.
+Counters stay simple numeric values for consumers; no `number | bigint` union
+or rounded count is exposed. This representation is a TypeScript SDK choice,
+not a change to Decision 0063's wire meanings.
+
+Present null, negative, fractional, malformed and out-of-uint64 counts return
+`MakaiProtocolError` with `malformed_response`. Integer spellings stay strict:
+`1.0` and `1e3` are deferred to #1398 together with the other SDKs/validators.

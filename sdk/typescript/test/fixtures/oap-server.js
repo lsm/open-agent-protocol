@@ -11,11 +11,18 @@ const switchedSessions = new Set();
 const agent = "open-agent-protocol.agent-control-core";
 const provider = "open-agent-protocol.model-provider-core";
 function send(request, type, payload, scope = {}) {
-  process.stdout.write(JSON.stringify({
+  let encodedPayload = JSON.stringify(payload);
+  const usage = process.env.OAP_FIXTURE_USAGE;
+  if (usage !== undefined && (type === "run.completed" || type === "inference.completed")) {
+    encodedPayload = JSON.stringify({ ...payload, usage: undefined });
+    if (usage !== "absent") encodedPayload = encodedPayload.slice(0, -1) + ',"usage":' + usage + '}';
+  }
+  const encoded = JSON.stringify({
     protocol: "open-agent-protocol", version: "0.1", profile: request.profile,
-    type, id: `server-${++id}`, payload,
+    type, id: `server-${++id}`,
     ...(request.id ? { in_reply_to: request.id } : {}), ...scope,
-  }) + "\n");
+  });
+  process.stdout.write(encoded.slice(0, -1) + ',"payload":' + encodedPayload + '}\n');
 }
 function event(profile, type, payload, scope = {}) {
   send({ profile }, type, payload, scope);

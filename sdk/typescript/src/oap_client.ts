@@ -1,10 +1,11 @@
+import { parse as parseLossless, isLosslessNumber } from "lossless-json";
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { createInterface, type Interface as ReadlineInterface } from "node:readline";
 import { ulid } from "ulid";
 import { resolveMakaiBinary } from "./binary_resolver";
 import { isAbortError, raceWithAbort } from "./abort_signal";
 import { AUTH_KINDS, AUTH_STATUSES, MakaiAuthError, type AuthFlowHandlers, type AuthKind, type MakaiAuthApi, type MakaiAuthEvent, type ProviderAuthInfo } from "./auth_protocol";
-import { MakaiAuthRequiredError, MakaiStreamError, type AgentRunRequest, type AgentRunResponse, type AgentStreamEvent, type ChatMessage, type CompletionResponse, type ContentPart, type MakaiProviderApi, type ProviderCompleteRequest, type ProviderStreamEvent, type ToolDefinition, type UsageSummary } from "./execution_types";
+import { MakaiAuthRequiredError, MakaiStreamError, type AgentRunRequest, type AgentRunResponse, type AgentStreamEvent, type ChatMessage, type CompletionResponse, type ContentPart, type MakaiProviderApi, type ProviderCompleteRequest, type ProviderStreamEvent, type ToolDefinition, type UsageSummary, type UnrepresentableUsageCount } from "./execution_types";
 import { MakaiProtocolError, type ListModelsRequest, type ListModelsResponse, type MakaiModelsApi, type ModelDescriptor, type ModelCost, type ModelLifecycle, type ModelSource, type ResolveModelRequest, type ResolveModelResponse } from "./models_types";
 import type { CreateMakaiClientOptions, MakaiAgentModelsApi, MakaiClient } from "./execution_client";
 
@@ -175,11 +176,15 @@ export class OapStdioTransport {
   private receive(line: string): void {
     let frame: OapEnvelope;
     try {
-      frame = JSON.parse(line) as OapEnvelope;
+      const decoded = parseLossless(line);
+      if (isRecord(decoded) && isRecord(decoded.payload) && Object.hasOwn(decoded.payload, "usage")) {
+        decoded.payload.usage = wireUsage(decoded.payload.usage);
+      }
+      frame = ordinaryNumbers(decoded) as OapEnvelope;
       if (frame.protocol !== OAP_PROTOCOL || frame.version !== OAP_VERSION || ![OAP_AGENT_PROFILE, OAP_PROVIDER_PROFILE].includes(frame.profile) || typeof frame.type !== "string" || typeof frame.id !== "string" || !isRecord(frame.payload)) {
         throw new Error("invalid OAP envelope");
       }
-    } catch { this.fail(new MakaiProtocolError("invalid OAP frame", "malformed_response")); return; }
+    } catch (error) { this.fail(error instanceof MakaiProtocolError ? error : new MakaiProtocolError("invalid OAP frame", "malformed_response")); return; }
     if (frame.in_reply_to) {
       const pending = this.pending.get(frame.in_reply_to);
       if (pending) { this.pending.delete(frame.in_reply_to); clearTimeout(pending.timer); pending.resolve(frame); return; }
@@ -301,16 +306,44 @@ function parseInputSchema(raw: string): unknown {
   catch { throw new MakaiProtocolError("tool parameters_schema_json is not valid JSON", "invalid_request"); }
 }
 
+const USAGE_FIELDS = {
+  input_tokens: "input", output_tokens: "output", total_tokens: "total",
+  cache_read_input_tokens: "cache_read", cache_write_input_tokens: "cache_write", reasoning_tokens: "reasoning",
+} as const;
+
+function wireUsage(value: unknown): Record<string, unknown> {
+  if (!isRecord(value) || isLosslessNumber(value)) throw new MakaiProtocolError("OAP usage must be an object", "malformed_response");
+  const result: Record<string, unknown> = {};
+  const unrepresentable: UnrepresentableUsageCount[] = [];
+  for (const field of Object.keys(USAGE_FIELDS) as Array<keyof typeof USAGE_FIELDS>) {
+    if (!Object.hasOwn(value, field)) continue;
+    const raw = value[field];
+    if (!isLosslessNumber(raw) || !/^(0|[1-9][0-9]*)$/.test(raw.value) || BigInt(raw.value) > 18446744073709551615n) {
+      throw new MakaiProtocolError(`OAP usage ${field} must be an unsigned 64-bit integer`, "malformed_response");
+    }
+    if (BigInt(raw.value) > BigInt(Number.MAX_SAFE_INTEGER)) {
+      unrepresentable.push({ code: "unrepresentable_count", field, value: raw.value });
+    } else result[field] = Number(raw.value);
+  }
+  if (unrepresentable.length) result.unrepresentable_counts = unrepresentable;
+  return result;
+}
+
+function ordinaryNumbers(value: unknown): unknown {
+  if (isLosslessNumber(value)) return Number(value.value);
+  if (Array.isArray(value)) return value.map(ordinaryNumbers);
+  if (isRecord(value)) return Object.fromEntries(Object.entries(value).map(([key, member]) => [key, ordinaryNumbers(member)]));
+  return value;
+}
+
 function usage(value: unknown): UsageSummary | undefined {
   if (!isRecord(value)) return undefined;
-  return {
-    input: typeof value.input_tokens === "number" ? value.input_tokens : 0,
-    output: typeof value.output_tokens === "number" ? value.output_tokens : 0,
-    ...(typeof value.cache_read_input_tokens === "number" ? { cache_read: value.cache_read_input_tokens } : {}),
-    ...(typeof value.cache_write_input_tokens === "number" ? { cache_write: value.cache_write_input_tokens } : {}),
-    ...(typeof value.reasoning_tokens === "number" ? { reasoning: value.reasoning_tokens } : {}),
-    ...(typeof value.total_tokens === "number" ? { total: value.total_tokens } : {}),
-  };
+  const result: UsageSummary = {};
+  for (const [wire, field] of Object.entries(USAGE_FIELDS)) {
+    if (typeof value[wire] === "number") result[field] = value[wire];
+  }
+  if (Array.isArray(value.unrepresentable_counts)) result.unrepresentable_counts = value.unrepresentable_counts as UnrepresentableUsageCount[];
+  return result;
 }
 
 function modelCost(raw: Record<string, unknown>): ModelCost {
