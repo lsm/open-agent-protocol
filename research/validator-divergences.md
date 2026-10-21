@@ -479,7 +479,7 @@ does not judge reopens yet.
 
 Rules: [`0016-provider.md`](../drafts/validator-rules/0016-provider.md). Go
 and Zig judge all seven items alike over the provider corpus, the sixth and
-seventh through the schema, and Rust has no provider validator. No item is a disagreement
+seventh through the schema, and Rust's `provider.rs` judges them the same way. No item is a disagreement
 between trees. Each is a rule that only [`drafts/model-provider-core.md`](../drafts/model-provider-core.md)
 states, because Decision 0016 leaves the profile's validator rules to a later
 decision (0016 L187–195). The recommendation throughout is to adopt the draft's
@@ -499,7 +499,7 @@ order where parts were streamed. A trace with no parts is outside the rule
 
 Recommendation: (a).
 
-**Status.** Settled by [Decision 0061](../decisions/0061-the-provider-profiles-validator-rules-and-schemas.md). Go and Zig judge it; Rust owes the port.
+**Status.** Settled by [Decision 0061](../decisions/0061-the-provider-profiles-validator-rules-and-schemas.md). Go, Zig and Rust judge it.
 
 ### OPEN-0016-2: is a credential-shaped header refused?
 
@@ -517,7 +517,7 @@ case-insensitive), on a call or in a descriptor's published `headers`
 
 Recommendation: (a).
 
-**Status.** Settled by [Decision 0061](../decisions/0061-the-provider-profiles-validator-rules-and-schemas.md). Go and Zig judge it; Rust owes the port.
+**Status.** Settled by [Decision 0061](../decisions/0061-the-provider-profiles-validator-rules-and-schemas.md). Go, Zig and Rust judge it.
 
 ### OPEN-0016-3: is a grant request carrying a `value` invalid in a trace?
 
@@ -532,7 +532,7 @@ further (`provider.go:Validate`, `provider_semantic.zig:Machine.apply`).
 
 Recommendation: (a).
 
-**Status.** Settled by [Decision 0061](../decisions/0061-the-provider-profiles-validator-rules-and-schemas.md). Go and Zig judge it; Rust owes the port.
+**Status.** Settled by [Decision 0061](../decisions/0061-the-provider-profiles-validator-rules-and-schemas.md). Go, Zig and Rust judge it.
 
 ### OPEN-0016-4: is an inference's `sequence` contiguous from 1?
 
@@ -549,7 +549,7 @@ than 1 or a skip, and `sequence_regression` for a repeat or a step back
 
 Recommendation: (a).
 
-**Status.** Settled by [Decision 0061](../decisions/0061-the-provider-profiles-validator-rules-and-schemas.md). Go and Zig judge it; Rust owes the port.
+**Status.** Settled by [Decision 0061](../decisions/0061-the-provider-profiles-validator-rules-and-schemas.md). Go, Zig and Rust judge it.
 
 ### OPEN-0016-5: is a scoped event after a terminal invalid?
 
@@ -564,7 +564,7 @@ terminal included, after `inference.completed` or `inference.failed`
 Recommendation: (a). The trees already agree on one code, and a fault is not
 identified by how many diagnostics it yields.
 
-**Status.** Settled by [Decision 0061](../decisions/0061-the-provider-profiles-validator-rules-and-schemas.md). Go and Zig judge it; Rust owes the port.
+**Status.** Settled by [Decision 0061](../decisions/0061-the-provider-profiles-validator-rules-and-schemas.md). Go, Zig and Rust judge it.
 
 ### OPEN-0016-6: may a refused inference carry an id?
 
@@ -581,7 +581,7 @@ is true (`provider-envelope.schema.json`, fixture
 Recommendation: (a). The rule is decidable from one frame, and the provider
 corpus judges frame-scoped defects through the schema.
 
-**Status.** Settled by [Decision 0061](../decisions/0061-the-provider-profiles-validator-rules-and-schemas.md). Go and Zig judge it; Rust owes the port.
+**Status.** Settled by [Decision 0061](../decisions/0061-the-provider-profiles-validator-rules-and-schemas.md). Go, Zig and Rust judge it.
 
 ### OPEN-0016-7: do the provider schemas bind?
 
@@ -603,5 +603,5 @@ Recommendation: (a). The schemas and the draft were written together, and
 both trees already apply them whole. Any constraint a later reading finds the
 draft does not support becomes an item of its own then.
 
-**Status.** Settled by [Decision 0061](../decisions/0061-the-provider-profiles-validator-rules-and-schemas.md). Go and Zig judge it; Rust owes the port.
+**Status.** Settled by [Decision 0061](../decisions/0061-the-provider-profiles-validator-rules-and-schemas.md). Go, Zig and Rust judge it.
 

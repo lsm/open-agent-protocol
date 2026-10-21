@@ -32,11 +32,15 @@ the `file:` form.)
 Prepare the checkout once before consumers install it: run `npm install` in
 `clients/ts`, which builds `dist/`. npm does not install a local-path
 package's own dependencies, so a `file:` install of an unprepared checkout
-cannot build and fails; the `prepare` script therefore skips the build
-whenever `dist/` already exists — a prepared checkout installs cleanly
-without the dev toolchain, while a Git dependency (whose dev dependencies
-npm does install) still builds from scratch. In a bare checkout, `npm install`
-prepares the same way, or run `npm run build` directly.
+cannot build and fails. The build records hashes of its sources, configuration
+and emitted JavaScript/declarations. `prepare` skips compilation only when
+those inputs and every output still match. A fresh, complete checkout installs
+without the dev toolchain; stale or partial output is rebuilt when the compiler
+is available, otherwise installation fails with instructions to prepare the
+checkout. In a bare checkout, `npm install` prepares it, or run `npm run build`
+directly. Builds clean `dist/` first, so removed source modules leave no stale
+output behind. A checkout missing source or configuration files cannot prove its
+build is current; restore the complete checkout before preparing it.
 
 ## Canonical lifecycle
 

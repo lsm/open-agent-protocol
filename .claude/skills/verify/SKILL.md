@@ -91,6 +91,24 @@ verbose output. The existing hub differential CI lane includes this test and
 builds ReleaseSafe: processing the real 16 MiB boundaries in Debug can exhaust
 the CI job timeout.
 
+## TypeScript file-dependency install journey
+
+After changing `clients/ts` packaging or build preparation, run:
+
+```sh
+(cd clients/ts && npm ci --ignore-scripts && npm test)
+```
+
+The explicit test-file list also runs `test/prepare.test.mjs`. It copies the
+client into temporary checkouts and runs real offline `npm install file:...`
+commands from separate consumers, with isolated HOME/npm config/cache. A fresh
+build must install and import without the compiler. Changed sources, modified
+output or missing JavaScript/declarations must fail installation without it. With the compiler,
+prepare must rebuild: the consumer must import the new source value and missing
+outputs must be restored. Missing source/configuration inputs must refuse with
+instructions to restore a complete checkout and prepare it. Temporary checkouts and children are cleaned up. Keep
+the console output as install-surface evidence, alongside the full baseline.
+
 ## Interaction tool-binding consumer journey
 
 After changing interaction binding (Decision 0055), run:
@@ -163,6 +181,18 @@ python3 .claude/skills/verify/scripts/rust-reopen.py --mutation-check --output-d
 The optional mutation mode temporarily weakens six conditions in
 `state/admissions.rs`, requires a test assertion failure for each (a compile
 failure is not a kill), and restores the original source in `finally`.
+
+The same example judges a `model-provider-core` trace with `--provider` first,
+as `goap validate --provider` does; `oapx validate` routes a provider trace by
+the profile it declares. Replay every provider fixture through all three:
+
+```sh
+python3 .claude/skills/verify/scripts/rust-provider-parity.py --output-dir /tmp/oap-rust-provider-<unique-name>
+```
+
+Rust and Go must report the same phase, code, envelope and pointer for every
+diagnostic, and both they and Zig must draw exactly the codes the manifest
+declares, exiting 0 only when it declares none. Build `oapx` first.
 
 ## Rust memory adapter consumer journey
 
