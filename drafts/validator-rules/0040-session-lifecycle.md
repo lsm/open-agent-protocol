@@ -85,8 +85,8 @@ Source: [`decisions/0045-reasoning-level-and-compaction-policy-are-session-setti
 
 | id | rule | lines | code | Go | Zig | Rust |
 | --- | --- | --- | --- | --- | --- | --- |
-| `0045#where-the-settings-go/1` | An open or update supplying `reasoning_level` or `compaction_policy` through a mode the feature does not affirmatively disclose MUST be refused `unsupported_feature` naming the key. | L247–260, L162–194 | `unavailable_capability` | `settings.go:gateSettings` | `semantic.zig:settingsGate` | — |
-| `0045#where-the-settings-go/2` | A setting under a `degraded` feature without the caller's opt-in MUST be refused `capability_degraded`. | L162–166 | `degraded_without_optin` | `settings.go:gateSettings` | `semantic.zig:settingsGate` | — |
+| `0045#where-the-settings-go/1` | An open or update supplying `reasoning_level` or `compaction_policy` through a mode the feature does not affirmatively disclose MUST be refused `unsupported_feature` naming the key. | L247–260, L162–194 | `unavailable_capability` | `settings.go:gateSettings` | `semantic.zig:settingsGate` | `state/controls.rs:open_settings_gate`, `open_settings_refusal` (open only; update owed) |
+| `0045#where-the-settings-go/2` | A setting under a `degraded` feature without the caller's opt-in MUST be refused `capability_degraded`. | L162–166 | `degraded_without_optin` | `settings.go:gateSettings` | `semantic.zig:settingsGate` | `state/controls.rs:open_settings_gate`, `open_settings_refusal` (open only; update owed) |
 
 ### [0045] What the state reports
 
@@ -94,8 +94,8 @@ Source: [`decisions/0045-reasoning-level-and-compaction-policy-are-session-setti
 
 | id | rule | lines | code | Go | Zig | Rust |
 | --- | --- | --- | --- | --- | --- | --- |
-| `0045#what-the-state-reports/1` | An admitted open MUST report the reasoning level it was asked for, or refuse it. | L197–222 | `session_state_mismatch` | `settings.go:settingsResponse` | `semantic.zig:settingsResponse` | — |
-| `0045#what-the-state-reports/2` | An admitted open MUST report the compaction policy it was asked for, or refuse it. | L197–222 | `session_state_mismatch` | `settings.go:settingsResponse` | `semantic.zig:settingsResponse` | — |
+| `0045#what-the-state-reports/1` | An admitted open MUST report the reasoning level it was asked for, or refuse it. | L197–222 | `session_state_mismatch` | `settings.go:settingsResponse` | `semantic.zig:settingsResponse` | `state/controls.rs:open_settings_response` |
+| `0045#what-the-state-reports/2` | An admitted open MUST report the compaction policy it was asked for, or refuse it. | L197–222 | `session_state_mismatch` | `settings.go:settingsResponse` | `semantic.zig:settingsResponse` | `state/controls.rs:open_settings_response` |
 
 ### [0045] Validator
 

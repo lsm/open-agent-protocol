@@ -35,6 +35,18 @@ pub(super) struct Expectation {
 }
 
 impl Expectation {
+    fn setting(key: &str, pointer: &str, degraded: bool) -> Self {
+        let mut expectation = Self::delivery(key, degraded);
+        expectation.pointer = pointer.to_owned();
+        expectation.message = if degraded {
+            "an open supplies a degraded session setting without the caller's opt-in"
+        } else {
+            "an open supplies a session setting not advertised for session_open"
+        }
+        .to_owned();
+        expectation
+    }
+
     pub(super) fn delivery(key: &str, degraded: bool) -> Self {
         let (rung, code, reason, diagnostic, message) = if degraded {
             (
@@ -174,6 +186,12 @@ pub(super) struct Controls {
     calls: BTreeMap<String, (String, bool)>,
 }
 
+pub(super) struct PendingOpenSettings {
+    level: ReasoningLevel,
+    policy: Option<CompactionPolicy>,
+    expectations: Vec<Expectation>,
+}
+
 pub(super) struct PendingSubscribe {
     expectation: Option<Expectation>,
 }
@@ -271,6 +289,7 @@ impl State {
             let p: SessionOpenRequest = payload(e);
             self.subscribe_gate(at, e, &p);
             self.provide_gate(at, e, &p);
+            self.open_settings_gate(at, e, &p);
             if let Some(message) = &p.message {
                 let submission = message.submit(p.session_id.clone().unwrap_or_default());
                 let provided: Vec<String> = p.tools.iter().map(|tool| tool.name.clone()).collect();
@@ -289,11 +308,13 @@ impl State {
         } else if *t == EnvelopeType::SESSION_OPEN_RESPONSE {
             self.settle_subscribe_admission(at, e);
             self.settle_provide_admission(at, e);
+            self.open_settings_response(at, e);
             self.record_provided_tools(e);
         } else if *t == EnvelopeType::ERROR_RESPONSE {
             self.settle_control_refusal(at, e);
             self.settle_provide_refusal(at, e);
             self.steer_refusal(at, e);
+            self.open_settings_refusal(at, e);
             self.settle_subscribe_refusal(at, e);
         }
         if *t == EnvelopeType::SESSION_MESSAGE_SUBMIT_RESPONSE
@@ -302,6 +323,115 @@ impl State {
             || *t == EnvelopeType::SESSION_OPEN_RESPONSE
         {
             self.close_submit_window(e);
+        }
+    }
+
+    fn open_settings_gate(&mut self, at: (usize, usize), e: &Envelope, p: &SessionOpenRequest) {
+        if p.reasoning_level.is_empty() && p.compaction_policy.is_none() {
+            return;
+        }
+        let mut pending = PendingOpenSettings {
+            level: p.reasoning_level.clone(),
+            policy: p.compaction_policy.clone(),
+            expectations: Vec::new(),
+        };
+        for (key, pointer, present) in [
+            (
+                FEATURE_SESSION_REASONING,
+                "/payload/reasoning_level",
+                !p.reasoning_level.is_empty(),
+            ),
+            (
+                FEATURE_COMPACTION_POLICY,
+                "/payload/compaction_policy",
+                p.compaction_policy.is_some(),
+            ),
+        ] {
+            if !present {
+                continue;
+            }
+            let Some(level) = self.control_descriptor(at, e, key) else {
+                break;
+            };
+            let disclosed = self
+                .feature_supports
+                .get(key)
+                .is_some_and(|support| support.discloses_mode(MODE_SESSION_OPEN));
+            if !affirmative(&level) || !disclosed {
+                pending
+                    .expectations
+                    .push(Expectation::setting(key, pointer, false));
+            } else if level == SupportLevel::DEGRADED && !p.allows_degraded(key) {
+                pending
+                    .expectations
+                    .push(Expectation::setting(key, pointer, true));
+            }
+        }
+        self.pending_open_settings.insert(s(&e.id), pending);
+    }
+
+    fn open_settings_response(&mut self, at: (usize, usize), e: &Envelope) {
+        let Some(pending) = self.pending_open_settings.remove(&os(&e.in_reply_to)) else {
+            return;
+        };
+        if !pending.expectations.is_empty() {
+            for expectation in pending.expectations {
+                self.add_expected(
+                    expectation.diagnostic,
+                    at,
+                    e,
+                    &expectation.pointer,
+                    &expectation.message,
+                    &format!("a typed refusal naming {}", expectation.key),
+                    "an admitted open",
+                    &[&os(&e.in_reply_to)],
+                );
+            }
+            return;
+        }
+        let p: SessionState = payload(e);
+        if !pending.level.is_empty()
+            && !p.reasoning_level.is_empty()
+            && p.reasoning_level != pending.level
+        {
+            self.add_expected(
+                codes::SESSION_STATE_MISMATCH,
+                at,
+                e,
+                "/payload/reasoning_level",
+                "an admitted open runs at the reasoning level it was asked for, or refuses it",
+                pending.level.as_str(),
+                p.reasoning_level.as_str(),
+                &[p.session_id.as_str()],
+            );
+        }
+        if let (Some(asked), Some(reported)) = (&pending.policy, &p.compaction_policy) {
+            if asked != reported {
+                self.add_expected(
+                    codes::SESSION_STATE_MISMATCH, at, e, "/payload/compaction_policy",
+                    "an admitted open runs under the compaction policy it was asked for, or refuses it",
+                    &serde_json::to_string(asked).unwrap(), &serde_json::to_string(reported).unwrap(),
+                    &[p.session_id.as_str()],
+                );
+            }
+        }
+    }
+
+    fn open_settings_refusal(&mut self, at: (usize, usize), e: &Envelope) {
+        let reply = os(&e.in_reply_to);
+        let Some(expectations) = self
+            .pending_open_settings
+            .get(&reply)
+            .map(|p| p.expectations.clone())
+        else {
+            return;
+        };
+        let err = payload::<ErrorResponse>(e).error;
+        let (discharged, speaker) = self.attribute(&reply, &err);
+        if !discharged {
+            for expectation in expectations {
+                self.refusal_misses(at, e, &expectation, &speaker, &err);
+            }
         }
     }
 
@@ -733,7 +863,16 @@ impl State {
                 .get(reply)
                 .and_then(|pending| pending.expectation.as_ref()),
         ];
-        let retained: Vec<&Expectation> = retained.into_iter().flatten().collect();
+        let retained: Vec<&Expectation> = retained
+            .into_iter()
+            .flatten()
+            .chain(
+                self.pending_open_settings
+                    .get(reply)
+                    .into_iter()
+                    .flat_map(|pending| &pending.expectations),
+            )
+            .collect();
         if retained
             .iter()
             .any(|expectation| expectation.conformed_by(err))

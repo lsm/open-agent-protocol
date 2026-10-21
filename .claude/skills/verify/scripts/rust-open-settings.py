@@ -3,6 +3,7 @@
 import argparse
 import copy
 import json
+import re
 from pathlib import Path
 import subprocess
 
@@ -113,15 +114,74 @@ def replay(language, output, label, case):
     return got, want
 
 
+def method_span(text, name):
+    pattern = re.compile(r"^    (?:pub(?:\([^)]*\))? )?fn " + re.escape(name) + r"\(", re.M)
+    found = list(pattern.finditer(text))
+    if len(found) != 1:
+        raise RuntimeError(f"{name}: method target is not unique")
+    start = found[0].start()
+    next_method = re.search(r"^    (?:pub(?:\([^)]*\))? )?fn ", text[found[0].end():], re.M)
+    end = found[0].end() + next_method.start() if next_method else len(text)
+    return start, end
+
+
+def mutation_check(output, corpus):
+    attribution = 'self.pending_open_settings\n                    .get(reply)'
+    changes = [
+        ("affirmative-feature", "open_settings_gate", "!affirmative(&level) || !disclosed", "false", "session-settings-unadvertised-admitted", [], []),
+        ("open-mode", "open_settings_gate", "!affirmative(&level) || !disclosed", "!affirmative(&level)", "open-settings-reasoning-missing-mode", [], []),
+        ("degraded-optin", "open_settings_gate", "level == SupportLevel::DEGRADED && !p.allows_degraded(key)", "false", "session-settings-degraded-admitted-without-optin", [], []),
+        ("optin-own-feature", "open_settings_gate", "p.allows_degraded(key)", "p.allows_degraded(FEATURE_SESSION_REASONING)", "open-settings-policy-degraded-wrong-optin", [], []),
+        ("refusal-feature", "conformed_by", "if err.code != self.code {", "if err.code == self.code { return true; }\n        if err.code != self.code {", "open-settings-refusal-missing-feature", [], []),
+        ("refusal-reason", "conformed_by", "if err.code != self.code {", "if err.code == self.code { return true; }\n        if err.code != self.code {", "open-settings-refusal-wrong-reason", [], []),
+        ("reasoning-value", "open_settings_response", "p.reasoning_level != pending.level", "false", "session-settings-level-rounded", [], []),
+        ("share-value", "open_settings_response", "asked != reported", "asked.kind != reported.kind", "open-settings-share-rounded", [], []),
+        ("token-value", "open_settings_response", "asked != reported", "asked.kind != reported.kind", "open-settings-tokens-rounded", [], []),
+        ("unknown-reasoning", "open_settings_response", "!p.reasoning_level.is_empty()", "true", "unknown-settings-stay-absent", ["session_state_mismatch"], [["session_state_mismatch", 3]]),
+        ("unknown-policy", "open_settings_response", "(&pending.policy, &p.compaction_policy)", "(&pending.policy, &Some(p.compaction_policy.clone().unwrap_or_default()))", "unknown-settings-stay-absent", ["session_state_mismatch"], [["session_state_mismatch", 3]]),
+        ("reply-correlation", "open_settings_response", ".remove(&os(&e.in_reply_to))", '.remove("op2")', "open-settings-reversed-replies-rounded", [], []),
+        ("diagnostic-location", "open_settings_response", "codes::SESSION_STATE_MISMATCH,\n                at,", "codes::SESSION_STATE_MISMATCH,\n                (at.0 + 1, at.1),", "session-settings-level-rounded", ["session_state_mismatch"], [["session_state_mismatch", 4]]),
+        ("retained-settings", "attribute", attribution, attribution.replace(".get(reply)", '.get("")'), "open-settings-setting-refusal-discharges-provide", ["unavailable_capability", "undisclosed_provide_limit"], [["unavailable_capability", 5], ["undisclosed_provide_limit", 5]]),
+        ("retain-every-setting", "attribute", ".flat_map(|pending| &pending.expectations)", ".flat_map(|pending| pending.expectations.iter().take(1))", "repair-open-settings-mixed-defects-wrong-refusal", ["degraded_without_optin"], [["degraded_without_optin", 3]]),
+        ("refusal-rank", "attribute", ".min_by(|a, b| a.order(b))", ".max_by(|a, b| a.order(b))", "open-settings-mixed-defects-wrong-refusal", ["degraded_without_optin"], [["degraded_without_optin", 3]]),
+        ("refusal-diagnostic", "open_settings_refusal", "if !discharged {", "if false {", "session-settings-unadvertised-wrong-refusal", [], []),
+        ("gates-before-fidelity", "open_settings_response", "            return;\n        }\n        let p: SessionState", "        }\n        let p: SessionState", "open-settings-gates-before-fidelity", ["session_state_mismatch", "unavailable_capability"], [["unavailable_capability", 3], ["unavailable_capability", 3], ["session_state_mismatch", 3], ["session_state_mismatch", 3]]),
+    ]
+    original = SOURCE.read_bytes()
+    results = []
+    try:
+        for label, method, before, after, target, changed_codes, locations in changes:
+            text = original.decode()
+            start, end = method_span(text, method)
+            body = text[start:end]
+            if body.count(before) != 1:
+                raise RuntimeError(f"{label}: mutation target is not unique")
+            SOURCE.write_text(text[:start] + body.replace(before, after, 1) + text[end:])
+            build("rust", output, label + "-build")
+            got, want = replay("rust", output, label, corpus[target])
+            changed = {"exit": int(bool(changed_codes)), "codes": sorted(changed_codes), "phases": ["semantic"] if changed_codes else [], "locations": sorted(locations)}
+            if got == want or got != changed:
+                raise RuntimeError(f"{label}: mutation survived or failed inconclusively: {got}; expected {changed}")
+            results.append({"mutation": label, "case": target, "got": got, "original": want})
+            print(f"KILLED {label}: {got}", flush=True)
+    finally:
+        SOURCE.write_bytes(original)
+        build("rust", output, "restored-build")
+        (output / "mutations.json").write_text(json.dumps(results, indent=2) + "\n")
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output-dir", required=True)
+    parser.add_argument("--mutation-check", action="store_true")
     args = parser.parse_args()
     output = Path(args.output_dir).resolve()
     output.mkdir(parents=True, exist_ok=False)
     corpus = cases()
     for language in ("go", "rust", "zig"):
         build(language, output, language + "-build")
+    if args.mutation_check:
+        mutation_check(output, corpus)
     results, wrong = [], []
     for name, case in corpus.items():
         for language in ("go", "rust", "zig"):
