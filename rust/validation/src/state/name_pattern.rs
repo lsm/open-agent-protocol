@@ -591,6 +591,8 @@ mod tests {
             r"\p{Script=Greek}",
             "(?u)a",
             r"\u0061",
+            r"[\x{+41}]",
+            r"[\x+4]",
         ] {
             assert!(compile(pattern).is_err(), "{pattern}");
         }

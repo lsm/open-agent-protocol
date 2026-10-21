@@ -110,7 +110,7 @@ def main():
                         "[[:foo:]]", r"\1", r"\8", r"\C", r"[\b]", "(?i-)a",
                         "(?P<é>a)", "{2}", "a|{2}", "({2})", "a*{2}",
                         "a{2}{3}", "a{2}*", "(?:[a-z]{1000}){1000}", "(?x)a",
-                        r"\p{Script=Greek}", "(?u)a", r"\u0061"]
+                        r"\p{Script=Greek}", "(?u)a", r"\u0061", r"[\x{+41}]", r"[\x+4]"]
     descriptor_trace = json.loads((fixtures / "semantic-invalid/provide-name-pattern-not-re2.json").read_text())
     for index, (pattern, expected) in enumerate([(p, []) for p in valid_patterns]
                                                + [(p, ["undisclosed_provide_limit"]) for p in invalid_patterns]):
