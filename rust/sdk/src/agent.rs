@@ -318,7 +318,10 @@ impl AgentApi {
                             if let Some(start) = start.take() { yield start; }
                             yield AgentEvent::ToolExecutionEnd {
                                 tool_call_id: data.get("tool_call_id").and_then(serde_json::Value::as_str).unwrap_or_default().to_owned(),
-                                is_error: Some(frame.kind != "action.call.completed"),
+                                is_error: Some(frame.kind != "action.call.completed"
+                                    || (data.get("name").and_then(serde_json::Value::as_str) == Some("codex.command")
+                                        && data.get("result").and_then(|result| result.get("exitCode")).and_then(serde_json::Value::as_f64) != Some(0.0))),
+                                result: data.get("result").cloned(),
                             };
                         }
                         "run.started" => start = Some(AgentEvent::AgentStart { session_id: Some(session_id.clone()) }),

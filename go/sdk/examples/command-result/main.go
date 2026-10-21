@@ -41,5 +41,16 @@ func main() {
 		if event.IsError != (i != 0 && i != 5) {
 			panic(fmt.Sprintf("command outcome %d misclassified", i))
 		}
+		if i < 6 {
+			var result map[string]any
+			if err := json.Unmarshal(event.Result, &result); err != nil {
+				panic(err)
+			}
+			expected := []any{float64(0), float64(1), float64(-7), nil, nil, float64(0)}
+			if result["exitCode"] != expected[i] || result["command"] != "git diff HEAD~1" || result["cwd"] != "/workspace/repo" {
+				panic(fmt.Sprintf("command result %d lost evidence: %s", i, event.Result))
+			}
+		}
+
 	}
 }

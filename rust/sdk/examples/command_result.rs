@@ -20,10 +20,12 @@ async fn main() {
         if let AgentEvent::ToolExecutionEnd {
             tool_call_id,
             is_error,
-            ..
+            result,
         } = event.expect("event")
         {
-            ends.push(json!({"tool_call_id": tool_call_id, "is_error": is_error}));
+            ends.push(
+                json!({"tool_call_id": tool_call_id, "is_error": is_error, "result": result}),
+            );
         }
     }
     client.close().await;
@@ -35,5 +37,14 @@ async fn main() {
             json!(i != 0 && i != 5),
             "command outcome {i}"
         );
+        if i < 6 {
+            assert_eq!(
+                event["result"]["exitCode"],
+                json!([Some(0), Some(1), Some(-7), None, None, Some(0)][i]),
+                "exit evidence {i}"
+            );
+            assert_eq!(event["result"]["command"], "git diff HEAD~1");
+            assert_eq!(event["result"]["cwd"], "/workspace/repo");
+        }
     }
 }

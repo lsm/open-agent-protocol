@@ -125,7 +125,7 @@ export type AgentStreamEvent =
   | { type: "turn_start" }
   | { type: "turn_end"; stop_reason?: StopReason; error_message?: string }
   | { type: "tool_execution_start"; tool_call_id: string; tool_name: string }
-  | { type: "tool_execution_end"; tool_call_id: string; is_error?: boolean };
+  | { type: "tool_execution_end"; tool_call_id: string; is_error?: boolean; result?: unknown };
 
 export interface ProviderCompleteRequest {
   model_ref: string;

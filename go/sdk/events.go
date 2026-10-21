@@ -1,5 +1,7 @@
 package sdk
 
+import "encoding/json"
+
 type ProviderEvent interface {
 	isProviderEvent()
 }
@@ -69,6 +71,7 @@ type ToolExecutionStart struct {
 type ToolExecutionEnd struct {
 	ToolCallID string
 	IsError    bool
+	Result     json.RawMessage
 }
 
 func (*MessageStart) isProviderEvent()  {}
