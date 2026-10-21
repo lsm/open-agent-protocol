@@ -2,6 +2,7 @@ package sdk
 
 import (
 	"bufio"
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -14,8 +15,14 @@ func decodeObject(raw json.RawMessage) (jsonObject, bool) {
 	if len(raw) == 0 {
 		return nil, false
 	}
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.UseNumber()
 	var decoded any
-	if err := json.Unmarshal(raw, &decoded); err != nil {
+	if err := decoder.Decode(&decoded); err != nil {
+		return nil, false
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); err != io.EOF {
 		return nil, false
 	}
 	obj, ok := decoded.(map[string]any)
@@ -43,20 +50,16 @@ func (o jsonObject) strOrDefault(fallback string, keys ...string) string {
 
 func (o jsonObject) num(keys ...string) (float64, bool) {
 	for _, key := range keys {
-		if value, ok := o[key].(float64); ok {
+		switch value := o[key].(type) {
+		case float64:
 			return value, true
+		case json.Number:
+			if number, err := value.Float64(); err == nil {
+				return number, true
+			}
 		}
 	}
 	return 0, false
-}
-
-func (o jsonObject) reported(key string) *int64 {
-	value, ok := o.num(key)
-	if !ok {
-		return nil
-	}
-	count := int64(value)
-	return &count
 }
 
 func (o jsonObject) intOr(fallback int, keys ...string) int {
