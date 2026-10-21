@@ -6,8 +6,7 @@
     "models-current-mismatch",
     "models-held-position-moved-no-model",
     "open-provide-refused-within-a-case-folding-pattern",
-    "open-provide-refused-within-a-unicode17-pattern",
-    "payload-decode-usage-past-the-integer-range"
+    "open-provide-refused-within-a-unicode17-pattern"
   ],
   "rust": [
     "attach-advertised-without-modes",
@@ -106,7 +105,6 @@
     "open-sources-state-disagrees-with-catalog",
     "open-sources-state-omits-attachment",
     "open-unadvertised-wrong-reason",
-    "payload-decode-usage-past-the-integer-range",
     "provider-attach-accepted-without-session-live",
     "provider-attach-conflicting-alias",
     "provider-attach-degraded-refusal-wrong-code",

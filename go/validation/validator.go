@@ -123,6 +123,10 @@ func (v *Validator) Validate(r io.Reader, fixture string) Result {
 			diagnostics = append(diagnostics, Diagnostic{Fixture: fixture, Phase: PhaseDecode, Code: CodeMalformedJSON, Index: i, Line: item.line, Message: message})
 			continue
 		}
+		if field := noncanonicalUsage(value); field != "" {
+			diagnostics = append(diagnostics, baseDiagnostic(fixture, PhaseDecode, CodePayloadDecode, i, item.line, env, "/payload/usage/"+field, "usage count must use canonical unsigned decimal spelling"))
+			continue
+		}
 		if dst := payloadTarget(env.Type); dst != nil {
 			if err := env.DecodePayload(dst); err != nil {
 				message := err.Error()

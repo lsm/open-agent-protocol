@@ -68,12 +68,18 @@ pub fn build(b: *std.Build) void {
     schema_bytes_mod.addAnonymousImport("schema_session", .{
         .root_source_file = b.path("../schema/v0.1/session.schema.json"),
     });
+    const usage_mod = b.createModule(.{
+        .root_source_file = b.path("src/validation/usage.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
     const jsonschema_mod = b.createModule(.{
         .root_source_file = b.path("src/validation/jsonschema.zig"),
         .target = target,
         .optimize = optimize,
     });
     jsonschema_mod.addImport("schema_bytes", schema_bytes_mod);
+    jsonschema_mod.addImport("usage", usage_mod);
     const jsonschema_test = b.addTest(.{ .root_module = jsonschema_mod });
     const gate_options = b.addOptions();
     gate_options.addOption([]const u8, "repository_root", buildPath(b, ".."));
@@ -103,6 +109,7 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
+    decode_mod.addImport("usage", usage_mod);
     fixture_gate_mod.addImport("decode", decode_mod);
     const decode_test = b.addTest(.{ .root_module = decode_mod });
     const semantic_mod = b.createModule(.{

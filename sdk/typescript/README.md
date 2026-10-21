@@ -565,4 +565,5 @@ not a change to Decision 0063's wire meanings.
 
 Present null, negative, fractional, malformed and out-of-uint64 counts return
 `MakaiProtocolError` with `malformed_response`. Integer spellings stay strict:
-`1.0` and `1e3` are deferred to #1398 together with the other SDKs/validators.
+`1.0`, `1e3` and `-0` are refused by Decision 0065: supplied usage counts have
+canonical unsigned decimal spelling, even when another spelling has an integral value.
