@@ -250,6 +250,12 @@ Source: [`decisions/0050-shutdown-is-graceful-forced-or-asked.md`](../../decisio
 | `0050#5/1` | A recovered reopen MUST list no run as `running`. It MAY list restored runs as `queued` in their original order, and only when `recovery.recovered: true`. | L156–185 | `session_state_mismatch` | `reopen.go:reopenResponse` | `semantic.zig:reopenResponse` | `state/admissions.rs:reopen_response` |
 | `0050#5/2` | `recovery.interrupted_runs` MUST list each run settled under § 1 as `{run_id, cause: "restart", settled_by: "inferred"}`. | L156–185 | — | — | — | — |
 | `0050#5/3` | `recovery.redelivered_runs` MUST pair each held prompt with its new run in the original order, and each `run_id` MUST appear in `state.active_runs` as `queued`. A withdrawn prompt carries `withdrawn: true` and no `run_id`. | L156–185 | — | — | — | — |
+| `0050#5/4` | Each redelivery record MUST carry nonempty `previous_run_id` and `root_run_id`, and either a nonempty new `run_id` or `withdrawn: true` with no `run_id`. | L165–174 | `schema_invalid` | schema | schema | schema |
+
+Wire coverage for `0050#5/3` now includes `recovery.redelivered_runs`, its typed
+bindings, and a shared positive trace. Its semantic checks for pairing held
+prompts, original order and queued membership remain unimplemented in all three
+validators; the schema alone does not establish those relationships.
 
 ## Divergences
 

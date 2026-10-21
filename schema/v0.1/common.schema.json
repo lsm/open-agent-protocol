@@ -93,7 +93,8 @@
         "previous_run_id": { "$ref": "#/$defs/opaqueID" },
         "resume_cursor": { "type": "string" },
         "reason": { "type": "string" },
-        "interrupted_runs": { "type": "array", "items": { "$ref": "#/$defs/interruptedRun" } }
+        "interrupted_runs": { "type": "array", "items": { "$ref": "#/$defs/interruptedRun" } },
+        "redelivered_runs": { "type": "array", "items": { "$ref": "#/$defs/redeliveredRun" } }
       },
       "additionalProperties": false
     },
@@ -105,6 +106,21 @@
         "cause": { "enum": ["restart"] },
         "settled_by": { "const": "inferred" }
       },
+      "additionalProperties": false
+    },
+    "redeliveredRun": {
+      "type": "object",
+      "required": ["previous_run_id", "root_run_id"],
+      "properties": {
+        "previous_run_id": { "$ref": "#/$defs/opaqueID" },
+        "run_id": { "$ref": "#/$defs/opaqueID" },
+        "root_run_id": { "$ref": "#/$defs/opaqueID" },
+        "withdrawn": { "type": "boolean" }
+      },
+      "oneOf": [
+        { "required": ["run_id"], "properties": { "withdrawn": { "const": false } } },
+        { "required": ["withdrawn"], "properties": { "withdrawn": { "const": true } }, "not": { "required": ["run_id"] } }
+      ],
       "additionalProperties": false
     },
     "compactionPolicy": {

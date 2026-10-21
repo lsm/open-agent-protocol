@@ -664,3 +664,22 @@ test('a catalog carrying no capability revision is refused', async () => {
   const session = openedSession(catalogTransport({ session_id: 's-1', tools: [] }, ''));
   await assert.rejects(session.tools(), /carries no capability revision/);
 });
+
+test('state exposes redelivered and withdrawn recovery records', async () => {
+  const records = [
+    { previous_run_id: 'held-1', run_id: 'new-1', root_run_id: 'root-1' },
+    { previous_run_id: 'held-2', root_run_id: 'root-2', withdrawn: true },
+  ];
+  const transport = new FakeTransport([{
+    match: '/state',
+    body: (call) => JSON.stringify(testEnvelope({
+      type: EnvelopeType.SessionStateResponse,
+      id: 'recovery-state',
+      inReplyTo: sentEnvelopeId(call),
+      sessionId: 's-1',
+      payload: { session_id: 's-1', status: 'queued', recovery: { recovered: true, redelivered_runs: records } },
+    })),
+  }]);
+  const state = await openedSession(transport).state();
+  assert.deepEqual(state.recovery?.redelivered_runs, records);
+});

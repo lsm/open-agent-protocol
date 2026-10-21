@@ -211,6 +211,10 @@ const samples: PayloadSample[] = [
       previous_run_id: 'r-0',
       resume_cursor: '3',
       reason: 'reattached',
+    redelivered_runs: [
+      { previous_run_id: 'held-1', run_id: 'new-1', root_run_id: 'root-1' },
+      { previous_run_id: 'held-2', root_run_id: 'root-2', withdrawn: true },
+    ],
     },
   }),
   sample<protocol.SessionState>('SessionState', 'session.schema.json', 'state', {
