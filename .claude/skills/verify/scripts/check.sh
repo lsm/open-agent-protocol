@@ -35,6 +35,7 @@ run go run ./go/tools/nocomment --check
 run node scripts/check-no-comments.mjs --check
 run ./scripts/check-zig-patterns.sh
 run ./scripts/check-no-test-litter.sh
+run python3 .claude/skills/verify/scripts/acp-permission-publication.py --output-dir "$artifacts/acp-permission-publication"
 run python3 .claude/skills/verify/scripts/stdio-overflow.py --output-dir "$artifacts/stdio-overflow"
 run python3 .claude/skills/verify/scripts/sdk-command-result.py --output-dir "$artifacts/sdk-command"
 run python3 .claude/skills/verify/scripts/python-sdk-usage.py --output-dir "$artifacts/python-sdk-usage"

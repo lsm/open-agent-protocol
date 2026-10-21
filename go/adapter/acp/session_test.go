@@ -1535,6 +1535,49 @@ func acpAskPermission(t *testing.T, f *fakeClient, stream base.EventStream, requ
 	}
 }
 
+func TestPromptSettlementResolvesAPermissionWhosePublisherIsPaused(t *testing.T) {
+	s, f := openTest(t, 64)
+	paused := make(chan struct{})
+	resume := make(chan struct{})
+	s.(*session).afterPermissionEmit = func() {
+		close(paused)
+		<-resume
+	}
+	t.Cleanup(func() {
+		close(resume)
+		_ = s.Close(context.Background())
+	})
+	admission, stream := submit(t, s)
+	<-f.promptStarted
+	var seen []protocol.Envelope
+	acpAskPermission(t, f, stream, "perm-1", "call-1", &seen)
+	select {
+	case <-paused:
+	case <-time.After(2 * time.Second):
+		t.Fatal("permission publisher did not reach its pause")
+	}
+	f.prompt <- promptOutcome{result: native.PromptResult{StopReason: "end_turn"}}
+	events := append(seen, collect(t, stream)...)
+	assertValidTrace(t, admission, events)
+	requested, resolved, terminal := -1, -1, -1
+	for i, event := range events {
+		switch event.Type {
+		case protocol.TypeActionPermissionRequested:
+			requested = i
+		case protocol.TypeActionPermissionResolved:
+			if resolved != -1 {
+				t.Fatal("permission resolved more than once")
+			}
+			resolved = i
+		case protocol.TypeRunCompleted:
+			terminal = i
+		}
+	}
+	if requested < 0 || resolved <= requested || terminal <= resolved {
+		t.Fatalf("permission request/resolution/terminal order: %d/%d/%d", requested, resolved, terminal)
+	}
+}
+
 func TestPendingPermissionsAreSettledInTheOrderTheyStarted(t *testing.T) {
 	s, f := openTest(t, 64)
 	admission, stream := submit(t, s)
