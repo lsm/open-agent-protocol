@@ -193,3 +193,36 @@ What `action.tools.provide` would map to:
 
 **Recommendation.** Feasible, and the call shape matches Decision 0011 one to
 one. Whether to take on `experimentalApi` for it is the decision.
+
+## Command process outcome on the normalized wire
+
+A native `commandExecution` item with native status `completed` settles
+`action.call.completed` under `name: "codex.command"`. Its result is:
+
+```json
+{"command":"git diff HEAD~1","cwd":"/workspace/repo","output":"...","exitCode":1}
+```
+
+`exitCode` retains the native spelling and integer value. Zero is evidence
+that the command exited successfully; a nonzero value is the actual process
+failure code. Native null or omission becomes explicit `exitCode: null`:
+the exit status is unknown, never an inferred zero. Consumers must require a
+numeric zero to classify a code read as successful; neither output text nor
+`action.call.completed` alone proves a subprocess succeeded. Completion here
+means the harness delivered the command's result, including nonzero outcomes
+such as grep's no-match status. It does not turn a nonzero status into a sandbox
+failure or fail the enclosing run.
+
+The result also preserves the native command, cwd and aggregated output. If
+a native command item additionally carries `result`, its whole JSON value is
+retained under `nativeResult`; it cannot overwrite the process evidence. Other
+item kinds retain their existing pass-through result shape. Native status
+`failed` or an explicit native error still emits `action.call.failed` with
+`native_action_failed` and no success result, even if an exit code is zero.
+
+This adapter protocol note uses the existing free-JSON `result` arm defined by
+Decision 0060 and the existing typed failure arm. It adds no envelope member,
+schema rule or validator obligation. The credential-free
+`.claude/skills/verify/scripts/codex-command-result.py` journey replays zero,
+nonzero, negative, omitted, null, native-result and explicit-failure cases
+through both real CLIs and validates both resulting traces in Go, Zig and Rust.

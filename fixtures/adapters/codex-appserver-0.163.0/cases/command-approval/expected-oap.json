@@ -147,6 +147,9 @@
       "execution_owner": "codex.app-server",
       "name": "codex.command",
       "result": {
+        "command": "true",
+        "cwd": "",
+        "exitCode": null,
         "output": "ok"
       }
     },

@@ -15,7 +15,7 @@ ROOT = Path(__file__).resolve().parents[4]
 OUTPUT = "bwrap: No permissions to create a new namespace"
 CASES = [("zero", 0), ("nonzero", 1), ("negative", -7),
          ("missing", None), ("null", None), ("native-result", 0),
-         ("failed", 1), ("error", 1)]
+         ("failed", 0), ("error", 0)]
 
 
 def native():
@@ -148,16 +148,30 @@ def replay(binary, output):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output-dir", required=True)
+    parser.add_argument("--oapx", type=Path, default=ROOT / "zig/zig-out/bin/oapx")
     args = parser.parse_args()
     output = Path(args.output_dir).resolve()
     output.mkdir(parents=True, exist_ok=False)
     goap = output / "goap"
     subprocess.run(["go", "build", "-o", str(goap), "./go/cmd/goap"], cwd=ROOT, check=True, timeout=120)
-    for label, binary in [("go", goap), ("zig", ROOT / "zig/zig-out/bin/oapx")]:
+    for label, binary in [("go", goap), ("zig", args.oapx.resolve())]:
         destination = output / label
         destination.mkdir()
         replay(binary, destination)
-    print(f"PASS: command exit evidence retained; artifacts: {output}")
+    commands = {
+        "go": [str(goap), "validate", "--format", "json"],
+        "zig": [str(args.oapx.resolve()), "validate", "--format", "json"],
+        "rust": ["cargo", "run", "--quiet", "--manifest-path", "rust/Cargo.toml",
+                 "-p", "oap-validation", "--example", "validate", "--"],
+    }
+    for source in ("go", "zig"):
+        for label, command in commands.items():
+            result = subprocess.run(command + [str(output / source / "trace.json")],
+                                    cwd=ROOT, capture_output=True, timeout=120)
+            (output / f"{source}-trace.{label}-validator.log").write_bytes(result.stdout + result.stderr)
+            assert result.returncode == 0, f"{source} trace: {label} validator exit {result.returncode}: {result.stdout!r}"
+            print(f"{source} trace: {label} validator exit 0")
+    print(f"PASS: command exit evidence retained; validators agree; artifacts: {output}")
 
 
 if __name__ == "__main__":
