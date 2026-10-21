@@ -948,7 +948,17 @@ pub const Reducer = struct {
             try self.put(&payload, "error", .{ .object = reason });
             return self.emit(index, "action.call.failed", payload, item.tool_call_id, false);
         }
-        if (native.raw(params, &.{ "item", "result" })) |result| {
+        if (std.mem.eql(u8, native.text(params, &.{ "item", "type" }), "commandExecution")) {
+            var result = std.json.ObjectMap.empty;
+            try self.put(&result, "command", str(native.text(params, &.{ "item", "command" })));
+            try self.put(&result, "cwd", str(native.text(params, &.{ "item", "cwd" })));
+            try self.put(&result, "exitCode", native.raw(params, &.{ "item", "exitCode" }) orelse .null);
+            if (native.raw(params, &.{ "item", "result" })) |carried| {
+                try self.put(&result, "nativeResult", carried);
+            }
+            try self.put(&result, "output", str(native.text(params, &.{ "item", "aggregatedOutput" })));
+            try self.put(&payload, "result", .{ .object = result });
+        } else if (native.raw(params, &.{ "item", "result" })) |result| {
             try self.put(&payload, "result", result);
         } else {
             var output = std.json.ObjectMap.empty;

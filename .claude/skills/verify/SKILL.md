@@ -85,6 +85,26 @@ must remain `0`, and the maximum `uint64` total must survive a JSON round trip.
 It retains the consumer source, input, output and stderr for inspection. No
 provider, credentials or GUI is used. The baseline includes this journey.
 
+## Hub stdio raw envelope budget journey
+
+After changing hub stdio decoding or envelope gating, rebuild `oapx`, then run
+this real-process differential without Go's test cache:
+
+```sh
+OAP_OAPX_BIN="$PWD/zig/zig-out/bin/oapx" go test ./go/cmd/goap -run '^TestHubStdioBudgetsTheRawRequestMember$' -count=1 -v
+zig build --build-file zig/build.zig test-unit-hub -Doptimize=ReleaseSafe
+```
+
+The test sends each real hub compact, whitespace-padded and Unicode-escaped
+open envelopes at 16 MiB−1, 16 MiB and 16 MiB+1. The first two must open the
+memory session; the last must return `request_too_large` even when the raw
+value compacts below the cap. The oversized padded value must also be refused
+by submit, resolve, cancel and settings. Wrapper bytes, an escaped `request` key and
+surrounding whitespace must not change the measured value span. Retain the
+verbose output. The existing hub differential CI lane includes this test and
+builds ReleaseSafe: processing the real 16 MiB boundaries in Debug can exhaust
+the CI job timeout.
+
 ## TypeScript file-dependency install journey
 
 After changing `clients/ts` packaging or build preparation, run:
@@ -117,6 +137,25 @@ resolution that moves `t1` to `t9` with only semantic `scope_mismatch` and exit 
 Matching `t1`, omitting the optional resolution binding, and an unbound
 interaction must pass with exit 0. Inputs and diagnostic JSON are retained.
 The baseline runner includes this journey.
+
+## Codex command result consumer journey
+
+After changing Codex command normalization, rebuild `oapx`, then run:
+
+```sh
+python3 .claude/skills/verify/scripts/codex-command-result.py --output-dir /tmp/oap-codex-command-<unique-name>
+```
+
+This launches each real CLI against a credential-free native app-server fixture
+using the issue #1386 command input. `codex.command` completed results must retain
+numeric `exitCode` values 0, 1 and −7; omitted/null status must remain explicit
+null, never zero. The result must retain `command`, `cwd`, `output` and an
+additional native result under `nativeResult`. Explicit native failed/error
+items must still emit typed `action.call.failed`. All three validators must
+accept both retained traces with exit 0. The script saves trace JSON, stderr
+and each validator's output. This proves the normalization boundary; the native
+fixture reports outcomes rather than executing a real Codex command or reading
+credentials. The baseline and backend parity CI lane include this journey.
 
 ## Rust validator consumer journey
 

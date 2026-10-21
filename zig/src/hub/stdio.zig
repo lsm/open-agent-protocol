@@ -101,12 +101,20 @@ pub const Request = struct {
     run_id: ?[]const u8 = null,
     after: ?u64 = null,
     payload: ?std.json.Value = null,
+    payload_bytes: usize = 0,
     allow_degraded_features: []const []const u8 = &.{},
     cursor: ?[]const u8 = null,
     limit: ?i64 = null,
     supplied: Supplied = .{},
     after_unreadable: bool = false,
     directory: []const u8 = "",
+
+    fn envelopeSizeRefusal(self: Request) ?Refusal {
+        if (self.payload_bytes > max_envelope_bytes) {
+            return .{ .code = "request_too_large", .message = "the request envelope exceeds the size limit" };
+        }
+        return null;
+    }
 
     fn takes(self: Request, parameter: []const u8) bool {
         if (std.mem.eql(u8, parameter, "adapter")) return self.supplied.adapter;
@@ -415,7 +423,13 @@ pub fn decode(arena: std.mem.Allocator, line: []const u8) Error!Request {
             request.after_unreadable = true;
         }
     }
-    if (request.supplied.request) request.payload = member(root, "request");
+    if (request.supplied.request) {
+        request.payload = member(root, "request");
+        request.payload_bytes = requestBytes(arena, line) catch |err| switch (err) {
+            error.OutOfMemory => return error.OutOfMemory,
+            else => return Error.MalformedLine,
+        };
+    }
     if (request.supplied.allow_degraded_features) {
         const degraded = member(root, "allow_degraded_features").?;
         if (degraded == .null) {
@@ -431,6 +445,24 @@ pub fn decode(arena: std.mem.Allocator, line: []const u8) Error!Request {
         }
     }
     return request;
+}
+
+fn requestBytes(arena: std.mem.Allocator, line: []const u8) !usize {
+    var scanner = std.json.Scanner.initCompleteInput(arena, line);
+    defer scanner.deinit();
+    if (try scanner.next() != .object_begin) return Error.MalformedLine;
+    while (true) {
+        const token = try scanner.nextAllocMax(arena, .alloc_if_needed, line.len);
+        const key = switch (token) {
+            .string, .allocated_string => |key| key,
+            .object_end => return 0,
+            else => return Error.MalformedLine,
+        };
+        _ = try scanner.peekNextTokenType();
+        const start = scanner.cursor;
+        try scanner.skipValue();
+        if (std.mem.eql(u8, key, "request")) return scanner.cursor - start;
+    }
 }
 
 fn allowed(key: []const u8) bool {
@@ -990,6 +1022,7 @@ pub const Frontend = struct {
         if (std.mem.eql(u8, request.op, op_events)) return self.events(arena, request);
         if (std.mem.eql(u8, request.op, op_submit) or std.mem.eql(u8, request.op, op_resolve) or std.mem.eql(u8, request.op, op_cancel) or std.mem.eql(u8, request.op, op_settings)) {
             if (try request.only(arena, session_request_parameters)) |refusal| return .{ .refused = refusal };
+            if (request.envelopeSizeRefusal()) |refusal| return .{ .refused = refusal };
             const session_id = request.session_id orelse "";
             const value = request.payload orelse std.json.Value{ .null = {} };
             const controlled = if (std.mem.eql(u8, request.op, op_submit))
@@ -2083,9 +2116,10 @@ pub const Frontend = struct {
         envelope: oap_types.Envelope,
     };
 
-    fn gateRequest(self: *Frontend, arena: std.mem.Allocator, payload: ?std.json.Value) Error!Gate {
+    fn gateRequest(self: *Frontend, arena: std.mem.Allocator, request: Request) Error!Gate {
         _ = self;
-        return gateEnvelope(arena, payload, &.{.session_open_request}, "the request envelope is not a session.open.request");
+        if (request.envelopeSizeRefusal()) |refusal| return .{ .refused = refusal };
+        return gateEnvelope(arena, request.payload, &.{.session_open_request}, "the request envelope is not a session.open.request");
     }
 
     pub fn gateEnvelope(
@@ -2097,9 +2131,6 @@ pub const Frontend = struct {
         const value = payload orelse return .{ .refused = .{ .code = "invalid_request", .message = "the request is required" } };
         if (value == .null) return .{ .refused = .{ .code = "invalid_request", .message = "the request is required" } };
         const raw = try oap_envelope.ownedRawJson(value, arena);
-        if (raw.len > max_envelope_bytes) {
-            return .{ .refused = .{ .code = "request_too_large", .message = "the request envelope exceeds the size limit" } };
-        }
         var registry = jsonschema.Registry.initFromBundled(arena) catch |err| switch (err) {
             error.OutOfMemory => return error.OutOfMemory,
             else => return .{ .refused = .{ .code = "internal", .message = "the bundled schemas could not be loaded" } },
@@ -2208,7 +2239,7 @@ pub const Frontend = struct {
         answered_as: OpenAnswer,
     ) Error!Outcome {
         const holding = answered_as == .held;
-        const gated = try self.gateRequest(arena, request.payload);
+        const gated = try self.gateRequest(arena, request);
         var envelope: oap_types.Envelope = switch (gated) {
             .refused => |refusal| return .{ .refused = refusal },
             .envelope => |value| value,

@@ -28,10 +28,12 @@ run go test ./go/validation
 )
 run zig build --build-file zig/build.zig -Doptimize=ReleaseSafe
 run zig build --build-file zig/build.zig test-unit-validation -Doptimize=ReleaseSafe
+run env OAP_OAPX_BIN="$PWD/zig/zig-out/bin/oapx" go test ./go/cmd/goap -run '^TestHubStdioBudgetsTheRawRequestMember$' -count=1 -v
 run go run ./go/tools/nocomment --check
 run node scripts/check-no-comments.mjs --check
 run ./scripts/check-zig-patterns.sh
 run ./scripts/check-no-test-litter.sh
+run python3 .claude/skills/verify/scripts/codex-command-result.py --output-dir "$artifacts/codex-command"
 run ./zig/zig-out/bin/oapx validate fixtures/valid/core-completed.json
 run ./zig/zig-out/bin/oapx validate fixtures/valid/permission-resolved-in-the-refresh-window.json
 run ./zig/zig-out/bin/oapx validate fixtures/valid/user-input-resolved-in-the-refresh-window.json
