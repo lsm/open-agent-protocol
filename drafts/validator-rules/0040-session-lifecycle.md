@@ -58,10 +58,10 @@ Source: [`decisions/0044-compaction.md`](../../decisions/0044-compaction.md#the-
 | `0044#the-barrier/1` | A run admitted by `session.compact.request` MUST open with its compaction, the first thing after `run.started`. | L165–173 | `compaction_run_mismatch` | `compaction.go:compactionOpening` | `semantic.zig:compactionOpening` | — |
 | `0044#the-barrier/2` | A `requested` compaction MUST belong to the run a `session.compact.request` admitted, and no other run asks for one. | L110–145, L165–173 | `compaction_run_mismatch` | `compaction.go:compactionEvent` | `semantic.zig:compactionEvent` | — |
 | `0044#the-barrier/3` | A run admitted by `session.compact.request` MUST carry exactly one compaction. | L165–173 | `compaction_run_mismatch` | `compaction.go:compactionTerminal` | `semantic.zig:runEvent` | — |
-| `0044#the-barrier/4` | A `run.compaction.started` MUST NOT follow another until that one has ended. | L165–173 | `compaction_unpaired` | `compaction.go:compactionEvent` | `semantic.zig:compactionEvent` | — |
+| `0044#the-barrier/4` | A `run.compaction.started` MUST NOT follow another until that one has ended. | L165–173 | `compaction_unpaired` | `compaction.go:compactionEvent` | `semantic.zig:compactionEvent` | `state/compaction.rs:compaction_pair_event` |
 | `0044#the-barrier/5` | A `compaction_id` MUST be unique within the session. | L110–145 | `compaction_unpaired` | `compaction.go:compactionEvent` (per run only) | `semantic.zig:compactionEvent` (per run only) | — |
-| `0044#the-barrier/6` | A `run.compaction.ended` MUST follow its `started`. | L165–173 | `compaction_ended_without_start` | `compaction.go:compactionEvent` | `semantic.zig:compactionEvent` | — |
-| `0044#the-barrier/7` | A run terminal MUST NOT be published while a compaction is open. | L165–173 | `compaction_open_at_terminal` | `compaction.go:compactionTerminal` | `semantic.zig:runEvent` | — |
+| `0044#the-barrier/6` | A `run.compaction.ended` MUST follow its `started`. | L165–173 | `compaction_ended_without_start` | `compaction.go:compactionEvent` | `semantic.zig:compactionEvent` | `state/compaction.rs:compaction_pair_event` |
+| `0044#the-barrier/7` | A run terminal MUST NOT be published while a compaction is open. | L165–173 | `compaction_open_at_terminal` | `compaction.go:compactionTerminal` | `semantic.zig:runEvent` | `state/compaction.rs:compaction_pair_event` |
 
 ### [0044] What a compaction looks like on the wire
 
@@ -69,7 +69,7 @@ Source: [`decisions/0044-compaction.md`](../../decisions/0044-compaction.md#what
 
 | id | rule | lines | code | Go | Zig | Rust |
 | --- | --- | --- | --- | --- | --- | --- |
-| `0044#what-a-compaction-looks-like-on-the-wire/1` | An `ended` with `outcome: "failed"` MUST carry `error`. | L110–145 | `compaction_failed_without_error` | `compaction.go:compactionEvent` | `semantic.zig:compactionEvent` | — |
+| `0044#what-a-compaction-looks-like-on-the-wire/1` | An `ended` with `outcome: "failed"` MUST carry `error`. | L110–145 | `compaction_failed_without_error` | `compaction.go:compactionEvent` | `semantic.zig:compactionEvent` | `state/compaction.rs:compaction_pair_event` |
 
 ### [0044] How a requested compaction settles
 
