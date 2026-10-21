@@ -87,7 +87,9 @@ memory session; the last must return `request_too_large` even when the raw
 value compacts below the cap. The oversized padded value must also be refused
 by submit, resolve, cancel and settings. Wrapper bytes, an escaped `request` key and
 surrounding whitespace must not change the measured value span. Retain the
-verbose output. The existing hub differential CI lane includes this test.
+verbose output. The existing hub differential CI lane includes this test and
+builds ReleaseSafe: processing the real 16 MiB boundaries in Debug can exhaust
+the CI job timeout.
 
 ## Interaction tool-binding consumer journey
 
