@@ -287,6 +287,11 @@ jobs:
           npm ci --ignore-scripts
           npm --prefix clients/ts ci --ignore-scripts
 
+      - name: Setup Python for SDK command parity
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
       - name: Require command exit evidence through every public SDK
         run: python3 .claude/skills/verify/scripts/sdk-command-result.py --oapx /tmp/oapx-parity/bin/oapx --output-dir /tmp/oap-sdk-command
 

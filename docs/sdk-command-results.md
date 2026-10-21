@@ -1,8 +1,8 @@
 # Command exit evidence in SDK streams
 
-The Go, Rust and TypeScript SDKs retain an action terminal's original result
+The Go, Rust, Python and TypeScript SDKs retain an action terminal's original result
 JSON on their tool execution end event: Go `ToolExecutionEnd.Result`, Rust
-`AgentEvent::ToolExecutionEnd.result`, TypeScript `tool_execution_end.result`.
+`AgentEvent::ToolExecutionEnd.result`, Python `ToolExecutionEnd.result`, TypeScript `tool_execution_end.result`.
 The daemon TypeScript client (`clients/ts`) exposes the same value unchanged
 on `ActionCallCompletedPayload.result`.
 
@@ -26,5 +26,5 @@ These are SDK event projections over the existing free-JSON OAP result; the
 wire schema and validator rules are unchanged. Rust has no native Codex
 adapter in this repository; native normalization is supplied by Go or Zig.
 The SDK parity journey replays issue #1386's native fixture through both real
-CLIs and all three SDKs, checks `clients/ts` preservation, and validates both
+CLIs and all four SDKs, checks `clients/ts` preservation, and validates both
 wire traces in Go, Rust and Zig.
