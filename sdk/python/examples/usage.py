@@ -10,7 +10,7 @@ from pathlib import Path
 import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
-from oap_sdk import MakaiProtocolError, connect
+from oap_sdk import MakaiError, connect
 
 
 async def main():
@@ -24,15 +24,28 @@ async def main():
                     request = {"model_ref": "fixture/other@usage",
                                "messages": [{"role": "user", "content": "usage"}]}
                     if stream:
-                        terminal = [event async for event in api.stream(**request)
-                                    if event.type == ("agent_end" if agent else "message_end")]
+                        terminal = []
+                        tool_results = []
+                        async for event in api.stream(**request):
+                            if event.type == ("agent_end" if agent else "message_end"):
+                                terminal.append(event)
+                            if event.type == "error":
+                                result.update(error=event.code, error_type=type(event).__name__)
+                            if event.type == "tool_execution_end":
+                                tool_results.append(event.result)
+                        if tool_results:
+                            result["tool_results"] = tool_results
+                        if not terminal:
+                            assert "error" in result, result
+                            observed.append(result)
+                            continue
                         assert len(terminal) == 1, terminal
                         usage = terminal[0].usage
                     else:
                         complete = api.run if agent else api.complete
                         usage = (await complete(**request)).usage
                     result["usage"] = None if usage is None else asdict(usage)
-                except MakaiProtocolError as error:
+                except MakaiError as error:
                     result.update(error=error.code, error_type=type(error).__name__)
                 observed.append(result)
     print(json.dumps(observed))

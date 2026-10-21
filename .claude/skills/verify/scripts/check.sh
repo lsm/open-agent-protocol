@@ -38,6 +38,7 @@ run ./scripts/check-no-test-litter.sh
 run python3 .claude/skills/verify/scripts/stdio-overflow.py --output-dir "$artifacts/stdio-overflow"
 run python3 .claude/skills/verify/scripts/sdk-command-result.py --output-dir "$artifacts/sdk-command"
 run python3 .claude/skills/verify/scripts/python-sdk-usage.py --output-dir "$artifacts/python-sdk-usage"
+run python3 .claude/skills/verify/scripts/python-sdk-negative-zero.py --output-dir "$artifacts/python-sdk-negative-zero"
 run python3 .claude/skills/verify/scripts/rust-sdk-usage.py --output-dir "$artifacts/rust-sdk-usage"
 run python3 .claude/skills/verify/scripts/go-sdk-usage.py --output-dir "$artifacts/go-sdk-usage"
 run python3 .claude/skills/verify/scripts/ts-sdk-usage.py --output-dir "$artifacts/ts-sdk-usage"

@@ -34,10 +34,10 @@ def run(command, output, label, expected=0):
     return stdout + stderr if label.endswith(".zig") else stdout
 
 
-def consumer(python, raw, output, label):
+def consumer(python, raw, output, label, site="completed"):
     (output / f"{label}.input").write_text(raw)
     values = json.loads(run([python, str(ROOT / "sdk/python/examples/usage.py"), python, "-u",
-                             str(ROOT / "sdk/python/tests/fixtures/usage.py"), raw], output, label))
+                             str(ROOT / "sdk/python/tests/fixtures/usage.py"), raw, site], output, label))
     assert [(value["agent"], value["stream"]) for value in values] == [
         (False, False), (False, True), (True, False), (True, True)], values
     return values
