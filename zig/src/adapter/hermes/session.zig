@@ -2162,3 +2162,24 @@ test "a refused submission drops what it buffered, it does not hand it to the ne
     try testing.expectEqualStrings("fresh", payloadAt(&reducer, 1).get("part").?.object.get("text").?.string);
     try testing.expectEqual(@as(usize, 2), reducer.envelopes.items.len);
 }
+
+test "negative native usage fails instead of becoming a token measurement" {
+    const cases = [_][]const u8{
+        \\{"status":"complete","text":"done","usage":{"input":-5}}
+        ,
+        \\{"status":"complete","text":"done","usage":{"output":-5}}
+        ,
+        \\{"status":"complete","text":"done","usage":{"total":-5}}
+        ,
+    };
+    for (cases) |frame| {
+        var arena = std.heap.ArenaAllocator.init(testing.allocator);
+        defer arena.deinit();
+        var reducer = try openRun(&arena);
+        try feedEvent(&reducer, arena.allocator(), "message.complete", frame);
+        try testing.expectEqualStrings("run.failed", typeAt(&reducer, 1));
+        const payload = payloadAt(&reducer, 1);
+        try testing.expectEqualStrings("hermes_invalid_event", payload.get("error").?.object.get("code").?.string);
+        try testing.expect(payload.get("usage") == null);
+    }
+}

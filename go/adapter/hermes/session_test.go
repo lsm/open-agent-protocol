@@ -1948,3 +1948,30 @@ func TestCompletedRunPreservesUsagePresence(t *testing.T) {
 		})
 	}
 }
+
+func TestNegativeUsageFailsInsteadOfBecomingAMeasurement(t *testing.T) {
+	for _, member := range []string{"input", "output", "total"} {
+		t.Run(member, func(t *testing.T) {
+			session, client := openTest(t)
+			ch := admit(t, session, client, true)
+			client.event(native.EventMessageComplete, 2, `{"text":"done","status":"complete","usage":{"`+member+`":-5}}`)
+			result := <-ch
+			if result.err != nil {
+				t.Fatal(result.err)
+			}
+			events := drain(t, result.stream)
+			validateWithCapabilities(t, result.response, events)
+			terminal := events[len(events)-1]
+			if terminal.Type != protocol.TypeRunFailed {
+				t.Fatalf("terminal = %s, want run.failed", terminal.Type)
+			}
+			var failed protocol.RunFailedPayload
+			if err := terminal.DecodePayload(&failed); err != nil {
+				t.Fatal(err)
+			}
+			if failed.Error.Code != "hermes_invalid_event" || failed.Usage != nil {
+				t.Fatalf("failure = %+v, want invalid event without usage", failed)
+			}
+		})
+	}
+}
