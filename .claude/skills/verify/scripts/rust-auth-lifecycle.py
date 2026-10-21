@@ -3,10 +3,12 @@
 import argparse
 import copy
 import json
+import re
 from pathlib import Path
 import subprocess
 
 ROOT = Path(__file__).resolve().parents[4]
+SOURCE = ROOT / "rust/validation/src/state/auth.rs"
 IDS = {"auth-event-before-start", "auth-completed-before-start", "auth-missing-terminal",
        "auth-progress-without-a-terminal", "auth-login-interactive", "auth-login-cancelled"}
 
@@ -67,15 +69,58 @@ def replay(language, output, label, case):
     return got, want
 
 
+def mutation_check(output, corpus):
+    unknown = 'self.add( codes::AUTH_FLOW_ORDER, at, e, "/payload/flow_id", "auth flow event or command preceded its start response", );'
+    changes = [
+        ("active-id-reuse", "if self.auth_flows.contains_key(&id) {", "if false {", "auth-flow-reuses-active-id", []),
+        ("completed-id-reuse", "if self.auth_flows.contains_key(&id) {", "if false {", "auth-flow-reuses-completed-id", ["missing_auth_terminal"]),
+        ("unstarted-event", unknown, "{}", "auth-event-before-start", []),
+        ("unstarted-cancel", unknown, "{}", "auth-flow-cancel-before-start", []),
+        ("first-sequence", "next: 1,", "next: 2,", "auth-flow-immediate-completion", ["sequence_regression"]),
+        ("sequence-gap", "sequence > expected", "false", "auth-flow-first-sequence-gap", []),
+        ("sequence-regression", "sequence < expected", "false", "auth-flow-sequence-regression", []),
+        ("advance-sequence", "flow.next = sequence.wrapping_add(1);", "flow.next = sequence;", "auth-login-interactive", ["sequence_gap"]),
+        ("event-after-terminal", "if flow.terminal {", "if false {", "auth-flow-event-after-terminal", []),
+        ("second-terminal", "if flow.terminal {", "if false {", "auth-flow-duplicate-terminal", []),
+        ("completion-closes", "flow.terminal = true;", "flow.terminal = false;", "auth-flow-immediate-completion", ["missing_auth_terminal"]),
+        ("missing-completion", "if !flow.terminal {", "if false {", "auth-progress-without-a-terminal", []),
+        ("flow-sequence-domain", ".get_mut(&id)", '.get_mut("flow-1")', "auth-flow-interleaved", ["sequence_regression", "event_after_terminal", "missing_auth_terminal"]),
+        ("cancel-is-not-completion", "if e.envelope_type != EnvelopeType::AUTH_LOGIN_EVENT && !completed { return; }", "if e.envelope_type != EnvelopeType::AUTH_LOGIN_EVENT && !completed { flow.terminal = true; return; }", "auth-flow-cancel-without-completion", []),
+    ]
+    original = SOURCE.read_bytes()
+    try:
+        for label, before, after, target, changed_codes in changes:
+            text = original.decode()
+            pattern = r"\s+".join(re.escape(part) for part in before.split())
+            matches = list(re.finditer(pattern, text))
+            if len(matches) != 1:
+                raise RuntimeError(f"{label}: mutation target is not unique")
+            match = matches[0]
+            SOURCE.write_text(text[:match.start()] + after + text[match.end():])
+            build("rust", output, label + "-build")
+            got, want = replay("rust", output, label, corpus[target])
+            changed = {"exit": int(bool(changed_codes)), "codes": sorted(changed_codes),
+                       "phases": ["semantic"] if changed_codes else []}
+            if got == want or got != changed:
+                raise RuntimeError(f"{label}: mutation survived or failed inconclusively: {got}")
+            print(f"KILLED {label}: {got}", flush=True)
+    finally:
+        SOURCE.write_bytes(original)
+        build("rust", output, "restored-build")
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output-dir", required=True)
+    parser.add_argument("--mutation-check", action="store_true")
     args = parser.parse_args()
     output = Path(args.output_dir).resolve()
     output.mkdir(parents=True, exist_ok=False)
     corpus = cases()
     for language in ("go", "rust", "zig"):
         build(language, output, language + "-build")
+    if args.mutation_check:
+        mutation_check(output, corpus)
     results, wrong = [], []
     for name, case in corpus.items():
         for language in ("go", "rust", "zig"):
