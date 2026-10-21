@@ -148,11 +148,7 @@ fn assembly_defect(fixture: &str, terminal: &Terminal, ended: &[Ended]) -> Optio
         diagnostic
     };
     let pointer = "/payload/message/content".to_owned();
-    let Some(parts) = terminal
-        .content
-        .as_array()
-        .filter(|parts| parts.iter().all(Value::is_object))
-    else {
+    let Some(parts) = terminal.content.as_array() else {
         return Some(defect(pointer, format!("{} content parts assembled from the ended parts", ordered.len()), "content that is not a part array".to_owned(), "an inference that streamed parts settled with a terminal whose content is not their assembly"));
     };
     if parts.len() != ordered.len() {
