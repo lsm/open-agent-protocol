@@ -100,7 +100,7 @@ func TestALostStreamSettlesARunTheRecordShowsFinished(t *testing.T) {
 		t.Fatalf("streamed %q", got)
 	}
 	final, completed := finalTexts(t, events[len(events)-1])
-	if !slices.Equal(final, []string{"pong"}) || completed.StopReason != "stop" || completed.Usage == nil || completed.Usage.TotalTokens != 5 {
+	if !slices.Equal(final, []string{"pong"}) || completed.StopReason != "stop" || completed.Usage == nil || (completed.Usage.TotalTokens == nil || *completed.Usage.TotalTokens != 5) {
 		t.Fatalf("final %q, completed %+v", final, completed)
 	}
 	if !strings.Contains(string(events[len(events)-1].Extensions["io.github.anomalyco.opencode.cost"]), "0.5") {
@@ -135,7 +135,7 @@ func TestALostStreamKeepsFollowingARunStillRunning(t *testing.T) {
 	events := adaptertest.Drain(t, stream, time.Second)
 	adaptertest.AssertRunTrace(t, response, CapabilityRevision, events)
 	final, completed := finalTexts(t, events[len(events)-1])
-	if !slices.Equal(final, []string{"hmm", "first", "deep", "second"}) || completed.Usage.TotalTokens != 2 {
+	if !slices.Equal(final, []string{"hmm", "first", "deep", "second"}) || (completed.Usage.TotalTokens == nil || *completed.Usage.TotalTokens != 2) {
 		t.Fatalf("final %q usage %+v", final, completed.Usage)
 	}
 	if got := streamedTexts(t, events); !slices.Equal(got, []string{"hmm", "first", "deep", "second"}) {
@@ -260,7 +260,7 @@ func TestASecondLostStreamDoesNotApplyTheFirstReplayAgain(t *testing.T) {
 	events := adaptertest.Drain(t, stream, time.Second)
 	adaptertest.AssertRunTrace(t, response, CapabilityRevision, events)
 	final, completed := finalTexts(t, events[len(events)-1])
-	if !slices.Equal(final, []string{"first", "second"}) || completed.Usage.TotalTokens != 6 {
+	if !slices.Equal(final, []string{"first", "second"}) || (completed.Usage.TotalTokens == nil || *completed.Usage.TotalTokens != 6) {
 		t.Fatalf("final %q usage %+v after two losses", final, completed.Usage)
 	}
 	if got := streamedTexts(t, events); !slices.Equal(got, []string{"first", "second"}) {

@@ -516,7 +516,7 @@ func TestACompletedRunSettlesWhenTheExecutionSucceedsAndNotBefore(t *testing.T) 
 	if err := events[len(events)-1].DecodePayload(&completed); err != nil {
 		t.Fatal(err)
 	}
-	if completed.StopReason != "stop" || completed.Usage == nil || completed.Usage.InputTokens != 2 || completed.Usage.OutputTokens != 5 {
+	if completed.StopReason != "stop" || completed.Usage == nil || (completed.Usage.InputTokens == nil || *completed.Usage.InputTokens != 2) || (completed.Usage.OutputTokens == nil || *completed.Usage.OutputTokens != 5) {
 		t.Fatalf("completed=%+v", completed)
 	}
 }

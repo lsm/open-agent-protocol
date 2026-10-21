@@ -54,7 +54,8 @@ func TestTheFirstTurnOfANewSessionReportsTheAgentsTokenCountsAsRunUsageAndKeepsT
 	if err := terminal.DecodePayload(&completed); err != nil {
 		t.Fatal(err)
 	}
-	if completed.Usage == nil || *completed.Usage != (protocol.Usage{InputTokens: 7224, OutputTokens: 77, TotalTokens: 7301}) {
+	input, output, total := uint64(7224), uint64(77), uint64(7301)
+	if !reflect.DeepEqual(completed.Usage, &protocol.Usage{InputTokens: &input, OutputTokens: &output, TotalTokens: &total}) {
 		t.Fatalf("usage=%+v", completed.Usage)
 	}
 	turn := extensionOf(t, terminal, turnUsageExtension)
@@ -112,6 +113,7 @@ func TestAReopenedSessionsFirstTurnKeepsTheAgentsCountsOutOfRunUsage(t *testing.
 }
 
 func TestTurnUsageThatIsMissingOrMalformedIsReportedAsUnavailableAndABadOptionalCountDropsOnlyItself(t *testing.T) {
+	zero, two, ten, twelve := uint64(0), uint64(2), uint64(10), uint64(12)
 	for _, scenario := range []struct {
 		name, usage string
 		want        *protocol.Usage
@@ -122,8 +124,8 @@ func TestTurnUsageThatIsMissingOrMalformedIsReportedAsUnavailableAndABadOptional
 		{"negative input", `{"totalTokens":10,"inputTokens":-1,"outputTokens":11}`, nil, nil},
 		{"missing output", `{"totalTokens":10,"inputTokens":10}`, nil, nil},
 		{"not an object", `[1,2]`, nil, nil},
-		{"measured zero", `{"totalTokens":0,"inputTokens":0,"outputTokens":0}`, &protocol.Usage{}, map[string]any{"total_tokens": 0.0, "input_tokens": 0.0, "output_tokens": 0.0}},
-		{"negative thought", `{"totalTokens":12,"inputTokens":10,"outputTokens":2,"thoughtTokens":-4,"cachedWriteTokens":3}`, &protocol.Usage{InputTokens: 10, OutputTokens: 2, TotalTokens: 12}, map[string]any{"total_tokens": 12.0, "input_tokens": 10.0, "output_tokens": 2.0, "cached_write_tokens": 3.0}},
+		{"measured zero", `{"totalTokens":0,"inputTokens":0,"outputTokens":0}`, &protocol.Usage{InputTokens: &zero, OutputTokens: &zero, TotalTokens: &zero}, map[string]any{"total_tokens": 0.0, "input_tokens": 0.0, "output_tokens": 0.0}},
+		{"negative thought", `{"totalTokens":12,"inputTokens":10,"outputTokens":2,"thoughtTokens":-4,"cachedWriteTokens":3}`, &protocol.Usage{InputTokens: &ten, OutputTokens: &two, TotalTokens: &twelve}, map[string]any{"total_tokens": 12.0, "input_tokens": 10.0, "output_tokens": 2.0, "cached_write_tokens": 3.0}},
 	} {
 		t.Run(scenario.name, func(t *testing.T) {
 			s, f := openTest(t, 64)

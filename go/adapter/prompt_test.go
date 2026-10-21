@@ -62,7 +62,8 @@ func TestRunToTerminalRefusesAGateWithNoPolicy(t *testing.T) {
 
 func TestRunToTerminalReportsAFailedRun(t *testing.T) {
 	failure := protocol.ProtocolError{Code: "provider_unavailable", Message: "the provider is down"}
-	payload := protocol.RunFailedPayload{SessionID: "session-1", RunID: "run-1", Error: failure, Usage: &protocol.Usage{InputTokens: 4}}
+	input := uint64(4)
+	payload := protocol.RunFailedPayload{SessionID: "session-1", RunID: "run-1", Error: failure, Usage: &protocol.Usage{InputTokens: &input}}
 	session := &scriptedSession{results: []adapter.Result{
 		{Envelope: envelope(protocol.TypeRunFailed, 1, payload)},
 	}}
@@ -71,7 +72,7 @@ func TestRunToTerminalReportsAFailedRun(t *testing.T) {
 	if !errors.As(err, &failed) {
 		t.Fatalf("err = %v, want a failed run", err)
 	}
-	if failed.Failure.Code != failure.Code || failed.Usage == nil || failed.Usage.InputTokens != 4 {
+	if failed.Failure.Code != failure.Code || failed.Usage == nil || (failed.Usage.InputTokens == nil || *failed.Usage.InputTokens != 4) {
 		t.Fatalf("failure = %+v", failed)
 	}
 	if !errors.Is(err, adapter.ErrRunFailed) {

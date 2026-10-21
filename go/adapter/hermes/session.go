@@ -846,7 +846,8 @@ func (s *Session) settleRun(run *runState, payload *native.MessageCompletePayloa
 	}
 	s.settleChildren(run)
 	if payload.Status == "complete" {
-		usage := &protocol.Usage{InputTokens: uint64(payload.Usage.Input), OutputTokens: uint64(payload.Usage.Output), TotalTokens: uint64(payload.Usage.Total)}
+		input, output, total := uint64(payload.Usage.Input), uint64(payload.Usage.Output), uint64(payload.Usage.Total)
+		usage := &protocol.Usage{InputTokens: &input, OutputTokens: &output, TotalTokens: &total}
 		_ = s.emit(run, protocol.TypeRunCompleted, protocol.RunCompletedPayload{SessionID: s.state.SessionID, RunID: run.id, FinalResponse: protocol.Message{ID: run.messageID, Role: protocol.RoleAssistant, Content: protocol.TextContent(payload.Text)}, StopReason: "completed", Usage: usage}, true)
 		return
 	}

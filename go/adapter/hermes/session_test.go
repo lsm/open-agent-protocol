@@ -440,7 +440,7 @@ func TestCompletedRunMapsDeltasToolsAndUsage(t *testing.T) {
 	if err := events[len(events)-1].DecodePayload(&completed); err != nil {
 		t.Fatal(err)
 	}
-	if completed.Usage == nil || completed.Usage.InputTokens != 3 || completed.Usage.TotalTokens != 8 {
+	if completed.Usage == nil || (completed.Usage.InputTokens == nil || *completed.Usage.InputTokens != 3) || (completed.Usage.TotalTokens == nil || *completed.Usage.TotalTokens != 8) {
 		t.Fatalf("usage %+v", completed.Usage)
 	}
 	if text, ok := completed.FinalResponse.Content.Text(); !ok || text != "done" {

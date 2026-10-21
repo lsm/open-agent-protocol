@@ -767,7 +767,8 @@ func (s *Session) trySettle(run *runState) {
 	}
 	var usage *protocol.Usage
 	if u := run.final.Usage; u != nil {
-		usage = &protocol.Usage{InputTokens: uint64(u.InputTokens), OutputTokens: uint64(u.OutputTokens), TotalTokens: uint64(u.InputTokens + u.OutputTokens)}
+		input, output, total := uint64(u.InputTokens), uint64(u.OutputTokens), uint64(u.InputTokens+u.OutputTokens)
+		usage = &protocol.Usage{InputTokens: &input, OutputTokens: &output, TotalTokens: &total}
 	}
 	_ = s.emit(run, protocol.TypeRunCompleted, protocol.RunCompletedPayload{SessionID: s.state.SessionID, RunID: run.id, FinalResponse: protocol.Message{ID: run.messageID, Role: protocol.RoleAssistant, Content: content}, StopReason: "completed", Usage: usage}, true)
 }
