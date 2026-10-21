@@ -6,6 +6,8 @@ use oap_validation::{codes, Phase, Validator};
 fn snapshots_must_reconcile_their_claims_with_the_events_that_follow() {
     let validator = Validator::new().unwrap();
     for name in [
+        "queue-state-started-admission-queued-before-start",
+        "queue-state-settled-terminal-never-arrives",
         "queue-state-omits-pending-interaction",
         "queue-state-unpositioned-entry-omits-pending-without-queue",
         "queue-state-pending-without-as-of",

@@ -6,6 +6,8 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[4]
 NEGATIVE = [
+    "queue-state-started-admission-queued-before-start",
+    "queue-state-settled-terminal-never-arrives",
     "queue-state-omits-pending-interaction",
     "queue-state-unpositioned-entry-omits-pending-without-queue",
     "queue-state-pending-without-as-of",
@@ -88,6 +90,12 @@ def main():
         trace.remove(resolution)
         trace.insert(next(i for i, e in enumerate(trace) if e["type"] == "session.state.response"), resolution)
         cases.append((f"historical-position-{position}-listed-{len(pending)}", trace, expected))
+    started = copy.deepcopy(next(trace for name, trace, _ in cases if name == "queue-state-started-admission-queued-before-start"))
+    state(started)["active_runs"][0]["status"] = "running"
+    cases.append(("started-admission-running-repaired", started, []))
+    missing = copy.deepcopy(next(trace for name, trace, _ in cases if name == "queue-state-settled-terminal-never-arrives"))
+    missing.append(json.loads((ROOT / "fixtures/valid/core-completed.json").read_text())[-1])
+    cases.append(("settled-terminal-arrives-repaired", missing, []))
     no_queue = copy.deepcopy(next(trace for name, trace, _ in cases if name == "state-omits-active-runs-with-pending-permission"))
     next(e for e in no_queue if e["type"] == "capabilities.response")["payload"]["features"].pop("session.message.delivery.queue", None)
     cases.append(("decision-0057-without-queue", no_queue, []))
