@@ -324,6 +324,10 @@ subscriptions on one session stay attributable.
 | `"event":"oap-frame-limit"` | an envelope this framing cannot carry; `sequence` is where a fresh cursor resumes past it, with the `run_id` it stopped in — `TestTheFrameLimitSignalCarriesItsRunAndSequence` |
 | `"event":"oap-stream-failed"` | the run's event stream failed; `run_id` and `sequence` are the last position delivered |
 
+The stdio overflow regression drives one producer run, then drains its queued
+lines. It checks that the overflow names that run and that its cursor is not
+behind the envelopes already delivered.
+
 `envelope` and `oap-subscribed` are the only two that do not end the
 subscription. The other five each end it, and each is a named line because this
 framing has no end to observe: the SSE body simply stops, while the pipe here

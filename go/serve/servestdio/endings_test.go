@@ -46,10 +46,10 @@ func TestEventsSignalAnOverflowWithItsRunAndCursor(t *testing.T) {
 	if response := f.expectResponse(9); !response.OK {
 		t.Fatalf("events failed: %+v", response.Error)
 	}
+	runID, _ := runToCompletion(t, hub, session)
 	var overflow *overflowLine
 	var delivered uint64
 	for i := 0; i < 64 && overflow == nil; i++ {
-		_, _ = runToCompletion(t, hub, session)
 		raw := f.line()
 		var line struct {
 			Event    string  `json:"event"`
@@ -78,8 +78,8 @@ func TestEventsSignalAnOverflowWithItsRunAndCursor(t *testing.T) {
 	if overflow.SessionID != "flooded" {
 		t.Fatalf("the overflow names %q, want the session it ended", overflow.SessionID)
 	}
-	if overflow.RunID == "" {
-		t.Fatal("the overflow names no run, so a client could not resume against it")
+	if overflow.RunID != string(runID) {
+		t.Fatalf("the overflow names run %q, want the run that filled the stream %q", overflow.RunID, runID)
 	}
 	if overflow.Message == "" {
 		t.Fatal("the overflow carries no message")
