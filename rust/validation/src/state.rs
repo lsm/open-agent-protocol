@@ -6,6 +6,7 @@ mod name_pattern;
 mod queue;
 mod results;
 mod runs;
+mod snapshot_listing;
 mod steer;
 
 use std::collections::{HashMap, HashSet};
