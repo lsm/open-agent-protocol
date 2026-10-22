@@ -45,6 +45,7 @@ def main():
     }
     cases = [
         ("semantic-invalid/capability-refresh-requires-announced-revision.json", [4, 5, 13, 14, 18, 19]),
+        ("semantic-invalid/capability-refresh-late-response-after-refresh.json", [6]),
         ("valid/permission-resolved-in-the-refresh-window.json", []),
         ("valid/user-input-resolved-in-the-refresh-window.json", []),
     ]
@@ -64,7 +65,7 @@ def main():
             results.append({"fixture": fixture, "language": language, "exit": status, "indices": indices})
             print(f"{label}: exit {status}, stale indices {indices}", flush=True)
     (output / "results.json").write_text(json.dumps(results, indent=2) + "\n")
-    print("PASS: 9 public CLI judgments, 0 disagreements", flush=True)
+    print("PASS: 12 public CLI judgments, 0 disagreements", flush=True)
 
 
 if __name__ == "__main__":

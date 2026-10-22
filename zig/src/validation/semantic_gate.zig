@@ -180,20 +180,25 @@ test "the Zig semantic phase emits exactly the codes the manifest declares unles
 
 test "only the announced descriptor closes the refresh window" {
     const allocator = std.testing.allocator;
-    const path = try std.fs.path.join(allocator, &.{ build_options.repository_root, "fixtures", "semantic-invalid", "capability-refresh-requires-announced-revision.json" });
-    defer allocator.free(path);
-    const bytes = try readAll(allocator, path);
-    defer allocator.free(bytes);
-    var trace = try std.json.parseFromSlice(std.json.Value, allocator, bytes, .{});
-    defer trace.deinit();
-    var machine = semantic.Machine.init(allocator);
-    defer machine.deinit();
-    for (trace.value.array.items, 0..) |envelope, index| try machine.apply(index, envelope);
-    try machine.close();
-    const expected = [_]usize{ 4, 5, 13, 14, 18, 19 };
-    try std.testing.expectEqual(expected.len, machine.diagnostics.items.len);
-    for (expected, machine.diagnostics.items) |index, diagnostic| {
-        try std.testing.expectEqualStrings("stale_capability_revision", diagnostic.code);
-        try std.testing.expectEqual(index, diagnostic.index);
+    const cases = [_]struct { name: []const u8, indices: []const usize }{
+        .{ .name = "capability-refresh-requires-announced-revision.json", .indices = &.{ 4, 5, 13, 14, 18, 19 } },
+        .{ .name = "capability-refresh-late-response-after-refresh.json", .indices = &.{6} },
+    };
+    for (cases) |case| {
+        const path = try std.fs.path.join(allocator, &.{ build_options.repository_root, "fixtures", "semantic-invalid", case.name });
+        defer allocator.free(path);
+        const bytes = try readAll(allocator, path);
+        defer allocator.free(bytes);
+        var trace = try std.json.parseFromSlice(std.json.Value, allocator, bytes, .{});
+        defer trace.deinit();
+        var machine = semantic.Machine.init(allocator);
+        defer machine.deinit();
+        for (trace.value.array.items, 0..) |envelope, index| try machine.apply(index, envelope);
+        try machine.close();
+        try std.testing.expectEqual(case.indices.len, machine.diagnostics.items.len);
+        for (case.indices, machine.diagnostics.items) |index, diagnostic| {
+            try std.testing.expectEqualStrings("stale_capability_revision", diagnostic.code);
+            try std.testing.expectEqual(index, diagnostic.index);
+        }
     }
 }

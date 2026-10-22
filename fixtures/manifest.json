@@ -16277,6 +16277,23 @@
       "rules": [
         "0064#every-non-exempt-request-in-the-window-is-stale-open-0001-8/1"
       ]
+    },
+    {
+      "id": "capability-refresh-late-response-after-refresh",
+      "path": "semantic-invalid/capability-refresh-late-response-after-refresh.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "stale_capability_revision"
+      ],
+      "units": [
+        "core"
+      ],
+      "provenance": [],
+      "rules": [
+        "0064#every-non-exempt-request-in-the-window-is-stale-open-0001-8/1"
+      ]
     }
   ]
 }
