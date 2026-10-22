@@ -450,7 +450,7 @@ impl State {
             return;
         }
         if e.envelope_type == EnvelopeType::CAPABILITIES_RESPONSE
-            && self.capabilities_stale
+            && !self.current_capability.is_empty()
             && revision != self.current_capability
         {
             return;

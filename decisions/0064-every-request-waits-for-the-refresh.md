@@ -35,7 +35,9 @@ the ones that settle work already in flight: `run.cancel.request`,
 A response carrying a different revision does not replace the descriptor or
 close the window. This includes a delayed response for the previous revision,
 an unannounced revision, or a revision superseded by another update; the
-response must carry the most recently announced revision.
+response must carry the most recently announced revision. Once the active
+revision is known, a mismatched response remains stale after the window closes
+and cannot roll the descriptor back.
 
 ## Consequences
 
