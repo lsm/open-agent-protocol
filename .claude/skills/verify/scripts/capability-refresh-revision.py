@@ -64,8 +64,22 @@ def main():
             assert indices == expected, (label, expected, diagnostics)
             results.append({"fixture": fixture, "language": language, "exit": status, "indices": indices})
             print(f"{label}: exit {status}, stale indices {indices}", flush=True)
+    pack = ROOT / "fixtures/packs/descriptor-member"
+    fixture = pack / "fixtures/region-on-stale-descriptor.json"
+    for language in ("go", "zig"):
+        label = "descriptor-region-on-stale-response." + language
+        status, stdout = run(commands[language] + ["--pack", str(pack), str(fixture)], output, label)
+        parsed = json.loads(stdout)
+        reports = parsed if isinstance(parsed, list) else parsed.get("reports", [parsed])
+        diagnostics = [d for report in reports for d in report.get("diagnostics") or []]
+        actual = sorted((d["code"], d["index"]) for d in diagnostics)
+        expected = sorted([("stale_capability_revision", 4), ("unavailable_capability", 4), ("stale_capability_revision", 5)])
+        assert status == 1 and all(d["phase"] == "semantic" for d in diagnostics), (label, status, diagnostics)
+        assert actual == expected, (label, expected, diagnostics)
+        results.append({"fixture": str(fixture.relative_to(ROOT)), "language": language, "exit": status, "diagnostics": actual})
+        print(f"{label}: exit {status}, diagnostics {actual}", flush=True)
     (output / "results.json").write_text(json.dumps(results, indent=2) + "\n")
-    print("PASS: 12 public CLI judgments, 0 disagreements", flush=True)
+    print("PASS: 12 core judgments across three validators + 2 Go/Zig pack judgments, 0 disagreements", flush=True)
 
 
 if __name__ == "__main__":

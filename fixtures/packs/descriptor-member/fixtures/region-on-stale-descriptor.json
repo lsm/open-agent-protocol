@@ -1,0 +1,9 @@
+[
+  {"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"capabilities.request","id":"initial-request","payload":{}},
+  {"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"capabilities.response","id":"initial-response","payload":{"endpoint":{"id":"agent"}},"in_reply_to":"initial-request","capability_revision":"v1"},
+  {"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"capabilities.request","id":"old-request","payload":{}},
+  {"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"capabilities.updated","id":"update-v2","payload":{"previous_revision":"v1"},"capability_revision":"v2","sequence":1},
+  {"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"capabilities.response","id":"old-response","payload":{"endpoint":{"id":"agent"},"com.example.descriptor.region":"eu-west"},"in_reply_to":"old-request","capability_revision":"v1"},
+  {"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"session.open.request","id":"after-old","payload":{"session_id":"after-old"}},
+  {"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"session.open.response","id":"after-old-response","payload":{"session_id":"after-old","status":"idle"},"in_reply_to":"after-old","session_id":"after-old"}
+]

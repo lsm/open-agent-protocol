@@ -40,6 +40,33 @@
         }
       ],
       "provenance": []
+    },
+    {
+      "id": "descriptor-region-on-stale-response",
+      "path": "region-on-stale-descriptor.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "stale_capability_revision",
+        "unavailable_capability"
+      ],
+      "units": [
+        "ext:com.example.descriptor/1.0.0"
+      ],
+      "covers": [
+        {
+          "capability": "com.example.descriptor.regions",
+          "aspect": "gate"
+        }
+      ],
+      "provenance": [
+        "../../../../decisions/0064-every-request-waits-for-the-refresh.md"
+      ],
+      "rules": [
+        "0064#every-non-exempt-request-in-the-window-is-stale-open-0001-8/1",
+        "0004#a-pack-declares-what-it-defines/8"
+      ]
     }
   ]
 }
