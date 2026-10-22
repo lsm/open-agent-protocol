@@ -288,6 +288,9 @@ func (s *state) apply(i, line int, e protocol.Envelope) {
 			}
 		}
 	case protocol.TypeCapabilitiesResponse:
+		if s.capabilitiesStale && e.CapabilityRevision != s.currentCapability {
+			return
+		}
 		var p protocol.CapabilitiesResponse
 		_ = e.DecodePayload(&p)
 

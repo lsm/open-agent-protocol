@@ -55,6 +55,7 @@ run python3 .claude/skills/verify/scripts/rust-deferred-captures.py --output-dir
 run python3 .claude/skills/verify/scripts/rust-snapshot-listing.py --output-dir "$artifacts/rust-snapshot-listing"
 run python3 .claude/skills/verify/scripts/rust-reopen.py --output-dir "$artifacts/rust-reopen"
 run python3 .claude/skills/verify/scripts/rust-refresh-window.py --output-dir "$artifacts/rust-refresh"
+run python3 .claude/skills/verify/scripts/capability-refresh-revision.py --output-dir "$artifacts/capability-refresh-revision"
 run python3 .claude/skills/verify/scripts/rust-control-tools.py --output-dir "$artifacts/rust-control"
 run python3 .claude/skills/verify/scripts/rust-memory-trace.py --output-dir "$artifacts/rust-memory"
 run python3 .claude/skills/verify/scripts/rust-provider-parity.py --output-dir "$artifacts/rust-provider"
