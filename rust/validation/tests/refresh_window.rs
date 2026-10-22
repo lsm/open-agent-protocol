@@ -317,3 +317,19 @@ fn a_settling_response_uses_refreshed_features_but_echoes_the_admitted_revision(
         );
     }
 }
+
+#[test]
+fn only_the_announced_descriptor_closes_the_refresh_window() {
+    for (trace, expected) in [
+        (include_bytes!("../../../fixtures/semantic-invalid/capability-refresh-requires-announced-revision.json").as_slice(), &[4, 5, 13, 14, 18, 19][..]),
+        (include_bytes!("../../../fixtures/semantic-invalid/capability-refresh-late-response-after-refresh.json").as_slice(), &[6][..]),
+    ] {
+        let result = Validator::new().unwrap().validate(trace, "refresh-window");
+        let indices: Vec<_> = result.diagnostics.iter().map(|diagnostic| {
+            assert_eq!(diagnostic.code, codes::STALE_CAPABILITY_REVISION);
+            assert_eq!(diagnostic.phase, Phase::Semantic);
+            diagnostic.index
+        }).collect();
+        assert_eq!(indices, expected, "{result:?}");
+    }
+}

@@ -1239,6 +1239,7 @@ pub const Machine = struct {
     }
 
     fn capabilitiesResponse(self: *Machine, index: usize, envelope: std.json.Value, payload: std.json.Value) !void {
+        if (self.current_capability.len != 0 and !std.mem.eql(u8, field(envelope, "capability_revision"), self.current_capability)) return;
         const outgoing = Snapshot{
             .revision = self.current_capability,
             .stale = self.capabilities_stale,

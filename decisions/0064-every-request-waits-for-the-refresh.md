@@ -32,6 +32,16 @@ the ones that settle work already in flight: `run.cancel.request`,
 `action.permission.resolve.request`, `user.input.resolve.request`,
 `user.input.cancel.request` and `action.call.resolve.request`.
 
+A response carrying a different revision does not replace the descriptor or
+close the window. This includes a delayed response for the previous revision,
+an unannounced revision, or a revision superseded by another update; the
+response must carry the most recently announced revision. Once the active
+revision is known, a mismatched response remains stale after the window closes
+and cannot roll the descriptor back.
+
+Rejecting a descriptor update does not skip independent envelope checks,
+including the extension-pack gates in [Decision 0004](0004-extension-packs.md).
+
 ## Consequences
 
 - Decision 0055's refresh section and Decision 0001's capabilities clause

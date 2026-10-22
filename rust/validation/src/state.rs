@@ -449,6 +449,12 @@ impl State {
         if duplicate_response {
             return;
         }
+        if e.envelope_type == EnvelopeType::CAPABILITIES_RESPONSE
+            && !self.current_capability.is_empty()
+            && revision != self.current_capability
+        {
+            return;
+        }
         self.payload_scope(at, e);
         self.check_result_images(at, e);
         self.list_scope(at, e);
