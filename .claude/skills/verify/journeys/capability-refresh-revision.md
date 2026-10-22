@@ -23,6 +23,16 @@ at index 6 after the matching refresh at 5. Only index 6 is stale; the following
 request and response citing the active revision at 7 and 8 pass. An old response
 must never roll the active descriptor back, even after the window closes.
 
+The descriptor-member pack's `region-on-stale-descriptor` case must still
+report `unavailable_capability` for the packed member at index 4, alongside
+`stale_capability_revision` at indices 4 and 5. Go and Zig compare this case
+with the pack explicitly loaded in tolerant mode. Zig's existing strict CLI
+does not widen core payload schemas for packed members and stops at
+`schema_invalid` before these semantic checks; that limitation is unchanged.
+Go's strict manifest suite also pins the pack case. Rust's existing lack of
+pack loading is unchanged. Together the helper checks 12 core judgments across all three trees
+and two pack judgments across Go and Zig, with zero disagreements.
+
 Also observe acceptance of the permission and user-input traces that settle
 under the previous revision while the window remains open. Require zero
 validator disagreements. This journey checks wire validation only; it does not

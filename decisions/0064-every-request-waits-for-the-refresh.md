@@ -39,6 +39,9 @@ response must carry the most recently announced revision. Once the active
 revision is known, a mismatched response remains stale after the window closes
 and cannot roll the descriptor back.
 
+Rejecting a descriptor update does not skip independent envelope checks,
+including the extension-pack gates in [Decision 0004](0004-extension-packs.md).
+
 ## Consequences
 
 - Decision 0055's refresh section and Decision 0001's capabilities clause

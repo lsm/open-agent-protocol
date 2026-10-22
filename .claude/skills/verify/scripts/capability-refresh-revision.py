@@ -68,7 +68,7 @@ def main():
     fixture = pack / "fixtures/region-on-stale-descriptor.json"
     for language in ("go", "zig"):
         label = "descriptor-region-on-stale-response." + language
-        status, stdout = run(commands[language] + ["--pack", str(pack), str(fixture)], output, label)
+        status, stdout = run(commands[language] + ["--mode", "tolerant", "--pack", str(pack), str(fixture)], output, label)
         parsed = json.loads(stdout)
         reports = parsed if isinstance(parsed, list) else parsed.get("reports", [parsed])
         diagnostics = [d for report in reports for d in report.get("diagnostics") or []]
