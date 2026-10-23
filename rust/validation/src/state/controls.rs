@@ -35,6 +35,33 @@ pub(super) struct Expectation {
 }
 
 impl Expectation {
+    fn attachment_gate(degraded: bool) -> Self {
+        let mut expectation = Self::delivery(FEATURE_TOOL_SOURCES_ATTACH, degraded);
+        expectation.pointer = "/payload/tool_sources".to_owned();
+        expectation.message = "an open attaches sources that require a typed refusal".to_owned();
+        expectation
+    }
+
+    fn attachment_value(
+        pointer: String,
+        source: &str,
+        diagnostic: &'static str,
+        limit: bool,
+    ) -> Self {
+        Self {
+            rung: RUNG_UNSATISFIABLE,
+            limit,
+            key: FEATURE_TOOL_SOURCES_ATTACH.to_owned(),
+            pointer,
+            code: UNSUPPORTED_FEATURE,
+            reason: CONTROL_UNSATISFIABLE,
+            detail_name: "source",
+            detail_value: source.to_owned(),
+            diagnostic,
+            message: "an open attaches sources that require a typed refusal".to_owned(),
+        }
+    }
+
     fn tool_list(degraded: bool) -> Self {
         let mut expectation = Self::delivery(FEATURE_TOOLS_LIST, degraded);
         expectation.pointer = "/payload".to_owned();
@@ -270,6 +297,153 @@ pub(super) struct PendingToolList {
     honour: bool,
 }
 
+#[derive(Clone)]
+pub(super) struct PendingAttach {
+    expectations: Vec<Expectation>,
+    honour: bool,
+}
+
+impl State {
+    fn check_attach_modes(&mut self, at: (usize, usize), e: &Envelope) {
+        let p: CapabilitiesResponse = payload(e);
+        if let Some(support) = p.effective_support(FEATURE_TOOL_SOURCES_ATTACH) {
+            if affirmative(&support.level) && !support.discloses_mode(MODE_SESSION_OPEN) {
+                self.add_expected(
+                    codes::UNDISCLOSED_ATTACH_MODES, at, e,
+                    "/payload/features/action.tool_sources.attach/modes",
+                    "action.tool_sources.attach is advertised without disclosing the session_open mode an open elects",
+                    MODE_SESSION_OPEN, &support.modes.join(","), &[],
+                );
+            }
+        }
+    }
+
+    fn attach_gate(&mut self, at: (usize, usize), e: &Envelope, p: &SessionOpenRequest) {
+        if p.tool_sources.is_empty() {
+            return;
+        }
+        let Some(level) = self.control_descriptor(at, e, FEATURE_TOOL_SOURCES_ATTACH) else {
+            return;
+        };
+        let support = self
+            .feature_supports
+            .get(FEATURE_TOOL_SOURCES_ATTACH)
+            .cloned()
+            .unwrap_or_default();
+        let mut expectations = Vec::new();
+        if !affirmative(&level) || !support.discloses_mode(MODE_SESSION_OPEN) {
+            expectations.push(Expectation::attachment_gate(false));
+        } else if level == SupportLevel::DEGRADED && !p.allows_degraded(FEATURE_TOOL_SOURCES_ATTACH)
+        {
+            expectations.push(Expectation::attachment_gate(true));
+        } else {
+            let mut seen = HashSet::new();
+            for (index, attachment) in p.tool_sources.iter().enumerate() {
+                if !seen.insert(attachment.id.as_str())
+                    || self.declared_sources.contains(&attachment.id)
+                {
+                    expectations.push(Expectation::attachment_value(
+                        format!("/payload/tool_sources/{index}/id"),
+                        &attachment.id,
+                        codes::DUPLICATE_TOOL_SOURCE,
+                        false,
+                    ));
+                }
+                if attachment.kind == "remote" && !support.discloses_mode(MODE_REMOTE) {
+                    expectations.push(Expectation::attachment_value(
+                        format!("/payload/tool_sources/{index}/kind"),
+                        &attachment.id,
+                        codes::UNAVAILABLE_CAPABILITY,
+                        false,
+                    ));
+                }
+            }
+            if expectations.is_empty() {
+                let mut violations = Vec::new();
+                if let Some(max) = support
+                    .max_sources()
+                    .and_then(|max| usize::try_from(max).ok())
+                {
+                    if let Some(source) = p.tool_sources.get(max) {
+                        violations.push(Expectation::attachment_value(
+                            format!("/payload/tool_sources/{max}"),
+                            &source.id,
+                            codes::UNAVAILABLE_CAPABILITY,
+                            true,
+                        ));
+                    }
+                }
+                if let Some(transports) = support.transports() {
+                    for (index, source) in p.tool_sources.iter().enumerate() {
+                        if !transports.contains(&source.kind) {
+                            violations.push(Expectation::attachment_value(
+                                format!("/payload/tool_sources/{index}/kind"),
+                                &source.id,
+                                codes::UNAVAILABLE_CAPABILITY,
+                                true,
+                            ));
+                        }
+                    }
+                }
+                if let Some(first) = violations.into_iter().min_by(Expectation::order) {
+                    expectations.push(first);
+                }
+            }
+        }
+        let honour = expectations.is_empty();
+        self.pending_attaches.insert(
+            s(&e.id),
+            PendingAttach {
+                expectations,
+                honour,
+            },
+        );
+    }
+
+    fn source_honour(&self, reply: &str, key: &str) -> bool {
+        let provided = self.pending_provides.get(reply);
+        if provided.is_some_and(|pending| pending.expectation.is_none() && !pending.honour) {
+            return false;
+        }
+        let owner = if self
+            .pending_attaches
+            .get(reply)
+            .is_some_and(|pending| pending.honour)
+        {
+            Some(FEATURE_TOOL_SOURCES_ATTACH)
+        } else if provided.is_some_and(|pending| pending.honour) {
+            Some(FEATURE_TOOLS_PROVIDE)
+        } else {
+            None
+        };
+        owner == Some(key)
+    }
+
+    fn attach_refusal(&mut self, at: (usize, usize), e: &Envelope) {
+        let reply = os(&e.in_reply_to);
+        let Some(pending) = self.pending_attaches.get(&reply).cloned() else {
+            return;
+        };
+        let err = payload::<ErrorResponse>(e).error;
+        let (discharged, speaker) = self.attribute(&reply, &err);
+        if discharged {
+            return;
+        }
+        if let Some(expectation) = pending.expectations.iter().min_by(|a, b| a.order(b)) {
+            self.refusal_misses(at, e, expectation, &speaker, &err);
+        } else if pending.honour
+            && speaker.is_none()
+            && self.source_honour(&reply, FEATURE_TOOL_SOURCES_ATTACH)
+        {
+            self.add_expected(
+                codes::UNDISCLOSED_ATTACH_LIMIT, at, e, "/payload/error",
+                "an open carrying no attachment defect and violating no disclosed limit was refused",
+                "an admitted open or a disclosed limit", &describe_refusal(&err), &[&reply],
+            );
+        }
+    }
+}
+
 impl PendingToolList {
     pub(super) fn gated(&self) -> bool {
         self.expectation.is_some()
@@ -355,6 +529,7 @@ impl State {
             self.check_descriptor_catalog(at, e);
             self.record_limits(at, e);
             self.check_provide_pattern(at, e);
+            self.check_attach_modes(at, e);
         } else if *t == EnvelopeType::CAPABILITIES_UPDATED {
             self.declared_sources.clear();
             self.descriptor_owners.clear();
@@ -383,6 +558,7 @@ impl State {
             let p: SessionOpenRequest = payload(e);
             self.subscribe_gate(at, e, &p);
             self.provide_gate(at, e, &p);
+            self.attach_gate(at, e, &p);
             self.open_settings_gate(at, e, &p);
             if let Some(message) = &p.message {
                 let submission = message.submit(p.session_id.clone().unwrap_or_default());
@@ -401,11 +577,12 @@ impl State {
             self.open_submit_window(&session, &s(&e.id));
         } else if *t == EnvelopeType::SESSION_OPEN_RESPONSE {
             self.settle_subscribe_admission(at, e);
-            self.settle_provide_admission(at, e);
+            self.settle_source_admission(at, e);
             self.open_settings_response(at, e);
             self.record_provided_tools(e);
         } else if *t == EnvelopeType::ERROR_RESPONSE {
             self.tools_list_refusal(at, e);
+            self.attach_refusal(at, e);
             self.settle_control_refusal(at, e);
             self.settle_provide_refusal(at, e);
             self.steer_refusal(at, e);
@@ -967,6 +1144,12 @@ impl State {
                     .into_iter()
                     .flat_map(|pending| &pending.expectations),
             )
+            .chain(
+                self.pending_attaches
+                    .get(reply)
+                    .into_iter()
+                    .flat_map(|pending| &pending.expectations),
+            )
             .collect();
         if retained
             .iter()
@@ -1499,11 +1682,23 @@ impl State {
         );
     }
 
-    fn settle_provide_admission(&mut self, at: (usize, usize), e: &Envelope) {
-        let Some(pending) = self.pending_provides.get(&os(&e.in_reply_to)) else {
-            return;
-        };
-        if let Some(expectation) = pending.expectation.clone().filter(|e| !e.limit) {
+    fn settle_source_admission(&mut self, at: (usize, usize), e: &Envelope) {
+        let reply = os(&e.in_reply_to);
+        let expectation = self
+            .pending_provides
+            .get(&reply)
+            .and_then(|pending| pending.expectation.as_ref())
+            .into_iter()
+            .chain(
+                self.pending_attaches
+                    .get(&reply)
+                    .into_iter()
+                    .flat_map(|pending| &pending.expectations),
+            )
+            .filter(|expectation| !expectation.limit)
+            .min_by(|a, b| a.order(b))
+            .cloned();
+        if let Some(expectation) = expectation {
             self.add(
                 expectation.diagnostic,
                 at,
@@ -1528,7 +1723,7 @@ impl State {
         }
         if let Some(expectation) = expectation {
             self.refusal_misses(at, e, &expectation, &speaker, &err);
-        } else if honour {
+        } else if honour && speaker.is_none() && self.source_honour(&reply, FEATURE_TOOLS_PROVIDE) {
             self.add(
                 codes::UNDISCLOSED_PROVIDE_LIMIT,
                 at,
