@@ -20,12 +20,9 @@ resolved event in a complete shared-fixture-shaped exchange. Rust, Go and Zig
 must agree on the recorded diagnostics. An empty text answer must emit `text: ""`;
 a choice answer must not gain a text member. Removing text from the valid empty
 answer must fail schema validation, and restoring it must remove that schema
-failure. There is a separate pre-existing semantic validator gap: all three
-validators reject optional empty text as `unmatched_interaction`, contrary to
-Decision 0056. The script explicitly checks this known result and the absence
-of schema errors; it does not call it a conforming validator result. Other
-valid traces must pass. Validator sources and shared fixture metadata are
-outside this helper/serializer change and remain untouched.
+failure. Restored optional empty text and all other valid emitted traces must
+exit 0 in Rust, Go and Zig with no schema or semantic refusal. The former
+optional-empty semantic validator gap is closed under Decision 0056.
 
 There is also a pre-existing Zig adapter-helper divergence, separate from the
 semantic validators: `zig/src/adapter/contract.zig`'s `validInputAnswer` rejects

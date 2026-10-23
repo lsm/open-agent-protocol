@@ -39,6 +39,13 @@ multiplicity and exits, and mutation catches remain in the artifact directory.
 After integrating current main, run the complete baseline in `SKILL.md`, full
 Rust workspace tests and the full Go gates. Inspect the isolated PTY screen for
 the fixture reply and confirm `/quit` exits 0 with its child stopped/reaped.
-If the adapter answer-helper journey is on main, run it too and update only its
-closed optional-empty semantic-gap expectation; adapter/protocol behavior is a
-separate port. This is scoped Decision 0056 verification, not full validator parity.
+Also run the main-branch adapter answer-helper journey:
+
+```sh
+python3 .claude/skills/verify/scripts/adapter-input-answers.py --output-dir /tmp/oap-optional-empty-helper-<unique>
+```
+
+Its valid emitted and restored empty-text traces must now exit 0; no semantic
+validator-gap exception remains. Keep the separately documented Zig adapter-helper
+divergence distinct from this validator correction. This is scoped Decision 0056
+verification, not full validator or adapter parity.

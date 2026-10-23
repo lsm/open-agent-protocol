@@ -94,13 +94,6 @@ def consumers(output):
     return {"rust": [str(ROOT / "rust/target/debug/examples/input_answers")], "go": [str(go)]}
 
 
-def optional_empty(questions, answers):
-    return any(q["kind"] == "text" and not q.get("required", False)
-               and a["question_id"] == q["id"] and a.get("text") == ""
-               and not a.get("selected_option_ids")
-               for q in questions for a in answers)
-
-
 def verify(output):
     helpers = consumers(output)
     run(CARGO + ["-p", "oap-validation", "--example", "validate"], output, "build-rust-validator")
@@ -128,16 +121,13 @@ def verify(output):
             continue
         path = output / f"{name}.trace.json"
         path.write_text(json.dumps(trace(questions, observed[0]["answers"]), ensure_ascii=False))
-        known_gap = indexed and optional_empty(questions, answers)
         for language, command in validators.items():
             result = run(command + [str(path)], output, f"{name}-{language}-wire",
-                         expected=0 if indexed and not known_gap else 1)
+                         expected=0 if indexed else 1)
             diagnostic = result.stdout + result.stderr
-            if known_gap:
-                assert "unmatched_interaction" in diagnostic and "schema_invalid" not in diagnostic, (name, language, result)
-            elif not indexed:
+            if not indexed:
                 assert "schema_invalid" in diagnostic or "unmatched_interaction" in diagnostic, (name, language, result)
-        print(f"PASS {name}: helpers; " + ("KNOWN GAP: optional empty text is schema-valid but rejected semantically by all three validators" if known_gap else "emitted wire"), flush=True)
+        print(f"PASS {name}: helpers; emitted wire", flush=True)
     repair = trace([question()], [{"question_id": "q", "text": ""}])
     broken = copy.deepcopy(repair)
     for envelope in broken:
@@ -148,13 +138,13 @@ def verify(output):
         path = output / f"{label}.trace.json"
         path.write_text(json.dumps(value))
         for language, command in validators.items():
-            result = run(command + [str(path)], output, f"{label}-{language}", expected=1)
+            result = run(command + [str(path)], output, f"{label}-{language}", expected=1 if label == "missing-text" else 0)
             diagnostic = result.stdout + result.stderr
             if label == "missing-text":
                 assert "schema_invalid" in diagnostic
             else:
-                assert "schema_invalid" not in diagnostic and "unmatched_interaction" in diagnostic
-    print(f"PASS {comparisons} public Rust/Go helper cases; emitted traces have no unexpected Rust/Go/Zig disagreements; missing-text schema failure repaired; optional-empty semantic validator gap remains explicit", flush=True)
+                assert "schema_invalid" not in diagnostic and "unmatched_interaction" not in diagnostic
+    print(f"PASS {comparisons} public Rust/Go helper cases; emitted traces have no unexpected Rust/Go/Zig disagreements; missing-text schema failure repaired; optional-empty text accepted by all three validators", flush=True)
 
 
 def mutations(output):
