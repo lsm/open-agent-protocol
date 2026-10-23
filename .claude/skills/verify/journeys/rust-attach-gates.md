@@ -20,18 +20,20 @@ admission above the ceiling; it does not require refusal. A refusal must identif
 the correct source under numeric JSON Pointer ordering, including index 2 versus
 index 10. Valid admissions, repaired traces and conforming refusals must pass.
 
-Compound attachment/provided-tool opens must retain every attachment expectation,
+A compound open judges a missing or stale descriptor once, before either
+attachment or provided-tool election. Compound attachment/provided-tool opens
+must retain every attachment expectation,
 discharge the whole open on a conforming refusal, and choose one diagnostic owner
 when a refusal is wrong or a defect is admitted. The existing unsupported Rust
 Unicode-pattern boundary remains explicit: where a provided-tool limit cannot be
 judged, the validator cannot invent an attachment honour failure instead. The
 positive compound pattern-boundary fixture must pass in all three validators.
 
-All 23 source mutations must compile and change the observed Rust verdict.
+All 24 source mutations must compile and change the observed Rust verdict.
 Compilation failure is not a catch. Mutations cover mode/capability/opt-in gates,
 collisions, ceiling boundaries, transports, refusal details, compound ownership,
 limit-versus-admission semantics and diagnostic location. Sources are restored in
-`finally`, Rust is rebuilt, and all 57 traces are replayed after restoration.
+`finally`, Rust is rebuilt, and all 58 traces are replayed after restoration.
 Inputs, raw output, normalized results and mutation catches remain in the chosen
 artifact directory.
 

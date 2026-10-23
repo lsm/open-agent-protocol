@@ -304,6 +304,20 @@ pub(super) struct PendingAttach {
 }
 
 impl State {
+    fn open_source_gates(&mut self, at: (usize, usize), e: &Envelope, p: &SessionOpenRequest) {
+        if p.tools.is_empty() && p.tool_sources.is_empty() {
+            return;
+        }
+        if self
+            .control_descriptor(at, e, FEATURE_TOOL_SOURCES_ATTACH)
+            .is_none()
+        {
+            return;
+        }
+        self.provide_gate(e, p);
+        self.attach_gate(e, p);
+    }
+
     fn check_attach_modes(&mut self, at: (usize, usize), e: &Envelope) {
         let p: CapabilitiesResponse = payload(e);
         if let Some(support) = p.effective_support(FEATURE_TOOL_SOURCES_ATTACH) {
@@ -318,13 +332,15 @@ impl State {
         }
     }
 
-    fn attach_gate(&mut self, at: (usize, usize), e: &Envelope, p: &SessionOpenRequest) {
+    fn attach_gate(&mut self, e: &Envelope, p: &SessionOpenRequest) {
         if p.tool_sources.is_empty() {
             return;
         }
-        let Some(level) = self.control_descriptor(at, e, FEATURE_TOOL_SOURCES_ATTACH) else {
-            return;
-        };
+        let level = self
+            .features
+            .get(FEATURE_TOOL_SOURCES_ATTACH)
+            .cloned()
+            .unwrap_or(SupportLevel::UNAVAILABLE);
         let support = self
             .feature_supports
             .get(FEATURE_TOOL_SOURCES_ATTACH)
@@ -557,8 +573,7 @@ impl State {
         } else if *t == EnvelopeType::SESSION_OPEN_REQUEST {
             let p: SessionOpenRequest = payload(e);
             self.subscribe_gate(at, e, &p);
-            self.provide_gate(at, e, &p);
-            self.attach_gate(at, e, &p);
+            self.open_source_gates(at, e, &p);
             self.open_settings_gate(at, e, &p);
             if let Some(message) = &p.message {
                 let submission = message.submit(p.session_id.clone().unwrap_or_default());
@@ -1479,13 +1494,15 @@ impl State {
         }
     }
 
-    fn provide_gate(&mut self, at: (usize, usize), e: &Envelope, p: &SessionOpenRequest) {
+    fn provide_gate(&mut self, e: &Envelope, p: &SessionOpenRequest) {
         if p.tools.is_empty() {
             return;
         }
-        let Some(level) = self.control_descriptor(at, e, FEATURE_TOOLS_PROVIDE) else {
-            return;
-        };
+        let level = self
+            .features
+            .get(FEATURE_TOOLS_PROVIDE)
+            .cloned()
+            .unwrap_or(SupportLevel::UNAVAILABLE);
         let defect =
             |rung, code, reason, pointer: String, detail_name, detail_value: String, diagnostic| {
                 Expectation {

@@ -164,6 +164,7 @@ def replay(language, output, label, case):
 def mutation_check(output, corpus):
     source = ROOT / 'rust/validation/src/state/controls.rs'
     mutations = [
+      ('stop-after-missing-descriptor','open_source_gates','.is_none()','.is_some()','compound-missing-descriptor-is-one-defect'),
       ('descriptor-mode','check_attach_modes','affirmative(&support.level) && !support.discloses_mode(MODE_SESSION_OPEN)','false','attach-advertised-without-modes'),
       ('affirmative-attach','attach_gate','!affirmative(&level) || !support.discloses_mode(MODE_SESSION_OPEN)','false','open-attach-unadvertised'),
       ('session-open-mode','attach_gate','!support.discloses_mode(MODE_SESSION_OPEN)','false','open-attach-without-session-open-mode'),
