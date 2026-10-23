@@ -3282,6 +3282,9 @@
       "provenance": [
         "drafts/staged-units-graduation.md",
         "decisions/0008-tool-sources.md"
+      ],
+      "rules": [
+        "0008#an-adapter-that-does-not-attach-says-so/1"
       ]
     },
     {
@@ -3326,6 +3329,9 @@
       ],
       "provenance": [
         "decisions/0008-tool-sources.md"
+      ],
+      "rules": [
+        "0008#an-adapter-that-does-not-attach-says-so/1"
       ]
     },
     {
@@ -3341,6 +3347,9 @@
       "provenance": [
         "drafts/staged-units-graduation.md",
         "decisions/0008-tool-sources.md"
+      ],
+      "rules": [
+        "0008#an-adapter-that-does-not-attach-says-so/1"
       ]
     },
     {
@@ -3364,6 +3373,9 @@
           "capability": "action.tool_sources.attach",
           "aspect": "gate"
         }
+      ],
+      "rules": [
+        "0008#an-adapter-that-does-not-attach-says-so/1"
       ]
     },
     {
@@ -3381,6 +3393,9 @@
       "provenance": [
         "drafts/staged-units-graduation.md",
         "decisions/0008-tool-sources.md"
+      ],
+      "rules": [
+        "0008#an-adapter-that-does-not-attach-says-so/1"
       ]
     },
     {
@@ -3396,6 +3411,9 @@
       "provenance": [
         "drafts/staged-units-graduation.md",
         "decisions/0008-tool-sources.md"
+      ],
+      "rules": [
+        "0008#attachment-discloses-a-set-of-modes-not-one/3"
       ]
     },
     {
@@ -3413,6 +3431,9 @@
       "provenance": [
         "drafts/staged-units-graduation.md",
         "decisions/0008-tool-sources.md"
+      ],
+      "rules": [
+        "0008#attachment-discloses-a-set-of-modes-not-one/3"
       ]
     },
     {
@@ -3430,6 +3451,9 @@
       "provenance": [
         "drafts/staged-units-graduation.md",
         "decisions/0008-tool-sources.md"
+      ],
+      "rules": [
+        "0008#attachment-discloses-a-set-of-modes-not-one/3"
       ]
     },
     {
@@ -3445,6 +3469,9 @@
       "provenance": [
         "drafts/staged-units-graduation.md",
         "decisions/0008-tool-sources.md"
+      ],
+      "rules": [
+        "0008#an-adapter-that-does-not-attach-says-so/1"
       ]
     },
     {
@@ -3460,6 +3487,9 @@
       "provenance": [
         "drafts/staged-units-graduation.md",
         "decisions/0008-tool-sources.md"
+      ],
+      "rules": [
+        "0008#attachment-is-for-the-sessions-lifetime/1"
       ]
     },
     {
@@ -3477,6 +3507,9 @@
       "provenance": [
         "drafts/staged-units-graduation.md",
         "decisions/0008-tool-sources.md"
+      ],
+      "rules": [
+        "0008#attachment-is-for-the-sessions-lifetime/1"
       ]
     },
     {
@@ -3492,6 +3525,9 @@
       "provenance": [
         "drafts/staged-units-graduation.md",
         "decisions/0008-tool-sources.md"
+      ],
+      "rules": [
+        "0008#an-adapter-that-does-not-attach-says-so/1"
       ]
     },
     {
@@ -3509,6 +3545,9 @@
       "provenance": [
         "drafts/staged-units-graduation.md",
         "decisions/0008-tool-sources.md"
+      ],
+      "rules": [
+        "0008#attachment-is-for-the-sessions-lifetime/1"
       ]
     },
     {
@@ -3524,6 +3563,9 @@
       "provenance": [
         "drafts/staged-units-graduation.md",
         "decisions/0008-tool-sources.md"
+      ],
+      "rules": [
+        "0008#attachment-is-bounded-by-what-the-endpoint-disclosed/2"
       ]
     },
     {
@@ -3541,6 +3583,9 @@
       "provenance": [
         "decisions/0005-run-controls.md",
         "decisions/0008-tool-sources.md"
+      ],
+      "rules": [
+        "0008#attachment-is-bounded-by-what-the-endpoint-disclosed/2"
       ]
     },
     {
@@ -3558,6 +3603,9 @@
       "provenance": [
         "decisions/0005-run-controls.md",
         "decisions/0008-tool-sources.md"
+      ],
+      "rules": [
+        "0008#attachment-is-bounded-by-what-the-endpoint-disclosed/2"
       ]
     },
     {
@@ -3581,6 +3629,9 @@
           "capability": "action.tool_sources.attach",
           "aspect": "honour"
         }
+      ],
+      "rules": [
+        "0008#attachment-is-bounded-by-what-the-endpoint-disclosed/1"
       ]
     },
     {
@@ -3598,6 +3649,9 @@
       "provenance": [
         "drafts/staged-units-graduation.md",
         "decisions/0008-tool-sources.md"
+      ],
+      "rules": [
+        "0008#attachment-discloses-a-set-of-modes-not-one/1"
       ]
     },
     {
@@ -3615,6 +3669,9 @@
       "provenance": [
         "drafts/conformance.md",
         "decisions/0008-tool-sources.md"
+      ],
+      "rules": [
+        "0008#attachment-discloses-a-set-of-modes-not-one/1"
       ]
     },
     {
@@ -3633,6 +3690,10 @@
       "provenance": [
         "drafts/staged-units-graduation.md",
         "decisions/0008-tool-sources.md"
+      ],
+      "rules": [
+        "0008#attachment-discloses-a-set-of-modes-not-one/1",
+        "0008#an-adapter-that-does-not-attach-says-so/1"
       ]
     },
     {
@@ -3696,6 +3757,9 @@
       "provenance": [
         "drafts/staged-units-graduation.md",
         "decisions/0008-tool-sources.md"
+      ],
+      "rules": [
+        "0008#attachment-discloses-a-set-of-modes-not-one/2"
       ]
     },
     {
@@ -3711,6 +3775,9 @@
       "provenance": [
         "drafts/staged-units-graduation.md",
         "decisions/0008-tool-sources.md"
+      ],
+      "rules": [
+        "0008#attachment-discloses-a-set-of-modes-not-one/2"
       ]
     },
     {
@@ -3728,6 +3795,9 @@
       "provenance": [
         "drafts/staged-units-graduation.md",
         "decisions/0008-tool-sources.md"
+      ],
+      "rules": [
+        "0008#attachment-discloses-a-set-of-modes-not-one/2"
       ]
     },
     {
@@ -14557,6 +14627,9 @@
       "provenance": [
         "drafts/staged-units-graduation.md",
         "decisions/0008-tool-sources.md"
+      ],
+      "rules": [
+        "0008#attachment-is-bounded-by-what-the-endpoint-disclosed/1"
       ]
     },
     {
@@ -16473,6 +16546,134 @@
       ],
       "rules": [
         "0008#the-catalog-is-gated-on-its-own-key/2"
+      ]
+    },
+    {
+      "id": "attach-refusal-discharges-provided-tools",
+      "path": "valid/attach-refusal-discharges-provided-tools.json",
+      "kind": "positive",
+      "valid": true,
+      "phase": "",
+      "codes": [],
+      "units": [
+        "tool-sources"
+      ],
+      "provenance": [
+        "decisions/0008-tool-sources.md"
+      ],
+      "rules": [
+        "0008#an-adapter-that-does-not-attach-says-so/1"
+      ]
+    },
+    {
+      "id": "attach-capability-before-provided-owner",
+      "path": "semantic-invalid/attach-capability-before-provided-owner.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "unavailable_capability"
+      ],
+      "units": [
+        "tool-sources"
+      ],
+      "provenance": [
+        "decisions/0008-tool-sources.md"
+      ],
+      "rules": [
+        "0008#an-adapter-that-does-not-attach-says-so/1"
+      ]
+    },
+    {
+      "id": "attach-and-provide-have-one-honour-owner",
+      "path": "semantic-invalid/attach-and-provide-have-one-honour-owner.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "undisclosed_attach_limit"
+      ],
+      "units": [
+        "tool-sources"
+      ],
+      "provenance": [
+        "decisions/0008-tool-sources.md"
+      ],
+      "rules": [
+        "0008#attachment-is-bounded-by-what-the-endpoint-disclosed/1"
+      ]
+    },
+    {
+      "id": "attach-transport-refusal-names-source",
+      "path": "semantic-invalid/attach-transport-refusal-names-source.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "unavailable_capability"
+      ],
+      "units": [
+        "tool-sources"
+      ],
+      "provenance": [
+        "decisions/0008-tool-sources.md"
+      ],
+      "rules": [
+        "0008#attachment-is-bounded-by-what-the-endpoint-disclosed/3"
+      ]
+    },
+    {
+      "id": "attach-above-disclosed-limit-admitted",
+      "path": "valid/attach-above-disclosed-limit-admitted.json",
+      "kind": "positive",
+      "valid": true,
+      "phase": "",
+      "codes": [],
+      "units": [
+        "tool-sources"
+      ],
+      "provenance": [
+        "decisions/0008-tool-sources.md"
+      ],
+      "rules": [
+        "0008#attachment-is-bounded-by-what-the-endpoint-disclosed/2"
+      ]
+    },
+    {
+      "id": "attach-request-source-id-repeated",
+      "path": "semantic-invalid/attach-request-source-id-repeated.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "duplicate_tool_source"
+      ],
+      "units": [
+        "tool-sources"
+      ],
+      "provenance": [
+        "decisions/0008-tool-sources.md"
+      ],
+      "rules": [
+        "0008#attachment-is-for-the-sessions-lifetime/1"
+      ]
+    },
+    {
+      "id": "attach-preserves-unknown-provided-pattern-boundary",
+      "path": "valid/attach-preserves-unknown-provided-pattern-boundary.json",
+      "kind": "positive",
+      "valid": true,
+      "phase": "",
+      "codes": [],
+      "units": [
+        "tool-sources"
+      ],
+      "provenance": [
+        "decisions/0008-tool-sources.md",
+        "decisions/0055-register-batch-2.md"
+      ],
+      "rules": [
+        "0008#attachment-is-bounded-by-what-the-endpoint-disclosed/1"
       ]
     }
   ]
