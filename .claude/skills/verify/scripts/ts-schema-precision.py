@@ -36,7 +36,7 @@ def main():
         if child.returncode != 0:
             raise SystemExit(f"step {index} exited {child.returncode}: {stderr}")
     results = json.loads((output / "consumer/results.json").read_text())
-    if len(results) != 4 or any((row["exit"] == 0) != row["expected"] for row in results):
+    if len(results) != 9 or any((row["exit"] == 0) != row["expected"] for row in results):
         raise SystemExit(f"unexpected consumer results: {results}")
     print(f"PASS: packaged public declarations accept valid controls and refuse both empty arrays; artifacts: {output}")
 

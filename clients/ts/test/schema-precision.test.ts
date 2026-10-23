@@ -6,10 +6,11 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { test } from 'node:test';
 import { schemaPrecisionCases } from './fixtures/schema-precision-consumer.js';
+import { authSchemaPrecisionCases } from './fixtures/auth-schema-precision-consumer.js';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 
-test('public client declarations enforce transport and shutdown cardinality', async (t) => {
+test('public client declarations enforce transport and shutdown cardinality and auth payloads', async (t) => {
   const temporary = mkdtempSync(join(tmpdir(), 'oap-ts-schema-precision-'));
   t.after(() => rmSync(temporary, { recursive: true, force: true }));
   const evidence = process.env.OAP_TS_SCHEMA_PRECISION_OUTPUT;
@@ -27,28 +28,38 @@ test('public client declarations enforce transport and shutdown cardinality', as
   assert.ok(filename);
   const installed = run('npm', ['install', '--offline', '--ignore-scripts', '--no-audit', '--no-fund', '--package-lock=false', join(temporary, filename)], consumer);
   assert.equal(installed.status, 0, installed.stdout + installed.stderr);
-  const results: { name: string; expected: boolean; exit: number | null; diagnostics: string }[] = [];
-  for (const sample of schemaPrecisionCases) {
+  const results: { name: string; expected: boolean; exit: number | null; diagnostics: string; wire?: unknown }[] = [];
+  for (const sample of [...schemaPrecisionCases, ...authSchemaPrecisionCases]) {
     await t.test(sample.name, () => {
       const source = join(consumer, 'consumer.ts');
       writeFileSync(source, `import type { FeatureSupport, EndpointShutdownResponse, ShutdownRun, ShutdownQueuedRun } from 'oap-client';\n${sample.source}`);
+      const emitted = 'wire' in sample && sample.wire;
+      const compiledDirectory = join(consumer, 'compiled');
+      rmSync(compiledDirectory, { recursive: true, force: true });
       const compiled = run(process.execPath, [join(root, 'node_modules/typescript/bin/tsc'),
-        '--noEmit', '--strict', '--noUncheckedIndexedAccess', '--skipLibCheck',
+        ...(emitted ? ['--outDir', compiledDirectory, '--noEmitOnError'] : ['--noEmit']), '--strict', '--noUncheckedIndexedAccess', '--skipLibCheck',
         '--module', 'NodeNext', '--moduleResolution', 'NodeNext', '--target', 'ES2022',
         '--types', 'node', '--typeRoots', join(root, 'node_modules/@types'), source], consumer);
       const diagnostics = compiled.stdout + compiled.stderr;
-      results.push({ name: sample.name, expected: sample.accepts, exit: compiled.status, diagnostics });
+      let wire: unknown;
+      if (emitted && compiled.status === 0) {
+        const executed = run(process.execPath, [join(compiledDirectory, 'consumer.js')], consumer);
+        assert.equal(executed.status, 0, executed.stdout + executed.stderr);
+        wire = JSON.parse(executed.stdout) as unknown;
+      }
+      results.push({ name: sample.name, expected: sample.accepts, exit: compiled.status, diagnostics, wire });
       if (evidence) {
         mkdirSync(evidence, { recursive: true });
         copyFileSync(source, join(evidence, `${sample.name}.ts`));
         writeFileSync(join(evidence, `${sample.name}.txt`), diagnostics);
+        if (wire !== undefined) writeFileSync(join(evidence, `${sample.name}.trace.json`), JSON.stringify(wire, null, 2) + '\n');
         writeFileSync(join(evidence, 'results.json'), JSON.stringify(results, null, 2) + '\n');
       }
       t.diagnostic(`${sample.name}: public tsc exit ${compiled.status}`);
       if (sample.accepts) {
         assert.equal(compiled.status, 0, diagnostics);
       } else {
-        assert.equal(compiled.status, 2, `invalid consumer compiled or failed unexpectedly: ${diagnostics}`);
+        assert.equal(compiled.status, emitted ? 1 : 2, `invalid consumer compiled or failed unexpectedly: ${diagnostics}`);
         const errors = diagnostics.split('\n').filter((line) => line.includes('error TS'));
         assert.equal(errors.length, 1, diagnostics);
         assert.match(errors[0] ?? '', /consumer\.ts\(\d+,\d+\): error TS2322:/);

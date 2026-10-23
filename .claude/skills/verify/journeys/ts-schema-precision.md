@@ -24,3 +24,19 @@ client test command executes it without an index or package-script change.
 Run `npm --prefix clients/ts test` too. These checks prove the public declaration
 surface against the unchanged schema, not runtime validation of untyped JSON;
 no endpoint, live provider, GUI or port 8399 is used.
+
+## Core auth payload declarations
+
+The same installed consumer also imports the provider listing, start, event,
+cancel and completion payload types named by the existing eight auth envelope
+constants. Before the declarations exist, the public imports fail with TS2305.
+Valid controls compile and execute synthetic JSON trace emitters once the types
+are available. The controls cover all optional provider/event fields, omitted
+optional fields, all auth status/kind vocabulary, empty provider listings, and
+success/failed/cancelled completion shapes. A URL event may also carry a message,
+and a progress event may also carry a URL; the schema permits both.
+
+Empty auth-kind lists, URL events without a URL and progress events without a
+message must produce one TS2322 assignment error. Those emitting cases use
+`noEmitOnError` and exit 1 when refused; the original non-emitting cardinality
+cases still exit 2. No account operation or real credential is involved.
