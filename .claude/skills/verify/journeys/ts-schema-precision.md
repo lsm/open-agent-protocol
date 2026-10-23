@@ -66,3 +66,29 @@ source restoration before continuing and rebuild before using compiled output.
 Run the complete verify baseline and the full client suite/integration tests
 without `OAP_TS_SKIP_INTEGRATION`; its PTY journey uses isolated, denied-network
 fixture state. No real provider, account or credential is exercised.
+
+## Session model-switch and provider-attach declarations
+
+The installed consumer also imports `SessionModelSwitchRequest`,
+`SessionModelSwitchResponse`, `ProviderAttachment`,
+`SessionProviderAttachRequest` and `SessionProviderAttachResponse`. Before these
+exports exist, the valid public imports fail with TS2724/TS2305. Four controls
+compile and execute model-switch/provider-attach traces derived from the
+unchanged shared valid fixtures. They include and omit degraded-feature opt-in,
+previous model id and provider service id independently of required fields.
+These checks add no model-capture, catalog or admission behavior.
+
+Each missing request/response model id, attachment upstream provider id and
+attach-response provider id produces exactly one TS2741 error and no emitted
+JavaScript. The helper also removes those fields from the emitted valid wire:
+all three public validators must return exactly `schema` / `schema_invalid`
+at index 6 (requests) or 7 (responses). Restoring the field must return exit 0
+without diagnostics. This is scoped declaration/wire evidence, not full
+validator parity or an actual account/provider operation.
+
+`--mutation-check` additionally makes each of the four required declaration
+fields optional in turn. Each negative installed consumer must then compile,
+execute and emit the corresponding schema-invalid trace. Require the same exact
+validator refusal, then restore the source and rerun all controls. Full client
+and integration tests and the complete verify baseline with isolated PTY remain
+required. No shared setup/index or other owner's helper is changed.
