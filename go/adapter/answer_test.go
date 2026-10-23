@@ -71,3 +71,41 @@ func TestIndexInputAnswers(t *testing.T) {
 		}
 	}
 }
+
+func TestOptionalEmptyInputAnswer(t *testing.T) {
+	questions := []protocol.InputQuestion{{ID: "q", Prompt: "Answer?", Kind: protocol.InputText}}
+	answers := []protocol.InputAnswer{{QuestionID: "q"}}
+	if err := ValidateInputAnswer(questions[0], answers[0]); err != nil {
+		t.Fatalf("optional empty text rejected: %v", err)
+	}
+	indexed, err := IndexInputAnswers(questions, answers)
+	if err != nil || len(indexed) != 1 {
+		t.Fatalf("optional empty text not indexed: %v %v", indexed, err)
+	}
+	if _, err := IndexInputAnswers(questions, nil); err != nil {
+		t.Fatalf("optional question may be omitted: %v", err)
+	}
+}
+
+func TestRequiredInputAnswers(t *testing.T) {
+	for _, kind := range []protocol.InputQuestionKind{protocol.InputText, protocol.InputSingleChoice, protocol.InputMultiChoice} {
+		t.Run(string(kind), func(t *testing.T) {
+			question := protocol.InputQuestion{ID: "q", Prompt: "Answer?", Kind: kind, Required: true}
+			answer := protocol.InputAnswer{QuestionID: "q", Text: "é漢😀"}
+			if kind != protocol.InputText {
+				question.Options = []protocol.InputOption{{ID: "yes", Label: "Yes"}}
+				answer.Text = ""
+				answer.SelectedOptionIDs = []string{"yes"}
+			}
+			questions := []protocol.InputQuestion{question, {ID: "optional", Prompt: "Note?", Kind: protocol.InputText}}
+			for _, answers := range [][]protocol.InputAnswer{nil, {{QuestionID: "optional", Text: "a note"}}} {
+				if _, err := IndexInputAnswers(questions, answers); !errors.Is(err, ErrInvalidResolution) {
+					t.Errorf("missing required question accepted: %v", err)
+				}
+			}
+			if indexed, err := IndexInputAnswers(questions, []protocol.InputAnswer{answer}); err != nil || len(indexed) != 1 {
+				t.Fatalf("valid required answer did not repair set: %v %v", indexed, err)
+			}
+		})
+	}
+}
