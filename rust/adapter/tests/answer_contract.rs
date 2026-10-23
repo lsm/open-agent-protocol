@@ -83,6 +83,9 @@ fn optional_text_does_not_accept_a_choice_or_mixed_answer() {
             text: value.into(),
             selected_option_ids: vec!["yes".into()],
         };
-        assert_eq!(validate_input_answer(&text, &answer), Err(Error::InvalidResolution));
+        assert_eq!(
+            validate_input_answer(&text, &answer),
+            Err(Error::InvalidResolution)
+        );
     }
 }

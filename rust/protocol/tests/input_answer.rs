@@ -39,8 +39,15 @@ fn empty_text_survives_drafts_resolve_requests_and_resolved_events() {
         ..UserInputResolvedPayload::default()
     })
     .unwrap();
-    for (payload, key) in [(requested, "draft_answers"), (request, "answers"), (resolved, "answers")] {
-        assert_eq!(payload[key][0].get("text"), Some(&Value::String(String::new())));
+    for (payload, key) in [
+        (requested, "draft_answers"),
+        (request, "answers"),
+        (resolved, "answers"),
+    ] {
+        assert_eq!(
+            payload[key][0].get("text"),
+            Some(&Value::String(String::new()))
+        );
         assert!(payload[key][0].get("selected_option_ids").is_none());
     }
 }

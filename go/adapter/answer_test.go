@@ -8,7 +8,7 @@ import (
 )
 
 func TestValidateInputAnswer(t *testing.T) {
-	text := protocol.InputQuestion{ID: "note", Kind: protocol.InputText}
+	text := protocol.InputQuestion{ID: "note", Kind: protocol.InputText, Required: true}
 	single := protocol.InputQuestion{ID: "pick", Kind: protocol.InputSingleChoice, Options: []protocol.InputOption{{ID: "a"}, {ID: "b"}}}
 	multi := protocol.InputQuestion{ID: "many", Kind: protocol.InputMultiChoice, Options: []protocol.InputOption{{ID: "x"}, {ID: "y"}}}
 	cases := []struct {

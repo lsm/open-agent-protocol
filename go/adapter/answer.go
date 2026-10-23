@@ -12,7 +12,7 @@ func ValidateInputAnswer(question protocol.InputQuestion, answer protocol.InputA
 	}
 	switch question.Kind {
 	case protocol.InputText:
-		if !hasText {
+		if !hasText && question.Required {
 			return ErrInvalidResolution
 		}
 	case protocol.InputSingleChoice:
@@ -58,6 +58,11 @@ func IndexInputAnswers(questions []protocol.InputQuestion, answers []protocol.In
 			return nil, err
 		}
 		indexed[answer.QuestionID] = answer
+	}
+	for _, question := range questions {
+		if _, answered := indexed[question.ID]; question.Required && !answered {
+			return nil, ErrInvalidResolution
+		}
 	}
 	return indexed, nil
 }

@@ -27,7 +27,10 @@ fn answer(question: &str, text: &str, selected: &[&str]) -> InputAnswer {
 
 #[test]
 fn an_answer_must_fit_its_question_kind_and_options() {
-    let text = question("note", InputQuestionKind::TEXT, &[]);
+    let text = InputQuestion {
+        required: true,
+        ..question("note", InputQuestionKind::TEXT, &[])
+    };
     let single = question("pick", InputQuestionKind::SINGLE_CHOICE, &["a", "b"]);
     let multi = question("many", InputQuestionKind::MULTI_CHOICE, &["x", "y"]);
     let bogus = question("q", InputQuestionKind::from("bogus"), &[]);
