@@ -142,7 +142,42 @@ def cases():
     trace = copy.deepcopy(result['compound-wrong-refusal-has-one-speaker'][0])
     trace = [e for e in trace if not e['type'].startswith('capabilities.')]
     result['compound-missing-descriptor-is-one-defect'] = (trace, [['unavailable_capability',2]])
+    template = json.loads((ROOT / 'fixtures/valid/open-provide-two-tools.json').read_text())[:6]
+    for name, expected, features, asked, error, repaired in review_cases():
+        trace = copy.deepcopy(template)
+        caps(trace)['payload']['features'].update(features)
+        request(trace)['payload'] = asked
+        reply(trace)['type'] = 'error.response'
+        reply(trace)['payload'] = {'error':error}
+        result[name] = (trace, sorted([[code,5] for code in expected]))
+        fixed = copy.deepcopy(trace)
+        reply(fixed)['payload'] = {'error':repaired}
+        result['repair-' + name] = (fixed, [])
     return result
+
+
+def review_cases():
+    provide = 'action.tools.provide'
+    attach = {'level':'native','modes':['session_open']}
+    tool = lambda name: {'name':name,'source':'native','execution_owner':'control','input_schema':{'type':'object'}}
+    source = lambda name: {'id':name,'kind':'process'}
+    refusal = lambda feature, **detail: {'code':'unsupported_feature','message':'synthetic refusal','details':{'feature':feature,'reason':'unsatisfiable',**detail}}
+    subscribe = {'code':'unsupported_feature','message':'synthetic refusal','details':{'feature':'session.open.subscribe','reason':'unadvertised'}}
+    internal = {'code':'internal','message':'synthetic refusal'}
+    return [
+        ('provide-defect-beats-attach-limit', ['duplicate_tool_name'],
+         {KEY:{**attach,'limits':{'max_sources':1}}},
+         {'session_id':'s1','tools':[tool('grep')],'tool_sources':[source('files'),source('docs')]},
+         refusal(KEY,source='docs'), refusal(provide,tool='grep')),
+        ('attach-defect-beats-provide-limit', ['duplicate_tool_source'],
+         {KEY:attach,provide:{'level':'native','limits':{'max_tools':1}}},
+         {'session_id':'s1','tools':[tool('echo'),tool('upper')],'tool_sources':[source('native')]},
+         refusal(provide,tool='upper'), refusal(KEY,source='native')),
+        ('provide-honour-survives-subscribe-defect', ['unavailable_capability','undisclosed_provide_limit'], {},
+         {'session_id':'s1','tools':[tool('echo'),tool('upper')],'subscribe':True}, internal, subscribe),
+        ('attach-honour-survives-subscribe-defect', ['unavailable_capability','undisclosed_attach_limit'], {KEY:attach},
+         {'session_id':'s1','tool_sources':[source('files')],'subscribe':True}, internal, subscribe),
+    ]
 
 
 def replay(language, output, label, case):
