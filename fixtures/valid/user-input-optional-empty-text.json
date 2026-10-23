@@ -87,8 +87,7 @@
         {
           "id": "q",
           "kind": "text",
-          "prompt": "Answer?",
-          "required": false
+          "prompt": "Answer?"
         }
       ],
       "requested_by": "agent",

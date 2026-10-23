@@ -9,7 +9,8 @@ python3 .claude/skills/verify/scripts/optional-empty-input.py --mutation-check -
 
 The helper builds `goap`, the public Rust validation example and ReleaseSafe
 `oapx`, then feeds each the same synthetic JSON envelopes. The shared positive
-fixture comes from the schema-valid public helper trace that exposed the bug.
+fixture comes from the schema-valid public helper trace that exposed the bug,
+using the omitted optional default for typed payload round-trip compatibility.
 Both explicit `required: false` and omitted `required` must accept `text: ""` on
 the resolve request and resolved event with exit 0 and no diagnostics.
 

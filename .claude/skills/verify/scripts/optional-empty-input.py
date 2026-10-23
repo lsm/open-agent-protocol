@@ -23,6 +23,7 @@ def expected(indices=(), phase="semantic"):
 
 def cases():
     optional = load("valid", "user-input-optional-empty-text")
+    optional[5]["payload"]["questions"][0]["required"] = False
     required = load("semantic-invalid", "user-input-required-empty-text")
     missing = load("semantic-invalid", "user-input-required-answer-missing")
     result = {
