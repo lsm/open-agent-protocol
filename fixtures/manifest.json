@@ -2890,6 +2890,9 @@
       "provenance": [
         "drafts/staged-units-graduation.md",
         "decisions/0008-tool-sources.md"
+      ],
+      "rules": [
+        "0008#the-catalog-is-gated-on-its-own-key/1"
       ]
     },
     {
@@ -2905,6 +2908,9 @@
       "provenance": [
         "drafts/staged-units-graduation.md",
         "decisions/0008-tool-sources.md"
+      ],
+      "rules": [
+        "0008#the-catalog-is-gated-on-its-own-key/2"
       ]
     },
     {
@@ -2920,6 +2926,9 @@
       "provenance": [
         "drafts/staged-units-graduation.md",
         "decisions/0008-tool-sources.md"
+      ],
+      "rules": [
+        "0008#the-catalog-is-gated-on-its-own-key/2"
       ]
     },
     {
@@ -2943,6 +2952,9 @@
           "capability": "action.tools.list",
           "aspect": "gate"
         }
+      ],
+      "rules": [
+        "0008#the-catalog-is-gated-on-its-own-key/1"
       ]
     },
     {
@@ -2966,6 +2978,9 @@
           "capability": "action.tools.list",
           "aspect": "honour"
         }
+      ],
+      "rules": [
+        "0008#the-catalog-is-gated-on-its-own-key/3"
       ]
     },
     {
@@ -2983,6 +2998,9 @@
       "provenance": [
         "drafts/staged-units-graduation.md",
         "decisions/0008-tool-sources.md"
+      ],
+      "rules": [
+        "0008#the-catalog-is-gated-on-its-own-key/2"
       ]
     },
     {
@@ -3000,6 +3018,9 @@
       "provenance": [
         "drafts/staged-units-graduation.md",
         "decisions/0008-tool-sources.md"
+      ],
+      "rules": [
+        "0008#the-catalog-is-gated-on-its-own-key/1"
       ]
     },
     {
@@ -3017,6 +3038,9 @@
       "provenance": [
         "drafts/staged-units-graduation.md",
         "decisions/0008-tool-sources.md"
+      ],
+      "rules": [
+        "0008#the-catalog-is-gated-on-its-own-key/1"
       ]
     },
     {
@@ -3034,6 +3058,9 @@
       "provenance": [
         "drafts/staged-units-graduation.md",
         "decisions/0008-tool-sources.md"
+      ],
+      "rules": [
+        "0008#the-catalog-is-gated-on-its-own-key/1"
       ]
     },
     {
@@ -3117,6 +3144,9 @@
       "provenance": [
         "drafts/staged-units-graduation.md",
         "decisions/0008-tool-sources.md"
+      ],
+      "rules": [
+        "0008#a-catalog-resolves-or-it-is-not-a-catalog/5"
       ]
     },
     {
@@ -3134,6 +3164,9 @@
       "provenance": [
         "drafts/staged-units-graduation.md",
         "decisions/0008-tool-sources.md"
+      ],
+      "rules": [
+        "0008#a-catalog-resolves-or-it-is-not-a-catalog/4"
       ]
     },
     {
@@ -3151,6 +3184,9 @@
       "provenance": [
         "drafts/staged-units-graduation.md",
         "decisions/0008-tool-sources.md"
+      ],
+      "rules": [
+        "0008#a-catalog-resolves-or-it-is-not-a-catalog/7"
       ]
     },
     {
@@ -3168,6 +3204,9 @@
       "provenance": [
         "drafts/conformance.md",
         "decisions/0008-tool-sources.md"
+      ],
+      "rules": [
+        "0008#a-catalog-resolves-or-it-is-not-a-catalog/6"
       ]
     },
     {
@@ -16360,6 +16399,80 @@
       ],
       "rules": [
         "0008#a-catalog-resolves-or-it-is-not-a-catalog/3"
+      ]
+    },
+    {
+      "id": "tools-list-gated-dangling-source",
+      "path": "semantic-invalid/tools-list-gated-dangling-source.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "unavailable_capability",
+        "unmatched_tool_source"
+      ],
+      "units": [
+        "tool-sources"
+      ],
+      "provenance": [
+        "decisions/0008-tool-sources.md"
+      ],
+      "rules": [
+        "0008#the-catalog-is-gated-on-its-own-key/1",
+        "0008#a-catalog-resolves-or-it-is-not-a-catalog/7"
+      ]
+    },
+    {
+      "id": "tools-list-overlapping-optins",
+      "path": "semantic-invalid/tools-list-overlapping-optins.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "degraded_without_optin"
+      ],
+      "units": [
+        "tool-sources"
+      ],
+      "provenance": [
+        "decisions/0008-tool-sources.md"
+      ],
+      "rules": [
+        "0008#the-catalog-is-gated-on-its-own-key/2"
+      ]
+    },
+    {
+      "id": "tools-list-refusal-keeps-requested-gate",
+      "path": "valid/tools-list-refusal-keeps-requested-gate.json",
+      "kind": "positive",
+      "valid": true,
+      "phase": "",
+      "codes": [],
+      "units": [
+        "tool-sources"
+      ],
+      "provenance": [
+        "decisions/0008-tool-sources.md"
+      ],
+      "rules": [
+        "0008#the-catalog-is-gated-on-its-own-key/1"
+      ]
+    },
+    {
+      "id": "tools-list-overlapping-optins-refused",
+      "path": "valid/tools-list-overlapping-optins-refused.json",
+      "kind": "positive",
+      "valid": true,
+      "phase": "",
+      "codes": [],
+      "units": [
+        "tool-sources"
+      ],
+      "provenance": [
+        "decisions/0008-tool-sources.md"
+      ],
+      "rules": [
+        "0008#the-catalog-is-gated-on-its-own-key/2"
       ]
     }
   ]
