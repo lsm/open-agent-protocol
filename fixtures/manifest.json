@@ -3182,6 +3182,9 @@
       "provenance": [
         "drafts/staged-units-graduation.md",
         "decisions/0008-tool-sources.md"
+      ],
+      "rules": [
+        "0008#a-catalog-resolves-or-it-is-not-a-catalog/2"
       ]
     },
     {
@@ -3199,6 +3202,9 @@
       "provenance": [
         "drafts/staged-units-graduation.md",
         "decisions/0008-tool-sources.md"
+      ],
+      "rules": [
+        "0008#a-catalog-resolves-or-it-is-not-a-catalog/1"
       ]
     },
     {
@@ -3216,6 +3222,9 @@
       "provenance": [
         "drafts/staged-units-graduation.md",
         "decisions/0008-tool-sources.md"
+      ],
+      "rules": [
+        "0008#a-catalog-resolves-or-it-is-not-a-catalog/3"
       ]
     },
     {
@@ -16293,6 +16302,61 @@
       "provenance": [],
       "rules": [
         "0064#every-non-exempt-request-in-the-window-is-stale-open-0001-8/1"
+      ]
+    },
+    {
+      "id": "descriptor-source-id-repeated-across-layers",
+      "path": "semantic-invalid/descriptor-source-id-repeated-across-layers.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "duplicate_tool_source"
+      ],
+      "units": [
+        "tool-sources"
+      ],
+      "provenance": [
+        "decisions/0008-tool-sources.md"
+      ],
+      "rules": [
+        "0008#a-catalog-resolves-or-it-is-not-a-catalog/1"
+      ]
+    },
+    {
+      "id": "descriptor-layer-tool-dangling-source",
+      "path": "semantic-invalid/descriptor-layer-tool-dangling-source.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "unmatched_tool_source"
+      ],
+      "units": [
+        "tool-sources"
+      ],
+      "provenance": [
+        "decisions/0008-tool-sources.md"
+      ],
+      "rules": [
+        "0008#a-catalog-resolves-or-it-is-not-a-catalog/3"
+      ]
+    },
+    {
+      "id": "descriptor-tool-without-source",
+      "path": "valid/descriptor-tool-without-source.json",
+      "kind": "valid",
+      "valid": true,
+      "phase": "semantic",
+      "codes": [],
+      "units": [
+        "tool-sources"
+      ],
+      "provenance": [
+        "decisions/0008-tool-sources.md"
+      ],
+      "rules": [
+        "0008#a-catalog-resolves-or-it-is-not-a-catalog/3"
       ]
     }
   ]
