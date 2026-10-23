@@ -7,10 +7,11 @@ import { fileURLToPath } from 'node:url';
 import { test } from 'node:test';
 import { schemaPrecisionCases } from './fixtures/schema-precision-consumer.js';
 import { authSchemaPrecisionCases } from './fixtures/auth-schema-precision-consumer.js';
+import { sessionControlSchemaCases } from './fixtures/session-control-schema-consumer.js';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 
-test('public client declarations enforce transport and shutdown cardinality and auth payloads', async (t) => {
+test('public client declarations enforce transport and shutdown cardinality and core payloads', async (t) => {
   const temporary = mkdtempSync(join(tmpdir(), 'oap-ts-schema-precision-'));
   t.after(() => rmSync(temporary, { recursive: true, force: true }));
   const evidence = process.env.OAP_TS_SCHEMA_PRECISION_OUTPUT;
@@ -29,7 +30,7 @@ test('public client declarations enforce transport and shutdown cardinality and 
   const installed = run('npm', ['install', '--offline', '--ignore-scripts', '--no-audit', '--no-fund', '--package-lock=false', join(temporary, filename)], consumer);
   assert.equal(installed.status, 0, installed.stdout + installed.stderr);
   const results: { name: string; expected: boolean; exit: number | null; diagnostics: string; wire?: unknown }[] = [];
-  for (const sample of [...schemaPrecisionCases, ...authSchemaPrecisionCases]) {
+  for (const sample of [...schemaPrecisionCases, ...authSchemaPrecisionCases, ...sessionControlSchemaCases]) {
     await t.test(sample.name, () => {
       const source = join(consumer, 'consumer.ts');
       writeFileSync(source, `import type { FeatureSupport, EndpointShutdownResponse, ShutdownRun, ShutdownQueuedRun } from 'oap-client';\n${sample.source}`);
@@ -62,7 +63,8 @@ test('public client declarations enforce transport and shutdown cardinality and 
         assert.equal(compiled.status, emitted ? 1 : 2, `invalid consumer compiled or failed unexpectedly: ${diagnostics}`);
         const errors = diagnostics.split('\n').filter((line) => line.includes('error TS'));
         assert.equal(errors.length, 1, diagnostics);
-        assert.match(errors[0] ?? '', /consumer\.ts\(\d+,\d+\): error TS2322:/);
+        const diagnostic = 'diagnostic' in sample ? sample.diagnostic : 'TS2322';
+        assert.match(errors[0] ?? '', new RegExp(`consumer\\.ts\\(\\d+,\\d+\\): error ${diagnostic}:`));
       }
     });
   }
