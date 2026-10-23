@@ -1,3 +1,4 @@
+import './schema-precision.test.js';
 
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
@@ -127,6 +128,20 @@ const samples: PayloadSample[] = [
       { id: 'files', kind: 'process', protocol: 'mcp', endpoint: 'stdio:filesystem-tools', display_name: 'Files' },
     ],
     degradation: [{ feature: 'run.replay', from: 'native', to: 'degraded', mode: 'journal', reason: 'bounded' }],
+  }),
+  sample<protocol.EndpointShutdownResponse>('EndpointShutdownResponse choose', 'capabilities.schema.json', 'shutdownResponse', {
+    outcome: 'choose',
+    active_runs: [{ session_id: 's-1', run_id: 'r-1', status: 'running' }],
+    held: [],
+    lost: [],
+  }),
+  sample<protocol.EndpointShutdownResponse>('EndpointShutdownResponse draining', 'capabilities.schema.json', 'shutdownResponse', {
+    outcome: 'draining',
+    active_runs: [],
+  }),
+  sample<protocol.EndpointShutdownResponse>('EndpointShutdownResponse stopping', 'capabilities.schema.json', 'shutdownResponse', {
+    outcome: 'stopping',
+    active_runs: [],
   }),
   sample<protocol.CapabilitiesUpdated>('CapabilitiesUpdated', 'capabilities.schema.json', 'capabilitiesUpdated', {
     previous_revision: 'rev-1',
@@ -813,4 +828,16 @@ test('the schema exclusivity rules are compile-time errors', () => {
   void acknowledgement;
   void acceptedResolution;
   void settledRefusal;
+});
+
+test('the schema requires transports and choose active runs to be nonempty', () => {
+  const support = def('capabilities.schema.json', 'featureSupport');
+  const properties = support.properties as Record<string, Record<string, unknown>>;
+  const limits = properties.limits.properties as Record<string, Record<string, unknown>>;
+  assert.equal(limits.transports.minItems, 1);
+  const shutdown = def('capabilities.schema.json', 'shutdownResponse');
+  const condition = shutdown.if as { properties: { outcome: { const: string } } };
+  const consequent = shutdown.then as { properties: { active_runs: { minItems: number } } };
+  assert.equal(condition.properties.outcome.const, 'choose');
+  assert.equal(consequent.properties.active_runs.minItems, 1);
 });
