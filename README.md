@@ -3,6 +3,15 @@
 Draft public-domain semantic protocol for agent software layers, agent loops,
 model IO, tools, resources, and adapters for existing agent SDKs.
 
+One protocol envelope covers the whole stack: how a client drives an agent,
+and how an agent loop does model IO. This repository ships the specification
+drafts and decisions, a JSON Schema bundle with executable conformance
+fixtures, SDKs in Go, Python, Rust and TypeScript, and `oapx` — a single
+binary that serves both profiles, runs its own agent loop, and adapts
+third-party harnesses onto the same wire.
+
+![Diagram: clients — the terminal UI, the SDKs, any OAP client — drive an agent over agent-control-core, served by oapx's built-in loop or a pinned harness adapter; the loop's model IO crosses model-provider-core to catalogued model providers.](docs/oap-overview.svg)
+
 The first conformance target is an agent-control core covering the boundary
 between a control layer and an agent loop: capabilities, session state, message
 submission, run lifecycle, streamed content, cancellation, and state recovery
@@ -25,6 +34,24 @@ lower model-provider boundary. `oapx` now implements both profiles and uses
 model-provider-core for its own agent inference; it can expose them together
 on one stdio connection. Other agent implementations may still wrap vendor
 SDKs internally.
+
+## Who it's for
+
+- **Client and UI builders.** Anything that drives an agent — the bundled
+  terminal UI, or your own client over stdio or HTTP + SSE — speaks the same
+  `agent-control-core` envelopes to any conformant endpoint. The SDKs in
+  `sdk/`, `rust/sdk/` and `go/sdk/` are the worked examples.
+- **Agent harness authors.** Put an existing runtime behind the same endpoint
+  with a pinned adapter (`claude`, `codex`, `pi`, `acp`, `hermes`, `deepseek`,
+  `opencode`), or implement the profile natively and judge it with
+  `go run ./go/cmd/goap conformance`.
+- **Model providers and inference services.** Serve `model-provider-core`
+  over stdio or the HTTP binding. The `oapx` loop is itself a client of the
+  profile, so a remote provider service can stand in for the local one.
+- **Protocol implementers and reviewers.** [STABILITY.md](STABILITY.md)
+  states the v0.1 pre-release contract, [IMPLEMENTERS.md](IMPLEMENTERS.md)
+  adds you to notice of proposed breaking changes, and every draft and
+  decision lives in `drafts/` and `decisions/`.
 
 ## Quick start
 
@@ -261,7 +288,8 @@ Run the combined endpoint with:
 oapx serve agent,provider --stdio
 ```
 
-The three SDKs in `sdk/` — Python, Rust and TypeScript — and the Go one at `go/sdk/` use this OAP mode by default. The agent's selected
+The four SDKs — Python and TypeScript in `sdk/`, Rust in `rust/sdk/`, and Go
+in `go/sdk/` — use this OAP mode by default. The agent's selected
 model can be changed mid-session with `session.model.switch`, and local
 authentication flows use the optional `+auth` unit. Dynamic provider
 attachment is specified but optional; a remote HTTP provider binding is
