@@ -1132,8 +1132,7 @@ impl State {
     }
 
     fn source_expectations(&self, reply: &str) -> Vec<&Expectation> {
-        let mut retained: Vec<_> = self
-            .pending_provides
+        self.pending_provides
             .get(reply)
             .and_then(|pending| pending.expectation.as_ref())
             .into_iter()
@@ -1143,11 +1142,9 @@ impl State {
                     .into_iter()
                     .flat_map(|pending| &pending.expectations),
             )
-            .collect();
-        if retained.iter().any(|expectation| !expectation.limit) {
-            retained.retain(|expectation| !expectation.limit);
-        }
-        retained
+            .min_by(|a, b| a.order(b))
+            .into_iter()
+            .collect()
     }
 
     fn attribute(&self, reply: &str, err: &ProtocolError) -> (bool, Option<Expectation>) {
