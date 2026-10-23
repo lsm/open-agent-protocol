@@ -11,6 +11,11 @@ use serde_json::json;
 fn event(kind: EnvelopeType, sequence: u64, payload: serde_json::Value) -> Envelope {
     let mut event = Envelope::new(kind, format!("event-{sequence}"), &payload).unwrap();
     event.run_id = Some("run-1".into());
+    event.session_id = Some("session-1".into());
+    event.tool_call_id = payload
+        .get("tool_call_id")
+        .and_then(|id| id.as_str())
+        .map(Into::into);
     event.sequence = Some(sequence);
     event
 }
@@ -35,7 +40,7 @@ fn completed_returns_authoritative_parts_usage_and_drops_open_stream() {
     let call = event(
         EnvelopeType::ACTION_CALL_STARTED,
         2,
-        json!({"session_id":"session-1","run_id":"run-1","tool_call_id":"call-1","name":"lookup","arguments_json":{}}),
+        json!({"session_id":"session-1","run_id":"run-1","tool_call_id":"call-1","execution_owner":"agent","name":"lookup","arguments_json":{}}),
     );
     let session = ScriptSession::new(
         vec![

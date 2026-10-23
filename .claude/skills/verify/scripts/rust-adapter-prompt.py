@@ -83,7 +83,7 @@ def main():
         case = copy.deepcopy(base)
         change(case)
         cases.append((label, case, kind))
-    call = {"protocol": "open-agent-protocol", "version": "0.1", "profile": "open-agent-protocol.agent-control-core", "type": "action.call.started", "id": "call-start", "run_id": "r1", "session_id": "s1", "sequence": 2, "payload": {"session_id": "s1", "run_id": "r1", "tool_call_id": "call-1", "execution_owner": "agent"}}
+    call = {"protocol": "open-agent-protocol", "version": "0.1", "profile": "open-agent-protocol.agent-control-core", "type": "action.call.started", "id": "call-start", "tool_call_id": "call-1", "run_id": "r1", "session_id": "s1", "sequence": 2, "payload": {"session_id": "s1", "run_id": "r1", "tool_call_id": "call-1", "execution_owner": "agent"}}
     case = copy.deepcopy(base)
     terminal = case["events"][-1]
     terminal["sequence"] = 3
@@ -93,13 +93,13 @@ def main():
     gate_admission = next(e["payload"] for e in gate_trace if e["type"] == "session.message.submit.response")
     gate_events = [e for e in gate_trace if "sequence" in e]
     cases.append(("provided-call-gate", {"admission": gate_admission, "events": gate_events, "hold": True}, "gate_unanswered"))
-    for typ, payload in [
-        ("user.input.requested", {"interaction_id":"i1","requested_by":"agent","responded_by":"user","session_id":"s1","run_id":"r1","questions":[{"id":"q1","kind":"text","prompt":"Continue?"}]}),
-        ("action.permission.requested", {"interaction_id":"i1","requested_by":"agent","responded_by":"user","session_id":"s1","run_id":"r1","choices":[{"id":"yes","label":"Yes","kind":"allow_once"}],"title":"Continue?"}),
+    for typ, fixture in [
+        ("user.input.requested", "user-input-resolved-in-the-refresh-window"),
+        ("action.permission.requested", "permission-resolved-in-the-refresh-window"),
     ]:
+        trace = json.loads((ROOT / f"fixtures/valid/{fixture}.json").read_text())
+        gate = next(e for e in trace if e["type"] == typ)
         case = copy.deepcopy(base)
-        gate = copy.deepcopy(call)
-        gate.update(type=typ, payload=payload)
         case["events"] = [gate]
         cases.append((typ, case, "gate_unanswered"))
     for name, case, expected in cases:
