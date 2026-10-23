@@ -154,3 +154,12 @@ fn conforming_refusals_optins_and_layered_advertisements_are_valid() {
         assert!(judge(&fixture("valid", name)).is_empty(), "{name}");
     }
 }
+
+#[test]
+fn unknown_provided_pattern_limits_do_not_invent_an_attachment_refusal() {
+    assert!(judge(&fixture(
+        "valid",
+        "attach-preserves-unknown-provided-pattern-boundary"
+    ))
+    .is_empty());
+}

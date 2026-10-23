@@ -16657,6 +16657,24 @@
       "rules": [
         "0008#attachment-is-for-the-sessions-lifetime/1"
       ]
+    },
+    {
+      "id": "attach-preserves-unknown-provided-pattern-boundary",
+      "path": "valid/attach-preserves-unknown-provided-pattern-boundary.json",
+      "kind": "positive",
+      "valid": true,
+      "phase": "",
+      "codes": [],
+      "units": [
+        "tool-sources"
+      ],
+      "provenance": [
+        "decisions/0008-tool-sources.md",
+        "decisions/0055-register-batch-2.md"
+      ],
+      "rules": [
+        "0008#attachment-is-bounded-by-what-the-endpoint-disclosed/1"
+      ]
     }
   ]
 }

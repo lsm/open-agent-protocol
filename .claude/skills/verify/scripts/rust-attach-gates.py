@@ -26,6 +26,7 @@ IDS = {
  'attach-refusal-discharges-provided-tools','attach-capability-before-provided-owner',
  'attach-and-provide-have-one-honour-owner','attach-transport-refusal-names-source',
  'attach-above-disclosed-limit-admitted','attach-request-source-id-repeated',
+ 'attach-preserves-unknown-provided-pattern-boundary',
 }
 
 
