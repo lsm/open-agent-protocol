@@ -15,6 +15,7 @@ mod session_list;
 mod snapshot_claims;
 mod snapshot_listing;
 mod steer;
+mod tool_sources;
 mod transcript;
 
 use std::collections::{HashMap, HashSet};
