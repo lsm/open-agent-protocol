@@ -204,3 +204,60 @@ fn cancellation_keeps_optional_usage_instead_of_inventing_zeroes() {
     assert_eq!(usage.total_tokens, None);
     assert!(session.dropped.load(Ordering::SeqCst));
 }
+
+fn assert_gate_payload_decoding(fixture: &str, kind: EnvelopeType) {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../fixtures/valid")
+        .join(format!("{fixture}.json"));
+    let trace: Vec<Envelope> = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+    let gate = trace.into_iter().find(|e| e.envelope_type == kind).unwrap();
+    let repaired = ScriptSession::new(vec![Ok(gate.clone())], true);
+    let error = block_on(run_to_terminal(&repaired, MessageSubmitRequest::default())).unwrap_err();
+    assert!(matches!(error.kind, RunErrorKind::GateUnanswered));
+    assert!(repaired.dropped.load(Ordering::SeqCst));
+    for defect in ["missing", "scalar", "member"] {
+        let mut broken = gate.clone();
+        broken.payload = match defect {
+            "missing" => None,
+            "scalar" => Some(serde_json::value::to_raw_value(&json!(42)).unwrap()),
+            _ => {
+                let mut payload: serde_json::Value = gate.decode_payload().unwrap();
+                payload["run_id"] = json!(42);
+                Some(serde_json::value::to_raw_value(&payload).unwrap())
+            }
+        };
+        let session = ScriptSession::new(vec![Ok(broken)], true);
+        let error =
+            block_on(run_to_terminal(&session, MessageSubmitRequest::default())).unwrap_err();
+        assert!(
+            matches!(error.kind, RunErrorKind::Decode(_)),
+            "{defect}: {error:?}"
+        );
+        assert_eq!(error.outcome.run_id, gate.run_id);
+        assert!(session.dropped.load(Ordering::SeqCst));
+    }
+}
+
+#[test]
+fn input_gate_decodes_before_reporting_unanswered() {
+    assert_gate_payload_decoding(
+        "user-input-resolved-in-the-refresh-window",
+        EnvelopeType::USER_INPUT_REQUESTED,
+    );
+}
+
+#[test]
+fn permission_gate_decodes_before_reporting_unanswered() {
+    assert_gate_payload_decoding(
+        "permission-resolved-in-the-refresh-window",
+        EnvelopeType::ACTION_PERMISSION_REQUESTED,
+    );
+}
+
+#[test]
+fn provided_call_gate_decodes_before_reporting_unanswered() {
+    assert_gate_payload_decoding(
+        "control-tool-roundtrip",
+        EnvelopeType::ACTION_CALL_REQUESTED,
+    );
+}

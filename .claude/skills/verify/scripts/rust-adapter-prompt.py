@@ -102,6 +102,25 @@ def main():
         case = copy.deepcopy(base)
         case["events"] = [gate]
         cases.append((typ, case, "gate_unanswered"))
+    for typ, fixture in [
+        ("user.input.requested", "user-input-resolved-in-the-refresh-window"),
+        ("action.permission.requested", "permission-resolved-in-the-refresh-window"),
+        ("action.call.requested", "control-tool-roundtrip"),
+    ]:
+        trace = json.loads((ROOT / f"fixtures/valid/{fixture}.json").read_text())
+        gate = next(e for e in trace if e["type"] == typ)
+        for defect in ["missing", "scalar", "member"]:
+            broken = copy.deepcopy(gate)
+            if defect == "missing":
+                broken.pop("payload")
+            elif defect == "scalar":
+                broken["payload"] = 42
+            else:
+                broken["payload"]["run_id"] = 42
+            case = copy.deepcopy(base)
+            case["events"] = [broken]
+            case["hold"] = True
+            cases.append((f"{typ}-{defect}-payload", case, "decode"))
     for name, case, expected in cases:
         path = output / f"{name}.json"
         path.write_text(json.dumps(case, ensure_ascii=False))
