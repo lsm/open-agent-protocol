@@ -3,6 +3,7 @@ mod contract;
 mod error;
 pub mod journal;
 pub mod memory;
+mod prompt;
 mod refuse;
 
 use oap_protocol::{
@@ -13,6 +14,7 @@ use serde_json::Value;
 pub use answer::{index_input_answers, validate_input_answer};
 pub use contract::*;
 pub use error::*;
+pub use prompt::{message_text, run_to_terminal, RunError, RunErrorKind, RunOutcome};
 pub use refuse::*;
 
 #[derive(Clone, Debug, Default)]
