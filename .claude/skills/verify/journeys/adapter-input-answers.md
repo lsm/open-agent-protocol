@@ -26,6 +26,15 @@ Decision 0056. The script explicitly checks this known result and the absence
 of schema errors; it does not call it a conforming validator result. Other
 valid traces must pass. Validator sources and shared fixture metadata are
 outside this helper/serializer change and remain untouched.
+
+There is also a pre-existing Zig adapter-helper divergence, separate from the
+semantic validators: `zig/src/adapter/contract.zig`'s `validInputAnswer` rejects
+empty text unconditionally, and its `Question` type has no `required` field.
+Thus Zig adapter consumers do not yet share the corrected Rust/Go helper
+contract. This was reproduced through the public Zig helper with an optional
+text question and `text = ""`; a normative acceptance assertion fails at
+runtime. Zig adapter changes are outside the bound file set and need their
+own follow-up. This journey makes no claim of Zig adapter-helper parity.
 Empty answer sets are tested at the helper surface only: the wire schema still
 requires at least one answer in a submitted resolution. Mixed answers remain
 invalid rather than being silently repaired by serialization.
