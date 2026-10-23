@@ -81,7 +81,8 @@ async fn collect(
         .await?;
     outcome.run_id = admission.run_id;
     let mut last_sequence = 0;
-    while let Some(item) = poll_fn(|cx| stream.as_mut().poll_next(cx)).await {
+    while let Some(item) = poll_fn(|cx| futures_core::Stream::poll_next(stream.as_mut(), cx)).await
+    {
         let event = item?;
         if event.run_id.is_some() {
             outcome.run_id = event.run_id.clone();
