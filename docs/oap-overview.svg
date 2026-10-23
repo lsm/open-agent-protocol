@@ -61,7 +61,7 @@
 
   <!-- Arrow: provider profile -> providers -->
   <line x1="490" y1="422" x2="570" y2="422" stroke="#5a6b8c" stroke-width="1.6" marker-end="url(#arrow)"/>
-  <text x="530" y="410" class="small" text-anchor="middle">HTTP binding</text>
+  <text x="530" y="410" class="small" text-anchor="middle">vendor APIs</text>
 
   <!-- Model providers -->
   <rect x="560" y="374" width="300" height="96" rx="10" fill="#ecf6ef" stroke="#4f9e6b"/>
