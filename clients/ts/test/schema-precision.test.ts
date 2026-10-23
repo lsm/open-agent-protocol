@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { copyFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -55,6 +55,4 @@ test('public client declarations enforce transport and shutdown cardinality', as
       }
     });
   }
-  const declarations = readFileSync(join(consumer, 'node_modules/oap-client/dist/src/protocol.d.ts'), 'utf8');
-  assert.ok(declarations.includes('EndpointShutdownResponse'));
 });

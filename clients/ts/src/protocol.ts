@@ -244,12 +244,13 @@ export interface ShutdownRun extends ShutdownQueuedRun {
   pending_interactions?: string[];
 }
 
-export interface EndpointShutdownResponse {
-  outcome: 'choose' | 'draining' | 'stopping';
-  active_runs: ShutdownRun[];
+export type EndpointShutdownResponse = {
   held?: ShutdownQueuedRun[];
   lost?: ShutdownQueuedRun[];
-}
+} & (
+  | { outcome: 'choose'; active_runs: [ShutdownRun, ...ShutdownRun[]] }
+  | { outcome: 'draining' | 'stopping'; active_runs: ShutdownRun[] }
+);
 
 export interface EndpointShutdownStarted {
   mode: ShutdownMode;
@@ -278,7 +279,7 @@ export interface FeatureSupport {
   constraints?: { fixed_result?: Record<string, unknown> } & Record<string, unknown>;
   limits?: {
     max_sources?: number;
-    transports?: ToolSourceKind[];
+    transports?: [ToolSourceKind, ...ToolSourceKind[]];
     max_tools?: number;
     name_pattern?: string;
     schema_dialect?: string;
