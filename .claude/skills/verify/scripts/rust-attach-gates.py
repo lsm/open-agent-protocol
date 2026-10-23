@@ -1,0 +1,293 @@
+#!/usr/bin/env python3
+"""Replay attachment gates, limits and compound-open ownership at public CLIs."""
+import argparse
+import copy
+import importlib.util
+import json
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[4]
+spec = importlib.util.spec_from_file_location('descriptor_journey', Path(__file__).with_name('rust-tool-catalog.py'))
+common = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(common)
+KEY = 'action.tool_sources.attach'
+IDS = {
+ 'open-attach-unadvertised','open-unadvertised-wrong-reason','open-attach-remote-unadvertised',
+ 'open-attach-remote-wrong-refusal','open-attach-without-session-open-mode-refused',
+ 'attach-advertised-without-modes','open-attach-without-session-open-mode',
+ 'open-degraded-attach-without-optin','open-attach-colliding-source-admitted',
+ 'tool-source-collision-wrong-refusal','tool-source-over-limit-unnamed-source',
+ 'tool-source-over-limit-untyped-refusal','tool-source-attach-refused-within-limits',
+ 'tool-source-attach-refused-at-its-limit','open-attach-process-source','open-attach-layered-capability',
+ 'open-attach-unadvertised-rejected','open-attach-remote-unadvertised-rejected',
+ 'tool-source-remote-unadvertised-attach','tool-source-collision-refused',
+ 'tool-source-collision-unadvertised-attach','tool-source-attach-refused-over-limit',
+ 'open-degraded-attach-optin','open-degraded-attach-refused',
+ 'attach-refusal-discharges-provided-tools','attach-capability-before-provided-owner',
+ 'attach-and-provide-have-one-honour-owner','attach-transport-refusal-names-source',
+ 'attach-above-disclosed-limit-admitted','attach-request-source-id-repeated',
+ 'attach-preserves-unknown-provided-pattern-boundary',
+}
+
+
+def caps(trace):
+    return next(e for e in trace if e['type'] == 'capabilities.response')
+
+
+def request(trace):
+    return next(e for e in trace if e['type'] == 'session.open.request')
+
+
+def reply(trace):
+    return next(e for e in trace if e.get('in_reply_to') == request(trace)['id'])
+
+
+def refuse(trace, code='unsupported_feature', reason='unadvertised', source=None):
+    response = reply(trace)
+    details = {'feature':KEY}
+    if reason:
+        details['reason'] = reason
+    if source is not None:
+        details['source'] = source
+    response['type'] = 'error.response'
+    response['payload'] = {'error':{'code':code,'message':'synthetic refusal','details':details}}
+
+
+def admit(trace):
+    asked = request(trace)['payload']
+    response = reply(trace)
+    response['type'] = 'session.open.response'
+    sources = copy.deepcopy(caps(trace)['payload'].get('sources', []))
+    sources += [{k:v for k,v in a.items() if k not in ['command','args','environment']} for a in asked.get('tool_sources',[])]
+    response['payload'] = {'session_id':asked['session_id'],'status':'idle','sources':sources}
+
+
+def cases():
+    result = {}
+    for entry in json.loads((ROOT / 'fixtures/manifest.json').read_text())['fixtures']:
+        name = entry['id']
+        if name not in IDS:
+            continue
+        trace = json.loads((ROOT / 'fixtures' / entry['path']).read_text())
+        expected = []
+        for code in entry['codes']:
+            at = trace.index(caps(trace)) if code == 'undisclosed_attach_modes' else trace.index(reply(trace))
+            expected.append([code, at])
+        result[name] = (trace, sorted(expected))
+        if entry['valid']:
+            continue
+        fixed = copy.deepcopy(trace)
+        if 'undisclosed_attach_modes' in entry['codes']:
+            caps(fixed)['payload']['features'][KEY]['level'] = 'unavailable'
+            if any(e['type'] == 'session.open.request' for e in fixed):
+                refuse(fixed)
+        elif 'undisclosed_attach_limit' in entry['codes']:
+            admit(fixed)
+        elif 'duplicate_tool_source' in entry['codes']:
+            refuse(fixed,reason='unsatisfiable',source=request(fixed)['payload']['tool_sources'][0]['id'])
+        elif name == 'open-degraded-attach-without-optin':
+            refuse(fixed,code='capability_degraded',reason=None)
+        elif name in ['tool-source-over-limit-unnamed-source','tool-source-over-limit-untyped-refusal']:
+            p = request(fixed)['payload']
+            maximum = caps(fixed)['payload']['features'][KEY]['limits']['max_sources']
+            refuse(fixed,reason='unsatisfiable',source=p['tool_sources'][maximum]['id'])
+        elif name in ['open-attach-remote-unadvertised','open-attach-remote-wrong-refusal','attach-transport-refusal-names-source']:
+            refuse(fixed,reason='unsatisfiable',source=request(fixed)['payload']['tool_sources'][0]['id'])
+        else:
+            refuse(fixed)
+        result['repair-' + name] = (fixed, [])
+    trace = copy.deepcopy(result['open-degraded-attach-optin'][0])
+    request(trace)['payload']['allow_degraded_features'] = ['action.tools.provide']
+    result['wrong-feature-optin'] = (trace, [['degraded_without_optin',3]])
+    trace = copy.deepcopy(result['open-attach-process-source'][0][:4])
+    caps(trace)['payload']['features'][KEY]['modes'].append('remote')
+    request(trace)['payload']['tool_sources'][0]['kind'] = 'remote'
+    caps(trace)['payload']['features'][KEY].pop('limits',None)
+    admit(trace)
+    result['remote-mode-and-source-admitted'] = (trace, [])
+    trace = copy.deepcopy(result['open-attach-process-source'][0][:4])
+    request(trace)['payload']['tool_sources'] = []
+    caps(trace)['payload']['features'].pop(KEY)
+    reply(trace)['payload']['sources'] = caps(trace)['payload']['sources']
+    result['empty-array-does-not-elect-attach'] = (trace, [])
+    trace = copy.deepcopy(result['attach-and-provide-have-one-honour-owner'][0])
+    reply(trace)['payload']['error'] = {'code':'session_exists','message':'synthetic open-level refusal'}
+    result['open-level-refusal-discharges-both'] = (trace, [])
+    trace = copy.deepcopy(result['open-attach-unadvertised-rejected'][0])
+    last = trace.pop()
+    update = copy.deepcopy(trace[0])
+    update.update(type='capabilities.updated',id='updated',capability_revision='tools-v2',sequence=1,payload={'previous_revision':'tools-v1'})
+    asked = copy.deepcopy(trace[0]);asked['id']='refresh'
+    refreshed = copy.deepcopy(caps(trace));refreshed.update(id='refreshed',in_reply_to='refresh',capability_revision='tools-v2')
+    refreshed['payload']['features'][KEY]={'level':'native','modes':['session_open']}
+    trace.extend([update,asked,refreshed,last])
+    result['refusal-retains-request-time-capability'] = (trace, [])
+    trace = copy.deepcopy(result['open-attach-remote-unadvertised-rejected'][0])
+    reply(trace)['payload']['error']['details']['reason'] = 'unadvertised'
+    result['remote-refusal-wrong-reason'] = (trace, [['unavailable_capability',3]])
+    trace = copy.deepcopy(result['attach-capability-before-provided-owner'][0])
+    reply(trace)['type'] = 'error.response'
+    reply(trace)['payload'] = {'error':{'code':'internal','message':'synthetic refusal'}}
+    result['compound-wrong-refusal-has-one-speaker'] = (trace, [['unavailable_capability',5]])
+    trace = copy.deepcopy(result['open-attach-process-source'][0][:4])
+    support = caps(trace)['payload']['features'][KEY]
+    support['limits'] = {'max_sources':10,'transports':['process']}
+    template = request(trace)['payload']['tool_sources'][0]
+    sources = [dict(template,id='source'+str(i)) for i in range(12)]
+    sources[2]['kind'] = 'local'
+    sources[2].pop('command',None)
+    request(trace)['payload']['tool_sources'] = sources
+    refuse(trace,reason='unsatisfiable',source='source2')
+    result['numeric-pointer-order-across-limits'] = (trace, [])
+    trace = copy.deepcopy(result['compound-wrong-refusal-has-one-speaker'][0])
+    trace = [e for e in trace if not e['type'].startswith('capabilities.')]
+    result['compound-missing-descriptor-is-one-defect'] = (trace, [['unavailable_capability',2]])
+    template = json.loads((ROOT / 'fixtures/valid/open-provide-two-tools.json').read_text())[:6]
+    for name, expected, features, asked, error, repaired in review_cases():
+        trace = copy.deepcopy(template)
+        caps(trace)['payload']['features'].update(features)
+        request(trace)['payload'] = asked
+        reply(trace)['type'] = 'error.response'
+        reply(trace)['payload'] = {'error':error}
+        result[name] = (trace, sorted([[code,5] for code in expected]))
+        fixed = copy.deepcopy(trace)
+        reply(fixed)['payload'] = {'error':repaired}
+        result['repair-' + name] = (fixed, [])
+    return result
+
+
+def review_cases():
+    provide = 'action.tools.provide'
+    attach = {'level':'native','modes':['session_open']}
+    tool = lambda name: {'name':name,'source':'native','execution_owner':'control','input_schema':{'type':'object'}}
+    source = lambda name: {'id':name,'kind':'process'}
+    refusal = lambda feature, **detail: {'code':'unsupported_feature','message':'synthetic refusal','details':{'feature':feature,'reason':'unsatisfiable',**detail}}
+    subscribe = {'code':'unsupported_feature','message':'synthetic refusal','details':{'feature':'session.open.subscribe','reason':'unadvertised'}}
+    internal = {'code':'internal','message':'synthetic refusal'}
+    return [
+        ('attach-capability-before-subscribe-degradation', ['unavailable_capability'], {'session.open.subscribe':{'level':'degraded'}},
+         {'session_id':'s1','tool_sources':[source('files')],'subscribe':True}, internal,
+         {'code':'unsupported_feature','message':'synthetic refusal','details':{'feature':KEY,'reason':'unadvertised'}}),
+        ('ranked-attach-defect-refuses-other-source', ['unavailable_capability'], {KEY:attach},
+         {'session_id':'s1','tool_sources':[{'id':'remote-first','kind':'remote'},source('native')]},
+         refusal(KEY,source='native'), refusal(KEY,source='remote-first')),
+        ('ranked-source-limit-refuses-other-feature', ['unavailable_capability'],
+         {KEY:{**attach,'limits':{'max_sources':1}},provide:{'level':'native','limits':{'max_tools':1}}},
+         {'session_id':'s1','tools':[tool('echo'),tool('upper')],'tool_sources':[source('files'),source('docs')]},
+         refusal(provide,tool='upper'), refusal(KEY,source='docs')),
+        ('ranked-source-defect-refuses-other-feature', ['duplicate_tool_source'], {KEY:attach},
+         {'session_id':'s1','tools':[tool('grep')],'tool_sources':[source('native')]},
+         refusal(provide,tool='grep'), refusal(KEY,source='native')),
+        ('numeric-defect-refuses-index-ten', ['unavailable_capability'], {KEY:attach},
+         {'session_id':'s1','tool_sources':[{'id':'remote-second','kind':'remote'} if i==2 else source('native' if i==10 else 'source'+str(i)) for i in range(12)]},
+         refusal(KEY,source='native'), refusal(KEY,source='remote-second')),
+        ('provide-honour-yields-to-attach-defect', ['unavailable_capability'], {},
+         {'session_id':'s1','tools':[tool('echo'),tool('upper')],'tool_sources':[source('files')]}, internal,
+         {'code':'unsupported_feature','message':'synthetic refusal','details':{'feature':KEY,'reason':'unadvertised'}}),
+        ('attach-honour-yields-to-provide-defect', ['duplicate_tool_name'], {KEY:attach},
+         {'session_id':'s1','tools':[tool('grep')],'tool_sources':[source('files')]}, internal, refusal(provide,tool='grep')),
+        ('provide-defect-beats-attach-limit', ['duplicate_tool_name'],
+         {KEY:{**attach,'limits':{'max_sources':1}}},
+         {'session_id':'s1','tools':[tool('grep')],'tool_sources':[source('files'),source('docs')]},
+         refusal(KEY,source='docs'), refusal(provide,tool='grep')),
+        ('attach-defect-beats-provide-limit', ['duplicate_tool_source'],
+         {KEY:attach,provide:{'level':'native','limits':{'max_tools':1}}},
+         {'session_id':'s1','tools':[tool('echo'),tool('upper')],'tool_sources':[source('native')]},
+         refusal(provide,tool='upper'), refusal(KEY,source='native')),
+        ('provide-honour-survives-subscribe-defect', ['unavailable_capability','undisclosed_provide_limit'], {},
+         {'session_id':'s1','tools':[tool('echo'),tool('upper')],'subscribe':True}, internal, subscribe),
+        ('attach-honour-survives-subscribe-defect', ['unavailable_capability','undisclosed_attach_limit'], {KEY:attach},
+         {'session_id':'s1','tool_sources':[source('files')],'subscribe':True}, internal, subscribe),
+    ]
+
+
+def replay(language, output, label, case):
+    trace, expected = case
+    path = output / (label + '.input.json');path.write_text(json.dumps(trace,indent=2)+'\n')
+    command = {
+      'go':[str(output/'goap'),'validate','--format','json'],
+      'rust':[str(ROOT/'rust/target/debug/examples/validate')],
+      'zig':[str(ROOT/'zig/zig-out/bin/oapx'),'validate','--format','json'],
+    }[language]
+    result = common.run(command+[str(path)],output,label)
+    data = json.loads(result.stdout);reports = data if isinstance(data,list) else data.get('reports',[data])
+    ds=[d for report in reports for d in report.get('diagnostics') or []]
+    got={'exit':result.returncode,'diagnostics':sorted([d['code'],d.get('index',0)] for d in ds),'phases':sorted({d['phase'] for d in ds})}
+    want={'exit':int(bool(expected)),'diagnostics':expected,'phases':['semantic'] if expected else []}
+    return got,want
+
+
+def mutation_check(output, corpus):
+    source = ROOT / 'rust/validation/src/state/controls.rs'
+    mutations = [
+      ('stop-after-missing-descriptor','open_source_gates','.is_none()','.is_some()','compound-missing-descriptor-is-one-defect'),
+      ('descriptor-mode','check_attach_modes','affirmative(&support.level) && !support.discloses_mode(MODE_SESSION_OPEN)','false','attach-advertised-without-modes'),
+      ('affirmative-attach','attach_gate','!affirmative(&level) || !support.discloses_mode(MODE_SESSION_OPEN)','false','open-attach-unadvertised'),
+      ('session-open-mode','attach_gate','!support.discloses_mode(MODE_SESSION_OPEN)','false','open-attach-without-session-open-mode'),
+      ('degraded-optin','attach_gate','!p.allows_degraded(FEATURE_TOOL_SOURCES_ATTACH)','false','open-degraded-attach-without-optin'),
+      ('own-optin-key','attach_gate','p.allows_degraded(FEATURE_TOOL_SOURCES_ATTACH)','p.allows_degraded(FEATURE_TOOLS_PROVIDE)','wrong-feature-optin'),
+      ('declared-id-collision','attach_gate','self.declared_sources.contains(&attachment.id)','false','open-attach-colliding-source-admitted'),
+      ('request-id-collision','attach_gate','!seen.insert(attachment.id.as_str())','false && !seen.insert(attachment.id.as_str())','attach-request-source-id-repeated'),
+      ('remote-mode','attach_gate','!support.discloses_mode(MODE_REMOTE)','false','open-attach-remote-unadvertised'),
+      ('maximum-limit','attach_gate','if let Some(source) = p.tool_sources.get(max) {','if let Some(source) = None::<&ToolSourceAttachment> {','tool-source-over-limit-untyped-refusal'),
+      ('ceiling-boundary','attach_gate','p.tool_sources.get(max)','p.tool_sources.get(max.saturating_sub(1))','tool-source-attach-refused-at-its-limit'),
+      ('transport-limit','attach_gate','!transports.contains(&source.kind)','false','attach-transport-refusal-names-source'),
+      ('source-detail','attachment_value','detail_name: "source",','detail_name: "",','tool-source-over-limit-unnamed-source'),
+      ('unsatisfiable-reason','attachment_value','reason: CONTROL_UNSATISFIABLE,','reason: "",','remote-refusal-wrong-reason'),
+      ('unadvertised-reason','attachment_gate','expectation.pointer = "/payload/tool_sources".to_owned();','expectation.pointer = "/payload/tool_sources".to_owned(); expectation.reason = "";','open-unadvertised-wrong-reason'),
+      ('retained-attachment','source_expectations','.pending_attaches\n                    .get(reply)','.pending_attaches\n                    .get("")','attach-refusal-discharges-provided-tools'),
+      ('honour','attach_refusal','pending.honour','false','tool-source-attach-refused-within-limits'),
+      ('provide-defect-over-attach-limit','source_expectations','.min_by(|a, b| a.order(b))','.max_by(|a, b| a.order(b))','provide-defect-beats-attach-limit'),
+      ('attach-defect-over-provide-limit','source_expectations','.min_by(|a, b| a.order(b))','.max_by(|a, b| a.order(b))','attach-defect-beats-provide-limit'),
+      ('provide-honour-with-nonsource-speaker','settle_provide_refusal','else if honour && self.source_honour','else if honour && speaker.is_none() && self.source_honour','provide-honour-survives-subscribe-defect'),
+      ('attach-honour-with-nonsource-speaker','attach_refusal','else if pending.honour && self.source_honour','else if pending.honour && speaker.is_none() && self.source_honour','attach-honour-survives-subscribe-defect'),
+      ('ranked-attach-defect','source_expectations','.min_by(|a, b| a.order(b))','.max_by(|a, b| a.order(b))','ranked-attach-defect-refuses-other-source'),
+      ('ranked-cross-feature-limit','source_expectations','.min_by(|a, b| a.order(b))','.max_by(|a, b| a.order(b))','ranked-source-limit-refuses-other-feature'),
+      ('ranked-cross-feature-defect','source_expectations','.min_by(|a, b| a.order(b))','.max_by(|a, b| a.order(b))','ranked-source-defect-refuses-other-feature'),
+      ('ranked-numeric-defect','source_expectations','.min_by(|a, b| a.order(b))','.max_by(|a, b| a.order(b))','numeric-defect-refuses-index-ten'),
+      ('source-expectation-before-honour','source_honour','!self.source_expectations(reply).is_empty()','false','provide-honour-yields-to-attach-defect'),
+      ('source-expectation-before-attach-honour','source_honour','!self.source_expectations(reply).is_empty()','false','attach-honour-yields-to-provide-defect'),
+      ('one-honour-owner','source_honour','owner == Some(key)','true','attach-and-provide-have-one-honour-owner'),
+      ('admission-rank','settle_source_admission','.min_by(|a, b| a.order(b))','.max_by(|a, b| a.order(b))','attach-capability-before-provided-owner'),
+      ('limits-permit-admission','settle_source_admission','.filter(|expectation| !expectation.limit)','.filter(|_| true)','attach-above-disclosed-limit-admitted'),
+      ('refusal-rank','attribute','.min_by(|a, b| a.order(b))','.max_by(|a, b| a.order(b))','attach-capability-before-subscribe-degradation'),
+      ('unknown-provider-boundary','source_honour','provided.is_some_and(|pending| pending.expectation.is_none() && !pending.honour)','false','attach-preserves-unknown-provided-pattern-boundary'),
+      ('numeric-limit-pointer','attach_gate','violations.into_iter().min_by(Expectation::order)','violations.into_iter().max_by(Expectation::order)','numeric-pointer-order-across-limits'),
+      ('diagnostic-location','attach_refusal','self.refusal_misses(at, e, expectation, &speaker, &err);','self.refusal_misses((at.0 + 1, at.1), e, expectation, &speaker, &err);','attach-transport-refusal-names-source'),
+    ]
+    original=source.read_bytes();catches=[]
+    try:
+        for name,method,before,after,target in mutations:
+            text=original.decode();marker='    fn '+method+'('
+            if marker not in text:marker='    pub(super) fn '+method+'('
+            start=text.index(marker)
+            ends=[text.find(token,start+len(marker)) for token in ['\n    fn ','\n    pub(super) fn ']]
+            end=min([i for i in ends if i>=0] or [len(text)]);body=text[start:end]
+            if body.count(before)!=1:raise RuntimeError(name+': method target not unique')
+            source.write_text(text[:start]+body.replace(before,after,1)+text[end:])
+            common.build('rust',output,name+'-build')
+            got,want=replay('rust',output,'mutation-'+name,corpus[target])
+            if got==want or got['exit'] not in [0,1] or any(p!='semantic' for p in got['phases']):
+                raise RuntimeError(name+': survived or inconclusive: '+str(got))
+            catches.append({'mutation':name,'got':got,'want':want});print('CAUGHT '+name,flush=True)
+    finally:
+        source.write_bytes(original);common.build('rust',output,'restored-build')
+    (output/'mutations.json').write_text(json.dumps(catches,indent=2)+'\n')
+
+
+def main():
+    parser=argparse.ArgumentParser(description=__doc__);parser.add_argument('--output-dir',required=True);parser.add_argument('--mutation-check',action='store_true');args=parser.parse_args()
+    output=Path(args.output_dir).resolve();output.mkdir(parents=True,exist_ok=False);corpus=cases()
+    for language in ['go','rust','zig']:common.build(language,output,language+'-build')
+    if args.mutation_check:mutation_check(output,corpus)
+    results,wrong=[],[]
+    for name,case in corpus.items():
+        for language in ['go','rust','zig']:
+            got,want=replay(language,output,language+'.'+name,case);results.append({'case':name,'language':language,'got':got,'want':want})
+            if got!=want:wrong.append(language+'.'+name+': '+str(got)+' != '+str(want))
+    (output/'results.json').write_text(json.dumps(results,indent=2)+'\n')
+    if wrong:raise RuntimeError('\n'.join(wrong))
+    print(f'PASS {len(corpus)} traces x 3 validators; 0 disagreements; {output}')
+
+
+if __name__=='__main__':main()
