@@ -229,6 +229,14 @@ It carries no `command`, `args`, or `environment` — those belong to
 - **`ModelEventPosition`** — A model-affecting run event or a session model
   switch.
 - **`ModelsResponse`** — The effective catalog for one session.
+- **`SessionModelSwitchRequest` / `SessionModelSwitchResponse`** — The core
+  model-switch payloads, including optional degraded-feature opt-in and the
+  previous model id.
+- **`ProviderAttachment`**, **`SessionProviderAttachRequest` /
+  `SessionProviderAttachResponse`** — A session-local provider alias and its
+  attach exchange. The alias has an upstream `provider_id` and optional
+  `service_id`. These are wire declarations; they add no transport operation or
+  provider/account behavior.
 - **`ToolSourceAttachment`** — The open-time shape of one tool source: the
   descriptor's published members plus, for a
   `process` source, the attachment-only `command`,

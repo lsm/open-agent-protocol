@@ -549,6 +549,35 @@ export interface TranscriptLoadResponse {
   gap?: { reason: 'pruned' | 'rewritten'; resumed_at?: string };
 }
 
+export interface SessionModelSwitchRequest {
+  session_id: string;
+  model_id: string;
+  allow_degraded_features?: string[];
+}
+
+export interface SessionModelSwitchResponse {
+  session_id: string;
+  model_id: string;
+  previous_model_id?: string;
+}
+
+export interface ProviderAttachment {
+  id: string;
+  provider_id: string;
+  service_id?: string;
+}
+
+export interface SessionProviderAttachRequest {
+  session_id: string;
+  provider: ProviderAttachment;
+  allow_degraded_features?: string[];
+}
+
+export interface SessionProviderAttachResponse {
+  session_id: string;
+  provider_id: string;
+}
+
 export interface SessionStateRequest {
   session_id: string;
 }

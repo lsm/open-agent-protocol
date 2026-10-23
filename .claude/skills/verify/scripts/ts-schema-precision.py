@@ -39,7 +39,7 @@ def consumers(output, expect_success=True):
         if status and (index == 0 or expect_success):
             raise RuntimeError(f"step {index} exited {status}: {stdout} {stderr}")
     results = json.loads((output / "consumer/results.json").read_text())
-    if expect_success and (len(results) != 9 or any((row["exit"] == 0) != row["expected"] for row in results)):
+    if expect_success and (len(results) != 17 or any((row["exit"] == 0) != row["expected"] for row in results)):
         raise RuntimeError(f"unexpected consumer results: {results}")
     print(f"public consumer: exit {status}; results at {output}", flush=True)
     return status, results
@@ -107,6 +107,30 @@ def wire_checks(commands, output, results):
     return observed
 
 
+def session_wire_checks(commands, output, results):
+    observed = {}
+    positives = [row for row in results if row["name"].startswith(("switch-", "attach-")) and row["expected"]]
+    if len(positives) != 4:
+        raise RuntimeError("missing executed session controls")
+    for row in positives:
+        observed[row["name"]] = judge(commands, row["wire"], output, row["name"])
+    for name, control, index, field, nested in [
+        ("switch-missing-request-model", "switch-optional-fields", 6, "model_id", False),
+        ("switch-missing-response-model", "switch-optional-fields", 7, "model_id", False),
+        ("attach-missing-upstream-provider", "attach-optional-fields", 6, "provider_id", True),
+        ("attach-missing-response-provider", "attach-optional-fields", 7, "provider_id", False),
+    ]:
+        bad = copy.deepcopy(next(row["wire"] for row in positives if row["name"] == control))
+        payload = bad[index]["payload"]
+        if nested:
+            payload = payload["provider"]
+        repair = payload.pop(field)
+        observed[name] = judge(commands, bad, output, name, index)
+        payload[field] = repair
+        observed[name + "-repaired"] = judge(commands, bad, output, name + "-repaired")
+    return observed
+
+
 def mutation_checks(commands, output):
     path = ROOT / "clients/ts/src/protocol.ts"
     original = path.read_text()
@@ -115,6 +139,17 @@ def mutation_checks(commands, output):
         ("auth-url-without-url", "{ kind: 'url'; url: string }", "{ kind: 'url'; url?: string }", 4),
         ("auth-progress-without-message", "{ kind: 'progress'; message: string }", "{ kind: 'progress'; message?: string }", 5),
     ]
+    for name, declaration, field, invalid_at in [
+        ("switch-missing-request-model", "SessionModelSwitchRequest", "model_id", 6),
+        ("switch-missing-response-model", "SessionModelSwitchResponse", "model_id", 7),
+        ("attach-missing-upstream-provider", "ProviderAttachment", "provider_id", 6),
+        ("attach-missing-response-provider", "SessionProviderAttachResponse", "provider_id", 7),
+    ]:
+        start = original.index(f"export interface {declaration} {{")
+        end = original.index("\n}", start) + 2
+        before = original[start:end]
+        after = before.replace(f"  {field}: string;", f"  {field}?: string;")
+        cases.append((name, before, after, invalid_at))
     observed = {}
     try:
         for name, before, after, invalid_at in cases:
@@ -142,12 +177,14 @@ def main():
     _, results = consumers(output / "baseline")
     commands = validators(output)
     observed = wire_checks(commands, output, results)
+    observed["session-controls"] = session_wire_checks(commands, output, results)
     if args.mutation_check:
         observed["mutations"] = mutation_checks(commands, output)
         _, restored = consumers(output / "restored")
         observed["restored"] = wire_checks(commands, output, restored)
+        observed["restored-session-controls"] = session_wire_checks(commands, output, restored)
     (output / "validator-results.json").write_text(json.dumps(observed, indent=2) + "\n")
-    print(f"PASS: scoped auth wire checks have zero disagreements; other validator rules are not claimed. Artifacts: {output}")
+    print(f"PASS: scoped auth and session-control wire checks have zero disagreements; other validator rules are not claimed. Artifacts: {output}")
 
 
 if __name__ == "__main__":

@@ -62,6 +62,22 @@ function sample<T extends object>(
 }
 
 const samples: PayloadSample[] = [
+  sample<protocol.SessionModelSwitchRequest>('SessionModelSwitchRequest', 'session.schema.json', 'modelSwitchRequest', {
+    session_id: 's1', model_id: 'm2', allow_degraded_features: ['session.model.switch'],
+  }),
+  sample<protocol.SessionModelSwitchResponse>('SessionModelSwitchResponse', 'session.schema.json', 'modelSwitchResponse', {
+    session_id: 's1', model_id: 'm2', previous_model_id: 'm1',
+  }),
+  sample<protocol.ProviderAttachment>('ProviderAttachment', 'session.schema.json', 'providerAttachment', {
+    id: 'local-provider', provider_id: 'upstream-provider', service_id: 'example-service',
+  }),
+  sample<protocol.SessionProviderAttachRequest>('SessionProviderAttachRequest', 'session.schema.json', 'providerAttachRequest', {
+    session_id: 's1', provider: { id: 'local-provider', provider_id: 'upstream-provider', service_id: 'example-service' },
+    allow_degraded_features: ['action.providers.attach'],
+  }),
+  sample<protocol.SessionProviderAttachResponse>('SessionProviderAttachResponse', 'session.schema.json', 'providerAttachResponse', {
+    session_id: 's1', provider_id: 'local-provider',
+  }),
   sample<protocol.InitializeRequest>('InitializeRequest', 'capabilities.schema.json', 'initializeRequest', {
     protocol_versions: ['0.1'],
     profiles: ['open-agent-protocol.agent-control-core'],
