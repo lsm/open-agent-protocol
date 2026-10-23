@@ -5,8 +5,8 @@ Decisions 0008, 0011 and 0048, and the tool call lifecycle sites of 0001 that
 validators raise for tool sources, the session catalog, call attribution and
 control-layer-provided tools. Go and Zig name the function in `go/validation/`
 and `zig/src/validation/`, Rust in `rust/validation/src/`. Rust ports the
-generic tool lifecycle and the list response's session scope, and none of the
-other tool-source or provided-tool rules yet.
+generic tool lifecycle, the list response's session scope, descriptor catalog
+integrity and the provided-tool rules marked below.
 The items in
 [`research/validator-divergences.md`](../../research/validator-divergences.md)
 for this group are all settled: OPEN-0008-1 by 0008's text, and OPEN-0008-2,
@@ -48,9 +48,9 @@ Source: [`decisions/0008-tool-sources.md`](../../decisions/0008-tool-sources.md#
 
 | id | rule | lines | code | Go | Zig | Rust |
 | --- | --- | --- | --- | --- | --- | --- |
-| `0008#a-catalog-resolves-or-it-is-not-a-catalog/1` | A capability descriptor MUST declare each tool source id once across its top level and layers. | L153–223 | `duplicate_tool_source` | `toolsources.go:checkDescriptorSources` | `semantic.zig:capabilitiesResponse` | — |
-| `0008#a-catalog-resolves-or-it-is-not-a-catalog/2` | A capability descriptor's effective catalog MUST list each tool name once. | L153–223 | `duplicate_tool_name` | `toolsources.go:checkDescriptorSources` | `semantic.zig:capabilitiesResponse` | — |
-| `0008#a-catalog-resolves-or-it-is-not-a-catalog/3` | A descriptor tool's `source` MUST name a source the descriptor declares. | L153–223 | `unmatched_tool_source` | `toolsources.go:checkDescriptorSources` | `semantic.zig:checkDeclaredToolSources` | — |
+| `0008#a-catalog-resolves-or-it-is-not-a-catalog/1` | A capability descriptor MUST declare each tool source id once across its top level and layers. | L153–223 | `duplicate_tool_source` | `toolsources.go:checkDescriptorSources` | `semantic.zig:capabilitiesResponse` | `state/tool_sources.rs:check_descriptor_catalog` |
+| `0008#a-catalog-resolves-or-it-is-not-a-catalog/2` | A capability descriptor's effective catalog MUST list each tool name once. | L153–223 | `duplicate_tool_name` | `toolsources.go:checkDescriptorSources` | `semantic.zig:capabilitiesResponse` | `state/tool_sources.rs:check_descriptor_catalog` |
+| `0008#a-catalog-resolves-or-it-is-not-a-catalog/3` | A descriptor tool's `source` MUST name a source the descriptor declares. | L153–223 | `unmatched_tool_source` | `toolsources.go:checkDescriptorSources` | `semantic.zig:checkDeclaredToolSources` | `state/tool_sources.rs:check_descriptor_catalog` |
 | `0008#a-catalog-resolves-or-it-is-not-a-catalog/4` | An `action.tools.list.response` MUST declare each source id once. | L153–223 | `duplicate_tool_source` | `toolsources.go:toolsListResponse` | `semantic.zig:dispatch` | — |
 | `0008#a-catalog-resolves-or-it-is-not-a-catalog/5` | An `action.tools.list.response` MUST list each tool name once. | L153–223 | `duplicate_tool_name` | `toolsources.go:toolsListResponse` | `semantic.zig:duplicateNames` | — |
 | `0008#a-catalog-resolves-or-it-is-not-a-catalog/6` | Every tool a served catalog lists MUST name a source. | L153–223 | `unmatched_tool_source` | `toolsources.go:toolsListResponse` | `semantic.zig:checkListedToolSources` | — |
@@ -237,7 +237,8 @@ Source: [`decisions/0001-agent-control-v0.1-executable-core.md`](../../decisions
 
 ## Port work
 
-- Rust still owes the general tool-source attachment/catalog checks and the
+- Rust still owes tool-source attachment, served-catalog and call-attribution
+  checks, plus the
   snapshot acknowledgement/deferred-claim rows. The call-resolution binding
   (OPEN-0008-2, 0055) and `name_pattern` limits (OPEN-0011-1, 0055, 0062) are
   now judged at the implementation sites above.

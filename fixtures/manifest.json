@@ -2559,6 +2559,9 @@
       "provenance": [
         "drafts/staged-units-graduation.md",
         "decisions/0005-run-controls.md"
+      ],
+      "rules": [
+        "0008#a-catalog-resolves-or-it-is-not-a-catalog/2"
       ]
     },
     {
@@ -16345,9 +16348,9 @@
     {
       "id": "descriptor-tool-without-source",
       "path": "valid/descriptor-tool-without-source.json",
-      "kind": "valid",
+      "kind": "positive",
       "valid": true,
-      "phase": "semantic",
+      "phase": "",
       "codes": [],
       "units": [
         "tool-sources"

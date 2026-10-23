@@ -263,6 +263,7 @@ impl State {
         let t = &e.envelope_type;
         if *t == EnvelopeType::CAPABILITIES_RESPONSE {
             self.record_catalog(at, e);
+            self.check_descriptor_catalog(at, e);
             self.record_limits(at, e);
             self.check_provide_pattern(at, e);
         } else if *t == EnvelopeType::CAPABILITIES_UPDATED {

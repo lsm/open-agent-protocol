@@ -150,7 +150,6 @@
     "controls-structured-satisfiable-refused",
     "controls-structured-uncompilable-schema",
     "controls-structured-undisclosed-constraint",
-    "controls-tool-choice-ambiguous-name",
     "controls-tool-choice-disallows-an-uncatalogued-tool",
     "controls-tool-choice-empty-allowlist-call",
     "controls-tool-choice-empty-filters",

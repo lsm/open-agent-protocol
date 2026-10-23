@@ -12,6 +12,7 @@ IDS = {
     'descriptor-duplicate-source-id', 'descriptor-duplicate-tool-name',
     'tools-descriptor-dangling-source', 'descriptor-source-id-repeated-across-layers',
     'descriptor-layer-tool-dangling-source', 'descriptor-tool-without-source',
+    'controls-tool-choice-ambiguous-name',
 }
 
 
@@ -48,6 +49,8 @@ def cases():
                 p['layers']['a']['sources'][0]['id'] = 'another'
             else:
                 p['sources'][-1]['id'] = 'another'
+        elif 'ambiguous-name' in entry['id']:
+            p['tools'][1]['name'] = 'another'
         elif 'tool-name' in entry['id']:
             p['layers']['action']['tools'][0]['name'] = 'another'
         else:
@@ -105,7 +108,7 @@ def mutate(output, corpus):
         ('absent-source-unknown', '!tool.source.is_empty()', 'true', 'descriptor-tool-without-source'),
         ('layer-sources', '.chain(p.layers.values().flat_map(|layer| &layer.sources))', '.chain(std::iter::empty())', 'layer-tool-resolves-other-layer'),
         ('layer-tools', '.chain(p.layers.values().flat_map(|layer| &layer.tools))', '.chain(std::iter::empty())', 'descriptor-layer-tool-dangling-source'),
-        ('diagnostic-index', 'codes::DUPLICATE_TOOL_SOURCE, at, e,', 'codes::DUPLICATE_TOOL_SOURCE, (at.0 + 1, at.1), e,', 'descriptor-duplicate-source-id'),
+        ('diagnostic-index', 'codes::DUPLICATE_TOOL_SOURCE,\n                at,', 'codes::DUPLICATE_TOOL_SOURCE,\n                (at.0 + 1, at.1),', 'descriptor-duplicate-source-id'),
     ]
     original = SOURCE.read_bytes()
     catches = []
