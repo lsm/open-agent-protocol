@@ -5,8 +5,8 @@ Decisions 0008, 0011 and 0048, and the tool call lifecycle sites of 0001 that
 validators raise for tool sources, the session catalog, call attribution and
 control-layer-provided tools. Go and Zig name the function in `go/validation/`
 and `zig/src/validation/`, Rust in `rust/validation/src/`. Rust ports the
-generic tool lifecycle, the list response's session scope, descriptor catalog
-integrity and the provided-tool rules marked below.
+generic tool lifecycle, list capability gates and response-local integrity,
+descriptor catalog integrity and the provided-tool rules marked below.
 The items in
 [`research/validator-divergences.md`](../../research/validator-divergences.md)
 for this group are all settled: OPEN-0008-1 by 0008's text, and OPEN-0008-2,
@@ -29,9 +29,9 @@ Source: [`decisions/0008-tool-sources.md`](../../decisions/0008-tool-sources.md#
 
 | id | rule | lines | code | Go | Zig | Rust |
 | --- | --- | --- | --- | --- | --- | --- |
-| `0008#the-catalog-is-gated-on-its-own-key/1` | An `action.tools.list.request` to an endpoint that does not affirmatively advertise `action.tools.list` MUST be answered `unsupported_feature` naming that key with `details.reason: "unadvertised"`; a served catalog or any other refusal is the defect. | L101–124 | `unavailable_capability` | `toolsources.go:toolsListRequest` | `semantic.zig:dispatch` (gatedRequest) | — |
-| `0008#the-catalog-is-gated-on-its-own-key/2` | A list request under a `degraded` `action.tools.list` without `allow_degraded_features` naming it MUST be refused `capability_degraded`. | L127–150 | `degraded_without_optin` | `toolsources.go:toolsListRequest` | `semantic.zig:dispatch` (gatedRequest) | — |
-| `0008#the-catalog-is-gated-on-its-own-key/3` | A list request an endpoint advertises, with no defect any rule names, MUST NOT be refused. | L101–124 | `unhonoured_capability` | `toolsources.go:settleToolSourceRefusal` | `semantic.zig:settleControlRefusal` | — |
+| `0008#the-catalog-is-gated-on-its-own-key/1` | An `action.tools.list.request` to an endpoint that does not affirmatively advertise `action.tools.list` MUST be answered `unsupported_feature` naming that key with `details.reason: "unadvertised"`; a served catalog or any other refusal is the defect. | L101–124 | `unavailable_capability` | `toolsources.go:toolsListRequest` | `semantic.zig:dispatch` (gatedRequest) | `state/controls.rs:tools_list_gate`<br>`state/controls.rs:tools_list_admission`<br>`state/controls.rs:tools_list_refusal` |
+| `0008#the-catalog-is-gated-on-its-own-key/2` | A list request under a `degraded` `action.tools.list` without `allow_degraded_features` naming it MUST be refused `capability_degraded`. | L127–150 | `degraded_without_optin` | `toolsources.go:toolsListRequest` | `semantic.zig:dispatch` (gatedRequest) | `state/controls.rs:tools_list_gate`<br>`state/controls.rs:tools_list_admission`<br>`state/controls.rs:tools_list_refusal` |
+| `0008#the-catalog-is-gated-on-its-own-key/3` | A list request an endpoint advertises, with no defect any rule names, MUST NOT be refused. | L101–124 | `unhonoured_capability` | `toolsources.go:settleToolSourceRefusal` | `semantic.zig:settleControlRefusal` | `state/controls.rs:tools_list_refusal` |
 
 ### [0008] A list request is a request of its own
 
@@ -51,10 +51,10 @@ Source: [`decisions/0008-tool-sources.md`](../../decisions/0008-tool-sources.md#
 | `0008#a-catalog-resolves-or-it-is-not-a-catalog/1` | A capability descriptor MUST declare each tool source id once across its top level and layers. | L153–223 | `duplicate_tool_source` | `toolsources.go:checkDescriptorSources` | `semantic.zig:capabilitiesResponse` | `state/tool_sources.rs:check_descriptor_catalog` |
 | `0008#a-catalog-resolves-or-it-is-not-a-catalog/2` | A capability descriptor's effective catalog MUST list each tool name once. | L153–223 | `duplicate_tool_name` | `toolsources.go:checkDescriptorSources` | `semantic.zig:capabilitiesResponse` | `state/tool_sources.rs:check_descriptor_catalog` |
 | `0008#a-catalog-resolves-or-it-is-not-a-catalog/3` | A descriptor tool's `source` MUST name a source the descriptor declares. | L153–223 | `unmatched_tool_source` | `toolsources.go:checkDescriptorSources` | `semantic.zig:checkDeclaredToolSources` | `state/tool_sources.rs:check_descriptor_catalog` |
-| `0008#a-catalog-resolves-or-it-is-not-a-catalog/4` | An `action.tools.list.response` MUST declare each source id once. | L153–223 | `duplicate_tool_source` | `toolsources.go:toolsListResponse` | `semantic.zig:dispatch` | — |
-| `0008#a-catalog-resolves-or-it-is-not-a-catalog/5` | An `action.tools.list.response` MUST list each tool name once. | L153–223 | `duplicate_tool_name` | `toolsources.go:toolsListResponse` | `semantic.zig:duplicateNames` | — |
-| `0008#a-catalog-resolves-or-it-is-not-a-catalog/6` | Every tool a served catalog lists MUST name a source. | L153–223 | `unmatched_tool_source` | `toolsources.go:toolsListResponse` | `semantic.zig:checkListedToolSources` | — |
-| `0008#a-catalog-resolves-or-it-is-not-a-catalog/7` | A listed tool's `source` MUST name a source the same response declares. | L153–223 | `unmatched_tool_source` | `toolsources.go:toolsListResponse` | `semantic.zig:checkListedToolSources` | — |
+| `0008#a-catalog-resolves-or-it-is-not-a-catalog/4` | An `action.tools.list.response` MUST declare each source id once. | L153–223 | `duplicate_tool_source` | `toolsources.go:toolsListResponse` | `semantic.zig:dispatch` | `state/tool_sources.rs:check_tools_list_shape` |
+| `0008#a-catalog-resolves-or-it-is-not-a-catalog/5` | An `action.tools.list.response` MUST list each tool name once. | L153–223 | `duplicate_tool_name` | `toolsources.go:toolsListResponse` | `semantic.zig:duplicateNames` | `state/tool_sources.rs:check_tools_list_shape` |
+| `0008#a-catalog-resolves-or-it-is-not-a-catalog/6` | Every tool a served catalog lists MUST name a source. | L153–223 | `unmatched_tool_source` | `toolsources.go:toolsListResponse` | `semantic.zig:checkListedToolSources` | `state/tool_sources.rs:check_tools_list_shape` |
+| `0008#a-catalog-resolves-or-it-is-not-a-catalog/7` | A listed tool's `source` MUST name a source the same response declares. | L153–223 | `unmatched_tool_source` | `toolsources.go:toolsListResponse` | `semantic.zig:checkListedToolSources` | `state/tool_sources.rs:check_tools_list_shape` |
 | `0008#a-catalog-resolves-or-it-is-not-a-catalog/8` | An `action.call.requested` that names a `source` MUST name the source the effective published catalog records for the tool (the session's served catalog under the active revision, else the descriptor's). | L153–223 | `unmatched_tool_source` | `toolsources.go:checkCallSource` | `semantic.zig:checkCallSource` | — |
 | `0008#a-catalog-resolves-or-it-is-not-a-catalog/9` | Where no published catalog lists the tool, a call's `source` MUST name a declared source. | L153–223 | `unmatched_tool_source` | `toolsources.go:checkCallSource` | `semantic.zig:checkCallSource` | — |
 | `0008#a-catalog-resolves-or-it-is-not-a-catalog/10` | A call from an endpoint advertising `action.tools.list`, whose published catalog attributes the tool, MUST name `source`. | L153–223 | `unattributed_call` | `toolsources.go:checkCallAttributed` | `semantic.zig:checkCallSource` | — |
@@ -237,8 +237,8 @@ Source: [`decisions/0001-agent-control-v0.1-executable-core.md`](../../decisions
 
 ## Port work
 
-- Rust still owes tool-source attachment, served-catalog and call-attribution
-  checks, plus the
+- Rust still owes tool-source attachment, session catalog reconciliation and
+  call-attribution checks, plus the
   snapshot acknowledgement/deferred-claim rows. The call-resolution binding
   (OPEN-0008-2, 0055) and `name_pattern` limits (OPEN-0011-1, 0055, 0062) are
   now judged at the implementation sites above.

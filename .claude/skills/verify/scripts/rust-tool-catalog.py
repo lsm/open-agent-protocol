@@ -115,9 +115,11 @@ def mutate(output, corpus):
     try:
         for name, before, after, target in mutations:
             text = original.decode()
-            if text.count(before) != 1:
-                raise RuntimeError(name + ': target not unique')
-            SOURCE.write_text(text.replace(before, after, 1))
+            start = text.index('    pub(super) fn check_descriptor_catalog(')
+            prefix, body = text[:start], text[start:]
+            if body.count(before) != 1:
+                raise RuntimeError(name + ': descriptor target not unique')
+            SOURCE.write_text(prefix + body.replace(before, after, 1))
             build('rust', output, name + '-build')
             got, want = replay('rust', output, 'mutation-' + name, corpus[target])
             if got == want or got['exit'] not in (0, 1) or any(p != 'semantic' for p in got['phases']):

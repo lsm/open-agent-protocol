@@ -103,15 +103,69 @@ def replay(language, output, label, case):
     return got, want
 
 
+def mutation_check(output, corpus):
+    controls = ROOT / 'rust/validation/src/state/controls.rs'
+    shape = ROOT / 'rust/validation/src/state/tool_sources.rs'
+    mutations = [
+        ('support-gate', controls, 'tools_list_gate', 'if !affirmative(&level)', 'if false', 'tools-list-unadvertised-served'),
+        ('degraded-optin', controls, 'tools_list_gate', '!p.allows_degraded(FEATURE_TOOLS_LIST)', 'false', 'tools-list-degraded-without-optin'),
+        ('own-feature-optin', controls, 'tools_list_gate', 'p.allows_degraded(FEATURE_TOOLS_LIST)', 'p.allows_degraded("action.tools")', 'family-key-is-not-list-optin'),
+        ('honour', controls, 'tools_list_gate', 'pending.honour = true;', 'pending.honour = false;', 'tools-list-refused-advertised'),
+        ('served-gate', controls, 'tools_list_admission', 'if let Some(expectation) = expectation {', 'if let Some(expectation) = None::<Expectation> {', 'tools-list-unadvertised-served'),
+        ('refusal-feature', controls, 'tools_list_refusal', '!expectation.conformed_by(&err)', 'false', 'tools-list-ungated-wrong-feature'),
+        ('refusal-reason', controls, 'tools_list_refusal', '!expectation.conformed_by(&err)', 'false', 'tools-list-ungated-wrong-reason'),
+        ('refusal-code', controls, 'tools_list_refusal', '!expectation.conformed_by(&err)', 'false', 'tools-list-ungated-wrong-refusal'),
+        ('reply-correlation', controls, 'tools_list_admission', '.get(&reply)', '.values().find(|pending| pending.gated())', 'tools-list-overlapping-optins-refused'),
+        ('retained-gate', controls, 'tools_list_refusal', 'let err = payload::<ErrorResponse>(e).error;', 'let err = payload::<ErrorResponse>(e).error;\n        let pending = if self.features.get(FEATURE_TOOLS_LIST) == Some(&SupportLevel::NATIVE) { PendingToolList { expectation: None, honour: true } } else { pending };', 'tools-list-refusal-keeps-requested-gate'),
+        ('unique-list-sources', shape, 'check_tools_list_shape', 'if let Some(id) = list_duplicate_source {', 'if let Some(id) = None::<&str> {', 'tools-duplicate-source-id'),
+        ('unique-list-names', shape, 'check_tools_list_shape', 'if let Some(name) = list_duplicate_name {', 'if let Some(name) = None::<&str> {', 'tools-duplicate-name'),
+        ('listed-source-resolves', shape, 'check_tools_list_shape', 'else if !declared.contains(tool.source.as_str()) {', 'else if false {', 'tools-unmatched-source'),
+        ('listed-source-required', shape, 'check_tools_list_shape', 'if !gated {', 'if false {', 'tools-unattributed-tool'),
+        ('gated-omission-suppressed', shape, 'check_tools_list_shape', 'if !gated {', 'if true {', 'tools-list-unadvertised-served'),
+        ('diagnostic-location', controls, 'tools_list_admission', 'expectation.diagnostic,\n                at,', 'expectation.diagnostic,\n                (at.0 + 1, at.1),', 'tools-list-unadvertised-served'),
+    ]
+    originals = {p: p.read_bytes() for p in [controls, shape]}
+    catches = []
+    try:
+        for name, path, method, before, after, target in mutations:
+            for p, data in originals.items():
+                p.write_bytes(data)
+            text = originals[path].decode()
+            marker = '    fn ' + method + '('
+            if marker not in text:
+                marker = '    pub(super) fn ' + method + '('
+            start = text.index(marker)
+            ends = [text.find(token, start + len(marker)) for token in ['\n    fn ', '\n    pub(super) fn ']]
+            end = min([i for i in ends if i >= 0] or [len(text)])
+            body = text[start:end]
+            if body.count(before) != 1:
+                raise RuntimeError(name + ': method target not unique')
+            path.write_text(text[:start] + body.replace(before, after, 1) + text[end:])
+            common.build('rust', output, name + '-build')
+            got, want = replay('rust', output, 'mutation-' + name, corpus[target])
+            if got == want or got['exit'] not in [0, 1] or any(p != 'semantic' for p in got['phases']):
+                raise RuntimeError(name + ': survived or inconclusive: ' + str(got))
+            catches.append({'mutation':name, 'got':got, 'want':want})
+            print('CAUGHT ' + name, flush=True)
+    finally:
+        for path, data in originals.items():
+            path.write_bytes(data)
+        common.build('rust', output, 'restored-build')
+    (output / 'mutations.json').write_text(json.dumps(catches, indent=2) + '\n')
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--output-dir', required=True)
+    parser.add_argument('--mutation-check', action='store_true')
     args = parser.parse_args()
     output = Path(args.output_dir).resolve()
     output.mkdir(parents=True, exist_ok=False)
     corpus = cases()
     for language in ['go','rust','zig']:
         common.build(language, output, language + '-build')
+    if args.mutation_check:
+        mutation_check(output, corpus)
     results, wrong = [], []
     for name, case in corpus.items():
         for language in ['go','rust','zig']:

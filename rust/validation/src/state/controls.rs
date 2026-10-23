@@ -35,6 +35,18 @@ pub(super) struct Expectation {
 }
 
 impl Expectation {
+    fn tool_list(degraded: bool) -> Self {
+        let mut expectation = Self::delivery(FEATURE_TOOLS_LIST, degraded);
+        expectation.pointer = "/payload".to_owned();
+        expectation.message = if degraded {
+            "a degraded catalog was requested without the caller's opt-in"
+        } else {
+            "a catalog was requested from an endpoint that has not affirmatively advertised one"
+        }
+        .to_owned();
+        expectation
+    }
+
     fn setting(key: &str, pointer: &str, degraded: bool) -> Self {
         let mut expectation = Self::delivery(key, degraded);
         expectation.pointer = pointer.to_owned();
@@ -252,6 +264,83 @@ const OPEN_LEVEL_REFUSALS: [&str; 5] = [
     "unknown_session",
 ];
 
+#[derive(Clone, Default)]
+pub(super) struct PendingToolList {
+    expectation: Option<Expectation>,
+    honour: bool,
+}
+
+impl PendingToolList {
+    pub(super) fn gated(&self) -> bool {
+        self.expectation.is_some()
+    }
+}
+
+impl State {
+    fn tools_list_gate(&mut self, at: (usize, usize), e: &Envelope) {
+        let p: ToolsListRequest = payload(e);
+        let mut pending = PendingToolList::default();
+        if let Some(level) = self.control_descriptor(at, e, FEATURE_TOOLS_LIST) {
+            if !affirmative(&level) {
+                pending.expectation = Some(Expectation::tool_list(false));
+            } else if level == SupportLevel::DEGRADED && !p.allows_degraded(FEATURE_TOOLS_LIST) {
+                pending.expectation = Some(Expectation::tool_list(true));
+            } else {
+                pending.honour = true;
+            }
+        }
+        self.pending_tool_lists.insert(s(&e.id), pending);
+    }
+
+    fn tools_list_admission(&mut self, at: (usize, usize), e: &Envelope) {
+        let reply = os(&e.in_reply_to);
+        let expectation = self
+            .pending_tool_lists
+            .get(&reply)
+            .and_then(|pending| pending.expectation.clone());
+        if let Some(expectation) = expectation {
+            self.add_expected(
+                expectation.diagnostic,
+                at,
+                e,
+                "/payload",
+                &expectation.message,
+                &format!("a typed refusal naming {}", expectation.key),
+                "a served catalog",
+                &[&reply],
+            );
+        }
+    }
+
+    fn tools_list_refusal(&mut self, at: (usize, usize), e: &Envelope) {
+        let reply = os(&e.in_reply_to);
+        let Some(pending) = self.pending_tool_lists.get(&reply).cloned() else {
+            return;
+        };
+        let err = payload::<ErrorResponse>(e).error;
+        if let Some(expectation) = pending.expectation {
+            if !expectation.conformed_by(&err) {
+                self.add_expected(
+                    expectation.diagnostic,
+                    at,
+                    e,
+                    "/payload/error",
+                    "refusal does not tell the caller what to change",
+                    &expectation.describe(),
+                    &describe_refusal(&err),
+                    &[&reply],
+                );
+            }
+        } else if pending.honour {
+            self.add_expected(
+                codes::UNHONOURED_CAPABILITY, at, e, "/payload/error",
+                "a catalog request within every disclosed constraint was refused by an endpoint advertising the catalog",
+                "a served catalog", &describe_refusal(&err), &[&reply],
+            );
+        }
+    }
+}
+
 impl Controls {
     pub(super) fn selects_model(&self) -> bool {
         self.model_present
@@ -269,7 +358,11 @@ impl State {
         } else if *t == EnvelopeType::CAPABILITIES_UPDATED {
             self.declared_sources.clear();
             self.descriptor_owners.clear();
+        } else if *t == EnvelopeType::ACTION_TOOLS_LIST_REQUEST {
+            self.tools_list_gate(at, e);
         } else if *t == EnvelopeType::ACTION_TOOLS_LIST_RESPONSE {
+            self.tools_list_admission(at, e);
+            self.check_tools_list_shape(at, e);
             let p: ToolsListResponse = payload(e);
             if let Some(session) = p.session_id {
                 self.catalog_owners.insert(
@@ -312,6 +405,7 @@ impl State {
             self.open_settings_response(at, e);
             self.record_provided_tools(e);
         } else if *t == EnvelopeType::ERROR_RESPONSE {
+            self.tools_list_refusal(at, e);
             self.settle_control_refusal(at, e);
             self.settle_provide_refusal(at, e);
             self.steer_refusal(at, e);
