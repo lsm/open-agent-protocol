@@ -5,8 +5,8 @@ use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll};
 
 use futures::Stream;
-use oap_adapter::*;
 use oap_adapter::Error;
+use oap_adapter::*;
 use oap_protocol::*;
 
 pub struct ScriptSession {
