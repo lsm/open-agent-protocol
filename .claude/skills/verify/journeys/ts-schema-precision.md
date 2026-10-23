@@ -40,3 +40,29 @@ Empty auth-kind lists, URL events without a URL and progress events without a
 message must produce one TS2322 assignment error. Those emitting cases use
 `noEmitOnError` and exit 1 when refused; the original non-emitting cardinality
 cases still exit 2. No account operation or real credential is involved.
+
+The helper builds the public Go/Rust/Zig validator CLIs and feeds them the two
+traces actually printed by the installed consumer. For each of three invalid
+variants (empty provider auth kinds, missing URL, missing progress message),
+require exactly `schema` / `schema_invalid` at index 1, 4 or 5 respectively in
+all three trees. A repaired copy of each must exit 0 without diagnostics.
+Outputs and the scoped comparison are retained in `validator-results.json`.
+This establishes those auth cases only, not full validator parity.
+
+With no other edits or builds running in this worktree, run:
+
+```sh
+python3 .claude/skills/verify/scripts/ts-schema-precision.py --mutation-check --output-dir /tmp/oap-ts-schema-mutations-<unique>
+```
+
+It weakens the owned TypeScript nonempty tuple, URL requirement and progress
+message requirement one at a time. Each targeted invalid consumer must compile
+and execute against the packed public client, emit the bad trace, and be
+rejected by all three unchanged validators with the exact diagnostic above.
+An unrelated build/compiler error does not count as a killed mutation. The
+source is restored in `finally`; after successful probes the helper rebuilds,
+reruns the consumers and replays all controls again. If interrupted, inspect
+source restoration before continuing and rebuild before using compiled output.
+Run the complete verify baseline and the full client suite/integration tests
+without `OAP_TS_SKIP_INTEGRATION`; its PTY journey uses isolated, denied-network
+fixture state. No real provider, account or credential is exercised.

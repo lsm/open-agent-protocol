@@ -143,6 +143,25 @@ const samples: PayloadSample[] = [
     outcome: 'stopping',
     active_runs: [],
   }),
+  sample<protocol.AuthProvider>('AuthProvider', 'auth.schema.json', 'provider', {
+    id: 'example', name: 'Example', auth_kinds: ['api_key', 'oauth', 'none'], auth_status: 'login_required',
+    last_error: 'fixture error', override_host: 'proxy.example',
+  }),
+  sample<protocol.AuthProvidersRequest>('AuthProvidersRequest', 'auth.schema.json', 'providersRequest', {}),
+  sample<protocol.AuthProvidersResponse>('AuthProvidersResponse', 'auth.schema.json', 'providersResponse', { providers: [] }),
+  sample<protocol.AuthLoginStartRequest>('AuthLoginStartRequest', 'auth.schema.json', 'loginStartRequest', { provider_id: 'example' }),
+  sample<protocol.AuthLoginStartResponse>('AuthLoginStartResponse', 'auth.schema.json', 'loginStartResponse', { flow_id: 'flow-1' }),
+  sample<protocol.AuthLoginEvent>('AuthLoginEvent URL', 'auth.schema.json', 'loginEvent', {
+    flow_id: 'flow-1', provider_id: 'example', kind: 'url', url: 'https://example.invalid/login', instructions: 'Fixture', message: 'Also allowed',
+  }),
+  sample<protocol.AuthLoginEvent>('AuthLoginEvent progress', 'auth.schema.json', 'loginEvent', {
+    flow_id: 'flow-1', provider_id: 'example', kind: 'progress', message: 'Fixture', url: 'https://example.invalid/progress', instructions: 'Also allowed',
+  }),
+  sample<protocol.AuthLoginCancelRequest>('AuthLoginCancelRequest', 'auth.schema.json', 'loginCancelRequest', { flow_id: 'flow-1' }),
+  sample<protocol.AuthLoginCancelResponse>('AuthLoginCancelResponse', 'auth.schema.json', 'loginCancelResponse', { flow_id: 'flow-1', accepted: true }),
+  sample<protocol.AuthLoginCompleted>('AuthLoginCompleted', 'auth.schema.json', 'loginCompleted', {
+    flow_id: 'flow-1', provider_id: 'example', status: 'cancelled', error: { code: 'cancelled_by_user', message: 'Fixture' },
+  }),
   sample<protocol.CapabilitiesUpdated>('CapabilitiesUpdated', 'capabilities.schema.json', 'capabilitiesUpdated', {
     previous_revision: 'rev-1',
     reason: 'reloaded',

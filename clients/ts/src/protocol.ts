@@ -348,6 +348,60 @@ export interface EmptyRequestPayload {
 
 export type CapabilitiesRequest = EmptyRequestPayload;
 
+export type AuthKind = 'api_key' | 'oauth' | 'none';
+export type AuthStatus = 'authenticated' | 'login_required' | 'expired' | 'refreshing' | 'login_in_progress' | 'failed' | 'unknown';
+
+export interface AuthProvider {
+  id: string;
+  name: string;
+  auth_kinds: [AuthKind, ...AuthKind[]];
+  auth_status: AuthStatus;
+  last_error?: string;
+  override_host?: string;
+}
+
+export type AuthProvidersRequest = EmptyRequestPayload;
+
+export interface AuthProvidersResponse {
+  providers: AuthProvider[];
+}
+
+export interface AuthLoginStartRequest {
+  provider_id: string;
+}
+
+export interface AuthLoginStartResponse {
+  flow_id: string;
+}
+
+export type AuthLoginEvent = {
+  flow_id: string;
+  provider_id: string;
+  url?: string;
+  instructions?: string;
+  message?: string;
+} & (
+  | { kind: 'url'; url: string }
+  | { kind: 'progress'; message: string }
+);
+
+export interface AuthLoginCancelRequest {
+  flow_id: string;
+}
+
+export interface AuthLoginCancelResponse {
+  flow_id: string;
+  accepted: boolean;
+}
+
+export interface AuthLoginCompleted {
+  flow_id: string;
+  provider_id: string;
+  status: 'success' | 'failed' | 'cancelled';
+  error?: ProtocolError;
+}
+
+
 export interface CapabilityDescriptor {
   endpoint: EndpointDescriptor;
   protocol_versions?: [string, ...string[]];
