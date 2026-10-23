@@ -21,6 +21,8 @@ def run(command, output, name, timeout=300):
 def mutation_check(output):
     original = SOURCE.read_text()
     mutations = [
+        ("input-payload", "let _: UserInputRequestedPayload = event.decode_payload()?;", "", "input_gate_decodes_before_reporting_unanswered"),
+        ("permission-payload", "let _: PermissionRequestedPayload = event.decode_payload()?;", "", "permission_gate_decodes_before_reporting_unanswered"),
         ("duplicate", "sequence <= last_sequence", "sequence < last_sequence", "completed_returns_authoritative_parts_usage_and_drops_open_stream"),
         ("usage", "outcome.usage = completed.usage;", "outcome.usage = None;", "completed_returns_authoritative_parts_usage_and_drops_open_stream"),
         ("failure", "RunErrorKind::Failed(Box::new(failed.error))", "RunErrorKind::Cancelled", "failed_run_preserves_failure_and_measured_zero"),

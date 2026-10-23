@@ -23,7 +23,11 @@ u64 maximum remain distinct. No total is inferred. One intentional difference
 is observed separately: Rust retains `run.cancelled` usage, whereas the current
 Go helper omits it. This follows the terminal payload, not a new wire rule.
 Malformed message content is an explicit content error; malformed terminal
-payloads are decode errors, never successful terminal results.
+payloads are decode errors, never successful terminal results. All three gate
+kinds also decode before reporting an unanswered gate: missing payloads, scalar
+payloads and mistyped run ids must return a decode error, retaining the run id
+and releasing the stream. Their shared valid fixture controls remain unanswered
+gates. The public Go/Rust journey compares all nine malformed variations.
 
 A synthetic stream held open after a terminal must be dropped immediately.
 Dropping a pending Rust consumer future must release its owned stream. The
@@ -49,7 +53,8 @@ With no concurrent Rust builds, mutation-check the outcome assertions:
 python3 .claude/skills/verify/scripts/rust-adapter-prompt.py --mutation-check --output-dir /tmp/oap-adapter-prompt-mutations-<unique>
 ```
 
-The script temporarily changes duplicate suppression, usage propagation,
+The script temporarily removes input/permission payload decoding and changes
+duplicate suppression, usage propagation,
 failed/no-terminal judgments and terminal-path stream cleanup. Every mutation
 must cause a runtime test assertion failure; compilation failure is not a kill.
 It restores the original source in `finally` and reruns the complete focused

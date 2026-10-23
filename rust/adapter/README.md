@@ -39,7 +39,9 @@ helper. It has no gate policy, overflow replay, observer, stall/compaction timer
 or automatic run cancellation when its future is dropped. It returns
 `GateUnanswered` on permission, input or provided-call gates and preserves stream
 errors, including overflow, for the host to handle. Harness-owned calls continue
-normally. An open quiet stream waits for the host's executor/deadline.
+normally. All gate payloads are decoded before reporting `GateUnanswered`;
+missing or mistyped payloads instead produce `Decode`. An open quiet stream
+waits for the host's executor/deadline.
 
 The consumer owns and drops its stream on return or future cancellation. It
 spawns no tasks or processes and does not close the caller's session. Dropping

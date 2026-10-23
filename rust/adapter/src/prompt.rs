@@ -1,8 +1,9 @@
 use std::future::poll_fn;
 
 use oap_protocol::{
-    ActionCallPayload, ContentPart, Message, MessageSubmitRequest, ProtocolError,
-    RunCancelledPayload, RunCompletedPayload, RunFailedPayload, RunId, Usage,
+    ActionCallPayload, ContentPart, Message, MessageSubmitRequest, PermissionRequestedPayload,
+    ProtocolError, RunCancelledPayload, RunCompletedPayload, RunFailedPayload, RunId, Usage,
+    UserInputRequestedPayload,
 };
 
 use crate::{Error, Session, SubmitRequest};
@@ -100,7 +101,12 @@ async fn collect(
                     return Err(RunErrorKind::GateUnanswered);
                 }
             }
-            "user.input.requested" | "action.permission.requested" => {
+            "user.input.requested" => {
+                let _: UserInputRequestedPayload = event.decode_payload()?;
+                return Err(RunErrorKind::GateUnanswered);
+            }
+            "action.permission.requested" => {
+                let _: PermissionRequestedPayload = event.decode_payload()?;
                 return Err(RunErrorKind::GateUnanswered);
             }
             "action.call.started" => outcome.tool_calls += 1,
