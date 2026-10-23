@@ -163,3 +163,20 @@ fn unknown_provided_pattern_limits_do_not_invent_an_attachment_refusal() {
     ))
     .is_empty());
 }
+
+#[test]
+fn one_compound_open_judges_a_missing_descriptor_once() {
+    let mut trace = fixture(
+        "semantic-invalid",
+        "attach-capability-before-provided-owner",
+    );
+    trace
+        .as_array_mut()
+        .unwrap()
+        .retain(|e| !e["type"].as_str().unwrap().starts_with("capabilities."));
+    let response = trace.as_array_mut().unwrap().last_mut().unwrap();
+    response["type"] = "error.response".into();
+    response["payload"] =
+        serde_json::json!({"error":{"code":"internal","message":"synthetic refusal"}});
+    assert_eq!(judge(&trace), [("unavailable_capability".into(), 2)]);
+}

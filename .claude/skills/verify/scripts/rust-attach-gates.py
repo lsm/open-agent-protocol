@@ -139,6 +139,9 @@ def cases():
     request(trace)['payload']['tool_sources'] = sources
     refuse(trace,reason='unsatisfiable',source='source2')
     result['numeric-pointer-order-across-limits'] = (trace, [])
+    trace = copy.deepcopy(result['compound-wrong-refusal-has-one-speaker'][0])
+    trace = [e for e in trace if not e['type'].startswith('capabilities.')]
+    result['compound-missing-descriptor-is-one-defect'] = (trace, [['unavailable_capability',2]])
     return result
 
 
