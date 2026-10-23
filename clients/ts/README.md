@@ -169,6 +169,13 @@ the two that are not appear under `errors` below.
   deliver unknown types unhindered.
 - **`Envelope`** — One protocol envelope; `payload` is decoded JSON, still
   untyped.
+- **Core auth payloads** — `AuthProvider`, `AuthProvidersRequest`/`Response`,
+  `AuthLoginStartRequest`/`Response`, `AuthLoginEvent`, `AuthLoginCancelRequest`/
+  `Response` and `AuthLoginCompleted` match the existing auth envelope names.
+  `AuthKind` and `AuthStatus` name their schema vocabularies; `auth_kinds` is
+  nonempty, and login events require `url` or `message` according to `kind`.
+  The opposite event field and instructions remain optional. These are wire
+  declarations; they add no login operation or credential storage.
 - **`parseEnvelope`** — Decodes one envelope from a JSON document (an SSE data
   field or a response body).
 - **`payload`** — Types one envelope's payload. The cast is deliberate: payloads

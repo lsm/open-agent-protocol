@@ -6,7 +6,8 @@ validators raise for tool sources, the session catalog, call attribution and
 control-layer-provided tools. Go and Zig name the function in `go/validation/`
 and `zig/src/validation/`, Rust in `rust/validation/src/`. Rust ports the
 generic tool lifecycle, list capability gates and response-local integrity,
-descriptor catalog integrity and the provided-tool rules marked below.
+descriptor catalog integrity, attachment gates/refusals and the provided-tool
+rules marked below.
 The items in
 [`research/validator-divergences.md`](../../research/validator-divergences.md)
 for this group are all settled: OPEN-0008-1 by 0008's text, and OPEN-0008-2,
@@ -21,7 +22,7 @@ Source: [`decisions/0008-tool-sources.md`](../../decisions/0008-tool-sources.md#
 
 | id | rule | lines | code | Go | Zig | Rust |
 | --- | --- | --- | --- | --- | --- | --- |
-| `0008#an-adapter-that-does-not-attach-says-so/1` | An open carrying `tool_sources` to an endpoint that does not affirmatively advertise `action.tool_sources.attach` with the `session_open` mode MUST be refused `unsupported_feature`, `details.feature: "action.tool_sources.attach"`, `details.reason: "unadvertised"`. | L54–80, L313–403 | `unavailable_capability` | `toolsources.go:attachExpectations` | `semantic.zig:attachExpectations` | — |
+| `0008#an-adapter-that-does-not-attach-says-so/1` | An open carrying `tool_sources` to an endpoint that does not affirmatively advertise `action.tool_sources.attach` with the `session_open` mode MUST be refused `unsupported_feature`, `details.feature: "action.tool_sources.attach"`, `details.reason: "unadvertised"`. | L54–80, L313–403 | `unavailable_capability` | `toolsources.go:attachExpectations` | `semantic.zig:attachExpectations` | `state/controls.rs:attach_gate`<br>`state/controls.rs:settle_source_admission`<br>`state/controls.rs:attach_refusal` |
 
 ### [0008] The catalog is gated on its own key
 
@@ -74,9 +75,9 @@ Source: [`decisions/0008-tool-sources.md`](../../decisions/0008-tool-sources.md#
 
 | id | rule | lines | code | Go | Zig | Rust |
 | --- | --- | --- | --- | --- | --- | --- |
-| `0008#attachment-is-bounded-by-what-the-endpoint-disclosed/1` | An attachment array that violates no disclosed `max_sources` or `transports` limit, and no rule above, MUST NOT be refused. | L262–310 | `undisclosed_attach_limit` | `toolsources.go:sessionOpenRequest` | `semantic.zig:sessionOpenRequest` | — |
-| `0008#attachment-is-bounded-by-what-the-endpoint-disclosed/2` | A refusal of an array exceeding `max_sources` MUST be `unsupported_feature`, `details.reason: "unsatisfiable"`, `details.source` naming the first entry past the limit. | L262–310 | `unavailable_capability` | `toolsources.go:limitViolation` | `semantic.zig:attachLimitViolation` | — |
-| `0008#attachment-is-bounded-by-what-the-endpoint-disclosed/3` | A refusal of an attachment whose `kind` is outside the disclosed `transports` MUST take the same unsatisfiable shape, naming that source. | L262–310 | `unavailable_capability` | `toolsources.go:limitViolation` | `semantic.zig:attachLimitViolation` | — |
+| `0008#attachment-is-bounded-by-what-the-endpoint-disclosed/1` | An attachment array that violates no disclosed `max_sources` or `transports` limit, and no rule above, MUST NOT be refused. | L262–310 | `undisclosed_attach_limit` | `toolsources.go:sessionOpenRequest` | `semantic.zig:sessionOpenRequest` | `state/controls.rs:source_honour`<br>`state/controls.rs:attach_refusal` |
+| `0008#attachment-is-bounded-by-what-the-endpoint-disclosed/2` | A refusal of an array exceeding `max_sources` MUST be `unsupported_feature`, `details.reason: "unsatisfiable"`, `details.source` naming the first entry past the limit. | L262–310 | `unavailable_capability` | `toolsources.go:limitViolation` | `semantic.zig:attachLimitViolation` | `state/controls.rs:attach_gate`<br>`state/controls.rs:settle_source_admission`<br>`state/controls.rs:attach_refusal` |
+| `0008#attachment-is-bounded-by-what-the-endpoint-disclosed/3` | A refusal of an attachment whose `kind` is outside the disclosed `transports` MUST take the same unsatisfiable shape, naming that source. | L262–310 | `unavailable_capability` | `toolsources.go:limitViolation` | `semantic.zig:attachLimitViolation` | `state/controls.rs:attach_gate`<br>`state/controls.rs:settle_source_admission`<br>`state/controls.rs:attach_refusal` |
 
 ### [0008] Attachment discloses a set of modes, not one
 
@@ -84,9 +85,9 @@ Source: [`decisions/0008-tool-sources.md`](../../decisions/0008-tool-sources.md#
 
 | id | rule | lines | code | Go | Zig | Rust |
 | --- | --- | --- | --- | --- | --- | --- |
-| `0008#attachment-discloses-a-set-of-modes-not-one/1` | `action.tool_sources.attach` advertised above `unavailable` MUST disclose `session_open` in `modes`. | L313–403 | `undisclosed_attach_modes` | `toolsources.go:checkAttachModes` | `semantic.zig:checkAttachModes` | — |
-| `0008#attachment-discloses-a-set-of-modes-not-one/2` | An open attaching tool sources under a `degraded` attach capability without the caller's opt-in MUST be refused `capability_degraded`. | L313–403 | `degraded_without_optin` | `toolsources.go:attachExpectations` | `semantic.zig:attachExpectations` | — |
-| `0008#attachment-discloses-a-set-of-modes-not-one/3` | An open attaching a `remote` source to an endpoint whose `modes` omit `remote` MUST be refused `unsupported_feature`, `details.reason: "unsatisfiable"`, `details.source`. | L313–403 | `unavailable_capability` | `toolsources.go:attachExpectations` | `semantic.zig:attachExpectations` | — |
+| `0008#attachment-discloses-a-set-of-modes-not-one/1` | `action.tool_sources.attach` advertised above `unavailable` MUST disclose `session_open` in `modes`. | L313–403 | `undisclosed_attach_modes` | `toolsources.go:checkAttachModes` | `semantic.zig:checkAttachModes` | `state/controls.rs:check_attach_modes` |
+| `0008#attachment-discloses-a-set-of-modes-not-one/2` | An open attaching tool sources under a `degraded` attach capability without the caller's opt-in MUST be refused `capability_degraded`. | L313–403 | `degraded_without_optin` | `toolsources.go:attachExpectations` | `semantic.zig:attachExpectations` | `state/controls.rs:attach_gate`<br>`state/controls.rs:settle_source_admission`<br>`state/controls.rs:attach_refusal` |
+| `0008#attachment-discloses-a-set-of-modes-not-one/3` | An open attaching a `remote` source to an endpoint whose `modes` omit `remote` MUST be refused `unsupported_feature`, `details.reason: "unsatisfiable"`, `details.source`. | L313–403 | `unavailable_capability` | `toolsources.go:attachExpectations` | `semantic.zig:attachExpectations` | `state/controls.rs:attach_gate`<br>`state/controls.rs:settle_source_admission`<br>`state/controls.rs:attach_refusal` |
 
 ### [0008] Attachment is for the session's lifetime
 
@@ -94,7 +95,7 @@ Source: [`decisions/0008-tool-sources.md`](../../decisions/0008-tool-sources.md#
 
 | id | rule | lines | code | Go | Zig | Rust |
 | --- | --- | --- | --- | --- | --- | --- |
-| `0008#attachment-is-for-the-sessions-lifetime/1` | An open MUST NOT attach a source under an id the same open or the descriptor already uses. Such an open is refused unsatisfiable with `details.source`. | L153–223, L406–459 | `duplicate_tool_source` | `toolsources.go:attachExpectations` | `semantic.zig:attachExpectations` | — |
+| `0008#attachment-is-for-the-sessions-lifetime/1` | An open MUST NOT attach a source under an id the same open or the descriptor already uses. Such an open is refused unsatisfiable with `details.source`. | L153–223, L406–459 | `duplicate_tool_source` | `toolsources.go:attachExpectations` | `semantic.zig:attachExpectations` | `state/controls.rs:attach_gate`<br>`state/controls.rs:settle_source_admission`<br>`state/controls.rs:attach_refusal` |
 | `0008#attachment-is-for-the-sessions-lifetime/2` | A refreshed descriptor MUST NOT declare a source id an open session already attached. | L406–459 | `duplicate_tool_source` | `toolsources.go:checkDescriptorSources` | `semantic.zig:checkAttachedCollision` | — |
 | `0008#attachment-is-for-the-sessions-lifetime/3` | A session-scoped catalog MUST list every source the open attached. | L406–459 | `catalog_mismatch` | `toolsources.go:toolsListResponse` | `semantic.zig:checkSessionCatalog` | — |
 | `0008#attachment-is-for-the-sessions-lifetime/4` | A session-scoped catalog MUST describe an attached source exactly as the open response adopted it. | L406–459 | `catalog_mismatch` | `toolsources.go:toolsListResponse` | `semantic.zig:checkSessionCatalog` | — |
@@ -237,7 +238,7 @@ Source: [`decisions/0001-agent-control-v0.1-executable-core.md`](../../decisions
 
 ## Port work
 
-- Rust still owes tool-source attachment, session catalog reconciliation and
+- Rust still owes attachment lifetime, session catalog reconciliation and
   call-attribution checks, plus the
   snapshot acknowledgement/deferred-claim rows. The call-resolution binding
   (OPEN-0008-2, 0055) and `name_pattern` limits (OPEN-0011-1, 0055, 0062) are
