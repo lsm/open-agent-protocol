@@ -138,15 +138,20 @@ fn answer_findings(
         }
         let options: HashSet<&str> = question.options.iter().map(|o| o.id.as_str()).collect();
         match question.kind.as_str() {
-            "text" if answer.text.is_empty() => found(
-                list,
-                codes::UNMATCHED_INTERACTION,
-                pointer,
-                "text answer carries no text",
-                "non-empty text",
-                "",
-                id,
-            ),
+            "text"
+                if !answer.selected_option_ids.is_empty()
+                    || question.required && answer.text.is_empty() =>
+            {
+                found(
+                    list,
+                    codes::UNMATCHED_INTERACTION,
+                    pointer,
+                    "answer does not satisfy its text question",
+                    "the text arm; non-empty when required",
+                    "",
+                    id,
+                )
+            }
             "single_choice" | "multi_choice" => {
                 if answer.selected_option_ids.is_empty() {
                     found(

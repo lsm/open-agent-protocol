@@ -1464,8 +1464,8 @@ func (s *state) validateInputAnswers(i, line int, e protocol.Envelope, id protoc
 		}
 		switch question.Kind {
 		case protocol.InputText:
-			if answer.Text == "" {
-				s.addExpected(CodeUnmatchedInteraction, i, line, e, "/payload/answers", "text answer carries no text", "non-empty text", "", string(id))
+			if len(answer.SelectedOptionIDs) != 0 || question.Required && answer.Text == "" {
+				s.addExpected(CodeUnmatchedInteraction, i, line, e, "/payload/answers", "answer does not satisfy its text question", "the text arm; non-empty when required", "", string(id))
 			}
 		case protocol.InputSingleChoice, protocol.InputMultiChoice:
 			if len(answer.SelectedOptionIDs) == 0 {
