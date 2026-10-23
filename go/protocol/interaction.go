@@ -1,5 +1,7 @@
 package protocol
 
+import "encoding/json"
+
 type InputQuestionKind string
 
 const (
@@ -26,6 +28,18 @@ type InputAnswer struct {
 	QuestionID        string   `json:"question_id"`
 	Text              string   `json:"text,omitempty"`
 	SelectedOptionIDs []string `json:"selected_option_ids,omitempty"`
+}
+
+func (a InputAnswer) MarshalJSON() ([]byte, error) {
+	var text *string
+	if len(a.SelectedOptionIDs) == 0 || a.Text != "" {
+		text = &a.Text
+	}
+	return json.Marshal(struct {
+		QuestionID        string   `json:"question_id"`
+		Text              *string  `json:"text,omitempty"`
+		SelectedOptionIDs []string `json:"selected_option_ids,omitempty"`
+	}{a.QuestionID, text, a.SelectedOptionIDs})
 }
 
 type UserInputRequestedPayload struct {

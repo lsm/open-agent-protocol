@@ -10,7 +10,7 @@ pub fn validate_input_answer(question: &InputQuestion, answer: &InputAnswer) -> 
     let shaped = answer.question_id == question.id
         && !(has_text && !selected.is_empty())
         && match question.kind.as_str() {
-            "text" => has_text,
+            "text" => has_text || !question.required,
             "single_choice" => selected.len() == 1,
             "multi_choice" => !selected.is_empty(),
             _ => false,
@@ -50,6 +50,12 @@ pub fn index_input_answers<'a>(
         }
         validate_input_answer(question, answer)?;
         indexed.insert(answer.question_id.as_str(), answer);
+    }
+    if questions
+        .iter()
+        .any(|question| question.required && !indexed.contains_key(question.id.as_str()))
+    {
+        return Err(Error::InvalidResolution);
     }
     Ok(indexed)
 }
