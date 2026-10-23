@@ -165,6 +165,19 @@ def review_cases():
     subscribe = {'code':'unsupported_feature','message':'synthetic refusal','details':{'feature':'session.open.subscribe','reason':'unadvertised'}}
     internal = {'code':'internal','message':'synthetic refusal'}
     return [
+        ('ranked-attach-defect-refuses-other-source', ['unavailable_capability'], {KEY:attach},
+         {'session_id':'s1','tool_sources':[{'id':'remote-first','kind':'remote'},source('native')]},
+         refusal(KEY,source='native'), refusal(KEY,source='remote-first')),
+        ('ranked-source-limit-refuses-other-feature', ['unavailable_capability'],
+         {KEY:{**attach,'limits':{'max_sources':1}},provide:{'level':'native','limits':{'max_tools':1}}},
+         {'session_id':'s1','tools':[tool('echo'),tool('upper')],'tool_sources':[source('files'),source('docs')]},
+         refusal(provide,tool='upper'), refusal(KEY,source='docs')),
+        ('ranked-source-defect-refuses-other-feature', ['duplicate_tool_source'], {KEY:attach},
+         {'session_id':'s1','tools':[tool('grep')],'tool_sources':[source('native')]},
+         refusal(provide,tool='grep'), refusal(KEY,source='native')),
+        ('numeric-defect-refuses-index-ten', ['unavailable_capability'], {KEY:attach},
+         {'session_id':'s1','tool_sources':[{'id':'remote-second','kind':'remote'} if i==2 else source('native' if i==10 else 'source'+str(i)) for i in range(12)]},
+         refusal(KEY,source='native'), refusal(KEY,source='remote-second')),
         ('provide-honour-yields-to-attach-defect', ['unavailable_capability'], {},
          {'session_id':'s1','tools':[tool('echo'),tool('upper')],'tool_sources':[source('files')]}, internal,
          {'code':'unsupported_feature','message':'synthetic refusal','details':{'feature':KEY,'reason':'unadvertised'}}),

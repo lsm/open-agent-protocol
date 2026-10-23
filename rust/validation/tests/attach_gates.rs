@@ -255,3 +255,43 @@ fn attach_honour_survives_subscribe_defect() {
         ]
     );
 }
+
+#[test]
+fn ranked_attach_defect_refuses_other_source() {
+    let mut trace = compound_refusal();
+    trace[3]["payload"]["features"]["action.tool_sources.attach"] = serde_json::json!({"level":"native","modes":["session_open"]});
+    trace[3]["payload"]["features"]["action.tools.provide"] = serde_json::json!({"level":"native"});
+    trace[4]["payload"] = serde_json::json!({"session_id":"s1","tool_sources":[{"id":"remote-first","kind":"remote"},{"id":"native","kind":"process"}]});
+    trace[5]["payload"] = serde_json::json!({"error":{"code":"unsupported_feature","message":"synthetic refusal","details":{"feature":"action.tool_sources.attach","reason":"unsatisfiable","source":"native"}}});
+    assert_eq!(judge(&trace), [("unavailable_capability".into(), 5)]);
+}
+
+#[test]
+fn ranked_source_limit_refuses_other_feature() {
+    let mut trace = compound_refusal();
+    trace[3]["payload"]["features"]["action.tool_sources.attach"] = serde_json::json!({"level":"native","modes":["session_open"],"limits":{"max_sources":1}});
+    trace[3]["payload"]["features"]["action.tools.provide"] = serde_json::json!({"level":"native","limits":{"max_tools":1}});
+    trace[4]["payload"] = serde_json::json!({"session_id":"s1","tools":[{"name":"echo","source":"native","execution_owner":"control","input_schema":{"type":"object"}},{"name":"upper","source":"native","execution_owner":"control","input_schema":{"type":"object"}}],"tool_sources":[{"id":"files","kind":"process"},{"id":"docs","kind":"process"}]});
+    trace[5]["payload"] = serde_json::json!({"error":{"code":"unsupported_feature","message":"synthetic refusal","details":{"feature":"action.tools.provide","reason":"unsatisfiable","tool":"upper"}}});
+    assert_eq!(judge(&trace), [("unavailable_capability".into(), 5)]);
+}
+
+#[test]
+fn ranked_source_defect_refuses_other_feature() {
+    let mut trace = compound_refusal();
+    trace[3]["payload"]["features"]["action.tool_sources.attach"] = serde_json::json!({"level":"native","modes":["session_open"]});
+    trace[3]["payload"]["features"]["action.tools.provide"] = serde_json::json!({"level":"native"});
+    trace[4]["payload"] = serde_json::json!({"session_id":"s1","tools":[{"name":"grep","source":"native","execution_owner":"control","input_schema":{"type":"object"}}],"tool_sources":[{"id":"native","kind":"process"}]});
+    trace[5]["payload"] = serde_json::json!({"error":{"code":"unsupported_feature","message":"synthetic refusal","details":{"feature":"action.tools.provide","reason":"unsatisfiable","tool":"grep"}}});
+    assert_eq!(judge(&trace), [("duplicate_tool_source".into(), 5)]);
+}
+
+#[test]
+fn numeric_defect_refuses_index_ten() {
+    let mut trace = compound_refusal();
+    trace[3]["payload"]["features"]["action.tool_sources.attach"] = serde_json::json!({"level":"native","modes":["session_open"]});
+    trace[3]["payload"]["features"]["action.tools.provide"] = serde_json::json!({"level":"native"});
+    trace[4]["payload"] = serde_json::json!({"session_id":"s1","tool_sources":[{"id":"source0","kind":"process"},{"id":"source1","kind":"process"},{"id":"remote-second","kind":"remote"},{"id":"source3","kind":"process"},{"id":"source4","kind":"process"},{"id":"source5","kind":"process"},{"id":"source6","kind":"process"},{"id":"source7","kind":"process"},{"id":"source8","kind":"process"},{"id":"source9","kind":"process"},{"id":"native","kind":"process"},{"id":"source11","kind":"process"}]});
+    trace[5]["payload"] = serde_json::json!({"error":{"code":"unsupported_feature","message":"synthetic refusal","details":{"feature":"action.tool_sources.attach","reason":"unsatisfiable","source":"native"}}});
+    assert_eq!(judge(&trace), [("unavailable_capability".into(), 5)]);
+}
