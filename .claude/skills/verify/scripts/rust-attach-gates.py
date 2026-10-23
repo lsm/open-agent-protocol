@@ -165,6 +165,11 @@ def review_cases():
     subscribe = {'code':'unsupported_feature','message':'synthetic refusal','details':{'feature':'session.open.subscribe','reason':'unadvertised'}}
     internal = {'code':'internal','message':'synthetic refusal'}
     return [
+        ('provide-honour-yields-to-attach-defect', ['unavailable_capability'], {},
+         {'session_id':'s1','tools':[tool('echo'),tool('upper')],'tool_sources':[source('files')]}, internal,
+         {'code':'unsupported_feature','message':'synthetic refusal','details':{'feature':KEY,'reason':'unadvertised'}}),
+        ('attach-honour-yields-to-provide-defect', ['duplicate_tool_name'], {KEY:attach},
+         {'session_id':'s1','tools':[tool('grep')],'tool_sources':[source('files')]}, internal, refusal(provide,tool='grep')),
         ('provide-defect-beats-attach-limit', ['duplicate_tool_name'],
          {KEY:{**attach,'limits':{'max_sources':1}}},
          {'session_id':'s1','tools':[tool('grep')],'tool_sources':[source('files'),source('docs')]},
@@ -214,8 +219,14 @@ def mutation_check(output, corpus):
       ('source-detail','attachment_value','detail_name: "source",','detail_name: "",','tool-source-over-limit-unnamed-source'),
       ('unsatisfiable-reason','attachment_value','reason: CONTROL_UNSATISFIABLE,','reason: "",','remote-refusal-wrong-reason'),
       ('unadvertised-reason','attachment_gate','expectation.pointer = "/payload/tool_sources".to_owned();','expectation.pointer = "/payload/tool_sources".to_owned(); expectation.reason = "";','open-unadvertised-wrong-reason'),
-      ('retained-attachment','attribute','.pending_attaches\n                    .get(reply)','.pending_attaches\n                    .get("")','attach-refusal-discharges-provided-tools'),
+      ('retained-attachment','source_expectations','.pending_attaches\n                    .get(reply)','.pending_attaches\n                    .get("")','attach-refusal-discharges-provided-tools'),
       ('honour','attach_refusal','pending.honour','false','tool-source-attach-refused-within-limits'),
+      ('provide-defect-over-attach-limit','source_expectations','retained.retain(|expectation| !expectation.limit);','retained.retain(|_| true);','provide-defect-beats-attach-limit'),
+      ('attach-defect-over-provide-limit','source_expectations','retained.retain(|expectation| !expectation.limit);','retained.retain(|_| true);','attach-defect-beats-provide-limit'),
+      ('provide-honour-with-nonsource-speaker','settle_provide_refusal','else if honour && self.source_honour','else if honour && speaker.is_none() && self.source_honour','provide-honour-survives-subscribe-defect'),
+      ('attach-honour-with-nonsource-speaker','attach_refusal','else if pending.honour && self.source_honour','else if pending.honour && speaker.is_none() && self.source_honour','attach-honour-survives-subscribe-defect'),
+      ('source-expectation-before-honour','source_honour','!self.source_expectations(reply).is_empty()','false','provide-honour-yields-to-attach-defect'),
+      ('source-expectation-before-attach-honour','source_honour','!self.source_expectations(reply).is_empty()','false','attach-honour-yields-to-provide-defect'),
       ('one-honour-owner','source_honour','owner == Some(key)','true','attach-and-provide-have-one-honour-owner'),
       ('admission-rank','settle_source_admission','.min_by(|a, b| a.order(b))','.max_by(|a, b| a.order(b))','attach-capability-before-provided-owner'),
       ('limits-permit-admission','settle_source_admission','.filter(|expectation| !expectation.limit)','.filter(|_| true)','attach-above-disclosed-limit-admitted'),

@@ -421,6 +421,9 @@ impl State {
         if provided.is_some_and(|pending| pending.expectation.is_none() && !pending.honour) {
             return false;
         }
+        if !self.source_expectations(reply).is_empty() {
+            return false;
+        }
         let owner = if self
             .pending_attaches
             .get(reply)
@@ -447,10 +450,7 @@ impl State {
         }
         if let Some(expectation) = pending.expectations.iter().min_by(|a, b| a.order(b)) {
             self.refusal_misses(at, e, expectation, &speaker, &err);
-        } else if pending.honour
-            && speaker.is_none()
-            && self.source_honour(&reply, FEATURE_TOOL_SOURCES_ATTACH)
-        {
+        } else if pending.honour && self.source_honour(&reply, FEATURE_TOOL_SOURCES_ATTACH) {
             self.add_expected(
                 codes::UNDISCLOSED_ATTACH_LIMIT, at, e, "/payload/error",
                 "an open carrying no attachment defect and violating no disclosed limit was refused",
@@ -1131,6 +1131,25 @@ impl State {
         controls
     }
 
+    fn source_expectations(&self, reply: &str) -> Vec<&Expectation> {
+        let mut retained: Vec<_> = self
+            .pending_provides
+            .get(reply)
+            .and_then(|pending| pending.expectation.as_ref())
+            .into_iter()
+            .chain(
+                self.pending_attaches
+                    .get(reply)
+                    .into_iter()
+                    .flat_map(|pending| &pending.expectations),
+            )
+            .collect();
+        if retained.iter().any(|expectation| !expectation.limit) {
+            retained.retain(|expectation| !expectation.limit);
+        }
+        retained
+    }
+
     fn attribute(&self, reply: &str, err: &ProtocolError) -> (bool, Option<Expectation>) {
         let opening = self
             .requests
@@ -1146,9 +1165,6 @@ impl State {
             self.pending_subscribes
                 .get(reply)
                 .and_then(|pending| pending.expectation.as_ref()),
-            self.pending_provides
-                .get(reply)
-                .and_then(|pending| pending.expectation.as_ref()),
         ];
         let retained: Vec<&Expectation> = retained
             .into_iter()
@@ -1159,12 +1175,7 @@ impl State {
                     .into_iter()
                     .flat_map(|pending| &pending.expectations),
             )
-            .chain(
-                self.pending_attaches
-                    .get(reply)
-                    .into_iter()
-                    .flat_map(|pending| &pending.expectations),
-            )
+            .chain(self.source_expectations(reply))
             .collect();
         if retained
             .iter()
@@ -1740,7 +1751,7 @@ impl State {
         }
         if let Some(expectation) = expectation {
             self.refusal_misses(at, e, &expectation, &speaker, &err);
-        } else if honour && speaker.is_none() && self.source_honour(&reply, FEATURE_TOOLS_PROVIDE) {
+        } else if honour && self.source_honour(&reply, FEATURE_TOOLS_PROVIDE) {
             self.add(
                 codes::UNDISCLOSED_PROVIDE_LIMIT,
                 at,

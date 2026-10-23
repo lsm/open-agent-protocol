@@ -181,46 +181,77 @@ fn one_compound_open_judges_a_missing_descriptor_once() {
     assert_eq!(judge(&trace), [("unavailable_capability".into(), 2)]);
 }
 
-#[test]
-fn provide_defect_beats_attach_limit() {
+fn compound_refusal() -> Value {
     let mut trace = fixture("valid", "open-provide-two-tools");
     trace.as_array_mut().unwrap().truncate(6);
-    trace[3]["payload"] = serde_json::json!({"endpoint":{"id":"agent","name":"Control-tools fixture endpoint"},"features":{"action.tools.list":{"level":"native"},"action.tools.provide":{"level":"native"},"session.message.delivery.auto":{"level":"native"},"session.message.submit":{"level":"native"},"session.open":{"level":"native"},"session.state":{"level":"native"},"tools":{"level":"native"},"action.tool_sources.attach":{"level":"native","modes":["session_open"],"limits":{"max_sources":1}}},"sources":[{"id":"native","kind":"native"}],"tools":[{"execution_owner":"agent","input_schema":{"type":"object"},"name":"grep","source":"native"}]});
-    trace[4]["payload"] = serde_json::json!({"session_id":"s1","tools":[{"execution_owner":"control","input_schema":{"type":"object"},"name":"grep","source":"native"}],"tool_sources":[{"id":"files","kind":"process"},{"id":"docs","kind":"process"}]});
-    trace[5]["payload"] = serde_json::json!({"error":{"code":"unsupported_feature","message":"synthetic review reproduction","details":{"feature":"action.tool_sources.attach","reason":"unsatisfiable","source":"docs"}}});
     trace[5]["type"] = "error.response".into();
+    trace[5]["payload"] =
+        serde_json::json!({"error":{"code":"internal","message":"synthetic refusal"}});
+    trace
+}
+
+#[test]
+fn provide_defect_beats_attach_limit() {
+    let mut trace = compound_refusal();
+    trace[3]["payload"]["features"]["action.tool_sources.attach"] = serde_json::json!({
+        "level":"native", "modes":["session_open"], "limits":{"max_sources":1}
+    });
+    trace[4]["payload"]["tools"]
+        .as_array_mut()
+        .unwrap()
+        .truncate(1);
+    trace[4]["payload"]["tools"][0]["name"] = "grep".into();
+    trace[4]["payload"]["tool_sources"] = serde_json::json!([
+        {"id":"files","kind":"process"}, {"id":"docs","kind":"process"}
+    ]);
+    trace[5]["payload"]["error"] = serde_json::json!({
+        "code":"unsupported_feature", "message":"synthetic refusal",
+        "details":{"feature":"action.tool_sources.attach","reason":"unsatisfiable","source":"docs"}
+    });
     assert_eq!(judge(&trace), [("duplicate_tool_name".into(), 5)]);
 }
 
 #[test]
 fn attach_defect_beats_provide_limit() {
-    let mut trace = fixture("valid", "open-provide-two-tools");
-    trace.as_array_mut().unwrap().truncate(6);
-    trace[3]["payload"] = serde_json::json!({"endpoint":{"id":"agent","name":"Control-tools fixture endpoint"},"features":{"action.tools.list":{"level":"native"},"action.tools.provide":{"level":"native","limits":{"max_tools":1}},"session.message.delivery.auto":{"level":"native"},"session.message.submit":{"level":"native"},"session.open":{"level":"native"},"session.state":{"level":"native"},"tools":{"level":"native"},"action.tool_sources.attach":{"level":"native","modes":["session_open"]}},"sources":[{"id":"native","kind":"native"}],"tools":[{"execution_owner":"agent","input_schema":{"type":"object"},"name":"grep","source":"native"}]});
-    trace[4]["payload"] = serde_json::json!({"session_id":"s1","tools":[{"execution_owner":"control","input_schema":{"type":"object"},"name":"echo","source":"native"},{"execution_owner":"control","input_schema":{"type":"object"},"name":"upper","source":"native"}],"tool_sources":[{"id":"native","kind":"process"}]});
-    trace[5]["payload"] = serde_json::json!({"error":{"code":"unsupported_feature","message":"synthetic review reproduction","details":{"feature":"action.tools.provide","reason":"unsatisfiable","tool":"upper"}}});
-    trace[5]["type"] = "error.response".into();
+    let mut trace = compound_refusal();
+    trace[3]["payload"]["features"]["action.tool_sources.attach"] =
+        serde_json::json!({"level":"native","modes":["session_open"]});
+    trace[3]["payload"]["features"]["action.tools.provide"]["limits"] =
+        serde_json::json!({"max_tools":1});
+    trace[4]["payload"]["tool_sources"] = serde_json::json!([{"id":"native","kind":"process"}]);
+    trace[5]["payload"]["error"] = serde_json::json!({
+        "code":"unsupported_feature", "message":"synthetic refusal",
+        "details":{"feature":"action.tools.provide","reason":"unsatisfiable","tool":"upper"}
+    });
     assert_eq!(judge(&trace), [("duplicate_tool_source".into(), 5)]);
 }
 
 #[test]
 fn provide_honour_survives_subscribe_defect() {
-    let mut trace = fixture("valid", "open-provide-two-tools");
-    trace.as_array_mut().unwrap().truncate(6);
-    trace[3]["payload"] = serde_json::json!({"endpoint":{"id":"agent","name":"Control-tools fixture endpoint"},"features":{"action.tools.list":{"level":"native"},"action.tools.provide":{"level":"native"},"session.message.delivery.auto":{"level":"native"},"session.message.submit":{"level":"native"},"session.open":{"level":"native"},"session.state":{"level":"native"},"tools":{"level":"native"}},"sources":[{"id":"native","kind":"native"}],"tools":[{"execution_owner":"agent","input_schema":{"type":"object"},"name":"grep","source":"native"}]});
-    trace[4]["payload"] = serde_json::json!({"session_id":"s1","tools":[{"execution_owner":"control","input_schema":{"type":"object"},"name":"echo","source":"native"},{"execution_owner":"control","input_schema":{"type":"object"},"name":"upper","source":"native"}],"subscribe":true});
-    trace[5]["payload"] = serde_json::json!({"error":{"code":"internal","message":"synthetic review reproduction"}});
-    trace[5]["type"] = "error.response".into();
-    assert_eq!(judge(&trace), [("unavailable_capability".into(), 5), ("undisclosed_provide_limit".into(), 5)]);
+    let mut trace = compound_refusal();
+    trace[4]["payload"]["subscribe"] = true.into();
+    assert_eq!(
+        judge(&trace),
+        [
+            ("unavailable_capability".into(), 5),
+            ("undisclosed_provide_limit".into(), 5)
+        ]
+    );
 }
 
 #[test]
 fn attach_honour_survives_subscribe_defect() {
-    let mut trace = fixture("valid", "open-provide-two-tools");
-    trace.as_array_mut().unwrap().truncate(6);
-    trace[3]["payload"] = serde_json::json!({"endpoint":{"id":"agent","name":"Control-tools fixture endpoint"},"features":{"action.tools.list":{"level":"native"},"action.tools.provide":{"level":"native"},"session.message.delivery.auto":{"level":"native"},"session.message.submit":{"level":"native"},"session.open":{"level":"native"},"session.state":{"level":"native"},"tools":{"level":"native"},"action.tool_sources.attach":{"level":"native","modes":["session_open"]}},"sources":[{"id":"native","kind":"native"}],"tools":[{"execution_owner":"agent","input_schema":{"type":"object"},"name":"grep","source":"native"}]});
-    trace[4]["payload"] = serde_json::json!({"session_id":"s1","subscribe":true,"tool_sources":[{"id":"files","kind":"process"}]});
-    trace[5]["payload"] = serde_json::json!({"error":{"code":"internal","message":"synthetic review reproduction"}});
-    trace[5]["type"] = "error.response".into();
-    assert_eq!(judge(&trace), [("unavailable_capability".into(), 5), ("undisclosed_attach_limit".into(), 5)]);
+    let mut trace = compound_refusal();
+    trace[3]["payload"]["features"]["action.tool_sources.attach"] =
+        serde_json::json!({"level":"native","modes":["session_open"]});
+    trace[4]["payload"].as_object_mut().unwrap().remove("tools");
+    trace[4]["payload"]["tool_sources"] = serde_json::json!([{"id":"files","kind":"process"}]);
+    trace[4]["payload"]["subscribe"] = true.into();
+    assert_eq!(
+        judge(&trace),
+        [
+            ("unavailable_capability".into(), 5),
+            ("undisclosed_attach_limit".into(), 5)
+        ]
+    );
 }
