@@ -110,6 +110,7 @@ fail compilation; bigint sums must work for both small and large values.
 Ordinary JSON/tool-result numbers, strings resembling numeric markers, absent
 usage and omitted counts retain their existing behavior. Invalid usage counts
 are refused before projection, including raw `-0`, decimals, exponents and null.
+Non-object usage containers, including numeric tokens, are refused at all six sites.
 
 The same separately installed consumer runs a real credential-free loopback
 HTTP server on an ephemeral port, closes all connections in `finally`, and proves

@@ -84,7 +84,7 @@ function envelopePaths(value: unknown): { path: Path; canonical: boolean }[] {
   if (typeof type !== 'string') return paths;
   if (USAGE_TYPES.has(type)) {
     fields(value, ['payload', 'usage'], (object, key) => {
-      if (object[key] !== undefined && (object[key] === null || typeof object[key] !== 'object' || Array.isArray(object[key]))) {
+      if (object[key] !== undefined && (object[key] === null || object[key] instanceof WireNumber || typeof object[key] !== 'object' || Array.isArray(object[key]))) {
         throw new TypeError('usage is not an object');
       }
     });
