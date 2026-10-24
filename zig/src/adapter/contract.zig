@@ -593,6 +593,7 @@ pub const QuestionKind = enum { text, single_choice, multi_choice };
 pub const Question = struct {
     id: []const u8,
     kind: QuestionKind,
+    required: bool = false,
     options: []const []const u8 = &.{},
 
     fn offers(self: Question, option: []const u8) bool {
@@ -606,9 +607,9 @@ pub const Question = struct {
 pub fn validInputAnswer(question: Question, answer: oap_types.InputAnswer) bool {
     if (!std.mem.eql(u8, answer.question_id, question.id)) return false;
     const has_text = if (answer.text) |text| text.len > 0 else false;
-    if (has_text and answer.selected_option_ids.len != 0) return false;
+    if (answer.text != null and answer.selected_option_ids.len != 0) return false;
     switch (question.kind) {
-        .text => if (!has_text) return false,
+        .text => if (answer.text == null or (question.required and !has_text)) return false,
         .single_choice => if (answer.selected_option_ids.len != 1) return false,
         .multi_choice => if (answer.selected_option_ids.len == 0) return false,
     }
@@ -840,7 +841,7 @@ test "an unavailable backend refuses both probe and open, naming itself" {
 }
 
 test "an input answer is valid only in the shape its question asks for" {
-    const text = Question{ .id = "note", .kind = .text };
+    const text = Question{ .id = "note", .kind = .text, .required = true };
     const single = Question{ .id = "pick", .kind = .single_choice, .options = &.{ "a", "b" } };
     const multi = Question{ .id = "many", .kind = .multi_choice, .options = &.{ "x", "y" } };
     const cases = [_]struct { question: Question, answer: oap_types.InputAnswer, valid: bool }{
@@ -855,6 +856,7 @@ test "an input answer is valid only in the shape its question asks for" {
         .{ .question = single, .answer = .{ .question_id = "pick", .selected_option_ids = &.{"c"} }, .valid = false },
         .{ .question = single, .answer = .{ .question_id = "pick", .selected_option_ids = &.{""} }, .valid = false },
         .{ .question = single, .answer = .{ .question_id = "pick", .text = "a" }, .valid = false },
+        .{ .question = single, .answer = .{ .question_id = "pick", .text = "", .selected_option_ids = &.{"a"} }, .valid = false },
         .{ .question = multi, .answer = .{ .question_id = "many", .selected_option_ids = &.{"x"} }, .valid = true },
         .{ .question = multi, .answer = .{ .question_id = "many", .selected_option_ids = &.{ "x", "y" } }, .valid = true },
         .{ .question = multi, .answer = .{ .question_id = "many" }, .valid = false },
@@ -864,6 +866,14 @@ test "an input answer is valid only in the shape its question asks for" {
     for (cases) |case| {
         try testing.expectEqual(case.valid, validInputAnswer(case.question, case.answer));
     }
+}
+
+test "an optional text answer may carry empty text under Decision 0056" {
+    const question = Question{ .id = "note", .kind = .text };
+    try testing.expect(validInputAnswer(question, .{ .question_id = "note", .text = "" }));
+    try testing.expect(validInputAnswer(question, .{ .question_id = "note", .text = "é漢😀" }));
+    try testing.expect(!validInputAnswer(question, .{ .question_id = "note" }));
+    try testing.expect(!validInputAnswer(question, .{ .question_id = "note", .text = "", .selected_option_ids = &.{"a"} }));
 }
 
 test "a malformed tool_choice is worded as goap's decoder words it, first defect in document order" {
