@@ -57,6 +57,9 @@ for (const site of sites) for (const field of fields) for (const token of tokens
 for (const site of sites) for (const field of fields) for (const invalid of ['-0','-1','1.0','1e3','1.5','null','true','"1"','18446744073709551616']) {
   assert.throws(() => parseEnvelope(frame(site, '{"usage":{' + JSON.stringify(field) + ':' + invalid + '}}')));
 }
+for (const site of sites) for (const invalid of ['null', '[]', '"x"', 'true', '0', '123', '1.5', '1e3']) {
+  assert.throws(() => parseEnvelope(frame(site, '{"usage":' + invalid + '}')), site + ' usage=' + invalid);
+}
 const previousJSON = Object.getOwnPropertyDescriptor(BigInt.prototype, 'toJSON');
 try {
   const parsed = parseEnvelope(frame('run.completed', '{"usage":{"input_tokens":18446744073709551615}}'));
