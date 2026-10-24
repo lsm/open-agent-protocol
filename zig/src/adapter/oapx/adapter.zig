@@ -3482,6 +3482,35 @@ test "native input rejects malformed questions before publishing a wait" {
     }) |invalid| try testing.expectError(error.InvalidSubmission, validatePrompt(testing.allocator, invalid));
 }
 
+test "optional empty text reaches the native tool in a validator-accepted exchange" {
+    var script = Script{ .tool_first = true, .tool_name = "request_user_input", .tool_arguments =
+        \\{"questions":[{"id":"note","prompt":"Why?","kind":"text","required":true},{"id":"optional","prompt":"Anything else?","kind":"text","required":false}]}
+    };
+    var wire: Wire = undefined;
+    wire.init(&script);
+    defer wire.deinit();
+    const a = wire.arena.allocator();
+    try wireOpen(&wire);
+    try wire.send("session.message.submit.request", wire_scope, try parseValue(a,
+        \\{"session_id":"wire-session","delivery":"auto","messages":[{"role":"user","content":"ask me"}]}
+    ));
+    const prompt = try wire.wait("user.input.requested");
+    const asked = prompt.object.get("payload").?.object;
+    var answer = Payload.init(a);
+    for ([_][]const u8{ "interaction_id", "session_id", "run_id", "requested_by", "responded_by" }) |key| try answer.put(key, asked.get(key).?);
+    try answer.put("answers", try parseValue(a,
+        \\[{"question_id":"note","text":"careful safe"},{"question_id":"optional","text":""}]
+    ));
+    const run_scope = try std.fmt.allocPrint(a, "{s},\"run_id\":\"{s}\"", .{ wire_scope, asked.get("run_id").?.string });
+    try wire.send("user.input.resolve.request", run_scope, answer.value());
+    const resolved = try wire.wait("user.input.resolved");
+    const empty = resolved.object.get("payload").?.object.get("answers").?.array.items[1];
+    try testing.expectEqualStrings("", empty.object.get("text").?.string);
+    _ = try wire.wait("run.completed");
+    try wire.validate();
+    try testing.expect(script.received_answers.load(.acquire));
+}
+
 test "an optional question can remain unanswered while required input reaches the native tool" {
     var script = Script{ .tool_first = true, .tool_name = "request_user_input", .tool_arguments =
         \\{"questions":[{"id":"note","prompt":"Why?","kind":"text"},{"id":"optional","prompt":"Anything else?","kind":"text","required":false}]}
