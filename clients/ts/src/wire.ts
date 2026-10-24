@@ -135,22 +135,21 @@ export function decodeSignal(data: string): unknown {
 }
 
 export function encodeEnvelope(value: unknown): string {
-  const counters = new WeakMap<object, Set<string>>();
+  const counters = new WeakMap<object, Map<string, bigint>>();
   for (const { path } of envelopePaths(value)) fields(value, path, (object, key) => {
     const count = object[key];
     if (count === undefined) return;
     if (typeof count !== 'bigint') throw new TypeError(path.join('.') + ' must be bigint');
     if (count < 0n || count > MAX_UINT64) throw new RangeError(path.join('.') + ' is outside uint64');
-    const keys = counters.get(object) ?? new Set<string>();
-    keys.add(key);
+    const keys = counters.get(object) ?? new Map<string, bigint>();
+    keys.set(key, count);
     counters.set(object, keys);
   });
   const tagged = JSON.stringify(value, function (key: string, child: unknown) {
-    if (typeof child === 'bigint') {
-      if (!counters.get(this)?.has(key)) throw new TypeError('bigint is only supported for uint64 fields');
-      return 'b' + child;
-    }
-    if (typeof child === 'string' || child instanceof String) return 's' + child;
+    const counter = counters.get(this)?.get(key);
+    if (counter !== undefined) return 'b' + counter;
+    if (typeof child === 'bigint') throw new TypeError('bigint is only supported for uint64 fields');
+    if (typeof child === 'string' || child instanceof String) return 's' + String(child);
     return child;
   });
   if (tagged === undefined) throw new TypeError('envelope is not serializable');
