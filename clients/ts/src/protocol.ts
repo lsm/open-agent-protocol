@@ -1,3 +1,4 @@
+import { decodeEnvelope, encodeEnvelope } from './wire.js';
 
 export const PROTOCOL = 'open-agent-protocol';
 export const VERSION = '0.1';
@@ -86,7 +87,7 @@ export interface Envelope {
   type: EnvelopeType;
   id: string;
   payload: Record<string, unknown>;
-  sequence?: number;
+  sequence?: bigint;
   timestamp_ms?: number;
   in_reply_to?: string;
   session_id?: string;
@@ -100,7 +101,7 @@ export interface Envelope {
 export function parseEnvelope(data: string): Envelope {
   let value: unknown;
   try {
-    value = JSON.parse(data);
+    value = decodeEnvelope(data);
   } catch (err) {
     throw new Error(`decode envelope: ${err instanceof Error ? err.message : String(err)}`);
   }
@@ -108,6 +109,10 @@ export function parseEnvelope(data: string): Envelope {
     throw new Error('decode envelope: not a JSON object');
   }
   return value as Envelope;
+}
+
+export function serializeEnvelope(envelope: Envelope): string {
+  return encodeEnvelope(envelope);
 }
 
 export function payload<T>(envelope: Envelope): T {
@@ -188,12 +193,12 @@ export interface Message {
 }
 
 export interface Usage {
-  input_tokens?: number;
-  cache_read_input_tokens?: number;
-  cache_write_input_tokens?: number;
-  output_tokens?: number;
-  reasoning_tokens?: number;
-  total_tokens?: number;
+  input_tokens?: bigint;
+  cache_read_input_tokens?: bigint;
+  cache_write_input_tokens?: bigint;
+  output_tokens?: bigint;
+  reasoning_tokens?: bigint;
+  total_tokens?: bigint;
 }
 
 export interface ProtocolError {
@@ -450,7 +455,7 @@ export interface ProviderDescriptor {
 }
 
 export type ModelEventPosition =
-  | { run_id: string; sequence: number; switch_request_id?: never }
+  | { run_id: string; sequence: bigint; switch_request_id?: never }
   | { switch_request_id: string; run_id?: never; sequence?: never };
 
 export interface ModelsResponse {
@@ -626,7 +631,7 @@ export interface ActiveRun {
   status: RunStatus;
   relationship: ActiveRunRelationship;
   queue_position?: number;
-  as_of_sequence?: number;
+  as_of_sequence?: bigint;
   admitted_submit_requests?: string[];
   pending_interactions?: string[];
   acknowledged_interactions?: string[];
@@ -634,12 +639,12 @@ export interface ActiveRun {
 
 export interface RunPosition {
   run_id: string | null;
-  sequence: number;
+  sequence: bigint;
 }
 
 export interface SettledRun {
   run_id: string;
-  sequence: number;
+  sequence: bigint;
 }
 
 export interface SessionCapture {
@@ -668,7 +673,7 @@ export interface MessageSubmitRequest {
 export type Admission = 'started' | 'queued' | 'steered' | 'side_started' | 'rejected';
 
 export interface MessageSubmitResponse {
-  target_sequence?: number;
+  target_sequence?: bigint;
   session_id: string;
   accepted: boolean;
   submission_id: string;
@@ -1076,7 +1081,7 @@ export interface RunCompactionStartedPayload {
   run_id: string;
   compaction_id: string;
   reason: CompactionReason;
-  history_tokens?: number;
+  history_tokens?: bigint;
 }
 
 export interface RunCompactionEndedPayload {
@@ -1085,7 +1090,7 @@ export interface RunCompactionEndedPayload {
   compaction_id: string;
   outcome: CompactionOutcome;
   summary?: Message;
-  history_tokens?: number;
+  history_tokens?: bigint;
   error?: ProtocolError;
 }
 

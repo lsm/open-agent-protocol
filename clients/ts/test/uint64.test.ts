@@ -1,11 +1,12 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { test } from 'node:test';
-import { uint64RuntimeConsumer, uint64TypeCases } from './fixtures/uint64-consumer.js';
+import { findRepoRoot } from './transport.js';
+import { uint64CorpusConsumer, uint64RuntimeConsumer, uint64TransportConsumer, uint64TypeCases } from './fixtures/uint64-consumer.js';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 
@@ -28,13 +29,32 @@ test('installed public client retains uniform exact uint64 values', async (t) =>
   assert.ok(archive);
   const installed = run('npm', ['install', '--offline', '--ignore-scripts', '--no-audit', '--no-fund', '--package-lock=false', join(temporary, archive)]);
   assert.equal(installed.status, 0, installed.stdout + installed.stderr);
-  await t.test('runtime values and round-trips', () => {
-    const path = join(consumer, 'runtime.mjs');
-    writeFileSync(path, uint64RuntimeConsumer);
+  for (const [name, source] of [['runtime', uint64RuntimeConsumer], ['transport', uint64TransportConsumer]]) await t.test(name, () => {
+    const path = join(consumer, name + '.mjs');
+    writeFileSync(path, source);
     const result = run(process.execPath, [path]);
     if (evidence) {
-      writeFileSync(join(evidence, 'runtime.mjs'), uint64RuntimeConsumer);
-      writeFileSync(join(evidence, 'runtime.log'), result.stdout + result.stderr);
+      writeFileSync(join(evidence, name + '.mjs'), source);
+      writeFileSync(join(evidence, name + '.log'), result.stdout + result.stderr);
+    }
+    assert.equal(result.status, 0, result.stdout + result.stderr);
+  });
+  await t.test('shared raw usage corpus', () => {
+    const repository = findRepoRoot(root);
+    const manifest = JSON.parse(readFileSync(join(repository, 'fixtures/manifest.json'), 'utf8')) as {
+      fixtures: { id: string; path: string; valid: boolean; codes: string[]; phase: string; profile?: string }[];
+    };
+    const cases = manifest.fixtures.filter(entry => entry.id.startsWith('usage-count-'))
+      .map(entry => ({ ...entry, input: join(repository, 'fixtures', entry.path) }));
+    const path = join(consumer, 'corpus.mjs');
+    const input = join(consumer, 'cases.json');
+    const output = join(evidence ?? consumer, 'corpus');
+    writeFileSync(path, uint64CorpusConsumer);
+    writeFileSync(input, JSON.stringify(cases));
+    const result = run(process.execPath, [path, input, output]);
+    if (evidence) {
+      writeFileSync(join(evidence, 'corpus.mjs'), uint64CorpusConsumer);
+      writeFileSync(join(evidence, 'corpus.log'), result.stdout + result.stderr);
     }
     assert.equal(result.status, 0, result.stdout + result.stderr);
   });

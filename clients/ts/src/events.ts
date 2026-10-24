@@ -12,6 +12,7 @@ import {
   ServerError,
 } from './errors.js';
 import { SSEParser, type SSEFrame } from './sse.js';
+import { decodeSignal as decodeSignalJSON } from './wire.js';
 import { EnvelopeType, parseEnvelope, type Envelope } from './protocol.js';
 import type { OapSession } from './session.js';
 
@@ -63,11 +64,11 @@ export class EventStream implements AsyncIterable<Envelope> {
   private readonly client: OapClient;
   private readonly signal?: AbortSignal;
   private readonly strict: boolean;
-  private readonly startAfter: number | null;
+  private readonly startAfter: bigint | null;
 
   private conn: Connection | null = null;
   private runId = '';
-  private lastSeq = 0;
+  private lastSeq = 0n;
   private resumed = false;
   private everConnected = false;
   private speculated = false;
@@ -87,7 +88,7 @@ export class EventStream implements AsyncIterable<Envelope> {
     session: OapSession,
     client: OapClient,
     options: EventsOptions,
-    cursor: { startAfter: number | null; runId: string },
+    cursor: { startAfter: bigint | null; runId: string },
   ) {
     this.session = session;
     this.client = client;
@@ -388,14 +389,14 @@ export class EventStream implements AsyncIterable<Envelope> {
       );
     }
     const sequence = envelope.sequence;
-    if (typeof sequence !== 'number' || !Number.isInteger(sequence) || sequence <= 0) {
+    if (typeof sequence !== 'bigint' || sequence <= 0n) {
       throw new MalformedFrameError('event envelope carries no sequence');
     }
     if (frame.hasId) {
       if (!/^\d+$/.test(frame.lastId)) {
         throw new MalformedFrameError(`frame id "${frame.lastId}" is not a sequence`);
       }
-      const id = Number(frame.lastId);
+      const id = BigInt(frame.lastId);
       if (sequence !== id) {
         throw new MalformedFrameError(`frame id ${id} disagrees with envelope sequence ${sequence}`);
       }
@@ -414,8 +415,8 @@ export class EventStream implements AsyncIterable<Envelope> {
       if (this.runId !== '' && runId !== this.runId) {
         throw new ResumeMismatchError(this.lastSeq, this.runId, runId, sequence);
       }
-      if (sequence !== this.lastSeq + 1) {
-        throw new SequenceGapError(runId, this.lastSeq + 1, sequence);
+      if (sequence !== this.lastSeq + 1n) {
+        throw new SequenceGapError(runId, this.lastSeq + 1n, sequence);
       }
     }
     if (runId !== this.runId) {
@@ -424,25 +425,25 @@ export class EventStream implements AsyncIterable<Envelope> {
         this.terminal = isTerminal(envelope.type);
       } else if (this.runId === '') {
         this.runId = runId;
-        this.lastSeq = 0;
+        this.lastSeq = 0n;
         this.terminal = isTerminal(envelope.type);
       } else {
-        if (sequence !== 1) {
-          throw new SequenceGapError(runId, 1, sequence);
+        if (sequence !== 1n) {
+          throw new SequenceGapError(runId, 1n, sequence);
         }
         this.runId = runId;
-        this.lastSeq = 0;
+        this.lastSeq = 0n;
         this.terminal = isTerminal(envelope.type);
       }
     } else if (isTerminal(envelope.type)) {
       this.terminal = true;
     }
-    if (this.lastSeq > 0) {
+    if (this.lastSeq > 0n) {
       if (sequence <= this.lastSeq) {
         throw new DuplicateSequenceError(runId, sequence);
       }
-      if (sequence !== this.lastSeq + 1) {
-        throw new SequenceGapError(runId, this.lastSeq + 1, sequence);
+      if (sequence !== this.lastSeq + 1n) {
+        throw new SequenceGapError(runId, this.lastSeq + 1n, sequence);
       }
     }
     this.lastSeq = sequence;
@@ -453,7 +454,7 @@ export class EventStream implements AsyncIterable<Envelope> {
 function decodeSignal(frame: SSEFrame): Record<string, unknown> {
   let value: unknown;
   try {
-    value = JSON.parse(frame.data);
+    value = decodeSignalJSON(frame.data);
   } catch (err) {
     throw new MalformedFrameError('signal frame payload did not decode', err);
   }
@@ -470,10 +471,10 @@ function signalString(signal: Record<string, unknown>, field: string): string {
   throw new MalformedFrameError(`signal field ${field} is not a string`);
 }
 
-function signalSequence(signal: Record<string, unknown>, field: string): number {
+function signalSequence(signal: Record<string, unknown>, field: string): bigint {
   const value = signal[field];
-  if (value === undefined) return 0;
-  if (typeof value === 'number' && Number.isInteger(value) && value >= 0) return value;
+  if (value === undefined) return 0n;
+  if (typeof value === 'bigint' && value >= 0n) return value;
   throw new MalformedFrameError(`signal field ${field} is not a sequence`);
 }
 

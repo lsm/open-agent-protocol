@@ -148,12 +148,12 @@ test(
     );
 
     const seen: string[] = [];
-    const sequences: number[] = [];
+    const sequences: bigint[] = [];
     let firstEnvelope: Envelope | undefined;
     for await (const envelope of events) {
       firstEnvelope ??= envelope;
       seen.push(envelope.type);
-      sequences.push(envelope.sequence ?? 0);
+      sequences.push(envelope.sequence ?? 0n);
       await resolveGate(session, envelope);
     }
     assert.equal(seen[0], EnvelopeType.RunStarted);
@@ -161,12 +161,12 @@ test(
     assert.equal(payload<RunStartedPayload>(firstEnvelope).model_id, 'reference-model-a');
     assert.equal(seen[seen.length - 1], EnvelopeType.RunCompleted);
     assert.equal(seen.filter((type) => type === EnvelopeType.RunCompleted).length, 1);
-    assert.deepEqual(sequences, Array.from({ length: 12 }, (_, index) => index + 1));
+    assert.deepEqual(sequences, Array.from({ length: 12 }, (_, index) => BigInt(index + 1)));
 
-    const replay = session.eventsAfter(admission.run_id ?? '', 10);
+    const replay = session.eventsAfter(admission.run_id ?? '', 10n);
     const tail: Envelope[] = [];
     for await (const envelope of replay) tail.push(envelope);
-    assert.deepEqual(tail.map((envelope) => envelope.sequence), [11, 12]);
+    assert.deepEqual(tail.map((envelope) => envelope.sequence), [11n, 12n]);
     assert.equal(finalText(tail[1]), 'The golden script completed.');
 
     const state = await session.state();
@@ -213,12 +213,12 @@ test(
       delivery: 'auto',
     });
 
-    const sequences: number[] = [];
+    const sequences: bigint[] = [];
     for await (const envelope of events) {
-      sequences.push(envelope.sequence ?? 0);
+      sequences.push(envelope.sequence ?? 0n);
       await resolveGate(session, envelope);
     }
-    assert.deepEqual(sequences, Array.from({ length: 12 }, (_, index) => index + 1));
+    assert.deepEqual(sequences, Array.from({ length: 12 }, (_, index) => BigInt(index + 1)));
     assert.ok(sabotage.connections() >= 2, `expected a reconnect, saw ${sabotage.connections()} connections`);
 
     await session.close();

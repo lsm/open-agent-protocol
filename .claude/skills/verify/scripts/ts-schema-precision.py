@@ -167,13 +167,50 @@ def mutation_checks(commands, output):
     return observed
 
 
+def uint64_checks(output):
+    environment = dict(os.environ, OAP_TS_UINT64_OUTPUT=str(output / "consumer"))
+    for index, command in enumerate([
+        ["npm", "--prefix", "clients/ts", "run", "build"],
+        ["node", "--test", "clients/ts/dist/test/uint64.test.js"],
+    ]):
+        status, stdout, stderr = run(command, output, f"uint64-{index}", environment)
+        if status:
+            raise RuntimeError(f"public uint64 consumer exited {status}: {stdout} {stderr}")
+    commands = validators(output)
+    cases = json.loads((output / "consumer/corpus/results.json").read_text())
+    observed = []
+    for entry in cases:
+        expected = {"exit": int(not entry["valid"]), "codes": sorted(entry["codes"]),
+                    "phases": [entry["phase"]] if entry["phase"] else []}
+        results = {}
+        for language, base in commands.items():
+            command = list(base)
+            if entry.get("profile") == "model-provider-core" and language != "zig":
+                command.append("--provider")
+            status, stdout, stderr = run(command + [entry["path"]], output, entry["id"] + "." + language)
+            parsed = json.loads(stdout)
+            reports = parsed if isinstance(parsed, list) else [parsed]
+            diagnostics = [d for report in reports for d in report.get("diagnostics") or []]
+            results[language] = {"exit": status, "codes": sorted({d["code"] for d in diagnostics}),
+                                 "phases": sorted({d["phase"] for d in diagnostics})}
+            if results[language] != expected:
+                raise RuntimeError(f"{entry['id']}.{language}: expected {expected}; got {results[language]}: {stderr}")
+        observed.append({"id": entry["id"], "expected": expected, "observed": results})
+    (output / "uint64-validator-results.json").write_text(json.dumps(observed, indent=2) + "\n")
+    print(f"PASS: {len(cases)} public-consumer usage cases; exact raw/round-tripped wire has zero scoped validator disagreements. Artifacts: {output}")
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output-dir", required=True)
     parser.add_argument("--mutation-check", action="store_true")
+    parser.add_argument("--uint64-check", action="store_true")
     args = parser.parse_args()
     output = Path(args.output_dir).resolve()
     output.mkdir(parents=True, exist_ok=False)
+    if args.uint64_check:
+        uint64_checks(output)
+        return
     _, results = consumers(output / "baseline")
     commands = validators(output)
     observed = wire_checks(commands, output, results)

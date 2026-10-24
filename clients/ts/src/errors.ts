@@ -41,10 +41,10 @@ export function serverCode(err: unknown): string | null {
 
 export class OverflowError extends OapError {
   readonly runId: string;
-  readonly lastSequence: number;
+  readonly lastSequence: bigint;
   readonly signalMessage: string;
 
-  constructor(runId: string, lastSequence: number, signalMessage: string) {
+  constructor(runId: string, lastSequence: bigint, signalMessage: string) {
     super(
       `client: event stream overflowed behind sequence ${lastSequence} (run ${runId}); resume with a cursor after it`,
     );
@@ -56,19 +56,19 @@ export class OverflowError extends OapError {
 
 export class ReplayGapError extends OapError {
   readonly runId: string;
-  readonly requestedAfter: number;
-  readonly oldestAvailable: number;
-  readonly latestAvailable: number;
+  readonly requestedAfter: bigint;
+  readonly oldestAvailable: bigint;
+  readonly latestAvailable: bigint;
   readonly signalMessage: string;
 
   constructor(
     runId: string,
-    requestedAfter: number,
-    oldestAvailable: number,
-    latestAvailable: number,
+    requestedAfter: bigint,
+    oldestAvailable: bigint,
+    latestAvailable: bigint,
     signalMessage: string,
   ) {
-    const floor = oldestAvailable > 1 ? oldestAvailable - 1 : 0;
+    const floor = oldestAvailable > 1n ? oldestAvailable - 1n : 0n;
     super(
       `client: replay cursor ${requestedAfter} expired (retained ${oldestAvailable} through ${latestAvailable}); resume at or after ${floor}`,
     );
@@ -82,9 +82,9 @@ export class ReplayGapError extends OapError {
 
 export class DisconnectError extends OapError {
   readonly runId: string;
-  readonly lastSequence: number;
+  readonly lastSequence: bigint;
 
-  constructor(runId: string, lastSequence: number, cause?: unknown) {
+  constructor(runId: string, lastSequence: bigint, cause?: unknown) {
     super(`client: event stream disconnected after sequence ${lastSequence} (run ${runId}): ${describe(cause)}`, {
       cause,
     });
@@ -109,9 +109,9 @@ export class MalformedFrameError extends OapError {
 
 export class DuplicateSequenceError extends OapError {
   readonly runId: string;
-  readonly sequence: number;
+  readonly sequence: bigint;
 
-  constructor(runId: string, sequence: number) {
+  constructor(runId: string, sequence: bigint) {
     super(`client: duplicate sequence ${sequence} in run ${runId}`);
     this.runId = runId;
     this.sequence = sequence;
@@ -120,10 +120,10 @@ export class DuplicateSequenceError extends OapError {
 
 export class SequenceGapError extends OapError {
   readonly runId: string;
-  readonly expected: number;
-  readonly observed: number;
+  readonly expected: bigint;
+  readonly observed: bigint;
 
-  constructor(runId: string, expected: number, observed: number) {
+  constructor(runId: string, expected: bigint, observed: bigint) {
     super(`client: run ${runId} skipped from sequence ${expected} to ${observed}`);
     this.runId = runId;
     this.expected = expected;
@@ -132,14 +132,14 @@ export class SequenceGapError extends OapError {
 }
 
 export class ResumeMismatchError extends OapError {
-  readonly afterSequence: number;
+  readonly afterSequence: bigint;
   readonly expectedRunId: string;
   readonly observedRunId: string;
-  readonly observedSequence: number;
+  readonly observedSequence: bigint;
 
-  constructor(afterSequence: number, expectedRunId: string, observedRunId: string, observedSequence: number) {
+  constructor(afterSequence: bigint, expectedRunId: string, observedRunId: string, observedSequence: bigint) {
     super(
-      `client: replay after sequence ${afterSequence} continued run ${observedRunId} at sequence ${observedSequence}, want run ${expectedRunId} at ${afterSequence + 1}`,
+      `client: replay after sequence ${afterSequence} continued run ${observedRunId} at sequence ${observedSequence}, want run ${expectedRunId} at ${afterSequence + 1n}`,
     );
     this.afterSequence = afterSequence;
     this.expectedRunId = expectedRunId;

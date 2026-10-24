@@ -247,7 +247,7 @@ export class OapSession {
     return new EventStream(this, this.client, options, { startAfter: null, runId: '' });
   }
 
-  eventsAfter(runId: string, after: number, options: EventsOptions = {}): EventStream {
+  eventsAfter(runId: string, after: bigint, options: EventsOptions = {}): EventStream {
     return new EventStream(this, this.client, options, { startAfter: after, runId });
   }
 
