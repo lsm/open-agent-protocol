@@ -948,7 +948,7 @@ pub const Session = struct {
 
     fn posed(arena: std.mem.Allocator, ask: Ask) std.mem.Allocator.Error!contract.Question {
         return switch (ask.dialog) {
-            .text => .{ .id = "value", .kind = .text },
+            .text => .{ .id = "value", .kind = .text, .required = true },
             .confirm => .{ .id = "value", .kind = .single_choice, .options = &.{ "yes", "no" } },
             .select => select: {
                 const options = try arena.alloc([]const u8, ask.labels.len);
@@ -1452,6 +1452,36 @@ test "a confirm dialog becomes a user input interaction, a malformed answer is r
     _ = try probe.waitWritten("{\"type\":\"extension_ui_response\",\"id\":\"ui-1\",\"confirmed\":true}");
     _ = try probe.pumpUntil("run.completed", &seen);
     try testing.expectError(error.InteractionNotFound, probe.handle.?.resolve(probe.arena.allocator(), .{ .input = &request }, &refusal));
+}
+
+test "a required text dialog rejects empty input unwritten and preserves a Unicode answer" {
+    var probe: Probe = undefined;
+    try probe.init(fake_prelude ++ fake_prompt_accepted ++
+        \\printf '{"type":"extension_ui_request","id":"ui-text","method":"input","title":"Note?"}\n'
+        \\take
+        \\
+    ++ fake_idle);
+    defer probe.deinit();
+    var refusal = contract.Refusal{};
+    _ = try probe.open(&refusal);
+    _ = try probe.submit("go", &refusal);
+    var seen = std.ArrayList(contract.Event).empty;
+    const payload = try probe.payloadOf(try probe.pumpUntil("user.input.requested", &seen));
+    try testing.expect(payload.get("questions").?.array.items[0].object.get("required").?.bool);
+    var answers = [_]oap_types.InputAnswer{.{ .question_id = "value", .text = "" }};
+    const request = oap_types.UserInputResolveRequest{
+        .interaction_id = payload.get("interaction_id").?.string,
+        .requested_by = payload.get("requested_by").?.string,
+        .responded_by = payload.get("responded_by").?.string,
+        .session_id = payload.get("session_id").?.string,
+        .run_id = payload.get("run_id").?.string,
+        .answers = &answers,
+    };
+    try testing.expectError(error.InvalidResolution, probe.handle.?.resolve(probe.arena.allocator(), .{ .input = &request }, &refusal));
+    try testing.expect(std.mem.indexOf(u8, try probe.fake.written(probe.arena.allocator()), "extension_ui_response") == null);
+    answers[0].text = "é漢😀";
+    try probe.handle.?.resolve(probe.arena.allocator(), .{ .input = &request }, &refusal);
+    _ = try probe.waitWritten("{\"type\":\"extension_ui_response\",\"id\":\"ui-text\",\"value\":\"é漢😀\"}");
 }
 
 test "a cancel sends abort once and answers cancelling" {

@@ -1094,7 +1094,8 @@ pub const Session = struct {
                         if (question.object.get("options")) |offered| {
                             for (offered.array.items) |option| try options.append(arena, option.object.get("id").?.string);
                         }
-                        if (!contract.validInputAnswer(.{ .id = value.question_id, .kind = kind, .options = options.items }, value)) return error.InvalidResolution;
+                        const required = if (question.object.get("required")) |flag| flag.bool else true;
+                        if (!contract.validInputAnswer(.{ .id = value.question_id, .kind = kind, .required = required, .options = options.items }, value)) return error.InvalidResolution;
                         found = true;
                     }
                     if (!found) return error.InvalidResolution;
