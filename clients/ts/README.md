@@ -159,7 +159,8 @@ the two that are not appear under `errors` below.
 
 ### Exact uint64 values
 
-Every uint64 field is always `bigint`, including `0n` and `1n`. This covers
+In OAP envelopes and their event-stream cursors, every uint64 field is always
+`bigint`, including `0n` and `1n`. This covers
 usage counts, envelope sequences, history-token counts and payload positions,
 as well as replay cursors and sequence properties on stream errors. There is
 no magnitude-dependent `number | bigint` type. `eventsAfter(runId, 0n)` starts
