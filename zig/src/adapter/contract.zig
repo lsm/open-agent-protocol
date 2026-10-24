@@ -866,6 +866,13 @@ test "an input answer is valid only in the shape its question asks for" {
     }
 }
 
+test "an optional text answer may carry empty text under Decision 0056" {
+    const question = Question{ .id = "note", .kind = .text };
+    try testing.expect(validInputAnswer(question, .{ .question_id = "note", .text = "" }));
+    try testing.expect(validInputAnswer(question, .{ .question_id = "note", .text = "é漢😀" }));
+    try testing.expect(!validInputAnswer(question, .{ .question_id = "note" }));
+}
+
 test "a malformed tool_choice is worded as goap's decoder words it, first defect in document order" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
