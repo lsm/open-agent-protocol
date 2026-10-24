@@ -92,3 +92,38 @@ execute and emit the corresponding schema-invalid trace. Require the same exact
 validator refusal, then restore the source and rerun all controls. Full client
 and integration tests and the complete verify baseline with isolated PTY remain
 required. No shared setup/index or other owner's helper is changed.
+
+## Exact uint64 wire values
+
+Run the installed public-consumer and shared-wire journey separately:
+
+```sh
+python3 .claude/skills/verify/scripts/ts-schema-precision.py --uint64-check --output-dir /tmp/oap-ts-uint64-<unique>
+```
+
+The packed client must expose every uint64 field as `bigint`, including zero
+and one, and `serializeEnvelope` must emit exact JSON number tokens. Observe
+216 usage cases across all six counts and six locations, plus payload positions,
+history tokens and integral sequence spellings. Counts at `2^53+1` and uint64
+maximum must round-trip unchanged. Number-valued counter/cursor consumers must
+fail compilation; bigint sums must work for both small and large values.
+Ordinary JSON/tool-result numbers, strings resembling numeric markers, absent
+usage and omitted counts retain their existing behavior. Invalid usage counts
+are refused before projection, including raw `-0`, decimals, exponents and null.
+Non-object usage containers, including numeric tokens, are refused at all six sites.
+
+The same separately installed consumer runs a real credential-free loopback
+HTTP server on an ephemeral port, closes all connections in `finally`, and proves
+outgoing serialization, incoming SSE, exact resume query/header values above
+`2^53`, adjacent large frame-ID mismatches, overflow and replay-gap properties.
+It uses no provider/account operation, port 8399 or external service.
+
+The consumer reads the shared usage fixtures as raw one-envelope-per-line
+arrays, rather than decoding their counts through `JSON.parse`. Every valid
+case is emitted through the public parser/serializer and replayed through the
+three public validators. Refused cases retain their original bytes, including
+negative zero, for exact phase/code comparison with the unchanged manifest.
+`consumer/corpus/results.json` and `uint64-validator-results.json` retain
+acceptance, errors, emitted traces and validator results. This is scoped usage
+proof; it does not claim full validator parity. Run the complete repository
+baseline, isolated PTY and full clients/ts suite with integration enabled too.

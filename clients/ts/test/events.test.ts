@@ -15,7 +15,7 @@ import {
   ServerError,
 } from '../src/errors.js';
 import type { Envelope } from '../src/protocol.js';
-import { EnvelopeType } from '../src/protocol.js';
+import { EnvelopeType, serializeEnvelope } from '../src/protocol.js';
 import { FakeTransport, eventFrame, goldenFrames, signalFrame, testEnvelope, type ScriptedResponse } from './transport.js';
 
 const BASE = 'http://127.0.0.1:6270';
@@ -48,15 +48,15 @@ async function rejectsWith<T extends Error>(promise: Promise<unknown>, type: new
   throw new Error(`expected rejection with ${type.name}`);
 }
 
-function sequences(envelopes: Envelope[]): number[] {
-  return envelopes.map((envelope) => envelope.sequence ?? 0);
+function sequences(envelopes: Envelope[]): bigint[] {
+  return envelopes.map((envelope) => envelope.sequence ?? 0n);
 }
 
 test('a live run delivers in order and ends cleanly at its terminal event', { timeout: 10000 }, async () => {
   const { session } = sessionWith([{ match: LIVE, chunks: goldenFrames(SESSION, RUN, 1, 12) }]);
   const envelopes = await collect(session.events());
   assert.equal(envelopes.length, 12);
-  assert.deepEqual(sequences(envelopes), Array.from({ length: 12 }, (_, i) => i + 1));
+  assert.deepEqual(sequences(envelopes), Array.from({ length: 12 }, (_, i) => BigInt(i + 1)));
   assert.equal(envelopes[11].type, EnvelopeType.RunCompleted);
 });
 
@@ -66,7 +66,7 @@ test('a mid-stream drop resumes from the cursor with no duplicates', { timeout: 
     { match: /after=3$/, chunks: goldenFrames(SESSION, RUN, 4, 12) },
   ]);
   const envelopes = await collect(session.events());
-  assert.deepEqual(sequences(envelopes), Array.from({ length: 12 }, (_, i) => i + 1));
+  assert.deepEqual(sequences(envelopes), Array.from({ length: 12 }, (_, i) => BigInt(i + 1)));
 
   const resumed = transport.callsFor('/events');
   assert.equal(resumed.length, 2);
@@ -87,14 +87,14 @@ test('a transport failure after a drop backs off and retries the cursor', { time
     { match: /after=3$/, chunks: goldenFrames(SESSION, RUN, 4, 12) },
   ]);
   const envelopes = await collect(session.events());
-  assert.deepEqual(sequences(envelopes), Array.from({ length: 12 }, (_, i) => i + 1));
+  assert.deepEqual(sequences(envelopes), Array.from({ length: 12 }, (_, i) => BigInt(i + 1)));
 });
 
 test('strict mode reports a drop as a DisconnectError carrying the cursor', { timeout: 10000 }, async () => {
   const { session } = sessionWith([{ match: LIVE, chunks: goldenFrames(SESSION, RUN, 1, 3) }], { strict: true });
   await rejectsWith(collect(session.events()), DisconnectError, (err) => {
     assert.equal(err.runId, RUN);
-    assert.equal(err.lastSequence, 3);
+    assert.equal(err.lastSequence, 3n);
   });
 });
 
@@ -111,7 +111,7 @@ test('a drop before the first delivery speculatively replays from the run start'
     { match: LIVE, chunks: goldenFrames(SESSION, RUN, 1, 12) },
   ]);
   const envelopes = await collect(session.events());
-  assert.deepEqual(sequences(envelopes), Array.from({ length: 12 }, (_, i) => i + 1));
+  assert.deepEqual(sequences(envelopes), Array.from({ length: 12 }, (_, i) => BigInt(i + 1)));
   const calls = transport.callsFor('/events');
   assert.equal(calls.length, 3);
   assert.equal(calls[1].url.endsWith('?after=0'), true);
@@ -125,7 +125,7 @@ test('repeated empty connections surface as a DisconnectError', { timeout: 10000
     { match: /after=12$/, chunks: [] },
   ]);
   await rejectsWith(
-    collect(session.eventsAfter(RUN, 12)),
+    collect(session.eventsAfter(RUN, 12n)),
     DisconnectError,
     (err) => assert.match(err.message, /without receiving an event/),
   );
@@ -144,7 +144,7 @@ test('the overflow signal surfaces the consumed run and its own cursor', { timeo
   ]);
   await rejectsWith(collect(session.events()), OverflowError, (err) => {
     assert.equal(err.runId, RUN);
-    assert.equal(err.lastSequence, 5);
+    assert.equal(err.lastSequence, 5n);
     assert.equal(err.signalMessage, 'fell behind');
   });
 });
@@ -158,7 +158,7 @@ test('an overflow before the first envelope uses the signal fields', { timeout: 
   ]);
   await rejectsWith(collect(session.events()), OverflowError, (err) => {
     assert.equal(err.runId, 'r-9');
-    assert.equal(err.lastSequence, 7);
+    assert.equal(err.lastSequence, 7n);
   });
 });
 
@@ -176,18 +176,18 @@ test('the replay-gap signal surfaces the retention bounds', { timeout: 10000 }, 
       ],
     },
   ]);
-  await rejectsWith(collect(session.eventsAfter(RUN, 2)), ReplayGapError, (err) => {
+  await rejectsWith(collect(session.eventsAfter(RUN, 2n)), ReplayGapError, (err) => {
     assert.equal(err.runId, RUN);
-    assert.equal(err.requestedAfter, 2);
-    assert.equal(err.oldestAvailable, 9);
-    assert.equal(err.latestAvailable, 12);
+    assert.equal(err.requestedAfter, 2n);
+    assert.equal(err.oldestAvailable, 9n);
+    assert.equal(err.latestAvailable, 12n);
   });
 });
 
 test('eventsAfter replays the suffix of the run it is bound to', { timeout: 10000 }, async () => {
   const { session } = sessionWith([{ match: /after=10$/, chunks: goldenFrames(SESSION, RUN, 11, 12) }]);
-  const envelopes = await collect(session.eventsAfter(RUN, 10));
-  assert.deepEqual(sequences(envelopes), [11, 12]);
+  const envelopes = await collect(session.eventsAfter(RUN, 10n));
+  assert.deepEqual(sequences(envelopes), [11n, 12n]);
   assert.equal(envelopes[1].type, EnvelopeType.RunCompleted);
 });
 
@@ -198,11 +198,11 @@ test('a replayed suffix for another run raises a ResumeMismatchError', { timeout
       chunks: goldenFrames(SESSION, 'r-other', 11, 11),
     },
   ]);
-  await rejectsWith(collect(session.eventsAfter(RUN, 10)), ResumeMismatchError, (err) => {
-    assert.equal(err.afterSequence, 10);
+  await rejectsWith(collect(session.eventsAfter(RUN, 10n)), ResumeMismatchError, (err) => {
+    assert.equal(err.afterSequence, 10n);
     assert.equal(err.expectedRunId, RUN);
     assert.equal(err.observedRunId, 'r-other');
-    assert.equal(err.observedSequence, 11);
+    assert.equal(err.observedSequence, 11n);
   });
 });
 
@@ -211,7 +211,7 @@ test('a duplicate sequence on a resumed stream is a wire defect', { timeout: 100
   const duplicate = goldenFrames(SESSION, RUN, 2, 2);
   const { session } = sessionWith([{ match: LIVE, chunks: [...frames, ...duplicate] }]);
   await rejectsWith(collect(session.events()), DuplicateSequenceError, (err) => {
-    assert.equal(err.sequence, 2);
+    assert.equal(err.sequence, 2n);
     assert.equal(err.runId, RUN);
   });
 });
@@ -221,8 +221,8 @@ test('a skipped sequence is surfaced, never silently accepted', { timeout: 10000
     { match: LIVE, chunks: [...goldenFrames(SESSION, RUN, 1, 2), ...goldenFrames(SESSION, RUN, 4, 4)] },
   ]);
   await rejectsWith(collect(session.events()), SequenceGapError, (err) => {
-    assert.equal(err.expected, 3);
-    assert.equal(err.observed, 4);
+    assert.equal(err.expected, 3n);
+    assert.equal(err.observed, 4n);
   });
 });
 
@@ -234,8 +234,8 @@ test('a live run change must begin at sequence one', { timeout: 10000 }, async (
     },
   ]);
   await rejectsWith(collect(session.events()), SequenceGapError, (err) => {
-    assert.equal(err.expected, 1);
-    assert.equal(err.observed, 2);
+    assert.equal(err.expected, 1n);
+    assert.equal(err.observed, 2n);
     assert.equal(err.runId, 'r-next');
   });
 });
@@ -248,13 +248,13 @@ test('a live run change that begins at one continues cleanly', { timeout: 10000 
     },
   ]);
   const envelopes = await collect(session.events());
-  assert.deepEqual(sequences(envelopes), [1, 2, 3, ...Array.from({ length: 12 }, (_, i) => i + 1)]);
+  assert.deepEqual(sequences(envelopes), [1n, 2n, 3n, ...Array.from({ length: 12 }, (_, i) => BigInt(i + 1))]);
 });
 
 test('a fresh live subscription may join a run in progress', { timeout: 10000 }, async () => {
   const { session } = sessionWith([{ match: LIVE, chunks: goldenFrames(SESSION, RUN, 7, 12) }]);
   const envelopes = await collect(session.events());
-  assert.deepEqual(sequences(envelopes), Array.from({ length: 6 }, (_, i) => i + 7));
+  assert.deepEqual(sequences(envelopes), Array.from({ length: 6 }, (_, i) => BigInt(i + 7)));
 });
 
 test('an envelope for another session never belongs on this stream', { timeout: 10000 }, async () => {
@@ -273,15 +273,13 @@ test('an envelope without a sequence is malformed', { timeout: 10000 }, async ()
 });
 
 test('an envelope without a run id is malformed', { timeout: 10000 }, async () => {
-  const missing = testEnvelope({ type: EnvelopeType.RunStarted, sequence: 1, sessionId: SESSION });
+  const missing = testEnvelope({ type: EnvelopeType.RunStarted, sequence: 1n, sessionId: SESSION });
   const { session } = sessionWith([{ match: LIVE, chunks: [eventFrame(missing)] }]);
   await rejectsWith(collect(session.events()), MalformedFrameError, (err) =>
     assert.match(err.detail, /no run id/),
   );
-  const wrongTyped = JSON.stringify({
-    ...testEnvelope({ type: EnvelopeType.RunStarted, sequence: 1, sessionId: SESSION }),
-    run_id: 7,
-  });
+  const wrongTyped = serializeEnvelope(testEnvelope({ type: EnvelopeType.RunStarted, sequence: 1n, sessionId: SESSION }))
+    .replace('"payload":', '"run_id":7,"payload":');
   const other = sessionWith([{ match: LIVE, chunks: [`data: ${wrongTyped}\n\n`] }]);
   await rejectsWith(collect(other.session.events()), MalformedFrameError, (err) =>
     assert.match(err.detail, /no run id/),
@@ -291,7 +289,7 @@ test('an envelope without a run id is malformed', { timeout: 10000 }, async () =
 test('session-scoped events deliver without disturbing the run cursor', { timeout: 10000 }, async () => {
   const stateUpdated = testEnvelope({
     type: EnvelopeType.SessionStateUpdated,
-    sequence: 4,
+    sequence: 4n,
     sessionId: SESSION,
     payload: { session_id: SESSION, status: 'waiting_for_input' },
   });
@@ -306,14 +304,14 @@ test('session-scoped events deliver without disturbing the run cursor', { timeou
   assert.equal(envelopes[3].type, EnvelopeType.SessionStateUpdated);
   assert.deepEqual(
     envelopes.filter((envelope) => envelope.run_id !== undefined).map((envelope) => envelope.sequence),
-    Array.from({ length: 12 }, (_, index) => index + 1),
+    Array.from({ length: 12 }, (_, index) => BigInt(index + 1)),
   );
 });
 
 test('a session-scoped event may open the stream before any run', { timeout: 10000 }, async () => {
   const stateUpdated = testEnvelope({
     type: EnvelopeType.SessionStateUpdated,
-    sequence: 1,
+    sequence: 1n,
     sessionId: SESSION,
     payload: { session_id: SESSION, status: 'idle' },
   });
@@ -324,14 +322,14 @@ test('a session-scoped event may open the stream before any run', { timeout: 100
   assert.equal(envelopes.length, 13);
   assert.deepEqual(
     envelopes.filter((envelope) => envelope.run_id !== undefined).map((envelope) => envelope.sequence),
-    Array.from({ length: 12 }, (_, index) => index + 1),
+    Array.from({ length: 12 }, (_, index) => BigInt(index + 1)),
   );
 });
 
 test('a payload naming another session, run, or tool call is malformed', { timeout: 10000 }, async () => {
   const foreignSession = testEnvelope({
     type: EnvelopeType.RunStarted,
-    sequence: 1,
+    sequence: 1n,
     sessionId: SESSION,
     runId: RUN,
     payload: { session_id: 's-other', run_id: RUN },
@@ -342,7 +340,7 @@ test('a payload naming another session, run, or tool call is malformed', { timeo
   );
   const foreignRun = testEnvelope({
     type: EnvelopeType.ContentDelta,
-    sequence: 2,
+    sequence: 2n,
     sessionId: SESSION,
     runId: RUN,
     payload: { session_id: SESSION, run_id: 'r-other' },
@@ -353,7 +351,7 @@ test('a payload naming another session, run, or tool call is malformed', { timeo
   );
   const foreignToolCall = testEnvelope({
     type: EnvelopeType.ActionCallStarted,
-    sequence: 3,
+    sequence: 3n,
     sessionId: SESSION,
     runId: RUN,
     toolCallId: 'tc-1',
@@ -368,12 +366,12 @@ test('a payload naming another session, run, or tool call is malformed', { timeo
 test('a frame id disagreeing with its envelope sequence is malformed', { timeout: 10000 }, async () => {
   const envelope = testEnvelope({
     type: EnvelopeType.RunStarted,
-    sequence: 2,
+    sequence: 2n,
     sessionId: SESSION,
     runId: RUN,
     payload: {},
   });
-  const mismatched = `id: 3\ndata: ${JSON.stringify(envelope)}\n\n`;
+  const mismatched = `id: 3\ndata: ${serializeEnvelope(envelope)}\n\n`;
   const { session } = sessionWith([{ match: LIVE, chunks: [mismatched] }]);
   await rejectsWith(collect(session.events()), MalformedFrameError, (err) =>
     assert.match(err.detail, /disagrees with envelope sequence 2/),
@@ -383,12 +381,12 @@ test('a frame id disagreeing with its envelope sequence is malformed', { timeout
 test('a non-numeric frame id is malformed', { timeout: 10000 }, async () => {
   const envelope = testEnvelope({
     type: EnvelopeType.RunStarted,
-    sequence: 1,
+    sequence: 1n,
     sessionId: SESSION,
     runId: RUN,
     payload: {},
   });
-  const frame = `id: 1st\ndata: ${JSON.stringify(envelope)}\n\n`;
+  const frame = `id: 1st\ndata: ${serializeEnvelope(envelope)}\n\n`;
   const { session } = sessionWith([{ match: LIVE, chunks: [frame] }]);
   await rejectsWith(collect(session.events()), MalformedFrameError, (err) =>
     assert.match(err.detail, /is not a sequence/),
@@ -435,7 +433,7 @@ test('a wrong-typed signal field is malformed, never a fabricated cursor', { tim
       chunks: ['event: oap-replay-gap\ndata: {"requested_after": "2", "oldest_available": 9}\n\n'],
     },
   ]);
-  await rejectsWith(collect(gap.session.eventsAfter(RUN, 2)), MalformedFrameError, (err) =>
+  await rejectsWith(collect(gap.session.eventsAfter(RUN, 2n)), MalformedFrameError, (err) =>
     assert.match(err.detail, /signal field requested_after is not a sequence/),
   );
 });
@@ -466,7 +464,7 @@ test('unknown named events are skipped, keeping the stream forward-compatible', 
     },
   ]);
   const envelopes = await collect(session.events());
-  assert.deepEqual(sequences(envelopes), Array.from({ length: 12 }, (_, i) => i + 1));
+  assert.deepEqual(sequences(envelopes), Array.from({ length: 12 }, (_, i) => BigInt(i + 1)));
 });
 
 test('a non-200 stream response is a ServerError', { timeout: 10000 }, async () => {
@@ -500,11 +498,11 @@ test('an initial connection failure surfaces at the first iteration', { timeout:
 test('aborting the signal ends the stream with an AbortedError', { timeout: 10000 }, async () => {
   const controller = new AbortController();
   const { session } = sessionWith([{ match: LIVE, chunks: goldenFrames(SESSION, RUN, 1, 12), chunkDelayMs: 5 }]);
-  const collected: number[] = [];
+  const collected: bigint[] = [];
   await rejectsWith(
     (async () => {
       for await (const envelope of session.events({ signal: controller.signal })) {
-        collected.push(envelope.sequence ?? 0);
+        collected.push(envelope.sequence ?? 0n);
         if (collected.length >= 2) controller.abort();
       }
     })(),
@@ -518,8 +516,8 @@ test('a second iteration resumes the same stream instead of rewinding', { timeou
   const stream = session.events();
   const iterator = stream[Symbol.asyncIterator]();
   const first = await iterator.next();
-  assert.equal(first.value?.sequence, 1);
-  assert.equal((await stream[Symbol.asyncIterator]().next()).value?.sequence, 2);
+  assert.equal(first.value?.sequence, 1n);
+  assert.equal((await stream[Symbol.asyncIterator]().next()).value?.sequence, 2n);
   await iterator.return?.();
 });
 
@@ -534,7 +532,7 @@ test('ready resolves once the subscription is live', { timeout: 10000 }, async (
 test('a settlement whose admission is still outstanding is held until the response arrives', { timeout: 10000 }, async () => {
   const settlement = testEnvelope({
     type: EnvelopeType.RunSteerApplied,
-    sequence: 1,
+    sequence: 1n,
     sessionId: SESSION,
     runId: RUN,
     payload: {
@@ -548,14 +546,14 @@ test('a settlement whose admission is still outstanding is held until the respon
   });
   const delta = testEnvelope({
     type: EnvelopeType.ContentDelta,
-    sequence: 2,
+    sequence: 2n,
     sessionId: SESSION,
     runId: RUN,
     payload: { session_id: SESSION, run_id: RUN, part: { type: 'text', text: 'applied' } },
   });
   const completed = testEnvelope({
     type: EnvelopeType.RunCompleted,
-    sequence: 3,
+    sequence: 3n,
     sessionId: SESSION,
     runId: RUN,
     payload: { session_id: SESSION, run_id: RUN, final_response: { role: 'assistant', content: 'done' }, stop_reason: 'end_turn' },
@@ -575,7 +573,7 @@ test('a settlement whose admission is still outstanding is held until the respon
   assert.equal(released.value?.payload['request_id'], 'req-steer');
 
   const second = await iterator.next();
-  assert.equal(second.value?.sequence, 2);
+  assert.equal(second.value?.sequence, 2n);
   const last = await iterator.next();
   assert.equal(last.value?.type, EnvelopeType.RunCompleted);
   assert.equal((await iterator.next()).done, true);
@@ -584,7 +582,7 @@ test('a settlement whose admission is still outstanding is held until the respon
 test('a settlement for a request that is not outstanding is delivered in order', { timeout: 10000 }, async () => {
   const settlement = testEnvelope({
     type: EnvelopeType.RunSteerDropped,
-    sequence: 1,
+    sequence: 1n,
     sessionId: SESSION,
     runId: RUN,
     payload: {
@@ -597,7 +595,7 @@ test('a settlement for a request that is not outstanding is delivered in order',
   });
   const completed = testEnvelope({
     type: EnvelopeType.RunCompleted,
-    sequence: 2,
+    sequence: 2n,
     sessionId: SESSION,
     runId: RUN,
     payload: { session_id: SESSION, run_id: RUN, final_response: { role: 'assistant', content: 'done' }, stop_reason: 'end_turn' },
@@ -615,7 +613,7 @@ test('a settlement for a request that is not outstanding is delivered in order',
 test('a held settlement is released across a dropped connection', { timeout: 10000 }, async () => {
   const settlement = testEnvelope({
     type: EnvelopeType.RunSteerApplied,
-    sequence: 1,
+    sequence: 1n,
     sessionId: SESSION,
     runId: RUN,
     payload: {
@@ -629,7 +627,7 @@ test('a held settlement is released across a dropped connection', { timeout: 100
   });
   const delta = testEnvelope({
     type: EnvelopeType.ContentDelta,
-    sequence: 2,
+    sequence: 2n,
     sessionId: SESSION,
     runId: RUN,
     payload: { session_id: SESSION, run_id: RUN, part: { type: 'text', text: 'applied' } },
@@ -653,7 +651,7 @@ test('a held settlement is released across a dropped connection', { timeout: 100
   assert.equal(released.value?.payload['request_id'], 'req-steer');
 
   const resumed = await iterator.next();
-  assert.equal(resumed.value?.sequence, 2);
+  assert.equal(resumed.value?.sequence, 2n);
   assert.equal(transport.callsFor('/events').length, 2);
   await iterator.return?.();
 });
@@ -661,7 +659,7 @@ test('a held settlement is released across a dropped connection', { timeout: 100
 test('a poll that settles behind a released settlement is not dropped', { timeout: 10000 }, async () => {
   const settlement = testEnvelope({
     type: EnvelopeType.RunSteerApplied,
-    sequence: 1,
+    sequence: 1n,
     sessionId: SESSION,
     runId: RUN,
     payload: {
@@ -675,14 +673,14 @@ test('a poll that settles behind a released settlement is not dropped', { timeou
   });
   const delta = testEnvelope({
     type: EnvelopeType.ContentDelta,
-    sequence: 2,
+    sequence: 2n,
     sessionId: SESSION,
     runId: RUN,
     payload: { session_id: SESSION, run_id: RUN, part: { type: 'text', text: 'applied' } },
   });
   const completed = testEnvelope({
     type: EnvelopeType.RunCompleted,
-    sequence: 3,
+    sequence: 3n,
     sessionId: SESSION,
     runId: RUN,
     payload: { session_id: SESSION, run_id: RUN, final_response: { role: 'assistant', content: 'done' }, stop_reason: 'end_turn' },
@@ -701,16 +699,16 @@ test('a poll that settles behind a released settlement is not dropped', { timeou
   assert.equal(first.value?.type, EnvelopeType.RunSteerApplied);
   await sleep(300);
   const second = await iterator.next();
-  assert.equal(second.value?.sequence, 2);
+  assert.equal(second.value?.sequence, 2n);
   const third = await iterator.next();
-  assert.equal(third.value?.sequence, 3);
+  assert.equal(third.value?.sequence, 3n);
   assert.equal((await iterator.next()).done, true);
 });
 
 test('a held settlement is released only to the stream that held it', { timeout: 10000 }, async () => {
   const settlement = testEnvelope({
     type: EnvelopeType.RunSteerApplied,
-    sequence: 1,
+    sequence: 1n,
     sessionId: SESSION,
     runId: RUN,
     payload: {
@@ -724,7 +722,7 @@ test('a held settlement is released only to the stream that held it', { timeout:
   });
   const completed = testEnvelope({
     type: EnvelopeType.RunCompleted,
-    sequence: 1,
+    sequence: 1n,
     sessionId: SESSION,
     runId: RUN,
     payload: { session_id: SESSION, run_id: RUN, final_response: { role: 'assistant', content: 'done' }, stop_reason: 'end_turn' },
@@ -754,7 +752,7 @@ test('a held settlement is released only to the stream that held it', { timeout:
 test('a settlement whose payload is not an object is delivered rather than throwing', { timeout: 10000 }, async () => {
   const malformed = testEnvelope({
     type: EnvelopeType.RunSteerApplied,
-    sequence: 1,
+    sequence: 1n,
     sessionId: SESSION,
     runId: RUN,
     payload: { session_id: SESSION, run_id: RUN },
@@ -762,7 +760,7 @@ test('a settlement whose payload is not an object is delivered rather than throw
   (malformed as { payload: unknown }).payload = 'not-an-object';
   const completed = testEnvelope({
     type: EnvelopeType.RunCompleted,
-    sequence: 2,
+    sequence: 2n,
     sessionId: SESSION,
     runId: RUN,
     payload: { session_id: SESSION, run_id: RUN, final_response: { role: 'assistant', content: 'done' }, stop_reason: 'end_turn' },

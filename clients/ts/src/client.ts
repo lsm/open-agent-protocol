@@ -7,6 +7,7 @@ import {
   VERSION,
   EnvelopeType,
   parseEnvelope,
+  serializeEnvelope,
   payload,
   type CapabilityDescriptor,
   type Envelope,
@@ -331,7 +332,7 @@ export class OapClient {
     const init: FetchInit = { method, headers: { Accept: 'application/json' } };
     if (request) {
       init.headers = { ...init.headers, 'Content-Type': 'application/json' };
-      init.body = JSON.stringify(request);
+      init.body = serializeEnvelope(request);
     }
     const response = await this.request(path, init);
     const body = await this.readBody(response, `read ${path} response`);

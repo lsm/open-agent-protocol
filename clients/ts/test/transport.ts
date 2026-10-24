@@ -2,7 +2,7 @@
 import { existsSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import type { FetchInit, FetchLike, FetchResponse, StreamReader } from '../src/client.js';
-import { PROTOCOL, PROFILE, VERSION, type Envelope } from '../src/protocol.js';
+import { PROTOCOL, PROFILE, VERSION, serializeEnvelope, type Envelope } from '../src/protocol.js';
 
 const encoder = new TextEncoder();
 
@@ -121,7 +121,7 @@ function matches(match: ScriptedResponse['match'], url: string): boolean {
 export interface TestEnvelopeInput {
   type: string;
   id?: string;
-  sequence?: number;
+  sequence?: bigint;
   sessionId?: string;
   runId?: string;
   toolCallId?: string;
@@ -153,7 +153,7 @@ export function testEnvelope(input: TestEnvelopeInput): Envelope {
 
 export function eventFrame(envelope: Envelope): string {
   const id = envelope.sequence !== undefined ? `id: ${envelope.sequence}\n` : '';
-  return `${id}data: ${JSON.stringify(envelope)}\n\n`;
+  return `${id}data: ${serializeEnvelope(envelope)}\n\n`;
 }
 
 export function signalFrame(event: string, data: unknown): string {
@@ -188,7 +188,7 @@ export function goldenFrames(sessionId: string, runId: string, from: number, to:
       eventFrame(
         testEnvelope({
           type,
-          sequence,
+          sequence: BigInt(sequence),
           sessionId,
           runId,
           payload: { session_id: sessionId, run_id: runId },

@@ -1,5 +1,5 @@
 const imports = `
-import { EnvelopeType, PROTOCOL, PROFILE, VERSION, parseEnvelope } from 'oap-client';
+import { EnvelopeType, PROTOCOL, PROFILE, VERSION, parseEnvelope, serializeEnvelope } from 'oap-client';
 import type { Envelope, AuthProvider, AuthStatus, AuthProvidersRequest, AuthProvidersResponse,
   AuthLoginStartRequest, AuthLoginStartResponse, AuthLoginEvent, AuthLoginCancelRequest,
   AuthLoginCancelResponse, AuthLoginCompleted } from 'oap-client';
@@ -24,25 +24,25 @@ const completed: AuthLoginCompleted = { flow_id: 'flow-1', provider_id: 'example
 const success: AuthLoginCompleted = { flow_id: 'flow-2', provider_id: 'example', status: 'success' };
 const failed: AuthLoginCompleted = { flow_id: 'flow-3', provider_id: 'example', status: 'failed' };
 function frame(type: string, id: string, payload: object, extra: Partial<Envelope> = {}): Envelope {
-  return parseEnvelope(JSON.stringify({ protocol: PROTOCOL, version: VERSION, profile: PROFILE,
-    type, id, payload, ...extra }));
+  return parseEnvelope(serializeEnvelope({ protocol: PROTOCOL, version: VERSION, profile: PROFILE,
+    type, id, payload: { ...payload }, ...extra }));
 }
 const trace = [
   frame(EnvelopeType.AuthProvidersRequest, 'providers-req', providersRequest),
   frame(EnvelopeType.AuthProvidersResponse, 'providers-resp', providersResponse, { in_reply_to: 'providers-req' }),
   frame(EnvelopeType.AuthLoginStartRequest, 'start-req', startRequest),
   frame(EnvelopeType.AuthLoginStartResponse, 'start-resp', startResponse, { in_reply_to: 'start-req' }),
-  frame(EnvelopeType.AuthLoginEvent, 'url', url, { sequence: 1 }),
-  frame(EnvelopeType.AuthLoginEvent, 'progress', progress, { sequence: 2 }),
+  frame(EnvelopeType.AuthLoginEvent, 'url', url, { sequence: 1n }),
+  frame(EnvelopeType.AuthLoginEvent, 'progress', progress, { sequence: 2n }),
   frame(EnvelopeType.AuthLoginCancelRequest, 'cancel-req', cancelRequest),
   frame(EnvelopeType.AuthLoginCancelResponse, 'cancel-resp', cancelResponse, { in_reply_to: 'cancel-req' }),
-  frame(EnvelopeType.AuthLoginCompleted, 'done', completed, { sequence: 3 }),
+  frame(EnvelopeType.AuthLoginCompleted, 'done', completed, { sequence: 3n }),
 ];
 void statuses;
 void emptyProviders;
 void success;
 void failed;
-console.log(JSON.stringify(trace));
+console.log('[' + trace.map(serializeEnvelope).join(',') + ']');
 `;
 }
 

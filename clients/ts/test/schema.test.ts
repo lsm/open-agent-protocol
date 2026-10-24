@@ -1,3 +1,4 @@
+import './uint64.test.js';
 import './schema-precision.test.js';
 
 import assert from 'node:assert/strict';
@@ -196,7 +197,7 @@ const samples: PayloadSample[] = [
   }),
   sample<protocol.ModelEventPosition>('ModelEventPosition', 'capabilities.schema.json', 'modelEventPosition', {
     run_id: 'r-1',
-    sequence: 2,
+    sequence: 2n,
   }, undefined, 0),
   sample<protocol.ModelEventPosition>('ModelEventPosition switch', 'capabilities.schema.json', 'modelEventPosition', {
     switch_request_id: 'switch-1',
@@ -205,7 +206,7 @@ const samples: PayloadSample[] = [
     session_id: 's-1',
     current_model_id: 'provider/model-a',
     models: [{ id: 'provider/model-a', display_name: 'Model A', provider_id: 'provider', default: true }],
-    as_of_model_event: { run_id: 'r-1', sequence: 2 },
+    as_of_model_event: { run_id: 'r-1', sequence: 2n },
   }),
 
   sample<protocol.ToolSourceAttachment>('ToolSourceAttachment', 'session.schema.json', 'toolSourceAttachment', {
@@ -268,7 +269,7 @@ const samples: PayloadSample[] = [
     status: 'running',
     active_run_id: 'r-1',
     active_runs: [
-      { run_id: 'r-1', status: 'running', relationship: 'primary', as_of_sequence: 4, pending_interactions: ['i-1'], acknowledged_interactions: ['i-1'] },
+      { run_id: 'r-1', status: 'running', relationship: 'primary', as_of_sequence: 4n, pending_interactions: ['i-1'], acknowledged_interactions: ['i-1'] },
       { run_id: 'r-2', status: 'queued', relationship: 'primary', queue_position: 1, admitted_submit_requests: ['e-9'] },
     ],
     current_model_id: 'model-a',
@@ -279,8 +280,8 @@ const samples: PayloadSample[] = [
     recovery: { recovered: false },
     as_of: {
       admitted_submit_requests: ['e-9'],
-      settled: [{ run_id: 'r-0', sequence: 7 }],
-      model_run_sequence: { run_id: null, sequence: 0 },
+      settled: [{ run_id: 'r-0', sequence: 7n }],
+      model_run_sequence: { run_id: null, sequence: 0n },
     },
   }),
   sample<protocol.ActiveRun>('ActiveRun', 'session.schema.json', 'activeRun', {
@@ -288,23 +289,23 @@ const samples: PayloadSample[] = [
     status: 'queued',
     relationship: 'primary',
     queue_position: 1,
-    as_of_sequence: 0,
+    as_of_sequence: 0n,
     admitted_submit_requests: ['e-9'],
     pending_interactions: ['i-1'],
     acknowledged_interactions: ['i-1'],
   }),
   sample<protocol.SessionCapture>('SessionCapture', 'session.schema.json', 'sessionCapture', {
     admitted_submit_requests: ['e-9'],
-    settled: [{ run_id: 'r-0', sequence: 7 }],
-    model_run_sequence: { run_id: 'r-1', sequence: 3 },
+    settled: [{ run_id: 'r-0', sequence: 7n }],
+    model_run_sequence: { run_id: 'r-1', sequence: 3n },
   }),
   sample<protocol.SettledRun>('SettledRun', 'session.schema.json', 'settledRun', {
     run_id: 'r-0',
-    sequence: 7,
+    sequence: 7n,
   }),
   sample<protocol.RunPosition>('RunPosition', 'session.schema.json', 'runPosition', {
     run_id: 'r-1',
-    sequence: 3,
+    sequence: 3n,
   }),
   sample<protocol.SessionStateRequest>('SessionStateRequest', 'session.schema.json', 'stateRequest', {
     session_id: 's-1',
@@ -372,7 +373,7 @@ const samples: PayloadSample[] = [
     session_id: 's-1',
     run_id: 'r-1',
     message_id: 'm-1',
-    usage: { input_tokens: 1, output_tokens: 2, total_tokens: 3 },
+    usage: { input_tokens: 1n, output_tokens: 2n, total_tokens: 3n },
   }),
   sample<protocol.RunCompletedPayload>('RunCompletedPayload', 'run.schema.json', 'completed', {
     session_id: 's-1',
@@ -381,7 +382,7 @@ const samples: PayloadSample[] = [
     stop_reason: 'end_turn',
     model_id: 'model-a',
     result: { answer: 42 },
-    usage: { input_tokens: 1, output_tokens: 2, total_tokens: 3 },
+    usage: { input_tokens: 1n, output_tokens: 2n, total_tokens: 3n },
     duration_ms: 1200,
     settled_by: 'observed',
   }),
@@ -389,7 +390,7 @@ const samples: PayloadSample[] = [
     session_id: 's-1',
     run_id: 'r-1',
     error: { code: 'provider_down', message: 'gone', retriable: true, details: { provider: 'x' } },
-    usage: { input_tokens: 1, output_tokens: 2, total_tokens: 3 },
+    usage: { input_tokens: 1n, output_tokens: 2n, total_tokens: 3n },
     duration_ms: 1200,
     recovery: { recovered: false, reason: 'nothing to resume' },
     settled_by: 'inferred',
@@ -398,7 +399,7 @@ const samples: PayloadSample[] = [
     session_id: 's-1',
     run_id: 'r-1',
     reason: 'user asked',
-    usage: { input_tokens: 1, output_tokens: 2, total_tokens: 3 },
+    usage: { input_tokens: 1n, output_tokens: 2n, total_tokens: 3n },
     duration_ms: 1200,
     settled_by: 'inferred',
   }),
@@ -625,9 +626,9 @@ const samples: PayloadSample[] = [
     details: { session_id: 's-x' },
   }),
   sample<protocol.Usage>('Usage', 'common.schema.json', 'usage', {
-    input_tokens: 1,
-    output_tokens: 2,
-    total_tokens: 3,
+    input_tokens: 1n,
+    output_tokens: 2n,
+    total_tokens: 3n,
   }),
   sample<protocol.RecoveryMetadata>('RecoveryMetadata', 'common.schema.json', 'recovery', {
     recovered: true,
@@ -713,7 +714,7 @@ test('the Envelope interface covers exactly the envelope schema properties', () 
     type: 'run.completed',
     id: 'env-1',
     payload: {},
-    sequence: 1,
+    sequence: 1n,
     timestamp_ms: 1700000000000,
     in_reply_to: 'env-0',
     session_id: 's-1',

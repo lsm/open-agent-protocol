@@ -1,7 +1,7 @@
 # oap-client (TypeScript)
 
 The TypeScript client for a local `oapx serve` or `goap serve` daemon: drives any OAP adapter
-over the daemon's HTTP + SSE surface with verbatim schema/v0.1 envelopes. It
+over the daemon's HTTP + SSE surface with schema/v0.1 envelopes and exact uint64 values. It
 is the counterpart of the Go `client` package — same wire surface, same
 semantics — so non-Go hosts (HyperNeo and friends) can consume the exact
 envelope stream the Go client sees.
@@ -157,12 +157,49 @@ Nine of the eleven documented `errors` exports are covered under
 [the event stream](#the-event-stream), where the resume rules that give them meaning are set out;
 the two that are not appear under `errors` below.
 
+### Exact uint64 values
+
+In OAP envelopes and their event-stream cursors, every uint64 field is always
+`bigint`, including `0n` and `1n`. This covers
+usage counts, envelope sequences, history-token counts and payload positions,
+as well as replay cursors and sequence properties on stream errors. There is
+no magnitude-dependent `number | bigint` type. `eventsAfter(runId, 0n)` starts
+at zero; use bigint literals and arithmetic consistently.
+
+Use `parseEnvelope` and `serializeEnvelope` together for wire envelopes:
+
+```ts
+import { parseEnvelope, payload, serializeEnvelope, type RunCompletedPayload } from 'oap-client';
+
+const envelope = parseEnvelope(rawEnvelopeJSON);
+const usage = payload<RunCompletedPayload>(envelope).usage;
+if (usage?.input_tokens !== undefined && usage.output_tokens !== undefined) {
+  const sum: bigint = usage.input_tokens + usage.output_tokens;
+  console.log(sum.toString());
+}
+const wireJSON = serializeEnvelope(envelope);
+```
+
+`9007199254740993n` and `18446744073709551615n` are written as exact, unquoted
+JSON number tokens. Native `JSON.stringify` does not serialize bigint; use the
+client serializer for envelopes. The HTTP client uses it automatically. Missing
+counts remain unknown, and `0n` remains a measured zero. Usage counts follow
+Decision 0065's canonical spelling/range rules; integral decimal/exponent
+sequence spellings remain accepted under hub D31 and serialize canonically.
+
+This representation is specific to uint64 fields. Signed timestamps, limits and
+arbitrary application/tool-result JSON numbers remain `number`; their normal
+JavaScript numeric behavior is unchanged. Bigints in those arbitrary JSON
+positions are not accepted by the envelope serializer. The parser is not a
+general runtime JSON-Schema validator, and no runtime dependency is added.
+
 ### `protocol`
 
 - **`PROTOCOL`** — The Open Agent Protocol agent-control-core wire model,
-  hand-written to mirror schema/v0.1 exactly. Every envelope
-  travels verbatim: the client adds no fields of its own and
-  ignores none.
+  hand-written to mirror schema/v0.1. The client preserves envelope fields
+  without adding metadata; uint64 values stay exact through its parser and
+  serializer. JSON whitespace and accepted integral sequence spellings may
+  normalize. Other JSON numbers retain JavaScript `number` behavior.
 - **`EnvelopeType`** — Envelope type constants and their string union. The union
   stays open (`string & {}`): the protocol adds envelope
   types without a client release, and the event stream must
@@ -177,7 +214,9 @@ the two that are not appear under `errors` below.
   The opposite event field and instructions remain optional. These are wire
   declarations; they add no login operation or credential storage.
 - **`parseEnvelope`** — Decodes one envelope from a JSON document (an SSE data
-  field or a response body).
+  field or a response body), retaining uint64 fields as exact `bigint` values.
+- **`serializeEnvelope`** — Writes an envelope back to JSON with exact uint64
+  number tokens. Use it instead of native `JSON.stringify` for envelopes.
 - **`payload`** — Types one envelope's payload. The cast is deliberate: payloads
   are trusted schema/v0.1 documents on this single-user wire,
   and runtime JSON-Schema validation is out of scope for the
@@ -263,7 +302,7 @@ The daemon's client-facing route accepts neither `command`, `args`, nor a
   serialized with lifecycle publication, so the position is what makes an
   accurate-but-stale pending set judgeable rather than guessed at.
 - **`RunPosition`** — A stated position in a run's sequence domain; `run_id:
-  null` with `sequence: 0` is the genesis position, before
+  null` with `sequence: 0n` is the genesis position, before
   the session's first model-affecting event.
 - **`SettledRun`** — One run a snapshot has already removed, with the sequence
   its terminal carries.
