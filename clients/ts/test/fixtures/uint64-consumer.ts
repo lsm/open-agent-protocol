@@ -57,6 +57,19 @@ for (const site of sites) for (const field of fields) for (const token of tokens
 for (const site of sites) for (const field of fields) for (const invalid of ['-0','-1','1.0','1e3','1.5','null','true','"1"','18446744073709551616']) {
   assert.throws(() => parseEnvelope(frame(site, '{"usage":{' + JSON.stringify(field) + ':' + invalid + '}}')));
 }
+const previousJSON = Object.getOwnPropertyDescriptor(BigInt.prototype, 'toJSON');
+try {
+  const parsed = parseEnvelope(frame('run.completed', '{"usage":{"input_tokens":18446744073709551615}}'));
+  for (const toJSON of [function () { return Number(this); }, function () { return this.toString(); }]) {
+    Object.defineProperty(BigInt.prototype, 'toJSON', { configurable: true, value: toJSON });
+    const encoded = serializeEnvelope(parsed);
+    assert.ok(encoded.includes('"input_tokens":18446744073709551615'));
+    assert.deepEqual(parseEnvelope(encoded), parsed);
+  }
+} finally {
+  if (previousJSON) Object.defineProperty(BigInt.prototype, 'toJSON', previousJSON);
+  else delete BigInt.prototype.toJSON;
+}
 const usage = payload(parseEnvelope(frame('run.completed', '{"usage":{}}'))).usage;
 assert.equal(usage.input_tokens, undefined);
 assert.equal(payload(parseEnvelope(frame('run.completed', '{}'))).usage, undefined);
