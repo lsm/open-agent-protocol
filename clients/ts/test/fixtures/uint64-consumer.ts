@@ -93,6 +93,8 @@ assert.deepEqual(parseEnvelope(serializeEnvelope(parsed)), parsed);
 const boxed = parseEnvelope(frame('future.event', '{}'));
 boxed.payload.text = new String('b123');
 assert.deepEqual(parseEnvelope(serializeEnvelope(boxed)).payload, JSON.parse(JSON.stringify(boxed.payload)));
+boxed.payload.text.toString = () => 'custom';
+assert.deepEqual(parseEnvelope(serializeEnvelope(boxed)).payload, JSON.parse(JSON.stringify(boxed.payload)));
 const prototype = parseEnvelope('{"__proto__":{"polluted":true},"payload":{},"type":"future.event","id":"e"}');
 assert.equal(Object.hasOwn(prototype, '__proto__'), true);
 assert.equal({}.polluted, undefined);
