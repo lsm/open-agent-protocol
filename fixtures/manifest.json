@@ -16675,6 +16675,64 @@
       "rules": [
         "0008#attachment-is-bounded-by-what-the-endpoint-disclosed/1"
       ]
+    },
+    {
+      "id": "user-input-optional-empty-text",
+      "path": "valid/user-input-optional-empty-text.json",
+      "kind": "positive",
+      "valid": true,
+      "phase": "",
+      "codes": [],
+      "units": [
+        "core",
+        "user-input"
+      ],
+      "provenance": [
+        "decisions/0056-input-answers-are-judged-against-the-prompt.md"
+      ],
+      "rules": [
+        "0056#an-answer-answers-the-prompt-it-resolves/4"
+      ]
+    },
+    {
+      "id": "user-input-required-empty-text",
+      "path": "semantic-invalid/user-input-required-empty-text.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "unmatched_interaction"
+      ],
+      "units": [
+        "core",
+        "user-input"
+      ],
+      "provenance": [
+        "decisions/0056-input-answers-are-judged-against-the-prompt.md"
+      ],
+      "rules": [
+        "0056#an-answer-answers-the-prompt-it-resolves/4"
+      ]
+    },
+    {
+      "id": "user-input-required-answer-missing",
+      "path": "semantic-invalid/user-input-required-answer-missing.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "unmatched_interaction"
+      ],
+      "units": [
+        "core",
+        "user-input"
+      ],
+      "provenance": [
+        "decisions/0056-input-answers-are-judged-against-the-prompt.md"
+      ],
+      "rules": [
+        "0056#an-answer-answers-the-prompt-it-resolves/3"
+      ]
     }
   ]
 }

@@ -5177,7 +5177,7 @@ pub const Machine = struct {
                 try covered.put(self.allocator, named, {});
                 const kind = memberString(question, "kind");
                 if (std.mem.eql(u8, kind, "text")) {
-                    if (memberString(answer, "text").len == 0) try self.add(code_unmatched_interaction, index);
+                    if (member(answer, "text") == null or (memberBool(question, "required") and memberString(answer, "text").len == 0)) try self.add(code_unmatched_interaction, index);
                     continue;
                 }
                 const single = std.mem.eql(u8, kind, "single_choice");
