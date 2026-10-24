@@ -1,3 +1,4 @@
+import './uint64.test.js';
 import './schema-precision.test.js';
 
 import assert from 'node:assert/strict';
