@@ -24,14 +24,21 @@ failure. Restored optional empty text and all other valid emitted traces must
 exit 0 in Rust, Go and Zig with no schema or semantic refusal. The former
 optional-empty semantic validator gap is closed under Decision 0056.
 
-There is also a pre-existing Zig adapter-helper divergence, separate from the
-semantic validators: `zig/src/adapter/contract.zig`'s `validInputAnswer` rejects
-empty text unconditionally, and its `Question` type has no `required` field.
-Thus Zig adapter consumers do not yet share the corrected Rust/Go helper
-contract. This was reproduced through the public Zig helper with an optional
-text question and `text = ""`; a normative acceptance assertion fails at
-runtime. Zig adapter changes are outside the bound file set and need their
-own follow-up. This journey makes no claim of Zig adapter-helper parity.
+The Zig adapter helper now carries each question's `required` flag. Optional
+text accepts an explicit empty text field; required text and malformed choices
+remain refused. Run the public helper and actual adapter call-site contracts:
+
+```sh
+zig test --dep oap_types -Mroot=zig/src/adapter/contract.zig -Moap_types=zig/src/protocol/oap/types.zig
+zig build --build-file zig/build.zig test-unit-adapter -Doptimize=ReleaseSafe -j4
+```
+
+The oapx endpoint test submits optional empty text beside required text, checks
+that the native tool receives the answer, preserves `text: ""` in the resolved
+event, and validates the complete emitted exchange. Pi's required text dialog
+must still reject empty text without writing a native response. No
+`known_gap` exemption applies: every valid emitted or restored-empty trace
+must exit 0 in Rust, Go and Zig; the missing-text mutation must exit 1.
 Empty answer sets are tested at the helper surface only: the wire schema still
 requires at least one answer in a submitted resolution. Mixed answers remain
 invalid rather than being silently repaired by serialization.
