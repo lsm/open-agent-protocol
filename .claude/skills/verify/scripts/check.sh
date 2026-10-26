@@ -1,9 +1,12 @@
 #!/bin/bash
 set -euo pipefail
 cd "$(dirname "$0")/../../../.."
-artifacts=$(mktemp -d /tmp/oap-verify.XXXXXX)
+artifacts=${OAP_VERIFY_ARTIFACTS:-$(mktemp -d "${TMPDIR:-/tmp}/oap-verify.XXXXXX")}
+if [[ -z ${OAP_VERIFY_ARTIFACTS:-} ]]; then
+    OAP_VERIFY_ARTIFACTS="$artifacts" bash "$0" 2>&1 | tee "$artifacts/check.log"
+    exit "${PIPESTATUS[0]}"
+fi
 printf 'Artifacts: %s\n' "$artifacts"
-exec > >(tee "$artifacts/check.log") 2>&1
 run() {
     printf '\nRUN:'
     printf ' %q' "$@"

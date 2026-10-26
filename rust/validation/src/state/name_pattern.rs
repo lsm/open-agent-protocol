@@ -34,7 +34,62 @@ const UNICODE_ALIASES: &str = concat!(
     "punct=P ",
 );
 
-pub(super) struct Pattern(Regex);
+const UNICODE17_SCRIPTS: &[(&str, &[(u32, u32)])] = &[
+    ("Beria_Erfe", &[(93856, 93880), (93883, 93907)]),
+    ("Sidetic", &[(67904, 67929)]),
+    (
+        "Tai_Yo",
+        &[(124608, 124638), (124640, 124661), (124670, 124671)],
+    ),
+    ("Tolong_Siki", &[(73136, 73179), (73184, 73193)]),
+];
+
+pub(super) struct Pattern(Regex, bool);
+
+fn unicode17(c: char) -> bool {
+    UNICODE17_SCRIPTS.iter().any(|(_, ranges)| {
+        ranges
+            .iter()
+            .any(|&(low, high)| (low..=high).contains(&(c as u32)))
+    })
+}
+
+fn expand_unicode17(pattern: &str) -> (String, bool) {
+    let mut result = String::new();
+    let mut chars = pattern.chars().peekable();
+    let mut expanded = false;
+    let mut other_property = false;
+    while let Some(c) = chars.next() {
+        if c != '\\' {
+            result.push(c);
+            continue;
+        }
+        let Some(kind) = chars.next() else { break };
+        if matches!(kind, 'p' | 'P') && chars.peek() == Some(&'{') {
+            chars.next();
+            let name: String = chars.by_ref().take_while(|&c| c != '}').collect();
+            if let Some((_, ranges)) = UNICODE17_SCRIPTS.iter().find(|(n, _)| *n == name) {
+                result.push('[');
+                if kind == 'P' {
+                    result.push('^');
+                }
+                for (low, high) in *ranges {
+                    result.push_str(&format!(r"\x{{{low:x}}}-\x{{{high:x}}}"));
+                }
+                result.push(']');
+                expanded = true;
+            } else {
+                result.push_str(&format!(r"\{kind}{{{name}}}"));
+                other_property = true;
+            }
+        } else {
+            other_property |= matches!(kind, 'p' | 'P');
+            result.push('\\');
+            result.push(kind);
+        }
+    }
+    (result, expanded && !other_property)
+}
 
 fn assigned(c: char) -> bool {
     static ASSIGNED: std::sync::OnceLock<Regex> = std::sync::OnceLock::new();
@@ -45,7 +100,9 @@ fn assigned(c: char) -> bool {
 
 impl Pattern {
     pub(super) fn matches(&self, name: &str) -> Option<bool> {
-        name.chars().all(assigned).then(|| self.0.is_match(name))
+        name.chars()
+            .all(|c| assigned(c) || (self.1 && unicode17(c)))
+            .then(|| self.0.is_match(name))
     }
 }
 
@@ -89,12 +146,13 @@ pub(super) fn compile(pattern: &str) -> Result<Option<Pattern>, ()> {
         return Ok(None);
     }
     boundaries(&ast, &mut normalized);
+    let (normalized, unicode17) = expand_unicode17(&normalized);
     match RegexBuilder::new(&format!(r"\A(?:{normalized})\z"))
         .nest_limit(1004)
         .size_limit(128 * 1024 * 1024)
         .build()
     {
-        Ok(regex) => Ok(Some(Pattern(regex))),
+        Ok(regex) => Ok(Some(Pattern(regex, unicode17))),
         Err(regex::Error::CompiledTooBig(_)) => Ok(None),
         Err(regex::Error::Syntax(message))
             if message.contains("Unicode property") && message.contains("not found") =>
@@ -672,7 +730,16 @@ mod tests {
         }
     }
     #[test]
-    fn valid_unicode17_data_is_unsupported_instead_of_invalid() {
-        assert!(matches!(compile(r"\p{Beria_Erfe}+"), Ok(None)));
+    fn unicode17_scripts_match_whole_names() {
+        for (name, ranges) in super::UNICODE17_SCRIPTS {
+            let pattern = compile(&format!(r"\p{{{name}}}+")).unwrap().unwrap();
+            for &(low, high) in *ranges {
+                for c in [low, high] {
+                    let text = char::from_u32(c).unwrap().to_string();
+                    assert_eq!(pattern.matches(&text), Some(true));
+                    assert_eq!(pattern.matches(&format!("x{text}")), Some(false));
+                }
+            }
+        }
     }
 }

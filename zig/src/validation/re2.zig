@@ -5,9 +5,27 @@ pub const Set = std.StaticBitSet(256);
 const max_repeat = 1000;
 const max_program = 10_000;
 
+const UnicodeSet = struct {
+    ranges: []const [2]u21,
+    negated: bool,
+
+    fn contains(self: UnicodeSet, rune: u21) bool {
+        for (self.ranges) |range| if (rune >= range[0] and rune <= range[1]) return !self.negated;
+        return self.negated;
+    }
+};
+
+const unicode17_scripts = .{
+    .{ "Beria_Erfe", &[_][2]u21{ .{ 93856, 93880 }, .{ 93883, 93907 } } },
+    .{ "Sidetic", &[_][2]u21{.{ 67904, 67929 }} },
+    .{ "Tai_Yo", &[_][2]u21{ .{ 124608, 124638 }, .{ 124640, 124661 }, .{ 124670, 124671 } } },
+    .{ "Tolong_Siki", &[_][2]u21{ .{ 73136, 73179 }, .{ 73184, 73193 } } },
+};
+
 const Node = union(enum) {
     empty,
     set: Set,
+    unicode: UnicodeSet,
     begin,
     end,
     concat: []const Node,
@@ -39,6 +57,7 @@ fn repeatFits(node: Node, limit: u32) bool {
 
 const Inst = union(enum) {
     set: Set,
+    unicode: UnicodeSet,
     split: [2]u32,
     jmp: u32,
     begin,
@@ -56,17 +75,28 @@ pub const Regex = struct {
     }
 
     pub fn fullMatch(self: *const Regex, allocator: std.mem.Allocator, text: []const u8) !?bool {
-        for (text) |byte| if (byte >= 0x80) return null;
+        const unicode = for (self.program) |inst| {
+            if (inst == .unicode) break true;
+        } else false;
+        if (!unicode) for (text) |byte| {
+            if (byte >= 0x80) return null;
+        };
         var now = try std.DynamicBitSetUnmanaged.initEmpty(allocator, self.program.len);
         defer now.deinit(allocator);
         var next = try std.DynamicBitSetUnmanaged.initEmpty(allocator, self.program.len);
         defer next.deinit(allocator);
         self.close(&now, 0, 0, text.len);
-        for (text, 0..) |byte, at| {
+        var at: usize = 0;
+        while (at < text.len) {
+            const length = std.unicode.utf8ByteSequenceLength(text[at]) catch return null;
+            if (at + length > text.len) return null;
+            const rune = std.unicode.utf8Decode(text[at..][0..length]) catch return null;
+            at += length;
             next.unsetAll();
             var live = now.iterator(.{});
             while (live.next()) |pc| switch (self.program[pc]) {
-                .set => |set| if (set.isSet(byte)) self.close(&next, @intCast(pc + 1), at + 1, text.len),
+                .set => |set| if (set.isSet(@min(rune, 128))) self.close(&next, @intCast(pc + 1), at, text.len),
+                .unicode => |set| if (set.contains(rune)) self.close(&next, @intCast(pc + 1), at, text.len),
                 else => {},
             };
             std.mem.swap(std.DynamicBitSetUnmanaged, &now, &next);
@@ -267,9 +297,33 @@ const Parser = struct {
             },
             '^' => return .begin,
             '$' => return .end,
-            '\\' => return if (try self.escape(false)) |set| .{ .set = set } else self.standDown(),
+            '\\' => {
+                if (self.unicodeProperty()) |node| return node;
+                return if (try self.escape(false)) |set| .{ .set = set } else self.standDown();
+            },
             else => return .{ .set = single(c) },
         }
+    }
+
+    fn unicodeProperty(self: *Parser) ?Node {
+        const start = self.at;
+        if (start + 3 > self.source.len) return null;
+        const kind = self.source[start];
+        if ((kind != 'p' and kind != 'P') or self.source[start + 1] != '{') return null;
+        const close = std.mem.indexOfScalarPos(u8, self.source, start + 2, '}') orelse return null;
+        var name = self.source[start + 2 .. close];
+        var negated = kind == 'P';
+        if (std.mem.startsWith(u8, name, "^")) {
+            name = name[1..];
+            negated = !negated;
+        }
+        inline for (unicode17_scripts) |entry| {
+            if (std.mem.eql(u8, name, entry[0])) {
+                self.at = close + 1;
+                return .{ .unicode = .{ .ranges = entry[1], .negated = negated } };
+            }
+        }
+        return null;
     }
 
     fn group(self: *Parser) Failure!Node {
@@ -501,6 +555,7 @@ const Emitter = struct {
         switch (node) {
             .empty => {},
             .set => |set| _ = try self.push(.{ .set = set }),
+            .unicode => |set| _ = try self.push(.{ .unicode = set }),
             .begin => _ = try self.push(.begin),
             .end => _ = try self.push(.end),
             .concat => |parts| for (parts) |part| try self.emit(part),

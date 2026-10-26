@@ -30,6 +30,8 @@ terminate/reap children in cleanup. Never run unattended GUI tests.
 
 Run `bash .claude/skills/verify/scripts/check.sh` for the complete baseline
 with a retained log and PTY artifacts under a fresh `/tmp/oap-verify.*` directory.
+Set `TMPDIR` to a writable temporary directory when `/tmp` is restricted; the
+runner respects it for retained artifacts and logs through an ordinary pipe.
 It stops on failure. Its checks are also listed below for focused reruns,
 relative to the repository root:
 

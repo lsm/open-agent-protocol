@@ -114,7 +114,7 @@ def main():
     parser.add_argument("--output-dir", type=Path, required=True)
     output = parser.parse_args().output_dir.resolve()
     output.mkdir(parents=True, exist_ok=True)
-    with tempfile.TemporaryDirectory(prefix="oap-acp-permission-", dir="/tmp") as temporary:
+    with tempfile.TemporaryDirectory(prefix="oap-acp-permission-") as temporary:
         work = Path(temporary)
         (work / "go.mod").write_text(f"module acp-permission-consumer\n\ngo 1.26\n\nrequire github.com/lsm/open-agent-protocol v0.0.0\nreplace github.com/lsm/open-agent-protocol => {ROOT}\n")
         (work / "main.go").write_text(CONSUMER)
