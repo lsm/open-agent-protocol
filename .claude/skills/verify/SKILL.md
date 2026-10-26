@@ -30,7 +30,11 @@ terminate/reap children in cleanup. Never run unattended GUI tests.
 
 Run `bash .claude/skills/verify/scripts/check.sh` for the complete baseline
 with a retained log and PTY artifacts under a fresh `/tmp/oap-verify.*` directory.
-It stops on failure. Its checks are also listed below for focused reruns,
+Set `TMPDIR` to a writable temporary directory when `/tmp` is restricted; the
+runner respects it for retained artifacts and logs through an ordinary pipe.
+It stops on failure. The runner also supports `bash check.sh` and `./check.sh`
+from its scripts directory; `python3 .claude/skills/verify/scripts/check-invocations.py`
+checks these entry points and preservation of the first failing check in the log. Its checks are also listed below for focused reruns,
 relative to the repository root:
 
 ```sh

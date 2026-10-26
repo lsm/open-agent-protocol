@@ -102,6 +102,38 @@ def main():
     path = output / "unicode17-descriptor.trace.json"
     path.write_text(json.dumps(unicode17[:4]))
     replay("unicode17-descriptor", path, [])
+    unicode_paths = [("unicode17-descriptor", path, [])]
+    for script, ranges in [
+        ("Beria_Erfe", [(93856, 93880), (93883, 93907)]),
+        ("Sidetic", [(67904, 67929)]),
+        ("Tai_Yo", [(124608, 124638), (124640, 124661), (124670, 124671)]),
+        ("Tolong_Siki", [(73136, 73179), (73184, 73193)]),
+    ]:
+        for pattern, name, matches in [
+            (rf"\p{{{script}}}+", chr(low), True) for low, _ in ranges
+        ] + [
+            (rf"\p{{{script}}}+", chr(high), True) for _, high in ranges
+        ] + [
+            (rf"\p{{{script}}}+", "x" + chr(ranges[0][0]), False),
+            (rf"\p{{{script}}}+", chr(ranges[-1][1] + 1), False),
+            (rf"\P{{{script}}}+", chr(ranges[0][0]), False),
+            (rf"\p{{^{script}}}+", "x", True),
+            (rf"\P{{^{script}}}+", chr(ranges[0][0]), True),
+            (rf"x\p{{{script}}}+", "x" + chr(ranges[0][0]), True),
+            (rf".\p{{{script}}}", chr(ranges[0][0]) * 2, True),
+            (rf"[^x]\p{{{script}}}", chr(ranges[0][0]) * 2, True),
+            (rf"(?:\p{{{script}}}|x)+", chr(ranges[0][0]) + "x", True),
+        ]:
+            trace = copy.deepcopy(unicode17)
+            trace[3]["payload"]["features"]["action.tools.provide"]["limits"]["name_pattern"] = pattern
+            trace[4]["payload"]["tools"][0]["name"] = name
+            trace[5]["payload"]["error"]["details"]["tool"] = name
+            label = f"unicode17-{script}-{len(unicode_paths)}"
+            path = output / f"{label}.trace.json"
+            path.write_text(json.dumps(trace))
+            expected = ["undisclosed_provide_limit"] if matches else []
+            replay(label, path, expected)
+            unicode_paths.append((label, path, expected))
     valid_patterns = [r"\pL+", r"\p{Greek}", r"\p{^Greek}", "[[:alpha:]]", r"\bword",
                       "^*a", "café", r"\x{100}", r"\Qa.b\E", "a{01}", "a{,3}",
                       "(?)a", "(?P<a>x)(?P<a>y)", r"\p{Letter}", "(?P<1>a)", "(?ii)a", r"\000", r"\123", r"\12", "[^^]", r"[\d-a]", "[--a]"]
@@ -150,19 +182,28 @@ def main():
         assert all(d["phase"] == "semantic" for d in diagnostics), (path, diagnostics)
     gap = fixtures / "semantic-invalid/open-provide-refused-within-a-unicode17-pattern.json"
     rust_gap = command([str(binary), str(gap)])
+    assert rust_gap.returncode == 1, rust_gap.stdout
     go_gap = command([str(go_binary), "validate", "--format=json", str(gap)])
     zig_gap = command([str(ROOT / "zig/zig-out/bin/oapx"), "validate", str(gap)])
     for name, result in [("rust", rust_gap), ("go", go_gap), ("zig", zig_gap)]:
         (output / f"known-unicode17-{name}.stdout").write_text(result.stdout)
         (output / f"known-unicode17-{name}.stderr").write_text(result.stderr)
-    assert rust_gap.returncode == 0 and json.loads(rust_gap.stdout)["diagnostics"] == []
-    assert zig_gap.returncode == 0 and "PASS" in zig_gap.stdout
+    assert rust_gap.returncode == 1, rust_gap.stdout
+    assert {d["code"] for d in json.loads(rust_gap.stdout)["diagnostics"]} == {"undisclosed_provide_limit"}
+    assert zig_gap.returncode == 1 and "undisclosed_provide_limit" in zig_gap.stdout + zig_gap.stderr
     assert go_gap.returncode == 1, go_gap.stderr
     diagnostics = json.loads(go_gap.stdout)[0]["diagnostics"]
     assert {d["code"] for d in diagnostics} == {"undisclosed_provide_limit"}, diagnostics
     assert all(d["phase"] == "semantic" and d["pointer"] == "/payload/error" for d in diagnostics)
-    print("KNOWN GAP observed: Go rejects the Unicode 17 refusal; Rust and Zig omit that judgment", flush=True)
-    print(f"PASS: {count} shared traces, nine consumer variations, a valid Unicode 17 descriptor, and {len(valid_patterns) + len(invalid_patterns) + len(matching)} RE2 probes; {len(compared)} Go/Rust comparisons, zero disagreements", flush=True)
+    for label, path, expected in unicode_paths:
+        result = command([str(ROOT / "zig/zig-out/bin/oapx"), "validate", str(path)])
+        (output / f"{label}.zig.txt").write_text(result.stdout + result.stderr)
+        assert result.returncode == int(bool(expected)), (label, result.stdout, result.stderr)
+        if expected:
+            assert "semantic" in result.stdout + result.stderr
+            assert "undisclosed_provide_limit" in result.stdout + result.stderr
+    print("PASS: Go, Rust and Zig reject the Unicode 17 refusal", flush=True)
+    print(f"PASS: {count} shared traces, nine consumer variations, {len(unicode_paths)} three-consumer Unicode 17 probes, and {len(valid_patterns) + len(invalid_patterns) + len(matching)} RE2 probes; {len(compared)} Go/Rust comparisons, zero disagreements", flush=True)
 
 
 if __name__ == "__main__":

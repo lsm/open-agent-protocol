@@ -5,8 +5,7 @@
     "control-call-recovered-ack-omitted",
     "models-current-mismatch",
     "models-held-position-moved-no-model",
-    "open-provide-refused-within-a-case-folding-pattern",
-    "open-provide-refused-within-a-unicode17-pattern"
+    "open-provide-refused-within-a-case-folding-pattern"
   ],
   "rust": [
     "call-omits-a-process-source",
@@ -69,7 +68,6 @@
     "models-unlisted-selection-wrong-refusal",
     "models-unmatched-provider",
     "open-attach-contradicts-stated-member",
-    "open-provide-refused-within-a-unicode17-pattern",
     "open-sources-duplicate-attachment",
     "open-sources-state-disagrees-with-catalog",
     "open-sources-state-omits-attachment",
