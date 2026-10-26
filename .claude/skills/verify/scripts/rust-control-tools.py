@@ -150,18 +150,20 @@ def main():
         assert all(d["phase"] == "semantic" for d in diagnostics), (path, diagnostics)
     gap = fixtures / "semantic-invalid/open-provide-refused-within-a-unicode17-pattern.json"
     rust_gap = command([str(binary), str(gap)])
+    assert rust_gap.returncode == 1, rust_gap.stdout
     go_gap = command([str(go_binary), "validate", "--format=json", str(gap)])
     zig_gap = command([str(ROOT / "zig/zig-out/bin/oapx"), "validate", str(gap)])
     for name, result in [("rust", rust_gap), ("go", go_gap), ("zig", zig_gap)]:
         (output / f"known-unicode17-{name}.stdout").write_text(result.stdout)
         (output / f"known-unicode17-{name}.stderr").write_text(result.stderr)
-    assert rust_gap.returncode == 0 and json.loads(rust_gap.stdout)["diagnostics"] == []
-    assert zig_gap.returncode == 0 and "PASS" in zig_gap.stdout
+    assert rust_gap.returncode == 1, rust_gap.stdout
+    assert {d["code"] for d in json.loads(rust_gap.stdout)["diagnostics"]} == {"undisclosed_provide_limit"}
+    assert zig_gap.returncode == 1 and "undisclosed_provide_limit" in zig_gap.stdout + zig_gap.stderr
     assert go_gap.returncode == 1, go_gap.stderr
     diagnostics = json.loads(go_gap.stdout)[0]["diagnostics"]
     assert {d["code"] for d in diagnostics} == {"undisclosed_provide_limit"}, diagnostics
     assert all(d["phase"] == "semantic" and d["pointer"] == "/payload/error" for d in diagnostics)
-    print("KNOWN GAP observed: Go rejects the Unicode 17 refusal; Rust and Zig omit that judgment", flush=True)
+    print("PASS: Go, Rust and Zig reject the Unicode 17 refusal", flush=True)
     print(f"PASS: {count} shared traces, nine consumer variations, a valid Unicode 17 descriptor, and {len(valid_patterns) + len(invalid_patterns) + len(matching)} RE2 probes; {len(compared)} Go/Rust comparisons, zero disagreements", flush=True)
 
 
