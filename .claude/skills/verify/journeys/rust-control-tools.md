@@ -19,7 +19,7 @@ and mutated inputs, checks RE2 syntax/matching probes, and builds the internal
 Go validator to compare every result with Rust. It requires zero Go/Rust
 code-set or phase disagreements and explicitly lists remaining snapshot gaps
 for the next port. The Unicode 17 descriptor prefix must pass in all three consumers. The refusal
-fixture and boundary, negation and whole-name probes for Beria Erfe, Sidetic,
+fixtures for all four scripts (also pinned by the shared manifest in CI), and boundary, negation and whole-name probes for Beria Erfe, Sidetic,
 Tai Yo and Tolong Siki must agree across Go, Rust and Zig. The script retains
 the three consumers’ results. Other Rust Unicode 16 data differences and Zig
 syntax outside its supported subset still conservatively stand down. The baseline

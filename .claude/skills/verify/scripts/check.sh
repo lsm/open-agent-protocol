@@ -1,9 +1,10 @@
 #!/bin/bash
 set -euo pipefail
-cd "$(dirname "$0")/../../../.."
+script_dir=$(cd "$(dirname "$0")" && pwd)
+cd "$script_dir/../../../.."
 artifacts=${OAP_VERIFY_ARTIFACTS:-$(mktemp -d "${TMPDIR:-/tmp}/oap-verify.XXXXXX")}
 if [[ -z ${OAP_VERIFY_ARTIFACTS:-} ]]; then
-    OAP_VERIFY_ARTIFACTS="$artifacts" bash "$0" 2>&1 | tee "$artifacts/check.log"
+    OAP_VERIFY_ARTIFACTS="$artifacts" bash "$script_dir/check.sh" 2>&1 | tee "$artifacts/check.log"
     exit "${PIPESTATUS[0]}"
 fi
 printf 'Artifacts: %s\n' "$artifacts"
