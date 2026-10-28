@@ -752,7 +752,7 @@ test "a prompt starts its run at its own user.message, streams, and completes at
     try testing.expectEqualStrings("po", payloadOf(&reducer, 1).get("part").?.object.get("text").?.string);
     const completed = payloadOf(&reducer, 3);
     try testing.expectEqualStrings("pong", completed.get("final_response").?.object.get("content").?.array.items[0].object.get("text").?.string);
-    try testing.expectEqual(@as(i64, 11957), completed.get("usage").?.object.get("total_tokens").?.integer);
+    try testing.expect(completed.get("usage").?.object.get("total_tokens") == null);
     const extensions = reducer.envelopes.items[3].object.get("extensions").?.object;
     try testing.expectEqualStrings("mai-code-1.1-flash", extensions.get(routed_model_extension).?.object.get("model").?.string);
     try testing.expectEqual(@as(f64, 1.0), extensions.get(cost_extension).?.object.get("premium_requests").?.float);
