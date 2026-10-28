@@ -162,7 +162,7 @@ func TestReplayRejectsDirectionAndBindingCorruption(t *testing.T) {
 }
 
 func TestUsageCorpus(t *testing.T) {
-	for _, name := range []string{"reasoning-usage", "usage-sparse", "usage-precision", "usage-wide", "usage-partial-call", "usage-overflow", "usage-negative-zero", "cost-wide", "cost-unrepresentable"} {
+	for _, name := range []string{"reasoning-usage", "usage-sparse", "usage-precision", "usage-wide", "usage-partial-call", "usage-overflow", "usage-negative-zero", "cost-wide", "cost-unrepresentable", "cost-unknown", "cost-partial"} {
 		t.Run(name, func(t *testing.T) { replay(t, name) })
 	}
 }
