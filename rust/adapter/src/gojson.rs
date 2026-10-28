@@ -1,6 +1,8 @@
 use std::borrow::Cow;
 use std::collections::HashSet;
 
+use crate::quote_table::PRINTABLE;
+
 pub const NESTING_LIMIT: usize = 10_000;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -26,77 +28,151 @@ impl std::error::Error for WalkError {}
 
 struct Level {
     object: bool,
-    expect_key: bool,
     seen: HashSet<String>,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Expect {
+    Value,
+    ValueOrClose,
+    Key,
+    KeyOrClose,
+    Colon,
+    CommaOrClose,
+}
+
 pub fn reject_duplicate_keys(data: &[u8]) -> Result<(), WalkError> {
+    std::str::from_utf8(data).map_err(|_| WalkError::Syntax)?;
+    let end = walk_value(data, 0)?;
+    let rest = skip_space(data, end);
+    if rest == data.len() {
+        return Ok(());
+    }
+    match walk_value(data, rest) {
+        Ok(_) | Err(WalkError::Trailing) => Err(WalkError::Trailing),
+        Err(error) => Err(error),
+    }
+}
+
+fn walk_value(data: &[u8], start: usize) -> Result<usize, WalkError> {
     let mut stack: Vec<Level> = Vec::new();
-    let mut at = skip_space(data, 0);
-    let mut settled = false;
-    while at < data.len() {
-        if settled {
-            return Err(WalkError::Trailing);
-        }
-        let byte = data[at];
-        let mut value = true;
-        match byte {
-            b'{' | b'[' => {
+    let mut expect = Expect::Value;
+    let mut at = skip_space(data, start);
+    loop {
+        let Some(&byte) = data.get(at) else {
+            return Err(WalkError::Syntax);
+        };
+        let mut finished = false;
+        match (expect, byte) {
+            (Expect::Value | Expect::ValueOrClose, b'{' | b'[') => {
                 if stack.len() >= NESTING_LIMIT {
                     return Err(WalkError::TooDeep);
                 }
                 stack.push(Level {
                     object: byte == b'{',
-                    expect_key: byte == b'{',
                     seen: HashSet::new(),
                 });
+                expect = if byte == b'{' {
+                    Expect::KeyOrClose
+                } else {
+                    Expect::ValueOrClose
+                };
                 at += 1;
-                value = false;
             }
-            b'}' | b']' => {
-                stack.pop().ok_or(WalkError::Syntax)?;
+            (Expect::ValueOrClose, b']') | (Expect::KeyOrClose, b'}') => {
+                stack.pop();
                 at += 1;
+                finished = true;
             }
-            b',' | b':' => {
-                at += 1;
-                value = false;
-            }
-            b'"' => {
-                let (text, next) = string(data, at)?;
-                at = next;
-                if let Some(top) = stack.last_mut() {
-                    if top.object && top.expect_key {
-                        if !top.seen.insert(text.clone()) {
-                            return Err(WalkError::Duplicate(text));
-                        }
-                        top.expect_key = false;
-                        value = false;
-                    }
-                }
-            }
-            _ => {
-                let start = at;
-                while at < data.len() && !b",:]} \t\r\n".contains(&data[at]) {
-                    at += 1;
-                }
-                if at == start {
+            (Expect::CommaOrClose, b']' | b'}') => {
+                let object = stack.last().is_some_and(|level| level.object);
+                if object != (byte == b'}') {
                     return Err(WalkError::Syntax);
                 }
+                stack.pop();
+                at += 1;
+                finished = true;
             }
+            (Expect::CommaOrClose, b',') => {
+                let object = stack.last().is_some_and(|level| level.object);
+                expect = if object { Expect::Key } else { Expect::Value };
+                at += 1;
+            }
+            (Expect::Key | Expect::KeyOrClose, b'"') => {
+                let (key, next) = string(data, at)?;
+                let level = stack.last_mut().ok_or(WalkError::Syntax)?;
+                if !level.seen.insert(key.clone()) {
+                    return Err(WalkError::Duplicate(key));
+                }
+                expect = Expect::Colon;
+                at = next;
+            }
+            (Expect::Colon, b':') => {
+                expect = Expect::Value;
+                at += 1;
+            }
+            (Expect::Value | Expect::ValueOrClose, b'"') => {
+                at = string(data, at)?.1;
+                finished = true;
+            }
+            (Expect::Value | Expect::ValueOrClose, _) => {
+                at = scalar(data, at)?;
+                finished = true;
+            }
+            _ => return Err(WalkError::Syntax),
         }
-        if value {
-            match stack.last_mut() {
-                None => settled = true,
-                Some(top) if top.object => top.expect_key = true,
-                Some(_) => {}
+        if finished {
+            if stack.is_empty() {
+                return Ok(at);
             }
+            expect = Expect::CommaOrClose;
         }
         at = skip_space(data, at);
     }
-    if !stack.is_empty() || !settled {
-        return Err(WalkError::Syntax);
+}
+
+fn digits(data: &[u8], mut at: usize) -> (usize, bool) {
+    let from = at;
+    while data.get(at).is_some_and(u8::is_ascii_digit) {
+        at += 1;
     }
-    Ok(())
+    (at, at > from)
+}
+
+fn scalar(data: &[u8], start: usize) -> Result<usize, WalkError> {
+    for literal in ["true", "false", "null"] {
+        if data[start..].starts_with(literal.as_bytes()) {
+            return Ok(start + literal.len());
+        }
+    }
+    let mut at = start;
+    if data.get(at) == Some(&b'-') {
+        at += 1;
+    }
+    match data.get(at) {
+        Some(b'0') => at += 1,
+        Some(b'1'..=b'9') => at = digits(data, at).0,
+        _ => return Err(WalkError::Syntax),
+    }
+    if data.get(at) == Some(&b'.') {
+        let (next, some) = digits(data, at + 1);
+        if !some {
+            return Err(WalkError::Syntax);
+        }
+        at = next;
+    }
+    if matches!(data.get(at), Some(b'e' | b'E')) {
+        at += 1;
+        if matches!(data.get(at), Some(b'+' | b'-')) {
+            at += 1;
+        }
+        let (next, some) = digits(data, at);
+        if !some {
+            return Err(WalkError::Syntax);
+        }
+        at = next;
+    }
+    Ok(at)
 }
 
 fn skip_space(data: &[u8], mut at: usize) -> usize {
@@ -237,14 +313,31 @@ pub fn go_quote(text: &str) -> String {
             '\t' => out.push_str("\\t"),
             '\u{7}' => out.push_str("\\a"),
             '\u{8}' => out.push_str("\\b"),
-            '\u{c}' => out.push_str("\\f"),
             '\u{b}' => out.push_str("\\v"),
-            other if (other as u32) < 0x20 || other == '\u{7f}' => {
+            '\u{c}' => out.push_str("\\f"),
+            other if (other as u32) < 0x80 && !printable(other) => {
                 out.push_str(&format!("\\x{:02x}", other as u32))
             }
-            other => out.push(other),
+            other if printable(other) => out.push(other),
+            other if (other as u32) < 0x10000 => out.push_str(&format!("\\u{:04x}", other as u32)),
+            other => out.push_str(&format!("\\U{:08x}", other as u32)),
         }
     }
     out.push('"');
     out
+}
+
+pub fn printable(character: char) -> bool {
+    let code = character as u32;
+    PRINTABLE
+        .binary_search_by(|(low, high)| {
+            if code < *low {
+                std::cmp::Ordering::Greater
+            } else if code > *high {
+                std::cmp::Ordering::Less
+            } else {
+                std::cmp::Ordering::Equal
+            }
+        })
+        .is_ok()
 }

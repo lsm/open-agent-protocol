@@ -5,6 +5,7 @@ pub mod gojson;
 pub mod journal;
 pub mod memory;
 mod prompt;
+mod quote_table;
 mod refuse;
 
 use oap_protocol::{
