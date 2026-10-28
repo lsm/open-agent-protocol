@@ -15,10 +15,15 @@ fn status_answers_supported_for_a_row_that_records_none_and_for_an_unknown_id() 
 }
 
 #[test]
-fn offering_answers_nothing_for_an_unknown_id() {
-    assert_eq!(held().offering("no-such-provider"), "");
-    assert!(held().credential_env("no-such-provider").is_empty());
-    assert!(held().oauth_origin("no-such-provider").is_none());
+fn an_unknown_id_resolves_no_wire_and_no_accessors() {
+    let unknown = "no-such-provider";
+    assert_eq!(held().wire_for_model(unknown, "gpt-5-pro"), "");
+    assert_eq!(held().offering(unknown), "");
+    assert!(held().credential_env(unknown).is_empty());
+    assert!(held().base_url_env(unknown).is_empty());
+    assert_eq!(held().region_env(unknown), "");
+    assert_eq!(held().models_endpoint(unknown), "");
+    assert!(held().oauth_origin(unknown).is_none());
 }
 
 #[test]
