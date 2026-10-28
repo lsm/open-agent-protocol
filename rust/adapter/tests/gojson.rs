@@ -227,3 +227,21 @@ fn go_quote_follows_strconv_printability() {
     }
     assert_eq!(go_quote("\u{7}\u{8}\u{b}\u{c}\u{0}"), r#""\a\b\v\f\x00""#);
 }
+
+#[test]
+fn a_bad_escape_before_a_multibyte_character_is_a_syntax_error_and_not_a_panic() {
+    let frame = r#"["\ud800\é"]"#.to_owned();
+    assert_eq!(
+        reject_duplicate_keys(frame.as_bytes()),
+        Err(WalkError::Syntax)
+    );
+    assert_eq!(replace_lone_surrogates(&frame), r#"["\ufffd\é"]"#);
+}
+
+#[test]
+fn invalid_utf8_is_refused_where_go_s_decoder_would_substitute_it() {
+    assert_eq!(
+        reject_duplicate_keys(b"{\"\xff\":1}"),
+        Err(WalkError::Syntax)
+    );
+}

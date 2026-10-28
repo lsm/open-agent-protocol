@@ -241,7 +241,10 @@ pub fn replace_lone_surrogates(data: &str) -> Cow<'_, str> {
                     continue;
                 }
                 Some(_) => 6,
-                None => 2.min(bytes.len() - at),
+                None => bytes
+                    .get(at + 1)
+                    .map_or(1, |next| 1 + utf8_width(*next))
+                    .min(bytes.len() - at),
             };
             out.push_str(&data[at..at + width]);
             at += width;
