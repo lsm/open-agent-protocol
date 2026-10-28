@@ -37,7 +37,7 @@ func (s *session) Submit(ctx context.Context, submit base.SubmitRequest) (protoc
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.closed {
+	if s.closed || s.unusable {
 		return zero, nil, base.ErrSessionClosed
 	}
 	busy := s.reducer.live() > 0
