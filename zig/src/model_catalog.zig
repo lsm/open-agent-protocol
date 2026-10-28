@@ -6406,3 +6406,26 @@ test "a custom provider's model list says whether each model sees images, and si
     try std.testing.expectEqual(@as(usize, 1), models[1].input.len);
     try std.testing.expect(!models[2].image_input_known);
 }
+
+test "copilot context tiers keep the default and allow the advertised long prompt without changing model identity" {
+    const allocator = std.testing.allocator;
+    const cases = [_]struct { prices: []const u8, default: u32, maximum: u32 }{
+        .{ .prices = "{\"default\":{\"context_max\":200000},\"long_context\":{\"context_max\":872000}}", .default = 200000, .maximum = 872000 },
+        .{ .prices = "{\"default\":{\"max_prompt_tokens\":180000},\"long_context\":{\"max_prompt_tokens\":936000}}", .default = 180000, .maximum = 936000 },
+        .{ .prices = "{\"default\":{\"max_prompt_tokens\":190000,\"context_max\":120000},\"long_context\":{\"max_prompt_tokens\":760000,\"context_max\":700000}}", .default = 190000, .maximum = 760000 },
+    };
+    for (cases) |case| {
+        const body = try std.fmt.allocPrint(allocator, "{{\"data\":[{{\"id\":\"claude-tiered\",\"capabilities\":{{\"type\":\"chat\",\"limits\":{{\"max_prompt_tokens\":200000,\"max_context_window_tokens\":1000000,\"max_output_tokens\":128000}}}},\"billing\":{{\"token_prices\":{s}}}}}]}}", .{case.prices});
+        defer allocator.free(body);
+        const discovered = try parseCopilotModels(allocator, body);
+        defer freeDiscoveredModels(allocator, discovered);
+        var model = try copilotModel(allocator, discovered[0].id, "https://api.individual.githubcopilot.com", discovered[0]);
+        defer model.deinit(allocator);
+        try std.testing.expectEqual(case.default, model.context_window);
+        try std.testing.expectEqual(@as(?u32, case.maximum), contextWindowMaximum(model));
+        var cloned = try ai_types.cloneModel(allocator, model);
+        defer cloned.deinit(allocator);
+        try std.testing.expectEqual(@as(?u32, case.maximum), contextWindowMaximum(cloned));
+        try std.testing.expectEqualStrings("claude-tiered", cloned.id);
+    }
+}
