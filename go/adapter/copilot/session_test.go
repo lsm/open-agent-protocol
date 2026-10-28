@@ -46,6 +46,7 @@ func TestSyntheticCopilotChild(t *testing.T) {
 			os.Exit(3)
 		}
 		result := any(map[string]any{})
+		prompt := "hello"
 		switch message.Method {
 		case "ping":
 			result = map[string]any{"protocolVersion": 3}
@@ -54,6 +55,9 @@ func TestSyntheticCopilotChild(t *testing.T) {
 		case "session.create":
 			result = map[string]any{"sessionId": "ses"}
 		case "session.send":
+			var params map[string]json.RawMessage
+			_ = json.Unmarshal(message.Params, &params)
+			prompt = native.Text(params, "prompt")
 			count++
 			id := fmt.Sprintf("m%d", count)
 			if os.Getenv("OAP_COPILOT_SESSION_MODE") == "refuse" {
@@ -67,6 +71,9 @@ func TestSyntheticCopilotChild(t *testing.T) {
 				time.Sleep(25 * time.Millisecond)
 			}
 			result = map[string]any{"messageId": id}
+			if os.Getenv("OAP_COPILOT_SESSION_MODE") == "missing-id" {
+				result = map[string]any{}
+			}
 		}
 		say(map[string]any{"jsonrpc": "2.0", "id": message.ID, "result": result})
 		if message.Method != "session.send" {
@@ -78,8 +85,8 @@ func TestSyntheticCopilotChild(t *testing.T) {
 		if os.Getenv("OAP_COPILOT_SESSION_MODE") == "hold" || os.Getenv("OAP_COPILOT_SESSION_MODE") == "queued" {
 			continue
 		}
-		event("assistant.message_delta", map[string]any{"deltaContent": "hello"})
-		event("assistant.message", map[string]any{"content": "hello"})
+		event("assistant.message_delta", map[string]any{"deltaContent": prompt})
+		event("assistant.message", map[string]any{"content": prompt})
 		event("assistant.usage", map[string]any{"inputTokens": 8, "outputTokens": 3, "cost": 0})
 		event("session.idle", map[string]any{})
 	}

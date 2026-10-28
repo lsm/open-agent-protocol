@@ -34,13 +34,18 @@ func newReducer(sessionID protocol.SessionID, nativeID string, ids base.IDGenera
 	return &reducer{sessionID: sessionID, nativeID: nativeID, ids: ids, clock: clock}
 }
 
-func (r *reducer) admit(queue bool) (*run, error) {
+func (r *reducer) live() int {
 	live := 0
 	for _, run := range r.runs {
 		if !run.terminal {
 			live++
 		}
 	}
+	return live
+}
+
+func (r *reducer) admit(queue bool) (*run, error) {
+	live := r.live()
 	if live > maxQueued {
 		return nil, base.ErrRunActive
 	}
