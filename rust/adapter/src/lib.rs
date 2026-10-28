@@ -8,6 +8,7 @@ pub mod memory;
 mod prompt;
 mod quote_table;
 mod refuse;
+pub mod subscriber;
 #[cfg(feature = "testkit")]
 pub mod testkit;
 

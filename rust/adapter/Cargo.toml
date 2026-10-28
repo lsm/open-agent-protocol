@@ -13,7 +13,7 @@ futures-core = "0.3"
 oap-protocol = { path = "../protocol" }
 oap-validation = { path = "../validation" }
 serde = { version = "1", features = ["derive"] }
-serde_json = { version = "1", features = ["raw_value"] }
+serde_json = { version = "1", features = ["raw_value", "unbounded_depth"] }
 thiserror = "2"
 
 [features]

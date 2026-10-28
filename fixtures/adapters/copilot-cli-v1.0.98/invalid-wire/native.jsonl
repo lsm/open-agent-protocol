@@ -1,0 +1,1 @@
+{"direction":"copilot-to-host","action":"reject-wire","classification":"refused","fidelity":"observed-only","raw":{"jsonrpc":"2.0","id":1,"result":{},"error":{"code":1,"message":"both result and error"}}}
