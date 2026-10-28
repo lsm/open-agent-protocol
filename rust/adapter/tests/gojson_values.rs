@@ -106,3 +106,11 @@ fn remarshal_any_accepts_go_s_nesting_limit_and_refuses_one_past_it() {
     assert_eq!(remarshal_any(&nested(10_000)).unwrap(), nested(10_000));
     assert!(remarshal_any(&nested(10_001)).is_err());
 }
+
+#[test]
+fn backspace_and_form_feed_keep_the_short_escapes_go_writes() {
+    assert_eq!(
+        remarshal_any(r#"{"a":"x\u0008y\u000cz"}"#).unwrap(),
+        r#"{"a":"x\by\fz"}"#
+    );
+}
