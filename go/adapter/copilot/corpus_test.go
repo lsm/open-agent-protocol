@@ -96,6 +96,7 @@ func replay(t *testing.T, name string) {
 var lifecycleCases = []string{"completed-text", "queued-busy-period", "unknown-event", "session-error", "foreign-session"}
 var usageCases = []string{"reasoning-usage", "usage-sparse", "usage-precision", "usage-wide", "usage-partial-call", "usage-overflow", "usage-negative-zero", "cost-wide", "cost-unrepresentable"}
 var toolCases = []string{"tool-success", "tool-denied", "tool-orphan", "tool-incomplete", "tool-duplicate-end"}
+var codecCases = []string{"invalid-wire", "invalid-event"}
 
 func TestLifecycleCorpus(t *testing.T) {
 	for _, name := range lifecycleCases {
@@ -118,10 +119,21 @@ func applyStep(r *reducer, admitted *run, step corpusStep) (*run, error) {
 		return admitted, fmt.Errorf("invalid corpus direction")
 	}
 	m, err := native.Parse(step.Raw)
+	if step.Action == "reject-wire" {
+		if err == nil {
+			return admitted, fmt.Errorf("accepted malformed wire")
+		}
+		return admitted, nil
+	}
 	if err != nil {
 		return admitted, err
 	}
 	switch step.Action {
+	case "reject-event":
+		if _, err := native.DecodeEvent(m); err == nil {
+			return admitted, fmt.Errorf("accepted malformed event")
+		}
+		return admitted, nil
 	case "admit":
 		if m.Kind != native.Request || m.Method != "session.send" {
 			return admitted, fmt.Errorf("invalid admission")
@@ -177,6 +189,12 @@ func TestToolCorpus(t *testing.T) {
 	}
 }
 
+func TestCodecCorpus(t *testing.T) {
+	for _, name := range codecCases {
+		t.Run(name, func(t *testing.T) { replay(t, name) })
+	}
+}
+
 func TestCorpusInventory(t *testing.T) {
 	data, err := os.ReadFile(filepath.Join("..", "..", "..", filepath.FromSlash(CorpusDirectory), "manifest.json"))
 	if err != nil {
@@ -189,7 +207,7 @@ func TestCorpusInventory(t *testing.T) {
 		t.Fatal(err)
 	}
 	known := map[string]bool{}
-	for _, group := range [][]string{lifecycleCases, usageCases, toolCases, {"invalid-wire", "invalid-event"}} {
+	for _, group := range [][]string{lifecycleCases, usageCases, toolCases, codecCases} {
 		for _, name := range group {
 			if known[name] {
 				t.Fatalf("repeated replay %s", name)
