@@ -671,7 +671,7 @@ test "separate user messages keep a boundary in the native prompt" {
     defer probe.deinit();
     var refusal = contract.Refusal{};
     const opened = try probe.open(&refusal);
-    const messages = [_]oap_types.Message{
+    var messages = [_]oap_types.Message{
         .{ .role = .user, .content = .{ .text = "hello" } },
         .{ .role = .user, .content = .{ .text = "world" } },
     };
