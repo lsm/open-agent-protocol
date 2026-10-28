@@ -1,0 +1,15 @@
+[package]
+name = "oap-adapter-acp"
+version = "0.1.0"
+edition = "2021"
+description = "The Open Agent Protocol adapter over an Agent Client Protocol v1 agent on stdio"
+repository = "https://github.com/lsm/open-agent-protocol"
+license = "CC0-1.0"
+publish = false
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["raw_value"] }
+
+[lints.rust]
+unsafe_code = "forbid"
