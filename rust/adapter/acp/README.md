@@ -23,3 +23,9 @@ Three Go behaviours are not reproduced here:
   `oap_adapter::gojson::replace_lone_surrogates` (#1445) before decoding it.
   Invalid UTF-8 never reaches these types: the frame reader refuses it, as Go's
   does.
+
+A member written twice never reaches these types. Go's encoding/json would keep
+the last copy, but the rpc layer refuses the whole frame first with
+`oap_adapter::gojson::reject_duplicate_keys`, as Go's `ParseMessage` refuses it
+with `jsonwalk`, so serde's refusal of a repeated field is never the one that
+decides.
