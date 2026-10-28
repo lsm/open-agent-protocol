@@ -143,3 +143,9 @@ func TestUsageCorpus(t *testing.T) {
 		t.Run(name, func(t *testing.T) { replay(t, name) })
 	}
 }
+
+func TestToolCorpus(t *testing.T) {
+	for _, name := range []string{"tool-success", "tool-denied", "tool-orphan", "tool-incomplete", "tool-duplicate-end"} {
+		t.Run(name, func(t *testing.T) { replay(t, name) })
+	}
+}
