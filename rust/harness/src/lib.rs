@@ -7,7 +7,7 @@ pub const SCHEMA_FILE: &str = "harness.schema.json";
 
 const SCHEMA: &str = include_str!("../../../harnesses/harness.schema.json");
 
-pub const FILES: [(&str, &str); 7] = [
+pub const FILES: [(&str, &str); 8] = [
     ("acp.json", include_str!("../../../harnesses/acp.json")),
     (
         "claude-code.json",
@@ -16,6 +16,10 @@ pub const FILES: [(&str, &str); 7] = [
     (
         "codex-app-server.json",
         include_str!("../../../harnesses/codex-app-server.json"),
+    ),
+    (
+        "copilot-cli.json",
+        include_str!("../../../harnesses/copilot-cli.json"),
     ),
     (
         "deepseek-harness.json",
