@@ -379,17 +379,25 @@ pub const Session = struct {
         }
         if (request.messages.len == 0) return error.InvalidSubmission;
         var prompt: std.ArrayList(u8) = .empty;
-        for (request.messages) |message| {
+        var text_bytes: usize = 0;
+        for (request.messages, 0..) |message, index| {
             if (message.role != .user) return error.InvalidSubmission;
+            if (index > 0) try prompt.appendSlice(arena, "\n\n");
             switch (message.content) {
-                .text => |content| try prompt.appendSlice(arena, content),
+                .text => |content| {
+                    text_bytes += content.len;
+                    try prompt.appendSlice(arena, content);
+                },
                 .parts => |parts| for (parts) |part| switch (part) {
-                    .text => |content| try prompt.appendSlice(arena, content),
+                    .text => |content| {
+                        text_bytes += content.len;
+                        try prompt.appendSlice(arena, content);
+                    },
                     else => return error.InvalidSubmission,
                 },
             }
         }
-        if (prompt.items.len == 0) return error.InvalidSubmission;
+        if (text_bytes == 0) return error.InvalidSubmission;
         if (self.ended) return error.SessionClosed;
         const held_prompt = try self.owned().dupe(u8, prompt.items);
         var params: std.json.ObjectMap = .empty;
@@ -663,6 +671,26 @@ test "an open refuses a server on another protocol version, and one that answers
     defer anonymous.deinit();
     try testing.expectError(error.BackendFailed, anonymous.open(&refusal));
     try testing.expect(std.mem.indexOf(u8, refusal.message, "no session id") != null);
+}
+
+test "separate user messages keep a boundary in the native prompt" {
+    var probe: Probe = undefined;
+    try probe.init(fake_connect ++ "take; say '{\"jsonrpc\":\"2.0\",\"id\":4,\"result\":{\"messageId\":\"m-1\"}}'\n" ++ fake_idle);
+    defer probe.deinit();
+    var refusal = contract.Refusal{};
+    const opened = try probe.open(&refusal);
+    var messages = [_]oap_types.Message{
+        .{ .role = .user, .content = .{ .text = "hello" } },
+        .{ .role = .user, .content = .{ .text = "world" } },
+    };
+    _ = try opened.submit(probe.arena.allocator(), &.{ .session_id = "s1", .messages = &messages, .delivery = .auto }, "", &refusal);
+    const written = try probe.fake.written(probe.arena.allocator());
+    try testing.expect(std.mem.indexOf(u8, written, "\"prompt\":\"hello\\n\\nworld\"") != null);
+    var empty_messages = [_]oap_types.Message{
+        .{ .role = .user, .content = .{ .text = "" } },
+        .{ .role = .user, .content = .{ .text = "" } },
+    };
+    try testing.expectError(error.InvalidSubmission, opened.submit(probe.arena.allocator(), &.{ .session_id = "s1", .messages = &empty_messages, .delivery = .auto }, "", &refusal));
 }
 
 test "a second prompt queues behind the open run, and a server that exits fails every open run" {

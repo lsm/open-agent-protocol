@@ -111,6 +111,12 @@ resume). Nine scenarios, fourteen billed model calls in all.
 
 ## Session lifecycle
 
+Text admission joins separate user messages with a double newline, preserving
+their boundary in Copilot's single prompt string. Text parts within one message
+remain contiguous. An entirely empty submission stays invalid even when message
+separators would otherwise produce bytes. Synthetic process tests pin this in
+both Go and Zig.
+
 | OAP | Native |
 | --- | --- |
 | `session.open` | `session.create {clientName, model?, requestPermission:true, requestUserInput:true, workingDirectory, streaming:true, envValueMode:"direct"}` → `{sessionId, workspacePath, …}` |

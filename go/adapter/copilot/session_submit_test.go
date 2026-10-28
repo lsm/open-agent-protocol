@@ -118,10 +118,10 @@ func TestNativeRefusalDoesNotAdmitAnOAPRun(t *testing.T) {
 	}
 }
 
-func TestSubmitPreservesUnicodeTextAcrossMessagesAndParts(t *testing.T) {
+func TestSubmitPreservesContiguousUnicodeTextParts(t *testing.T) {
 	s := emptySession(t, "")
 	request := helloRequest()
-	request.Request.Messages = []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("\u4f60")}, {Role: protocol.RoleUser, Content: protocol.PartsContent([]protocol.ContentPart{{Type: protocol.ContentText, Text: "\u597d"}})}}
+	request.Request.Messages = []protocol.Message{{Role: protocol.RoleUser, Content: protocol.PartsContent([]protocol.ContentPart{{Type: protocol.ContentText, Text: "\u4f60"}, {Type: protocol.ContentText, Text: "\u597d"}})}}
 	ack, stream, err := s.Submit(context.Background(), request)
 	if err != nil {
 		t.Fatal(err)
@@ -189,5 +189,33 @@ func TestQueuedSubmissionPromotesAtItsNativeUserMessage(t *testing.T) {
 	terminal := adaptertest.Drain(t, secondStream, time.Second)
 	if len(terminal) != 1 || terminal[0].Type != protocol.TypeRunFailed {
 		t.Fatalf("close did not settle promoted run: %+v", terminal)
+	}
+}
+
+func TestSeparateMessagesKeepTheirBoundaryAtTheNativeServer(t *testing.T) {
+	s := emptySession(t, "")
+	request := helloRequest()
+	request.Request.Messages = []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("hello")}, {Role: protocol.RoleUser, Content: protocol.TextContent("world")}}
+	_, stream, err := s.Submit(context.Background(), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	events := adaptertest.Drain(t, stream, time.Second)
+	var terminal protocol.RunCompletedPayload
+	if err := events[len(events)-1].DecodePayload(&terminal); err != nil {
+		t.Fatal(err)
+	}
+	parts, ok := terminal.FinalResponse.Content.Parts()
+	if !ok || len(parts) != 1 || parts[0].Text != "hello\n\nworld" {
+		t.Fatalf("message boundary lost in native round trip: %s", terminal.FinalResponse.Content)
+	}
+}
+
+func TestEmptyMessagesDoNotBecomeASeparatorOnlyPrompt(t *testing.T) {
+	s := emptySession(t, "")
+	request := helloRequest()
+	request.Request.Messages = []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("")}, {Role: protocol.RoleUser, Content: protocol.TextContent("")}}
+	if _, _, err := s.Submit(context.Background(), request); !errors.Is(err, base.ErrInvalidSubmission) {
+		t.Fatalf("empty messages admitted as separators: %v", err)
 	}
 }

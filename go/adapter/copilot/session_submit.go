@@ -37,7 +37,7 @@ func (s *session) Submit(ctx context.Context, submit base.SubmitRequest) (protoc
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.closed {
+	if s.closed || s.unusable {
 		return zero, nil, base.ErrSessionClosed
 	}
 	busy := s.reducer.live() > 0
@@ -77,11 +77,16 @@ func (s *session) Submit(ctx context.Context, submit base.SubmitRequest) (protoc
 
 func textPrompt(messages []protocol.Message) (string, error) {
 	var prompt strings.Builder
-	for _, message := range messages {
+	textBytes := 0
+	for index, message := range messages {
 		if message.Role != protocol.RoleUser {
 			return "", base.ErrInvalidSubmission
 		}
+		if index > 0 {
+			prompt.WriteString("\n\n")
+		}
 		if text, ok := message.Content.Text(); ok {
+			textBytes += len(text)
 			prompt.WriteString(text)
 			continue
 		}
@@ -93,10 +98,11 @@ func textPrompt(messages []protocol.Message) (string, error) {
 			if part.Type != protocol.ContentText {
 				return "", base.ErrInvalidSubmission
 			}
+			textBytes += len(part.Text)
 			prompt.WriteString(part.Text)
 		}
 	}
-	if prompt.Len() == 0 {
+	if textBytes == 0 {
 		return "", base.ErrInvalidSubmission
 	}
 	return prompt.String(), nil
