@@ -696,6 +696,7 @@ fn number(value: std.json.Value) f64 {
     return switch (value) {
         .integer => |whole| @floatFromInt(whole),
         .float => |real| real,
+        .number_string => |raw| std.fmt.parseFloat(f64, raw) catch 0,
         else => 0,
     };
 }

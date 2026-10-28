@@ -20,8 +20,7 @@ func (u *usageState) observe(data map[string]json.RawMessage) {
 	u.input = accumulate(u.input, data["inputTokens"], !u.measured)
 	u.output = accumulate(u.output, data["outputTokens"], !u.measured)
 	u.measured = true
-	var cost float64
-	_ = json.Unmarshal(data["cost"], &cost)
+	cost, _ := strconv.ParseFloat(string(data["cost"]), 64)
 	u.cost += cost
 	if model := native.Text(data, "model"); model != "" {
 		u.model = model
