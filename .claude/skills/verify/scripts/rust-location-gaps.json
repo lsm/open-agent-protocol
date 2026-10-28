@@ -2,6 +2,7 @@
   "version": 1,
   "rust": [
     "capability-refresh-requires-announced-revision",
+    "controls-per-run-overwrites-default-after-refresh",
     "ext-core-invalid-stays-invalid",
     "ext-member-undeclared-still-rejected",
     "ext-member-validated",

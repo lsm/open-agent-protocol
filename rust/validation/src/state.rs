@@ -4,6 +4,7 @@ mod auth;
 mod compaction;
 mod control_tools;
 mod controls;
+mod default_model;
 mod interactions;
 mod models;
 mod name_pattern;
@@ -65,6 +66,7 @@ pub(crate) struct State {
     catalog_ambiguous: bool,
     provided: HashMap<String, Vec<ToolDefinition>>,
     pending_controls: HashMap<String, controls::PendingSubmit>,
+    session_models: HashMap<String, default_model::SessionModel>,
     steer_snapshots: Vec<((usize, usize), Envelope)>,
     snapshot_claims: Vec<snapshot_claims::Claim>,
     admission_anchors: Vec<admission_anchors::Claim>,
@@ -338,6 +340,7 @@ impl State {
             catalog_ambiguous: false,
             provided: HashMap::new(),
             pending_controls: HashMap::new(),
+            session_models: HashMap::new(),
             steer_snapshots: Vec::new(),
             snapshot_claims: Vec::new(),
             admission_anchors: Vec::new(),
@@ -469,6 +472,8 @@ impl State {
             self.transcript_load_response(at, e);
         } else if e.envelope_type == EnvelopeType::MODELS_RESPONSE {
             self.models_response_shape(at, e);
+        } else if e.envelope_type == EnvelopeType::SESSION_MODEL_SWITCH_RESPONSE {
+            self.switched_model(e);
         }
         if e.envelope_type == EnvelopeType::CAPABILITIES_RESPONSE {
             self.snapshot_descriptor();

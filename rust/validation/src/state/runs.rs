@@ -30,6 +30,7 @@ pub(super) struct Run {
     pub(super) tools: HashMap<String, ToolTrack>,
     pub(super) interactions: HashMap<String, Interaction>,
     pub(super) controls: Controls,
+    pub(super) deferred_model: bool,
     pub(super) order: usize,
     pub(super) admitted_queued: bool,
     pub(super) admitted_model: String,
@@ -241,6 +242,11 @@ impl State {
         }
         let controls = self.settle_submit_admission(at, e, &p);
         let session = s(&p.session_id);
+        let queued = p.admission == Admission::QUEUED;
+        if !queued {
+            self.apply_model_control(&session, &controls);
+        }
+        let deferred_model = queued && controls.model_control().is_some();
         let run = Run {
             session: session.clone(),
             next: 1,
@@ -250,7 +256,8 @@ impl State {
             status: RunStatus::QUEUED,
             last: at,
             controls,
-            admitted_queued: p.admission == Admission::QUEUED,
+            deferred_model,
+            admitted_queued: queued,
             admitted_model: p.model_id.clone(),
             ..Run::default()
         };
@@ -296,6 +303,7 @@ impl State {
         let live = self.runs.get(&run_id).is_some_and(|run| !run.terminal);
         let was_started = self.runs.get(&run_id).is_some_and(|run| run.started);
         let (found, plain) = self.advance(at, e, &run_id);
+        self.promote_controls(&run_id, was_started);
         for (code, pointer, message, expected, actual) in found {
             let related: &[&str] = if code == codes::SCOPE_MISMATCH {
                 &[run_id.as_str()]

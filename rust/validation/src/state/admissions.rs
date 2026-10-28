@@ -128,6 +128,7 @@ impl State {
     }
 
     pub(super) fn open_response(&mut self, at: (usize, usize), e: &Envelope) {
+        self.open_model(e);
         let p: SessionState = payload(e);
         self.redelivery_response(at, e, &p);
         self.reopen_response(at, e, &p);
@@ -274,6 +275,7 @@ impl State {
     }
 
     pub(super) fn state_document(&mut self, at: (usize, usize), e: &Envelope) {
+        self.state_model(at, e);
         let p: SessionState = payload(e);
         let session = s(&p.session_id);
         let active = os(&p.active_run_id);
