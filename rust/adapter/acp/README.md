@@ -10,7 +10,7 @@ corpus records what the Go adapter accepted, they keep four of Go's
 list, is its zero value; a struct member refuses an array; and a raw member
 keeps an explicit `null`. `native::decode` applies them to a whole message.
 
-Two Go behaviours are not reproduced here:
+Three Go behaviours are not reproduced here:
 
 - Go falls back to a case-insensitive key match, so `{"sessionid":"s"}` sets
   `SessionID`; these types match keys exactly. The pinned corpus spells every
@@ -18,3 +18,8 @@ Two Go behaviours are not reproduced here:
 - Go's `json.Marshal` escapes `<`, `>`, `&`, U+2028 and U+2029. Serializing a
   type here does not, so the rpc layer, which is not ported yet, must write
   every frame through `oap_adapter::gojson::go_marshal` (#1445).
+- Go decodes an unpaired surrogate escape such as `\ud800` as U+FFFD; serde_json
+  refuses the document. The rpc layer must pass each frame through
+  `oap_adapter::gojson::replace_lone_surrogates` (#1445) before decoding it.
+  Invalid UTF-8 never reaches these types: the frame reader refuses it, as Go's
+  does.
