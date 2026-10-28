@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::value::RawValue;
 
 pub use go::{decode, Decode};
-use go::{raw, slice, strings, structures, zero};
+use go::{raw, slice, strings, structure, structures, zero};
 
 pub const METHOD_SESSION_NEW: &str = "session/new";
 pub const METHOD_SESSION_LOAD: &str = "session/load";
@@ -249,6 +249,176 @@ pub struct CancelParams {
     pub session_id: String,
 }
 
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionUpdateParams {
+    #[serde(default, deserialize_with = "zero")]
+    pub session_id: String,
+    #[serde(default, deserialize_with = "raw")]
+    pub update: Raw,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateHeader {
+    #[serde(default, deserialize_with = "zero")]
+    pub session_update: String,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentMessageChunk {
+    #[serde(default, deserialize_with = "zero")]
+    pub session_update: String,
+    #[serde(default, deserialize_with = "structure")]
+    pub content: ContentBlock,
+    #[serde(
+        default,
+        deserialize_with = "zero",
+        skip_serializing_if = "String::is_empty"
+    )]
+    pub message_id: String,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ToolCall {
+    #[serde(default, deserialize_with = "zero")]
+    pub session_update: String,
+    #[serde(default, deserialize_with = "zero")]
+    pub tool_call_id: String,
+    #[serde(default, deserialize_with = "zero")]
+    pub title: String,
+    #[serde(
+        default,
+        deserialize_with = "raw",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub name: Raw,
+    #[serde(
+        default,
+        deserialize_with = "zero",
+        skip_serializing_if = "String::is_empty"
+    )]
+    pub kind: String,
+    #[serde(
+        default,
+        deserialize_with = "zero",
+        skip_serializing_if = "String::is_empty"
+    )]
+    pub status: String,
+    #[serde(
+        default,
+        deserialize_with = "raw",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub raw_input: Raw,
+    #[serde(
+        default,
+        deserialize_with = "raw",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub raw_output: Raw,
+    #[serde(
+        default,
+        deserialize_with = "raw",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub content: Raw,
+    #[serde(
+        default,
+        deserialize_with = "raw",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub locations: Raw,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ToolCallUpdate {
+    #[serde(default, deserialize_with = "zero")]
+    pub session_update: String,
+    #[serde(default, deserialize_with = "zero")]
+    pub tool_call_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    #[serde(
+        default,
+        deserialize_with = "raw",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub name: Raw,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kind: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub status: Option<String>,
+    #[serde(
+        default,
+        deserialize_with = "raw",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub raw_input: Raw,
+    #[serde(
+        default,
+        deserialize_with = "raw",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub raw_output: Raw,
+    #[serde(
+        default,
+        deserialize_with = "raw",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub content: Raw,
+    #[serde(
+        default,
+        deserialize_with = "raw",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub locations: Raw,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PermissionRequest {
+    #[serde(default, deserialize_with = "zero")]
+    pub session_id: String,
+    #[serde(default, deserialize_with = "structure")]
+    pub tool_call: ToolCall,
+    #[serde(default, deserialize_with = "structures")]
+    pub options: Vec<PermissionOption>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PermissionOption {
+    #[serde(default, deserialize_with = "zero")]
+    pub option_id: String,
+    #[serde(default, deserialize_with = "zero")]
+    pub name: String,
+    #[serde(default, deserialize_with = "zero")]
+    pub kind: String,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PermissionResponse {
+    #[serde(default, deserialize_with = "structure")]
+    pub outcome: PermissionOutcome,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PermissionOutcome {
+    #[serde(default, deserialize_with = "zero")]
+    pub outcome: String,
+    #[serde(
+        default,
+        deserialize_with = "zero",
+        skip_serializing_if = "String::is_empty"
+    )]
+    pub option_id: String,
+}
+
 impl Decode for SessionNewParams {}
 impl Decode for SessionReopenParams {}
 impl Decode for SetConfigOptionParams {}
@@ -257,3 +427,10 @@ impl Decode for ConfigOptionUpdate {}
 impl Decode for PromptParams {}
 impl Decode for PromptResult {}
 impl Decode for CancelParams {}
+impl Decode for SessionUpdateParams {}
+impl Decode for UpdateHeader {}
+impl Decode for AgentMessageChunk {}
+impl Decode for ToolCall {}
+impl Decode for ToolCallUpdate {}
+impl Decode for PermissionRequest {}
+impl Decode for PermissionResponse {}
