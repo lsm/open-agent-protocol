@@ -148,6 +148,36 @@ func TestCancellationUnblocksAStalledWrite(t *testing.T) {
 	}
 }
 
+func TestReplyArrivingBeforeEOFRemainsReadable(t *testing.T) {
+	for range 40 {
+		func() {
+			a, b := net.Pipe()
+			c := NewClient(a, 0, 2)
+			defer c.Close()
+			go func() {
+				defer b.Close()
+				wire := NewCodec(b, b, 0)
+				body, err := wire.Read()
+				if err != nil {
+					return
+				}
+				m, err := native.Parse(body)
+				if err != nil {
+					return
+				}
+				body, _ = json.Marshal(map[string]any{"jsonrpc": "2.0", "id": m.ID, "result": "last reply"})
+				_ = wire.Write(body)
+			}()
+			ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+			defer cancel()
+			var got string
+			if err := c.Call(ctx, "synthetic", nil, &got); err != nil || got != "last reply" {
+				t.Fatalf("last reply %q, error %v", got, err)
+			}
+		}()
+	}
+}
+
 func TestMalformedInputAndBackpressureCloseTheClient(t *testing.T) {
 	for _, bodies := range [][]string{{`{"jsonrpc":"1.0","method":"x"}`}, {`{"jsonrpc":"2.0","id":999,"result":{}}`}, {`{"jsonrpc":"2.0","method":"one"}`, `{"jsonrpc":"2.0","method":"two"}`, `{"jsonrpc":"2.0","method":"three"}`}} {
 		func() {
