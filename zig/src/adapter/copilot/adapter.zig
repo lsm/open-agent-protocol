@@ -665,6 +665,21 @@ test "an open refuses a server on another protocol version, and one that answers
     try testing.expect(std.mem.indexOf(u8, refusal.message, "no session id") != null);
 }
 
+test "separate user messages keep a boundary in the native prompt" {
+    var probe: Probe = undefined;
+    try probe.init(fake_connect ++ "take; say '{\"jsonrpc\":\"2.0\",\"id\":4,\"result\":{\"messageId\":\"m-1\"}}'\n" ++ fake_idle);
+    defer probe.deinit();
+    var refusal = contract.Refusal{};
+    const opened = try probe.open(&refusal);
+    const messages = [_]oap_types.Message{
+        .{ .role = .user, .content = .{ .text = "hello" } },
+        .{ .role = .user, .content = .{ .text = "world" } },
+    };
+    _ = try opened.submit(probe.arena.allocator(), &.{ .session_id = "s1", .messages = &messages, .delivery = .auto }, "", &refusal);
+    const written = try probe.fake.written(probe.arena.allocator());
+    try testing.expect(std.mem.indexOf(u8, written, "\"prompt\":\"hello\\n\\nworld\"") != null);
+}
+
 test "a second prompt queues behind the open run, and a server that exits fails every open run" {
     var probe: Probe = undefined;
     try probe.init(fake_connect ++

@@ -191,3 +191,22 @@ func TestQueuedSubmissionPromotesAtItsNativeUserMessage(t *testing.T) {
 		t.Fatalf("close did not settle promoted run: %+v", terminal)
 	}
 }
+
+func TestSeparateMessagesKeepTheirBoundaryAtTheNativeServer(t *testing.T) {
+	s := emptySession(t, "")
+	request := helloRequest()
+	request.Request.Messages = []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("hello")}, {Role: protocol.RoleUser, Content: protocol.TextContent("world")}}
+	_, stream, err := s.Submit(context.Background(), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	events := adaptertest.Drain(t, stream, time.Second)
+	var terminal protocol.RunCompletedPayload
+	if err := events[len(events)-1].DecodePayload(&terminal); err != nil {
+		t.Fatal(err)
+	}
+	parts, ok := terminal.FinalResponse.Content.Parts()
+	if !ok || len(parts) != 1 || parts[0].Text != "hello\n\nworld" {
+		t.Fatalf("message boundary lost in native round trip: %s", terminal.FinalResponse.Content)
+	}
+}
