@@ -119,10 +119,21 @@ func applyStep(r *reducer, admitted *run, step corpusStep) (*run, error) {
 		return admitted, fmt.Errorf("invalid corpus direction")
 	}
 	m, err := native.Parse(step.Raw)
+	if step.Action == "reject-wire" {
+		if err == nil {
+			return admitted, fmt.Errorf("accepted malformed wire")
+		}
+		return admitted, nil
+	}
 	if err != nil {
 		return admitted, err
 	}
 	switch step.Action {
+	case "reject-event":
+		if _, err := native.DecodeEvent(m); err == nil {
+			return admitted, fmt.Errorf("accepted malformed event")
+		}
+		return admitted, nil
 	case "admit":
 		if m.Kind != native.Request || m.Method != "session.send" {
 			return admitted, fmt.Errorf("invalid admission")
