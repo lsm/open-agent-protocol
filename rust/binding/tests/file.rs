@@ -190,3 +190,34 @@ fn the_store_file_is_not_world_readable() {
     assert_eq!(mode & 0o077, 0);
     assert!(FileStore::open(std::path::Path::new("")).is_err());
 }
+
+#[test]
+fn a_record_longer_than_the_tail_window_is_kept_across_appends() {
+    let (_scratch, path) = scratch("long");
+    let store = FileStore::open(&path).unwrap();
+    let mut long = sample();
+    long.model = "m".repeat(5000);
+    store.append(Entry::opened(sample(), 1)).unwrap();
+    store.append(Entry::opened(long, 2)).unwrap();
+    store.append(Entry::opened(sample(), 3)).unwrap();
+    let history = store.history("session-1").unwrap();
+    assert_eq!(
+        history
+            .iter()
+            .map(|entry| entry.time_ms)
+            .collect::<Vec<_>>(),
+        [1, 2, 3]
+    );
+    assert_eq!(history[1].record.model.len(), 5000);
+}
+
+#[test]
+fn a_store_whose_file_was_deleted_reads_as_empty() {
+    let (_scratch, path) = scratch("deleted");
+    let store = FileStore::open(&path).unwrap();
+    store.append(Entry::opened(sample(), 1)).unwrap();
+    std::fs::remove_file(&path).unwrap();
+    assert!(store.history("session-1").unwrap().is_empty());
+    assert!(store.latest("session-1").unwrap().is_none());
+    assert!(store.sessions().unwrap().is_empty());
+}

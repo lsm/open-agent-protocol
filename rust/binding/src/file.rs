@@ -59,7 +59,7 @@ impl FileStore {
         let mut file = OpenOptions::new().read(true).write(true).open(&self.path)?;
         let mut from = 0;
         if cache.confirmed && size >= cache.validated && cache.last_start < size {
-            let line = read_from(&mut file, cache.last_start, cache.validated)?;
+            let line = read_line_at(&mut file, cache.last_start, size)?;
             if line.ends_with(b"\n") && decode(&line).is_ok() {
                 from = cache.validated;
             }
@@ -89,7 +89,11 @@ impl FileStore {
     fn read(&self, keep: impl Fn(&Entry) -> bool) -> Result<Vec<Entry>, Error> {
         let mut cache = self.cache();
         let mut text = Vec::new();
-        File::open(&self.path)?.read_to_end(&mut text)?;
+        match File::open(&self.path) {
+            Ok(mut file) => file.read_to_end(&mut text)?,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(err) => return Err(err.into()),
+        };
         let mut entries = Vec::new();
         for line in text.split_inclusive(|byte| *byte == b'\n') {
             if !line.ends_with(b"\n") {
@@ -136,6 +140,26 @@ fn read_from(file: &mut File, start: u64, end: u64) -> Result<Vec<u8>, Error> {
         .take(end.saturating_sub(start))
         .read_to_end(&mut buffer)?;
     Ok(buffer)
+}
+
+fn read_line_at(file: &mut File, start: u64, size: u64) -> Result<Vec<u8>, Error> {
+    let mut line = Vec::new();
+    let mut chunk = [0u8; 512];
+    file.seek(SeekFrom::Start(start))?;
+    let mut offset = start;
+    while offset < size {
+        let read = file.read(&mut chunk)?;
+        if read == 0 {
+            break;
+        }
+        offset += read as u64;
+        if let Some(end) = chunk[..read].iter().position(|byte| *byte == b'\n') {
+            line.extend_from_slice(&chunk[..=end]);
+            return Ok(line);
+        }
+        line.extend_from_slice(&chunk[..read]);
+    }
+    Ok(line)
 }
 
 fn last_record_start(file: &mut File, size: u64) -> Result<u64, Error> {
