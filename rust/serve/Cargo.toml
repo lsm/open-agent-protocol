@@ -1,0 +1,16 @@
+[package]
+name = "oap-serve"
+version = "0.1.0"
+edition = "2021"
+description = "The Open Agent Protocol hub: a registry of adapters, its sessions, and the stdio, HTTP and endpoint bindings over it"
+repository = "https://github.com/lsm/open-agent-protocol"
+license = "CC0-1.0"
+publish = false
+
+[dependencies]
+oap-adapter = { path = "../adapter" }
+oap-protocol = { path = "../protocol" }
+thiserror = "2"
+
+[lints.rust]
+unsafe_code = "forbid"
