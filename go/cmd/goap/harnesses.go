@@ -9,6 +9,7 @@ import (
 	"github.com/lsm/open-agent-protocol/go/adapter/acp"
 	"github.com/lsm/open-agent-protocol/go/adapter/claude"
 	"github.com/lsm/open-agent-protocol/go/adapter/codex/appserver"
+	"github.com/lsm/open-agent-protocol/go/adapter/copilot"
 	"github.com/lsm/open-agent-protocol/go/adapter/deepseek"
 	"github.com/lsm/open-agent-protocol/go/adapter/hermes"
 	"github.com/lsm/open-agent-protocol/go/adapter/opencode"
@@ -20,6 +21,7 @@ import (
 var adapterPins = map[string]harness.AdapterPin{
 	"acp":              {CapabilityRevision: acp.CapabilityRevision, Corpus: acp.CorpusDirectory},
 	"claude-code":      {CapabilityRevision: claude.CapabilityRevision, Corpus: claude.CorpusDirectory},
+	"copilot-cli":      {CapabilityRevision: copilot.CapabilityRevision, Corpus: copilot.CorpusDirectory},
 	"codex-app-server": {CapabilityRevision: appserver.CapabilityRevision, Corpus: appserver.CorpusDirectory},
 	"deepseek-harness": {CapabilityRevision: deepseek.CapabilityRevision, Corpus: deepseek.CorpusDirectory},
 	"hermes":           {CapabilityRevision: hermes.CapabilityRevision, Corpus: hermes.CorpusDirectory},

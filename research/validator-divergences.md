@@ -639,3 +639,13 @@ draft does not support becomes an item of its own then.
 
 **Status.** Settled by [Decision 0061](../decisions/0061-the-provider-profiles-validator-rules-and-schemas.md). Go, Zig and Rust judge it.
 
+## Diagnostic locations (Rust)
+
+[`rust-location-gaps.json`](../.claude/skills/verify/scripts/rust-location-gaps.json)
+lists the fixtures where Rust and Go raise the same codes but differ in a
+diagnostic's envelope, pointer or count. Most are `stale_capability_revision`
+pointed at `/capability_revision` where Go points at `/type`, a stale response
+reported once where Go reports it twice, and pack-member schema errors that
+Rust reports at `/payload`. `.claude/skills/verify/scripts/rust-go-parity.py`
+keeps the list exact. None changes a verdict, so none is an open item; each is
+Rust port work.

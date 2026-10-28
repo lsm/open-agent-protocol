@@ -934,6 +934,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "oap-adapter-acp"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "oap-binding"
 version = "0.1.0"
 dependencies = [
@@ -958,6 +966,16 @@ dependencies = [
 name = "oap-protocol"
 version = "0.1.0"
 dependencies = [
+ "serde",
+ "serde_json",
+ "thiserror",
+]
+
+[[package]]
+name = "oap-provider-catalog"
+version = "0.1.0"
+dependencies = [
+ "jsonschema",
  "serde",
  "serde_json",
  "thiserror",

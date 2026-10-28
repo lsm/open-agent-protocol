@@ -1,0 +1,41 @@
+{
+  "id": "copilot-cli",
+  "name": "GitHub Copilot CLI",
+  "versions": [
+    {
+      "label": "v1.0.98",
+      "status": "current",
+      "endpoint_version": "1.0.98",
+      "capability_revision": "copilot-cli-1.0.98-oap-v1",
+      "ledgers": [
+        "research/copilot-cli-1.0.98-mapping.md"
+      ],
+      "corpus": "fixtures/adapters/copilot-cli-v1.0.98",
+      "components": [
+        {
+          "name": "copilot-cli",
+          "version": "v1.0.98",
+          "repository": "https://github.com/github/copilot-cli"
+        }
+      ],
+      "sources": [
+        {
+          "component": "copilot-cli",
+          "tag": "v1.0.98",
+          "commit": "76c3172eb38f5e7537b90b9800a7023d81156438",
+          "tree": "dfc13180abc66a21eedd4699dfa7e4ba25198f13"
+        }
+      ],
+      "artifacts": [
+        {
+          "component": "copilot-cli",
+          "platform": "darwin-arm64",
+          "kind": "archive",
+          "name": "copilot-darwin-arm64.tar.gz",
+          "sha256": "a87018a0194789313c979906e45e8874699fee50549ea11d0be7bdde88b6b3c8",
+          "bytes": 105462854
+        }
+      ]
+    }
+  ]
+}
