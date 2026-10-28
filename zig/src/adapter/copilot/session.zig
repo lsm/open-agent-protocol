@@ -39,8 +39,8 @@ pub const Run = struct {
     terminal: bool = false,
     cancel_requested: bool = false,
     parts: std.ArrayList([]const u8) = .empty,
-    input_tokens: u64 = 0,
-    output_tokens: u64 = 0,
+    input_tokens: ?u64 = null,
+    output_tokens: ?u64 = null,
     measured: bool = false,
     cost: f64 = 0,
     routed_model: []const u8 = "",
@@ -232,8 +232,8 @@ pub const Reducer = struct {
             },
             .usage => {
                 const run = self.current orelse return;
-                run.input_tokens +|= count(event.data, "inputTokens");
-                run.output_tokens +|= count(event.data, "outputTokens");
+                run.input_tokens = accumulate(run.input_tokens, count(event.data, "inputTokens"), !run.measured);
+                run.output_tokens = accumulate(run.output_tokens, count(event.data, "outputTokens"), !run.measured);
                 run.measured = true;
                 if (event.data.get("cost")) |cost| run.cost += number(cost);
                 const model = native.text(event.data, "model");
@@ -596,9 +596,8 @@ pub const Reducer = struct {
         var payload = payload_in;
         if (run.measured) {
             var usage: std.json.ObjectMap = .empty;
-            try usage.put(self.allocator(), "input_tokens", try unsigned(self.allocator(), run.input_tokens));
-            try usage.put(self.allocator(), "output_tokens", try unsigned(self.allocator(), run.output_tokens));
-            try usage.put(self.allocator(), "total_tokens", try unsigned(self.allocator(), run.input_tokens +| run.output_tokens));
+            if (run.input_tokens) |counted| try usage.put(self.allocator(), "input_tokens", try unsigned(self.allocator(), counted));
+            if (run.output_tokens) |counted| try usage.put(self.allocator(), "output_tokens", try unsigned(self.allocator(), counted));
             try payload.put(self.allocator(), "usage", .{ .object = usage });
         }
         try self.emit(run, kind, payload, true);
@@ -701,12 +700,23 @@ fn number(value: std.json.Value) f64 {
     };
 }
 
-fn count(data: std.json.ObjectMap, name: []const u8) u64 {
-    const value = data.get(name) orelse return 0;
-    const real = number(value);
-    if (!(real > 0)) return 0;
-    if (real >= 18446744073709551616.0) return std.math.maxInt(u64);
-    return @intFromFloat(real);
+fn count(data: std.json.ObjectMap, name: []const u8) ?u64 {
+    const value = data.get(name) orelse return null;
+    return switch (value) {
+        .integer => |whole| if (whole >= 0) @intCast(whole) else null,
+        .number_string => |raw| blk: {
+            if (raw.len == 0) break :blk null;
+            for (raw) |digit| if (!std.ascii.isDigit(digit)) break :blk null;
+            break :blk std.fmt.parseInt(u64, raw, 10) catch null;
+        },
+        else => null,
+    };
+}
+
+fn accumulate(previous: ?u64, next: ?u64, first: bool) ?u64 {
+    if (first) return next;
+    const sum = @addWithOverflow(previous orelse return null, next orelse return null);
+    return if (sum[1] == 0) sum[0] else null;
 }
 
 const testing = std.testing;

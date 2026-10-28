@@ -16,6 +16,7 @@ type run struct {
 	started, terminal bool
 	next              uint64
 	parts             []protocol.ContentPart
+	usage             usageState
 }
 
 type reducer struct {
@@ -112,6 +113,10 @@ func (r *reducer) observe(event native.Event) error {
 			text = "Copilot reported a session error"
 		}
 		return r.fail(r.current, "copilot_session_error", text)
+	case "assistant.usage":
+		if r.current != nil {
+			r.current.usage.observe(event.Data)
+		}
 	}
 	return nil
 }
@@ -136,6 +141,9 @@ func (r *reducer) emit(run *run, kind string, payload map[string]any, terminal b
 	}
 	payload["session_id"] = r.sessionID
 	payload["run_id"] = run.id
+	if terminal && run.usage.measured {
+		payload["usage"] = run.usage.portable()
+	}
 	envelope, err := protocol.NewEnvelope(protocol.EnvelopeType(kind), protocol.EnvelopeID(r.ids.NewID("event")), payload)
 	if err != nil {
 		return "", err
@@ -152,6 +160,7 @@ func (r *reducer) emit(run *run, kind string, payload map[string]any, terminal b
 	}
 	run.next++
 	if terminal {
+		envelope.Extensions = run.usage.extensions()
 		run.terminal = true
 		run.status = protocol.RunCompleted
 		if kind == "run.failed" {
