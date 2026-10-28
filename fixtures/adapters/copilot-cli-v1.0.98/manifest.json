@@ -92,6 +92,14 @@
     {
       "id": "cost-unrepresentable",
       "path": "cost-unrepresentable"
+    },
+    {
+      "id": "cost-unknown",
+      "path": "cost-unknown"
+    },
+    {
+      "id": "cost-partial",
+      "path": "cost-partial"
     }
   ]
 }

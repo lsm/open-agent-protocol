@@ -42,7 +42,7 @@ pub const Run = struct {
     input_tokens: ?u64 = null,
     output_tokens: ?u64 = null,
     measured: bool = false,
-    cost: f64 = 0,
+    cost: ?f64 = null,
     routed_model: []const u8 = "",
 };
 
@@ -234,8 +234,8 @@ pub const Reducer = struct {
                 const run = self.current orelse return;
                 run.input_tokens = accumulate(run.input_tokens, count(event.data, "inputTokens"), !run.measured);
                 run.output_tokens = accumulate(run.output_tokens, count(event.data, "outputTokens"), !run.measured);
+                run.cost = accumulateCost(run.cost, if (event.data.get("cost")) |cost| number(cost) else null, !run.measured);
                 run.measured = true;
-                if (event.data.get("cost")) |cost| run.cost += number(cost);
                 const model = native.text(event.data, "model");
                 if (model.len > 0) run.routed_model = try self.allocator().dupe(u8, model);
             },
@@ -646,9 +646,9 @@ pub const Reducer = struct {
     fn extensions(self: *Reducer, run: *Run) std.mem.Allocator.Error!?std.json.Value {
         if (!run.measured) return null;
         var carried: std.json.ObjectMap = .empty;
-        if (std.math.isFinite(run.cost)) {
+        if (run.cost) |known| {
             var cost: std.json.ObjectMap = .empty;
-            try cost.put(self.allocator(), "premium_requests", .{ .float = run.cost });
+            try cost.put(self.allocator(), "premium_requests", .{ .float = known });
             try carried.put(self.allocator(), cost_extension, .{ .object = cost });
         }
         if (run.routed_model.len > 0) {
@@ -692,13 +692,19 @@ fn unsigned(arena: std.mem.Allocator, value: u64) std.mem.Allocator.Error!std.js
     return .{ .number_string = try std.fmt.allocPrint(arena, "{d}", .{value}) };
 }
 
-fn number(value: std.json.Value) f64 {
+fn number(value: std.json.Value) ?f64 {
     return switch (value) {
         .integer => |whole| @floatFromInt(whole),
         .float => |real| real,
-        .number_string => |raw| std.fmt.parseFloat(f64, raw) catch 0,
-        else => 0,
+        .number_string => |raw| std.fmt.parseFloat(f64, raw) catch null,
+        else => null,
     };
+}
+
+fn accumulateCost(previous: ?f64, next: ?f64, first: bool) ?f64 {
+    const incoming = next orelse return null;
+    const total = if (first) incoming else (previous orelse return null) + incoming;
+    return if (std.math.isFinite(total)) total else null;
 }
 
 fn count(data: std.json.ObjectMap, name: []const u8) ?u64 {
