@@ -379,17 +379,25 @@ pub const Session = struct {
         }
         if (request.messages.len == 0) return error.InvalidSubmission;
         var prompt: std.ArrayList(u8) = .empty;
-        for (request.messages) |message| {
+        var text_bytes: usize = 0;
+        for (request.messages, 0..) |message, index| {
             if (message.role != .user) return error.InvalidSubmission;
+            if (index > 0) try prompt.appendSlice(arena, "\n\n");
             switch (message.content) {
-                .text => |content| try prompt.appendSlice(arena, content),
+                .text => |content| {
+                    text_bytes += content.len;
+                    try prompt.appendSlice(arena, content);
+                },
                 .parts => |parts| for (parts) |part| switch (part) {
-                    .text => |content| try prompt.appendSlice(arena, content),
+                    .text => |content| {
+                        text_bytes += content.len;
+                        try prompt.appendSlice(arena, content);
+                    },
                     else => return error.InvalidSubmission,
                 },
             }
         }
-        if (prompt.items.len == 0) return error.InvalidSubmission;
+        if (text_bytes == 0) return error.InvalidSubmission;
         if (self.ended) return error.SessionClosed;
         const held_prompt = try self.owned().dupe(u8, prompt.items);
         var params: std.json.ObjectMap = .empty;

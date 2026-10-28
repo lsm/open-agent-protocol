@@ -118,10 +118,10 @@ func TestNativeRefusalDoesNotAdmitAnOAPRun(t *testing.T) {
 	}
 }
 
-func TestSubmitPreservesUnicodeTextAcrossMessagesAndParts(t *testing.T) {
+func TestSubmitPreservesContiguousUnicodeTextParts(t *testing.T) {
 	s := emptySession(t, "")
 	request := helloRequest()
-	request.Request.Messages = []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("\u4f60")}, {Role: protocol.RoleUser, Content: protocol.PartsContent([]protocol.ContentPart{{Type: protocol.ContentText, Text: "\u597d"}})}}
+	request.Request.Messages = []protocol.Message{{Role: protocol.RoleUser, Content: protocol.PartsContent([]protocol.ContentPart{{Type: protocol.ContentText, Text: "\u4f60"}, {Type: protocol.ContentText, Text: "\u597d"}})}}
 	ack, stream, err := s.Submit(context.Background(), request)
 	if err != nil {
 		t.Fatal(err)
