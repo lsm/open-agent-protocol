@@ -49,11 +49,41 @@ func TestPinnedCorpusMessages(t *testing.T) {
 				if m.Kind != want {
 					t.Fatalf("kind %s, want %s", m.Kind, want)
 				}
+				event, err := DecodeEvent(m)
+				if item.Action == "reject-event" {
+					if err == nil {
+						t.Fatal("accepted malformed event")
+					}
+				} else if err != nil {
+					t.Fatal(err)
+				} else if item.Action == "observe" && (event == nil || event.Type == "" || event.SessionID == "") {
+					t.Fatalf("lost event: %+v", event)
+				}
 			}
 			if err := scan.Err(); err != nil {
 				t.Fatal(err)
 			}
 		})
+	}
+}
+
+func TestEventKeepsNativeNamesAndExactNumbers(t *testing.T) {
+	m, err := Parse([]byte(`{"jsonrpc":"2.0","method":"session.event","params":{"sessionId":"native-session","event":{"type":"session.future","ephemeral":true,"data":{"count":18446744073709551615}}}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	event, err := DecodeEvent(m)
+	if err != nil || event == nil || event.Type != "session.future" || !event.Ephemeral || string(event.Data["count"]) != "18446744073709551615" {
+		t.Fatalf("event %+v, error %v", event, err)
+	}
+	for _, frame := range []string{`{"jsonrpc":"2.0","method":"session.lifecycle","params":{}}`, `{"jsonrpc":"2.0","id":1,"result":{}}`} {
+		m, err := Parse([]byte(frame))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if e, err := DecodeEvent(m); e != nil || err != nil {
+			t.Fatalf("non-event decoded: %+v %v", e, err)
+		}
 	}
 }
 
