@@ -1,4 +1,6 @@
-use oap_adapter_pi::native::{decode_strict, validate_state, Command, Response, SessionState};
+use oap_adapter_pi::native::{
+    decode_strict, validate_state, Command, ImageContent, Response, SessionState,
+};
 
 fn with(kind: &str, fill: impl FnOnce(&mut Command)) -> Command {
     let mut command = Command::of(kind);
@@ -156,4 +158,30 @@ fn session_state_needs_an_identity_known_modes_and_a_known_thinking_level() {
     ] {
         assert!(validate_state(&broken).is_err(), "{broken:?}");
     }
+}
+
+#[test]
+fn a_command_decodes_like_go_s_strict_decoder_a_null_is_zero_and_an_unknown_image_member_is_refused(
+) {
+    let command: Command = decode_strict(
+        r#"{"id":null,"type":"prompt","message":"m","images":[{"type":"image","data":null},null]}"#,
+    )
+    .unwrap();
+    assert_eq!(command.id, "");
+    assert_eq!(
+        command.images,
+        [
+            ImageContent {
+                kind: "image".into(),
+                ..ImageContent::default()
+            },
+            ImageContent::default(),
+        ]
+    );
+    let bare: Command = decode_strict(r#"{"type":"steer","images":null,"level":null}"#).unwrap();
+    assert!(bare.images.is_empty());
+    assert!(decode_strict::<Command>(
+        r#"{"type":"prompt","images":[{"type":"image","data":"x","mimeType":"image/png","extra":1}]}"#
+    )
+    .is_err());
 }

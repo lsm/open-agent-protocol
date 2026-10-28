@@ -95,26 +95,35 @@ fn valid_mode(mode: &str) -> bool {
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
 pub struct ImageContent {
-    #[serde(rename = "type")]
+    #[serde(rename = "type", deserialize_with = "zero")]
     pub kind: String,
+    #[serde(deserialize_with = "zero")]
     pub data: String,
-    #[serde(rename = "mimeType")]
+    #[serde(rename = "mimeType", deserialize_with = "zero")]
     pub mime_type: String,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Command {
-    #[serde(skip_serializing_if = "String::is_empty")]
+    #[serde(deserialize_with = "zero", skip_serializing_if = "String::is_empty")]
     pub id: String,
-    #[serde(rename = "type")]
+    #[serde(rename = "type", deserialize_with = "zero")]
     pub kind: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub message: Option<String>,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
+    #[serde(
+        deserialize_with = "oap_adapter::gojson::structures",
+        skip_serializing_if = "Vec::is_empty"
+    )]
     pub images: Vec<ImageContent>,
-    #[serde(rename = "streamingBehavior", skip_serializing_if = "String::is_empty")]
+    #[serde(
+        rename = "streamingBehavior",
+        deserialize_with = "zero",
+        skip_serializing_if = "String::is_empty"
+    )]
     pub streaming_behavior: String,
     #[serde(rename = "parentSession", skip_serializing_if = "Option::is_none")]
     pub parent_session: Option<String>,
@@ -122,9 +131,9 @@ pub struct Command {
     pub provider: Option<String>,
     #[serde(rename = "modelId", skip_serializing_if = "Option::is_none")]
     pub model_id: Option<String>,
-    #[serde(skip_serializing_if = "String::is_empty")]
+    #[serde(deserialize_with = "zero", skip_serializing_if = "String::is_empty")]
     pub level: String,
-    #[serde(skip_serializing_if = "String::is_empty")]
+    #[serde(deserialize_with = "zero", skip_serializing_if = "String::is_empty")]
     pub mode: String,
     #[serde(rename = "customInstructions", skip_serializing_if = "Option::is_none")]
     pub custom_instructions: Option<String>,
