@@ -19,6 +19,10 @@ def main():
                              "-Doptimize=ReleaseSafe"], cwd=ROOT, capture_output=True, text=True, timeout=300)
     (output / "zig-replay.txt").write_text(result.stdout + result.stderr)
     assert result.returncode == 0, result.stdout + result.stderr
+    decoded = subprocess.run(["go", "test", "-race", "./go/adapter/copilot/internal/native"],
+                             cwd=ROOT, capture_output=True, text=True, timeout=120)
+    (output / "go-native.txt").write_text(decoded.stdout + decoded.stderr)
+    assert decoded.returncode == 0, decoded.stdout + decoded.stderr
     pin = next(v for v in json.loads((ROOT / "harnesses/copilot-cli.json").read_text())["versions"]
                if v["status"] == "current")
     corpus = ROOT / pin["corpus"]
