@@ -50,9 +50,21 @@ func TestSyntheticCopilotChild(t *testing.T) {
 		switch message.Method {
 		case "ping":
 			result = map[string]any{"protocolVersion": 3}
+			if os.Getenv("OAP_COPILOT_SESSION_MODE") == "bad-protocol" {
+				result = map[string]any{"protocolVersion": 4}
+			}
 		case "status.get":
 			result = map[string]any{"version": PinnedVersion, "protocolVersion": 3}
+			if os.Getenv("OAP_COPILOT_SESSION_MODE") == "bad-version" {
+				result = map[string]any{"version": "synthetic-other", "protocolVersion": 3}
+			}
 		case "session.create":
+			var params map[string]json.RawMessage
+			_ = json.Unmarshal(message.Params, &params)
+			if native.Text(params, "clientName") != "open-agent-protocol" || string(params["requestPermission"]) != "false" || string(params["requestUserInput"]) != "false" || string(params["streaming"]) != "true" || native.Text(params, "workingDirectory") != os.Getenv("HOME") || flag.Lookup("headless").Value.String() != "true" || flag.Lookup("stdio").Value.String() != "true" || flag.Lookup("no-auto-update").Value.String() != "true" {
+				say(map[string]any{"jsonrpc": "2.0", "id": message.ID, "error": map[string]any{"code": -32602, "message": "invalid synthetic session configuration"}})
+				continue
+			}
 			result = map[string]any{"sessionId": "ses"}
 		case "session.send":
 			var params map[string]json.RawMessage
