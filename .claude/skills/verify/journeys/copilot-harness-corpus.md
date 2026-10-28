@@ -21,7 +21,10 @@ existing ledger. This is synthetic schema/ledger-based data, not a new live
 recording. It starts no Copilot process, uses no token, and performs no model
 call. Go's native JSON-RPC decoder now consumes the same ten cases, preserves
 unknown event names and exact numeric source bytes, and rejects duplicate keys
-and ambiguous message shapes. Inspect `go-native.txt` for its result. This does
-not yet claim a runnable Go adapter: process transport and reducer follow in
+and ambiguous message shapes. Inspect `go-native.txt` for its result and the
+bounded Content-Length codec checks: fragmented/coalesced frames, UTF-8 byte
+lengths, header/body limits, malformed or truncated input, and short writes.
+These run through the script with race detection. This does not yet claim a
+runnable Go adapter: RPC dispatch, process transport and reducer follow in
 later slices. Unsupported host capabilities remain unadvertised; the Rust lane
 follows separately.
