@@ -7,6 +7,78 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+## [0.1.0-alpha.28] - 2026-10-28
+
+### Breaking changes
+
+- **ts: Preserve protocol uint64 fields as exact bigint values** ([#1433](https://github.com/lsm/open-agent-protocol/pull/1433))
+
+- `oap-client` protocol uint64 fields, `eventsAfter` cursors and stream-error sequence properties now use `bigint` even for zero and small values; use bigint literals and `serializeEnvelope` for wire output.
+
+- **ts: Enforce schema cardinality for transports and shutdown choose** ([#1425](https://github.com/lsm/open-agent-protocol/pull/1425))
+
+`EndpointShutdownResponse` is now a discriminated union; `choose.active_runs` and present `FeatureSupport.limits.transports` require nonempty tuples.
+
+- **sdk: Preserve TypeScript usage with nonfatal precision signals** ([#1400](https://github.com/lsm/open-agent-protocol/pull/1400))
+
+`oap-sdk`: `UsageSummary.input` and `output` are now optional; check for `undefined` and inspect `unrepresentable_counts` for valid unsafe measurements that previously rounded silently.
+
+- **sdk: Preserve optional Python usage counts** ([#1399](https://github.com/lsm/open-agent-protocol/pull/1399))
+
+`sdk/python` (`oap_sdk.Usage`): `input` and `output` become `Optional[int]`, defaulting to `None`. Consumers must handle unknown counts explicitly before arithmetic. Measured zero stays `0`; absent usage stays `None`; `{}` yields all-unknown counters. Supplied counts must be integers in `0..18446744073709551615`; null, booleans, strings, floats, negatives and overflow now raise the typed malformed-response error rather than being coerced or discarded. The README includes migration guidance.
+
+- **sdk: Preserve optional Go usage counts without rounding** ([#1397](https://github.com/lsm/open-agent-protocol/pull/1397))
+
+- `sdk` (`go/sdk`): `Usage.Input` and `Output` change from `int64` to `*uint64`; `CacheRead`, `CacheWrite` and `Reasoning` change from `*int64` to `*uint64`. Check nil for unknown measurements and use unsigned counts; the new `Total` retains reported totals.
+
+### Fixed
+
+- **copilot: allow service-advertised long context in the TUI** ([#1436](https://github.com/lsm/open-agent-protocol/pull/1436)): Copilot Claude models with a long-context pricing tier were capped at their default prompt window, so choosing a larger `/context` value produced an error.
+
+### Merged pull requests
+
+- **verify: prove oapx serve saves and reopens session history** ([#1435](https://github.com/lsm/open-agent-protocol/pull/1435)): The session-saving feature is already on main through #1178, #1182 and #1207.
+- **validation: Enforce Unicode 17 provided-tool script patterns** ([#1434](https://github.com/lsm/open-agent-protocol/pull/1434)): Fixes validators accepting a policy refusal for a tool whose name satisfies an advertised Unicode 17 script pattern.
+- **ts: Preserve protocol uint64 fields as exact bigint values** ([#1433](https://github.com/lsm/open-agent-protocol/pull/1433)): `parseEnvelope` retains protocol uint64 fields as uniform `bigint` values, and `serializeEnvelope` emits their exact JSON number tokens.
+- **adapter: Accept optional empty text in Zig input answers** ([#1432](https://github.com/lsm/open-agent-protocol/pull/1432)): Closes lsm/open-agent-protocol#1430
+- **validation: Accept optional empty text answers** ([#1431](https://github.com/lsm/open-agent-protocol/pull/1431)): A schema-valid optional text answer with `text: ""` failed semantic validation in Go, Rust and Zig at both the resolve request and resolved event.
+- **ts: Export schema-backed session control payload types** ([#1429](https://github.com/lsm/open-agent-protocol/pull/1429)): Adds the existing schema-backed model-switch and provider-attach payload types, including `ProviderAttachment`, without adding transport operations or dependencies.
+- **ts: Export schema-backed core auth payload types** ([#1428](https://github.com/lsm/open-agent-protocol/pull/1428)): The client exported all eight core auth envelope names without their payload types, so installed consumers could not import the existing wire shapes.
+- **validation: Judge Rust attachment gates and refusal ownership** ([#1427](https://github.com/lsm/open-agent-protocol/pull/1427)): Rust accepted attachment admissions and refusals that Go and Zig reject under Decision 0008.
+- **adapter: align Rust and Go input answers with Decision 0056** ([#1426](https://github.com/lsm/open-agent-protocol/pull/1426)): Optional empty text answers were rejected by both adapter helpers, and both indexers accepted answer sets missing required questions.
+- **ts: Enforce schema cardinality for transports and shutdown choose** ([#1425](https://github.com/lsm/open-agent-protocol/pull/1425)): Match `oap-client` declarations to the unchanged schema: supplied transports and shutdown `choose` active runs must be nonempty (refs #9).
+- **docs: lead the README with what OAP is, who it's for, and how to try it** ([#1424](https://github.com/lsm/open-agent-protocol/pull/1424)): Restructures only the top of the README: a short summary of what the repository ships, one at-a-glance SVG diagram (`docs/oap-overview.svg`, hand-laid, referenced once), and a new "Who it's for" section ahead of the existing quick start.
+- **adapter: collect Rust terminal outcomes and message text** ([#1423](https://github.com/lsm/open-agent-protocol/pull/1423)): Rust adapter hosts currently hand-roll prompt-stream consumption.
+- **validation: Judge Rust tool-list gates and response integrity** ([#1422](https://github.com/lsm/open-agent-protocol/pull/1422)): Rust accepted served catalogs and incorrect refusals even when `action.tools.list` was unadvertised or degraded without its own opt-in, and did not reject malformed served catalogs.
+- **validation: Judge Rust descriptor catalog integrity** ([#1421](https://github.com/lsm/open-agent-protocol/pull/1421)): Rust accepted capability descriptors with duplicate source IDs, duplicate effective tool names or tool sources absent from that descriptor.
+- **validation: Hold refresh for the announced descriptor revision** ([#1420](https://github.com/lsm/open-agent-protocol/pull/1420)): A delayed, unannounced or superseded `capabilities.response` cannot replace the active descriptor or close the refresh window in Go, Rust and Zig.
+- **docs: Refresh validator divergence follow-up notes** ([#1419](https://github.com/lsm/open-agent-protocol/pull/1419)): Correct OPEN-0001-7 to record the resume-cursor bound already enforced by Go, Rust and Zig, retaining the separate Go/Zig unrecovered-open scope gap.
+- **validation: Judge Rust open-time session settings** ([#1418](https://github.com/lsm/open-agent-protocol/pull/1418)): Rust accepted settings on opens whose feature/mode or degraded opt-in Go and Zig reject, and accepted reported reasoning/policy values that silently changed the caller's request.
+- **validation: Judge Rust per-run compaction pairs** ([#1417](https://github.com/lsm/open-agent-protocol/pull/1417)): Rust accepted compaction streams whose start/end pairing or failed-end payload Go and Zig reject.
+- **validation: Judge Rust transcript response pages** ([#1416](https://github.com/lsm/open-agent-protocol/pull/1416)): Rust accepted transcript pages that Go and Zig reject: oversized pages, repeated entry IDs, and gaps inconsistent with the correlated request or first returned entry.
+- **validation: Reconcile Rust snapshot admission anchors** ([#1415](https://github.com/lsm/open-agent-protocol/pull/1415)): Rust now reconciles session and entry admission anchors against submit/message-carrying open requests, admitted session/run identity, refusals, run accounting and trace closure.
+- **validation: Judge Rust standalone auth flow lifecycles** ([#1414](https://github.com/lsm/open-agent-protocol/pull/1414)): Rust accepted standalone auth traces that Go and Zig reject: reused flow IDs, activity before start or after completion, broken sequences and accepted flows without completion.
+- **validation: Judge Rust model catalog shapes** ([#1413](https://github.com/lsm/open-agent-protocol/pull/1413)): Rust omitted response-local model catalog diagnostics that Go and Zig already report.
+- **validation: Reconcile Rust deferred per-run snapshot claims** ([#1412](https://github.com/lsm/open-agent-protocol/pull/1412)): Rust accepted snapshots whose pending set, queued/cancelling status or settled claim contradicted events that arrived later.
+- **validation: Judge Rust session-list response pages** ([#1411](https://github.com/lsm/open-agent-protocol/pull/1411)): Rust accepted `session.list.response` pages that Go and Zig reject: pages over the explicit/default limit, pages out of newest-first or session-ID tie order, and pages containing duplicate sessions.
+- **acp: Record permission publication before prompt settlement** ([#1410](https://github.com/lsm/open-agent-protocol/pull/1410)): ACP could publish a permission request, then finish its prompt before the permission handler set `published`.
+- **validation: Preserve terminal capture diagnostics after late events** ([#1408](https://github.com/lsm/open-agent-protocol/pull/1408)): A run completed at sequence 2, but a later invalid event at sequence 3 advanced the counter Go and Zig used for snapshot captures and settled claims.
+- **validation: Bind control-owned call requesters to the initialized endpoint** ([#1407](https://github.com/lsm/open-agent-protocol/pull/1407)): Control-owned tool calls could consistently name the control participant or an undeclared ID as `requested_by` and pass all three validators.
+- **sdk: Refuse raw negative-zero Python usage counts** ([#1406](https://github.com/lsm/open-agent-protocol/pull/1406))
+- **validation: Enforce exact uint64 usage-count tokens** ([#1404](https://github.com/lsm/open-agent-protocol/pull/1404))
+- **validation: judge recovery redelivery chains** ([#1402](https://github.com/lsm/open-agent-protocol/pull/1402)): Decision 0050 recovery records currently pass schema validation without establishing their relationships to queued carriers.
+- **docs: Specify exact usage count wire spelling** ([#1401](https://github.com/lsm/open-agent-protocol/pull/1401)): Specify the usage-only wire contract
+- **sdk: Preserve TypeScript usage with nonfatal precision signals** ([#1400](https://github.com/lsm/open-agent-protocol/pull/1400)): Preserve TypeScript usage without rounding
+- **sdk: Preserve optional Python usage counts** ([#1399](https://github.com/lsm/open-agent-protocol/pull/1399)): Python SDK usage decoding turned unmeasured input/output into zero, accepted invalid counts or raised untyped conversion errors, and treated null usage as absent.
+- **sdk: Preserve optional Go usage counts without rounding** ([#1397](https://github.com/lsm/open-agent-protocol/pull/1397)): Preserve Go SDK usage measurements
+- **release: prepare 0.1.0-alpha.27** ([#1396](https://github.com/lsm/open-agent-protocol/pull/1396)): Prepare OAP `0.1.0-alpha.27` with the four approved fixes: normalized Codex command exit status (#1390), public SDK command-result evidence (#1391), Zig's raw-span 16 MiB stdio limit (#1388), and measured-zero/absent usage plus native…
+- **serve: Drive the stdio overflow producer once** ([#1395](https://github.com/lsm/open-agent-protocol/pull/1395)): The stdio overflow regression started a new full run before reading each queued line from the first run.
+- **sdk: Preserve optional Rust usage counts** ([#1394](https://github.com/lsm/open-agent-protocol/pull/1394)): The Rust SDK now preserves absent, measured-zero, partial and maximum token counts across provider/agent unary and streaming results, retains `total`, and refuses invalid usage with typed `malformed_response`.
+- **validation: judge Rust snapshot listings and read windows** ([#1383](https://github.com/lsm/open-agent-protocol/pull/1383)): Rust previously accepted contradictory session snapshots, including terminal statuses in active_runs, missing queue ranks and omitted observed reservations.
+- **schema: carry recovery redelivery records on the wire** ([#1381](https://github.com/lsm/open-agent-protocol/pull/1381)): `recovery.redelivered_runs` was rejected by the v0.1 schema, and typed Go/Rust recovery metadata dropped it.
+- **validation: port Rust control-tool settlement and provided-tool limits** ([#1378](https://github.com/lsm/open-agent-protocol/pull/1378)): Rust previously accepted control-owned tool calls without their required interaction, mismatched resolutions, and undisclosed provided-tool limits.
+
+
 ## [0.1.0-alpha.27] - 2026-10-21
 
 ### Breaking changes
