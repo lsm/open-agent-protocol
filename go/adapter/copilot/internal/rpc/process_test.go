@@ -27,7 +27,9 @@ func TestSyntheticProcessChild(t *testing.T) {
 			os.Exit(2)
 		}
 		if m.Method == "stall" {
-			select {}
+			for {
+				time.Sleep(time.Hour)
+			}
 		}
 		if m.Method == "malformed" {
 			_ = wire.Write([]byte(`{"jsonrpc":"1.0"}`))
