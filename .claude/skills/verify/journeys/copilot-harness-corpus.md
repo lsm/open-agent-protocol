@@ -31,5 +31,7 @@ counts stay unknown; neither reducer infers totals with unknown cache terms.
 Go now matches all sixteen lifecycle projections, including tool success/denial,
 orphan/duplicate completions and incomplete tools at run settlement. Its inventory
 test requires every manifest case to be replayed or checked by the native codec.
-The public adapter/session wiring follows separately. Unsupported host capabilities
+The Go session read loop additionally proves state snapshots, bounded cursor
+replay and explicit gaps, process-exit settlement and close/reaping with a
+synthetic subprocess. Public submission and adapter/registry wiring follow separately. Unsupported host capabilities
 remain unadvertised; the Rust lane follows separately.
