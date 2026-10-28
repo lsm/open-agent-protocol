@@ -11,6 +11,7 @@ ROOT = Path(__file__).resolve().parents[4]
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output-dir", required=True)
+    parser.add_argument("--oapx", default=str(ROOT / "zig/zig-out/bin/oapx"))
     args = parser.parse_args()
     output = Path(args.output_dir).resolve()
     output.mkdir(parents=True, exist_ok=False)
@@ -23,14 +24,18 @@ def main():
     corpus = ROOT / pin["corpus"]
     manifest = json.loads((corpus / "manifest.json").read_text())
     for case in manifest["cases"]:
-        events = json.loads((corpus / case["path"] / "expected-oap.json").read_text())
-        prefix = json.loads((ROOT / "fixtures/valid/core-completed.json").read_text())[:2]
-        prefix[0]["payload"]["messages"][0]["content"] = "hello"
-        prefix[1]["payload"]["run_id"] = "run-1"
+        directory = corpus / case["path"]
+        metadata = json.loads((directory / "case.json").read_text())
+        events = json.loads((directory / "expected-oap.json").read_text())
+        if metadata.get("codec_only"):
+            assert events is None, case["id"]
+            print("Zig codec rejection", case["id"], "passed", flush=True)
+            continue
+        prefix = json.loads((directory / metadata["prefix_oap"]).read_text())
         trace = output / (case["id"] + ".json")
         trace.write_text(json.dumps(prefix + events, indent=2) + "\n")
         for label, command in [("go", ["go", "run", "./go/cmd/goap", "validate", str(trace)]),
-                               ("zig", [str(ROOT / "zig/zig-out/bin/oapx"), "validate", str(trace)])]:
+                               ("zig", [args.oapx, "validate", str(trace)])]:
             checked = subprocess.run(command, cwd=ROOT, capture_output=True, text=True, timeout=60)
             (output / (case["id"] + "-" + label + ".txt")).write_text(checked.stdout + checked.stderr)
             assert checked.returncode == 0, checked.stdout + checked.stderr

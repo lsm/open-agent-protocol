@@ -19,8 +19,14 @@ const Driver = struct {
         const direction = corpus.stringMember(item.script.object, "direction") orelse return error.InvalidCorpusDirection;
         const outbound = std.mem.eql(u8, item.action, "admit");
         if (!std.mem.eql(u8, direction, if (outbound) "host-to-copilot" else "copilot-to-host")) return error.InvalidCorpusDirection;
+        if (std.mem.eql(u8, item.action, "reject-wire")) {
+            try std.testing.expectError(error.InvalidWire, native.parseMessage(scratch, item.source));
+            return .handled;
+        }
         const message = try native.parseMessage(scratch, item.source);
-        if (std.mem.eql(u8, item.action, "admit")) {
+        if (std.mem.eql(u8, item.action, "reject-event")) {
+            try std.testing.expectError(error.InvalidWire, native.decodeEvent(message));
+        } else if (std.mem.eql(u8, item.action, "admit")) {
             if (message.kind != .request or !std.mem.eql(u8, message.method, "session.send")) return error.InvalidAdmission;
             _ = try reducer.admit("s1");
         } else if (std.mem.eql(u8, item.action, "bind")) {
@@ -40,8 +46,19 @@ const Driver = struct {
 };
 const Harness = corpus.Harness(Driver);
 
-test "the synthetic Copilot baseline replays through the native decoder and reducer" {
-    try Harness.expectEveryCase(std.testing.allocator, &.{.{ .id = "completed-text", .path = "completed-text" }});
+test "the synthetic Copilot cases replay through the native decoder and reducer" {
+    try Harness.expectEveryCase(std.testing.allocator, &.{
+        .{ .id = "completed-text", .path = "completed-text" },
+        .{ .id = "reasoning-usage", .path = "reasoning-usage" },
+        .{ .id = "queued-busy-period", .path = "queued-busy-period" },
+        .{ .id = "tool-success", .path = "tool-success" },
+        .{ .id = "tool-denied", .path = "tool-denied" },
+        .{ .id = "session-error", .path = "session-error" },
+        .{ .id = "foreign-session", .path = "foreign-session" },
+        .{ .id = "unknown-event", .path = "unknown-event" },
+        .{ .id = "invalid-wire", .path = "invalid-wire" },
+        .{ .id = "invalid-event", .path = "invalid-event" },
+    });
 }
 
 test "the replay refuses a response labelled as an outbound request" {
