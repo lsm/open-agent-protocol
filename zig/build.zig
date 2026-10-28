@@ -3115,6 +3115,7 @@ pub fn build(b: *std.Build) void {
     test_unit_adapter_step.dependOn(&b.addRunArtifact(copilot_session_test).step);
     test_step.dependOn(&b.addRunArtifact(copilot_adapter_test).step);
     test_unit_adapter_step.dependOn(&b.addRunArtifact(copilot_adapter_test).step);
+    test_step.dependOn(&b.addRunArtifact(copilot_corpus_test).step);
     test_unit_adapter_step.dependOn(&b.addRunArtifact(copilot_corpus_test).step);
     test_step.dependOn(&b.addRunArtifact(opencode_httpapi_test).step);
     test_unit_adapter_step.dependOn(&b.addRunArtifact(opencode_httpapi_test).step);
