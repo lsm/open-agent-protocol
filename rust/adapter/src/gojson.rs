@@ -3,6 +3,12 @@ use std::collections::HashSet;
 
 use crate::quote_table::PRINTABLE;
 
+mod decode;
+mod value;
+
+pub use decode::{decode, raw, slice, strings, structure, structures, zero, Decode};
+pub use value::{go_float, remarshal_any};
+
 pub const NESTING_LIMIT: usize = 10_000;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
