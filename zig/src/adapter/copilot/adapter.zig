@@ -686,6 +686,11 @@ test "separate user messages keep a boundary in the native prompt" {
     _ = try opened.submit(probe.arena.allocator(), &.{ .session_id = "s1", .messages = &messages, .delivery = .auto }, "", &refusal);
     const written = try probe.fake.written(probe.arena.allocator());
     try testing.expect(std.mem.indexOf(u8, written, "\"prompt\":\"hello\\n\\nworld\"") != null);
+    var empty_messages = [_]oap_types.Message{
+        .{ .role = .user, .content = .{ .text = "" } },
+        .{ .role = .user, .content = .{ .text = "" } },
+    };
+    try testing.expectError(error.InvalidSubmission, opened.submit(probe.arena.allocator(), &.{ .session_id = "s1", .messages = &empty_messages, .delivery = .auto }, "", &refusal));
 }
 
 test "a second prompt queues behind the open run, and a server that exits fails every open run" {

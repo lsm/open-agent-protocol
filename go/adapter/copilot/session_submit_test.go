@@ -210,3 +210,12 @@ func TestSeparateMessagesKeepTheirBoundaryAtTheNativeServer(t *testing.T) {
 		t.Fatalf("message boundary lost in native round trip: %s", terminal.FinalResponse.Content)
 	}
 }
+
+func TestEmptyMessagesDoNotBecomeASeparatorOnlyPrompt(t *testing.T) {
+	s := emptySession(t, "")
+	request := helloRequest()
+	request.Request.Messages = []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("")}, {Role: protocol.RoleUser, Content: protocol.TextContent("")}}
+	if _, _, err := s.Submit(context.Background(), request); !errors.Is(err, base.ErrInvalidSubmission) {
+		t.Fatalf("empty messages admitted as separators: %v", err)
+	}
+}
