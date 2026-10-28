@@ -42,7 +42,9 @@ The public Go `New`/`Probe`/`Open` path now starts the synthetic child with
 enforced headless/stdio/no-update flags, verifies protocol 3 and the pinned CLI
 version, then produces validator-accepted events. Mismatched versions and
 unsupported open controls are refused; each open owns a separate process.
-The registry exposes this adapter as `copilot`. Unsupported host capabilities
+The Go registry exposes this adapter as `copilot`; its dedicated example is
+`examples/oap-serve-go-copilot.json`, because the shared registry must stay usable
+by both trees. Unsupported host capabilities
 remain unadvertised; the Rust lane follows separately.
 
 Run the registered command-line surface with a token-free synthetic peer:
@@ -60,3 +62,7 @@ HOME and checks that every synthetic child exited. It performs no login, reads n
 credentials and makes no network or provider call. This proves the registered
 Go front door against the pinned synthetic wire; live CLI compatibility remains
 unverified.
+
+After registry/example changes, also run `zig build --build-file zig/build.zig test-unit-adapter`
+and require exit 0. This includes the shared example inventory check and prevents
+a Go-only entry from breaking the Zig front door.

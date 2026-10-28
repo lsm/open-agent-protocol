@@ -1,0 +1,13 @@
+{
+  "adapters": {
+    "copilot": {
+      "type": "copilot",
+      "executable": "/absolute/path/to/copilot",
+      "environment": [
+        "HOME",
+        "PATH"
+      ],
+      "working_directory": "/absolute/project/path"
+    }
+  }
+}

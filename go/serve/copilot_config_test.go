@@ -34,7 +34,7 @@ func TestRegistryBuildsTheCopilotAdapterWithoutStartingIt(t *testing.T) {
 }
 
 func TestTheExampleCopilotEntryUsesAnExplicitNativeEnvironment(t *testing.T) {
-	data, err := os.ReadFile(filepath.Join("..", "..", "examples", "oap-serve.json"))
+	data, err := os.ReadFile(filepath.Join("..", "..", "examples", "oap-serve-go-copilot.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
