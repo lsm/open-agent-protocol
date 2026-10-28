@@ -317,3 +317,14 @@ fn an_identifier_in_an_error_message_is_quoted_bare_as_go_quotes_it() {
         "adapter: model is not in the effective catalog: \"m\""
     );
 }
+
+#[test]
+fn a_harness_error_reads_as_the_native_failure_and_is_not_unsupported_input() {
+    let error = Error::harness("acp rpc error -32603 for request 3: fixture prompt failure");
+    assert_eq!(
+        error.to_string(),
+        "acp rpc error -32603 for request 3: fixture prompt failure"
+    );
+    assert!(!error.is_unsupported_input());
+    assert_eq!(error.clone(), error);
+}

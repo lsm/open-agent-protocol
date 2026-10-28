@@ -1,0 +1,18 @@
+[package]
+name = "oap-binding"
+version = "0.1.0"
+edition = "2021"
+description = "Open Agent Protocol session binding and run stores"
+repository = "https://github.com/lsm/open-agent-protocol"
+license = "CC0-1.0"
+publish = false
+
+[dependencies]
+base64 = "0.22"
+oap-protocol = { path = "../protocol" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+
+[lints.rust]
+unsafe_code = "forbid"
