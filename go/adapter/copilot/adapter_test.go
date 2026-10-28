@@ -73,6 +73,24 @@ func TestPublicOpenRejectsMismatchedPins(t *testing.T) {
 	}
 }
 
+func TestPublicOpenAllowsEachHandshakeReplyWithinItsRequestDeadline(t *testing.T) {
+	a, err := New(factoryConfig(t, "slow-handshake"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	s, err := a.Open(ctx, openRequest())
+	if err != nil {
+		t.Fatalf("timely individual handshake replies failed to open: %v", err)
+	}
+	defer s.Close(context.Background())
+	state, err := s.State(ctx)
+	if err != nil || state.Status != protocol.SessionIdle {
+		t.Fatalf("opened state: %+v %v", state, err)
+	}
+}
+
 func TestOpenRefusesUnavailableFeaturesBeforeStartingAProcess(t *testing.T) {
 	a, err := New(Config{Executable: filepath.Join(t.TempDir(), "missing-executable"), WorkingDirectory: t.TempDir()})
 	if err != nil {

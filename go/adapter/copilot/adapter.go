@@ -118,12 +118,15 @@ func (a *Adapter) Open(ctx context.Context, request base.OpenRequest) (base.Sess
 			_ = process.Close()
 		}
 	}()
-	call, cancel := context.WithTimeout(ctx, config.RequestTimeout)
-	defer cancel()
+	call := func(method string, params, result any) error {
+		request, cancel := context.WithTimeout(ctx, config.RequestTimeout)
+		defer cancel()
+		return process.Client.Call(request, method, params, result)
+	}
 	var pong struct {
 		ProtocolVersion int `json:"protocolVersion"`
 	}
-	if err := process.Client.Call(call, "ping", map[string]any{}, &pong); err != nil {
+	if err := call("ping", map[string]any{}, &pong); err != nil {
 		return nil, err
 	}
 	if pong.ProtocolVersion != 3 {
@@ -132,7 +135,7 @@ func (a *Adapter) Open(ctx context.Context, request base.OpenRequest) (base.Sess
 	var status struct {
 		Version string `json:"version"`
 	}
-	if err := process.Client.Call(call, "status.get", map[string]any{}, &status); err != nil {
+	if err := call("status.get", map[string]any{}, &status); err != nil {
 		return nil, err
 	}
 	if status.Version != PinnedVersion {
@@ -145,7 +148,7 @@ func (a *Adapter) Open(ctx context.Context, request base.OpenRequest) (base.Sess
 	var created struct {
 		SessionID string `json:"sessionId"`
 	}
-	if err := process.Client.Call(call, "session.create", params, &created); err != nil {
+	if err := call("session.create", params, &created); err != nil {
 		return nil, err
 	}
 	if created.SessionID == "" {

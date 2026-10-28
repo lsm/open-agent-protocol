@@ -40,7 +40,8 @@ ghost run, missing binding teardown, queue promotion and the nine-run bound.
 Unsupported portable controls and non-text input are refused before admission.
 The public Go `New`/`Probe`/`Open` path now starts the synthetic child with
 enforced headless/stdio/no-update flags, verifies protocol 3 and the pinned CLI
-version, then produces validator-accepted events. Mismatched versions and
+version, giving each handshake RPC its own request deadline, then produces
+validator-accepted events. Mismatched versions and
 unsupported open controls are refused; each open owns a separate process.
 The Go registry exposes this adapter as `copilot`; its dedicated example is
 `examples/oap-serve-go-copilot.json`, because the shared registry must stay usable
