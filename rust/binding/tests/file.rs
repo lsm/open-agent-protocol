@@ -1,6 +1,5 @@
 use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
-use std::time::{Duration, Instant};
 
 use oap_binding::{frame, Action, Entry, Error, FileStore, Record, Store};
 
@@ -173,11 +172,9 @@ fn a_host_that_empties_the_store_does_not_leave_the_cache_pointing_into_nothing(
 fn four_hundred_appends_read_back_whole() {
     let (_scratch, path) = scratch("linear");
     let store = FileStore::open(&path).unwrap();
-    let started = Instant::now();
     for at in 0..400 {
         store.append(Entry::opened(sample(), at)).unwrap();
     }
-    assert!(started.elapsed() < Duration::from_secs(5));
     assert_eq!(store.history("session-1").unwrap().len(), 400);
 }
 

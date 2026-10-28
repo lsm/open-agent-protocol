@@ -1,5 +1,7 @@
 #![doc = include_str!("../README.md")]
 
+mod baseurl;
+mod credential;
 mod row;
 
 use std::sync::OnceLock;
@@ -7,6 +9,11 @@ use std::sync::OnceLock;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+pub use baseurl::{
+    base_url_with_overrides, normalize_kimi_region, normalize_versioned_base_url, provider_arm,
+    uses_versioned_route, BaseOverrides, GLOBAL_BASE_URL_ENV, VERSIONED_WIRES,
+};
+pub use credential::{api_key_from_names, Credential, EnvironmentValue, Source, StoredCredential};
 pub use row::{is_responses_only_model, joins_wire, WIRES};
 
 const SCHEMA: &str = include_str!("../../../providers/catalog.schema.json");
