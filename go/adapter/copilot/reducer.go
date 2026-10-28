@@ -17,6 +17,7 @@ type run struct {
 	next              uint64
 	parts             []protocol.ContentPart
 	usage             usageState
+	tools             []*tool
 }
 
 type reducer struct {
@@ -117,6 +118,8 @@ func (r *reducer) observe(event native.Event) error {
 		if r.current != nil {
 			r.current.usage.observe(event.Data)
 		}
+	case "tool.execution_start", "tool.execution_partial_result", "tool.shell_output", "tool.execution_complete":
+		return r.observeTool(event)
 	}
 	return nil
 }
@@ -138,6 +141,11 @@ func (r *reducer) fail(run *run, code, message string) error {
 func (r *reducer) emit(run *run, kind string, payload map[string]any, terminal bool, reply protocol.EnvelopeID) (protocol.EnvelopeID, error) {
 	if run.terminal {
 		return "", nil
+	}
+	if terminal {
+		if err := r.settleTools(run); err != nil {
+			return "", err
+		}
 	}
 	payload["session_id"] = r.sessionID
 	payload["run_id"] = run.id

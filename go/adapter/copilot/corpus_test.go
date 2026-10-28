@@ -70,8 +70,12 @@ func replay(t *testing.T, name string) {
 	}
 }
 
+var lifecycleCases = []string{"completed-text", "queued-busy-period", "unknown-event", "session-error", "foreign-session"}
+var usageCases = []string{"reasoning-usage", "usage-sparse", "usage-precision", "usage-wide", "usage-partial-call", "usage-overflow"}
+var toolCases = []string{"tool-success", "tool-denied", "tool-orphan", "tool-incomplete", "tool-duplicate-end"}
+
 func TestLifecycleCorpus(t *testing.T) {
-	for _, name := range []string{"completed-text", "queued-busy-period", "unknown-event", "session-error", "foreign-session"} {
+	for _, name := range lifecycleCases {
 		t.Run(name, func(t *testing.T) { replay(t, name) })
 	}
 }
@@ -139,13 +143,44 @@ func TestReplayRejectsDirectionAndBindingCorruption(t *testing.T) {
 }
 
 func TestUsageCorpus(t *testing.T) {
-	for _, name := range []string{"reasoning-usage", "usage-sparse", "usage-precision", "usage-wide", "usage-partial-call", "usage-overflow"} {
+	for _, name := range usageCases {
 		t.Run(name, func(t *testing.T) { replay(t, name) })
 	}
 }
 
 func TestToolCorpus(t *testing.T) {
-	for _, name := range []string{"tool-success", "tool-denied", "tool-orphan", "tool-incomplete", "tool-duplicate-end"} {
+	for _, name := range toolCases {
 		t.Run(name, func(t *testing.T) { replay(t, name) })
+	}
+}
+
+func TestCorpusInventory(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join("..", "..", "..", filepath.FromSlash(CorpusDirectory), "manifest.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var manifest struct {
+		Cases []struct{ ID, Path string } `json:"cases"`
+	}
+	if err := json.Unmarshal(data, &manifest); err != nil {
+		t.Fatal(err)
+	}
+	known := map[string]bool{}
+	for _, group := range [][]string{lifecycleCases, usageCases, toolCases, {"invalid-wire", "invalid-event"}} {
+		for _, name := range group {
+			if known[name] {
+				t.Fatalf("repeated replay %s", name)
+			}
+			known[name] = true
+		}
+	}
+	for _, item := range manifest.Cases {
+		if !known[item.ID] || item.Path != item.ID {
+			t.Fatalf("uncovered or repeated manifest case %+v", item)
+		}
+		delete(known, item.ID)
+	}
+	if len(known) != 0 {
+		t.Fatalf("replay cases absent from manifest: %v", known)
 	}
 }
