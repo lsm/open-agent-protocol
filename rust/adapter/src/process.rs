@@ -1,5 +1,6 @@
 use std::io::{Read, Write};
 use std::process::{ChildStdin, ChildStdout, Command, ExitStatus, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, LazyLock, Mutex, MutexGuard};
 use std::time::Duration;
 
@@ -26,12 +27,46 @@ struct Stderr {
 #[derive(Clone)]
 pub struct Child {
     child: Arc<Mutex<std::process::Child>>,
-    stdin: Arc<Mutex<Option<ChildStdin>>>,
+    stdin: Arc<Stdin>,
     stderr: Arc<Mutex<Stderr>>,
     stderr_done: Receiver<()>,
     exited: Receiver<()>,
     exit: Arc<Mutex<Option<crossbeam_channel::Sender<()>>>>,
     status: Arc<Mutex<Option<ExitStatus>>>,
+}
+
+struct Stdin {
+    pipe: Mutex<Option<ChildStdin>>,
+    released: AtomicBool,
+}
+
+impl Stdin {
+    fn release(&self) {
+        self.released.store(true, Ordering::SeqCst);
+        if let Ok(mut pipe) = self.pipe.try_lock() {
+            pipe.take();
+        }
+    }
+
+    fn with<T>(
+        &self,
+        use_pipe: impl FnOnce(&mut ChildStdin) -> std::io::Result<T>,
+        absent: impl FnOnce() -> std::io::Result<T>,
+    ) -> std::io::Result<T> {
+        if self.released.load(Ordering::SeqCst) {
+            lock(&self.pipe).take();
+            return absent();
+        }
+        let mut pipe = lock(&self.pipe);
+        let outcome = match pipe.as_mut() {
+            Some(stdin) => use_pipe(stdin),
+            None => absent(),
+        };
+        if self.released.load(Ordering::SeqCst) {
+            pipe.take();
+        }
+        outcome
+    }
 }
 
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -199,7 +234,10 @@ impl Child {
         Ok((
             Self {
                 child: Arc::new(Mutex::new(child)),
-                stdin: Arc::new(Mutex::new(Some(stdin))),
+                stdin: Arc::new(Stdin {
+                    pipe: Mutex::new(Some(stdin)),
+                    released: AtomicBool::new(false),
+                }),
                 stderr,
                 stderr_done,
                 exited,
@@ -215,7 +253,7 @@ impl Child {
     }
 
     pub fn release_stdin(&self) {
-        lock(&self.stdin).take();
+        self.stdin.release();
     }
 
     pub fn watch(&self, reader_done: Receiver<()>, drain: Duration) {
@@ -293,20 +331,17 @@ impl Child {
     }
 }
 
-struct SharedStdin(Arc<Mutex<Option<ChildStdin>>>);
+struct SharedStdin(Arc<Stdin>);
 
 impl Write for SharedStdin {
     fn write(&mut self, data: &[u8]) -> std::io::Result<usize> {
-        match lock(&self.0).as_mut() {
-            Some(stdin) => stdin.write(data),
-            None => Err(std::io::ErrorKind::BrokenPipe.into()),
-        }
+        self.0.with(
+            |stdin| stdin.write(data),
+            || Err(std::io::ErrorKind::BrokenPipe.into()),
+        )
     }
 
     fn flush(&mut self) -> std::io::Result<()> {
-        match lock(&self.0).as_mut() {
-            Some(stdin) => stdin.flush(),
-            None => Ok(()),
-        }
+        self.0.with(|stdin| stdin.flush(), || Ok(()))
     }
 }

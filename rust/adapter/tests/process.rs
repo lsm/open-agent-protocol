@@ -127,3 +127,31 @@ fn a_signal_reads_as_go_names_it_on_this_platform() {
         Some("signal: user defined signal 1")
     );
 }
+
+#[test]
+fn releasing_stdin_returns_while_a_write_is_blocked_on_a_full_pipe_and_the_write_fails_once_the_child_dies(
+) {
+    let _serial = serial();
+    let (child, _stdout) = Child::spawn(&shell("sleep 30")).unwrap();
+    let mut writer = child.writer();
+    let (wrote, written) = crossbeam_channel::bounded(1);
+    std::thread::spawn(move || {
+        let _ = wrote.send(writer.write_all(&vec![b'x'; 8 << 20]));
+    });
+    assert!(written.recv_timeout(Duration::from_millis(300)).is_err());
+    let (released, release_done) = crossbeam_channel::bounded(1);
+    let releaser = child.clone();
+    std::thread::spawn(move || {
+        releaser.release_stdin();
+        let _ = released.send(());
+    });
+    assert!(release_done.recv_timeout(Duration::from_secs(2)).is_ok());
+    watched(&child);
+    child.kill();
+    assert!(written
+        .recv_timeout(Duration::from_secs(5))
+        .unwrap()
+        .is_err());
+    assert!(child.await_exit(Duration::from_secs(5)));
+    assert!(child.writer().write_all(b"late\n").is_err());
+}

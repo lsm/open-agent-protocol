@@ -79,3 +79,10 @@ call, so `interrupt` runs `/bin/kill -INT` (or `/usr/bin/kill`) while it holds
 the child, and only if the child has not been reaped, so a recycled pid is
 never signalled. On a host with neither binary it kills the child instead,
 which is the step Go would reach after its grace period anyway.
+
+Stdin has the same limit. `release_stdin` never waits: when a write is
+blocked on a full pipe it marks the pipe released and returns, and the writer
+drops the descriptor as soon as its write returns, which killing the child
+causes. Go closes the descriptor under the blocked write at once; Rust's
+stays open until that write ends, so a grandchild holding the read end keeps
+the writer blocked until it exits.
