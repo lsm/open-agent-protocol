@@ -80,19 +80,33 @@ func (c *Client) Call(ctx context.Context, method string, params, out any) error
 	}
 	select {
 	case m := <-replies:
-		if m.Kind == native.Failure {
-			return &RemoteError{m.Code, m.Error}
-		}
-		if out != nil {
-			return json.Unmarshal(m.Result, out)
-		}
-		return nil
+		return decodeReply(m, out)
 	case <-ctx.Done():
+		select {
+		case m := <-replies:
+			return decodeReply(m, out)
+		default:
+		}
 		c.fail(ctx.Err())
 		return ctx.Err()
 	case <-c.done:
+		select {
+		case m := <-replies:
+			return decodeReply(m, out)
+		default:
+		}
 		return c.Err()
 	}
+}
+
+func decodeReply(m native.Message, out any) error {
+	if m.Kind == native.Failure {
+		return &RemoteError{m.Code, m.Error}
+	}
+	if out != nil {
+		return json.Unmarshal(m.Result, out)
+	}
+	return nil
 }
 
 func (c *Client) read() {
