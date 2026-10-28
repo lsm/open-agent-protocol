@@ -110,3 +110,11 @@ fn a_lone_surrogate_escape_decodes_as_the_replacement_character_as_go_s_decoder_
     let delta: DeltaPayload = decode_strict(br#"{"text":"bad \ud800 half"}"#).unwrap();
     assert_eq!(delta.text, "bad \u{fffd} half");
 }
+
+#[test]
+fn an_event_envelope_refuses_an_unknown_member() {
+    let refused =
+        decode_strict::<Event>(br#"{"type":"error","payload":{"message":"x"},"bogus":1}"#)
+            .unwrap_err();
+    assert!(refused.contains("unknown field `bogus`"), "{refused}");
+}

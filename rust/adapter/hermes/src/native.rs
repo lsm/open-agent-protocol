@@ -63,6 +63,7 @@ fn object_or_null<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Raw, D::
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Event {
     #[serde(default, rename = "type", deserialize_with = "zero")]
     pub kind: String,
