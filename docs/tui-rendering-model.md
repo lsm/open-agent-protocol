@@ -478,8 +478,15 @@ context gauge divides by, so the two cannot disagree: the runtime hands the agen
 model carrying the session's window everywhere it hands it a model, which is at start,
 at a model switch, at a picker selection and when the catalog is refreshed.
 
-A value is refused when it is above the ceiling the model's row records in the provider
-catalog, and the refusal names the model, the ceiling and the window still in effect.
+Copilot models with distinct `billing.token_prices.default` and `long_context`
+limits retain the default prompt window and the larger selectable prompt ceiling.
+Both the current `max_prompt_tokens` and earlier `context_max` spellings are read
+from each tier; the model id stays unchanged. `/context <tokens>` selects the long
+window explicitly, and `/context default` restores the default tier. Models with
+no distinct tiers keep the limits their listing already supplies.
+
+A value is refused when it is above the model's dynamically reported maximum or
+the ceiling its row records in the provider catalog, and the refusal names the model, the ceiling and the window still in effect.
 Lowering is never refused. A model that records no ceiling is accepted at any size,
 because the window such a model arrives with is this repository's generic default rather
 than a statement about the model — the reply says so, and with it that the provider may

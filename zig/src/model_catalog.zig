@@ -303,6 +303,7 @@ fn copilotModel(allocator: std.mem.Allocator, id_text: []const u8, base_url_text
         .image_input_known = if (listed) |found| found.image_input != null else false,
         .cost = .{ .input = 0, .output = 0, .cache_read = 0, .cache_write = 0 },
         .context_window = if (listed) |found| found.context_window orelse 128_000 else 128_000,
+        .max_context_window = if (listed) |found| found.max_context_window else null,
         .max_tokens = if (listed) |found| found.max_tokens orelse 16_384 else 16_384,
         .is_owned = true,
     };
@@ -471,9 +472,27 @@ fn parseCopilotModels(allocator: std.mem.Allocator, data: []const u8) ![]Discove
             }
             if (objectObject(capabilities, "supports")) |supports| model.image_input = objectBool(supports, "vision");
         }
+        if (objectObject(&item.object, "billing")) |billing| {
+            if (objectObject(billing, "token_prices")) |prices| {
+                const default = copilotTierWindow(prices, "default") orelse model.context_window;
+                if (copilotTierWindow(prices, "long_context")) |maximum| {
+                    if (default) |window| {
+                        if (maximum > window) {
+                            model.context_window = window;
+                            model.max_context_window = maximum;
+                        }
+                    }
+                }
+            }
+        }
         try models.append(allocator, model);
     }
     return models.toOwnedSlice(allocator);
+}
+
+fn copilotTierWindow(prices: *const std.json.ObjectMap, name: []const u8) ?u32 {
+    const tier = objectObject(prices, name) orelse return null;
+    return positiveU32(objectU32(tier, "max_prompt_tokens")) orelse positiveU32(objectU32(tier, "context_max"));
 }
 
 fn copilotOffersForChat(item: *const std.json.ObjectMap) bool {
@@ -1314,6 +1333,7 @@ fn contextWindowFor(id: []const u8, model: DiscoveredModel) u32 {
 }
 
 pub fn contextWindowMaximum(model: ai_types.Model) ?u32 {
+    if (model.max_context_window) |maximum| return @max(maximum, model.context_window);
     if (provider_catalog.modelMaxContextWindow(model.provider, model.id)) |ceiling| {
         if (!contextWindowIsReported(model)) return ceiling;
         return @max(ceiling, model.context_window);
@@ -1721,6 +1741,7 @@ const DiscoveredModel = struct {
     id: []const u8,
     name: ?[]const u8 = null,
     context_window: ?u32 = null,
+    max_context_window: ?u32 = null,
     max_tokens: ?u32 = null,
     reasoning: ?bool = null,
     image_input: ?bool = null,
@@ -6405,4 +6426,27 @@ test "a custom provider's model list says whether each model sees images, and si
     try std.testing.expect(models[1].image_input_known);
     try std.testing.expectEqual(@as(usize, 1), models[1].input.len);
     try std.testing.expect(!models[2].image_input_known);
+}
+
+test "copilot context tiers keep the default and allow the advertised long prompt without changing model identity" {
+    const allocator = std.testing.allocator;
+    const cases = [_]struct { prices: []const u8, default: u32, maximum: u32 }{
+        .{ .prices = "{\"default\":{\"context_max\":200000},\"long_context\":{\"context_max\":872000}}", .default = 200000, .maximum = 872000 },
+        .{ .prices = "{\"default\":{\"max_prompt_tokens\":180000},\"long_context\":{\"max_prompt_tokens\":936000}}", .default = 180000, .maximum = 936000 },
+        .{ .prices = "{\"default\":{\"max_prompt_tokens\":190000,\"context_max\":120000},\"long_context\":{\"max_prompt_tokens\":760000,\"context_max\":700000}}", .default = 190000, .maximum = 760000 },
+    };
+    for (cases) |case| {
+        const body = try std.fmt.allocPrint(allocator, "{{\"data\":[{{\"id\":\"claude-tiered\",\"capabilities\":{{\"type\":\"chat\",\"limits\":{{\"max_prompt_tokens\":200000,\"max_context_window_tokens\":1000000,\"max_output_tokens\":128000}}}},\"billing\":{{\"token_prices\":{s}}}}}]}}", .{case.prices});
+        defer allocator.free(body);
+        const discovered = try parseCopilotModels(allocator, body);
+        defer freeDiscoveredModels(allocator, discovered);
+        var model = try copilotModel(allocator, discovered[0].id, "https://api.individual.githubcopilot.com", discovered[0]);
+        defer model.deinit(allocator);
+        try std.testing.expectEqual(case.default, model.context_window);
+        try std.testing.expectEqual(@as(?u32, case.maximum), contextWindowMaximum(model));
+        var cloned = try ai_types.cloneModel(allocator, model);
+        defer cloned.deinit(allocator);
+        try std.testing.expectEqual(@as(?u32, case.maximum), contextWindowMaximum(cloned));
+        try std.testing.expectEqualStrings("claude-tiered", cloned.id);
+    }
 }
