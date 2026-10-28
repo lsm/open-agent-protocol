@@ -1,7 +1,7 @@
 use oap_protocol::*;
 
 use super::controls::Controls;
-use super::{payload, s, State};
+use super::{os, payload, s, State};
 use crate::codes;
 
 #[derive(Default)]
@@ -45,6 +45,13 @@ impl State {
 
     pub(super) fn switched_model(&mut self, e: &Envelope) {
         let p: SessionModelSwitchResponse = payload(e);
+        let Some(request) = self.requests.get(&os(&e.in_reply_to)) else {
+            return;
+        };
+        let asked: SessionModelSwitchRequest = payload(&request.envelope);
+        if asked.session_id != p.session_id || asked.model_id != p.model_id {
+            return;
+        }
         let track = self.session_models.entry(s(&p.session_id)).or_default();
         track.current = Some(p.model_id);
         track.guarded = None;

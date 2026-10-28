@@ -126,9 +126,9 @@
   "profile": "open-agent-protocol.agent-control-core",
   "type": "session.model.switch.request",
   "id": "sw1",
-  "session_id": "s1",
+  "session_id": "s9",
   "payload": {
-   "session_id": "s1",
+   "session_id": "s9",
    "model_id": "third-model"
   },
   "capability_revision": "controls-v1"
@@ -142,7 +142,7 @@
   "in_reply_to": "sw1",
   "session_id": "s1",
   "payload": {
-   "session_id": "s9",
+   "session_id": "s1",
    "model_id": "third-model",
    "previous_model_id": "default-model"
   },
