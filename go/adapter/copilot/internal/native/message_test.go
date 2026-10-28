@@ -6,10 +6,12 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/lsm/open-agent-protocol/harnesses"
 )
 
 func TestPinnedCorpusMessages(t *testing.T) {
-	root := filepath.Join("..", "..", "..", "..", "..", "fixtures", "adapters", "copilot-cli-v1.0.98")
+	root := filepath.Join("..", "..", "..", "..", "..", filepath.FromSlash(harnesses.Current("copilot-cli").Corpus))
 	entries, err := filepath.Glob(filepath.Join(root, "*", "native.jsonl"))
 	if err != nil || len(entries) != 10 {
 		t.Fatalf("corpus inventory: %v, cases %d", err, len(entries))
