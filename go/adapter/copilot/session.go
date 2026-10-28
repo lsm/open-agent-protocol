@@ -152,7 +152,7 @@ func (s *session) end(code, message string) {
 
 func (s *session) flush() {
 	for _, event := range s.reducer.events {
-		s.journal.Append(event, event.Type == protocol.TypeRunCompleted || event.Type == protocol.TypeRunFailed)
+		s.journal.Append(event, event.Type == protocol.TypeRunCompleted || event.Type == protocol.TypeRunFailed || event.Type == protocol.TypeRunCancelled)
 	}
 	s.reducer.events = nil
 }
