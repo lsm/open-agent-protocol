@@ -126,6 +126,10 @@ pub struct PromptRequest {
     #[serde(skip_serializing_if = "String::is_empty")]
     pub id: String,
     pub text: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub files: Raw,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub agents: Raw,
     #[serde(skip_serializing_if = "String::is_empty")]
     pub delivery: String,
     #[serde(skip_serializing_if = "Option::is_none")]

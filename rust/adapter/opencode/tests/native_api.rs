@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 
 use oap_adapter_opencode::native::{
     decode_api_error, valid_delivery, valid_event_id, valid_message_id, valid_session_id, Admitted,
-    ApiError, Error, SessionInfo,
+    ApiError, Error, PromptRequest, SessionInfo,
 };
 
 #[test]
@@ -132,4 +132,29 @@ fn an_unknown_member_is_refused_in_a_receipt_its_time_and_a_session_s_model() {
     )
     .unwrap();
     assert_eq!(info.model.unwrap().variant, "high");
+}
+
+#[test]
+fn a_prompt_request_marshals_go_s_members_in_go_s_order_and_omits_the_empty_ones() {
+    assert_eq!(
+        serde_json::to_string(&PromptRequest {
+            text: "hi".into(),
+            ..PromptRequest::default()
+        })
+        .unwrap(),
+        r#"{"text":"hi"}"#
+    );
+    let raw = |text: &str| Some(serde_json::value::RawValue::from_string(text.into()).unwrap());
+    assert_eq!(
+        serde_json::to_string(&PromptRequest {
+            id: "msg_1".into(),
+            text: "hi".into(),
+            files: raw(r#"[{"path":"a"}]"#),
+            agents: raw(r#"["build"]"#),
+            delivery: "queue".into(),
+            resume: Some(false),
+        })
+        .unwrap(),
+        r#"{"id":"msg_1","text":"hi","files":[{"path":"a"}],"agents":["build"],"delivery":"queue","resume":false}"#
+    );
 }
