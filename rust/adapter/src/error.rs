@@ -88,6 +88,8 @@ pub enum Error {
     ReplayGap(ReplayGap),
     #[error("adapter: no portable tool catalog is served")]
     ToolCatalogUnavailable,
+    #[error("{0}")]
+    Harness(String),
 }
 
 fn control_text(control: &UnsupportedControl) -> String {
@@ -102,6 +104,10 @@ fn control_text(control: &UnsupportedControl) -> String {
 }
 
 impl Error {
+    pub fn harness(error: impl std::fmt::Display) -> Self {
+        Self::Harness(error.to_string())
+    }
+
     pub fn is_unsupported_input(&self) -> bool {
         matches!(
             self,
