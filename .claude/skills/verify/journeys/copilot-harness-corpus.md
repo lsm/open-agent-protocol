@@ -38,5 +38,9 @@ synthetic subprocess. Public session submission now tests an early native event
 before its reply, Unicode text across messages/parts, native refusal without a
 ghost run, missing binding teardown, queue promotion and the nine-run bound.
 Unsupported portable controls and non-text input are refused before admission.
-Adapter construction and registry wiring follow separately. Unsupported host capabilities
+The public Go `New`/`Probe`/`Open` path now starts the synthetic child with
+enforced headless/stdio/no-update flags, verifies protocol 3 and the pinned CLI
+version, then produces validator-accepted events. Mismatched versions and
+unsupported open controls are refused; each open owns a separate process.
+Registry wiring follows separately. Unsupported host capabilities
 remain unadvertised; the Rust lane follows separately.
