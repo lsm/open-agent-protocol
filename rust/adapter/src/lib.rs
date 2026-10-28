@@ -7,6 +7,8 @@ pub mod memory;
 mod prompt;
 mod quote_table;
 mod refuse;
+#[cfg(feature = "testkit")]
+pub mod testkit;
 
 use oap_protocol::{
     CompactionPolicy, Participant, ReasoningLevel, SessionId, ToolDefinition, ToolSourceAttachment,
