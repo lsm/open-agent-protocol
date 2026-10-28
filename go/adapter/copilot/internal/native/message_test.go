@@ -9,7 +9,7 @@ import (
 )
 
 func TestPinnedCorpusMessages(t *testing.T) {
-	root := filepath.Join("..", "..", "..", "..", "..", "..", "fixtures", "adapters", "copilot-cli-v1.0.98")
+	root := filepath.Join("..", "..", "..", "..", "..", "fixtures", "adapters", "copilot-cli-v1.0.98")
 	entries, err := filepath.Glob(filepath.Join(root, "*", "native.jsonl"))
 	if err != nil || len(entries) != 10 {
 		t.Fatalf("corpus inventory: %v, cases %d", err, len(entries))
