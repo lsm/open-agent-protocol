@@ -1,10 +1,13 @@
 # GitHub Copilot CLI 1.0.98 mapping ledger
 
-Status: the first pin, not yet catalogued. No adapter implements it yet; this
-ledger is the spec the Zig and Go adapters will be built against, and it
-chooses the native surface they drive. `harnesses/copilot-cli.json` lands with
-the first adapter, because a current version needs a capability revision and a
-corpus.
+Status: catalogued for the existing Zig implementation. The shared pin is
+`harnesses/copilot-cli.json`; the token-free synthetic baseline corpus is
+`fixtures/adapters/copilot-cli-v1.0.98`. It is authored from this ledger rather
+than a new live capture. Go currently has pin metadata only; its runtime and
+broader corpus are tracked in #1448, with Rust following separately in #1439.
+The lifecycle tables below distinguish native possibilities from the conservative
+host descriptor: reopen, cancel and interactive resolution are not advertised
+by the current Zig host.
 
 ## Which surface
 

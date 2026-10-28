@@ -461,6 +461,7 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
     copilot_native_mod.addImport("gojson", adapter_gojson_mod);
+    copilot_native_mod.addImport("harness_pins", harness_pins_mod);
     const copilot_native_test = b.addTest(.{ .root_module = copilot_native_mod });
 
     const copilot_session_mod = b.createModule(.{
@@ -1508,7 +1509,16 @@ pub fn build(b: *std.Build) void {
             .{ .name = "copilot_session", .module = copilot_session_mod },
         },
     });
+    copilot_adapter_mod.addImport("harness_pins", harness_pins_mod);
     const copilot_adapter_test = b.addTest(.{ .root_module = copilot_adapter_mod });
+    const copilot_corpus_mod = b.createModule(.{ .root_source_file = b.path("src/adapter/copilot/corpus.zig"), .target = target, .optimize = optimize });
+    copilot_corpus_mod.addImport("corpus", adapter_corpus_mod);
+    copilot_corpus_mod.addImport("harness_pins", harness_pins_mod);
+    copilot_corpus_mod.addImport("native", copilot_native_mod);
+    copilot_corpus_mod.addImport("copilot_session", copilot_session_mod);
+    const copilot_corpus_test = b.addTest(.{ .root_module = copilot_corpus_mod });
+    const copilot_corpus_step = b.step("test-copilot-corpus", "Replay the synthetic Copilot corpus through Zig");
+    copilot_corpus_step.dependOn(&b.addRunArtifact(copilot_corpus_test).step);
 
     const deepseek_adapter_mod = b.createModule(.{
         .root_source_file = b.path("src/adapter/deepseek/adapter.zig"),
@@ -3105,6 +3115,7 @@ pub fn build(b: *std.Build) void {
     test_unit_adapter_step.dependOn(&b.addRunArtifact(copilot_session_test).step);
     test_step.dependOn(&b.addRunArtifact(copilot_adapter_test).step);
     test_unit_adapter_step.dependOn(&b.addRunArtifact(copilot_adapter_test).step);
+    test_unit_adapter_step.dependOn(&b.addRunArtifact(copilot_corpus_test).step);
     test_step.dependOn(&b.addRunArtifact(opencode_httpapi_test).step);
     test_unit_adapter_step.dependOn(&b.addRunArtifact(opencode_httpapi_test).step);
     test_step.dependOn(&b.addRunArtifact(opencode_session_test).step);
@@ -3721,7 +3732,7 @@ fn harnessPinsModule(b: *std.Build) *std.Build.Module {
     };
     const Entry = struct { versions: []const Version };
     const options = b.addOptions();
-    const ids = [_][]const u8{ "acp", "claude-code", "codex-app-server", "deepseek-harness", "hermes", "opencode", "pi" };
+    const ids = [_][]const u8{ "acp", "claude-code", "codex-app-server", "copilot-cli", "deepseek-harness", "hermes", "opencode", "pi" };
     for (ids) |id| {
         const path = b.fmt("../harnesses/{s}.json", .{id});
         const bytes = readConfigFile(b, path) catch |err| std.debug.panic("reading {s}: {t}", .{ path, err });
