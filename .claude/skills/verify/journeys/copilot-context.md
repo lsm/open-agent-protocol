@@ -7,6 +7,9 @@ After building ReleaseSafe, run:
 python3 .claude/skills/verify/scripts/copilot-context.py --output-dir /tmp/oap-copilot-context-<unique-name>
 ```
 
+For a release archive, pass `--binary /absolute/path/to/extracted/oapx` to
+exercise the shipped binary with the same isolation and assertions.
+
 The real TUI loads a synthetic Copilot catalog with a default 200K prompt tier
 and an 872K long tier under the same Claude model id. It reports 200K, accepts
 `/context 872k`, refuses 900K without changing the persisted selection, restores

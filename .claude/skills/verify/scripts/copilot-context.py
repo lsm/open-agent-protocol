@@ -18,6 +18,7 @@ spec.loader.exec_module(driver)
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output-dir", required=True)
+    parser.add_argument("--binary", default=str(ROOT / "zig/zig-out/bin/oapx"))
     options = parser.parse_args()
     output = Path(options.output_dir).resolve()
     output.mkdir(parents=True, exist_ok=False)
@@ -28,7 +29,7 @@ def main():
         cache = data / "model_catalog"
         cache.mkdir(parents=True)
         binary = root / "oapx"
-        shutil.copy2(ROOT / "zig/zig-out/bin/oapx", binary)
+        shutil.copy2(options.binary, binary)
         (data / "auth.json").write_text(json.dumps({"github-copilot": {
             "api_key": "synthetic-test-value-not-a-real-credential"}}))
         config = data / "config.json"
