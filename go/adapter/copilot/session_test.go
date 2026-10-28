@@ -66,6 +66,12 @@ func TestSyntheticCopilotChild(t *testing.T) {
 		if os.Getenv("OAP_COPILOT_SESSION_MODE") == "exit" {
 			os.Exit(0)
 		}
+		if os.Getenv("OAP_COPILOT_SESSION_MODE") == "burst-exit" {
+			for range 100 {
+				event("assistant.message_delta", map[string]any{"deltaContent": "x"})
+			}
+			os.Exit(0)
+		}
 		if os.Getenv("OAP_COPILOT_SESSION_MODE") == "hold" {
 			continue
 		}
@@ -83,7 +89,7 @@ func syntheticSession(t *testing.T, mode string, capacity int) (*session, *run) 
 		t.Fatal(err)
 	}
 	home := t.TempDir()
-	p, err := rpc.Start(rpc.ProcessConfig{Path: path, Args: []string{"-test.run=^TestSyntheticCopilotChild$"}, Dir: home, Env: []string{"HOME=" + home, "OAP_COPILOT_SESSION_CHILD=1", "OAP_COPILOT_SESSION_MODE=" + mode, "GORACE=atexit_sleep_ms=0"}})
+	p, err := rpc.Start(rpc.ProcessConfig{Path: path, Args: []string{"-test.run=^TestSyntheticCopilotChild$"}, Dir: home, Env: []string{"HOME=" + home, "OAP_COPILOT_SESSION_CHILD=1", "OAP_COPILOT_SESSION_MODE=" + mode, "GORACE=atexit_sleep_ms=0"}, QueueCapacity: 256})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -94,7 +100,7 @@ func syntheticSession(t *testing.T, mode string, capacity int) (*session, *run) 
 		t.Fatal(err)
 	}
 	run.nativeMessage = "m1"
-	s := newSession(r, p, capacity, time.Second)
+	s := newSession(r, p, capacity)
 	t.Cleanup(func() {
 		if err := s.Close(context.Background()); err != nil {
 			t.Error(err)
@@ -229,5 +235,35 @@ func TestSessionReplayReportsAnEvictedPrefix(t *testing.T) {
 	var gap *base.ReplayGap
 	if !errors.As(err, &gap) || gap.RequestedAfter != 0 || gap.OldestAvailable == 0 {
 		t.Fatalf("missing replay gap: %v", err)
+	}
+}
+
+func TestCrashReplayRetainsMoreThanOneFollowerBuffer(t *testing.T) {
+	s, run := syntheticSession(t, "burst-exit", 256)
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	_, stream, err := s.Resume(ctx, base.ResumeRequest{RunID: run.id})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.process.Client.Call(ctx, "session.send", map[string]any{"prompt": "hello"}, nil); err != nil {
+		t.Fatal(err)
+	}
+	first := adaptertest.Drain(t, stream, time.Second)
+	if len(first) != 102 || first[len(first)-1].Type != protocol.TypeRunFailed {
+		t.Fatalf("crash lost original observations: %d", len(first))
+	}
+	_, again, err := s.Resume(ctx, base.ResumeRequest{RunID: run.id})
+	if err != nil {
+		t.Fatal(err)
+	}
+	replayed := adaptertest.Drain(t, again, time.Second)
+	if len(replayed) != len(first) {
+		t.Fatalf("replay truncated: %d of %d", len(replayed), len(first))
+	}
+	for index, event := range replayed {
+		if event.ID != first[index].ID || *event.Sequence != *first[index].Sequence {
+			t.Fatalf("replay changed event %d", index)
+		}
 	}
 }

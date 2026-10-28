@@ -3,7 +3,6 @@ package copilot
 import (
 	"context"
 	"sync"
-	"time"
 
 	base "github.com/lsm/open-agent-protocol/go/adapter"
 	"github.com/lsm/open-agent-protocol/go/adapter/copilot/internal/native"
@@ -13,17 +12,17 @@ import (
 )
 
 type session struct {
-	mu      sync.Mutex
-	reducer *reducer
-	process *rpc.Process
-	journal *journal.Journal
-	timeout time.Duration
-	closed  bool
-	done    chan struct{}
+	mu       sync.Mutex
+	reducer  *reducer
+	process  *rpc.Process
+	journal  *journal.Journal
+	closed   bool
+	unusable bool
+	done     chan struct{}
 }
 
-func newSession(r *reducer, p *rpc.Process, capacity int, timeout time.Duration) *session {
-	s := &session{reducer: r, process: p, journal: journal.New(capacity), timeout: timeout, done: make(chan struct{})}
+func newSession(r *reducer, p *rpc.Process, capacity int) *session {
+	s := &session{reducer: r, process: p, journal: journal.New(capacity), done: make(chan struct{})}
 	go s.pump()
 	return s
 }
@@ -36,7 +35,7 @@ func (s *session) State(ctx context.Context) (protocol.SessionState, error) {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.closed {
+	if s.closed || s.unusable {
 		return protocol.SessionState{}, base.ErrSessionClosed
 	}
 	return s.state(), nil
@@ -93,15 +92,16 @@ func (s *session) Resume(ctx context.Context, request base.ResumeRequest) (base.
 func (s *session) Close(context.Context) error {
 	s.mu.Lock()
 	s.end("copilot_closed", "the Copilot session closed")
+	s.closed = true
 	s.mu.Unlock()
 	_ = s.process.Close()
 	<-s.done
+	s.journal.Close()
 	return nil
 }
 
 func (s *session) pump() {
 	defer close(s.done)
-	defer s.journal.Close()
 	client := s.process.Client
 	for {
 		select {
@@ -123,7 +123,7 @@ func (s *session) pump() {
 func (s *session) consume(message native.Message) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.closed {
+	if s.closed || s.unusable {
 		return
 	}
 	event, err := native.DecodeEvent(message)
@@ -138,10 +138,10 @@ func (s *session) consume(message native.Message) {
 }
 
 func (s *session) end(code, message string) {
-	if s.closed {
+	if s.closed || s.unusable {
 		return
 	}
-	s.closed = true
+	s.unusable = true
 	for _, run := range s.reducer.runs {
 		if !run.terminal {
 			_ = s.reducer.fail(run, code, message)
