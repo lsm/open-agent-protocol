@@ -31,12 +31,29 @@ fn depth(text: &str) -> usize {
 
 pub fn remarshal_any(json: &str) -> Result<String, serde_json::Error> {
     let text = replace_lone_surrogates(json);
-    if depth(&text) > NESTING_LIMIT {
+    let levels = depth(&text);
+    if levels > NESTING_LIMIT {
         return Err(serde_json::Error::custom(format!(
             "exceeded max depth of {NESTING_LIMIT}"
         )));
     }
-    let mut deserializer = serde_json::Deserializer::from_str(&text);
+    if levels <= SHALLOW {
+        return remarshal(&text);
+    }
+    let owned = text.into_owned();
+    std::thread::Builder::new()
+        .stack_size(DEEP_STACK)
+        .spawn(move || remarshal(&owned))
+        .map_err(serde_json::Error::custom)?
+        .join()
+        .unwrap_or_else(|_| Err(serde_json::Error::custom("remarshal panicked")))
+}
+
+const SHALLOW: usize = 128;
+const DEEP_STACK: usize = 1 << 30;
+
+fn remarshal(text: &str) -> Result<String, serde_json::Error> {
+    let mut deserializer = serde_json::Deserializer::from_str(text);
     deserializer.disable_recursion_limit();
     let value = Value::deserialize(&mut deserializer)?;
     deserializer.end()?;
