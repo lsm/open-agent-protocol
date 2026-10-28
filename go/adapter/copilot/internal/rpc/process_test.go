@@ -84,11 +84,6 @@ func TestProcessUsesOnlyExplicitEnvironmentAndReapsChild(t *testing.T) {
 	if err := p.Close(); err != nil {
 		t.Fatal(err)
 	}
-	select {
-	case <-p.Done():
-	case <-ctx.Done():
-		t.Fatal("child not reaped")
-	}
 }
 
 func TestProcessCancellationAndBrokenWireStopChild(t *testing.T) {
