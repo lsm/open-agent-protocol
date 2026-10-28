@@ -1,7 +1,9 @@
+mod codec;
 mod message;
 
 use std::fmt;
 
+pub use codec::{Decoder, Encoder, DEFAULT_FRAME_LIMIT};
 pub use message::{ErrorObject, Kind, Message, RequestId};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
