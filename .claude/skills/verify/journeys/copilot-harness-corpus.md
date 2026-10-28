@@ -22,6 +22,9 @@ recording. It starts no Copilot process, uses no token, and performs no model
 call. Go's native JSON-RPC decoder now consumes the same ten cases, preserves
 unknown event names and exact numeric source bytes, and rejects duplicate keys
 and ambiguous message shapes. Inspect `go-native.txt` for its result. This does
-not yet claim a runnable Go adapter: process transport and reducer follow in
-later slices. Unsupported host capabilities remain unadvertised; the Rust lane
-follows separately.
+not yet claim a runnable Go adapter. The Go checks now include bounded framing,
+RPC dispatch and a synthetic child process under temporary HOME, with cancellation
+and shutdown reaping. The Go reducer matches fixed OAP for text, queue, unknown
+events, session errors and foreign sessions; usage and tool projections follow
+in later slices. Unsupported host capabilities remain unadvertised; the Rust
+lane follows separately.
