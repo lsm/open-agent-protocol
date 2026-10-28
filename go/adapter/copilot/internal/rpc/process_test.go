@@ -3,6 +3,7 @@ package rpc
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -94,8 +95,12 @@ func TestProcessCancellationAndBrokenWireStopChild(t *testing.T) {
 			p, _ := syntheticProcess(t)
 			ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 			defer cancel()
-			if err := p.Client.Call(ctx, method, struct{}{}, nil); err == nil {
+			err := p.Client.Call(ctx, method, struct{}{}, nil)
+			if err == nil {
 				t.Fatal("expected failure")
+			}
+			if method == "stall" && !errors.Is(err, context.DeadlineExceeded) {
+				t.Fatalf("stalled call ended before cancellation: %v", err)
 			}
 			select {
 			case <-p.Done():
