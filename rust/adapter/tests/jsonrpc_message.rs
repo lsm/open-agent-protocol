@@ -194,3 +194,11 @@ fn a_message_go_would_refuse_to_marshal_is_refused() {
     response.id = None;
     assert!(response.encode(&D).is_err());
 }
+
+#[test]
+fn a_lone_surrogate_escape_decodes_as_the_replacement_character() {
+    let message =
+        parse(r#"{"jsonrpc":"2.0","method":"x","params":{"prompt":"a\ud800b"}}"#).unwrap();
+    let params: serde_json::Value = serde_json::from_str(message.params.unwrap().get()).unwrap();
+    assert_eq!(params["prompt"], "a\u{fffd}b");
+}

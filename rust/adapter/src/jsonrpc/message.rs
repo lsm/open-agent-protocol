@@ -1,6 +1,6 @@
 use std::fmt;
 
-use crate::gojson::{go_marshal, go_quote, reject_duplicate_keys};
+use crate::gojson::{go_marshal, go_quote, reject_duplicate_keys, replace_lone_surrogates};
 use serde::Deserialize;
 use serde_json::value::RawValue;
 use std::collections::HashMap;
@@ -162,8 +162,9 @@ impl Message {
             return Err(invalid("frame must be exactly one JSON object"));
         }
         reject_duplicate_keys(data).map_err(|error| invalid(&error.to_string()))?;
+        let text = replace_lone_surrogates(text);
         let members: Option<HashMap<String, Box<RawValue>>> =
-            serde_json::from_str(text).map_err(|error| invalid(&error.to_string()))?;
+            serde_json::from_str(&text).map_err(|error| invalid(&error.to_string()))?;
         let mut members = members.ok_or_else(|| invalid("expected one object"))?;
         if dialect.strict_frames {
             if let Some(name) = members
