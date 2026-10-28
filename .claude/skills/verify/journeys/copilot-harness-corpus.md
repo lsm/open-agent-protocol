@@ -33,5 +33,9 @@ orphan/duplicate completions and incomplete tools at run settlement. Its invento
 test requires every manifest case to be replayed or checked by the native codec.
 The Go session read loop additionally proves state snapshots, bounded cursor
 replay and explicit gaps, process-exit settlement and close/reaping with a
-synthetic subprocess. Public submission and adapter/registry wiring follow separately. Unsupported host capabilities
+synthetic subprocess. Public session submission now tests an early native event
+before its reply, Unicode text across messages/parts, native refusal without a
+ghost run, missing binding teardown, queue promotion and the nine-run bound.
+Unsupported portable controls and non-text input are refused before admission.
+Adapter construction and registry wiring follow separately. Unsupported host capabilities
 remain unadvertised; the Rust lane follows separately.
