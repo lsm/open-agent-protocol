@@ -35,6 +35,18 @@ where
     Ok(Option::<T>::deserialize(deserializer)?.unwrap_or_default())
 }
 
+pub(crate) fn strings<'de, D>(deserializer: D) -> Result<Vec<String>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let items = Option::<Vec<Option<String>>>::deserialize(deserializer)?;
+    Ok(items
+        .unwrap_or_default()
+        .into_iter()
+        .map(Option::unwrap_or_default)
+        .collect())
+}
+
 pub(crate) fn structures<'de, D, T>(deserializer: D) -> Result<Vec<T>, D::Error>
 where
     D: Deserializer<'de>,

@@ -58,6 +58,13 @@ fn session_new_result_must_be_an_object() {
 }
 
 #[test]
+fn a_null_string_element_decodes_as_empty() {
+    let params =
+        decode::<SessionNewParams>(br#"{"mcpServers":[{"name":"m","args":["a",null]}]}"#).unwrap();
+    assert_eq!(params.mcp_servers[0].args, ["a", ""]);
+}
+
+#[test]
 fn null_members_decode_as_their_zero_value() {
     let result = decode::<SessionNewResult>(br#"{"sessionId":null,"configOptions":null}"#).unwrap();
     assert_eq!(result.session_id, "");
@@ -89,7 +96,7 @@ fn prompt_result_keeps_usage_raw() {
 }
 
 #[test]
-fn requests_encode_as_go_does() {
+fn requests_omit_the_members_go_omits() {
     let params = SessionNewParams {
         cwd: "/w".into(),
         mcp_servers: vec![McpServer {

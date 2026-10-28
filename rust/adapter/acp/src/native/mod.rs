@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::value::RawValue;
 
 pub use go::{decode, Decode};
-use go::{raw, slice, structures, zero};
+use go::{raw, slice, strings, structures, zero};
 
 pub const METHOD_SESSION_NEW: &str = "session/new";
 pub const METHOD_SESSION_LOAD: &str = "session/load";
@@ -47,7 +47,7 @@ pub struct McpServer {
     pub command: String,
     #[serde(
         default,
-        deserialize_with = "zero",
+        deserialize_with = "strings",
         skip_serializing_if = "Vec::is_empty"
     )]
     pub args: Vec<String>,
