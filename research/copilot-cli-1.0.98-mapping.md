@@ -78,6 +78,19 @@ other pinned harness frames this way.
   `session.lifecycle` notifications. With the session options below it sent
   the recorder no server-to-client requests.
 
+## Go process diagnostics
+
+The minimal Go process bridge discards child stderr. Unlike the sibling Go
+bridges, it retains no bounded/redacted diagnostic tail, so pre-RPC startup
+text is unavailable; callers have transport errors and `Process.WaitError`'s
+exit status only. This is an explicit diagnostic divergence, not a claim of
+startup-error detail parity. Adding a diagnostic tail requires its own bounded
+capture/redaction evidence before that detail can be promised.
+
+The synthetic Go process checks prove explicit environment isolation, RPC
+replies, deadline cancellation and reaping. They do not verify real Copilot
+authentication/runtime failure text, and never invoke that CLI or read tokens.
+
 ## Live probe
 
 2026-10-17, the darwin-arm64 binary above, `HOME` and `PATH` only, a fresh
@@ -147,6 +160,13 @@ exercise it.
 | `assistant.message` that ends a message, with the `assistant.usage` calls since the previous one | `content.completed` carrying that message's own `usage` ([Decision 0049](../decisions/0049-a-message-reports-its-own-usage.md)) |
 
 ## Tools and permissions
+
+Native numeric normalization: an incoming Copilot `-0` count is treated as
+unknown by both peers, not converted into measured zero. Decision 0065 still
+rejects `-0` in OAP input envelopes. Premium-request costs use float64 in both peers, including
+integer tokens beyond int64; a non-finite accumulated cost is omitted. Numeric
+corpus comparisons retain exact rational values, so exponent/decimal spellings
+of the same cost compare equally without rounding usage counts.
 
 | Native | OAP |
 | --- | --- |

@@ -66,6 +66,9 @@ test "the synthetic Copilot cases replay through the native decoder and reducer"
         .{ .id = "tool-orphan", .path = "tool-orphan" },
         .{ .id = "tool-incomplete", .path = "tool-incomplete" },
         .{ .id = "tool-duplicate-end", .path = "tool-duplicate-end" },
+        .{ .id = "usage-negative-zero", .path = "usage-negative-zero" },
+        .{ .id = "cost-wide", .path = "cost-wide" },
+        .{ .id = "cost-unrepresentable", .path = "cost-unrepresentable" },
     });
 }
 
