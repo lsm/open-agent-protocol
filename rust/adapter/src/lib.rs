@@ -4,6 +4,7 @@ mod error;
 pub mod gojson;
 pub mod journal;
 pub mod memory;
+pub mod process;
 mod prompt;
 mod quote_table;
 mod refuse;
