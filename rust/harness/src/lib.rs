@@ -3,6 +3,10 @@ use std::sync::OnceLock;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+mod check;
+
+pub use check::{check, AdapterPin, Code, Finding};
+
 pub const SCHEMA_FILE: &str = "harness.schema.json";
 
 const SCHEMA: &str = include_str!("../../../harnesses/harness.schema.json");
