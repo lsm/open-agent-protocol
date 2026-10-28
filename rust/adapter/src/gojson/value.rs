@@ -1,10 +1,45 @@
+use serde::de::Error as _;
+use serde::Deserialize;
 use serde_json::Value;
 
-use super::{go_marshal, replace_lone_surrogates};
+use super::{go_marshal, replace_lone_surrogates, NESTING_LIMIT};
+
+fn depth(text: &str) -> usize {
+    let (mut deepest, mut level, mut quoted, mut escaped) = (0, 0usize, false, false);
+    for byte in text.bytes() {
+        if quoted {
+            match (escaped, byte) {
+                (true, _) => escaped = false,
+                (false, b'\\') => escaped = true,
+                (false, b'"') => quoted = false,
+                _ => {}
+            }
+            continue;
+        }
+        match byte {
+            b'"' => quoted = true,
+            b'{' | b'[' => {
+                level += 1;
+                deepest = deepest.max(level);
+            }
+            b'}' | b']' => level = level.saturating_sub(1),
+            _ => {}
+        }
+    }
+    deepest
+}
 
 pub fn remarshal_any(json: &str) -> Result<String, serde_json::Error> {
     let text = replace_lone_surrogates(json);
-    let value: Value = serde_json::from_str(&text)?;
+    if depth(&text) > NESTING_LIMIT {
+        return Err(serde_json::Error::custom(format!(
+            "exceeded max depth of {NESTING_LIMIT}"
+        )));
+    }
+    let mut deserializer = serde_json::Deserializer::from_str(&text);
+    deserializer.disable_recursion_limit();
+    let value = Value::deserialize(&mut deserializer)?;
+    deserializer.end()?;
     let mut out = String::with_capacity(text.len());
     write_value(&value, &mut out);
     Ok(go_marshal(&out))

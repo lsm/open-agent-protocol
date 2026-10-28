@@ -99,3 +99,17 @@ fn remarshal_any_sorts_keys_and_reformats_numbers() {
 fn remarshal_any_refuses_malformed_json() {
     assert!(remarshal_any("{").is_err());
 }
+
+#[test]
+fn remarshal_any_accepts_go_s_nesting_limit_and_refuses_one_past_it() {
+    let nested = |levels: usize| format!("{}{}", "[".repeat(levels), "]".repeat(levels));
+    std::thread::Builder::new()
+        .stack_size(256 << 20)
+        .spawn(move || {
+            assert_eq!(remarshal_any(&nested(10_000)).unwrap(), nested(10_000));
+            assert!(remarshal_any(&nested(10_001)).is_err());
+        })
+        .unwrap()
+        .join()
+        .unwrap();
+}
