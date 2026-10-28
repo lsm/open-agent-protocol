@@ -2,7 +2,7 @@
 name = "oap-serve"
 version = "0.1.0"
 edition = "2021"
-description = "The Open Agent Protocol hub: a registry of adapters, its sessions, and the stdio, HTTP and endpoint bindings over it"
+description = "The Open Agent Protocol hub's adapter and tool-source registry"
 repository = "https://github.com/lsm/open-agent-protocol"
 license = "CC0-1.0"
 publish = false
