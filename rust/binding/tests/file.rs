@@ -221,3 +221,12 @@ fn a_store_whose_file_was_deleted_reads_as_empty() {
     assert!(store.latest("session-1").unwrap().is_none());
     assert!(store.sessions().unwrap().is_empty());
 }
+
+#[test]
+fn a_fresh_store_reads_as_empty() {
+    let (_scratch, path) = scratch("fresh");
+    let store = FileStore::open(&path).unwrap();
+    assert!(store.history("session-1").unwrap().is_empty());
+    assert!(store.latest("session-1").unwrap().is_none());
+    assert!(store.sessions().unwrap().is_empty());
+}
