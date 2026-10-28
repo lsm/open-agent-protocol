@@ -162,6 +162,16 @@ func TestProcessExitFailsTheAdmittedRun(t *testing.T) {
 	case <-ctx.Done():
 		t.Fatal("child not reaped")
 	}
+	_, again, err := s.Resume(ctx, base.ResumeRequest{RunID: run.id})
+	if err != nil {
+		t.Fatalf("retained replay became unreachable after native exit: %v", err)
+	}
+	replayed := adaptertest.Drain(t, again, time.Second)
+	want, _ := json.Marshal(events)
+	got, _ := json.Marshal(replayed)
+	if string(want) != string(got) {
+		t.Fatalf("crash replay changed events: %s", got)
+	}
 }
 
 func TestSessionCloseSettlesAndStopsItsProcess(t *testing.T) {
