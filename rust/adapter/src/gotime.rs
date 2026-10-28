@@ -39,17 +39,18 @@ fn parse(text: &str) -> Option<i64> {
         let sign = if zone.starts_with('-') { -1 } else { 1 };
         let (hours, minutes) = zone[1..].split_once(':')?;
         let (hours, minutes) = (digits(hours, 2)?, digits(minutes, 2)?);
-        if hours > 23 || minutes > 59 {
+        if hours > 24 || minutes > 60 {
             return None;
         }
         (clock, sign * (hours * 60 + minutes))
     };
-    let (whole, fraction) = match clock.split_once('.') {
+    let (whole, fraction) = match clock.split_once(['.', ',']) {
         Some((whole, fraction)) => (whole, Some(fraction)),
         None => (clock, None),
     };
     let mut whole = whole.split(':');
-    let hour = digits(whole.next()?, 2)?;
+    let hour = whole.next()?;
+    let hour = digits(hour, 2).or_else(|| digits(hour, 1))?;
     let minute = digits(whole.next()?, 2)?;
     let second = digits(whole.next()?, 2)?;
     if whole.next().is_some() {
