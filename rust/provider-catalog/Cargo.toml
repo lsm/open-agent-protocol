@@ -1,0 +1,17 @@
+[package]
+name = "oap-provider-catalog"
+version = "0.1.0"
+edition = "2021"
+description = "The curated model provider catalog: every supported vendor's endpoints, credentials and limits, as data"
+repository = "https://github.com/lsm/open-agent-protocol"
+license = "CC0-1.0"
+publish = false
+
+[dependencies]
+jsonschema = { version = "=0.59.0", default-features = false }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+
+[lints.rust]
+unsafe_code = "forbid"
