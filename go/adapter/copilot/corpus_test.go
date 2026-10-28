@@ -94,7 +94,7 @@ func replay(t *testing.T, name string) {
 }
 
 var lifecycleCases = []string{"completed-text", "queued-busy-period", "unknown-event", "session-error", "foreign-session"}
-var usageCases = []string{"reasoning-usage", "usage-sparse", "usage-precision", "usage-wide", "usage-partial-call", "usage-overflow", "usage-negative-zero", "cost-wide", "cost-unrepresentable"}
+var usageCases = []string{"reasoning-usage", "usage-sparse", "usage-precision", "usage-wide", "usage-partial-call", "usage-overflow", "usage-negative-zero", "cost-wide", "cost-unrepresentable", "cost-unknown", "cost-partial"}
 var toolCases = []string{"tool-success", "tool-denied", "tool-orphan", "tool-incomplete", "tool-duplicate-end"}
 var codecCases = []string{"invalid-wire", "invalid-event"}
 

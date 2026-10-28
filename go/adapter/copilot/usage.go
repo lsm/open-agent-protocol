@@ -12,16 +12,15 @@ import (
 type usageState struct {
 	input, output *uint64
 	measured      bool
-	cost          float64
+	cost          *float64
 	model         string
 }
 
 func (u *usageState) observe(data map[string]json.RawMessage) {
 	u.input = accumulate(u.input, data["inputTokens"], !u.measured)
 	u.output = accumulate(u.output, data["outputTokens"], !u.measured)
+	u.cost = accumulateCost(u.cost, data["cost"], !u.measured)
 	u.measured = true
-	cost, _ := strconv.ParseFloat(string(data["cost"]), 64)
-	u.cost += cost
 	if model := native.Text(data, "model"); model != "" {
 		u.model = model
 	}
@@ -53,13 +52,30 @@ func (u *usageState) portable() protocol.Usage {
 	return protocol.Usage{InputTokens: u.input, OutputTokens: u.output}
 }
 
+func accumulateCost(previous *float64, raw json.RawMessage, first bool) *float64 {
+	next, err := strconv.ParseFloat(string(raw), 64)
+	if err != nil {
+		return nil
+	}
+	if !first {
+		if previous == nil {
+			return nil
+		}
+		next += *previous
+	}
+	if math.IsInf(next, 0) || math.IsNaN(next) {
+		return nil
+	}
+	return &next
+}
+
 func (u *usageState) extensions() map[string]json.RawMessage {
 	if !u.measured {
 		return nil
 	}
 	ext := map[string]json.RawMessage{}
-	if !math.IsInf(u.cost, 0) && !math.IsNaN(u.cost) {
-		ext["com.github.copilot.cost"], _ = json.Marshal(map[string]float64{"premium_requests": u.cost})
+	if u.cost != nil {
+		ext["com.github.copilot.cost"], _ = json.Marshal(map[string]float64{"premium_requests": *u.cost})
 	}
 	if u.model != "" {
 		ext["com.github.copilot.routed_model"], _ = json.Marshal(map[string]string{"model": u.model})
