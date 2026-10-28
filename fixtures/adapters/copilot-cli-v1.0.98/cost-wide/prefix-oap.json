@@ -1,0 +1,39 @@
+[
+  {
+    "id": "req1",
+    "payload": {
+      "delivery": "auto",
+      "messages": [
+        {
+          "content": "hello",
+          "role": "user"
+        }
+      ],
+      "session_id": "s1"
+    },
+    "profile": "open-agent-protocol.agent-control-core",
+    "protocol": "open-agent-protocol",
+    "session_id": "s1",
+    "type": "session.message.submit.request",
+    "version": "0.1"
+  },
+  {
+    "id": "resp1",
+    "in_reply_to": "req1",
+    "payload": {
+      "accepted": true,
+      "admission": "started",
+      "effective_delivery": "start",
+      "requested_delivery": "auto",
+      "run_id": "run-1",
+      "session_id": "s1",
+      "status": "running",
+      "submission_id": "sub1"
+    },
+    "profile": "open-agent-protocol.agent-control-core",
+    "protocol": "open-agent-protocol",
+    "session_id": "s1",
+    "type": "session.message.submit.response",
+    "version": "0.1"
+  }
+]

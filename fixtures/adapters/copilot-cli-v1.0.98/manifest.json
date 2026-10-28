@@ -68,6 +68,18 @@
     {
       "id": "usage-overflow",
       "path": "usage-overflow"
+    },
+    {
+      "id": "usage-negative-zero",
+      "path": "usage-negative-zero"
+    },
+    {
+      "id": "cost-wide",
+      "path": "cost-wide"
+    },
+    {
+      "id": "cost-unrepresentable",
+      "path": "cost-unrepresentable"
     }
   ]
 }
