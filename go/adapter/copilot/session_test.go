@@ -56,7 +56,16 @@ func TestSyntheticCopilotChild(t *testing.T) {
 		case "session.send":
 			count++
 			id := fmt.Sprintf("m%d", count)
-			event("user.message", map[string]any{"messageId": id, "content": "hello"})
+			if os.Getenv("OAP_COPILOT_SESSION_MODE") == "refuse" {
+				say(map[string]any{"jsonrpc": "2.0", "id": message.ID, "error": map[string]any{"code": -32602, "message": "synthetic refusal"}})
+				continue
+			}
+			if os.Getenv("OAP_COPILOT_SESSION_MODE") != "queued" || count == 1 {
+				event("user.message", map[string]any{"messageId": id, "content": "hello"})
+			}
+			if os.Getenv("OAP_COPILOT_SESSION_MODE") == "early" {
+				time.Sleep(25 * time.Millisecond)
+			}
 			result = map[string]any{"messageId": id}
 		}
 		say(map[string]any{"jsonrpc": "2.0", "id": message.ID, "result": result})
@@ -66,7 +75,7 @@ func TestSyntheticCopilotChild(t *testing.T) {
 		if os.Getenv("OAP_COPILOT_SESSION_MODE") == "exit" {
 			os.Exit(0)
 		}
-		if os.Getenv("OAP_COPILOT_SESSION_MODE") == "hold" {
+		if os.Getenv("OAP_COPILOT_SESSION_MODE") == "hold" || os.Getenv("OAP_COPILOT_SESSION_MODE") == "queued" {
 			continue
 		}
 		event("assistant.message_delta", map[string]any{"deltaContent": "hello"})
@@ -76,14 +85,19 @@ func TestSyntheticCopilotChild(t *testing.T) {
 	}
 }
 
-func syntheticSession(t *testing.T, mode string, capacity int) (*session, *run) {
+func syntheticProcessConfig(t *testing.T, mode string) rpc.ProcessConfig {
 	t.Helper()
 	path, err := os.Executable()
 	if err != nil {
 		t.Fatal(err)
 	}
 	home := t.TempDir()
-	p, err := rpc.Start(rpc.ProcessConfig{Path: path, Args: []string{"-test.run=^TestSyntheticCopilotChild$"}, Dir: home, Env: []string{"HOME=" + home, "OAP_COPILOT_SESSION_CHILD=1", "OAP_COPILOT_SESSION_MODE=" + mode, "GORACE=atexit_sleep_ms=0"}})
+	return rpc.ProcessConfig{Path: path, Args: []string{"-test.run=^TestSyntheticCopilotChild$"}, Dir: home, Env: []string{"HOME=" + home, "OAP_COPILOT_SESSION_CHILD=1", "OAP_COPILOT_SESSION_MODE=" + mode, "GORACE=atexit_sleep_ms=0"}}
+}
+
+func syntheticSession(t *testing.T, mode string, capacity int) (*session, *run) {
+	t.Helper()
+	p, err := rpc.Start(syntheticProcessConfig(t, mode))
 	if err != nil {
 		t.Fatal(err)
 	}
