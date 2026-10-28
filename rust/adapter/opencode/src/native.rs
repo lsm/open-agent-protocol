@@ -85,6 +85,7 @@ impl ApiError {
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ModelRef {
     #[serde(default, deserialize_with = "zero")]
     pub id: String,
@@ -132,12 +133,14 @@ pub struct PromptRequest {
 }
 
 #[derive(Clone, Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct AdmittedTime {
     #[serde(default, deserialize_with = "zero")]
     pub created: i64,
 }
 
 #[derive(Clone, Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Admitted {
     #[serde(default, deserialize_with = "zero")]
     pub id: String,

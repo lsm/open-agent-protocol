@@ -1,8 +1,8 @@
 use std::collections::BTreeMap;
 
 use oap_adapter_opencode::native::{
-    decode_api_error, valid_delivery, valid_event_id, valid_message_id, valid_session_id, ApiError,
-    Error, SessionInfo,
+    decode_api_error, valid_delivery, valid_event_id, valid_message_id, valid_session_id, Admitted,
+    ApiError, Error, SessionInfo,
 };
 
 #[test]
@@ -82,4 +82,54 @@ fn session_info_needs_an_id_a_project_and_nonnegative_times_and_refuses_an_unkno
     assert!(serde_json::from_str::<SessionInfo>(r#"{"id":"ses_1","extra":1}"#).is_err());
     let unplaced: SessionInfo = serde_json::from_str(r#"{"id":"ses_1","location":null}"#).unwrap();
     assert_eq!(unplaced.directory(), "");
+}
+
+#[test]
+fn an_admitted_receipt_needs_its_ids_a_delivery_a_user_type_and_a_nonnegative_time() {
+    let receipt = |body: &str| serde_json::from_str::<Admitted>(body);
+    let admitted = receipt(
+        r#"{"id":"msg_1","sessionID":"ses_1","time":{"created":5},"type":"user","payload":{"text":"hi"},"delivery":"queue"}"#,
+    )
+    .unwrap();
+    assert_eq!(admitted.validate(), Ok(()));
+    assert_eq!(admitted.payload.unwrap().get(), r#"{"text":"hi"}"#);
+    for invalid in [
+        r#"{"id":"m","sessionID":"ses_1","type":"user","delivery":"queue"}"#,
+        r#"{"id":"msg_1","sessionID":"s","type":"user","delivery":"queue"}"#,
+        r#"{"id":"msg_1","sessionID":"ses_1","type":"user","delivery":"now"}"#,
+        r#"{"id":"msg_1","sessionID":"ses_1","type":"assistant","delivery":"queue"}"#,
+        r#"{"id":"msg_1","sessionID":"ses_1","time":{"created":-1},"type":"user","delivery":"queue"}"#,
+    ] {
+        assert_eq!(
+            receipt(invalid)
+                .unwrap()
+                .validate()
+                .unwrap_err()
+                .to_string(),
+            "opencode native: invalid wire payload: invalid admitted receipt",
+            "{invalid}"
+        );
+    }
+}
+
+#[test]
+fn an_unknown_member_is_refused_in_a_receipt_its_time_and_a_session_s_model() {
+    for strict in [
+        r#"{"id":"msg_1","extra":1}"#,
+        r#"{"id":"msg_1","time":{"created":1,"extra":1}}"#,
+    ] {
+        assert!(
+            serde_json::from_str::<Admitted>(strict).is_err(),
+            "{strict}"
+        );
+    }
+    assert!(serde_json::from_str::<SessionInfo>(
+        r#"{"id":"ses_1","model":{"id":"m","providerID":"p","extra":1}}"#
+    )
+    .is_err());
+    let info: SessionInfo = serde_json::from_str(
+        r#"{"id":"ses_1","model":{"id":"m","providerID":"p","variant":"high"}}"#,
+    )
+    .unwrap();
+    assert_eq!(info.model.unwrap().variant, "high");
 }
