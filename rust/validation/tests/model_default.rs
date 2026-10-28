@@ -69,3 +69,19 @@ fn a_queued_per_run_selection_guards_the_default_from_its_promotion() {
     assert_eq!(unapplied_in("promoted-moves-default"), [moved]);
     assert_eq!(unapplied_in("default-moves-while-queued"), []);
 }
+
+#[test]
+fn a_switch_response_that_answers_no_matching_request_leaves_the_guard() {
+    for trace in [
+        "switch-uncorrelated",
+        "switch-other-model",
+        "switch-other-session",
+    ] {
+        let moved: Vec<String> = unapplied_in(trace)
+            .into_iter()
+            .filter(|(_, expected, _)| expected == "default-model")
+            .map(|(envelope, _, _)| envelope)
+            .collect();
+        assert_eq!(moved, ["sw-updated", "state-after-resp"], "{trace}");
+    }
+}
