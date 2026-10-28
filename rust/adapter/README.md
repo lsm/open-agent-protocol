@@ -64,3 +64,9 @@ Go's decoder replaces invalid UTF-8 inside a string with U+FFFD and accepts the
 document, while `reject_duplicate_keys` refuses it as a syntax error. Every
 caller reads frames through a reader that has already refused invalid UTF-8, as
 Go's frame readers do, so the walk never sees such bytes on a harness's wire.
+
+One limit differs on purpose. `remarshal_any` nests as deep as Go (10000
+levels, on a large-stack thread past 128), but typed decoding through serde,
+including the `zero`/`structure` helpers and every adapter's strict decoder,
+keeps serde_json's 128-level limit, where Go's typed decode goes deeper. No
+pinned corpus nests a native frame that deep.
