@@ -6,9 +6,12 @@ Use the shared build/tool setup in `SKILL.md`, then run from the root:
 python3 .claude/skills/verify/scripts/copilot-harness-corpus.py --output-dir /tmp/oap-copilot-corpus-<unique-name>
 ```
 
-The first baseline is `completed-text`: Zig's production native decoder and
-reducer replay the authored synthetic observations against fixed expected OAP.
-The script wraps that matching event sequence with its admission exchange and
+Zig's production native decoder and reducer replay every manifest case against
+fixed expected OAP: text, queued runs sharing one busy period, accumulated usage,
+tool success/denial, session errors, foreign sessions and unknown events. Reasoning
+is explicitly observed without a published projection. Malformed JSON-RPC and
+malformed event bodies must be rejected by the native codec, with no OAP events.
+The script wraps each event sequence with its checked-in admission exchange and
 runs the public Go and oapx validators. Require exit 0 and `PASS`; inspect
 `zig-replay.txt`, the full trace and both validator outputs. The replay also
 refuses a mislabeled outbound response, so its direction is part of the contract.
