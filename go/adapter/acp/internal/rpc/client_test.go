@@ -659,6 +659,8 @@ func TestClientHoldsABurstForASlowConsumerInsteadOfFailing(t *testing.T) {
 		var inbound <-chan InboundMessage
 		if !legacy {
 			inbound = client.Inbound()
+		} else {
+			_ = client.Requests()
 		}
 		const burst = 40
 		go func() {
