@@ -147,6 +147,13 @@ exercise it.
 
 ## Tools and permissions
 
+Native numeric normalization: an incoming Copilot `-0` count is treated as
+unknown by both peers, not converted into measured zero. Decision 0065 still
+rejects `-0` in OAP input envelopes. Premium-request costs use float64 in both peers, including
+integer tokens beyond int64; a non-finite accumulated cost is omitted. Numeric
+corpus comparisons retain exact rational values, so exponent/decimal spellings
+of the same cost compare equally without rounding usage counts.
+
 | Native | OAP |
 | --- | --- |
 | `tool.execution_start {toolCallId, toolName, arguments, toolTitle}` | `action.call.requested` carrying `toolName` and `arguments`, then `action.call.started` |

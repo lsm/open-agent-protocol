@@ -1,6 +1,6 @@
 [
   {
     "native": "native numeric spelling / cost precision",
-    "reason": "Normalize native -0 to measured zero; cost uses float64 and is omitted when non-finite. These are foreign-wire mappings; OAP usage spelling rules stay unchanged."
+    "reason": "Native -0 remains unknown in both peers; cost uses float64 and is omitted when non-finite. OAP usage spelling rules stay unchanged."
   }
 ]
