@@ -178,6 +178,61 @@ func TestReplyArrivingBeforeEOFRemainsReadable(t *testing.T) {
 	}
 }
 
+type pausedContext struct {
+	context.Context
+	calls int
+	pause func()
+}
+
+func (c *pausedContext) Done() <-chan struct{} {
+	c.calls++
+	if c.calls == 2 {
+		c.pause()
+	}
+	return c.Context.Done()
+}
+
+func TestDeliveredReplyWinsOverTermination(t *testing.T) {
+	for _, cancelled := range []bool{false, true} {
+		for range 40 {
+			func() {
+				a, b := net.Pipe()
+				client := NewClient(a, 0, 2)
+				defer client.Close()
+				go func() {
+					defer b.Close()
+					wire := NewCodec(b, b, 0)
+					body, err := wire.Read()
+					if err != nil {
+						return
+					}
+					m, err := native.Parse(body)
+					if err != nil {
+						return
+					}
+					body, _ = json.Marshal(map[string]any{"jsonrpc": "2.0", "id": m.ID, "result": "delivered"})
+					_ = wire.Write(body)
+				}()
+				parent, cancel := context.WithTimeout(context.Background(), time.Second)
+				defer cancel()
+				ctx := &pausedContext{Context: parent, pause: func() {
+					select {
+					case <-client.Done():
+					case <-parent.Done():
+					}
+					if cancelled {
+						cancel()
+					}
+				}}
+				var got string
+				if err := client.Call(ctx, "synthetic", nil, &got); err != nil || got != "delivered" {
+					t.Fatalf("cancelled=%v, got %q, error %v", cancelled, got, err)
+				}
+			}()
+		}
+	}
+}
+
 func TestMalformedInputAndBackpressureCloseTheClient(t *testing.T) {
 	for _, bodies := range [][]string{{`{"jsonrpc":"1.0","method":"x"}`}, {`{"jsonrpc":"2.0","id":999,"result":{}}`}, {`{"jsonrpc":"2.0","method":"one"}`, `{"jsonrpc":"2.0","method":"two"}`, `{"jsonrpc":"2.0","method":"three"}`}} {
 		func() {
