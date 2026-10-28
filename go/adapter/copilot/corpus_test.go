@@ -45,46 +45,13 @@ func replay(t *testing.T, name string) {
 	scan := bufio.NewScanner(file)
 	var admitted *run
 	for scan.Scan() {
-		var step struct {
-			Action    string          `json:"action"`
-			Direction string          `json:"direction"`
-			Raw       json.RawMessage `json:"raw"`
-		}
+		var step corpusStep
 		if err := json.Unmarshal(scan.Bytes(), &step); err != nil {
 			t.Fatal(err)
 		}
-		m, err := native.Parse(step.Raw)
+		admitted, err = applyStep(r, admitted, step)
 		if err != nil {
 			t.Fatal(err)
-		}
-		switch step.Action {
-		case "admit":
-			if step.Direction != "host-to-copilot" || m.Kind != native.Request || m.Method != "session.send" {
-				t.Fatal("invalid admission")
-			}
-			admitted, err = r.admit(false)
-			if err != nil {
-				t.Fatal(err)
-			}
-		case "bind":
-			var result map[string]json.RawMessage
-			if err := json.Unmarshal(m.Result, &result); err != nil {
-				t.Fatal(err)
-			}
-			if admitted == nil || m.Kind != native.Response {
-				t.Fatal("unbound reply")
-			}
-			admitted.nativeMessage = native.Text(result, "messageId")
-		case "observe":
-			event, err := native.DecodeEvent(m)
-			if err != nil || event == nil {
-				t.Fatalf("event %v %v", event, err)
-			}
-			if err := r.observe(*event); err != nil {
-				t.Fatal(err)
-			}
-		default:
-			t.Fatalf("unhandled action %s", step.Action)
 		}
 	}
 	if err := scan.Err(); err != nil {
@@ -106,5 +73,60 @@ func replay(t *testing.T, name string) {
 func TestLifecycleCorpus(t *testing.T) {
 	for _, name := range []string{"completed-text", "queued-busy-period", "unknown-event", "session-error", "foreign-session"} {
 		t.Run(name, func(t *testing.T) { replay(t, name) })
+	}
+}
+
+type corpusStep struct {
+	Action    string          `json:"action"`
+	Direction string          `json:"direction"`
+	Raw       json.RawMessage `json:"raw"`
+}
+
+func applyStep(r *reducer, admitted *run, step corpusStep) (*run, error) {
+	m, err := native.Parse(step.Raw)
+	if err != nil {
+		return admitted, err
+	}
+	switch step.Action {
+	case "admit":
+		if step.Direction != "host-to-copilot" || m.Kind != native.Request || m.Method != "session.send" {
+			return admitted, fmt.Errorf("invalid admission")
+		}
+		return r.admit(false)
+	case "bind":
+		var result map[string]json.RawMessage
+		if err := json.Unmarshal(m.Result, &result); err != nil {
+			return admitted, err
+		}
+		if admitted == nil || m.Kind != native.Response {
+			return admitted, fmt.Errorf("unbound reply")
+		}
+		admitted.nativeMessage = native.Text(result, "messageId")
+	case "observe":
+		event, err := native.DecodeEvent(m)
+		if err != nil {
+			return admitted, err
+		}
+		if event == nil {
+			return admitted, fmt.Errorf("missing event")
+		}
+		return admitted, r.observe(*event)
+	default:
+		return admitted, fmt.Errorf("unhandled action %s", step.Action)
+	}
+	return admitted, nil
+}
+
+func TestReplayRejectsDirectionAndBindingCorruption(t *testing.T) {
+	for _, step := range []corpusStep{
+		{Action: "bind", Direction: "host-to-copilot", Raw: json.RawMessage(`{"jsonrpc":"2.0","id":1,"result":{"messageId":"m1"}}`)},
+		{Action: "observe", Direction: "host-to-copilot", Raw: json.RawMessage(`{"jsonrpc":"2.0","method":"session.event","params":{"sessionId":"ses","event":{"type":"session.idle","data":{}}}}`)},
+		{Action: "bind", Direction: "copilot-to-host", Raw: json.RawMessage(`{"jsonrpc":"2.0","id":1,"result":{}}`)},
+		{Action: "bind", Direction: "copilot-to-host", Raw: json.RawMessage(`{"jsonrpc":"2.0","id":1,"result":null}`)},
+	} {
+		r := newReducer("s1", "ses", &corpusIDs{}, &corpusClock{})
+		if _, err := applyStep(r, &run{}, step); err == nil {
+			t.Errorf("accepted corrupted %s step: %s", step.Action, step.Raw)
+		}
 	}
 }
