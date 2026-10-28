@@ -47,6 +47,14 @@ where
         .collect())
 }
 
+pub(crate) fn structure<'de, D, T>(deserializer: D) -> Result<T, D::Error>
+where
+    D: Deserializer<'de>,
+    T: DeserializeOwned + Default,
+{
+    object(&Box::<RawValue>::deserialize(deserializer)?)
+}
+
 pub(crate) fn structures<'de, D, T>(deserializer: D) -> Result<Vec<T>, D::Error>
 where
     D: Deserializer<'de>,
