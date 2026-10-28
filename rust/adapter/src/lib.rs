@@ -3,6 +3,7 @@ mod contract;
 mod error;
 pub mod gojson;
 pub mod journal;
+pub mod jsonrpc;
 pub mod memory;
 mod prompt;
 mod quote_table;
