@@ -67,9 +67,15 @@ Go's frame readers do, so the walk never sees such bytes on a harness's wire.
 
 ## Child processes
 
-`process::Child` follows Go's launchers in every observable way but one. When
+`process::Child` follows Go's launchers in every observable way but two. When
 a harness leaves a grandchild holding its stderr, Go closes the pipe on the
 drain-timeout and kill paths, which ends the copy. Safe Rust cannot close a
 pipe under a blocked read, so the capture thread, its descriptor and its
 buffer of at most `stderr_limit` bytes live until that grandchild exits. The
 child's exit and every launcher's close are not delayed by it.
+
+Go interrupts a child in process with `os.Interrupt`. Safe Rust has no signal
+call, so `interrupt` runs `/bin/kill -INT` (or `/usr/bin/kill`) while it holds
+the child, and only if the child has not been reaped, so a recycled pid is
+never signalled. On a host with neither binary it kills the child instead,
+which is the step Go would reach after its grace period anyway.

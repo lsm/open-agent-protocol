@@ -230,8 +230,8 @@ impl Child {
                 std::thread::sleep(Duration::from_millis(10));
             };
             *lock(&child.status) = waited;
-            child.release_stdin();
             lock(&child.exit).take();
+            child.release_stdin();
         });
     }
 
@@ -262,12 +262,22 @@ impl Child {
 
     #[cfg(unix)]
     pub fn interrupt(&self) {
-        let id = lock(&self.child).id();
-        let _ = Command::new("kill")
-            .args(["-INT", &id.to_string()])
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status();
+        let mut child = lock(&self.child);
+        if !matches!(child.try_wait(), Ok(None)) {
+            return;
+        }
+        let id = child.id().to_string();
+        let sent = ["/bin/kill", "/usr/bin/kill"].iter().any(|kill| {
+            Command::new(kill)
+                .args(["-INT", &id])
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status()
+                .is_ok_and(|status| status.success())
+        });
+        if !sent {
+            let _ = child.kill();
+        }
     }
 
     #[cfg(not(unix))]
