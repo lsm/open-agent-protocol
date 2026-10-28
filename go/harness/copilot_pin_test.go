@@ -11,8 +11,7 @@ func TestCopilotPinIsPresentInThePublicCatalog(t *testing.T) {
 		t.Fatalf("the Copilot harness has no shared catalog pin: %v", err)
 	}
 	catalog := loadCatalog(t)
-	entry := harnessNamed(t, &catalog, "copilot-cli")
-	current := currentOf(t, entry)
+	current := currentOf(t, &catalog, "copilot-cli")
 	if current.EndpointVersion == "" || current.CapabilityRevision == "" || current.Corpus == "" {
 		t.Fatal("the current Copilot pin must name its endpoint, descriptor and replay corpus")
 	}
