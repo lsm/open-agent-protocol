@@ -155,3 +155,39 @@ func TestMissingNativeBindingRefusesAndStopsTheSession(t *testing.T) {
 		t.Fatalf("invalid session remained open: %v", err)
 	}
 }
+
+func TestQueuedSubmissionPromotesAtItsNativeUserMessage(t *testing.T) {
+	s := emptySession(t, "hold")
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	first, firstStream, err := s.Submit(ctx, helloRequest())
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, secondStream, err := s.Submit(ctx, helloRequest())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second.Admission != protocol.AdmissionQueued || first.RunID == second.RunID {
+		t.Fatalf("queued admission %+v", second)
+	}
+	finished := adaptertest.Drain(t, firstStream, time.Second)
+	if len(finished) != 2 || finished[1].Type != protocol.TypeRunCompleted {
+		t.Fatalf("prior run did not settle: %+v", finished)
+	}
+	started := adaptertest.Next(t, secondStream, time.Second)
+	if started.Type != protocol.TypeRunStarted || started.RunID != second.RunID {
+		t.Fatalf("queued run did not start: %+v", started)
+	}
+	state, err := s.State(ctx)
+	if err != nil || state.ActiveRunID != second.RunID || len(state.ActiveRuns) != 1 || state.ActiveRuns[0].Status != protocol.RunRunning {
+		t.Fatalf("promoted state %+v %v", state, err)
+	}
+	if err := s.Close(ctx); err != nil {
+		t.Fatal(err)
+	}
+	terminal := adaptertest.Drain(t, secondStream, time.Second)
+	if len(terminal) != 1 || terminal[0].Type != protocol.TypeRunFailed {
+		t.Fatalf("close did not settle promoted run: %+v", terminal)
+	}
+}
