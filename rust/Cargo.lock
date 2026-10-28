@@ -946,6 +946,15 @@ name = "oap-adapter-opencode"
 version = "0.1.0"
 
 [[package]]
+name = "oap-adapter-pi"
+version = "0.1.0"
+dependencies = [
+ "oap-adapter",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "oap-binding"
 version = "0.1.0"
 dependencies = [
