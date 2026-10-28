@@ -265,5 +265,6 @@ pub fn decode_strict<T: serde::de::DeserializeOwned + Default>(data: &[u8]) -> R
     if text.trim() == "null" {
         return Ok(T::default());
     }
-    serde_json::from_str(text).map_err(|error| error.to_string())
+    serde_json::from_str(&oap_adapter::gojson::replace_lone_surrogates(text))
+        .map_err(|error| error.to_string())
 }

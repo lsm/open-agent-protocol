@@ -104,3 +104,9 @@ fn an_event_keeps_its_payload_bytes_and_marshals_without_its_zero_members() {
         r#"{"type":"gateway.ready"}"#
     );
 }
+
+#[test]
+fn a_lone_surrogate_escape_decodes_as_the_replacement_character_as_go_s_decoder_reads_it() {
+    let delta: DeltaPayload = decode_strict(br#"{"text":"bad \ud800 half"}"#).unwrap();
+    assert_eq!(delta.text, "bad \u{fffd} half");
+}
