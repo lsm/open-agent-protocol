@@ -112,6 +112,12 @@ def main():
     with tempfile.TemporaryDirectory(prefix="oap-copilot-home-") as home:
         env = {"HOME": home, "PATH": os.defpath, "OAP_SYNTHETIC_LOG": str(native_log),
                "OAP_SYNTHETIC_VERSION": pin["endpoint_version"]}
+        refusal = subprocess.run([args.oapx, "hub", "--stdio", "--no-save-oapx-sessions",
+                                  "--config", str(ROOT / "examples/oap-serve-go-copilot.json")],
+                                 cwd=ROOT, env={"HOME": home, "PATH": os.defpath},
+                                 input="", capture_output=True, text=True, timeout=15)
+        (output / "zig-registry-refusal.txt").write_text(refusal.stdout + refusal.stderr)
+        assert refusal.returncode != 0 and '"copilot"' in refusal.stderr and "does not know" in refusal.stderr, refusal.stderr
         config = output / "registry.json"
         config.write_text(json.dumps({"adapters": {"copilot": {
             "type": "copilot", "executable": sys.executable,

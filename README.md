@@ -621,7 +621,8 @@ go run ./go/cmd/goap serve [--config examples/oap-serve.json] [--addr 127.0.0.1:
 
 Without `--config` the daemon serves the built-in memory reference adapter
 only. The registry document maps names to in-repo adapter configurations
-(`examples/oap-serve.json` shows every entry type); constructor requirements
+(`examples/oap-serve.json` shows the shared entry types; the Go-only Copilot entry
+is in `examples/oap-serve-go-copilot.json`); constructor requirements
 (absolute working directories, provider settings) surface at startup. The
 `environment` list of an entry is an explicit allowlist: a bare `NAME`
 forwards the value the daemon itself carries (unset names are omitted) and

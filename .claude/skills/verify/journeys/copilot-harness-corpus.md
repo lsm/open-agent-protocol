@@ -55,6 +55,9 @@ python3 .claude/skills/verify/scripts/copilot-hub.py --output-dir /tmp/oap-copil
 ```
 
 Require `PASS` after all four actual hub traces are accepted by Go and oapx.
+`zig-registry-refusal.txt` must also show that Zig refuses the dedicated Go-only
+example as an unknown `copilot` type before serving; this records the permitted
+registry availability difference in `drafts/hub.md`.
 The script builds the internal Go command, uses a temporary HOME and an explicit
 child environment, and exercises multi-message text boundaries, Unicode, tool
 lifecycles, exact usage above 2^53 and queued-run promotion through `hub --stdio`.

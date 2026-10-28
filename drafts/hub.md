@@ -108,6 +108,20 @@ only `oapx` builds; under Decision 0038 `goap` is internal and is not obliged to
 build them. A document naming either is an `oapx` document, as one carrying
 `model_provider` is, so `examples/oap-serve.json` names neither.
 
+The `copilot` type is built by `goap` only: its registry constructs the pinned
+headless Copilot CLI adapter with the entry's executable, arguments, explicit
+environment, working directory, model and journal capacity. The Zig hub has no
+registry constructor for this type and refuses the entry before serving, naming
+the entry and its type, even though Zig has an internal Copilot adapter. A
+document naming `copilot` is therefore a Go-only document, illustrated by
+`examples/oap-serve-go-copilot.json`; the shared `examples/oap-serve.json` omits it.
+This is the same allowed availability difference as D27, in the other direction.
+Go's constructor is pinned by `TestRegistryBuildsTheCopilotAdapterWithoutStartingIt`
+and `TestTheExampleCopilotEntryUsesAnExplicitNativeEnvironment`; the public
+`copilot-hub.py` verify journey observes Go serving the synthetic peer and Zig
+refusing the Go-only example. It claims no live Copilot authentication or model
+response.
+
 `model_provider` names a catalog row as a claude or codex entry's model provider (#361),
 and is `oapx`'s own under Decision 0038: Go's decoder refuses it as an unknown
 member, so a document carrying it is an `oapx` document. `oapx` translates it
