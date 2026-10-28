@@ -1,0 +1,6 @@
+[
+  {
+    "native": "missing per-call cost",
+    "reason": "The aggregate cost is unknown if any native call omits its cost; measured zero remains distinct."
+  }
+]
