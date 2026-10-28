@@ -1,6 +1,6 @@
 use std::fmt;
 
-use oap_adapter::gojson::{go_quote, raw, reject_duplicate_keys, zero};
+use oap_adapter::gojson::{go_quote, raw, reject_duplicate_keys, replace_lone_surrogates, zero};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::value::RawValue;
@@ -325,5 +325,5 @@ pub fn validate_state(state: &SessionState) -> Result<(), String> {
 
 pub fn decode_strict<T: DeserializeOwned>(data: &str) -> Result<T, String> {
     reject_duplicate_keys(data.as_bytes()).map_err(|error| error.to_string())?;
-    serde_json::from_str(data).map_err(|error| error.to_string())
+    serde_json::from_str(&replace_lone_surrogates(data)).map_err(|error| error.to_string())
 }

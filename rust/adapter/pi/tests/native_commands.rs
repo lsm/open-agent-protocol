@@ -185,3 +185,12 @@ fn a_command_decodes_like_go_s_strict_decoder_a_null_is_zero_and_an_unknown_imag
     )
     .is_err());
 }
+
+#[test]
+fn a_lone_surrogate_escape_decodes_as_the_replacement_character_as_go_s_decoder_reads_it() {
+    let response: Response = decode_strict(
+        r#"{"id":"req_1","type":"response","command":"prompt","success":false,"error":"bad \ud800 half"}"#,
+    )
+    .unwrap();
+    assert_eq!(response.error, "bad \u{fffd} half");
+}
