@@ -9,8 +9,9 @@ const native = @import("native");
 const session = @import("copilot_session");
 
 pub const endpoint_id = session.endpoint_id;
-pub const endpoint_version = "1.0.98";
-pub const capability_revision = "copilot-cli-1.0.98-oap-v1";
+const harness_pins = @import("harness_pins");
+pub const endpoint_version = harness_pins.copilot_cli_endpoint_version;
+pub const capability_revision = harness_pins.copilot_cli_capability_revision;
 pub const protocol_version: i64 = 3;
 
 const features = [_]contract.Feature{

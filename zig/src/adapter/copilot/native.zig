@@ -1,4 +1,5 @@
 const std = @import("std");
+const harness_pins = @import("harness_pins");
 const gojson = @import("gojson");
 
 pub const Error = error{InvalidWire} || std.mem.Allocator.Error;
@@ -165,7 +166,7 @@ test "a response, a failure, a notification and a request each parse as what the
     const pong = try parseMessage(scratch, "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"version\":\"1.0.98\",\"protocolVersion\":3}}");
     try testing.expectEqual(Kind.response, pong.kind);
     try testing.expectEqual(@as(i64, 1), pong.id.?.integer);
-    try testing.expectEqualStrings("1.0.98", text(pong.result.?.object, "version"));
+    try testing.expectEqualStrings(harness_pins.copilot_cli_endpoint_version, text(pong.result.?.object, "version"));
 
     const refused = try parseMessage(scratch, "{\"jsonrpc\":\"2.0\",\"id\":2,\"error\":{\"code\":-32601,\"message\":\"no such method\"}}");
     try testing.expectEqual(Kind.failure, refused.kind);
