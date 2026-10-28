@@ -315,6 +315,10 @@ impl State {
             || *t == EnvelopeType::USER_INPUT_RESOLVED
         {
             Some("user_input")
+        } else if *t == EnvelopeType::RUN_COMPACTION_STARTED
+            || *t == EnvelopeType::RUN_COMPACTION_ENDED
+        {
+            Some(FEATURE_RUN_COMPACTION)
         } else {
             None
         };
@@ -805,6 +809,14 @@ impl State {
             let key = format!("delivery.{}", delivery.as_str());
             self.feature(at, e, &key);
             return;
+        } else if *t == *EnvelopeType::SESSION_COMPACT_REQUEST.as_str() {
+            FEATURE_SESSION_COMPACT
+        } else if *t == *EnvelopeType::MODELS_RESPONSE.as_str() {
+            FEATURE_MODELS_LIST
+        } else if *t == *EnvelopeType::SESSION_LIST_RESPONSE.as_str() {
+            FEATURE_SESSION_LIST
+        } else if *t == *EnvelopeType::TRANSCRIPT_LOAD_RESPONSE.as_str() {
+            FEATURE_TRANSCRIPT_LOAD
         } else {
             return;
         };
