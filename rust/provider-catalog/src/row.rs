@@ -116,7 +116,7 @@ impl Catalog {
         let Some(provider) = self.provider(id) else {
             return "";
         };
-        if id == "openai" && is_responses_only_model(model_id) {
+        if id == "openai" && is_responses_only_model(model_id) && joins_wire("openai-responses") {
             return "openai-responses";
         }
         provider.first_implemented_wire()
