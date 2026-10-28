@@ -115,3 +115,15 @@ fn redaction_hides_secret_values_in_both_spellings() {
         "Authorization: [REDACTED] and \"api_key\": \"[REDACTED]\""
     );
 }
+
+#[test]
+fn a_signal_reads_as_go_names_it_on_this_platform() {
+    let _serial = serial();
+    let (child, _stdout) = Child::spawn(&shell("kill -USR1 $$")).unwrap();
+    watched(&child);
+    assert!(child.await_exit(Duration::from_secs(5)));
+    assert_eq!(
+        wait_error(child.exit_status()).as_deref(),
+        Some("signal: user defined signal 1")
+    );
+}

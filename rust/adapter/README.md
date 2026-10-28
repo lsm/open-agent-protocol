@@ -64,3 +64,12 @@ Go's decoder replaces invalid UTF-8 inside a string with U+FFFD and accepts the
 document, while `reject_duplicate_keys` refuses it as a syntax error. Every
 caller reads frames through a reader that has already refused invalid UTF-8, as
 Go's frame readers do, so the walk never sees such bytes on a harness's wire.
+
+## Child processes
+
+`process::Child` follows Go's launchers in every observable way but one. When
+a harness leaves a grandchild holding its stderr, Go closes the pipe on the
+drain-timeout and kill paths, which ends the copy. Safe Rust cannot close a
+pipe under a blocked read, so the capture thread, its descriptor and its
+buffer of at most `stderr_limit` bytes live until that grandchild exits. The
+child's exit and every launcher's close are not delayed by it.

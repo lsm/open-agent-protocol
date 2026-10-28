@@ -53,6 +53,77 @@ pub fn redact(value: &str) -> String {
         .to_owned()
 }
 
+#[cfg(unix)]
+fn signal_name(signal: i32) -> Option<&'static str> {
+    let shared = match signal {
+        1 => "hangup",
+        2 => "interrupt",
+        3 => "quit",
+        4 => "illegal instruction",
+        8 => "floating point exception",
+        9 => "killed",
+        11 => "segmentation fault",
+        13 => "broken pipe",
+        14 => "alarm clock",
+        15 => "terminated",
+        _ => "",
+    };
+    if !shared.is_empty() {
+        return Some(shared);
+    }
+    #[cfg(target_os = "linux")]
+    let named = match signal {
+        5 => "trace/breakpoint trap",
+        6 => "aborted",
+        7 => "bus error",
+        10 => "user defined signal 1",
+        12 => "user defined signal 2",
+        16 => "stack fault",
+        17 => "child exited",
+        18 => "continued",
+        19 => "stopped (signal)",
+        20 => "stopped",
+        21 => "stopped (tty input)",
+        22 => "stopped (tty output)",
+        23 => "urgent I/O condition",
+        24 => "CPU time limit exceeded",
+        25 => "file size limit exceeded",
+        26 => "virtual timer expired",
+        27 => "profiling timer expired",
+        28 => "window changed",
+        29 => "I/O possible",
+        30 => "power failure",
+        31 => "bad system call",
+        _ => return None,
+    };
+    #[cfg(not(target_os = "linux"))]
+    let named = match signal {
+        5 => "trace/BPT trap",
+        6 => "abort trap",
+        7 => "EMT trap",
+        10 => "bus error",
+        12 => "bad system call",
+        16 => "urgent I/O condition",
+        17 => "suspended (signal)",
+        18 => "suspended",
+        19 => "continued",
+        20 => "child exited",
+        21 => "stopped (tty input)",
+        22 => "stopped (tty output)",
+        23 => "I/O possible",
+        24 => "cputime limit exceeded",
+        25 => "filesize limit exceeded",
+        26 => "virtual timer expired",
+        27 => "profiling timer expired",
+        28 => "window size changes",
+        29 => "information request",
+        30 => "user defined signal 1",
+        31 => "user defined signal 2",
+        _ => return None,
+    };
+    Some(named)
+}
+
 pub fn wait_error(status: Option<ExitStatus>) -> Option<String> {
     let status = status?;
     if status.success() {
@@ -65,17 +136,13 @@ pub fn wait_error(status: Option<ExitStatus>) -> Option<String> {
     {
         use std::os::unix::process::ExitStatusExt;
         if let Some(signal) = status.signal() {
-            let name = match signal {
-                1 => "hangup".to_owned(),
-                2 => "interrupt".to_owned(),
-                6 => "aborted".to_owned(),
-                9 => "killed".to_owned(),
-                11 => "segmentation fault".to_owned(),
-                13 => "broken pipe".to_owned(),
-                15 => "terminated".to_owned(),
-                other => format!("signal {other}"),
+            let name = signal_name(signal).map_or_else(|| format!("signal {signal}"), String::from);
+            let core = if status.core_dumped() {
+                " (core dumped)"
+            } else {
+                ""
             };
-            return Some(format!("signal: {name}"));
+            return Some(format!("signal: {name}{core}"));
         }
     }
     Some("process exited".into())
