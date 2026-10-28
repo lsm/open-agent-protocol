@@ -1,9 +1,13 @@
 #![doc = include_str!("../README.md")]
 
+mod row;
+
 use std::sync::OnceLock;
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+
+pub use row::{is_responses_only_model, joins_wire, WIRES};
 
 const SCHEMA: &str = include_str!("../../../providers/catalog.schema.json");
 const CATALOG: &str = include_str!("../../../providers/catalog.json");
