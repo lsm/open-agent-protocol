@@ -60,7 +60,12 @@ func Start(config ProcessConfig) (*Process, error) {
 	}
 	p := &Process{command: command, done: make(chan struct{})}
 	p.Client = NewClient(&processWire{Reader: stdout, Writer: stdin, stdin: stdin, stdout: stdout, command: command}, config.FrameLimit, config.QueueCapacity)
-	go func() { p.waitErr = command.Wait(); close(p.done) }()
+	go func() {
+		<-p.Client.Done()
+		_ = p.Client.Close()
+		p.waitErr = command.Wait()
+		close(p.done)
+	}()
 	return p, nil
 }
 
