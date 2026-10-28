@@ -45,6 +45,9 @@ func TestSyntheticCopilotChild(t *testing.T) {
 		if err != nil {
 			os.Exit(3)
 		}
+		if os.Getenv("OAP_COPILOT_SESSION_MODE") == "slow-handshake" && message.Method != "session.send" {
+			time.Sleep(600 * time.Millisecond)
+		}
 		result := any(map[string]any{})
 		prompt := "hello"
 		switch message.Method {
