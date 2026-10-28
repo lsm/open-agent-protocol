@@ -21,8 +21,8 @@ existing ledger. This is synthetic schema/ledger-based data, not a new live
 recording. It starts no Copilot process, uses no token, and performs no model
 call. Go's native JSON-RPC decoder now consumes the same twenty-three cases, preserves
 unknown event names and exact numeric source bytes, and rejects duplicate keys
-and ambiguous message shapes. Inspect `go-native.txt` for its result. This does
-not yet claim a runnable Go adapter. The Go checks now include bounded framing,
+and ambiguous message shapes. Inspect `go-native.txt` for its result. The Go
+checks also include bounded framing,
 RPC dispatch and a synthetic child process under temporary HOME, with cancellation
 and shutdown reaping. The Go reducer matches fixed OAP for text, queue, unknown
 events, session errors, foreign sessions and usage. Usage additionally pins
@@ -42,5 +42,21 @@ The public Go `New`/`Probe`/`Open` path now starts the synthetic child with
 enforced headless/stdio/no-update flags, verifies protocol 3 and the pinned CLI
 version, then produces validator-accepted events. Mismatched versions and
 unsupported open controls are refused; each open owns a separate process.
-Registry wiring follows separately. Unsupported host capabilities
+The registry exposes this adapter as `copilot`. Unsupported host capabilities
 remain unadvertised; the Rust lane follows separately.
+
+Run the registered command-line surface with a token-free synthetic peer:
+
+```sh
+python3 .claude/skills/verify/scripts/copilot-hub.py --output-dir /tmp/oap-copilot-hub-<unique-name>
+```
+
+Require `PASS` after all four actual hub traces are accepted by Go and oapx.
+The script builds the internal Go command, uses a temporary HOME and an explicit
+child environment, and exercises multi-message text boundaries, Unicode, tool
+lifecycles, exact usage above 2^53 and queued-run promotion through `hub --stdio`.
+It retains the actual hub/native wire and validator results, removes the temporary
+HOME and checks that every synthetic child exited. It performs no login, reads no
+credentials and makes no network or provider call. This proves the registered
+Go front door against the pinned synthetic wire; live CLI compatibility remains
+unverified.

@@ -1301,7 +1301,7 @@ Go callers can use `go/adapter/copilot.New` or a `copilot` entry in
 checks the reported version/protocol before opening, and supports text auto/queue
 delivery, streaming, state, bounded in-memory replay and Copilot-owned tools.
 Reopen, portable cancellation and interactive answers are not advertised.
-Its 21-case corpus is authored synthetic data, not a new live recording; no
+Its 23-case corpus is authored synthetic data, not a new live recording; no
 live Copilot authentication or provider response is claimed by these checks.
 
 The repository is dedicated under CC0-1.0 so any presentation layer, control
