@@ -468,6 +468,7 @@ fn parseCopilotModels(allocator: std.mem.Allocator, data: []const u8) ![]Discove
             if (objectObject(capabilities, "limits")) |limits| {
                 model.context_window = positiveU32(objectU32(limits, "max_prompt_tokens")) orelse
                     positiveU32(objectU32(limits, "max_context_window_tokens"));
+                model.max_context_window = positiveU32(objectU32(limits, "max_context_window_tokens"));
                 model.max_tokens = positiveU32(objectU32(limits, "max_output_tokens"));
             }
             if (objectObject(capabilities, "supports")) |supports| model.image_input = objectBool(supports, "vision");
@@ -6448,5 +6449,28 @@ test "copilot context tiers keep the default and allow the advertised long promp
         defer cloned.deinit(allocator);
         try std.testing.expectEqual(@as(?u32, case.maximum), contextWindowMaximum(cloned));
         try std.testing.expectEqualStrings("claude-tiered", cloned.id);
+    }
+}
+
+test "copilot keeps the reported total context ceiling without a billing tier" {
+    const allocator = std.testing.allocator;
+    const cases = [_]struct { prompt: u32, context: u32, maximum: u32 }{
+        .{ .prompt = 200_000, .context = 1_000_000, .maximum = 1_000_000 },
+        .{ .prompt = 272_000, .context = 1_050_000, .maximum = 1_050_000 },
+        .{ .prompt = 168_000, .context = 200_000, .maximum = 200_000 },
+        .{ .prompt = 200_000, .context = 0, .maximum = 200_000 },
+    };
+    for (cases) |case| {
+        const body = try std.fmt.allocPrint(allocator, "{{\"data\":[{{\"id\":\"copilot-context\",\"model_picker_enabled\":true,\"supported_endpoints\":[\"/chat/completions\"],\"capabilities\":{{\"type\":\"chat\",\"limits\":{{\"max_prompt_tokens\":{d},\"max_context_window_tokens\":{d},\"max_output_tokens\":128000}}}}}}]}}", .{ case.prompt, case.context });
+        defer allocator.free(body);
+        const discovered = try parseCopilotModels(allocator, body);
+        defer freeDiscoveredModels(allocator, discovered);
+        var model = try copilotModel(allocator, discovered[0].id, github_copilot.DEFAULT_BASE_URL, discovered[0]);
+        defer model.deinit(allocator);
+        try std.testing.expectEqual(case.prompt, model.context_window);
+        try std.testing.expectEqual(@as(?u32, case.maximum), contextWindowMaximum(model));
+        var cloned = try ai_types.cloneModel(allocator, model);
+        defer cloned.deinit(allocator);
+        try std.testing.expectEqual(@as(?u32, case.maximum), contextWindowMaximum(cloned));
     }
 }

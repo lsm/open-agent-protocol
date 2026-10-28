@@ -11,6 +11,7 @@ ROOT = Path(__file__).resolve().parents[4]
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output-dir", required=True)
+    parser.add_argument("--oapx", default=str(ROOT / "zig/zig-out/bin/oapx"))
     args = parser.parse_args()
     output = Path(args.output_dir).resolve()
     output.mkdir(parents=True, exist_ok=False)
@@ -18,19 +19,27 @@ def main():
                              "-Doptimize=ReleaseSafe"], cwd=ROOT, capture_output=True, text=True, timeout=300)
     (output / "zig-replay.txt").write_text(result.stdout + result.stderr)
     assert result.returncode == 0, result.stdout + result.stderr
+    decoded = subprocess.run(["go", "test", "-race", "./go/adapter/copilot/internal/native"],
+                             cwd=ROOT, capture_output=True, text=True, timeout=120)
+    (output / "go-native.txt").write_text(decoded.stdout + decoded.stderr)
+    assert decoded.returncode == 0, decoded.stdout + decoded.stderr
     pin = next(v for v in json.loads((ROOT / "harnesses/copilot-cli.json").read_text())["versions"]
                if v["status"] == "current")
     corpus = ROOT / pin["corpus"]
     manifest = json.loads((corpus / "manifest.json").read_text())
     for case in manifest["cases"]:
-        events = json.loads((corpus / case["path"] / "expected-oap.json").read_text())
-        prefix = json.loads((ROOT / "fixtures/valid/core-completed.json").read_text())[:2]
-        prefix[0]["payload"]["messages"][0]["content"] = "hello"
-        prefix[1]["payload"]["run_id"] = "run-1"
+        directory = corpus / case["path"]
+        metadata = json.loads((directory / "case.json").read_text())
+        events = json.loads((directory / "expected-oap.json").read_text())
+        if metadata.get("codec_only"):
+            assert events is None, case["id"]
+            print("Zig codec rejection", case["id"], "passed", flush=True)
+            continue
+        prefix = json.loads((directory / metadata["prefix_oap"]).read_text())
         trace = output / (case["id"] + ".json")
         trace.write_text(json.dumps(prefix + events, indent=2) + "\n")
         for label, command in [("go", ["go", "run", "./go/cmd/goap", "validate", str(trace)]),
-                               ("zig", [str(ROOT / "zig/zig-out/bin/oapx"), "validate", str(trace)])]:
+                               ("zig", [args.oapx, "validate", str(trace)])]:
             checked = subprocess.run(command, cwd=ROOT, capture_output=True, text=True, timeout=60)
             (output / (case["id"] + "-" + label + ".txt")).write_text(checked.stdout + checked.stderr)
             assert checked.returncode == 0, checked.stdout + checked.stderr
