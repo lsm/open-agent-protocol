@@ -120,7 +120,7 @@ func TestSessionStateAndReplayUseNativeObservations(t *testing.T) {
 		t.Fatal(err)
 	}
 	events := adaptertest.Drain(t, stream, time.Second)
-	ack := protocol.MessageSubmitResponse{SessionID: "s1", Accepted: true, RunID: run.id, SubmissionID: "m1", RequestedDelivery: protocol.DeliveryAuto, EffectiveDelivery: protocol.EffectiveStart, Admission: protocol.AdmissionStarted, Status: protocol.RunRunning}
+	ack := protocol.MessageSubmitResponse{SessionID: "s1", Accepted: true, RunID: run.id, SubmissionID: "m1", RequestedDelivery: protocol.DeliveryAuto, EffectiveDelivery: protocol.DeliveryStart, Admission: protocol.AdmissionStarted, Status: protocol.RunRunning}
 	adaptertest.AssertRunTrace(t, ack, CapabilityRevision, events)
 	state, err = s.State(ctx)
 	if err != nil || state.Status != protocol.SessionIdle {
