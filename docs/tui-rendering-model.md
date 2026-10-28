@@ -483,7 +483,12 @@ limits retain the default prompt window and the larger selectable prompt ceiling
 Both the current `max_prompt_tokens` and earlier `context_max` spellings are read
 from each tier; the model id stays unchanged. `/context <tokens>` selects the long
 window explicitly, and `/context default` restores the default tier. Models with
-no distinct tiers keep the limits their listing already supplies.
+no distinct tiers retain `capabilities.limits.max_prompt_tokens` as the default
+window and `max_context_window_tokens` as the selectable total-context ceiling.
+If the total-context field is absent or zero, the prompt window remains the ceiling.
+An explicit larger billing prompt tier takes precedence over the total-context
+ceiling. This sets the TUI compaction budget; it does not promise that the provider
+will accept a prompt of that size or remove its output-token reservation.
 
 A value is refused when it is above the model's dynamically reported maximum or
 the ceiling its row records in the provider catalog, and the refusal names the model, the ceiling and the window still in effect.
