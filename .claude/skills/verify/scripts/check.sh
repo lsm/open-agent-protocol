@@ -64,6 +64,7 @@ run python3 .claude/skills/verify/scripts/rust-control-tools.py --output-dir "$a
 run python3 .claude/skills/verify/scripts/rust-memory-trace.py --output-dir "$artifacts/rust-memory"
 run python3 .claude/skills/verify/scripts/rust-provider-parity.py --output-dir "$artifacts/rust-provider"
 run python3 .claude/skills/verify/scripts/rust-steer-parity.py --output-dir "$artifacts/rust-steer"
+run python3 .claude/skills/verify/scripts/rust-go-parity.py --output-dir "$artifacts/rust-go"
 printf '\nRUN: oapx validate fixtures/schema-invalid/missing-envelope-id.json (expect exit 1, schema_invalid)\n'
 set +e
 ./zig/zig-out/bin/oapx validate fixtures/schema-invalid/missing-envelope-id.json > "$artifacts/invalid.txt" 2>&1
