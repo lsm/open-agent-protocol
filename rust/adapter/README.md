@@ -58,8 +58,8 @@ consumers; its journey is `.claude/skills/verify/journeys/rust-adapter-prompt.md
 
 `gojson` reproduces the `encoding/json` behaviour the harness corpora pin: the
 duplicate-key walk and its 10000-deep limit, `json.Marshal`'s compaction and
-HTML escaping, `strconv.Quote`'s printability table, and the zero-value
-decoding of `null` members. One Go behaviour is deliberately not reproduced:
+HTML escaping, `strconv.Quote`'s printability table, and the replacement of a
+lone surrogate escape with U+FFFD. One Go behaviour is deliberately not reproduced:
 Go's decoder replaces invalid UTF-8 inside a string with U+FFFD and accepts the
 document, while `reject_duplicate_keys` refuses it as a syntax error. Every
 caller reads frames through a reader that has already refused invalid UTF-8, as
