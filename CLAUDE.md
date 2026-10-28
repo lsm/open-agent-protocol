@@ -372,8 +372,9 @@ files do not say: `session.go` is a reducer the adapter *owns*, not a rename
 table over native events; `internal/rpc/` keeps one reader dispatching and one
 serialized writer sending, fail-closed with bounded lines; `internal/native/`
 holds pinned upstream types and nothing else. Adding an adapter also means a
-`case` in `serve/registry.go`, an entry in `examples/oap-serve.json`, and a
-README gate-table row.
+`case` in `serve/registry.go`, a registry example, and a README gate-table row.
+Keep `examples/oap-serve.json` usable by both trees; types implemented in only
+one tree need a separate example such as `examples/oap-serve-go-copilot.json`.
 
 Corpus coverage is **not** uniform: what each manifest pins, what counts as a
 blank expectation, and how much of the codec is exercised differ per adapter.
