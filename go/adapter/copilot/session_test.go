@@ -83,7 +83,7 @@ func syntheticSession(t *testing.T, mode string, capacity int) (*session, *run) 
 		t.Fatal(err)
 	}
 	home := t.TempDir()
-	p, err := rpc.Start(rpc.ProcessConfig{Path: path, Args: []string{"-test.run=^TestSyntheticCopilotChild$"}, Dir: home, Env: []string{"HOME=" + home, "OAP_COPILOT_SESSION_CHILD=1", "OAP_COPILOT_SESSION_MODE=" + mode}})
+	p, err := rpc.Start(rpc.ProcessConfig{Path: path, Args: []string{"-test.run=^TestSyntheticCopilotChild$"}, Dir: home, Env: []string{"HOME=" + home, "OAP_COPILOT_SESSION_CHILD=1", "OAP_COPILOT_SESSION_MODE=" + mode, "GORACE=atexit_sleep_ms=0"}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -161,5 +161,63 @@ func TestProcessExitFailsTheAdmittedRun(t *testing.T) {
 	case <-s.process.Done():
 	case <-ctx.Done():
 		t.Fatal("child not reaped")
+	}
+}
+
+func TestSessionCloseSettlesAndStopsItsProcess(t *testing.T) {
+	s, run := syntheticSession(t, "hold", 64)
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	_, stream, err := s.Resume(ctx, base.ResumeRequest{RunID: run.id})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.process.Client.Call(ctx, "session.send", map[string]any{"prompt": "hello"}, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Close(ctx); err != nil {
+		t.Fatal(err)
+	}
+	events := adaptertest.Drain(t, stream, time.Second)
+	if len(events) == 0 || events[len(events)-1].Type != protocol.TypeRunFailed {
+		t.Fatalf("close left the admitted run open: %+v", events)
+	}
+	select {
+	case <-s.process.Done():
+	default:
+		t.Fatal("child remains live")
+	}
+	if _, err := s.State(ctx); !errors.Is(err, base.ErrSessionClosed) {
+		t.Fatal(err)
+	}
+}
+
+func TestSessionReplayReportsAnEvictedPrefix(t *testing.T) {
+	s, run := syntheticSession(t, "", 1)
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	if err := s.process.Client.Call(ctx, "session.send", map[string]any{"prompt": "hello"}, nil); err != nil {
+		t.Fatal(err)
+	}
+	ticker := time.NewTicker(time.Millisecond)
+	defer ticker.Stop()
+	for {
+		state, err := s.State(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if state.Status == protocol.SessionIdle {
+			break
+		}
+		select {
+		case <-ticker.C:
+		case <-ctx.Done():
+			t.Fatal(ctx.Err())
+		}
+	}
+	_, _, err := s.Resume(ctx, base.ResumeRequest{RunID: run.id})
+	var gap *base.ReplayGap
+	if !errors.As(err, &gap) || gap.RequestedAfter != 0 || gap.OldestAvailable == 0 {
+		t.Fatalf("missing replay gap: %v", err)
 	}
 }
