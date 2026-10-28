@@ -18,7 +18,8 @@
     "native.messageId": "private admission binding; run-1 is OAP id"
   },
   "advertised_capabilities": {
-    "run.streaming": "native"
+    "run.streaming": "native",
+    "session.message.delivery.queue": "emulated"
   },
   "codec_only": false,
   "prefix_oap": "prefix-oap.json"

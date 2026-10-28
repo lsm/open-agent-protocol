@@ -1,5 +1,37 @@
 [
   {
+    "protocol": "open-agent-protocol",
+    "version": "0.1",
+    "profile": "open-agent-protocol.agent-control-core",
+    "type": "capabilities.request",
+    "id": "capq",
+    "payload": {}
+  },
+  {
+    "protocol": "open-agent-protocol",
+    "version": "0.1",
+    "profile": "open-agent-protocol.agent-control-core",
+    "type": "capabilities.response",
+    "id": "capr",
+    "in_reply_to": "capq",
+    "capability_revision": "copilot-cli-1.0.98-oap-v1",
+    "payload": {
+      "endpoint": {
+        "id": "copilot.headless"
+      },
+      "features": {
+        "session.message.delivery.queue": {
+          "level": "emulated",
+          "reason": "session.send enqueues behind an open run"
+        }
+      },
+      "limits": {
+        "max_active_runs_per_session": 9,
+        "max_queued_runs_per_session": 8
+      }
+    }
+  },
+  {
     "id": "req1",
     "payload": {
       "delivery": "auto",
@@ -65,7 +97,8 @@
       "run_id": "run-3",
       "session_id": "s1",
       "status": "queued",
-      "submission_id": "sub2"
+      "submission_id": "sub2",
+      "delivery_resolution": "session_busy"
     },
     "profile": "open-agent-protocol.agent-control-core",
     "protocol": "open-agent-protocol",
