@@ -83,13 +83,20 @@ type corpusStep struct {
 }
 
 func applyStep(r *reducer, admitted *run, step corpusStep) (*run, error) {
+	direction := "copilot-to-host"
+	if step.Action == "admit" {
+		direction = "host-to-copilot"
+	}
+	if step.Direction != direction {
+		return admitted, fmt.Errorf("invalid corpus direction")
+	}
 	m, err := native.Parse(step.Raw)
 	if err != nil {
 		return admitted, err
 	}
 	switch step.Action {
 	case "admit":
-		if step.Direction != "host-to-copilot" || m.Kind != native.Request || m.Method != "session.send" {
+		if m.Kind != native.Request || m.Method != "session.send" {
 			return admitted, fmt.Errorf("invalid admission")
 		}
 		return r.admit(false)
@@ -98,7 +105,7 @@ func applyStep(r *reducer, admitted *run, step corpusStep) (*run, error) {
 		if err := json.Unmarshal(m.Result, &result); err != nil {
 			return admitted, err
 		}
-		if admitted == nil || m.Kind != native.Response {
+		if admitted == nil || m.Kind != native.Response || result == nil || native.Text(result, "messageId") == "" {
 			return admitted, fmt.Errorf("unbound reply")
 		}
 		admitted.nativeMessage = native.Text(result, "messageId")
