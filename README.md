@@ -1289,11 +1289,20 @@ download anything.
 | Hermes | `OAP_HERMES_SMOKE` / `OAP_HERMES_INTEGRATION`, `_BIN`, `_ROOT`, `_SHA256` | skipped |
 | Claude Code | `OAP_CLAUDE_SMOKE` / `OAP_CLAUDE_INTEGRATION` / `OAP_CLAUDE_CAPTURE_DIR`, `_BIN`, `_SHA256` | skipped |
 | ACP (docker/cagent) | `OAP_ACP_SMOKE` / `OAP_ACP_INTEGRATION`, `_BIN`, `_SHA256` | skipped |
+| Copilot CLI | no live gate; synthetic Content-Length process and corpus proof only | synthetic checks run |
 
 Each adapter additionally has a hermetic corpus that runs in CI: it decodes
 sanitized native frames through the production codec and drives the
 production reducer, so codec and reducer regressions are caught without any
 external process.
+
+Go callers can use `go/adapter/copilot.New` or a `copilot` entry in
+`examples/oap-serve.json`. The adapter pins CLI 1.0.98 over headless stdio,
+checks the reported version/protocol before opening, and supports text auto/queue
+delivery, streaming, state, bounded in-memory replay and Copilot-owned tools.
+Reopen, portable cancellation and interactive answers are not advertised.
+Its 21-case corpus is authored synthetic data, not a new live recording; no
+live Copilot authentication or provider response is claimed by these checks.
 
 The repository is dedicated under CC0-1.0 so any presentation layer, control
 layer, agent loop, model provider, tool executor, resource provider, tool

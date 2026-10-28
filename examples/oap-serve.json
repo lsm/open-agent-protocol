@@ -42,6 +42,12 @@
       "executable": "/absolute/path/to/pi",
       "working_directory": "/absolute/project/path"
     },
+    "copilot": {
+      "type": "copilot",
+      "executable": "/absolute/path/to/copilot",
+      "environment": ["HOME", "PATH"],
+      "working_directory": "/absolute/project/path"
+    },
     "acp": {
       "type": "acp",
       "executable": "/absolute/path/to/docker-agent",

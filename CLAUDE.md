@@ -159,7 +159,7 @@ A strict stack; lower layers never import higher ones.
 | `validation` | Decode (duplicate keys), schema, semantic state machine (`state.go`), typed diagnostic codes |
 | `adapter` | `Adapter`/`Session`/`EventStream`, error sentinels, `ValidateInputAnswer`, and `Memory` |
 | `adapter/adaptertest` | `Next`/`Drain`, `AssertProtocolValid*` |
-| `adapter/{acp,claude,codex/appserver,deepseek,hermes,opencode,pi}` | One per pinned upstream harness |
+| `adapter/{acp,claude,codex/appserver,copilot,deepseek,hermes,opencode,pi}` | One per pinned upstream harness |
 | `serve` | Registry + multi-session hub, bounded fan-out, cursor replay; adds no semantics, never validates |
 | `serve/{servehttp,servestdio}` | HTTP+SSE and newline-JSON over one hub; `parity_test.go` enforces the mirror |
 | `cmd/goap` parity fixtures | one per harness plus `memory`; what the job is for, and what the corpora cover instead, is [`docs/parity-job.md`](docs/parity-job.md) |
