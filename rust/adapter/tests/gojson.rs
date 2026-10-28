@@ -163,6 +163,14 @@ fn a_second_value_is_trailing_only_when_it_is_itself_json() {
 }
 
 #[test]
+fn a_duplicate_key_in_a_second_value_is_trailing() {
+    assert_eq!(
+        reject_duplicate_keys(br#"{} {"a":1,"a":2}"#),
+        Err(WalkError::Trailing)
+    );
+}
+
+#[test]
 fn every_recorded_harness_frame_walks_as_serde_parses_it() {
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/adapters");
     let mut checked = 0;

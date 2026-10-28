@@ -49,7 +49,7 @@ pub fn reject_duplicate_keys(data: &[u8]) -> Result<(), WalkError> {
         return Ok(());
     }
     match walk_value(data, rest) {
-        Ok(_) | Err(WalkError::Trailing) => Err(WalkError::Trailing),
+        Ok(_) | Err(WalkError::Trailing | WalkError::Duplicate(_)) => Err(WalkError::Trailing),
         Err(error) => Err(error),
     }
 }
