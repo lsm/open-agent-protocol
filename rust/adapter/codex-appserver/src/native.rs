@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 
-use oap_adapter::gojson::{raw, structure, structures, zero};
+use oap_adapter::gojson::{raw, slice, structure, structures, zero};
 use serde::{Deserialize, Serialize};
 use serde_json::value::RawValue;
 use serde_json::Value;
@@ -28,6 +28,18 @@ pub const TURN_IN_PROGRESS: &str = "inProgress";
 
 fn none(value: &Raw) -> bool {
     value.is_none()
+}
+
+fn optional_structures<'de, D, T>(deserializer: D) -> Result<Option<Vec<T>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: serde::de::DeserializeOwned + Default,
+{
+    let raw = Box::<RawValue>::deserialize(deserializer)?;
+    if raw.get() == "null" {
+        return Ok(None);
+    }
+    slice(&raw).map(Some)
 }
 
 #[derive(Clone, Debug, Default, Deserialize)]
@@ -217,7 +229,7 @@ pub struct Item {
     pub cwd: String,
     #[serde(default, deserialize_with = "zero")]
     pub path: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "optional_structures")]
     pub changes: Option<Vec<FileChange>>,
     #[serde(default, deserialize_with = "zero")]
     pub server: String,
@@ -310,7 +322,7 @@ pub struct UserInputQuestion {
     pub is_other: bool,
     #[serde(default, rename = "isSecret", deserialize_with = "zero")]
     pub is_secret: bool,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "optional_structures")]
     pub options: Option<Vec<UserInputOption>>,
 }
 

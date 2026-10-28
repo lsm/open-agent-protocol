@@ -31,8 +31,10 @@ fn text(params: &Value, key: &str) -> String {
 }
 
 #[test]
-fn every_server_frame_in_the_corpus_decodes_into_its_native_type_with_its_ids() {
+fn every_server_frame_in_the_corpus_but_the_declined_permissions_request_decodes_into_its_native_type_with_its_ids(
+) {
     let mut decoded = BTreeMap::<String, usize>::new();
+    let mut declined = Vec::new();
     for frame in corpus_frames() {
         if frame["direction"] != "server_to_client" {
             continue;
@@ -90,10 +92,14 @@ fn every_server_frame_in_the_corpus_decodes_into_its_native_type_with_its_ids() 
                 assert_eq!(value.questions.len(), questions.len());
                 assert_eq!(value.questions[0].id, questions[0]["id"].as_str().unwrap());
             }
-            _ => continue,
+            _ => {
+                declined.push(method);
+                continue;
+            }
         }
         *decoded.entry(method).or_default() += 1;
     }
+    assert_eq!(declined, ["item/permissions/requestApproval"]);
     assert_eq!(
         decoded.keys().map(String::as_str).collect::<Vec<_>>(),
         [
@@ -108,6 +114,35 @@ fn every_server_frame_in_the_corpus_decodes_into_its_native_type_with_its_ids() 
             METHOD_TURN_STARTED,
         ]
     );
+}
+
+#[test]
+fn a_null_element_in_an_item_s_changes_or_a_question_s_options_is_its_zero_value() {
+    let item: ItemNotification =
+        serde_json::from_str(r#"{"item":{"type":"fileChange","changes":[null,{"path":"a"}]}}"#)
+            .unwrap();
+    let changes = item.item.changes.unwrap();
+    assert_eq!(
+        changes
+            .iter()
+            .map(|change| change.path.as_str())
+            .collect::<Vec<_>>(),
+        ["", "a"]
+    );
+    let request: UserInputRequestParams =
+        serde_json::from_str(r#"{"questions":[{"id":"q","options":[null,{"label":"Yes"}]}]}"#)
+            .unwrap();
+    let options = request.questions[0].options.as_ref().unwrap();
+    assert_eq!(
+        options
+            .iter()
+            .map(|option| option.label.as_str())
+            .collect::<Vec<_>>(),
+        ["", "Yes"]
+    );
+    let bare: UserInputRequestParams =
+        serde_json::from_str(r#"{"questions":[{"id":"q","options":null}]}"#).unwrap();
+    assert!(bare.questions[0].options.is_none());
 }
 
 #[test]
