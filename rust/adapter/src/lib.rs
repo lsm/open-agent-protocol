@@ -5,6 +5,7 @@ pub mod journal;
 pub mod memory;
 mod prompt;
 mod refuse;
+pub mod subscriber;
 #[cfg(feature = "testkit")]
 pub mod testkit;
 
