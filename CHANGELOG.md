@@ -41,6 +41,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **binding: start the Rust binding crate with records, memory store and paging** ([#1443](https://github.com/lsm/open-agent-protocol/pull/1443)): New `rust/binding` (`oap-binding`, Decision 0052's crate for `go/binding`): `Record`/`Entry`/`Action`, `state`, `sessions`, the `Store` trait with `MemoryStore`, and `list` paging.
 - **harness: port the catalog drift rules to Rust** ([#1442](https://github.com/lsm/open-agent-protocol/pull/1442)): Ports `go/harness/check.go` to `oap-harness::check`: the 11 catalog drift codes (current count, duplicate label/revision, unknown component, corpus_from, missing path, unledgered digest, corpus revision, adapter pin rules), with Go's tests…
 - **verify: compare the Rust and Go validators over the whole manifest** ([#1441](https://github.com/lsm/open-agent-protocol/pull/1441)): Adds the shared Rust-versus-Go check, slice 1 of lane A.
+- **release: prepare 0.1.0-alpha.28 with Copilot context tiers** ([#1437](https://github.com/lsm/open-agent-protocol/pull/1437)): Prepare `v0.1.0-alpha.28`, including the Copilot long-context fix in #1436 and every merged change since alpha.27.
 
 ## [0.1.0-alpha.28] - 2026-10-28
 
