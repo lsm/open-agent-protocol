@@ -83,3 +83,27 @@ fn a_waiting_reader_wakes_when_an_envelope_arrives() {
     assert_eq!(sequences, [1]);
     assert!(failure.is_none());
 }
+
+#[test]
+fn nothing_is_queued_after_the_stream_has_ended() {
+    for end in ["terminal", "overflow", "close"] {
+        let subscriber = Subscriber::new(1);
+        match end {
+            "terminal" => assert!(!subscriber.offer(envelope(1), true)),
+            "overflow" => {
+                assert!(subscriber.offer(envelope(1), false));
+                assert!(!subscriber.offer(envelope(2), false));
+            }
+            _ => {
+                assert!(subscriber.offer(envelope(1), false));
+                subscriber.close();
+            }
+        }
+        assert!(!subscriber.offer(envelope(3), false), "{end}");
+        assert!(!subscriber.offer(envelope(4), false), "{end}");
+        subscriber.replay(envelope(5));
+        let (sequences, failure) = collect(subscriber.stream());
+        assert_eq!(sequences, [1], "{end}");
+        assert_eq!(failure.is_some(), end == "overflow", "{end}");
+    }
+}

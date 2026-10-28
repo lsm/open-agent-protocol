@@ -38,6 +38,9 @@ impl Subscriber {
 
     pub fn offer(&self, envelope: Envelope, terminal: bool) -> bool {
         self.with(|queue| {
+            if queue.closed {
+                return false;
+            }
             if queue.items.len() < queue.capacity {
                 queue.items.push_back(Ok(envelope));
                 queue.closed = terminal;
@@ -50,7 +53,11 @@ impl Subscriber {
     }
 
     pub fn replay(&self, envelope: Envelope) {
-        self.with(|queue| queue.items.push_back(Ok(envelope)));
+        self.with(|queue| {
+            if !queue.closed {
+                queue.items.push_back(Ok(envelope));
+            }
+        });
     }
 
     pub fn close(&self) {
