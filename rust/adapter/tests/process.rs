@@ -129,6 +129,20 @@ fn a_signal_reads_as_go_names_it_on_this_platform() {
 }
 
 #[test]
+fn an_aborted_child_reads_as_go_names_sigabrt_on_this_platform() {
+    let _serial = serial();
+    let (child, _stdout) = Child::spawn(&shell("ulimit -c 0; kill -ABRT $$")).unwrap();
+    watched(&child);
+    assert!(child.await_exit(Duration::from_secs(5)));
+    let want = if cfg!(target_os = "linux") {
+        "signal: aborted"
+    } else {
+        "signal: abort trap"
+    };
+    assert_eq!(wait_error(child.exit_status()).as_deref(), Some(want));
+}
+
+#[test]
 fn releasing_stdin_returns_while_a_write_is_blocked_on_a_full_pipe_and_the_write_fails_once_the_child_dies(
 ) {
     let _serial = serial();
