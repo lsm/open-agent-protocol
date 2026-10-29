@@ -34,6 +34,7 @@ fn hub_in(store: &Arc<MemoryStore>, home: &str, directory: &str) -> Hub {
         HubOptions {
             bindings: Some(store.clone()),
             home: home.into(),
+            report: None,
         },
     )
 }
@@ -197,4 +198,59 @@ impl Session for SettlingSession {
     fn close(&self) -> BoxFuture<'_, ()> {
         Box::pin(async { Err(Error::SessionClosed) })
     }
+}
+
+#[test]
+fn a_session_closed_after_its_hub_is_gone_is_still_recorded_as_closed() {
+    let store = Arc::new(MemoryStore::default());
+    let session = {
+        let hub = hub(&store, "");
+        block_on(hub.open("memory", request("outlived")))
+            .unwrap()
+            .session
+    };
+    block_on(session.close()).unwrap();
+    assert_eq!(
+        actions(&store, "outlived"),
+        [Action::Opened, Action::Closed]
+    );
+}
+
+struct Refusing;
+
+impl Store for Refusing {
+    fn append(&self, _: oap_binding::Entry) -> Result<(), oap_binding::Error> {
+        Err(oap_binding::Error::Torn("disk full".into()))
+    }
+
+    fn history(&self, _: &str) -> Result<Vec<oap_binding::Entry>, oap_binding::Error> {
+        Ok(Vec::new())
+    }
+
+    fn sessions(&self) -> Result<Vec<oap_binding::Entry>, oap_binding::Error> {
+        Ok(Vec::new())
+    }
+}
+
+#[test]
+fn a_store_that_refuses_a_record_is_reported_and_the_open_still_stands() {
+    let reports = Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+    let heard = reports.clone();
+    let hub = Hub::with_options(
+        Registry::default_registry(),
+        HubOptions {
+            bindings: Some(Arc::new(Refusing)),
+            home: String::new(),
+            report: Some(Arc::new(move |line| heard.lock().unwrap().push(line))),
+        },
+    );
+    let session = block_on(hub.open("memory", request("unrecorded")))
+        .unwrap()
+        .session;
+    block_on(session.close()).unwrap();
+    let reports = reports.lock().unwrap();
+    assert_eq!(reports.len(), 2, "{reports:?}");
+    assert!(reports[0].starts_with("binding: opened for unrecorded: "));
+    assert!(reports[0].contains("disk full"));
+    assert!(reports[1].starts_with("binding: closed for unrecorded: "));
 }

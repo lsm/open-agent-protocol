@@ -36,6 +36,30 @@ struct Sessions {
 pub struct HubOptions {
     pub bindings: Option<Arc<dyn Store>>,
     pub home: String,
+    pub report: Option<Arc<dyn Fn(String) + Send + Sync>>,
+}
+
+impl HubOptions {
+    fn record(&self, record: &Record, action: Action, time_ms: i64) {
+        let Some(bindings) = &self.bindings else {
+            return;
+        };
+        if record.session_id.is_empty() {
+            return;
+        }
+        let appended = bindings.append(Entry {
+            action,
+            time_ms,
+            record: record.clone(),
+        });
+        if let (Err(err), Some(report)) = (appended, &self.report) {
+            report(format!(
+                "binding: {} for {}: {err}",
+                action.as_str(),
+                record.session_id
+            ));
+        }
+    }
 }
 
 struct Shared {
@@ -64,21 +88,7 @@ impl Shared {
         {
             sessions.live.remove(&entry.id);
         }
-        self.record(&entry.record, Action::Closed, now_ms());
-    }
-
-    fn record(&self, record: &Record, action: Action, time_ms: i64) {
-        let Some(bindings) = &self.options.bindings else {
-            return;
-        };
-        if record.session_id.is_empty() {
-            return;
-        }
-        let _ = bindings.append(Entry {
-            action,
-            time_ms,
-            record: record.clone(),
-        });
+        self.options.record(&entry.record, Action::Closed, now_ms());
     }
 }
 
@@ -193,8 +203,12 @@ impl Hub {
         };
         if settled {
             let _sessions = self.shared.sessions();
-            self.shared.record(&record, began, state.updated_at_ms);
-            self.shared.record(&record, Action::Closed, now_ms());
+            self.shared
+                .options
+                .record(&record, began, state.updated_at_ms);
+            self.shared
+                .options
+                .record(&record, Action::Closed, now_ms());
             return Err(HubError::ClosedAtOpen(Box::new(state)));
         }
         let entry = Arc::new(HubSession {
@@ -203,16 +217,20 @@ impl Hub {
             session,
             closed: AtomicBool::new(false),
             hub: Arc::downgrade(&self.shared),
+            options: self.shared.options.clone(),
             record,
         });
         let added = {
             let mut sessions = self.shared.sessions();
             if sessions.live.contains_key(&entry.id) {
-                self.shared.record(&entry.record, Action::Refused, now_ms());
+                self.shared
+                    .options
+                    .record(&entry.record, Action::Refused, now_ms());
                 false
             } else {
                 sessions.live.insert(entry.id.clone(), entry.clone());
                 self.shared
+                    .options
                     .record(&entry.record, began, state.updated_at_ms);
                 true
             }
@@ -245,7 +263,9 @@ impl Hub {
                 "",
                 &[],
             );
-            self.shared.record(&refused, Action::Refused, now_ms());
+            self.shared
+                .options
+                .record(&refused, Action::Refused, now_ms());
             return Err(HubError::SessionExists(id.clone()));
         }
         Ok(Reservation {
@@ -274,6 +294,7 @@ pub struct HubSession {
     session: Box<dyn oap_adapter::Session>,
     closed: AtomicBool,
     hub: Weak<Shared>,
+    options: HubOptions,
     record: Record,
 }
 
@@ -292,8 +313,9 @@ impl HubSession {
 
     fn mark_closed(&self) {
         if !self.closed.swap(true, Ordering::SeqCst) {
-            if let Some(hub) = self.hub.upgrade() {
-                hub.release(self);
+            match self.hub.upgrade() {
+                Some(hub) => hub.release(self),
+                None => self.options.record(&self.record, Action::Closed, now_ms()),
             }
         }
     }
