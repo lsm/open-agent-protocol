@@ -271,3 +271,13 @@ test "every mapped event type round-trips through its wire name" {
     }
     try testing.expect(EventType.parse("session.start") == null);
 }
+
+test "native negative-zero usage keeps its floating sign rather than becoming an integer" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const message = try parseMessage(arena.allocator(), "{\"jsonrpc\":\"2.0\",\"method\":\"session.event\",\"params\":{\"sessionId\":\"ses\",\"event\":{\"type\":\"assistant.usage\",\"data\":{\"inputTokens\":-0}}}}");
+    const event = (try decodeEvent(message)).?;
+    const value = event.data.get("inputTokens").?;
+    try testing.expect(value == .float);
+    try testing.expect(value.float == 0 and std.math.signbit(value.float));
+}

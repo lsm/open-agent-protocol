@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"math/big"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -30,7 +31,29 @@ func structural(t *testing.T, data []byte) any {
 	if err := decoder.Decode(&out); err != nil {
 		t.Fatal(err)
 	}
-	return out
+	return exactNumbers(out)
+}
+
+type exactNumber string
+
+func exactNumbers(value any) any {
+	switch v := value.(type) {
+	case json.Number:
+		n, ok := new(big.Rat).SetString(string(v))
+		if !ok {
+			panic("invalid corpus number")
+		}
+		return exactNumber(n.RatString())
+	case map[string]any:
+		for key, item := range v {
+			v[key] = exactNumbers(item)
+		}
+	case []any:
+		for index, item := range v {
+			v[index] = exactNumbers(item)
+		}
+	}
+	return value
 }
 
 func replay(t *testing.T, name string) {
@@ -135,5 +158,11 @@ func TestReplayRejectsDirectionAndBindingCorruption(t *testing.T) {
 		if _, err := applyStep(r, &run{}, step); err == nil {
 			t.Errorf("accepted corrupted %s step: %s", step.Action, step.Raw)
 		}
+	}
+}
+
+func TestUsageCorpus(t *testing.T) {
+	for _, name := range []string{"reasoning-usage", "usage-sparse", "usage-precision", "usage-wide", "usage-partial-call", "usage-overflow", "usage-negative-zero", "cost-wide", "cost-unrepresentable", "cost-unknown", "cost-partial"} {
+		t.Run(name, func(t *testing.T) { replay(t, name) })
 	}
 }
