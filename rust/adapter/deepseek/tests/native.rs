@@ -106,3 +106,15 @@ fn the_server_version_comes_from_the_catalog_and_observed_events_are_pinned() {
     assert!(observed_only("compaction/start"));
     assert!(!observed_only("turn/start"));
 }
+
+#[test]
+fn empty_optional_slices_are_omitted_on_reencode_as_go_omitempty_does() {
+    let event: Event =
+        decode_strict(br#"{"type":"t","seq":1,"time":2,"data":{},"sourceEventSeqs":[]}"#).unwrap();
+    assert_eq!(
+        serde_json::to_string(&event).unwrap(),
+        r#"{"type":"t","seq":1,"time":2,"data":{}}"#
+    );
+    let block: ContentBlock = decode_strict(br#"{"type":"text","content":[]}"#).unwrap();
+    assert_eq!(serde_json::to_string(&block).unwrap(), r#"{"type":"text"}"#);
+}

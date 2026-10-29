@@ -82,6 +82,10 @@ fn none<T>(value: &Option<T>) -> bool {
     value.is_none()
 }
 
+fn empty<T>(value: &Option<Vec<T>>) -> bool {
+    value.as_ref().is_none_or(Vec::is_empty)
+}
+
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct InitializeParams {
@@ -175,7 +179,7 @@ pub struct ContentBlock {
     #[serde(
         default,
         deserialize_with = "nullable_blocks",
-        skip_serializing_if = "none"
+        skip_serializing_if = "empty"
     )]
     pub content: Option<Vec<ContentBlock>>,
     #[serde(default, skip_serializing_if = "none")]
@@ -257,7 +261,7 @@ pub struct Event {
     pub data: Raw,
     #[serde(default, skip_serializing_if = "none")]
     pub ignorable: Option<bool>,
-    #[serde(default, deserialize_with = "seqs", skip_serializing_if = "none")]
+    #[serde(default, deserialize_with = "seqs", skip_serializing_if = "empty")]
     pub source_event_seqs: Option<Vec<i64>>,
     #[serde(default, deserialize_with = "raw", skip_serializing_if = "none")]
     pub surface_op: Raw,
