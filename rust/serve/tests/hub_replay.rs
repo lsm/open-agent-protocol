@@ -194,3 +194,28 @@ fn an_unqualified_cursor_follows_a_queued_run_the_adapter_has_since_started() {
     let replay = block_on(hub.subscribe_after(&"promoted".into(), None, 0)).unwrap();
     assert_eq!(replay.run_id(), &second);
 }
+
+#[test]
+fn a_live_subscriber_joins_a_queued_run_once_the_adapter_starts_it() {
+    let hub = hub(64);
+    let session = open(&hub, "handover");
+    let first = block_on(session.submit(prompt("handover")))
+        .unwrap()
+        .run_id
+        .unwrap();
+    let mut queued = prompt("handover");
+    queued.request.delivery = RequestedDeliveryMode::QUEUE;
+    let second = block_on(session.submit(queued)).unwrap().run_id.unwrap();
+    block_on(session.cancel(first)).unwrap();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while session.current_run().as_ref() != Some(&second) {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "{:?}",
+            session.current_run()
+        );
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    let joined = hub.subscribe(&"handover".into()).unwrap().joined_at();
+    assert_eq!(joined.map(|(run, _)| run), Some(second));
+}

@@ -1,4 +1,4 @@
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
@@ -7,7 +7,7 @@ use std::thread::{self, Thread};
 
 use futures_core::Stream;
 use oap_adapter::{Error, EventStream};
-use oap_protocol::{Envelope, RunId};
+use oap_protocol::{Envelope, EnvelopeType, RunId};
 
 use crate::{HubError, HubSession};
 
@@ -68,6 +68,7 @@ pub(crate) struct Live {
     current: Option<RunId>,
     sequences: HashMap<RunId, u64>,
     subs: Vec<Arc<Subscriber>>,
+    finished: HashSet<RunId>,
     readers: usize,
     closed: bool,
 }
@@ -79,6 +80,7 @@ impl Live {
 
     pub(crate) fn start(&mut self, run: &RunId, current: bool) {
         self.readers += 1;
+        self.finished.remove(run);
         if current {
             self.current = Some(run.clone());
             self.sequences.remove(run);
@@ -87,6 +89,19 @@ impl Live {
 
     fn publish(&mut self, envelope: &Envelope, capacity: usize) {
         let run = envelope.run_id.clone().unwrap_or_default();
+        let terminal = [
+            EnvelopeType::RUN_COMPLETED,
+            EnvelopeType::RUN_FAILED,
+            EnvelopeType::RUN_CANCELLED,
+        ]
+        .contains(&envelope.envelope_type);
+        let current_done = self
+            .current
+            .as_ref()
+            .is_none_or(|current| self.finished.contains(current));
+        if !terminal && current_done && !run.as_str().is_empty() && !self.finished.contains(&run) {
+            self.current = Some(run.clone());
+        }
         if let Some(sequence) = envelope.sequence {
             let seen = self.sequences.entry(run.clone()).or_default();
             *seen = (*seen).max(sequence);
@@ -110,6 +125,7 @@ impl Live {
         end: Option<Terminal>,
     ) -> (Vec<Arc<Subscriber>>, Option<Terminal>) {
         self.readers -= 1;
+        self.finished.insert(run.clone());
         if self.readers > 0 {
             return (Vec::new(), None);
         }
