@@ -258,8 +258,28 @@ pub struct ToolCompletePayload {
     pub labels: Raw,
 }
 
+fn go_lossy(data: &[u8]) -> String {
+    let mut text = String::with_capacity(data.len());
+    let mut rest = data;
+    loop {
+        match std::str::from_utf8(rest) {
+            Ok(valid) => {
+                text.push_str(valid);
+                return text;
+            }
+            Err(error) => {
+                let (valid, after) = rest.split_at(error.valid_up_to());
+                text.push_str(std::str::from_utf8(valid).unwrap_or_default());
+                let invalid = error.error_len().unwrap_or(after.len());
+                text.extend(std::iter::repeat_n('\u{fffd}', invalid));
+                rest = &after[invalid..];
+            }
+        }
+    }
+}
+
 pub fn decode_strict<T: serde::de::DeserializeOwned + Default>(data: &[u8]) -> Result<T, String> {
-    let text = String::from_utf8_lossy(data);
+    let text = go_lossy(data);
     let value = text.trim_matches(|character| matches!(character, ' ' | '\t' | '\r' | '\n'));
     if value.is_empty() {
         return Err("EOF".into());

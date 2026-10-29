@@ -134,3 +134,9 @@ fn decode_strict_skips_only_json_whitespace_and_reads_invalid_utf8_in_a_string_a
     assert_eq!(delta.text, "a\u{fffd}b");
     assert!(decode_strict::<DeltaPayload>(b"{\"text\":\"a\"}\xff").is_err());
 }
+
+#[test]
+fn each_invalid_byte_in_a_string_reads_as_its_own_replacement_character_as_go_reads_it() {
+    let delta: DeltaPayload = decode_strict(b"{\"text\":\"a\xff\xfeb\xe2\x82\"}").unwrap();
+    assert_eq!(delta.text, "a\u{fffd}\u{fffd}b\u{fffd}\u{fffd}");
+}
