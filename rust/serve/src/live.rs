@@ -53,17 +53,19 @@ impl Subscriber {
         true
     }
 
-    fn exposed_to(&self, run: &RunId) -> bool {
+    fn exposed_to(&self, run: &RunId, serial: impl Fn(&RunId) -> u64) -> bool {
         let mailbox = lock(&self.mailbox);
         let unread = mailbox
             .queue
             .iter()
             .any(|envelope| envelope.run_id.as_ref() == Some(run));
-        unread
-            || match &mailbox.last_read {
-                Some(read) => read == run,
-                None => mailbox.attached.as_ref() == Some(run),
+        match (&mailbox.last_read, &mailbox.attached) {
+            (Some(read), _) => read == run || (unread && serial(run) > serial(read)),
+            (None, Some(attached)) => {
+                attached == run || (unread && serial(run) >= serial(attached))
             }
+            (None, None) => unread,
+        }
     }
 
     fn stop(&self, terminal: Option<Terminal>) {
@@ -84,6 +86,7 @@ pub(crate) struct Live {
     sequences: HashMap<RunId, u64>,
     subs: Vec<Arc<Subscriber>>,
     serials: HashMap<RunId, u64>,
+    ended: std::collections::HashSet<RunId>,
     next_serial: u64,
     readers: usize,
     closed: bool,
@@ -107,6 +110,7 @@ impl Live {
 
     fn bind(&mut self, run: &RunId, serial: u64, current: bool) {
         self.serials.insert(run.clone(), serial);
+        self.ended.remove(run);
         if current {
             self.supersede(run);
             self.sequences.remove(run);
@@ -125,9 +129,9 @@ impl Live {
     }
 
     fn cut_exposed(&mut self, run: &RunId) -> Vec<Arc<Subscriber>> {
-        let (cut, kept) = std::mem::take(&mut self.subs)
-            .into_iter()
-            .partition(|sub| sub.exposed_to(run));
+        let (cut, kept) = std::mem::take(&mut self.subs).into_iter().partition(|sub| {
+            sub.exposed_to(run, |held| self.serials.get(held).copied().unwrap_or(0))
+        });
         self.subs = kept;
         cut
     }
@@ -171,6 +175,7 @@ impl Live {
         end: Option<Terminal>,
     ) -> Vec<(Arc<Subscriber>, Option<Terminal>)> {
         self.readers -= 1;
+        self.ended.insert(run.clone());
         let current = self.current.as_ref() == Some(run);
         if self.readers > 0 {
             return match end {
@@ -216,10 +221,14 @@ impl Live {
         let sub = Arc::new(Subscriber::default());
         lock(&sub.mailbox).attached = self.current.clone();
         self.subs.push(sub.clone());
-        let joined = self.current.as_ref().and_then(|run| {
-            let sequence = self.sequences.get(run).copied().unwrap_or(0);
-            (sequence > 0).then(|| (run.clone(), sequence))
-        });
+        let joined = self
+            .current
+            .as_ref()
+            .filter(|run| !self.ended.contains(*run))
+            .and_then(|run| {
+                let sequence = self.sequences.get(run).copied().unwrap_or(0);
+                (sequence > 0).then(|| (run.clone(), sequence))
+            });
         Some((sub, joined))
     }
 

@@ -467,3 +467,45 @@ fn a_held_failure_does_not_carry_into_a_run_promoted_after_it() {
     script.end(&queued);
     assert!(next(&mut on_queued).is_none());
 }
+
+#[test]
+fn a_late_envelope_of_an_older_run_does_not_expose_a_subscriber_reading_a_newer_one() {
+    let script = script(64);
+    let mut reader = script.subscribe();
+    let old = script.submit();
+    script.emit(&old, 1);
+    assert_eq!(next(&mut reader).unwrap().unwrap().sequence, Some(1));
+    let newer = script.submit();
+    script.emit(&newer, 1);
+    assert_eq!(
+        next(&mut reader).unwrap().unwrap().run_id.as_ref(),
+        Some(&newer)
+    );
+    script.emit(&old, 2);
+    settle();
+    script.overflow(&old);
+    settle();
+    script.emit(&newer, 2);
+    assert_eq!(next(&mut reader).unwrap().unwrap().sequence, Some(2));
+    assert_eq!(
+        next(&mut reader).unwrap().unwrap().run_id.as_ref(),
+        Some(&newer)
+    );
+    script.end(&old);
+    script.end(&newer);
+    assert!(next(&mut reader).is_none());
+}
+
+#[test]
+fn a_subscription_after_a_run_ended_reports_no_join_point() {
+    let script = script(64);
+    let mut watcher = script.subscribe();
+    let run = script.submit();
+    script.emit(&run, 1);
+    script.emit(&run, 2);
+    next(&mut watcher).unwrap().unwrap();
+    next(&mut watcher).unwrap().unwrap();
+    script.end(&run);
+    assert!(next(&mut watcher).is_none());
+    assert_eq!(script.subscribe().joined_at(), None);
+}
