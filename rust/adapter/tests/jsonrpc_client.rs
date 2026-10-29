@@ -338,3 +338,33 @@ fn a_response_being_routed_when_the_client_closes_still_reaches_its_call() {
         r#"{"stopReason":"end_turn"}"#
     );
 }
+
+#[test]
+fn a_call_closed_while_the_reader_decodes_is_failed_when_the_reader_then_errors() {
+    let (from_server, mut to_client) = std::io::pipe().unwrap();
+    let (from_client, to_server) = std::io::pipe().unwrap();
+    let client = RpcClient::new(
+        D,
+        from_server,
+        to_server,
+        ClientOptions {
+            closer: Some(Box::new(|| {})),
+            ..ClientOptions::default()
+        },
+    );
+    let mut from_client = BufReader::new(from_client);
+    let call = call_in_thread(&client, RequestId::Integer(1), "session/prompt");
+    let mut line = String::new();
+    from_client.read_line(&mut line).unwrap();
+    client.close();
+    to_client.write_all(b"{not json\n").unwrap();
+    let deadline = Instant::now() + WAIT;
+    while !call.is_finished() && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert!(call.is_finished(), "the deferred call was never failed");
+    assert!(matches!(
+        call.join().unwrap().unwrap_err().fault,
+        Fault::Closed
+    ));
+}

@@ -236,7 +236,11 @@ impl RpcClient {
         }
         if let Err(error) = self.write(Message::request(id.clone(), method, params), deadline) {
             if self.is_closed() {
-                if let Ok(outcome) = response.try_recv() {
+                let parked = select! {
+                    recv(response) -> outcome => outcome.ok(),
+                    recv(deadline_channel(deadline)) -> _ => None,
+                };
+                if let Some(outcome) = parked {
                     if outcome
                         .as_ref()
                         .map_or_else(|e| e.remote_code().is_some(), |_| true)
@@ -418,10 +422,12 @@ impl RpcClient {
                     ..
                 }) if error.kind() == std::io::ErrorKind::UnexpectedEof => {
                     self.close_with("EOF".into());
+                    self.settle_reader();
                     return;
                 }
                 Err(error) => {
                     self.close_with(error.to_string());
+                    self.settle_reader();
                     return;
                 }
             }
