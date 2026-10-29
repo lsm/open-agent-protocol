@@ -1018,6 +1018,7 @@ version = "0.1.0"
 dependencies = [
  "futures",
  "oap-adapter",
+ "oap-binding",
  "oap-protocol",
  "thiserror",
 ]
