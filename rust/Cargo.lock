@@ -942,6 +942,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "oap-adapter-codex-appserver"
+version = "0.1.0"
+dependencies = [
+ "oap-adapter",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "oap-adapter-copilot"
 version = "0.1.0"
 dependencies = [
