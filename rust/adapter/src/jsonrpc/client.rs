@@ -196,7 +196,12 @@ impl RpcClient {
         params: Option<Box<RawValue>>,
         deadline: Option<Instant>,
     ) -> CallResult {
-        let id = RequestId::Integer(self.0.next_id.fetch_add(1, Ordering::SeqCst).wrapping_add(1));
+        let id = RequestId::Integer(
+            self.0
+                .next_id
+                .fetch_add(1, Ordering::SeqCst)
+                .wrapping_add(1),
+        );
         self.call_id(id, method, params, deadline, None)
     }
 
@@ -276,7 +281,12 @@ impl RpcClient {
         params: Option<Box<RawValue>>,
         started: Started,
     ) -> CallResult {
-        let id = RequestId::Integer(self.0.next_id.fetch_add(1, Ordering::SeqCst).wrapping_add(1));
+        let id = RequestId::Integer(
+            self.0
+                .next_id
+                .fetch_add(1, Ordering::SeqCst)
+                .wrapping_add(1),
+        );
         self.call_id(id, method, params, None, Some(started))
     }
 
