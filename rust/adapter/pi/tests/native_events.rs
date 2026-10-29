@@ -18,7 +18,8 @@ fn request(
 }
 
 #[test]
-fn extension_requests_validate_the_pinned_union() {
+fn extension_requests_validate_the_pinned_union_and_an_empty_foreign_array_is_omitted_as_go_marshals_it(
+) {
     let valid = [
         request("1", "select", |r| {
             r.title = "T".into();
@@ -61,6 +62,19 @@ fn extension_requests_validate_the_pinned_union() {
             r.widget_key = "foreign".into();
         }),
     ];
+    for request in [
+        request("10", "confirm", |r| {
+            r.title = "T".into();
+            r.message = "M".into();
+            r.options = Some(Vec::new());
+        }),
+        request("11", "setTitle", |r| {
+            r.title = "T".into();
+            r.widget_lines = Some(Vec::new());
+        }),
+    ] {
+        assert_eq!(request.validate(), Ok(()), "{}", request.method);
+    }
     for request in invalid {
         assert!(request.validate().is_err(), "accepted {request:?}");
     }

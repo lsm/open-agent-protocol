@@ -450,7 +450,7 @@ pub struct ExtensionUiRequest {
     #[serde(
         default,
         deserialize_with = "optional_strings",
-        skip_serializing_if = "Option::is_none"
+        skip_serializing_if = "no_strings"
     )]
     pub options: Option<Vec<String>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -504,7 +504,7 @@ pub struct ExtensionUiRequest {
         default,
         rename = "widgetLines",
         deserialize_with = "optional_strings",
-        skip_serializing_if = "Option::is_none"
+        skip_serializing_if = "no_strings"
     )]
     pub widget_lines: Option<Vec<String>>,
     #[serde(
@@ -631,6 +631,10 @@ impl ExtensionUiResponse {
         }
         Ok(())
     }
+}
+
+fn no_strings(value: &Option<Vec<String>>) -> bool {
+    value.as_ref().is_none_or(Vec::is_empty)
 }
 
 fn optional_strings<'de, D>(deserializer: D) -> Result<Option<Vec<String>>, D::Error>
