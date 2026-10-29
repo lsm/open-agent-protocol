@@ -97,7 +97,12 @@ impl Session for ScriptedSession {
     }
 
     fn resume(&self, _: ResumeRequest) -> BoxFuture<'_, (Recovery, EventStream)> {
-        Box::pin(async { Err(Error::RunNotFound) })
+        let (sender, receiver) = unbounded();
+        sender
+            .unbounded_send(Err(Error::EventStreamOverflow))
+            .unwrap();
+        let stream: EventStream = Box::pin(receiver);
+        Box::pin(async move { Ok((Recovery::default(), stream)) })
     }
 
     fn close(&self) -> BoxFuture<'_, ()> {
@@ -596,4 +601,26 @@ fn a_submission_dropped_while_in_flight_releases_its_reservation() {
     }
     script.end(&first);
     assert!(next(&mut watcher).is_none());
+}
+
+#[test]
+fn a_replay_that_overflows_before_its_first_envelope_names_the_cursor_it_resumed_from() {
+    let script = script(64);
+    let run = script.submit();
+    let mut replay = block_on(
+        script
+            .hub
+            .subscribe_after(&"s".into(), Some(run.clone()), 7),
+    )
+    .unwrap();
+    match next(&mut replay) {
+        Some(Err(HubError::Overflow {
+            run_id,
+            last_sequence,
+        })) => {
+            assert_eq!((run_id, last_sequence), (run.clone(), 7));
+        }
+        other => panic!("{:?}", other.map(|item| item.map(|e| e.sequence))),
+    }
+    script.end(&run);
 }

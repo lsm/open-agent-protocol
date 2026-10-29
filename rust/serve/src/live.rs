@@ -388,11 +388,11 @@ pub struct Subscription {
 }
 
 impl Subscription {
-    pub(crate) fn replay(run: RunId, stream: EventStream) -> Self {
+    pub(crate) fn replay(run: RunId, after: u64, stream: EventStream) -> Self {
         Self {
+            positions: HashMap::from([(run.clone(), after)]),
             run,
             joined: None,
-            positions: HashMap::new(),
             source: Source::Replay(stream),
             done: false,
         }

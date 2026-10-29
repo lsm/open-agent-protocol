@@ -359,7 +359,7 @@ impl Hub {
             })
             .await
             .inspect_err(|err| entry.closed_by(err))?;
-        Ok(Subscription::replay(run, stream))
+        Ok(Subscription::replay(run, after, stream))
     }
 
     pub fn subscribe(&self, id: &SessionId) -> Result<Subscription, HubError> {
