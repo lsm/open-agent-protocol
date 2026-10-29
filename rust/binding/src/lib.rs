@@ -37,6 +37,17 @@ pub enum Action {
     Refused,
 }
 
+impl Action {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Action::Opened => "opened",
+            Action::Reopened => "reopened",
+            Action::Closed => "closed",
+            Action::Refused => "refused",
+        }
+    }
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Record {
     pub session_id: String,
