@@ -579,6 +579,7 @@ fn clone_error(error: &Error) -> Error {
     };
     Error {
         dialect: error.dialect,
+        versioned: error.versioned,
         fault,
     }
 }
