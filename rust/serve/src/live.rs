@@ -125,9 +125,13 @@ impl Live {
     }
 
     fn bind(&mut self, run: &RunId, serial: u64, current: bool) {
+        let newer = self
+            .current
+            .as_ref()
+            .is_none_or(|held| serial > self.serials.get(held).copied().unwrap_or(0));
         self.serials.insert(run.clone(), serial);
         self.ended.remove(run);
-        if current {
+        if current && newer {
             self.supersede(run);
             self.sequences.remove(run);
         }

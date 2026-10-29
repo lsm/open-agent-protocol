@@ -1,3 +1,4 @@
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
@@ -29,6 +30,7 @@ struct Scripted {
 
 struct ScriptedSession {
     id: String,
+    minted: AtomicU64,
     senders: Arc<Mutex<Vec<(RunId, Sender)>>>,
     queue_next: Arc<Mutex<bool>>,
     hold: Hold,
@@ -43,6 +45,7 @@ impl Adapter for Scripted {
     fn open(&self, request: OpenRequest) -> BoxFuture<'_, Box<dyn Session>> {
         let session: Box<dyn Session> = Box::new(ScriptedSession {
             id: request.session_id.to_string(),
+            minted: AtomicU64::new(0),
             senders: self.senders.clone(),
             queue_next: self.queue_next.clone(),
             hold: self.hold.clone(),
@@ -55,7 +58,7 @@ impl Adapter for Scripted {
 impl Session for ScriptedSession {
     fn submit(&self, _: SubmitRequest) -> BoxFuture<'_, (MessageSubmitResponse, EventStream)> {
         let mut senders = self.senders.lock().unwrap();
-        let run: RunId = format!("run-{}", senders.len() + 1).into();
+        let run: RunId = format!("run-{}", self.minted.fetch_add(1, Ordering::SeqCst) + 1).into();
         let (sender, receiver) = unbounded();
         senders.push((run.clone(), sender));
         let admission = MessageSubmitResponse {
@@ -623,4 +626,27 @@ fn a_replay_that_overflows_before_its_first_envelope_names_the_cursor_it_resumed
         other => panic!("{:?}", other.map(|item| item.map(|e| e.sequence))),
     }
     script.end(&run);
+}
+
+#[test]
+fn an_older_unnamed_run_bound_late_does_not_take_back_the_current_run() {
+    let script = scripted_with(64, true);
+    let mut watcher = script.subscribe();
+    script.submit_anyway();
+    let older = script.senders.lock().unwrap().last().unwrap().0.clone();
+    script.submit_anyway();
+    let newer = script.senders.lock().unwrap().last().unwrap().0.clone();
+    script.emit(&newer, 1);
+    assert_eq!(
+        next(&mut watcher).unwrap().unwrap().run_id.as_ref(),
+        Some(&newer)
+    );
+    script.emit(&older, 1);
+    assert_eq!(
+        next(&mut watcher).unwrap().unwrap().run_id.as_ref(),
+        Some(&older)
+    );
+    assert_eq!(script.session.current_run(), Some(newer.clone()));
+    script.end(&older);
+    script.end(&newer);
 }
