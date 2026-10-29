@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -78,6 +80,105 @@ func TestQueuedAdmissionKeepsTheCurrentRunStreaming(t *testing.T) {
 	adaptertest.AssertRunTrace(t, second, CapabilityRevision, adaptertest.Drain(t, secondStream, time.Second))
 }
 
+func TestPendingAdmissionKeepsStateAndCloseResponsive(t *testing.T) {
+	config := syntheticProcessConfig(t, "wait-reply")
+	p, err := rpc.Start(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := newSession(newReducer("s1", "ses", &corpusIDs{}, &corpusClock{}), p, 256, time.Second)
+	t.Cleanup(func() { _ = s.Close(context.Background()) })
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	submitted := make(chan error, 1)
+	go func() { _, _, err := s.Submit(ctx, helloRequest()); submitted <- err }()
+	for {
+		if _, err := os.Stat(filepath.Join(config.Dir, "send-received")); err == nil {
+			break
+		}
+		select {
+		case <-ctx.Done():
+			t.Fatal("native admission did not start")
+		case <-time.After(time.Millisecond):
+		}
+	}
+	waiting, stopWaiting := context.WithTimeout(ctx, 25*time.Millisecond)
+	defer stopWaiting()
+	if ack, stream, err := s.Submit(waiting, helloRequest()); !errors.Is(err, context.DeadlineExceeded) || ack.Accepted || stream != nil {
+		t.Fatalf("waiting admission ignored cancellation: %+v %v", ack, err)
+	}
+	observed := make(chan error, 1)
+	go func() {
+		state, err := s.State(ctx)
+		if err == nil && len(state.ActiveRuns) != 0 {
+			err = errors.New("pending native reply exposed an unaccepted run")
+		}
+		observed <- err
+	}()
+	select {
+	case err := <-observed:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(250 * time.Millisecond):
+		t.Fatal("state stalled behind native admission")
+	}
+	go func() { observed <- s.Close(ctx) }()
+	select {
+	case err := <-observed:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(250 * time.Millisecond):
+		t.Fatal("close stalled behind native admission")
+	}
+	if err := <-submitted; err == nil {
+		t.Fatal("closed pending admission was accepted")
+	}
+}
+
+func TestAdmissionFollowerKeepsEventsBeforeTheReplyWithTinyReplay(t *testing.T) {
+	p, err := rpc.Start(syntheticProcessConfig(t, "early-complete"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := newSession(newReducer("s1", "ses", &corpusIDs{}, &corpusClock{}), p, 1, time.Second)
+	t.Cleanup(func() { _ = s.Close(context.Background()) })
+	ack, stream, err := s.Submit(context.Background(), helloRequest())
+	if err != nil {
+		t.Fatal(err)
+	}
+	events := adaptertest.Drain(t, stream, time.Second)
+	if len(events) != 3 {
+		t.Fatalf("early live follower lost events to replay eviction: %d", len(events))
+	}
+	adaptertest.AssertRunTrace(t, ack, CapabilityRevision, events)
+}
+
+func TestUnboundNativeEventsRemainBounded(t *testing.T) {
+	config := syntheticProcessConfig(t, "unbound-burst")
+	config.QueueCapacity = 16
+	p, err := rpc.Start(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := newSession(newReducer("s1", "ses", &corpusIDs{}, &corpusClock{}), p, 256, time.Second)
+	t.Cleanup(func() { _ = s.Close(context.Background()) })
+	ack, stream, err := s.Submit(context.Background(), helloRequest())
+	if err == nil || ack.Accepted || stream != nil {
+		t.Fatalf("unbounded early stream admitted: %+v %v", ack, err)
+	}
+	select {
+	case <-p.Done():
+	case <-time.After(time.Second):
+		t.Fatal("overflow did not reap the synthetic child")
+	}
+	state, err := s.State(context.Background())
+	if err != nil || len(state.ActiveRuns) != 0 {
+		t.Fatalf("overflow leaked an admission: %+v %v", state, err)
+	}
+}
+
 func TestSubmitRefusesUnavailableControlsAndNonTextInput(t *testing.T) {
 	s := emptySession(t, "")
 	ctx := context.Background()
@@ -133,6 +234,26 @@ func TestQueueAdmissionAndBound(t *testing.T) {
 		if i > 0 && (active.QueuePosition == nil || *active.QueuePosition != i) {
 			t.Fatalf("queue position %+v", active)
 		}
+	}
+}
+
+func TestExplicitQueueRejectsANinthReservationWithoutAnActiveRun(t *testing.T) {
+	s := emptySession(t, "all-queued")
+	request := helloRequest()
+	request.Request.Delivery = protocol.DeliveryQueue
+	for range 8 {
+		ack, _, err := s.Submit(context.Background(), request)
+		if err != nil || ack.Admission != protocol.AdmissionQueued {
+			t.Fatalf("queue reservation: %+v %v", ack, err)
+		}
+	}
+	ack, stream, err := s.Submit(context.Background(), request)
+	if !errors.Is(err, base.ErrRunActive) || ack.Accepted || stream != nil {
+		t.Fatalf("ninth queued reservation admitted without an active run: %+v %v", ack, err)
+	}
+	state, err := s.State(context.Background())
+	if err != nil || len(state.ActiveRuns) != 8 || state.ActiveRunID != "" {
+		t.Fatalf("queue bound changed state: %+v %v", state, err)
 	}
 }
 
