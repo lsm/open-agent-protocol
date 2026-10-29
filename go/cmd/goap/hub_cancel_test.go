@@ -39,12 +39,15 @@ func TestHubAddrFinishesTheRefusalAndStopsTheBodyWhenItsSignalArrives(t *testing
 	var written atomic.Int64
 	var blocks atomic.Int64
 	writeDone := make(chan struct{})
+	startWriting := make(chan struct{})
+	allowWriting := sync.OnceFunc(func() { close(startWriting) })
 	joined := false
 	join := func() {
 		if joined {
 			return
 		}
 		joined = true
+		allowWriting()
 		_ = conn.Close()
 		select {
 		case <-writeDone:
@@ -55,6 +58,7 @@ func TestHubAddrFinishesTheRefusalAndStopsTheBodyWhenItsSignalArrives(t *testing
 	defer join()
 	go func() {
 		defer close(writeDone)
+		<-startWriting
 		block := bytes.Repeat([]byte{'c'}, 32*1024)
 		for written.Load() < int64(declared) {
 			take := len(block)
@@ -89,6 +93,7 @@ func TestHubAddrFinishesTheRefusalAndStopsTheBodyWhenItsSignalArrives(t *testing
 		t.Fatalf("the refusal did not carry its code: %s", body)
 	}
 	beforeSignal := written.Load()
+	allowWriting()
 	if beforeSignal == 0 {
 		t.Fatalf("the refusal was read before any body byte moved, so nothing was in flight")
 	}
