@@ -15,6 +15,9 @@ The script wraps each event sequence with its checked-in admission exchange and
 runs the public Go and oapx validators. Require exit 0 and `PASS`; inspect
 `zig-replay.txt`, the full trace and both validator outputs. The replay also
 refuses a mislabeled outbound response, so its direction is part of the contract.
+The driver then runs the Rust Copilot native consumer against the manifest;
+require exit 0 in `rust-native.txt`. This covers shared wire decoding. Rust
+session projection and host integration remain separate work.
 
 The pin is CLI 1.0.98 / protocol 3; source and artifact provenance come from the
 existing ledger. This is synthetic schema/ledger-based data, not a new live
