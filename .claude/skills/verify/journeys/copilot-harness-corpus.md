@@ -54,7 +54,14 @@ Close first drains native notifications already received, so a completed run
 remains completed for existing followers instead of being replaced by failure.
 Public session submission tests an early native event before its reply, Unicode
 text across messages/parts, native refusal without a ghost run, missing binding
-teardown, queue promotion and the nine-run bound. Unsupported portable controls
+teardown, queue promotion and the nine-run bound.
+Queued admission must keep the current run streaming while its reply is pending.
+State and Close remain responsive, pending admissions are absent from snapshots,
+and a caller waiting for the admission gate can cancel. Unbound early events
+stay bounded; early completion still reaches the reserved live follower even
+with a one-event replay journal. Eight queued reservations are the limit even
+when no run is active; one active run plus eight queued runs remains allowed.
+Unsupported portable controls
 and non-text input are refused before admission. The public Go `New`/`Probe`/`Open` path now starts the synthetic child with
 enforced headless/stdio/no-update flags, verifies protocol 3 and the pinned CLI
 version, giving each handshake RPC its own request deadline, then produces
