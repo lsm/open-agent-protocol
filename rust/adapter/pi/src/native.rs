@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::fmt;
 
 use oap_adapter::gojson::{go_quote, raw, reject_duplicate_keys, replace_lone_surrogates, zero};
@@ -321,6 +322,319 @@ pub fn validate_state(state: &SessionState) -> Result<(), String> {
         return Err("invalid thinking level".into());
     }
     Ok(())
+}
+
+pub const EVENT_AGENT_START: &str = "agent_start";
+pub const EVENT_AGENT_END: &str = "agent_end";
+pub const EVENT_AGENT_SETTLED: &str = "agent_settled";
+pub const EVENT_TURN_END: &str = "turn_end";
+pub const EVENT_MESSAGE_UPDATE: &str = "message_update";
+pub const EVENT_MESSAGE_END: &str = "message_end";
+pub const EVENT_TOOL_START: &str = "tool_execution_start";
+pub const EVENT_TOOL_UPDATE: &str = "tool_execution_update";
+pub const EVENT_TOOL_END: &str = "tool_execution_end";
+pub const EVENT_COMPACTION_START: &str = "compaction_start";
+pub const EVENT_COMPACTION_END: &str = "compaction_end";
+
+const IGNORED_EVENTS: &[&str] = &[
+    "auto_retry_start",
+    "auto_retry_end",
+    "turn_start",
+    "message_start",
+    "queue_update",
+    "entry_appended",
+    "session_info_changed",
+    "thinking_level_changed",
+    "summarization_retry_scheduled",
+    "summarization_retry_attempt_start",
+    "summarization_retry_finished",
+    "bash_execution_update",
+    "extension_error",
+];
+
+pub fn ignored_event(kind: &str) -> bool {
+    IGNORED_EVENTS.contains(&kind)
+}
+
+pub fn valid_event_type(kind: &str) -> bool {
+    ignored_event(kind)
+        || matches!(
+            kind,
+            "agent_start"
+                | "agent_end"
+                | "agent_settled"
+                | "turn_end"
+                | "message_update"
+                | "message_end"
+                | "tool_execution_start"
+                | "tool_execution_update"
+                | "tool_execution_end"
+                | "compaction_start"
+                | "compaction_end"
+        )
+}
+
+pub fn validate_event(data: &str, kind: &str) -> Result<(), Invalid> {
+    if !valid_event_type(kind) {
+        return Err(invalid(format!("unknown event type {}", go_quote(kind))));
+    }
+    let object: BTreeMap<String, Box<RawValue>> = decode_strict(data).map_err(Invalid)?;
+    let (required, optional): (&[&str], &[&str]) = match kind {
+        "agent_settled" => (&[], &["aborted"]),
+        "agent_end" => (&["messages", "willRetry"], &[]),
+        "turn_end" => (&["message", "toolResults"], &[]),
+        "message_start" | "message_end" => (&["message"], &[]),
+        "message_update" => (&["usage", "assistantMessageEvent"], &[]),
+        "tool_execution_start" => (&["toolCallId", "toolName", "args"], &["parentToolCallId"]),
+        "tool_execution_update" => (
+            &["toolCallId", "toolName", "args", "partialResult"],
+            &["parentToolCallId"],
+        ),
+        "tool_execution_end" => (
+            &["toolCallId", "toolName", "result", "isError"],
+            &["parentToolCallId", "durationMs"],
+        ),
+        "queue_update" => (&["steering", "followUp"], &[]),
+        "compaction_start" => (&["reason"], &[]),
+        "compaction_end" => (
+            &["reason", "aborted", "willRetry"],
+            &["result", "errorMessage"],
+        ),
+        "entry_appended" => (&["entry"], &[]),
+        "session_info_changed" => (&[], &["name"]),
+        "thinking_level_changed" => (&["level"], &[]),
+        "auto_retry_start" | "summarization_retry_scheduled" => {
+            (&["attempt", "maxAttempts", "delayMs", "errorMessage"], &[])
+        }
+        "auto_retry_end" => (&["success", "attempt"], &["finalError"]),
+        "summarization_retry_attempt_start" => (&["source"], &["reason"]),
+        "bash_execution_update" => (&["delta"], &["id"]),
+        "extension_error" => (&["extensionPath", "event", "error"], &[]),
+        _ => (&[], &[]),
+    };
+    for name in std::iter::once(&"type").chain(required) {
+        if !object.contains_key(*name) {
+            return Err(invalid(format!("{kind} event requires {name}")));
+        }
+    }
+    for name in object.keys() {
+        let name = name.as_str();
+        if name != "type" && !required.contains(&name) && !optional.contains(&name) {
+            return Err(invalid(format!("field {name} is not valid for {kind}")));
+        }
+    }
+    Ok(())
+}
+
+#[derive(Clone, Debug)]
+pub struct Event {
+    pub kind: String,
+    pub raw: String,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ExtensionUiRequest {
+    #[serde(default, rename = "type", deserialize_with = "zero")]
+    pub kind: String,
+    #[serde(default, deserialize_with = "zero")]
+    pub id: String,
+    #[serde(default, deserialize_with = "zero")]
+    pub method: String,
+    #[serde(
+        default,
+        deserialize_with = "zero",
+        skip_serializing_if = "String::is_empty"
+    )]
+    pub title: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub options: Option<Vec<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timeout: Option<i64>,
+    #[serde(
+        default,
+        deserialize_with = "zero",
+        skip_serializing_if = "String::is_empty"
+    )]
+    pub message: String,
+    #[serde(
+        default,
+        deserialize_with = "zero",
+        skip_serializing_if = "String::is_empty"
+    )]
+    pub placeholder: String,
+    #[serde(
+        default,
+        deserialize_with = "zero",
+        skip_serializing_if = "String::is_empty"
+    )]
+    pub prefill: String,
+    #[serde(
+        default,
+        rename = "notifyType",
+        deserialize_with = "zero",
+        skip_serializing_if = "String::is_empty"
+    )]
+    pub notify_type: String,
+    #[serde(
+        default,
+        rename = "statusKey",
+        deserialize_with = "zero",
+        skip_serializing_if = "String::is_empty"
+    )]
+    pub status_key: String,
+    #[serde(
+        default,
+        rename = "statusText",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub status_text: Option<String>,
+    #[serde(
+        default,
+        rename = "widgetKey",
+        deserialize_with = "zero",
+        skip_serializing_if = "String::is_empty"
+    )]
+    pub widget_key: String,
+    #[serde(
+        default,
+        rename = "widgetLines",
+        deserialize_with = "optional_strings",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub widget_lines: Option<Vec<String>>,
+    #[serde(
+        default,
+        rename = "widgetPlacement",
+        deserialize_with = "zero",
+        skip_serializing_if = "String::is_empty"
+    )]
+    pub widget_placement: String,
+    #[serde(
+        default,
+        deserialize_with = "zero",
+        skip_serializing_if = "String::is_empty"
+    )]
+    pub text: String,
+}
+
+impl ExtensionUiRequest {
+    pub fn validate(&self) -> Result<(), Invalid> {
+        if self.kind != "extension_ui_request" || self.id.is_empty() {
+            return Err(invalid("invalid extension request"));
+        }
+        let method = self.method.as_str();
+        let require = |value: &str, name: &str| {
+            if value.is_empty() {
+                Err(invalid(format!("{method} requires {name}")))
+            } else {
+                Ok(())
+            }
+        };
+        let fields: &[&str] = match method {
+            "select" => {
+                require(&self.title, "title")?;
+                if self.options.is_none() {
+                    return Err(invalid("select requires options"));
+                }
+                &["title", "options", "timeout"]
+            }
+            "confirm" => {
+                require(&self.title, "title")?;
+                require(&self.message, "message")?;
+                &["title", "message", "timeout"]
+            }
+            "input" => {
+                require(&self.title, "title")?;
+                &["title", "placeholder", "timeout"]
+            }
+            "editor" => {
+                require(&self.title, "title")?;
+                &["title", "prefill"]
+            }
+            "notify" => {
+                require(&self.message, "message")?;
+                if !matches!(self.notify_type.as_str(), "" | "info" | "warning" | "error") {
+                    return Err(invalid("invalid notifyType"));
+                }
+                &["message", "notifyType"]
+            }
+            "setStatus" => {
+                require(&self.status_key, "statusKey")?;
+                &["statusKey", "statusText"]
+            }
+            "setWidget" => {
+                require(&self.widget_key, "widgetKey")?;
+                if !matches!(
+                    self.widget_placement.as_str(),
+                    "" | "aboveEditor" | "belowEditor"
+                ) {
+                    return Err(invalid("invalid widgetPlacement"));
+                }
+                &["widgetKey", "widgetLines", "widgetPlacement"]
+            }
+            "setTitle" => {
+                require(&self.title, "title")?;
+                &["title"]
+            }
+            "set_editor_text" => &["text"],
+            _ => {
+                return Err(invalid(format!(
+                    "unknown extension method {}",
+                    go_quote(method)
+                )))
+            }
+        };
+        let value = serde_json::to_value(self).map_err(|error| invalid(error.to_string()))?;
+        for name in value
+            .as_object()
+            .into_iter()
+            .flat_map(|object| object.keys())
+        {
+            if !matches!(name.as_str(), "type" | "id" | "method")
+                && !fields.contains(&name.as_str())
+            {
+                return Err(invalid(format!("field {name} is not valid for {method}")));
+            }
+        }
+        Ok(())
+    }
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
+pub struct ExtensionUiResponse {
+    #[serde(rename = "type")]
+    pub kind: String,
+    pub id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub value: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub confirmed: Option<bool>,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub cancelled: bool,
+}
+
+impl ExtensionUiResponse {
+    pub fn validate(&self) -> Result<(), Invalid> {
+        if self.kind != "extension_ui_response" || self.id.is_empty() {
+            return Err(invalid("invalid extension response"));
+        }
+        let outcomes = usize::from(self.value.is_some())
+            + usize::from(self.confirmed.is_some())
+            + usize::from(self.cancelled);
+        if outcomes != 1 {
+            return Err(invalid("extension response requires exactly one outcome"));
+        }
+        Ok(())
+    }
+}
+
+fn optional_strings<'de, D>(deserializer: D) -> Result<Option<Vec<String>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let items = Option::<Vec<Option<String>>>::deserialize(deserializer)?;
+    Ok(items.map(|items| items.into_iter().map(Option::unwrap_or_default).collect()))
 }
 
 pub fn decode_strict<T: DeserializeOwned>(data: &str) -> Result<T, String> {
