@@ -52,7 +52,7 @@ test("resolveMakaiBinary rejects URL override without checksum", async (t) => {
   }
 });
 
-test("resolveMakaiBinary rejects resolver URL option without checksum", async (t) => {
+test("resolveMakaiBinary rejects resolver URL option without checksum", async () => {
   const prevUrl = process.env[ENV_BINARY_URL];
   const prevChecksum = process.env[ENV_BINARY_SHA256];
   const prevPath = process.env[ENV_BINARY_PATH];
