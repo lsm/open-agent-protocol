@@ -4,6 +4,7 @@ import { mkdtempSync, readdirSync, rmSync, writeFileSync, mkdirSync } from "node
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
+import { fileURLToPath } from "node:url";
 
 for (const failSetup of [false, true]) {
   test(`changelog fixtures are removed after ${failSetup ? "setup failure" : "success"}`, (t) => {
@@ -21,11 +22,11 @@ for (const failSetup of [false, true]) {
       };
       require('node:module').syncBuiltinESMExports();
     `);
-    const env = { ...process.env, TMPDIR: temporary, TMP: temporary, TEMP: temporary };
+    const env = { ...process.env, TMPDIR: temporary, TMP: temporary, TEMP: temporary, NODE_DISABLE_COMPILE_CACHE: "1" };
     delete env.NODE_TEST_CONTEXT;
     const result = spawnSync(process.execPath, [
       ...(failSetup ? ["--require", preload] : []),
-      "--test", new URL("./changelog-release.test.mjs", import.meta.url).pathname,
+      "--test", fileURLToPath(new URL("./changelog-release.test.mjs", import.meta.url)),
     ], { env, encoding: "utf8" });
     assert.equal(result.status, failSetup ? 1 : 0, result.stdout + result.stderr);
     assert.deepEqual(readdirSync(temporary), [], "the suite must remove every fixture it created");

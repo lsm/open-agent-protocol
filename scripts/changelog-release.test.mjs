@@ -4,9 +4,10 @@ import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSy
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, test } from "node:test";
+import { fileURLToPath } from "node:url";
 import { breakingSection, compareVersions, firstLine, fold } from "./changelog-release.mjs";
 
-const SCRIPT = new URL("./changelog-release.mjs", import.meta.url).pathname;
+const SCRIPT = fileURLToPath(new URL("./changelog-release.mjs", import.meta.url));
 const HEAD = "# Changelog\n\nAll notable changes to this project will be documented in this file.\n\n";
 
 function cli(args, input, script) {
