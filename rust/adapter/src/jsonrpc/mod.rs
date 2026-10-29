@@ -1,9 +1,14 @@
+mod client;
 mod codec;
 mod inbound;
 mod message;
 
 use std::fmt;
 
+pub use client::{
+    ClientOptions, Closer, NotificationCheck, RpcClient, Started, DEFAULT_QUEUE_CAPACITY,
+    DEFAULT_STALL,
+};
 pub use codec::{Decoder, Encoder, DEFAULT_FRAME_LIMIT};
 pub use inbound::{Inbound, IncomingRequest, NotificationMessage, Responder};
 pub use message::{ErrorObject, Kind, Message, RequestId};
