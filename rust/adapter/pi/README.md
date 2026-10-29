@@ -29,3 +29,9 @@ scripted test client, defaults it to `done`. The `Client` trait's
 `call` takes no context, so Go's per-call cancellation and the tests that
 cancel a call have no Rust twin. A call ends with its response or with the
 client's close.
+
+`process::Process` is Go's launcher: it runs `<executable> --mode rpc`, takes
+the session state from the first `get_state` response, refuses a state that
+fails validation and any observation that arrives before it, and reaps the
+child only after its reader exits. It closes by releasing stdin, then kills the
+child at the shutdown timeout.
