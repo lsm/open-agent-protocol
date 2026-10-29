@@ -210,6 +210,11 @@ pub const Reducer = struct {
             const run = self.current orelse return;
             return self.fail(run, "copilot_foreign_session", "an event for another Copilot session reached this one");
         }
+        const interaction = native.text(event.data, "interactionId");
+        if (!std.mem.eql(u8, event.type_name, "user.message") and interaction.len > 0) {
+            const run = self.current orelse return;
+            if (!std.mem.eql(u8, run.interaction_id, interaction)) return;
+        }
         const kind = event.kind orelse return;
         switch (kind) {
             .user_message => try self.userMessage(event.data),
