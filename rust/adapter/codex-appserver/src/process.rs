@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -19,6 +20,24 @@ pub struct ClientInfo {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub title: Option<String>,
     pub version: String,
+}
+
+#[derive(Clone, Debug, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InitializeCapabilities {
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub experimental_api: bool,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub request_attestation: bool,
+    #[serde(
+        rename = "mcpServerOpenaiFormElicitation",
+        skip_serializing_if = "std::ops::Not::not"
+    )]
+    pub mcp_server_openai_form_elicitation: bool,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub opt_out_notification_methods: Vec<String>,
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub extensions: BTreeMap<String, Box<RawValue>>,
 }
 
 #[derive(Clone, Debug, Default, Deserialize)]
@@ -45,6 +64,7 @@ pub struct ProcessConfig {
     pub stderr_limit: usize,
     pub shutdown_timeout: Option<Duration>,
     pub client_info: ClientInfo,
+    pub capabilities: Option<InitializeCapabilities>,
 }
 
 pub struct Process {
@@ -109,9 +129,12 @@ impl Process {
         #[serde(rename_all = "camelCase")]
         struct Params<'a> {
             client_info: &'a ClientInfo,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            capabilities: Option<&'a InitializeCapabilities>,
         }
         let params = serde_json::value::to_raw_value(&Params {
             client_info: &config.client_info,
+            capabilities: config.capabilities.as_ref(),
         })
         .map_err(|failure| error(Fault::Encode(failure.to_string())))?;
         let initialized = process

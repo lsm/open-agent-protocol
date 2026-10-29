@@ -1,7 +1,9 @@
 use std::sync::{Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
-use oap_adapter_codex_appserver::process::{ClientInfo, Process, ProcessConfig};
+use oap_adapter_codex_appserver::process::{
+    ClientInfo, InitializeCapabilities, Process, ProcessConfig,
+};
 
 static SPAWNING: Mutex<()> = Mutex::new(());
 
@@ -91,11 +93,12 @@ fn close_bounds_a_forced_shutdown_when_a_descendant_holds_the_pipes() {
     let script =
         r#"read request; printf '%s\n' '{"id":0,"result":{}}'; read notice; sleep 5 & exit 0"#;
     let config = ProcessConfig {
-        shutdown_timeout: Some(Duration::from_millis(300)),
+        shutdown_timeout: Some(Duration::from_secs(1)),
         ..server(script)
     };
     let process = Process::start(&config, deadline()).unwrap();
     let (sender, receiver) = std::sync::mpsc::channel();
+    let started = Instant::now();
     std::thread::spawn(move || {
         let _ = sender.send(process.close());
     });
@@ -105,5 +108,35 @@ fn close_bounds_a_forced_shutdown_when_a_descendant_holds_the_pipes() {
     assert_eq!(
         outcome,
         Err("codex app-server rpc: shutdown timed out".to_string())
+    );
+    assert!(
+        started.elapsed() < Duration::from_millis(1700),
+        "{:?}",
+        started.elapsed()
+    );
+}
+
+#[test]
+fn configured_capabilities_ride_in_the_initialize_params() {
+    let _serial = serial();
+    let script = r#"read request; printf '%s\n' "$request" >&2; printf '%s\n' '{"id":0,"result":{}}'; read notice; cat >/dev/null"#;
+    let config = ProcessConfig {
+        capabilities: Some(InitializeCapabilities {
+            experimental_api: true,
+            opt_out_notification_methods: vec!["item/started".into()],
+            extensions: [(
+                "z".to_string(),
+                serde_json::value::RawValue::from_string("{\"on\":true}".into()).unwrap(),
+            )]
+            .into(),
+            ..InitializeCapabilities::default()
+        }),
+        ..server(script)
+    };
+    let process = Process::start(&config, deadline()).unwrap();
+    assert_eq!(process.close(), Ok(()));
+    assert_eq!(
+        process.stderr(),
+        "{\"id\":0,\"method\":\"initialize\",\"params\":{\"clientInfo\":{\"name\":\"open-agent-protocol\",\"version\":\"0.1\"},\"capabilities\":{\"experimentalApi\":true,\"optOutNotificationMethods\":[\"item/started\"],\"extensions\":{\"z\":{\"on\":true}}}}}"
     );
 }

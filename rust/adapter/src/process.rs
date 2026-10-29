@@ -268,7 +268,11 @@ impl Child {
                 recv(reader_done) -> _ => {}
                 recv(child.killed) -> _ => {}
             }
-            let _ = child.stderr_done.recv_timeout(drain);
+            crossbeam_channel::select! {
+                recv(child.stderr_done) -> _ => {}
+                recv(child.killed) -> _ => {}
+                default(drain) => {}
+            }
             let waited = loop {
                 if let Ok(Some(exit)) = lock(&child.child).try_wait() {
                     break Some(exit);
