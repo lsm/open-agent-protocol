@@ -33,5 +33,7 @@ client's close.
 `process::Process` is Go's launcher: it runs `<executable> --mode rpc`, takes
 the session state from the first `get_state` response, refuses a state that
 fails validation and any observation that arrives before it, and reaps the
-child only after its reader exits. It closes by releasing stdin, then kills the
+child only after its reader exits. The state decodes leniently, as Go's
+client does: a member the pin does not name is ignored, and a repeated key keeps
+its last value. It closes by releasing stdin, then kills the
 child at the shutdown timeout.

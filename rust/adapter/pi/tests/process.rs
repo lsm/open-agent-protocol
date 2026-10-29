@@ -60,6 +60,19 @@ fn the_launcher_runs_pi_in_rpc_mode_takes_its_state_from_get_state_and_closes_on
 }
 
 #[test]
+fn the_handshake_state_ignores_members_the_pin_does_not_name() {
+    let _serial = serial();
+    let state = STATE.replacen('{', r#"{"newField":{"x":1},"#, 1);
+    let script = format!(
+        "{}; cat >/dev/null",
+        reply("req_1", &format!("\"success\":true,\"data\":{state}"))
+    );
+    let (process, state) = Process::start(&fake_pi(&script)).unwrap();
+    assert_eq!(state.session_id, "s1");
+    assert_eq!(process.close(), Ok(()));
+}
+
+#[test]
 fn a_pi_that_exits_before_its_state_fails_the_handshake_with_its_stderr() {
     let _serial = serial();
     let failure = Process::start(&fake_pi("echo 'token=abc broke' >&2; exit 3"))

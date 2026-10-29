@@ -6,7 +6,7 @@ use oap_adapter::process::{wait_error, Child, ChildConfig};
 use serde_json::value::RawValue;
 
 use crate::client::Client;
-use crate::native::{validate_state, Command, ExtensionUiResponse, SessionState};
+use crate::native::{decode_state, validate_state, Command, ExtensionUiResponse, SessionState};
 use crate::rpc::{Error, Inbound};
 use crate::rpc_client::{ClientOptions, RpcClient};
 
@@ -89,7 +89,7 @@ impl Process {
         let outcome: Result<SessionState, String> = loop {
             select! {
                 recv(ready) -> outcome => break match outcome {
-                    Ok(Ok(Some(raw))) => serde_json::from_str::<SessionState>(raw.get())
+                    Ok(Ok(Some(raw))) => decode_state(raw.get())
                         .map_err(|failure| format!("decode get_state response: {failure}")),
                     Ok(Ok(None)) => Ok(SessionState::default()),
                     Ok(Err(failure)) => Err(failure.to_string()),

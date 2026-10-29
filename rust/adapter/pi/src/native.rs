@@ -311,6 +311,32 @@ pub struct SessionState {
     pub pending_message_count: i64,
 }
 
+const STATE_MEMBERS: [&str; 12] = [
+    "model",
+    "thinkingLevel",
+    "isStreaming",
+    "isCompacting",
+    "steeringMode",
+    "followUpMode",
+    "sessionFile",
+    "sessionId",
+    "sessionName",
+    "autoCompactionEnabled",
+    "messageCount",
+    "pendingMessageCount",
+];
+
+pub fn decode_state(data: &str) -> Result<SessionState, String> {
+    if data.trim_matches(|character| matches!(character, ' ' | '\t' | '\r' | '\n')) == "null" {
+        return Ok(SessionState::default());
+    }
+    let mut members: BTreeMap<String, Box<RawValue>> =
+        serde_json::from_str(data).map_err(|failure| failure.to_string())?;
+    members.retain(|name, _| STATE_MEMBERS.contains(&name.as_str()));
+    let known = serde_json::to_string(&members).map_err(|failure| failure.to_string())?;
+    serde_json::from_str(&known).map_err(|failure| failure.to_string())
+}
+
 pub fn validate_state(state: &SessionState) -> Result<(), String> {
     if state.session_id.is_empty() || state.message_count < 0 || state.pending_message_count < 0 {
         return Err("missing identity or negative counts".into());
