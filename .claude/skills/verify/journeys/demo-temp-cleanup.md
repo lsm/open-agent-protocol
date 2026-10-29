@@ -25,7 +25,7 @@ node --test scripts/demo-server-cleanup.test.mjs
 ```
 
 Expect the CLI exit shown by the observer and an empty directory listing.
-The separate cleanup proof also exercises injected setup failure (the smoke
-proof uses an intentionally missing runtime). Inspect the printed child output;
+The separate demo cleanup proof also requires the injected startup-failure
+diagnostic. Inspect the printed child output;
 any unexpected exit, timeout, or remaining directory fails verification.
 No credentials or network provider calls are needed.

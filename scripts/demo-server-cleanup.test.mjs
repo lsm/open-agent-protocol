@@ -23,6 +23,7 @@ for (const failSetup of [false, true]) {
       "--test", new URL("../dist/test/demo_server.test.js", import.meta.url).pathname,
     ], { env, encoding: "utf8" });
     assert.equal(result.status, failSetup ? 1 : 0, result.stdout + result.stderr);
+    if (failSetup) assert.match(result.stdout + result.stderr, /injected startup failure/);
     assert.deepEqual(readdirSync(temporary), [], "the suite must remove every fixture it created");
   });
 }
