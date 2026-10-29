@@ -259,13 +259,14 @@ pub struct ToolCompletePayload {
 }
 
 pub fn decode_strict<T: serde::de::DeserializeOwned + Default>(data: &[u8]) -> Result<T, String> {
-    let text = std::str::from_utf8(data).map_err(|error| error.to_string())?;
-    if text.trim().is_empty() {
+    let text = String::from_utf8_lossy(data);
+    let value = text.trim_matches(|character| matches!(character, ' ' | '\t' | '\r' | '\n'));
+    if value.is_empty() {
         return Err("EOF".into());
     }
-    if text.trim() == "null" {
+    if value == "null" {
         return Ok(T::default());
     }
-    serde_json::from_str(&oap_adapter::gojson::replace_lone_surrogates(text))
+    serde_json::from_str(&oap_adapter::gojson::replace_lone_surrogates(&text))
         .map_err(|error| error.to_string())
 }

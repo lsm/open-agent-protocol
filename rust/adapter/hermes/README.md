@@ -6,8 +6,9 @@ the corpus in `fixtures/adapters/hermes-v0.22.2`.
 
 So far it holds the gateway's event envelope and the payloads of its run
 events, decoded as Go's `DecodeStrict` does: unknown members refused, a null
-member read as its zero value, a trailing value refused, and an unpaired
-surrogate escape read as U+FFFD. Three of Go's `encoding/json` rules differ:
+member read as its zero value, a trailing value refused, only JSON's four
+whitespace characters skipped, and an unpaired surrogate escape or invalid
+UTF-8 inside a string read as U+FFFD. Three of Go's `encoding/json` rules differ:
 
 - Go keeps the last of a repeated member; serde's derived structs refuse the
   frame instead.

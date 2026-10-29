@@ -118,3 +118,19 @@ fn an_event_envelope_refuses_an_unknown_member() {
             .unwrap_err();
     assert!(refused.contains("unknown field `bogus`"), "{refused}");
 }
+
+#[test]
+fn decode_strict_skips_only_json_whitespace_and_reads_invalid_utf8_in_a_string_as_the_replacement_character(
+) {
+    assert_eq!(
+        decode_strict::<DeltaPayload>(b" \t\r\nnull\n")
+            .unwrap()
+            .text,
+        ""
+    );
+    assert!(decode_strict::<DeltaPayload>("\u{a0}null".as_bytes()).is_err());
+    assert!(decode_strict::<DeltaPayload>("\u{a0}".as_bytes()).is_err());
+    let delta: DeltaPayload = decode_strict(b"{\"text\":\"a\xffb\"}").unwrap();
+    assert_eq!(delta.text, "a\u{fffd}b");
+    assert!(decode_strict::<DeltaPayload>(b"{\"text\":\"a\"}\xff").is_err());
+}
