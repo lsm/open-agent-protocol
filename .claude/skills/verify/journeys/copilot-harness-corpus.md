@@ -24,7 +24,10 @@ unknown event names and exact numeric source bytes, and rejects duplicate keys
 and ambiguous message shapes. Inspect `go-native.txt` for its result and the
 bounded Content-Length codec checks: fragmented/coalesced frames, UTF-8 byte
 lengths, header/body limits, malformed or truncated input, and short writes.
-These run through the script with race detection. This does not yet claim a
-runnable Go adapter: RPC dispatch, process transport and reducer follow in
+The same script also checks RPC correlation across concurrent calls, preserved
+notifications, refusal of reverse requests, delivered replies surviving EOF or
+cancellation, and closure on malformed input or queue overflow. Call cancellation
+unblocks an owned stalled pipe. These run with race detection and appear in
+`go-native.txt`. Process ownership and the runnable reducer/adapter follow in
 later slices. Unsupported host capabilities remain unadvertised; the Rust lane
 follows separately.
