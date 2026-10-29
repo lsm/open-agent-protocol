@@ -141,6 +141,8 @@ fn a_lone_surrogate_escape_decodes_as_the_replacement_character_as_go_s_decoder_
     )
     .unwrap();
     assert_eq!(event.session_id, "ses_1");
+    let data: serde_json::Map<String, Value> = decode_data(&event).unwrap();
+    assert_eq!(data["delta"], "\u{fffd}");
 }
 
 #[test]
