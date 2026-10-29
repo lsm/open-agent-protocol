@@ -1,0 +1,49 @@
+[
+  {
+    "protocol": "open-agent-protocol",
+    "version": "0.1",
+    "profile": "open-agent-protocol.agent-control-core",
+    "type": "run.started",
+    "id": "event-3",
+    "payload": {
+      "session_id": "s1",
+      "run_id": "run-1",
+      "status": "running"
+    },
+    "sequence": 1,
+    "timestamp_ms": 1,
+    "session_id": "s1",
+    "run_id": "run-1",
+    "capability_revision": "copilot-cli-1.0.98-oap-v1"
+  },
+  {
+    "protocol": "open-agent-protocol",
+    "version": "0.1",
+    "profile": "open-agent-protocol.agent-control-core",
+    "type": "run.completed",
+    "id": "event-4",
+    "payload": {
+      "session_id": "s1",
+      "run_id": "run-1",
+      "final_response": {
+        "id": "message-2",
+        "role": "assistant",
+        "content": ""
+      },
+      "stop_reason": "end_turn",
+      "usage": {
+        "output_tokens": 0
+      }
+    },
+    "sequence": 2,
+    "timestamp_ms": 2,
+    "session_id": "s1",
+    "run_id": "run-1",
+    "capability_revision": "copilot-cli-1.0.98-oap-v1",
+    "extensions": {
+      "com.github.copilot.cost": {
+        "premium_requests": 0
+      }
+    }
+  }
+]
