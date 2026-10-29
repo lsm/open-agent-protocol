@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"runtime"
+	"strings"
 	"testing"
 	"time"
 
@@ -61,6 +62,13 @@ func TestSyntheticCopilotChild(t *testing.T) {
 			prompt = native.Text(params, "prompt")
 			count++
 			id := fmt.Sprintf("m%d", count)
+			if os.Getenv("OAP_COPILOT_SESSION_MODE") == "queue-burst" && count == 2 {
+				for range 80 {
+					event("assistant.message_delta", map[string]any{"deltaContent": "x"})
+					time.Sleep(time.Millisecond)
+				}
+				event("assistant.message", map[string]any{"content": strings.Repeat("x", 80)})
+			}
 			if os.Getenv("OAP_COPILOT_SESSION_MODE") == "refuse" {
 				say(map[string]any{"jsonrpc": "2.0", "id": message.ID, "error": map[string]any{"code": -32602, "message": "synthetic refusal"}})
 				continue
@@ -68,7 +76,7 @@ func TestSyntheticCopilotChild(t *testing.T) {
 			if os.Getenv("OAP_COPILOT_SESSION_MODE") != "queued" || count == 1 {
 				event("user.message", map[string]any{"messageId": id, "content": "hello"})
 			}
-			if os.Getenv("OAP_COPILOT_SESSION_MODE") == "early" {
+			if os.Getenv("OAP_COPILOT_SESSION_MODE") == "early" || os.Getenv("OAP_COPILOT_SESSION_MODE") == "queue-burst" {
 				time.Sleep(25 * time.Millisecond)
 			}
 			result = map[string]any{"messageId": id}
@@ -89,7 +97,7 @@ func TestSyntheticCopilotChild(t *testing.T) {
 			}
 			os.Exit(0)
 		}
-		if os.Getenv("OAP_COPILOT_SESSION_MODE") == "hold" || os.Getenv("OAP_COPILOT_SESSION_MODE") == "queued" {
+		if os.Getenv("OAP_COPILOT_SESSION_MODE") == "hold" || os.Getenv("OAP_COPILOT_SESSION_MODE") == "queued" || (os.Getenv("OAP_COPILOT_SESSION_MODE") == "queue-burst" && count == 1) {
 			continue
 		}
 		event("assistant.message_delta", map[string]any{"deltaContent": prompt})

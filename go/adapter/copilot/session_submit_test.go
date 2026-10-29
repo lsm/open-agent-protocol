@@ -47,6 +47,37 @@ func TestSubmitBindsAnEventReceivedBeforeTheReply(t *testing.T) {
 	}
 }
 
+func TestQueuedAdmissionKeepsTheCurrentRunStreaming(t *testing.T) {
+	config := syntheticProcessConfig(t, "queue-burst")
+	config.QueueCapacity = 16
+	p, err := rpc.Start(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := newSession(newReducer("s1", "ses", &corpusIDs{}, &corpusClock{}), p, 256, time.Second)
+	t.Cleanup(func() { _ = s.Close(context.Background()) })
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	first, firstStream, err := s.Submit(ctx, helloRequest())
+	if err != nil {
+		t.Fatal(err)
+	}
+	started := adaptertest.Next(t, firstStream, time.Second)
+	second, secondStream, err := s.Submit(ctx, helloRequest())
+	if err != nil {
+		t.Fatalf("queued admission killed the streaming session: %v", err)
+	}
+	if second.Admission != protocol.AdmissionQueued {
+		t.Fatalf("queued admission changed: %+v", second)
+	}
+	events := append([]protocol.Envelope{started}, adaptertest.Drain(t, firstStream, time.Second)...)
+	if len(events) != 82 || events[len(events)-1].Type != protocol.TypeRunCompleted {
+		t.Fatalf("streaming observations lost: %d events", len(events))
+	}
+	adaptertest.AssertRunTrace(t, first, CapabilityRevision, events)
+	adaptertest.AssertRunTrace(t, second, CapabilityRevision, adaptertest.Drain(t, secondStream, time.Second))
+}
+
 func TestSubmitRefusesUnavailableControlsAndNonTextInput(t *testing.T) {
 	s := emptySession(t, "")
 	ctx := context.Background()
