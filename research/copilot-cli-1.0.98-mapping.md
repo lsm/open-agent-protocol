@@ -4,7 +4,8 @@ Status: catalogued for the existing Zig implementation. The shared pin is
 `harnesses/copilot-cli.json`; the token-free synthetic baseline corpus is
 `fixtures/adapters/copilot-cli-v1.0.98`. It is authored from this ledger rather
 than a new live capture. Go's decoder, transport and reducer now replay that
-corpus; its public adapter/session wiring is tracked in #1448, with Rust
+corpus; Go's public adapter/session path now has synthetic process proof, with
+registry integration tracked in #1448 and Rust
 following separately in #1439.
 The lifecycle tables below distinguish native possibilities from the conservative
 host descriptor: reopen, cancel and interactive resolution are not advertised

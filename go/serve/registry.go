@@ -15,6 +15,7 @@ import (
 	"github.com/lsm/open-agent-protocol/go/adapter/acp"
 	"github.com/lsm/open-agent-protocol/go/adapter/claude"
 	"github.com/lsm/open-agent-protocol/go/adapter/codex/appserver"
+	"github.com/lsm/open-agent-protocol/go/adapter/copilot"
 	"github.com/lsm/open-agent-protocol/go/adapter/deepseek"
 	"github.com/lsm/open-agent-protocol/go/adapter/hermes"
 	"github.com/lsm/open-agent-protocol/go/adapter/opencode"
@@ -426,6 +427,12 @@ func buildAdapter(name string, entry adapterEntry, environ func(string) (string,
 		implementation, err := pi.New(pi.Config{
 			Executable: entry.Executable, Args: entry.Args, Environment: environment,
 			WorkingDirectory: entry.WorkingDirectory, JournalCapacity: entry.JournalCapacity,
+		})
+		return implementation, wrapBuild(name, err)
+	case "copilot":
+		implementation, err := copilot.New(copilot.Config{
+			Executable: entry.Executable, Args: entry.Args, Environment: environment,
+			WorkingDirectory: entry.WorkingDirectory, Model: entry.Model, JournalCapacity: entry.JournalCapacity,
 		})
 		return implementation, wrapBuild(name, err)
 	case "deepseek":

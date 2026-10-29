@@ -63,11 +63,39 @@ with a one-event replay journal. Eight queued reservations are the limit even
 when no run is active; one active run plus eight queued runs remains allowed.
 An intentional Close during admission keeps its close-specific failure reason
 for existing runs; an interrupted send must not relabel it as process failure.
-Unsupported portable controls and non-text input are refused before admission. Adapter construction and registry
-wiring follow separately. Unsupported host capabilities remain unadvertised;
-the Rust lane follows separately.
+Unsupported portable controls
+and non-text input are refused before admission. The public Go `New`/`Probe`/`Open` path now starts the synthetic child with
+enforced headless/stdio/no-update flags, verifies protocol 3 and the pinned CLI
+version, giving each handshake RPC its own request deadline, then produces
+validator-accepted events. Mismatched versions and
+unsupported open controls are refused; each open owns a separate process.
+The Go registry exposes this adapter as `copilot`; its dedicated example is
+`examples/oap-serve-go-copilot.json`, because the shared registry must stay usable
+by both trees. Unsupported host capabilities
+remain unadvertised; the Rust lane follows separately.
 
+Run the registered command-line surface with a token-free synthetic peer:
 
+```sh
+python3 .claude/skills/verify/scripts/copilot-hub.py --output-dir /tmp/oap-copilot-hub-<unique-name>
+```
+
+Require `PASS` after all four actual hub traces are accepted by Go and oapx.
+`zig-registry-refusal.txt` must also show that Zig refuses the dedicated Go-only
+example as an unknown `copilot` type before serving; this records the permitted
+registry availability difference in `drafts/hub.md`.
+The script builds the internal Go command, uses a temporary HOME and an explicit
+child environment, and exercises multi-message text boundaries, Unicode, tool
+lifecycles, exact usage above 2^53 and queued-run promotion through `hub --stdio`.
+It retains the actual hub/native wire and validator results, removes the temporary
+HOME and checks that every synthetic child exited. It performs no login, reads no
+credentials and makes no network or provider call. This proves the registered
+Go front door against the pinned synthetic wire; live CLI compatibility remains
+unverified.
+
+After registry/example changes, also run `zig build --build-file zig/build.zig test-unit-adapter`
+and require exit 0. This includes the shared example inventory check and prevents
+a Go-only entry from breaking the Zig front door.
 
 
 For missing native admission bindings, inspect the ledger's explicit host
