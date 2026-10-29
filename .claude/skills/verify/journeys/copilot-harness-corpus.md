@@ -24,7 +24,14 @@ unknown event names and exact numeric source bytes, and rejects duplicate keys
 and ambiguous message shapes. Inspect `go-native.txt` for its result and the
 bounded Content-Length codec checks: fragmented/coalesced frames, UTF-8 byte
 lengths, header/body limits, malformed or truncated input, and short writes.
-These run through the script with race detection. This does not yet claim a
-runnable Go adapter: RPC dispatch, process transport and reducer follow in
-later slices. Unsupported host capabilities remain unadvertised; the Rust lane
-follows separately.
+The same script also checks RPC correlation across concurrent calls, preserved
+notifications, refusal of reverse requests, delivered replies surviving EOF or
+cancellation, and closure on malformed input or queue overflow. Call cancellation
+unblocks an owned stalled pipe. These run with race detection and appear in
+`go-native.txt`. Process ownership is exercised with an actual synthetic child
+under temporary HOME and an explicit environment: an RPC reads that HOME, a
+stalled call must return DeadlineExceeded, and close/cancellation must reap the
+child. The script disables Go's test cache so this process proof really runs.
+No real Copilot binary or authentication is used. The runnable reducer/adapter
+follows in later slices. Unsupported host capabilities remain unadvertised;
+the Rust lane follows separately.
