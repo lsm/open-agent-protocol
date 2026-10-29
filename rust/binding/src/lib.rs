@@ -8,8 +8,10 @@ use oap_protocol::CompactionPolicy;
 use serde::{Deserialize, Serialize};
 
 mod file;
+mod runs;
 
 pub use file::{frame, FileStore};
+pub use runs::{open_runs, MemoryRuns, OpenRun, RunAction, RunRecord, Runs, RunsFile};
 
 pub const DEFAULT_LIMIT: usize = 50;
 pub const MAX_LIMIT: usize = 100;
