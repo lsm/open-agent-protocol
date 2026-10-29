@@ -61,6 +61,8 @@ and a caller waiting for the admission gate can cancel. Unbound early events
 stay bounded; early completion still reaches the reserved live follower even
 with a one-event replay journal. Eight queued reservations are the limit even
 when no run is active; one active run plus eight queued runs remains allowed.
+An intentional Close during admission keeps its close-specific failure reason
+for existing runs; an interrupted send must not relabel it as process failure.
 Unsupported portable controls
 and non-text input are refused before admission. The public Go `New`/`Probe`/`Open` path now starts the synthetic child with
 enforced headless/stdio/no-update flags, verifies protocol 3 and the pinned CLI

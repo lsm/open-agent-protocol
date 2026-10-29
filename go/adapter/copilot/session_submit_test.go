@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 	"time"
 
@@ -134,6 +135,48 @@ func TestPendingAdmissionKeepsStateAndCloseResponsive(t *testing.T) {
 	}
 	if err := <-submitted; err == nil {
 		t.Fatal("closed pending admission was accepted")
+	}
+}
+
+func TestCloseDuringAdmissionKeepsTheIntentionalCloseReason(t *testing.T) {
+	config := syntheticProcessConfig(t, "wait-second")
+	p, err := rpc.Start(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := newSession(newReducer("s1", "ses", &corpusIDs{}, &corpusClock{}), p, 256, time.Second)
+	t.Cleanup(func() { _ = s.Close(context.Background()) })
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	_, stream, err := s.Submit(ctx, helloRequest())
+	if err != nil {
+		t.Fatal(err)
+	}
+	adaptertest.Next(t, stream, time.Second)
+	submitted := make(chan error, 1)
+	go func() { _, _, err := s.Submit(ctx, helloRequest()); submitted <- err }()
+	for {
+		if _, err := os.Stat(filepath.Join(config.Dir, "send-received")); err == nil {
+			break
+		}
+		select {
+		case <-ctx.Done():
+			t.Fatal("queued native admission did not start")
+		case <-time.After(time.Millisecond):
+		}
+	}
+	previous := runtime.GOMAXPROCS(1)
+	defer runtime.GOMAXPROCS(previous)
+	if err := s.Close(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-submitted; err == nil {
+		t.Fatal("closed pending submission was accepted")
+	}
+	events := adaptertest.Drain(t, stream, time.Second)
+	var terminal protocol.RunFailedPayload
+	if len(events) != 1 || events[0].DecodePayload(&terminal) != nil || terminal.Error.Code != "copilot_closed" {
+		t.Fatalf("intentional close became a process failure: %+v", events)
 	}
 }
 

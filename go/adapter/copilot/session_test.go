@@ -91,7 +91,7 @@ func TestSyntheticCopilotChild(t *testing.T) {
 			if (os.Getenv("OAP_COPILOT_SESSION_MODE") != "queued" || count == 1) && os.Getenv("OAP_COPILOT_SESSION_MODE") != "all-queued" {
 				event("user.message", map[string]any{"messageId": id, "content": "hello"})
 			}
-			if os.Getenv("OAP_COPILOT_SESSION_MODE") == "wait-reply" {
+			if os.Getenv("OAP_COPILOT_SESSION_MODE") == "wait-reply" || (os.Getenv("OAP_COPILOT_SESSION_MODE") == "wait-second" && count == 2) {
 				_ = os.WriteFile("send-received", nil, 0600)
 				for {
 					if _, err := os.Stat("release-send"); err == nil {
@@ -132,7 +132,7 @@ func TestSyntheticCopilotChild(t *testing.T) {
 			}
 			os.Exit(0)
 		}
-		if os.Getenv("OAP_COPILOT_SESSION_MODE") == "hold" || os.Getenv("OAP_COPILOT_SESSION_MODE") == "queued" || os.Getenv("OAP_COPILOT_SESSION_MODE") == "all-queued" || (os.Getenv("OAP_COPILOT_SESSION_MODE") == "queue-burst" && count == 1) {
+		if os.Getenv("OAP_COPILOT_SESSION_MODE") == "hold" || os.Getenv("OAP_COPILOT_SESSION_MODE") == "queued" || os.Getenv("OAP_COPILOT_SESSION_MODE") == "all-queued" || ((os.Getenv("OAP_COPILOT_SESSION_MODE") == "queue-burst" || os.Getenv("OAP_COPILOT_SESSION_MODE") == "wait-second") && count == 1) {
 			continue
 		}
 		event("assistant.message_delta", map[string]any{"deltaContent": prompt})
