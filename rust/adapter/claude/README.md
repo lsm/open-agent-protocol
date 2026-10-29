@@ -10,6 +10,6 @@ frame type reads as `Unknown` until its own types land.
 
 One `encoding/json` rule is not followed: Go falls back to a case-insensitive
 key match, so `{"MESSAGE":{...}}` fills `Message`, while these types match keys
-exactly, as the ACP and Pi crates do. Claude Code writes every key in its
+exactly, as the ACP crate does. Claude Code writes every key in its
 exact case, and the pinned corpus spells them so, so nothing observes the
 difference.
