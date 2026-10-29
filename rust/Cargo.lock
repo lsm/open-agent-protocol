@@ -944,6 +944,7 @@ dependencies = [
  "futures-core",
  "oap-protocol",
  "oap-validation",
+ "regex",
  "serde",
  "serde_json",
  "thiserror",
@@ -953,6 +954,15 @@ dependencies = [
 name = "oap-adapter-acp"
 version = "0.1.0"
 dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "oap-adapter-claude"
+version = "0.1.0"
+dependencies = [
+ "oap-adapter",
  "serde",
  "serde_json",
 ]
