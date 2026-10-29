@@ -6,9 +6,12 @@ Use the shared build/tool setup in `SKILL.md`, then run from the root:
 python3 .claude/skills/verify/scripts/copilot-harness-corpus.py --output-dir /tmp/oap-copilot-corpus-<unique-name>
 ```
 
-The first baseline is `completed-text`: Zig's production native decoder and
-reducer replay the authored synthetic observations against fixed expected OAP.
-The script wraps that matching event sequence with its admission exchange and
+Zig's production native decoder and reducer replay every manifest case against
+fixed expected OAP: text, queued runs sharing one busy period, accumulated usage,
+tool success/denial, session errors, foreign sessions and unknown events. Reasoning
+is explicitly observed without a published projection. Malformed JSON-RPC and
+malformed event bodies must be rejected by the native codec, with no OAP events.
+The script wraps each event sequence with its checked-in admission exchange and
 runs the public Go and oapx validators. Require exit 0 and `PASS`; inspect
 `zig-replay.txt`, the full trace and both validator outputs. The replay also
 refuses a mislabeled outbound response, so its direction is part of the contract.
@@ -16,7 +19,12 @@ refuses a mislabeled outbound response, so its direction is part of the contract
 The pin is CLI 1.0.98 / protocol 3; source and artifact provenance come from the
 existing ledger. This is synthetic schema/ledger-based data, not a new live
 recording. It starts no Copilot process, uses no token, and performs no model
-call. Go currently exposes pin metadata only: a successful catalog or corpus
-check does not claim the Go native adapter is implemented. Later slices expand
-this corpus before Go and Rust consume it; unsupported host capabilities remain
-unadvertised. The Rust lane follows separately.
+call. Go's native JSON-RPC decoder now consumes the same ten cases, preserves
+unknown event names and exact numeric source bytes, and rejects duplicate keys
+and ambiguous message shapes. Inspect `go-native.txt` for its result and the
+bounded Content-Length codec checks: fragmented/coalesced frames, UTF-8 byte
+lengths, header/body limits, malformed or truncated input, and short writes.
+These run through the script with race detection. This does not yet claim a
+runnable Go adapter: RPC dispatch, process transport and reducer follow in
+later slices. Unsupported host capabilities remain unadvertised; the Rust lane
+follows separately.

@@ -19,5 +19,6 @@
   },
   "advertised_capabilities": {
     "run.streaming": "native"
-  }
+  },
+  "prefix_oap": "prefix-oap.json"
 }

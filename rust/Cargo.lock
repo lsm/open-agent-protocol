@@ -959,6 +959,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "oap-adapter-opencode"
+version = "0.1.0"
+
+[[package]]
 name = "oap-binding"
 version = "0.1.0"
 dependencies = [
@@ -1014,6 +1018,15 @@ dependencies = [
  "thiserror",
  "tokio",
  "tracing",
+]
+
+[[package]]
+name = "oap-serve"
+version = "0.1.0"
+dependencies = [
+ "oap-adapter",
+ "oap-protocol",
+ "thiserror",
 ]
 
 [[package]]
