@@ -227,6 +227,9 @@ jobs:
       - name: Install npm dependencies
         run: npm ci
 
+      - name: Verify smoke connection-failure cleanup
+        run: npm run build:sdk && node --test scripts/binary-smoke-cleanup.test.mjs
+
       - name: Build the oapx binary for TS SDK E2E
         run: zig build --build-file zig/build.zig install --prefix /tmp/makai-smoke
 
