@@ -16,3 +16,8 @@ types, and land with it: a response with a repeated key is refused through
 `oap_adapter::gojson::reject_duplicate_keys`, and a request body is written
 through `oap_adapter::gojson::go_marshal`, so `<`, `>` and `&` are escaped as
 Go writes them.
+
+`native::decode_event` reads one event-stream frame as Go's `DecodeEvent`
+does. It refuses a repeated key, reads an unpaired surrogate escape as U+FFFD,
+and admits a session event only with its session id, a pinned type and the
+durable position that type declares, or without one if the type is ephemeral.
