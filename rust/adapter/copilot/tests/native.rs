@@ -16,13 +16,22 @@ fn every_message_in_the_pinned_corpus_parses_to_the_kind_its_action_names() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../..")
         .join(&*CORPUS_DIRECTORY);
-    let mut cases = 0;
-    for case in std::fs::read_dir(&root).unwrap() {
-        let native = case.unwrap().path().join("native.jsonl");
-        let Ok(lines) = std::fs::read_to_string(&native) else {
-            continue;
-        };
-        cases += 1;
+    #[derive(Deserialize)]
+    struct Case {
+        path: String,
+    }
+    #[derive(Deserialize)]
+    struct Manifest {
+        cases: Vec<Case>,
+    }
+    let manifest: Manifest =
+        serde_json::from_str(&std::fs::read_to_string(root.join("manifest.json")).unwrap())
+            .unwrap();
+    assert!(!manifest.cases.is_empty(), "the manifest lists no cases");
+    for case in &manifest.cases {
+        let native = root.join(&case.path).join("native.jsonl");
+        let lines = std::fs::read_to_string(&native)
+            .unwrap_or_else(|failure| panic!("{}: {failure}", native.display()));
         for line in lines.lines().filter(|line| !line.trim().is_empty()) {
             let item: Item = serde_json::from_str(line).unwrap();
             let frame = item.raw.get().as_bytes();
@@ -49,7 +58,6 @@ fn every_message_in_the_pinned_corpus_parses_to_the_kind_its_action_names() {
             }
         }
     }
-    assert_eq!(cases, 10);
 }
 
 #[test]
