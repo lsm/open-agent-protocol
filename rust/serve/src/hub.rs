@@ -335,7 +335,17 @@ impl Hub {
         let entry = self.session(id)?;
         let run = match run.filter(|run| !run.as_str().is_empty()) {
             Some(run) => run,
-            None => entry.current_run().ok_or(HubError::NoRunToResume)?,
+            None => {
+                let active = entry
+                    .session
+                    .state()
+                    .await
+                    .ok()
+                    .and_then(|state| state.active_run_id);
+                active
+                    .or_else(|| entry.current_run())
+                    .ok_or(HubError::NoRunToResume)?
+            }
         };
         let (_, stream) = entry
             .session

@@ -177,3 +177,20 @@ fn a_resolution_scoped_to_another_session_is_refused_before_the_adapter_sees_it(
         }
     }
 }
+
+#[test]
+fn an_unqualified_cursor_follows_a_queued_run_the_adapter_has_since_started() {
+    let hub = hub(64);
+    let session = open(&hub, "promoted");
+    let first = block_on(session.submit(prompt("promoted")))
+        .unwrap()
+        .run_id
+        .unwrap();
+    let mut queued = prompt("promoted");
+    queued.request.delivery = RequestedDeliveryMode::QUEUE;
+    let second = block_on(session.submit(queued)).unwrap().run_id.unwrap();
+    assert_ne!(first, second);
+    block_on(session.cancel(first)).unwrap();
+    let replay = block_on(hub.subscribe_after(&"promoted".into(), None, 0)).unwrap();
+    assert_eq!(replay.run_id(), &second);
+}
