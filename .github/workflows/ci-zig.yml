@@ -142,6 +142,9 @@ jobs:
       - name: Run checker self-tests
         run: node --test scripts/check-no-comments.test.mjs
 
+      - name: Verify readme temporary-directory cleanup
+        run: node --test scripts/check-readme-samples-cleanup.test.mjs
+
       - name: Run changelog-release self-tests
         run: node --test scripts/changelog-release.test.mjs
 
