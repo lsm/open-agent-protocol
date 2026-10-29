@@ -52,6 +52,7 @@ if (blocks.length === 0) {
 }
 
 const workDir = mkdtempSync(join(tmpdir(), "oap-readme-samples-"));
+process.once("exit", () => rmSync(workDir, { recursive: true, force: true }));
 const samples = join(workDir, "samples");
 mkdirSync(samples);
 
@@ -103,9 +104,7 @@ try {
   });
   console.error(located.trim());
   console.error("check-readme-samples: FAIL: a README sample does not type-check");
-  rmSync(workDir, { recursive: true, force: true });
   process.exit(1);
 }
 
-rmSync(workDir, { recursive: true, force: true });
 console.log("check-readme-samples: OK");
