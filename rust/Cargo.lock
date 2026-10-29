@@ -177,6 +177,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "crossbeam-channel"
+version = "0.5.17"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "98b0cc327b5bc766e7fda9c9260cc0fa81b43a8e240440422dff70788e3f9ef1"
+dependencies = [
+ "crossbeam-utils",
+]
+
+[[package]]
+name = "crossbeam-utils"
+version = "0.8.23"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a31eee39dddec8330830986fcd7625edb5a24ec90ea038215273bbc3adb08ac6"
+
+[[package]]
 name = "crypto-common"
 version = "0.1.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -924,6 +939,7 @@ dependencies = [
 name = "oap-adapter"
 version = "0.1.0"
 dependencies = [
+ "crossbeam-channel",
  "futures",
  "futures-core",
  "oap-protocol",
@@ -963,6 +979,20 @@ dependencies = [
 [[package]]
 name = "oap-adapter-opencode"
 version = "0.1.0"
+dependencies = [
+ "oap-adapter",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "oap-adapter-pi"
+version = "0.1.0"
+dependencies = [
+ "oap-adapter",
+ "serde",
+ "serde_json",
+]
 
 [[package]]
 name = "oap-binding"
@@ -1026,6 +1056,7 @@ dependencies = [
 name = "oap-serve"
 version = "0.1.0"
 dependencies = [
+ "futures",
  "oap-adapter",
  "oap-protocol",
  "thiserror",
