@@ -117,6 +117,14 @@ remain contiguous. An entirely empty submission stays invalid even when message
 separators would otherwise produce bytes. Synthetic process tests pin this in
 both Go and Zig.
 
+Go serializes native admission with a context-aware gate and releases the session
+mutex during `session.send`, so existing runs continue streaming and state/close
+remain available. Only an unmatched native user-message boundary and subsequent
+events wait for its binding; that holding queue shares the configured RPC queue
+bound. Provisional runs are hidden from snapshots. A reserved follower binds
+before held events publish, so a small replay journal cannot erase live delivery.
+The host permits at most eight queued reservations, independently of active work.
+
 | OAP | Native |
 | --- | --- |
 | `session.open` | `session.create {clientName, model?, requestPermission:true, requestUserInput:true, workingDirectory, streaming:true, envValueMode:"direct"}` → `{sessionId, workspacePath, …}` |

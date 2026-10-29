@@ -53,6 +53,15 @@ func (r *reducer) admit(queue bool) (*run, error) {
 	status := protocol.RunRunning
 	if queue || live > 0 {
 		status = protocol.RunQueued
+		queued := 0
+		for _, run := range r.runs {
+			if !run.terminal && run.status == protocol.RunQueued {
+				queued++
+			}
+		}
+		if queued >= maxQueued {
+			return nil, base.ErrRunActive
+		}
 	}
 	admitted := &run{id: protocol.RunID(r.ids.NewID("run")), messageID: protocol.MessageID(r.ids.NewID("message")), status: status, next: 1}
 	r.runs = append(r.runs, admitted)

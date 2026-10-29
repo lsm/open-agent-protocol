@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	base "github.com/lsm/open-agent-protocol/go/adapter"
+	"github.com/lsm/open-agent-protocol/go/adapter/copilot/internal/native"
 	"github.com/lsm/open-agent-protocol/go/adapter/copilot/internal/rpc"
 	"github.com/lsm/open-agent-protocol/go/protocol"
 )
@@ -35,8 +36,17 @@ func (s *session) Submit(ctx context.Context, submit base.SubmitRequest) (protoc
 	if err != nil {
 		return zero, nil, err
 	}
+	select {
+	case s.sending <- struct{}{}:
+		defer func() { <-s.sending }()
+	case <-ctx.Done():
+		return zero, nil, ctx.Err()
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return zero, nil, err
+	}
 	if s.closed || s.closing || s.unusable {
 		return zero, nil, base.ErrSessionClosed
 	}
@@ -45,12 +55,23 @@ func (s *session) Submit(ctx context.Context, submit base.SubmitRequest) (protoc
 	if err != nil {
 		return zero, nil, err
 	}
+	follower := s.journal.Reserve()
+	defer follower.Release()
+	s.pending = admitted
 	call, cancel := context.WithTimeout(ctx, s.timeout)
 	defer cancel()
 	var reply struct {
 		MessageID string `json:"messageId"`
 	}
+	s.mu.Unlock()
 	err = s.process.Client.Call(call, "session.send", map[string]string{"sessionId": s.reducer.nativeID, "prompt": prompt}, &reply)
+	s.mu.Lock()
+	s.pending = nil
+	held := s.held
+	s.held = nil
+	if err == nil && (s.closed || s.closing || s.unusable) {
+		err = base.ErrSessionClosed
+	}
 	if err != nil || reply.MessageID == "" {
 		s.reducer.runs = s.reducer.runs[:len(s.reducer.runs)-1]
 		if err == nil {
@@ -72,7 +93,34 @@ func (s *session) Submit(ctx context.Context, submit base.SubmitRequest) (protoc
 	if busy {
 		ack.DeliveryResolution = "session_busy"
 	}
-	return ack, s.journal.Follow(admitted.id, 0), nil
+	follower.Bind(admitted.id)
+	for _, event := range held {
+		if err := s.reducer.observe(event); err != nil {
+			s.end("copilot_invalid_event", "the Copilot server sent an invalid session event")
+			_ = s.process.Client.Close()
+			break
+		}
+	}
+	s.flush()
+	return ack, follower.Stream(), nil
+}
+
+func (s *session) observe(event native.Event) error {
+	unbound := event.Type == "user.message" && native.Text(event.Data, "messageId") != ""
+	for _, run := range s.reducer.runs {
+		if run.nativeMessage == native.Text(event.Data, "messageId") {
+			unbound = false
+			break
+		}
+	}
+	if s.pending != nil && (len(s.held) > 0 || (event.SessionID == s.reducer.nativeID && unbound)) {
+		if len(s.held) >= cap(s.process.Client.Notifications()) {
+			return rpc.ErrBackpressure
+		}
+		s.held = append(s.held, event)
+		return nil
+	}
+	return s.reducer.observe(event)
 }
 
 func textPrompt(messages []protocol.Message) (string, error) {
