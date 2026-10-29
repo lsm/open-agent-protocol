@@ -87,7 +87,7 @@ pub(crate) struct Live {
     next_serial: u64,
     readers: usize,
     closed: bool,
-    pending_end: Option<Terminal>,
+    pending_end: Option<(Vec<Arc<Subscriber>>, Terminal)>,
 }
 
 impl Live {
@@ -108,8 +108,19 @@ impl Live {
     fn bind(&mut self, run: &RunId, serial: u64, current: bool) {
         self.serials.insert(run.clone(), serial);
         if current {
-            self.current = Some(run.clone());
+            self.supersede(run);
             self.sequences.remove(run);
+        }
+    }
+
+    fn supersede(&mut self, run: &RunId) {
+        self.current = Some(run.clone());
+        if let Some((cohort, failure)) = self.pending_end.take() {
+            self.subs
+                .retain(|sub| !cohort.iter().any(|held| Arc::ptr_eq(held, sub)));
+            for sub in cohort {
+                sub.stop(Some(failure.clone()));
+            }
         }
     }
 
@@ -135,7 +146,7 @@ impl Live {
             None => !run.as_str().is_empty(),
         };
         if !terminal && newer {
-            self.current = Some(run.clone());
+            self.supersede(&run);
         }
         if let Some(sequence) = envelope.sequence {
             let seen = self.sequences.entry(run.clone()).or_default();
@@ -158,25 +169,36 @@ impl Live {
         &mut self,
         run: &RunId,
         end: Option<Terminal>,
-    ) -> (Vec<Arc<Subscriber>>, Option<Terminal>) {
+    ) -> Vec<(Arc<Subscriber>, Option<Terminal>)> {
         self.readers -= 1;
         let current = self.current.as_ref() == Some(run);
         if self.readers > 0 {
             return match end {
                 Some(failure) if current => {
-                    self.pending_end = Some(failure);
-                    (Vec::new(), None)
+                    self.pending_end = Some((self.subs.clone(), failure));
+                    Vec::new()
                 }
-                Some(failure) => (self.cut_exposed(run), Some(failure)),
-                None => (Vec::new(), None),
+                Some(failure) => self
+                    .cut_exposed(run)
+                    .into_iter()
+                    .map(|sub| (sub, Some(failure.clone())))
+                    .collect(),
+                None => Vec::new(),
             };
         }
-        let end = if current {
-            end.or(self.pending_end.take())
-        } else {
-            self.pending_end.take()
+        let end = end.filter(|_| current);
+        let (cohort, held) = match self.pending_end.take() {
+            Some((cohort, failure)) => (cohort, Some(failure)),
+            None => (Vec::new(), None),
         };
-        (self.detach(), end)
+        self.detach()
+            .into_iter()
+            .map(|sub| {
+                let failed = cohort.iter().any(|member| Arc::ptr_eq(member, &sub));
+                let terminal = if failed { held.clone() } else { end.clone() };
+                (sub, terminal)
+            })
+            .collect()
     }
 
     pub(crate) fn close(&mut self) -> Vec<Arc<Subscriber>> {
@@ -241,9 +263,8 @@ pub(crate) fn read_run(
             }
         }
         let run = run.unwrap_or_default();
-        let (subs, end) = entry.with_live(|live| live.exit(&run, end));
-        for sub in subs {
-            sub.stop(end.clone());
+        for (sub, terminal) in entry.with_live(|live| live.exit(&run, end)) {
+            sub.stop(terminal);
         }
     });
 }

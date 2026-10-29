@@ -20,12 +20,14 @@ type Sender = UnboundedSender<Result<Envelope, Error>>;
 #[derive(Default)]
 struct Scripted {
     senders: Arc<Mutex<Vec<(RunId, Sender)>>>,
+    queue_next: Arc<Mutex<bool>>,
     anonymous: bool,
 }
 
 struct ScriptedSession {
     id: String,
     senders: Arc<Mutex<Vec<(RunId, Sender)>>>,
+    queue_next: Arc<Mutex<bool>>,
     anonymous: bool,
 }
 
@@ -38,6 +40,7 @@ impl Adapter for Scripted {
         let session: Box<dyn Session> = Box::new(ScriptedSession {
             id: request.session_id.to_string(),
             senders: self.senders.clone(),
+            queue_next: self.queue_next.clone(),
             anonymous: self.anonymous,
         });
         Box::pin(async move { Ok(session) })
@@ -53,7 +56,11 @@ impl Session for ScriptedSession {
         let admission = MessageSubmitResponse {
             session_id: self.id.as_str().into(),
             accepted: true,
-            admission: Admission::STARTED,
+            admission: if std::mem::take(&mut *self.queue_next.lock().unwrap()) {
+                Admission::QUEUED
+            } else {
+                Admission::STARTED
+            },
             run_id: (!self.anonymous).then_some(run),
             ..MessageSubmitResponse::default()
         };
@@ -91,6 +98,7 @@ struct Script {
     hub: Hub,
     session: Arc<HubSession>,
     senders: Arc<Mutex<Vec<(RunId, Sender)>>>,
+    queue_next: Arc<Mutex<bool>>,
 }
 
 fn script(queue: usize) -> Script {
@@ -103,6 +111,7 @@ fn scripted_with(queue: usize, anonymous: bool) -> Script {
         ..Scripted::default()
     };
     let senders = scripted.senders.clone();
+    let queue_next = scripted.queue_next.clone();
     let mut registry = Registry::new();
     registry.register("scripted", Arc::new(scripted)).unwrap();
     let hub = Hub::with_options(
@@ -125,6 +134,7 @@ fn scripted_with(queue: usize, anonymous: bool) -> Script {
         hub,
         session,
         senders,
+        queue_next,
     }
 }
 
@@ -144,6 +154,11 @@ impl Script {
         }))
         .unwrap()
         .run_id
+    }
+
+    fn submit_queued(&self) -> RunId {
+        *self.queue_next.lock().unwrap() = true;
+        self.submit()
     }
 
     fn overflow(&self, run: &RunId) {
@@ -427,4 +442,28 @@ fn closing_a_session_with_a_run_still_being_read_ends_its_subscribers_once_the_r
     assert_eq!(next(&mut watcher).unwrap().unwrap().sequence, Some(2));
     script.end(&run);
     assert!(next(&mut watcher).is_none());
+}
+
+#[test]
+fn a_held_failure_does_not_carry_into_a_run_promoted_after_it() {
+    let script = script(64);
+    let mut on_first = script.subscribe();
+    let first = script.submit();
+    script.emit(&first, 1);
+    assert_eq!(next(&mut on_first).unwrap().unwrap().sequence, Some(1));
+    let queued = script.submit_queued();
+    script.fail(&first);
+    settle();
+    let mut on_queued = script.subscribe();
+    script.emit(&queued, 1);
+    assert!(matches!(
+        next(&mut on_first),
+        Some(Err(HubError::Adapter(Error::Harness(_))))
+    ));
+    assert_eq!(
+        next(&mut on_queued).unwrap().unwrap().run_id.as_ref(),
+        Some(&queued)
+    );
+    script.end(&queued);
+    assert!(next(&mut on_queued).is_none());
 }
