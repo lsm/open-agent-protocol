@@ -71,6 +71,41 @@ fn args_in<'de, D: Deserializer<'de>>(deserializer: D, owner: &str) -> Result<Ra
     )))
 }
 
+fn object_as<'de, D, T>(deserializer: D, alias: &str) -> Result<Option<T>, D::Error>
+where
+    D: Deserializer<'de>,
+    T: serde::de::DeserializeOwned,
+{
+    let raw = Box::<RawValue>::deserialize(deserializer)?;
+    let text = raw.get().trim_start();
+    if text == "null" {
+        return Ok(None);
+    }
+    if !text.starts_with('{') {
+        return Err(serde::de::Error::custom(format!(
+            "json: cannot unmarshal {} into Go value of type native.{alias}",
+            go_kind(text)
+        )));
+    }
+    serde_json::from_str(raw.get())
+        .map(Some)
+        .map_err(serde::de::Error::custom)
+}
+
+fn usage_alias<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Option<Usage>, D::Error> {
+    object_as(deserializer, "usageAlias")
+}
+
+fn surface_alias<'de, D: Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<ErrorSurface>, D::Error> {
+    object_as(deserializer, "surfaceAlias")
+}
+
+fn tick_usage<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Usage, D::Error> {
+    object_as(deserializer, "usageAlias").map(Option::unwrap_or_default)
+}
+
 fn start_args<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Raw, D::Error> {
     args_in(deserializer, "ToolStartPayload")
 }
@@ -144,7 +179,7 @@ pub struct InterimPayload {
 pub struct MessageCompletePayload {
     #[serde(default, deserialize_with = "zero")]
     pub text: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "usage_alias")]
     pub usage: Option<Usage>,
     #[serde(default, deserialize_with = "zero")]
     pub status: String,
@@ -168,7 +203,7 @@ pub struct MessageCompletePayload {
     pub error: String,
     #[serde(default, deserialize_with = "zero")]
     pub recoverable: bool,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "surface_alias")]
     pub error_surface: Option<ErrorSurface>,
     #[serde(default, deserialize_with = "zero")]
     pub partial: bool,
@@ -225,7 +260,7 @@ pub struct Usage {
 #[derive(Clone, Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct UsageTickPayload {
-    #[serde(default, deserialize_with = "oap_adapter::gojson::structure")]
+    #[serde(default, deserialize_with = "tick_usage")]
     pub usage: Usage,
 }
 
@@ -303,6 +338,16 @@ pub fn decode_strict<T: serde::de::DeserializeOwned + Default>(data: &[u8]) -> R
     }
     if value == "null" {
         return Ok(T::default());
+    }
+    if !value.starts_with('{') {
+        let name = std::any::type_name::<T>()
+            .rsplit("::")
+            .next()
+            .unwrap_or_default();
+        return Err(format!(
+            "json: cannot unmarshal {} into Go value of type native.{name}",
+            go_kind(value)
+        ));
     }
     serde_json::from_str(&oap_adapter::gojson::replace_lone_surrogates(&text)).map_err(|error| {
         let text = error.to_string();

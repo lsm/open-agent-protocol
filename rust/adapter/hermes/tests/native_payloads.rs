@@ -153,3 +153,32 @@ fn each_invalid_byte_in_a_string_reads_as_its_own_replacement_character_as_go_re
     let delta: DeltaPayload = decode_strict(b"{\"text\":\"a\xff\xfeb\xe2\x82\"}").unwrap();
     assert_eq!(delta.text, "a\u{fffd}\u{fffd}b\u{fffd}\u{fffd}");
 }
+
+#[test]
+fn a_struct_is_refused_from_anything_but_an_object_with_go_s_text() {
+    assert_eq!(
+        decode_strict::<Event>(b"[]").unwrap_err(),
+        "json: cannot unmarshal array into Go value of type native.Event"
+    );
+    assert_eq!(
+        decode_strict::<DeltaPayload>(br#"["x"]"#).unwrap_err(),
+        "json: cannot unmarshal array into Go value of type native.DeltaPayload"
+    );
+    assert_eq!(
+        decode_strict::<MessageCompletePayload>(br#"{"text":"x","usage":[{}]}"#).unwrap_err(),
+        "json: cannot unmarshal array into Go value of type native.usageAlias"
+    );
+    assert_eq!(
+        decode_strict::<MessageCompletePayload>(br#"{"text":"x","error_surface":["a"]}"#)
+            .unwrap_err(),
+        "json: cannot unmarshal array into Go value of type native.surfaceAlias"
+    );
+    assert_eq!(
+        decode_strict::<UsageTickPayload>(br#"{"usage":[1]}"#).unwrap_err(),
+        "json: cannot unmarshal array into Go value of type native.usageAlias"
+    );
+    assert_eq!(
+        decode_strict::<UsageTickPayload>(br#"{"usage":"x"}"#).unwrap_err(),
+        "json: cannot unmarshal string into Go value of type native.usageAlias"
+    );
+}
