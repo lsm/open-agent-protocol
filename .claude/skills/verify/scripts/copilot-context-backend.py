@@ -21,6 +21,7 @@ def main():
     parser.add_argument('--binary', default=str(ROOT / 'zig/zig-out/bin/oapx'))
     parser.add_argument('--output-dir', required=True)
     parser.add_argument('--expect-alpha28-refusal', action='store_true')
+    parser.add_argument('--opus55-versioned', action='store_true')
     options = parser.parse_args()
     output = Path(options.output_dir).resolve()
     output.mkdir(parents=True, exist_ok=False)
@@ -32,13 +33,22 @@ def main():
             'supported_endpoints': ['/chat/completions'], 'capabilities': {
                 'type': 'chat', 'limits': {'max_prompt_tokens': prompt,
                     'max_context_window_tokens': maximum, 'max_output_tokens': 128000}}})
+    cached_metadata = metadata
+    if options.opus55_versioned:
+        assert not options.expect_alpha28_refusal
+        fixture = json.loads((ROOT / '.claude/skills/verify/fixtures/copilot-opus55-catalog.json').read_text())
+        cached_metadata = {'data': metadata['data'] + [fixture['legacy']]}
+        metadata = {'data': metadata['data'] + [fixture['current']]}
+        (output / 'legacy-models.json').write_text(json.dumps(cached_metadata, indent=2))
     (output / 'mock-models.json').write_text(json.dumps(metadata, indent=2))
     requests = []
 
     class Handler(BaseHTTPRequestHandler):
         def do_GET(self):
-            requests.append({'method': 'GET', 'path': self.path})
-            body = json.dumps(metadata).encode()
+            version = self.headers.get('X-GitHub-Api-Version')
+            requests.append({'method': 'GET', 'path': self.path, 'api_version': version})
+            offered = cached_metadata if options.opus55_versioned and version != '2026-08-01' else metadata
+            body = json.dumps(offered).encode()
             self.send_response(200 if self.path == '/models' else 404)
             self.send_header('Content-Type', 'application/json')
             self.send_header('Content-Length', str(len(body)))
@@ -68,7 +78,7 @@ def main():
             config = data / 'config.json'
             config.write_text(json.dumps({'model': 'claude-sonnet-4.6', 'provider': 'github-copilot',
                 'api': 'openai-completions', 'workspace': str(root)}))
-            (cache / 'github-copilot.json').write_text(json.dumps(metadata))
+            (cache / 'github-copilot.json').write_text(json.dumps(cached_metadata))
             profile = root / 'isolation.sb'
             profile.write_text('(version 1) (allow default)\n(deny network*)\n'
                 '(allow network-outbound (remote ip "localhost:*"))\n'
@@ -95,7 +105,16 @@ def main():
                 results.append({'command': text, 'expected': marker, 'persisted': actual})
                 (output / f'screen-{len(results):02d}.txt').write_bytes(session.screen_text())
 
+            if options.opus55_versioned:
+                command('/model claude-opus-5.5', 'model switched to claude-opus-5.5', check=False)
+                command('/context default', 'context window: 200000')
+                command('/context 1m', 'takes at most 327680 context tokens')
             command('/model refresh', 'model catalog refreshed', check=False)
+            if options.opus55_versioned:
+                command('/context 1m', 'context window: 1000000', 1000000)
+                command('/context 1000001', 'takes at most 1000000 context tokens', 1000000)
+                command('/context default', 'context window: 1000000')
+                assert any(r['api_version'] == '2026-08-01' for r in requests), requests
             assert any(r['path'] == '/models' for r in requests), requests
             for model, prompt, maximum in [('claude-sonnet-4.6', 200000, 1000000),
                                            ('gpt-5.4', 272000, 1050000),
