@@ -2,9 +2,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError, Weak};
 
-use oap_adapter::{Error, OpenRequest};
+use oap_adapter::{Error, OpenRequest, UnsupportedControl, CONTROL_UNSATISFIABLE};
 use oap_binding::{Action, Entry, Record, Store};
-use oap_protocol::{SessionId, SessionState, SessionStatus};
+use oap_protocol::{SessionId, SessionState, SessionStatus, FEATURE_OPEN_REOPEN};
 
 use crate::Registry;
 
@@ -24,6 +24,8 @@ pub enum HubError {
     ClosedAtOpen(Box<SessionState>),
     #[error(transparent)]
     Adapter(#[from] Error),
+    #[error(transparent)]
+    Binding(#[from] oap_binding::Error),
 }
 
 #[derive(Default)]
@@ -151,8 +153,33 @@ impl Hub {
         }
         let _reservation = self.reserve(adapter, &request.session_id)?;
         let requested = request.session_id.clone();
+        let adopting = request.reopen && request.adopted && !request.native_session_id.is_empty();
+        let mut directory = self.shared.registry.working_directory(adapter).to_owned();
+        if let (true, Some(bindings), false) =
+            (request.reopen, &self.shared.options.bindings, adopting)
+        {
+            let history = bindings.history(request.session_id.as_str())?;
+            let bound = oap_binding::state(&history)
+                .filter(|bound| bound.record.adapter == adapter)
+                .ok_or_else(|| HubError::UnknownSession(request.session_id.clone()))?;
+            request.native_session_id = bound.record.native_session_id.clone();
+            request.adopted = bound.record.adopted;
+            directory = bound.record.directory.clone();
+        }
         let asked = request.clone();
-        let session = implementation.open(request).await?;
+        let reloads = asked.reopen && (self.shared.options.bindings.is_some() || adopting);
+        let session = match implementation.open(request).await {
+            Err(Error::UnknownSession(_)) if reloads => {
+                return Err(Error::UnsupportedControl(Box::new(UnsupportedControl {
+                    feature: FEATURE_OPEN_REOPEN.into(),
+                    reason: CONTROL_UNSATISFIABLE,
+                    detail: "the binding names a session the adapter can no longer load".into(),
+                    ..UnsupportedControl::default()
+                }))
+                .into())
+            }
+            opened => opened?,
+        };
         let (state, settled) = match session.state().await {
             Ok(state) => {
                 let settled = state.status == SessionStatus::CLOSED;
@@ -188,7 +215,7 @@ impl Hub {
                 &version,
                 &state.current_model_id,
                 &self.shared.options.home,
-                self.shared.registry.working_directory(adapter),
+                &directory,
                 &sources,
             );
             record.reasoning_level = asked.reasoning_level.as_str().into();
