@@ -340,6 +340,9 @@ pub fn decode_strict<T: serde::de::DeserializeOwned + Default>(data: &[u8]) -> R
         return Ok(T::default());
     }
     if !value.starts_with('{') {
+        if let Err(error) = serde_json::from_str::<serde::de::IgnoredAny>(value) {
+            return Err(error.to_string());
+        }
         let name = std::any::type_name::<T>()
             .rsplit("::")
             .next()

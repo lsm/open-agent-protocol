@@ -182,3 +182,11 @@ fn a_struct_is_refused_from_anything_but_an_object_with_go_s_text() {
         "json: cannot unmarshal string into Go value of type native.usageAlias"
     );
 }
+
+#[test]
+fn a_malformed_top_level_token_is_a_syntax_error_not_a_type_mismatch() {
+    for frame in [&b"x"[..], b"[1,", b"\"open"] {
+        let refused = decode_strict::<DeltaPayload>(frame).unwrap_err();
+        assert!(!refused.contains("cannot unmarshal"), "{refused}");
+    }
+}
