@@ -1,5 +1,5 @@
 use oap_adapter_pi::native::{
-    decode_strict, validate_state, Command, ImageContent, Response, SessionState,
+    decode_state, decode_strict, validate_state, Command, ImageContent, Response, SessionState,
 };
 
 fn with(kind: &str, fill: impl FnOnce(&mut Command)) -> Command {
@@ -193,4 +193,15 @@ fn a_lone_surrogate_escape_decodes_as_the_replacement_character_as_go_s_decoder_
     )
     .unwrap();
     assert_eq!(response.error, "bad \u{fffd} half");
+}
+
+#[test]
+fn the_lenient_state_matches_keys_as_go_does_and_keeps_the_last_value() {
+    let state = decode_state(
+        r#"{"sessionid":"folded","sessionId":"exact","SESSIONID":"last","messagecount":2,"unknown":1}"#,
+    )
+    .unwrap();
+    assert_eq!(state.session_id, "last");
+    assert_eq!(state.message_count, 2);
+    assert_eq!(decode_state("null").unwrap().session_id, "");
 }

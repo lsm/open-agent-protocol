@@ -971,6 +971,7 @@ dependencies = [
 name = "oap-adapter-codex-appserver"
 version = "0.1.0"
 dependencies = [
+ "crossbeam-channel",
  "oap-adapter",
  "serde",
  "serde_json",
@@ -978,6 +979,16 @@ dependencies = [
 
 [[package]]
 name = "oap-adapter-copilot"
+version = "0.1.0"
+dependencies = [
+ "oap-adapter",
+ "oap-harness",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "oap-adapter-deepseek"
 version = "0.1.0"
 dependencies = [
  "oap-adapter",
