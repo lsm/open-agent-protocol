@@ -4,7 +4,8 @@ The Rust port of `go/adapter/pi`: an OAP adapter over Pi's RPC mode on stdio,
 pinned by `harnesses/pi.json` and judged by the corpus in
 `fixtures/adapters/pi-v1.3.0`.
 
-So far it holds the native commands, responses and session state.
+So far it holds the native commands, responses, session state, events and
+extension UI requests and responses.
 `decode_strict` follows Go's `DecodeStrict`: a repeated key is refused, an
 unknown member is refused, a null member reads as its zero value, and an
 unpaired surrogate escape reads as U+FFFD. Two of Go's `encoding/json` rules
