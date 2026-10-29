@@ -58,6 +58,7 @@ struct Inner {
     inbound_rx: Receiver<Inbound>,
     done_rx: Receiver<()>,
     done_tx: Mutex<Option<Sender<()>>>,
+    read_done: Receiver<()>,
     closer: Mutex<Option<Closer>>,
     closing: AtomicBool,
     unblocks_writes: bool,
@@ -93,6 +94,7 @@ impl RpcClient {
             crossbeam_channel::bounded(or_default(options.write_queue_capacity, capacity));
         let (inbound_tx, inbound_rx) = crossbeam_channel::bounded(capacity);
         let (done_tx, done_rx) = crossbeam_channel::bounded(0);
+        let (reading, read_done) = crossbeam_channel::bounded::<()>(0);
         let unblocks_writes = options.closer.is_some();
         let client = Self(Arc::new(Inner {
             state: Mutex::new(State {
@@ -110,6 +112,7 @@ impl RpcClient {
             inbound_rx,
             done_rx,
             done_tx: Mutex::new(Some(done_tx)),
+            read_done,
             closer: Mutex::new(options.closer.take()),
             closing: AtomicBool::new(false),
             unblocks_writes,
@@ -118,7 +121,10 @@ impl RpcClient {
         let writer_client = client.clone();
         std::thread::spawn(move || writer_client.write_loop(writer, write_rx, limit));
         let reader_client = client.clone();
-        std::thread::spawn(move || reader_client.read_loop(BufReader::new(reader), limit));
+        std::thread::spawn(move || {
+            let _reading = reading;
+            reader_client.read_loop(BufReader::new(reader), limit)
+        });
         client
     }
 
@@ -128,6 +134,10 @@ impl RpcClient {
 
     fn close_error(&self) -> Error {
         lock(&self.0.state).err.clone().unwrap_or(Error::Closed)
+    }
+
+    pub fn read_done(&self) -> Receiver<()> {
+        self.0.read_done.clone()
     }
 
     pub(crate) fn close_with(&self, reason: Error) {

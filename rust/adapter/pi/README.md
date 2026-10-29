@@ -22,7 +22,9 @@ differ:
 events and extension requests in wire order, and a response waits behind a
 barrier until every earlier inbound message is drained. A close leaves
 pending calls to the reader while it routes a frame. A frame stuck in a write
-that no closer can unblock does not hold its caller. The `Client` trait's
+that no closer can unblock does not hold its caller. `read_done` is Go's `ReadDone`: it fires
+when the reader exits, which can be after `done`, so a launcher waits on it
+before it reaps the process. The `Client` trait's
 `call` takes no context, so Go's per-call cancellation and the tests that
 cancel a call have no Rust twin. A call ends with its response or with the
 client's close.

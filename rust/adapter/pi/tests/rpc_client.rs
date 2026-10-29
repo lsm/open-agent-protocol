@@ -301,3 +301,20 @@ fn a_write_blocked_with_no_closer_returns_once_the_reader_retires() {
     assert!(result.join().unwrap().is_err());
     drop(release);
 }
+
+#[test]
+fn read_done_fires_when_the_reader_exits_not_when_the_client_closes() {
+    let mut peer = peer(capacity(4));
+    let read_done = peer.client.read_done();
+    peer.client.close().unwrap();
+    assert!(peer.client.done().recv_timeout(WAIT).is_err());
+    assert!(matches!(
+        read_done.recv_timeout(Duration::from_millis(100)),
+        Err(crossbeam_channel::RecvTimeoutError::Timeout)
+    ));
+    peer.to_client.take();
+    assert!(matches!(
+        read_done.recv_timeout(WAIT),
+        Err(crossbeam_channel::RecvTimeoutError::Disconnected)
+    ));
+}
