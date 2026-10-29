@@ -102,6 +102,7 @@ pub struct Message {
     pub id: Option<RequestId>,
     pub method: String,
     pub params: Option<Box<RawValue>>,
+    pub trace: Option<Box<RawValue>>,
     pub result: Option<Box<RawValue>>,
     pub error: Option<ErrorObject>,
 }
@@ -113,6 +114,7 @@ impl Message {
             id: None,
             method: String::new(),
             params: None,
+            trace: None,
             result: None,
             error: None,
         }
@@ -166,6 +168,9 @@ impl Message {
         let members: Option<HashMap<String, Box<RawValue>>> =
             serde_json::from_str(&text).map_err(|error| invalid(&error.to_string()))?;
         let mut members = members.ok_or_else(|| invalid("expected one object"))?;
+        if !dialect.versioned && members.is_empty() {
+            return Err(invalid("empty object"));
+        }
         if dialect.strict_frames {
             if let Some(name) = members
                 .keys()
@@ -174,7 +179,19 @@ impl Message {
                 return Err(invalid(&format!("unknown member {}", go_quote(name))));
             }
         }
-        if members.get("jsonrpc").is_none_or(|version| {
+        if !dialect.versioned {
+            if members.contains_key("jsonrpc") {
+                return Err(invalid(&format!(
+                    "jsonrpc member is not part of the {} dialect",
+                    dialect
+                        .name
+                        .split(' ')
+                        .next()
+                        .map(capitalized)
+                        .unwrap_or_default()
+                )));
+            }
+        } else if members.get("jsonrpc").is_none_or(|version| {
             serde_json::from_str::<String>(version.get())
                 .ok()
                 .as_deref()
@@ -187,13 +204,14 @@ impl Message {
         let params = members.remove("params");
         let result = members.remove("result");
         let error = members.remove("error");
+        let trace = members.remove("trace");
         if result.is_some() && error.is_some() {
             return Err(invalid("result and error are mutually exclusive"));
         }
         if method.is_some() && (result.is_some() || error.is_some()) {
             return Err(invalid("method cannot accompany a response"));
         }
-        if method.is_none() && params.is_some() {
+        if dialect.versioned && method.is_none() && params.is_some() {
             return Err(invalid("params requires method"));
         }
         let kind = match (&id, &method) {
@@ -220,6 +238,9 @@ impl Message {
                 return Err(invalid(dialect.params_rule()));
             }
             message.params = params;
+            if !dialect.versioned {
+                message.trace = trace;
+            }
         }
         message.result = result;
         if let Some(error) = error {
@@ -243,12 +264,12 @@ impl Message {
             if !fields.contains_key("code") {
                 return Err(invalid("error code is required"));
             }
-            if !fields.contains_key("message") {
+            if dialect.versioned && !fields.contains_key("message") {
                 return Err(invalid("error message is required"));
             }
             let object: ErrorObject =
                 serde_json::from_str(error.get()).map_err(|_| invalid("malformed error object"))?;
-            if dialect.strict_frames && object.message.is_empty() {
+            if (dialect.strict_frames || !dialect.versioned) && object.message.is_empty() {
                 return Err(invalid("malformed error object"));
             }
             message.error = Some(object);
@@ -275,7 +296,11 @@ impl Message {
             .params
             .as_deref()
             .is_none_or(|params| dialect.params_shape(params.get()));
-        let mut members: Vec<(&str, String)> = vec![("jsonrpc", "\"2.0\"".into())];
+        let mut members: Vec<(&str, String)> = if dialect.versioned {
+            vec![("jsonrpc", "\"2.0\"".into())]
+        } else {
+            Vec::new()
+        };
         match self.kind {
             Kind::Request | Kind::Notification => {
                 if self.method.is_empty() || !params_ok {
@@ -290,6 +315,9 @@ impl Message {
                 ));
                 if let Some(params) = &self.params {
                     members.push(("params", go_marshal(params.get())));
+                }
+                if let (Kind::Request, Some(trace)) = (self.kind, &self.trace) {
+                    members.push(("trace", go_marshal(trace.get())));
                 }
             }
             Kind::Response => {
@@ -316,4 +344,12 @@ const MEMBERS: [&str; 6] = ["jsonrpc", "id", "method", "params", "result", "erro
 
 pub(crate) fn object_or_array(raw: &str) -> bool {
     matches!(raw.trim_start().as_bytes().first(), Some(b'{' | b'['))
+}
+
+fn capitalized(word: &str) -> String {
+    let mut characters = word.chars();
+    characters
+        .next()
+        .map(|first| first.to_uppercase().chain(characters).collect())
+        .unwrap_or_default()
 }
