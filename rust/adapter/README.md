@@ -73,6 +73,11 @@ pinned corpus nests a native frame that deep.
 
 ## Child processes
 
+`wait_error` writes the text Go's `exec.ExitError` carries: `exit status N`,
+or `signal: <name>` with Go's per-platform signal names, followed by
+` (core dumped)` when the status reports a core dump, as Go's
+`os.ProcessState.String` appends it (`os/exec_posix.go`).
+
 `process::Child` follows Go's launchers in every observable way but two. When
 a harness leaves a grandchild holding its stderr, Go closes the pipe on the
 drain-timeout and kill paths, which ends the copy. Safe Rust cannot close a
