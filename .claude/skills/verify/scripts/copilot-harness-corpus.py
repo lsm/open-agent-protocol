@@ -44,7 +44,12 @@ def main():
             (output / (case["id"] + "-" + label + ".txt")).write_text(checked.stdout + checked.stderr)
             assert checked.returncode == 0, checked.stdout + checked.stderr
             print(label, case["id"], "exit", checked.returncode, flush=True)
-    print("PASS: Zig decoded and replayed the synthetic Copilot corpus; public Go and oapx validators accepted the complete admission trace; no native harness or credentials used")
+    rust = subprocess.run(["cargo", "test", "--manifest-path", "rust/Cargo.toml",
+                           "-p", "oap-adapter-copilot", "--all-features"],
+                          cwd=ROOT, capture_output=True, text=True, timeout=300)
+    (output / "rust-native.txt").write_text(rust.stdout + rust.stderr)
+    assert rust.returncode == 0, rust.stdout + rust.stderr
+    print("PASS: Zig/Go replay and both public validators accepted the synthetic corpus; Rust consumed the shared native wire; synthetic peers only")
 
 
 if __name__ == "__main__":

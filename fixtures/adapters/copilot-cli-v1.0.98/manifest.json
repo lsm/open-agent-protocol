@@ -70,6 +70,18 @@
       "path": "usage-overflow"
     },
     {
+      "id": "tool-orphan",
+      "path": "tool-orphan"
+    },
+    {
+      "id": "tool-incomplete",
+      "path": "tool-incomplete"
+    },
+    {
+      "id": "tool-duplicate-end",
+      "path": "tool-duplicate-end"
+    },
+    {
       "id": "usage-negative-zero",
       "path": "usage-negative-zero"
     },

@@ -15,11 +15,14 @@ The script wraps each event sequence with its checked-in admission exchange and
 runs the public Go and oapx validators. Require exit 0 and `PASS`; inspect
 `zig-replay.txt`, the full trace and both validator outputs. The replay also
 refuses a mislabeled outbound response, so its direction is part of the contract.
+The driver then runs the Rust Copilot native consumer against the manifest;
+require exit 0 in `rust-native.txt`. This covers shared wire decoding. Rust
+session projection and host integration remain separate work.
 
 The pin is CLI 1.0.98 / protocol 3; source and artifact provenance come from the
 existing ledger. This is synthetic schema/ledger-based data, not a new live
 recording. It starts no Copilot process, uses no token, and performs no model
-call. Go's native JSON-RPC decoder now consumes the same twenty cases, preserves
+call. Go's native JSON-RPC decoder now consumes the same twenty-three cases, preserves
 unknown event names and exact numeric source bytes, and rejects duplicate keys
 and ambiguous message shapes. Inspect `go-native.txt` for its result and the
 bounded Content-Length codec checks: fragmented/coalesced frames, UTF-8 byte
@@ -39,7 +42,10 @@ completed interaction after its successor starts; neither may enter the next run
 Usage additionally pins measured zero, sparse calls, exact
 counts above 2^53, uint64 maximum and sum overflow, native negative zero and
 missing/partial/wide/non-finite costs. Missing counts stay unknown; neither
-reducer infers totals with unknown cache terms. Tool projections and public
-adapter wiring follow in later slices. Unsupported host capabilities remain unadvertised; the Rust lane
-follows separately.
+reducer infers totals with unknown cache terms. Go now matches all twenty-one
+lifecycle projections, including tool success/denial, orphan/duplicate completions
+and incomplete tools at run settlement. Its inventory test requires every
+manifest case to be replayed or checked by the native codec. Public adapter and
+session wiring follow separately. Unsupported host capabilities remain
+unadvertised; the Rust lane follows separately.
 
