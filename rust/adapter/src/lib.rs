@@ -2,6 +2,7 @@ mod answer;
 mod contract;
 mod error;
 pub mod gojson;
+pub mod gotime;
 pub mod journal;
 pub mod jsonrpc;
 pub mod memory;
