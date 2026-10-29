@@ -35,7 +35,7 @@ func (s *session) State(ctx context.Context) (protocol.SessionState, error) {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.closed || s.unusable {
+	if s.closed {
 		return protocol.SessionState{}, base.ErrSessionClosed
 	}
 	return s.state(), nil
