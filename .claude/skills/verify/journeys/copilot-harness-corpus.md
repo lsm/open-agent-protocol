@@ -19,7 +19,7 @@ refuses a mislabeled outbound response, so its direction is part of the contract
 The pin is CLI 1.0.98 / protocol 3; source and artifact provenance come from the
 existing ledger. This is synthetic schema/ledger-based data, not a new live
 recording. It starts no Copilot process, uses no token, and performs no model
-call. Go's native JSON-RPC decoder now consumes the same ten cases, preserves
+call. Go's native JSON-RPC decoder now consumes the same twenty cases, preserves
 unknown event names and exact numeric source bytes, and rejects duplicate keys
 and ambiguous message shapes. Inspect `go-native.txt` for its result and the
 bounded Content-Length codec checks: fragmented/coalesced frames, UTF-8 byte
@@ -34,8 +34,12 @@ stalled call must return DeadlineExceeded, and close/cancellation must reap the
 child. The script disables Go's test cache so this process proof really runs.
 No real Copilot binary or authentication is used. The Go reducer additionally
 matches fixed OAP for text, queue, unknown events, session errors and foreign
-sessions. The queued case also injects delayed delta/final text for the completed
-interaction after its successor starts; neither may appear in the next run.
-Usage and tool projections, then public adapter wiring, follow in
-later slices. Unsupported host capabilities remain unadvertised; the Rust lane
+sessions and usage. The queued case also injects delayed delta/final text for the
+completed interaction after its successor starts; neither may enter the next run.
+Usage additionally pins measured zero, sparse calls, exact
+counts above 2^53, uint64 maximum and sum overflow, native negative zero and
+missing/partial/wide/non-finite costs. Missing counts stay unknown; neither
+reducer infers totals with unknown cache terms. Tool projections and public
+adapter wiring follow in later slices. Unsupported host capabilities remain unadvertised; the Rust lane
 follows separately.
+

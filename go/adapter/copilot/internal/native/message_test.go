@@ -12,9 +12,21 @@ import (
 
 func TestPinnedCorpusMessages(t *testing.T) {
 	root := filepath.Join("..", "..", "..", "..", "..", filepath.FromSlash(harnesses.Current("copilot-cli").Corpus))
-	entries, err := filepath.Glob(filepath.Join(root, "*", "native.jsonl"))
-	if err != nil || len(entries) != 10 {
-		t.Fatalf("corpus inventory: %v, cases %d", err, len(entries))
+	data, err := os.ReadFile(filepath.Join(root, "manifest.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var manifest struct {
+		Cases []struct {
+			Path string `json:"path"`
+		} `json:"cases"`
+	}
+	if err := json.Unmarshal(data, &manifest); err != nil || len(manifest.Cases) == 0 {
+		t.Fatalf("manifest: %v", err)
+	}
+	var entries []string
+	for _, item := range manifest.Cases {
+		entries = append(entries, filepath.Join(root, item.Path, "native.jsonl"))
 	}
 	for _, path := range entries {
 		t.Run(filepath.Base(filepath.Dir(path)), func(t *testing.T) {
