@@ -17,10 +17,13 @@ use oap_serve::{Hub, HubError, HubOptions, HubSession, Registry, Subscription};
 
 type Sender = UnboundedSender<Result<Envelope, Error>>;
 
+type Hold = Arc<Mutex<Option<futures::channel::oneshot::Receiver<()>>>>;
+
 #[derive(Default)]
 struct Scripted {
     senders: Arc<Mutex<Vec<(RunId, Sender)>>>,
     queue_next: Arc<Mutex<bool>>,
+    hold: Hold,
     anonymous: bool,
 }
 
@@ -28,6 +31,7 @@ struct ScriptedSession {
     id: String,
     senders: Arc<Mutex<Vec<(RunId, Sender)>>>,
     queue_next: Arc<Mutex<bool>>,
+    hold: Hold,
     anonymous: bool,
 }
 
@@ -41,6 +45,7 @@ impl Adapter for Scripted {
             id: request.session_id.to_string(),
             senders: self.senders.clone(),
             queue_next: self.queue_next.clone(),
+            hold: self.hold.clone(),
             anonymous: self.anonymous,
         });
         Box::pin(async move { Ok(session) })
@@ -65,7 +70,13 @@ impl Session for ScriptedSession {
             ..MessageSubmitResponse::default()
         };
         let stream: EventStream = Box::pin(receiver);
-        Box::pin(async move { Ok((admission, stream)) })
+        let hold = self.hold.lock().unwrap().take();
+        Box::pin(async move {
+            if let Some(hold) = hold {
+                let _ = hold.await;
+            }
+            Ok((admission, stream))
+        })
     }
 
     fn state(&self) -> BoxFuture<'_, SessionState> {
@@ -99,6 +110,7 @@ struct Script {
     session: Arc<HubSession>,
     senders: Arc<Mutex<Vec<(RunId, Sender)>>>,
     queue_next: Arc<Mutex<bool>>,
+    hold: Hold,
 }
 
 fn script(queue: usize) -> Script {
@@ -112,6 +124,7 @@ fn scripted_with(queue: usize, anonymous: bool) -> Script {
     };
     let senders = scripted.senders.clone();
     let queue_next = scripted.queue_next.clone();
+    let hold = scripted.hold.clone();
     let mut registry = Registry::new();
     registry.register("scripted", Arc::new(scripted)).unwrap();
     let hub = Hub::with_options(
@@ -135,6 +148,7 @@ fn scripted_with(queue: usize, anonymous: bool) -> Script {
         session,
         senders,
         queue_next,
+        hold,
     }
 }
 
@@ -536,4 +550,27 @@ fn an_overflow_caused_by_a_late_envelope_of_an_older_run_names_the_current_run()
     }
     script.end(&old);
     script.end(&current);
+}
+
+#[test]
+fn a_submission_still_in_flight_keeps_the_subscribers_open_for_its_run() {
+    let script = Arc::new(script(64));
+    let mut watcher = script.subscribe();
+    let first = script.submit();
+    script.emit(&first, 1);
+    assert_eq!(next(&mut watcher).unwrap().unwrap().sequence, Some(1));
+    let (release, hold) = futures::channel::oneshot::channel();
+    *script.hold.lock().unwrap() = Some(hold);
+    let submitting = script.clone();
+    let pending = thread::spawn(move || submitting.submit_queued());
+    settle();
+    script.end(&first);
+    settle();
+    release.send(()).unwrap();
+    let queued = pending.join().unwrap();
+    script.emit(&queued, 1);
+    let delivered = next(&mut watcher).unwrap().unwrap();
+    assert_eq!(delivered.run_id.as_ref(), Some(&queued));
+    script.end(&queued);
+    assert!(next(&mut watcher).is_none());
 }

@@ -20,7 +20,7 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 }
 
 #[derive(Clone)]
-enum Terminal {
+pub(crate) enum Terminal {
     Overflow(RunId),
     Failed(Error),
 }
@@ -91,6 +91,8 @@ pub(crate) struct Live {
     readers: usize,
     closed: bool,
     pending_end: Option<(Vec<Arc<Subscriber>>, Terminal)>,
+    reservations: usize,
+    finish_due: bool,
 }
 
 impl Live {
@@ -98,8 +100,22 @@ impl Live {
         self.current.clone()
     }
 
+    pub(crate) fn reserve(&mut self) {
+        self.reservations += 1;
+    }
+
+    pub(crate) fn release(&mut self) -> Vec<(Arc<Subscriber>, Option<Terminal>)> {
+        self.reservations -= 1;
+        if self.finish_due && self.readers == 0 && self.reservations == 0 {
+            return self.finish(None);
+        }
+        Vec::new()
+    }
+
     pub(crate) fn start(&mut self, run: Option<&RunId>, current: bool) -> u64 {
+        self.reservations -= 1;
         self.readers += 1;
+        self.finish_due = false;
         self.next_serial += 1;
         let serial = self.next_serial;
         if let Some(run) = run {
@@ -227,6 +243,18 @@ impl Live {
             };
         }
         let end = end.filter(|_| current);
+        if self.reservations > 0 {
+            if let Some(failure) = end {
+                self.pending_end = Some((self.subs.clone(), failure));
+            }
+            self.finish_due = true;
+            return Vec::new();
+        }
+        self.finish(end)
+    }
+
+    fn finish(&mut self, end: Option<Terminal>) -> Vec<(Arc<Subscriber>, Option<Terminal>)> {
+        self.finish_due = false;
         let (cohort, held) = match self.pending_end.take() {
             Some((cohort, failure)) => (cohort, Some(failure)),
             None => (Vec::new(), None),
@@ -241,12 +269,16 @@ impl Live {
             .collect()
     }
 
-    pub(crate) fn close(&mut self) -> Vec<Arc<Subscriber>> {
+    pub(crate) fn close(&mut self) -> Vec<(Arc<Subscriber>, Option<Terminal>)> {
         self.closed = true;
         if self.readers > 0 {
             return Vec::new();
         }
-        self.detach()
+        if self.reservations > 0 {
+            self.finish_due = true;
+            return Vec::new();
+        }
+        self.finish(None)
     }
 
     pub(crate) fn subscribe(&mut self) -> Option<(Arc<Subscriber>, Joined)> {
@@ -313,9 +345,9 @@ pub(crate) fn read_run(
     });
 }
 
-pub(crate) fn finish(subs: Vec<Arc<Subscriber>>) {
-    for sub in subs {
-        sub.stop(None);
+pub(crate) fn finish(subs: Vec<(Arc<Subscriber>, Option<Terminal>)>) {
+    for (sub, terminal) in subs {
+        sub.stop(terminal);
     }
 }
 

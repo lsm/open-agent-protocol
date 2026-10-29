@@ -455,17 +455,23 @@ impl HubSession {
                 addressed: self.id.clone(),
             });
         }
-        let (admission, stream) = self
-            .session
-            .submit(submit)
-            .await
-            .inspect_err(|err| self.closed_by(err))?;
-        if admission.admission != Admission::STEERED {
-            let current = admission.admission != Admission::QUEUED;
-            let run = admission.run_id.clone();
-            let serial = self.with_live(|live| live.start(run.as_ref(), current));
-            live::read_run(self.clone(), run, serial, current, stream);
+        self.with_live(Live::reserve);
+        let (admission, stream) = match self.session.submit(submit).await {
+            Ok(admitted) => admitted,
+            Err(err) => {
+                self.closed_by(&err);
+                live::finish(self.with_live(Live::release));
+                return Err(err.into());
+            }
+        };
+        if admission.admission == Admission::STEERED {
+            live::finish(self.with_live(Live::release));
+            return Ok(admission);
         }
+        let current = admission.admission != Admission::QUEUED;
+        let run = admission.run_id.clone();
+        let serial = self.with_live(|live| live.start(run.as_ref(), current));
+        live::read_run(self.clone(), run, serial, current, stream);
         Ok(admission)
     }
 
