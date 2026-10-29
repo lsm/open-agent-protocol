@@ -7,6 +7,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+## [0.1.0-alpha.30] - 2026-10-29
+
+### Fixed
+
+- Copilot model catalogs, model policy enablement and inference now negotiate the versioned API so service-advertised long context reaches the TUI. After upgrading, run `/model refresh`, then `/context 1m` for a model whose metadata permits it (#1497).
+
+### Changed
+
+- The native Go Copilot adapter owns its headless process, projects runs, text and tool lifecycles, and preserves exact known usage (#1457, #1458, #1459, #1460).
+- Rust adds native Copilot, Pi, Claude and OpenCode codecs and messages, shared child-process plumbing, and persisted hub history with session reopen support (#1474, #1479, #1480, #1484, #1487, #1489, #1490, #1491, #1493, #1494).
+- Rust Copilot corpus checks follow the manifest as the corpus grows (#1498).
+
+### Merged pull requests
+
+- **copilot: walk the corpus by its manifest, as Go's test now does** ([#1498](https://github.com/lsm/open-agent-protocol/pull/1498)): Fixes the Rust SDK job on main.
+- **copilot: negotiate versioned context catalogs and inference** ([#1497](https://github.com/lsm/open-agent-protocol/pull/1497)): Copilot `/models`, model-policy enablement and inference requests omit `X-GitHub-Api-Version`.
+- **pi: add the RPC frame codec** ([#1494](https://github.com/lsm/open-agent-protocol/pull/1494)): Adds `oap_adapter_pi::rpc` on the merged native package (#1480, #1491), ported from Go's `pi/internal/rpc/codec.go`:
+- **serve: reopen a Rust hub session from its binding history** ([#1493](https://github.com/lsm/open-agent-protocol/pull/1493)): Ports `OpenIn`'s reopen path from `go/serve/serve.go`.
+- **pi: add the native events and extension UI messages** ([#1491](https://github.com/lsm/open-agent-protocol/pull/1491)): Second half of Go's `pi/internal/native` in Rust, after #1480:
+- **opencode: decode event-stream frames as Go's DecodeEvent does** ([#1490](https://github.com/lsm/open-agent-protocol/pull/1490)): Adds the event half of OpenCode's native package, after #1479: the pinned event vocabulary with `supported`, `durable` and `session_scoped`, plus `decode_event`, `decode_data` and `decode_strict`.
+- **serve: record the Rust hub's opens, closes and refusals in the binding store** ([#1489](https://github.com/lsm/open-agent-protocol/pull/1489)): `HubOptions { bindings, home }` and `Hub::with_options`.
+- **adapter: add JSON-RPC reverse requests and inbound messages** ([#1488](https://github.com/lsm/open-agent-protocol/pull/1488)): Adds `oap_adapter::jsonrpc::{IncomingRequest, Responder, Inbound, NotificationMessage}`, the inbound half the shared client will route into.
+- **copilot: add the native frame parse, event decode and Content-Length codec** ([#1487](https://github.com/lsm/open-agent-protocol/pull/1487)): Starts `rust/adapter/copilot` with the Go pieces already on main (`go/adapter/copilot/internal/{native,rpc}`):
+- **serve: open, list and close sessions in the Rust hub** ([#1486](https://github.com/lsm/open-agent-protocol/pull/1486)): Adds `oap_serve::Hub` and `HubSession`, ported from `go/serve/serve.go` and `session.go`:
+- **claude: add the stream-json user and assistant frames** ([#1484](https://github.com/lsm/open-agent-protocol/pull/1484)): Starts `rust/adapter/claude` with the first part of Go's `claude/internal/native`: the frame-type vocabulary, content blocks, user frames (`blocks`/`text_content`, origin) and assistant frames (echo uuids, API-error marker), and…
+- **pi: add the native commands, responses and session state** ([#1480](https://github.com/lsm/open-agent-protocol/pull/1480)): Starts `rust/adapter/pi` with the first half of Go's `pi/internal/native`: the pinned command set with per-variant field and requirement checks, strict `Response` decoding (duplicate keys and unknown members refused), `SessionState` and…
+- **opencode: add the native HTTP API types** ([#1479](https://github.com/lsm/open-agent-protocol/pull/1479)): First half of OpenCode's native package in Rust: identifier validators (Go's regexes), the tagged `ApiError` and `decode_api_error`, model/token accounting, prompt admission and `SessionInfo` with Go's strict member set, `validate` and…
+- **adapter: add shared child-process plumbing for harness launchers** ([#1474](https://github.com/lsm/open-agent-protocol/pull/1474)): Adds `oap_adapter::process::Child`: spawn with an explicit environment, a stdin the rpc client can release, bounded redacted stderr, an exit watcher, interrupt then kill, and Go exec's exit text (`exit status 3`, `signal: killed`).
+- **copilot: project tool lifecycles and failure boundaries in Go** ([#1460](https://github.com/lsm/open-agent-protocol/pull/1460)): Projects Copilot tool calls into Go OAP tool lifecycle events, including failed or unfinished calls.
+- **copilot: preserve exact known usage in Go and Zig** ([#1459](https://github.com/lsm/open-agent-protocol/pull/1459)): This adds Go usage projection and fixes Zig's shared mapping.
+- **copilot: project native runs and streaming text into Go OAP events** ([#1458](https://github.com/lsm/open-agent-protocol/pull/1458)): This slice maps admitted Copilot prompts to Go-owned runs and streaming text.
+- **copilot: own the headless process lifecycle in Go** ([#1457](https://github.com/lsm/open-agent-protocol/pull/1457)): Own the configured process and stdio pipes used by Go's Copilot transport.
+- **release: prepare 0.1.0-alpha.29 with Copilot context ceilings** ([#1482](https://github.com/lsm/open-agent-protocol/pull/1482)): Prepare `v0.1.0-alpha.29` from main so the Copilot >200K TUI fix in #1477 is available in a published package.
+
 ## [0.1.0-alpha.29] - 2026-10-28
 
 ### Fixed
