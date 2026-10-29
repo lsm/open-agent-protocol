@@ -19,5 +19,6 @@ prompt results decode leniently, as Go's client does. Three of Go's
 - Go's `json.Marshal` escapes `<`, `>`, `&`, U+2028 and U+2029, and serializing
   a type here does not; the rpc layer writes every frame through
   `oap_adapter::gojson::go_marshal`.
-- A trailing value and a malformed document are refused with serde_json's
-  wording rather than Go's.
+- A malformed document or a mistyped member is refused with the duplicate-key
+  walker's `invalid JSON` or with serde_json's wording rather than Go's. A
+  trailing value carries Go's `trailing JSON value`.
