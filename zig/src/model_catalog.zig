@@ -426,6 +426,7 @@ fn fetchCopilotModelsCatalog(allocator: std.mem.Allocator, token: []const u8, ba
     try headers.append(allocator, .{ .name = "editor-version", .value = github_copilot.COPILOT_HEADERS.editor_version });
     try headers.append(allocator, .{ .name = "editor-plugin-version", .value = github_copilot.COPILOT_HEADERS.editor_plugin_version });
     try headers.append(allocator, .{ .name = "copilot-integration-id", .value = github_copilot.COPILOT_HEADERS.copilot_integration_id });
+    try headers.append(allocator, .{ .name = "x-github-api-version", .value = github_copilot.COPILOT_HEADERS.api_version });
 
     const models_url = try std.fmt.allocPrint(allocator, "{s}/models", .{std.mem.trimEnd(u8, base_url, "/")});
     defer allocator.free(models_url);
