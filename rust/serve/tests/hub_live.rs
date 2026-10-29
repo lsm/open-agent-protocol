@@ -351,3 +351,80 @@ fn a_run_admitted_without_its_id_is_bound_from_its_first_envelope() {
     script.end(&run);
     assert!(next(&mut watcher).is_none());
 }
+
+#[test]
+fn a_failure_of_one_of_two_runs_reaches_the_subscribers_reading_it() {
+    let script = script(64);
+    let mut watcher = script.subscribe();
+    let first = script.submit();
+    script.emit(&first, 1);
+    assert_eq!(next(&mut watcher).unwrap().unwrap().sequence, Some(1));
+    let second = script.submit();
+    let mut on_second = script.subscribe();
+    script.emit(&second, 1);
+    assert_eq!(
+        next(&mut on_second).unwrap().unwrap().run_id.as_ref(),
+        Some(&second)
+    );
+    assert_eq!(
+        next(&mut watcher).unwrap().unwrap().run_id.as_ref(),
+        Some(&second)
+    );
+    script.fail(&second);
+    settle();
+    script.end(&first);
+    assert!(matches!(
+        next(&mut watcher),
+        Some(Err(HubError::Adapter(Error::Harness(_))))
+    ));
+    assert!(matches!(
+        next(&mut on_second),
+        Some(Err(HubError::Adapter(Error::Harness(_))))
+    ));
+}
+
+#[test]
+fn a_failure_of_an_older_run_ends_only_the_subscribers_still_on_it() {
+    let script = script(64);
+    let lagging = script.subscribe();
+    let first = script.submit();
+    script.emit(&first, 1);
+    settle();
+    let second = script.submit();
+    let mut on_second = script.subscribe();
+    script.emit(&second, 1);
+    assert_eq!(
+        next(&mut on_second).unwrap().unwrap().run_id.as_ref(),
+        Some(&second)
+    );
+    let mut lagging = lagging;
+    script.fail(&first);
+    settle();
+    script.emit(&second, 2);
+    assert_eq!(next(&mut on_second).unwrap().unwrap().sequence, Some(2));
+    assert_eq!(next(&mut lagging).unwrap().unwrap().sequence, Some(1));
+    assert_eq!(
+        next(&mut lagging).unwrap().unwrap().run_id.as_ref(),
+        Some(&second)
+    );
+    assert!(matches!(
+        next(&mut lagging),
+        Some(Err(HubError::Adapter(Error::Harness(_))))
+    ));
+    script.end(&second);
+    assert!(next(&mut on_second).is_none());
+}
+
+#[test]
+fn closing_a_session_with_a_run_still_being_read_ends_its_subscribers_once_the_run_drains() {
+    let script = script(64);
+    let mut watcher = script.subscribe();
+    let run = script.submit();
+    script.emit(&run, 1);
+    block_on(script.session.close()).unwrap();
+    assert_eq!(next(&mut watcher).unwrap().unwrap().sequence, Some(1));
+    script.emit(&run, 2);
+    assert_eq!(next(&mut watcher).unwrap().unwrap().sequence, Some(2));
+    script.end(&run);
+    assert!(next(&mut watcher).is_none());
+}

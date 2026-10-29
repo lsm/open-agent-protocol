@@ -87,6 +87,7 @@ pub(crate) struct Live {
     next_serial: u64,
     readers: usize,
     closed: bool,
+    pending_end: Option<Terminal>,
 }
 
 impl Live {
@@ -159,10 +160,22 @@ impl Live {
         end: Option<Terminal>,
     ) -> (Vec<Arc<Subscriber>>, Option<Terminal>) {
         self.readers -= 1;
+        let current = self.current.as_ref() == Some(run);
         if self.readers > 0 {
-            return (Vec::new(), None);
+            return match end {
+                Some(failure) if current => {
+                    self.pending_end = Some(failure);
+                    (Vec::new(), None)
+                }
+                Some(failure) => (self.cut_exposed(run), Some(failure)),
+                None => (Vec::new(), None),
+            };
         }
-        let end = end.filter(|_| self.current.as_ref() == Some(run));
+        let end = if current {
+            end.or(self.pending_end.take())
+        } else {
+            self.pending_end.take()
+        };
         (self.detach(), end)
     }
 
