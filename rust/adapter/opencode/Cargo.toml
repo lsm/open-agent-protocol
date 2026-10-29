@@ -1,0 +1,11 @@
+[package]
+name = "oap-adapter-opencode"
+version = "0.1.0"
+edition = "2021"
+description = "The Open Agent Protocol adapter over the OpenCode server's HTTP API and event stream"
+repository = "https://github.com/lsm/open-agent-protocol"
+license = "CC0-1.0"
+publish = false
+
+[lints.rust]
+unsafe_code = "forbid"
