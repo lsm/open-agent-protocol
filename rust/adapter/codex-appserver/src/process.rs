@@ -118,6 +118,9 @@ impl Process {
             .client
             .call("initialize", Some(params), deadline)
             .and_then(|raw| {
+                if raw.get() == "null" {
+                    return Ok(InitializeResponse::default());
+                }
                 serde_json::from_str::<InitializeResponse>(raw.get()).map_err(|failure| {
                     error(Fault::Decode {
                         method: "initialize".into(),

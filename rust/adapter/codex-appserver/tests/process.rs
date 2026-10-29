@@ -73,3 +73,37 @@ fn client_info_is_required() {
         "codex app-server rpc: initialization handshake failed: executable path and client info are required"
     );
 }
+
+#[test]
+fn a_null_initialize_result_completes_the_handshake_with_an_empty_response() {
+    let _serial = serial();
+    let script =
+        r#"read request; printf '%s\n' '{"id":0,"result":null}'; read notice; cat >/dev/null"#;
+    let process = Process::start(&server(script), deadline()).unwrap();
+    assert_eq!(process.initialize.user_agent, "");
+    assert_eq!(process.initialize.codex_home, "");
+    assert_eq!(process.close(), Ok(()));
+}
+
+#[test]
+fn close_bounds_a_forced_shutdown_when_a_descendant_holds_the_pipes() {
+    let _serial = serial();
+    let script =
+        r#"read request; printf '%s\n' '{"id":0,"result":{}}'; read notice; sleep 5 & exit 0"#;
+    let config = ProcessConfig {
+        shutdown_timeout: Some(Duration::from_millis(300)),
+        ..server(script)
+    };
+    let process = Process::start(&config, deadline()).unwrap();
+    let (sender, receiver) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = sender.send(process.close());
+    });
+    let outcome = receiver
+        .recv_timeout(Duration::from_secs(4))
+        .expect("close blocked while a descendant held the pipes open");
+    assert_eq!(
+        outcome,
+        Err("codex app-server rpc: shutdown timed out".to_string())
+    );
+}
