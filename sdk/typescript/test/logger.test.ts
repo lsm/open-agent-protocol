@@ -214,7 +214,7 @@ test("isNoopLogger identifies no-op logger and distinguishes custom loggers", ()
   assert.ok(!isNoopLogger(custom), "custom logger should not be identified as no-op");
 });
 
-test("createOapClient hands its logger to binary resolution", async (t) => {
+test("createOapClient hands its logger to binary resolution", async () => {
   const logger = createCapturingLogger();
   const prev = process.env.OAP_SDK_BINARY_PATH;
   delete process.env.OAP_SDK_BINARY_PATH;
