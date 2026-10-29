@@ -318,3 +318,19 @@ fn read_done_fires_when_the_reader_exits_not_when_the_client_closes() {
         Err(crossbeam_channel::RecvTimeoutError::Disconnected)
     ));
 }
+
+#[test]
+fn a_generated_id_wraps_at_the_counter_limit_as_go_s_atomic_add_does() {
+    let mut peer = peer(ClientOptions {
+        first_request_id: u64::MAX,
+        ..capacity(4)
+    });
+    acknowledge(peer.client.inbound());
+    let first = call(&peer.client, Command::of("get_state"));
+    let id = peer.read()["id"].as_str().unwrap().to_owned();
+    assert_eq!(id, "req_0");
+    peer.send(&format!(
+        r#"{{"id":"{id}","type":"response","command":"get_state","success":true}}"#
+    ));
+    first.join().unwrap().unwrap();
+}

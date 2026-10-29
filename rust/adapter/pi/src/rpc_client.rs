@@ -323,7 +323,13 @@ impl Client for RpcClient {
     fn call(&self, command: &Command, want: bool) -> Result<Option<Box<RawValue>>, Error> {
         let mut command = command.clone();
         if command.id.is_empty() {
-            command.id = format!("req_{}", self.0.next_id.fetch_add(1, Ordering::SeqCst) + 1);
+            command.id = format!(
+                "req_{}",
+                self.0
+                    .next_id
+                    .fetch_add(1, Ordering::SeqCst)
+                    .wrapping_add(1)
+            );
         }
         command
             .validate()
