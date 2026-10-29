@@ -50,16 +50,33 @@ fn none<T>(value: &Option<T>) -> bool {
     value.is_none()
 }
 
-fn object_or_null<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Raw, D::Error> {
+fn go_kind(text: &str) -> &'static str {
+    match text.as_bytes().first() {
+        Some(b'[') => "array",
+        Some(b'"') => "string",
+        Some(b't' | b'f') => "bool",
+        _ => "number",
+    }
+}
+
+fn args_in<'de, D: Deserializer<'de>>(deserializer: D, owner: &str) -> Result<Raw, D::Error> {
     let value = Box::<RawValue>::deserialize(deserializer)?;
     let text = value.get().trim_start();
     if text.starts_with('{') || text == "null" {
         return Ok(Some(value));
     }
     Err(serde::de::Error::custom(format!(
-        "json: cannot unmarshal {} into Go value of type map[string]interface {{}}",
-        value.get()
+        "json: cannot unmarshal {} into Go struct field {owner}.args of type map[string]interface {{}}",
+        go_kind(text)
     )))
+}
+
+fn start_args<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Raw, D::Error> {
+    args_in(deserializer, "ToolStartPayload")
+}
+
+fn complete_args<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Raw, D::Error> {
+    args_in(deserializer, "ToolCompletePayload")
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -221,7 +238,7 @@ pub struct ToolStartPayload {
     pub name: String,
     #[serde(default, deserialize_with = "zero")]
     pub context: String,
-    #[serde(default, deserialize_with = "object_or_null")]
+    #[serde(default, deserialize_with = "start_args")]
     pub args: Raw,
     #[serde(default, deserialize_with = "zero")]
     pub args_text: String,
@@ -238,7 +255,7 @@ pub struct ToolCompletePayload {
     pub tool_id: String,
     #[serde(default, deserialize_with = "zero")]
     pub name: String,
-    #[serde(default, deserialize_with = "object_or_null")]
+    #[serde(default, deserialize_with = "complete_args")]
     pub args: Raw,
     #[serde(default)]
     pub duration_s: Option<f64>,
@@ -287,6 +304,10 @@ pub fn decode_strict<T: serde::de::DeserializeOwned + Default>(data: &[u8]) -> R
     if value == "null" {
         return Ok(T::default());
     }
-    serde_json::from_str(&oap_adapter::gojson::replace_lone_surrogates(&text))
-        .map_err(|error| error.to_string())
+    serde_json::from_str(&oap_adapter::gojson::replace_lone_surrogates(&text)).map_err(|error| {
+        let text = error.to_string();
+        let suffix = format!(" at line {} column {}", error.line(), error.column());
+        text.strip_suffix(&suffix)
+            .map_or(text.clone(), str::to_owned)
+    })
 }

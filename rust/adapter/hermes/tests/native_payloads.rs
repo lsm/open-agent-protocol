@@ -83,13 +83,26 @@ fn tool_args_must_be_an_object_or_null() {
                 .unwrap();
         assert_eq!(start.args.unwrap().get(), args);
     }
-    let refused =
-        decode_strict::<ToolCompletePayload>(br#"{"tool_id":"t","args":[1]}"#).unwrap_err();
-    assert!(
-        refused
-            .contains("json: cannot unmarshal [1] into Go value of type map[string]interface {}"),
-        "{refused}"
-    );
+    for (args, kind) in [
+        ("[1]", "array"),
+        (r#""x""#, "string"),
+        ("5", "number"),
+        ("true", "bool"),
+    ] {
+        let frame = format!(r#"{{"tool_id":"t","args":{args}}}"#);
+        assert_eq!(
+            decode_strict::<ToolStartPayload>(frame.as_bytes()).unwrap_err(),
+            format!(
+                "json: cannot unmarshal {kind} into Go struct field ToolStartPayload.args of type map[string]interface {{}}"
+            )
+        );
+        assert_eq!(
+            decode_strict::<ToolCompletePayload>(frame.as_bytes()).unwrap_err(),
+            format!(
+                "json: cannot unmarshal {kind} into Go struct field ToolCompletePayload.args of type map[string]interface {{}}"
+            )
+        );
+    }
 }
 
 #[test]
