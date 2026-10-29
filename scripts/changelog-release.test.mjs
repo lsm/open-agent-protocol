@@ -1,12 +1,13 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { test } from "node:test";
+import { afterEach, test } from "node:test";
+import { fileURLToPath } from "node:url";
 import { breakingSection, compareVersions, firstLine, fold } from "./changelog-release.mjs";
 
-const SCRIPT = new URL("./changelog-release.mjs", import.meta.url).pathname;
+const SCRIPT = fileURLToPath(new URL("./changelog-release.mjs", import.meta.url));
 const HEAD = "# Changelog\n\nAll notable changes to this project will be documented in this file.\n\n";
 
 function cli(args, input, script) {
@@ -18,8 +19,21 @@ function cli(args, input, script) {
   }
 }
 
-function changelogFile(text) {
+const temporaryDirectories = [];
+afterEach(() => {
+  for (const directory of temporaryDirectories.splice(0)) {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+function temporaryDirectory() {
   const directory = mkdtempSync(join(tmpdir(), "changelog-release-"));
+  temporaryDirectories.push(directory);
+  return directory;
+}
+
+function changelogFile(text) {
+  const directory = temporaryDirectory();
   const path = join(directory, "CHANGELOG.md");
   writeFileSync(path, text);
   return path;
@@ -329,7 +343,7 @@ test("a real heading is still skipped", () => {
 test("the entry-point guard survives a checkout path holding a space", () => {
   // `file://${process.argv[1]}` mismatches on a percent-encoded path, which made
   // main() never run and the script exit 0 having done nothing.
-  const directory = mkdtempSync(join(tmpdir(), "changelog-release-"));
+  const directory = temporaryDirectory();
   const spaced = join(directory, "a dir with a space");
   const path = join(spaced, "CHANGELOG.md");
   const script = join(spaced, "changelog-release.mjs");

@@ -146,7 +146,7 @@ jobs:
         run: node --test scripts/check-readme-samples-cleanup.test.mjs
 
       - name: Run changelog-release self-tests
-        run: node --test scripts/changelog-release.test.mjs
+        run: node --test scripts/changelog-release.test.mjs scripts/changelog-release-cleanup.test.mjs
 
       - name: Check zero-comments policy
         run: node scripts/check-no-comments.mjs --check --base "$BASE_SHA"
