@@ -8,3 +8,11 @@ line endings, a bare CR refused, one `event` and one `id` per frame, a frame
 without data refused, and a byte limit per frame. Unlike Go's decoder it
 refuses a frame that is not UTF-8 instead of passing the bytes on, since the
 JSON decode that follows would refuse it anyway.
+
+`native` holds the HTTP API's types with Go's member sets: every response
+type refuses an unknown member, as Go's `DisallowUnknownFields` does at every
+depth. Two of Go's rules belong to the client that reads and writes these
+types, and land with it: a response with a repeated key is refused through
+`oap_adapter::gojson::reject_duplicate_keys`, and a request body is written
+through `oap_adapter::gojson::go_marshal`, so `<`, `>` and `&` are escaped as
+Go writes them.
