@@ -125,7 +125,7 @@ test("resolveMakaiBinary leaves no temp file when the download cannot be finaliz
 
   const server = http.createServer((_req, res) => {
     res.writeHead(200, { "Content-Type": "application/octet-stream" });
-    void (async (t) => {
+    void (async () => {
       await fs.mkdir(cachePath, { recursive: true });
       await fs.writeFile(path.join(cachePath, "occupant"), "x");
       res.end(payload);
