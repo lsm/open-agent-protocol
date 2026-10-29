@@ -214,6 +214,10 @@ impl RpcClient {
             select! {
                 recv(requests) -> request => {
                     let Ok(request) = request else { return };
+                    if self.is_closed() {
+                        let _ = request.result.send(Err(self.close_error()));
+                        return;
+                    }
                     let _ = request.started.send(());
                     let outcome = encode(&request.value, limit).and_then(|data| {
                         writer
