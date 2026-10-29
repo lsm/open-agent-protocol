@@ -50,6 +50,8 @@ read loop additionally proves state snapshots, bounded cursor replay and explici
 gaps, process-exit settlement and close/reaping with a synthetic subprocess.
 After transport death, State still reports the settled snapshot and Resume
 serves retained events; explicit Close makes both unavailable.
+Close first drains native notifications already received, so a completed run
+remains completed for existing followers instead of being replaced by failure.
 Public session submission tests an early native event before its reply, Unicode
 text across messages/parts, native refusal without a ghost run, missing binding
 teardown, queue promotion and the nine-run bound. Unsupported portable controls
