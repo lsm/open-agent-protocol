@@ -113,6 +113,9 @@ jobs:
       - name: Run ${{ matrix.group }} unit tests
         run: zig build --build-file zig/build.zig test-unit-${{ matrix.group }}
 
+      - name: Verify demo temporary-directory cleanup
+        run: node --test scripts/demo-server-cleanup.test.mjs
+
       - name: Tests leave no credential store in the checkout
         if: always()
         run: ./scripts/check-no-test-litter.sh
@@ -240,6 +243,9 @@ jobs:
 
       - name: Verify npm package ships TypeScript declarations
         run: npm run check:declarations
+
+      - name: Verify demo temporary-directory cleanup
+        run: node --test scripts/demo-server-cleanup.test.mjs
 
       - name: Tests leave no credential store in the checkout
         if: always()
@@ -513,6 +519,9 @@ jobs:
           OAP_SDK_BINARY_PATH: /tmp/makai-rs/bin/oapx
         run: cargo test --all-features
 
+      - name: Verify demo temporary-directory cleanup
+        run: node --test scripts/demo-server-cleanup.test.mjs
+
       - name: Tests leave no credential store in the checkout
         if: always()
         working-directory: .
@@ -574,6 +583,9 @@ jobs:
           OAP_SDK_BINARY_PATH: /tmp/makai-py/bin/oapx
         run: python -m pytest -q
 
+      - name: Verify demo temporary-directory cleanup
+        run: node --test scripts/demo-server-cleanup.test.mjs
+
       - name: Tests leave no credential store in the checkout
         if: always()
         run: ./scripts/check-no-test-litter.sh
@@ -623,6 +635,9 @@ jobs:
           sudo cp "$RUNNER_TEMP/pty-tls/ca.pem" /usr/local/share/ca-certificates/oap-tui-pty-test.crt
           sudo update-ca-certificates
           python3 scripts/tui-pty-driver.py --binary "$RUNNER_TEMP/makai-pty/bin/oapx" --output-dir tui-pty-out --scenario all --tls-dir "$RUNNER_TEMP/pty-tls"
+
+      - name: Verify demo temporary-directory cleanup
+        run: node --test scripts/demo-server-cleanup.test.mjs
 
       - name: Tests leave no credential store in the checkout
         if: always()
