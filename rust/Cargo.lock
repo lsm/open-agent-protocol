@@ -1007,6 +1007,7 @@ dependencies = [
 name = "oap-serve"
 version = "0.1.0"
 dependencies = [
+ "futures",
  "oap-adapter",
  "oap-protocol",
  "thiserror",
