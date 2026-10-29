@@ -106,7 +106,10 @@ impl RpcClient {
                 routing: false,
             }),
             next_id: AtomicU64::new(options.first_request_id),
-            stall: options.queue_stall.unwrap_or(DEFAULT_STALL),
+            stall: options
+                .queue_stall
+                .filter(|stall| !stall.is_zero())
+                .unwrap_or(DEFAULT_STALL),
             writes,
             inbound_tx,
             inbound_rx,
