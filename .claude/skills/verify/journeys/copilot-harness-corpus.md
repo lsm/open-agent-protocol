@@ -21,18 +21,29 @@ existing ledger. This is synthetic schema/ledger-based data, not a new live
 recording. It starts no Copilot process, uses no token, and performs no model
 call. Go's native JSON-RPC decoder now consumes the same twenty-three cases, preserves
 unknown event names and exact numeric source bytes, and rejects duplicate keys
-and ambiguous message shapes. Inspect `go-native.txt` for its result. This does
-not yet claim a runnable Go adapter. The Go checks now include bounded framing,
-RPC dispatch and a synthetic child process under temporary HOME, with cancellation
-and shutdown reaping. The Go reducer matches fixed OAP for text, queue, unknown
-events, session errors, foreign sessions and usage. Usage additionally pins
-measured zero, sparse calls, exact counts above 2^53, uint64 maximum and sum overflow,
-native negative zero and missing/partial/wide/non-finite costs. Missing
-counts stay unknown; neither reducer infers totals with unknown cache terms.
-Go now matches all twenty-one lifecycle projections, including tool success/denial,
-orphan/duplicate completions and incomplete tools at run settlement. Its inventory
-test requires every manifest case to be replayed or checked by the native codec.
-The Go session read loop additionally proves state snapshots, bounded cursor
-replay and explicit gaps, process-exit settlement and close/reaping with a
-synthetic subprocess. Public submission and adapter/registry wiring follow separately. Unsupported host capabilities
-remain unadvertised; the Rust lane follows separately.
+and ambiguous message shapes. Inspect `go-native.txt` for its result and the
+bounded Content-Length codec checks: fragmented/coalesced frames, UTF-8 byte
+lengths, header/body limits, malformed or truncated input, and short writes.
+The same script also checks RPC correlation across concurrent calls, preserved
+notifications, refusal of reverse requests, delivered replies surviving EOF or
+cancellation, and closure on malformed input or queue overflow. Call cancellation
+unblocks an owned stalled pipe. These run with race detection and appear in
+`go-native.txt`. Process ownership is exercised with an actual synthetic child
+under temporary HOME and an explicit environment: an RPC reads that HOME, a
+stalled call must return DeadlineExceeded, and close/cancellation must reap the
+child. The script disables Go's test cache so this process proof really runs.
+No real Copilot binary or authentication is used. The Go reducer additionally
+matches fixed OAP for text, queue, unknown events, session errors and foreign
+sessions and usage. Usage additionally pins measured zero, sparse calls, exact
+counts above 2^53, uint64 maximum and sum overflow, native negative zero and
+missing/partial/wide/non-finite costs. Missing counts stay unknown; neither
+reducer infers totals with unknown cache terms. Go now matches all twenty-one
+lifecycle projections, including tool success/denial, orphan/duplicate completions
+and incomplete tools at run settlement. Its inventory test requires every
+manifest case to be replayed or checked by the native codec. The Go session
+read loop additionally proves state snapshots, bounded cursor replay and explicit
+gaps, process-exit settlement and close/reaping with a synthetic subprocess.
+Public submission and adapter/registry wiring follow separately. Unsupported host capabilities remain
+unadvertised; the Rust lane follows separately.
+
+

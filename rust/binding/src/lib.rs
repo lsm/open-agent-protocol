@@ -7,11 +7,19 @@ use base64::Engine;
 use oap_protocol::CompactionPolicy;
 use serde::{Deserialize, Serialize};
 
+mod file;
+mod runs;
+
+pub use file::{frame, FileStore};
+pub use runs::{open_runs, MemoryRuns, OpenRun, RunAction, RunRecord, Runs, RunsFile};
+
 pub const DEFAULT_LIMIT: usize = 50;
 pub const MAX_LIMIT: usize = 100;
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
+    #[error("binding: a record was not written whole: {0}")]
+    Torn(String),
     #[error("binding: a cursor this history did not issue")]
     InvalidCursor,
     #[error("binding: limit must be from 1 to {MAX_LIMIT}")]

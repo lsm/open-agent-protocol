@@ -1,3 +1,3 @@
 [workspace]
 resolver = "2"
-members = ["adapter", "adapter/acp", "binding", "harness", "protocol", "provider-catalog", "sdk", "tools/nocomment", "validation"]
+members = ["adapter", "adapter/acp", "adapter/opencode", "binding", "harness", "protocol", "provider-catalog", "sdk", "serve", "tools/nocomment", "validation"]
