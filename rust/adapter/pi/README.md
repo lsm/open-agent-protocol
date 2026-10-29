@@ -17,3 +17,15 @@ differ:
 - Go's `json.Marshal` escapes `<`, `>`, `&`, U+2028 and U+2029, and serializing
   a command here does not. The rpc client, which lands separately, writes every
   frame through `oap_adapter::gojson::go_marshal`.
+
+`rpc_client::RpcClient` is Go's `rpc.Client`: one reader routes responses,
+events and extension requests in wire order, and a response waits behind a
+barrier until every earlier inbound message is drained. A close leaves
+pending calls to the reader while it routes a frame. A frame stuck in a write
+that no closer can unblock does not hold its caller. `Client::read_done` is Go's `ReadDone`:
+it fires when the reader exits, which can be after `done`, so a launcher waits
+on it before it reaps the process. A client with no reader of its own, such as a
+scripted test client, defaults it to `done`. The `Client` trait's
+`call` takes no context, so Go's per-call cancellation and the tests that
+cancel a call have no Rust twin. A call ends with its response or with the
+client's close.
