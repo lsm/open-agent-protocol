@@ -2,9 +2,15 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError, Weak};
 
-use oap_adapter::{Error, OpenRequest, UnsupportedControl, CONTROL_UNSATISFIABLE};
+use oap_adapter::{
+    Error, EventStream, InteractionResolution, OpenRequest, ResumeRequest, SubmitRequest,
+    UnsupportedControl, CONTROL_UNSATISFIABLE,
+};
 use oap_binding::{Action, Entry, Record, Store};
-use oap_protocol::{SessionId, SessionState, SessionStatus, FEATURE_OPEN_REOPEN};
+use oap_protocol::{
+    Admission, MessageSubmitResponse, RunCancelResponse, RunId, SessionId, SessionState,
+    SessionStatus, FEATURE_OPEN_REOPEN,
+};
 
 use crate::Registry;
 
@@ -22,6 +28,15 @@ pub enum HubError {
     StateScope { got: SessionId, want: SessionId },
     #[error("the session is closed")]
     ClosedAtOpen(Box<SessionState>),
+    #[error(
+        "serve: request session {payload:?} does not match the addressed session {addressed:?}"
+    )]
+    ScopeMismatch {
+        payload: SessionId,
+        addressed: SessionId,
+    },
+    #[error("the session has no run to replay")]
+    NoRunToResume,
     #[error(transparent)]
     Adapter(#[from] Error),
     #[error(transparent)]
@@ -246,6 +261,7 @@ impl Hub {
             hub: Arc::downgrade(&self.shared),
             options: self.shared.options.clone(),
             record,
+            runs: Mutex::default(),
         });
         let added = {
             let mut sessions = self.shared.sessions();
@@ -310,6 +326,38 @@ impl Hub {
             .ok_or_else(|| HubError::UnknownSession(id.clone()))
     }
 
+    pub async fn subscribe_after(
+        &self,
+        id: &SessionId,
+        run: Option<RunId>,
+        after: u64,
+    ) -> Result<Subscription, HubError> {
+        let entry = self.session(id)?;
+        let run = match run.filter(|run| !run.as_str().is_empty()) {
+            Some(run) => run,
+            None => {
+                let active = entry
+                    .session
+                    .state()
+                    .await
+                    .ok()
+                    .and_then(|state| state.active_run_id);
+                active
+                    .or_else(|| entry.current_run())
+                    .ok_or(HubError::NoRunToResume)?
+            }
+        };
+        let (_, stream) = entry
+            .session
+            .resume(ResumeRequest {
+                run_id: run.clone(),
+                after_sequence: after,
+            })
+            .await
+            .inspect_err(|err| entry.closed_by(err))?;
+        Ok(Subscription { run, stream })
+    }
+
     pub fn sessions(&self) -> Vec<Arc<HubSession>> {
         self.shared.sessions().live.values().cloned().collect()
     }
@@ -323,6 +371,34 @@ pub struct HubSession {
     hub: Weak<Shared>,
     options: HubOptions,
     record: Record,
+    runs: Mutex<Runs>,
+}
+
+#[derive(Default)]
+struct Runs {
+    current: Option<RunId>,
+}
+
+pub struct Subscription {
+    run: RunId,
+    stream: EventStream,
+}
+
+impl Subscription {
+    pub fn run_id(&self) -> &RunId {
+        &self.run
+    }
+}
+
+impl futures_core::Stream for Subscription {
+    type Item = Result<oap_protocol::Envelope, Error>;
+
+    fn poll_next(
+        mut self: std::pin::Pin<&mut Self>,
+        context: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Option<Self::Item>> {
+        self.stream.as_mut().poll_next(context)
+    }
 }
 
 impl HubSession {
@@ -360,6 +436,69 @@ impl HubSession {
             });
         }
         Ok(state)
+    }
+
+    fn runs(&self) -> MutexGuard<'_, Runs> {
+        self.runs.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    fn closed_by(&self, err: &Error) {
+        if matches!(err, Error::SessionClosed) {
+            self.mark_closed();
+        }
+    }
+
+    pub fn current_run(&self) -> Option<RunId> {
+        self.runs().current.clone()
+    }
+
+    pub async fn submit(&self, submit: SubmitRequest) -> Result<MessageSubmitResponse, HubError> {
+        if submit.request.session_id != self.id {
+            return Err(HubError::ScopeMismatch {
+                payload: submit.request.session_id,
+                addressed: self.id.clone(),
+            });
+        }
+        let (admission, _stream) = self
+            .session
+            .submit(submit)
+            .await
+            .inspect_err(|err| self.closed_by(err))?;
+        if let Some(run) = &admission.run_id {
+            if admission.admission != Admission::QUEUED {
+                self.runs().current = Some(run.clone());
+            }
+        }
+        Ok(admission)
+    }
+
+    pub async fn resolve(&self, resolution: InteractionResolution) -> Result<(), HubError> {
+        let scoped = [
+            resolution
+                .permission
+                .as_ref()
+                .map(|permission| &permission.session_id),
+            resolution.input.as_ref().map(|input| &input.session_id),
+        ];
+        if let Some(payload) = scoped.into_iter().flatten().find(|id| **id != self.id) {
+            return Err(HubError::ScopeMismatch {
+                payload: payload.clone(),
+                addressed: self.id.clone(),
+            });
+        }
+        self.session
+            .resolve(resolution)
+            .await
+            .inspect_err(|err| self.closed_by(err))?;
+        Ok(())
+    }
+
+    pub async fn cancel(&self, run: RunId) -> Result<RunCancelResponse, HubError> {
+        Ok(self
+            .session
+            .cancel(run)
+            .await
+            .inspect_err(|err| self.closed_by(err))?)
     }
 
     pub async fn close(&self) -> Result<(), HubError> {

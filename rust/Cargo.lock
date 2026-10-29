@@ -1077,6 +1077,7 @@ name = "oap-serve"
 version = "0.1.0"
 dependencies = [
  "futures",
+ "futures-core",
  "oap-adapter",
  "oap-binding",
  "oap-protocol",
