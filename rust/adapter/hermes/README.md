@@ -20,3 +20,10 @@ UTF-8 inside a string read as U+FFFD. Three of Go's `encoding/json` rules differ
 
 The gateway writes each member once, in its exact case, and the pinned corpus
 spells them so, so nothing on the wire observes the first two.
+
+`decode_strict` refuses every frame Go's `DecodeStrict` refuses. Its error text
+is Go's for the refusals the adapter reports: a non-object struct, which names
+`native.<Type>` or Go's `usageAlias` and `surfaceAlias`, and a non-object tool
+`args`. Other refusals carry serde_json's wording. Examples are a mistyped
+member inside `usage` or `error_surface`, and a byte that cannot begin a JSON
+value.
