@@ -244,6 +244,7 @@ impl Hub {
             Action::Opened
         };
         if settled {
+            let _ = session.close().await;
             let _sessions = self.shared.sessions();
             self.shared
                 .options
@@ -434,6 +435,9 @@ impl HubSession {
                 got: state.session_id,
                 want: self.id.clone(),
             });
+        }
+        if state.status == SessionStatus::CLOSED {
+            self.mark_closed();
         }
         Ok(state)
     }
