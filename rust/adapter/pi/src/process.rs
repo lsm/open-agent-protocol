@@ -1,5 +1,5 @@
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crossbeam_channel::{select, Receiver};
 use oap_adapter::process::{wait_error, Child, ChildConfig};
@@ -38,7 +38,10 @@ fn handshake(detail: impl std::fmt::Display) -> Error {
 }
 
 impl Process {
-    pub fn start(config: &ProcessConfig) -> Result<(Arc<Self>, SessionState), Error> {
+    pub fn start(
+        config: &ProcessConfig,
+        deadline: Option<Instant>,
+    ) -> Result<(Arc<Self>, SessionState), Error> {
         if config.path.is_empty() {
             return Err(handshake("executable path is required"));
         }
@@ -86,6 +89,7 @@ impl Process {
         });
         let inbound = process.client.inbound();
         let done = process.client.done();
+        let expiry = deadline.map_or_else(crossbeam_channel::never, crossbeam_channel::at);
         let outcome: Result<SessionState, String> = loop {
             select! {
                 recv(ready) -> outcome => break match outcome {
@@ -100,6 +104,7 @@ impl Process {
                     _ => break Err("native observation preceded get_state response".into()),
                 },
                 recv(done) -> _ => break Err(process.client.err().unwrap_or_else(|| "EOF".into())),
+                recv(expiry) -> _ => break Err("context deadline exceeded".into()),
             }
         };
         let validated = outcome.and_then(|state| {

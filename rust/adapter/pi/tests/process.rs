@@ -45,7 +45,7 @@ fn the_launcher_runs_pi_in_rpc_mode_takes_its_state_from_get_state_and_closes_on
         reply("req_1", &format!("\"success\":true,\"data\":{STATE}")),
         reply("req_2", "\"success\":false,\"error\":\"nope\""),
     );
-    let (process, state) = Process::start(&fake_pi(&script)).unwrap();
+    let (process, state) = Process::start(&fake_pi(&script), None).unwrap();
     assert_eq!(state.session_id, "s1");
     let inbound = process.inbound();
     std::thread::spawn(move || while inbound.recv().is_ok() {});
@@ -67,7 +67,7 @@ fn the_handshake_state_ignores_members_the_pin_does_not_name() {
         "{}; cat >/dev/null",
         reply("req_1", &format!("\"success\":true,\"data\":{state}"))
     );
-    let (process, state) = Process::start(&fake_pi(&script)).unwrap();
+    let (process, state) = Process::start(&fake_pi(&script), None).unwrap();
     assert_eq!(state.session_id, "s1");
     assert_eq!(process.close(), Ok(()));
 }
@@ -75,7 +75,7 @@ fn the_handshake_state_ignores_members_the_pin_does_not_name() {
 #[test]
 fn a_pi_that_exits_before_its_state_fails_the_handshake_with_its_stderr() {
     let _serial = serial();
-    let failure = Process::start(&fake_pi("echo 'token=abc broke' >&2; exit 3"))
+    let failure = Process::start(&fake_pi("echo 'token=abc broke' >&2; exit 3"), None)
         .err()
         .unwrap()
         .to_string();
@@ -90,13 +90,33 @@ fn a_pi_that_exits_before_its_state_fails_the_handshake_with_its_stderr() {
 }
 
 #[test]
+fn a_pi_that_never_answers_get_state_fails_the_handshake_at_the_deadline() {
+    let _serial = serial();
+    let started = std::time::Instant::now();
+    let deadline = started + std::time::Duration::from_millis(300);
+    let failure = Process::start(&fake_pi("echo waiting >&2; exec sleep 30"), Some(deadline))
+        .err()
+        .unwrap()
+        .to_string();
+    assert!(started.elapsed() < std::time::Duration::from_secs(5));
+    assert!(
+        failure
+            .starts_with("pi rpc: startup handshake failed: context deadline exceeded; stderr: "),
+        "{failure}"
+    );
+}
+
+#[test]
 fn an_invalid_state_fails_the_handshake() {
     let _serial = serial();
     let script = format!(
         "{}; cat >/dev/null",
         reply("req_1", "\"success\":true,\"data\":{\"sessionId\":\"\"}")
     );
-    let failure = Process::start(&fake_pi(&script)).err().unwrap().to_string();
+    let failure = Process::start(&fake_pi(&script), None)
+        .err()
+        .unwrap()
+        .to_string();
     assert!(
         failure.starts_with("pi rpc: startup handshake failed: invalid get_state response"),
         "{failure}"
