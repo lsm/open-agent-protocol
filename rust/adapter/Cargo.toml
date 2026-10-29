@@ -8,10 +8,12 @@ license = "CC0-1.0"
 publish = false
 
 [dependencies]
+crossbeam-channel = "0.5"
 futures = { version = "0.3", optional = true }
 futures-core = "0.3"
 oap-protocol = { path = "../protocol" }
 oap-validation = { path = "../validation" }
+regex = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["raw_value", "unbounded_depth"] }
 thiserror = "2"
