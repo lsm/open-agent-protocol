@@ -92,3 +92,9 @@ drops the descriptor as soon as its write returns, which killing the child
 causes. Go closes the descriptor under the blocked write at once; Rust's
 stays open until that write ends, so a grandchild holding the read end keeps
 the writer blocked until it exits.
+
+Stdout follows Go's order: a child's exit is recorded only after its stdout
+reader ends, so every frame is read first. When a grandchild holds stdout
+open, Go's kill closes the pipe and the read ends. Rust's `kill` cannot close
+it, so it releases the watch instead: the child is reaped and `exited` fires,
+while the blocked reader thread lives until the grandchild exits.

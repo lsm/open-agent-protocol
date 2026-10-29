@@ -143,6 +143,22 @@ fn an_aborted_child_reads_as_go_names_sigabrt_on_this_platform() {
 }
 
 #[test]
+fn a_killed_child_is_reaped_while_a_grandchild_still_holds_its_stdout() {
+    let _serial = serial();
+    let (child, _stdout) = Child::spawn(&shell("sleep 5 & wait")).unwrap();
+    let (reader, reader_done) = crossbeam_channel::bounded::<()>(0);
+    child.watch(reader_done, Duration::from_millis(100));
+    assert!(!child.await_exit(Duration::from_millis(200)));
+    child.kill();
+    assert!(child.await_exit(Duration::from_secs(5)));
+    assert_eq!(
+        wait_error(child.exit_status()).as_deref(),
+        Some("signal: killed")
+    );
+    drop(reader);
+}
+
+#[test]
 fn releasing_stdin_returns_while_a_write_is_blocked_on_a_full_pipe_and_the_write_fails_once_the_child_dies(
 ) {
     let _serial = serial();

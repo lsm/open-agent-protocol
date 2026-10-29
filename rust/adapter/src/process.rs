@@ -33,6 +33,8 @@ pub struct Child {
     exited: Receiver<()>,
     exit: Arc<Mutex<Option<crossbeam_channel::Sender<()>>>>,
     status: Arc<Mutex<Option<ExitStatus>>>,
+    killed: Receiver<()>,
+    kill: Arc<Mutex<Option<crossbeam_channel::Sender<()>>>>,
 }
 
 struct Stdin {
@@ -231,6 +233,7 @@ impl Child {
             drop(stderr_sender);
         });
         let (exit, exited) = crossbeam_channel::bounded::<()>(0);
+        let (kill, killed) = crossbeam_channel::bounded::<()>(0);
         Ok((
             Self {
                 child: Arc::new(Mutex::new(child)),
@@ -243,6 +246,8 @@ impl Child {
                 exited,
                 exit: Arc::new(Mutex::new(Some(exit))),
                 status: Arc::new(Mutex::new(None)),
+                killed,
+                kill: Arc::new(Mutex::new(Some(kill))),
             },
             stdout,
         ))
@@ -259,7 +264,10 @@ impl Child {
     pub fn watch(&self, reader_done: Receiver<()>, drain: Duration) {
         let child = self.clone();
         std::thread::spawn(move || {
-            let _ = reader_done.recv();
+            crossbeam_channel::select! {
+                recv(reader_done) -> _ => {}
+                recv(child.killed) -> _ => {}
+            }
             let _ = child.stderr_done.recv_timeout(drain);
             let waited = loop {
                 if let Ok(Some(exit)) = lock(&child.child).try_wait() {
@@ -296,6 +304,7 @@ impl Child {
 
     pub fn kill(&self) {
         let _ = lock(&self.child).kill();
+        lock(&self.kill).take();
     }
 
     #[cfg(unix)]
