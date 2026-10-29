@@ -322,3 +322,19 @@ fn a_call_reports_its_admission_through_an_unbuffered_channel_once_and_then_clos
     assert_eq!(call.join().unwrap().unwrap().get(), "{}");
     assert!(admitted.recv_timeout(WAIT).is_err());
 }
+
+#[test]
+fn a_response_being_routed_when_the_client_closes_still_reaches_its_call() {
+    let mut peer = peer(false);
+    let _inbound = peer.client.inbound();
+    let call = call_in_thread(&peer.client, RequestId::Integer(1), "session/prompt");
+    let request = peer.read();
+    assert_eq!(request.id, Some(RequestId::Integer(1)));
+    peer.send(r#"{"jsonrpc":"2.0","id":1,"result":{"stopReason":"end_turn"}}"#);
+    std::thread::sleep(Duration::from_millis(100));
+    peer.client.close();
+    assert_eq!(
+        call.join().unwrap().unwrap(),
+        r#"{"stopReason":"end_turn"}"#
+    );
+}

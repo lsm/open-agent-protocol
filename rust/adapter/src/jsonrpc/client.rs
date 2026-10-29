@@ -49,6 +49,8 @@ struct State {
     closed: bool,
     err: Option<String>,
     activated: bool,
+    decoding: bool,
+    routing: bool,
 }
 
 struct Inner {
@@ -125,6 +127,8 @@ impl RpcClient {
                 closed: false,
                 err: None,
                 activated: false,
+                decoding: false,
+                routing: false,
             }),
             next_id: AtomicI64::new(options.first_request_id),
             strict: options.strict_response_ids,
@@ -295,13 +299,35 @@ impl RpcClient {
             let mut state = lock(&self.0.state);
             state.closed = true;
             state.err.get_or_insert(reason.clone());
-            std::mem::take(&mut state.pending)
+            let defer = state.routing || (state.decoding && self.0.unblocks_writes);
+            if defer {
+                HashMap::new()
+            } else {
+                std::mem::take(&mut state.pending)
+            }
         };
         lock(&self.0.done_tx).take();
+        self.fail_pending(pending);
+    }
+
+    fn fail_pending(&self, pending: HashMap<RequestId, Sender<CallResult>>) {
         let error = self.close_error();
         for (_, respond) in pending {
             let _ = respond.send(Err(clone_error(&error)));
         }
+    }
+
+    fn settle_reader(&self) {
+        let pending = {
+            let mut state = lock(&self.0.state);
+            state.routing = false;
+            if state.closed {
+                std::mem::take(&mut state.pending)
+            } else {
+                HashMap::new()
+            }
+        };
+        self.fail_pending(pending);
     }
 
     fn write(&self, message: Message, deadline: Option<Instant>) -> Result<(), Error> {
@@ -372,9 +398,18 @@ impl RpcClient {
 
     fn read_loop<R: std::io::BufRead>(&self, mut decoder: Decoder<R>) {
         loop {
-            match decoder.decode() {
+            lock(&self.0.state).decoding = true;
+            let decoded = decoder.decode();
+            {
+                let mut state = lock(&self.0.state);
+                state.decoding = false;
+                state.routing = decoded.is_ok();
+            }
+            match decoded {
                 Ok(message) => {
-                    if self.route(message) {
+                    let stop = self.route(message);
+                    self.settle_reader();
+                    if stop {
                         return;
                     }
                 }
