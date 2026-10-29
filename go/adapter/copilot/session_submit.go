@@ -79,7 +79,9 @@ func (s *session) Submit(ctx context.Context, submit base.SubmitRequest) (protoc
 		}
 		var refusal *rpc.RemoteError
 		if !errors.As(err, &refusal) {
-			s.end("copilot_process_exit", "Copilot prompt admission failed")
+			if !s.closing {
+				s.end("copilot_process_exit", "Copilot prompt admission failed")
+			}
 			_ = s.process.Client.Close()
 		}
 		return zero, nil, err
