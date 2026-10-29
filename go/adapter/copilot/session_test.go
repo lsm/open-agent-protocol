@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"runtime"
+	"strings"
 	"testing"
 	"time"
 
@@ -47,6 +48,7 @@ func TestSyntheticCopilotChild(t *testing.T) {
 			os.Exit(3)
 		}
 		result := any(map[string]any{})
+		prompt := "hello"
 		switch message.Method {
 		case "ping":
 			result = map[string]any{"protocolVersion": 3}
@@ -55,13 +57,55 @@ func TestSyntheticCopilotChild(t *testing.T) {
 		case "session.create":
 			result = map[string]any{"sessionId": "ses"}
 		case "session.send":
+			var params map[string]json.RawMessage
+			_ = json.Unmarshal(message.Params, &params)
+			prompt = native.Text(params, "prompt")
 			count++
 			id := fmt.Sprintf("m%d", count)
-			event("user.message", map[string]any{"messageId": id, "content": "hello"})
+			if os.Getenv("OAP_COPILOT_SESSION_MODE") == "queue-burst" && count == 2 {
+				for range 80 {
+					event("assistant.message_delta", map[string]any{"deltaContent": "x"})
+					time.Sleep(time.Millisecond)
+				}
+				event("assistant.message", map[string]any{"content": strings.Repeat("x", 80)})
+			}
+			if os.Getenv("OAP_COPILOT_SESSION_MODE") == "refuse" {
+				say(map[string]any{"jsonrpc": "2.0", "id": message.ID, "error": map[string]any{"code": -32602, "message": "synthetic refusal"}})
+				continue
+			}
+			if (os.Getenv("OAP_COPILOT_SESSION_MODE") != "queued" || count == 1) && os.Getenv("OAP_COPILOT_SESSION_MODE") != "all-queued" {
+				event("user.message", map[string]any{"messageId": id, "content": "hello"})
+			}
+			if os.Getenv("OAP_COPILOT_SESSION_MODE") == "wait-reply" || (os.Getenv("OAP_COPILOT_SESSION_MODE") == "wait-second" && count == 2) {
+				_ = os.WriteFile("send-received", nil, 0600)
+				for {
+					if _, err := os.Stat("release-send"); err == nil {
+						break
+					}
+					time.Sleep(time.Millisecond)
+				}
+			}
+			if os.Getenv("OAP_COPILOT_SESSION_MODE") == "unbound-burst" {
+				for range 80 {
+					event("assistant.message_delta", map[string]any{"deltaContent": "x"})
+					time.Sleep(time.Millisecond)
+				}
+			}
+			if os.Getenv("OAP_COPILOT_SESSION_MODE") == "early-complete" {
+				event("assistant.message_delta", map[string]any{"deltaContent": prompt})
+				event("assistant.message", map[string]any{"content": prompt})
+				event("session.idle", map[string]any{})
+			}
+			if os.Getenv("OAP_COPILOT_SESSION_MODE") == "early" || os.Getenv("OAP_COPILOT_SESSION_MODE") == "queue-burst" {
+				time.Sleep(25 * time.Millisecond)
+			}
 			result = map[string]any{"messageId": id}
+			if os.Getenv("OAP_COPILOT_SESSION_MODE") == "missing-id" {
+				result = map[string]any{}
+			}
 		}
 		say(map[string]any{"jsonrpc": "2.0", "id": message.ID, "result": result})
-		if message.Method != "session.send" {
+		if message.Method != "session.send" || os.Getenv("OAP_COPILOT_SESSION_MODE") == "early-complete" {
 			continue
 		}
 		if os.Getenv("OAP_COPILOT_SESSION_MODE") == "exit" {
@@ -73,11 +117,11 @@ func TestSyntheticCopilotChild(t *testing.T) {
 			}
 			os.Exit(0)
 		}
-		if os.Getenv("OAP_COPILOT_SESSION_MODE") == "hold" {
+		if os.Getenv("OAP_COPILOT_SESSION_MODE") == "hold" || os.Getenv("OAP_COPILOT_SESSION_MODE") == "queued" || os.Getenv("OAP_COPILOT_SESSION_MODE") == "all-queued" || ((os.Getenv("OAP_COPILOT_SESSION_MODE") == "queue-burst" || os.Getenv("OAP_COPILOT_SESSION_MODE") == "wait-second") && count == 1) {
 			continue
 		}
-		event("assistant.message_delta", map[string]any{"deltaContent": "hello"})
-		event("assistant.message", map[string]any{"content": "hello"})
+		event("assistant.message_delta", map[string]any{"deltaContent": prompt})
+		event("assistant.message", map[string]any{"content": prompt})
 		event("assistant.usage", map[string]any{"inputTokens": 8, "outputTokens": 3, "cost": 0})
 		event("session.idle", map[string]any{})
 	}
@@ -106,7 +150,7 @@ func syntheticSession(t *testing.T, mode string, capacity int) (*session, *run) 
 		t.Fatal(err)
 	}
 	run.nativeMessage = "m1"
-	s := newSession(r, p, capacity)
+	s := newSession(r, p, capacity, time.Second)
 	t.Cleanup(func() {
 		if err := s.Close(context.Background()); err != nil {
 			t.Error(err)
@@ -240,7 +284,7 @@ func TestClosePreservesACompletionAlreadyReceivedFromTheProcess(t *testing.T) {
 	run.nativeMessage = "m1"
 	previous := runtime.GOMAXPROCS(1)
 	defer runtime.GOMAXPROCS(previous)
-	s := newSession(r, p, 64)
+	s := newSession(r, p, 64, time.Second)
 	t.Cleanup(func() { _ = s.Close(context.Background()) })
 	_, stream, err := s.Resume(ctx, base.ResumeRequest{RunID: run.id})
 	if err != nil {

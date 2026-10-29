@@ -1,0 +1,421 @@
+package copilot
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"os"
+	"path/filepath"
+	"runtime"
+	"testing"
+	"time"
+
+	base "github.com/lsm/open-agent-protocol/go/adapter"
+	"github.com/lsm/open-agent-protocol/go/adapter/adaptertest"
+	"github.com/lsm/open-agent-protocol/go/adapter/copilot/internal/rpc"
+	"github.com/lsm/open-agent-protocol/go/protocol"
+)
+
+func emptySession(t *testing.T, mode string) *session {
+	t.Helper()
+	p, err := rpc.Start(syntheticProcessConfig(t, mode))
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := newSession(newReducer("s1", "ses", &corpusIDs{}, &corpusClock{}), p, 256, time.Second)
+	t.Cleanup(func() { _ = s.Close(context.Background()) })
+	return s
+}
+
+func helloRequest() base.SubmitRequest {
+	return base.SubmitRequest{Request: protocol.MessageSubmitRequest{SessionID: "s1", Delivery: protocol.DeliveryAuto, Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("hello")}}}}
+}
+
+func TestSubmitBindsAnEventReceivedBeforeTheReply(t *testing.T) {
+	s := emptySession(t, "early")
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	request := helloRequest()
+	ack, stream, err := s.Submit(ctx, request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	events := adaptertest.Drain(t, stream, time.Second)
+	adaptertest.AssertRunTrace(t, ack, CapabilityRevision, events)
+	if len(events) != 3 || events[0].Type != protocol.TypeRunStarted || events[1].Type != protocol.TypeContentDelta || events[2].Type != protocol.TypeRunCompleted {
+		t.Fatalf("lost early event: %+v", events)
+	}
+	if string(ack.SubmissionID) == "m1" || string(ack.RunID) == "m1" {
+		t.Fatal("native message identity escaped its private binding")
+	}
+}
+
+func TestQueuedAdmissionKeepsTheCurrentRunStreaming(t *testing.T) {
+	config := syntheticProcessConfig(t, "queue-burst")
+	config.QueueCapacity = 16
+	p, err := rpc.Start(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := newSession(newReducer("s1", "ses", &corpusIDs{}, &corpusClock{}), p, 256, time.Second)
+	t.Cleanup(func() { _ = s.Close(context.Background()) })
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	first, firstStream, err := s.Submit(ctx, helloRequest())
+	if err != nil {
+		t.Fatal(err)
+	}
+	started := adaptertest.Next(t, firstStream, time.Second)
+	second, secondStream, err := s.Submit(ctx, helloRequest())
+	if err != nil {
+		t.Fatalf("queued admission killed the streaming session: %v", err)
+	}
+	if second.Admission != protocol.AdmissionQueued {
+		t.Fatalf("queued admission changed: %+v", second)
+	}
+	events := append([]protocol.Envelope{started}, adaptertest.Drain(t, firstStream, time.Second)...)
+	if len(events) != 82 || events[len(events)-1].Type != protocol.TypeRunCompleted {
+		t.Fatalf("streaming observations lost: %d events", len(events))
+	}
+	adaptertest.AssertRunTrace(t, first, CapabilityRevision, events)
+	adaptertest.AssertRunTrace(t, second, CapabilityRevision, adaptertest.Drain(t, secondStream, time.Second))
+}
+
+func TestPendingAdmissionKeepsStateAndCloseResponsive(t *testing.T) {
+	config := syntheticProcessConfig(t, "wait-reply")
+	p, err := rpc.Start(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := newSession(newReducer("s1", "ses", &corpusIDs{}, &corpusClock{}), p, 256, time.Second)
+	t.Cleanup(func() { _ = s.Close(context.Background()) })
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	submitted := make(chan error, 1)
+	go func() { _, _, err := s.Submit(ctx, helloRequest()); submitted <- err }()
+	for {
+		if _, err := os.Stat(filepath.Join(config.Dir, "send-received")); err == nil {
+			break
+		}
+		select {
+		case <-ctx.Done():
+			t.Fatal("native admission did not start")
+		case <-time.After(time.Millisecond):
+		}
+	}
+	waiting, stopWaiting := context.WithTimeout(ctx, 25*time.Millisecond)
+	defer stopWaiting()
+	if ack, stream, err := s.Submit(waiting, helloRequest()); !errors.Is(err, context.DeadlineExceeded) || ack.Accepted || stream != nil {
+		t.Fatalf("waiting admission ignored cancellation: %+v %v", ack, err)
+	}
+	observed := make(chan error, 1)
+	go func() {
+		state, err := s.State(ctx)
+		if err == nil && len(state.ActiveRuns) != 0 {
+			err = errors.New("pending native reply exposed an unaccepted run")
+		}
+		observed <- err
+	}()
+	select {
+	case err := <-observed:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(250 * time.Millisecond):
+		t.Fatal("state stalled behind native admission")
+	}
+	go func() { observed <- s.Close(ctx) }()
+	select {
+	case err := <-observed:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(250 * time.Millisecond):
+		t.Fatal("close stalled behind native admission")
+	}
+	if err := <-submitted; err == nil {
+		t.Fatal("closed pending admission was accepted")
+	}
+}
+
+func TestCloseDuringAdmissionKeepsTheIntentionalCloseReason(t *testing.T) {
+	config := syntheticProcessConfig(t, "wait-second")
+	p, err := rpc.Start(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := newSession(newReducer("s1", "ses", &corpusIDs{}, &corpusClock{}), p, 256, time.Second)
+	t.Cleanup(func() { _ = s.Close(context.Background()) })
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	_, stream, err := s.Submit(ctx, helloRequest())
+	if err != nil {
+		t.Fatal(err)
+	}
+	adaptertest.Next(t, stream, time.Second)
+	submitted := make(chan error, 1)
+	go func() { _, _, err := s.Submit(ctx, helloRequest()); submitted <- err }()
+	for {
+		if _, err := os.Stat(filepath.Join(config.Dir, "send-received")); err == nil {
+			break
+		}
+		select {
+		case <-ctx.Done():
+			t.Fatal("queued native admission did not start")
+		case <-time.After(time.Millisecond):
+		}
+	}
+	previous := runtime.GOMAXPROCS(1)
+	defer runtime.GOMAXPROCS(previous)
+	if err := s.Close(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-submitted; err == nil {
+		t.Fatal("closed pending submission was accepted")
+	}
+	events := adaptertest.Drain(t, stream, time.Second)
+	var terminal protocol.RunFailedPayload
+	if len(events) != 1 || events[0].DecodePayload(&terminal) != nil || terminal.Error.Code != "copilot_closed" {
+		t.Fatalf("intentional close became a process failure: %+v", events)
+	}
+}
+
+func TestAdmissionFollowerKeepsEventsBeforeTheReplyWithTinyReplay(t *testing.T) {
+	p, err := rpc.Start(syntheticProcessConfig(t, "early-complete"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := newSession(newReducer("s1", "ses", &corpusIDs{}, &corpusClock{}), p, 1, time.Second)
+	t.Cleanup(func() { _ = s.Close(context.Background()) })
+	ack, stream, err := s.Submit(context.Background(), helloRequest())
+	if err != nil {
+		t.Fatal(err)
+	}
+	events := adaptertest.Drain(t, stream, time.Second)
+	if len(events) != 3 {
+		t.Fatalf("early live follower lost events to replay eviction: %d", len(events))
+	}
+	adaptertest.AssertRunTrace(t, ack, CapabilityRevision, events)
+}
+
+func TestUnboundNativeEventsRemainBounded(t *testing.T) {
+	config := syntheticProcessConfig(t, "unbound-burst")
+	config.QueueCapacity = 16
+	p, err := rpc.Start(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := newSession(newReducer("s1", "ses", &corpusIDs{}, &corpusClock{}), p, 256, time.Second)
+	t.Cleanup(func() { _ = s.Close(context.Background()) })
+	ack, stream, err := s.Submit(context.Background(), helloRequest())
+	if err == nil || ack.Accepted || stream != nil {
+		t.Fatalf("unbounded early stream admitted: %+v %v", ack, err)
+	}
+	select {
+	case <-p.Done():
+	case <-time.After(time.Second):
+		t.Fatal("overflow did not reap the synthetic child")
+	}
+	state, err := s.State(context.Background())
+	if err != nil || len(state.ActiveRuns) != 0 {
+		t.Fatalf("overflow leaked an admission: %+v %v", state, err)
+	}
+}
+
+func TestSubmitRefusesUnavailableControlsAndNonTextInput(t *testing.T) {
+	s := emptySession(t, "")
+	ctx := context.Background()
+	for _, request := range []protocol.MessageSubmitRequest{
+		{ModelID: protocol.ControlValue("")}, {Instructions: protocol.ControlValue("")}, {ToolChoice: json.RawMessage(`null`)}, {OutputSchema: json.RawMessage(`{}`)}, {Delivery: protocol.DeliverySteer}, {Delivery: protocol.DeliveryBTW},
+	} {
+		good := helloRequest()
+		request.SessionID = good.Request.SessionID
+		request.Messages = good.Request.Messages
+		if request.Delivery == "" {
+			request.Delivery = protocol.DeliveryAuto
+		}
+		_, _, err := s.Submit(ctx, base.SubmitRequest{Request: request})
+		var unsupported *base.UnsupportedControlError
+		if !errors.As(err, &unsupported) {
+			t.Fatalf("control refusal: %v", err)
+		}
+	}
+	for _, message := range []protocol.Message{{Role: protocol.RoleAssistant, Content: protocol.TextContent("hello")}, {Role: protocol.RoleUser, Content: protocol.PartsContent([]protocol.ContentPart{{Type: protocol.ContentImage}})}, {Role: protocol.RoleUser, Content: protocol.TextContent("")}} {
+		request := helloRequest()
+		request.Request.Messages = []protocol.Message{message}
+		if _, _, err := s.Submit(ctx, request); !errors.Is(err, base.ErrInvalidSubmission) {
+			t.Fatalf("input refusal: %v", err)
+		}
+	}
+	state, err := s.State(ctx)
+	if err != nil || len(state.ActiveRuns) != 0 {
+		t.Fatalf("refusal created runs: %+v %v", state, err)
+	}
+}
+
+func TestQueueAdmissionAndBound(t *testing.T) {
+	s := emptySession(t, "queued")
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	for i := 0; i < 9; i++ {
+		ack, _, err := s.Submit(ctx, helloRequest())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if i > 0 && (ack.Admission != protocol.AdmissionQueued || ack.EffectiveDelivery != protocol.EffectiveDeliveryQueue || ack.DeliveryResolution != "session_busy") {
+			t.Fatalf("queue admission %+v", ack)
+		}
+	}
+	if _, _, err := s.Submit(ctx, helloRequest()); !errors.Is(err, base.ErrRunActive) {
+		t.Fatalf("queue bound: %v", err)
+	}
+	state, err := s.State(ctx)
+	if err != nil || len(state.ActiveRuns) != 9 {
+		t.Fatalf("queue state %+v %v", state, err)
+	}
+	for i, active := range state.ActiveRuns {
+		if i > 0 && (active.QueuePosition == nil || *active.QueuePosition != i) {
+			t.Fatalf("queue position %+v", active)
+		}
+	}
+}
+
+func TestExplicitQueueRejectsANinthReservationWithoutAnActiveRun(t *testing.T) {
+	s := emptySession(t, "all-queued")
+	request := helloRequest()
+	request.Request.Delivery = protocol.DeliveryQueue
+	for range 8 {
+		ack, _, err := s.Submit(context.Background(), request)
+		if err != nil || ack.Admission != protocol.AdmissionQueued {
+			t.Fatalf("queue reservation: %+v %v", ack, err)
+		}
+	}
+	ack, stream, err := s.Submit(context.Background(), request)
+	if !errors.Is(err, base.ErrRunActive) || ack.Accepted || stream != nil {
+		t.Fatalf("ninth queued reservation admitted without an active run: %+v %v", ack, err)
+	}
+	state, err := s.State(context.Background())
+	if err != nil || len(state.ActiveRuns) != 8 || state.ActiveRunID != "" {
+		t.Fatalf("queue bound changed state: %+v %v", state, err)
+	}
+}
+
+func TestNativeRefusalDoesNotAdmitAnOAPRun(t *testing.T) {
+	s := emptySession(t, "refuse")
+	_, _, err := s.Submit(context.Background(), helloRequest())
+	var refusal *rpc.RemoteError
+	if !errors.As(err, &refusal) || refusal.Code != -32602 {
+		t.Fatalf("native refusal lost: %v", err)
+	}
+	state, err := s.State(context.Background())
+	if err != nil || len(state.ActiveRuns) != 0 {
+		t.Fatalf("refused run leaked: %+v %v", state, err)
+	}
+}
+
+func TestSubmitPreservesContiguousUnicodeTextParts(t *testing.T) {
+	s := emptySession(t, "")
+	request := helloRequest()
+	request.Request.Messages = []protocol.Message{{Role: protocol.RoleUser, Content: protocol.PartsContent([]protocol.ContentPart{{Type: protocol.ContentText, Text: "\u4f60"}, {Type: protocol.ContentText, Text: "\u597d"}})}}
+	ack, stream, err := s.Submit(context.Background(), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	events := adaptertest.Drain(t, stream, time.Second)
+	adaptertest.AssertRunTrace(t, ack, CapabilityRevision, events)
+	var terminal protocol.RunCompletedPayload
+	if err := events[len(events)-1].DecodePayload(&terminal); err != nil {
+		t.Fatal(err)
+	}
+	parts, ok := terminal.FinalResponse.Content.Parts()
+	if !ok || len(parts) != 1 || parts[0].Text != "\u4f60\u597d" {
+		t.Fatalf("native round trip changed text: %s", terminal.FinalResponse.Content)
+	}
+}
+
+func TestMissingNativeBindingStopsWorkButKeepsSettledState(t *testing.T) {
+	s := emptySession(t, "missing-id")
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	ack, stream, err := s.Submit(ctx, helloRequest())
+	if err == nil || ack.Accepted || stream != nil {
+		t.Fatalf("missing binding admitted %+v %v", ack, err)
+	}
+	select {
+	case <-s.process.Done():
+	case <-ctx.Done():
+		t.Fatal("invalid admission left child running")
+	}
+	state, err := s.State(ctx)
+	if err != nil || state.Status != protocol.SessionIdle || len(state.ActiveRuns) != 0 {
+		t.Fatalf("uncertain admission lost settled state: %+v, %v", state, err)
+	}
+	ack, stream, err = s.Submit(ctx, helloRequest())
+	if !errors.Is(err, base.ErrSessionClosed) || ack.Accepted || stream != nil {
+		t.Fatalf("unbound native admission allowed further work: %+v, %v", ack, err)
+	}
+}
+
+func TestQueuedSubmissionPromotesAtItsNativeUserMessage(t *testing.T) {
+	s := emptySession(t, "hold")
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	first, firstStream, err := s.Submit(ctx, helloRequest())
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, secondStream, err := s.Submit(ctx, helloRequest())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second.Admission != protocol.AdmissionQueued || first.RunID == second.RunID {
+		t.Fatalf("queued admission %+v", second)
+	}
+	finished := adaptertest.Drain(t, firstStream, time.Second)
+	if len(finished) != 2 || finished[1].Type != protocol.TypeRunCompleted {
+		t.Fatalf("prior run did not settle: %+v", finished)
+	}
+	started := adaptertest.Next(t, secondStream, time.Second)
+	if started.Type != protocol.TypeRunStarted || started.RunID != second.RunID {
+		t.Fatalf("queued run did not start: %+v", started)
+	}
+	state, err := s.State(ctx)
+	if err != nil || state.ActiveRunID != second.RunID || len(state.ActiveRuns) != 1 || state.ActiveRuns[0].Status != protocol.RunRunning {
+		t.Fatalf("promoted state %+v %v", state, err)
+	}
+	if err := s.Close(ctx); err != nil {
+		t.Fatal(err)
+	}
+	terminal := adaptertest.Drain(t, secondStream, time.Second)
+	if len(terminal) != 1 || terminal[0].Type != protocol.TypeRunFailed {
+		t.Fatalf("close did not settle promoted run: %+v", terminal)
+	}
+}
+
+func TestSeparateMessagesKeepTheirBoundaryAtTheNativeServer(t *testing.T) {
+	s := emptySession(t, "")
+	request := helloRequest()
+	request.Request.Messages = []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("hello")}, {Role: protocol.RoleUser, Content: protocol.TextContent("world")}}
+	_, stream, err := s.Submit(context.Background(), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	events := adaptertest.Drain(t, stream, time.Second)
+	var terminal protocol.RunCompletedPayload
+	if err := events[len(events)-1].DecodePayload(&terminal); err != nil {
+		t.Fatal(err)
+	}
+	parts, ok := terminal.FinalResponse.Content.Parts()
+	if !ok || len(parts) != 1 || parts[0].Text != "hello\n\nworld" {
+		t.Fatalf("message boundary lost in native round trip: %s", terminal.FinalResponse.Content)
+	}
+}
+
+func TestEmptyMessagesDoNotBecomeASeparatorOnlyPrompt(t *testing.T) {
+	s := emptySession(t, "")
+	request := helloRequest()
+	request.Request.Messages = []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("")}, {Role: protocol.RoleUser, Content: protocol.TextContent("")}}
+	if _, _, err := s.Submit(context.Background(), request); !errors.Is(err, base.ErrInvalidSubmission) {
+		t.Fatalf("empty messages admitted as separators: %v", err)
+	}
+}

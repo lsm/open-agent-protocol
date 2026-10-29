@@ -111,6 +111,20 @@ resume). Nine scenarios, fourteen billed model calls in all.
 
 ## Session lifecycle
 
+Text admission joins separate user messages with a double newline, preserving
+their boundary in Copilot's single prompt string. Text parts within one message
+remain contiguous. An entirely empty submission stays invalid even when message
+separators would otherwise produce bytes. Synthetic process tests pin this in
+both Go and Zig.
+
+Go serializes native admission with a context-aware gate and releases the session
+mutex during `session.send`, so existing runs continue streaming and state/close
+remain available. Only an unmatched native user-message boundary and subsequent
+events wait for its binding; that holding queue shares the configured RPC queue
+bound. Provisional runs are hidden from snapshots. A reserved follower binds
+before held events publish, so a small replay journal cannot erase live delivery.
+The host permits at most eight queued reservations, independently of active work.
+
 | OAP | Native |
 | --- | --- |
 | `session.open` | `session.create {clientName, model?, requestPermission:true, requestUserInput:true, workingDirectory, streaming:true, envValueMode:"direct"}` → `{sessionId, workspacePath, …}` |
@@ -122,6 +136,18 @@ resume). Nine scenarios, fourteen billed model calls in all.
 `requestPermission:true` is what makes a gated tool wait for the client: the
 SDK sets it whenever an `onPermissionRequest` handler exists, and its handler
 is required. Without it the server decides alone.
+
+## Host admission divergence
+
+A successful `session.send` reply without `messageId` leaves native admission
+uncertain. Go removes the provisional run, stops the native process and refuses
+further submissions, while retaining readable state/replay until explicit Close.
+Zig currently forgets that run and permits another submission. Its adapter test
+"a prompt the server refuses or answers without a message id is not admitted"
+pins that reusable behavior; Go's missing-binding test pins conservative teardown.
+This is an explicit lifecycle divergence under Decision 0032, not a parity claim:
+Go cannot safely correlate later observations with an accepted-but-unbound prompt.
+The Go submission slice leaves Zig host lifecycle alignment for follow-up.
 
 ## Run boundaries
 

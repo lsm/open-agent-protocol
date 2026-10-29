@@ -3,6 +3,7 @@ package copilot
 import (
 	"context"
 	"sync"
+	"time"
 
 	base "github.com/lsm/open-agent-protocol/go/adapter"
 	"github.com/lsm/open-agent-protocol/go/adapter/copilot/internal/native"
@@ -16,14 +17,18 @@ type session struct {
 	reducer  *reducer
 	process  *rpc.Process
 	journal  *journal.Journal
+	timeout  time.Duration
+	sending  chan struct{}
+	pending  *run
+	held     []native.Event
 	closed   bool
 	closing  bool
 	unusable bool
 	done     chan struct{}
 }
 
-func newSession(r *reducer, p *rpc.Process, capacity int) *session {
-	s := &session{reducer: r, process: p, journal: journal.New(capacity), done: make(chan struct{})}
+func newSession(r *reducer, p *rpc.Process, capacity int, timeout time.Duration) *session {
+	s := &session{reducer: r, process: p, journal: journal.New(capacity), timeout: timeout, sending: make(chan struct{}, 1), done: make(chan struct{})}
 	go s.pump()
 	return s
 }
@@ -46,7 +51,7 @@ func (s *session) state() protocol.SessionState {
 	state := protocol.SessionState{SessionID: s.reducer.sessionID, Status: protocol.SessionIdle}
 	position := 0
 	for _, run := range s.reducer.runs {
-		if run.terminal {
+		if run.terminal || run == s.pending {
 			continue
 		}
 		seq := run.next - 1
@@ -78,7 +83,7 @@ func (s *session) Resume(ctx context.Context, request base.ResumeRequest) (base.
 		return base.Recovery{}, nil, base.ErrSessionClosed
 	}
 	for _, run := range s.reducer.runs {
-		if run.id != request.RunID {
+		if run.id != request.RunID || run == s.pending {
 			continue
 		}
 		latest := run.next - 1
@@ -135,7 +140,7 @@ func (s *session) consume(message native.Message) {
 	}
 	event, err := native.DecodeEvent(message)
 	if err == nil && event != nil {
-		err = s.reducer.observe(*event)
+		err = s.observe(*event)
 	}
 	if err != nil {
 		s.end("copilot_invalid_event", "the Copilot server sent an invalid session event")

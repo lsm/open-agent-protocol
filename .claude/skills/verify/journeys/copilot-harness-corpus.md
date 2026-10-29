@@ -52,7 +52,26 @@ After transport death, State still reports the settled snapshot and Resume
 serves retained events; explicit Close makes both unavailable.
 Close first drains native notifications already received, so a completed run
 remains completed for existing followers instead of being replaced by failure.
-Public submission and adapter/registry wiring follow separately. Unsupported host capabilities remain
-unadvertised; the Rust lane follows separately.
+Public session submission tests an early native event before its reply, Unicode
+text across messages/parts, native refusal without a ghost run, missing binding
+teardown, queue promotion and the nine-run bound.
+Queued admission must keep the current run streaming while its reply is pending.
+State and Close remain responsive, pending admissions are absent from snapshots,
+and a caller waiting for the admission gate can cancel. Unbound early events
+stay bounded; early completion still reaches the reserved live follower even
+with a one-event replay journal. Eight queued reservations are the limit even
+when no run is active; one active run plus eight queued runs remains allowed.
+An intentional Close during admission keeps its close-specific failure reason
+for existing runs; an interrupted send must not relabel it as process failure.
+Unsupported portable controls and non-text input are refused before admission. Adapter construction and registry
+wiring follow separately. Unsupported host capabilities remain unadvertised;
+the Rust lane follows separately.
 
 
+
+
+For missing native admission bindings, inspect the ledger's explicit host
+lifecycle divergence. Go refuses further work but keeps the settled snapshot;
+Zig currently allows another submission. The Go missing-binding subprocess test
+runs above; also run `zig build --build-file zig/build.zig test-unit-adapter`
+for its synthetic host test. This comparison does not claim identical teardown.
