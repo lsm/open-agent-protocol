@@ -34,8 +34,8 @@ client's close.
 the session state from the first `get_state` response, refuses a state that
 fails validation and any observation that arrives before it, and reaps the
 child only after its reader exits. The state decodes leniently, as Go's
-client does: a member the pin does not name is ignored, and a repeated key keeps
-its last value. It closes by releasing stdin, then kills the
+client does: a member the pin does not name is ignored, a key matches its member
+case-insensitively, and a repeated key keeps its last value. It closes by releasing stdin, then kills the
 child at the shutdown timeout. A start given a deadline aborts and reaps the
 child when no state arrives by then, as Go's does when the caller's context
 ends.
