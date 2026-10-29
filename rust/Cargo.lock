@@ -971,6 +971,7 @@ dependencies = [
 name = "oap-adapter-codex-appserver"
 version = "0.1.0"
 dependencies = [
+ "crossbeam-channel",
  "oap-adapter",
  "serde",
  "serde_json",
