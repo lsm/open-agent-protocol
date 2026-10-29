@@ -142,6 +142,9 @@ jobs:
       - name: Run checker self-tests
         run: node --test scripts/check-no-comments.test.mjs
 
+      - name: Verify readme temporary-directory cleanup
+        run: node --test scripts/check-readme-samples-cleanup.test.mjs
+
       - name: Run changelog-release self-tests
         run: node --test scripts/changelog-release.test.mjs
 
@@ -227,6 +230,9 @@ jobs:
       - name: Install npm dependencies
         run: npm ci
 
+      - name: Verify smoke connection-failure cleanup
+        run: npm run build:sdk && node --test scripts/binary-smoke-cleanup.test.mjs
+
       - name: Build the oapx binary for TS SDK E2E
         run: zig build --build-file zig/build.zig install --prefix /tmp/makai-smoke
 
@@ -235,11 +241,14 @@ jobs:
           OAP_SDK_BINARY_PATH: /tmp/makai-smoke/bin/oapx
         run: npm run test:sdk
 
+      - name: Verify logger temporary-directory cleanup
+        run: node --test scripts/logger-cleanup.test.mjs
+
       - name: Type-check the TypeScript README samples
         run: npm run check:readme
 
-      - name: Verify resolver temporary-directory cleanup
-        run: node --test scripts/binary-resolver-cleanup.test.mjs
+      - name: Verify resolver and demo temporary-directory cleanup
+        run: node --test scripts/binary-resolver-cleanup.test.mjs scripts/demo-server-cleanup.test.mjs
 
       - name: Verify npm package ships TypeScript declarations
         run: npm run check:declarations

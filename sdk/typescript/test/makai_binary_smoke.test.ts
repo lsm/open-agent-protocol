@@ -27,6 +27,7 @@ test("e2e: a manual login fails closed and persists no credentials", async (t) =
   }
 
   const tempHome = await fs.mkdtemp(path.join(os.tmpdir(), "oapx-auth-home-"));
+  t.after(() => fs.rm(tempHome, { recursive: true, force: true }));
   const client = await createMakaiClient({
     resolver: { binaryPath },
     env: { ...process.env, HOME: tempHome, OAPX_TEST_FIXTURE_PROVIDER: "1" },
@@ -40,7 +41,6 @@ test("e2e: a manual login fails closed and persists no credentials", async (t) =
     await assert.rejects(() => fs.access(path.join(tempHome, ".oapx", "auth.json")));
   } finally {
     await client.close();
-    await fs.rm(tempHome, { recursive: true, force: true });
   }
 });
 
