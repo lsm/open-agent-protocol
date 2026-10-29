@@ -942,8 +942,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "oap-adapter-codex-appserver"
+version = "0.1.0"
+dependencies = [
+ "oap-adapter",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "oap-adapter-opencode"
 version = "0.1.0"
+dependencies = [
+ "oap-adapter",
+ "serde",
+ "serde_json",
+]
 
 [[package]]
 name = "oap-binding"
@@ -1007,6 +1021,7 @@ dependencies = [
 name = "oap-serve"
 version = "0.1.0"
 dependencies = [
+ "futures",
  "oap-adapter",
  "oap-protocol",
  "thiserror",
