@@ -232,29 +232,26 @@ impl Live {
         self.readers -= 1;
         self.ended.insert(run.clone());
         let current = self.current.as_ref() == Some(run);
-        if self.readers > 0 {
-            return match end {
-                Some(failure) if current => {
-                    self.pending_end = Some((self.subs.clone(), failure));
-                    Vec::new()
-                }
-                Some(failure) => self
-                    .cut_exposed(run)
-                    .into_iter()
-                    .map(|sub| (sub, Some(failure.clone())))
-                    .collect(),
-                None => Vec::new(),
-            };
-        }
+        let mut stopped: Vec<(Arc<Subscriber>, Option<Terminal>)> = match &end {
+            Some(failure) if !current => self
+                .cut_exposed(run)
+                .into_iter()
+                .map(|sub| (sub, Some(failure.clone())))
+                .collect(),
+            _ => Vec::new(),
+        };
         let end = end.filter(|_| current);
-        if self.reservations > 0 {
+        if self.readers > 0 || self.reservations > 0 {
             if let Some(failure) = end {
                 self.pending_end = Some((self.subs.clone(), failure));
             }
-            self.finish_due = true;
-            return Vec::new();
+            if self.readers == 0 {
+                self.finish_due = true;
+            }
+            return stopped;
         }
-        self.finish(end)
+        stopped.extend(self.finish(end));
+        stopped
     }
 
     fn finish(&mut self, end: Option<Terminal>) -> Vec<(Arc<Subscriber>, Option<Terminal>)> {

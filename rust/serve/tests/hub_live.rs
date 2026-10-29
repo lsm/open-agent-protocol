@@ -650,3 +650,36 @@ fn an_older_unnamed_run_bound_late_does_not_take_back_the_current_run() {
     script.end(&older);
     script.end(&newer);
 }
+
+#[test]
+fn an_older_run_failing_after_the_current_run_ended_still_reaches_its_exposed_subscribers() {
+    let script = script(64);
+    let lagging = script.subscribe();
+    let old = script.submit();
+    script.emit(&old, 1);
+    settle();
+    let current = script.submit();
+    let mut on_current = script.subscribe();
+    script.emit(&current, 1);
+    assert_eq!(
+        next(&mut on_current).unwrap().unwrap().run_id.as_ref(),
+        Some(&current)
+    );
+    script.end(&current);
+    settle();
+    let mut lagging = lagging;
+    script.fail(&old);
+    settle();
+    assert_eq!(next(&mut lagging).unwrap().unwrap().sequence, Some(1));
+    assert_eq!(
+        next(&mut lagging).unwrap().unwrap().run_id.as_ref(),
+        Some(&current)
+    );
+    let got = next(&mut lagging);
+    assert!(
+        matches!(got, Some(Err(HubError::Adapter(Error::Harness(_))))),
+        "{:?}",
+        got.map(|item| item.map(|e| (e.run_id, e.sequence)))
+    );
+    assert!(next(&mut on_current).is_none());
+}

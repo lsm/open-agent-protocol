@@ -38,6 +38,8 @@ pub enum HubError {
     },
     #[error("the session has no run to replay")]
     NoRunToResume,
+    #[error("the session is closed")]
+    SessionClosed(SessionId),
     #[error("serve: event stream overflowed behind sequence {last_sequence} (run {run_id}); resume with a cursor after it")]
     Overflow { run_id: RunId, last_sequence: u64 },
     #[error(transparent)]
@@ -337,6 +339,9 @@ impl Hub {
         after: u64,
     ) -> Result<Subscription, HubError> {
         let entry = self.session(id)?;
+        if entry.is_closed() {
+            return Err(HubError::SessionClosed(id.clone()));
+        }
         let run = match run.filter(|run| !run.as_str().is_empty()) {
             Some(run) => run,
             None => {
@@ -366,7 +371,7 @@ impl Hub {
         let entry = self.session(id)?;
         let (sub, joined) = entry
             .with_live(Live::subscribe)
-            .ok_or_else(|| HubError::UnknownSession(id.clone()))?;
+            .ok_or_else(|| HubError::SessionClosed(id.clone()))?;
         Ok(Subscription::live(entry, sub, joined))
     }
 
