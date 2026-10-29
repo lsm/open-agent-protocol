@@ -484,10 +484,10 @@ pub fn decode_event(data: &str) -> Result<Event, Error> {
 }
 
 pub fn decode_data<T: DeserializeOwned>(event: &Event) -> Result<T, Error> {
-    decode_strict(if event.data.is_empty() {
-        "null"
+    let decoded = if event.data.is_empty() {
+        Err("EOF".to_owned())
     } else {
-        &event.data
-    })
-    .map_err(|error| Error::InvalidWire(format!("{} data: {error}", event.kind)))
+        decode_strict(&event.data)
+    };
+    decoded.map_err(|error| Error::InvalidWire(format!("{} data: {error}", event.kind)))
 }

@@ -142,3 +142,12 @@ fn a_lone_surrogate_escape_decodes_as_the_replacement_character_as_go_s_decoder_
     .unwrap();
     assert_eq!(event.session_id, "ses_1");
 }
+
+#[test]
+fn an_event_without_data_fails_its_data_decode_with_go_s_eof() {
+    let bare = decode_event(r#"{"id":"evt_6","type":"server.heartbeat"}"#).unwrap();
+    assert_eq!(
+        decode_data::<Option<Value>>(&bare).unwrap_err().to_string(),
+        "opencode native: invalid wire payload: server.heartbeat data: EOF"
+    );
+}
