@@ -31,6 +31,7 @@ pub const KNOWN_COPILOT_MODELS = [_][]const u8{
 };
 
 pub const COPILOT_HEADERS = struct {
+    pub const api_version = "2026-08-01";
     pub const user_agent = "GitHubCopilotChat/0.35.0";
     pub const editor_version = "vscode/1.107.0";
     pub const editor_plugin_version = "copilot-chat/0.35.0";

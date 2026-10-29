@@ -478,6 +478,12 @@ context gauge divides by, so the two cannot disagree: the runtime hands the agen
 model carrying the session's window everywhere it hands it a model, which is at start,
 at a model switch, at a picker selection and when the catalog is refreshed.
 
+Copilot catalog refreshes and inference requests use the versioned API contract
+(`X-GitHub-Api-Version: 2026-08-01`), matching the official Copilot API client.
+Unversioned catalogs can expose legacy windows even for models with longer context.
+After upgrading, `/model refresh` replaces an existing legacy catalog; `/context`
+continues to use the returned limits rather than a hardcoded model allowance.
+
 Copilot models with distinct `billing.token_prices.default` and `long_context`
 limits retain the default prompt window and the larger selectable prompt ceiling.
 Both the current `max_prompt_tokens` and earlier `context_max` spellings are read
