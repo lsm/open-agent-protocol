@@ -34,7 +34,9 @@ stalled call must return DeadlineExceeded, and close/cancellation must reap the
 child. The script disables Go's test cache so this process proof really runs.
 No real Copilot binary or authentication is used. The Go reducer additionally
 matches fixed OAP for text, queue, unknown events, session errors and foreign
-sessions and usage. Usage additionally pins measured zero, sparse calls, exact
+sessions and usage. The queued case also injects delayed delta/final text for the
+completed interaction after its successor starts; neither may enter the next run.
+Usage additionally pins measured zero, sparse calls, exact
 counts above 2^53, uint64 maximum and sum overflow, native negative zero and
 missing/partial/wide/non-finite costs. Missing counts stay unknown; neither
 reducer infers totals with unknown cache terms. Go now matches all twenty-one
@@ -43,6 +45,8 @@ and incomplete tools at run settlement. Its inventory test requires every
 manifest case to be replayed or checked by the native codec. The Go session
 read loop additionally proves state snapshots, bounded cursor replay and explicit
 gaps, process-exit settlement and close/reaping with a synthetic subprocess.
+After transport death, State still reports the settled snapshot and Resume
+serves retained events; explicit Close makes both unavailable.
 Public session submission tests an early native event before its reply, Unicode
 text across messages/parts, native refusal without a ghost run, missing binding
 teardown, queue promotion and the nine-run bound. Unsupported portable controls
@@ -78,3 +82,10 @@ unverified.
 After registry/example changes, also run `zig build --build-file zig/build.zig test-unit-adapter`
 and require exit 0. This includes the shared example inventory check and prevents
 a Go-only entry from breaking the Zig front door.
+
+
+For missing native admission bindings, inspect the ledger's explicit host
+lifecycle divergence. Go refuses further work but keeps the settled snapshot;
+Zig currently allows another submission. The Go missing-binding subprocess test
+runs above; also run `zig build --build-file zig/build.zig test-unit-adapter`
+for its synthetic host test. This comparison does not claim identical teardown.

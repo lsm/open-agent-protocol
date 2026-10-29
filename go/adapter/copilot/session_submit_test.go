@@ -138,7 +138,7 @@ func TestSubmitPreservesContiguousUnicodeTextParts(t *testing.T) {
 	}
 }
 
-func TestMissingNativeBindingRefusesAndStopsTheSession(t *testing.T) {
+func TestMissingNativeBindingStopsWorkButKeepsSettledState(t *testing.T) {
 	s := emptySession(t, "missing-id")
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
@@ -151,8 +151,13 @@ func TestMissingNativeBindingRefusesAndStopsTheSession(t *testing.T) {
 	case <-ctx.Done():
 		t.Fatal("invalid admission left child running")
 	}
-	if _, err := s.State(ctx); !errors.Is(err, base.ErrSessionClosed) {
-		t.Fatalf("invalid session remained open: %v", err)
+	state, err := s.State(ctx)
+	if err != nil || state.Status != protocol.SessionIdle || len(state.ActiveRuns) != 0 {
+		t.Fatalf("uncertain admission lost settled state: %+v, %v", state, err)
+	}
+	ack, stream, err = s.Submit(ctx, helloRequest())
+	if !errors.Is(err, base.ErrSessionClosed) || ack.Accepted || stream != nil {
+		t.Fatalf("unbound native admission allowed further work: %+v, %v", ack, err)
 	}
 }
 
