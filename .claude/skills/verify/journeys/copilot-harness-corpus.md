@@ -28,6 +28,10 @@ The same script also checks RPC correlation across concurrent calls, preserved
 notifications, refusal of reverse requests, delivered replies surviving EOF or
 cancellation, and closure on malformed input or queue overflow. Call cancellation
 unblocks an owned stalled pipe. These run with race detection and appear in
-`go-native.txt`. Process ownership and the runnable reducer/adapter follow in
-later slices. Unsupported host capabilities remain unadvertised; the Rust lane
-follows separately.
+`go-native.txt`. Process ownership is exercised with an actual synthetic child
+under temporary HOME and an explicit environment: an RPC reads that HOME, a
+stalled call must return DeadlineExceeded, and close/cancellation must reap the
+child. The script disables Go's test cache so this process proof really runs.
+No real Copilot binary or authentication is used. The runnable reducer/adapter
+follows in later slices. Unsupported host capabilities remain unadvertised;
+the Rust lane follows separately.
