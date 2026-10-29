@@ -367,7 +367,6 @@ pub struct HubSession {
 #[derive(Default)]
 struct Runs {
     current: Option<RunId>,
-    held: Vec<(RunId, EventStream)>,
 }
 
 pub struct Subscription {
@@ -450,22 +449,33 @@ impl HubSession {
                 addressed: self.id.clone(),
             });
         }
-        let (admission, stream) = self
+        let (admission, _stream) = self
             .session
             .submit(submit)
             .await
             .inspect_err(|err| self.closed_by(err))?;
         if let Some(run) = &admission.run_id {
-            let mut runs = self.runs();
             if admission.admission != Admission::QUEUED {
-                runs.current = Some(run.clone());
+                self.runs().current = Some(run.clone());
             }
-            runs.held.push((run.clone(), stream));
         }
         Ok(admission)
     }
 
     pub async fn resolve(&self, resolution: InteractionResolution) -> Result<(), HubError> {
+        let scoped = [
+            resolution
+                .permission
+                .as_ref()
+                .map(|permission| &permission.session_id),
+            resolution.input.as_ref().map(|input| &input.session_id),
+        ];
+        if let Some(payload) = scoped.into_iter().flatten().find(|id| **id != self.id) {
+            return Err(HubError::ScopeMismatch {
+                payload: payload.clone(),
+                addressed: self.id.clone(),
+            });
+        }
         self.session
             .resolve(resolution)
             .await

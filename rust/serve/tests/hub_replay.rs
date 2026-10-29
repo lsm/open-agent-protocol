@@ -3,10 +3,10 @@ use std::sync::Arc;
 use futures::executor::block_on;
 use futures::{FutureExt, StreamExt};
 use oap_adapter::memory::{Config, Memory};
-use oap_adapter::{Error, OpenRequest, SubmitRequest};
+use oap_adapter::{Error, InteractionResolution, OpenRequest, SubmitRequest};
 use oap_protocol::{
     Envelope, EnvelopeType, Message, MessageContent, MessageRole, MessageSubmitRequest,
-    RequestedDeliveryMode, RunId,
+    PermissionResolveRequest, RequestedDeliveryMode, RunId, UserInputResolveRequest,
 };
 use oap_serve::{Hub, HubError, HubSession, Registry, Subscription};
 
@@ -148,4 +148,32 @@ fn a_request_scoped_to_another_session_is_refused_before_the_adapter_sees_it() {
         block_on(hub.subscribe_after(&"dup".into(), None, 0)),
         Err(HubError::NoRunToResume)
     ));
+}
+
+#[test]
+fn a_resolution_scoped_to_another_session_is_refused_before_the_adapter_sees_it() {
+    let hub = hub(64);
+    let session = open(&hub, "mine");
+    let permission = InteractionResolution {
+        permission: Some(PermissionResolveRequest {
+            session_id: "theirs".into(),
+            ..PermissionResolveRequest::default()
+        }),
+        ..InteractionResolution::default()
+    };
+    let input = InteractionResolution {
+        input: Some(UserInputResolveRequest {
+            session_id: "theirs".into(),
+            ..UserInputResolveRequest::default()
+        }),
+        ..InteractionResolution::default()
+    };
+    for resolution in [permission, input] {
+        match block_on(session.resolve(resolution)) {
+            Err(HubError::ScopeMismatch { payload, addressed }) => {
+                assert_eq!((payload.as_str(), addressed.as_str()), ("theirs", "mine"));
+            }
+            other => panic!("resolve = {other:?}"),
+        }
+    }
 }
