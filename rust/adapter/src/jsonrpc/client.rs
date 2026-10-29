@@ -226,6 +226,7 @@ impl RpcClient {
                 return Err(error);
             }
             if state.pending.contains_key(&id) {
+                drop(state);
                 let error = self.fail(Fault::Transport(
                     self.text(&format!("request id is already active: {id}")),
                 ));
@@ -379,6 +380,10 @@ impl RpcClient {
             select! {
                 recv(requests) -> request => {
                     let Ok(request) = request else { return };
+                    if self.is_closed() {
+                        let _ = request.result.send(Err(self.close_error()));
+                        return;
+                    }
                     if request.deadline.is_some_and(|at| Instant::now() >= at) {
                         let _ = request.result.send(Err(self.fail(Fault::DeadlineExceeded)));
                         continue;

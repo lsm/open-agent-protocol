@@ -368,3 +368,26 @@ fn a_call_closed_while_the_reader_decodes_is_failed_when_the_reader_then_errors(
         Fault::Closed
     ));
 }
+
+#[test]
+fn a_duplicate_id_reported_to_a_slow_reader_does_not_hold_the_client() {
+    let mut peer = peer(false);
+    let first = call_in_thread(&peer.client, RequestId::Integer(9), "session/prompt");
+    let _ = peer.read();
+    let (started, admitted) = crossbeam_channel::bounded(0);
+    let duplicate = peer.client.clone();
+    let refused = std::thread::spawn(move || {
+        duplicate.call_id(
+            RequestId::Integer(9),
+            "session/prompt",
+            None,
+            None,
+            Some(started),
+        )
+    });
+    std::thread::sleep(Duration::from_millis(100));
+    peer.send(r#"{"jsonrpc":"2.0","id":9,"result":{}}"#);
+    assert_eq!(first.join().unwrap().unwrap(), "{}");
+    assert!(admitted.recv_timeout(WAIT).unwrap().is_some());
+    assert!(refused.join().unwrap().is_err());
+}
