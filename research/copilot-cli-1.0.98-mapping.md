@@ -129,6 +129,18 @@ both Go and Zig.
 SDK sets it whenever an `onPermissionRequest` handler exists, and its handler
 is required. Without it the server decides alone.
 
+## Host admission divergence
+
+A successful `session.send` reply without `messageId` leaves native admission
+uncertain. Go removes the provisional run, stops the native process and refuses
+further submissions, while retaining readable state/replay until explicit Close.
+Zig currently forgets that run and permits another submission. Its adapter test
+"a prompt the server refuses or answers without a message id is not admitted"
+pins that reusable behavior; Go's missing-binding test pins conservative teardown.
+This is an explicit lifecycle divergence under Decision 0032, not a parity claim:
+Go cannot safely correlate later observations with an accepted-but-unbound prompt.
+The Go submission slice leaves Zig host lifecycle alignment for follow-up.
+
 ## Run boundaries
 
 The pattern is OpenCode v2's: an idle is a **busy period**, not a run.

@@ -54,3 +54,9 @@ the Rust lane follows separately.
 
 
 
+
+For missing native admission bindings, inspect the ledger's explicit host
+lifecycle divergence. Go refuses further work but keeps the settled snapshot;
+Zig currently allows another submission. The Go missing-binding subprocess test
+runs above; also run `zig build --build-file zig/build.zig test-unit-adapter`
+for its synthetic host test. This comparison does not claim identical teardown.
