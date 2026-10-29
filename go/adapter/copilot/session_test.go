@@ -168,6 +168,10 @@ func TestProcessExitFailsTheAdmittedRun(t *testing.T) {
 	case <-ctx.Done():
 		t.Fatal("child not reaped")
 	}
+	state, err := s.State(ctx)
+	if err != nil || state.SessionID != "s1" || state.Status != protocol.SessionIdle || state.ActiveRunID != "" || len(state.ActiveRuns) != 0 {
+		t.Fatalf("settled state became unreachable after native exit: %+v, %v", state, err)
+	}
 	_, again, err := s.Resume(ctx, base.ResumeRequest{RunID: run.id})
 	if err != nil {
 		t.Fatalf("retained replay became unreachable after native exit: %v", err)
