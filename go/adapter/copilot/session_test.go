@@ -7,6 +7,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"runtime"
 	"testing"
 	"time"
 
@@ -82,14 +83,19 @@ func TestSyntheticCopilotChild(t *testing.T) {
 	}
 }
 
-func syntheticSession(t *testing.T, mode string, capacity int) (*session, *run) {
+func syntheticProcessConfig(t *testing.T, mode string) rpc.ProcessConfig {
 	t.Helper()
 	path, err := os.Executable()
 	if err != nil {
 		t.Fatal(err)
 	}
 	home := t.TempDir()
-	p, err := rpc.Start(rpc.ProcessConfig{Path: path, Args: []string{"-test.run=^TestSyntheticCopilotChild$"}, Dir: home, Env: []string{"HOME=" + home, "OAP_COPILOT_SESSION_CHILD=1", "OAP_COPILOT_SESSION_MODE=" + mode, "GORACE=atexit_sleep_ms=0"}, QueueCapacity: 256})
+	return rpc.ProcessConfig{Path: path, Args: []string{"-test.run=^TestSyntheticCopilotChild$"}, Dir: home, Env: []string{"HOME=" + home, "OAP_COPILOT_SESSION_CHILD=1", "OAP_COPILOT_SESSION_MODE=" + mode, "GORACE=atexit_sleep_ms=0"}, QueueCapacity: 256}
+}
+
+func syntheticSession(t *testing.T, mode string, capacity int) (*session, *run) {
+	t.Helper()
+	p, err := rpc.Start(syntheticProcessConfig(t, mode))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -209,6 +215,43 @@ func TestSessionCloseSettlesAndStopsItsProcess(t *testing.T) {
 	}
 	if _, err := s.State(ctx); !errors.Is(err, base.ErrSessionClosed) {
 		t.Fatal(err)
+	}
+}
+
+func TestClosePreservesACompletionAlreadyReceivedFromTheProcess(t *testing.T) {
+	p, err := rpc.Start(syntheticProcessConfig(t, ""))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = p.Close() })
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	if err := p.Client.Call(ctx, "session.send", map[string]any{"prompt": "hello"}, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := p.Client.Call(ctx, "ping", map[string]any{}, nil); err != nil {
+		t.Fatal(err)
+	}
+	r := newReducer("s1", "ses", &corpusIDs{}, &corpusClock{})
+	run, err := r.admit(false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	run.nativeMessage = "m1"
+	previous := runtime.GOMAXPROCS(1)
+	defer runtime.GOMAXPROCS(previous)
+	s := newSession(r, p, 64)
+	t.Cleanup(func() { _ = s.Close(context.Background()) })
+	_, stream, err := s.Resume(ctx, base.ResumeRequest{RunID: run.id})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Close(ctx); err != nil {
+		t.Fatal(err)
+	}
+	events := adaptertest.Drain(t, stream, time.Second)
+	if len(events) == 0 || events[len(events)-1].Type != protocol.TypeRunCompleted {
+		t.Fatalf("close replaced the received completion: %+v", events)
 	}
 }
 
