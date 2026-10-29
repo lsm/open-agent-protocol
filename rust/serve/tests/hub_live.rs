@@ -20,11 +20,13 @@ type Sender = UnboundedSender<Result<Envelope, Error>>;
 #[derive(Default)]
 struct Scripted {
     senders: Arc<Mutex<Vec<(RunId, Sender)>>>,
+    anonymous: bool,
 }
 
 struct ScriptedSession {
     id: String,
     senders: Arc<Mutex<Vec<(RunId, Sender)>>>,
+    anonymous: bool,
 }
 
 impl Adapter for Scripted {
@@ -36,6 +38,7 @@ impl Adapter for Scripted {
         let session: Box<dyn Session> = Box::new(ScriptedSession {
             id: request.session_id.to_string(),
             senders: self.senders.clone(),
+            anonymous: self.anonymous,
         });
         Box::pin(async move { Ok(session) })
     }
@@ -51,7 +54,7 @@ impl Session for ScriptedSession {
             session_id: self.id.as_str().into(),
             accepted: true,
             admission: Admission::STARTED,
-            run_id: Some(run),
+            run_id: (!self.anonymous).then_some(run),
             ..MessageSubmitResponse::default()
         };
         let stream: EventStream = Box::pin(receiver);
@@ -91,7 +94,14 @@ struct Script {
 }
 
 fn script(queue: usize) -> Script {
-    let scripted = Scripted::default();
+    scripted_with(queue, false)
+}
+
+fn scripted_with(queue: usize, anonymous: bool) -> Script {
+    let scripted = Scripted {
+        anonymous,
+        ..Scripted::default()
+    };
     let senders = scripted.senders.clone();
     let mut registry = Registry::new();
     registry.register("scripted", Arc::new(scripted)).unwrap();
@@ -120,6 +130,11 @@ fn script(queue: usize) -> Script {
 
 impl Script {
     fn submit(&self) -> RunId {
+        self.submit_anyway();
+        self.senders.lock().unwrap().last().unwrap().0.clone()
+    }
+
+    fn submit_anyway(&self) -> Option<RunId> {
         block_on(self.session.submit(SubmitRequest {
             request: MessageSubmitRequest {
                 session_id: "s".into(),
@@ -129,7 +144,12 @@ impl Script {
         }))
         .unwrap()
         .run_id
-        .unwrap()
+    }
+
+    fn overflow(&self, run: &RunId) {
+        self.sender(run)
+            .unbounded_send(Err(Error::EventStreamOverflow))
+            .unwrap();
     }
 
     fn sender(&self, run: &RunId) -> Sender {
@@ -276,4 +296,58 @@ fn a_subscription_ends_when_its_owner_closes_it_or_the_session_closes() {
         script.hub.subscribe(&"s".into()),
         Err(HubError::UnknownSession(_))
     ));
+}
+
+#[test]
+fn an_adapter_overflow_cuts_only_the_subscribers_still_exposed_to_its_run() {
+    let script = script(64);
+    let mut moved_on = script.subscribe();
+    let lagging = script.subscribe();
+    let old = script.submit();
+    script.emit(&old, 1);
+    assert_eq!(next(&mut moved_on).unwrap().unwrap().sequence, Some(1));
+    let newer = script.submit();
+    script.emit(&newer, 1);
+    assert_eq!(
+        next(&mut moved_on).unwrap().unwrap().run_id.as_ref(),
+        Some(&newer)
+    );
+    let mut lagging = lagging;
+    script.overflow(&old);
+    settle();
+    script.emit(&newer, 2);
+    assert_eq!(next(&mut moved_on).unwrap().unwrap().sequence, Some(2));
+    assert_eq!(next(&mut lagging).unwrap().unwrap().sequence, Some(1));
+    assert_eq!(
+        next(&mut lagging).unwrap().unwrap().run_id.as_ref(),
+        Some(&newer)
+    );
+    match next(&mut lagging).unwrap().unwrap_err() {
+        HubError::Overflow {
+            run_id,
+            last_sequence,
+        } => {
+            assert_eq!((run_id, last_sequence), (old.clone(), 1));
+        }
+        other => panic!("{other:?}"),
+    }
+    script.end(&old);
+    script.end(&newer);
+    assert!(next(&mut moved_on).is_none());
+}
+
+#[test]
+fn a_run_admitted_without_its_id_is_bound_from_its_first_envelope() {
+    let script = scripted_with(64, true);
+    let mut watcher = script.subscribe();
+    assert_eq!(script.submit_anyway(), None);
+    let run = script.senders.lock().unwrap().last().unwrap().0.clone();
+    script.emit(&run, 1);
+    assert_eq!(
+        next(&mut watcher).unwrap().unwrap().run_id.as_ref(),
+        Some(&run)
+    );
+    assert_eq!(script.session.current_run(), Some(run.clone()));
+    script.end(&run);
+    assert!(next(&mut watcher).is_none());
 }

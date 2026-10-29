@@ -460,12 +460,11 @@ impl HubSession {
             .submit(submit)
             .await
             .inspect_err(|err| self.closed_by(err))?;
-        if let Some(run) = &admission.run_id {
-            if admission.admission != Admission::STEERED {
-                let current = admission.admission != Admission::QUEUED;
-                self.with_live(|live| live.start(run, current));
-                live::read_run(self.clone(), run.clone(), stream);
-            }
+        if admission.admission != Admission::STEERED {
+            let current = admission.admission != Admission::QUEUED;
+            let run = admission.run_id.clone();
+            let serial = self.with_live(|live| live.start(run.as_ref(), current));
+            live::read_run(self.clone(), run, serial, current, stream);
         }
         Ok(admission)
     }

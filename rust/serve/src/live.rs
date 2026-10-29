@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{HashMap, VecDeque};
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
@@ -28,6 +28,8 @@ enum Terminal {
 #[derive(Default)]
 struct Mailbox {
     queue: VecDeque<Envelope>,
+    attached: Option<RunId>,
+    last_read: Option<RunId>,
     stopped: bool,
     terminal: Option<Terminal>,
     waker: Option<Waker>,
@@ -51,6 +53,19 @@ impl Subscriber {
         true
     }
 
+    fn exposed_to(&self, run: &RunId) -> bool {
+        let mailbox = lock(&self.mailbox);
+        let unread = mailbox
+            .queue
+            .iter()
+            .any(|envelope| envelope.run_id.as_ref() == Some(run));
+        unread
+            || match &mailbox.last_read {
+                Some(read) => read == run,
+                None => mailbox.attached.as_ref() == Some(run),
+            }
+    }
+
     fn stop(&self, terminal: Option<Terminal>) {
         let mut mailbox = lock(&self.mailbox);
         if mailbox.terminal.is_none() {
@@ -68,7 +83,8 @@ pub(crate) struct Live {
     current: Option<RunId>,
     sequences: HashMap<RunId, u64>,
     subs: Vec<Arc<Subscriber>>,
-    finished: HashSet<RunId>,
+    serials: HashMap<RunId, u64>,
+    next_serial: u64,
     readers: usize,
     closed: bool,
 }
@@ -78,13 +94,30 @@ impl Live {
         self.current.clone()
     }
 
-    pub(crate) fn start(&mut self, run: &RunId, current: bool) {
+    pub(crate) fn start(&mut self, run: Option<&RunId>, current: bool) -> u64 {
         self.readers += 1;
-        self.finished.remove(run);
+        self.next_serial += 1;
+        let serial = self.next_serial;
+        if let Some(run) = run {
+            self.bind(run, serial, current);
+        }
+        serial
+    }
+
+    fn bind(&mut self, run: &RunId, serial: u64, current: bool) {
+        self.serials.insert(run.clone(), serial);
         if current {
             self.current = Some(run.clone());
             self.sequences.remove(run);
         }
+    }
+
+    fn cut_exposed(&mut self, run: &RunId) -> Vec<Arc<Subscriber>> {
+        let (cut, kept) = std::mem::take(&mut self.subs)
+            .into_iter()
+            .partition(|sub| sub.exposed_to(run));
+        self.subs = kept;
+        cut
     }
 
     fn publish(&mut self, envelope: &Envelope, capacity: usize) {
@@ -95,11 +128,12 @@ impl Live {
             EnvelopeType::RUN_CANCELLED,
         ]
         .contains(&envelope.envelope_type);
-        let current_done = self
-            .current
-            .as_ref()
-            .is_none_or(|current| self.finished.contains(current));
-        if !terminal && current_done && !run.as_str().is_empty() && !self.finished.contains(&run) {
+        let serial = |run: &RunId| self.serials.get(run).copied().unwrap_or(0);
+        let newer = match &self.current {
+            Some(current) => current != &run && serial(&run) > serial(current),
+            None => !run.as_str().is_empty(),
+        };
+        if !terminal && newer {
             self.current = Some(run.clone());
         }
         if let Some(sequence) = envelope.sequence {
@@ -125,7 +159,6 @@ impl Live {
         end: Option<Terminal>,
     ) -> (Vec<Arc<Subscriber>>, Option<Terminal>) {
         self.readers -= 1;
-        self.finished.insert(run.clone());
         if self.readers > 0 {
             return (Vec::new(), None);
         }
@@ -146,6 +179,7 @@ impl Live {
             return None;
         }
         let sub = Arc::new(Subscriber::default());
+        lock(&sub.mailbox).attached = self.current.clone();
         self.subs.push(sub.clone());
         let joined = self.current.as_ref().and_then(|run| {
             let sequence = self.sequences.get(run).copied().unwrap_or(0);
@@ -159,7 +193,13 @@ impl Live {
     }
 }
 
-pub(crate) fn read_run(entry: Arc<HubSession>, run: RunId, mut stream: EventStream) {
+pub(crate) fn read_run(
+    entry: Arc<HubSession>,
+    mut run: Option<RunId>,
+    serial: u64,
+    current: bool,
+    mut stream: EventStream,
+) {
     thread::spawn(move || {
         let mut end = None;
         while let Some(item) = block_on(std::future::poll_fn(|context| {
@@ -167,13 +207,18 @@ pub(crate) fn read_run(entry: Arc<HubSession>, run: RunId, mut stream: EventStre
         })) {
             match item {
                 Ok(envelope) => {
+                    if let (None, Some(bound)) = (&run, &envelope.run_id) {
+                        run = Some(bound.clone());
+                        entry.with_live(|live| live.bind(bound, serial, current));
+                    }
                     let capacity = entry.stream_queue();
                     entry.with_live(|live| live.publish(&envelope, capacity));
                 }
                 Err(Error::EventStreamOverflow) => {
-                    let subs = entry.with_live(Live::detach);
+                    let overflowed = run.clone().unwrap_or_default();
+                    let subs = entry.with_live(|live| live.cut_exposed(&overflowed));
                     for sub in subs {
-                        sub.stop(Some(Terminal::Overflow(run.clone())));
+                        sub.stop(Some(Terminal::Overflow(overflowed.clone())));
                     }
                 }
                 Err(err) => {
@@ -182,6 +227,7 @@ pub(crate) fn read_run(entry: Arc<HubSession>, run: RunId, mut stream: EventStre
                 }
             }
         }
+        let run = run.unwrap_or_default();
         let (subs, end) = entry.with_live(|live| live.exit(&run, end));
         for sub in subs {
             sub.stop(end.clone());
@@ -321,6 +367,7 @@ impl Stream for Subscription {
             Source::Live { sub, .. } => {
                 let mut mailbox = lock(&sub.mailbox);
                 if let Some(envelope) = mailbox.queue.pop_front() {
+                    mailbox.last_read = envelope.run_id.clone();
                     Polled::Item(Box::new(envelope))
                 } else if mailbox.stopped {
                     match mailbox.terminal.take() {
