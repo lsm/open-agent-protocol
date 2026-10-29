@@ -1,9 +1,14 @@
+mod client;
 mod codec;
 mod inbound;
 mod message;
 
 use std::fmt;
 
+pub use client::{
+    ClientOptions, Closer, NotificationCheck, RpcClient, Started, DEFAULT_QUEUE_CAPACITY,
+    DEFAULT_STALL,
+};
 pub use codec::{Decoder, Encoder, DEFAULT_FRAME_LIMIT};
 pub use inbound::{Inbound, IncomingRequest, NotificationMessage, Responder};
 pub use message::{ErrorObject, Kind, Message, RequestId};
@@ -15,6 +20,7 @@ pub struct Dialect {
     pub limit_writes: bool,
     pub params_object_or_null: bool,
     pub nonempty_string_ids: bool,
+    pub versioned: bool,
 }
 
 impl Dialect {
@@ -25,6 +31,14 @@ impl Dialect {
             limit_writes: false,
             params_object_or_null: false,
             nonempty_string_ids: false,
+            versioned: true,
+        }
+    }
+
+    pub const fn unversioned(name: &'static str) -> Self {
+        Self {
+            versioned: false,
+            ..Self::lenient(name)
         }
     }
 
@@ -38,6 +52,9 @@ impl Dialect {
 
     pub(crate) fn params_shape(&self, raw: &str) -> bool {
         let trimmed = raw.trim();
+        if !self.versioned {
+            return true;
+        }
         if self.params_object_or_null {
             return trimmed == "null" || trimmed.starts_with('{');
         }
@@ -55,6 +72,7 @@ impl Dialect {
     pub fn error(&self, fault: Fault) -> Error {
         Error {
             dialect: self.name,
+            versioned: self.versioned,
             fault,
         }
     }
@@ -78,6 +96,7 @@ pub enum Fault {
 #[derive(Debug)]
 pub struct Error {
     pub dialect: &'static str,
+    pub versioned: bool,
     pub fault: Fault,
 }
 
@@ -94,7 +113,12 @@ impl fmt::Display for Error {
         let name = self.dialect;
         match &self.fault {
             Fault::InvalidMessage(text) => {
-                write!(f, "{name} rpc: invalid JSON-RPC message{}", detail(text))
+                let noun = if self.versioned {
+                    "JSON-RPC message"
+                } else {
+                    "message"
+                };
+                write!(f, "{name} rpc: invalid {noun}{}", detail(text))
             }
             Fault::InvalidId(text) => {
                 write!(

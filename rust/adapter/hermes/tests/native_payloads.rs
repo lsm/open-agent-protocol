@@ -1,0 +1,192 @@
+use oap_adapter_hermes::native::{
+    decode_strict, DeltaPayload, Event, MessageCompletePayload, ToolCompletePayload,
+    ToolStartPayload, UsageTickPayload,
+};
+
+fn event(frame: &str) -> Event {
+    decode_strict(frame.as_bytes()).unwrap()
+}
+
+fn complete(frame: &str) -> Result<MessageCompletePayload, String> {
+    decode_strict(event(frame).payload_bytes())
+}
+
+#[test]
+fn an_interrupted_settlement_carries_null_text_and_its_persisted_turn() {
+    let payload = complete(
+        r#"{"type":"message.complete","session_id":"s","seq":4,"payload":{"text":null,"usage":{"model":"m","input":0,"output":0,"reasoning":0,"prompt":0,"completion":0,"total":0,"calls":0,"compressions":0,"active_subagents":0},"status":"interrupted","persisted_turn":{"row_ids":[1,2],"complete":false,"user_row_id":1}}}"#,
+    )
+    .unwrap();
+    assert_eq!(
+        (payload.text.as_str(), payload.status.as_str()),
+        ("", "interrupted")
+    );
+    assert!(payload.persisted_turn.is_some());
+}
+
+#[test]
+fn message_complete_admits_response_reuse_and_transform_flags_and_refuses_an_undeclared_member() {
+    let payload = complete(
+        r#"{"type":"message.complete","session_id":"s","seq":3,"payload":{"text":"hi","status":"complete","response_reused":true,"response_transformed":null}}"#,
+    )
+    .unwrap();
+    assert_eq!(payload.response_reused, Some(true));
+    assert_eq!(payload.response_transformed, None);
+    assert!(complete(
+        r#"{"type":"message.complete","session_id":"s","seq":3,"payload":{"text":"hi","status":"complete","response_recycled":true}}"#,
+    )
+    .is_err());
+}
+
+#[test]
+fn message_complete_usage_tolerates_extensible_readouts_but_the_payload_does_not() {
+    let payload = complete(
+        r#"{"type":"message.complete","session_id":"s","seq":3,"payload":{"text":"hi","usage":{"model":"m","input":1,"output":2,"reasoning":0,"prompt":1,"completion":2,"total":3,"calls":1,"active_subagents":2,"avg_latency_s":1.4,"avg_tps":9.2,"future_readout":true},"status":"complete"}}"#,
+    )
+    .unwrap();
+    assert_eq!(payload.usage.unwrap().active_subagents, Some(2));
+    assert!(complete(
+        r#"{"type":"message.complete","session_id":"s","seq":3,"payload":{"text":"hi","usage":{"model":"m","input":1,"output":2,"reasoning":0,"prompt":1,"completion":2,"total":3,"calls":1},"status":"complete","surprise":1}}"#,
+    )
+    .is_err());
+}
+
+#[test]
+fn an_error_surface_carries_provider_identity() {
+    let payload = complete(
+        r#"{"type":"message.complete","session_id":"s","seq":9,"payload":{"text":"Error: boom","usage":{},"status":"error","error":"boom","recoverable":true,"error_surface":{"layer":"provider","code":"auth","retryable":false,"provider":"openai","model":"gpt-5.6-sol"}}}"#,
+    )
+    .unwrap();
+    let surface = payload.error_surface.unwrap();
+    assert_eq!(
+        (surface.provider.as_str(), surface.model.as_str()),
+        ("openai", "gpt-5.6-sol")
+    );
+    assert!(payload.recoverable);
+}
+
+#[test]
+fn decode_strict_reads_null_as_zero_and_refuses_empty_input_a_trailing_value_and_a_wrong_shape() {
+    let delta: DeltaPayload = decode_strict(b"null").unwrap();
+    assert_eq!(delta.text, "");
+    assert_eq!(decode_strict::<DeltaPayload>(b"  ").unwrap_err(), "EOF");
+    assert!(decode_strict::<DeltaPayload>(br#"{"text":"a"} {}"#).is_err());
+    assert!(decode_strict::<DeltaPayload>(br#"[1]"#).is_err());
+    assert!(decode_strict::<UsageTickPayload>(br#"{"usage":null}"#).is_ok());
+}
+
+#[test]
+fn tool_args_must_be_an_object_or_null() {
+    for args in [r#"{"path":"a"}"#, "null"] {
+        let start: ToolStartPayload =
+            decode_strict(format!(r#"{{"tool_id":"t","name":"read","args":{args}}}"#).as_bytes())
+                .unwrap();
+        assert_eq!(start.args.unwrap().get(), args);
+    }
+    for (args, kind) in [
+        ("[1]", "array"),
+        (r#""x""#, "string"),
+        ("5", "number"),
+        ("true", "bool"),
+    ] {
+        let frame = format!(r#"{{"tool_id":"t","args":{args}}}"#);
+        assert_eq!(
+            decode_strict::<ToolStartPayload>(frame.as_bytes()).unwrap_err(),
+            format!(
+                "json: cannot unmarshal {kind} into Go struct field ToolStartPayload.args of type map[string]interface {{}}"
+            )
+        );
+        assert_eq!(
+            decode_strict::<ToolCompletePayload>(frame.as_bytes()).unwrap_err(),
+            format!(
+                "json: cannot unmarshal {kind} into Go struct field ToolCompletePayload.args of type map[string]interface {{}}"
+            )
+        );
+    }
+}
+
+#[test]
+fn an_event_keeps_its_payload_bytes_and_marshals_without_its_zero_members() {
+    let frame =
+        event(r#"{"type":"message.delta","session_id":"s","seq":2,"payload":{"text":"x"}}"#);
+    assert_eq!(frame.payload_bytes(), br#"{"text":"x"}"#);
+    let bare = event(r#"{"type":"gateway.ready"}"#);
+    assert_eq!(bare.payload_bytes(), b"");
+    assert_eq!(
+        serde_json::to_string(&bare).unwrap(),
+        r#"{"type":"gateway.ready"}"#
+    );
+}
+
+#[test]
+fn a_lone_surrogate_escape_decodes_as_the_replacement_character_as_go_s_decoder_reads_it() {
+    let delta: DeltaPayload = decode_strict(br#"{"text":"bad \ud800 half"}"#).unwrap();
+    assert_eq!(delta.text, "bad \u{fffd} half");
+}
+
+#[test]
+fn an_event_envelope_refuses_an_unknown_member() {
+    let refused =
+        decode_strict::<Event>(br#"{"type":"error","payload":{"message":"x"},"bogus":1}"#)
+            .unwrap_err();
+    assert!(refused.contains("unknown field `bogus`"), "{refused}");
+}
+
+#[test]
+fn decode_strict_skips_only_json_whitespace_and_reads_invalid_utf8_in_a_string_as_the_replacement_character(
+) {
+    assert_eq!(
+        decode_strict::<DeltaPayload>(b" \t\r\nnull\n")
+            .unwrap()
+            .text,
+        ""
+    );
+    assert!(decode_strict::<DeltaPayload>("\u{a0}null".as_bytes()).is_err());
+    assert!(decode_strict::<DeltaPayload>("\u{a0}".as_bytes()).is_err());
+    let delta: DeltaPayload = decode_strict(b"{\"text\":\"a\xffb\"}").unwrap();
+    assert_eq!(delta.text, "a\u{fffd}b");
+    assert!(decode_strict::<DeltaPayload>(b"{\"text\":\"a\"}\xff").is_err());
+}
+
+#[test]
+fn each_invalid_byte_in_a_string_reads_as_its_own_replacement_character_as_go_reads_it() {
+    let delta: DeltaPayload = decode_strict(b"{\"text\":\"a\xff\xfeb\xe2\x82\"}").unwrap();
+    assert_eq!(delta.text, "a\u{fffd}\u{fffd}b\u{fffd}\u{fffd}");
+}
+
+#[test]
+fn a_struct_is_refused_from_anything_but_an_object_with_go_s_text() {
+    assert_eq!(
+        decode_strict::<Event>(b"[]").unwrap_err(),
+        "json: cannot unmarshal array into Go value of type native.Event"
+    );
+    assert_eq!(
+        decode_strict::<DeltaPayload>(br#"["x"]"#).unwrap_err(),
+        "json: cannot unmarshal array into Go value of type native.DeltaPayload"
+    );
+    assert_eq!(
+        decode_strict::<MessageCompletePayload>(br#"{"text":"x","usage":[{}]}"#).unwrap_err(),
+        "json: cannot unmarshal array into Go value of type native.usageAlias"
+    );
+    assert_eq!(
+        decode_strict::<MessageCompletePayload>(br#"{"text":"x","error_surface":["a"]}"#)
+            .unwrap_err(),
+        "json: cannot unmarshal array into Go value of type native.surfaceAlias"
+    );
+    assert_eq!(
+        decode_strict::<UsageTickPayload>(br#"{"usage":[1]}"#).unwrap_err(),
+        "json: cannot unmarshal array into Go value of type native.usageAlias"
+    );
+    assert_eq!(
+        decode_strict::<UsageTickPayload>(br#"{"usage":"x"}"#).unwrap_err(),
+        "json: cannot unmarshal string into Go value of type native.usageAlias"
+    );
+}
+
+#[test]
+fn a_malformed_top_level_token_is_a_syntax_error_not_a_type_mismatch() {
+    for frame in [&b"x"[..], b"[1,", b"\"open"] {
+        let refused = decode_strict::<DeltaPayload>(frame).unwrap_err();
+        assert!(!refused.contains("cannot unmarshal"), "{refused}");
+    }
+}

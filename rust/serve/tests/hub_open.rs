@@ -15,7 +15,9 @@ enum Answer {
     Live,
     Fails,
     Closed,
+    ClosedState,
     ClosesAfterOpen,
+    StateClosesAfterOpen,
 }
 
 #[derive(Default)]
@@ -75,11 +77,17 @@ impl Session for ManualSession {
             _ if self.closed.load(Ordering::SeqCst) => Answer::Closed,
             Answer::ClosesAfterOpen if asked_before => Answer::Closed,
             Answer::ClosesAfterOpen => Answer::Live,
+            Answer::StateClosesAfterOpen if asked_before => Answer::ClosedState,
+            Answer::StateClosesAfterOpen => Answer::Live,
             other => other,
         };
         Box::pin(async move {
             match answer {
-                Answer::Live | Answer::ClosesAfterOpen => Ok(state),
+                Answer::Live | Answer::ClosesAfterOpen | Answer::StateClosesAfterOpen => Ok(state),
+                Answer::ClosedState => Ok(SessionState {
+                    status: SessionStatus::CLOSED,
+                    ..state
+                }),
                 Answer::Fails => Err(Error::harness("state probe failed")),
                 Answer::Closed => Err(Error::SessionClosed),
             }
@@ -177,7 +185,7 @@ fn an_open_whose_state_fails_closes_the_adapter_session_and_lists_nothing() {
 
 #[test]
 fn an_open_of_a_session_already_closed_is_refused_and_leaves_its_id_free() {
-    let (hub, _) = hub_with(Answer::Closed);
+    let (hub, seen) = hub_with(Answer::Closed);
     match block_on(hub.open("manual", request("already-closed"))) {
         Err(HubError::ClosedAtOpen(state)) => {
             assert_eq!(state.session_id.as_str(), "already-closed");
@@ -187,8 +195,22 @@ fn an_open_of_a_session_already_closed_is_refused_and_leaves_its_id_free() {
     }
     assert!(hub.sessions().is_empty());
     assert!(hub.session(&"already-closed".into()).is_err());
+    assert_eq!(seen.lock().unwrap().closed, ["already-closed"]);
     block_on(hub.open("live", request("already-closed"))).unwrap();
     assert_eq!(hub.sessions().len(), 1);
+}
+
+#[test]
+fn a_closed_snapshot_at_open_closes_the_adapter_and_leaves_its_id_free() {
+    let (hub, seen) = hub_with(Answer::ClosedState);
+    assert!(matches!(
+        block_on(hub.open("manual", request("s"))),
+        Err(HubError::ClosedAtOpen(state)) if state.status == SessionStatus::CLOSED
+    ));
+    assert_eq!(seen.lock().unwrap().closed, ["s"]);
+    assert!(hub.sessions().is_empty());
+    assert!(hub.session(&"s".into()).is_err());
+    block_on(hub.open("live", request("s"))).unwrap();
 }
 
 #[test]
@@ -225,6 +247,20 @@ fn a_state_the_adapter_reports_closed_releases_the_session() {
     ));
     assert!(session.is_closed());
     assert!(hub.sessions().is_empty());
+    assert!(seen.lock().unwrap().closed.is_empty());
+    block_on(hub.open("live", request("s"))).unwrap();
+}
+
+#[test]
+fn a_closed_snapshot_releases_the_session_and_allows_the_id_to_reopen() {
+    let (hub, seen) = hub_with(Answer::StateClosesAfterOpen);
+    let session = block_on(hub.open("manual", request("s"))).unwrap().session;
+    assert_eq!(
+        block_on(session.state()).unwrap().status,
+        SessionStatus::CLOSED
+    );
+    assert!(hub.sessions().is_empty());
+    assert!(hub.session(&"s".into()).is_err());
     assert!(seen.lock().unwrap().closed.is_empty());
     block_on(hub.open("live", request("s"))).unwrap();
 }
