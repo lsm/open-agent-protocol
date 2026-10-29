@@ -38,6 +38,12 @@ func TestHubAddrFinishesTheRefusalAndStopsTheBodyWhenItsSignalArrives(t *testing
 
 	var written atomic.Int64
 	var blocks atomic.Int64
+	block := bytes.Repeat([]byte{'c'}, 32*1024)
+	n, err := conn.Write(block)
+	if err != nil {
+		t.Fatalf("start the body: %v", err)
+	}
+	written.Store(int64(n))
 	writeDone := make(chan struct{})
 	startWriting := make(chan struct{})
 	allowWriting := sync.OnceFunc(func() { close(startWriting) })
@@ -59,7 +65,6 @@ func TestHubAddrFinishesTheRefusalAndStopsTheBodyWhenItsSignalArrives(t *testing
 	go func() {
 		defer close(writeDone)
 		<-startWriting
-		block := bytes.Repeat([]byte{'c'}, 32*1024)
 		for written.Load() < int64(declared) {
 			take := len(block)
 			if left := int64(declared) - written.Load(); left < int64(take) {
@@ -136,7 +141,7 @@ func TestHubAddrFinishesTheRefusalAndStopsTheBodyWhenItsSignalArrives(t *testing
 	if final >= int64(declared) {
 		t.Fatalf("all %d declared bytes were transferred, so nothing was left in flight to cancel", declared)
 	}
-	t.Logf("the refusal was read whole while %d of the %d declared body bytes were still unwritten, and the writer was still running at that moment; after the signal the writer reached %d and stopped, leaving %d never written; %d status, %d body bytes. These are client write counts: they bound when the answer arrived and when the writer stopped. They are not a count of bytes the daemon read, and a count above or below the drain cap would not be one either, because what the client pushes before the answer lands is kernel buffering and scheduling.",
+	t.Logf("the refusal was read whole after %d of the %d declared body bytes were written, and the writer was still running at that moment; after the signal the writer reached %d and stopped, leaving %d never written; %d status, %d body bytes. These are client write counts: they bound when the answer arrived and when the writer stopped. They are not a count of bytes the daemon read, and a count above or below the drain cap would not be one either, because what the client pushes before the answer lands is kernel buffering and scheduling.",
 		beforeSignal, declared, final, int64(declared)-final, answer.StatusCode, len(body))
 
 	if !exited {

@@ -15,7 +15,7 @@ env -i PATH="$PATH" HOME="$probe_home" TMPDIR="${TMPDIR:-/tmp}" \
   XDG_DATA_HOME="$probe_home/data" XDG_CONFIG_HOME="$probe_home/config" \
   GOCACHE="$go_cache" GOMODCACHE="$go_modules" GOMAXPROCS=1 \
   OAP_OAPX_BIN="$binary" \
-  go test ./go/cmd/goap \
+  go test -race ./go/cmd/goap \
     -run '^TestHubAddrFinishesTheRefusalAndStopsTheBodyWhenItsSignalArrives$' \
     -count="$repetitions" -v > "$proof_dir/signal.txt" 2>&1
 printf 'PASS: refusal and signal observed with an unfinished body; owned daemons reaped\n'

@@ -7,7 +7,8 @@ bash .claude/skills/verify/scripts/hub-signal-cancellation.sh /tmp/oap-hub-signa
 ```
 
 The script uses an empty temporary HOME/data/config and one Go scheduler thread
-to expose startup ordering races. It repeats the actual loopback daemon test;
+to expose startup ordering races. It repeats the actual loopback daemon test
+under race detection, with its remaining writer held until the refusal arrives;
 require exit 0 and `PASS`. Inspect `signal.txt` for a complete 403 refusal while
 some body bytes have been written and some remain unwritten, followed by SIGINT,
 writer termination and a closed listener. These are client write counts, not
