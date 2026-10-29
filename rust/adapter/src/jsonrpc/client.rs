@@ -495,13 +495,14 @@ impl RpcClient {
                     self.close_with(self.text(&format!("request id is already active: {id}")));
                     return true;
                 }
-                let request = IncomingRequest::new(
+                let mut request = IncomingRequest::new(
                     self.0.dialect,
                     id,
                     message.method,
                     message.params,
                     Arc::new(ClientResponder(self.clone())),
                 );
+                request.trace = message.trace;
                 !self.enqueue(
                     Inbound::Request(Arc::new(request)),
                     &self.text("reverse request queue is full"),

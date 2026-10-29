@@ -118,3 +118,30 @@ fn a_versioned_dialect_keeps_its_jsonrpc_member_and_wording() {
         .to_string()
         .starts_with("codex app-server rpc: invalid message: "));
 }
+
+#[test]
+fn a_reverse_request_from_an_unversioned_peer_keeps_its_trace() {
+    use std::io::Write;
+    let (from_server, mut to_client) = std::io::pipe().unwrap();
+    let (_from_client, to_server) = std::io::pipe().unwrap();
+    let client = oap_adapter::jsonrpc::RpcClient::new(
+        CODEX,
+        from_server,
+        to_server,
+        oap_adapter::jsonrpc::ClientOptions::default(),
+    );
+    let inbound = client.inbound();
+    to_client
+        .write_all(b"{\"id\":3,\"method\":\"item/tool/requestUserInput\",\"params\":{},\"trace\":{\"span\":\"s\"}}\n")
+        .unwrap();
+    let oap_adapter::jsonrpc::Inbound::Request(request) = inbound
+        .recv_timeout(std::time::Duration::from_secs(5))
+        .unwrap()
+    else {
+        panic!("no request");
+    };
+    assert_eq!(
+        request.trace.as_deref().map(RawValue::get),
+        Some(r#"{"span":"s"}"#)
+    );
+}
