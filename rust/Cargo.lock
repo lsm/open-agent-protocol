@@ -977,6 +977,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "oap-adapter-copilot"
+version = "0.1.0"
+dependencies = [
+ "oap-adapter",
+ "oap-harness",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "oap-adapter-opencode"
 version = "0.1.0"
 dependencies = [
@@ -989,6 +999,7 @@ dependencies = [
 name = "oap-adapter-pi"
 version = "0.1.0"
 dependencies = [
+ "crossbeam-channel",
  "oap-adapter",
  "serde",
  "serde_json",
