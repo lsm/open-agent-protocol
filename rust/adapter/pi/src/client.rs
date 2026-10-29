@@ -15,6 +15,10 @@ pub trait Client: Send + Sync {
 
     fn done(&self) -> Receiver<()>;
 
+    fn read_done(&self) -> Receiver<()> {
+        self.done()
+    }
+
     fn err(&self) -> Option<String>;
 
     fn close(&self) -> Result<(), Error>;

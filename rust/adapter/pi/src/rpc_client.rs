@@ -139,10 +139,6 @@ impl RpcClient {
         lock(&self.0.state).err.clone().unwrap_or(Error::Closed)
     }
 
-    pub fn read_done(&self) -> Receiver<()> {
-        self.0.read_done.clone()
-    }
-
     pub(crate) fn close_with(&self, reason: Error) {
         if self.0.closing.swap(true, Ordering::SeqCst) {
             return;
@@ -379,6 +375,10 @@ impl Client for RpcClient {
 
     fn done(&self) -> Receiver<()> {
         self.0.done_rx.clone()
+    }
+
+    fn read_done(&self) -> Receiver<()> {
+        self.0.read_done.clone()
     }
 
     fn err(&self) -> Option<String> {

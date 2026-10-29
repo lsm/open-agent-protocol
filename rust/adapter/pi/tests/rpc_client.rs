@@ -6,6 +6,7 @@ use oap_adapter_pi::client::Client;
 use oap_adapter_pi::native::{Command, ExtensionUiResponse};
 use oap_adapter_pi::rpc::{Error, Inbound};
 use oap_adapter_pi::rpc_client::{ClientOptions, RpcClient};
+use std::sync::Arc;
 
 const WAIT: Duration = Duration::from_secs(5);
 
@@ -333,4 +334,21 @@ fn a_generated_id_wraps_at_the_counter_limit_as_go_s_atomic_add_does() {
         r#"{{"id":"{id}","type":"response","command":"get_state","success":true}}"#
     ));
     first.join().unwrap().unwrap();
+}
+
+#[test]
+fn a_factory_s_client_exposes_read_done_through_the_trait() {
+    let mut peer = peer(capacity(4));
+    let client: Arc<dyn Client> = Arc::new(peer.client.clone());
+    let read_done = client.read_done();
+    client.close().unwrap();
+    assert!(matches!(
+        read_done.recv_timeout(Duration::from_millis(100)),
+        Err(crossbeam_channel::RecvTimeoutError::Timeout)
+    ));
+    peer.to_client.take();
+    assert!(matches!(
+        read_done.recv_timeout(WAIT),
+        Err(crossbeam_channel::RecvTimeoutError::Disconnected)
+    ));
 }
