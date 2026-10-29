@@ -67,6 +67,7 @@ struct Inner {
     done_tx: Mutex<Option<Sender<()>>>,
     closer: Mutex<Option<Closer>>,
     closing: AtomicBool,
+    route: Mutex<()>,
     unblocks_writes: bool,
 }
 
@@ -143,6 +144,7 @@ impl RpcClient {
             done_tx: Mutex::new(Some(done_tx)),
             closer: Mutex::new(options.closer.take()),
             closing: AtomicBool::new(false),
+            route: Mutex::new(()),
             unblocks_writes,
         }));
         let limit = options.frame_limit;
@@ -158,7 +160,10 @@ impl RpcClient {
     }
 
     pub fn inbound(&self) -> Receiver<Inbound> {
-        lock(&self.0.state).activated = true;
+        if !lock(&self.0.state).activated {
+            let _route = lock(&self.0.route);
+            lock(&self.0.state).activated = true;
+        }
         self.0.inbound_rx.clone()
     }
 
@@ -429,7 +434,10 @@ impl RpcClient {
             }
             match decoded {
                 Ok(message) => {
-                    let stop = self.route(message);
+                    let stop = {
+                        let _route = lock(&self.0.route);
+                        self.route(message)
+                    };
                     self.settle_reader();
                     if stop {
                         return;
