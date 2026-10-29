@@ -134,11 +134,16 @@ fn v110_events_admit_a_timed_tool_end_and_an_aborted_settlement_and_nothing_else
 }
 
 #[test]
-fn an_extension_request_decodes_strictly_with_a_null_widget_line_as_empty() {
+fn an_extension_request_decodes_strictly_with_a_null_widget_line_or_option_as_empty() {
     let request: ExtensionUiRequest = decode_strict(
         r#"{"type":"extension_ui_request","id":"7","method":"setWidget","widgetKey":"k","widgetLines":["a",null]}"#,
     )
     .unwrap();
+    let select: ExtensionUiRequest = decode_strict(
+        r#"{"type":"extension_ui_request","id":"1","method":"select","title":"T","options":[null,"b"]}"#,
+    )
+    .unwrap();
+    assert_eq!(select.options, Some(vec![String::new(), "b".to_owned()]));
     assert_eq!(
         request.widget_lines,
         Some(vec!["a".to_owned(), String::new()])

@@ -447,7 +447,11 @@ pub struct ExtensionUiRequest {
         skip_serializing_if = "String::is_empty"
     )]
     pub title: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        deserialize_with = "optional_strings",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub options: Option<Vec<String>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub timeout: Option<i64>,
