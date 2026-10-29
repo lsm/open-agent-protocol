@@ -254,3 +254,54 @@ fn close_is_idempotent_and_keeps_the_first_reason() {
         })
     ));
 }
+
+struct Stuck(crossbeam_channel::Receiver<()>);
+
+impl Write for Stuck {
+    fn write(&mut self, _: &[u8]) -> std::io::Result<usize> {
+        let _ = self.0.recv();
+        Err(std::io::ErrorKind::BrokenPipe.into())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+#[test]
+fn a_close_returns_a_call_whose_frame_is_stuck_in_a_write_with_no_closer_to_unblock_it() {
+    let (from_server, to_client) = std::io::pipe().unwrap();
+    let (release, stuck) = crossbeam_channel::bounded::<()>(0);
+    let client = RpcClient::new(D, from_server, Stuck(stuck), ClientOptions::default());
+    let caller = client.clone();
+    let (answered, answer) = crossbeam_channel::bounded(1);
+    std::thread::spawn(move || {
+        let _ = answered.send(caller.call("session/prompt", None, None));
+    });
+    std::thread::sleep(Duration::from_millis(100));
+    client.close();
+    let outcome = answer
+        .recv_timeout(WAIT)
+        .expect("the call returned after close");
+    assert!(matches!(outcome.unwrap_err().fault, Fault::Closed));
+    drop(release);
+    drop(to_client);
+}
+
+#[test]
+fn a_frame_the_writer_cannot_encode_fails_its_call_with_the_encoder_s_own_fault() {
+    let strict = Dialect::strict("deepseek");
+    let (from_server, _to_client) = std::io::pipe().unwrap();
+    let (_from_client, to_server) = std::io::pipe().unwrap();
+    let client = RpcClient::new(
+        strict,
+        from_server,
+        to_server,
+        ClientOptions {
+            frame_limit: 8,
+            ..ClientOptions::default()
+        },
+    );
+    let refused = client.call("session.status", None, None).unwrap_err();
+    assert!(matches!(refused.fault, Fault::FrameTooLarge), "{refused}");
+}

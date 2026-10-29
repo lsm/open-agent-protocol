@@ -39,7 +39,8 @@ struct WriteRequest {
     message: Message,
     deadline: Option<Instant>,
     started: Sender<()>,
-    result: Sender<Result<(), String>>,
+    encoded: Sender<()>,
+    result: Sender<Result<(), Error>>,
 }
 
 struct State {
@@ -64,6 +65,7 @@ struct Inner {
     done_tx: Mutex<Option<Sender<()>>>,
     closer: Mutex<Option<Closer>>,
     closing: AtomicBool,
+    unblocks_writes: bool,
 }
 
 #[derive(Clone)]
@@ -110,6 +112,7 @@ impl RpcClient {
         } else {
             options.write_queue_capacity
         };
+        let unblocks_writes = options.closer.is_some();
         let (writes, write_rx) = crossbeam_channel::bounded(write_capacity);
         let (inbound_tx, inbound_rx) = crossbeam_channel::bounded(capacity);
         let (done_tx, done_rx) = crossbeam_channel::bounded(0);
@@ -133,6 +136,7 @@ impl RpcClient {
             done_tx: Mutex::new(Some(done_tx)),
             closer: Mutex::new(options.closer.take()),
             closing: AtomicBool::new(false),
+            unblocks_writes,
         }));
         let limit = options.frame_limit;
         let writer_client = client.clone();
@@ -228,14 +232,13 @@ impl RpcClient {
         if let Err(error) = self.write(Message::request(id.clone(), method, params), deadline) {
             if self.is_closed() {
                 if let Ok(outcome) = response.try_recv() {
-                    report(
-                        outcome
-                            .as_ref()
-                            .err()
-                            .filter(|e| e.remote_code().is_none())
-                            .map(ToString::to_string),
-                    );
-                    return outcome;
+                    if outcome
+                        .as_ref()
+                        .map_or_else(|e| e.remote_code().is_some(), |_| true)
+                    {
+                        report(None);
+                        return outcome;
+                    }
                 }
             }
             lock(&self.0.state).pending.remove(&id);
@@ -305,6 +308,7 @@ impl RpcClient {
             return Err(self.fail(Fault::DeadlineExceeded));
         }
         let (started, began) = crossbeam_channel::bounded(1);
+        let (encoded, settled) = crossbeam_channel::bounded(1);
         let (result, written) = crossbeam_channel::bounded(1);
         if self.is_closed() {
             return Err(self.close_error());
@@ -313,6 +317,7 @@ impl RpcClient {
             message,
             deadline,
             started,
+            encoded,
             result,
         }) {
             Ok(()) => {}
@@ -322,23 +327,16 @@ impl RpcClient {
             Err(TrySendError::Disconnected(_)) => return Err(self.close_error()),
         }
         select! {
-            recv(written) -> outcome => match outcome {
-                Ok(Ok(())) => Ok(()),
-                Ok(Err(reason)) => Err(self.fail(Fault::Transport(reason))),
-                Err(_) => Err(self.close_error()),
-            },
+            recv(written) -> outcome => outcome.unwrap_or_else(|_| Err(self.close_error())),
             recv(deadline_channel(deadline)) -> _ => {
                 let error = self.fail(Fault::DeadlineExceeded);
                 self.close_with(error.to_string());
                 Err(error)
             }
             recv(self.0.done_rx) -> _ => {
-                if began.try_recv().is_ok() {
-                    return match written.recv() {
-                        Ok(Ok(())) => Ok(()),
-                        Ok(Err(reason)) => Err(self.fail(Fault::Transport(reason))),
-                        Err(_) => Err(self.close_error()),
-                    };
+                let settles = settled.try_recv().is_ok() || self.0.unblocks_writes;
+                if began.try_recv().is_ok() && settles {
+                    return written.recv().unwrap_or_else(|_| Err(self.close_error()));
                 }
                 Err(self.close_error())
             }
@@ -351,14 +349,15 @@ impl RpcClient {
                 recv(requests) -> request => {
                     let Ok(request) = request else { return };
                     if request.deadline.is_some_and(|at| Instant::now() >= at) {
-                        let _ = request.result.send(Err(self.fail(Fault::DeadlineExceeded).to_string()));
+                        let _ = request.result.send(Err(self.fail(Fault::DeadlineExceeded)));
                         continue;
                     }
                     let _ = request.started.send(());
-                    let outcome = encoder.encode(&request.message).map_err(|error| error.to_string());
+                    let outcome = encoder.encode(&request.message);
+                    let _ = request.encoded.send(());
                     let failed = outcome.is_err();
                     if let Err(reason) = &outcome {
-                        self.close_with(reason.clone());
+                        self.close_with(reason.to_string());
                     }
                     let _ = request.result.send(outcome);
                     if failed {
