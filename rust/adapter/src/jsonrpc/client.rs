@@ -201,9 +201,10 @@ impl RpcClient {
         deadline: Option<Instant>,
         started: Option<Started>,
     ) -> CallResult {
-        let report = |error: Option<String>| {
-            if let Some(started) = &started {
-                let _ = started.try_send(error);
+        let mut started = started;
+        let mut report = |error: Option<String>| {
+            if let Some(started) = started.take() {
+                let _ = started.send(error);
             }
         };
         if method.is_empty() {

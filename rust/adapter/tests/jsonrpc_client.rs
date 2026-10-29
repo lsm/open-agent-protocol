@@ -305,3 +305,20 @@ fn a_frame_the_writer_cannot_encode_fails_its_call_with_the_encoder_s_own_fault(
     let refused = client.call("session.status", None, None).unwrap_err();
     assert!(matches!(refused.fault, Fault::FrameTooLarge), "{refused}");
 }
+
+#[test]
+fn a_call_reports_its_admission_through_an_unbuffered_channel_once_and_then_closes_it() {
+    let mut peer = peer(false);
+    let (started, admitted) = crossbeam_channel::bounded(0);
+    let caller = peer.client.clone();
+    let call = std::thread::spawn(move || caller.call_started("session/prompt", None, started));
+    std::thread::sleep(Duration::from_millis(100));
+    assert_eq!(admitted.recv_timeout(WAIT).unwrap(), None);
+    let request = peer.read();
+    peer.send(&format!(
+        r#"{{"jsonrpc":"2.0","id":{},"result":{{}}}}"#,
+        request.id.unwrap()
+    ));
+    assert_eq!(call.join().unwrap().unwrap().get(), "{}");
+    assert!(admitted.recv_timeout(WAIT).is_err());
+}
