@@ -375,6 +375,16 @@ impl Hub {
     }
 }
 
+struct Reserved<'a>(Option<&'a HubSession>);
+
+impl Drop for Reserved<'_> {
+    fn drop(&mut self) {
+        if let Some(entry) = self.0.take() {
+            live::finish(entry.with_live(Live::release));
+        }
+    }
+}
+
 pub struct HubSession {
     id: SessionId,
     adapter: String,
@@ -455,19 +465,19 @@ impl HubSession {
                 addressed: self.id.clone(),
             });
         }
+        let mut reserved = Reserved(Some(self));
         self.with_live(Live::reserve);
         let (admission, stream) = match self.session.submit(submit).await {
             Ok(admitted) => admitted,
             Err(err) => {
                 self.closed_by(&err);
-                live::finish(self.with_live(Live::release));
                 return Err(err.into());
             }
         };
         if admission.admission == Admission::STEERED {
-            live::finish(self.with_live(Live::release));
             return Ok(admission);
         }
+        reserved.0 = None;
         let current = admission.admission != Admission::QUEUED;
         let run = admission.run_id.clone();
         let serial = self.with_live(|live| live.start(run.as_ref(), current));

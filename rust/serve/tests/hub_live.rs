@@ -574,3 +574,26 @@ fn a_submission_still_in_flight_keeps_the_subscribers_open_for_its_run() {
     script.end(&queued);
     assert!(next(&mut watcher).is_none());
 }
+
+#[test]
+fn a_submission_dropped_while_in_flight_releases_its_reservation() {
+    let script = script(64);
+    let mut watcher = script.subscribe();
+    let first = script.submit();
+    script.emit(&first, 1);
+    assert_eq!(next(&mut watcher).unwrap().unwrap().sequence, Some(1));
+    let (_release, hold) = futures::channel::oneshot::channel::<()>();
+    *script.hold.lock().unwrap() = Some(hold);
+    {
+        let mut pending = Box::pin(script.session.submit(SubmitRequest {
+            request: MessageSubmitRequest {
+                session_id: "s".into(),
+                ..MessageSubmitRequest::default()
+            },
+            ..SubmitRequest::default()
+        }));
+        assert!(futures::FutureExt::now_or_never(pending.as_mut()).is_none());
+    }
+    script.end(&first);
+    assert!(next(&mut watcher).is_none());
+}
