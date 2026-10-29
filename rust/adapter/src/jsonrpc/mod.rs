@@ -1,9 +1,11 @@
 mod codec;
+mod inbound;
 mod message;
 
 use std::fmt;
 
 pub use codec::{Decoder, Encoder, DEFAULT_FRAME_LIMIT};
+pub use inbound::{Inbound, IncomingRequest, NotificationMessage, Responder};
 pub use message::{ErrorObject, Kind, Message, RequestId};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

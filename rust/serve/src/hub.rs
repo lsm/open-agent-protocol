@@ -2,8 +2,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError, Weak};
 
-use oap_adapter::{Error, OpenRequest};
-use oap_protocol::{SessionId, SessionState, SessionStatus};
+use oap_adapter::{Error, OpenRequest, UnsupportedControl, CONTROL_UNSATISFIABLE};
+use oap_binding::{Action, Entry, Record, Store};
+use oap_protocol::{SessionId, SessionState, SessionStatus, FEATURE_OPEN_REOPEN};
 
 use crate::Registry;
 
@@ -23,6 +24,8 @@ pub enum HubError {
     ClosedAtOpen(Box<SessionState>),
     #[error(transparent)]
     Adapter(#[from] Error),
+    #[error(transparent)]
+    Binding(#[from] oap_binding::Error),
 }
 
 #[derive(Default)]
@@ -31,9 +34,46 @@ struct Sessions {
     opening: BTreeSet<SessionId>,
 }
 
+#[derive(Clone, Default)]
+pub struct HubOptions {
+    pub bindings: Option<Arc<dyn Store>>,
+    pub home: String,
+    pub report: Option<Arc<dyn Fn(String) + Send + Sync>>,
+}
+
+impl HubOptions {
+    fn record(&self, record: &Record, action: Action, time_ms: i64) {
+        let Some(bindings) = &self.bindings else {
+            return;
+        };
+        if record.session_id.is_empty() {
+            return;
+        }
+        let appended = bindings.append(Entry {
+            action,
+            time_ms,
+            record: record.clone(),
+        });
+        if let (Err(err), Some(report)) = (appended, &self.report) {
+            report(format!(
+                "binding: {} for {}: {err}",
+                action.as_str(),
+                record.session_id
+            ));
+        }
+    }
+}
+
 struct Shared {
     registry: Registry,
     sessions: Mutex<Sessions>,
+    options: HubOptions,
+}
+
+fn now_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |elapsed| elapsed.as_millis() as i64)
 }
 
 impl Shared {
@@ -50,6 +90,7 @@ impl Shared {
         {
             sessions.live.remove(&entry.id);
         }
+        self.options.record(&entry.record, Action::Closed, now_ms());
     }
 }
 
@@ -77,12 +118,21 @@ impl Drop for Reservation<'_> {
 
 impl Hub {
     pub fn new(registry: Registry) -> Self {
+        Self::with_options(registry, HubOptions::default())
+    }
+
+    pub fn with_options(registry: Registry, options: HubOptions) -> Self {
         Self {
             shared: Arc::new(Shared {
                 registry,
                 sessions: Mutex::default(),
+                options,
             }),
         }
+    }
+
+    pub fn bindings(&self) -> Option<&Arc<dyn Store>> {
+        self.shared.options.bindings.as_ref()
     }
 
     pub fn registry(&self) -> &Registry {
@@ -101,24 +151,91 @@ impl Hub {
         if let Some(admitter) = implementation.admitter() {
             admitter.admit(&request).await?;
         }
-        let _reservation = self.reserve(&request.session_id)?;
+        let _reservation = self.reserve(adapter, &request.session_id)?;
         let requested = request.session_id.clone();
-        let session = implementation.open(request).await?;
-        let state = match session.state().await {
-            Ok(state) => state,
-            Err(Error::SessionClosed) => {
-                return Err(HubError::ClosedAtOpen(Box::new(SessionState {
+        let adopting = request.reopen && request.adopted && !request.native_session_id.is_empty();
+        let mut directory = self.shared.registry.working_directory(adapter).to_owned();
+        if let (true, Some(bindings), false) =
+            (request.reopen, &self.shared.options.bindings, adopting)
+        {
+            let history = bindings.history(request.session_id.as_str())?;
+            let bound = oap_binding::state(&history)
+                .filter(|bound| bound.record.adapter == adapter)
+                .ok_or_else(|| HubError::UnknownSession(request.session_id.clone()))?;
+            request.native_session_id = bound.record.native_session_id.clone();
+            request.adopted = bound.record.adopted;
+            directory = bound.record.directory.clone();
+        }
+        let asked = request.clone();
+        let reloads = asked.reopen && (self.shared.options.bindings.is_some() || adopting);
+        let session = match implementation.open(request).await {
+            Err(Error::UnknownSession(_)) if reloads => {
+                return Err(Error::UnsupportedControl(Box::new(UnsupportedControl {
+                    feature: FEATURE_OPEN_REOPEN.into(),
+                    reason: CONTROL_UNSATISFIABLE,
+                    detail: "the binding names a session the adapter can no longer load".into(),
+                    ..UnsupportedControl::default()
+                }))
+                .into())
+            }
+            opened => opened?,
+        };
+        let (state, settled) = match session.state().await {
+            Ok(state) => {
+                let settled = state.status == SessionStatus::CLOSED;
+                (state, settled)
+            }
+            Err(Error::SessionClosed) => (
+                SessionState {
                     session_id: requested,
                     status: SessionStatus::CLOSED,
                     ..SessionState::default()
-                })))
-            }
+                },
+                true,
+            ),
             Err(err) => {
                 let _ = session.close().await;
                 return Err(err.into());
             }
         };
-        if state.status == SessionStatus::CLOSED {
+        let mut record = Record::default();
+        if self.shared.options.bindings.is_some() {
+            let version = match implementation.probe().await {
+                Ok(descriptor) => descriptor.capabilities.endpoint.version,
+                Err(_) => String::new(),
+            };
+            let sources: Vec<String> = asked
+                .tool_sources
+                .iter()
+                .map(|source| source.id.clone())
+                .collect();
+            record = Record::from_open(
+                state.session_id.as_str(),
+                adapter,
+                &version,
+                &state.current_model_id,
+                &self.shared.options.home,
+                &directory,
+                &sources,
+            );
+            record.reasoning_level = asked.reasoning_level.as_str().into();
+            record.adopted = asked.adopted;
+            record.compaction_policy = asked.compaction_policy.clone();
+            record.native_session_id = session.native_session_id().unwrap_or_default();
+        }
+        let began = if asked.reopen {
+            Action::Reopened
+        } else {
+            Action::Opened
+        };
+        if settled {
+            let _sessions = self.shared.sessions();
+            self.shared
+                .options
+                .record(&record, began, state.updated_at_ms);
+            self.shared
+                .options
+                .record(&record, Action::Closed, now_ms());
             return Err(HubError::ClosedAtOpen(Box::new(state)));
         }
         let entry = Arc::new(HubSession {
@@ -127,13 +244,21 @@ impl Hub {
             session,
             closed: AtomicBool::new(false),
             hub: Arc::downgrade(&self.shared),
+            options: self.shared.options.clone(),
+            record,
         });
         let added = {
             let mut sessions = self.shared.sessions();
             if sessions.live.contains_key(&entry.id) {
+                self.shared
+                    .options
+                    .record(&entry.record, Action::Refused, now_ms());
                 false
             } else {
                 sessions.live.insert(entry.id.clone(), entry.clone());
+                self.shared
+                    .options
+                    .record(&entry.record, began, state.updated_at_ms);
                 true
             }
         };
@@ -147,7 +272,7 @@ impl Hub {
         })
     }
 
-    fn reserve(&self, id: &SessionId) -> Result<Reservation<'_>, HubError> {
+    fn reserve(&self, adapter: &str, id: &SessionId) -> Result<Reservation<'_>, HubError> {
         if id.as_str().is_empty() {
             return Ok(Reservation {
                 shared: &self.shared,
@@ -156,6 +281,18 @@ impl Hub {
         }
         let mut sessions = self.shared.sessions();
         if sessions.live.contains_key(id) || !sessions.opening.insert(id.clone()) {
+            let refused = Record::from_open(
+                id.as_str(),
+                adapter,
+                "",
+                "",
+                &self.shared.options.home,
+                "",
+                &[],
+            );
+            self.shared
+                .options
+                .record(&refused, Action::Refused, now_ms());
             return Err(HubError::SessionExists(id.clone()));
         }
         Ok(Reservation {
@@ -184,6 +321,8 @@ pub struct HubSession {
     session: Box<dyn oap_adapter::Session>,
     closed: AtomicBool,
     hub: Weak<Shared>,
+    options: HubOptions,
+    record: Record,
 }
 
 impl HubSession {
@@ -201,8 +340,9 @@ impl HubSession {
 
     fn mark_closed(&self) {
         if !self.closed.swap(true, Ordering::SeqCst) {
-            if let Some(hub) = self.hub.upgrade() {
-                hub.release(self);
+            match self.hub.upgrade() {
+                Some(hub) => hub.release(self),
+                None => self.options.record(&self.record, Action::Closed, now_ms()),
             }
         }
     }
