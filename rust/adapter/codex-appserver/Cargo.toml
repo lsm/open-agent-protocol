@@ -1,0 +1,16 @@
+[package]
+name = "oap-adapter-codex-appserver"
+version = "0.1.0"
+edition = "2021"
+description = "The Open Agent Protocol adapter over the Codex app-server on stdio"
+repository = "https://github.com/lsm/open-agent-protocol"
+license = "CC0-1.0"
+publish = false
+
+[dependencies]
+oap-adapter = { path = ".." }
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["raw_value"] }
+
+[lints.rust]
+unsafe_code = "forbid"
