@@ -311,6 +311,69 @@ pub struct SessionState {
     pub pending_message_count: i64,
 }
 
+const STATE_MEMBERS: [&str; 12] = [
+    "model",
+    "thinkingLevel",
+    "isStreaming",
+    "isCompacting",
+    "steeringMode",
+    "followUpMode",
+    "sessionFile",
+    "sessionId",
+    "sessionName",
+    "autoCompactionEnabled",
+    "messageCount",
+    "pendingMessageCount",
+];
+
+pub fn decode_state(data: &str) -> Result<SessionState, String> {
+    if data.trim_matches(|character| matches!(character, ' ' | '\t' | '\r' | '\n')) == "null" {
+        return Ok(SessionState::default());
+    }
+    let Members(pairs) = serde_json::from_str(data).map_err(|failure| failure.to_string())?;
+    let mut members = BTreeMap::new();
+    for (name, value) in pairs {
+        let known = STATE_MEMBERS
+            .iter()
+            .find(|member| **member == name)
+            .or_else(|| {
+                STATE_MEMBERS
+                    .iter()
+                    .find(|member| member.eq_ignore_ascii_case(&name))
+            });
+        if let Some(member) = known {
+            members.insert(*member, value);
+        }
+    }
+    let known = serde_json::to_string(&members).map_err(|failure| failure.to_string())?;
+    serde_json::from_str(&known).map_err(|failure| failure.to_string())
+}
+
+struct Members(Vec<(String, Box<RawValue>)>);
+
+impl<'de> Deserialize<'de> for Members {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct Visitor;
+        impl<'de> serde::de::Visitor<'de> for Visitor {
+            type Value = Members;
+            fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                f.write_str("a JSON object")
+            }
+            fn visit_map<A: serde::de::MapAccess<'de>>(
+                self,
+                mut map: A,
+            ) -> Result<Members, A::Error> {
+                let mut pairs = Vec::new();
+                while let Some(pair) = map.next_entry()? {
+                    pairs.push(pair);
+                }
+                Ok(Members(pairs))
+            }
+        }
+        deserializer.deserialize_map(Visitor)
+    }
+}
+
 pub fn validate_state(state: &SessionState) -> Result<(), String> {
     if state.session_id.is_empty() || state.message_count < 0 || state.pending_message_count < 0 {
         return Err("missing identity or negative counts".into());
