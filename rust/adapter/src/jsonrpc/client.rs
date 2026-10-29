@@ -64,6 +64,7 @@ struct Inner {
     inbound_tx: Sender<Inbound>,
     inbound_rx: Receiver<Inbound>,
     done_rx: Receiver<()>,
+    read_done: Receiver<()>,
     done_tx: Mutex<Option<Sender<()>>>,
     closer: Mutex<Option<Closer>>,
     closing: AtomicBool,
@@ -119,6 +120,7 @@ impl RpcClient {
         let (writes, write_rx) = crossbeam_channel::bounded(write_capacity);
         let (inbound_tx, inbound_rx) = crossbeam_channel::bounded(capacity);
         let (done_tx, done_rx) = crossbeam_channel::bounded(0);
+        let (reading, read_done) = crossbeam_channel::bounded::<()>(0);
         let client = Self(Arc::new(Inner {
             dialect,
             check: options.check_notification,
@@ -142,6 +144,7 @@ impl RpcClient {
             inbound_rx,
             done_rx,
             done_tx: Mutex::new(Some(done_tx)),
+            read_done,
             closer: Mutex::new(options.closer.take()),
             closing: AtomicBool::new(false),
             route: Mutex::new(()),
@@ -154,6 +157,7 @@ impl RpcClient {
         });
         let reader_client = client.clone();
         std::thread::spawn(move || {
+            let _reading = reading;
             reader_client.read_loop(Decoder::new(dialect, BufReader::new(reader), limit))
         });
         client
@@ -169,6 +173,10 @@ impl RpcClient {
 
     pub fn done(&self) -> Receiver<()> {
         self.0.done_rx.clone()
+    }
+
+    pub fn read_done(&self) -> Receiver<()> {
+        self.0.read_done.clone()
     }
 
     pub fn err(&self) -> Option<String> {
@@ -495,13 +503,14 @@ impl RpcClient {
                     self.close_with(self.text(&format!("request id is already active: {id}")));
                     return true;
                 }
-                let request = IncomingRequest::new(
+                let mut request = IncomingRequest::new(
                     self.0.dialect,
                     id,
                     message.method,
                     message.params,
                     Arc::new(ClientResponder(self.clone())),
                 );
+                request.trace = message.trace;
                 !self.enqueue(
                     Inbound::Request(Arc::new(request)),
                     &self.text("reverse request queue is full"),
@@ -579,6 +588,7 @@ fn clone_error(error: &Error) -> Error {
     };
     Error {
         dialect: error.dialect,
+        versioned: error.versioned,
         fault,
     }
 }

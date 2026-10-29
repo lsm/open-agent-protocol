@@ -393,3 +393,20 @@ fn a_duplicate_id_reported_to_a_slow_reader_does_not_hold_the_client() {
     assert!(admitted.recv_timeout(WAIT).unwrap().is_some());
     assert!(refused.join().unwrap().is_err());
 }
+
+#[test]
+fn read_done_fires_when_the_reader_exits_not_when_the_client_closes() {
+    let mut peer = peer(false);
+    let read_done = peer.client.read_done();
+    peer.client.close();
+    assert!(peer.client.done().recv_timeout(WAIT).is_err());
+    assert!(matches!(
+        read_done.recv_timeout(Duration::from_millis(100)),
+        Err(crossbeam_channel::RecvTimeoutError::Timeout)
+    ));
+    peer.hang_up();
+    assert!(matches!(
+        read_done.recv_timeout(WAIT),
+        Err(crossbeam_channel::RecvTimeoutError::Disconnected)
+    ));
+}
