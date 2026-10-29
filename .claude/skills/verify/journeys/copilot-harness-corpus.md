@@ -34,7 +34,9 @@ stalled call must return DeadlineExceeded, and close/cancellation must reap the
 child. The script disables Go's test cache so this process proof really runs.
 No real Copilot binary or authentication is used. The Go reducer additionally
 matches fixed OAP for text, queue, unknown events, session errors and foreign
-sessions and usage. Usage additionally pins measured zero, sparse calls, exact
+sessions and usage. The queued case also injects delayed delta/final text for the
+completed interaction after its successor starts; neither may enter the next run.
+Usage additionally pins measured zero, sparse calls, exact
 counts above 2^53, uint64 maximum and sum overflow, native negative zero and
 missing/partial/wide/non-finite costs. Missing counts stay unknown; neither
 reducer infers totals with unknown cache terms. Go now matches all twenty-one

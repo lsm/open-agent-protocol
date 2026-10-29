@@ -149,6 +149,9 @@ the default `mode` is `enqueue`. Each admitted prompt then appears as
 `user.message {messageId, interactionId, delivery}`, `delivery` being `idle`
 when it started a busy period and `queued` when it waited behind another.
 Every assistant and tool event of that prompt carries its `interactionId`.
+Go and Zig bind that identity at `user.message` and omit observations carrying a
+different interaction, including delayed text after the next queued prompt starts.
+Events without an interaction identity retain the busy-period mapping.
 In the queue probe two prompts produced two `user.message`s, two
 `assistant.turn_start`/`turn_end` pairs, and one `session.idle`.
 
