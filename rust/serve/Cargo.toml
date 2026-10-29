@@ -9,6 +9,7 @@ publish = false
 
 [dependencies]
 oap-adapter = { path = "../adapter" }
+oap-binding = { path = "../binding" }
 oap-protocol = { path = "../protocol" }
 thiserror = "2"
 
