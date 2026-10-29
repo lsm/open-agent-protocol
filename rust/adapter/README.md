@@ -53,3 +53,20 @@ Run `cargo run -p oap-adapter --example prompt -- --memory` from `rust/` for a
 credential-free memory example. It reaches a gate, obtains the run id, cancels
 the run and closes the session. The verifier compares public Rust and Go
 consumers; its journey is `.claude/skills/verify/journeys/rust-adapter-prompt.md`.
+
+## Go's encoding/json rules
+
+`gojson` reproduces the `encoding/json` behaviour the harness corpora pin: the
+duplicate-key walk and its 10000-deep limit, `json.Marshal`'s compaction and
+HTML escaping, `strconv.Quote`'s printability table, and the replacement of a
+lone surrogate escape with U+FFFD. One Go behaviour is deliberately not reproduced:
+Go's decoder replaces invalid UTF-8 inside a string with U+FFFD and accepts the
+document, while `reject_duplicate_keys` refuses it as a syntax error. Every
+caller reads frames through a reader that has already refused invalid UTF-8, as
+Go's frame readers do, so the walk never sees such bytes on a harness's wire.
+
+One limit differs on purpose. `remarshal_any` nests as deep as Go (10000
+levels, on a large-stack thread past 128), but typed decoding through serde,
+including the `zero`/`structure` helpers and every adapter's strict decoder,
+keeps serde_json's 128-level limit, where Go's typed decode goes deeper. No
+pinned corpus nests a native frame that deep.
