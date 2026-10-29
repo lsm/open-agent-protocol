@@ -1420,6 +1420,12 @@ fn runThread(ctx: *ThreadCtx) void {
             return;
         };
 
+        headers.append(allocator, .{ .name = "x-github-api-version", .value = github_copilot.COPILOT_HEADERS.api_version }) catch {
+            ctx.deinit();
+            stream.completeWithError("oom copilot headers");
+            return;
+        };
+
         const has_images = github_copilot.hasCopilotVisionInput(context.messages);
         const copilot_headers = github_copilot.buildCopilotDynamicHeaders(
             context.messages,
@@ -3828,6 +3834,7 @@ const MockCompletionsServer = struct {
     saw_stream_flag: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
     saw_session_header: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
     saw_client_agent: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
+    saw_copilot_api_version: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
     response_headers: []const u8 = "",
 
     const trace_events =
@@ -3934,6 +3941,9 @@ const MockCompletionsServer = struct {
         }
         if (std.mem.eql(u8, headerValue(head, "x-opencode-session") orelse "", "ses-tui-1")) {
             self.saw_session_header.store(true, .release);
+        }
+        if (std.mem.eql(u8, headerValue(head, "x-github-api-version") orelse "", "2026-08-01")) {
+            self.saw_copilot_api_version.store(true, .release);
         }
         if (std.mem.eql(u8, headerValue(head, "user-agent") orelse "", client_user_agent)) {
             self.saw_client_agent.store(true, .release);
@@ -4696,4 +4706,33 @@ test "images in a user message and a tool result reach a vision model in a well-
     var parsed = try std.json.parseFromSlice(std.json.Value, allocator, body, .{});
     defer parsed.deinit();
     try std.testing.expectEqual(@as(usize, 2), std.mem.count(u8, body, "data:image/png;base64,aGk="));
+}
+
+test "Copilot inference requests carry the versioned API header without changing other providers" {
+    const allocator = std.testing.allocator;
+    for ([_][]const u8{ "github-copilot", "gateway" }) |provider| {
+        var mock = try MockCompletionsServer.listen(MockCompletionsServer.complete_stream);
+        var stopped = false;
+        defer if (!stopped) mock.stop();
+        const base_url = try mock.baseUrl(allocator);
+        defer allocator.free(base_url);
+        try mock.start();
+        var model = traceModel(base_url);
+        model.provider = provider;
+        const stream = try streamOpenAICompletions(model, traceContext(), .{
+            .api_key = ai_types.OwnedSlice(u8).initBorrowed("synthetic-copilot-key"),
+        }, allocator);
+        defer {
+            stream.deinit();
+            allocator.destroy(stream);
+        }
+        while (stream.wait()) |event| {
+            var polled = event;
+            ai_types.deinitAssistantMessageEvent(allocator, &polled);
+        }
+        try std.testing.expect(stream.waitForThread(5_000));
+        mock.stop();
+        stopped = true;
+        try std.testing.expectEqual(std.mem.eql(u8, provider, "github-copilot"), mock.saw_copilot_api_version.load(.acquire));
+    }
 }
