@@ -73,6 +73,22 @@ fn the_handshake_state_ignores_members_the_pin_does_not_name() {
 }
 
 #[test]
+fn an_event_right_after_the_state_response_does_not_fail_the_handshake() {
+    let _serial = serial();
+    let script = format!(
+        "{}; printf '%s\\n' '{{\"type\":\"agent_start\"}}'; cat >/dev/null",
+        reply("req_1", &format!("\"success\":true,\"data\":{STATE}"))
+    );
+    for _ in 0..20 {
+        let (process, state) = Process::start(&fake_pi(&script), None).unwrap();
+        assert_eq!(state.session_id, "s1");
+        let inbound = process.inbound();
+        std::thread::spawn(move || while inbound.recv().is_ok() {});
+        assert_eq!(process.close(), Ok(()));
+    }
+}
+
+#[test]
 fn a_pi_that_exits_before_its_state_fails_the_handshake_with_its_stderr() {
     let _serial = serial();
     let failure = Process::start(&fake_pi("echo 'token=abc broke' >&2; exit 3"), None)

@@ -87,8 +87,8 @@ impl Process {
             };
             let _ = reply.send(caller.call(&command, true));
         });
-        let inbound = process.client.inbound();
-        let done = process.client.done();
+        let mut inbound = process.client.inbound();
+        let mut done = process.client.done();
         let expiry = deadline.map_or_else(crossbeam_channel::never, crossbeam_channel::at);
         let outcome: Result<SessionState, String> = loop {
             select! {
@@ -100,7 +100,11 @@ impl Process {
                     Err(_) => Err(process.client.err().unwrap_or_else(|| "EOF".into())),
                 },
                 recv(inbound) -> message => match message {
-                    Ok(Inbound::Barrier(ack)) => drop(ack),
+                    Ok(Inbound::Barrier(ack)) => {
+                        drop(ack);
+                        inbound = crossbeam_channel::never();
+                        done = crossbeam_channel::never();
+                    }
                     _ => break Err("native observation preceded get_state response".into()),
                 },
                 recv(done) -> _ => break Err(process.client.err().unwrap_or_else(|| "EOF".into())),
