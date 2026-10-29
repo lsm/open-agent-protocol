@@ -156,13 +156,48 @@ impl Live {
             let seen = self.sequences.entry(run.clone()).or_default();
             *seen = (*seen).max(sequence);
         }
+        let mut dropped = Vec::new();
         self.subs.retain(|sub| {
             let kept = sub.offer(envelope, capacity);
             if !kept {
-                sub.stop(Some(Terminal::Overflow(run.clone())));
+                dropped.push(sub.clone());
             }
             kept
         });
+        for sub in dropped {
+            let resume = self.loss_run(&sub, &run);
+            sub.stop(Some(Terminal::Overflow(resume)));
+        }
+    }
+
+    fn loss_run(&self, sub: &Subscriber, dropped: &RunId) -> RunId {
+        let serial = |run: &RunId| self.serials.get(run).copied().unwrap_or(0);
+        let spent = |run: &RunId| self.current.as_ref() != Some(run) && self.ended.contains(run);
+        let mailbox = lock(&sub.mailbox);
+        let mut candidates: Vec<RunId> = mailbox
+            .queue
+            .iter()
+            .filter_map(|envelope| envelope.run_id.clone())
+            .collect();
+        match &mailbox.last_read {
+            Some(read) => candidates.push(read.clone()),
+            None => candidates.extend(mailbox.attached.clone()),
+        }
+        candidates.extend(self.current.clone());
+        let mut newest = dropped.clone();
+        let mut live = !spent(dropped);
+        for run in candidates {
+            match (live, spent(&run)) {
+                (true, true) => {}
+                (false, false) => {
+                    newest = run;
+                    live = true;
+                }
+                _ if serial(&run) > serial(&newest) => newest = run,
+                _ => {}
+            }
+        }
+        newest
     }
 
     fn detach(&mut self) -> Vec<Arc<Subscriber>> {

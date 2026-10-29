@@ -509,3 +509,31 @@ fn a_subscription_after_a_run_ended_reports_no_join_point() {
     assert!(next(&mut watcher).is_none());
     assert_eq!(script.subscribe().joined_at(), None);
 }
+
+#[test]
+fn an_overflow_caused_by_a_late_envelope_of_an_older_run_names_the_current_run() {
+    let script = script(2);
+    let mut full = script.subscribe();
+    let old = script.submit();
+    script.emit(&old, 1);
+    assert_eq!(next(&mut full).unwrap().unwrap().sequence, Some(1));
+    let current = script.submit();
+    script.emit(&current, 1);
+    script.emit(&current, 2);
+    settle();
+    script.emit(&old, 2);
+    settle();
+    assert_eq!(next(&mut full).unwrap().unwrap().sequence, Some(1));
+    assert_eq!(next(&mut full).unwrap().unwrap().sequence, Some(2));
+    match next(&mut full) {
+        Some(Err(HubError::Overflow {
+            run_id,
+            last_sequence,
+        })) => {
+            assert_eq!((run_id, last_sequence), (current.clone(), 2));
+        }
+        other => panic!("{:?}", other.map(|item| item.map(|e| e.sequence))),
+    }
+    script.end(&old);
+    script.end(&current);
+}
