@@ -51,12 +51,26 @@
   {
     "index": 8,
     "direction": "copilot-to-host",
+    "classification": "observed-only",
+    "fidelity": "observed-only",
+    "oap": "ignore stale interaction i1 after i2 starts"
+  },
+  {
+    "index": 9,
+    "direction": "copilot-to-host",
+    "classification": "observed-only",
+    "fidelity": "observed-only",
+    "oap": "ignore stale interaction i1 after i2 starts"
+  },
+  {
+    "index": 10,
+    "direction": "copilot-to-host",
     "classification": "mapped",
     "fidelity": "normalized",
     "oap": "event projection or explicit omission"
   },
   {
-    "index": 9,
+    "index": 11,
     "direction": "copilot-to-host",
     "classification": "mapped",
     "fidelity": "normalized",
