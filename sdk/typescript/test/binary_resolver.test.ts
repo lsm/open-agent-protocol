@@ -11,8 +11,9 @@ const ENV_BINARY_PATH = "OAP_SDK_BINARY_PATH";
 const ENV_BINARY_URL = "OAP_SDK_BINARY_URL";
 const ENV_BINARY_SHA256 = "OAP_SDK_BINARY_SHA256";
 
-test("resolveMakaiBinary prefers OAP_SDK_BINARY_PATH override", async () => {
+test("resolveMakaiBinary prefers OAP_SDK_BINARY_PATH override", async (t) => {
   const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "makai-bin-path-"));
+  t.after(() => fs.rm(tempDir, { recursive: true, force: true }));
   const binaryPath = path.join(tempDir, process.platform === "win32" ? "oapx.exe" : "oapx");
   await fs.writeFile(binaryPath, "fixture");
 
@@ -24,12 +25,12 @@ test("resolveMakaiBinary prefers OAP_SDK_BINARY_PATH override", async () => {
   } finally {
     if (prev === undefined) delete process.env[ENV_BINARY_PATH];
     else process.env[ENV_BINARY_PATH] = prev;
-    await fs.rm(tempDir, { recursive: true, force: true });
   }
 });
 
-test("resolveMakaiBinary rejects URL override without checksum", async () => {
+test("resolveMakaiBinary rejects URL override without checksum", async (t) => {
   const cacheDir = await fs.mkdtemp(path.join(os.tmpdir(), "makai-cache-"));
+  t.after(() => fs.rm(cacheDir, { recursive: true, force: true }));
   const prevUrl = process.env[ENV_BINARY_URL];
   const prevChecksum = process.env[ENV_BINARY_SHA256];
   const prevPath = process.env[ENV_BINARY_PATH];
@@ -48,11 +49,10 @@ test("resolveMakaiBinary rejects URL override without checksum", async () => {
     else process.env[ENV_BINARY_SHA256] = prevChecksum;
     if (prevPath === undefined) delete process.env[ENV_BINARY_PATH];
     else process.env[ENV_BINARY_PATH] = prevPath;
-    await fs.rm(cacheDir, { recursive: true, force: true });
   }
 });
 
-test("resolveMakaiBinary rejects resolver URL option without checksum", async () => {
+test("resolveMakaiBinary rejects resolver URL option without checksum", async (t) => {
   const prevUrl = process.env[ENV_BINARY_URL];
   const prevChecksum = process.env[ENV_BINARY_SHA256];
   const prevPath = process.env[ENV_BINARY_PATH];
@@ -78,10 +78,11 @@ test("resolveMakaiBinary rejects resolver URL option without checksum", async ()
   }
 });
 
-test("resolveMakaiBinary downloads URL override to cache with checksum", async () => {
+test("resolveMakaiBinary downloads URL override to cache with checksum", async (t) => {
   const payload = Buffer.from("makai-binary-content");
   const checksum = createHash("sha256").update(payload).digest("hex");
   const cacheDir = await fs.mkdtemp(path.join(os.tmpdir(), "makai-cache-"));
+  t.after(() => fs.rm(cacheDir, { recursive: true, force: true }));
 
   const server = http.createServer((_req, res) => {
     res.writeHead(200, { "Content-Type": "application/octet-stream" });
@@ -111,20 +112,20 @@ test("resolveMakaiBinary downloads URL override to cache with checksum", async (
     else process.env[ENV_BINARY_SHA256] = prevChecksum;
     if (prevPath === undefined) delete process.env[ENV_BINARY_PATH];
     else process.env[ENV_BINARY_PATH] = prevPath;
-    await fs.rm(cacheDir, { recursive: true, force: true });
     await new Promise<void>((resolve) => server.close(() => resolve()));
   }
 });
 
-test("resolveMakaiBinary leaves no temp file when the download cannot be finalized", async () => {
+test("resolveMakaiBinary leaves no temp file when the download cannot be finalized", async (t) => {
   const payload = Buffer.from("makai-binary-content-for-rename-failure");
   const checksum = createHash("sha256").update(payload).digest("hex");
   const cacheDir = await fs.mkdtemp(path.join(os.tmpdir(), "makai-cache-fail-"));
+  t.after(() => fs.rm(cacheDir, { recursive: true, force: true }));
   const cachePath = path.join(cacheDir, "makai-test.bin");
 
   const server = http.createServer((_req, res) => {
     res.writeHead(200, { "Content-Type": "application/octet-stream" });
-    void (async () => {
+    void (async (t) => {
       await fs.mkdir(cachePath, { recursive: true });
       await fs.writeFile(path.join(cachePath, "occupant"), "x");
       res.end(payload);
@@ -153,7 +154,6 @@ test("resolveMakaiBinary leaves no temp file when the download cannot be finaliz
     else process.env[ENV_BINARY_SHA256] = prevChecksum;
     if (prevPath === undefined) delete process.env[ENV_BINARY_PATH];
     else process.env[ENV_BINARY_PATH] = prevPath;
-    await fs.rm(cacheDir, { recursive: true, force: true });
     await new Promise<void>((resolve) => server.close(() => resolve()));
   }
 });
