@@ -3,8 +3,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError, Weak};
 
 use oap_adapter::{
-    Error, EventStream, InteractionResolution, OpenRequest, ResumeRequest, SubmitRequest,
-    UnsupportedControl, CONTROL_UNSATISFIABLE,
+    Error, InteractionResolution, OpenRequest, ResumeRequest, SubmitRequest, UnsupportedControl,
+    CONTROL_UNSATISFIABLE,
 };
 use oap_binding::{Action, Entry, Record, Store};
 use oap_protocol::{
@@ -12,6 +12,7 @@ use oap_protocol::{
     SessionStatus, FEATURE_OPEN_REOPEN,
 };
 
+use crate::live::{self, Live, Subscription, DEFAULT_STREAM_QUEUE};
 use crate::Registry;
 
 pub const DEFAULT_PARTICIPANT: &str = "user";
@@ -37,6 +38,8 @@ pub enum HubError {
     },
     #[error("the session has no run to replay")]
     NoRunToResume,
+    #[error("serve: event stream overflowed behind sequence {last_sequence} (run {run_id}); resume with a cursor after it")]
+    Overflow { run_id: RunId, last_sequence: u64 },
     #[error(transparent)]
     Adapter(#[from] Error),
     #[error(transparent)]
@@ -53,6 +56,7 @@ struct Sessions {
 pub struct HubOptions {
     pub bindings: Option<Arc<dyn Store>>,
     pub home: String,
+    pub stream_queue: usize,
     pub report: Option<Arc<dyn Fn(String) + Send + Sync>>,
 }
 
@@ -261,7 +265,7 @@ impl Hub {
             hub: Arc::downgrade(&self.shared),
             options: self.shared.options.clone(),
             record,
-            runs: Mutex::default(),
+            live: Mutex::default(),
         });
         let added = {
             let mut sessions = self.shared.sessions();
@@ -355,7 +359,15 @@ impl Hub {
             })
             .await
             .inspect_err(|err| entry.closed_by(err))?;
-        Ok(Subscription { run, stream })
+        Ok(Subscription::replay(run, stream))
+    }
+
+    pub fn subscribe(&self, id: &SessionId) -> Result<Subscription, HubError> {
+        let entry = self.session(id)?;
+        let (sub, joined) = entry
+            .with_live(Live::subscribe)
+            .ok_or_else(|| HubError::UnknownSession(id.clone()))?;
+        Ok(Subscription::live(entry, sub, joined))
     }
 
     pub fn sessions(&self) -> Vec<Arc<HubSession>> {
@@ -371,34 +383,7 @@ pub struct HubSession {
     hub: Weak<Shared>,
     options: HubOptions,
     record: Record,
-    runs: Mutex<Runs>,
-}
-
-#[derive(Default)]
-struct Runs {
-    current: Option<RunId>,
-}
-
-pub struct Subscription {
-    run: RunId,
-    stream: EventStream,
-}
-
-impl Subscription {
-    pub fn run_id(&self) -> &RunId {
-        &self.run
-    }
-}
-
-impl futures_core::Stream for Subscription {
-    type Item = Result<oap_protocol::Envelope, Error>;
-
-    fn poll_next(
-        mut self: std::pin::Pin<&mut Self>,
-        context: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<Option<Self::Item>> {
-        self.stream.as_mut().poll_next(context)
-    }
+    live: Mutex<Live>,
 }
 
 impl HubSession {
@@ -416,6 +401,7 @@ impl HubSession {
 
     fn mark_closed(&self) {
         if !self.closed.swap(true, Ordering::SeqCst) {
+            live::finish(self.with_live(Live::close));
             match self.hub.upgrade() {
                 Some(hub) => hub.release(self),
                 None => self.options.record(&self.record, Action::Closed, now_ms()),
@@ -438,8 +424,15 @@ impl HubSession {
         Ok(state)
     }
 
-    fn runs(&self) -> MutexGuard<'_, Runs> {
-        self.runs.lock().unwrap_or_else(PoisonError::into_inner)
+    pub(crate) fn with_live<T>(&self, change: impl FnOnce(&mut Live) -> T) -> T {
+        change(&mut self.live.lock().unwrap_or_else(PoisonError::into_inner))
+    }
+
+    pub(crate) fn stream_queue(&self) -> usize {
+        match self.options.stream_queue {
+            0 => DEFAULT_STREAM_QUEUE,
+            queue => queue,
+        }
     }
 
     fn closed_by(&self, err: &Error) {
@@ -449,24 +442,29 @@ impl HubSession {
     }
 
     pub fn current_run(&self) -> Option<RunId> {
-        self.runs().current.clone()
+        self.with_live(|live| live.current())
     }
 
-    pub async fn submit(&self, submit: SubmitRequest) -> Result<MessageSubmitResponse, HubError> {
+    pub async fn submit(
+        self: &Arc<Self>,
+        submit: SubmitRequest,
+    ) -> Result<MessageSubmitResponse, HubError> {
         if submit.request.session_id != self.id {
             return Err(HubError::ScopeMismatch {
                 payload: submit.request.session_id,
                 addressed: self.id.clone(),
             });
         }
-        let (admission, _stream) = self
+        let (admission, stream) = self
             .session
             .submit(submit)
             .await
             .inspect_err(|err| self.closed_by(err))?;
         if let Some(run) = &admission.run_id {
-            if admission.admission != Admission::QUEUED {
-                self.runs().current = Some(run.clone());
+            if admission.admission != Admission::STEERED {
+                let current = admission.admission != Admission::QUEUED;
+                self.with_live(|live| live.start(run, current));
+                live::read_run(self.clone(), run.clone(), stream);
             }
         }
         Ok(admission)

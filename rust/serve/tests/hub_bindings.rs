@@ -34,6 +34,7 @@ fn hub_in(store: &Arc<MemoryStore>, home: &str, directory: &str) -> Hub {
         HubOptions {
             bindings: Some(store.clone()),
             home: home.into(),
+            stream_queue: 0,
             report: None,
         },
     )
@@ -241,6 +242,7 @@ fn a_store_that_refuses_a_record_is_reported_and_the_open_still_stands() {
         HubOptions {
             bindings: Some(Arc::new(Refusing)),
             home: String::new(),
+            stream_queue: 0,
             report: Some(Arc::new(move |line| heard.lock().unwrap().push(line))),
         },
     );

@@ -52,7 +52,7 @@ fn prompt(session: &str) -> SubmitRequest {
     }
 }
 
-fn cancelled_run(session: &HubSession) -> RunId {
+fn cancelled_run(session: &Arc<HubSession>) -> RunId {
     let admission = block_on(session.submit(prompt(session.id().as_str()))).unwrap();
     let run = admission.run_id.unwrap();
     assert!(block_on(session.cancel(run.clone())).unwrap().accepted);

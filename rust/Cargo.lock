@@ -1081,6 +1081,7 @@ dependencies = [
  "oap-adapter",
  "oap-binding",
  "oap-protocol",
+ "serde_json",
  "thiserror",
 ]
 

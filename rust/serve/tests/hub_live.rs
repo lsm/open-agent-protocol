@@ -1,0 +1,279 @@
+use std::sync::{Arc, Mutex};
+use std::thread;
+use std::time::Duration;
+
+use futures::channel::mpsc::{unbounded, UnboundedSender};
+use futures::executor::block_on;
+use futures::StreamExt;
+use oap_adapter::{
+    Adapter, BoxFuture, Descriptor, Error, EventStream, InteractionResolution, OpenRequest,
+    Recovery, ResumeRequest, Session, SubmitRequest,
+};
+use oap_protocol::{
+    Admission, Envelope, EnvelopeType, MessageSubmitRequest, MessageSubmitResponse,
+    RunCancelResponse, RunId, SessionState, SessionStatus,
+};
+use oap_serve::{Hub, HubError, HubOptions, HubSession, Registry, Subscription};
+
+type Sender = UnboundedSender<Result<Envelope, Error>>;
+
+#[derive(Default)]
+struct Scripted {
+    senders: Arc<Mutex<Vec<(RunId, Sender)>>>,
+}
+
+struct ScriptedSession {
+    id: String,
+    senders: Arc<Mutex<Vec<(RunId, Sender)>>>,
+}
+
+impl Adapter for Scripted {
+    fn probe(&self) -> BoxFuture<'_, Descriptor> {
+        Box::pin(async { Ok(Descriptor::default()) })
+    }
+
+    fn open(&self, request: OpenRequest) -> BoxFuture<'_, Box<dyn Session>> {
+        let session: Box<dyn Session> = Box::new(ScriptedSession {
+            id: request.session_id.to_string(),
+            senders: self.senders.clone(),
+        });
+        Box::pin(async move { Ok(session) })
+    }
+}
+
+impl Session for ScriptedSession {
+    fn submit(&self, _: SubmitRequest) -> BoxFuture<'_, (MessageSubmitResponse, EventStream)> {
+        let mut senders = self.senders.lock().unwrap();
+        let run: RunId = format!("run-{}", senders.len() + 1).into();
+        let (sender, receiver) = unbounded();
+        senders.push((run.clone(), sender));
+        let admission = MessageSubmitResponse {
+            session_id: self.id.as_str().into(),
+            accepted: true,
+            admission: Admission::STARTED,
+            run_id: Some(run),
+            ..MessageSubmitResponse::default()
+        };
+        let stream: EventStream = Box::pin(receiver);
+        Box::pin(async move { Ok((admission, stream)) })
+    }
+
+    fn state(&self) -> BoxFuture<'_, SessionState> {
+        let state = SessionState {
+            session_id: self.id.as_str().into(),
+            status: SessionStatus::IDLE,
+            ..SessionState::default()
+        };
+        Box::pin(async move { Ok(state) })
+    }
+
+    fn resolve(&self, _: InteractionResolution) -> BoxFuture<'_, ()> {
+        Box::pin(async { Ok(()) })
+    }
+
+    fn cancel(&self, _: RunId) -> BoxFuture<'_, RunCancelResponse> {
+        Box::pin(async { Err(Error::RunNotFound) })
+    }
+
+    fn resume(&self, _: ResumeRequest) -> BoxFuture<'_, (Recovery, EventStream)> {
+        Box::pin(async { Err(Error::RunNotFound) })
+    }
+
+    fn close(&self) -> BoxFuture<'_, ()> {
+        Box::pin(async { Ok(()) })
+    }
+}
+
+struct Script {
+    hub: Hub,
+    session: Arc<HubSession>,
+    senders: Arc<Mutex<Vec<(RunId, Sender)>>>,
+}
+
+fn script(queue: usize) -> Script {
+    let scripted = Scripted::default();
+    let senders = scripted.senders.clone();
+    let mut registry = Registry::new();
+    registry.register("scripted", Arc::new(scripted)).unwrap();
+    let hub = Hub::with_options(
+        registry,
+        HubOptions {
+            stream_queue: queue,
+            ..HubOptions::default()
+        },
+    );
+    let session = block_on(hub.open(
+        "scripted",
+        OpenRequest {
+            session_id: "s".into(),
+            ..OpenRequest::default()
+        },
+    ))
+    .unwrap()
+    .session;
+    Script {
+        hub,
+        session,
+        senders,
+    }
+}
+
+impl Script {
+    fn submit(&self) -> RunId {
+        block_on(self.session.submit(SubmitRequest {
+            request: MessageSubmitRequest {
+                session_id: "s".into(),
+                ..MessageSubmitRequest::default()
+            },
+            ..SubmitRequest::default()
+        }))
+        .unwrap()
+        .run_id
+        .unwrap()
+    }
+
+    fn sender(&self, run: &RunId) -> Sender {
+        let senders = self.senders.lock().unwrap();
+        senders.iter().find(|(id, _)| id == run).unwrap().1.clone()
+    }
+
+    fn emit(&self, run: &RunId, sequence: u64) {
+        let mut envelope = Envelope::new(
+            EnvelopeType::RUN_STATUS_UPDATED,
+            format!("e{sequence}"),
+            &serde_json::json!({}),
+        )
+        .unwrap();
+        envelope.session_id = Some("s".into());
+        envelope.run_id = Some(run.clone());
+        envelope.sequence = Some(sequence);
+        self.sender(run).unbounded_send(Ok(envelope)).unwrap();
+    }
+
+    fn fail(&self, run: &RunId) {
+        self.sender(run)
+            .unbounded_send(Err(Error::harness("the harness died")))
+            .unwrap();
+    }
+
+    fn end(&self, run: &RunId) {
+        let mut senders = self.senders.lock().unwrap();
+        senders.retain(|(id, _)| id != run);
+    }
+
+    fn subscribe(&self) -> Subscription {
+        self.hub.subscribe(&"s".into()).unwrap()
+    }
+}
+
+fn next(subscription: &mut Subscription) -> Option<Result<Envelope, HubError>> {
+    block_on(subscription.next())
+}
+
+fn settle() {
+    thread::sleep(Duration::from_millis(50));
+}
+
+#[test]
+fn every_subscriber_sees_the_run_in_order_and_then_its_end() {
+    let script = script(64);
+    let mut subscriptions: Vec<Subscription> = (0..4).map(|_| script.subscribe()).collect();
+    let run = script.submit();
+    for sequence in 1..=3 {
+        script.emit(&run, sequence);
+    }
+    script.end(&run);
+    for subscription in &mut subscriptions {
+        for sequence in 1..=3 {
+            let envelope = next(subscription).unwrap().unwrap();
+            assert_eq!(envelope.run_id.as_ref(), Some(&run));
+            assert_eq!(envelope.sequence, Some(sequence));
+        }
+        assert!(next(subscription).is_none());
+    }
+}
+
+#[test]
+fn a_subscriber_that_falls_behind_is_ended_with_an_overflow_naming_its_run_and_position() {
+    let script = script(2);
+    let mut slow = script.subscribe();
+    let run = script.submit();
+    let mut fast = script.subscribe();
+    for sequence in 1..=2 {
+        script.emit(&run, sequence);
+    }
+    settle();
+    assert_eq!(next(&mut fast).unwrap().unwrap().sequence, Some(1));
+    assert_eq!(next(&mut fast).unwrap().unwrap().sequence, Some(2));
+    script.emit(&run, 3);
+    settle();
+    assert_eq!(next(&mut slow).unwrap().unwrap().sequence, Some(1));
+    assert_eq!(next(&mut slow).unwrap().unwrap().sequence, Some(2));
+    match next(&mut slow) {
+        Some(Err(HubError::Overflow {
+            run_id,
+            last_sequence,
+        })) => {
+            assert_eq!((run_id, last_sequence), (run.clone(), 2));
+        }
+        other => panic!(
+            "after the overflow: {:?}",
+            other.map(|item| item.map(|e| e.sequence))
+        ),
+    }
+    assert!(next(&mut slow).is_none());
+    assert_eq!(next(&mut fast).unwrap().unwrap().sequence, Some(3));
+    script.end(&run);
+    assert!(next(&mut fast).is_none());
+}
+
+#[test]
+fn a_stream_error_reaches_the_subscriber_after_what_came_before_it() {
+    let script = script(64);
+    let mut watcher = script.subscribe();
+    let run = script.submit();
+    script.emit(&run, 1);
+    script.fail(&run);
+    assert_eq!(next(&mut watcher).unwrap().unwrap().sequence, Some(1));
+    assert!(matches!(
+        next(&mut watcher),
+        Some(Err(HubError::Adapter(Error::Harness(_))))
+    ));
+    assert!(next(&mut watcher).is_none());
+}
+
+#[test]
+fn a_subscription_reports_where_it_joined_a_run_and_nothing_between_runs() {
+    let script = script(64);
+    let mut watcher = script.subscribe();
+    assert_eq!(watcher.joined_at(), None);
+    let run = script.submit();
+    script.emit(&run, 1);
+    script.emit(&run, 2);
+    next(&mut watcher).unwrap().unwrap();
+    next(&mut watcher).unwrap().unwrap();
+    let mid = script.subscribe();
+    assert_eq!(mid.joined_at(), Some((run.clone(), 2)));
+    drop(mid);
+    script.end(&run);
+    assert!(next(&mut watcher).is_none());
+    let second = script.submit();
+    let late = script.subscribe();
+    assert_eq!(late.joined_at(), None);
+    script.end(&second);
+}
+
+#[test]
+fn a_subscription_ends_when_its_owner_closes_it_or_the_session_closes() {
+    let script = script(64);
+    let mut owned = script.subscribe();
+    owned.close();
+    assert!(next(&mut owned).is_none());
+    let mut watcher = script.subscribe();
+    block_on(script.session.close()).unwrap();
+    assert!(next(&mut watcher).is_none());
+    assert!(matches!(
+        script.hub.subscribe(&"s".into()),
+        Err(HubError::UnknownSession(_))
+    ));
+}
