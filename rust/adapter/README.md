@@ -70,3 +70,36 @@ levels, on a large-stack thread past 128), but typed decoding through serde,
 including the `zero`/`structure` helpers and every adapter's strict decoder,
 keeps serde_json's 128-level limit, where Go's typed decode goes deeper. No
 pinned corpus nests a native frame that deep.
+
+## Child processes
+
+`wait_error` writes the text Go's `exec.ExitError` carries: `exit status N`,
+or `signal: <name>` with Go's per-platform signal names, followed by
+` (core dumped)` when the status reports a core dump, as Go's
+`os.ProcessState.String` appends it (`os/exec_posix.go`).
+
+`process::Child` follows Go's launchers in every observable way but two. When
+a harness leaves a grandchild holding its stderr, Go closes the pipe on the
+drain-timeout and kill paths, which ends the copy. Safe Rust cannot close a
+pipe under a blocked read, so the capture thread, its descriptor and its
+buffer of at most `stderr_limit` bytes live until that grandchild exits. The
+child's exit and every launcher's close are not delayed by it.
+
+Go interrupts a child in process with `os.Interrupt`. Safe Rust has no signal
+call, so `interrupt` runs `/bin/kill -INT` (or `/usr/bin/kill`) while it holds
+the child, and only if the child has not been reaped, so a recycled pid is
+never signalled. On a host with neither binary it kills the child instead,
+which is the step Go would reach after its grace period anyway.
+
+Stdin has the same limit. `release_stdin` never waits: when a write is
+blocked on a full pipe it marks the pipe released and returns, and the writer
+drops the descriptor as soon as its write returns, which killing the child
+causes. Go closes the descriptor under the blocked write at once; Rust's
+stays open until that write ends, so a grandchild holding the read end keeps
+the writer blocked until it exits.
+
+Stdout follows Go's order: a child's exit is recorded only after its stdout
+reader ends, so every frame is read first. When a grandchild holds stdout
+open, Go's kill closes the pipe and the read ends. Rust's `kill` cannot close
+it, so it releases the watch instead: the child is reaped and `exited` fires,
+while the blocked reader thread lives until the grandchild exits.

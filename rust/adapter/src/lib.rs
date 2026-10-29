@@ -6,6 +6,7 @@ pub mod gotime;
 pub mod journal;
 pub mod jsonrpc;
 pub mod memory;
+pub mod process;
 mod prompt;
 mod quote_table;
 mod refuse;
