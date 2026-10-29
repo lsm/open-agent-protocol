@@ -247,6 +247,9 @@ jobs:
       - name: Type-check the TypeScript README samples
         run: npm run check:readme
 
+      - name: Verify demo temporary-directory cleanup
+        run: node --test scripts/demo-server-cleanup.test.mjs
+
       - name: Verify npm package ships TypeScript declarations
         run: npm run check:declarations
 

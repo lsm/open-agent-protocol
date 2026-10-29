@@ -8,8 +8,9 @@ import { startDemoServer } from "../demo/server";
 const sourceFixturesDir = path.resolve(__dirname, "../../sdk/typescript/test/fixtures");
 const oapFixture = path.join(sourceFixturesDir, "oap-server.js");
 
-test("demo: serves UI and metadata", async () => {
+test("demo: serves UI and metadata", async (t) => {
   const tempHome = await fs.mkdtemp(path.join(os.tmpdir(), "makai-demo-home-"));
+  t.after(() => fs.rm(tempHome, { recursive: true, force: true }));
   const running = await startDemoServer({
     port: 0,
     command: process.execPath,
@@ -32,12 +33,12 @@ test("demo: serves UI and metadata", async () => {
     assert.equal(meta.chatProviders.some((provider) => provider.id === "test-fixture"), true);
   } finally {
     await running.close();
-    await fs.rm(tempHome, { recursive: true, force: true });
   }
 });
 
-test("demo: fixture chat works without configured Makai runtime", async () => {
+test("demo: fixture chat works without configured Makai runtime", async (t) => {
   const tempHome = await fs.mkdtemp(path.join(os.tmpdir(), "makai-demo-home-"));
+  t.after(() => fs.rm(tempHome, { recursive: true, force: true }));
   const running = await startDemoServer({
     port: 0,
     homeDir: tempHome,
@@ -59,6 +60,5 @@ test("demo: fixture chat works without configured Makai runtime", async () => {
     assert.equal(payload.reply, "[fixture-echo-v1] eerf yranib");
   } finally {
     await running.close();
-    await fs.rm(tempHome, { recursive: true, force: true });
   }
 });
