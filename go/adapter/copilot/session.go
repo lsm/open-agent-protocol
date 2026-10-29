@@ -17,6 +17,7 @@ type session struct {
 	process  *rpc.Process
 	journal  *journal.Journal
 	closed   bool
+	closing  bool
 	unusable bool
 	done     chan struct{}
 }
@@ -91,11 +92,13 @@ func (s *session) Resume(ctx context.Context, request base.ResumeRequest) (base.
 
 func (s *session) Close(context.Context) error {
 	s.mu.Lock()
-	s.end("copilot_closed", "the Copilot session closed")
-	s.closed = true
+	s.closing = true
 	s.mu.Unlock()
 	_ = s.process.Close()
 	<-s.done
+	s.mu.Lock()
+	s.closed = true
+	s.mu.Unlock()
 	s.journal.Close()
 	return nil
 }
@@ -113,7 +116,11 @@ func (s *session) pump() {
 				s.consume(<-client.Notifications())
 			}
 			s.mu.Lock()
-			s.end("copilot_process_exit", "the Copilot server closed its RPC connection")
+			if s.closing {
+				s.end("copilot_closed", "the Copilot session closed")
+			} else {
+				s.end("copilot_process_exit", "the Copilot server closed its RPC connection")
+			}
 			s.mu.Unlock()
 			return
 		}
