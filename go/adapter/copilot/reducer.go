@@ -12,6 +12,7 @@ type run struct {
 	id                protocol.RunID
 	messageID         protocol.MessageID
 	nativeMessage     string
+	interaction       string
 	status            protocol.RunStatus
 	started, terminal bool
 	next              uint64
@@ -60,6 +61,10 @@ func (r *reducer) observe(event native.Event) error {
 		}
 		return nil
 	}
+	if id := native.Text(event.Data, "interactionId"); event.Type != "user.message" && id != "" && (r.current == nil || r.current.interaction != id) {
+		return nil
+	}
+
 	switch event.Type {
 	case "user.message":
 		id := native.Text(event.Data, "messageId")
@@ -75,6 +80,7 @@ func (r *reducer) observe(event native.Event) error {
 					return err
 				}
 			}
+			run.interaction = native.Text(event.Data, "interactionId")
 			run.started = true
 			run.status = protocol.RunRunning
 			r.current = run

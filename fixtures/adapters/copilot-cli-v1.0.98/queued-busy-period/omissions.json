@@ -1,1 +1,10 @@
-[]
+[
+  {
+    "native": "assistant.message_delta",
+    "reason": "Delayed event for completed interaction i1 must not enter current interaction i2."
+  },
+  {
+    "native": "assistant.message",
+    "reason": "Delayed event for completed interaction i1 must not enter current interaction i2."
+  }
+]
