@@ -32,6 +32,10 @@ unblocks an owned stalled pipe. These run with race detection and appear in
 under temporary HOME and an explicit environment: an RPC reads that HOME, a
 stalled call must return DeadlineExceeded, and close/cancellation must reap the
 child. The script disables Go's test cache so this process proof really runs.
-No real Copilot binary or authentication is used. The runnable reducer/adapter
-follows in later slices. Unsupported host capabilities remain unadvertised;
-the Rust lane follows separately.
+No real Copilot binary or authentication is used. The Go reducer additionally
+matches fixed OAP for text, queue, unknown events, session errors and foreign
+sessions. The queued case also injects delayed delta/final text for the completed
+interaction after its successor starts; neither may appear in the next run.
+Usage and tool projections, then public adapter wiring, follow in
+later slices. Unsupported host capabilities remain unadvertised; the Rust lane
+follows separately.

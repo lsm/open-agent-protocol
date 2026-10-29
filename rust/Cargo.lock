@@ -977,6 +977,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "oap-adapter-copilot"
+version = "0.1.0"
+dependencies = [
+ "oap-adapter",
+ "oap-harness",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "oap-adapter-hermes"
 version = "0.1.0"
 dependencies = [
@@ -1067,6 +1077,7 @@ version = "0.1.0"
 dependencies = [
  "futures",
  "oap-adapter",
+ "oap-binding",
  "oap-protocol",
  "thiserror",
 ]
