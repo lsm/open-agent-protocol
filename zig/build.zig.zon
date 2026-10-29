@@ -1,7 +1,7 @@
 .{
     .name = .makai,
     .minimum_zig_version = "0.17.0",
-    .version = "0.1.0-alpha.29",
+    .version = "0.1.0-alpha.30",
     .dependencies = .{
         .zigzag = .{
             .path = "vendor/zigzag",

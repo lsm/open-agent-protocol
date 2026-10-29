@@ -11,6 +11,7 @@ publish = false
 oap-adapter = { path = "../adapter" }
 oap-binding = { path = "../binding" }
 oap-protocol = { path = "../protocol" }
+futures-core = "0.3"
 thiserror = "2"
 
 [dev-dependencies]

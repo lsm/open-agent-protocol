@@ -987,6 +987,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "oap-adapter-hermes"
+version = "0.1.0"
+dependencies = [
+ "oap-adapter",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "oap-adapter-opencode"
 version = "0.1.0"
 dependencies = [
@@ -1068,6 +1077,7 @@ name = "oap-serve"
 version = "0.1.0"
 dependencies = [
  "futures",
+ "futures-core",
  "oap-adapter",
  "oap-binding",
  "oap-protocol",
