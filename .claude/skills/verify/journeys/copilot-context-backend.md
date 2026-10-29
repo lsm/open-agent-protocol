@@ -44,3 +44,6 @@ and the before/after terminal frames. alpha.29 fails this regression after the
 refresh because it sends no API-version header. Existing per-model cases still
 run, and `test-unit-providers` checks the same version on the Copilot inference
 wire and its absence for another provider.
+
+`test-unit-utils` also verifies the model-policy enablement request uses the
+same API version, so login policy calls do not retain an unversioned gateway path.
