@@ -40,9 +40,10 @@ test("getNoopLogger returns the same singleton instance", () => {
   assert.strictEqual(getNoopLogger(), getNoopLogger());
 });
 
-test("binary resolver logs resolution steps", async () => {
+test("binary resolver logs resolution steps", async (t) => {
   const logger = createCapturingLogger();
   const tempDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), "makai-bin-log-"));
+  t.after(() => fs.promises.rm(tempDir, { recursive: true, force: true }));
   const binaryPath = path.join(tempDir, process.platform === "win32" ? "oapx.exe" : "oapx");
   await fs.promises.writeFile(binaryPath, "fixture");
 
@@ -59,13 +60,13 @@ test("binary resolver logs resolution steps", async () => {
   } finally {
     if (prev === undefined) delete process.env.OAP_SDK_BINARY_PATH;
     else process.env.OAP_SDK_BINARY_PATH = prev;
-    await fs.promises.rm(tempDir, { recursive: true, force: true });
   }
 });
 
-test("binary resolver logs auto resolution candidate checks", async () => {
+test("binary resolver logs auto resolution candidate checks", async (t) => {
   const logger = createCapturingLogger();
   const emptyCwd = await fs.promises.mkdtemp(path.join(os.tmpdir(), "makai-empty-cwd-"));
+  t.after(() => fs.promises.rm(emptyCwd, { recursive: true, force: true }));
   const binaryName = process.platform === "win32" ? "oapx.exe" : "oapx";
   const resolveModule = (specifier: string): string => {
     throw new Error(`Cannot find module '${specifier}'`);
@@ -77,7 +78,9 @@ test("binary resolver logs auto resolution candidate checks", async () => {
   delete process.env.OAP_SDK_BINARY_URL;
   delete process.env.OAP_SDK_BINARY_SHA256;
   const prevSearchPath = process.env.PATH;
-  process.env.PATH = await fs.promises.mkdtemp(path.join(os.tmpdir(), "makai-empty-path-"));
+  const emptyPath = await fs.promises.mkdtemp(path.join(os.tmpdir(), "makai-empty-path-"));
+  t.after(() => fs.promises.rm(emptyPath, { recursive: true, force: true }));
+  process.env.PATH = emptyPath;
   try {
     const resolved = await resolveMakaiBinary({ logger, cwd: emptyCwd, resolveModule });
     const notFoundLog = logger.entries.find((e) => e.message === "binary: bundled package not found");
@@ -108,14 +111,16 @@ test("binary resolver logs auto resolution candidate checks", async () => {
     else process.env.OAP_SDK_BINARY_SHA256 = prevChecksum;
     if (prevSearchPath === undefined) delete process.env.PATH;
     else process.env.PATH = prevSearchPath;
-    await fs.promises.rm(emptyCwd, { recursive: true, force: true });
   }
 });
 
-test("binary resolver passes over a PATH entry that is not an executable file", async () => {
+test("binary resolver passes over a PATH entry that is not an executable file", async (t) => {
   const emptyCwd = await fs.promises.mkdtemp(path.join(os.tmpdir(), "makai-empty-cwd-"));
+  t.after(() => fs.promises.rm(emptyCwd, { recursive: true, force: true }));
   const decoyDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), "makai-decoy-"));
+  t.after(() => fs.promises.rm(decoyDir, { recursive: true, force: true }));
   const realDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), "makai-real-"));
+  t.after(() => fs.promises.rm(realDir, { recursive: true, force: true }));
   const binaryName = process.platform === "win32" ? "oapx.exe" : "oapx";
   await fs.promises.mkdir(path.join(decoyDir, binaryName));
   const real = path.join(realDir, binaryName);
@@ -134,15 +139,14 @@ test("binary resolver passes over a PATH entry that is not an executable file", 
     else process.env.OAP_SDK_BINARY_PATH = prevBinaryPath;
     if (prevSearchPath === undefined) delete process.env.PATH;
     else process.env.PATH = prevSearchPath;
-    await fs.promises.rm(emptyCwd, { recursive: true, force: true });
-    await fs.promises.rm(decoyDir, { recursive: true, force: true });
-    await fs.promises.rm(realDir, { recursive: true, force: true });
   }
 });
 
-test("binary resolver ignores an install predating the rename on PATH", async () => {
+test("binary resolver ignores an install predating the rename on PATH", async (t) => {
   const emptyCwd = await fs.promises.mkdtemp(path.join(os.tmpdir(), "makai-empty-cwd-"));
+  t.after(() => fs.promises.rm(emptyCwd, { recursive: true, force: true }));
   const pathDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), "makai-path-"));
+  t.after(() => fs.promises.rm(pathDir, { recursive: true, force: true }));
   const legacy = path.join(pathDir, process.platform === "win32" ? "makai.exe" : "makai");
   await fs.promises.writeFile(legacy, "#!/bin/sh\nexit 0\n", { mode: 0o755 });
   const resolveModule = (specifier: string): string => {
@@ -163,12 +167,10 @@ test("binary resolver ignores an install predating the rename on PATH", async ()
     else process.env.OAP_SDK_BINARY_URL = prevBinaryUrl;
     if (prevSearchPath === undefined) delete process.env.PATH;
     else process.env.PATH = prevSearchPath;
-    await fs.promises.rm(emptyCwd, { recursive: true, force: true });
-    await fs.promises.rm(pathDir, { recursive: true, force: true });
   }
 });
 
-test("binary resolver logs resolution from the bundled package", async () => {
+test("binary resolver logs resolution from the bundled package", async (t) => {
   const logger = createCapturingLogger();
   const bundledPath = path.join(path.sep, "bundled", "bin", process.platform === "win32" ? "oapx.exe" : "oapx");
   const specifiers: string[] = [];
@@ -212,7 +214,7 @@ test("isNoopLogger identifies no-op logger and distinguishes custom loggers", ()
   assert.ok(!isNoopLogger(custom), "custom logger should not be identified as no-op");
 });
 
-test("createOapClient hands its logger to binary resolution", async () => {
+test("createOapClient hands its logger to binary resolution", async (t) => {
   const logger = createCapturingLogger();
   const prev = process.env.OAP_SDK_BINARY_PATH;
   delete process.env.OAP_SDK_BINARY_PATH;
