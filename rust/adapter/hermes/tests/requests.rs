@@ -128,3 +128,19 @@ fn payloads_follow_their_pinned_strictness() {
         r#"{"choice":"once"}"#
     );
 }
+
+#[test]
+fn the_request_session_folds_its_key_and_keeps_the_last_string_as_go_does() {
+    assert_eq!(
+        request_session_id(br#"{"session_id":"owned","Session_ID":"other"}"#),
+        "other"
+    );
+    assert_eq!(
+        request_session_id("{\"\u{17f}ession_id\":\"long-s\"}".as_bytes()),
+        "long-s"
+    );
+    assert_eq!(
+        request_session_id(br#"{"session_id":"kept","SESSION_ID":null,"Session_Id":5}"#),
+        "kept"
+    );
+}

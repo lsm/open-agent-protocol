@@ -260,14 +260,53 @@ pub fn decode_server_request(method: &str, params: &[u8]) -> Result<Option<Serve
 
 pub fn request_session_id(params: &[u8]) -> String {
     let text = go_lossy(params);
-    let Ok(object) = serde_json::from_str::<BTreeMap<String, Box<serde_json::value::RawValue>>>(
-        &oap_adapter::gojson::replace_lone_surrogates(&text),
-    ) else {
+    let Ok(Members(members)) =
+        serde_json::from_str::<Members>(&oap_adapter::gojson::replace_lone_surrogates(&text))
+    else {
         return String::new();
     };
-    object
-        .get("session_id")
-        .and_then(|raw| serde_json::from_str::<Option<String>>(raw.get()).ok())
-        .flatten()
-        .unwrap_or_default()
+    let mut session = String::new();
+    for (name, value) in members {
+        if !folds_to(&name, "session_id") {
+            continue;
+        }
+        if let Ok(Some(text)) = serde_json::from_str::<Option<String>>(value.get()) {
+            session = text;
+        }
+    }
+    session
+}
+
+fn folds_to(name: &str, field: &str) -> bool {
+    let fold = |character: char| match character {
+        '\u{17f}' => 's',
+        '\u{212a}' => 'k',
+        other => other.to_ascii_lowercase(),
+    };
+    name.chars().map(fold).eq(field.chars())
+}
+
+struct Members(Vec<(String, Box<serde_json::value::RawValue>)>);
+
+impl<'de> Deserialize<'de> for Members {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct Visitor;
+        impl<'de> serde::de::Visitor<'de> for Visitor {
+            type Value = Members;
+            fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_str("a JSON object")
+            }
+            fn visit_map<A: serde::de::MapAccess<'de>>(
+                self,
+                mut map: A,
+            ) -> Result<Members, A::Error> {
+                let mut members = Vec::new();
+                while let Some(member) = map.next_entry()? {
+                    members.push(member);
+                }
+                Ok(Members(members))
+            }
+        }
+        deserializer.deserialize_map(Visitor)
+    }
 }
