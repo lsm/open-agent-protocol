@@ -5,7 +5,8 @@ harness SDK runtime's JSON-RPC on stdio, pinned by
 `harnesses/deepseek-harness.json` and judged by the corpus in
 `fixtures/adapters/deepseek-harness-dsh-v0.2.1-rc.2`.
 
-So far it holds the native handshake, prompt and notification types and Go's
+So far it holds the native handshake, prompt, notification and event payload
+types, including Go's `MessageSource` rules for closed source kinds, and Go's
 `DecodeStrict`: a repeated key is refused, an unknown member is refused, a
 null reads as the zero value, a null array element reads as its zero value,
 each invalid UTF-8 byte and each unpaired surrogate escape reads as U+FFFD,
