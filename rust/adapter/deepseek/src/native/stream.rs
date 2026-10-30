@@ -1,6 +1,8 @@
 use std::collections::BTreeMap;
 
-use oap_adapter::gojson::{go_quote, reject_duplicate_keys, strings, structure, zero};
+use oap_adapter::gojson::{
+    go_quote, reject_duplicate_keys, replace_lone_surrogates, strings, structure, zero,
+};
 use serde::{Deserialize, Deserializer};
 use serde_json::value::RawValue;
 
@@ -122,11 +124,13 @@ pub fn stream_record(data: &str) -> Result<AssistantStreamRecord, String> {
         #[serde(default, rename = "type", deserialize_with = "zero")]
         kind: String,
     }
-    let head = if data.trim() == "null" {
-        Head::default()
-    } else {
-        serde_json::from_str::<Head>(data).map_err(|error| error.to_string())?
-    };
+    let text = replace_lone_surrogates(data);
+    let head =
+        if text.trim_matches(|character| matches!(character, ' ' | '\t' | '\r' | '\n')) == "null" {
+            Head::default()
+        } else {
+            serde_json::from_str::<Head>(&text).map_err(|error| error.to_string())?
+        };
     let kind = head.kind;
     match kind.as_str() {
         "text-chunks" | "reasoning-chunks" => {

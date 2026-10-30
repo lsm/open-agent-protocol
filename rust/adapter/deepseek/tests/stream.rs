@@ -112,3 +112,14 @@ fn assistant_events_decode_their_stream_records() {
         "{refused}"
     );
 }
+
+#[test]
+fn the_record_type_reads_lone_surrogates_and_only_json_whitespace_as_go_does() {
+    assert_eq!(
+        stream_record(r#"{"type":"\ud800"}"#).unwrap_err(),
+        "deepseek native: invalid pinned message: unknown assistant stream record \"\u{fffd}\""
+    );
+    assert!(!stream_record("\u{a0}null")
+        .unwrap_err()
+        .starts_with("deepseek native: invalid pinned message"));
+}
