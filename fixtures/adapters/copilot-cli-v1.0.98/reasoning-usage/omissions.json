@@ -1,0 +1,6 @@
+[
+  {
+    "native": "assistant.reasoning_delta / assistant.reasoning",
+    "reason": "The pinned reducer observes but does not publish reasoning; do not invent a reasoning capability."
+  }
+]

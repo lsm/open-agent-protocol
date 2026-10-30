@@ -1,0 +1,44 @@
+[
+  {
+    "index": 1,
+    "direction": "host-to-copilot",
+    "classification": "mapped",
+    "fidelity": "normalized",
+    "oap": "admission binding"
+  },
+  {
+    "index": 2,
+    "direction": "copilot-to-host",
+    "classification": "mapped",
+    "fidelity": "normalized",
+    "oap": "admission binding"
+  },
+  {
+    "index": 3,
+    "direction": "copilot-to-host",
+    "classification": "mapped",
+    "fidelity": "normalized",
+    "oap": "known counts and unknown cost"
+  },
+  {
+    "index": 4,
+    "direction": "copilot-to-host",
+    "classification": "mapped",
+    "fidelity": "normalized",
+    "oap": "known counts and unknown cost"
+  },
+  {
+    "index": 5,
+    "direction": "copilot-to-host",
+    "classification": "mapped",
+    "fidelity": "normalized",
+    "oap": "known counts and unknown cost"
+  },
+  {
+    "index": 6,
+    "direction": "copilot-to-host",
+    "classification": "mapped",
+    "fidelity": "normalized",
+    "oap": "known counts and unknown cost"
+  }
+]

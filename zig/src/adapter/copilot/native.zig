@@ -1,4 +1,5 @@
 const std = @import("std");
+const harness_pins = @import("harness_pins");
 const gojson = @import("gojson");
 
 pub const Error = error{InvalidWire} || std.mem.Allocator.Error;
@@ -165,7 +166,7 @@ test "a response, a failure, a notification and a request each parse as what the
     const pong = try parseMessage(scratch, "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"version\":\"1.0.98\",\"protocolVersion\":3}}");
     try testing.expectEqual(Kind.response, pong.kind);
     try testing.expectEqual(@as(i64, 1), pong.id.?.integer);
-    try testing.expectEqualStrings("1.0.98", text(pong.result.?.object, "version"));
+    try testing.expectEqualStrings(harness_pins.copilot_cli_endpoint_version, text(pong.result.?.object, "version"));
 
     const refused = try parseMessage(scratch, "{\"jsonrpc\":\"2.0\",\"id\":2,\"error\":{\"code\":-32601,\"message\":\"no such method\"}}");
     try testing.expectEqual(Kind.failure, refused.kind);
@@ -269,4 +270,14 @@ test "every mapped event type round-trips through its wire name" {
         try testing.expectEqual(kind, EventType.parse(kind.wire()).?);
     }
     try testing.expect(EventType.parse("session.start") == null);
+}
+
+test "native negative-zero usage keeps its floating sign rather than becoming an integer" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const message = try parseMessage(arena.allocator(), "{\"jsonrpc\":\"2.0\",\"method\":\"session.event\",\"params\":{\"sessionId\":\"ses\",\"event\":{\"type\":\"assistant.usage\",\"data\":{\"inputTokens\":-0}}}}");
+    const event = (try decodeEvent(message)).?;
+    const value = event.data.get("inputTokens").?;
+    try testing.expect(value == .float);
+    try testing.expect(value.float == 0 and std.math.signbit(value.float));
 }

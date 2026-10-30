@@ -39,10 +39,10 @@ pub const Run = struct {
     terminal: bool = false,
     cancel_requested: bool = false,
     parts: std.ArrayList([]const u8) = .empty,
-    input_tokens: u64 = 0,
-    output_tokens: u64 = 0,
+    input_tokens: ?u64 = null,
+    output_tokens: ?u64 = null,
     measured: bool = false,
-    cost: f64 = 0,
+    cost: ?f64 = null,
     routed_model: []const u8 = "",
 };
 
@@ -210,6 +210,11 @@ pub const Reducer = struct {
             const run = self.current orelse return;
             return self.fail(run, "copilot_foreign_session", "an event for another Copilot session reached this one");
         }
+        const interaction = native.text(event.data, "interactionId");
+        if (!std.mem.eql(u8, event.type_name, "user.message") and interaction.len > 0) {
+            const run = self.current orelse return;
+            if (!std.mem.eql(u8, run.interaction_id, interaction)) return;
+        }
         const kind = event.kind orelse return;
         switch (kind) {
             .user_message => try self.userMessage(event.data),
@@ -232,10 +237,10 @@ pub const Reducer = struct {
             },
             .usage => {
                 const run = self.current orelse return;
-                run.input_tokens +|= count(event.data, "inputTokens");
-                run.output_tokens +|= count(event.data, "outputTokens");
+                run.input_tokens = accumulate(run.input_tokens, count(event.data, "inputTokens"), !run.measured);
+                run.output_tokens = accumulate(run.output_tokens, count(event.data, "outputTokens"), !run.measured);
+                run.cost = accumulateCost(run.cost, if (event.data.get("cost")) |cost| number(cost) else null, !run.measured);
                 run.measured = true;
-                if (event.data.get("cost")) |cost| run.cost += number(cost);
                 const model = native.text(event.data, "model");
                 if (model.len > 0) run.routed_model = try self.allocator().dupe(u8, model);
             },
@@ -596,9 +601,8 @@ pub const Reducer = struct {
         var payload = payload_in;
         if (run.measured) {
             var usage: std.json.ObjectMap = .empty;
-            try usage.put(self.allocator(), "input_tokens", try unsigned(self.allocator(), run.input_tokens));
-            try usage.put(self.allocator(), "output_tokens", try unsigned(self.allocator(), run.output_tokens));
-            try usage.put(self.allocator(), "total_tokens", try unsigned(self.allocator(), run.input_tokens +| run.output_tokens));
+            if (run.input_tokens) |counted| try usage.put(self.allocator(), "input_tokens", try unsigned(self.allocator(), counted));
+            if (run.output_tokens) |counted| try usage.put(self.allocator(), "output_tokens", try unsigned(self.allocator(), counted));
             try payload.put(self.allocator(), "usage", .{ .object = usage });
         }
         try self.emit(run, kind, payload, true);
@@ -647,9 +651,9 @@ pub const Reducer = struct {
     fn extensions(self: *Reducer, run: *Run) std.mem.Allocator.Error!?std.json.Value {
         if (!run.measured) return null;
         var carried: std.json.ObjectMap = .empty;
-        if (std.math.isFinite(run.cost)) {
+        if (run.cost) |known| {
             var cost: std.json.ObjectMap = .empty;
-            try cost.put(self.allocator(), "premium_requests", .{ .float = run.cost });
+            try cost.put(self.allocator(), "premium_requests", .{ .float = known });
             try carried.put(self.allocator(), cost_extension, .{ .object = cost });
         }
         if (run.routed_model.len > 0) {
@@ -693,20 +697,38 @@ fn unsigned(arena: std.mem.Allocator, value: u64) std.mem.Allocator.Error!std.js
     return .{ .number_string = try std.fmt.allocPrint(arena, "{d}", .{value}) };
 }
 
-fn number(value: std.json.Value) f64 {
+fn number(value: std.json.Value) ?f64 {
     return switch (value) {
         .integer => |whole| @floatFromInt(whole),
         .float => |real| real,
-        else => 0,
+        .number_string => |raw| std.fmt.parseFloat(f64, raw) catch null,
+        else => null,
     };
 }
 
-fn count(data: std.json.ObjectMap, name: []const u8) u64 {
-    const value = data.get(name) orelse return 0;
-    const real = number(value);
-    if (!(real > 0)) return 0;
-    if (real >= 18446744073709551616.0) return std.math.maxInt(u64);
-    return @intFromFloat(real);
+fn accumulateCost(previous: ?f64, next: ?f64, first: bool) ?f64 {
+    const incoming = next orelse return null;
+    const total = if (first) incoming else (previous orelse return null) + incoming;
+    return if (std.math.isFinite(total)) total else null;
+}
+
+fn count(data: std.json.ObjectMap, name: []const u8) ?u64 {
+    const value = data.get(name) orelse return null;
+    return switch (value) {
+        .integer => |whole| if (whole >= 0) @intCast(whole) else null,
+        .number_string => |raw| blk: {
+            if (raw.len == 0) break :blk null;
+            for (raw) |digit| if (!std.ascii.isDigit(digit)) break :blk null;
+            break :blk std.fmt.parseInt(u64, raw, 10) catch null;
+        },
+        else => null,
+    };
+}
+
+fn accumulate(previous: ?u64, next: ?u64, first: bool) ?u64 {
+    if (first) return next;
+    const sum = @addWithOverflow(previous orelse return null, next orelse return null);
+    return if (sum[1] == 0) sum[0] else null;
 }
 
 const testing = std.testing;
@@ -752,7 +774,7 @@ test "a prompt starts its run at its own user.message, streams, and completes at
     try testing.expectEqualStrings("po", payloadOf(&reducer, 1).get("part").?.object.get("text").?.string);
     const completed = payloadOf(&reducer, 3);
     try testing.expectEqualStrings("pong", completed.get("final_response").?.object.get("content").?.array.items[0].object.get("text").?.string);
-    try testing.expectEqual(@as(i64, 11957), completed.get("usage").?.object.get("total_tokens").?.integer);
+    try testing.expect(completed.get("usage").?.object.get("total_tokens") == null);
     const extensions = reducer.envelopes.items[3].object.get("extensions").?.object;
     try testing.expectEqualStrings("mai-code-1.1-flash", extensions.get(routed_model_extension).?.object.get("model").?.string);
     try testing.expectEqual(@as(f64, 1.0), extensions.get(cost_extension).?.object.get("premium_requests").?.float);

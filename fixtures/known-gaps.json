@@ -10,9 +10,7 @@
   "rust": [
     "call-omits-a-process-source",
     "call-omits-published-source",
-    "compaction-event-unadvertised",
     "compaction-focus-degraded-without-optin",
-    "compaction-request-unadvertised",
     "compaction-requested-in-a-submitted-run",
     "compaction-run-not-compacted",
     "compaction-run-stops-for-another-reason",
@@ -57,7 +55,6 @@
     "models-select-in-gap-unlisted",
     "models-select-removed-after-refresh",
     "models-select-unlisted",
-    "models-unadvertised",
     "models-unadvertised-wrong-reason",
     "models-unlisted-selection-missing-detail",
     "models-unlisted-selection-wrong-refusal",
@@ -92,7 +89,6 @@
     "queue-state-omission-excused-then-repeated",
     "queue-state-promoted-run-erased",
     "session-list-degraded-admitted-without-optin",
-    "session-list-unadvertised",
     "session-list-unadvertised-wrong-refusal",
     "session-reopen-degraded-admitted-without-optin",
     "session-reopen-unadvertised",
@@ -117,7 +113,6 @@
     "tools-refresh-collides-with-attachment",
     "tools-refresh-collides-with-provided",
     "tools-refresh-removes-provided-source",
-    "transcript-load-degraded-admitted-without-optin",
-    "transcript-load-unadvertised"
+    "transcript-load-degraded-admitted-without-optin"
   ]
 }

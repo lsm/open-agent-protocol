@@ -1,0 +1,17 @@
+{
+  "provenance": "Synthetic official-SDK-shaped limits, not an account recording. Legacy total from the human's alpha.29 report; modern limits match models.dev and the primary upstream API-version A/B report.",
+  "legacy": {
+    "id": "claude-opus-5.5",
+    "name": "Claude Opus 5.5",
+    "model_picker_enabled": true,
+    "supported_endpoints": ["/chat/completions"],
+    "capabilities": {"type": "chat", "limits": {"max_prompt_tokens": 200000, "max_context_window_tokens": 327680, "max_output_tokens": 128000}}
+  },
+  "current": {
+    "id": "claude-opus-5.5",
+    "name": "Claude Opus 5.5",
+    "model_picker_enabled": true,
+    "supported_endpoints": ["/chat/completions"],
+    "capabilities": {"type": "chat", "limits": {"max_prompt_tokens": 1000000, "max_context_window_tokens": 1000000, "max_output_tokens": 128000}}
+  }
+}

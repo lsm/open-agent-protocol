@@ -1,0 +1,105 @@
+## Shared Copilot CLI corpus
+
+Use the shared build/tool setup in `SKILL.md`, then run from the root:
+
+```sh
+python3 .claude/skills/verify/scripts/copilot-harness-corpus.py --output-dir /tmp/oap-copilot-corpus-<unique-name>
+```
+
+Zig's production native decoder and reducer replay every manifest case against
+fixed expected OAP: text, queued runs sharing one busy period, accumulated usage,
+tool success/denial, session errors, foreign sessions and unknown events. Reasoning
+is explicitly observed without a published projection. Malformed JSON-RPC and
+malformed event bodies must be rejected by the native codec, with no OAP events.
+The script wraps each event sequence with its checked-in admission exchange and
+runs the public Go and oapx validators. Require exit 0 and `PASS`; inspect
+`zig-replay.txt`, the full trace and both validator outputs. The replay also
+refuses a mislabeled outbound response, so its direction is part of the contract.
+The driver then runs the Rust Copilot native consumer against the manifest;
+require exit 0 in `rust-native.txt`. This covers shared wire decoding. Rust
+session projection and host integration remain separate work.
+
+The pin is CLI 1.0.98 / protocol 3; source and artifact provenance come from the
+existing ledger. This is synthetic schema/ledger-based data, not a new live
+recording. It starts no Copilot process, uses no token, and performs no model
+call. Go's native JSON-RPC decoder now consumes the same twenty-three cases, preserves
+unknown event names and exact numeric source bytes, and rejects duplicate keys
+and ambiguous message shapes. Inspect `go-native.txt` for its result and the
+bounded Content-Length codec checks: fragmented/coalesced frames, UTF-8 byte
+lengths, header/body limits, malformed or truncated input, and short writes.
+The same script also checks RPC correlation across concurrent calls, preserved
+notifications, refusal of reverse requests, delivered replies surviving EOF or
+cancellation, and closure on malformed input or queue overflow. Call cancellation
+unblocks an owned stalled pipe. These run with race detection and appear in
+`go-native.txt`. Process ownership is exercised with an actual synthetic child
+under temporary HOME and an explicit environment: an RPC reads that HOME, a
+stalled call must return DeadlineExceeded, and close/cancellation must reap the
+child. The script disables Go's test cache so this process proof really runs.
+No real Copilot binary or authentication is used. The Go reducer additionally
+matches fixed OAP for text, queue, unknown events, session errors and foreign
+sessions and usage. The queued case also injects delayed delta/final text for the
+completed interaction after its successor starts; neither may enter the next run.
+Usage additionally pins measured zero, sparse calls, exact
+counts above 2^53, uint64 maximum and sum overflow, native negative zero and
+missing/partial/wide/non-finite costs. Missing counts stay unknown; neither
+reducer infers totals with unknown cache terms. Go now matches all twenty-one
+lifecycle projections, including tool success/denial, orphan/duplicate completions
+and incomplete tools at run settlement. Its inventory test requires every
+manifest case to be replayed or checked by the native codec. The Go session
+read loop additionally proves state snapshots, bounded cursor replay and explicit
+gaps, process-exit settlement and close/reaping with a synthetic subprocess.
+After transport death, State still reports the settled snapshot and Resume
+serves retained events; explicit Close makes both unavailable.
+Close first drains native notifications already received, so a completed run
+remains completed for existing followers instead of being replaced by failure.
+Public session submission tests an early native event before its reply, Unicode
+text across messages/parts, native refusal without a ghost run, missing binding
+teardown, queue promotion and the nine-run bound.
+Queued admission must keep the current run streaming while its reply is pending.
+State and Close remain responsive, pending admissions are absent from snapshots,
+and a caller waiting for the admission gate can cancel. Unbound early events
+stay bounded; early completion still reaches the reserved live follower even
+with a one-event replay journal. Eight queued reservations are the limit even
+when no run is active; one active run plus eight queued runs remains allowed.
+An intentional Close during admission keeps its close-specific failure reason
+for existing runs; an interrupted send must not relabel it as process failure.
+Unsupported portable controls
+and non-text input are refused before admission. The public Go `New`/`Probe`/`Open` path now starts the synthetic child with
+enforced headless/stdio/no-update flags, verifies protocol 3 and the pinned CLI
+version, giving each handshake RPC its own request deadline, then produces
+validator-accepted events. Mismatched versions and
+unsupported open controls are refused; each open owns a separate process.
+The Go registry exposes this adapter as `copilot`; its dedicated example is
+`examples/oap-serve-go-copilot.json`, because the shared registry must stay usable
+by both trees. Unsupported host capabilities
+remain unadvertised; the Rust lane follows separately.
+
+Run the registered command-line surface with a token-free synthetic peer:
+
+```sh
+python3 .claude/skills/verify/scripts/copilot-hub.py --output-dir /tmp/oap-copilot-hub-<unique-name>
+```
+
+Require `PASS` after all four actual hub traces are accepted by Go and oapx.
+`zig-registry-refusal.txt` must also show that Zig refuses the dedicated Go-only
+example as an unknown `copilot` type before serving; this records the permitted
+registry availability difference in `drafts/hub.md`.
+The script builds the internal Go command, uses a temporary HOME and an explicit
+child environment, and exercises multi-message text boundaries, Unicode, tool
+lifecycles, exact usage above 2^53 and queued-run promotion through `hub --stdio`.
+It retains the actual hub/native wire and validator results, removes the temporary
+HOME and checks that every synthetic child exited. It performs no login, reads no
+credentials and makes no network or provider call. This proves the registered
+Go front door against the pinned synthetic wire; live CLI compatibility remains
+unverified.
+
+After registry/example changes, also run `zig build --build-file zig/build.zig test-unit-adapter`
+and require exit 0. This includes the shared example inventory check and prevents
+a Go-only entry from breaking the Zig front door.
+
+
+For missing native admission bindings, inspect the ledger's explicit host
+lifecycle divergence. Go refuses further work but keeps the settled snapshot;
+Zig currently allows another submission. The Go missing-binding subprocess test
+runs above; also run `zig build --build-file zig/build.zig test-unit-adapter`
+for its synthetic host test. This comparison does not claim identical teardown.

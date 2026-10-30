@@ -1,10 +1,15 @@
 # GitHub Copilot CLI 1.0.98 mapping ledger
 
-Status: the first pin, not yet catalogued. No adapter implements it yet; this
-ledger is the spec the Zig and Go adapters will be built against, and it
-chooses the native surface they drive. `harnesses/copilot-cli.json` lands with
-the first adapter, because a current version needs a capability revision and a
-corpus.
+Status: catalogued for the existing Zig implementation. The shared pin is
+`harnesses/copilot-cli.json`; the token-free synthetic baseline corpus is
+`fixtures/adapters/copilot-cli-v1.0.98`. It is authored from this ledger rather
+than a new live capture. Go's decoder, transport and reducer now replay that
+corpus; Go's public adapter/session path now has synthetic process proof, with
+registry integration tracked in #1448 and Rust
+following separately in #1439.
+The lifecycle tables below distinguish native possibilities from the conservative
+host descriptor: reopen, cancel and interactive resolution are not advertised
+by the current Zig host.
 
 ## Which surface
 
@@ -74,6 +79,19 @@ other pinned harness frames this way.
   `session.lifecycle` notifications. With the session options below it sent
   the recorder no server-to-client requests.
 
+## Go process diagnostics
+
+The minimal Go process bridge discards child stderr. Unlike the sibling Go
+bridges, it retains no bounded/redacted diagnostic tail, so pre-RPC startup
+text is unavailable; callers have transport errors and `Process.WaitError`'s
+exit status only. This is an explicit diagnostic divergence, not a claim of
+startup-error detail parity. Adding a diagnostic tail requires its own bounded
+capture/redaction evidence before that detail can be promised.
+
+The synthetic Go process checks prove explicit environment isolation, RPC
+replies, deadline cancellation and reaping. They do not verify real Copilot
+authentication/runtime failure text, and never invoke that CLI or read tokens.
+
 ## Live probe
 
 2026-10-17, the darwin-arm64 binary above, `HOME` and `PATH` only, a fresh
@@ -94,6 +112,20 @@ resume). Nine scenarios, fourteen billed model calls in all.
 
 ## Session lifecycle
 
+Text admission joins separate user messages with a double newline, preserving
+their boundary in Copilot's single prompt string. Text parts within one message
+remain contiguous. An entirely empty submission stays invalid even when message
+separators would otherwise produce bytes. Synthetic process tests pin this in
+both Go and Zig.
+
+Go serializes native admission with a context-aware gate and releases the session
+mutex during `session.send`, so existing runs continue streaming and state/close
+remain available. Only an unmatched native user-message boundary and subsequent
+events wait for its binding; that holding queue shares the configured RPC queue
+bound. Provisional runs are hidden from snapshots. A reserved follower binds
+before held events publish, so a small replay journal cannot erase live delivery.
+The host permits at most eight queued reservations, independently of active work.
+
 | OAP | Native |
 | --- | --- |
 | `session.open` | `session.create {clientName, model?, requestPermission:true, requestUserInput:true, workingDirectory, streaming:true, envValueMode:"direct"}` → `{sessionId, workspacePath, …}` |
@@ -106,6 +138,18 @@ resume). Nine scenarios, fourteen billed model calls in all.
 SDK sets it whenever an `onPermissionRequest` handler exists, and its handler
 is required. Without it the server decides alone.
 
+## Host admission divergence
+
+A successful `session.send` reply without `messageId` leaves native admission
+uncertain. Go removes the provisional run, stops the native process and refuses
+further submissions, while retaining readable state/replay until explicit Close.
+Zig currently forgets that run and permits another submission. Its adapter test
+"a prompt the server refuses or answers without a message id is not admitted"
+pins that reusable behavior; Go's missing-binding test pins conservative teardown.
+This is an explicit lifecycle divergence under Decision 0032, not a parity claim:
+Go cannot safely correlate later observations with an accepted-but-unbound prompt.
+The Go submission slice leaves Zig host lifecycle alignment for follow-up.
+
 ## Run boundaries
 
 The pattern is OpenCode v2's: an idle is a **busy period**, not a run.
@@ -114,6 +158,9 @@ the default `mode` is `enqueue`. Each admitted prompt then appears as
 `user.message {messageId, interactionId, delivery}`, `delivery` being `idle`
 when it started a busy period and `queued` when it waited behind another.
 Every assistant and tool event of that prompt carries its `interactionId`.
+Go and Zig bind that identity at `user.message` and omit observations carrying a
+different interaction, including delayed text after the next queued prompt starts.
+Events without an interaction identity retain the busy-period mapping.
 In the queue probe two prompts produced two `user.message`s, two
 `assistant.turn_start`/`turn_end` pairs, and one `session.idle`.
 
@@ -139,10 +186,18 @@ exercise it.
 | `assistant.message {messageId, content, phase, toolRequests}` | authoritative text for the final response; `phase:"final_answer"` marks the last |
 | `assistant.reasoning_delta` / `assistant.reasoning {reasoningId, content}` | reasoning, same shape |
 | `assistant.streaming_delta {totalResponseSizeBytes}` | observed-only: a byte counter, no text |
-| `assistant.usage {inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens, reasoningTokens, cost, model, isAuto, …}` | one per model call; the run's usage on its terminal is their sum. `cost` is premium requests and goes to a namespaced extension |
+| `assistant.usage {inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens, reasoningTokens, cost, model, isAuto, …}` | one per model call; known input/output counts sum exactly on the terminal. A missing or unrepresentable term makes that accumulated count unknown, never zero or a saturated approximation. Totals are omitted because cache terms are not mapped, per Decisions 0063/0065. `cost` is premium requests and goes to a namespaced extension |
 | `assistant.message` that ends a message, with the `assistant.usage` calls since the previous one | `content.completed` carrying that message's own `usage` ([Decision 0049](../decisions/0049-a-message-reports-its-own-usage.md)) |
 
+Native numeric normalization: an incoming Copilot `-0` count is treated as
+unknown by both peers, not converted into measured zero. Decision 0065 still
+rejects `-0` in OAP input envelopes. Premium-request costs use float64 in both peers, including
+integer tokens beyond int64; a missing per-call cost makes the total unknown, and a non-finite accumulated cost is omitted. Measured cost zero stays distinct from absence. Numeric
+corpus comparisons retain exact rational values, so exponent/decimal spellings
+of the same cost compare equally without rounding usage counts.
+
 ## Tools and permissions
+
 
 | Native | OAP |
 | --- | --- |

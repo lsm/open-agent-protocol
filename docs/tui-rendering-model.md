@@ -478,12 +478,24 @@ context gauge divides by, so the two cannot disagree: the runtime hands the agen
 model carrying the session's window everywhere it hands it a model, which is at start,
 at a model switch, at a picker selection and when the catalog is refreshed.
 
+Copilot catalog refreshes, model policy enablement and inference requests use
+the versioned API contract (`X-GitHub-Api-Version: 2026-08-01`), matching the
+official Copilot API client.
+Unversioned catalogs can expose legacy windows even for models with longer context.
+After upgrading, `/model refresh` replaces an existing legacy catalog; `/context`
+continues to use the returned limits rather than a hardcoded model allowance.
+
 Copilot models with distinct `billing.token_prices.default` and `long_context`
 limits retain the default prompt window and the larger selectable prompt ceiling.
 Both the current `max_prompt_tokens` and earlier `context_max` spellings are read
 from each tier; the model id stays unchanged. `/context <tokens>` selects the long
 window explicitly, and `/context default` restores the default tier. Models with
-no distinct tiers keep the limits their listing already supplies.
+no distinct tiers retain `capabilities.limits.max_prompt_tokens` as the default
+window and `max_context_window_tokens` as the selectable total-context ceiling.
+If the total-context field is absent or zero, the prompt window remains the ceiling.
+An explicit larger billing prompt tier takes precedence over the total-context
+ceiling. This sets the TUI compaction budget; it does not promise that the provider
+will accept a prompt of that size or remove its output-token reservation.
 
 A value is refused when it is above the model's dynamically reported maximum or
 the ceiling its row records in the provider catalog, and the refusal names the model, the ceiling and the window still in effect.

@@ -31,6 +31,7 @@ pub const KNOWN_COPILOT_MODELS = [_][]const u8{
 };
 
 pub const COPILOT_HEADERS = struct {
+    pub const api_version = "2026-08-01";
     pub const user_agent = "GitHubCopilotChat/0.35.0";
     pub const editor_version = "vscode/1.107.0";
     pub const editor_plugin_version = "copilot-chat/0.35.0";
@@ -191,6 +192,7 @@ pub fn enableModel(
     try headers.append(allocator, .{ .name = "content-type", .value = "application/json" });
     try headers.append(allocator, .{ .name = "openai-intent", .value = "chat-policy" });
     try headers.append(allocator, .{ .name = "x-interaction-type", .value = "chat-policy" });
+    try headers.append(allocator, .{ .name = "x-github-api-version", .value = COPILOT_HEADERS.api_version });
 
     var fetched = fetch(allocator, url, .{
         .method = .POST,
@@ -818,4 +820,17 @@ test "buildProviderData drops values that would break the json" {
     try testing.expect(!isSafeProviderDataValue("has\"quote"));
     try testing.expect(!isSafeProviderDataValue(""));
     try testing.expect(isSafeProviderDataValue("gpt-5.1-codex-max"));
+}
+
+test "model policy enablement negotiates the Copilot API version" {
+    const Policy = struct {
+        fn fetch(allocator: std.mem.Allocator, _: []const u8, options: http.FetchOptions) http.FetchError!http.Fetched {
+            var versioned = false;
+            for (options.extra_headers) |header| {
+                if (std.ascii.eqlIgnoreCase(header.name, "x-github-api-version") and std.mem.eql(u8, header.value, "2026-08-01")) versioned = true;
+            }
+            return .{ .status = if (versioned) 200 else 400, .body = try allocator.dupe(u8, "{}") };
+        }
+    };
+    try std.testing.expect(try enableModel(Policy.fetch, std.testing.allocator, "synthetic-policy-token", "claude-opus-5.5", DEFAULT_BASE_URL));
 }

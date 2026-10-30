@@ -1,10 +1,16 @@
 mod answer;
 mod contract;
 mod error;
+pub mod gojson;
+pub mod gotime;
 pub mod journal;
+pub mod jsonrpc;
 pub mod memory;
+pub mod process;
 mod prompt;
+mod quote_table;
 mod refuse;
+pub mod subscriber;
 #[cfg(feature = "testkit")]
 pub mod testkit;
 
