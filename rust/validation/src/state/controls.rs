@@ -999,6 +999,21 @@ impl State {
                             .to_owned(),
                     }));
                 }
+                if self.unlisted_model(p.session_id.as_str(), &controls.model) {
+                    return Err(Box::new(Expectation {
+                        rung: RUNG_UNSATISFIABLE,
+                        limit: false,
+                        key: key.to_owned(),
+                        pointer: "/payload/model_id".to_owned(),
+                        code: MODEL_NOT_FOUND,
+                        reason: "",
+                        detail_name: "model_id",
+                        detail_value: controls.model.clone(),
+                        diagnostic: codes::MODEL_NOT_IN_CATALOG,
+                        message: "submission selects a model the catalog served under this revision does not list"
+                            .to_owned(),
+                    }));
+                }
                 Ok(true)
             }
             FEATURE_INSTRUCTIONS => Ok(true),

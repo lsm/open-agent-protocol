@@ -49,3 +49,25 @@ fn a_selection_the_bound_catalog_does_not_list_must_be_refused_by_name() {
         assert_eq!(drawn(fixture), missing(envelope, pointer), "{fixture}");
     }
 }
+
+fn catalog_misses(trace: &str) -> Vec<(String, String)> {
+    let path = format!(
+        "{}/tests/data/model_catalog/{trace}.json",
+        env!("CARGO_MANIFEST_DIR")
+    );
+    Validator::new()
+        .unwrap()
+        .validate(&std::fs::read(&path).unwrap(), &path)
+        .diagnostics
+        .into_iter()
+        .filter(|d| d.code == "model_not_in_catalog")
+        .map(|d| (d.envelope_id, d.pointer))
+        .collect()
+}
+
+#[test]
+fn only_a_catalog_served_under_the_current_revision_and_binding_judges_a_selection() {
+    let admitted = ("submit-resp".to_owned(), "/payload/admission".to_owned());
+    assert_eq!(catalog_misses("older-revision"), [admitted]);
+    assert_eq!(catalog_misses("degraded-catalog"), []);
+}
