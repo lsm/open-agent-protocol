@@ -133,13 +133,25 @@ fn a_line_over_the_frame_limit_ends_serving_and_a_limit_below_the_floor_is_refus
         "{{\"id\":1,\"op\":\"adapters\"}}\n{{\"id\":2,\"op\":\"adapters\",\"pad\":\"{}\"}}\n",
         "x".repeat(7000)
     );
-    let (lines, result) = run(&padded, StdioOptions { frame_limit: 6000 });
+    let (lines, result) = run(
+        &padded,
+        StdioOptions {
+            frame_limit: 6000,
+            ..StdioOptions::default()
+        },
+    );
     assert_eq!(lines.len(), 1);
     assert!(matches!(
         result,
         Err(StdioError::MalformedLine { line: 2, .. })
     ));
-    let (_, result) = run("", StdioOptions { frame_limit: 255 });
+    let (_, result) = run(
+        "",
+        StdioOptions {
+            frame_limit: 255,
+            ..StdioOptions::default()
+        },
+    );
     assert!(matches!(result, Err(StdioError::FrameLimit(255))));
 }
 
@@ -152,7 +164,10 @@ fn an_empty_input_ends_cleanly() {
 fn a_response_over_the_frame_limit_is_refused_and_serving_goes_on() {
     let (lines, result) = run(
         "{\"id\":1,\"op\":\"adapters\"}\n{\"id\":2,\"op\":\"adapters\",\"session_id\":\"none\"}\n",
-        StdioOptions { frame_limit: 1024 },
+        StdioOptions {
+            frame_limit: 1024,
+            ..StdioOptions::default()
+        },
     );
     result.unwrap();
     assert_eq!(lines[0]["id"], 1);

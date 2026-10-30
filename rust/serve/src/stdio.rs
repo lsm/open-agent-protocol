@@ -30,12 +30,16 @@ const PARAMS: [&str; 8] = [
 #[derive(Clone, Debug)]
 pub struct StdioOptions {
     pub frame_limit: usize,
+    pub max_subscriptions: usize,
 }
+
+pub const DEFAULT_MAX_SUBSCRIPTIONS: usize = 64;
 
 impl Default for StdioOptions {
     fn default() -> Self {
         Self {
             frame_limit: DEFAULT_FRAME_LIMIT,
+            max_subscriptions: DEFAULT_MAX_SUBSCRIPTIONS,
         }
     }
 }
@@ -121,6 +125,11 @@ fn serve_lines<W: Write>(
 ) -> Result<(), StdioError> {
     let mut number = 0;
     let mut ids = 0;
+    let attached = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let cap = match options.max_subscriptions {
+        0 => DEFAULT_MAX_SUBSCRIPTIONS,
+        cap => cap,
+    };
     loop {
         number += 1;
         let malformed = |detail: String| StdioError::MalformedLine {
@@ -136,14 +145,14 @@ fn serve_lines<W: Write>(
         };
         let request = decode_request(&frame).map_err(malformed)?;
         let (answer, pump) = if request.op == "events" {
-            match events(hub, &request) {
+            match events(hub, &request, Attached::claim(&attached, cap)) {
                 Ok(pump) => (Ok(Value::Null), Some(pump)),
                 Err(Subscribing::Refused(error)) => (Err(error), None),
                 Err(Subscribing::Gap(gap)) => {
                     if let Some(line) = fitted(request.id, Ok(Value::Null), options.frame_limit)? {
                         emit(writer, &line)?;
                     }
-                    let line = serde_json::to_vec(&GapLine {
+                    let full = GapLine {
                         event: "oap-replay-gap",
                         id: request.id,
                         session_id: &request.session_id,
@@ -151,9 +160,20 @@ fn serve_lines<W: Write>(
                         oldest_available: gap.oldest_available,
                         latest_available: gap.latest_available,
                         message: "requested replay cursor is no longer retained; resume with a cursor at or after oldest_available - 1",
-                    })
-                    .map_err(|_| StdioError::LineTooLarge)?;
-                    emit(writer, &line)?;
+                    };
+                    let minimal = GapLine {
+                        session_id: "",
+                        message: "",
+                        ..full
+                    };
+                    let fitting = [&full, &minimal].into_iter().find_map(|gap| {
+                        serde_json::to_vec(gap)
+                            .ok()
+                            .filter(|line| line.len() <= options.frame_limit)
+                    });
+                    if let Some(line) = fitting {
+                        emit(writer, &line)?;
+                    }
                     continue;
                 }
             }
@@ -180,14 +200,44 @@ impl From<WireError> for Subscribing {
     }
 }
 
+struct Attached(Arc<std::sync::atomic::AtomicUsize>);
+
+impl Attached {
+    fn claim(count: &Arc<std::sync::atomic::AtomicUsize>, cap: usize) -> Result<Self, WireError> {
+        use std::sync::atomic::Ordering;
+        count
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |held| {
+                (held < cap).then_some(held + 1)
+            })
+            .map(|_| Attached(count.clone()))
+            .map_err(|_| {
+                wire(
+                    "busy",
+                    format!("the frontend is already serving {cap} subscriptions; a subscription ends at its run's terminal, at an overflow or stream failure, or when its session closes \u{2014} send this request again once one has"),
+                )
+            })
+    }
+}
+
+impl Drop for Attached {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
 struct Pump {
+    _attached: Attached,
     id: i64,
     entry: Arc<HubSession>,
     subscription: Subscription,
     resume_from: u64,
 }
 
-fn events(hub: &Hub, request: &Request) -> Result<Pump, Subscribing> {
+fn events(
+    hub: &Hub,
+    request: &Request,
+    attached: Result<Attached, WireError>,
+) -> Result<Pump, Subscribing> {
     request.only(&["session_id", "run_id", "after"])?;
     let entry = session(hub, &request.session_id)?;
     if entry.is_closed() {
@@ -214,6 +264,7 @@ fn events(hub: &Hub, request: &Request) -> Result<Pump, Subscribing> {
         }
         _ => None,
     };
+    let attached = attached?;
     let subscribed = match after {
         Some(after) => {
             let run = (!request.run_id.is_empty()).then(|| request.run_id.as_str().into());
@@ -225,7 +276,8 @@ fn events(hub: &Hub, request: &Request) -> Result<Pump, Subscribing> {
         HubError::Adapter(oap_adapter::Error::ReplayGap(gap)) => Subscribing::Gap(gap),
         err => Subscribing::Refused(wire(
             match &err {
-                HubError::Adapter(oap_adapter::Error::SessionClosed) => "session_closed",
+                HubError::Adapter(oap_adapter::Error::SessionClosed)
+                | HubError::SessionClosed(_) => "session_closed",
                 HubError::NoRunToResume => "no_run_to_resume",
                 HubError::Adapter(oap_adapter::Error::ReplayCursorFuture) => "replay_cursor_future",
                 HubError::Adapter(oap_adapter::Error::RunNotFound) => "run_not_found",
@@ -240,6 +292,7 @@ fn events(hub: &Hub, request: &Request) -> Result<Pump, Subscribing> {
         entry,
         subscription,
         resume_from: after.unwrap_or(0),
+        _attached: attached,
     })
 }
 
@@ -247,10 +300,12 @@ fn events(hub: &Hub, request: &Request) -> Result<Pump, Subscribing> {
 struct GapLine<'a> {
     event: &'static str,
     id: i64,
+    #[serde(skip_serializing_if = "str::is_empty")]
     session_id: &'a str,
     requested_after: u64,
     oldest_available: u64,
     latest_available: u64,
+    #[serde(skip_serializing_if = "str::is_empty")]
     message: &'static str,
 }
 

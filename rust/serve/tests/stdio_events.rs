@@ -54,9 +54,13 @@ fn started(session: &Arc<HubSession>) -> RunId {
 }
 
 fn lines(hub: &Hub, input: &[&str]) -> Vec<Value> {
+    lines_with(hub, input, StdioOptions::default())
+}
+
+fn lines_with(hub: &Hub, input: &[&str], options: StdioOptions) -> Vec<Value> {
     let input: String = input.iter().map(|line| format!("{line}\n")).collect();
     let mut output = Vec::new();
-    serve(hub, input.as_bytes(), &mut output, &StdioOptions::default()).unwrap();
+    serve(hub, input.as_bytes(), &mut output, &options).unwrap();
     String::from_utf8(output)
         .unwrap()
         .lines()
@@ -168,4 +172,84 @@ fn closing_the_session_ends_its_subscription_with_a_session_closed_line() {
     assert_eq!(closed[0]["id"], 1);
     assert_eq!(closed[0]["session_id"], "s");
     assert_eq!(closed[0]["message"], "the session is closed");
+}
+
+#[test]
+fn a_subscription_past_the_cap_is_refused_busy() {
+    let (hub, _) = opened(64);
+    let answered = lines_with(
+        &hub,
+        &[
+            r#"{"id":1,"op":"events","session_id":"s"}"#,
+            r#"{"id":2,"op":"events","session_id":"s"}"#,
+        ],
+        StdioOptions {
+            max_subscriptions: 1,
+            ..StdioOptions::default()
+        },
+    );
+    assert_eq!(answered[0]["ok"], true);
+    let refused = answered.iter().find(|line| line["id"] == 2).unwrap();
+    assert_eq!(refused["error"]["code"], "busy");
+    assert!(refused["error"]["message"]
+        .as_str()
+        .unwrap()
+        .starts_with("the frontend is already serving 1 subscriptions"));
+}
+
+#[test]
+fn a_replay_gap_falls_back_to_its_minimal_line_under_a_tight_frame_limit() {
+    let id = "s".repeat(120);
+    let mut registry = Registry::new();
+    registry
+        .register(
+            "memory",
+            Arc::new(Memory::new(Config {
+                journal_capacity: 2,
+                ..Config::default()
+            })),
+        )
+        .unwrap();
+    let hub = Hub::new(registry);
+    let session = block_on(hub.open(
+        "memory",
+        OpenRequest {
+            session_id: id.as_str().into(),
+            ..OpenRequest::default()
+        },
+    ))
+    .unwrap()
+    .session;
+    let run = block_on(session.submit(SubmitRequest {
+        request: MessageSubmitRequest {
+            session_id: id.as_str().into(),
+            delivery: RequestedDeliveryMode::AUTO,
+            messages: vec![Message {
+                role: MessageRole::USER,
+                content: MessageContent::from_text("go"),
+                ..Message::default()
+            }],
+            ..MessageSubmitRequest::default()
+        },
+        ..SubmitRequest::default()
+    }))
+    .unwrap()
+    .run_id
+    .unwrap();
+    block_on(session.cancel(run.clone())).unwrap();
+    let answered = lines_with(
+        &hub,
+        &[&format!(
+            r#"{{"id":3,"op":"events","session_id":"{id}","run_id":"{run}","after":0}}"#
+        )],
+        StdioOptions {
+            frame_limit: 256,
+            ..StdioOptions::default()
+        },
+    );
+    let gaps = signals(&answered, "oap-replay-gap");
+    assert_eq!(gaps.len(), 1, "{answered:?}");
+    assert!(gaps[0].get("session_id").is_none());
+    assert!(gaps[0].get("message").is_none());
+    assert_eq!(gaps[0]["requested_after"], 0);
 }
