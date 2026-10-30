@@ -120,12 +120,7 @@ fn a_malformed_line_ends_serving_after_the_lines_before_it_are_answered() {
     let mut invalid = b"{\"id\":1,\"op\":\"adapters\"}\n{\"id\":2,\"op\":\"".to_vec();
     invalid.extend_from_slice(b"\xff\"}\n");
     let hub = Hub::new(Registry::default_registry());
-    let result = serve(
-        &hub,
-        &invalid[..],
-        &mut Vec::new(),
-        &StdioOptions::default(),
-    );
+    let result = serve(&hub, &invalid[..], Vec::new(), &StdioOptions::default());
     assert!(matches!(
         result,
         Err(StdioError::MalformedLine { line: 2, .. })
